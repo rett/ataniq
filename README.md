@@ -44,6 +44,7 @@ See [the Codex qualification guide](docs/qualification-codex.md) and
 packages a later managed-lead daemon will use; it starts, stops and manages no
 lead, except in a build with the `ataniq_canary` tag, under `--canary`. See
 [the lead daemon guide](docs/lead-daemon.md).
+Release builds contain no owner channel; a build with the `ataniq_ownerchannel` tag has an unqualified scratch one, behind a stand-in door (`make test-ownerchannel`; see the same guide).
 A provisional scratch-only lead holder and its attach path are described in
 [the lead holder guide](docs/lead-holder.md).
 The [lead sandbox guide](docs/lead-sandbox.md) describes a proposal, unqualified,

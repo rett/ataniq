@@ -373,7 +373,7 @@ It prints:
 `--diff` also prints the patch of the net change. The review has limits that
 are not options: 5000 commits, 20 000 paths and 16 MiB of patch.
 
-A path can carry several flags. These are the kinds:
+A path can carry several flags. These are the kinds (`odd-path` is for the merge mode only, see [merge mode](#merge-mode-of-verification)):
 
 | Kind | Why it exists |
 | --- | --- |
@@ -382,6 +382,7 @@ A path can carry several flags. These are the kinds:
 | `submodule` | The entry is, or was, a submodule. A submodule fetches and runs other code. |
 | `aliased` | A symbolic link whose own path is execution config stands for a folder, and this path lies in that folder. A link that points out of the repository, at an absolute path, or through too long a chain of links, is flagged on its own path. |
 | `history-only` | The path is execution config, a link or a submodule, or lies in a folder that a link stands for, in the change of some commit of the branch, and the net change does not show it: it was added and removed again, or changed and changed back, or it was a link or a submodule in a commit and is neither at the tip. It still enters upstream history, so it needs a sign-off too. |
+| `odd-path` | The matcher cannot be trusted with the path: it holds bytes that are not UTF-8, a control or format character, a colon, a `~` followed by a digit, or it is not in Unicode normalization form C, so another file system could read it as a different name. Merge mode only: the review of a merge the host built flags it, and the review of a lead branch never does. |
 
 ### verify
 
@@ -421,6 +422,7 @@ standard error.
 
 #### Merge mode of verification
 
+Merge mode is the mode of the intake's review as well as of its verification: the owner channel (tagged build only, not qualified) reviews a merge the host built, with the flag kind `odd-path` and a fuller summary, and verifies it.
 The package `internal/intake/verify` and the records store also verify a merge
 that the host built, which sits under a pin in `refs/ataniq/pending/`. No
 command offers this mode: the host adapter of the owner channel (package

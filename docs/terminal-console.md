@@ -305,7 +305,7 @@ session focus. Esc closes it, and a digit opens one of its lines. Opening a
 line decides nothing.
 
 The console rings the terminal's bell for a card that arrives while you are
-away. `--no-bell` turns the bell off; it needs `--demo`.
+away. `--no-bell` turns the bell off; it works with `--demo` and with `--daemon`.
 
 ### Presence
 
@@ -324,13 +324,40 @@ every control is unavailable with its reason, and it has no session terminal.
 With no daemon, a slow one or one that speaks another protocol, it says so with
 the next step and keeps asking. See [the lead daemon guide](lead-daemon.md).
 
+## The owner channel (tagged daemon only)
+
+The console client is the same in every build: it is not behind a build tag. With `--daemon DIR` it asks the daemon for `hello`
+and shows the daemon's approvals only when the answer lists the owner
+operations. A daemon from a release build lists none, so the approvals view
+says "no owner channel in this build" and nothing can be decided. Release
+builds contain no owner channel.
+
+A daemon built with the tag `ataniq_ownerchannel` and started with
+`ataniqd run --owner-channel` lists them. Then the approvals view shows that
+daemon's cards instead of sample cards: the list, a card, its paths and patch in
+pages, the limit, and a decision, which the console sends once and shows the
+outcome it is told. A lost connection drops what was typed and decides
+nothing. Only one console at a time gets the place that may decide, and it
+needs a controlling terminal. The daemon's section,
+[The owner channel](lead-daemon.md#the-owner-channel-tagged-build-only), says what
+the daemon does, how it is started and which of its settings are scratch
+settings. That daemon's door is a stand-in: it prints
+`owner channel: STAND-IN door, scratch state: no real approval` at start, and
+an approval on it moves a ref in a scratch mirror and nothing real. The
+console makes none of that real.
+
+None of this is qualified. Which cases ran on the stand-in, and which wait for a
+seated lead, is listed in the daemon's section.
+
 ## What is a sample and what is not qualified
 
-- No approval is possible in a release build: without `--demo` the approvals
-  view says "no owner channel in this build".
+- No approval is possible in a release build: release builds, of the console
+  and of the daemon, contain no owner channel, and without `--demo` the
+  approvals view says "no owner channel in this build".
 - The sample cards of `--demo` change nothing: the header says "sample cards: a
   decision changes nothing".
-- The daemon view is read-only.
+- The daemon view is read-only, except for the approvals of a daemon that
+  serves the owner channel (see [The owner channel](#the-owner-channel-tagged-daemon-only)).
 - Nothing here has been qualified on a real lead.
 
 ## Flags
@@ -338,7 +365,7 @@ the next step and keeps asking. See [the lead daemon guide](lead-daemon.md).
 ```
 ataniq-console --demo [--theme dark|light] [--return-key ctrl+KEY] [--recording NAME] [--linger DURATION] [--no-bell]
 ataniq-console --attach DIR --ticket-file FILE [--viewer] [--shift-enter esc-cr|lf|csi-u|backslash-cr] [--theme dark|light] [--return-key ctrl+KEY]
-ataniq-console --daemon DIR [--theme dark|light]
+ataniq-console --daemon DIR [--theme dark|light] [--no-bell]
 ```
 
 - `--demo` starts the cockpit with sample cards that change nothing. Without it, `--attach` or `--daemon` the
@@ -359,12 +386,13 @@ ataniq-console --daemon DIR [--theme dark|light]
   is yours: `lf` sends a line feed (Ctrl+J), `csi-u` sends the enhanced form
   `CSI 13;2u`, which only an agent that reads it understands, and
   `backslash-cr` sends a backslash and Enter, the line continuation.
-- `--daemon DIR` shows the daemon's leads, read-only. DIR is the folder that
+- `--daemon DIR` shows the daemon's leads, read-only, and its approvals when
+  the daemon serves the owner channel. DIR is the folder that
   holds the daemon's socket. It cannot be combined with `--demo`, `--attach`,
   `--recording`, `--linger`, `--return-key`, `--ticket-file`, `--viewer` or
   `--shift-enter`. See [The daemon view](#the-daemon-view).
-- `--no-bell` does not ring the terminal's bell when a sample card arrives while
-  you are away. It needs `--demo`.
+- `--no-bell` does not ring the terminal's bell when a card arrives while
+  you are away. It needs `--demo` or `--daemon`.
 - `--theme dark|light` chooses the appearance. The default is dark.
 - `--return-key ctrl+KEY` sets the return key. The default is `ctrl+\`. The
   value is `ctrl+` and one letter, `ctrl+\` or `ctrl+]`. The console refuses

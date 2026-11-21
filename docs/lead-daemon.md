@@ -88,7 +88,7 @@ The command is Linux only. On another platform it prints that and exits 1.
 ### Commands and flags
 
 ```text
-ataniqd run [--state-dir DIR] [--runtime-dir DIR]
+ataniqd run [--state-dir DIR] [--runtime-dir DIR] [--owner-channel]
 ataniqd status [--socket PATH] [--json]
 ataniqd version
 ```
@@ -97,6 +97,7 @@ ataniqd version
 | --- | --- | --- |
 | `run --state-dir DIR` | `$XDG_STATE_HOME/ataniq`, else `$HOME/.local/state/ataniq` | The state folder. |
 | `run --runtime-dir DIR` | `$XDG_RUNTIME_DIR/ataniq` | The folder that holds `daemon.sock`. |
+| `run --owner-channel` | off | Tagged build only (tag `ataniq_ownerchannel`): serve the owner connection. See [the owner channel](#the-owner-channel-tagged-build-only). |
 | `status --socket PATH` | `$XDG_RUNTIME_DIR/ataniq/daemon.sock` | The socket to ask. |
 | `status --json` | off | Print the status result as JSON. |
 
@@ -192,35 +193,6 @@ completed. It writes no log file.
 | 21 | `status`: the daemon refused this user. |
 | 22 | `status`: an answer that is not valid, or an error the daemon answered. |
 
-### The owner channel's suite (tagged build only)
-
-A build with the `ataniq_ownerchannel` tag has `run --owner-channel`; a release
-build has no such flag and none of this. It is provisional and unqualified,
-and the door behind it is a stand-in that gives no real approval. The host's
-side of a card is built from `owner/scratch.json` in the state folder (one
-project, its mirror, the folder requests are dropped in). Besides the project
-and the scratch roots, the settings name the suite that verifies the merge the
-host builds for a request:
-
-- `"sandbox"`: the clean absolute path of the sandbox template file, the same
-  template `ataniq-intake verify --sandbox` takes (see
-  [lead-intake.md](lead-intake.md)). It lies under a scratch root and not in
-  the state folder, where a lead could change it.
-- `"work"`: the clean absolute path of the folder the runs work in, under a
-  scratch root, outside the state folder and apart from the mirror. The daemon
-  makes it with mode 0700 when it is not there (its parent must exist).
-
-Both keys are required, since the suite is no longer optional: the daemon
-refuses `--owner-channel` with exit code 10 when they are missing or are not
-scratch paths, before it takes a lock. The suite is the intake's merge-mode
-verification (`internal/intake/verify` with its real runner): the merge is
-fetched through the pin under `refs/ataniq/pending/`, checked to have two
-parents with the target's tip first, and the gates run in the sandbox. The
-daemon builds it without starting anything: the template is read, and a
-sandbox is started, only when a request is verified, and each run reads the
-template again. The record of the run is kept in `owner/records` as a
-merge-mode record, which is the only kind the host's approval counts.
-
 ### What `status` prints
 
 `ataniqd status` calls `hello` and then `status`, and prints one line for the
@@ -257,6 +229,103 @@ when the daemon goes away keeps running. A SIGKILL or a crash skips all of it;
 the kernel releases the locks, and a socket file may stay behind, which the
 next daemon removes after it holds both locks. A lock file that stays behind is
 no obstacle: the lock is the `flock`, not the file.
+
+## The owner channel (tagged build only)
+
+Release builds contain no owner channel: no flag, no `owner.*` operation in
+`hello`, no code. It exists only in a build made with the tag
+`ataniq_ownerchannel`, for a scratch pass. It is provisional, and **none of it is
+qualified**: the door behind it is a stand-in that gives no real approval. The
+tests of that code run with `make test-ownerchannel` (the tagged packages with
+the tag, and again with the tags `ataniq_ownerchannel` and `ataniq_canary` for the
+packages that hold both); `make test` stays untagged and skips them.
+
+### Starting it
+
+```text
+ataniqd run --owner-channel [--state-dir DIR] [--runtime-dir DIR]
+```
+
+`--owner-channel` is a flag of `run` in the tagged build only. With it the
+daemon serves the owner connection, the `owner.*` operations of the console's
+approvals, on the same socket and the same protocol, and `hello` lists them.
+Without it the tagged build lists none, as a release build does. The place of
+the one connection that may decide goes to a console of the owner that has a
+controlling terminal. The daemon refuses to start with the flag when its build
+cannot build the host's side of a card or when the settings below are wrong,
+with exit code 10 and before it takes a lock. At start it prints one line on
+standard error, the STAND-IN banner:
+
+```text
+ataniqd: owner channel: STAND-IN door, scratch state: no real approval
+```
+
+### The scratch settings
+
+The host's side of a card is built from `owner/scratch.json` in the state
+folder, over the real journal in `owner/` and the stand-in for the planner's
+door, which keeps nothing across a restart. Its keys:
+
+- `"door"`: must be `"stand-in"`. Any other value, or none, is refused.
+- `"roots"`: the scratch folders, one of which holds the mirror. The daemon
+  refuses a state folder, a root or a mirror that is, lies inside or contains
+  the account's default state or runtime folder.
+- `"sandbox"`: the clean absolute path of the sandbox template file, the same
+  template `ataniq-intake verify --sandbox` takes (see
+  [lead-intake.md](lead-intake.md)). It lies under a scratch root and not in
+  the state folder, where a lead could change it.
+- `"work"`: the clean absolute path of the folder the runs work in, under a
+  scratch root, outside the state folder and apart from the mirror. The daemon
+  makes it with mode 0700 when it is not there (its parent must exist).
+
+The settings also name the project, its mirror, the role, the target, the
+commit identity, the gates and the folder requests are dropped in. `sandbox`
+and `work` are required: the daemon refuses `--owner-channel` without them or
+with paths that are not scratch paths. A request is a file named after its
+request id with the suffix `.request` in the drop folder, and its reply is a
+file beside it, the only reply this build writes. The suite is the intake's
+merge-mode verification (`internal/intake/verify` with its real runner): the
+merge is fetched through the pin under `refs/ataniq/pending/`, checked to have
+two parents with the target's tip first, and the gates run in the sandbox. The
+daemon builds it without starting anything: the template is read, and a
+sandbox is started, only when a request is verified, and each run reads the
+template again. The record of the run is kept in `owner/records` as a
+merge-mode record, which is the only kind the host's approval counts. An
+approval applies by one ref transaction with the old value, with no checkout and
+no hook; a target that moved gives `not-applied` and changes nothing.
+
+### What ran on a stand-in, and what waits for a seated lead
+
+This list is written from the plan's cases and is **to be confirmed against the
+end-to-end test**. A case that ran here ran on fakes, sample cards or the
+stand-in, which prove the Ataniq side only. Every one of them is run again
+against the real door, on a seated lead, and counts as qualified only then.
+
+- Ran on fakes, sample cards or the stand-in: bad or reused ids, bad feature
+  names and extra fields (OC3); a branch moved or a request withdrawn with the
+  card open (OC4); a target that moves after the decision (OC5); one decision
+  used twice (OC6); expiry (OC7); a stop at each crash point, and a restart
+  with a held decision, which delivers nothing (OC9); hostile text and terminal
+  answers at the confirm field (OC10, OC11); who may send a decision frame, on
+  the daemon's side (OC13); one verification at a time (the host's part of
+  OC14); the summary of a known change set (OC15); a missing or surplus
+  sign-off (OC16); a wrong digest, epoch, revision or id (OC17); a lead-made
+  merge named as the tip (OC18); console and daemon restarts (OC21); a clock
+  moved back (OC22); the confirm code and the plan token in no readable place
+  (the host's part of OC23); the journal and the store made to disagree (OC24);
+  the pin against a rewritten branch (OC25); the attribute cases (OC27); ask,
+  read, withdraw, ask again (OC28); the `odd-path` flag (OC29); the outcomes of
+  a verification, failed, stopped or cut (OC31).
+- Wait for a seated lead, all of it: the sandbox cannot reach the socket,
+  journal or store (OC1); `--approved` from a managed seat (OC2); seat transfer
+  with requests open (OC8); requests across a handoff (OC26); a member inside
+  the lead's sandbox (OC30). Also the real door's own part of the others: the
+  caps and the throttle (OC14), a holder attach connection and Remote Control
+  as a sender (OC13), the registry edit between plan and use (OC29), the
+  sandboxed suite's reach (OC31) and the sandbox-readable places (OC23).
+- Not a case of this build: a same-user process as the decider is the stated
+  limit (OC20), a drawn copy of the card is the owner's judgement (OC12),
+  OC19 is withdrawn, and prune requests are out of scope (OC32).
 
 ## The client socket and protocol
 
