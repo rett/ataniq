@@ -126,9 +126,10 @@ and no tag. The steps below follow `Mirror.Fetch` in `internal/mirror`.
    (`STATE/leads/<role>/tree`), which is looked at again without following a
    symlink and must be a real folder, which no bundle can be. A clone that is
    by then a symlink, a file or missing is refused as a hostile tree, as step 2
-   refuses it. When this check refuses the path nothing has run. The check of step 6 can refuse it too, when it appeared or changed
-   in between: then the measure of step 4 has run and the staging repository
-   of step 5 was made and is removed, and the mirror is as it was.
+   refuses it. When this check refuses the path nothing has run. The check of
+   step 6 can refuse it too, when it appeared or changed in between: then the
+   measure of step 4 has run and the staging repository of step 5 was made and
+   is removed, and the mirror is as it was.
 4. **Measure.** The measure command runs in the sandbox. Its number is the
    lead side's own statement, a first check. More than the source limit is a
    limit error. The owner also measures the mirror: a mirror already at its
@@ -140,9 +141,11 @@ and no tag. The steps below follow `Mirror.Fetch` in `internal/mirror`.
    to keep the window of a path that appears in between small. Git runs as the
    owner, in the staging repository, with the source as a `file://` URL (a `%`
    in the path is written `%25`, so the sandboxed command gets the path as the
-   template has it). The serving
-   half is the sandboxed command, named with git's `--upload-pack` option. Only
-   the receiving half runs as the owner. A watchdog stops the fetch when the
+   template has it; a path with `@[` in it is the one thing that cannot be
+   passed this way, as git changes it in a URL, so the template is refused, see
+   [the sandbox template](#the-sandbox-template)). The serving half is the
+   sandboxed command, named with git's `--upload-pack` option. Only the
+   receiving half runs as the owner. A watchdog stops the fetch when the
    staging repository passes its size limit or its entry limit, and the whole
    fetch has a time limit.
 7. **Check what arrived**, in the staging repository, before the mirror is
@@ -276,6 +279,10 @@ nothing. This is the whole format, version 1:
   expected case. A file that appears after the check is not read as a bundle
   either, and keeping every folder on the way to the path out of the reach of
   any sandbox is still the better choice.
+  The path must not hold `@[`: git cuts the brackets and what they enclose
+  out of the path of a `file://` URL, and no encoding prevents it, so the
+  sandbox would be asked for another path. The template is refused when it
+  names such a path, before anything runs.
 - `serve.measure` and `serve.measure_env` are the command and the
   environment that print the size of the clone's object store. The first
   token of the first output line must be a decimal byte count.

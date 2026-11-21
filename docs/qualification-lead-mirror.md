@@ -113,7 +113,8 @@ following.
   exist on the host. The owner-side git of the fetch is given it as a
   `file://` URL, so it starts `upload_pack` and never reads a git bundle file
   at that path itself (see
-  [the sandbox template](lead-intake.md#the-sandbox-template)). As a second
+  [the sandbox template](lead-intake.md#the-sandbox-template)). It holds no
+  `@[`, which git changes in a URL; such a template is refused at load. As a second
   layer the fetch refuses a path that exists on the host, a regular file, a
   symlink or a folder alike, before anything runs (`mirror.ErrRepositoryPath`),
   so a template with such a path gives a refused `s16-fetch.fetch` and no other

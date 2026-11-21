@@ -82,8 +82,14 @@ type Cmd struct {
 	// the URL and gives the program the decoded path, so the encoding makes
 	// the program get the path the caller wrote. The tests ask the installed
 	// git about both points, and about the other characters of a path (a
-	// space, "#", "?", ":" and the rest need no encoding). Argv refuses
-	// the field without UploadPack.
+	// space, "#", "?", ":" and the rest need no encoding, but for one
+	// sequence). One sequence cannot be written so that git keeps it: after the decoding git takes
+	// the path of a "file://" URL for a host and a path, and strips the
+	// brackets that follow an "@" ("@[" up to "]") from what it takes for
+	// the host, which for a local path is the whole path, so the program
+	// would get another path or none. No encoding protects it, and Argv
+	// refuses a source with "@[" in it. Argv refuses the field without
+	// UploadPack.
 	SourceFileURL bool
 }
 
@@ -489,6 +495,12 @@ func uploadPackOption(c Cmd, sub string, protocols []string) (string, int, error
 	if !filepath.IsAbs(src) || strings.Contains(src, "::") || strings.Contains(src, "://") {
 		return "", -1, fmt.Errorf("gitenv: UploadPack needs the source to be an absolute local path, not %q", src)
 	}
+	if c.SourceFileURL && strings.Contains(src, "@[") {
+		// git strips "[...]" after "@[" from the path of a "file://" URL after
+		// it has decoded it, so no encoding keeps such a path (see
+		// [Cmd.SourceFileURL]); the program would be started for another path.
+		return "", -1, fmt.Errorf(`gitenv: SourceFileURL cannot pass a source with "@[" in it, as git would change the path: %q`, src)
+	}
 	return "--upload-pack=" + strings.Join(words, " "), i + 2, nil
 }
 
@@ -697,6 +709,10 @@ func checkMergeTree(args []string) error {
 //     error line is the expected sign.
 //   - core.protectNTFS and core.protectHFS are added, so the fsck checks of
 //     ".git" look-alikes do not depend on the platform.
+//   - fetch.bundleURI is set to the empty string, so that a fetch downloads
+//     no bundle from an address its repository's own config names. git 2.56
+//     reads an empty value as no address and the fetch works as before (a
+//     test fetches with the setting).
 //   - uploadpack.packObjectsHook is not set. It is read from protected
 //     configuration only (the command line, user and system files), never
 //     from a repository's config, and an empty value would make
@@ -737,6 +753,7 @@ func settings(protocols []string) []string {
 		"fetch.recurseSubmodules=false",
 		"submodule.recurse=false",
 		"fetch.writeCommitGraph=false",
+		"fetch.bundleURI=",
 		"gc.auto=0",
 		"maintenance.auto=false",
 		"safe.bareRepository=explicit",

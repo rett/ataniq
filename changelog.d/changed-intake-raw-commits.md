@@ -13,7 +13,9 @@
   commits that are parsed. The `gitenv` package no longer allows the `git log`
   subcommand at all, so no owner-side command can convert a message.
   `ataniq-intake fetch` names the source of the fetch to the owner's git as a
-  `file://` URL (a `%` in the path is written `%25`), so git never reads a
+  `file://` URL (a `%` in the path is written `%25`; a path with `@[` in it
+  cannot be passed so, as git changes it, and a template whose `serve.repository`
+  holds one is refused when it is loaded), so git never reads a
   bundle file at the template's `serve.repository` path itself and always starts
   the sandboxed upload-pack, also for a bundle that appears at the path after
   the checks. As a second layer it refuses a template whose `serve.repository`
