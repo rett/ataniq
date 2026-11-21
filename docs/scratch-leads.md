@@ -424,6 +424,17 @@ says nothing of the answer, though `message_spent` stays true. The rows of
 why the row's receipt is the summary form without its `message`, and a replay of
 the command's id gives the full receipt.
 
+The console's client cleans both members to fixed words (a word outside the
+grammar becomes `unrecognised`), and its leads view draws the `ready` line and
+the MSG column from them (`free`, `sent`, `sent-unsure` or
+`spent-not-delivered`), so it guesses neither. The decoding is strict about
+members the client does not know, which it refuses, and not about members it has,
+so a row of a daemon from before `state_reason` and `message_result` (this
+feature is not released) is read as a row with both empty: the view then shows
+the plain state, and the MSG column says `sent` for a spent message. A message's
+receipt carries the same three words, which the view draws as the answer to the
+press.
+
 The ticket file is **per lead** (`<runtime root>/leads/<layout role>/ticket`) and
 has one name, so there is **one ticket at a time per role**: the tickets of one
 lead are made one after the other, and a later ticket replaces the file. A

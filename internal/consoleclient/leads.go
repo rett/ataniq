@@ -140,18 +140,34 @@ type LeadReceipt struct {
 	Earlier bool
 }
 
+// LeadDelivery is the holder's three words about the epoch's message, as a
+// row of the list carries them: the words of [LeadReceipt]'s Outcome, Reason
+// and Written, each a word of the closed grammar. All three are empty when the
+// daemon has no answer.
+type LeadDelivery struct {
+	Outcome, Reason, Written string
+}
+
 // LeadRow is one lead of a [LeadListing]. Role is exactly as the daemon sent
 // it, because every command is sent with it; the other strings are cleaned.
 type LeadRow struct {
-	Key          string
-	Role         string
-	Defined      bool
-	Provision    string
-	State        string
+	Key       string
+	Role      string
+	Defined   bool
+	Provision string
+	State     string
+	// StateReason is the reason code the registry shows with State, a word of
+	// the closed grammar, empty with none. A row of a daemon built before the
+	// member has none.
+	StateReason  string
 	Epoch        uint64
 	Unit         string
 	Inject       bool
 	MessageSpent bool
+	// MessageResult is the holder's answer to the current epoch's message when
+	// the daemon has it, and empty otherwise (a row of a daemon built before
+	// the member has none).
+	MessageResult LeadDelivery
 	// Last is the lead's last command in summary form, nil with none.
 	Last *LeadReceipt
 }
@@ -719,10 +735,16 @@ func buildListing(res leadwire.ListResult) (LeadListing, bool) {
 			Defined:      w.Defined,
 			Provision:    leadWord(w.Provision),
 			State:        clean(w.State),
+			StateReason:  leadWord(w.StateReason),
 			Epoch:        w.Epoch,
 			Unit:         clean(w.Unit),
 			Inject:       w.Inject,
 			MessageSpent: w.MessageSpent,
+			MessageResult: LeadDelivery{
+				Outcome: leadWord(w.MessageResult.Outcome),
+				Reason:  leadWord(w.MessageResult.Reason),
+				Written: leadWord(w.MessageResult.Written),
+			},
 		}
 		if w.Last != nil {
 			r := w.Last

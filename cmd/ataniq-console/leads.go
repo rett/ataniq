@@ -111,7 +111,8 @@ func (a *leadsAdapter) List() (leadctl.Listing, error) {
 	for _, r := range l.Leads {
 		lead := leadctl.Lead{
 			Key: r.Key, Role: r.Role, Defined: r.Defined, Provision: r.Provision,
-			State: r.State, Epoch: r.Epoch, Unit: r.Unit, Inject: r.Inject, MessageSpent: r.MessageSpent,
+			State: r.State, StateReason: r.StateReason, Epoch: r.Epoch, Unit: r.Unit, Inject: r.Inject, MessageSpent: r.MessageSpent,
+			MessageResult: leadctl.Delivery{Outcome: r.MessageResult.Outcome, Reason: r.MessageResult.Reason, Written: r.MessageResult.Written},
 		}
 		if r.Last != nil {
 			// The summary of a lead's last command: it is no answer to a
