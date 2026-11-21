@@ -21,6 +21,7 @@ import (
 	"ataniq/internal/leadlock"
 	"ataniq/internal/leadregistry"
 	"ataniq/internal/leadrole"
+	"ataniq/internal/leadwire"
 )
 
 // This file is scratch mode of the daemon: the lead control plane. The daemon
@@ -108,6 +109,37 @@ type leadRole struct {
 	// reserved is a start in flight, counted against max_running. It is
 	// guarded by the mode's capMu.
 	reserved bool
+	// deliveryMu guards delivery.
+	deliveryMu sync.Mutex
+	// delivery is the holder's answer to the last message this daemon
+	// delivered for the role, with its epoch. It is memory: a restart of the
+	// daemon forgets it, and the row then reads the answer from the role's
+	// last receipt when that is the message's (see leadMode.deliveryOf).
+	delivery deliveryMemo
+}
+
+// deliveryMemo is the holder's three words about a message, for the epoch it
+// was sent in. Epoch 0 is none.
+type deliveryMemo struct {
+	epoch uint64
+	words leadwire.MessageResult
+}
+
+// noteDelivery keeps the holder's answer of a message of the epoch.
+func (lr *leadRole) noteDelivery(epoch uint64, w leadwire.MessageResult) {
+	lr.deliveryMu.Lock()
+	defer lr.deliveryMu.Unlock()
+	lr.delivery = deliveryMemo{epoch: epoch, words: w}
+}
+
+// deliveryIn returns the kept answer when it is for the epoch.
+func (lr *leadRole) deliveryIn(epoch uint64) (leadwire.MessageResult, bool) {
+	lr.deliveryMu.Lock()
+	defer lr.deliveryMu.Unlock()
+	if epoch == 0 || lr.delivery.epoch != epoch {
+		return leadwire.MessageResult{}, false
+	}
+	return lr.delivery.words, true
 }
 
 func (lr *leadRole) tryLock() bool {
