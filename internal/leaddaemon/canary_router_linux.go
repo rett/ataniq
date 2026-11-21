@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 
 	"ataniq/internal/clientapi"
 	"ataniq/internal/leadcanary"
@@ -20,6 +21,11 @@ import (
 // instances'.
 var errNotALead = errors.New("the role is not a lead of this daemon")
 
+// errNoHolder is what the router answers for a role that has no holder command:
+// a lead of scratch mode that is not provisioned. A holder is never started
+// without the digest of the lead's profile.
+var errNoHolder = errors.New("the role has no holder command")
+
 // leadInstance is one role's share of the daemon: the config derived for it,
 // the lifecycle's preflight and holder command for it, its evidence file and
 // the epochs that file shows as spent. The operations and the state they change
@@ -29,12 +35,33 @@ var errNotALead = errors.New("the role is not a lead of this daemon")
 type leadInstance struct {
 	cfg       leadcanary.Config
 	preflight leadlifecycle.Preflight
-	holder    leadlifecycle.HolderCommand
-	ev        *leadcanary.Evidence
+	// holder is the lifecycle's holder command for the role. The canary's is
+	// set when the daemon is set up and never changes. A lead of scratch mode
+	// has none until its record was read or its define finished, and that
+	// command is replaced when it is defined, always under the role's operation
+	// lock ([leadMode]); the accessors below make the read of the lifecycle
+	// safe whatever the lock is.
+	holder leadlifecycle.HolderCommand
+	hmu    sync.RWMutex
+	ev     *leadcanary.Evidence
 	// spent is the epochs whose message the evidence shows as sent, read when
 	// the evidence is opened.
 	spent map[uint64]bool
 	ext   *canaryExt
+}
+
+// holderCommand returns the role's holder command, nil when it has none.
+func (in *leadInstance) holderCommand() leadlifecycle.HolderCommand {
+	in.hmu.RLock()
+	defer in.hmu.RUnlock()
+	return in.holder
+}
+
+// setHolderCommand replaces the role's holder command.
+func (in *leadInstance) setHolderCommand(h leadlifecycle.HolderCommand) {
+	in.hmu.Lock()
+	in.holder = h
+	in.hmu.Unlock()
 }
 
 // leadRouter is the set of roles a daemon runs, fixed when the daemon starts.
@@ -90,13 +117,17 @@ func (r *leadRouter) Check(ctx context.Context, role leadrole.Role, e leadregist
 }
 
 // Build is the lifecycle's holder command: the role's own builds it, and a role
-// that is not in the router has none.
+// that is not in the router, or has no holder command yet, has none.
 func (r *leadRouter) Build(role leadrole.Role, e leadregistry.Entry, intent leadregistry.Intent) ([]string, string, []string, error) {
 	in, ok := r.byRole[role]
 	if !ok {
 		return nil, "", nil, errNotALead
 	}
-	return in.holder.Build(role, e, intent)
+	h := in.holderCommand()
+	if h == nil {
+		return nil, "", nil, errNoHolder
+	}
+	return h.Build(role, e, intent)
 }
 
 // Limits is the lifecycle's limits seam: the three limits of the role's config,

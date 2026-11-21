@@ -42,6 +42,19 @@ message (see internal/leadcanary).
                         config's runtime root and prints the result as one
                         JSON line. inject waits up to 30 s, the others up to 60 s.
   --version             print the name, the version and the build tag
+
+With run --scratch the daemon serves the lead control plane for the leads of the
+scratch CONFIG (see internal/leadcanary): the operations lead.list, lead.define,
+lead.start, lead.stop, lead.ticket and lead.inject, which the console calls. It
+serves no canary operation.
+
+       ataniqd run --scratch CONFIG
+
+  run --scratch CONFIG  the roots are the config's: --state-dir, --runtime-dir
+                        and --canary are refused. The daemon refuses to start
+                        when the config, a root or the root marker (written by
+                        scratch-init) is not right, or when the command table
+                        or the record of a lead cannot be read.
 Exit codes of canary: 0 done; 2 usage; 10 the config; 20 no daemon; 21
 unauthorized; 22 protocol error; 30 refused; 31 unavailable; 1 anything else.
 `
@@ -62,6 +75,9 @@ var canaryOps = map[string]string{
 type canaryFlags struct {
 	set  bool
 	path string
+	// scratchSet and scratch are --scratch: the scratch config file.
+	scratchSet bool
+	scratch    string
 }
 
 func (c *canaryFlags) define(fs *flag.FlagSet) {
@@ -69,11 +85,18 @@ func (c *canaryFlags) define(fs *flag.FlagSet) {
 		c.set, c.path = true, s
 		return nil
 	})
+	fs.Func("scratch", "scratch config file; puts the daemon in scratch mode, the lead control plane", func(s string) error {
+		c.scratchSet, c.scratch = true, s
+		return nil
+	})
 }
 
 // canaryRun reads the canary config when --canary was given and sets the roots
 // and the canary parts of cfg. It returns applied true, or a code to end with.
 func (a *app) canaryRun(c *canaryFlags, stateDir, runtimeDir string, cfg *leaddaemon.Config) (applied bool, code int) {
+	if c.scratchSet {
+		return a.scratchRun(c, stateDir, runtimeDir, cfg)
+	}
 	if !c.set {
 		return false, -1
 	}
@@ -92,6 +115,32 @@ func (a *app) canaryRun(c *canaryFlags, stateDir, runtimeDir string, cfg *leadda
 	}
 	cfg.StateDir, cfg.RuntimeDir = cc.StateRoot, cc.RuntimeRoot
 	cfg.Canary = &leaddaemon.Canary{Config: cc, Getenv: a.getenv}
+	return true, -1
+}
+
+// scratchRun reads the scratch config when --scratch was given and sets the
+// roots and the scratch part of cfg. --scratch excludes --canary and the root
+// flags: the roots are the config's, and the daemon serves the lead operations
+// or the canary's, never both.
+func (a *app) scratchRun(c *canaryFlags, stateDir, runtimeDir string, cfg *leaddaemon.Config) (applied bool, code int) {
+	switch {
+	case c.scratch == "":
+		fmt.Fprint(a.stderr, "ataniqd run: --scratch needs a config file\n")
+		return false, leaddaemon.ExitUsage
+	case c.set:
+		fmt.Fprint(a.stderr, "ataniqd run: --scratch and --canary exclude each other\n")
+		return false, leaddaemon.ExitUsage
+	case stateDir != "" || runtimeDir != "":
+		fmt.Fprint(a.stderr, "ataniqd run: --state-dir and --runtime-dir are refused with --scratch: the roots are the config's\n")
+		return false, leaddaemon.ExitUsage
+	}
+	sc, err := leadcanary.ReadScratchConfig(c.scratch)
+	if err != nil {
+		fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(err.Error()))
+		return false, leaddaemon.ExitConfig
+	}
+	cfg.StateDir, cfg.RuntimeDir = sc.StateRoot, sc.RuntimeRoot
+	cfg.Scratch = &leaddaemon.Scratch{Config: sc, Getenv: a.getenv}
 	return true, -1
 }
 

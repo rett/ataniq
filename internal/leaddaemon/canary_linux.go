@@ -40,6 +40,10 @@ type CanaryConfig struct {
 	// read-only skeleton: no extension is registered and no canary holder
 	// command is ever built.
 	Canary *Canary
+	// Scratch, when not nil, puts the daemon in scratch mode, the lead control
+	// plane (lead_mode_linux.go). It excludes Canary: with it the daemon serves
+	// the lead.* operations and never the canary's.
+	Scratch *Scratch
 }
 
 // Canary is the canary mode of one [Run].
@@ -86,11 +90,19 @@ type canaryMode struct {
 	router    *leadRouter
 	injectFor time.Duration
 	dialFor   time.Duration
+	// idPrefix begins the command ids the daemon gives the holder; empty means
+	// the canary's.
+	idPrefix string
+	// lead is the scratch mode's own parts; nil in canary mode.
+	lead *leadMode
 }
 
 // canarySetup checks the canary config and builds the parts that need no file.
 // Every refusal is a [StartupError] of [StepConfig].
 func (d *daemon) canarySetup() (*canaryMode, error) {
+	if d.Scratch != nil {
+		return d.scratchSetup()
+	}
 	c := d.Canary
 	if c == nil {
 		return nil, nil
@@ -166,6 +178,14 @@ func (m *canaryMode) openEvidence() error {
 			return err
 		}
 	}
+	// Scratch mode: the records of the leads and the command table, after the
+	// evidence.
+	if m.lead != nil {
+		if err := m.lead.open(); err != nil {
+			_ = m.closeEvidence()
+			return err
+		}
+	}
 	return nil
 }
 
@@ -176,6 +196,9 @@ func (m *canaryMode) closeEvidence() error {
 		return nil
 	}
 	var errs []error
+	// The command table is closed first: nothing finishes a command after the
+	// server has ended, and the evidence is the older record.
+	errs = append(errs, m.lead.closeTable())
 	for i := len(m.router.order) - 1; i >= 0; i-- {
 		in := m.router.byRole[m.router.order[i]]
 		if in.ev == nil {
@@ -217,6 +240,10 @@ func (m *canaryMode) announce() error {
 func (m *canaryMode) extensions(ctl *leadlifecycle.Controller, reg *leadregistry.Registry) []clientapi.Extension {
 	if m == nil {
 		return nil
+	}
+	// Scratch mode registers the lead.* operations and never the canary's.
+	if m.lead != nil {
+		return []clientapi.Extension{m.lead.extension(ctl, reg)}
 	}
 	for _, role := range m.router.order {
 		in := m.router.byRole[role]
