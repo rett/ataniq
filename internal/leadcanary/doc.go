@@ -20,6 +20,11 @@
 //     there for the rules. [Config.CheckRoots] runs the shared root check of
 //     internal/leadholder/canaryroot, marker included, and the daemon calls it
 //     before it listens.
+//   - [ReadScratchConfig] reads the scratch config, the owner-only file of
+//     scratch mode that lists up to [MaxScratchLeads] leads, with the same
+//     file rules as [ReadConfig]. [ScratchConfig.Leads] derives from it the
+//     validated [Config] of each lead, of the scratch kind, so that every rule
+//     of the canary config applies to each lead without a copy.
 //   - [Names] and [RoleOf] map the role "<project>/lead" to the layout and
 //     intake role "<project>-lead" and the unit name, and back. [NamesFor] and
 //     [RoleOfFor] do the same for the other reserved kind, the scratch lead

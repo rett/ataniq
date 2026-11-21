@@ -101,10 +101,10 @@ func TestValidateOfAScratchConfig(t *testing.T) {
 	wantConfigError(t, wrongKind.Validate(), "role")
 	noSource := cfg
 	noSource.Provision.Source = ""
-	wantConfigError(t, noSource.Validate(), "leads[].source")
+	wantConfigError(t, noSource.Validate(), "provision.source")
 	relSource := cfg
 	relSource.Provision.Source = "upstream/sample.git"
-	wantConfigError(t, relSource.Validate(), "leads[].source")
+	wantConfigError(t, relSource.Validate(), "provision.source")
 
 	// A throwaway config has no source and the scratch prefix is refused.
 	throwaway := f.config(t)

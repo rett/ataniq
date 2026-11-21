@@ -230,7 +230,7 @@ func (c Config) validateProvision() error {
 	}
 	switch {
 	case c.Reserved == leadrole.ReservedScratch:
-		return checkAbs("leads[].source", c.Provision.Source)
+		return checkAbs("provision.source", c.Provision.Source)
 	case c.Provision.Source != "":
 		return bad("provision.source", "is for a scratch lead only")
 	}
