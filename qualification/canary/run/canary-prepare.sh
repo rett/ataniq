@@ -15,7 +15,7 @@
 # --version` names the tested version the config declares (this is the one
 # program prepare runs besides ataniq-intake and ataniq-canary, and it runs it
 # only for pass B and only without --dry). The config is a live one (agent.kind
-# live, the executable as argv[0], DISABLE_AUTOUPDATER=1 in agent.env,
+# live, the executable as argv[0], DISABLE_AUTOUPDATER=1 and CLAUDE_CODE_NO_FLICKER=1 in agent.env,
 # footer_mode manual, inject true), and the pin is taken last, after the
 # environment and everything else the digest covers is in place. It also writes
 # ROOT/netcheck.sh, which the owner runs by hand: prepare never runs it.
@@ -269,7 +269,7 @@ if [ "$DRY" -eq 1 ]; then
   if [ "$PASS" = B ]; then
     _argv='["/ataniq/agent/claude"]'
     if [ -n "$MODEL" ]; then _argv="[\"/ataniq/agent/claude\", \"--model\", \"$MODEL\"]"; fi
-    cc_say "[dry]   $CONFIG (0600): pass B, live agent, runtime claude $RUNTIME_VERSION, argv $_argv, env [\"DISABLE_AUTOUPDATER=1\"], footer_mode manual, inject true, limits 4 GiB, no swap, 512 tasks, 1 GiB floor, 50 percent"
+    cc_say "[dry]   $CONFIG (0600): pass B, live agent, runtime claude $RUNTIME_VERSION, argv $_argv, env [\"DISABLE_AUTOUPDATER=1\", \"CLAUDE_CODE_NO_FLICKER=1\"], footer_mode manual, inject true, limits 4 GiB, no swap, 512 tasks, 1 GiB floor, 50 percent"
     if [ -z "$MODEL" ]; then cc_say "[dry]   no --model flag in the agent command: you pick the model (the run's step 15 prints the arguments and asks you)"; fi
     cc_say "[dry]   $INPUTS (0600), provider_host api.anthropic.com, sources.managed_marker guard-hook, sources.agent_install $ROOT/agent-install, terminal xterm-256color, truecolor, C.UTF-8"
   else
@@ -421,14 +421,18 @@ ZERO=0000000000000000000000000000000000000000000000000000000000000000
 # The agent block: the stand-in of pass A, the live claude of pass B. The
 # live one has the executable itself as argv[0] (never a wrapper: step 9 runs
 # that file), the model flag only when --model gave one, and
-# DISABLE_AUTOUPDATER=1 in the environment so that the agent does not draw an
-# update notice on the screen the fence reads (the variable is part of the
-# profile digest, so the pin is taken after it is here).
+# two names in the environment: DISABLE_AUTOUPDATER=1 so that the agent does
+# not draw an update notice on the screen the fence reads, and
+# CLAUDE_CODE_NO_FLICKER=1, which selects the fullscreen (alternate-screen)
+# renderer, the only one the screen recogniser has fixtures for and reads
+# (without it claude chooses the renderer per process and may draw on the main
+# screen, where every inject ends not-now). The environment is part of the
+# profile digest, so the pin is taken after it is here.
 if [ "$PASS" = B ]; then
   AGENT_KIND=live
   AGENT_ARGV='["/ataniq/agent/claude"]'
   if [ -n "$MODEL" ]; then AGENT_ARGV="[\"/ataniq/agent/claude\", \"--model\", \"$MODEL\"]"; fi
-  AGENT_ENV='["DISABLE_AUTOUPDATER=1"]'
+  AGENT_ENV='["DISABLE_AUTOUPDATER=1", "CLAUDE_CODE_NO_FLICKER=1"]'
   TERMINAL='{"term": "xterm-256color", "colorterm": "truecolor", "lang": "C.UTF-8"}'
 else
   AGENT_KIND=stand-in

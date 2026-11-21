@@ -308,7 +308,7 @@ done_step() { echo DONE-STEP; }`
 	if code != 0 || !strings.Contains(o, "DONE-STEP") {
 		t.Fatalf("exit status %d:\n%s", code, o)
 	}
-	for _, want := range []string{"started at 20260101T000000Z", "done at about 2026-01-01T00:10:00Z (UTC)", "In your local time that is about", "Revoke ONLY the login", "no other row", "log out everywhere", "a wrong row ends them"} {
+	for _, want := range []string{"started at 20260101T000000Z", "done at about 2026-01-01T00:10:00Z (UTC)", "In your local time that is about", "Identify the login as a new row whose last-active time falls during this run", "revoke ONLY that row, no other", "log out of all devices", "throwaway account", "cannot-identify:"} {
 		if !strings.Contains(o, want) {
 			t.Errorf("step 23 does not say %q:\n%s", want, o)
 		}

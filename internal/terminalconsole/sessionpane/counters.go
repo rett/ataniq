@@ -26,7 +26,7 @@ type Counters struct {
 	// cut to that count.
 	RepeatsCut uint64
 
-	// The last two are the pane's own.
+	// The last four are the pane's own.
 
 	// ClipboardRequestsBlocked is the number of clipboard requests (OSC 52, a
 	// write or a query) the session made. None was passed on.
@@ -34,6 +34,14 @@ type Counters struct {
 	// TitlesCut is the number of titles that lost characters to the cap of
 	// MaxTitle bytes.
 	TitlesCut uint64
+	// AltScreenOn and AltScreenOff are the times the emulator entered and
+	// left the alternate screen (mode 1049, 1047), as its callback reported
+	// them: a repeated set or reset while already in that state is not
+	// counted. They are not caps; they say which renderer a session draws
+	// with (a fullscreen one enters the alternate screen once, soon after
+	// its start; a main-screen one never does).
+	AltScreenOn  uint64
+	AltScreenOff uint64
 }
 
 // CounterValue is the name and the value of one counter, for display.
@@ -55,6 +63,8 @@ func (c Counters) List() []CounterValue {
 		{"repeats_cut", c.RepeatsCut},
 		{"clipboard_requests_blocked", c.ClipboardRequestsBlocked},
 		{"titles_cut", c.TitlesCut},
+		{"alt_screen_on", c.AltScreenOn},
+		{"alt_screen_off", c.AltScreenOff},
 	}
 }
 
@@ -73,5 +83,7 @@ func (p *Pane) Counters() Counters {
 		RepeatsCut:               e.RepeatsCut,
 		ClipboardRequestsBlocked: uint64(p.clipboard),
 		TitlesCut:                p.titlesCut,
+		AltScreenOn:              p.altOn,
+		AltScreenOff:             p.altOff,
 	}
 }

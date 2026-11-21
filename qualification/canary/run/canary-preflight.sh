@@ -20,8 +20,8 @@
 # on the same line (a check it cannot make for want of an earlier one is a
 # "skip:" line, which the fix before it clears), and ends with "READY" or
 # "NOT READY (n to fix)". When ready it prints the three things the owner
-# types and the terminal of each: the daemon command (T2, which it keeps until
-# Ctrl-C at step 26), the attach command with its ticket file, `ticket` in the
+# types and the terminal of each: the daemon command (T2, started at step 10 after step 8
+# provisions, which it keeps until Ctrl-C at step 26), the attach command with its ticket file, `ticket` in the
 # holder's runtime folder (T3; T4 for the second console of step 14) and the
 # run command (T1). The exit status is 0 when ready, 1 when not, 2 for a wrong
 # command line.
@@ -308,7 +308,7 @@ check_inputs() {
 # 4c. A live agent (pass B), what prepare --pass B makes and a hand edit can
 # break: the footer mode is one the recogniser names (the config's validation
 # refuses anything else with inject on, this says it in words), the agent's
-# environment names DISABLE_AUTOUPDATER (names only, from `ataniq-canary show`;
+# environment names DISABLE_AUTOUPDATER and CLAUDE_CODE_NO_FLICKER (names only, from `ataniq-canary show`;
 # a value is never read or printed), and the claude executable is there, one
 # regular file under the install folder, and prints the tested version as step
 # 9 of the run asks it: `--version` with an empty environment and a home that
@@ -331,6 +331,10 @@ check_live_agent() {
   case ",$(show_field agent_env_names)," in
     *,DISABLE_AUTOUPDATER,*) ok "agent.env names DISABLE_AUTOUPDATER (names only; no value is read)" ;;
     *) fix "agent.env does not name DISABLE_AUTOUPDATER: the agent may draw an update notice on the screen the fence reads, and the env is part of the pin" "$_fresh" ;;
+  esac
+  case ",$(show_field agent_env_names)," in
+    *,CLAUDE_CODE_NO_FLICKER,*) ok "agent.env names CLAUDE_CODE_NO_FLICKER (names only; no value is read)" ;;
+    *) fix "agent.env does not name CLAUDE_CODE_NO_FLICKER: the agent may draw on the main screen, where every inject ends not-now, and the env is part of the pin" "$_fresh" ;;
   esac
   _hasmodel=0
   _i=0
@@ -592,9 +596,11 @@ cc_say "READY"
 cc_say
 cc_say 'What you type, and where. The run never starts the daemon or the console for you.'
 cc_say
-cc_say '1. In a second terminal (T2), the daemon, started BEFORE you press Enter at step 10'
-cc_say '   (wait for its listening line). It stays in front of that terminal until you stop it with'
-cc_say '   Ctrl-C at step 26, before that step'"'"'s Enter, so T2 is busy from here on:'
+cc_say '1. At step 10, in a second terminal (T2), the daemon, started BEFORE you press Enter at step 10'
+cc_say '   (wait for its listening line), and not earlier: step 8 provisions the roots and writes the'
+cc_say '   marker file (canary-root.json) that the daemon needs, so a daemon started before step 8 has'
+cc_say '   no marker to find. It stays in front of that terminal until you stop it with Ctrl-C at'
+cc_say '   step 26, before that step'"'"'s Enter, so T2 is busy from step 10 on:'
 cc_say "     $BIN/ataniqd run --canary $CONFIG"
 cc_say
 cc_say '2. At step 14 (and again in the second epoch), in a third terminal (T3), the console, started'

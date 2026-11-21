@@ -89,6 +89,8 @@ usage() {
     '                      whether the evidence folder FOLDER lies outside every ROOT, links resolved' \
     '         counters-7501 FIELDS' \
     '                      the 7501 counters step 22 prints from the lines FIELDS' \
+    '         counters-alt FIELDS' \
+    '                      the alternate-screen counters (alt_screen_on, alt_screen_off) step 22 prints from FIELDS' \
     '         unit-stopped STATE' \
     '                      whether that active state lets step 26 show the delete command' \
     '         review-verdict FILE HASH | mirror-verdict FILE HASH' \
@@ -438,6 +440,9 @@ runcap() {
   if [ -n "$EV" ]; then
     LASTOUT=$EV/out/$(printf '%02d' "$CUR")-e$EPOCH_NO-$_name.out
     LASTERR=$EV/out/$(printf '%02d' "$CUR")-e$EPOCH_NO-$_name.err
+    _csfx=$(chain_sfx "$LASTOUT")
+    LASTOUT=${LASTOUT%.out}$_csfx.out
+    LASTERR=${LASTERR%.err}$_csfx.err
   else
     # The test entry keeps no evidence.
     LASTOUT=/dev/null
@@ -509,11 +514,18 @@ $_kv
   done
 }
 
-# counters_7501 prints, from the lines $1 (what ataniq-canary fields prints
-# for the holder's final record), the counters named for 7501, and fails when
-# there is none, so that the caller can say so.
-counters_7501() {
+# counters_like prints, from the lines $1 (what ataniq-canary fields prints
+# for the holder's final record), the lines that match the pattern $2, and
+# fails when there is none, so that the caller can say so.
+# counters_7501 prints the counters named for 7501; counters_alt prints the
+# two alternate-screen counters of the holder's pane (alt_screen_on and
+# alt_screen_off): alt_screen_on above 0 means the agent drew with the
+# fullscreen renderer, which the screen recogniser requires.
+counters_7501() { counters_like "$1" 'counters.*7501*'; }
+counters_alt() { counters_like "$1" 'counters.alt_screen_*'; }
+counters_like() {
   _rest=$1
+  _pat=$2
   _none=1
   while [ -n "$_rest" ]; do
     _l=${_rest%%"
@@ -525,7 +537,7 @@ counters_7501() {
       *) _rest= ;;
     esac
     case $_l in
-      counters.*7501*)
+      $_pat)
         out "     $_l"
         _none=0
         ;;
@@ -585,6 +597,14 @@ show_unit_journal() {
   runcap unit-journal-tail unit_journal 40
 }
 
+# chain_sfx FILE prints -chain when the clean-up chain is about to write a file
+# that the pass itself wrote already (step 22 runs again in the chain, with the
+# epoch number set to 1, and must not overwrite the proof of the stop between
+# the epochs), and nothing otherwise.
+chain_sfx() {
+  if [ "$IN_CHAIN" -eq 1 ] && [ -e "$1" ]; then printf '%s' -chain; fi
+}
+
 # save_unit_journal keeps the journal in the evidence (step 22), whatever
 # became of the unit.
 save_unit_journal() {
@@ -594,6 +614,7 @@ save_unit_journal() {
   fi
   if [ -z "$T_START" ]; then return 0; fi
   _jf=$EV/out/$(printf '%02d' "$CUR")-e$EPOCH_NO-unit-journal.out
+  _jf=${_jf%.out}$(chain_sfx "$_jf").out
   if unit_journal 500 >"$_jf" 2>"$_jf.err"; then
     out "   the unit's journal since $T_START, as the holder wrote it on its standard error, is in $_jf ($(awk 'END { print NR }' "$_jf") lines)"
     note "kept the journal of the unit in $_jf"
@@ -1451,6 +1472,11 @@ self_test() {
       [ "$#" -eq 1 ] || usage
       counters_7501 "$1" || out '     (none is named for 7501)'
       ;;
+    counters-alt)
+      # FIELDS: what ataniq-canary fields prints for a final record.
+      [ "$#" -eq 1 ] || usage
+      counters_alt "$1" || out '     (alt_screen_on and alt_screen_off are not in the record)'
+      ;;
     open-runs)
       # LIST REPO: the open runs of REPO in the text of qargi local list.
       [ "$#" -eq 2 ] || usage
@@ -1963,10 +1989,12 @@ step_5() {
     return 0
   fi
   step_head 5 'Revocation' \
-    "the owner opens the provider's account page himself and confirms that it lists logins or sessions and can revoke one server-side, of the kind the sandbox login will make; the script opens no browser" \
-    '"confirmed", with the time; anything else ends the pass here' 'G2'
-  ask 'Owner: type confirmed when the account page lists logins and can revoke one server-side; anything else ends the pass'
-  check 'the owner confirmed server-side revocation' is_eq "$ANSWER" confirmed || return 0
+    "the owner opens the account page of the account the sandbox login will use and confirms that it lists the login as its own entry that can be revoked on its own, or that a separate throwaway account is used for the login; the script opens no browser" \
+    '"confirmed", with the time, only when the login will be an entry of its own or the account is a throwaway; otherwise "no", which ends the pass here' 'G2'
+  out '   Pass B run 1 showed that the provider lists Claude Code logins as rows named Unknown, with no entry that can be'
+  out '   identified as the login made in the pass: a page that lists logins is not enough, so the question below is narrower.'
+  ask 'Owner: type confirmed only if the account used for the sandbox login lists that login as its own entry that can be revoked on its own, OR if a separate throwaway account is used for it; otherwise type no (the pass ends)'
+  check 'the owner confirmed an identifiable revocable login, or a throwaway account' is_eq "$ANSWER" confirmed || return 0
   result confirmed
   done_step
 }
@@ -2557,7 +2585,7 @@ step_16() {
     return 0
   fi
   step_head 16 'Wait for the idle composer, and look at the report path' \
-    "ask the daemon's status; the lead reads the holder's status and its 7501 counters in the console and the script records what he reads: while the holder runs the counters are only in its status answer, which no command of the kit reads, and the event log holds none; the script prints them itself from final.json after the child ends (step 22); then the owner looks at the pane before step 17 (the empty composer, no dialog, the expected mode on the last row, no notice) and answers yes"  \
+    "ask the daemon's status; the lead reads the holder's status and its 7501 counters in the console and the script records what he reads: while the holder runs the counters are only in its status answer, which no command of the kit reads, and the event log holds none; the script prints them itself from final.json after the child ends (step 22); the lead also reads alt_screen_on in the status: alt_screen_on above 0 means the agent drew with the fullscreen renderer, which the fence requires; at 0 the agent drew on the main screen and every inject ends not-now; then the owner looks at the pane before step 17 (the empty composer, no dialog, the expected mode on the last row, no notice) and answers yes"  \
     "the holder's idle field reads unknown in this feature, and the answer is recorded, not judged (the fence judges idle itself inside a delivery); the OSC 7501 query was answered before the DA1 reply, and at least one report was tracked; if no report ever arrives, that is recorded: the fence will then end uncertain, and the reason is known; an update notice on the screen is recorded if it shows (L9); the owner's look at the pane is answered yes" 'B1'
   wait_key 'Step 16 reads the status.'
   runcap role-status "$BIN/ataniqd" status --socket "$SOCK"
@@ -2569,6 +2597,9 @@ step_16() {
     out '     that answer, and the event log holds no counters: the script cannot show them now.'
     out '     Lead: read them in the console and answer below; the script records what you read.'
     out "   - after the child ends they are in $HSTATE/final.json: step 22 prints them from there."
+    out '   Also read alt_screen_on (and alt_screen_off) in the same status: alt_screen_on above 0 means the'
+    out '   agent drew with the fullscreen renderer (CLAUDE_CODE_NO_FLICKER=1), which the fence reads;'
+    out '   0 means it drew on the main screen, and every inject will end not-now.'
     note 'the 7501 counters are not read by the script at this step: the lead records what the console shows'
   fi
   ask "Lead: what does the holder's idle field read (the holder reports unknown in this feature; the fence judges idle itself inside a delivery)"
@@ -2834,15 +2865,41 @@ step_20() {
   runcap branches "$BIN/ataniq-intake" branches --state "$STATE" --project "$PROJECT" --role "$LAYOUT"
   runcap review "$BIN/ataniq-intake" review --state "$STATE" --project "$PROJECT" --role "$LAYOUT" --branch "$BRANCH" --target "$UPSTREAM" --records "$_rec"
   check 'the review succeeded' is_rc 0 || return 0
+  _revout=$LASTOUT
   runcap verify "$BIN/ataniq-intake" verify --state "$STATE" --project "$PROJECT" --role "$LAYOUT" --branch "$BRANCH" \
     --gate "token=grep -qxF $TOKEN canary-token.txt" --sandbox "$TEMPLATE" --records "$_rec" --work "$_work"
   if [ "$DRY" -eq 0 ] && [ "$RC" -ne 0 ]; then show_token_file; fi
   check 'the gate passed: the file holds the token' is_rc 0 || return 0
-  out '   Owner: the sign-off is yours. In your own terminal, with the tip and the digest that review printed above:'
+  out '   Owner: the sign-off is yours. In your own terminal, with the tip and the digest that review printed:'
+  if [ "$DRY" -eq 1 ]; then
+    dry "print the review's Digest: and Tip: lines, read from $EV/out/20-e1-review.out"
+  else
+    out "   the review's lines (from $_revout):"
+    # The text comes from the agent's review: at most 4 lines of 300 bytes, control characters replaced.
+    _dt=$(grep -E '^(Digest|Tip):' "$_revout" 2>/dev/null | sed -n '1,4p' | LC_ALL=C tr -c '[:print:]\n' '?' | LC_ALL=C cut -b1-300 || :)
+    if [ -n "$_dt" ]; then
+      printf '%s\n' "$_dt" | sed 's/^/     /'
+    else
+      out '     (no Digest line in the review output: read the review output above)'
+    fi
+  fi
+  out "   Use the review's digest, not the verify output's plan digest: integrate refuses the plan digest."
   out "     $BIN/ataniq-intake integrate --state $STATE --project $PROJECT --role $LAYOUT --branch $BRANCH --target $UPSTREAM \\"
   out "       --tip <TIP> --digest <DIGEST> --accept-change --records $_rec"
   out '   and one --accept-path for each path review listed under "Needs your sign-off".'
-  affirm 'Owner: integrate succeeded' yes || return 0
+  ask 'Owner: integrate succeeded (type: yes)'
+  _re=0
+  while [ "$DRY" -eq 0 ] && [ "$ANSWER" != yes ] && [ "${_askok:-1}" -eq 1 ] && [ "$_re" -lt 2 ]; do
+    _re=$((_re + 1))
+    out "   ask again ($_re of 2): only the word yes is taken; type it once integrate has succeeded, or anything else to end the pass"
+    ask 'Owner: integrate succeeded (type: yes)'
+  done
+  if [ "$DRY" -eq 1 ]; then
+    dry 'ask again when the answer is not exactly yes, up to 2 more times (3 answers in all); fail only after the third wrong answer or at the end of the input'
+  elif [ "$ANSWER" != yes ]; then
+    fail 'the answer was not "yes": Owner: integrate succeeded'
+    return 0
+  fi
   runcap branches-after "$BIN/ataniq-intake" branches --state "$STATE" --project "$PROJECT" --role "$LAYOUT"
   if [ "$DRY" -eq 0 ]; then
     _lead=$(lead_branch_id "$LASTOUT" "$LAYOUT" "$BRANCH")
@@ -2929,11 +2986,13 @@ step_22() {
   runcap revert systemctl --user revert "$UNIT"
   save_unit_journal
   runcap units-after systemctl --user list-units --all --no-legend --plain 'ataniq-*'
-  if [ "$DRY" -eq 0 ]; then awk '{print $1}' "$LASTOUT" | LC_ALL=C sort >"$EV/units-after-$EPOCH_NO.txt"; fi
-  check 'no unit remains: the units are those of step 1' cmp -s "$EV/units-before.txt" "$EV/units-after-$EPOCH_NO.txt" || :
+  _ua=$EV/units-after-$EPOCH_NO$(chain_sfx "$EV/units-after-$EPOCH_NO.txt").txt
+  if [ "$DRY" -eq 0 ]; then awk '{print $1}' "$LASTOUT" | LC_ALL=C sort >"$_ua"; fi
+  check 'no unit remains: the units are those of step 1' cmp -s "$EV/units-before.txt" "$_ua" || :
   runcap unit-files-after systemctl --user list-unit-files --no-legend 'ataniq-*'
-  if [ "$DRY" -eq 0 ]; then awk '{print $1}' "$LASTOUT" | LC_ALL=C sort >"$EV/unit-files-after-$EPOCH_NO.txt"; fi
-  check 'no unit file remains: the unit files are those of step 1' cmp -s "$EV/unit-files-before.txt" "$EV/unit-files-after-$EPOCH_NO.txt" || :
+  _ufa=$EV/unit-files-after-$EPOCH_NO$(chain_sfx "$EV/unit-files-after-$EPOCH_NO.txt").txt
+  if [ "$DRY" -eq 0 ]; then awk '{print $1}' "$LASTOUT" | LC_ALL=C sort >"$_ufa"; fi
+  check 'no unit file remains: the unit files are those of step 1' cmp -s "$EV/unit-files-before.txt" "$_ufa" || :
   for _folder in transient user.control; do
     _dir=${XDG_RUNTIME_DIR:-/nonexistent}/systemd/$_folder
     if [ "$DRY" -eq 1 ]; then
@@ -2946,13 +3005,15 @@ step_22() {
   if [ "$DRY" -eq 0 ]; then _l=$(cat "$LASTOUT"); else _l=$LINGER0; fi
   check 'lingering is as it was' is_eq "$_l" "$LINGER0" || :
   if [ "$DRY" -eq 1 ]; then
-    dry "print the 7501 counters of the holder's final record, $HSTATE/final.json"
+    dry "print the 7501 counters and the alternate-screen counters (alt_screen_on, alt_screen_off) of the holder's final record, $HSTATE/final.json"
   elif [ -f "$HSTATE/final.json" ]; then
     out "   the 7501 counters of the holder's final record:"
     _fin=$("$BIN/ataniq-canary" fields --file "$HSTATE/final.json" 2>/dev/null || :)
     counters_7501 "$_fin" || out '     (none is named for 7501)'
+    out "   the alternate-screen counters of the final record (alt_screen_on above 0: the fullscreen renderer):"
+    counters_alt "$_fin" || out '     (alt_screen_on and alt_screen_off are not in the record)'
   else
-    out "   the holder left no final record ($HSTATE/final.json): there are no 7501 counters to print"
+    out "   the holder left no final record ($HSTATE/final.json): there are no 7501 or alternate-screen counters to print"
   fi
   result stopped
   done_step
@@ -2981,12 +3042,21 @@ step_23() {
       out "   In your local time that is about $(date -d "$LOGIN_AT" '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || echo '(the local time could not be worked out)'): the account page shows its own zone."
     fi
   fi
-  out '   Revoke ONLY the login the account page lists as made at that time, and no other row, and do not use "log out everywhere":'
-  out '   your own running sessions, the lead'"'"'s among them, use logins of the same account, and a wrong row ends them.'
-  ask 'Owner: revoke the login on the account page yourself; type revoked when it is gone from the list, or no-login when no login was ever made in this pass'
+  out '   Identify the login as a new row whose last-active time falls during this run, and revoke ONLY that row, no other, and not'
+  out '   "log out of all devices" on an account that holds your own sessions: the lead'"'"'s among them use logins of the same account.'
+  out '   On a separate throwaway account used for this login only, "log out of all devices" revokes it completely and is the way.'
+  out '   When no row can be identified (the provider lists only Unknown rows), do not guess: type cannot-identify: and what you see.'
+  ask 'Owner: revoke the login on the account page yourself; type revoked when it is gone from the list, no-login when no login was ever made in this pass, or cannot-identify: <what you see> when no row can be identified (a finding)'
   case $ANSWER in
     revoked) result revoked ;;
     no-login) result 'nothing to act on: no login was made' ;;
+    cannot-identify:*[![:space:]]*)
+      # Accepted only with some text after the colon. Accepted, but a finding: the login is still live and the credential stays exposed.
+      FINDINGS=$((FINDINGS + 1))
+      note "finding: the login could not be identified on the account page: ${ANSWER#cannot-identify:}"
+      out '   accepted, and recorded as a finding: the login could not be revoked on its own; the credential stays exposed until it is.'
+      result "cannot-identify (a finding):${ANSWER#cannot-identify:}"
+      ;;
     *)
       if [ "$DRY" -eq 1 ]; then
         result revoked

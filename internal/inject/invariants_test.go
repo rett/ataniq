@@ -145,7 +145,7 @@ func checkInvariants(t *testing.T, f *fake, m Message, res Result, inv invariant
 	if f.locked {
 		t.Errorf("the input lock was not released")
 	}
-	if line := res.Readings(); len(line) > maxReadingText {
+	if line := res.Readings(); len(line) > 1024 {
 		t.Errorf("Readings is %d bytes", len(line))
 	}
 	if f.settles > 2 || f.frozens > 2 || f.lockCalls > 1 {
