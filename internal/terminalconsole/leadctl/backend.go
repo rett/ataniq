@@ -130,6 +130,11 @@ type Receipt struct {
 	Earlier bool
 }
 
+// Delivery is the holder's three words about a message.
+type Delivery struct {
+	Outcome, Reason, Written string
+}
+
 // Lead is one lead of the listing.
 type Lead struct {
 	// Key is the short name shown in the table.
@@ -142,6 +147,10 @@ type Lead struct {
 	Provision string
 	// State is the lead's state in the registry, such as "ready".
 	State string
+	// StateReason is the reason code the registry shows with the state, such
+	// as "holder-ready" with "ready". Empty with none. It is never drawn as
+	// text: the view has words for the pairs it knows.
+	StateReason string
 	// Epoch is the current epoch, 0 with none.
 	Epoch uint64
 	// Unit is the lead's unit name.
@@ -150,6 +159,11 @@ type Lead struct {
 	Inject bool
 	// MessageSpent says that the epoch's one message was sent.
 	MessageSpent bool
+	// MessageResult is the holder's answer to the epoch's message, when the
+	// adapter has it for the current epoch: all three words empty means it
+	// does not. The view also remembers the answers of the messages it sent
+	// itself (the receipt's words), and prefers this field when it is set.
+	MessageResult Delivery
 	// Last is the receipt of the lead's last command, nil with none.
 	Last *Receipt
 }

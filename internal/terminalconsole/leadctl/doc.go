@@ -46,7 +46,10 @@
 // is read again. A done message is drawn from the holder's three words (the
 // receipt's Outcome, Reason and Written): whether the message was submitted,
 // NOT delivered (nothing was written) or written with an unknown result, and
-// that the epoch's one message is spent, as the daemon makes it. A row whose last receipt is in progress is read again every
+// that the epoch's one message is spent, as the daemon makes it. The MSG
+// column agrees (free, sent, sent-unsure, spent-not-delivered), from the
+// answers the view saw and the Lead's MessageResult, and a line under the
+// table gives words for a state and reason such as ready and holder-ready. A row whose last receipt is in progress is read again every
 // two seconds until it is final.
 //
 // A receipt with Earlier set answers a command that an earlier press sent and

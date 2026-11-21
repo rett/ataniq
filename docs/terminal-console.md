@@ -394,9 +394,16 @@ and how many leads count against it:
 | KEY | The lead's key in the daemon's config. |
 | STATE | The registry's state of the lead, with `*` after it while a command for the lead has no answer yet. |
 | EPOCH | The current epoch, `-` with none. |
-| MSG | `off` when the lead's config turns messages off, `sent` when the epoch's one message was sent, else `free`. |
+| MSG | `off` when the lead's config turns messages off, `free` while the epoch's one message is not sent, else what became of it: `spent-not-delivered` when the holder wrote nothing (the receipt line says why), `sent-unsure` when something may have reached the lead (look at its screen), and `sent` when it was submitted or when this console has no result for it (a message sent before the console started, or by another client). |
 | LAST RECEIPT | The lead's last command and where it stands. |
 | UNIT | The lead's unit name. |
+
+Below the table the view draws one line about the row under the cursor when its
+state needs words. For state `ready` with the reason `holder-ready` it reads
+"KEY: ready (holder-ready): the holder is up and the agent started; its login is
+not observed", which says what the daemon observed and no more: the agent's login
+is not looked at. The line gives way to the message editor, the stop question and
+a note, and a state or reason the console has no words for adds no line.
 
 Everything in the view that comes from the daemon (names, states, units) is cut
 to a short ASCII subset and drawn one character at a time, and the text of an

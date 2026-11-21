@@ -6,4 +6,7 @@
   of what was written, and each says that the epoch's one message is spent,
   which is what the daemon does once it has written the request to the holder.
   Before, a not-now answer was drawn as "the result is not known to this
-  console". See `docs/terminal-console.md`.
+  console". The MSG column agrees: `free`, `sent`, `sent-unsure` or
+  `spent-not-delivered`. A lead whose state is `ready` with the reason
+  `holder-ready` gets a line that says the holder is up and the agent started
+  and that its login is not observed. See `docs/terminal-console.md`.

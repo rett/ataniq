@@ -232,6 +232,43 @@ func outcomeWords(r Receipt) string {
 	return t.text + spentTail
 }
 
+// msgWord is the MSG column: whether the lead takes a message, and what became
+// of the epoch's one. It agrees with the receipt line of a done message: a
+// message that was NOT delivered is spent all the same.
+func msgWord(l Lead, d Delivery) string {
+	switch {
+	case !l.Inject:
+		return "off"
+	case !l.MessageSpent:
+		return "free"
+	}
+	switch deliveryOf(d.Outcome, d.Reason, d.Written).fate {
+	case fateNotDelivered:
+		return "spent-not-delivered"
+	case fateUnsure:
+		return "sent-unsure"
+	}
+	return "sent"
+}
+
+// stateWords are the words for a registry state and the reason shown with it,
+// where the state alone says too little. The pair ready and holder-ready is
+// what the daemon shows once the holder is up and the agent started.
+var stateWords = map[[2]string]string{
+	{"ready", "holder-ready"}: "the holder is up and the agent started; its login is not observed",
+}
+
+// stateLine is the line about the row under the cursor: its state in words,
+// where the table's cell has no room for them. It is empty when there is
+// nothing to add.
+func stateLine(l Lead) string {
+	w, ok := stateWords[[2]string{l.State, l.StateReason}]
+	if !ok {
+		return ""
+	}
+	return l.Key + ": " + l.State + " (" + l.StateReason + "): " + w
+}
+
 // receiptLine is the full line of a receipt, in the view's words.
 func receiptLine(r Receipt) string {
 	head := opWords(r.Op) + ": "
