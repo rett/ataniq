@@ -651,15 +651,29 @@ rest of this guide.
 **How to record.** Set `"record_screens": true` in the lead's entry of the
 scratch config and start the daemon again (it reads the config at start). Each
 `lead.start` of that lead then starts its holder with
-`--record-dir <runtime root>/leads/<layout role>/record`. The holder refuses
-that flag without `--canary`, for any other folder, and when the folder exists
-already: **a start of a recording lead whose `record` folder is still there is
-refused** (the holder exits 2, "--record-dir exists already"), so that an
-earlier recording is neither added to nor replaced. Move or delete the folder
-first, or set the field back to `false`. Once the sandbox has started, the
-holder makes the folder, mode 0700, and says one line in its journal,
-`recording screens to record`, with no host path. A start that fails makes no
-folder. The folder is one of the holder's paths that assertion 1 holds the
+`--record-dir <runtime root>/leads/<layout role>/record`.
+
+**A start of a recording lead whose `record` folder is still there is
+refused**, so that an earlier recording is neither added to nor replaced. The
+daemon looks first, before anything changes: anything at that name (a folder,
+a file, a link) refuses `lead.start` with the code `preflight`, which the
+console shows as "the preflight refused the start", and the receipt's fixed
+message "the lead's record folder from an earlier recording is still there;
+move or delete it, or set record_screens to false"; the daemon's log says the
+same with no path, and nothing is started. Move or delete the folder, or set
+the field back to `false` and start the daemon again. The holder keeps its own
+check: it refuses the flag without `--canary`, for any other folder, and when
+the folder exists (one made between the daemon's look and the holder's start),
+and then exits 2 with "--record-dir exists already". The unit has then only
+ended, so the reason is in **the unit's journal**, where everything the holder
+says goes: `journalctl --user --unit UNIT`, where `UNIT` is the lead's unit,
+`ataniq-lead-scratch-<key>.service` (the `unit` of the start's receipt and of
+`lead.list`).
+
+Once the sandbox has started, the holder makes the folder, mode 0700, and says
+one line in that journal, `recording screens to record`, with no host path, or
+`not recording screens:` and the reason (by errno) when it cannot make it; the
+lead then goes on without a recording. A start that fails makes no folder. The folder is one of the holder's paths that assertion 1 holds the
 sandbox does not show, so the agent cannot see it or name anything in it.
 
 **What it writes**, every file mode 0600:
