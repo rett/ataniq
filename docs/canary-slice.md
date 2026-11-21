@@ -589,7 +589,8 @@ them, and no command of the slice prints them while the holder runs.
 
 Two further counters of the pane, `alt_screen_on` and `alt_screen_off`, count
 the times the emulator entered and left the alternate screen. They are listed
-with the others and printed by step 22 from `final.json`. `alt_screen_on` above
+in the status answer, on the `exit` event and in `final.json`, and step 22
+prints them from `final.json`. `alt_screen_on` above
 zero means the agent drew with the fullscreen renderer, which the recogniser
 requires; both at zero until the agent leaves means it drew on the main screen.
 

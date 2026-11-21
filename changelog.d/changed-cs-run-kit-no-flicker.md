@@ -8,4 +8,7 @@
   digest, so a root prepared earlier needs a new root and a new pin. The kit's
   README, the checklist and `docs/canary-slice.md` say so, and
   `docs/lead-injection.md` says that every recorded claude screen is from the
-  fullscreen renderer.
+  fullscreen renderer. Step 22 prints the two alternate-screen counters from
+  `final.json`, and step 16 names `alt_screen_on` as the thing the lead reads;
+  `alt_screen_on` above zero in the final record is what confirms the
+  renderer choice, which is likely the cause and not yet confirmed by a run.

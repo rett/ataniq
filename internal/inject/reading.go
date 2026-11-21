@@ -182,10 +182,13 @@ func (r *Reading) String() string {
 		// observations of a composer.
 		b.WriteString(", composer not read")
 	}
-	fmt.Fprintf(&b, ", screen %dx%d alt %t cursor %d,%d last-row %d", r.Screen.Cols, r.Screen.Rows, r.Screen.AltScreen, r.Screen.CursorX, r.Screen.CursorY, r.Screen.LastRow)
+	// The failed list comes before the shape: the wire keeps only the first
+	// 512 bytes of the readings, and the conditions that decided the result
+	// must stay inside them.
 	if len(r.Failed) > 0 {
 		fmt.Fprintf(&b, ", failed: %s", strings.Join(r.Failed, ", "))
 	}
+	fmt.Fprintf(&b, ", screen %dx%d alt %t cursor %d,%d last-row %d", r.Screen.Cols, r.Screen.Rows, r.Screen.AltScreen, r.Screen.CursorX, r.Screen.CursorY, r.Screen.LastRow)
 	return b.String()
 }
 

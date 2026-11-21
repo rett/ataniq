@@ -450,14 +450,17 @@ A `Result` carries `Written`, `Outcome`, `State`, both readings (`Before` and
 signals, `ReportOnly`, the parser state, the quiet times, the report, the
 screen reading and the conditions that failed. `Result.Readings()` renders one
 bounded line of fixed words and short tokens. It never holds the message, the
-owner's draft or a line the agent drew. Each reading ends its screen part with
-the shape of the screen, numbers and flags only: `screen WxH alt B cursor X,Y
-last-row N` (the size, the alternate-screen flag, the cursor column and row,
+owner's draft or a line the agent drew. Each reading ends with the shape of
+the screen, after its failed conditions, numbers and flags only: `screen WxH
+alt B cursor X,Y last-row N` (the size, the alternate-screen flag, the cursor column and row,
 and the zero-based index of the last row that holds anything, -1 for a blank
 screen). When the screen is not one the recogniser knows, the composer part
 reads `composer not read` in place of the composer, empty, cursor, header and
 marker values, which would otherwise read as a composer that holds text. The
-whole result detail is cut to 512 bytes on the wire. The daemon maps a `Result` to the
+whole result detail is cut to its first 512 bytes on the wire, with no mark
+that anything was cut. The shape sits last in each reading, after `failed:`,
+so the conditions that decided the result are the last to be cut, and the
+second check's reading, which comes after the first, is usually cut. The daemon maps a `Result` to the
 command machine's `FenceResult` in a few lines. The spellings match, and a test
 fails if they drift:
 
@@ -909,13 +912,14 @@ bluntly as we can state them.
 - **Every recorded claude screen is from the fullscreen renderer.** claude
   2.1.325 draws either with a fullscreen renderer on the alternate screen or
   with a classic one on the main screen, and it chooses per process: the
-  environment variable `CLAUDE_CODE_NO_FLICKER=1` selects the fullscreen one
-  and nothing remote or in the config folder overrules it, while without it
-  the setting `tui` and remote feature gates decide, which the version, the
-  terminal type and the size do not fix. The recogniser reads only the
+  environment variable `CLAUDE_CODE_NO_FLICKER=1` likely selects the fullscreen
+  one ahead of the setting and the remote gates (read from the program's
+  text, not yet confirmed by a run; `alt_screen_on` in the final record
+  confirms it), while without it the setting `tui` and remote feature gates
+  decide, which the version, the terminal type and the size do not fix. The recogniser reads only the
   alternate screen, so a claude lead must be started with that variable; a
   session on the main screen reads as an unknown screen and is never injected
-  (the result is `not now`). No fixture of the classic renderer exists, and
+  (the result is `not-now`). No fixture of the classic renderer exists, and
   none is proposed. The result line says which case it was: `screen WxH alt
   B cursor X,Y last-row N`, and the holder's counter `alt_screen_on` above
   zero says the session entered the alternate screen.

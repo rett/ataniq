@@ -3013,7 +3013,7 @@ step_22() {
     out "   the alternate-screen counters of the final record (alt_screen_on above 0: the fullscreen renderer):"
     counters_alt "$_fin" || out '     (alt_screen_on and alt_screen_off are not in the record)'
   else
-    out "   the holder left no final record ($HSTATE/final.json): there are no 7501 counters to print"
+    out "   the holder left no final record ($HSTATE/final.json): there are no 7501 or alternate-screen counters to print"
   fi
   result stopped
   done_step
