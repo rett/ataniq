@@ -50,6 +50,10 @@ const (
 	// animated spinner) does not fill the pairs. The last look, when the
 	// session is over, does not wait for it.
 	Settle = 300 * time.Millisecond
+	// TornAfter is how long a due snapshot waits for the parser to reach
+	// ground and for a mode 2026 frame to close. Past it the snapshot is
+	// taken anyway and its pair is marked "torn": true.
+	TornAfter = 2 * time.Second
 	// PollInterval is how often Watch looks at the pane's position, size and
 	// title.
 	PollInterval = 100 * time.Millisecond
@@ -72,7 +76,8 @@ delete this folder once the fixtures are made.
 NNNN.txt, NNNN.json  one distinct screen each, once it stood still for about
                      300 ms (and the last one), in the fixture format of
                      internal/inject/screen/testdata ("source": "recorded",
-                     no description and no "want" yet)
+                     no description and no "want" yet); "torn": true marks
+                     a screen taken mid-frame, not a fixture as it is
 titles.jsonl         each window title as it changed, with "ms"
 osc7501.jsonl        each OSC 7501 payload, with "ms"
 LIMIT.txt            why the screens or the recording stopped early, and
@@ -115,6 +120,7 @@ type item struct {
 	kind kind
 	ms   int64
 	snap screen.Snapshot
+	torn bool // the pair's snapshot was taken mid-sequence or in a frame
 	// text is the title, data the payload, both already cut; size is their
 	// length as seen.
 	text string
@@ -245,7 +251,11 @@ func (r *Recorder) takesPairs() bool {
 
 // Screen queues a pair for s when it differs from the last screen queued and
 // MaxPairs was not reached.
-func (r *Recorder) Screen(s screen.Snapshot) {
+func (r *Recorder) Screen(s screen.Snapshot) { r.screen(s, false) }
+
+// screen is Screen for a snapshot that may be torn: taken while the parser was
+// in the middle of a sequence or a mode 2026 frame was open. Its pair says so.
+func (r *Recorder) screen(s screen.Snapshot, torn bool) {
 	ms := r.elapsed()
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -255,7 +265,7 @@ func (r *Recorder) Screen(s screen.Snapshot) {
 	c := s
 	c.Faint = append([]screen.Span(nil), s.Faint...)
 	r.last = &c
-	r.pushLocked(item{kind: kindPair, ms: ms, snap: c})
+	r.pushLocked(item{kind: kindPair, ms: ms, snap: c, torn: torn})
 }
 
 func sameScreen(a, b screen.Snapshot) bool {
@@ -541,7 +551,7 @@ func (r *Recorder) write(it item) error {
 			return r.endPairs()
 		}
 		txt := []byte(it.snap.Text + "\n")
-		js, err := pairJSON(it.snap)
+		js, err := pairJSON(it.snap, it.torn)
 		if err != nil {
 			return &Error{Step: "encode a screen", Err: err}
 		}
@@ -603,7 +613,8 @@ func (r *Recorder) appendLine(fd int, name string, v any) error {
 }
 
 // pairFile is NNNN.json: the fixture format of internal/inject/screen/testdata
-// without "want".
+// without "want", and "torn": true for a snapshot taken mid-sequence or in a
+// mode 2026 frame (absent otherwise; it is not a field of a fixture).
 type pairFile struct {
 	Source       string     `json:"source"`
 	Description  string     `json:"description"`
@@ -615,6 +626,7 @@ type pairFile struct {
 	AltScreen    bool       `json:"alt_screen"`
 	Title        string     `json:"title"`
 	Faint        []spanFile `json:"faint"`
+	Torn         bool       `json:"torn,omitempty"`
 }
 
 type spanFile struct {
@@ -626,10 +638,10 @@ type spanFile struct {
 // SourceRecorded is the "source" of every pair.
 const SourceRecorded = "recorded"
 
-func pairJSON(s screen.Snapshot) ([]byte, error) {
+func pairJSON(s screen.Snapshot, torn bool) ([]byte, error) {
 	f := pairFile{
 		Source: SourceRecorded, Cols: s.Cols, Rows: s.Rows, CursorX: s.CursorX, CursorY: s.CursorY,
-		CursorHidden: s.CursorHidden, AltScreen: s.AltScreen, Title: s.Title,
+		CursorHidden: s.CursorHidden, AltScreen: s.AltScreen, Title: s.Title, Torn: torn,
 		Faint: make([]spanFile, 0, len(s.Faint)),
 	}
 	for _, sp := range s.Faint {

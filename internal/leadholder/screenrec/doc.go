@@ -21,7 +21,10 @@
 //     the cursor, the two flags, the title and the faint spans, "source":
 //     "recorded", an empty description and no "want"). The snapshot is the
 //     pane's text snapshot converted by injectbridge.SnapshotOf, the
-//     screen.Snapshot the fence reads;
+//     screen.Snapshot the fence reads, taken as the fence does only while the
+//     parser is at ground and no mode 2026 frame is open; one that waited
+//     [TornAfter] for that, or that the last look took before it, has
+//     "torn": true in its .json;
 //   - titles.jsonl, one JSON line for each window title the pane shows that
 //     differs from the last one recorded;
 //   - osc7501.jsonl, one JSON line for each OSC 7501 payload the holder's hook

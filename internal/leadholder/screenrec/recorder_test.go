@@ -378,10 +378,10 @@ func TestByteLimit(t *testing.T) {
 	}
 }
 
-// The constants are the task's: 400 pairs, 8 MiB, 4 KiB, 500 ms, 300 ms.
+// The constants are the task's: 400 pairs, 8 MiB, 4 KiB, 500 ms, 300 ms, 2 s.
 func TestTheBounds(t *testing.T) {
 	if MaxPairs != 400 || MaxBytes != 8<<20 || MaxPayload != 4096 || PairInterval != 500*time.Millisecond ||
-		Settle != 300*time.Millisecond || DirName != "record" {
+		Settle != 300*time.Millisecond || TornAfter != 2*time.Second || DirName != "record" {
 		t.Fatal("a bound changed")
 	}
 	r := New(Config{})
@@ -518,17 +518,27 @@ func TestCloseBeforeOpenWritesNothing(t *testing.T) {
 	}
 }
 
-// fakePane is a Pane whose position, size, title and screen a test sets.
+// fakePane is a Pane whose position, size, title, screen and parser state a
+// test sets. Its zero parser state is settled: at ground, no frame open.
 type fakePane struct {
 	pos        uint64
 	cols, rows int
 	title      string
 	text       string
 	snaps      int
+	// midSequence: the parser is not at ground; frame: mode 2026 is set.
+	midSequence, frame bool
 }
 
 func (p *fakePane) Size() (int, int) { return p.cols, p.rows }
 func (p *fakePane) Title() string    { return p.title }
+func (p *fakePane) Quiescent() bool  { return !p.midSequence }
+func (p *fakePane) ModeSet() sessionpane.ModeSet {
+	if p.frame {
+		return sessionpane.ModeSet{DEC: []int{25, 2026}}
+	}
+	return sessionpane.ModeSet{DEC: []int{25}}
+}
 func (p *fakePane) TextSnapshot() sessionpane.TextSnapshot {
 	p.snaps++
 	return sessionpane.TextSnapshot{Text: p.text, Cols: p.cols, Rows: p.rows, Title: p.title}
@@ -729,5 +739,73 @@ func TestWatchRecordsTheLastScreenWhenTheSessionEnds(t *testing.T) {
 	}
 	if osc := x.lines(OSCName); len(osc) != 1 || osc[0]["payload"] != "state=last" {
 		t.Errorf("payload lines %v", osc)
+	}
+}
+
+// A due snapshot waits, the screen kept marked as changed, while the parser is
+// in the middle of a sequence or a synchronized-output frame (mode 2026) is
+// open, as the fence does; it is taken as soon as both settle. One that has
+// waited TornAfter is taken anyway and its pair says "torn": true, and so is
+// one the last look takes while they are not settled.
+func TestLookWaitsForTheParserAndTheFrame(t *testing.T) {
+	x := newRec(t, nil)
+	x.open()
+	p := &fakePane{cols: 40, rows: 5, title: "t", text: "one"}
+	var w watcher
+	look := func(final bool) { w.look(x.r, p.screen, final) }
+	want := func(n int, what string) {
+		t.Helper()
+		if p.snaps != n {
+			t.Fatalf("%d snapshots %s, want %d", p.snaps, what, n)
+		}
+	}
+	look(false)
+	x.clock.add(Settle)
+	look(false)
+	want(1, "of a settled screen")
+
+	x.clock.add(time.Second)
+	p.pos, p.text, p.frame = 10, "two", true
+	look(false)
+	x.clock.add(Settle)
+	look(false)
+	x.clock.add(time.Second)
+	look(false)
+	want(1, "while a frame is open")
+	p.frame = false
+	x.clock.add(100 * time.Millisecond)
+	look(false)
+	want(2, "once the frame closed")
+
+	x.clock.add(time.Second)
+	p.pos, p.text, p.midSequence = 20, "three", true
+	look(false)
+	x.clock.add(Settle)
+	look(false) // due, and waiting from here
+	x.clock.add(TornAfter - 100*time.Millisecond)
+	look(false)
+	want(2, "while the parser is in a sequence")
+	x.clock.add(100 * time.Millisecond)
+	look(false)
+	want(3, "once it waited TornAfter")
+
+	x.clock.add(time.Second)
+	p.pos, p.text, p.midSequence, p.frame = 30, "four", false, true
+	look(true)
+	want(4, "at the last look")
+	x.r.Close()
+
+	for name, torn := range map[string]bool{"0001": false, "0002": false, "0003": true, "0004": true} {
+		raw := x.read(name + ".json")
+		var m map[string]any
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			t.Fatal(err)
+		}
+		if got, has := m["torn"]; torn && got != true || !torn && has {
+			t.Errorf("%s.json torn %v (present %v), want %v", name, got, has, torn)
+		}
+	}
+	if x.read("0003.txt") != "three\n" || x.read("0004.txt") != "four\n" {
+		t.Errorf("pairs %q %q", x.read("0003.txt"), x.read("0004.txt"))
 	}
 }

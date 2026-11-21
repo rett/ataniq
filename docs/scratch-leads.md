@@ -670,7 +670,14 @@ sandbox does not show, so the agent cannot see it or name anything in it.
   `internal/inject/screen/testdata` (the `.txt` is the screen text; the `.json`
   holds the size, the cursor, the alternate-screen flag, the title and the faint
   spans, `"source": "recorded"`, an empty description and no `want`). The
-  screen is the snapshot the fence reads. The holder takes one only after
+  screen is the snapshot the fence reads, and the holder takes it, as the fence
+  does, only while the terminal parser is between sequences and no
+  synchronized-output frame (mode 2026) is open. A snapshot that has waited
+  2 seconds for that is taken anyway, and so is the last one when the session
+  ended in the middle of a frame; its `.json` then says `"torn": true` (the
+  field is absent otherwise). A torn pair may show half a frame: it is not a
+  fixture as it is, so drop it or check it by hand and remove the field. The
+  holder takes a snapshot only after
   output or a resize, only once the screen has had no output and no resize for
   about 300 ms (the settle rule), and at most one every 500 ms; the last screen,
   when the session ends, is taken at once. The settle rule keeps a screen that

@@ -10,10 +10,21 @@ import (
 )
 
 // Pane is what Watch reads of the holder's pane; *sessionpane.Pane has it.
+// Quiescent and ModeSet are what the fence reads of the parser
+// (session.TermState, from the session's frozenView.Term): whether it is at
+// ground, and whether a synchronized-output frame (mode 2026) is open.
 type Pane interface {
 	Size() (cols, rows int)
 	Title() string
 	TextSnapshot() sessionpane.TextSnapshot
+	Quiescent() bool
+	ModeSet() sessionpane.ModeSet
+}
+
+// settled says the pane shows a whole frame: the checks of the fence, the
+// parser at ground and no mode 2026 frame open.
+func settled(p Pane) bool {
+	return p.Quiescent() && !p.ModeSet().Has(2026, false)
 }
 
 // ScreenFunc runs fn with the pane and the count of output bytes applied to
@@ -32,8 +43,11 @@ type ScreenFunc func(fn func(p Pane, pos uint64))
 // been unchanged for Settle and PairInterval has passed since the last
 // snapshot, while MaxPairs is not reached, through the conversion of the fence
 // (injectbridge.SnapshotOf), and Screen records it when it differs from the
-// last one. The snapshot is copied under the lock and written by the writer,
-// off it.
+// last one. A snapshot that is due waits, the screen kept marked as changed,
+// while the parser is in the middle of a sequence or a mode 2026 frame is
+// open, as the fence does; one that has waited TornAfter, and one the last
+// look takes before they settled, is taken anyway and marked torn. The
+// snapshot is copied under the lock and written by the writer, off it.
 func (r *Recorder) Watch(screenFn ScreenFunc, done <-chan struct{}) {
 	defer r.Close()
 	t := time.NewTicker(r.cfg.PollInterval)
@@ -63,6 +77,7 @@ type watcher struct {
 	dirty      bool      // the screen changed since the last snapshot
 	changedAt  time.Time // when a look last saw it change
 	snapAt     time.Time // when the last snapshot was taken
+	waitingAt  time.Time // when a due snapshot began to wait for the parser
 }
 
 // look is one look at the pane. The last look (final) takes a changed screen
@@ -74,6 +89,7 @@ func (w *watcher) look(r *Recorder, screenFn ScreenFunc, final bool) {
 		changed bool
 		title   string
 		snap    *sessionpane.TextSnapshot
+		torn    bool
 	)
 	screenFn(func(p Pane, pos uint64) {
 		cols, rows := p.Size()
@@ -84,16 +100,28 @@ func (w *watcher) look(r *Recorder, screenFn ScreenFunc, final bool) {
 		}
 		due := final || (now.Sub(w.changedAt) >= r.cfg.Settle &&
 			(w.snapAt.IsZero() || now.Sub(w.snapAt) >= r.cfg.PairInterval))
-		if pairs && w.dirty && due {
-			ts := p.TextSnapshot()
-			snap = &ts
+		if !pairs || !w.dirty || !due {
+			w.waitingAt = time.Time{}
+			return
 		}
+		if !settled(p) {
+			if w.waitingAt.IsZero() {
+				w.waitingAt = now
+			}
+			if !final && now.Sub(w.waitingAt) < TornAfter {
+				return
+			}
+			torn = true
+		}
+		w.waitingAt = time.Time{}
+		ts := p.TextSnapshot()
+		snap = &ts
 	})
 	if changed {
 		r.Title(title)
 	}
 	if snap != nil {
 		w.dirty, w.snapAt = false, now
-		r.Screen(injectbridge.SnapshotOf(*snap))
+		r.screen(injectbridge.SnapshotOf(*snap), torn)
 	}
 }
