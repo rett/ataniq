@@ -20,7 +20,7 @@ BEFORE   (prepare made the files; the steps below are yours)
       sh @RUN@ --pass B --config @CONFIG@ --dry
       sh @RUN@ --pass B --config @CONFIG@ --evidence @EVIDENCE@
 @MODELNOTE@
-Enter = go on; a word is typed by you, exactly. Other steps go as in pass A.
+Enter = go on; type words exactly. T3 console before 14, T4 integrate at 20.
 
 STEP  WHAT YOU DO (the steps pass B adds)
   5   confirmed ONLY if the login shows as its own revocable entry, or the

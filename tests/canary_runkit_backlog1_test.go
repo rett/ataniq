@@ -58,6 +58,8 @@ func TestCanaryRunKitBacklog1Step23CannotIdentify(t *testing.T) {
 		{"no-login", true, "findings=0"},
 		{"cannot-identify: three Unknown rows", true, "findings=1"},
 		{"cannot-identify", false, "findings=0"},
+		{"cannot-identify:", false, "findings=0"},
+		{"cannot-identify:   ", false, "findings=0"},
 		{"done", false, "findings=0"},
 	} {
 		dir := t.TempDir()
@@ -72,7 +74,7 @@ func TestCanaryRunKitBacklog1Step23CannotIdentify(t *testing.T) {
 		if !strings.Contains(o, c.findings) {
 			t.Errorf("answer %q: want %s:\n%s", c.answer, c.findings, o)
 		}
-		if strings.HasPrefix(c.answer, "cannot-identify:") && !strings.Contains(o, "a finding") {
+		if c.done && strings.HasPrefix(c.answer, "cannot-identify:") && !strings.Contains(o, "a finding") {
 			t.Errorf("the finding is not said:\n%s", o)
 		}
 	}
@@ -101,7 +103,7 @@ runcap() {
   RC=0
   LASTOUT=$EV/out-$1.txt
   case $1 in
-    review) printf 'Tip: tip123\nDigest: digest456\nOther: x\n' >"$LASTOUT" ;;
+    review) printf '%b' "${REVIEW:-Tip: tip123\\nDigest: digest456\\nOther: x\\n}" >"$LASTOUT" ;;
     verify) printf 'plan digest: plan789\n' >"$LASTOUT" ;;
     upstream-tip) echo c1 >"$LASTOUT" ;;
     *) : >"$LASTOUT" ;;
@@ -134,10 +136,6 @@ func TestCanaryRunKitBacklog1Step20AsksAgain(t *testing.T) {
 		dir := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(dir, "ev"), 0o700); err != nil {
 			t.Fatal(err)
-		}
-		if c.answers == "no" {
-			// one wrong answer and then the end of the input
-			c.answers = "no"
 		}
 		o, code := canaryStepHarness(t, dir, step20Real, step20Pre+"ANSWERS='"+c.answers+"'", "step_20")
 		if code != 0 && c.done {
@@ -175,7 +173,7 @@ func TestCanaryRunKitBacklog1Step20Dry(t *testing.T) {
 			"/out/20-e1-review.out",
 			"Use the review's digest, not the verify output's plan digest",
 			"Owner: integrate succeeded (type: yes)",
-			"when the answer is not exactly yes, ask again, up to 2 more times",
+			"ask again when the answer is not exactly yes, up to 2 more times",
 		} {
 			if !strings.Contains(o, want) {
 				t.Errorf("pass %s: the dry run does not say %q", pass, want)
@@ -311,6 +309,91 @@ func TestCanaryRunKitBacklog1Docs(t *testing.T) {
 	for _, want := range []string{"throwaway account", "cannot-identify: <what you see>", "-chain", "review's `Digest:`"} {
 		if !strings.Contains(string(readme), want) {
 			t.Errorf("the README does not say %q", want)
+		}
+	}
+}
+
+// Step 20 caps what it prints from the review's output, replaces control
+// characters, and says so when the review printed no Digest: or Tip: line.
+func TestCanaryRunKitBacklog1Step20PrintIsCapped(t *testing.T) {
+	long := strings.Repeat("x", 900)
+	for _, c := range []struct {
+		name    string
+		review  string
+		want    []string
+		notWant []string
+	}{
+		{"no lines", `Other: x\n`, []string{"no Digest line in the review output"}, []string{"Tip:", "Digest: "}},
+		{"capped", `Tip: t\nDigest: ` + long + `\n`, []string{"Tip: t", "Digest: xxx"}, []string{strings.Repeat("x", 301)}},
+		{"control characters", `Digest: a\033[31mb\rc\n`, []string{"Digest: a?[31mb?c"}, []string{"\x1b", "\r"}},
+		{"at most four lines", `Tip: 1\nTip: 2\nTip: 3\nTip: 4\nTip: 5\n`, []string{"Tip: 4"}, []string{"Tip: 5"}},
+	} {
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, "ev"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		o, code := canaryStepHarness(t, dir, step20Real, step20Pre+"REVIEW='"+c.review+"' ANSWERS=yes", "step_20")
+		if code != 0 || !strings.Contains(o, "DONE-STEP") {
+			t.Fatalf("%s: exit status %d:\n%s", c.name, code, o)
+		}
+		for _, w := range c.want {
+			if !strings.Contains(o, w) {
+				t.Errorf("%s: the output lacks %q:\n%s", c.name, w, o)
+			}
+		}
+		for _, w := range c.notWant {
+			if strings.Contains(o, w) {
+				t.Errorf("%s: the output holds %q:\n%s", c.name, w, o)
+			}
+		}
+	}
+}
+
+// In the clean-up chain the journal and the unit lists of step 22 keep the
+// first run's files: the chain writes its own with the suffix -chain.
+func TestCanaryRunKitBacklog1ChainKeepsJournalAndLists(t *testing.T) {
+	for _, chain := range []string{"1", "0"} {
+		dir := t.TempDir()
+		ev := filepath.Join(dir, "ev")
+		if err := os.MkdirAll(filepath.Join(ev, "out"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range []string{"out/22-e1-unit-journal.out", "units-after-1.txt", "unit-files-after-1.txt", "units-before.txt", "unit-files-before.txt"} {
+			if err := os.WriteFile(filepath.Join(ev, f), []byte("first\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		pre := "CUR=22 EPOCH_NO=1 IN_CHAIN=" + chain + " T_START=t0 UNIT=u STARTED=0 STOPPED=0 ME=me LINGER0=x HSTATE=/nonexistent BIN=/b\n" +
+			"step_head() { :; }\nwait_key() { :; }\nstop_role() { :; }\nresult() { :; }\ndone_step() { :; }\nfld() { echo x; }\nis_eq() { :; }\n" +
+			"unit_journal() { echo second; }\n" +
+			"runcap() { LASTOUT=$EV/lo.txt; echo 'ataniq-second.service loaded' >$EV/lo.txt; RC=0; }\n" +
+			"check() { shift; \"$@\" || :; }\n"
+		real := []string{"out", "note", "dry", "chain_sfx", "save_unit_journal", "step_22"}
+		o, code := canaryStepHarness(t, dir, real, pre, "step_22")
+		if code != 0 {
+			t.Fatalf("chain %s: exit status %d:\n%s", chain, code, o)
+		}
+		for _, f := range []struct{ base, ext string }{{"out/22-e1-unit-journal", ".out"}, {"units-after-1", ".txt"}, {"unit-files-after-1", ".txt"}} {
+			old, err := os.ReadFile(filepath.Join(ev, f.base+f.ext))
+			if err != nil {
+				t.Fatal(err)
+			}
+			chained, cerr := os.ReadFile(filepath.Join(ev, f.base+"-chain"+f.ext))
+			if chain == "1" {
+				if strings.TrimSpace(string(old)) != "first" {
+					t.Errorf("chain: %s was overwritten: %q", f.base, old)
+				}
+				if cerr != nil || !strings.Contains(string(chained), "second") {
+					t.Errorf("chain: %s-chain%s holds %q (%v)", f.base, f.ext, chained, cerr)
+				}
+			} else {
+				if strings.TrimSpace(string(old)) == "first" {
+					t.Errorf("no chain: %s was not rewritten", f.base)
+				}
+				if cerr == nil {
+					t.Errorf("no chain: %s-chain%s exists", f.base, f.ext)
+				}
+			}
 		}
 	}
 }

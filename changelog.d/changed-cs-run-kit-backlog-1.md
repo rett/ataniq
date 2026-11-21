@@ -5,6 +5,6 @@
   23 says how to identify the login and accepts `cannot-identify: <what you see>`
   as a finding. Step 20 prints the review's `Digest:` and `Tip:` lines and asks
   `integrate succeeded` up to three times. The clean-up chain no longer
-  overwrites the first proof of the stop between the epochs (its files get the
-  suffix `-chain`). The preflight and the checklists list the daemon at step 10
+  overwrites the first proof of the stop between the epochs (the files it writes that
+  already exist get the suffix `-chain`). The preflight and the checklists list the daemon at step 10
   and say why. `docs/canary-slice.md` records what pass B showed.
