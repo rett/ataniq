@@ -718,6 +718,13 @@ func (m *leadMode) inject(ctx context.Context, lr *leadRole, p leadwire.InjectPa
 	}
 	res, f := lr.in.ext.injectFor(ctx, CanaryInjectParams{Role: p.Role, MessageID: p.MessageID, Body: p.Body}, p.Epoch)
 	if f != nil {
+		if f.code == "holder-"+wire.CodeWrongEpoch {
+			// The role was stopped and started between the daemon's epoch
+			// check and the holder's read of the frame: a mismatch of the
+			// epoch, as the daemon's own check answers it. The text of the
+			// refusal is the epoch's, and no text reached the lead.
+			return refusedOut(codeStaleEpoch, msgStaleEpoch)
+		}
 		return fromFail(f)
 	}
 	return done(leadwire.InjectResult{

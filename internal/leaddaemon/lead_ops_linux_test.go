@@ -488,6 +488,21 @@ func TestLeadStartFailedLeavingUnknownIsUncertain(t *testing.T) {
 	}
 }
 
+// A holder that refuses an inject with wrong-epoch (the role was stopped and
+// started after the daemon's epoch check and before the holder read the frame)
+// is answered like the daemon's own mismatch, refused/stale-epoch, and not
+// unavailable/holder-wrong-epoch. The canary's operation keeps its answer.
+func TestLeadInjectHolderWrongEpochIsStale(t *testing.T) {
+	l := newLeadEnv(t)
+	l.start()
+	sr := l.up("alpha", respondWith(wire.Response{OK: false, Code: wire.CodeWrongEpoch}))
+	r := l.inject("alpha", sr.Epoch, "msg-late", "body one")
+	want(t, r, leadwire.StatusRefused, codeStaleEpoch)
+	if r.Message != msgStaleEpoch {
+		t.Fatalf("the text: %q", r.Message)
+	}
+}
+
 // The cap counts every lead whose shown state is not desired, stopped or ended,
 // so a lead that is stopping and one that is unknown both hold a place, and a
 // lead with a pending intent or a start in flight does too. A start is reserved
