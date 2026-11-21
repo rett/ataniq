@@ -429,16 +429,39 @@ view's own, chosen by the receipt's status, and are not the daemon's text:
 | Shown | Status | Meaning |
 | --- | --- | --- |
 | accepted (running) | in-progress | The daemon admitted the command and it has not ended. The row is read again every two seconds until it is final. |
-| accepted (done) | done | The command was carried out. For a message the line adds what the lead did with it: submitted, could not take it now (nothing written), refused (nothing written), or "it may have reached the lead; look at the lead's screen before you decide". |
+| accepted (done) | done | The command was carried out. For a message the line says what became of it, from the holder's own three words (outcome, reason, written), and that the epoch's one message is spent (next table). |
 | refused | refused | The daemon changed nothing that matters; the line gives the reason in the view's words. |
 | unavailable | unavailable | The command could not be carried out; the line gives the reason. |
 | uncertain | uncertain | The daemon does not know what happened, as after a restart while the command ran. Read the lead's state, then decide; nothing is sent again for you. |
 
+The line of a done message, for every answer the lead's holder can give (each
+ends "This epoch's one message is spent"):
+
+| Holder says (outcome, reason, written) | The line says |
+| --- | --- |
+| submitted, none, whole | the message was submitted: the whole of it was written and sent |
+| not-now, not-ready, nothing | NOT delivered: nothing was written, the lead's screen is not idle |
+| not-now, blocked, nothing | NOT delivered: nothing was written, the lead's screen is blocked |
+| refused, untested, nothing | NOT delivered: nothing was written, the lead's program version is not one the holder is tested with |
+| refused, text, nothing | NOT delivered: nothing was written, the holder refused the text |
+| uncertain, not-submitted, partial | written but not submitted: the text reached the lead's input and Enter was not sent. Look at the lead's screen |
+| uncertain, died, nothing / partial / whole / unknown | result unknown: the lead ended during the send, with what the holder says was written (nothing, part, the whole, or not known). Look at the lead's screen |
+
+The spent sentence is what the daemon does: it marks the epoch's one message
+spent once it has written the request to the holder, whatever the holder then
+answers, so a message that was NOT delivered is still the epoch's only one.
+Only a new epoch has a message again. A refusal of the daemon itself (a code
+below, such as `holder-busy`) is a different receipt: it says "refused", not
+"accepted". A done message from a console adapter that does not pass the
+holder's reason and written is drawn from its outcome alone, with the same first
+words.
+
 "Accepted" means that the daemon took the command into its durable table, not
 that it is done. The view has words for every reason code the daemon sends.
 Only a code from a newer daemon, one that is not in that set, is drawn as "the
-reason is not known to this console"; an outcome it does not know is drawn as
-"the result is not known to this console".
+reason is not known to this console"; a message result it does not know, or a
+reason and written that the holder does not send together, is drawn as "the
+result is not known to this console", with no spent sentence.
 
 **Earlier receipts.** After a lost answer the console's client asks once more,
 on a new connection, with the same command id and the same arguments, and the

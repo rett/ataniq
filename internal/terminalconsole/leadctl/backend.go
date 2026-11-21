@@ -79,6 +79,24 @@ const (
 	OutcomeUncertain = "uncertain"
 )
 
+// The reasons the holder gives with an outcome other than submitted.
+const (
+	ReasonNotReady     = "not-ready"
+	ReasonBlocked      = "blocked"
+	ReasonUntested     = "untested"
+	ReasonText         = "text"
+	ReasonNotSubmitted = "not-submitted"
+	ReasonDied         = "died"
+)
+
+// How much of a message reached the lead's input, in the holder's words.
+const (
+	WrittenNothing = "nothing"
+	WrittenPartial = "partial"
+	WrittenWhole   = "whole"
+	WrittenUnknown = "unknown"
+)
+
 // Receipt is the answer to a command, or the last one of a lead. The view
 // draws nothing of it but words of its own chosen by Status, Op, Outcome and
 // Code: any text a peer sent is not a field here, and a Code or Outcome that
@@ -92,8 +110,14 @@ type Receipt struct {
 	Code string
 	// Epoch is the epoch of a start, ticket or inject.
 	Epoch uint64
-	// Outcome is the outcome of a done inject.
-	Outcome string
+	// Outcome, Reason and Written are the holder's three words about a done
+	// inject: what happened to the message, why, and how much of it reached
+	// the lead's input. Reason and Written may be empty (an adapter that
+	// does not pass them): the view then draws the words of the outcome
+	// alone, and a Reason or Written outside the holder's closed sets is
+	// drawn as a result that is not known. None of them is ever drawn as
+	// text.
+	Outcome, Reason, Written string
 	// Folder and TicketFile are the result of a done ticket: where to attach.
 	// They are handed to the parent in an Attach action and never drawn.
 	Folder, TicketFile string

@@ -4,7 +4,9 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -164,6 +166,216 @@ func TestReasonWordsAreShortASCII(t *testing.T) {
 		}
 		if len(c) > 64 || safeID(c, 64) != c {
 			t.Errorf("the code %q is not a short code", c)
+		}
+	}
+}
+
+// constNames returns, for each constant of the Go file whose value is a
+// string literal, its name and its value, read from the source.
+func constNames(t *testing.T, path string) map[string]string {
+	t.Helper()
+	f, err := parser.ParseFile(token.NewFileSet(), filepath.FromSlash(path), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	for _, d := range f.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok || gd.Tok != token.CONST {
+			continue
+		}
+		for _, sp := range gd.Specs {
+			vs := sp.(*ast.ValueSpec)
+			for i, n := range vs.Names {
+				if i >= len(vs.Values) {
+					continue
+				}
+				if lit, ok := vs.Values[i].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+					s, err := strconv.Unquote(lit.Value)
+					if err != nil {
+						t.Fatal(err)
+					}
+					out[n.Name] = s
+				}
+			}
+		}
+	}
+	return out
+}
+
+// holderResults reads the combinations of outcome, reason and written that
+// the holder's wire carries: the validInject table of the holder's wire
+// package, and its sets of words. The file carries no tag, and is read as
+// source so that a combination added later is held too.
+func holderResults(t *testing.T) (combos []deliveryKey, outcomes, reasons, writtens []string) {
+	t.Helper()
+	const path = "../../leadholder/wire/inject.go"
+	names := constNames(t, path)
+	f, err := parser.ParseFile(token.NewFileSet(), filepath.FromSlash(path), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for n, v := range names {
+		switch {
+		case strings.HasPrefix(n, "InjectOutcome"):
+			outcomes = append(outcomes, v)
+		case strings.HasPrefix(n, "InjectReason") && v != "":
+			reasons = append(reasons, v)
+		case strings.HasPrefix(n, "InjectWritten"):
+			writtens = append(writtens, v)
+		}
+	}
+	for _, d := range f.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok || gd.Tok != token.VAR {
+			continue
+		}
+		for _, sp := range gd.Specs {
+			vs := sp.(*ast.ValueSpec)
+			if len(vs.Names) != 1 || vs.Names[0].Name != "validInject" || len(vs.Values) != 1 {
+				continue
+			}
+			lit, ok := vs.Values[0].(*ast.CompositeLit)
+			if !ok {
+				t.Fatal("validInject is not a composite literal")
+			}
+			for _, e := range lit.Elts {
+				el, ok := e.(*ast.CompositeLit)
+				if !ok || len(el.Elts) != 3 {
+					t.Fatal("a validInject entry is not three positional words")
+				}
+				var w [3]string
+				for i, x := range el.Elts {
+					id, ok := x.(*ast.Ident)
+					if !ok {
+						t.Fatal("a validInject word is not a constant")
+					}
+					v, ok := names[id.Name]
+					if !ok {
+						t.Fatalf("validInject names %s, which is not a constant of its file", id.Name)
+					}
+					w[i] = v
+				}
+				combos = append(combos, deliveryKey{w[0], w[1], w[2]})
+			}
+		}
+	}
+	if len(combos) < 10 || len(outcomes) != 4 || len(reasons) != 6 || len(writtens) != 4 {
+		t.Fatalf("read %d combinations, %d outcomes, %d reasons, %d amounts: the holder's wire was not read",
+			len(combos), len(outcomes), len(reasons), len(writtens))
+	}
+	return combos, outcomes, reasons, writtens
+}
+
+// TestEveryResultTheHolderCanSendHasWords holds that each valid combination
+// of outcome, reason and written has its own fixed text, that the view's
+// constants for the holder's words are the holder's, and that the table has
+// no text for a combination the holder does not send.
+func TestEveryResultTheHolderCanSendHasWords(t *testing.T) {
+	combos, outcomes, reasons, writtens := holderResults(t)
+	have := map[deliveryKey]bool{}
+	for _, c := range combos {
+		have[c] = true
+		tx, ok := deliveryWords[c]
+		if !ok {
+			t.Errorf("the holder sends %q, %q, %q and the view has no words for it", c.outcome, c.reason, c.written)
+			continue
+		}
+		if tx.fate == fateUnknown || tx.text == "" {
+			t.Errorf("%v: the words say nothing of what happened to the message", c)
+		}
+		if got := deliveryOf(c.outcome, c.reason, c.written); got != tx {
+			t.Errorf("%v: looked up as %v", c, got)
+		}
+		// What the words claim agrees with the holder's own: nothing is
+		// said of a message that was not written unless the holder says
+		// nothing was.
+		switch tx.fate {
+		case fateNotDelivered:
+			if c.written != WrittenNothing || !strings.Contains(tx.text, "nothing was written") {
+				t.Errorf("%v: drawn as not delivered", c)
+			}
+		case fateDelivered:
+			if c.outcome != OutcomeSubmitted || c.written != WrittenWhole {
+				t.Errorf("%v: drawn as delivered", c)
+			}
+		}
+	}
+	for c := range deliveryWords {
+		if !have[c] {
+			t.Errorf("the view has words for %q, %q, %q and the holder does not send it", c.outcome, c.reason, c.written)
+		}
+	}
+	// The words of an outcome alone, for an adapter that passes no reason.
+	for _, o := range outcomes {
+		if _, ok := outcomeOnlyWords[o]; !ok {
+			t.Errorf("the outcome %q has no words of its own", o)
+		}
+	}
+	for o := range outcomeOnlyWords {
+		if !slices.Contains(outcomes, o) {
+			t.Errorf("the view has words for the outcome %q and the holder does not send it", o)
+		}
+	}
+	// The exported words are the holder's.
+	for want, got := range map[string][]string{
+		"outcome": {OutcomeSubmitted, OutcomeNotNow, OutcomeRefused, OutcomeUncertain},
+		"reason":  {ReasonNotReady, ReasonBlocked, ReasonUntested, ReasonText, ReasonNotSubmitted, ReasonDied},
+		"written": {WrittenNothing, WrittenPartial, WrittenWhole, WrittenUnknown},
+	} {
+		src := map[string][]string{"outcome": outcomes, "reason": reasons, "written": writtens}[want]
+		a, b := slices.Clone(src), slices.Clone(got)
+		slices.Sort(a)
+		slices.Sort(b)
+		if !slices.Equal(a, b) {
+			t.Errorf("the view's %s words are %v, the holder's are %v", want, b, a)
+		}
+	}
+}
+
+// TestResultWordsAreShortASCIIAndSpendTheEpoch holds that each text is plain
+// printable ASCII on one line, and that every result the view has words for
+// says that the epoch's message is spent, as the daemon makes it.
+func TestResultWordsAreShortASCIIAndSpendTheEpoch(t *testing.T) {
+	check := func(name string, tx deliveryText) {
+		if tx.text == "" || len(tx.text) > 130 {
+			t.Errorf("%s: %d bytes", name, len(tx.text))
+		}
+		for i := 0; i < len(tx.text); i++ {
+			if tx.text[i] < 0x20 || tx.text[i] > 0x7e {
+				t.Errorf("%s: %q is not printable ASCII", name, tx.text)
+				break
+			}
+		}
+	}
+	for c, tx := range deliveryWords {
+		check(c.outcome+"/"+c.reason+"/"+c.written, tx)
+		line := receiptLine(Receipt{Op: OpInject, Status: Done, Outcome: c.outcome, Reason: c.reason, Written: c.written})
+		if !strings.Contains(line, "This epoch's one message is spent") {
+			t.Errorf("%v: %q does not say the epoch's message is spent", c, line)
+		}
+	}
+	for o, tx := range outcomeOnlyWords {
+		check(o, tx)
+	}
+}
+
+// TestTheDaemonSpendsTheMessageWhenTheRequestIsWritten holds the sentence the
+// view says of every done inject: the daemon marks the epoch's message spent
+// once the request is written to the holder, whatever the holder answers. It
+// reads the daemon's source; a change there is a change of the view's words.
+func TestTheDaemonSpendsTheMessageWhenTheRequestIsWritten(t *testing.T) {
+	src, err := os.ReadFile(filepath.FromSlash("../../leaddaemon/canary_ext_linux.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+	for _, want := range []string{
+		"resp, wrote, err := callHolderThen(",
+		"\t\tif wrote {\n\t\t\tx.spent[epoch] = true\n\t\t}",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("the daemon's source no longer holds %q: check what it spends and change the view's words", want)
 		}
 	}
 }
