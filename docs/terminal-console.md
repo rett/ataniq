@@ -403,7 +403,16 @@ state needs words. For state `ready` with the reason `holder-ready` it reads
 "KEY: ready (holder-ready): the holder is up and the agent started; its login is
 not observed", which says what the daemon observed and no more: the agent's login
 is not looked at. The line gives way to the message editor, the stop question and
-a note, and a state or reason the console has no words for adds no line.
+a note, and a state or reason the console has no words for adds no line. A lead
+that is `unknown` with the reason `launch-unsettled` or `launch-reply-lost` (a
+start whose launch the daemon cannot yet say anything about, as after the daemon
+was killed in the middle of a start) gets "launch not settled; a daemon restart
+after the 40 s launch window settles it". The same words answer a `lead.stop` or
+`lead.start` that is refused with `intent-pending`: reading the list does not
+settle a launch, so the line does not tell the owner to read it. While such a lead is
+listed, a start refused because the limit of running leads is reached adds that an
+unknown lead holds a slot, and what settles it. See [a lead left unknown after a
+killed daemon](scratch-leads.md#a-lead-left-unknown-after-a-killed-daemon).
 
 Everything in the view that comes from the daemon (names, states, units) is cut
 to a short ASCII subset and drawn one character at a time, and the text of an

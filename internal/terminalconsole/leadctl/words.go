@@ -111,7 +111,7 @@ var reasonWords = map[string]string{
 	"previous-unit-not-gone": "the previous unit is not proven gone",
 	"start-failed":           "the start failed and nothing was started",
 	"launch-uncertain":       "the start's outcome is not known; read the list",
-	"intent-pending":         "the launch intent is not settled yet; read the list",
+	"intent-pending":         unsettledWords,
 	"stop-unproven":          "the stop is not proven; read the list",
 
 	// Ticket and message.
@@ -137,6 +137,17 @@ var reasonWords = map[string]string{
 	"bad-body":           "the message body was not accepted",
 	"bad-text":           "the message text was not accepted",
 }
+
+// unsettledWords is what a launch that is not settled needs: reading the list
+// does not settle it (only the daemon's reconcile at its start does, and only
+// once the late-start window of 30 s and its margin of 10 s have passed since
+// the launch was recorded).
+const unsettledWords = "launch not settled; a daemon restart after the 40 s launch window settles it"
+
+// maxRunningUnknownTail is added to the refusal for the limit of running
+// leads while the list shows a lead that is unknown: an unknown lead counts
+// as running, and it stays so until its launch is settled.
+const maxRunningUnknownTail = ". An unknown lead holds a slot: its launch is not settled, and reading the list does not settle it; only a daemon restart after the 40 s launch window does"
 
 const unknownReason = "the reason is not known to this console"
 
@@ -324,6 +335,10 @@ func msgWord(l Lead, d Delivery) string {
 // what the daemon shows once the holder is up and the agent started.
 var stateWords = map[[2]string]string{
 	{"ready", "holder-ready"}: "the holder is up and the agent started; its login is not observed",
+	// A launch whose reply was lost, or that a restarted daemon found inside
+	// its window: the list never settles it.
+	{"unknown", "launch-unsettled"}:  unsettledWords,
+	{"unknown", "launch-reply-lost"}: unsettledWords,
 }
 
 // stateLine is the line about the row under the cursor: its state in words,

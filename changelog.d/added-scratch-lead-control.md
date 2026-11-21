@@ -97,3 +97,12 @@
   running (state stopped, ended, desired or unknown, or no epoch), where it
   drew the words of the lead's last epoch's message; `off` stays for a lead
   whose messages are off. See `docs/terminal-console.md`.
+- The console's leads view says what settles a lead whose launch is not
+  settled. A lead that is `unknown` with the reason `launch-unsettled` or
+  `launch-reply-lost` gets the line "launch not settled; a daemon restart after
+  the 40 s launch window settles it", the same words answer a stop or a start
+  refused with `intent-pending` (which no longer tells the owner to read the
+  list, because reading it does not settle the launch), and a start refused for
+  the limit of running leads while an unknown lead is listed says that the
+  unknown lead holds a slot and what settles it. `docs/scratch-leads.md` has the
+  recovery after a killed daemon. See `docs/terminal-console.md`.

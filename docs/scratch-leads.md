@@ -703,6 +703,30 @@ daemon restart is settled as the lead daemon guide says of the [reconcile at
 start](lead-daemon.md#reconcile-and-what-starts-by-itself) and [the late-start
 window](lead-daemon.md#the-late-start-window); the console never sends it again.
 
+### A lead left unknown after a killed daemon
+
+A daemon that is killed in the middle of a start (or whose start loses its
+reply) leaves the lead `unknown`, with the reason `launch-unsettled` or
+`launch-reply-lost`, and counted against `max_running`. While the launch is
+unsettled `lead.stop` and `lead.start` are answered `unavailable` with
+`intent-pending`, and a start of another lead can be refused `max-running`
+because the unknown lead holds the slot. **Reading the list does not settle it,
+and neither does the console:** the daemon reconciles once, when it starts, and
+it closes the launch intent as abandoned (the lead then reads `stopped`) only
+when the late-start window of 30 s plus its margin of 10 s has passed since the
+registry stamped the intent (see [the late-start
+window](lead-daemon.md#the-late-start-window)). A daemon that was restarted
+inside that window leaves the lead `unknown` for good until it is restarted
+again.
+
+So the owner's recovery is: wait until 40 s have passed since the start, stop the
+daemon, start it again, and read the list. The lead is `stopped` and the slot is
+free. The console says the same: the row's line, the refusal of the stop or the
+start (`intent-pending`) and the refusal for the limit of running leads (while an
+unknown lead is listed) all say that the launch is not settled and that a daemon
+restart after the 40 s launch window settles it. The console does not know when
+the window ends, so it names no time.
+
 ## What scratch mode leaves open
 
 - **The profile digest is the daemon's own computation** unless pinned, and the
