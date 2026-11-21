@@ -403,15 +403,16 @@ func TestByteLimitCountsLimitTxt(t *testing.T) {
 	}
 }
 
-// The constants are the task's: 400 pairs, 8 MiB, 4 KiB, 500 ms, 300 ms, 2 s.
+// The constants are the task's: 400 pairs, 8 MiB, 4 KiB, 500 ms, 300 ms, 2 s,
+// 3 s.
 func TestTheBounds(t *testing.T) {
 	if MaxPairs != 400 || MaxBytes != 8<<20 || MaxPayload != 4096 || PairInterval != 500*time.Millisecond ||
-		Settle != 300*time.Millisecond || TornAfter != 2*time.Second || DirName != "record" {
+		Settle != 300*time.Millisecond || TornAfter != 2*time.Second || SampleEvery != 3*time.Second || DirName != "record" {
 		t.Fatal("a bound changed")
 	}
 	r := New(Config{})
 	if r.cfg.MaxPairs != MaxPairs || r.cfg.MaxBytes != MaxBytes || r.cfg.PairInterval != PairInterval || r.cfg.QueueLen != QueueLen ||
-		r.cfg.Settle != Settle {
+		r.cfg.Settle != Settle || r.cfg.SampleEvery != SampleEvery {
 		t.Fatalf("defaults %+v", r.cfg)
 	}
 }
@@ -650,9 +651,10 @@ func TestLookSnapshotsOnlyChangesAndAtMostOncePerInterval(t *testing.T) {
 	}
 }
 
-// A screen that keeps changing (an animated spinner) is not snapshotted while
-// it changes, so it cannot fill the pairs; it is taken once it has been
-// unchanged for Settle, and the last look takes it at once.
+// A screen that keeps changing (an animated spinner) is not snapshotted by the
+// settle rule while it changes, so it cannot fill the pairs: it is sampled
+// once every SampleEvery instead. It is taken by the settle rule once it has
+// been unchanged for Settle, and the last look takes it at once.
 func TestLookWaitsForAnAnimationToSettle(t *testing.T) {
 	x := newRec(t, nil)
 	x.open()
@@ -664,23 +666,212 @@ func TestLookWaitsForAnAnimationToSettle(t *testing.T) {
 		w.look(x.r, p.screen, false)
 		x.clock.add(100 * time.Millisecond)
 	}
-	if p.snaps != 0 {
-		t.Fatalf("%d snapshots of a screen that never settled", p.snaps)
+	// Ten seconds of changes: a sample at 3, 6 and 9 seconds, and no other.
+	if p.snaps != 3 {
+		t.Fatalf("%d snapshots of a screen that never settled, want 3 samples", p.snaps)
 	}
 	x.clock.add(200 * time.Millisecond)
 	w.look(x.r, p.screen, false)
-	if p.snaps != 1 {
+	if p.snaps != 4 {
 		t.Fatalf("%d snapshots once it settled", p.snaps)
 	}
 	x.clock.add(time.Second)
 	p.pos, p.text = p.pos+1, "the end"
 	w.look(x.r, p.screen, true)
-	if p.snaps != 2 {
+	if p.snaps != 5 {
 		t.Fatalf("%d snapshots after the last look", p.snaps)
 	}
 	x.r.Close()
-	if x.read("0001.txt") != "working \\\n" || x.read("0002.txt") != "the end\n" {
-		t.Fatalf("pairs %q %q", x.read("0001.txt"), x.read("0002.txt"))
+	if x.read("0004.txt") != "working \\\n" || x.read("0005.txt") != "the end\n" {
+		t.Fatalf("pairs %q %q", x.read("0004.txt"), x.read("0005.txt"))
+	}
+	for name, sampled := range map[string]bool{"0001": true, "0002": true, "0003": true, "0004": false, "0005": false} {
+		if got := pairFlag(t, x, name, "sampled"); got != sampled {
+			t.Errorf("%s.json sampled %v, want %v", name, got, sampled)
+		}
+	}
+}
+
+// pairFlag reads the flag key of the pair name's .json: true when it is there
+// and true, false when it is absent; any other value fails the test.
+func pairFlag(t *testing.T, x *rec, name, key string) bool {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal([]byte(x.read(name+".json")), &m); err != nil {
+		t.Fatal(err)
+	}
+	v, has := m[key]
+	if has && v != true {
+		t.Fatalf("%s.json %s is %v: the field is true or absent", name, key, v)
+	}
+	return has
+}
+
+// spin is a fake pane that shows a working screen: each step is new output
+// that changes the text (an elapsed-time counter), at the given pace.
+type spin struct {
+	t     *testing.T
+	x     *rec
+	p     *fakePane
+	w     watcher
+	start time.Time
+	n     int
+	at    []time.Duration // when each snapshot was taken, from start
+}
+
+func newSpin(t *testing.T, x *rec) *spin {
+	return &spin{t: t, x: x, p: &fakePane{cols: 40, rows: 5, title: "✶ working"}, start: x.clock.now()}
+}
+
+// run makes output and looks at the pane every step for d.
+func (s *spin) run(d, step time.Duration) {
+	for end := s.x.clock.now().Add(d); s.x.clock.now().Before(end); s.x.clock.add(step) {
+		s.n++
+		s.p.pos++
+		s.p.text = fmt.Sprintf("✶ Working… (%d)", s.n)
+		s.look()
+	}
+}
+
+// look looks at the pane once, and notes the time of a snapshot it took.
+func (s *spin) look() {
+	before := s.p.snaps
+	s.w.look(s.x.r, s.p.screen, false)
+	if s.p.snaps != before {
+		s.at = append(s.at, s.x.clock.now().Sub(s.start))
+	}
+}
+
+// A screen that keeps changing and never settles (Claude Code's working
+// screen, with its spinner and elapsed time) is sampled once every
+// SampleEvery, and never faster, however often the pane is looked at and
+// output comes; each sample is a pair marked "sampled": true.
+func TestANeverSettlingScreenIsSampledEverySampleEvery(t *testing.T) {
+	x := newRec(t, nil)
+	x.open()
+	s := newSpin(t, x)
+	s.run(10*time.Second, 20*time.Millisecond)
+	want := []time.Duration{SampleEvery, 2 * SampleEvery, 3 * SampleEvery}
+	if !reflect.DeepEqual(s.at, want) {
+		t.Fatalf("snapshots at %v, want one each %v: %v", s.at, SampleEvery, want)
+	}
+	x.r.Close()
+	for i := range want {
+		name := fmt.Sprintf("%04d", i+1)
+		if !pairFlag(t, x, name, "sampled") || pairFlag(t, x, name, "torn") {
+			t.Errorf("%s.json: %s", name, x.read(name+".json"))
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(x.dir, "0004.txt")); err == nil {
+		t.Fatal("a fourth pair was written")
+	}
+}
+
+// A screen that settles is taken by the settle rule: its one pair, with no
+// "sampled", and nothing more while it stands still. A sample is not taken
+// before the screen has changed for SampleEvery. A screen that settles on the
+// text of the sample just taken is not recorded a second time.
+func TestASettledScreenIsNotSampled(t *testing.T) {
+	x := newRec(t, nil)
+	x.open()
+	s := newSpin(t, x)
+	s.run(SampleEvery-500*time.Millisecond, 100*time.Millisecond)
+	if len(s.at) != 0 {
+		t.Fatalf("snapshots at %v of a screen that changed for less than %v", s.at, SampleEvery)
+	}
+	for i := 0; i < 100; i++ { // ten seconds with no output
+		x.clock.add(100 * time.Millisecond)
+		s.look()
+	}
+	if len(s.at) != 1 {
+		t.Fatalf("snapshots at %v, want the one pair of the settled screen", s.at)
+	}
+
+	// Changing again: sampled once it has changed for SampleEvery, and then
+	// output that leaves the screen as it is, which settles.
+	s.run(SampleEvery+50*time.Millisecond, 100*time.Millisecond)
+	if len(s.at) != 2 {
+		t.Fatalf("snapshots at %v, want a sample", s.at)
+	}
+	s.p.pos++
+	s.look()
+	for i := 0; i < 10; i++ {
+		x.clock.add(100 * time.Millisecond)
+		s.look()
+	}
+	if len(s.at) != 3 {
+		t.Fatalf("snapshots at %v, want the settled one too", s.at)
+	}
+	x.r.Close()
+	if pairFlag(t, x, "0001", "sampled") || !pairFlag(t, x, "0002", "sampled") {
+		t.Errorf("0001.json %s\n0002.json %s", x.read("0001.json"), x.read("0002.json"))
+	}
+	if _, err := os.Lstat(filepath.Join(x.dir, "0003.txt")); err == nil {
+		t.Fatalf("the screen of the sample was recorded twice: %q", x.read("0003.txt"))
+	}
+}
+
+// A sample waits for a whole frame as a settled snapshot does: while a mode
+// 2026 frame is open it is not taken, it is taken when the frame closes, and
+// one that waited TornAfter is taken anyway, marked torn and sampled. The next
+// sample is due SampleEvery after the last one was taken.
+func TestASampleWaitsForAWholeFrame(t *testing.T) {
+	x := newRec(t, nil)
+	x.open()
+	s := newSpin(t, x)
+	s.run(SampleEvery-100*time.Millisecond, 100*time.Millisecond)
+	s.p.frame = true
+	s.run(600*time.Millisecond, 100*time.Millisecond)
+	if len(s.at) != 0 {
+		t.Fatalf("snapshots at %v while a frame was open", s.at)
+	}
+	s.p.frame = false
+	s.run(100*time.Millisecond, 100*time.Millisecond)
+	if want := SampleEvery + 500*time.Millisecond; len(s.at) != 1 || s.at[0] != want {
+		t.Fatalf("snapshots at %v, want one at %v, when the frame closed", s.at, want)
+	}
+	s.run(SampleEvery-100*time.Millisecond, 100*time.Millisecond)
+	s.p.frame = true
+	s.run(TornAfter+500*time.Millisecond, 100*time.Millisecond)
+	if want := 2*SampleEvery + 500*time.Millisecond + TornAfter; len(s.at) != 2 || s.at[1] != want {
+		t.Fatalf("snapshots at %v, want the second at %v, once it waited %v", s.at, want, TornAfter)
+	}
+	x.r.Close()
+	if !pairFlag(t, x, "0001", "sampled") || pairFlag(t, x, "0001", "torn") {
+		t.Errorf("0001.json %s", x.read("0001.json"))
+	}
+	if !pairFlag(t, x, "0002", "sampled") || !pairFlag(t, x, "0002", "torn") {
+		t.Errorf("0002.json %s", x.read("0002.json"))
+	}
+}
+
+// Samples count toward MaxPairs like any pair: they stop at the cap, with
+// the line of LIMIT.txt, and the titles go on.
+func TestSamplesStopAtThePairCap(t *testing.T) {
+	x := newRec(t, func(c *Config) { c.MaxPairs = 2 })
+	x.open()
+	s := newSpin(t, x)
+	s.run(20*time.Second, 100*time.Millisecond)
+	if len(s.at) < 2 {
+		t.Fatalf("snapshots at %v", s.at)
+	}
+	s.p.pos, s.p.title = s.p.pos+1, "after the cap"
+	s.look()
+	x.r.Close()
+	want := []string{"0001.json", "0001.txt", "0002.json", "0002.txt", LimitName, ReadmeName, OSCName, TitlesName}
+	if got := x.names(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("names %v, want %v", got, want)
+	}
+	for _, name := range []string{"0001", "0002"} {
+		if !pairFlag(t, x, name, "sampled") {
+			t.Errorf("%s.json %s", name, x.read(name+".json"))
+		}
+	}
+	if lim := x.read(LimitName); !strings.HasPrefix(lim, "screens stopped: 2 screens") {
+		t.Fatalf("LIMIT.txt %q", lim)
+	}
+	if titles := x.lines(TitlesName); len(titles) != 2 || titles[1]["title"] != "after the cap" {
+		t.Errorf("titles %v", titles)
 	}
 }
 

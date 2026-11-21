@@ -396,7 +396,7 @@ operation; every code is a word of lower-case letters, digits and dashes.
 | Operation | Refused | Unavailable | Uncertain |
 | --- | --- | --- | --- |
 | `lead.define` | `role-busy`, `record-invalid`, `provision-incomplete`, `digest-pin`, `provision-refused`, `registry-refused` | `provision-failed` | `registry-broken`, `failed` |
-| `lead.start` | `role-busy`, `not-provisioned`, `folder-missing`, `max-running`, `role-not-defined`, `not-managed`, `preflight`, `foreign-unit`, `unit-loaded`, `limits`, `launch-refused`, `epoch-exhausted`, `registry-refused` | `start-failed`, `previous-unit-not-gone`, `intent-pending` | `launch-uncertain`, `daemon-stopping`, `registry-check`, `registry-broken`, `failed` |
+| `lead.start` | `role-busy`, `not-provisioned`, `folder-missing`, `max-running`, `role-not-defined`, `not-managed`, `preflight`, `record-folder-left`, `foreign-unit`, `unit-loaded`, `limits`, `launch-refused`, `epoch-exhausted`, `registry-refused` | `start-failed`, `previous-unit-not-gone`, `intent-pending` | `launch-uncertain`, `daemon-stopping`, `registry-check`, `registry-broken`, `failed` |
 | `lead.stop` | `role-busy`, `stale-epoch`, `role-not-defined`, `not-managed` | `intent-pending`, `failed` | `stop-unproven`, `daemon-stopping`, `registry-broken`, `failed` |
 | `lead.ticket` | `stale-epoch`, `not-running`, `ticket-refused` | `holder-unreachable`, `ticket-failed`, `ticket-lost`, `ticket-file` | |
 | `lead.inject` | `stale-epoch`, `inject-off`, `not-running`, `second-message`, `message-in-flight`, and the admission codes of the canary slice (`bad-id`, `body-too-long`, `empty-body` and the like) | `holder-unreachable`, and `holder-` with the holder's refusal (`disabled`, `busy`, `bad-request`; the epoch's message stays free after `disabled` and `bad-request`, and stays spent after `busy`) | |
@@ -656,11 +656,12 @@ scratch config and start the daemon again (it reads the config at start). Each
 **A start of a recording lead whose `record` folder is still there is
 refused**, so that an earlier recording is neither added to nor replaced. The
 daemon looks first, before anything changes: anything at that name (a folder,
-a file, a link) refuses `lead.start` with the code `preflight`, which the
-console shows as "the preflight refused the start", and the receipt's fixed
-message "the lead's record folder from an earlier recording is still there;
-move or delete it, or set record_screens to false"; the daemon's log says the
-same with no path, and nothing is started. Move or delete the folder, or set
+a file, a link) refuses `lead.start` with the code `record-folder-left`, which
+the console shows as "refused: an earlier record folder is there: move or
+delete it, or turn record_screens off", and the receipt's fixed message "the
+lead's record folder from an earlier recording is still there; move or delete
+it, or set record_screens to false"; the daemon's log says the same with no
+path, and nothing is started. Move or delete the folder, or set
 the field back to `false` and start the daemon again. The holder keeps its own
 check: it refuses the flag without `--canary`, for any other folder, and when
 the folder exists (one made between the daemon's look and the holder's start),
@@ -695,12 +696,19 @@ sandbox does not show, so the agent cannot see it or name anything in it.
   output or a resize, only once the screen has had no output and no resize for
   about 300 ms (the settle rule), and at most one every 500 ms; the last screen,
   when the session ends, is taken at once. The settle rule keeps a screen that
-  keeps changing, such as the working screen with its animated spinner, from
-  using up the 400 pairs in a few minutes: such a screen is recorded only when
-  it stands still for 300 ms, or when the session ends. So a screen shown for
-  less than 300 ms is not recorded, nor is a screen that never stands still
-  that long, and a screen replaced within 500 ms of the last pair may be
-  missing.
+  keeps changing, such as the working screen with its animated spinner and its
+  elapsed time, from using up the 400 pairs in a few minutes. Such a screen is
+  sampled instead: once it has changed for 3 seconds without standing still
+  for 300 ms, the holder takes one snapshot, and one more every 3 seconds
+  while it goes on, each waiting for a whole frame as above (and marked torn
+  after 2 seconds of waiting). The `.json` of a sample says `"sampled": true`
+  (the field is absent otherwise), so a working screen is in the recording
+  for the fixtures that need one. A sample is a pair like any other: it counts
+  toward the 400, and a screen that then stands still is taken by the settle
+  rule, unless it is the same as the sample just taken (no screen is written
+  twice in a row). So a screen shown for less than 300 ms is not recorded, a
+  screen that never stands still is recorded once every 3 seconds, and a
+  screen replaced within 500 ms of the last pair may be missing.
 - `titles.jsonl`, one JSON line for each window title as it changed, and
   `osc7501.jsonl`, one JSON line for each OSC 7501 payload (the data after
   `7501;`, the support query included). Each line has `ms`, the milliseconds

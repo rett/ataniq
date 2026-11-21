@@ -51,6 +51,12 @@ const (
 	// animated spinner) does not fill the pairs. The last look, when the
 	// session is over, does not wait for it.
 	Settle = 300 * time.Millisecond
+	// SampleEvery is how often a screen that keeps changing without ever
+	// settling (the working screen, with its spinner and its elapsed time) is
+	// sampled: one snapshot once it has changed for SampleEvery with no pause
+	// of Settle, and one more each SampleEvery while it goes on. Its pair is
+	// marked "sampled": true.
+	SampleEvery = 3 * time.Second
 	// TornAfter is how long a due snapshot waits for the parser to reach
 	// ground and for a mode 2026 frame to close. Past it the snapshot is
 	// taken anyway and its pair is marked "torn": true.
@@ -86,7 +92,9 @@ NNNN.txt, NNNN.json  one distinct screen each, once it stood still for about
                      300 ms (and the last one), in the fixture format of
                      internal/inject/screen/testdata ("source": "recorded",
                      no description and no "want" yet); "torn": true marks
-                     a screen taken mid-frame, not a fixture as it is
+                     a screen taken mid-frame, not a fixture as it is;
+                     "sampled": true marks a screen that never stood still
+                     (a working screen), taken every 3 s while it changed
 titles.jsonl         each window title as it changed: "ms", "bytes", "cut",
                      "title"
 osc7501.jsonl        each OSC 7501 payload, raw: "ms", "bytes", "cut",
@@ -109,15 +117,16 @@ type Config struct {
 	// discards it. The line names no path.
 	Logf func(format string, args ...any)
 
-	// MaxPairs, MaxBytes, QueueLen, PairInterval, PollInterval and Settle
-	// replace the constants of the same names when above zero. They are for
-	// tests.
+	// MaxPairs, MaxBytes, QueueLen, PairInterval, PollInterval, Settle and
+	// SampleEvery replace the constants of the same names when above zero.
+	// They are for tests.
 	MaxPairs     int
 	MaxBytes     int64
 	QueueLen     int
 	PairInterval time.Duration
 	PollInterval time.Duration
 	Settle       time.Duration
+	SampleEvery  time.Duration
 }
 
 // kind is the kind of a queued item.
@@ -131,11 +140,12 @@ const (
 
 // item is one queued record.
 type item struct {
-	kind kind
-	ms   int64
-	snap screen.Snapshot
-	torn bool   // the pair's snapshot was taken mid-sequence or in a frame
-	seq  uint64 // the pair's number among the pairs queued
+	kind    kind
+	ms      int64
+	snap    screen.Snapshot
+	torn    bool   // the pair's snapshot was taken mid-sequence or in a frame
+	sampled bool   // the pair's snapshot was a sample of a screen not settled
+	seq     uint64 // the pair's number among the pairs queued
 	// text is the title, data the payload, both already cut; size is their
 	// length as seen.
 	text string
@@ -199,6 +209,9 @@ func New(cfg Config) *Recorder {
 	}
 	if cfg.Settle <= 0 {
 		cfg.Settle = Settle
+	}
+	if cfg.SampleEvery <= 0 {
+		cfg.SampleEvery = SampleEvery
 	}
 	return &Recorder{
 		cfg: cfg, begun: cfg.Now(),
@@ -275,11 +288,14 @@ func (r *Recorder) takesPairs() bool {
 
 // Screen queues a pair for s when it differs from the last screen queued and
 // MaxPairs was not reached.
-func (r *Recorder) Screen(s screen.Snapshot) { r.screen(s, false) }
+func (r *Recorder) Screen(s screen.Snapshot) { r.screen(s, false, false) }
 
-// screen is Screen for a snapshot that may be torn: taken while the parser was
-// in the middle of a sequence or a mode 2026 frame was open. Its pair says so.
-func (r *Recorder) screen(s screen.Snapshot, torn bool) {
+// screen is Screen for a snapshot that may be torn (taken while the parser was
+// in the middle of a sequence or a mode 2026 frame was open) or sampled (taken
+// from a screen that had not settled). Its pair says so. A sample is a pair
+// like any other: it counts toward MaxPairs, and one that is the last screen
+// queued is not queued again.
+func (r *Recorder) screen(s screen.Snapshot, torn, sampled bool) {
 	ms := r.elapsed()
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -289,7 +305,7 @@ func (r *Recorder) screen(s screen.Snapshot, torn bool) {
 	c := s
 	c.Faint = append([]screen.Span(nil), s.Faint...)
 	r.pairSeq++
-	r.pushLocked(item{kind: kindPair, ms: ms, snap: c, torn: torn, seq: r.pairSeq})
+	r.pushLocked(item{kind: kindPair, ms: ms, snap: c, torn: torn, sampled: sampled, seq: r.pairSeq})
 	// The pair is in the queue: it is the last screen until it is dropped.
 	r.last, r.lastSeq = &c, r.pairSeq
 }
@@ -618,7 +634,7 @@ func (r *Recorder) write(it item) error {
 			return r.endPairs()
 		}
 		txt := []byte(it.snap.Text + "\n")
-		js, err := pairJSON(it.snap, it.torn)
+		js, err := pairJSON(it.snap, it.torn, it.sampled)
 		if err != nil {
 			return &Error{Step: "encode a screen", Err: err}
 		}
@@ -680,8 +696,9 @@ func (r *Recorder) appendLine(fd int, name string, v any) error {
 }
 
 // pairFile is NNNN.json: the fixture format of internal/inject/screen/testdata
-// without "want", and "torn": true for a snapshot taken mid-sequence or in a
-// mode 2026 frame (absent otherwise; it is not a field of a fixture).
+// without "want", "torn": true for a snapshot taken mid-sequence or in a mode
+// 2026 frame, and "sampled": true for a sample of a screen that had not
+// settled (each absent otherwise; neither is a field of a fixture).
 type pairFile struct {
 	Source       string     `json:"source"`
 	Description  string     `json:"description"`
@@ -694,6 +711,7 @@ type pairFile struct {
 	Title        string     `json:"title"`
 	Faint        []spanFile `json:"faint"`
 	Torn         bool       `json:"torn,omitempty"`
+	Sampled      bool       `json:"sampled,omitempty"`
 }
 
 type spanFile struct {
@@ -705,10 +723,10 @@ type spanFile struct {
 // SourceRecorded is the "source" of every pair.
 const SourceRecorded = "recorded"
 
-func pairJSON(s screen.Snapshot, torn bool) ([]byte, error) {
+func pairJSON(s screen.Snapshot, torn, sampled bool) ([]byte, error) {
 	f := pairFile{
 		Source: SourceRecorded, Cols: s.Cols, Rows: s.Rows, CursorX: s.CursorX, CursorY: s.CursorY,
-		CursorHidden: s.CursorHidden, AltScreen: s.AltScreen, Title: s.Title, Torn: torn,
+		CursorHidden: s.CursorHidden, AltScreen: s.AltScreen, Title: s.Title, Torn: torn, Sampled: sampled,
 		Faint: make([]spanFile, 0, len(s.Faint)),
 	}
 	for _, sp := range s.Faint {

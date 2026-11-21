@@ -71,8 +71,8 @@ func TestLeadRecordScreensPassesTheFlagOnlyForThatLead(t *testing.T) {
 
 // A start of a recording lead whose record folder is still there (from an
 // earlier recording, or a link at its name) is refused by the daemon before
-// anything changes, with a fixed text that names no path and the code of a
-// refused preflight, which the console has words for; the folder is left as
+// anything changes, with a fixed text that names no path and the code
+// record-folder-left, which the console has words for; the folder is left as
 // it is. Once it is gone the start goes on. A lead that does not record is
 // not held up by a folder of that name.
 func TestLeadStartRefusedWhileTheRecordFolderIsThere(t *testing.T) {
@@ -92,7 +92,7 @@ func TestLeadStartRefusedWhileTheRecordFolderIsThere(t *testing.T) {
 	refusedNow := func(what string) {
 		t.Helper()
 		r := l.startLead("alpha")
-		want(t, r, leadwire.StatusRefused, codePreflight)
+		want(t, r, leadwire.StatusRefused, codeRecordLeft)
 		if r.Message != msgRecordLeft {
 			t.Errorf("%s: the refusal says %q", what, r.Message)
 		}

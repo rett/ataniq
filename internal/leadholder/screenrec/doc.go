@@ -24,7 +24,14 @@
 //     screen.Snapshot the fence reads, taken as the fence does only while the
 //     parser is at ground and no mode 2026 frame is open; one that waited
 //     [TornAfter] for that, or that the last look took before it, has
-//     "torn": true in its .json;
+//     "torn": true in its .json. A screen that keeps changing and never has
+//     no output for Settle (the working screen, with its spinner and its
+//     elapsed time) is sampled: one snapshot once it has changed for
+//     [SampleEvery], and one more each SampleEvery while it goes on, each
+//     waiting for a whole frame in the same way, and its .json has
+//     "sampled": true. A sample is a pair like any other: it counts toward
+//     [MaxPairs], and a screen the same as the last pair is not written
+//     again;
 //   - titles.jsonl, one JSON line for each window title the pane shows that
 //     differs from the last one recorded: "ms", "bytes", "cut" and "title";
 //   - osc7501.jsonl, one JSON line for each OSC 7501 payload the holder's hook
