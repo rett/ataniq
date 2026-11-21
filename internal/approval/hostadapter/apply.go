@@ -48,11 +48,16 @@ func (h *Host) Fresh(ctx context.Context, in ownerchannel.FreshInput) (door.Fres
 			out.Refs = append(out.Refs, door.RefValue{Ref: e.Ref, Value: info.id})
 		}
 	}
+	// base is the fresh review's base, the tip the target is at. Without a
+	// review there is none, no record counts, and the door refuses the use
+	// on the review itself.
+	base := ""
 	if b.Summary != nil {
 		rev, err := h.inspect(ctx, p, b.Summary.Tip)
 		switch {
 		case err == nil:
 			out.ReviewDigest = rev.Digest()
+			base = rev.Base
 		default:
 			if _, moved := changedError(err, record.CodeReviewChanged); !moved {
 				return door.Fresh{}, mapReviewError(err, record.CodeReviewChanged)
@@ -63,7 +68,7 @@ func (h *Host) Fresh(ctx context.Context, in ownerchannel.FreshInput) (door.Fres
 		if b.Merge == nil {
 			return door.Fresh{}, errors.New("hostadapter: a binding with evidence has no merge")
 		}
-		recs, err := h.suiteRecords(in.Project, b.Merge.Commit)
+		recs, err := h.suiteRecords(in.Project, b.Merge.Commit, base)
 		if err != nil {
 			return door.Fresh{}, err
 		}
@@ -99,15 +104,19 @@ func recordIdentity(rec intake.VerificationRecord) (id, sha string, err error) {
 	return "suite-" + sha[:16], sha, nil
 }
 
-// suiteRecords returns the records of the project for the tip, oldest first.
-func (h *Host) suiteRecords(project, tip string) ([]suiteRecord, error) {
+// suiteRecords returns the verification records of the project that count for
+// the merge on the base, oldest first, by the rules of [intake.Integrate]: a
+// merge-mode record whose tip is the merge and whose base is the given one. A
+// lead-mode record of the same commit id and a merge record made against
+// another base are not evidence for this review, so they are not here.
+func (h *Host) suiteRecords(project, tip, base string) ([]suiteRecord, error) {
 	all, err := h.store.Verifications(tip)
 	if err != nil {
 		return nil, err
 	}
 	var out []suiteRecord
 	for _, r := range all {
-		if r.Project != project {
+		if r.Project != project || !r.Merge || r.Base != base || r.Tip != tip {
 			continue
 		}
 		id, sha, err := recordIdentity(r)
@@ -189,8 +198,15 @@ func (h *Host) Apply(ctx context.Context, in ownerchannel.ApplyInput) (door.Outc
 		// synced: a warning for the operator, not a doubt about the ref.
 		h.cfg.notice("the target moved, and the intake's record of it came with a warning")
 		return door.OutcomeApplied, nil
+	case errors.Is(err, intake.ErrNotVerified):
+		// Refused before anything was written, and not because a ref
+		// moved: no verification record counts for this merge on this base,
+		// or the newest one is not a clean pass. The reply's line says the
+		// ref had moved, so the operator is told the real cause here.
+		h.cfg.notice("not applied: no verification record counts for the merge on its base, or the newest is not a clean pass; nothing changed")
+		return door.OutcomeNotApplied, nil
 	case errors.Is(err, intake.ErrMoved), errors.Is(err, intake.ErrNothingToIntegrate), errors.Is(err, intake.ErrNoRef),
-		errors.Is(err, intake.ErrNotVerified), errors.Is(err, intake.ErrNotMerge), errors.Is(err, intake.ErrAttributes),
+		errors.Is(err, intake.ErrNotMerge), errors.Is(err, intake.ErrAttributes),
 		errors.As(err, &se):
 		// Refused before anything was written.
 		return door.OutcomeNotApplied, nil

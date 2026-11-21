@@ -15,10 +15,9 @@ import (
 
 // Suite runs the project's gates on a fresh checkout of a merge, in the
 // verification sandbox, and says how the run ended. It is the one thing of
-// the host that this package does not build: the sandbox of package verify
-// takes a tip under refs/leads/, and the merge lives under
-// refs/ataniq/pending/, so the real suite is for a later change. The tests of
-// this package use a fake.
+// the host that [Host] does not build: the daemon installs the runner, which
+// runs package verify in its merge mode, and the tests of this package use a
+// fake.
 type Suite interface {
 	Run(ctx context.Context, req SuiteRequest) (SuiteResult, error)
 }
@@ -32,6 +31,9 @@ type SuiteRequest struct {
 	// built on.
 	Merge string
 	Base  string
+	// TipRef is the pin under refs/ataniq/pending/ that holds Merge in the
+	// mirror: the ref a merge-mode run fetches.
+	TipRef string
 	// Gates are run in order, in the root of the checkout.
 	Gates []verify.Gate
 }
@@ -60,9 +62,16 @@ type SuiteResult struct {
 // earlier pass. A run that is not clean says why in one word of the closed
 // list: output-cut for a cut output, stopped for a run that was stopped,
 // failed for a gate that did not exit 0, and could-not-run for a suite that
-// returned an error, or whose record could not be kept. The suite's answer
-// carries no commit id, so the adapter does not check that it describes the
-// merge: the runner is told the merge and is trusted to run on it.
+// returned an error, or whose record could not be kept, or a merge that has no
+// pin to run on (nothing is run then).
+//
+// The run is in merge mode of package verify: the record names the merge as
+// the tip, the base the merge was built on and the pin that keeps the merge
+// alive, so [intake.Integrate] counts it for exactly that merge on that base
+// and for no other review. The suite's answer carries no commit id, so the
+// adapter does not check that it describes the merge: the runner is told the
+// merge and the pin and is trusted to run on them (the script of package
+// verify checks the fetched commit against both before it runs a gate).
 func (h *Host) Verify(ctx context.Context, in ownerchannel.VerifyInput) (ownerchannel.Verification, error) {
 	p, err := h.project(in.Project)
 	if err != nil {
@@ -71,17 +80,25 @@ func (h *Host) Verify(ctx context.Context, in ownerchannel.VerifyInput) (ownerch
 	if !record.ValidRequestID(in.RequestID) || !record.ValidObjectID(in.Merge) {
 		return ownerchannel.Verification{}, errors.New("hostadapter: the verification names no valid request or merge")
 	}
+	if !record.ValidObjectID(in.Base) {
+		return ownerchannel.Verification{}, errors.New("hostadapter: the verification names no valid base")
+	}
+	// The service does not name the pin; it is found by the commit it holds.
+	pin, err := h.pinOf(ctx, p, in.Merge)
+	if err != nil {
+		// No pin, or the mirror cannot be read: nothing can be fetched, so
+		// nothing is run and no record is made.
+		return ownerchannel.Verification{Detail: ownerchannel.VerifyCouldNotRun}, nil
+	}
 	res, err := h.cfg.Suite.Run(ctx, SuiteRequest{
-		Project: p.Name, Mirror: p.Mirror, Merge: in.Merge, Base: in.Base, Gates: append([]verify.Gate(nil), p.Gates...),
+		Project: p.Name, Mirror: p.Mirror, Merge: in.Merge, Base: in.Base, TipRef: pin,
+		Gates: append([]verify.Gate(nil), p.Gates...),
 	})
 	if err != nil {
 		return ownerchannel.Verification{Detail: ownerchannel.VerifyCouldNotRun}, nil
 	}
-	// The record's TipRef is a label that names the request, in the lead
-	// namespace the intake's store takes; no ref of that name exists and the
-	// intake compares none.
 	vr := verify.Result{
-		Tip: in.Merge, TipRef: "refs/leads/" + p.Role + "/heads/merge/" + in.RequestID,
+		Tip: in.Merge, TipRef: pin, Merge: true, Base: in.Base,
 		PlanDigest: verify.PlanDigest(p.Gates),
 		Passed:     res.Passed && res.Exit == 0 && res.Stopped == "" && !res.OutputCut,
 		Exit:       res.Exit, Stopped: res.Stopped, Output: res.Output, OutputCut: res.OutputCut,

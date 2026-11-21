@@ -25,9 +25,13 @@
 //     records again; the ref update is [intake.Integrate], one transaction
 //     with the old value, no checkout and no hook; the mirror is read for
 //     what an unfinished use left.
-//   - [Host.Verify] is the Verifier: it runs a [Suite] on the merge and
-//     keeps the result as a verification record of the intake's store, which
-//     is also what [intake.Integrate] needs before it moves a ref.
+//   - [Host.Verify] is the Verifier: it runs a [Suite] on the merge, through
+//     the pin that holds it, and keeps the result as a merge-mode
+//     verification record of the intake's store (the merge as the tip, the
+//     target's tip it was built on as the base, the pin as the ref), which is
+//     what [intake.Integrate] needs before it moves a ref. A lead-mode record
+//     of the same commit, or a merge record on another base, never counts,
+//     here or there.
 //   - [FileMailbox] is the Mailbox: a reply file beside the request, the
 //     only reply this build writes (a mailbox reply to a lead is out of
 //     scope).
@@ -42,9 +46,8 @@
 // A pin keeps the merge and both parents alive, and a test of this package
 // shows it by running git gc on a temporary mirror directly, outside gitenv.
 // It does not refresh the lead's branch in the mirror (the mirror's own sync
-// does), and it runs no suite by itself: the [Suite] is injected, and the
-// verification sandbox of package verify takes a tip under refs/leads/ only,
-// so a merge that lives under refs/ataniq/pending/ cannot be handed to it yet.
+// does). The [Suite] is injected: the daemon installs the runner, and a test
+// uses a fake.
 //
 // # Text from the lead
 //

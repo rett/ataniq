@@ -61,7 +61,7 @@ func TestAVerificationThatIsNotCleanRefusesTheRequest(t *testing.T) {
 				t.Errorf("reply %+v", rp)
 			}
 			merge := r.suiteMerge()
-			recs, err := r.o.Host.suiteRecords("project-a", merge)
+			recs, err := r.o.Host.suiteRecords("project-a", merge, r.scene.target)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -98,7 +98,7 @@ func TestTheEvidenceIsTheRecordOfTheRunAndChangesWithIt(t *testing.T) {
 	p := r.card()
 	merge := p.Binding.Merge.Commit
 	ev := p.Binding.Evidence[0]
-	recs, err := r.o.Host.suiteRecords("project-a", merge)
+	recs, err := r.o.Host.suiteRecords("project-a", merge, r.scene.target)
 	if err != nil || len(recs) != 1 {
 		t.Fatalf("records %v, %v", recs, err)
 	}
@@ -128,7 +128,9 @@ func TestTheEvidenceIsTheRecordOfTheRunAndChangesWithIt(t *testing.T) {
 func TestVerifyChecksItsInputAndPassesTheProjectsGates(t *testing.T) {
 	r := newRig(t, execFeature)
 	h := r.o.Host
-	merge := strings.Repeat("a", 40)
+	p := r.card()
+	merge := p.Binding.Merge.Commit
+	runs := r.suite.count()
 	for _, in := range []ownerchannel.VerifyInput{
 		{Project: "project-a", RequestID: "../x", Merge: merge},
 		{Project: "project-a", RequestID: "rq-ok-01", Merge: "abc"},
@@ -138,13 +140,13 @@ func TestVerifyChecksItsInputAndPassesTheProjectsGates(t *testing.T) {
 			t.Errorf("Verify accepted %+v", in)
 		}
 	}
-	if r.suite.count() != 0 {
+	if r.suite.count() != runs {
 		t.Errorf("the suite ran for a refused input")
 	}
-	if _, err := h.Verify(context.Background(), ownerchannel.VerifyInput{Project: "project-a", RequestID: "rq-ok-01", Merge: merge, Base: merge}); err != nil {
+	if _, err := h.Verify(context.Background(), ownerchannel.VerifyInput{Project: "project-a", RequestID: "rq-ok-01", Merge: merge, Base: r.scene.target}); err != nil {
 		t.Fatal(err)
 	}
-	if got := r.suite.calls[0]; len(got.Gates) != 1 || got.Gates[0].Name != "suite" || strings.Join(got.Gates[0].Argv, " ") != "make test" {
+	if got := r.suite.calls[runs]; len(got.Gates) != 1 || got.Gates[0].Name != "suite" || strings.Join(got.Gates[0].Argv, " ") != "make test" {
 		t.Errorf("gates %+v", got.Gates)
 	}
 }

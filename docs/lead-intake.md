@@ -423,7 +423,10 @@ standard error.
 
 The package `internal/intake/verify` and the records store also verify a merge
 that the host built, which sits under a pin in `refs/ataniq/pending/`. No
-command offers this mode yet: the host's approval path calls it. It differs
+command offers this mode: the host adapter of the owner channel (package
+`internal/approval/hostadapter`, tagged build only) calls it for each merge it
+builds, with the pin, the merge and the target's tip it was built on, and counts
+the records of this mode by the rules below before it moves a target. It differs
 from the verification of a lead branch in these ways:
 
 - **The request.** `Merge` is set, `TipRef` is the pin (a name under
