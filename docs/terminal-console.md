@@ -346,8 +346,14 @@ settings. That daemon's door is a stand-in: it prints
 an approval on it moves a ref in a scratch mirror and nothing real. The
 console makes none of that real.
 
-None of this is qualified. Which cases ran on the stand-in, and which wait for a
-seated lead, is listed in the daemon's section.
+None of this is qualified. For each case, whether the end-to-end test ran it on
+the stand-in, ran only part of it, or whether it needs a seated lead, see the
+daemon's section. The console's own part of the cases (the typed text dropped when a
+card ends, hostile text, terminal answers at the confirm field) is covered by the
+console's tests; the end-to-end test does not run the typed-text drop. The
+confirm code appears in no place: the console draws it and keeps it in its
+model. If a request is interrupted, the daemon answers it request-invalid and the
+lead must ask again.
 
 ## What is a sample and what is not qualified
 
