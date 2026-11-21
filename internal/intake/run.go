@@ -57,6 +57,19 @@ func newRunner(src Source, lim Limits) *runner {
 	return &runner{src: src, deadline: time.Now().Add(lim.Timeout)}
 }
 
+// alive reports an error when the context is done or the shared deadline has
+// passed. The work that runs no git command calls it between its units, as
+// [runner.git] checks both when it starts a command.
+func (r *runner) alive(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("intake: %w", err)
+	}
+	if time.Until(r.deadline) <= 0 {
+		return errTimeout(boundedexec.ErrTimeout)
+	}
+	return nil
+}
+
 // git runs one git subcommand with args (the subcommand first). The output
 // is returned unless sink is set, which then receives it as it arrives.
 // maxOut caps the bytes of standard output. On an error it returns no output.

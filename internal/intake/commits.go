@@ -79,8 +79,18 @@ func (r *runner) commits(ctx context.Context, base, tip string, lim Limits) ([]C
 	if err != nil {
 		return nil, err
 	}
-	commits := make([]Commit, 0, n)
+	return r.parseCommits(ctx, ids, objects)
+}
+
+// parseCommits parses the objects of ids. The parse runs no git command, so
+// the context and the deadline of the call are checked here, before each
+// commit.
+func (r *runner) parseCommits(ctx context.Context, ids []string, objects [][]byte) ([]Commit, error) {
+	commits := make([]Commit, 0, len(ids))
 	for i, id := range ids {
+		if err := r.alive(ctx); err != nil {
+			return nil, err
+		}
 		c, err := parseCommit(id, objects[i])
 		if err != nil {
 			return nil, err
@@ -211,16 +221,21 @@ func parseCommit(id string, raw []byte) (Commit, error) {
 	state := wantTree
 	sawEncoding := false
 	rest := raw
-	var name, value string
+	// The value of the header being read is accumulated in vbuf, so a header
+	// of many continuation lines costs linear time, and is made a string once
+	// in flush.
+	var name string
+	var vbuf []byte
 	haveHeader := false
 	flush := func() error {
 		if !haveHeader {
 			return nil
 		}
 		haveHeader = false
-		if len(value) > maxCommitField {
+		if len(vbuf) > maxCommitField {
 			return fmt.Errorf("%w: a header of the commit %s is longer than the limit", ErrLimit, id)
 		}
+		value := string(vbuf)
 		switch {
 		case state == wantTree:
 			if name != "tree" || !gitenv.IsObjectID(value) {
@@ -282,8 +297,9 @@ func parseCommit(id string, raw []byte) (Commit, error) {
 			if !haveHeader {
 				return Commit{}, commitErr(ErrCommitFormat, id, "a continuation line has no header")
 			}
-			value += "\n" + string(line[1:])
-			if len(value) > maxCommitField {
+			vbuf = append(vbuf, '\n')
+			vbuf = append(vbuf, line[1:]...)
+			if len(vbuf) > maxCommitField {
 				return Commit{}, fmt.Errorf("%w: a header of the commit %s is longer than the limit", ErrLimit, id)
 			}
 			continue
@@ -295,8 +311,9 @@ func parseCommit(id string, raw []byte) (Commit, error) {
 		if sp <= 0 {
 			return Commit{}, commitErr(ErrCommitFormat, id, "a header has no name or no value")
 		}
-		name, value, haveHeader = string(line[:sp]), string(line[sp+1:]), true
-		if len(value) > maxCommitField {
+		name, haveHeader = string(line[:sp]), true
+		vbuf = append(vbuf[:0], line[sp+1:]...)
+		if len(vbuf) > maxCommitField {
 			return Commit{}, fmt.Errorf("%w: a header of the commit %s is longer than the limit", ErrLimit, id)
 		}
 	}

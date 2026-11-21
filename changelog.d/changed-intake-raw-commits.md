@@ -8,7 +8,9 @@
   git writes (exit status 1; the lead commits the branch again). Commit text
   that is not valid UTF-8 is still shown escaped. A header or subject over
   32 KiB, a commit over 64 KiB, or commits over 8 KiB each on average are a
-  limit error. `ataniq-intake fetch` refuses a sandbox template whose
+  limit error. A header of many continuation lines is parsed in time linear in
+  its size, and the call's time limit and context are checked between the
+  commits that are parsed. `ataniq-intake fetch` refuses a sandbox template whose
   `serve.repository` path exists on the host (a regular file, a symlink, any
   folder, or a path that cannot be checked), before any command runs, because
   the owner's git reads a bundle file at that path itself and never starts the

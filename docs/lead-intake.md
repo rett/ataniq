@@ -427,7 +427,10 @@ commits with `git rev-list`, checks the size of each object with
   most 32 KiB, a whole commit object at most 64 KiB, and all the commits
   together at most 8 KiB for each commit plus one commit object of 64 KiB.
   More is a limit error, with the commit id; an object over its size limit is
-  not read. Of the message only the subject is kept.
+  not read. Of the message only the subject is kept. A header of many
+  continuation lines is parsed in time linear in its size, and the time limit
+  of the call and the caller's context are checked between the commits that
+  are parsed, so a branch of such commits is refused when the time is used up.
 
 A path can carry several flags. These are the kinds (`odd-path` is for the merge mode only, see [merge mode](#merge-mode-of-verification)):
 
