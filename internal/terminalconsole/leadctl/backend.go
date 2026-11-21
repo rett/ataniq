@@ -97,6 +97,13 @@ type Receipt struct {
 	// Folder and TicketFile are the result of a done ticket: where to attach.
 	// They are handed to the parent in an Attach action and never drawn.
 	Folder, TicketFile string
+	// Earlier says that this final receipt answers a command that an earlier
+	// press sent and kept, not the press that returned it: the command was
+	// not run again and the receipt may be old. The view draws it as the
+	// answer to an earlier command, never attaches with a done ticket of it,
+	// and does not take a message's epoch as settled by it. It is false in
+	// the receipts of the list.
+	Earlier bool
 }
 
 // Lead is one lead of the listing.
@@ -127,6 +134,9 @@ type Lead struct {
 type Listing struct {
 	MaxRunning, Running int
 	Leads               []Lead
+	// LeftOut counts the rows the backend did not return. The view adds the
+	// rows it drops itself, and shows a fixed line when the sum is not zero.
+	LeftOut int
 }
 
 // Colors are the colours the view draws with. The parent fills them from its

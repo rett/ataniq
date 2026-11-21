@@ -337,3 +337,124 @@ func TestAListingIsBoundedAndRowsWithoutAUsableRoleAreDropped(t *testing.T) {
 	}
 	r.notSeen("norole", "long ")
 }
+
+func TestAnEarlierReceiptIsDrawnAsTheAnswerToAnEarlierCommand(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		r    Receipt
+		want string
+		not  string
+	}{
+		{"start", Receipt{Op: OpStart, Status: Done, Earlier: true}, "an earlier start command: accepted, done", "start: accepted"},
+		{"stop refused", Receipt{Op: OpStop, Status: Refused, Code: "stale-epoch", Earlier: true}, "an earlier stop command: refused: the epoch changed", "stop: refused"},
+		{"unavailable", Receipt{Op: OpStart, Status: Unavailable, Code: "holder-unreachable", Earlier: true}, "an earlier start command: unavailable: the lead's holder", ""},
+		{"uncertain", Receipt{Op: OpStart, Status: Uncertain, Earlier: true}, "an earlier start command: uncertain", ""},
+		{"ticket", Receipt{Op: OpTicket, Status: Done, Earlier: true, Folder: "/f", TicketFile: "/f/t"}, "an earlier attach ticket command: accepted, done", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			b := twoLeads(t)
+			b.answer = func(call) (Receipt, error) { return c.r, nil }
+			r := newRig(t, b, 140, 30)
+			lists := b.lists
+			switch c.r.Op {
+			case OpStart:
+				r.key("s")
+			case OpStop:
+				r.key("j")
+				r.key("x")
+				r.key("y")
+			case OpTicket:
+				r.key("j")
+				r.key("w")
+			}
+			r.seen(c.want)
+			if c.not != "" {
+				r.notSeen(c.not)
+			}
+			if b.lists != lists+1 {
+				t.Fatalf("%d lists after the answer, want %d: the list is read again", b.lists, lists+1)
+			}
+			if len(r.actions) != 0 {
+				t.Fatalf("actions %+v", r.actions)
+			}
+		})
+	}
+}
+
+func TestAnEarlierMessageReceiptDoesNotClearTheEpochsUnconfirmedMessage(t *testing.T) {
+	for _, rc := range []Receipt{
+		{Op: OpInject, Status: Refused, Code: "message-in-flight", Earlier: true},
+		{Op: OpInject, Status: Done, Outcome: OutcomeNotNow, Earlier: true},
+		{Op: OpInject, Status: Unavailable, Code: "holder-unreachable", Earlier: true},
+	} {
+		b := twoLeads(t)
+		rc := rc
+		b.answer = func(call) (Receipt, error) { return rc, nil }
+		r := newRig(t, b, 140, 30)
+		r.key("j")
+		r.key("m")
+		r.typ("one")
+		r.key("enter")
+		r.seen("an earlier message command")
+		r.key("m")
+		if r.m.edit != nil {
+			t.Fatalf("receipt %+v: an editor opened for an unconfirmed epoch", rc)
+		}
+		r.seen("has no final answer")
+	}
+}
+
+func TestTheEarlierLineKeepsItsWordsWhenTheListHoldsTheSameCommand(t *testing.T) {
+	b := twoLeads(t)
+	b.answer = func(call) (Receipt, error) {
+		return Receipt{CommandID: "c1", Op: OpStart, Status: Done, Earlier: true}, nil
+	}
+	r := newRig(t, b, 140, 30)
+	b.listing.Leads[0].Last = &Receipt{CommandID: "c1", Op: OpStart, Status: Done}
+	r.key("s")
+	r.seen("an earlier start command: accepted, done")
+	r.key("r")
+	r.seen("an earlier start command: accepted, done")
+}
+
+func TestARefusedConflictDoesNotClearTheEpochsMessage(t *testing.T) {
+	for code, again := range map[string]bool{"conflict": false, "stale-epoch": true} {
+		b := twoLeads(t)
+		code := code
+		b.answer = func(call) (Receipt, error) { return Receipt{Op: OpInject, Status: Refused, Code: code}, nil }
+		r := newRig(t, b, 140, 30)
+		r.key("j")
+		r.key("m")
+		r.typ("one")
+		r.key("enter")
+		r.key("m")
+		if got := r.m.edit != nil; got != again {
+			t.Fatalf("%s: editor open %v, want %v", code, got, again)
+		}
+	}
+}
+
+func TestRowsLeftOutAreSaidInOneFixedLine(t *testing.T) {
+	b := twoLeads(t)
+	r := newRig(t, b, 140, 30)
+	r.notSeen("left out")
+	b.listing.LeftOut = 3
+	r.key("r")
+	r.seen("3 rows left out")
+	// The rows the view drops itself are counted with them.
+	b.listing.Leads = append(b.listing.Leads, Lead{Key: "norole"})
+	r.key("r")
+	r.seen("4 rows left out")
+	b.listing.LeftOut = -5
+	b.listing.Leads = b.listing.Leads[:2]
+	r.key("r")
+	r.notSeen("left out")
+	// A list that could not be read keeps its own line.
+	b.listing.LeftOut = 2
+	r.key("r")
+	r.seen("2 rows left out")
+	b.listErr = errLost
+	r.key("r")
+	r.seen(noListLine)
+	r.notSeen("left out")
+}

@@ -46,6 +46,11 @@
 // is read again. A row whose last receipt is in progress is read again every
 // two seconds until it is final.
 //
+// A receipt with Earlier set answers a command that an earlier press sent and
+// kept, and is drawn as "an earlier <operation> command": it never makes an
+// attach, and it does not settle the epoch's message. The list's LeftOut, and
+// the rows the view drops itself, are shown as one fixed line.
+//
 // # Peer text
 //
 // The names of leads, states and units come from the daemon. Each is cut and
