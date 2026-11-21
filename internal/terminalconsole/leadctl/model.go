@@ -283,12 +283,31 @@ func (m *Model) onListed(v listedMsg) tea.Cmd {
 				// The list's summary is never "earlier"; the line keeps
 				// what it said of the press.
 				r.Earlier = m.status.Earlier
+				keepWords(&r, *m.status)
 				m.status = &r
 			}
 		}
 	}
 	m.clamp()
 	return m.tickCmd()
+}
+
+// keepWords gives the list's receipt the words of the press's receipt that the
+// list's lacks. The daemon's list carries a summary of each lead's last command
+// without its result, so a done message would otherwise lose what the holder
+// answered (outcome, reason, written) and a done ticket where to attach
+// (folder, ticket file). A list receipt that has any of the words keeps its
+// own, and words are taken only from a receipt that is done as well.
+func keepWords(list *Receipt, press Receipt) {
+	if list.Status != Done || press.Status != Done || list.Op != press.Op {
+		return
+	}
+	if list.Outcome == "" && list.Reason == "" && list.Written == "" {
+		list.Outcome, list.Reason, list.Written = press.Outcome, press.Reason, press.Written
+	}
+	if list.Folder == "" && list.TicketFile == "" {
+		list.Folder, list.TicketFile = press.Folder, press.TicketFile
+	}
 }
 
 func pairKey(role string, epoch uint64) string { return role + "\x00" + itoa(epoch) }

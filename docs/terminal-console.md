@@ -483,7 +483,11 @@ message is spent, and the row shows it as `sent-unsure` (the message that was
 refused was not written, and what the holder was delivering is not known to have
 reached the lead nor known not to have: look at the lead's screen). A done message from a console adapter that does not pass the
 holder's reason and written is drawn from its outcome alone, with the same first
-words.
+words. The line stays the same when the list is read again: the daemon's list
+holds the last command of each lead as a summary without its result, so the
+view keeps the words of the answer to the press (the holder's three words of a
+message) while the list shows the same command, and takes a list receipt's own
+words when it has any.
 
 "Accepted" means that the daemon took the command into its durable table, not
 that it is done. The view has words for every reason code the daemon sends.

@@ -82,3 +82,9 @@
   is `ready` with the reason `holder-ready` gets a line that says the holder is
   up and the agent started and that its login is not observed. See
   `docs/terminal-console.md`.
+- The console's leads view keeps what became of a message on its status line
+  when the list is read again. The daemon's list holds each lead's last command
+  as a summary without its result, and the view keeps the answer's three words
+  (outcome, reason, written) of the message just sent, and a ticket's folder and
+  ticket file, while the list shows the same command; a list receipt that has
+  words of its own is shown as it is. See `docs/terminal-console.md`.

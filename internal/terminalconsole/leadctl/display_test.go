@@ -460,3 +460,102 @@ func TestRowsLeftOutAreSaidInOneFixedLine(t *testing.T) {
 	r.seen(noListLine)
 	r.notSeen("left out")
 }
+
+// The daemon's list carries each lead's last command as a summary without its
+// result, so a list that is read after a message must not take the words of the
+// press away.
+func TestTheStatusLineKeepsWhatBecameOfAMessageWhenTheListHoldsAWordlessSummary(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		got  Receipt
+		line string
+	}{
+		{"not delivered", Receipt{CommandID: "m1", Op: OpInject, Status: Done, Epoch: 3,
+			Outcome: OutcomeNotNow, Reason: ReasonNotReady, Written: WrittenNothing},
+			"message: accepted. NOT delivered: nothing was written, the lead's screen is not idle"},
+		{"submitted", Receipt{CommandID: "m1", Op: OpInject, Status: Done, Epoch: 3,
+			Outcome: OutcomeSubmitted, Written: WrittenWhole},
+			"message: accepted. the message was submitted: the whole of it was written and sent"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			b := twoLeads(t)
+			b.answer = func(call) (Receipt, error) { return c.got, nil }
+			r := newRig(t, b, 150, 30)
+			r.key("j")
+			r.key("m")
+			r.typ("hi")
+			// What the real daemon lists: the same command, no result.
+			b.listing.Leads[1].Last = &Receipt{CommandID: "m1", Op: OpInject, Status: Done, Epoch: 3}
+			r.key("enter")
+			if !r.m.statusListed {
+				t.Fatal("the list was not read after the answer")
+			}
+			r.seen(c.line)
+			r.notSeen("the result is not known to this console")
+			// And again on every later read.
+			r.key("r")
+			r.seen(c.line)
+			r.notSeen("the result is not known to this console")
+		})
+	}
+}
+
+func TestAListReceiptWithWordsIsNotOverriddenByThePress(t *testing.T) {
+	b := twoLeads(t)
+	b.answer = func(call) (Receipt, error) {
+		return Receipt{CommandID: "m1", Op: OpInject, Status: Done, Epoch: 3,
+			Outcome: OutcomeNotNow, Reason: ReasonNotReady, Written: WrittenNothing}, nil
+	}
+	r := newRig(t, b, 150, 30)
+	r.key("j")
+	r.key("m")
+	r.typ("hi")
+	b.listing.Leads[1].Last = &Receipt{CommandID: "m1", Op: OpInject, Status: Done, Epoch: 3,
+		Outcome: OutcomeSubmitted, Written: WrittenWhole}
+	r.key("enter")
+	r.seen("message: accepted. the message was submitted")
+	r.notSeen("NOT delivered")
+}
+
+func TestATicketReceiptKeepsItsFolderAndTicketFileThroughTheList(t *testing.T) {
+	b := twoLeads(t)
+	b.answer = func(call) (Receipt, error) {
+		return Receipt{CommandID: "t1", Op: OpTicket, Status: Done, Epoch: 3, Folder: "/run/x/attach", TicketFile: "/run/x/ticket"}, nil
+	}
+	r := newRig(t, b, 150, 30)
+	r.key("j")
+	b.listing.Leads[1].Last = &Receipt{CommandID: "t1", Op: OpTicket, Status: Done, Epoch: 3}
+	r.key("w")
+	// The attach is made from the answer, before the list is read.
+	if len(r.actions) != 1 {
+		t.Fatalf("actions %+v", r.actions)
+	}
+	act := r.actions[0]
+	if act.Kind != Attach || act.Attach.Folder != "/run/x/attach" || act.Attach.TicketFile != "/run/x/ticket" || !act.Attach.Writer {
+		t.Fatalf("action %+v", act)
+	}
+	if s := r.m.status; s == nil || s.Folder != "/run/x/attach" || s.TicketFile != "/run/x/ticket" {
+		t.Fatalf("the status after the list: %+v", s)
+	}
+	r.seen("attach ticket: accepted, done")
+}
+
+func TestKeepWordsTakesNothingFromAnotherOperationOrAnUnfinishedReceipt(t *testing.T) {
+	press := Receipt{Op: OpInject, Status: Done, Outcome: OutcomeNotNow, Reason: ReasonNotReady, Written: WrittenNothing, Folder: "f", TicketFile: "t"}
+	for name, list := range map[string]Receipt{
+		"other op":    {Op: OpTicket, Status: Done},
+		"in progress": {Op: OpInject, Status: InProgress},
+		"refused":     {Op: OpInject, Status: Refused, Code: "stale-epoch"},
+	} {
+		l := list
+		keepWords(&l, press)
+		if l != list {
+			t.Errorf("%s: %+v became %+v", name, list, l)
+		}
+	}
+	l := Receipt{Op: OpInject, Status: Done, Written: WrittenWhole}
+	keepWords(&l, press)
+	if l.Outcome != "" || l.Reason != "" || l.Written != WrittenWhole {
+		t.Errorf("a receipt with a word of its own took the press's: %+v", l)
+	}
+}

@@ -503,7 +503,11 @@ still the role's last; a later command (a ticket, say) hides it, and the row the
 says nothing of the answer, whatever `message_spent` says. The rows of
 `lead.list` stay under 8 KiB for eight leads with the longest values, which is
 why the row's receipt is the summary form without its `message`, and a replay of
-the command's id gives the full receipt.
+the command's id gives the full receipt. The console's status line keeps the
+words of the answer to a press when the list is read again: the row's receipt
+of the same command has no result, so the line keeps the three words of a done
+message (and the folder and ticket file of a done ticket) from the answer, and a
+row's receipt that has words of its own is shown as it is.
 
 The console's client cleans both members to fixed words (a word outside the
 grammar becomes `unrecognised`), and its leads view draws the `ready` line and
