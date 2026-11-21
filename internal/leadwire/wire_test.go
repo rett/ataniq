@@ -3,7 +3,11 @@ package leadwire
 import (
 	"bytes"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -407,4 +411,57 @@ func maxList(t *testing.T, withResult bool) ListResult {
 		})
 	}
 	return l
+}
+
+// TestCodeListsHoldEveryCodeConstant reads ops.go and holds that ErrorCodes
+// and ReasonCodes hold, in order, the value of every constant named ErrCode*
+// and Code*, so a code added later is added to its list too.
+func TestCodeListsHoldEveryCodeConstant(t *testing.T) {
+	f, err := parser.ParseFile(token.NewFileSet(), "ops.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var errCodes, reasons []string
+	for _, d := range f.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok || gd.Tok != token.CONST {
+			continue
+		}
+		for _, sp := range gd.Specs {
+			vs := sp.(*ast.ValueSpec)
+			for i, n := range vs.Names {
+				if i >= len(vs.Values) {
+					continue
+				}
+				lit, ok := vs.Values[i].(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					continue
+				}
+				v, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				switch {
+				case strings.HasPrefix(n.Name, "ErrCode"):
+					errCodes = append(errCodes, v)
+				case strings.HasPrefix(n.Name, "Code"):
+					reasons = append(reasons, v)
+				}
+			}
+		}
+	}
+	if len(errCodes) == 0 || len(reasons) == 0 {
+		t.Fatalf("read %d error codes and %d reason codes: ops.go was not read", len(errCodes), len(reasons))
+	}
+	if got := ErrorCodes(); !reflect.DeepEqual(got, errCodes) {
+		t.Errorf("ErrorCodes() = %q, the constants are %q", got, errCodes)
+	}
+	if got := ReasonCodes(); !reflect.DeepEqual(got, reasons) {
+		t.Errorf("ReasonCodes() = %q, the constants are %q", got, reasons)
+	}
+	// The lists are new slices.
+	ErrorCodes()[0], ReasonCodes()[0] = "x", "x"
+	if ErrorCodes()[0] == "x" || ReasonCodes()[0] == "x" {
+		t.Error("a list is shared between calls")
+	}
 }
