@@ -689,3 +689,60 @@ func TestLeadReadyObserversAreJoinedAndNoneStartsAfter(t *testing.T) {
 		t.Fatal("the second join did not finish")
 	}
 }
+
+// A stop that is refused because it names another epoch leaves the epoch that
+// runs, and so its observer: the lead is shown ready once the holder answers
+// for the epoch, though the stop came while it was still starting.
+func TestLeadReadyKeptByAStopOfAnotherEpoch(t *testing.T) {
+	l := newLeadEnv(t)
+	l.readyBounds(10 * time.Second)
+	l.start()
+	h := newReadyHolder(roleOf("alpha"))
+	h.answerEpoch.Store(99) // an answer for another epoch: the lead stays starting
+	l.upWith("alpha", h)
+	want(t, l.stopLead("alpha", 7), leadwire.StatusRefused, codeStaleEpoch)
+	l.stays("alpha", "starting", 100*time.Millisecond)
+	h.answerEpoch.Store(0)
+	h.epoch.Store(1)
+	l.waitState("alpha", "ready")
+}
+
+// A stop that is refused role-busy (a command of the role holds the lock) goes
+// no further and leaves the observer: the lead is shown ready once the holder
+// answers. A stop that fails after it began changes the registry's state (the
+// lead is shown unknown), so there is no starting lead left for an observer
+// to settle; the lifecycle's stop errors are covered by the failure table.
+func TestLeadReadyKeptByAStopRefusedRoleBusy(t *testing.T) {
+	l := newLeadEnv(t)
+	l.readyBounds(10 * time.Second)
+	l.start()
+	h := newReadyHolder(roleOf("alpha"))
+	h.answerEpoch.Store(99)
+	l.upWith("alpha", h)
+	held, release := make(chan struct{}), make(chan struct{})
+	t.Cleanup(func() { leadActHook = nil })
+	leadActHook = func(op string) {
+		if op == "start" {
+			close(held)
+			<-release
+		}
+	}
+	secondDone := make(chan struct{})
+	go func() {
+		defer close(secondDone)
+		var r leadwire.Receipt
+		l.call(leadwire.OpStart, params("alpha", "second-start", nil), &r)
+	}()
+	select {
+	case <-held:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the second start never took the role's lock")
+	}
+	want(t, l.stopLead("alpha", 0), leadwire.StatusRefused, "role-busy")
+	close(release)
+	<-secondDone
+	l.stays("alpha", "starting", 100*time.Millisecond)
+	h.answerEpoch.Store(0)
+	h.epoch.Store(1)
+	l.waitState("alpha", "ready")
+}

@@ -620,14 +620,14 @@ func (m *leadMode) startFailure(lr *leadRole, err error) outcome {
 
 // stop stops the lead through the lifecycle whatever state the registry shows
 // for it: the lifecycle's Stop signals the role's own units, so it is the way
-// out of unknown and of a unit that a start left behind. An epoch of 0 means
-// the current epoch; any other is compared with the registry's under the
+// out of unknown and of a unit that a start left behind. The lead's ready
+// observer is ended only by a stop that is proven; a refused, failed or
+// unproven stop leaves the epoch running and its observer with it. An epoch of
+// 0 means the current epoch; any other is compared with the registry's under the
 // role's operation lock, which a start of the role also holds, so a stop that
 // was meant for one epoch never stops the next.
 func (m *leadMode) stop(ctx context.Context, lr *leadRole, epoch uint64) outcome {
 	return m.withRoleLock(lr, "stop", func() outcome {
-		// An observer that has not settled has nothing left to settle.
-		m.cancelReady(lr)
 		if epoch != 0 {
 			e, err := m.reg.Get(lr.role)
 			switch {
@@ -661,6 +661,12 @@ func (m *leadMode) stop(ctx context.Context, lr *leadRole, epoch uint64) outcome
 			m.d.logf("scratch stop %q: the stop returned the state %q without a proof", lr.key, SafeText(string(e.Shown.State)))
 			return uncertainOut(codeStopUnproven, msgStopUnproven)
 		}
+		// The stop is proven: an observer that has not settled has nothing
+		// left to settle. A stop that was refused, failed or proved nothing
+		// leaves the epoch as it was, so it leaves its observer too; a stop
+		// that does go ahead is also covered by the observer's own check (it
+		// sets nothing for a lead that is no longer starting in its epoch).
+		m.cancelReady(lr)
 		lr.in.ext.record(leadcanary.Entry{Event: leadcanary.EventStop, Epoch: e.Epoch})
 		return done(leadwire.StopResult{Role: lr.role.String(), State: string(e.Shown.State), Proof: e.Shown.Proof})
 	})

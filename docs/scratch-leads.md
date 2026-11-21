@@ -329,7 +329,10 @@ on the holder's word, and in no other way:
   one check and change, and a promotion that finds it held (a define, a start or
   a stop of the role is running) is tried again a moment later. A stop, or a
   newer epoch, therefore wins: the observer then sets nothing, and a `lead.stop`
-  also ends the lead's observer. A stop is never held up by an observer.
+  that is proven ends the lead's observer. A stop that is refused (a stale
+  epoch, a role that is busy), that fails or that proves nothing leaves the
+  epoch running and its observer with it, so the lead is still shown `ready`
+  when its holder answers. A stop is never held up by an observer.
 - **What `ready` means here.** The holder is up, and the agent was started in
   the lead's sandbox. The agent's login is **not** observed, nothing was read
   from its screen, and nothing says the agent works or will answer. `ready` is
