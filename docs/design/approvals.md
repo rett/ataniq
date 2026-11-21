@@ -3,7 +3,8 @@
 Status: proposed, owner-approved direction; no grant format, signer, owner
 channel or gate verification is implemented or qualified. Today approvals are
 the owner's direct words. The formats, key handling and storage are still to be
-designed and reviewed.
+designed and reviewed. A statement marked "Proposed" is a proposal for the owner
+to decide, not part of the owner-approved direction.
 
 ## Who can approve
 
@@ -21,13 +22,16 @@ the owner.
 
 An agent that runs on a provider's cloud, or anywhere else outside an execution
 boundary that Ataniq qualifies on the owner's hosts, holds, sees and passes no
-approval, plan token or delegation grant, whatever role it holds. What such an
-agent can do is nominate a request, which reaches the owner only as a card (see
-[nominations](#nominations-from-a-remote-supervisory-agent) below).
+approval token, plan token or delegation grant, whatever role it holds. It may
+read that a request was decided, as status. A supervisor that runs on a
+provider's cloud can nominate a request, which reaches the owner only as a card
+(see [nominations](#nominations-from-a-remote-supervisory-agent) below); any
+other holder outside a qualified boundary is unsupported as a remote
+supervisory agent.
 
 A feature coordinator, the ephemeral delegate of a lead for one feature (see
 [roles and authority](roles-and-authority.md)), never approves anything. No
-approval, plan token or grant passes to or through a coordinator. A lead's
+approval token, plan token or grant passes to or through a coordinator. A lead's
 feature delegation to a coordinator is neither a grant nor an approval and is
 not part of the delegation chain below: it hands over some of the lead's own
 verbs on one feature and carries no owner gate. Its questions go to its lead,
@@ -41,10 +45,13 @@ A delegation chain starts with the owner's root grant to a grantee the owner
 names. A grantee is a role whose holder runs inside an execution boundary that
 Ataniq qualifies on the owner's hosts. No grant is issued to, held by or passed
 through a role whose holder runs outside such a boundary: not a supervisor or a
-lead that runs on a provider's cloud, and not a relay such as a gateway. No
-grantee holds a signing key: a sub-grant is issued by code on the authority
-host, which checks that it narrows its parent and journals it, never by the
-role that receives or relays it. The issuer is still to be designed.
+lead that runs on a provider's cloud, and not a relay such as a gateway.
+
+Proposed, not yet the owner's decision: no grantee holds a signing key. A
+sub-grant would be issued by an issuer inside a qualified boundary on the
+owner's hosts, which checks that it narrows its parent and records it in the
+one store below, never by the role that receives or relays it. The issuer, its
+key and its place in the chain are still to be designed.
 
 Whether a locally held supervisor is a grantee at all is open, and it is the
 owner's decision. Until the owner decides, no supervisor is a grantee and the
@@ -79,43 +86,70 @@ in [runtime](runtime.md), and directional federation grants in
 The supervisor role may be held by an agent on any provider, local or cloud
 (see [roles and authority](roles-and-authority.md)). A supervisor that runs on a
 provider's cloud is an owner-side facilitator, not a grantee and not an
-approver. It reads status and requests from the supervisors and leads of its
-assigned instances, each through that instance's scoped port, summarises across
-the instances, and nominates requests. A nomination is a typed request, not a
-message to a lead and not an approval:
+approver. Each instance assigns it as its own remote supervisory client and
+fences it alone. It reads status and requests from the supervisors and leads of
+its assigned instances, each through that instance's scoped port, and may
+summarise across the instances; that summary is for the owner and is not served
+to any instance. It nominates requests. A nomination or a proposal to an
+instance names only that instance's records. A nomination is a reference to a
+request, not a message to a lead and not an approval:
 
-- The instance renders the card from the structured request, so the nominating
-  agent cannot reword what the owner approves. Any text the agent adds is shown
-  apart, marked as the agent's, and is not part of what the owner decides.
+- A nomination names a request that already exists in the instance, made there
+  by a lead inside the boundary, by its identity and revision. The agent
+  supplies no field of what is approved, and no text of its own appears on the
+  card in the first version. The instance renders the card from its own record,
+  and the card is bound to the immutable approval record of
+  [client protocol](client-protocol.md). A nomination of an unknown, changed or
+  already decided request is refused. If the request changes, the card is stale
+  and decides nothing.
 - The owner decides at the owner channel (below), and the decision returns
   straight to the instance. It does not pass through the nominating agent or any
-  relay, and the agent holds no token that stands for it.
-- The card says it came from a remote supervisory agent.
-- A card the owner does not decide never approves by default.
+  relay, and the agent holds no approval token that stands for it.
+- The card says it came from a remote supervisory agent. It shows the typed
+  fields first: the project, the action, the exact target and revision, who
+  requested it inside the instance, what happens on approve, the expiry, and the
+  choices approve, refuse or leave. Any text a lead wrote that the card shows is
+  marked untrusted. The fields a card must show, at least these, are settled
+  with the supervisor port.
+- A card the owner does not decide never approves by default. It expires
+  undecided and the request stays as it was.
+- One card carries one request and one decision. No decision covers a card the
+  owner has not opened, and a nomination does not change a request's priority or
+  order. The instance limits the nominations it accepts from one agent and shows
+  a request nominated twice as one card. The limits are decided with the
+  supervisor port.
 
 Which kinds of request may be nominated is decided with the supervisor port.
 A request to start or stop a lead is not among the first kinds: such cards from
-a cloud agent come later, with a daily limit per nominating agent, marked on the
-card, and not before the owner channel is qualified.
+a cloud agent come later, with a daily limit the instance enforces, and marked
+on the card as a start or stop asked by a remote agent. This is the one case
+where the agent is the originator of the request; its fields are then a closed
+set (which lead, and start or stop), with no free text.
 
 The agent makes proposals only. It never edits a plan, a backlog or a
 dependency manifest. A proposal against an expected revision changes nothing
 until the project's lead or the owner accepts it through the system that owns
 the record (see [roles and authority](roles-and-authority.md)).
 
-The supervisor port, the client class that identifies such an agent (a field
-of client identity, not enforced) and the gateway that carries its calls are
-not built, and nothing here is qualified. Until they exist no remote
-supervisory agent is supported, and approvals remain the owner's direct words.
-What an agent on a third party's provider may read is in
-[security](security.md).
+The supervisor port, the port credential of such an agent (see
+[security](security.md)), the client class that identifies it and the gateway
+that carries its calls are not built, and nothing here is qualified. The class
+is bound by the instance when the owner enrols the client; a class the client
+declares is never honoured. A gateway enforces nothing unless it runs inside a
+qualified boundary on the owner's hosts; otherwise the instance enforces. No
+card from a remote supervisory agent reaches the owner before the owner channel
+(below) is qualified. Until these exist no remote supervisory agent is
+supported, and approvals remain the owner's direct words. What an agent on a
+third party's provider may read is in [security](security.md).
 
 ## Messages are not authority
 
 A message is never the authority. A signed grant may travel by message,
 because the gate verifies the signatures, not the carrier. The carrier is still
-never a role whose holder runs outside a qualified boundary (see Grants). A
-message that claims an approval without a verifying grant has no effect.
+never a role whose holder runs outside a qualified boundary (see Grants): the
+supervisor port has no call that carries a grant, and anything shaped like one
+is refused there. A message that claims an approval without a verifying grant
+has no effect.
 
 ## Owner channel
 
