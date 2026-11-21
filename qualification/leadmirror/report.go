@@ -170,6 +170,8 @@ func classify(err error) []string {
 		{sandboxplan.ErrNotConfigured, "sandboxplan.ErrNotConfigured"},
 		{intake.ErrNoRef, "intake.ErrNoRef"},
 		{intake.ErrLimit, "intake.ErrLimit"},
+		{intake.ErrCommitEncoding, "intake.ErrCommitEncoding"},
+		{intake.ErrCommitFormat, "intake.ErrCommitFormat"},
 		{context.DeadlineExceeded, "context.DeadlineExceeded"},
 		{context.Canceled, "context.Canceled"},
 	}

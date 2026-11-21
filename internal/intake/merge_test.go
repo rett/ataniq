@@ -338,7 +338,7 @@ func TestMergeModeCommandLines(t *testing.T) {
 			}
 		}
 	}
-	for _, sub := range []string{"diff", "diff-tree", "cat-file", "log"} {
+	for _, sub := range []string{"diff", "diff-tree", "cat-file"} {
 		if seen[sub] == 0 {
 			t.Errorf("git %s was not run", sub)
 		}

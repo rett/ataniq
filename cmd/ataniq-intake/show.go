@@ -139,6 +139,8 @@ func classify(err error) int {
 		errors.Is(err, mirror.ErrTooManyRefs),
 		errors.Is(err, intake.ErrNoRef),
 		errors.Is(err, intake.ErrLimit),
+		errors.Is(err, intake.ErrCommitEncoding),
+		errors.Is(err, intake.ErrCommitFormat),
 		errors.Is(err, intake.ErrNotVerified),
 		errors.Is(err, intake.ErrMoved),
 		errors.Is(err, intake.ErrNothingToIntegrate),
@@ -169,6 +171,10 @@ func hintFor(sub string, err error) string {
 		return "Run '" + program + " verify' for this branch, and then integrate again."
 	case errors.Is(err, intake.ErrMoved):
 		return "Run '" + program + " review' again and sign off the new review."
+	case errors.Is(err, intake.ErrCommitEncoding):
+		return "A commit of the branch names an encoding other than UTF-8. Nothing was converted. The lead has to commit the branch again in UTF-8."
+	case errors.Is(err, intake.ErrCommitFormat):
+		return "A commit object of the branch is not in the form this command reads. The lead has to commit the branch again with git."
 	case errors.Is(err, sandboxplan.ErrNotConfigured):
 		return "The sandbox template has no section for this step. Nothing was run."
 	}

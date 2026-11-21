@@ -254,7 +254,7 @@ execution-config rules.
 | Fact | Observed values |
 | --- | --- |
 | `s19-review.fetch` | The fetch values, and the lead refs after. |
-| `s19-review.inspect` | The result; `base` and `tip`; `commits` (id and subject); `changes` (path, status, modes, flag kinds); `flagged` (kind, path, pattern, reason); `flagged_paths`; `unflagged_changed_paths`; `rule_count`. |
+| `s19-review.inspect` | The result (`error_classes` can hold `intake.ErrCommitEncoding` or `intake.ErrCommitFormat`: see the notes below); `base` and `tip`; `commits` (id and subject); `changes` (path, status, modes, flag kinds); `flagged` (kind, path, pattern, reason); `flagged_paths`; `unflagged_changed_paths`; `rule_count`. |
 | `s19-review.upstream-refs` | The upstream refs before the fetch and after the review, and whether they are `identical`. They show that neither the fetch nor the review moved the upstream branch. |
 
 ### Case `verification`
@@ -323,6 +323,11 @@ tip, it holds `verification.not-run`.
 - Flagged paths show what the intake's rules mark for a separate sign-off. A
   path that is not flagged is not shown to be harmless. The harness does not
   run the sign-off, the integration or the lead's code.
+- The intake reads the commits of the review branch as raw objects and
+  converts no text, whatever the commit's `encoding` header says (see
+  [how the commits are read](lead-intake.md#review)). The harness has no
+  commit with such a header, so no fact here shows that refusal; the package's
+  tests do.
 - `serve_requests` shows how many times the planner was asked for a serve
   plan during that call. The harness asks the planner once per case, before the
   fetches, only to learn the clone's path as the sandbox sees it.

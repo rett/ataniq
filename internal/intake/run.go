@@ -26,7 +26,8 @@ const (
 	// record has about 150 bytes of mode, ids and status, and a path. A
 	// listing of paths that are 900 bytes long on average is refused.
 	bytesPerRecord = 1024
-	// maxCommitField is the longest field of a commit record.
+	// maxCommitField is the longest field of a commit: a header with its
+	// continuation lines, or the subject.
 	maxCommitField = 32 << 10
 )
 

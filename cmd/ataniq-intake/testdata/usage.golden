@@ -53,8 +53,9 @@ must be a real folder that you own.
 
 Exit status: 0 success (also with a warning on standard error); 1 a refusal you
 can act on (sign-off incomplete, not verified, moved, nothing to integrate, a
-limit, a hostile tree, busy, no usable sandbox); 2 usage; 3 any other failure,
-among them an update whose outcome is unknown.
+limit, a hostile tree, a commit that names an encoding other than UTF-8 or is
+not in the form git writes, busy, no usable sandbox); 2 usage; 3 any other
+failure, among them an update whose outcome is unknown.
 
 Run 'ataniq-intake <subcommand> -h' for the flags of a subcommand.
 
@@ -137,6 +138,11 @@ commits, the changed paths, the verification records of the tip when you give
 --records, and the section "Needs your sign-off": every path that needs its own
 sign-off, with its kind, its reason and the exact --accept-path argument to
 type.
+
+The commits are read as the raw objects the lead wrote, and no text is
+converted. A commit that has an encoding header other than UTF-8, or whose
+headers are not in the form git writes, refuses the review (exit status 1); the
+lead has to commit the branch again.
 
   --branch BRANCH     the lead's branch, as 'branches' prints it
   --target TARGET     the upstream branch the work goes to
