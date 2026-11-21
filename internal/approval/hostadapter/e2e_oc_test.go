@@ -1341,6 +1341,9 @@ func TestOwnerChannelOC18ALeadMadeMergeNamedAsTheTip(t *testing.T) {
 // The host's merge has the host's author, committer, dates and message and
 // nothing else: its raw commit has no extra header, and what git prints of it
 // in a plain terminal holds no byte of the lead's but the feature's name.
+// The feature commit has no "encoding" header: the host refuses a commit that
+// declares an encoding other than UTF-8, which
+// TestOwnerChannelOC33ACommitInAnotherEncodingIsRefused shows.
 func TestOwnerChannelOC33HostileCommitHeaders(t *testing.T) {
 	const evilName = "Evil\x1b]0;pwn\x07 Name"
 	j := newJoinedScene(t, func(l *lab) scene {
@@ -1354,7 +1357,7 @@ func TestOwnerChannelOC33HostileCommitHeaders(t *testing.T) {
 			return "tree " + tree + "\nparent " + s.root + "\n" +
 				"author " + evilName + " <evil\x1b[31m@example.invalid> 9999999999 +0000\n" +
 				"committer Other\x1b[2J Person <o\x07@example.invalid> 4102444800 +0000\n" +
-				"x-injected-header: yes\nencoding ISO-8859-1\n\n" +
+				"x-injected-header: yes\n\n" +
 				"message \x1b[31mred\x1b[0m \r\x08\x08 bell\x07 and a second line\n"
 		})
 		l.setRef(targetBranch, s.target)
@@ -1406,6 +1409,53 @@ func TestOwnerChannelOC33HostileCommitHeaders(t *testing.T) {
 	}
 	if out, err := j.approve(o, cid); err != nil || out.State != record.StateApplied {
 		t.Fatalf("approve: %+v, %v", out, err)
+	}
+}
+
+// OC33, a commit in another encoding: the feature commit carries the hostile
+// headers of OC33 and also "encoding ISO-8859-1", with a message in that
+// charset. The intake reads commits as raw objects and converts no text; git
+// would convert the author's bytes from the charset that header names when it
+// prints the commit, so what the owner is shown would not be the bytes the
+// lead stored. The intake refuses such a commit (intake.ErrCommitEncoding).
+// That refusal is not one the lead's reply carries as its own code, so the
+// host answers request-invalid with its fixed line for a review it could not
+// make: no card, no ref changed (the pin of the built merge is taken away),
+// and no record at the door.
+func TestOwnerChannelOC33ACommitInAnotherEncodingIsRefused(t *testing.T) {
+	j := newJoinedScene(t, func(l *lab) scene {
+		l.put("README.md", "readme\n")
+		s := scene{root: l.commit("root\n")}
+		l.put("target-side.txt", "target\n")
+		s.target = l.commit("target moves\n", s.root)
+		l.load(s.root)
+		l.put("feature.txt", "one\n")
+		s.feature = l.rawCommit(func(tree string) string {
+			return "tree " + tree + "\nparent " + s.root + "\n" +
+				"author Evil\x1b]0;pwn\x07 Name <evil\x1b[31m@example.invalid> 9999999999 +0000\n" +
+				"committer Other\x1b[2J Person <o\x07@example.invalid> 4102444800 +0000\n" +
+				"x-injected-header: yes\nencoding ISO-8859-1\n\n" +
+				"caf\xe9 \x1b[31mred\x1b[0m bell\x07\n"
+		})
+		l.setRef(targetBranch, s.target)
+		l.setRef(featureRef, s.feature)
+		return s
+	})
+	before := j.lab.refs()
+	id := j.ask()
+	st, ok := j.o.Service.Status(id)
+	if !ok || st.State != ownerchannel.RequestRefused || st.Code != record.CodeRequestInvalid ||
+		st.Detail != "the host could not review the merge" || st.PendingID != "" {
+		t.Fatalf("status %+v, want refused request-invalid, the host could not review the merge, with no card", st)
+	}
+	if got := j.lab.refs(); got != before {
+		t.Errorf("refs changed:\n%s\nwant\n%s", got, before)
+	}
+	if rp := j.readReply(id); rp.Code != string(record.CodeRequestInvalid) || rp.State != "" || rp.PendingID != "" {
+		t.Errorf("reply %+v", rp)
+	}
+	if l, err := j.stand.List(context.Background()); err != nil || len(l) != 0 {
+		t.Errorf("the door lists %d records (%v)", len(l), err)
 	}
 }
 

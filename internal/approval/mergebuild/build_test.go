@@ -62,8 +62,18 @@ func TestBuildWritesTheMergeAndPinsIt(t *testing.T) {
 			if got := l.git("", "rev-parse", "--verify", "--end-of-options", m.Commit+"^{tree}"); got != wantTree {
 				t.Errorf("git reads the tree %s", got)
 			}
-			if got := l.git("", "log", "--no-walk", "--format=%P", "--end-of-options", m.Commit); got != s.target+" "+s.feature {
+			// gitenv refuses "log" (it converts a commit's text by the
+			// commit's own encoding header); rev-parse names each parent
+			// as git reads it, and there is no third.
+			got := [2]string{
+				l.git("", "rev-parse", "--verify", "--end-of-options", m.Commit+"^1"),
+				l.git("", "rev-parse", "--verify", "--end-of-options", m.Commit+"^2"),
+			}
+			if got != [2]string{s.target, s.feature} {
 				t.Errorf("git reads the parents as %q", got)
+			}
+			if third, err := l.tryGit("", "rev-parse", "--verify", "--quiet", "--end-of-options", m.Commit+"^3"); err == nil {
+				t.Errorf("git reads a third parent, %q", third)
 			}
 			if err := Check(ctx, l.repo, m.Commit, inputs(s.target, s.feature)); err != nil {
 				t.Errorf("Check refuses what Build wrote: %v", err)
