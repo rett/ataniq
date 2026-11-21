@@ -106,9 +106,9 @@ const (
 )
 
 // LeadReceipt is the answer to a command, or the last one of a lead. It holds
-// no text the daemon wrote: the receipt's message is left out, and Code and
-// Outcome are words of a closed grammar (a word outside it is
-// "unrecognised"). Folder and TicketFile are paths for the console to attach
+// no text the daemon wrote: the receipt's message and the result's detail are
+// left out, and Code, Outcome, Reason and Written are words of a closed
+// grammar (a word outside it is "unrecognised"). Folder and TicketFile are paths for the console to attach
 // with, checked to be absolute and clean, and are not for showing.
 type LeadReceipt struct {
 	// CommandID identifies the command. For a command this client sent it is
@@ -122,8 +122,12 @@ type LeadReceipt struct {
 	// Epoch is the epoch of a done start, ticket or inject. It is 0 in the
 	// summary of a lead's last command, which has no result.
 	Epoch uint64
-	// Outcome is the outcome of a done inject.
-	Outcome string
+	// Outcome, Reason and Written are the holder's three words about a done
+	// inject: what happened to the message, why, and how much of it reached
+	// the lead's input. Each is a word of the grammar of
+	// [LeadReceipt]; Reason is empty for a submitted message, and all three
+	// are empty in the summary of a lead's last command, which has no result.
+	Outcome, Reason, Written string
 	// Folder and TicketFile are the result of a done ticket.
 	Folder, TicketFile string
 	// Earlier says that this final receipt answers a command that an earlier
@@ -136,18 +140,38 @@ type LeadReceipt struct {
 	Earlier bool
 }
 
+// LeadDelivery is the holder's three words about the epoch's message, as a
+// row of the list carries them: the words of [LeadReceipt]'s Outcome, Reason
+// and Written, each a word of the closed grammar. All three are empty when the
+// daemon has no answer.
+type LeadDelivery struct {
+	Outcome, Reason, Written string
+}
+
 // LeadRow is one lead of a [LeadListing]. Role is exactly as the daemon sent
 // it, because every command is sent with it; the other strings are cleaned.
 type LeadRow struct {
-	Key          string
-	Role         string
-	Defined      bool
-	Provision    string
-	State        string
-	Epoch        uint64
-	Unit         string
-	Inject       bool
+	Key       string
+	Role      string
+	Defined   bool
+	Provision string
+	State     string
+	// StateReason is the reason code the registry shows with State, a word of
+	// the closed grammar, empty with none. A row of a daemon built before the
+	// member has none.
+	StateReason string
+	Epoch       uint64
+	Unit        string
+	Inject      bool
+	// MessageSpent says that the epoch's message was sent and is not free
+	// again. A message that was not delivered (the holder answered not-now or
+	// refused with nothing written, or refused the request itself) leaves it
+	// false.
 	MessageSpent bool
+	// MessageResult is the holder's answer to the current epoch's last message
+	// when the daemon has it, whether the message is spent or not, and empty
+	// otherwise (a row of a daemon built before the member has none).
+	MessageResult LeadDelivery
 	// Last is the lead's last command in summary form, nil with none.
 	Last *LeadReceipt
 }
@@ -693,6 +717,7 @@ func fillResult(out *LeadReceipt, k leadKey, raw json.RawMessage) bool {
 			return false
 		}
 		out.Epoch, out.Outcome = r.Epoch, leadWord(r.Result.Outcome)
+		out.Reason, out.Written = leadWord(r.Result.Reason), leadWord(r.Result.Written)
 	}
 	return true
 }
@@ -714,10 +739,16 @@ func buildListing(res leadwire.ListResult) (LeadListing, bool) {
 			Defined:      w.Defined,
 			Provision:    leadWord(w.Provision),
 			State:        clean(w.State),
+			StateReason:  leadWord(w.StateReason),
 			Epoch:        w.Epoch,
 			Unit:         clean(w.Unit),
 			Inject:       w.Inject,
 			MessageSpent: w.MessageSpent,
+			MessageResult: LeadDelivery{
+				Outcome: leadWord(w.MessageResult.Outcome),
+				Reason:  leadWord(w.MessageResult.Reason),
+				Written: leadWord(w.MessageResult.Written),
+			},
 		}
 		if w.Last != nil {
 			r := w.Last

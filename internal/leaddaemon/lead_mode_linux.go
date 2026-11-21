@@ -21,6 +21,7 @@ import (
 	"ataniq/internal/leadlock"
 	"ataniq/internal/leadregistry"
 	"ataniq/internal/leadrole"
+	"ataniq/internal/leadwire"
 )
 
 // This file is scratch mode of the daemon: the lead control plane. The daemon
@@ -71,6 +72,12 @@ type Scratch struct {
 	// ProvisionTimeout bounds the provisioning of one define; default
 	// [DefaultProvisionTimeout].
 	ProvisionTimeout time.Duration
+	// ReadyWithin is how long the observer that promotes a starting lead to
+	// ready keeps asking its holder; default [DefaultReadyWithin].
+	ReadyWithin time.Duration
+	// ReadyBackoff is the first wait between two of its questions; default
+	// [DefaultReadyBackoff].
+	ReadyBackoff time.Duration
 }
 
 // leadActHook is called by a command, after it holds the role's operation lock
@@ -102,6 +109,37 @@ type leadRole struct {
 	// reserved is a start in flight, counted against max_running. It is
 	// guarded by the mode's capMu.
 	reserved bool
+	// deliveryMu guards delivery.
+	deliveryMu sync.Mutex
+	// delivery is the holder's answer to the last message this daemon
+	// delivered for the role, with its epoch. It is memory: a restart of the
+	// daemon forgets it, and the row then reads the answer from the role's
+	// last receipt when that is the message's (see leadMode.deliveryOf).
+	delivery deliveryMemo
+}
+
+// deliveryMemo is the holder's three words about a message, for the epoch it
+// was sent in. Epoch 0 is none.
+type deliveryMemo struct {
+	epoch uint64
+	words leadwire.MessageResult
+}
+
+// noteDelivery keeps the holder's answer of a message of the epoch.
+func (lr *leadRole) noteDelivery(epoch uint64, w leadwire.MessageResult) {
+	lr.deliveryMu.Lock()
+	defer lr.deliveryMu.Unlock()
+	lr.delivery = deliveryMemo{epoch: epoch, words: w}
+}
+
+// deliveryIn returns the kept answer when it is for the epoch.
+func (lr *leadRole) deliveryIn(epoch uint64) (leadwire.MessageResult, bool) {
+	lr.deliveryMu.Lock()
+	defer lr.deliveryMu.Unlock()
+	if epoch == 0 || lr.delivery.epoch != epoch {
+		return leadwire.MessageResult{}, false
+	}
+	return lr.delivery.words, true
 }
 
 func (lr *leadRole) tryLock() bool {
@@ -124,6 +162,12 @@ type leadMode struct {
 	provisionT time.Duration
 	roles      map[leadrole.Role]*leadRole
 	maxRunning int
+
+	// readyWithin and readyBackoff are the observer's bounds (see
+	// lead_ready_linux.go); ready is its observers.
+	readyWithin  time.Duration
+	readyBackoff time.Duration
+	ready        readyObservers
 
 	table *leadcontrol.Table
 	ctl   *leadlifecycle.Controller
@@ -178,6 +222,7 @@ func (d *daemon) scratchSetup() (*canaryMode, error) {
 	lm := &leadMode{
 		cm: m, d: d, cfg: s.Config, getenv: getenv, provisionT: s.ProvisionTimeout,
 		roles: make(map[leadrole.Role]*leadRole, len(leads)), maxRunning: s.Config.MaxRunning,
+		readyWithin: s.ReadyWithin, readyBackoff: s.ReadyBackoff,
 	}
 	if lm.provisionT <= 0 {
 		lm.provisionT = DefaultProvisionTimeout

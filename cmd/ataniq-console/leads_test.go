@@ -118,6 +118,22 @@ func TestTheKindOfATicketComesFromOneFunction(t *testing.T) {
 	}
 }
 
+// A row whose message was not delivered, not spent, with the holder's words, is
+// handed to the view as it is.
+func TestTheAdapterMapsAFreeMessageWithTheWordsOfTheLastOne(t *testing.T) {
+	r := aLead()
+	r.MessageSpent = false
+	r.MessageResult = consoleclient.LeadDelivery{Outcome: "refused", Reason: "text", Written: "nothing"}
+	f := &fakeLeads{list: consoleclient.LeadListing{Leads: []consoleclient.LeadRow{r}}}
+	got, err := newLeadsAdapter(f).List()
+	if err != nil || len(got.Leads) != 1 {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if l := got.Leads[0]; l.MessageSpent || l.MessageResult != (leadctl.Delivery{Outcome: "refused", Reason: "text", Written: "nothing"}) {
+		t.Fatalf("%+v", l)
+	}
+}
+
 func TestTheAdapterMapsTheListing(t *testing.T) {
 	f := &fakeLeads{list: consoleclient.LeadListing{
 		MaxRunning: 4, Running: 1, LeftOut: 2,
@@ -125,6 +141,8 @@ func TestTheAdapterMapsTheListing(t *testing.T) {
 			func() consoleclient.LeadRow {
 				r := aLead()
 				r.MessageSpent = true
+				r.StateReason = "holder-ready"
+				r.MessageResult = consoleclient.LeadDelivery{Outcome: "not-now", Reason: "not-ready", Written: "nothing"}
 				r.Last = &consoleclient.LeadReceipt{CommandID: "c9", Op: consoleclient.LeadOpStart, Role: "lead-alpha", Status: consoleclient.LeadRefused, Code: "max-running", Earlier: true}
 				return r
 			}(),
@@ -136,8 +154,9 @@ func TestTheAdapterMapsTheListing(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := leadctl.Listing{MaxRunning: 4, Running: 1, LeftOut: 2, Leads: []leadctl.Lead{
-		{Key: "alpha", Role: "lead-alpha", Defined: true, Provision: "done", State: "ready", Epoch: 3, Unit: "unit-alpha", Inject: true, MessageSpent: true,
-			Last: &leadctl.Receipt{CommandID: "c9", Op: leadctl.OpStart, Status: leadctl.Refused, Code: "max-running"}},
+		{Key: "alpha", Role: "lead-alpha", Defined: true, Provision: "done", State: "ready", StateReason: "holder-ready", Epoch: 3, Unit: "unit-alpha", Inject: true, MessageSpent: true,
+			MessageResult: leadctl.Delivery{Outcome: "not-now", Reason: "not-ready", Written: "nothing"},
+			Last:          &leadctl.Receipt{CommandID: "c9", Op: leadctl.OpStart, Status: leadctl.Refused, Code: "max-running"}},
 		{Key: "beta", Role: "lead-beta"},
 	}}
 	if !reflect.DeepEqual(got, want) {
@@ -159,7 +178,7 @@ func TestTheAdapterMapsEveryReceipt(t *testing.T) {
 	for cop, vop := range ops {
 		for cst, vst := range statuses {
 			f := &fakeLeads{receipt: consoleclient.LeadReceipt{
-				CommandID: "c1", Op: cop, Role: "r", Status: cst, Code: "stale-epoch", Epoch: 7, Outcome: "submitted",
+				CommandID: "c1", Op: cop, Role: "r", Status: cst, Code: "stale-epoch", Epoch: 7, Outcome: "not-now", Reason: "not-ready", Written: "nothing",
 				Folder: "/f", TicketFile: "/f/t",
 			}}
 			a := newLeadsAdapter(f)
@@ -174,7 +193,7 @@ func TestTheAdapterMapsEveryReceipt(t *testing.T) {
 				if err != nil {
 					t.Fatalf("%s %s %s: %v", name, cop, cst, err)
 				}
-				want := leadctl.Receipt{CommandID: "c1", Op: vop, Status: vst, Code: "stale-epoch", Epoch: 7, Outcome: "submitted", Folder: "/f", TicketFile: "/f/t"}
+				want := leadctl.Receipt{CommandID: "c1", Op: vop, Status: vst, Code: "stale-epoch", Epoch: 7, Outcome: "not-now", Reason: "not-ready", Written: "nothing", Folder: "/f", TicketFile: "/f/t"}
 				if got != want {
 					t.Fatalf("%s %s %s: got %+v want %+v", name, cop, cst, got, want)
 				}
@@ -419,6 +438,43 @@ func TestWithLeadControlLOpensTheListAndTheKeysReachTheClient(t *testing.T) {
 	d.until("the receipt", func(v string) bool { return strings.Contains(v, "the limit of running leads is reached") })
 	if got := f.callList(); !reflect.DeepEqual(got, []string{"start lead-alpha"}) {
 		t.Fatalf("calls %v", got)
+	}
+}
+
+// What the daemon's row says reaches the screen: the state's reason draws the
+// ready line, and the message's words draw the MSG column, with nothing guessed
+// by the view: a message that was not delivered shows as free while the daemon
+// says it is not spent, and as spent and not delivered while it says it is.
+func TestTheViewDrawsTheStateReasonAndTheMessageResultTheDaemonGave(t *testing.T) {
+	row := aLead()
+	row.MessageSpent = false
+	row.StateReason = "holder-ready"
+	row.MessageResult = consoleclient.LeadDelivery{Outcome: "not-now", Reason: "not-ready", Written: "nothing"}
+	f := &fakeLeads{list: consoleclient.LeadListing{MaxRunning: 2, Leads: []consoleclient.LeadRow{row}}}
+	rig := rigFor(t, f)
+	d := newViewDriver(t, rig.model())
+	d.send(tea.WindowSizeMsg{Width: 140, Height: 45})
+	d.send(openLeadsKey())
+	d.until("the ready line", func(v string) bool { return strings.Contains(v, "alpha: ready (holder-ready)") })
+	d.until("the message's fate", func(v string) bool { return strings.Contains(v, "free (not delivered)") })
+	spentRow := row
+	spentRow.MessageSpent = true
+	f3 := &fakeLeads{list: consoleclient.LeadListing{MaxRunning: 2, Leads: []consoleclient.LeadRow{spentRow}}}
+	d3 := newViewDriver(t, rigFor(t, f3).model())
+	d3.send(tea.WindowSizeMsg{Width: 140, Height: 45})
+	d3.send(openLeadsKey())
+	d3.until("the spent message's fate", func(v string) bool { return strings.Contains(v, "spent, not delivered") })
+
+	// A row without them, as a daemon that gives none, draws the plain state
+	// and the message by the daemon's flag alone.
+	row.StateReason, row.MessageResult = "", consoleclient.LeadDelivery{}
+	f2 := &fakeLeads{list: consoleclient.LeadListing{MaxRunning: 2, Leads: []consoleclient.LeadRow{row}}}
+	d2 := newViewDriver(t, rigFor(t, f2).model())
+	d2.send(tea.WindowSizeMsg{Width: 140, Height: 45})
+	d2.send(openLeadsKey())
+	v := d2.until("the list", func(v string) bool { return strings.Contains(v, "alpha") })
+	if strings.Contains(v, "holder-ready") || strings.Contains(v, "not delivered") {
+		t.Fatalf("the view drew what the row did not say:\n%s", v)
 	}
 }
 

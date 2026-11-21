@@ -80,18 +80,49 @@ type (
 		Provision string `json:"provision"`
 		// State is the registry's shown state of the role.
 		State string `json:"state"`
-		Epoch uint64 `json:"epoch"`
-		Unit  string `json:"unit"`
+		// StateReason is the reason code the registry shows with State, such
+		// as "holder-ready" with "ready". It is a fixed word (lower-case
+		// letters, digits and dashes, the first a letter, at most
+		// [MaxStateReason] bytes); the daemon sends "" for a code that is
+		// not, and for a lead the registry does not know. The key is always
+		// present.
+		StateReason string `json:"state_reason"`
+		Epoch       uint64 `json:"epoch"`
+		Unit        string `json:"unit"`
 		// Inject: the lead's config allows lead.inject.
 		Inject bool `json:"inject"`
-		// MessageSpent: the epoch's one message was already sent.
+		// MessageSpent: the epoch's message was already sent and is not free
+		// again. A message that the holder answered as not delivered
+		// (not-now or refused with nothing written, or refused by the holder
+		// itself as disabled, wrong-epoch, busy or bad-request) does not spend
+		// it: the row then says false and the lead may send another.
 		MessageSpent bool `json:"message_spent"`
+		// MessageResult is what the holder answered about the current
+		// epoch's last message, in its three words, when the daemon has it,
+		// whether the message is spent or not: all three are "" when no
+		// message was sent in the epoch, when the last one was sent and the
+		// daemon has no answer (it was restarted since, and the lead's last
+		// receipt is not that message's), and for a lead the registry does
+		// not know. After a refusal by the holder itself the outcome is
+		// "refused" and the other two are "": the message was not delivered.
+		// The keys are always present.
+		MessageResult MessageResult `json:"message_result"`
 		// Last is the role's latest receipt, or null when it has none. In a
-		// row it is the summary form: its Result is left out, because the
-		// row's state, epoch and unit say what the result would, and eight
-		// rows with full results would not fit in 8 KiB (see
-		// [MaxRelayBytes]). A replay of the command id gives the full receipt.
+		// row it is the summary form: its Result and its Message are left
+		// out, because the row's state, state reason, epoch, unit and
+		// message result say what they would, and eight rows with full
+		// receipts would not fit in 8 KiB (see [MaxRelayBytes]). A replay of
+		// the command id gives the full receipt.
 		Last *Receipt `json:"last"`
+	}
+
+	// MessageResult is the three words of a [Delivery] without its detail, as
+	// a row of lead.list carries them. Each is a fixed word of at most
+	// [MaxDeliveryWord] bytes, or "" when the daemon has no answer.
+	MessageResult struct {
+		Outcome string `json:"outcome"`
+		Reason  string `json:"reason"`
+		Written string `json:"written"`
 	}
 
 	// DefineResult is the result of lead.define.

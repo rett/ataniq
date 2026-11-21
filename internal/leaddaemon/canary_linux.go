@@ -3,6 +3,7 @@
 package leaddaemon
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -162,7 +163,13 @@ func (m *canaryMode) openEvidence() error {
 		ev, err := leadcanary.OpenEvidence(in.cfg, m.d.Clock.Now)
 		if err == nil {
 			var spent map[uint64]bool
-			spent, err = spentEpochs(in.cfg.EvidencePath(), in.cfg.Role.String())
+			if m.lead != nil {
+				// Scratch mode: a message the holder answered as not
+				// delivered is not spent.
+				spent, err = scratchSpentEpochs(in.cfg.EvidencePath(), in.cfg.Role.String())
+			} else {
+				spent, err = spentEpochs(in.cfg.EvidencePath(), in.cfg.Role.String())
+			}
 			if err != nil {
 				_ = ev.Close()
 				err = fmt.Errorf("canary mode: %w; no message is admitted from an evidence file that cannot be read back; set the file aside only once the role's unit is stopped, since a new file spends no epoch's message", err)
@@ -250,4 +257,22 @@ func (m *canaryMode) extensions(ctl *leadlifecycle.Controller, reg *leadregistry
 		in.ext = m.newExt(in, ctl, reg)
 	}
 	return []clientapi.Extension{&routerExt{router: m.router}}
+}
+
+// startObservers lets the background observers of scratch mode run, under the
+// server's context; the canary has none.
+func (m *canaryMode) startObservers(ctx context.Context) {
+	if m == nil || m.lead == nil {
+		return
+	}
+	m.lead.startObservers(ctx)
+}
+
+// joinObservers ends the observers of scratch mode and waits for them, at most
+// grace, and reports whether they ended.
+func (m *canaryMode) joinObservers(grace time.Duration) bool {
+	if m == nil {
+		return true
+	}
+	return m.lead.joinObservers(grace)
 }

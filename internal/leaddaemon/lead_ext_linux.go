@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"strings"
 
 	"golang.org/x/sys/unix"
 
@@ -562,6 +563,9 @@ func (m *leadMode) start(ctx context.Context, lr *leadRole) outcome {
 			unit = e.Intent.UnitName
 		}
 		lr.in.ext.record(leadcanary.Entry{Event: leadcanary.EventStart, Epoch: e.Epoch})
+		// The observer that shows the lead ready once its holder answers for
+		// the epoch; it runs on its own and never holds this command up.
+		m.observeReady(lr, e.Epoch)
 		return done(leadwire.StartResult{
 			Role: lr.role.String(), State: string(e.Shown.State), Epoch: e.Epoch, Unit: unit, Waiver: canaryroot.WaiverText,
 		})
@@ -616,8 +620,10 @@ func (m *leadMode) startFailure(lr *leadRole, err error) outcome {
 
 // stop stops the lead through the lifecycle whatever state the registry shows
 // for it: the lifecycle's Stop signals the role's own units, so it is the way
-// out of unknown and of a unit that a start left behind. An epoch of 0 means
-// the current epoch; any other is compared with the registry's under the
+// out of unknown and of a unit that a start left behind. The lead's ready
+// observer is ended only by a stop that is proven; a refused, failed or
+// unproven stop leaves the epoch running and its observer with it. An epoch of
+// 0 means the current epoch; any other is compared with the registry's under the
 // role's operation lock, which a start of the role also holds, so a stop that
 // was meant for one epoch never stops the next.
 func (m *leadMode) stop(ctx context.Context, lr *leadRole, epoch uint64) outcome {
@@ -655,6 +661,12 @@ func (m *leadMode) stop(ctx context.Context, lr *leadRole, epoch uint64) outcome
 			m.d.logf("scratch stop %q: the stop returned the state %q without a proof", lr.key, SafeText(string(e.Shown.State)))
 			return uncertainOut(codeStopUnproven, msgStopUnproven)
 		}
+		// The stop is proven: an observer that has not settled has nothing
+		// left to settle. A stop that was refused, failed or proved nothing
+		// leaves the epoch as it was, so it leaves its observer too; a stop
+		// that does go ahead is also covered by the observer's own check (it
+		// sets nothing for a lead that is no longer starting in its epoch).
+		m.cancelReady(lr)
 		lr.in.ext.record(leadcanary.Entry{Event: leadcanary.EventStop, Epoch: e.Epoch})
 		return done(leadwire.StopResult{Role: lr.role.String(), State: string(e.Shown.State), Proof: e.Shown.Proof})
 	})
@@ -698,12 +710,20 @@ func (m *leadMode) ticket(ctx context.Context, lr *leadRole, p leadwire.TicketPa
 	return done(leadwire.TicketResult{Role: res.Role, Epoch: res.Epoch, TicketFile: res.TicketFile, Folder: res.Folder})
 }
 
-// inject sends the one message of the lead's epoch. The order is the canary's,
-// and the receipt comes last: the command is admitted (durably), the admission
+// inject sends a message of the lead's epoch. The order is the canary's, and
+// the receipt comes last: the command is admitted (durably), the admission
 // checks and the epoch are made, the frame is written, the inject-sent line of
 // the evidence is written, and then the command is finished. The epoch's spent
 // set (from the evidence, read when the daemon starts) stays the authority on
 // whether a message was sent; the table never replaces it.
+//
+// The epoch takes one message, with one exception that is the lead's own: a
+// message that was not delivered (the holder answered not-now or refused with
+// nothing written, or refused the request itself as disabled, wrong-epoch or
+// bad-request) does not spend it, so the lead may send another in the epoch, as
+// [canaryExt.injectFor] says. A holder's busy is not one of them: it says a
+// delivery is running that the daemon has no record of, which may have reached
+// the lead, so it leaves the epoch spent.
 //
 // The residual: a daemon killed after the frame is written and before the
 // inject-sent line is, a window of a few milliseconds, leaves the epoch unspent
@@ -718,15 +738,37 @@ func (m *leadMode) inject(ctx context.Context, lr *leadRole, p leadwire.InjectPa
 	}
 	res, f := lr.in.ext.injectFor(ctx, CanaryInjectParams{Role: p.Role, MessageID: p.MessageID, Body: p.Body}, p.Epoch)
 	if f != nil {
-		if f.code == "holder-"+wire.CodeWrongEpoch {
-			// The role was stopped and started between the daemon's epoch
-			// check and the holder's read of the frame: a mismatch of the
-			// epoch, as the daemon's own check answers it. The text of the
-			// refusal is the epoch's, and no text reached the lead.
-			return refusedOut(codeStaleEpoch, msgStaleEpoch)
+		if code, held := strings.CutPrefix(f.code, "holder-"); held && holderRefusal(code) {
+			// The holder refused the request and wrote nothing to the lead for
+			// this message. The words kept for an earlier message of the epoch
+			// are not this one's: with disabled, wrong-epoch and bad-request
+			// this one was not delivered, and with the refusal in the
+			// evidence the epoch's message is free again (see
+			// [canaryExt.injectFor]); when the line could not be written it is
+			// still spent, and the row says so. A busy holder is delivering
+			// something the daemon has no record of, so the epoch stays spent
+			// and no word is known of the epoch's message: the row has none,
+			// which the console reads as sent-unsure.
+			words := leadwire.MessageResult{Outcome: string(wire.InjectOutcomeRefused)}
+			if !holderFrees(code) {
+				words = leadwire.MessageResult{}
+			}
+			lr.noteDelivery(p.Epoch, words)
+			if code == wire.CodeWrongEpoch {
+				// The role was stopped and started between the daemon's epoch
+				// check and the holder's read of the frame: a mismatch of the
+				// epoch, as the daemon's own check answers it. The text of the
+				// refusal is the epoch's, and no text reached the lead.
+				return refusedOut(codeStaleEpoch, msgStaleEpoch)
+			}
 		}
 		return fromFail(f)
 	}
+	lr.noteDelivery(res.Epoch, leadwire.MessageResult{
+		Outcome: fixedWord(string(res.Result.Outcome), leadwire.MaxDeliveryWord),
+		Reason:  fixedWord(string(res.Result.Reason), leadwire.MaxDeliveryWord),
+		Written: fixedWord(string(res.Result.Written), leadwire.MaxDeliveryWord),
+	})
 	return done(leadwire.InjectResult{
 		Role: res.Role, Epoch: res.Epoch, MessageID: res.MessageID,
 		Result: leadwire.Delivery{
@@ -758,21 +800,72 @@ func (m *leadMode) row(lr *leadRole) leadwire.Lead {
 	row := leadwire.Lead{
 		Key: lr.key, Role: lr.role.String(), Inject: lr.cfg.Inject, Provision: m.provisionWord(lr),
 	}
+	rec, hasLast := m.table.Last(lr.role)
 	if e, err := m.reg.Get(lr.role); err == nil {
 		row.Defined = true
 		row.State = string(e.Shown.State)
+		row.StateReason = fixedWord(e.Shown.Reason.Code, leadwire.MaxStateReason)
 		row.Epoch = e.Epoch
 		row.Unit = lr.role.UnitName()
 		row.MessageSpent = e.Epoch != 0 && lr.in.ext.messageSpent(e.Epoch)
+		if e.Epoch != 0 {
+			// The words of the last message of the epoch, which the
+			// message's state does not decide: a message that was not
+			// delivered leaves the epoch's message free and its words show.
+			row.MessageResult = deliveryOf(lr, e.Epoch, rec, hasLast)
+		}
 	}
-	if rec, ok := m.table.Last(lr.role); ok {
-		// The summary form of a receipt: no result, which the row's state, epoch
-		// and unit say already, and which would not fit in the relay's size.
-		rec.Result = nil
+	if hasLast {
+		// The summary form of a receipt: no result and no message, which the
+		// row's state, reason, epoch, unit and message result say already,
+		// and which would not fit in the relay's size.
+		rec.Result, rec.Message = nil, ""
 		w := toWire(rec)
 		row.Last = &w
 	}
 	return row
+}
+
+// deliveryOf is the holder's answer to the epoch's message, in its three
+// words: the one this daemon kept when it delivered the message, else the one
+// in the role's last receipt when that is the done inject of this epoch (a
+// daemon that was restarted since has no memory of it, and the command table
+// holds it). The words are empty when neither is so, which the view reads as
+// no answer known.
+func deliveryOf(lr *leadRole, epoch uint64, last leadcontrol.Receipt, hasLast bool) leadwire.MessageResult {
+	if w, ok := lr.deliveryIn(epoch); ok {
+		return w
+	}
+	if !hasLast || last.Op != leadwire.OpInject || leadwire.Status(last.Status) != leadwire.StatusDone || len(last.Result) == 0 {
+		return leadwire.MessageResult{}
+	}
+	var r leadwire.InjectResult
+	if json.Unmarshal(last.Result, &r) != nil || r.Epoch != epoch || r.Role != lr.role.String() {
+		return leadwire.MessageResult{}
+	}
+	return leadwire.MessageResult{
+		Outcome: fixedWord(r.Result.Outcome, leadwire.MaxDeliveryWord),
+		Reason:  fixedWord(r.Result.Reason, leadwire.MaxDeliveryWord),
+		Written: fixedWord(r.Result.Written, leadwire.MaxDeliveryWord),
+	}
+}
+
+// fixedWord returns s when it is a word of the wire's grammar for reason codes
+// and outcomes (lower-case letters, digits and dashes, the first a letter) of
+// at most max bytes, and "" otherwise: a row never carries a peer's text.
+func fixedWord(s string, max int) string {
+	if len(s) > max {
+		return ""
+	}
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c >= 'a' && c <= 'z':
+		case i > 0 && (c >= '0' && c <= '9' || c == '-'):
+		default:
+			return ""
+		}
+	}
+	return s
 }
 
 // provisionWord is the row's provision word. A lead whose define is in flight

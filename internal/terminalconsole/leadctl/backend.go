@@ -79,6 +79,24 @@ const (
 	OutcomeUncertain = "uncertain"
 )
 
+// The reasons the holder gives with an outcome other than submitted.
+const (
+	ReasonNotReady     = "not-ready"
+	ReasonBlocked      = "blocked"
+	ReasonUntested     = "untested"
+	ReasonText         = "text"
+	ReasonNotSubmitted = "not-submitted"
+	ReasonDied         = "died"
+)
+
+// How much of a message reached the lead's input, in the holder's words.
+const (
+	WrittenNothing = "nothing"
+	WrittenPartial = "partial"
+	WrittenWhole   = "whole"
+	WrittenUnknown = "unknown"
+)
+
 // Receipt is the answer to a command, or the last one of a lead. The view
 // draws nothing of it but words of its own chosen by Status, Op, Outcome and
 // Code: any text a peer sent is not a field here, and a Code or Outcome that
@@ -92,8 +110,14 @@ type Receipt struct {
 	Code string
 	// Epoch is the epoch of a start, ticket or inject.
 	Epoch uint64
-	// Outcome is the outcome of a done inject.
-	Outcome string
+	// Outcome, Reason and Written are the holder's three words about a done
+	// inject: what happened to the message, why, and how much of it reached
+	// the lead's input. Reason and Written may be empty (an adapter that
+	// does not pass them): the view then draws the words of the outcome
+	// alone, and a Reason or Written outside the holder's closed sets is
+	// drawn as a result that is not known. None of them is ever drawn as
+	// text.
+	Outcome, Reason, Written string
 	// Folder and TicketFile are the result of a done ticket: where to attach.
 	// They are handed to the parent in an Attach action and never drawn.
 	Folder, TicketFile string
@@ -104,6 +128,11 @@ type Receipt struct {
 	// and does not take a message's epoch as settled by it. It is false in
 	// the receipts of the list.
 	Earlier bool
+}
+
+// Delivery is the holder's three words about a message.
+type Delivery struct {
+	Outcome, Reason, Written string
 }
 
 // Lead is one lead of the listing.
@@ -118,14 +147,26 @@ type Lead struct {
 	Provision string
 	// State is the lead's state in the registry, such as "ready".
 	State string
+	// StateReason is the reason code the registry shows with the state, such
+	// as "holder-ready" with "ready". Empty with none. It is never drawn as
+	// text: the view has words for the pairs it knows.
+	StateReason string
 	// Epoch is the current epoch, 0 with none.
 	Epoch uint64
 	// Unit is the lead's unit name.
 	Unit string
 	// Inject says that messages are on for the lead.
 	Inject bool
-	// MessageSpent says that the epoch's one message was sent.
+	// MessageSpent says that the epoch's message was sent and is not free
+	// again: a message that was not delivered (not-now or refused with nothing
+	// written, or refused by the holder itself) leaves it false, and the lead
+	// may send another.
 	MessageSpent bool
+	// MessageResult is the holder's answer to the epoch's last message, spent
+	// or not, when the adapter has it for the current epoch: all three words
+	// empty means it does not. The view also remembers the answers of the messages it sent
+	// itself (the receipt's words), and prefers this field when it is set.
+	MessageResult Delivery
 	// Last is the receipt of the lead's last command, nil with none.
 	Last *Receipt
 }

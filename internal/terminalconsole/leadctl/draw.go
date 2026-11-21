@@ -194,7 +194,7 @@ func (m *Model) Draw(dst Canvas, area uv.Rectangle) {
 const (
 	colState = 11
 	colEpoch = 7
-	colMsg   = 6
+	colMsg   = 21
 	colLast  = 28
 )
 
@@ -232,7 +232,7 @@ func (m *Model) drawTable(d *drawer, w, h int) {
 		x += d.put(x, row, w-x, pad(l.Key, keyW)+"  ", d.style(sText))
 		x += d.put(x, row, w-x, pad(state, colState), d.style(sText))
 		x += d.put(x, row, w-x, pad(epoch, colEpoch), d.style(sText))
-		x += d.put(x, row, w-x, pad(msgWord(l), colMsg), d.style(sText))
+		x += d.put(x, row, w-x, pad(msgWord(l, m.deliveryOf(l)), colMsg), d.style(sText))
 		last, st := "-", sDim
 		if l.Last != nil {
 			last = opShort(l.Last.Op) + ": " + shortStatus(l.Last.Status)
@@ -259,16 +259,6 @@ func lastStyle(s Status) style {
 		return sWarn
 	}
 	return sText
-}
-
-func msgWord(l Lead) string {
-	switch {
-	case !l.Inject:
-		return "off"
-	case l.MessageSpent:
-		return "sent"
-	}
-	return "free"
 }
 
 func (m *Model) drawFooter(d *drawer, w, h int) {
@@ -309,6 +299,8 @@ func (m *Model) drawFooter(d *drawer, w, h int) {
 		}
 	} else if prompt != "" {
 		d.put(1, h-2, w-1, prompt, d.style(pst))
+	} else if l, ok := m.under(); ok {
+		d.put(1, h-2, w-1, stateLine(l), d.style(sDim))
 	}
 	d.put(1, h-1, w-1, last, d.style(lst))
 }
@@ -334,7 +326,31 @@ func (m *Model) receiptText() string {
 	if m.status == nil {
 		return ""
 	}
-	return receiptLine(*m.status)
+	return receiptLine(*m.status, m.heldFor(*m.status))
+}
+
+// heldFor is what the list says of the epoch's message for a receipt: the row
+// of the lead the command was for, once the list has been read since the
+// answer (the list that was drawn before it says nothing of this message), and
+// when the row is still at the epoch the receipt names (a receipt that names
+// none takes the row's).
+func (m *Model) heldFor(r Receipt) held {
+	if !m.statusListed || m.statusRole == "" {
+		return heldUnknown
+	}
+	for _, l := range m.leads {
+		if l.Role != m.statusRole {
+			continue
+		}
+		switch {
+		case l.Epoch == 0 || r.Epoch != 0 && l.Epoch != r.Epoch:
+			return heldUnknown
+		case l.MessageSpent:
+			return heldSpent
+		}
+		return heldFree
+	}
+	return heldUnknown
 }
 
 // drawEditor draws the message line: the target and the end of the text,

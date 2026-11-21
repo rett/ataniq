@@ -13,7 +13,8 @@ the injected message are; this guide does not repeat that.
 A scratch lead is a lead whose project is `scratch-<key>`, run in the real
 sandbox by the real holder, in a clone of a repository that the owner made for
 the purpose. The daemon provisions it, starts it in a transient user unit and
-sends it one message per epoch, and it does all of that on the console's
+sends it one message per epoch (a message that was not delivered does not count),
+and it does all of that on the console's
 command, with a durable receipt for each command.
 
 It exists only in a build with the `ataniq_canary` tag. It is **not** a real
@@ -36,9 +37,11 @@ of one is read by the other.
 
 What it does not do:
 
-- No Qargi inside the sandbox, no `ready`, no operator decision on an uncertain
-  command and no confirmation from the conversation file: these are the canary
-  slice's limits, and they hold here.
+- No Qargi inside the sandbox, no operator decision on an uncertain command and
+  no confirmation from the conversation file: these are the canary slice's
+  limits, and they hold here. The canary's `ready` limit does not: a scratch lead
+  is shown `ready` once its holder reports up (see [Ready](#ready)), which says
+  nothing about the agent's login.
 - No intake by the daemon: the owner takes a commit in by hand with
   `ataniq-intake`.
 - No unit for the daemon and no start at boot: the daemon is started by hand.
@@ -243,9 +246,9 @@ begin with `client` and `command_id`, then `role`, then the rest.
 
 | Operation | Params | Result |
 | --- | --- | --- |
-| `lead.list` | none, or `{}` | `{"max_running","running","leads":[{"key","role","defined","provision","state","epoch","unit","inject","message_spent","last"}]}`, one row per configured lead. `provision` is `done`, `incomplete` or `none`. `last` is the role's latest receipt in summary form (no `result`), or `null`. Not bound to a command id; it takes no lock and answers while a define runs. |
+| `lead.list` | none, or `{}` | `{"max_running","running","leads":[{"key","role","defined","provision","state","state_reason","epoch","unit","inject","message_spent","message_result","last"}]}`, one row per configured lead. `provision` is `done`, `incomplete` or `none`. `state_reason` is the reason code the registry shows with `state` (`holder-ready` with `ready`, see [Ready](#ready)). `message_result` is `{"outcome","reason","written"}`, the holder's three words about the epoch's message (see [Message and attach](#message-and-attach)). `last` is the role's latest receipt in summary form (no `result` and no `message`), or `null`. Not bound to a command id; it takes no lock and answers while a define runs. |
 | `lead.define` | `client`, `command_id`, `role` | A receipt whose result is `{"role","state","profile_digest"}`. The state is `stopped`. |
-| `lead.start` | `client`, `command_id`, `role` | A receipt whose result is `{"role","state","epoch","unit","waiver"}`. The state is `starting`; `waiver` is the waiver's text. |
+| `lead.start` | `client`, `command_id`, `role` | A receipt whose result is `{"role","state","epoch","unit","waiver"}`. The state is `starting`, always: the receipt does not wait for [`ready`](#ready); `waiver` is the waiver's text. |
 | `lead.stop` | `client`, `command_id`, `role`, `epoch` | A receipt whose result is `{"role","state","proof"}`. An `epoch` of 0 means the current epoch. |
 | `lead.ticket` | `client`, `command_id`, `role`, `epoch`, `attach_role` (`writer` or `viewer`) | A receipt whose result is `{"role","epoch","ticket_file","folder"}`. The ticket is never in an answer: it is in the ticket file. |
 | `lead.inject` | `client`, `command_id`, `role`, `epoch`, `message_id`, `body` | A receipt whose result is `{"role","epoch","message_id","result":{"outcome","reason","written","detail"}}`, the holder's own words as in [the canary slice](canary-slice.md#the-result-and-its-evidence). |
@@ -286,7 +289,9 @@ What each does:
 - **`lead.ticket`** asks the holder for a ticket for the epoch and writes it to
   the lead's ticket file. An `epoch` of 0, or one that is not the lead's current
   one, is refused `stale-epoch`.
-- **`lead.inject`** sends the epoch's one message. It names the epoch, and a
+- **`lead.inject`** sends the epoch's message: one per epoch, and a message that
+  was not delivered does not use it up (see [Message and attach](#message-and-attach)).
+  It names the epoch, and a
   mismatch is `stale-epoch`, so a delayed command cannot land in a newer epoch;
   an `epoch` of 0 is refused too. The message and its admission are the canary's:
   the id and the body grammar, a body of at most 2048 bytes (the wire's cap on the
@@ -294,7 +299,73 @@ What each does:
   kind=canary]`. When the holder itself refuses the frame as `wrong-epoch` (the
   lead was stopped and started between the daemon's check and the holder's
   read), the answer is `stale-epoch` like the daemon's own check: no text
-  reached the lead, and the old epoch stays spent.
+  reached the lead, and the refusal frees the old epoch's message like any
+  other message that was not delivered (see [Message and attach](#message-and-attach)).
+
+### Ready
+
+A started lead is shown `starting`. The daemon moves it to `ready` by itself,
+on the holder's word, and in no other way:
+
+- **When it asks.** After `lead.start` has returned for an epoch, and once for
+  every lead that is shown `starting` (with its launch recorded and a holder
+  command) when the daemon starts, as for a lead it adopted after a restart, a
+  background observer asks the holder's control socket for its `status`. It asks
+  again, with a wait that grows from 200 ms to 1.6 s, for up to 60 s. The dial
+  and the wait for each answer are bounded by 5 s each, and by the 60 s. A
+  lead that the 60 s did not settle stays `starting`, the daemon logs that
+  once, and it is observed again the next time the daemon starts. A `lead.start`
+  never waits for the observer, and no client call does: the start's receipt is
+  answered with `starting` at once.
+- **What it takes.** The holder answers `ok` with a status for the **same epoch
+  and the same role** as the registry shows. A refusal (`wrong-epoch` included),
+  no answer, an answer with no status and a status of another epoch or role are
+  ignored: the lead stays `starting`, and nothing else changes.
+- **What it sets.** The shown state `ready` for that epoch, with the reason code
+  `holder-ready`, the evidence kind `ataniq-observation` and the detail "the
+  holder is up and the agent was started; the agent's login is not observed".
+  The change is made only if the registry still shows the lead `starting` in
+  that epoch, as one compare-and-set under the role's operation lock. The lock
+  is **not** held while the holder is asked: it is taken, as a try-lock, for the
+  one check and change, and a promotion that finds it held (a define, a start or
+  a stop of the role is running) is tried again a moment later. A stop, or a
+  newer epoch, therefore wins: the observer then sets nothing, and a `lead.stop`
+  that is proven ends the lead's observer. A stop that is refused (a stale
+  epoch, a role that is busy), that fails or that proves nothing leaves the
+  epoch running and its observer with it, so the lead is still shown `ready`
+  when its holder answers. A stop, start or define that arrives while the
+  observer is writing the registry (about one write) is refused `role-busy` and
+  may be tried again. An observer that waits for the holder never holds up a
+  stop.
+- **What `ready` means here.** The holder is up, and the agent was started in
+  the lead's sandbox. The agent's login is **not** observed, nothing was read
+  from its screen, and nothing says the agent works or will answer. `ready` is
+  not a claim that the lead is usable: it replaces "nothing says anything" with
+  "the holder said it is up", and no more. A lead that is `ready` stays so until
+  a stop. This build adds no way from `ready` back to `starting` or to
+  `degraded`: a holder that goes away after it said it was up is not noticed
+  by this observer, and a unit that ends is found by the next reconcile when
+  the daemon starts.
+- **It does not change** what counts against `max_running` (a `starting` lead
+  and a `ready` one both count), the receipts, the command table or the
+  evidence file.
+- **At shutdown** the daemon ends the observers and waits for them before it
+  closes the registry, so a daemon stopped while a holder does not answer still
+  exits 0 and promptly. When the server itself did not stop within the grace the
+  daemon is already abandoning it (exit 19) and does not wait for the observers
+  a second grace. A failure of the observer's own (a panic is recovered
+  and logged) leaves the lead as it is shown.
+
+`ready` is for scratch leads only. The canary has no observer and its lead stays
+`starting` (see [the canary slice](canary-slice.md)).
+
+`lead.list` shows the state and the reason together: a promoted lead's row says
+`"state":"ready"` and `"state_reason":"holder-ready"`, both from the registry's
+entry, so a client that draws `ready (holder-ready)` draws what the daemon
+shows and guesses nothing. `state_reason` is a fixed word (lower-case letters,
+digits and dashes, at most 32 bytes: the registry's own codes are at most 30),
+and is `""` for a lead the registry does not know and for a code that is not
+one; the key is always present.
 
 ### Receipts
 
@@ -325,7 +396,7 @@ operation; every code is a word of lower-case letters, digits and dashes.
 | `lead.start` | `role-busy`, `not-provisioned`, `folder-missing`, `max-running`, `role-not-defined`, `not-managed`, `preflight`, `foreign-unit`, `unit-loaded`, `limits`, `launch-refused`, `epoch-exhausted`, `registry-refused` | `start-failed`, `previous-unit-not-gone`, `intent-pending` | `launch-uncertain`, `daemon-stopping`, `registry-check`, `registry-broken`, `failed` |
 | `lead.stop` | `role-busy`, `stale-epoch`, `role-not-defined`, `not-managed` | `intent-pending`, `failed` | `stop-unproven`, `daemon-stopping`, `registry-broken`, `failed` |
 | `lead.ticket` | `stale-epoch`, `not-running`, `ticket-refused` | `holder-unreachable`, `ticket-failed`, `ticket-lost`, `ticket-file` | |
-| `lead.inject` | `stale-epoch`, `inject-off`, `not-running`, `second-message`, `message-in-flight`, and the admission codes of the canary slice (`bad-id`, `body-too-long`, `empty-body` and the like) | `holder-unreachable`, and `holder-` with the holder's refusal (`disabled`, `busy`, `bad-request`) | |
+| `lead.inject` | `stale-epoch`, `inject-off`, `not-running`, `second-message`, `message-in-flight`, and the admission codes of the canary slice (`bad-id`, `body-too-long`, `empty-body` and the like) | `holder-unreachable`, and `holder-` with the holder's refusal (`disabled`, `busy`, `bad-request`; the epoch's message stays free after `disabled` and `bad-request`, and stays spent after `busy`) | |
 
 Every operation can also end `refused` with `daemon-broken` (the registry or the
 table cannot be written, and the daemon admits no new command until it is
@@ -344,12 +415,107 @@ a result that holds a receipt.
 
 ### Message and attach
 
-A lead's `inject` flag and its message follow the canary slice: **every result
-of a message spends the epoch's one message**, `not-now` included, and a refusal
-before the frame is written spends nothing. The spent epochs are rebuilt at
-every daemon start from the lead's evidence file, and `lead.list` shows
-`message_spent`. The one-message state and the in-flight flag are per lead, so
+A lead's `inject` flag and its message follow the canary slice, with one
+difference that is the lead's own: **the epoch's one message is spent by a message
+that may have reached the lead, and not by one that was not delivered.** Once the
+request frame is written the message is spent, and stays spent unless the holder
+wrote nothing to the lead, which it says in one of two ways:
+
+- its answer decodes, is a valid result, and says `not-now` (reason `not-ready`
+  or `blocked`) or `refused` (reason `untested` or `text`) with `written`
+  `nothing`; the daemon then writes the `inject-result` line of the message to the
+  evidence; or
+- it refuses the request itself, with the code `disabled`, `wrong-epoch` or
+  `bad-request` (an answer with no result: the receipt is `unavailable` with
+  `holder-` and the code, or `refused` `stale-epoch` for `wrong-epoch`); the
+  daemon then writes the `inject-refused` line of the message, with its message id
+  and the code `holder-` and the holder's code.
+
+Then the daemon makes the epoch's message free again, once the line is in the
+evidence, and the lead may send another message in the same epoch, with the same
+message id or another (an id that was used before is not refused: the daemon does
+not remember ids, and a replay of a command's id is the command table's).
+Everything else leaves it spent: `submitted`, every `uncertain` result (the `died`
+result with `written` `nothing` too, since the lead's end during the send leaves
+open what reached it), no answer within the wait, a closed connection, an answer
+that does not decode, an ok answer without a result, a refusal code that the
+daemon does not know, a line (the result or the refusal) that could not be
+written, and a holder's refusal `busy`. The last is a refusal of the request, and
+the receipt is `unavailable` with `holder-busy` all the same, but the daemon sends
+one message at a time, so a holder that says a delivery is running is delivering
+something the daemon has no record of (the inject residual below), which may have
+reached the lead: the daemon writes the `inject-refused` line of the message, the
+row shows the epoch's message spent with no words of it (the console says
+`sent-unsure`) and the daemon's log says why, and a later message is refused
+`second-message`. The holder's text is not read to tell this `busy` from another.
+A refusal before the
+frame is written (a bad message, a stopped role, a second message, a holder that
+cannot be dialled) spends nothing. A second message while the first is
+spent is refused `second-message`, and one while the first is in flight
+`message-in-flight`. The canary's own rule is unchanged: there every result spends
+the message, `not-now` included.
+
+The spent epochs are rebuilt at every daemon start from the lead's evidence file,
+and `lead.list` shows `message_spent`. The reader sees the lines of one epoch in
+the order of the file, as a series of messages, an `inject-sent` line and then
+the `inject-result` line of the same message id, or the `inject-refused` line of
+the same message id whose code is `holder-disabled`, `holder-wrong-epoch`,
+`holder-busy` or `holder-bad-request`. The epoch is free when every message of
+the series is closed by a result of the four that release the message or by a
+refusal other than `holder-busy` (a `holder-busy` line closes its message and
+spends the epoch); it is spent when a message has no closing line (the daemon
+was killed after the `inject-sent` line, which is written before the wait for the
+answer), when a result line or a holder refusal has no `inject-sent` line before
+it, names another message id or is the second of its message, when an
+`inject-sent` line follows one that has no closing line, and when a result is not
+a release or is not a combination the holder sends, and when a message is closed
+by `holder-busy`. An `inject-refused` line with
+any other code (a message that never reached the holder: `inject-off`,
+`second-message`, `holder-unreachable` and the like) is not part of the series
+and changes nothing, so it does not close an open message. Whatever is in doubt
+is spent. The file is read as strictly as the canary's: a line that is damaged or
+partial refuses the start, and so does a line of the lead that lacks the
+`message_id` (and, of a result, the `outcome` and `written`) that the reader
+needs. The canary's reader sees no refusal line: there every message that was
+sent stays spent. The one-message state and the in-flight flag are per lead, so
 one lead's inject never blocks another's.
+
+The row also says what became of the epoch's message. `message_result` has the
+holder's three words, `outcome`, `reason` and `written` (the words of the
+`lead.inject` result, each at most 16 bytes; no detail), once the message of the
+current epoch's last message was delivered and the holder answered; `reason` is
+`""` for `submitted`. The words are the last message's, and they do not depend on
+`message_spent`: after a message that was not delivered `message_spent` is `false`
+and the words still say what happened to it, so that the console can show it. All
+three are `""` when no message was sent in the epoch, when the last one was sent
+and no answer is known, and for a lead the registry does not know. When the holder
+refused the request itself as `disabled`, `wrong-epoch` or `bad-request` (see
+above) the row says `outcome` `refused` with `reason` and `written` `""`: the
+message was not delivered, and the words of an earlier message of the epoch are
+dropped, since they are not this message's. After `busy` the three words are
+`""` and `message_spent` is `true`: the message that was refused was not written,
+and the delivery that the holder is running is not known to have reached the lead
+nor known not to have. A restarted
+daemon has no words for a message that the holder refused (its receipt is not a
+result), and the row then shows the epoch's message free with no words. The daemon keeps the answer in memory when it delivers the message,
+and after a restart reads it from the command table while the message's receipt is
+still the role's last; a later command (a ticket, say) hides it, and the row then
+says nothing of the answer, whatever `message_spent` says. The rows of
+`lead.list` stay under 8 KiB for eight leads with the longest values, which is
+why the row's receipt is the summary form without its `message`, and a replay of
+the command's id gives the full receipt.
+
+The console's client cleans both members to fixed words (a word outside the
+grammar becomes `unrecognised`), and its leads view draws the `ready` line and
+the MSG column from them (`free`, `free (not delivered)`, `sent`, `sent-unsure`
+or `spent, not delivered`), so it guesses neither. The decoding is strict about
+members the client does not know, which it refuses, and not about members it has,
+so a row without `state_reason` and `message_result` is read as a row with both
+empty: the view then shows
+the plain state, and the MSG column says `sent-unsure` for a spent message
+(nothing says what became of it) and `free` for a free one. A message's
+receipt carries the same three words, which the view draws as the answer to the
+press.
 
 The ticket file is **per lead** (`<runtime root>/leads/<layout role>/ticket`) and
 has one name, so there is **one ticket at a time per role**: the tickets of one
@@ -481,7 +647,7 @@ lead's record that is not what provisioning writes, or whose digest is not the
 lead's pin, refuses the start; the refusal says that the owner checks the lead's
 folders. An evidence file that cannot be read back refuses the start for the
 canary's reason: set it aside only once the lead's unit is stopped, because a new
-file spends no epoch's message.
+file spends no epoch's message (and frees every one whose message was sent).
 
 **A define that was cut short** (the daemon was stopped, git ran out of time,
 the ten minutes ended) leaves the lead's folders and **no** `provisioned.json`.
@@ -548,8 +714,20 @@ window](lead-daemon.md#the-late-start-window); the console never sends it again.
   **between the frame and the `inject-sent` line** (a window of a few
   milliseconds) leaves the epoch **unspent** after the restart, though the
   message is on its way to the lead, and the command's receipt reads `uncertain`.
-  A killed daemon after that line leaves the epoch spent, and a replay of the
-  command is never sent again. Read the lead's screen before a second message.
+  A killed daemon after that line leaves the epoch spent, because the line has no
+  `inject-result` line after it: only a message whose result line is in the
+  evidence, with `not-now` or `refused` and nothing written, or whose
+  `inject-refused` line holds a holder refusal other than `holder-busy`, is read
+  back as not spent. A replay of the command is never sent again. Read the lead's
+  screen before a second message.
+
+  The same window is why a holder's `busy` leaves the epoch spent: a restarted
+  daemon with the epoch unspent that sends a message finds the holder still
+  delivering the one that was lost, and the holder answers `busy`. The daemon
+  takes that for what it is, a delivery it has no record of, and keeps the epoch
+  spent, so that no third message follows. The message that was refused was not
+  written, and the lost one is not known to have been delivered nor known not to
+  have been: read the lead's screen.
 - **One scratch root per account for a key.** Unit names come from the key and
   live in the user's one systemd manager. Two scratch roots on one account that
   both define `alpha` name the same unit, `ataniq-lead-scratch-alpha.service`,

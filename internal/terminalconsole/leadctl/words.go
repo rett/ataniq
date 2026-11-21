@@ -123,7 +123,7 @@ var reasonWords = map[string]string{
 	"ticket-file":        "the ticket was taken but its file could not be written",
 	"holder-disabled":    "the lead's holder does not take messages",
 	"holder-wrong-epoch": "the holder is at another epoch; read the list and try again",
-	"holder-busy":        "the holder is busy; nothing was written",
+	"holder-busy":        "the holder is busy with an unrecorded delivery; the epoch's message is spent",
 	"holder-bad-request": "the holder did not accept the request; nothing was written",
 	"inject-off":         "messages are off for this lead",
 	"bad-message":        "the message was not accepted",
@@ -140,23 +140,187 @@ var reasonWords = map[string]string{
 
 const unknownReason = "the reason is not known to this console"
 
-// outcomeWords maps the outcome of a done inject to a fixed text.
-func outcomeWords(o string) string {
-	switch o {
-	case OutcomeSubmitted:
-		return "the message was submitted"
-	case OutcomeNotNow:
-		return "the lead could not take it now; nothing was written"
-	case OutcomeRefused:
-		return "the lead refused it; nothing was written"
-	case OutcomeUncertain:
-		return "it may have reached the lead; look at the lead's screen before you decide"
-	}
-	return "the result is not known to this console"
+// fate is what became of a message, as far as the view can say.
+type fate int
+
+const (
+	// fateUnknown: the result is not one the view has words for.
+	fateUnknown fate = iota
+	// fateNotDelivered: nothing was written to the lead.
+	fateNotDelivered
+	// fateDelivered: the whole message was written and submitted.
+	fateDelivered
+	// fateUnsure: something may have reached the lead; only a person can
+	// settle it.
+	fateUnsure
+)
+
+type deliveryKey struct{ outcome, reason, written string }
+
+type deliveryText struct {
+	fate fate
+	text string
 }
 
-// receiptLine is the full line of a receipt, in the view's words.
-func receiptLine(r Receipt) string {
+// deliveryWords is a fixed text for every combination of the holder's
+// outcome, reason and written that its wire carries (the table in
+// internal/leadholder/wire/inject.go; a test reads it from the source). The
+// text says what happened to the message: submitted, NOT delivered, written
+// but not submitted, or a result that is not known.
+var deliveryWords = map[deliveryKey]deliveryText{
+	{OutcomeSubmitted, "", WrittenWhole}: {fateDelivered,
+		"the message was submitted: the whole of it was written and sent"},
+	{OutcomeNotNow, ReasonNotReady, WrittenNothing}: {fateNotDelivered,
+		"NOT delivered: nothing was written, the lead's screen is not idle"},
+	{OutcomeNotNow, ReasonBlocked, WrittenNothing}: {fateNotDelivered,
+		"NOT delivered: nothing was written, the lead's screen is blocked"},
+	{OutcomeRefused, ReasonUntested, WrittenNothing}: {fateNotDelivered,
+		"NOT delivered: nothing was written, the lead's program version is not one the holder is tested with"},
+	{OutcomeRefused, ReasonText, WrittenNothing}: {fateNotDelivered,
+		"NOT delivered: nothing was written, the holder refused the text"},
+	{OutcomeUncertain, ReasonNotSubmitted, WrittenPartial}: {fateUnsure,
+		"written but not submitted: the text reached the lead's input and Enter was not sent. Look at the lead's screen"},
+	{OutcomeUncertain, ReasonDied, WrittenNothing}: {fateUnsure,
+		"result unknown: the lead ended during the send; the holder reports nothing written. Look at the lead's screen"},
+	{OutcomeUncertain, ReasonDied, WrittenPartial}: {fateUnsure,
+		"result unknown: the lead ended during the send; part of the message was written. Look at the lead's screen"},
+	{OutcomeUncertain, ReasonDied, WrittenWhole}: {fateUnsure,
+		"result unknown: the lead ended during the send; the whole message was written. Look at the lead's screen"},
+	{OutcomeUncertain, ReasonDied, WrittenUnknown}: {fateUnsure,
+		"result unknown: the lead ended or no answer came back; how much was written is not known. Look at the lead's screen"},
+}
+
+// outcomeOnlyWords is the text for an outcome whose reason and written the
+// receipt does not carry (an adapter that does not pass them). What each says
+// about the lead's input is what the wire says of the outcome.
+var outcomeOnlyWords = map[string]deliveryText{
+	OutcomeSubmitted: {fateDelivered, "the message was submitted"},
+	OutcomeNotNow:    {fateNotDelivered, "NOT delivered: nothing was written, the lead could not take it now"},
+	OutcomeRefused:   {fateNotDelivered, "NOT delivered: nothing was written, the lead refused it"},
+	OutcomeUncertain: {fateUnsure, "result unknown: it may have reached the lead. Look at the lead's screen"},
+}
+
+const unknownResult = "the result is not known to this console"
+
+// What the daemon does with the epoch's message once a request was written to
+// the holder (internal/leaddaemon/canary_ext_linux.go injectFor): it is spent,
+// unless the holder answered that nothing was written (not-now or refused), when
+// it is free again and the lead may send another. The receipt does not say
+// which: the daemon holds the epoch spent all the same when it could not write
+// the result down, and only the list's row (message_spent) knows. So the tail
+// of a message that was not delivered is drawn from the row when the view has
+// read it since the answer, and says what it does not know otherwise.
+const (
+	spentTail = ". This epoch's one message is spent"
+	freeTail  = ". The epoch's message is free"
+	// heldTail: the row says spent after a message that was not delivered.
+	heldTail = ". The daemon holds this epoch's message spent all the same"
+	// maybeTail: no row has been read since the answer.
+	maybeTail = ". The epoch's message is free unless the list says it is spent"
+)
+
+// held is what the list's row says of the epoch's message for the receipt
+// that is drawn.
+type held int
+
+const (
+	// heldUnknown: the view has no row of the receipt's lead and epoch that it
+	// read after the answer.
+	heldUnknown held = iota
+	// heldFree and heldSpent: the row's message_spent.
+	heldFree
+	heldSpent
+)
+
+// deliveryOf looks up the words of a done inject's three words. A result
+// whose reason or written is set and is not a combination the holder sends,
+// or whose outcome is not one it sends, is not known.
+func deliveryOf(outcome, reason, written string) deliveryText {
+	if t, ok := deliveryWords[deliveryKey{outcome, reason, written}]; ok {
+		return t
+	}
+	if reason == "" && written == "" {
+		if t, ok := outcomeOnlyWords[outcome]; ok {
+			return t
+		}
+	}
+	return deliveryText{fateUnknown, unknownResult}
+}
+
+// outcomeWords is the line of a done inject's result: what happened to the
+// message and, when something is known, whether the epoch's message is spent
+// (it is not after a message that was not delivered, unless the daemon holds it
+// spent, which the row says: h).
+func outcomeWords(r Receipt, h held) string {
+	t := deliveryOf(r.Outcome, r.Reason, r.Written)
+	switch t.fate {
+	case fateUnknown:
+		return t.text
+	case fateNotDelivered:
+		switch h {
+		case heldFree:
+			return t.text + freeTail
+		case heldSpent:
+			return t.text + heldTail
+		}
+		return t.text + maybeTail
+	}
+	return t.text + spentTail
+}
+
+// msgWord is the MSG column: whether the lead takes a message, and what became
+// of the epoch's message. It agrees with the receipt line of a done message: a
+// message that was NOT delivered leaves the epoch's message free, and says so
+// while it is free. The same result of a message that the daemon holds spent
+// (it could not write down the result) reads as spent and not delivered.
+//
+// A spent message is "sent" only when the words say it was submitted. When
+// something may have reached the lead, when the words are not ones this console
+// knows, and when the daemon holds the epoch spent and there are no words at
+// all (a message whose answer was lost, one sent before the console started or
+// by another client, a daemon that was restarted since, a holder answer the
+// daemon could not use), the word is "sent-unsure": the frame was written, and
+// nothing says the lead has the message.
+func msgWord(l Lead, d Delivery) string {
+	f := deliveryOf(d.Outcome, d.Reason, d.Written).fate
+	switch {
+	case !l.Inject:
+		return "off"
+	case !l.MessageSpent && f == fateNotDelivered:
+		return "free (not delivered)"
+	case !l.MessageSpent:
+		return "free"
+	}
+	switch f {
+	case fateNotDelivered:
+		return "spent, not delivered"
+	case fateDelivered:
+		return "sent"
+	}
+	return "sent-unsure"
+}
+
+// stateWords are the words for a registry state and the reason shown with it,
+// where the state alone says too little. The pair ready and holder-ready is
+// what the daemon shows once the holder is up and the agent started.
+var stateWords = map[[2]string]string{
+	{"ready", "holder-ready"}: "the holder is up and the agent started; its login is not observed",
+}
+
+// stateLine is the line about the row under the cursor: its state in words,
+// where the table's cell has no room for them. It is empty when there is
+// nothing to add.
+func stateLine(l Lead) string {
+	w, ok := stateWords[[2]string{l.State, l.StateReason}]
+	if !ok {
+		return ""
+	}
+	return l.Key + ": " + l.State + " (" + l.StateReason + "): " + w
+}
+
+// receiptLine is the full line of a receipt, in the view's words; h is what the
+// list's row says of the epoch's message.
+func receiptLine(r Receipt, h held) string {
 	head := opWords(r.Op) + ": "
 	if r.Earlier {
 		head = "an earlier " + opWords(r.Op) + " command: "
@@ -166,7 +330,7 @@ func receiptLine(r Receipt) string {
 		return head + "accepted, still running"
 	case Done:
 		if r.Op == OpInject {
-			return head + "accepted. " + outcomeWords(r.Outcome)
+			return head + "accepted. " + outcomeWords(r, h)
 		}
 		return head + "accepted, done"
 	case Refused:

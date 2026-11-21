@@ -3,6 +3,9 @@
 package leaddaemon
 
 import (
+	"context"
+	"time"
+
 	"ataniq/internal/clientapi"
 	"ataniq/internal/leadlifecycle"
 	"ataniq/internal/leadregistry"
@@ -29,3 +32,6 @@ func (*canaryMode) announce() error                  { return nil }
 func (*canaryMode) extensions(*leadlifecycle.Controller, *leadregistry.Registry) []clientapi.Extension {
 	return nil
 }
+
+func (*canaryMode) startObservers(context.Context)   {}
+func (*canaryMode) joinObservers(time.Duration) bool { return true }
