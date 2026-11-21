@@ -191,28 +191,75 @@ func reconcileText(completed bool) string {
 	return "not completed"
 }
 
-// daemonConsole returns the console for --daemon as the command line makes
-// it: the daemon's view, and the daemon's approvals as its backend. Every build
-// has the backend; whether the daemon has an owner channel is found when it
-// is asked. The returned function ends what the backend holds; the caller
-// calls it when the console is done.
-func daemonConsole(cfg config) (*terminalconsole.Model, func(), error) {
+// daemonRig is what outlives one console of --daemon: the daemon's approvals
+// backend, and the lead client when the daemon has lead control. The loop
+// makes a console from it each time it opens one, so that an attach, which
+// ends a console, leaves the connections and the lead client's unconfirmed
+// commands where they were.
+type daemonRig struct {
+	cfg config
+	// read asks the daemon for its view: consoleclient.Read, or a test's own.
+	read func(ctx context.Context, dir string) consoleclient.Result
+	// leads is the adapter of the lead client, nil when the daemon has no
+	// lead control.
+	leads  *leadsAdapter
+	closes []func()
+}
+
+// newDaemonRig makes the rig for --daemon as the command line makes it: the
+// daemon's approvals as the backend, and, when the daemon's hello lists the
+// lead control's operations, the lead client as the leads view's backend. Every
+// build has the approvals backend; whether the daemon has an owner channel or
+// lead control is found when it is asked. mk makes the lead client. Close
+// ends what the rig holds.
+func newDaemonRig(cfg config, mk newLeadsFunc) (*daemonRig, error) {
 	backend, closeOwner, err := ownerBackend(cfg.daemon)
+	if err != nil {
+		return nil, err
+	}
+	r := &daemonRig{cfg: cfg, read: consoleclient.Read, closes: []func(){closeOwner}}
+	r.cfg.options.Backend = backend
+	if r.leads = detectLeads(cfg.daemon, mk); r.leads != nil {
+		r.cfg.options.Leads = r.leads
+		c := r.leads.c
+		r.closes = append(r.closes, func() { c.Close() })
+	}
+	return r, nil
+}
+
+// model returns a new console for the daemon's view.
+func (r *daemonRig) model() *terminalconsole.Model { return daemonModelWith(r.cfg, r.read) }
+
+// attachKind is the kind of attach a request of the leads view is for.
+func (r *daemonRig) attachKind(req terminalconsole.AttachRequest) attachKind {
+	if r.leads == nil {
+		return ""
+	}
+	return r.leads.attachKind(req)
+}
+
+// Close ends the backends.
+func (r *daemonRig) Close() {
+	for _, c := range r.closes {
+		c()
+	}
+}
+
+// daemonConsole returns the console for --daemon as the command line makes
+// it for one run: the daemon's view, its approvals as the backend, and its
+// lead control as the leads view's when it has one. The returned function ends
+// what the backends hold; the caller calls it when the console is done.
+func daemonConsole(cfg config) (*terminalconsole.Model, func(), error) {
+	r, err := newDaemonRig(cfg, newLeadsClient)
 	if err != nil {
 		return nil, nil, err
 	}
-	cfg.options.Backend = backend
-	return daemonModel(cfg), closeOwner, nil
+	return r.model(), r.Close, nil
 }
 
-// daemonModel returns the console for the daemon's view: the cockpit with the
-// daemon as a source it asks again on its tick.
-func daemonModel(cfg config) *terminalconsole.Model {
-	return daemonModelWith(cfg, consoleclient.Read)
-}
-
-// daemonModelWith is daemonModel with the function that asks the daemon: the
-// command line gives consoleclient.Read and a test its own.
+// daemonModelWith returns the console for the daemon's view: the cockpit with
+// the daemon as a source it asks again on its tick, by the function that asks
+// the daemon: the command line gives consoleclient.Read and a test its own.
 func daemonModelWith(cfg config, read func(ctx context.Context, dir string) consoleclient.Result) *terminalconsole.Model {
 	o := cfg.options
 	o.Label = daemonLabel
