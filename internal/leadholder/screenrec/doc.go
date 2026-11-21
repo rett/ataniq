@@ -23,7 +23,7 @@
 //   - titles.jsonl, one JSON line for each window title the pane shows that
 //     differs from the last one recorded;
 //   - osc7501.jsonl, one JSON line for each OSC 7501 payload the holder's hook
-//     sees, the support query included;
+//     sees (the data after "7501;"), the support query included;
 //   - LIMIT.txt, only when needed: one line when the recording stopped at its
 //     bounds, and a line "dropped N" with the running total each time the queue
 //     dropped items.

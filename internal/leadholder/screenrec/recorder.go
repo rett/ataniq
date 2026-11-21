@@ -262,9 +262,9 @@ func (r *Recorder) Title(t string) {
 	r.pushLocked(item{kind: kindTitle, ms: ms, text: cutText(t), size: len(t)})
 }
 
-// OSC7501 queues a line for one payload of the status protocol. It copies at
-// most MaxPayload bytes and returns at once: the session calls it where it
-// applies output.
+// OSC7501 queues a line for one payload of the status protocol, the OSC data
+// after "7501;". It copies at most MaxPayload bytes and returns at once: the
+// session calls it where it applies output.
 func (r *Recorder) OSC7501(data []byte) {
 	ms := r.elapsed()
 	keep := append([]byte(nil), data[:min(len(data), MaxPayload)]...)
