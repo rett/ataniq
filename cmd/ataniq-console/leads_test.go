@@ -465,8 +465,8 @@ func TestTheViewDrawsTheStateReasonAndTheMessageResultTheDaemonGave(t *testing.T
 	d3.send(openLeadsKey())
 	d3.until("the spent message's fate", func(v string) bool { return strings.Contains(v, "spent, not delivered") })
 
-	// A row without them, as an older daemon gives, draws the plain state and
-	// the message as sent.
+	// A row without them, as a daemon that gives none, draws the plain state
+	// and the message by the daemon's flag alone.
 	row.StateReason, row.MessageResult = "", consoleclient.LeadDelivery{}
 	f2 := &fakeLeads{list: consoleclient.LeadListing{MaxRunning: 2, Leads: []consoleclient.LeadRow{row}}}
 	d2 := newViewDriver(t, rigFor(t, f2).model())
