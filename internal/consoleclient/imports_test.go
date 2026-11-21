@@ -26,6 +26,23 @@ var ownerAllowed = map[string]bool{
 	"ataniq/internal/approval/limits":    true,
 }
 
+// leadsAllowed are the packages of this repository that a file of the lead
+// control client (named leads*.go) may import besides the client protocol:
+// the wire values of the lead control plane, which have no behaviour.
+var leadsAllowed = map[string]bool{
+	"ataniq/internal/leadwire": true,
+}
+
+// leadsForbidden are the imports that no non-test file of the lead control
+// client may have. The client is for any front end, a console in a terminal
+// or a cloud agent's, so it names no terminal, no process, no system call
+// and no file of the machine: only the client protocol and the values of
+// package leadwire.
+var leadsForbidden = []string{
+	"os", "os/exec", "os/signal", "os/user", "syscall", "unsafe", "net/http", "plugin",
+	"golang.org/x/sys", "golang.org/x/term", "charm.land", "github.com/charmbracelet",
+}
+
 // namesTheTag reports whether a line of src is a build constraint that names
 // the owner channel's tag.
 func namesTheTag(src string) bool {
@@ -52,7 +69,7 @@ func TestImportsOnlyTheClientProtocol(t *testing.T) {
 		t.Fatalf("no files: %v", err)
 	}
 	fset := token.NewFileSet()
-	sawClient, sawOwner := false, false
+	sawClient, sawOwner, sawLeads := false, false, false
 	for _, name := range files {
 		src, err := os.ReadFile(name)
 		if err != nil {
@@ -66,6 +83,7 @@ func TestImportsOnlyTheClientProtocol(t *testing.T) {
 			t.Errorf("%s is behind the build tag %s: the console client is in every build", name, ownerTag)
 		}
 		owner := strings.HasPrefix(name, "owner")
+		leads := strings.HasPrefix(name, "leads")
 		for _, imp := range f.Imports {
 			path, _ := strconv.Unquote(imp.Path.Value)
 			if path != "ataniq" && !strings.HasPrefix(path, "ataniq/") {
@@ -76,6 +94,8 @@ func TestImportsOnlyTheClientProtocol(t *testing.T) {
 				sawClient = true
 			case owner && ownerAllowed[path]:
 				sawOwner = true
+			case leads && leadsAllowed[path]:
+				sawLeads = true
 			default:
 				t.Errorf("%s imports %s", name, path)
 			}
@@ -86,6 +106,43 @@ func TestImportsOnlyTheClientProtocol(t *testing.T) {
 	}
 	if !sawOwner {
 		t.Error("no owner file imports the owner connection's wire package: the check read nothing")
+	}
+	if !sawLeads {
+		t.Error("no leads file imports the lead control's wire package: the check read nothing")
+	}
+}
+
+// TestTheLeadsClientNamesNoTerminalOrSystem holds the lead control client to
+// the protocol and its wire values: no non-test file named leads*.go imports
+// a terminal toolkit, a process or system-call package or the file system's
+// os package (the paths of a ticket are values it checks as text).
+func TestTheLeadsClientNamesNoTerminalOrSystem(t *testing.T) {
+	files, err := filepath.Glob("leads*.go")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no files: %v", err)
+	}
+	fset := token.NewFileSet()
+	checked := 0
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		checked++
+		f, err := parser.ParseFile(fset, name, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, imp := range f.Imports {
+			path, _ := strconv.Unquote(imp.Path.Value)
+			for _, bad := range leadsForbidden {
+				if path == bad || strings.HasPrefix(path, bad+"/") {
+					t.Errorf("%s imports %s", name, path)
+				}
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no non-test leads file: the check read nothing")
 	}
 }
 
@@ -102,6 +159,23 @@ func TestTheTagRuleSeesAConstraint(t *testing.T) {
 	} {
 		if got := namesTheTag(src); got != want {
 			t.Errorf("%q: %v, want %v", src, got, want)
+		}
+	}
+}
+
+// TestTheLeadsRulesRejectWhatTheyShould holds the leads rules against their
+// own mistakes: only the wire values are allowed, and each forbidden import
+// is one the client could be tempted by.
+func TestTheLeadsRulesRejectWhatTheyShould(t *testing.T) {
+	if len(leadsAllowed) != 1 || !leadsAllowed["ataniq/internal/leadwire"] {
+		t.Errorf("the leads files may import %v", leadsAllowed)
+	}
+	for _, path := range []string{
+		"ataniq/internal/leadcontrol", "ataniq/internal/leaddaemon", "ataniq/internal/leadrole",
+		"ataniq/internal/terminalconsole", "ataniq/internal/terminalconsole/leadctl",
+	} {
+		if leadsAllowed[path] {
+			t.Errorf("the leads files may import %s", path)
 		}
 	}
 }
