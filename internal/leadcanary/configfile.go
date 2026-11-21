@@ -65,16 +65,26 @@ func ReadConfig(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	for _, r := range []struct{ field, root string }{{"state_root", cfg.StateRoot}, {"runtime_root", cfg.RuntimeRoot}} {
-		root, err := resolveLoose(r.root)
-		if err != nil {
-			return Config{}, bad(r.field, "cannot be resolved")
-		}
-		if real == root || strings.HasPrefix(real, root+"/") {
-			return Config{}, bad("file", "the config lies inside the %s", r.field)
-		}
+	if err := checkOutsideRoots(real, cfg.StateRoot, cfg.RuntimeRoot); err != nil {
+		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// checkOutsideRoots refuses a config file whose resolved path lies inside the
+// state root or the runtime root, by resolved path of the roots (symbolic links
+// resolved as far as they exist).
+func checkOutsideRoots(real, stateRoot, runtimeRoot string) error {
+	for _, r := range []struct{ field, root string }{{"state_root", stateRoot}, {"runtime_root", runtimeRoot}} {
+		root, err := resolveLoose(r.root)
+		if err != nil {
+			return bad(r.field, "cannot be resolved")
+		}
+		if real == root || strings.HasPrefix(real, root+"/") {
+			return bad("file", "the config lies inside the %s", r.field)
+		}
+	}
+	return nil
 }
 
 // readConfigFile opens the file by handle and returns its content and its
@@ -155,41 +165,59 @@ func resolveLoose(p string) (string, error) {
 
 // parseConfig decodes and validates the bytes of a config.
 func parseConfig(data []byte) (Config, error) {
-	if !utf8.Valid(data) {
-		return Config{}, bad("file", "is not valid UTF-8")
-	}
-	if err := scanKeys(data); err != nil {
-		return Config{}, err
-	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
 	var cfg Config
-	if err := dec.Decode(&cfg); err != nil {
-		if errors.Is(err, leadrole.ErrInvalid) {
-			return Config{}, bad("role", "is not a role string")
-		}
-		return Config{}, bad("file", "is not a config object: %s", decodeReason(err))
-	}
-	var extra json.RawMessage
-	if err := dec.Decode(&extra); err != io.EOF {
-		return Config{}, bad("file", "holds data after the object")
-	}
-	var tree map[string]any
-	if err := json.Unmarshal(data, &tree); err != nil {
-		return Config{}, bad("file", "is not a JSON object")
-	}
-	if field := findNull(tree, ""); field != "" {
-		return Config{}, bad(field, "is null")
-	}
-	for _, key := range requiredKeys {
-		if !present(tree, key) {
-			return Config{}, bad(strings.Join(key, "."), "is missing")
-		}
+	if err := decodeStrict(data, &cfg, requiredKeys, nil); err != nil {
+		return Config{}, err
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// decodeStrict decodes the bytes of a config file into v with the rules both
+// config files share: valid UTF-8, no key that an object repeats, no unknown
+// field, one object and nothing after it, no null anywhere, and every key of
+// required present. An element of an array of objects is checked by perElement:
+// it is called with the decoded tree and returns the first missing key of the
+// elements, as a field name, or "". The caller validates the values.
+func decodeStrict(data []byte, v any, required [][]string, perElement func(tree map[string]any) string) error {
+	if !utf8.Valid(data) {
+		return bad("file", "is not valid UTF-8")
+	}
+	if err := scanKeys(data); err != nil {
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		if errors.Is(err, leadrole.ErrInvalid) {
+			return bad("role", "is not a role string")
+		}
+		return bad("file", "is not a config object: %s", decodeReason(err))
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); err != io.EOF {
+		return bad("file", "holds data after the object")
+	}
+	var tree map[string]any
+	if err := json.Unmarshal(data, &tree); err != nil {
+		return bad("file", "is not a JSON object")
+	}
+	if field := findNull(tree, ""); field != "" {
+		return bad(field, "is null")
+	}
+	for _, key := range required {
+		if !present(tree, key) {
+			return bad(strings.Join(key, "."), "is missing")
+		}
+	}
+	if perElement != nil {
+		if field := perElement(tree); field != "" {
+			return bad(field, "is missing")
+		}
+	}
+	return nil
 }
 
 // decodeReason gives the part of a decoding error that holds no value: the

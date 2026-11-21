@@ -1,6 +1,7 @@
 //go:build linux && ataniq_canary
 
-// Package provision makes the folders of the one canary lead, before its first
+// Package provision makes the folders of the one canary lead (and of a scratch
+// lead, see below), before its first
 // start. It is the owner's step P0 of the canary slice: the daemon starts a
 // lead whose folders already exist, and nothing in the daemon or the holder
 // makes them. Like everything of canary mode it exists only in a build with the
@@ -98,9 +99,31 @@
 //
 // # The sandbox inputs file
 //
-// Provisioning does not write the sandbox inputs file; the run kit does.
+// [Provision] does not write the sandbox inputs file; the run kit does.
 // [PathsOf] gives the paths it must name for the sources, and [CheckInputs]
-// checks a file against the config.
+// checks a file against the config. [ProvisionScratch] does write it
+// ([WriteInputs]), from the scratch config's sandbox values.
+//
+// # Scratch leads
+//
+// [ProvisionScratch] is the daemon's define for a lead of a scratch place
+// (leadcanary.ScratchConfig): the same folders, clone, files, mount points and
+// checks, with these differences. The root check is canaryroot.Check with the
+// scratch root marker, which only the owner's command writes, and the lead has
+// no marker in the state root: its last act is the record
+// <state root>/scratch/<layout role>/provisioned.json, which holds the profile
+// digest. The mirror is made here from the lead's source when it is not there
+// (mirror.Mirror.ImportUpstream), and kept when a later step fails. The sandbox
+// inputs file is made here, the digest is computed with the holder's own code
+// (sandboxstart.ProfileDigest) before anything is written, and a profile_digest
+// pin in the scratch config must equal it ([ErrDigestPin]).
+//
+// A define that is cut short leaves its folders and no record. [ScratchStateOf]
+// says "incomplete" for it, [ProvisionScratch] refuses it with [ErrIncomplete]
+// and changes nothing, and the owner's command "ataniq-canary scratch-clean"
+// ([CleanScratch]) removes what that lead left, and only that, after which the
+// next define starts again. No define deletes anything. A lead that has
+// started, or whose record is there, is never cleaned.
 //
 // # What it prints
 //
