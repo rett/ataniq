@@ -756,3 +756,166 @@ func TestScratchModeInATaggedBuildIsScratchMode(t *testing.T) {
 		t.Fatalf("exit %d; stderr: %s", code, c.errbuf.String())
 	}
 }
+
+// The project and the names of a scratch lead under test: the reserved prefix
+// of a scratch place, whose state root carries the scratch root marker.
+const (
+	scratchProject    = "scratch-alpha"
+	scratchLayoutRole = "scratch-alpha-lead"
+	scratchRoleText   = "scratch-alpha/lead"
+)
+
+// newScratchRig is a canary rig whose lead is a scratch lead: the project, the
+// layout's folders and the role lock are the scratch lead's, and the state root
+// carries the scratch root marker in place of the canary marker.
+func newScratchRig(t *testing.T) *canaryRig {
+	t.Helper()
+	c := newCanaryRig(t)
+	if err := os.Remove(filepath.Join(c.stateRoot, canaryroot.MarkerName)); err != nil {
+		t.Fatal(err)
+	}
+	if err := canaryroot.WriteScratchMarker(c.stateRoot); err != nil {
+		t.Fatal(err)
+	}
+	lead := filepath.Join(c.stateRoot, "leads", scratchLayoutRole)
+	c.state, c.tree = filepath.Join(lead, "holder"), filepath.Join(lead, "tree")
+	c.runtime = filepath.Join(c.runRoot, "leads", scratchLayoutRole)
+	c.roleLock = filepath.Join(c.stateRoot, "roles", scratchProject, "lead.lock")
+	for _, d := range []string{c.state, c.tree, c.runtime, filepath.Dir(c.roleLock)} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c.in.Project, c.in.LayoutRole = scratchProject, scratchLayoutRole
+	c.writeInputs()
+	return c
+}
+
+// scratchSpec is the command line of a scratch lead's holder: the canary's,
+// with the scratch lead's role.
+func (c *canaryRig) scratchSpec(digest string, bools ...string) *argSpec {
+	return c.spec(digest, bools...).set("role", scratchRoleText)
+}
+
+// scratchDigest is canaryRig.digest for the scratch lead's command line: a
+// start pinned to sixty-four zeros is refused at the step verify-plan, before
+// anything is launched, and the refusal names the real digest.
+func (c *canaryRig) scratchDigest() string {
+	c.t.Helper()
+	if code := c.runNow(c.scratchSpec("").build()); code != exitSandbox {
+		c.t.Fatalf("the probing start exited %d; stderr: %s", code, c.errbuf.String())
+	}
+	m := pinnedDigest.FindStringSubmatch(c.errbuf.String())
+	if m == nil {
+		c.t.Fatalf("the probing start does not name the digest: %s", c.errbuf.String())
+	}
+	if n := len(c.launches()); n != 0 {
+		c.t.Fatalf("the probing start launched %d times", n)
+	}
+	ents, err := os.ReadDir(c.state)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	for _, e := range ents {
+		os.RemoveAll(filepath.Join(c.state, e.Name()))
+	}
+	c.errbuf = &syncBuf{}
+	c.sys.reset()
+	return m[1]
+}
+
+// A scratch lead passes the root check on a root with the scratch root marker,
+// goes through the same start sequence as the canary and serves, with the
+// waiver in its state file.
+func TestCanaryScratchLeadStartServes(t *testing.T) {
+	c := newScratchRig(t)
+	digest := c.scratchDigest()
+	c.start(c.scratchSpec(digest).build())
+	c.waitReady()
+	if s := c.status(); s.Lead != scratchRoleText || s.Epoch != testEpoch {
+		t.Errorf("status %+v", s)
+	}
+	if st := c.readState(); !st.Canary || st.Scratch || !st.SandboxStarted || st.Waiver != canaryroot.WaiverText || st.Role != scratchRoleText {
+		t.Errorf("state file %+v", st)
+	}
+	c.stopAndWait()
+	if !c.lockFree() {
+		t.Error("the role lock is still held after the holder ended")
+	}
+}
+
+// The refusals of the place gate for a scratch lead come before the role lock
+// is taken and before anything is written, as the canary's do: the root marker
+// missing, the canary marker in its place or beside it, and a throwaway lead
+// on a scratch root.
+func TestCanaryScratchRefusalsBeforeTheStartSequence(t *testing.T) {
+	tests := []struct {
+		name  string
+		rig   func(t *testing.T) *canaryRig
+		setup func(c *canaryRig)
+		want  string
+	}{
+		{"no root marker", newScratchRig, func(c *canaryRig) {
+			os.Remove(filepath.Join(c.stateRoot, canaryroot.ScratchMarkerName))
+		}, "no-marker"},
+		{"the canary marker in place of the root marker", newScratchRig, func(c *canaryRig) {
+			os.Remove(filepath.Join(c.stateRoot, canaryroot.ScratchMarkerName))
+			if err := canaryroot.WriteMarker(c.stateRoot, canaryProject); err != nil {
+				c.t.Fatal(err)
+			}
+		}, "wrong-kind"},
+		{"the canary marker beside the root marker", newScratchRig, func(c *canaryRig) {
+			if err := os.WriteFile(filepath.Join(c.stateRoot, canaryroot.MarkerName), []byte("{}\n"), 0o600); err != nil {
+				c.t.Fatal(err)
+			}
+		}, "wrong-kind"},
+		{"a root marker with the wrong mode", newScratchRig, func(c *canaryRig) {
+			os.Chmod(filepath.Join(c.stateRoot, canaryroot.ScratchMarkerName), 0o644)
+		}, "bad-marker"},
+		{"a throwaway lead on a scratch root", newCanaryRig, func(c *canaryRig) {
+			if err := os.WriteFile(filepath.Join(c.stateRoot, canaryroot.ScratchMarkerName), []byte("{}\n"), 0o600); err != nil {
+				c.t.Fatal(err)
+			}
+		}, "wrong-kind"},
+		{"a layout role that is not the scratch lead's", newScratchRig, func(c *canaryRig) {
+			c.in.LayoutRole = scratchProject + "-other"
+			c.writeInputs()
+		}, "layout role"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := tc.rig(t)
+			tc.setup(c)
+			a := c.spec("")
+			if c.in.Project == scratchProject {
+				a = c.scratchSpec("")
+			}
+			if code := c.runNow(a.build()); code != exitRefuse {
+				t.Errorf("exit %d, want %d; stderr: %s", code, exitRefuse, c.errbuf.String())
+			}
+			if !strings.Contains(c.errbuf.String(), "refused: ") || !strings.Contains(c.errbuf.String(), tc.want) {
+				t.Errorf("stderr %q does not say %q", c.errbuf.String(), tc.want)
+			}
+			nothingStarted(t, c.rig)
+			untouched(t, c.state)
+			if c.systemsMade() != 0 || len(c.launches()) != 0 {
+				t.Error("a refused start reached the start sequence")
+			}
+			if !c.lockFree() {
+				t.Error("the role lock is still held")
+			}
+		})
+	}
+}
+
+// With a project of neither prefix the refusal is the prefix's, whatever
+// markers the root carries.
+func TestCanaryRefusesAProjectOfNeitherPrefixOnAScratchRoot(t *testing.T) {
+	c := newScratchRig(t)
+	c.in.Project, c.in.LayoutRole = "plain", "plain-lead"
+	c.writeInputs()
+	if code := c.runNow(c.spec("").set("role", "plain/lead").build()); code != exitRefuse || !strings.Contains(c.errbuf.String(), "not-throwaway") {
+		t.Errorf("exit %d, want %d with the not-throwaway code; stderr: %s", code, exitRefuse, c.errbuf.String())
+	}
+	nothingStarted(t, c.rig)
+}
