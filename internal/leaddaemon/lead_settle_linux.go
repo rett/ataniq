@@ -76,7 +76,9 @@ const (
 var settleHook func(stage string)
 
 // settlers is the timers of one daemon: at most one per lead. The mutex guards
-// the fields and is never held across a call that waits.
+// the fields and is never held across a call that waits, except for the read of
+// one registry entry (the registry takes no callback, so no lock of the
+// registry can wait for this one).
 type settlers struct {
 	mu     sync.Mutex
 	ctx    context.Context // the timers' parent; nil until the server runs
@@ -143,16 +145,21 @@ func settleWanted(e leadregistry.Entry) bool {
 // registry shows the lead as settleWanted says, in place of a timer for another
 // epoch or intent; a timer that is armed for the same intent is left as it is.
 // It returns at once, and does nothing before the timers are let run or after
-// they are ended. It takes no lock but the timers' own, so it may be called
-// under the role's operation lock.
+// they are ended. It takes no lock but the timers' own and, for one read, the
+// registry's, so it may be called under the role's operation lock. The entry is
+// read under the timers' lock, so that it is the entry the timer replaces the
+// older one for: a read made before the lock could be of an epoch that a stop
+// and a new start of the role have left behind while the call waited, and its
+// timer would then replace the newer epoch's.
 func (l *leadMode) armSettle(lr *leadRole) {
-	e, err := l.reg.Get(lr.role)
-	if err != nil || !settleWanted(e) {
-		return
-	}
 	s := &l.settle
 	s.mu.Lock()
 	if s.closed || s.ctx == nil {
+		s.mu.Unlock()
+		return
+	}
+	e, err := l.reg.Get(lr.role)
+	if err != nil || !settleWanted(e) {
 		s.mu.Unlock()
 		return
 	}

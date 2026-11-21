@@ -817,6 +817,42 @@ func TestSettleTimersAreArmedPerIntentAndCancelled(t *testing.T) {
 	}
 }
 
+// A call that arms a timer reads the entry under the timers' lock: one that
+// waits for the lock while the role is stopped and started again (a newer epoch
+// and intent, unknown and pending) arms the timer of the newer intent, and does
+// not replace it with one for the epoch it first saw. The test holds the lock,
+// lets the call reach it, changes the lead and lets the call go.
+func TestSettleArmReadsTheEntryUnderTheTimersLock(t *testing.T) {
+	m, lr := bareSettle(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.startSettlers(ctx)
+	first := unknownPending(t, m, lr, "launch-unsettled")
+
+	m.settle.mu.Lock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.armSettle(lr)
+	}()
+	// The call is at the lock (or about to be: a call that reads late sees the
+	// newer entry anyway, which is what the test checks).
+	time.Sleep(100 * time.Millisecond)
+	second := unknownPending(t, m, lr, "launch-unsettled")
+	if second.Epoch == first.Epoch || second.ID == first.ID {
+		t.Fatalf("the intent did not change: %+v %+v", first, second)
+	}
+	m.settle.mu.Unlock()
+	<-done
+
+	cur := timersOf(m)[lr.role]
+	if cur == nil || cur.epoch != second.Epoch || cur.intent != second.ID {
+		t.Fatalf("timer %+v, want epoch %d intent %s", cur, second.Epoch, second.ID)
+	}
+	m.cancelSettle(lr)
+	m.settle.wg.Wait()
+}
+
 func TestSettleTimersAreJoinedAndNoneStartsAfter(t *testing.T) {
 	m, lr := bareSettle(t)
 	ctx, cancel := context.WithCancel(context.Background())
