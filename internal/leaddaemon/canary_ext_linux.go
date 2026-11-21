@@ -59,6 +59,13 @@ const (
 	CodeUnavailable clientapi.ErrorCode = "unavailable"
 )
 
+// The prefix of the command ids the daemon gives the holder in canary mode, and
+// the reason code of an operation whose epoch is not the role's.
+const (
+	canaryIDPrefix = "canary-"
+	codeStaleEpoch = "stale-epoch"
+)
+
 // The profile the registry shows as requested for the canary role. The
 // registry wants every field, the config carries the runtime, its version and
 // the permission mode the fence expects, and nothing else of a profile.
@@ -143,6 +150,7 @@ const (
 	msgRegistryNo   = "the registry refused"
 	msgForeignUnit  = "a unit with the role's name is not the role's recorded unit"
 	msgFailed       = "the operation failed; see the daemon's log"
+	msgStaleEpoch   = "the epoch is not the role's current epoch"
 	msgStopping     = "the daemon is stopping"
 	attachRoleWrite = string(wire.RoleWriter)
 	attachRoleView  = string(wire.RoleViewer)
@@ -169,6 +177,9 @@ type canaryExt struct {
 	wait      time.Duration
 	logf      func(format string, a ...any)
 	profile   leadregistry.Requested
+	// idPrefix begins the command ids the daemon gives the holder: "canary-"
+	// for the canary, "lead-" for a lead of scratch mode (see [leadMode]).
+	idPrefix string
 
 	mu sync.Mutex
 	// spent holds the epochs whose one message is spent. It starts from the
@@ -192,14 +203,14 @@ func (m *canaryMode) newExt(in *leadInstance, ctl *leadlifecycle.Controller, reg
 	// Validated at setup: the names, the admission and the runtime folder
 	// cannot fail for this config.
 	holderDir, _ := cfg.HolderRuntimeDir()
-	adm, _ := leadcanary.NewAdmission(cfg.Role)
+	adm, _ := leadcanary.NewAdmissionFor(cfg.Reserved, cfg.Role)
 	spent := make(map[uint64]bool, len(in.spent))
 	for epoch := range in.spent {
 		spent[epoch] = true
 	}
 	return &canaryExt{
 		cfg: cfg, role: cfg.Role, holderDir: holderDir, ctl: ctl, reg: reg, ev: in.ev, adm: adm,
-		dial: m.dialFor, wait: m.injectFor, logf: m.d.logf, spent: spent,
+		dial: m.dialFor, wait: m.injectFor, logf: m.d.logf, spent: spent, idPrefix: m.idPrefix,
 		profile: leadregistry.Requested{
 			// The registry's runtime enum is checked by the registry; the config
 			// names the key. The model, the effort and the access mode are not
@@ -319,6 +330,14 @@ func (x *canaryExt) record(en leadcanary.Entry) {
 func (x *canaryExt) failure(op string, err error) *clientapi.ErrorBody {
 	x.logf("canary %s: %s", op, SafeText(err.Error()))
 	switch {
+	// An error that says the outcome is not known comes first: the daemon that
+	// is told to stop while the manager has the start request returns an error
+	// that wraps the lifecycle's and the context's, and the answer must not say
+	// that nothing was started.
+	case errors.Is(err, leadlifecycle.ErrLaunchUncertain):
+		return unavailable("the start's outcome is not known; the role is shown unknown")
+	case errors.Is(err, leadlifecycle.ErrStopUnproven):
+		return unavailable("the stop is not proven; the role is shown unknown")
 	case errors.Is(err, context.Canceled):
 		return unavailable(msgStopping)
 	case errors.Is(err, leadregistry.ErrNoRole):
@@ -342,10 +361,6 @@ func (x *canaryExt) failure(op string, err error) *clientapi.ErrorBody {
 		return unavailable("the previous unit is not proven gone")
 	case errors.Is(err, leadlifecycle.ErrStartFailed):
 		return unavailable("the start failed and nothing was started")
-	case errors.Is(err, leadlifecycle.ErrLaunchUncertain):
-		return unavailable("the start's outcome is not known; the role is shown unknown")
-	case errors.Is(err, leadlifecycle.ErrStopUnproven):
-		return unavailable("the stop is not proven; the role is shown unknown")
 	case errors.Is(err, leadlifecycle.ErrIntentPending):
 		return unavailable("the launch intent is not settled yet")
 	case errors.Is(err, leadregistry.ErrEpochExhausted):
@@ -386,7 +401,11 @@ func (x *canaryExt) commandID(op string, epoch uint64) string {
 	x.commands++
 	n := x.commands
 	x.mu.Unlock()
-	return "canary-" + op + "-" + strconv.FormatUint(epoch, 10) + "-" + strconv.FormatUint(n, 10)
+	prefix := x.idPrefix
+	if prefix == "" {
+		prefix = canaryIDPrefix
+	}
+	return prefix + op + "-" + strconv.FormatUint(epoch, 10) + "-" + strconv.FormatUint(n, 10)
 }
 
 // define defines the role, as the lead of the daemon (run by ataniq), and
@@ -484,16 +503,57 @@ func (x *canaryExt) stop(ctx context.Context) (any, *clientapi.ErrorBody) {
 
 // ticket mints a ticket, registers it with the holder and writes the ticket
 // file for the console. The ticket is in nothing else: not in the answer, not
-// in the evidence, not in the log.
+// in the evidence, not in the log. The canary's ticket is for the role's
+// current epoch.
 func (x *canaryExt) ticket(ctx context.Context, attach wire.Role) (any, *clientapi.ErrorBody) {
+	res, f := x.ticketFor(ctx, attach, 0)
+	if f != nil {
+		return nil, f.body()
+	}
+	return res, nil
+}
+
+// opFail is why an operation of the extension did not give a result: whether it
+// was refused (nothing was done) or could not be carried out, the reason code
+// and the fixed text. The canary's operations answer it as an error; the lead
+// operations of scratch mode keep the code and the text in a receipt.
+type opFail struct {
+	refused bool
+	code    string
+	msg     string
+}
+
+func refusal(code, msg string) *opFail { return &opFail{refused: true, code: code, msg: msg} }
+
+func failure(code, msg string) *opFail { return &opFail{code: code, msg: msg} }
+
+// body is the answer of an error.
+func (f *opFail) body() *clientapi.ErrorBody {
+	if f.refused {
+		return refused(f.msg)
+	}
+	return unavailable(f.msg)
+}
+
+// ticketFor is [canaryExt.ticket] for an epoch the sender expects. want is the
+// epoch the sender saw, and 0 means the role's current one (the canary's). A
+// want that is not the role's current epoch is refused with the code
+// stale-epoch before anything reaches the holder, and the request the holder
+// gets carries the epoch that was checked, so that the holder's own check of
+// the epoch is the last guard against a role that was stopped and started in
+// between.
+func (x *canaryExt) ticketFor(ctx context.Context, attach wire.Role, want uint64) (CanaryTicketResult, *opFail) {
 	e, running := x.runningEntry()
 	if !running {
-		return nil, refused(msgNotRunning)
+		return CanaryTicketResult{}, refusal("not-running", msgNotRunning)
+	}
+	if want != 0 && want != e.Epoch {
+		return CanaryTicketResult{}, refusal(codeStaleEpoch, msgStaleEpoch)
 	}
 	ticket, err := wire.NewTicket()
 	if err != nil {
 		x.logf("canary ticket: cannot mint a ticket: %s", SafeText(err.Error()))
-		return nil, unavailable(msgFailed)
+		return CanaryTicketResult{}, failure("ticket-failed", msgFailed)
 	}
 	resp, wrote, err := callHolder(ctx, x.holderDir, wire.Request{
 		Op: wire.OpTicket, Epoch: e.Epoch, Role: attach, Ticket: ticket,
@@ -502,18 +562,21 @@ func (x *canaryExt) ticket(ctx context.Context, attach wire.Role) (any, *clienta
 	switch {
 	case err != nil && !wrote:
 		x.logf("canary ticket: %s", SafeText(err.Error()))
-		return nil, unavailable(msgUnreachable)
+		return CanaryTicketResult{}, failure("holder-unreachable", msgUnreachable)
 	case err != nil:
 		x.logf("canary ticket: no usable answer: %s", SafeText(err.Error()))
-		return nil, unavailable(msgTicketLost)
+		return CanaryTicketResult{}, failure("ticket-lost", msgTicketLost)
 	case !resp.OK:
 		x.logf("canary ticket: the holder refused: %s", SafeText(resp.Code))
-		return nil, refused(msgTicketNo)
+		if resp.Code == wire.CodeWrongEpoch {
+			return CanaryTicketResult{}, refusal(codeStaleEpoch, msgTicketNo)
+		}
+		return CanaryTicketResult{}, refusal("ticket-refused", msgTicketNo)
 	}
 	file, err := writeTicketFile(x.holderDir, ticket)
 	if err != nil {
 		x.logf("canary ticket: the ticket file: %s", SafeText(err.Error()))
-		return nil, unavailable(msgTicketFile)
+		return CanaryTicketResult{}, failure("ticket-file", msgTicketFile)
 	}
 	x.record(leadcanary.Entry{Event: leadcanary.EventTicket, Epoch: e.Epoch, Detail: "attach-role " + string(attach)})
 	return CanaryTicketResult{Role: x.role.String(), Epoch: e.Epoch, TicketFile: file, Folder: x.holderDir}, nil
@@ -542,11 +605,25 @@ func (x *canaryExt) ticket(ctx context.Context, attach wire.Role) (any, *clienta
 // bad-request mean that nothing was written to the lead; they are the error
 // unavailable.
 func (x *canaryExt) inject(ctx context.Context, p CanaryInjectParams) (any, *clientapi.ErrorBody) {
+	res, f := x.injectFor(ctx, p, 0)
+	if f != nil {
+		return nil, f.body()
+	}
+	return res, nil
+}
+
+// injectFor is [canaryExt.inject] for an epoch the sender expects, as
+// [canaryExt.ticketFor] is for a ticket. The check of the epoch comes after the
+// one of whether the role is running and before the one of whether the epoch's
+// message is spent, so that a message that names an epoch that is not the
+// role's is never counted against the role's. The frame the holder gets
+// carries the epoch that was checked.
+func (x *canaryExt) injectFor(ctx context.Context, p CanaryInjectParams, want uint64) (CanaryInjectResult, *opFail) {
 	e, running := x.runningEntry()
 	epoch := e.Epoch
 	if !x.cfg.Inject {
 		x.refuse(p.MessageID, epoch, "inject-off")
-		return nil, refused(msgInjectOff)
+		return CanaryInjectResult{}, refusal("inject-off", msgInjectOff)
 	}
 	text, err := x.adm.Admit(p.MessageID, p.Body)
 	if err != nil {
@@ -556,22 +633,26 @@ func (x *canaryExt) inject(ctx context.Context, p CanaryInjectParams) (any, *cli
 			code = string(ae.Code)
 		}
 		x.refuse(p.MessageID, epoch, code)
-		return nil, refused("the message is refused (" + code + ")")
+		return CanaryInjectResult{}, refusal(code, "the message is refused ("+code+")")
 	}
 	if !running {
 		x.refuse(p.MessageID, epoch, "not-running")
-		return nil, refused(msgNotRunning)
+		return CanaryInjectResult{}, refusal("not-running", msgNotRunning)
+	}
+	if want != 0 && want != epoch {
+		x.refuse(p.MessageID, epoch, codeStaleEpoch)
+		return CanaryInjectResult{}, refusal(codeStaleEpoch, msgStaleEpoch)
 	}
 	x.mu.Lock()
 	switch {
 	case x.spent[epoch]:
 		x.mu.Unlock()
 		x.refuse(p.MessageID, epoch, "second-message")
-		return nil, refused(msgSecond)
+		return CanaryInjectResult{}, refusal("second-message", msgSecond)
 	case x.inFlight:
 		x.mu.Unlock()
 		x.refuse(p.MessageID, epoch, "message-in-flight")
-		return nil, refused(msgInFlight)
+		return CanaryInjectResult{}, refusal("message-in-flight", msgInFlight)
 	}
 	x.inFlight = true
 	x.mu.Unlock()
@@ -595,7 +676,7 @@ func (x *canaryExt) inject(ctx context.Context, p CanaryInjectParams) (any, *cli
 	if !wrote {
 		x.logf("canary inject: %s", SafeText(err.Error()))
 		x.refuse(p.MessageID, epoch, "holder-unreachable")
-		return nil, unavailable(msgUnreachable)
+		return CanaryInjectResult{}, failure("holder-unreachable", msgUnreachable)
 	}
 	if !sent {
 		x.sentUnrecorded(p.MessageID, epoch)
@@ -609,10 +690,18 @@ func (x *canaryExt) inject(ctx context.Context, p CanaryInjectParams) (any, *cli
 		result = *resp.Inject
 	case !resp.OK && holderRefusal(resp.Code):
 		x.refuse(p.MessageID, epoch, "holder-"+resp.Code)
-		return nil, unavailable(msgHolderNo)
+		return CanaryInjectResult{}, failure("holder-"+resp.Code, msgHolderNo)
 	}
 	x.record(leadcanary.ResultEntry(p.MessageID, epoch, result))
 	return CanaryInjectResult{Role: x.role.String(), Epoch: epoch, MessageID: p.MessageID, Result: result}, nil
+}
+
+// messageSpent reports whether the one message of the epoch is spent, from the
+// role's own set.
+func (x *canaryExt) messageSpent(epoch uint64) bool {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.spent[epoch]
 }
 
 // recordSent writes the inject-sent line of a message whose request frame is

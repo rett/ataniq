@@ -86,6 +86,9 @@ type canaryMode struct {
 	router    *leadRouter
 	injectFor time.Duration
 	dialFor   time.Duration
+	// idPrefix begins the command ids the daemon gives the holder; empty means
+	// the canary's.
+	idPrefix string
 }
 
 // canarySetup checks the canary config and builds the parts that need no file.
