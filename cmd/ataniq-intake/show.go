@@ -173,7 +173,7 @@ func hintFor(sub string, err error) string {
 	case errors.Is(err, intake.ErrMoved):
 		return "Run '" + program + " review' again and sign off the new review."
 	case errors.Is(err, mirror.ErrRepositoryPath):
-		return "The sandbox template's serve.repository names a path that exists on this host. Choose a path that does not exist here. Nothing was run."
+		return "The sandbox template's serve.repository names a path that exists on this host or cannot be checked here. Choose a path that does not exist here. The mirror was not changed."
 	case errors.Is(err, intake.ErrCommitEncoding):
 		return "A commit of the branch names an encoding other than UTF-8. Nothing was converted. The lead has to commit the branch again in UTF-8."
 	case errors.Is(err, intake.ErrCommitFormat):

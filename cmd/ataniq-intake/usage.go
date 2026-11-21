@@ -89,8 +89,8 @@ nothing runs without a usable template.
 
 Prints the sizes, each ref update, and any ref outside the lead's namespace
 that changed meanwhile. Exit status 1 when a limit is passed, the clone is
-refused, the template's serve.repository path exists on this host, or another
-fetch is running.
+refused, the template's serve.repository path exists on this host or cannot be
+checked here, or another fetch is running.
 `,
 	"branches": `Usage: ataniq-intake branches --state DIR --project NAME [--role ROLE]
 
