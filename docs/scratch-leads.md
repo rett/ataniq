@@ -1,0 +1,566 @@
+# Scratch leads
+
+This guide is for the owner and for contributors. It describes the lead control
+plane as built: a daemon that, under `ataniqd run --scratch CONFIG`, defines,
+starts, stops, messages and hands out attach tickets for up to eight scratch
+leads on throwaway repositories, and the console that drives it. It describes
+provisional code, and nothing in it is qualified. It builds on
+[the canary slice](canary-slice.md), which says what the holder, the waiver and
+the injected message are; this guide does not repeat that.
+
+## What it is, and what it is not
+
+A scratch lead is a lead whose project is `scratch-<key>`, run in the real
+sandbox by the real holder, in a clone of a repository that the owner made for
+the purpose. The daemon provisions it, starts it in a transient user unit and
+sends it one message per epoch, and it does all of that on the console's
+command, with a durable receipt for each command.
+
+It exists only in a build with the `ataniq_canary` tag. It is **not** a real
+project's lead: no real project, no real repository and no real credential
+belong in it, and the `scratch-` prefix is reserved so that no real project
+carries it. It is **not** a qualification. It passes no case of the lead-hosting
+design's section 7, no part of its output says that something passed, is
+qualified or is supported, and it uses the same assertion 10 waiver as the
+canary slice, for the same reason: no qualification record exists. It lets
+several scratch leads be driven from the console; what it shows is a list of
+facts, not a result.
+
+**It is unrelated to the holder's `--scratch` mode.** `ataniq-holder --scratch`
+and the `ataniq-scratch` launcher host a scratch *agent*: no project, no lead
+role and a disposable home, started by hand, with no daemon ([the lead holder
+guide](lead-holder.md)). A scratch *lead* is a lead of a project named
+`scratch-<key>`, started by the daemon under the canary tag with the holder's
+`--canary` mode. The two share a word and nothing else; no flag, file or folder
+of one is read by the other.
+
+What it does not do:
+
+- No Qargi inside the sandbox, no `ready`, no operator decision on an uncertain
+  command and no confirmation from the conversation file: these are the canary
+  slice's limits, and they hold here.
+- No intake by the daemon: the owner takes a commit in by hand with
+  `ataniq-intake`.
+- No unit for the daemon and no start at boot: the daemon is started by hand.
+- No removal by the daemon. A define that was cut short is removed by the
+  owner's own command (see [Failure handling](#failure-handling-and-owner-recovery)).
+- No client identity. The daemon's socket admits the daemon's own user, as it
+  does for the read-only skeleton, and the `client` string of a command is a
+  namespace for command ids, not an identity (see [The command
+  table](#the-command-table)).
+
+## Where it exists: the tag, the prefix and the three gates
+
+**The build tag.** Every file of the daemon's side of scratch mode (the
+operations, the router, the config, provisioning, the owner's two commands and
+the flag) starts with `//go:build linux && ataniq_canary`, and the package that
+holds the command table, `internal/leadcontrol`, has no untagged file, like the
+canary's four library packages. The wire values and the console's side (the
+client and the leads view) are untagged and do nothing until a daemon's `hello`
+lists the operations, and a release daemon lists none. A release build has no
+scratch mode: `hello` lists two operations and says `mutations: false`, and
+`ataniqd` has no `--scratch` flag. Only `make canary-build` builds binaries with
+the tag. The tests of the tagged code run with `make test-canary`.
+
+**The reserved prefix is `scratch-`** (`leadrole.ScratchPrefix`), beside the
+canary's `throwaway-`. Each mode accepts its own prefix and refuses the other's:
+scratch mode accepts only a project that carries `scratch-`, with the role
+`scratch-<key>/lead`, and canary mode only `throwaway-`. Name no real project
+with either prefix.
+
+**Three gates stand before the waiver and the injection**, as they do for the
+canary slice, independent of each other:
+
+1. **The binary.** It was built with the tag, by `make canary-build`.
+2. **The place.** The state root and the runtime root are not the account's
+   default folders and neither lies in or contains one (the same check as the
+   canary's), and the state root carries the root marker `scratch-root.json`.
+   That file holds exactly
+
+   ```text
+   {"marker":"ataniq-scratch-root","version":1}
+   ```
+
+   and a newline, is the caller's, mode 0600, at most 256 bytes, and names no
+   project, because one scratch root holds several leads. **Only `ataniq-canary
+   scratch-init` writes it.** The daemon never does, so a daemon cannot make a
+   place into a scratch place by itself. A root carries one kind of marker: a
+   state root that has `canary-root.json` is refused for a scratch lead, and one
+   that has `scratch-root.json` is refused for a throwaway lead, whatever else
+   it holds. The daemon, the holder and provisioning share the one check.
+3. **The invocation.** The daemon runs with `--scratch CONFIG`, a config that
+   lists the lead, and the holder is started with `--canary`, and with
+   `--inject` only when that lead's config says `"inject": true`. The holder's
+   flag keeps its name: it selects the waiver path, not the prefix.
+
+## The owner's steps
+
+In order, by the owner's hand. The daemon never runs `ataniq-canary`.
+
+1. Build with `make canary-build`.
+2. Write the scratch config (below). It is the owner's file: mode 0600, outside
+   both roots.
+3. Run `ataniq-canary scratch-init --config CONFIG`. It refuses the default
+   roots, makes the state root with mode 0700 when it is not there (its parent
+   folder must exist), writes `scratch-root.json` in it, and prints one line for
+   each folder or file it made or kept. Run again, it keeps what is right; a root
+   that carries the canary's marker, or a marker that is not the one this
+   command writes, is refused. It makes no lead folder, no mirror and no runtime
+   root. Exit status: 0 done, 1 failed, 2 usage.
+4. Start `ataniqd run --scratch CONFIG`. The daemon makes the runtime folder
+   itself, like the skeleton does.
+5. Drive the leads from the console ([the console guide](terminal-console.md)),
+   which defines, starts, stops, messages and attaches.
+
+Nothing about a lead is made until its `lead.define` runs: the daemon provisions
+it then, in the folders below, with the git of the host.
+
+## The scratch config
+
+One JSON file, read once by `ataniqd run --scratch` and by `ataniq-canary
+scratch-init` and `scratch-clean`. The client never sends a path or a value of
+it: a lead is named by its key. It follows the canary config's file rules: the
+caller's, mode 0600, one link, at most 64 KiB, outside both roots (judged by its
+resolved path), valid UTF-8, no unknown key, no repeated key and no `null`, every
+key required except the optional ones named below, every path absolute and
+clean, and no limit has a default in code. The values are samples: every path is
+yours to choose, and nothing here is a real path.
+
+```json
+{
+  "version": 1,
+  "state_root": "/srv/scratch/state",
+  "runtime_root": "/srv/scratch/runtime",
+  "max_running": 2,
+  "holder": {"executable": "/srv/checkout/build/canary/ataniq-holder", "cols": 120, "rows": 40},
+  "sandbox": {
+    "agent_install": "/srv/scratch/agent-install",
+    "pasta": "/usr/bin/pasta",
+    "bwrap": "/usr/bin/bwrap",
+    "probe": "/srv/checkout/build/canary/ataniq-probe",
+    "managed_marker": "guard-hook",
+    "never_mounted": ["/srv/checkout", "/srv/sample/dot-ssh"],
+    "provider_host": "provider.example.invalid",
+    "terminal": {"term": "xterm-256color"},
+    "time_limit_seconds": 60
+  },
+  "provision": {
+    "git_name": "Sample Lead",
+    "git_email": "lead@example.invalid",
+    "managed_settings": "/srv/scratch/conf/managed-settings.json",
+    "guard_hook": "/srv/scratch/conf/guard-hook",
+    "replay_screens": "/srv/scratch/conf/replay-screens"
+  },
+  "leads": [
+    {
+      "key": "alpha",
+      "source": "/srv/scratch/upstream/alpha.git",
+      "upstream_branch": "develop",
+      "agent": {
+        "kind": "stand-in",
+        "runtime": "claude",
+        "runtime_version": "1.2.3",
+        "footer_mode": "manual",
+        "argv": ["/ataniq/agent/ataniq-canary-standin"],
+        "env": []
+      },
+      "inject": true,
+      "limits": {
+        "memory_max_bytes": 4294967296,
+        "swap_max_bytes": 0,
+        "tasks_max": 512,
+        "memory_floor_bytes": 1073741824,
+        "memory_share_percent": 50
+      }
+    }
+  ]
+}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `version` | 1. |
+| `state_root`, `runtime_root` | The two roots of the scratch place, shared by every lead. Neither may be a default root of the account, and they must differ and not nest. They are the daemon's roots: `--state-dir` and `--runtime-dir` are refused with `--scratch`. |
+| `max_running` | 1 to 8: the most leads that count as running at once (see [max_running](#max_running)). |
+| `holder.executable` | The holder binary of `build/canary/`. |
+| `holder.cols`, `holder.rows` | The holder's screen, 20 to 500 columns and 5 to 200 rows, for every lead. |
+| `sandbox.agent_install` | The agent's install folder, the `sources.agent_install` of the sandbox inputs file. |
+| `sandbox.pasta`, `sandbox.bwrap`, `sandbox.probe` | The three executables of the sandbox: three different files. |
+| `sandbox.managed_marker` | Optional. The text the managed-settings file must hold (`sources.managed_marker` of the inputs file); the runtime `claude` needs it. |
+| `sandbox.never_mounted` | 1 to 64 host paths that no bind source may touch. |
+| `sandbox.provider_host` | The host name assertion 4 resolves inside, plain text. |
+| `sandbox.terminal` | `term` is required; `colorterm`, `lang` and `tz` are optional. |
+| `sandbox.time_limit_seconds` | 1 to 3600: how long the start waits for the probe's report line. |
+| `provision.git_name`, `provision.git_email` | The leads' git identity. |
+| `provision.managed_settings`, `provision.guard_hook`, `provision.replay_screens` | The files and the folder that provisioning copies, the same for every lead. |
+| `leads` | 1 to 8 leads. |
+| `leads[].key` | Lower-case letters, digits and dashes, starting with a letter or a digit, at most 50 bytes, unique in the file. |
+| `leads[].source` | The absolute path of the local repository the lead's mirror is made from. It is the owner's, and a throwaway one. |
+| `leads[].upstream_branch` | The branch fetched from `source` into the mirror, and the one the lead's tree starts from. |
+| `leads[].agent`, `leads[].inject`, `leads[].limits` | As the canary config's `agent`, `inject` and `limits`, for this lead; [the canary slice guide](canary-slice.md#the-config-file) has each field and its bounds. |
+| `leads[].profile_digest` | Optional. A pin of the lead's sandbox profile digest: 64 lower-case hex digits, not all zeros. See [The profile digest](#the-profile-digest-and-the-pin). |
+
+The names follow from the key. For the key `alpha` the project is
+`scratch-alpha`, the role `scratch-alpha/lead`, the layout and intake role
+`scratch-alpha-lead` (63 bytes at most, which is why a key has 50), the unit
+`ataniq-lead-scratch-alpha.service` and the mirror
+`<state root>/mirrors/scratch-alpha.git`. Each lead's config is the canary
+config's rules applied to it: the same validation, per lead.
+
+## What a lead has on disk
+
+Provisioning makes the folders of [the canary slice](canary-slice.md#the-commands)
+for each lead, in the same two roots, and these files, which are scratch mode's
+own:
+
+| Path | What it is |
+| --- | --- |
+| `<state root>/scratch-root.json` | The place gate, written only by `scratch-init`. |
+| `<state root>/scratch/<layout role>/sandbox-inputs.json` | The sandbox inputs file of the lead, written by the define (mode 0600) from the config's `sandbox` part, the lead's layout and agent, and the SHA-256 of the copied managed settings. The holder reads it. |
+| `<state root>/scratch/<layout role>/provisioned.json` | The record that provisioning is done, written last. It holds a marker, a version, the project and the profile digest, and nothing else; the daemon reads it back and refuses a record that is not exactly what provisioning writes. |
+| `<state root>/evidence/<layout role>.jsonl` | The lead's evidence file, one per lead (the canary's `canary-evidence.jsonl` is not used), with the events and the rules of [the canary slice](canary-slice.md#the-result-and-its-evidence). |
+| `<state root>/lead-commands.jsonl` | The command table, one for the daemon. |
+| `<state root>/mirrors/scratch-<key>.git` | The lead's mirror, made by the define from `source`; kept when a later step fails. |
+| `<runtime root>/leads/<layout role>/` | The holder's runtime folder, with its attach socket and the lead's ticket file (`ticket`, mode 0600). One per lead. |
+
+Every lead's per-lead files are in its own folder, so leads share no evidence
+file, no inputs file and no ticket file.
+
+## The operations
+
+The daemon registers one extension with six operations, listed by `hello` after
+`hello` and `status`, in this order: `lead.list`, `lead.define`, `lead.start`,
+`lead.stop`, `lead.ticket` and `lead.inject`. `hello` then says
+`"mutations":true`. The protocol name stays `ataniq.client/1`, and the daemon
+serves no canary operation under `--scratch`. A client takes all six as lead
+control, none as a daemon without it, and some as a version error.
+
+The shapes are the structs of [`internal/leadwire`](../internal/leadwire/doc.go),
+which has no build tag and imports only the standard library, so the daemon and
+the console's client share one definition. Params are decoded strictly: every key
+of the operation, spelled exactly, none `null`, nothing else. A command's params
+begin with `client` and `command_id`, then `role`, then the rest.
+
+| Operation | Params | Result |
+| --- | --- | --- |
+| `lead.list` | none, or `{}` | `{"max_running","running","leads":[{"key","role","defined","provision","state","epoch","unit","inject","message_spent","last"}]}`, one row per configured lead. `provision` is `done`, `incomplete` or `none`. `last` is the role's latest receipt in summary form (no `result`), or `null`. Not bound to a command id; it takes no lock and answers while a define runs. |
+| `lead.define` | `client`, `command_id`, `role` | A receipt whose result is `{"role","state","profile_digest"}`. The state is `stopped`. |
+| `lead.start` | `client`, `command_id`, `role` | A receipt whose result is `{"role","state","epoch","unit","waiver"}`. The state is `starting`; `waiver` is the waiver's text. |
+| `lead.stop` | `client`, `command_id`, `role`, `epoch` | A receipt whose result is `{"role","state","proof"}`. An `epoch` of 0 means the current epoch. |
+| `lead.ticket` | `client`, `command_id`, `role`, `epoch`, `attach_role` (`writer` or `viewer`) | A receipt whose result is `{"role","epoch","ticket_file","folder"}`. The ticket is never in an answer: it is in the ticket file. |
+| `lead.inject` | `client`, `command_id`, `role`, `epoch`, `message_id`, `body` | A receipt whose result is `{"role","epoch","message_id","result":{"outcome","reason","written","detail"}}`, the holder's own words as in [the canary slice](canary-slice.md#the-result-and-its-evidence). |
+
+What each does:
+
+- **`lead.define`** provisions the lead when that is not done (the mirror from
+  `source`, the folders, the clone, the copies, the inputs file, the record, in
+  that order, with the record last), then defines the role in the registry and
+  gives it its holder command. A lead whose record is already there skips
+  provisioning and is defined again, which updates it. Provisioning runs inside
+  the daemon, so the daemon runs `/usr/bin/git`, with the explicit minimal
+  environment that provisioning gives it and not the daemon's. It is bounded at
+  ten minutes. A define a client stops waiting for goes on; the receipt shows it
+  as `in-progress` until it ends.
+- **`lead.start`** starts the lead's unit through the lifecycle, after the check
+  that the lead's folders exist and are private and the `max_running` check. It
+  refuses a lead that has no holder command, which is a lead whose define has not
+  finished (`not-provisioned`).
+- **`lead.stop`** is the owner's way out of every state, `unknown` included: it
+  signals the role's own units. With an `epoch` that is not the registry's it is
+  refused `stale-epoch`, so a stop meant for one epoch never stops the next. It
+  is `done` **only for a lead that is stopped with a stop proof**: the proof text
+  names the unit's invocation and its empty control group. The stop always
+  reaches the lifecycle, so a lead that is shown stopped is asked about too; a
+  lead that was **never started** has no proof, and its stop answers
+  `uncertain` with the code `stop-unproven`, not `done`.
+- **`lead.ticket`** asks the holder for a ticket for the epoch and writes it to
+  the lead's ticket file. An `epoch` of 0, or one that is not the lead's current
+  one, is refused `stale-epoch`.
+- **`lead.inject`** sends the epoch's one message. It names the epoch, and a
+  mismatch is `stale-epoch`, so a delayed command cannot land in a newer epoch;
+  an `epoch` of 0 is refused too. The message and its admission are the canary's:
+  the id and the body grammar, a body of at most 2048 bytes (the wire's cap on the
+  params, 4096, is the larger), the header `[ataniq-msg id=<id> from=ataniq
+  kind=canary]`.
+
+### Receipts
+
+Every mutating operation is answered by a **receipt**, and acceptance is the
+admission of the command, not its completion:
+
+```json
+{"command_id":"3f2c0b5a9e1d4c77a1b2c3d4e5f60718","op":"lead.start","role":"scratch-alpha/lead","status":"done","result":{"role":"scratch-alpha/lead","state":"starting","epoch":1,"unit":"ataniq-lead-scratch-alpha.service","waiver":"assertion 10 waived: canary slice, no qualification record"},"admitted_at":"2026-01-01T00:00:00Z","finished_at":"2026-01-01T00:00:05Z"}
+```
+
+The `status` is one of five words:
+
+| Status | Meaning |
+| --- | --- |
+| `in-progress` | Admitted and not finished. Not final. |
+| `done` | Carried out; `result` says what it did. |
+| `refused` | The daemon changed nothing that matters; `code` says why. |
+| `unavailable` | It could not be carried out; `code` says why. |
+| `uncertain` | The daemon does not know what happened: it stopped between admitting the command and finishing it, or what the lifecycle said does not say. The client reads `lead.list` and never resends. |
+
+`code` is one short token and `message` a fixed text that echoes nothing a peer
+sent. The codes that scratch mode adds to the canary's are listed with each
+operation; every code is a word of lower-case letters, digits and dashes.
+
+| Operation | Refused | Unavailable | Uncertain |
+| --- | --- | --- | --- |
+| `lead.define` | `role-busy`, `record-invalid`, `provision-incomplete`, `digest-pin`, `provision-refused`, `registry-refused` | `provision-failed` | `registry-broken`, `failed` |
+| `lead.start` | `role-busy`, `not-provisioned`, `folder-missing`, `max-running`, `role-not-defined`, `not-managed`, `preflight`, `foreign-unit`, `unit-loaded`, `limits`, `launch-refused`, `epoch-exhausted`, `registry-refused` | `start-failed`, `previous-unit-not-gone`, `intent-pending` | `launch-uncertain`, `daemon-stopping`, `registry-check`, `registry-broken`, `failed` |
+| `lead.stop` | `role-busy`, `stale-epoch`, `role-not-defined`, `not-managed` | `intent-pending`, `failed` | `stop-unproven`, `daemon-stopping`, `registry-broken`, `failed` |
+| `lead.ticket` | `stale-epoch`, `not-running`, `ticket-refused` | `holder-unreachable`, `ticket-failed`, `ticket-lost`, `ticket-file` | |
+| `lead.inject` | `stale-epoch`, `inject-off`, `not-running`, `second-message`, `message-in-flight`, and the admission codes of the canary slice (`bad-id`, `body-too-long`, `empty-body` and the like) | `holder-unreachable`, and `holder-` with the holder's refusal (`disabled`, `wrong-epoch`, `busy`, `bad-request`) | |
+
+Every operation can also end `refused` with `daemon-broken` (the registry or the
+table cannot be written, and the daemon admits no new command until it is
+restarted), and `uncertain` with `panic` (the code of the command
+panicked; the daemon recovered and finished it) or `receipt-not-recorded` (the command ran
+and its answer was too large or not well formed to keep). A refused inject that
+reached no holder spends nothing. A start or a stop that was carried out may
+still end `uncertain`: the state of the lead, not the code, is what to read.
+
+Errors are answered only **before** a command is admitted, and nothing was
+admitted when one comes: `invalid-request` (the params), `conflict` (the command
+id is held for another command, or no longer held; see below), `unavailable`
+(the table is full or cannot be written) and `refused` (the role is not a lead of
+the daemon; no command is admitted for it). After admission the answer is always
+a result that holds a receipt.
+
+### Message and attach
+
+A lead's `inject` flag and its message follow the canary slice: **every result
+of a message spends the epoch's one message**, `not-now` included, and a refusal
+before the frame is written spends nothing. The spent epochs are rebuilt at
+every daemon start from the lead's evidence file, and `lead.list` shows
+`message_spent`. The one-message state and the in-flight flag are per lead, so
+one lead's inject never blocks another's.
+
+The ticket file is **per lead** (`<runtime root>/leads/<layout role>/ticket`) and
+has one name, so there is **one ticket at a time per role**: the tickets of one
+lead are made one after the other, and a later ticket replaces the file. A
+ticket is single use and the holder grants a writer ticket only while there is
+no writer and no other ticket for that place is waiting ([the lead holder
+guide](lead-holder.md)), so a second writer ticket may be refused
+(`ticket-refused`). The console reads the file when it attaches; mint a ticket
+and attach before minting another for the same lead. Tickets of two leads do
+not cross.
+
+## The command table
+
+The table is what makes a command run at most once. It is its own file,
+`<state root>/lead-commands.jsonl`, owned by `internal/leadcontrol`; there is
+no second store of lead state, because the registry and the evidence stay the
+authority on what a lead is and on what was sent, and the table does not
+replace either. The registry's own journal is untouched, so a release daemon
+never reads a command record.
+
+**The key and the binding.** A command is named by `client` and `command_id`. The
+`client` is 1 to 64 printable ASCII bytes without a space, the `command_id` 1 to
+64 bytes of `A-Z`, `a-z`, `0-9`, `.`, `_`, `:` and `-`. The table binds the key
+to the operation, the role and a digest of the payload (SHA-256 of the operation
+name, a NUL and the JSON of the decoded params with `client` and `command_id`
+left out). The console makes a command id of 128 random bits for each command and
+a client string from its name and a random run id.
+
+**The client string is a namespace, not an identity.** The daemon's socket admits
+the daemon's own user and the client API gives the handler no peer identity, so
+nothing here authenticates a caller: any process of that user can choose any
+client string, and can replay a command id it knows. The client string only keeps
+two consoles' ids apart.
+
+**Replay.** The same key with the same operation, role and payload returns the
+stored receipt, whatever its status, and never runs the command again, even while
+the first call is still running: a replay takes no lock and has no effect. The
+same key with anything else is `conflict`, and so is a command id of another
+client that still has an open command (the id of an open command is unique). So
+a lost answer is asked for by repeating the same command, and a lost `start` is
+never a second start.
+
+**Durability.** The table is one append-only JSON-lines file, mode 0600, the
+caller's, opened by handle with one link and an exclusive lock, every line at
+most 4 KiB and fsynced before the call returns. The command is admitted, that is
+durably recorded, before it acts, so acceptance is durable admission. The kinds
+of line are `admit`, `finish`, `interrupted` and `tombstone`.
+
+**Restart rules.** When the daemon starts it opens the table and:
+
+- cuts a final line without its newline (an append that never returned);
+- refuses to start, at the state step with exit status 11, on any other damage: a
+  line that is not valid, an unknown field, a record that breaks the rules, a
+  line over the cap. Nothing is repaired. The refusal says that the table holds
+  every command that was admitted, so **set it aside only when every scratch unit
+  is stopped**: a daemon with a new table forgets what was admitted, and a client
+  that asks again would run the command again;
+- gives every command that was admitted and never finished an `interrupted` line.
+  Its receipt then reads `uncertain` with the code `interrupted` (for a ticket,
+  `unavailable`, since a ticket repeats harmlessly), and the client is never told
+  to send it again. It reads `lead.list`, where the registry and the evidence are
+  the authority.
+
+**Bounds.** The table holds at most 1024 receipts and 4096 tombstones. Over the
+bound the oldest receipts that are final are dropped, and the file is compacted
+when it is next opened: a temporary file, fsynced and renamed over the table,
+keeping every receipt that is not final and the newest final ones. A key that
+was dropped leaves a tombstone (the SHA-256 of client and command id), and a
+replay of it is answered `conflict` ("no longer held; read `lead.list`"): a
+dropped command is never run again. When every slot holds a
+command that is not final, a new command is refused `unavailable` and nothing is
+admitted. One residual risk: a key older than the newest 4096 tombstones looks
+new. The console makes ids from 128 random bits, so only a client that replays a
+very old id can meet it.
+
+A failed write or sync closes the table for good: the daemon logs it, admits no
+new command until it is restarted, and still answers a replay of a key it holds.
+
+## max_running
+
+`max_running` caps the leads that run at once. `lead.start` counts, under one
+lock, the leads that are shown in any state but `desired`, `stopped` and `ended`
+(so `starting`, `ready`, `degraded`, `stalled`, `stopping` and **`unknown`**,
+because a unit may run), those with a launch intent that is still pending, and
+the starts in flight. At the cap the start is refused `max-running`; a lead
+shown `starting` that has ended is freed by `lead.stop`. The cap bounds the
+number of units. Each unit carries its own memory, swap and task limits; the
+daemon does not look at the host's memory across leads, and the `memory_floor`
+and `memory_share_percent` of a lead are for the run script's balancing, not the
+daemon's.
+
+A second define, start or stop of one lead while one runs is not queued: it is
+refused `role-busy`. A define does not hold up another lead.
+
+## The profile digest and the pin
+
+The sandbox profile digest depends on the lead's layout and on the provisioned
+copy of its managed settings, so it cannot be known before the define has made
+them. **The daemon therefore computes the digest itself, with the holder's own
+code** (`sandboxstart.ProfileDigest`), from the inputs file it writes. It puts
+the digest in the lead's `provisioned.json`, returns it in the define receipt,
+and starts the holder pinned to it.
+
+**This weakens a check of the canary slice.** There, the owner computes the digest
+once with `ataniq-canary profile-digest` and pins it in the config, and the
+holder compares it with its own computation: two readings of the profile, made at
+two times by two commands. Here, unless the owner pins one, the digest the holder
+is given and the one it computes are the same code applied to the same files, so
+the holder's comparison no longer catches a change of the profile that is made
+before the define computes it.
+
+An owner who wants the check back may set `profile_digest` in a lead's config
+entry. The define then refuses, before it writes anything (`digest-pin`), a
+digest that differs, and a daemon start refuses a lead whose record is not the
+pin. **But that pin is not an independent check:** the subcommands `show` and
+`profile-digest` of `ataniq-canary` read the canary config and no scratch config,
+so no separate tool of the owner computes a scratch lead's digest. The only way
+to obtain the digest to pin is the daemon's own computation (the define receipt
+or the record), which is the same code. The pin catches a change made after it
+was taken; it cannot show that the first digest was the right one. Read the
+profile and the managed settings yourself before the first define.
+
+## Failure handling and owner recovery
+
+The daemon refuses to start when the config, a root or the root marker is not
+right (exit status 10, the config step), and when an evidence file, a lead's
+record or the command table cannot be read (exit status 11, the state step). A
+lead's record that is not what provisioning writes, or whose digest is not the
+lead's pin, refuses the start; the refusal says that the owner checks the lead's
+folders. An evidence file that cannot be read back refuses the start for the
+canary's reason: set it aside only once the lead's unit is stopped, because a new
+file spends no epoch's message.
+
+**A define that was cut short** (the daemon was stopped, git ran out of time,
+the ten minutes ended) leaves the lead's folders and **no** `provisioned.json`.
+`lead.list` shows `provision: "incomplete"`, and every later define is refused
+`provision-incomplete`, because the console cannot repair what it never named by
+path. Deletion is the owner's act:
+
+```sh
+ataniq-canary scratch-clean --config CONFIG --lead KEY
+```
+
+It runs the same root check as a define (so the scratch root marker must be
+there), and removes, each only when it is a real folder and not a link, the
+lead's folder of the state root's `scratch` folder (the inputs file), its lead
+folder, mailbox and published folders, the folder of its role lock and the
+holder's runtime folder. It does **not** remove the mirror, the evidence, the
+roots or any other lead's folders. It refuses a lead whose record is there (only
+an incomplete one is cleaned) and a lead that has started (its holder's state or
+runtime folder holds something), and a lead none of whose folders is there is
+left as it is ("nothing to remove"). It may be run again if it was cut short
+itself. After it, the next define starts again from the mirror. Exit status: 0
+done, 1 failed, 2 usage; a `--lead` the config does not list is a failure.
+
+**Two rules about `scratch-clean`.** It takes **no daemon lock**, so run it only
+**while no define runs**: it cannot tell a define that is running from one that
+was cut short, and it would pull the folders from under the first. Stop the
+daemon, or make sure that no define is pending. While a define runs in the
+daemon, `lead.list` shows its lead as `none` and never as `incomplete`, so an
+`incomplete` row is a lead whose define is not running in that daemon.
+
+**A daemon restart during a define leaves that lead incomplete** (or, if it had
+made nothing yet, untouched). Its receipt reads `uncertain` (`interrupted`),
+and the owner runs `scratch-clean` and defines again.
+
+Failures of a running lead are read from `lead.list` and the receipts; the
+lifecycle's rules apply unchanged ([the lead daemon
+guide](lead-daemon.md#units-and-the-replacement-rule)): a start whose outcome is
+not known leaves the lead `unknown` and counted against `max_running`, a unit may
+still run, and `lead.stop` is the way out. A start that was `uncertain` after a
+daemon restart is settled as the lead daemon guide says of the [reconcile at
+start](lead-daemon.md#reconcile-and-what-starts-by-itself) and [the late-start
+window](lead-daemon.md#the-late-start-window); the console never sends it again.
+
+## What scratch mode leaves open
+
+- **The profile digest is the daemon's own computation** unless pinned, and the
+  pin is not independent (above).
+- **The inject residual.** The order of an inject is: admit the command (durable),
+  the admission checks and the epoch, write the request frame, write the
+  `inject-sent` line of the evidence, then finish the receipt. A daemon killed
+  **between the frame and the `inject-sent` line** (a window of a few
+  milliseconds) leaves the epoch **unspent** after the restart, though the
+  message is on its way to the lead, and the command's receipt reads `uncertain`.
+  A killed daemon after that line leaves the epoch spent, and a replay of the
+  command is never sent again. Read the lead's screen before a second message.
+- **One scratch root per account for a key.** Unit names come from the key and
+  live in the user's one systemd manager. Two scratch roots on one account that
+  both define `alpha` name the same unit, `ataniq-lead-scratch-alpha.service`,
+  and `lead.stop` signals an older unit of the same name, which may be the other
+  root's. Keep one scratch root per account for a key, and keep the canary's
+  root and a scratch root apart by their prefixes.
+- **The client string is a namespace, not an identity**, and any process of the
+  owner's user can drive the daemon, mint a ticket and type into a session: the
+  same-user limit of [the canary slice](canary-slice.md#what-the-slice-relies-on-and-what-it-proves-none-of)
+  holds.
+- **The git runs in the daemon.** A define runs `/usr/bin/git` in the daemon's
+  process, with the explicit environment of provisioning.
+- **Host resources.** `max_running` bounds the units; what N sandboxes cost the
+  host (memory across units, N instances of pasta and bubblewrap) is not measured.
+- **Everything else the canary slice relies on and proves none of** holds here as
+  it does there: see [that list](canary-slice.md#what-the-slice-relies-on-and-what-it-proves-none-of).
+  The waiver, in particular, means a sandbox starts with no qualification record.
+
+## Where the code is
+
+| Part | Where |
+| --- | --- |
+| The wire values (untagged) | [`internal/leadwire`](../internal/leadwire/doc.go) |
+| The command table (tagged) | [`internal/leadcontrol`](../internal/leadcontrol/doc.go) |
+| The operations and scratch mode of the daemon (tagged) | `internal/leaddaemon`: `lead_ext_linux.go`, `lead_mode_linux.go`, `canary_router_linux.go` |
+| The scratch config, names and per-lead evidence (tagged) | [`internal/leadcanary`](../internal/leadcanary/doc.go) |
+| Provisioning of a scratch lead, `scratch-clean` (tagged) | [`internal/leadcanary/provision`](../internal/leadcanary/provision/doc.go) |
+| The owner's commands | [`cmd/ataniq-canary`](../cmd/ataniq-canary/main.go) (`scratch-init`, `scratch-clean`), [`cmd/ataniqd`](../cmd/ataniqd/doc.go) (`run --scratch`) |
+| The console's client | [`internal/consoleclient`](../internal/consoleclient/doc.go) |
+| The console's view | [`internal/terminalconsole/leadctl`](../internal/terminalconsole/leadctl/doc.go) |
+
+The targeted checks, after `make doctor`:
+
+```sh
+sh scripts/go-tool.sh test -tags ataniq_canary ./internal/leadcontrol/ ./internal/leadcanary/... ./internal/leaddaemon/ ./cmd/ataniqd/ ./cmd/ataniq-canary/
+sh scripts/go-tool.sh test ./internal/leadwire/ ./internal/consoleclient/ ./internal/terminalconsole/... ./cmd/ataniq-console/
+```
+
+The whole suite is `make test` and then `make test-canary` (and `make
+test-ownerchannel` while code behind that tag exists).

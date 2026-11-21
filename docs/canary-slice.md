@@ -35,6 +35,14 @@ with the `ataniq_canary` tag, under `--canary`, these joins exist:
 
 It is one short attended session on a throwaway repository.
 
+The same tag also holds **scratch mode**, the lead control plane: under
+`ataniqd run --scratch CONFIG` one daemon serves up to eight scratch leads,
+each a throwaway `scratch-<key>` project, through six `lead.*` operations that
+the console drives, with a durable receipt for each command. It uses this
+slice's holder, waiver, injected message and evidence, and is described in
+[the scratch leads guide](scratch-leads.md). Everything below is about the one
+canary lead unless it says otherwise.
+
 It is **not** a qualification. It passes no case of the lead-hosting design's
 section 7, and no part of its output says that something passed, is qualified
 or is supported. It is not the week-long canary lead of that design's
@@ -81,11 +89,13 @@ What the slice does not do, so that nobody reads it into the pieces:
 
 **The build tag.** Canary mode exists only in a build with the Go build tag
 `ataniq_canary`. Every file of canary mode starts with
-`//go:build linux && ataniq_canary`, and four library packages
+`//go:build linux && ataniq_canary`, and five library packages
 (`internal/leadcanary` with its sub-packages, `internal/leadholder/sandboxstart`,
-`internal/leadholder/injectbridge` and `internal/leadholder/canaryroot`) have no
-untagged file, so an untagged build cannot import them. **Release builds do not contain canary mode.** Without the
-tag, `ataniqd` has no `--canary` flag and no `canary` command, `ataniq-holder`
+`internal/leadholder/injectbridge`, `internal/leadholder/canaryroot` and
+`internal/leadcontrol`, the command table of scratch mode) have no untagged
+file, so an untagged build cannot import them. **Release builds do not contain canary mode.** Without the
+tag, `ataniqd` has no `--canary` flag, no `--scratch` flag and no `canary`
+command, `ataniq-holder`
 knows `--scratch` only and its control socket answers every `inject` request
 `disabled`, and `hello` lists two operations and says `mutations: false`. The
 waiver, the path from a control request to the terminal and the canary
@@ -111,11 +121,16 @@ refuses everything else. For the slice the role is `throwaway-one/lead`, the
 layout and intake role is `throwaway-one-lead`, and the unit is
 `ataniq-lead-throwaway-one.service`.
 
-A daemon that defines real leads must refuse a project with this prefix, and
-only canary mode accepts it. No release daemon defines a lead, so nothing
-refuses the prefix yet; the reservation is the constant and this rule, so that
-the refusal is written when a define exists. Name no real project `throwaway-`
-anything.
+**A second reserved prefix, `scratch-`** (`leadrole.ScratchPrefix`), belongs to
+scratch mode, which accepts only it, as canary mode accepts only `throwaway-`;
+each mode refuses the other's prefix. See [the scratch leads
+guide](scratch-leads.md#where-it-exists-the-tag-the-prefix-and-the-three-gates).
+
+A daemon that defines real leads must refuse a project with either prefix, and
+only canary mode accepts `throwaway-` and only scratch mode `scratch-`. No
+release daemon defines a lead, so nothing refuses the prefixes yet; the
+reservation is the constants and this rule, so that the refusal is written when
+a define exists. Name no real project `throwaway-` or `scratch-` anything.
 
 **Three gates stand before the waiver and the injection, independent of each
 other:**
@@ -126,6 +141,10 @@ other:**
    default folders and do not lie in, or contain, one, and the state root
    carries the marker file `canary-root.json` that only `ataniq-canary
    provision` writes. The daemon, the holder and provisioning share one check.
+   For a `scratch-` project the marker is `scratch-root.json`, which names no
+   project because one scratch root holds several leads, and which only
+   `ataniq-canary scratch-init` writes; a root carries one kind of marker, and a
+   root with the other kind's is refused.
    It works the defaults out twice, from the environment and from the account
    (the home folder in the password database, and `/run/user/<uid>`), so a
    unit's bare environment does not hide them. A real lead's state root at a
@@ -138,6 +157,10 @@ other:**
    one file, so they count as one gate.
 
 A real lead would need all three to go wrong at once.
+
+Scratch mode stands behind the same three gates; its place gate and its
+invocation (`ataniqd run --scratch CONFIG`) are in
+[the scratch leads guide](scratch-leads.md).
 
 ## The commands
 
@@ -164,6 +187,8 @@ The owner's tool, run by hand. The daemon never runs it.
 | `show --config CONFIG` | Prints, as `key=value` lines, the names, numbers and paths of the config that the run script needs. It prints the names of the agent's environment (`agent_env_names`) but never a value, and never the git identity or the profile digest (`profile-digest` prints the digest). It changes nothing. |
 | `check-inputs --config CONFIG --inputs FILE` | Checks the sandbox inputs file against the config and names the field that differs, never its value. It also runs, on the file, the trial of the profile and of the spec that the holder runs in its first step, `validate-config`, as far as that needs no launch and no host access, with the agent command line, environment and pinned digest the holder takes from the config, so that what the holder would refuse there is refused here and not at the start. For the runtime `claude` the file must also name `sources.managed_marker` (the holder refuses it without, at that step), and the managed-settings file that `sources.managed_settings` names must hold that text (before provisioning that file does not exist yet, and the file `provision.managed_settings` names, which provisioning copies, is read instead; once provisioned, the copy is read) (the holder does not read the file then: assertion 8 finds a file without it inside, after the launch, and this check refuses it earlier). It changes nothing. |
 | `profile-digest --config CONFIG --inputs FILE` | Prints the sandbox profile digest the holder will compute for the config and the inputs file, as one line of 64 lower-case hex digits, to pin in `holder.profile_digest` before the first start. It refuses a file that is not the config's `holder.sandbox_inputs` (the resolved paths are compared), because that is the file the holder reads; it then checks the file against the config as `check-inputs` does and computes the digest with the holder's own code, with the agent's environment of the config. It prints no environment value and no path of its own (a refusal to read the file repeats the path given to `--inputs`, as `check-inputs` does), and it changes nothing. |
+| `scratch-init --config SCRATCH_CONFIG` | Scratch mode's place gate: makes the scratch state root and writes `scratch-root.json` in it (see [the scratch leads guide](scratch-leads.md#the-owners-steps)). It reads the scratch config, not this one. |
+| `scratch-clean --config SCRATCH_CONFIG --lead KEY` | Removes what a define of one scratch lead left when it was cut short (see [the scratch leads guide](scratch-leads.md#failure-handling-and-owner-recovery)). It reads the scratch config. |
 | `fields --file FILE` | Prints every value of one JSON object as a sorted `path=value` line. |
 | `scrub-screen --file FILE` | Replaces the screen text in a copy of the holder's final record by its SHA-256 and prints the hash. |
 | `--version` | Prints the name and the build tag. |
@@ -200,7 +225,9 @@ right. It then gives the lifecycle the canary preflight, the canary holder
 command and the config's limits, opens the evidence file, writes the
 `daemon-start` line, and registers the canary operations. `hello` then lists
 them after `hello` and `status` and says `mutations: true`. Without `--canary`
-the daemon is the read-only skeleton of [the lead daemon guide](lead-daemon.md),
+and without `--scratch` (the lead control plane, a mode of its own: see [the
+scratch leads guide](scratch-leads.md); the two flags exclude each other) the
+daemon is the read-only skeleton of [the lead daemon guide](lead-daemon.md),
 byte for byte.
 
 ### `ataniqd canary`
@@ -732,7 +759,9 @@ Stated plainly, because the slice proves none of these:
    deliverer are to be deleted, not promoted: the waiver when a qualification
    store exists, the deliverer when the daemon's production injection path
    replaces it, the operations when the daemon has real ones. The tag keeps all
-   three out of every release until then.
+   three out of every release until then. Scratch mode uses the same waiver and
+   the same direct deliverer, and registers its own six operations behind the
+   same tag.
 3. **The balancing lives in a script.** The limits are in the unit
    specification; the daemon does not yet rebalance running units.
 4. **Two suite commands.** While tagged code exists, the whole suite is

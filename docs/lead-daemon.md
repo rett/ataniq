@@ -27,30 +27,36 @@ questions on a local socket, `hello` and `status`.
 only under `ataniqd run --canary CONFIG`, the daemon serves five more
 operations (`define`, `start`, `ticket`, `inject` and `stop`) for the one
 throwaway role that the config names, and then starts and stops that lead's
-unit. [The canary slice guide](canary-slice.md) describes it. Release builds
-do not contain canary mode, and a tagged build without `--canary` is the
-read-only skeleton this guide describes. Everything below is about that
-skeleton unless it says otherwise.
+unit. [The canary slice guide](canary-slice.md) describes it. **Scratch mode is
+the second exception**, in the same tagged build and under `ataniqd run
+--scratch CONFIG` alone (it excludes `--canary`): the daemon serves six more
+operations, `lead.list`, `lead.define`, `lead.start`, `lead.stop`, `lead.ticket`
+and `lead.inject`, for up to eight scratch leads, with a durable receipt for each
+command. [The scratch leads guide](scratch-leads.md) describes it. Release
+builds contain neither mode, and a tagged build without `--canary` and
+`--scratch` is the read-only skeleton this guide describes. Everything below is
+about that skeleton unless it says otherwise.
 
 These are not part of it: a real lead, the holder, a sandbox, injection of
 instructions into a session, any console integration and any Qargi
 integration. The list of what is not built is at the [end](#not-built).
 
 The tree has provisional code for some of these, and the daemon uses none of
-it, except in a build with the `ataniq_canary` tag, under `--canary` (see
-[the canary slice guide](canary-slice.md)): the scratch-only holder and the
+it, except in a build with the `ataniq_canary` tag, under `--canary` or
+`--scratch` (see [the canary slice guide](canary-slice.md) and [the scratch
+leads guide](scratch-leads.md)): the scratch-only holder and the
 console's attach client ([the lead holder guide](lead-holder.md)), the sandbox
 proposal ([the lead sandbox guide](lead-sandbox.md)), the injection library
 ([the lead injection guide](lead-injection.md)), and the exchange mirror with
 its intake command ([the lead intake guide](lead-intake.md)). Without that tag
-and flag, none of that code imports a package of this guide, and no package of
+and a flag, none of that code imports a package of this guide, and no package of
 this guide imports it. In a tagged build the daemon's canary files import the
 holder's control wire, and the canary package they use for the admission
 imports the injection library's message rules.
 
 | Package or command | What it is | What the daemon does with it today |
 | --- | --- | --- |
-| [`cmd/ataniqd`](../cmd/ataniqd/doc.go) | The command: `run`, `status`, `version`; in a build with the `ataniq_canary` tag also `run --canary`, `canary` and `--version`. | It is the daemon. |
+| [`cmd/ataniqd`](../cmd/ataniqd/doc.go) | The command: `run`, `status`, `version`; in a build with the `ataniq_canary` tag also `run --canary`, `run --scratch`, `canary` and `--version`. | It is the daemon. |
 | [`internal/leaddaemon`](../internal/leaddaemon/doc.go) | Start-up order, shutdown, exit codes, the status handler and the status client. | All of it. |
 | [`internal/clientapi`](../internal/clientapi/doc.go) | The client protocol `ataniq.client/1`: socket, server, client. | Serves `hello` and `status`. |
 | [`internal/leadregistry`](../internal/leadregistry/doc.go) | The durable journal of lead roles. | Opens it and reads it. The reconcile at start writes what it finds about a role; nothing defines a role or launches one. |
@@ -422,8 +428,9 @@ every process of the user that can reach the socket what is in the registry
 summary. A managed lead that runs in a sandbox must never see this socket.
 Keeping it away is the sandbox's job; nothing here asserts or tests it, and the
 daemon launches no sandbox, except that in a build with the `ataniq_canary`
-tag, under `--canary`, the holder it starts launches one (see
-[the canary slice guide](canary-slice.md)). The profile in
+tag, under `--canary` or `--scratch`, the holder it starts launches one (see
+[the canary slice guide](canary-slice.md) and
+[the scratch leads guide](scratch-leads.md)). The profile in
 [the lead sandbox guide](lead-sandbox.md) is an unqualified proposal that no
 lead runs in, except there.
 
@@ -546,7 +553,12 @@ registers (`Options.Extra`), each named with lower-case letters, digits and
 dashes around one dot. No release build registers one; a build with the
 `ataniq_canary` tag, under `--canary`, registers the five canary operations and
 adds the error codes `refused` and `unavailable` (see
-[the canary slice guide](canary-slice.md#the-commands)). When one is registered,
+[the canary slice guide](canary-slice.md#the-commands)), and, under
+`--scratch`, registers six more tagged operations, `lead.list`, `lead.define`,
+`lead.start`, `lead.stop`, `lead.ticket` and `lead.inject`, and adds the error
+code `conflict` (see [the scratch leads guide](scratch-leads.md#the-operations)).
+The two modes exclude each other, and release builds still register none.
+When one is registered,
 `hello` lists the two base operations and then the extensions', and says
 `"mutations":true` only when a registered extension declares that it changes
 something. A request for such an operation may carry `params`, one JSON object
