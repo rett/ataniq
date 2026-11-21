@@ -93,10 +93,16 @@ var protocolNames = []string{"file"}
 
 // subcommands are the git subcommands that follow the option rule of
 // [checkOptions]. "hash-object" and "merge-tree" are not here: each is
-// allowed in one exact form only (see [exactForms]).
+// allowed in one exact form only (see [exactForms]). "log" is not here
+// either: it converts a message from the charset that the commit's own
+// "encoding" header names, with a converter the lead chose, and prints a
+// patch with the textconv program of a diff driver. A caller that needs
+// commits reads them as raw objects ("rev-list" and "cat-file"), and a
+// later change that wants "log" has to add it here, to [noDiffPrograms] and
+// to [attrPinned] on purpose; the tests assert that it is refused.
 var subcommands = []string{
 	"init", "version", "fetch", "for-each-ref", "rev-parse", "rev-list",
-	"merge-base", "diff-tree", "diff", "log", "cat-file", "update-ref",
+	"merge-base", "diff-tree", "diff", "cat-file", "update-ref",
 	"symbolic-ref", "show-ref", "count-objects", "config",
 	"check-ref-format", "ls-tree",
 }
@@ -184,8 +190,9 @@ var refusedOptions = []string{"--upload-pack", "--receive-pack", "--exec", "--ex
 
 // noDiffPrograms are the subcommands that run the programs of the
 // configuration when they print a patch: "git diff" runs diff.external and
-// the textconv program of a diff driver by default, and "git log -p" runs
-// the textconv program. An empty or dummy diff.external does not stop it:
+// the textconv program of a diff driver by default ("git log -p" would run
+// the textconv program too, but "log" is not allowed; see [subcommands]). An
+// empty or dummy diff.external does not stop it:
 // git reports "cannot run" and fails. For these [Git.Argv] adds the options
 // "--no-ext-diff" and "--no-textconv" right after the subcommand, which do
 // stop both. "diff-tree" is plumbing and runs neither unless asked; the
@@ -193,8 +200,8 @@ var refusedOptions = []string{"--upload-pack", "--receive-pack", "--exec", "--ex
 //
 // A tree cannot name a diff driver, because of the attribute pin (see
 // [attrPinned]), but the repository's own "info/attributes" can, and a
-// caller of "log" is not required to run [CheckInfoAttributes].
-var noDiffPrograms = []string{"diff", "log"}
+// caller of "diff" is not required to run [CheckInfoAttributes].
+var noDiffPrograms = []string{"diff"}
 
 // emptyTree is the id of the tree with no entry, in a SHA-1 repository. git
 // knows it without the object being stored.
@@ -218,7 +225,7 @@ const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 //
 // What the pin cannot reach is the repository's own "info/attributes"; see
 // [CheckInfoAttributes].
-var attrPinned = []string{"diff", "diff-tree", "merge-tree", "log"}
+var attrPinned = []string{"diff", "diff-tree", "merge-tree"}
 
 // attrSourceOption is the git option that names the attribute source. It
 // comes before the setting "attr.tree", so it would undo the pin of
@@ -281,9 +288,9 @@ func IsObjectID(s string) bool {
 }
 
 // Argv returns the command line for c: the git path, the fixed -c settings,
-// for "diff", "diff-tree", "merge-tree" and "log" the setting that pins the
+// for "diff", "diff-tree" and "merge-tree" the setting that pins the
 // attribute source to the empty tree, --git-dir=..., the subcommand, for
-// "diff" and "log" the options "--no-ext-diff" and "--no-textconv", then the
+// "diff" the options "--no-ext-diff" and "--no-textconv", then the
 // arguments. It starts nothing. It refuses what the package comment lists.
 func (g Git) Argv(c Cmd) ([]string, error) {
 	if !filepath.IsAbs(g.Path) {
@@ -493,7 +500,7 @@ var valuelessFlags = []string{
 	"--bare",
 	// Output control.
 	"--quiet", "-q", "-v", "-z", "--raw", "--count",
-	// Diff and log.
+	// Diff and rev-list.
 	"-r", "-m", "--root", "--no-renames", "--full-index", "--no-color",
 	"--no-ext-diff", "--no-textconv", "--no-mailmap", "--no-notes",
 	"--no-decorate", "--no-show-signature", "--first-parent", "--no-walk",
@@ -541,7 +548,7 @@ var markerNotEnd = map[string][]string{
 //
 // Some pairs of subcommand and marker stay allowed although git reads the
 // argument after the marker as an option, because it then dies and acts on
-// nothing. With "--end-of-options" first, "rev-parse", "rev-list", "log",
+// nothing. With "--end-of-options" first, "rev-parse", "rev-list",
 // "diff" and "diff-tree" fail with "option '...' must come before non-option
 // arguments" (TestMarkerReadThenDie pins this). "check-ref-format" fails with
 // its usage text for either marker, even before a valid name (it takes no
@@ -646,7 +653,7 @@ func checkMergeTree(args []string) error {
 // the first list, and why:
 //   - diff.external is not set. An empty or dummy value does not disable the
 //     external diff: "git diff" then fails with "cannot run". [Git.Argv]
-//     adds --no-ext-diff and --no-textconv to "diff" and "log" instead
+//     adds --no-ext-diff and --no-textconv to "diff" instead
 //     (see [noDiffPrograms]).
 //   - core.alternateRefsCommand is set to the empty string. git 2.56 does
 //     not skip an empty command: when a fetch lists the refs of an alternate

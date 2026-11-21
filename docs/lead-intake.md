@@ -200,7 +200,10 @@ accepted before the subcommand. After it, up to the first `--` or
 short list of flags that take no value. Options that name a program to run are
 refused in every form, abbreviated too; the one upload-pack command of the
 fetch is set by the package itself, not as an option the caller writes. The
-package does not make git safe in a repository an attacker controls, and does
+subcommand `log` is refused, because it converts a message from the charset
+that a commit's own `encoding` header names and runs the textconv program of a
+diff driver for a patch; commits are read as raw objects, as
+"How the commits are read" below says. The package does not make git safe in a repository an attacker controls, and does
 not confine the process. Owner-side code runs git only on bare repositories
 that Ataniq made, with an explicit `--git-dir`. The package comment of
 `internal/exchange/gitenv` has the details.

@@ -10,7 +10,8 @@
   32 KiB, a commit over 64 KiB, or commits over 8 KiB each on average are a
   limit error. A header of many continuation lines is parsed in time linear in
   its size, and the call's time limit and context are checked between the
-  commits that are parsed. `ataniq-intake fetch` refuses a sandbox template whose
+  commits that are parsed. The `gitenv` package no longer allows the
+  `git log` subcommand at all, so no owner-side command can convert a message. `ataniq-intake fetch` refuses a sandbox template whose
   `serve.repository` path exists on the host (a regular file, a symlink, any
   folder, or a path that cannot be checked), before any command runs, because
   the owner's git reads a bundle file at that path itself and never starts the

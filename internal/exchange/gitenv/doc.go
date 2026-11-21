@@ -20,13 +20,14 @@
 //     monitors, pagers, editors, askpass programs, credential helpers,
 //     external diff programs, submodule recursion and every transport except
 //     the ones the caller names.
-//   - For "diff" and "log" it adds the options "--no-ext-diff" and
-//     "--no-textconv", so that neither starts an external diff program or the
-//     textconv program of a diff driver that the repository's config names.
-//     "log" needs them as "diff" does: "git log -p" runs a textconv program
-//     by default.
+//   - For "diff" it adds the options "--no-ext-diff" and "--no-textconv", so
+//     that it starts neither an external diff program nor the textconv
+//     program of a diff driver that the repository's config names.
+//   - It refuses "log": git log converts a message from the charset of the
+//     commit's own "encoding" header and runs the textconv program for a
+//     patch. Commits are read as raw objects with "rev-list" and "cat-file".
 //   - It turns on object checking (fsck) for fetches.
-//   - For "diff", "diff-tree", "merge-tree" and "log" it pins the attribute
+//   - For "diff", "diff-tree" and "merge-tree" it pins the attribute
 //     source to the empty tree, with the setting "attr.tree" among its own
 //     -c settings. git then reads no ".gitattributes" from any tree, neither
 //     from the trees it compares or merges nor from HEAD, so an attribute a

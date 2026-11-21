@@ -382,10 +382,10 @@ func TestRepositoryConfigIsOverridden(t *testing.T) {
 		gitDir := filepath.Join(work, ".git")
 		// The pager may exit before it reads, so the exit status of the
 		// control is not looked at; the canary is.
-		runOnTerminal([]string{g.Path, "--git-dir=" + gitDir, "log", "--oneline"}, env, work)
+		runOnTerminal([]string{g.Path, "--git-dir=" + gitDir, "diff", "HEAD~1", "HEAD"}, env, work)
 		mustFire(t, mark, "core.pager in the repository config")
 
-		c := Cmd{GitDir: gitDir, Args: []string{"log", "--oneline"}}
+		c := Cmd{GitDir: gitDir, Args: []string{"diff", "--end-of-options", "HEAD~1", "HEAD"}}
 		argv, err := g.Argv(c)
 		if err != nil {
 			t.Fatal(err)
@@ -400,7 +400,7 @@ func TestRepositoryConfigIsOverridden(t *testing.T) {
 			if out, err := runOnTerminal(argv, e, work); err != nil {
 				t.Fatalf("%s: %v\n%s", name, err, out)
 			}
-			mustNotFire(t, mark, "git log with "+name)
+			mustNotFire(t, mark, "git diff with "+name)
 		}
 	})
 
@@ -776,11 +776,13 @@ func TestDiscoveryStaysInTheWorkingFolder(t *testing.T) {
 
 // TestMailmapFromTheMirrorIsNotRead puts a .mailmap in the tree of the
 // branch that HEAD of the bare mirror names. Plain git reads it from there
-// and prints the identity the lead chose for %aN, %aE and the default log
-// format. The commands of this package print the identity in the commit.
+// and prints the identity the lead chose for %aN and %aE. The commands of
+// this package print the identity in the commit. ("log" is refused, so the
+// log format that git maps by the setting log.mailmap is not reachable; the
+// format placeholders of "rev-list --format" are.)
 //
 // Proves: a lead-written .mailmap cannot change the author or committer
-// that owner-side log output shows. The control shows git does read it.
+// that owner-side output shows. The control shows git does read it.
 // Cannot prove: that no other lead-written file is read as configuration.
 func TestMailmapFromTheMirrorIsNotRead(t *testing.T) {
 	g := needGit(t)
@@ -800,24 +802,18 @@ func TestMailmapFromTheMirrorIsNotRead(t *testing.T) {
 		t.Fatalf("HEAD of the mirror is %q, not main", got)
 	}
 
+	head := fixture(t, g, env, "", "--git-dir="+mirror, "rev-parse", "HEAD")
 	const format = "--format=%an <%ae> / %aN <%aE> / %cN <%cE>"
 	const plain = "Fixture <fixture@example.invalid>"
 	const mapped = "Somebody Else <boss@example.invalid>"
-	control := fixture(t, g, env, "", "--git-dir="+mirror, "log", "-1", format)
-	if want := plain + " / " + mapped + " / " + mapped; control != want {
+	control := fixture(t, g, env, "", "--git-dir="+mirror, "rev-list", "--max-count=1", format, "HEAD")
+	if want := "commit " + head + "\n" + plain + " / " + mapped + " / " + mapped; control != want {
 		t.Fatalf("control failed: plain git printed %q, want %q, so the test could not show anything", control, want)
 	}
-	if out := fixture(t, g, env, "", "--git-dir="+mirror, "log", "-1"); !strings.Contains(out, "Author: "+mapped) {
-		t.Fatalf("control failed: plain git log did not map the author:\n%s", out)
-	}
 
-	got := mustOwned(t, g, Cmd{GitDir: mirror, Args: []string{"log", "--max-count=1", format}})
-	if want := plain + " / " + plain + " / " + plain; got != want {
-		t.Errorf("log format printed %q, want %q", got, want)
-	}
-	out := mustOwned(t, g, Cmd{GitDir: mirror, Args: []string{"log", "--max-count=1"}})
-	if !strings.Contains(out, "Author: Fixture <fixture@example.invalid>") || strings.Contains(out, "Somebody Else") {
-		t.Errorf("default log output used the lead's .mailmap:\n%s", out)
+	got := mustOwned(t, g, Cmd{GitDir: mirror, Args: []string{"rev-list", "--max-count=1", format, "HEAD"}})
+	if want := "commit " + head + "\n" + plain + " / " + plain + " / " + plain; got != want {
+		t.Errorf("rev-list format printed %q, want %q", got, want)
 	}
 }
 
@@ -863,15 +859,19 @@ func TestSignaturePrograms(t *testing.T) {
 			id := fixtureIn(t, g, env, "", commit, "hash-object", "-t", "commit", "-w", "--literally", "--stdin")
 			fixture(t, g, env, "", "update-ref", "refs/heads/main", id)
 
-			run([]string{g.Path, "--git-dir=" + repo, "log", "-1", "--show-signature", "--format=%G? %GS"}, env, "", "")
+			run([]string{g.Path, "--git-dir=" + repo, "rev-list", "--max-count=1", "--format=%G? %GS", "refs/heads/main"}, env, "", "")
 			mustFire(t, mark, tc.key+" in the repository config")
 
 			for _, args := range [][]string{
-				{"log", "--max-count=1", "--show-signature", "--format=%G? %GS %GK"},
-				{"log", "--max-count=1", "--format=%G?"},
+				{"rev-list", "--max-count=1", "--format=%G? %GS %GK", "--end-of-options", "refs/heads/main"},
+				{"rev-list", "--max-count=1", "--show-signature", "--format=%G?", "--end-of-options", "refs/heads/main"},
 				{"for-each-ref", "--format=%(contents:signature)", "refs/heads/"},
-				{"show", "--show-signature", "-s", id},
 			} {
+				// The command line must be one that Argv builds, or the
+				// case would show nothing.
+				if _, err := g.Argv(Cmd{GitDir: repo, Args: args}); err != nil {
+					t.Fatalf("git %s: %v", strings.Join(args, " "), err)
+				}
 				// A bad or unknown signature may exit non-zero or not;
 				// the canary is what matters.
 				owned(g, Cmd{GitDir: repo, Args: args})

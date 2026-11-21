@@ -96,7 +96,7 @@ func TestUploadPackRefuses(t *testing.T) {
 		cmd  Cmd
 	}{
 		{"for-each-ref", with(func(c *Cmd) { c.Args = []string{"for-each-ref"} })},
-		{"log", with(func(c *Cmd) { c.Args = []string{"log", "--end-of-options", "/srv/src"} })},
+		{"rev-list", with(func(c *Cmd) { c.Args = []string{"rev-list", "--end-of-options", "/srv/src"} })},
 		{"init", with(func(c *Cmd) { c.GitDir = ""; c.Args = []string{"init", "--end-of-options", "/srv/src"} })},
 		{"no Protocols", with(func(c *Cmd) { c.Protocols = nil })},
 		{"empty Protocols", with(func(c *Cmd) { c.Protocols = []string{} })},
