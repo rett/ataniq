@@ -91,14 +91,18 @@ type (
 		Unit        string `json:"unit"`
 		// Inject: the lead's config allows lead.inject.
 		Inject bool `json:"inject"`
-		// MessageSpent: the epoch's one message was already sent.
+		// MessageSpent: the epoch's message was already sent and is not free
+		// again. A message that the holder answered as not delivered
+		// (not-now or refused, nothing written) does not spend it: the row
+		// then says false and the lead may send another.
 		MessageSpent bool `json:"message_spent"`
 		// MessageResult is what the holder answered about the current
-		// epoch's message, in its three words, when the daemon has it: all
-		// three are "" when the epoch's message was not sent, when it was
-		// sent and the daemon has no answer (it was restarted since, and
-		// the lead's last receipt is not that message's), and for a lead the
-		// registry does not know. The keys are always present.
+		// epoch's last message, in its three words, when the daemon has it,
+		// whether the message is spent or not: all three are "" when no
+		// message was sent in the epoch, when the last one was sent and the
+		// daemon has no answer (it was restarted since, and the lead's last
+		// receipt is not that message's), and for a lead the registry does
+		// not know. The keys are always present.
 		MessageResult MessageResult `json:"message_result"`
 		// Last is the role's latest receipt, or null when it has none. In a
 		// row it is the summary form: its Result and its Message are left

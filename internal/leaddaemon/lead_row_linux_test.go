@@ -63,12 +63,14 @@ func notNowHolder(req wire.Request, conn net.Conn) {
 	}})
 }
 
-// A row has the holder's three words about the epoch's message once it was
-// delivered, and nothing before. The row's receipt is the summary form: no
-// result and no message. The words stay when a later command is the role's last
-// receipt, and, after a restart of the daemon, they are read from the command
-// table while the inject is still the last receipt and are not known once
-// another command follows it.
+// A row has the holder's three words about the epoch's message once the holder
+// answered, and nothing before. The notNowHolder's message was not delivered, so
+// the epoch's message is free and the words say why. The row's receipt is the
+// summary form: no result and no message. The words stay when a later command is
+// the role's last receipt, and, after a restart of the daemon, they are read from
+// the command table while the inject is still the last receipt and are not
+// known once another command follows it. A message that was delivered shows
+// spent with its words (TestLeadListRowOfADeliveredMessageIsSpent).
 func TestLeadListRowShowsTheMessagesWords(t *testing.T) {
 	l := newLeadEnv(t)
 	l.start()
@@ -80,7 +82,7 @@ func TestLeadListRowShowsTheMessagesWords(t *testing.T) {
 	}
 	want(t, l.inject("alpha", sr.Epoch, "msg-one", "body one"), leadwire.StatusDone, "")
 	row := l.row("alpha")
-	if !row.MessageSpent || row.MessageResult != words {
+	if row.MessageSpent || row.MessageResult != words {
 		t.Fatalf("after the message: %+v", row)
 	}
 	if row.Last == nil || row.Last.Op != leadwire.OpInject || row.Last.Result != nil || row.Last.Message != "" {
@@ -89,14 +91,14 @@ func TestLeadListRowShowsTheMessagesWords(t *testing.T) {
 
 	// A restart: the inject is still the last receipt, and the table has it.
 	l.restart()
-	if row := l.row("alpha"); !row.MessageSpent || row.MessageResult != words {
+	if row := l.row("alpha"); row.MessageSpent || row.MessageResult != words {
 		t.Fatalf("after the restart: %+v", row)
 	}
 
 	// A command after the inject: this daemon kept nothing since the restart,
-	// so the words are not known, and the message is still shown spent.
+	// so the words are not known; the message is free all the same.
 	want(t, l.ticket("alpha", sr.Epoch, leadwire.AttachViewer), leadwire.StatusDone, "")
-	if row := l.row("alpha"); !row.MessageSpent || row.MessageResult != (leadwire.MessageResult{}) {
+	if row := l.row("alpha"); row.MessageSpent || row.MessageResult != (leadwire.MessageResult{}) {
 		t.Fatalf("after a ticket that followed the restart: %+v", row)
 	}
 }
@@ -121,6 +123,23 @@ func TestLeadListRowKeepsTheMessagesWordsAcrossLaterCommands(t *testing.T) {
 	want(t, l.startLead("alpha"), leadwire.StatusDone, "")
 	if row := l.row("alpha"); row.Epoch != sr.Epoch+1 || row.MessageSpent || row.MessageResult != (leadwire.MessageResult{}) {
 		t.Fatalf("the next epoch: %+v", row)
+	}
+}
+
+// A message that was delivered spends the epoch's message: the row shows it
+// spent with the holder's words, before and after a restart of the daemon.
+func TestLeadListRowOfADeliveredMessageIsSpent(t *testing.T) {
+	l := newLeadEnv(t)
+	l.start()
+	sr := l.up("alpha", submitted)
+	want(t, l.inject("alpha", sr.Epoch, "msg-one", "body one"), leadwire.StatusDone, "")
+	words := leadwire.MessageResult{Outcome: "submitted", Written: "whole"}
+	if row := l.row("alpha"); !row.MessageSpent || row.MessageResult != words {
+		t.Fatalf("after the message: %+v", row)
+	}
+	l.restart()
+	if row := l.row("alpha"); !row.MessageSpent || row.MessageResult != words {
+		t.Fatalf("after the restart: %+v", row)
 	}
 }
 

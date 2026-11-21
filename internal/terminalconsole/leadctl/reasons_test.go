@@ -372,7 +372,8 @@ func TestTheDaemonSpendsTheMessageWhenTheRequestIsWritten(t *testing.T) {
 	s := string(src)
 	for _, want := range []string{
 		"resp, wrote, err := callHolderThen(",
-		"\t\tif wrote {\n\t\t\tx.spent[epoch] = true\n\t\t}",
+		"\t\tif wrote && !release {\n\t\t\tx.spent[epoch] = true\n\t\t}",
+		"x.scratch && leadcanary.ReleasesMessage(result)",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("the daemon's source no longer holds %q: check what it spends and change the view's words", want)
