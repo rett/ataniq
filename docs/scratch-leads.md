@@ -695,12 +695,19 @@ sandbox does not show, so the agent cannot see it or name anything in it.
   output or a resize, only once the screen has had no output and no resize for
   about 300 ms (the settle rule), and at most one every 500 ms; the last screen,
   when the session ends, is taken at once. The settle rule keeps a screen that
-  keeps changing, such as the working screen with its animated spinner, from
-  using up the 400 pairs in a few minutes: such a screen is recorded only when
-  it stands still for 300 ms, or when the session ends. So a screen shown for
-  less than 300 ms is not recorded, nor is a screen that never stands still
-  that long, and a screen replaced within 500 ms of the last pair may be
-  missing.
+  keeps changing, such as the working screen with its animated spinner and its
+  elapsed time, from using up the 400 pairs in a few minutes. Such a screen is
+  sampled instead: once it has changed for 3 seconds without standing still
+  for 300 ms, the holder takes one snapshot, and one more every 3 seconds
+  while it goes on, each waiting for a whole frame as above (and marked torn
+  after 2 seconds of waiting). The `.json` of a sample says `"sampled": true`
+  (the field is absent otherwise), so a working screen is in the recording
+  for the fixtures that need one. A sample is a pair like any other: it counts
+  toward the 400, and a screen that then stands still is taken by the settle
+  rule, unless it is the same as the sample just taken (no screen is written
+  twice in a row). So a screen shown for less than 300 ms is not recorded, a
+  screen that never stands still is recorded once every 3 seconds, and a
+  screen replaced within 500 ms of the last pair may be missing.
 - `titles.jsonl`, one JSON line for each window title as it changed, and
   `osc7501.jsonl`, one JSON line for each OSC 7501 payload (the data after
   `7501;`, the support query included). Each line has `ms`, the milliseconds

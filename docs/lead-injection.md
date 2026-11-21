@@ -139,7 +139,8 @@ is not an edit of the packages that read the agent.
 1. Record the screens, window titles and OSC 7501 reports of the new version
    from attended runs, with the screen recorder: a scratch lead whose config
    says `"record_screens": true` writes them, raw, into the `record` folder of
-   its runtime folder, one pair in the fixture format for each distinct screen
+   its runtime folder, one pair in the fixture format for each distinct screen,
+   and a sample every 3 seconds of a working screen that never stands still
    (see [Recording screens](scratch-leads.md#recording-screens)). Scrub them by
    hand as [The fixtures](#the-fixtures) says, and delete the folder once the
    fixtures are made: a recording of the login screen holds a login URL and

@@ -4,8 +4,10 @@
   `false` when absent) is started with `ataniq-holder --record-dir`, and its
   holder writes, raw, into the folder `record` of the lead's runtime folder one
   fixture pair (`NNNN.txt`, `NNNN.json`) per distinct screen that stood still
-  for about 300 ms, at most every 500 ms, and the screen shown at the end, each
-  window title (`titles.jsonl`) and each OSC 7501 payload (`osc7501.jsonl`).
+  for about 300 ms, at most every 500 ms, the screen shown at the end, and one
+  every 3 seconds of a screen that never stands still, such as the working
+  screen (marked `"sampled": true`), each window title (`titles.jsonl`) and
+  each OSC 7501 payload (`osc7501.jsonl`).
   The folder is 0700 and its files 0600, with a `README.txt` that says the
   files are raw (scrub before use; do not commit); a start whose folder exists
   is refused, the screens stop at 400 pairs and the recording at 8 MiB, each

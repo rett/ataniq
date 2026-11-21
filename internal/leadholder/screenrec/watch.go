@@ -43,11 +43,17 @@ type ScreenFunc func(fn func(p Pane, pos uint64))
 // been unchanged for Settle and PairInterval has passed since the last
 // snapshot, while MaxPairs is not reached, through the conversion of the fence
 // (injectbridge.SnapshotOf), and Screen records it when it differs from the
-// last one. A snapshot that is due waits, the screen kept marked as changed,
-// while the parser is in the middle of a sequence or a mode 2026 frame is
-// open, as the fence does; one that has waited TornAfter, and one the last
-// look takes before they settled, is taken anyway and marked torn. The
-// snapshot is copied under the lock and written by the writer, off it.
+// last one. A screen that keeps changing and never stays unchanged for Settle
+// (the working screen) is sampled instead: once it has changed for
+// SampleEvery with no pause of Settle, and again each SampleEvery after the
+// last sample while it goes on, a snapshot is due as well, recorded the same
+// way and marked sampled; a pause of Settle ends the stretch, and the settle
+// rule takes the screen. A snapshot that is due, a sample too, waits, the
+// screen kept marked as changed, while the parser is in the middle of a
+// sequence or a mode 2026 frame is open, as the fence does; one that has
+// waited TornAfter, and one the last look takes before they settled, is taken
+// anyway and marked torn. The snapshot is copied under the lock and written by
+// the writer, off it.
 func (r *Recorder) Watch(screenFn ScreenFunc, done <-chan struct{}) {
 	defer r.Close()
 	t := time.NewTicker(r.cfg.PollInterval)
@@ -78,6 +84,10 @@ type watcher struct {
 	changedAt  time.Time // when a look last saw it change
 	snapAt     time.Time // when the last snapshot was taken
 	waitingAt  time.Time // when a due snapshot began to wait for the parser
+	// busySince is when the screen began to change with no pause of Settle,
+	// or when the last sample of that stretch was taken; zero once a look
+	// sees it unchanged for Settle.
+	busySince time.Time
 }
 
 // look is one look at the pane. The last look (final) takes a changed screen
@@ -90,6 +100,7 @@ func (w *watcher) look(r *Recorder, screenFn ScreenFunc, final bool) {
 		title   string
 		snap    *sessionpane.TextSnapshot
 		torn    bool
+		sampled bool
 	)
 	screenFn(func(p Pane, pos uint64) {
 		cols, rows := p.Size()
@@ -97,9 +108,18 @@ func (w *watcher) look(r *Recorder, screenFn ScreenFunc, final bool) {
 			w.seen, w.pos, w.cols, w.rows = true, pos, cols, rows
 			changed, w.dirty, w.changedAt = true, true, now
 			title = p.Title()
+			if w.busySince.IsZero() {
+				w.busySince = now
+			}
 		}
-		due := final || (now.Sub(w.changedAt) >= r.cfg.Settle &&
-			(w.snapAt.IsZero() || now.Sub(w.snapAt) >= r.cfg.PairInterval))
+		quiet := now.Sub(w.changedAt) >= r.cfg.Settle
+		if quiet {
+			w.busySince = time.Time{}
+		}
+		interval := w.snapAt.IsZero() || now.Sub(w.snapAt) >= r.cfg.PairInterval
+		settleDue := quiet && interval
+		sampleDue := !quiet && !w.busySince.IsZero() && now.Sub(w.busySince) >= r.cfg.SampleEvery && interval
+		due := final || settleDue || sampleDue
 		if !pairs || !w.dirty || !due {
 			w.waitingAt = time.Time{}
 			return
@@ -116,12 +136,17 @@ func (w *watcher) look(r *Recorder, screenFn ScreenFunc, final bool) {
 		w.waitingAt = time.Time{}
 		ts := p.TextSnapshot()
 		snap = &ts
+		if !final && !settleDue {
+			// A sample: the next one is due SampleEvery from now if the
+			// screen goes on changing.
+			sampled, w.busySince = true, now
+		}
 	})
 	if changed {
 		r.Title(title)
 	}
 	if snap != nil {
 		w.dirty, w.snapAt = false, now
-		r.screen(injectbridge.SnapshotOf(*snap), torn)
+		r.screen(injectbridge.SnapshotOf(*snap), torn, sampled)
 	}
 }
