@@ -245,7 +245,7 @@ begin with `client` and `command_id`, then `role`, then the rest.
 
 | Operation | Params | Result |
 | --- | --- | --- |
-| `lead.list` | none, or `{}` | `{"max_running","running","leads":[{"key","role","defined","provision","state","epoch","unit","inject","message_spent","last"}]}`, one row per configured lead. `provision` is `done`, `incomplete` or `none`. `last` is the role's latest receipt in summary form (no `result`), or `null`. Not bound to a command id; it takes no lock and answers while a define runs. |
+| `lead.list` | none, or `{}` | `{"max_running","running","leads":[{"key","role","defined","provision","state","state_reason","epoch","unit","inject","message_spent","message_result","last"}]}`, one row per configured lead. `provision` is `done`, `incomplete` or `none`. `state_reason` is the reason code the registry shows with `state` (`holder-ready` with `ready`, see [Ready](#ready)). `message_result` is `{"outcome","reason","written"}`, the holder's three words about the epoch's message (see [Message and attach](#message-and-attach)). `last` is the role's latest receipt in summary form (no `result` and no `message`), or `null`. Not bound to a command id; it takes no lock and answers while a define runs. |
 | `lead.define` | `client`, `command_id`, `role` | A receipt whose result is `{"role","state","profile_digest"}`. The state is `stopped`. |
 | `lead.start` | `client`, `command_id`, `role` | A receipt whose result is `{"role","state","epoch","unit","waiver"}`. The state is `starting`, always: the receipt does not wait for [`ready`](#ready); `waiver` is the waiver's text. |
 | `lead.stop` | `client`, `command_id`, `role`, `epoch` | A receipt whose result is `{"role","state","proof"}`. An `epoch` of 0 means the current epoch. |
@@ -347,6 +347,14 @@ on the holder's word, and in no other way:
 `ready` is for scratch leads only. The canary has no observer and its lead stays
 `starting` (see [the canary slice](canary-slice.md)).
 
+`lead.list` shows the state and the reason together: a promoted lead's row says
+`"state":"ready"` and `"state_reason":"holder-ready"`, both from the registry's
+entry, so a client that draws `ready (holder-ready)` draws what the daemon
+shows and guesses nothing. `state_reason` is a fixed word (lower-case letters,
+digits and dashes, at most 32 bytes: the registry's own codes are at most 30),
+and is `""` for a lead the registry does not know and for a code that is not
+one; the key is always present.
+
 ### Receipts
 
 Every mutating operation is answered by a **receipt**, and acceptance is the
@@ -401,6 +409,31 @@ before the frame is written spends nothing. The spent epochs are rebuilt at
 every daemon start from the lead's evidence file, and `lead.list` shows
 `message_spent`. The one-message state and the in-flight flag are per lead, so
 one lead's inject never blocks another's.
+
+The row also says what became of the epoch's message. `message_result` has the
+holder's three words, `outcome`, `reason` and `written` (the words of the
+`lead.inject` result, each at most 16 bytes; no detail), once the message of the
+current epoch was delivered and the holder answered; `reason` is `""` for
+`submitted`. All three are `""` when the epoch's message was not sent, when it
+was sent and no answer is known, and for a lead the registry does not know. The
+daemon keeps the answer in memory when it delivers the message, and after a
+restart reads it from the command table while the message's receipt is still
+the role's last; a later command (a ticket, say) hides it, and the row then
+says nothing of the answer, though `message_spent` stays true. The rows of
+`lead.list` stay under 8 KiB for eight leads with the longest values, which is
+why the row's receipt is the summary form without its `message`, and a replay of
+the command's id gives the full receipt.
+
+The console's client cleans both members to fixed words (a word outside the
+grammar becomes `unrecognised`), and its leads view draws the `ready` line and
+the MSG column from them (`free`, `sent`, `sent-unsure` or
+`spent-not-delivered`), so it guesses neither. The decoding is strict about
+members the client does not know, which it refuses, and not about members it has,
+so a row of a daemon from before `state_reason` and `message_result` (this
+feature is not released) is read as a row with both empty: the view then shows
+the plain state, and the MSG column says `sent` for a spent message. A message's
+receipt carries the same three words, which the view draws as the answer to the
+press.
 
 The ticket file is **per lead** (`<runtime root>/leads/<layout role>/ticket`) and
 has one name, so there is **one ticket at a time per role**: the tickets of one

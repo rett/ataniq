@@ -225,14 +225,16 @@ func TestReceiptResultDecodes(t *testing.T) {
 func TestListJSON(t *testing.T) {
 	last := Receipt{CommandID: "id2", Op: OpStart, Role: "scratch-alpha/lead", Status: StatusDone, AdmittedAt: t0, FinishedAt: &t1}
 	l := ListResult{MaxRunning: 2, Running: 1, Leads: []Lead{
-		{Key: "alpha", Role: "scratch-alpha/lead", Defined: true, Provision: ProvisionDone, State: "ready", Epoch: 3,
-			Unit: "ataniq-lead-scratch-alpha.service", Inject: true, MessageSpent: false, Last: &last},
+		{Key: "alpha", Role: "scratch-alpha/lead", Defined: true, Provision: ProvisionDone, State: "ready", StateReason: "holder-ready", Epoch: 3,
+			Unit: "ataniq-lead-scratch-alpha.service", Inject: true, MessageSpent: true,
+			MessageResult: MessageResult{Outcome: "not-now", Reason: "not-ready", Written: "nothing"}, Last: &last},
 		{Key: "beta", Role: "scratch-beta/lead", Provision: ProvisionNone, State: ""},
 	}}
 	const want = `{"max_running":2,"running":1,"leads":[` +
-		`{"key":"alpha","role":"scratch-alpha/lead","defined":true,"provision":"done","state":"ready","epoch":3,"unit":"ataniq-lead-scratch-alpha.service","inject":true,"message_spent":false,` +
+		`{"key":"alpha","role":"scratch-alpha/lead","defined":true,"provision":"done","state":"ready","state_reason":"holder-ready","epoch":3,"unit":"ataniq-lead-scratch-alpha.service","inject":true,"message_spent":true,` +
+		`"message_result":{"outcome":"not-now","reason":"not-ready","written":"nothing"},` +
 		`"last":{"command_id":"id2","op":"lead.start","role":"scratch-alpha/lead","status":"done","admitted_at":"2026-11-20T12:00:00.123456789Z","finished_at":"2026-11-20T12:00:01.623456789Z"}},` +
-		`{"key":"beta","role":"scratch-beta/lead","defined":false,"provision":"none","state":"","epoch":0,"unit":"","inject":false,"message_spent":false,"last":null}]}`
+		`{"key":"beta","role":"scratch-beta/lead","defined":false,"provision":"none","state":"","state_reason":"","epoch":0,"unit":"","inject":false,"message_spent":false,"message_result":{"outcome":"","reason":"","written":""},"last":null}]}`
 	if got := marshal(t, l); got != want {
 		t.Errorf("marshal:\n got %s\nwant %s", got, want)
 	}
@@ -243,6 +245,25 @@ func TestListJSON(t *testing.T) {
 	}
 	if back.Leads[1].Last != nil {
 		t.Error("a null last decoded to a non-nil receipt")
+	}
+}
+
+// TestListRowWithoutNewKeys holds the decoding rule for a row of a daemon from
+// before state_reason and message_result: the strict decoding refuses a key a
+// struct does not have, and does not require one it has, so such a row decodes
+// with both empty. A row with a key nobody defined is refused.
+func TestListRowWithoutNewKeys(t *testing.T) {
+	const old = `{"max_running":2,"running":1,"leads":[{"key":"alpha","role":"scratch-alpha/lead","defined":true,"provision":"done","state":"ready","epoch":3,"unit":"u","inject":true,"message_spent":true,"last":null}]}`
+	var l ListResult
+	strictDecode(t, old, &l)
+	if r := l.Leads[0]; r.State != "ready" || r.StateReason != "" || r.MessageResult != (MessageResult{}) {
+		t.Errorf("row = %+v, want the state and no reason, no message result", r)
+	}
+	var bad ListResult
+	dec := json.NewDecoder(strings.NewReader(strings.Replace(old, `"last":null`, `"last":null,"other":1`, 1)))
+	dec.DisallowUnknownFields()
+	if dec.Decode(&bad) == nil {
+		t.Error("a row with an unknown key was accepted")
 	}
 }
 
@@ -368,11 +389,18 @@ func TestLargestReceiptSize(t *testing.T) {
 	}
 }
 
-// TestLargestListSize checks that lead.list with the most leads, each with a
-// full-size latest receipt, stays under 8 KiB. The receipt in a row is the
-// summary form: it carries no result (see [Lead.Last]), because a row holds
-// the lead's state, epoch and unit already and a result is at most 1.4 KiB.
-// TestListWithResultsExceedsRelay records what the size would be with results.
+// TestLargestListSize checks that lead.list with the most leads, each with the
+// longest latest receipt of the summary form, the longest state reason and the
+// longest message result, stays under 8 KiB. The receipt in a row is the
+// summary form: it carries no result and no message (see [Lead.Last]), because
+// a row holds the lead's state, state reason, epoch, unit and message result
+// already, and a result is at most 1.4 KiB. TestListWithResultsExceedsRelay
+// records what the size would be with results. The arithmetic: the largest
+// list was 7735 bytes with the summary's 256-byte message, which left 457
+// bytes under the limit; the row's two new members cost 156 bytes with the
+// longest words, 1248 over eight rows, which does not fit; the message and its
+// key are 270 bytes a row, 2160 over eight, so without the message the list is
+// 6823 bytes and with it, and the new members, 8983, over the limit.
 func TestLargestListSize(t *testing.T) {
 	b := marshal(t, maxList(t, false))
 	t.Logf("largest lead.list: %d bytes", len(b))
@@ -392,7 +420,9 @@ func TestListWithResultsExceedsRelay(t *testing.T) {
 	}
 }
 
-// maxList is the largest lead.list: MaxLeads rows with the longest values.
+// maxList is the largest lead.list: MaxLeads rows with the longest values. A
+// row's receipt is the summary form, without its result and its message, and
+// the full receipt with withResult.
 func maxList(t *testing.T, withResult bool) ListResult {
 	t.Helper()
 	key := repeat('k', MaxKey)
@@ -401,13 +431,17 @@ func maxList(t *testing.T, withResult bool) ListResult {
 	for i := 0; i < MaxLeads; i++ {
 		r := maxInjectReceipt(t)
 		if !withResult {
-			r.Result = nil
+			r.Result, r.Message = nil, ""
 		}
 		l.Leads = append(l.Leads, Lead{
 			Key: key, Role: role, Defined: true, Provision: ProvisionIncomplete,
-			State: "degraded", Epoch: 1<<64 - 1,
+			State: "degraded", StateReason: repeat('s', MaxStateReason), Epoch: 1<<64 - 1,
 			Unit:   "ataniq-lead-scratch-" + key + ".service",
-			Inject: true, MessageSpent: true, Last: &r,
+			Inject: true, MessageSpent: true,
+			MessageResult: MessageResult{
+				Outcome: repeat('o', MaxDeliveryWord), Reason: repeat('r', MaxDeliveryWord), Written: repeat('w', MaxDeliveryWord),
+			},
+			Last: &r,
 		})
 	}
 	return l

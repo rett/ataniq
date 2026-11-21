@@ -732,6 +732,11 @@ func (m *leadMode) inject(ctx context.Context, lr *leadRole, p leadwire.InjectPa
 		}
 		return fromFail(f)
 	}
+	lr.noteDelivery(res.Epoch, leadwire.MessageResult{
+		Outcome: fixedWord(string(res.Result.Outcome), leadwire.MaxDeliveryWord),
+		Reason:  fixedWord(string(res.Result.Reason), leadwire.MaxDeliveryWord),
+		Written: fixedWord(string(res.Result.Written), leadwire.MaxDeliveryWord),
+	})
 	return done(leadwire.InjectResult{
 		Role: res.Role, Epoch: res.Epoch, MessageID: res.MessageID,
 		Result: leadwire.Delivery{
@@ -763,21 +768,69 @@ func (m *leadMode) row(lr *leadRole) leadwire.Lead {
 	row := leadwire.Lead{
 		Key: lr.key, Role: lr.role.String(), Inject: lr.cfg.Inject, Provision: m.provisionWord(lr),
 	}
+	rec, hasLast := m.table.Last(lr.role)
 	if e, err := m.reg.Get(lr.role); err == nil {
 		row.Defined = true
 		row.State = string(e.Shown.State)
+		row.StateReason = fixedWord(e.Shown.Reason.Code, leadwire.MaxStateReason)
 		row.Epoch = e.Epoch
 		row.Unit = lr.role.UnitName()
 		row.MessageSpent = e.Epoch != 0 && lr.in.ext.messageSpent(e.Epoch)
+		if row.MessageSpent {
+			row.MessageResult = deliveryOf(lr, e.Epoch, rec, hasLast)
+		}
 	}
-	if rec, ok := m.table.Last(lr.role); ok {
-		// The summary form of a receipt: no result, which the row's state, epoch
-		// and unit say already, and which would not fit in the relay's size.
-		rec.Result = nil
+	if hasLast {
+		// The summary form of a receipt: no result and no message, which the
+		// row's state, reason, epoch, unit and message result say already,
+		// and which would not fit in the relay's size.
+		rec.Result, rec.Message = nil, ""
 		w := toWire(rec)
 		row.Last = &w
 	}
 	return row
+}
+
+// deliveryOf is the holder's answer to the epoch's message, in its three
+// words: the one this daemon kept when it delivered the message, else the one
+// in the role's last receipt when that is the done inject of this epoch (a
+// daemon that was restarted since has no memory of it, and the command table
+// holds it). The words are empty when neither is so, which the view reads as
+// no answer known.
+func deliveryOf(lr *leadRole, epoch uint64, last leadcontrol.Receipt, hasLast bool) leadwire.MessageResult {
+	if w, ok := lr.deliveryIn(epoch); ok {
+		return w
+	}
+	if !hasLast || last.Op != leadwire.OpInject || leadwire.Status(last.Status) != leadwire.StatusDone || len(last.Result) == 0 {
+		return leadwire.MessageResult{}
+	}
+	var r leadwire.InjectResult
+	if json.Unmarshal(last.Result, &r) != nil || r.Epoch != epoch || r.Role != lr.role.String() {
+		return leadwire.MessageResult{}
+	}
+	return leadwire.MessageResult{
+		Outcome: fixedWord(r.Result.Outcome, leadwire.MaxDeliveryWord),
+		Reason:  fixedWord(r.Result.Reason, leadwire.MaxDeliveryWord),
+		Written: fixedWord(r.Result.Written, leadwire.MaxDeliveryWord),
+	}
+}
+
+// fixedWord returns s when it is a word of the wire's grammar for reason codes
+// and outcomes (lower-case letters, digits and dashes, the first a letter) of
+// at most max bytes, and "" otherwise: a row never carries a peer's text.
+func fixedWord(s string, max int) string {
+	if len(s) > max {
+		return ""
+	}
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c >= 'a' && c <= 'z':
+		case i > 0 && (c >= '0' && c <= '9' || c == '-'):
+		default:
+			return ""
+		}
+	}
+	return s
 }
 
 // provisionWord is the row's provision word. A lead whose define is in flight

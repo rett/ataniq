@@ -777,6 +777,36 @@ func TestInjectOutcomeIsAGrammarWord(t *testing.T) {
 	}
 }
 
+// A done message carries the holder's reason and written words next to the
+// outcome, each cleaned to a word of the grammar, and never its detail.
+func TestInjectReasonAndWrittenAreGrammarWords(t *testing.T) {
+	d := startLeadDaemon(t)
+	l := newLeads(t, d.dir)
+	for i, tc := range []struct {
+		res                      leadwire.Delivery
+		outcome, reason, written string
+	}{
+		{leadwire.Delivery{Outcome: "not-now", Reason: "not-ready", Written: "nothing"}, "not-now", "not-ready", "nothing"},
+		{leadwire.Delivery{Outcome: "submitted", Written: "whole"}, "submitted", "", "whole"},
+		{leadwire.Delivery{Outcome: "uncertain", Reason: "died", Written: "unknown"}, "uncertain", "died", "unknown"},
+		{leadwire.Delivery{Outcome: "refused", Reason: "Weird Reason", Written: "\x1b[31m"}, "refused", "unrecognised", "unrecognised"},
+		{leadwire.Delivery{Outcome: "refused", Reason: strings.Repeat("a", 65), Written: "nothing"}, "refused", "unrecognised", "nothing"},
+	} {
+		tc := tc
+		tc.res.Detail = hostileMark
+		d.setExec(func(op string, p cmdParams) (leadwire.Status, string, any) {
+			return leadwire.StatusDone, "", leadwire.InjectResult{Role: p.Role, Epoch: p.Epoch, MessageID: p.MessageID, Result: tc.res}
+		})
+		r, err := l.Send(testRole, 2, "m-"+strconv.Itoa(i), "hi")
+		if err != nil || r.Outcome != tc.outcome || r.Reason != tc.reason || r.Written != tc.written {
+			t.Fatalf("%+v: got %+v %v", tc, r, err)
+		}
+		if s := fmt.Sprintf("%+v", r); strings.Contains(s, "EVIL") {
+			t.Fatalf("the detail is in %s", s)
+		}
+	}
+}
+
 // ---- a lost answer -----------------------------------------------------
 
 func TestALostAnswerIsAskedForWithTheSameIdOnANewConnection(t *testing.T) {
@@ -1230,6 +1260,70 @@ func TestListBuildsTheListing(t *testing.T) {
 	}
 	if lst.Leads[1].Last != nil || lst.Leads[2].Provision != "incomplete" {
 		t.Fatalf("rows = %+v", lst.Leads)
+	}
+}
+
+// A row carries the state's reason code and the holder's three words about the
+// epoch's message, each cleaned to a word of the grammar.
+func TestListCarriesTheStatesReasonAndTheMessagesWords(t *testing.T) {
+	d := startLeadDaemon(t)
+	l := newLeads(t, d.dir)
+	d.setList(leadwire.ListResult{MaxRunning: 2, Running: 1, Leads: []leadwire.Lead{
+		{Key: "alpha", Role: "scratch-alpha/lead", Defined: true, Provision: "done", State: "ready", StateReason: "holder-ready",
+			Epoch: 3, Inject: true, MessageSpent: true,
+			MessageResult: leadwire.MessageResult{Outcome: "not-now", Reason: "not-ready", Written: "nothing"}},
+		{Key: "beta", Role: "scratch-beta/lead", State: "stopped", StateReason: "Bad Reason\x1b[2J",
+			MessageResult: leadwire.MessageResult{Outcome: "sub mitted", Reason: strings.Repeat("a", 65), Written: "whole"}},
+		{Key: "gamma", Role: "scratch-gamma/lead"},
+	}})
+	lst, err := l.List()
+	if err != nil || len(lst.Leads) != 3 {
+		t.Fatalf("%+v %v", lst, err)
+	}
+	if a := lst.Leads[0]; a.StateReason != "holder-ready" || a.MessageResult != (LeadDelivery{Outcome: "not-now", Reason: "not-ready", Written: "nothing"}) {
+		t.Fatalf("alpha = %+v", a)
+	}
+	if b := lst.Leads[1]; b.StateReason != "unrecognised" || b.MessageResult != (LeadDelivery{Outcome: "unrecognised", Reason: "unrecognised", Written: "whole"}) {
+		t.Fatalf("beta = %+v", b)
+	}
+	if g := lst.Leads[2]; g.StateReason != "" || g.MessageResult != (LeadDelivery{}) {
+		t.Fatalf("gamma = %+v", g)
+	}
+}
+
+// The rule for a row of a daemon from before state_reason and message_result:
+// the decoding refuses a member the types do not have and does not require one
+// they have, so such a row is accepted with both empty, and a row with a member
+// nobody defined is a bad answer.
+func TestAListRowWithoutTheNewMembersIsAcceptedAndOneWithAnUnknownMemberIsNot(t *testing.T) {
+	oldRow := map[string]any{
+		"key": "alpha", "role": testRole, "defined": true, "provision": "done", "state": "ready",
+		"epoch": 3, "unit": "u", "inject": true, "message_spent": true, "last": nil,
+	}
+	list := func(row map[string]any) map[string]any {
+		return map[string]any{"max_running": 2, "running": 1, "leads": []any{row}}
+	}
+	p, _, _ := scriptedPeer(t, func(clientapi.Request, cmdParams) any { return list(oldRow) })
+	l := newLeads(t, p.dir)
+	lst, err := l.List()
+	if err != nil || len(lst.Leads) != 1 {
+		t.Fatalf("%+v %v", lst, err)
+	}
+	if r := lst.Leads[0]; r.State != "ready" || r.StateReason != "" || r.MessageResult != (LeadDelivery{}) || !r.MessageSpent {
+		t.Fatalf("row = %+v", r)
+	}
+	l.Close()
+
+	withUnknown := map[string]any{}
+	for k, v := range oldRow {
+		withUnknown[k] = v
+	}
+	withUnknown["state_note"] = "x"
+	p2, _, _ := scriptedPeer(t, func(clientapi.Request, cmdParams) any { return list(withUnknown) })
+	l2 := newLeads(t, p2.dir)
+	defer l2.Close()
+	if _, err := l2.List(); !isUnavailable(err, StateBadAnswer) {
+		t.Fatalf("a row with an unknown member: %v", err)
 	}
 }
 

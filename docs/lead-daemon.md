@@ -910,7 +910,9 @@ group of the previous epoch must be proven empty (a changed boot identity is
 proof in itself). Without that proof nothing starts: the start is refused and
 the role is left as it is. Only then does the lifecycle journal the launch
 intent, with the boot identity when the manager reported one, and call `Start`
-once. It never waits for readiness, and it never sets `ready`.
+once. It never waits for readiness, and it never sets `ready`. (In scratch
+mode a background observer sets `ready` afterwards, on the holder's word: see
+[the scratch leads guide](scratch-leads.md#ready).)
 
 A reply that is lost is its own error. The caller inspects and does not start
 again. A unit with exactly this epoch and intent is adopted. Otherwise the
@@ -1282,7 +1284,8 @@ without the tag and the flag.
 - a sandbox for a lead: the daemon launches none. The profile of
   [the lead sandbox guide](lead-sandbox.md) is an unqualified proposal; in
   canary mode the holder launches it, with assertion 10 waived;
-- readiness: nothing sets `ready`;
+- readiness: nothing sets `ready` in this skeleton; for scratch mode see
+  [the scratch leads guide](scratch-leads.md#ready);
 - delivery of instructions and the wait for an idle turn, and the quiesce of
   delivery before a stop (the interface exists, nothing implements it). The
   library of [the lead injection guide](lead-injection.md) is not joined to
