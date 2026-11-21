@@ -36,7 +36,8 @@ There are two passes, and pass A comes first:
   identify the login as a new row whose last-active time falls during the run
   (on a separate throwaway account, "log out of all devices" revokes it
   completely); when none can be identified the owner types
-  `cannot-identify: <what you see>`, which is accepted and counted as a finding.
+  `cannot-identify: <what you see>` (some text after the colon), which is accepted
+  and counted as a finding.
 
 ## Build
 
@@ -245,7 +246,8 @@ with the reason when the fact is not true; the lead types nothing for it:
   intake's list and by `git rev-parse` on the mirror.
   The step prints the review's `Digest:` and `Tip:` lines (from
   `out/20-e1-review.out`): the owner signs off with the review's digest, not the
-  plan digest of the verify output. The question `integrate succeeded` is asked
+  plan digest of the verify output (at most 4 lines of 300 bytes, control
+  characters replaced; a note when the review printed none). The question `integrate succeeded` is asked
   again up to 2 more times when the answer is not exactly `yes`; the pass ends
   after the third wrong answer or at the end of the input.
 
@@ -266,10 +268,11 @@ word.
 - **Pass B:** a failure at step 6 or later runs the clean-up chain: steps 22
   (stop and revert the unit), 24 (restore the listeners), 25 (compare the
   manifest) and 26 (clean up). From step 15 on, steps 21 (log out) and 23
-  (revoke) are run as well. The chain's step 22 keeps the first proof of the
-  stop: a file that step 22 already wrote in the pass (`out/22-e1-stop.out`, the
-  journal, the unit lists) is not overwritten, and the chain writes its own with
-  the suffix `-chain`.
+  (revoke) are run as well. The chain keeps the first proof of the
+  stop: every file the chain writes by a captured command (`runcap`) or as the
+  journal or a unit list, when that file already exists in the pass
+  (`out/22-e1-stop.out`, for one), is not overwritten, and the chain writes it
+  with the suffix `-chain`.
 - **Pass A:** a failure at step 11 or later runs steps 22 and 26.
 - A failure before that starts no chain; undo by hand what the earlier steps
   left (below).

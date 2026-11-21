@@ -2858,7 +2858,13 @@ step_20() {
     dry "print the review's Digest: and Tip: lines, read from $EV/out/20-e1-review.out"
   else
     out "   the review's lines (from $_revout):"
-    grep -E '^(Digest|Tip):' "$_revout" 2>/dev/null | sed 's/^/     /' || :
+    # The text comes from the agent's review: at most 4 lines of 300 bytes, control characters replaced.
+    _dt=$(grep -E '^(Digest|Tip):' "$_revout" 2>/dev/null | sed -n '1,4p' | LC_ALL=C tr -c '[:print:]\n' '?' | LC_ALL=C cut -b1-300 || :)
+    if [ -n "$_dt" ]; then
+      printf '%s\n' "$_dt" | sed 's/^/     /'
+    else
+      out '     (no Digest line in the review output: read the review output above)'
+    fi
   fi
   out "   Use the review's digest, not the verify output's plan digest: integrate refuses the plan digest."
   out "     $BIN/ataniq-intake integrate --state $STATE --project $PROJECT --role $LAYOUT --branch $BRANCH --target $UPSTREAM \\"
@@ -2872,7 +2878,7 @@ step_20() {
     ask 'Owner: integrate succeeded (type: yes)'
   done
   if [ "$DRY" -eq 1 ]; then
-    dry 'when the answer is not exactly yes, ask again, up to 2 more times (3 answers in all); fail only after the third wrong answer or at the end of the input'
+    dry 'ask again when the answer is not exactly yes, up to 2 more times (3 answers in all); fail only after the third wrong answer or at the end of the input'
   elif [ "$ANSWER" != yes ]; then
     fail 'the answer was not "yes": Owner: integrate succeeded'
     return 0
@@ -3025,8 +3031,8 @@ step_23() {
   case $ANSWER in
     revoked) result revoked ;;
     no-login) result 'nothing to act on: no login was made' ;;
-    cannot-identify:*)
-      # Accepted, but a finding: the login is still live and the credential stays exposed.
+    cannot-identify:*[![:space:]]*)
+      # Accepted only with some text after the colon. Accepted, but a finding: the login is still live and the credential stays exposed.
       FINDINGS=$((FINDINGS + 1))
       note "finding: the login could not be identified on the account page: ${ANSWER#cannot-identify:}"
       out '   accepted, and recorded as a finding: the login could not be revoked on its own; the credential stays exposed until it is.'
