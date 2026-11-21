@@ -5,6 +5,7 @@ package hostadapter
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"ataniq/internal/approval/ownerchannel"
 	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/approval/record"
+	"ataniq/internal/intake"
 )
 
 // buildMerge builds and pins a merge by hand, as the service does, and returns
@@ -74,6 +76,27 @@ func TestAChangeLargerThanTheSummaryReadsIsRefusedRecordTooLarge(t *testing.T) {
 	}
 	if pins != 1 || r.pinOfMerge(in.Merge) == "" {
 		t.Errorf("%d pins are left, the hand-built one among them: %v", pins, r.pinOfMerge(in.Merge) != "")
+	}
+}
+
+// mapReviewError gives a commit in another encoding a refusal the lead's
+// reply carries, request-invalid, with a fixed line: the intake's error holds
+// the commit's id and an escaped copy of the header's value, and the detail
+// repeats neither. Another error of the host passes as it is.
+func TestMapReviewErrorRefusesACommitInAnotherEncodingWithAFixedLine(t *testing.T) {
+	id := strings.Repeat("ab", 20)
+	err := fmt.Errorf("%w: commit %s: %s", intake.ErrCommitEncoding, id, `the encoding header is "ISO-8859-1\x1b"`)
+	got := mapReviewError(err, record.CodeReviewChanged)
+	var e *record.Error
+	if !errors.As(got, &e) || e.Code != record.CodeRequestInvalid || e.Detail != "a commit declares an encoding other than UTF-8" {
+		t.Fatalf("mapReviewError(%v) = %v, want request-invalid with the fixed line", err, got)
+	}
+	if strings.Contains(e.Detail, id) || strings.Contains(e.Detail, "ISO-8859-1") {
+		t.Errorf("the detail repeats the intake's error: %q", e.Detail)
+	}
+	other := errors.New("hostadapter: something else")
+	if got := mapReviewError(other, record.CodeReviewChanged); got != other {
+		t.Errorf("mapReviewError(%v) = %v, want it as it is", other, got)
 	}
 }
 

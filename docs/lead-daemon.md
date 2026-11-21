@@ -352,7 +352,17 @@ Covered by the end-to-end test on the stand-in:
   of an approval by a later failed run (`TestOwnerChannelOC31VerificationOutcomes`).
   Not covered: the sandbox's reach (a suite that reads the lead's home, reaches
   the network or writes outside its checkout), because the suite is a fake.
-- OC33, hostile commit headers (`TestOwnerChannelOC33HostileCommitHeaders`).
+- OC33, hostile commit headers (`TestOwnerChannelOC33HostileCommitHeaders`),
+  and a commit in another encoding
+  (`TestOwnerChannelOC33ACommitInAnotherEncodingIsRefused`). A feature commit
+  whose `encoding` header names a charset other than UTF-8 is refused
+  `request-invalid` with the line "a commit declares an encoding other than
+  UTF-8", and no card: git would convert the author's bytes from the charset
+  that header names when it prints the commit, so the owner would not be shown
+  the bytes the lead stored, and the intake refuses such a commit (see
+  [lead-intake.md](lead-intake.md)). The line is fixed and does not repeat the
+  commit's id or the header's value. The lead commits the branch again in
+  UTF-8 and asks again.
 
 Covered only on the daemon side: OC13, who may send a decision frame, in
 `ownerchannel_contract_test.go` and `owner_decider_linux_test.go` (a second

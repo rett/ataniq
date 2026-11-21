@@ -1418,10 +1418,11 @@ func TestOwnerChannelOC33HostileCommitHeaders(t *testing.T) {
 // would convert the author's bytes from the charset that header names when it
 // prints the commit, so what the owner is shown would not be the bytes the
 // lead stored. The intake refuses such a commit (intake.ErrCommitEncoding).
-// That refusal is not one the lead's reply carries as its own code, so the
-// host answers request-invalid with its fixed line for a review it could not
-// make: no card, no ref changed (the pin of the built merge is taken away),
-// and no record at the door.
+// The host answers request-invalid with a fixed line that says why, and the
+// lead's reply carries it; neither the status nor the reply repeats the
+// commit's id or the header's value, which the intake's error holds. No card,
+// no ref changed (the pin of the built merge is taken away), and no record at
+// the door.
 func TestOwnerChannelOC33ACommitInAnotherEncodingIsRefused(t *testing.T) {
 	j := newJoinedScene(t, func(l *lab) scene {
 		l.put("README.md", "readme\n")
@@ -1443,16 +1444,23 @@ func TestOwnerChannelOC33ACommitInAnotherEncodingIsRefused(t *testing.T) {
 	})
 	before := j.lab.refs()
 	id := j.ask()
+	const want = "a commit declares an encoding other than UTF-8"
 	st, ok := j.o.Service.Status(id)
 	if !ok || st.State != ownerchannel.RequestRefused || st.Code != record.CodeRequestInvalid ||
-		st.Detail != "the host could not review the merge" || st.PendingID != "" {
-		t.Fatalf("status %+v, want refused request-invalid, the host could not review the merge, with no card", st)
+		st.Detail != want || st.PendingID != "" {
+		t.Fatalf("status %+v, want refused request-invalid, %q, with no card", st, want)
 	}
 	if got := j.lab.refs(); got != before {
 		t.Errorf("refs changed:\n%s\nwant\n%s", got, before)
 	}
-	if rp := j.readReply(id); rp.Code != string(record.CodeRequestInvalid) || rp.State != "" || rp.PendingID != "" {
-		t.Errorf("reply %+v", rp)
+	rp := j.readReply(id)
+	if rp.Code != string(record.CodeRequestInvalid) || rp.State != "" || rp.PendingID != "" || rp.Line != want {
+		t.Errorf("reply %+v, want request-invalid with the line %q", rp, want)
+	}
+	for _, leak := range []string{j.scene.feature, "ISO-8859-1"} {
+		if strings.Contains(st.Detail, leak) || strings.Contains(rp.Line, leak) {
+			t.Errorf("the refusal repeats %q: status %q, reply %q", leak, st.Detail, rp.Line)
+		}
 	}
 	if l, err := j.stand.List(context.Background()); err != nil || len(l) != 0 {
 		t.Errorf("the door lists %d records (%v)", len(l), err)
