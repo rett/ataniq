@@ -3,6 +3,8 @@
 package leaddaemon
 
 import (
+	"errors"
+	"math"
 	"os"
 	"os/exec"
 	"strconv"
@@ -33,6 +35,9 @@ func TestOwnerTheTerminalOfAStat(t *testing.T) {
 		{"pts 7", stat("sh", strconv.Itoa(136<<8|7)), "/dev/pts/7", false},
 		{"pts 300 on the next major", stat("sh", strconv.Itoa(137<<8|44)), "/dev/pts/300", false},
 		{"the highest pts major", stat("sh", strconv.Itoa(143<<8|255)), "/dev/pts/2047", false},
+		{"the major under the pts range", stat("sh", strconv.Itoa(135<<8|1)), "", true},
+		{"the major over the pts range", stat("sh", strconv.Itoa(144<<8|1)), "", true},
+		{"a major far over the pts range", stat("sh", strconv.Itoa(200<<8|1)), "", true},
 		{"a virtual console", stat("login", strconv.Itoa(4<<8|1)), "/dev/tty1", false},
 		{"a name with parentheses and spaces", stat("a) S 1 2 3 99 (b c", strconv.Itoa(136<<8|3)), "/dev/pts/3", false},
 		{"the device /dev/tty", stat("x", strconv.Itoa(5<<8)), "", true},
@@ -166,5 +171,86 @@ func TestOwnerInspectAProcessWithAControllingTerminal(t *testing.T) {
 	got, err := ProcInspector{}.Inspect(PeerRef{PID: cmd.Process.Pid, AcceptedAt: time.Now()})
 	if err != nil || got.TTY != name {
 		t.Fatalf("%+v, %v; want %s", got, err, name)
+	}
+}
+
+// inspectFake answers the questions of the inspector one by one, for this
+// process's pidfd, so that a test can make exactly one of them say "no".
+func inspectFake(stat string, exited bool) procReads {
+	rd := realProcReads
+	rd.stat = func(int) ([]byte, error) { return []byte(stat), nil }
+	rd.exited = func(*os.File) (bool, error) { return exited, nil }
+	rd.uptime = func() (time.Duration, error) { return 1000 * time.Hour, nil }
+	return rd
+}
+
+// ownerStatOf is the text of /proc/<pid>/stat of a process in state, started
+// start ticks after boot, with no terminal.
+func ownerStatOf(state string, start uint64) string {
+	return "4242 (x) " + state + " 1 4242 4242 0 4242 4194560 100 0 0 0 0 0 0 0 20 0 1 0 " +
+		strconv.FormatUint(start, 10) + " 1000 100 18446744073709551615"
+}
+
+// TestOwnerInspectEachCheckOfTheEndOfAProcessHoldsAlone: the pidfd's answer
+// that the process exited and the state of the stat (zombie, dead) each
+// refuse the peer when the other says it is running; neither check hides the
+// other.
+func TestOwnerInspectEachCheckOfTheEndOfAProcessHoldsAlone(t *testing.T) {
+	peer := PeerRef{PID: os.Getpid(), AcceptedAt: time.Now()}
+	ready := ownerStatOf("S", 100)
+	if got, err := inspectProc(peer, inspectFake(ready, false)); err != nil || got.TTY != "" {
+		t.Fatalf("a running process: %+v, %v", got, err)
+	}
+	for _, tt := range []struct {
+		name   string
+		stat   string
+		exited bool
+	}{
+		{"only the pidfd says it exited", ready, true},
+		{"only the stat says zombie", ownerStatOf("Z", 100), false},
+		{"only the stat says dead", ownerStatOf("X", 100), false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := inspectProc(peer, inspectFake(tt.stat, tt.exited))
+			if err == nil || !strings.Contains(err.Error(), "ended") {
+				t.Fatalf("%v", err)
+			}
+		})
+	}
+	// An error from the pidfd is no answer either.
+	rd := inspectFake(ready, false)
+	rd.exited = func(*os.File) (bool, error) { return false, errors.New("poll failed") }
+	if _, err := inspectProc(peer, rd); err == nil {
+		t.Fatal("a pidfd that could not be asked was taken")
+	}
+}
+
+// TestOwnerInspectTheStartTimeDoesNotOverflow: a process that started after
+// more than 1067 days of uptime (a start time past 9.2e9 ticks, whose
+// nanoseconds overflow an int64) still has its age worked out, so the
+// reuse check is right: a process older than the connection is judged and one
+// younger than it is refused.
+func TestOwnerInspectTheStartTimeDoesNotOverflow(t *testing.T) {
+	const day = 24 * time.Hour
+	start := uint64(1100 * 24 * 3600 * 100) // 1100 days after boot, in ticks
+	if got := processAge(1200*day, start); got != 100*day {
+		t.Fatalf("age %v, want 100 days", got)
+	}
+	if got := processAge(1100*day+time.Hour, start); got != time.Hour {
+		t.Fatalf("age %v, want an hour", got)
+	}
+	if got := processAge(5*time.Second, math.MaxUint64); got >= 0 {
+		t.Fatalf("an impossible start time gave the age %v", got)
+	}
+	// Through the inspector: up 1200 days, started 1100 days after boot.
+	rd := inspectFake(ownerStatOf("S", start), false)
+	rd.uptime = func() (time.Duration, error) { return 1200 * day, nil }
+	old := PeerRef{PID: os.Getpid(), AcceptedAt: time.Now().Add(-50 * day)}
+	if _, err := inspectProc(old, rd); err != nil {
+		t.Fatalf("a process 100 days old, connected 50 days ago: %v", err)
+	}
+	young := PeerRef{PID: os.Getpid(), AcceptedAt: time.Now().Add(-200 * day)}
+	if _, err := inspectProc(young, rd); err == nil || !strings.Contains(err.Error(), "reused") {
+		t.Fatalf("a process 100 days old, connected 200 days ago: %v", err)
 	}
 }

@@ -8,7 +8,8 @@
   console is read-only, and a client with no terminal and a decision frame from
   any other connection are refused and counted. The flag is refused until the
   host's side of a card is built into the command. Release builds have no such
-  flag and register no owner operation, and `hello` lists what it lists today. The connection that holds the place of the one that may decide is kept
+  flag and register no owner operation, and `hello` lists what it lists today.
+  The connection that holds the place of the one that may decide is kept
   for up to ten minutes without a request (other connections keep the
   server's 30 seconds), so the place is not lost while the owner reads a card;
   a connection that is not the decider and sends more than 16 decision frames
