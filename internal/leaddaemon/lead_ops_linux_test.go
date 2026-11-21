@@ -688,7 +688,9 @@ func TestLeadInjectEpochAndTheOneMessage(t *testing.T) {
 	want(t, l.inject("alpha", 0, "msg-zero", "body one"), leadwire.StatusRefused, "stale-epoch")
 	want(t, l.ticket("alpha", sr.Epoch+1, leadwire.AttachWriter), leadwire.StatusRefused, "stale-epoch")
 	want(t, l.ticket("alpha", 0, leadwire.AttachWriter), leadwire.StatusRefused, "stale-epoch")
-	if n := len(h.requests("")); n != 0 {
+	// The daemon's own status questions (the observer that shows the lead ready)
+	// are not the frames this is about: no ticket and no inject reached it.
+	if n := len(h.requests(wire.OpTicket)) + len(h.requests(wire.OpInject)); n != 0 {
 		t.Fatalf("%d frames reached the holder", n)
 	}
 	if row := l.row("alpha"); row.MessageSpent {
@@ -980,7 +982,10 @@ func TestLeadDefineAndStartTogether(t *testing.T) {
 	for _, r := range got {
 		switch {
 		case r.Status == leadwire.StatusDone,
-			r.Status == leadwire.StatusRefused && (r.Code == "role-busy" || r.Code == codeRoleNotDefined):
+			// A start that comes after another start of the role has finished is
+			// refused by the registry, which admits a launch from desired,
+			// stopped and ended only.
+			r.Status == leadwire.StatusRefused && (r.Code == "role-busy" || r.Code == codeRoleNotDefined || r.Code == codeLaunchRefused):
 		default:
 			t.Errorf("%s: %s %s %s", r.Op, r.Status, r.Code, r.Message)
 		}

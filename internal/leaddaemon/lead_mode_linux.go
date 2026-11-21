@@ -71,6 +71,12 @@ type Scratch struct {
 	// ProvisionTimeout bounds the provisioning of one define; default
 	// [DefaultProvisionTimeout].
 	ProvisionTimeout time.Duration
+	// ReadyWithin is how long the observer that promotes a starting lead to
+	// ready keeps asking its holder; default [DefaultReadyWithin].
+	ReadyWithin time.Duration
+	// ReadyBackoff is the first wait between two of its questions; default
+	// [DefaultReadyBackoff].
+	ReadyBackoff time.Duration
 }
 
 // leadActHook is called by a command, after it holds the role's operation lock
@@ -125,6 +131,12 @@ type leadMode struct {
 	roles      map[leadrole.Role]*leadRole
 	maxRunning int
 
+	// readyWithin and readyBackoff are the observer's bounds (see
+	// lead_ready_linux.go); ready is its observers.
+	readyWithin  time.Duration
+	readyBackoff time.Duration
+	ready        readyObservers
+
 	table *leadcontrol.Table
 	ctl   *leadlifecycle.Controller
 	reg   *leadregistry.Registry
@@ -178,6 +190,7 @@ func (d *daemon) scratchSetup() (*canaryMode, error) {
 	lm := &leadMode{
 		cm: m, d: d, cfg: s.Config, getenv: getenv, provisionT: s.ProvisionTimeout,
 		roles: make(map[leadrole.Role]*leadRole, len(leads)), maxRunning: s.Config.MaxRunning,
+		readyWithin: s.ReadyWithin, readyBackoff: s.ReadyBackoff,
 	}
 	if lm.provisionT <= 0 {
 		lm.provisionT = DefaultProvisionTimeout

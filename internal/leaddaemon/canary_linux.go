@@ -3,6 +3,7 @@
 package leaddaemon
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -250,4 +251,22 @@ func (m *canaryMode) extensions(ctl *leadlifecycle.Controller, reg *leadregistry
 		in.ext = m.newExt(in, ctl, reg)
 	}
 	return []clientapi.Extension{&routerExt{router: m.router}}
+}
+
+// startObservers lets the background observers of scratch mode run, under the
+// server's context; the canary has none.
+func (m *canaryMode) startObservers(ctx context.Context) {
+	if m == nil || m.lead == nil {
+		return
+	}
+	m.lead.startObservers(ctx)
+}
+
+// joinObservers ends the observers of scratch mode and waits for them, at most
+// grace, and reports whether they ended.
+func (m *canaryMode) joinObservers(grace time.Duration) bool {
+	if m == nil {
+		return true
+	}
+	return m.lead.joinObservers(grace)
 }

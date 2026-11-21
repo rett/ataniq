@@ -369,6 +369,9 @@ func Run(ctx context.Context, cfg Config) error {
 	go func() {
 		done <- clientapi.Serve(serveCtx, l, &handler{reg: reg, version: d.Version, info: info}, srvOpts)
 	}()
+	// The background observers of scratch mode (none otherwise) run under the
+	// server's context and are joined below, before the registry is closed.
+	canary.startObservers(serveCtx)
 	var serveErr error
 	select {
 	case <-ctx.Done():
@@ -389,6 +392,15 @@ func Run(ctx context.Context, cfg Config) error {
 				err = errors.New("the server returned with no error before it was asked to stop")
 			}
 			serveErr = &StartupError{Step: StepServe, Err: err}
+		}
+	}
+	if !canary.joinObservers(d.ShutdownGrace) && !abandoned {
+		abandoned = true
+		d.logf("an observer did not stop within %s", d.ShutdownGrace)
+		if serveErr == nil {
+			serveErr = &StartupError{Step: StepShutdown, Err: fmt.Errorf(
+				"an observer did not stop within %s; its goroutine may still be running, the registry is left open and the daemon lock held, the socket lock too, and all end with this process",
+				d.ShutdownGrace)}
 		}
 	}
 	// The registry, the socket lock and the daemon lock are released by the
