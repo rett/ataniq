@@ -37,7 +37,9 @@
 // client and id, and a replay of a tombstoned key is [ErrExpired]: a dropped
 // command is never run again. At most MaxTombstones tombstones are kept, the
 // newest; a key older than that looks new, which is the residual risk named in
-// the design. While MaxReceipts receipts are all not final, a new key is
+// the design. A tombstone that the file holds is kept in memory for the run of
+// the process, so a key is never admitted after its tombstone in the file,
+// which Open would refuse as corrupt. While MaxReceipts receipts are all not final, a new key is
 // refused with [ErrFull] and nothing is admitted.
 //
 // A command id that belongs to a receipt that is not final may not be used by
