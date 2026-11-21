@@ -126,9 +126,10 @@ and no tag. The steps below follow `Mirror.Fetch` in `internal/mirror`.
    (`STATE/leads/<role>/tree`), which is looked at again without following a
    symlink and must be a real folder, which no bundle can be. A clone that is
    by then a symlink, a file or missing is refused as a hostile tree, as step 2
-   refuses it. When this check refuses the path nothing has run. The check of step 6 can refuse it too, when it appeared or changed
-   in between: then the measure of step 4 has run and the staging repository
-   of step 5 was made and is removed, and the mirror is as it was.
+   refuses it. When this check refuses the path nothing has run. The check of
+   step 6 can refuse it too, when it appeared or changed in between: then the
+   measure of step 4 has run and the staging repository of step 5 was made and
+   is removed, and the mirror is as it was.
 4. **Measure.** The measure command runs in the sandbox. Its number is the
    lead side's own statement, a first check. More than the source limit is a
    limit error. The owner also measures the mirror: a mirror already at its
