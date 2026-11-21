@@ -1,8 +1,8 @@
 CANARY RUN, PASS B: YOUR CHECKLIST    (written by canary-prepare.sh)
 Root @ROOT@
 Live agent, one login, one message, 30 minutes or 10 turns. The script answers
-nothing for you. T1 runs it, T2 the daemon (until Ctrl-C at 26), T3 the console
-(the writer), T4 the second console and integrate.
+nothing for you. T1 runs it, T2 the daemon (start it at 10, after 8 wrote its
+marker; Ctrl-C at 26), T3 the console (writer), T4 2nd console, integrate.
 
 BEFORE   (prepare made the files; the steps below are yours)
  1. qualify-mirror for THIS root, as in pass A: set "i_run_this_on_purpose"
@@ -20,11 +20,11 @@ BEFORE   (prepare made the files; the steps below are yours)
       sh @RUN@ --pass B --config @CONFIG@ --dry
       sh @RUN@ --pass B --config @CONFIG@ --evidence @EVIDENCE@
 @MODELNOTE@
-Enter = go on; a word is typed by you, exactly. Other steps go as in pass A
-(T2 daemon before 10, T3 console before 14, T4 integrate at 20).
+Enter = go on; a word is typed by you, exactly. Other steps go as in pass A.
 
 STEP  WHAT YOU DO (the steps pass B adds)
-  5   Account page: confirmed if it lists logins and can revoke one; keep it.
+  5   confirmed ONLY if the login shows as its own revocable entry, or the
+      account is a throwaway (Unknown rows do not count); else no.
   6   Enter the numbers of the listeners you stop (or none); stop them yourself.
   7   The path of the real config folder of the live runtime; Enter.
  15   Confirm the model argument (yes; none shown: no). Log in IN THE PANE:
@@ -39,8 +39,8 @@ STEP  WHAT YOU DO (the steps pass B adds)
       ONE paste with the pane in focus, Enter in the pane once, then type
       pasted in T1 (an Enter alone there ends the pass).
  21   Type the agent's logout in the pane, then logged-out.
- 23   Account page: revoke ONLY the login made now (never "log out
-      everywhere": your own sessions use the same account). Then revoked.
+ 23   Revoke the one new row, last-active during the run: never "log out of
+      all devices" on your own account. Then revoked, or cannot-identify: ...
  24   Restart what you stopped at step 6, then Enter.
  25   Enter. If it asks about a file: yes only if one of your own sessions
       ran during this pass; else say what you see (an Enter is a finding).

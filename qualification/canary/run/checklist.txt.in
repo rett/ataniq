@@ -30,7 +30,7 @@ STEP  WHAT YOU DO
  10   Start the daemon in T2 BEFORE pressing Enter at step 10, wait for the
       listening line, then Enter in T1:
         @BIN@/ataniqd run --canary @CONFIG@
-      (The script waits up to a minute for it, but start it first.) Then: yes.
+      (Not before step 8: it needs its marker file. Waits a minute.) Then: yes.
  12   Lead: yes (the probe reported once, every assertion ok except 10).
  14   T3: start the console BEFORE you press Enter at step 14; it waits for
       a ticket (the script mints into the file named here):
