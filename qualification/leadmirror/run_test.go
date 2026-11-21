@@ -337,3 +337,35 @@ func contains(list []string, s string) bool {
 	}
 	return false
 }
+
+// TestRepositoryOnHostFact: the clone fact says whether the template's
+// repository path exists on the host. With the fake planner the path is the
+// clone's own; with a path that is a bundle file the fetch is refused and the
+// fact and the fetch fact say so.
+func TestRepositoryOnHostFact(t *testing.T) {
+	rep, _ := runFake(t, fakePlanner(t))
+	if got := findFact(t, rep, "s16-fetch.clone").Observed["repository_on_host"]; got != "the clone's own path" {
+		t.Errorf("repository_on_host = %v", got)
+	}
+
+	p := fakePlanner(t)
+	p.Repository = filepath.Join(t.TempDir(), "work")
+	if err := os.WriteFile(p.Repository, []byte("not a bundle\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rep, _ = runFake(t, p)
+	if got := findFact(t, rep, "s16-fetch.clone").Observed["repository_on_host"]; got != "exists: a regular file" {
+		t.Errorf("repository_on_host = %v", got)
+	}
+	f := findFact(t, rep, "s16-fetch.fetch").Observed
+	if f["result"] != "error" || !strings.Contains(strings.Join(f["error_classes"].([]string), ","), "mirror.ErrRepositoryPath") {
+		t.Errorf("fetch fact: %v", f)
+	}
+
+	p = fakePlanner(t)
+	p.Repository = filepath.Join(t.TempDir(), "absent")
+	rep, _ = runFake(t, p)
+	if got := findFact(t, rep, "s16-fetch.clone").Observed["repository_on_host"]; got != "absent" {
+		t.Errorf("repository_on_host = %v", got)
+	}
+}

@@ -43,7 +43,13 @@
 // a sandbox, with no network and the clone read-only, named with git's
 // --upload-pack option, and only the receiving half runs as the owner. The
 // sandbox is reached through a [sandboxplan.Planner]; a fetch without one does
-// not exist, and there is no fallback that runs unsandboxed.
+// not exist, and there is no fallback that runs unsandboxed. The owner's git is
+// given the plan's repository path and looks at it on the host before it
+// starts the serving half: a bundle file there would be read by that git
+// itself, as the owner, and the sandboxed command would never run. A fetch
+// therefore refuses a repository path that exists on the host, whatever it
+// is ([ErrRepositoryPath]), and lets pass a path that does not exist and the
+// clone's own path.
 //
 // The fetch goes in two moves. The receiving half fetches into a staging
 // repository, a fresh bare repository beside the mirror that has the mirror's

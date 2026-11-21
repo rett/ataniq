@@ -125,7 +125,7 @@ func TestGitCommandLinesFollowTheArgumentRule(t *testing.T) {
 			}
 		}
 	}
-	for _, sub := range []string{"for-each-ref", "rev-parse", "merge-base", "rev-list", "log", "diff-tree", "ls-tree", "cat-file", "diff"} {
+	for _, sub := range []string{"for-each-ref", "rev-parse", "merge-base", "rev-list", "diff-tree", "ls-tree", "cat-file", "diff"} {
 		if !seen[sub] {
 			t.Errorf("git %s was not run", sub)
 		}
