@@ -102,8 +102,13 @@ func changedError(err error, c record.Code) (*record.Error, bool) {
 // owner connection speaks in: a review that is no longer the one asked for
 // has the code changed, and a change larger than the host reads is
 // record-too-large (the 64 MiB limit of the summary's scan, a patch past its
-// limit, too many paths or commits). Any other error is the host's failure
-// and passes as it is.
+// limit, too many paths or commits). A commit that declares an encoding other
+// than UTF-8 is request-invalid with a line of its own: git would convert that
+// commit's bytes from the charset the header names when it prints it, so the
+// intake refuses it, and the lead has to commit the branch again in UTF-8.
+// The details are fixed lines: the intake's error holds a commit id and an
+// escaped copy of the lead's header value, which no refusal repeats. Any other
+// error is the host's failure and passes as it is.
 func mapReviewError(err error, changed record.Code) error {
 	if err == nil {
 		return nil
@@ -114,8 +119,15 @@ func mapReviewError(err error, changed record.Code) error {
 	if errors.Is(err, intake.ErrLimit) {
 		return refusal(record.CodeRecordTooLarge, "the change is larger than the host reads for a card")
 	}
+	if errors.Is(err, intake.ErrCommitEncoding) {
+		return refusal(record.CodeRequestInvalid, lineCommitEncoding)
+	}
 	return err
 }
+
+// lineCommitEncoding is the detail of the refusal of a commit that declares an
+// encoding other than UTF-8.
+const lineCommitEncoding = "a commit declares an encoding other than UTF-8"
 
 // inspect reviews the merge in merge mode against the target as it is now.
 func (h *Host) inspect(ctx context.Context, p Project, merge string) (*intake.Review, error) {
