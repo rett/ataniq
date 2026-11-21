@@ -743,7 +743,12 @@ What the timer does not do:
   `unknown` in both cases and nothing is signalled. `lead.stop` is the way out,
   as for any lead whose unit may run. A start request that lands after the
   window is the stale-unit path of the lead daemon guide: the daemon reports it
-  and never signals it.
+  and never signals it. A request that lands after the timer has settled the
+  lead is the same path, and the list does not show it: the lead reads
+  `stopped` and is not counted under `max_running` while a unit of the old
+  epoch runs, until the daemon is restarted (it then shows the lead `unknown`,
+  `stale-unit`) or the owner stops the lead, which ends the unit. A start in
+  between is refused `unit-loaded` and starts nothing.
 - **It does not touch a lead shown `unknown` for `registry-recovered`.** That
   lead is the owner's to decide.
 - **It never starts a unit, and never waits for the role's lock.** A start or a
@@ -753,9 +758,15 @@ What the timer does not do:
   that recorded the lead `stopped`.
 - **It does not settle what it cannot prove, and does not stop trying.** When
   the unit manager does not answer, or the control group is not proven empty,
-  nothing changes and the timer tries again after 2 s, then at doubling waits up
-  to a minute, until the intent is settled or the lead no longer shows it; the
-  daemon logs each try. A daemon that is not in scratch mode has no timer.
+  the lead is not settled (it stays `unknown`, and for a control group not
+  proven empty its reason becomes `control-group-not-proven-empty`) and the timer
+  tries again after 2 s, then at doubling waits up to a minute, until the intent
+  is settled or the lead no longer shows it; the daemon logs each try and a
+  repeated try adds nothing to the registry's journal. A daemon whose reconcile
+  at start did not act on a cut of the registry's journal (it ran out of time or
+  failed during the cut) ends the timer at its first try, with one log line that
+  names the restart, because only a restart reconciles again. A daemon that is
+  not in scratch mode has no timer.
 
 The console's leads view does not read the list by a timer for a lead that is
 `unknown`: press `r` after the 40 s to see the settled lead. The row's line, the

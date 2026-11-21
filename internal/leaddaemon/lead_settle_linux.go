@@ -4,9 +4,11 @@ package leaddaemon
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
+	"ataniq/internal/leadlifecycle"
 	"ataniq/internal/leadregistry"
 	"ataniq/internal/leadrole"
 )
@@ -32,13 +34,17 @@ import (
 // stopped, and it takes the next epoch.
 //
 // A timer is armed for a role the registry shows unknown with the reason
-// launch-unsettled or launch-reply-lost and its intent pending: when the daemon
+// launch-unsettled, launch-reply-lost or (after a try) control-group-not-proven-empty
+// and its intent pending: when the daemon
 // starts serving (a start that was cut short by the death of an earlier daemon)
 // and when a start of this daemon ended with its reply lost. A role shown
 // unknown for a cut of the registry (registry-recovered) is the owner's and is
 // never armed. A timer ends when the intent is no longer pending, when the
 // role no longer shows the epoch and intent it was armed for, on a proven stop,
-// on a new start and when the daemon stops.
+// on a new start, when the daemon stops, and when the lifecycle answers that
+// the reconcile at start did not act on the registry's cut journal (the daemon
+// logs it once and names the restart: nothing in a running daemon reconciles
+// again, so no later try would be answered otherwise).
 //
 // The timer takes the role's operation lock as a try-lock, for one read of the
 // registry that checks the role still shows what it was armed for, and never
@@ -51,6 +57,12 @@ import (
 const (
 	codeLaunchUnsettled = "launch-unsettled"
 	codeLaunchReplyLost = "launch-reply-lost"
+
+	// codeGroupNotEmpty is what the lifecycle shows for a pending intent whose
+	// control group was not proven empty at a try: the intent is still the
+	// timer's, which tries again. For an intent with an outcome the same code
+	// arms nothing, since the intent is the gate.
+	codeGroupNotEmpty = "control-group-not-proven-empty"
 )
 
 // The waits of a timer that could not settle the role.
@@ -69,7 +81,9 @@ const (
 var settleHook func(stage string)
 
 // settlers is the timers of one daemon: at most one per lead. The mutex guards
-// the fields and is never held across a call that waits.
+// the fields and is never held across a call that waits, except for the read of
+// one registry entry (the registry takes no callback, so no lock of the
+// registry can wait for this one).
 type settlers struct {
 	mu     sync.Mutex
 	ctx    context.Context // the timers' parent; nil until the server runs
@@ -126,7 +140,7 @@ func settleWanted(e leadregistry.Entry) bool {
 		return false
 	}
 	switch e.Shown.Reason.Code {
-	case codeLaunchUnsettled, codeLaunchReplyLost:
+	case codeLaunchUnsettled, codeLaunchReplyLost, codeGroupNotEmpty:
 		return true
 	}
 	return false
@@ -136,16 +150,21 @@ func settleWanted(e leadregistry.Entry) bool {
 // registry shows the lead as settleWanted says, in place of a timer for another
 // epoch or intent; a timer that is armed for the same intent is left as it is.
 // It returns at once, and does nothing before the timers are let run or after
-// they are ended. It takes no lock but the timers' own, so it may be called
-// under the role's operation lock.
+// they are ended. It takes no lock but the timers' own and, for one read, the
+// registry's, so it may be called under the role's operation lock. The entry is
+// read under the timers' lock, so that it is the entry the timer replaces the
+// older one for: a read made before the lock could be of an epoch that a stop
+// and a new start of the role have left behind while the call waited, and its
+// timer would then replace the newer epoch's.
 func (l *leadMode) armSettle(lr *leadRole) {
-	e, err := l.reg.Get(lr.role)
-	if err != nil || !settleWanted(e) {
-		return
-	}
 	s := &l.settle
 	s.mu.Lock()
 	if s.closed || s.ctx == nil {
+		s.mu.Unlock()
+		return
+	}
+	e, err := l.reg.Get(lr.role)
+	if err != nil || !settleWanted(e) {
 		s.mu.Unlock()
 		return
 	}
@@ -269,6 +288,13 @@ func (l *leadMode) settleStep(ctx context.Context, lr *leadRole, me *settler) (a
 	}
 	if err != nil {
 		if l.registryDown(err) {
+			return false
+		}
+		if errors.Is(err, leadlifecycle.ErrNotReconciled) {
+			// The reconcile at start did not act on the registry's cut journal,
+			// and nothing in this daemon runs it again: every later try would
+			// give the same answer. The role is left as it is shown.
+			l.d.logf("scratch settle %q: the launch of epoch %d cannot be settled by this daemon, which did not finish acting on the registry's cut journal at its start; the timer ends, and a restart of the daemon settles it", lr.key, me.epoch)
 			return false
 		}
 		l.d.logf("scratch settle %q: the launch of epoch %d could not be settled: %s; the daemon tries again", lr.key, me.epoch, SafeText(err.Error()))

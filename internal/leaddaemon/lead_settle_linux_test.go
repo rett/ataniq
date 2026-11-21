@@ -547,6 +547,209 @@ func TestSettleTriesAgainWhenTheManagerDoesNotAnswer(t *testing.T) {
 	s.waitState("alpha", "stopped")
 }
 
+// The rule that stops a second unit of a role holds after the timer settled the
+// lead: the start request of the abandoned launch lands late, the next start
+// finds the unit loaded and is refused (nothing is started or signalled by it),
+// and an explicit stop ends the unit and records the lead stopped. Until a
+// start is refused the list shows the lead stopped, as docs/lead-daemon.md says.
+func TestSettleALateLandingAfterTheSettleRefusesTheNextStart(t *testing.T) {
+	s := newSettleEnv(t)
+	in := s.killedMidStart("alpha")
+	s.holder("alpha", submitted)
+	s.clk.waitLongSleeps(t, 1)
+	s.clk.Advance(leadlifecycle.DefaultLateStartWindow + leadlifecycle.DefaultLateStartMargin + time.Second)
+	s.waitState("alpha", "stopped")
+
+	// The request that the killed daemon sent lands, after the settle.
+	if _, err := s.fake.Start(context.Background(), leadunit.Spec{
+		Unit: in.UnitName, Epoch: in.Epoch, Intent: in.ID, Argv: []string{"/bin/true"}, WorkDir: "/",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	startsBefore, signalsBefore := s.startsAndSignals()
+	if startsBefore != 1 || signalsBefore != 0 {
+		t.Fatalf("%d starts and %d signals before the owner's start, want the landing only", startsBefore, signalsBefore)
+	}
+
+	// The list still shows the lead stopped: nothing has looked at the unit.
+	if state, _, _, _ := s.shown("alpha"); state != "stopped" {
+		t.Fatalf("shown %q", state)
+	}
+
+	// The next start finds the unit and is refused; it starts and signals nothing.
+	want(t, s.startLead("alpha"), leadwire.StatusRefused, codeUnitLoaded)
+	if starts, signals := s.startsAndSignals(); starts != startsBefore || signals != signalsBefore {
+		t.Fatalf("%d starts and %d signals after the refused start, want %d and %d", starts, signals, startsBefore, signalsBefore)
+	}
+
+	// An explicit stop ends the unit.
+	want(t, s.stopLead("alpha", 0), leadwire.StatusDone, "")
+	if state, _, _, _ := s.shown("alpha"); state != "stopped" {
+		t.Fatalf("shown %q after the stop", state)
+	}
+	if st, err := s.fake.Inspect(context.Background(), in.UnitName); err != nil || st.Loaded {
+		t.Fatalf("the unit after the stop: %+v (%v)", st, err)
+	}
+	if starts, _ := s.startsAndSignals(); starts != startsBefore {
+		t.Fatalf("%d starts", starts)
+	}
+}
+
+// A daemon whose reconcile at start did not act on the registry's cut journal
+// (here the manager does not answer within the reconcile's time) answers every
+// try of a timer with ErrNotReconciled: the timer ends after one line in the
+// log that names the restart, and does not go on trying once a minute. The
+// lead is left as it is shown.
+func TestSettleEndsOnACutJournalThatTheReconcileDidNotAct(t *testing.T) {
+	s := newSettleEnv(t)
+	s.startDaemonOn()
+	want(t, s.define("alpha"), leadwire.StatusDone, "")
+	want(t, s.define("beta"), leadwire.StatusDone, "")
+	s.holder("beta", submitted)
+	s.fake.DropNextStart(s.roleOf("beta").UnitName())
+	want(t, s.startLead("beta"), leadwire.StatusUncertain, codeLaunchUncertain)
+	if state, code, _, _ := s.shown("beta"); state != "unknown" || code != "launch-reply-lost" {
+		t.Fatalf("shown %q (%s)", state, code)
+	}
+	if err := s.running.stop(); err != nil {
+		t.Fatalf("the daemon did not stop clean: %v", err)
+	}
+	// A torn tail: the registry cuts it when it opens.
+	f, err := os.OpenFile(filepath.Join(s.state, RegistryDirName, leadregistry.FileName), os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"seq":99,"time":"2026`); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	// The manager does not answer during the reconcile, which runs out of time
+	// before it has acted on the cut.
+	s.gate.blockInspect.Store(true)
+	cfg := s.daemonConfig()
+	cfg.Clock = s.clk
+	cfg.ReconcileTimeout = 300 * time.Millisecond
+	s.running = s.env.startDaemon(cfg)
+	s.gate.blockInspect.Store(false)
+	if !strings.Contains(s.log.String(), "the reconcile did not finish") {
+		t.Fatalf("the reconcile finished:\n%s", s.log)
+	}
+	if state, code, _, _ := s.shown("beta"); state != "unknown" || code != "launch-reply-lost" {
+		t.Fatalf("shown %q (%s)\nlog:\n%s", state, code, s.log)
+	}
+	s.clk.waitLongSleeps(t, 1)
+
+	// The deadline passes: the first try ends the timer with one line.
+	s.clk.Advance(leadlifecycle.DefaultLateStartWindow + leadlifecycle.DefaultLateStartMargin + time.Second)
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(s.log.String(), "the timer ends, and a restart of the daemon settles it") {
+		if time.Now().After(deadline) {
+			t.Fatalf("no line about the cut journal:\n%s", s.log)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// No try follows: no wait is asked for, and nothing else is logged.
+	sleeps, logged := s.clk.longSleeps(), s.log.String()
+	for i := 0; i < 3; i++ {
+		s.clk.Advance(settleRetryLongest)
+		time.Sleep(50 * time.Millisecond)
+	}
+	if n := s.clk.longSleeps(); n != sleeps {
+		t.Fatalf("%d waits after the timer ended, %d before", n, sleeps)
+	}
+	if now := s.log.String(); now != logged {
+		t.Fatalf("the log grew after the timer ended:\n%s", now[len(logged):])
+	}
+	if n := strings.Count(s.log.String(), "the timer ends, and a restart of the daemon settles it"); n != 1 {
+		t.Fatalf("%d lines, want one:\n%s", n, s.log)
+	}
+	if strings.Contains(s.log.String(), "could not be settled") {
+		t.Fatalf("a try was logged as a failure to retry:\n%s", s.log)
+	}
+	if state, code, _, _ := s.shown("beta"); state != "unknown" || code != "launch-reply-lost" {
+		t.Fatalf("shown %q (%s)", state, code)
+	}
+	if starts, signals := s.startsAndSignals(); starts != 1 || signals != 0 {
+		t.Fatalf("%d starts and %d signals", starts, signals)
+	}
+}
+
+// journalLines is how many records the registry's journal holds now.
+func (s *settleEnv) journalLines() int {
+	s.t.Helper()
+	b, err := os.ReadFile(filepath.Join(s.state, RegistryDirName, leadregistry.FileName))
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	return strings.Count(string(b), "\n")
+}
+
+// A control group that is not proven empty at the deadline leaves the lead
+// unknown with the reason control-group-not-proven-empty, and the timer, which
+// that reason keeps armed, tries again at growing waits: once the group is
+// empty the lead ends stopped, with no restart. The tries add no line to the
+// registry's journal after the first that changes the reason.
+func TestSettleTriesAgainWhileTheControlGroupIsNotEmpty(t *testing.T) {
+	s := newSettleEnv(t)
+	s.killedMidStart("alpha")
+	s.clk.waitLongSleeps(t, 1)
+	unit := s.roleOf("alpha").UnitName()
+	s.fake.LeaveControlGroup(unit, true)
+
+	s.clk.Advance(leadlifecycle.DefaultLateStartWindow + leadlifecycle.DefaultLateStartMargin + time.Second)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, code, _, _ := s.shown("alpha"); code == codeGroupNotEmpty {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the lead is not shown with the group's reason:\n%s", s.log)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// The timer is waiting for its retry.
+	s.clk.waitLongSleeps(t, 2)
+	lines := s.journalLines()
+
+	// Several tries with the group still left: the lead stays unknown, nothing
+	// is journaled, and the timer is still there.
+	for i := 0; i < 4; i++ {
+		n := s.clk.longSleeps()
+		s.clk.Advance(settleRetryLongest)
+		s.clk.waitLongSleeps(t, n+1)
+	}
+	if state, code, _, _ := s.shown("alpha"); state != "unknown" || code != codeGroupNotEmpty {
+		t.Fatalf("shown %q (%s)", state, code)
+	}
+	if got := s.journalLines(); got != lines {
+		t.Fatalf("the journal has %d records after the tries, %d before", got, lines)
+	}
+	if got := strings.Count(s.log.String(), "epoch 1: unknown ("+codeGroupNotEmpty+")"); got < 3 {
+		t.Fatalf("%d tries logged, want each try:\n%s", got, s.log)
+	}
+
+	// The group is empty: the next try settles the lead.
+	s.fake.LeaveControlGroup(unit, false)
+	for i := 0; i < 20; i++ {
+		if state, _, _, _ := s.shown("alpha"); state == "stopped" {
+			break
+		}
+		s.clk.Advance(settleRetryLongest)
+		time.Sleep(20 * time.Millisecond)
+	}
+	s.waitState("alpha", "stopped")
+	if _, code, _, _ := s.shown("alpha"); code != "launch-abandoned" {
+		t.Fatalf("reason %q", code)
+	}
+	if starts, signals := s.startsAndSignals(); starts != 0 || signals != 0 {
+		t.Fatalf("%d starts and %d signals", starts, signals)
+	}
+	if e := s.finalEntry("alpha"); e.Shown.State != leadregistry.StateStopped || e.Intent.Outcome != leadregistry.OutcomeAbandoned {
+		t.Fatalf("entry %+v", e)
+	}
+}
+
 // A shutdown ends a timer that waits for its deadline, within the grace, and
 // the log has no word of an observer left behind.
 func TestSettleShutdownJoinsTheTimer(t *testing.T) {
@@ -692,6 +895,42 @@ func TestSettleTimersAreArmedPerIntentAndCancelled(t *testing.T) {
 	if n := len(timersOf(m)); n != 0 {
 		t.Fatalf("%d timers for a resolved intent", n)
 	}
+}
+
+// A call that arms a timer reads the entry under the timers' lock: one that
+// waits for the lock while the role is stopped and started again (a newer epoch
+// and intent, unknown and pending) arms the timer of the newer intent, and does
+// not replace it with one for the epoch it first saw. The test holds the lock,
+// lets the call reach it, changes the lead and lets the call go.
+func TestSettleArmReadsTheEntryUnderTheTimersLock(t *testing.T) {
+	m, lr := bareSettle(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.startSettlers(ctx)
+	first := unknownPending(t, m, lr, "launch-unsettled")
+
+	m.settle.mu.Lock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.armSettle(lr)
+	}()
+	// The call is at the lock (or about to be: a call that reads late sees the
+	// newer entry anyway, which is what the test checks).
+	time.Sleep(100 * time.Millisecond)
+	second := unknownPending(t, m, lr, "launch-unsettled")
+	if second.Epoch == first.Epoch || second.ID == first.ID {
+		t.Fatalf("the intent did not change: %+v %+v", first, second)
+	}
+	m.settle.mu.Unlock()
+	<-done
+
+	cur := timersOf(m)[lr.role]
+	if cur == nil || cur.epoch != second.Epoch || cur.intent != second.ID {
+		t.Fatalf("timer %+v, want epoch %d intent %s", cur, second.Epoch, second.ID)
+	}
+	m.cancelSettle(lr)
+	m.settle.wg.Wait()
 }
 
 func TestSettleTimersAreJoinedAndNoneStartsAfter(t *testing.T) {

@@ -1073,8 +1073,14 @@ What the timer does when it cannot settle:
   request that lands after the window is the stale-unit path above and is never
   signalled by the timer.
 - **The manager does not answer, or the control group is not proven empty.**
-  Nothing changes and the timer tries again after 2 s, then at doubling waits up
-  to a minute, until the intent is settled or the role no longer shows it.
+  The role is not settled: when the manager does not answer nothing changes;
+  when the control group is not proven empty the role stays `unknown` and its
+  reason becomes `control-group-not-proven-empty`, which keeps the timer armed
+  (it is one of the reasons that arm it, while the intent is pending). The timer
+  tries again after 2 s, then at doubling waits up to a minute, until the intent
+  is settled or the role no longer shows it. A repeated try with the same reason
+  writes nothing to the registry, so the retries do not grow its journal; each
+  try is a line in the daemon's log.
 - **The role's operation lock is held** (a start or a stop of the role is
   running) or the role changed (another epoch, a proven stop): the timer waits
   and tries again, or ends. It never waits for the lock, and holds it only for
@@ -1084,8 +1090,13 @@ What the timer does when it cannot settle:
   new unit can follow only a settle that recorded the role `stopped`.
 
 A timer ends when the intent is no longer pending, on a proven stop, on a new
-start of the role, and at shutdown, where the daemon joins it. The daemon that
-is not in scratch mode has no timer, and the settle still needs a restart.
+start of the role, and at shutdown, where the daemon joins it. It also ends when
+the lifecycle answers that the reconcile at start did not act on the registry's
+cut journal (a reconcile that ran out of time or failed for a role during a
+cut): nothing in a running daemon reconciles again, so no later try would be
+answered otherwise. The daemon logs one line, naming the restart that settles
+the role, and the role stays as it is shown. The daemon that is not in scratch
+mode has no timer, and the settle still needs a restart.
 
 **The window is a heuristic and not a bound.** The manager's call timeout limits
 how long the caller waits for a reply, not when systemd executes a request that
@@ -1100,6 +1111,15 @@ An explicit stop ends a unit of ours that has the record's epoch and intent or
 an older epoch, since epochs only grow and an older one cannot be newer work.
 A unit of a newer epoch, of the same epoch with another intent, or that is not
 ours is never signalled.
+
+A request of an abandoned launch can also land after the timer has settled the
+role to `stopped`. Until then the role is not told of it: the list shows the
+role `stopped` (`launch-abandoned`) and does not count it under `max_running`
+while a unit of the old epoch runs. A start of the role is refused
+(`unit-loaded`, nothing is started or signalled) because the unit's name is
+loaded, and it changes nothing the list shows. The role is shown `unknown`
+(`stale-unit`) when the daemon is restarted and the reconcile finds the unit,
+and an explicit stop ends the unit and records the role `stopped`.
 
 ### Coordinators in the lifecycle
 

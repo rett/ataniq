@@ -143,14 +143,17 @@ var reasonWords = map[string]string{
 // margin of 10 s have passed since the launch was recorded (reading the list
 // does not settle it). A daemon that does not (one that cannot ask the unit
 // manager, or has no timer) settles it at its reconcile when it is restarted
-// after that, which is the fallback the words name.
-const unsettledWords = "launch settles by itself 40 s after the start; if not, restart the daemon"
+// after that. The words name the two ways out when it is not settled: stopping
+// the lead (the way out when the launch's own unit was adopted, which the
+// timer and a restart both leave unknown) and the restart.
+const unsettledWords = "launch settles by itself 40 s after the start; if not, stop the lead or restart"
 
 // maxRunningUnknownTail is added to the refusal for the limit of running
 // leads while the list shows a lead that is unknown: an unknown lead counts
 // as running, and it stays so until its launch is settled, which the daemon
-// does itself 40 s after the start (a restart is the fallback).
-const maxRunningUnknownTail = ". An unknown lead holds a slot until its launch settles by itself, 40 s after the start; if it is still unknown after that, restart the daemon"
+// does itself 40 s after the start (stopping the lead or a restart is the
+// fallback).
+const maxRunningUnknownTail = ". An unknown lead holds a slot until its launch settles by itself, 40 s after the start; if it is still unknown after that, stop the lead or restart"
 
 const unknownReason = "the reason is not known to this console"
 
