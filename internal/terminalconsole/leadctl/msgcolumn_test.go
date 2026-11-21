@@ -81,7 +81,8 @@ func TestTheMsgColumnAndTheReceiptLineSayTheSameOfAMessage(t *testing.T) {
 // of the list that was read after the answer: free when the row says so, the
 // daemon's hold when the row says spent, and neither claim until the list has
 // been read (the row of the list that was drawn before the answer says nothing
-// of this message). A row at another epoch says nothing either.
+// of this message). A row at another epoch says nothing of the message either,
+// and the line says that the lead has moved.
 func TestTheReceiptLineDoesNotCallTheEpochFreeWhileTheDaemonHoldsItSpent(t *testing.T) {
 	notNow := Receipt{Op: OpInject, Status: Done, Epoch: 3, Outcome: OutcomeNotNow, Reason: ReasonNotReady, Written: WrittenNothing}
 	for _, c := range []struct {
@@ -93,12 +94,12 @@ func TestTheReceiptLineDoesNotCallTheEpochFreeWhileTheDaemonHoldsItSpent(t *test
 	}{
 		{"row free", false, 3, "The epoch's message is free", "spent"},
 		{"row spent", true, 3, "holds this epoch's message spent", "is free"},
-		{"row at another epoch", false, 4, "free unless the list says it is spent", "The epoch's message is free."},
+		{"row at another epoch", false, 4, movedTail, "The epoch's message is free"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			b := twoLeads(t)
 			b.answer = func(call) (Receipt, error) { return notNow, nil }
-			g := newRig(t, b, 150, 30)
+			g := newRig(t, b, 180, 30)
 			g.key("j")
 			g.key("m")
 			g.typ("hi")
@@ -115,6 +116,9 @@ func TestTheReceiptLineDoesNotCallTheEpochFreeWhileTheDaemonHoldsItSpent(t *test
 			g.run(cmd)
 			g.seen(c.want)
 			g.notSeen(c.not)
+			if c.epoch != 3 {
+				g.notSeen("free unless the list says it is spent")
+			}
 		})
 	}
 }
@@ -323,7 +327,7 @@ func TestTheMsgColumnSaysAHoldersRefusalWasNotDelivered(t *testing.T) {
 		spent bool
 		want  string
 	}{{false, "free (not delivered)"}, {true, "spent, not delivered"}} {
-		if got := msgWord(Lead{Inject: true, MessageSpent: c.spent}, refused); got != c.want {
+		if got := msgWord(Lead{Inject: true, State: "ready", Epoch: 3, MessageSpent: c.spent}, refused); got != c.want {
 			t.Errorf("spent %v: %q, want %q", c.spent, got, c.want)
 		}
 	}
@@ -347,8 +351,77 @@ func TestASpentMessageIsSentOnlyWhenItsWordsSaySubmitted(t *testing.T) {
 		{"not a combination the holder sends", Delivery{OutcomeSubmitted, ReasonDied, WrittenNothing}, "sent-unsure"},
 		{"no words", Delivery{}, "sent-unsure"},
 	} {
-		if got := msgWord(Lead{Inject: true, MessageSpent: true}, c.d); got != c.want {
+		if got := msgWord(Lead{Inject: true, State: "ready", Epoch: 3, MessageSpent: true}, c.d); got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// A lead that is not running has no message to speak of: the epoch's words
+// belong to its last epoch and the column draws "-", except "off", which is the
+// lead's config and stays. A lead unknown for a reason that is not a launch's
+// (a unit that may run) is drawn by the normal rule.
+func TestTheMsgColumnOfALeadThatIsNotRunningIsADash(t *testing.T) {
+	words := Delivery{Outcome: OutcomeNotNow, Reason: ReasonNotReady, Written: WrittenNothing}
+	for _, c := range []struct {
+		name string
+		l    Lead
+		want string
+	}{
+		{"stopped with its last epoch", Lead{State: "stopped", Epoch: 3}, "-"},
+		{"ended", Lead{State: "ended", Epoch: 3}, "-"},
+		{"desired", Lead{State: "desired", Epoch: 1}, "-"},
+		{"unknown, launch not settled", Lead{State: "unknown", StateReason: "launch-unsettled", Epoch: 2}, "-"},
+		{"unknown, launch reply lost", Lead{State: "unknown", StateReason: "launch-reply-lost", Epoch: 2}, "-"},
+		{"unknown, launch not settled and spent", Lead{State: "unknown", StateReason: "launch-unsettled", Epoch: 2, MessageSpent: true}, "-"},
+		{"unknown with no epoch", Lead{State: "unknown", StateReason: "competing-unit"}, "-"},
+		// Another reason: a unit may run with the epoch's message, so the
+		// column follows the normal rule.
+		{"unknown, control group not proven empty", Lead{State: "unknown", StateReason: "control-group-not-proven-empty", Epoch: 2}, "free (not delivered)"},
+		{"unknown, competing unit", Lead{State: "unknown", StateReason: "competing-unit", Epoch: 2}, "free (not delivered)"},
+		{"unknown, no reason", Lead{State: "unknown", Epoch: 2}, "free (not delivered)"},
+		{"unknown, competing unit, spent", Lead{State: "unknown", StateReason: "competing-unit", Epoch: 2, MessageSpent: true}, "spent, not delivered"},
+		{"no epoch", Lead{State: "ready"}, "-"},
+		{"no state", Lead{Epoch: 3}, "-"},
+		{"stopped and spent", Lead{State: "stopped", Epoch: 3, MessageSpent: true}, "-"},
+		{"starting", Lead{State: "starting", Epoch: 1}, "free (not delivered)"},
+		{"ready", Lead{State: "ready", Epoch: 3}, "free (not delivered)"},
+		{"stopping", Lead{State: "stopping", Epoch: 3}, "free (not delivered)"},
+	} {
+		l := c.l
+		l.Inject = true
+		if got := msgWord(l, words); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+		l.Inject = false
+		if got := msgWord(l, words); got != "off" {
+			t.Errorf("%s with messages off: %q, want off", c.name, got)
+		}
+	}
+}
+
+func TestTheMsgColumnOfAStoppedLeadIsADashAfterItsMessageWasSent(t *testing.T) {
+	g := sendOne(t, Receipt{Op: OpInject, Status: Done, Epoch: 3, Outcome: OutcomeNotNow, Reason: ReasonNotReady, Written: WrittenNothing}, false)
+	if !strings.Contains(g.rows()[5], "free (not delivered)") {
+		t.Fatalf("the running lead:\n%s", g.screen())
+	}
+	// The lead stops; the list still carries the last epoch.
+	g.m.leads[1].State = "stopped"
+	if row := g.rows()[5]; strings.Contains(row, "free") || strings.Contains(row, "not delivered") {
+		t.Fatalf("a stopped lead keeps the words of its last epoch:\n%s", g.screen())
+	}
+}
+
+func TestTheMsgColumnOfALeadUnknownForAnotherReasonShowsASentMessage(t *testing.T) {
+	l := Lead{Inject: true, State: "unknown", StateReason: "control-group-not-proven-empty", Epoch: 2, MessageSpent: true}
+	if got := msgWord(l, Delivery{}); got != "sent-unsure" {
+		t.Errorf("spent with no words: %q", got)
+	}
+	if got := msgWord(l, Delivery{Outcome: OutcomeSubmitted, Written: WrittenWhole}); got != "sent" {
+		t.Errorf("spent and submitted: %q", got)
+	}
+	l.StateReason = "launch-unsettled"
+	if got := msgWord(l, Delivery{Outcome: OutcomeSubmitted, Written: WrittenWhole}); got != "-" {
+		t.Errorf("a launch reason: %q", got)
 	}
 }

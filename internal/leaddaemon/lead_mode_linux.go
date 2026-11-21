@@ -168,6 +168,9 @@ type leadMode struct {
 	readyWithin  time.Duration
 	readyBackoff time.Duration
 	ready        readyObservers
+	// settle is the timers that settle a launch intent that a start left
+	// pending when its late-start window ends (see lead_settle_linux.go).
+	settle settlers
 
 	table *leadcontrol.Table
 	ctl   *leadlifecycle.Controller

@@ -380,9 +380,12 @@ func TestResultWordsAreShortASCIIAndSayWhetherTheEpochIsSpent(t *testing.T) {
 			if line := receiptLine(r, heldUnknown); !strings.Contains(line, "free unless the list says it is spent") {
 				t.Errorf("%v: %q does not leave the list to say", c, line)
 			}
+			if line := receiptLine(r, heldMoved); !strings.HasSuffix(line, movedTail) || strings.Contains(line, "is free") || strings.Contains(line, "holds this epoch's") {
+				t.Errorf("%v: %q does not leave the moved lead's message alone", c, line)
+			}
 			continue
 		}
-		for _, h := range []held{heldUnknown, heldFree, heldSpent} {
+		for _, h := range []held{heldUnknown, heldFree, heldSpent, heldMoved} {
 			if line := receiptLine(r, h); !strings.Contains(line, "This epoch's one message is spent") {
 				t.Errorf("%v: %q does not say the epoch's message is spent", c, line)
 			}
@@ -414,5 +417,144 @@ func TestTheDaemonSpendsTheMessageWhenTheRequestIsWrittenUnlessItWasNotDelivered
 		if !strings.Contains(s, want) {
 			t.Errorf("the daemon's source no longer holds %q: check what it spends and change the view's words", want)
 		}
+	}
+}
+
+// A lead left unknown by a launch that was never settled: the list never
+// settles it, so the words say what does (the daemon, 40 s after the start,
+// and a daemon restart when it does not) and not "read the list".
+func TestAnUnsettledLaunchSaysWhatSettlesIt(t *testing.T) {
+	b := twoLeads(t)
+	b.listing.Leads[1].State, b.listing.Leads[1].StateReason = "unknown", "launch-unsettled"
+	b.listing.Leads[1].Epoch = 1
+	b.answer = func(c call) (Receipt, error) {
+		return Receipt{CommandID: "x1", Op: Op(c.op), Status: Unavailable, Code: "intent-pending"}, nil
+	}
+	r := newRig(t, b, 150, 30)
+	r.key("j")
+	// The row says it before any command is sent.
+	r.seen("beta: unknown (launch-unsettled): launch settles by itself 40 s after the start; if not, stop the lead or restart")
+	r.key("x")
+	r.key("y")
+	r.seen("stop: unavailable: launch settles by itself 40 s after the start; if not, stop the lead or restart")
+	r.notSeen("read the list")
+	r.key("s")
+	r.seen("start: unavailable: launch settles by itself 40 s after the start; if not, stop the lead or restart")
+}
+
+func TestAMaxRunningRefusalNamesAnUnknownLeadThatHoldsASlot(t *testing.T) {
+	refuse := func(call) (Receipt, error) {
+		return Receipt{CommandID: "x1", Op: OpStart, Status: Refused, Code: "max-running"}, nil
+	}
+	// With a lead unknown in the list the refusal says what holds the slot.
+	b := twoLeads(t)
+	b.listing.Leads[1].State, b.listing.Leads[1].StateReason = "unknown", "launch-unsettled"
+	b.answer = refuse
+	r := newRig(t, b, 220, 30)
+	r.key("s")
+	r.seen("start: refused: the limit of running leads is reached. An unknown lead holds a slot",
+		"until its launch settles by itself, 40 s after the start; if it is still unknown after that, stop the lead or restart")
+	// A lead unknown for a reason the daemon has a timer for says the same
+	// (a control group that was not proven empty is tried again by the timer).
+	for _, reason := range []string{"launch-reply-lost", "control-group-not-proven-empty"} {
+		b = twoLeads(t)
+		b.listing.Leads[1].State, b.listing.Leads[1].StateReason = "unknown", reason
+		b.answer = refuse
+		r = newRig(t, b, 220, 30)
+		r.key("s")
+		r.seen("until its launch settles by itself, 40 s after the start")
+	}
+	// A lead unknown for any other reason, or none given, has no timer: the
+	// refusal makes no promise of a self-settle, and says what is left.
+	for _, reason := range []string{"registry-recovered", "competing-unit", "foreign-unit", "stale-unit", "host-rebooted", ""} {
+		b = twoLeads(t)
+		b.listing.Leads[1].State, b.listing.Leads[1].StateReason = "unknown", reason
+		b.answer = refuse
+		r = newRig(t, b, 220, 30)
+		r.key("s")
+		r.seen("start: refused: the limit of running leads is reached. An unknown lead holds a slot until it is settled; stop the lead or restart")
+		r.notSeen("by itself", "40 s")
+	}
+	// One that settles by itself beside one that does not: no promise.
+	b = twoLeads(t)
+	b.listing.Leads[0].State, b.listing.Leads[0].StateReason = "unknown", "launch-unsettled"
+	b.listing.Leads[1].State, b.listing.Leads[1].StateReason = "unknown", "competing-unit"
+	b.answer = refuse
+	r = newRig(t, b, 220, 30)
+	r.key("j")
+	r.key("s")
+	r.seen("holds a slot until it is settled")
+	r.notSeen("by itself")
+	// Without one the refusal is the plain line.
+	b = twoLeads(t)
+	b.answer = refuse
+	r = newRig(t, b, 220, 30)
+	r.key("s")
+	r.seen("start: refused: the limit of running leads is reached")
+	r.notSeen("unknown lead", "launch window")
+	// Another refusal is left alone even with an unknown lead listed.
+	b = twoLeads(t)
+	b.listing.Leads[1].State = "unknown"
+	b.answer = func(call) (Receipt, error) {
+		return Receipt{CommandID: "x1", Op: OpStart, Status: Refused, Code: "role-busy"}, nil
+	}
+	r = newRig(t, b, 220, 30)
+	r.key("s")
+	r.notSeen("An unknown lead")
+}
+
+// The receipt of a refused ticket carries only ticket-refused (the daemon logs
+// the holder's code), so the words say that a writer may already be attached
+// without claiming it is.
+func TestARefusedTicketSaysAWriterMayAlreadyBeAttached(t *testing.T) {
+	for _, key := range []string{"w", "v"} {
+		b := twoLeads(t)
+		b.answer = func(call) (Receipt, error) {
+			return Receipt{CommandID: "t1", Op: OpTicket, Status: Refused, Code: "ticket-refused"}, nil
+		}
+		r := newRig(t, b, 150, 30)
+		r.key("j")
+		r.key(key)
+		r.seen("attach ticket: refused: the holder refused the ticket; a writer may already be attached")
+		if len(r.actions) != 0 {
+			t.Fatalf("%s attached: %+v", key, r.actions)
+		}
+	}
+}
+
+// The words of a launch that is not settled say that the daemon settles it by
+// itself after the 40 s window, and name stopping the lead or a restart as what
+// is left, and the tail of the max-running refusal does the same; each stays
+// within the byte caps of its kind (the state and reason words 80, the tail
+// what it was).
+func TestUnsettledWordsNameTheWindowAndTheFallback(t *testing.T) {
+	for name, w := range map[string]string{
+		"state line":       stateWords[[2]string{"unknown", "launch-unsettled"}],
+		"reply lost":       stateWords[[2]string{"unknown", "launch-reply-lost"}],
+		"intent-pending":   reasonWords["intent-pending"],
+		"max-running tail": maxRunningUnknownTail,
+	} {
+		for _, part := range []string{"by itself", "40 s after the start", "stop the lead or restart"} {
+			if !strings.Contains(w, part) {
+				t.Errorf("%s: %q lacks %q", name, w, part)
+			}
+		}
+		if strings.Contains(w, "only a daemon restart") || strings.Contains(w, "launch window") {
+			t.Errorf("%s: %q still says that only a restart settles the launch", name, w)
+		}
+	}
+	for name, w := range map[string]string{
+		"state line":     stateWords[[2]string{"unknown", "launch-unsettled"}],
+		"intent-pending": reasonWords["intent-pending"],
+	} {
+		if len(w) > 80 {
+			t.Errorf("%s: %d bytes", name, len(w))
+		}
+	}
+	if len(maxRunningPlainTail) > 100 || strings.Contains(maxRunningPlainTail, "by itself") {
+		t.Errorf("the plain tail: %q", maxRunningPlainTail)
+	}
+	if len(maxRunningUnknownTail) > 155 {
+		t.Errorf("the tail is %d bytes", len(maxRunningUnknownTail))
 	}
 }

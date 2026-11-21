@@ -28,16 +28,21 @@ There are two passes, and pass A comes first:
 - **Pass B** uses one live agent, once, with a fresh login inside the sandbox,
   the cheapest model, and a cap of 30 minutes or 10 turns. A second run of
   pass B needs the owner's word again.
-  Step 5 asks for `confirmed` only when the account used for the sandbox
-  login lists that login as its own entry that can be revoked on its own, or
-  when a separate throwaway account is used for it; otherwise `no` ends the pass.
-  Pass B run 1 showed that Claude Code logins appear as rows named Unknown, with
-  no entry that can be identified as the login made in the pass. Step 23 says to
-  identify the login as a new row whose last-active time falls during the run
-  (on a separate throwaway account, "log out of all devices" revokes it
-  completely); when none can be identified the owner types
-  `cannot-identify: <what you see>` (some text after the colon), which is accepted
-  and counted as a finding.
+  Revocation is checked before and after. In pass B run 1 the provider's
+  account page listed Claude Code logins as rows named Unknown and none could be
+  matched to the login made in the pass. The owner believes that login had
+  already been revoked in the provider's console when he revoked it, which is
+  why no row matched; this is not verified, and whether the page can revoke a
+  single login is not known. Step 5 asks for `confirmed` once the owner has
+  noted the rows the account page lists now (`no` ends the pass), and step 15
+  reminds the owner after the login to note the new row and its last-active
+  time (a separate throwaway account may still be used for the login, and on it
+  "log out of all devices" revokes it completely). Step 23 says to identify the
+  login as that new row, whose last-active time falls during the run, to revoke
+  only that row, and to confirm after the revoke that the row is gone (the
+  sandbox is stopped by then, so the session cannot be tried); when no row can
+  be identified the owner types `cannot-identify: <what you see>` (some text
+  after the colon), which is accepted and counted as a finding.
 
 ## Build
 
@@ -851,7 +856,8 @@ failed, undo in this order. The names come from
 In pass B, also: log out inside the sandbox if the pane still runs, revoke the
 login on the provider's account page whatever the logout showed (identify it as
 a new row with last-active during the run, or log out of all devices on a
-separate throwaway account), restart the
+separate throwaway account, then confirm the row is gone; the sandbox is
+stopped by then, so the session cannot be tried), restart the
 listeners you stopped, and compare the live config folder with
 `manifest-before.txt`.
 

@@ -198,7 +198,9 @@ func (m *Model) onTick() tea.Cmd {
 	return m.listCmd()
 }
 
-// needsPoll says whether a receipt in progress is shown.
+// needsPoll says whether the list is to be read again by itself: a receipt in
+// progress is shown, or a listed lead is in a state that changes without a
+// key (see changesByItself).
 func (m *Model) needsPoll() bool {
 	if m.status != nil && m.status.Status == InProgress {
 		return true
@@ -207,9 +209,19 @@ func (m *Model) needsPoll() bool {
 		if l.Last != nil && l.Last.Status == InProgress {
 			return true
 		}
+		if changesByItself(l.State) {
+			return true
+		}
 	}
 	return false
 }
+
+// changesByItself says whether a lead in this registry state is moving on
+// without a command: starting turns ready (or stopped or ended) when its holder
+// is observed, and stopping turns stopped. unknown is not one of them: the view
+// does not read the list for it by a timer, so a lead whose launch the daemon
+// settles after the window shows it at the next reading the owner asks for.
+func changesByItself(state string) bool { return state == "starting" || state == "stopping" }
 
 // onListed takes in the answer to a list request. An answer to a request that
 // a later one replaced is left alone.
@@ -283,12 +295,37 @@ func (m *Model) onListed(v listedMsg) tea.Cmd {
 				// The list's summary is never "earlier"; the line keeps
 				// what it said of the press.
 				r.Earlier = m.status.Earlier
+				keepWords(&r, *m.status)
 				m.status = &r
 			}
 		}
 	}
 	m.clamp()
 	return m.tickCmd()
+}
+
+// keepWords gives the list's receipt the words of the press's receipt that the
+// list's lacks. The daemon's list carries a summary of each lead's last command
+// without its result, so a done message would otherwise lose what the holder
+// answered (outcome, reason, written) and a done ticket where to attach
+// (folder, ticket file). A list receipt that has any of the words keeps its
+// own, and words are taken only from a receipt that is done as well. The
+// summary the daemon lists carries no epoch either (it is 0), and the words
+// belong to the epoch the press was answered for: the list's receipt takes it,
+// so that the line is not read against the epoch the lead has moved to since.
+func keepWords(list *Receipt, press Receipt) {
+	if list.Status != Done || press.Status != Done || list.Op != press.Op {
+		return
+	}
+	if list.Epoch == 0 {
+		list.Epoch = press.Epoch
+	}
+	if list.Outcome == "" && list.Reason == "" && list.Written == "" {
+		list.Outcome, list.Reason, list.Written = press.Outcome, press.Reason, press.Written
+	}
+	if list.Folder == "" && list.TicketFile == "" {
+		list.Folder, list.TicketFile = press.Folder, press.TicketFile
+	}
 }
 
 func pairKey(role string, epoch uint64) string { return role + "\x00" + itoa(epoch) }

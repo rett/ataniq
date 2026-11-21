@@ -82,3 +82,66 @@
   is `ready` with the reason `holder-ready` gets a line that says the holder is
   up and the agent started and that its login is not observed. See
   `docs/terminal-console.md`.
+- The console's leads view keeps what became of a message on its status line
+  when the list is read again. The daemon's list holds each lead's last command
+  as a summary without its result, and the view keeps the answer's three words
+  (outcome, reason, written) of the message just sent, and a ticket's folder and
+  ticket file, while the list shows the same command; a list receipt that has
+  words of its own is shown as it is. The list's summary has no epoch, so the
+  line also keeps the epoch the answer was for: when the lead has moved to
+  another epoch since, the line of a message that was not delivered says that
+  the lead is at another epoch now and that epoch's message is not known, and
+  does not call the new epoch's message free or spent. See
+  `docs/terminal-console.md`.
+- The console's leads view reads the list again every two seconds while a lead
+  is `starting` or `stopping`, as it already did while a receipt is in
+  progress, so a started lead turns `ready` without `r` and the reading stops
+  when none is. A lead that is `unknown` is not read by a timer. See
+  `docs/terminal-console.md`.
+- The console's leads view draws `-` in the MSG column of a lead that is not
+  running (state stopped, ended or desired, or unknown with the reason
+  `launch-unsettled` or `launch-reply-lost`, or no epoch), where it drew the
+  words of the lead's last epoch's message; `off` stays for a lead whose
+  messages are off. A lead that is unknown for another reason (for example
+  `control-group-not-proven-empty` or `competing-unit`) may have a unit that
+  runs with a message sent, so its column shows `free`, `sent`, `sent-unsure`
+  or `spent, not delivered` as for any other lead. See
+  `docs/terminal-console.md`.
+- The console's leads view says what settles a lead whose launch is not
+  settled. A lead that is `unknown` with the reason `launch-unsettled` or
+  `launch-reply-lost` gets the line "launch settles by itself 40 s after the
+  start; if not, stop the lead or restart", the same words answer a stop or a start
+  refused with `intent-pending` (which does not tell the owner to read the
+  list, because reading it does not settle the launch), and a start refused for
+  the limit of running leads while such a lead is listed says that the
+  unknown lead holds a slot until its launch settles by itself, 40 s after the
+  start, and that stopping the lead or a restart of the daemon is what is left
+  if it is still unknown after that (a lead that is unknown for another reason,
+  which the daemon has no timer for, is said to hold a slot until it is
+  settled, with no promise of a self-settle) (a launch's own unit that was adopted
+  leaves the lead `unknown`, and a stop ends it). `docs/scratch-leads.md` has the recovery after a killed
+  daemon. See `docs/terminal-console.md`.
+- The console's leads view words a refused attach ticket "the holder refused
+  the ticket; a writer may already be attached", because the receipt carries no
+  reason beyond `ticket-refused` and the holder grants one writer at a time. See
+  `docs/terminal-console.md`.
+- The daemon in scratch mode settles a launch that is not settled itself when
+  the late-start window ends, so a lead left `unknown` by a daemon killed in
+  the middle of a start (reason `launch-unsettled`) or by a start whose reply
+  was lost (`launch-reply-lost`) needs no daemon restart. A timer per such
+  lead waits until the intent's deadline (the late-start window of 30 s and its
+  margin of 10 s, on the registry's clock) and asks the lifecycle to settle
+  that one role by the rules of the reconcile: with no unit loaded and its
+  control group empty, the intent is closed as abandoned and the lead reads
+  `stopped`, with a proof, and leaves the `max_running` count. A unit that is
+  loaded at the deadline does not settle the lead and is never signalled (the
+  launch's own unit is adopted, another is reported and the intent abandoned,
+  and the lead stays `unknown`), a manager that does not answer, or a control
+  group that is not proven empty, is tried again at growing waits (the lead
+  stays `unknown`, with the reason `control-group-not-proven-empty` in the
+  second case), and a lead shown `unknown` for `registry-recovered` has no
+  timer. The timer starts nothing, never waits for the role's lock, ends on a
+  stop, a new start and at shutdown, and ends with one log line that names the
+  restart when the daemon's reconcile at start did not act on a cut of the
+  registry's journal. See `docs/lead-daemon.md` and
+  `docs/scratch-leads.md`.
