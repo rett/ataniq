@@ -6,5 +6,7 @@
   answer is not known (the daemon keeps it while it runs and reads it from the
   command table after a restart while the message's receipt is the lead's last).
   The summary receipt of a row now leaves out its `message` as well as its
-  `result`, which keeps the largest list under 8 KiB. See
-  `docs/scratch-leads.md`.
+  `result`, which keeps the largest list under 8 KiB. The console's leads view
+  is given the reason and written words of a message's receipt, which it was
+  not given before, so a message the holder did not deliver reads with its
+  reason. See `docs/scratch-leads.md`.

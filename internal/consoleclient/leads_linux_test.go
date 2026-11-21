@@ -777,6 +777,36 @@ func TestInjectOutcomeIsAGrammarWord(t *testing.T) {
 	}
 }
 
+// A done message carries the holder's reason and written words next to the
+// outcome, each cleaned to a word of the grammar, and never its detail.
+func TestInjectReasonAndWrittenAreGrammarWords(t *testing.T) {
+	d := startLeadDaemon(t)
+	l := newLeads(t, d.dir)
+	for i, tc := range []struct {
+		res                      leadwire.Delivery
+		outcome, reason, written string
+	}{
+		{leadwire.Delivery{Outcome: "not-now", Reason: "not-ready", Written: "nothing"}, "not-now", "not-ready", "nothing"},
+		{leadwire.Delivery{Outcome: "submitted", Written: "whole"}, "submitted", "", "whole"},
+		{leadwire.Delivery{Outcome: "uncertain", Reason: "died", Written: "unknown"}, "uncertain", "died", "unknown"},
+		{leadwire.Delivery{Outcome: "refused", Reason: "Weird Reason", Written: "\x1b[31m"}, "refused", "unrecognised", "unrecognised"},
+		{leadwire.Delivery{Outcome: "refused", Reason: strings.Repeat("a", 65), Written: "nothing"}, "refused", "unrecognised", "nothing"},
+	} {
+		tc := tc
+		tc.res.Detail = hostileMark
+		d.setExec(func(op string, p cmdParams) (leadwire.Status, string, any) {
+			return leadwire.StatusDone, "", leadwire.InjectResult{Role: p.Role, Epoch: p.Epoch, MessageID: p.MessageID, Result: tc.res}
+		})
+		r, err := l.Send(testRole, 2, "m-"+strconv.Itoa(i), "hi")
+		if err != nil || r.Outcome != tc.outcome || r.Reason != tc.reason || r.Written != tc.written {
+			t.Fatalf("%+v: got %+v %v", tc, r, err)
+		}
+		if s := fmt.Sprintf("%+v", r); strings.Contains(s, "EVIL") {
+			t.Fatalf("the detail is in %s", s)
+		}
+	}
+}
+
 // ---- a lost answer -----------------------------------------------------
 
 func TestALostAnswerIsAskedForWithTheSameIdOnANewConnection(t *testing.T) {

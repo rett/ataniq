@@ -231,7 +231,8 @@ func refusedCode(err error) (string, bool) {
 // this is a guard, not a path.
 func viewReceipt(r consoleclient.LeadReceipt) (leadctl.Receipt, bool) {
 	out := leadctl.Receipt{
-		CommandID: r.CommandID, Code: r.Code, Epoch: r.Epoch, Outcome: r.Outcome,
+		CommandID: r.CommandID, Code: r.Code, Epoch: r.Epoch,
+		Outcome: r.Outcome, Reason: r.Reason, Written: r.Written,
 		Folder: r.Folder, TicketFile: r.TicketFile,
 	}
 	switch r.Op {

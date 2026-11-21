@@ -159,7 +159,7 @@ func TestTheAdapterMapsEveryReceipt(t *testing.T) {
 	for cop, vop := range ops {
 		for cst, vst := range statuses {
 			f := &fakeLeads{receipt: consoleclient.LeadReceipt{
-				CommandID: "c1", Op: cop, Role: "r", Status: cst, Code: "stale-epoch", Epoch: 7, Outcome: "submitted",
+				CommandID: "c1", Op: cop, Role: "r", Status: cst, Code: "stale-epoch", Epoch: 7, Outcome: "not-now", Reason: "not-ready", Written: "nothing",
 				Folder: "/f", TicketFile: "/f/t",
 			}}
 			a := newLeadsAdapter(f)
@@ -174,7 +174,7 @@ func TestTheAdapterMapsEveryReceipt(t *testing.T) {
 				if err != nil {
 					t.Fatalf("%s %s %s: %v", name, cop, cst, err)
 				}
-				want := leadctl.Receipt{CommandID: "c1", Op: vop, Status: vst, Code: "stale-epoch", Epoch: 7, Outcome: "submitted", Folder: "/f", TicketFile: "/f/t"}
+				want := leadctl.Receipt{CommandID: "c1", Op: vop, Status: vst, Code: "stale-epoch", Epoch: 7, Outcome: "not-now", Reason: "not-ready", Written: "nothing", Folder: "/f", TicketFile: "/f/t"}
 				if got != want {
 					t.Fatalf("%s %s %s: got %+v want %+v", name, cop, cst, got, want)
 				}

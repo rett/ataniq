@@ -106,9 +106,9 @@ const (
 )
 
 // LeadReceipt is the answer to a command, or the last one of a lead. It holds
-// no text the daemon wrote: the receipt's message is left out, and Code and
-// Outcome are words of a closed grammar (a word outside it is
-// "unrecognised"). Folder and TicketFile are paths for the console to attach
+// no text the daemon wrote: the receipt's message and the result's detail are
+// left out, and Code, Outcome, Reason and Written are words of a closed
+// grammar (a word outside it is "unrecognised"). Folder and TicketFile are paths for the console to attach
 // with, checked to be absolute and clean, and are not for showing.
 type LeadReceipt struct {
 	// CommandID identifies the command. For a command this client sent it is
@@ -122,8 +122,12 @@ type LeadReceipt struct {
 	// Epoch is the epoch of a done start, ticket or inject. It is 0 in the
 	// summary of a lead's last command, which has no result.
 	Epoch uint64
-	// Outcome is the outcome of a done inject.
-	Outcome string
+	// Outcome, Reason and Written are the holder's three words about a done
+	// inject: what happened to the message, why, and how much of it reached
+	// the lead's input. Each is a word of the grammar of
+	// [LeadReceipt]; Reason is empty for a submitted message, and all three
+	// are empty in the summary of a lead's last command, which has no result.
+	Outcome, Reason, Written string
 	// Folder and TicketFile are the result of a done ticket.
 	Folder, TicketFile string
 	// Earlier says that this final receipt answers a command that an earlier
@@ -693,6 +697,7 @@ func fillResult(out *LeadReceipt, k leadKey, raw json.RawMessage) bool {
 			return false
 		}
 		out.Epoch, out.Outcome = r.Epoch, leadWord(r.Result.Outcome)
+		out.Reason, out.Written = leadWord(r.Result.Reason), leadWord(r.Result.Written)
 	}
 	return true
 }
