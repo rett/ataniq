@@ -174,7 +174,8 @@ func (m *Mirror) lockPath() string { return m.path + ".lock" }
 //     runs before this. The plan's repository path must not exist on the
 //     host: [ErrRepositoryPath]. This is a second layer: the fetch names its
 //     source as a "file://" URL, which git never reads as a bundle, so the
-//     sandboxed command starts whatever is at the path.
+//     sandboxed command starts whatever is at the path. The clone's own path
+//     passes only while it is a real folder: [ErrHostileTree] otherwise.
 //  4. The sandbox measures the clone's object store; more than MaxSource is a
 //     [*LimitError]. The mirror is measured; a mirror at or over MaxMirror is
 //     a [*LimitError].

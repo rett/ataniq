@@ -51,7 +51,8 @@
 // starts the command, whatever is at the path on the host, also a bundle that
 // appears after any check. As a second layer, a fetch refuses a repository
 // path that exists on the host, whatever it is ([ErrRepositoryPath]), twice,
-// and lets pass a path that does not exist and the clone's own path.
+// and lets pass a path that does not exist and the clone's own path when that
+// is a real folder (a clone that is not one is an [ErrHostileTree]).
 //
 // The fetch goes in two moves. The receiving half fetches into a staging
 // repository, a fresh bare repository beside the mirror that has the mirror's

@@ -19,8 +19,10 @@
   the checks. As a second layer it refuses a template whose `serve.repository`
   path exists on the host (a regular file, a symlink, any folder, or a path that
   cannot be checked), before the measure runs and again before git starts; a
-  path that does not exist passes, as does the clone's own path. The refusal's
-  hint says that the path exists or cannot be checked and that the mirror was
-  not changed, which holds for both checks. The `qualify-mirror` report gets the
-  fact `repository_on_host` in `s16-fetch.clone`. See `docs/lead-intake.md` and
+  path that does not exist passes, as does the clone's own path while it is a
+  real folder (a clone that was replaced by a symlink or a file in between is a
+  hostile tree, exit status 1). The refusal's hint says that the path exists or
+  cannot be checked and that the mirror was not changed, which holds for both
+  checks. The `qualify-mirror` report gets the fact `repository_on_host` in
+  `s16-fetch.clone`. See `docs/lead-intake.md` and
   `docs/qualification-lead-mirror.md`.

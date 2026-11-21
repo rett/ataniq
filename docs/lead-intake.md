@@ -123,9 +123,10 @@ and no tag. The steps below follow `Mirror.Fetch` in `internal/mirror`.
    folder should be on the way), so the rule fails closed. Two things pass: a
    path that does not exist on the host, which is a path inside the sandbox
    and the case the template is for, and the lead's own clone path
-   (`STATE/leads/<role>/tree`), which step 2 has just checked to be a real
-   folder and which no bundle can be. When this check refuses the path nothing
-   has run. The check of step 6 can refuse it too, when it appeared or changed
+   (`STATE/leads/<role>/tree`), which is looked at again without following a
+   symlink and must be a real folder, which no bundle can be. A clone that is
+   by then a symlink, a file or missing is refused as a hostile tree, as step 2
+   refuses it. When this check refuses the path nothing has run. The check of step 6 can refuse it too, when it appeared or changed
    in between: then the measure of step 4 has run and the staging repository
    of step 5 was made and is removed, and the mirror is as it was.
 4. **Measure.** The measure command runs in the sandbox. Its number is the

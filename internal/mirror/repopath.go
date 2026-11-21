@@ -23,10 +23,15 @@ var ErrRepositoryPath = errors.New("mirror: the template's repository path exist
 //   - the path does not exist (the answer "no such file or directory" and
 //     no other): it is a path inside the sandbox, and the owner's git finds
 //     nothing there to read;
-//   - the path is the lead's clone itself, tree, written the same. The owner
-//     has just checked it with [checkLeadTree]: it is a real folder, and a
-//     folder is never read by the owner's git as a bundle. A plan that gives
-//     the clone's own host path, as the plans of the tests do, is not a bundle
+//   - the path is the lead's clone itself, tree, written the same, and it is
+//     a real folder now: it is looked at again without following a symlink
+//     and must be a folder. The owner has checked it with [checkLeadTree], but
+//     that was before the sandbox plan, and the check runs again right before
+//     git starts, so a clone that was replaced by a file or a symlink in
+//     between, or is missing or cannot be looked at, is refused as a
+//     hostile tree ([ErrHostileTree]), as [checkLeadTree] refuses it. A
+//     folder is never read by the owner's git as a bundle. A plan that gives the
+//     clone's own host path, as the plans of the tests do, is not a bundle
 //     door.
 //
 // Everything else is refused, whatever it is: a regular file (a bundle or
@@ -46,10 +51,19 @@ var ErrRepositoryPath = errors.New("mirror: the template's repository path exist
 // path that no sandbox can write a folder on the way to, in the documentation
 // of the template, is the same protection for a plan whose source is a path.
 func checkRepositoryPath(repository, tree string) error {
-	if repository == tree {
-		return nil
-	}
 	fi, err := os.Lstat(repository)
+	if repository == tree {
+		// The clone's own path passes as a folder and as nothing else. A
+		// clone that is now a symlink, a file or missing, or that cannot be
+		// checked, is what [checkLeadTree] refuses: a hostile tree.
+		switch {
+		case err == nil && fi.IsDir():
+			return nil
+		case err == nil:
+			return hostile("the lead's clone is " + kindOf(fi.Mode()) + ", not a folder, when the fetch is about to start")
+		}
+		return hostile("the lead's clone cannot be checked when the fetch is about to start")
+	}
 	switch {
 	case err == nil:
 		return fmt.Errorf("%w: %q is %s; choose a path that does not exist on the host", ErrRepositoryPath, repository, kindOf(fi.Mode()))

@@ -269,3 +269,83 @@ func TestFetchRepositoryPathWithAPercentSignReachesTheSandbox(t *testing.T) {
 		})
 	}
 }
+
+// TestCheckRepositoryPathOfTheCloneItself: the clone's own path passes as a
+// real folder and as nothing else. A symlink to a folder, a file, a missing
+// path and a path on which a file stands in the way are refused as a hostile
+// tree, the same refusal that checkLeadTree gives for the clone.
+func TestCheckRepositoryPathOfTheCloneItself(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "folder")
+	if err := os.Mkdir(folder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(folder, link); err != nil {
+		t.Fatal(err)
+	}
+	dangling := filepath.Join(dir, "dangling")
+	if err := os.Symlink(filepath.Join(dir, "nothing"), dangling); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkRepositoryPath(folder, folder); err != nil {
+		t.Errorf("a real folder: %v", err)
+	}
+	for name, p := range map[string]string{
+		"a symlink to a folder":             link,
+		"a dangling symlink":                dangling,
+		"a regular file":                    file,
+		"a missing path":                    filepath.Join(dir, "missing"),
+		"a file in the way":                 filepath.Join(file, "tree"),
+		"a symlink, as the folder's parent": filepath.Join(link, "nothing"),
+	} {
+		err := checkRepositoryPath(p, p)
+		if !errors.Is(err, ErrHostileTree) {
+			t.Errorf("%s: %v, want ErrHostileTree", name, err)
+		}
+		if errors.Is(err, ErrRepositoryPath) {
+			t.Errorf("%s: the refusal is ErrRepositoryPath too: %v", name, err)
+		}
+	}
+	// A path other than the clone's is still judged by the other rule.
+	if err := checkRepositoryPath(folder, filepath.Join(dir, "other")); !errors.Is(err, ErrRepositoryPath) {
+		t.Errorf("a folder that is not the clone: %v, want ErrRepositoryPath", err)
+	}
+}
+
+// TestFetchRefusesACloneReplacedBeforeTheSecondCheck: the plan names the
+// clone's own path, which passes the first check as a real folder. If the
+// clone is replaced by a symlink before the second check, the fetch is
+// refused as a hostile tree before git starts, and the mirror is as it was.
+func TestFetchRefusesACloneReplacedBeforeTheSecondCheck(t *testing.T) {
+	e := newFetchEnv(t)
+	started := filepath.Join(t.TempDir(), "upload-pack")
+	e.planner.UploadPack = e.wrapper("touch '" + started + "'")
+	e.planner.Repository = e.lead.tree
+	was := e.state0(t)
+	moved := e.lead.tree + ".moved"
+	fetchHook = func(step int) {
+		if step == 6 {
+			if err := os.Rename(e.lead.tree, moved); err != nil {
+				t.Error(err)
+				return
+			}
+			if err := os.Symlink(moved, e.lead.tree); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	t.Cleanup(func() { fetchHook = nil })
+	_, err := e.m.Fetch(context.Background(), e.req())
+	if !errors.Is(err, ErrHostileTree) {
+		t.Fatalf("Fetch = %v, want ErrHostileTree", err)
+	}
+	if _, serr := os.Stat(started); serr == nil {
+		t.Error("the sandboxed command started")
+	}
+	e.unchanged(t, was)
+}

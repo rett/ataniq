@@ -117,8 +117,8 @@ following.
   layer the fetch refuses a path that exists on the host, a regular file, a
   symlink or a folder alike, before anything runs (`mirror.ErrRepositoryPath`),
   so a template with such a path gives a refused `s16-fetch.fetch` and no other
-  fact of the fetch. A path that does not exist, and the clone's own path (which a fake
-  planner gives), pass.
+  fact of the fetch. A path that does not exist, and the clone's own path while
+  it is a folder (which a fake planner gives), pass.
 - `measure` prints the size of the clone's object store, and runs in the same
   kind of sandbox.
 - The sandbox gives `git-upload-pack` what it needs to run and nothing else.
