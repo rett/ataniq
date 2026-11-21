@@ -80,6 +80,13 @@ const (
 	ErrCodeRefused = "refused"
 )
 
+// ErrorCodes returns the four error codes above, in the order they are
+// declared, in a new slice. A test of a client that has words for the codes
+// holds that it has words for each of them.
+func ErrorCodes() []string {
+	return []string{ErrCodeInvalidRequest, ErrCodeConflict, ErrCodeUnavailable, ErrCodeRefused}
+}
+
 // The reason codes of a refused receipt that the control plane adds to the
 // canary's. A receipt's code is one short token of lower-case letters, digits
 // and dashes.
@@ -93,6 +100,13 @@ const (
 	// CodeStaleEpoch: the command names an epoch that is not the role's.
 	CodeStaleEpoch = "stale-epoch"
 )
+
+// ReasonCodes returns the four reason codes above, in the order they are
+// declared, in a new slice. They are not all the codes a receipt can carry:
+// the daemon adds its own (see the lead extension of internal/leaddaemon).
+func ReasonCodes() []string {
+	return []string{CodeMaxRunning, CodeSecondMessage, CodeMessageInFlight, CodeStaleEpoch}
+}
 
 // The attach roles of a ticket.
 const (

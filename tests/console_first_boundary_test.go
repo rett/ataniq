@@ -103,7 +103,7 @@ var boundaryTable = map[string][]string{
 		pkgSessionPane, pkgSessionPlay,
 		pkgPager, pkgArrival, pkgApprovals, pkgLimitView, pkgLeadCtl, pkgCard, pkgRecord, pkgLimits, pkgPresence, pkgLeadText,
 	},
-	pkgConsoleCmd: {pkgConsole, pkgLeadAttach, pkgConsoleView, pkgDemo, pkgApprovals},
+	pkgConsoleCmd: {pkgConsole, pkgLeadAttach, pkgConsoleView, pkgDemo, pkgApprovals, pkgLeadCtl},
 }
 
 // boundaryPure lists the packages that, beyond their row of the table, import

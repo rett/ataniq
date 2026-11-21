@@ -1,7 +1,11 @@
 package leadctl
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -294,6 +298,55 @@ func TestTheEditorStopsAtTheLongestMessage(t *testing.T) {
 		t.Fatalf("%d bytes", len(r.m.edit.text))
 	}
 	r.seen("the message is at the longest")
+}
+
+// TestTheEditorsLimitIsTheDaemons reads the longest body the daemon's
+// admission takes from its source, and holds that the editor takes exactly
+// that many bytes: no more (the daemon would refuse the message with
+// body-too-long) and no fewer.
+func TestTheEditorsLimitIsTheDaemons(t *testing.T) {
+	f, err := parser.ParseFile(token.NewFileSet(), "../../leadcanary/admission.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit := -1
+	for _, d := range f.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok || gd.Tok != token.CONST {
+			continue
+		}
+		for _, sp := range gd.Specs {
+			vs := sp.(*ast.ValueSpec)
+			for i, n := range vs.Names {
+				if n.Name != "MaxBodyBytes" || i >= len(vs.Values) {
+					continue
+				}
+				lit, ok := vs.Values[i].(*ast.BasicLit)
+				if !ok || lit.Kind != token.INT {
+					t.Fatal("MaxBodyBytes is not an integer literal")
+				}
+				if limit, err = strconv.Atoi(lit.Value); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+	if limit <= 0 {
+		t.Fatal("MaxBodyBytes was not found in the admission's source")
+	}
+	if maxBody != limit {
+		t.Fatalf("the editor takes %d bytes, the daemon's admission %d", maxBody, limit)
+	}
+	b := twoLeads(t)
+	r := newRig(t, b, 120, 30)
+	r.key("j")
+	r.key("m")
+	r.feed(tea.PasteMsg{Content: strings.Repeat("y", limit)})
+	r.key("z")
+	if len(r.m.edit.text) != limit {
+		t.Fatalf("%d bytes, want %d", len(r.m.edit.text), limit)
+	}
+	r.seen("the message is at the longest", strconv.Itoa(limit)+" of "+strconv.Itoa(limit)+" bytes")
 }
 
 func TestMIsRefusedWhereTheRowSaysNoMessageCanGo(t *testing.T) {
