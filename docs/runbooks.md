@@ -412,8 +412,9 @@ single login is not known. So every login is checked before and after.
    in the sandbox no longer works (press `v` and look; send nothing).
 6. **If the row is still there, or the session still works:** the revoke did not
    take. Do it again in the provider's console, and check again. If it still
-   does not work, log out of all devices on the account, stop the lead (step
-   1.7) and go to section 6.
+   does not work, stop the lead (step 1.7) and go to section 6. Use "log out
+   of all devices" only on a separate throwaway account that is used for this
+   login alone, never on an account that holds your own sessions.
 
 ### 3.3 If the login simply expired
 
