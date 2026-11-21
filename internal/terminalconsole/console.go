@@ -21,6 +21,10 @@
 // command, and a refresh that fails keeps the last view and shows its age.
 // See refresh.go.
 //
+// With Options.Leads set the L key opens the leads view, where the leads of
+// a daemon are listed and started, stopped, messaged and attached to. See
+// Options.Leads and package leadctl.
+//
 // With a window of at least MinCols by MinRows the console draws the cockpit:
 // three panes, a timeline and a key bar. Below that it falls back to
 // single-column pages.
@@ -35,9 +39,11 @@ import (
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 
 	"ataniq/internal/terminalconsole/approvals"
+	"ataniq/internal/terminalconsole/leadctl"
 	"ataniq/internal/terminalconsole/sessionpane"
 	"ataniq/internal/terminalconsole/sessionreplay"
 )
@@ -142,6 +148,9 @@ type Model struct {
 
 	opts Options
 	cockpitState
+
+	// lc is the leads view's part of the console.
+	lc leadsState
 }
 
 func clean(s string) string {
@@ -329,6 +338,14 @@ type Options struct {
 	// Random is the source of the run's session id and of the confirm code.
 	// Nil means the system's random source.
 	Random io.Reader
+	// Leads is where the leads view reads from and sends its commands to.
+	// The console imports no client of its own: the command hands it one.
+	// Nil means there is no lead control in this daemon: the L key opens a
+	// screen that says so. With a backend L opens the view, in console
+	// focus only (a key typed while the session has the focus goes to the
+	// session), and every key goes to the view before any key of the
+	// console until Esc closes it. See package leadctl.
+	Leads leadctl.Backend
 	// BellOff turns the bell off. The bell rings once for a card that arrives
 	// while the owner is not present, and is on by default.
 	BellOff bool
@@ -342,11 +359,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = min(4096, max(0, v.Width))
 		m.height = min(4096, max(0, v.Height))
+		m.resizeLeads()
 		return m, tea.Batch(m.onSize(), m.resizeApprovals())
 	case tea.KeyPressMsg:
 		beat := m.activity()
+		if m.leadsOpen() {
+			// An open leads screen has every key before the cockpit's own.
+			return m, tea.Batch(beat, m.leadsKey(v))
+		}
+		if m.opensLeads(v) {
+			return m, tea.Batch(beat, m.openLeads())
+		}
 		return m, tea.Batch(beat, m.onKey(v))
 	case tea.PasteMsg:
+		if m.leadsOpen() {
+			// A paste is the leads view's: the message editor takes it.
+			return m, m.leadsUpdate(msg)
+		}
 		if m.apprOpen() {
 			// A paste is the approvals view's: it refuses one in a field.
 			return m, m.forward(msg)
@@ -354,7 +383,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.onPaste(v.Content)
 	case tea.MouseMsg:
 		beat := m.activity()
-		if m.apprOpen() {
+		if m.apprOpen() || m.leadsOpen() {
 			return m, beat
 		}
 		return m, tea.Batch(beat, m.onMouse(v))
@@ -386,8 +415,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case apprLimitMsg:
 		m.onApprLimit(v)
 	default:
-		// What is left is the approvals view's own: the answers to its
-		// commands and what its pager asks for.
+		// What is left is an open view's own: the answers to its commands
+		// and what its pager asks for.
+		if m.leadsOpen() {
+			return m, m.leadsUpdate(msg)
+		}
 		return m, m.forward(msg)
 	}
 	return m, nil
@@ -545,7 +577,7 @@ func (m *Model) lines() []string {
 			lines = append(lines, l.Conversation...)
 		}
 	case "help":
-		lines = append(lines, "Help", "Up/down or j/k: navigate or scroll", "Enter: open project or conversation", "t: project tasks   Esc: back", "g: approvals", "a: full attach (unavailable)   Ctrl+K: actions", "q or Ctrl-C: quit", "A window of "+sizeText(MinCols, MinRows)+" or more shows the cockpit.")
+		lines = append(lines, "Help", "Up/down or j/k: navigate or scroll", "Enter: open project or conversation", "t: project tasks   Esc: back", "g: approvals   L: lead control", "a: full attach (unavailable)   Ctrl+K: actions", "q or Ctrl-C: quit", "A window of "+sizeText(MinCols, MinRows)+" or more shows the cockpit.")
 	case "actions":
 		switch {
 		case m.approvalsLive():
@@ -570,6 +602,9 @@ func (m *Model) View() tea.View {
 	}
 	if m.width <= 0 || m.height <= 0 {
 		return m.newView("")
+	}
+	if m.leadsOpen() {
+		return m.leadsView()
 	}
 	if m.apprOpen() {
 		return m.approvalsView()
@@ -634,4 +669,137 @@ func (m *Model) fallbackView() tea.View {
 		content = fmt.Sprintf("\x1b[%s;%sm%s\x1b[0m", fg, bg, content)
 	}
 	return m.newView(content)
+}
+
+// AttachRequest is what the leads view asks of the program once a ticket for a
+// lead is done: to end the console and attach to the lead, in the folder and
+// with the ticket file the receipt named. The command reads it with Attach
+// after the program ends.
+type AttachRequest = leadctl.AttachRequest
+
+// NoLeadControl is what the leads screen says when the console was given no
+// backend.
+const NoLeadControl = "no lead control in this daemon"
+
+// leadsState is the console's part of the leads view.
+type leadsState struct {
+	// view is the open leads view, nil while it is closed. noControl is
+	// whether the screen without a backend is open.
+	view      *leadctl.Model
+	noControl bool
+	// attach is the request the view made, set when the program ended on it.
+	attach *AttachRequest
+}
+
+// Attach returns the request to attach to a lead that the leads view made
+// before it asked the program to end, and false when the program ended for
+// another reason.
+func (m *Model) Attach() (AttachRequest, bool) {
+	if m.lc.attach == nil {
+		return AttachRequest{}, false
+	}
+	return *m.lc.attach, true
+}
+
+// leadsOpen reports whether a leads screen has the keys: the view, or the
+// screen that says there is no lead control.
+func (m *Model) leadsOpen() bool { return m.lc.view != nil || m.lc.noControl }
+
+func (m *Model) leadsColors() leadctl.Colors {
+	p := paletteFor(m.theme)
+	return leadctl.Colors{Fg: p.fg, Bg: p.bg, Dim: p.dim, Accent: p.accent, Warn: p.warn}
+}
+
+// openLeads opens the leads screen. It closes the arrival strip. Without a
+// backend it opens the screen that says there is no lead control.
+func (m *Model) openLeads() tea.Cmd {
+	l := &m.lc
+	m.ap.strip.Dismiss()
+	m.sel = selection{}
+	m.overlay = ""
+	if m.opts.Leads == nil {
+		l.noControl = true
+		return nil
+	}
+	l.view = leadctl.New(leadctl.Options{
+		Backend: m.opts.Leads,
+		Colors:  m.leadsColors(),
+		Random:  m.ap.random,
+		After:   m.afterFn,
+	})
+	w, h := m.apprSize()
+	l.view.SetSize(w, h)
+	return l.view.Init()
+}
+
+// closeLeads leaves the leads screen for the cockpit.
+func (m *Model) closeLeads() { m.lc.view, m.lc.noControl = nil, false }
+
+// resizeLeads gives an open leads view the size of the window.
+func (m *Model) resizeLeads() {
+	if m.lc.view != nil {
+		w, h := m.apprSize()
+		m.lc.view.SetSize(w, h)
+	}
+}
+
+// leadsKey handles a key press while a leads screen is open. Every key goes to
+// the view and none to the cockpit's own commands, ctrl+c aside: it quits from
+// every screen.
+func (m *Model) leadsKey(k tea.KeyPressMsg) tea.Cmd {
+	if k.String() == "ctrl+c" {
+		return m.quit()
+	}
+	if m.lc.noControl {
+		if k.String() == "esc" {
+			m.closeLeads()
+		}
+		return nil
+	}
+	return m.leadsUpdate(k)
+}
+
+// leadsUpdate hands msg to the view and carries out what it asks of the
+// console.
+func (m *Model) leadsUpdate(msg tea.Msg) tea.Cmd {
+	l := &m.lc
+	if l.view == nil {
+		return nil
+	}
+	cmd, act := l.view.Update(msg)
+	switch act.Kind {
+	case leadctl.Close:
+		m.closeLeads()
+	case leadctl.Quit:
+		return tea.Batch(cmd, m.quit())
+	case leadctl.Attach:
+		req := act.Attach
+		l.attach = &req
+		m.closeLeads()
+		return tea.Batch(cmd, m.quit())
+	}
+	return cmd
+}
+
+// leadsView draws the open leads screen over the whole window.
+func (m *Model) leadsView() tea.View {
+	l := &m.lc
+	w, h := m.apprSize()
+	buf := uv.NewBuffer(w, h)
+	p := &painter{buf: buf, pal: paletteFor(m.theme), graphemes: m.graphemes}
+	p.fill(buf.Bounds())
+	switch {
+	case l.noControl:
+		p.lines(uv.Rect(1, 0, max(0, w-1), h), []line{
+			{"LEAD CONTROL", lnHead},
+			{"", lnText},
+			{NoLeadControl, lnWarn},
+			{"No lead can be started, stopped or messaged from here.", lnText},
+			{"", lnText},
+			{"[esc] back", lnDim},
+		})
+	case l.view != nil:
+		l.view.Draw(buf, buf.Bounds())
+	}
+	return m.newView(buf.Render())
 }
