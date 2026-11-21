@@ -68,6 +68,10 @@ const (
 	FlagSubmodule   = "submodule"
 	FlagAliased     = "aliased"
 	FlagHistoryOnly = "history-only"
+	// FlagOddPath marks a path the matcher cannot read safely: a colon, a
+	// tilde and a digit, a combining mark or text not in NFC, an invisible
+	// character, or bytes that are not UTF-8. It needs a sign-off.
+	FlagOddPath = "odd-path"
 )
 
 // Request is what a lead asks for. Everything in it is the lead's claim:
