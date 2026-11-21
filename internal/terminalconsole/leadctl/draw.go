@@ -326,7 +326,31 @@ func (m *Model) receiptText() string {
 	if m.status == nil {
 		return ""
 	}
-	return receiptLine(*m.status)
+	return receiptLine(*m.status, m.heldFor(*m.status))
+}
+
+// heldFor is what the list says of the epoch's message for a receipt: the row
+// of the lead the command was for, once the list has been read since the
+// answer (the list that was drawn before it says nothing of this message), and
+// when the row is still at the epoch the receipt names (a receipt that names
+// none takes the row's).
+func (m *Model) heldFor(r Receipt) held {
+	if !m.statusListed || m.statusRole == "" {
+		return heldUnknown
+	}
+	for _, l := range m.leads {
+		if l.Role != m.statusRole {
+			continue
+		}
+		switch {
+		case l.Epoch == 0 || r.Epoch != 0 && l.Epoch != r.Epoch:
+			return heldUnknown
+		case l.MessageSpent:
+			return heldSpent
+		}
+		return heldFree
+	}
+	return heldUnknown
 }
 
 // drawEditor draws the message line: the target and the end of the text,

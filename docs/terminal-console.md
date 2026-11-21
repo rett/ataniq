@@ -442,8 +442,15 @@ view's own, chosen by the receipt's status, and are not the daemon's text:
 | uncertain | uncertain | The daemon does not know what happened, as after a restart while the command ran. Read the lead's state, then decide; nothing is sent again for you. |
 
 The line of a done message, for every answer the lead's holder can give (each
-of the NOT delivered ones ends "The epoch's message is free", and each other one
-ends "This epoch's one message is spent"):
+of the NOT delivered ones ends "The epoch's message is free" when the list's row
+for the lead and epoch, read after the answer, says the message is not spent,
+and each other one ends "This epoch's one message is spent"). The receipt does
+not carry that flag, so the NOT delivered ones are drawn from the row: until the
+list has been read again they end "The epoch's message is free unless the list
+says it is spent", and when the row says spent (the daemon could not write the
+result down and holds the epoch spent all the same) they end "The daemon holds
+this epoch's message spent all the same", as the MSG column says `spent, not
+delivered`:
 
 | Holder says (outcome, reason, written) | The line says |
 | --- | --- |
@@ -456,7 +463,7 @@ ends "This epoch's one message is spent"):
 | uncertain, died, nothing / partial / whole | result unknown: the lead ended during the send, with what the holder says was written (nothing, part, or the whole). Look at the lead's screen |
 | uncertain, died, unknown | result unknown: the lead ended or no answer came back; how much was written is not known. Look at the lead's screen |
 
-The last sentence is what the daemon does: it marks the epoch's message spent
+The last sentence of a line is what the daemon does: it marks the epoch's message spent
 once it has written the request to the holder, and frees it again when nothing
 was written to the lead: the holder answered not-now or refused with nothing
 written, or refused the request itself (`holder-disabled`, `holder-wrong-epoch`

@@ -367,15 +367,25 @@ func TestResultWordsAreShortASCIIAndSayWhetherTheEpochIsSpent(t *testing.T) {
 	}
 	for c, tx := range deliveryWords {
 		check(c.outcome+"/"+c.reason+"/"+c.written, tx)
-		line := receiptLine(Receipt{Op: OpInject, Status: Done, Outcome: c.outcome, Reason: c.reason, Written: c.written})
+		r := Receipt{Op: OpInject, Status: Done, Outcome: c.outcome, Reason: c.reason, Written: c.written}
 		if tx.fate == fateNotDelivered {
-			if !strings.Contains(line, "The epoch's message is free") || strings.Contains(line, "is spent") {
+			// Free only when the row says so; spent when it says that; and
+			// neither claimed when no row has been read since the answer.
+			if line := receiptLine(r, heldFree); !strings.Contains(line, "The epoch's message is free") || strings.Contains(line, "spent") {
 				t.Errorf("%v: %q does not say the epoch's message is free", c, line)
+			}
+			if line := receiptLine(r, heldSpent); !strings.Contains(line, "holds this epoch's message spent") || strings.Contains(line, "is free") {
+				t.Errorf("%v: %q does not say the daemon holds the epoch's message spent", c, line)
+			}
+			if line := receiptLine(r, heldUnknown); !strings.Contains(line, "free unless the list says it is spent") {
+				t.Errorf("%v: %q does not leave the list to say", c, line)
 			}
 			continue
 		}
-		if !strings.Contains(line, "This epoch's one message is spent") {
-			t.Errorf("%v: %q does not say the epoch's message is spent", c, line)
+		for _, h := range []held{heldUnknown, heldFree, heldSpent} {
+			if line := receiptLine(r, h); !strings.Contains(line, "This epoch's one message is spent") {
+				t.Errorf("%v: %q does not say the epoch's message is spent", c, line)
+			}
 		}
 	}
 	for o, tx := range outcomeOnlyWords {

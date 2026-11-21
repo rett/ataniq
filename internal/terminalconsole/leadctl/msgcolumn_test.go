@@ -58,9 +58,10 @@ func TestTheMsgColumnAndTheReceiptLineSayTheSameOfAMessage(t *testing.T) {
 			"sent-unsure", "the result is not known to this console", ""},
 		// The daemon holds the epoch spent after a message that was not
 		// delivered when it could not write the result down: the row says so,
-		// and does not say the message is free.
+		// and so does the receipt line, which does not say the message is
+		// free (see TestTheReceiptLineDoesNotCallTheEpochFreeWhileTheDaemonHoldsItSpent).
 		{"not delivered and held spent", Receipt{Op: OpInject, Status: Done, Epoch: 3, Outcome: OutcomeNotNow, Reason: ReasonNotReady, Written: WrittenNothing}, true,
-			"spent, not delivered", "NOT delivered", notSpent},
+			"spent, not delivered", "NOT delivered", "The daemon holds this epoch's message spent all the same"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			g := sendOne(t, c.r, c.spent)
@@ -72,6 +73,48 @@ func TestTheMsgColumnAndTheReceiptLineSayTheSameOfAMessage(t *testing.T) {
 			if c.tail != "" {
 				g.seen(c.tail)
 			}
+		})
+	}
+}
+
+// The tail of the line of a message that was not delivered comes from the row
+// of the list that was read after the answer: free when the row says so, the
+// daemon's hold when the row says spent, and neither claim until the list has
+// been read (the row of the list that was drawn before the answer says nothing
+// of this message). A row at another epoch says nothing either.
+func TestTheReceiptLineDoesNotCallTheEpochFreeWhileTheDaemonHoldsItSpent(t *testing.T) {
+	notNow := Receipt{Op: OpInject, Status: Done, Epoch: 3, Outcome: OutcomeNotNow, Reason: ReasonNotReady, Written: WrittenNothing}
+	for _, c := range []struct {
+		name  string
+		spent bool
+		epoch uint64
+		want  string
+		not   string
+	}{
+		{"row free", false, 3, "The epoch's message is free", "spent"},
+		{"row spent", true, 3, "holds this epoch's message spent", "is free"},
+		{"row at another epoch", false, 4, "free unless the list says it is spent", "The epoch's message is free."},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			b := twoLeads(t)
+			b.answer = func(call) (Receipt, error) { return notNow, nil }
+			g := newRig(t, b, 150, 30)
+			g.key("j")
+			g.key("m")
+			g.typ("hi")
+			b.listing.Leads[1].MessageSpent = c.spent
+			b.listing.Leads[1].Epoch = c.epoch
+			// The answer is in and the list is not read again yet: the old row
+			// is not asked.
+			cmd, _ := g.m.Update(keyMsg("enter"))
+			b.inCmd = true
+			answer := cmd()
+			b.inCmd = false
+			cmd, _ = g.m.Update(answer)
+			g.seen("NOT delivered: nothing was written", "free unless the list says it is spent")
+			g.run(cmd)
+			g.seen(c.want)
+			g.notSeen(c.not)
 		})
 	}
 }

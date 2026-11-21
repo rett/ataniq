@@ -205,10 +205,31 @@ const unknownResult = "the result is not known to this console"
 // What the daemon does with the epoch's message once a request was written to
 // the holder (internal/leaddaemon/canary_ext_linux.go injectFor): it is spent,
 // unless the holder answered that nothing was written (not-now or refused), when
-// it is free again and the lead may send another.
+// it is free again and the lead may send another. The receipt does not say
+// which: the daemon holds the epoch spent all the same when it could not write
+// the result down, and only the list's row (message_spent) knows. So the tail
+// of a message that was not delivered is drawn from the row when the view has
+// read it since the answer, and says what it does not know otherwise.
 const (
 	spentTail = ". This epoch's one message is spent"
 	freeTail  = ". The epoch's message is free"
+	// heldTail: the row says spent after a message that was not delivered.
+	heldTail = ". The daemon holds this epoch's message spent all the same"
+	// maybeTail: no row has been read since the answer.
+	maybeTail = ". The epoch's message is free unless the list says it is spent"
+)
+
+// held is what the list's row says of the epoch's message for the receipt
+// that is drawn.
+type held int
+
+const (
+	// heldUnknown: the view has no row of the receipt's lead and epoch that it
+	// read after the answer.
+	heldUnknown held = iota
+	// heldFree and heldSpent: the row's message_spent.
+	heldFree
+	heldSpent
 )
 
 // deliveryOf looks up the words of a done inject's three words. A result
@@ -228,14 +249,21 @@ func deliveryOf(outcome, reason, written string) deliveryText {
 
 // outcomeWords is the line of a done inject's result: what happened to the
 // message and, when something is known, whether the epoch's message is spent
-// (it is not after a message that was not delivered).
-func outcomeWords(r Receipt) string {
+// (it is not after a message that was not delivered, unless the daemon holds it
+// spent, which the row says: h).
+func outcomeWords(r Receipt, h held) string {
 	t := deliveryOf(r.Outcome, r.Reason, r.Written)
 	switch t.fate {
 	case fateUnknown:
 		return t.text
 	case fateNotDelivered:
-		return t.text + freeTail
+		switch h {
+		case heldFree:
+			return t.text + freeTail
+		case heldSpent:
+			return t.text + heldTail
+		}
+		return t.text + maybeTail
 	}
 	return t.text + spentTail
 }
@@ -290,8 +318,9 @@ func stateLine(l Lead) string {
 	return l.Key + ": " + l.State + " (" + l.StateReason + "): " + w
 }
 
-// receiptLine is the full line of a receipt, in the view's words.
-func receiptLine(r Receipt) string {
+// receiptLine is the full line of a receipt, in the view's words; h is what the
+// list's row says of the epoch's message.
+func receiptLine(r Receipt, h held) string {
 	head := opWords(r.Op) + ": "
 	if r.Earlier {
 		head = "an earlier " + opWords(r.Op) + " command: "
@@ -301,7 +330,7 @@ func receiptLine(r Receipt) string {
 		return head + "accepted, still running"
 	case Done:
 		if r.Op == OpInject {
-			return head + "accepted. " + outcomeWords(r)
+			return head + "accepted. " + outcomeWords(r, h)
 		}
 		return head + "accepted, done"
 	case Refused:

@@ -69,7 +69,10 @@
   not idle or is blocked, the program version is untested, the text was
   refused), "the message was submitted", or "result unknown" with what is
   known of what was written, and the line says whether the epoch's message is
-  free (a message that was not delivered) or spent. The MSG column agrees:
+  free (a message that was not delivered, as far as the list's row says) or
+  spent; the line of a message that was not delivered is not drawn "free" while
+  the daemon holds the epoch spent, and says so until the list is read. The MSG
+  column agrees:
   `free`, `free (not delivered)`, `sent` (only when the words say the message
   was submitted), `sent-unsure` (something may have reached the lead, the
   words are not known, or the daemon holds the epoch spent with none) or
