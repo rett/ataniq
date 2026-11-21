@@ -133,7 +133,6 @@ func TestTheCollectorAnswersABadRequestFileWithAReplyFile(t *testing.T) {
 		"rq-other-aa": record.CodeRequestInvalid,
 		"rq-big-aa":   record.CodeRecordTooLarge,
 		idNote:        record.CodeRecordTooLarge,
-		idDup:         record.CodeRequestDuplicate,
 	}
 	for id, code := range want {
 		if rp := r.readReply(id); rp.Code != string(code) || rp.State != "" || rp.Line == "" {
@@ -142,6 +141,21 @@ func TestTheCollectorAnswersABadRequestFileWithAReplyFile(t *testing.T) {
 		if _, ok := r.o.Service.Status(id); ok {
 			t.Errorf("the service saw %s", id)
 		}
+	}
+	// A second file for an id taken before is never answered: it is set
+	// aside in the collected folder, out of the drop folder, and the service
+	// does not see it.
+	if _, err := os.Stat(r.o.Host.mailbox.ReplyPath(idDup)); err == nil {
+		t.Errorf("a reply file was written for the second file of %s", idDup)
+	}
+	if _, err := os.Lstat(filepath.Join(r.drop, idDup+requestSuffix)); err == nil {
+		t.Errorf("the second file of %s is still in the drop folder", idDup)
+	}
+	if _, err := os.Lstat(filepath.Join(r.drop, collectedDir, idDup+requestSuffix+".dup-1")); err != nil {
+		t.Errorf("the second file of %s was not set aside: %v", idDup, err)
+	}
+	if _, ok := r.o.Service.Status(idDup); ok {
+		t.Errorf("the service saw %s", idDup)
 	}
 	for _, name := range []string{"rq-link-aa", "rq-dir-aa"} {
 		if _, err := os.Stat(filepath.Join(r.drop, name+replySuffix)); err == nil {

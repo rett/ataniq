@@ -60,8 +60,9 @@ func TestAChangeLargerThanTheSummaryReadsIsRefusedRecordTooLarge(t *testing.T) {
 	if !ok || st.State != ownerchannel.RequestRefused || st.PendingID != "" {
 		t.Errorf("status %+v, want refused without a card", st)
 	}
-	if rp := r.readReply(id); rp.State != "" || rp.Code == "" {
-		t.Errorf("reply %+v", rp)
+	// The lead's reply carries the adapter's own code, not a generic one.
+	if rp := r.readReply(id); rp.State != "" || rp.Code != string(record.CodeRecordTooLarge) {
+		t.Errorf("reply %+v, want record-too-large", rp)
 	}
 	// The merge built by hand stays pinned; the service's own was unpinned
 	// with the refusal, so one pin is left.
@@ -76,21 +77,53 @@ func TestAChangeLargerThanTheSummaryReadsIsRefusedRecordTooLarge(t *testing.T) {
 	}
 }
 
-// A path the record has no flag for (an odd path) is not left out of the
-// list that carries the sign-offs: the review is refused and no card is made.
-func TestAnOddPathIsRefusedBecauseTheRecordCannotFlagIt(t *testing.T) {
+// A path the matcher cannot read safely (an odd path) is carried to the card
+// as a flag of its own kind: the request is not refused silently, the card
+// shows the flag, and an approval that does not sign it off is refused.
+func TestAnOddPathMakesACardWithTheFlagAndNeedsItsSignOff(t *testing.T) {
 	r := newRig(t, func(l *lab) { l.put("feature.txt", "one\n"); l.put("a:stream", "x\n") })
 	_, in := r.buildMerge("rq-odd-01")
-	_, err := r.o.Host.Review(context.Background(), in)
-	if c, ok := record.CodeOf(err); !ok || c != record.CodeRequestInvalid {
-		t.Fatalf("Review with an odd path: %v, want request-invalid", err)
+	sum, err := r.o.Host.Review(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Review with an odd path: %v", err)
 	}
-	if strings.Contains(err.Error(), "a:stream") {
-		t.Errorf("the refusal repeats the path: %v", err)
+	var odd *record.Flag
+	for i, f := range sum.Flagged {
+		if f.Kind == record.FlagOddPath {
+			odd = &sum.Flagged[i]
+		}
 	}
-	id := r.ask()
-	if st, ok := r.o.Service.Status(id); !ok || st.State != ownerchannel.RequestRefused || st.PendingID != "" {
-		t.Errorf("status %+v, want refused without a card", st)
+	if odd == nil || string(odd.Path) != "a:stream" {
+		t.Fatalf("the summary's flags %+v lack the odd path", sum.Flagged)
+	}
+	// Through the service a card is made, with the flag.
+	p := r.card()
+	found := false
+	for _, f := range p.Binding.Summary.Flagged {
+		found = found || (f.Kind == record.FlagOddPath && string(f.Path) == "a:stream")
+	}
+	if !found {
+		t.Fatalf("the card's flags %+v lack the odd path", p.Binding.Summary.Flagged)
+	}
+	// An approval with no sign-off for it is refused, and the target stays.
+	f := frame(p, true)
+	f.SignedOff = []record.SignOff{}
+	if err := r.o.Service.Beat(src); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.o.Service.Decide(context.Background(), src, f); err == nil {
+		t.Errorf("an approval without the odd path's sign-off was accepted")
+	}
+	if got := r.lab.ref(targetBranch); got != r.scene.target {
+		t.Errorf("the target moved to %s", got)
+	}
+	// With the sign-off it is applied.
+	res, err := r.decide(p, true)
+	if err != nil || res.State != record.StateApplied {
+		t.Fatalf("the approval with the sign-off: %+v, %v", res, err)
+	}
+	if got := r.lab.ref(targetBranch); got != p.Binding.Merge.Commit {
+		t.Errorf("the target is at %s, want the merge", got)
 	}
 }
 

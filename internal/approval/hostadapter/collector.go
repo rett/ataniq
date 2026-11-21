@@ -145,7 +145,12 @@ func (c *Collector) take(ctx context.Context, id string) {
 	// The files are moved first, so that a request is taken once whatever
 	// happens next. A name taken before is a second request with the id.
 	if err := c.move(reqPath, id+requestSuffix); err != nil {
-		c.refuse(ctx, id, record.CodeRequestDuplicate, "a request with this id was taken before")
+		// The reply file of this id belongs to the request taken first,
+		// whose outcome may still come and which is written once: a second
+		// file never answers the id. It is set aside, unanswered.
+		c.keepAside(reqPath, id+requestSuffix)
+		c.keepAside(notePath, id+noteSuffix)
+		c.logf("a second request file for an id taken before was set aside, unanswered")
 		return
 	}
 	if note != nil {
@@ -192,7 +197,9 @@ func readCode(err error) record.Code {
 var errTooLarge = errors.New("hostadapter: the file is larger than its cap")
 
 // move links the file into the collected folder under name and removes it
-// from the drop folder. It fails when the name is taken.
+// from the drop folder. It fails when the name is taken. A crash between the
+// link and the remove leaves the file in both folders; the next scan finds the
+// name taken and sets the file aside, without a reply.
 func (c *Collector) move(path, name string) error {
 	if err := os.Link(path, filepath.Join(c.mail.dir, collectedDir, name)); err != nil {
 		return err
@@ -207,6 +214,26 @@ func (c *Collector) keep(path, name string) {
 		return
 	}
 	_ = c.move(path, name)
+}
+
+// maxAside is how many files of one name are set aside before the next is left
+// where it is.
+const maxAside = 1000
+
+// keepAside moves a file whose name is taken in the collected folder out of the
+// drop folder, under the name and ".dup-" and the first free number, a name
+// that no request's and no note's name can have. A file that cannot be set
+// aside is left where it is.
+func (c *Collector) keepAside(path, name string) {
+	if _, err := os.Lstat(path); err != nil {
+		return
+	}
+	for n := 1; n <= maxAside; n++ {
+		err := c.move(path, fmt.Sprintf("%s.dup-%d", name, n))
+		if err == nil || !errors.Is(err, fs.ErrExist) {
+			return
+		}
+	}
 }
 
 // readSmall reads a regular file of at most max bytes without following a

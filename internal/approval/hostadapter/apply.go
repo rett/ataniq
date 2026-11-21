@@ -127,8 +127,12 @@ func (h *Host) suiteRecords(project, tip string) ([]suiteRecord, error) {
 // before it wrote anything, the target having moved among them, is
 // not-applied, and nothing changed. A move that is certain is applied, also
 // when the intake's record of it was written with a warning. A move whose
-// outcome could not be read afterwards, and any failure the adapter cannot
-// place, is unknown, with the error, and the service waits for the owner.
+// outcome could not be read afterwards is unknown, with the error, and the
+// service waits for the owner. So is any failure the adapter cannot place
+// while the target is not found at the old value; with the target still at the
+// old value nothing was written, and the result is not-applied. A review that
+// the intake refuses to make (the repository's attributes, a limit) before the
+// move is tried is not-applied too.
 func (h *Host) Apply(ctx context.Context, in ownerchannel.ApplyInput) (door.Outcome, error) {
 	p, err := h.project(in.Project)
 	if err != nil {
@@ -144,6 +148,12 @@ func (h *Host) Apply(ctx context.Context, in ownerchannel.ApplyInput) (door.Outc
 	rev, err := h.inspect(ctx, p, e.New)
 	if err != nil {
 		if _, moved := changedError(err, record.CodeReviewChanged); moved {
+			return door.OutcomeNotApplied, nil
+		}
+		// A review the intake refuses to make (the repository's own
+		// attributes, a change past a limit) has written nothing: the move
+		// was not tried, as in Integrate's own refusal of attributes.
+		if errors.Is(err, intake.ErrAttributes) || errors.Is(err, intake.ErrLimit) {
 			return door.OutcomeNotApplied, nil
 		}
 		return door.OutcomeUnknown, err
@@ -184,6 +194,14 @@ func (h *Host) Apply(ctx context.Context, in ownerchannel.ApplyInput) (door.Outc
 		errors.As(err, &se):
 		// Refused before anything was written.
 		return door.OutcomeNotApplied, nil
+	}
+	// An error the adapter cannot place, such as a ref lock held by another
+	// writer, can come before the transaction was prepared. Only the ref
+	// itself says: still at the old value, nothing was written.
+	if got, rerr := h.gitCall(p).refs(ctx, e.Ref); rerr == nil {
+		if info, ok := got[e.Ref]; ok && info.id == e.Old {
+			return door.OutcomeNotApplied, nil
+		}
 	}
 	return door.OutcomeUnknown, err
 }
