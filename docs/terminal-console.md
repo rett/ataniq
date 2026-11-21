@@ -332,7 +332,10 @@ operations. A daemon from a release build lists none, so the approvals view
 says "no owner channel in this build" and nothing can be decided. A release
 daemon contains no owner channel; the release console contains the client
 side of it, which does nothing until a daemon's hello lists every owner
-operation.
+operation. The client asks again when the owner leaves the approvals view
+(Esc) and opens it again, so a daemon restarted with `--owner-channel` is
+found without restarting the console; between those actions it remembers the
+answer and does not dial for each reading.
 
 A daemon built with the tag `ataniq_ownerchannel` and started with
 `ataniqd run --owner-channel` lists them. Then the approvals view shows that

@@ -123,8 +123,11 @@ type Owner struct {
 	settled   map[string]card.Outcome
 	notListed int64
 	// noChannel is set when a daemon's hello listed no owner operation:
-	// every later call answers [ErrNoOwnerChannel] without dialling, for the
-	// life of this Owner. A new Owner asks again.
+	// every later call answers [ErrNoOwnerChannel] without dialling, so that
+	// the polling of a view costs no dial per call. An explicit action of
+	// the owner clears it: [Owner.Looked], which the approvals view sends when
+	// the owner leaves it, so that a daemon restarted with the channel is
+	// found when the owner opens the view again. A new Owner asks again.
 	noChannel bool
 }
 

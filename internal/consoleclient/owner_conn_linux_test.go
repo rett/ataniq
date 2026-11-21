@@ -443,3 +443,49 @@ func TestCloseEndsCallsAndAllLaterOnesRefuse(t *testing.T) {
 		t.Fatalf("a second Close: %v", err)
 	}
 }
+
+// A daemon that listed no owner operation is asked once for as many calls as
+// the view makes between two actions of the owner: the answer is remembered.
+// Without the memory every poll of the view would dial and read a hello.
+func TestTheNoOwnerChannelAnswerIsRememberedBetweenActionsOfTheOwner(t *testing.T) {
+	f := startOwnerWith(t, clientapi.Options{}, nil)
+	o := newOwner(t, f.dir)
+	for i := 0; i < 5; i++ {
+		if _, err := o.List(); !errors.Is(err, ErrNoOwnerChannel) {
+			t.Fatalf("List %d: %v", i, err)
+		}
+		if ok, why := o.Decider(); ok || why != NoOwnerChannelText {
+			t.Fatalf("Decider %d = %v, %q", i, ok, why)
+		}
+	}
+	if n := f.counters.Snapshot().Served[clientapi.OpHello]; n != 1 {
+		t.Fatalf("the daemon was asked for its hello %d times, want once", n)
+	}
+}
+
+// A daemon restarted with the owner channel is found when the owner opens the
+// approvals view again: the view says Looked when he leaves it, and the next
+// call asks the daemon. Nothing asks on a timer.
+func TestADaemonRestartedWithTheChannelIsFoundByTheNextActionOfTheOwner(t *testing.T) {
+	f := startOwnerWith(t, clientapi.Options{}, nil)
+	o := newOwner(t, f.dir)
+	if _, err := o.List(); !errors.Is(err, ErrNoOwnerChannel) {
+		t.Fatalf("List: %v, want ErrNoOwnerChannel", err)
+	}
+	f.ops = ownerwire.Operations()
+	f.onResult(ownerwire.OpLooked, ownerwire.EncodeNothing())
+	f.onResult(ownerwire.OpList, mustEncode(t)(ownerwire.EncodeListing(ownerwire.Listing{})))
+	f.restart()
+	// Nothing the view does between actions of the owner asks again.
+	if _, err := o.List(); !errors.Is(err, ErrNoOwnerChannel) {
+		t.Fatalf("List before any action: %v, want the remembered answer", err)
+	}
+	// He leaves the view; the next opening reads the new daemon.
+	o.Looked(time.Time{})
+	if _, err := o.List(); err != nil {
+		t.Fatalf("List after the owner left the view: %v", err)
+	}
+	if ok, why := o.Decider(); !ok {
+		t.Fatalf("Decider = %v, %q", ok, why)
+	}
+}

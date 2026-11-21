@@ -66,10 +66,15 @@ func (o *Owner) Activity(time.Time) {
 }
 
 // Looked tells the daemon that the owner looked at the list now: the daemon
-// moves its mark, and List returns it. The time is not sent.
+// moves its mark, and List returns it. The time is not sent. The view sends
+// it when the owner leaves the list, which is an action of the owner and not a
+// timer: it forgets an earlier answer that the daemon has no owner channel,
+// so that the next opening of the view asks the daemon again. When the
+// daemon still lists none, this call asks once and remembers the answer.
 func (o *Owner) Looked(time.Time) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	o.noChannel = false
 	if raw, err := o.ask(ownerwire.OpLooked, nil); err == nil && ownerwire.DecodeNothing(raw) != nil {
 		o.badAnswer()
 	}
