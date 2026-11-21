@@ -213,7 +213,7 @@ func TestStatus(t *testing.T) {
 	for _, name := range []string{
 		"output_bytes", "held_keys_suspend", // the session's
 		"cluster_bytes_dropped", "modes_ignored", "links_over_length", "links_over_limit", "strings_truncated", // the pane's caps
-		"titles_cut", "clipboard_requests_blocked",
+		"titles_cut", "clipboard_requests_blocked", "alt_screen_on", "alt_screen_off",
 	} {
 		if _, ok := st.Counters[name]; !ok {
 			t.Errorf("no counter %s in the status", name)

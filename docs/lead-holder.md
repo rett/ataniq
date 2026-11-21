@@ -364,12 +364,21 @@ the next whole MiB, 19 MiB, which holds the 8-byte position and a snapshot of up
 to 19 MiB less 8 bytes; the same test checks that the pane's constant and the
 frame's agree.
 
-A hit cap shows in two places. While the holder runs, `ataniq-scratch status`
-lists the counters. When the session is over, the final record's `counters`
-object holds the same numbers (and so does the `exit` event). The session's own
-counters and the pane's are always listed, with zeros. The attach service's
-counters (`attach_refused_*`, `resyncs`, `bad_frames` and the like) are listed
+A hit cap of the pane shows in the `status` answer while the holder runs and
+in the wire `Exit` frame an attached client gets when it ends; the final
+record and the `exit` event do not hold the pane's cap counters. The
+session's own counters are in all four places, always listed, with zeros, and
+so are the pane's `alt_screen_on` and `alt_screen_off` below. The attach
+service's counters (`attach_refused_*`, `resyncs`, `bad_frames` and the like) are listed
 only after their first hit.
+
+Two of the pane's counters are not caps: `alt_screen_on` and `alt_screen_off`
+count the times the emulator entered and left the alternate screen (a repeated
+set or reset in the same state is not counted). A session that draws a
+fullscreen interface enters it once, soon after its start, so `alt_screen_on`
+above zero says it did; a session that draws on the main screen leaves both at
+zero. The inject fence reads only the alternate screen, so these two numbers
+tell why a screen was not read.
 
 ### What is still slow
 

@@ -21,13 +21,12 @@ func TestStartArgvGolden(t *testing.T) {
 	want := []string{
 		"busctl", "--user", "--timeout=5s", "--", "call",
 		"org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
-		"StartTransientUnit", "ssa(sv)a(sa(sv))", unitName, "fail", "10",
+		"StartTransientUnit", "ssa(sv)a(sa(sv))", unitName, "fail", "9",
 		"Type", "s", "exec",
 		"CollectMode", "s", "inactive-or-failed",
 		"KillMode", "s", "control-group",
 		"Restart", "s", "no",
 		"TimeoutStopUSec", "t", "2000000",
-		"NoNewPrivileges", "b", "true",
 		"Description", "s", "ataniq lead epoch=3 intent=intent-7",
 		"WorkingDirectory", "s", "/srv/work",
 		"Environment", "as", "2", "A=1", "PATH=/usr/bin:/bin",
@@ -136,13 +135,12 @@ func TestStartArgvBoundGolden(t *testing.T) {
 	want := []string{
 		"busctl", "--user", "--timeout=5s", "--", "call",
 		"org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
-		"StartTransientUnit", "ssa(sv)a(sa(sv))", unitName, "fail", "13",
+		"StartTransientUnit", "ssa(sv)a(sa(sv))", unitName, "fail", "12",
 		"Type", "s", "exec",
 		"CollectMode", "s", "inactive-or-failed",
 		"KillMode", "s", "control-group",
 		"Restart", "s", "no",
 		"TimeoutStopUSec", "t", "2000000",
-		"NoNewPrivileges", "b", "true",
 		"BindsTo", "as", "1", "ataniq-lead-parent.service",
 		"PartOf", "as", "1", "ataniq-lead-parent.service",
 		"After", "as", "1", "ataniq-lead-parent.service",
@@ -267,6 +265,16 @@ func TestStartArgvCarriesEveryFixedProperty(t *testing.T) {
 	i := indexOf(argv, "fail")
 	if i < 0 || argv[i+1] != fmt.Sprint(n) {
 		t.Fatalf("property count after the mode: %q, want %d", argv[i+1:i+2], n)
+	}
+}
+
+func TestFixedPropertyRendersNoNewPrivileges(t *testing.T) {
+	for value, want := range map[string]string{"yes": "true", "no": "false"} {
+		parts, err := fixedProperty(leadunit.Property{Name: "NoNewPrivileges", Value: value})
+		if err != nil {
+			t.Fatalf("%s: %v", value, err)
+		}
+		mustEqual(t, parts, []string{"NoNewPrivileges", "b", want})
 	}
 }
 

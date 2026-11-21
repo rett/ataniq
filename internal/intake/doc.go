@@ -54,7 +54,7 @@
 //
 // This package does not import the mirror package. It takes a repository and
 // full ref names, and checks only that the base ref is under refs/heads/ and
-// the tip ref under refs/leads/.
+// the tip ref under refs/leads/ (under [PendingPrefix] in merge mode).
 //
 // # Text from the lead
 //
@@ -129,10 +129,13 @@
 // reads the refs as they are now), and goes on only when the fresh review's
 // tip and digest are the ones the owner signed ([ErrMoved] otherwise, naming
 // the old and the new ids), the sign-off passes [Review.CheckSignOff], and the
-// newest verification record in the store for this project and tip is a clean
-// pass ([ErrNotVerified] otherwise, so a later failed run withdraws an
+// newest verification record in the store that counts for this review is a
+// clean pass ([ErrNotVerified] otherwise, so a later failed run withdraws an
 // earlier pass; a pass whose output was cut, or that was stopped, is not
-// clean). Then it moves the upstream branch to the tip with one
+// clean). Only the records of the review's mode count: for a lead branch the
+// records of the project and the tip that are not merge records, and for a
+// merge the merge-mode records whose merge is the tip and whose base is the
+// review's base (see Merge mode). Then it moves the upstream branch to the tip with one
 // compare-and-swap, git update-ref in a transaction on standard input that
 // expects the target to be at the base the review saw, and writes an
 // [IntakeRecord]. The move is fast-forward only: Inspect has refused a tip
@@ -161,9 +164,10 @@
 // After the sign-off the code runs as the owner, as any merged code does. The
 // review at intake is the boundary: what the owner signs is what enters
 // the history. A verification pass is evidence, not proof (see package
-// verify). Any passing record for the project and the tip counts, whatever
-// gates it ran: this package does not compare the record's plan (gates) with
-// the project's current gates or the record's lead ref with the review's. The
+// verify). Any passing record of the review's mode for the project and the tip
+// (for a merge, on the review's base) counts, whatever gates it ran: this
+// package does not compare the record's plan (gates) with the project's
+// current gates or the record's lead ref with the review's. The
 // gates that were run are in the [IntakeRecord] that [Integrate] returns, in
 // its Verification field. The command that calls [Integrate] must show them
 // to the owner before the sign-off (with the review output) and after it (with
@@ -171,6 +175,60 @@
 // run it, because the mirror is read-only in its sandbox and the records
 // folder is not mounted there; that is a property of the sandbox plan and of
 // the command that calls this package, not something this package checks.
+//
+// # Merge mode
+//
+// A lead never supplies a merge. When a feature is to be finished, the host
+// builds the merge of the feature into the target itself (package mergebuild,
+// which this package does not import) and pins it under [PendingPrefix]. A
+// [Request] with Merge set reviews that merge: BaseRef is the target branch,
+// whose tip is the base, and TipRef is the pin. Everything above holds, with
+// "tip" meaning the merge. In addition:
+//
+//   - The tip must be a commit of exactly two parents whose first is the base
+//     ([ErrNotMerge] otherwise; a first parent that is not the target's tip is
+//     a *[MergeBaseError], and [Integrate] reports it as [ErrMoved], since the
+//     target moved after the merge was built).
+//   - The review is of base..merge, so it holds the feature's commits and the
+//     merge, and the net change is what the merge brings in, never the
+//     target's own earlier changes.
+//   - The repository's "info/attributes" is checked ([gitenv.CheckInfoAttributes],
+//     [ErrAttributes]) before each pinned diff: by Inspect, [Diff] of a merge
+//     review and [Summarize]. Lead mode does not run it, as before.
+//   - A path that is odd gets the flag [FlagOddPath].
+//   - Only a merge-mode verification record counts for the merge, one whose
+//     tip is the merge and whose base is the review's base. A lead-mode record
+//     of the same commit id, and a merge record made against another base, are
+//     no evidence and do not withdraw a pass. The host adapter of the owner
+//     channel (package hostadapter, tagged build) makes these records, one for
+//     each run of the suite on the merge, and counts them by the same rule.
+//   - [Integrate] moves the target from the base to the merge, with the same
+//     compare-and-swap, and nothing else: the pin stays (the host removes it),
+//     and the lead's branches, tags and HEAD are not touched.
+//
+// The lead mode is unchanged: a [Request] without Merge takes a tip under
+// refs/leads/ only, and a pin is refused there as a ref name.
+//
+// # The summary
+//
+// [Summarize] gives the fuller account that the owner's card shows, from the
+// ids of a review: the number of changed paths, the lines added and removed,
+// the bytes of new content, a row for each path, and the lists of binary
+// files, symbolic links, mode changes, submodules and odd paths. A path is
+// binary by content, not by git's heuristic or an attribute: a NUL byte
+// anywhere in either side, or a side over [TextCap] (1 MiB). A binary path has
+// its sizes and no line counts. The lines of every other path come from git
+// diff --numstat with renames off, so a rename is a deletion and an addition,
+// both counted. [Summary] is raw lead text in its paths.
+//
+// # Odd paths
+//
+// [OddPath] says why the execution-config matcher cannot be trusted with a
+// path: bytes that are not UTF-8, a control or invisible character, a colon, a
+// "~" and a digit, or a form that is not NFC. The module carries no
+// normalization tables, so the NFC test is a superset (it also flags a path
+// with a combining mark that is in form C). Merge mode flags such a path
+// [FlagOddPath], so it needs its own sign-off whatever the matcher says of it.
 //
 // # What it does not do
 //

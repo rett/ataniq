@@ -77,6 +77,13 @@ func (p *Pane) install() {
 	p.emu.SetCallbacks(vt.Callbacks{
 		EnableMode:  func(m ansi.Mode) { p.setMode(m, true) },
 		DisableMode: func(m ansi.Mode) { p.setMode(m, false) },
+		AltScreen: func(on bool) {
+			if on {
+				p.altOn++
+			} else {
+				p.altOff++
+			}
+		},
 	})
 	// x/vt drops a title that contains ";". These handlers, registered after
 	// x/vt's own and so called first, keep everything after the first ";".

@@ -717,7 +717,7 @@ func TestReadingsAreBounded(t *testing.T) {
 				t.Errorf("readings contain %q: %q", bad, line)
 			}
 		}
-		if len(line) > maxReadingText {
+		if len(line) > 1024 {
 			t.Errorf("readings are %d bytes", len(line))
 		}
 		for _, c := range []byte(line) {

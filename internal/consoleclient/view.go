@@ -74,6 +74,10 @@ type Result struct {
 // View is the daemon's answer as the console shows it. Every string in it is
 // cleaned and bounded.
 type View struct {
+	// OwnerChannel tells whether the daemon's hello lists every operation of
+	// the owner channel: the console can then show and decide approvals
+	// through it. It is false for a daemon that lists none or only some.
+	OwnerChannel bool
 	// Daemon is the daemon itself.
 	Daemon Daemon
 	// HasSupervisor tells whether the daemon listed a supervisor.

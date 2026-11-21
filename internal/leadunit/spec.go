@@ -87,6 +87,16 @@ type Property struct {
 // the command, the working directory, the environment and the extra hardening
 // of the [Spec]), and the documentation lists them from here. The caller owns
 // the returned slice.
+//
+// The unit has no NoNewPrivileges on purpose. The sandbox start runs pasta,
+// which runs the probe, which execs bubblewrap inside pasta's user namespace.
+// With no-new-privs on the unit, the command there keeps only
+// CAP_NET_BIND_SERVICE, CAP_NET_ADMIN and CAP_SYS_ADMIN and no CAP_SETUID, so
+// bubblewrap fails to set up its uid map and the start is refused; without it
+// the command is root there with the full set. Bubblewrap sets no-new-privs on the
+// agent it execs, as observed with bubblewrap 0.13.1; no probe assertion checks
+// that yet, and a later one should. Do not add the property
+// back without a nested pasta and bubblewrap launch check inside a unit.
 func FixedProperties() []Property {
 	return []Property{
 		{Name: "Type", Value: "exec"},
@@ -94,7 +104,6 @@ func FixedProperties() []Property {
 		{Name: "KillMode", Value: "control-group"},
 		{Name: "Restart", Value: "no"},
 		{Name: "TimeoutStopSec", Value: "2s"},
-		{Name: "NoNewPrivileges", Value: "yes"},
 	}
 }
 

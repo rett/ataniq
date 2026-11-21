@@ -21,7 +21,7 @@ import (
 
 // showLines gives the values of the config that the run script needs, as
 // "key=value" lines in a fixed order. Every value is a name, a number or a
-// path: the environment of the agent, the git identity and the profile digest
+// path: the values of the agent's environment, the git identity and the profile digest
 // are not among them, and no file is read but the config. The agent's argument
 // vector is printed (agent_argc, then agent_argv_0 and so on), because the
 // script shows the model argument for the owner to confirm; a secret belongs
@@ -65,7 +65,16 @@ func showLines(cfg leadcanary.Config) ([]string, error) {
 	for i, a := range cfg.Agent.Argv {
 		pairs = append(pairs, [2]string{"agent_argv_" + strconv.Itoa(i), a})
 	}
+	// The names of the agent's environment, comma-separated and in order, and
+	// never a value: the preflight checks that a name (DISABLE_AUTOUPDATER) is
+	// there without reading what it is set to.
+	envNames := make([]string, 0, len(cfg.Agent.Env))
+	for _, kv := range cfg.Agent.Env {
+		name, _, _ := strings.Cut(kv, "=")
+		envNames = append(envNames, name)
+	}
 	pairs = append(pairs, [][2]string{
+		{"agent_env_names", strings.Join(envNames, ",")},
 		{"mirror", p.Mirror},
 		{"upstream_branch", cfg.Provision.UpstreamBranch},
 		{"lead_dir", p.LeadDir},

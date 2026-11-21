@@ -200,6 +200,9 @@ func (c Config) Validate() error {
 	if err := c.Agent.validate(); err != nil {
 		return err
 	}
+	if err := c.validateLive(); err != nil {
+		return err
+	}
 	if err := c.Limits.validate(); err != nil {
 		return err
 	}
@@ -264,6 +267,32 @@ func (a AgentConfig) validate() error {
 			return bad(fmt.Sprintf("agent.env[%d]", i), "repeats a key")
 		}
 		seen[key] = true
+	}
+	return nil
+}
+
+// FooterModes are the two values of agent.footer_mode that the screen
+// recogniser of the claude runtime names: "manual" and "auto". The value is
+// the recogniser's short name of the permission mode, never the footer's text.
+var FooterModes = [...]string{"manual", "auto"}
+
+// validateLive holds a live agent to what the stand-in does not need. With
+// inject on, agent.footer_mode must be one of [FooterModes]: any other value
+// (the text of the footer, say) is never what the recogniser reports, so every
+// inject would end not-now after the message is spent. The agent's executable
+// must be under the agent's bind inside the sandbox (profile.AgentInside), the
+// file of sources.agent_install that the run's version step runs; a wrapper
+// that is not that file is not allowed.
+func (c Config) validateLive() error {
+	if c.Agent.Kind != AgentLive {
+		return nil
+	}
+	if c.Inject && c.Agent.FooterMode != FooterModes[0] && c.Agent.FooterMode != FooterModes[1] {
+		return bad("agent.footer_mode", "must be %q or %q for a live agent with inject on (the recogniser's name of the mode, not the footer's text)", FooterModes[0], FooterModes[1])
+	}
+	rest, ok := strings.CutPrefix(c.Agent.Argv[0], profile.AgentInside+"/")
+	if !ok || rest == "" || path.Clean(rest) != rest || strings.HasPrefix(rest, "../") {
+		return bad("agent.argv[0]", "must be a file under %s/ for a live agent (the file of sources.agent_install; no wrapper)", profile.AgentInside)
 	}
 	return nil
 }

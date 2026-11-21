@@ -1,0 +1,141 @@
+# The body of ROOT/netcheck.sh, which canary-prepare.sh --pass B writes after
+# five lines of its own (SELF, PASTA, BWRAP, INSTALL and VERSION, the real values).
+# It is never run by prepare, by the run script or by an agent: the owner runs
+# it by hand, once, before pass B.
+#
+# It checks, in the shape of the sandbox profile (pasta, then bubblewrap with
+# the read-only root, no capabilities, UID 0, the resolv.conf the holder would derive from, bound):
+#   1. that each of four hosts resolves and answers an unauthenticated GET
+#      (any HTTP status is a pass; a resolve or connect error is the finding);
+#   2. that the claude executable of the install folder, bound at
+#      /ataniq/agent, prints its version in that shape;
+#   3. the same under the unit's limits, in a throwaway unit of systemd-run.
+# It sends no request but the four GETs, uses no credential and starts no
+# agent session (claude runs only with --version). One line per host and per
+# version check, PASS or FINDING; the exit status is the number of findings,
+# at most 100.
+#
+# POSIX sh. The script calls itself with --core to run the sandbox, so that the
+# same line runs directly and under systemd-run.
+HOSTS='api.anthropic.com claude.ai platform.claude.com console.anthropic.com'
+# The holder uses resolved's upstream file only when the host's file is the
+# local stub (it resolves to the stub file, or its one nameserver is
+# 127.0.0.53) and the upstream file exists; otherwise the host's file.
+# This is an approximation of the holder's rule (sandboxnet/resolv.go), which
+# decides on its parsed list: it drops duplicates, maps ::ffff:127.0.0.53 to
+# IPv4 and drops unusable lines. Here the raw nameserver lines are compared, so
+# those rare layouts may bind the host file where the holder uses the upstream.
+RESOLV=/etc/resolv.conf
+_stub=0
+[ "$(readlink -f /etc/resolv.conf 2>/dev/null)" = /run/systemd/resolve/stub-resolv.conf ] && _stub=1
+if [ "$_stub" -eq 0 ] && [ -r /etc/resolv.conf ]; then
+  _ns=$(awk '$1 == "nameserver" { print $2 }' /etc/resolv.conf)
+  [ "$_ns" = 127.0.0.53 ] && _stub=1
+fi
+if [ "$_stub" -eq 1 ] && [ -r /run/systemd/resolve/resolv.conf ]; then
+  RESOLV=/run/systemd/resolve/resolv.conf
+fi
+SH=$(command -v sh) || SH=/bin/sh
+
+# core runs the command given as arguments inside pasta and bubblewrap in the
+# shape of the profile, with the install folder bound at /ataniq/agent.
+core() {
+  # The binds the profile marks optional are made only where the host has the path.
+  _opt=
+  [ -e /etc/ssl ] && _opt="$_opt --ro-bind /etc/ssl /etc/ssl"
+  [ -e /etc/ca-certificates ] && _opt="$_opt --ro-bind /etc/ca-certificates /etc/ca-certificates"
+  [ -e /etc/nsswitch.conf ] && _opt="$_opt --ro-bind /etc/nsswitch.conf /etc/nsswitch.conf"
+  [ -e /usr/lib64 ] && _opt="$_opt --symlink usr/lib64 /lib64"
+  # shellcheck disable=SC2086  # the optional binds are split on purpose
+  "$PASTA" -f -q --config-net -t none -u none -T none -U none --no-map-gw -- \
+    "$BWRAP" --die-with-parent --unshare-all --share-net --unshare-user --uid 0 --gid 0 \
+    --cap-drop ALL --clearenv --tmpfs / --ro-bind /usr /usr \
+    --symlink usr/bin /bin --symlink usr/lib /lib $_opt \
+    --ro-bind /etc/hosts /etc/hosts \
+    --ro-bind /etc/passwd /etc/passwd --ro-bind /etc/group /etc/group \
+    --ro-bind "$RESOLV" /etc/resolv.conf \
+    --dev /dev --proc /proc --tmpfs /tmp --setenv PATH /usr/bin \
+    --ro-bind "$INSTALL" /ataniq/agent --setenv HOME /tmp \
+    --remount-ro / -- "$@"
+}
+
+if [ "${1:-}" = --core ]; then
+  case ${2:-} in
+    net)
+      # One line per host: the host, the first address (none), the HTTP status (000).
+      core /usr/bin/sh -c 'for h in '"$HOSTS"'; do
+        ip=$(getent hosts "$h" | head -n 1 | cut -d" " -f1)
+        code=$(curl -sS -m 15 -o /dev/null -w "%{http_code}" "https://$h/" 2>/dev/null) || code=000
+        echo "$h ${ip:-none} ${code:-000}"
+      done'
+      ;;
+    ver) core /ataniq/agent/claude --version ;;
+    *) exit 2 ;;
+  esac
+  exit
+fi
+
+FINDINGS=0
+finding() {
+  FINDINGS=$((FINDINGS + 1))
+  printf 'FINDING  %s\n' "$*"
+}
+pass() { printf 'PASS     %s\n' "$*"; }
+
+# The unit's limits, as the lead unit has them.
+limited() {
+  systemd-run --user --wait --collect --pipe \
+    -p MemoryMax=4294967296 -p MemorySwapMax=0 -p TasksMax=512 -- "$SH" "$SELF" --core "$1"
+}
+
+hosts_line() {
+  # hosts_line OUTPUT HOST prints PASS or FINDING for the host.
+  _l=$(printf '%s\n' "$1" | awk -v h="$2" '$1 == h { print; exit }')
+  if [ -z "$_l" ]; then
+    finding "$2: no answer from the sandbox (see the output below)"
+    return 0
+  fi
+  # shellcheck disable=SC2086  # the three fields are split on purpose
+  set -- $_l
+  if [ "$2" = none ]; then
+    finding "$1: does not resolve in the sandbox's shape"
+  elif [ "$3" = 000 ]; then
+    finding "$1: resolves to $2, but no HTTPS answer (connect or TLS error)"
+  else
+    pass "$1: resolves to $2, HTTP status $3"
+  fi
+}
+
+version_line() {
+  # version_line LABEL OUTPUT
+  if printf '%s\n' "$2" | grep -qwF -- "$VERSION"; then
+    pass "$1: claude --version names $VERSION"
+  else
+    finding "$1: claude --version does not name $VERSION"
+  fi
+}
+
+echo "netcheck: pasta $PASTA, bubblewrap $BWRAP, install folder $INSTALL"
+NET=$("$SH" "$SELF" --core net 2>&1)
+for h in $HOSTS; do hosts_line "$NET" "$h"; done
+VER=$("$SH" "$SELF" --core ver 2>&1)
+version_line 'sandbox shape' "$VER"
+if command -v systemd-run >/dev/null 2>&1; then
+  LIM=$(limited ver 2>&1)
+  version_line 'under the unit limits' "$LIM"
+  printf '%s\n' "$LIM" | grep -i 'memory peak' | head -n 1 | sed 's/^/info     /'
+else
+  finding 'systemd-run is not on PATH: the limits cannot be tried'
+  LIM=
+fi
+if [ "$FINDINGS" -gt 0 ]; then
+  echo
+  echo "Each finding above needs a look before pass B. What the sandbox printed:"
+  printf '%s\n' "$NET" | head -n 20 | sed 's/^/  net: /'
+  printf '%s\n' "$VER" | head -n 10 | sed 's/^/  ver: /'
+  printf '%s\n' "$LIM" | head -n 10 | sed 's/^/  lim: /'
+  echo "netcheck: $FINDINGS finding(s)"
+  [ "$FINDINGS" -le 100 ] || FINDINGS=100
+  exit "$FINDINGS"
+fi
+echo "netcheck: no finding"

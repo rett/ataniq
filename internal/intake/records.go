@@ -30,6 +30,13 @@ type VerificationRecord struct {
 	TipRef string
 	// Tip is the full commit id that was verified.
 	Tip string
+	// Merge is true for a record of merge mode: Tip is a host-built merge
+	// and TipRef a pin under [PendingPrefix]. A lead-mode record has Merge
+	// false and no Base, and is written as before.
+	Merge bool
+	// Base is, in merge mode, the target's tip the merge was built
+	// against, a full object id. It is empty in lead mode.
+	Base string
 	// PlanDigest is [verify.PlanDigest] of Gates.
 	PlanDigest string
 	// Gates are the gates that were run, in order.
@@ -141,6 +148,8 @@ type verificationJSON struct {
 	Project      string     `json:"project"`
 	TipRef       rawText    `json:"tip_ref"`
 	Tip          string     `json:"tip"`
+	Merge        bool       `json:"merge,omitempty"`
+	Base         string     `json:"base,omitempty"`
 	PlanDigest   string     `json:"plan_digest"`
 	Gates        []gateJSON `json:"gates"`
 	Passed       bool       `json:"passed"`
@@ -157,7 +166,7 @@ type verificationJSON struct {
 func (v VerificationRecord) MarshalJSON() ([]byte, error) {
 	j := verificationJSON{
 		Version: v.Version, Project: v.Project, TipRef: rawText(v.TipRef), Tip: v.Tip,
-		PlanDigest: v.PlanDigest, Passed: v.Passed, Exit: v.Exit, Stopped: v.Stopped,
+		Merge: v.Merge, Base: v.Base, PlanDigest: v.PlanDigest, Passed: v.Passed, Exit: v.Exit, Stopped: v.Stopped,
 		OutputSHA256: v.OutputSHA256, OutputBytes: v.OutputBytes, OutputCut: v.OutputCut,
 		Started: v.Started, DurationMS: v.DurationMS,
 		Gates: make([]gateJSON, 0, len(v.Gates)),
@@ -177,7 +186,7 @@ func (v *VerificationRecord) UnmarshalJSON(data []byte) error {
 	}
 	rec := VerificationRecord{
 		Version: j.Version, Project: j.Project, TipRef: string(j.TipRef), Tip: j.Tip,
-		PlanDigest: j.PlanDigest, Passed: j.Passed, Exit: j.Exit, Stopped: j.Stopped,
+		Merge: j.Merge, Base: j.Base, PlanDigest: j.PlanDigest, Passed: j.Passed, Exit: j.Exit, Stopped: j.Stopped,
 		OutputSHA256: j.OutputSHA256, OutputBytes: j.OutputBytes, OutputCut: j.OutputCut,
 		Started: j.Started, DurationMS: j.DurationMS,
 	}
@@ -213,6 +222,10 @@ func (v VerificationRecord) check() error {
 		return errors.New("verification record has no valid project")
 	case !gitenv.IsObjectID(v.Tip):
 		return errors.New("verification record tip is not a full object id")
+	case v.Merge && (!gitenv.IsObjectID(v.Base) || len(v.Base) != len(v.Tip)):
+		return errors.New("verification record of a merge has no base that is a full object id of the format of the tip")
+	case !v.Merge && v.Base != "":
+		return errors.New("verification record of a lead branch has a base")
 	case !isHex64(v.PlanDigest):
 		return errors.New("verification record plan digest is not a SHA-256")
 	case len(v.Gates) == 0:

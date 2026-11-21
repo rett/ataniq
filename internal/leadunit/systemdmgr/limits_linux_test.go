@@ -24,13 +24,12 @@ func TestStartArgvLimitsGolden(t *testing.T) {
 	want := []string{
 		"busctl", "--user", "--timeout=5s", "--", "call",
 		"org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
-		"StartTransientUnit", "ssa(sv)a(sa(sv))", unitName, "fail", "13",
+		"StartTransientUnit", "ssa(sv)a(sa(sv))", unitName, "fail", "12",
 		"Type", "s", "exec",
 		"CollectMode", "s", "inactive-or-failed",
 		"KillMode", "s", "control-group",
 		"Restart", "s", "no",
 		"TimeoutStopUSec", "t", "2000000",
-		"NoNewPrivileges", "b", "true",
 		"MemoryMax", "t", "4294967296",
 		"MemorySwapMax", "t", "0",
 		"TasksMax", "t", "512",
@@ -56,8 +55,8 @@ func TestStartArgvLimitsAfterTheBoundProperties(t *testing.T) {
 		t.Fatalf("the limits do not follow the bound properties: %q", got)
 	}
 	i := indexOf(got, "fail")
-	if got[i+1] != "16" {
-		t.Fatalf("property count = %s, want 16", got[i+1])
+	if got[i+1] != "15" {
+		t.Fatalf("property count = %s, want 15", got[i+1])
 	}
 }
 

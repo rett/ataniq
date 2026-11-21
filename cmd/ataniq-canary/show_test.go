@@ -65,6 +65,7 @@ func TestShowPrintsTheValuesTheRunScriptNeeds(t *testing.T) {
 		"agent_footer_mode":          "sample mode on",
 		"agent_argc":                 "1",
 		"agent_argv_0":               "/opt/sample/agent",
+		"agent_env_names":            "",
 		"mirror":                     w.Mirror,
 		"upstream_branch":            provisiontest.Branch,
 		"lead_dir":                   p.LeadDir,
@@ -93,14 +94,18 @@ func TestShowPrintsTheValuesTheRunScriptNeeds(t *testing.T) {
 
 func TestShowLeavesOutWhatTheScriptMustNotSee(t *testing.T) {
 	w := provisiontest.New(t)
-	w.Cfg.Agent.Env = []string{"SAMPLE_VARIABLE=sample-env-value"}
+	w.Cfg.Agent.Env = []string{"SAMPLE_VARIABLE=sample-env-value", "OTHER_VARIABLE=other-env-value"}
 	w.WriteConfig(t)
 	code, out, errOut := do(t, w, "show", "--config", w.ConfigPath)
 	if code != 0 {
 		t.Fatalf("status %d: %s", code, errOut)
 	}
+	// The names are printed, in order; the values never.
+	if !strings.Contains(out, "\nagent_env_names=SAMPLE_VARIABLE,OTHER_VARIABLE\n") {
+		t.Errorf("show does not print the names of the environment: %q", out)
+	}
 	for _, hidden := range []string{
-		"sample-env-value", "SAMPLE_VARIABLE", w.Cfg.Holder.ProfileDigest,
+		"sample-env-value", "other-env-value", w.Cfg.Holder.ProfileDigest,
 		w.Cfg.Provision.GitEmail, "Quoted", provisiontest.Secret,
 		w.Settings, w.Hook, w.Screens,
 	} {
@@ -133,6 +138,8 @@ func inputsFile(t *testing.T, w *provisiontest.World, mod func(*sandboxstart.Inp
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The managed-settings file provisioning made, holding the guard hook.
+	provisiontest.WriteManagedSettings(t, p.ManagedSettings, provisiontest.Marker)
 	in := sandboxstart.Inputs{
 		Version: sandboxstart.InputsVersion, Canary: true,
 		Project: p.Layout.Project, LayoutRole: p.Layout.Role,
@@ -141,8 +148,8 @@ func inputsFile(t *testing.T, w *provisiontest.World, mod func(*sandboxstart.Inp
 		Executables: sandboxstart.Executables{Pasta: "/opt/sample/pasta", Bwrap: "/opt/sample/bwrap", Probe: "/opt/sample/probe"},
 		Sources: sandboxstart.Sources{
 			AgentInstall: "/opt/sample/agent", ManagedSettings: p.ManagedSettings,
-			ManagedSettingsSHA256: strings.Repeat("0a", 32),
-			LeadSkills:            p.LeadSkills, InstructionFile: p.InstructionFile,
+			ManagedSettingsSHA256: strings.Repeat("0a", 32), ManagedMarker: provisiontest.Marker,
+			LeadSkills: p.LeadSkills, InstructionFile: p.InstructionFile,
 			GitIdentityDir: p.GitIdentityDir, QargiInstall: p.QargiInstall,
 			QargiRecordsInside: "/ataniq/records",
 			AssignmentDir:      p.AssignmentDir, ProjectionDir: p.ProjectionDir,
@@ -179,6 +186,69 @@ func TestCheckInputsRefusesAMismatchByFieldAndWithoutTheValue(t *testing.T) {
 	}
 	if strings.Contains(errOut, "other-skills") {
 		t.Errorf("the refusal repeats a value of the file: %q", errOut)
+	}
+}
+
+// The inputs file the prepare script wrote before it knew the marker has no
+// sources.managed_marker: the holder refuses it at validate-config, so step 8
+// refuses it, by the key and without a path of the world.
+func TestCheckInputsRefusesAClaudeFileWithoutTheManagedMarker(t *testing.T) {
+	w := provisiontest.New(t)
+	file := inputsFile(t, w, func(in *sandboxstart.Inputs) { in.Sources.ManagedMarker = "" })
+	code, out, errOut := do(t, w, "check-inputs", "--config", w.ConfigPath, "--inputs", file)
+	if code != exitFailed || out != "" || !strings.Contains(errOut, "sources.managed_marker") {
+		t.Fatalf("status %d, out %q, err %q", code, out, errOut)
+	}
+	if strings.Contains(errOut, w.Dir) {
+		t.Errorf("the refusal names a path: %q", errOut)
+	}
+}
+
+// The marker is named but the managed-settings file does not hold it.
+func TestCheckInputsRefusesASettingsFileThatLacksTheMarker(t *testing.T) {
+	w := provisiontest.New(t)
+	file := inputsFile(t, w, func(in *sandboxstart.Inputs) {
+		provisiontest.WriteManagedSettings(t, in.Sources.ManagedSettings, "another-text")
+	})
+	code, out, errOut := do(t, w, "check-inputs", "--config", w.ConfigPath, "--inputs", file)
+	if code != exitFailed || out != "" || !strings.Contains(errOut, "sources.managed_settings") {
+		t.Fatalf("status %d, out %q, err %q", code, out, errOut)
+	}
+	for _, leak := range []string{w.Dir, provisiontest.Marker, "another-text"} {
+		if strings.Contains(errOut, leak) {
+			t.Errorf("the refusal holds %q: %q", leak, errOut)
+		}
+	}
+}
+
+// Prepare asks for the digest before anything is provisioned: the lead's copy
+// of the managed settings and its folder are not there, and the config's file
+// is read in its place, by check-inputs and by profile-digest. The marker is
+// still required.
+func TestCheckInputsAndProfileDigestWorkBeforeProvisioning(t *testing.T) {
+	for _, marker := range []string{provisiontest.Marker, "another-text"} {
+		w := provisiontest.New(t)
+		file := configInputs(t, w, nil)
+		p, err := provision.PathsOf(w.Cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.RemoveAll(filepath.Dir(p.ManagedSettings)); err != nil {
+			t.Fatal(err)
+		}
+		provisiontest.WriteManagedSettings(t, w.Cfg.Provision.ManagedSettings, marker)
+		for _, cmd := range []string{"check-inputs", "profile-digest"} {
+			code, out, errOut := do(t, w, cmd, "--config", w.ConfigPath, "--inputs", file)
+			if marker == provisiontest.Marker {
+				if code != 0 || errOut != "" || out == "" {
+					t.Errorf("%s: status %d, out %q, err %q", cmd, code, out, errOut)
+				}
+				continue
+			}
+			if code != exitFailed || out != "" || !strings.Contains(errOut, "sources.managed_marker") {
+				t.Errorf("%s with no marker: status %d, out %q, err %q", cmd, code, out, errOut)
+			}
+		}
 	}
 }
 

@@ -89,9 +89,10 @@ type run struct {
 // what was made so far, and no marker. A second run refuses what the first
 // left, so remove it before running again: the lead's folder
 // (<state root>/leads/<layout role>), its mailbox and published folders
-// (<state root>/mailbox/<layout role>, <state root>/pub/<project>) and the
-// runtime root. The mirror stays: it is in the state root, provisioning needs
-// it and does not make it, so the state root itself is not removed.
+// (<state root>/mailbox/<layout role>, <state root>/pub/<project>), the folder
+// of its role lock (<state root>/roles/<project>) and the runtime root. The
+// mirror stays: it is in the state root, provisioning needs it and does not
+// make it, so the state root itself is not removed.
 func Provision(ctx context.Context, cfg leadcanary.Config, opts Options) error {
 	r := &run{cfg: cfg, opts: opts, say: func(s string) {
 		if opts.Log != nil {
@@ -188,6 +189,7 @@ func (r *run) stateFolders() []string {
 		rel(r.p.LeadSkills), rel(r.p.GitIdentityDir), rel(r.p.QargiInstall),
 		rel(r.p.AssignmentDir), rel(r.p.ProjectionDir),
 		rel(r.p.MailboxesDir), rel(r.p.Mailbox), rel(r.p.PublishedDir), rel(r.p.Published),
+		rel(r.p.RolesDir), rel(r.p.RoleDir),
 		rel(r.p.MirrorsDir), rel(r.p.ReplayDir),
 	}
 }
@@ -195,10 +197,10 @@ func (r *run) stateFolders() []string {
 // sharedParent reports that the folder rel, of stateFolders, is one that holds
 // other things than this lead's by design, or holds the lead's other folders:
 // the leads folder, the lead's own folder, the mailboxes folder, the published
-// folder and the mirrors folder. Every other folder that is there before the
-// run must be empty.
+// folder, the roles folder (the locks of other roles lie in it) and the mirrors
+// folder. Every other folder that is there before the run must be empty.
 func (r *run) sharedParent(rel string) bool {
-	for _, abs := range []string{r.p.LeadsDir, r.p.LeadDir, r.p.MailboxesDir, r.p.PublishedDir, r.p.MirrorsDir} {
+	for _, abs := range []string{r.p.LeadsDir, r.p.LeadDir, r.p.MailboxesDir, r.p.PublishedDir, r.p.RolesDir, r.p.MirrorsDir} {
 		if rel == r.p.stateRel(abs) {
 			return true
 		}

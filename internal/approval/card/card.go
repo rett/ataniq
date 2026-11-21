@@ -356,6 +356,8 @@ func flagReason(kind string) string {
 		return "lies in a folder that an execution-config link stands for"
 	case record.FlagHistoryOnly:
 		return "was flagged in a commit of the branch and is not in the net change"
+	case record.FlagOddPath:
+		return "a path name the matcher cannot read safely"
 	}
 	return "flagged"
 }

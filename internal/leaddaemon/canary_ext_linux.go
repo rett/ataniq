@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"path"
 	"strconv"
 	"sync"
 	"time"
@@ -136,6 +137,8 @@ const (
 	msgTicketLost   = "the holder did not answer the ticket request"
 	msgTicketFile   = "the holder took the ticket but the ticket file could not be written"
 	msgFolder       = "the role's runtime folder is missing or not private"
+	msgStateFolder  = "the holder's state folder is missing or not private"
+	msgRoleFolder   = "the folder of the role's lock is missing or not private"
 	msgRegistryNo   = "the registry refused"
 	msgForeignUnit  = "a unit with the role's name is not the role's recorded unit"
 	msgFailed       = "the operation failed; see the daemon's log"
@@ -401,14 +404,20 @@ func (x *canaryExt) define() (any, *clientapi.ErrorBody) {
 
 // start starts the role through the lifecycle.
 func (x *canaryExt) start(ctx context.Context) (any, *clientapi.ErrorBody) {
-	// Provisioning makes the holder's runtime folder; the daemon checks it
-	// before it changes anything.
-	fd, err := openPrivateDir(x.holderDir)
-	if err != nil {
-		x.logf("canary start: the runtime folder: %s", SafeText(err.Error()))
-		return nil, refused(msgFolder)
+	// Provisioning makes the folders the holder's unit needs before it has
+	// written anything: the runtime folder, the holder's state folder (the
+	// unit's working directory) and the folder of the role lock, where the
+	// holder makes the lock file but not the folder. The daemon checks them
+	// before it changes anything: without this, a folder that was never made
+	// shows only as a unit that ends at once, with the reason in the journal.
+	for _, f := range x.provisionedFolders() {
+		fd, err := f.open()
+		if err != nil {
+			x.logf("canary start: %s: %s", f.what, SafeText(err.Error()))
+			return nil, refused(f.msg)
+		}
+		unix.Close(fd)
 	}
-	unix.Close(fd)
 	e, err := x.ctl.Start(ctx, x.role)
 	if err != nil {
 		return nil, x.failure("start", err)
@@ -422,6 +431,47 @@ func (x *canaryExt) start(ctx context.Context) (any, *clientapi.ErrorBody) {
 		Role: x.role.String(), State: string(e.Shown.State), Epoch: e.Epoch, Unit: unit,
 		Waiver: canaryroot.WaiverText,
 	}, nil
+}
+
+// provisionedFolder is a folder that provisioning makes and the daemon checks
+// before it starts the role: what it is called in the log and the fixed text of
+// the refusal. A folder whose path cannot be worked out has err set instead of
+// a path, and is refused like a missing one: the check is never skipped.
+type provisionedFolder struct {
+	path, what, msg string
+	err             error
+}
+
+// open opens the folder as one that is private to the caller, or answers why
+// it is not (or why its path is not known).
+func (f provisionedFolder) open() (int, error) {
+	if f.err != nil {
+		return -1, f.err
+	}
+	return openPrivateDir(f.path)
+}
+
+// provisionedFolders lists the folders canary.start requires, in the order it
+// looks at them: the holder's runtime folder, the holder's state folder and the
+// folder of the role lock, all from the config. The config is validated when
+// the daemon starts, so a path that cannot be worked out is not expected; if it
+// happens, the start is refused for that folder, not made without the check.
+func (x *canaryExt) provisionedFolders() []provisionedFolder {
+	folders := []provisionedFolder{{path: x.holderDir, what: "the runtime folder", msg: msgFolder}}
+	state := provisionedFolder{what: "the holder's state folder", msg: msgStateFolder}
+	if l, err := x.cfg.Layout(); err != nil {
+		state.err = err
+	} else {
+		state.path = l.Holder()
+	}
+	folders = append(folders, state)
+	lock := provisionedFolder{what: "the folder of the role lock", msg: msgRoleFolder}
+	if p := x.role.LockPath(x.cfg.StateRoot); p == "" {
+		lock.err = errors.New("the role has no lock path")
+	} else {
+		lock.path = path.Dir(p)
+	}
+	return append(folders, lock)
 }
 
 // stop stops the role through the lifecycle and answers the proof text.

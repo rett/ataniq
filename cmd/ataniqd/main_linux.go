@@ -153,10 +153,12 @@ func (a *app) flags(name string, args []string, define func(*flag.FlagSet)) int 
 func (a *app) runCmd(args []string) int {
 	var stateDir, runtimeDir string
 	var canary canaryFlags
+	var owner ownerFlags
 	if code := a.flags("run", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&stateDir, "state-dir", "", "state folder")
 		fs.StringVar(&runtimeDir, "runtime-dir", "", "runtime folder")
 		canary.define(fs)
+		owner.define(fs)
 	}); code >= 0 {
 		return code
 	}
@@ -186,6 +188,11 @@ func (a *app) runCmd(args []string) int {
 			}
 		}
 		cfg.StateDir, cfg.RuntimeDir = stateDir, runtimeDir
+	}
+	// With --owner-channel (a build with the ataniq_ownerchannel tag only) the
+	// daemon serves the owner connection.
+	if code := a.ownerRun(&owner, &cfg); code >= 0 {
+		return code
 	}
 	err = leaddaemon.Run(context.Background(), cfg)
 	if err != nil {

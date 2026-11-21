@@ -23,7 +23,9 @@ with the `ataniq_canary` tag, under `--canary`, these joins exist:
    starts the sandbox's first process under its pseudo-terminal. That process
    is a scratch agent: the stand-in that `make canary-build` builds, or, in
    pass B, one live agent.
-4. The owner mints a ticket and attaches the console as writer.
+4. The owner mints a ticket and attaches the console: as the writer in the first
+   epoch (he pastes there), as a read-only viewer in the second epoch of pass A
+   (the fence writes and he only watches; a viewer does not resize the session).
 5. The daemon sends the lead one message through the holder's control socket.
    The holder's fence ([the lead injection guide](lead-injection.md)) pastes it
    only when the screen reads as idle.
@@ -159,8 +161,8 @@ The owner's tool, run by hand. The daemon never runs it.
 | --- | --- |
 | `provision --config CONFIG` | Makes the folders of the lead (below), clones the throwaway repository from the mirror into the tree, copies the managed settings, the guard hook and the replay screens, and writes the marker last. It refuses the default roots, a root that already carries the marker and a lead that has started. |
 | `replay-on --config CONFIG` | Writes the replay switch file and nothing else. It is the only subcommand allowed after a first start. |
-| `show --config CONFIG` | Prints, as `key=value` lines, the names, numbers and paths of the config that the run script needs. It never prints the agent's environment, the git identity or the profile digest (`profile-digest` prints the digest). It changes nothing. |
-| `check-inputs --config CONFIG --inputs FILE` | Checks the sandbox inputs file against the config and names the field that differs, never its value. It changes nothing. |
+| `show --config CONFIG` | Prints, as `key=value` lines, the names, numbers and paths of the config that the run script needs. It prints the names of the agent's environment (`agent_env_names`) but never a value, and never the git identity or the profile digest (`profile-digest` prints the digest). It changes nothing. |
+| `check-inputs --config CONFIG --inputs FILE` | Checks the sandbox inputs file against the config and names the field that differs, never its value. It also runs, on the file, the trial of the profile and of the spec that the holder runs in its first step, `validate-config`, as far as that needs no launch and no host access, with the agent command line, environment and pinned digest the holder takes from the config, so that what the holder would refuse there is refused here and not at the start. For the runtime `claude` the file must also name `sources.managed_marker` (the holder refuses it without, at that step), and the managed-settings file that `sources.managed_settings` names must hold that text (before provisioning that file does not exist yet, and the file `provision.managed_settings` names, which provisioning copies, is read instead; once provisioned, the copy is read) (the holder does not read the file then: assertion 8 finds a file without it inside, after the launch, and this check refuses it earlier). It changes nothing. |
 | `profile-digest --config CONFIG --inputs FILE` | Prints the sandbox profile digest the holder will compute for the config and the inputs file, as one line of 64 lower-case hex digits, to pin in `holder.profile_digest` before the first start. It refuses a file that is not the config's `holder.sandbox_inputs` (the resolved paths are compared), because that is the file the holder reads; it then checks the file against the config as `check-inputs` does and computes the digest with the holder's own code, with the agent's environment of the config. It prints no environment value and no path of its own (a refusal to read the file repeats the path given to `--inputs`, as `check-inputs` does), and it changes nothing. |
 | `fields --file FILE` | Prints every value of one JSON object as a sorted `path=value` line. |
 | `scrub-screen --file FILE` | Replaces the screen text in a copy of the holder's final record by its SHA-256 and prints the hash. |
@@ -176,9 +178,13 @@ everything before it writes anything, makes every folder with mode 0700 by
 handle, and refuses a symbolic link at any path it would make. Besides the
 folders of the lead's layout it makes the holder's runtime folder
 `<runtime root>/leads/<layout role>`, which must exist before the holder
-starts, and `<home>/canary-replay/` with the replay screens in it. A failed run
-leaves what it made and no marker, and a second run refuses that; the log it
-prints says what to remove.
+starts, the folder of the lead's role lock `<state root>/roles/<project>`
+(with `<state root>/roles` above it; the holder makes the lock file
+`lead.lock` in it, with an open that makes the file and not the folder, so
+without this folder it refuses at its first start), and
+`<home>/canary-replay/` with the replay screens in it. A failed run leaves what
+it made and no marker, and a second run refuses that; the log it prints says
+what to remove.
 
 ### `ataniqd run --canary`
 
@@ -235,8 +241,12 @@ Exit status of `ataniqd canary`:
 The two error codes `refused` and `unavailable` are new, and carry fixed texts
 that never echo what the caller sent.
 
-`ataniqd canary start` is refused when the holder's runtime folder is missing
-or not private; provisioning makes it.
+`ataniqd canary start` is refused, before it changes anything, when the
+holder's runtime folder, the holder's state folder or the folder of the role
+lock (`<state root>/roles/<project>`) is missing or not private; provisioning
+makes all three. Each has its own fixed refusal text, with no path in it; the
+detail is in the daemon's log. Without the check, a missing folder showed only
+as a unit that ended at once, with the reason in the journal.
 
 ## The config file
 
@@ -265,7 +275,7 @@ here is a real path.
     "kind": "stand-in",
     "runtime": "<a runtime key the registry accepts for a lead>",
     "runtime_version": "1.2.3",
-    "footer_mode": "sample mode on",
+    "footer_mode": "manual",
     "argv": ["/ataniq/agent/ataniq-canary-standin"],
     "env": []
   },
@@ -300,9 +310,9 @@ here is a real path.
 | `holder.profile_digest` | The pinned digest of the sandbox profile, 64 lower-case hex digits. The holder refuses a plan whose digest differs. Compute it with `ataniq-canary profile-digest --config CONFIG --inputs FILE`; a wrong pin otherwise fails the real start at step 12. |
 | `agent.kind` | `stand-in` or `live`. It goes into every line of the evidence. |
 | `agent.runtime`, `agent.runtime_version` | Given to the holder as `--runtime` and `--runtime-version`: plain text of 1 to 64 bytes. The runtime must be a key the registry accepts for a lead. |
-| `agent.footer_mode` | The permission mode the fence expects in the agent's footer (`--expected-mode`), 1 to 128 bytes. |
-| `agent.argv` | The agent's command as seen inside the sandbox, an absolute executable first, at most 64 elements. |
-| `agent.env` | The agent's whole environment as `KEY=VALUE`, at most 64; one `--env` flag each. The holder inherits nothing for it. |
+| `agent.footer_mode` | The recogniser's short name of the permission mode the fence expects in the agent's footer (`--expected-mode`), 1 to 128 bytes: `manual` or `auto` for claude 2.1.325, never the footer's own text ("manual mode on" is the text of the `manual` footer, and every inject then ends `not-now`). A `live` agent with `inject` true is refused at `show` and `check-inputs` unless it is `manual` or `auto`; the stand-in's value is free. |
+| `agent.argv` | The agent's command as seen inside the sandbox, an absolute executable first, at most 64 elements. For a `live` agent the first element is `/ataniq/agent/NAME`, the executable itself and no wrapper: step 9 runs the file `NAME` of the inputs file's `sources.agent_install` (the install folder is that key of the inputs file, not a field of the config), and `check-inputs` refuses a first element that is not such a file there. |
+| `agent.env` | The agent's whole environment as `KEY=VALUE`, at most 64; one `--env` flag each. The holder inherits nothing for it. It is part of the profile digest, so the pin is taken after it is final; a live claude needs two names here: `DISABLE_AUTOUPDATER=1`, or it may draw an update notice on the screen the fence reads, and `CLAUDE_CODE_NO_FLICKER=1`, which selects the fullscreen (alternate-screen) renderer, the only one the recogniser reads (without it claude chooses the renderer per process and may draw on the main screen, where every inject ends `not-now`). A root prepared before `CLAUDE_CODE_NO_FLICKER=1` was added has another environment and so another digest: prepare a new root and take a new pin. `ataniq-canary show` prints the names (`agent_env_names`), never a value. |
 | `inject` | `true` opens the injection gate: the holder gets `--inject`. With `false` the daemon refuses `canary.inject` at once and spends nothing. |
 | `limits` | The unit's limits (next section). |
 | `provision` | What provisioning copies and sets: the mirror, the upstream branch, the lead's git identity, the managed-settings file, the guard hook's executable and the folder of replay screens. The daemon only checks it. |
@@ -330,12 +340,13 @@ with the sources from `ataniq-canary show`, and checks it with
   "executables": {
     "pasta": "/usr/bin/pasta",
     "bwrap": "/usr/bin/bwrap",
-    "probe": "/srv/checkout/build/canary/ataniq-probe"
+    "probe": "/srv/canary/bin/ataniq-probe"
   },
   "sources": {
     "agent_install": "/srv/canary/agent-install",
     "managed_settings": "/srv/canary/state/leads/throwaway-one-lead/managed-settings.json",
     "managed_settings_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "managed_marker": "guard-hook",
     "lead_skills": "/srv/canary/state/leads/throwaway-one-lead/skills",
     "instruction_file": "/srv/canary/state/leads/throwaway-one-lead/instructions.md",
     "git_identity_dir": "/srv/canary/state/leads/throwaway-one-lead/git-identity",
@@ -344,7 +355,7 @@ with the sources from `ataniq-canary show`, and checks it with
     "assignment_dir": "/srv/canary/state/leads/throwaway-one-lead/assignment",
     "projection_dir": "/srv/canary/state/leads/throwaway-one-lead/projection"
   },
-  "never_mounted": ["/srv/sample/checkout", "/srv/sample/dot-ssh"],
+  "never_mounted": ["/srv/checkout", "/srv/sample/dot-ssh"],
   "provider_host": "provider.example.invalid",
   "terminal": {"term": "xterm-256color"},
   "time_limit_seconds": 60
@@ -357,6 +368,14 @@ with the sources from `ataniq-canary show`, and checks it with
   the caller with no access for group or others. The start sequence
   makes `report` (the report FIFO's folder) and `bound` in it and removes them
   when the start ends.
+- `sources.managed_marker` is required for the runtime `claude`: the text of
+  the guard hook that the managed-settings file holds (assertion 8 searches
+  the file inside for it). The holder refuses a start without it at its first
+  step; a file that lacks the text fails assertion 8 inside, after the launch.
+  `check-inputs` refuses both before the start, naming
+  `sources.managed_marker` or `sources.managed_settings`, and, for the rest of
+  that step, the field the holder would name. The marker is not part of the
+  profile digest.
 - `time_limit_seconds` (1 to 3600) is how long the start waits for the probe's
   report line.
 - Two statements about the start itself, that no lead has run in the folders
@@ -443,6 +462,11 @@ or writes anything:
   file and the layout, a `--state-dir` or `--runtime-dir` that is not exactly
   the layout's holder folder and runtime folder, and `--inject` without a
   non-empty `--expected-mode`.
+
+It then takes the role lock, `<state root>/roles/<project>/lead.lock`: it makes
+the file when it is not there, and not its folder, which provisioning makes. A
+folder that is missing is refused, with exit status 2, as `--role-lock cannot be
+taken as the role lock`.
 
 ## The message and the token
 
@@ -563,6 +587,13 @@ puts them, at most one second old, on the `exit` event and in `final.json`,
 which the second epoch of the run reads. No `counters` event is written for
 them, and no command of the slice prints them while the holder runs.
 
+Two further counters of the pane, `alt_screen_on` and `alt_screen_off`, count
+the times the emulator entered and left the alternate screen. They are listed
+in the status answer, on the `exit` event and in `final.json`, and step 22
+prints them from `final.json`. `alt_screen_on` above
+zero means the agent drew with the fullscreen renderer, which the recogniser
+requires; both at zero until the agent leaves means it drew on the main screen.
+
 The order against the DA1 reply holds by construction and is not logged. The
 stand-in in replay mode records it (below).
 
@@ -613,6 +644,31 @@ mirror, the config and the inputs file), how a failed step is handled, what the
 evidence folder holds and the undo. The intake template, which the owner
 vouches for, has [its own note](../qualification/canary/templates/README.md).
 
+## What pass B showed
+
+Pass B (one live agent, one run) gave these facts:
+
+- `claude` 2.1.325 with the canary's config reached the composer inside the
+  sandbox.
+- The 7501 report path works: 1 query and 8 reports in a 24-minute run.
+- The fence answers `not-now` with `not-ready` on a fresh live screen: the
+  screen is read as "not on the alternate screen" and its title has no leading
+  glyph (which is normal for claude 2.1.325 once the terminal answered the 7501
+  query), so the recogniser does not place it. The likely cause is that the
+  agent drew with its classic main-screen renderer, which claude chooses per
+  process unless `CLAUDE_CODE_NO_FLICKER=1` is set; the kit now sets it, and the
+  result line and the holder's `alt_screen_on` counter say which renderer the
+  next pass got. The owner's paste is the path that works until then.
+- The agent needed one turn to commit.
+- The unit's memory peak was 450 MB of the 4 GiB ceiling.
+- Revocation is limited: the provider's account page lists Claude Code logins
+  as rows named Unknown, with no entry identifiable as the login made in the
+  pass. Step 5 therefore asks for `confirmed` only when the account lists the
+  login as its own revocable entry or a separate throwaway account is used, and
+  step 23 says to identify the login as a new row with last-active during the
+  run (on a throwaway account, "log out of all devices" revokes it) and takes
+  `cannot-identify: <what you see>` as a finding when none can be identified.
+
 ## Undo
 
 The slice makes no removal command. After a run, or after a script that stopped
@@ -622,7 +678,8 @@ control group empty, `systemctl --user revert` the unit and check that no
 `ataniq-*` unit, unit file or runtime drop-in remains, stop the daemon, and
 delete the canary's own state and runtime roots by hand. The run kit's README
 lists the steps in order. In pass B also log out inside the sandbox, revoke the
-login on the provider's account page, restart the listeners that were stopped
+login on the provider's account page (the new row with last-active during the
+run, or log out of all devices on a separate throwaway account), restart the listeners that were stopped
 and compare the live config folder with its manifest.
 
 ## What the slice relies on, and what it proves none of
