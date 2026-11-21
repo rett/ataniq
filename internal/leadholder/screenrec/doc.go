@@ -14,7 +14,9 @@
 //   - README.txt, which says the files are raw (scrub before use; do not
 //     commit);
 //   - NNNN.txt and NNNN.json, from 0001 on: one pair for each distinct
-//     snapshot of the holder's pane, in the fixture format of
+//     snapshot of the holder's pane (taken once the screen has had no output
+//     for [Settle], at most once per [PairInterval], and once more when the
+//     session is over), in the fixture format of
 //     internal/inject/screen/testdata (the text with a final newline; the size,
 //     the cursor, the two flags, the title and the faint spans, "source":
 //     "recorded", an empty description and no "want"). The snapshot is the
@@ -24,8 +26,8 @@
 //     differs from the last one recorded;
 //   - osc7501.jsonl, one JSON line for each OSC 7501 payload the holder's hook
 //     sees (the data after "7501;"), the support query included;
-//   - LIMIT.txt, only when needed: one line when the recording stopped at its
-//     bounds, and a line "dropped N" with the running total each time the queue
+//   - LIMIT.txt, only when needed: one line when the pairs stopped at
+//     [MaxPairs], one when the recording stopped at [MaxBytes], and a line "dropped N" with the running total each time the queue
 //     dropped items.
 //
 // Every line carries "ms", the milliseconds since the recorder was made. A
@@ -54,8 +56,10 @@
 // # Bounds and failures
 //
 // At most [MaxPairs] pairs and [MaxBytes] bytes in all (README.txt included,
-// LIMIT.txt not). The item that would pass a bound is not written: one line
-// goes to LIMIT.txt and the recording stops for good. A write that fails stops
+// LIMIT.txt not). The pair that would pass MaxPairs is not written: one line
+// goes to LIMIT.txt and one to the log, no pair is taken after it, and the
+// titles and payloads go on. The item that would pass MaxBytes is not
+// written: one line goes to LIMIT.txt and the recording stops for good. A write that fails stops
 // the recording too, and is logged once, by its errno and with no path. Either
 // way the agent and the pane go on as before.
 package screenrec

@@ -670,20 +670,29 @@ sandbox does not show, so the agent cannot see it or name anything in it.
   `internal/inject/screen/testdata` (the `.txt` is the screen text; the `.json`
   holds the size, the cursor, the alternate-screen flag, the title and the faint
   spans, `"source": "recorded"`, an empty description and no `want`). The
-  screen is the snapshot the fence reads. The holder looks at it at most every
-  500 ms, and only after output or a resize, so a screen that was shown for
-  less than that may be missing.
+  screen is the snapshot the fence reads. The holder takes one only after
+  output or a resize, only once the screen has had no output and no resize for
+  about 300 ms (the settle rule), and at most one every 500 ms; the last screen,
+  when the session ends, is taken at once. The settle rule keeps a screen that
+  keeps changing, such as the working screen with its animated spinner, from
+  using up the 400 pairs in a few minutes: such a screen is recorded only when
+  it stands still for 300 ms, or when the session ends. So a screen shown for
+  less than 300 ms is not recorded, nor is a screen that never stands still
+  that long, and a screen replaced within 500 ms of the last pair may be
+  missing.
 - `titles.jsonl`, one JSON line for each window title as it changed, and
   `osc7501.jsonl`, one JSON line for each OSC 7501 payload (the data after
   `7501;`, the support query included). Each line has `ms` (milliseconds since
   the start), `bytes` and `cut`; a title or payload is cut at 4096 bytes, stored
   as a JSON string and never interpreted. The title is read every 100 ms, so a
   title the agent replaced sooner is not seen.
-- `LIMIT.txt`, only when needed: a line when the recording stopped at its bounds
-  (400 pairs, or 8 MiB written in all), and `dropped N` when the recorder's
+- `LIMIT.txt`, only when needed: a line when the screens stopped at 400 pairs
+  (the titles and the payloads go on being recorded), a line when the recording
+  stopped at 8 MiB written in all, and `dropped N` when the recorder's
   small queue dropped its oldest items to keep up.
 
-The recorder never blocks the agent or its screen: when it reaches a bound or a
+The recorder never blocks the agent or its screen. At 400 pairs it stops taking
+screens and says so in one line of the journal; when it would pass 8 MiB or a
 write fails, it stops recording, says so in one line of the journal (by errno,
 with no path), and the lead goes on. When the session ends, the recorder takes
 one last look at the screen, whatever the time since the last pair, and the

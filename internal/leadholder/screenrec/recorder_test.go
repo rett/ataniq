@@ -299,15 +299,29 @@ func TestPairsForDistinctScreensOnly(t *testing.T) {
 	}
 }
 
-// The pairs stop at MaxPairs: the item that would pass it is not written, one
-// line goes to LIMIT.txt, the recording stops and says so once.
-func TestPairLimit(t *testing.T) {
+// The pairs stop at MaxPairs: the pair that would pass it is not written, one
+// line goes to LIMIT.txt and one to the log, and the titles and payloads go on
+// being recorded. Screen takes no more pairs and a look takes no snapshot.
+func TestPairLimitStopsPairsOnly(t *testing.T) {
 	x := newRec(t, func(c *Config) { c.MaxPairs = 3 })
 	x.open()
 	for i := 0; i < 6; i++ {
 		x.r.Screen(sample(fmt.Sprintf("screen %d", i)))
 	}
-	x.r.Title("after the limit")
+	deadline := time.Now().Add(10 * time.Second)
+	for x.r.takesPairs() {
+		if time.Now().After(deadline) {
+			t.Fatal("the pairs did not stop")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	p := &fakePane{cols: 40, rows: 5, title: "after the limit", text: "after"}
+	var w watcher
+	w.look(x.r, p.screen, true)
+	if p.snaps != 0 {
+		t.Errorf("%d snapshots after the pairs stopped", p.snaps)
+	}
+	x.r.OSC7501([]byte("state=idle"))
 	x.r.Close()
 	if _, err := os.Lstat(filepath.Join(x.dir, "0004.txt")); err == nil {
 		t.Fatal("a fourth pair was written")
@@ -316,17 +330,20 @@ func TestPairLimit(t *testing.T) {
 		t.Fatal("the third pair is missing")
 	}
 	lim := x.read(LimitName)
-	if strings.Count(lim, "\n") != 1 || !strings.HasPrefix(lim, "recording stopped: 3 screens") {
+	if strings.Count(lim, "\n") != 1 || !strings.HasPrefix(lim, "screens stopped: 3 screens") {
 		t.Fatalf("LIMIT.txt %q", lim)
 	}
-	if !x.r.Stopped() {
-		t.Error("not stopped")
+	if x.r.Stopped() {
+		t.Error("the recording stopped")
 	}
-	if l := x.log.all(); len(l) != 1 || !strings.Contains(l[0], "recording screens stopped") || strings.Contains(l[0], x.dir) {
+	if l := x.log.all(); len(l) != 1 || !strings.Contains(l[0], "no more screens") || strings.Contains(l[0], x.dir) {
 		t.Errorf("log %q", l)
 	}
-	if got := x.read(TitlesName); got != "" {
-		t.Errorf("a title after the limit was written: %q", got)
+	if titles := x.lines(TitlesName); len(titles) != 1 || titles[0]["title"] != "after the limit" {
+		t.Errorf("titles after the limit: %v", titles)
+	}
+	if osc := x.lines(OSCName); len(osc) != 1 || osc[0]["payload"] != "state=idle" {
+		t.Errorf("payloads after the limit: %v", osc)
 	}
 }
 
@@ -361,13 +378,15 @@ func TestByteLimit(t *testing.T) {
 	}
 }
 
-// The constants are the task's: 400 pairs, 8 MiB, 4 KiB, 500 ms.
+// The constants are the task's: 400 pairs, 8 MiB, 4 KiB, 500 ms, 300 ms.
 func TestTheBounds(t *testing.T) {
-	if MaxPairs != 400 || MaxBytes != 8<<20 || MaxPayload != 4096 || PairInterval != 500*time.Millisecond || DirName != "record" {
+	if MaxPairs != 400 || MaxBytes != 8<<20 || MaxPayload != 4096 || PairInterval != 500*time.Millisecond ||
+		Settle != 300*time.Millisecond || DirName != "record" {
 		t.Fatal("a bound changed")
 	}
 	r := New(Config{})
-	if r.cfg.MaxPairs != MaxPairs || r.cfg.MaxBytes != MaxBytes || r.cfg.PairInterval != PairInterval || r.cfg.QueueLen != QueueLen {
+	if r.cfg.MaxPairs != MaxPairs || r.cfg.MaxBytes != MaxBytes || r.cfg.PairInterval != PairInterval || r.cfg.QueueLen != QueueLen ||
+		r.cfg.Settle != Settle {
 		t.Fatalf("defaults %+v", r.cfg)
 	}
 }
@@ -517,63 +536,105 @@ func (p *fakePane) TextSnapshot() sessionpane.TextSnapshot {
 
 func (p *fakePane) screen(fn func(Pane, uint64)) { fn(p, p.pos) }
 
-// A look snapshots the pane only after output or a resize, at most once per
-// PairInterval, and records a title when it changed.
+// A look snapshots the pane only after output or a resize, once the screen
+// has been unchanged for Settle, at most once per PairInterval, and records a
+// title when it changed.
 func TestLookSnapshotsOnlyChangesAndAtMostOncePerInterval(t *testing.T) {
 	x := newRec(t, nil)
 	x.open()
 	p := &fakePane{cols: 40, rows: 5, title: "t1", text: "one"}
 	var w watcher
 	look := func() { w.look(x.r, p.screen, false) }
+	want := func(n int, what string) {
+		t.Helper()
+		if p.snaps != n {
+			t.Fatalf("%d snapshots %s, want %d", p.snaps, what, n)
+		}
+	}
 
-	look() // the first look snapshots
-	if p.snaps != 1 {
-		t.Fatalf("%d snapshots after the first look", p.snaps)
-	}
+	look()
+	want(0, "at the first look: the screen has not settled")
+	x.clock.add(300 * time.Millisecond)
+	look()
+	want(1, "once the first screen settled")
 	x.clock.add(time.Second)
-	look() // no output since: no snapshot
-	if p.snaps != 1 {
-		t.Fatalf("%d snapshots with nothing new", p.snaps)
-	}
+	look()
+	want(1, "with nothing new")
 	p.pos, p.text = 10, "two"
-	look() // output, and the interval has passed
-	if p.snaps != 2 {
-		t.Fatalf("%d snapshots after output", p.snaps)
-	}
+	look()
+	want(1, "at the look that saw output")
+	x.clock.add(300 * time.Millisecond)
+	look()
+	want(2, "once the output settled")
 	p.pos, p.text, p.title = 20, "three", "t2"
 	x.clock.add(100 * time.Millisecond)
-	look() // output within the interval: marked, not taken
-	if p.snaps != 2 {
-		t.Fatalf("%d snapshots within the interval", p.snaps)
-	}
-	x.clock.add(400 * time.Millisecond)
-	look() // no more output, the interval passed: the marked change is taken
-	if p.snaps != 3 {
-		t.Fatalf("%d snapshots after the interval", p.snaps)
-	}
+	look()
+	x.clock.add(300 * time.Millisecond)
+	look()
+	want(2, "settled, within the interval")
+	x.clock.add(100 * time.Millisecond)
+	look()
+	want(3, "settled, after the interval")
 	x.clock.add(time.Second)
 	p.cols = 50
-	look() // a resize
-	if p.snaps != 4 {
-		t.Fatalf("%d snapshots after a resize", p.snaps)
-	}
+	look()
+	x.clock.add(300 * time.Millisecond)
+	look()
+	want(4, "after a resize")
 	x.clock.add(time.Second)
 	p.pos = 30 // output that changed nothing visible: a snapshot, no pair
 	look()
+	x.clock.add(300 * time.Millisecond)
+	look()
+	want(5, "after output that changed nothing")
 	x.r.Close()
-	want := []string{"0001.json", "0001.txt", "0002.json", "0002.txt", "0003.json", "0003.txt", "0004.json", "0004.txt"}
+	wantPairs := []string{"0001.json", "0001.txt", "0002.json", "0002.txt", "0003.json", "0003.txt", "0004.json", "0004.txt"}
 	var pairs []string
 	for _, n := range x.names() {
 		if strings.HasPrefix(n, "000") {
 			pairs = append(pairs, n)
 		}
 	}
-	if !reflect.DeepEqual(pairs, want) {
-		t.Fatalf("pairs %v, want %v", pairs, want)
+	if !reflect.DeepEqual(pairs, wantPairs) {
+		t.Fatalf("pairs %v, want %v", pairs, wantPairs)
 	}
 	titles := x.lines(TitlesName)
 	if len(titles) != 2 || titles[0]["title"] != "t1" || titles[1]["title"] != "t2" {
 		t.Fatalf("titles %v", titles)
+	}
+}
+
+// A screen that keeps changing (an animated spinner) is not snapshotted while
+// it changes, so it cannot fill the pairs; it is taken once it has been
+// unchanged for Settle, and the last look takes it at once.
+func TestLookWaitsForAnAnimationToSettle(t *testing.T) {
+	x := newRec(t, nil)
+	x.open()
+	p := &fakePane{cols: 40, rows: 5, title: "t", text: "spin"}
+	var w watcher
+	for i := 0; i < 100; i++ {
+		p.pos++
+		p.text = fmt.Sprintf("working %c", "|/-\\"[i%4])
+		w.look(x.r, p.screen, false)
+		x.clock.add(100 * time.Millisecond)
+	}
+	if p.snaps != 0 {
+		t.Fatalf("%d snapshots of a screen that never settled", p.snaps)
+	}
+	x.clock.add(200 * time.Millisecond)
+	w.look(x.r, p.screen, false)
+	if p.snaps != 1 {
+		t.Fatalf("%d snapshots once it settled", p.snaps)
+	}
+	x.clock.add(time.Second)
+	p.pos, p.text = p.pos+1, "the end"
+	w.look(x.r, p.screen, true)
+	if p.snaps != 2 {
+		t.Fatalf("%d snapshots after the last look", p.snaps)
+	}
+	x.r.Close()
+	if x.read("0001.txt") != "working \\\n" || x.read("0002.txt") != "the end\n" {
+		t.Fatalf("pairs %q %q", x.read("0001.txt"), x.read("0002.txt"))
 	}
 }
 

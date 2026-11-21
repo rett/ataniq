@@ -33,7 +33,7 @@ func recordScript() string {
 // for the real intervals, and hands the test the recorder.
 func fastRecorder(d *deps, got chan<- *screenrec.Recorder) {
 	d.canary.tweakRecorder = func(c *screenrec.Config) {
-		c.PollInterval, c.PairInterval = 5*time.Millisecond, 20*time.Millisecond
+		c.PollInterval, c.PairInterval, c.Settle = 5*time.Millisecond, 20*time.Millisecond, 10*time.Millisecond
 	}
 	d.canary.recorderStarted = func(r *screenrec.Recorder) { got <- r }
 }
@@ -376,7 +376,7 @@ func TestCanaryRecordingIsFlushedWhenTheSessionEnds(t *testing.T) {
 	d := c.deps()
 	d.canary.tweakRecorder = func(c *screenrec.Config) {
 		// One pair an hour: after the first, only the look at the end takes one.
-		c.PollInterval, c.PairInterval = 5*time.Millisecond, time.Hour
+		c.PollInterval, c.PairInterval, c.Settle = 5*time.Millisecond, time.Hour, 10*time.Millisecond
 	}
 	d.canary.recorderStarted = func(r *screenrec.Recorder) { recs <- r }
 	go func() { c.done <- run(c.spec(digest).set("record-dir", c.recordDir()).build(), d) }()

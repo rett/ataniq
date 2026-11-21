@@ -33,7 +33,8 @@ const (
 
 // The bounds of a recording.
 const (
-	// MaxPairs is the most screen pairs one recording keeps.
+	// MaxPairs is the most screen pairs one recording keeps. Reaching it
+	// stops the pairs only: the titles and the payloads go on.
 	MaxPairs = 400
 	// MaxBytes is the most bytes one recording writes, README.txt included
 	// and LIMIT.txt not.
@@ -44,6 +45,11 @@ const (
 	// PairInterval is the least time between two snapshots of the pane, so
 	// between two pairs.
 	PairInterval = 500 * time.Millisecond
+	// Settle is how long the pane must have had no output and no resize
+	// before a snapshot is taken, so that a screen that keeps changing (an
+	// animated spinner) does not fill the pairs. The last look, when the
+	// session is over, does not wait for it.
+	Settle = 300 * time.Millisecond
 	// PollInterval is how often Watch looks at the pane's position, size and
 	// title.
 	PollInterval = 100 * time.Millisecond
@@ -63,13 +69,14 @@ URL, a login code, a session id, a home path, a host name or anything else the
 agent showed. Scrub them by hand before any of it goes into a fixture, and
 delete this folder once the fixtures are made.
 
-NNNN.txt, NNNN.json  one distinct screen each, in the fixture format of
+NNNN.txt, NNNN.json  one distinct screen each, once it stood still for about
+                     300 ms (and the last one), in the fixture format of
                      internal/inject/screen/testdata ("source": "recorded",
                      no description and no "want" yet)
 titles.jsonl         each window title as it changed, with "ms"
 osc7501.jsonl        each OSC 7501 payload, with "ms"
-LIMIT.txt            why the recording stopped early, and "dropped N" when
-                     the queue dropped items
+LIMIT.txt            why the screens or the recording stopped early, and
+                     "dropped N" when the queue dropped items
 
 "ms" is milliseconds since the holder started recording. A title or payload
 is cut at 4096 bytes ("cut": true) and stored as a JSON string.
@@ -83,13 +90,15 @@ type Config struct {
 	// discards it. The line names no path.
 	Logf func(format string, args ...any)
 
-	// MaxPairs, MaxBytes, QueueLen, PairInterval and PollInterval replace the
-	// constants of the same names when above zero. They are for tests.
+	// MaxPairs, MaxBytes, QueueLen, PairInterval, PollInterval and Settle
+	// replace the constants of the same names when above zero. They are for
+	// tests.
 	MaxPairs     int
 	MaxBytes     int64
 	QueueLen     int
 	PairInterval time.Duration
 	PollInterval time.Duration
+	Settle       time.Duration
 }
 
 // kind is the kind of a queued item.
@@ -125,6 +134,7 @@ type Recorder struct {
 	opened    bool // Open succeeded: the writer runs
 	closing   bool // Close was called
 	stopped   bool // the recording stopped early, or Open failed
+	pairsDone bool // MaxPairs pairs were written: no more pairs are taken
 	last      *screen.Snapshot
 	lastTitle string
 	wake      chan struct{}
@@ -136,6 +146,7 @@ type Recorder struct {
 	pairs                   int
 	written                 int64
 	reported                uint64
+	pairsEnded              bool // the writer said that the pairs stopped
 }
 
 // New returns a recorder that queues and writes nothing until Open. Its "ms"
@@ -161,6 +172,9 @@ func New(cfg Config) *Recorder {
 	}
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = PollInterval
+	}
+	if cfg.Settle <= 0 {
+		cfg.Settle = Settle
 	}
 	return &Recorder{
 		cfg: cfg, begun: cfg.Now(),
@@ -221,12 +235,21 @@ func (r *Recorder) pushLocked(it item) {
 // accepting says new items are taken, with r.mu held.
 func (r *Recorder) accepting() bool { return !r.closing && !r.stopped }
 
-// Screen queues a pair for s when it differs from the last screen queued.
+// takesPairs says a new pair would be taken: the recorder takes items and
+// MaxPairs was not reached.
+func (r *Recorder) takesPairs() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.accepting() && !r.pairsDone
+}
+
+// Screen queues a pair for s when it differs from the last screen queued and
+// MaxPairs was not reached.
 func (r *Recorder) Screen(s screen.Snapshot) {
 	ms := r.elapsed()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !r.accepting() || (r.last != nil && sameScreen(*r.last, s)) {
+	if !r.accepting() || r.pairsDone || (r.last != nil && sameScreen(*r.last, s)) {
 		return
 	}
 	c := s
@@ -483,6 +506,25 @@ func (r *Recorder) appendLimit(s string) error {
 	return nil
 }
 
+// endPairs stops the pairs for good, once: the pair that would pass MaxPairs
+// and every later one is not written, one line goes to LIMIT.txt and one to
+// the log, and the titles and the payloads go on.
+func (r *Recorder) endPairs() error {
+	if r.pairsEnded {
+		return nil
+	}
+	r.pairsEnded = true
+	r.mu.Lock()
+	r.pairsDone = true
+	r.mu.Unlock()
+	why := fmt.Sprintf("%d screens were written, the most a recording keeps", r.pairs)
+	if err := r.appendLimit("screens stopped: " + why + "; titles and payloads go on\n"); err != nil {
+		return err
+	}
+	r.cfg.Logf("recording screens: no more screens (%s); titles and payloads go on", why)
+	return nil
+}
+
 // fits checks the byte bound for n more bytes.
 func (r *Recorder) fits(n int) error {
 	if r.written+int64(n) > r.cfg.MaxBytes {
@@ -496,7 +538,7 @@ func (r *Recorder) write(it item) error {
 	switch it.kind {
 	case kindPair:
 		if r.pairs >= r.cfg.MaxPairs {
-			return &limitError{fmt.Sprintf("%d screens were written, the most a recording keeps", r.pairs)}
+			return r.endPairs()
 		}
 		txt := []byte(it.snap.Text + "\n")
 		js, err := pairJSON(it.snap)
