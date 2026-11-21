@@ -111,14 +111,14 @@ var reasonWords = map[string]string{
 	"previous-unit-not-gone": "the previous unit is not proven gone",
 	"start-failed":           "the start failed and nothing was started",
 	"launch-uncertain":       "the start's outcome is not known; read the list",
-	"intent-pending":         "the launch intent is not settled yet; read the list",
+	"intent-pending":         unsettledWords,
 	"stop-unproven":          "the stop is not proven; read the list",
 
 	// Ticket and message.
 	"not-running":        "the lead is not running",
 	"holder-unreachable": "the lead's holder could not be reached",
 	"ticket-failed":      "no ticket could be made",
-	"ticket-refused":     "the holder refused the ticket",
+	"ticket-refused":     "the holder refused the ticket; a writer may already be attached",
 	"ticket-lost":        "the holder did not answer the ticket request",
 	"ticket-file":        "the ticket was taken but its file could not be written",
 	"holder-disabled":    "the lead's holder does not take messages",
@@ -136,6 +136,52 @@ var reasonWords = map[string]string{
 	"forged-header":      "the message holds text that looks like a message header",
 	"bad-body":           "the message body was not accepted",
 	"bad-text":           "the message text was not accepted",
+}
+
+// unsettledWords is what a launch that is not settled needs: the daemon in
+// scratch mode settles it itself once the late-start window of 30 s and its
+// margin of 10 s have passed since the launch was recorded (reading the list
+// does not settle it). A daemon that does not (one that cannot ask the unit
+// manager, or has no timer) settles it at its reconcile when it is restarted
+// after that. The words name the two ways out when it is not settled: stopping
+// the lead (the way out when the launch's own unit was adopted, which the
+// timer and a restart both leave unknown) and the restart.
+const unsettledWords = "launch settles by itself 40 s after the start; if not, stop the lead or restart"
+
+// maxRunningUnknownTail is added to the refusal for the limit of running
+// leads while the list shows a lead that is unknown: an unknown lead counts
+// as running, and it stays so until its launch is settled, which the daemon
+// does itself 40 s after the start (stopping the lead or a restart is the
+// fallback).
+const maxRunningUnknownTail = ". An unknown lead holds a slot until its launch settles by itself, 40 s after the start; if it is still unknown after that, stop the lead or restart"
+
+// maxRunningPlainTail is added instead while the list shows a lead that is
+// unknown for another reason (a unit that is not ours, a registry that was
+// recovered, a reboot): the daemon has no timer for it, so the words promise
+// no self-settle and name what the owner can do.
+const maxRunningPlainTail = ". An unknown lead holds a slot until it is settled; stop the lead or restart"
+
+// Reasons of an unknown lead that the daemon settles by itself (its settle
+// timer in internal/leaddaemon/lead_settle_linux.go, settleWanted): a launch
+// that was not settled or whose reply was lost, and a control group that was
+// not proven empty when the timer tried (the timer tries again).
+const (
+	reasonLaunchUnsettled = "launch-unsettled"
+	reasonLaunchReplyLost = "launch-reply-lost"
+	reasonGroupNotProven  = "control-group-not-proven-empty"
+)
+
+// launchReason says whether the lead is unknown for the reason of a launch
+// that was not settled: nothing is known of whether its unit runs.
+func launchReason(l Lead) bool {
+	return l.State == "unknown" && (l.StateReason == reasonLaunchUnsettled || l.StateReason == reasonLaunchReplyLost)
+}
+
+// settlesItself says whether the daemon's settle timer is for the lead: a
+// launch reason, or a control group that is not proven empty (which only a
+// timer that is trying sets).
+func settlesItself(l Lead) bool {
+	return launchReason(l) || l.State == "unknown" && l.StateReason == reasonGroupNotProven
 }
 
 const unknownReason = "the reason is not known to this console"
@@ -217,6 +263,10 @@ const (
 	heldTail = ". The daemon holds this epoch's message spent all the same"
 	// maybeTail: no row has been read since the answer.
 	maybeTail = ". The epoch's message is free unless the list says it is spent"
+	// movedTail: the row is at another epoch than the answer's (the lead was
+	// stopped or started since, perhaps by another client), so nothing is
+	// known here of that epoch's message and the row's flag is not its.
+	movedTail = ". The lead is at another epoch now; that epoch's message is not known"
 )
 
 // held is what the list's row says of the epoch's message for the receipt
@@ -230,6 +280,8 @@ const (
 	// heldFree and heldSpent: the row's message_spent.
 	heldFree
 	heldSpent
+	// heldMoved: the row is at another epoch than the receipt's.
+	heldMoved
 )
 
 // deliveryOf looks up the words of a done inject's three words. A result
@@ -262,14 +314,39 @@ func outcomeWords(r Receipt, h held) string {
 			return t.text + freeTail
 		case heldSpent:
 			return t.text + heldTail
+		case heldMoved:
+			return t.text + movedTail
 		}
 		return t.text + maybeTail
 	}
 	return t.text + spentTail
 }
 
-// msgWord is the MSG column: whether the lead takes a message, and what became
-// of the epoch's message. It agrees with the receipt line of a done message: a
+// running says whether the lead has an epoch whose message the row speaks of: it
+// has an epoch and its state is not one of a lead that is not running (stopped,
+// ended, desired) or one unknown for a launch reason (launch-unsettled,
+// launch-reply-lost), where nothing is known of whether the launch's unit runs
+// at all. A lead that is not running has no message to speak of, and the epoch
+// the row still carries after a stop or an unknown start is the last one's. A
+// lead unknown for another reason (control-group-not-proven-empty,
+// competing-unit, and the like) may have a unit that runs with a message sent
+// in its epoch, so its column is drawn as any other lead's.
+func running(l Lead) bool {
+	if l.Epoch == 0 {
+		return false
+	}
+	switch l.State {
+	case "", "stopped", "ended", "desired":
+		return false
+	case "unknown":
+		return !launchReason(l)
+	}
+	return true
+}
+
+// msgWord is the MSG column: whether the lead takes a message ("off" when it
+// does not), "-" for a lead that is not running (see running), and what became
+// of the epoch's message for one that is. It agrees with the receipt line of a done message: a
 // message that was NOT delivered leaves the epoch's message free, and says so
 // while it is free. The same result of a message that the daemon holds spent
 // (it could not write down the result) reads as spent and not delivered.
@@ -286,6 +363,8 @@ func msgWord(l Lead, d Delivery) string {
 	switch {
 	case !l.Inject:
 		return "off"
+	case !running(l):
+		return "-"
 	case !l.MessageSpent && f == fateNotDelivered:
 		return "free (not delivered)"
 	case !l.MessageSpent:
@@ -305,6 +384,10 @@ func msgWord(l Lead, d Delivery) string {
 // what the daemon shows once the holder is up and the agent started.
 var stateWords = map[[2]string]string{
 	{"ready", "holder-ready"}: "the holder is up and the agent started; its login is not observed",
+	// A launch whose reply was lost, or that a restarted daemon found inside
+	// its window: the daemon settles it when the window ends.
+	{"unknown", reasonLaunchUnsettled}: unsettledWords,
+	{"unknown", reasonLaunchReplyLost}: unsettledWords,
 }
 
 // stateLine is the line about the row under the cursor: its state in words,

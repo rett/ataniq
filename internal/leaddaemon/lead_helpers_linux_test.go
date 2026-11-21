@@ -40,6 +40,9 @@ func (s shortTB) TempDir() string { return s.dir }
 type gateManager struct {
 	leadunit.Manager
 	starts atomic.Int32
+	// blockInspect makes Inspect wait until its context ends, as a manager that
+	// does not answer in time does.
+	blockInspect atomic.Bool
 
 	mu   sync.Mutex
 	hook func(ctx context.Context, spec leadunit.Spec) (st leadunit.State, err error, handled bool)
@@ -49,6 +52,14 @@ func (g *gateManager) setHook(h func(ctx context.Context, spec leadunit.Spec) (l
 	g.mu.Lock()
 	g.hook = h
 	g.mu.Unlock()
+}
+
+func (g *gateManager) Inspect(ctx context.Context, unit string) (leadunit.State, error) {
+	if g.blockInspect.Load() {
+		<-ctx.Done()
+		return leadunit.State{}, ctx.Err()
+	}
+	return g.Manager.Inspect(ctx, unit)
 }
 
 func (g *gateManager) Start(ctx context.Context, spec leadunit.Spec) (leadunit.State, error) {

@@ -326,14 +326,53 @@ func (m *Model) receiptText() string {
 	if m.status == nil {
 		return ""
 	}
-	return receiptLine(*m.status, m.heldFor(*m.status))
+	line := receiptLine(*m.status, m.heldFor(*m.status))
+	if m.status.Status == Refused && m.status.Code == "max-running" {
+		switch m.unknownLeads() {
+		case unknownSettling:
+			line += maxRunningUnknownTail
+		case unknownOther:
+			line += maxRunningPlainTail
+		}
+	}
+	return line
+}
+
+// What the list shows of the leads that are unknown, which count against the
+// limit of running leads.
+type unknownKind int
+
+const (
+	// unknownNone: no lead is unknown.
+	unknownNone unknownKind = iota
+	// unknownSettling: every unknown lead is one the daemon settles by itself.
+	unknownSettling
+	// unknownOther: an unknown lead is unknown for another reason, so that
+	// no promise of a self-settle holds for every slot.
+	unknownOther
+)
+
+// unknownLeads says which kind of unknown lead the list shows.
+func (m *Model) unknownLeads() unknownKind {
+	k := unknownNone
+	for _, l := range m.leads {
+		switch {
+		case l.State != "unknown":
+		case !settlesItself(l):
+			return unknownOther
+		default:
+			k = unknownSettling
+		}
+	}
+	return k
 }
 
 // heldFor is what the list says of the epoch's message for a receipt: the row
 // of the lead the command was for, once the list has been read since the
 // answer (the list that was drawn before it says nothing of this message), and
 // when the row is still at the epoch the receipt names (a receipt that names
-// none takes the row's).
+// none takes the row's). A row at another epoch than the receipt's, or with
+// none, says nothing of the receipt's message: the lead has moved on.
 func (m *Model) heldFor(r Receipt) held {
 	if !m.statusListed || m.statusRole == "" {
 		return heldUnknown
@@ -343,7 +382,9 @@ func (m *Model) heldFor(r Receipt) held {
 			continue
 		}
 		switch {
-		case l.Epoch == 0 || r.Epoch != 0 && l.Epoch != r.Epoch:
+		case r.Epoch != 0 && l.Epoch != r.Epoch:
+			return heldMoved
+		case l.Epoch == 0:
 			return heldUnknown
 		case l.MessageSpent:
 			return heldSpent

@@ -460,3 +460,252 @@ func TestRowsLeftOutAreSaidInOneFixedLine(t *testing.T) {
 	r.seen(noListLine)
 	r.notSeen("left out")
 }
+
+// The daemon's list carries each lead's last command as a summary without its
+// result, so a list that is read after a message must not take the words of the
+// press away.
+func TestTheStatusLineKeepsWhatBecameOfAMessageWhenTheListHoldsAWordlessSummary(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		got  Receipt
+		line string
+	}{
+		{"not delivered", Receipt{CommandID: "m1", Op: OpInject, Status: Done, Epoch: 3,
+			Outcome: OutcomeNotNow, Reason: ReasonNotReady, Written: WrittenNothing},
+			"message: accepted. NOT delivered: nothing was written, the lead's screen is not idle"},
+		{"submitted", Receipt{CommandID: "m1", Op: OpInject, Status: Done, Epoch: 3,
+			Outcome: OutcomeSubmitted, Written: WrittenWhole},
+			"message: accepted. the message was submitted: the whole of it was written and sent"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			b := twoLeads(t)
+			b.answer = func(call) (Receipt, error) { return c.got, nil }
+			r := newRig(t, b, 150, 30)
+			r.key("j")
+			r.key("m")
+			r.typ("hi")
+			// What the real daemon lists: the same command, no result and
+			// no epoch.
+			b.listing.Leads[1].Last = &Receipt{CommandID: "m1", Op: OpInject, Status: Done}
+			r.key("enter")
+			if !r.m.statusListed {
+				t.Fatal("the list was not read after the answer")
+			}
+			r.seen(c.line)
+			r.notSeen("the result is not known to this console")
+			// And again on every later read.
+			r.key("r")
+			r.seen(c.line)
+			r.notSeen("the result is not known to this console")
+		})
+	}
+}
+
+// The list's summary has no epoch, so the line keeps the epoch the answer was
+// for. When the lead has moved to another epoch since (stopped and started by
+// another client) the row's flag is not that message's: the line keeps the old
+// result and says that nothing is known here of that epoch's message, and it
+// does not say the new epoch's message is free or spent.
+func TestTheStatusLineDoesNotReadAnOldResultAgainstTheEpochTheLeadMovedTo(t *testing.T) {
+	for _, spent := range []bool{true, false} {
+		b := twoLeads(t)
+		b.answer = func(call) (Receipt, error) {
+			return Receipt{CommandID: "m1", Op: OpInject, Status: Done, Epoch: 3,
+				Outcome: OutcomeNotNow, Reason: ReasonNotReady, Written: WrittenNothing}, nil
+		}
+		r := newRig(t, b, 180, 30)
+		r.key("j")
+		r.key("m")
+		r.typ("hi")
+		// The list read after the answer: the same command, no epoch, and a
+		// row that has moved to epoch 4.
+		b.listing.Leads[1].Last = &Receipt{CommandID: "m1", Op: OpInject, Status: Done}
+		b.listing.Leads[1].Epoch, b.listing.Leads[1].MessageSpent = 4, spent
+		r.key("enter")
+		if s := r.m.status; s == nil || s.Epoch != 3 {
+			t.Fatalf("spent %v: the status after the list: %+v", spent, s)
+		}
+		r.seen("message: accepted. NOT delivered: nothing was written, the lead's screen is not idle" + movedTail)
+		r.notSeen("is free", "spent all the same", "unless the list says")
+		// Another read changes nothing.
+		r.key("r")
+		r.seen(movedTail)
+		r.notSeen("is free", "spent all the same")
+	}
+	// The same row at the answer's own epoch is read as before.
+	b := twoLeads(t)
+	b.answer = func(call) (Receipt, error) {
+		return Receipt{CommandID: "m1", Op: OpInject, Status: Done, Epoch: 3,
+			Outcome: OutcomeNotNow, Reason: ReasonNotReady, Written: WrittenNothing}, nil
+	}
+	r := newRig(t, b, 180, 30)
+	r.key("j")
+	r.key("m")
+	r.typ("hi")
+	b.listing.Leads[1].Last = &Receipt{CommandID: "m1", Op: OpInject, Status: Done}
+	b.listing.Leads[1].MessageSpent = true
+	r.key("enter")
+	r.seen("The daemon holds this epoch's message spent all the same")
+	r.notSeen(movedTail)
+}
+
+func TestAListReceiptWithWordsIsNotOverriddenByThePress(t *testing.T) {
+	b := twoLeads(t)
+	b.answer = func(call) (Receipt, error) {
+		return Receipt{CommandID: "m1", Op: OpInject, Status: Done, Epoch: 3,
+			Outcome: OutcomeNotNow, Reason: ReasonNotReady, Written: WrittenNothing}, nil
+	}
+	r := newRig(t, b, 150, 30)
+	r.key("j")
+	r.key("m")
+	r.typ("hi")
+	b.listing.Leads[1].Last = &Receipt{CommandID: "m1", Op: OpInject, Status: Done,
+		Outcome: OutcomeSubmitted, Written: WrittenWhole}
+	r.key("enter")
+	r.seen("message: accepted. the message was submitted")
+	r.notSeen("NOT delivered")
+}
+
+func TestATicketReceiptKeepsItsFolderAndTicketFileThroughTheList(t *testing.T) {
+	b := twoLeads(t)
+	b.answer = func(call) (Receipt, error) {
+		return Receipt{CommandID: "t1", Op: OpTicket, Status: Done, Epoch: 3, Folder: "/run/x/attach", TicketFile: "/run/x/ticket"}, nil
+	}
+	r := newRig(t, b, 150, 30)
+	r.key("j")
+	b.listing.Leads[1].Last = &Receipt{CommandID: "t1", Op: OpTicket, Status: Done}
+	r.key("w")
+	// The attach is made from the answer, before the list is read.
+	if len(r.actions) != 1 {
+		t.Fatalf("actions %+v", r.actions)
+	}
+	act := r.actions[0]
+	if act.Kind != Attach || act.Attach.Folder != "/run/x/attach" || act.Attach.TicketFile != "/run/x/ticket" || !act.Attach.Writer {
+		t.Fatalf("action %+v", act)
+	}
+	if s := r.m.status; s == nil || s.Folder != "/run/x/attach" || s.TicketFile != "/run/x/ticket" {
+		t.Fatalf("the status after the list: %+v", s)
+	}
+	r.seen("attach ticket: accepted, done")
+}
+
+func TestKeepWordsCarriesTheEpochOfThePressWhenTheListHasNone(t *testing.T) {
+	press := Receipt{Op: OpInject, Status: Done, Epoch: 3, Outcome: OutcomeNotNow, Reason: ReasonNotReady, Written: WrittenNothing}
+	l := Receipt{Op: OpInject, Status: Done}
+	keepWords(&l, press)
+	if l.Epoch != 3 {
+		t.Errorf("the epoch: %+v", l)
+	}
+	// An epoch of the list's own is kept.
+	l = Receipt{Op: OpInject, Status: Done, Epoch: 4}
+	keepWords(&l, press)
+	if l.Epoch != 4 {
+		t.Errorf("the list's epoch was replaced: %+v", l)
+	}
+	// An unfinished or other receipt takes none.
+	l = Receipt{Op: OpTicket, Status: Done}
+	keepWords(&l, press)
+	if l.Epoch != 0 {
+		t.Errorf("another operation took the epoch: %+v", l)
+	}
+}
+
+func TestKeepWordsTakesNothingFromAnotherOperationOrAnUnfinishedReceipt(t *testing.T) {
+	press := Receipt{Op: OpInject, Status: Done, Outcome: OutcomeNotNow, Reason: ReasonNotReady, Written: WrittenNothing, Folder: "f", TicketFile: "t"}
+	for name, list := range map[string]Receipt{
+		"other op":    {Op: OpTicket, Status: Done},
+		"in progress": {Op: OpInject, Status: InProgress},
+		"refused":     {Op: OpInject, Status: Refused, Code: "stale-epoch"},
+	} {
+		l := list
+		keepWords(&l, press)
+		if l != list {
+			t.Errorf("%s: %+v became %+v", name, list, l)
+		}
+	}
+	l := Receipt{Op: OpInject, Status: Done, Written: WrittenWhole}
+	keepWords(&l, press)
+	if l.Outcome != "" || l.Reason != "" || l.Written != WrittenWhole {
+		t.Errorf("a receipt with a word of its own took the press's: %+v", l)
+	}
+}
+
+func TestAStartingLeadIsReadAgainByTheTickUntilItIsReady(t *testing.T) {
+	b := twoLeads(t)
+	b.listing.Leads[0].State = "starting"
+	b.listing.Leads[0].Epoch = 1
+	r := newRig(t, b, 140, 30)
+	r.seen("starting")
+	if len(r.pending) != 1 {
+		t.Fatalf("%d timers: a starting lead is polled", len(r.pending))
+	}
+	// Two ticks and still starting: one reading and one timer each time.
+	for i := 0; i < 2; i++ {
+		lists := b.lists
+		r.tick()
+		if b.lists != lists+1 || len(r.pending) != 1 {
+			t.Fatalf("tick %d: lists %d to %d, timers %d", i, lists, b.lists, len(r.pending))
+		}
+	}
+	// The daemon promotes it: the row follows without a key, and no timer is
+	// left.
+	b.listing.Leads[0].State = "ready"
+	r.tick()
+	r.seen("ready")
+	r.notSeen("starting")
+	if len(r.pending) != 0 {
+		t.Fatalf("%d timers after no lead was starting", len(r.pending))
+	}
+	lists := b.lists
+	r.tick()
+	if b.lists != lists {
+		t.Fatal("the list was read with nothing changing by itself")
+	}
+}
+
+func TestAStoppingLeadIsReadAgainByTheTickUntilItIsStopped(t *testing.T) {
+	b := twoLeads(t)
+	b.listing.Leads[1].State = "stopping"
+	r := newRig(t, b, 140, 30)
+	if len(r.pending) != 1 {
+		t.Fatalf("%d timers: a stopping lead is polled", len(r.pending))
+	}
+	b.listing.Leads[1].State = "stopped"
+	b.listing.Leads[1].Epoch = 0
+	r.tick()
+	r.notSeen("stopping")
+	if len(r.pending) != 0 {
+		t.Fatalf("%d timers after the lead stopped", len(r.pending))
+	}
+}
+
+func TestStatesThatOnlyARestartOrAKeyChangesAreNotPolled(t *testing.T) {
+	for _, state := range []string{"unknown", "stopped", "ended", "ready", "desired", ""} {
+		b := twoLeads(t)
+		b.listing.Leads[0].State = state
+		r := newRig(t, b, 140, 30)
+		if len(r.pending) != 0 {
+			t.Errorf("state %q: %d timers", state, len(r.pending))
+		}
+	}
+}
+
+func TestAStartThatTurnsToStartingIsFollowedWithoutAKey(t *testing.T) {
+	b := twoLeads(t)
+	b.answer = func(call) (Receipt, error) { return Receipt{CommandID: "s1", Op: OpStart, Status: Done, Epoch: 1}, nil }
+	r := newRig(t, b, 140, 30)
+	// The list that is read after the answer shows the lead starting.
+	b.listing.Leads[0].State, b.listing.Leads[0].Epoch = "starting", 1
+	b.listing.Leads[0].Last = &Receipt{CommandID: "s1", Op: OpStart, Status: Done}
+	r.key("s")
+	r.seen("starting")
+	if len(r.pending) != 1 {
+		t.Fatalf("%d timers: the receipt is done but the lead is starting", len(r.pending))
+	}
+	b.listing.Leads[0].State = "ready"
+	r.tick()
+	r.seen("ready")
+	if len(r.pending) != 0 {
+		t.Fatalf("%d timers", len(r.pending))
+	}
+}
