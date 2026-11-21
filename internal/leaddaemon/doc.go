@@ -193,8 +193,10 @@
 // or the lifecycle, and the lifecycle's own lock for the role keeps its settle
 // from overlapping a start or a stop. A lead shown unknown for a cut of the
 // registry (registry-recovered) has no timer. A timer ends when the intent is
-// no longer pending, on a proven stop, on a new start and at shutdown, where
-// the daemon joins it like the ready observers.
+// no longer pending, on a proven stop, on a new start, at shutdown, where the
+// daemon joins it like the ready observers, and when the lifecycle answers
+// that the reconcile at start did not act on the registry's cut journal (one
+// log line names the restart that settles the lead).
 //
 // # The owner connection
 //

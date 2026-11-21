@@ -595,6 +595,86 @@ func TestSettleALateLandingAfterTheSettleRefusesTheNextStart(t *testing.T) {
 	}
 }
 
+// A daemon whose reconcile at start did not act on the registry's cut journal
+// (here the manager does not answer within the reconcile's time) answers every
+// try of a timer with ErrNotReconciled: the timer ends after one line in the
+// log that names the restart, and does not go on trying once a minute. The
+// lead is left as it is shown.
+func TestSettleEndsOnACutJournalThatTheReconcileDidNotAct(t *testing.T) {
+	s := newSettleEnv(t)
+	s.startDaemonOn()
+	want(t, s.define("alpha"), leadwire.StatusDone, "")
+	want(t, s.define("beta"), leadwire.StatusDone, "")
+	s.holder("beta", submitted)
+	s.fake.DropNextStart(s.roleOf("beta").UnitName())
+	want(t, s.startLead("beta"), leadwire.StatusUncertain, codeLaunchUncertain)
+	if state, code, _, _ := s.shown("beta"); state != "unknown" || code != "launch-reply-lost" {
+		t.Fatalf("shown %q (%s)", state, code)
+	}
+	if err := s.running.stop(); err != nil {
+		t.Fatalf("the daemon did not stop clean: %v", err)
+	}
+	// A torn tail: the registry cuts it when it opens.
+	f, err := os.OpenFile(filepath.Join(s.state, RegistryDirName, leadregistry.FileName), os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"seq":99,"time":"2026`); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	// The manager does not answer during the reconcile, which runs out of time
+	// before it has acted on the cut.
+	s.gate.blockInspect.Store(true)
+	cfg := s.daemonConfig()
+	cfg.Clock = s.clk
+	cfg.ReconcileTimeout = 300 * time.Millisecond
+	s.running = s.env.startDaemon(cfg)
+	s.gate.blockInspect.Store(false)
+	if !strings.Contains(s.log.String(), "the reconcile did not finish") {
+		t.Fatalf("the reconcile finished:\n%s", s.log)
+	}
+	if state, code, _, _ := s.shown("beta"); state != "unknown" || code != "launch-reply-lost" {
+		t.Fatalf("shown %q (%s)\nlog:\n%s", state, code, s.log)
+	}
+	s.clk.waitLongSleeps(t, 1)
+
+	// The deadline passes: the first try ends the timer with one line.
+	s.clk.Advance(leadlifecycle.DefaultLateStartWindow + leadlifecycle.DefaultLateStartMargin + time.Second)
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(s.log.String(), "the timer ends, and a restart of the daemon settles it") {
+		if time.Now().After(deadline) {
+			t.Fatalf("no line about the cut journal:\n%s", s.log)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// No try follows: no wait is asked for, and nothing else is logged.
+	sleeps, logged := s.clk.longSleeps(), s.log.String()
+	for i := 0; i < 3; i++ {
+		s.clk.Advance(settleRetryLongest)
+		time.Sleep(50 * time.Millisecond)
+	}
+	if n := s.clk.longSleeps(); n != sleeps {
+		t.Fatalf("%d waits after the timer ended, %d before", n, sleeps)
+	}
+	if now := s.log.String(); now != logged {
+		t.Fatalf("the log grew after the timer ended:\n%s", now[len(logged):])
+	}
+	if n := strings.Count(s.log.String(), "the timer ends, and a restart of the daemon settles it"); n != 1 {
+		t.Fatalf("%d lines, want one:\n%s", n, s.log)
+	}
+	if strings.Contains(s.log.String(), "could not be settled") {
+		t.Fatalf("a try was logged as a failure to retry:\n%s", s.log)
+	}
+	if state, code, _, _ := s.shown("beta"); state != "unknown" || code != "launch-reply-lost" {
+		t.Fatalf("shown %q (%s)", state, code)
+	}
+	if starts, signals := s.startsAndSignals(); starts != 1 || signals != 0 {
+		t.Fatalf("%d starts and %d signals", starts, signals)
+	}
+}
+
 // journalLines is how many records the registry's journal holds now.
 func (s *settleEnv) journalLines() int {
 	s.t.Helper()

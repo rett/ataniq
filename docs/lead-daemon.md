@@ -1090,8 +1090,13 @@ What the timer does when it cannot settle:
   new unit can follow only a settle that recorded the role `stopped`.
 
 A timer ends when the intent is no longer pending, on a proven stop, on a new
-start of the role, and at shutdown, where the daemon joins it. The daemon that
-is not in scratch mode has no timer, and the settle still needs a restart.
+start of the role, and at shutdown, where the daemon joins it. It also ends when
+the lifecycle answers that the reconcile at start did not act on the registry's
+cut journal (a reconcile that ran out of time or failed for a role during a
+cut): nothing in a running daemon reconciles again, so no later try would be
+answered otherwise. The daemon logs one line, naming the restart that settles
+the role, and the role stays as it is shown. The daemon that is not in scratch
+mode has no timer, and the settle still needs a restart.
 
 **The window is a heuristic and not a bound.** The manager's call timeout limits
 how long the caller waits for a reply, not when systemd executes a request that

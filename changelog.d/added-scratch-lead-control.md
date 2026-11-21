@@ -129,5 +129,7 @@
   stays `unknown`, with the reason `control-group-not-proven-empty` in the
   second case), and a lead shown `unknown` for `registry-recovered` has no
   timer. The timer starts nothing, never waits for the role's lock, ends on a
-  stop, a new start and at shutdown. See `docs/lead-daemon.md` and
+  stop, a new start and at shutdown, and ends with one log line that names the
+  restart when the daemon's reconcile at start did not act on a cut of the
+  registry's journal. See `docs/lead-daemon.md` and
   `docs/scratch-leads.md`.

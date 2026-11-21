@@ -4,9 +4,11 @@ package leaddaemon
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
+	"ataniq/internal/leadlifecycle"
 	"ataniq/internal/leadregistry"
 	"ataniq/internal/leadrole"
 )
@@ -39,7 +41,10 @@ import (
 // unknown for a cut of the registry (registry-recovered) is the owner's and is
 // never armed. A timer ends when the intent is no longer pending, when the
 // role no longer shows the epoch and intent it was armed for, on a proven stop,
-// on a new start and when the daemon stops.
+// on a new start, when the daemon stops, and when the lifecycle answers that
+// the reconcile at start did not act on the registry's cut journal (the daemon
+// logs it once and names the restart: nothing in a running daemon reconciles
+// again, so no later try would be answered otherwise).
 //
 // The timer takes the role's operation lock as a try-lock, for one read of the
 // registry that checks the role still shows what it was armed for, and never
@@ -283,6 +288,13 @@ func (l *leadMode) settleStep(ctx context.Context, lr *leadRole, me *settler) (a
 	}
 	if err != nil {
 		if l.registryDown(err) {
+			return false
+		}
+		if errors.Is(err, leadlifecycle.ErrNotReconciled) {
+			// The reconcile at start did not act on the registry's cut journal,
+			// and nothing in this daemon runs it again: every later try would
+			// give the same answer. The role is left as it is shown.
+			l.d.logf("scratch settle %q: the launch of epoch %d cannot be settled by this daemon, which did not finish acting on the registry's cut journal at its start; the timer ends, and a restart of the daemon settles it", lr.key, me.epoch)
 			return false
 		}
 		l.d.logf("scratch settle %q: the launch of epoch %d could not be settled: %s; the daemon tries again", lr.key, me.epoch, SafeText(err.Error()))

@@ -762,7 +762,11 @@ What the timer does not do:
   proven empty its reason becomes `control-group-not-proven-empty`) and the timer
   tries again after 2 s, then at doubling waits up to a minute, until the intent
   is settled or the lead no longer shows it; the daemon logs each try and a
-  repeated try adds nothing to the registry's journal. A daemon that is not in scratch mode has no timer.
+  repeated try adds nothing to the registry's journal. A daemon whose reconcile
+  at start did not act on a cut of the registry's journal (it ran out of time or
+  failed during the cut) ends the timer at its first try, with one log line that
+  names the restart, because only a restart reconciles again. A daemon that is
+  not in scratch mode has no timer.
 
 The console's leads view does not read the list by a timer for a lead that is
 `unknown`: press `r` after the 40 s to see the settled lead. The row's line, the
