@@ -220,7 +220,8 @@ that Ataniq made, with an explicit `--git-dir`. The package comment of
 The template is a JSON file that you write. It says which commands run, and
 the command trusts it. It is not checked to be a sandbox: the package fills in
 the argument lists and does nothing more. You vouch for it. The file must not
-be in the state root (a lead could change it), is read through a safe open (a
+be in the state root, which is kept for the host's records and journal and free
+of configuration (a lead's sandbox cannot write the host's folders), is read through a safe open (a
 symlink is refused) and is at most 64 KiB.
 
 Both sections are optional. A step whose section is absent refuses and runs
@@ -373,7 +374,7 @@ It prints:
 `--diff` also prints the patch of the net change. The review has limits that
 are not options: 5000 commits, 20 000 paths and 16 MiB of patch.
 
-A path can carry several flags. These are the kinds:
+A path can carry several flags. These are the kinds (`odd-path` is for the merge mode only, see [merge mode](#merge-mode-of-verification)):
 
 | Kind | Why it exists |
 | --- | --- |
@@ -382,6 +383,7 @@ A path can carry several flags. These are the kinds:
 | `submodule` | The entry is, or was, a submodule. A submodule fetches and runs other code. |
 | `aliased` | A symbolic link whose own path is execution config stands for a folder, and this path lies in that folder. A link that points out of the repository, at an absolute path, or through too long a chain of links, is flagged on its own path. |
 | `history-only` | The path is execution config, a link or a submodule, or lies in a folder that a link stands for, in the change of some commit of the branch, and the net change does not show it: it was added and removed again, or changed and changed back, or it was a link or a submodule in a commit and is neither at the tip. It still enters upstream history, so it needs a sign-off too. |
+| `odd-path` | The matcher cannot be trusted with the path: it holds bytes that are not UTF-8, a control or format character, a colon, a `~` followed by a digit, or it is not in Unicode normalization form C, so another file system could read it as a different name. Merge mode only: the review of a merge the host built flags it, and the review of a lead branch never does. |
 
 ### verify
 
@@ -418,6 +420,39 @@ ends the run.
 The exit status is 0 only for a pass. A pass whose record was stored but could
 not be synced to disk is still a pass: the command exits 0 and warns on
 standard error.
+
+#### Merge mode of verification
+
+Merge mode is the mode of the intake's review as well as of its verification: the owner channel (tagged build only, not qualified) reviews a merge the host built, with the flag kind `odd-path` and a fuller summary, and verifies it.
+The package `internal/intake/verify` and the records store also verify a merge
+that the host built, which sits under a pin in `refs/ataniq/pending/`. No
+command offers this mode: the host adapter of the owner channel (package
+`internal/approval/hostadapter`, tagged build only) calls it for each merge it
+builds, with the pin, the merge and the target's tip it was built on, and counts
+the records of this mode by the rules below before it moves a target. It differs
+from the verification of a lead branch in these ways:
+
+- **The request.** `Merge` is set, `TipRef` is the pin (a name under
+  `refs/ataniq/pending/` only) and `Base` is the target's tip the merge was
+  built against. A pin is refused in lead mode, a lead ref in merge mode, a
+  base in lead mode, and merge mode without a full-length base.
+- **The script.** It fetches the pin by its exact name, checks that it is
+  exactly the merge that was reviewed, and then checks that this commit has
+  exactly two parents and that the first is the base. Any other shape (one
+  parent, three, none, the parents the other way round, another first parent)
+  ends the run with status 93 before any gate runs. The run is not a pass.
+- **The record.** A record of merge mode holds `"merge": true` and the `"base"`
+  next to the pin, as `tip_ref`, and the merge, as `tip`. A record of a lead
+  branch has neither key and is written and read as before; the store refuses
+  a pin in a lead-mode result and a lead ref in a merge-mode one.
+- **The evidence.** `integrate` of a merge counts only merge-mode records of
+  its project whose merge is the tip being integrated and whose base is the
+  target's tip the review was made against. A record of a lead branch for the
+  same commit id, and a merge record made against another base, are not
+  evidence and do not withdraw a pass either. Among the records that count, the
+  newest decides, as for a lead branch: a later failed run withdraws an earlier
+  pass. `integrate` of a lead branch ignores merge-mode records in the same
+  way.
 
 ### integrate
 

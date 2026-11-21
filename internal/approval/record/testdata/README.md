@@ -163,7 +163,7 @@ record with several faults has, beyond the order of the five steps.
   `[a-z0-9-]{1,48}`. A feature name is a name. A request id is `rq-` and
   then a name; a pending id is `ap-` and then a name.
 - **Flag kind.** One of `exec-config`, `symlink`, `submodule`, `aliased`,
-  `history-only`.
+  `history-only`, `odd-path`.
 
 Every list of words below is closed, and the words are matched byte for
 byte: `Feature Finish` is not a verb.

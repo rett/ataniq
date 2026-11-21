@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -78,6 +79,15 @@ type Config struct {
 	// Server holds the options of the socket server; the zero value is the
 	// production one.
 	Server clientapi.Options
+	// ServeHook, when set, is called once, with both locks held and the socket
+	// bound, just before the server starts. It may add extensions and set
+	// options through opts, and may return a wrapper of the listener; the
+	// returned function, when not nil, is called when the server has ended
+	// (not after a server that is abandoned at shutdown). An error stops the
+	// daemon at [StepServe]. Nothing in a release build sets it: the command
+	// sets it only in a build with the ataniq_ownerchannel tag, and only for
+	// the owner channel's flag.
+	ServeHook func(l net.Listener, opts *clientapi.Options) (net.Listener, func(), error)
 	// Observe, when set, is called as each step begins. A test records the
 	// order with it.
 	Observe func(Step)
@@ -341,6 +351,21 @@ func Run(ctx context.Context, cfg Config) error {
 	done := make(chan error, 1)
 	srvOpts := d.Server
 	srvOpts.Extra = append(slices.Clone(srvOpts.Extra), canary.extensions(ctl, reg)...)
+	if d.ServeHook != nil {
+		wrapped, hookDone, err := d.ServeHook(l, &srvOpts)
+		if err != nil {
+			l.Close()
+			return &StartupError{Step: StepServe, Err: err}
+		}
+		l = wrapped
+		if hookDone != nil {
+			defer func() {
+				if !abandoned {
+					hookDone()
+				}
+			}()
+		}
+	}
 	go func() {
 		done <- clientapi.Serve(serveCtx, l, &handler{reg: reg, version: d.Version, info: info}, srvOpts)
 	}()

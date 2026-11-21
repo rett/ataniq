@@ -51,6 +51,15 @@ func checkRefName(name, prefix string) error {
 	return nil
 }
 
+// tipPrefix is the namespace of the tip ref: the lead's branches, or in merge
+// mode the pins of the host's merges.
+func tipPrefix(merge bool) string {
+	if merge {
+		return PendingPrefix
+	}
+	return "refs/leads/"
+}
+
 // resolve reads the two refs by their exact names in one for-each-ref run,
 // so both ids come from one listing, and checks that each names a commit.
 // A pattern of for-each-ref matches a name and what lies below it; only the

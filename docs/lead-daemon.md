@@ -88,7 +88,7 @@ The command is Linux only. On another platform it prints that and exits 1.
 ### Commands and flags
 
 ```text
-ataniqd run [--state-dir DIR] [--runtime-dir DIR]
+ataniqd run [--state-dir DIR] [--runtime-dir DIR] [--owner-channel]
 ataniqd status [--socket PATH] [--json]
 ataniqd version
 ```
@@ -97,6 +97,7 @@ ataniqd version
 | --- | --- | --- |
 | `run --state-dir DIR` | `$XDG_STATE_HOME/ataniq`, else `$HOME/.local/state/ataniq` | The state folder. |
 | `run --runtime-dir DIR` | `$XDG_RUNTIME_DIR/ataniq` | The folder that holds `daemon.sock`. |
+| `run --owner-channel` | off | Tagged build only (tag `ataniq_ownerchannel`): serve the owner connection. See [the owner channel](#the-owner-channel-tagged-build-only). |
 | `status --socket PATH` | `$XDG_RUNTIME_DIR/ataniq/daemon.sock` | The socket to ask. |
 | `status --json` | off | Print the status result as JSON. |
 
@@ -228,6 +229,170 @@ when the daemon goes away keeps running. A SIGKILL or a crash skips all of it;
 the kernel releases the locks, and a socket file may stay behind, which the
 next daemon removes after it holds both locks. A lock file that stays behind is
 no obstacle: the lock is the `flock`, not the file.
+
+## The owner channel (tagged build only)
+
+Release builds of the daemon contain no owner channel: no flag, no `owner.*` operation in
+`hello`, no code. It exists only in a build made with the tag
+`ataniq_ownerchannel`, for a scratch pass. It is provisional, and **none of it is
+qualified**: the door behind it is a stand-in that gives no real approval. The
+tests of that code run with `make test-ownerchannel` (the tagged packages with
+the tag, and again with the tags `ataniq_ownerchannel` and `ataniq_canary` for the
+packages that hold both); `make test` stays untagged and skips them.
+
+### Starting it
+
+```text
+ataniqd run --owner-channel [--state-dir DIR] [--runtime-dir DIR]
+```
+
+`--owner-channel` is a flag of `run` in the tagged build only. With it the
+daemon serves the owner connection, the `owner.*` operations of the console's
+approvals, on the same socket and the same protocol, and `hello` lists them.
+Without it the tagged build lists none, as a release build does. The place of
+the one connection that may decide goes to a console of the owner that has a
+controlling terminal. The daemon refuses to start with the flag when its build
+cannot build the host's side of a card or when the settings below are wrong,
+with exit code 10 and before it takes a lock. At start it prints one line on
+standard error, the STAND-IN banner:
+
+```text
+ataniqd: owner channel: STAND-IN door, scratch state: no real approval
+```
+
+### The scratch settings
+
+The host's side of a card is built from `owner/scratch.json` in the state
+folder, over the real journal in `owner/` and the stand-in for the planner's
+door, which keeps nothing across a restart. Its keys:
+
+- `"door"`: must be `"stand-in"`. Any other value, or none, is refused.
+- `"roots"`: the scratch folders, one of which holds the mirror. The daemon
+  refuses a state folder, a root or a mirror that is, lies inside or contains
+  the account's default state or runtime folder. It refuses a drop folder that
+  is, lies inside or contains a default folder or the state folder (so its
+  `owner/` folder too).
+- `"sandbox"`: the clean absolute path of the sandbox template file, the same
+  template `ataniq-intake verify --sandbox` takes (see
+  [lead-intake.md](lead-intake.md)). It lies under a scratch root and not in
+  the state folder, which is kept for the host's records and journal and free
+  of configuration, and not in the drop folder, the mirror or the work folder.
+- `"work"`: the clean absolute path of the folder the runs work in, under a
+  scratch root, outside the state folder and apart from the mirror and the drop
+  folder. The daemon
+  makes it with mode 0700 when it is not there (its parent must exist).
+
+The settings also name the project, its mirror, the role, the target, the
+commit identity, the gates and the folder requests are dropped in. `sandbox`
+and `work` are required: the daemon refuses `--owner-channel` without them or
+with paths that are not scratch paths. A request is a file named after its
+request id with the suffix `.request` in the drop folder, and its reply is a
+file beside it, the only reply this build writes. A request that a stop left taken but never
+handled gets one `request-invalid` reply, asking for a new request id, from the
+first scan after the next start. The suite is the intake's
+merge-mode verification (`internal/intake/verify` with its real runner): the
+merge is fetched through the pin under `refs/ataniq/pending/`, checked to have
+two parents with the target's tip first, and the gates run in the sandbox. The
+daemon builds it without starting anything: the template is read, and a
+sandbox is started, only when a request is verified, and each run reads the
+template again. The record of the run is kept in `owner/records` as a
+merge-mode record, which is the only kind the host's approval counts. An
+approval applies by one ref transaction with the old value, with no checkout and
+no hook; a target that moved gives `not-applied` and changes nothing.
+
+### What ran on a stand-in, and what waits for a seated lead
+
+The end-to-end test is in `internal/approval/hostadapter` (`e2e_test.go` and
+`e2e_oc_test.go`, run with the tag `ataniq_ownerchannel` and `-run OwnerChannel`)
+and `internal/leaddaemon/ownerchannel_contract_test.go`. It joins the console's
+approvals model, the console's client, the daemon on a private socket, the
+service, the real journal, the host adapter and a temporary bare mirror, over the
+stand-in door and a fake verification suite. No sandbox, no unit and no lead
+runs in it. A case that passed there proves the host's side only, against a door
+that is kinder than the real one. **None of this is qualified**: every case is
+run again against the real door on a seated lead, and counts as qualified only
+then.
+
+Covered by the end-to-end test on the stand-in:
+
+- OC4, the host's part: the branch moved or the request withdrawn with the card
+  open (`TestOwnerChannelOC4TheFeatureMovesOrTheRequestIsWithdrawnWithTheCardOpen`).
+  Not covered there: the typed text dropped when the card ends under the owner's
+  hands, which is the console's own test.
+- OC5, a target that moves after the decision (`TestOwnerChannelOC5TheTargetMovesAfterTheCard`).
+- OC6, one decision used twice, over the wire, at the door and at the ref
+  (`TestOwnerChannelOC6OneDecisionUsedTwice`). Not covered: a store file restored
+  from a copy, which the stand-in cannot show because it keeps nothing on disk.
+- OC7, expiry of a pending and of an approved request
+  (`TestOwnerChannelOC7ExpiryOfAPendingAndOfAnApprovedRequest`).
+- OC9, the host's part: a stop at each crash point and a restart with a held
+  decision, which delivers nothing (`TestOwnerChannelOC9StopsAtEachCrashPoint`,
+  `TestOwnerChannelOC9AHeldDecisionIsNotDeliveredByARestart`). Not covered: the
+  stop of the whole daemon on a seated lead.
+- OC15, the summary of a known change set (`TestOwnerChannelOC15TheSummaryOfAKnownChangeSet`).
+- OC16, a missing or surplus sign-off (`TestOwnerChannelOC16MissingAndSurplusSignOff`).
+- OC17, a wrong digest, epoch, revision or id (`TestOwnerChannelOC17WrongDigestEpochRevisionOrId`).
+- OC18, a lead-made merge named as the tip (`TestOwnerChannelOC18ALeadMadeMergeNamedAsTheTip`).
+- OC21, restarts of the console and the daemon with a card pending and a
+  request being verified (`TestOwnerChannelOC21RestartsOfTheConsoleAndTheDaemon`).
+  A verification that the stop interrupted leaves no card and no pin and is
+  answered `request-invalid`; the lead must ask again, and the new request runs
+  the verification from the start.
+- OC23, the host's part: the full cycle and where the confirm code and the plan
+  token are (`TestOwnerChannelOC23FullCycleAndWhereTheCodeAndTheTokenAre`).
+- OC24, the journal and the store made to disagree (`TestOwnerChannelOC24TheJournalAndTheDoorDisagree`).
+- OC27, the attribute cases (`TestOwnerChannelOC27AttributesOfTheTreeChangeNothing`).
+- OC31, the outcomes of a verification, failed, stopped or cut, and the voiding
+  of an approval by a later failed run (`TestOwnerChannelOC31VerificationOutcomes`).
+  Not covered: the sandbox's reach (a suite that reads the lead's home, reaches
+  the network or writes outside its checkout), because the suite is a fake.
+- OC33, hostile commit headers (`TestOwnerChannelOC33HostileCommitHeaders`).
+
+Covered only on the daemon side: OC13, who may send a decision frame, in
+`ownerchannel_contract_test.go` and `owner_decider_linux_test.go` (a second
+console, a client with no terminal, a client that does not name the console).
+A holder attach connection and Remote Control as
+a sender are not covered.
+
+Not covered by the end-to-end test, only by the package tests of the part
+concerned: bad or reused ids, bad feature names and extra fields (OC3, in the
+record package's test vectors and the collector's tests in
+`internal/approval/hostadapter`; that the card then shows only the host's plan
+and token is not tested); hostile text and terminal answers at the confirm
+field (OC10, OC11), in the console's tests; ask, read, withdraw, ask again
+(OC28: the "differs from" block in the console's tests, and the
+`request-duplicate` refusal only on the stand-in door, in
+`internal/approval/door/doortest`; the real door's is not covered); one verification at a time
+(OC14, the host's part, in `internal/approval/ownerchannel`; the real door's caps
+and throttle are not covered); a clock moved back (OC22, in the same package's
+restart test); the pin against a rewritten branch (OC25, in
+`internal/approval/hostadapter`, where maintenance is run by hand on the test
+mirror; the build has no maintenance entry point to refuse); the `odd-path` flag
+(OC29, in the intake's tests and the host adapter's review test). For OC29's
+registry edit between plan and use, only the stand-in door's refusal of a
+changed rule-set digest at use is tested; an actual edit is not testable,
+because the host reads the project's rules once at start, so it is not
+covered.
+
+Not covered at all, because they need a seated lead or the real door: the
+sandbox cannot reach the socket, journal or store (OC1); `--approved` from a
+managed seat (OC2); seat transfer with requests open (OC8); a drawn copy of the
+card, which is the owner's judgement (OC12); the real door's caps and throttle
+(OC14); a same-user process as the decider, which is the stated limit of this
+build (OC20); requests across a handoff (OC26); and a member inside the lead's
+sandbox (OC30). OC19 is withdrawn, and prune requests are out of scope (OC32).
+
+What the tests found about the places of secrets:
+
+- The confirm code appears in no place, on the wire or off it. The console draws
+  it and keeps it in its model.
+- The plan token appears in the host's own journal, only inside the one `decision`
+  record, which repeats it so that a refusal can name the field that differs. The
+  design's OC23 lists the places a sandbox can read (the reply, the request and
+  the note in the drop folder, the intake's records and the mirror); the host's
+  journal is not one of them, and none of those holds the token.
+- The owner channel's verification runs the project's gates in the verification
+  sandbox. It was never run for real: the tests use a fake runner.
 
 ## The client socket and protocol
 

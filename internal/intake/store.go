@@ -199,19 +199,25 @@ func (s *Store) put(name string, data []byte) error {
 // is returned together with an error that matches [ErrNotSynced]: a warning,
 // the record is there.
 //
+// A lead-mode result (Merge false) must name a ref under refs/leads/ and have
+// no Base; a merge-mode result must name a pin under [PendingPrefix] and have
+// the Base the merge was built against. The other combinations are refused,
+// so that a record never names a ref of the other mode. The record keeps
+// Merge and Base.
+//
 // PutVerification records what it is given, also a failure. Whether a record
 // allows an integration is decided by [Integrate].
 func (s *Store) PutVerification(project string, res verify.Result, gates []verify.Gate) (VerificationRecord, error) {
 	if !sandboxplan.ValidName(project) {
 		return VerificationRecord{}, fmt.Errorf("%w: the project name is not valid", ErrStore)
 	}
-	if err := checkRefName(res.TipRef, "refs/leads/"); err != nil {
+	if err := checkRefName(res.TipRef, tipPrefix(res.Merge)); err != nil {
 		return VerificationRecord{}, err
 	}
 	sum := sha256.Sum256(res.Output)
 	rec := VerificationRecord{
 		Version: recordVersion, Project: project, TipRef: res.TipRef, Tip: res.Tip,
-		PlanDigest: res.PlanDigest, Gates: slices.Clone(gates),
+		Merge: res.Merge, Base: res.Base, PlanDigest: res.PlanDigest, Gates: slices.Clone(gates),
 		Passed: res.Passed, Exit: res.Exit, Stopped: res.Stopped,
 		OutputSHA256: hex.EncodeToString(sum[:]), OutputBytes: int64(len(res.Output)), OutputCut: res.OutputCut,
 		Started: res.Started, DurationMS: res.Duration.Milliseconds(),

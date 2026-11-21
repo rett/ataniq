@@ -29,8 +29,21 @@
 // Exit statuses 90 to 99 are reserved for the script's own failures: 90 means
 // the tip ref no longer resolves to the reviewed tip, 91 that the scratch
 // repository could not be made or the ref could not be fetched, 92 that the
-// checkout failed. A gate can exit with one of these statuses too, and it is
+// checkout failed, and 93 (merge mode only) that the fetched commit is not a
+// merge of two parents whose first is the recorded base. A gate can exit with one of these statuses too, and it is
 // reported as it is. The status alone does not say who produced it.
+//
+// # Merge mode
+//
+// A request with Merge set verifies the merge that the host built, and not a
+// lead branch. TipRef is then a pin under [PendingPrefix] and Base is the
+// target's tip the merge was built against; a pin is refused in lead mode, a
+// lead ref in merge mode, a Base in lead mode, and merge mode without a Base.
+// [MergeScript] fetches the pin by its exact name and, after the tip check and
+// before any gate, checks that the fetched commit has exactly two parents and
+// that the first is Base. Any other shape ends with status 93 and no gate
+// runs. The result carries Merge and Base, so that a record of it says which
+// merge on which base it is evidence for.
 //
 // # What a pass means
 //

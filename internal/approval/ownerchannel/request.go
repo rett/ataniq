@@ -173,6 +173,9 @@ func (f *flow) build(ctx context.Context) (RequestStatus, error) {
 	}
 	res, err := s.cfg.Intake.Resolve(ctx, ResolveInput{Project: f.in.Project, Request: f.req})
 	if err != nil {
+		if e, ok := leadCode(err); ok {
+			return f.refuse(ctx, e.Code, e.Detail)
+		}
 		return f.failed(ctx, err, "the host could not read the feature and the target")
 	}
 	if res.FeatureTip != f.req.FeatureSHA {
@@ -224,6 +227,9 @@ func (f *flow) build(ctx context.Context) (RequestStatus, error) {
 
 	summary, err := s.cfg.Intake.Review(ctx, ReviewInput{Project: f.in.Project, Base: res.TargetTip, Merge: built.Commit})
 	if err != nil {
+		if e, ok := leadCode(err); ok {
+			return f.refuse(ctx, e.Code, e.Detail)
+		}
 		return f.failed(ctx, err, "the host could not review the merge")
 	}
 	if summary.Base != res.TargetTip || summary.Tip != built.Commit {
@@ -268,6 +274,26 @@ func (f *flow) build(ctx context.Context) (RequestStatus, error) {
 	f.status = RequestStatus{RequestID: f.req.RequestID, State: RequestPending, PendingID: p.ID}
 	s.setStatus(f.status)
 	return f.status, nil
+}
+
+// leadCodes is the closed set of codes an intake refusal may carry to the
+// lead's reply: the lead can act on each (fix the name, rebase the branch,
+// split the change). Any other code, and any error that is not a refusal, is
+// a failure of the host and is answered request-invalid with a fixed line.
+var leadCodes = map[record.Code]bool{
+	record.CodeFeatureName:     true,
+	record.CodeFeatureMoved:    true,
+	record.CodeRecordTooLarge:  true,
+	record.CodeBindingMismatch: true,
+	record.CodeRequestInvalid:  true,
+}
+
+// leadCode returns the refusal in err when its code is in [leadCodes].
+func leadCode(err error) (*record.Error, bool) {
+	if e, ok := doorRefusal(err); ok && leadCodes[e.Code] {
+		return e, true
+	}
+	return nil, false
 }
 
 // suiteEvidence reports whether e is a well-formed suite record.

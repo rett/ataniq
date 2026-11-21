@@ -25,7 +25,17 @@ const (
 	// ExitCheckoutFailed is the status when the tip could not be checked
 	// out.
 	ExitCheckoutFailed = 92
+	// ExitNotMerge is the status of a merge-mode script when the fetched
+	// commit is not a commit of exactly two parents whose first is the
+	// recorded base.
+	ExitNotMerge = 93
 )
+
+// PendingPrefix is the namespace of the pins of host-built merges: the refs
+// that a request in merge mode may name. It is the prefix of package
+// mergebuild's pins and of the intake's own constant of the same name; a test
+// holds them equal.
+const PendingPrefix = "refs/ataniq/pending/"
 
 // MarkerPrefix starts the line the script prints before each gate. The line
 // is "ataniq-verify: gate <name>".
@@ -176,11 +186,17 @@ func checkTip(tip string) error {
 	return nil
 }
 
-// checkTipRef reports why ref cannot be the lead ref to verify: it must be
-// under refs/leads/ and a valid ref name by the rules of git check-ref-format.
-func checkTipRef(ref string) error {
-	if !strings.HasPrefix(ref, leadsPrefix) || len(ref) == len(leadsPrefix) {
-		return fmt.Errorf("verify: tip ref %q is not under %s", ref, leadsPrefix)
+// checkTipRef reports why ref cannot be the ref to verify. In lead mode it
+// must be under refs/leads/ and only there; in merge mode it must be under
+// [PendingPrefix] and only there. In both it must be a valid ref name by the
+// rules of git check-ref-format.
+func checkTipRef(ref string, merge bool) error {
+	prefix := leadsPrefix
+	if merge {
+		prefix = PendingPrefix
+	}
+	if !strings.HasPrefix(ref, prefix) || len(ref) == len(prefix) {
+		return fmt.Errorf("verify: tip ref %q is not under %s", ref, prefix)
 	}
 	if len(ref) > 1024 {
 		return errors.New("verify: tip ref is longer than 1024 bytes")
@@ -230,10 +246,26 @@ func checkInsidePath(what, p string) error {
 // gate as a program, in a subshell, from the tree's root. The first gate that
 // fails ends the script with its status. Standard error is joined to standard output.
 func Script(tipRef, tip string, mirrorInside, scratchInside string, gates []Gate) (string, error) {
-	if err := checkTipRef(tipRef); err != nil {
+	return makeScript(false, tipRef, tip, "", mirrorInside, scratchInside, gates)
+}
+
+// MergeScript is [Script] for merge mode: tipRef is a pin under
+// [PendingPrefix] and base is the target's tip the merge was built against.
+// After the fetch, and before any gate, the script checks that the fetched
+// commit is tip, and that it has exactly two parents and the first is base;
+// otherwise it ends with [ExitNotMerge] and no gate runs.
+func MergeScript(tipRef, tip, base string, mirrorInside, scratchInside string, gates []Gate) (string, error) {
+	return makeScript(true, tipRef, tip, base, mirrorInside, scratchInside, gates)
+}
+
+func makeScript(merge bool, tipRef, tip, base string, mirrorInside, scratchInside string, gates []Gate) (string, error) {
+	if err := checkTipRef(tipRef, merge); err != nil {
 		return "", err
 	}
 	if err := checkTip(tip); err != nil {
+		return "", err
+	}
+	if err := checkBase(merge, tip, base); err != nil {
 		return "", err
 	}
 	if err := checkInsidePath("mirror path", mirrorInside); err != nil {
@@ -245,13 +277,34 @@ func Script(tipRef, tip string, mirrorInside, scratchInside string, gates []Gate
 	if err := validateGates(gates); err != nil {
 		return "", err
 	}
-	return buildScript(tipRef, tip, mirrorInside, scratchInside, gates)
+	return buildScriptMode(merge, tipRef, tip, base, mirrorInside, scratchInside, gates)
+}
+
+// checkBase reports why base is not acceptable for the mode: in merge mode a
+// full object id of the format of tip, in lead mode empty.
+func checkBase(merge bool, tip, base string) error {
+	if !merge {
+		if base != "" {
+			return errors.New("verify: a base is for merge mode only")
+		}
+		return nil
+	}
+	if !gitenv.IsObjectID(base) || len(base) != len(tip) {
+		return errors.New("verify: base is not a full lower-case object id of the format of the tip")
+	}
+	return nil
 }
 
 // buildScript writes the text of [Script] for arguments that were checked.
 // It is separate so that a test can show what the script does with a gate
 // that validation would refuse.
 func buildScript(tipRef, tip string, mirrorInside, scratchInside string, gates []Gate) (string, error) {
+	return buildScriptMode(false, tipRef, tip, "", mirrorInside, scratchInside, gates)
+}
+
+// buildScriptMode is [buildScript] with the merge-mode check of the fetched
+// commit's parents when merge is true.
+func buildScriptMode(merge bool, tipRef, tip, base string, mirrorInside, scratchInside string, gates []Gate) (string, error) {
 	q := func(s string) string {
 		out, err := sandboxplan.ShellQuote([]string{s})
 		if err != nil {
@@ -281,6 +334,14 @@ func buildScript(tipRef, tip string, mirrorInside, scratchInside string, gates [
 	b.WriteString(fail(ExitFetchFailed, "cannot fetch the tip ref from the mirror"))
 	b.WriteString(`[ "$(git rev-parse --verify --quiet ` + tipLocalRef + `)" = ` + q(tip) + ` ] `)
 	b.WriteString(fail(ExitTipMismatch, "the tip ref does not resolve to the reviewed tip"))
+	if merge {
+		// The parents of the fetched commit: its own id, then each parent.
+		// Exactly two words after the id, the first the base. A failed
+		// listing leaves no words, which is refused as well.
+		b.WriteString("set -- $(git rev-list --parents -n 1 " + tipLocalRef + " 2>/dev/null || true)\n")
+		b.WriteString(`[ "$#" -eq 3 ] && [ "$2" = ` + q(base) + ` ] `)
+		b.WriteString(fail(ExitNotMerge, "the tip is not a merge whose first parent is the base"))
+	}
 	b.WriteString("git checkout --quiet --detach " + tipLocalRef + " ")
 	b.WriteString(fail(ExitCheckoutFailed, "cannot check out the tip"))
 	b.WriteString("unset GIT_CONFIG_NOSYSTEM GIT_TERMINAL_PROMPT\n")

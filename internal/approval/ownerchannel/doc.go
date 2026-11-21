@@ -25,7 +25,11 @@
 // the feature and the target, the merge builder writes and pins the merge,
 // the verifier runs the suite on it and the intake reviews it; then the door
 // plans it into a pending record. Anything but a clean verification refuses
-// the request verification-failed and makes no card. Every refusal is
+// the request verification-failed and makes no card. A refusal of the intake
+// (resolving or reviewing) reaches the lead with its own code when the code is
+// one of feature-name, feature-moved, record-too-large, binding-mismatch and
+// request-invalid; any other failure of the intake is request-invalid with a
+// fixed line. Every refusal is
 // answered in the lead's mailbox, undoes the pin, ends the request at the
 // door through [RequestEnder] when there is one, and is counted. The count
 // from the first card, whether the request would have met the First

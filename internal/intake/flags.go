@@ -8,7 +8,7 @@ import (
 )
 
 // kindOrder is the order of the kinds when flags of one path are sorted.
-var kindOrder = []FlagKind{FlagExecConfig, FlagSymlink, FlagSubmodule, FlagAliased, FlagHistory}
+var kindOrder = []FlagKind{FlagExecConfig, FlagSymlink, FlagSubmodule, FlagAliased, FlagHistory, FlagOddPath}
 
 func kindRank(k FlagKind) int {
 	if i := slices.Index(kindOrder, k); i >= 0 {

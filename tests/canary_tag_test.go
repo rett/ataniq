@@ -65,7 +65,8 @@ var canaryForbiddenDeps = []string{
 }
 
 // canaryMakeTargets are the Makefile targets whose recipes may name the tag.
-var canaryMakeTargets = []string{"test-canary", "canary-build"}
+// test-ownerchannel runs the pair of tags together, so it names this one too.
+var canaryMakeTargets = []string{"test-canary", "canary-build", "test-ownerchannel"}
 
 func underAnyPath(p string, folders []string) bool {
 	for _, folder := range folders {

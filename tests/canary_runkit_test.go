@@ -336,7 +336,7 @@ func TestCanaryRunKitInstructionLines(t *testing.T) {
 			t.Errorf("the run kit item of AGENTS.md does not say %s", want)
 		}
 	}
-	const oneTarget = "`make canary-build` is the one target that builds binaries with the tag"
+	const oneTarget = "`make canary-build` is the one target that builds binaries with the canary tag"
 	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
 		data, err := os.ReadFile(filepath.Join(root(t), name))
 		if err != nil {

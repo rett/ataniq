@@ -111,7 +111,11 @@ type IntegrateRequest struct {
 //  4. The newest verification record of the store for this project and tip
 //     must be a clean pass, else [ErrNotVerified]. Any passing record for
 //     the project and the tip counts, whatever gates it ran: the plan of
-//     the record is not compared with the project's gates. The gates that
+//     the record is not compared with the project's gates. In merge mode
+//     only a merge-mode record counts, one whose merge is the tip and whose
+//     base is the review's base, the tip the target is at; a lead-mode
+//     record of the same commit id, and a merge record made against
+//     another base, are no evidence and are not counted at all. The gates that
 //     were run are in the returned record (Verification.Gates and
 //     Verification.PlanDigest), and the command that calls Integrate must
 //     show them to the owner before the sign-off, with the review output,
@@ -165,6 +169,11 @@ func Integrate(ctx context.Context, src Source, req IntegrateRequest) (IntakeRec
 			return IntakeRecord{}, fmt.Errorf("%w: the sign-off is for tip %s; the target is now at %s and %s at %s, which does not contain it: %w",
 				ErrMoved, req.SignOff.Tip, nf.Base, leadtext.Escape(req.Review.TipRef), nf.Tip, err)
 		}
+		var mb *MergeBaseError
+		if errors.As(err, &mb) {
+			return IntakeRecord{}, fmt.Errorf("%w: the sign-off is for tip %s, a merge onto %s; the target is now at %s: %w",
+				ErrMoved, req.SignOff.Tip, mb.Parent, mb.Base, err)
+		}
 		return IntakeRecord{}, err
 	}
 	if rev.Base == rev.Tip {
@@ -181,7 +190,7 @@ func Integrate(ctx context.Context, src Source, req IntegrateRequest) (IntakeRec
 	if err := rev.CheckSignOff(req.SignOff); err != nil {
 		return IntakeRecord{}, err
 	}
-	ver, err := newestVerification(req.Store, req.Project, rev.Tip)
+	ver, err := newestVerification(req.Store, req.Project, rev)
 	if err != nil {
 		return IntakeRecord{}, err
 	}
@@ -228,14 +237,24 @@ func Integrate(ctx context.Context, src Source, req IntegrateRequest) (IntakeRec
 }
 
 // newestVerification returns the newest verification record of the project
-// for the tip, which must be a clean pass.
-func newestVerification(st *Store, project, tip string) (VerificationRecord, error) {
+// for the review's tip, which must be a clean pass. Only records of the
+// review's mode count: in lead mode the records that are not merge records;
+// in merge mode the merge records whose base is the review's base. The other
+// records are not evidence for this review, so they neither stand for it nor
+// withdraw a pass.
+func newestVerification(st *Store, project string, rev *Review) (VerificationRecord, error) {
+	tip := rev.Tip
 	all, err := st.Verifications(tip)
 	if err != nil {
 		return VerificationRecord{}, err
 	}
-	all = slices.DeleteFunc(all, func(v VerificationRecord) bool { return v.Project != project })
+	all = slices.DeleteFunc(all, func(v VerificationRecord) bool {
+		return v.Project != project || v.Merge != rev.Merge || (rev.Merge && v.Base != rev.Base)
+	})
 	if len(all) == 0 {
+		if rev.Merge {
+			return VerificationRecord{}, fmt.Errorf("%w: no merge-mode verification record for merge %s on base %s", ErrNotVerified, tip, rev.Base)
+		}
 		return VerificationRecord{}, fmt.Errorf("%w: no verification record for tip %s", ErrNotVerified, tip)
 	}
 	newest := all[len(all)-1]
