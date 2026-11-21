@@ -146,7 +146,7 @@ func newJoinedScene(t *testing.T, mk func(l *lab) scene) *joined {
 	j.fake = leadunit.NewFake(clk)
 	j.oc = &leaddaemon.OwnerChannel{
 		Build: j.build, Inspector: ttyInspector{},
-		Log: func(f string, a ...any) { fmt.Fprintf(j.logs, f+"\n", a...) },
+		Log: func(f string, a ...any) { _, _ = fmt.Fprintf(j.logs, f+"\n", a...) },
 	}
 	j.startDaemon()
 	return j
@@ -335,7 +335,7 @@ func (j *joined) dialWire(decider bool) *wire {
 	if err != nil {
 		j.t.Fatal(err)
 	}
-	j.t.Cleanup(func() { c.Close() })
+	j.t.Cleanup(func() { _ = c.Close() })
 	w := &wire{t: j.t, c: c}
 	if decider {
 		// The place may still be held by a connection that was just
@@ -490,7 +490,7 @@ func (j *joined) journalEntries() []ownerjournal.Entry {
 	if err != nil {
 		j.t.Fatalf("the journal: %v", err)
 	}
-	defer jr.Close()
+	defer func() { _ = jr.Close() }()
 	es, err := jr.Entries(0, 0)
 	if err != nil {
 		j.t.Fatal(err)
@@ -738,7 +738,7 @@ func (j *joined) startTap() *tap {
 			go func() {
 				d, err := net.Dial("unix", target)
 				if err != nil {
-					c.Close()
+					_ = c.Close()
 					return
 				}
 				done := make(chan struct{}, 2)
@@ -763,12 +763,12 @@ func (j *joined) startTap() *tap {
 				go cp(d, c, &tp.up)
 				go cp(c, d, &tp.down)
 				<-done
-				c.Close()
-				d.Close()
+				_ = c.Close()
+				_ = d.Close()
 			}()
 		}
 	}()
-	j.t.Cleanup(func() { l.Close() })
+	j.t.Cleanup(func() { _ = l.Close() })
 	return tp
 }
 

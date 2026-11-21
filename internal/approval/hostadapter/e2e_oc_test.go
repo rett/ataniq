@@ -370,7 +370,7 @@ func (j *joined) intakeMovesAfterStop() int {
 	if err != nil {
 		j.t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	moves, err := st.Intakes()
 	if err != nil {
 		j.t.Fatal(err)

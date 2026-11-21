@@ -174,7 +174,7 @@ func newWorld(t *testing.T) *cWorld {
 		}
 	}
 	w.runtime = filepath.Join(base, "run")
-	w.oc = &leaddaemon.OwnerChannel{Build: w.build, Inspector: cTTYInspector{}, Log: func(f string, a ...any) { fmt.Fprintf(w.logs, f+"\n", a...) }}
+	w.oc = &leaddaemon.OwnerChannel{Build: w.build, Inspector: cTTYInspector{}, Log: func(f string, a ...any) { _, _ = fmt.Fprintf(w.logs, f+"\n", a...) }}
 	w.counts = w.oc.Counts()
 	return w
 }
@@ -392,7 +392,7 @@ func (w *cWorld) dialAt(runtime string, decider bool) *conn {
 	if err != nil {
 		w.t.Fatal(err)
 	}
-	w.t.Cleanup(func() { c.Close() })
+	w.t.Cleanup(func() { _ = c.Close() })
 	k := &conn{t: w.t, c: c}
 	if decider {
 		var res ownerwire.DeciderResult
@@ -438,7 +438,7 @@ func (w *cWorld) journal() []ownerjournal.Entry {
 	if err != nil {
 		w.t.Fatalf("the journal: %v", err)
 	}
-	defer j.Close()
+	defer func() { _ = j.Close() }()
 	es, err := j.Entries(0, 0)
 	if err != nil {
 		w.t.Fatal(err)
