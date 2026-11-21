@@ -10,7 +10,9 @@
   each OSC 7501 payload (`osc7501.jsonl`).
   The folder is 0700 and its files 0600, with a `README.txt` that says the
   files are raw (scrub before use; do not commit); a start whose folder exists
-  is refused, the screens stop at 400 pairs and the recording at 8 MiB, each
+  is refused, with the code `record-folder-left`, which the leads view of
+  `ataniq-console` shows as "an earlier record folder is there: move or delete
+  it, or turn record_screens off"; the screens stop at 400 pairs and the recording at 8 MiB, each
   with a line in `LIMIT.txt`, and it never blocks the agent. A recording of
   the login screen holds a login URL and code: delete the folder once the
   fixtures are made. Without the field nothing changes.

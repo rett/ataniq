@@ -396,7 +396,7 @@ operation; every code is a word of lower-case letters, digits and dashes.
 | Operation | Refused | Unavailable | Uncertain |
 | --- | --- | --- | --- |
 | `lead.define` | `role-busy`, `record-invalid`, `provision-incomplete`, `digest-pin`, `provision-refused`, `registry-refused` | `provision-failed` | `registry-broken`, `failed` |
-| `lead.start` | `role-busy`, `not-provisioned`, `folder-missing`, `max-running`, `role-not-defined`, `not-managed`, `preflight`, `foreign-unit`, `unit-loaded`, `limits`, `launch-refused`, `epoch-exhausted`, `registry-refused` | `start-failed`, `previous-unit-not-gone`, `intent-pending` | `launch-uncertain`, `daemon-stopping`, `registry-check`, `registry-broken`, `failed` |
+| `lead.start` | `role-busy`, `not-provisioned`, `folder-missing`, `max-running`, `role-not-defined`, `not-managed`, `preflight`, `record-folder-left`, `foreign-unit`, `unit-loaded`, `limits`, `launch-refused`, `epoch-exhausted`, `registry-refused` | `start-failed`, `previous-unit-not-gone`, `intent-pending` | `launch-uncertain`, `daemon-stopping`, `registry-check`, `registry-broken`, `failed` |
 | `lead.stop` | `role-busy`, `stale-epoch`, `role-not-defined`, `not-managed` | `intent-pending`, `failed` | `stop-unproven`, `daemon-stopping`, `registry-broken`, `failed` |
 | `lead.ticket` | `stale-epoch`, `not-running`, `ticket-refused` | `holder-unreachable`, `ticket-failed`, `ticket-lost`, `ticket-file` | |
 | `lead.inject` | `stale-epoch`, `inject-off`, `not-running`, `second-message`, `message-in-flight`, and the admission codes of the canary slice (`bad-id`, `body-too-long`, `empty-body` and the like) | `holder-unreachable`, and `holder-` with the holder's refusal (`disabled`, `busy`, `bad-request`; the epoch's message stays free after `disabled` and `bad-request`, and stays spent after `busy`) | |
@@ -656,11 +656,12 @@ scratch config and start the daemon again (it reads the config at start). Each
 **A start of a recording lead whose `record` folder is still there is
 refused**, so that an earlier recording is neither added to nor replaced. The
 daemon looks first, before anything changes: anything at that name (a folder,
-a file, a link) refuses `lead.start` with the code `preflight`, which the
-console shows as "the preflight refused the start", and the receipt's fixed
-message "the lead's record folder from an earlier recording is still there;
-move or delete it, or set record_screens to false"; the daemon's log says the
-same with no path, and nothing is started. Move or delete the folder, or set
+a file, a link) refuses `lead.start` with the code `record-folder-left`, which
+the console shows as "refused: an earlier record folder is there: move or
+delete it, or turn record_screens off", and the receipt's fixed message "the
+lead's record folder from an earlier recording is still there; move or delete
+it, or set record_screens to false"; the daemon's log says the same with no
+path, and nothing is started. Move or delete the folder, or set
 the field back to `false` and start the daemon again. The holder keeps its own
 check: it refuses the flag without `--canary`, for any other folder, and when
 the folder exists (one made between the daemon's look and the holder's start),
