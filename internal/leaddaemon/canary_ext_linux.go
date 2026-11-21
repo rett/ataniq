@@ -26,7 +26,8 @@ import (
 )
 
 // The operations of the canary extension. Each takes strict params that carry
-// "role", which must be the config's role.
+// "role", which must be a role of the daemon's router: the config's in canary
+// mode, which has the one.
 const (
 	OpCanaryDefine = "canary.define"
 	OpCanaryStart  = "canary.start"
@@ -151,7 +152,11 @@ const (
 // follow something the daemon already did.
 const msgRegistryCheck = "the registry refused; check the role's status before you retry"
 
-// canaryExt is the extension: the five operations of canary mode.
+// canaryExt is one role's side of the extension: the five operations for one
+// lead, with that lead's evidence handle, admission, spent epochs and in-flight
+// flag. Every lock it holds is the role's own, so one role's inject never waits
+// on another's. The router (canary_router_linux.go) owns one per role and
+// reaches it by the role of a call's params.
 type canaryExt struct {
 	cfg       leadcanary.Config
 	role      leadrole.Role
@@ -174,20 +179,26 @@ type canaryExt struct {
 	commands uint64 // counter of the command ids
 }
 
-var _ clientapi.Extension = (*canaryExt)(nil)
-
+// newCanaryExt returns the extension of the canary's one role: the first
+// instance of the mode's router (the canary is the router with one role).
 func newCanaryExt(m *canaryMode, ctl *leadlifecycle.Controller, reg *leadregistry.Registry) *canaryExt {
-	cfg := m.cfg
+	return m.newExt(m.router.byRole[m.router.order[0]], ctl, reg)
+}
+
+// newExt returns the extension of one instance of the router, which has read
+// back its evidence by now.
+func (m *canaryMode) newExt(in *leadInstance, ctl *leadlifecycle.Controller, reg *leadregistry.Registry) *canaryExt {
+	cfg := in.cfg
 	// Validated at setup: the names, the admission and the runtime folder
 	// cannot fail for this config.
 	holderDir, _ := cfg.HolderRuntimeDir()
 	adm, _ := leadcanary.NewAdmission(cfg.Role)
-	spent := make(map[uint64]bool, len(m.spent))
-	for epoch := range m.spent {
+	spent := make(map[uint64]bool, len(in.spent))
+	for epoch := range in.spent {
 		spent[epoch] = true
 	}
 	return &canaryExt{
-		cfg: cfg, role: cfg.Role, holderDir: holderDir, ctl: ctl, reg: reg, ev: m.ev, adm: adm,
+		cfg: cfg, role: cfg.Role, holderDir: holderDir, ctl: ctl, reg: reg, ev: in.ev, adm: adm,
 		dial: m.dialFor, wait: m.injectFor, logf: m.d.logf, spent: spent,
 		profile: leadregistry.Requested{
 			// The registry's runtime enum is checked by the registry; the config
@@ -203,53 +214,48 @@ func newCanaryExt(m *canaryMode, ctl *leadlifecycle.Controller, reg *leadregistr
 	}
 }
 
-// Operations lists the five operations.
-func (x *canaryExt) Operations() []string { return CanaryOperations() }
+// opCall is an operation whose params are decoded and whose role is known, ready
+// to run against that role's extension.
+type opCall func(ctx context.Context, x *canaryExt) (any, *clientapi.ErrorBody)
 
-// Mutating is true: define, start, ticket, inject and stop change things.
-func (x *canaryExt) Mutating() bool { return true }
-
-// Handle decodes the strict params of op and carries it out.
-func (x *canaryExt) Handle(ctx context.Context, op string, params json.RawMessage) (any, *clientapi.ErrorBody) {
+// decodeOp decodes the strict params of op and returns the role they name and
+// the call to make on that role's extension. The role is not checked here: the
+// router looks it up. Errors are the answers for a malformed request.
+func decodeOp(op string, params json.RawMessage) (string, opCall, *clientapi.ErrorBody) {
 	switch op {
 	case OpCanaryDefine, OpCanaryStart, OpCanaryStop:
 		var p CanaryParams
 		if f := decodeStrict(params, &p, "role"); f != nil {
-			return nil, f
-		}
-		if f := x.checkRole(p.Role); f != nil {
-			return nil, f
+			return "", nil, f
 		}
 		switch op {
 		case OpCanaryDefine:
-			return x.define()
+			return p.Role, func(_ context.Context, x *canaryExt) (any, *clientapi.ErrorBody) { return x.define() }, nil
 		case OpCanaryStart:
-			return x.start(ctx)
+			return p.Role, func(ctx context.Context, x *canaryExt) (any, *clientapi.ErrorBody) { return x.start(ctx) }, nil
 		}
-		return x.stop(ctx)
+		return p.Role, func(ctx context.Context, x *canaryExt) (any, *clientapi.ErrorBody) { return x.stop(ctx) }, nil
 	case OpCanaryTicket:
 		var p CanaryTicketParams
 		if f := decodeStrict(params, &p, "role", "attach_role"); f != nil {
-			return nil, f
+			return "", nil, f
 		}
-		if f := x.checkRole(p.Role); f != nil {
-			return nil, f
-		}
-		if p.AttachRole != attachRoleWrite && p.AttachRole != attachRoleView {
-			return nil, &clientapi.ErrorBody{Code: clientapi.CodeInvalidRequest, Message: msgBadParams}
-		}
-		return x.ticket(ctx, wire.Role(p.AttachRole))
+		return p.Role, func(ctx context.Context, x *canaryExt) (any, *clientapi.ErrorBody) {
+			// After the role: a malformed attach role of a role that is not
+			// the daemon's is still the refusal of the role.
+			if p.AttachRole != attachRoleWrite && p.AttachRole != attachRoleView {
+				return nil, &clientapi.ErrorBody{Code: clientapi.CodeInvalidRequest, Message: msgBadParams}
+			}
+			return x.ticket(ctx, wire.Role(p.AttachRole))
+		}, nil
 	case OpCanaryInject:
 		var p CanaryInjectParams
 		if f := decodeStrict(params, &p, "role", "message_id", "body"); f != nil {
-			return nil, f
+			return "", nil, f
 		}
-		if f := x.checkRole(p.Role); f != nil {
-			return nil, f
-		}
-		return x.inject(ctx, p)
+		return p.Role, func(ctx context.Context, x *canaryExt) (any, *clientapi.ErrorBody) { return x.inject(ctx, p) }, nil
 	}
-	return nil, &clientapi.ErrorBody{Code: clientapi.CodeUnsupportedOperation, Message: msgBadParams}
+	return "", nil, &clientapi.ErrorBody{Code: clientapi.CodeUnsupportedOperation, Message: msgBadParams}
 }
 
 // decodeStrict decodes params into v: one JSON object whose keys are exactly
@@ -290,14 +296,6 @@ func refused(msg string) *clientapi.ErrorBody {
 
 func unavailable(msg string) *clientapi.ErrorBody {
 	return &clientapi.ErrorBody{Code: CodeUnavailable, Message: msg}
-}
-
-// checkRole refuses a role other than the config's, before anything else.
-func (x *canaryExt) checkRole(role string) *clientapi.ErrorBody {
-	if role != x.role.String() {
-		return refused(msgNotCanary)
-	}
-	return nil
 }
 
 // record appends an evidence line. The operation it describes has happened by
