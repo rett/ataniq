@@ -25,11 +25,13 @@ func TestEveryReceiptIsShownInTheViewsOwnFixedWords(t *testing.T) {
 		{"uncertain", Receipt{Op: OpStart, Status: Uncertain}, []string{"start: uncertain: the outcome is not known", "nothing is sent again for you"}, nil},
 		{"unknown code", Receipt{Op: OpStart, Status: Refused, Code: "a code from the future"}, []string{"refused: the reason is not known to this console"}, []string{"future"}},
 		{"unknown status", Receipt{Op: OpStart, Status: "weird"}, []string{"the status is not known to this console"}, []string{"weird"}},
-		{"submitted", Receipt{Op: OpInject, Status: Done, Outcome: OutcomeSubmitted}, []string{"message: accepted. the message was submitted"}, nil},
-		{"not now", Receipt{Op: OpInject, Status: Done, Outcome: OutcomeNotNow}, []string{"could not take it now; nothing was written"}, nil},
-		{"lead refused", Receipt{Op: OpInject, Status: Done, Outcome: OutcomeRefused}, []string{"the lead refused it; nothing was written"}, nil},
-		{"uncertain outcome", Receipt{Op: OpInject, Status: Done, Outcome: OutcomeUncertain}, []string{"it may have reached the lead"}, nil},
-		{"unknown outcome", Receipt{Op: OpInject, Status: Done, Outcome: "sent!!"}, []string{"the result is not known to this console"}, []string{"sent!!"}},
+		{"submitted", Receipt{Op: OpInject, Status: Done, Outcome: OutcomeSubmitted}, []string{"message: accepted. the message was submitted", "This epoch's one message is spent"}, nil},
+		{"not now", Receipt{Op: OpInject, Status: Done, Outcome: OutcomeNotNow}, []string{"message: accepted. NOT delivered: nothing was written, the lead could not take it now", "This epoch's one message is spent"}, nil},
+		{"lead refused", Receipt{Op: OpInject, Status: Done, Outcome: OutcomeRefused}, []string{"NOT delivered: nothing was written, the lead refused it"}, nil},
+		{"uncertain outcome", Receipt{Op: OpInject, Status: Done, Outcome: OutcomeUncertain}, []string{"result unknown: it may have reached the lead"}, nil},
+		{"unknown outcome", Receipt{Op: OpInject, Status: Done, Outcome: "sent!!"}, []string{"the result is not known to this console"}, []string{"sent!!", "is spent"}},
+		{"unknown reason", Receipt{Op: OpInject, Status: Done, Outcome: OutcomeNotNow, Reason: "a reason from the future", Written: WrittenNothing}, []string{"the result is not known to this console"}, []string{"future", "NOT delivered"}},
+		{"a pair the holder does not send", Receipt{Op: OpInject, Status: Done, Outcome: OutcomeSubmitted, Reason: ReasonNotReady, Written: WrittenNothing}, []string{"the result is not known to this console"}, []string{"delivered"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			b := twoLeads(t)

@@ -194,7 +194,7 @@ func (m *Model) Draw(dst Canvas, area uv.Rectangle) {
 const (
 	colState = 11
 	colEpoch = 7
-	colMsg   = 6
+	colMsg   = 21
 	colLast  = 28
 )
 
@@ -232,7 +232,7 @@ func (m *Model) drawTable(d *drawer, w, h int) {
 		x += d.put(x, row, w-x, pad(l.Key, keyW)+"  ", d.style(sText))
 		x += d.put(x, row, w-x, pad(state, colState), d.style(sText))
 		x += d.put(x, row, w-x, pad(epoch, colEpoch), d.style(sText))
-		x += d.put(x, row, w-x, pad(msgWord(l), colMsg), d.style(sText))
+		x += d.put(x, row, w-x, pad(msgWord(l, m.deliveryOf(l)), colMsg), d.style(sText))
 		last, st := "-", sDim
 		if l.Last != nil {
 			last = opShort(l.Last.Op) + ": " + shortStatus(l.Last.Status)
@@ -259,16 +259,6 @@ func lastStyle(s Status) style {
 		return sWarn
 	}
 	return sText
-}
-
-func msgWord(l Lead) string {
-	switch {
-	case !l.Inject:
-		return "off"
-	case l.MessageSpent:
-		return "sent"
-	}
-	return "free"
 }
 
 func (m *Model) drawFooter(d *drawer, w, h int) {
@@ -309,6 +299,8 @@ func (m *Model) drawFooter(d *drawer, w, h int) {
 		}
 	} else if prompt != "" {
 		d.put(1, h-2, w-1, prompt, d.style(pst))
+	} else if l, ok := m.under(); ok {
+		d.put(1, h-2, w-1, stateLine(l), d.style(sDim))
 	}
 	d.put(1, h-1, w-1, last, d.style(lst))
 }

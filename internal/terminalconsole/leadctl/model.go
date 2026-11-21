@@ -64,6 +64,9 @@ type Model struct {
 	// unconfirmed holds the "role epoch" pairs for which a message was sent
 	// and has no final answer: no second message is made for them.
 	unconfirmed map[string]bool
+	// delivered holds, for each "role epoch" pair, the holder's answer to a
+	// message this view sent or read the receipt of.
+	delivered map[string]Delivery
 
 	// confirm is the open confirmation of a stop, edit the open message
 	// editor.
@@ -88,7 +91,7 @@ type editState struct {
 // Init returns the command that reads the list.
 func New(o Options) *Model {
 	m := &Model{b: o.Backend, o: o, random: o.Random, after: o.After, poll: o.Poll,
-		busy: map[string]int{}, unconfirmed: map[string]bool{}}
+		busy: map[string]int{}, unconfirmed: map[string]bool{}, delivered: map[string]Delivery{}}
 	if m.after == nil {
 		m.after = tea.Tick
 	}
@@ -228,8 +231,8 @@ func (m *Model) onListed(v listedMsg) tea.Cmd {
 		}
 		c := Lead{
 			Key: safeID(l.Key, 64), Role: l.Role, Defined: l.Defined,
-			Provision: safeID(l.Provision, 16), State: safeID(l.State, 16),
-			Epoch: l.Epoch, Unit: safeID(l.Unit, 96), Inject: l.Inject, MessageSpent: l.MessageSpent,
+			Provision: safeID(l.Provision, 16), State: safeID(l.State, 16), StateReason: safeID(l.StateReason, 64),
+			Epoch: l.Epoch, Unit: safeID(l.Unit, 96), Inject: l.Inject, MessageSpent: l.MessageSpent, MessageResult: l.MessageResult,
 		}
 		if l.Last != nil {
 			last := *l.Last
@@ -243,6 +246,17 @@ func (m *Model) onListed(v listedMsg) tea.Cmd {
 		}
 	}
 	// A pair whose epoch is no longer the lead's current one is over.
+	for k := range m.delivered {
+		held := false
+		for _, l := range m.leads {
+			if pairKey(l.Role, l.Epoch) == k {
+				held = true
+			}
+		}
+		if !held {
+			delete(m.delivered, k)
+		}
+	}
 	for k := range m.unconfirmed {
 		held := false
 		for _, l := range m.leads {
@@ -602,6 +616,9 @@ func (m *Model) onDone(v doneMsg) (tea.Cmd, Action) {
 		// shows otherwise.
 		return tea.Batch(cmds...), Action{}
 	}
+	if v.op == OpInject {
+		m.noteDelivery(v, r)
+	}
 	if v.op == OpInject && clearOfMessage(r) {
 		delete(m.unconfirmed, pairKey(v.role, v.epoch))
 	}
@@ -612,6 +629,40 @@ func (m *Model) onDone(v doneMsg) (tea.Cmd, Action) {
 		m.status, m.note = nil, unusableAns
 	}
 	return tea.Batch(cmds...), Action{}
+}
+
+// noteDelivery keeps the holder's answer of a done message, for the epoch the
+// receipt names (the one the press was for when it names none), so that the
+// MSG column says what became of it.
+func (m *Model) noteDelivery(v doneMsg, r Receipt) {
+	if r.Status != Done {
+		return
+	}
+	epoch := r.Epoch
+	if epoch == 0 {
+		epoch = v.epoch
+	}
+	if epoch == 0 {
+		return
+	}
+	m.delivered[pairKey(v.role, epoch)] = Delivery{Outcome: r.Outcome, Reason: r.Reason, Written: r.Written}
+}
+
+// deliveryOf returns what the view knows of the holder's answer to the
+// lead's current epoch's message: the adapter's, else the one it kept.
+func (m *Model) deliveryOf(l Lead) Delivery {
+	if l.MessageResult != (Delivery{}) {
+		return l.MessageResult
+	}
+	return m.delivered[pairKey(l.Role, l.Epoch)]
+}
+
+// under returns the lead under the cursor without a note when there is none.
+func (m *Model) under() (Lead, bool) {
+	if m.cursor < 0 || m.cursor >= len(m.leads) {
+		return Lead{}, false
+	}
+	return m.leads[m.cursor], true
 }
 
 // clearOfMessage says whether the receipt of a message says that nothing was
