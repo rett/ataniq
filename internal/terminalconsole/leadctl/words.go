@@ -24,6 +24,7 @@ const (
 	blankLine     = "there is nothing to send"
 	pasteLine     = "that paste was not taken: it holds text that cannot be sent"
 	tooLongLine   = "the message is at the longest the lead takes"
+	leftOutSuffix = " rows left out: the list is not all of the daemon's leads"
 )
 
 // opWords is the name of an operation in the view's words.
@@ -104,6 +105,9 @@ func outcomeWords(o string) string {
 // receiptLine is the full line of a receipt, in the view's words.
 func receiptLine(r Receipt) string {
 	head := opWords(r.Op) + ": "
+	if r.Earlier {
+		head = "an earlier " + opWords(r.Op) + " command: "
+	}
 	switch r.Status {
 	case InProgress:
 		return head + "accepted, still running"

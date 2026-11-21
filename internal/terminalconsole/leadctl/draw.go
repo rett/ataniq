@@ -178,6 +178,8 @@ func (m *Model) Draw(dst Canvas, area uv.Rectangle) {
 	d.put(1, 0, w-1, head, d.style(sHead))
 	if m.listErr {
 		d.put(1, 1, w-1, noListLine+": the rows are the earlier ones", d.style(sWarn))
+	} else if m.leftOut > 0 {
+		d.put(1, 1, w-1, itoa(uint64(m.leftOut))+leftOutSuffix, d.style(sWarn))
 	} else if m.have && len(m.leads) == 0 {
 		d.put(1, 1, w-1, noneLine, d.style(sDim))
 	} else {

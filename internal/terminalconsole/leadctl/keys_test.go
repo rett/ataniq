@@ -576,3 +576,18 @@ func TestACommandNeverSendsWithoutAnIdSource(t *testing.T) {
 		t.Fatalf("calls %+v", b.calls)
 	}
 }
+
+func TestAnEarlierTicketReceiptNeverAttaches(t *testing.T) {
+	b := twoLeads(t)
+	b.answer = func(call) (Receipt, error) {
+		return Receipt{CommandID: "t1", Op: OpTicket, Status: Done, Folder: "/srv/lead/beta", TicketFile: "/srv/lead/beta/ticket", Earlier: true}, nil
+	}
+	r := newRig(t, b, 120, 30)
+	r.key("j")
+	r.key("w")
+	if len(r.actions) != 0 {
+		t.Fatalf("actions %+v", r.actions)
+	}
+	r.seen("an earlier attach ticket command")
+	r.notSeen(unusableAns)
+}

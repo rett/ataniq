@@ -44,6 +44,7 @@ type Model struct {
 	listSeq  int
 	running  int
 	capacity int
+	leftOut  int
 	cursor   int
 	top      int
 
@@ -215,11 +216,10 @@ func (m *Model) onListed(v listedMsg) tea.Cmd {
 	m.listErr, m.have = false, true
 	m.running, m.capacity = max(0, v.l.Running), max(0, v.l.MaxRunning)
 	m.leads = m.leads[:0]
+	m.leftOut = max(0, v.l.LeftOut)
 	for _, l := range v.l.Leads {
-		if len(m.leads) == maxLeads {
-			break
-		}
-		if l.Role == "" || len(l.Role) > maxRole {
+		if len(m.leads) == maxLeads || l.Role == "" || len(l.Role) > maxRole {
+			m.leftOut++
 			continue
 		}
 		c := Lead{
@@ -256,6 +256,9 @@ func (m *Model) onListed(v listedMsg) tea.Cmd {
 		for _, l := range m.leads {
 			if l.Last != nil && l.Last.CommandID == m.status.CommandID {
 				r := *l.Last
+				// The list's summary is never "earlier"; the line keeps
+				// what it said of the press.
+				r.Earlier = m.status.Earlier
 				m.status = &r
 			}
 		}
@@ -587,10 +590,17 @@ func (m *Model) onDone(v doneMsg) (tea.Cmd, Action) {
 	if r.Op != v.op {
 		r.Op = v.op
 	}
+	m.status = &r
+	if r.Earlier {
+		// The answer to an earlier command is shown as that and settles
+		// nothing for this press: no attach with a ticket that may be
+		// spent, and the epoch's message stays unconfirmed until the list
+		// shows otherwise.
+		return tea.Batch(cmds...), Action{}
+	}
 	if v.op == OpInject && clearOfMessage(r) {
 		delete(m.unconfirmed, pairKey(v.role, v.epoch))
 	}
-	m.status = &r
 	if v.op == OpTicket && r.Status == Done {
 		if act, ok := m.attach(v, r); ok {
 			return tea.Batch(cmds...), act
@@ -604,7 +614,11 @@ func (m *Model) onDone(v doneMsg) (tea.Cmd, Action) {
 // sent, so that the epoch's message may be tried again.
 func clearOfMessage(r Receipt) bool {
 	switch r.Status {
-	case Refused, Unavailable:
+	case Refused:
+		// The daemon no longer holds the command's id: what became of an
+		// earlier send is not said, so the epoch is not clear.
+		return r.Code != "conflict"
+	case Unavailable:
 		return true
 	case Done:
 		return r.Outcome == OutcomeNotNow || r.Outcome == OutcomeRefused
