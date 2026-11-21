@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"ataniq/internal/exchange/boundedexec"
 	"ataniq/internal/exchange/leadtext"
 )
 
@@ -340,3 +343,81 @@ func TestCommitFieldsMatchGitLog(t *testing.T) {
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+// manyContinuations is a commit object of just under 64 KiB whose gpgsig
+// header is made of continuation lines of no text: 32000 lines of one space
+// and a newline, so the header value is 32000 bytes, within maxCommitField,
+// and the object is within maxCommitObject.
+func manyContinuations() []byte {
+	return []byte("tree " + strings.Repeat("a", 40) + "\n" +
+		"parent " + strings.Repeat("b", 40) + "\n" +
+		goodAuthor + goodCommitter +
+		"gpgsig x\n" + strings.Repeat(" \n", 32000) + "\nm\n")
+}
+
+// TestCommitContinuationLinesCostLinearTime: a header of 32000 continuation
+// lines in a 64 KiB object is parsed by appending to one buffer. The test
+// measures the bytes that the parse allocates, not its time, so it does not
+// depend on the speed of the machine: a parse that copies the value for each
+// line allocates about 512 MiB for this object, this one about 100 KiB, and
+// the bound is 8 MiB. The parse also has to give the right fields.
+func TestCommitContinuationLinesCostLinearTime(t *testing.T) {
+	raw := manyContinuations()
+	if len(raw) > maxCommitObject {
+		t.Fatalf("the test object is %d bytes, over maxCommitObject", len(raw))
+	}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	c, err := parseCommit("id", raw)
+	runtime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatalf("parseCommit: %v", err)
+	}
+	if c.Subject != "m" || c.CommitterName != "C" {
+		t.Errorf("the parse is wrong: %+v", c)
+	}
+	if got := after.TotalAlloc - before.TotalAlloc; got > 8<<20 {
+		t.Errorf("parsing %d continuation lines allocated %d bytes: the cost is not linear", 32000, got)
+	}
+}
+
+// BenchmarkParseCommitContinuations is the benchmark of the same object.
+func BenchmarkParseCommitContinuations(b *testing.B) {
+	raw := manyContinuations()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, err := parseCommit("id", raw); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// TestParseCommitsChecksContextAndDeadlineBetweenCommits: the parse of the
+// objects runs no git command, so it checks the context and the shared
+// deadline before each commit, and stops with ErrLimit (a timeout) or the
+// context's error.
+func TestParseCommitsChecksContextAndDeadlineBetweenCommits(t *testing.T) {
+	obj := []byte("tree " + strings.Repeat("a", 40) + "\nparent " + strings.Repeat("b", 40) + "\n" +
+		goodAuthor + goodCommitter + "\nm\n")
+	ids := []string{"one", "two"}
+	objects := [][]byte{obj, obj}
+
+	live := &runner{deadline: time.Now().Add(time.Hour)}
+	if got, err := live.parseCommits(context.Background(), ids, objects); err != nil || len(got) != 2 {
+		t.Fatalf("a live context and deadline: %d commits, %v", len(got), err)
+	}
+
+	expired := &runner{deadline: time.Now().Add(-time.Second)}
+	_, err := expired.parseCommits(context.Background(), ids, objects)
+	if !errors.Is(err, ErrLimit) || !errors.Is(err, boundedexec.ErrTimeout) {
+		t.Errorf("a passed deadline: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = live.parseCommits(ctx, ids, objects)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("a cancelled context: %v", err)
+	}
+}

@@ -12,7 +12,7 @@ import (
 // after the subcommand, before the arguments of the caller. No other
 // subcommand gets them.
 func TestNoDiffProgramsIsOnTheseSubcommands(t *testing.T) {
-	want := []string{"diff", "log"}
+	want := []string{"diff"}
 	if !reflect.DeepEqual(noDiffPrograms, want) {
 		t.Fatalf("noDiffPrograms = %q, want %q", noDiffPrograms, want)
 	}
@@ -54,19 +54,19 @@ func withoutNoDiffPrograms(t *testing.T, argv []string) []string {
 // TestTextconvProgramsDoNotRun gives a repository whose own config names a
 // textconv program for the diff driver "x", and whose "info/attributes"
 // gives every file that driver. The attribute pin does not reach that file,
-// so git does know the driver. "log -p" and "diff", built through Argv and
-// Env, print the patch as text and do not start the program.
+// so git does know the driver. "diff", built through Argv and Env, prints the
+// patch as text and does not start the program.
 //
-// The controls show the test can fail: the same two command lines with only
-// "--no-ext-diff" and "--no-textconv" taken out start the program. So
-// without the two options a caller of "log -p" would run a program named in
-// the repository's config.
+// The control shows the test can fail: the same command line with only
+// "--no-ext-diff" and "--no-textconv" taken out starts the program. So
+// without the two options a caller of "diff" would run a program named in
+// the repository's config. ("log" is refused, see TestLogIsRefused.)
 //
 // "diff-tree -p" gets no such options and does not start the program either,
 // because it is plumbing; the test records that, so a git that changes it is
 // seen.
 //
-// Proves: with this git, the two options keep "log -p" and "diff" from
+// Proves: with this git, the two options keep "diff" from
 // running a textconv program that the config and "info/attributes" name, and
 // "diff-tree -p" runs none. Cannot prove: anything about other git versions,
 // or about other programs a config can name.
@@ -82,7 +82,6 @@ func TestTextconvProgramsDoNotRun(t *testing.T) {
 		args    []string
 		options bool // Argv adds the two options
 	}{
-		{"log -p", []string{"log", "-p", "--max-count=1", "--format=%s", "--no-color", "--end-of-options", s.theirs}, true},
 		{"diff", []string{"diff", "--no-color", "--end-of-options", s.base, s.theirs}, true},
 		{"diff-tree -p", []string{"diff-tree", "-r", "-p", "--no-color", "--end-of-options", s.base, s.theirs}, false},
 	} {

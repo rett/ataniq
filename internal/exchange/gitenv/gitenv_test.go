@@ -440,11 +440,11 @@ func TestArgvAccepts(t *testing.T) {
 	// even when it looks like a refused option.
 	for _, args := range [][]string{
 		{"rev-parse", "--end-of-options", "--upload-pack=x"},
-		{"log", "--", "--ext-diff"},
+		{"rev-list", "--", "--ext-diff"},
 		{"fetch", "--no-ext-diff"},
 		{"fetch", "--recurse-submodules=no"},
 		{"fetch", "--update-head-ok"},
-		{"log", "--exit-code"},
+		{"diff", "--exit-code"},
 		{"diff", "--exit-code", "a", "b"},
 		{"diff-tree", "-r", "--name-only", "a", "b"},
 		{"for-each-ref", "--format=%(refname)", "refs/heads/"},
@@ -455,7 +455,7 @@ func TestArgvAccepts(t *testing.T) {
 		}
 	}
 	// The allowed list is exactly the one the task names.
-	want := []string{"init", "version", "fetch", "for-each-ref", "rev-parse", "rev-list", "merge-base", "diff-tree", "diff", "log", "cat-file", "update-ref", "symbolic-ref", "show-ref", "count-objects", "config", "check-ref-format", "ls-tree"}
+	want := []string{"init", "version", "fetch", "for-each-ref", "rev-parse", "rev-list", "merge-base", "diff-tree", "diff", "cat-file", "update-ref", "symbolic-ref", "show-ref", "count-objects", "config", "check-ref-format", "ls-tree"}
 	if !reflect.DeepEqual(subcommands, want) {
 		t.Errorf("subcommands = %q, want %q", subcommands, want)
 	}
@@ -482,4 +482,42 @@ func indexOf(s []string, v string) int {
 		}
 	}
 	return -1
+}
+
+// TestLogIsRefused: "git log" converts a message from the charset that the
+// commit's own "encoding" header names, with a converter the lead chose, and
+// prints a patch with the textconv program of a diff driver, so no command of
+// this package is "log". It is not an allowed subcommand, it is on neither
+// the list of subcommands that get "--no-ext-diff" and "--no-textconv" nor
+// the list that get the attribute pin, and Argv refuses it however it is
+// written. A change that wants "log" back has to edit these lists and this
+// test.
+func TestLogIsRefused(t *testing.T) {
+	for name, list := range map[string][]string{
+		"subcommands": subcommands, "noDiffPrograms": noDiffPrograms, "attrPinned": attrPinned,
+	} {
+		if slices.Contains(list, "log") {
+			t.Errorf("%s holds %q", name, "log")
+		}
+	}
+	if _, ok := exactForms["log"]; ok {
+		t.Errorf("exactForms holds log")
+	}
+	g := Git{Path: "/usr/bin/git"}
+	for _, args := range [][]string{
+		{"log"},
+		{"log", "--max-count=1", "--end-of-options", "HEAD"},
+		{"log", "-p", "--no-ext-diff", "--no-textconv", "--end-of-options", "HEAD"},
+		{"log", "--", "x"},
+		{"log", "--format=%H"},
+		{"show", "HEAD"},
+	} {
+		argv, err := g.Argv(Cmd{GitDir: "/srv/r.git", Args: args})
+		if err == nil || argv != nil {
+			t.Errorf("Argv accepted %q: %q", args, argv)
+		}
+		if err != nil && !strings.Contains(err.Error(), `subcommand "`+args[0]+`" is not allowed`) {
+			t.Errorf("%q: error %q does not say that the subcommand is not allowed", args, err)
+		}
+	}
 }

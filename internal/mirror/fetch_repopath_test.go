@@ -168,25 +168,181 @@ func TestFetchRepositoryPathOfTheCloneItselfIsUnchanged(t *testing.T) {
 }
 
 // TestFetchRefusesARepositoryPathThatAppearsLater: a path that is missing
-// when the plan arrives and a bundle by the time the receiving half is about
-// to start is refused by the second check, before git is started, and the
-// mirror is as it was.
+// when the plan arrives and a bundle at some later time must not be read by
+// the owner's git. There are two later times, and a case for each.
+//
+// Before the second check (step 6): the check refuses the path before git is
+// started, and the mirror is as it was.
+//
+// After the second check, right before git is started (the hook 60): the
+// check cannot see it, and the fetch names the source as a "file://" URL, for
+// which git never opens a bundle. The sandboxed command is started instead
+// and serves the lead's clone, so the fetch takes the lead's tip and not the
+// tip that the bundle holds. The bundle is of another clone, with a commit of
+// its own, so a read of it would show as a ref at that commit.
 func TestFetchRefusesARepositoryPathThatAppearsLater(t *testing.T) {
+	t.Run("before the second check", func(t *testing.T) {
+		e := newFetchEnv(t)
+		started := filepath.Join(t.TempDir(), "upload-pack")
+		e.planner.UploadPack = e.wrapper("touch '" + started + "'")
+		path := filepath.Join(t.TempDir(), "work")
+		e.planner.Repository = path
+		was := e.state0(t)
+		fetchHook = func(step int) {
+			if step == 6 {
+				e.makeBundle(t, path)
+			}
+		}
+		t.Cleanup(func() { fetchHook = nil })
+		_, err := e.m.Fetch(context.Background(), e.req())
+		if !errors.Is(err, ErrRepositoryPath) {
+			t.Fatalf("Fetch = %v, want ErrRepositoryPath", err)
+		}
+		if _, serr := os.Stat(started); serr == nil {
+			t.Error("the sandboxed command started")
+		}
+		e.unchanged(t, was)
+	})
+
+	t.Run("after the second check", func(t *testing.T) {
+		e := newFetchEnv(t)
+		tip := e.lead.git(t, "rev-parse", "refs/heads/main")
+		other := newLeadClone(t, e.g, t.TempDir(), "other")
+		otherTip := other.commit(t, "other.txt", "not the lead's\n", "the bundle's commit")
+		if otherTip == tip {
+			t.Fatal("the bundle holds the lead's tip: the case proves nothing")
+		}
+		started := filepath.Join(t.TempDir(), "upload-pack")
+		e.planner.UploadPack = []string{"/bin/sh", "-c", "touch '" + started + "'; exec '" + e.gup + "' '" + e.lead.tree + "'", "sh"}
+		path := filepath.Join(t.TempDir(), "work")
+		e.planner.Repository = path
+		fetchHook = func(step int) {
+			if step == 60 {
+				other.git(t, "bundle", "create", path, "main")
+			}
+		}
+		t.Cleanup(func() { fetchHook = nil })
+		rep, err := e.m.Fetch(context.Background(), e.req())
+		if err != nil {
+			t.Fatalf("Fetch: %v", err)
+		}
+		if fi, serr := os.Lstat(path); serr != nil || !fi.Mode().IsRegular() {
+			t.Fatalf("the bundle was not at the path when git started (%v): the case proves nothing", serr)
+		}
+		if _, serr := os.Stat(started); serr != nil {
+			t.Error("the sandboxed command did not start: git took the path itself")
+		}
+		if len(rep.Updates) != 1 || rep.Updates[0].Ref != "refs/leads/coder/heads/main" || rep.Updates[0].New != tip {
+			t.Errorf("updates = %+v, want the lead's tip %s", rep.Updates, tip)
+		}
+		for _, line := range mirrorRefs(t, e.m) {
+			if strings.Contains(line, otherTip) {
+				t.Errorf("the mirror holds the bundle's commit: %s", line)
+			}
+		}
+	})
+}
+
+// TestFetchRepositoryPathWithAPercentSignReachesTheSandbox: git decodes "%"
+// and two hexadecimal digits in the path of a "file://" URL, so the fetch
+// writes each "%" of the plan's path as "%25". The sandboxed command gets the
+// path as the plan has it, and the fetch works.
+func TestFetchRepositoryPathWithAPercentSignReachesTheSandbox(t *testing.T) {
+	for _, name := range []string{"100%41", "50%", "a%2Fb", "%25"} {
+		t.Run(name, func(t *testing.T) {
+			e := newFetchEnv(t)
+			tip := e.lead.git(t, "rev-parse", "refs/heads/main")
+			inside := filepath.Join(t.TempDir(), "absent", name, "work")
+			record := filepath.Join(t.TempDir(), "path")
+			e.planner.Repository = inside
+			e.planner.UploadPack = []string{"/bin/sh", "-c", "printf '%s' \"$1\" > '" + record + "'; exec '" + e.gup + "' '" + e.lead.tree + "'", "sh"}
+			rep, err := e.m.Fetch(context.Background(), e.req())
+			if err != nil {
+				t.Fatalf("Fetch: %v", err)
+			}
+			if len(rep.Updates) != 1 || rep.Updates[0].New != tip {
+				t.Errorf("updates = %+v", rep.Updates)
+			}
+			if got, err := os.ReadFile(record); err != nil || string(got) != inside {
+				t.Errorf("the sandboxed command got %q (%v), want %q", got, err, inside)
+			}
+		})
+	}
+}
+
+// TestCheckRepositoryPathOfTheCloneItself: the clone's own path passes as a
+// real folder and as nothing else. A symlink to a folder, a file, a missing
+// path and a path on which a file stands in the way are refused as a hostile
+// tree, the same refusal that checkLeadTree gives for the clone.
+func TestCheckRepositoryPathOfTheCloneItself(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "folder")
+	if err := os.Mkdir(folder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(folder, link); err != nil {
+		t.Fatal(err)
+	}
+	dangling := filepath.Join(dir, "dangling")
+	if err := os.Symlink(filepath.Join(dir, "nothing"), dangling); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkRepositoryPath(folder, folder); err != nil {
+		t.Errorf("a real folder: %v", err)
+	}
+	for name, p := range map[string]string{
+		"a symlink to a folder":             link,
+		"a dangling symlink":                dangling,
+		"a regular file":                    file,
+		"a missing path":                    filepath.Join(dir, "missing"),
+		"a file in the way":                 filepath.Join(file, "tree"),
+		"a symlink, as the folder's parent": filepath.Join(link, "nothing"),
+	} {
+		err := checkRepositoryPath(p, p)
+		if !errors.Is(err, ErrHostileTree) {
+			t.Errorf("%s: %v, want ErrHostileTree", name, err)
+		}
+		if errors.Is(err, ErrRepositoryPath) {
+			t.Errorf("%s: the refusal is ErrRepositoryPath too: %v", name, err)
+		}
+	}
+	// A path other than the clone's is still judged by the other rule.
+	if err := checkRepositoryPath(folder, filepath.Join(dir, "other")); !errors.Is(err, ErrRepositoryPath) {
+		t.Errorf("a folder that is not the clone: %v, want ErrRepositoryPath", err)
+	}
+}
+
+// TestFetchRefusesACloneReplacedBeforeTheSecondCheck: the plan names the
+// clone's own path, which passes the first check as a real folder. If the
+// clone is replaced by a symlink before the second check, the fetch is
+// refused as a hostile tree before git starts, and the mirror is as it was.
+func TestFetchRefusesACloneReplacedBeforeTheSecondCheck(t *testing.T) {
 	e := newFetchEnv(t)
 	started := filepath.Join(t.TempDir(), "upload-pack")
 	e.planner.UploadPack = e.wrapper("touch '" + started + "'")
-	path := filepath.Join(t.TempDir(), "work")
-	e.planner.Repository = path
+	e.planner.Repository = e.lead.tree
 	was := e.state0(t)
+	moved := e.lead.tree + ".moved"
 	fetchHook = func(step int) {
 		if step == 6 {
-			e.makeBundle(t, path)
+			if err := os.Rename(e.lead.tree, moved); err != nil {
+				t.Error(err)
+				return
+			}
+			if err := os.Symlink(moved, e.lead.tree); err != nil {
+				t.Error(err)
+			}
 		}
 	}
 	t.Cleanup(func() { fetchHook = nil })
 	_, err := e.m.Fetch(context.Background(), e.req())
-	if !errors.Is(err, ErrRepositoryPath) {
-		t.Fatalf("Fetch = %v, want ErrRepositoryPath", err)
+	if !errors.Is(err, ErrHostileTree) {
+		t.Fatalf("Fetch = %v, want ErrHostileTree", err)
 	}
 	if _, serr := os.Stat(started); serr == nil {
 		t.Error("the sandboxed command started")

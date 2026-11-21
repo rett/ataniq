@@ -68,6 +68,23 @@ type Cmd struct {
 	// fixed -c hardening for git-upload-pack. The checks of the fetched
 	// objects (fsck) run on the receiving side, here, in the owner's git.
 	UploadPack []string
+	// SourceFileURL, for a fetch with UploadPack, makes [Git.Argv] pass the
+	// source (the first argument after the end of the options, checked as
+	// above: an absolute local path) to git as the URL "file://" and the
+	// path, with each "%" written "%25". The caller still writes a path, and
+	// the refusal of a source that is itself a URL stays.
+	//
+	// Why: git reads a source that is a path to a file as a git bundle,
+	// when the file is one, itself and never starts the program of
+	// UploadPack. A source that is a "file://" URL is never read that way:
+	// git takes the smart transport and starts the program, whatever is at
+	// the path. git decodes "%" and two hexadecimal digits in the path of
+	// the URL and gives the program the decoded path, so the encoding makes
+	// the program get the path the caller wrote. The tests ask the installed
+	// git about both points, and about the other characters of a path (a
+	// space, "#", "?", ":" and the rest need no encoding). Argv refuses
+	// the field without UploadPack.
+	SourceFileURL bool
 }
 
 // fixedPaths are the places Find looks for git. $PATH is never read.
@@ -93,10 +110,16 @@ var protocolNames = []string{"file"}
 
 // subcommands are the git subcommands that follow the option rule of
 // [checkOptions]. "hash-object" and "merge-tree" are not here: each is
-// allowed in one exact form only (see [exactForms]).
+// allowed in one exact form only (see [exactForms]). "log" is not here
+// either: it converts a message from the charset that the commit's own
+// "encoding" header names, with a converter the lead chose, and prints a
+// patch with the textconv program of a diff driver. A caller that needs
+// commits reads them as raw objects ("rev-list" and "cat-file"), and a
+// later change that wants "log" has to add it here, to [noDiffPrograms] and
+// to [attrPinned] on purpose; the tests assert that it is refused.
 var subcommands = []string{
 	"init", "version", "fetch", "for-each-ref", "rev-parse", "rev-list",
-	"merge-base", "diff-tree", "diff", "log", "cat-file", "update-ref",
+	"merge-base", "diff-tree", "diff", "cat-file", "update-ref",
 	"symbolic-ref", "show-ref", "count-objects", "config",
 	"check-ref-format", "ls-tree",
 }
@@ -184,8 +207,9 @@ var refusedOptions = []string{"--upload-pack", "--receive-pack", "--exec", "--ex
 
 // noDiffPrograms are the subcommands that run the programs of the
 // configuration when they print a patch: "git diff" runs diff.external and
-// the textconv program of a diff driver by default, and "git log -p" runs
-// the textconv program. An empty or dummy diff.external does not stop it:
+// the textconv program of a diff driver by default ("git log -p" would run
+// the textconv program too, but "log" is not allowed; see [subcommands]). An
+// empty or dummy diff.external does not stop it:
 // git reports "cannot run" and fails. For these [Git.Argv] adds the options
 // "--no-ext-diff" and "--no-textconv" right after the subcommand, which do
 // stop both. "diff-tree" is plumbing and runs neither unless asked; the
@@ -193,8 +217,8 @@ var refusedOptions = []string{"--upload-pack", "--receive-pack", "--exec", "--ex
 //
 // A tree cannot name a diff driver, because of the attribute pin (see
 // [attrPinned]), but the repository's own "info/attributes" can, and a
-// caller of "log" is not required to run [CheckInfoAttributes].
-var noDiffPrograms = []string{"diff", "log"}
+// caller of "diff" is not required to run [CheckInfoAttributes].
+var noDiffPrograms = []string{"diff"}
 
 // emptyTree is the id of the tree with no entry, in a SHA-1 repository. git
 // knows it without the object being stored.
@@ -218,7 +242,7 @@ const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 //
 // What the pin cannot reach is the repository's own "info/attributes"; see
 // [CheckInfoAttributes].
-var attrPinned = []string{"diff", "diff-tree", "merge-tree", "log"}
+var attrPinned = []string{"diff", "diff-tree", "merge-tree"}
 
 // attrSourceOption is the git option that names the attribute source. It
 // comes before the setting "attr.tree", so it would undo the pin of
@@ -281,9 +305,9 @@ func IsObjectID(s string) bool {
 }
 
 // Argv returns the command line for c: the git path, the fixed -c settings,
-// for "diff", "diff-tree", "merge-tree" and "log" the setting that pins the
+// for "diff", "diff-tree" and "merge-tree" the setting that pins the
 // attribute source to the empty tree, --git-dir=..., the subcommand, for
-// "diff" and "log" the options "--no-ext-diff" and "--no-textconv", then the
+// "diff" the options "--no-ext-diff" and "--no-textconv", then the
 // arguments. It starts nothing. It refuses what the package comment lists.
 func (g Git) Argv(c Cmd) ([]string, error) {
 	if !filepath.IsAbs(g.Path) {
@@ -339,9 +363,14 @@ func (g Git) Argv(c Cmd) ([]string, error) {
 	} else if err := checkOptions(sub, c.Args[1:]); err != nil {
 		return nil, err
 	}
-	uploadPack, err := uploadPackOption(c, sub, protocols)
+	uploadPack, sourceAt, err := uploadPackOption(c, sub, protocols)
 	if err != nil {
 		return nil, err
+	}
+	args := c.Args[1:]
+	if sourceAt >= 0 && c.SourceFileURL {
+		args = slices.Clone(args)
+		args[sourceAt-1] = fileURL(args[sourceAt-1])
 	}
 
 	argv := []string{g.Path}
@@ -363,7 +392,13 @@ func (g Git) Argv(c Cmd) ([]string, error) {
 		// No external diff and no textconv program; see noDiffPrograms.
 		argv = append(argv, "--no-ext-diff", "--no-textconv")
 	}
-	return append(argv, c.Args[1:]...), nil
+	return append(argv, args...), nil
+}
+
+// fileURL returns the "file://" URL of an absolute path, with each "%"
+// written "%25" (see [Cmd.SourceFileURL]).
+func fileURL(path string) string {
+	return "file://" + strings.ReplaceAll(path, "%", "%25")
 }
 
 // Env returns the whole environment for c, sorted. Nothing is inherited.
@@ -408,49 +443,53 @@ func (g Git) Env(c Cmd) []string {
 }
 
 // uploadPackOption checks c.UploadPack and returns the option for it, or ""
-// when it is unset.
-func uploadPackOption(c Cmd, sub string, protocols []string) (string, error) {
+// when it is unset, and the index in c.Args of the source, or -1 when there
+// is none.
+func uploadPackOption(c Cmd, sub string, protocols []string) (string, int, error) {
 	if len(c.UploadPack) == 0 {
-		return "", nil
+		if c.SourceFileURL {
+			return "", -1, errors.New("gitenv: SourceFileURL needs UploadPack")
+		}
+		return "", -1, nil
 	}
 	if sub != "fetch" {
-		return "", fmt.Errorf("gitenv: UploadPack is only for fetch, not %q", sub)
+		return "", -1, fmt.Errorf("gitenv: UploadPack is only for fetch, not %q", sub)
 	}
 	if !slices.Equal(protocols, []string{"file"}) {
-		return "", errors.New(`gitenv: UploadPack needs Protocols to be exactly ["file"]`)
+		return "", -1, errors.New(`gitenv: UploadPack needs Protocols to be exactly ["file"]`)
 	}
 	words := make([]string, len(c.UploadPack))
 	for i, w := range c.UploadPack {
 		switch {
 		case w == "":
-			return "", fmt.Errorf("gitenv: UploadPack element %d is empty", i)
+			return "", -1, fmt.Errorf("gitenv: UploadPack element %d is empty", i)
 		case strings.ContainsAny(w, "\x00\n"):
-			return "", fmt.Errorf("gitenv: UploadPack element %d holds a NUL or a newline", i)
+			return "", -1, fmt.Errorf("gitenv: UploadPack element %d holds a NUL or a newline", i)
 		}
 		words[i] = shellQuote(w)
 	}
 	if !filepath.IsAbs(c.UploadPack[0]) {
-		return "", fmt.Errorf("gitenv: UploadPack program %q is not an absolute path", c.UploadPack[0])
+		return "", -1, fmt.Errorf("gitenv: UploadPack program %q is not an absolute path", c.UploadPack[0])
 	}
 	// Git appends the source to the command, so the source must be a local
 	// path and must be named after the end of the options.
 	i := slices.IndexFunc(c.Args[1:], func(a string) bool { return a == "--" || a == "--end-of-options" })
 	if i < 0 || i+2 >= len(c.Args) {
-		return "", errors.New(`gitenv: UploadPack needs "--end-of-options" and then the source in Args`)
+		return "", -1, errors.New(`gitenv: UploadPack needs "--end-of-options" and then the source in Args`)
 	}
 	// Before the end of the options only options may stand, so that no
 	// other argument can be the repository git runs the program for. An
 	// option takes its value after "=" ("--depth=1", not "--depth 1").
 	for _, a := range c.Args[1 : i+1] {
 		if !strings.HasPrefix(a, "-") || a == "-" {
-			return "", fmt.Errorf("gitenv: UploadPack allows only options before the end of options, not %q", a)
+			return "", -1, fmt.Errorf("gitenv: UploadPack allows only options before the end of options, not %q", a)
 		}
 	}
 	src := c.Args[i+2]
 	if !filepath.IsAbs(src) || strings.Contains(src, "::") || strings.Contains(src, "://") {
-		return "", fmt.Errorf("gitenv: UploadPack needs the source to be an absolute local path, not %q", src)
+		return "", -1, fmt.Errorf("gitenv: UploadPack needs the source to be an absolute local path, not %q", src)
 	}
-	return "--upload-pack=" + strings.Join(words, " "), nil
+	return "--upload-pack=" + strings.Join(words, " "), i + 2, nil
 }
 
 // shellQuote returns s as one POSIX shell word: in single quotes, with each
@@ -493,7 +532,7 @@ var valuelessFlags = []string{
 	"--bare",
 	// Output control.
 	"--quiet", "-q", "-v", "-z", "--raw", "--count",
-	// Diff and log.
+	// Diff and rev-list.
 	"-r", "-m", "--root", "--no-renames", "--full-index", "--no-color",
 	"--no-ext-diff", "--no-textconv", "--no-mailmap", "--no-notes",
 	"--no-decorate", "--no-show-signature", "--first-parent", "--no-walk",
@@ -541,7 +580,7 @@ var markerNotEnd = map[string][]string{
 //
 // Some pairs of subcommand and marker stay allowed although git reads the
 // argument after the marker as an option, because it then dies and acts on
-// nothing. With "--end-of-options" first, "rev-parse", "rev-list", "log",
+// nothing. With "--end-of-options" first, "rev-parse", "rev-list",
 // "diff" and "diff-tree" fail with "option '...' must come before non-option
 // arguments" (TestMarkerReadThenDie pins this). "check-ref-format" fails with
 // its usage text for either marker, even before a valid name (it takes no
@@ -646,7 +685,7 @@ func checkMergeTree(args []string) error {
 // the first list, and why:
 //   - diff.external is not set. An empty or dummy value does not disable the
 //     external diff: "git diff" then fails with "cannot run". [Git.Argv]
-//     adds --no-ext-diff and --no-textconv to "diff" and "log" instead
+//     adds --no-ext-diff and --no-textconv to "diff" instead
 //     (see [noDiffPrograms]).
 //   - core.alternateRefsCommand is set to the empty string. git 2.56 does
 //     not skip an empty command: when a fetch lists the refs of an alternate

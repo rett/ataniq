@@ -110,11 +110,12 @@ and no tag. The steps below follow `Mirror.Fetch` in `internal/mirror`.
 3. **Ask for the sandbox plan.** The template gives the command that runs
    `git-upload-pack` on the clone, and the command that measures the clone's
    object store. With no template, or a template without a `serve` section,
-   the fetch stops here. Nothing has run. The plan's repository path
-   (`serve.repository`) is then checked on the host, because the owner's git
-   is given that path and looks at it before it starts the serving half: a git
-   bundle file there is read by that git itself, as the owner, and the sandboxed
-   command never runs. The path is refused ("the template's repository path
+   the fetch stops here. Nothing has run. The fetch gives the owner's git the
+   plan's repository path (`serve.repository`) as a `file://` URL. git reads a
+   git bundle file itself, as the owner, only when its source is a path to a
+   file; for a `file://` URL it starts the sandboxed command, whatever is at the
+   path on the host, a bundle that appears later included. As a second layer the
+   path is then checked on the host. It is refused ("the template's repository path
    exists on the host") when anything is there: a regular file, a symlink (also
    a dangling one, found without following it), a folder of any kind (a bare
    repository, a mirror, a clone), or a file of another kind. It is also
@@ -122,8 +123,12 @@ and no tag. The steps below follow `Mirror.Fetch` in `internal/mirror`.
    folder should be on the way), so the rule fails closed. Two things pass: a
    path that does not exist on the host, which is a path inside the sandbox
    and the case the template is for, and the lead's own clone path
-   (`STATE/leads/<role>/tree`), which step 2 has just checked to be a real
-   folder and which no bundle can be. Nothing has run when the path is refused.
+   (`STATE/leads/<role>/tree`), which is looked at again without following a
+   symlink and must be a real folder, which no bundle can be. A clone that is
+   by then a symlink, a file or missing is refused as a hostile tree, as step 2
+   refuses it. When this check refuses the path nothing has run. The check of step 6 can refuse it too, when it appeared or changed
+   in between: then the measure of step 4 has run and the staging repository
+   of step 5 was made and is removed, and the mirror is as it was.
 4. **Measure.** The measure command runs in the sandbox. Its number is the
    lead side's own statement, a first check. More than the source limit is a
    limit error. The owner also measures the mirror: a mirror already at its
@@ -133,7 +138,9 @@ and no tag. The steps below follow `Mirror.Fetch` in `internal/mirror`.
    again what the mirror has. The mirror's refs are noted.
 6. **Receive.** The repository path is checked again, right before git starts,
    to keep the window of a path that appears in between small. Git runs as the
-   owner, in the staging repository. The serving
+   owner, in the staging repository, with the source as a `file://` URL (a `%`
+   in the path is written `%25`, so the sandboxed command gets the path as the
+   template has it). The serving
    half is the sandboxed command, named with git's `--upload-pack` option. Only
    the receiving half runs as the owner. A watchdog stops the fetch when the
    staging repository passes its size limit or its entry limit, and the whole
@@ -200,7 +207,10 @@ accepted before the subcommand. After it, up to the first `--` or
 short list of flags that take no value. Options that name a program to run are
 refused in every form, abbreviated too; the one upload-pack command of the
 fetch is set by the package itself, not as an option the caller writes. The
-package does not make git safe in a repository an attacker controls, and does
+subcommand `log` is refused, because it converts a message from the charset
+that a commit's own `encoding` header names and runs the textconv program of a
+diff driver for a patch; commits are read as raw objects, as
+"How the commits are read" below says. The package does not make git safe in a repository an attacker controls, and does
 not confine the process. Owner-side code runs git only on bare repositories
 that Ataniq made, with an explicit `--git-dir`. The package comment of
 `internal/exchange/gitenv` has the details.
@@ -257,15 +267,15 @@ nothing. This is the whole format, version 1:
   owner credentials. The plan has no environment for it, so the list itself
   must clear the environment (for example `bwrap --clearenv`, or `env -i`).
 - `serve.repository` is the path of the clone as the sandbox sees it. The
-  owner's git is given this path as the source of the fetch, and it looks at
-  the path on the host before it starts the serving half: when a regular file
-  is there and it is a git bundle, git reads that file itself and never starts
-  `upload_pack`. Choose a path that does not exist on the host, such as
+  owner's git is given this path as the source of the fetch, as a `file://`
+  URL, so it starts `upload_pack` and never reads a git bundle file at the path
+  on the host itself. Choose a path that does not exist on the host, such as
   `/work/{project}`, and never one where a sandbox could put a file. The fetch
-  checks it and refuses a path that exists there, whatever it is (see step 3 of
+  also refuses a path that exists there, whatever it is (see step 3 of
   [the fetch](#the-fetch-step-by-step)); a path that does not exist is the
-  expected case. The check cannot stop a file that appears after it, so keep
-  every folder on the way to the path out of the reach of any sandbox.
+  expected case. A file that appears after the check is not read as a bundle
+  either, and keeping every folder on the way to the path out of the reach of
+  any sandbox is still the better choice.
 - `serve.measure` and `serve.measure_env` are the command and the
   environment that print the size of the clone's object store. The first
   token of the first output line must be a decimal byte count.
@@ -427,7 +437,10 @@ commits with `git rev-list`, checks the size of each object with
   most 32 KiB, a whole commit object at most 64 KiB, and all the commits
   together at most 8 KiB for each commit plus one commit object of 64 KiB.
   More is a limit error, with the commit id; an object over its size limit is
-  not read. Of the message only the subject is kept.
+  not read. Of the message only the subject is kept. A header of many
+  continuation lines is parsed in time linear in its size, and the time limit
+  of the call and the caller's context are checked between the commits that
+  are parsed, so a branch of such commits is refused when the time is used up.
 
 A path can carry several flags. These are the kinds (`odd-path` is for the merge mode only, see [merge mode](#merge-mode-of-verification)):
 

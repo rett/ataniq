@@ -137,7 +137,7 @@ func (r *runner) caseFetch(ctx context.Context) error {
 	if c.insideOK {
 		onHost = pathOnHost(c.inside, c.tree)
 	}
-	cs.fact("clone", "What the harness planted in the lead's clone, how the serving half sees the clone's path, and whether that path exists on the host (the owner's git reads a bundle file there itself; the fetch refuses such a path).", map[string]any{
+	cs.fact("clone", "What the harness planted in the lead's clone, how the serving half sees the clone's path, and whether that path exists on the host (the fetch names the path to git as a file:// URL, which git never reads as a bundle, and refuses a path that exists as a second layer).", map[string]any{
 		"hook_names":           hookNames,
 		"hook_folders":         []string{".git/hooks", ".git/" + leadHooksFolder},
 		"config_keys":          []string{"core.fsmonitor", "core.hooksPath", "uploadpack.packObjectsHook", "core.alternateRefsCommand"},
