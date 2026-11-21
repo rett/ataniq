@@ -62,7 +62,7 @@ func NewHolderCommand(cfg Config, daemonLock string) (*HolderCommand, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrHolderCommand, err)
 	}
-	_, unit, err := Names(cfg.Role)
+	_, unit, err := NamesFor(cfg.Reserved, cfg.Role)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrHolderCommand, err)
 	}
