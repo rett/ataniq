@@ -262,25 +262,34 @@ func Open(path string, o Options) (*Table, error) {
 // Admit binds the command to its key and makes the binding durable before it
 // returns. For a key that is held with the same operation, role and digest it
 // returns the stored receipt and false, and the command must not run again,
-// whatever the status. For a new key it returns a receipt in progress and true,
-// and the caller may act. A key held with anything else is [ErrConflict], a
-// dropped key is [ErrExpired], and a table whose every slot is open is
-// [ErrFull]; none of them admits anything.
+// whatever the status, also on a table that can no longer be written
+// ([ErrBroken]): a command that was admitted keeps its receipt, in progress
+// when its finish could not be written. For a new key it returns a receipt in
+// progress and true, and the caller may act. A key held with anything else is
+// [ErrConflict], a dropped key is [ErrExpired], and a table whose every slot is
+// open is [ErrFull]; none of them admits anything.
 func (t *Table) Admit(b Binding) (r Receipt, fresh bool, err error) {
 	if err := b.validate(); err != nil {
 		return Receipt{}, false, err
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if err := t.usable(); err != nil {
-		return Receipt{}, false, err
+	if t.closed {
+		return Receipt{}, false, ErrClosed
 	}
 	k := key{b.Client, b.ID}
 	if e, ok := t.receipts[k]; ok {
+		// A held key is answered even when the table cannot be written: the
+		// receipt is what the table knows, and a client that asks again must not
+		// be told that nothing was admitted.
 		if e.rec.Op != b.Op || e.role != b.Role || e.digest != b.Digest {
 			return Receipt{}, false, ErrConflict
 		}
 		return e.rec.clone(), false, nil
+	}
+	if t.broken != nil {
+		// Nothing new is admitted.
+		return Receipt{}, false, t.broken
 	}
 	h := k.hash()
 	if _, ok := t.tombs[h]; ok {

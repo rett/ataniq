@@ -51,8 +51,10 @@
 // between two runs is not damage.
 //
 // A failed write or sync of the file closes the table for good ([ErrBroken]):
-// what reached the disk is unknown, so no later line may follow it. The next
-// Open replays whatever is there.
+// what reached the disk is unknown, so no later line may follow it. The table
+// still answers a replay of a key it holds with the receipt it holds (in
+// progress when the finish could not be written), and refuses everything else.
+// The next Open replays whatever is there.
 //
 // The client string is a namespace, not an identity: the client API gives the
 // daemon no peer identity beyond the user's own, so nothing here authenticates
