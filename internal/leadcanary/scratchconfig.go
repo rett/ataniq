@@ -468,3 +468,8 @@ func ReadScratchConfig(path string) (ScratchConfig, error) {
 	}
 	return cfg, nil
 }
+
+// Validate checks the sandbox values that need no file system: the same rules
+// [ScratchConfig.Validate] applies to the config's sandbox section. The error is
+// a *ConfigError.
+func (b ScratchSandbox) Validate() error { return b.validate() }

@@ -12,12 +12,14 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/unix"
 
 	"ataniq/internal/exchange/gitenv"
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leadholder/canaryroot"
+	"ataniq/internal/leadrole"
 	"ataniq/internal/leadsandbox/mountpoints"
 	"ataniq/internal/leadsandbox/profile"
 	"ataniq/internal/leadsandbox/safefile"
@@ -78,6 +80,10 @@ type run struct {
 	hook     []byte
 	replay   replayScreens
 	mirror   *mirror.Mirror
+
+	// scratch is set for a scratch lead ([ProvisionScratch]) and nil for the
+	// canary's.
+	scratch *scratchRun
 }
 
 // Provision makes the folders of the one canary lead and writes the marker
@@ -94,18 +100,46 @@ type run struct {
 // mirror stays: it is in the state root, provisioning needs it and does not
 // make it, so the state root itself is not removed.
 func Provision(ctx context.Context, cfg leadcanary.Config, opts Options) error {
+	if cfg.Reserved != leadrole.ReservedThrowaway {
+		return fmt.Errorf("%w: Provision takes a throwaway lead; use ProvisionScratch", ErrScratchKind)
+	}
+	r, err := newRun(cfg, opts)
+	if err != nil {
+		return err
+	}
+	return r.provision(ctx)
+}
+
+// newRun makes a run of the config: it validates the config and looks at
+// nothing.
+func newRun(cfg leadcanary.Config, opts Options) (*run, error) {
 	r := &run{cfg: cfg, opts: opts, say: func(s string) {
 		if opts.Log != nil {
 			opts.Log(s)
 		}
 	}}
 	if err := cfg.Validate(); err != nil {
-		return err
+		return nil, err
 	}
+	return r, nil
+}
+
+// provision runs the checks and then makes everything: the body of [Provision]
+// and of [ProvisionScratch], which differ where r.scratch is set.
+func (r *run) provision(ctx context.Context) error {
+	cfg := r.cfg
 	// First, before any file is looked at: the roots must not be, hold or lie
 	// in the account's default state or runtime folders. WriteMarker does not
-	// look where the root is.
-	if err := canaryroot.CheckRoots(cfg.StateRoot, cfg.RuntimeRoot, opts.getenv()); err != nil {
+	// look where the root is. A scratch lead is also held to the root marker of
+	// the scratch place, which only the owner's command writes.
+	if r.scratch != nil {
+		if err := canaryroot.Check(cfg.StateRoot, cfg.RuntimeRoot, cfg.Role.Project(), r.opts.getenv()); err != nil {
+			return err
+		}
+		if err := r.checkScratchState(); err != nil {
+			return err
+		}
+	} else if err := canaryroot.CheckRoots(cfg.StateRoot, cfg.RuntimeRoot, r.opts.getenv()); err != nil {
 		return err
 	}
 	p, err := PathsOf(cfg)
@@ -118,6 +152,14 @@ func Provision(ctx context.Context, cfg leadcanary.Config, opts Options) error {
 	}
 	if err := r.loadSources(); err != nil {
 		return err
+	}
+	if r.scratch != nil {
+		if err := r.prepareScratch(); err != nil {
+			return err
+		}
+		if err := r.ensureMirror(ctx); err != nil {
+			return err
+		}
 	}
 	if err := r.checkMirror(ctx); err != nil {
 		return err
@@ -132,6 +174,23 @@ func Provision(ctx context.Context, cfg leadcanary.Config, opts Options) error {
 		return err
 	}
 	return r.execute(ctx)
+}
+
+// checkScratchState refuses a scratch lead that is provisioned already
+// ([ErrFirstStart]) or was cut short ([ErrIncomplete]), before anything is read
+// or made.
+func (r *run) checkScratchState() error {
+	st, err := ScratchStateOf(r.cfg)
+	switch {
+	case err != nil:
+		return err
+	case st == StateDone:
+		return fmt.Errorf("%w: the lead's record is there", ErrFirstStart)
+	case st == StateIncomplete:
+		return fmt.Errorf("%w: the owner removes them with: ataniq-canary scratch-clean --config FILE --lead %s",
+			ErrIncomplete, strings.TrimPrefix(r.cfg.Role.Project(), leadrole.ScratchPrefix))
+	}
+	return nil
 }
 
 // loadSources reads, and checks, every file that is copied, before anything
@@ -182,7 +241,7 @@ func (r *run) checkMirror(ctx context.Context) error {
 // only checked here.
 func (r *run) stateFolders() []string {
 	rel := r.p.stateRel
-	return []string{
+	folders := []string{
 		rel(r.p.LeadsDir), rel(r.p.LeadDir), rel(r.p.Holder), rel(r.p.Home),
 		rel(r.p.ConfigRoot), rel(r.p.ConfigDir), rel(r.p.Tree),
 		rel(r.p.Records), rel(r.p.Requests), rel(r.p.Mail),
@@ -192,6 +251,10 @@ func (r *run) stateFolders() []string {
 		rel(r.p.RolesDir), rel(r.p.RoleDir),
 		rel(r.p.MirrorsDir), rel(r.p.ReplayDir),
 	}
+	if r.scratch != nil {
+		folders = append(folders, rel(r.p.ScratchRoot), rel(r.p.ScratchDir))
+	}
+	return folders
 }
 
 // sharedParent reports that the folder rel, of stateFolders, is one that holds
@@ -200,7 +263,12 @@ func (r *run) stateFolders() []string {
 // folder, the roles folder (the locks of other roles lie in it) and the mirrors
 // folder. Every other folder that is there before the run must be empty.
 func (r *run) sharedParent(rel string) bool {
-	for _, abs := range []string{r.p.LeadsDir, r.p.LeadDir, r.p.MailboxesDir, r.p.PublishedDir, r.p.RolesDir, r.p.MirrorsDir} {
+	shared := []string{r.p.LeadsDir, r.p.LeadDir, r.p.MailboxesDir, r.p.PublishedDir, r.p.RolesDir, r.p.MirrorsDir}
+	if r.scratch != nil {
+		// The scratch folder holds one folder per scratch lead.
+		shared = append(shared, r.p.ScratchRoot)
+	}
+	for _, abs := range shared {
 		if rel == r.p.stateRel(abs) {
 			return true
 		}
@@ -242,11 +310,15 @@ func (r *run) preflight() error {
 	if why := checkFolder(info); why != "" {
 		return fmt.Errorf("state root %s: %s", r.p.StateRoot, why)
 	}
-	// The marker: provisioning ran already.
-	if _, err := r.state.root.Lstat(canaryroot.MarkerName); err == nil {
-		return fmt.Errorf("%w: %s is there", ErrFirstStart, r.p.Marker)
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("%s: %w", r.p.Marker, err)
+	// The marker: provisioning ran already. A scratch lead has none in the
+	// state root (its record is looked at below, with the files it makes), and
+	// the canary's marker in a scratch place was refused by the root check.
+	if r.scratch == nil {
+		if _, err := r.state.root.Lstat(canaryroot.MarkerName); err == nil {
+			return fmt.Errorf("%w: %s is there", ErrFirstStart, r.p.Marker)
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("%s: %w", r.p.Marker, err)
+		}
 	}
 	// The holder's state folder: a first start happened.
 	if name, err := r.state.empty(r.p.stateRel(r.p.Holder)); err != nil {
@@ -274,6 +346,15 @@ func (r *run) preflight() error {
 	for _, f := range r.stateFiles() {
 		if err := r.state.lookAbsent(f.rel); err != nil {
 			return err
+		}
+	}
+	if r.scratch != nil {
+		// The two files of the lead's scratch folder: the inputs, which
+		// WriteInputs makes, and the record, the last act.
+		for _, abs := range []string{r.p.SandboxInputs, r.p.LeadRecord} {
+			if err := r.state.lookAbsent(r.p.stateRel(abs)); err != nil {
+				return err
+			}
 		}
 	}
 	// The replay switch is written by ReplayOn alone, after the marker: one
@@ -395,6 +476,17 @@ func (r *run) execute(ctx context.Context) error {
 	}
 	if err := r.makeRuntime(); err != nil {
 		return err
+	}
+	if r.scratch != nil {
+		if err := WriteInputs(r.cfg, r.scratch.sandbox, hashHex(r.settings)); err != nil {
+			return err
+		}
+		r.say("made file " + r.p.SandboxInputs)
+		if err := r.finishScratch(); err != nil {
+			return err
+		}
+		r.say("made file " + r.p.LeadRecord)
+		return nil
 	}
 	return r.writeMarker()
 }
