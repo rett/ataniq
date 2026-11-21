@@ -5,9 +5,10 @@
 // footer shows.
 //
 // There is one recogniser for each tested runtime and version, written from
-// recorded screens (the fixtures in testdata). Look one up with For. Only
-// claude 2.1.325 and codex 0.169 exist; any other runtime or version has no
-// recogniser, and nothing here guesses for it.
+// recorded screens (the fixtures in testdata). Look one up with For. Only the
+// versions of the table in package versions exist (claude 2.1.325 and codex
+// 0.169 today); any other runtime or version has no recogniser, and nothing
+// here guesses for it.
 //
 // The package is provisional and unqualified: it is built from recorded
 // sessions of one version per runtime, with no live qualification yet.
