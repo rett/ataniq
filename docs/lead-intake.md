@@ -220,7 +220,8 @@ that Ataniq made, with an explicit `--git-dir`. The package comment of
 The template is a JSON file that you write. It says which commands run, and
 the command trusts it. It is not checked to be a sandbox: the package fills in
 the argument lists and does nothing more. You vouch for it. The file must not
-be in the state root (a lead could change it), is read through a safe open (a
+be in the state root, which is kept for the host's records and journal and free
+of configuration (a lead's sandbox cannot write the host's folders), is read through a safe open (a
 symlink is refused) and is at most 64 KiB.
 
 Both sections are optional. A step whose section is absent refuses and runs

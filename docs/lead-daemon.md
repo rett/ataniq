@@ -302,36 +302,85 @@ no hook; a target that moved gives `not-applied` and changes nothing.
 
 ### What ran on a stand-in, and what waits for a seated lead
 
-This list is written from the plan's cases and is **to be confirmed against the
-end-to-end test**. A case that ran here ran on fakes, sample cards or the
-stand-in, which prove the Ataniq side only. Every one of them is run again
-against the real door, on a seated lead, and counts as qualified only then.
+The end-to-end test is in `internal/approval/hostadapter` (`e2e_test.go` and
+`e2e_oc_test.go`, run with the tag `ataniq_ownerchannel` and `-run OwnerChannel`)
+and `internal/leaddaemon/ownerchannel_contract_test.go`. It joins the console's
+approvals model, the console's client, the daemon on a private socket, the
+service, the real journal, the host adapter and a temporary bare mirror, over the
+stand-in door and a fake verification suite. No sandbox, no unit and no lead
+runs in it. A case that passed there proves the host's side only, against a door
+that is kinder than the real one. **None of this is qualified**: every case is
+run again against the real door on a seated lead, and counts as qualified only
+then.
 
-- Ran on fakes, sample cards or the stand-in: bad or reused ids, bad feature
-  names and extra fields (OC3); a branch moved or a request withdrawn with the
-  card open (OC4); a target that moves after the decision (OC5); one decision
-  used twice (OC6); expiry (OC7); a stop at each crash point, and a restart
-  with a held decision, which delivers nothing (OC9); hostile text and terminal
-  answers at the confirm field (OC10, OC11); who may send a decision frame, on
-  the daemon's side (OC13); one verification at a time (the host's part of
-  OC14); the summary of a known change set (OC15); a missing or surplus
-  sign-off (OC16); a wrong digest, epoch, revision or id (OC17); a lead-made
-  merge named as the tip (OC18); console and daemon restarts (OC21); a clock
-  moved back (OC22); the confirm code and the plan token in no readable place
-  (the host's part of OC23); the journal and the store made to disagree (OC24);
-  the pin against a rewritten branch (OC25); the attribute cases (OC27); ask,
-  read, withdraw, ask again (OC28); the `odd-path` flag (OC29); the outcomes of
-  a verification, failed, stopped or cut (OC31).
-- Wait for a seated lead, all of it: the sandbox cannot reach the socket,
-  journal or store (OC1); `--approved` from a managed seat (OC2); seat transfer
-  with requests open (OC8); requests across a handoff (OC26); a member inside
-  the lead's sandbox (OC30). Also the real door's own part of the others: the
-  caps and the throttle (OC14), a holder attach connection and Remote Control
-  as a sender (OC13), the registry edit between plan and use (OC29), the
-  sandboxed suite's reach (OC31) and the sandbox-readable places (OC23).
-- Not a case of this build: a same-user process as the decider is the stated
-  limit (OC20), a drawn copy of the card is the owner's judgement (OC12),
-  OC19 is withdrawn, and prune requests are out of scope (OC32).
+Covered by the end-to-end test on the stand-in:
+
+- OC4, the host's part: the branch moved or the request withdrawn with the card
+  open (`TestOwnerChannelOC4TheFeatureMovesOrTheRequestIsWithdrawnWithTheCardOpen`).
+  Not covered there: the typed text dropped when the card ends under the owner's
+  hands, which is the console's own test.
+- OC5, a target that moves after the decision (`TestOwnerChannelOC5TheTargetMovesAfterTheCard`).
+- OC6, one decision used twice, over the wire, at the door and at the ref
+  (`TestOwnerChannelOC6OneDecisionUsedTwice`). Not covered: a store file restored
+  from a copy, which the stand-in cannot show because it keeps nothing on disk.
+- OC7, expiry of a pending and of an approved request
+  (`TestOwnerChannelOC7ExpiryOfAPendingAndOfAnApprovedRequest`).
+- OC9, the host's part: a stop at each crash point and a restart with a held
+  decision, which delivers nothing (`TestOwnerChannelOC9StopsAtEachCrashPoint`,
+  `TestOwnerChannelOC9AHeldDecisionIsNotDeliveredByARestart`). Not covered: the
+  stop of the whole daemon on a seated lead.
+- OC15, the summary of a known change set (`TestOwnerChannelOC15TheSummaryOfAKnownChangeSet`).
+- OC16, a missing or surplus sign-off (`TestOwnerChannelOC16MissingAndSurplusSignOff`).
+- OC17, a wrong digest, epoch, revision or id (`TestOwnerChannelOC17WrongDigestEpochRevisionOrId`).
+- OC18, a lead-made merge named as the tip (`TestOwnerChannelOC18ALeadMadeMergeNamedAsTheTip`).
+- OC21, restarts of the console and the daemon with a card pending and a
+  request being verified (`TestOwnerChannelOC21RestartsOfTheConsoleAndTheDaemon`).
+  A verification that the stop interrupted leaves no card and no pin and is
+  answered `request-invalid`; the lead must ask again, and the new request runs
+  the verification from the start.
+- OC23, the host's part: the full cycle and where the confirm code and the plan
+  token are (`TestOwnerChannelOC23FullCycleAndWhereTheCodeAndTheTokenAre`).
+- OC24, the journal and the store made to disagree (`TestOwnerChannelOC24TheJournalAndTheDoorDisagree`).
+- OC27, the attribute cases (`TestOwnerChannelOC27AttributesOfTheTreeChangeNothing`).
+- OC31, the outcomes of a verification, failed, stopped or cut, and the voiding
+  of an approval by a later failed run (`TestOwnerChannelOC31VerificationOutcomes`).
+  Not covered: the sandbox's reach (a suite that reads the lead's home, reaches
+  the network or writes outside its checkout), because the suite is a fake.
+- OC33, hostile commit headers (`TestOwnerChannelOC33HostileCommitHeaders`).
+
+Covered only on the daemon side: OC13, who may send a decision frame, in
+`ownerchannel_contract_test.go`. A holder attach connection and Remote Control as
+a sender are not covered.
+
+Not covered by the end-to-end test, only by the package tests of the part
+concerned: bad or reused ids, bad feature names and extra fields (OC3); hostile
+text and terminal answers at the confirm field (OC10, OC11) and ask, read,
+withdraw, ask again (OC28), in the console's tests; one verification at a time
+(OC14, the host's part, in `internal/approval/ownerchannel`; the real door's caps
+and throttle are not covered); a clock moved back (OC22, in the same package's
+restart test); the pin against a rewritten branch (OC25, in
+`internal/approval/hostadapter`); the `odd-path` flag (OC29, in the intake's
+tests; the registry edit between plan and use is not covered).
+
+Not covered at all, because they need a seated lead or the real door: the
+sandbox cannot reach the socket, journal or store (OC1); `--approved` from a
+managed seat (OC2); seat transfer with requests open (OC8); a drawn copy of the
+card, which is the owner's judgement (OC12); the real door's caps and throttle
+(OC14); a same-user process as the decider, which is the stated limit of this
+build (OC20); requests across a handoff (OC26); and a member inside the lead's
+sandbox (OC30). OC19 is withdrawn, and prune requests are out of scope (OC32).
+
+What the tests found about the places of secrets:
+
+- The confirm code appears in no place, on the wire or off it. The console draws
+  it and keeps it in its model.
+- The plan token appears in the host's own journal, only inside the one `decision`
+  record, which repeats it so that a refusal can name the field that differs. The
+  design's OC23 lists the places a sandbox can read (the reply, the request and
+  the note in the drop folder, the intake's records and the mirror); the host's
+  journal is not one of them, and none of those holds the token.
+- The owner channel's verification runs the project's gates in the verification
+  sandbox. It was never run for real: the tests use a fake runner.
 
 ## The client socket and protocol
 
