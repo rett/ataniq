@@ -13,7 +13,9 @@ package main
 // Before the role lock is taken, with nothing written: the inputs file is read;
 // the holder refuses "canary": false, a layout role that is not
 // "<project>-lead" and a --role that is not the lead of the inputs' project; the
-// root check of canary mode (canaryroot.Check) is made with the process's real
+// root check of canary mode (canaryroot.Check, which takes its rule from the
+// project's prefix: the canary marker for a throwaway- project, the scratch
+// root marker for a scratch- project) is made with the process's real
 // environment; the holder refuses a --role-lock that is not that role's lock
 // under the state root, and a --state-dir or --runtime-dir that does not lie
 // under the inputs' roots; then it compares the flags with the inputs: --runtime
@@ -105,7 +107,9 @@ slice only:
 --canary starts the agent in the lead sandbox, through the start sequence, and
 waives assertion 10 (no qualification record). It needs --sandbox-inputs, the
 inputs file of the start sequence, and refuses --scratch. The project must be a
-throwaway project and the roots must not be the default ones. --inject opens
+throwaway project (the state root carries the canary marker) or a scratch
+project (it carries the scratch root marker, and no canary marker), and the
+roots must not be the default ones. --inject opens
 injection through the control socket; --expected-mode is the permission mode the
 agent's footer must show for a delivery; --inject needs a non-empty one. The
 three are refused without --canary.
