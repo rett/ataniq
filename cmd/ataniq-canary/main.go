@@ -12,6 +12,8 @@
 //	ataniq-canary profile-digest --config CONFIG --inputs FILE
 //	ataniq-canary fields --file FILE
 //	ataniq-canary scrub-screen --file FILE
+//	ataniq-canary scratch-init --config SCRATCH_CONFIG
+//	ataniq-canary scratch-clean --config SCRATCH_CONFIG --lead KEY
 //	ataniq-canary --version
 //
 // provision makes the folders of the layout, clones the throwaway repository
@@ -27,9 +29,14 @@
 // (show.go). Those five read the config with leadcanary.ReadConfig.
 // fields and scrub-screen read one JSON file and no config: fields prints its
 // values as lines, and scrub-screen replaces the screen text in a copy of the
-// holder's final record by its hash (jsonfile.go). The work of provisioning is
-// in internal/leadcanary/provision; this file only parses the command line and
-// prints.
+// holder's final record by its hash (jsonfile.go). scratch-init and
+// scratch-clean are the owner's two steps of scratch mode and read the scratch
+// config (leadcanary.ReadScratchConfig), not the canary's: scratch-init makes
+// the scratch place's state root and writes its root marker, the place gate that
+// only this command writes, and scratch-clean removes what a define of one lead
+// left when it was cut short, after which the lead can be defined again
+// (scratch.go). The work of provisioning is in internal/leadcanary/provision;
+// this file only parses the command line and prints.
 package main
 
 import (
@@ -62,6 +69,8 @@ const usage = `usage: ataniq-canary provision --config CONFIG
        ataniq-canary profile-digest --config CONFIG --inputs FILE
        ataniq-canary fields --file FILE
        ataniq-canary scrub-screen --file FILE
+       ataniq-canary scratch-init --config SCRATCH_CONFIG
+       ataniq-canary scratch-clean --config SCRATCH_CONFIG --lead KEY
        ataniq-canary --version`
 
 func main() {
@@ -87,6 +96,8 @@ func run(ctx context.Context, args []string, out, errOut io.Writer, getenv func(
 	case "provision", "replay-on", "show", "check-inputs", "profile-digest":
 	case "fields", "scrub-screen":
 		return runFile(sub, args[1:], out, errOut)
+	case "scratch-init", "scratch-clean":
+		return runScratch(ctx, sub, args[1:], out, errOut, getenv)
 	default:
 		fmt.Fprintf(errOut, "ataniq-canary: unknown subcommand %q\n%s\n", sub, usage)
 		return exitUsage
