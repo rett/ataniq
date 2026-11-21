@@ -156,6 +156,12 @@ type ScratchLead struct {
 	// holder's comparison no longer catches a change of the profile that is
 	// made before the daemon computes.
 	ProfileDigest string `json:"profile_digest,omitempty"`
+	// RecordScreens is optional and false when absent: when true, the daemon
+	// starts this lead's holder with --record-dir <the lead's runtime
+	// folder>/record ([RecordDirName]), and the holder records the agent's
+	// screens, titles and OSC 7501 payloads there, raw, for the owner's
+	// fixtures. The daemon never reads the folder.
+	RecordScreens bool `json:"record_screens,omitempty"`
 }
 
 // Validate checks every rule of the scratch config that does not need the file
@@ -231,9 +237,10 @@ func (s ScratchConfig) derive(l ScratchLead) (Config, error) {
 			SandboxInputs: path.Join(s.StateRoot, ScratchDirName, layoutRole, SandboxInputsName),
 			ProfileDigest: digest,
 		},
-		Agent:  l.Agent,
-		Inject: l.Inject,
-		Limits: l.Limits,
+		Agent:         l.Agent,
+		Inject:        l.Inject,
+		RecordScreens: l.RecordScreens,
+		Limits:        l.Limits,
 		Provision: ProvisionConfig{
 			Mirror:          path.Join(s.StateRoot, "mirrors", role.Project()+".git"),
 			UpstreamBranch:  l.UpstreamBranch,
@@ -410,7 +417,7 @@ var scratchRequiredKeys = [][]string{
 }
 
 // scratchLeadKeys are the keys every element of "leads" must hold. Optional:
-// profile_digest and agent.env.
+// profile_digest, record_screens and agent.env.
 var scratchLeadKeys = [][]string{
 	{"key"}, {"source"}, {"upstream_branch"}, {"inject"},
 	{"agent", "kind"}, {"agent", "runtime"}, {"agent", "runtime_version"},

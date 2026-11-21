@@ -576,3 +576,104 @@ func TestHolderRulesTestIsNotVacuous(t *testing.T) {
 		t.Fatal("source file is not UTF-8")
 	}
 }
+
+// scratchBuilder returns the holder command of the first lead of the sample
+// scratch config, with record_screens as given.
+func scratchBuilder(t *testing.T, f fixture, record bool) (*leadcanary.HolderCommand, leadcanary.Config) {
+	t.Helper()
+	sc := f.scratchSample()
+	sc.Entries[0].RecordScreens = record
+	leads, err := sc.Leads()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := leads[0]
+	if cfg.RecordScreens != record {
+		t.Fatalf("the derived config records %v, the lead says %v", cfg.RecordScreens, record)
+	}
+	h, err := leadcanary.NewHolderCommand(cfg, filepath.Join(f.state, "daemon.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h, cfg
+}
+
+// The mutation check of record_screens: a scratch lead that records gets
+// exactly "--record-dir <its runtime folder>/record" after --expected-mode, and
+// the same lead that does not record gets the line it had before the field
+// existed, written out here by hand. Nothing else of the line changes.
+func TestHolderCommandRecordDirOnlyWhenTheLeadRecords(t *testing.T) {
+	f := newFixture(t)
+	hOff, cfg := scratchBuilder(t, f, false)
+	hOn, _ := scratchBuilder(t, f, true)
+	entry, intent := sampleEntryIntent(cfg.Role, 3)
+	off, _, _, err := hOff.Build(cfg.Role, entry, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	on, _, _, err := hOn.Build(cfg.Role, entry, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lead := filepath.Join(f.state, "leads", "scratch-alpha-lead")
+	runtimeDir := filepath.Join(f.runtime, "leads", "scratch-alpha-lead")
+	golden := []string{
+		"/opt/sample/ataniq-holder",
+		"--role", "scratch-alpha/lead",
+		"--epoch", "3",
+		"--launch-intent", sampleIntent,
+		"--runtime", "claude",
+		"--runtime-version", "1.2.3",
+		"--profile-digest", leadcanary.UnpinnedDigest,
+		"--tree", filepath.Join(lead, "tree"),
+		"--state-dir", filepath.Join(lead, "holder"),
+		"--runtime-dir", runtimeDir,
+		"--role-lock", filepath.Join(f.state, "roles", "scratch-alpha", "lead.lock"),
+		"--daemon-lock", filepath.Join(f.state, "daemon.lock"),
+		"--cols", "120",
+		"--rows", "40",
+		"--canary",
+		"--inject",
+		"--sandbox-inputs", cfg.Holder.SandboxInputs,
+		"--expected-mode", "manual",
+		"--",
+		"/ataniq/agent/sample-standin",
+	}
+	if !reflect.DeepEqual(off, golden) {
+		t.Fatalf("argv without recording\n got %q\nwant %q", off, golden)
+	}
+	i := len(golden) - 2 // before "--" and the agent
+	want := append(append(append([]string(nil), golden[:i]...), "--record-dir", filepath.Join(runtimeDir, "record")), golden[i:]...)
+	if !reflect.DeepEqual(on, want) {
+		t.Fatalf("argv with recording\n got %q\nwant %q", on, want)
+	}
+	if leadcanary.RecordDirName != "record" {
+		t.Fatalf("RecordDirName %q", leadcanary.RecordDirName)
+	}
+	// The canary's line never carries the flag.
+	h, ccfg := newBuilder(t, f, nil)
+	e2, i2 := sampleEntryIntent(ccfg.Role, 1)
+	argv, _, _, err := h.Build(ccfg.Role, e2, i2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(argv, "--record-dir") {
+		t.Fatalf("the canary's line records: %q", argv)
+	}
+}
+
+// Only a scratch lead records: a throwaway config that says so is refused.
+func TestRecordScreensIsForAScratchLeadOnly(t *testing.T) {
+	f := newFixture(t)
+	cfg := f.config(t)
+	cfg.RecordScreens = true
+	wantConfigError(t, cfg.Validate(), "record_screens")
+	if _, err := leadcanary.NewHolderCommand(cfg, filepath.Join(f.state, "daemon.lock")); !errors.Is(err, leadcanary.ErrHolderCommand) {
+		t.Fatalf("NewHolderCommand: %v", err)
+	}
+	// A canary config file has no such key.
+	m := tree(t, f.config(t))
+	m["record_screens"] = true
+	_, err := leadcanary.ReadConfig(f.writeTree(t, m))
+	wantConfigError(t, err, "file")
+}

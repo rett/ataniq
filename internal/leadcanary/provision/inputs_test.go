@@ -16,6 +16,7 @@ import (
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leadcanary/provision/provisiontest"
 	"ataniq/internal/leadholder/sandboxstart"
+	"ataniq/internal/leadholder/screenrec"
 	"ataniq/internal/leadholder/serve"
 	"ataniq/internal/leadsandbox/profile"
 )
@@ -482,8 +483,17 @@ func TestTheHolderSocketNamesAreThoseOfTheServingPackage(t *testing.T) {
 	}
 	rt := sandboxstart.RuntimeFolder("/run/sample", "sample-lead")
 	want := []string{filepath.Join(rt, serve.AttachSocket), filepath.Join(rt, serve.ControlSocket)}
-	if got := holderSocketPaths("/run/sample", "sample-lead"); !reflect.DeepEqual(got, want) {
+	if got := holderSocketPaths("/run/sample", "sample-lead", false); !reflect.DeepEqual(got, want) {
 		t.Errorf("the socket paths are %v, the holder's are %v", got, want)
+	}
+	// A lead that records adds the recording's folder, by the holder's own
+	// name for it.
+	if leadcanary.RecordDirName != screenrec.DirName {
+		t.Errorf("the config names the recording %q, the holder %q", leadcanary.RecordDirName, screenrec.DirName)
+	}
+	want = append(want, filepath.Join(rt, screenrec.DirName))
+	if got := holderSocketPaths("/run/sample", "sample-lead", true); !reflect.DeepEqual(got, want) {
+		t.Errorf("the paths of a recording lead are %v, the holder's are %v", got, want)
 	}
 }
 

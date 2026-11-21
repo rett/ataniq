@@ -493,3 +493,63 @@ func TestKeyBoundsFit(t *testing.T) {
 		}
 	}
 }
+
+// record_screens is an optional boolean of a lead: absent and false derive no
+// recording, true derives one; a value that is not a boolean, null and a
+// misspelt key are refused as the siblings' are.
+func TestScratchRecordScreens(t *testing.T) {
+	f := newFixture(t)
+	leadOf := func(m map[string]any, i int) map[string]any { return m["leads"].([]any)[i].(map[string]any) }
+	read := func(edit func(m map[string]any)) ([]leadcanary.Config, error) {
+		m := scratchTree(t, f.scratchSample())
+		edit(m)
+		s, err := leadcanary.ReadScratchConfig(f.writeScratchTree(t, m))
+		if err != nil {
+			return nil, err
+		}
+		return s.Leads()
+	}
+	for name, c := range map[string]struct {
+		edit func(m map[string]any)
+		want [2]bool
+	}{
+		"absent": {func(m map[string]any) {}, [2]bool{false, false}},
+		"false":  {func(m map[string]any) { leadOf(m, 0)["record_screens"] = false }, [2]bool{false, false}},
+		"true":   {func(m map[string]any) { leadOf(m, 1)["record_screens"] = true }, [2]bool{false, true}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			leads, err := read(c.edit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := [2]bool{leads[0].RecordScreens, leads[1].RecordScreens}; got != c.want {
+				t.Fatalf("recording %v, want %v", got, c.want)
+			}
+			for _, l := range leads {
+				if err := l.Validate(); err != nil {
+					t.Fatalf("%v: %v", l.Role, err)
+				}
+			}
+		})
+	}
+	if m := scratchTree(t, f.scratchSample()); leadOf(m, 0)["record_screens"] != nil {
+		t.Error("a lead that does not record writes the key")
+	}
+	for name, c := range map[string]struct {
+		edit  func(m map[string]any)
+		field string
+	}{
+		"a string":    {func(m map[string]any) { leadOf(m, 0)["record_screens"] = "true" }, "file"},
+		"a number":    {func(m map[string]any) { leadOf(m, 0)["record_screens"] = 1 }, "file"},
+		"an object":   {func(m map[string]any) { leadOf(m, 0)["record_screens"] = map[string]any{} }, "file"},
+		"null":        {func(m map[string]any) { leadOf(m, 0)["record_screens"] = nil }, "leads[0].record_screens"},
+		"misspelt":    {func(m map[string]any) { leadOf(m, 0)["record_screen"] = true }, "file"},
+		"at the root": {func(m map[string]any) { m["record_screens"] = true }, "file"},
+		"in holder":   {func(m map[string]any) { m["holder"].(map[string]any)["record_screens"] = true }, "file"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := read(c.edit)
+			wantConfigError(t, err, c.field)
+		})
+	}
+}
