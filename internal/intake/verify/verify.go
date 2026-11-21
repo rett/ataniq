@@ -86,11 +86,22 @@ type Request struct {
 	Project string
 	// Mirror is the absolute, clean host path of the bare exchange mirror.
 	Mirror string
-	// TipRef is the lead ref under refs/leads/ whose tip is verified.
+	// TipRef is the lead ref under refs/leads/ whose tip is verified; in
+	// merge mode, the pin under [PendingPrefix] of the host-built merge. A
+	// pin is refused in lead mode and a lead ref in merge mode.
 	TipRef string
 	// Tip is the full object id the review was made for. The run fails with
 	// exit 90 when TipRef no longer resolves to it.
 	Tip string
+	// Merge selects merge mode: Tip is a host-built merge commit. Before
+	// the first gate the script checks that the fetched commit is a merge of
+	// exactly two parents whose first is Base, and ends with
+	// [ExitNotMerge] otherwise.
+	Merge bool
+	// Base is the target's tip that the merge was built against, a full
+	// object id of the format of Tip. It is required in merge mode and
+	// refused in lead mode.
+	Base string
 	// Gates are run in order, in the scratch clone's root. At least one.
 	Gates []Gate
 	// Planner supplies the sandbox. It is required. A planner that has no
@@ -109,8 +120,10 @@ type Request struct {
 // Result is what a run found. It says nothing about the code beyond what the
 // package comment lists.
 type Result struct {
-	// Tip and TipRef are the request's.
+	// Tip, TipRef, Merge and Base are the request's.
 	Tip, TipRef string
+	Merge       bool
+	Base        string
 	// PlanDigest is [PlanDigest] of the gates that were run.
 	PlanDigest string
 	// Passed is true only when the command exited 0 by itself, was not
@@ -163,10 +176,13 @@ func (r *Request) validate() (Limits, error) {
 	if within(r.WorkRoot, r.Mirror) || within(r.Mirror, r.WorkRoot) {
 		return zero, errors.New("verify: the mirror and the work root must not contain each other")
 	}
-	if err := checkTipRef(r.TipRef); err != nil {
+	if err := checkTipRef(r.TipRef, r.Merge); err != nil {
 		return zero, err
 	}
 	if err := checkTip(r.Tip); err != nil {
+		return zero, err
+	}
+	if err := checkBase(r.Merge, r.Tip, r.Base); err != nil {
 		return zero, err
 	}
 	if err := validateGates(r.Gates); err != nil {
@@ -193,7 +209,7 @@ func Run(ctx context.Context, req Request) (res Result, err error) {
 	if err != nil {
 		return Result{}, err
 	}
-	res = Result{Tip: req.Tip, TipRef: req.TipRef, PlanDigest: PlanDigest(req.Gates), Exit: -1}
+	res = Result{Tip: req.Tip, TipRef: req.TipRef, Merge: req.Merge, Base: req.Base, PlanDigest: PlanDigest(req.Gates), Exit: -1}
 
 	wr, err := openWorkRoot(req.WorkRoot)
 	if err != nil {
@@ -238,7 +254,7 @@ func Run(ctx context.Context, req Request) (res Result, err error) {
 	if err := plan.Validate(); err != nil {
 		return res, fmt.Errorf("verify: sandbox plan: %w", err)
 	}
-	script, err := Script(req.TipRef, req.Tip, plan.Mirror, plan.Scratch, req.Gates)
+	script, err := makeScript(req.Merge, req.TipRef, req.Tip, req.Base, plan.Mirror, plan.Scratch, req.Gates)
 	if err != nil {
 		return res, err
 	}

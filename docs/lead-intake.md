@@ -419,6 +419,35 @@ The exit status is 0 only for a pass. A pass whose record was stored but could
 not be synced to disk is still a pass: the command exits 0 and warns on
 standard error.
 
+#### Merge mode of verification
+
+The package `internal/intake/verify` and the records store also verify a merge
+that the host built, which sits under a pin in `refs/ataniq/pending/`. No
+command offers this mode yet: the host's approval path calls it. It differs
+from the verification of a lead branch in these ways:
+
+- **The request.** `Merge` is set, `TipRef` is the pin (a name under
+  `refs/ataniq/pending/` only) and `Base` is the target's tip the merge was
+  built against. A pin is refused in lead mode, a lead ref in merge mode, a
+  base in lead mode, and merge mode without a full-length base.
+- **The script.** It fetches the pin by its exact name, checks that it is
+  exactly the merge that was reviewed, and then checks that this commit has
+  exactly two parents and that the first is the base. Any other shape (one
+  parent, three, none, the parents the other way round, another first parent)
+  ends the run with status 93 before any gate runs. The run is not a pass.
+- **The record.** A record of merge mode holds `"merge": true` and the `"base"`
+  next to the pin, as `tip_ref`, and the merge, as `tip`. A record of a lead
+  branch has neither key and is written and read as before; the store refuses
+  a pin in a lead-mode result and a lead ref in a merge-mode one.
+- **The evidence.** `integrate` of a merge counts only merge-mode records of
+  its project whose merge is the tip being integrated and whose base is the
+  target's tip the review was made against. A record of a lead branch for the
+  same commit id, and a merge record made against another base, are not
+  evidence and do not withdraw a pass either. Among the records that count, the
+  newest decides, as for a lead branch: a later failed run withdraws an earlier
+  pass. `integrate` of a lead branch ignores merge-mode records in the same
+  way.
+
 ### integrate
 
 `integrate` moves the upstream branch to the lead's tip. You sign off by

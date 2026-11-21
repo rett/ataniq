@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ataniq/internal/intake/verify"
 )
 
 func newMergeRig(t *testing.T, change func(l *lab)) (*rig, *mscene) {
@@ -34,7 +36,7 @@ func TestIntegrateMergeMovesTheTargetFromTheTipToTheMerge(t *testing.T) {
 	m.publish(leadRef, m.feature)
 	m.publish("refs/heads/feature/x", m.feature)
 	r := m.inspectMerge()
-	g.recordFor(m.merge, nil)
+	g.recordMerge(m, nil)
 	others := g.refsExcept(upstreamRef)
 	headBefore := mustRead(t, filepath.Join(m.bare, "HEAD"))
 	rec, err := Integrate(context.Background(), m.source(), g.mergeReq(m, r))
@@ -94,7 +96,7 @@ func TestIntegrateMergeNeedsTheSameChecks(t *testing.T) {
 	if err := g.refuse("unverified merge", g.mergeReq(m, r)); !errors.Is(err, ErrNotVerified) {
 		t.Errorf("unverified: %v", err)
 	}
-	g.recordFor(m.merge, nil)
+	g.recordMerge(m, nil)
 	// The sign-off without the odd path is refused.
 	req := g.mergeReq(m, r)
 	for i, p := range req.SignOff.Paths {
@@ -147,7 +149,7 @@ func TestIntegrateMergeTargetMoved(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			g, m := newMergeRig(t, featureChange)
 			r := m.inspectMerge()
-			g.recordFor(m.merge, nil)
+			g.recordMerge(m, nil)
 			req := g.mergeReq(m, r)
 			m.publish(upstreamRef, move(m))
 			if err := g.refuse(name, req); !errors.Is(err, ErrMoved) {
@@ -159,7 +161,7 @@ func TestIntegrateMergeTargetMoved(t *testing.T) {
 	// swap refuses it, from the base the review saw.
 	g, m := newMergeRig(t, featureChange)
 	r := m.inspectMerge()
-	g.recordFor(m.merge, nil)
+	g.recordMerge(m, nil)
 	req := g.mergeReq(m, r)
 	var moved string
 	req.afterChecks = func() {
@@ -182,7 +184,7 @@ func TestIntegrateMergeTargetMoved(t *testing.T) {
 func TestIntegrateMergeAtTheTarget(t *testing.T) {
 	g, m := newMergeRig(t, featureChange)
 	r := m.inspectMerge()
-	g.recordFor(m.merge, nil)
+	g.recordMerge(m, nil)
 	req := g.mergeReq(m, r)
 	m.publish(upstreamRef, m.merge)
 	if err := g.refuse("already applied", req); !errors.Is(err, ErrNothingToIntegrate) {
@@ -194,7 +196,7 @@ func TestIntegrateMergeAtTheTarget(t *testing.T) {
 // request takes no lead branch.
 func TestIntegrateLeadModeAsBefore(t *testing.T) {
 	g, m := newMergeRig(t, featureChange)
-	g.recordFor(m.merge, nil)
+	g.recordMerge(m, nil)
 	m.publish(leadRef, m.merge)
 	lr := m.inspect()
 	req := g.req(lr)
@@ -206,5 +208,122 @@ func TestIntegrateLeadModeAsBefore(t *testing.T) {
 	req.Review.TipRef = leadRef
 	if err := g.refuse("lead ref in merge mode", req); !errors.Is(err, ErrRefName) {
 		t.Errorf("lead ref in merge mode: %v", err)
+	}
+}
+
+// mergeResult is a hand-made passing result of merge mode: the pin, the merge
+// and the base it was built against.
+func mergeResult(tip, base string) verify.Result {
+	r := passResult(tip)
+	r.TipRef, r.Merge, r.Base = testPin, true, base
+	return r
+}
+
+// recordMerge stores a passing merge-mode verification of the scene's merge
+// on the scene's base. mod changes the result first.
+func (g *rig) recordMerge(m *mscene, mod func(*verify.Result)) {
+	g.t.Helper()
+	g.recordMergeFor(m.merge, m.target, mod)
+}
+
+func (g *rig) recordMergeFor(tip, base string, mod func(*verify.Result)) {
+	g.t.Helper()
+	res := mergeResult(tip, base)
+	if mod != nil {
+		mod(&res)
+	}
+	if _, err := g.store.PutVerification(testProject, res, testGates); err != nil {
+		g.t.Fatal(err)
+	}
+}
+
+// TestIntegrateMergeCountsOnlyMergeRecordsOfTheBase: in merge mode a pass
+// counts only when it is a merge-mode record whose merge is the tip and whose
+// base is the review's base. A lead-mode pass of the same commit id, and a
+// merge pass made against another base, are no evidence, and neither of them
+// withdraws a pass that counts.
+func TestIntegrateMergeCountsOnlyMergeRecordsOfTheBase(t *testing.T) {
+	t.Run("a lead-mode pass of the merge is no evidence", func(t *testing.T) {
+		g, m := newMergeRig(t, featureChange)
+		r := m.inspectMerge()
+		g.recordFor(m.merge, nil)
+		if err := g.refuse("lead record", g.mergeReq(m, r)); !errors.Is(err, ErrNotVerified) {
+			t.Errorf("error = %v, want ErrNotVerified", err)
+		}
+	})
+	t.Run("a merge pass on another base is no evidence", func(t *testing.T) {
+		g, m := newMergeRig(t, featureChange)
+		r := m.inspectMerge()
+		g.recordMergeFor(m.merge, m.root, nil)
+		if err := g.refuse("other base", g.mergeReq(m, r)); !errors.Is(err, ErrNotVerified) {
+			t.Errorf("error = %v, want ErrNotVerified", err)
+		}
+	})
+	t.Run("a merge pass of another merge is no evidence", func(t *testing.T) {
+		g, m := newMergeRig(t, featureChange)
+		r := m.inspectMerge()
+		g.recordMergeFor(m.feature, m.target, nil)
+		if err := g.refuse("other merge", g.mergeReq(m, r)); !errors.Is(err, ErrNotVerified) {
+			t.Errorf("error = %v, want ErrNotVerified", err)
+		}
+	})
+	t.Run("a merge pass on the base counts, and is the record used", func(t *testing.T) {
+		g, m := newMergeRig(t, featureChange)
+		r := m.inspectMerge()
+		g.recordFor(m.merge, func(res *verify.Result) { res.Passed, res.Exit = false, 1 })
+		g.recordMergeFor(m.merge, m.root, func(res *verify.Result) { res.Passed, res.Exit = false, 1 })
+		g.recordMerge(m, nil)
+		rec, err := Integrate(context.Background(), m.source(), g.mergeReq(m, r))
+		if err != nil {
+			t.Fatalf("Integrate: %v", err)
+		}
+		if v := rec.Verification; !v.Merge || v.Base != m.target || v.Tip != m.merge || v.TipRef != testPin {
+			t.Errorf("the record that allowed it: %+v", v)
+		}
+	})
+	t.Run("a later record that does not count does not withdraw the pass", func(t *testing.T) {
+		g, m := newMergeRig(t, featureChange)
+		r := m.inspectMerge()
+		g.recordMerge(m, nil)
+		g.recordMergeFor(m.merge, m.root, func(res *verify.Result) { res.Passed, res.Exit = false, 1 })
+		g.recordFor(m.merge, func(res *verify.Result) { res.Passed, res.Exit = false, 1 })
+		if _, err := Integrate(context.Background(), m.source(), g.mergeReq(m, r)); err != nil {
+			t.Fatalf("Integrate: %v", err)
+		}
+	})
+}
+
+// TestIntegrateMergeLaterFailureWithdrawsThePass: as in lead mode, the newest
+// counting record decides.
+func TestIntegrateMergeLaterFailureWithdrawsThePass(t *testing.T) {
+	g, m := newMergeRig(t, featureChange)
+	r := m.inspectMerge()
+	g.recordMerge(m, nil)
+	g.recordMerge(m, func(res *verify.Result) { res.Passed, res.Exit = false, 2 })
+	if err := g.refuse("withdrawn", g.mergeReq(m, r)); !errors.Is(err, ErrNotVerified) {
+		t.Errorf("error = %v, want ErrNotVerified", err)
+	}
+	g.recordMerge(m, nil) // a later pass restores it
+	if _, err := Integrate(context.Background(), m.source(), g.mergeReq(m, r)); err != nil {
+		t.Fatalf("Integrate after a later pass: %v", err)
+	}
+}
+
+// TestIntegrateLeadModeIgnoresMergeRecords: in lead mode a merge-mode record
+// of the same commit id is no evidence either.
+func TestIntegrateLeadModeIgnoresMergeRecords(t *testing.T) {
+	g, m := newMergeRig(t, featureChange)
+	m.publish(leadRef, m.merge)
+	lr := m.inspect()
+	g.recordMerge(m, nil)
+	if err := g.refuse("merge record in lead mode", g.req(lr)); !errors.Is(err, ErrNotVerified) {
+		t.Errorf("error = %v, want ErrNotVerified", err)
+	}
+	// A pass of lead mode counts, and a later merge-mode failure does not
+	// withdraw it.
+	g.recordFor(m.merge, nil)
+	g.recordMerge(m, func(res *verify.Result) { res.Passed, res.Exit = false, 1 })
+	if _, err := Integrate(context.Background(), m.source(), g.req(lr)); err != nil {
+		t.Fatalf("Integrate: %v", err)
 	}
 }
