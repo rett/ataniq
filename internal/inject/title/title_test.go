@@ -56,7 +56,7 @@ func loadTitles(t *testing.T) []titleCase {
 	return cases
 }
 
-var versions = map[string]string{"claude": "2.1.325", "codex": "0.169"}
+var testVersions = map[string]string{"claude": "2.1.325", "codex": "0.169"}
 
 // uuidPattern matches a session id; the recorded titles may hold none.
 var uuidPattern = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
@@ -78,7 +78,7 @@ func TestRecordedTitles(t *testing.T) {
 	seen := map[string]int{}
 	for _, c := range cases {
 		seen[c.runtime]++
-		version, ok := versions[c.runtime]
+		version, ok := testVersions[c.runtime]
 		if !ok {
 			t.Fatalf("testdata/titles.txt:%d: unknown runtime %q", c.line, c.runtime)
 		}
@@ -92,7 +92,7 @@ func TestRecordedTitles(t *testing.T) {
 				c.line, c.runtime, c.title, got.Busy, got.ActionRequired, c.busy, c.action)
 		}
 	}
-	for rt := range versions {
+	for rt := range testVersions {
 		if seen[rt] == 0 {
 			t.Errorf("testdata/titles.txt has no %s titles", rt)
 		}
@@ -134,7 +134,7 @@ func TestForKnowsOnlyRecordedVersions(t *testing.T) {
 
 func mustRules(t *testing.T, runtime string) Rules {
 	t.Helper()
-	r, ok := For(runtime, versions[runtime])
+	r, ok := For(runtime, testVersions[runtime])
 	if !ok {
 		t.Fatalf("For(%q) = false", runtime)
 	}
@@ -255,7 +255,7 @@ func TestHostileTitles(t *testing.T) {
 		t.Fatalf("huge title is %d bytes", len(huge))
 	}
 	invalid := strings.Repeat("\xff\xfe\xc0\x80\xed\xa0\x80", 100)
-	for runtime := range versions {
+	for runtime := range testVersions {
 		r := mustRules(t, runtime)
 		for name, title := range map[string]string{
 			"empty":             "",
@@ -317,7 +317,7 @@ func FuzzRead(f *testing.F) {
 	f.Add("\xff")
 	f.Add("[ ! ] Action Required | work")
 	f.Fuzz(func(t *testing.T, title string) {
-		for runtime, version := range versions {
+		for runtime, version := range testVersions {
 			r, ok := For(runtime, version)
 			if !ok {
 				t.Fatalf("For(%q, %q) = false", runtime, version)
