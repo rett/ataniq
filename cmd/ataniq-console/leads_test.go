@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -124,7 +125,7 @@ func TestTheAdapterMapsTheListing(t *testing.T) {
 			func() consoleclient.LeadRow {
 				r := aLead()
 				r.MessageSpent = true
-				r.Last = &consoleclient.LeadReceipt{CommandID: "c9", Op: consoleclient.LeadOpStart, Role: "lead-alpha", Status: consoleclient.LeadRefused, Code: "max-running"}
+				r.Last = &consoleclient.LeadReceipt{CommandID: "c9", Op: consoleclient.LeadOpStart, Role: "lead-alpha", Status: consoleclient.LeadRefused, Code: "max-running", Earlier: true}
 				return r
 			}(),
 			{Key: "beta", Role: "lead-beta"},
@@ -134,7 +135,7 @@ func TestTheAdapterMapsTheListing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := leadctl.Listing{MaxRunning: 4, Running: 1, Leads: []leadctl.Lead{
+	want := leadctl.Listing{MaxRunning: 4, Running: 1, LeftOut: 2, Leads: []leadctl.Lead{
 		{Key: "alpha", Role: "lead-alpha", Defined: true, Provision: "done", State: "ready", Epoch: 3, Unit: "unit-alpha", Inject: true, MessageSpent: true,
 			Last: &leadctl.Receipt{CommandID: "c9", Op: leadctl.OpStart, Status: leadctl.Refused, Code: "max-running"}},
 		{Key: "beta", Role: "lead-beta"},
@@ -198,10 +199,9 @@ func TestTheAdapterMapsEveryReceipt(t *testing.T) {
 func TestTheAdapterShowsEveryErrorAsOneFixedLine(t *testing.T) {
 	hostile := errors.New("\x1b]0;owned\x07 a peer-written secret boom")
 	errs := []error{
-		// Plain errors of the client, before admission and after a bad
-		// answer, and a failure of the connection.
-		consoleclient.ErrLeadRequest, consoleclient.ErrLeadNotListed, consoleclient.ErrLeadRejected,
-		consoleclient.ErrCommandUnavailable, consoleclient.ErrCommandConflict, consoleclient.ErrTooManyPending,
+		// Plain errors of the client that are no refusal the view has words
+		// for, a bad answer, and a failure of the connection.
+		consoleclient.ErrCommandUnavailable, consoleclient.ErrTooManyPending,
 		consoleclient.ErrNoCommandID, consoleclient.ErrAnswerLost, consoleclient.ErrLeadsClosed,
 		consoleclient.ErrNoLeadControl, consoleclient.ErrLeadsVersion,
 		&consoleclient.Unavailable{State: consoleclient.StateBadAnswer}, hostile,
@@ -230,7 +230,7 @@ func TestTheAdapterShowsEveryErrorAsOneFixedLine(t *testing.T) {
 	}
 }
 
-func TestTheAdapterDoesNotGiveAnEarlierReceiptToTheView(t *testing.T) {
+func TestTheAdapterGivesAnEarlierReceiptToTheViewWithTheFlag(t *testing.T) {
 	f := &fakeLeads{}
 	a := newLeadsAdapter(f)
 	for _, r := range []consoleclient.LeadReceipt{
@@ -249,19 +249,59 @@ func TestTheAdapterDoesNotGiveAnEarlierReceiptToTheView(t *testing.T) {
 		default:
 			got, err = a.Send("r", 1, "m", "b")
 		}
-		if err != errNoReceipt || got != (leadctl.Receipt{}) {
+		if err != nil || !got.Earlier || got.CommandID != r.CommandID || got.Code != r.Code || got.Epoch != r.Epoch || string(got.Status) != string(r.Status) {
 			t.Fatalf("%s: %+v, %v", r.Op, got, err)
 		}
 	}
-	// Nothing was remembered of the earlier ticket: the view is never asked to
-	// attach with it.
-	if k := a.attachKind(terminalconsole.AttachRequest{Folder: "/f", TicketFile: "/f/t"}); k != "" {
-		t.Fatalf("kind %q", k)
-	}
-	// The same ticket, not earlier, is taken.
+	// The remembered kind of an earlier ticket is harmless: the view makes no
+	// attach from an earlier receipt (its own tests). It is still the same
+	// ticket's kind when the ticket is later taken, not earlier.
 	f.receipt = doneTicket()
-	if r, err := a.Ticket("lead-alpha", 3, true); err != nil || r.Status != leadctl.Done {
-		t.Fatalf("%+v, %v", r, err)
+	got, err := a.Ticket("lead-alpha", 3, true)
+	if err != nil || got.Status != leadctl.Done || got.Earlier {
+		t.Fatalf("%+v, %v", got, err)
+	}
+	// A receipt that is not earlier does not carry the flag.
+	f.receipt = consoleclient.LeadReceipt{CommandID: "c9", Op: consoleclient.LeadOpStart, Role: "r", Status: consoleclient.LeadDone}
+	if got, err := a.Start("r"); err != nil || got.Earlier {
+		t.Fatalf("%+v, %v", got, err)
+	}
+}
+
+func TestTheAdapterGivesARefusalBeforeAdmissionAsARefusedReceipt(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		code string
+	}{
+		{consoleclient.ErrLeadNotListed, "not-listed"},
+		{consoleclient.ErrCommandConflict, "conflict"},
+		{consoleclient.ErrLeadRejected, "invalid-request"},
+		{consoleclient.ErrLeadRequest, "invalid-request"},
+		// Wrapped, as an error of the client may be.
+		{fmt.Errorf("wrapped: %w", consoleclient.ErrLeadNotListed), "not-listed"},
+	} {
+		f := &fakeLeads{err: c.err}
+		a := newLeadsAdapter(f)
+		for name, call := range map[string]struct {
+			do func() (leadctl.Receipt, error)
+			op leadctl.Op
+		}{
+			"define": {func() (leadctl.Receipt, error) { return a.Define("r") }, leadctl.OpDefine},
+			"start":  {func() (leadctl.Receipt, error) { return a.Start("r") }, leadctl.OpStart},
+			"stop":   {func() (leadctl.Receipt, error) { return a.Stop("r", 0) }, leadctl.OpStop},
+			"ticket": {func() (leadctl.Receipt, error) { return a.Ticket("r", 1, false) }, leadctl.OpTicket},
+			"send":   {func() (leadctl.Receipt, error) { return a.Send("r", 1, "m", "b") }, leadctl.OpInject},
+		} {
+			r, err := call.do()
+			want := leadctl.Receipt{Op: call.op, Status: leadctl.Refused, Code: c.code}
+			if err != nil || r != want {
+				t.Fatalf("%s with %v: %+v, %v", name, c.err, r, err)
+			}
+		}
+		// Nothing is remembered for an attach from a refused ticket.
+		if k := a.attachKind(terminalconsole.AttachRequest{}); k != "" {
+			t.Fatalf("kind %q", k)
+		}
 	}
 }
 

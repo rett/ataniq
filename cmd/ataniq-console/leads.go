@@ -25,7 +25,7 @@ import (
 // attach the ticket is for, and then opens the leads view again.
 
 // errNoReceipt is the one error the adapter returns, for every error of the
-// client. The view says what happened in a fixed line of its own and reads
+// client that is not a refusal before admission (see answer). The view says what happened in a fixed line of its own and reads
 // the list again, and it never shows an error's text; this value carries none
 // either, so nothing the client or the daemon wrote can reach the view even
 // when the view changes.
@@ -107,7 +107,7 @@ func (a *leadsAdapter) List() (leadctl.Listing, error) {
 	if err != nil {
 		return leadctl.Listing{}, errNoReceipt
 	}
-	out := leadctl.Listing{MaxRunning: l.MaxRunning, Running: l.Running}
+	out := leadctl.Listing{MaxRunning: l.MaxRunning, Running: l.Running, LeftOut: l.LeftOut}
 	for _, r := range l.Leads {
 		lead := leadctl.Lead{
 			Key: r.Key, Role: r.Role, Defined: r.Defined, Provision: r.Provision,
@@ -127,24 +127,27 @@ func (a *leadsAdapter) List() (leadctl.Listing, error) {
 
 // Define provisions and defines the lead role.
 func (a *leadsAdapter) Define(role string) (leadctl.Receipt, error) {
-	return a.answer(a.c.Define(role))
+	r, err := a.c.Define(role)
+	return a.answer(leadctl.OpDefine, r, err)
 }
 
 // Start starts the lead role.
 func (a *leadsAdapter) Start(role string) (leadctl.Receipt, error) {
-	return a.answer(a.c.Start(role))
+	r, err := a.c.Start(role)
+	return a.answer(leadctl.OpStart, r, err)
 }
 
 // Stop stops the lead role in epoch.
 func (a *leadsAdapter) Stop(role string, epoch uint64) (leadctl.Receipt, error) {
-	return a.answer(a.c.Stop(role, epoch))
+	r, err := a.c.Stop(role, epoch)
+	return a.answer(leadctl.OpStop, r, err)
 }
 
 // Ticket asks for an attach ticket. A done ticket's attach kind is
 // remembered for the loop.
 func (a *leadsAdapter) Ticket(role string, epoch uint64, writer bool) (leadctl.Receipt, error) {
 	cr, err := a.c.Ticket(role, epoch, writer)
-	r, err := a.answer(cr, err)
+	r, err := a.answer(leadctl.OpTicket, cr, err)
 	if err == nil && r.Status == leadctl.Done {
 		a.remember(attachTarget{r.Folder, r.TicketFile}, a.kindOf(cr))
 	}
@@ -153,7 +156,8 @@ func (a *leadsAdapter) Ticket(role string, epoch uint64, writer bool) (leadctl.R
 
 // Send sends one message to the lead in epoch.
 func (a *leadsAdapter) Send(role string, epoch uint64, messageID, body string) (leadctl.Receipt, error) {
-	return a.answer(a.c.Send(role, epoch, messageID, body))
+	r, err := a.c.Send(role, epoch, messageID, body)
+	return a.answer(leadctl.OpInject, r, err)
 }
 
 // attachKind is the kind of attach a request of the view is for: the kind of
@@ -174,30 +178,52 @@ func (a *leadsAdapter) remember(t attachTarget, k attachKind) {
 	a.kinds[t] = k
 }
 
-// answer turns the client's answer to a command into the view's. Every error
-// of the client becomes errNoReceipt. The view's contract says an error comes
-// only when no receipt came back, while the client also returns plain errors
-// for a command refused before the daemon admitted it and for an answer it
-// could not use: the view draws one fixed line for all of them and reads the
-// list again, which is what the owner is to do next in each case.
+// answer turns the client's answer to a command (op) into the view's.
 //
-// A receipt that answers an earlier command (Earlier) is not given to the
-// view either. The view has no word for "this is the answer to an earlier
-// press", and shown as the answer to this one it would say that something
-// was just done; for a ticket it would attach with a ticket that may be spent.
-// It is the one fixed line, too, until the view takes the flag: the receipt
-// is final and the client has forgotten its id, so the list, read again, shows
-// the command's state and the next press is a new command. This is the one
-// place that reads the flag.
-func (a *leadsAdapter) answer(r consoleclient.LeadReceipt, err error) (leadctl.Receipt, error) {
-	if err != nil || r.Earlier {
+// An error of the client that says that the command was refused before the
+// daemon admitted it, and that nothing was done, becomes a Refused receipt
+// with the code the view has words for (see refusedCode). Every other error
+// of the client becomes errNoReceipt: the view's contract says an error comes
+// only when no receipt came back, and it draws one fixed line for all of
+// them and reads the list again, which is what the owner is to do next. The
+// receipt made for a refusal has no command id, and nothing the client
+// wrote is in it.
+//
+// A receipt that answers an earlier command (Earlier) is given to the view
+// with the flag set: the view draws it as the answer to an earlier command
+// and never attaches with it. This is the one place that reads the flag.
+func (a *leadsAdapter) answer(op leadctl.Op, r consoleclient.LeadReceipt, err error) (leadctl.Receipt, error) {
+	if err != nil {
+		if code, ok := refusedCode(err); ok {
+			return leadctl.Receipt{Op: op, Status: leadctl.Refused, Code: code}, nil
+		}
 		return leadctl.Receipt{}, errNoReceipt
 	}
 	out, ok := viewReceipt(r)
 	if !ok {
 		return leadctl.Receipt{}, errNoReceipt
 	}
+	out.Earlier = r.Earlier
 	return out, nil
+}
+
+// refusedCode maps an error of the client for a command that was refused
+// before the daemon admitted it to the reason code of a refusal, where the
+// view has words for the code: not-listed, conflict and invalid-request. The
+// other errors of the client are left to the fixed line of a lost answer:
+// the client's own limits (too many commands without an answer, no command
+// id) and "could not take the command now" are no refusal the daemon made,
+// and the view has no words for them.
+func refusedCode(err error) (string, bool) {
+	switch {
+	case errors.Is(err, consoleclient.ErrLeadNotListed):
+		return "not-listed", true
+	case errors.Is(err, consoleclient.ErrCommandConflict):
+		return "conflict", true
+	case errors.Is(err, consoleclient.ErrLeadRejected), errors.Is(err, consoleclient.ErrLeadRequest):
+		return "invalid-request", true
+	}
+	return "", false
 }
 
 // viewReceipt converts a receipt of the client. It says false for an
