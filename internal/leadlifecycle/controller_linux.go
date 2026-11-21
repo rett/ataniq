@@ -76,6 +76,10 @@ var (
 	// ErrStopUnproven means the stop did not end with the proof; the role is
 	// shown unknown.
 	ErrStopUnproven = errors.New("leadlifecycle: stop is not proven")
+	// ErrNotReconciled means SettleLaunch was called while the registry's cut
+	// journal is not yet acted on by Reconcile: the settle rules of a cut are
+	// the Reconcile's, so nothing is settled for one role before it.
+	ErrNotReconciled = errors.New("leadlifecycle: the registry's cut journal is not reconciled yet")
 )
 
 // Preflight is the check that must pass before a role is started: the
