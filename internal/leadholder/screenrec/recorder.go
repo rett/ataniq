@@ -127,7 +127,8 @@ type item struct {
 	kind kind
 	ms   int64
 	snap screen.Snapshot
-	torn bool // the pair's snapshot was taken mid-sequence or in a frame
+	torn bool   // the pair's snapshot was taken mid-sequence or in a frame
+	seq  uint64 // the pair's number among the pairs queued
 	// text is the title, data the payload, both already cut; size is their
 	// length as seen.
 	text string
@@ -144,11 +145,13 @@ type Recorder struct {
 	mu        sync.Mutex
 	queue     []item
 	drops     uint64
-	opened    bool // Open succeeded: the writer runs
-	closing   bool // Close was called
-	stopped   bool // the recording stopped early, or Open failed
-	pairsDone bool // MaxPairs pairs were written: no more pairs are taken
-	last      *screen.Snapshot
+	opened    bool             // Open succeeded: the writer runs
+	closing   bool             // Close was called
+	stopped   bool             // the recording stopped early, or Open failed
+	pairsDone bool             // MaxPairs pairs were written: no more pairs are taken
+	last      *screen.Snapshot // the last pair queued and not dropped
+	lastSeq   uint64           // its seq
+	pairSeq   uint64           // the seq of the last pair queued
 	lastTitle string
 	wake      chan struct{}
 	done      chan struct{} // closed when the writer returns
@@ -231,9 +234,14 @@ func (r *Recorder) elapsed() int64 {
 }
 
 // pushLocked queues it, with r.mu held, dropping the oldest item when the
-// queue is full, and wakes the writer.
+// queue is full, and wakes the writer. A dropped pair that is the last one
+// queued is forgotten as the last screen, so that the same screen is queued
+// again when it is seen again.
 func (r *Recorder) pushLocked(it item) {
 	if len(r.queue) >= r.cfg.QueueLen {
+		if old := r.queue[0]; old.kind == kindPair && old.seq == r.lastSeq {
+			r.last = nil
+		}
 		n := copy(r.queue, r.queue[1:])
 		r.queue[n] = item{}
 		r.queue = r.queue[:n]
@@ -272,8 +280,10 @@ func (r *Recorder) screen(s screen.Snapshot, torn bool) {
 	}
 	c := s
 	c.Faint = append([]screen.Span(nil), s.Faint...)
-	r.last = &c
-	r.pushLocked(item{kind: kindPair, ms: ms, snap: c, torn: torn})
+	r.pairSeq++
+	r.pushLocked(item{kind: kindPair, ms: ms, snap: c, torn: torn, seq: r.pairSeq})
+	// The pair is in the queue: it is the last screen until it is dropped.
+	r.last, r.lastSeq = &c, r.pairSeq
 }
 
 func sameScreen(a, b screen.Snapshot) bool {
@@ -304,17 +314,37 @@ func (r *Recorder) Title(t string) {
 }
 
 // OSC7501 queues a line for one payload of the status protocol, the OSC data
-// after "7501;". It copies at most MaxPayload bytes and returns at once: the
-// session calls it where it applies output.
+// after "7501;". It copies at most MaxPayload bytes, cut at a character
+// boundary (cutBytes), and returns at once: the session calls it where it
+// applies output.
 func (r *Recorder) OSC7501(data []byte) {
 	ms := r.elapsed()
-	keep := append([]byte(nil), data[:min(len(data), MaxPayload)]...)
+	keep := append([]byte(nil), data[:cutBytes(data)]...)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.accepting() {
 		return
 	}
 	r.pushLocked(item{kind: kindOSC, ms: ms, data: keep, size: len(data)})
+}
+
+// cutBytes is where b is cut: all of it when it is at most MaxPayload bytes,
+// and otherwise at the start of the character that MaxPayload falls in, so
+// that a valid payload stays valid once cut. A byte that starts no character
+// within utf8.UTFMax-1 bytes before MaxPayload (bytes that are not UTF-8) is
+// cut at MaxPayload.
+func cutBytes(b []byte) int {
+	if len(b) <= MaxPayload {
+		return len(b)
+	}
+	i := MaxPayload
+	for j := 0; j < utf8.UTFMax-1 && i > 0 && !utf8.RuneStart(b[i]); j++ {
+		i--
+	}
+	if !utf8.RuneStart(b[i]) {
+		return MaxPayload
+	}
+	return i
 }
 
 // cutText cuts s to at most MaxPayload bytes at a character boundary.

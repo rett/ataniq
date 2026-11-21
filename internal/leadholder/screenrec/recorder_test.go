@@ -854,3 +854,47 @@ func TestLimitLinesFitTheirReserve(t *testing.T) {
 		t.Fatalf("the longest LIMIT.txt is %d bytes, the reserve %d", longest, limitReserve)
 	}
 }
+
+// A payload over MaxPayload is cut at a character boundary, and "utf8" says
+// whether the bytes kept are valid: a valid payload cut where a character
+// would be split stays valid, one that is not valid stays marked, and a run
+// of bytes with no character start is cut at MaxPayload.
+func TestAPayloadIsCutAtACharacterBoundary(t *testing.T) {
+	x := newRec(t, nil)
+	x.open()
+	valid := "a" + strings.Repeat("é", 2500) // MaxPayload falls inside an é
+	x.r.OSC7501([]byte(valid))
+	x.r.OSC7501(bytes.Repeat([]byte{0x80}, 5000))
+	x.r.Close()
+	osc := x.lines(OSCName)
+	if len(osc) != 2 {
+		t.Fatalf("%d payload lines", len(osc))
+	}
+	p, _ := osc[0]["payload"].(string)
+	if osc[0]["utf8"] != true || osc[0]["cut"] != true || osc[0]["bytes"] != float64(len(valid)) ||
+		len(p) != MaxPayload-1 || !strings.HasPrefix(valid, p) {
+		t.Errorf("valid payload: %d bytes kept, %v", len(p), osc[0])
+	}
+	if osc[1]["utf8"] != false || osc[1]["cut"] != true || osc[1]["bytes"] != float64(5000) {
+		t.Errorf("invalid payload: %v", osc[1])
+	}
+}
+
+// A pair the queue dropped does not count as recorded: the same screen is
+// queued again when it comes back.
+func TestADroppedPairIsTakenAgain(t *testing.T) {
+	x := newRec(t, func(c *Config) { c.QueueLen = 2 })
+	a := sample("the screen that was dropped")
+	x.r.Screen(a)
+	x.r.OSC7501([]byte("one"))
+	x.r.OSC7501([]byte("two")) // the queue is full: the pair is dropped
+	x.r.Screen(a)
+	x.open()
+	x.r.Close()
+	if got := x.read("0001.txt"); got != a.Text+"\n" {
+		t.Fatalf("0001.txt %q", got)
+	}
+	if lim := x.read(LimitName); lim != "dropped 2\n" {
+		t.Errorf("LIMIT.txt %q", lim)
+	}
+}
