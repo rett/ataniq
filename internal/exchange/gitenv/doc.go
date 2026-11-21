@@ -109,7 +109,8 @@
 //     program is [Cmd.UploadPack], for a fetch from a local path; Argv
 //     quotes it, and the field comment says what the program receives.
 //     With [Cmd.SourceFileURL] the source goes to git as a "file://" URL,
-//     which git never opens as a bundle file.
+//     which git never opens as a bundle file. A source with "@[" in it is
+//     refused then, as git changes such a path in a URL.
 //   - It does not confine the process: no namespace, no file system limit, no
 //     network limit.
 package gitenv

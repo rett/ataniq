@@ -12,7 +12,8 @@ import (
 // wrote as an absolute path stands in the command line as a "file://" URL
 // with each "%" written "%25", and nothing else changes. Without the field
 // the source is as written. The field needs UploadPack, and a source that is
-// itself a URL stays refused.
+// itself a URL stays refused, and so does a source with "@[" in it, which git
+// would change in a URL. Without the field that source is as written.
 func TestSourceFileURLInArgv(t *testing.T) {
 	g := Git{Path: "/usr/bin/git"}
 	prog := []string{"/usr/bin/wrap"}
@@ -54,10 +55,19 @@ func TestSourceFileURLInArgv(t *testing.T) {
 		"a file URL source":  {GitDir: "/srv/r.git", Protocols: []string{"file"}, UploadPack: prog, SourceFileURL: true, Args: []string{"fetch", "--end-of-options", "file:///srv/src"}},
 		"a relative source":  {GitDir: "/srv/r.git", Protocols: []string{"file"}, UploadPack: prog, SourceFileURL: true, Args: []string{"fetch", "--end-of-options", "src"}},
 		"a host-form source": {GitDir: "/srv/r.git", Protocols: []string{"file"}, UploadPack: prog, SourceFileURL: true, Args: []string{"fetch", "--end-of-options", "host:/srv/src"}},
+		"at-bracket":         {GitDir: "/srv/r.git", Protocols: []string{"file"}, UploadPack: prog, SourceFileURL: true, Args: []string{"fetch", "--end-of-options", "/srv/at@[v]x"}},
+		"at-bracket pair":    {GitDir: "/srv/r.git", Protocols: []string{"file"}, UploadPack: prog, SourceFileURL: true, Args: []string{"fetch", "--end-of-options", "/srv/a@[b]c"}},
 		"not a fetch":        {GitDir: "/srv/r.git", Protocols: []string{"file"}, UploadPack: prog, SourceFileURL: true, Args: []string{"rev-list", "--end-of-options", "/srv/src"}},
 	} {
 		if argv, err := g.Argv(c); err == nil {
 			t.Errorf("%s: Argv accepted %q", name, argv)
+		}
+	}
+	// Without the field the same source is as written.
+	for _, src := range []string{"/srv/at@[v]x", "/srv/a@[b]c"} {
+		c := Cmd{GitDir: "/srv/r.git", Protocols: []string{"file"}, UploadPack: prog, Args: []string{"fetch", "--end-of-options", src}}
+		if argv, err := g.Argv(c); err != nil || argv[len(argv)-1] != src {
+			t.Errorf("%q without the field: %q, %v", src, argv, err)
 		}
 	}
 }
@@ -144,6 +154,38 @@ func TestSourceFileURLWithGit(t *testing.T) {
 		}
 		if got, ok := recorded(); !ok || got != strings.ReplaceAll(path, "%41", "A") {
 			t.Errorf("control: the wrapper got %q (ran: %v), want the decoded %q", got, ok, strings.ReplaceAll(path, "%41", "A"))
+		}
+	})
+
+	// Why Argv refuses "@[": with the URL written by hand, git hands the
+	// wrapper another path (the brackets and what follows the "@" are cut), or
+	// stops without starting it. The test fails if this git keeps the path, as
+	// the refusal would then be needless.
+	t.Run("control: at-bracket", func(t *testing.T) {
+		for _, name := range []string{"at@[v]x", "a@[b]c"} {
+			path := filepath.Join(root, name)
+			fixture(t, g, env, "", "clone", "-q", "--bare", src, path)
+			_ = os.Remove(record)
+			repo := bare(t, g)
+			argv, aerr := g.Argv(Cmd{GitDir: repo, Protocols: []string{"file"}, UploadPack: []string{wrapper},
+				Args: []string{"fetch", "--end-of-options", path, "+refs/heads/*:refs/heads/*"}})
+			if aerr != nil {
+				t.Fatal(aerr)
+			}
+			for i, a := range argv {
+				if a == path {
+					argv[i] = fileURL(path)
+				}
+			}
+			_, _ = run(argv, g.Env(Cmd{GitDir: repo, Protocols: []string{"file"}}), "", "")
+			if got, ok := recorded(); ok && got == path {
+				t.Errorf("%q: git kept the path in a file URL, so the refusal of %q is not needed with this git", name, "@[")
+			}
+			// And the field refuses it before git starts.
+			if _, err := g.Argv(Cmd{GitDir: repo, Protocols: []string{"file"}, UploadPack: []string{wrapper}, SourceFileURL: true,
+				Args: []string{"fetch", "--end-of-options", path, "+refs/heads/*:refs/heads/*"}}); err == nil {
+				t.Errorf("%q: Argv accepted the source with the field", name)
+			}
 		}
 	})
 
