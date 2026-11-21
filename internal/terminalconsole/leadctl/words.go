@@ -118,7 +118,7 @@ var reasonWords = map[string]string{
 	"not-running":        "the lead is not running",
 	"holder-unreachable": "the lead's holder could not be reached",
 	"ticket-failed":      "no ticket could be made",
-	"ticket-refused":     "the holder refused the ticket",
+	"ticket-refused":     "the holder refused the ticket; a writer may already be attached",
 	"ticket-lost":        "the holder did not answer the ticket request",
 	"ticket-file":        "the ticket was taken but its file could not be written",
 	"holder-disabled":    "the lead's holder does not take messages",

@@ -535,7 +535,9 @@ lead are made one after the other, and a later ticket replaces the file. A
 ticket is single use and the holder grants a writer ticket only while there is
 no writer and no other ticket for that place is waiting ([the lead holder
 guide](lead-holder.md)), so a second writer ticket may be refused
-(`ticket-refused`). The console reads the file when it attaches; mint a ticket
+(`ticket-refused`; the daemon logs the holder's code, `busy` among them, and the
+receipt carries only `ticket-refused`, so the console says "the holder refused the
+ticket; a writer may already be attached"). The console reads the file when it attaches; mint a ticket
 and attach before minting another for the same lead. Tickets of two leads do
 not cross.
 

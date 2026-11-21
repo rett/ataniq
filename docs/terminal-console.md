@@ -530,7 +530,10 @@ runs, and when it ends the cockpit opens again with the leads view open and the
 list read afresh. So the owner goes list, attach, back. `--daemon` still cannot
 be combined with `--attach`: the loop is internal. A ticket is single use and the
 lead has one ticket file, so ask for a ticket and attach before asking for
-another for the same lead. An attach that cannot be made (for example, the
+another for the same lead. A refused ticket reads "the holder refused the ticket;
+a writer may already be attached": the holder grants one writer at a time, and
+the receipt carries no reason beyond the refusal, so the line says what is likely
+and no more. An attach that cannot be made (for example, the
 attach socket's path is too long for a unix socket address) is told in one line
 and the cockpit comes back.
 

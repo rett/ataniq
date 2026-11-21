@@ -106,3 +106,7 @@
   the limit of running leads while an unknown lead is listed says that the
   unknown lead holds a slot and what settles it. `docs/scratch-leads.md` has the
   recovery after a killed daemon. See `docs/terminal-console.md`.
+- The console's leads view words a refused attach ticket "the holder refused
+  the ticket; a writer may already be attached", because the receipt carries no
+  reason beyond `ticket-refused` and the holder grants one writer at a time. See
+  `docs/terminal-console.md`.

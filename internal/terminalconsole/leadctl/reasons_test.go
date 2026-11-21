@@ -468,3 +468,22 @@ func TestAMaxRunningRefusalNamesAnUnknownLeadThatHoldsASlot(t *testing.T) {
 	r.key("s")
 	r.notSeen("An unknown lead")
 }
+
+// The receipt of a refused ticket carries only ticket-refused (the daemon logs
+// the holder's code), so the words say that a writer may already be attached
+// without claiming it is.
+func TestARefusedTicketSaysAWriterMayAlreadyBeAttached(t *testing.T) {
+	for _, key := range []string{"w", "v"} {
+		b := twoLeads(t)
+		b.answer = func(call) (Receipt, error) {
+			return Receipt{CommandID: "t1", Op: OpTicket, Status: Refused, Code: "ticket-refused"}, nil
+		}
+		r := newRig(t, b, 150, 30)
+		r.key("j")
+		r.key(key)
+		r.seen("attach ticket: refused: the holder refused the ticket; a writer may already be attached")
+		if len(r.actions) != 0 {
+			t.Fatalf("%s attached: %+v", key, r.actions)
+		}
+	}
+}
