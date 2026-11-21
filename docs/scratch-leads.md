@@ -7,6 +7,9 @@ leads on throwaway repositories, and the console that drives it. It describes
 provisional code, and nothing in it is qualified. It builds on
 [the canary slice](canary-slice.md), which says what the holder, the waiver and
 the injected message are; this guide does not repeat that.
+[The runbooks](runbooks.md) turn it into plain steps for the owner: after a
+crash or a reboot, a lead that looks stuck, a revoked login and stopping
+everything.
 
 ## What it is, and what it is not
 

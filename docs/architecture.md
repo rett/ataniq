@@ -58,6 +58,11 @@ and in the canary slice too (see [the canary slice guide](canary-slice.md)).
 The opt-in harness for a real sandbox template is in
 [the lead mirror qualification manual](qualification-lead-mirror.md).
 
+[The runbooks](runbooks.md) are the owner's plain steps for the scratch leads
+that exist today: after a crash or a reboot, a lead that looks stuck, a revoked
+login, stopping everything, and what to do when it cannot be told. They mark the
+handoff and cutover as not built yet.
+
 ## Roles and authority split
 
 Each project has exactly one assigned lead, and one supervisory lead spans
