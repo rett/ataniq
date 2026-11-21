@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"time"
 
@@ -18,14 +19,15 @@ import (
 // This file is the one place in the command that builds the host's side of a
 // card, for the scratch pass: the owner channel's service on the real journal
 // in the state folder, the real merge, intake and records of the host adapter,
-// the file-drop collector, and the stand-in for the planner's door. It is
+// the real suite runner, the file-drop collector, and the stand-in for the
+// planner's door. It is
 // provisional and unqualified. Nothing here runs in a release build.
 
-// ownerSuite is the suite runner the host's verifier uses. It is nil in this
-// build: the verification sandbox of package verify takes a tip under
-// refs/leads/, and the host's merge lives under refs/ataniq/pending/, so there
-// is no real suite to hand over yet, and the daemon refuses to serve the owner
-// channel without one rather than refuse every request. A test sets a fake.
+// ownerSuite replaces the suite runner of the build. It is nil: the builder
+// then makes the real one (package verify in merge mode, through the sandbox
+// template and the work folder the scratch settings name, with the real
+// runner) and refuses settings that name none rather than refuse every
+// request. A test sets a fake; nothing else does.
 var ownerSuite hostadapter.Suite
 
 // ownerNotice receives the host-written lines of the service and the adapter.
@@ -36,7 +38,15 @@ func init() {
 	ownerServiceBuilder = buildOwnerService
 	ownerGuard = &ownerGuardSet{
 		check: func(stateDir string, getenv func(string) string) error {
-			_, err := checkOwnerScratch(stateDir, getenv)
+			sc, err := checkOwnerScratch(stateDir, getenv)
+			if err != nil {
+				return err
+			}
+			// Without a suite of a test, the settings must name the real
+			// one, so that the daemon refuses before it takes a lock.
+			if ownerSuite == nil {
+				_, err = sc.VerifySuiteOf()
+			}
 			return err
 		},
 		banner: ownerBanner,
@@ -52,20 +62,32 @@ func (e standInEnder) EndRequest(_ context.Context, id string) error { return e.
 // buildOwnerService is the [ownerServiceBuilder] of this build. It reads the
 // scratch settings in the owner folder of the state folder, opens the host
 // adapter on them, and returns the service with the function that closes
-// everything. It refuses without a suite runner, without settings that select
-// the stand-in door, and with a state folder, a scratch root or a mirror that
-// is the account's default or not a scratch one.
+// everything. It refuses without settings that select the stand-in door and
+// name the suite's sandbox template and work folder, and with a state folder, a
+// scratch root or a mirror that is the account's default or not a scratch one.
+// The suite is the real one built from the settings ("sandbox", "work"):
+// building it starts nothing, and the template is read and the sandbox started
+// only when a request is verified.
 func buildOwnerService(stateDir string) (leaddaemon.OwnerService, func() error, error) {
-	suite := ownerSuite
-	if suite == nil {
-		return nil, nil, errors.New("this build has no verification suite for a merge yet, so no card can be made")
-	}
 	// The settings select the stand-in door, and the state folder, the roots
 	// and the mirror are not the account's real ones. ownerRun makes the same
 	// check before the daemon starts; this one is the builder's own.
 	sc, err := checkOwnerScratch(stateDir, ownerGetenv)
 	if err != nil {
 		return nil, nil, err
+	}
+	suite := ownerSuite
+	if suite == nil {
+		real, err := sc.VerifySuiteOf()
+		if err != nil {
+			return nil, nil, err
+		}
+		// The work folder is made private when it is not there; its parent
+		// must exist. Nothing else is made or started.
+		if err := os.Mkdir(real.WorkRoot, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+			return nil, nil, fmt.Errorf("the work folder of the suite cannot be made: %w", err)
+		}
+		suite = real
 	}
 	git, err := gitenv.Find()
 	if err != nil {

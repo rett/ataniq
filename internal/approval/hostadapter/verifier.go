@@ -15,7 +15,7 @@ import (
 
 // Suite runs the project's gates on a fresh checkout of a merge, in the
 // verification sandbox, and says how the run ended. It is the one thing of
-// the host that [Host] does not build: the daemon installs the runner, which
+// the host that [Host] does not build: [VerifySuite] is the real one, which
 // runs package verify in its merge mode, and the tests of this package use a
 // fake.
 type Suite interface {

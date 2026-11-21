@@ -192,6 +192,35 @@ completed. It writes no log file.
 | 21 | `status`: the daemon refused this user. |
 | 22 | `status`: an answer that is not valid, or an error the daemon answered. |
 
+### The owner channel's suite (tagged build only)
+
+A build with the `ataniq_ownerchannel` tag has `run --owner-channel`; a release
+build has no such flag and none of this. It is provisional and unqualified,
+and the door behind it is a stand-in that gives no real approval. The host's
+side of a card is built from `owner/scratch.json` in the state folder (one
+project, its mirror, the folder requests are dropped in). Besides the project
+and the scratch roots, the settings name the suite that verifies the merge the
+host builds for a request:
+
+- `"sandbox"`: the clean absolute path of the sandbox template file, the same
+  template `ataniq-intake verify --sandbox` takes (see
+  [lead-intake.md](lead-intake.md)). It lies under a scratch root and not in
+  the state folder, where a lead could change it.
+- `"work"`: the clean absolute path of the folder the runs work in, under a
+  scratch root, outside the state folder and apart from the mirror. The daemon
+  makes it with mode 0700 when it is not there (its parent must exist).
+
+Both keys are required, since the suite is no longer optional: the daemon
+refuses `--owner-channel` with exit code 10 when they are missing or are not
+scratch paths, before it takes a lock. The suite is the intake's merge-mode
+verification (`internal/intake/verify` with its real runner): the merge is
+fetched through the pin under `refs/ataniq/pending/`, checked to have two
+parents with the target's tip first, and the gates run in the sandbox. The
+daemon builds it without starting anything: the template is read, and a
+sandbox is started, only when a request is verified, and each run reads the
+template again. The record of the run is kept in `owner/records` as a
+merge-mode record, which is the only kind the host's approval counts.
+
 ### What `status` prints
 
 `ataniqd status` calls `hello` and then `status`, and prints one line for the

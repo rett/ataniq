@@ -46,7 +46,8 @@
 // A pin keeps the merge and both parents alive, and a test of this package
 // shows it by running git gc on a temporary mirror directly, outside gitenv.
 // It does not refresh the lead's branch in the mirror (the mirror's own sync
-// does). The [Suite] is injected: the daemon installs the runner, and a test
+// does). The [Suite] is injected: [VerifySuite] is the real one, which runs
+// package verify in its merge mode through the sandbox template, and a test
 // uses a fake.
 //
 // # Text from the lead
