@@ -8,6 +8,488 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.0.12] - 2026-11-20
 
+### Added
+
+- Add the console's approvals client for the daemon: `ataniq-console --daemon DIR`
+  shows the daemon's approvals when the daemon serves the owner channel. It lists
+  the daemon's cards, opens one, reads a path list or a patch larger than one
+  response in pages, sends the owner's decision once and shows the outcome the
+  daemon gives, and reads and sets the daily limit. The cockpit's approval
+  controls and the approvals view follow what the daemon's hello lists. A
+  release daemon has no owner channel, so no approval is possible with it: the
+  console then says "no owner channel in this build". A lost connection drops
+  what was typed and decides nothing, and a decision that got no answer is
+  never sent again until the card is opened again. `--no-bell` now also works
+  with `--daemon`.
+- Add the daemon's side of the owner connection, in a build with the
+  `ataniq_ownerchannel` tag only: `ataniqd run --owner-channel` registers the
+  `owner.*` operations of the console's approvals through the client protocol's
+  extension seam, on the same socket and the same protocol (`ataniq.client/1`).
+  The place of the one connection that may decide goes to a console of the
+  owner that names itself and has a controlling terminal, checked through an
+  injected inspector (the real one reads the process with a pidfd); a second
+  console is read-only, and a client with no terminal and a decision frame from
+  any other connection are refused and counted. The flag is refused until the
+  host's side of a card is built into the command. Release builds have no such
+  flag and register no owner operation, and `hello` lists what it lists today.
+  The connection that holds the place of the one that may decide is kept
+  for up to ten minutes without a request (other connections keep the
+  server's 30 seconds), so the place is not lost while the owner reads a card;
+  a connection that is not the decider and sends more than 16 decision frames
+  is closed, and the frames past the 16th are not journaled. The bound is per
+  connection: a process of the same user can connect again.
+- Add contract tests of the daemon's owner connection against the real service,
+  journal and host adapter, in a build with the `ataniq_ownerchannel` tag only:
+  every `owner.*` operation answered over the client protocol and read back
+  through the wire package's decoders, the code each failure takes on the wire
+  (a connection that is not the decider, a door that cannot be reached, a
+  service that stopped), the decision of a stopped service delivered once by the
+  next daemon, and a second daemon that cannot open a journal the first holds.
+  Nothing changes in a release build.
+- Add end-to-end tests of the owner channel for a host with no seated lead, in
+  a build with the `ataniq_ownerchannel` tag only: the console's approvals
+  model, the console's client, the daemon with its owner connection, the
+  service, the real journal, the host adapter and a temporary bare mirror in one
+  test, with the stand-in for the planner's door and a fake verification suite.
+  One request is followed from the file the lead drops to the ref that moves,
+  and the cases that need no seat are run on it: a branch that moves or a
+  request that is withdrawn with the card open, a target that moves after the
+  decision, a decision used twice, expiry, a stop at each crash point and a
+  restart with a held decision, the summary of a known change set and of 5,000
+  paths read in pages, missing and surplus sign-offs, a wrong digest, epoch,
+  revision or id, a merge made by the lead, restarts of the console and the
+  daemon, a journal and a door that disagree, attributes in the tree, failed and
+  cut verifications, and hostile commit headers. The confirm code is found in
+  no place of the host or on the wire, and the plan token only on the card and
+  in the journal's copy of the decision record. Cases that need a seated lead
+  or the real door stay for step 2b. Nothing changes in a release build.
+- Add the host adapter of the owner channel, in a build with the
+  `ataniq_ownerchannel` tag only: the service's interfaces joined to the real
+  merge builder, the intake (merge-mode review, summary, one ref transaction
+  with the old value, no checkout and no hook), the journal in the daemon's
+  state folder, and a verifier that keeps each run as a verification record.
+  A merge the host built stays pinned under `refs/ataniq/pending/`, so the
+  mirror's own maintenance cannot remove it or its parents; the adapter adds no
+  maintenance. A request enters through a file-drop collector that exists for
+  the scratch pass only: a request file in a private folder, refused before
+  anything is built when it is not a request or its feature name is outside the
+  grammar, with a reply file beside it as the only reply this build writes.
+  `ataniqd run --owner-channel` now builds the host's side of a card from
+  `owner/scratch.json` in the state folder, over a stand-in for the planner's
+  door that keeps nothing across a restart. It is provisional and unqualified,
+  and no suite runner is installed yet, so the flag is still refused until one
+  is. Release builds contain none of it.
+- The intake can review a merge the host built, in a new merge mode of the
+  `internal/intake` package: the base is the target's tip, the tip is the
+  merge under a pin in `refs/ataniq/pending/`, and `Integrate` moves the target
+  from the one to the other and writes no other ref. It adds a fuller summary
+  for the owner's approval card (binary by content, forced-text line counts
+  with renames off, new bytes, and lists of binary files, symbolic links, mode
+  changes and submodules), an `odd-path` flag for paths the matcher cannot read
+  safely, a check of the repository's `info/attributes` before each diff of a
+  merge, and a digest of the execution-config rule set. No command uses it yet,
+  and the lead-branch review is unchanged.
+- Add `make test-ownerchannel`, which runs the tests of code behind the
+  `ataniq_ownerchannel` build tag, alone and together with `ataniq_canary`, as
+  a third CI job, and a guard in `tests/` that keeps that tag out of release
+  builds: tagged files only in the daemon, its command and the host adapter,
+  no command depending on the owner channel's service, journal, host adapter
+  or stand-in without the tag, no module used only with the tag, and a
+  workflow that names the target and never the tag.
+- The intake's verification has a merge mode, for the merge the host builds
+  under `refs/ataniq/pending/`: the request and the stored record carry the
+  merge and the base (the target's tip) it was built against, the verification
+  script refuses to run a gate unless the fetched commit is a merge of two
+  parents whose first is the base (status 93), and `Integrate` of a merge
+  counts only merge-mode records of that merge on that base. Records of a lead
+  branch are unchanged and still read. No command uses it yet.
+- The inject fence's result line now carries the shape of the screen it read,
+  numbers and flags only, no text, after the failed conditions: `screen WxH
+  alt B cursor X,Y last-row N` (the size, the alternate-screen flag, the
+  cursor, and the last row that holds anything). When the screen is not one the recogniser knows, the line says
+  `composer not read` instead of `composer false empty false ...`, which read
+  as a composer that holds text. A `not-now` on a live claude now says whether
+  the screen was on the alternate screen and where the cursor was. The
+  recogniser's rules and fixtures are unchanged.
+- The holder's counters gain `alt_screen_on` and `alt_screen_off`, the times
+  the emulator entered and left the alternate screen. They are listed in the
+  status answer, on the `exit` event and in `final.json` with the other
+  counters. `alt_screen_on` above zero says the agent drew with a fullscreen
+  renderer; both at zero says it drew on the main screen, which the inject
+  fence never reads. The session carries them in its own counters, so the
+  final record and the `exit` event hold them even though the pane is where
+  they are counted.
+
+### Changed
+
+- The host adapter of the owner channel (tagged build only) now verifies the
+  merge it builds in the merge mode of verification: the record names the
+  merge as the tip, the target's tip it was built on as the base and the pin
+  under `refs/ataniq/pending/` that keeps it alive, instead of a made-up lead
+  ref, and only such a record counts for the approval. A lead-mode record of
+  the same commit, or a merge record on another base, is no evidence, and an
+  approval with no counting record is not applied, with a notice that says so
+  instead of a moved ref. `ataniqd run --owner-channel` now has a real suite
+  runner (the intake's verification in the sandbox template, run through the
+  pin): `owner/scratch.json` gains the keys `sandbox` (the template file) and
+  `work` (the runs' folder), both under a scratch root and outside the state
+  folder, and the daemon refuses the flag without them. Building the runner
+  starts nothing; a sandbox starts when a request is verified.
+- The owner-channel guides (daemon, console, intake) now say, case by case,
+  which of the plan's cases the end-to-end test ran on the stand-in, which it ran
+  in part, and which need a seated lead or the real door, in place of "to be
+  confirmed". They also state where the confirm code and the plan token are, that
+  the verification sandbox was never run for real, and that an interrupted
+  request is answered request-invalid. The reason for keeping the sandbox
+  template out of the state folder is corrected in the intake guide.
+- Correct the docs on the owner channel: the release console contains the
+  client side of it and only a release daemon has none (README, architecture,
+  lead daemon and terminal console guides), and the list of what ran on a
+  stand-in puts the coverage of OC3, OC13, OC28 and OC29 where it is.
+- The tagged daemon's scratch guard (`ataniqd run --owner-channel`) now also
+  refuses a drop folder that is, lies inside or contains a default state or
+  runtime folder or the state folder (with its `owner/` folder), a sandbox
+  template inside the drop folder, the mirror or the work folder, and a work
+  folder that is, lies inside or contains the drop folder. The reason given for
+  keeping the template out of the state folder is corrected in the guide.
+- The guides now describe the owner channel of the tagged daemon: release builds contain no owner channel, the tag `ataniq_ownerchannel` and `make test-ownerchannel`, the daemon flag `--owner-channel` with the scratch settings (`door`, `roots`, `sandbox`, `work`) and the STAND-IN banner, and the console, which shows the daemon's approvals only when the daemon's `hello` lists the owner operations. A list says which cases ran on a stand-in and which wait for a seated lead, to be confirmed against the end-to-end test. None of it is qualified. The console guide also says that `--no-bell` works with `--daemon`, and the intake guide lists the `odd-path` flag and says that merge mode covers the review as well as the verification.
+- `ataniq-canary check-inputs` now counts the holder's two sockets
+  (`attach.sock` and `control.sock` in the runtime folder) in the trial of the
+  spec, as the holder does. An inputs file whose `never_mounted` list had 60 or
+  61 entries was accepted by `check-inputs` and then refused by the holder at
+  its first step (`mount_substrings: more than 64 entries`); it is now refused
+  by `check-inputs`. This is in a build with the `ataniq_canary` tag only.
+- `ataniq-canary check-inputs` (and `profile-digest`, which runs it first) now
+  refuses what the holder refuses at its first step, `validate-config`, so that
+  the owner's step 8 catches it and not step 11. It runs the holder's own trial
+  of the profile and the spec on the inputs file (`sandboxstart.TrialValidate`,
+  the code the holder runs), with the agent command line, environment and
+  pinned digest of the config, and for the runtime `claude` it requires
+  `sources.managed_marker`, which the holder requires too, and a
+  managed-settings file that holds that text, which only assertion 8 inside
+  the sandbox checks, after the launch, so that this is earlier than the
+  holder. An inputs file without the key, as the run
+  kit's prepare script wrote it, was accepted by step 8 and refused by the
+  holder, which then ended the unit at once. A refusal names the field and
+  never a value or a path. `docs/canary-slice.md` lists what it checks and
+  shows the key. A new test derives the keys the holder requires from its own
+  trial and fails when `check-inputs` accepts a file without one. This is in a
+  build with the `ataniq_canary` tag only.
+- Fix the attended canary run kit's texts after passes A and B. Step 5 of pass B
+  now asks for `confirmed` only when the account used for the sandbox login
+  lists that login as its own revocable entry, or a separate throwaway account is
+  used (pass B run 1 showed Claude Code logins listed as Unknown rows), and step
+  23 says how to identify the login and accepts `cannot-identify: <what you see>`
+  as a finding. Step 20 prints the review's `Digest:` and `Tip:` lines and asks
+  `integrate succeeded` up to three times. The clean-up chain no longer
+  overwrites the first proof of the stop between the epochs (the files it writes that
+  already exist get the suffix `-chain`). The preflight and the checklists list the daemon at step 10
+  and say why. `docs/canary-slice.md` records what pass B showed.
+- Bound the attended canary run's wait for the daemon. Each ask of the daemon's
+  status is cut off after 5 seconds by `timeout(1)`, so a socket that accepts
+  and never answers no longer holds each ask for about 10 seconds, and a wait
+  ends after its 60 seconds plus one ask, about 65 seconds at most. Step 14 no
+  longer says the ticket was taken when the ticket result names no file. The
+  three variables that shorten the wait are read by the test entry only, and the
+  preflight checks that `timeout` is on `PATH`.
+- `canary-prepare.sh --pass B` now puts `CLAUDE_CODE_NO_FLICKER=1` in the live
+  agent's environment beside `DISABLE_AUTOUPDATER=1`. It selects claude's
+  fullscreen (alternate-screen) renderer, the only one the screen recogniser
+  has fixtures for; without it claude chooses the renderer per process and the
+  first pass B drew on the main screen, where the fence answered `not-now`.
+  The preflight of a live root now requires both names in `agent.env` and gives
+  a FIX naming the one that is missing. The environment is part of the profile
+  digest, so a root prepared earlier needs a new root and a new pin. The kit's
+  README, the checklist and `docs/canary-slice.md` say so, and
+  `docs/lead-injection.md` says that every recorded claude screen is from the
+  fullscreen renderer. Step 22 prints the two alternate-screen counters from
+  `final.json`, and step 16 names `alt_screen_on` as the thing the lead reads;
+  `alt_screen_on` above zero in the final record is what confirms the
+  renderer choice, which is likely the cause and not yet confirmed by a run.
+- Make the attended canary run easier on the owner, without the script ever
+  answering for him. A step that waits for something he starts or stops in
+  another terminal (the daemon at steps 10 and 26, the console's ticket at step
+  14, the listeners at steps 6 and 24) now asks for it every second for up to 60
+  seconds instead of failing at once. Step 26 says when the daemon still answers
+  or a root still exists and asks again, up to 5 more times, before it fails.
+  `canary-prepare.sh` writes `answers.hint`, suggested paths that the run shows
+  as "(Enter for: PATH)" at its four path prompts and takes for an empty line (a
+  typed path wins; no word such as `yes` or `read` is ever a hint), and
+  `CHECKLIST.txt`, one page with the real paths and what each prompt expects;
+  `--template-review`, `--unit-report` and `--plan-summary` name the files to
+  suggest. A wrong file is refused before it is recorded and asked again up to
+  3 more times: a qualify-mirror report where the template's review is asked
+  for, or a report of another template. The new `canary-preflight.sh --root DIR`
+  is a read-only look before the run: one line per check, `ok:` or `FIX:` with
+  the command to type, and `READY` with the three things to type or `NOT READY`.
+  The guide is `qualification/canary/run/README.md`.
+- Let the owner carry on in pass B of the attended canary run when the fence
+  answers `not-now` having written nothing: step 17 now takes the same path as
+  a refusal and pass A's first epoch (the owner clears the pane and pastes the
+  message himself). Step 16 ends with the owner's checks of the pane (the empty
+  composer, no dialog, the last row reading the mode the config expects with no
+  notice, then Ctrl+\ and no key or mouse for 3 seconds), and step 14 says what
+  the window size means to the fence. Step 15 tells the owner how to carry the
+  login URL out of the pane, accepts `logged-in` or `failed`, and lists changed
+  files even when the folder was empty before. Step 6 lists the listeners once
+  more before it fails, step 23 names the login by its time and warns that a
+  wrong row ends the lead's own session, and step 26 also looks for this
+  runtime's token and code shapes. Step 25 now counts the changes of the real
+  config folder, which the owner's own sessions write, and judges only the files
+  of the login's kind at the top of the folder. The preflight checks for `ss`
+  and prints the pass the root was made for.
+- Tell the owner of the attended canary run two things the console and the unit
+  need. At the paste step the script, the page and the guide now say to give the
+  session pane the focus first (select it and press Enter): a paste while the
+  console has the focus itself is dropped without a word, and the first Enter
+  only moves the focus. Between the two epochs of pass A the script now also
+  reverts the unit with `systemctl --user revert`, so that the second start does
+  not load the `MemoryMax` drop-in of the first. The guide lists three limits it
+  does not remove: the script cannot see that the first epoch's console is
+  closed, step 12 may read the waiver before the holder has written it, and a
+  stop may leave no final record.
+- Prepare pass B of the attended canary run the way pass A is prepared:
+  `canary-prepare.sh --pass B --claude PATH [--model NAME]` copies the tested
+  claude (one regular file, never a link) to `ROOT/agent-install/claude` after
+  its `--version`, run with an empty environment, names 2.1.325, and writes a
+  live config (`agent.argv` the executable itself, `agent.env`
+  `DISABLE_AUTOUPDATER=1`, `footer_mode` `manual`), the inputs file with the
+  terminal values, and a pin computed last, after the environment is in place.
+  It also writes `netcheck.sh`, which the owner runs by hand to check DNS,
+  HTTPS and `claude --version` in the sandbox's shape and under the unit's
+  limits, and a pass B `CHECKLIST.txt`. The preflight checks a pass B root's
+  claude copy, version, `DISABLE_AUTOUPDATER` and footer mode, and
+  `ataniq-canary show` prints the names of `agent.env`, never a value. The
+  README gains "The set-up of pass B".
+- Change step 14 of the attended canary run so that the owner is not racing the
+  30 seconds of the attach ticket. The script now prints the exact console
+  command, with its real folder and ticket file, before it mints; the owner
+  starts the console first (it waits for a ticket) and presses Enter, and only
+  then does the script mint, check that the ticket went to the file it printed,
+  and watch that file. The old question whether the used ticket was refused is
+  gone, because the console empties the file and the second console never
+  presents the ticket: in the first epoch the owner now starts the console once
+  more in a fourth terminal, sees that it does not attach and says "waiting for
+  a ticket", and the script reads that the ticket file is empty and that the
+  holder's event log shows no second attach. The owner is told to close the
+  first epoch's console before the second epoch, because a console left open
+  takes the next ticket. The page, the preflight's READY text and the guide say
+  the same.
+- Correct the terminals the attended canary run's page and its preflight name:
+  the daemon stays in front of its terminal until Ctrl-C at step 26, so the
+  owner needs four, T1 for the script, T2 for the daemon, T3 for the console
+  and T4 for the second console of step 14 and the integrate command of step
+  20. `CHECKLIST.txt`, the preflight's READY text, the run's own prompts at
+  steps 10 and 14 and the guide now agree.
+- Make the attended canary run say why a holder ended at its start. The holder
+  reports a refused start on its standard error, which is the unit's journal;
+  the event log holds only a code. Step 11 now prints the last 40 lines of the
+  journal (`journalctl --user --unit UNIT --since` the first start) before it
+  fails because the unit is not active or the role is not starting, and step 22
+  keeps up to 500 lines of it in the evidence (`out/22-e1-unit-journal.out`,
+  with the epoch in its name).
+- The canary run script's step 14 mints a read-only viewer ticket in the second
+  epoch of pass A and keeps the writer ticket in the first. A writer's attach
+  resizes the session to the console's pane, and the screen the stand-in draws
+  once is recognised by the fence only at its recorded size, so at most window
+  sizes the second epoch's inject ended `not-now, not-ready`. The owner only
+  watches in the second epoch. The message text the script prints to compare is
+  now between two marker lines with no prefix (text copied from the screen
+  carried the prefix and the stand-in found no token), and the guide, the
+  checklist and step 14 say the first epoch's window limits (a paste is dropped
+  below 100 by 30), that a first-epoch refusal by the fence is expected, and that
+  pasta may write two lines on the agent's pane. This is in a build with the
+  `ataniq_canary` tag only.
+
+### Fixed
+
+- The console's owner client asks the daemon again when the owner leaves the
+  approvals view and opens it again, after an answer that the daemon has no
+  owner channel, so a daemon restarted with `--owner-channel` is found without
+  restarting the console. Between those actions it still remembers the answer
+  and does not dial for each reading.
+- The tagged daemon's `owner/scratch.json` now also refuses a repeated key that
+  differs only in case (`drop` and `Drop`), which the decoder takes for the
+  same key.
+- The file-drop collector of the tagged daemon now answers a request that a
+  stop left taken but never handled: on its first scan after the start, a
+  request in the `collected` folder with no reply that neither the service nor
+  the door knows gets one `request-invalid` reply asking for a new request id,
+  instead of waiting for an answer that never came. A reply that exists is never
+  written over, and the request is not submitted again.
+- The tagged daemon's `owner/scratch.json` now refuses a key that appears twice
+  in one object, as its documentation said; the decoder used to keep the last
+  value without a word.
+- The tagged daemon's host adapter now tells a lead that a verification could
+  not run, not that its gates failed, when the verification script ended with
+  one of its own statuses 90 to 93 (the pin moved, the fetch or the checkout
+  failed, or the commit is not a merge on the base). The run is still kept as
+  a record and is no pass.
+- Fix the review findings of the host adapter of the owner channel (builds with
+  the tag `ataniq_ownerchannel` only). A second request file for an id that was
+  taken is set aside in the `collected` folder and never answered, so it no
+  longer takes the only reply file of the first request. A change with an odd
+  path now makes a card that flags the path (the new flag kind `odd-path`, which
+  needs a sign-off) instead of a silent refusal. The refusal codes
+  `feature-name`, `feature-moved`, `record-too-large` and `binding-mismatch` of
+  the intake reach the lead's reply instead of `request-invalid`. `Apply` says
+  `not-applied` where nothing was written (the repository's attributes, a ref
+  lock held by another writer). `ataniqd run --owner-channel` now refuses, with
+  the configuration's exit code, a state folder that is, lies in or holds the
+  account's default state or runtime folder, a scratch root of that kind, and a
+  mirror that is not under a scratch root; `owner/scratch.json` must carry
+  `"door": "stand-in"` and `"roots"`; and the daemon prints "owner channel:
+  STAND-IN door, scratch state: no real approval" at start.
+- `ataniqd canary start` now refuses, before it changes anything, when the
+  holder's state folder or the folder of the role lock
+  (`<state root>/roles/<project>`) is missing or not private, as it already
+  did for the holder's runtime folder. Each has its own fixed refusal text and
+  the path goes to the daemon's log only. Before, the start answered
+  `starting` for a unit that ended at once, and the reason was in the journal
+  alone. This is in a build with the `ataniq_canary` tag only.
+- Refuse, at `ataniq-canary show` and `check-inputs`, a live canary agent with
+  `inject` true whose `agent.footer_mode` is not `manual` or `auto`, the
+  screen recogniser's names of the mode, so that the footer's text (`manual
+  mode on`, or the old sample `sample mode on`) is caught before the message
+  is spent instead of ending every inject `not-now`. A live agent's
+  `agent.argv[0]` must also be a file under `/ataniq/agent/` that exists as a
+  regular file in `sources.agent_install` (no wrapper). This is in a build with
+  the `ataniq_canary` tag only.
+- Fix `canary-prepare.sh` with the real tagged binaries, which it could not
+  finish. It now copies the probe to `bin/ataniq-probe` in the root (mode
+  0700, as it copies pasta) and the inputs file names that copy as
+  `executables.probe`: the default `--bin`, `build/canary` of the checkout, is
+  in `never_mounted`, so the holder's validate step refused it as a bind
+  source. Step 9 of `canary-run.sh` compares the probe copy with the built
+  probe, as it compares the stand-in. `ataniq-canary profile-digest` and
+  `check-inputs` read the lead's copy of the managed settings once
+  provisioning has made it, and before that, when prepare asks for the digest,
+  the file `provision.managed_settings` names, which provisioning copies; a
+  missing marker is refused in both cases. Before, they failed with
+  `sources.managed_settings cannot be read: its folder cannot be opened`. A
+  prepare that fails after it made the root now ends by saying how to remove
+  the half-made root by hand; it deletes nothing. The second replay screen is
+  now the recorded `collapsed-paste-footer-c`, which the holder reads as a
+  submitted paste; `-a` carries a damaged title that reads as a busy agent, so
+  the second epoch's fence ended "not submitted". The Go change is in a build
+  with the `ataniq_canary` tag only.
+- `ataniq-canary provision` now makes the folder of the lead's role lock,
+  `<state root>/roles/<project>` (and `<state root>/roles` above it), with mode
+  0700, owned by the caller, checked like the other folders and reported as
+  `made folder` or `kept folder`. The holder takes its role lock with an open
+  that makes the file and not its folder, so on a provisioned root it refused
+  at its first start with `--role-lock cannot be taken as the role lock: no
+  such file or directory` and the unit ended at once. The folder must be empty
+  when a run keeps it, so a lock left by an earlier holder is refused as a
+  leftover; remove `<state root>/roles/<project>` with the other folders when
+  you provision again. New tests start the holder from a tree that
+  provisioning made, with no folder made by hand. This is in a build with the
+  `ataniq_canary` tag only.
+- Fix `canary-prepare.sh`, `canary-reset.sh` and `canary-preflight.sh` run by
+  their bare name from their own folder (`sh canary-preflight.sh`), which failed
+  with `cd: canary-preflight.sh: Not a directory`. They now find their folder
+  with no fork when `$0` holds no slash, and in `/` for `/name`.
+- Fix two details of the attended canary run kit. In the second epoch the run
+  now prints the console command with `--viewer`, matching the read-only ticket
+  it mints. Step 12's wait no longer takes an empty or failed answer from
+  `systemctl` for the unit's end: it asks again within the same asks. The
+  first-time prepare message for a non-empty root no longer gives a delete
+  command for a folder that does not carry the prepare mark.
+- Fix the attended canary run's set-up for the guard hook's marker. The holder
+  refuses a claude start without `sources.managed_marker` and its assertion 8
+  searches the managed-settings file for that text, but `canary-prepare.sh`
+  wrote neither, so step 11 would end with the holder exiting at once and the
+  step saying only that the unit was not active. Prepare now writes a
+  managed-settings file that names the guard hook, `/ataniq/qargi/guard-hook`,
+  as its PreToolUse hook command, and `sources.managed_marker` `guard-hook` in
+  the inputs file; the hash the inputs file records is that of the file as
+  written. `canary-preflight.sh` runs `ataniq-canary check-inputs` and looks for
+  the marker (and for it in the managed settings), and says to use a fresh
+  root when the inputs file is from an earlier prepare. The guide's example of
+  the inputs file and the slice's gain the key.
+- Fix the findings of the advisor review of the pass B run kit. Step 17 asks
+  again (up to three times) on an empty answer instead of ending the pass after
+  the login is spent, the dry run names the word `pasted`, and the pass B
+  checklist now agrees with the run's prompts at steps 16, 17, 25 and 26 and
+  with prepare's order (mirror qualification, then `netcheck.sh`). Step 25 takes
+  only a credential file as proof that the canary wrote a login (not the state
+  file), compares against the canary's own folder as it is at step 25 (also when
+  step 15 left no manifest), and, when no login was completed, asks about a
+  difference instead of counting it as a finding. The preflight of a live root says FIX
+  when `agent.argv` has no `--model` (and prepare's note no longer says to
+  prepare the same root again), and asks for `ss` only for a live root.
+  `netcheck.sh` binds resolved's upstream resolv.conf only when the host's file
+  is the local stub, as the holder does. AGENTS.md and CLAUDE.md name
+  `netcheck.sh` as run only by the owner's hand. The README and the slice guide
+  say that `show` prints the names of the agent's environment.
+- Reword the message of the attended canary run so that a live agent writes the
+  value only: the file `canary-token.txt` in the top folder of the repository
+  holds exactly one line, the value after the label on the next line, then a
+  line feed. The `canary-token: ` line stays for the stand-in and the daemon's
+  admission. When the gate of step 20 fails, the script now also prints the
+  first 3 lines the file holds, so that the wrong reading is seen; the gate
+  itself is unchanged.
+- Run kit, pass B: the checklist and the printed next steps of
+  `canary-prepare.sh --pass B` now tell the owner to run `qualify-mirror` for
+  the new root (the commands with its paths) or to give the preflight
+  `--mirror-report`, since the preflight wants that root's report. They say how
+  to add a model when `--model` was not given; step 15 asks for a no when no
+  model argument is shown. `netcheck.sh` binds `/etc/ssl`,
+  `/etc/ca-certificates`, `/etc/nsswitch.conf` and `/lib64` only where the host
+  has them. The dry text of step 9 names the check that `argv[0]` is under
+  `/ataniq/agent`.
+- Fix the findings of the review of the run script's pass B fixes. Step 16's
+  question also takes `go-on` (the fence then answers not-now and the owner
+  pastes the message), and any other answer ends the pass with the reason.
+  Step 15 asks again until `logged-in` or `failed`. Step 25 counts a changed
+  login file as a finding only when its new hash is one the canary's own config
+  folder holds; any other change becomes a question to the owner and the lead,
+  and a new `projects/-work-*` path (the sandbox's working folder) is always a
+  finding. Step 20's display of the token file opens the file once, checks the
+  opened file, is bounded and timed, and never follows a symlink or waits on a
+  FIFO. Step 23 prints the login time in local time too, as about. Step 26 looks
+  for `code=` only in the form of a URL query.
+- Fix step 25 of pass B of the attended canary run: the owner's question about
+  a changed login file now reads the owner's answer (it read the next line of
+  the changes file), the file must match the canary's own file under the same
+  name, a change is a finding without a question when the canary's own login
+  wrote no file of its kind in its own folder, and the result line names the
+  files the owner explained. Step 20 no longer opens a file at the filesystem
+  root when the lead's folder cannot be resolved. The README names `go-on` at
+  step 16 and the new judgement of step 25.
+- Correct two fix lines of `canary-preflight.sh`. The line for a stale profile
+  digest pin now also runs `ataniq-canary check-inputs`, as `canary-prepare.sh`
+  does after it pins. The line for a root that is not prepared names a fresh
+  `--root` when the folder already holds files, which prepare refuses; for an
+  empty or missing folder it still names the same root.
+- The canary run script's step 12 now waits for the holder's second write of
+  `holder.json` (the epoch named and `sandbox_started` true), for up to 90
+  seconds, or until the unit is no longer active, and prints the unit's journal
+  before it fails. A quick Enter could read the file between the holder's two
+  writes and fail the pass. This is in a build with the `ataniq_canary` tag only.
+- Fix the attended canary run's step 26 so that an end of input (Ctrl-D, or a
+  terminal that hangs up) at one of its Enters still records a failure when a
+  daemon still answers or a root still exists, as it did before the step began
+  to ask again. A missing key no longer hides either.
+- The canary stand-in agent now gives its git the `GIT_CONFIG_GLOBAL` of its own
+  environment (a new `GitConfigGlobal` field of `standin.Config`, filled by
+  `ataniq-canary-standin` from the environment; it is the only variable besides
+  `HOME` that git gets). The sandbox names the identity file that provisioning
+  wrote with that variable, and the stand-in had dropped it, so inside the
+  sandbox its commit failed with `unable to auto-detect email address` (the
+  second epoch's `result.txt` said `failed: git commit`) and the pass could not
+  show a commit. New tests lay the world out as the sandbox does: a repository
+  with no identity of its own, an empty home, and the identity only in the file
+  the variable names. This is in a build with the `ataniq_canary` tag only.
+- The lead unit no longer sets `NoNewPrivileges`. With it, the command that
+  pasta runs in its user namespace has no `CAP_SETUID`, so the nested
+  bubblewrap could not set up its uid map and the sandbox start was refused.
+  Bubblewrap sets no-new-privs on the agent it execs, as observed with
+  bubblewrap 0.13.1; no probe assertion checks that yet, and a later one
+  should. The holder, pasta and the probe's pass-through step now run without
+  no-new-privs (they are Ataniq's own code and distro programs that are not
+  set-uid).
+
 ## [0.0.11] - 2026-11-19
 
 ### Added
