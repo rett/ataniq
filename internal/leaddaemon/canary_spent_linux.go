@@ -46,11 +46,12 @@ func spentEpochs(path, role string) (map[uint64]bool, error) {
 
 // scratchSpentEpochs is [spentEpochs] for a lead of scratch mode, whose message
 // stays unspent when the holder answered that nothing was written (see
-// [leadcanary.ReleasesMessage]) or refused the request itself (disabled,
-// wrong-epoch, busy or bad-request: see [holderRefusal]). The file is read as
-// strictly, and the lines of role that count are its inject-sent and
-// inject-result lines and the inject-refused lines whose code is holder-<code>
-// of one of those four; the other members they need are "message_id" (a
+// [leadcanary.ReleasesMessage]) or refused the request itself as disabled,
+// wrong-epoch or bad-request (see [holderFrees]); a holder's busy closes the
+// message but does not free it. The file is read as strictly, and the lines of
+// role that count are its inject-sent and inject-result lines and the
+// inject-refused lines whose code is holder-<code> of one of the holder's four
+// refusals; the other members they need are "message_id" (a
 // string) and, of a result line, "outcome", "written" (strings) and, when
 // present, "reason" (a string).
 //
@@ -70,7 +71,9 @@ func spentEpochs(path, role string) (map[uint64]bool, error) {
 //     its epoch or of its message id, and so also the second of two lines
 //     that close one message;
 //   - a result that does not release the message, or whose words are not a
-//     combination the wire carries.
+//     combination the wire carries;
+//   - a holder refusal of busy, which says that a delivery is running that
+//     the daemon has no record of.
 //
 // An inject-refused line with any other code (a message refused before its
 // frame was written: inject-off, second-message, holder-unreachable and the
@@ -142,9 +145,10 @@ func readSpent(path, role string, scratch bool) (map[uint64]bool, error) {
 			delete(open, l.epoch)
 		case l.refused:
 			// The holder's own refusal, which closes the message that is
-			// open; the message id must be that message's.
+			// open; the message id must be that message's. A busy does not
+			// free the epoch.
 			id, pending := open[l.epoch]
-			if !pending || id != l.messageID {
+			if !pending || id != l.messageID || !l.releases {
 				doubt[l.epoch] = true
 			}
 			delete(open, l.epoch)
@@ -168,8 +172,9 @@ func readSpent(path, role string, scratch bool) (map[uint64]bool, error) {
 type evidenceLine struct {
 	sent, result bool
 	// refused is an inject-refused line with the code holder-<code> of one of
-	// the holder's refusals; read in scratch mode only. Its messageID is "" if
-	// the line has none.
+	// the holder's refusals; read in scratch mode only, and its releases says
+	// whether the refusal frees the message (every code but busy does). Its
+	// messageID is "" if the line has none.
 	refused   bool
 	epoch     uint64
 	messageID string
@@ -206,8 +211,12 @@ func readLine(line []byte, role string, scratch bool) (evidenceLine, error) {
 		l.sent = true
 	case scratch && event == string(leadcanary.EventInjectResult):
 		l.result = true
-	case scratch && event == string(leadcanary.EventInjectRefused) && holderRefusalLine(members):
-		l.refused = true
+	case scratch && event == string(leadcanary.EventInjectRefused):
+		code, ok := holderRefusalCode(members)
+		if !ok {
+			return evidenceLine{epoch: l.epoch}, nil
+		}
+		l.refused, l.releases = true, holderFrees(code)
 	default:
 		return evidenceLine{epoch: l.epoch}, nil
 	}
@@ -247,16 +256,17 @@ func readLine(line []byte, role string, scratch bool) (evidenceLine, error) {
 	return l, nil
 }
 
-// holderRefusalLine reports whether the members of an inject-refused line carry
-// the code holder-<code> of one of the holder's own refusals, the ones that
-// say nothing was written to the lead (see [holderRefusal]).
-func holderRefusalLine(members map[string]json.RawMessage) bool {
+// holderRefusalCode returns the holder's code when the members of an
+// inject-refused line carry the code holder-<code> of one of the holder's own
+// refusals, the ones that say nothing was written to the lead for the message
+// (see [holderRefusal]).
+func holderRefusalCode(members map[string]json.RawMessage) (string, bool) {
 	var code string
 	if raw, has := members["code"]; !has || len(raw) == 0 || raw[0] != '"' || json.Unmarshal(raw, &code) != nil {
-		return false
+		return "", false
 	}
 	rest, ok := strings.CutPrefix(code, "holder-")
-	return ok && holderRefusal(rest)
+	return rest, ok && holderRefusal(rest)
 }
 
 // stringMember sets v to the member key of members, which must be a string

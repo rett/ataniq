@@ -623,9 +623,11 @@ func (x *canaryExt) ticketFor(ctx context.Context, attach wire.Role, want uint64
 // epoch as free; see scratchSpentEpochs): an ok answer whose result decodes,
 // is valid and says not-now or refused with nothing written
 // ([leadcanary.ReleasesMessage]), freed by the inject-result line, and one of
-// the holder's own refusals above, freed by the inject-refused line with the
-// message id and the code holder-<code>. Every other case stays spent: no
-// answer, a closed connection, an answer that does not decode, an ok answer
+// the holder's own refusals above except busy ([holderFrees]), freed by the
+// inject-refused line with the message id and the code holder-<code>. Every
+// other case stays spent, a holder's busy included (it says a delivery is
+// running that the daemon has no record of, which may have reached the lead):
+// no answer, a closed connection, an answer that does not decode, an ok answer
 // without a result, an uncertain, partial or whole result, a refusal code the
 // daemon does not know, and a line that could not be written. The lead may
 // then send another message in the epoch; it needs no other id than the
@@ -720,13 +722,20 @@ func (x *canaryExt) injectFor(ctx context.Context, p CanaryInjectParams, want ui
 	case resp.OK && resp.Inject != nil && resp.Inject.Validate() == nil:
 		result = *resp.Inject
 	case !resp.OK && holderRefusal(resp.Code):
-		// The holder wrote nothing to the lead. A lead of scratch mode takes
-		// the epoch's message back once the refusal is in the evidence (the
-		// line is what lets a daemon that starts later read the epoch as
-		// free; see scratchSpentEpochs); the canary's message stays spent.
-		if x.refuse(p.MessageID, epoch, "holder-"+resp.Code) && x.scratch {
+		// The holder wrote nothing to the lead for this message. A lead of
+		// scratch mode takes the epoch's message back once the refusal is in
+		// the evidence (the line is what lets a daemon that starts later read
+		// the epoch as free; see scratchSpentEpochs), except after busy: a
+		// holder that is delivering something the daemon has no record of may
+		// have delivered it, so that refusal leaves the message spent. The
+		// canary's message stays spent after any of them.
+		recorded := x.refuse(p.MessageID, epoch, "holder-"+resp.Code)
+		switch {
+		case recorded && x.scratch && holderFrees(resp.Code):
 			release = true
 			x.logf("lead inject: the message of epoch %d was refused by the holder (%s): the epoch's message is not spent", epoch, SafeText(resp.Code))
+		case x.scratch && resp.Code == wire.CodeBusy:
+			x.logf("lead inject: the message of epoch %d was refused by the holder as busy: a delivery this daemon has no record of may be running, so the epoch's message stays spent", epoch)
 		}
 		return CanaryInjectResult{}, failure("holder-"+resp.Code, msgHolderNo)
 	}
@@ -778,11 +787,23 @@ func (x *canaryExt) sentUnrecorded(messageID string, epoch uint64) {
 	if x.recordSent(messageID, epoch) {
 		return
 	}
-	x.logf("canary inject: the message of epoch %d is sent and the evidence has no inject-sent line for it: the epoch is spent in this daemon only, so stop the role before the daemon is restarted", epoch)
+	x.logf("canary inject: the message of epoch %d is sent and the evidence has no inject-sent line for it: the epoch is spent in this daemon unless the holder answers that nothing was written, so stop the role before the daemon is restarted", epoch)
+}
+
+// holderFrees reports whether a holder refusal gives the epoch's message back
+// to a lead of scratch mode: disabled, wrong-epoch and bad-request do, since the
+// holder refused the request before any delivery. Busy does not: the daemon
+// sends one message at a time, so a holder that says a delivery is running is
+// delivering something the daemon has no record of (the residual of an inject
+// whose daemon was killed between the frame and the inject-sent line), which
+// may have reached the lead. The holder's text is not trusted to tell that busy
+// from another one.
+func holderFrees(code string) bool {
+	return holderRefusal(code) && code != wire.CodeBusy
 }
 
 // holderRefusal reports whether code is one of the refusals that mean nothing
-// was written to the lead.
+// was written to the lead for the message that was refused.
 func holderRefusal(code string) bool {
 	switch code {
 	case wire.CodeDisabled, wire.CodeWrongEpoch, wire.CodeBusy, wire.CodeBadRequest:

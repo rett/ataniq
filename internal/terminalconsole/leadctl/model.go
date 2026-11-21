@@ -61,6 +61,11 @@ type Model struct {
 	// takes the place of status while it is not empty.
 	status *Receipt
 	note   string
+	// statusRole is the role the status receipt answers, and statusListed
+	// whether the list was read again since the answer: only then does a
+	// row say whether the daemon holds that message spent (see heldFor).
+	statusRole   string
+	statusListed bool
 	// unconfirmed holds the "role epoch" pairs for which a message was sent
 	// and has no final answer: no second message is made for them.
 	unconfirmed map[string]bool
@@ -221,6 +226,7 @@ func (m *Model) onListed(v listedMsg) tea.Cmd {
 		keep = m.leads[m.cursor].Role
 	}
 	m.listErr, m.have = false, true
+	m.statusListed = m.statusRole != ""
 	m.running, m.capacity = max(0, v.l.Running), max(0, v.l.MaxRunning)
 	m.leads = m.leads[:0]
 	m.leftOut = max(0, v.l.LeftOut)
@@ -424,7 +430,7 @@ func (m *Model) command(l Lead, op Op, epoch uint64, writer bool, call func(Back
 	m.seq++
 	seq, b, role, key := m.seq, m.b, l.Role, l.Key
 	m.busy[role] = seq
-	m.status, m.note = nil, "sending: "+opWords(op)+" for "+key
+	m.status, m.statusRole, m.statusListed, m.note = nil, "", false, "sending: "+opWords(op)+" for "+key
 	return func() tea.Msg {
 		r, err := call(b)
 		return doneMsg{owner: m, seq: seq, role: role, key: key, op: op, epoch: epoch, writer: writer, r: r, err: err}
@@ -596,7 +602,7 @@ func (m *Model) onDone(v doneMsg) (tea.Cmd, Action) {
 		return nil, Action{}
 	}
 	delete(m.busy, v.role)
-	m.note, m.status = "", nil
+	m.note, m.status, m.statusRole, m.statusListed = "", nil, "", false
 	cmds := []tea.Cmd{m.listCmd()}
 	if v.err != nil {
 		m.note = lostAnswer
@@ -611,7 +617,7 @@ func (m *Model) onDone(v doneMsg) (tea.Cmd, Action) {
 	if r.Op != v.op {
 		r.Op = v.op
 	}
-	m.status = &r
+	m.status, m.statusRole = &r, v.role
 	if r.Earlier {
 		// The answer to an earlier command is shown as that and settles
 		// nothing for this press: no attach with a ticket that may be
@@ -629,7 +635,7 @@ func (m *Model) onDone(v doneMsg) (tea.Cmd, Action) {
 		if act, ok := m.attach(v, r); ok {
 			return tea.Batch(cmds...), act
 		}
-		m.status, m.note = nil, unusableAns
+		m.status, m.statusRole, m.note = nil, "", unusableAns
 	}
 	return tea.Batch(cmds...), Action{}
 }
