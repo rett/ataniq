@@ -394,7 +394,7 @@ and how many leads count against it:
 | KEY | The lead's key in the daemon's config. |
 | STATE | The registry's state of the lead, with `*` after it while a command for the lead has no answer yet. |
 | EPOCH | The current epoch, `-` with none. |
-| MSG | `off` when the lead's config turns messages off, `-` for a lead that is not running (its state is stopped, ended, desired or unknown, or it has no epoch: the words of its last epoch's message are not drawn), `free` while the epoch's message is not spent, and `free (not delivered)` while it is free after a message that was not delivered (the holder answered not-now or refused with nothing written, or refused the request itself as disabled, wrong-epoch or bad-request; the receipt line says why): another can be sent with `m`. Once the message is spent, what became of it: `sent` only when its words say it was submitted; `sent-unsure` when something may have reached the lead (look at its screen), when the words are not ones the console knows, and when the daemon holds the epoch spent and has no words for it (the holder answered busy, which says it is delivering something the daemon has no record of; the answer was lost, the message was sent before the console started or by another client, or the daemon was restarted since and a later command hides the receipt): the request was written and nothing says what became of the message; and `spent, not delivered` for a message that was not delivered but that the daemon holds as spent anyway, because it could not write the result, or the holder's refusal, down (then `m` says a message was already sent in this epoch). |
+| MSG | `off` when the lead's config turns messages off, `-` for a lead that is not running (its state is stopped, ended or desired, or it is `unknown` with the reason `launch-unsettled` or `launch-reply-lost`, or it has no epoch: the words of its last epoch's message are not drawn; a lead that is `unknown` for another reason, such as `control-group-not-proven-empty` or `competing-unit`, may have a unit that runs with the epoch's message sent, so its column follows the rule below), `free` while the epoch's message is not spent, and `free (not delivered)` while it is free after a message that was not delivered (the holder answered not-now or refused with nothing written, or refused the request itself as disabled, wrong-epoch or bad-request; the receipt line says why): another can be sent with `m`. Once the message is spent, what became of it: `sent` only when its words say it was submitted; `sent-unsure` when something may have reached the lead (look at its screen), when the words are not ones the console knows, and when the daemon holds the epoch spent and has no words for it (the holder answered busy, which says it is delivering something the daemon has no record of; the answer was lost, the message was sent before the console started or by another client, or the daemon was restarted since and a later command hides the receipt): the request was written and nothing says what became of the message; and `spent, not delivered` for a message that was not delivered but that the daemon holds as spent anyway, because it could not write the result, or the holder's refusal, down (then `m` says a message was already sent in this epoch). |
 | LAST RECEIPT | The lead's last command and where it stands. |
 | UNIT | The lead's unit name. |
 
@@ -413,11 +413,16 @@ after that, stopping the lead (the way out when the launch's own unit was
 adopted, which leaves the lead `unknown`) or a restart of the daemon is what is
 left. The same words answer a `lead.stop` that is refused with `intent-pending`
 (and a `lead.start` with that code): reading the list does not settle a launch,
-so the line does not tell the owner to read it. While such a lead is listed, a
-start refused because the limit of running leads is reached adds that the
-unknown lead holds a slot until its launch settles by itself, 40 s after the
-start, and that if it is still unknown after that the lead is stopped or the
-daemon restarted. The view does not read the list by a timer for an `unknown`
+so the line does not tell the owner to read it. While such a lead is listed (or one
+that is `unknown` with the reason `control-group-not-proven-empty`, which the
+daemon's timer tries again), a start refused because the limit of running leads
+is reached adds that the unknown lead holds a slot until its launch settles by
+itself, 40 s after the start, and that if it is still unknown after that the
+lead is stopped or the daemon restarted. When a listed lead is `unknown` for any
+other reason (a unit that is not the lead's own, a registry that was recovered,
+a reboot, or none given), the daemon has no timer for it and the refusal adds
+only that the unknown lead holds a slot until it is settled and that the lead is
+stopped or the daemon restarted. The view does not read the list by a timer for an `unknown`
 lead, so the settled lead shows at the next reading (`r`).
 See [a lead left unknown after a killed
 daemon](scratch-leads.md#a-lead-left-unknown-after-a-killed-daemon).
@@ -467,7 +472,12 @@ list has been read again they end "The epoch's message is free unless the list
 says it is spent", and when the row says spent (the daemon could not write the
 result down and holds the epoch spent all the same) they end "The daemon holds
 this epoch's message spent all the same", as the MSG column says `spent, not
-delivered`:
+delivered`. When the row is at another epoch than the answer's (the lead was
+stopped and started since, perhaps by another client), the row's flag is not that
+message's, and they end "The lead is at another epoch now; that epoch's message
+is not known" and say nothing of free or spent. The daemon's list summary carries
+no epoch, so the status line keeps the epoch the answer was for when it keeps the
+answer's words:
 
 | Holder says (outcome, reason, written) | The line says |
 | --- | --- |

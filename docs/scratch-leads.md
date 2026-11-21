@@ -529,8 +529,11 @@ receipt carries the same three words, which the view draws as the answer to the
 press. The registry keeps a lead's last epoch after a stop and for an unknown
 start, and the row's message flag and words are that epoch's, so the view draws
 the MSG column of a lead that is not running (state `stopped`, `ended`,
-`desired` or `unknown`, or no epoch) as `-` and not from them; `off` still shows
-for a lead whose messages are off.
+or `desired`, or `unknown` with the reason `launch-unsettled` or
+`launch-reply-lost`, or no epoch) as `-` and not from them; a lead that is
+`unknown` for another reason may have a unit that runs with the epoch's message
+sent, and its column is drawn by the same rule as a running lead's; `off` still
+shows for a lead whose messages are off.
 
 The ticket file is **per lead** (`<runtime root>/leads/<layout role>/ticket`) and
 has one name, so there is **one ticket at a time per role**: the tickets of one
@@ -771,10 +774,12 @@ What the timer does not do:
 The console's leads view does not read the list by a timer for a lead that is
 `unknown`: press `r` after the 40 s to see the settled lead. The row's line, the
 refusal of a stop (`intent-pending`) and the refusal for the limit of running
-leads (while an unknown lead is listed) say that the launch settles by itself 40
-s after the start and that a restart of the daemon is what is left if the lead
-is still `unknown` after that. The console does not know when the window ends,
-so it names no time but the 40 s.
+leads (while a lead is listed that the timer is for) say that the launch
+settles by itself 40 s after the start and that stopping the lead or a restart
+of the daemon is what is left if the lead is still `unknown` after that. The console does not know
+when the window ends, so it names no time but the 40 s. For a listed lead that
+is `unknown` for another reason (the daemon has no timer for it) the refusal for
+the limit only says that the lead holds a slot until it is settled.
 
 A lead that is still `unknown` after that, because its unit is loaded or the
 manager never answered, is settled by `lead.stop` (a unit of ours that is loaded

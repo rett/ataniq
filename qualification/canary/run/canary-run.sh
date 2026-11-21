@@ -3028,7 +3028,7 @@ step_23() {
     return 0
   fi
   step_head 23 'Revoke' \
-    "the owner revokes the login on the provider's account page, whatever the logout showed, and confirms that its row is gone from the list and that the session no longer works; the credential is treated as exposed" \
+    "the owner revokes the login on the provider's account page, whatever the logout showed, and confirms that its row is gone from the list (the sandbox is stopped by then, so whether the session still works cannot be tried here); the credential is treated as exposed" \
     '"revoked", with the time' 'G2'
   if [ "$IN_CHAIN" -eq 1 ] && was_done 23; then
     wait_key 'This step ended earlier in this run.'
@@ -3047,9 +3047,9 @@ step_23() {
   out '   Identify the login as a new row whose last-active time falls during this run, and revoke ONLY that row, no other, and not'
   out '   "log out of all devices" on an account that holds your own sessions: the lead'"'"'s among them use logins of the same account.'
   out '   On a separate throwaway account used for this login only, "log out of all devices" revokes it completely and is the way.'
-  out '   Compare with what you noted after the login: after the revoke its row must be gone and the session must no longer work.'
+  out '   Compare with what you noted after the login: after the revoke its row must be gone. The sandbox is stopped at step 22, so the session cannot be tried here.'
   out '   When no row can be identified (run 1 saw only rows named Unknown; whether the login was already revoked then is not verified), do not guess: type cannot-identify: and what you see.'
-  ask 'Owner: revoke the login on the account page yourself; type revoked when its row is gone from the list and the session no longer works, no-login when no login was ever made in this pass, or cannot-identify: <what you see> when no row can be identified (a finding)'
+  ask 'Owner: revoke the login on the account page yourself; type revoked when its row is gone from the list (the sandbox is stopped, so the session cannot be tried here), no-login when no login was ever made in this pass, or cannot-identify: <what you see> when no row can be identified (a finding)'
   case $ANSWER in
     revoked) result revoked ;;
     no-login) result 'nothing to act on: no login was made' ;;

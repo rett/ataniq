@@ -155,6 +155,35 @@ const unsettledWords = "launch settles by itself 40 s after the start; if not, s
 // fallback).
 const maxRunningUnknownTail = ". An unknown lead holds a slot until its launch settles by itself, 40 s after the start; if it is still unknown after that, stop the lead or restart"
 
+// maxRunningPlainTail is added instead while the list shows a lead that is
+// unknown for another reason (a unit that is not ours, a registry that was
+// recovered, a reboot): the daemon has no timer for it, so the words promise
+// no self-settle and name what the owner can do.
+const maxRunningPlainTail = ". An unknown lead holds a slot until it is settled; stop the lead or restart"
+
+// Reasons of an unknown lead that the daemon settles by itself (its settle
+// timer in internal/leaddaemon/lead_settle_linux.go, settleWanted): a launch
+// that was not settled or whose reply was lost, and a control group that was
+// not proven empty when the timer tried (the timer tries again).
+const (
+	reasonLaunchUnsettled = "launch-unsettled"
+	reasonLaunchReplyLost = "launch-reply-lost"
+	reasonGroupNotProven  = "control-group-not-proven-empty"
+)
+
+// launchReason says whether the lead is unknown for the reason of a launch
+// that was not settled: nothing is known of whether its unit runs.
+func launchReason(l Lead) bool {
+	return l.State == "unknown" && (l.StateReason == reasonLaunchUnsettled || l.StateReason == reasonLaunchReplyLost)
+}
+
+// settlesItself says whether the daemon's settle timer is for the lead: a
+// launch reason, or a control group that is not proven empty (which only a
+// timer that is trying sets).
+func settlesItself(l Lead) bool {
+	return launchReason(l) || l.State == "unknown" && l.StateReason == reasonGroupNotProven
+}
+
 const unknownReason = "the reason is not known to this console"
 
 // fate is what became of a message, as far as the view can say.
@@ -234,6 +263,10 @@ const (
 	heldTail = ". The daemon holds this epoch's message spent all the same"
 	// maybeTail: no row has been read since the answer.
 	maybeTail = ". The epoch's message is free unless the list says it is spent"
+	// movedTail: the row is at another epoch than the answer's (the lead was
+	// stopped or started since, perhaps by another client), so nothing is
+	// known here of that epoch's message and the row's flag is not its.
+	movedTail = ". The lead is at another epoch now; that epoch's message is not known"
 )
 
 // held is what the list's row says of the epoch's message for the receipt
@@ -247,6 +280,8 @@ const (
 	// heldFree and heldSpent: the row's message_spent.
 	heldFree
 	heldSpent
+	// heldMoved: the row is at another epoch than the receipt's.
+	heldMoved
 )
 
 // deliveryOf looks up the words of a done inject's three words. A result
@@ -279,31 +314,39 @@ func outcomeWords(r Receipt, h held) string {
 			return t.text + freeTail
 		case heldSpent:
 			return t.text + heldTail
+		case heldMoved:
+			return t.text + movedTail
 		}
 		return t.text + maybeTail
 	}
 	return t.text + spentTail
 }
 
-// running says whether the lead has an epoch that is running, as far as the
-// row says: it has an epoch and its state is not one of a lead that is not
-// running (stopped, ended, desired, unknown). A lead that is not running has no
-// message to speak of, and the epoch the row still carries after a stop or an
-// unknown start is the last one's.
+// running says whether the lead has an epoch whose message the row speaks of: it
+// has an epoch and its state is not one of a lead that is not running (stopped,
+// ended, desired) or one unknown for a launch reason (launch-unsettled,
+// launch-reply-lost), where nothing is known of whether the launch's unit runs
+// at all. A lead that is not running has no message to speak of, and the epoch
+// the row still carries after a stop or an unknown start is the last one's. A
+// lead unknown for another reason (control-group-not-proven-empty,
+// competing-unit, and the like) may have a unit that runs with a message sent
+// in its epoch, so its column is drawn as any other lead's.
 func running(l Lead) bool {
 	if l.Epoch == 0 {
 		return false
 	}
 	switch l.State {
-	case "", "stopped", "ended", "desired", "unknown":
+	case "", "stopped", "ended", "desired":
 		return false
+	case "unknown":
+		return !launchReason(l)
 	}
 	return true
 }
 
 // msgWord is the MSG column: whether the lead takes a message ("off" when it
-// does not), "-" for a lead that is not running, and what became of the epoch's
-// message for one that is. It agrees with the receipt line of a done message: a
+// does not), "-" for a lead that is not running (see running), and what became
+// of the epoch's message for one that is. It agrees with the receipt line of a done message: a
 // message that was NOT delivered leaves the epoch's message free, and says so
 // while it is free. The same result of a message that the daemon holds spent
 // (it could not write down the result) reads as spent and not delivered.
@@ -343,8 +386,8 @@ var stateWords = map[[2]string]string{
 	{"ready", "holder-ready"}: "the holder is up and the agent started; its login is not observed",
 	// A launch whose reply was lost, or that a restarted daemon found inside
 	// its window: the daemon settles it when the window ends.
-	{"unknown", "launch-unsettled"}:  unsettledWords,
-	{"unknown", "launch-reply-lost"}: unsettledWords,
+	{"unknown", reasonLaunchUnsettled}: unsettledWords,
+	{"unknown", reasonLaunchReplyLost}: unsettledWords,
 }
 
 // stateLine is the line about the row under the cursor: its state in words,
