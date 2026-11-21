@@ -169,6 +169,53 @@
 // and is in no answer and no evidence line. No file of the package imports the
 // injection tree.
 //
+// # The owner connection
+//
+// A build with the ataniq_ownerchannel tag has one more thing, and no other
+// build has any of it (the files owner_*_linux.go): [OwnerChannel], whose
+// Serve method is the [Config].ServeHook of the daemon. The hook is the one
+// place outside those files where the package knows of it: it is called once,
+// with both locks held and the socket bound, and nothing in a release build
+// sets it. With it set, the daemon builds the host's side of an approval card
+// ([OwnerService], package ownerchannel's service in a real build), registers
+// the operations owner.list, owner.show, owner.paths, owner.patch,
+// owner.decider, owner.decide, owner.beat, owner.limit, owner.limit-set and
+// owner.looked ([OwnerOperations]) through the client protocol's extension
+// seam, on the same socket and the same protocol, "ataniq.client/1", and
+// closes the service after the server has ended. A daemon without the hook
+// registers none of them, whatever the tag.
+//
+// The extension seam does not tell an operation which connection it came from,
+// and the owner channel needs to know (the decider is one connection, and the
+// session of owner.decider belongs to it). The daemon therefore wraps the
+// listener: every connection is known, and the goroutine that reads it, which
+// is the one that serves its requests, is recorded against it. A request that
+// cannot be tied to a connection is refused for every operation that needs one
+// (owner_conn_linux.go).
+//
+// The decider's place goes to one connection at a time: the peer's user is the
+// owner's (the server's own check, which the wrapper leaves as it is), its
+// client string names the console (first word "ataniq-console"), and its
+// process has a controlling terminal, which an injected [PeerInspector]
+// finds ([ProcInspector], the real one, holds a pidfd for the peer, reads its
+// state, start time and terminal from /proc, and refuses a process that
+// started after the connection was accepted). A second console is read-only;
+// a client with no terminal, one that does not name the console, and a peer
+// that cannot be judged get no place. The session named by the first
+// owner.decider is kept for the connection, a second one that names another is
+// refused decision-invalid, and the service is told the connection's session,
+// pid, terminal and client for every decision, which it writes into the
+// decision record and its journal. A decision frame from a connection that is
+// not the decider is refused not-decider and counted ([OwnerCounts]); the
+// service is told too, so that its journal keeps the refusal. The beats of the
+// decider reach the service. [UnescapingIntake] turns the lines of the intake's
+// patch back to raw bytes before the service pages them.
+//
+// The same-user limit of the socket holds here as everywhere: any process of
+// the owner's user can say it is the console, and one with a terminal of its
+// own is granted the place when it is free (owner-channel case OC20). Nothing
+// here is qualified.
+//
 // # What it does not prove
 //
 // The same-user check of the socket is the protocol's: the peer's UID from

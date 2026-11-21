@@ -29,6 +29,16 @@
 // JSON line, and "ataniqd --version", which names the tag. Package leaddaemon
 // says what the daemon then does.
 //
+// A build with the ataniq_ownerchannel tag adds one flag to run
+// (owner_linux.go; every other build has owner_off_linux.go and none of it):
+// "ataniqd run --owner-channel", which serves the owner connection, the
+// operations owner.* of the console's approvals, on the same socket and
+// protocol. Without the flag the tagged build registers nothing. The host's
+// side of a card is built in the daemon's state folder through
+// ownerServiceBuilder, which the host adapter sets; until it does the flag is
+// refused with the config exit code before anything is made. It combines with
+// --canary. Package leaddaemon says what the daemon then does.
+//
 // A build without the tag is read-only. It starts, stops and manages no unit
 // and defines no lead; no flag does. Reconcile runs at start only, not on a timer. Leads,
 // coordinators, the holder, the sandbox and the console are not part of it.

@@ -1,0 +1,11 @@
+- Add the daemon's side of the owner connection, in a build with the
+  `ataniq_ownerchannel` tag only: `ataniqd run --owner-channel` registers the
+  `owner.*` operations of the console's approvals through the client protocol's
+  extension seam, on the same socket and the same protocol (`ataniq.client/1`).
+  The place of the one connection that may decide goes to a console of the
+  owner that names itself and has a controlling terminal, checked through an
+  injected inspector (the real one reads the process with a pidfd); a second
+  console is read-only, and a client with no terminal and a decision frame from
+  any other connection are refused and counted. The flag is refused until the
+  host's side of a card is built into the command. Release builds have no such
+  flag and register no owner operation, and `hello` lists what it lists today.
