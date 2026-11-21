@@ -5,6 +5,8 @@ package sandboxstart
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -369,5 +371,145 @@ func TestRunWithoutCanaryChecksNoRoot(t *testing.T) {
 	}
 	if len(w.sys.callList()) == 0 {
 		t.Error("no step ran")
+	}
+}
+
+// scratchWorld is the world of a scratch lead: the project and the layout role
+// carry the scratch prefix, and the state root has the scratch root marker in
+// place of the canary marker.
+func scratchWorld(t *testing.T) *world {
+	t.Helper()
+	w := newWorld(t)
+	const project, role = "scratch-alpha", "scratch-alpha-lead"
+	if err := os.Remove(filepath.Join(w.state, canaryroot.MarkerName)); err != nil {
+		t.Fatal(err)
+	}
+	if err := canaryroot.WriteScratchMarker(w.state); err != nil {
+		t.Fatal(err)
+	}
+	mkdir(t, RuntimeFolder(w.run, role), 0o700)
+	w.in.Project, w.in.LayoutRole = project, role
+	return w
+}
+
+// TestRunScratchProjectWithTheRootMarker shows a scratch project passes the
+// root check on a root with the scratch root marker and runs the same steps,
+// and that one marker serves another scratch lead of the same root.
+func TestRunScratchProjectWithTheRootMarker(t *testing.T) {
+	w := scratchWorld(t)
+	st, err := w.run_()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stepNames(st.Steps), StepNames(); strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("steps = %v, want %v", got, want)
+	}
+	if w.lch.launches() != 1 {
+		t.Errorf("%d launches", w.lch.launches())
+	}
+
+	w2 := scratchWorld(t)
+	w2.in.Project, w2.in.LayoutRole = "scratch-beta", "scratch-beta-lead"
+	mkdir(t, RuntimeFolder(w2.run, "scratch-beta-lead"), 0o700)
+	if _, err := w2.run_(); err != nil {
+		t.Fatalf("another scratch lead of the same root: %v", err)
+	}
+}
+
+// TestRunScratchRefusals shows the refusals of a scratch project come before
+// any step, with the root check's codes: no marker, the canary marker instead
+// of the root marker, a canary marker beside the root marker, a throwaway
+// project on a scratch root, a default root, and a layout role that is not the
+// project's lead.
+func TestRunScratchRefusals(t *testing.T) {
+	cases := []struct {
+		name string
+		code canaryroot.Code
+		set  func(t *testing.T, w *world)
+	}{
+		{"no root marker", canaryroot.CodeNoMarker, func(t *testing.T, w *world) {
+			if err := os.Remove(filepath.Join(w.state, canaryroot.ScratchMarkerName)); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"the canary marker only", canaryroot.CodeWrongKind, func(t *testing.T, w *world) {
+			if err := os.Remove(filepath.Join(w.state, canaryroot.ScratchMarkerName)); err != nil {
+				t.Fatal(err)
+			}
+			if err := canaryroot.WriteMarker(w.state, sampleProject); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"both markers", canaryroot.CodeWrongKind, func(t *testing.T, w *world) {
+			if err := os.WriteFile(filepath.Join(w.state, canaryroot.MarkerName), []byte("{}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a throwaway project on a scratch root", canaryroot.CodeWrongKind, func(t *testing.T, w *world) {
+			w.in.Project, w.in.LayoutRole = sampleProject, sampleRole
+		}},
+		{"a root marker with another content", canaryroot.CodeBadMarker, func(t *testing.T, w *world) {
+			p := filepath.Join(w.state, canaryroot.ScratchMarkerName)
+			if err := os.WriteFile(p, []byte(`{"marker":"ataniq-scratch-root","version":2}`+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a default root", canaryroot.CodeDefaultRoot, func(t *testing.T, w *world) {
+			xdg := w.base + "/xdg"
+			mkdir(t, xdg+"/ataniq", 0o700)
+			w.sys.env = map[string]string{"XDG_STATE_HOME": xdg}
+			w.in.StateRoot = xdg + "/ataniq"
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w := scratchWorld(t)
+			c.set(t, w)
+			_, err := w.run_()
+			var re *canaryroot.RefusedError
+			if !errors.As(err, &re) || re.Code != c.code {
+				t.Fatalf("error %v, want a root refusal with code %s", err, c.code)
+			}
+			var se *StepError
+			if errors.As(err, &se) {
+				t.Errorf("the refusal came from step %s: it must come before any", se.Step)
+			}
+			if calls := w.sys.callList(); len(calls) != 0 {
+				t.Errorf("calls before any step: %v", calls)
+			}
+			if w.lch.launches() != 0 {
+				t.Error("something was launched")
+			}
+		})
+	}
+
+	t.Run("a layout role that is not the project's lead", func(t *testing.T) {
+		w := scratchWorld(t)
+		w.in.LayoutRole = "scratch-beta-lead"
+		_, err := w.run_()
+		if err == nil || !strings.Contains(err.Error(), "layout role") {
+			t.Fatalf("error %v, want a layout role refusal", err)
+		}
+		if calls := w.sys.callList(); len(calls) != 0 {
+			t.Errorf("calls before any step: %v", calls)
+		}
+	})
+}
+
+// TestRunThrowawayProjectRefusesAScratchRoot shows the throwaway rule is
+// unchanged by the scratch marker, apart from the refusal of a root that is
+// the other kind's.
+func TestRunThrowawayProjectRefusesAScratchRoot(t *testing.T) {
+	w := newWorld(t)
+	if err := os.WriteFile(filepath.Join(w.state, canaryroot.ScratchMarkerName), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := w.run_()
+	var re *canaryroot.RefusedError
+	if !errors.As(err, &re) || re.Code != canaryroot.CodeWrongKind {
+		t.Fatalf("error %v, want a root refusal with code %s", err, canaryroot.CodeWrongKind)
+	}
+	if calls := w.sys.callList(); len(calls) != 0 {
+		t.Errorf("calls before any step: %v", calls)
 	}
 }
