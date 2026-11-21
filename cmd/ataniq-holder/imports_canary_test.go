@@ -27,6 +27,7 @@ var canaryRepoDeps = []string{
 	"ataniq/internal/inject/osc7501",
 	"ataniq/internal/inject/screen",
 	"ataniq/internal/inject/title",
+	"ataniq/internal/inject/versions",
 }
 
 // guardRepoDeps is the list of this build: the six and the written-out list of
