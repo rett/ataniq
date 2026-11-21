@@ -408,8 +408,10 @@ single login is not known. So every login is checked before and after.
    so plainly (the kit accepts `cannot-identify: <what you see>`, and counts it
    as a finding). A separate throwaway account for the login makes this easy: on
    it, "log out of all devices" revokes the login completely.
-5. **Confirm after the revoke:** the row is gone from the page, and the session
-   in the sandbox no longer works (press `v` and look; send nothing).
+5. **Confirm after the revoke:** the row is gone from the page. While the lead
+   is still running, also press `v` and look (send nothing): the session in the
+   sandbox should no longer work. The run kit's step 23 comes after the sandbox
+   was stopped, so there only the row can be confirmed.
 6. **If the row is still there, or the session still works:** the revoke did not
    take. Do it again in the provider's console, and check again. If it still
    does not work, stop the lead (step 1.7) and go to section 6. Use "log out

@@ -87,7 +87,7 @@ func TestCanaryRunKitBacklog1Step23CannotIdentify(t *testing.T) {
 		}
 	}
 	o, _ := canaryDry(t, "--pass", "B", "--config", "/nonexistent/sample/canary.json")
-	for _, want := range []string{"new row whose last-active time falls during this run", "log out of all devices", "cannot-identify: <what you see>", "its row is gone", "the session no longer works"} {
+	for _, want := range []string{"new row whose last-active time falls during this run", "log out of all devices", "cannot-identify: <what you see>", "its row is gone", "the session cannot be tried here"} {
 		if !strings.Contains(o, want) {
 			t.Errorf("pass B's dry run does not say %q", want)
 		}

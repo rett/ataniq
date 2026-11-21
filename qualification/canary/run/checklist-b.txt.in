@@ -39,7 +39,7 @@ STEP  WHAT YOU DO (the steps pass B adds)
       pasted in T1 (an Enter alone there ends the pass).
  21   Type the agent's logout in the pane, then logged-out.
  23   Revoke the one new row, never "log out of all devices" on your account.
-      Row gone and session dead: revoked; else cannot-identify: ...
+      Row gone (session untestable now): revoked; else cannot-identify: ...
  24   Restart what you stopped at step 6, then Enter.
  25   Enter. If it asks about a file: yes only if one of your own sessions
       ran during this pass; else say what you see (an Enter is a finding).
