@@ -132,8 +132,10 @@ Only if step 1.2 found none.
 | 10 | The config, a root or the root marker is wrong. Read the line it printed. A new place needs `build/canary/ataniq-canary scratch-init --config <config>` first (it keeps what is right and writes the marker). |
 | 11 | An evidence file, a lead's record or the command table cannot be read. Nothing is repaired. Do not set the file aside while any lead's unit runs (step 1.1): a new file forgets what was sent or admitted. Go to section 6. |
 | 12 or 17 | Another daemon holds the lock or serves the runtime folder. Run step 1.2. Do not start another. The pid in the lock file is a hint, not proof. |
+| 13 | The daemon lock could not be taken, for a reason other than another daemon holding it. Read the line it printed; if it is not plain, go to section 6. |
 | 14 | The registry is damaged or locked by another writer. Nothing is repaired. Go to section 6. |
 | 15, 16 | The unit manager could not be set up, or the reconcile failed in the registry. Check `systemctl --user` works, then start the daemon once more. If it repeats, go to section 6. |
+| 18 | The server stopped by itself after it was serving. Read the line it printed and the log, check step 1.2 and step 1.4 before another start, and if it repeats, go to section 6. |
 | 19 | This is a shutdown, not a start: see section 4. |
 
 ### 1.4 Read what the daemon believes
@@ -193,16 +195,18 @@ and a unit may still run. Nothing starts for an `unknown` lead, and it counts
 against `max_running`, so a start of another lead can be refused for the limit.
 The usual cause after a crash is a daemon killed in the middle of a start. The
 reason is `launch-unsettled` or `launch-reply-lost`, and the console says
-"launch not settled; a daemon restart after the 40 s launch window settles it".
-A stop or a start of that lead is refused `intent-pending` meanwhile.
+"launch settles by itself 40 s after the start; if not, stop the lead or
+restart". A stop or a start of that lead is refused `intent-pending` meanwhile.
 
 Reading the list does not settle it, and neither does the console.
 
 - Do: wait until 40 s have passed since the start was made. The daemon settles
-  it after the 40 s window. If the lead still shows `unknown`, restart the
-  daemon: stop it with Ctrl+C in its terminal (step 4.3) and start it again
-  (step 1.3), then read the list. In a build from before the daemon settled it
-  by itself, nothing but the restart settles it.
+  it after the 40 s window. If the lead still shows `unknown` after that, stop
+  the lead (step 1.7: the way out when the launch's own unit was adopted, which
+  leaves the lead `unknown`), or restart the daemon: stop it with Ctrl+C in its
+  terminal (step 4.3) and start it again (step 1.3), then read the list. In a
+  build from before the daemon settled it by itself, nothing but the restart
+  settles it.
 - You see: the lead `stopped` and the slot free. If its unit had landed late,
   the daemon reports it (`stale-unit`) and the lead stays `unknown`: use step
   1.7.
@@ -226,7 +230,8 @@ Stop is the owner's way out of every state, `unknown` included.
 
 - Do: in the leads view, put the cursor on the lead, press `x`, read "Stop KEY
   (epoch N)?" and press `y`.
-- You see: the receipt line "accepted (done)" and the row `stopped`. The daemon
+- You see: the status line "stop: accepted, done" (the LAST RECEIPT column
+  reads "stop: accepted (done)") and the row `stopped`. The daemon
   answers `done` only when the stop is proven: the unit's invocation is gone and
   its control group is empty. A refused stop says why (`stale-epoch`: read the
   list and try again; `role-busy`: another command for that lead is running, try
@@ -437,7 +442,8 @@ help when you can, and by the unit manager when you cannot.
 
 - Do: in the leads view, for each lead that is not `stopped`, `ended` or
   `desired`: press `x`, then `y`. One lead at a time.
-- You see: "accepted (done)" for each, and the row `stopped`.
+- You see: the status line "stop: accepted, done" for each (the LAST RECEIPT
+  column reads "stop: accepted (done)"), and the row `stopped`.
 - It proves: each stop is proven (step 1.7).
 - If it does not work: a stop that reads `uncertain` is not proven: repeat it. A
   stop refused `intent-pending` is a launch not settled: step 1.6.
