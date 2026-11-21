@@ -7,7 +7,7 @@ package tests
 // is not itself behind the tag and passes with and without it, and with the
 // canary tag too. Every check is written so that an empty set passes: none of
 // the tagged packages need exist. The checks are plain functions over a tree, a
-// text or a package listing, and the TestOwnerchannelTag... functions below
+// text or a package listing, and the TestOwnerChannelTag... functions below
 // run them over small synthetic inputs, so the guard is itself tested.
 //
 // The checks are:
@@ -481,8 +481,8 @@ func ownerGoList(t *testing.T, tags string, flags []string, patterns ...string) 
 // ownerTagSets are the two tag settings the tagged build is checked under.
 var ownerTagSets = []string{ownerTag, ownerTag + "," + canaryTag}
 
-// TestOwnerchannelTag holds the checks of the build tag on the repository.
-func TestOwnerchannelTag(t *testing.T) {
+// TestOwnerChannelTag holds the checks of the build tag on the repository.
+func TestOwnerChannelTag(t *testing.T) {
 	dir := root(t)
 	repo := os.DirFS(dir)
 
@@ -544,7 +544,7 @@ const (
 	ownHdrCanaryTag = "//go:build linux && ataniq_canary"
 )
 
-func TestOwnerchannelTagPlacementCheck(t *testing.T) {
+func TestOwnerChannelTagPlacementCheck(t *testing.T) {
 	src := func(header string) *fstest.MapFile { return goSource(header) }
 	for _, tc := range []struct {
 		name  string
@@ -616,7 +616,7 @@ func TestOwnerchannelTagPlacementCheck(t *testing.T) {
 	}
 }
 
-func TestOwnerchannelTagMakefileCheck(t *testing.T) {
+func TestOwnerChannelTagMakefileCheck(t *testing.T) {
 	good := ".PHONY: test test-ownerchannel\n" +
 		"\n# comment that names test-ownerchannel\n" +
 		"test-ownerchannel: doctor\n" +
@@ -669,7 +669,7 @@ func TestOwnerchannelTagMakefileCheck(t *testing.T) {
 	}
 }
 
-func TestOwnerchannelTagNoMentionUnderCheck(t *testing.T) {
+func TestOwnerChannelTagNoMentionUnderCheck(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		files fstest.MapFS
@@ -696,7 +696,7 @@ func TestOwnerchannelTagNoMentionUnderCheck(t *testing.T) {
 	}
 }
 
-func TestOwnerchannelTagDependencyCheck(t *testing.T) {
+func TestOwnerChannelTagDependencyCheck(t *testing.T) {
 	const module = "example.test/m"
 	line := func(pkg, failed string, deps ...string) string {
 		return pkg + "|" + failed + "|" + strings.Join(deps, " ") + "\n"
@@ -732,7 +732,7 @@ func TestOwnerchannelTagDependencyCheck(t *testing.T) {
 	}
 }
 
-func TestOwnerchannelTagLoadsCheck(t *testing.T) {
+func TestOwnerChannelTagLoadsCheck(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		listing string
@@ -755,7 +755,7 @@ func TestOwnerchannelTagLoadsCheck(t *testing.T) {
 	}
 }
 
-func TestOwnerchannelTagModuleCheck(t *testing.T) {
+func TestOwnerChannelTagModuleCheck(t *testing.T) {
 	// The module check is the canary guard's, called here for each tag setting:
 	// a module that only a tagged build uses is a problem.
 	if got := checkCanaryModules("a\nb\n", "a\nb\n"); len(got) != 0 {
@@ -809,7 +809,7 @@ jobs:
       - run: make test-ownerchannel
 `
 
-func TestOwnerchannelTagWorkflowCheck(t *testing.T) {
+func TestOwnerChannelTagWorkflowCheck(t *testing.T) {
 	edit := func(old, new string) map[string]string {
 		if !strings.Contains(ownerGoodWorkflow, old) {
 			t.Fatalf("the sample workflow lacks %q", old)
@@ -858,7 +858,7 @@ func TestOwnerchannelTagWorkflowCheck(t *testing.T) {
 	}
 }
 
-func TestOwnerchannelTagListRefusesTaggedPackages(t *testing.T) {
+func TestOwnerChannelTagListRefusesTaggedPackages(t *testing.T) {
 	for _, tc := range []struct {
 		pattern string
 		names   bool
@@ -901,7 +901,7 @@ func ownerCorrectTree() fstest.MapFS {
 	}
 }
 
-func TestOwnerchannelTagCorrectTree(t *testing.T) {
+func TestOwnerChannelTagCorrectTree(t *testing.T) {
 	tree := ownerCorrectTree()
 	reportCanaryProblems(t, checkOwnerPlacement(tree))
 	reportCanaryProblems(t, checkNoOwnerTagUnder(tree, ".github", "scripts"))
@@ -922,7 +922,7 @@ func TestOwnerchannelTagCorrectTree(t *testing.T) {
 
 // The real Makefile has the target in .PHONY, after doctor, and names the tag
 // in its recipe only.
-func TestOwnerchannelTagMakeTargetDeclaration(t *testing.T) {
+func TestOwnerChannelTagMakeTargetDeclaration(t *testing.T) {
 	makefile, err := os.ReadFile(filepath.Join(root(t), "Makefile"))
 	if err != nil {
 		t.Fatal(err)
@@ -941,7 +941,7 @@ func TestOwnerchannelTagMakeTargetDeclaration(t *testing.T) {
 
 // The instructions say what the target does, in both files that list the
 // targets.
-func TestOwnerchannelTagInstructions(t *testing.T) {
+func TestOwnerChannelTagInstructions(t *testing.T) {
 	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
 		data, err := os.ReadFile(filepath.Join(root(t), name))
 		if err != nil {
@@ -957,7 +957,7 @@ func TestOwnerchannelTagInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(agents), "OwnerchannelTag") {
+	if !strings.Contains(string(agents), "OwnerChannelTag") {
 		t.Error("AGENTS.md does not name the targeted check of the tag")
 	}
 }
@@ -967,7 +967,7 @@ func TestOwnerchannelTagInstructions(t *testing.T) {
 // run time, and ./tests/. The second run sets the pair of tags. With no such
 // package each run is ./tests/ alone, and the second run does not start when
 // the first fails.
-func TestOwnerchannelTagMakeTarget(t *testing.T) {
+func TestOwnerChannelTagMakeTarget(t *testing.T) {
 	const own, pair = "test -tags ataniq_ownerchannel ", "test -tags ataniq_ownerchannel,ataniq_canary "
 	for _, tc := range []struct {
 		name  string

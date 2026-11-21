@@ -34,8 +34,10 @@ import (
 const boundaryModule = "ataniq"
 
 // boundaryTag is the build tag of the owner channel. A file that cannot be
-// built without it is skipped by the import rules here: a later tag guard
-// checks those files, with the rules that hold when the tag is set. A file
+// built without it is skipped by the import rules here, except rule 3, which
+// holds with the tag set too and reads such a file under internal/approval
+// (the tagged host adapter); the tag guard checks only where those files are,
+// not what they import. A file
 // whose build line names the tag and can still be built without it, such as
 // one that asks for the tag to be off, is read like any other: it is part of
 // the build the rules protect.
@@ -560,7 +562,9 @@ func rulePure(files []boundaryFile) []string {
 func ruleApprovalHeadless(files []boundaryFile) []string {
 	var found []string
 	for _, f := range files {
-		if !within(f.pkg(), pkgApproval) || !f.imported() {
+		// Rule 3 holds with the owner channel's tag set too, so a tagged file
+		// is read here as well. Test files stay out, as in every import rule.
+		if !within(f.pkg(), pkgApproval) || f.test {
 			continue
 		}
 		for _, imp := range f.imports {
@@ -875,9 +879,18 @@ func TestConsoleFirstBoundaryApprovalWithoutTheConsole(t *testing.T) {
 		pkgCard + "/bad_test.go":     boundarySource("charm.land/bubbletea/v2"),
 		pkgOwnerChannel + "/tag.go":  boundaryTagged,
 		pkgConsoleView + "/a.go":     boundarySource("/"+pkgClientAPI, "charm.land/bubbletea/v2"),
+		// A tagged file is read: rule 3 holds with the tag set.
+		pkgApproval + "/hostadapter/adapter.go": "//go:build linux && " + boundaryTag + "\n\n" +
+			boundarySource("/"+pkgConsole, "/"+pkgClientAPI),
+		pkgApproval + "/hostadapter/clean.go": "//go:build linux && " + boundaryTag + "\n\n" +
+			boundarySource("strings", "/"+pkgDoor),
+		pkgApproval + "/hostadapter/adapter_test.go": "//go:build linux && " + boundaryTag + "\n\n" +
+			boundarySource("/"+pkgConsole),
 	}),
 		pkgCard+"/tea.go", pkgDemo+"/ansi.go", pkgDoorTest+"/console.go", pkgOwnerChannel+"/pane.go",
-		pkgApproval+"/later/a.go", pkgOwnerWire+"/below.go")
+		pkgApproval+"/later/a.go", pkgOwnerWire+"/below.go", pkgOwnerChannel+"/tag.go",
+		// One finding per denied import: tag.go has three, adapter.go two.
+		pkgOwnerChannel+"/tag.go", pkgOwnerChannel+"/tag.go", pkgApproval+"/hostadapter/adapter.go", pkgApproval+"/hostadapter/adapter.go")
 }
 
 func TestConsoleFirstBoundaryConsoleReach(t *testing.T) {
