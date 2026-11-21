@@ -547,6 +547,54 @@ func TestSettleTriesAgainWhenTheManagerDoesNotAnswer(t *testing.T) {
 	s.waitState("alpha", "stopped")
 }
 
+// The rule that stops a second unit of a role holds after the timer settled the
+// lead: the start request of the abandoned launch lands late, the next start
+// finds the unit loaded and is refused (nothing is started or signalled by it),
+// and an explicit stop ends the unit and records the lead stopped. Until a
+// start is refused the list shows the lead stopped, as docs/lead-daemon.md says.
+func TestSettleALateLandingAfterTheSettleRefusesTheNextStart(t *testing.T) {
+	s := newSettleEnv(t)
+	in := s.killedMidStart("alpha")
+	s.holder("alpha", submitted)
+	s.clk.waitLongSleeps(t, 1)
+	s.clk.Advance(leadlifecycle.DefaultLateStartWindow + leadlifecycle.DefaultLateStartMargin + time.Second)
+	s.waitState("alpha", "stopped")
+
+	// The request that the killed daemon sent lands, after the settle.
+	if _, err := s.fake.Start(context.Background(), leadunit.Spec{
+		Unit: in.UnitName, Epoch: in.Epoch, Intent: in.ID, Argv: []string{"/bin/true"}, WorkDir: "/",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	startsBefore, signalsBefore := s.startsAndSignals()
+	if startsBefore != 1 || signalsBefore != 0 {
+		t.Fatalf("%d starts and %d signals before the owner's start, want the landing only", startsBefore, signalsBefore)
+	}
+
+	// The list still shows the lead stopped: nothing has looked at the unit.
+	if state, _, _, _ := s.shown("alpha"); state != "stopped" {
+		t.Fatalf("shown %q", state)
+	}
+
+	// The next start finds the unit and is refused; it starts and signals nothing.
+	want(t, s.startLead("alpha"), leadwire.StatusRefused, codeUnitLoaded)
+	if starts, signals := s.startsAndSignals(); starts != startsBefore || signals != signalsBefore {
+		t.Fatalf("%d starts and %d signals after the refused start, want %d and %d", starts, signals, startsBefore, signalsBefore)
+	}
+
+	// An explicit stop ends the unit.
+	want(t, s.stopLead("alpha", 0), leadwire.StatusDone, "")
+	if state, _, _, _ := s.shown("alpha"); state != "stopped" {
+		t.Fatalf("shown %q after the stop", state)
+	}
+	if st, err := s.fake.Inspect(context.Background(), in.UnitName); err != nil || st.Loaded {
+		t.Fatalf("the unit after the stop: %+v (%v)", st, err)
+	}
+	if starts, _ := s.startsAndSignals(); starts != startsBefore {
+		t.Fatalf("%d starts", starts)
+	}
+}
+
 // journalLines is how many records the registry's journal holds now.
 func (s *settleEnv) journalLines() int {
 	s.t.Helper()

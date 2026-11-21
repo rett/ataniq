@@ -1107,6 +1107,15 @@ an older epoch, since epochs only grow and an older one cannot be newer work.
 A unit of a newer epoch, of the same epoch with another intent, or that is not
 ours is never signalled.
 
+A request of an abandoned launch can also land after the timer has settled the
+role to `stopped`. Until then the role is not told of it: the list shows the
+role `stopped` (`launch-abandoned`) and does not count it under `max_running`
+while a unit of the old epoch runs. A start of the role is refused
+(`unit-loaded`, nothing is started or signalled) because the unit's name is
+loaded, and it changes nothing the list shows. The role is shown `unknown`
+(`stale-unit`) when the daemon is restarted and the reconcile finds the unit,
+and an explicit stop ends the unit and records the role `stopped`.
+
 ### Coordinators in the lifecycle
 
 `internal/leadlifecycle` handles coordinators in start, stop, the stalled

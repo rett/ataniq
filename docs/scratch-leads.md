@@ -743,7 +743,12 @@ What the timer does not do:
   `unknown` in both cases and nothing is signalled. `lead.stop` is the way out,
   as for any lead whose unit may run. A start request that lands after the
   window is the stale-unit path of the lead daemon guide: the daemon reports it
-  and never signals it.
+  and never signals it. A request that lands after the timer has settled the
+  lead is the same path, and the list does not show it: the lead reads
+  `stopped` and is not counted under `max_running` while a unit of the old
+  epoch runs, until the daemon is restarted (it then shows the lead `unknown`,
+  `stale-unit`) or the owner stops the lead, which ends the unit. A start in
+  between is refused `unit-loaded` and starts nothing.
 - **It does not touch a lead shown `unknown` for `registry-recovered`.** That
   lead is the owner's to decide.
 - **It never starts a unit, and never waits for the role's lock.** A start or a
