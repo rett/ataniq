@@ -407,16 +407,18 @@ a note, and a state or reason the console has no words for adds no line. A lead
 that is `unknown` with the reason `launch-unsettled` or `launch-reply-lost` (a
 start whose launch the daemon cannot yet say anything about, as after the daemon
 was killed in the middle of a start) gets "launch settles by itself 40 s after
-the start; if not, restart the daemon": the daemon in scratch mode settles the
-launch itself when the 40 s window ends, and a restart of the daemon is what is
-left if the lead is still `unknown` after that. The same words answer a
-`lead.stop` that is refused with `intent-pending` (and a `lead.start` with that
-code): reading the list does not settle a launch, so the line does not tell the
-owner to read it. While such a lead is listed, a start refused because the
-limit of running leads is reached adds that the unknown lead holds a slot until
-its launch settles by itself, 40 s after the start, and that if it is still
-unknown after that the daemon is restarted. The view does not read the list by a
-timer for an `unknown` lead, so the settled lead shows at the next reading (`r`).
+the start; if not, stop the lead or restart": the daemon in scratch mode settles
+the launch itself when the 40 s window ends, and if the lead is still `unknown`
+after that, stopping the lead (the way out when the launch's own unit was
+adopted, which leaves the lead `unknown`) or a restart of the daemon is what is
+left. The same words answer a `lead.stop` that is refused with `intent-pending`
+(and a `lead.start` with that code): reading the list does not settle a launch,
+so the line does not tell the owner to read it. While such a lead is listed, a
+start refused because the limit of running leads is reached adds that the
+unknown lead holds a slot until its launch settles by itself, 40 s after the
+start, and that if it is still unknown after that the lead is stopped or the
+daemon restarted. The view does not read the list by a timer for an `unknown`
+lead, so the settled lead shows at the next reading (`r`).
 See [a lead left unknown after a killed
 daemon](scratch-leads.md#a-lead-left-unknown-after-a-killed-daemon).
 

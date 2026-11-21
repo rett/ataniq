@@ -430,13 +430,13 @@ func TestAnUnsettledLaunchSaysWhatSettlesIt(t *testing.T) {
 	r := newRig(t, b, 150, 30)
 	r.key("j")
 	// The row says it before any command is sent.
-	r.seen("beta: unknown (launch-unsettled): launch settles by itself 40 s after the start; if not, restart the daemon")
+	r.seen("beta: unknown (launch-unsettled): launch settles by itself 40 s after the start; if not, stop the lead or restart")
 	r.key("x")
 	r.key("y")
-	r.seen("stop: unavailable: launch settles by itself 40 s after the start; if not, restart the daemon")
+	r.seen("stop: unavailable: launch settles by itself 40 s after the start; if not, stop the lead or restart")
 	r.notSeen("read the list")
 	r.key("s")
-	r.seen("start: unavailable: launch settles by itself 40 s after the start; if not, restart the daemon")
+	r.seen("start: unavailable: launch settles by itself 40 s after the start; if not, stop the lead or restart")
 }
 
 func TestAMaxRunningRefusalNamesAnUnknownLeadThatHoldsASlot(t *testing.T) {
@@ -450,7 +450,7 @@ func TestAMaxRunningRefusalNamesAnUnknownLeadThatHoldsASlot(t *testing.T) {
 	r := newRig(t, b, 220, 30)
 	r.key("s")
 	r.seen("start: refused: the limit of running leads is reached. An unknown lead holds a slot",
-		"until its launch settles by itself, 40 s after the start; if it is still unknown after that, restart the daemon")
+		"until its launch settles by itself, 40 s after the start; if it is still unknown after that, stop the lead or restart")
 	// Without one the refusal is the plain line.
 	b = twoLeads(t)
 	b.answer = refuse
@@ -489,9 +489,10 @@ func TestARefusedTicketSaysAWriterMayAlreadyBeAttached(t *testing.T) {
 }
 
 // The words of a launch that is not settled say that the daemon settles it by
-// itself after the 40 s window, and name the restart as what is left, and the
-// tail of the max-running refusal does the same; each stays within the byte
-// caps of its kind (the state and reason words 80, the tail what it was).
+// itself after the 40 s window, and name stopping the lead or a restart as what
+// is left, and the tail of the max-running refusal does the same; each stays
+// within the byte caps of its kind (the state and reason words 80, the tail
+// what it was).
 func TestUnsettledWordsNameTheWindowAndTheFallback(t *testing.T) {
 	for name, w := range map[string]string{
 		"state line":       stateWords[[2]string{"unknown", "launch-unsettled"}],
@@ -499,7 +500,7 @@ func TestUnsettledWordsNameTheWindowAndTheFallback(t *testing.T) {
 		"intent-pending":   reasonWords["intent-pending"],
 		"max-running tail": maxRunningUnknownTail,
 	} {
-		for _, part := range []string{"by itself", "40 s after the start", "restart the daemon"} {
+		for _, part := range []string{"by itself", "40 s after the start", "stop the lead or restart"} {
 			if !strings.Contains(w, part) {
 				t.Errorf("%s: %q lacks %q", name, w, part)
 			}

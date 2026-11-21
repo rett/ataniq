@@ -100,13 +100,14 @@
 - The console's leads view says what settles a lead whose launch is not
   settled. A lead that is `unknown` with the reason `launch-unsettled` or
   `launch-reply-lost` gets the line "launch settles by itself 40 s after the
-  start; if not, restart the daemon", the same words answer a stop or a start
+  start; if not, stop the lead or restart", the same words answer a stop or a start
   refused with `intent-pending` (which does not tell the owner to read the
   list, because reading it does not settle the launch), and a start refused for
   the limit of running leads while an unknown lead is listed says that the
   unknown lead holds a slot until its launch settles by itself, 40 s after the
-  start, and that a restart of the daemon is what is left if it is still
-  unknown after that. `docs/scratch-leads.md` has the recovery after a killed
+  start, and that stopping the lead or a restart of the daemon is what is left
+  if it is still unknown after that (a launch's own unit that was adopted
+  leaves the lead `unknown`, and a stop ends it). `docs/scratch-leads.md` has the recovery after a killed
   daemon. See `docs/terminal-console.md`.
 - The console's leads view words a refused attach ticket "the holder refused
   the ticket; a writer may already be attached", because the receipt carries no
