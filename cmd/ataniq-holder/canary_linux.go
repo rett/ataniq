@@ -67,7 +67,9 @@ package main
 // recorder (package screenrec), and adds the folder to the holder paths the
 // sandbox must not show. Only once the start succeeded does serve make the
 // folder, 0700, say one line "recording screens to record" and watch the pane;
-// a start that fails makes no folder. A recorder that cannot make its folder,
+// a start that fails makes no folder. Once the session is over the recorder
+// takes a last look at the pane, and run waits for it (finish, at most
+// recordWait) before it returns. A recorder that cannot make its folder,
 // or that stops early, says so in one line and changes nothing else: the
 // agent, the pane and the service go on as without the flag. Without the flag
 // nothing of this runs, and the hook, the holder paths and the session's
@@ -294,7 +296,14 @@ type canaryMode struct {
 	tracker *osc7501.Tracker
 	// rec is the screen recorder, with --record-dir only.
 	rec *screenrec.Recorder
+	// watched is closed when the recorder's Watch has returned, its writer
+	// done; nil when nothing watches the pane.
+	watched chan struct{}
 }
+
+// recordWait is how long the holder waits, once the session is over, for the
+// recorder's last look and for its writer to write what is queued.
+const recordWait = 2 * time.Second
 
 // vettedMode is what the checks of the command line before the role lock
 // leave for selectMode.
@@ -756,7 +765,29 @@ func (m *canaryMode) startRecording(sess *session.Session) {
 	screen := func(fn func(screenrec.Pane, uint64)) {
 		sess.Screen(func(p *sessionpane.Pane, pos uint64) { fn(p, pos) })
 	}
-	go m.rec.Watch(screen, sess.Done())
+	m.watched = make(chan struct{})
+	go func() {
+		defer close(m.watched)
+		m.rec.Watch(screen, sess.Done())
+	}()
+}
+
+// finish waits, at most recordWait, for the recorder: when the session is over
+// Watch takes its last look at the pane and the writer writes what is queued,
+// so the screen shown at the end and the last payloads are on disk before the
+// holder exits. A recorder that does not finish in time is said in one line,
+// and the holder exits all the same.
+func (m *canaryMode) finish() {
+	if m.watched == nil {
+		return
+	}
+	t := time.NewTimer(recordWait)
+	defer t.Stop()
+	select {
+	case <-m.watched:
+	case <-t.C:
+		holderOut{m.d.stderr}.line("recording screens: the recorder did not finish in %s; the last screens may be missing", recordWait)
+	}
 }
 
 // counterPump copies the increases of the tracker's totals into the session's

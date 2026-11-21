@@ -149,6 +149,10 @@ type holderMode interface {
 	// serve completes the configuration of the attach and control service for
 	// the started session.
 	serve(sess *session.Session, vcfg *serve.Config)
+	// finish runs once the session is over, before run returns: it waits, for
+	// a bounded time, for what the mode still does with the session (the
+	// recorder of canary mode).
+	finish()
 }
 
 // startContext is what a mode's start is given.
@@ -188,6 +192,8 @@ func (scratchMode) start(sc startContext) (*session.Session, int) {
 }
 
 func (scratchMode) serve(*session.Session, *serve.Config) {}
+
+func (scratchMode) finish() {}
 
 func realDeps() deps {
 	return deps{
@@ -429,6 +435,9 @@ func run(args []string, d deps) int {
 	if sess == nil {
 		return code
 	}
+	// Deferred first, so that it runs last: once the session is closed, on
+	// every path from here.
+	defer mode.finish()
 	defer sess.Close()
 
 	vcfg := serve.Config{

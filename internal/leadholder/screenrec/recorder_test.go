@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -299,15 +300,29 @@ func TestPairsForDistinctScreensOnly(t *testing.T) {
 	}
 }
 
-// The pairs stop at MaxPairs: the item that would pass it is not written, one
-// line goes to LIMIT.txt, the recording stops and says so once.
-func TestPairLimit(t *testing.T) {
+// The pairs stop at MaxPairs: the pair that would pass it is not written, one
+// line goes to LIMIT.txt and one to the log, and the titles and payloads go on
+// being recorded. Screen takes no more pairs and a look takes no snapshot.
+func TestPairLimitStopsPairsOnly(t *testing.T) {
 	x := newRec(t, func(c *Config) { c.MaxPairs = 3 })
 	x.open()
 	for i := 0; i < 6; i++ {
 		x.r.Screen(sample(fmt.Sprintf("screen %d", i)))
 	}
-	x.r.Title("after the limit")
+	deadline := time.Now().Add(10 * time.Second)
+	for x.r.takesPairs() {
+		if time.Now().After(deadline) {
+			t.Fatal("the pairs did not stop")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	p := &fakePane{cols: 40, rows: 5, title: "after the limit", text: "after"}
+	var w watcher
+	w.look(x.r, p.screen, true)
+	if p.snaps != 0 {
+		t.Errorf("%d snapshots after the pairs stopped", p.snaps)
+	}
+	x.r.OSC7501([]byte("state=idle"))
 	x.r.Close()
 	if _, err := os.Lstat(filepath.Join(x.dir, "0004.txt")); err == nil {
 		t.Fatal("a fourth pair was written")
@@ -316,21 +331,24 @@ func TestPairLimit(t *testing.T) {
 		t.Fatal("the third pair is missing")
 	}
 	lim := x.read(LimitName)
-	if strings.Count(lim, "\n") != 1 || !strings.HasPrefix(lim, "recording stopped: 3 screens") {
+	if strings.Count(lim, "\n") != 1 || !strings.HasPrefix(lim, "screens stopped: 3 screens") {
 		t.Fatalf("LIMIT.txt %q", lim)
 	}
-	if !x.r.Stopped() {
-		t.Error("not stopped")
+	if x.r.Stopped() {
+		t.Error("the recording stopped")
 	}
-	if l := x.log.all(); len(l) != 1 || !strings.Contains(l[0], "recording screens stopped") || strings.Contains(l[0], x.dir) {
+	if l := x.log.all(); len(l) != 1 || !strings.Contains(l[0], "no more screens") || strings.Contains(l[0], x.dir) {
 		t.Errorf("log %q", l)
 	}
-	if got := x.read(TitlesName); got != "" {
-		t.Errorf("a title after the limit was written: %q", got)
+	if titles := x.lines(TitlesName); len(titles) != 1 || titles[0]["title"] != "after the limit" {
+		t.Errorf("titles after the limit: %v", titles)
+	}
+	if osc := x.lines(OSCName); len(osc) != 1 || osc[0]["payload"] != "state=idle" {
+		t.Errorf("payloads after the limit: %v", osc)
 	}
 }
 
-// The bytes stop at MaxBytes, README.txt included and LIMIT.txt not.
+// The bytes stop at MaxBytes, README.txt and LIMIT.txt included.
 func TestByteLimit(t *testing.T) {
 	const max = 4096
 	x := newRec(t, func(c *Config) { c.MaxBytes = max })
@@ -341,9 +359,6 @@ func TestByteLimit(t *testing.T) {
 	x.r.Close()
 	total := int64(0)
 	for _, n := range x.names() {
-		if n == LimitName {
-			continue
-		}
 		fi, err := os.Lstat(filepath.Join(x.dir, n))
 		if err != nil {
 			t.Fatal(err)
@@ -361,13 +376,42 @@ func TestByteLimit(t *testing.T) {
 	}
 }
 
-// The constants are the task's: 400 pairs, 8 MiB, 4 KiB, 500 ms.
+// LIMIT.txt counts toward MaxBytes: small lines that fill the bound up to
+// less than one line leave no room for LIMIT.txt beyond it.
+func TestByteLimitCountsLimitTxt(t *testing.T) {
+	max := int64(len(Readme) + 1000)
+	x := newRec(t, func(c *Config) { c.MaxBytes = max })
+	x.open()
+	for i := 0; i < 100; i++ {
+		x.r.OSC7501([]byte("p"))
+		time.Sleep(50 * time.Microsecond)
+	}
+	x.r.Close()
+	total := int64(0)
+	for _, n := range x.names() {
+		fi, err := os.Lstat(filepath.Join(x.dir, n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		total += fi.Size()
+	}
+	if total > max {
+		t.Fatalf("%d bytes written with LIMIT.txt, the bound is %d", total, max)
+	}
+	if lim := x.read(LimitName); !strings.HasPrefix(lim, "recording stopped: ") {
+		t.Fatalf("LIMIT.txt %q", lim)
+	}
+}
+
+// The constants are the task's: 400 pairs, 8 MiB, 4 KiB, 500 ms, 300 ms, 2 s.
 func TestTheBounds(t *testing.T) {
-	if MaxPairs != 400 || MaxBytes != 8<<20 || MaxPayload != 4096 || PairInterval != 500*time.Millisecond || DirName != "record" {
+	if MaxPairs != 400 || MaxBytes != 8<<20 || MaxPayload != 4096 || PairInterval != 500*time.Millisecond ||
+		Settle != 300*time.Millisecond || TornAfter != 2*time.Second || DirName != "record" {
 		t.Fatal("a bound changed")
 	}
 	r := New(Config{})
-	if r.cfg.MaxPairs != MaxPairs || r.cfg.MaxBytes != MaxBytes || r.cfg.PairInterval != PairInterval || r.cfg.QueueLen != QueueLen {
+	if r.cfg.MaxPairs != MaxPairs || r.cfg.MaxBytes != MaxBytes || r.cfg.PairInterval != PairInterval || r.cfg.QueueLen != QueueLen ||
+		r.cfg.Settle != Settle {
 		t.Fatalf("defaults %+v", r.cfg)
 	}
 }
@@ -380,7 +424,7 @@ func TestTitlesAndPayloadsAreCutAndEscaped(t *testing.T) {
 	x.clock.add(1500 * time.Millisecond)
 	evil := "\x1b]0;x\x07\"quote\" \\ back\nnew\u2028line\x00nul"
 	x.r.Title(evil)
-	x.r.Title(evil) // the same title is not recorded twice
+	x.r.Title(evil)                   // the same title is not recorded twice
 	long := strings.Repeat("é", 3000) // 6000 bytes
 	x.r.Title(long)
 	x.clock.add(250 * time.Millisecond)
@@ -428,8 +472,9 @@ func TestTitlesAndPayloadsAreCutAndEscaped(t *testing.T) {
 	}
 }
 
-// The queue drops the oldest item when it is full and counts the drops into
-// LIMIT.txt as "dropped N".
+// The queue drops the oldest item when it is full and counts the drops; the
+// count goes to LIMIT.txt once, as "dropped N", when the recording ends, not
+// at each pass of the writer.
 func TestQueueDropsTheOldest(t *testing.T) {
 	x := newRec(t, func(c *Config) { c.QueueLen = 2 })
 	// Before Open the writer does not run, so the queue fills.
@@ -437,6 +482,16 @@ func TestQueueDropsTheOldest(t *testing.T) {
 		x.r.OSC7501([]byte(fmt.Sprintf("payload-%d", i)))
 	}
 	x.open()
+	deadline := time.Now().Add(10 * time.Second)
+	for strings.Count(x.read(OSCName), "\n") != 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("the queue was not written")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := os.Lstat(filepath.Join(x.dir, LimitName)); err == nil {
+		t.Fatalf("LIMIT.txt was written before the end: %q", x.read(LimitName))
+	}
 	x.r.Close()
 	osc := x.lines(OSCName)
 	if len(osc) != 2 || osc[0]["payload"] != "payload-4" || osc[1]["payload"] != "payload-5" {
@@ -499,17 +554,27 @@ func TestCloseBeforeOpenWritesNothing(t *testing.T) {
 	}
 }
 
-// fakePane is a Pane whose position, size, title and screen a test sets.
+// fakePane is a Pane whose position, size, title, screen and parser state a
+// test sets. Its zero parser state is settled: at ground, no frame open.
 type fakePane struct {
 	pos        uint64
 	cols, rows int
 	title      string
 	text       string
 	snaps      int
+	// midSequence: the parser is not at ground; frame: mode 2026 is set.
+	midSequence, frame bool
 }
 
 func (p *fakePane) Size() (int, int) { return p.cols, p.rows }
 func (p *fakePane) Title() string    { return p.title }
+func (p *fakePane) Quiescent() bool  { return !p.midSequence }
+func (p *fakePane) ModeSet() sessionpane.ModeSet {
+	if p.frame {
+		return sessionpane.ModeSet{DEC: []int{25, 2026}}
+	}
+	return sessionpane.ModeSet{DEC: []int{25}}
+}
 func (p *fakePane) TextSnapshot() sessionpane.TextSnapshot {
 	p.snaps++
 	return sessionpane.TextSnapshot{Text: p.text, Cols: p.cols, Rows: p.rows, Title: p.title}
@@ -517,63 +582,105 @@ func (p *fakePane) TextSnapshot() sessionpane.TextSnapshot {
 
 func (p *fakePane) screen(fn func(Pane, uint64)) { fn(p, p.pos) }
 
-// A look snapshots the pane only after output or a resize, at most once per
-// PairInterval, and records a title when it changed.
+// A look snapshots the pane only after output or a resize, once the screen
+// has been unchanged for Settle, at most once per PairInterval, and records a
+// title when it changed.
 func TestLookSnapshotsOnlyChangesAndAtMostOncePerInterval(t *testing.T) {
 	x := newRec(t, nil)
 	x.open()
 	p := &fakePane{cols: 40, rows: 5, title: "t1", text: "one"}
 	var w watcher
-	look := func() { w.look(x.r, p.screen) }
+	look := func() { w.look(x.r, p.screen, false) }
+	want := func(n int, what string) {
+		t.Helper()
+		if p.snaps != n {
+			t.Fatalf("%d snapshots %s, want %d", p.snaps, what, n)
+		}
+	}
 
-	look() // the first look snapshots
-	if p.snaps != 1 {
-		t.Fatalf("%d snapshots after the first look", p.snaps)
-	}
+	look()
+	want(0, "at the first look: the screen has not settled")
+	x.clock.add(300 * time.Millisecond)
+	look()
+	want(1, "once the first screen settled")
 	x.clock.add(time.Second)
-	look() // no output since: no snapshot
-	if p.snaps != 1 {
-		t.Fatalf("%d snapshots with nothing new", p.snaps)
-	}
+	look()
+	want(1, "with nothing new")
 	p.pos, p.text = 10, "two"
-	look() // output, and the interval has passed
-	if p.snaps != 2 {
-		t.Fatalf("%d snapshots after output", p.snaps)
-	}
+	look()
+	want(1, "at the look that saw output")
+	x.clock.add(300 * time.Millisecond)
+	look()
+	want(2, "once the output settled")
 	p.pos, p.text, p.title = 20, "three", "t2"
 	x.clock.add(100 * time.Millisecond)
-	look() // output within the interval: marked, not taken
-	if p.snaps != 2 {
-		t.Fatalf("%d snapshots within the interval", p.snaps)
-	}
-	x.clock.add(400 * time.Millisecond)
-	look() // no more output, the interval passed: the marked change is taken
-	if p.snaps != 3 {
-		t.Fatalf("%d snapshots after the interval", p.snaps)
-	}
+	look()
+	x.clock.add(300 * time.Millisecond)
+	look()
+	want(2, "settled, within the interval")
+	x.clock.add(100 * time.Millisecond)
+	look()
+	want(3, "settled, after the interval")
 	x.clock.add(time.Second)
 	p.cols = 50
-	look() // a resize
-	if p.snaps != 4 {
-		t.Fatalf("%d snapshots after a resize", p.snaps)
-	}
+	look()
+	x.clock.add(300 * time.Millisecond)
+	look()
+	want(4, "after a resize")
 	x.clock.add(time.Second)
 	p.pos = 30 // output that changed nothing visible: a snapshot, no pair
 	look()
+	x.clock.add(300 * time.Millisecond)
+	look()
+	want(5, "after output that changed nothing")
 	x.r.Close()
-	want := []string{"0001.json", "0001.txt", "0002.json", "0002.txt", "0003.json", "0003.txt", "0004.json", "0004.txt"}
+	wantPairs := []string{"0001.json", "0001.txt", "0002.json", "0002.txt", "0003.json", "0003.txt", "0004.json", "0004.txt"}
 	var pairs []string
 	for _, n := range x.names() {
 		if strings.HasPrefix(n, "000") {
 			pairs = append(pairs, n)
 		}
 	}
-	if !reflect.DeepEqual(pairs, want) {
-		t.Fatalf("pairs %v, want %v", pairs, want)
+	if !reflect.DeepEqual(pairs, wantPairs) {
+		t.Fatalf("pairs %v, want %v", pairs, wantPairs)
 	}
 	titles := x.lines(TitlesName)
 	if len(titles) != 2 || titles[0]["title"] != "t1" || titles[1]["title"] != "t2" {
 		t.Fatalf("titles %v", titles)
+	}
+}
+
+// A screen that keeps changing (an animated spinner) is not snapshotted while
+// it changes, so it cannot fill the pairs; it is taken once it has been
+// unchanged for Settle, and the last look takes it at once.
+func TestLookWaitsForAnAnimationToSettle(t *testing.T) {
+	x := newRec(t, nil)
+	x.open()
+	p := &fakePane{cols: 40, rows: 5, title: "t", text: "spin"}
+	var w watcher
+	for i := 0; i < 100; i++ {
+		p.pos++
+		p.text = fmt.Sprintf("working %c", "|/-\\"[i%4])
+		w.look(x.r, p.screen, false)
+		x.clock.add(100 * time.Millisecond)
+	}
+	if p.snaps != 0 {
+		t.Fatalf("%d snapshots of a screen that never settled", p.snaps)
+	}
+	x.clock.add(200 * time.Millisecond)
+	w.look(x.r, p.screen, false)
+	if p.snaps != 1 {
+		t.Fatalf("%d snapshots once it settled", p.snaps)
+	}
+	x.clock.add(time.Second)
+	p.pos, p.text = p.pos+1, "the end"
+	w.look(x.r, p.screen, true)
+	if p.snaps != 2 {
+		t.Fatalf("%d snapshots after the last look", p.snaps)
+	}
+	x.r.Close()
+	if x.read("0001.txt") != "working \\\n" || x.read("0002.txt") != "the end\n" {
+		t.Fatalf("pairs %q %q", x.read("0001.txt"), x.read("0002.txt"))
 	}
 }
 
@@ -616,5 +723,178 @@ func TestWatchStopsAtDoneAndCloses(t *testing.T) {
 	x.r.OSC7501([]byte("after"))
 	if got := x.read(OSCName); got != "" {
 		t.Errorf("taken after Watch ended: %q", got)
+	}
+}
+
+// When the session ends, Watch takes one last look with no interval to wait
+// for: the screen shown at the end is recorded even when the last pair was
+// taken just before, and what was queued is written before Watch returns. The
+// test does not call Close itself.
+func TestWatchRecordsTheLastScreenWhenTheSessionEnds(t *testing.T) {
+	x := newRec(t, func(c *Config) {
+		c.PollInterval, c.PairInterval, c.Now = time.Millisecond, time.Hour, time.Now
+	})
+	x.open()
+	var mu sync.Mutex
+	p := &fakePane{cols: 40, rows: 5, title: "t", text: "first"}
+	screenFn := func(fn func(Pane, uint64)) {
+		mu.Lock()
+		defer mu.Unlock()
+		p.screen(fn)
+	}
+	done := make(chan struct{})
+	ended := make(chan struct{})
+	go func() { x.r.Watch(screenFn, done); close(ended) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if b, err := os.ReadFile(filepath.Join(x.dir, "0001.txt")); err == nil && string(b) == "first\n" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no first pair")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// The last screen comes within the pair interval of the first: only the
+	// look at the end can take it.
+	mu.Lock()
+	p.pos, p.text, p.title = 10, "last", "last title"
+	mu.Unlock()
+	x.r.OSC7501([]byte("state=last"))
+	close(done)
+	select {
+	case <-ended:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Watch did not end")
+	}
+	if got := x.read("0002.txt"); got != "last\n" {
+		t.Fatalf("0002.txt %q, want the last screen", got)
+	}
+	if !strings.Contains(x.read("0002.json"), `"title": "last title"`) {
+		t.Errorf("0002.json %s", x.read("0002.json"))
+	}
+	if osc := x.lines(OSCName); len(osc) != 1 || osc[0]["payload"] != "state=last" {
+		t.Errorf("payload lines %v", osc)
+	}
+}
+
+// A due snapshot waits, the screen kept marked as changed, while the parser is
+// in the middle of a sequence or a synchronized-output frame (mode 2026) is
+// open, as the fence does; it is taken as soon as both settle. One that has
+// waited TornAfter is taken anyway and its pair says "torn": true, and so is
+// one the last look takes while they are not settled.
+func TestLookWaitsForTheParserAndTheFrame(t *testing.T) {
+	x := newRec(t, nil)
+	x.open()
+	p := &fakePane{cols: 40, rows: 5, title: "t", text: "one"}
+	var w watcher
+	look := func(final bool) { w.look(x.r, p.screen, final) }
+	want := func(n int, what string) {
+		t.Helper()
+		if p.snaps != n {
+			t.Fatalf("%d snapshots %s, want %d", p.snaps, what, n)
+		}
+	}
+	look(false)
+	x.clock.add(Settle)
+	look(false)
+	want(1, "of a settled screen")
+
+	x.clock.add(time.Second)
+	p.pos, p.text, p.frame = 10, "two", true
+	look(false)
+	x.clock.add(Settle)
+	look(false)
+	x.clock.add(time.Second)
+	look(false)
+	want(1, "while a frame is open")
+	p.frame = false
+	x.clock.add(100 * time.Millisecond)
+	look(false)
+	want(2, "once the frame closed")
+
+	x.clock.add(time.Second)
+	p.pos, p.text, p.midSequence = 20, "three", true
+	look(false)
+	x.clock.add(Settle)
+	look(false) // due, and waiting from here
+	x.clock.add(TornAfter - 100*time.Millisecond)
+	look(false)
+	want(2, "while the parser is in a sequence")
+	x.clock.add(100 * time.Millisecond)
+	look(false)
+	want(3, "once it waited TornAfter")
+
+	x.clock.add(time.Second)
+	p.pos, p.text, p.midSequence, p.frame = 30, "four", false, true
+	look(true)
+	want(4, "at the last look")
+	x.r.Close()
+
+	for name, torn := range map[string]bool{"0001": false, "0002": false, "0003": true, "0004": true} {
+		raw := x.read(name + ".json")
+		var m map[string]any
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			t.Fatal(err)
+		}
+		if got, has := m["torn"]; torn && got != true || !torn && has {
+			t.Errorf("%s.json torn %v (present %v), want %v", name, got, has, torn)
+		}
+	}
+	if x.read("0003.txt") != "three\n" || x.read("0004.txt") != "four\n" {
+		t.Errorf("pairs %q %q", x.read("0003.txt"), x.read("0004.txt"))
+	}
+}
+
+// LIMIT.txt holds at most three lines, each of a bounded length, and the
+// longest they can be fits in the bytes the bound keeps for it.
+func TestLimitLinesFitTheirReserve(t *testing.T) {
+	longest := len(pairsLine(math.MaxInt)) + len(bytesLine(math.MaxInt64)) + len(dropsLine(math.MaxUint64))
+	if longest > limitReserve {
+		t.Fatalf("the longest LIMIT.txt is %d bytes, the reserve %d", longest, limitReserve)
+	}
+}
+
+// A payload over MaxPayload is cut at a character boundary, and "utf8" says
+// whether the bytes kept are valid: a valid payload cut where a character
+// would be split stays valid, one that is not valid stays marked, and a run
+// of bytes with no character start is cut at MaxPayload.
+func TestAPayloadIsCutAtACharacterBoundary(t *testing.T) {
+	x := newRec(t, nil)
+	x.open()
+	valid := "a" + strings.Repeat("é", 2500) // MaxPayload falls inside an é
+	x.r.OSC7501([]byte(valid))
+	x.r.OSC7501(bytes.Repeat([]byte{0x80}, 5000))
+	x.r.Close()
+	osc := x.lines(OSCName)
+	if len(osc) != 2 {
+		t.Fatalf("%d payload lines", len(osc))
+	}
+	p, _ := osc[0]["payload"].(string)
+	if osc[0]["utf8"] != true || osc[0]["cut"] != true || osc[0]["bytes"] != float64(len(valid)) ||
+		len(p) != MaxPayload-1 || !strings.HasPrefix(valid, p) {
+		t.Errorf("valid payload: %d bytes kept, %v", len(p), osc[0])
+	}
+	if osc[1]["utf8"] != false || osc[1]["cut"] != true || osc[1]["bytes"] != float64(5000) {
+		t.Errorf("invalid payload: %v", osc[1])
+	}
+}
+
+// A pair the queue dropped does not count as recorded: the same screen is
+// queued again when it comes back.
+func TestADroppedPairIsTakenAgain(t *testing.T) {
+	x := newRec(t, func(c *Config) { c.QueueLen = 2 })
+	a := sample("the screen that was dropped")
+	x.r.Screen(a)
+	x.r.OSC7501([]byte("one"))
+	x.r.OSC7501([]byte("two")) // the queue is full: the pair is dropped
+	x.r.Screen(a)
+	x.open()
+	x.r.Close()
+	if got := x.read("0001.txt"); got != a.Text+"\n" {
+		t.Fatalf("0001.txt %q", got)
+	}
+	if lim := x.read(LimitName); lim != "dropped 2\n" {
+		t.Errorf("LIMIT.txt %q", lim)
 	}
 }

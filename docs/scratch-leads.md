@@ -651,15 +651,29 @@ rest of this guide.
 **How to record.** Set `"record_screens": true` in the lead's entry of the
 scratch config and start the daemon again (it reads the config at start). Each
 `lead.start` of that lead then starts its holder with
-`--record-dir <runtime root>/leads/<layout role>/record`. The holder refuses
-that flag without `--canary`, for any other folder, and when the folder exists
-already: **a start of a recording lead whose `record` folder is still there is
-refused** (the holder exits 2, "--record-dir exists already"), so that an
-earlier recording is neither added to nor replaced. Move or delete the folder
-first, or set the field back to `false`. Once the sandbox has started, the
-holder makes the folder, mode 0700, and says one line in its journal,
-`recording screens to record`, with no host path. A start that fails makes no
-folder. The folder is one of the holder's paths that assertion 1 holds the
+`--record-dir <runtime root>/leads/<layout role>/record`.
+
+**A start of a recording lead whose `record` folder is still there is
+refused**, so that an earlier recording is neither added to nor replaced. The
+daemon looks first, before anything changes: anything at that name (a folder,
+a file, a link) refuses `lead.start` with the code `preflight`, which the
+console shows as "the preflight refused the start", and the receipt's fixed
+message "the lead's record folder from an earlier recording is still there;
+move or delete it, or set record_screens to false"; the daemon's log says the
+same with no path, and nothing is started. Move or delete the folder, or set
+the field back to `false` and start the daemon again. The holder keeps its own
+check: it refuses the flag without `--canary`, for any other folder, and when
+the folder exists (one made between the daemon's look and the holder's start),
+and then exits 2 with "--record-dir exists already". The unit has then only
+ended, so the reason is in **the unit's journal**, where everything the holder
+says goes: `journalctl --user --unit UNIT`, where `UNIT` is the lead's unit,
+`ataniq-lead-scratch-<key>.service` (the `unit` of the start's receipt and of
+`lead.list`).
+
+Once the sandbox has started, the holder makes the folder, mode 0700, and says
+one line in that journal, `recording screens to record`, with no host path, or
+`not recording screens:` and the reason (by errno) when it cannot make it; the
+lead then goes on without a recording. A start that fails makes no folder. The folder is one of the holder's paths that assertion 1 holds the
 sandbox does not show, so the agent cannot see it or name anything in it.
 
 **What it writes**, every file mode 0600:
@@ -670,23 +684,54 @@ sandbox does not show, so the agent cannot see it or name anything in it.
   `internal/inject/screen/testdata` (the `.txt` is the screen text; the `.json`
   holds the size, the cursor, the alternate-screen flag, the title and the faint
   spans, `"source": "recorded"`, an empty description and no `want`). The
-  screen is the snapshot the fence reads. The holder looks at it at most every
-  500 ms, and only after output or a resize, so a screen that was shown for
-  less than that may be missing.
+  screen is the snapshot the fence reads, and the holder takes it, as the fence
+  does, only while the terminal parser is between sequences and no
+  synchronized-output frame (mode 2026) is open. A snapshot that has waited
+  2 seconds for that is taken anyway, and so is the last one when the session
+  ended in the middle of a frame; its `.json` then says `"torn": true` (the
+  field is absent otherwise). A torn pair may show half a frame: it is not a
+  fixture as it is, so drop it or check it by hand and remove the field. The
+  holder takes a snapshot only after
+  output or a resize, only once the screen has had no output and no resize for
+  about 300 ms (the settle rule), and at most one every 500 ms; the last screen,
+  when the session ends, is taken at once. The settle rule keeps a screen that
+  keeps changing, such as the working screen with its animated spinner, from
+  using up the 400 pairs in a few minutes: such a screen is recorded only when
+  it stands still for 300 ms, or when the session ends. So a screen shown for
+  less than 300 ms is not recorded, nor is a screen that never stands still
+  that long, and a screen replaced within 500 ms of the last pair may be
+  missing.
 - `titles.jsonl`, one JSON line for each window title as it changed, and
   `osc7501.jsonl`, one JSON line for each OSC 7501 payload (the data after
-  `7501;`, the support query included). Each line has `ms` (milliseconds since
-  the start), `bytes` and `cut`; a title or payload is cut at 4096 bytes, stored
-  as a JSON string and never interpreted. The title is read every 100 ms, so a
-  title the agent replaced sooner is not seen.
-- `LIMIT.txt`, only when needed: a line when the recording stopped at its bounds
-  (400 pairs, or 8 MiB written in all), and `dropped N` when the recorder's
-  small queue dropped its oldest items to keep up.
+  `7501;`, the support query included). Each line has `ms`, the milliseconds
+  since the recording began, measured from the recorder's creation, which the
+  holder makes as it starts the lead, before the sandbox starts (so the first
+  line comes some time after 0); and `bytes`, the length as seen, and `cut`.
+  A title is the pane's title as the pane keeps it, not the raw bytes: invalid
+  UTF-8 becomes U+FFFD, control, line-separator and bidirectional formatting
+  characters are dropped, and it is cut at 256 bytes, by the pane, at a
+  character boundary (the pane's cut is not seen, so `cut` is `false`). Only
+  the OSC 7501 payloads are raw: a payload is cut at 4096 bytes at a character
+  boundary (`cut`: `true`), stored as a JSON string and never interpreted, and
+  its line also has `utf8`, which says whether the bytes kept are valid UTF-8
+  (when they are not, each bad byte is stored as U+FFFD). The title is read
+  every 100 ms, so a title the agent replaced sooner is not seen.
+- `LIMIT.txt`, only when needed: a line when the screens stopped at 400 pairs
+  (the titles and the payloads go on being recorded), a line when the recording
+  stopped at 8 MiB written in all (`README.txt` and `LIMIT.txt` included),
+  and `dropped N`, written once when the recording ends, when the recorder's
+  small queue dropped N of its oldest items in all to keep up. It holds at
+  most these three lines.
 
-The recorder never blocks the agent or its screen: when it reaches a bound or a
+The recorder never blocks the agent or its screen. At 400 pairs it stops taking
+screens and says so in one line of the journal; when it would pass 8 MiB or a
 write fails, it stops recording, says so in one line of the journal (by errno,
-with no path), and the lead goes on. The last screen before the agent ends may
-be missing; the holder's `final.json` has it.
+with no path), and the lead goes on. When the session ends, the recorder takes
+one last look at the screen, whatever the time since the last pair, and the
+holder waits up to 2 seconds for it to write what it holds before it exits: the
+last pair is the screen the agent showed at its end, with its cursor,
+alternate-screen flag, title and faint spans. If the recorder does not finish
+in time, the holder says so in one line of the journal and exits all the same.
 
 **The files are raw.** Nothing scrubs them: they may hold a login URL, a login
 code, a session id, a home path or a host name, whatever the agent showed. The

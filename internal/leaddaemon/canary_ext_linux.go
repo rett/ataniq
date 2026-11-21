@@ -147,6 +147,7 @@ const (
 	msgFolder       = "the role's runtime folder is missing or not private"
 	msgStateFolder  = "the holder's state folder is missing or not private"
 	msgRoleFolder   = "the folder of the role's lock is missing or not private"
+	msgRecordLeft   = "the lead's record folder from an earlier recording is still there; move or delete it, or set record_screens to false"
 	msgRegistryNo   = "the registry refused"
 	msgForeignUnit  = "a unit with the role's name is not the role's recorded unit"
 	msgFailed       = "the operation failed; see the daemon's log"
@@ -446,6 +447,10 @@ func (x *canaryExt) start(ctx context.Context) (any, *clientapi.ErrorBody) {
 		}
 		unix.Close(fd)
 	}
+	if x.recordFolderLeft() {
+		x.logf("canary start: %s", logRecordLeft)
+		return nil, refused(msgRecordLeft)
+	}
 	e, err := x.ctl.Start(ctx, x.role)
 	if err != nil {
 		return nil, x.failure("start", err)
@@ -500,6 +505,25 @@ func (x *canaryExt) provisionedFolders() []provisionedFolder {
 		lock.path = path.Dir(p)
 	}
 	return append(folders, lock)
+}
+
+// logRecordLeft is the daemon's log line, after the operation's prefix, for a
+// start refused by recordFolderLeft. It names no path.
+const logRecordLeft = "the lead records its screens and its record folder is still there"
+
+// recordFolderLeft says a lead that records its screens (RecordScreens) has
+// something at the name of its record folder in the runtime folder: an earlier
+// recording, or anything else (a link included, not followed). Its holder
+// would refuse --record-dir and end at once, with the reason only in the
+// unit's journal, so the start is refused here first, before anything changes.
+// The holder keeps its own check. A folder that cannot be looked at for
+// another reason than its absence counts as there.
+func (x *canaryExt) recordFolderLeft() bool {
+	if !x.cfg.RecordScreens {
+		return false
+	}
+	var st unix.Stat_t
+	return !errors.Is(unix.Lstat(path.Join(x.holderDir, leadcanary.RecordDirName), &st), unix.ENOENT)
 }
 
 // stop stops the role through the lifecycle and answers the proof text.
