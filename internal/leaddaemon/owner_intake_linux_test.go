@@ -121,3 +121,68 @@ func TestOwnerALineThatIsNotEscapedIsNotPassedOn(t *testing.T) {
 		t.Fatal("the escaping is not what these cases assume")
 	}
 }
+
+// TestOwnerAPatchAsTheIntakeWritesItIsPaged: the input is what the intake's
+// own writer, leadtext.NewWriter, makes of a patch with tab-indented lines (Go
+// code, a Makefile), a carriage return, an escape byte and a backslash: the
+// tab stays raw in it, every other control byte is escaped. The wrapper turns
+// it back, the pages rejoin to the raw lines byte for byte, and a long
+// tab-indented line is split and rejoined too.
+func TestOwnerAPatchAsTheIntakeWritesItIsPaged(t *testing.T) {
+	long := "+\t" + strings.Repeat("\tx\x1b", 100<<10)
+	rawLines := []string{
+		"ataniq intake diff base=aa tip=bb",
+		"diff --git a/main.go b/main.go",
+		"@@ -1,3 +1,4 @@",
+		" func main() {",
+		"+\tfmt.Println(\"x\")",
+		"+\t\tif a {\t// tab inside",
+		"-\told\r",
+		"+all:\n\t@echo \"a\\b\"\x1b[2J",
+		long,
+		"+\t",
+	}
+	// The first line is the intake's header, written before the writer.
+	var buf bytes.Buffer
+	buf.WriteString(rawLines[0] + "\n")
+	w := leadtext.NewWriter(&buf)
+	body := strings.Join(rawLines[1:], "\n") + "\n"
+	if _, err := w.Write([]byte(body)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	written := buf.String()
+	if !strings.Contains(written, "\t") || strings.ContainsAny(written, "\x1b\r\x7f") {
+		t.Fatal("the writer is not what this test assumes: it passes the tab and escapes the rest")
+	}
+	lines := strings.Split(strings.TrimSuffix(written, "\n"), "\n")
+	// The raw expectation has the embedded "\n" of one sample split, as the
+	// writer's lines are.
+	var want []string
+	for _, l := range rawLines {
+		want = append(want, strings.Split(l, "\n")...)
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("%d lines written, %d expected", len(lines), len(want))
+	}
+	rp, err := UnescapingIntake{Intake: ownerIntake{lines: lines}}.Patch(context.Background(), ownerchannel.ReviewRef{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(rp.Lines, want) {
+		t.Fatalf("the lines are not the raw ones: %q", rp.Lines)
+	}
+	pages, err := ownerwire.SplitPatch("ap-one", ownerReviewDigest, rp.Lines)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pages) < 2 {
+		t.Fatalf("the long line was not split: %d pages", len(pages))
+	}
+	back, err := ownerwire.JoinPatch(pages)
+	if err != nil || !slices.Equal(back, want) {
+		t.Fatalf("the pages do not rejoin to the raw lines: %v", err)
+	}
+}
