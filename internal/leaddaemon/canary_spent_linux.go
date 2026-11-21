@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"golang.org/x/sys/unix"
 
@@ -45,27 +46,36 @@ func spentEpochs(path, role string) (map[uint64]bool, error) {
 
 // scratchSpentEpochs is [spentEpochs] for a lead of scratch mode, whose message
 // stays unspent when the holder answered that nothing was written (see
-// [leadcanary.ReleasesMessage]). The file is read as strictly, and the lines
-// of role that count are its inject-sent and inject-result lines; the other
-// members they need are "message_id" (a string) and, of a result line,
-// "outcome", "written" (strings) and, when present, "reason" (a string).
+// [leadcanary.ReleasesMessage]) or refused the request itself (disabled,
+// wrong-epoch, busy or bad-request: see [holderRefusal]). The file is read as
+// strictly, and the lines of role that count are its inject-sent and
+// inject-result lines and the inject-refused lines whose code is holder-<code>
+// of one of those four; the other members they need are "message_id" (a
+// string) and, of a result line, "outcome", "written" (strings) and, when
+// present, "reason" (a string).
 //
 // The lines of one epoch are read in the order of the file as a series of
-// messages, each an inject-sent line that its own inject-result line follows
-// (the daemon sends one message at a time and writes the sent line before the
-// result line). An epoch is free when its series is complete and every result
-// of it releases the message. It is spent otherwise, and every doubt spends
-// it, so that nothing makes a message that may have been delivered look
-// unspent:
+// messages, each an inject-sent line that its own inject-result line, or its
+// own holder refusal, follows (the daemon sends one message at a time and
+// writes the sent line before either). An epoch is free when its series is
+// complete and every close of it releases the message. It is spent otherwise,
+// and every doubt spends it, so that nothing makes a message that may have
+// been delivered look unspent:
 //
-//   - an inject-sent line that no result line follows;
+//   - an inject-sent line that no result line or holder refusal follows;
 //   - an inject-sent line that follows another one that has no result (a
 //     second line of one message, which a failed sync of the first may leave,
 //     is one of these);
-//   - a result line that follows no inject-sent line of its epoch or of its
-//     message id, and so also the second of two result lines of one message;
+//   - a result line or a holder refusal that follows no inject-sent line of
+//     its epoch or of its message id, and so also the second of two lines
+//     that close one message;
 //   - a result that does not release the message, or whose words are not a
 //     combination the wire carries.
+//
+// An inject-refused line with any other code (a message refused before its
+// frame was written: inject-off, second-message, holder-unreachable and the
+// like) is not part of a series and changes nothing: it does not close the
+// message that is open, which stays open, so the epoch stays spent.
 //
 // A message id that is used again in the epoch by a message that follows a
 // released one is two messages, each with its own pair of lines.
@@ -130,6 +140,14 @@ func readSpent(path, role string, scratch bool) (map[uint64]bool, error) {
 				doubt[l.epoch] = true
 			}
 			delete(open, l.epoch)
+		case l.refused:
+			// The holder's own refusal, which closes the message that is
+			// open; the message id must be that message's.
+			id, pending := open[l.epoch]
+			if !pending || id != l.messageID {
+				doubt[l.epoch] = true
+			}
+			delete(open, l.epoch)
 		}
 	}
 	if scratch {
@@ -149,9 +167,13 @@ func readSpent(path, role string, scratch bool) (map[uint64]bool, error) {
 // result releases the message.
 type evidenceLine struct {
 	sent, result bool
-	epoch        uint64
-	messageID    string
-	releases     bool
+	// refused is an inject-refused line with the code holder-<code> of one of
+	// the holder's refusals; read in scratch mode only. Its messageID is "" if
+	// the line has none.
+	refused   bool
+	epoch     uint64
+	messageID string
+	releases  bool
 }
 
 // readLine reads one line of the evidence. In scratch mode an inject-result
@@ -184,6 +206,8 @@ func readLine(line []byte, role string, scratch bool) (evidenceLine, error) {
 		l.sent = true
 	case scratch && event == string(leadcanary.EventInjectResult):
 		l.result = true
+	case scratch && event == string(leadcanary.EventInjectRefused) && holderRefusalLine(members):
+		l.refused = true
 	default:
 		return evidenceLine{epoch: l.epoch}, nil
 	}
@@ -191,6 +215,12 @@ func readLine(line []byte, role string, scratch bool) (evidenceLine, error) {
 		return evidenceLine{}, fmt.Errorf("an %s line without an epoch", event)
 	}
 	if !scratch {
+		return l, nil
+	}
+	if l.refused {
+		// A refusal of the holder always carries the id of the message it
+		// refused; one without a string id matches no sent line.
+		stringMember(members, "message_id", &l.messageID)
 		return l, nil
 	}
 	if err := stringMember(members, "message_id", &l.messageID); err != nil {
@@ -215,6 +245,18 @@ func readLine(line []byte, role string, scratch bool) (evidenceLine, error) {
 		Outcome: wire.InjectOutcome(outcome), Reason: wire.InjectReason(reason), Written: wire.InjectWritten(written),
 	})
 	return l, nil
+}
+
+// holderRefusalLine reports whether the members of an inject-refused line carry
+// the code holder-<code> of one of the holder's own refusals, the ones that
+// say nothing was written to the lead (see [holderRefusal]).
+func holderRefusalLine(members map[string]json.RawMessage) bool {
+	var code string
+	if raw, has := members["code"]; !has || len(raw) == 0 || raw[0] != '"' || json.Unmarshal(raw, &code) != nil {
+		return false
+	}
+	rest, ok := strings.CutPrefix(code, "holder-")
+	return ok && holderRefusal(rest)
 }
 
 // stringMember sets v to the member key of members, which must be a string

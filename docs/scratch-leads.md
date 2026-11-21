@@ -299,7 +299,8 @@ What each does:
   kind=canary]`. When the holder itself refuses the frame as `wrong-epoch` (the
   lead was stopped and started between the daemon's check and the holder's
   read), the answer is `stale-epoch` like the daemon's own check: no text
-  reached the lead, and the old epoch stays spent.
+  reached the lead, and the refusal frees the old epoch's message like any
+  other message that was not delivered (see [Message and attach](#message-and-attach)).
 
 ### Ready
 
@@ -390,7 +391,7 @@ operation; every code is a word of lower-case letters, digits and dashes.
 | `lead.start` | `role-busy`, `not-provisioned`, `folder-missing`, `max-running`, `role-not-defined`, `not-managed`, `preflight`, `foreign-unit`, `unit-loaded`, `limits`, `launch-refused`, `epoch-exhausted`, `registry-refused` | `start-failed`, `previous-unit-not-gone`, `intent-pending` | `launch-uncertain`, `daemon-stopping`, `registry-check`, `registry-broken`, `failed` |
 | `lead.stop` | `role-busy`, `stale-epoch`, `role-not-defined`, `not-managed` | `intent-pending`, `failed` | `stop-unproven`, `daemon-stopping`, `registry-broken`, `failed` |
 | `lead.ticket` | `stale-epoch`, `not-running`, `ticket-refused` | `holder-unreachable`, `ticket-failed`, `ticket-lost`, `ticket-file` | |
-| `lead.inject` | `stale-epoch`, `inject-off`, `not-running`, `second-message`, `message-in-flight`, and the admission codes of the canary slice (`bad-id`, `body-too-long`, `empty-body` and the like) | `holder-unreachable`, and `holder-` with the holder's refusal (`disabled`, `busy`, `bad-request`) | |
+| `lead.inject` | `stale-epoch`, `inject-off`, `not-running`, `second-message`, `message-in-flight`, and the admission codes of the canary slice (`bad-id`, `body-too-long`, `empty-body` and the like) | `holder-unreachable`, and `holder-` with the holder's refusal (`disabled`, `busy`, `bad-request`; none of these spends the epoch's message) | |
 
 Every operation can also end `refused` with `daemon-broken` (the registry or the
 table cannot be written, and the daemon admits no new command until it is
@@ -412,20 +413,29 @@ a result that holds a receipt.
 A lead's `inject` flag and its message follow the canary slice, with one
 difference that is the lead's own: **the epoch's one message is spent by a message
 that may have reached the lead, and not by one that was not delivered.** Once the
-request frame is written the message is spent, and stays spent unless the holder's
-answer decodes, is a valid result, and says `not-now` (reason `not-ready` or
-`blocked`) or `refused` (reason `untested` or `text`) with `written` `nothing`:
-the holder wrote nothing to the lead. Then the daemon makes the epoch's message
-free again, once it has written the `inject-result` line of the message to the
+request frame is written the message is spent, and stays spent unless the holder
+wrote nothing to the lead, which it says in one of two ways:
+
+- its answer decodes, is a valid result, and says `not-now` (reason `not-ready`
+  or `blocked`) or `refused` (reason `untested` or `text`) with `written`
+  `nothing`; the daemon then writes the `inject-result` line of the message to the
+  evidence; or
+- it refuses the request itself, with the code `disabled`, `wrong-epoch`, `busy`
+  or `bad-request` (an answer with no result: the receipt is `unavailable` with
+  `holder-` and the code, or `refused` `stale-epoch` for `wrong-epoch`); the
+  daemon then writes the `inject-refused` line of the message, with its message id
+  and the code `holder-` and the holder's code.
+
+Then the daemon makes the epoch's message free again, once the line is in the
 evidence, and the lead may send another message in the same epoch, with the same
 message id or another (an id that was used before is not refused: the daemon does
 not remember ids, and a replay of a command's id is the command table's).
 Everything else leaves it spent: `submitted`, every `uncertain` result (the `died`
 result with `written` `nothing` too, since the lead's end during the send leaves
 open what reached it), no answer within the wait, a closed connection, an answer
-that does not decode, an ok answer without a result, one of the holder's refusal
-codes (`disabled`, `wrong-epoch`, `busy`, `bad-request`: the answer is an error
-with no result), and a result line that could not be written. A refusal before the
+that does not decode, an ok answer without a result, a refusal code that the
+daemon does not know, and a line (the result or the refusal) that could not be
+written. A refusal before the
 frame is written (a bad message, a stopped role, a second message, a holder that
 cannot be dialled) spends nothing, as before. A second message while the first is
 spent is refused `second-message`, and one while the first is in flight
@@ -435,17 +445,24 @@ the message, `not-now` included.
 The spent epochs are rebuilt at every daemon start from the lead's evidence file,
 and `lead.list` shows `message_spent`. The reader sees the lines of one epoch in
 the order of the file, as a series of messages, an `inject-sent` line and then
-the `inject-result` line of the same message id. The epoch is free when every
-message of the series has its result line and every result is one of the four
-that release the message; it is spent when a message has no result line (the
-daemon was killed after the `inject-sent` line, which is written before the wait
-for the answer), when a result line has no `inject-sent` line before it or is the
-second of its message, when an `inject-sent` line follows one that has no result,
-and when a result is not a release or is not a combination the holder sends.
-Whatever is in doubt is spent. The file is read as strictly as the canary's: a
-line that is damaged or partial refuses the start, and so does a line of the lead
-that lacks the `message_id` (and, of a result, the `outcome` and `written`) that
-the reader needs. The one-message state and the in-flight flag are per lead, so
+the `inject-result` line of the same message id, or the `inject-refused` line of
+the same message id whose code is `holder-disabled`, `holder-wrong-epoch`,
+`holder-busy` or `holder-bad-request`. The epoch is free when every message of
+the series is closed by one of those and every result is one of the four that
+release the message; it is spent when a message has no closing line (the daemon
+was killed after the `inject-sent` line, which is written before the wait for the
+answer), when a result line or a holder refusal has no `inject-sent` line before
+it, names another message id or is the second of its message, when an
+`inject-sent` line follows one that has no closing line, and when a result is not
+a release or is not a combination the holder sends. An `inject-refused` line with
+any other code (a message that never reached the holder: `inject-off`,
+`second-message`, `holder-unreachable` and the like) is not part of the series
+and changes nothing, so it does not close an open message. Whatever is in doubt
+is spent. The file is read as strictly as the canary's: a line that is damaged or
+partial refuses the start, and so does a line of the lead that lacks the
+`message_id` (and, of a result, the `outcome` and `written`) that the reader
+needs. The canary's reader sees no refusal line: there every message that was
+sent stays spent. The one-message state and the in-flight flag are per lead, so
 one lead's inject never blocks another's.
 
 The row also says what became of the epoch's message. `message_result` has the
@@ -456,9 +473,12 @@ current epoch's last message was delivered and the holder answered; `reason` is
 `message_spent`: after a message that was not delivered `message_spent` is `false`
 and the words still say what happened to it, so that the console can show it. All
 three are `""` when no message was sent in the epoch, when the last one was sent
-and no answer is known, when the holder answered with a refusal code (the words of
-an earlier message of the epoch are dropped then), and for a lead the registry
-does not know. The daemon keeps the answer in memory when it delivers the message,
+and no answer is known, and for a lead the registry does not know. When the holder
+refused the request itself (see above) the row says `outcome` `refused` with `reason`
+and `written` `""`: the message was not delivered, and the words of an earlier
+message of the epoch are dropped, since they are not this message's. A restarted
+daemon has no words for a message that the holder refused (its receipt is not a
+result), and the row then shows the epoch's message free with no words. The daemon keeps the answer in memory when it delivers the message,
 and after a restart reads it from the command table while the message's receipt is
 still the role's last; a later command (a ticket, say) hides it, and the row then
 says nothing of the answer, whatever `message_spent` says. The rows of
@@ -677,8 +697,8 @@ window](lead-daemon.md#the-late-start-window); the console never sends it again.
   message is on its way to the lead, and the command's receipt reads `uncertain`.
   A killed daemon after that line leaves the epoch spent, because the line has no
   `inject-result` line after it: only a message whose result line is in the
-  evidence, with `not-now` or `refused` and nothing written, is read back as not
-  spent. A replay of the command is never sent again. Read the lead's screen
+  evidence, with `not-now` or `refused` and nothing written, or whose
+  `inject-refused` line with a holder refusal is, is read back as not spent. A replay of the command is never sent again. Read the lead's screen
   before a second message.
 - **One scratch root per account for a key.** Unit names come from the key and
   live in the user's one systemd manager. Two scratch roots on one account that

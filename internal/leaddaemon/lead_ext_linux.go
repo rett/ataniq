@@ -718,9 +718,10 @@ func (m *leadMode) ticket(ctx context.Context, lr *leadRole, p leadwire.TicketPa
 // whether a message was sent; the table never replaces it.
 //
 // The epoch takes one message, with one exception that is the lead's own: a
-// message the holder answered as not delivered (not-now or refused, nothing
-// written) does not spend it, so the lead may send another in the epoch, as
-// [canaryExt.injectFor] says.
+// message that was not delivered (the holder answered not-now or refused with
+// nothing written, or refused the request itself as disabled, wrong-epoch,
+// busy or bad-request) does not spend it, so the lead may send another in the
+// epoch, as [canaryExt.injectFor] says.
 //
 // The residual: a daemon killed after the frame is written and before the
 // inject-sent line is, a window of a few milliseconds, leaves the epoch unspent
@@ -735,18 +736,21 @@ func (m *leadMode) inject(ctx context.Context, lr *leadRole, p leadwire.InjectPa
 	}
 	res, f := lr.in.ext.injectFor(ctx, CanaryInjectParams{Role: p.Role, MessageID: p.MessageID, Body: p.Body}, p.Epoch)
 	if f != nil {
-		if f.code == "holder-"+wire.CodeWrongEpoch {
-			// The role was stopped and started between the daemon's epoch
-			// check and the holder's read of the frame: a mismatch of the
-			// epoch, as the daemon's own check answers it. The text of the
-			// refusal is the epoch's, and no text reached the lead.
-			return refusedOut(codeStaleEpoch, msgStaleEpoch)
-		}
 		if code, held := strings.CutPrefix(f.code, "holder-"); held && holderRefusal(code) {
-			// The frame was written, the epoch's message is spent and the
-			// holder answered with a refusal and no result: the words kept
-			// for an earlier message of the epoch are not this one's.
-			lr.noteDelivery(p.Epoch, leadwire.MessageResult{})
+			// The holder refused the request and wrote nothing to the lead.
+			// The words kept for an earlier message of the epoch are not this
+			// one's: this one was not delivered. With the refusal in the
+			// evidence the epoch's message is free again (see
+			// [canaryExt.injectFor]); when the line could not be written it is
+			// still spent, and the row says so.
+			lr.noteDelivery(p.Epoch, leadwire.MessageResult{Outcome: string(wire.InjectOutcomeRefused)})
+			if code == wire.CodeWrongEpoch {
+				// The role was stopped and started between the daemon's epoch
+				// check and the holder's read of the frame: a mismatch of the
+				// epoch, as the daemon's own check answers it. The text of the
+				// refusal is the epoch's, and no text reached the lead.
+				return refusedOut(codeStaleEpoch, msgStaleEpoch)
+			}
 		}
 		return fromFail(f)
 	}

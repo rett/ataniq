@@ -266,3 +266,19 @@ func (r *countingReader) Read(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
+
+// The words of a message that the holder refused itself (the row carries the
+// outcome refused and no other word): not delivered, free when the daemon says
+// the message is not spent, and spent and not delivered when it says it is
+// (the refusal's line could not be written).
+func TestTheMsgColumnSaysAHoldersRefusalWasNotDelivered(t *testing.T) {
+	refused := Delivery{Outcome: OutcomeRefused}
+	for _, c := range []struct {
+		spent bool
+		want  string
+	}{{false, "free (not delivered)"}, {true, "spent, not delivered"}} {
+		if got := msgWord(Lead{Inject: true, MessageSpent: c.spent}, refused); got != c.want {
+			t.Errorf("spent %v: %q, want %q", c.spent, got, c.want)
+		}
+	}
+}

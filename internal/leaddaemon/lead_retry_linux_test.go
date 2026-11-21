@@ -14,10 +14,11 @@ import (
 	"ataniq/internal/leadwire"
 )
 
-// The tests of the one exception to a spent message in scratch mode: a message
-// that the holder answered as not delivered (not-now or refused, nothing
-// written) leaves the epoch's message free, and anything that may have reached
-// the lead leaves it spent, in this daemon and in the next.
+// The tests of the exceptions to a spent message in scratch mode: a message
+// that was not delivered (the holder answered not-now or refused with nothing
+// written, or refused the request itself as disabled, wrong-epoch, busy or
+// bad-request) leaves the epoch's message free, and anything that may have
+// reached the lead leaves it spent, in this daemon and in the next.
 
 // injectAnswer is the holder's answer to one inject request.
 type injectAnswer func(conn net.Conn)
@@ -115,12 +116,11 @@ func TestScratchLeadMessageStaysSpentWhenItMayHaveBeenDelivered(t *testing.T) {
 			Outcome: wire.InjectOutcomeUncertain, Reason: wire.InjectReasonDied, Written: wire.InjectWrittenNothing}),
 		"uncertain, died, unknown": okResult(wire.InjectResult{
 			Outcome: wire.InjectOutcomeUncertain, Reason: wire.InjectReasonDied, Written: wire.InjectWrittenUnknown}),
-		"an ok answer without a result":  func(conn net.Conn) { writeResponse(conn, wire.Response{OK: true}) },
-		"the holder's busy":              func(conn net.Conn) { writeResponse(conn, wire.Response{OK: false, Code: wire.CodeBusy}) },
-		"the holder's bad request":       func(conn net.Conn) { writeResponse(conn, wire.Response{OK: false, Code: wire.CodeBadRequest}) },
-		"an answer that does not decode": garbage,
-		"no answer":                      func(conn net.Conn) { silent(wire.Request{}, conn) },
-		"a closed connection":            func(conn net.Conn) { conn.Close() },
+		"an ok answer without a result":           func(conn net.Conn) { writeResponse(conn, wire.Response{OK: true}) },
+		"a refusal code the daemon does not know": func(conn net.Conn) { writeResponse(conn, wire.Response{OK: false, Code: "no-such-code"}) },
+		"an answer that does not decode":          garbage,
+		"no answer":                               func(conn net.Conn) { silent(wire.Request{}, conn) },
+		"a closed connection":                     func(conn net.Conn) { conn.Close() },
 	} {
 		t.Run(name, func(t *testing.T) {
 			l := newLeadEnv(t)
@@ -369,5 +369,196 @@ func TestCanaryNotNowMessageStaysSpentAcrossARestart(t *testing.T) {
 	}
 	if n := len(c.holder.requests(wire.OpInject)); n != 1 {
 		t.Fatalf("%d inject requests", n)
+	}
+}
+
+// holderRefusals are the holder's own refusals of an inject request, the ones
+// that mean nothing was written to the lead (holderRefusal).
+var holderRefusals = []string{wire.CodeDisabled, wire.CodeWrongEpoch, wire.CodeBusy, wire.CodeBadRequest}
+
+// A message the holder refuses itself (disabled, wrong-epoch, busy or
+// bad-request) was not delivered and does not spend the epoch's message: the
+// row says free and not delivered, whatever words an earlier message left, the
+// lead may send another, and a restart of the daemon reads the epoch as free
+// too, from the inject-refused line. The answer to the lead is the refusal's.
+func TestScratchLeadHolderRefusalLeavesTheEpochsMessageFree(t *testing.T) {
+	for _, code := range holderRefusals {
+		t.Run(code, func(t *testing.T) {
+			l := newLeadEnv(t)
+			l.start()
+			refuse := func(conn net.Conn) { writeResponse(conn, wire.Response{OK: false, Code: code}) }
+			// The first message is not delivered with words of its own, which
+			// the refusal of the second replaces.
+			sr := l.up("alpha", answersInOrder(answerNotNow, refuse, refuse, answerSubmit))
+			h := l.holders["alpha"]
+			want(t, l.inject("alpha", sr.Epoch, "msg-one", "body text"), leadwire.StatusDone, "")
+			if row := l.row("alpha"); row.MessageSpent || row.MessageResult.Reason != "not-ready" {
+				t.Fatalf("after the not-now message: %+v", row)
+			}
+			wantCode, wantStatus := "holder-"+code, leadwire.StatusUnavailable
+			if code == wire.CodeWrongEpoch {
+				wantCode, wantStatus = codeStaleEpoch, leadwire.StatusRefused
+			}
+			want(t, l.inject("alpha", sr.Epoch, "msg-two", "body text"), wantStatus, wantCode)
+			notDelivered := leadwire.MessageResult{Outcome: "refused"}
+			if row := l.row("alpha"); row.MessageSpent || row.MessageResult != notDelivered {
+				t.Fatalf("after the refusal: %+v", row)
+			}
+			// Free in the next daemon too: the evidence has the refused line.
+			l.restart()
+			if row := l.row("alpha"); row.MessageSpent {
+				t.Fatalf("after the restart: %+v", row)
+			}
+			want(t, l.inject("alpha", sr.Epoch, "msg-two", "body text"), wantStatus, wantCode)
+			want(t, l.inject("alpha", sr.Epoch, "msg-three", "body text"), leadwire.StatusDone, "")
+			if row := l.row("alpha"); !row.MessageSpent || row.MessageResult.Outcome != "submitted" {
+				t.Fatalf("after the delivered message: %+v", row)
+			}
+			want(t, l.inject("alpha", sr.Epoch, "msg-four", "body text"), leadwire.StatusRefused, leadwire.CodeSecondMessage)
+			if n := injectFrames(h); n != 4 {
+				t.Fatalf("%d frames reached the holder, want 4", n)
+			}
+			if !strings.Contains(l.log.String(), "was refused by the holder") {
+				t.Fatalf("the log does not say the message was refused:\n%s", l.log)
+			}
+			l.restart()
+			if row := l.row("alpha"); !row.MessageSpent {
+				t.Fatalf("after the second restart: %+v", row)
+			}
+		})
+	}
+}
+
+// What the evidence shows to the next daemon about a holder's refusal: a
+// refusal that closes the open message of its id frees the epoch; every
+// disorder spends it (the refusal of no message, of another message, twice, a
+// message left open by a kill after it, or a code that is not one of the
+// holder's four), and the lines of a message refused before its frame was
+// written change nothing.
+func TestScratchLeadEvidenceOfAHolderRefusalDecidesWhatARestartAdmits(t *testing.T) {
+	role := roleOf("alpha")
+	sent := func(id string) string {
+		return evidenceLineOf("inject-sent", role, `,"epoch":1,"message_id":"`+id+`"`)
+	}
+	refused := func(id, code string) string {
+		return evidenceLineOf("inject-refused", role, `,"epoch":1,"message_id":"`+id+`","code":"`+code+`"`)
+	}
+	noID := evidenceLineOf("inject-refused", role, `,"epoch":1,"code":"holder-busy"`)
+	result := evidenceLineOf("inject-result", role, `,"epoch":1,"message_id":"m-1","outcome":"submitted","written":"whole"`)
+	for name, tc := range map[string]struct {
+		lines []string
+		spent bool
+	}{
+		"sent and holder-busy":                  {[]string{sent("m-1"), refused("m-1", "holder-busy")}, false},
+		"sent and holder-disabled":              {[]string{sent("m-1"), refused("m-1", "holder-disabled")}, false},
+		"sent and holder-wrong-epoch":           {[]string{sent("m-1"), refused("m-1", "holder-wrong-epoch")}, false},
+		"sent and holder-bad-request":           {[]string{sent("m-1"), refused("m-1", "holder-bad-request")}, false},
+		"refused twice, each after its sent":    {[]string{sent("m-1"), refused("m-1", "holder-busy"), sent("m-2"), refused("m-2", "holder-busy")}, false},
+		"refusal, then a delivered message":     {[]string{sent("m-1"), refused("m-1", "holder-busy"), sent("m-2"), result}, true},
+		"a refusal of no sent message":          {[]string{refused("m-1", "holder-busy")}, true},
+		"a refusal of another message":          {[]string{sent("m-1"), refused("m-2", "holder-busy")}, true},
+		"a refusal with no message id":          {[]string{sent("m-1"), noID}, true},
+		"a refusal twice":                       {[]string{sent("m-1"), refused("m-1", "holder-busy"), refused("m-1", "holder-busy")}, true},
+		"a refusal, then killed after the sent": {[]string{sent("m-1"), refused("m-1", "holder-busy"), sent("m-2")}, true},
+		"killed after the sent line":            {[]string{sent("m-1")}, true},
+		"a refusal and a result of one message": {[]string{sent("m-1"), refused("m-1", "holder-busy"), result}, true},
+		// Not one of the holder's four: the open message stays open.
+		"sent and holder-unreachable":           {[]string{sent("m-1"), refused("m-1", "holder-unreachable")}, true},
+		"sent and an unknown holder code":       {[]string{sent("m-1"), refused("m-1", "holder-no-such-code")}, true},
+		"sent and second-message":               {[]string{sent("m-1"), refused("m-1", "second-message")}, true},
+		"sent and the holder's code unprefixed": {[]string{sent("m-1"), refused("m-1", "busy")}, true},
+		// A line of a message that never reached the holder, between others.
+		"a refusal before any frame":         {[]string{refused("m-1", "inject-off")}, false},
+		"a refusal in flight, of another id": {[]string{sent("m-1"), refused("m-2", "message-in-flight"), refused("m-1", "holder-busy")}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			l := newLeadEnv(t)
+			l.start()
+			sr := l.up("alpha", answersInOrder(answerSubmit))
+			h := l.holders["alpha"]
+			if err := l.running.stop(); err != nil {
+				t.Fatal(err)
+			}
+			appendEvidence(t, l, "alpha", tc.lines...)
+			l.start()
+			if row := l.row("alpha"); row.MessageSpent != tc.spent {
+				t.Fatalf("spent %v, want %v: %+v", row.MessageSpent, tc.spent, row)
+			}
+			if tc.spent {
+				want(t, l.inject("alpha", sr.Epoch, "msg-new", "body text"), leadwire.StatusRefused, leadwire.CodeSecondMessage)
+				if n := injectFrames(h); n != 0 {
+					t.Fatalf("%d frames reached the holder", n)
+				}
+				return
+			}
+			want(t, l.inject("alpha", sr.Epoch, "msg-new", "body text"), leadwire.StatusDone, "")
+			if n := injectFrames(h); n != 1 {
+				t.Fatalf("%d frames reached the holder", n)
+			}
+		})
+	}
+}
+
+// The canary keeps its rule: a refusal of the holder spends the epoch's
+// message in the instance and in the daemon that reads the evidence back,
+// where an instance of scratch mode (the flag the router sets for a lead)
+// takes it back. The inject-refused line is the same in both.
+func TestCanaryHolderRefusalStillSpendsTheMessageAndScratchDoesNot(t *testing.T) {
+	ctx := context.Background()
+	for _, code := range holderRefusals {
+		for _, scratch := range []bool{false, true} {
+			f := newExtFixture(t, answersInOrder(
+				func(conn net.Conn) { writeResponse(conn, wire.Response{OK: false, Code: code}) }, answerSubmit), "")
+			f.x.scratch = scratch
+			_, fl := f.x.injectFor(ctx, CanaryInjectParams{MessageID: "msg-one", Body: "body text"}, f.epoch)
+			if fl == nil || fl.code != "holder-"+code {
+				t.Fatalf("%s, scratch %v: %+v", code, scratch, fl)
+			}
+			if got := f.x.messageSpent(f.epoch); got == scratch {
+				t.Fatalf("%s, scratch %v: spent %v", code, scratch, got)
+			}
+			_, fl = f.x.injectFor(ctx, CanaryInjectParams{MessageID: "msg-two", Body: "body text"}, f.epoch)
+			if scratch && fl != nil || !scratch && (fl == nil || fl.code != "second-message") {
+				t.Fatalf("%s, scratch %v: the second message: %+v", code, scratch, fl)
+			}
+		}
+	}
+}
+
+// The canary daemon reads its evidence with the canary's reader: the inject-refused
+// line of a holder's refusal does not free the epoch's message across a restart.
+func TestCanaryHolderRefusalMessageStaysSpentAcrossARestart(t *testing.T) {
+	c := newCanaryEnv(t)
+	started := c.up(respondWith(wire.Response{OK: false, Code: wire.CodeBusy}))
+	if _, err := c.inject("msg-one", "body text\n"); err == nil {
+		t.Fatal("the message was not refused")
+	}
+	c.restart()
+	if _, _, epoch, found := c.shown(); !found || epoch != started.Epoch {
+		t.Fatalf("after the restart: epoch %d (found %v)", epoch, found)
+	}
+	_, err := c.inject("msg-two", "body text\n")
+	if ce := wantCode(t, err, CodeRefused); ce.Message != msgSecond {
+		t.Fatalf("message %q", ce.Message)
+	}
+	if n := len(c.holder.requests(wire.OpInject)); n != 1 {
+		t.Fatalf("%d inject requests", n)
+	}
+}
+
+// A refusal line that could not be written leaves the message spent, as a
+// result line does: the evidence cannot show the message as free, and the
+// daemon does not show it free either.
+func TestScratchHolderRefusalStaysSpentWhenItsLineCannotBeWritten(t *testing.T) {
+	f := newExtFixture(t, respondWith(wire.Response{OK: false, Code: wire.CodeBusy}), "")
+	f.x.scratch = true
+	if err := f.x.ev.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, fl := f.x.injectFor(context.Background(), CanaryInjectParams{MessageID: "msg-one", Body: "body text"}, f.epoch); fl == nil || fl.code != "holder-busy" {
+		t.Fatalf("%+v", fl)
+	}
+	if !f.x.messageSpent(f.epoch) {
+		t.Fatal("a refusal whose line is not written is shown free")
 	}
 }
