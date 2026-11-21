@@ -333,10 +333,11 @@ func TestEveryResultTheHolderCanSendHasWords(t *testing.T) {
 	}
 }
 
-// TestResultWordsAreShortASCIIAndSpendTheEpoch holds that each text is plain
-// printable ASCII on one line, and that every result the view has words for
-// says that the epoch's message is spent, as the daemon makes it.
-func TestResultWordsAreShortASCIIAndSpendTheEpoch(t *testing.T) {
+// TestResultWordsAreShortASCIIAndSayWhetherTheEpochIsSpent holds that each text
+// is plain printable ASCII on one line, and that every result the view has words
+// for says what the daemon does with the epoch's message: it is free again after
+// a message that was not delivered, and spent after any other.
+func TestResultWordsAreShortASCIIAndSayWhetherTheEpochIsSpent(t *testing.T) {
 	check := func(name string, tx deliveryText) {
 		if tx.text == "" || len(tx.text) > 130 {
 			t.Errorf("%s: %d bytes", name, len(tx.text))
@@ -351,6 +352,12 @@ func TestResultWordsAreShortASCIIAndSpendTheEpoch(t *testing.T) {
 	for c, tx := range deliveryWords {
 		check(c.outcome+"/"+c.reason+"/"+c.written, tx)
 		line := receiptLine(Receipt{Op: OpInject, Status: Done, Outcome: c.outcome, Reason: c.reason, Written: c.written})
+		if tx.fate == fateNotDelivered {
+			if !strings.Contains(line, "The epoch's message is free") || strings.Contains(line, "is spent") {
+				t.Errorf("%v: %q does not say the epoch's message is free", c, line)
+			}
+			continue
+		}
 		if !strings.Contains(line, "This epoch's one message is spent") {
 			t.Errorf("%v: %q does not say the epoch's message is spent", c, line)
 		}
@@ -360,11 +367,14 @@ func TestResultWordsAreShortASCIIAndSpendTheEpoch(t *testing.T) {
 	}
 }
 
-// TestTheDaemonSpendsTheMessageWhenTheRequestIsWritten holds the sentence the
-// view says of every done inject: the daemon marks the epoch's message spent
-// once the request is written to the holder, whatever the holder answers. It
-// reads the daemon's source; a change there is a change of the view's words.
-func TestTheDaemonSpendsTheMessageWhenTheRequestIsWritten(t *testing.T) {
+// TestTheDaemonSpendsTheMessageWhenTheRequestIsWrittenUnlessItWasNotDelivered
+// holds the sentences the view says of every done inject: the daemon marks the
+// epoch's message spent once the request is written to the holder, whatever the
+// holder answers, except that a lead of scratch mode whose message the holder
+// answered as not delivered (and whose result line is in the evidence) keeps it
+// free. It reads the daemon's source; a change there is a change of the view's
+// words.
+func TestTheDaemonSpendsTheMessageWhenTheRequestIsWrittenUnlessItWasNotDelivered(t *testing.T) {
 	src, err := os.ReadFile(filepath.FromSlash("../../leaddaemon/canary_ext_linux.go"))
 	if err != nil {
 		t.Fatal(err)

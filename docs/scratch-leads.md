@@ -466,7 +466,7 @@ the command's id gives the full receipt.
 The console's client cleans both members to fixed words (a word outside the
 grammar becomes `unrecognised`), and its leads view draws the `ready` line and
 the MSG column from them (`free`, `free (not delivered)`, `sent`, `sent-unsure`
-or `spent (not delivered)`), so it guesses neither. The decoding is strict about
+or `spent, not delivered`), so it guesses neither. The decoding is strict about
 members the client does not know, which it refuses, and not about members it has,
 so a row of a daemon from before `state_reason` and `message_result` (this
 feature is not released) is read as a row with both empty: the view then shows

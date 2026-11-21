@@ -11,5 +11,10 @@
   `refused` and nothing written; a daemon killed after the `inject-sent` line
   and before the result line leaves the epoch spent, as does any result line
   without a matching `inject-sent` line or one that comes twice. The canary's
-  rule that every result spends the message is unchanged.
-  See `docs/scratch-leads.md`.
+  rule that every result spends the message is unchanged. The console's leads
+  view says `free (not delivered)` in the MSG column for such a message, its
+  receipt line says the epoch's message is free, and `m` sends another;
+  `spent-not-delivered` becomes `spent, not delivered` and is seen only when
+  the daemon holds the epoch spent after a message that was not delivered,
+  because its result line could not be written. See `docs/scratch-leads.md` and
+  `docs/terminal-console.md`.

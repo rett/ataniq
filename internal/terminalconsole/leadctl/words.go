@@ -202,10 +202,14 @@ var outcomeOnlyWords = map[string]deliveryText{
 
 const unknownResult = "the result is not known to this console"
 
-// spentTail says what the daemon does with the epoch's one message: it is
-// spent when the daemon has written the request to the holder, whatever the
-// holder then answers (internal/leaddaemon/lead_ext_linux.go injectFor).
-const spentTail = ". This epoch's one message is spent"
+// What the daemon does with the epoch's message once a request was written to
+// the holder (internal/leaddaemon/canary_ext_linux.go injectFor): it is spent,
+// unless the holder answered that nothing was written (not-now or refused), when
+// it is free again and the lead may send another.
+const (
+	spentTail = ". This epoch's one message is spent"
+	freeTail  = ". The epoch's message is free"
+)
 
 // deliveryOf looks up the words of a done inject's three words. A result
 // whose reason or written is set and is not a combination the holder sends,
@@ -223,28 +227,37 @@ func deliveryOf(outcome, reason, written string) deliveryText {
 }
 
 // outcomeWords is the line of a done inject's result: what happened to the
-// message and, when something is known, that the epoch's message is spent.
+// message and, when something is known, whether the epoch's message is spent
+// (it is not after a message that was not delivered).
 func outcomeWords(r Receipt) string {
 	t := deliveryOf(r.Outcome, r.Reason, r.Written)
-	if t.fate == fateUnknown {
+	switch t.fate {
+	case fateUnknown:
 		return t.text
+	case fateNotDelivered:
+		return t.text + freeTail
 	}
 	return t.text + spentTail
 }
 
 // msgWord is the MSG column: whether the lead takes a message, and what became
-// of the epoch's one. It agrees with the receipt line of a done message: a
-// message that was NOT delivered is spent all the same.
+// of the epoch's message. It agrees with the receipt line of a done message: a
+// message that was NOT delivered leaves the epoch's message free, and says so
+// while it is free. The same result of a message that the daemon holds spent
+// (it could not write down the result) reads as spent and not delivered.
 func msgWord(l Lead, d Delivery) string {
+	f := deliveryOf(d.Outcome, d.Reason, d.Written).fate
 	switch {
 	case !l.Inject:
 		return "off"
+	case !l.MessageSpent && f == fateNotDelivered:
+		return "free (not delivered)"
 	case !l.MessageSpent:
 		return "free"
 	}
-	switch deliveryOf(d.Outcome, d.Reason, d.Written).fate {
+	switch f {
 	case fateNotDelivered:
-		return "spent-not-delivered"
+		return "spent, not delivered"
 	case fateUnsure:
 		return "sent-unsure"
 	}

@@ -118,6 +118,22 @@ func TestTheKindOfATicketComesFromOneFunction(t *testing.T) {
 	}
 }
 
+// A row whose message was not delivered, not spent, with the holder's words, is
+// handed to the view as it is.
+func TestTheAdapterMapsAFreeMessageWithTheWordsOfTheLastOne(t *testing.T) {
+	r := aLead()
+	r.MessageSpent = false
+	r.MessageResult = consoleclient.LeadDelivery{Outcome: "refused", Reason: "text", Written: "nothing"}
+	f := &fakeLeads{list: consoleclient.LeadListing{Leads: []consoleclient.LeadRow{r}}}
+	got, err := newLeadsAdapter(f).List()
+	if err != nil || len(got.Leads) != 1 {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if l := got.Leads[0]; l.MessageSpent || l.MessageResult != (leadctl.Delivery{Outcome: "refused", Reason: "text", Written: "nothing"}) {
+		t.Fatalf("%+v", l)
+	}
+}
+
 func TestTheAdapterMapsTheListing(t *testing.T) {
 	f := &fakeLeads{list: consoleclient.LeadListing{
 		MaxRunning: 4, Running: 1, LeftOut: 2,
@@ -427,10 +443,11 @@ func TestWithLeadControlLOpensTheListAndTheKeysReachTheClient(t *testing.T) {
 
 // What the daemon's row says reaches the screen: the state's reason draws the
 // ready line, and the message's words draw the MSG column, with nothing guessed
-// by the view.
+// by the view: a message that was not delivered shows as free while the daemon
+// says it is not spent, and as spent and not delivered while it says it is.
 func TestTheViewDrawsTheStateReasonAndTheMessageResultTheDaemonGave(t *testing.T) {
 	row := aLead()
-	row.MessageSpent = true
+	row.MessageSpent = false
 	row.StateReason = "holder-ready"
 	row.MessageResult = consoleclient.LeadDelivery{Outcome: "not-now", Reason: "not-ready", Written: "nothing"}
 	f := &fakeLeads{list: consoleclient.LeadListing{MaxRunning: 2, Leads: []consoleclient.LeadRow{row}}}
@@ -439,7 +456,14 @@ func TestTheViewDrawsTheStateReasonAndTheMessageResultTheDaemonGave(t *testing.T
 	d.send(tea.WindowSizeMsg{Width: 140, Height: 45})
 	d.send(openLeadsKey())
 	d.until("the ready line", func(v string) bool { return strings.Contains(v, "alpha: ready (holder-ready)") })
-	d.until("the message's fate", func(v string) bool { return strings.Contains(v, "spent-not-delivered") })
+	d.until("the message's fate", func(v string) bool { return strings.Contains(v, "free (not delivered)") })
+	spentRow := row
+	spentRow.MessageSpent = true
+	f3 := &fakeLeads{list: consoleclient.LeadListing{MaxRunning: 2, Leads: []consoleclient.LeadRow{spentRow}}}
+	d3 := newViewDriver(t, rigFor(t, f3).model())
+	d3.send(tea.WindowSizeMsg{Width: 140, Height: 45})
+	d3.send(openLeadsKey())
+	d3.until("the spent message's fate", func(v string) bool { return strings.Contains(v, "spent, not delivered") })
 
 	// A row without them, as an older daemon gives, draws the plain state and
 	// the message as sent.
@@ -449,7 +473,7 @@ func TestTheViewDrawsTheStateReasonAndTheMessageResultTheDaemonGave(t *testing.T
 	d2.send(tea.WindowSizeMsg{Width: 140, Height: 45})
 	d2.send(openLeadsKey())
 	v := d2.until("the list", func(v string) bool { return strings.Contains(v, "alpha") })
-	if strings.Contains(v, "holder-ready") || strings.Contains(v, "spent-not-delivered") {
+	if strings.Contains(v, "holder-ready") || strings.Contains(v, "not delivered") {
 		t.Fatalf("the view drew what the row did not say:\n%s", v)
 	}
 }
