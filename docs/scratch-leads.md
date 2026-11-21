@@ -345,7 +345,7 @@ on the holder's word, and in no other way:
   a stop. This build adds no way from `ready` back to `starting` or to
   `degraded`: a holder that goes away after it said it was up is not noticed
   by this observer, and a unit that ends is found by the next reconcile when
-  the daemon starts, as before.
+  the daemon starts.
 - **It does not change** what counts against `max_running` (a `starting` lead
   and a `ready` one both count), the receipts, the command table or the
   evidence file.
@@ -442,7 +442,7 @@ that does not decode, an ok answer without a result, a refusal code that the
 daemon does not know, and a line (the result or the refusal) that could not be
 written. A refusal before the
 frame is written (a bad message, a stopped role, a second message, a holder that
-cannot be dialled) spends nothing, as before. A second message while the first is
+cannot be dialled) spends nothing. A second message while the first is
 spent is refused `second-message`, and one while the first is in flight
 `message-in-flight`. The canary's own rule is unchanged: there every result spends
 the message, `not-now` included.
@@ -496,8 +496,8 @@ grammar becomes `unrecognised`), and its leads view draws the `ready` line and
 the MSG column from them (`free`, `free (not delivered)`, `sent`, `sent-unsure`
 or `spent, not delivered`), so it guesses neither. The decoding is strict about
 members the client does not know, which it refuses, and not about members it has,
-so a row of a daemon from before `state_reason` and `message_result` (this
-feature is not released) is read as a row with both empty: the view then shows
+so a row without `state_reason` and `message_result` is read as a row with both
+empty: the view then shows
 the plain state, and the MSG column says `sent-unsure` for a spent message
 (nothing says what became of it) and `free` for a free one. A message's
 receipt carries the same three words, which the view draws as the answer to the
