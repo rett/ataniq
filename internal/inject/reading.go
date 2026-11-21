@@ -7,6 +7,7 @@ import (
 
 	"ataniq/internal/inject/idle"
 	"ataniq/internal/inject/osc7501"
+	"ataniq/internal/inject/screen"
 )
 
 // Bounds on what a Reading carries, so that a journal line or a notice made
@@ -54,6 +55,18 @@ type ScreenReading struct {
 	// Mode is the permission mode the footer shows (claude only), a short
 	// name from the recogniser's closed list.
 	Mode string
+
+	// The shape of the screen the check read: numbers and flags of the
+	// snapshot, no text, so a screen that was not placed can be told from
+	// one that was by its size, its alternate-screen flag, the cursor and
+	// the last row that holds anything.
+	Cols, Rows int
+	AltScreen  bool
+	CursorX    int
+	CursorY    int
+	// LastRow is the zero-based index of the last row that holds a
+	// character other than a blank, or -1 when the screen is blank.
+	LastRow int
 }
 
 // Reading is what one check read, as plain data for the journal and for the
@@ -83,7 +96,7 @@ type Reading struct {
 func (r *Reading) Passed() bool { return r != nil && len(r.Failed) == 0 }
 
 // newReading makes the reading of one view and its classification.
-func newReading(v View, cl idle.Classification, rep osc7501.Status, header string) *Reading {
+func newReading(v View, snap screen.Snapshot, cl idle.Classification, rep osc7501.Status, header string) *Reading {
 	r := &Reading{
 		State:       cl.State,
 		ReportOnly:  cl.ReportOnly,
@@ -110,6 +123,12 @@ func newReading(v View, cl idle.Classification, rep osc7501.Status, header strin
 			PastedMarker:     cl.Screen.PastedMarker,
 			StateHidden:      cl.Screen.StateHidden,
 			Mode:             clipToken(cl.Screen.Mode),
+			Cols:             snap.Cols,
+			Rows:             snap.Rows,
+			AltScreen:        snap.AltScreen,
+			CursorX:          snap.CursorX,
+			CursorY:          snap.CursorY,
+			LastRow:          lastRow(snap.Text),
 		},
 	}
 	for i, m := range cl.Screen.DialogMarks {
@@ -156,7 +175,14 @@ func (r *Reading) String() string {
 	}
 	fmt.Fprintf(&b, ", parser ground %t, frame open %t, bracketed paste %t", r.Term.ParserGround, r.Term.FrameOpen, r.Term.BracketedPaste)
 	fmt.Fprintf(&b, ", owner quiet %s, screen quiet %s", r.OwnerQuiet.Round(time.Millisecond), r.ScreenQuiet.Round(time.Millisecond))
-	fmt.Fprintf(&b, ", composer %t empty %t cursor-in %t header %t marker %t", r.Screen.Composer, r.Screen.ComposerEmpty, r.Screen.CursorInComposer, r.Screen.HeaderHeld, r.Screen.PastedMarker)
+	if r.Screen.Known {
+		fmt.Fprintf(&b, ", composer %t empty %t cursor-in %t header %t marker %t", r.Screen.Composer, r.Screen.ComposerEmpty, r.Screen.CursorInComposer, r.Screen.HeaderHeld, r.Screen.PastedMarker)
+	} else {
+		// An unknown screen was not examined: the zero values are not
+		// observations of a composer.
+		b.WriteString(", composer not read")
+	}
+	fmt.Fprintf(&b, ", screen %dx%d alt %t cursor %d,%d last-row %d", r.Screen.Cols, r.Screen.Rows, r.Screen.AltScreen, r.Screen.CursorX, r.Screen.CursorY, r.Screen.LastRow)
 	if len(r.Failed) > 0 {
 		fmt.Fprintf(&b, ", failed: %s", strings.Join(r.Failed, ", "))
 	}
@@ -174,6 +200,27 @@ func (r Result) Readings() string {
 	}
 	s += "; before: " + r.Before.String() + "; after: " + r.After.String()
 	return clipText(s, maxReadingText)
+}
+
+// lastRow returns the zero-based index of the last row of text that holds a
+// character other than a blank, or -1 when none does. It returns a number
+// only: the text is never kept.
+func lastRow(text string) int {
+	last := -1
+	row := 0
+	for len(text) > 0 {
+		line := text
+		if i := strings.IndexByte(text, '\n'); i >= 0 {
+			line, text = text[:i], text[i+1:]
+		} else {
+			text = ""
+		}
+		if strings.TrimSpace(line) != "" {
+			last = row
+		}
+		row++
+	}
+	return last
 }
 
 // clipToken cuts a short token of outside text to maxToken bytes of printable
