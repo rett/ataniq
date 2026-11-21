@@ -599,3 +599,9 @@ func TestTheDaemonViewFollowsTheDaemon(t *testing.T) {
 		}
 	}
 }
+
+// unavailableResult is a result without a view, for the tests of the
+// projection's fixed parts.
+func unavailableResult() consoleclient.Result {
+	return consoleclient.Result{State: consoleclient.StateNoDaemon, Text: "no daemon", NextStep: "start it"}
+}

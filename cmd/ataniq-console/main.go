@@ -250,7 +250,13 @@ func run(args []string, out, errout io.Writer) int {
 	case cfg.attach != nil:
 		model = attachModel(cfg)
 	case cfg.daemon != "":
-		model = daemonModel(cfg)
+		m, closeOwner, err := daemonConsole(cfg)
+		if err != nil {
+			fmt.Fprintln(errout, "error:", err)
+			return 1
+		}
+		defer closeOwner()
+		model = m
 	case cfg.demo:
 		model = demoModel(cfg)
 	default:

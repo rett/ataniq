@@ -30,11 +30,14 @@ type daemonSource struct {
 	dir string
 	// read asks the daemon: consoleclient.Read, or a test's own.
 	read func(ctx context.Context, dir string) consoleclient.Result
+	// owner says that the console was given the daemon's approvals, so that
+	// what the projection says of them is not "no owner channel".
+	owner bool
 }
 
 // Snapshot returns the view shown until the first answer.
 func (d daemonSource) Snapshot() terminalconsole.Projection {
-	p := daemonBase()
+	p := daemonBase(d.owner)
 	p.Problem = "the daemon has not been asked yet"
 	return p
 }
@@ -43,29 +46,40 @@ func (d daemonSource) Snapshot() terminalconsole.Projection {
 // daemon cannot be read the projection carries the plain state and its next
 // step, which the cockpit shows where the leads would be.
 func (d daemonSource) Refresh(ctx context.Context) (terminalconsole.Projection, error) {
-	return daemonProjection(d.read(ctx, d.dir)), nil
+	return daemonProjectionFor(d.read(ctx, d.dir), d.owner), nil
 }
 
-// daemonBase is what every projection of the daemon's view holds: no control
-// is available, and each says why.
-func daemonBase() terminalconsole.Projection {
+// daemonBase is what every projection of the daemon's view holds: no session
+// control is available, and each says why. Without the daemon's approvals
+// (the release build) the approval controls say there is no owner channel;
+// with them, the cockpit makes those controls live and they point at the
+// approvals view.
+func daemonBase(owner bool) terminalconsole.Projection {
 	readOnly := "The daemon's view is read-only."
-	return terminalconsole.Projection{
+	approve := "There is " + noOwnerChannel + "."
+	p := terminalconsole.Projection{
 		ControlUnavailable: "The daemon's view is read-only: " + noOwnerChannel + ".",
 		Gate:               terminalconsole.Gate{State: "None shown: " + noOwnerChannel},
 		Contract: []terminalconsole.Check{
 			{Name: "Daemon view", State: "provisional, unqualified"},
 			{Name: "Owner channel", State: "unavailable: " + noOwnerChannel},
 		},
-		Controls: []terminalconsole.Control{
-			{Name: "Approve pending gate", Key: "Ctrl+K", Reason: "There is " + noOwnerChannel + ".", Approval: true},
-			{Name: "Deny pending gate", Key: "Ctrl+K", Reason: "There is " + noOwnerChannel + ".", Approval: true},
-			{Name: "Full attach", Key: "a", Reason: readOnly + " It attaches to no session."},
-			{Name: "Send to lead", Key: "Ctrl+K", Reason: readOnly + " It sends nothing to a lead."},
-			{Name: "Interrupt lead", Key: "Ctrl+K", Reason: readOnly + " It sends nothing to a lead."},
-			{Name: "Detach", Key: "Ctrl+K", Reason: readOnly + " There is no attachment to end."},
-		},
 	}
+	if owner {
+		approve = "Open the approvals view with g."
+		p.ControlUnavailable = "The daemon's view has no session control: it attaches to no session and sends nothing to a lead."
+		p.Gate = terminalconsole.Gate{State: "Shown in the approvals view (g)"}
+		p.Contract[1] = terminalconsole.Check{Name: "Owner channel", State: "provisional, unqualified: asked of the daemon"}
+	}
+	p.Controls = []terminalconsole.Control{
+		{Name: "Approve pending gate", Key: "Ctrl+K", Reason: approve, Approval: true},
+		{Name: "Deny pending gate", Key: "Ctrl+K", Reason: approve, Approval: true},
+		{Name: "Full attach", Key: "a", Reason: readOnly + " It attaches to no session."},
+		{Name: "Send to lead", Key: "Ctrl+K", Reason: readOnly + " It sends nothing to a lead."},
+		{Name: "Interrupt lead", Key: "Ctrl+K", Reason: readOnly + " It sends nothing to a lead."},
+		{Name: "Detach", Key: "Ctrl+K", Reason: readOnly + " There is no attachment to end."},
+	}
+	return p
 }
 
 // daemonProjection maps what consoleclient read onto the console's
@@ -76,7 +90,13 @@ func daemonBase() terminalconsole.Projection {
 // consoleclient has cleaned and bounded every string of a view, and the
 // console cleans and bounds its copy again, so nothing here needs to.
 func daemonProjection(r consoleclient.Result) terminalconsole.Projection {
-	p := daemonBase()
+	return daemonProjectionFor(r, false)
+}
+
+// daemonProjectionFor is daemonProjection for a console that was given the
+// daemon's approvals when owner is true.
+func daemonProjectionFor(r consoleclient.Result, owner bool) terminalconsole.Projection {
+	p := daemonBase(owner)
 	if r.State != consoleclient.StateOK {
 		p.Problem, p.NextStep = r.Text, r.NextStep
 		if p.Problem == "" {
@@ -177,6 +197,20 @@ func reconcileText(completed bool) string {
 	return "not completed"
 }
 
+// daemonConsole returns the console for --daemon as the command line makes
+// it: the daemon's view, and the daemon's approvals as its backend when this
+// build has an owner channel (the tagged build), and none otherwise. The
+// returned function ends what the backend holds; the caller calls it when the
+// console is done.
+func daemonConsole(cfg config) (*terminalconsole.Model, func(), error) {
+	backend, closeOwner, err := ownerBackend(cfg.daemon)
+	if err != nil {
+		return nil, nil, err
+	}
+	cfg.options.Backend = backend
+	return daemonModel(cfg), closeOwner, nil
+}
+
 // daemonModel returns the console for the daemon's view: the cockpit with the
 // daemon as a source it asks again on its tick.
 func daemonModel(cfg config) *terminalconsole.Model {
@@ -188,5 +222,5 @@ func daemonModel(cfg config) *terminalconsole.Model {
 func daemonModelWith(cfg config, read func(ctx context.Context, dir string) consoleclient.Result) *terminalconsole.Model {
 	o := cfg.options
 	o.Label = daemonLabel
-	return terminalconsole.NewWithOptions(daemonSource{dir: cfg.daemon, read: read}, o)
+	return terminalconsole.NewWithOptions(daemonSource{dir: cfg.daemon, read: read, owner: o.Backend != nil}, o)
 }
