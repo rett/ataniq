@@ -244,6 +244,7 @@ func (r *ownerRig) counts() map[string]uint64 {
 		"no-terminal": c.NoTerminal.Load(), "not-inspected": c.NotInspected.Load(),
 		"session-changed": c.SessionChanged.Load(), "decision-not-decider": c.DecisionNotDecider.Load(),
 		"decision-invalid": c.DecisionInvalid.Load(), "no-connection": c.NoConnection.Load(),
+		"decision-flooded": c.DecisionFlooded.Load(),
 	}
 }
 

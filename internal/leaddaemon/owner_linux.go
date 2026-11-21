@@ -60,6 +60,17 @@ type PeerInspector interface {
 	Inspect(p PeerRef) (PeerProcess, error)
 }
 
+// DefaultDeciderIdle is the default idle time of the decider's connection. It
+// is longer than the server's, so that the place is not lost while the owner
+// reads a card; a connection that holds it and sends nothing for this long is
+// closed, and the place is free again.
+const DefaultDeciderIdle = 10 * time.Minute
+
+// DecisionRefusalBound is how many decision frames from a connection that is
+// not the decider are handed to the service, which journals each as refused.
+// The next one is refused without the journal and ends the connection.
+const DecisionRefusalBound = 16
+
 // OwnerChannel is the owner connection of one daemon: the operations
 // "owner.*" of package ownerwire, served on the same socket and the same
 // protocol, "ataniq.client/1", as everything else, through the extension seam
@@ -81,6 +92,11 @@ type OwnerChannel struct {
 	Inspector PeerInspector
 	// Now is the clock of the accept times; default time.Now.
 	Now func() time.Time
+	// DeciderIdle is how long the connection that holds the decider's place
+	// may wait for its next request before the server closes it, which frees
+	// the place; the server's own idle time, 30 s by default, applies to every
+	// other connection. Default [DefaultDeciderIdle].
+	DeciderIdle time.Duration
 	// Log receives one line for each refusal and each grant, with no text a
 	// peer sent but its client name through [SafeText]; nil discards them.
 	Log func(format string, a ...any)
@@ -111,6 +127,10 @@ type OwnerCounts struct {
 	// DecisionInvalid counts decision frames from the decider that did not
 	// pass the frame's own form.
 	DecisionInvalid atomic.Uint64
+	// DecisionFlooded counts connections closed because a connection that
+	// was not the decider sent more than [DecisionRefusalBound] decision
+	// frames.
+	DecisionFlooded atomic.Uint64
 	// NoConnection counts requests that could not be tied to a connection.
 	NoConnection atomic.Uint64
 }
@@ -123,6 +143,13 @@ func (o *OwnerChannel) now() time.Time {
 		return o.Now()
 	}
 	return time.Now()
+}
+
+func (o *OwnerChannel) deciderIdle() time.Duration {
+	if o.DeciderIdle > 0 {
+		return o.DeciderIdle
+	}
+	return DefaultDeciderIdle
 }
 
 func (o *OwnerChannel) logf(format string, a ...any) {
@@ -149,7 +176,7 @@ func (o *OwnerChannel) Serve(l net.Listener, opts *clientapi.Options) (net.Liste
 		}
 		return nil, nil, errors.New("owner channel: the service could not be built")
 	}
-	reg := newOwnerConns()
+	reg := newOwnerConns(o.deciderIdle())
 	ext := &ownerExt{oc: o, svc: svc, reg: reg}
 	opts.Extra = append(opts.Extra, ext)
 	base := opts.PeerUID
