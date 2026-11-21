@@ -706,31 +706,69 @@ not known leaves the lead `unknown` and counted against `max_running`, a unit ma
 still run, and `lead.stop` is the way out. A start that was `uncertain` after a
 daemon restart is settled as the lead daemon guide says of the [reconcile at
 start](lead-daemon.md#reconcile-and-what-starts-by-itself) and [the late-start
-window](lead-daemon.md#the-late-start-window); the console never sends it again.
+window](lead-daemon.md#the-late-start-window), and a lead left `unknown` by a
+launch that was not settled is settled by the daemon when the window ends (see
+[a lead left unknown after a killed
+daemon](#a-lead-left-unknown-after-a-killed-daemon)); the console never sends it
+again.
 
 ### A lead left unknown after a killed daemon
 
 A daemon that is killed in the middle of a start (or whose start loses its
 reply) leaves the lead `unknown`, with the reason `launch-unsettled` or
 `launch-reply-lost`, and counted against `max_running`. While the launch is
-unsettled `lead.stop` and `lead.start` are answered `unavailable` with
-`intent-pending`, and a start of another lead can be refused `max-running`
-because the unknown lead holds the slot. **Reading the list does not settle it,
-and neither does the console:** the daemon reconciles once, when it starts, and
-it closes the launch intent as abandoned (the lead then reads `stopped`) only
-when the late-start window of 30 s plus its margin of 10 s has passed since the
-registry stamped the intent (see [the late-start
-window](lead-daemon.md#the-late-start-window)). A daemon that was restarted
-inside that window leaves the lead `unknown` for good until it is restarted
-again.
+unsettled nothing starts for the lead (`lead.start` is refused `launch-refused`:
+a lead that is `unknown` is not started), `lead.stop` is answered `unavailable`
+with `intent-pending` inside the late-start window, and a start of another lead
+can be refused `max-running` because the unknown lead holds the slot. Reading
+the list does not settle it, and neither does the console.
 
-So the owner's recovery is: wait until 40 s have passed since the start, stop the
-daemon, start it again, and read the list. The lead is `stopped` and the slot is
-free. The console says the same: the row's line, the refusal of the stop or the
-start (`intent-pending`) and the refusal for the limit of running leads (while an
-unknown lead is listed) all say that the launch is not settled and that a daemon
-restart after the 40 s launch window settles it. The console does not know when
-the window ends, so it names no time.
+**The daemon settles it itself.** For each lead shown `unknown` with one of
+those reasons and its launch intent pending, found when the daemon starts
+serving (a start that an earlier daemon was killed in) or left by a start of its
+own that lost its reply, a timer waits until the late-start window of 30 s plus
+its margin of 10 s has passed since the registry stamped the intent (see [the
+late-start window](lead-daemon.md#the-late-start-window)). It then asks the
+lifecycle to settle that one lead, which applies the reconcile's rules and no
+others: with no unit loaded and its control group empty, the intent is closed as
+abandoned and the lead reads `stopped`, with a proof, and leaves the
+`max_running` count. No restart is needed, and the lead may be started again
+(with the next epoch). The daemon logs the settle (`scratch settle "KEY"`).
+
+What the timer does not do:
+
+- **It does not settle a lead whose unit is loaded at the deadline.** A unit of
+  the launch's own epoch and intent is adopted, another unit is reported
+  (`foreign-unit`) and the intent is closed as abandoned; the lead stays
+  `unknown` in both cases and nothing is signalled. `lead.stop` is the way out,
+  as for any lead whose unit may run. A start request that lands after the
+  window is the stale-unit path of the lead daemon guide: the daemon reports it
+  and never signals it.
+- **It does not touch a lead shown `unknown` for `registry-recovered`.** That
+  lead is the owner's to decide.
+- **It never starts a unit, and never waits for the role's lock.** A start or a
+  stop of the lead that runs when the timer fires is not held up; the timer
+  tries again later. The lifecycle's lock for the lead keeps a settle from
+  overlapping a start or a stop, and a start is admitted only after a settle
+  that recorded the lead `stopped`.
+- **It does not settle what it cannot prove, and does not stop trying.** When
+  the unit manager does not answer, or the control group is not proven empty,
+  nothing changes and the timer tries again after 2 s, then at doubling waits up
+  to a minute, until the intent is settled or the lead no longer shows it; the
+  daemon logs each try. A daemon that is not in scratch mode has no timer.
+
+The console's leads view does not read the list by a timer for a lead that is
+`unknown`: press `r` after the 40 s to see the settled lead. The row's line, the
+refusal of a stop (`intent-pending`) and the refusal for the limit of running
+leads (while an unknown lead is listed) say that the launch settles by itself 40
+s after the start and that a restart of the daemon is what is left if the lead
+is still `unknown` after that. The console does not know when the window ends,
+so it names no time but the 40 s.
+
+A lead that is still `unknown` after that, because its unit is loaded or the
+manager never answered, is settled by `lead.stop` (a unit of ours that is loaded
+is ended by it) or, for an intent still pending, by a restart of the daemon,
+which settles it at its reconcile, as before.
 
 ## What scratch mode leaves open
 

@@ -41,6 +41,13 @@
 // away) and shows unknown where it cannot. It returns a [Report] with one line
 // per role: what it was, what it is, and why.
 //
+// SettleLaunch runs the same settle rules for one role that holds a pending
+// launch intent, under the role's lock, at any time: a daemon calls it when the
+// late-start window of an intent that Reconcile left pending has passed
+// ([Controller.LaunchDeadline]). It is the Reconcile's code and adds no rule: a
+// role with a loaded unit, a control group not proven empty or a window still
+// open is not settled to stopped, and it starts nothing and signals nothing.
+//
 // # Coordinators
 //
 // A coordinator is a role of its own, one per feature of a project, with its

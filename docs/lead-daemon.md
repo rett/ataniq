@@ -64,7 +64,7 @@ imports the injection library's message rules.
 | [`internal/leadlock`](../internal/leadlock/doc.go) | The two kinds of file lock. | Takes the daemon lock and the runtime folder lock. Takes no role lock. |
 | [`internal/leadunit`](../internal/leadunit/doc.go) | The unit manager interface, the unit specification and an in-memory fake. | The interface only. |
 | [`internal/leadunit/systemdmgr`](../internal/leadunit/systemdmgr/doc.go) | The unit manager for the systemd user manager. | Reads units for the one reconcile at start. |
-| [`internal/leadlifecycle`](../internal/leadlifecycle/doc.go) | Start, stop and reconcile of roles, coordinators included (see [below](#coordinators-in-the-lifecycle)). | Calls reconcile once. Never start, stop, mark or clear a stall. |
+| [`internal/leadlifecycle`](../internal/leadlifecycle/doc.go) | Start, stop and reconcile of roles, coordinators included (see [below](#coordinators-in-the-lifecycle)). | Calls reconcile once, at start. Never start, stop, mark or clear a stall. In scratch mode (tagged build) a timer also settles one role's pending launch when its window ends ([below](#the-late-start-window)). |
 | [`internal/pidfd`](../internal/pidfd/doc.go) | Process identity and boot identity primitives. | Reads the boot identity. |
 | [`internal/systemd`](../internal/systemd/doc.go) | Control group, `systemctl show` and bounded command helpers. | Used by the unit manager. |
 | [`qualification/leadunit/cmd/leadunit-qualify`](../qualification/leadunit/cmd/leadunit-qualify/doc.go) | An opt-in harness for the unit manager. | None. It is run by hand. |
@@ -165,7 +165,9 @@ fails, with one line on standard error:
    the manager did not answer for a role, when it ran out of time, and while a
    cut of the registry is unacknowledged. None of these is fatal; a failure of
    the registry is (see [Reconcile](#reconcile-and-what-starts-by-itself)).
-   Reconcile does not run again on a timer.
+   Reconcile does not run again on a timer; in scratch mode (a build with the
+   `ataniq_canary` tag) a timer settles a launch that is still pending at its
+   deadline (see [the late-start window](#the-late-start-window)).
 8. **stale socket**: with both locks held, remove a socket file an earlier
    daemon left. It removes a socket owned by the caller and refuses anything
    else at that name.
@@ -1040,12 +1042,50 @@ decision to the window alone. For a role shown `unknown` for a cut of the
 registry, a changed boot closes the intent in the same way, and the role stays
 `unknown`.
 
-The daemon reconciles once. An intent that is still inside its window at that
-moment leaves the role `unknown` with the reason `launch-unsettled`, the
-reconcile is shown as completed, and nothing settles the intent until the daemon
-is started again. A role keeps the reason it already had when it was shown
+The daemon reconciles at start, and in scratch mode settles pending launches at
+their deadline. An intent that is still inside its window at the reconcile
+leaves the role `unknown` with the reason `launch-unsettled`, and the reconcile
+is shown as completed. A role keeps the reason it already had when it was shown
 `unknown` with `launch-reply-lost`, or for a cut of the registry with
 `registry-recovered`; only another role is given `launch-unsettled`.
+
+In scratch mode (`ataniqd run --scratch`, a build with the `ataniq_canary` tag)
+the daemon settles that intent itself, with no restart. For each role shown
+`unknown` with the reason `launch-unsettled` or `launch-reply-lost` and its
+intent pending, found when it starts serving or left by a start of its own that
+lost its reply, a timer waits until the intent's deadline (the intent's time,
+the window and the margin: 40 s) on the clock the registry uses. It then asks the
+lifecycle to settle that one role (`SettleLaunch`), which runs the code of the
+reconcile for it and no other rule: the same checks (no unit loaded, its
+control group proven empty, the window and margin passed; a changed boot
+identity settles at once) decide, and with them the intent is abandoned and the
+role recorded `stopped`, with the proof, so that it leaves the `max_running`
+count and may be started again, with the next epoch. A role shown `unknown` for
+`registry-recovered` has no timer and is left to the owner.
+
+What the timer does when it cannot settle:
+
+- **A unit is loaded at the deadline.** The role is not settled to `stopped`.
+  A unit with this epoch and intent is adopted (the intent is closed as
+  `adopted`), another unit is reported (`stale-unit`, `foreign-unit`) and the
+  intent is closed as `abandoned`; in both cases the role stays `unknown`,
+  nothing is signalled, and an explicit stop is the way out, as before. A
+  request that lands after the window is the stale-unit path above and is never
+  signalled by the timer.
+- **The manager does not answer, or the control group is not proven empty.**
+  Nothing changes and the timer tries again after 2 s, then at doubling waits up
+  to a minute, until the intent is settled or the role no longer shows it.
+- **The role's operation lock is held** (a start or a stop of the role is
+  running) or the role changed (another epoch, a proven stop): the timer waits
+  and tries again, or ends. It never waits for the lock, and holds it only for
+  one read of the registry, never across a call to the manager; the
+  lifecycle's own lock for the role keeps its settle from overlapping a start or
+  a stop, and a start is admitted only from `stopped`, `ended` or `desired`, so a
+  new unit can follow only a settle that recorded the role `stopped`.
+
+A timer ends when the intent is no longer pending, on a proven stop, on a new
+start of the role, and at shutdown, where the daemon joins it. The daemon that
+is not in scratch mode has no timer, and the settle still needs a restart.
 
 **The window is a heuristic and not a bound.** The manager's call timeout limits
 how long the caller waits for a reply, not when systemd executes a request that

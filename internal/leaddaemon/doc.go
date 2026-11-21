@@ -104,8 +104,9 @@
 // calls Start. Reconcile runs once at start and is not repeated on a timer:
 // a periodic reconcile is not part of this feature. A launch intent that is
 // still pending inside its late-start window at that moment leaves the role
-// unknown (launch-unsettled) with the reconcile shown as completed, and
-// nothing settles the intent until the daemon is restarted. Leads,
+// unknown (launch-unsettled) with the reconcile shown as completed. Without
+// scratch mode (below) nothing settles the intent until the daemon is
+// restarted; in scratch mode a timer settles it when the window ends. Leads,
 // coordinators, the holder, the sandbox and the console are not part of it
 // either, and no operation of the protocol or flag of the binary starts,
 // stops or defines a lead (canary mode, in a build with the tag, aside).
@@ -168,6 +169,31 @@
 // hold it. The ticket is written to the role's runtime folder for the console
 // and is in no answer and no evidence line. No file of the package imports the
 // injection tree.
+//
+// # Scratch mode and a launch that is not settled
+//
+// In scratch mode ([Config].Scratch, ataniqd run --scratch) the
+// daemon also settles a launch intent itself when its late-start window ends
+// (lead_settle_linux.go). A lead that the registry shows unknown with the
+// reason launch-unsettled or launch-reply-lost and its intent pending (a
+// daemon killed in the middle of a start, or a start whose reply was lost) has
+// a timer, armed when the daemon starts serving and after a start that ended
+// with its reply lost. At the intent's deadline on the daemon's clock, the
+// timer asks [leadlifecycle.Controller.SettleLaunch] to settle the one role,
+// which applies the rules of Reconcile and no other: with no unit loaded, the
+// control group empty and the window and its margin passed, the intent is
+// abandoned and the lead is stopped with the proof (and leaves the
+// max_running count); a unit that is loaded at the deadline leaves the lead
+// unknown (the launch's own unit is adopted, another is reported and the
+// intent abandoned) and is never signalled; a manager that does not answer or
+// a control group that is not proven empty is tried again later, at growing
+// waits. The timer never starts a unit. It takes the role's operation lock as
+// a try-lock for one read of the registry, never across a call to the manager
+// or the lifecycle, and the lifecycle's own lock for the role keeps its settle
+// from overlapping a start or a stop. A lead shown unknown for a cut of the
+// registry (registry-recovered) has no timer. A timer ends when the intent is
+// no longer pending, on a proven stop, on a new start and at shutdown, where
+// the daemon joins it like the ready observers.
 //
 // # The owner connection
 //
