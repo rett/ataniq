@@ -787,7 +787,7 @@ func (x *canaryExt) sentUnrecorded(messageID string, epoch uint64) {
 	if x.recordSent(messageID, epoch) {
 		return
 	}
-	x.logf("canary inject: the message of epoch %d is sent and the evidence has no inject-sent line for it: the epoch is spent in this daemon only, so stop the role before the daemon is restarted", epoch)
+	x.logf("canary inject: the message of epoch %d is sent and the evidence has no inject-sent line for it: the epoch is spent in this daemon unless the holder answers that nothing was written, so stop the role before the daemon is restarted", epoch)
 }
 
 // holderFrees reports whether a holder refusal gives the epoch's message back
