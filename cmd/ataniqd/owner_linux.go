@@ -29,6 +29,14 @@ unqualified.
                     decide goes to a console of the owner that has a
                     controlling terminal. The daemon refuses to start when
                     this build has no way to build the host's side of a card.
+
+The host's side of a card is built for the scratch pass only, from the file
+owner/scratch.json in the state folder (one project, its mirror, the folder
+requests are dropped in), over the real journal in owner/ and the stand-in for
+the planner's door, which holds nothing across a restart. A request is a file
+<request id>.request in the drop folder, and its reply is a file beside it. It
+is provisional and unqualified, and no suite runs in this build yet, so the
+daemon refuses --owner-channel until one is installed.
 `
 
 func init() { usage += ownerUsage }
