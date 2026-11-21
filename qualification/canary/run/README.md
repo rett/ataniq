@@ -28,6 +28,15 @@ There are two passes, and pass A comes first:
 - **Pass B** uses one live agent, once, with a fresh login inside the sandbox,
   the cheapest model, and a cap of 30 minutes or 10 turns. A second run of
   pass B needs the owner's word again.
+  Step 5 asks for `confirmed` only when the account used for the sandbox
+  login lists that login as its own entry that can be revoked on its own, or
+  when a separate throwaway account is used for it; otherwise `no` ends the pass.
+  Pass B run 1 showed that Claude Code logins appear as rows named Unknown, with
+  no entry that can be identified as the login made in the pass. Step 23 says to
+  identify the login as a new row whose last-active time falls during the run
+  (on a separate throwaway account, "log out of all devices" revokes it
+  completely); when none can be identified the owner types
+  `cannot-identify: <what you see>`, which is accepted and counted as a finding.
 
 ## Build
 
@@ -234,6 +243,11 @@ with the reason when the fact is not true; the lead types nothing for it:
   the profile digest of the config's `holder.profile_digest`.
 - Step 20: the upstream branch is at the commit of the lead's branch, by the
   intake's list and by `git rev-parse` on the mirror.
+  The step prints the review's `Digest:` and `Tip:` lines (from
+  `out/20-e1-review.out`): the owner signs off with the review's digest, not the
+  plan digest of the verify output. The question `integrate succeeded` is asked
+  again up to 2 more times when the answer is not exactly `yes`; the pass ends
+  after the third wrong answer or at the end of the input.
 
 The lead still types `yes` where no file holds the fact: that no agent session
 was told about the slice (step 1); that the probe reported once and every
@@ -252,7 +266,10 @@ word.
 - **Pass B:** a failure at step 6 or later runs the clean-up chain: steps 22
   (stop and revert the unit), 24 (restore the listeners), 25 (compare the
   manifest) and 26 (clean up). From step 15 on, steps 21 (log out) and 23
-  (revoke) are run as well.
+  (revoke) are run as well. The chain's step 22 keeps the first proof of the
+  stop: a file that step 22 already wrote in the pass (`out/22-e1-stop.out`, the
+  journal, the unit lists) is not overwritten, and the chain writes its own with
+  the suffix `-chain`.
 - **Pass A:** a failure at step 11 or later runs steps 22 and 26.
 - A failure before that starts no chain; undo by hand what the earlier steps
   left (below).
@@ -531,7 +548,9 @@ wrong command line. The checks:
 | The evidence folder (default `ROOT/evidence`) is writable | `mkdir` it or `chmod` it. |
 
 When ready it prints the three things you type, with the real paths and the
-terminal of each: the daemon command in T2, the attach command in T3 (with its
+terminal of each: the daemon command in T2 (listed as the thing to type at step
+10: step 8 provisions and writes the marker file the daemon needs, so it is not
+started earlier), the attach command in T3 (with its
 ticket file, `ticket` in the holder's runtime folder; start it before the Enter
 at step 14, which mints) and the run command in T1.
 Four terminals are needed, because the daemon stays in front of its terminal
@@ -816,7 +835,9 @@ failed, undo in this order. The names come from
    the host was written: the evidence folder is yours to keep.
 
 In pass B, also: log out inside the sandbox if the pane still runs, revoke the
-login on the provider's account page whatever the logout showed, restart the
+login on the provider's account page whatever the logout showed (identify it as
+a new row with last-active during the run, or log out of all devices on a
+separate throwaway account), restart the
 listeners you stopped, and compare the live config folder with
 `manifest-before.txt`.
 

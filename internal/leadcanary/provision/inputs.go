@@ -71,8 +71,9 @@ var ErrInputs = errors.New("provision: the sandbox inputs do not match the confi
 // that the file alone decides is a refusal here. For the runtime claude the
 // file must also name the managed-settings marker (sources.managed_marker),
 // and the managed-settings file that sources.managed_settings names must
-// hold that text, which assertion 8 searches for inside. The run kit and the
-// daemon call it before a start.
+// hold that text, which assertion 8 searches for inside. The ataniq-canary
+// command calls it (its show and check-inputs verbs, which the run kit uses
+// before a start); the daemon does not.
 //
 // Every refusal names the field and never repeats a value of the file. A
 // refusal of ReadInputs is returned as it is (an *sandboxstart.InputsError); a

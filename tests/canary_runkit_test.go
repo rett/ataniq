@@ -5639,7 +5639,8 @@ func TestCanaryRunKitPreflightReady(t *testing.T) {
 		// The daemon stays in front of its terminal until Ctrl-C at step 26,
 		// so the console and the second console of step 14 have terminals of
 		// their own.
-		"1. In a second terminal (T2), the daemon",
+		"1. At step 10, in a second terminal (T2), the daemon",
+		"marker file (canary-root.json) that the daemon needs",
 		"It stays in front of that terminal until you stop it with",
 		"2. At step 14 (and again in the second epoch), in a third terminal (T3), the console, started",
 		"BEFORE you press Enter at step 14: it waits for a ticket, and the run mints one only after",

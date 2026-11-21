@@ -637,6 +637,27 @@ mirror, the config and the inputs file), how a failed step is handled, what the
 evidence folder holds and the undo. The intake template, which the owner
 vouches for, has [its own note](../qualification/canary/templates/README.md).
 
+## What pass B showed
+
+Pass B (one live agent, one run) gave these facts:
+
+- `claude` 2.1.325 with the canary's config reached the composer inside the
+  sandbox.
+- The 7501 report path works: 1 query and 8 reports in a 24-minute run.
+- The fence answers `not-now` with `not-ready` on a fresh live screen: the
+  screen is read as "not on the alternate screen" and its title has no leading
+  glyph, so the recogniser does not place it. The owner's paste is the path that
+  works until the recogniser is fixed.
+- The agent needed one turn to commit.
+- The unit's memory peak was 450 MB of the 4 GiB ceiling.
+- Revocation is limited: the provider's account page lists Claude Code logins
+  as rows named Unknown, with no entry identifiable as the login made in the
+  pass. Step 5 therefore asks for `confirmed` only when the account lists the
+  login as its own revocable entry or a separate throwaway account is used, and
+  step 23 says to identify the login as a new row with last-active during the
+  run (on a throwaway account, "log out of all devices" revokes it) and takes
+  `cannot-identify: <what you see>` as a finding when none can be identified.
+
 ## Undo
 
 The slice makes no removal command. After a run, or after a script that stopped
@@ -646,7 +667,8 @@ control group empty, `systemctl --user revert` the unit and check that no
 `ataniq-*` unit, unit file or runtime drop-in remains, stop the daemon, and
 delete the canary's own state and runtime roots by hand. The run kit's README
 lists the steps in order. In pass B also log out inside the sandbox, revoke the
-login on the provider's account page, restart the listeners that were stopped
+login on the provider's account page (the new row with last-active during the
+run, or log out of all devices on a separate throwaway account), restart the listeners that were stopped
 and compare the live config folder with its manifest.
 
 ## What the slice relies on, and what it proves none of
