@@ -69,3 +69,22 @@ func Judge(r wire.InjectResult) (spent, uncertain bool) {
 	r = trusted(r)
 	return true, r.Outcome == wire.InjectOutcomeUncertain
 }
+
+// ReleasesMessage says whether a lead of scratch mode takes a result as a
+// message that was not delivered, so that the epoch's message is not spent.
+// The canary does not use it: its rule, [Judge], spends the message on every
+// result.
+//
+// It is true only for a result that is valid by [wire.InjectResult.Validate],
+// whose outcome is "not-now" or "refused" and whose written is "nothing": the
+// holder says it wrote nothing to the lead's input. It is false for everything
+// else, so a message that may have reached the lead never looks unspent: a
+// submitted result, any uncertain one (the "died" result with written
+// "nothing" included, since the lead's end during the send leaves open what
+// reached it) and a result the wire would refuse.
+func ReleasesMessage(r wire.InjectResult) bool {
+	if r.Validate() != nil || r.Written != wire.InjectWrittenNothing {
+		return false
+	}
+	return r.Outcome == wire.InjectOutcomeNotNow || r.Outcome == wire.InjectOutcomeRefused
+}

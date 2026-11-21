@@ -5,8 +5,10 @@ package leaddaemon
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -239,5 +241,170 @@ func TestSpentEpochsReadsOnlyARegularFileItself(t *testing.T) {
 	}
 	if _, err := spentEpochs(dir, canaryRoleText); err == nil || !strings.Contains(err.Error(), "not a regular file") {
 		t.Fatalf("a folder: %v", err)
+	}
+}
+
+// sentOf and resultOf are lines of the evidence, as the writer makes them.
+func sentOf(epoch int, id string) string {
+	return evidenceLineOf("inject-sent", canaryRoleText, `,"epoch":`+strconv.Itoa(epoch)+`,"message_id":"`+id+`"`)
+}
+
+func resultOf(epoch int, id, outcome, reason, written string) string {
+	more := `,"epoch":` + strconv.Itoa(epoch) + `,"message_id":"` + id + `","outcome":"` + outcome + `"`
+	if reason != "" {
+		more += `,"reason":"` + reason + `"`
+	}
+	return evidenceLineOf("inject-result", canaryRoleText, more+`,"written":"`+written+`"`)
+}
+
+func writeEvidence(t *testing.T, lines ...string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "evidence.jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// The reader of scratch mode frees an epoch only for a sent line that its own
+// result line follows with nothing written; the canary's reader never does.
+func TestScratchSpentEpochsFreesOnlyANotDeliveredMessage(t *testing.T) {
+	other := evidenceLineOf("inject-sent", "scratch-two/lead", `,"epoch":1,"message_id":"m-9"`)
+	otherResult := evidenceLineOf("inject-result", "scratch-two/lead", `,"epoch":1,"message_id":"m-9","outcome":"submitted","written":"whole"`)
+	for name, tc := range map[string]struct {
+		lines []string
+		want  []uint64 // the spent epochs of scratch mode
+	}{
+		"not-now with nothing written":   {[]string{sentOf(1, "m-1"), resultOf(1, "m-1", "not-now", "not-ready", "nothing")}, nil},
+		"not-now blocked":                {[]string{sentOf(1, "m-1"), resultOf(1, "m-1", "not-now", "blocked", "nothing")}, nil},
+		"refused untested":               {[]string{sentOf(1, "m-1"), resultOf(1, "m-1", "refused", "untested", "nothing")}, nil},
+		"refused text":                   {[]string{sentOf(1, "m-1"), resultOf(1, "m-1", "refused", "text", "nothing")}, nil},
+		"submitted":                      {[]string{sentOf(1, "m-1"), resultOf(1, "m-1", "submitted", "", "whole")}, []uint64{1}},
+		"not submitted":                  {[]string{sentOf(1, "m-1"), resultOf(1, "m-1", "uncertain", "not-submitted", "partial")}, []uint64{1}},
+		"died with nothing written":      {[]string{sentOf(1, "m-1"), resultOf(1, "m-1", "uncertain", "died", "nothing")}, []uint64{1}},
+		"died, unknown":                  {[]string{sentOf(1, "m-1"), resultOf(1, "m-1", "uncertain", "died", "unknown")}, []uint64{1}},
+		"the sent line only (a kill)":    {[]string{sentOf(1, "m-1")}, []uint64{1}},
+		"a combination the wire refuses": {[]string{sentOf(1, "m-1"), resultOf(1, "m-1", "not-now", "died", "nothing")}, []uint64{1}},
+		"a result of nothing written, but not of not-delivered": {[]string{sentOf(1, "m-1"), resultOf(1, "m-1", "submitted", "", "nothing")}, []uint64{1}},
+		"not-now, then a second message that is submitted": {[]string{
+			sentOf(1, "m-1"), resultOf(1, "m-1", "not-now", "not-ready", "nothing"),
+			sentOf(1, "m-2"), resultOf(1, "m-2", "submitted", "", "whole")}, []uint64{1}},
+		"not-now, then a second one killed": {[]string{
+			sentOf(1, "m-1"), resultOf(1, "m-1", "not-now", "not-ready", "nothing"), sentOf(1, "m-2")}, []uint64{1}},
+		"not-now twice": {[]string{
+			sentOf(1, "m-1"), resultOf(1, "m-1", "not-now", "not-ready", "nothing"),
+			sentOf(1, "m-2"), resultOf(1, "m-2", "refused", "text", "nothing")}, nil},
+		"the same id used again after a release": {[]string{
+			sentOf(1, "m-1"), resultOf(1, "m-1", "not-now", "not-ready", "nothing"),
+			sentOf(1, "m-1"), resultOf(1, "m-1", "not-now", "blocked", "nothing")}, nil},
+		"the same id used again, and submitted": {[]string{
+			sentOf(1, "m-1"), resultOf(1, "m-1", "not-now", "not-ready", "nothing"),
+			sentOf(1, "m-1"), resultOf(1, "m-1", "submitted", "", "whole")}, []uint64{1}},
+		// Fail closed.
+		"a result twice": {[]string{
+			sentOf(1, "m-1"), resultOf(1, "m-1", "not-now", "not-ready", "nothing"),
+			resultOf(1, "m-1", "not-now", "not-ready", "nothing")}, []uint64{1}},
+		"a result with no sent line":     {[]string{resultOf(1, "m-1", "not-now", "not-ready", "nothing")}, []uint64{1}},
+		"a result of another message id": {[]string{sentOf(1, "m-1"), resultOf(1, "m-2", "not-now", "not-ready", "nothing")}, []uint64{1}},
+		"a result of another epoch":      {[]string{sentOf(1, "m-1"), resultOf(2, "m-1", "not-now", "not-ready", "nothing")}, []uint64{1, 2}},
+		"two sent lines of one message":  {[]string{sentOf(1, "m-1"), sentOf(1, "m-1"), resultOf(1, "m-1", "not-now", "not-ready", "nothing")}, []uint64{1}},
+		"a sent line of a message in between": {[]string{
+			sentOf(1, "m-1"), sentOf(1, "m-2"), resultOf(1, "m-2", "not-now", "not-ready", "nothing"),
+			resultOf(1, "m-1", "not-now", "not-ready", "nothing")}, []uint64{1}},
+		"a refusal line in between changes nothing": {[]string{
+			sentOf(1, "m-1"),
+			evidenceLineOf("inject-refused", canaryRoleText, `,"epoch":1,"message_id":"m-2","code":"message-in-flight"`),
+			resultOf(1, "m-1", "not-now", "not-ready", "nothing")}, nil},
+		"epochs are apart": {[]string{
+			sentOf(1, "m-1"), resultOf(1, "m-1", "submitted", "", "whole"),
+			sentOf(2, "m-2"), resultOf(2, "m-2", "refused", "text", "nothing")}, []uint64{1}},
+		"another role's lines are not the role's": {[]string{other, otherResult,
+			sentOf(1, "m-1"), resultOf(1, "m-1", "not-now", "not-ready", "nothing")}, nil},
+		"another role's sent line spends nothing": {[]string{other}, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := writeEvidence(t, tc.lines...)
+			got, err := scratchSpentEpochs(path, canaryRoleText)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("spent epochs %v, want %v", got, tc.want)
+			}
+			for _, e := range tc.want {
+				if !got[e] {
+					t.Fatalf("spent epochs %v, want %v", got, tc.want)
+				}
+			}
+			// The canary's reader reads the same file and has every epoch with
+			// a sent line spent, whatever the result was.
+			canary, err := spentEpochs(path, canaryRoleText)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, l := range tc.lines {
+				var ev struct {
+					Event string `json:"event"`
+					Role  string `json:"role"`
+					Epoch int    `json:"epoch"`
+				}
+				if err := json.Unmarshal([]byte(l), &ev); err != nil {
+					t.Fatal(err)
+				}
+				if ev.Event == "inject-sent" && ev.Role == canaryRoleText && !canary[uint64(ev.Epoch)] {
+					t.Fatalf("the canary's reader has epoch %d free", ev.Epoch)
+				}
+			}
+		})
+	}
+}
+
+// The reader of scratch mode is as strict as the canary's: a line that is
+// damaged or partial refuses the start, and so does a line of the role that
+// lacks a member it needs.
+func TestScratchSpentEpochsRefusesADamagedFile(t *testing.T) {
+	good := sentOf(1, "m-1") + "\n"
+	res := resultOf(1, "m-1", "not-now", "not-ready", "nothing")
+	for name, tc := range map[string]struct {
+		content, want string
+	}{
+		"a line cut short":                     {good + res[:40], "does not end with a newline"},
+		"a part of a line":                     {good + res[:40] + "\n", "line 2 of the evidence file is damaged"},
+		"an empty line":                        {good + "\n" + good, "line 2 of the evidence file is damaged"},
+		"not an object":                        {"[1,2]\n", "not a JSON object"},
+		"an epoch in quotes":                   {evidenceLineOf("inject-result", canaryRoleText, `,"epoch":"1"`) + "\n", `"epoch" is not a whole number`},
+		"sent without an epoch":                {evidenceLineOf("inject-sent", canaryRoleText, `,"message_id":"m-1"`) + "\n", "an inject-sent line without an epoch"},
+		"result without epoch":                 {evidenceLineOf("inject-result", canaryRoleText, `,"message_id":"m-1","outcome":"not-now","written":"nothing"`) + "\n", "an inject-result line without an epoch"},
+		"sent without an id":                   {evidenceLineOf("inject-sent", canaryRoleText, `,"epoch":1`) + "\n", `"message_id" is not a string`},
+		"result without an id":                 {evidenceLineOf("inject-result", canaryRoleText, `,"epoch":1,"outcome":"not-now","written":"nothing"`) + "\n", `"message_id" is not a string`},
+		"result without outcome":               {evidenceLineOf("inject-result", canaryRoleText, `,"epoch":1,"message_id":"m-1","written":"nothing"`) + "\n", `"outcome" is not a string`},
+		"result without written":               {evidenceLineOf("inject-result", canaryRoleText, `,"epoch":1,"message_id":"m-1","outcome":"not-now"`) + "\n", `"written" is not a string`},
+		"result with a reason that is no text": {evidenceLineOf("inject-result", canaryRoleText, `,"epoch":1,"message_id":"m-1","outcome":"not-now","reason":7,"written":"nothing"`) + "\n", `"reason" is not a string`},
+		"too large":                            {strings.Repeat(good, maxEvidenceRead/len(good)+1), "larger than"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "evidence.jsonl")
+			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := scratchSpentEpochs(path, canaryRoleText)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %v, want %q in it", err, tc.want)
+			}
+		})
+	}
+	// A line of another role is not read for the members the role's lines need.
+	path := writeEvidence(t, evidenceLineOf("inject-result", "scratch-two/lead", `,"epoch":1`))
+	if got, err := scratchSpentEpochs(path, canaryRoleText); err != nil || len(got) != 0 {
+		t.Fatalf("%v %v", got, err)
+	}
+	// The same file shape as for the canary's reader: a link, a FIFO and a
+	// folder are refused.
+	dir := t.TempDir()
+	if _, err := scratchSpentEpochs(dir, canaryRoleText); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("a folder: %v", err)
+	}
+	if got, err := scratchSpentEpochs(filepath.Join(dir, "none"), canaryRoleText); err != nil || len(got) != 0 {
+		t.Fatalf("no file: %v %v", got, err)
 	}
 }

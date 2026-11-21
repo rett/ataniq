@@ -553,6 +553,9 @@ func (m *Model) submit() tea.Cmd {
 		return nil
 	}
 	m.unconfirmed[pairKey(e.role, e.epoch)] = true
+	// What the view kept of an earlier message of the epoch is not this one's:
+	// a message whose answer is lost must not read as the earlier one.
+	delete(m.delivered, pairKey(e.role, e.epoch))
 	role, epoch, body := e.role, e.epoch, e.text
 	return m.command(Lead{Role: role, Key: e.key}, OpInject, epoch, false,
 		func(b Backend) (Receipt, error) { return b.Send(role, epoch, id, body) })

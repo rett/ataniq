@@ -163,7 +163,13 @@ func (m *canaryMode) openEvidence() error {
 		ev, err := leadcanary.OpenEvidence(in.cfg, m.d.Clock.Now)
 		if err == nil {
 			var spent map[uint64]bool
-			spent, err = spentEpochs(in.cfg.EvidencePath(), in.cfg.Role.String())
+			if m.lead != nil {
+				// Scratch mode: a message the holder answered as not
+				// delivered is not spent.
+				spent, err = scratchSpentEpochs(in.cfg.EvidencePath(), in.cfg.Role.String())
+			} else {
+				spent, err = spentEpochs(in.cfg.EvidencePath(), in.cfg.Role.String())
+			}
 			if err != nil {
 				_ = ev.Close()
 				err = fmt.Errorf("canary mode: %w; no message is admitted from an evidence file that cannot be read back; set the file aside only once the role's unit is stopped, since a new file spends no epoch's message", err)

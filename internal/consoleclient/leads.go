@@ -159,14 +159,17 @@ type LeadRow struct {
 	// StateReason is the reason code the registry shows with State, a word of
 	// the closed grammar, empty with none. A row of a daemon built before the
 	// member has none.
-	StateReason  string
-	Epoch        uint64
-	Unit         string
-	Inject       bool
+	StateReason string
+	Epoch       uint64
+	Unit        string
+	Inject      bool
+	// MessageSpent says that the epoch's message was sent and is not free
+	// again. A message that the holder answered as not delivered (not-now or
+	// refused, nothing written) leaves it false.
 	MessageSpent bool
-	// MessageResult is the holder's answer to the current epoch's message when
-	// the daemon has it, and empty otherwise (a row of a daemon built before
-	// the member has none).
+	// MessageResult is the holder's answer to the current epoch's last message
+	// when the daemon has it, whether the message is spent or not, and empty
+	// otherwise (a row of a daemon built before the member has none).
 	MessageResult LeadDelivery
 	// Last is the lead's last command in summary form, nil with none.
 	Last *LeadReceipt

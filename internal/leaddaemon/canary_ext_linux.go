@@ -180,11 +180,17 @@ type canaryExt struct {
 	// idPrefix begins the command ids the daemon gives the holder: "canary-"
 	// for the canary, "lead-" for a lead of scratch mode (see [leadMode]).
 	idPrefix string
+	// scratch is true for a lead of scratch mode and false for the canary. A
+	// lead's message that the holder answered as not delivered (nothing
+	// written, see [leadcanary.ReleasesMessage]) is not spent, so the lead may
+	// send another in the epoch; the canary's is spent whatever the answer.
+	scratch bool
 
 	mu sync.Mutex
 	// spent holds the epochs whose one message is spent. It starts from the
-	// inject-sent lines of the evidence (see spentEpochs), so that a restart of
-	// the daemon inside an epoch admits no second message.
+	// inject-sent lines of the evidence (see spentEpochs and
+	// scratchSpentEpochs), so that a restart of the daemon inside an epoch
+	// admits no second message that the evidence does not free.
 	spent    map[uint64]bool
 	inFlight bool   // a message is being sent
 	commands uint64 // counter of the command ids
@@ -210,7 +216,7 @@ func (m *canaryMode) newExt(in *leadInstance, ctl *leadlifecycle.Controller, reg
 	}
 	return &canaryExt{
 		cfg: cfg, role: cfg.Role, holderDir: holderDir, ctl: ctl, reg: reg, ev: in.ev, adm: adm,
-		dial: m.dialFor, wait: m.injectFor, logf: m.d.logf, spent: spent, idPrefix: m.idPrefix,
+		dial: m.dialFor, wait: m.injectFor, logf: m.d.logf, spent: spent, idPrefix: m.idPrefix, scratch: m.lead != nil,
 		profile: leadregistry.Requested{
 			// The registry's runtime enum is checked by the registry; the config
 			// names the key. The model, the effort and the access mode are not
@@ -311,10 +317,15 @@ func unavailable(msg string) *clientapi.ErrorBody {
 
 // record appends an evidence line. The operation it describes has happened by
 // then, so a failure to write is the daemon's log's to carry.
-func (x *canaryExt) record(en leadcanary.Entry) {
-	if err := x.ev.Append(en); err != nil {
+func (x *canaryExt) record(en leadcanary.Entry) { x.recorded(en) }
+
+// recorded is [canaryExt.record] that says whether the line is in the evidence.
+func (x *canaryExt) recorded(en leadcanary.Entry) bool {
+	err := x.ev.Append(en)
+	if err != nil {
 		x.logf("canary evidence: %s: %s", en.Event, SafeText(err.Error()))
 	}
+	return err == nil
 }
 
 // failure maps the error of a registry or lifecycle call to a fixed answer and
@@ -591,7 +602,8 @@ func (x *canaryExt) ticketFor(ctx context.Context, attach wire.Role, want uint64
 // A refusal before the request frame is written leaves the message unspent: a
 // message that does not pass the admission, a role that is not running, a
 // second message, the holder's socket that cannot be dialled. Once the frame
-// is written the message is spent for the epoch whatever comes back, and
+// is written the message is spent for the epoch whatever comes back (the
+// canary's rule; the exception of scratch mode is below), and
 // whatever becomes of the daemon: the inject-sent line of the evidence, which
 // spends it for a daemon that starts later (see spentEpochs), is written right
 // after the frame and before the wait for the answer, so a daemon that is
@@ -604,6 +616,18 @@ func (x *canaryExt) ticketFor(ctx context.Context, attach wire.Role, want uint64
 // not an error. The holder's refusals disabled, wrong-epoch, busy and
 // bad-request mean that nothing was written to the lead; they are the error
 // unavailable.
+//
+// A lead of scratch mode has one exception to the spent message: an ok answer
+// whose result decodes, is valid and says not-now or refused with nothing
+// written ([leadcanary.ReleasesMessage]) frees the epoch's message again, once
+// the inject-result line is in the evidence (the line is what lets a daemon
+// that starts later read the epoch as free; see scratchSpentEpochs). Every
+// other case stays spent: no answer, a closed connection, an answer that does
+// not decode, an ok answer without a result, an uncertain, partial or whole
+// result, the holder's refusal codes, and a result line that could not be
+// written. The lead may then send another message in the epoch; it needs no
+// other id than the admission asks, and a message id used before is not
+// refused.
 func (x *canaryExt) inject(ctx context.Context, p CanaryInjectParams) (any, *clientapi.ErrorBody) {
 	res, f := x.injectFor(ctx, p, 0)
 	if f != nil {
@@ -657,10 +681,14 @@ func (x *canaryExt) injectFor(ctx context.Context, p CanaryInjectParams, want ui
 	x.inFlight = true
 	x.mu.Unlock()
 	wrote := false
+	// release is set at the one place that may leave the message unspent, the
+	// end of a result that was written down. Every other way out, a panic
+	// included, finds it false and spends the message once the frame is out.
+	release := false
 	defer func() {
 		x.mu.Lock()
 		x.inFlight = false
-		if wrote {
+		if wrote && !release {
 			x.spent[epoch] = true
 		}
 		x.mu.Unlock()
@@ -692,7 +720,10 @@ func (x *canaryExt) injectFor(ctx context.Context, p CanaryInjectParams, want ui
 		x.refuse(p.MessageID, epoch, "holder-"+resp.Code)
 		return CanaryInjectResult{}, failure("holder-"+resp.Code, msgHolderNo)
 	}
-	x.record(leadcanary.ResultEntry(p.MessageID, epoch, result))
+	if x.recorded(leadcanary.ResultEntry(p.MessageID, epoch, result)) && x.scratch && leadcanary.ReleasesMessage(result) {
+		release = true
+		x.logf("lead inject: the message of epoch %d was not delivered (%s): the epoch's message is not spent", epoch, SafeText(string(result.Outcome)))
+	}
 	return CanaryInjectResult{Role: x.role.String(), Epoch: epoch, MessageID: p.MessageID, Result: result}, nil
 }
 

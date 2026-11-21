@@ -1291,6 +1291,25 @@ func TestListCarriesTheStatesReasonAndTheMessagesWords(t *testing.T) {
 	}
 }
 
+// A row of a message that was not delivered is not spent and still carries the
+// holder's words: the client passes both on as they are, so the view can say
+// that the epoch's message is free and what became of the last one.
+func TestListCarriesAFreeMessageWithTheWordsOfTheLastOne(t *testing.T) {
+	d := startLeadDaemon(t)
+	l := newLeads(t, d.dir)
+	d.setList(leadwire.ListResult{MaxRunning: 2, Running: 1, Leads: []leadwire.Lead{
+		{Key: "alpha", Role: "scratch-alpha/lead", Defined: true, Provision: "done", State: "ready", Epoch: 3, Inject: true,
+			MessageSpent: false, MessageResult: leadwire.MessageResult{Outcome: "refused", Reason: "text", Written: "nothing"}},
+	}})
+	lst, err := l.List()
+	if err != nil || len(lst.Leads) != 1 {
+		t.Fatalf("%+v %v", lst, err)
+	}
+	if a := lst.Leads[0]; a.MessageSpent || a.MessageResult != (LeadDelivery{Outcome: "refused", Reason: "text", Written: "nothing"}) {
+		t.Fatalf("alpha = %+v", a)
+	}
+}
+
 // The rule for a row of a daemon from before state_reason and message_result:
 // the decoding refuses a member the types do not have and does not require one
 // they have, so such a row is accepted with both empty, and a row with a member

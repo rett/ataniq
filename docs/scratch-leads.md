@@ -13,7 +13,8 @@ the injected message are; this guide does not repeat that.
 A scratch lead is a lead whose project is `scratch-<key>`, run in the real
 sandbox by the real holder, in a clone of a repository that the owner made for
 the purpose. The daemon provisions it, starts it in a transient user unit and
-sends it one message per epoch, and it does all of that on the console's
+sends it one message per epoch (a message that was not delivered does not count),
+and it does all of that on the console's
 command, with a durable receipt for each command.
 
 It exists only in a build with the `ataniq_canary` tag. It is **not** a real
@@ -288,7 +289,9 @@ What each does:
 - **`lead.ticket`** asks the holder for a ticket for the epoch and writes it to
   the lead's ticket file. An `epoch` of 0, or one that is not the lead's current
   one, is refused `stale-epoch`.
-- **`lead.inject`** sends the epoch's one message. It names the epoch, and a
+- **`lead.inject`** sends the epoch's message: one per epoch, and a message that
+  was not delivered does not use it up (see [Message and attach](#message-and-attach)).
+  It names the epoch, and a
   mismatch is `stale-epoch`, so a delayed command cannot land in a newer epoch;
   an `epoch` of 0 is refused too. The message and its admission are the canary's:
   the id and the body grammar, a body of at most 2048 bytes (the wire's cap on the
@@ -403,35 +406,72 @@ a result that holds a receipt.
 
 ### Message and attach
 
-A lead's `inject` flag and its message follow the canary slice: **every result
-of a message spends the epoch's one message**, `not-now` included, and a refusal
-before the frame is written spends nothing. The spent epochs are rebuilt at
-every daemon start from the lead's evidence file, and `lead.list` shows
-`message_spent`. The one-message state and the in-flight flag are per lead, so
+A lead's `inject` flag and its message follow the canary slice, with one
+difference that is the lead's own: **the epoch's one message is spent by a message
+that may have reached the lead, and not by one that was not delivered.** Once the
+request frame is written the message is spent, and stays spent unless the holder's
+answer decodes, is a valid result, and says `not-now` (reason `not-ready` or
+`blocked`) or `refused` (reason `untested` or `text`) with `written` `nothing`:
+the holder wrote nothing to the lead. Then the daemon makes the epoch's message
+free again, once it has written the `inject-result` line of the message to the
+evidence, and the lead may send another message in the same epoch, with the same
+message id or another (an id that was used before is not refused: the daemon does
+not remember ids, and a replay of a command's id is the command table's).
+Everything else leaves it spent: `submitted`, every `uncertain` result (the `died`
+result with `written` `nothing` too, since the lead's end during the send leaves
+open what reached it), no answer within the wait, a closed connection, an answer
+that does not decode, an ok answer without a result, one of the holder's refusal
+codes (`disabled`, `wrong-epoch`, `busy`, `bad-request`: the answer is an error
+with no result), and a result line that could not be written. A refusal before the
+frame is written (a bad message, a stopped role, a second message, a holder that
+cannot be dialled) spends nothing, as before. A second message while the first is
+spent is refused `second-message`, and one while the first is in flight
+`message-in-flight`. The canary's own rule is unchanged: there every result spends
+the message, `not-now` included.
+
+The spent epochs are rebuilt at every daemon start from the lead's evidence file,
+and `lead.list` shows `message_spent`. The reader sees the lines of one epoch in
+the order of the file, as a series of messages, an `inject-sent` line and then
+the `inject-result` line of the same message id. The epoch is free when every
+message of the series has its result line and every result is one of the four
+that release the message; it is spent when a message has no result line (the
+daemon was killed after the `inject-sent` line, which is written before the wait
+for the answer), when a result line has no `inject-sent` line before it or is the
+second of its message, when an `inject-sent` line follows one that has no result,
+and when a result is not a release or is not a combination the holder sends.
+Whatever is in doubt is spent. The file is read as strictly as the canary's: a
+line that is damaged or partial refuses the start, and so does a line of the lead
+that lacks the `message_id` (and, of a result, the `outcome` and `written`) that
+the reader needs. The one-message state and the in-flight flag are per lead, so
 one lead's inject never blocks another's.
 
 The row also says what became of the epoch's message. `message_result` has the
 holder's three words, `outcome`, `reason` and `written` (the words of the
 `lead.inject` result, each at most 16 bytes; no detail), once the message of the
-current epoch was delivered and the holder answered; `reason` is `""` for
-`submitted`. All three are `""` when the epoch's message was not sent, when it
-was sent and no answer is known, and for a lead the registry does not know. The
-daemon keeps the answer in memory when it delivers the message, and after a
-restart reads it from the command table while the message's receipt is still
-the role's last; a later command (a ticket, say) hides it, and the row then
-says nothing of the answer, though `message_spent` stays true. The rows of
+current epoch's last message was delivered and the holder answered; `reason` is
+`""` for `submitted`. The words are the last message's, and they do not depend on
+`message_spent`: after a message that was not delivered `message_spent` is `false`
+and the words still say what happened to it, so that the console can show it. All
+three are `""` when no message was sent in the epoch, when the last one was sent
+and no answer is known, when the holder answered with a refusal code (the words of
+an earlier message of the epoch are dropped then), and for a lead the registry
+does not know. The daemon keeps the answer in memory when it delivers the message,
+and after a restart reads it from the command table while the message's receipt is
+still the role's last; a later command (a ticket, say) hides it, and the row then
+says nothing of the answer, whatever `message_spent` says. The rows of
 `lead.list` stay under 8 KiB for eight leads with the longest values, which is
 why the row's receipt is the summary form without its `message`, and a replay of
 the command's id gives the full receipt.
 
 The console's client cleans both members to fixed words (a word outside the
 grammar becomes `unrecognised`), and its leads view draws the `ready` line and
-the MSG column from them (`free`, `sent`, `sent-unsure` or
-`spent-not-delivered`), so it guesses neither. The decoding is strict about
+the MSG column from them (`free`, `free (not delivered)`, `sent`, `sent-unsure`
+or `spent, not delivered`), so it guesses neither. The decoding is strict about
 members the client does not know, which it refuses, and not about members it has,
 so a row of a daemon from before `state_reason` and `message_result` (this
 feature is not released) is read as a row with both empty: the view then shows
-the plain state, and the MSG column says `sent` for a spent message. A message's
+the plain state, and the MSG column says `sent` for a spent message and `free`
+for a free one. A message's
 receipt carries the same three words, which the view draws as the answer to the
 press.
 
@@ -565,7 +605,7 @@ lead's record that is not what provisioning writes, or whose digest is not the
 lead's pin, refuses the start; the refusal says that the owner checks the lead's
 folders. An evidence file that cannot be read back refuses the start for the
 canary's reason: set it aside only once the lead's unit is stopped, because a new
-file spends no epoch's message.
+file spends no epoch's message (and frees every one whose message was sent).
 
 **A define that was cut short** (the daemon was stopped, git ran out of time,
 the ten minutes ended) leaves the lead's folders and **no** `provisioned.json`.
@@ -632,8 +672,11 @@ window](lead-daemon.md#the-late-start-window); the console never sends it again.
   **between the frame and the `inject-sent` line** (a window of a few
   milliseconds) leaves the epoch **unspent** after the restart, though the
   message is on its way to the lead, and the command's receipt reads `uncertain`.
-  A killed daemon after that line leaves the epoch spent, and a replay of the
-  command is never sent again. Read the lead's screen before a second message.
+  A killed daemon after that line leaves the epoch spent, because the line has no
+  `inject-result` line after it: only a message whose result line is in the
+  evidence, with `not-now` or `refused` and nothing written, is read back as not
+  spent. A replay of the command is never sent again. Read the lead's screen
+  before a second message.
 - **One scratch root per account for a key.** Unit names come from the key and
   live in the user's one systemd manager. Two scratch roots on one account that
   both define `alpha` name the same unit, `ataniq-lead-scratch-alpha.service`,

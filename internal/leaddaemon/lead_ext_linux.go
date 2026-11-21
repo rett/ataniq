@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"strings"
 
 	"golang.org/x/sys/unix"
 
@@ -703,12 +704,17 @@ func (m *leadMode) ticket(ctx context.Context, lr *leadRole, p leadwire.TicketPa
 	return done(leadwire.TicketResult{Role: res.Role, Epoch: res.Epoch, TicketFile: res.TicketFile, Folder: res.Folder})
 }
 
-// inject sends the one message of the lead's epoch. The order is the canary's,
-// and the receipt comes last: the command is admitted (durably), the admission
+// inject sends a message of the lead's epoch. The order is the canary's, and
+// the receipt comes last: the command is admitted (durably), the admission
 // checks and the epoch are made, the frame is written, the inject-sent line of
 // the evidence is written, and then the command is finished. The epoch's spent
 // set (from the evidence, read when the daemon starts) stays the authority on
 // whether a message was sent; the table never replaces it.
+//
+// The epoch takes one message, with one exception that is the lead's own: a
+// message the holder answered as not delivered (not-now or refused, nothing
+// written) does not spend it, so the lead may send another in the epoch, as
+// [canaryExt.injectFor] says.
 //
 // The residual: a daemon killed after the frame is written and before the
 // inject-sent line is, a window of a few milliseconds, leaves the epoch unspent
@@ -729,6 +735,12 @@ func (m *leadMode) inject(ctx context.Context, lr *leadRole, p leadwire.InjectPa
 			// epoch, as the daemon's own check answers it. The text of the
 			// refusal is the epoch's, and no text reached the lead.
 			return refusedOut(codeStaleEpoch, msgStaleEpoch)
+		}
+		if code, held := strings.CutPrefix(f.code, "holder-"); held && holderRefusal(code) {
+			// The frame was written, the epoch's message is spent and the
+			// holder answered with a refusal and no result: the words kept
+			// for an earlier message of the epoch are not this one's.
+			lr.noteDelivery(p.Epoch, leadwire.MessageResult{})
 		}
 		return fromFail(f)
 	}
@@ -776,7 +788,10 @@ func (m *leadMode) row(lr *leadRole) leadwire.Lead {
 		row.Epoch = e.Epoch
 		row.Unit = lr.role.UnitName()
 		row.MessageSpent = e.Epoch != 0 && lr.in.ext.messageSpent(e.Epoch)
-		if row.MessageSpent {
+		if e.Epoch != 0 {
+			// The words of the last message of the epoch, which the
+			// message's state does not decide: a message that was not
+			// delivered leaves the epoch's message free and its words show.
 			row.MessageResult = deliveryOf(lr, e.Epoch, rec, hasLast)
 		}
 	}

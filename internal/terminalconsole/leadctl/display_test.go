@@ -26,7 +26,7 @@ func TestEveryReceiptIsShownInTheViewsOwnFixedWords(t *testing.T) {
 		{"unknown code", Receipt{Op: OpStart, Status: Refused, Code: "a code from the future"}, []string{"refused: the reason is not known to this console"}, []string{"future"}},
 		{"unknown status", Receipt{Op: OpStart, Status: "weird"}, []string{"the status is not known to this console"}, []string{"weird"}},
 		{"submitted", Receipt{Op: OpInject, Status: Done, Outcome: OutcomeSubmitted}, []string{"message: accepted. the message was submitted", "This epoch's one message is spent"}, nil},
-		{"not now", Receipt{Op: OpInject, Status: Done, Outcome: OutcomeNotNow}, []string{"message: accepted. NOT delivered: nothing was written, the lead could not take it now", "This epoch's one message is spent"}, nil},
+		{"not now", Receipt{Op: OpInject, Status: Done, Outcome: OutcomeNotNow}, []string{"message: accepted. NOT delivered: nothing was written, the lead could not take it now", "The epoch's message is free"}, []string{"is spent"}},
 		{"lead refused", Receipt{Op: OpInject, Status: Done, Outcome: OutcomeRefused}, []string{"NOT delivered: nothing was written, the lead refused it"}, nil},
 		{"uncertain outcome", Receipt{Op: OpInject, Status: Done, Outcome: OutcomeUncertain}, []string{"result unknown: it may have reached the lead"}, nil},
 		{"unknown outcome", Receipt{Op: OpInject, Status: Done, Outcome: "sent!!"}, []string{"the result is not known to this console"}, []string{"sent!!", "is spent"}},
