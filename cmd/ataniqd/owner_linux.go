@@ -33,7 +33,12 @@ unqualified.
 The host's side of a card is built for the scratch pass only, from the file
 owner/scratch.json in the state folder (one project, its mirror, the folder
 requests are dropped in), over the real journal in owner/ and the stand-in for
-the planner's door, which holds nothing across a restart. A request is a file
+the planner's door, which holds nothing across a restart. The settings must say
+"door": "stand-in" and name "roots", the scratch folders, one of which holds the
+mirror; the daemon refuses (the configuration's exit code) a state folder, a
+root or a mirror that is, lies inside or contains the account's default state
+or runtime folder, and prints "owner channel: STAND-IN door, scratch state: no
+real approval" at start. A request is a file
 <request id>.request in the drop folder, and its reply is a file beside it. It
 is provisional and unqualified, and no suite runs in this build yet, so the
 daemon refuses --owner-channel until one is installed.
@@ -55,6 +60,18 @@ func (o *ownerFlags) define(fs *flag.FlagSet) {
 // is.
 var ownerServiceBuilder func(stateDir string) (leaddaemon.OwnerService, func() error, error)
 
+// ownerGuardSet is what the builder of a build brings with it: the checks of
+// the state folder and the settings that run before the daemon starts, and the
+// line the daemon prints once the service is built.
+type ownerGuardSet struct {
+	check  func(stateDir string, getenv func(string) string) error
+	banner string
+}
+
+// ownerGuard is the host adapter's guard, set with the builder. A test that
+// puts its own builder in place sets it to nil.
+var ownerGuard *ownerGuardSet
+
 // ownerInspector looks at the peer of a connection that asks to be the
 // decider. A test replaces it, so that none needs a real terminal.
 var ownerInspector leaddaemon.PeerInspector = leaddaemon.ProcInspector{}
@@ -71,8 +88,24 @@ func (a *app) ownerRun(o *ownerFlags, cfg *leaddaemon.Config) (code int) {
 		return leaddaemon.ExitConfig
 	}
 	stateDir := cfg.StateDir
+	// The guards of the builder's own door come before the daemon takes a
+	// lock or makes a socket: a refusal is a configuration the daemon refuses.
+	guard := ownerGuard
+	if guard != nil {
+		if err := guard.check(stateDir, a.getenv); err != nil {
+			fmt.Fprintf(a.stderr, "ataniqd run: --owner-channel: %s\n", leaddaemon.SafeText(err.Error()))
+			return leaddaemon.ExitConfig
+		}
+	}
 	oc := &leaddaemon.OwnerChannel{
-		Build:     func() (leaddaemon.OwnerService, func() error, error) { return build(stateDir) },
+		Build: func() (leaddaemon.OwnerService, func() error, error) {
+			svc, closer, err := build(stateDir)
+			if err == nil && guard != nil {
+				// The one line at start that says what the door is.
+				fmt.Fprintf(a.stderr, "ataniqd: %s\n", guard.banner)
+			}
+			return svc, closer, err
+		},
 		Inspector: ownerInspector,
 		Log:       func(format string, args ...any) { fmt.Fprintf(a.stderr, "ataniqd: "+format+"\n", args...) },
 	}

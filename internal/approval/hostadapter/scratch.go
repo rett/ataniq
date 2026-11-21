@@ -20,6 +20,13 @@ import (
 // folder of the state folder.
 const ScratchName = "scratch.json"
 
+// DoorStandIn is the one value the settings' door may have in this build: the
+// planner's door is the in-memory stand-in, which gives no real approval.
+const DoorStandIn = "stand-in"
+
+// maxScratchRoots caps the list of scratch roots.
+const maxScratchRoots = 8
+
 // maxScratchBytes caps the settings file.
 const maxScratchBytes = 64 << 10
 
@@ -43,6 +50,14 @@ type Scratch struct {
 	// Seat is what the stand-in door is given: the epoch a request must
 	// name and the revision of the seat's record.
 	Seat ScratchSeat `json:"seat"`
+	// Door selects the planner's door. Only [DoorStandIn] is accepted: the
+	// settings must say that the pass runs on the stand-in.
+	Door string `json:"door"`
+	// Roots are the scratch roots: clean absolute folders, none of them a
+	// default folder of the account or holding one. The mirror must lie
+	// under one of them. The command checks both against the account; this
+	// package checks only their form.
+	Roots []string `json:"roots"`
 }
 
 // ScratchIdentity is the identity of the merge commit.
@@ -89,6 +104,17 @@ func LoadScratch(path string) (Scratch, error) {
 	}
 	if s.Seat.Epoch < 0 || s.Seat.SeatRev < 0 || s.Drop == "" || !filepath.IsAbs(s.Drop) || filepath.Clean(s.Drop) != s.Drop {
 		return Scratch{}, errors.New("hostadapter: the scratch settings name no clean absolute drop folder, or a negative number")
+	}
+	if s.Door != DoorStandIn {
+		return Scratch{}, errors.New("hostadapter: the scratch settings do not select the stand-in door (\"door\": \"stand-in\")")
+	}
+	if len(s.Roots) == 0 || len(s.Roots) > maxScratchRoots {
+		return Scratch{}, errors.New("hostadapter: the scratch settings name no scratch root, or too many")
+	}
+	for _, r := range s.Roots {
+		if !filepath.IsAbs(r) || filepath.Clean(r) != r {
+			return Scratch{}, errors.New("hostadapter: a scratch root is not a clean absolute path")
+		}
 	}
 	if err := s.ProjectOf().check(); err != nil {
 		return Scratch{}, err

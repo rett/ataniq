@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"ataniq/internal/approval/door/doortest"
@@ -33,7 +32,16 @@ var ownerSuite hostadapter.Suite
 // The default writes them to the standard error, one line each.
 var ownerNotice = func(line string) { fmt.Fprintf(os.Stderr, "ataniqd: owner channel: %s\n", line) }
 
-func init() { ownerServiceBuilder = buildOwnerService }
+func init() {
+	ownerServiceBuilder = buildOwnerService
+	ownerGuard = &ownerGuardSet{
+		check: func(stateDir string, getenv func(string) string) error {
+			_, err := checkOwnerScratch(stateDir, getenv)
+			return err
+		},
+		banner: ownerBanner,
+	}
+}
 
 // standInEnder ends a request at the stand-in door, which has a withdraw of
 // its own for it.
@@ -44,14 +52,18 @@ func (e standInEnder) EndRequest(_ context.Context, id string) error { return e.
 // buildOwnerService is the [ownerServiceBuilder] of this build. It reads the
 // scratch settings in the owner folder of the state folder, opens the host
 // adapter on them, and returns the service with the function that closes
-// everything. It refuses without a suite runner and without settings.
+// everything. It refuses without a suite runner, without settings that select
+// the stand-in door, and with a state folder, a scratch root or a mirror that
+// is the account's default or not a scratch one.
 func buildOwnerService(stateDir string) (leaddaemon.OwnerService, func() error, error) {
 	suite := ownerSuite
 	if suite == nil {
 		return nil, nil, errors.New("this build has no verification suite for a merge yet, so no card can be made")
 	}
-	settingsPath := filepath.Join(stateDir, hostadapter.OwnerDirName, hostadapter.ScratchName)
-	sc, err := hostadapter.LoadScratch(settingsPath)
+	// The settings select the stand-in door, and the state folder, the roots
+	// and the mirror are not the account's real ones. ownerRun makes the same
+	// check before the daemon starts; this one is the builder's own.
+	sc, err := checkOwnerScratch(stateDir, ownerGetenv)
 	if err != nil {
 		return nil, nil, err
 	}
