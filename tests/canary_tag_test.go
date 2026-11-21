@@ -38,6 +38,7 @@ var canaryAllowedPaths = []string{
 	"internal/leadholder/serve/",
 	"internal/leadcontrol/",
 	"internal/leaddaemon/",
+	"internal/mirror/",
 	"cmd/ataniqd/",
 	"cmd/ataniq-holder/",
 	"cmd/ataniq-canary/",
