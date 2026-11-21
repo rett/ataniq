@@ -403,7 +403,7 @@ func TestReadmeStatesTheRules(t *testing.T) {
 
 	for _, word := range []string{SchemaRequest, SchemaPending, SchemaDecision, VerbFeatureFinish, VerbBranchPrune,
 		ClassRefMove, SubjectSeat, EffectRef, BuiltByHost, EvidenceSuite, DecisionApprove, DecisionDeny,
-		ConfirmedCode, FlagExecConfig, FlagSymlink, FlagSubmodule, FlagAliased, FlagHistoryOnly, "A", "M", "D", "T",
+		ConfirmedCode, FlagExecConfig, FlagSymlink, FlagSubmodule, FlagAliased, FlagHistoryOnly, FlagOddPath, "A", "M", "D", "T",
 		"rq-", "ap-", "b64", PlanDigest(""), branchPrefix} {
 		need("the word", word)
 	}

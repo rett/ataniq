@@ -30,26 +30,23 @@ import (
 // host writes no blob and no tree; everything the adapter does goes through
 // gitenv, as in production.
 
-const gitBin = "/usr/bin/git"
-
 var start = time.Date(2026, 11, 20, 14, 2, 4, 0, time.UTC)
 
 // lab is a temporary bare repository, the mirror, with an index file of its
 // own for building commits.
 type lab struct {
-	t   *testing.T
-	dir string
-	idx string
-	n   int
+	t    *testing.T
+	git0 string // the git the repository's lookup found
+	dir  string
+	idx  string
+	n    int
 }
 
 func newLab(t *testing.T) *lab {
 	t.Helper()
-	if _, err := os.Stat(gitBin); err != nil {
-		t.Fatalf("these tests need %s: %v", gitBin, err)
-	}
+	gitBin := needGit(t).Path
 	dir := filepath.Join(t.TempDir(), "mirror.git")
-	l := &lab{t: t, dir: dir, idx: filepath.Join(t.TempDir(), "index")}
+	l := &lab{t: t, git0: gitBin, dir: dir, idx: filepath.Join(t.TempDir(), "index")}
 	cmd := exec.Command(gitBin, "init", "--bare", "--quiet", "--template=", dir)
 	cmd.Env = l.env()
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -71,7 +68,7 @@ func (l *lab) env() []string {
 // try runs plain git on the mirror.
 func (l *lab) try(stdin string, args ...string) (string, error) {
 	l.t.Helper()
-	cmd := exec.Command(gitBin, args...)
+	cmd := exec.Command(l.git0, args...)
 	cmd.Env = l.env()
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
@@ -223,7 +220,7 @@ func needGit(t *testing.T) gitenv.Git {
 	t.Helper()
 	g, err := gitenv.Find()
 	if err != nil {
-		t.Fatalf("these tests need an installed git: %v", err)
+		t.Skipf("these tests need an installed git, which the repository's lookup (gitenv.Find) does not find: %v", err)
 	}
 	return g
 }
@@ -247,6 +244,9 @@ type rig struct {
 	// fault, when set, is the service's fault hook.
 	fault func(point string) error
 	n     int
+	// git, when set, is the git the host runs instead of the installed one:
+	// a wrapper of a test.
+	git *gitenv.Git
 }
 
 func newRig(t *testing.T, change func(l *lab)) *rig {
@@ -275,7 +275,7 @@ func privateDir(t *testing.T) string {
 func (r *rig) config() OpenConfig {
 	return OpenConfig{
 		Config: Config{
-			Git: needGit(r.t), Projects: []Project{r.proj}, Suite: r.suite, Now: r.clock.Now,
+			Git: r.gitOf(), Projects: []Project{r.proj}, Suite: r.suite, Now: r.clock.Now,
 			Notice: func(l string) { r.mu.Lock(); r.notices = append(r.notices, l); r.mu.Unlock() },
 		},
 		StateDir: r.state, Door: r.stand, Ender: ender{r.stand}, DropDir: r.drop, CollectProject: "project-a", Manual: true,
@@ -286,6 +286,13 @@ func (r *rig) config() OpenConfig {
 			return nil
 		}},
 	}
+}
+
+func (r *rig) gitOf() gitenv.Git {
+	if r.git != nil {
+		return *r.git
+	}
+	return needGit(r.t)
 }
 
 type ender struct{ d *doortest.Door }

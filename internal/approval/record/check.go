@@ -355,7 +355,7 @@ func checkDecision(d *Decision) error {
 
 func validFlagKind(k string) bool {
 	switch k {
-	case FlagExecConfig, FlagSymlink, FlagSubmodule, FlagAliased, FlagHistoryOnly:
+	case FlagExecConfig, FlagSymlink, FlagSubmodule, FlagAliased, FlagHistoryOnly, FlagOddPath:
 		return true
 	}
 	return false

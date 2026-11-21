@@ -207,14 +207,16 @@ func (h *Host) Patch(ctx context.Context, ref ownerchannel.ReviewRef) (ownerchan
 	return ownerchannel.ReviewPatch{ReviewDigest: rev.Digest(), Lines: lines}, nil
 }
 
-// flagKinds maps the intake's kinds of flag to the record's. The intake's
-// odd-path flag has no kind in the record, so it is not here.
+// flagKinds maps the intake's kinds of flag to the record's. Every kind the
+// intake has is here, the odd-path one too: such a path is carried to the card
+// and needs its sign-off like any other flagged path.
 var flagKinds = map[intake.FlagKind]string{
 	intake.FlagExecConfig: record.FlagExecConfig,
 	intake.FlagSymlink:    record.FlagSymlink,
 	intake.FlagSubmodule:  record.FlagSubmodule,
 	intake.FlagAliased:    record.FlagAliased,
 	intake.FlagHistory:    record.FlagHistoryOnly,
+	intake.FlagOddPath:    record.FlagOddPath,
 }
 
 // mode writes a git file mode as six octal digits.
@@ -257,8 +259,9 @@ func estimate(path string) int { return 2*len(path) + 160 }
 // the four lists are never cut, and a change whose lists do not fit is
 // refused record-too-large; the path list is cut when it is long, and marked,
 // and the card reads the rest in pages (owner.paths). A flag the record has
-// no kind for (an odd path) is refused: a path that needs a sign-off cannot
-// be left out of the list that carries them.
+// no kind for is refused (the intake has none now: the odd-path kind is
+// carried): a path that needs a sign-off cannot be left out of the list that
+// carries them.
 func buildSummary(p Project, rev *intake.Review, sum *intake.Summary) (record.Summary, error) {
 	flagged := make([]record.Flag, 0, len(rev.Flagged))
 	used := 0

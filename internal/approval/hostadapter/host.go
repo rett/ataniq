@@ -15,8 +15,8 @@ import (
 )
 
 // Host holds the adapters. It implements [ownerchannel.Merger],
-// [ownerchannel.Intake], [ownerchannel.Verifier] and [ownerchannel.Mailbox]
-// for the projects of its configuration, and is safe for use by several
+// [ownerchannel.Intake] and [ownerchannel.Verifier] for the projects of its
+// configuration (the mailbox is the [FileMailbox] it is given), and is safe for use by several
 // goroutines: it keeps no state of its own but the intake's records folder,
 // which locks its writes.
 type Host struct {

@@ -69,7 +69,8 @@ func ownerCmdSetup(t *testing.T) (svc *ownerCmdService, builds func() int) {
 	svc = &ownerCmdService{}
 	var mu sync.Mutex
 	n := 0
-	oldBuild, oldInspect := ownerServiceBuilder, ownerInspector
+	oldBuild, oldInspect, oldGuard := ownerServiceBuilder, ownerInspector, ownerGuard
+	ownerGuard = nil
 	ownerServiceBuilder = func(stateDir string) (leaddaemon.OwnerService, func() error, error) {
 		mu.Lock()
 		n++
@@ -80,7 +81,7 @@ func ownerCmdSetup(t *testing.T) (svc *ownerCmdService, builds func() int) {
 		return svc, func() error { svc.mu.Lock(); svc.closed++; svc.mu.Unlock(); return nil }, nil
 	}
 	ownerInspector = ownerCmdTerminal{}
-	t.Cleanup(func() { ownerServiceBuilder, ownerInspector = oldBuild, oldInspect })
+	t.Cleanup(func() { ownerServiceBuilder, ownerInspector, ownerGuard = oldBuild, oldInspect, oldGuard })
 	return svc, func() int { mu.Lock(); defer mu.Unlock(); return n }
 }
 
@@ -233,7 +234,9 @@ func TestOwnerRunWithTheFlagWhenThisBuildCannotBuildTheService(t *testing.T) {
 // TestOwnerRunWhenTheBuilderFails: a builder that fails stops the daemon with
 // the serve step's exit code, with the builder's words through SafeText.
 func TestOwnerRunWhenTheBuilderFails(t *testing.T) {
-	old := ownerServiceBuilder
+	old, oldGuard := ownerServiceBuilder, ownerGuard
+	ownerGuard = nil
+	t.Cleanup(func() { ownerGuard = oldGuard })
 	ownerServiceBuilder = func(string) (leaddaemon.OwnerService, func() error, error) {
 		return nil, nil, errors.New("the journal is locked")
 	}

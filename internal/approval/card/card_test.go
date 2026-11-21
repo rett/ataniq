@@ -505,7 +505,7 @@ func TestPageKinds(t *testing.T) {
 // The reason of a flag is the host's words for its kind, and nothing else.
 func TestFlagReasons(t *testing.T) {
 	seen := map[string]bool{}
-	for _, kind := range []string{record.FlagExecConfig, record.FlagSymlink, record.FlagSubmodule, record.FlagAliased, record.FlagHistoryOnly} {
+	for _, kind := range []string{record.FlagExecConfig, record.FlagSymlink, record.FlagSubmodule, record.FlagAliased, record.FlagHistoryOnly, record.FlagOddPath} {
 		raw := rawPending()
 		raw.Binding.Summary.Flagged = []record.Flag{{Kind: kind, Path: "some/path", Pattern: ""}}
 		c := mustCard(t, seal(t, raw), Inputs{})

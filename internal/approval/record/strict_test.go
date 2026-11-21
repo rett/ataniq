@@ -110,7 +110,7 @@ func TestTextLenIsTheLengthOfItsJSON(t *testing.T) {
 
 // The validators the owner connection shares are the record's own.
 func TestSharedValidators(t *testing.T) {
-	for _, k := range []string{FlagExecConfig, FlagSymlink, FlagSubmodule, FlagAliased, FlagHistoryOnly} {
+	for _, k := range []string{FlagExecConfig, FlagSymlink, FlagSubmodule, FlagAliased, FlagHistoryOnly, FlagOddPath} {
 		if !ValidFlagKind(k) {
 			t.Errorf("ValidFlagKind(%q) is false", k)
 		}

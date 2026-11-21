@@ -13,19 +13,22 @@
 //
 // # What it adapts
 //
-//   - [Host.Merge] is the Merger: it builds the host's merge and pins it
-//     under refs/ataniq/pending/, the key being the service's own.
-//   - [Host.Intake] is the Intake: the feature and the target are read from
+//   - [Host.Build], [Host.Pinned] and [Host.Unpin] are the Merger: they build
+//     the host's merge and pin it under refs/ataniq/pending/, the key being
+//     the service's own.
+//   - [Host.Resolve], [Host.Review], [Host.TargetTip], [Host.Paths],
+//     [Host.Patch], [Host.Fresh], [Host.Apply] and [Host.Mirror] are the
+//     Intake: the feature and the target are read from
 //     the mirror by their exact names; the review is the intake's merge mode
 //     (Inspect and Summarize), with the summary the card shows; a use reads
 //     the refs, the review digest, the rule-set digest and the verification
 //     records again; the ref update is [intake.Integrate], one transaction
 //     with the old value, no checkout and no hook; the mirror is read for
 //     what an unfinished use left.
-//   - [Host.Verifier] is the Verifier: it runs a [Suite] on the merge and
+//   - [Host.Verify] is the Verifier: it runs a [Suite] on the merge and
 //     keeps the result as a verification record of the intake's store, which
 //     is also what [intake.Integrate] needs before it moves a ref.
-//   - [Host.Mailbox] is the Mailbox: a reply file beside the request, the
+//   - [FileMailbox] is the Mailbox: a reply file beside the request, the
 //     only reply this build writes (a mailbox reply to a lead is out of
 //     scope).
 //   - [Collector] is a file-drop collector for the scratch pass: it reads
@@ -48,5 +51,5 @@
 // Paths and the patch are raw lead text. The adapter keeps them as the
 // intake does: the summary holds raw paths as record.Text, and the patch
 // lines are the intake's escaped lines, which the daemon turns back with
-// leaddaemon.UnescapingIntake (see [Host.Service]).
+// leaddaemon.UnescapingIntake (see [Host.Patch]).
 package hostadapter

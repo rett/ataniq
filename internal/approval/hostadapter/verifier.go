@@ -60,7 +60,9 @@ type SuiteResult struct {
 // earlier pass. A run that is not clean says why in one word of the closed
 // list: output-cut for a cut output, stopped for a run that was stopped,
 // failed for a gate that did not exit 0, and could-not-run for a suite that
-// returned an error or an answer that does not describe the merge.
+// returned an error, or whose record could not be kept. The suite's answer
+// carries no commit id, so the adapter does not check that it describes the
+// merge: the runner is told the merge and is trusted to run on it.
 func (h *Host) Verify(ctx context.Context, in ownerchannel.VerifyInput) (ownerchannel.Verification, error) {
 	p, err := h.project(in.Project)
 	if err != nil {

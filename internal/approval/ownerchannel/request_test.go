@@ -81,6 +81,23 @@ func TestARequestIsRefusedWithItsCodeAndAReply(t *testing.T) {
 		}, nil, record.CodeVerificationFailed},
 		{"the review cannot be made", func(e *env) { e.intake.reviewErr = errors.New("no mirror") }, nil, record.CodeRequestInvalid},
 		{"the feature cannot be resolved", func(e *env) { e.intake.resolveErr = errors.New("no mirror") }, nil, record.CodeRequestInvalid},
+		// The intake's refusals reach the lead with their own code when the
+		// code is in the closed set; an outside code is the host's failure.
+		{"the review is too large", func(e *env) {
+			e.intake.reviewErr = &record.Error{Code: record.CodeRecordTooLarge, Detail: "the change is larger than the host reads for a card"}
+		}, nil, record.CodeRecordTooLarge},
+		{"the review is not of the merge", func(e *env) {
+			e.intake.reviewErr = &record.Error{Code: record.CodeBindingMismatch, Detail: "the target moved"}
+		}, nil, record.CodeBindingMismatch},
+		{"the feature is gone at the intake", func(e *env) {
+			e.intake.resolveErr = &record.Error{Code: record.CodeFeatureMoved, Detail: "the feature branch is not in the mirror"}
+		}, nil, record.CodeFeatureMoved},
+		{"the intake refuses the name", func(e *env) {
+			e.intake.resolveErr = &record.Error{Code: record.CodeFeatureName, Detail: "the feature name is not in the grammar"}
+		}, nil, record.CodeFeatureName},
+		{"the review refuses with a code outside the closed set", func(e *env) {
+			e.intake.reviewErr = &record.Error{Code: record.CodeApprovalVoid, Detail: "not a code for a lead"}
+		}, nil, record.CodeRequestInvalid},
 		{"a prune is not handled", func(e *env) {}, func(r *record.Request) {
 			r.Verb, r.Argv, r.FeatureSHA = record.VerbBranchPrune, []string{}, ""
 		}, record.CodeVerbNotRequestable},

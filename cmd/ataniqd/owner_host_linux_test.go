@@ -40,11 +40,22 @@ func scratchSettings(t *testing.T, mutate func(*hostadapter.Scratch)) (state, dr
 			t.Fatal(err)
 		}
 	}
+	writeScratch(t, state, base, mutate)
+	return state, drop
+}
+
+// writeScratch writes the scratch settings into the owner folder of state, with
+// the mirror and the drop folder under base, which is also the one scratch
+// root.
+func writeScratch(t *testing.T, state, base string, mutate func(*hostadapter.Scratch)) {
+	t.Helper()
+	drop := base + "/drop"
 	sc := hostadapter.Scratch{
 		Project: "project-a", Mirror: base + "/mirror.git", Role: "role-a", Target: "refs/heads/develop",
 		Identity: hostadapter.ScratchIdentity{Name: "Host Identity", Email: "host@example.invalid"},
 		Gates:    []hostadapter.ScratchGate{{Name: "suite", Argv: []string{"make", "test"}}},
 		Drop:     drop, Seat: hostadapter.ScratchSeat{Epoch: 7, SeatRev: 12},
+		Door: hostadapter.DoorStandIn, Roots: []string{base},
 	}
 	if mutate != nil {
 		mutate(&sc)
@@ -56,7 +67,6 @@ func scratchSettings(t *testing.T, mutate func(*hostadapter.Scratch)) (state, dr
 	if err := os.WriteFile(filepath.Join(state, "owner", hostadapter.ScratchName), b, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return state, drop
 }
 
 // useSuite puts a suite runner in place of the build's, which has none.
@@ -254,6 +264,10 @@ func TestOwnerRunWithTheHostAdapterServesTheOwnerOperations(t *testing.T) {
 	ta := newTestApp(t, nil)
 	done := startApp(t, ta, []string{"--state-dir", state, "--runtime-dir", runtime, "--owner-channel"}, runtime+"/daemon.sock")
 
+	// The one line at start says that the door is the stand-in.
+	if got := ta.err.String(); strings.Count(got, "ataniqd: "+ownerBanner+"\n") != 1 || ownerBanner != "owner channel: STAND-IN door, scratch state: no real approval" {
+		t.Errorf("the start line is missing or repeated: %q", got)
+	}
 	h := ownerCmdHello(t, runtime+"/daemon.sock")
 	want := append([]string{"hello", "status"}, ownerwire.Operations()...)
 	if strings.Join(h.Operations, " ") != strings.Join(want, " ") {
