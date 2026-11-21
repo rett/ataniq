@@ -753,9 +753,11 @@ What the timer does not do:
   that recorded the lead `stopped`.
 - **It does not settle what it cannot prove, and does not stop trying.** When
   the unit manager does not answer, or the control group is not proven empty,
-  nothing changes and the timer tries again after 2 s, then at doubling waits up
-  to a minute, until the intent is settled or the lead no longer shows it; the
-  daemon logs each try. A daemon that is not in scratch mode has no timer.
+  the lead is not settled (it stays `unknown`, and for a control group not
+  proven empty its reason becomes `control-group-not-proven-empty`) and the timer
+  tries again after 2 s, then at doubling waits up to a minute, until the intent
+  is settled or the lead no longer shows it; the daemon logs each try and a
+  repeated try adds nothing to the registry's journal. A daemon that is not in scratch mode has no timer.
 
 The console's leads view does not read the list by a timer for a lead that is
 `unknown`: press `r` after the 40 s to see the settled lead. The row's line, the

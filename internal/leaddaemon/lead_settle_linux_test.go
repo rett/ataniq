@@ -547,6 +547,81 @@ func TestSettleTriesAgainWhenTheManagerDoesNotAnswer(t *testing.T) {
 	s.waitState("alpha", "stopped")
 }
 
+// journalLines is how many records the registry's journal holds now.
+func (s *settleEnv) journalLines() int {
+	s.t.Helper()
+	b, err := os.ReadFile(filepath.Join(s.state, RegistryDirName, leadregistry.FileName))
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	return strings.Count(string(b), "\n")
+}
+
+// A control group that is not proven empty at the deadline leaves the lead
+// unknown with the reason control-group-not-proven-empty, and the timer, which
+// that reason keeps armed, tries again at growing waits: once the group is
+// empty the lead ends stopped, with no restart. The tries add no line to the
+// registry's journal after the first that changes the reason.
+func TestSettleTriesAgainWhileTheControlGroupIsNotEmpty(t *testing.T) {
+	s := newSettleEnv(t)
+	s.killedMidStart("alpha")
+	s.clk.waitLongSleeps(t, 1)
+	unit := s.roleOf("alpha").UnitName()
+	s.fake.LeaveControlGroup(unit, true)
+
+	s.clk.Advance(leadlifecycle.DefaultLateStartWindow + leadlifecycle.DefaultLateStartMargin + time.Second)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, code, _, _ := s.shown("alpha"); code == codeGroupNotEmpty {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the lead is not shown with the group's reason:\n%s", s.log)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// The timer is waiting for its retry.
+	s.clk.waitLongSleeps(t, 2)
+	lines := s.journalLines()
+
+	// Several tries with the group still left: the lead stays unknown, nothing
+	// is journaled, and the timer is still there.
+	for i := 0; i < 4; i++ {
+		n := s.clk.longSleeps()
+		s.clk.Advance(settleRetryLongest)
+		s.clk.waitLongSleeps(t, n+1)
+	}
+	if state, code, _, _ := s.shown("alpha"); state != "unknown" || code != codeGroupNotEmpty {
+		t.Fatalf("shown %q (%s)", state, code)
+	}
+	if got := s.journalLines(); got != lines {
+		t.Fatalf("the journal has %d records after the tries, %d before", got, lines)
+	}
+	if got := strings.Count(s.log.String(), "epoch 1: unknown ("+codeGroupNotEmpty+")"); got < 3 {
+		t.Fatalf("%d tries logged, want each try:\n%s", got, s.log)
+	}
+
+	// The group is empty: the next try settles the lead.
+	s.fake.LeaveControlGroup(unit, false)
+	for i := 0; i < 20; i++ {
+		if state, _, _, _ := s.shown("alpha"); state == "stopped" {
+			break
+		}
+		s.clk.Advance(settleRetryLongest)
+		time.Sleep(20 * time.Millisecond)
+	}
+	s.waitState("alpha", "stopped")
+	if _, code, _, _ := s.shown("alpha"); code != "launch-abandoned" {
+		t.Fatalf("reason %q", code)
+	}
+	if starts, signals := s.startsAndSignals(); starts != 0 || signals != 0 {
+		t.Fatalf("%d starts and %d signals", starts, signals)
+	}
+	if e := s.finalEntry("alpha"); e.Shown.State != leadregistry.StateStopped || e.Intent.Outcome != leadregistry.OutcomeAbandoned {
+		t.Fatalf("entry %+v", e)
+	}
+}
+
 // A shutdown ends a timer that waits for its deadline, within the grace, and
 // the log has no word of an observer left behind.
 func TestSettleShutdownJoinsTheTimer(t *testing.T) {

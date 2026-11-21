@@ -123,8 +123,10 @@
   `stopped`, with a proof, and leaves the `max_running` count. A unit that is
   loaded at the deadline does not settle the lead and is never signalled (the
   launch's own unit is adopted, another is reported and the intent abandoned,
-  and the lead stays `unknown`), a manager that does not answer is tried again
-  at growing waits, and a lead shown `unknown` for `registry-recovered` has no
+  and the lead stays `unknown`), a manager that does not answer, or a control
+  group that is not proven empty, is tried again at growing waits (the lead
+  stays `unknown`, with the reason `control-group-not-proven-empty` in the
+  second case), and a lead shown `unknown` for `registry-recovered` has no
   timer. The timer starts nothing, never waits for the role's lock, ends on a
   stop, a new start and at shutdown. See `docs/lead-daemon.md` and
   `docs/scratch-leads.md`.

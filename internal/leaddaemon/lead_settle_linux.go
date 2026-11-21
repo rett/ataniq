@@ -32,7 +32,8 @@ import (
 // stopped, and it takes the next epoch.
 //
 // A timer is armed for a role the registry shows unknown with the reason
-// launch-unsettled or launch-reply-lost and its intent pending: when the daemon
+// launch-unsettled, launch-reply-lost or (after a try) control-group-not-proven-empty
+// and its intent pending: when the daemon
 // starts serving (a start that was cut short by the death of an earlier daemon)
 // and when a start of this daemon ended with its reply lost. A role shown
 // unknown for a cut of the registry (registry-recovered) is the owner's and is
@@ -51,6 +52,12 @@ import (
 const (
 	codeLaunchUnsettled = "launch-unsettled"
 	codeLaunchReplyLost = "launch-reply-lost"
+
+	// codeGroupNotEmpty is what the lifecycle shows for a pending intent whose
+	// control group was not proven empty at a try: the intent is still the
+	// timer's, which tries again. For an intent with an outcome the same code
+	// arms nothing, since the intent is the gate.
+	codeGroupNotEmpty = "control-group-not-proven-empty"
 )
 
 // The waits of a timer that could not settle the role.
@@ -126,7 +133,7 @@ func settleWanted(e leadregistry.Entry) bool {
 		return false
 	}
 	switch e.Shown.Reason.Code {
-	case codeLaunchUnsettled, codeLaunchReplyLost:
+	case codeLaunchUnsettled, codeLaunchReplyLost, codeGroupNotEmpty:
 		return true
 	}
 	return false

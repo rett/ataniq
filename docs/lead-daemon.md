@@ -1073,8 +1073,14 @@ What the timer does when it cannot settle:
   request that lands after the window is the stale-unit path above and is never
   signalled by the timer.
 - **The manager does not answer, or the control group is not proven empty.**
-  Nothing changes and the timer tries again after 2 s, then at doubling waits up
-  to a minute, until the intent is settled or the role no longer shows it.
+  The role is not settled: when the manager does not answer nothing changes;
+  when the control group is not proven empty the role stays `unknown` and its
+  reason becomes `control-group-not-proven-empty`, which keeps the timer armed
+  (it is one of the reasons that arm it, while the intent is pending). The timer
+  tries again after 2 s, then at doubling waits up to a minute, until the intent
+  is settled or the role no longer shows it. A repeated try with the same reason
+  writes nothing to the registry, so the retries do not grow its journal; each
+  try is a line in the daemon's log.
 - **The role's operation lock is held** (a start or a stop of the role is
   running) or the role changed (another epoch, a proven stop): the timer waits
   and tries again, or ends. It never waits for the lock, and holds it only for
