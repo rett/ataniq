@@ -410,7 +410,7 @@ error is never drawn.
 | d | Define the lead under the cursor: the daemon provisions it and registers it. |
 | s | Start it. |
 | x | Ask "Stop KEY (epoch N)?"; only y stops it, any other key keeps it running. |
-| m | Open a one-line editor for a message to the lead, for the epoch the row shows. Enter sends it once, Esc drops it, Ctrl+U clears it, and every printable key, q and j included, is text. It holds at most 4096 bytes. |
+| m | Open a one-line editor for a message to the lead, for the epoch the row shows. Enter sends it once, Esc drops it, Ctrl+U clears it, and every printable key, q and j included, is text. It holds at most 2048 bytes, the daemon's limit, and stops taking text there. |
 | w, v | Ask for an attach ticket as a writer or as a viewer (below). |
 | r | Read the list again. |
 | Esc | Close the view. |
@@ -419,10 +419,7 @@ error is never drawn.
 While a command for a lead has no answer yet, the keys that would send another
 for that lead do nothing and say so. `m` says why it does nothing when the lead
 has no epoch, when messages are off, when the epoch's message was sent, and when
-an earlier message of the epoch has no final answer. The daemon's own admission
-is stricter than the editor in one place: it accepts a body of at most 2048
-bytes, so a longer message is refused and the view draws its reason line for a
-code it has no words for.
+an earlier message of the epoch has no final answer.
 
 ### Receipts
 
@@ -438,11 +435,10 @@ view's own, chosen by the receipt's status, and are not the daemon's text:
 | uncertain | uncertain | The daemon does not know what happened, as after a restart while the command ran. Read the lead's state, then decide; nothing is sent again for you. |
 
 "Accepted" means that the daemon took the command into its durable table, not
-that it is done. The view has words for a closed set of reason codes. A code the
-daemon sends that is not in that set is drawn as "the reason is not known to
-this console", so a refusal can show that line for a code the daemon does
-define; an outcome it does not know is drawn as "the result is not known to this
-console".
+that it is done. The view has words for every reason code the daemon sends.
+Only a code from a newer daemon, one that is not in that set, is drawn as "the
+reason is not known to this console"; an outcome it does not know is drawn as
+"the result is not known to this console".
 
 **Earlier receipts.** After a lost answer the console's client asks once more,
 on a new connection, with the same command id and the same arguments, and the
