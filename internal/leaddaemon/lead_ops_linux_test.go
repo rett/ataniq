@@ -563,25 +563,63 @@ func TestLeadStopForAnOldEpochNeverStopsTheNext(t *testing.T) {
 }
 
 // lead.stop always reaches the lifecycle: for a lead that is shown stopped, it
-// asks the manager about the unit, and it is done only for a lead that is
-// stopped with its proof.
+// asks the manager about the unit. It is done for a lead that is stopped with
+// its proof, and for one defined and never started (epoch 0, no intent, no
+// proof in the registry), where the lifecycle has just found no unit loaded and
+// no launch was ever recorded, so a fixed proof text stands for it.
 func TestLeadStopAlwaysCallsTheLifecycle(t *testing.T) {
 	l := newLeadEnv(t)
 	l.start()
 	want(t, l.define("alpha"), leadwire.StatusDone, "")
 	inspects := len(l.fake.CallsOf(leadunit.MethodInspect))
 	// Shown stopped, never started: the lifecycle looks at the unit, and the
-	// answer is not a proven stop.
+	// stop is done with the fixed proof, not uncertain.
 	r := l.stopLead("alpha", 0)
 	if len(l.fake.CallsOf(leadunit.MethodInspect)) <= inspects {
 		t.Fatal("the stop did not reach the lifecycle")
 	}
-	want(t, r, leadwire.StatusUncertain, codeStopUnproven)
+	want(t, r, leadwire.StatusDone, "")
+	var never leadwire.StopResult
+	result(t, r, &never)
+	if never.State != "stopped" || never.Proof != msgProofNeverStarted {
+		t.Fatalf("the stop of a lead never started: %+v", never)
+	}
 	// After a real stop the proof is there, and a second stop is done.
 	l.holder("alpha", submitted)
 	want(t, l.startLead("alpha"), leadwire.StatusDone, "")
 	want(t, l.stopLead("alpha", 0), leadwire.StatusDone, "")
 	want(t, l.stopLead("alpha", 0), leadwire.StatusDone, "")
+}
+
+// A lead that the reconcile marked ended, with its proof, is a lead whose unit is
+// proven gone: lead.stop answers done with that proof, on every press, and
+// signals nothing. A stop that could not prove the unit gone is still
+// uncertain (the stop-failure statuses cover that answer).
+func TestLeadStopOfAnEndedLeadIsDone(t *testing.T) {
+	l := newLeadEnv(t)
+	l.start()
+	up := l.up("alpha", submitted)
+	if !l.fake.Crash(up.Unit) {
+		t.Fatalf("the unit %q was not loaded", up.Unit)
+	}
+	l.restart()
+	row := l.row("alpha")
+	if row.State != "ended" {
+		t.Fatalf("the row after the unit went away: %+v", row)
+	}
+	signals := len(l.fake.CallsOf(leadunit.MethodSignal))
+	for i := 0; i < 2; i++ {
+		r := l.stopLead("alpha", 0)
+		want(t, r, leadwire.StatusDone, "")
+		var res leadwire.StopResult
+		result(t, r, &res)
+		if res.State != "ended" || res.Proof == "" {
+			t.Fatalf("stop %d of an ended lead: %+v", i, res)
+		}
+	}
+	if got := len(l.fake.CallsOf(leadunit.MethodSignal)); got != signals {
+		t.Fatalf("the stop of an ended lead signalled: %d calls, had %d", got, signals)
+	}
 }
 
 // An inject that names an epoch that is not the lead's writes no frame and spends

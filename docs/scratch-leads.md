@@ -268,11 +268,17 @@ What each does:
 - **`lead.stop`** is the owner's way out of every state, `unknown` included: it
   signals the role's own units. With an `epoch` that is not the registry's it is
   refused `stale-epoch`, so a stop meant for one epoch never stops the next. It
-  is `done` **only for a lead that is stopped with a stop proof**: the proof text
-  names the unit's invocation and its empty control group. The stop always
-  reaches the lifecycle, so a lead that is shown stopped is asked about too; a
-  lead that was **never started** has no proof, and its stop answers
-  `uncertain` with the code `stop-unproven`, not `done`.
+  is `done` **only when the stop is proven**: for a lead that is stopped with a
+  stop proof (the text names the unit's invocation and its empty control group),
+  for a lead the reconcile ended with its proof (the unit is proven gone, and
+  the answer is `done` on every press), and for a lead that was **defined and
+  never started** (epoch 0, no launch intent): no launch was ever recorded and
+  the lifecycle has just found no unit of the role's name loaded, so the answer
+  is `done` with the fixed proof "no launch was ever recorded and no unit of the
+  role is loaded". The stop always reaches the lifecycle, so a lead that is shown
+  stopped is asked about too. Where a stop could not be proven (a unit that may
+  be loaded, a state that is unknown) the answer stays `uncertain` with the code
+  `stop-unproven`; `uncertain` means that what the stop did is not known.
 - **`lead.ticket`** asks the holder for a ticket for the epoch and writes it to
   the lead's ticket file. An `epoch` of 0, or one that is not the lead's current
   one, is refused `stale-epoch`.

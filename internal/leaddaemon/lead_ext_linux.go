@@ -127,6 +127,10 @@ const (
 	msgRecordNotFound  = "the lead has no record, so provisioning is not complete"
 )
 
+// The proof a stop of a lead that was defined and never started carries: the
+// registry holds none for it, and the receipt never shows an empty proof.
+const msgProofNeverStarted = "no launch was ever recorded and no unit of the role is loaded"
+
 // outcome is what a command ended with, before it is made the receipt's final
 // answer.
 type outcome struct {
@@ -627,8 +631,19 @@ func (m *leadMode) stop(ctx context.Context, lr *leadRole, epoch uint64) outcome
 		if err != nil {
 			return m.stopFailure(lr, err)
 		}
-		if e.Shown.State != leadregistry.StateStopped || e.Shown.Proof == "" {
-			// Done only for a lead that is stopped with its proof.
+		switch {
+		case (e.Shown.State == leadregistry.StateStopped || e.Shown.State == leadregistry.StateEnded) && e.Shown.Proof != "":
+			// Stopped by this stop, or stopped or ended earlier with the proof
+			// that the lifecycle (or the reconcile) recorded.
+		case e.Shown.State == leadregistry.StateStopped && e.Epoch == 0 && e.Intent == nil:
+			// Defined and never started: no launch was ever recorded, and the
+			// lifecycle has just found no unit of the role's name loaded, so
+			// there is no unit a stop could fail to end. The registry holds no
+			// proof text for it, so the receipt carries a fixed one.
+			e.Shown.Proof = msgProofNeverStarted
+		default:
+			// Anything else is not a stop that was proven: a state that is not
+			// stopped or ended, or one without its proof.
 			m.d.logf("scratch stop %q: the stop returned the state %q without a proof", lr.key, SafeText(string(e.Shown.State)))
 			return uncertainOut(codeStopUnproven, msgStopUnproven)
 		}
