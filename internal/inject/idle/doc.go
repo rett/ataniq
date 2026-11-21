@@ -4,12 +4,13 @@
 // session is idle, working, blocked, ended or unknown, and lists the signals
 // that said so.
 //
-// The package holds the tested table. Lookup returns a Classifier only for the
-// runtimes and versions that were recorded: claude 2.1.325, and codex 0.169
-// (also spelled 0.169.0, which is how codex reports itself). Any other pair
-// has no classifier and nothing is guessed from a neighbouring version. The
-// zero Classifier classifies everything as unknown. Tested lists the table for
-// the documentation and for the holder's status.
+// The tested table is the one of package versions. Lookup returns a Classifier
+// only for the runtimes and versions in it, the ones that were recorded:
+// claude 2.1.325, and codex 0.169 (also spelled 0.169.0, which is how codex
+// reports itself), today. Any other pair has no classifier and nothing is
+// guessed from a neighbouring version. The zero Classifier classifies
+// everything as unknown. Tested lists the table for the documentation and for
+// the holder's status.
 //
 // The package is provisional and unqualified: built from recorded sessions of
 // one version per runtime, with no live qualification yet.

@@ -162,7 +162,7 @@ yours to choose, and nothing here is a real path.
       "agent": {
         "kind": "stand-in",
         "runtime": "claude",
-        "runtime_version": "1.2.3",
+        "runtime_version": "2.1.325",
         "footer_mode": "manual",
         "argv": ["/ataniq/agent/ataniq-canary-standin"],
         "env": []

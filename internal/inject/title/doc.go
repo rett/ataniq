@@ -14,11 +14,12 @@
 // combines the signals must treat a case the signals cannot settle as not
 // idle.
 //
-// The package knows exactly the versions that were recorded: claude 2.1.325
-// and codex 0.169, which codex reports as 0.169.0 and For accepts in either
-// spelling. For any other runtime or version, For reports false and no rules
-// exist; nothing is guessed from a neighbouring version. The zero Rules has no
-// rules either: it reads every title as busy, with a note.
+// The package knows exactly the versions in the table of package versions,
+// the versions that were recorded (claude 2.1.325 and codex 0.169, which codex
+// reports as 0.169.0 and For accepts in either spelling, today). For any other
+// runtime or version, For reports false and no rules exist; nothing is guessed
+// from a neighbouring version. The zero Rules has no rules either: it reads
+// every title as busy, with a note.
 //
 // The claude title will rarely veto anything in production. When the holder
 // answered claude's OSC 7501 query (the Q13 runs, as production will), claude
