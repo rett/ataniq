@@ -110,3 +110,19 @@
   the ticket; a writer may already be attached", because the receipt carries no
   reason beyond `ticket-refused` and the holder grants one writer at a time. See
   `docs/terminal-console.md`.
+- The daemon in scratch mode settles a launch that is not settled itself when
+  the late-start window ends, so a lead left `unknown` by a daemon killed in
+  the middle of a start (reason `launch-unsettled`) or by a start whose reply
+  was lost (`launch-reply-lost`) needs no daemon restart. A timer per such
+  lead waits until the intent's deadline (the late-start window of 30 s and its
+  margin of 10 s, on the registry's clock) and asks the lifecycle to settle
+  that one role by the rules of the reconcile: with no unit loaded and its
+  control group empty, the intent is closed as abandoned and the lead reads
+  `stopped`, with a proof, and leaves the `max_running` count. A unit that is
+  loaded at the deadline does not settle the lead and is never signalled (the
+  launch's own unit is adopted, another is reported and the intent abandoned,
+  and the lead stays `unknown`), a manager that does not answer is tried again
+  at growing waits, and a lead shown `unknown` for `registry-recovered` has no
+  timer. The timer starts nothing, never waits for the role's lock, ends on a
+  stop, a new start and at shutdown. See `docs/lead-daemon.md` and
+  `docs/scratch-leads.md`.
