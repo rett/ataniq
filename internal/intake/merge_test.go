@@ -332,13 +332,13 @@ func TestMergeModeCommandLines(t *testing.T) {
 			}
 		}
 		switch sub {
-		case "diff", "diff-tree", "rev-list", "log", "for-each-ref", "rev-parse", "merge-base":
+		case "diff", "diff-tree", "rev-list", "for-each-ref", "rev-parse", "merge-base":
 			if !afterEnd && !slices.Contains(args, "--stdin") {
 				t.Errorf("git %s has no --end-of-options: %q", sub, args)
 			}
 		}
 	}
-	for _, sub := range []string{"diff", "diff-tree", "cat-file", "log"} {
+	for _, sub := range []string{"diff", "diff-tree", "cat-file"} {
 		if seen[sub] == 0 {
 			t.Errorf("git %s was not run", sub)
 		}

@@ -110,7 +110,26 @@ and no tag. The steps below follow `Mirror.Fetch` in `internal/mirror`.
 3. **Ask for the sandbox plan.** The template gives the command that runs
    `git-upload-pack` on the clone, and the command that measures the clone's
    object store. With no template, or a template without a `serve` section,
-   the fetch stops here. Nothing has run.
+   the fetch stops here. Nothing has run. The fetch gives the owner's git the
+   plan's repository path (`serve.repository`) as a `file://` URL. git reads a
+   git bundle file itself, as the owner, only when its source is a path to a
+   file; for a `file://` URL it starts the sandboxed command, whatever is at the
+   path on the host, a bundle that appears later included. As a second layer the
+   path is then checked on the host. It is refused ("the template's repository path
+   exists on the host") when anything is there: a regular file, a symlink (also
+   a dangling one, found without following it), a folder of any kind (a bare
+   repository, a mirror, a clone), or a file of another kind. It is also
+   refused when its state cannot be told (a permission error, a file where a
+   folder should be on the way), so the rule fails closed. Two things pass: a
+   path that does not exist on the host, which is a path inside the sandbox
+   and the case the template is for, and the lead's own clone path
+   (`STATE/leads/<role>/tree`), which is looked at again without following a
+   symlink and must be a real folder, which no bundle can be. A clone that is
+   by then a symlink, a file or missing is refused as a hostile tree, as step 2
+   refuses it. When this check refuses the path nothing has run. The check of
+   step 6 can refuse it too, when it appeared or changed in between: then the
+   measure of step 4 has run and the staging repository of step 5 was made and
+   is removed, and the mirror is as it was.
 4. **Measure.** The measure command runs in the sandbox. Its number is the
    lead side's own statement, a first check. More than the source limit is a
    limit error. The owner also measures the mirror: a mirror already at its
@@ -118,9 +137,15 @@ and no tag. The steps below follow `Mirror.Fetch` in `internal/mirror`.
 5. **Staging repository.** A fresh bare repository is made beside the mirror.
    It has the mirror's objects as its only alternate, so git does not fetch
    again what the mirror has. The mirror's refs are noted.
-6. **Receive.** Git runs as the owner, in the staging repository. The serving
-   half is the sandboxed command, named with git's `--upload-pack` option. Only
-   the receiving half runs as the owner. A watchdog stops the fetch when the
+6. **Receive.** The repository path is checked again, right before git starts,
+   to keep the window of a path that appears in between small. Git runs as the
+   owner, in the staging repository, with the source as a `file://` URL (a `%`
+   in the path is written `%25`, so the sandboxed command gets the path as the
+   template has it; a path with `@[` in it is the one thing that cannot be
+   passed this way, as git changes it in a URL, so the template is refused, see
+   [the sandbox template](#the-sandbox-template)). The serving half is the
+   sandboxed command, named with git's `--upload-pack` option. Only the
+   receiving half runs as the owner. A watchdog stops the fetch when the
    staging repository passes its size limit or its entry limit, and the whole
    fetch has a time limit.
 7. **Check what arrived**, in the staging repository, before the mirror is
@@ -185,7 +210,10 @@ accepted before the subcommand. After it, up to the first `--` or
 short list of flags that take no value. Options that name a program to run are
 refused in every form, abbreviated too; the one upload-pack command of the
 fetch is set by the package itself, not as an option the caller writes. The
-package does not make git safe in a repository an attacker controls, and does
+subcommand `log` is refused, because it converts a message from the charset
+that a commit's own `encoding` header names and runs the textconv program of a
+diff driver for a patch; commits are read as raw objects, as
+"How the commits are read" below says. The package does not make git safe in a repository an attacker controls, and does
 not confine the process. Owner-side code runs git only on bare repositories
 that Ataniq made, with an explicit `--git-dir`. The package comment of
 `internal/exchange/gitenv` has the details.
@@ -242,11 +270,19 @@ nothing. This is the whole format, version 1:
   owner credentials. The plan has no environment for it, so the list itself
   must clear the environment (for example `bwrap --clearenv`, or `env -i`).
 - `serve.repository` is the path of the clone as the sandbox sees it. The
-  owner's git is given this path as the source of the fetch, and it looks at
-  the path on the host before it starts the serving half: when a regular file
-  is there and it is a git bundle, git reads that file itself and never starts
-  `upload_pack`. Choose a path that does not exist on the host, such as
-  `/work/{project}`, and never one where a sandbox could put a file.
+  owner's git is given this path as the source of the fetch, as a `file://`
+  URL, so it starts `upload_pack` and never reads a git bundle file at the path
+  on the host itself. Choose a path that does not exist on the host, such as
+  `/work/{project}`, and never one where a sandbox could put a file. The fetch
+  also refuses a path that exists there, whatever it is (see step 3 of
+  [the fetch](#the-fetch-step-by-step)); a path that does not exist is the
+  expected case. A file that appears after the check is not read as a bundle
+  either, and keeping every folder on the way to the path out of the reach of
+  any sandbox is still the better choice.
+  The path must not hold `@[`: git cuts the brackets and what they enclose
+  out of the path of a `file://` URL, and no encoding prevents it, so the
+  sandbox would be asked for another path. The template is refused when it
+  names such a path, before anything runs.
 - `serve.measure` and `serve.measure_env` are the command and the
   environment that print the size of the clone's object store. The first
   token of the first output line must be a decimal byte count.
@@ -373,6 +409,45 @@ It prints:
 
 `--diff` also prints the patch of the net change. The review has limits that
 are not options: 5000 commits, 20 000 paths and 16 MiB of patch.
+
+**How the commits are read.** The commits are lead text. When git prints a
+message, it converts the text from the charset that the commit's own
+`encoding` header names, with a converter the lead chose, in the owner's
+process. The review therefore never asks git to print a message. It lists the
+commits with `git rev-list`, checks the size of each object with
+`git cat-file --batch-check`, reads the raw objects with
+`git cat-file --batch` and parses the headers itself:
+
+- The headers are `tree`, the `parent` lines, `author` and `committer`, in that
+  order, and then any others. A header that continues on lines starting with a
+  space (`gpgsig`, `mergetag`) is one header. A header out of order, without a
+  value, not ended by a newline, a second `encoding` header, or an `author` or
+  `committer` that is not `Name <address> seconds zone` (the seconds as digits,
+  the zone as a sign and four digits) refuses the review: "a commit object is
+  malformed", with the commit id.
+- Only the `encoding` header is looked at, and only to refuse. A value of
+  `UTF-8` or `utf8`, in any case, is UTF-8; any other value, a charset git
+  knows (`ISO-8859-1`, `SHIFT_JIS`) or not, and an empty one, refuses the
+  review: "a commit declares an encoding other than UTF-8", with the commit id
+  and the value escaped. Nothing is converted and nothing of that commit is
+  shown. The lead has to commit the branch again in UTF-8. Refusing was chosen
+  over showing such a commit as raw bytes: a commit that the owner cannot read
+  is not one to sign off, and a refusal adds no code that handles a charset.
+- The names, the addresses and the subject are the stored bytes. A message
+  with bytes that are not UTF-8 and no encoding header is not refused; it is
+  shown escaped, as any lead text (see
+  [How lead text is shown](#how-lead-text-is-shown)). The subject is what
+  `git log --format=%s` prints: the first paragraph, its lines joined by single
+  spaces, white space at the end of each line dropped, and a NUL byte ending the
+  message.
+- Each header with its continuation lines, a name, and the subject may be at
+  most 32 KiB, a whole commit object at most 64 KiB, and all the commits
+  together at most 8 KiB for each commit plus one commit object of 64 KiB.
+  More is a limit error, with the commit id; an object over its size limit is
+  not read. Of the message only the subject is kept. A header of many
+  continuation lines is parsed in time linear in its size, and the time limit
+  of the call and the caller's context are checked between the commits that
+  are parsed, so a branch of such commits is refused when the time is used up.
 
 A path can carry several flags. These are the kinds (`odd-path` is for the merge mode only, see [merge mode](#merge-mode-of-verification)):
 
@@ -637,6 +712,10 @@ shows it only through the `leadtext` package.
   private use and unassigned code points. The escaping can be undone. For
   `--branch`, `--target` and `--accept-path`, you type a name as printed, and
   the command unescapes it, so a name with odd bytes can be named exactly.
+- **Bytes that are not UTF-8.** A commit message, name or path that is not
+  valid UTF-8 is shown escaped and never crashes the command. A commit that
+  declares an encoding other than UTF-8 is not shown at all: the review is
+  refused (see [review](#review)).
 - **Layout.** A line that starts in the first column is the command's own.
   Lead text is on indented lines, under a heading that carries the label
   `unverified lead data`. The output of a gate is shown on lines that start

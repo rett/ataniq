@@ -119,13 +119,13 @@ func TestGitCommandLinesFollowTheArgumentRule(t *testing.T) {
 		// Commands that take a revision or a ref name end the options first.
 		// "diff-tree --stdin" takes none: its ids come on standard input.
 		switch sub {
-		case "for-each-ref", "rev-parse", "merge-base", "rev-list", "log", "diff-tree", "ls-tree", "diff":
+		case "for-each-ref", "rev-parse", "merge-base", "rev-list", "diff-tree", "ls-tree", "diff":
 			if !afterEnd && !slices.Contains(args, "--stdin") {
 				t.Errorf("git %s has no --end-of-options: %q", sub, args)
 			}
 		}
 	}
-	for _, sub := range []string{"for-each-ref", "rev-parse", "merge-base", "rev-list", "log", "diff-tree", "ls-tree", "cat-file", "diff"} {
+	for _, sub := range []string{"for-each-ref", "rev-parse", "merge-base", "rev-list", "diff-tree", "ls-tree", "cat-file", "diff"} {
 		if !seen[sub] {
 			t.Errorf("git %s was not run", sub)
 		}

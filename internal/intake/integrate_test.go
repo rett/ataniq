@@ -702,7 +702,7 @@ func TestIntegrateGitCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reads := []string{"for-each-ref", "rev-parse", "merge-base", "rev-list", "log", "diff-tree", "ls-tree", "cat-file"}
+	reads := []string{"for-each-ref", "rev-parse", "merge-base", "rev-list", "diff-tree", "ls-tree", "cat-file"}
 	updates := 0
 	for _, line := range strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n") {
 		args := strings.Split(strings.TrimSuffix(line, "\x1f"), "\x1f")

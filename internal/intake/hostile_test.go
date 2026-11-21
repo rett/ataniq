@@ -75,14 +75,13 @@ func TestInspectHostileNames(t *testing.T) {
 }
 
 // TestInspectCommitTextIsRaw: the stored bytes are returned, with no
-// re-encoding, no mailmap and no replacement object.
+// re-encoding, no mailmap and no replacement object. A message with bytes
+// that are not UTF-8 stays as it is; one that declares another encoding is
+// refused (commits_test.go).
 func TestInspectCommitTextIsRaw(t *testing.T) {
 	s := newScene(t)
-	// A message in Latin-1 that says so in its encoding header: git
-	// converts it to UTF-8. A message with bytes that are not UTF-8 and no
-	// encoding header stays as it is.
 	s.put("src/a.go", "package main\n")
-	s.rawCommit("encoding ISO-8859-1\n", "caf\xe9 in latin one\n", s.base)
+	s.rawCommit("encoding UTF-8\n", "caf\u00e9 in utf-8\n", s.base)
 	s.put("src/a2.go", "package main\n")
 	s.rawCommit("", "bad \xff\xfe bytes\n", s.cur)
 	latin := s.cur
@@ -104,8 +103,8 @@ func TestInspectCommitTextIsRaw(t *testing.T) {
 	for _, c := range r.Commits {
 		bySubject[c.Subject] = c
 	}
-	if _, ok := bySubject["caf\u00e9 in latin one"]; !ok {
-		t.Errorf("the Latin-1 subject was not converted: %+v", r.Commits)
+	if _, ok := bySubject["caf\u00e9 in utf-8"]; !ok {
+		t.Errorf("the UTF-8 subject was changed: %+v", r.Commits)
 	}
 	if _, ok := bySubject["bad \xff\xfe bytes"]; !ok {
 		t.Errorf("bytes that are not UTF-8 were changed: %+v", r.Commits)

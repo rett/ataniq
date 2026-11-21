@@ -26,7 +26,8 @@ const (
 	// record has about 150 bytes of mode, ids and status, and a path. A
 	// listing of paths that are 900 bytes long on average is refused.
 	bytesPerRecord = 1024
-	// maxCommitField is the longest field of a commit record.
+	// maxCommitField is the longest field of a commit: a header with its
+	// continuation lines, or the subject.
 	maxCommitField = 32 << 10
 )
 
@@ -54,6 +55,19 @@ type runner struct {
 
 func newRunner(src Source, lim Limits) *runner {
 	return &runner{src: src, deadline: time.Now().Add(lim.Timeout)}
+}
+
+// alive reports an error when the context is done or the shared deadline has
+// passed. The work that runs no git command calls it between its units, as
+// [runner.git] checks both when it starts a command.
+func (r *runner) alive(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("intake: %w", err)
+	}
+	if time.Until(r.deadline) <= 0 {
+		return errTimeout(boundedexec.ErrTimeout)
+	}
+	return nil
 }
 
 // git runs one git subcommand with args (the subcommand first). The output

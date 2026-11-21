@@ -96,11 +96,13 @@ func (l *leadMode) startObservers(ctx context.Context) {
 			l.observeReady(lr, e.Epoch)
 		}
 	}
+	// The timers that settle a launch the daemon was killed in the middle of.
+	l.startSettlers(ctx)
 }
 
-// joinObservers ends every observer and waits for them, at most grace, and
-// reports whether they all ended. Once it is called no observer starts. It is
-// called before the registry is closed.
+// joinObservers ends every observer and every settle timer and waits for them,
+// at most grace, and reports whether they all ended. Once it is called none
+// starts. It is called before the registry is closed.
 func (l *leadMode) joinObservers(grace time.Duration) bool {
 	if l == nil {
 		return true
@@ -112,9 +114,11 @@ func (l *leadMode) joinObservers(grace time.Duration) bool {
 		o.cancel()
 	}
 	o.mu.Unlock()
+	l.cancelSettlers()
 	ended := make(chan struct{})
 	go func() {
 		o.wg.Wait()
+		l.settle.wg.Wait()
 		close(ended)
 	}()
 	t := time.NewTimer(grace)

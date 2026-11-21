@@ -61,12 +61,17 @@
 // Everything a lead wrote is hostile: paths, commit subjects, author names,
 // diff content, symlink targets. The structs of this package ([Commit],
 // [Change], [Flag]) hold that text raw, byte for byte, so that a signed
-// digest and a later comparison are exact. A caller that shows a field must
+// digest and a later comparison are exact. The commits are read as the raw
+// objects the lead wrote, with no conversion of text: git would convert a
+// message from the charset the commit's own encoding header names, so no git
+// command that prints a message runs, a commit that declares an encoding other
+// than UTF-8 is refused with [ErrCommitEncoding], and a commit object that is
+// not in the form git writes is refused with [ErrCommitFormat]. A caller that shows a field must
 // escape it for display first with the leadtext package, and must show
 // leadtext.Label near it. The reason of a flag is the package's own text; lead
 // text inside it (a path, a link target) is already escaped with
 // leadtext.Escape. Error messages carry no output of git and no lead text
-// except escaped ref names.
+// except escaped ref names and the escaped value of an encoding header.
 //
 // [Diff] writes one header line of its own, which names the two commits,
 // and then the patch through leadtext.NewWriter. A lead can write any line

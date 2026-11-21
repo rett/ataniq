@@ -196,8 +196,8 @@ func TestHashObjectWritesAMergeCommit(t *testing.T) {
 	if err != nil || stored != want {
 		t.Errorf("the stored commit is not the text written (err=%v):\n got  %q\n want %q", err, stored, want)
 	}
-	parents := mustOwned(t, g, Cmd{GitDir: s.repo, Args: []string{"log", "--format=%H %P", "--max-count=1", "--end-of-options", id}})
-	if wantLine := id + " " + s.ours + " " + s.theirs; parents != wantLine {
+	parents := mustOwned(t, g, Cmd{GitDir: s.repo, Args: []string{"rev-parse", id + "^@"}})
+	if wantLine := s.ours + "\n" + s.theirs; parents != wantLine {
 		t.Errorf("parents as git lists them:\n got  %q\n want %q", parents, wantLine)
 	}
 
@@ -210,8 +210,8 @@ func TestHashObjectWritesAMergeCommit(t *testing.T) {
 	if swapped == id {
 		t.Errorf("the commit with the parents swapped has the same id %s", id)
 	}
-	parents = mustOwned(t, g, Cmd{GitDir: s.repo, Args: []string{"log", "--format=%H %P", "--max-count=1", "--end-of-options", swapped}})
-	if wantLine := swapped + " " + s.theirs + " " + s.ours; parents != wantLine {
+	parents = mustOwned(t, g, Cmd{GitDir: s.repo, Args: []string{"rev-parse", swapped + "^@"}})
+	if wantLine := s.theirs + "\n" + s.ours; parents != wantLine {
 		t.Errorf("parents of the swapped commit:\n got  %q\n want %q", parents, wantLine)
 	}
 

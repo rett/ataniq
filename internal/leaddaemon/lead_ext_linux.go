@@ -556,6 +556,9 @@ func (m *leadMode) start(ctx context.Context, lr *leadRole) outcome {
 		defer m.release(lr)
 		e, err := m.ctl.Start(ctx, lr.role)
 		if err != nil {
+			// A start whose reply was lost leaves the role unknown with its
+			// intent pending: the daemon settles it when the window ends.
+			m.armSettle(lr)
 			if errors.Is(err, leadlifecycle.ErrStartFailed) && e.Shown.State == leadregistry.StateUnknown {
 				// The lifecycle could not prove the unit gone after the failed
 				// launch (it could not inspect it, found it loaded, or the name
@@ -571,6 +574,9 @@ func (m *leadMode) start(ctx context.Context, lr *leadRole) outcome {
 			unit = e.Intent.UnitName
 		}
 		lr.in.ext.record(leadcanary.Entry{Event: leadcanary.EventStart, Epoch: e.Epoch})
+		// The launch has its outcome: no timer of an earlier epoch is left for
+		// the role.
+		m.cancelSettle(lr)
 		// The observer that shows the lead ready once its holder answers for
 		// the epoch; it runs on its own and never holds this command up.
 		m.observeReady(lr, e.Epoch)
@@ -651,6 +657,9 @@ func (m *leadMode) stop(ctx context.Context, lr *leadRole, epoch uint64) outcome
 		}
 		e, err := m.ctl.Stop(ctx, lr.role)
 		if err != nil {
+			// A stop that did not settle the role's intent leaves it for the
+			// timer (one that is armed for the same intent is kept).
+			m.armSettle(lr)
 			return m.stopFailure(lr, err)
 		}
 		switch {
@@ -675,6 +684,7 @@ func (m *leadMode) stop(ctx context.Context, lr *leadRole, epoch uint64) outcome
 		// that does go ahead is also covered by the observer's own check (it
 		// sets nothing for a lead that is no longer starting in its epoch).
 		m.cancelReady(lr)
+		m.cancelSettle(lr)
 		lr.in.ext.record(leadcanary.Entry{Event: leadcanary.EventStop, Epoch: e.Epoch})
 		return done(leadwire.StopResult{Role: lr.role.String(), State: string(e.Shown.State), Proof: e.Shown.Proof})
 	})

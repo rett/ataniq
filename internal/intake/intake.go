@@ -127,8 +127,9 @@ type Commit struct {
 	AuthorTime, CommitTime time.Time
 	// Subject is the first paragraph of the message with its lines joined
 	// by spaces, as git prints "%s". It is raw lead text: bytes that are
-	// not UTF-8 stay as they are, except that git converts the text of a
-	// commit that declares another encoding to UTF-8.
+	// not UTF-8 stay as they are. Nothing is converted: a commit that
+	// declares an encoding other than UTF-8 is refused ([ErrCommitEncoding])
+	// and is not listed.
 	Subject string
 }
 
