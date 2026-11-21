@@ -481,8 +481,9 @@ run `qualify-mirror`: that is yours, for this root (the end of step 1).
    screen, and the recogniser reads nothing else. claude 2.1.325 chooses its
    renderer per process (the setting `tui` and remote feature gates decide
    unless the environment says), and the version, `TERM` and the size do not
-   fix it. `CLAUDE_CODE_NO_FLICKER=1` in `agent.env` selects the fullscreen
-   renderer and nothing in the config folder overrules it, so the kit sets it;
+   fix it. `CLAUDE_CODE_NO_FLICKER=1` in `agent.env` likely selects the fullscreen
+   renderer (read from the program's text, not yet confirmed by a run;
+   `alt_screen_on` in the final record confirms it), so the kit sets it;
    `DISABLE_AUTOUPDATER=1` only keeps update notices off the screen. The pin comes last: `holder.profile_digest` is
    computed after the environment and everything else is in place (the
    environment is part of the digest), and then `check-inputs` runs. It also
