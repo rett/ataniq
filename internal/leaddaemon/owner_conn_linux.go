@@ -53,6 +53,7 @@ type ownerConn struct {
 	session string // the session of owner.decider
 	tty     string // the terminal the inspector found, when decider
 	decider bool
+	refused int // decision frames from this connection while it was not the decider
 }
 
 // Read binds the calling goroutine to the connection on the first call, then
@@ -60,6 +61,15 @@ type ownerConn struct {
 func (c *ownerConn) Read(p []byte) (int, error) {
 	c.bindOnce.Do(func() { c.reg.bind(c) })
 	return c.Conn.Read(p)
+}
+
+// SetReadDeadline is the server's idle timer for the connection, which it sets
+// before each request. The decider's connection gets the longer idle time of
+// the registry, so that the place is not lost while the owner reads a card
+// (the presence beat is slower than the server's own idle time); every other
+// connection keeps the server's.
+func (c *ownerConn) SetReadDeadline(t time.Time) error {
+	return c.Conn.SetReadDeadline(c.reg.readDeadline(c, t))
 }
 
 // Close unbinds the connection, gives up the decider's place if it holds it,
@@ -79,9 +89,40 @@ type ownerConns struct {
 	byGID map[uint64]*ownerConn
 	// seat is the connection that is the decider, nil when there is none.
 	seat *ownerConn
+	// deciderIdle is how long the decider's connection may wait for its next
+	// request.
+	deciderIdle time.Duration
 }
 
-func newOwnerConns() *ownerConns { return &ownerConns{byGID: map[uint64]*ownerConn{}} }
+func newOwnerConns(deciderIdle time.Duration) *ownerConns {
+	return &ownerConns{byGID: map[uint64]*ownerConn{}, deciderIdle: deciderIdle}
+}
+
+// readDeadline returns the deadline for the connection's next read: the
+// server's t, or for the decider, now plus the registry's idle time when that
+// is later. A zero t (no deadline) is kept.
+func (r *ownerConns) readDeadline(c *ownerConn, t time.Time) time.Time {
+	if t.IsZero() {
+		return t
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !c.closed && r.seat == c && c.decider {
+		if ext := time.Now().Add(r.deciderIdle); t.Before(ext) {
+			return ext
+		}
+	}
+	return t
+}
+
+// refuseDecide counts one more decision frame from a connection that is not
+// the decider and returns how many it has sent.
+func (r *ownerConns) refuseDecide(c *ownerConn) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	c.refused++
+	return c.refused
+}
 
 // wrap makes the connection of an accepted socket.
 func (r *ownerConns) wrap(c net.Conn, now time.Time) *ownerConn {
@@ -167,13 +208,14 @@ func (r *ownerConns) grant(c *ownerConn, tty string) ownerSeat {
 }
 
 // declare keeps the client and the session of the first owner.decider call
-// for the connection. A later call with another session changes nothing and
-// returns false.
+// for the connection. A later call that names another session or another
+// client changes nothing and returns false, so the client kept is the one the
+// grant was judged on.
 func (r *ownerConns) declare(c *ownerConn, client, session string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if c.asked {
-		return c.session == session
+		return c.session == session && c.client == client
 	}
 	c.asked, c.client, c.session = true, client, session
 	return true

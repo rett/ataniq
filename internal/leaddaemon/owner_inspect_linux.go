@@ -5,6 +5,7 @@ package leaddaemon
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -37,17 +38,34 @@ const startSlack = 250 * time.Millisecond
 // clockTicks is USER_HZ, which is 100 on every Linux the daemon runs on.
 const clockTicks = 100
 
+// procReads is what the inspector reads from the system, apart so that a test
+// can answer each question on its own.
+type procReads struct {
+	open   func(pid int) (*os.File, error)
+	stat   func(pid int) ([]byte, error)
+	exited func(f *os.File) (bool, error)
+	uptime func() (time.Duration, error)
+}
+
+var realProcReads = procReads{
+	open:   pidfd.Open,
+	stat:   func(pid int) ([]byte, error) { return os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat") },
+	exited: pidfd.Exited, uptime: uptime,
+}
+
 // Inspect looks at the process p.PID.
-func (ProcInspector) Inspect(p PeerRef) (PeerProcess, error) {
+func (ProcInspector) Inspect(p PeerRef) (PeerProcess, error) { return inspectProc(p, realProcReads) }
+
+func inspectProc(p PeerRef, rd procReads) (PeerProcess, error) {
 	if p.PID < 1 {
 		return PeerProcess{}, errors.New("the peer's process id is not known")
 	}
-	f, err := pidfd.Open(p.PID)
+	f, err := rd.open(p.PID)
 	if err != nil {
 		return PeerProcess{}, fmt.Errorf("the peer's process cannot be held: %w", err)
 	}
 	defer f.Close()
-	b, err := os.ReadFile("/proc/" + strconv.Itoa(p.PID) + "/stat")
+	b, err := rd.stat(p.PID)
 	if err != nil {
 		return PeerProcess{}, fmt.Errorf("the peer's process cannot be read: %w", err)
 	}
@@ -65,20 +83,32 @@ func (ProcInspector) Inspect(p PeerRef) (PeerProcess, error) {
 	}
 	// The process the pidfd holds must still be running now: what was read
 	// above is then that process's.
-	if exited, err := pidfd.Exited(f); err != nil {
+	if exited, err := rd.exited(f); err != nil {
 		return PeerProcess{}, fmt.Errorf("the peer's process cannot be checked: %w", err)
 	} else if exited {
 		return PeerProcess{}, errors.New("the peer's process has ended")
 	}
-	up, err := uptime()
+	up, err := rd.uptime()
 	if err != nil {
 		return PeerProcess{}, err
 	}
-	age := up - time.Duration(st.Start)*time.Second/clockTicks
-	if age+startSlack < time.Since(p.AcceptedAt) {
+	if processAge(up, st.Start)+startSlack < time.Since(p.AcceptedAt) {
 		return PeerProcess{}, errors.New("the process started after the connection was made: the process id was reused")
 	}
 	return PeerProcess{TTY: tty}, nil
+}
+
+// processAge returns how long before now, with the system up for up, a
+// process started at start clock ticks after boot. A tick is 10 ms, so the
+// product is made from the tick's length: start times past about 1067 days
+// would overflow the nanosecond count of the other order of operations. A
+// start time too large to be a duration is as large as one can be.
+func processAge(up time.Duration, start uint64) time.Duration {
+	const tick = time.Second / clockTicks
+	if start > uint64(math.MaxInt64/int64(tick)) {
+		return up - time.Duration(math.MaxInt64)
+	}
+	return up - time.Duration(start)*tick
 }
 
 // uptime reads the time since boot from /proc/uptime.

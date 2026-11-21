@@ -38,7 +38,7 @@ const (
 const (
 	msgOwnerNoConn    = "the request could not be tied to a connection"
 	msgOwnerBadParams = "the parameters are not valid for this operation"
-	msgOwnerSession   = "this connection already named another session"
+	msgOwnerSession   = "this connection already named another session or client"
 	msgOwnerNotDecide = "this connection is not the one that may decide"
 	msgOwnerStopped   = "the owner channel is not serving"
 	msgOwnerDoor      = "the door could not be reached; the decision is journaled and is handed over later"
@@ -183,7 +183,7 @@ func (x *ownerExt) decider(ctx context.Context, params json.RawMessage) (any, *c
 	}
 	if !x.reg.declare(c, p.Client, p.Session) {
 		x.oc.counts.SessionChanged.Add(1)
-		x.oc.logf("owner channel: a connection named a second session (peer pid %d)", c.pid)
+		x.oc.logf("owner channel: a connection named a second session or client (peer pid %d)", c.pid)
 		return nil, &clientapi.ErrorBody{Code: string2code(record.CodeDecisionInvalid), Message: msgOwnerSession}
 	}
 	if x.reg.isDecider(c) {
@@ -241,7 +241,8 @@ func clientName(client string) string {
 // the decider, and the session and the process of the connection, which the
 // service writes into the decision record and into the journal; a frame from a
 // connection that is not the decider is still handed to the service, which
-// journals it refused, and is counted here.
+// journals it refused, and is counted here; after [DecisionRefusalBound] of
+// them the connection is closed and no further frame is journaled.
 func (x *ownerExt) decide(ctx context.Context, params json.RawMessage) (any, *clientapi.ErrorBody) {
 	c, fail := x.connection()
 	if fail != nil {
@@ -250,6 +251,15 @@ func (x *ownerExt) decide(ctx context.Context, params json.RawMessage) (any, *cl
 	v := x.reg.view(c)
 	if !v.decider {
 		x.oc.counts.DecisionNotDecider.Add(1)
+		if x.reg.refuseDecide(c) > DecisionRefusalBound {
+			// Past the bound a frame is refused without the journal and the
+			// connection ends: it cannot fill the journal or hold the
+			// decision lock.
+			x.oc.counts.DecisionFlooded.Add(1)
+			x.oc.logf("owner channel: a connection that is not the decider sent more than %d decision frames and was closed (peer pid %d)", DecisionRefusalBound, c.pid)
+			_ = c.Close()
+			return nil, &clientapi.ErrorBody{Code: string2code(record.CodeNotDecider), Message: msgOwnerNotDecide}
+		}
 		x.oc.logf("owner channel: a decision frame was refused: the connection is not the decider (peer pid %d)", c.pid)
 		// The frame is read so that the journal can say which card it was
 		// for; the answer is the same whatever the frame holds, and a frame

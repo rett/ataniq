@@ -7,6 +7,7 @@ import (
 	"net"
 	"sync"
 	"testing"
+	"time"
 
 	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/clientapi"
@@ -40,7 +41,7 @@ var testNow = t0
 // goroutine finds its connection; another goroutine, and a goroutine that never
 // read, find none; after Close nothing finds it and the decider's place is free.
 func TestOwnerAConnectionIsFoundByTheGoroutineThatReadsIt(t *testing.T) {
-	reg := newOwnerConns()
+	reg := newOwnerConns(time.Minute)
 	c1, peer1 := ownerPipeConn(t, reg)
 	c2, peer2 := ownerPipeConn(t, reg)
 
@@ -104,7 +105,7 @@ func TestOwnerAConnectionIsFoundByTheGoroutineThatReadsIt(t *testing.T) {
 // reads, which need no connection, are served.
 func TestOwnerARequestThatCannotBeTiedToAConnectionIsRefused(t *testing.T) {
 	r := newUnstartedOwnerRig(t)
-	ext := &ownerExt{oc: r.oc, svc: r.svc, reg: newOwnerConns()}
+	ext := &ownerExt{oc: r.oc, svc: r.svc, reg: newOwnerConns(time.Minute)}
 	deciderParams := []byte(`{"client":"ataniq-console 1","session":"0123456789abcdef"}`)
 	frame := []byte(`{"binding_sha256":"` + string(make([]byte, 0)) + `abababababababababababababababababababababababababababababababab","decision":"approve","id":"ap-one","signed_off":[]}`)
 	for _, tt := range []struct {

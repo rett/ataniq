@@ -253,6 +253,45 @@ func TestOwnerTheSessionIsKeptForTheConnection(t *testing.T) {
 	}
 }
 
+// TestOwnerTheClientOfTheGrantIsTheClientOfTheRecord: a connection that is
+// refused as another tool and then asks again as the console, in the same
+// session, is refused the second time too, decision-invalid and counted, so
+// the client the decisions carry is never one the grant was not judged on. The
+// console's own name asked first, then another name, changes nothing either.
+func TestOwnerTheClientOfTheGrantIsTheClientOfTheRecord(t *testing.T) {
+	r := newOwnerRig(t)
+	c := r.dial()
+	res, err := r.askDecider(c, "other-tool 1.0", ownerSession)
+	if err != nil || res.Decider {
+		t.Fatalf("the first ask: %+v, %v", res, err)
+	}
+	_, err = r.askDecider(c, ownerConsoleClient, ownerSession)
+	wantOwnerCode(t, err, "decision-invalid")
+	r.wantCounts(map[string]uint64{"not-console": 1, "session-changed": 1})
+	if _, err := r.decide(c, ownerFrame("ap-one")); err == nil {
+		t.Fatal("a connection refused as another tool decided")
+	}
+	if got := r.svc.decided(); len(got) != 1 || got[0].Src.Decider || got[0].Src.Client != "" {
+		t.Fatalf("the service saw %+v", got)
+	}
+	if n := len(r.insp.inspected()); n != 0 {
+		t.Fatalf("the inspector was asked %d times", n)
+	}
+
+	// The other order: the place held as the console, then another client name.
+	c2 := r.dial()
+	r.mustBeDecider(c2, ownerSession2)
+	_, err = r.askDecider(c2, "other-tool 1.0", ownerSession2)
+	wantOwnerCode(t, err, "decision-invalid")
+	if _, err := r.decide(c2, ownerFrame("ap-two")); err != nil {
+		t.Fatal(err)
+	}
+	got := r.svc.decided()
+	if len(got) != 2 || got[1].Src.Client != ownerConsoleClient || !got[1].Src.Decider {
+		t.Fatalf("the service saw %+v", got)
+	}
+}
+
 // TestOwnerAConnectionThatNeverAskedGetsASessionOfTheDaemonsOwn: a decision
 // frame from a connection that never called owner.decider is refused
 // not-decider, and the service is told a well-formed session the daemon made
