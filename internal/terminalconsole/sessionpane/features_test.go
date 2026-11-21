@@ -64,10 +64,38 @@ func TestCountersCountEveryCap(t *testing.T) {
 	}
 }
 
+// The alternate-screen switches are counted from the emulator's callback: one
+// enter and one exit are one of each, and a repeated set or reset while
+// already in that state counts nothing.
+func TestCountersCountAlternateScreenSwitches(t *testing.T) {
+	p := newPane(t, 80, 24, sessionpane.Options{})
+	count := func() (uint64, uint64) { c := p.Counters(); return c.AltScreenOn, c.AltScreenOff }
+	if on, off := count(); on != 0 || off != 0 {
+		t.Fatalf("a new pane counts %d on, %d off", on, off)
+	}
+	p.Write([]byte("main screen text"))
+	if on, off := count(); on != 0 || off != 0 {
+		t.Errorf("text on the main screen counts %d on, %d off", on, off)
+	}
+	p.Write([]byte("\x1b[?1049h"))
+	if on, off := count(); on != 1 || off != 0 {
+		t.Errorf("after the enter: %d on, %d off, want 1 and 0", on, off)
+	}
+	p.Write([]byte("\x1b[?1049h"))
+	if on, off := count(); on != 1 || off != 0 {
+		t.Errorf("after a repeated enter: %d on, %d off, want 1 and 0", on, off)
+	}
+	p.Write([]byte("\x1b[?1049l"))
+	if on, off := count(); on != 1 || off != 1 {
+		t.Errorf("after the exit: %d on, %d off, want 1 and 1", on, off)
+	}
+}
+
 func TestCountersList(t *testing.T) {
 	c := sessionpane.Counters{
 		ClusterBytesDropped: 1, ModesIgnored: 2, LinksOverLength: 3, LinksOverLimit: 4,
 		StringsTruncated: 5, RepeatsCut: 6, ClipboardRequestsBlocked: 7, TitlesCut: 8,
+		AltScreenOn: 9, AltScreenOff: 10,
 	}
 	list := c.List()
 	var names []string
@@ -80,6 +108,7 @@ func TestCountersList(t *testing.T) {
 	want := []string{
 		"cluster_bytes_dropped", "modes_ignored", "links_over_length", "links_over_limit",
 		"strings_truncated", "repeats_cut", "clipboard_requests_blocked", "titles_cut",
+		"alt_screen_on", "alt_screen_off",
 	}
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("names %v, want %v", names, want)

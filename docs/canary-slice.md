@@ -312,7 +312,7 @@ here is a real path.
 | `agent.runtime`, `agent.runtime_version` | Given to the holder as `--runtime` and `--runtime-version`: plain text of 1 to 64 bytes. The runtime must be a key the registry accepts for a lead. |
 | `agent.footer_mode` | The recogniser's short name of the permission mode the fence expects in the agent's footer (`--expected-mode`), 1 to 128 bytes: `manual` or `auto` for claude 2.1.325, never the footer's own text ("manual mode on" is the text of the `manual` footer, and every inject then ends `not-now`). A `live` agent with `inject` true is refused at `show` and `check-inputs` unless it is `manual` or `auto`; the stand-in's value is free. |
 | `agent.argv` | The agent's command as seen inside the sandbox, an absolute executable first, at most 64 elements. For a `live` agent the first element is `/ataniq/agent/NAME`, the executable itself and no wrapper: step 9 runs the file `NAME` of the inputs file's `sources.agent_install` (the install folder is that key of the inputs file, not a field of the config), and `check-inputs` refuses a first element that is not such a file there. |
-| `agent.env` | The agent's whole environment as `KEY=VALUE`, at most 64; one `--env` flag each. The holder inherits nothing for it. It is part of the profile digest, so the pin is taken after it is final; a live claude needs `DISABLE_AUTOUPDATER=1` here, or it may draw an update notice on the screen the fence reads. `ataniq-canary show` prints the names (`agent_env_names`), never a value. |
+| `agent.env` | The agent's whole environment as `KEY=VALUE`, at most 64; one `--env` flag each. The holder inherits nothing for it. It is part of the profile digest, so the pin is taken after it is final; a live claude needs two names here: `DISABLE_AUTOUPDATER=1`, or it may draw an update notice on the screen the fence reads, and `CLAUDE_CODE_NO_FLICKER=1`, which selects the fullscreen (alternate-screen) renderer, the only one the recogniser reads (without it claude chooses the renderer per process and may draw on the main screen, where every inject ends `not-now`). A root prepared before `CLAUDE_CODE_NO_FLICKER=1` was added has another environment and so another digest: prepare a new root and take a new pin. `ataniq-canary show` prints the names (`agent_env_names`), never a value. |
 | `inject` | `true` opens the injection gate: the holder gets `--inject`. With `false` the daemon refuses `canary.inject` at once and spends nothing. |
 | `limits` | The unit's limits (next section). |
 | `provision` | What provisioning copies and sets: the mirror, the upstream branch, the lead's git identity, the managed-settings file, the guard hook's executable and the folder of replay screens. The daemon only checks it. |
@@ -587,6 +587,12 @@ puts them, at most one second old, on the `exit` event and in `final.json`,
 which the second epoch of the run reads. No `counters` event is written for
 them, and no command of the slice prints them while the holder runs.
 
+Two further counters of the pane, `alt_screen_on` and `alt_screen_off`, count
+the times the emulator entered and left the alternate screen. They are listed
+with the others and printed by step 22 from `final.json`. `alt_screen_on` above
+zero means the agent drew with the fullscreen renderer, which the recogniser
+requires; both at zero until the agent leaves means it drew on the main screen.
+
 The order against the DA1 reply holds by construction and is not logged. The
 stand-in in replay mode records it (below).
 
@@ -646,8 +652,12 @@ Pass B (one live agent, one run) gave these facts:
 - The 7501 report path works: 1 query and 8 reports in a 24-minute run.
 - The fence answers `not-now` with `not-ready` on a fresh live screen: the
   screen is read as "not on the alternate screen" and its title has no leading
-  glyph, so the recogniser does not place it. The owner's paste is the path that
-  works until the recogniser is fixed.
+  glyph (which is normal for claude 2.1.325 once the terminal answered the 7501
+  query), so the recogniser does not place it. The likely cause is that the
+  agent drew with its classic main-screen renderer, which claude chooses per
+  process unless `CLAUDE_CODE_NO_FLICKER=1` is set; the kit now sets it, and the
+  result line and the holder's `alt_screen_on` counter say which renderer the
+  next pass got. The owner's paste is the path that works until then.
 - The agent needed one turn to commit.
 - The unit's memory peak was 450 MB of the 4 GiB ceiling.
 - Revocation is limited: the provider's account page lists Claude Code logins

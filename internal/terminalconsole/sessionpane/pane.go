@@ -70,6 +70,8 @@ type Pane struct {
 	clipboard int
 	// titlesCut counts the titles that lost characters to the length cap.
 	titlesCut uint64
+	// altOn and altOff count the emulator's alternate-screen switches.
+	altOn, altOff uint64
 
 	ended       bool
 	status      int

@@ -551,7 +551,7 @@ func (r *run) read(v View, header string) (*Reading, idle.Classification) {
 	snap := v.Snapshot()
 	rep := v.Report()
 	cl := r.cl.Classify(idle.Input{Report: rep, Screen: snap, Ended: v.Ended(), ExpectedMode: r.mode})
-	return newReading(v, cl, rep, header), cl
+	return newReading(v, snap, cl, rep, header), cl
 }
 
 // termFailures adds the failed conditions of the parser state.

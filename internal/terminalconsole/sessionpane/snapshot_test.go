@@ -995,6 +995,8 @@ func TestPaneInventoryCoversEveryField(t *testing.T) {
 		"title":       "carried",
 		"clipboard":   "not carried: a counter",
 		"titlesCut":   "not carried: a counter",
+		"altOn":       "not carried: a counter",
+		"altOff":      "not carried: a counter",
 		"ended":       "not carried: Restore is refused after the end",
 		"status":      "not carried: the end of the session",
 		"statusKnown": "not carried: the end of the session",
