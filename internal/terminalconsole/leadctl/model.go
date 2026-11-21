@@ -309,10 +309,16 @@ func (m *Model) onListed(v listedMsg) tea.Cmd {
 // without its result, so a done message would otherwise lose what the holder
 // answered (outcome, reason, written) and a done ticket where to attach
 // (folder, ticket file). A list receipt that has any of the words keeps its
-// own, and words are taken only from a receipt that is done as well.
+// own, and words are taken only from a receipt that is done as well. The
+// summary the daemon lists carries no epoch either (it is 0), and the words
+// belong to the epoch the press was answered for: the list's receipt takes it,
+// so that the line is not read against the epoch the lead has moved to since.
 func keepWords(list *Receipt, press Receipt) {
 	if list.Status != Done || press.Status != Done || list.Op != press.Op {
 		return
+	}
+	if list.Epoch == 0 {
+		list.Epoch = press.Epoch
 	}
 	if list.Outcome == "" && list.Reason == "" && list.Written == "" {
 		list.Outcome, list.Reason, list.Written = press.Outcome, press.Reason, press.Written

@@ -348,7 +348,8 @@ func (m *Model) anyUnknown() bool {
 // of the lead the command was for, once the list has been read since the
 // answer (the list that was drawn before it says nothing of this message), and
 // when the row is still at the epoch the receipt names (a receipt that names
-// none takes the row's).
+// none takes the row's). A row at another epoch than the receipt's, or with
+// none, says nothing of the receipt's message: the lead has moved on.
 func (m *Model) heldFor(r Receipt) held {
 	if !m.statusListed || m.statusRole == "" {
 		return heldUnknown
@@ -358,7 +359,9 @@ func (m *Model) heldFor(r Receipt) held {
 			continue
 		}
 		switch {
-		case l.Epoch == 0 || r.Epoch != 0 && l.Epoch != r.Epoch:
+		case r.Epoch != 0 && l.Epoch != r.Epoch:
+			return heldMoved
+		case l.Epoch == 0:
 			return heldUnknown
 		case l.MessageSpent:
 			return heldSpent

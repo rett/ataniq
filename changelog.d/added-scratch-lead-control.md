@@ -87,7 +87,12 @@
   as a summary without its result, and the view keeps the answer's three words
   (outcome, reason, written) of the message just sent, and a ticket's folder and
   ticket file, while the list shows the same command; a list receipt that has
-  words of its own is shown as it is. See `docs/terminal-console.md`.
+  words of its own is shown as it is. The list's summary has no epoch, so the
+  line also keeps the epoch the answer was for: when the lead has moved to
+  another epoch since, the line of a message that was not delivered says that
+  the lead is at another epoch now and that epoch's message is not known, and
+  does not call the new epoch's message free or spent. See
+  `docs/terminal-console.md`.
 - The console's leads view reads the list again every two seconds while a lead
   is `starting` or `stopping`, as it already did while a receipt is in
   progress, so a started lead turns `ready` without `r` and the reading stops

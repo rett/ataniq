@@ -81,7 +81,8 @@ func TestTheMsgColumnAndTheReceiptLineSayTheSameOfAMessage(t *testing.T) {
 // of the list that was read after the answer: free when the row says so, the
 // daemon's hold when the row says spent, and neither claim until the list has
 // been read (the row of the list that was drawn before the answer says nothing
-// of this message). A row at another epoch says nothing either.
+// of this message). A row at another epoch says nothing of the message either,
+// and the line says that the lead has moved.
 func TestTheReceiptLineDoesNotCallTheEpochFreeWhileTheDaemonHoldsItSpent(t *testing.T) {
 	notNow := Receipt{Op: OpInject, Status: Done, Epoch: 3, Outcome: OutcomeNotNow, Reason: ReasonNotReady, Written: WrittenNothing}
 	for _, c := range []struct {
@@ -93,12 +94,12 @@ func TestTheReceiptLineDoesNotCallTheEpochFreeWhileTheDaemonHoldsItSpent(t *test
 	}{
 		{"row free", false, 3, "The epoch's message is free", "spent"},
 		{"row spent", true, 3, "holds this epoch's message spent", "is free"},
-		{"row at another epoch", false, 4, "free unless the list says it is spent", "The epoch's message is free."},
+		{"row at another epoch", false, 4, movedTail, "The epoch's message is free"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			b := twoLeads(t)
 			b.answer = func(call) (Receipt, error) { return notNow, nil }
-			g := newRig(t, b, 150, 30)
+			g := newRig(t, b, 180, 30)
 			g.key("j")
 			g.key("m")
 			g.typ("hi")
@@ -115,6 +116,9 @@ func TestTheReceiptLineDoesNotCallTheEpochFreeWhileTheDaemonHoldsItSpent(t *test
 			g.run(cmd)
 			g.seen(c.want)
 			g.notSeen(c.not)
+			if c.epoch != 3 {
+				g.notSeen("free unless the list says it is spent")
+			}
 		})
 	}
 }

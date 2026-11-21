@@ -467,7 +467,12 @@ list has been read again they end "The epoch's message is free unless the list
 says it is spent", and when the row says spent (the daemon could not write the
 result down and holds the epoch spent all the same) they end "The daemon holds
 this epoch's message spent all the same", as the MSG column says `spent, not
-delivered`:
+delivered`. When the row is at another epoch than the answer's (the lead was
+stopped and started since, perhaps by another client), the row's flag is not that
+message's, and they end "The lead is at another epoch now; that epoch's message
+is not known" and say nothing of free or spent. The daemon's list summary carries
+no epoch, so the status line keeps the epoch the answer was for when it keeps the
+answer's words:
 
 | Holder says (outcome, reason, written) | The line says |
 | --- | --- |

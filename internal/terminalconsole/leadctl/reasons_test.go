@@ -380,9 +380,12 @@ func TestResultWordsAreShortASCIIAndSayWhetherTheEpochIsSpent(t *testing.T) {
 			if line := receiptLine(r, heldUnknown); !strings.Contains(line, "free unless the list says it is spent") {
 				t.Errorf("%v: %q does not leave the list to say", c, line)
 			}
+			if line := receiptLine(r, heldMoved); !strings.HasSuffix(line, movedTail) || strings.Contains(line, "is free") || strings.Contains(line, "holds this epoch's") {
+				t.Errorf("%v: %q does not leave the moved lead's message alone", c, line)
+			}
 			continue
 		}
-		for _, h := range []held{heldUnknown, heldFree, heldSpent} {
+		for _, h := range []held{heldUnknown, heldFree, heldSpent, heldMoved} {
 			if line := receiptLine(r, h); !strings.Contains(line, "This epoch's one message is spent") {
 				t.Errorf("%v: %q does not say the epoch's message is spent", c, line)
 			}

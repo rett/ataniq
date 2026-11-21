@@ -234,6 +234,10 @@ const (
 	heldTail = ". The daemon holds this epoch's message spent all the same"
 	// maybeTail: no row has been read since the answer.
 	maybeTail = ". The epoch's message is free unless the list says it is spent"
+	// movedTail: the row is at another epoch than the answer's (the lead was
+	// stopped or started since, perhaps by another client), so nothing is
+	// known here of that epoch's message and the row's flag is not its.
+	movedTail = ". The lead is at another epoch now; that epoch's message is not known"
 )
 
 // held is what the list's row says of the epoch's message for the receipt
@@ -247,6 +251,8 @@ const (
 	// heldFree and heldSpent: the row's message_spent.
 	heldFree
 	heldSpent
+	// heldMoved: the row is at another epoch than the receipt's.
+	heldMoved
 )
 
 // deliveryOf looks up the words of a done inject's three words. A result
@@ -279,6 +285,8 @@ func outcomeWords(r Receipt, h held) string {
 			return t.text + freeTail
 		case heldSpent:
 			return t.text + heldTail
+		case heldMoved:
+			return t.text + movedTail
 		}
 		return t.text + maybeTail
 	}
