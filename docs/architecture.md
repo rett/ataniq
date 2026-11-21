@@ -70,7 +70,7 @@ campaigns. Each record has one authoritative system. See
 A provisional, unqualified, read-only daemon skeleton, `ataniqd`, and the
 registry, lock, unit-manager and lifecycle packages a later managed-lead daemon
 will use are in the tree. They start, stop and manage no lead. See
-[the lead daemon guide](lead-daemon.md). Release builds contain no owner channel; a build with the `ataniq_ownerchannel` tag has an unqualified scratch one behind a stand-in door, described there. The daemon, the holder, the sandbox
+[the lead daemon guide](lead-daemon.md). Release builds of the daemon contain no owner channel; a build with the `ataniq_ownerchannel` tag has an unqualified scratch one behind a stand-in door, described there. The daemon, the holder, the sandbox
 proposal, the injection library and the intake are built side by side, and
 none calls another (the daemon starts no holder, the holder launches no sandbox
 and injects nothing, and the intake is run by hand), except in a build with the

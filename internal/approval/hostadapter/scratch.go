@@ -167,6 +167,9 @@ func noRepeatedKey(b []byte) error {
 					return err
 				}
 				key, _ := k.(string)
+				// encoding/json matches a key to a field without regard to
+				// case, so "drop" and "Drop" are one key to the decoder.
+				key = strings.ToLower(key)
 				if seen[key] {
 					return errRepeatedKey
 				}

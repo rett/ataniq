@@ -232,7 +232,7 @@ no obstacle: the lock is the `flock`, not the file.
 
 ## The owner channel (tagged build only)
 
-Release builds contain no owner channel: no flag, no `owner.*` operation in
+Release builds of the daemon contain no owner channel: no flag, no `owner.*` operation in
 `hello`, no code. It exists only in a build made with the tag
 `ataniq_ownerchannel`, for a scratch pass. It is provisional, and **none of it is
 qualified**: the door behind it is a stand-in that gives no real approval. The
@@ -349,18 +349,30 @@ Covered by the end-to-end test on the stand-in:
 - OC33, hostile commit headers (`TestOwnerChannelOC33HostileCommitHeaders`).
 
 Covered only on the daemon side: OC13, who may send a decision frame, in
-`ownerchannel_contract_test.go`. A holder attach connection and Remote Control as
+`ownerchannel_contract_test.go` and `owner_decider_linux_test.go` (a second
+console, a client with no terminal, a client that does not name the console).
+A holder attach connection and Remote Control as
 a sender are not covered.
 
 Not covered by the end-to-end test, only by the package tests of the part
-concerned: bad or reused ids, bad feature names and extra fields (OC3); hostile
-text and terminal answers at the confirm field (OC10, OC11) and ask, read,
-withdraw, ask again (OC28), in the console's tests; one verification at a time
+concerned: bad or reused ids, bad feature names and extra fields (OC3, in the
+record package's test vectors and the collector's tests in
+`internal/approval/hostadapter`; that the card then shows only the host's plan
+and token is not tested); hostile text and terminal answers at the confirm
+field (OC10, OC11), in the console's tests; ask, read, withdraw, ask again
+(OC28: the "differs from" block in the console's tests, and the
+`request-duplicate` refusal only on the stand-in door, in
+`internal/approval/door/doortest`; the real door's is not covered); one verification at a time
 (OC14, the host's part, in `internal/approval/ownerchannel`; the real door's caps
 and throttle are not covered); a clock moved back (OC22, in the same package's
 restart test); the pin against a rewritten branch (OC25, in
-`internal/approval/hostadapter`); the `odd-path` flag (OC29, in the intake's
-tests; the registry edit between plan and use is not covered).
+`internal/approval/hostadapter`, where maintenance is run by hand on the test
+mirror; the build has no maintenance entry point to refuse); the `odd-path` flag
+(OC29, in the intake's tests and the host adapter's review test). For OC29's
+registry edit between plan and use, only the stand-in door's refusal of a
+changed rule-set digest at use is tested; an actual edit is not testable,
+because the host reads the project's rules once at start, so it is not
+covered.
 
 Not covered at all, because they need a seated lead or the real door: the
 sandbox cannot reach the socket, journal or store (OC1); `--approved` from a

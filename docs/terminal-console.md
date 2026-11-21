@@ -329,8 +329,13 @@ the next step and keeps asking. See [the lead daemon guide](lead-daemon.md).
 The console client is the same in every build: it is not behind a build tag. With `--daemon DIR` it asks the daemon for `hello`
 and shows the daemon's approvals only when the answer lists the owner
 operations. A daemon from a release build lists none, so the approvals view
-says "no owner channel in this build" and nothing can be decided. Release
-builds contain no owner channel.
+says "no owner channel in this build" and nothing can be decided. A release
+daemon contains no owner channel; the release console contains the client
+side of it, which does nothing until a daemon's hello lists every owner
+operation. The client asks again when the owner leaves the approvals view
+(Esc) and opens it again, so a daemon restarted with `--owner-channel` is
+found without restarting the console; between those actions it remembers the
+answer and does not dial for each reading.
 
 A daemon built with the tag `ataniq_ownerchannel` and started with
 `ataniqd run --owner-channel` lists them. Then the approvals view shows that
@@ -357,9 +362,10 @@ lead must ask again.
 
 ## What is a sample and what is not qualified
 
-- No approval is possible in a release build: release builds, of the console
-  and of the daemon, contain no owner channel, and without `--demo` the
-  approvals view says "no owner channel in this build".
+- No approval is possible with a release daemon: a release daemon contains no
+  owner channel, and without `--demo`, or with a daemon that lists no owner
+  operation, the approvals view says "no owner channel in this build". The
+  console's client side of the owner channel is in every build.
 - The sample cards of `--demo` change nothing: the header says "sample cards: a
   decision changes nothing".
 - The daemon view is read-only, except for the approvals of a daemon that
