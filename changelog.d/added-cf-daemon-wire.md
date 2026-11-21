@@ -13,4 +13,5 @@
   for up to ten minutes without a request (other connections keep the
   server's 30 seconds), so the place is not lost while the owner reads a card;
   a connection that is not the decider and sends more than 16 decision frames
-  is closed, and the frames past the 16th are not journaled.
+  is closed, and the frames past the 16th are not journaled. The bound is per
+  connection: a process of the same user can connect again.

@@ -253,8 +253,11 @@ func (x *ownerExt) decide(ctx context.Context, params json.RawMessage) (any, *cl
 		x.oc.counts.DecisionNotDecider.Add(1)
 		if x.reg.refuseDecide(c) > DecisionRefusalBound {
 			// Past the bound a frame is refused without the journal and the
-			// connection ends: it cannot fill the journal or hold the
-			// decision lock.
+			// connection ends: one connection cannot fill the journal or hold
+			// the decision lock. The bound is per connection: a process of
+			// the same user can connect again and get its frames refused and
+			// journaled up to the bound once more (the same-user limit of
+			// OC20).
 			x.oc.counts.DecisionFlooded.Add(1)
 			x.oc.logf("owner channel: a connection that is not the decider sent more than %d decision frames and was closed (peer pid %d)", DecisionRefusalBound, c.pid)
 			_ = c.Close()
