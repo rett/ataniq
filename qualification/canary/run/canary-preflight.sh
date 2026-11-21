@@ -308,7 +308,7 @@ check_inputs() {
 # 4c. A live agent (pass B), what prepare --pass B makes and a hand edit can
 # break: the footer mode is one the recogniser names (the config's validation
 # refuses anything else with inject on, this says it in words), the agent's
-# environment names DISABLE_AUTOUPDATER (names only, from `ataniq-canary show`;
+# environment names DISABLE_AUTOUPDATER and CLAUDE_CODE_NO_FLICKER (names only, from `ataniq-canary show`;
 # a value is never read or printed), and the claude executable is there, one
 # regular file under the install folder, and prints the tested version as step
 # 9 of the run asks it: `--version` with an empty environment and a home that
@@ -331,6 +331,10 @@ check_live_agent() {
   case ",$(show_field agent_env_names)," in
     *,DISABLE_AUTOUPDATER,*) ok "agent.env names DISABLE_AUTOUPDATER (names only; no value is read)" ;;
     *) fix "agent.env does not name DISABLE_AUTOUPDATER: the agent may draw an update notice on the screen the fence reads, and the env is part of the pin" "$_fresh" ;;
+  esac
+  case ",$(show_field agent_env_names)," in
+    *,CLAUDE_CODE_NO_FLICKER,*) ok "agent.env names CLAUDE_CODE_NO_FLICKER (names only; no value is read)" ;;
+    *) fix "agent.env does not name CLAUDE_CODE_NO_FLICKER: the agent may draw on the main screen, where every inject ends not-now, and the env is part of the pin" "$_fresh" ;;
   esac
   _hasmodel=0
   _i=0

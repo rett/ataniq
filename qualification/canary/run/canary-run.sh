@@ -89,6 +89,8 @@ usage() {
     '                      whether the evidence folder FOLDER lies outside every ROOT, links resolved' \
     '         counters-7501 FIELDS' \
     '                      the 7501 counters step 22 prints from the lines FIELDS' \
+    '         counters-alt FIELDS' \
+    '                      the alternate-screen counters (alt_screen_on, alt_screen_off) step 22 prints from FIELDS' \
     '         unit-stopped STATE' \
     '                      whether that active state lets step 26 show the delete command' \
     '         review-verdict FILE HASH | mirror-verdict FILE HASH' \
@@ -512,11 +514,18 @@ $_kv
   done
 }
 
-# counters_7501 prints, from the lines $1 (what ataniq-canary fields prints
-# for the holder's final record), the counters named for 7501, and fails when
-# there is none, so that the caller can say so.
-counters_7501() {
+# counters_like prints, from the lines $1 (what ataniq-canary fields prints
+# for the holder's final record), the lines that match the pattern $2, and
+# fails when there is none, so that the caller can say so.
+# counters_7501 prints the counters named for 7501; counters_alt prints the
+# two alternate-screen counters of the holder's pane (alt_screen_on and
+# alt_screen_off): alt_screen_on above 0 means the agent drew with the
+# fullscreen renderer, which the screen recogniser requires.
+counters_7501() { counters_like "$1" 'counters.*7501*'; }
+counters_alt() { counters_like "$1" 'counters.alt_screen_*'; }
+counters_like() {
   _rest=$1
+  _pat=$2
   _none=1
   while [ -n "$_rest" ]; do
     _l=${_rest%%"
@@ -528,7 +537,7 @@ counters_7501() {
       *) _rest= ;;
     esac
     case $_l in
-      counters.*7501*)
+      $_pat)
         out "     $_l"
         _none=0
         ;;
@@ -1462,6 +1471,11 @@ self_test() {
       # FIELDS: what ataniq-canary fields prints for a final record.
       [ "$#" -eq 1 ] || usage
       counters_7501 "$1" || out '     (none is named for 7501)'
+      ;;
+    counters-alt)
+      # FIELDS: what ataniq-canary fields prints for a final record.
+      [ "$#" -eq 1 ] || usage
+      counters_alt "$1" || out '     (alt_screen_on and alt_screen_off are not in the record)'
       ;;
     open-runs)
       # LIST REPO: the open runs of REPO in the text of qargi local list.
@@ -2571,7 +2585,7 @@ step_16() {
     return 0
   fi
   step_head 16 'Wait for the idle composer, and look at the report path' \
-    "ask the daemon's status; the lead reads the holder's status and its 7501 counters in the console and the script records what he reads: while the holder runs the counters are only in its status answer, which no command of the kit reads, and the event log holds none; the script prints them itself from final.json after the child ends (step 22); then the owner looks at the pane before step 17 (the empty composer, no dialog, the expected mode on the last row, no notice) and answers yes"  \
+    "ask the daemon's status; the lead reads the holder's status and its 7501 counters in the console and the script records what he reads: while the holder runs the counters are only in its status answer, which no command of the kit reads, and the event log holds none; the script prints them itself from final.json after the child ends (step 22); the lead also reads alt_screen_on in the status: alt_screen_on above 0 means the agent drew with the fullscreen renderer, which the fence requires; at 0 the agent drew on the main screen and every inject ends not-now; then the owner looks at the pane before step 17 (the empty composer, no dialog, the expected mode on the last row, no notice) and answers yes"  \
     "the holder's idle field reads unknown in this feature, and the answer is recorded, not judged (the fence judges idle itself inside a delivery); the OSC 7501 query was answered before the DA1 reply, and at least one report was tracked; if no report ever arrives, that is recorded: the fence will then end uncertain, and the reason is known; an update notice on the screen is recorded if it shows (L9); the owner's look at the pane is answered yes" 'B1'
   wait_key 'Step 16 reads the status.'
   runcap role-status "$BIN/ataniqd" status --socket "$SOCK"
@@ -2583,6 +2597,9 @@ step_16() {
     out '     that answer, and the event log holds no counters: the script cannot show them now.'
     out '     Lead: read them in the console and answer below; the script records what you read.'
     out "   - after the child ends they are in $HSTATE/final.json: step 22 prints them from there."
+    out '   Also read alt_screen_on (and alt_screen_off) in the same status: alt_screen_on above 0 means the'
+    out '   agent drew with the fullscreen renderer (CLAUDE_CODE_NO_FLICKER=1), which the fence reads;'
+    out '   0 means it drew on the main screen, and every inject will end not-now.'
     note 'the 7501 counters are not read by the script at this step: the lead records what the console shows'
   fi
   ask "Lead: what does the holder's idle field read (the holder reports unknown in this feature; the fence judges idle itself inside a delivery)"
@@ -2988,11 +3005,13 @@ step_22() {
   if [ "$DRY" -eq 0 ]; then _l=$(cat "$LASTOUT"); else _l=$LINGER0; fi
   check 'lingering is as it was' is_eq "$_l" "$LINGER0" || :
   if [ "$DRY" -eq 1 ]; then
-    dry "print the 7501 counters of the holder's final record, $HSTATE/final.json"
+    dry "print the 7501 counters and the alternate-screen counters (alt_screen_on, alt_screen_off) of the holder's final record, $HSTATE/final.json"
   elif [ -f "$HSTATE/final.json" ]; then
     out "   the 7501 counters of the holder's final record:"
     _fin=$("$BIN/ataniq-canary" fields --file "$HSTATE/final.json" 2>/dev/null || :)
     counters_7501 "$_fin" || out '     (none is named for 7501)'
+    out "   the alternate-screen counters of the final record (alt_screen_on above 0: the fullscreen renderer):"
+    counters_alt "$_fin" || out '     (alt_screen_on and alt_screen_off are not in the record)'
   else
     out "   the holder left no final record ($HSTATE/final.json): there are no 7501 counters to print"
   fi

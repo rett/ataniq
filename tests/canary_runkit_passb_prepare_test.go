@@ -116,7 +116,7 @@ func TestCanaryRunKitPassBPrepareDryWritesNothing(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit status %d:\n%s", code, out)
 		}
-		for _, want := range append(c.want, "[dry]", "pass B, live agent", r+"/agent-install/claude", "--version", "DISABLE_AUTOUPDATER=1",
+		for _, want := range append(c.want, "[dry]", "pass B, live agent", r+"/agent-install/claude", "--version", "DISABLE_AUTOUPDATER=1", "CLAUDE_CODE_NO_FLICKER=1",
 			"footer_mode manual", "sources.agent_install "+r+"/agent-install", "terminal xterm-256color, truecolor, C.UTF-8", "the environment is part of the digest",
 			r+"/netcheck.sh", "checklist-b.txt.in", "canary-reset.sh", ".canary-prepared") {
 			if !strings.Contains(out, want) {
@@ -295,7 +295,7 @@ func TestCanaryRunKitPassBPrepareMakesTheLiveSetUp(t *testing.T) {
 		if got := passBStrings(t, passBGet(t, cfg, "agent", "argv")); !slices.Equal(got, wantArgv) {
 			t.Errorf("agent.argv is %v, want %v", got, wantArgv)
 		}
-		if got := passBStrings(t, passBGet(t, cfg, "agent", "env")); !slices.Equal(got, []string{"DISABLE_AUTOUPDATER=1"}) {
+		if got := passBStrings(t, passBGet(t, cfg, "agent", "env")); !slices.Equal(got, []string{"DISABLE_AUTOUPDATER=1", "CLAUDE_CODE_NO_FLICKER=1"}) {
 			t.Errorf("agent.env is %v", got)
 		}
 		for path, want := range map[string]any{"footer_mode": "manual", "runtime": "claude", "runtime_version": passBVersion} {
@@ -545,7 +545,7 @@ func passBPF(t *testing.T) (*canaryPF, string) {
 	t.Helper()
 	p := newCanaryPF(t)
 	show := "holder_runtime_dir=" + p.root + "/runtime/leads/throwaway-one-lead\nproject=throwaway-one\nagent_kind=live\nagent_runtime_version=" + passBVersion +
-		"\nagent_footer_mode=manual\nagent_argv_0=/ataniq/agent/claude\nagent_argv_1=--model\nagent_argv_2=sample-model\nagent_env_names=DISABLE_AUTOUPDATER\n"
+		"\nagent_footer_mode=manual\nagent_argv_0=/ataniq/agent/claude\nagent_argv_1=--model\nagent_argv_2=sample-model\nagent_env_names=DISABLE_AUTOUPDATER,CLAUDE_CODE_NO_FLICKER\n"
 	canaryWrite(t, p.dir, "show.out", show)
 	canaryWrite(t, p.root, "conf/sandbox-inputs.json.fields", "runtime=claude\nsources.managed_marker=guard-hook\nsources.agent_install="+p.root+"/agent-install\n")
 	claude := passBClaude(t, filepath.Join(p.root, "agent-install"), "claude", passBVersion+" (Claude Code)", "", "")
@@ -562,6 +562,7 @@ func TestCanaryRunKitPassBPreflightChecksTheLiveAgent(t *testing.T) {
 	for _, want := range []string{
 		"ok:   agent.footer_mode is manual, a name the screen recogniser reports",
 		"ok:   agent.env names DISABLE_AUTOUPDATER (names only; no value is read)",
+		"ok:   agent.env names CLAUDE_CODE_NO_FLICKER (names only; no value is read)",
 		"ok:   the claude copy prints the tested version " + passBVersion,
 		"READY", "canary-run.sh --pass B --config " + p.root + "/config.json",
 	} {
@@ -586,6 +587,9 @@ func TestCanaryRunKitPassBPreflightFixes(t *testing.T) {
 		{"the auto-update switch missing", func(p *canaryPF) {
 			canaryWrite(t, p.dir, "show.out", strings.ReplaceAll(readPassB(t, p.dir, "show.out"), "DISABLE_AUTOUPDATER", "OTHER_NAME"))
 		}, "agent.env does not name DISABLE_AUTOUPDATER"},
+		{"the fullscreen switch missing", func(p *canaryPF) {
+			canaryWrite(t, p.dir, "show.out", strings.ReplaceAll(readPassB(t, p.dir, "show.out"), "CLAUDE_CODE_NO_FLICKER", "OTHER_NAME"))
+		}, "agent.env does not name CLAUDE_CODE_NO_FLICKER: the agent may draw on the main screen"},
 		{"a wrapper outside the bind", func(p *canaryPF) {
 			canaryWrite(t, p.dir, "show.out", strings.ReplaceAll(readPassB(t, p.dir, "show.out"), "/ataniq/agent/claude", "/usr/bin/claude"))
 		}, "agent.argv[0] is not a file under /ataniq/agent/"},
@@ -632,7 +636,7 @@ func TestCanaryRunKitPassBPreflightLeavesPassAAlone(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit status %d:\n%s", code, out)
 	}
-	for _, bad := range []string{"agent.footer_mode", "DISABLE_AUTOUPDATER", "the claude copy"} {
+	for _, bad := range []string{"agent.footer_mode", "DISABLE_AUTOUPDATER", "CLAUDE_CODE_NO_FLICKER", "the claude copy"} {
 		if strings.Contains(out, bad) {
 			t.Errorf("the preflight of a pass A root says %q:\n%s", bad, out)
 		}
@@ -725,7 +729,7 @@ func TestCanaryRunKitPassBPrepareWithTheRealBinaries(t *testing.T) {
 	// The environment is part of the digest: taking the switch out of agent.env
 	// changes it, which is why the pin is last.
 	original, _ := os.ReadFile(config)
-	without := strings.Replace(string(original), `"env": ["DISABLE_AUTOUPDATER=1"]`, `"env": []`, 1)
+	without := strings.Replace(string(original), `"env": ["DISABLE_AUTOUPDATER=1", "CLAUDE_CODE_NO_FLICKER=1"]`, `"env": []`, 1)
 	if without == string(original) {
 		t.Fatal("the config does not hold the env line the test edits")
 	}
@@ -744,7 +748,7 @@ func TestCanaryRunKitPassBPrepareWithTheRealBinaries(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("show: exit status %d:\n%s", code, show)
 	}
-	for _, want := range []string{"agent_kind=live\n", "agent_footer_mode=manual\n", "agent_env_names=DISABLE_AUTOUPDATER\n", "agent_argv_0=/ataniq/agent/claude\n", "agent_argv_2=sample-model\n"} {
+	for _, want := range []string{"agent_kind=live\n", "agent_footer_mode=manual\n", "agent_env_names=DISABLE_AUTOUPDATER,CLAUDE_CODE_NO_FLICKER\n", "agent_argv_0=/ataniq/agent/claude\n", "agent_argv_2=sample-model\n"} {
 		if !strings.Contains(show, want) {
 			t.Errorf("show lacks %q:\n%s", want, show)
 		}
@@ -790,6 +794,7 @@ func TestCanaryRunKitPassBPrepareWithTheRealBinaries(t *testing.T) {
 	for _, want := range []string{
 		"ok:   agent.footer_mode is manual",
 		"ok:   agent.env names DISABLE_AUTOUPDATER",
+		"ok:   agent.env names CLAUDE_CODE_NO_FLICKER",
 		"ok:   the claude copy prints the tested version " + passBVersion,
 	} {
 		if !strings.Contains(pre, want) {
@@ -824,7 +829,7 @@ func TestCanaryRunKitPassBDocs(t *testing.T) {
 	slice := readFileText(t, "docs/canary-slice.md")
 	for _, want := range []string{
 		"### The set-up of pass B", "canary-prepare.sh --pass B --claude", "netcheck.sh", "canary-preflight.sh --root", "--pass B --config",
-		"sources.agent_install", "pin comes last", "DISABLE_AUTOUPDATER", "no wrapper", "`manual` or `auto`", "defaultMode",
+		"sources.agent_install", "pin comes last", "DISABLE_AUTOUPDATER", "CLAUDE_CODE_NO_FLICKER=1", "fullscreen", "no wrapper", "`manual` or `auto`", "defaultMode",
 	} {
 		if !strings.Contains(readme, want) {
 			t.Errorf("the kit README does not mention %q", want)
@@ -837,6 +842,9 @@ func TestCanaryRunKitPassBDocs(t *testing.T) {
 		if strings.Contains(doc, "the live agent's install folder, version") {
 			t.Error("a document still says the config holds the install folder")
 		}
+	}
+	if !strings.Contains(slice, "CLAUDE_CODE_NO_FLICKER=1") || !strings.Contains(slice, "new pin") {
+		t.Error("docs/canary-slice.md does not say what CLAUDE_CODE_NO_FLICKER=1 selects and that a new pin follows")
 	}
 	if !strings.Contains(slice, "`manual` or `auto`") {
 		t.Error("docs/canary-slice.md does not say what footer_mode takes")

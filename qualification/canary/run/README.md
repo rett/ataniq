@@ -471,12 +471,19 @@ run `qualify-mirror`: that is yours, for this root (the end of step 1).
    ```
    It writes `config.json` with `agent.kind` `live`, `agent.argv`
    `["/ataniq/agent/claude"]` (plus `--model NAME` when you gave it), `agent.env`
-   `["DISABLE_AUTOUPDATER=1"]`, `footer_mode` `manual` (the recogniser's name of
+   `["DISABLE_AUTOUPDATER=1", "CLAUDE_CODE_NO_FLICKER=1"]`, `footer_mode` `manual` (the recogniser's name of
    the mode, `manual` or `auto`, not the footer's text) and `inject` true;
    `conf/sandbox-inputs.json` with `sources.agent_install` `ROOT/agent-install`,
-   the terminal values `xterm-256color`, `truecolor` and `C.UTF-8` (the ones the
-   recorded screens were taken with), and the managed settings with
-   `defaultMode` `default`. The pin comes last: `holder.profile_digest` is
+   the terminal values `xterm-256color`, `truecolor` and `C.UTF-8`, and the managed settings with
+   `defaultMode` `default`. Those terminal values are not all of the conditions
+   the recorded screens were taken in. The deciding one is the renderer: every
+   recorded claude screen is from the fullscreen renderer on the alternate
+   screen, and the recogniser reads nothing else. claude 2.1.325 chooses its
+   renderer per process (the setting `tui` and remote feature gates decide
+   unless the environment says), and the version, `TERM` and the size do not
+   fix it. `CLAUDE_CODE_NO_FLICKER=1` in `agent.env` selects the fullscreen
+   renderer and nothing in the config folder overrules it, so the kit sets it;
+   `DISABLE_AUTOUPDATER=1` only keeps update notices off the screen. The pin comes last: `holder.profile_digest` is
    computed after the environment and everything else is in place (the
    environment is part of the digest), and then `check-inputs` runs. It also
    writes `ROOT/CHECKLIST.txt` (from `checklist-b.txt.in`: the order, the pass B
@@ -499,7 +506,7 @@ run `qualify-mirror`: that is yours, for this root (the end of step 1).
 3. **Preflight.** `sh qualification/canary/run/canary-preflight.sh --root ROOT`.
    For a pass B root it also checks that the claude copy is a regular file under
    the install folder, that its `--version` prints 2.1.325, that `agent.env`
-   names `DISABLE_AUTOUPDATER` (names only, from `ataniq-canary show`; no value
+   names `DISABLE_AUTOUPDATER` and `CLAUDE_CODE_NO_FLICKER` (names only, from `ataniq-canary show`; no value
    is read), that `agent.argv` holds `--model` and that `footer_mode` is `manual` or `auto`; its last lines name
    `--pass B`.
 4. **Run.** `sh qualification/canary/run/canary-run.sh --pass B --config ROOT/config.json --evidence ROOT/evidence`
@@ -540,7 +547,7 @@ wrong command line. The checks:
 | The checkout is at `develop` with no tracked change (what step 3 asks) | `git checkout develop`, or look at `git status`. |
 | The holder the config names exists and is the built one, and the profile digest pinned in `config.json` equals `ataniq-canary profile-digest` now, and the config shows | Write the new pin and run `ataniq-canary check-inputs` (one command, as prepare does after it pins), or prepare again on a fresh root. |
 | The sandbox inputs: `ataniq-canary check-inputs` accepts them, and, for `claude`, they name `sources.managed_marker` and the managed-settings file the config names holds that text (the holder refuses a start without it, and neither shows in the digest). Skipped while the pin above needs a fix | The inputs are from an earlier prepare: use a fresh root (the line says why). |
-| For a pass B root (`agent_kind` `live`): `agent.footer_mode` is `manual` or `auto`; `agent.env` names `DISABLE_AUTOUPDATER` (names only); `agent.argv` holds `--model`; the claude copy is an executable regular file under `sources.agent_install` and prints the tested version for `--version` (run with an empty environment and a new empty home, as step 9 does; it is the one program besides the kit's own that the preflight runs) | The command is printed (edit `footer_mode` or `agent.argv` in the config, or prepare a fresh root with `--pass B --claude PATH`). |
+| For a pass B root (`agent_kind` `live`): `agent.footer_mode` is `manual` or `auto`; `agent.env` names `DISABLE_AUTOUPDATER` and `CLAUDE_CODE_NO_FLICKER` (names only); `agent.argv` holds `--model`; the claude copy is an executable regular file under `sources.agent_install` and prints the tested version for `--version` (run with an empty environment and a new empty home, as step 9 does; it is the one program besides the kit's own that the preflight runs) | The command is printed (edit `footer_mode` or `agent.argv` in the config, or prepare a fresh root with `--pass B --claude PATH`). |
 | `state/` and `runtime/` are empty (a mirror only) | They hold an earlier attempt: run `canary-reset.sh`. |
 | No `ataniq-*` unit is loaded (slices left out) and no `ataniqd` or `ataniq-holder` runs | Stop it. |
 | No open Qargi run of this repository, read with the run script's own helpers through its `--self-test` entry. Without `qargi`, with a list it cannot read, or with an open run whose `repo.path` is unreadable, the line is `ok:` and says that the run asks the lead | Verify and close the run. |
@@ -682,8 +689,11 @@ path.
   agent with `inject` true is refused at `show` and `check-inputs` with any
   other value.
 - `agent.env` is the agent's whole environment and is part of the profile
-  digest: for the live claude it is `["DISABLE_AUTOUPDATER=1"]`, so that no
-  update notice reaches the screen the fence reads. The pin comes last.
+  digest: for the live claude it is `["DISABLE_AUTOUPDATER=1", "CLAUDE_CODE_NO_FLICKER=1"]`,
+  so that no update notice reaches the screen the fence reads and so that claude draws with
+  the fullscreen (alternate-screen) renderer, the only one the recogniser reads. A root
+  prepared before the second name was added has another environment and another
+  digest: prepare a new root and take a new pin. The pin comes last.
 - `holder.profile_digest` is the pinned digest of the profile, 64 hex digits;
   the holder refuses a plan whose digest differs. Compute it with
   `ataniq-canary profile-digest --config CONFIG --inputs FILE`, where FILE is
@@ -853,11 +863,15 @@ listeners you stopped, and compare the live config folder with
   delivery, so the script records the answer and does not judge it) and what
   the OSC 7501 counters (queries, reports, unreadable payloads) show, and the
   script records what he reads; it says so plainly and shows no counter itself
-  there.
+  there; he also reads `alt_screen_on` in the same status, the thing that says
+  which renderer the agent drew with: above 0 means the fullscreen renderer
+  (`CLAUDE_CODE_NO_FLICKER=1`), which the fence requires; 0 means the main
+  screen, where every inject ends `not-now`.
   While the holder runs the counters are only in that answer: the event log
   holds none. After the child ends they are in `final.json` in the holder's
   state folder, and step 22 prints them from it, or says that none is named
-  for 7501 or that there is no final record.
+  for 7501 or that there is no final record. It prints the two alternate-screen
+  counters (`alt_screen_on`, `alt_screen_off`) from the same file with them.
 - That `hello` lists the canary operations (step 10) is the lead's reading.
 - That the console of the first epoch is closed before the second epoch's step
   14. The script tells the owner to close it, and cannot see whether he did; a
@@ -938,6 +952,7 @@ test entry:
 | `--self-test wait-key` | It waits for one key as a step of the clean-up chain does, with the chain's answer to a signal and its standard input taken for a terminal, and prints `key` when a line was read or `no-key` when the input ended. |
 | `--self-test pass-a-record FILE` | What step 2 of pass B reads in that `result.txt` of pass A: `clean`, `findings <N>`, `unknown` (complete, with no number of findings) or `incomplete`. It reads the file and nothing else. |
 | `--self-test outside-roots FOLDER ROOT...` | `outside` when the folder, which need not exist, lies outside every root, compared as written and with symbolic links resolved, and `inside` otherwise. The script checks its evidence folder against the checkout and the canary's two roots with it. |
+| `--self-test counters-alt FIELDS` | The lines of `FIELDS` that are the holder's alternate-screen counters (`alt_screen_on`, `alt_screen_off`), as step 22 prints them, or the line that says they are not in the record. |
 | `--self-test counters-7501 FIELDS` | The lines of `FIELDS`, which are what `ataniq-canary fields` prints for a final record, that are counters named for 7501, as step 22 prints them, or the line that says there is none. |
 | `--self-test mirror-remote URL PROJECT` | `yes` when `URL` (with or without `file://`) is the mirror's place inside the sandbox for `PROJECT` (`/ataniq/mirror/PROJECT.git`), the one remote step 8 accepts for the lead's tree, and `no` otherwise. |
 | `--self-test unit-stopped STATE` | `stopped` when that active state of the unit lets step 26 show the command that deletes the roots (`inactive` or `failed`), and `not-stopped` for every other one, an empty one too. |
