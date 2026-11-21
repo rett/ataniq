@@ -4,6 +4,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"ataniq/internal/inject/versions"
 )
 
 // MaxTitleBytes is the number of bytes of a title that Read looks at. It is
@@ -41,15 +43,20 @@ type Rules struct {
 	read    func(title string) Reading
 }
 
-// For returns the rules for a runtime and version. It knows claude 2.1.325,
-// and codex as 0.169 or as 0.169.0, the spelling codex reports itself with;
-// for anything else it returns false.
+// For returns the rules for a runtime and version. It knows the runtimes and
+// versions of the table in package versions (claude 2.1.325, and codex 0.169
+// or 0.169.0 today); for anything else, and for a runtime that has no rules
+// here, it returns false.
 func For(runtime, version string) (Rules, bool) {
-	switch {
-	case runtime == "claude" && version == "2.1.325":
-		return Rules{runtime: runtime, read: readClaude}, true
-	case runtime == "codex" && (version == "0.169" || version == "0.169.0"):
-		return Rules{runtime: runtime, read: readCodex}, true
+	e, ok := versions.Lookup(runtime, version)
+	if !ok {
+		return Rules{}, false
+	}
+	switch e.Runtime {
+	case "claude":
+		return Rules{runtime: e.Runtime, read: readClaude}, true
+	case "codex":
+		return Rules{runtime: e.Runtime, read: readCodex}, true
 	}
 	return Rules{}, false
 }

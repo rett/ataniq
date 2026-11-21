@@ -4,6 +4,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"ataniq/internal/inject/versions"
 )
 
 // The caps of the holder's emulator. A snapshot larger than these is not a
@@ -136,18 +138,19 @@ type Recogniser interface {
 }
 
 // For returns the recogniser for a runtime and version. Only the tested pairs
-// exist: claude 2.1.325, and codex 0.169 (the recorded build is 0.169.0, which
-// is also accepted). Any other pair, and any empty value, is not found.
+// of the table in package versions exist (claude 2.1.325, and codex 0.169,
+// whose recorded build 0.169.0 the table lists as an alias). Any other pair,
+// any empty value and any runtime without a recogniser here is not found.
 func For(runtime, version string) (Recogniser, bool) {
-	switch runtime {
+	e, ok := versions.Lookup(runtime, version)
+	if !ok {
+		return nil, false
+	}
+	switch e.Runtime {
 	case "claude":
-		if version == "2.1.325" {
-			return claude{}, true
-		}
+		return claude{}, true
 	case "codex":
-		if version == "0.169" || version == "0.169.0" {
-			return codex{}, true
-		}
+		return codex{}, true
 	}
 	return nil, false
 }
