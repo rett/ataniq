@@ -1,5 +1,3 @@
-//go:build linux && ataniq_ownerchannel
-
 package main
 
 import (
@@ -19,11 +17,12 @@ import (
 	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/approval/record"
 	"ataniq/internal/clientapi"
+	"ataniq/internal/consoleclient"
 	"ataniq/internal/terminalconsole"
 )
 
-// These tests run the console that the command line makes with --daemon in the
-// tagged build, against the client protocol's own server on a private socket
+// These tests run the console that the command line makes with --daemon in
+// every build, against the client protocol's own server on a private socket
 // with the owner channel's operations answered by a fake daemon. They prove
 // that the console, the owner client and the wire work together; the daemon
 // itself is a fake, and nothing here qualifies the owner channel.
@@ -220,25 +219,36 @@ func ownerConsole(t *testing.T, dir string, clk *clock) *viewDriver {
 	return d
 }
 
-func TestADaemonWithNoOwnerChannelGivesTheApprovalsScreenItsReason(t *testing.T) {
-	// A daemon of the canary slice: it answers hello and status, and registers
-	// no owner operation.
+// startPlainDaemon serves a daemon of the release build: it answers hello and
+// status and registers no owner operation.
+func startPlainDaemon(t *testing.T) (dir string, plain *ownerDaemon) {
+	t.Helper()
 	base, err := os.MkdirTemp("", "oc")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(base)
-	dir := filepath.Join(base, "run")
+	t.Cleanup(func() { os.RemoveAll(base) })
+	dir = filepath.Join(base, "run")
 	l, _, err := clientapi.Listen(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	plain := &ownerDaemon{t: t}
+	plain = &ownerDaemon{t: t}
 	go func() { done <- clientapi.Serve(ctx, l, plain, clientapi.Options{}) }()
-	defer func() { cancel(); <-done }()
+	t.Cleanup(func() { cancel(); <-done })
+	return dir, plain
+}
 
+// TestAConsoleWorksAgainstADaemonThatListsNoOwnerOperation holds what the
+// console does in every build, which has the owner client, against the daemon
+// of a release build: the console starts, the approvals screen gives the
+// daemon's reason, no owner operation is sent, and the cockpit's approval
+// controls say there is no owner channel and do not point at the approvals
+// view.
+func TestAConsoleWorksAgainstADaemonThatListsNoOwnerOperation(t *testing.T) {
+	dir, plain := startPlainDaemon(t)
 	clk := &clock{t: time.Now()}
 	d := ownerConsole(t, dir, clk)
 	d.send(tea.KeyPressMsg{Code: 'g', Text: "g"})
@@ -250,6 +260,25 @@ func TestADaemonWithNoOwnerChannelGivesTheApprovalsScreenItsReason(t *testing.T)
 	}
 	if len(plain.sentOps()) != 0 {
 		t.Fatalf("owner operations reached a daemon that has none: %v", plain.sentOps())
+	}
+	p := daemonProjection(consoleclient.Read(context.Background(), dir))
+	approvals := 0
+	for _, c := range p.Controls {
+		if !c.Approval {
+			continue
+		}
+		approvals++
+		if !strings.Contains(c.Reason, noOwnerChannel) || strings.Contains(c.Reason, "approvals view") {
+			t.Fatalf("%+v", c)
+		}
+	}
+	if approvals == 0 || !strings.Contains(p.Gate.State, noOwnerChannel) || strings.Contains(p.Gate.State, "approvals view") {
+		t.Fatalf("%d approval controls, gate %+v", approvals, p.Gate)
+	}
+	for _, c := range p.Contract {
+		if c.Name == "Owner channel" && !strings.Contains(c.State, noOwnerChannel) {
+			t.Fatalf("%+v", c)
+		}
 	}
 }
 
@@ -341,13 +370,29 @@ func TestTheDaemonsApprovalsAreNotReadOnlyInTheCockpit(t *testing.T) {
 	if !strings.Contains(v, "APPROVALS") || strings.Contains(v, terminalconsole.NoOwnerChannel) {
 		t.Fatalf("the approvals screen is the one without a backend:\n%s", v)
 	}
-	p := daemonProjectionFor(unavailableResult(), true)
+	// The cockpit's texts follow the daemon's hello: a daemon that lists the
+	// owner channel makes the approval controls point at the approvals view.
+	daemon := startOwnerDaemon(t)
+	p := daemonProjection(consoleclient.Read(context.Background(), daemon.dir))
+	approvals := 0
 	for _, c := range p.Controls {
-		if c.Approval && strings.Contains(c.Reason, noOwnerChannel) {
-			t.Fatalf("%+v says there is no owner channel", c)
+		if !c.Approval {
+			continue
+		}
+		approvals++
+		if strings.Contains(c.Reason, noOwnerChannel) || !strings.Contains(c.Reason, "approvals view with g") {
+			t.Fatalf("%+v", c)
 		}
 	}
-	if strings.Contains(p.Gate.State, noOwnerChannel) {
-		t.Fatalf("%+v", p.Gate)
+	if approvals == 0 || strings.Contains(p.Gate.State, noOwnerChannel) || !strings.Contains(p.Gate.State, "approvals view (g)") {
+		t.Fatalf("%d approval controls, gate %+v", approvals, p.Gate)
+	}
+	// A result that did not come from a daemon that lists the channel does
+	// not claim one.
+	for _, r := range []consoleclient.Result{unavailableResult(), {State: consoleclient.StateOK}} {
+		p := daemonProjection(r)
+		if !strings.Contains(p.Gate.State, noOwnerChannel) {
+			t.Fatalf("%+v", p.Gate)
+		}
 	}
 }

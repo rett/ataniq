@@ -1,5 +1,3 @@
-//go:build linux && ataniq_ownerchannel
-
 package consoleclient
 
 import (
@@ -427,6 +425,19 @@ func TestAPageOfAnotherReviewOrAnotherPageIsNotTakenIn(t *testing.T) {
 		t.Fatal("another card's page was taken in")
 	} else if code, ok := record.CodeOf(err); !ok || code != record.CodeReviewChanged {
 		t.Fatalf("another card: %v", err)
+	}
+	// The same for a page of the patch: another review, or another card.
+	foreignPatch := patchPages[0]
+	foreignPatch.ReviewDigest = record.Digest([]byte("another review"))
+	f.onResult(ownerwire.OpPatch, mustEncode(t)(ownerwire.EncodePatchPage(foreignPatch)))
+	if _, err := o.Page(c.p.ID, card.PagePatch, 0); func() bool { code, ok := record.CodeOf(err); return !ok || code != record.CodeReviewChanged }() {
+		t.Fatalf("another review's patch page: %v", err)
+	}
+	foreignPatch = patchPages[0]
+	foreignPatch.ID = "ap-someone-else"
+	f.onResult(ownerwire.OpPatch, mustEncode(t)(ownerwire.EncodePatchPage(foreignPatch)))
+	if _, err := o.Page(c.p.ID, card.PagePatch, 0); func() bool { code, ok := record.CodeOf(err); return !ok || code != record.CodeReviewChanged }() {
+		t.Fatalf("another card's patch page: %v", err)
 	}
 	// A page of another number than the one asked for is a bad answer.
 	f.onResult(ownerwire.OpPaths, mustEncode(t)(ownerwire.EncodePathsPage(pathPages[0])))

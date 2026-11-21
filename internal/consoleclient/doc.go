@@ -1,8 +1,8 @@
 // Package consoleclient reads the daemon's leads for the console, as plain
-// values, and changes nothing. In the build with the owner channel it also
-// holds the console's approvals client, [Owner].
+// values. [Read] changes nothing. The package also holds the console's
+// approvals client, [Owner], which decides only what the owner hands it.
 //
-// [Read] is the whole package in a release build: given the folder of the daemon's socket it
+// [Read] given the folder of the daemon's socket
 // dials the socket, asks the two read-only questions of the client protocol
 // ("hello" and "status"), closes, and returns one [Result]. The result is
 // either a [View] (the daemon, the supervisor, and the projects with their
@@ -28,10 +28,11 @@
 //
 // # The owner channel's client
 //
-// The files that start with the build line "//go:build linux &&
-// ataniq_ownerchannel" hold [Owner], the console's approvals backend over the
-// daemon's owner channel. A release build has none of them, and there [Read]
-// is all there is. [Owner] speaks the owner operations of package ownerwire
+// The files named owner*.go hold [Owner], the console's approvals backend
+// over the daemon's owner channel. They are in every build, behind no build
+// tag: whether a daemon has the owner channel is found at run time, from the
+// operations its hello lists ([View.OwnerChannel]), and a release daemon has
+// none. [Owner] speaks the owner operations of package ownerwire
 // through the client protocol's call for registered operations: list, show,
 // the pages of a long path list and patch, the decider, a decision, a beat,
 // the limit and the "looked" mark. It builds the console's values (the

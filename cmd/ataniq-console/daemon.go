@@ -10,7 +10,8 @@ import (
 )
 
 // The daemon's view. With --daemon the cockpit shows what the daemon says of
-// its leads, read-only: the reading is consoleclient's, the drawing is the
+// its leads, and its approvals in the approvals view when the daemon serves the
+// owner channel: the reading is consoleclient's, the drawing is the
 // console's, and this file is the only place where the two meet, because the
 // console may not import a client. It maps consoleclient's plain values onto
 // the console's projection and changes nothing anywhere.
@@ -19,7 +20,8 @@ import (
 // --daemon.
 const daemonLabel = "the daemon's view, read-only and provisional"
 
-// noOwnerChannel is the reason every approval control carries with --daemon.
+// noOwnerChannel is the reason every approval control carries with --daemon
+// until the daemon's hello lists the owner channel.
 const noOwnerChannel = "no owner channel in this build"
 
 // daemonSource is the console's source with --daemon. Snapshot opens nothing:
@@ -30,14 +32,11 @@ type daemonSource struct {
 	dir string
 	// read asks the daemon: consoleclient.Read, or a test's own.
 	read func(ctx context.Context, dir string) consoleclient.Result
-	// owner says that the console was given the daemon's approvals, so that
-	// what the projection says of them is not "no owner channel".
-	owner bool
 }
 
 // Snapshot returns the view shown until the first answer.
 func (d daemonSource) Snapshot() terminalconsole.Projection {
-	p := daemonBase(d.owner)
+	p := daemonBase(false)
 	p.Problem = "the daemon has not been asked yet"
 	return p
 }
@@ -46,14 +45,15 @@ func (d daemonSource) Snapshot() terminalconsole.Projection {
 // daemon cannot be read the projection carries the plain state and its next
 // step, which the cockpit shows where the leads would be.
 func (d daemonSource) Refresh(ctx context.Context) (terminalconsole.Projection, error) {
-	return daemonProjectionFor(d.read(ctx, d.dir), d.owner), nil
+	return daemonProjection(d.read(ctx, d.dir)), nil
 }
 
 // daemonBase is what every projection of the daemon's view holds: no session
-// control is available, and each says why. Without the daemon's approvals
-// (the release build) the approval controls say there is no owner channel;
-// with them, the cockpit makes those controls live and they point at the
-// approvals view.
+// control is available, and each says why. The texts follow the daemon, not
+// the build: owner is true only when the daemon's hello listed the owner
+// channel, and then the approval controls point at the approvals view. Until
+// the daemon has answered, and for a daemon that lists none, they say there
+// is no owner channel.
 func daemonBase(owner bool) terminalconsole.Projection {
 	readOnly := "The daemon's view is read-only."
 	approve := "There is " + noOwnerChannel + "."
@@ -90,13 +90,7 @@ func daemonBase(owner bool) terminalconsole.Projection {
 // consoleclient has cleaned and bounded every string of a view, and the
 // console cleans and bounds its copy again, so nothing here needs to.
 func daemonProjection(r consoleclient.Result) terminalconsole.Projection {
-	return daemonProjectionFor(r, false)
-}
-
-// daemonProjectionFor is daemonProjection for a console that was given the
-// daemon's approvals when owner is true.
-func daemonProjectionFor(r consoleclient.Result, owner bool) terminalconsole.Projection {
-	p := daemonBase(owner)
+	p := daemonBase(r.State == consoleclient.StateOK && r.View.OwnerChannel)
 	if r.State != consoleclient.StateOK {
 		p.Problem, p.NextStep = r.Text, r.NextStep
 		if p.Problem == "" {
@@ -198,10 +192,10 @@ func reconcileText(completed bool) string {
 }
 
 // daemonConsole returns the console for --daemon as the command line makes
-// it: the daemon's view, and the daemon's approvals as its backend when this
-// build has an owner channel (the tagged build), and none otherwise. The
-// returned function ends what the backend holds; the caller calls it when the
-// console is done.
+// it: the daemon's view, and the daemon's approvals as its backend. Every build
+// has the backend; whether the daemon has an owner channel is found when it
+// is asked. The returned function ends what the backend holds; the caller
+// calls it when the console is done.
 func daemonConsole(cfg config) (*terminalconsole.Model, func(), error) {
 	backend, closeOwner, err := ownerBackend(cfg.daemon)
 	if err != nil {
@@ -222,5 +216,5 @@ func daemonModel(cfg config) *terminalconsole.Model {
 func daemonModelWith(cfg config, read func(ctx context.Context, dir string) consoleclient.Result) *terminalconsole.Model {
 	o := cfg.options
 	o.Label = daemonLabel
-	return terminalconsole.NewWithOptions(daemonSource{dir: cfg.daemon, read: read, owner: o.Backend != nil}, o)
+	return terminalconsole.NewWithOptions(daemonSource{dir: cfg.daemon, read: read}, o)
 }
