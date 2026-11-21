@@ -168,28 +168,104 @@ func TestFetchRepositoryPathOfTheCloneItselfIsUnchanged(t *testing.T) {
 }
 
 // TestFetchRefusesARepositoryPathThatAppearsLater: a path that is missing
-// when the plan arrives and a bundle by the time the receiving half is about
-// to start is refused by the second check, before git is started, and the
-// mirror is as it was.
+// when the plan arrives and a bundle at some later time must not be read by
+// the owner's git. There are two later times, and a case for each.
+//
+// Before the second check (step 6): the check refuses the path before git is
+// started, and the mirror is as it was.
+//
+// After the second check, right before git is started (the hook 60): the
+// check cannot see it, and the fetch names the source as a "file://" URL, for
+// which git never opens a bundle. The sandboxed command is started instead
+// and serves the lead's clone, so the fetch takes the lead's tip and not the
+// tip that the bundle holds. The bundle is of another clone, with a commit of
+// its own, so a read of it would show as a ref at that commit.
 func TestFetchRefusesARepositoryPathThatAppearsLater(t *testing.T) {
-	e := newFetchEnv(t)
-	started := filepath.Join(t.TempDir(), "upload-pack")
-	e.planner.UploadPack = e.wrapper("touch '" + started + "'")
-	path := filepath.Join(t.TempDir(), "work")
-	e.planner.Repository = path
-	was := e.state0(t)
-	fetchHook = func(step int) {
-		if step == 6 {
-			e.makeBundle(t, path)
+	t.Run("before the second check", func(t *testing.T) {
+		e := newFetchEnv(t)
+		started := filepath.Join(t.TempDir(), "upload-pack")
+		e.planner.UploadPack = e.wrapper("touch '" + started + "'")
+		path := filepath.Join(t.TempDir(), "work")
+		e.planner.Repository = path
+		was := e.state0(t)
+		fetchHook = func(step int) {
+			if step == 6 {
+				e.makeBundle(t, path)
+			}
 		}
+		t.Cleanup(func() { fetchHook = nil })
+		_, err := e.m.Fetch(context.Background(), e.req())
+		if !errors.Is(err, ErrRepositoryPath) {
+			t.Fatalf("Fetch = %v, want ErrRepositoryPath", err)
+		}
+		if _, serr := os.Stat(started); serr == nil {
+			t.Error("the sandboxed command started")
+		}
+		e.unchanged(t, was)
+	})
+
+	t.Run("after the second check", func(t *testing.T) {
+		e := newFetchEnv(t)
+		tip := e.lead.git(t, "rev-parse", "refs/heads/main")
+		other := newLeadClone(t, e.g, t.TempDir(), "other")
+		otherTip := other.commit(t, "other.txt", "not the lead's\n", "the bundle's commit")
+		if otherTip == tip {
+			t.Fatal("the bundle holds the lead's tip: the case proves nothing")
+		}
+		started := filepath.Join(t.TempDir(), "upload-pack")
+		e.planner.UploadPack = []string{"/bin/sh", "-c", "touch '" + started + "'; exec '" + e.gup + "' '" + e.lead.tree + "'", "sh"}
+		path := filepath.Join(t.TempDir(), "work")
+		e.planner.Repository = path
+		fetchHook = func(step int) {
+			if step == 60 {
+				other.git(t, "bundle", "create", path, "main")
+			}
+		}
+		t.Cleanup(func() { fetchHook = nil })
+		rep, err := e.m.Fetch(context.Background(), e.req())
+		if err != nil {
+			t.Fatalf("Fetch: %v", err)
+		}
+		if fi, serr := os.Lstat(path); serr != nil || !fi.Mode().IsRegular() {
+			t.Fatalf("the bundle was not at the path when git started (%v): the case proves nothing", serr)
+		}
+		if _, serr := os.Stat(started); serr != nil {
+			t.Error("the sandboxed command did not start: git took the path itself")
+		}
+		if len(rep.Updates) != 1 || rep.Updates[0].Ref != "refs/leads/coder/heads/main" || rep.Updates[0].New != tip {
+			t.Errorf("updates = %+v, want the lead's tip %s", rep.Updates, tip)
+		}
+		for _, line := range mirrorRefs(t, e.m) {
+			if strings.Contains(line, otherTip) {
+				t.Errorf("the mirror holds the bundle's commit: %s", line)
+			}
+		}
+	})
+}
+
+// TestFetchRepositoryPathWithAPercentSignReachesTheSandbox: git decodes "%"
+// and two hexadecimal digits in the path of a "file://" URL, so the fetch
+// writes each "%" of the plan's path as "%25". The sandboxed command gets the
+// path as the plan has it, and the fetch works.
+func TestFetchRepositoryPathWithAPercentSignReachesTheSandbox(t *testing.T) {
+	for _, name := range []string{"100%41", "50%", "a%2Fb", "%25"} {
+		t.Run(name, func(t *testing.T) {
+			e := newFetchEnv(t)
+			tip := e.lead.git(t, "rev-parse", "refs/heads/main")
+			inside := filepath.Join(t.TempDir(), "absent", name, "work")
+			record := filepath.Join(t.TempDir(), "path")
+			e.planner.Repository = inside
+			e.planner.UploadPack = []string{"/bin/sh", "-c", "printf '%s' \"$1\" > '" + record + "'; exec '" + e.gup + "' '" + e.lead.tree + "'", "sh"}
+			rep, err := e.m.Fetch(context.Background(), e.req())
+			if err != nil {
+				t.Fatalf("Fetch: %v", err)
+			}
+			if len(rep.Updates) != 1 || rep.Updates[0].New != tip {
+				t.Errorf("updates = %+v", rep.Updates)
+			}
+			if got, err := os.ReadFile(record); err != nil || string(got) != inside {
+				t.Errorf("the sandboxed command got %q (%v), want %q", got, err, inside)
+			}
+		})
 	}
-	t.Cleanup(func() { fetchHook = nil })
-	_, err := e.m.Fetch(context.Background(), e.req())
-	if !errors.Is(err, ErrRepositoryPath) {
-		t.Fatalf("Fetch = %v, want ErrRepositoryPath", err)
-	}
-	if _, serr := os.Stat(started); serr == nil {
-		t.Error("the sandboxed command started")
-	}
-	e.unchanged(t, was)
 }

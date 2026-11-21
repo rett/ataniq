@@ -138,8 +138,10 @@ const maxWatchFailures = 3
 var watchMeasureHook func() (safefs.Size, error)
 
 // fetchHook is called by a fetch right before each of the steps 3 to 10, with
-// the number of the step, and once more, with 90, right after the listing that
-// step 9 makes. It is nil outside the tests, which use it to stop a fetch at a
+// the number of the step, once more, with 60, right after the check of the
+// repository path of step 6 and before the receiving half is prepared and
+// started, and once more, with 90, right after the listing that step 9
+// makes. It is nil outside the tests, which use it to stop a fetch at a
 // given step, for example with a panic.
 var fetchHook func(step int)
 
@@ -170,15 +172,16 @@ func (m *Mirror) lockPath() string { return m.path + ".lock" }
 //  3. The planner gives the sandboxed upload-pack command. A planner error,
 //     [sandboxplan.ErrNotConfigured] included, stops the fetch. No command
 //     runs before this. The plan's repository path must not exist on the
-//     host: [ErrRepositoryPath]. The owner's git reads a bundle file at that
-//     path itself and would never start the sandboxed command.
+//     host: [ErrRepositoryPath]. This is a second layer: the fetch names its
+//     source as a "file://" URL, which git never reads as a bundle, so the
+//     sandboxed command starts whatever is at the path.
 //  4. The sandbox measures the clone's object store; more than MaxSource is a
 //     [*LimitError]. The mirror is measured; a mirror at or over MaxMirror is
 //     a [*LimitError].
 //  5. A staging repository is made beside the mirror, with the mirror's
 //     objects as its alternate, and the mirror's refs are noted.
 //  6. The repository path is checked again, and then the receiving half of
-//     git runs as the owner, with the sandboxed command
+//     git runs as the owner, with the source as a "file://" URL, with the sandboxed command
 //     as upload-pack, into the staging repository. The fetch has a time limit
 //     ([ErrFetchTimeout]) and a watchdog that stops it when the staging
 //     repository passes MaxStaged or MaxEntries, or when three measures of
@@ -339,6 +342,7 @@ func (m *Mirror) fetch(ctx context.Context, req FetchRequest, rep *FetchReport) 
 	if err := checkRepositoryPath(plan.Repository, tree); err != nil {
 		return err
 	}
+	hook(60)
 	if err := m.fetchStaging(ctx, st, plan, refspec, negotiationTips(snapBefore, prefix), lim); err != nil {
 		return timedOut(err)
 	}
@@ -519,6 +523,8 @@ func (m *Mirror) fetchStaging(ctx context.Context, st *staging, plan sandboxplan
 		GitDir:     st.path,
 		Protocols:  []string{"file"},
 		UploadPack: plan.UploadPack,
+		// A "file://" URL, so that git never reads a bundle at the path.
+		SourceFileURL: true,
 		Args: slices.Concat(
 			[]string{"fetch", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", "--no-auto-maintenance", "--prune"},
 			tips,

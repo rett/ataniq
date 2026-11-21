@@ -68,6 +68,23 @@ type Cmd struct {
 	// fixed -c hardening for git-upload-pack. The checks of the fetched
 	// objects (fsck) run on the receiving side, here, in the owner's git.
 	UploadPack []string
+	// SourceFileURL, for a fetch with UploadPack, makes [Git.Argv] pass the
+	// source (the first argument after the end of the options, checked as
+	// above: an absolute local path) to git as the URL "file://" and the
+	// path, with each "%" written "%25". The caller still writes a path, and
+	// the refusal of a source that is itself a URL stays.
+	//
+	// Why: git reads a source that is a path to a file as a git bundle,
+	// when the file is one, itself and never starts the program of
+	// UploadPack. A source that is a "file://" URL is never read that way:
+	// git takes the smart transport and starts the program, whatever is at
+	// the path. git decodes "%" and two hexadecimal digits in the path of
+	// the URL and gives the program the decoded path, so the encoding makes
+	// the program get the path the caller wrote. The tests ask the installed
+	// git about both points, and about the other characters of a path (a
+	// space, "#", "?", ":" and the rest need no encoding). Argv refuses
+	// the field without UploadPack.
+	SourceFileURL bool
 }
 
 // fixedPaths are the places Find looks for git. $PATH is never read.
@@ -346,9 +363,14 @@ func (g Git) Argv(c Cmd) ([]string, error) {
 	} else if err := checkOptions(sub, c.Args[1:]); err != nil {
 		return nil, err
 	}
-	uploadPack, err := uploadPackOption(c, sub, protocols)
+	uploadPack, sourceAt, err := uploadPackOption(c, sub, protocols)
 	if err != nil {
 		return nil, err
+	}
+	args := c.Args[1:]
+	if sourceAt >= 0 && c.SourceFileURL {
+		args = slices.Clone(args)
+		args[sourceAt-1] = fileURL(args[sourceAt-1])
 	}
 
 	argv := []string{g.Path}
@@ -370,7 +392,13 @@ func (g Git) Argv(c Cmd) ([]string, error) {
 		// No external diff and no textconv program; see noDiffPrograms.
 		argv = append(argv, "--no-ext-diff", "--no-textconv")
 	}
-	return append(argv, c.Args[1:]...), nil
+	return append(argv, args...), nil
+}
+
+// fileURL returns the "file://" URL of an absolute path, with each "%"
+// written "%25" (see [Cmd.SourceFileURL]).
+func fileURL(path string) string {
+	return "file://" + strings.ReplaceAll(path, "%", "%25")
 }
 
 // Env returns the whole environment for c, sorted. Nothing is inherited.
@@ -415,49 +443,53 @@ func (g Git) Env(c Cmd) []string {
 }
 
 // uploadPackOption checks c.UploadPack and returns the option for it, or ""
-// when it is unset.
-func uploadPackOption(c Cmd, sub string, protocols []string) (string, error) {
+// when it is unset, and the index in c.Args of the source, or -1 when there
+// is none.
+func uploadPackOption(c Cmd, sub string, protocols []string) (string, int, error) {
 	if len(c.UploadPack) == 0 {
-		return "", nil
+		if c.SourceFileURL {
+			return "", -1, errors.New("gitenv: SourceFileURL needs UploadPack")
+		}
+		return "", -1, nil
 	}
 	if sub != "fetch" {
-		return "", fmt.Errorf("gitenv: UploadPack is only for fetch, not %q", sub)
+		return "", -1, fmt.Errorf("gitenv: UploadPack is only for fetch, not %q", sub)
 	}
 	if !slices.Equal(protocols, []string{"file"}) {
-		return "", errors.New(`gitenv: UploadPack needs Protocols to be exactly ["file"]`)
+		return "", -1, errors.New(`gitenv: UploadPack needs Protocols to be exactly ["file"]`)
 	}
 	words := make([]string, len(c.UploadPack))
 	for i, w := range c.UploadPack {
 		switch {
 		case w == "":
-			return "", fmt.Errorf("gitenv: UploadPack element %d is empty", i)
+			return "", -1, fmt.Errorf("gitenv: UploadPack element %d is empty", i)
 		case strings.ContainsAny(w, "\x00\n"):
-			return "", fmt.Errorf("gitenv: UploadPack element %d holds a NUL or a newline", i)
+			return "", -1, fmt.Errorf("gitenv: UploadPack element %d holds a NUL or a newline", i)
 		}
 		words[i] = shellQuote(w)
 	}
 	if !filepath.IsAbs(c.UploadPack[0]) {
-		return "", fmt.Errorf("gitenv: UploadPack program %q is not an absolute path", c.UploadPack[0])
+		return "", -1, fmt.Errorf("gitenv: UploadPack program %q is not an absolute path", c.UploadPack[0])
 	}
 	// Git appends the source to the command, so the source must be a local
 	// path and must be named after the end of the options.
 	i := slices.IndexFunc(c.Args[1:], func(a string) bool { return a == "--" || a == "--end-of-options" })
 	if i < 0 || i+2 >= len(c.Args) {
-		return "", errors.New(`gitenv: UploadPack needs "--end-of-options" and then the source in Args`)
+		return "", -1, errors.New(`gitenv: UploadPack needs "--end-of-options" and then the source in Args`)
 	}
 	// Before the end of the options only options may stand, so that no
 	// other argument can be the repository git runs the program for. An
 	// option takes its value after "=" ("--depth=1", not "--depth 1").
 	for _, a := range c.Args[1 : i+1] {
 		if !strings.HasPrefix(a, "-") || a == "-" {
-			return "", fmt.Errorf("gitenv: UploadPack allows only options before the end of options, not %q", a)
+			return "", -1, fmt.Errorf("gitenv: UploadPack allows only options before the end of options, not %q", a)
 		}
 	}
 	src := c.Args[i+2]
 	if !filepath.IsAbs(src) || strings.Contains(src, "::") || strings.Contains(src, "://") {
-		return "", fmt.Errorf("gitenv: UploadPack needs the source to be an absolute local path, not %q", src)
+		return "", -1, fmt.Errorf("gitenv: UploadPack needs the source to be an absolute local path, not %q", src)
 	}
-	return "--upload-pack=" + strings.Join(words, " "), nil
+	return "--upload-pack=" + strings.Join(words, " "), i + 2, nil
 }
 
 // shellQuote returns s as one POSIX shell word: in single quotes, with each

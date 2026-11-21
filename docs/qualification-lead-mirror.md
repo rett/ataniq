@@ -110,14 +110,14 @@ following.
   `sh` with the environment of the harness, so the argv must clear the
   environment itself (for example `bwrap --clearenv`).
 - `repository` is the clone's path inside the sandbox, and a path that does not
-  exist on the host. The owner-side git of the fetch looks at that path on the
-  host first: a git bundle file there is read by that git itself, and
-  `upload_pack` is never started (see
-  [the sandbox template](lead-intake.md#the-sandbox-template)). The fetch
-  refuses a path that exists on the host, a regular file, a symlink or a folder
-  alike, before anything runs (`mirror.ErrRepositoryPath`), so a template with
-  such a path gives a refused `s16-fetch.fetch` and no other fact of
-  the fetch. A path that does not exist, and the clone's own path (which a fake
+  exist on the host. The owner-side git of the fetch is given it as a
+  `file://` URL, so it starts `upload_pack` and never reads a git bundle file
+  at that path itself (see
+  [the sandbox template](lead-intake.md#the-sandbox-template)). As a second
+  layer the fetch refuses a path that exists on the host, a regular file, a
+  symlink or a folder alike, before anything runs (`mirror.ErrRepositoryPath`),
+  so a template with such a path gives a refused `s16-fetch.fetch` and no other
+  fact of the fetch. A path that does not exist, and the clone's own path (which a fake
   planner gives), pass.
 - `measure` prints the size of the clone's object store, and runs in the same
   kind of sandbox.
@@ -330,8 +330,10 @@ tip, it holds `verification.not-run`.
   run the sign-off, the integration or the lead's code.
 - `repository_on_host` is the harness's reading of the template's `repository`
   path on the host, taken before the fetch with the same rule as the fetch. It
-  is not a report on the sandbox: it says whether the owner's git could read a
-  file at that path. A race (a file that appears after it) is not covered.
+  is not a report on the sandbox: it says whether the second layer of the fetch
+  would refuse the path. A race (a file that appears after it) is not covered
+  by it, and is not read as a bundle either, because the source is a `file://`
+  URL.
 - The intake reads the commits of the review branch as raw objects and
   converts no text, whatever the commit's `encoding` header says (see
   [how the commits are read](lead-intake.md#review)). The harness has no

@@ -11,11 +11,14 @@
   limit error. A header of many continuation lines is parsed in time linear in
   its size, and the call's time limit and context are checked between the
   commits that are parsed. The `gitenv` package no longer allows the
-  `git log` subcommand at all, so no owner-side command can convert a message. `ataniq-intake fetch` refuses a sandbox template whose
-  `serve.repository` path exists on the host (a regular file, a symlink, any
-  folder, or a path that cannot be checked), before any command runs, because
-  the owner's git reads a bundle file at that path itself and never starts the
-  sandboxed upload-pack; a path that does not exist passes, as does the clone's
-  own path. The `qualify-mirror` report gets the fact `repository_on_host` in
+  `git log` subcommand at all, so no owner-side command can convert a message. `ataniq-intake fetch` names the source of the
+  fetch to the owner's git as a `file://` URL (a `%` in the path is written
+  `%25`), so git never reads a bundle file at the template's `serve.repository`
+  path itself and always starts the sandboxed upload-pack, also for a bundle
+  that appears at the path after the checks. As a second layer it refuses a
+  template whose `serve.repository` path exists on the host (a regular file, a
+  symlink, any folder, or a path that cannot be checked), before any command
+  runs; a path that does not exist passes, as does the clone's own path. The
+  `qualify-mirror` report gets the fact `repository_on_host` in
   `s16-fetch.clone`. See `docs/lead-intake.md` and
   `docs/qualification-lead-mirror.md`.

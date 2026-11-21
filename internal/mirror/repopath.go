@@ -8,12 +8,13 @@ import (
 )
 
 // ErrRepositoryPath is returned by a fetch when the plan's repository path
-// exists on the host. The owner's git is given that path as the source of the
-// fetch and looks at it on the host before it starts the serving half: a
-// regular file there that is a git bundle is read by that git itself, as the
-// owner, and the sandboxed upload-pack never runs. The path is meant to name
-// the clone as the sandbox sees it, so on the host it must not exist. See
-// checkRepositoryPath for the exact rule.
+// exists on the host. The path is meant to name the clone as the sandbox sees
+// it, so on the host it must not exist. The refusal is a second layer. The
+// first is that the fetch names the path to the owner's git as a "file://"
+// URL ([gitenv.Cmd.SourceFileURL]): git reads a bundle itself, as the owner,
+// only when its source is a path to a file, so for the URL it starts the
+// sandboxed upload-pack whatever is at the path, also a bundle that appears
+// after the checks. See checkRepositoryPath for the exact rule.
 var ErrRepositoryPath = errors.New("mirror: the template's repository path exists on the host")
 
 // checkRepositoryPath refuses a repository path that exists on the host,
@@ -38,10 +39,12 @@ var ErrRepositoryPath = errors.New("mirror: the template's repository path exist
 //
 // The check cannot close a race: something may create the path right after
 // it. It runs twice, before any command of the fetch starts and again right
-// before the owner's git is started, to keep the window small. What closes
-// the race is that no sandbox can write a folder on the way to the path,
-// which is the owner's choice of path and is in the documentation of the
-// template.
+// before the owner's git is started, to keep the window small. A path that
+// appears after the second check is not read as a bundle, because the source
+// is a "file://" URL (see [ErrRepositoryPath]); the test of that case is
+// TestFetchRefusesARepositoryPathThatAppearsLater. The owner's choice of a
+// path that no sandbox can write a folder on the way to, in the documentation
+// of the template, is the same protection for a plan whose source is a path.
 func checkRepositoryPath(repository, tree string) error {
 	if repository == tree {
 		return nil
