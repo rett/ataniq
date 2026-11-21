@@ -529,6 +529,19 @@ window](lead-daemon.md#the-late-start-window); the console never sends it again.
 
 - **The profile digest is the daemon's own computation** unless pinned, and the
   pin is not independent (above).
+- **A lead removed from the config while its unit runs is out of the daemon's
+  reach.** The daemon knows only the leads of its config. If the owner removes a
+  lead from the config while its unit runs, and restarts the daemon, the
+  registry still holds the role, but `lead.stop` for it is refused ("the role is
+  not a lead of this daemon"), `lead.list` does not show it, and it does **not**
+  count against `max_running`: the cap can then be exceeded by that unit. Stop a
+  lead, and see it `stopped`, **before** removing it from the config. If it was
+  removed first, stop its unit by hand (the user unit
+  `ataniq-lead-scratch-alpha.service` for a key `alpha`), or put the lead back
+  in the config and restart the daemon. The daemon does not refuse to start with
+  such a lead: that needs a new startup check of the registry in both builds and
+  a decision on what blocks the owner who is trying to clean up, so it is left
+  documented only.
 - **The inject residual.** The order of an inject is: admit the command (durable),
   the admission checks and the epoch, write the request frame, write the
   `inject-sent` line of the evidence, then finish the receipt. A daemon killed
