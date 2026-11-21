@@ -127,6 +127,10 @@ const (
 	msgRecordNotFound  = "the lead has no record, so provisioning is not complete"
 )
 
+// The proof a stop of a lead that was defined and never started carries: the
+// registry holds none for it, and the receipt never shows an empty proof.
+const msgProofNeverStarted = "no launch was ever recorded and no unit of the role is loaded"
+
 // outcome is what a command ended with, before it is made the receipt's final
 // answer.
 type outcome struct {
@@ -543,6 +547,14 @@ func (m *leadMode) start(ctx context.Context, lr *leadRole) outcome {
 		defer m.release(lr)
 		e, err := m.ctl.Start(ctx, lr.role)
 		if err != nil {
+			if errors.Is(err, leadlifecycle.ErrStartFailed) && e.Shown.State == leadregistry.StateUnknown {
+				// The lifecycle could not prove the unit gone after the failed
+				// launch (it could not inspect it, found it loaded, or the name
+				// is held), so it left the role unknown. "Nothing was started"
+				// would be a claim of what is not known.
+				m.d.logf("scratch start %q: %s", lr.key, SafeText(err.Error()))
+				return uncertainOut(codeLaunchUncertain, msgLaunchUncertain)
+			}
 			return m.startFailure(lr, err)
 		}
 		unit := ""
@@ -627,8 +639,19 @@ func (m *leadMode) stop(ctx context.Context, lr *leadRole, epoch uint64) outcome
 		if err != nil {
 			return m.stopFailure(lr, err)
 		}
-		if e.Shown.State != leadregistry.StateStopped || e.Shown.Proof == "" {
-			// Done only for a lead that is stopped with its proof.
+		switch {
+		case (e.Shown.State == leadregistry.StateStopped || e.Shown.State == leadregistry.StateEnded) && e.Shown.Proof != "":
+			// Stopped by this stop, or stopped or ended earlier with the proof
+			// that the lifecycle (or the reconcile) recorded.
+		case e.Shown.State == leadregistry.StateStopped && e.Epoch == 0 && e.Intent == nil:
+			// Defined and never started: no launch was ever recorded, and the
+			// lifecycle has just found no unit of the role's name loaded, so
+			// there is no unit a stop could fail to end. The registry holds no
+			// proof text for it, so the receipt carries a fixed one.
+			e.Shown.Proof = msgProofNeverStarted
+		default:
+			// Anything else is not a stop that was proven: a state that is not
+			// stopped or ended, or one without its proof.
 			m.d.logf("scratch stop %q: the stop returned the state %q without a proof", lr.key, SafeText(string(e.Shown.State)))
 			return uncertainOut(codeStopUnproven, msgStopUnproven)
 		}
@@ -695,6 +718,13 @@ func (m *leadMode) inject(ctx context.Context, lr *leadRole, p leadwire.InjectPa
 	}
 	res, f := lr.in.ext.injectFor(ctx, CanaryInjectParams{Role: p.Role, MessageID: p.MessageID, Body: p.Body}, p.Epoch)
 	if f != nil {
+		if f.code == "holder-"+wire.CodeWrongEpoch {
+			// The role was stopped and started between the daemon's epoch
+			// check and the holder's read of the frame: a mismatch of the
+			// epoch, as the daemon's own check answers it. The text of the
+			// refusal is the epoch's, and no text reached the lead.
+			return refusedOut(codeStaleEpoch, msgStaleEpoch)
+		}
 		return fromFail(f)
 	}
 	return done(leadwire.InjectResult{

@@ -451,6 +451,58 @@ func TestLeadUnknownCountsAndStopReachesTheLifecycle(t *testing.T) {
 	}
 }
 
+// A start that failed and left the role unknown (the manager refused it because
+// the unit name is taken, and the lifecycle could not prove nothing was
+// started) is uncertain, with the text that says the role is shown unknown, and
+// not unavailable with the text "nothing was started". A start that failed and
+// whose absence the lifecycle proved stays unavailable/start-failed.
+func TestLeadStartFailedLeavingUnknownIsUncertain(t *testing.T) {
+	l := newLeadEnv(t)
+	l.start()
+	want(t, l.define("alpha"), leadwire.StatusDone, "")
+	l.holder("alpha", submitted)
+
+	l.gate.setHook(func(ctx context.Context, spec leadunit.Spec) (leadunit.State, error, bool) {
+		return leadunit.State{}, leadunit.ErrUnitExists, true
+	})
+	r := l.startLead("alpha")
+	want(t, r, leadwire.StatusUncertain, codeLaunchUncertain)
+	if r.Message != msgLaunchUncertain {
+		t.Fatalf("the text: %q", r.Message)
+	}
+	if row := l.row("alpha"); row.State != "unknown" {
+		t.Fatalf("the row: %+v", row)
+	}
+
+	// A refused launch whose absence is proven is still unavailable, and the
+	// lead is stopped again.
+	l.gate.setHook(nil)
+	want(t, l.stopLead("alpha", 0), leadwire.StatusDone, "")
+	l.gate.setHook(func(ctx context.Context, spec leadunit.Spec) (leadunit.State, error, bool) {
+		return leadunit.State{}, errors.New("the manager refused"), true
+	})
+	f := l.startLead("alpha")
+	want(t, f, leadwire.StatusUnavailable, codeStartFailed)
+	if row := l.row("alpha"); row.State != "stopped" {
+		t.Fatalf("the row after a proven failed start: %+v", row)
+	}
+}
+
+// A holder that refuses an inject with wrong-epoch (the role was stopped and
+// started after the daemon's epoch check and before the holder read the frame)
+// is answered like the daemon's own mismatch, refused/stale-epoch, and not
+// unavailable/holder-wrong-epoch. The canary's operation keeps its answer.
+func TestLeadInjectHolderWrongEpochIsStale(t *testing.T) {
+	l := newLeadEnv(t)
+	l.start()
+	sr := l.up("alpha", respondWith(wire.Response{OK: false, Code: wire.CodeWrongEpoch}))
+	r := l.inject("alpha", sr.Epoch, "msg-late", "body one")
+	want(t, r, leadwire.StatusRefused, codeStaleEpoch)
+	if r.Message != msgStaleEpoch {
+		t.Fatalf("the text: %q", r.Message)
+	}
+}
+
 // The cap counts every lead whose shown state is not desired, stopped or ended,
 // so a lead that is stopping and one that is unknown both hold a place, and a
 // lead with a pending intent or a start in flight does too. A start is reserved
@@ -563,25 +615,63 @@ func TestLeadStopForAnOldEpochNeverStopsTheNext(t *testing.T) {
 }
 
 // lead.stop always reaches the lifecycle: for a lead that is shown stopped, it
-// asks the manager about the unit, and it is done only for a lead that is
-// stopped with its proof.
+// asks the manager about the unit. It is done for a lead that is stopped with
+// its proof, and for one defined and never started (epoch 0, no intent, no
+// proof in the registry), where the lifecycle has just found no unit loaded and
+// no launch was ever recorded, so a fixed proof text stands for it.
 func TestLeadStopAlwaysCallsTheLifecycle(t *testing.T) {
 	l := newLeadEnv(t)
 	l.start()
 	want(t, l.define("alpha"), leadwire.StatusDone, "")
 	inspects := len(l.fake.CallsOf(leadunit.MethodInspect))
 	// Shown stopped, never started: the lifecycle looks at the unit, and the
-	// answer is not a proven stop.
+	// stop is done with the fixed proof, not uncertain.
 	r := l.stopLead("alpha", 0)
 	if len(l.fake.CallsOf(leadunit.MethodInspect)) <= inspects {
 		t.Fatal("the stop did not reach the lifecycle")
 	}
-	want(t, r, leadwire.StatusUncertain, codeStopUnproven)
+	want(t, r, leadwire.StatusDone, "")
+	var never leadwire.StopResult
+	result(t, r, &never)
+	if never.State != "stopped" || never.Proof != msgProofNeverStarted {
+		t.Fatalf("the stop of a lead never started: %+v", never)
+	}
 	// After a real stop the proof is there, and a second stop is done.
 	l.holder("alpha", submitted)
 	want(t, l.startLead("alpha"), leadwire.StatusDone, "")
 	want(t, l.stopLead("alpha", 0), leadwire.StatusDone, "")
 	want(t, l.stopLead("alpha", 0), leadwire.StatusDone, "")
+}
+
+// A lead that the reconcile marked ended, with its proof, is a lead whose unit is
+// proven gone: lead.stop answers done with that proof, on every press, and
+// signals nothing. A stop that could not prove the unit gone is still
+// uncertain (the stop-failure statuses cover that answer).
+func TestLeadStopOfAnEndedLeadIsDone(t *testing.T) {
+	l := newLeadEnv(t)
+	l.start()
+	up := l.up("alpha", submitted)
+	if !l.fake.Crash(up.Unit) {
+		t.Fatalf("the unit %q was not loaded", up.Unit)
+	}
+	l.restart()
+	row := l.row("alpha")
+	if row.State != "ended" {
+		t.Fatalf("the row after the unit went away: %+v", row)
+	}
+	signals := len(l.fake.CallsOf(leadunit.MethodSignal))
+	for i := 0; i < 2; i++ {
+		r := l.stopLead("alpha", 0)
+		want(t, r, leadwire.StatusDone, "")
+		var res leadwire.StopResult
+		result(t, r, &res)
+		if res.State != "ended" || res.Proof == "" {
+			t.Fatalf("stop %d of an ended lead: %+v", i, res)
+		}
+	}
+	if got := len(l.fake.CallsOf(leadunit.MethodSignal)); got != signals {
+		t.Fatalf("the stop of an ended lead signalled: %d calls, had %d", got, signals)
+	}
 }
 
 // An inject that names an epoch that is not the lead's writes no frame and spends

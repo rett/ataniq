@@ -264,15 +264,25 @@ What each does:
 - **`lead.start`** starts the lead's unit through the lifecycle, after the check
   that the lead's folders exist and are private and the `max_running` check. It
   refuses a lead that has no holder command, which is a lead whose define has not
-  finished (`not-provisioned`).
+  finished (`not-provisioned`). A start that failed is `unavailable`
+  (`start-failed`, "nothing was started") only when the lifecycle proved the
+  unit absent afterwards; when it could not (the unit could not be inspected,
+  one is loaded, or the manager says the name is taken) the lead is shown
+  `unknown` and the start is `uncertain` (`launch-uncertain`).
 - **`lead.stop`** is the owner's way out of every state, `unknown` included: it
   signals the role's own units. With an `epoch` that is not the registry's it is
   refused `stale-epoch`, so a stop meant for one epoch never stops the next. It
-  is `done` **only for a lead that is stopped with a stop proof**: the proof text
-  names the unit's invocation and its empty control group. The stop always
-  reaches the lifecycle, so a lead that is shown stopped is asked about too; a
-  lead that was **never started** has no proof, and its stop answers
-  `uncertain` with the code `stop-unproven`, not `done`.
+  is `done` **only when the stop is proven**: for a lead that is stopped with a
+  stop proof (the text names the unit's invocation and its empty control group),
+  for a lead the reconcile ended with its proof (the unit is proven gone, and
+  the answer is `done` on every press), and for a lead that was **defined and
+  never started** (epoch 0, no launch intent): no launch was ever recorded and
+  the lifecycle has just found no unit of the role's name loaded, so the answer
+  is `done` with the fixed proof "no launch was ever recorded and no unit of the
+  role is loaded". The stop always reaches the lifecycle, so a lead that is shown
+  stopped is asked about too. Where a stop could not be proven (a unit that may
+  be loaded, a state that is unknown) the answer stays `uncertain` with the code
+  `stop-unproven`; `uncertain` means that what the stop did is not known.
 - **`lead.ticket`** asks the holder for a ticket for the epoch and writes it to
   the lead's ticket file. An `epoch` of 0, or one that is not the lead's current
   one, is refused `stale-epoch`.
@@ -281,7 +291,10 @@ What each does:
   an `epoch` of 0 is refused too. The message and its admission are the canary's:
   the id and the body grammar, a body of at most 2048 bytes (the wire's cap on the
   params, 4096, is the larger), the header `[ataniq-msg id=<id> from=ataniq
-  kind=canary]`.
+  kind=canary]`. When the holder itself refuses the frame as `wrong-epoch` (the
+  lead was stopped and started between the daemon's check and the holder's
+  read), the answer is `stale-epoch` like the daemon's own check: no text
+  reached the lead, and the old epoch stays spent.
 
 ### Receipts
 
@@ -312,7 +325,7 @@ operation; every code is a word of lower-case letters, digits and dashes.
 | `lead.start` | `role-busy`, `not-provisioned`, `folder-missing`, `max-running`, `role-not-defined`, `not-managed`, `preflight`, `foreign-unit`, `unit-loaded`, `limits`, `launch-refused`, `epoch-exhausted`, `registry-refused` | `start-failed`, `previous-unit-not-gone`, `intent-pending` | `launch-uncertain`, `daemon-stopping`, `registry-check`, `registry-broken`, `failed` |
 | `lead.stop` | `role-busy`, `stale-epoch`, `role-not-defined`, `not-managed` | `intent-pending`, `failed` | `stop-unproven`, `daemon-stopping`, `registry-broken`, `failed` |
 | `lead.ticket` | `stale-epoch`, `not-running`, `ticket-refused` | `holder-unreachable`, `ticket-failed`, `ticket-lost`, `ticket-file` | |
-| `lead.inject` | `stale-epoch`, `inject-off`, `not-running`, `second-message`, `message-in-flight`, and the admission codes of the canary slice (`bad-id`, `body-too-long`, `empty-body` and the like) | `holder-unreachable`, and `holder-` with the holder's refusal (`disabled`, `wrong-epoch`, `busy`, `bad-request`) | |
+| `lead.inject` | `stale-epoch`, `inject-off`, `not-running`, `second-message`, `message-in-flight`, and the admission codes of the canary slice (`bad-id`, `body-too-long`, `empty-body` and the like) | `holder-unreachable`, and `holder-` with the holder's refusal (`disabled`, `busy`, `bad-request`) | |
 
 Every operation can also end `refused` with `daemon-broken` (the registry or the
 table cannot be written, and the daemon admits no new command until it is
@@ -516,6 +529,19 @@ window](lead-daemon.md#the-late-start-window); the console never sends it again.
 
 - **The profile digest is the daemon's own computation** unless pinned, and the
   pin is not independent (above).
+- **A lead removed from the config while its unit runs is out of the daemon's
+  reach.** The daemon knows only the leads of its config. If the owner removes a
+  lead from the config while its unit runs, and restarts the daemon, the
+  registry still holds the role, but `lead.stop` for it is refused ("the role is
+  not a lead of this daemon"), `lead.list` does not show it, and it does **not**
+  count against `max_running`: the cap can then be exceeded by that unit. Stop a
+  lead, and see it `stopped`, **before** removing it from the config. If it was
+  removed first, stop its unit by hand (the user unit
+  `ataniq-lead-scratch-alpha.service` for a key `alpha`), or put the lead back
+  in the config and restart the daemon. The daemon does not refuse to start with
+  such a lead: that needs a new startup check of the registry in both builds and
+  a decision on what blocks the owner who is trying to clean up, so it is left
+  documented only.
 - **The inject residual.** The order of an inject is: admit the command (durable),
   the admission checks and the epoch, write the request frame, write the
   `inject-sent` line of the evidence, then finish the receipt. A daemon killed
