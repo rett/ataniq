@@ -36,9 +36,11 @@ of one is read by the other.
 
 What it does not do:
 
-- No Qargi inside the sandbox, no `ready`, no operator decision on an uncertain
-  command and no confirmation from the conversation file: these are the canary
-  slice's limits, and they hold here.
+- No Qargi inside the sandbox, no operator decision on an uncertain command and
+  no confirmation from the conversation file: these are the canary slice's
+  limits, and they hold here. The canary's `ready` limit does not: a scratch lead
+  is shown `ready` once its holder reports up (see [Ready](#ready)), which says
+  nothing about the agent's login.
 - No intake by the daemon: the owner takes a commit in by hand with
   `ataniq-intake`.
 - No unit for the daemon and no start at boot: the daemon is started by hand.
@@ -245,7 +247,7 @@ begin with `client` and `command_id`, then `role`, then the rest.
 | --- | --- | --- |
 | `lead.list` | none, or `{}` | `{"max_running","running","leads":[{"key","role","defined","provision","state","epoch","unit","inject","message_spent","last"}]}`, one row per configured lead. `provision` is `done`, `incomplete` or `none`. `last` is the role's latest receipt in summary form (no `result`), or `null`. Not bound to a command id; it takes no lock and answers while a define runs. |
 | `lead.define` | `client`, `command_id`, `role` | A receipt whose result is `{"role","state","profile_digest"}`. The state is `stopped`. |
-| `lead.start` | `client`, `command_id`, `role` | A receipt whose result is `{"role","state","epoch","unit","waiver"}`. The state is `starting`; `waiver` is the waiver's text. |
+| `lead.start` | `client`, `command_id`, `role` | A receipt whose result is `{"role","state","epoch","unit","waiver"}`. The state is `starting`, always: the receipt does not wait for [`ready`](#ready); `waiver` is the waiver's text. |
 | `lead.stop` | `client`, `command_id`, `role`, `epoch` | A receipt whose result is `{"role","state","proof"}`. An `epoch` of 0 means the current epoch. |
 | `lead.ticket` | `client`, `command_id`, `role`, `epoch`, `attach_role` (`writer` or `viewer`) | A receipt whose result is `{"role","epoch","ticket_file","folder"}`. The ticket is never in an answer: it is in the ticket file. |
 | `lead.inject` | `client`, `command_id`, `role`, `epoch`, `message_id`, `body` | A receipt whose result is `{"role","epoch","message_id","result":{"outcome","reason","written","detail"}}`, the holder's own words as in [the canary slice](canary-slice.md#the-result-and-its-evidence). |
@@ -295,6 +297,55 @@ What each does:
   lead was stopped and started between the daemon's check and the holder's
   read), the answer is `stale-epoch` like the daemon's own check: no text
   reached the lead, and the old epoch stays spent.
+
+### Ready
+
+A started lead is shown `starting`. The daemon moves it to `ready` by itself,
+on the holder's word, and in no other way:
+
+- **When it asks.** After `lead.start` has returned for an epoch, and once for
+  every lead that is shown `starting` (with its launch recorded and a holder
+  command) when the daemon starts, as for a lead it adopted after a restart, a
+  background observer asks the holder's control socket for its `status`. It asks
+  again, with a wait that grows from 200 ms to 1.6 s, for up to 60 s. The dial
+  and the wait for each answer are bounded by 5 s each, and by the 60 s. A
+  lead that the 60 s did not settle stays `starting`, the daemon logs that
+  once, and it is observed again the next time the daemon starts. A `lead.start`
+  never waits for the observer, and no client call does: the start's receipt is
+  answered with `starting` at once.
+- **What it takes.** The holder answers `ok` with a status for the **same epoch
+  and the same role** as the registry shows. A refusal (`wrong-epoch` included),
+  no answer, an answer with no status and a status of another epoch or role are
+  ignored: the lead stays `starting`, and nothing else changes.
+- **What it sets.** The shown state `ready` for that epoch, with the reason code
+  `holder-ready`, the evidence kind `ataniq-observation` and the detail "the
+  holder is up and the agent was started; the agent's login is not observed".
+  The change is made only if the registry still shows the lead `starting` in
+  that epoch, as one compare-and-set under the role's operation lock. The lock
+  is **not** held while the holder is asked: it is taken, as a try-lock, for the
+  one check and change, and a promotion that finds it held (a define, a start or
+  a stop of the role is running) is tried again a moment later. A stop, or a
+  newer epoch, therefore wins: the observer then sets nothing, and a `lead.stop`
+  also ends the lead's observer. A stop is never held up by an observer.
+- **What `ready` means here.** The holder is up, and the agent was started in
+  the lead's sandbox. The agent's login is **not** observed, nothing was read
+  from its screen, and nothing says the agent works or will answer. `ready` is
+  not a claim that the lead is usable: it replaces "nothing says anything" with
+  "the holder said it is up", and no more. A lead that is `ready` stays so until
+  a stop. This build adds no way from `ready` back to `starting` or to
+  `degraded`: a holder that goes away after it said it was up is not noticed
+  by this observer, and a unit that ends is found by the next reconcile when
+  the daemon starts, as before.
+- **It does not change** what counts against `max_running` (a `starting` lead
+  and a `ready` one both count), the receipts, the command table or the
+  evidence file.
+- **At shutdown** the daemon ends the observers and waits for them before it
+  closes the registry, so a daemon stopped while a holder does not answer still
+  exits 0 and promptly. A failure of the observer's own (a panic is recovered
+  and logged) leaves the lead as it is shown.
+
+`ready` is for scratch leads only. The canary has no observer and its lead stays
+`starting` (see [the canary slice](canary-slice.md)).
 
 ### Receipts
 

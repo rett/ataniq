@@ -562,6 +562,9 @@ func (m *leadMode) start(ctx context.Context, lr *leadRole) outcome {
 			unit = e.Intent.UnitName
 		}
 		lr.in.ext.record(leadcanary.Entry{Event: leadcanary.EventStart, Epoch: e.Epoch})
+		// The observer that shows the lead ready once its holder answers for
+		// the epoch; it runs on its own and never holds this command up.
+		m.observeReady(lr, e.Epoch)
 		return done(leadwire.StartResult{
 			Role: lr.role.String(), State: string(e.Shown.State), Epoch: e.Epoch, Unit: unit, Waiver: canaryroot.WaiverText,
 		})
@@ -622,6 +625,8 @@ func (m *leadMode) startFailure(lr *leadRole, err error) outcome {
 // was meant for one epoch never stops the next.
 func (m *leadMode) stop(ctx context.Context, lr *leadRole, epoch uint64) outcome {
 	return m.withRoleLock(lr, "stop", func() outcome {
+		// An observer that has not settled has nothing left to settle.
+		m.cancelReady(lr)
 		if epoch != 0 {
 			e, err := m.reg.Get(lr.role)
 			switch {
