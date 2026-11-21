@@ -129,7 +129,8 @@ func callState(err error) State {
 // buildView turns the two results into a view, cleaning every string and
 // keeping to the bounds.
 func buildView(hello clientapi.HelloResult, status clientapi.StatusResult) View {
-	v := View{Daemon: Daemon{
+	_, owner := ownerOperationsListed(hello.Operations)
+	v := View{OwnerChannel: owner, Daemon: Daemon{
 		Version:            clean(hello.Version),
 		StartedAt:          status.Daemon.StartedAt,
 		ReconcileCompleted: status.Daemon.LastReconcileCompleted,

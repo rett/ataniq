@@ -1,5 +1,3 @@
-//go:build linux && ataniq_ownerchannel
-
 package main
 
 import (
@@ -9,7 +7,7 @@ import (
 
 // The daemon's owner client satisfies the console's one view of approvals.
 // The console imports neither it nor the wire it speaks: this command hands
-// it over as a value in the options, with --daemon, in the tagged build only.
+// it over as a value in the options, with --daemon.
 var _ approvals.Backend = (*consoleclient.Owner)(nil)
 
 // ownerBackend returns the console's approvals backend for the daemon whose

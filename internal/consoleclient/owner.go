@@ -1,5 +1,3 @@
-//go:build linux && ataniq_ownerchannel
-
 package consoleclient
 
 import (
@@ -21,7 +19,7 @@ import (
 
 // NoOwnerChannelText is what the console says when the daemon it is
 // connected to has no owner channel. It is the console's own sentence for
-// the case that no backend was given.
+// the case that the daemon lists no owner operation.
 const NoOwnerChannelText = "no owner channel in this build"
 
 // DefaultOwnerTimeout bounds each call of an [Owner] whose configuration
@@ -124,6 +122,10 @@ type Owner struct {
 	doubt     map[string]bool
 	settled   map[string]card.Outcome
 	notListed int64
+	// noChannel is set when a daemon's hello listed no owner operation:
+	// every later call answers [ErrNoOwnerChannel] without dialling, for the
+	// life of this Owner. A new Owner asks again.
+	noChannel bool
 }
 
 // ownerConn is one connection with what the daemon said when it was made.
@@ -221,6 +223,9 @@ func (o *Owner) connect() (*ownerConn, error) {
 	if o.conn != nil {
 		return o.conn, nil
 	}
+	if o.noChannel {
+		return nil, ErrNoOwnerChannel
+	}
 	ctx, cancel := o.ctx()
 	defer cancel()
 	c, err := clientapi.Dial(ctx, clientapi.SocketPath(o.dir))
@@ -238,19 +243,11 @@ func (o *Owner) connect() (*ownerConn, error) {
 	if !speaksProtocol(hello.Protocols) {
 		return fail(&Unavailable{State: StateOtherProtocol})
 	}
-	have := 0
-	for _, op := range ownerwire.Operations() {
-		for _, listed := range hello.Operations {
-			if listed == op {
-				have++
-				break
-			}
-		}
-	}
-	switch {
+	switch have, all := ownerOperationsListed(hello.Operations); {
 	case have == 0:
+		o.noChannel = true
 		return fail(ErrNoOwnerChannel)
-	case have < len(ownerwire.Operations()):
+	case !all:
 		return fail(ErrOwnerVersion)
 	}
 	params, err := ownerwire.EncodeDeciderParams(ownerwire.DeciderParams{Client: o.name, Session: o.session})
@@ -272,6 +269,22 @@ func (o *Owner) connect() (*ownerConn, error) {
 	o.conn = &ownerConn{c: c, gen: o.gen, decider: res.Decider, reason: clean(res.Reason), fresh: true}
 	o.live.Store(c)
 	return o.conn, nil
+}
+
+// ownerOperationsListed counts the owner channel's operations among the
+// operations a hello listed, and says whether it listed every one. [Read]
+// uses the same rule for [View.OwnerChannel].
+func ownerOperationsListed(listed []string) (have int, all bool) {
+	ops := ownerwire.Operations()
+	for _, op := range ops {
+		for _, l := range listed {
+			if l == op {
+				have++
+				break
+			}
+		}
+	}
+	return have, have == len(ops)
 }
 
 // call sends one request on the connection and returns the raw result. A

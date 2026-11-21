@@ -33,7 +33,7 @@ const defaultLinger = 30 * time.Second
 
 const usageLine = "Usage: ataniq-console --demo [--theme dark|light] [--return-key ctrl+KEY] [--recording NAME] [--linger DURATION] [--no-bell]\n" +
 	"       ataniq-console --attach DIR --ticket-file FILE [--viewer] [--shift-enter esc-cr|lf|csi-u|backslash-cr] [--theme dark|light] [--return-key ctrl+KEY]\n" +
-	"       ataniq-console --daemon DIR [--theme dark|light]\n" +
+	"       ataniq-console --daemon DIR [--theme dark|light] [--no-bell]\n" +
 	"--demo, --attach and --daemon exclude each other."
 
 // clientName is the name the console gives the holder, which shows it to the
@@ -90,8 +90,8 @@ func parse(args []string, errout io.Writer) (cfg config, code int, ok bool) {
 	ticketFile := flags.String("ticket-file", "", "with --attach: a 0600 file the single-use attach ticket is read from each time one is needed")
 	viewer := flags.Bool("viewer", false, "with --attach: ask for the read-only place; the ticket decides which place the holder grants")
 	shiftEnter := flags.String("shift-enter", shiftEnters[0].String(), "with --attach: what Shift+Enter sends: "+strings.Join(shiftEnterNames(), ", "))
-	noBell := flags.Bool("no-bell", false, "with --demo: do not ring the terminal's bell when a sample card arrives while you are away (the bell is on by default)")
-	daemon := flags.String("daemon", "", "show the daemon's leads, read-only: the folder that holds the daemon's socket (provisional; not with --demo or --attach)")
+	noBell := flags.Bool("no-bell", false, "with --demo or --daemon: do not ring the terminal's bell when a card arrives while you are away (the bell is on by default)")
+	daemon := flags.String("daemon", "", "show the daemon's leads, and its approvals when it serves the owner channel: the folder that holds the daemon's socket (provisional; not with --demo or --attach)")
 	usage := func() {
 		fmt.Fprintln(errout, usageLine)
 		flags.SetOutput(errout)
@@ -139,10 +139,10 @@ func parse(args []string, errout io.Writer) (cfg config, code int, ok bool) {
 	if *linger < 0 || *linger > maxLinger {
 		return usageError("--linger must be between 0 and 1h")
 	}
-	if given["no-bell"] && !*demo {
+	if given["no-bell"] && !*demo && !given["daemon"] {
 		// The bell rings for a card, and only the sample backend of --demo
-		// has cards in this build.
-		return usageError("--no-bell needs --demo")
+		// and the daemon's approvals have cards.
+		return usageError("--no-bell needs --demo or --daemon")
 	}
 	cfg = config{demo: *demo, options: terminalconsole.Options{Theme: *theme, ReturnKey: key, Recording: *recording, Linger: *linger, BellOff: *noBell}}
 	if given["daemon"] {

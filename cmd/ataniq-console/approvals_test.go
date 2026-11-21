@@ -74,19 +74,34 @@ func TestTheBellFlag(t *testing.T) {
 	if !ok || code != 0 || !cfg.options.BellOff || errout.Len() != 0 {
 		t.Fatalf("--no-bell: %v %d %+v %s", ok, code, cfg.options, errout.String())
 	}
-	// The bell rings for a card, and only --demo has cards in this build.
+	// The bell rings for a card, and the sample cards of --demo and the
+	// daemon's approvals of --daemon are the cards there are. This changes
+	// an earlier pin on purpose: --no-bell with --daemon was refused when the
+	// daemon had no cards to ring for.
+	errout.Reset()
+	cfg, code, ok = parse([]string{"--daemon", "d", "--no-bell"}, &errout)
+	if !ok || code != 0 || !cfg.options.BellOff || cfg.daemon != "d" || errout.Len() != 0 {
+		t.Fatalf("--daemon --no-bell: %v %d %+v %s", ok, code, cfg.options, errout.String())
+	}
+	cfg, _, ok = parse([]string{"--daemon", "d"}, &errout)
+	if !ok || cfg.options.BellOff {
+		t.Fatalf("the bell is on by default with --daemon: %+v", cfg.options)
+	}
 	for _, args := range [][]string{
 		{"--no-bell"},
-		{"--daemon", "d", "--no-bell"},
 		{"--attach", "d", "--ticket-file", "t", "--no-bell"},
 	} {
 		var out, err bytes.Buffer
-		if got := run(args, &out, &err); got != 2 || !strings.Contains(err.String(), "--no-bell needs --demo") || strings.Count(err.String(), "Usage:") != 1 {
+		if got := run(args, &out, &err); got != 2 || !strings.Contains(err.String(), "--no-bell needs --demo or --daemon") || strings.Count(err.String(), "Usage:") != 1 {
 			t.Fatalf("%q: %d %s", args, got, err.String())
 		}
 	}
 	var out, err bytes.Buffer
 	if code := run([]string{"--help"}, &out, &err); code != 0 || !strings.Contains(err.String(), "-no-bell") || !strings.Contains(err.String(), "[--no-bell]") {
 		t.Fatal(code, err.String())
+	}
+	// The --daemon help says the daemon's approvals, not "read-only".
+	if h := err.String(); !strings.Contains(h, "its approvals when it serves the owner channel") || strings.Contains(h, "leads, read-only") {
+		t.Fatal(h)
 	}
 }

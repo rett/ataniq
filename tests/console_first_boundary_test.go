@@ -90,7 +90,7 @@ var boundaryTable = map[string][]string{
 	pkgOwnerJournal: {pkgRecord},
 	pkgOwnerChannel: {pkgRecord, pkgCard, pkgLimits, pkgPresence, pkgDoor, pkgOwnerJournal, pkgOwnerWire},
 	pkgDemo:         {pkgRecord, pkgCard, pkgLimits, pkgPresence, pkgLeadText},
-	pkgConsoleView:  {pkgClientAPI},
+	pkgConsoleView:  {pkgClientAPI, pkgOwnerWire, pkgRecord, pkgCard, pkgLimits},
 	pkgPager:        {pkgLeadText},
 	pkgArrival:      {pkgPresence},
 	pkgApprovals:    {pkgCard, pkgRecord, pkgLimits, pkgLeadText, pkgPager},
@@ -846,6 +846,13 @@ func TestConsoleFirstBoundaryImportTable(t *testing.T) {
 	}),
 		pkgOwnerWire+"/a.go", pkgCard+"/a.go", pkgDemo+"/a.go", pkgConsole+"/a.go", pkgConsoleCmd+"/a.go",
 		pkgPager+"/a.go", pkgDoor+"/a.go")
+	// The console's client may import the owner connection's wire package and
+	// the values of the approvals backend, and no package that acts.
+	expectFindings(t, ruleTable, boundarySample(t, map[string]string{
+		pkgConsoleView + "/ok.go": boundarySource("/"+pkgClientAPI, "/"+pkgOwnerWire, "/"+pkgRecord, "/"+pkgCard, "/"+pkgLimits),
+		pkgConsoleView + "/a.go":  boundarySource("/"+pkgDoor, "/"+pkgOwnerChannel, "/"+pkgDemo),
+		pkgConsoleView + "/b.go":  boundarySource("/" + pkgConsole),
+	}), pkgConsoleView+"/a.go", pkgConsoleView+"/a.go", pkgConsoleView+"/a.go", pkgConsoleView+"/b.go")
 }
 
 func TestConsoleFirstBoundaryPurePackages(t *testing.T) {
