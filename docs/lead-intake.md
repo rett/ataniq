@@ -110,7 +110,20 @@ and no tag. The steps below follow `Mirror.Fetch` in `internal/mirror`.
 3. **Ask for the sandbox plan.** The template gives the command that runs
    `git-upload-pack` on the clone, and the command that measures the clone's
    object store. With no template, or a template without a `serve` section,
-   the fetch stops here. Nothing has run.
+   the fetch stops here. Nothing has run. The plan's repository path
+   (`serve.repository`) is then checked on the host, because the owner's git
+   is given that path and looks at it before it starts the serving half: a git
+   bundle file there is read by that git itself, as the owner, and the sandboxed
+   command never runs. The path is refused ("the template's repository path
+   exists on the host") when anything is there: a regular file, a symlink (also
+   a dangling one, found without following it), a folder of any kind (a bare
+   repository, a mirror, a clone), or a file of another kind. It is also
+   refused when its state cannot be told (a permission error, a file where a
+   folder should be on the way), so the rule fails closed. Two things pass: a
+   path that does not exist on the host, which is a path inside the sandbox
+   and the case the template is for, and the lead's own clone path
+   (`STATE/leads/<role>/tree`), which step 2 has just checked to be a real
+   folder and which no bundle can be. Nothing has run when the path is refused.
 4. **Measure.** The measure command runs in the sandbox. Its number is the
    lead side's own statement, a first check. More than the source limit is a
    limit error. The owner also measures the mirror: a mirror already at its
@@ -118,7 +131,9 @@ and no tag. The steps below follow `Mirror.Fetch` in `internal/mirror`.
 5. **Staging repository.** A fresh bare repository is made beside the mirror.
    It has the mirror's objects as its only alternate, so git does not fetch
    again what the mirror has. The mirror's refs are noted.
-6. **Receive.** Git runs as the owner, in the staging repository. The serving
+6. **Receive.** The repository path is checked again, right before git starts,
+   to keep the window of a path that appears in between small. Git runs as the
+   owner, in the staging repository. The serving
    half is the sandboxed command, named with git's `--upload-pack` option. Only
    the receiving half runs as the owner. A watchdog stops the fetch when the
    staging repository passes its size limit or its entry limit, and the whole
@@ -246,7 +261,11 @@ nothing. This is the whole format, version 1:
   the path on the host before it starts the serving half: when a regular file
   is there and it is a git bundle, git reads that file itself and never starts
   `upload_pack`. Choose a path that does not exist on the host, such as
-  `/work/{project}`, and never one where a sandbox could put a file.
+  `/work/{project}`, and never one where a sandbox could put a file. The fetch
+  checks it and refuses a path that exists there, whatever it is (see step 3 of
+  [the fetch](#the-fetch-step-by-step)); a path that does not exist is the
+  expected case. The check cannot stop a file that appears after it, so keep
+  every folder on the way to the path out of the reach of any sandbox.
 - `serve.measure` and `serve.measure_env` are the command and the
   environment that print the size of the clone's object store. The first
   token of the first output line must be a decimal byte count.

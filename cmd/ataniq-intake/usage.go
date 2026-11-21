@@ -57,8 +57,9 @@ must be a real folder that you own.
 Exit status: 0 success (also with a warning on standard error); 1 a refusal you
 can act on (sign-off incomplete, not verified, moved, nothing to integrate, a
 limit, a hostile tree, a commit that names an encoding other than UTF-8 or is
-not in the form git writes, busy, no usable sandbox); 2 usage; 3 any other
-failure, among them an update whose outcome is unknown.
+not in the form git writes, a template path that exists on the host, busy, no
+usable sandbox); 2 usage; 3 any other failure, among them an update whose
+outcome is unknown.
 
 Run 'ataniq-intake <subcommand> -h' for the flags of a subcommand.
 `
@@ -88,7 +89,8 @@ nothing runs without a usable template.
 
 Prints the sizes, each ref update, and any ref outside the lead's namespace
 that changed meanwhile. Exit status 1 when a limit is passed, the clone is
-refused or another fetch is running.
+refused, the template's serve.repository path exists on this host, or another
+fetch is running.
 `,
 	"branches": `Usage: ataniq-intake branches --state DIR --project NAME [--role ROLE]
 

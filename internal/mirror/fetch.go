@@ -169,13 +169,16 @@ func (m *Mirror) lockPath() string { return m.path + ".lock" }
 //     is worth.
 //  3. The planner gives the sandboxed upload-pack command. A planner error,
 //     [sandboxplan.ErrNotConfigured] included, stops the fetch. No command
-//     runs before this.
+//     runs before this. The plan's repository path must not exist on the
+//     host: [ErrRepositoryPath]. The owner's git reads a bundle file at that
+//     path itself and would never start the sandboxed command.
 //  4. The sandbox measures the clone's object store; more than MaxSource is a
 //     [*LimitError]. The mirror is measured; a mirror at or over MaxMirror is
 //     a [*LimitError].
 //  5. A staging repository is made beside the mirror, with the mirror's
 //     objects as its alternate, and the mirror's refs are noted.
-//  6. The receiving half of git runs as the owner, with the sandboxed command
+//  6. The repository path is checked again, and then the receiving half of
+//     git runs as the owner, with the sandboxed command
 //     as upload-pack, into the staging repository. The fetch has a time limit
 //     ([ErrFetchTimeout]) and a watchdog that stops it when the staging
 //     repository passes MaxStaged or MaxEntries, or when three measures of
@@ -296,6 +299,9 @@ func (m *Mirror) fetch(ctx context.Context, req FetchRequest, rep *FetchReport) 
 	if err := plan.Validate(); err != nil {
 		return fmt.Errorf("mirror: the sandbox plan is not valid: %w", err)
 	}
+	if err := checkRepositoryPath(plan.Repository, tree); err != nil {
+		return err
+	}
 
 	// Step 4.
 	hook(4)
@@ -330,6 +336,9 @@ func (m *Mirror) fetch(ctx context.Context, req FetchRequest, rep *FetchReport) 
 
 	// Step 6.
 	hook(6)
+	if err := checkRepositoryPath(plan.Repository, tree); err != nil {
+		return err
+	}
 	if err := m.fetchStaging(ctx, st, plan, refspec, negotiationTips(snapBefore, prefix), lim); err != nil {
 		return timedOut(err)
 	}

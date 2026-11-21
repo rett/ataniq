@@ -167,6 +167,7 @@ func classify(err error) []string {
 		{mirror.ErrRefused, "mirror.ErrRefused"},
 		{mirror.ErrFetchTimeout, "mirror.ErrFetchTimeout"},
 		{mirror.ErrBadName, "mirror.ErrBadName"},
+		{mirror.ErrRepositoryPath, "mirror.ErrRepositoryPath"},
 		{sandboxplan.ErrNotConfigured, "sandboxplan.ErrNotConfigured"},
 		{intake.ErrNoRef, "intake.ErrNoRef"},
 		{intake.ErrLimit, "intake.ErrLimit"},
