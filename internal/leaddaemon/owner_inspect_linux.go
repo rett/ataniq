@@ -41,15 +41,15 @@ const clockTicks = 100
 // procReads is what the inspector reads from the system, apart so that a test
 // can answer each question on its own.
 type procReads struct {
-	open     func(pid int) (*os.File, error)
-	stat     func(pid int) ([]byte, error)
-	exited   func(f *os.File) (bool, error)
-	uptime   func() (time.Duration, error)
+	open   func(pid int) (*os.File, error)
+	stat   func(pid int) ([]byte, error)
+	exited func(f *os.File) (bool, error)
+	uptime func() (time.Duration, error)
 }
 
 var realProcReads = procReads{
-	open: pidfd.Open,
-	stat: func(pid int) ([]byte, error) { return os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat") },
+	open:   pidfd.Open,
+	stat:   func(pid int) ([]byte, error) { return os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat") },
 	exited: pidfd.Exited, uptime: uptime,
 }
 
