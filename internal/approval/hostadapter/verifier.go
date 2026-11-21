@@ -63,7 +63,11 @@ type SuiteResult struct {
 // list: output-cut for a cut output, stopped for a run that was stopped,
 // failed for a gate that did not exit 0, and could-not-run for a suite that
 // returned an error, or whose record could not be kept, or a merge that has no
-// pin to run on (nothing is run then).
+// pin to run on (nothing is run then), and for a run that ended with one of the
+// script's own statuses 90 to 93 (the host could not set the run up; the
+// record of such a run is kept all the same and is no pass; the status alone does
+// not say who produced it, so a gate that itself exits 90 to 93 is worded the
+// same, and either way the run is no pass).
 //
 // The run is in merge mode of package verify: the record names the merge as
 // the tip, the base the merge was built on and the pin that keeps the merge
@@ -128,6 +132,11 @@ func notCleanWord(res SuiteResult) string {
 		return ownerchannel.VerifyOutputCut
 	case res.Stopped != "":
 		return ownerchannel.VerifyStopped
+	case res.Exit >= verify.ExitTipMismatch && res.Exit <= verify.ExitNotMerge:
+		// The script's own failures (the pin moved, the fetch or the
+		// checkout failed, not a merge on the base): no gate ran, so the
+		// lead is not told that its gates failed.
+		return ownerchannel.VerifyCouldNotRun
 	}
 	return ownerchannel.VerifyFailed
 }

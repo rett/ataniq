@@ -33,6 +33,17 @@ func TestAVerificationThatIsNotCleanRefusesTheRequest(t *testing.T) {
 		{"the output limit", SuiteResult{Exit: -1, Stopped: verify.StoppedOutputLimit, OutputCut: true}, nil, ownerchannel.VerifyOutputCut, true},
 		{"a pass that did not exit 0", SuiteResult{Passed: true, Exit: 3}, nil, ownerchannel.VerifyFailed, true},
 		{"a pass that was stopped", SuiteResult{Passed: true, Exit: 0, Stopped: verify.StoppedTimeout}, nil, ownerchannel.VerifyStopped, true},
+		// The run's own answer decides first: exit 0 with a "did not pass"
+		// (a cleanup that left a folder behind) is not clean.
+		{"a run that says it did not pass at exit 0", SuiteResult{Passed: false, Exit: 0}, nil, ownerchannel.VerifyFailed, true},
+		// The script's reserved statuses are the host's failures, not the
+		// lead's gates: could-not-run, though a record is kept.
+		{"the pin moved (exit 90)", SuiteResult{Exit: verify.ExitTipMismatch}, nil, ownerchannel.VerifyCouldNotRun, true},
+		{"the fetch failed (exit 91)", SuiteResult{Exit: verify.ExitFetchFailed}, nil, ownerchannel.VerifyCouldNotRun, true},
+		{"the checkout failed (exit 92)", SuiteResult{Exit: verify.ExitCheckoutFailed}, nil, ownerchannel.VerifyCouldNotRun, true},
+		{"not a merge on the base (exit 93)", SuiteResult{Exit: verify.ExitNotMerge}, nil, ownerchannel.VerifyCouldNotRun, true},
+		{"a gate status next to the reserved ones (exit 94)", SuiteResult{Exit: 94}, nil, ownerchannel.VerifyFailed, true},
+		{"a gate status next to the reserved ones (exit 89)", SuiteResult{Exit: 89}, nil, ownerchannel.VerifyFailed, true},
 		{"a suite that could not run", SuiteResult{}, errors.New("no sandbox"), ownerchannel.VerifyCouldNotRun, false},
 	}
 	for _, c := range cases {
