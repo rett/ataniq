@@ -523,7 +523,11 @@ empty: the view then shows
 the plain state, and the MSG column says `sent-unsure` for a spent message
 (nothing says what became of it) and `free` for a free one. A message's
 receipt carries the same three words, which the view draws as the answer to the
-press.
+press. The registry keeps a lead's last epoch after a stop and for an unknown
+start, and the row's message flag and words are that epoch's, so the view draws
+the MSG column of a lead that is not running (state `stopped`, `ended`,
+`desired` or `unknown`, or no epoch) as `-` and not from them; `off` still shows
+for a lead whose messages are off.
 
 The ticket file is **per lead** (`<runtime root>/leads/<layout role>/ticket`) and
 has one name, so there is **one ticket at a time per role**: the tickets of one

@@ -93,3 +93,7 @@
   progress, so a started lead turns `ready` without `r` and the reading stops
   when none is. A lead that is `unknown` is not read by a timer, because the
   list does not change it. See `docs/terminal-console.md`.
+- The console's leads view draws `-` in the MSG column of a lead that is not
+  running (state stopped, ended, desired or unknown, or no epoch), where it
+  drew the words of the lead's last epoch's message; `off` stays for a lead
+  whose messages are off. See `docs/terminal-console.md`.
