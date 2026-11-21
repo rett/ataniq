@@ -167,13 +167,14 @@ func (r *ownerConns) grant(c *ownerConn, tty string) ownerSeat {
 }
 
 // declare keeps the client and the session of the first owner.decider call
-// for the connection. A later call with another session changes nothing and
-// returns false.
+// for the connection. A later call that names another session or another
+// client changes nothing and returns false, so the client kept is the one the
+// grant was judged on.
 func (r *ownerConns) declare(c *ownerConn, client, session string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if c.asked {
-		return c.session == session
+		return c.session == session && c.client == client
 	}
 	c.asked, c.client, c.session = true, client, session
 	return true

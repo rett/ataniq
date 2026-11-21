@@ -102,7 +102,7 @@ type OwnerCounts struct {
 	NoTerminal atomic.Uint64
 	// NotInspected counts requests whose peer the inspector could not judge.
 	NotInspected atomic.Uint64
-	// SessionChanged counts owner.decider calls that named another session
+	// SessionChanged counts owner.decider calls that named another session or client
 	// than the connection's first.
 	SessionChanged atomic.Uint64
 	// DecisionNotDecider counts decision frames from a connection that was

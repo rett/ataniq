@@ -38,7 +38,7 @@ const (
 const (
 	msgOwnerNoConn    = "the request could not be tied to a connection"
 	msgOwnerBadParams = "the parameters are not valid for this operation"
-	msgOwnerSession   = "this connection already named another session"
+	msgOwnerSession   = "this connection already named another session or client"
 	msgOwnerNotDecide = "this connection is not the one that may decide"
 	msgOwnerStopped   = "the owner channel is not serving"
 	msgOwnerDoor      = "the door could not be reached; the decision is journaled and is handed over later"
@@ -183,7 +183,7 @@ func (x *ownerExt) decider(ctx context.Context, params json.RawMessage) (any, *c
 	}
 	if !x.reg.declare(c, p.Client, p.Session) {
 		x.oc.counts.SessionChanged.Add(1)
-		x.oc.logf("owner channel: a connection named a second session (peer pid %d)", c.pid)
+		x.oc.logf("owner channel: a connection named a second session or client (peer pid %d)", c.pid)
 		return nil, &clientapi.ErrorBody{Code: string2code(record.CodeDecisionInvalid), Message: msgOwnerSession}
 	}
 	if x.reg.isDecider(c) {
