@@ -316,7 +316,11 @@ on the holder's word, and in no other way:
   lead that the 60 s did not settle stays `starting`, the daemon logs that
   once, and it is observed again the next time the daemon starts. A `lead.start`
   never waits for the observer, and no client call does: the start's receipt is
-  answered with `starting` at once.
+  answered with `starting` at once. The console's leads view reads the list
+  again every two seconds while a lead is shown `starting` (or `stopping`), so
+  the row turns `ready` without a key, and stops when none is; a lead left
+  `starting` by a silent holder is read until the owner stops it or closes the
+  view.
 - **What it takes.** The holder answers `ok` with a status for the **same epoch
   and the same role** as the registry shows. A refusal (`wrong-epoch` included),
   no answer, an answer with no status and a status of another epoch or role are

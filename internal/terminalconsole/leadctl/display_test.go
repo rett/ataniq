@@ -559,3 +559,83 @@ func TestKeepWordsTakesNothingFromAnotherOperationOrAnUnfinishedReceipt(t *testi
 		t.Errorf("a receipt with a word of its own took the press's: %+v", l)
 	}
 }
+
+func TestAStartingLeadIsReadAgainByTheTickUntilItIsReady(t *testing.T) {
+	b := twoLeads(t)
+	b.listing.Leads[0].State = "starting"
+	b.listing.Leads[0].Epoch = 1
+	r := newRig(t, b, 140, 30)
+	r.seen("starting")
+	if len(r.pending) != 1 {
+		t.Fatalf("%d timers: a starting lead is polled", len(r.pending))
+	}
+	// Two ticks and still starting: one reading and one timer each time.
+	for i := 0; i < 2; i++ {
+		lists := b.lists
+		r.tick()
+		if b.lists != lists+1 || len(r.pending) != 1 {
+			t.Fatalf("tick %d: lists %d to %d, timers %d", i, lists, b.lists, len(r.pending))
+		}
+	}
+	// The daemon promotes it: the row follows without a key, and no timer is
+	// left.
+	b.listing.Leads[0].State = "ready"
+	r.tick()
+	r.seen("ready")
+	r.notSeen("starting")
+	if len(r.pending) != 0 {
+		t.Fatalf("%d timers after no lead was starting", len(r.pending))
+	}
+	lists := b.lists
+	r.tick()
+	if b.lists != lists {
+		t.Fatal("the list was read with nothing changing by itself")
+	}
+}
+
+func TestAStoppingLeadIsReadAgainByTheTickUntilItIsStopped(t *testing.T) {
+	b := twoLeads(t)
+	b.listing.Leads[1].State = "stopping"
+	r := newRig(t, b, 140, 30)
+	if len(r.pending) != 1 {
+		t.Fatalf("%d timers: a stopping lead is polled", len(r.pending))
+	}
+	b.listing.Leads[1].State = "stopped"
+	b.listing.Leads[1].Epoch = 0
+	r.tick()
+	r.notSeen("stopping")
+	if len(r.pending) != 0 {
+		t.Fatalf("%d timers after the lead stopped", len(r.pending))
+	}
+}
+
+func TestStatesThatOnlyARestartOrAKeyChangesAreNotPolled(t *testing.T) {
+	for _, state := range []string{"unknown", "stopped", "ended", "ready", "desired", ""} {
+		b := twoLeads(t)
+		b.listing.Leads[0].State = state
+		r := newRig(t, b, 140, 30)
+		if len(r.pending) != 0 {
+			t.Errorf("state %q: %d timers", state, len(r.pending))
+		}
+	}
+}
+
+func TestAStartThatTurnsToStartingIsFollowedWithoutAKey(t *testing.T) {
+	b := twoLeads(t)
+	b.answer = func(call) (Receipt, error) { return Receipt{CommandID: "s1", Op: OpStart, Status: Done, Epoch: 1}, nil }
+	r := newRig(t, b, 140, 30)
+	// The list that is read after the answer shows the lead starting.
+	b.listing.Leads[0].State, b.listing.Leads[0].Epoch = "starting", 1
+	b.listing.Leads[0].Last = &Receipt{CommandID: "s1", Op: OpStart, Status: Done, Epoch: 1}
+	r.key("s")
+	r.seen("starting")
+	if len(r.pending) != 1 {
+		t.Fatalf("%d timers: the receipt is done but the lead is starting", len(r.pending))
+	}
+	b.listing.Leads[0].State = "ready"
+	r.tick()
+	r.seen("ready")
+	if len(r.pending) != 0 {
+		t.Fatalf("%d timers", len(r.pending))
+	}
+}

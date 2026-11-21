@@ -198,7 +198,9 @@ func (m *Model) onTick() tea.Cmd {
 	return m.listCmd()
 }
 
-// needsPoll says whether a receipt in progress is shown.
+// needsPoll says whether the list is to be read again by itself: a receipt in
+// progress is shown, or a listed lead is in a state that changes without a
+// key (see changesByItself).
 func (m *Model) needsPoll() bool {
 	if m.status != nil && m.status.Status == InProgress {
 		return true
@@ -207,9 +209,18 @@ func (m *Model) needsPoll() bool {
 		if l.Last != nil && l.Last.Status == InProgress {
 			return true
 		}
+		if changesByItself(l.State) {
+			return true
+		}
 	}
 	return false
 }
+
+// changesByItself says whether a lead in this registry state is moving on
+// without a command: starting turns ready (or stopped or ended) when its holder
+// is observed, and stopping turns stopped. unknown is not one of them: it holds
+// until a daemon restart settles it, so no reading of the list changes it.
+func changesByItself(state string) bool { return state == "starting" || state == "stopping" }
 
 // onListed takes in the answer to a list request. An answer to a request that
 // a later one replaced is left alone.

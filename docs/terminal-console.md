@@ -419,7 +419,7 @@ error is never drawn.
 | x | Ask "Stop KEY (epoch N)?"; only y stops it, any other key keeps it running. |
 | m | Open a one-line editor for a message to the lead, for the epoch the row shows. Enter sends it once, Esc drops it, Ctrl+U clears it, and every printable key, q and j included, is text. It holds at most 2048 bytes, the daemon's limit, and stops taking text there. |
 | w, v | Ask for an attach ticket as a writer or as a viewer (below). |
-| r | Read the list again. |
+| r | Read the list again now. The view also reads it every two seconds by itself while a receipt is in progress and while a lead is `starting` or `stopping`, so a started lead turns `ready` without this key, and stops reading when none is. A lead that is `unknown` is not read by a timer: nothing in the list changes it. |
 | Esc | Close the view. |
 | Ctrl+C | Quit, dropping an open field first. |
 
@@ -435,7 +435,7 @@ view's own, chosen by the receipt's status, and are not the daemon's text:
 
 | Shown | Status | Meaning |
 | --- | --- | --- |
-| accepted (running) | in-progress | The daemon admitted the command and it has not ended. The row is read again every two seconds until it is final. |
+| accepted (running) | in-progress | The daemon admitted the command and it has not ended. The list is read again every two seconds until it is final. |
 | accepted (done) | done | The command was carried out. For a message the line says what became of it, from the holder's own three words (outcome, reason, written), and whether the epoch's message is spent (next table). |
 | refused | refused | The daemon changed nothing that matters; the line gives the reason in the view's words. |
 | unavailable | unavailable | The command could not be carried out; the line gives the reason. |

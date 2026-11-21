@@ -88,3 +88,8 @@
   (outcome, reason, written) of the message just sent, and a ticket's folder and
   ticket file, while the list shows the same command; a list receipt that has
   words of its own is shown as it is. See `docs/terminal-console.md`.
+- The console's leads view reads the list again every two seconds while a lead
+  is `starting` or `stopping`, as it already did while a receipt is in
+  progress, so a started lead turns `ready` without `r` and the reading stops
+  when none is. A lead that is `unknown` is not read by a timer, because the
+  list does not change it. See `docs/terminal-console.md`.
