@@ -101,6 +101,11 @@ type Config struct {
 	// Inject opens the injection gate of the config; the holder gets
 	// "--inject" only when it is true.
 	Inject bool `json:"inject"`
+	// RecordScreens gives the holder "--record-dir" (see
+	// [HolderCommand.Build]). It is a scratch lead's only: only
+	// [ScratchConfig.Leads] sets it, from the lead's "record_screens", and a
+	// canary config file has no such key.
+	RecordScreens bool `json:"-"`
 	// Limits are the unit's resource limits.
 	Limits Limits `json:"limits"`
 	// Provision names what the provisioning command copies and sets.
@@ -221,9 +226,9 @@ func (c Config) Validate() error {
 	return c.validateProvision()
 }
 
-// validateProvision checks the provision part and the one rule of the reserved
-// kind that it carries: a scratch lead names the local repository its mirror
-// is made from, a throwaway one has none.
+// validateProvision checks the provision part and the rules of the reserved
+// kind: a scratch lead names the local repository its mirror is made from, a
+// throwaway one has none, and only a scratch lead records its screens.
 func (c Config) validateProvision() error {
 	if err := c.Provision.validate(); err != nil {
 		return err
@@ -233,6 +238,8 @@ func (c Config) validateProvision() error {
 		return checkAbs("provision.source", c.Provision.Source)
 	case c.Provision.Source != "":
 		return bad("provision.source", "is for a scratch lead only")
+	case c.RecordScreens:
+		return bad("record_screens", "is for a scratch lead only")
 	}
 	return nil
 }

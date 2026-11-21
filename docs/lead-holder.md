@@ -29,7 +29,13 @@ Three commands take part:
 
 - `ataniq-holder`, the holder. It refuses to run without `--scratch`; a build
   with the `ataniq_canary` tag has a second mode, `--canary`, in place of it
-  (see [the canary slice guide](canary-slice.md)).
+  (see [the canary slice guide](canary-slice.md)). In that mode only,
+  `--record-dir DIR` records the agent's screens, window titles and OSC 7501
+  payloads, raw, for the owner who makes fixtures by hand; DIR must be the
+  folder `record` in `--runtime-dir` and must not exist, and the holder makes
+  it, mode 0700, once the sandbox has started. The daemon passes the flag for
+  a scratch lead whose config says `"record_screens": true` (see
+  [the scratch leads guide](scratch-leads.md#recording-screens)).
 - `ataniq-scratch`, a development launcher that stands in for the daemon. It
   starts a holder, mints attach tickets and asks the holder to stop. The
   daemon skeleton `ataniqd` ([the lead daemon guide](lead-daemon.md)) does none
