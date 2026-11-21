@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -164,7 +165,7 @@ func TestCanaryRecordsScreensTitlesAndReports(t *testing.T) {
 	fastRecorder(&d, recs)
 	go func() { c.done <- run(c.spec(digest).set("record-dir", c.recordDir()).build(), d) }()
 	c.waitReady()
-	rec := <-recs
+	<-recs
 
 	dir := c.recordDir()
 	poll(t, func() string { return "the first pair" }, func() bool {
@@ -182,8 +183,9 @@ func TestCanaryRecordsScreensTitlesAndReports(t *testing.T) {
 	poll(t, func() string { return "the counted query" }, func() bool {
 		return c.status().Counters[counterQueries] == 1 && c.status().Counters[counterReports] == 1
 	})
+	// The holder waited for the recorder before it exited: nothing is
+	// closed here.
 	c.stopAndWait()
-	rec.Close()
 
 	osc := readFile(t, filepath.Join(dir, screenrec.OSCName))
 	if !strings.Contains(osc, `"payload":"?"`) || !strings.Contains(osc, `"payload":"state=idle"`) {
@@ -280,9 +282,8 @@ func TestCanaryRecordingOffChangesNoGoldenOfTheStart(t *testing.T) {
 	fastRecorder(&d, recs)
 	go func() { c.done <- run(c.spec(digest).set("record-dir", c.recordDir()).build(), d) }()
 	c.waitReady()
-	rec := <-recs
+	<-recs
 	c.stopAndWait()
-	rec.Close()
 
 	ls, seen := c.launches(), c.sys.inputs()
 	if len(ls) != 2 || len(seen) != 2 {
@@ -355,5 +356,67 @@ func TestCanaryRecorderThatCannotOpenChangesNothingElse(t *testing.T) {
 	}
 	if ents, _ := os.ReadDir(c.recordDir()); len(ents) != 0 {
 		t.Errorf("written into a folder the recorder did not make: %v", ents)
+	}
+}
+
+// The holder waits for the recorder when the session is over: the screen shown
+// at the end, which came within the pair interval of the first and so only the
+// last look takes, and the payload queued last are on disk when run returns.
+// The last pair carries the cursor, the alternate screen, the title and the
+// faint spans, so final.json is not needed for them. The test does not close
+// the recorder itself.
+func TestCanaryRecordingIsFlushedWhenTheSessionEnds(t *testing.T) {
+	c := newCanaryRig(t)
+	digest := c.digest()
+	first := "\x1b]2;first title\x07\x1b[2J\x1b[Hfirst screen"
+	last := "\x1b[?1049h\x1b[2J\x1b[Hlast screen \x1b[2mfaint hint\x1b[22m\x1b[2;5H\x1b]2;last title\x07"
+	c.script = "raw; print " + hex.EncodeToString([]byte(first)) + "; print " + hexOSC("state=idle") +
+		"; sleep 300ms; print " + hex.EncodeToString([]byte(last)) + "; print " + hexOSC("state=working") + "; wait"
+	recs := make(chan *screenrec.Recorder, 1)
+	d := c.deps()
+	d.canary.tweakRecorder = func(c *screenrec.Config) {
+		// One pair an hour: after the first, only the look at the end takes one.
+		c.PollInterval, c.PairInterval = 5*time.Millisecond, time.Hour
+	}
+	d.canary.recorderStarted = func(r *screenrec.Recorder) { recs <- r }
+	go func() { c.done <- run(c.spec(digest).set("record-dir", c.recordDir()).build(), d) }()
+	c.waitReady()
+	<-recs
+	dir := c.recordDir()
+	poll(t, func() string { return "the first pair" }, func() bool {
+		b, err := os.ReadFile(filepath.Join(dir, "0001.txt"))
+		return err == nil && strings.Contains(string(b), "first screen")
+	})
+	poll(t, func() string { return "the second report" }, func() bool { return c.status().Counters[counterReports] == 2 })
+	c.stopAndWait()
+
+	if got := readFile(t, filepath.Join(dir, "0002.txt")); !strings.HasPrefix(got, "last screen faint hint\n") {
+		t.Fatalf("0002.txt %q, want the last screen", got)
+	}
+	var pair struct {
+		CursorX   int    `json:"cursor_x"`
+		CursorY   int    `json:"cursor_y"`
+		AltScreen bool   `json:"alt_screen"`
+		Title     string `json:"title"`
+		Faint     []struct {
+			Row, From, To int
+		} `json:"faint"`
+	}
+	if err := json.Unmarshal([]byte(readFile(t, filepath.Join(dir, "0002.json"))), &pair); err != nil {
+		t.Fatal(err)
+	}
+	if pair.CursorX != 4 || pair.CursorY != 1 || !pair.AltScreen || pair.Title != "last title" ||
+		len(pair.Faint) != 1 || pair.Faint[0].Row != 0 || pair.Faint[0].From != len("last screen ") {
+		t.Errorf("0002.json %+v", pair)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "0003.txt")); err == nil {
+		t.Error("a third pair was written")
+	}
+	osc := readFile(t, filepath.Join(dir, screenrec.OSCName))
+	if strings.Count(osc, "\n") != 2 || !strings.Contains(osc, `"payload":"state=working"`) {
+		t.Errorf("osc7501.jsonl %q", osc)
+	}
+	if titles := readFile(t, filepath.Join(dir, screenrec.TitlesName)); !strings.Contains(titles, `"title":"last title"`) {
+		t.Errorf("titles.jsonl %q", titles)
 	}
 }

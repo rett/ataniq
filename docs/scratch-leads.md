@@ -685,8 +685,12 @@ sandbox does not show, so the agent cannot see it or name anything in it.
 
 The recorder never blocks the agent or its screen: when it reaches a bound or a
 write fails, it stops recording, says so in one line of the journal (by errno,
-with no path), and the lead goes on. The last screen before the agent ends may
-be missing; the holder's `final.json` has it.
+with no path), and the lead goes on. When the session ends, the recorder takes
+one last look at the screen, whatever the time since the last pair, and the
+holder waits up to 2 seconds for it to write what it holds before it exits: the
+last pair is the screen the agent showed at its end, with its cursor,
+alternate-screen flag, title and faint spans. If the recorder does not finish
+in time, the holder says so in one line of the journal and exits all the same.
 
 **The files are raw.** Nothing scrubs them: they may hold a login URL, a login
 code, a session id, a home path or a host name, whatever the agent showed. The

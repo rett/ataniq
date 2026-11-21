@@ -380,7 +380,7 @@ func TestTitlesAndPayloadsAreCutAndEscaped(t *testing.T) {
 	x.clock.add(1500 * time.Millisecond)
 	evil := "\x1b]0;x\x07\"quote\" \\ back\nnew\u2028line\x00nul"
 	x.r.Title(evil)
-	x.r.Title(evil) // the same title is not recorded twice
+	x.r.Title(evil)                   // the same title is not recorded twice
 	long := strings.Repeat("é", 3000) // 6000 bytes
 	x.r.Title(long)
 	x.clock.add(250 * time.Millisecond)
@@ -524,7 +524,7 @@ func TestLookSnapshotsOnlyChangesAndAtMostOncePerInterval(t *testing.T) {
 	x.open()
 	p := &fakePane{cols: 40, rows: 5, title: "t1", text: "one"}
 	var w watcher
-	look := func() { w.look(x.r, p.screen) }
+	look := func() { w.look(x.r, p.screen, false) }
 
 	look() // the first look snapshots
 	if p.snaps != 1 {
@@ -616,5 +616,57 @@ func TestWatchStopsAtDoneAndCloses(t *testing.T) {
 	x.r.OSC7501([]byte("after"))
 	if got := x.read(OSCName); got != "" {
 		t.Errorf("taken after Watch ended: %q", got)
+	}
+}
+
+// When the session ends, Watch takes one last look with no interval to wait
+// for: the screen shown at the end is recorded even when the last pair was
+// taken just before, and what was queued is written before Watch returns. The
+// test does not call Close itself.
+func TestWatchRecordsTheLastScreenWhenTheSessionEnds(t *testing.T) {
+	x := newRec(t, func(c *Config) {
+		c.PollInterval, c.PairInterval, c.Now = time.Millisecond, time.Hour, time.Now
+	})
+	x.open()
+	var mu sync.Mutex
+	p := &fakePane{cols: 40, rows: 5, title: "t", text: "first"}
+	screenFn := func(fn func(Pane, uint64)) {
+		mu.Lock()
+		defer mu.Unlock()
+		p.screen(fn)
+	}
+	done := make(chan struct{})
+	ended := make(chan struct{})
+	go func() { x.r.Watch(screenFn, done); close(ended) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if b, err := os.ReadFile(filepath.Join(x.dir, "0001.txt")); err == nil && string(b) == "first\n" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no first pair")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// The last screen comes within the pair interval of the first: only the
+	// look at the end can take it.
+	mu.Lock()
+	p.pos, p.text, p.title = 10, "last", "last title"
+	mu.Unlock()
+	x.r.OSC7501([]byte("state=last"))
+	close(done)
+	select {
+	case <-ended:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Watch did not end")
+	}
+	if got := x.read("0002.txt"); got != "last\n" {
+		t.Fatalf("0002.txt %q, want the last screen", got)
+	}
+	if !strings.Contains(x.read("0002.json"), `"title": "last title"`) {
+		t.Errorf("0002.json %s", x.read("0002.json"))
+	}
+	if osc := x.lines(OSCName); len(osc) != 1 || osc[0]["payload"] != "state=last" {
+		t.Errorf("payload lines %v", osc)
 	}
 }

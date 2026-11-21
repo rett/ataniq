@@ -41,7 +41,10 @@
 // most [MaxPayload] bytes into a small queue and returns. [Recorder.Watch]
 // takes the session's output lock only to read the pane's size and title and,
 // at most once per [PairInterval] and only after output or a resize, its text
-// snapshot. One goroutine of its own writes the queue to the files; the queue
+// snapshot; when the session is over it takes one last look, whatever the
+// time since the last snapshot, so the screen shown at the end is recorded,
+// and then closes the recorder, which waits for the writer. One goroutine of
+// its own writes the queue to the files; the queue
 // holds [QueueLen] items and drops the oldest when it is full, counting the
 // drops. The files are never read back.
 //

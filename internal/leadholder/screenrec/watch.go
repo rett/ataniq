@@ -22,7 +22,10 @@ type Pane interface {
 type ScreenFunc func(fn func(p Pane, pos uint64))
 
 // Watch looks at the pane every PollInterval until done is closed or the
-// recording stops, and closes the recorder then. Each look reads the position
+// recording stops, and closes the recorder then, which waits for the writer.
+// When done is closed it takes one last look first, with no interval to wait
+// for: the pane keeps its last screen after the session ended, and that screen
+// is recorded when it differs from the last one. Each look reads the position
 // and the size; when either changed since the last look, it reads the title,
 // which Title records when it changed, and marks the screen as changed. A
 // changed screen is snapshotted when PairInterval has passed since the last
@@ -37,12 +40,15 @@ func (r *Recorder) Watch(screenFn ScreenFunc, done <-chan struct{}) {
 	for {
 		select {
 		case <-done:
+			if !r.Stopped() {
+				w.look(r, screenFn, true)
+			}
 			return
 		case <-t.C:
 			if r.Stopped() {
 				return
 			}
-			w.look(r, screenFn)
+			w.look(r, screenFn, false)
 		}
 	}
 }
@@ -56,7 +62,9 @@ type watcher struct {
 	snapAt     time.Time // when the last snapshot was taken
 }
 
-func (w *watcher) look(r *Recorder, screenFn ScreenFunc) {
+// look is one look at the pane. The last look (final) takes a changed screen
+// whatever the time since the last snapshot.
+func (w *watcher) look(r *Recorder, screenFn ScreenFunc, final bool) {
 	now := r.cfg.Now()
 	var (
 		changed bool
@@ -70,7 +78,7 @@ func (w *watcher) look(r *Recorder, screenFn ScreenFunc) {
 			changed, w.dirty = true, true
 			title = p.Title()
 		}
-		if w.dirty && (w.snapAt.IsZero() || now.Sub(w.snapAt) >= r.cfg.PairInterval) {
+		if w.dirty && (final || w.snapAt.IsZero() || now.Sub(w.snapAt) >= r.cfg.PairInterval) {
 			ts := p.TextSnapshot()
 			snap = &ts
 		}
