@@ -529,8 +529,11 @@ receipt carries the same three words, which the view draws as the answer to the
 press. The registry keeps a lead's last epoch after a stop and for an unknown
 start, and the row's message flag and words are that epoch's, so the view draws
 the MSG column of a lead that is not running (state `stopped`, `ended`,
-`desired` or `unknown`, or no epoch) as `-` and not from them; `off` still shows
-for a lead whose messages are off.
+or `desired`, or `unknown` with the reason `launch-unsettled` or
+`launch-reply-lost`, or no epoch) as `-` and not from them; a lead that is
+`unknown` for another reason may have a unit that runs with the epoch's message
+sent, and its column is drawn by the same rule as a running lead's; `off` still
+shows for a lead whose messages are off.
 
 The ticket file is **per lead** (`<runtime root>/leads/<layout role>/ticket`) and
 has one name, so there is **one ticket at a time per role**: the tickets of one

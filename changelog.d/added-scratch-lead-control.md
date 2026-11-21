@@ -99,9 +99,14 @@
   when none is. A lead that is `unknown` is not read by a timer. See
   `docs/terminal-console.md`.
 - The console's leads view draws `-` in the MSG column of a lead that is not
-  running (state stopped, ended, desired or unknown, or no epoch), where it
-  drew the words of the lead's last epoch's message; `off` stays for a lead
-  whose messages are off. See `docs/terminal-console.md`.
+  running (state stopped, ended or desired, or unknown with the reason
+  `launch-unsettled` or `launch-reply-lost`, or no epoch), where it drew the
+  words of the lead's last epoch's message; `off` stays for a lead whose
+  messages are off. A lead that is unknown for another reason (for example
+  `control-group-not-proven-empty` or `competing-unit`) may have a unit that
+  runs with a message sent, so its column shows `free`, `sent`, `sent-unsure`
+  or `spent, not delivered` as for any other lead. See
+  `docs/terminal-console.md`.
 - The console's leads view says what settles a lead whose launch is not
   settled. A lead that is `unknown` with the reason `launch-unsettled` or
   `launch-reply-lost` gets the line "launch settles by itself 40 s after the

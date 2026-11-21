@@ -322,25 +322,31 @@ func outcomeWords(r Receipt, h held) string {
 	return t.text + spentTail
 }
 
-// running says whether the lead has an epoch that is running, as far as the
-// row says: it has an epoch and its state is not one of a lead that is not
-// running (stopped, ended, desired, unknown). A lead that is not running has no
-// message to speak of, and the epoch the row still carries after a stop or an
-// unknown start is the last one's.
+// running says whether the lead has an epoch whose message the row speaks of: it
+// has an epoch and its state is not one of a lead that is not running (stopped,
+// ended, desired) or one unknown for a launch reason (launch-unsettled,
+// launch-reply-lost), where nothing is known of whether the launch's unit runs
+// at all. A lead that is not running has no message to speak of, and the epoch
+// the row still carries after a stop or an unknown start is the last one's. A
+// lead unknown for another reason (control-group-not-proven-empty,
+// competing-unit, and the like) may have a unit that runs with a message sent
+// in its epoch, so its column is drawn as any other lead's.
 func running(l Lead) bool {
 	if l.Epoch == 0 {
 		return false
 	}
 	switch l.State {
-	case "", "stopped", "ended", "desired", "unknown":
+	case "", "stopped", "ended", "desired":
 		return false
+	case "unknown":
+		return !launchReason(l)
 	}
 	return true
 }
 
 // msgWord is the MSG column: whether the lead takes a message ("off" when it
-// does not), "-" for a lead that is not running, and what became of the epoch's
-// message for one that is. It agrees with the receipt line of a done message: a
+// does not), "-" for a lead that is not running (see running), and what became
+// of the epoch's message for one that is. It agrees with the receipt line of a done message: a
 // message that was NOT delivered leaves the epoch's message free, and says so
 // while it is free. The same result of a message that the daemon holds spent
 // (it could not write down the result) reads as spent and not delivered.

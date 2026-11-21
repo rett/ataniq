@@ -359,7 +359,8 @@ func TestASpentMessageIsSentOnlyWhenItsWordsSaySubmitted(t *testing.T) {
 
 // A lead that is not running has no message to speak of: the epoch's words
 // belong to its last epoch and the column draws "-", except "off", which is the
-// lead's config and stays.
+// lead's config and stays. A lead unknown for a reason that is not a launch's
+// (a unit that may run) is drawn by the normal rule.
 func TestTheMsgColumnOfALeadThatIsNotRunningIsADash(t *testing.T) {
 	words := Delivery{Outcome: OutcomeNotNow, Reason: ReasonNotReady, Written: WrittenNothing}
 	for _, c := range []struct {
@@ -370,7 +371,16 @@ func TestTheMsgColumnOfALeadThatIsNotRunningIsADash(t *testing.T) {
 		{"stopped with its last epoch", Lead{State: "stopped", Epoch: 3}, "-"},
 		{"ended", Lead{State: "ended", Epoch: 3}, "-"},
 		{"desired", Lead{State: "desired", Epoch: 1}, "-"},
-		{"unknown", Lead{State: "unknown", Epoch: 2}, "-"},
+		{"unknown, launch not settled", Lead{State: "unknown", StateReason: "launch-unsettled", Epoch: 2}, "-"},
+		{"unknown, launch reply lost", Lead{State: "unknown", StateReason: "launch-reply-lost", Epoch: 2}, "-"},
+		{"unknown, launch not settled and spent", Lead{State: "unknown", StateReason: "launch-unsettled", Epoch: 2, MessageSpent: true}, "-"},
+		{"unknown with no epoch", Lead{State: "unknown", StateReason: "competing-unit"}, "-"},
+		// Another reason: a unit may run with the epoch's message, so the
+		// column follows the normal rule.
+		{"unknown, control group not proven empty", Lead{State: "unknown", StateReason: "control-group-not-proven-empty", Epoch: 2}, "free (not delivered)"},
+		{"unknown, competing unit", Lead{State: "unknown", StateReason: "competing-unit", Epoch: 2}, "free (not delivered)"},
+		{"unknown, no reason", Lead{State: "unknown", Epoch: 2}, "free (not delivered)"},
+		{"unknown, competing unit, spent", Lead{State: "unknown", StateReason: "competing-unit", Epoch: 2, MessageSpent: true}, "spent, not delivered"},
 		{"no epoch", Lead{State: "ready"}, "-"},
 		{"no state", Lead{Epoch: 3}, "-"},
 		{"stopped and spent", Lead{State: "stopped", Epoch: 3, MessageSpent: true}, "-"},
@@ -399,5 +409,19 @@ func TestTheMsgColumnOfAStoppedLeadIsADashAfterItsMessageWasSent(t *testing.T) {
 	g.m.leads[1].State = "stopped"
 	if row := g.rows()[5]; strings.Contains(row, "free") || strings.Contains(row, "not delivered") {
 		t.Fatalf("a stopped lead keeps the words of its last epoch:\n%s", g.screen())
+	}
+}
+
+func TestTheMsgColumnOfALeadUnknownForAnotherReasonShowsASentMessage(t *testing.T) {
+	l := Lead{Inject: true, State: "unknown", StateReason: "control-group-not-proven-empty", Epoch: 2, MessageSpent: true}
+	if got := msgWord(l, Delivery{}); got != "sent-unsure" {
+		t.Errorf("spent with no words: %q", got)
+	}
+	if got := msgWord(l, Delivery{Outcome: OutcomeSubmitted, Written: WrittenWhole}); got != "sent" {
+		t.Errorf("spent and submitted: %q", got)
+	}
+	l.StateReason = "launch-unsettled"
+	if got := msgWord(l, Delivery{Outcome: OutcomeSubmitted, Written: WrittenWhole}); got != "-" {
+		t.Errorf("a launch reason: %q", got)
 	}
 }
