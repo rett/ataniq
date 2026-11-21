@@ -688,13 +688,13 @@ Pass B (one live agent, one run) gave these facts:
   next pass got. The owner's paste is the path that works until then.
 - The agent needed one turn to commit.
 - The unit's memory peak was 450 MB of the 4 GiB ceiling.
-- Revocation is limited: the provider's account page lists Claude Code logins
-  as rows named Unknown, with no entry identifiable as the login made in the
-  pass. Step 5 therefore asks for `confirmed` only when the account lists the
-  login as its own revocable entry or a separate throwaway account is used, and
-  step 23 says to identify the login as a new row with last-active during the
-  run (on a throwaway account, "log out of all devices" revokes it) and takes
-  `cannot-identify: <what you see>` as a finding when none can be identified.
+- Revocation is unverified. In run 1 the account page listed Claude Code logins
+  as rows named Unknown and none matched the login made in the pass. The owner
+  believes the login was already revoked in the provider's console when he
+  revoked it, so no row was left (not checked; whether the page revokes one
+  login is not known). Steps 5 and 23 are a before/after check: the rows before
+  the login, the new row after it, its absence and a dead session after the
+  revoke; `cannot-identify: <what you see>` is still accepted as a finding.
 
 ## Undo
 

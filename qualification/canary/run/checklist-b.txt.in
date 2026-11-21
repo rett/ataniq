@@ -21,8 +21,8 @@ BEFORE   (prepare made the files; the steps below are yours)
 @MODELNOTE@
 Enter = go on; type words exactly. T3 console before 14, T4 integrate at 20.
 STEP  WHAT YOU DO (the steps pass B adds)
-  5   confirmed ONLY if the login shows as its own revocable entry, or the
-      account is a throwaway (Unknown rows do not count); else no.
+  5   Note the account page's rows now (before the login), then confirmed;
+      else no. A throwaway account is fine. Run 1 saw Unknown rows: unverified.
   6   Enter the numbers of the listeners you stop (or none); stop them yourself.
   7   The path of the real config folder of the live runtime; Enter.
  15   Confirm the model argument (yes; none shown: no). Log in IN THE PANE:
@@ -38,8 +38,8 @@ STEP  WHAT YOU DO (the steps pass B adds)
       ONE paste with the pane in focus, Enter in the pane once, then type
       pasted in T1 (an Enter alone there ends the pass).
  21   Type the agent's logout in the pane, then logged-out.
- 23   Revoke the one new row, last-active during the run: never "log out of
-      all devices" on your own account. Then revoked, or cannot-identify: ...
+ 23   Revoke the one new row, never "log out of all devices" on your account.
+      Row gone and session dead: revoked; else cannot-identify: ...
  24   Restart what you stopped at step 6, then Enter.
  25   Enter. If it asks about a file: yes only if one of your own sessions
       ran during this pass; else say what you see (an Enter is a finding).

@@ -12,16 +12,19 @@ import (
 // its re-asked sign-off, the clean-up chain keeping the first proof of the
 // stop, the daemon's place in the printed lists, and the docs that say so.
 
-// Step 5 asks the narrower question and says what pass B run 1 showed.
+// Step 5 asks for the account page's rows before the login and says what pass
+// B run 1 saw, and that its cause is not verified.
 func TestCanaryRunKitBacklog1Step5Question(t *testing.T) {
 	text := canaryScriptText(t)
 	f := canaryFuncs(t, text)["step_5"]
 	for _, want := range []string{
-		"its own entry that can be revoked on its own",
-		"a separate throwaway account is used for it",
+		"the rows the account page lists now",
+		"a separate throwaway account may be used",
 		"otherwise type no",
 		"rows named Unknown",
-		"no entry that can be",
+		"could not match one",
+		"not verified",
+		"checks before and after",
 	} {
 		if !strings.Contains(f, want) {
 			t.Errorf("step 5 does not say %q", want)
@@ -29,6 +32,11 @@ func TestCanaryRunKitBacklog1Step5Question(t *testing.T) {
 	}
 	if strings.Contains(f, "type confirmed when the account page lists logins") {
 		t.Error("step 5 still asks the old question")
+	}
+	for _, old := range []string{"its own entry that can be revoked on its own", "a page that lists logins is not enough"} {
+		if strings.Contains(f, old) {
+			t.Errorf("step 5 still states the old premise %q as a fact", old)
+		}
 	}
 	for _, c := range []struct {
 		answer string
@@ -79,7 +87,7 @@ func TestCanaryRunKitBacklog1Step23CannotIdentify(t *testing.T) {
 		}
 	}
 	o, _ := canaryDry(t, "--pass", "B", "--config", "/nonexistent/sample/canary.json")
-	for _, want := range []string{"new row whose last-active time falls during this run", "log out of all devices", "cannot-identify: <what you see>"} {
+	for _, want := range []string{"new row whose last-active time falls during this run", "log out of all devices", "cannot-identify: <what you see>", "its row is gone", "the session no longer works"} {
 		if !strings.Contains(o, want) {
 			t.Errorf("pass B's dry run does not say %q", want)
 		}
