@@ -36,8 +36,9 @@ const (
 	// MaxPairs is the most screen pairs one recording keeps. Reaching it
 	// stops the pairs only: the titles and the payloads go on.
 	MaxPairs = 400
-	// MaxBytes is the most bytes one recording writes, README.txt included
-	// and LIMIT.txt not.
+	// MaxBytes is the most bytes one recording writes, README.txt and
+	// LIMIT.txt included: the last limitReserve bytes of it are kept for
+	// LIMIT.txt.
 	MaxBytes = 8 << 20
 	// MaxPayload is the most bytes of one title or one OSC 7501 payload that
 	// are kept.
@@ -62,6 +63,11 @@ const (
 	QueueLen = 32
 )
 
+// limitReserve is the part of MaxBytes kept for LIMIT.txt, which holds at
+// most three lines of bounded length (pairsLine, bytesLine and dropsLine, each
+// written at most once).
+const limitReserve = 512
+
 // Readme is the text of README.txt.
 const Readme = `Screen recording of one start of a scratch lead, written by ataniq-holder
 (--record-dir, the lead's "record_screens": true).
@@ -81,7 +87,8 @@ NNNN.txt, NNNN.json  one distinct screen each, once it stood still for about
 titles.jsonl         each window title as it changed, with "ms"
 osc7501.jsonl        each OSC 7501 payload, with "ms"
 LIMIT.txt            why the screens or the recording stopped early, and
-                     "dropped N" when the queue dropped items
+                     "dropped N", once at the end, when the queue dropped
+                     items
 
 "ms" is milliseconds since the holder started recording. A title or payload
 is cut at 4096 bytes ("cut": true) and stored as a JSON string.
@@ -208,8 +215,9 @@ func sysErr(step string, err error) error {
 	return &Error{Step: step, Err: errors.New("failed")}
 }
 
-// limitError is a bound that was reached.
-type limitError struct{ reason string }
+// limitError is a bound that was reached: why, for the log, and its line of
+// LIMIT.txt.
+type limitError struct{ reason, line string }
 
 func (e *limitError) Error() string { return e.reason }
 
@@ -462,15 +470,9 @@ func (r *Recorder) run() {
 				return
 			}
 		}
-		if drops > r.reported {
-			if err := r.appendLimit("dropped " + strconv.FormatUint(drops, 10) + "\n"); err != nil {
-				r.halt(err)
-				return
-			}
-			r.reported = drops
-		}
 		if len(items) == 0 {
 			if closing {
+				r.closeDrops(drops)
 				return
 			}
 			<-r.wake
@@ -490,9 +492,9 @@ func (r *Recorder) halt(err error) {
 		r.cfg.Logf("recording screens stopped: %v", err)
 		return
 	}
-	line := "recording stopped: " + lim.reason + "\n"
+	line := lim.line
 	if drops > r.reported {
-		line += "dropped " + strconv.FormatUint(drops, 10) + "\n"
+		line += dropsLine(drops)
 	}
 	if werr := r.appendLimit(line); werr != nil {
 		r.cfg.Logf("recording screens stopped: %s; and %v", lim.reason, werr)
@@ -501,7 +503,32 @@ func (r *Recorder) halt(err error) {
 	r.cfg.Logf("recording screens stopped: %s", lim.reason)
 }
 
-// appendLimit appends to LIMIT.txt, which it makes the first time.
+// closeDrops writes the count of dropped items to LIMIT.txt, once, when the
+// recording closes; a failure is logged like a failed write.
+func (r *Recorder) closeDrops(drops uint64) {
+	if drops <= r.reported {
+		return
+	}
+	if err := r.appendLimit(dropsLine(drops)); err != nil {
+		r.cfg.Logf("recording screens stopped: %v", err)
+		return
+	}
+	r.reported = drops
+}
+
+// The lines of LIMIT.txt.
+func pairsLine(pairs int) string {
+	return fmt.Sprintf("screens stopped: %d screens were written, the most a recording keeps; titles and payloads go on\n", pairs)
+}
+
+func bytesLine(max int64) string {
+	return fmt.Sprintf("recording stopped: the next record would pass %d bytes in all\n", max)
+}
+
+func dropsLine(drops uint64) string { return "dropped " + strconv.FormatUint(drops, 10) + "\n" }
+
+// appendLimit appends to LIMIT.txt, which it makes the first time. Its bytes
+// count toward MaxBytes, in the part kept for it.
 func (r *Recorder) appendLimit(s string) error {
 	if r.limit < 0 {
 		fd, err := r.create(LimitName)
@@ -513,6 +540,7 @@ func (r *Recorder) appendLimit(s string) error {
 	if err := writeAll(r.limit, []byte(s)); err != nil {
 		return sysErr("write "+LimitName, err)
 	}
+	r.written += int64(len(s))
 	return nil
 }
 
@@ -528,17 +556,18 @@ func (r *Recorder) endPairs() error {
 	r.pairsDone = true
 	r.mu.Unlock()
 	why := fmt.Sprintf("%d screens were written, the most a recording keeps", r.pairs)
-	if err := r.appendLimit("screens stopped: " + why + "; titles and payloads go on\n"); err != nil {
+	if err := r.appendLimit(pairsLine(r.pairs)); err != nil {
 		return err
 	}
 	r.cfg.Logf("recording screens: no more screens (%s); titles and payloads go on", why)
 	return nil
 }
 
-// fits checks the byte bound for n more bytes.
+// fits checks the byte bound for n more bytes of a record, which may use
+// MaxBytes but the part kept for LIMIT.txt.
 func (r *Recorder) fits(n int) error {
-	if r.written+int64(n) > r.cfg.MaxBytes {
-		return &limitError{fmt.Sprintf("the next record would pass %d bytes in all", r.cfg.MaxBytes)}
+	if r.written+int64(n) > r.cfg.MaxBytes-limitReserve {
+		return &limitError{reason: fmt.Sprintf("the next record would pass %d bytes in all", r.cfg.MaxBytes), line: bytesLine(r.cfg.MaxBytes)}
 	}
 	return nil
 }

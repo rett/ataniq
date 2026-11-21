@@ -709,8 +709,10 @@ sandbox does not show, so the agent cannot see it or name anything in it.
   title the agent replaced sooner is not seen.
 - `LIMIT.txt`, only when needed: a line when the screens stopped at 400 pairs
   (the titles and the payloads go on being recorded), a line when the recording
-  stopped at 8 MiB written in all, and `dropped N` when the recorder's
-  small queue dropped its oldest items to keep up.
+  stopped at 8 MiB written in all (`README.txt` and `LIMIT.txt` included),
+  and `dropped N`, written once when the recording ends, when the recorder's
+  small queue dropped N of its oldest items in all to keep up. It holds at
+  most these three lines.
 
 The recorder never blocks the agent or its screen. At 400 pairs it stops taking
 screens and says so in one line of the journal; when it would pass 8 MiB or a

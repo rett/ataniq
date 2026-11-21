@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -347,7 +348,7 @@ func TestPairLimitStopsPairsOnly(t *testing.T) {
 	}
 }
 
-// The bytes stop at MaxBytes, README.txt included and LIMIT.txt not.
+// The bytes stop at MaxBytes, README.txt and LIMIT.txt included.
 func TestByteLimit(t *testing.T) {
 	const max = 4096
 	x := newRec(t, func(c *Config) { c.MaxBytes = max })
@@ -358,9 +359,6 @@ func TestByteLimit(t *testing.T) {
 	x.r.Close()
 	total := int64(0)
 	for _, n := range x.names() {
-		if n == LimitName {
-			continue
-		}
 		fi, err := os.Lstat(filepath.Join(x.dir, n))
 		if err != nil {
 			t.Fatal(err)
@@ -375,6 +373,33 @@ func TestByteLimit(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(x.dir, "0001.txt")); err != nil {
 		t.Fatal("no pair was written before the bound")
+	}
+}
+
+// LIMIT.txt counts toward MaxBytes: small lines that fill the bound up to
+// less than one line leave no room for LIMIT.txt beyond it.
+func TestByteLimitCountsLimitTxt(t *testing.T) {
+	max := int64(len(Readme) + 1000)
+	x := newRec(t, func(c *Config) { c.MaxBytes = max })
+	x.open()
+	for i := 0; i < 100; i++ {
+		x.r.OSC7501([]byte("p"))
+		time.Sleep(50 * time.Microsecond)
+	}
+	x.r.Close()
+	total := int64(0)
+	for _, n := range x.names() {
+		fi, err := os.Lstat(filepath.Join(x.dir, n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		total += fi.Size()
+	}
+	if total > max {
+		t.Fatalf("%d bytes written with LIMIT.txt, the bound is %d", total, max)
+	}
+	if lim := x.read(LimitName); !strings.HasPrefix(lim, "recording stopped: ") {
+		t.Fatalf("LIMIT.txt %q", lim)
 	}
 }
 
@@ -447,8 +472,9 @@ func TestTitlesAndPayloadsAreCutAndEscaped(t *testing.T) {
 	}
 }
 
-// The queue drops the oldest item when it is full and counts the drops into
-// LIMIT.txt as "dropped N".
+// The queue drops the oldest item when it is full and counts the drops; the
+// count goes to LIMIT.txt once, as "dropped N", when the recording ends, not
+// at each pass of the writer.
 func TestQueueDropsTheOldest(t *testing.T) {
 	x := newRec(t, func(c *Config) { c.QueueLen = 2 })
 	// Before Open the writer does not run, so the queue fills.
@@ -456,6 +482,16 @@ func TestQueueDropsTheOldest(t *testing.T) {
 		x.r.OSC7501([]byte(fmt.Sprintf("payload-%d", i)))
 	}
 	x.open()
+	deadline := time.Now().Add(10 * time.Second)
+	for strings.Count(x.read(OSCName), "\n") != 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("the queue was not written")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := os.Lstat(filepath.Join(x.dir, LimitName)); err == nil {
+		t.Fatalf("LIMIT.txt was written before the end: %q", x.read(LimitName))
+	}
 	x.r.Close()
 	osc := x.lines(OSCName)
 	if len(osc) != 2 || osc[0]["payload"] != "payload-4" || osc[1]["payload"] != "payload-5" {
@@ -807,5 +843,14 @@ func TestLookWaitsForTheParserAndTheFrame(t *testing.T) {
 	}
 	if x.read("0003.txt") != "three\n" || x.read("0004.txt") != "four\n" {
 		t.Errorf("pairs %q %q", x.read("0003.txt"), x.read("0004.txt"))
+	}
+}
+
+// LIMIT.txt holds at most three lines, each of a bounded length, and the
+// longest they can be fits in the bytes the bound keeps for it.
+func TestLimitLinesFitTheirReserve(t *testing.T) {
+	longest := len(pairsLine(math.MaxInt)) + len(bytesLine(math.MaxInt64)) + len(dropsLine(math.MaxUint64))
+	if longest > limitReserve {
+		t.Fatalf("the longest LIMIT.txt is %d bytes, the reserve %d", longest, limitReserve)
 	}
 }
