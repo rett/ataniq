@@ -117,6 +117,34 @@ func q(s string) string {
 // maxArgvText bounds a command as qargv shows it.
 const maxArgvText = 1024
 
+// QuoteField is q for the commands of the switch: s fit for one field of a
+// line, bounded and quoted with Go's escapes when it holds anything but
+// printable ASCII other than a space, a quote or a backslash.
+func QuoteField(s string) string { return q(s) }
+
+// maxLine bounds a line EscapeLine returns.
+const maxLine = 512
+
+// EscapeLine returns s fit for a line of a diagnostic: every byte that is
+// not printable ASCII, and the backslash, is written as \xNN, and s is cut
+// at maxLine bytes ("..." follows when it is cut). Spaces and quotes stay,
+// so a sentence reads as one.
+func EscapeLine(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if b.Len() >= maxLine {
+			b.WriteString("...")
+			break
+		}
+		if c := s[i]; c < ' ' || c >= 0x7f || c == '\\' {
+			fmt.Fprintf(&b, "\\x%02x", c)
+		} else {
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
 // qargv quotes each word of a command for output, at most maxArgvText bytes
 // of it ("..." follows when it is cut).
 func qargv(argv []string) string {

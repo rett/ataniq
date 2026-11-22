@@ -59,7 +59,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 				fs.PrintDefaults()
 				return switcher.ExitOK
 			}
-			return bad("%v", err)
+			// The flag package's message repeats what was typed.
+			return bad("%s", switcher.EscapeLine(err.Error()))
 		}
 		if fs.NArg() == 0 {
 			break
@@ -77,8 +78,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return filepath.Abs(p)
 	}
 	rootAbs, err := abs(*root)
-	if err != nil || *root == "" {
-		return bad("--root %q: %v", *root, err)
+	if *root == "" {
+		return bad("--root needs a folder")
+	}
+	if err != nil {
+		return bad("--root %s: %s", switcher.QuoteField(*root), switcher.EscapeLine(err.Error()))
 	}
 
 	if len(pos) == 1 && pos[0] == "status" && !set["rollback-to"] {
@@ -116,11 +120,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	noaiAbs, err := abs(*noai)
 	if err != nil {
-		return bad("--noaicheck: %v", err)
+		return bad("--noaicheck %s: %s", switcher.QuoteField(*noai), switcher.EscapeLine(err.Error()))
 	}
 	fromAbs, err := abs(*from)
 	if err != nil {
-		return bad("--from: %v", err)
+		return bad("--from %s: %s", switcher.QuoteField(*from), switcher.EscapeLine(err.Error()))
 	}
 
 	s := switcher.New(switcher.Config{

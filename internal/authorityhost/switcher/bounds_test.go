@@ -145,3 +145,62 @@ func TestStateWriteFitsItsReader(t *testing.T) {
 		t.Errorf("small: %v", err)
 	}
 }
+
+// TestCanonicalLinkTargets: current and previous must point at exactly
+// releases/<id>; any other spelling, even one that cleans to a release, is
+// refused, and a target is only ever shown escaped.
+func TestCanonicalLinkTargets(t *testing.T) {
+	for _, target := range []string{
+		"releases/./" + rel2,
+		"./releases/" + rel2,
+		"releases//" + rel2,
+		"releases/" + rel2 + "/",
+		"", // set below to the absolute path
+		"releases/" + rel2 + "\x1b[2J",
+		"../authority-host/releases/" + rel2,
+	} {
+		t.Run(target, func(t *testing.T) {
+			e := active(t)
+			e.release(rel3, "2026-11-01")
+			if target == "" {
+				target = e.relDir(rel2)
+			}
+			cur := filepath.Join(e.root, BaseDir, "current")
+			os.Remove(cur)
+			if err := os.Symlink(target, cur); err != nil {
+				t.Fatal(err)
+			}
+			if code := e.switchTo(rel3); code != ExitFailed {
+				t.Fatalf("exit %d", code)
+			}
+			if rec := e.record(); rec.FailedStep != "state" || rec.Error != CodeStateInvalid {
+				t.Errorf("record: %+v", rec)
+			}
+			if strings.Contains(e.last, "\x1b") || strings.Contains(e.deployJSON(), "\x1b") {
+				t.Errorf("a control byte of a link target was passed on:\n%q", e.last)
+			}
+			if code := e.switcher().Status(); code != ExitFailed {
+				t.Errorf("status: exit %d", code)
+			}
+			if strings.Contains(e.out.String(), "\x1b") {
+				t.Errorf("status passed a control byte on")
+			}
+			e.out.Reset()
+		})
+	}
+}
+
+func TestEscapeLine(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{`flag provided but not defined: -x`, `flag provided but not defined: -x`},
+		{"bad \x1b[2J\nline\\", `bad \x1b[2J\x0aline\x5c`},
+		{"\xc3\xa9", `\xc3\xa9`},
+	} {
+		if got := EscapeLine(tc.in); got != tc.want {
+			t.Errorf("EscapeLine(%q) = %s, want %s", tc.in, got, tc.want)
+		}
+	}
+	if got := EscapeLine(strings.Repeat("a", 2*maxLine)); len(got) != maxLine+3 {
+		t.Errorf("long line: %d bytes", len(got))
+	}
+}

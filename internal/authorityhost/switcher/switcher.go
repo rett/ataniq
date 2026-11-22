@@ -173,23 +173,17 @@ func (s *Switcher) checkConfig() error {
 }
 
 // targetID reads the release id out of the target of current or previous,
-// which must be releases/<id> or the absolute path of that folder.
+// which must be exactly releases/<id>, as the switch writes it: an absolute
+// path, ./ or .. elements, a doubled slash or anything else is refused, never
+// cleaned into a release.
 func (s *Switcher) targetID(target string) (ReleaseID, error) {
-	t := filepath.Clean(target)
-	if filepath.IsAbs(t) {
-		rel, err := filepath.Rel(s.base(), t)
-		if err != nil {
-			return ReleaseID{}, failf(CodeStateInvalid, "link target %s is not a folder of releases/", q(target))
-		}
-		t = rel
-	}
-	dir, name := filepath.Split(t)
-	if dir != "releases/" {
-		return ReleaseID{}, failf(CodeStateInvalid, "link target %s is not a folder of releases/", q(target))
+	name, ok := strings.CutPrefix(target, "releases/")
+	if !ok {
+		return ReleaseID{}, failf(CodeStateInvalid, "link target %s is not releases/<id>", q(target))
 	}
 	id, err := ParseID(name)
 	if err != nil {
-		return ReleaseID{}, failf(CodeStateInvalid, "link target %s is not a release id", q(target))
+		return ReleaseID{}, failf(CodeStateInvalid, "link target %s is not releases/<id>", q(target))
 	}
 	return id, nil
 }
@@ -429,9 +423,9 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	newTarget := filepath.Join("releases", id.Name)
 	if s.cfg.Dry {
 		if a.oldExists {
-			s.step(6, "would point previous at %s", a.oldTarget)
+			s.step(6, "would point previous at %s", q(a.oldTarget))
 		}
-		s.step(6, "would point current at %s (a new link renamed over it)", newTarget)
+		s.step(6, "would point current at %s (a new link renamed over it)", q(newTarget))
 		for _, r := range a.reloads {
 			s.step(6, "would reload: %s", qargv(r))
 		}
@@ -486,9 +480,9 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	}
 	a.rec.CurrentID = id.Name
 	if a.oldExists {
-		s.step(6, "previous -> %s", a.oldTarget)
+		s.step(6, "previous -> %s", q(a.oldTarget))
 	}
-	s.step(6, "current -> %s", newTarget)
+	s.step(6, "current -> %s", q(newTarget))
 	if err := s.reload(ctx, a.reloads); err != nil {
 		return s.goBack(ctx, a, "reload", err)
 	}

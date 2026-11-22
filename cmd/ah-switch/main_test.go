@@ -211,3 +211,23 @@ func TestRecover(t *testing.T) {
 		t.Fatalf("switch after recover: exit %d\n%s%s", code, out, errOut)
 	}
 }
+
+// TestDiagnosticsEscaped: what was typed reaches the diagnostics only
+// escaped: an unknown flag, a bad flag value.
+func TestDiagnosticsEscaped(t *testing.T) {
+	root := t.TempDir()
+	for _, args := range [][]string{
+		{"--root", root, "--no\x1b[2J-such", "0001-aaaaaaa"},
+		{"--root", root, "--allow-exec", "recover", "--counter", "x\x1b[2J\ny"},
+		{"--root", root, "--rollback-to", "previous\x1b[2J"},
+		{"--root", root, "--mode", "x\x1b[2J", "0001-aaaaaaa"},
+	} {
+		code, out, errOut := call(args...)
+		if code != switcher.ExitUsage {
+			t.Errorf("%q: exit %d", args, code)
+		}
+		if strings.ContainsAny(out+errOut, "\x1b") {
+			t.Errorf("%q: a control byte was passed on: %q", args, errOut)
+		}
+	}
+}
