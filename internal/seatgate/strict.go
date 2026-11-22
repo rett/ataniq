@@ -282,9 +282,9 @@ var fieldsCache sync.Map
 
 // cachedFields is [jsonFields] of t, worked out once for each type. The
 // selection of a struct's fields depends on the type alone, and a frame holds
-// one object per element of a list of them, so without the cache a 64 KiB frame
-// of small objects ran the selection some twenty thousand times. A type that
-// is refused is cached as refused. Two decodes that meet a type at once may
+// one object per element of a list of them, so without the cache a frame of
+// the largest size ([MaxFrame], 257 KiB) made of small objects ran the
+// selection tens of thousands of times. A type that is refused is cached as refused. Two decodes that meet a type at once may
 // both work it out; the results are equal and either is kept.
 func cachedFields(t reflect.Type) (map[string]jsonField, bool) {
 	if e, ok := fieldsCache.Load(t); ok {
