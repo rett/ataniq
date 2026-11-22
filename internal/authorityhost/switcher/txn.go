@@ -153,9 +153,9 @@ func (s *Switcher) drive(ctx context.Context, t *txn) (int, bool) {
 		var err error
 		switch t.j.Phase {
 		case PhasePackages:
-			err = s.resumePackages(t)
+			err = s.resumePackages(ctx, t)
 		case PhaseLinks:
-			err = s.putBack(t, "interrupted", failf(CodeInterrupted, "the %s %s was interrupted before it was activated", t.kind(), t.j.ID))
+			err = s.putBack(ctx, t, "interrupted", failf(CodeInterrupted, "the %s %s was interrupted before it was activated", t.kind(), t.j.ID))
 		case PhaseActivating:
 			err = s.activate(ctx, t)
 		case PhaseRestoring:
@@ -207,7 +207,7 @@ func (s *Switcher) done(t *txn, result string) error {
 // release reloaded and checked), or, with no earlier release, stops the
 // decision services, so that it ends with decisions inhibited unless that
 // release is qualified again.
-func (s *Switcher) putBack(t *txn, step string, cause error) error {
+func (s *Switcher) putBack(ctx context.Context, t *txn, step string, cause error) error {
 	if err := s.ensureLink("current", t.j.OldCurrent); err != nil {
 		return failf(CodeLinkFailed, "current not put back: %s", q(err.Error()))
 	}
@@ -221,7 +221,7 @@ func (s *Switcher) putBack(t *txn, step string, cause error) error {
 	t.note("current and previous were put back")
 	s.printf("back: current -> %s, previous -> %s", linkText(t.j.OldCurrent), linkText(t.j.OldPrevious))
 	if t.j.OldCurrent == "" {
-		return s.toStopping(t, ResultFailed)
+		return s.toStopping(ctx, t, ResultFailed)
 	}
 	t.j.Phase = PhaseRestoring
 	if err := s.save(t); err != nil {
@@ -298,19 +298,14 @@ func (s *Switcher) toRecovery(ctx context.Context, t *txn, step string, cause er
 	s.step(n, "FAILED: %s", describe(cause))
 	t.fail(step, cause)
 	if t.j.OldCurrent == "" {
-		t.j.Result = ResultFailed
 		t.note("there is no earlier release to go back to, so current stays at %s", t.j.ID)
-		t.j.Phase = PhaseStopping
-	} else {
-		t.j.Phase = PhaseRestoring
+		return s.toStopping(ctx, t, ResultFailed)
 	}
+	t.j.Phase = PhaseRestoring
 	if err := s.save(t); err != nil {
 		return err
 	}
-	if t.j.Phase == PhaseRestoring {
-		return s.crash(CrashRestoring)
-	}
-	return s.crash(CrashStopping)
+	return s.crash(CrashRestoring)
 }
 
 // restore is the restoring phase: first the services of the transaction's
@@ -324,13 +319,8 @@ func (s *Switcher) toRecovery(ctx context.Context, t *txn, step string, cause er
 // decision services are stopped.
 func (s *Switcher) restore(ctx context.Context, t *txn) error {
 	failed := func(format string, args ...any) error {
-		t.j.Result = ResultFailedRecovery
 		t.note(format, args...)
-		t.j.Phase = PhaseStopping
-		if err := s.save(t); err != nil {
-			return err
-		}
-		return s.crash(CrashStopping)
+		return s.toStopping(ctx, t, ResultFailedRecovery)
 	}
 	fb, err := s.fallback(ctx, t)
 	if err != nil {
@@ -418,12 +408,10 @@ func (s *Switcher) stop(ctx context.Context, t *txn) error {
 	run := func(list string, cmds [][]string) {
 		failures = append(failures, s.runStops(ctx, list, cmds)...)
 	}
-	if stops, err := s.hostStopList(); err != nil {
-		s.printf("stop: FAILED: the host's %s: %s", HostStopList, describe(err))
-		failures = append(failures, "the host's "+HostStopList+": "+describe(err))
-	} else {
-		run("host", stops)
-	}
+	// The host's list, run once per command, first (it may have run
+	// already, before anything that could fail: see hostStopsFirst).
+	s.hostStopsFirst(ctx)
+	failures = append(failures, s.hostStopsFailures...)
 	if cand, err := s.candidate(ctx, t); err == nil {
 		run(t.j.ID, cand.stops)
 	} else {
@@ -663,7 +651,7 @@ func (s *Switcher) highestAtLeast(n uint64) error {
 // helperEnded); it is never taken as done or as not run. Either way the
 // package step may have changed the host, which nothing checked since:
 // the decision services are stopped, and decisions stay inhibited.
-func (s *Switcher) resumePackages(t *txn) error {
+func (s *Switcher) resumePackages(ctx context.Context, t *txn) error {
 	switch t.j.PackageState {
 	case PackageDone:
 		t.fail("interrupted", failf(CodeInterrupted, "the %s %s was interrupted before its links; the package step had brought the host to snapshot %s", t.kind(), t.j.ID, q(t.j.PackageTo)))
@@ -675,14 +663,19 @@ func (s *Switcher) resumePackages(t *txn) error {
 		t.fail("interrupted", failf(CodePackageInterrupted, "the package step from %s to %s was interrupted", q(t.j.PackageFrom), q(t.j.PackageTo)))
 		t.note("%s", describe(packageUnknownError(t.j.PackageFrom, t.j.PackageTo)))
 	}
-	return s.toStopping(t, ResultFailed)
+	return s.toStopping(ctx, t, ResultFailed)
 }
 
 // toStopping ends the transaction t with result, after the decision
-// services are stopped (the stopping phase).
-func (s *Switcher) toStopping(t *txn, result string) error {
+// services are stopped (the stopping phase). The host's stop list runs
+// first, before the phase is saved: a journal that cannot be written
+// must not keep the decision services running. Then the phase is saved;
+// when that fails the transaction is unresolved, and the next command
+// runs the stops again.
+func (s *Switcher) toStopping(ctx context.Context, t *txn, result string) error {
 	t.j.Result = result
 	t.j.Phase = PhaseStopping
+	s.hostStopsFirst(ctx)
 	if err := s.save(t); err != nil {
 		return err
 	}

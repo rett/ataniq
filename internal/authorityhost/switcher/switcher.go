@@ -118,6 +118,10 @@ type Switcher struct {
 	hostStops     [][]string
 	hostStopsErr  error
 	hostStopsRead bool
+	// The host's stop list ran in this command (see hostStopsFirst), with
+	// these failures: it is not run twice by one command.
+	hostStopsRan      bool
+	hostStopsFailures []string
 	// crashAt, when set, is called at each point of crash; an error stops
 	// the switch there as a crash would.
 	crashAt func(point string) error
@@ -294,6 +298,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	}
 	defer lk.release()
 	defer s.closeRoots()
+	s.stopsOwed(ctx)
 	if blocked != nil {
 		return s.stopFirst(ctx, blocked)
 	}
@@ -586,7 +591,7 @@ func (s *Switcher) activateNew(ctx context.Context, t *txn, newTarget string) in
 	}
 	linkFailed := func(name string, err error) int {
 		s.step(6, "FAILED: %s: %s", name, q(err.Error()))
-		if err := s.putBack(t, "switch", failf(CodeLinkFailed, "%s: %s", name, q(err.Error()))); err != nil {
+		if err := s.putBack(ctx, t, "switch", failf(CodeLinkFailed, "%s: %s", name, q(err.Error()))); err != nil {
 			if !errors.Is(err, errCrashed) {
 				s.printf("result: unresolved: %s; %s stays in phase %s, and the next switch, rollback or recover resumes it", describe(err), JournalFile, t.j.Phase)
 			}
@@ -696,6 +701,43 @@ func (s *Switcher) lockHolder(state *os.Root) string {
 		return fmt.Sprintf("surviving helper pid %d (start time matches): stop it or reboot; it is the package step of the %s %s, which outlived its switch and holds the lock", j.HelperPID, (&txn{j: j}).kind(), j.ID)
 	}
 	return errLocked.Error()
+}
+
+// stopsOwed runs, under the lock and before anything else, the host's stop
+// list of a transaction left in its stopping phase: nothing that can fail
+// on the way to its resume (releases/ that cannot be used, a counter or a
+// record that cannot be read, a journal that cannot be checked against the
+// host, a policy that cannot be used) keeps the stops it owes from
+// running. The resume runs the rest (see stop) and records it; when it
+// cannot, the journal stays in stopping and every command runs them
+// again. A dry run runs nothing.
+func (s *Switcher) stopsOwed(ctx context.Context) {
+	if s.cfg.Dry || s.stateRoot == nil || s.lockFile == nil {
+		return
+	}
+	j, ok, err := s.readJournal()
+	if err != nil || !ok || j.Phase != PhaseStopping {
+		return
+	}
+	s.printf("reconcile: the interrupted %s %s is stopping the decision services: the host's %s runs first", (&txn{j: j}).kind(), j.ID, HostStopList)
+	s.hostStopsFirst(ctx)
+}
+
+// hostStopsFirst runs the host's stop list, once per command, and keeps
+// its failures for the stopping phase (see stop): the list that depends on
+// no release runs before anything is saved or read that could fail.
+func (s *Switcher) hostStopsFirst(ctx context.Context) {
+	if s.hostStopsRan {
+		return
+	}
+	s.hostStopsRan = true
+	stops, err := s.hostStopList()
+	if err != nil {
+		s.printf("stop: FAILED: the host's %s: %s", HostStopList, describe(err))
+		s.hostStopsFailures = []string{"the host's " + HostStopList + ": " + describe(err)}
+		return
+	}
+	s.hostStopsFailures = s.runStops(ctx, "host", stops)
 }
 
 // stopFirst is what a command does, under the lock, when the switch policy
@@ -1031,7 +1073,7 @@ func (s *Switcher) fail(a *attempt, n int, err error) int {
 		if t.j.Check == CheckNotRun {
 			t.j.Check = a.rec.Check
 		}
-		if err := s.toStopping(t, ResultFailed); err != nil {
+		if err := s.toStopping(context.Background(), t, ResultFailed); err != nil {
 			if !errors.Is(err, errCrashed) {
 				s.printf("result: unresolved: %s; %s stays, and the next switch, rollback or recover resumes it", describe(err), JournalFile)
 			}

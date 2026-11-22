@@ -531,11 +531,15 @@ firewall listing), on the host as it now is. The result is `rolled-back`
 with `restored_health: ok` only when all of that succeeded, putting
 `previous` back included. Otherwise (or with no
 fallback: the very first switch, or one that cannot be used, when
-`current` stays at the new release) the journal says `stopping` and the
-decision services are stopped (the static status page stays): first the
-host's own `/etc/authority-host/stop.list`, then the stop list of the new
-release and of the fallback, each one that verifies (a release that does
-not verify runs no code; the host's list does not depend on any release).
+`current` stays at the new release) the decision services are stopped
+(the static status page stays): first the host's own
+`/etc/authority-host/stop.list`, which runs before the journal is saved
+as `stopping`, so that a journal that cannot be written does not keep the
+services running (the command then prints `result: unresolved`, and the
+next command runs the stops again); then, once the journal says
+`stopping`, the stop list of the new release and of the fallback, each
+one that verifies (a release that does not verify runs no code; the
+host's list does not depend on any release).
 The result is `failed` on a first switch and `failed-recovery` otherwise,
 with `restored_health: failed` when going back was tried, and
 `services_stopped: true`; the console is needed, and decisions stay
@@ -553,6 +557,17 @@ A switch or rollback is refused while it is missing, empty or not
 trusted, and `status` says so; only the stops a journal in `stopping`
 owes run first (the lists of the releases that verify: the journal then
 stays in `stopping`, since the host's list did not run).
+
+While a journal says `stopping`, every switch, rollback and `recover`
+(but `recover --services-stopped`, which runs nothing) runs the host's
+stop list first, under the lock, right after taking it and before
+anything that could fail on the way to the resume: `releases/` missing or
+not trusted, `highest-counter`, `counters.log` or `deploy.json` that
+cannot be read, a journal that cannot be checked against the host, a
+switch policy that cannot be used. The command then goes on as it would
+(the resume runs the release lists that verify, and records the outcome
+when every stop passed), or stops where it fails, with the journal still
+in `stopping`; one command never runs the host's list twice.
 
 ### The decision inhibit
 
@@ -670,6 +685,14 @@ shows. That renames the journal to `txn-TXN.discarded` in the state
 folder (kept as evidence), resumes nothing of it and prints the time; it
 refuses a journal that matches the host (any command resumes that) or
 another id.
+
+Only a journal proven stale is discarded: one whose links or counter the
+host's evidence contradicts. When that evidence cannot be read (a link,
+`highest-counter`, `counters.log`, `deploy.json` or `releases/` that
+cannot be read), nothing is proven: the journal is unresolved, neither
+resumed (`reconcile: unresolved: ...; the journal cannot be checked
+against the host`) nor discarded (`recover --discard-journal` refuses
+it), until the evidence is readable again.
 
 When the resume ends with the decision services stopped, the command that
 resumed it does nothing else: a new switch never starts on its own after a
@@ -832,6 +855,9 @@ see its messages. The text of a broken state file is not repeated either.
 | Another switch or rollback while an outcome is owed | Reports the outcomes owed, leaves them owed and is refused, exit 1, nothing recorded or run, until `ack --asked WORDS` or the same request again |
 | `highest-counter` missing or broken while `current` exists, or below a counter the links, `deploy.json` or `counters.log` show was used | Refused before anything, nothing recorded (`counter-missing`, `counter-invalid`); run `recover --counter N` |
 | A journal whose links or counter do not match the host (restored from a backup) | `reconcile: unresolved`, exit 1; nothing resumed, run or moved until `recover --discard-journal TXN` |
+| A journal that cannot be checked against the host (its evidence cannot be read) | `reconcile: unresolved`, exit 1; neither resumed nor discarded until the evidence is readable; a journal in `stopping` still gets the host's stop list first |
+| A journal in `stopping` while `releases/`, the counter or `deploy.json` cannot be used | The host's stop list runs first, under the lock; the journal stays in `stopping` until the rest can run |
+| The journal cannot be saved as `stopping` | The host's stop list has run already; `result: unresolved`, and the next command runs the stops again |
 | A release folder of a higher counter is in `releases/` | Refused at counter (`counter-not-above`); build a higher counter |
 | A second switch while one runs | Exit 3; nothing done |
 

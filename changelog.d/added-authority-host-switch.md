@@ -29,7 +29,10 @@
   release (after stopping the failed release's services) with that
   release's own reload and health lists and its no-AI check, or stopping
   the decision services, with the host's own
-  `/etc/authority-host/stop.list` first, when it cannot. Every transaction
+  `/etc/authority-host/stop.list` first, when it cannot (that list runs
+  before the stopping phase is saved, and, while a journal is stopping,
+  first in every command, under the lock, even when `releases/`, the
+  counter or the record cannot be used). Every transaction
   first writes `/var/lib/authority-host/decisions.inhibit`; a
   decision-capable service may start while it is there (and answer its
   readiness probe) but refuses every decision while it is there or cannot
@@ -57,7 +60,9 @@
   `ah-switch recover --package-state SNAPSHOT` settles an unknown package
   state, a journal that does not match the host (its links, or a counter
   below those attempted since) is never resumed until
-  `ah-switch recover --discard-journal TXN` sets it aside,
+  `ah-switch recover --discard-journal TXN` sets it aside (only a journal
+  proven stale: one whose evidence cannot be read is neither resumed nor
+  discarded),
   `ah-switch recover --services-stopped` settles a transaction whose stop
   commands failed on the owner's word,
   `ah-switch status` shows the state under a shared lock, `--dry` prints
