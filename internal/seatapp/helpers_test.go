@@ -2,6 +2,8 @@ package seatapp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -58,15 +60,22 @@ func (c *clock) Advance(d time.Duration) {
 	c.t = c.t.Add(d)
 }
 
-// counterReader is a deterministic Random: every byte is a running count.
-type counterReader struct{ n byte }
+// counterReader is a deterministic Random: the SHA-256 of a running count, so
+// that no two reads are equal.
+type counterReader struct {
+	n   uint64
+	buf []byte
+}
 
 func (r *counterReader) Read(p []byte) (int, error) {
-	for i := range p {
+	for len(r.buf) < len(p) {
 		r.n++
-		p[i] = r.n
+		sum := sha256.Sum256(binary.BigEndian.AppendUint64(nil, r.n))
+		r.buf = append(r.buf, sum[:]...)
 	}
-	return len(p), nil
+	n := copy(p, r.buf)
+	r.buf = r.buf[n:]
+	return n, nil
 }
 
 // rig is an app under test with its fakes.
@@ -154,3 +163,5 @@ func checkHeaders(t *testing.T, what string, w *httptest.ResponseRecorder) {
 		t.Errorf("%s: sets a cookie: %v", what, c)
 	}
 }
+
+func stringReader(s string) io.Reader { return strings.NewReader(s) }
