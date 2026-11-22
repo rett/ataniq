@@ -26,8 +26,11 @@
   unenforced policies are `NOTE` lines and the run is incomplete.
   Whatever the check cannot cover (a walk at its depth limit, an entry of
   unknown type, its budget of entries, bytes, time and memory spent, an
-  unusable `/proc` or socket table, a file it cannot parse, a source or
-  PATH folder it cannot resolve, a missing required `EnvironmentFile=`)
+  unusable `/proc`, a process whose `/proc` folder stays without a name,
+  a socket table without its own protocol's header, a missing or empty
+  pacman database or a package entry without a name, a pinned firewall
+  digest without a listing, a file it cannot parse, a source or PATH
+  folder it cannot resolve, a missing required `EnvironmentFile=`)
   is a `HIT incomplete` line, and every hit that is not a finding makes
   the run incomplete, never a pass. `ah-noaicheck ports` checks only the
   listening ports. It exits 0 clean, 1 on a hit and 2 on an error, never

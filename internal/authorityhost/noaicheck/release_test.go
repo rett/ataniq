@@ -35,7 +35,7 @@ func TestRunPhase(t *testing.T) {
 		env("/home/user/.config/u.env", "GEMINI_API_KEY"),
 	}
 	port := Hit{Kind: KindPort, Path: "tcp:0.0.0.0:8080"}
-	nft := Hit{Kind: KindNFT, Path: "ruleset", Detail: DetailListingMissing}
+	nft := Hit{Kind: KindIncomplete, Path: PathNFT, Detail: DetailListingMissing}
 	cases := []struct {
 		phase string
 		want  []Hit

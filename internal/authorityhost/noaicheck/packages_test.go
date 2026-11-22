@@ -2,6 +2,7 @@ package noaicheck
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -31,16 +32,22 @@ func TestCheckPackages(t *testing.T) {
 		}, nil, []string{NotePackagesNotEnforced}},
 		{"an entry without a name", []string{"bash"}, func(f *fixture) {
 			f.file("var/lib/pacman/local/odd-1-1/desc", "%VERSION%\n1\n")
-		}, []Hit{pkg("/var/lib/pacman/local/odd-1-1", DetailNoName)}, nil},
+		}, []Hit{{Kind: KindIncomplete, Path: "/var/lib/pacman/local/odd-1-1", Detail: DetailNoName}}, nil},
+		{"an empty database", []string{"bash"}, func(f *fixture) {
+			mustRemoveAll(f, "var/lib/pacman/local/bash-5.2.037-1")
+		}, []Hit{{Kind: KindIncomplete, Path: PathPackages, Detail: DetailDB}}, nil},
+		{"an empty database while not enforced", nil, func(f *fixture) {
+			mustRemoveAll(f, "var/lib/pacman/local/bash-5.2.037-1")
+		}, []Hit{{Kind: KindIncomplete, Path: PathPackages, Detail: DetailDB}}, []string{NotePackagesNotEnforced}},
 		{"an entry without desc", []string{"bash"}, func(f *fixture) {
 			f.dir("var/lib/pacman/local/odd-1-1")
 		}, []Hit{{Kind: KindUnreadable, Path: "/var/lib/pacman/local/odd-1-1/desc", Detail: "no desc file"}}, nil},
 		{"no database while enforced", []string{"bash"}, func(f *fixture) {
 			mustRemoveAll(f, "var/lib/pacman")
-		}, []Hit{pkg("/var/lib/pacman/local", DetailMissing)}, nil},
-		{"no database while not enforced", nil, func(f *fixture) {
+		}, []Hit{{Kind: KindIncomplete, Path: PathPackages, Detail: DetailMissing}}, nil},
+		{"no database while not enforced: forbidden packages cannot be checked", nil, func(f *fixture) {
 			mustRemoveAll(f, "var/lib/pacman")
-		}, nil, []string{NotePackagesNotEnforced}},
+		}, []Hit{{Kind: KindIncomplete, Path: PathPackages, Detail: DetailMissing}}, []string{NotePackagesNotEnforced}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -58,6 +65,9 @@ func TestCheckPackages(t *testing.T) {
 			}
 			if !(len(r.Notes) == 0 && len(tc.wantNotes) == 0) && !reflect.DeepEqual(r.Notes, tc.wantNotes) {
 				t.Errorf("notes %v, want %v", r.Notes, tc.wantNotes)
+			}
+			if r.Complete && slices.ContainsFunc(r.Hits, func(h Hit) bool { return h.Kind == KindIncomplete }) {
+				t.Errorf("complete with %v", r.Hits)
 			}
 		})
 	}

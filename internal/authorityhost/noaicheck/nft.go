@@ -6,10 +6,12 @@ import (
 	"strings"
 )
 
-// NFT hit details.
+// NFT hit details: "HIT nft ruleset digest-differs", a finding, and
+// "HIT incomplete nft listing-missing", evidence the check was not given.
 const (
 	DetailDigestDiffers  = "digest-differs"  // the loaded rules are not the release's
 	DetailListingMissing = "listing-missing" // the release pins a digest and no listing was given
+	PathNFT              = "nft"             // the name of the incomplete hit
 )
 
 // NoteNFTNotPinned is the note of a release without share/nft.digest.
@@ -176,8 +178,9 @@ func NFTDigest(listing []byte) string {
 
 // CheckNFT is check 8: when the release pins a firewall digest
 // (share/nft.digest), a listing whose digest (see NFTDigest) differs is a hit
-// of kind "nft" with detail "digest-differs", and no listing (nil) is a hit
-// with detail "listing-missing". The caller runs "nft list ruleset"; the
+// of kind "nft" with detail "digest-differs". No listing (nil) is not a
+// finding but missing evidence: the hit "incomplete nft listing-missing",
+// which makes the run incomplete. The caller runs "nft list ruleset"; the
 // check never does. Without a pinned digest the note "nft not pinned" is
 // written or, with RequirePolicy, the hit "policy nft.digest missing".
 func (c *Checker) CheckNFT(listing []byte) {
@@ -187,7 +190,7 @@ func (c *Checker) CheckNFT(listing []byte) {
 	}
 	switch {
 	case listing == nil:
-		c.hit(KindNFT, "ruleset", DetailListingMissing)
+		c.hit(KindIncomplete, PathNFT, DetailListingMissing)
 	case NFTDigest(listing) != c.lists.NFTDigest:
 		c.hit(KindNFT, "ruleset", DetailDigestDiffers)
 	}

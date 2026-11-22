@@ -713,6 +713,11 @@ The `HIT incomplete` lines:
 | `HIT incomplete path <file>` | a PATH setting whose folder the check cannot resolve |
 | `HIT incomplete proc <why>` | no usable `/proc`: missing, unreadable, without processes, or listing processes of which not one name or executable could be read (`no-identity`) |
 | `HIT incomplete proc-access <n>` | run as another user than root, `n` processes refused their name or executable |
+| `HIT incomplete proc-identity <n>` | `n` processes whose `/proc` folder stays but which give no name: `comm` missing or empty and no executable (a process whose folder is gone has ended and is passed over) |
+| `HIT incomplete packages missing` | there is no pacman database (`/var/lib/pacman/local`), so not even the forbidden packages can be checked |
+| `HIT incomplete packages db` | the pacman database lists no package at all |
+| `HIT incomplete <entry> no-name` | a pacman database entry whose `desc` names no package |
+| `HIT incomplete nft listing-missing` | the release pins `nft.digest` and no `--nft-listing` was given (`post` and `full`) |
 | `HIT incomplete /proc/net/tcp header` | a socket table that is empty or does not start with its own protocol's header line: `sl local_address rem_address st` for `/proc/net/tcp`, `sl local_address remote_address st` for `/proc/net/tcp6` (checked too when it is there) |
 
 `--root` (default `/`) checks the tree beneath another folder, for tests;
@@ -834,10 +839,14 @@ folder whose `share/` holds the lists (and, in `pre` and `post`, whose
   another specifier, a line that is not `KEY=VALUE`) is
   `HIT incomplete env-syntax <file>`.
 - `process`: a running process whose name or executable is named like an
-  executable of `ai-names.list`. A process that ends while it is read and
-  a kernel thread are passed over. A missing or empty `/proc`, or one in
+  executable of `ai-names.list`. A process that ends while it is read (its
+  `/proc` folder is gone) and a kernel thread are passed over. Only a
+  name that is not empty counts. A missing or empty `/proc`, or one in
   which not one process's name or executable could be read, is
-  `HIT incomplete proc <why>`. A process whose name or executable is
+  `HIT incomplete proc <why>`; a process whose folder stays but which
+  gives no name (its `comm` missing or empty, and no executable) is
+  counted into one `HIT incomplete proc-identity <n>`, so one readable
+  process cannot hide others the check cannot see. A process whose name or executable is
   refused for lack of permission is a `HIT unreadable` of its own when the
   check runs as root, and otherwise counted into one
   `HIT incomplete proc-access <n>`, `n` the number of such processes: run
@@ -860,11 +869,17 @@ folder whose `share/` holds the lists (and, in `pre` and `post`, whose
 - `package`: an installed package (the pacman database) named in
   `forbidden-packages.list`, or, once `packages.allow` is filled, any
   package not in it. While it is empty the check prints
-  `NOTE packages not enforced` instead.
+  `NOTE packages not enforced` instead. The database is the evidence for
+  both, and forbidden packages are checked either way, so a database the
+  check cannot use is incomplete, never a pass and never a finding: no
+  database is `HIT incomplete packages missing`, one that lists no
+  package `HIT incomplete packages db`, and an entry without a name
+  `HIT incomplete <entry> no-name`.
 - `nft` (`post` and `full`): when the release has `share/nft.digest`, the
   SHA-256 of the normalised listing passed with `--nft-listing` (the
-  caller runs `nft list ruleset`; the check never does) differs, or no
-  listing was passed. `ah-noaicheck nft-digest FILE` prints the digest to
+  caller runs `nft list ruleset`; the check never does) differs. No
+  listing at all is not a finding but missing evidence,
+  `HIT incomplete nft listing-missing`. `ah-noaicheck nft-digest FILE` prints the digest to
   pin. Normalising drops blank lines and trailing spaces and, by their
   place among the line's unquoted tokens only, the values that change
   while the rules stay the same: `packets N bytes N` of a counter,

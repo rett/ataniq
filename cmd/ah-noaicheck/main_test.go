@@ -177,7 +177,7 @@ func TestNFT(t *testing.T) {
 		t.Errorf("changed rules: exit %d\n%s", code, out)
 	}
 	code, out, _ = runCmd(t, "", "--root", host(t), "--release", rel)
-	if code != exitHit || !strings.Contains(out, "HIT nft ruleset listing-missing\n") {
+	if code != exitHit || !strings.Contains(out, "HIT incomplete nft listing-missing\n") || !strings.Contains(out, "RUN incomplete\n") {
 		t.Errorf("no listing: exit %d\n%s", code, out)
 	}
 }
@@ -238,7 +238,7 @@ func TestRequirePolicy(t *testing.T) {
 		{"empty packages.allow", with("packages.allow", ""), []string{"--nft-listing", file}, "HIT policy packages.allow empty\n"},
 		{"empty ports.allow", with("ports.allow", ""), []string{"--nft-listing", file}, "HIT policy ports.allow empty\n"},
 		{"no nft.digest", map[string]string{"packages.allow": "bash\n"}, []string{"--nft-listing", file}, "HIT policy nft.digest missing\n"},
-		{"pinned, no listing", full, nil, "HIT nft ruleset listing-missing\n"},
+		{"pinned, no listing", full, nil, "HIT incomplete nft listing-missing\nRUN incomplete\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
