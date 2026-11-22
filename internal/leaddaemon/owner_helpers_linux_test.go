@@ -39,8 +39,8 @@ type ownerFake struct {
 
 	pairStart   func(src ownerchannel.Source, p ownerwire.PairStartParams) (ownerwire.PairStartResult, error)
 	pairStatus  func() (ownerwire.PairStatus, error)
-	pairConfirm func(src ownerchannel.Source) (ownerwire.KeyItem, error)
-	pairReject  func(src ownerchannel.Source) error
+	pairConfirm func(src ownerchannel.Source, p ownerwire.PairPendingParams) (ownerwire.KeyItem, error)
+	pairReject  func(src ownerchannel.Source, p ownerwire.PairPendingParams) error
 	pairPresent func(src ownerchannel.Source, p ownerwire.SeatPairParams) (ownerwire.SeatPairResult, error)
 	keys        func() (ownerwire.KeysView, error)
 	keyRevoke   func(src ownerchannel.Source, p ownerwire.KeyRevokeParams) (ownerwire.KeysView, error)
@@ -389,20 +389,20 @@ func (f *ownerFake) PairStatus(context.Context) (ownerwire.PairStatus, error) {
 	return f.pairStatus()
 }
 
-func (f *ownerFake) PairConfirm(_ context.Context, src ownerchannel.Source) (ownerwire.KeyItem, error) {
-	f.enter("pair-confirm", &src)
+func (f *ownerFake) PairConfirm(_ context.Context, src ownerchannel.Source, p ownerwire.PairPendingParams) (ownerwire.KeyItem, error) {
+	f.enter("pair-confirm "+p.PendingID, &src)
 	if f.pairConfirm == nil {
 		return ownerwire.KeyItem{}, errOwnerNotSet
 	}
-	return f.pairConfirm(src)
+	return f.pairConfirm(src, p)
 }
 
-func (f *ownerFake) PairReject(_ context.Context, src ownerchannel.Source) error {
-	f.enter("pair-reject", &src)
+func (f *ownerFake) PairReject(_ context.Context, src ownerchannel.Source, p ownerwire.PairPendingParams) error {
+	f.enter("pair-reject "+p.PendingID, &src)
 	if f.pairReject == nil {
 		return nil
 	}
-	return f.pairReject(src)
+	return f.pairReject(src, p)
 }
 
 func (f *ownerFake) PairPresent(_ context.Context, src ownerchannel.Source, p ownerwire.SeatPairParams) (ownerwire.SeatPairResult, error) {

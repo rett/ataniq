@@ -12,7 +12,8 @@ const (
 	// CodeLength is the number of characters of a pairing code.
 	CodeLength = 20
 	// CodeLifetime is how long a code is valid. A code is expired at its issue
-	// time plus this, exactly, and not before.
+	// time plus this, exactly, and not before, and once it has been seen
+	// expired it stays so (see Code).
 	CodeLifetime = 10 * time.Minute
 	// MaxTries is the number of wrong tries a code allows. The last of them
 	// burns the code.
@@ -28,6 +29,20 @@ const (
 // of the code, the time it expires, the wrong tries so far and whether it is
 // used. It does not hold the code, and none of its texts show anything of it.
 // The zero Code is a code nobody can present.
+//
+// Time. A Code judges the readings it is handed with Time.Before, Time.Add
+// and Time.IsZero, and keeps them as they are. A reading from time.Now
+// carries a monotonic part, and when both the issue and the reading carry one
+// the lifetime is measured by it, so a wall clock that is set back (or
+// forward) changes nothing: the code lives ten monotonic minutes. A reading
+// without one (a fake clock's, or one that went through Round(0), UTC().Round
+// or a parse) is judged by its wall time, and a wall clock set back to a time
+// between the issue and the deadline then gives the code more wall time, to
+// the deadline of that clock and no further; set back to before the issue it is
+// refused ErrClock. Either way expiry is a latch: once a use of the code
+// (Verify, or the pairing's Present, Phase or Start) has seen it expired, it is
+// expired for good, as a used or a burnt code is, and no later reading, however
+// early, makes it live again.
 type Code struct {
 	issued  bool
 	digest  [sha256.Size]byte
@@ -35,6 +50,9 @@ type Code struct {
 	expires time.Time
 	tries   int
 	used    bool
+	// lapsed is the latch of expiry: set the first time the code is seen at
+	// or past its deadline, and never cleared.
+	lapsed bool
 }
 
 // NewCode makes a code of CodeLength characters from rand, valid from now for
@@ -79,6 +97,15 @@ func (c Code) Tries() int { return c.tries }
 // Used reports whether a presented code was taken as the right one.
 func (c Code) Used() bool { return c.used }
 
+// expired reports whether the code is past its time at now, and latches it:
+// a code seen expired is expired for every later reading.
+func (c *Code) expired(now time.Time) bool {
+	if c.lapsed || !now.Before(c.expires) {
+		c.lapsed = true
+	}
+	return c.lapsed
+}
+
 // Burnt reports whether the code has had MaxTries wrong tries.
 func (c Code) Burnt() bool { return c.tries >= MaxTries }
 
@@ -98,7 +125,8 @@ func (c Code) GoString() string { return c.String() }
 // code (ErrClock), a used code (ErrUsed), a burnt one (ErrBurnt), an expired
 // one (ErrExpired) and a wrong one (ErrWrongCode, which counts a try; the
 // fifth of them burns the code). A refusal for the state of the code never
-// shows whether the text presented was the right one, and counts no try.
+// shows whether the text presented was the right one, and counts no try. The
+// time of the refusal ErrExpired is a latch: see Code.
 func (c *Code) Verify(presented string, now time.Time) error {
 	if err := c.check(presented, now); err != nil {
 		return err
@@ -124,7 +152,7 @@ func (c *Code) check(presented string, now time.Time) error {
 		return ErrUsed
 	case c.Burnt():
 		return ErrBurnt
-	case !now.Before(c.expires):
+	case c.expired(now):
 		return ErrExpired
 	case !match:
 		c.tries++

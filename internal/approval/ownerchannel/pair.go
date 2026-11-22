@@ -45,6 +45,10 @@ var (
 	// ErrPairingExpired says the credential waited for its ten minutes and
 	// no longer; the pairing is over.
 	ErrPairingExpired = errors.New("ownerchannel: the pending credential expired")
+	// ErrPairingChanged says the credential the owner's word named (by its
+	// pending id) is not the one pending now: the pairing was replaced, or
+	// ran out and another took its place. Nothing was changed.
+	ErrPairingChanged = errors.New("ownerchannel: the pending credential is not the one named")
 	// ErrPairRefused says the seat's presentation was refused for the code
 	// or for the state of the pairing: a wrong, used, burnt or expired code,
 	// no pairing, or a credential already pending. It never says which.
@@ -63,7 +67,9 @@ type pairing struct {
 	p *seatpair.Pairing
 	// at is the time handed to the pairing's clock by the call that is
 	// running, so that the code's time and the time the service reports are
-	// one.
+	// one. It is the clock's own reading, monotonic part included (see
+	// [Service.nowBoth]): the pairing's deadlines are measured by it. What the
+	// service shows and journals is the wall reading of the same call.
 	at time.Time
 	// live is whether a pairing was started and not ended by a confirm, a
 	// reject or a replacement; with the phase none it reads as expired.
@@ -169,14 +175,14 @@ func (s *Service) PairStart(ctx context.Context, src Source, p ownerwire.PairSta
 	defer done()
 	s.pmu.Lock()
 	defer s.pmu.Unlock()
-	now := s.now()
+	mono, now := s.nowBoth()
 	if err := s.pairGate(src, now, true); err != nil {
 		return ownerwire.PairStartResult{}, err
 	}
 	if _, _, err := s.usableKeys(); err != nil {
 		return ownerwire.PairStartResult{}, err
 	}
-	s.pr.at = now
+	s.pr.at = mono
 	code, err := s.pr.p.Start(p.Replace)
 	switch {
 	case errors.Is(err, seatpair.ErrPairingOpen):
@@ -191,7 +197,8 @@ func (s *Service) PairStart(ctx context.Context, src Source, p ownerwire.PairSta
 
 // PairStatus says where the pairing stands (owner.pair-status): none; waiting
 // for the phone; a credential pending at the desk, with the six words of its
-// fingerprint; or expired, which is what a pairing that ran out or whose code
+// fingerprint and its pending id, which a confirm or a reject must give back;
+// or expired, which is what a pairing that ran out or whose code
 // was burnt reads as, until the next start. It never holds the code.
 func (s *Service) PairStatus(ctx context.Context) (ownerwire.PairStatus, error) {
 	_, done, err := s.begin(ctx)
@@ -201,14 +208,15 @@ func (s *Service) PairStatus(ctx context.Context) (ownerwire.PairStatus, error) 
 	defer done()
 	s.pmu.Lock()
 	defer s.pmu.Unlock()
-	now := s.now()
-	switch s.pr.p.Phase(now) {
+	mono, _ := s.nowBoth()
+	switch s.pr.p.Phase(mono) {
 	case seatpair.PhaseOpen:
 		return ownerwire.PairStatus{Phase: ownerwire.PairWaiting, ExpiresAt: record.FormatTime(s.pr.ends)}, nil
 	case seatpair.PhasePending:
-		fp, ok := s.pr.p.Pending(now)
-		if ok {
-			return ownerwire.PairStatus{Phase: ownerwire.PairPending, Words: append([]string(nil), fp[:]...), ExpiresAt: record.FormatTime(s.pr.ends)}, nil
+		fp, ok := s.pr.p.Pending(mono)
+		id, _ := s.pr.p.PendingID(mono)
+		if ok && id != "" {
+			return ownerwire.PairStatus{Phase: ownerwire.PairPending, Words: append([]string(nil), fp[:]...), PendingID: id, ExpiresAt: record.FormatTime(s.pr.ends)}, nil
 		}
 	}
 	if s.pr.live {
@@ -224,7 +232,9 @@ func (s *Service) PairStatus(ctx context.Context) (ownerwire.PairStatus, error) 
 // does. A refusal of the code or of the pairing's state is [ErrPairRefused] and
 // never says which, a credential that is not an ES256 key or has an id of
 // another length is [ErrCredentialInvalid] and leaves the code unused, and the
-// fifth wrong code burns it. The source must be a seat ([SurfaceSeat]); the
+// fifth wrong code burns it. A credential that is on the list of keys already,
+// revoked or not, is [ErrCredentialInvalid] as well, but only after the code was
+// right, and it ends the pairing (the code is spent). The source must be a seat ([SurfaceSeat]); the
 // daemon passes only one it knows to be.
 func (s *Service) PairPresent(ctx context.Context, src Source, p ownerwire.SeatPairParams) (ownerwire.SeatPairResult, error) {
 	_, done, err := s.begin(ctx)
@@ -243,13 +253,14 @@ func (s *Service) PairPresent(ctx context.Context, src Source, p ownerwire.SeatP
 	}
 	s.pmu.Lock()
 	defer s.pmu.Unlock()
-	now := s.now()
+	mono, now := s.nowBoth()
 	// A list that cannot take the credential refuses before the code is
 	// spent on it.
-	if _, _, err := s.usableKeys(); err != nil {
+	_, listed, err := s.usableKeys()
+	if err != nil {
 		return ownerwire.SeatPairResult{}, err
 	}
-	fp, err := s.pr.p.Present(p.Code, p.CredentialID, p.PublicKey, now)
+	fp, err := s.pr.p.Present(p.Code, p.CredentialID, p.PublicKey, mono)
 	switch {
 	case err == nil:
 	case errors.Is(err, seatpair.ErrCredentialID), errors.Is(err, seatpair.ErrKeyFormat),
@@ -257,24 +268,49 @@ func (s *Service) PairPresent(ctx context.Context, src Source, p ownerwire.SeatP
 		return ownerwire.SeatPairResult{}, ErrCredentialInvalid
 	case errors.Is(err, seatpair.ErrWrongCode), errors.Is(err, seatpair.ErrUsed), errors.Is(err, seatpair.ErrBurnt),
 		errors.Is(err, seatpair.ErrExpired), errors.Is(err, seatpair.ErrNoPairing), errors.Is(err, seatpair.ErrPending):
+		if errors.Is(err, seatpair.ErrWrongCode) && s.pr.live && s.pr.p.Phase(mono) == seatpair.PhaseNone {
+			// The try was the one that burnt the code. The pairing reads as
+			// expired from this moment, and the desk is told, once: nothing of
+			// the code or of the try is in the line.
+			s.pr.ends = now
+			s.notice("a pairing code was burnt by wrong tries; start the pairing again")
+		}
 		return ownerwire.SeatPairResult{}, ErrPairRefused
 	default:
 		return ownerwire.SeatPairResult{}, fmt.Errorf("ownerchannel: the pairing could not take the credential: %w", err)
 	}
-	s.pr.id = ownerjournal.KeyDisplayID(p.CredentialID)
+	id := ownerjournal.KeyDisplayID(p.CredentialID)
+	// A credential that is on the list already, revoked or not, could only
+	// fail at the confirm, after the pairing was spent and with the wrong
+	// advice. It is refused here, after the code was checked (so a wrong code
+	// still counted its try), and the pairing is ended: the code is used.
+	for _, k := range listed {
+		if k.ID == id {
+			if pid, ok := s.pr.p.PendingID(mono); ok {
+				_ = s.pr.p.Reject(pid)
+			}
+			s.pr.live, s.pr.id = false, ""
+			return ownerwire.SeatPairResult{}, ErrCredentialInvalid
+		}
+	}
+	s.pr.id = id
 	s.pr.ends = now.Add(seatpair.PendingLifetime)
 	return ownerwire.SeatPairResult{Words: append([]string(nil), fp[:]...)}, nil
 }
 
 // PairConfirm is the owner at the desk saying the six words are the same on
 // the phone (owner.pair-confirm): the pending credential goes on the list of
-// deciding keys with the kind "unverified", and the answer is its row. It needs
-// the decider and the owner's presence. It is refused with [ErrNoPairing] when
-// none waits and with [ErrPairingExpired] when its ten minutes are over. A list
+// deciding keys with the kind "unverified", and the answer is its row. The
+// params name the credential the owner compared by its pending id (the one
+// [Service.PairStatus] showed with the words), which is checked, under the
+// pairing's lock and in constant time, against the credential pending now: one
+// that is not it is refused with [ErrPairingChanged] and nothing changes. It
+// needs the decider and the owner's presence. It is refused with [ErrNoPairing]
+// when none waits and with [ErrPairingExpired] when its ten minutes are over. A list
 // that cannot be used, or that is full, is found before the pairing is touched,
 // so the credential stays pending; a list that fails while the credential is
 // put on it ends the pairing, and the owner pairs again.
-func (s *Service) PairConfirm(ctx context.Context, src Source) (ownerwire.KeyItem, error) {
+func (s *Service) PairConfirm(ctx context.Context, src Source, p ownerwire.PairPendingParams) (ownerwire.KeyItem, error) {
 	_, done, err := s.begin(ctx)
 	if err != nil {
 		return ownerwire.KeyItem{}, err
@@ -282,9 +318,12 @@ func (s *Service) PairConfirm(ctx context.Context, src Source) (ownerwire.KeyIte
 	defer done()
 	s.pmu.Lock()
 	defer s.pmu.Unlock()
-	now := s.now()
+	mono, now := s.nowBoth()
 	if err := s.pairGate(src, now, true); err != nil {
 		return ownerwire.KeyItem{}, err
+	}
+	if _, err := ownerwire.EncodePairPendingParams(p); err != nil {
+		return ownerwire.KeyItem{}, refuse(record.CodeRecordInvalid, "the parameters are not valid for this operation")
 	}
 	ks, keys, err := s.usableKeys()
 	if err != nil {
@@ -293,11 +332,13 @@ func (s *Service) PairConfirm(ctx context.Context, src Source) (ownerwire.KeyIte
 	if len(keys) >= ownerjournal.MaxKeys {
 		return ownerwire.KeyItem{}, ErrKeysFull
 	}
-	cred, err := s.pr.p.Confirm(now)
+	cred, err := s.pr.p.Confirm(mono, p.PendingID)
 	switch {
 	case err == nil:
 	case errors.Is(err, seatpair.ErrNotPending):
 		return ownerwire.KeyItem{}, ErrNoPairing
+	case errors.Is(err, seatpair.ErrPendingID):
+		return ownerwire.KeyItem{}, ErrPairingChanged
 	case errors.Is(err, seatpair.ErrPendingExpired):
 		return ownerwire.KeyItem{}, ErrPairingExpired
 	default:
@@ -305,7 +346,7 @@ func (s *Service) PairConfirm(ctx context.Context, src Source) (ownerwire.KeyIte
 	}
 	s.pr.live, s.pr.id = false, ""
 	stored, err := ks.AddKey(ownerjournal.NewKey{
-		CredentialID: cred.ID, PublicKey: cred.SPKI, Kind: cred.Kind, PairedAt: cred.PairedAt,
+		CredentialID: cred.ID, PublicKey: cred.SPKI, Kind: cred.Kind, PairedAt: cred.PairedAt.Round(0),
 		Words: cred.Fingerprint().String(),
 	})
 	if err != nil {
@@ -318,9 +359,17 @@ func (s *Service) PairConfirm(ctx context.Context, src Source) (ownerwire.KeyIte
 // PairReject drops the pending credential and ends the pairing
 // (owner.pair-reject), and journals it with the credential's display id and
 // fingerprint words and no key. It needs the decider and the owner's presence.
-// It is refused with [ErrNoPairing] when none waits. The list is checked
-// first, so a rejection that could not be journaled is not made.
-func (s *Service) PairReject(ctx context.Context, src Source) error {
+// The params name the credential by its pending id, as for
+// [Service.PairConfirm]: another credential's id is refused with
+// [ErrPairingChanged] and nothing changes. It is refused with [ErrNoPairing]
+// when none waits. The list is checked before the pairing is touched, so a
+// list that cannot be used leaves the credential pending. Once that check has
+// passed the credential is dropped and the pairing ended, before the journal is
+// written, because a drop only lowers what anyone may do; when the journal then
+// fails (an error of the store, or the cap on rejected pairings) the call
+// answers that error although the rejection took effect, and the credential is
+// not pending any more, which the status shows.
+func (s *Service) PairReject(ctx context.Context, src Source, p ownerwire.PairPendingParams) error {
 	_, done, err := s.begin(ctx)
 	if err != nil {
 		return err
@@ -328,27 +377,40 @@ func (s *Service) PairReject(ctx context.Context, src Source) error {
 	defer done()
 	s.pmu.Lock()
 	defer s.pmu.Unlock()
-	now := s.now()
+	mono, now := s.nowBoth()
 	if err := s.pairGate(src, now, true); err != nil {
 		return err
+	}
+	if _, err := ownerwire.EncodePairPendingParams(p); err != nil {
+		return refuse(record.CodeRecordInvalid, "the parameters are not valid for this operation")
 	}
 	ks, _, err := s.usableKeys()
 	if err != nil {
 		return err
 	}
-	fp, ok := s.pr.p.Pending(now)
+	fp, ok := s.pr.p.Pending(mono)
 	id := s.pr.id
+	rejectErr := func() error {
+		switch err := s.pr.p.Reject(p.PendingID); {
+		case err == nil:
+			return nil
+		case errors.Is(err, seatpair.ErrPendingID):
+			return ErrPairingChanged
+		default:
+			return ErrNoPairing
+		}
+	}
 	if !ok {
 		// The pending credential's time may be over; it is still dropped
 		// (seatpair's Reject needs no time), but it has no words to journal.
-		if err := s.pr.p.Reject(); err != nil {
-			return ErrNoPairing
+		if err := rejectErr(); err != nil {
+			return err
 		}
 		s.pr.live, s.pr.id = false, ""
 		return nil
 	}
-	if err := s.pr.p.Reject(); err != nil {
-		return ErrNoPairing
+	if err := rejectErr(); err != nil {
+		return err
 	}
 	s.pr.live, s.pr.id = false, ""
 	if err := ks.AppendRejected(ownerjournal.RejectedPairing{ID: id, Words: strings.Join(fp[:], " "), At: now}); err != nil {

@@ -68,6 +68,7 @@ const (
 	ownerCodePairingOpen       clientapi.ErrorCode = "pairing-open"
 	ownerCodePairingNone       clientapi.ErrorCode = "pairing-none"
 	ownerCodePairingExpired    clientapi.ErrorCode = "pairing-expired"
+	ownerCodePairingChanged    clientapi.ErrorCode = "pairing-changed"
 	ownerCodePairingRefused    clientapi.ErrorCode = "pairing-refused"
 	ownerCodeCredentialInvalid clientapi.ErrorCode = "credential-invalid"
 )
@@ -81,6 +82,7 @@ const (
 	msgOwnerPairingOpen       = "a pairing is already open; start again with replace to end it"
 	msgOwnerPairingNone       = "no credential is waiting to be confirmed or rejected"
 	msgOwnerPairingExpired    = "the credential waited too long; the pairing is over"
+	msgOwnerPairingChanged    = "the pending credential is not the one you compared; look at the words again"
 	msgOwnerPairingRefused    = "the pairing was refused"
 	msgOwnerCredentialInvalid = "the credential cannot be used"
 	msgOwnerNoSeat            = "this build has no seat that may pair a phone"
@@ -405,16 +407,18 @@ func (x *ownerExt) pairStart(ctx context.Context, params json.RawMessage) (any, 
 	return ownerResult(x.svc.PairStart(ctx, s, p))(ownerwire.EncodePairStartResult, x)
 }
 
-// pairConfirm answers owner.pair-confirm.
+// pairConfirm answers owner.pair-confirm. Its params name the pending
+// credential, and the service refuses one that is not the one pending now.
 func (x *ownerExt) pairConfirm(ctx context.Context, params json.RawMessage) (any, *clientapi.ErrorBody) {
 	s, fail := x.pairSource()
 	if fail != nil {
 		return nil, fail
 	}
-	if f := ownerNothing(params); f != nil {
-		return nil, f
+	p, err := ownerwire.DecodePairPendingParams(params)
+	if err != nil {
+		return nil, x.fail(err)
 	}
-	return ownerResult(x.svc.PairConfirm(ctx, s))(ownerwire.EncodeKeyItem, x)
+	return ownerResult(x.svc.PairConfirm(ctx, s, p))(ownerwire.EncodeKeyItem, x)
 }
 
 // pairReject answers owner.pair-reject.
@@ -423,10 +427,11 @@ func (x *ownerExt) pairReject(ctx context.Context, params json.RawMessage) (any,
 	if fail != nil {
 		return nil, fail
 	}
-	if f := ownerNothing(params); f != nil {
-		return nil, f
+	p, err := ownerwire.DecodePairPendingParams(params)
+	if err != nil {
+		return nil, x.fail(err)
 	}
-	if err := x.svc.PairReject(ctx, s); err != nil {
+	if err := x.svc.PairReject(ctx, s, p); err != nil {
 		return nil, x.fail(err)
 	}
 	return json.RawMessage(ownerwire.EncodeNothing()), nil
@@ -474,7 +479,18 @@ func (x *ownerExt) seatPair(ctx context.Context, params json.RawMessage) (any, *
 	}
 	if !ok {
 		x.oc.counts.SeatRefused.Add(1)
-		x.oc.logf("owner channel: a seat.pair call was refused: this build has no seat source (peer pid %d)", c.pid)
+		// The refusals of a connection are bounded as the writes of one that is
+		// not the decider are: the first DecisionRefusalBound are logged, the
+		// next ends the connection (counted once), and the calls after that
+		// write nothing, so a peer cannot flood the log.
+		switch n := x.reg.refuseDecide(c); {
+		case n < DecisionRefusalBound+1:
+			x.oc.logf("owner channel: a seat.pair call was refused: this build has no seat source (peer pid %d)", c.pid)
+		case n == DecisionRefusalBound+1:
+			x.oc.counts.DecisionFlooded.Add(1)
+			x.oc.logf("owner channel: a connection sent more than %d refused seat.pair calls and was closed (peer pid %d)", DecisionRefusalBound, c.pid)
+			_ = c.Close()
+		}
 		return nil, &clientapi.ErrorBody{Code: ownerCodeUnavailable, Message: msgOwnerNoSeat}
 	}
 	p, err := ownerwire.DecodeSeatPairParams(params)
@@ -534,6 +550,8 @@ func (x *ownerExt) fail(err error) *clientapi.ErrorBody {
 		return &clientapi.ErrorBody{Code: ownerCodePairingNone, Message: msgOwnerPairingNone}
 	case errors.Is(err, ownerchannel.ErrPairingExpired):
 		return &clientapi.ErrorBody{Code: ownerCodePairingExpired, Message: msgOwnerPairingExpired}
+	case errors.Is(err, ownerchannel.ErrPairingChanged):
+		return &clientapi.ErrorBody{Code: ownerCodePairingChanged, Message: msgOwnerPairingChanged}
 	case errors.Is(err, ownerchannel.ErrPairRefused):
 		return &clientapi.ErrorBody{Code: ownerCodePairingRefused, Message: msgOwnerPairingRefused}
 	case errors.Is(err, ownerchannel.ErrCredentialInvalid):

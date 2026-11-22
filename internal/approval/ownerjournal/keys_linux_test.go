@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -436,6 +437,11 @@ func TestARecordAgainstTheRulesOfTheListIsDamage(t *testing.T) {
 		if err := os.WriteFile(path, data, 0o600); err != nil {
 			t.Fatal(err)
 		}
+		// The head that goes with the list, so the rules are what is tested.
+		head := fmt.Sprintf("%s %d %s\n", keysHeadHeader, len(recs), hex.EncodeToString(prev[:]))
+		if err := os.WriteFile(headPathOf(path), []byte(head), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		return path, data
 	}
 	n := aKey(1)
@@ -776,23 +782,461 @@ func TestTheFileNameIsFixed(t *testing.T) {
 
 func sha256Of(b []byte) [32]byte { return sha256.Sum256(b) }
 
-// Records lost from the end of the file are not found by the digests, which
-// say so in the package's words: the list that is left is a whole one. A
-// damaged file in the middle is found; a file cut at a line is not. The test
-// pins what the doc comment says, so a change of it is seen.
-func TestRecordsLostFromTheEndLeaveAShorterListThatHolds(t *testing.T) {
+// Records lost from the end of the file are not found by the digests of the
+// chain, which would leave a shorter list that holds; they are found by the
+// head, the record count and digest of the last record that keys.head keeps.
+// This test once pinned the opposite (the shorter list opened), which let a
+// lost revocation make a revoked key good again after a restart; it now holds
+// that the list is refused as damaged, with the cause named, and is left as it
+// is. TestACutThatTheHeadFollowsIsNotFound pins what remains.
+func TestRecordsLostFromTheEndAreDamage(t *testing.T) {
+	for name, cut := range map[string]func(lines [][]byte) []byte{
+		"the last credential": func(l [][]byte) []byte { return bytes.Join(l[:2], nil) },
+		"the last revocation": func(l [][]byte) []byte { return bytes.Join(l[:3], nil) },
+		"every record":        func(l [][]byte) []byte { return l[0] },
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := newKeyPath(t)
+			k := mustOpenKeys(t, path)
+			a := mustAdd(t, k, 1)
+			mustAdd(t, k, 2)
+			if err := k.RevokeKeys([]string{a.ID}, base.Add(time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			mustClose2(t, k)
+			lines := bytes.SplitAfter(fileBytes(t, path), []byte("\n"))
+			cutBytes := cut(lines)
+			if err := os.WriteFile(path, cutBytes, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := OpenKeys(path)
+			if !errors.Is(err, ErrDamaged) || !strings.Contains(err.Error(), "suffix lost") {
+				t.Fatalf("a list with records lost from its end: %v, want %v (suffix lost)", err, ErrDamaged)
+			}
+			if !bytes.Equal(fileBytes(t, path), cutBytes) {
+				t.Fatal("the refused file was changed")
+			}
+		})
+	}
+}
+
+// What the head cannot hold: someone who can write the folder can cut the list
+// and write the head to match, and the list that is left holds. The package
+// doc names this limit.
+func TestACutThatTheHeadFollowsIsNotFound(t *testing.T) {
 	path := newKeyPath(t)
 	k := mustOpenKeys(t, path)
 	a := mustAdd(t, k, 1)
+	mustClose2(t, k)
+	headOf1 := fileBytes(t, headPathOf(path))
+	k = mustOpenKeys(t, path)
 	mustAdd(t, k, 2)
 	mustClose2(t, k)
 	lines := bytes.SplitAfter(fileBytes(t, path), []byte("\n"))
-	cut := bytes.Join(lines[:2], nil) // the header and the first record
-	if err := os.WriteFile(path, cut, 0o600); err != nil {
+	if err := os.WriteFile(path, bytes.Join(lines[:2], nil), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(headPathOf(path), headOf1, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	k = mustOpenKeys(t, path)
 	if keys := mustKeys(t, k); len(keys) != 1 || keys[0].ID != a.ID {
 		t.Fatalf("%+v", keys)
+	}
+}
+
+// headPathOf is where the head of the list at path is.
+func headPathOf(path string) string {
+	return filepath.Join(filepath.Dir(path), KeysHeadFileName)
+}
+
+// Same-length damage while the list is open: a byte of a record changed in
+// place. Every call that reads or writes finds it, marks the list damaged, and
+// refuses everything after.
+func TestSameLengthDamageWhileOpenIsFound(t *testing.T) {
+	flipInPlace := func(t *testing.T, path string, line int) {
+		t.Helper()
+		data := fileBytes(t, path)
+		lines := bytes.SplitAfter(data, []byte("\n"))
+		off := 0
+		for i := 0; i < line; i++ {
+			off += len(lines[i])
+		}
+		// A digit of the digest of that line: the length does not change.
+		if data[off] == '0' {
+			data[off] = '1'
+		} else {
+			data[off] = '0'
+		}
+		f, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		if _, err := f.WriteAt(data, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("found at Keys", func(t *testing.T) {
+		path := newKeyPath(t)
+		k := mustOpenKeys(t, path)
+		mustAdd(t, k, 1)
+		mustAdd(t, k, 2)
+		flipInPlace(t, path, 1)
+		if _, err := k.Keys(); !errors.Is(err, ErrDamaged) {
+			t.Fatalf("Keys: %v, want %v", err, ErrDamaged)
+		}
+		// Refused for good, whatever is done to the file after.
+		if _, err := k.AddKey(aKey(3)); !errors.Is(err, ErrDamaged) {
+			t.Fatalf("AddKey: %v, want %v", err, ErrDamaged)
+		}
+		if err := k.RevokeKeys(nil, base); !errors.Is(err, ErrDamaged) {
+			t.Fatalf("RevokeKeys: %v, want %v", err, ErrDamaged)
+		}
+		if err := k.AppendRejected(RejectedPairing{ID: KeyDisplayID(aKey(1).CredentialID), Words: keyWords, At: base}); !errors.Is(err, ErrDamaged) {
+			t.Fatalf("AppendRejected: %v, want %v", err, ErrDamaged)
+		}
+		flipInPlace(t, path, 1) // put it back
+		if _, err := k.Keys(); !errors.Is(err, ErrDamaged) {
+			t.Fatalf("Keys after the file was put right: %v, want %v", err, ErrDamaged)
+		}
+	})
+	t.Run("found before an append", func(t *testing.T) {
+		path := newKeyPath(t)
+		k := mustOpenKeys(t, path)
+		mustAdd(t, k, 1)
+		flipInPlace(t, path, 1)
+		before := fileBytes(t, path)
+		if _, err := k.AddKey(aKey(2)); !errors.Is(err, ErrDamaged) {
+			t.Fatalf("AddKey: %v, want %v", err, ErrDamaged)
+		}
+		if !bytes.Equal(before, fileBytes(t, path)) {
+			t.Fatal("a record was appended to a damaged chain")
+		}
+		if _, err := k.Keys(); !errors.Is(err, ErrDamaged) {
+			t.Fatalf("Keys: %v, want %v", err, ErrDamaged)
+		}
+	})
+	t.Run("a revocation is not made on a damaged chain either", func(t *testing.T) {
+		path := newKeyPath(t)
+		k := mustOpenKeys(t, path)
+		a := mustAdd(t, k, 1)
+		flipInPlace(t, path, 1)
+		if err := k.RevokeKeys([]string{a.ID}, base); !errors.Is(err, ErrDamaged) {
+			t.Fatalf("RevokeKeys: %v, want %v", err, ErrDamaged)
+		}
+	})
+	t.Run("the head changed under the list", func(t *testing.T) {
+		path := newKeyPath(t)
+		k := mustOpenKeys(t, path)
+		mustAdd(t, k, 1)
+		other := newKeyPath(t)
+		k2 := mustOpenKeys(t, other)
+		mustAdd(t, k2, 2)
+		mustClose2(t, k2)
+		if err := os.WriteFile(headPathOf(path), fileBytes(t, headPathOf(other)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := k.AddKey(aKey(3)); !errors.Is(err, ErrDamaged) {
+			t.Fatalf("AddKey: %v, want %v", err, ErrDamaged)
+		}
+		if _, err := k.Keys(); !errors.Is(err, ErrDamaged) {
+			t.Fatalf("Keys: %v, want %v", err, ErrDamaged)
+		}
+	})
+	t.Run("a list that nobody touched is not refused", func(t *testing.T) {
+		path := newKeyPath(t)
+		k := mustOpenKeys(t, path)
+		for i := 1; i <= 5; i++ {
+			mustAdd(t, k, i)
+			mustKeys(t, k)
+		}
+		if len(mustKeys(t, k)) != 5 {
+			t.Fatal("the keys are not all there")
+		}
+	})
+}
+
+// The head keeps the count and digest of the last record, written after the
+// record is on the disk. A crash between the two leaves the file one record
+// ahead of the head, which chains from it: that is accepted and the head is
+// made right.
+func TestACrashBetweenTheAppendAndTheHeadIsRepaired(t *testing.T) {
+	path := newKeyPath(t)
+	k := mustOpenKeys(t, path)
+	a := mustAdd(t, k, 1)
+	oldHead := fileBytes(t, headPathOf(path))
+	b := mustAdd(t, k, 2)
+	mustClose2(t, k)
+	newHead := fileBytes(t, headPathOf(path))
+	if bytes.Equal(oldHead, newHead) {
+		t.Fatal("the head did not move with the record")
+	}
+	// The crash: the record is in the file, the head is the one before.
+	if err := os.WriteFile(headPathOf(path), oldHead, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	k = mustOpenKeys(t, path)
+	if keys := mustKeys(t, k); len(keys) != 2 || keys[0].ID != a.ID || keys[1].ID != b.ID {
+		t.Fatalf("%+v", keys)
+	}
+	if got := fileBytes(t, headPathOf(path)); !bytes.Equal(got, newHead) {
+		t.Fatalf("the head was not repaired: %q, want %q", got, newHead)
+	}
+	mustClose2(t, k)
+	// And a revocation of several credentials, written in one step, is the same
+	// crash with more than one record ahead.
+	k = mustOpenKeys(t, path)
+	before := fileBytes(t, headPathOf(path))
+	if err := k.RevokeKeys([]string{a.ID, b.ID}, base.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	mustClose2(t, k)
+	if err := os.WriteFile(headPathOf(path), before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	k = mustOpenKeys(t, path)
+	for _, key := range mustKeys(t, k) {
+		if !key.Revoked {
+			t.Fatalf("a revocation that was in the file is lost: %+v", key)
+		}
+	}
+}
+
+// A file that is ahead of the head by a record that does not chain from it is
+// not a crash between two writes, and neither is a head of another chain.
+func TestAFileAheadOfTheHeadThatDoesNotChainIsDamage(t *testing.T) {
+	path := newKeyPath(t)
+	k := mustOpenKeys(t, path)
+	mustAdd(t, k, 1)
+	mustAdd(t, k, 2)
+	mustClose2(t, k)
+	other := newKeyPath(t)
+	k2 := mustOpenKeys(t, other)
+	mustAdd(t, k2, 7)
+	mustClose2(t, k2)
+	// A head with a count of one, but of another chain.
+	if err := os.WriteFile(headPathOf(path), fileBytes(t, headPathOf(other)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenKeys(path); !errors.Is(err, ErrDamaged) {
+		t.Fatalf("%v, want %v", err, ErrDamaged)
+	}
+}
+
+// The head is the list's own: a list with records and no head is damaged, a
+// list with none gets one, and a head that is not of the form is damage.
+func TestTheHeadFile(t *testing.T) {
+	t.Run("a new list makes its head", func(t *testing.T) {
+		path := newKeyPath(t)
+		k := mustOpenKeys(t, path)
+		info, err := os.Lstat(headPathOf(path))
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+			t.Fatalf("the head: %v, %v", info, err)
+		}
+		mustClose2(t, k)
+		if _, err := os.Lstat(headPathOf(path) + ".new"); err == nil {
+			t.Fatal("the temporary name of the head is left")
+		}
+	})
+	t.Run("the head has the mode of the list after every write", func(t *testing.T) {
+		path := newKeyPath(t)
+		k := mustOpenKeys(t, path)
+		mustAdd(t, k, 1)
+		a := mustAdd(t, k, 2)
+		if err := k.RevokeKeys([]string{a.ID}, base); err != nil {
+			t.Fatal(err)
+		}
+		if err := k.AppendRejected(RejectedPairing{ID: a.ID, Words: keyWords, At: base}); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Lstat(headPathOf(path))
+		if err != nil || info.Mode().Perm() != 0o600 || info.Mode().Type() != 0 {
+			t.Fatalf("the head: %v, %v", info, err)
+		}
+		if _, err := os.Lstat(headPathOf(path) + ".new"); err == nil {
+			t.Fatal("the temporary name of the head is left")
+		}
+	})
+	t.Run("an existing list with records and no head is damaged", func(t *testing.T) {
+		path := newKeyPath(t)
+		k := mustOpenKeys(t, path)
+		mustAdd(t, k, 1)
+		mustClose2(t, k)
+		if err := os.Remove(headPathOf(path)); err != nil {
+			t.Fatal(err)
+		}
+		before := fileBytes(t, path)
+		if _, err := OpenKeys(path); !errors.Is(err, ErrDamaged) || !strings.Contains(err.Error(), "head") {
+			t.Fatalf("%v, want %v naming the head", err, ErrDamaged)
+		}
+		if !bytes.Equal(before, fileBytes(t, path)) {
+			t.Fatal("the refused list was changed")
+		}
+		if _, err := os.Lstat(headPathOf(path)); err == nil {
+			t.Fatal("a head was made for a list that has records")
+		}
+	})
+	t.Run("a list with no records and no head gets one", func(t *testing.T) {
+		path := newKeyPath(t)
+		k := mustOpenKeys(t, path)
+		mustClose2(t, k)
+		if err := os.Remove(headPathOf(path)); err != nil {
+			t.Fatal(err)
+		}
+		k = mustOpenKeys(t, path)
+		mustAdd(t, k, 1)
+		mustClose2(t, k)
+		if _, err := OpenKeys(path); err != nil {
+			t.Fatal(err)
+		}
+	})
+	for name, content := range map[string]string{
+		"empty":            "",
+		"no line feed":     "ataniq-ownerkeys-head 1 0 " + strings.Repeat("0", 64),
+		"another version":  "ataniq-ownerkeys-head 2 0 " + strings.Repeat("0", 64) + "\n",
+		"a negative count": "ataniq-ownerkeys-head 1 -1 " + strings.Repeat("0", 64) + "\n",
+		"a capital digest": "ataniq-ownerkeys-head 1 0 " + strings.Repeat("A", 64) + "\n",
+		"a short digest":   "ataniq-ownerkeys-head 1 0 " + strings.Repeat("0", 63) + "\n",
+		"garbage":          strings.Repeat("\x00", 90),
+		"two lines":        "ataniq-ownerkeys-head 1 0 " + strings.Repeat("0", 64) + "\nx\n",
+		"too long":         strings.Repeat("x", 4096),
+	} {
+		t.Run("a head that is "+name, func(t *testing.T) {
+			path := newKeyPath(t)
+			k := mustOpenKeys(t, path)
+			mustClose2(t, k)
+			if err := os.WriteFile(headPathOf(path), []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := OpenKeys(path); !errors.Is(err, ErrDamaged) {
+				t.Fatalf("%v, want %v", err, ErrDamaged)
+			}
+		})
+	}
+	t.Run("a head with a count the list does not reach", func(t *testing.T) {
+		path := newKeyPath(t)
+		k := mustOpenKeys(t, path)
+		mustClose2(t, k)
+		head := "ataniq-ownerkeys-head 1 5 " + strings.Repeat("0", 64) + "\n"
+		if err := os.WriteFile(headPathOf(path), []byte(head), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := OpenKeys(path); !errors.Is(err, ErrDamaged) {
+			t.Fatalf("%v, want %v", err, ErrDamaged)
+		}
+	})
+}
+
+// The head is held to the list's own trust checks.
+func TestTheHeadFileIsHeldToTheTrustChecksOfTheList(t *testing.T) {
+	prepare := func(t *testing.T) string {
+		path := newKeyPath(t)
+		k := mustOpenKeys(t, path)
+		mustAdd(t, k, 1)
+		mustClose2(t, k)
+		return path
+	}
+	for name, mode := range map[string]os.FileMode{"readable by the group": 0o640, "executable": 0o700, "readable by all": 0o644, "not readable": 0o400} {
+		t.Run(name, func(t *testing.T) {
+			path := prepare(t)
+			if err := os.Chmod(headPathOf(path), mode); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := OpenKeys(path); !errors.Is(err, ErrNotPrivate) {
+				t.Fatalf("%v, want %v", err, ErrNotPrivate)
+			}
+		})
+	}
+	t.Run("a second name", func(t *testing.T) {
+		path := prepare(t)
+		if err := os.Link(headPathOf(path), headPathOf(path)+".again"); err != nil {
+			t.Skip(err)
+		}
+		if _, err := OpenKeys(path); !errors.Is(err, ErrNotPrivate) {
+			t.Fatalf("%v, want %v", err, ErrNotPrivate)
+		}
+	})
+	t.Run("a symbolic link", func(t *testing.T) {
+		path := prepare(t)
+		real := headPathOf(path) + ".real"
+		if err := os.Rename(headPathOf(path), real); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(real, headPathOf(path)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := OpenKeys(path); !errors.Is(err, ErrNotPrivate) {
+			t.Fatalf("%v, want %v", err, ErrNotPrivate)
+		}
+	})
+	t.Run("a folder in its place", func(t *testing.T) {
+		path := prepare(t)
+		os.Remove(headPathOf(path))
+		if err := os.Mkdir(headPathOf(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := OpenKeys(path); !errors.Is(err, ErrNotPrivate) {
+			t.Fatalf("%v, want %v", err, ErrNotPrivate)
+		}
+	})
+	t.Run("changed while the list is open", func(t *testing.T) {
+		path := newKeyPath(t)
+		k := mustOpenKeys(t, path)
+		mustAdd(t, k, 1)
+		if err := os.Chmod(headPathOf(path), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := k.AddKey(aKey(2)); err == nil {
+			t.Fatal("a record was appended with a head the group can read")
+		}
+		if _, err := k.Keys(); err == nil {
+			t.Fatal("Keys read a list whose head the group can read")
+		}
+	})
+}
+
+// A write whose head cannot be written stops the list as a failed write does,
+// and the record that is in the file is taken as the crash it is on the next open.
+func TestAHeadThatCannotBeWrittenStopsTheList(t *testing.T) {
+	path := newKeyPath(t)
+	k := mustOpenKeys(t, path)
+	mustAdd(t, k, 1)
+	// A folder in the way of the temporary name makes the head unwritable.
+	if err := os.Mkdir(headPathOf(path)+".new", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.AddKey(aKey(2)); !errors.Is(err, ErrUncertain) {
+		t.Fatalf("AddKey: %v, want %v", err, ErrUncertain)
+	}
+	if _, err := k.Keys(); !errors.Is(err, ErrUncertain) {
+		t.Fatalf("Keys: %v, want %v", err, ErrUncertain)
+	}
+	mustClose2(t, k)
+	os.Remove(headPathOf(path) + ".new")
+	k = mustOpenKeys(t, path)
+	if keys := mustKeys(t, k); len(keys) != 2 {
+		t.Fatalf("%d keys: the record that reached the file is not there", len(keys))
+	}
+}
+
+// Close called twice returns what the first call returned.
+func TestCloseTwiceReturnsWhatTheFirstReturned(t *testing.T) {
+	path := newKeyPath(t)
+	k := mustOpenKeys(t, path)
+	first := k.Close()
+	if second := k.Close(); second != first {
+		t.Fatalf("the second Close returned %v, the first %v", second, first)
+	}
+	// A list whose descriptor is closed under it: the first Close reports it,
+	// the second says the same.
+	k = mustOpenKeys(t, newKeyPath(t))
+	k.file.Close()
+	first = k.Close()
+	if first == nil {
+		t.Fatal("the first Close of a list with a closed file returned nil")
+	}
+	if second := k.Close(); second == nil || second.Error() != first.Error() {
+		t.Fatalf("the second Close returned %v, the first %v", second, first)
 	}
 }

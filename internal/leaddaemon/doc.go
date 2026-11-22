@@ -246,15 +246,20 @@
 // decider's connection only: from another they are refused not-decider before
 // their params are read, and count against the same per-connection bound as a
 // decision frame, past which the connection is closed (OwnerCounts). The
-// service decides presence. Each error of the service has a code of its own and
+// service decides presence. Confirm and reject take the pending id of the
+// credential the owner compared ([ownerwire.PairPendingParams], required), and
+// the service refuses one that is not the credential pending now with
+// pairing-changed, changing nothing. Each error of the service has a code of its own and
 // a fixed text (keys-unavailable, keys-full, key-unknown, key-ambiguous,
-// pairing-open, pairing-none, pairing-expired, pairing-refused,
-// credential-invalid); a cause that names a path is in the log and not in the
+// pairing-open, pairing-none, pairing-expired, pairing-changed,
+// pairing-refused, credential-invalid); a cause that names a path is in the log and not in the
 // answer, and the pairing code, which is in the result of owner.pair-start
 // and nowhere else, is never logged. seat.pair is the seat app's call: it is
 // answered only to a connection a seat source says is a seat, and no build has
 // one, so it is refused "unavailable" to every connection before its params are
-// read.
+// read. The refused calls of a connection count against the same bound as its
+// refused writes: the first [DecisionRefusalBound] are logged, the next closes
+// the connection and is logged once, and no line is written for any after.
 //
 // The same-user limit of the socket holds here as everywhere: any process of
 // the owner's user can say it is the console, and one with a terminal of its

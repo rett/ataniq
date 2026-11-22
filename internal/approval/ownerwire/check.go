@@ -377,9 +377,17 @@ func checkPairStatus(s *PairStatus) error {
 	}
 	if s.Phase == PairPending {
 		c.words(s.Words, "pair.words")
+		c.need(record.IsLowerHex(s.PendingID, PendingIDLength), "pair.pending_id is not "+strconv.Itoa(PendingIDLength)+" lower-case hexadecimal digits")
 	} else {
 		c.need(s.Words == nil, "pair.words is given for a pairing that is not pending")
+		c.need(s.PendingID == "", "pair.pending_id is given for a pairing that is not pending")
 	}
+	return c.result()
+}
+
+func checkPairPendingParams(p *PairPendingParams) error {
+	c := &checker{invalid: record.CodeRecordInvalid}
+	c.need(record.IsLowerHex(p.PendingID, PendingIDLength), "pair.pending_id is not "+strconv.Itoa(PendingIDLength)+" lower-case hexadecimal digits")
 	return c.result()
 }
 
