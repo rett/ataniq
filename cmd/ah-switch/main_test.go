@@ -367,8 +367,10 @@ func TestRecoverForms(t *testing.T) {
 		{"--root", root, "--asked", "x", "status"},
 		{"--root", root, "ack"},
 		{"--root", root, "ack", "--asked", ""},
-		{"--root", root, "ack", "--asked", "x", "--allow-exec"},
-		{"--root", root, "--rollback-to", "previous", "ack", "--asked", "x"},
+		// A valid --txn and --asked, so that each of these can fail only
+		// for the flag it names.
+		{"--root", root, "ack", "--txn", "0123456789abcdef0123456789abcdef", "--asked", "x", "--allow-exec"},
+		{"--root", root, "--rollback-to", "previous", "ack", "--txn", "0123456789abcdef0123456789abcdef", "--asked", "x"},
 		{"--root", root, "ack", "--asked", "x"},
 		{"--root", root, "ack", "--txn", "", "--asked", "x"},
 		{"--root", root, "ack", "--txn", "0123456789abcdef0123456789abcdef", "--asked", ""},
