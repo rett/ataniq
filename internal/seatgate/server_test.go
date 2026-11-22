@@ -785,6 +785,39 @@ func TestServerRequestDeadline(t *testing.T) {
 	}
 }
 
+// An id has one answer pending at a time, which is not one handler at a time:
+// the answer deadline-exceeded frees the id while a handler that ignores its
+// context still runs, and a request that reuses the id is served then (the
+// wording of the package documentation).
+func TestServerIdIsFreeAtTheDeadlineAnswerWhileItsHandlerStillRuns(t *testing.T) {
+	leakCheck(t)
+	release := make(chan struct{})
+	var running atomic.Int32
+	var overlap atomic.Bool
+	e := startServer(t, func(c *ServerConfig) { c.RequestTimeout = 100 * time.Millisecond }, HandlerFunc(
+		func(ctx context.Context, _ Peer, op string, _ json.RawMessage) (json.RawMessage, error) {
+			if op == "t.ignores" {
+				running.Add(1)
+				defer running.Add(-1)
+				<-release
+				return nil, nil
+			}
+			overlap.Store(running.Load() > 0)
+			return json.RawMessage(`{"ok":true}`), nil
+		}))
+	defer close(release)
+	r := e.helloed()
+	if resp := r.call(2, "t.ignores", ""); resp.Code != CodeDeadline {
+		t.Fatalf("%+v", resp)
+	}
+	if resp := r.call(2, "t.quick", ""); resp.Code != "" || string(resp.Result) != `{"ok":true}` {
+		t.Fatalf("the id was not free: %+v", resp)
+	}
+	if !overlap.Load() {
+		t.Fatal("the first handler had returned: the test did not test the overlap")
+	}
+}
+
 func TestServerConcurrentRequestsOnOneConnection(t *testing.T) {
 	leakCheck(t)
 	e := startServer(t, func(c *ServerConfig) { c.RateMax = 1000 }, HandlerFunc(

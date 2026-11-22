@@ -88,7 +88,11 @@
 // answer is being written waits for the write, since a client may have the
 // answer before the server's write returns: if the write succeeds the id is
 // free and the request is served; if it fails the connection is closed and the
-// request is not served. So one id never has two operations in flight.
+// request is not served. So one id never has two answers pending. That is
+// about answers, not about handlers: a request that is answered
+// deadline-exceeded has its answer written, which frees its id, though its
+// handler may still be running, so a handler that ignores its context can
+// still be running when a request with the same id is served.
 // Responses may come in any order; the id says which request each answers. On
 // shutdown (the context of Serve is done) the server stops accepting, lets
 // requests in flight be answered for up to the grace period and closes
