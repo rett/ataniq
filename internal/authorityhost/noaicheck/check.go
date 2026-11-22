@@ -25,6 +25,7 @@ const (
 	KindUnreadable = "unreadable" // a place the check must look into but cannot
 	KindPolicy     = "policy"     // a release policy list is empty or missing (--require-policy)
 	KindIncomplete = "incomplete" // a check could not cover all it must: the run proves nothing there
+	KindUnitLink   = "unit-link"  // a unit link that loops or climbs above the root
 )
 
 // Incomplete hit names and details: a walk cut short by its depth limit

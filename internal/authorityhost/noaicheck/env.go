@@ -1,7 +1,6 @@
 package noaicheck
 
 import (
-	"errors"
 	"path"
 	"strings"
 )
@@ -27,10 +26,6 @@ var envDirs = []struct {
 	{"etc/environment.d", 1},
 	{"etc/systemd/system.conf.d", 1},
 	{"etc/systemd/user.conf.d", 1},
-	{"etc/systemd/system", 3},
-	{"etc/systemd/user", 3},
-	{"usr/lib/systemd/system", 3},
-	{"usr/lib/systemd/user", 3},
 	{"usr/lib/environment.d", 1},
 }
 
@@ -46,7 +41,6 @@ var (
 		depth int
 	}{
 		{".config/environment.d", 1},
-		{".config/systemd/user", 3},
 		{".config/fish/conf.d", 1},
 	}
 )
@@ -73,25 +67,28 @@ func ProviderKeyName(name string) bool {
 // variable's name as its detail; the value is never read into the report.
 // The files are those of /etc/environment, /etc/profile and the shells'
 // system profiles, /etc/profile.d, the environment.d folders, the systemd
-// manager configuration, every unit file and drop-in under /etc/systemd and
-// /usr/lib/systemd, every home's profiles and user units, and each file an
+// manager configuration, every unit file and drop-in systemd loads (see
+// scanUnitFiles: links into the release are followed within the root, and
+// each file is read once), every home's profiles, and each file an
 // EnvironmentFile= line of those names.
 func (c *Checker) CheckEnv() {
 	done := map[string]bool{}
 	var queue []string
 	scan := func(rel string) {
-		p, data, err := c.t.readFile(rel, maxEnvFile)
-		if errors.Is(err, errNotRegular) && p == "dev/null" {
-			return // a masked file
-		}
+		p, err := c.t.resolve(rel)
 		if err != nil {
 			c.unreadable(rel, err)
 			return
 		}
-		if done[p] {
+		if done[p] || p == "dev/null" { // read once; a masked file is empty
 			return
 		}
 		done[p] = true
+		_, data, err := c.t.readFile(p, maxEnvFile)
+		if err != nil {
+			c.unreadable(p, err)
+			return
+		}
 		names, files := envNames(string(data))
 		for _, n := range names {
 			c.hit(KindEnv, show(p), n)
@@ -114,6 +111,7 @@ func (c *Checker) CheckEnv() {
 	for _, d := range envDirs {
 		scanDir(d.rel, d.depth)
 	}
+	c.scanUnitFiles(scan)
 	for _, home := range c.homeFolders() {
 		for _, f := range homeEnvFiles {
 			scan(path.Join(home, f))

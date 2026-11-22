@@ -251,15 +251,27 @@ What it detects, by kind:
   `*_AUTH_TOKEN`, `ANTHROPIC_*`, `OPENAI_*`, `GEMINI_*`, `CLAUDE_*`,
   `CODEX_*`) set or passed in `/etc/environment`, `/etc/profile` and the
   shells' system profiles, `/etc/profile.d`, the `environment.d` folders,
-  the systemd manager configuration and its drop-ins, any unit file or
-  drop-in under `/etc/systemd` and `/usr/lib/systemd`, a home's profiles
-  and user units, or a file an `EnvironmentFile=` line names. The detail is
-  the variable's name.
+  the systemd manager configuration and its drop-ins, a unit file or
+  drop-in systemd loads, a home's profiles, or a file an
+  `EnvironmentFile=` line names. The unit files are those at the top of
+  `/etc/systemd/system`, `/run/systemd/system`, `/usr/lib/systemd/system`,
+  the matching `user` folders and a home's `.config/systemd/user`, the
+  units their `*.wants`, `*.requires` and `*.upholds` folders link to, and
+  the files of their `*.d` drop-in folders. A unit that is a link (into
+  `current/etc/systemd`, say) is read where it leads within the root, each
+  file once; a masked unit (a link to `/dev/null`) is not read. The detail
+  is the variable's name.
 - `process`: a running process whose name or executable is named like an
   executable of `ai-names.list`.
 - `unit`: an enabled unit (an entry of a `*.wants`, `*.requires` or
-  `*.upholds` folder of `/etc/systemd/system`, `/etc/systemd/user` or a
-  home's `.config/systemd/user`) not in `units.allow`.
+  `*.upholds` folder of `/etc/systemd/system`, `/run/systemd/system`,
+  `/etc/systemd/user`, `/run/systemd/user` or a home's
+  `.config/systemd/user`) not in `units.allow`. An enabled unit that is
+  masked (its entry, or a unit of its name at the top of the same folder,
+  links to `/dev/null`) is not enabled: it is the line
+  `NOTE unit masked <path>`, which is not a hit.
+- `unit-link`: a unit link that loops (`loop`) or whose target climbs
+  above the root (`escape`).
 - `package`: an installed package (the pacman database) named in
   `forbidden-packages.list`, or, once `packages.allow` is filled, any
   package not in it. While it is empty the check prints

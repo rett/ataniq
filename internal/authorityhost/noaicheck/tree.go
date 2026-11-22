@@ -37,6 +37,10 @@ var errChanged = errors.New("changed while opened")
 // hit for it (see Checker.Report).
 var errBudget = errors.New("budget spent")
 
+// errEscape is returned by resolveStrict for a link whose target climbs
+// above the root.
+var errEscape = errors.New("link climbs above the root")
+
 // errDirent is returned for a directory listing the kernel gave in a form
 // that cannot be read.
 var errDirent = errors.New("malformed directory entry")
@@ -175,6 +179,17 @@ func clean(p string) string {
 // process whose root folder is the tree's root. The result holds no link
 // (barring a change while it runs) and names an existing entry.
 func (t *tree) resolve(rel string) (string, error) {
+	return t.resolveLinks(rel, false)
+}
+
+// resolveStrict is resolve, except that a ".." of a link target that would
+// climb above the root is the error errEscape instead of stopping at it:
+// such a link points outside the tree that is checked.
+func (t *tree) resolveStrict(rel string) (string, error) {
+	return t.resolveLinks(rel, true)
+}
+
+func (t *tree) resolveLinks(rel string, strict bool) (string, error) {
 	parts := strings.Split(clean(rel), "/")
 	done := "."
 	links := 0
@@ -185,6 +200,9 @@ func (t *tree) resolve(rel string) (string, error) {
 		case "", ".":
 			continue
 		case "..":
+			if strict && done == "." && links > 0 {
+				return "", &fs.PathError{Op: "resolve", Path: show(rel), Err: errEscape}
+			}
 			done = clean(path.Dir(done))
 			continue
 		}
