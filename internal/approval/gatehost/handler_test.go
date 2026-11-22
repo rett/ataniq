@@ -317,7 +317,6 @@ func TestTheCodesAreValidAndTheConsolesOwn(t *testing.T) {
 // read and without the service: the writes of the owner connection above all.
 func TestOtherOperationsAreUnknown(t *testing.T) {
 	f := &fakePort{open: true, code: pairCode}
-	h, lb := newHandler(t, f)
 	var others []string
 	for _, op := range ownerwire.Operations() {
 		if _, ok := opCaps[op]; !ok {
@@ -329,21 +328,24 @@ func TestOtherOperationsAreUnknown(t *testing.T) {
 	}
 	others = append(others, "seat.decide", "seat.challenge", "seat.login", "seat.hello2", "owner.nothing", "x.y")
 	for _, op := range others {
+		// A handler for each operation, so that the refusal bound is not
+		// what answers.
+		h, lb := newHandler(t, f)
 		for _, params := range []json.RawMessage{nil, json.RawMessage(`{}`), json.RawMessage(`{"decision":"approve"}`)} {
 			out, err := h.Handle(context.Background(), seat, op, params)
 			if out != nil || codeOfErr(err) != CodeUnknownOp {
 				t.Errorf("%s: %s %v", op, out, err)
 			}
 		}
+		for _, l := range lb.all() {
+			// The name a peer chose is not logged.
+			if l != "seat gate: an unknown operation refused unknown-op (peer "+seatFP[:16]+")" {
+				t.Errorf("log %q", l)
+			}
+		}
 	}
 	if n := len(f.seen()); n != 0 {
 		t.Errorf("the service was called %d times", n)
-	}
-	for _, l := range lb.all() {
-		// The name a peer chose is not logged.
-		if l != "seat gate: an unknown operation refused unknown-op (peer "+seatFP[:16]+")" {
-			t.Errorf("log %q", l)
-		}
 	}
 }
 
@@ -424,22 +426,24 @@ func TestBadParamsAreRefused(t *testing.T) {
 // service is not called, whatever the operation.
 func TestAPeerThatIsNotPinnedIsRefused(t *testing.T) {
 	f := &fakePort{open: true, code: pairCode}
-	h, lb := newHandler(t, f)
 	for _, peer := range []seatgate.Peer{{Fingerprint: otherFP}, {}, {Fingerprint: strings.ToUpper(seatFP)}, {Fingerprint: seatFP[:16]}} {
+		// A handler for each peer: the peers with no valid fingerprint share
+		// one count of the refusal bound.
+		h, lb := newHandler(t, f)
 		for _, op := range append(Operations(), "owner.decide") {
 			out, err := h.Handle(context.Background(), peer, op, validParamsOr(t, op))
 			if out != nil || codeOfErr(err) != CodeNotPinned {
 				t.Errorf("%q %s: %s %v", peer.Fingerprint, op, out, err)
 			}
 		}
+		for _, l := range lb.all() {
+			if !strings.Contains(l, "refused not-pinned") {
+				t.Errorf("log %q", l)
+			}
+		}
 	}
 	if n := len(f.seen()); n != 0 {
 		t.Errorf("the service was called %d times", n)
-	}
-	for _, l := range lb.all() {
-		if !strings.Contains(l, "refused not-pinned") {
-			t.Errorf("log %q", l)
-		}
 	}
 
 	// The pin check is asked on every call: a key unpinned after the

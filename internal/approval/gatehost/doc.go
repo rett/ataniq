@@ -82,8 +82,36 @@
 // record-invalid and record-too-large. A refusal with any other code is
 // answered failed and logged, so that only words from this list reach a seat.
 //
-// The handler adds codes of its own: unknown-op, bad-params and not-pinned.
-// A result the service returned that its encoder refuses is answered failed.
+// The handler adds codes of its own: unknown-op, bad-params, not-pinned and
+// too-many-refusals (below). A result the service returned that its encoder
+// refuses is answered failed.
+//
+// # The refusal bound
+//
+// The gate pins keys, but a pinned peer can still be hostile: a seat host that
+// was taken over could send seat.pair with guess after guess, or anything else
+// the handler refuses, to burn pairing codes or fill the log. The service
+// burns a code after five wrong tries; the handler bounds each peer as well,
+// by its key fingerprint, across all its connections, so that reconnecting
+// does not start the count again.
+//
+// A refusal of what the peer sent counts: unknown-op, bad-params, not-pinned,
+// the pairing codes (pairing-refused, credential-invalid and the rest) and the
+// refusals passed on from the service (approval-void and the rest). A refusal
+// for the daemon's own state does not: unavailable, deadline-exceeded, failed,
+// door-unavailable, journal-reopened, keys-unavailable and keys-full, so a seat
+// that polls while the door is down is not shut out for it. A call that is
+// served never counts.
+//
+// After [RefusalBound] (16, the owner connection's bound on refused writes)
+// counted refusals within [RefusalWindow] (10 minutes), every request of the
+// peer, a read too, is refused too-many-refusals before the pin check, the
+// params and the service. That lasts until the oldest of the refusals is
+// RefusalWindow old; then one more request is served, and a refusal of it
+// shuts the peer out again. Requests that were admitted before the bound was
+// reached, which the gate may run together (16 per connection), are served
+// and counted as they end, and the peer's shut-out runs from the latest. The
+// count is in memory: a restart of the daemon starts it afresh.
 //
 // # The log
 //
@@ -93,5 +121,8 @@
 // keys-unavailable one add the error's own text, made one printable line of at
 // most 300 bytes, since their cause (a path, say) is for the operator and not
 // for the seat; the service's errors hold nothing a caller sent. A call that is
-// served writes no line.
+// served writes no line. The counted refusals of a peer are logged up to the
+// bound; the request that finds the peer shut out writes one line saying so,
+// and nothing more is written for the peer until a request of it is admitted
+// again.
 package gatehost

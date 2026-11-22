@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"ataniq/internal/approval/ownerchannel"
 	"ataniq/internal/approval/ownerwire"
@@ -57,6 +58,8 @@ type Handler struct {
 	svc    Port
 	pinned func(fingerprint string) bool
 	log    func(format string, a ...any)
+	now    func() time.Time // the clock of the refusal bound
+	bound  bound
 }
 
 var _ seatgate.Handler = (*Handler)(nil)
@@ -64,8 +67,8 @@ var _ seatgate.Handler = (*Handler)(nil)
 // New returns the handler that serves the gate's operations with svc. pinned
 // says whether a key fingerprint is pinned now; it is asked on every call, and
 // a peer it says no to is refused not-pinned. log receives one line for each
-// refusal (see the package documentation); nil discards them. svc and pinned
-// are required.
+// refusal, within the refusal bound (see the package documentation); nil
+// discards them. svc and pinned are required.
 func New(svc Port, pinned func(fingerprint string) bool, log func(format string, a ...any)) (*Handler, error) {
 	if svc == nil || pinned == nil {
 		return nil, errors.New("gatehost: the service and the pin check are required")
@@ -73,21 +76,35 @@ func New(svc Port, pinned func(fingerprint string) bool, log func(format string,
 	if log == nil {
 		log = func(string, ...any) {}
 	}
-	return &Handler{svc: svc, pinned: pinned, log: log}, nil
+	return &Handler{svc: svc, pinned: pinned, log: log, now: time.Now}, nil
 }
 
 // Handle serves one request of a seat. It is called by the gate, in a
 // goroutine of the request's own; see the package documentation for what it
 // answers.
 func (h *Handler) Handle(ctx context.Context, peer seatgate.Peer, op string, params json.RawMessage) (json.RawMessage, error) {
+	key := boundKey(peer)
+	if ok, first := h.bound.admit(key, h.now()); !ok {
+		if first {
+			h.log("seat gate: the peer %s was refused %d times within %v; it is refused %s, unlogged, until they age out", peerName(peer), RefusalBound, RefusalWindow, CodeTooManyRefusals)
+		}
+		return nil, seatgate.NewCodedError(CodeTooManyRefusals)
+	}
+	var o outcome
 	if !seatgate.ValidFingerprint(peer.Fingerprint) || !h.pinned(peer.Fingerprint) {
-		return nil, h.refused(peer, op, outcome{code: CodeNotPinned})
+		o = outcome{code: CodeNotPinned}
+	} else {
+		o = h.serve(ctx, peer, op, params)
 	}
-	o := h.serve(ctx, peer, op, params)
-	if o.code != "" {
-		return nil, h.refused(peer, op, o)
+	if o.code == "" {
+		return o.out, nil
 	}
-	return o.out, nil
+	if counted[o.code] && !h.bound.count(key, h.now()) {
+		// Past the bound, by requests admitted before it was reached: the
+		// peer is shut out from here, and the line was or will be written.
+		return nil, seatgate.NewCodedError(o.code)
+	}
+	return nil, h.refused(peer, op, o)
 }
 
 // outcome is what serving one request came to: a result, or a code and,
