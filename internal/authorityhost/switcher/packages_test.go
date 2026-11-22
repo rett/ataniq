@@ -407,7 +407,9 @@ func TestStaticReleaseOfAnotherSnapshot(t *testing.T) {
 		t.Errorf("decisions inhibited although nothing began")
 	}
 	e.noJournal()
-	if !strings.Contains(e.last, "--package-snapshot") {
+	// The same id rebuilt would be refused as release-exists: the
+	// message asks for the host's snapshot and a higher counter.
+	if !strings.Contains(e.last, "build it with the host's --package-snapshot 2026-11-01 and a higher counter") {
 		t.Errorf("output:\n%s", e.last)
 	}
 	const rel4 = "0004-ddddddd"

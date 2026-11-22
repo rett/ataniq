@@ -483,7 +483,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		// here, before anything begins, so that the services stay as they
 		// are and the host's snapshot stays known.
 		if manifest.Components == ComponentsStatic && !unknown && from != "" {
-			return s.fail(a, 3, failf(CodePackageFailed, "a static release cannot move the host from package snapshot %s to %s; build it with the host's --package-snapshot %s", q(from), q(manifest.PackageSnapshot), q(from)))
+			return s.fail(a, 3, failf(CodePackageFailed, "a static release cannot move the host from package snapshot %s to %s; build it with the host's --package-snapshot %s and a higher counter", q(from), q(manifest.PackageSnapshot), q(from)))
 		}
 		ok, err := rel.exists(PackageStepProgram)
 		if err == nil && !ok {

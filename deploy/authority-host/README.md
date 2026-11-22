@@ -462,9 +462,11 @@ are stopped and decisions stay inhibited, see step 4).
    changes no package, so one whose snapshot is not the one `deploy.json`
    records (built with the wrong `--package-snapshot`) is refused here,
    before the transaction begins and before its step or any check runs
-   (`package-step-failed`, `build it with the host's --package-snapshot`):
-   current, the services, the inhibit and the host's known snapshot stay
-   as they are, and the release rebuilt with that snapshot switches. (On a
+   (`package-step-failed`, `build it with the host's --package-snapshot
+   ... and a higher counter`): current, the services, the inhibit and the
+   host's known snapshot stay as they are, and the release rebuilt with
+   that snapshot and a higher counter switches (the same id again is
+   refused at import as `release-exists`). (On a
    first switch, with no snapshot recorded, and while the package state is
    unknown, its step runs as any other.) The step's progress is journaled in
    `txn.json` (`started`, with its process id and start time once it runs,
