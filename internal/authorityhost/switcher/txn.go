@@ -301,11 +301,38 @@ func (s *Switcher) toRecovery(ctx context.Context, t *txn, step string, cause er
 		t.note("there is no earlier release to go back to, so current stays at %s", t.j.ID)
 		return s.toStopping(ctx, t, ResultFailed)
 	}
+	return s.toRestoring(ctx, t)
+}
+
+// toRestoring saves the phase restoring, after an activation failed: the
+// candidate's reload may have started its services. When the phase cannot
+// be saved the transaction stays unresolved in the phase the journal
+// still says, but its services are not left running: the stop list of the
+// candidate (when it verifies) and the host's run first, under the lock,
+// then the failure is reported. The next command resumes the phase.
+func (s *Switcher) toRestoring(ctx context.Context, t *txn) error {
+	durable := t.j.Phase
 	t.j.Phase = PhaseRestoring
 	if err := s.save(t); err != nil {
+		t.j.Phase = durable
+		s.printf("back: FAILED: %s; the services of %s are stopped before the failure is reported", describe(err), t.j.ID)
+		s.stopUnrecorded(ctx, t)
 		return err
 	}
 	return s.crash(CrashRestoring)
+}
+
+// stopUnrecorded stops the decision services of the transaction t whose
+// next phase could not be recorded: the host's stop list, then the stop
+// list of its release when that verifies. A failure of either is reported
+// and changes nothing else: the journal still says what it said.
+func (s *Switcher) stopUnrecorded(ctx context.Context, t *txn) {
+	s.hostStopsFirst(ctx)
+	if cand, err := s.candidate(ctx, t); err == nil {
+		s.runStops(ctx, t.j.ID, cand.stops)
+	} else {
+		s.printf("stop: the stop list of %s is not run: it cannot be verified (%s)", t.j.ID, describe(err))
+	}
 }
 
 // restore is the restoring phase: first the services of the transaction's

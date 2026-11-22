@@ -901,6 +901,7 @@ see its messages. The text of a broken state file is not repeated either.
 | A journal whose links or counter do not match the host (restored from a backup) | `reconcile: unresolved`, exit 1; nothing resumed, run or moved until `recover --discard-journal TXN` |
 | A journal that cannot be checked against the host (its evidence cannot be read) | `reconcile: unresolved`, exit 1; neither resumed nor discarded until the evidence is readable; a journal in `stopping` still gets the host's stop list first |
 | A journal in `stopping` while `releases/`, the counter or `deploy.json` cannot be used | The host's stop list runs first, under the lock; the journal stays in `stopping` until the rest can run |
+| The journal cannot be saved as `restoring` after the new release failed its reload, health check or no-AI check | The host's stop list and the new release's (when it verifies) run first, under the lock, so that its services do not keep running; then `result: unresolved`, the journal stays in `activating`, and the next command resumes it and goes back |
 | The journal cannot be saved as `stopping` | The host's stop list has run already; `result: unresolved`, and the next command runs the stops again |
 | A release folder of a higher counter is in `releases/` | Refused at counter (`counter-not-above`); build a higher counter |
 | A second switch while one runs | Exit 3; nothing done |

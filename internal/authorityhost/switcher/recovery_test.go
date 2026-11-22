@@ -561,3 +561,47 @@ func TestDiscardNeedsProof(t *testing.T) {
 		})
 	}
 }
+
+// TestRestoringNotSavedStillStops: a candidate whose reload started its
+// services and whose health check failed must have those services stopped
+// even when the journal cannot be moved to restoring: the candidate's stop
+// list and the host's run first, under the lock, then the command reports
+// the failure. The transaction stays unresolved in activating, and the
+// next command, with the state folder writable again, goes back.
+func TestRestoringNotSavedStillStops(t *testing.T) {
+	e := activeOwn(t)
+	e.runner.fail["health-probe"] = -1
+	// The health check of the candidate is where the journal stops being
+	// writable: its temporary file cannot be made again.
+	block := filepath.Join(e.root, StateDir, "."+JournalFile+".new")
+	e.runner.hook = func(argv []string) {
+		if argv[0] == "health-probe" {
+			os.MkdirAll(block, 0o755)
+			os.WriteFile(filepath.Join(block, "x"), []byte("x"), 0o644)
+		}
+	}
+	if code := e.switchTo(rel3); code != ExitFailed {
+		t.Fatalf("exit %d\n%s", code, e.last)
+	}
+	if !strings.Contains(e.last, "result: unresolved") || !strings.Contains(e.last, "txn.json stays in phase activating") {
+		t.Errorf("output:\n%s", e.last)
+	}
+	e.ran(map[string]int{"stop-app": 1, "stop-all": 1, "reload-old": 0})
+	if j, ok := e.journal(); !ok || j.Phase != PhaseActivating {
+		t.Errorf("journal: %+v, %v", j, ok)
+	}
+	if _, ok := e.inhibited(); !ok {
+		t.Errorf("not inhibited")
+	}
+	// Writable again: the next command resumes and goes back.
+	e.runner.hook = nil
+	if err := os.RemoveAll(block); err != nil {
+		t.Fatal(err)
+	}
+	e.runner.reset()
+	e.recover(resumeOnly)
+	if rec := e.record(); rec.Result != ResultRolledBack || rec.RestoredHealth != "ok" {
+		t.Errorf("record: %+v", rec)
+	}
+	e.links(rel2, rel1)
+}

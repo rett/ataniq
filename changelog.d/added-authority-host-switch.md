@@ -49,7 +49,8 @@
   it began with;
   the next command resumes an interrupted one from its phase, a link
   counts as moved only once its folder is synced, a failed stop keeps the
-  transaction open, and every settled outcome is owed in its own file,
+  transaction open (so does a journal that cannot be saved as restoring,
+  after the stops of the failed release and of the host ran), and every settled outcome is owed in its own file,
   `/var/lib/authority-host/owed.json` (written before the journal is
   removed, never in `deploy.json`, and not taken back by a printed result
   line): the same request run again reports it instead of doing it again
