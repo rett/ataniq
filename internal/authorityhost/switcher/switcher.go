@@ -233,6 +233,7 @@ type attempt struct {
 	prevTarget string // what previous pointed at
 	prevExists bool
 	prevThere  bool // the release previous points at is a folder
+	recorded   bool // deploy.json was there
 	// The release current pointed at, verified, to go back to; nil when
 	// there is none or it cannot be used (fallbackErr says why).
 	fallback    *release
@@ -466,6 +467,23 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	// the snapshot the unfinished step went to may switch, by running that
 	// step again; anything else waits for recover --package-state.
 	from, unknown := a.rec.PackageSnapshot, a.rec.PackageState == PackageUnknown
+	if manifest.Components == ComponentsStatic {
+		// A static release's step (the builder's) changes no package and
+		// exits 0 for an empty --from, as on a first switch: run where the
+		// state is unknown, or where a current release has no recorded
+		// snapshot (deploy.json lost), it would certify a state nothing
+		// established. Refused before anything begins.
+		switch {
+		case unknown:
+			return s.fail(a, 3, failf(CodePackageUnknown, "the host's package snapshot is unknown: the package step from %s to %s did not finish, and a static release changes no package, so it cannot settle that; run ah-switch recover --package-state SNAPSHOT (%s or %s, the one the host is at), or switch to a release of snapshot %s with a package step of its own", q(a.rec.PackageFrom), q(a.rec.PackageTo), q(a.rec.PackageFrom), q(a.rec.PackageTo), q(a.rec.PackageTo)))
+		case from == "" && a.oldExists:
+			what := DeployFile + " records no package snapshot"
+			if !a.recorded {
+				what = DeployFile + " is missing"
+			}
+			return s.fail(a, 3, failf(CodePackageFailed, "%s although current points at %s, so the host's package snapshot is not known, and a static release cannot establish one: switch to a release with a package step of its own", what, a.rec.CurrentID))
+		}
+	}
 	if unknown {
 		if manifest.PackageSnapshot != a.rec.PackageTo {
 			return s.fail(a, 3, packageUnknownError(a.rec.PackageFrom, a.rec.PackageTo))
@@ -482,7 +500,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		// --package-snapshot, and its step can only refuse. It is refused
 		// here, before anything begins, so that the services stay as they
 		// are and the host's snapshot stays known.
-		if manifest.Components == ComponentsStatic && !unknown && from != "" {
+		if manifest.Components == ComponentsStatic && from != "" {
 			return s.fail(a, 3, failf(CodePackageFailed, "a static release cannot move the host from package snapshot %s to %s; build it with the host's --package-snapshot %s and a higher counter", q(from), q(manifest.PackageSnapshot), q(from)))
 		}
 		ok, err := rel.exists(PackageStepProgram)
@@ -862,7 +880,7 @@ func (s *Switcher) readState(a *attempt) (Record, int, bool) {
 	}
 	var last Record
 	if s.stateRoot != nil {
-		if last, _, err = s.readRecord(); err != nil {
+		if last, a.recorded, err = s.readRecord(); err != nil {
 			// Not recorded: the record is what cannot be trusted.
 			s.printf("state: FAILED: %s", describe(err))
 			s.printf("result: failed before step 1; nothing changed or recorded")

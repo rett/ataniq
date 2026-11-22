@@ -20,10 +20,12 @@
   runs its no-AI check before activation (`--phase pre`: the release's
   units and the host, without ports and firewall) before and after the
   release's package step (a static release whose snapshot is not the
-  host's is refused before anything begins; a step that fails or is
-  interrupted leaves the
-  package state unknown, refusing further switches until the owner states
-  the snapshot or the step runs again to the end; the step holds the
+  host's is refused before anything begins, and so is one while the
+  package state is unknown or on a host with a `current` and no recorded
+  snapshot, which its no-op step could only certify; a step that fails or
+  is interrupted leaves the package state unknown, refusing further
+  switches until the owner states the snapshot or a release with its own
+  step runs it again to the end; the step holds the
   owner-only switch lock and dies with it, and one that outlives its
   switch is named by its process id), then its validators;
   renames a new `current` link over the old one, reloads and checks every

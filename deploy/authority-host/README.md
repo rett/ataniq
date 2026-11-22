@@ -469,9 +469,17 @@ are stopped and decisions stay inhibited, see step 4).
    ... and a higher counter`): current, the services, the inhibit and the
    host's known snapshot stay as they are, and the release rebuilt with
    that snapshot and a higher counter switches (the same id again is
-   refused at import as `release-exists`). (On a
-   first switch, with no snapshot recorded, and while the package state is
-   unknown, its step runs as any other.) The step's progress is journaled in
+   refused at import as `release-exists`). On a first switch, with no
+   `current` and no snapshot recorded, its step runs as any other. While
+   the package state is unknown a static release is refused at this step
+   too (`package-state-unknown`), before anything begins: its step changes
+   no package and exits 0 for an empty `--from`, so it could only certify
+   a state nothing established. And on a host with a `current` and no
+   recorded snapshot (`deploy.json` missing, or written since without
+   one) it is refused (`package-step-failed`, `a static release cannot
+   establish one`): that is no first switch, and only a release with a
+   package step of its own can establish the snapshot. The step's
+   progress is journaled in
    `txn.json` (`started`, with its process id and start time once it runs,
    then `done`), and on success the new snapshot is what `deploy.json`
    records from then on, even when a later step fails.
@@ -485,7 +493,8 @@ are stopped and decisions stay inhibited, see step 4).
    which end the host is at, with
    `ah-switch recover --package-state SNAPSHOT` (recorded with the time in
    `package_stated_at`), or a switch to a release of the snapshot the step
-   went to runs the step again, from the same `--from`, to the end. So
+   went to, with a package step of its own (not a static release), runs
+   the step again, from the same `--from`, to the end. So
    `bin/ah-pkgstep` must be idempotent: run twice with the same `--from`
    and `--to` it must end in the same state.
 
@@ -984,7 +993,8 @@ see its messages. The text of a broken state file is not repeated either.
 | Counter not above the highest ever attempted | Refused at counter |
 | `--rollback-to` anything but previous | Refused at counter |
 | The snapshot changes and there is no package step | Refused at packages; `current` unchanged |
-| Package step fails | Failed at packages; `current` unchanged; the decision services are stopped and decisions stay inhibited; the package state is unknown, and every switch is refused until `recover --package-state` or a switch to the same new snapshot runs the step to the end |
+| A static release while the package state is unknown, or on a host with a `current` and no recorded snapshot (`deploy.json` lost) | Refused at packages before anything begins (`package-state-unknown`, `package-step-failed`); nothing runs, the state stays as it was |
+| Package step fails | Failed at packages; `current` unchanged; the decision services are stopped and decisions stay inhibited; the package state is unknown, and every switch is refused until `recover --package-state` or a switch to the same new snapshot runs the step to the end (a release with a package step of its own; a static release is refused) |
 | No-AI check fails before the package step (phase pre) | Refused at noaicheck; nothing ran, nothing began |
 | No-AI check (phase pre) or a validator fails after the package step | Failed at noaicheck or validate; `current` unchanged; the decision services are stopped and decisions stay inhibited |
 | No-AI check fails before activation, with no package step | Refused at noaicheck; no validator runs |
