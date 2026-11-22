@@ -15,8 +15,10 @@ package tests
 //     the allowed paths and in no folder that ./... skips, needs the tag and
 //     linux together, and every file of a wholly tagged package needs the tag;
 //  2. the Makefile and the scripts: the tag is named only in the recipe of
-//     make test-ownerchannel, which builds nothing, and nowhere under .github
-//     or scripts;
+//     make test-ownerchannel, which builds nothing, and in the recipe of
+//     make ownerchannel-build, which builds the daemon alone into build/owner/
+//     and runs nothing; nothing names the tag under .github or scripts, and
+//     nothing but those two recipes names the build target;
 //  3. without the tag no command depends on the service, the journal, the host
 //     adapter or the stand-in for the door;
 //  4. with the tag, and with it and the canary tag, every package loads;
@@ -70,8 +72,19 @@ var ownerForbiddenDeps = []string{
 	"internal/approval/door/doortest",
 }
 
-// ownerMakeTarget is the one Makefile target whose recipe may name the tag.
-const ownerMakeTarget = "test-ownerchannel"
+// ownerMakeTarget is the Makefile target whose recipe may name the tag to run
+// the tests; ownerBuildTarget is the one other target whose recipe may name it,
+// to build the daemon. No other recipe names it.
+const (
+	ownerMakeTarget  = "test-ownerchannel"
+	ownerBuildTarget = "ownerchannel-build"
+)
+
+// ownerBuildDir is the only folder the build target writes to, which git
+// ignores, and ownerBuildPackages are the only packages it builds.
+const ownerBuildDir = "build/owner/"
+
+var ownerBuildPackages = []string{"./cmd/ataniqd"}
 
 // exprNames reports whether an expression names the tag.
 func exprNames(e constraint.Expr, tag string) bool {
@@ -196,17 +209,74 @@ func checkOwnerPlacement(fsys fs.FS) []string {
 // ownerTargetRef finds the name of the make target as a word.
 var ownerTargetRef = regexp.MustCompile(`(^|[^A-Za-z0-9_.-])` + ownerMakeTarget + `($|[^A-Za-z0-9_.-])`)
 
+// ownerBuildTargetRef finds the name of the build target as a word.
+var ownerBuildTargetRef = regexp.MustCompile(`(^|[^A-Za-z0-9_.-])` + ownerBuildTarget + `($|[^A-Za-z0-9_.-])`)
+
+// ownerMkdirLine is the one line of the build recipe that is not a build.
+var ownerMkdirLine = regexp.MustCompile(`^@?mkdir -p ` + regexp.QuoteMeta(strings.TrimSuffix(ownerBuildDir, "/")) + `$`)
+
+// ownerBuildLineProblem returns what is wrong with one line of the recipe of
+// the build target, or "". A line is the mkdir of the output folder or a build
+// through the helper whose only flags are the tag, set to this tag alone,
+// -trimpath and -o into the output folder, and whose arguments after them are
+// packages of ownerBuildPackages: nothing that runs the daemon or any other
+// program, no other tag and no other output.
+func ownerBuildLineProblem(line string) string {
+	body := strings.TrimSpace(line)
+	if strings.HasSuffix(body, "\\") {
+		return "the recipe of " + ownerBuildTarget + " has a continued line, which this check does not read"
+	}
+	if ownerMkdirLine.MatchString(body) {
+		return ""
+	}
+	body = strings.TrimPrefix(body, "@")
+	prefix := "sh scripts/go-tool.sh build "
+	if !strings.HasPrefix(body, prefix) {
+		return fmt.Sprintf("the recipe of %s has the line %q, and nothing but the mkdir of %s and a build through scripts/go-tool.sh is allowed", ownerBuildTarget, strings.TrimSpace(line), strings.TrimSuffix(ownerBuildDir, "/"))
+	}
+	args := strings.Fields(strings.TrimPrefix(body, prefix))
+	tags, out, pkgs := "", "", 0
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "-trimpath":
+		case a == "-tags" && i+1 < len(args):
+			i++
+			tags = args[i]
+		case a == "-o" && i+1 < len(args):
+			i++
+			out = args[i]
+		case strings.HasPrefix(a, "-"):
+			return fmt.Sprintf("the recipe of %s passes %s to the build, and nothing but -tags, -trimpath and -o is allowed", ownerBuildTarget, a)
+		case slices.Contains(ownerBuildPackages, a):
+			pkgs++
+		default:
+			return fmt.Sprintf("the recipe of %s builds %s, and nothing but %s is allowed", ownerBuildTarget, a, strings.Join(ownerBuildPackages, ", "))
+		}
+	}
+	switch {
+	case tags != ownerTag:
+		return fmt.Sprintf("the recipe of %s builds with the tags %q, and nothing but %s is allowed", ownerBuildTarget, tags, ownerTag)
+	case !strings.HasPrefix(out, ownerBuildDir) || strings.Contains(out, ".."):
+		return fmt.Sprintf("the recipe of %s writes %q, and nothing outside %s is allowed", ownerBuildTarget, out, ownerBuildDir)
+	case pkgs == 0:
+		return "the recipe of " + ownerBuildTarget + " builds no package"
+	}
+	return ""
+}
+
 // ownerGoToolVerb finds the Go command a recipe line runs through the helper.
 var ownerGoToolVerb = regexp.MustCompile(`go-tool\.sh\s+(\S+)`)
 
 // checkOwnerMakefile is the first half of check (2): in a Makefile the tag
-// appears only inside the recipe of test-ownerchannel, and that recipe runs the
-// Go command only as test, so it builds no binary. A comment, a variable, the
-// .PHONY line, a prerequisite line and the recipe of any other target are all
-// outside. Two more lines are problems, so that no other target can reach the
-// tagged one: a mention of the target anywhere but a comment, the .PHONY line
-// and the rule line that defines it, and an include, whose file this check does
-// not read. The limit of a text check is a name that is assembled at run time
+// appears only inside the recipe of test-ownerchannel, which runs the Go
+// command only as test and so builds no binary, and inside the recipe of
+// ownerchannel-build, which only makes build/owner/ and builds the daemon into
+// it with the tag alone (see ownerBuildLineProblem) and so runs nothing. A
+// comment, a variable, the .PHONY line, a prerequisite line and the recipe of
+// any other target are all outside. Two more lines are problems, so that no
+// other target can reach a tagged one: a mention of either target anywhere but
+// a comment, the .PHONY line and the rule line that defines it, and an
+// include, whose file this check does not read. The limit of a text check is a name that is assembled at run time
 // or by make's own expansion.
 func checkOwnerMakefile(text string) []string {
 	var problems []string
@@ -235,8 +305,16 @@ func checkOwnerMakefile(text string) []string {
 			problem = "includes another makefile, which this check does not read"
 		}
 		inOwnRecipe := recipe && len(targets) == 1 && targets[0] == ownerMakeTarget
-		if problem == "" && strings.Contains(line, ownerTag) && !inOwnRecipe {
-			problem = fmt.Sprintf("names %s outside the recipe of %s", ownerTag, ownerMakeTarget)
+		inBuildRecipe := recipe && len(targets) == 1 && targets[0] == ownerBuildTarget
+		if problem == "" && strings.Contains(line, ownerTag) && !inOwnRecipe && !inBuildRecipe {
+			problem = fmt.Sprintf("names %s outside the recipes of %s and %s", ownerTag, ownerMakeTarget, ownerBuildTarget)
+		}
+		if problem == "" && inBuildRecipe {
+			if regexp.MustCompile(`(^|[^A-Za-z0-9_-])go\s+\S`).MatchString(line) {
+				problem = "the recipe of " + ownerBuildTarget + " runs go directly"
+			} else {
+				problem = ownerBuildLineProblem(line)
+			}
 		}
 		if problem == "" && inOwnRecipe {
 			for _, m := range ownerGoToolVerb.FindAllStringSubmatch(line, -1) {
@@ -248,13 +326,18 @@ func checkOwnerMakefile(text string) []string {
 				problem = "the recipe of " + ownerMakeTarget + " runs go directly to build or run"
 			}
 		}
-		if problem == "" && ownerTargetRef.MatchString(line) && !strings.HasPrefix(trimmed, "#") && !phony {
-			own := false
-			if m := makeRuleLine.FindStringSubmatch(line); m != nil && !recipe && !wasContinued {
-				own = !ownerTargetRef.MatchString(line[len(m[1])+1:])
-			}
-			if !own {
-				problem = "another line names " + ownerMakeTarget
+		for _, ref := range []struct {
+			name string
+			re   *regexp.Regexp
+		}{{ownerMakeTarget, ownerTargetRef}, {ownerBuildTarget, ownerBuildTargetRef}} {
+			if problem == "" && ref.re.MatchString(line) && !strings.HasPrefix(trimmed, "#") && !phony {
+				own := false
+				if m := makeRuleLine.FindStringSubmatch(line); m != nil && !recipe && !wasContinued {
+					own = !ref.re.MatchString(line[len(m[1])+1:])
+				}
+				if !own {
+					problem = "another line names " + ref.name
+				}
 			}
 		}
 		if problem != "" {
@@ -282,6 +365,37 @@ func checkNoOwnerTagUnder(fsys fs.FS, folders ...string) []string {
 			}
 			if bytes.Contains(data, []byte(ownerTag)) {
 				problems = append(problems, fmt.Sprintf("%s: names %s", p, ownerTag))
+			}
+			return nil
+		})
+		if err != nil && !os.IsNotExist(err) && !strings.Contains(err.Error(), "file does not exist") {
+			problems = append(problems, folder+": "+err.Error())
+		}
+	}
+	return problems
+}
+
+// checkNoOwnerBuildUnder is the third part of check (2): no file under the
+// folders names the build target outside a comment line, so no workflow, release
+// step or script can build the tagged daemon.
+func checkNoOwnerBuildUnder(fsys fs.FS, folders ...string) []string {
+	var problems []string
+	for _, folder := range folders {
+		err := fs.WalkDir(fsys, folder, func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			data, err := fs.ReadFile(fsys, p)
+			if err != nil {
+				return err
+			}
+			for i, line := range strings.Split(string(data), "\n") {
+				if t := strings.TrimSpace(line); !strings.HasPrefix(t, "#") && strings.Contains(line, ownerBuildTarget) {
+					problems = append(problems, fmt.Sprintf("%s:%d: names %s", p, i+1, ownerBuildTarget))
+				}
 			}
 			return nil
 		})
@@ -497,6 +611,7 @@ func TestOwnerChannelTag(t *testing.T) {
 		}
 		reportCanaryProblems(t, checkOwnerMakefile(string(makefile)))
 		reportCanaryProblems(t, checkNoOwnerTagUnder(repo, ".github", "scripts"))
+		reportCanaryProblems(t, checkNoOwnerBuildUnder(repo, ".github", "scripts"))
 	})
 
 	t.Run("3_untagged_dependencies", func(t *testing.T) {
@@ -628,6 +743,15 @@ func TestOwnerChannelTagMakefileCheck(t *testing.T) {
 	ownRecipe := func(line string) string {
 		return strings.Replace(good, "ataniq_canary ./tests/\n\ntest:", "ataniq_canary ./tests/\n"+line+"\ntest:", 1)
 	}
+	// withBuild is the sample with the recipe of the build target, whose one
+	// build line is buildLine; build replaces that line, and buildRecipe adds a
+	// line after it.
+	const buildLine = "\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel -trimpath -o build/owner/ataniqd ./cmd/ataniqd\n"
+	withBuild := strings.Replace(good, ".PHONY: test test-ownerchannel", ".PHONY: test test-ownerchannel ownerchannel-build", 1) +
+		"\n# the daemon with the owner channel, into an ignored folder\n" +
+		"ownerchannel-build: doctor\n\t@mkdir -p build/owner\n" + buildLine
+	build := func(line string) string { return strings.Replace(withBuild, buildLine, line, 1) }
+	buildRecipe := func(line string) string { return withBuild + line }
 	for _, tc := range []struct {
 		name string
 		text string
@@ -635,6 +759,39 @@ func TestOwnerChannelTagMakefileCheck(t *testing.T) {
 	}{
 		{"an empty Makefile", "", ""},
 		{"the sample", good, ""},
+		{"the sample with the build target", withBuild, ""},
+		{"the build target after the canary build", good + "canary-build: doctor\n\t@sh scripts/go-tool.sh build -tags ataniq_canary ./cmd/ataniqd\n" + strings.TrimPrefix(withBuild, good), ""},
+		{"the build with a line without at", build("\tsh scripts/go-tool.sh build -tags ataniq_ownerchannel -o build/owner/ataniqd ./cmd/ataniqd\n"), ""},
+		{"the build target runs a test", build("\t@sh scripts/go-tool.sh test -tags ataniq_ownerchannel ./cmd/ataniqd\n"), "nothing but the mkdir"},
+		{"the build target builds another package", build("\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel -trimpath -o build/owner/x ./cmd/ataniq-console\n"), "nothing but ./cmd/ataniqd is allowed"},
+		{"the build target builds everything", build("\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel -trimpath -o build/owner/ ./...\n"), "nothing but ./cmd/ataniqd is allowed"},
+		{"the build target also builds a second package", buildRecipe("\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel -o build/owner/h ./cmd/ataniq-holder\n"), "nothing but ./cmd/ataniqd is allowed"},
+		{"the build target writes outside its folder", build("\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel -o build/ataniqd ./cmd/ataniqd\n"), "nothing outside build/owner/"},
+		{"the build target writes into the canary folder", build("\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel -o build/canary/ataniqd ./cmd/ataniqd\n"), "nothing outside build/owner/"},
+		{"the build target climbs out of its folder", build("\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel -o build/owner/../ataniqd ./cmd/ataniqd\n"), "nothing outside build/owner/"},
+		{"the build target has no output", build("\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel ./cmd/ataniqd\n"), "nothing outside build/owner/"},
+		{"the build target builds with both tags", build("\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel,ataniq_canary -o build/owner/ataniqd ./cmd/ataniqd\n"), "nothing but ataniq_ownerchannel is allowed"},
+		{"the build target builds with the canary tag", build("\t@sh scripts/go-tool.sh build -tags ataniq_canary -o build/owner/ataniqd ./cmd/ataniqd\n"), "nothing but ataniq_ownerchannel is allowed"},
+		{"the build target builds without a tag", build("\t@sh scripts/go-tool.sh build -o build/owner/ataniqd ./cmd/ataniqd\n"), "nothing but ataniq_ownerchannel is allowed"},
+		{"the build target builds no package", build("\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel -o build/owner/ataniqd\n"), "builds no package"},
+		{"the build target passes a flag that runs a program", build("\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel -toolexec x -o build/owner/ataniqd ./cmd/ataniqd\n"), "nothing but -tags, -trimpath and -o"},
+		{"the build target installs", build("\t@sh scripts/go-tool.sh install -tags ataniq_ownerchannel ./cmd/ataniqd\n"), "nothing but the mkdir"},
+		{"the build target runs go directly", build("\t@go build -tags ataniq_ownerchannel -o build/owner/ataniqd ./cmd/ataniqd\n"), "runs go directly"},
+		{"the build target runs the daemon", buildRecipe("\t@build/owner/ataniqd run --owner-channel\n"), "nothing but the mkdir"},
+		{"the build target makes another folder", buildRecipe("\t@mkdir -p build/other\n"), "nothing but the mkdir"},
+		{"the build target removes things", buildRecipe("\t@rm -rf build\n"), "nothing but the mkdir"},
+		{"the build target runs the tests", buildRecipe("\t@$(MAKE) test-ownerchannel\n"), "nothing but the mkdir"},
+		{"the build target has a continued line", build("\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel -o build/owner/ataniqd \\\n\t\t./cmd/ataniqd\n"), "continued line"},
+		{"the tag in another target next to the build target", withBuild + "other: doctor\n\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel -o build/owner/x ./cmd/ataniqd\n", "outside the recipes"},
+		{"the tag in a recipe shared with the build target", strings.Replace(withBuild, "ownerchannel-build: doctor", "ownerchannel-build other: doctor", 1), "outside the recipes"},
+		{"another target depends on the build target", withBuild + "release: ownerchannel-build\n", "another line names ownerchannel-build"},
+		{"another target runs the build target", withBuild + "release: doctor\n\t@$(MAKE) ownerchannel-build\n", "another line names ownerchannel-build"},
+		{"the test target runs the build target", strings.Replace(withBuild, "test: doctor\n", "test: doctor ownerchannel-build\n", 1), "another line names ownerchannel-build"},
+		{"the canary build runs the build target", withBuild + "canary-build: doctor\n\t@$(MAKE) ownerchannel-build\n", "another line names ownerchannel-build"},
+		{"a variable names the build target", "ALL = ownerchannel-build\n" + withBuild, "another line names ownerchannel-build"},
+		{"the build target is only a word of another name", withBuild + "other: my-ownerchannel-build ownerchannel-builds\n", ""},
+		{"the build target in a comment", "# ownerchannel-build\n" + good, ""},
+		{"the build target in .PHONY alone", strings.Replace(good, ".PHONY: test test-ownerchannel", ".PHONY: test test-ownerchannel ownerchannel-build", 1), ""},
 		{"the Makefile of the repository's shape without the target", "test: doctor\n\t@sh scripts/go-tool.sh test ./...\n", ""},
 		{"the tag in a variable", "TAGS = ataniq_ownerchannel\n" + good, "outside the recipe"},
 		{"the tag in a comment", "# ataniq_ownerchannel\n" + good, "outside the recipe"},
@@ -686,6 +843,34 @@ func TestOwnerChannelTagNoMentionUnderCheck(t *testing.T) {
 			got := checkNoOwnerTagUnder(tc.files, ".github", "scripts")
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %q, want files %q", got, tc.want)
+			}
+			for i, w := range tc.want {
+				if !strings.HasPrefix(got[i], w+":") {
+					t.Errorf("problem %d is %q, want it to name %s", i, got[i], w)
+				}
+			}
+		})
+	}
+}
+
+func TestOwnerChannelTagNoBuildMentionUnderCheck(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files fstest.MapFS
+		want  []string
+	}{
+		{"clean folders", fstest.MapFS{"scripts/a.sh": {Data: []byte("echo\n")}, ".github/workflows/test.yml": {Data: []byte("name: test\n- run: make test-ownerchannel\n")}}, nil},
+		{"no folders", fstest.MapFS{"other/a.sh": {Data: []byte("make ownerchannel-build\n")}}, nil},
+		{"a workflow runs the target", fstest.MapFS{".github/workflows/x.yml": {Data: []byte("jobs:\n  b:\n    steps:\n      - run: make ownerchannel-build\n")}}, []string{".github/workflows/x.yml:4"}},
+		{"a script runs the target", fstest.MapFS{"scripts/a.sh": {Data: []byte("#!/bin/sh\nmake ownerchannel-build\n")}}, []string{"scripts/a.sh:2"}},
+		{"a nested file under .github", fstest.MapFS{".github/actions/b/action.yml": {Data: []byte("run: make ownerchannel-build\n")}}, []string{".github/actions/b/action.yml:1"}},
+		{"a comment line is no use", fstest.MapFS{"scripts/a.sh": {Data: []byte("# make ownerchannel-build is run by hand\n")}, ".github/workflows/x.yml": {Data: []byte("  # ownerchannel-build\n")}}, nil},
+		{"the canary build is not this target", fstest.MapFS{"scripts/a.sh": {Data: []byte("make canary-build\n")}}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := checkNoOwnerBuildUnder(tc.files, ".github", "scripts")
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %q, want %q", got, tc.want)
 			}
 			for i, w := range tc.want {
 				if !strings.HasPrefix(got[i], w+":") {
@@ -833,6 +1018,7 @@ func TestOwnerChannelTagWorkflowCheck(t *testing.T) {
 		{"another workflow names the tag", map[string]string{"test.yml": ownerGoodWorkflow, "other.yml": "# ataniq_ownerchannel\n"}, "other.yml: names the tag"},
 		{"the job runs another command", edit(job, job+"      - run: make test\n"), "runs \"make test\""},
 		{"the job builds", edit(job, job+"      - run: make canary-build\n"), "runs \"make canary-build\""},
+		{"the job builds the owner daemon", edit(job, job+"      - run: make ownerchannel-build\n"), "runs \"make ownerchannel-build\""},
 		{"the job uploads", edit(job, job+"      - uses: actions/upload-artifact@v4\n"), "uses actions/upload-artifact@v4"},
 		{"the job uses a local action", edit(job, job+"      - uses: ./.github/actions/x\n"), "uses ./.github/actions/x"},
 		{"a continue-on-error", edit("    timeout-minutes: 30\n    permissions:\n      contents: read\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          persist-credentials", "    continue-on-error: true\n    timeout-minutes: 30\n    permissions:\n      contents: read\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          persist-credentials"), "continue-on-error"},
@@ -939,6 +1125,34 @@ func TestOwnerChannelTagMakeTargetDeclaration(t *testing.T) {
 	}
 }
 
+// The real Makefile has the build target in .PHONY, depending on doctor alone,
+// defined once, and no other rule depends on it.
+func TestOwnerChannelTagBuildTargetDeclaration(t *testing.T) {
+	makefile, err := os.ReadFile(filepath.Join(root(t), "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(makefile)
+	if !regexp.MustCompile(`(?m)^\.PHONY:.*\bownerchannel-build\b`).MatchString(text) {
+		t.Error("ownerchannel-build is not in .PHONY")
+	}
+	if !regexp.MustCompile(`(?m)^ownerchannel-build: doctor$`).MatchString(text) {
+		t.Error("ownerchannel-build does not depend on doctor alone")
+	}
+	rules := 0
+	for _, line := range strings.Split(text, "\n") {
+		if m := makeRuleLine.FindStringSubmatch(line); m != nil && !makePhony.MatchString(line) && ownerBuildTargetRef.MatchString(line[len(m[1])+1:]) {
+			t.Errorf("a rule depends on ownerchannel-build: %q", line)
+		}
+		if strings.HasPrefix(line, "ownerchannel-build:") {
+			rules++
+		}
+	}
+	if rules != 1 {
+		t.Errorf("the Makefile has %d rules for ownerchannel-build, want 1", rules)
+	}
+}
+
 // The instructions say what the target does, in both files that list the
 // targets.
 func TestOwnerChannelTagInstructions(t *testing.T) {
@@ -947,7 +1161,7 @@ func TestOwnerChannelTagInstructions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{"make test-ownerchannel", ownerTag, "make test-canary"} {
+		for _, want := range []string{"make test-ownerchannel", ownerTag, "make test-canary", "make ownerchannel-build", "build/owner/"} {
 			if !strings.Contains(string(data), want) {
 				t.Errorf("%s does not mention %s", name, want)
 			}
@@ -959,6 +1173,18 @@ func TestOwnerChannelTagInstructions(t *testing.T) {
 	}
 	if !strings.Contains(string(agents), "OwnerChannelTag") {
 		t.Error("AGENTS.md does not name the targeted check of the tag")
+	}
+	// No instruction still says that no target builds a binary with the tag.
+	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
+		data, err := os.ReadFile(filepath.Join(root(t), name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, stale := range []string{"no target builds a binary with it", "no target builds a binary with the tag"} {
+			if strings.Contains(string(data), stale) {
+				t.Errorf("%s still says %q", name, stale)
+			}
+		}
 	}
 }
 
@@ -1042,6 +1268,60 @@ func TestOwnerChannelTagMakeTarget(t *testing.T) {
 			t.Fatalf("make test-ownerchannel passed although the second run failed:\n%s", out)
 		}
 	})
+}
+
+// make ownerchannel-build runs doctor, makes build/owner/ and runs one Go
+// build of the daemon with the tag alone, writing into that folder. The Go
+// tool is replaced by one that logs a build and fails anything else.
+func TestOwnerChannelTagBuildTarget(t *testing.T) {
+	dir, pin := fixture(t)
+	makefile, err := os.ReadFile(filepath.Join(root(t), "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Makefile"), makefile, 0644); err != nil {
+		t.Fatal(err)
+	}
+	path := fakePath(t, `case "$1" in
+version) printf 'go version go`+pin+` linux/amd64\n';;
+list|mod) :;;
+build) shift; printf '%s\n' "build $*" >> "$LOG";;
+*) printf '%s\n' "other $*" >> "$LOG"; exit 10;;
+esac
+`)
+	mkdirPath, err := exec.LookPath("mkdir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(mkdirPath, filepath.Join(path, "mkdir")); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(t.TempDir(), "log")
+	cmd := exec.Command(filepath.Join(path, "make"), "ownerchannel-build")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "PATH="+path, "LOG="+log)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make ownerchannel-build: %s %v", out, err)
+	}
+	if !strings.Contains(string(out), "ok: go version go") {
+		t.Errorf("doctor did not run first:\n%s", out)
+	}
+	got, _ := os.ReadFile(log)
+	if want := "build -tags ataniq_ownerchannel -trimpath -o build/owner/ataniqd ./cmd/ataniqd\n"; string(got) != want {
+		t.Errorf("go ran\n%s\nwant\n%s", got, want)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "build", "owner")); err != nil || !fi.IsDir() {
+		t.Errorf("build/owner/ was not made: %v", err)
+	}
+	// The folder is ignored, so nothing built there is committed.
+	ignore, err := os.ReadFile(filepath.Join(root(t), ".gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`(?m)^build/$`).Match(ignore) {
+		t.Error(".gitignore does not ignore build/")
+	}
 }
 
 // runOwnerMakeTarget runs make test-ownerchannel over a tree of the given
