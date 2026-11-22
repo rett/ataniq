@@ -1,0 +1,6 @@
+# The allowlist of listening TCP ports, read by "ah-noaicheck ports" (see
+# ../README.md). One decimal port number per line (1 to 65535), allowed on
+# any address; blank lines and lines starting with '#' are ignored.
+#
+# Empty here: the lead fills it from the host's baseline at deploy time.
+# Every listening TCP socket on a port not named here is a hit.
