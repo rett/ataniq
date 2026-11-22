@@ -107,57 +107,6 @@ func journalTrust(j journal) trust {
 	return trust{signed: []signer{{signers: j.TrustSigners, principal: j.TrustPrincipal}}}
 }
 
-// retryOf reports whether a request (arg, rollback) is a retry of the
-// transaction last records, whose outcome is still to be reported: the
-// same direction and the same request id. A retried rollback is bound to
-// the release the first one went to: asked as previous it is a retry of
-// any rollback whose outcome is owed (previous must not be resolved anew:
-// it would name the release the first one left), asked by an id only of
-// the rollback to that id. A forward switch is a retry of the switch to
-// the same id.
-func retryOf(last Record, arg string, rollback bool) bool {
-	if !last.PendingReport || last.Txn == "" || last.Rollback != rollback {
-		return false
-	}
-	if rollback {
-		return arg == "previous" || last.RequestID == requestID(DirRollback, arg)
-	}
-	return last.RequestID == requestID(DirForward, arg)
-}
-
-// reportSettled answers a retry of a request whose outcome nobody was
-// shown yet (its transaction was settled by a later command, or the
-// command that settled it died before printing its result): the retry
-// reports that outcome and does nothing else, rather than doing the
-// request again (a retried --rollback-to previous would otherwise resolve
-// previous anew, and go back to the release the first one left). The
-// outcome is reported once: the report is cleared after the result line
-// is written, and the same request after that is a new one. A dry run
-// reports it and changes nothing: the report stays owed.
-func (s *Switcher) reportSettled(last Record, arg string, rollback bool) (int, bool) {
-	if !retryOf(last, arg, rollback) {
-		return 0, false
-	}
-	kind := "switch to"
-	if rollback {
-		kind = "rollback to"
-	}
-	s.printf("settled: this %s %s was interrupted and has been settled since; it is not done again (request %s)", kind, arg, q(last.RequestID))
-	if last.Detail != "" {
-		s.printf("settled: %s", last.Detail)
-	}
-	err := s.printResult(last)
-	if s.cfg.Dry {
-		s.printf("settled: dry run: the outcome is still to be reported; nothing changed")
-	} else if err == nil {
-		s.reported(last)
-	}
-	if last.Result == ResultOK {
-		return ExitOK, true
-	}
-	return ExitFailed, true
-}
-
 // RecoverOptions is what ah-switch recover is asked to do: exactly one of
 // them.
 type RecoverOptions struct {

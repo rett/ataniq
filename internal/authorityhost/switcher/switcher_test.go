@@ -99,7 +99,11 @@ func TestDeployRecord(t *testing.T) {
 	if rec.Txn == "" {
 		t.Errorf("no transaction id recorded")
 	}
-	rec.Txn = ""
+	// The test's owner acknowledged the outcome (see ackSeen).
+	if rec.OutcomeAckedTxn != rec.Txn || rec.OutcomeAckedAsked != "seen by the test" || rec.OutcomeAckedAt != "2026-11-21T12:00:00Z" {
+		t.Errorf("acknowledgement: %+v", rec)
+	}
+	rec.Txn, rec.OutcomeAckedTxn, rec.OutcomeAckedAsked, rec.OutcomeAckedAt = "", "", "", ""
 	want := Record{
 		Requested:       rel2,
 		RequestID:       "forward:" + rel2,
@@ -122,7 +126,7 @@ func TestDeployRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"id", "previous_id", "current_id", "counter", "mode", "trust", "rollback", "time", "result", "check", "failed_step", "error", "detail", "package_snapshot", "restored_health", "services_stopped", "counter_used", "txn", "requested", "pending_report", "package_state"} {
+	for _, key := range []string{"id", "previous_id", "current_id", "counter", "mode", "trust", "rollback", "time", "result", "check", "failed_step", "error", "detail", "package_snapshot", "restored_health", "services_stopped", "counter_used", "txn", "requested", "request_id", "package_state", "outcome_acked_at", "outcome_acked_asked", "outcome_acked_txn"} {
 		if !strings.Contains(string(data), `"`+key+`":`) {
 			t.Errorf("deploy.json has no %s:\n%s", key, data)
 		}

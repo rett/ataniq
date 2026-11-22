@@ -38,6 +38,7 @@ switch runs it.
   stop.list               the host's own emergency stop list (required)
 /var/lib/authority-host/
   deploy.json             the outcome of the last switch
+  owed.json               the outcomes owed until acknowledged (see "The journal and recover")
   highest-counter         the highest counter a switch ever attempted
   counters.log            every counter a switch attempted, appended
   decisions.inhibit       while it is there, every decision service refuses every decision
@@ -54,7 +55,7 @@ switch runs it.
   root, as in tests, the folders of the user running it are accepted too.)
   It creates the state folder, mode 0755, when it is missing, holds each
   folder open while it works, and opens the lock, `highest-counter`,
-  `counters.log`, `deploy.json` and `txn.json` relative to that folder
+  `counters.log`, `deploy.json`, `owed.json` and `txn.json` relative to that folder
   without following a link. Each of them must be a regular file with one link, owned by root (or
   that user) and not writable by its group or by others, and of a bounded
   size: a folder made safe after the fact can still hold a file another
@@ -275,6 +276,7 @@ ah-switch [--root DIR [--allow-exec]] [--dry] recover --package-state SNAPSHOT
 ah-switch [--root DIR [--allow-exec]] [--dry] recover --services-stopped
 ah-switch [--root DIR [--allow-exec]] [--dry] recover --discard-journal TXN
 ah-switch [--root DIR] [--dry] inhibit-clear --asked WORDS
+ah-switch [--root DIR] [--dry] ack --asked WORDS
 ```
 
 - `--root DIR` is the folder that holds `opt/authority-host`,
@@ -314,16 +316,17 @@ ah-switch [--root DIR] [--dry] inhibit-clear --asked WORDS
   counter, the package state, a `--noaicheck` program) and the host's
   stop list, and it is refused while a switch holds the lock or a
   transaction is still to resume (a journal that does not match the host
-  included). A dry run of a request whose outcome is still to be reported
-  (see "The journal and recover") shows that outcome and changes nothing
-  either: not `deploy.json`, not its time, and the outcome stays to be
-  reported to the real request.
+  included). A dry run of a request whose outcome is owed (see "The
+  journal and recover") shows that outcome and changes nothing either:
+  the outcome stays owed to the real request; a dry run of another
+  request while one is owed is refused as the request would be.
 - `status` prints `current`, `previous`, the highest counter, the trust of
   the switch policy, a transaction still to resume and its phase (with the
   stop commands that failed, when it is stopping), the host's stop list,
-  whether decisions are inhibited, and the last outcome from
-  `deploy.json` (with `outcome not reported yet (request ...)` while it is
-  still to be reported). It takes the lock shared, so what it prints is
+  whether decisions are inhibited, every outcome owed
+  (`outcome owed (request ..., transaction ...)`), the owner's last
+  acknowledgement, and the last outcome from `deploy.json`. It takes the
+  lock shared, so what it prints is
   one state between two switches: while a switch runs it exits 3, and
   while it reads, a switch is refused with exit 3. It prints all of it or
   nothing, and it changes nothing.
@@ -334,6 +337,8 @@ ah-switch [--root DIR] [--dry] inhibit-clear --asked WORDS
   does not match the host; see "The journal and recover".
 - `inhibit-clear --asked WORDS` removes the decision inhibit on the
   owner's word; see "The decision inhibit".
+- `ack --asked WORDS` acknowledges the outcomes owed on the owner's word;
+  see "The journal and recover".
 
 Flags may come before or after the id.
 
@@ -488,7 +493,8 @@ are stopped and decisions stay inhibited, see step 4).
    it since that release passed.
 9. **record**: the journal says `done` with the outcome; the link folder is
    synced once more, `deploy.json` is written (a temporary file renamed over
-   the old one), the decision inhibit is removed when the transaction
+   the old one), the outcome is added to `owed.json` (see "The journal and
+   recover"), the decision inhibit is removed when the transaction
    ended healthy (or kept, with the outcome as its reason), and the
    journal is removed. Only then does the switch print `result: ok` and
    exit 0. When any of that fails it prints `result:
@@ -669,21 +675,47 @@ When the resume ends with the decision services stopped, the command that
 resumed it does nothing else: a new switch never starts on its own after a
 failed recovery. Run it again once the host is looked at.
 
-Every transaction records its outcome with `pending_report: true` and its
-request id, `request_id`: its direction and the release it went to
-(`forward:ID` or `rollback:ID`). The record is written before the journal
-is removed, and `pending_report` is cleared only after the result line was
-written, and only by the command that was asked for the transaction:
-an outcome that another command settled (a resume), or whose command died
-after removing the journal and before printing its result, stays to be
-reported. When the same request is run again it reports that outcome and
-does nothing else, once. A rollback is bound to its request id: retried as
-`--rollback-to previous` (or by the id it went to), it reports the
-rollback whose outcome is owed and never resolves `previous` anew, which
-would go back to the release the first rollback left. A forward switch is
-retried by the same id. Run the request once more to do it again. A dry
-run only shows the outcome (see `--dry`); `recover --package-state` keeps
-it owed.
+Every settled transaction owes its outcome to whoever asked for it, and
+that outcome is kept in its own file, `/var/lib/authority-host/owed.json`
+(written whole and synced, mode 0644, read with the checks of the other
+state files), never in `deploy.json`: a later record, a refusal's
+included, cannot lose it. Each outcome there holds the transaction's id
+(`txn`), its request id (`request_id`: its direction and the release it
+went to, `forward:ID` or `rollback:ID`), its `direction`, what was asked
+(`requested`), the releases (`id`, `from_id`, `current_id`), its `result`,
+`failed_step`, `restored_health`, `services_stopped`, `detail` and
+`time`. It is written before the journal is removed, by whichever command
+settles the transaction, and it stays owed after the switch printed its
+result line: a line written to the switch's output is no proof that it
+reached the one who asked (a remote session can drop it). Only two
+things take it back:
+
+- **The same request, run again**, reports the outcome and does nothing
+  else (`settled: this ... has been settled already; it is not done
+  again`), and the outcome is no longer owed. A rollback is bound to its
+  request id: retried as `--rollback-to previous` (or by the id it went
+  to), it reports the rollback whose outcome is owed and never resolves
+  `previous` anew, which would go back to the release the first rollback
+  left. A forward switch is retried by the same id. Run the request once
+  more to do it again.
+- **`ah-switch ack --asked WORDS`**, the owner's acknowledgement that the
+  outcomes were seen, with in `WORDS` what was asked or seen (1 to 512
+  bytes). It prints every outcome owed, records the time, the words and
+  the transactions in `deploy.json` (`outcome_acked_at`,
+  `outcome_acked_asked`, `outcome_acked_txn`, kept by later records), and
+  removes `owed.json`. It runs no program, is refused while a transaction
+  is open (run any command to settle it first) or when nothing is owed,
+  and with `--dry` changes nothing.
+
+Any other switch or rollback while an outcome is owed (another release,
+or one that is not there) first reports the outcomes owed (`owed: the ...
+ended ...`), leaves them owed and is refused, exit 1, with nothing
+recorded or run. A dry run only shows the outcome (see `--dry`);
+`recover`, `status` and `inhibit-clear` are not refused, and
+`recover --package-state` keeps it owed. An `owed.json` that does not
+parse, is not trusted or does not describe a transaction refuses every
+switch, rollback and `ack` (`state: FAILED`): it is never taken as
+nothing owed.
 
 `ah-switch recover --counter N` writes `highest-counter` as `N` when it is
 missing, does not hold a number, or holds less than the counters the host
@@ -723,12 +755,15 @@ not finish, with `package_from` and `package_to`; empty when known),
 forward switch that got as far as using its counter: evidence of that
 counter for step 2), `restored_health` (`ok`, `failed` or empty),
 `services_stopped` (the decision services were stopped), and `txn`,
-`requested`, `request_id` and `pending_report` (the transaction this
-record ends, what was asked, its direction and release as `forward:ID` or
-`rollback:ID`, and whether its outcome is still to be reported), and
+`requested` and `request_id` (the transaction this record ends, what was
+asked, and its direction and release as `forward:ID` or `rollback:ID`;
+whether its outcome is still owed is in `owed.json`, not here),
 `inhibit_cleared_at` and `inhibit_cleared_asked` (when the owner last
-removed the decision inhibit by hand, and the words given). A dry run
-writes nothing.
+removed the decision inhibit by hand, and the words given), and
+`outcome_acked_at`, `outcome_acked_asked` and `outcome_acked_txn` (when
+the owner last acknowledged the outcomes owed, the words given and the
+transactions). An earlier `deploy.json` with `pending_report` still
+parses; the key is no longer written or used. A dry run writes nothing.
 
 `error` is a stable failure code, such as `release-exists`, `bad-entry`,
 `file-changed`, `too-many-entries`, `time-budget`, `untrusted`,
@@ -754,7 +789,7 @@ see its messages. The text of a broken state file is not repeated either.
 
 | Code | Meaning |
 | --- | --- |
-| 0 | Switched and healthy (recorded, journal removed), a dry run whose checks passed, `status`, `recover` or `inhibit-clear` done, or a retried request whose settled outcome was `ok` |
+| 0 | Switched and healthy (recorded, journal removed), a dry run whose checks passed, `status`, `recover`, `inhibit-clear` or `ack` done, or a retried request whose settled outcome was `ok` |
 | 1 | Failed; outside a dry run the outcome is in `deploy.json`, except when the state folder, the switch policy or the host's stop list is not trusted, or `releases/`, `current` or `previous` cannot be read (`state: FAILED`), which records nothing, or when the result is `unresolved`, which leaves the journal for the next command |
 | 2 | Bad arguments, `--mode` weaker than the switch policy, or a root other than `/` without `--allow-exec`; nothing was done |
 | 3 | Another switch holds the lock, or `status` holds it while a switch is asked for (`flock`, not waited for), or a package step that outlived its switch holds it (said as `surviving helper pid N`); nothing was done |
@@ -793,7 +828,8 @@ see its messages. The text of a broken state file is not repeated either.
 | A link folder cannot be synced | `result: unresolved`, exit 1; the journal stays; nothing is recorded as done until the next command syncs it |
 | `--rollback-to` when `previous` points at a missing release | Refused at counter (`no-previous`) |
 | Crash or power loss during the switch | `current` points at a whole release, the old or the new one, and the journal is there; the next command resumes its phase (see "The journal and recover") |
-| The same request run again after its transaction was settled by another command, or after its command died between removing the journal and printing the result | Reports that outcome once and does nothing else; a rollback retried as `previous` goes to no other release; `--dry` only shows it |
+| The same request run again while its outcome is owed (settled by its own command or by another one, its result line printed or not) | Reports that outcome once and does nothing else; a rollback retried as `previous` goes to no other release; `--dry` only shows it |
+| Another switch or rollback while an outcome is owed | Reports the outcomes owed, leaves them owed and is refused, exit 1, nothing recorded or run, until `ack --asked WORDS` or the same request again |
 | `highest-counter` missing or broken while `current` exists, or below a counter the links, `deploy.json` or `counters.log` show was used | Refused before anything, nothing recorded (`counter-missing`, `counter-invalid`); run `recover --counter N` |
 | A journal whose links or counter do not match the host (restored from a backup) | `reconcile: unresolved`, exit 1; nothing resumed, run or moved until `recover --discard-journal TXN` |
 | A release folder of a higher counter is in `releases/` | Refused at counter (`counter-not-above`); build a higher counter |

@@ -148,6 +148,14 @@ func TestSwitchRollbackAndStatus(t *testing.T) {
 		if code != switcher.ExitOK {
 			t.Fatalf("switch to %s: exit %d\n%s%s", id, code, out, errOut)
 		}
+		// The outcome is owed until the owner acknowledges it.
+		code, out, errOut = call("--root", root, "--allow-exec", "0009-fffffff")
+		if code != switcher.ExitFailed || !strings.Contains(out, "owed: the switch to "+id) {
+			t.Errorf("a request while an outcome is owed: exit %d\n%s%s", code, out, errOut)
+		}
+		if code, out, errOut := call("--root", root, "ack", "--asked", "result seen"); code != switcher.ExitOK {
+			t.Fatalf("ack: exit %d\n%s%s", code, out, errOut)
+		}
 	}
 	code, out, _ = call("--root", root, "--allow-exec", "0001-aaaaaaa")
 	if code != switcher.ExitFailed || !strings.Contains(out, "not above the highest ever attempted") {
@@ -161,7 +169,7 @@ func TestSwitchRollbackAndStatus(t *testing.T) {
 	if code != switcher.ExitOK {
 		t.Fatalf("status: exit %d", code)
 	}
-	for _, want := range []string{"current: 0001-aaaaaaa", "previous: 0002-bbbbbbb", "highest counter: 2", "last switch: rollback to 0001-aaaaaaa: ok"} {
+	for _, want := range []string{"current: 0001-aaaaaaa", "previous: 0002-bbbbbbb", "highest counter: 2", "last switch: rollback to 0001-aaaaaaa: ok", "outcome owed (request rollback:0001-aaaaaaa"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("status lacks %q:\n%s", want, out)
 		}
@@ -222,6 +230,9 @@ func TestRecover(t *testing.T) {
 	if code, out, errOut := call("--root", root, "--allow-exec", "--from", filepath.Join(in, "0001-aaaaaaa"), "0001-aaaaaaa"); code != switcher.ExitOK {
 		t.Fatalf("switch: exit %d\n%s%s", code, out, errOut)
 	}
+	if code, out, errOut := call("--root", root, "ack", "--asked", "result seen"); code != switcher.ExitOK {
+		t.Fatalf("ack: exit %d\n%s%s", code, out, errOut)
+	}
 	os.Remove(filepath.Join(root, switcher.StateDir, switcher.HighestFile))
 	if code, out, _ := call("--root", root, "--allow-exec", "--from", filepath.Join(in, "0002-bbbbbbb"), "0002-bbbbbbb"); code != switcher.ExitFailed || !strings.Contains(out, "recover --counter N") {
 		t.Fatalf("switch without a counter: exit %d\n%s", code, out)
@@ -277,6 +288,10 @@ func TestRecoverForms(t *testing.T) {
 		{"--root", root, "inhibit-clear", "--asked", "x", "--counter", "3"},
 		{"--root", root, "--asked", "x", "0001-aaaaaaa"},
 		{"--root", root, "--asked", "x", "status"},
+		{"--root", root, "ack"},
+		{"--root", root, "ack", "--asked", ""},
+		{"--root", root, "ack", "--asked", "x", "--allow-exec"},
+		{"--root", root, "--rollback-to", "previous", "ack", "--asked", "x"},
 	} {
 		if code, _, errOut := call(args...); code != switcher.ExitUsage {
 			t.Errorf("%q: exit %d, %q", args, code, errOut)

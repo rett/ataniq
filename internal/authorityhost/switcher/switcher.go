@@ -9,7 +9,7 @@
 //	opt/authority-host/releases/<id>/   MANIFEST, SHA256SUMS, [SHA256SUMS.sig], bin/, etc/, share/
 //	opt/authority-host/current  -> releases/<id>
 //	opt/authority-host/previous -> releases/<id>
-//	var/lib/authority-host/deploy.json, highest-counter, counters.log, decisions.inhibit, txn.json, switch.lock
+//	var/lib/authority-host/deploy.json, owed.json, highest-counter, counters.log, decisions.inhibit, txn.json, switch.lock
 package switcher
 
 import (
@@ -314,11 +314,10 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	if code, halt := s.reconcile(ctx, true); halt {
 		return code
 	}
-	last, code, done := s.readState(a)
-	if done {
+	if code, done := s.answerOwed(arg, rollback); done {
 		return code
 	}
-	if code, done := s.reportSettled(last, arg, rollback); done {
+	if _, code, done := s.readState(a); done {
 		return code
 	}
 	if err := s.counterState(a); err != nil {
@@ -804,6 +803,7 @@ func (s *Switcher) readState(a *attempt) (Record, int, bool) {
 	a.rec.PackageSnapshot = last.PackageSnapshot
 	a.rec.PackageState, a.rec.PackageFrom, a.rec.PackageTo, a.rec.PackageStatedAt = last.PackageState, last.PackageFrom, last.PackageTo, last.PackageStatedAt
 	a.rec.InhibitClearedAt, a.rec.InhibitClearedAsked = last.InhibitClearedAt, last.InhibitClearedAsked
+	a.rec.OutcomeAckedAt, a.rec.OutcomeAckedAsked, a.rec.OutcomeAckedTxn = last.OutcomeAckedAt, last.OutcomeAckedAsked, last.OutcomeAckedTxn
 	current := "none"
 	if a.oldExists {
 		current = a.rec.CurrentID
@@ -1133,17 +1133,6 @@ func (s *Switcher) rewriteRecord(rec *Record) error {
 	return writeJSONIn(s.stateRoot, DeployFile, rec, 0o644)
 }
 
-// reported clears the report rec owes, once its result line was written:
-// deploy.json is written again as it is, its time included, but
-// pending_report. A failure leaves the report owed, which is safe: the
-// same request run again only reports the outcome.
-func (s *Switcher) reported(rec Record) {
-	rec.PendingReport = false
-	if err := s.rewriteRecord(&rec); err != nil {
-		s.printf("warning: %s not written: %s; the same request run again reports this outcome once more", DeployFile, q(err.Error()))
-	}
-}
-
 // setFailure records err in the record as the failure of step.
 func (s *Switcher) setFailure(a *attempt, step string, err error) {
 	a.rec.FailedStep = step
@@ -1226,6 +1215,7 @@ func (s *Switcher) status(w io.Writer) error {
 	var present, ok, pending bool
 	var rec Record
 	var j journal
+	var owed []string
 	if s.stateRoot != nil {
 		if highest, present, err = s.readHighest(); err != nil {
 			return err
@@ -1234,6 +1224,9 @@ func (s *Switcher) status(w io.Writer) error {
 			return err
 		}
 		if j, pending, err = s.readJournal(); err != nil {
+			return err
+		}
+		if owed, err = s.owedStatus(); err != nil {
 			return err
 		}
 	}
@@ -1296,6 +1289,12 @@ func (s *Switcher) status(w io.Writer) error {
 	if rec.InhibitClearedAt != "" {
 		fmt.Fprintf(w, "inhibit last cleared by the owner at %s, asked: %s\n", q(rec.InhibitClearedAt), q(rec.InhibitClearedAsked))
 	}
+	for _, line := range owed {
+		fmt.Fprintln(w, line)
+	}
+	if rec.OutcomeAckedAt != "" {
+		fmt.Fprintf(w, "outcomes last acknowledged by the owner at %s (transactions %s), asked: %s\n", q(rec.OutcomeAckedAt), q(rec.OutcomeAckedTxn), q(rec.OutcomeAckedAsked))
+	}
 	if !ok || rec.Txn == "" && rec.ID == "" {
 		fmt.Fprintln(w, "last switch: none recorded")
 		return nil
@@ -1305,9 +1304,6 @@ func (s *Switcher) status(w io.Writer) error {
 		kind = "rollback to"
 	}
 	fmt.Fprintf(w, "last switch: %s %s: %s at %s (mode %s)\n", kind, q(rec.ID), q(rec.Result), q(rec.Time), q(rec.Mode))
-	if rec.PendingReport {
-		fmt.Fprintf(w, "outcome not reported yet (request %s): the same request run again reports it once and does nothing else\n", q(rec.RequestID))
-	}
 	if rec.ServicesStopped {
 		fmt.Fprintf(w, "decision services: stopped\n")
 	}

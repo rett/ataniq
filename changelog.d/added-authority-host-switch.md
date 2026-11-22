@@ -44,11 +44,14 @@
   it began with;
   the next command resumes an interrupted one from its phase, a link
   counts as moved only once its folder is synced, a failed stop keeps the
-  transaction open, and a retried request reports the outcome it is still
-  owed (`pending_report`, set before the journal is removed and cleared
-  only once the result line is written, so a lost response is reported
-  too) instead of doing it again, a rollback bound to its request id so
-  that a retry never resolves `previous` anew; `--dry` only shows it.
+  transaction open, and every settled outcome is owed in its own file,
+  `/var/lib/authority-host/owed.json` (written before the journal is
+  removed, never in `deploy.json`, and not taken back by a printed result
+  line): the same request run again reports it instead of doing it again,
+  a rollback bound to its request id so that a retry never resolves
+  `previous` anew, any other switch or rollback reports it and is refused
+  until then, and `ah-switch ack --asked WORDS` acknowledges it (recorded
+  with the time); `--dry` only shows it.
   `ah-switch --rollback-to previous` goes back under the same policy,
   `ah-switch recover --counter N` restores a missing counter,
   `ah-switch recover --package-state SNAPSHOT` settles an unknown package

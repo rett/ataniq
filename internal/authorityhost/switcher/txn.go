@@ -500,6 +500,12 @@ func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 	if err := s.writeRecord(&rec); err != nil {
 		return unresolved(DeployFile+" not written", err)
 	}
+	// The outcome is owed before the journal goes, whichever command
+	// settles it; only an acknowledgement or a retry of the same request
+	// takes it back (see answerOwed), never the result line below.
+	if err := s.addOwed(rec, t.j.Direction); err != nil {
+		return unresolved(OwedFile+" not written", err)
+	}
 	if err := s.crash(CrashRecord); err != nil {
 		return ExitFailed, false
 	}
@@ -512,13 +518,8 @@ func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 	if err := s.crash(CrashUnreported); err != nil {
 		return ExitFailed, false
 	}
-	s.step(9, "recorded in %s", q(filepath.Join(s.stateDir(), DeployFile)))
-	// The outcome stays owed until its result line is written, and is
-	// owed still when the command that settled it was not the one asked
-	// for it (a resume).
-	if err := s.printResult(rec); err == nil && !t.resumed {
-		s.reported(rec)
-	}
+	s.step(9, "recorded in %s; the outcome is owed until ah-switch ack --asked WORDS or the same request run again", q(filepath.Join(s.stateDir(), DeployFile)))
+	s.printResult(rec)
 	if t.requalifyFailed {
 		s.printf("result: decisions stay inhibited: %s did not pass its reload and health check again after the interruption; look at the host, then switch, or run ah-switch inhibit-clear --asked WORDS", linkText(cur))
 		return ExitFailed, true
@@ -590,12 +591,15 @@ func (s *Switcher) txnRecord(t *txn, cur string, curOK bool) (Record, error) {
 		Txn:             t.j.Txn,
 		Requested:       t.j.Requested,
 		RequestID:       requestID(t.j.Direction, t.j.ID),
-		PendingReport:   true,
 		ServicesStopped: t.j.Stopped,
 		CounterUsed:     t.j.CounterUsed,
-		// The owner's last clearing of the inhibit stays on record.
+		// The owner's last clearing of the inhibit, and last
+		// acknowledgement, stay on record.
 		InhibitClearedAt:    last.InhibitClearedAt,
 		InhibitClearedAsked: last.InhibitClearedAsked,
+		OutcomeAckedAt:      last.OutcomeAckedAt,
+		OutcomeAckedAsked:   last.OutcomeAckedAsked,
+		OutcomeAckedTxn:     last.OutcomeAckedTxn,
 	}
 	if t.j.OldCurrent != "" {
 		id, _ := s.targetID(t.j.OldCurrent)

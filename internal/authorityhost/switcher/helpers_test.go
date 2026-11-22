@@ -181,6 +181,11 @@ type env struct {
 	out    bytes.Buffer
 	last   string // the output of the last switchTo or rollBack
 	in     string // the folder incoming releases are written to
+	// keepOwed: the outcomes a command leaves owed stay owed. Without it
+	// the owner acknowledges, after each switchTo, rollBack and recover,
+	// every outcome that command left owed, as one who saw its output
+	// would (see ackSeen).
+	keepOwed bool
 }
 
 func newEnv(t *testing.T) *env {
@@ -228,6 +233,7 @@ func (e *env) switchTo(id string, mod ...func(*Config)) int {
 	e.t.Logf("switch to %s: exit %d\n%s", id, code, e.out.String())
 	e.last = e.out.String()
 	e.out.Reset()
+	e.ackSeen()
 	return code
 }
 
@@ -237,7 +243,32 @@ func (e *env) rollBack(which string) int {
 	e.t.Logf("roll back to %s: exit %d\n%s", which, code, e.out.String())
 	e.last = e.out.String()
 	e.out.Reset()
+	e.ackSeen()
 	return code
+}
+
+// ack runs ah-switch ack --asked words and returns its exit code; its
+// output is in last.
+func (e *env) ack(words string, mod ...func(*Config)) int {
+	e.t.Helper()
+	code := e.switcher(mod...).Ack(context.Background(), words)
+	e.t.Logf("ack: exit %d\n%s", code, e.out.String())
+	e.last = e.out.String()
+	e.out.Reset()
+	return code
+}
+
+// ackSeen acknowledges, unless keepOwed, the outcomes owed after a command
+// whose output the test saw; its own output is not kept.
+func (e *env) ackSeen() {
+	if e.keepOwed {
+		return
+	}
+	if _, err := os.Lstat(filepath.Join(e.root, StateDir, OwedFile)); err != nil {
+		return
+	}
+	var out bytes.Buffer
+	e.switcher(func(c *Config) { c.Out, c.Err = &out, &out }).Ack(context.Background(), "seen by the test")
 }
 
 // resumeOnly is a recover that resumes a journal and then changes nothing:
@@ -252,6 +283,7 @@ func (e *env) recover(o RecoverOptions) int {
 	e.t.Logf("recover %+v: exit %d\n%s", o, code, e.out.String())
 	e.last = e.out.String()
 	e.out.Reset()
+	e.ackSeen()
 	return code
 }
 
