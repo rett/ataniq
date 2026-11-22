@@ -24,6 +24,7 @@ var inventory = []struct {
 	{"GET /{$}", "page", nil},
 	{"GET /pair/{$}", "page", []string{"button#start"}},
 	{"GET /pair", "redirect", nil},
+	{"GET /static/words.js", "asset", nil},
 	{"GET /static/pair.js", "asset", nil},
 	{"GET /static/app.css", "asset", nil},
 	{"POST /api/pair-challenge", "api", nil},

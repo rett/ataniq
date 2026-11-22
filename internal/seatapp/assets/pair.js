@@ -8,6 +8,8 @@
   var button = document.getElementById("start");
   var result = document.getElementById("result");
   var wordsEl = document.getElementById("words");
+  var compare = document.getElementById("compare");
+  var mismatch = document.getElementById("mismatch");
 
   // Every failure ends in one of these fixed messages; retry says whether the
   // same code can be tried again on this page.
@@ -80,7 +82,8 @@
     return !!(window.PublicKeyCredential && navigator.credentials && window.crypto &&
       window.AuthenticatorAttestationResponse &&
       AuthenticatorAttestationResponse.prototype.getPublicKey &&
-      AuthenticatorAttestationResponse.prototype.getAuthenticatorData);
+      AuthenticatorAttestationResponse.prototype.getAuthenticatorData &&
+      window.SeatWords && crypto.subtle);
   }
 
   async function pair() {
@@ -112,17 +115,25 @@
       public_key: b64e(key)
     });
     if (!out || !Array.isArray(out.words) || out.words.length !== 6) { throw "failed"; }
-    return out.words;
+    // The words this phone works out from its own credential are the ones it
+    // shows. The seat's words are only compared with them.
+    var local = await SeatWords.fingerprint(cred.rawId, key);
+    var same = local.every(function (w, i) { return w === String(out.words[i]); });
+    return { words: local, same: same };
   }
 
-  function show(words) {
+  function show(res) {
     wordsEl.textContent = "";
-    words.forEach(function (w) {
+    res.words.forEach(function (w) {
       var li = document.createElement("li");
       li.textContent = String(w);
       wordsEl.appendChild(li);
     });
-    say("Paired on this phone, waiting for you at the desk.");
+    // When the seat's words differ, the comparison is not offered at all.
+    mismatch.hidden = res.same;
+    compare.hidden = !res.same;
+    say(res.same ? "Paired on this phone, waiting for you at the desk." :
+      "The words do not match. Do not confirm.");
     button.hidden = true;
     result.hidden = false;
   }

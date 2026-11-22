@@ -3,7 +3,7 @@
 // sessions and journal pages will use later.
 //
 // The app is the standard library only. Pages are made on the server with
-// html/template, each act a plain form where an act is a form; the one script
+// html/template, each act a plain form where an act is a form; the two scripts
 // of the pairing page and the one style sheet are compiled into the binary
 // with go:embed and served from the app's own origin. Nothing is fetched from
 // another site, there is no inline script and no inline style, and no cookie
@@ -15,6 +15,7 @@
 //	GET  /                    a plain status page
 //	GET  /pair/               the pairing page (the code is never in the path or query)
 //	GET  /pair                a 308 to /pair/
+//	GET  /static/words.js     the six words' list and formula
 //	GET  /static/pair.js      the pairing script
 //	GET  /static/app.css      the style sheet
 //	POST /api/pair-challenge  a one-time challenge for a new passkey
@@ -58,6 +59,21 @@
 // signed. What the checks give is that the id, the authenticator data and the
 // key the daemon hears of are one credential's, not that the phone proved it
 // holds the private key.
+//
+// # The six words
+//
+// The script computes the six words itself from the credential the phone
+// made (the first six bytes of SHA-256 of the 4-byte big-endian length and the
+// credential id, then the same for the SPKI; each byte indexes the 256-word
+// list in assets/words.js, the list of the seatpair package, which a test in
+// tests/ holds equal). It shows its own words, and if the words the server
+// returns differ it shows a fixed warning and does not offer the comparison.
+// That protects the link between the app and the daemon, and an honest
+// authority host behind a bad relay. It does not protect against a host that
+// is taken over: that host also serves the script, so it can serve one that
+// shows whatever it likes. Pair a phone only while the host's no-AI check is
+// green, and use a hardware key, with its attestation verified, for a real
+// project.
 //
 // A failure is one of a small fixed set of codes, each with its status, and a
 // response never holds anything the request sent. Pairing tries are limited

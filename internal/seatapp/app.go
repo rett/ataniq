@@ -161,6 +161,7 @@ func (a *app) routes() []route {
 		// fragment across a redirect that has none of its own).
 		{"GET /pair/{$}", a.page("pair")},
 		{"GET /pair", a.redirect(pairPath)},
+		{"GET /static/words.js", a.asset("assets/words.js", "text/javascript; charset=utf-8")},
 		{"GET /static/pair.js", a.asset("assets/pair.js", "text/javascript; charset=utf-8")},
 		{"GET /static/app.css", a.asset("assets/app.css", "text/css; charset=utf-8")},
 		{"POST /api/pair-challenge", a.post(a.pair.challenge)},

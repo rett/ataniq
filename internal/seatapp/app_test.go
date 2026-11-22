@@ -91,6 +91,7 @@ func TestRoutes(t *testing.T) {
 		{"/healthz", "text/plain; charset=utf-8", "ok"},
 		{"/", "text/html; charset=utf-8", "Authority seat"},
 		{"/pair/", "text/html; charset=utf-8", "Pair this phone"},
+		{"/static/words.js", "text/javascript; charset=utf-8", "SeatWords"},
 		{"/static/pair.js", "text/javascript; charset=utf-8", ""},
 		{"/static/app.css", "text/css; charset=utf-8", ""},
 	} {

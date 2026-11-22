@@ -1,6 +1,7 @@
 package seatapp
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -20,7 +21,7 @@ func TestPairPageAndScript(t *testing.T) {
 	}
 	checkHeaders(t, "GET /pair", rd)
 	for _, want := range []string{
-		`data-rp-id="seat.example"`, `<script src="/static/pair.js"></script>`, `id="start"`,
+		`data-rp-id="seat.example"`, "<script src=\"/static/words.js\"></script>\n<script src=\"/static/pair.js\"></script>", `id="compare"`, `id="mismatch"`, `id="start"`,
 		"Compare these six words with the desk console, then confirm there. Nothing is trusted until you confirm at the desk.",
 	} {
 		if !strings.Contains(page, want) {
@@ -36,7 +37,7 @@ func TestPairPageAndScript(t *testing.T) {
 	for _, want := range []string{
 		"location.hash", "history.replaceState", `userVerification: "required"`, `residentKey: "preferred"`,
 		`attestation: "none"`, "alg: -7", "timeout: 120000", "getPublicKey()", "getAuthenticatorData()",
-		`name: "owner"`, "/api/pair-challenge", "/api/pair", "client_data_json", "credential_id",
+		`name: "owner"`, "SeatWords.fingerprint(cred.rawId, key)", "mismatch", "/api/pair-challenge", "/api/pair", "client_data_json", "credential_id",
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("the script lacks %q", want)
@@ -77,5 +78,27 @@ func TestScriptFetchPolicyKeepsTheOrigin(t *testing.T) {
 	// The response header stays: the page itself leaks no referrer.
 	if got := r.do("GET", "/pair/", nil, nil).Header().Get("Referrer-Policy"); got != "no-referrer" {
 		t.Errorf("Referrer-Policy %q", got)
+	}
+}
+
+// TestPageShowsItsOwnWordsAndWarnsOnADifference checks the structure the
+// script relies on: the comparison prompt and the warning are separate
+// elements, the warning is hidden until the script shows it, and the script
+// loads the word list before it runs. What the script does with them needs a
+// real browser.
+func TestPageShowsItsOwnWordsAndWarnsOnADifference(t *testing.T) {
+	r := newRig(t)
+	page := r.do("GET", "/pair/", nil, nil).Body.String()
+	if !regexp.MustCompile(`(?s)<p id="mismatch"[^>]* hidden>[^<]*do not match[^<]*</p>`).MatchString(page) {
+		t.Error("the page lacks the hidden mismatch warning")
+	}
+	if strings.Index(page, "/static/words.js") > strings.Index(page, "/static/pair.js") || !strings.Contains(page, "/static/words.js") {
+		t.Error("words.js must load before pair.js")
+	}
+	js := r.do("GET", "/static/pair.js", nil, nil).Body.String()
+	for _, want := range []string{`getElementById("mismatch")`, `getElementById("compare")`, "mismatch.hidden", "compare.hidden"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("the script lacks %q", want)
+		}
 	}
 }
