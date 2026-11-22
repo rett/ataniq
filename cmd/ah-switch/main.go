@@ -5,6 +5,7 @@
 //	ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manual|signed] [--noaicheck PATH] [--from INCOMING_DIR] ID
 //	ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manual|signed] [--noaicheck PATH] --rollback-to previous
 //	ah-switch [--root DIR] status
+//	ah-switch [--root DIR [--allow-exec]] boot
 //	ah-switch [--root DIR [--allow-exec]] [--dry] recover --counter N
 //	ah-switch [--root DIR [--allow-exec]] [--dry] recover --package-state SNAPSHOT
 //	ah-switch [--root DIR [--allow-exec]] [--dry] recover --services-stopped
@@ -12,7 +13,8 @@
 //	ah-switch [--root DIR] [--dry] inhibit-clear --asked WORDS
 //	ah-switch [--root DIR] [--dry] ack --txn ID[,ID...] --asked WORDS
 //
-// Exit codes: 0 ok, 1 failed (the outcome is recorded), 2 usage, 3 locked.
+// Exit codes: 0 ok, 1 failed (the outcome is recorded), 2 usage, 3 locked,
+// 4 boot found no current release.
 package main
 
 import (
@@ -35,6 +37,7 @@ func main() {
 const usage = `usage: ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manual|signed] [--noaicheck PATH] [--from INCOMING_DIR] ID
        ah-switch [--root DIR [--allow-exec]] [--dry] [--mode ...] [--noaicheck PATH] --rollback-to previous
        ah-switch [--root DIR] status
+       ah-switch [--root DIR [--allow-exec]] boot
        ah-switch [--root DIR [--allow-exec]] [--dry] recover --counter N
        ah-switch [--root DIR [--allow-exec]] [--dry] recover --package-state SNAPSHOT
        ah-switch [--root DIR [--allow-exec]] [--dry] recover --services-stopped
@@ -109,6 +112,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		return switcher.New(switcher.Config{Root: rootAbs, Out: stdout, Err: stderr}).Status()
 	}
+	if len(pos) == 1 && pos[0] == "boot" && !set["rollback-to"] {
+		for _, name := range []string{"dry", "mode", "noaicheck", "from", "counter", "services-stopped", "package-state", "discard-journal", "asked", "txn"} {
+			if set[name] {
+				return bad("boot takes only --root and --allow-exec")
+			}
+		}
+		return switcher.New(switcher.Config{Root: rootAbs, AllowExec: *allowExec, Out: stdout, Err: stderr}).Boot(context.Background())
+	}
 	if len(pos) == 1 && pos[0] == "inhibit-clear" && !set["rollback-to"] {
 		for _, name := range []string{"mode", "noaicheck", "from", "allow-exec", "counter", "services-stopped", "package-state", "discard-journal", "txn"} {
 			if set[name] {
@@ -181,7 +192,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case set["from"] && *from == "":
 		return bad("--from needs a folder")
 	case !set["rollback-to"] && len(pos) != 1:
-		return bad("give one release id, --rollback-to previous, status, recover, inhibit-clear or ack")
+		return bad("give one release id, --rollback-to previous, status, boot, recover, inhibit-clear or ack")
 	}
 	// A path on the host, below --root: never resolved against the
 	// working folder.

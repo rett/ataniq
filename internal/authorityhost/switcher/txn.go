@@ -510,6 +510,9 @@ func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 	}
 	if t.requalify && t.healthy() && !t.j.RequalifyFailed {
 		if err := s.requalifyCurrent(ctx, t, cur, curOK); err != nil {
+			if errors.Is(err, errCrashed) {
+				return ExitFailed, false
+			}
 			return unresolved("the failed requalification was not journaled", err)
 		}
 	}
@@ -571,7 +574,7 @@ func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 	s.step(9, "recorded in %s; the outcome is owed until %s (the same request run again reports it)", q(filepath.Join(s.stateDir(), DeployFile)), ackCommand(owed))
 	s.printResult(rec)
 	if t.j.RequalifyFailed {
-		s.emit("%s", requalifyFailedLine(rec.CurrentID, ackCommand(owed)))
+		s.emit("%s", requalifyFailedLine(rec.CurrentID, ackCommand(owed), "after the interruption"))
 		return ExitFailed, true
 	}
 	if rec.Result == ResultOK {
@@ -592,12 +595,13 @@ func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 // and noted (a failed no-AI check also as the record's check) and
 // journaled before the outcome is recorded, as it was decided, with
 // decisions inhibited (see keepInhibit). The error is that journal not
-// being written: the transaction then stays unresolved.
+// being written (or errCrashed, a test's crash): the transaction then
+// stays unresolved.
 func (s *Switcher) requalifyCurrent(ctx context.Context, t *txn, cur string, curOK bool) error {
 	intro := fmt.Sprintf("reconcile: the %s %s was decided before an interruption; ", t.kind(), t.j.ID)
 	checkFailed, err := s.qualifyAgain(ctx, t.check(), cur, curOK, intro)
-	if err == nil {
-		return nil
+	if err == nil || errors.Is(err, errCrashed) {
+		return err
 	}
 	t.j.RequalifyFailed = true
 	if checkFailed {
@@ -613,7 +617,7 @@ func (s *Switcher) requalifyCurrent(ctx context.Context, t *txn, cur string, cur
 // check and the post-activation no-AI check (the program check names) of
 // the release current points at (cur), verified again as the switch's
 // trust says, and returns the first failure; checkFailed says it was the
-// no-AI check's. intro begins the line that says it runs. The verdict of an
+// no-AI check's. A test's crash (see crash) returns errCrashed. intro begins the line that says it runs. The verdict of an
 // earlier post-activation check is never reused: the firewall and the
 // listeners may have changed since.
 func (s *Switcher) qualifyAgain(ctx context.Context, check checkRef, cur string, curOK bool, intro string) (checkFailed bool, err error) {
@@ -633,7 +637,13 @@ func (s *Switcher) qualifyAgain(ctx context.Context, check checkRef, cur string,
 	if err := s.reload(ctx, rel.reloads); err != nil {
 		return false, err
 	}
+	if err := s.crash(CrashRequalifyReload); err != nil {
+		return false, err
+	}
 	if err := s.checkHealth(ctx, rel.health); err != nil {
+		return false, err
+	}
+	if err := s.crash(CrashRequalifyHealth); err != nil {
 		return false, err
 	}
 	if err := s.postCheck(ctx, check, rel); err != nil {

@@ -110,8 +110,23 @@
   the fixed search path; any other absolute path is refused when the
   release is verified. The outcome is written to
   `/var/lib/authority-host/deploy.json` as stable failure codes, never a
-  program's output. Exit codes are 0 ok, 1 failed, 2 usage and 3
-  locked. Known limits (an old journal restored by root can replay a
-  settled transaction; a package step's descendant that keeps the lock
-  open keeps every command out until it is stopped) are in
+  program's output. `ah-switch boot`, run as root at every boot, keeps
+  decisions refused after a reboot until the host is qualified since
+  that boot: under the lock, before it runs anything, it writes the
+  decision inhibit as its own record when none is there (or takes over the
+  record of a boot that did not finish), qualifies `current` again as a
+  settling transaction does (verified with the switch policy's trust, its
+  reload list, health check and post-activation no-AI check) and removes
+  only that record, only when all of it passed; a failure runs the host's
+  stop list, is owed (`direction: boot`, `requalify_failed`, shown by
+  `status` with its `ack`) and keeps decisions inhibited; any other
+  inhibit it finds (a transaction's, a held journal, a failure, one left
+  for `inhibit-clear`, one it cannot read strictly) stays as found while
+  it settles an open journal as any command does, and it never
+  acknowledges anything or writes `deploy.json`; a host with nothing
+  deployed is refused with exit 4 and nothing changed. Exit codes are 0
+  ok, 1 failed, 2 usage, 3 locked and 4 nothing deployed (`boot`).
+  Known limits (an old journal restored by root can replay a settled
+  transaction; a package step's descendant that keeps the lock open
+  keeps every command out until it is stopped) are in
   `deploy/authority-host/README.md`.

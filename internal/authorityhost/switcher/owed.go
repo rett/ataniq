@@ -59,8 +59,11 @@ type owedFile struct {
 }
 
 func (o owedOutcome) kind() string {
-	if o.Direction == DirRollback {
+	switch o.Direction {
+	case DirRollback:
 		return "rollback to"
+	case DirBoot:
+		return "boot requalification of"
 	}
 	return "switch to"
 }
@@ -86,6 +89,9 @@ func (o owedOutcome) matches(arg string, rollback bool) bool {
 // check reports what in o is not what a switch writes; its text holds no
 // value of o.
 func (o owedOutcome) check() error {
+	if o.Direction == DirBoot {
+		return o.checkBoot()
+	}
 	id, err := ParseID(o.ID)
 	switch {
 	case !txnPattern.MatchString(o.Txn):
@@ -112,6 +118,31 @@ func (o owedOutcome) check() error {
 	return nil
 }
 
+// checkBoot is check of the outcome of a failed ah-switch boot (see
+// bootFailed): no request, no earlier release; current is the release
+// that did not qualify, empty when it could not be read; always a
+// failed requalification.
+func (o owedOutcome) checkBoot() error {
+	switch {
+	case !txnPattern.MatchString(o.Txn):
+		return errors.New("txn")
+	case o.Requested != DirBoot || o.RequestID != requestID(DirBoot, o.ID):
+		return errors.New("requested or request_id")
+	case o.ID != "" && !validID(o.ID), o.CurrentID != o.ID, o.FromID != "":
+		return errors.New("a release id")
+	case o.Result != ResultFailed || !o.RequalifyFailed:
+		return errors.New("result")
+	case o.RestoredHealth != "" || o.ServicesStopped:
+		return errors.New("restored_health or services_stopped")
+	}
+	return nil
+}
+
+func validID(s string) bool {
+	_, err := ParseID(s)
+	return err == nil
+}
+
 // reportOwed prints the outcome o as it is owed, and, when its
 // requalification failed, that decisions stay inhibited (ack is the command
 // that acknowledges what is owed, see ackCommand); it says whether it was
@@ -119,21 +150,26 @@ func (o owedOutcome) check() error {
 func (s *Switcher) reportOwed(o owedOutcome, ack string) error {
 	err := s.printResult(o.record())
 	if o.RequalifyFailed {
-		if werr := s.emit("%s", requalifyFailedLine(o.CurrentID, ack)); err == nil {
+		when := "after the interruption"
+		if o.Direction == DirBoot {
+			when = "after the boot"
+		}
+		if werr := s.emit("%s", requalifyFailedLine(o.CurrentID, ack, when)); err == nil {
 			err = werr
 		}
 	}
 	return err
 }
 
-// requalifyFailedLine is the line that says a transaction found in phase
-// done did not pass its reload, health check and no-AI check again,
-// current being cur; ack is the command that acknowledges what is owed.
-func requalifyFailedLine(cur, ack string) string {
+// requalifyFailedLine is the line that says current, cur, did not pass its
+// reload, health check and no-AI check again when (after the interruption
+// of a transaction found in phase done, or after the boot); ack is the
+// command that acknowledges what is owed.
+func requalifyFailedLine(cur, ack, when string) string {
 	if cur == "" {
 		cur = "none"
 	}
-	return fmt.Sprintf("result: decisions stay inhibited: %s did not pass its reload, health check and no-AI check again after the interruption; look at the host, acknowledge the outcome with %s, then switch, or run ah-switch inhibit-clear --asked WORDS", cur, ack)
+	return fmt.Sprintf("result: decisions stay inhibited: %s did not pass its reload, health check and no-AI check again %s; look at the host, acknowledge the outcome with %s, then switch, or run ah-switch inhibit-clear --asked WORDS", cur, when, ack)
 }
 
 // ackCommand is the command that acknowledges the outcomes owed: ack names
@@ -226,11 +262,7 @@ func (s *Switcher) writeOwed(owed []owedOutcome) error {
 // that is done again), and returns the outcomes owed then. An owed.json
 // that cannot be read is an error: the outcomes it holds would be lost.
 func (s *Switcher) addOwed(rec Record, direction string, requalifyFailed bool) ([]owedOutcome, error) {
-	owed, err := s.readOwed()
-	if err != nil {
-		return nil, err
-	}
-	o := owedOutcome{
+	return s.addOwedOutcome(owedOutcome{
 		Txn:             rec.Txn,
 		RequestID:       rec.RequestID,
 		Direction:       direction,
@@ -245,6 +277,15 @@ func (s *Switcher) addOwed(rec Record, direction string, requalifyFailed bool) (
 		Detail:          boundDetail(rec.Detail),
 		Time:            rec.Time,
 		RequalifyFailed: requalifyFailed,
+	})
+}
+
+// addOwedOutcome adds the outcome o to owed.json, replacing an outcome of
+// the same transaction, and returns the outcomes owed then (see addOwed).
+func (s *Switcher) addOwedOutcome(o owedOutcome) ([]owedOutcome, error) {
+	owed, err := s.readOwed()
+	if err != nil {
+		return nil, err
 	}
 	kept := owed[:0]
 	for _, old := range owed {
@@ -478,6 +519,14 @@ func (s *Switcher) owedStatus(pending bool) ([]string, error) {
 	for _, o := range owed {
 		if pending {
 			lines = append(lines, fmt.Sprintf("outcome owed, not final (request %s, transaction %s): the %s %s ended %s at %s, but a transaction is still open and settling it may change this outcome; the next switch, rollback or recover settles it, then status shows the command that acknowledges it", q(o.RequestID), o.Txn, o.kind(), o.ID, o.Result, q(o.Time)))
+			continue
+		}
+		if o.Direction == DirBoot {
+			cur := o.CurrentID
+			if cur == "" {
+				cur = "current"
+			}
+			lines = append(lines, fmt.Sprintf("outcome owed (boot requalification of %s, transaction %s): after the boot at %s, %s did not pass its reload, health check and no-AI check again, so decisions stay inhibited; %s acknowledges it, and any switch or rollback is refused until then", cur, o.Txn, q(o.Time), cur, ackCommand(owed)))
 			continue
 		}
 		line := fmt.Sprintf("outcome owed (request %s, transaction %s): the %s %s ended %s at %s; the same request run again reports it, %s acknowledges it, and any other switch or rollback is refused until then", q(o.RequestID), o.Txn, o.kind(), o.ID, o.Result, q(o.Time), ackCommand(owed))
