@@ -303,3 +303,92 @@ func TestCheckHitOfTheShippedCheckFails(t *testing.T) {
 		t.Errorf("exit %d, %q", code, stdout)
 	}
 }
+
+// repoSource is the real source tree of the authority host's releases.
+const repoSource = "../../deploy/authority-host"
+
+// TestRealStaticRelease builds the first (static) release from the tree this
+// repository ships, with fake binaries, and checks it: coverage passes, the
+// switch accepts it, and the Caddyfile and lists are the ones the design
+// asks for.
+func TestRealStaticRelease(t *testing.T) {
+	out := t.TempDir()
+	a, b := bins(t)
+	pkg := filepath.Join(t.TempDir(), "ah-pkgstep")
+	write(t, pkg, "#!/bin/sh\nexit 0\n", 0o755)
+	code, stdout, errOut := call(buildArgs(out, repoSource, a, b, "--bin", pkg)...)
+	if code != 0 {
+		t.Fatalf("build: exit %d, %q, %q", code, stdout, errOut)
+	}
+	dir := filepath.Join(out, "0003-0123456")
+	if code, stdout, errOut := call("check", "--no-noaicheck", dir); code != 0 || stdout != "ok: release 0003-0123456\n" {
+		t.Fatalf("check: exit %d, %q, %q", code, stdout, errOut)
+	}
+	// With the shipped no-AI check too (the fake exits 0).
+	if code, stdout, errOut := call("check", dir); code != 0 {
+		t.Fatalf("check with the no-AI check: exit %d, %q, %q", code, stdout, errOut)
+	}
+
+	read := func(p string) string {
+		data, err := os.ReadFile(filepath.Join(dir, p))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	const caddyfile = "{\n\tadmin off\n\tauto_https off\n\tservers {\n\t\ttimeouts {\n\t\t\tread_header 10s\n\t\t\tread_body 10s\n\t\t\twrite 30s\n\t\t\tidle 60s\n\t\t}\n\t}\n}\n\n" +
+		":80 {\n\theader {\n\t\tX-Content-Type-Options nosniff\n\t\tReferrer-Policy no-referrer\n\t\tX-Frame-Options DENY\n" +
+		"\t\tContent-Security-Policy \"default-src 'none'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\"\n" +
+		"\t\tCache-Control no-store\n\t\t-Server\n\t}\n\n\thandle /healthz {\n\t\trespond \"ok\" 200\n\t}\n\n\thandle {\n\t\troot * /srv/authority/public\n\t\tfile_server\n\t}\n}\n"
+	if got := read("etc/caddy/Caddyfile"); got != caddyfile {
+		t.Errorf("Caddyfile:\n%s", got)
+	}
+	if got := read("share/health.cmd"); got != "curl -fsS --max-time 5 http://127.0.0.1/healthz\n" {
+		t.Errorf("health.cmd: %q", got)
+	}
+	if got := read("share/validators.list"); !strings.Contains(got, "\ncaddy validate --config {release}/etc/caddy/Caddyfile --adapter caddyfile\n") {
+		t.Errorf("validators.list:\n%s", got)
+	}
+	if got := read("share/reload.list"); !strings.Contains(got, "\nsystemctl restart caddy\n") || !strings.Contains(got, "admin off") {
+		t.Errorf("reload.list:\n%s", got)
+	}
+	for _, line := range strings.Split(read("share/stop.list"), "\n") {
+		if line != "" && !strings.HasPrefix(line, "#") {
+			t.Errorf("stop.list holds a command: %q", line)
+		}
+	}
+	for _, p := range []string{"share/ai-names.list", "share/forbidden-packages.list", "share/packages.allow", "share/ports.allow", "share/units.allow", "MANIFEST", "SHA256SUMS"} {
+		if _, err := os.Stat(filepath.Join(dir, p)); err != nil {
+			t.Errorf("%s: %v", p, err)
+		}
+	}
+	if !strings.Contains(read("MANIFEST"), "components: static\n") {
+		t.Errorf("MANIFEST:\n%s", read("MANIFEST"))
+	}
+
+	// The switch accepts the folder: sums, manifest, lists and programs.
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, switcher.BaseDir, "releases"), 0o755)
+	write(t, filepath.Join(root, switcher.PolicyDir, switcher.HostStopList), "systemctl stop caddy\n", 0o644)
+	var log bytes.Buffer
+	s := switcher.New(switcher.Config{Root: root, Dry: true, From: dir, Out: &log})
+	if code := s.Switch(t.Context(), "0003-0123456"); code != switcher.ExitOK {
+		t.Fatalf("the switch refuses the real static release: exit %d\n%s", code, log.String())
+	}
+}
+
+// TestRealTreeHasNoPrivateNames: nothing of the source tree names a host, a
+// user, an address or a home folder.
+func TestRealTreeHasNoPrivateNames(t *testing.T) {
+	for _, p := range []string{"etc/caddy/Caddyfile", "share/validators.list", "share/reload.list", "share/health.cmd", "share/stop.list"} {
+		data, err := os.ReadFile(filepath.Join(repoSource, p))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, bad := range []string{"/home/", "@", "192.168.", "10.0."} {
+			if strings.Contains(string(data), bad) {
+				t.Errorf("%s holds %q", p, bad)
+			}
+		}
+	}
+}

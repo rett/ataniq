@@ -1590,3 +1590,37 @@ It checks, in this order, all of them (a pass is no finding):
    `share/*.allow` ship empty from this tree and are filled from the
    host's baseline at deploy time, so it is for a release that has been
    filled. `--no-noaicheck` skips this step (for tests).
+
+### The source tree of the first release
+
+The first release is static (`--components static`): it runs no decision
+service, only the static status page, so its source tree is the front end
+and its lists.
+
+- `etc/caddy/Caddyfile`: Caddy with `admin off` and `auto_https off`
+  (no certificate handling, and no admin endpoint to reach), server timeouts of 10 s for the header and
+  for the body, 30 s for a write and 60 s idle; one site, `:80`, that sends
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
+  `X-Frame-Options: DENY`, a `Content-Security-Policy` that allows
+  nothing but styles from the site itself (`default-src 'none'; style-src
+  'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`) and
+  `Cache-Control: no-store`, drops the `Server` header, answers `/healthz`
+  with `ok` and serves everything else from `/srv/authority/public`.
+- `share/validators.list`: `caddy validate --config
+  {release}/etc/caddy/Caddyfile --adapter caddyfile`.
+- `share/reload.list`: `systemctl restart caddy`. With the admin endpoint
+  off Caddy cannot be reloaded (`systemctl reload caddy` asks that endpoint),
+  so it is restarted; the comment in the file says so.
+- `share/health.cmd`: `curl -fsS --max-time 5 http://127.0.0.1/healthz`.
+- `share/stop.list`: comments only, which is what `components: static`
+  allows.
+- `share/ai-names.list`, `forbidden-packages.list`, `packages.allow`,
+  `ports.allow` and `units.allow` are the no-AI check's lists, as before;
+  the allowlists are filled from the host's baseline at deploy time.
+
+`ah-release build --src deploy/authority-host --components static ...`
+followed by `ah-release check` passes on this tree; a test builds it with
+stand-in binaries and checks it, and the switch's own dry run accepts the
+result. The validators (`caddy validate`) are not run by the tests: they
+need Caddy, which is not a developer prerequisite; the switch runs them
+on the host.

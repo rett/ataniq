@@ -14,5 +14,8 @@
   stop and a restart of every decision service, no decision service in a
   static release), and the release's own no-AI check, which must exit 0 and
   print no hit. Both print only fixed reasons and plain names, never a
-  file's content. See `deploy/authority-host/README.md`, "The release
-  builder".
+  file's content. `deploy/authority-host` now holds the source tree of the
+  first, static release: a hardened Caddyfile (admin endpoint off, server
+  timeouts, security headers, `/healthz`, a static site) and its validator,
+  reload, health and stop lists. See `deploy/authority-host/README.md`, "The
+  release builder".
