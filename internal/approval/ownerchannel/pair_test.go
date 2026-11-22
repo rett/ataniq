@@ -111,16 +111,41 @@ func (e *env) status() ownerwire.PairStatus {
 	return st
 }
 
-func (e *env) confirm() (ownerwire.KeyItem, error) {
+// noPending is the pending id a test gives when the status shows none: a
+// well-formed id no credential has.
+const noPending = "0000000000000000"
+
+// pendingID is the pending id the status shows now, or noPending.
+func (e *env) pendingID() string {
 	e.t.Helper()
-	e.beat()
-	return e.svc.PairConfirm(context.Background(), src)
+	if id := e.status().PendingID; id != "" {
+		return id
+	}
+	return noPending
 }
 
-func (e *env) reject() error {
+// confirm is the owner confirming the credential the status shows.
+func (e *env) confirm() (ownerwire.KeyItem, error) {
+	e.t.Helper()
+	return e.confirmID(e.pendingID())
+}
+
+func (e *env) confirmID(id string) (ownerwire.KeyItem, error) {
 	e.t.Helper()
 	e.beat()
-	return e.svc.PairReject(context.Background(), src)
+	return e.svc.PairConfirm(context.Background(), src, ownerwire.PairPendingParams{PendingID: id})
+}
+
+// reject is the owner rejecting the credential the status shows.
+func (e *env) reject() error {
+	e.t.Helper()
+	return e.rejectID(e.pendingID())
+}
+
+func (e *env) rejectID(id string) error {
+	e.t.Helper()
+	e.beat()
+	return e.svc.PairReject(context.Background(), src, ownerwire.PairPendingParams{PendingID: id})
 }
 
 // pairedUp runs a whole pairing of a phone up to the credential pending.
@@ -342,6 +367,7 @@ func TestThePhasesOverTime(t *testing.T) {
 	// A pending credential that waits too long.
 	_, _ = e.pairedUp(ph)
 	presented := e.clock.Now()
+	seen := e.pendingID()
 	e.advance(seatpair.PendingLifetime - time.Second)
 	if st := e.status(); st.Phase != ownerwire.PairPending {
 		t.Fatalf("a second before the end: %+v", st)
@@ -350,7 +376,7 @@ func TestThePhasesOverTime(t *testing.T) {
 	if st := e.status(); st.Phase != ownerwire.PairExpired || st.ExpiresAt != record.FormatTime(presented.Add(seatpair.PendingLifetime)) {
 		t.Fatalf("at the end: %+v", st)
 	}
-	if _, err := e.confirm(); !errors.Is(err, ErrNoPairing) && !errors.Is(err, ErrPairingExpired) {
+	if _, err := e.confirmID(seen); !errors.Is(err, ErrPairingExpired) {
 		t.Fatalf("a confirm after the end: %v", err)
 	}
 	if st := e.status(); st.Phase != ownerwire.PairExpired {
@@ -366,9 +392,10 @@ func TestThePhasesOverTime(t *testing.T) {
 func TestAnExpiredPendingCredentialIsRefusedAtTheConfirm(t *testing.T) {
 	e, keys := pairEnv(t)
 	e.pairedUp(newPhone(t, 1))
+	seen := e.pendingID()
 	// Past the time, with no status read in between.
 	e.advance(seatpair.PendingLifetime)
-	if _, err := e.confirm(); !errors.Is(err, ErrPairingExpired) {
+	if _, err := e.confirmID(seen); !errors.Is(err, ErrPairingExpired) {
 		t.Fatalf("%v, want %v", err, ErrPairingExpired)
 	}
 	if len(keys.keys) != 0 {
@@ -386,6 +413,7 @@ func TestWhoMayDoWhat(t *testing.T) {
 	e, keys := pairEnv(t)
 	ph := newPhone(t, 1)
 	e.pairedUp(ph)
+	pending := e.pendingID()
 	keys.seed("0123456789abcdef", false)
 
 	writes := map[string]func(Source) error{
@@ -393,8 +421,13 @@ func TestWhoMayDoWhat(t *testing.T) {
 			_, err := e.svc.PairStart(context.Background(), s, ownerwire.PairStartParams{Replace: true})
 			return err
 		},
-		"pair-confirm": func(s Source) error { _, err := e.svc.PairConfirm(context.Background(), s); return err },
-		"pair-reject":  func(s Source) error { return e.svc.PairReject(context.Background(), s) },
+		"pair-confirm": func(s Source) error {
+			_, err := e.svc.PairConfirm(context.Background(), s, ownerwire.PairPendingParams{PendingID: pending})
+			return err
+		},
+		"pair-reject": func(s Source) error {
+			return e.svc.PairReject(context.Background(), s, ownerwire.PairPendingParams{PendingID: pending})
+		},
 		"key-revoke": func(s Source) error {
 			_, err := e.svc.KeyRevoke(context.Background(), s, ownerwire.KeyRevokeParams{ID: "0123"})
 			return err
@@ -958,6 +991,7 @@ func TestConfirmsRacingMakeOneKey(t *testing.T) {
 	e, keys := pairEnv(t)
 	e.pairedUp(newPhone(t, 1))
 	e.beat()
+	pending := e.pendingID()
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	ok, none := 0, 0
@@ -965,7 +999,7 @@ func TestConfirmsRacingMakeOneKey(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := e.svc.PairConfirm(context.Background(), src)
+			_, err := e.svc.PairConfirm(context.Background(), src, ownerwire.PairPendingParams{PendingID: pending})
 			mu.Lock()
 			defer mu.Unlock()
 			switch {
@@ -1067,5 +1101,123 @@ func TestWhatTheServiceAnswersEncodes(t *testing.T) {
 	}
 	if _, err := ownerwire.EncodeKeysView(view); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The status of a pending credential carries its pending id, 16 lower-case
+// hexadecimal digits, and no other phase does.
+func TestTheStatusOfAPendingCredentialCarriesItsID(t *testing.T) {
+	e, _ := pairEnv(t)
+	if st := e.status(); st.PendingID != "" {
+		t.Fatalf("no pairing: %+v", st)
+	}
+	code := e.mustStart()
+	if st := e.status(); st.PendingID != "" {
+		t.Fatalf("waiting: %+v", st)
+	}
+	if _, err := e.present(code, newPhone(t, 1)); err != nil {
+		t.Fatal(err)
+	}
+	st := e.status()
+	if st.Phase != ownerwire.PairPending || len(st.PendingID) != ownerwire.PendingIDLength {
+		t.Fatalf("pending: %+v", st)
+	}
+	if st2 := e.status(); st2.PendingID != st.PendingID {
+		t.Fatalf("the id changed between two readings: %q, %q", st.PendingID, st2.PendingID)
+	}
+	e.advance(seatpair.PendingLifetime + time.Minute)
+	if st := e.status(); st.Phase != ownerwire.PairExpired || st.PendingID != "" {
+		t.Fatalf("expired: %+v", st)
+	}
+}
+
+// The owner compared the words of A; A was replaced by B (or A ran out and B
+// took its place); his word for A is about nothing now: it changes nothing and
+// is answered with its own error, and B stays pending to be confirmed on its
+// own id.
+func TestAWordAboutAReplacedCredentialChangesNothing(t *testing.T) {
+	for _, how := range []string{"replaced", "ran out"} {
+		t.Run(how, func(t *testing.T) {
+			e, keys := pairEnv(t)
+			a, b := newPhone(t, 1), newPhone(t, 2)
+			e.pairedUp(a)
+			idA := e.status().PendingID
+			if how == "replaced" {
+				if _, err := e.pairStart(true); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				e.advance(seatpair.PendingLifetime)
+			}
+			code, err := e.pairStart(true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := e.present(code.Code, b); err != nil {
+				t.Fatal(err)
+			}
+			idB := e.status().PendingID
+			if idA == idB || idB == "" {
+				t.Fatalf("the ids of A and B: %q, %q", idA, idB)
+			}
+			if _, err := e.confirmID(idA); !errors.Is(err, ErrPairingChanged) {
+				t.Fatalf("confirm of A while B is pending: %v, want %v", err, ErrPairingChanged)
+			}
+			if err := e.rejectID(idA); !errors.Is(err, ErrPairingChanged) {
+				t.Fatalf("reject of A while B is pending: %v, want %v", err, ErrPairingChanged)
+			}
+			if len(keys.keys) != 0 || len(keys.rejected) != 0 {
+				t.Fatalf("a word about A changed the store: %d keys, %d rejected", len(keys.keys), len(keys.rejected))
+			}
+			if st := e.status(); st.Phase != ownerwire.PairPending || st.PendingID != idB {
+				t.Fatalf("B no longer pending: %+v", st)
+			}
+			item, err := e.confirmID(idB)
+			if err != nil || item.ID != b.displayID() {
+				t.Fatalf("confirm of B: %+v, %v", item, err)
+			}
+			if len(keys.keys) != 1 {
+				t.Fatalf("%d keys", len(keys.keys))
+			}
+		})
+	}
+}
+
+// A word that does not name the pending credential is refused for every
+// spelling of it, and nothing moves.
+func TestAWordWithTheWrongIDChangesNothing(t *testing.T) {
+	e, keys := pairEnv(t)
+	e.pairedUp(newPhone(t, 1))
+	good := e.status().PendingID
+	other := []byte(good)
+	if other[0] == '0' {
+		other[0] = '1'
+	} else {
+		other[0] = '0'
+	}
+	for _, id := range []string{noPending, string(other)} {
+		if _, err := e.confirmID(id); !errors.Is(err, ErrPairingChanged) {
+			t.Errorf("confirm with %q: %v", id, err)
+		}
+		if err := e.rejectID(id); !errors.Is(err, ErrPairingChanged) {
+			t.Errorf("reject with %q: %v", id, err)
+		}
+	}
+	if len(keys.keys) != 0 || len(keys.rejected) != 0 || e.status().PendingID != good {
+		t.Fatalf("a wrong id moved something: %d keys, %d rejected", len(keys.keys), len(keys.rejected))
+	}
+	// Params the wire refuses are refused before the pairing is looked at.
+	for _, id := range []string{"", good[:15], strings.ToUpper(good), good + "0"} {
+		e.beat()
+		_, err := e.svc.PairConfirm(context.Background(), src, ownerwire.PairPendingParams{PendingID: id})
+		wantCode(t, err, record.CodeRecordInvalid)
+		e.beat()
+		wantCode(t, e.svc.PairReject(context.Background(), src, ownerwire.PairPendingParams{PendingID: id}), record.CodeRecordInvalid)
+	}
+	if e.status().PendingID != good {
+		t.Fatal("a refused call moved the pairing")
+	}
+	if err := e.rejectID(good); err != nil {
+		t.Fatalf("the right id: %v", err)
 	}
 }

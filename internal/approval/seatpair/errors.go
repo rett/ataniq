@@ -32,6 +32,10 @@ const (
 	// ErrNotPending: no credential is pending, so there is none to confirm
 	// or reject.
 	ErrNotPending Error = "seatpair: no credential is pending"
+	// ErrPendingID: the pending id given is not that of the credential that
+	// is pending now: the pairing was replaced, or ran out and another
+	// took its place. Nothing was changed.
+	ErrPendingID Error = "seatpair: the credential named is not the one pending"
 	// ErrPendingExpired: the credential waited at the desk for its 10 minutes
 	// and no longer; the pairing is over.
 	ErrPendingExpired Error = "seatpair: the pending credential expired"

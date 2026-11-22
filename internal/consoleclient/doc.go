@@ -61,7 +61,10 @@
 // again after a failure, refuse locally what the wire package refuses, and
 // decide nothing: the daemon's rules are the daemon's. A refusal with a code of
 // the pairing and key operations is a [*PairError] with a fixed text of this
-// package; the pairing code is in the result of PairStart, which prints
+// package; PairConfirm and PairReject take the pending id that PairStatus
+// showed with the six words, so that the owner's word is about the credential
+// he compared (the daemon refuses another with pairing-changed, changing
+// nothing); the pairing code is in the result of PairStart, which prints
 // without it, and in no error. The seat's call, seat.pair, is not the
 // console's and has no method here.
 //

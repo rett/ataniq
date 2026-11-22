@@ -15,6 +15,9 @@ import (
 // A made-up code of the form of a real one.
 const pairCode = "7ZB0KX4M9TQ2VH6NRC3E"
 
+// A made-up pending id of the form of a real one.
+const pairID = "0f1e2d3c4b5a6978"
+
 var pairWords = []string{"acorn", "bridge", "cedar", "delta", "ember", "falcon"}
 
 func aKey(revoked bool) ownerwire.KeyItem {
@@ -38,7 +41,7 @@ func pairingFake(t *testing.T) (*ownerFake, *Owner) {
 	f.onResult(ownerwire.OpPairStart, mustEncode(t)(ownerwire.EncodePairStartResult(
 		ownerwire.PairStartResult{Code: pairCode, ExpiresAt: "2026-11-20T14:12:00Z"})))
 	f.onResult(ownerwire.OpPairStatus, mustEncode(t)(ownerwire.EncodePairStatus(
-		ownerwire.PairStatus{Phase: ownerwire.PairPending, Words: pairWords, ExpiresAt: "2026-11-20T14:12:00Z"})))
+		ownerwire.PairStatus{Phase: ownerwire.PairPending, Words: pairWords, PendingID: pairID, ExpiresAt: "2026-11-20T14:12:00Z"})))
 	f.onResult(ownerwire.OpPairConfirm, mustEncode(t)(ownerwire.EncodeKeyItem(aKey(false))))
 	f.onResult(ownerwire.OpPairReject, ownerwire.EncodeNothing())
 	f.onResult(ownerwire.OpKeys, keysResult(t, aKey(false)))
@@ -55,14 +58,14 @@ func TestThePairingOperationsSendTheirParamsAndReturnTheWireTypes(t *testing.T) 
 		t.Fatalf("PairStart = %v, %v", start, err)
 	}
 	st, err := o.PairStatus()
-	if err != nil || st.Phase != ownerwire.PairPending || strings.Join(st.Words, " ") != strings.Join(pairWords, " ") {
+	if err != nil || st.Phase != ownerwire.PairPending || strings.Join(st.Words, " ") != strings.Join(pairWords, " ") || st.PendingID != pairID {
 		t.Fatalf("PairStatus = %+v, %v", st, err)
 	}
-	k, err := o.PairConfirm()
+	k, err := o.PairConfirm(pairID)
 	if err != nil || k != aKey(false) {
 		t.Fatalf("PairConfirm = %+v, %v", k, err)
 	}
-	if err := o.PairReject(); err != nil {
+	if err := o.PairReject(pairID); err != nil {
 		t.Fatalf("PairReject: %v", err)
 	}
 	keys, err := o.Keys()
@@ -83,8 +86,8 @@ func TestThePairingOperationsSendTheirParamsAndReturnTheWireTypes(t *testing.T) 
 	for op, want := range map[string]string{
 		ownerwire.OpPairStart:   `{"replace":true}`,
 		ownerwire.OpPairStatus:  "",
-		ownerwire.OpPairConfirm: "",
-		ownerwire.OpPairReject:  "",
+		ownerwire.OpPairConfirm: `{"pending_id":"` + pairID + `"}`,
+		ownerwire.OpPairReject:  `{"pending_id":"` + pairID + `"}`,
 		ownerwire.OpKeys:        "",
 		ownerwire.OpKeyRevoke:   `{"id":"0123"}`,
 		ownerwire.OpKeysOff:     "",
@@ -113,6 +116,42 @@ func TestThePairingOperationsSendTheirParamsAndReturnTheWireTypes(t *testing.T) 
 	}
 }
 
+// A pending id the wire refuses is not sent.
+func TestAPendingIdTheWireRefusesIsNotSent(t *testing.T) {
+	f, o := pairingFake(t)
+	for _, id := range []string{"", "0f1e2d3c4b5a697", "0f1e2d3c4b5a69780", "0F1E2D3C4B5A6978", "0f1e2d3c4b5a697g", "0f1e 2d3c4b5a697"} {
+		for name, call := range map[string]func() error{
+			"PairConfirm": func() error { _, err := o.PairConfirm(id); return err },
+			"PairReject":  func() error { return o.PairReject(id) },
+		} {
+			err := call()
+			var rec *record.Error
+			if !errors.As(err, &rec) || rec.Code != record.CodeRecordInvalid {
+				t.Errorf("%s(%q) = %v", name, id, err)
+			}
+		}
+	}
+	if n := f.count(ownerwire.OpPairConfirm) + f.count(ownerwire.OpPairReject); n != 0 {
+		t.Fatalf("%d requests were sent", n)
+	}
+}
+
+// The daemon's word that the credential is not the one named is a PairError
+// of its own, and the pairing's other refusals keep theirs.
+func TestAPairingChangedAnswerIsItsOwnError(t *testing.T) {
+	f, o := pairingFake(t)
+	f.refuse(ownerwire.OpPairConfirm, "pairing-changed", "x")
+	_, err := o.PairConfirm(pairID)
+	var pe *PairError
+	if !errors.As(err, &pe) || pe.Code != PairPairingChanged || PairPairingChanged != "pairing-changed" {
+		t.Fatalf("PairConfirm: %v", err)
+	}
+	f.refuse(ownerwire.OpPairReject, "pairing-changed", "x")
+	if err := o.PairReject(pairID); !errors.As(err, &pe) || pe.Code != PairPairingChanged {
+		t.Fatalf("PairReject: %v", err)
+	}
+}
+
 // What the wire refuses is not sent.
 func TestAnIdTheWireRefusesIsNotSent(t *testing.T) {
 	f, o := pairingFake(t)
@@ -134,8 +173,8 @@ func TestEachPairingCodeOfTheDaemonHasItsFixedText(t *testing.T) {
 	calls := map[string]func() error{
 		ownerwire.OpPairStart:   func() error { _, err := o.PairStart(false); return err },
 		ownerwire.OpPairStatus:  func() error { _, err := o.PairStatus(); return err },
-		ownerwire.OpPairConfirm: func() error { _, err := o.PairConfirm(); return err },
-		ownerwire.OpPairReject:  func() error { return o.PairReject() },
+		ownerwire.OpPairConfirm: func() error { _, err := o.PairConfirm(pairID); return err },
+		ownerwire.OpPairReject:  func() error { return o.PairReject(pairID) },
 		ownerwire.OpKeys:        func() error { _, err := o.Keys(); return err },
 		ownerwire.OpKeyRevoke:   func() error { _, err := o.KeyRevoke("0123"); return err },
 		ownerwire.OpKeysOff:     func() error { _, err := o.KeysOff(); return err },
@@ -177,12 +216,12 @@ func TestEachPairingCodeOfTheDaemonHasItsFixedText(t *testing.T) {
 	}
 	// Every code of the daemon is one the client knows.
 	for _, code := range []string{"keys-unavailable", "keys-full", "key-unknown", "key-ambiguous", "pairing-open",
-		"pairing-none", "pairing-expired", "pairing-refused", "credential-invalid"} {
+		"pairing-none", "pairing-expired", "pairing-changed", "pairing-refused", "credential-invalid"} {
 		if _, ok := pairTexts[code]; !ok {
 			t.Errorf("the code %s has no text", code)
 		}
 	}
-	if len(pairTexts) != 9 {
+	if len(pairTexts) != 10 {
 		t.Errorf("%d texts", len(pairTexts))
 	}
 }
@@ -194,15 +233,15 @@ func TestAnAnswerTheWireRefusesIsABadAnswer(t *testing.T) {
 	bad := map[string]func() error{
 		ownerwire.OpPairStart:   func() error { _, err := o.PairStart(false); return err },
 		ownerwire.OpPairStatus:  func() error { _, err := o.PairStatus(); return err },
-		ownerwire.OpPairConfirm: func() error { _, err := o.PairConfirm(); return err },
-		ownerwire.OpPairReject:  func() error { return o.PairReject() },
+		ownerwire.OpPairConfirm: func() error { _, err := o.PairConfirm(pairID); return err },
+		ownerwire.OpPairReject:  func() error { return o.PairReject(pairID) },
 		ownerwire.OpKeys:        func() error { _, err := o.Keys(); return err },
 		ownerwire.OpKeyRevoke:   func() error { _, err := o.KeyRevoke("0123"); return err },
 		ownerwire.OpKeysOff:     func() error { _, err := o.KeysOff(); return err },
 	}
 	answers := map[string][]string{
 		ownerwire.OpPairStart:   {`{"code":"short","expires_at":"2026-11-20T14:12:00Z"}`, `{}`, `{"code":"` + pairCode + `","expires_at":"x"}`},
-		ownerwire.OpPairStatus:  {`{"phase":"pending","expires_at":"2026-11-20T14:12:00Z"}`, `{"phase":"waiting","words":[],"expires_at":"2026-11-20T14:12:00Z"}`, `{"phase":"open"}`},
+		ownerwire.OpPairStatus:  {`{"phase":"pending","expires_at":"2026-11-20T14:12:00Z"}`, `{"phase":"pending","words":["acorn","bridge","cedar","delta","ember","falcon"],"expires_at":"2026-11-20T14:12:00Z"}`, `{"phase":"waiting","words":[],"expires_at":"2026-11-20T14:12:00Z"}`, `{"phase":"open"}`},
 		ownerwire.OpPairConfirm: {`{"id":"x","kind":"unverified","paired_at":"2026-11-20T14:06:40Z","revoked":false}`, `{}`},
 		ownerwire.OpPairReject:  {`{"x":1}`},
 		ownerwire.OpKeys:        {`{}`, `{"keys":[{"id":"0123456789abcdef"}]}`},
@@ -265,8 +304,8 @@ func TestThePairingCallsAfterCloseAndWithNoChannel(t *testing.T) {
 	for name, call := range map[string]func() error{
 		"PairStart":   func() error { _, err := o2.PairStart(false); return err },
 		"PairStatus":  func() error { _, err := o2.PairStatus(); return err },
-		"PairConfirm": func() error { _, err := o2.PairConfirm(); return err },
-		"PairReject":  func() error { return o2.PairReject() },
+		"PairConfirm": func() error { _, err := o2.PairConfirm(pairID); return err },
+		"PairReject":  func() error { return o2.PairReject(pairID) },
 		"Keys":        func() error { _, err := o2.Keys(); return err },
 		"KeyRevoke":   func() error { _, err := o2.KeyRevoke("0123"); return err },
 		"KeysOff":     func() error { _, err := o2.KeysOff(); return err },

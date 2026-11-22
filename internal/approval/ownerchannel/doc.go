@@ -114,6 +114,16 @@
 // seat app's call and takes a source whose surface is [SurfaceSeat]; the
 // daemon decides which connection that is.
 //
+// A credential that becomes pending has a pending id, 8 random bytes in 16
+// lower-case hexadecimal digits that [Service.PairStatus] shows with the six
+// words. [Service.PairConfirm] and [Service.PairReject] take it back
+// (ownerwire.PairPendingParams, required) and compare it, under the pairing's
+// lock and in constant time, to the credential pending at that moment. The
+// owner's word is therefore about the credential whose words he compared: if
+// the pairing was replaced, or ran out and another began, the call is refused
+// with [ErrPairingChanged] and nothing changes (the daemon's code is
+// pairing-changed). A replacement or an expired pairing has a new id.
+//
 // A confirmed credential goes on the list of deciding keys, [KeyStore], in
 // [Config].Keys, with the kind "unverified". The service owns the store and
 // closes it. The list only grows: a revoked credential stays on it, marked,

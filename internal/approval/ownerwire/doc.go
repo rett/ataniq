@@ -12,25 +12,25 @@
 //
 // # The operations
 //
-//	operation           params            result
-//	owner.list          none              Listing
-//	owner.show          ShowParams        ShowResult
-//	owner.paths         PageParams        PathsPage
-//	owner.patch         PageParams        PatchPage
-//	owner.decider       DeciderParams     DeciderResult
-//	owner.decide        DecisionFrame     DecideResult
-//	owner.beat          none              nothing
-//	owner.limit         LimitParams       LimitView
-//	owner.limit-set     LimitSetParams    LimitView
-//	owner.looked        none              nothing
-//	owner.pair-start    PairStartParams   PairStartResult
-//	owner.pair-status   none              PairStatus
-//	owner.pair-confirm  none              KeyItem
-//	owner.pair-reject   none              nothing
-//	owner.keys          none              KeysView
-//	owner.key-revoke    KeyRevokeParams   KeysView
-//	owner.keys-off      none              KeysView
-//	seat.pair           SeatPairParams    SeatPairResult
+//	operation           params             result
+//	owner.list          none               Listing
+//	owner.show          ShowParams         ShowResult
+//	owner.paths         PageParams         PathsPage
+//	owner.patch         PageParams         PatchPage
+//	owner.decider       DeciderParams      DeciderResult
+//	owner.decide        DecisionFrame      DecideResult
+//	owner.beat          none               nothing
+//	owner.limit         LimitParams        LimitView
+//	owner.limit-set     LimitSetParams     LimitView
+//	owner.looked        none               nothing
+//	owner.pair-start    PairStartParams    PairStartResult
+//	owner.pair-status   none               PairStatus
+//	owner.pair-confirm  PairPendingParams  KeyItem
+//	owner.pair-reject   PairPendingParams  nothing
+//	owner.keys          none               KeysView
+//	owner.key-revoke    KeyRevokeParams    KeysView
+//	owner.keys-off      none               KeysView
+//	seat.pair           SeatPairParams     SeatPairResult
 //
 // [Operations] lists the names. Every type has a Decode and an Encode
 // function named after it; "none" and "nothing" are an empty object, read
@@ -89,7 +89,13 @@
 // one name that does not begin with "owner.", which is the seat app's call and
 // not the console's); the desk reads the six words of the credential's
 // fingerprint with owner.pair-status and confirms (owner.pair-confirm) or
-// rejects (owner.pair-reject). A confirmed credential is on the list of
+// rejects (owner.pair-reject). owner.pair-status also gives the pending
+// credential a pending id, 8 random bytes in 16 lower-case hexadecimal digits
+// the daemon draws when the credential becomes pending, and confirm and reject
+// must give that id back ([PairPendingParams], required): the daemon compares
+// it to the credential pending at that moment and, when it is not that one
+// (the pairing was replaced or ran out and another took its place), changes
+// nothing and answers pairing-changed. A confirmed credential is on the list of
 // deciding keys, which owner.keys reads. owner.key-revoke and owner.keys-off
 // ("phone off") revoke one credential or all of them; a revoked credential
 // stays on the list, marked, and is never made good again.

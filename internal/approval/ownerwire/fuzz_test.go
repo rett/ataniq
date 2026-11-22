@@ -238,3 +238,8 @@ func FuzzDecodeKeyRevokeParams(f *testing.F) {
 	fuzzForm(f, "key revoke params", `{"id":"0123"}`, `{"id":"012"}`, `{"id":"0123456789abcdef0"}`,
 		`{"id":"0123456789ABCDEF"}`, `{"id":"0123","all":true}`)
 }
+
+func FuzzDecodePairPendingParams(f *testing.F) {
+	fuzzForm(f, "pair pending params", `{"pending_id":"0f1e2d3c4b5a6978"}`, `{"pending_id":""}`,
+		`{"pending_id":"0F1E2D3C4B5A6978"}`, `{"pending_id":"0f1e2d3c4b5a6978","x":1}`, `{}`)
+}

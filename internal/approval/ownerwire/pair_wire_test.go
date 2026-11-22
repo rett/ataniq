@@ -20,8 +20,10 @@ func samplePairStartResult() PairStartResult {
 	return PairStartResult{Code: sampleCode, ExpiresAt: sampleDay}
 }
 
+const samplePendingID = "0f1e2d3c4b5a6978"
+
 func samplePairStatus() PairStatus {
-	return PairStatus{Phase: PairPending, Words: sampleWords(), ExpiresAt: sampleDay}
+	return PairStatus{Phase: PairPending, Words: sampleWords(), PendingID: samplePendingID, ExpiresAt: sampleDay}
 }
 
 func sampleSeatPairParams() SeatPairParams {
@@ -108,7 +110,7 @@ func TestPairStatusPhases(t *testing.T) {
 	ok := []PairStatus{
 		{Phase: PairNone},
 		{Phase: PairWaiting, ExpiresAt: sampleDay},
-		{Phase: PairPending, Words: sampleWords(), ExpiresAt: sampleDay},
+		{Phase: PairPending, Words: sampleWords(), PendingID: samplePendingID, ExpiresAt: sampleDay},
 		{Phase: PairExpired, ExpiresAt: sampleDay},
 	}
 	for _, s := range ok {
@@ -138,6 +140,14 @@ func TestPairStatusPhases(t *testing.T) {
 		"a short word":            {Phase: PairPending, Words: []string{"ab", "bridge", "cedar", "delta", "ember", "falcon"}, ExpiresAt: sampleDay},
 		"a long word":             {Phase: PairPending, Words: []string{"acornss", "bridge", "cedar", "delta", "ember", "falcon"}, ExpiresAt: sampleDay},
 		"a digit in a word":       {Phase: PairPending, Words: []string{"acor1", "bridge", "cedar", "delta", "ember", "falcon"}, ExpiresAt: sampleDay},
+		"pending with no id":      {Phase: PairPending, Words: sampleWords(), ExpiresAt: sampleDay},
+		"pending, a short id":     {Phase: PairPending, Words: sampleWords(), PendingID: samplePendingID[:15], ExpiresAt: sampleDay},
+		"pending, a long id":      {Phase: PairPending, Words: sampleWords(), PendingID: samplePendingID + "0", ExpiresAt: sampleDay},
+		"pending, a capital id":   {Phase: PairPending, Words: sampleWords(), PendingID: "0F1E2D3C4B5A6978", ExpiresAt: sampleDay},
+		"pending, a non-hex id":   {Phase: PairPending, Words: sampleWords(), PendingID: "0f1e2d3c4b5a697g", ExpiresAt: sampleDay},
+		"waiting with an id":      {Phase: PairWaiting, PendingID: samplePendingID, ExpiresAt: sampleDay},
+		"expired with an id":      {Phase: PairExpired, PendingID: samplePendingID, ExpiresAt: sampleDay},
+		"none with an id":         {Phase: PairNone, PendingID: samplePendingID},
 	}
 	for name, s := range bad {
 		_, err := EncodePairStatus(s)
@@ -148,6 +158,7 @@ func TestPairStatusPhases(t *testing.T) {
 	for name, in := range map[string]string{
 		"an empty list for words": `{"phase":"waiting","words":[],"expires_at":"` + sampleDay + `"}`,
 		"a code":                  `{"phase":"waiting","code":"` + sampleCode + `","expires_at":"` + sampleDay + `"}`,
+		"an empty id":             `{"phase":"waiting","pending_id":"","expires_at":"` + sampleDay + `"}`,
 	} {
 		_, err := DecodePairStatus([]byte(in))
 		refused(t, err, record.CodeRecordInvalid, "decode "+name)
@@ -314,4 +325,37 @@ func TestPairRefusalsHoldNoByteOfThePayload(t *testing.T) {
 	if _, err := DecodeSeatPairParams([]byte(`{"code":"` + sampleCode + `","credential_id":"AAAA","public_key":"AAAA"}`)); err == nil || strings.Contains(err.Error(), sampleCode) {
 		t.Errorf("a short credential id: %v", err)
 	}
+}
+
+// owner.pair-confirm and owner.pair-reject name the credential the owner
+// compared: the pending id is required, exactly 16 lower-case hexadecimal
+// digits, and nothing else is in the params.
+func TestPairPendingParamsNameTheCredential(t *testing.T) {
+	b, err := EncodePairPendingParams(PairPendingParams{PendingID: samplePendingID})
+	if err != nil || string(b) != `{"pending_id":"`+samplePendingID+`"}` {
+		t.Fatalf("encoded %s, %v", b, err)
+	}
+	p, err := DecodePairPendingParams(b)
+	if err != nil || p.PendingID != samplePendingID {
+		t.Fatalf("decoded %+v, %v", p, err)
+	}
+	for name, in := range map[string]string{
+		"no field":       `{}`,
+		"an empty id":    `{"pending_id":""}`,
+		"a null":         `{"pending_id":null}`,
+		"a number":       `{"pending_id":1}`,
+		"a short id":     `{"pending_id":"0f1e2d3c4b5a697"}`,
+		"a long id":      `{"pending_id":"0f1e2d3c4b5a69780"}`,
+		"a capital":      `{"pending_id":"0F1E2D3C4B5A6978"}`,
+		"a non-hex":      `{"pending_id":"0f1e2d3c4b5a697g"}`,
+		"another field":  `{"pending_id":"0f1e2d3c4b5a6978","replace":true}`,
+		"a capital name": `{"Pending_id":"0f1e2d3c4b5a6978"}`,
+		"a list":         `["0f1e2d3c4b5a6978"]`,
+		"a display id":   `{"id":"0f1e2d3c4b5a6978"}`,
+	} {
+		_, err := DecodePairPendingParams([]byte(in))
+		refused(t, err, record.CodeRecordInvalid, "decode "+name)
+	}
+	_, err = EncodePairPendingParams(PairPendingParams{})
+	refused(t, err, record.CodeRecordInvalid, "encode no id")
 }

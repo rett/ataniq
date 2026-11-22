@@ -36,6 +36,15 @@
 // kind "unverified"; Reject drops the pending one. The code is spent by
 // either: one code brings one credential at most.
 //
+// A pending credential has a pending id: 8 random bytes from the package's
+// random source, as 16 lower-case hexadecimal digits, drawn when the
+// credential becomes pending and given by PendingID. Confirm and Reject take it
+// back and compare it, in constant time, to that of the credential pending at
+// that moment; one that differs (the pairing was replaced, or ran out and
+// another began) is refused with ErrPendingID and changes nothing. So the
+// owner's word is about the credential whose six words he compared, never about
+// one that took its place while he looked.
+//
 // The package is what the daemon asks. It is not a wire, a daemon, an HTTP
 // handler, a store or a clock: it opens no file and no socket, starts no
 // program and keeps nothing between runs. The random source and the time are

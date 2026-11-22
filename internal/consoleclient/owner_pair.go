@@ -31,6 +31,7 @@ const (
 	PairPairingOpen       = "pairing-open"
 	PairPairingNone       = "pairing-none"
 	PairPairingExpired    = "pairing-expired"
+	PairPairingChanged    = "pairing-changed"
 	PairPairingRefused    = "pairing-refused"
 	PairCredentialInvalid = "credential-invalid"
 )
@@ -44,6 +45,7 @@ var pairTexts = map[string]string{
 	PairPairingOpen:       "a pairing is already open; start again with replace to end it",
 	PairPairingNone:       "no credential is waiting to be confirmed or rejected",
 	PairPairingExpired:    "the credential waited too long; the pairing is over",
+	PairPairingChanged:    "the pending credential is not the one you compared; look at the words again",
 	PairPairingRefused:    "the pairing was refused",
 	PairCredentialInvalid: "the credential cannot be used",
 }
@@ -84,8 +86,9 @@ func (o *Owner) PairStart(replace bool) (ownerwire.PairStartResult, error) {
 }
 
 // PairStatus reads where the pairing stands: none, waiting for the phone, a
-// credential pending at the desk with the six words of its fingerprint, or
-// expired. It never holds the code.
+// credential pending at the desk with the six words of its fingerprint and its
+// pending id (the id to give back to [Owner.PairConfirm] and [Owner.PairReject]),
+// or expired. It never holds the code.
 func (o *Owner) PairStatus() (ownerwire.PairStatus, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -102,11 +105,19 @@ func (o *Owner) PairStatus() (ownerwire.PairStatus, error) {
 
 // PairConfirm is the owner saying the six words are the same on the phone: the
 // pending credential goes on the list of deciding keys, and the answer is its
-// row.
-func (o *Owner) PairConfirm() (ownerwire.KeyItem, error) {
+// row. The id is the pending id the status showed with the words he compared;
+// when it is not the credential pending now (the pairing was replaced, or ran
+// out and another began) the daemon changes nothing and refuses with a
+// [PairError] of the code [PairPairingChanged]. An id the wire package refuses
+// is refused here and nothing is sent.
+func (o *Owner) PairConfirm(pendingID string) (ownerwire.KeyItem, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	raw, err := o.ask(ownerwire.OpPairConfirm, nil)
+	params, err := ownerwire.EncodePairPendingParams(ownerwire.PairPendingParams{PendingID: pendingID})
+	if err != nil {
+		return ownerwire.KeyItem{}, err
+	}
+	raw, err := o.ask(ownerwire.OpPairConfirm, jsonRaw(params))
 	if err != nil {
 		return ownerwire.KeyItem{}, err
 	}
@@ -117,11 +128,18 @@ func (o *Owner) PairConfirm() (ownerwire.KeyItem, error) {
 	return k, nil
 }
 
-// PairReject drops the pending credential and ends the pairing.
-func (o *Owner) PairReject() error {
+// PairReject drops the pending credential and ends the pairing. The id is the
+// pending id of the credential the owner looked at, as for [Owner.PairConfirm]:
+// another credential's id is refused by the daemon with [PairPairingChanged],
+// and an id the wire package refuses is not sent.
+func (o *Owner) PairReject(pendingID string) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	raw, err := o.ask(ownerwire.OpPairReject, nil)
+	params, err := ownerwire.EncodePairPendingParams(ownerwire.PairPendingParams{PendingID: pendingID})
+	if err != nil {
+		return err
+	}
+	raw, err := o.ask(ownerwire.OpPairReject, jsonRaw(params))
 	if err != nil {
 		return err
 	}

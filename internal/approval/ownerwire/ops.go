@@ -42,14 +42,17 @@ const (
 	OpPairStart = "owner.pair-start"
 	// OpPairStatus reads where the pairing stands: none, waiting for the
 	// phone, a credential pending at the desk (with its six words), or
-	// expired. Params: none. Result: [PairStatus].
+	// expired; a pending one has a pending id. Params: none. Result:
+	// [PairStatus].
 	OpPairStatus = "owner.pair-status"
 	// OpPairConfirm is the owner at the desk saying the six words are the
 	// same on the phone: the pending credential joins the list of deciding
-	// keys. It needs the decider. Params: none. Result: [KeyItem].
+	// keys. It needs the decider, and names the credential it means by its
+	// pending id. Params: [PairPendingParams]. Result: [KeyItem].
 	OpPairConfirm = "owner.pair-confirm"
 	// OpPairReject drops the pending credential and ends the pairing. It
-	// needs the decider. Params: none. Result: nothing.
+	// needs the decider, and names the credential it means by its pending
+	// id. Params: [PairPendingParams]. Result: nothing.
 	OpPairReject = "owner.pair-reject"
 	// OpKeys reads the list of deciding keys, revoked ones included.
 	// Params: none. Result: [KeysView].

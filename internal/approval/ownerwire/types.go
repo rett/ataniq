@@ -360,6 +360,10 @@ const (
 	// MinKeyIDPrefix is the shortest prefix of a display id that
 	// owner.key-revoke takes.
 	MinKeyIDPrefix = 4
+	// PendingIDLength is the length of a pending credential's pending id:
+	// 16 lower-case hexadecimal digits, 8 random bytes the daemon makes when
+	// the credential becomes pending.
+	PendingIDLength = 16
 )
 
 // The phases of a pairing, the words of [PairStatus].Phase.
@@ -408,9 +412,24 @@ type PairStatus struct {
 	// fingerprint, which the phone shows too. They are there exactly when
 	// the phase is pending.
 	Words []string `json:"words,omitempty"`
+	// PendingID names the pending credential: [PendingIDLength] lower-case
+	// hexadecimal digits the daemon drew at random when the credential
+	// became pending. It is there exactly when the phase is pending, and a
+	// confirm or a reject has to give it back, so that the owner's word is
+	// about the credential whose words he compared and not about one that
+	// replaced it.
+	PendingID string `json:"pending_id,omitempty"`
 	// ExpiresAt is when the waiting code or the pending credential ends,
 	// or ended, a record's time. It is left out for the phase none.
 	ExpiresAt string `json:"expires_at,omitempty"`
+}
+
+// PairPendingParams is the params of owner.pair-confirm and of
+// owner.pair-reject: the pending id the owner saw in [PairStatus] with the
+// words he compared. It is required, and the daemon refuses a call whose id is
+// not that of the credential pending now (pairing-changed), changing nothing.
+type PairPendingParams struct {
+	PendingID string `json:"pending_id"`
 }
 
 // SeatPairParams is the params of seat.pair, the seat app's relay of what

@@ -27,6 +27,13 @@ import (
 // A made-up code, the form of a real one.
 const pairTestCode = "7ZB0KX4M9TQ2VH6NRC3E"
 
+// A made-up pending id, the form of a real one.
+const pairTestID = "0f1e2d3c4b5a6978"
+
+func pairPending() ownerwire.PairPendingParams {
+	return ownerwire.PairPendingParams{PendingID: pairTestID}
+}
+
 func pairKey() ownerwire.KeyItem {
 	return ownerwire.KeyItem{ID: "0123456789abcdef", Kind: "unverified", PairedAt: "2026-11-20T14:06:40Z"}
 }
@@ -40,8 +47,8 @@ var pairWrites = []struct {
 	params any
 }{
 	{"pair-start", ownerwire.OpPairStart, ownerwire.PairStartParams{Replace: true}},
-	{"pair-confirm", ownerwire.OpPairConfirm, nil},
-	{"pair-reject", ownerwire.OpPairReject, nil},
+	{"pair-confirm", ownerwire.OpPairConfirm, ownerwire.PairPendingParams{PendingID: pairTestID}},
+	{"pair-reject", ownerwire.OpPairReject, ownerwire.PairPendingParams{PendingID: pairTestID}},
 	{"key-revoke", ownerwire.OpKeyRevoke, ownerwire.KeyRevokeParams{ID: "0123"}},
 	{"keys-off", ownerwire.OpKeysOff, nil},
 }
@@ -52,9 +59,11 @@ func fakePairService(f *ownerFake) {
 		return ownerwire.PairStartResult{Code: pairTestCode, ExpiresAt: "2026-11-20T14:12:00Z"}, nil
 	}
 	f.pairStatus = func() (ownerwire.PairStatus, error) {
-		return ownerwire.PairStatus{Phase: ownerwire.PairPending, Words: pairWords(), ExpiresAt: "2026-11-20T14:12:00Z"}, nil
+		return ownerwire.PairStatus{Phase: ownerwire.PairPending, Words: pairWords(), PendingID: pairTestID, ExpiresAt: "2026-11-20T14:12:00Z"}, nil
 	}
-	f.pairConfirm = func(ownerchannel.Source) (ownerwire.KeyItem, error) { return pairKey(), nil }
+	f.pairConfirm = func(ownerchannel.Source, ownerwire.PairPendingParams) (ownerwire.KeyItem, error) {
+		return pairKey(), nil
+	}
 	f.keys = func() (ownerwire.KeysView, error) {
 		return ownerwire.KeysView{Keys: []ownerwire.KeyItem{pairKey()}}, nil
 	}
@@ -87,14 +96,14 @@ func TestOwnerThePairingOperationsReachTheService(t *testing.T) {
 		t.Fatalf("pair-start: %v, %v", start, err)
 	}
 	var status ownerwire.PairStatus
-	if err := c.Call(ownerCtx(t), ownerwire.OpPairStatus, nil, &status); err != nil || status.Phase != ownerwire.PairPending || len(status.Words) != 6 {
+	if err := c.Call(ownerCtx(t), ownerwire.OpPairStatus, nil, &status); err != nil || status.Phase != ownerwire.PairPending || len(status.Words) != 6 || status.PendingID != pairTestID {
 		t.Fatalf("pair-status: %+v, %v", status, err)
 	}
 	var key ownerwire.KeyItem
-	if err := c.Call(ownerCtx(t), ownerwire.OpPairConfirm, nil, &key); err != nil || key != pairKey() {
+	if err := c.Call(ownerCtx(t), ownerwire.OpPairConfirm, pairPending(), &key); err != nil || key != pairKey() {
 		t.Fatalf("pair-confirm: %+v, %v", key, err)
 	}
-	if err := c.Call(ownerCtx(t), ownerwire.OpPairReject, nil, nil); err != nil {
+	if err := c.Call(ownerCtx(t), ownerwire.OpPairReject, pairPending(), nil); err != nil {
 		t.Fatalf("pair-reject: %v", err)
 	}
 	var keys ownerwire.KeysView
@@ -108,7 +117,7 @@ func TestOwnerThePairingOperationsReachTheService(t *testing.T) {
 	if err := c.Call(ownerCtx(t), ownerwire.OpKeysOff, nil, &keys); err != nil || !keys.Keys[0].Revoked {
 		t.Fatalf("keys-off: %+v, %v", keys, err)
 	}
-	want := "pair-start replace=true,pair-status,pair-confirm,pair-reject,keys,key-revoke 0123,keys-off"
+	want := "pair-start replace=true,pair-status,pair-confirm " + pairTestID + ",pair-reject " + pairTestID + ",keys,key-revoke 0123,keys-off"
 	if got := strings.Join(r.svc.called(), ","); got != want {
 		t.Fatalf("the service was called as %q, want %q", got, want)
 	}
@@ -218,8 +227,16 @@ func TestOwnerThePairingParamsAreStrict(t *testing.T) {
 		{ownerwire.OpKeyRevoke, nil, "record-invalid"},
 		{ownerwire.OpKeyRevoke, map[string]any{"id": "0123", "all": true}, "record-invalid"},
 		{ownerwire.OpPairStatus, map[string]any{"x": 1}, clientapi.CodeInvalidRequest},
-		{ownerwire.OpPairConfirm, map[string]any{"x": 1}, clientapi.CodeInvalidRequest},
-		{ownerwire.OpPairReject, map[string]any{"x": 1}, clientapi.CodeInvalidRequest},
+		{ownerwire.OpPairConfirm, map[string]any{"x": 1}, "record-invalid"},
+		{ownerwire.OpPairConfirm, nil, "record-invalid"},
+		{ownerwire.OpPairConfirm, map[string]any{}, "record-invalid"},
+		{ownerwire.OpPairConfirm, map[string]any{"pending_id": "0F1E2D3C4B5A6978"}, "record-invalid"},
+		{ownerwire.OpPairConfirm, map[string]any{"pending_id": pairTestID[:15]}, "record-invalid"},
+		{ownerwire.OpPairConfirm, map[string]any{"pending_id": pairTestID, "replace": true}, "record-invalid"},
+		{ownerwire.OpPairReject, map[string]any{"x": 1}, "record-invalid"},
+		{ownerwire.OpPairReject, nil, "record-invalid"},
+		{ownerwire.OpPairReject, map[string]any{"pending_id": ""}, "record-invalid"},
+		{ownerwire.OpPairReject, map[string]any{"pending_id": pairTestID, "x": 1}, "record-invalid"},
 		{ownerwire.OpKeys, map[string]any{"x": 1}, clientapi.CodeInvalidRequest},
 		{ownerwire.OpKeysOff, map[string]any{"x": 1}, clientapi.CodeInvalidRequest},
 	} {
@@ -251,6 +268,7 @@ func TestOwnerThePairingErrorsHaveFixedCodes(t *testing.T) {
 		{"pairing open", ownerchannel.ErrPairingOpen, "pairing-open", msgOwnerPairingOpen},
 		{"no pairing", ownerchannel.ErrNoPairing, "pairing-none", msgOwnerPairingNone},
 		{"pairing expired", ownerchannel.ErrPairingExpired, "pairing-expired", msgOwnerPairingExpired},
+		{"pairing changed", ownerchannel.ErrPairingChanged, "pairing-changed", msgOwnerPairingChanged},
 		{"pairing refused", ownerchannel.ErrPairRefused, "pairing-refused", msgOwnerPairingRefused},
 		{"credential invalid", ownerchannel.ErrCredentialInvalid, "credential-invalid", msgOwnerCredentialInvalid},
 		{"not decider", &record.Error{Code: record.CodeNotDecider, Detail: "this connection is not the one that may decide"}, "not-decider", "this connection is not the one that may decide"},
@@ -262,7 +280,9 @@ func TestOwnerThePairingErrorsHaveFixedCodes(t *testing.T) {
 			r.svc.pairStart = func(ownerchannel.Source, ownerwire.PairStartParams) (ownerwire.PairStartResult, error) {
 				return ownerwire.PairStartResult{}, tt.err
 			}
-			r.svc.pairConfirm = func(ownerchannel.Source) (ownerwire.KeyItem, error) { return ownerwire.KeyItem{}, tt.err }
+			r.svc.pairConfirm = func(ownerchannel.Source, ownerwire.PairPendingParams) (ownerwire.KeyItem, error) {
+				return ownerwire.KeyItem{}, tt.err
+			}
 			r.svc.keyRevoke = func(ownerchannel.Source, ownerwire.KeyRevokeParams) (ownerwire.KeysView, error) {
 				return ownerwire.KeysView{}, tt.err
 			}
@@ -273,7 +293,7 @@ func TestOwnerThePairingErrorsHaveFixedCodes(t *testing.T) {
 				params any
 			}{
 				{"start", ownerwire.OpPairStart, ownerwire.PairStartParams{}},
-				{"confirm", ownerwire.OpPairConfirm, nil},
+				{"confirm", ownerwire.OpPairConfirm, pairPending()},
 				{"revoke", ownerwire.OpKeyRevoke, ownerwire.KeyRevokeParams{ID: "0123"}},
 				{"keys", ownerwire.OpKeys, nil},
 			} {
@@ -566,7 +586,7 @@ func TestOwnerAPhoneIsPairedEndToEnd(t *testing.T) {
 	id, spki := newPhoneKey(t)
 	over := ownerwire.SeatPairParams{Code: start.Code, CredentialID: id, PublicKey: spki}
 	wantOwnerCode(t, c.Call(ownerCtx(t), ownerwire.OpSeatPair, over, nil), "unavailable")
-	if err := c.Call(ownerCtx(t), ownerwire.OpPairConfirm, nil, nil); err == nil {
+	if err := c.Call(ownerCtx(t), ownerwire.OpPairConfirm, pairPending(), nil); err == nil {
 		t.Fatal("a confirm with nothing pending")
 	} else {
 		wantOwnerCode(t, err, "pairing-none")
@@ -580,8 +600,19 @@ func TestOwnerAPhoneIsPairedEndToEnd(t *testing.T) {
 		t.Fatalf("%+v %v", st, err)
 	}
 	beat()
+	if len(st.PendingID) != ownerwire.PendingIDLength {
+		t.Fatalf("the status shows no pending id: %+v", st)
+	}
+	// A word about another credential changes nothing; the one that names this
+	// credential confirms it.
+	wrong := ownerwire.PairPendingParams{PendingID: "ffffffffffffffff"}
+	if st.PendingID == wrong.PendingID {
+		wrong.PendingID = "eeeeeeeeeeeeeeee"
+	}
+	wantOwnerCode(t, c.Call(ownerCtx(t), ownerwire.OpPairConfirm, wrong, nil), "pairing-changed")
+	wantOwnerCode(t, c.Call(ownerCtx(t), ownerwire.OpPairReject, wrong, nil), "pairing-changed")
 	var key ownerwire.KeyItem
-	if err := c.Call(ownerCtx(t), ownerwire.OpPairConfirm, nil, &key); err != nil {
+	if err := c.Call(ownerCtx(t), ownerwire.OpPairConfirm, ownerwire.PairPendingParams{PendingID: st.PendingID}, &key); err != nil {
 		t.Fatalf("pair-confirm: %v", err)
 	}
 	if key.Kind != "unverified" || key.Revoked || len(key.ID) != ownerwire.KeyIDLength {
@@ -603,7 +634,10 @@ func TestOwnerAPhoneIsPairedEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	beat()
-	if err := c.Call(ownerCtx(t), ownerwire.OpPairReject, nil, nil); err != nil {
+	if err := c.Call(ownerCtx(t), ownerwire.OpPairStatus, nil, &st); err != nil || st.Phase != ownerwire.PairPending {
+		t.Fatalf("%+v %v", st, err)
+	}
+	if err := c.Call(ownerCtx(t), ownerwire.OpPairReject, ownerwire.PairPendingParams{PendingID: st.PendingID}, nil); err != nil {
 		t.Fatalf("pair-reject: %v", err)
 	}
 	if err := c.Call(ownerCtx(t), ownerwire.OpKeys, nil, &keys); err != nil || len(keys.Keys) != 1 {

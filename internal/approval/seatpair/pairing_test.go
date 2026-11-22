@@ -32,6 +32,8 @@ func (s *seq) Read(p []byte) (int, error) {
 var (
 	idA   = bytes.Repeat([]byte{0xA1}, 32)
 	spkiA = spkiOfScalar(scalarOf(0x11))
+	idB   = bytes.Repeat([]byte{0xB2}, 32)
+	spkiB = spkiOfScalar(scalarOf(0x12))
 )
 
 func newTestPairing() (*Pairing, *fakeClock) {
@@ -284,6 +286,8 @@ func TestStartRandomFailureKeepsThePairing(t *testing.T) {
 	if _, err := p.Start(true); err != ErrRandom {
 		t.Fatalf("Start with a failing source = %v, want ErrRandom", err)
 	}
+	// Present draws the pending id from the same source, so it is given one.
+	p.rand = &seq{next: 0x80}
 	if err := present(p, code, idA, spkiA, clk.now); err != nil {
 		t.Errorf("the old code after a failed replace = %v", err)
 	}

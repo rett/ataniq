@@ -59,10 +59,10 @@ func (s *ownerCmdService) PairStart(context.Context, ownerchannel.Source, ownerw
 func (s *ownerCmdService) PairStatus(context.Context) (ownerwire.PairStatus, error) {
 	return ownerwire.PairStatus{Phase: ownerwire.PairNone}, nil
 }
-func (s *ownerCmdService) PairConfirm(context.Context, ownerchannel.Source) (ownerwire.KeyItem, error) {
+func (s *ownerCmdService) PairConfirm(context.Context, ownerchannel.Source, ownerwire.PairPendingParams) (ownerwire.KeyItem, error) {
 	return ownerwire.KeyItem{}, errors.New("not here")
 }
-func (s *ownerCmdService) PairReject(context.Context, ownerchannel.Source) error {
+func (s *ownerCmdService) PairReject(context.Context, ownerchannel.Source, ownerwire.PairPendingParams) error {
 	return errors.New("not here")
 }
 func (s *ownerCmdService) PairPresent(context.Context, ownerchannel.Source, ownerwire.SeatPairParams) (ownerwire.SeatPairResult, error) {

@@ -54,19 +54,19 @@ var (
 	limitSetParamsForm = payload[LimitSetParams]{"limit", MaxParamsBytes, record.CodeRecordInvalid, checkLimitSetParams}
 	limitViewForm      = payload[LimitView]{"limit", MaxResultBytes, record.CodeRecordInvalid, checkLimitView}
 
-	pairStartParamsForm = payload[PairStartParams]{"pair start", MaxParamsBytes, record.CodeRecordInvalid, checkPairStartParams}
-	pairStartResultForm = payload[PairStartResult]{"pair started", MaxResultBytes, record.CodeRecordInvalid, checkPairStartResult}
-	pairStatusForm      = payload[PairStatus]{"pair status", MaxResultBytes, record.CodeRecordInvalid, checkPairStatus}
-	seatPairParamsForm  = payload[SeatPairParams]{"seat pair", MaxParamsBytes, record.CodeRecordInvalid, checkSeatPairParams}
-	seatPairResultForm  = payload[SeatPairResult]{"seat paired", MaxResultBytes, record.CodeRecordInvalid, checkSeatPairResult}
-	keyItemForm         = payload[KeyItem]{"key", MaxResultBytes, record.CodeRecordInvalid, checkKeyItem}
-	keysViewForm        = payload[KeysView]{"keys", MaxResultBytes, record.CodeRecordInvalid, checkKeysView}
-	keyRevokeParamsForm = payload[KeyRevokeParams]{"key revoke", MaxParamsBytes, record.CodeRecordInvalid, checkKeyRevokeParams}
+	pairStartParamsForm   = payload[PairStartParams]{"pair start", MaxParamsBytes, record.CodeRecordInvalid, checkPairStartParams}
+	pairStartResultForm   = payload[PairStartResult]{"pair started", MaxResultBytes, record.CodeRecordInvalid, checkPairStartResult}
+	pairStatusForm        = payload[PairStatus]{"pair status", MaxResultBytes, record.CodeRecordInvalid, checkPairStatus}
+	pairPendingParamsForm = payload[PairPendingParams]{"pair pending", MaxParamsBytes, record.CodeRecordInvalid, checkPairPendingParams}
+	seatPairParamsForm    = payload[SeatPairParams]{"seat pair", MaxParamsBytes, record.CodeRecordInvalid, checkSeatPairParams}
+	seatPairResultForm    = payload[SeatPairResult]{"seat paired", MaxResultBytes, record.CodeRecordInvalid, checkSeatPairResult}
+	keyItemForm           = payload[KeyItem]{"key", MaxResultBytes, record.CodeRecordInvalid, checkKeyItem}
+	keysViewForm          = payload[KeysView]{"keys", MaxResultBytes, record.CodeRecordInvalid, checkKeysView}
+	keyRevokeParamsForm   = payload[KeyRevokeParams]{"key revoke", MaxParamsBytes, record.CodeRecordInvalid, checkKeyRevokeParams}
 )
 
 // DecodeNothing reads the params of an operation that takes none (owner.list,
-// owner.beat, owner.looked, owner.pair-status, owner.pair-confirm,
-// owner.pair-reject, owner.keys, owner.keys-off) or the result of one that
+// owner.beat, owner.looked, owner.pair-status, owner.keys, owner.keys-off) or the result of one that
 // answers nothing (owner.beat, owner.looked, owner.pair-reject). It accepts an empty JSON object and refuses
 // everything else record-invalid, or record-too-large over [MaxParamsBytes].
 func DecodeNothing(data []byte) error {
@@ -236,6 +236,21 @@ func DecodePairStatus(data []byte) (PairStatus, error) { return pairStatusForm.d
 
 // EncodePairStatus writes the result of owner.pair-status.
 func EncodePairStatus(s PairStatus) ([]byte, error) { return pairStatusForm.encode(s) }
+
+// DecodePairPendingParams reads the params of owner.pair-confirm and of
+// owner.pair-reject. The pending id is required: a call without it, with
+// another field, or with an id that is not 16 lower-case hexadecimal digits
+// is refused record-invalid, and params over [MaxParamsBytes]
+// record-too-large.
+func DecodePairPendingParams(data []byte) (PairPendingParams, error) {
+	return pairPendingParamsForm.decode(data)
+}
+
+// EncodePairPendingParams writes the params of owner.pair-confirm and of
+// owner.pair-reject.
+func EncodePairPendingParams(p PairPendingParams) ([]byte, error) {
+	return pairPendingParamsForm.encode(p)
+}
 
 // DecodeSeatPairParams reads the params of seat.pair. Params over
 // [MaxParamsBytes] are refused record-too-large; anything else that is wrong,

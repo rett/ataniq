@@ -35,8 +35,8 @@ type OwnerService interface {
 	Looked(ctx context.Context) error
 	PairStart(ctx context.Context, src ownerchannel.Source, p ownerwire.PairStartParams) (ownerwire.PairStartResult, error)
 	PairStatus(ctx context.Context) (ownerwire.PairStatus, error)
-	PairConfirm(ctx context.Context, src ownerchannel.Source) (ownerwire.KeyItem, error)
-	PairReject(ctx context.Context, src ownerchannel.Source) error
+	PairConfirm(ctx context.Context, src ownerchannel.Source, p ownerwire.PairPendingParams) (ownerwire.KeyItem, error)
+	PairReject(ctx context.Context, src ownerchannel.Source, p ownerwire.PairPendingParams) error
 	PairPresent(ctx context.Context, src ownerchannel.Source, p ownerwire.SeatPairParams) (ownerwire.SeatPairResult, error)
 	Keys(ctx context.Context) (ownerwire.KeysView, error)
 	KeyRevoke(ctx context.Context, src ownerchannel.Source, p ownerwire.KeyRevokeParams) (ownerwire.KeysView, error)
