@@ -4,6 +4,7 @@
 //
 //	ataniq-seat (--origin https://HOST | --origin-file PATH) (--socket PATH | --listen 127.0.0.1:PORT)
 //	            [--rpid HOST] [--socket-mode 0660] [--client-addr-header NAME]
+//	ataniq-seat gate-init --identity DIR
 //
 // The origin is the address the reverse proxy serves the app on, https on
 // port 443, and has no default: it comes from --origin or from the first line
@@ -13,6 +14,13 @@
 // --socket needs --client-addr-header, the header the proxy sets to the
 // client's address on every request: a client of a Unix socket has no address
 // of its own, so the per-source limits would otherwise be one bucket for all.
+//
+// gate-init makes the seat's own key for the seat gate: a new identity
+// (package seatgate) written to DIR as cert.pem and key.pem, the key with mode
+// 0600, DIR made with mode 0700 when it is missing. It never overwrites: a
+// file already there is an error and nothing is written. It prints one line,
+// the key's fingerprint (64 lower-case hex digits), which the owner carries to
+// the gate's pin list, and nothing else.
 //
 // Nothing secret is printed or read from the command line. The daemon port is
 // not wired yet: pairing answers with the fixed code daemon_unavailable.
@@ -36,10 +44,17 @@ import (
 	"time"
 
 	"ataniq/internal/seatapp"
+	"ataniq/internal/seatgate"
 )
 
 const usageLine = "Usage: ataniq-seat (--origin https://HOST | --origin-file PATH) (--socket PATH | --listen LOOPBACK:PORT) [--rpid HOST] [--socket-mode MODE] [--client-addr-header NAME]\n" +
 	"--origin and --origin-file exclude each other; --socket and --listen exclude each other; --socket needs --client-addr-header; --listen takes an IP literal of the loopback range."
+
+const gateInitUsage = "Usage: ataniq-seat gate-init --identity DIR\n" +
+	"Makes the seat's key for the seat gate in DIR and prints its fingerprint; it never overwrites."
+
+// identityName is the name in the certificate of the seat's gate identity.
+const identityName = "ataniq-seat"
 
 // maxOriginFile bounds the origin file.
 const maxOriginFile = 1 << 10
@@ -56,9 +71,48 @@ func (unwiredDaemon) Pair(context.Context, seatapp.PairRequest) (seatapp.PairRes
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	code := run(ctx, os.Args[1:], os.Stderr, nil)
+	code := dispatch(ctx, os.Args[1:], os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)
+}
+
+// dispatch runs the subcommand args name, or the server, and returns the exit
+// code.
+func dispatch(ctx context.Context, args []string, out, errout io.Writer) int {
+	if len(args) > 0 && args[0] == "gate-init" {
+		return gateInit(args[1:], out, errout)
+	}
+	return run(ctx, args, errout, nil)
+}
+
+// gateInit makes the seat's gate identity in the folder --identity names and
+// prints its fingerprint to out, and nothing else. It returns the exit code.
+func gateInit(args []string, out, errout io.Writer) int {
+	fs := flag.NewFlagSet("ataniq-seat gate-init", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dir := fs.String("identity", "", "folder for the seat's gate key")
+	fail := func(msg string) int {
+		fmt.Fprintf(errout, "ataniq-seat gate-init: %s\n%s\n", msg, gateInitUsage)
+		return 2
+	}
+	if err := fs.Parse(args); err != nil {
+		return fail("bad flags")
+	}
+	if fs.NArg() != 0 {
+		return fail("no arguments are taken")
+	}
+	if *dir == "" {
+		return fail("--identity is required")
+	}
+	// The errors of seatgate's file helpers are fixed texts, with no path
+	// and nothing of the key.
+	id, err := seatgate.WriteIdentityFiles(*dir, identityName)
+	if err != nil {
+		fmt.Fprintf(errout, "ataniq-seat gate-init: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(out, id.Fingerprint())
+	return 0
 }
 
 // options is what the flags select.
