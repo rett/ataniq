@@ -212,7 +212,7 @@ func TestStartThenQRThenWordsThenConfirm(t *testing.T) {
 	if b.count("confirm") != 1 || r.m.screen != scPaired {
 		t.Fatalf("screen %v calls %v", r.m.screen, b.calls)
 	}
-	r.see(80, 24, "Paired. Kind: unverified (a syncing passkey).", "cred-7f3a9b")
+	r.see(80, 24, "Paired. Kind: unverified (no claim made).", "cred-7f3a9b")
 	if b.count("reject") != 0 {
 		t.Fatal("a reject was sent")
 	}
