@@ -54,7 +54,10 @@
 // (cose.go: the five-entry ES256 COSE_Key of a P-256 point on the curve, in
 // canonical order, definite lengths only) and turns into its canonical DER
 // SPKI, which must equal the posted public key byte for byte. Then it hands
-// the code, the credential id and the key to the [Daemon] port, and the
+// the code, the credential id and the key to the [Daemon] port, with the
+// authenticator data (at most 4096 bytes) and the relying party id, from which
+// the daemon reads the kind the authenticator's AAGUID claims and its backup
+// flags (claims, not facts: nothing is attested), and the
 // [WordCount] words that come back are shown on the phone to be compared with the desk
 // console. Nothing is trusted until the owner confirms at the desk; this
 // package adds no credential to anything.
