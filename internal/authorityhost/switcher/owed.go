@@ -342,8 +342,9 @@ const maxAckWords = 512
 // interrupted before that removal, or repeated after it) keeps the recorded
 // words and time: it only finishes the removal when they are still owed,
 // and leaves any outcome owed since as it is. It runs no program, is
-// refused while a transaction is open (any command settles it first) and
-// when nothing is owed, and a dry run changes nothing.
+// refused while a transaction is open (any command settles it first), the
+// journal held by the inhibit after an interrupted healthy end included,
+// and when nothing is owed, and a dry run changes nothing.
 func (s *Switcher) Ack(ctx context.Context, txns []string, words string) int {
 	if !filepath.IsAbs(s.cfg.Root) {
 		s.errorf("--root %s is not an absolute path", q(s.cfg.Root))
@@ -372,6 +373,13 @@ func (s *Switcher) Ack(ctx context.Context, txns []string, words string) int {
 	if j, ok, err := s.readJournal(); err != nil || ok {
 		if err == nil {
 			err = failf(CodeStateInvalid, "the %s %s (transaction %s) is still open in phase %s; run any command to settle it first", (&txn{j: j}).kind(), j.ID, j.Txn, j.Phase)
+		}
+		s.printf("ack: FAILED: %s", describe(err))
+		return ExitFailed
+	}
+	if _, settling, there, err := s.readInhibit(); settling != nil || err != nil && !there {
+		if err == nil {
+			err = failf(CodeStateInvalid, "%s holds the journal of the %s %s (transaction %s), which is still to be settled; run any switch, rollback or recover to settle it first", InhibitFile, (&txn{j: *settling}).kind(), settling.ID, settling.Txn)
 		}
 		s.printf("ack: FAILED: %s", describe(err))
 		return ExitFailed

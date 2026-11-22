@@ -24,7 +24,24 @@ func (s *Switcher) reconcile(ctx context.Context, newWork bool) (code int, halt 
 		return ExitFailed, true
 	}
 	if !ok {
-		return 0, false
+		// A healthy end interrupted between its two steps: the inhibit
+		// holds the journal. It is written back, the inhibit staying, and
+		// settled as any journal found in phase done: current is
+		// qualified again first (see InhibitFile).
+		_, settling, _, err := s.readInhibit()
+		if err != nil || settling == nil {
+			return 0, false
+		}
+		j = *settling
+		s.printf("reconcile: %s holds the journal of the %s %s (transaction %s), which ended %s and was interrupted while it was settled", InhibitFile, (&txn{j: j}).kind(), j.ID, j.Txn, j.Result)
+		if s.cfg.Dry {
+			s.printf("reconcile: a dry run reconciles nothing; run the command without --dry first")
+			return ExitFailed, true
+		}
+		if err := s.writeJournal(j); err != nil {
+			s.printf("reconcile: unresolved: %s not written back: %s; %s stays, and decisions stay inhibited", JournalFile, q(err.Error()), InhibitFile)
+			return ExitFailed, true
+		}
 	}
 	t := &txn{j: j, resumed: true}
 	defer t.close()
@@ -336,8 +353,9 @@ func (s *Switcher) recoverDiscard(id string) int {
 		return ExitOK
 	}
 	// Setting the journal aside qualifies nothing: decisions stay
-	// inhibited, the inhibit written first when it is not there.
-	if _, there, err := s.readInhibit(); err != nil || !there {
+	// inhibited, the inhibit written first when it is not there (or holds
+	// the journal, which would be written back from it).
+	if _, settling, there, err := s.readInhibit(); err != nil || !there || settling != nil {
 		if err := s.setInhibit(&txn{j: j}, fmt.Sprintf("the journal of the %s %s was set aside by the owner; nothing qualified the host since", (&txn{j: j}).kind(), j.ID)); err != nil {
 			s.printf("recover: FAILED: %s; the journal stays", describe(err))
 			return ExitFailed

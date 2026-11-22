@@ -41,12 +41,15 @@
   before the stopping phase is saved, and, while a journal is stopping,
   first in every command, under the lock, even when `releases/`, the
   counter or the record cannot be used). Every transaction
-  first writes `/var/lib/authority-host/decisions.inhibit`; a
-  decision-capable service may start while it is there (and answer its
-  readiness probe) but refuses every decision while it is there or cannot
-  be read, and while the journal `txn.json` is there, checking both before
-  each decision (a healthy end removes the inhibit before the journal, so
-  a power loss between the two still refuses); the switch removes it only
+  first writes `/var/lib/authority-host/decisions.inhibit`, the one file
+  a decision-capable service looks up: it may start while the file is
+  there (and answer its readiness probe) but refuses every decision unless
+  one lookup before the decision finds no such file (the journal
+  `txn.json` is never there without it: a healthy end renames the journal
+  over the inhibit, then removes the inhibit, the one step that lets
+  decisions through; a power loss between the two leaves the journal in
+  the inhibit, which the next command writes back and settles and which
+  `inhibit-clear` and `ack` refuse); the switch removes it only
   when the transaction ends healthy, after running the reload list,
   health check and post-activation no-AI check (`--phase post`, the
   firewall and listeners as they are now) of `current` again when it

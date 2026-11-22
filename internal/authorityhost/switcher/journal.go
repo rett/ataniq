@@ -12,7 +12,8 @@ import (
 
 // JournalFile is the journal of a switch in the state folder: one
 // transaction, written whole and synced with its folder before every change
-// of its phase, and removed once its outcome is recorded. A journal that is
+// of its phase, and removed once its outcome is recorded (a healthy end
+// renames it over decisions.inhibit, see InhibitFile). A journal that is
 // still there when a command starts is a transaction that did not finish;
 // the command resumes it from its phase before it does anything else.
 const JournalFile = "txn.json"
@@ -253,7 +254,8 @@ const (
 	CrashStopped          = "stopped"           // every stop command ran; txn.json still says stopping
 	CrashDone             = "done"              // txn.json says done
 	CrashRecord           = "record"            // deploy.json written; txn.json still there
-	CrashInhibitLifted    = "inhibit-lifted"    // a healthy end: decisions.inhibit removed; txn.json still there
+	CrashJournalMoved     = "journal-moved"     // a healthy end: txn.json renamed over decisions.inhibit, which holds it; decisions still inhibited
+	CrashInhibitKept      = "inhibit-kept"      // any other end: decisions.inhibit holds the outcome; txn.json still there
 	CrashUnreported       = "unreported"        // txn.json removed; the result line not printed yet
 	CrashAcked            = "acked"             // ack: deploy.json records the acknowledgement; owed.json still there
 )

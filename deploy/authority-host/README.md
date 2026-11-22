@@ -43,7 +43,7 @@ builder, `ah-release` (see "The release builder" below).
   highest-counter         the highest counter a switch ever attempted
   counters.log            every counter a switch attempted, appended
   decisions.inhibit       while it is there, every decision service refuses every decision
-  txn.json                the journal of the transaction under way; decision services refuse while it is there too
+  txn.json                the journal of the transaction under way; never there without decisions.inhibit
   switch.lock             the lock of a running switch
   imported/<id>           the record of the import that made releases/<id>
 ```
@@ -568,12 +568,13 @@ are stopped and decisions stay inhibited, see step 4).
 9. **record**: the journal says `done` with the outcome; the link folder is
    synced once more, `deploy.json` is written (a temporary file renamed over
    the old one), the outcome is added to `owed.json` (see "The journal and
-   recover"), the decision inhibit is removed when the transaction
-   ended healthy (or kept, with the outcome as its reason), and the
-   journal is removed. Only then does the switch print `result: ok` and
-   exit 0. When any of that fails it prints `result:
-   unresolved`, exits 1 and leaves the journal, and the next command
-   records the outcome.
+   recover"), and the transaction ends: when it ended healthy the journal
+   is renamed over the decision inhibit and that file is then removed;
+   otherwise the inhibit is rewritten with the outcome as its reason and
+   the journal is removed (see "The decision inhibit"). Only then does the
+   switch print `result: ok` and exit 0. When any of that fails it prints
+   `result: unresolved`, exits 1 and leaves the journal (in the inhibit,
+   once renamed), and the next command records the outcome.
 
 A link is taken as moved only once its folder is synced. A rename that is
 visible but whose folder could not be synced is not trusted to survive a
@@ -668,10 +669,10 @@ in `stopping`; one command never runs the host's list twice.
 ### The decision inhibit
 
 `/var/lib/authority-host/decisions.inhibit` is the switch's own file
-(root-owned, mode 0644, written whole and synced with its folder): while
-it is there, every decision-capable service refuses every decision, and so
-does the journal `txn.json` while it is there. The contract for those
-services is:
+(root-owned, written whole and synced with its folder): while it is
+there, every decision-capable service refuses every decision. It is the
+one file the services look at: the journal `txn.json` is never there
+without it. The contract for those services is:
 
 - A decision-capable service **may start** while the file is there: its
   unit carries no start condition on it. It must, since the switch's
@@ -681,18 +682,21 @@ services is:
   such unit; that condition kept the service from starting, so its
   readiness probe could never pass. Do not add it, and remove it where it
   was added.
-- The application **must refuse every decision** while the file is there,
-  and while the journal `/var/lib/authority-host/txn.json` is there: it
-  checks both before each decision (not once at start), and refuses when
-  either is there or when whether it is there cannot be told (any error
-  other than "no such file"; only existence is checked, so the journal's
-  mode 0600 does not matter). Readiness and the static status page do not
-  depend on them.
+- The application **must refuse every decision unless the file does not
+  exist**: one lookup before each decision (not once at start), such as an
+  `lstat` of `/var/lib/authority-host/decisions.inhibit`, which refuses
+  when it finds the file and when it gets any answer other than "no such
+  file" (only existence is checked, so the file's mode and content do not
+  matter). One lookup is one instant: there is no second file and no order
+  of lookups to get wrong. Readiness and the static status page do not
+  depend on it.
 
 The release builder makes every decision-capable service follow this
 contract (the switch does not check the services for it). The file holds
-the id of the transaction that set it and why (`txn`, `reason`, `time`);
-only its existence matters to the services.
+the id of the transaction that set it and why (`txn`, `reason`, `time`,
+mode 0644), or, for the moment between the two steps of a healthy end
+(below), the journal of that transaction (mode 0600); only its existence
+matters to the services.
 
 - The switch writes it at the start of every transaction: before the
   package step, or, without one, before the journal says `links`. Every
@@ -704,15 +708,19 @@ only its existence matters to the services.
   rollback whose release passed its health check and its post-activation
   no-AI check (`ok`), or a going back whose release passed its reload, its
   health check and its no-AI check of phase post (`rolled-back` with
-  `restored_health: ok`). The removal is synced before the journal is
-  removed, so a crash (a power loss) between the two leaves the journal in
-  phase `done` and no inhibit: the journal alone then keeps decisions
-  refused, `status` says `decisions: refused while txn.json is there`, and
-  the next command qualifies `current` again (below), writing the inhibit
-  back first, before it settles. From the inhibit's writing to the
-  journal's removal one of the two files is always there. The other order
-  would leave, after such a crash, an inhibit with no journal to qualify
-  the host again from, which only the owner could clear.
+  `restored_health: ok`). That end has two steps: the journal is renamed
+  over the inhibit (one atomic step: the journal is gone and the inhibit,
+  now holding it, is there) and the folder synced, then the inhibit is
+  removed and the folder synced. That removal is the one step of a switch
+  that lets decisions through. A crash (a power loss) between the two
+  leaves the inhibit holding a journal in phase `done`: decisions are
+  still refused, `status` says so (`decisions: inhibited
+  (decisions.inhibit) by transaction ..., which holds its journal`), and
+  the next switch, rollback or `recover` writes `txn.json` back from it,
+  the inhibit staying, and qualifies `current` again (below) before it
+  settles. `inhibit-clear` and `ack` refuse such an inhibit: it is a
+  transaction still to settle, not an outcome, and the host must be
+  qualified again first.
 - A healthy transaction found in phase `done` by a later command (a
   reboot, or a crash, came between its health check and its settling)
   is not taken as healthy on its word: the release `current` points at,
@@ -753,14 +761,41 @@ only its existence matters to the services.
   the words are recorded in `deploy.json` (`inhibit_cleared_at`,
   `inhibit_cleared_asked`) and kept by later records. It runs no program,
   is refused while a transaction is open (run any command to settle it
-  first) or when there is nothing to clear, and with `--dry` changes
+  first), the journal held by the inhibit after an interrupted healthy end
+  included, or when there is nothing to clear, and with `--dry` changes
   nothing. Removing the file does not start anything: the services take
   decisions again only where they run; start them by hand, or switch.
 - A failure before any transaction begins (verify, counter, the no-AI
   check before the package step, or any step when there is no package
   step) changes nothing on the host, and neither sets nor removes it.
 - `status` says `decisions: inhibited (...)` with the transaction and the
-  reason, or `decisions: not inhibited`.
+  reason (or that it holds the journal of a transaction still to settle),
+  or `decisions: not inhibited`; with `txn.json` there and the file
+  removed by hand, `decisions: not inhibited, although txn.json is there`,
+  since a service following the contract then takes decisions: the next
+  switch, rollback or `recover` writes it back first.
+
+Why a service following the contract never takes a decision while the
+host is not qualified: its lookup sees the state folder at one instant,
+and these are every change of the file (each under the switch's lock,
+each write an atomic rename, synced):
+
+| Who | What it does to the file |
+| --- | --- |
+| A transaction's start | Writes it, before the journal is first written |
+| A switch, rollback or `recover` that finds a journal | Writes it back when it was removed by hand; writes the journal back from it when it holds one, keeping it |
+| An end that is not healthy | Rewrites it with the outcome, then removes the journal |
+| A healthy end | Renames the journal over it, then removes it |
+| `recover --discard-journal` | Writes it when it is not there (or holds the journal), then sets the journal aside |
+| `inhibit-clear` | Removes it on the owner's word; refused while a journal is there or it holds one |
+
+Only the second step of a healthy end and `inhibit-clear` make it absent:
+the first after the release passed its checks (again, when it was found
+in phase `done`) with no journal left, the second on the owner's word.
+Nothing makes it absent while a journal is there, and every transaction
+writes it before anything else, so a lookup that finds no file sees a
+host that ended healthy, or that the owner cleared, with no transaction
+open.
 
 ### The journal and recover
 
@@ -781,7 +816,7 @@ order:
 | `activating` | The links point at the new release; its reload, health and post-activation check run | Verifies the release again, makes and syncs both links again, runs its reload list, health check and post-activation check again: `ok` (`completed after an interruption`), or goes back as a failed health check does |
 | `restoring` | Going back to the old release | Does all of going back again, from stopping the failed release's services |
 | `stopping` | The decision services are being stopped | Runs every stop list again |
-| `done` | The outcome is decided | Syncs the link folder, appends to `counters.log` (when it lacks the counter) and writes `highest-counter` when the counter was used; when the transaction ended healthy, runs the reload list, health check and post-activation no-AI check of the release `current` points at again (a reboot may have come; see "The decision inhibit"); records the outcome, removes the inhibit only when that passed, and removes the journal |
+| `done` | The outcome is decided | Syncs the link folder, appends to `counters.log` (when it lacks the counter) and writes `highest-counter` when the counter was used; when the transaction ended healthy, runs the reload list, health check and post-activation no-AI check of the release `current` points at again (a reboot may have come; see "The decision inhibit"); records the outcome; then, only when that passed, renames the journal over the inhibit and removes it, and otherwise rewrites the inhibit with the outcome and removes the journal. A journal held by the inhibit (a crash between those two steps) is written back to `txn.json` first and resumed in this phase |
 
 A transaction that dies (a crash, a power loss, a kill) leaves `txn.json`.
 Every switch, rollback and `recover` takes the lock and resumes it from its
@@ -874,7 +909,8 @@ concern it, and only the second takes it back:
   the transactions in `deploy.json` (`outcome_acked_at`,
   `outcome_acked_asked`, `outcome_acked_txn`, kept by later records), and
   removes `owed.json`. It runs no program, is refused while a transaction
-  is open (run any command to settle it first) or when nothing is owed,
+  is open (run any command to settle it first), a journal held by the
+  decision inhibit included, or when nothing is owed,
   and with `--dry` changes nothing. As with a retry, an outcome that
   cannot be written or flushed has not been seen: when printing the
   outcomes fails, `ack` records nothing, keeps `owed.json`, says so on its
@@ -1009,6 +1045,7 @@ see its messages. The text of a broken state file is not repeated either.
 | Going back fails (putting `previous` back included), or the old release is not healthy or fails its no-AI check | The host's `stop.list` and the stop lists of both releases run; `failed-recovery` with `restored_health: failed`; decisions stay inhibited; the console is needed |
 | First switch, or the old release missing or no longer verifying, and the new one fails | `current` stays; the host's and the release's stop lists run; `failed` or `failed-recovery`; decisions stay inhibited, across a reboot |
 | `decisions.inhibit` there after a failure | Decision-capable services may run but refuse every decision; a later healthy switch or `inhibit-clear --asked WORDS` removes it |
+| Crash or power loss between the two steps of a healthy end (the journal renamed over `decisions.inhibit`, the inhibit not removed yet) | Decisions are still refused; `inhibit-clear` and `ack` refuse it; the next command writes `txn.json` back from it and settles it as a journal in `done` (next row) |
 | Reboot or crash after a healthy release was decided (`done`) and before it was settled | The next command runs the reload list, health check and post-activation no-AI check of `current` again before removing the inhibit; when any fails, the host's stop list runs, decisions stay inhibited, the outcome stays owed with `requalify_failed`, and that command and every retry of the same request exit 1 until `ack --txn ID --asked WORDS` |
 | A stop command fails | `result: unresolved`, exit 1; the journal stays in `stopping`; every later command runs the stops again and does nothing else until they pass, or `recover --services-stopped` |
 | A link folder cannot be synced | `result: unresolved`, exit 1; the journal stays; nothing is recorded as done until the next command syncs it |
@@ -1044,8 +1081,8 @@ What the switch does not do, so that nobody relies on it:
   switch's checks of an honest release are not a privilege boundary.
 - It does not check that a release's lists cover what the release ships
   (see the lists above), nor that its decision-capable services refuse
-  decisions while the inhibit or the journal `txn.json` is there: that is
-  the release builder's job.
+  decisions while the inhibit is there: that is the release builder's
+  job.
 - The decision inhibit keeps decisions from being taken by a service
   that follows the contract; it neither stops a service nor keeps one
   from starting. Stopping is the stop lists' job, and a service that does
@@ -1691,11 +1728,9 @@ It checks, in this order, all of them (a pass is no finding):
      matched by any instance, `x@1`). No unit gates its start on
      `decisions.inhibit` (`ConditionPathExists=` and the like naming it): the
      contract under "The decision inhibit" is that a service starts while
-     it (or the journal `txn.json`) is there and refuses decisions itself,
-     and the builder cannot see the application, so that is for its own
-     tests; what it does check is that no unit file breaks it by a
-     condition on `decisions.inhibit` (a condition on `txn.json` would
-     break it the same way, and is not looked for).
+     it is there and refuses decisions itself, and the builder cannot see
+     the application, so that is for its own tests; what it does check is
+     that no unit file breaks it by a condition on `decisions.inhibit`.
 5. **The no-AI check.** The release's own
    `bin/ah-noaicheck --phase pre --release DIR/<id>` runs as a child of its
    own process group (killed whole at the time limit) with the switch's

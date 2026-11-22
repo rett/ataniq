@@ -197,6 +197,9 @@ func TestEveryCommandRestoresTheInhibitBesideAJournal(t *testing.T) {
 	if err := os.Remove(filepath.Join(e.root, BaseDir, "previous")); err != nil {
 		t.Fatal(err)
 	}
+	if got := e.status(); !strings.Contains(got, "decisions: not inhibited, although "+JournalFile+" is there") {
+		t.Errorf("status:\n%s", got)
+	}
 	e.runner.reset()
 	if code := e.switchTo(rel3, func(c *Config) { c.Dry = true }); code != ExitFailed {
 		t.Fatalf("dry run: exit %d\n%s", code, e.last)
@@ -347,9 +350,9 @@ func TestInhibitClear(t *testing.T) {
 // guardedApp models a decision-capable service under the inhibit
 // contract: its unit carries no start condition, so it starts (on a
 // reload, at boot) whether decisions.inhibit is there or not, and its
-// readiness probe passes only while it runs; it refuses every decision
-// while decisions.inhibit or txn.json is there, and when whether either
-// is there cannot be told.
+// readiness probe passes only while it runs; before each decision it
+// makes one lookup, and refuses unless decisions.inhibit does not exist
+// (any answer but "no such file" refuses).
 type guardedApp struct {
 	e       *env
 	started bool
@@ -358,11 +361,8 @@ type guardedApp struct {
 }
 
 func (g *guardedApp) decide() string {
-	for _, name := range []string{InhibitFile, JournalFile} {
-		_, err := os.Lstat(filepath.Join(g.e.root, StateDir, name))
-		if !errors.Is(err, fs.ErrNotExist) {
-			return "refused"
-		}
+	if _, err := os.Lstat(filepath.Join(g.e.root, StateDir, InhibitFile)); !errors.Is(err, fs.ErrNotExist) {
+		return "refused"
 	}
 	return "accepted"
 }
@@ -575,52 +575,280 @@ func TestRetryAfterFailedRequalification(t *testing.T) {
 	}
 }
 
-// TestNoDecisionWhileAJournalIsOpen: no crash point of a transaction leaves
-// a state in which the published contract lets a decision through while
-// its journal is still there. The case it guards: a healthy settling
-// removes decisions.inhibit before txn.json; a crash (a power loss) between
-// the two leaves a journal in phase done and no inhibit, and at boot a
-// service that follows the contract must still refuse, until the next
-// command has qualified the host again (the reload list, health check and
-// post-activation no-AI check of current) and settled the transaction.
-func TestNoDecisionWhileAJournalIsOpen(t *testing.T) {
-	for _, point := range []string{CrashLinks, CrashCounter, CrashPrevious, CrashCurrent, CrashActivating, CrashReload, CrashHealth, CrashPostCheck, CrashDone, CrashRecord, CrashInhibitLifted, CrashUnreported} {
-		t.Run(point, func(t *testing.T) {
+// TestTheInhibitIsTheOneGuard: decisions.inhibit is the one file a
+// decision-capable service looks up. At every crash point of a switch (a
+// package step, a healthy end, going back, stopping the services), the
+// journal is never there without it, and it is absent only once a
+// transaction ended healthy and qualified; a service following the
+// one-lookup contract refuses exactly while it is there. The next command
+// keeps it there while it resumes (at every command it runs), and removes
+// it only for an outcome that is healthy.
+func TestTheInhibitIsTheOneGuard(t *testing.T) {
+	healthy := func(rec Record) bool {
+		return rec.Result == ResultOK || rec.Result == ResultRolledBack && rec.RestoredHealth == "ok"
+	}
+	back := map[string]int{"health-probe": -1}
+	stopped := map[string]int{"health-probe": -1, "health-old": -1}
+	for _, tc := range []struct {
+		name     string
+		point    string
+		snapshot string
+		fail     map[string]int
+	}{
+		{"package-start", CrashPackageStart, "t", nil},
+		{"package-ran", CrashPackageRan, "t", nil},
+		{"package-done", CrashPackageDone, "t", nil},
+		{"links", CrashLinks, "s", nil},
+		{"counter", CrashCounter, "s", nil},
+		{"previous", CrashPrevious, "s", nil},
+		{"current", CrashCurrent, "s", nil},
+		{"activating", CrashActivating, "s", nil},
+		{"reload", CrashReload, "s", nil},
+		{"health", CrashHealth, "s", nil},
+		{"postcheck", CrashPostCheck, "s", nil},
+		{"done", CrashDone, "s", nil},
+		{"record", CrashRecord, "s", nil},
+		{"healthy end", CrashJournalMoved, "s", nil},
+		{"unreported", CrashUnreported, "s", nil},
+		{"restoring", CrashRestoring, "s", back},
+		{"candidate-stopped", CrashCandidateStopped, "s", back},
+		{"restore-links", CrashRestoreLinks, "s", back},
+		{"restore-reload", CrashRestoreReload, "s", back},
+		{"restore-health", CrashRestoreHealth, "s", back},
+		{"restored done", CrashDone, "s", back},
+		{"restored record", CrashRecord, "s", back},
+		{"restored healthy end", CrashJournalMoved, "s", back},
+		{"restored unreported", CrashUnreported, "s", back},
+		{"stopping", CrashStopping, "s", stopped},
+		{"stopped", CrashStopped, "s", stopped},
+		{"stopped done", CrashDone, "s", stopped},
+		{"stopped record", CrashRecord, "s", stopped},
+		{"stopped end", CrashInhibitKept, "s", stopped},
+		{"stopped unreported", CrashUnreported, "s", stopped},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			e := activeOwn(t)
+			e.keepOwed = true
+			if tc.snapshot != "s" {
+				e.release(rel3, tc.snapshot)
+			}
+			for k, v := range tc.fail {
+				e.runner.fail[k] = v
+			}
 			g := guard(e)
 			g.started = true
-			e.keepOwed = true
-			e.crashAt(point, false, rel3)
+			e.crashAt(tc.point, false, rel3)
 			_, open := e.journal()
-			if open && g.decide() != "refused" {
-				t.Fatalf("after a crash at %s, with %s still there, the contract lets a decision through", point, JournalFile)
+			_, inhibited := e.inhibited()
+			if open && !inhibited {
+				t.Fatalf("after a crash at %s the journal is there without the inhibit", tc.point)
 			}
-			if point != CrashInhibitLifted {
-				return
+			if !inhibited && (open || !healthy(e.record())) {
+				t.Fatalf("after a crash at %s the inhibit is gone, but no transaction ended healthy: journal %v, record %+v", tc.point, open, e.record())
 			}
-			if _, ok := e.inhibited(); ok || !open {
-				t.Fatalf("a crash at %s: inhibited %v, journal there %v", point, ok, open)
+			if want := map[bool]string{true: "refused", false: "accepted"}[inhibited]; g.decide() != want {
+				t.Errorf("after a crash at %s, inhibited %v: a decision is %s", tc.point, inhibited, g.decide())
 			}
-			if got := e.status(); !strings.Contains(got, "decisions: refused while "+JournalFile+" is there") {
+			// The reboot, then the next command: the inhibit is there at
+			// every command the resume runs, and gone only after an
+			// outcome that is healthy.
+			g.started, g.asked = false, nil
+			unguarded := 0
+			e.runner.hook = func([]string) {
+				if _, ok := e.inhibited(); !ok {
+					unguarded++
+				}
+			}
+			e.runner.reset()
+			e.recover(resumeOnly)
+			e.runner.hook = nil
+			if unguarded > 0 {
+				t.Errorf("the resume ran %d command(s) without the inhibit: %v", unguarded, e.runner.calls)
+			}
+			e.noJournal()
+			_, inhibited = e.inhibited()
+			rec := e.record()
+			owed := e.owed()
+			qualified := healthy(rec) && (len(owed) == 0 || !owed[len(owed)-1].RequalifyFailed)
+			if inhibited == qualified {
+				t.Errorf("after the resume: inhibited %v, record %+v, owed %+v", inhibited, rec, owed)
+			}
+			if want := map[bool]string{true: "refused", false: "accepted"}[inhibited]; g.decide() != want {
+				t.Errorf("after the resume, inhibited %v: a decision is %s", inhibited, g.decide())
+			}
+		})
+	}
+}
+
+// TestCrashBetweenTheTwoStepsOfAHealthyEnd: a healthy end first renames
+// the journal over decisions.inhibit, then removes that file. A crash (a
+// power loss) between the two leaves the journal in the inhibit: services
+// refuse, status says what is pending, and the next command writes the
+// journal back, qualifies current again and settles it, the inhibit there
+// all the while; when the qualification fails, the inhibit stays with the
+// failure, and a decision is never accepted on the way.
+func TestCrashBetweenTheTwoStepsOfAHealthyEnd(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		reload bool // the reload after the reboot passes
+	}{{"qualified again", true}, {"not qualified after the reboot", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := activeOwn(t)
+			e.keepOwed = true
+			g := guard(e)
+			g.started = true
+			e.crashAt(CrashJournalMoved, false, rel3)
+			e.noJournal()
+			if _, ok := e.inhibited(); !ok {
+				t.Fatalf("no inhibit after a crash between the two steps of a healthy end")
+			}
+			if got := e.status(); !strings.Contains(got, "interrupted: switch to "+rel3+" in phase done") || !strings.Contains(got, "runs the reload list, the health check and the no-AI check of "+rel3+" again") || strings.Contains(got, "decisions: not inhibited") || strings.Contains(got, "ack --txn") {
 				t.Errorf("status:\n%s", got)
 			}
-			// The reboot, then the next command: current is qualified
-			// again, decisions refused all the while, then settled.
 			g.started, g.asked = false, nil
+			if !tc.reload {
+				e.runner.fail["reload-units"] = 1
+			}
+			unguarded := 0
+			e.runner.hook = func([]string) {
+				if _, ok := e.inhibited(); !ok {
+					unguarded++
+				}
+			}
 			e.runner.reset()
 			if code := e.recover(resumeOnly); code != ExitFailed {
 				t.Fatalf("recover: exit %d\n%s", code, e.last)
 			}
+			e.runner.hook = nil
+			if unguarded > 0 {
+				t.Errorf("the resume ran %d command(s) without the inhibit", unguarded)
+			}
 			e.noJournal()
-			if e.runner.called("reload-units") != 1 || e.runner.called("health-probe") != 1 {
+			if e.runner.called("reload-units") != 1 {
 				t.Errorf("the resume did not qualify current again: %v", e.runner.calls)
 			}
-			if strings.Join(g.asked, " ") != "refused" {
-				t.Errorf("decisions while the probe ran: %v", g.asked)
+			if tc.reload {
+				if strings.Join(g.asked, " ") != "refused" {
+					t.Errorf("decisions while the probe ran: %v", g.asked)
+				}
+				if got := g.decide(); got != "accepted" || !g.started {
+					t.Errorf("after the resume: %s, running %v", got, g.started)
+				}
+				return
 			}
-			if got := g.decide(); got != "accepted" || !g.started {
-				t.Errorf("after the resume: %s, running %v", got, g.started)
+			if got := g.decide(); got != "refused" {
+				t.Errorf("after a failed requalification a decision is %s", got)
+			}
+			if in, ok := e.inhibited(); !ok || !strings.Contains(in.Reason, "did not pass its reload, health check and no-AI check again") {
+				t.Errorf("inhibit: %+v, %v", in, ok)
 			}
 		})
 	}
+}
+
+// TestTheHeldJournalIsNoOutcome: after a crash between the two steps of a
+// healthy end, decisions.inhibit holds the journal of a transaction still
+// to settle, not an outcome the owner can take back: inhibit-clear and ack
+// refuse it (the host is qualified again first), a dry run reconciles
+// nothing and changes nothing, and status shows the transaction, the
+// requalification still to run and no ack command. A held journal that
+// does not match the host is written back and stays unresolved; setting
+// it aside leaves decisions inhibited with a plain record, and no later
+// command writes it back again.
+func TestTheHeldJournalIsNoOutcome(t *testing.T) {
+	clear := func(e *env, words string) int {
+		e.t.Helper()
+		code := e.switcher().InhibitClear(context.Background(), words)
+		e.last = e.out.String()
+		e.out.Reset()
+		return code
+	}
+	held := func(t *testing.T) (*env, string) {
+		e := activeOwn(t)
+		e.keepOwed = true
+		e.crashAt(CrashJournalMoved, false, rel3)
+		e.noJournal()
+		data, err := os.ReadFile(e.inhibitPath())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var j journal
+		if err := json.Unmarshal(data, &j); err != nil || j.Phase != PhaseDone || j.Result != ResultOK || j.ID != rel3 {
+			t.Fatalf("the inhibit does not hold the journal: %v %+v", err, j)
+		}
+		e.runner.reset()
+		return e, j.Txn
+	}
+	t.Run("refused by the owner's verbs", func(t *testing.T) {
+		e, txn := held(t)
+		before := digest(t, e.root)
+		if code := clear(e, "looked at the host"); code != ExitFailed || !strings.Contains(e.last, "must be qualified again first") {
+			t.Errorf("inhibit-clear: exit %d\n%s", code, e.last)
+		}
+		if code := e.ackTxns([]string{txn}, "saw it"); code != ExitFailed || !strings.Contains(e.last, "still to be settled") {
+			t.Errorf("ack: exit %d\n%s", code, e.last)
+		}
+		if code := e.switchTo(rel3, func(c *Config) { c.Dry = true }); code != ExitFailed || !strings.Contains(e.last, "a dry run reconciles nothing") {
+			t.Errorf("dry run: exit %d\n%s", code, e.last)
+		}
+		if digest(t, e.root) != before {
+			t.Errorf("a refused verb or a dry run changed the state")
+		}
+		got := e.status()
+		for _, want := range []string{"which holds its journal", "interrupted: switch to " + rel3 + " in phase done (transaction " + txn + ", its journal held by " + InhibitFile + ")", "again before decisions are no longer inhibited", "outcome owed, not final"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("status lacks %q:\n%s", want, got)
+			}
+		}
+		if strings.Contains(got, "ack --txn") {
+			t.Errorf("status prints an ack command:\n%s", got)
+		}
+		if len(e.runner.calls) != 0 {
+			t.Errorf("commands run: %v", e.runner.calls)
+		}
+		// Settled by the next command, the owner's verbs work again.
+		if code := e.recover(resumeOnly); code != ExitFailed {
+			t.Fatalf("recover: exit %d\n%s", code, e.last)
+		}
+		if _, ok := e.inhibited(); ok {
+			t.Errorf("still inhibited after the settling")
+		}
+		if code := e.ackTxns([]string{txn}, "saw it"); code != ExitOK {
+			t.Errorf("ack after the settling: exit %d\n%s", code, e.last)
+		}
+	})
+	t.Run("stale, set aside", func(t *testing.T) {
+		e, txn := held(t)
+		g := guard(e)
+		if err := os.Remove(filepath.Join(e.root, BaseDir, "previous")); err != nil {
+			t.Fatal(err)
+		}
+		e.runner.reset()
+		if code := e.recover(resumeOnly); code != ExitFailed || !strings.Contains(e.last, "does not match the host") {
+			t.Fatalf("recover: exit %d\n%s", code, e.last)
+		}
+		if j, ok := e.journal(); !ok || j.Txn != txn {
+			t.Fatalf("the held journal was not written back: %+v, %v", j, ok)
+		}
+		if code := e.recover(RecoverOptions{DiscardJournal: txn}); code != ExitOK {
+			t.Fatalf("discard: exit %d\n%s", code, e.last)
+		}
+		e.noJournal()
+		data, _ := os.ReadFile(e.inhibitPath())
+		var in inhibit
+		if err := decodeStrict(data, &in); err != nil || !strings.Contains(in.Reason, "set aside by the owner") {
+			t.Errorf("the inhibit after the discard: %v, %s", err, data)
+		}
+		if g.decide() != "refused" {
+			t.Errorf("a decision is accepted after the discard")
+		}
+		// The next command finds nothing to write back.
+		if code := e.recover(resumeOnly); code != ExitFailed || strings.Contains(e.last, "reconcile:") {
+			t.Errorf("recover after the discard: exit %d\n%s", code, e.last)
+		}
+		e.noJournal()
+		if len(e.runner.calls) != 0 {
+			t.Errorf("commands run: %v", e.runner.calls)
+		}
+	})
 }

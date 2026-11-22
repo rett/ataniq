@@ -11,9 +11,9 @@
 //	opt/authority-host/previous -> releases/<id>
 //	var/lib/authority-host/deploy.json, owed.json, highest-counter, counters.log, decisions.inhibit, txn.json, switch.lock
 //
-// A decision-capable service refuses every decision while
-// var/lib/authority-host/decisions.inhibit or var/lib/authority-host/txn.json
-// is there, or while whether either is there cannot be told (see
+// A decision-capable service makes one lookup before each decision and
+// refuses unless var/lib/authority-host/decisions.inhibit does not exist:
+// the switch never leaves its journal, txn.json, there without it (see
 // InhibitFile).
 package switcher
 
@@ -1229,14 +1229,6 @@ func (s *Switcher) setFailure(a *attempt, step string, err error) {
 	a.rec.Error, a.rec.Detail = codeOf(err)
 }
 
-// readInhibitIfState is readInhibit when the state folder is open.
-func (s *Switcher) readInhibitIfState() (inhibit, bool, error) {
-	if s.stateRoot == nil {
-		return inhibit{}, false, nil
-	}
-	return s.readInhibit()
-}
-
 // describe is err as a line may show it: its code and its detail.
 func describe(err error) string {
 	code, detail := codeOf(err)
@@ -1302,9 +1294,11 @@ func (s *Switcher) status(w io.Writer) error {
 		fmt.Fprintf(w, "%s: %s\n", name, id.Name)
 	}
 	var highest uint64
-	var present, ok, pending bool
+	var present, ok, pending, inhibited, held bool
 	var rec Record
 	var j journal
+	var in inhibit
+	var settling *journal
 	var owed []string
 	if s.stateRoot != nil {
 		if highest, present, err = s.readHighest(); err != nil {
@@ -1315,6 +1309,14 @@ func (s *Switcher) status(w io.Writer) error {
 		}
 		if j, pending, err = s.readJournal(); err != nil {
 			return err
+		}
+		if in, settling, inhibited, err = s.readInhibit(); err != nil {
+			return err
+		}
+		if !pending && settling != nil {
+			// A healthy end interrupted between its two steps: the
+			// transaction is still to settle.
+			j, pending, held = *settling, true, true
 		}
 		if owed, err = s.owedStatus(pending); err != nil {
 			return err
@@ -1341,18 +1343,23 @@ func (s *Switcher) status(w io.Writer) error {
 	default:
 		fmt.Fprintln(w, "highest counter: 0")
 	}
-	if in, ok, err := s.readInhibitIfState(); err != nil {
-		return err
-	} else if ok {
+	switch {
+	case settling != nil:
+		fmt.Fprintf(w, "decisions: inhibited (%s) by transaction %s, which holds its journal: the %s %s ended %s and was interrupted while it was settled; decision-capable services refuse every decision while it is there; the next switch, rollback or recover qualifies current again before it removes it, and inhibit-clear and ack refuse it until then\n", InhibitFile, q(settling.Txn), (&txn{j: *settling}).kind(), settling.ID, settling.Result)
+	case inhibited:
 		fmt.Fprintf(w, "decisions: inhibited (%s) since %s by transaction %s: %s; decision-capable services refuse every decision while it is there; a transaction that ends healthy removes it, or ah-switch inhibit-clear --asked WORDS\n", InhibitFile, q(in.Time), q(in.Txn), q(in.Reason))
-	} else if pending {
-		fmt.Fprintf(w, "decisions: refused while %s is there: %s was removed, but the transaction is not settled; decision-capable services refuse every decision until it is, and the next switch, rollback or recover settles it\n", JournalFile, InhibitFile)
-	} else {
+	case pending:
+		fmt.Fprintf(w, "decisions: not inhibited, although %s is there: %s was removed by hand, so decision-capable services take decisions; the next switch, rollback or recover writes it back first\n", JournalFile, InhibitFile)
+	default:
 		fmt.Fprintln(w, "decisions: not inhibited")
 	}
 	if pending {
 		t := &txn{j: j}
-		fmt.Fprintf(w, "interrupted: %s %s in phase %s (transaction %s); the next switch, rollback or recover resumes it\n", t.kind(), j.ID, j.Phase, j.Txn)
+		where := ""
+		if held {
+			where = ", its journal held by " + InhibitFile
+		}
+		fmt.Fprintf(w, "interrupted: %s %s in phase %s (transaction %s%s); the next switch, rollback or recover resumes it\n", t.kind(), j.ID, j.Phase, j.Txn, where)
 		if j.Phase == PhaseDone && journalHealthy(j) {
 			cur := j.ID
 			if j.Result != ResultOK && j.OldCurrent != "" {
