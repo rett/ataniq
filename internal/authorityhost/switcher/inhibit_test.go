@@ -405,14 +405,16 @@ func TestRebootInDoneRequalifies(t *testing.T) {
 			}
 			var ran []string
 			for _, c := range e.runner.calls {
-				ran = append(ran, filepath.Base(strings.Fields(c)[0]))
+				ran = append(ran, strings.Fields(c)[0])
 			}
 			rec := e.record()
 			if rec.Result != ResultOK || rec.ID != rel3 || rec.CurrentID != rel3 {
 				t.Errorf("record: %+v", rec)
 			}
 			if tc.reload {
-				if strings.Join(ran, " ") != "reload-units health-probe nft ah-noaicheck" {
+				// The checker is the one of the verified release current
+				// points at, by its full path.
+				if strings.Join(ran, " ") != "reload-units health-probe nft "+filepath.Join(e.relDir(rel3), NoAICheckProgram) {
 					t.Errorf("ran %v, want the reload list, health check and post-activation check of %s", ran, rel3)
 				}
 				if strings.Join(g.asked, " ") != "refused" {

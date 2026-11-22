@@ -296,14 +296,16 @@ func TestCrashDoneRunsThePostCheckAgain(t *testing.T) {
 			if code := e.recover(resumeOnly); code != ExitFailed {
 				t.Fatalf("recover: exit %d\n%s", code, e.last)
 			}
-			post := "--phase post --root " + e.root + " --release " + e.relDir(rel3) + " --require-policy --nft-listing FILE"
+			// The checker is the one of the verified release current
+			// points at, by its full path.
+			post := postCall(filepath.Join(e.relDir(rel3), NoAICheckProgram), e.root, e.relDir(rel3))
 			var order []string
 			for _, c := range e.runner.calls {
-				if strings.HasSuffix(c, post) {
+				if c == post {
 					order = append(order, "post-check")
 					continue
 				}
-				order = append(order, filepath.Base(strings.Fields(c)[0]))
+				order = append(order, strings.Fields(c)[0])
 			}
 			e.noJournal()
 			rec := e.record()
