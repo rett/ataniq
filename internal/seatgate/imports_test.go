@@ -20,6 +20,7 @@ import (
 var only = map[string][]string{
 	"os":      {"files.go"},
 	"syscall": {"files.go"},
+	"net":     {"server.go", "client.go"},
 }
 
 // never lists imports no file of the package may hold.

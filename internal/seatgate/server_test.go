@@ -1,0 +1,983 @@
+package seatgate
+
+import (
+	"context"
+	"crypto/tls"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"runtime"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// leakCheck counts the goroutines now and, at the end of the test, waits for
+// them to come back to that count. It is called first in a test, so the count
+// is taken before anything the test starts.
+func leakCheck(t *testing.T) {
+	t.Helper()
+	before := runtime.NumGoroutine()
+	t.Cleanup(func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			n := runtime.NumGoroutine()
+			if n <= before {
+				return
+			}
+			if time.Now().After(deadline) {
+				buf := make([]byte, 1<<16)
+				buf = buf[:runtime.Stack(buf, true)]
+				t.Errorf("goroutines: %d before, %d after\n%s", before, n, buf)
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
+}
+
+// env is a running server and the identities of both ends.
+type env struct {
+	t      *testing.T
+	addr   string
+	srv    Identity
+	seat   Identity
+	cancel context.CancelFunc
+	done   chan error
+}
+
+// startServer starts a server on a loopback port. mut changes the
+// configuration before it starts; it may be nil.
+func startServer(t *testing.T, mut func(*ServerConfig), h Handler) *env {
+	t.Helper()
+	e := &env{t: t, srv: newID(t, "gate"), seat: newID(t, "seat"), done: make(chan error, 1)}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.addr = ln.Addr().String()
+	cfg := ServerConfig{TLS: ServerTLS(e.srv, []string{e.seat.Fingerprint()}), Caps: []string{"owner.read", "seat.pair"}}
+	if mut != nil {
+		mut(&cfg)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	e.cancel = cancel
+	go func() { e.done <- Serve(ctx, ln, cfg, h) }()
+	t.Cleanup(func() { e.stop() })
+	return e
+}
+
+// stop shuts the server down and waits for Serve to return.
+func (e *env) stop() error {
+	e.cancel()
+	select {
+	case err := <-e.done:
+		e.done <- err
+		return err
+	case <-time.After(10 * time.Second):
+		e.t.Error("Serve did not return after its context was cancelled")
+		return errors.New("timeout")
+	}
+}
+
+// rawConn is a test client that speaks frames by hand.
+type rawConn struct {
+	t *testing.T
+	c *tls.Conn
+}
+
+// rawDial connects as id, pinning the server's key, and completes the TLS
+// handshake. It does not say hello.
+func (e *env) rawDial(id Identity) (*rawConn, error) {
+	e.t.Helper()
+	d := net.Dialer{Timeout: 5 * time.Second}
+	nc, err := d.Dial("tcp", e.addr)
+	if err != nil {
+		return nil, err
+	}
+	tc := tls.Client(nc, ClientTLS(id, e.srv.Fingerprint(), "gate.example.invalid"))
+	nc.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := tc.Handshake(); err != nil {
+		nc.Close()
+		return nil, err
+	}
+	nc.SetDeadline(time.Time{})
+	r := &rawConn{e.t, tc}
+	e.t.Cleanup(func() { tc.Close() })
+	return r, nil
+}
+
+func (e *env) raw() *rawConn {
+	e.t.Helper()
+	r, err := e.rawDial(e.seat)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return r
+}
+
+// helloed is a raw connection that has said hello.
+func (e *env) helloed() *rawConn {
+	e.t.Helper()
+	r := e.raw()
+	r.hello()
+	return r
+}
+
+func (r *rawConn) send(payload string) {
+	r.t.Helper()
+	r.c.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if err := writeFrame(r.c, []byte(payload)); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+func (r *rawConn) sendBytes(b []byte) {
+	r.t.Helper()
+	r.c.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if _, err := r.c.Write(b); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// recv reads one response, waiting up to d.
+func (r *rawConn) recvWithin(d time.Duration) (response, error) {
+	r.t.Helper()
+	r.c.SetReadDeadline(time.Now().Add(d))
+	p, err := readFrame(r.c)
+	if err != nil {
+		return response{}, err
+	}
+	return decodeResponse(p)
+}
+
+func (r *rawConn) recv() response {
+	r.t.Helper()
+	resp, err := r.recvWithin(5 * time.Second)
+	if err != nil {
+		r.t.Fatalf("no response: %v", err)
+	}
+	return resp
+}
+
+func (r *rawConn) call(id uint64, op, params string) response {
+	r.t.Helper()
+	if params == "" {
+		r.send(fmt.Sprintf(`{"id":%d,"op":%q}`, id, op))
+	} else {
+		r.send(fmt.Sprintf(`{"id":%d,"op":%q,"params":%s}`, id, op, params))
+	}
+	return r.recv()
+}
+
+func (r *rawConn) hello() response {
+	r.t.Helper()
+	resp := r.call(1, OpHello, `{"proto":1,"caps":["owner.read"],"role":"seat"}`)
+	if resp.Code != "" {
+		r.t.Fatalf("hello refused: %s", resp.Code)
+	}
+	return resp
+}
+
+// expectClosed reads until the connection ends and fails if it does not within
+// d. Responses that were already on the way are drained and returned.
+func (r *rawConn) expectClosed(d time.Duration) []response {
+	r.t.Helper()
+	var got []response
+	deadline := time.Now().Add(d)
+	for {
+		r.c.SetReadDeadline(deadline)
+		p, err := readFrame(r.c)
+		if err != nil {
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
+				r.t.Fatalf("the connection was not closed within %v", d)
+			}
+			return got
+		}
+		if resp, err := decodeResponse(p); err == nil {
+			got = append(got, resp)
+		}
+	}
+}
+
+// echo is a handler that answers {"op":..., "peer":...} and the params it
+// was given.
+func echo() Handler {
+	return HandlerFunc(func(_ context.Context, p Peer, op string, params json.RawMessage) (json.RawMessage, error) {
+		b, _ := json.Marshal(map[string]any{"op": op, "peer": p.Fingerprint, "params": params})
+		return b, nil
+	})
+}
+
+func TestServerHello(t *testing.T) {
+	leakCheck(t)
+	e := startServer(t, nil, echo())
+	r := e.raw()
+	resp := r.hello()
+	h, err := decodeHelloResult(resp.Result)
+	if err != nil || h.Proto != 1 || strings.Join(h.Caps, ",") != "owner.read,seat.pair" {
+		t.Fatalf("%s %v", resp.Result, err)
+	}
+	if resp := r.call(2, OpPing, ""); resp.Code != "" || resp.ID != 2 {
+		t.Fatalf("ping: %+v", resp)
+	}
+}
+
+func TestServerCapsOfNoneAnswerAnEmptyList(t *testing.T) {
+	e := startServer(t, func(c *ServerConfig) { c.Caps = nil }, echo())
+	resp := e.raw().hello()
+	if string(resp.Result) != `{"proto":1,"caps":[]}` {
+		t.Fatalf("%s", resp.Result)
+	}
+}
+
+func TestServerRefusesAHelloOfAnotherMajorVersion(t *testing.T) {
+	leakCheck(t)
+	e := startServer(t, nil, echo())
+	r := e.raw()
+	resp := r.call(1, OpHello, `{"proto":2,"caps":[],"role":"seat"}`)
+	if resp.Code != CodeProtoUnsupported {
+		t.Fatalf("%+v", resp)
+	}
+	r.expectClosed(3 * time.Second)
+}
+
+func TestServerRefusesABadHello(t *testing.T) {
+	e := startServer(t, nil, echo())
+	for name, params := range map[string]string{
+		"wrong role":     `{"proto":1,"caps":[],"role":"gate"}`,
+		"missing caps":   `{"proto":1,"role":"seat"}`,
+		"unknown field":  `{"proto":1,"caps":[],"role":"seat","x":1}`,
+		"capability bad": `{"proto":1,"caps":["Bad Cap"],"role":"seat"}`,
+		"none":           ``,
+	} {
+		r := e.raw()
+		resp := r.call(1, OpHello, params)
+		if resp.Code != CodeBadHello {
+			t.Errorf("%s: %+v", name, resp)
+		}
+		r.expectClosed(3 * time.Second)
+	}
+}
+
+// A repeated key is a violation of the frame itself, so the connection is
+// closed with no answer, hello or not.
+func TestServerClosesOnARepeatedKeyInAHello(t *testing.T) {
+	e := startServer(t, nil, echo())
+	r := e.raw()
+	r.send(`{"id":1,"op":"seat.hello","params":{"proto":1,"proto":1,"caps":[],"role":"seat"}}`)
+	if got := r.expectClosed(3 * time.Second); len(got) != 0 {
+		t.Fatalf("answered %+v", got)
+	}
+}
+
+func TestServerServesNothingBeforeHello(t *testing.T) {
+	leakCheck(t)
+	called := make(chan string, 4)
+	e := startServer(t, nil, HandlerFunc(func(_ context.Context, _ Peer, op string, _ json.RawMessage) (json.RawMessage, error) {
+		called <- op
+		return nil, nil
+	}))
+	for _, op := range []string{"owner.list", OpPing, "seat.challenge"} {
+		r := e.raw()
+		resp := r.call(1, op, "")
+		if resp.Code != CodeHelloRequired {
+			t.Errorf("%s before hello: %+v", op, resp)
+		}
+		r.expectClosed(3 * time.Second)
+	}
+	select {
+	case op := <-called:
+		t.Fatalf("the handler was called for %s before a hello", op)
+	default:
+	}
+}
+
+func TestServerRefusesASecondHello(t *testing.T) {
+	e := startServer(t, nil, echo())
+	r := e.helloed()
+	resp := r.call(2, OpHello, `{"proto":1,"caps":[],"role":"seat"}`)
+	if resp.Code != CodeHelloRepeated {
+		t.Fatalf("%+v", resp)
+	}
+	if resp := r.call(3, OpPing, ""); resp.Code != "" {
+		t.Fatalf("the connection did not stay: %+v", resp)
+	}
+}
+
+func TestServerPassesThePeerOperationAndParams(t *testing.T) {
+	e := startServer(t, nil, echo())
+	r := e.helloed()
+	resp := r.call(2, "owner.show", `{"id":"p-1"}`)
+	var got struct {
+		Op     string          `json:"op"`
+		Peer   string          `json:"peer"`
+		Params json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal(resp.Result, &got); err != nil {
+		t.Fatalf("%s %v", resp.Result, err)
+	}
+	if got.Op != "owner.show" || got.Peer != e.seat.Fingerprint() || string(got.Params) != `{"id":"p-1"}` {
+		t.Fatalf("%+v", got)
+	}
+	resp = r.call(3, "owner.list", "")
+	json.Unmarshal(resp.Result, &got)
+	if string(got.Params) != "null" {
+		t.Fatalf("params for a request with none: %s", got.Params)
+	}
+}
+
+type testCoded struct{ code string }
+
+func (e testCoded) Error() string { return "SECRET text of a coded error" }
+func (e testCoded) Code() string  { return e.code }
+
+type panicCode struct{}
+
+func (panicCode) Error() string { return "x" }
+func (panicCode) Code() string  { panic("SECRET in Code") }
+
+func TestServerMapsHandlerErrorsToCodes(t *testing.T) {
+	leakCheck(t)
+	e := startServer(t, nil, HandlerFunc(func(_ context.Context, _ Peer, op string, _ json.RawMessage) (json.RawMessage, error) {
+		switch op {
+		case "t.coded":
+			return nil, testCoded{"no-such-card"}
+		case "t.plain":
+			return nil, errors.New("SECRET path /home/someone/key")
+		case "t.wrapped":
+			return nil, fmt.Errorf("SECRET context: %w", NewCodedError("card-expired"))
+		case "t.badcode":
+			return nil, testCoded{"Not A Code"}
+		case "t.panicinside":
+			return nil, panicCode{}
+		case "t.panic":
+			panic("SECRET panic text")
+		case "t.notobject":
+			return json.RawMessage(`[1]`), nil
+		case "t.invalid":
+			return json.RawMessage(`{`), nil
+		case "t.huge":
+			return json.RawMessage(`{"x":"` + strings.Repeat("a", MaxFrame) + `"}`), nil
+		}
+		return json.RawMessage(`{"ok":true}`), nil
+	}))
+	r := e.helloed()
+	for i, c := range []struct{ op, code string }{
+		{"t.coded", "no-such-card"},
+		{"t.plain", CodeFailed},
+		{"t.wrapped", "card-expired"},
+		{"t.badcode", CodeFailed},
+		{"t.panicinside", CodeFailed},
+		{"t.panic", CodeFailed},
+		{"t.notobject", CodeFailed},
+		{"t.invalid", CodeFailed},
+		{"t.huge", CodeTooLarge},
+		{"t.fine", ""},
+	} {
+		r.send(fmt.Sprintf(`{"id":%d,"op":%q}`, i+2, c.op))
+		r.c.SetReadDeadline(time.Now().Add(5 * time.Second))
+		p, err := readFrame(r.c)
+		if err != nil {
+			t.Fatalf("%s: %v", c.op, err)
+		}
+		if strings.Contains(string(p), "SECRET") || strings.Contains(string(p), "/home") {
+			t.Errorf("%s: text leaked: %s", c.op, p)
+		}
+		resp, err := decodeResponse(p)
+		if err != nil || resp.Code != c.code || resp.ID != uint64(i+2) {
+			t.Errorf("%s: %s %v, want code %q", c.op, p, err, c.code)
+		}
+	}
+}
+
+// Whatever a peer sends that breaks the framing or the strict form, the
+// connection is closed, and the server goes on serving others.
+func TestServerClosesOnAViolation(t *testing.T) {
+	leakCheck(t)
+	e := startServer(t, nil, echo())
+	big := make([]byte, 4)
+	big[0], big[1], big[2], big[3] = 0, 1, 0, 1 // 65537
+	cases := map[string][]byte{
+		"oversize length":  big,
+		"huge length":      {0xff, 0xff, 0xff, 0xff},
+		"zero length":      {0, 0, 0, 0},
+		"invalid json":     append([]byte{0, 0, 0, 5}, "{oops"...),
+		"not an object":    append([]byte{0, 0, 0, 2}, "[]"...),
+		"duplicate keys":   framedBytes(`{"id":2,"id":3,"op":"owner.list"}`),
+		"unknown field":    framedBytes(`{"id":2,"op":"owner.list","x":1}`),
+		"trailing bytes":   framedBytes(`{"id":2,"op":"owner.list"}x`),
+		"wrong op grammar": framedBytes(`{"id":2,"op":"Owner.List"}`),
+		"op without dot":   framedBytes(`{"id":2,"op":"list"}`),
+		"id zero":          framedBytes(`{"id":0,"op":"owner.list"}`),
+		"id as string":     framedBytes(`{"id":"2","op":"owner.list"}`),
+		"params array":     framedBytes(`{"id":2,"op":"owner.list","params":[]}`),
+		"a response":       framedBytes(`{"id":2,"result":{}}`),
+	}
+	for name, b := range cases {
+		r := e.helloed()
+		r.sendBytes(b)
+		got := r.expectClosed(3 * time.Second)
+		if len(got) != 0 {
+			t.Errorf("%s: answered %+v", name, got)
+		}
+	}
+	// A truncated frame: half a frame and then the end of the stream.
+	r := e.helloed()
+	r.sendBytes(framedBytes(`{"id":2,"op":"owner.list"}`)[:10])
+	r.c.CloseWrite()
+	r.expectClosed(3 * time.Second)
+	// And the server still serves.
+	if resp := e.helloed().call(2, "owner.list", ""); resp.Code != "" {
+		t.Fatalf("%+v", resp)
+	}
+}
+
+func framedBytes(s string) []byte { return framed(s) }
+
+func TestServerRefusesAnUnpinnedClient(t *testing.T) {
+	leakCheck(t)
+	called := make(chan struct{}, 1)
+	e := startServer(t, nil, HandlerFunc(func(context.Context, Peer, string, json.RawMessage) (json.RawMessage, error) {
+		called <- struct{}{}
+		return nil, nil
+	}))
+	stranger := newID(t, "seat")
+	r, err := e.rawDial(stranger)
+	if err == nil {
+		// TLS 1.3: the client's handshake ends before the server's verdict.
+		r.send(`{"id":1,"op":"seat.hello","params":{"proto":1,"caps":[],"role":"seat"}}`)
+		_, err = r.recvWithin(3 * time.Second)
+	}
+	if err == nil {
+		t.Fatal("an unpinned client was served")
+	}
+	select {
+	case <-called:
+		t.Fatal("the handler was called")
+	default:
+	}
+}
+
+func TestServerIdReuse(t *testing.T) {
+	leakCheck(t)
+	release := make(chan struct{})
+	e := startServer(t, nil, HandlerFunc(func(ctx context.Context, _ Peer, op string, _ json.RawMessage) (json.RawMessage, error) {
+		if op == "t.block" {
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		}
+		return nil, nil
+	}))
+	t.Run("while in flight the connection is closed", func(t *testing.T) {
+		r := e.helloed()
+		r.send(`{"id":7,"op":"t.block"}`)
+		r.send(`{"id":7,"op":"t.block"}`)
+		r.expectClosed(3 * time.Second)
+	})
+	t.Run("a ping may not take the id of a request in flight", func(t *testing.T) {
+		r := e.helloed()
+		r.send(`{"id":7,"op":"t.block"}`)
+		r.send(`{"id":7,"op":"seat.ping"}`)
+		r.expectClosed(3 * time.Second)
+	})
+	t.Run("after the answer the id is free again", func(t *testing.T) {
+		r := e.helloed()
+		for i := 0; i < 5; i++ {
+			if resp := r.call(9, "t.quick", ""); resp.Code != "" || resp.ID != 9 {
+				t.Fatalf("round %d: %+v", i, resp)
+			}
+		}
+	})
+	close(release)
+}
+
+func TestServerRateLimit(t *testing.T) {
+	leakCheck(t)
+	var mu sync.Mutex
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	called := 0
+	e := startServer(t, func(c *ServerConfig) { c.RateMax, c.RatePer, c.Now = 5, time.Minute, clock }, HandlerFunc(
+		func(context.Context, Peer, string, json.RawMessage) (json.RawMessage, error) {
+			mu.Lock()
+			called++
+			mu.Unlock()
+			return nil, nil
+		}))
+	r := e.helloed()
+	limited := 0
+	for i := 0; i < 20; i++ {
+		resp := r.call(uint64(i+2), "owner.list", "")
+		if resp.Code == CodeRateLimited {
+			limited++
+		} else if resp.Code != "" {
+			t.Fatalf("%+v", resp)
+		}
+	}
+	mu.Lock()
+	if limited != 15 || called != 5 {
+		t.Fatalf("%d limited and %d served, want 15 and 5", limited, called)
+	}
+	now = now.Add(61 * time.Second)
+	mu.Unlock()
+	if resp := r.call(100, "owner.list", ""); resp.Code != "" {
+		t.Fatalf("after the window: %+v", resp)
+	}
+	// A flood on the wire, not one at a time: still bounded.
+	for i := 0; i < 50; i++ {
+		r.send(fmt.Sprintf(`{"id":%d,"op":"owner.list"}`, 200+i))
+	}
+	ok, lim := 0, 0
+	for i := 0; i < 50; i++ {
+		if resp := r.recv(); resp.Code == CodeRateLimited {
+			lim++
+		} else {
+			ok++
+		}
+	}
+	if ok != 4 || lim != 46 { // 1 already used in this window, so 4 more
+		t.Fatalf("flood: %d served and %d limited, want 4 and 46", ok, lim)
+	}
+}
+
+func TestServerDefaultRateIs60PerMinute(t *testing.T) {
+	e := startServer(t, nil, echo())
+	r := e.helloed()
+	limited := 0
+	for i := 0; i < 70; i++ {
+		r.send(fmt.Sprintf(`{"id":%d,"op":"seat.ping"}`, i+2))
+	}
+	for i := 0; i < 70; i++ {
+		if r.recv().Code == CodeRateLimited {
+			limited++
+		}
+	}
+	if limited != 10 {
+		t.Fatalf("%d limited, want 10", limited)
+	}
+}
+
+func TestServerInFlightLimit(t *testing.T) {
+	leakCheck(t)
+	release := make(chan struct{})
+	e := startServer(t, func(c *ServerConfig) { c.MaxInFlight = 3 }, HandlerFunc(func(ctx context.Context, _ Peer, _ string, _ json.RawMessage) (json.RawMessage, error) {
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return nil, nil
+	}))
+	r := e.helloed()
+	for i := 0; i < 5; i++ {
+		r.send(fmt.Sprintf(`{"id":%d,"op":"t.block"}`, i+2))
+	}
+	for i := 0; i < 2; i++ {
+		resp := r.recv()
+		if resp.Code != CodeBusy {
+			t.Fatalf("%+v", resp)
+		}
+	}
+	close(release)
+	for i := 0; i < 3; i++ {
+		if resp := r.recv(); resp.Code != "" {
+			t.Fatalf("%+v", resp)
+		}
+	}
+}
+
+func TestServerSlowlorisAndIdle(t *testing.T) {
+	leakCheck(t)
+	e := startServer(t, func(c *ServerConfig) {
+		c.FrameTimeout = 200 * time.Millisecond
+		c.IdleTimeout = 600 * time.Millisecond
+		c.HelloTimeout = 300 * time.Millisecond
+		c.HandshakeTimeout = 300 * time.Millisecond
+	}, echo())
+	t.Run("half a frame", func(t *testing.T) {
+		r := e.helloed()
+		r.sendBytes([]byte{0, 0, 0, 30, '{', '"', 'i'})
+		start := time.Now()
+		r.expectClosed(5 * time.Second)
+		if time.Since(start) > 2*time.Second {
+			t.Fatalf("closed after %v", time.Since(start))
+		}
+	})
+	t.Run("half a header", func(t *testing.T) {
+		r := e.helloed()
+		r.sendBytes([]byte{0, 0})
+		r.expectClosed(5 * time.Second)
+	})
+	t.Run("a trickle that never finishes", func(t *testing.T) {
+		r := e.helloed()
+		start := time.Now()
+		r.sendBytes([]byte{0, 0, 0, 40})
+		stop := make(chan struct{})
+		go func() {
+			for i := 0; ; i++ {
+				select {
+				case <-stop:
+					return
+				case <-time.After(50 * time.Millisecond):
+					r.c.SetWriteDeadline(time.Now().Add(time.Second))
+					if _, err := r.c.Write([]byte{'x'}); err != nil {
+						return
+					}
+				}
+			}
+		}()
+		r.expectClosed(5 * time.Second)
+		close(stop)
+		if time.Since(start) > 2*time.Second {
+			t.Fatalf("closed after %v", time.Since(start))
+		}
+	})
+	t.Run("no hello", func(t *testing.T) {
+		r := e.raw()
+		start := time.Now()
+		r.expectClosed(5 * time.Second)
+		if time.Since(start) > 2*time.Second {
+			t.Fatalf("closed after %v", time.Since(start))
+		}
+	})
+	t.Run("silence after the hello", func(t *testing.T) {
+		r := e.helloed()
+		start := time.Now()
+		r.expectClosed(5 * time.Second)
+		if d := time.Since(start); d < 400*time.Millisecond || d > 3*time.Second {
+			t.Fatalf("closed after %v, want about 600ms", d)
+		}
+	})
+	t.Run("a connection kept alive by pings stays", func(t *testing.T) {
+		r := e.helloed()
+		for i := 0; i < 8; i++ {
+			time.Sleep(200 * time.Millisecond)
+			if resp := r.call(uint64(i+2), OpPing, ""); resp.Code != "" {
+				t.Fatalf("%+v", resp)
+			}
+		}
+	})
+	t.Run("a connection that never handshakes", func(t *testing.T) {
+		c, err := net.Dial("tcp", e.addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		c.SetReadDeadline(time.Now().Add(5 * time.Second))
+		start := time.Now()
+		if _, err := c.Read(make([]byte, 1)); err == nil || time.Since(start) > 3*time.Second {
+			t.Fatalf("%v after %v", err, time.Since(start))
+		}
+	})
+}
+
+func TestServerRefusesTheNinthConnection(t *testing.T) {
+	leakCheck(t)
+	e := startServer(t, nil, echo())
+	var held []*rawConn
+	for i := 0; i < 8; i++ {
+		held = append(held, e.helloed())
+	}
+	// The ninth is closed as it arrives: the TLS handshake does not complete,
+	// or no hello is answered.
+	if r, err := e.rawDial(e.seat); err == nil {
+		r.send(`{"id":1,"op":"seat.hello","params":{"proto":1,"caps":[],"role":"seat"}}`)
+		if _, err := r.recvWithin(3 * time.Second); err == nil {
+			t.Fatal("a ninth connection was served")
+		}
+	}
+	// The first eight still work, and when one leaves a place is free.
+	for i, r := range held {
+		if resp := r.call(uint64(i+10), OpPing, ""); resp.Code != "" {
+			t.Fatalf("%+v", resp)
+		}
+	}
+	held[0].c.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		r, err := e.rawDial(e.seat)
+		if err == nil {
+			r.send(`{"id":1,"op":"seat.hello","params":{"proto":1,"caps":[],"role":"seat"}}`)
+			if resp, err := r.recvWithin(2 * time.Second); err == nil && resp.Code == "" {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no place was freed")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestServerRequestDeadline(t *testing.T) {
+	leakCheck(t)
+	release := make(chan struct{})
+	e := startServer(t, func(c *ServerConfig) { c.RequestTimeout = 150 * time.Millisecond; c.MaxInFlight = 2 }, HandlerFunc(
+		func(ctx context.Context, _ Peer, op string, _ json.RawMessage) (json.RawMessage, error) {
+			switch op {
+			case "t.honours":
+				<-ctx.Done()
+				return nil, ctx.Err()
+			case "t.ignores":
+				<-release
+			}
+			return nil, nil
+		}))
+	r := e.helloed()
+	start := time.Now()
+	if resp := r.call(2, "t.honours", ""); resp.Code != CodeDeadline || time.Since(start) > 3*time.Second {
+		t.Fatalf("%+v after %v", resp, time.Since(start))
+	}
+	// A handler that ignores its context is answered at the deadline too,
+	// and keeps its slot until it returns.
+	if resp := r.call(3, "t.ignores", ""); resp.Code != CodeDeadline {
+		t.Fatalf("%+v", resp)
+	}
+	if resp := r.call(4, "t.ignores", ""); resp.Code != CodeDeadline {
+		t.Fatalf("%+v", resp)
+	}
+	if resp := r.call(5, "t.quick", ""); resp.Code != CodeBusy {
+		t.Fatalf("both slots are held by handlers that did not return: %+v", resp)
+	}
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		resp := r.call(6, "t.quick", "")
+		if resp.Code == "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the slots were not freed: %+v", resp)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestServerConcurrentRequestsOnOneConnection(t *testing.T) {
+	leakCheck(t)
+	e := startServer(t, func(c *ServerConfig) { c.RateMax = 1000 }, HandlerFunc(
+		func(ctx context.Context, _ Peer, _ string, params json.RawMessage) (json.RawMessage, error) {
+			var p struct {
+				N int `json:"n"`
+			}
+			if err := DecodeStrict(params, &p); err != nil {
+				return nil, err
+			}
+			time.Sleep(time.Duration(10-p.N%10) * 3 * time.Millisecond) // later ones finish first
+			return json.RawMessage(fmt.Sprintf(`{"n":%d}`, p.N)), nil
+		}))
+	r := e.helloed()
+	const total = 200
+	var wg sync.WaitGroup
+	wg.Add(1)
+	got := map[uint64]int{}
+	go func() {
+		defer wg.Done()
+		for len(got) < total {
+			resp := r.recv()
+			var res struct {
+				N int `json:"n"`
+			}
+			if resp.Code == CodeBusy {
+				got[resp.ID] = -1
+				continue
+			}
+			if err := json.Unmarshal(resp.Result, &res); err != nil {
+				t.Errorf("%v", err)
+				return
+			}
+			got[resp.ID] = res.N
+		}
+	}()
+	for i := 0; i < total; i++ {
+		r.send(fmt.Sprintf(`{"id":%d,"op":"t.n","params":{"n":%d}}`, i+2, i))
+	}
+	wg.Wait()
+	ok := 0
+	for id, n := range got {
+		if n == -1 {
+			continue
+		}
+		ok++
+		if uint64(n+2) != id {
+			t.Fatalf("id %d got the result of request %d", id, n)
+		}
+	}
+	if ok == 0 {
+		t.Fatal("nothing was served")
+	}
+}
+
+func TestServerConcurrentConnections(t *testing.T) {
+	leakCheck(t)
+	e := startServer(t, nil, echo())
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r, err := e.rawDial(e.seat)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer r.c.Close()
+			r.hello()
+			for j := 0; j < 10; j++ {
+				if resp := r.call(uint64(j+2), "owner.list", ""); resp.Code != "" {
+					t.Errorf("%+v", resp)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestServerShutdown(t *testing.T) {
+	t.Run("lets a request in flight finish", func(t *testing.T) {
+		leakCheck(t)
+		started, release := make(chan struct{}), make(chan struct{})
+		e := startServer(t, nil, HandlerFunc(func(ctx context.Context, _ Peer, _ string, _ json.RawMessage) (json.RawMessage, error) {
+			close(started)
+			select {
+			case <-release:
+				return json.RawMessage(`{"done":true}`), nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}))
+		r := e.helloed()
+		r.send(`{"id":2,"op":"t.slow"}`)
+		<-started
+		e.cancel()
+		time.Sleep(100 * time.Millisecond)
+		close(release)
+		resp := r.recv()
+		if resp.Code != "" || string(resp.Result) != `{"done":true}` {
+			t.Fatalf("%+v", resp)
+		}
+		r.expectClosed(3 * time.Second)
+		if err := e.stop(); err != nil {
+			t.Fatal(err)
+		}
+		// Nobody can connect any more.
+		if c, err := net.DialTimeout("tcp", e.addr, time.Second); err == nil {
+			c.Close()
+			t.Fatal("the listener is still open")
+		}
+	})
+	t.Run("cuts a request that outlasts the grace", func(t *testing.T) {
+		leakCheck(t)
+		started := make(chan struct{})
+		e := startServer(t, func(c *ServerConfig) { c.ShutdownGrace = 200 * time.Millisecond }, HandlerFunc(
+			func(ctx context.Context, _ Peer, _ string, _ json.RawMessage) (json.RawMessage, error) {
+				close(started)
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}))
+		r := e.helloed()
+		r.send(`{"id":2,"op":"t.slow"}`)
+		<-started
+		start := time.Now()
+		e.cancel()
+		r.expectClosed(5 * time.Second)
+		if err := e.stop(); err != nil || time.Since(start) > 4*time.Second {
+			t.Fatalf("%v after %v", err, time.Since(start))
+		}
+	})
+	t.Run("closes idle connections and returns nil", func(t *testing.T) {
+		leakCheck(t)
+		e := startServer(t, nil, echo())
+		a, b := e.helloed(), e.raw()
+		if err := e.stop(); err != nil {
+			t.Fatal(err)
+		}
+		a.expectClosed(3 * time.Second)
+		b.expectClosed(3 * time.Second)
+	})
+	t.Run("a handshake in progress does not hold it up", func(t *testing.T) {
+		leakCheck(t)
+		e := startServer(t, func(c *ServerConfig) { c.HandshakeTimeout = time.Minute }, echo())
+		c, err := net.Dial("tcp", e.addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		time.Sleep(100 * time.Millisecond)
+		start := time.Now()
+		if err := e.stop(); err != nil || time.Since(start) > 3*time.Second {
+			t.Fatalf("%v after %v", err, time.Since(start))
+		}
+	})
+}
+
+func TestServeRefusesABadConfiguration(t *testing.T) {
+	ln := func() net.Listener {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return l
+	}
+	id := newID(t, "x")
+	if err := Serve(context.Background(), ln(), ServerConfig{}, echo()); err == nil {
+		t.Error("no TLS configuration")
+	}
+	if err := Serve(context.Background(), ln(), ServerConfig{TLS: ServerTLS(id, nil)}, nil); err == nil {
+		t.Error("no handler")
+	}
+	if err := Serve(context.Background(), ln(), ServerConfig{TLS: ServerTLS(id, nil), Caps: []string{"A"}}, echo()); err == nil {
+		t.Error("a bad capability")
+	}
+}
+
+type failingListener struct{ net.Listener }
+
+func (failingListener) Accept() (net.Conn, error) { return nil, errors.New("boom") }
+
+func TestServeReturnsAListenerFailure(t *testing.T) {
+	leakCheck(t)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := newID(t, "x")
+	err = Serve(context.Background(), failingListener{l}, ServerConfig{TLS: ServerTLS(id, nil)}, echo())
+	if err == nil || strings.Contains(err.Error(), "boom") {
+		t.Fatalf("%v", err)
+	}
+}
+
+// A mixed load of good and bad connections leaves no goroutine behind.
+func TestServerLeaksNoGoroutines(t *testing.T) {
+	leakCheck(t)
+	e := startServer(t, func(c *ServerConfig) { c.FrameTimeout = 200 * time.Millisecond }, echo())
+	for i := 0; i < 20; i++ {
+		r := e.helloed()
+		switch i % 4 {
+		case 0:
+			r.call(2, "owner.list", "")
+		case 1:
+			r.sendBytes([]byte{0, 0, 0, 0})
+		case 2:
+			r.sendBytes([]byte{0, 0, 0, 9, '{'})
+		case 3:
+			r.c.Close()
+		}
+		r.c.Close()
+	}
+	for i := 0; i < 3; i++ {
+		c, err := net.Dial("tcp", e.addr)
+		if err == nil {
+			c.Close()
+		}
+	}
+	if err := e.stop(); err != nil {
+		t.Fatal(err)
+	}
+}
