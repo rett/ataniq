@@ -21,6 +21,13 @@
 // (ParseKey). A credential id is 16 to 1024 bytes (CheckCredentialID). A bad
 // credential is refused only after a right code, and leaves the code unused.
 //
+// The fingerprint of a credential is six words, which the desk console and the
+// phone both show so the owner can see they hold one key: the first six bytes
+// of the SHA-256 of the length-prefixed credential id and key, each byte the
+// index of a word in a fixed list of 256 (FingerprintOf, WordList). That is 48
+// bits: it shows that the two sides agree on a key the owner has just seen
+// made, within the minutes of a pairing; it is not a long-term name for a key.
+//
 // The package is what the daemon asks. It is not a wire, a daemon, an HTTP
 // handler, a store or a clock: it opens no file and no socket, starts no
 // program and keeps nothing between runs. The random source and the time are
