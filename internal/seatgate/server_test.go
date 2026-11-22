@@ -1117,6 +1117,56 @@ func TestServerHandlersHaveAServerWideCeiling(t *testing.T) {
 // to a peer that has stopped reading. The loop writes the answers it serves
 // itself (a ping, busy, rate-limited), and used to see the drain only once such
 // a write ended, at WriteTimeout, so Serve could outlast the grace by that.
+// A request that the connection's loop takes once the shutdown has begun is
+// answered shutting-down and not started: the peer learns that nothing of it
+// ran, where a cut connection would leave it unable to tell. A request already
+// in flight is still given the grace.
+func TestServerShutdownAnswersALateRequestWithoutRunningIt(t *testing.T) {
+	leakCheck(t)
+	var ran atomic.Int32
+	inFlight, release, taken := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	e := startServer(t, func(c *ServerConfig) {
+		c.frameHook = func(op string, drain <-chan struct{}) {
+			if op == "t.late" {
+				close(taken)
+				<-drain // the loop takes this frame only once the shutdown has begun
+			}
+		}
+	}, HandlerFunc(func(ctx context.Context, _ Peer, op string, _ json.RawMessage) (json.RawMessage, error) {
+		ran.Add(1)
+		if op == "t.slow" {
+			close(inFlight)
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		}
+		return json.RawMessage(`{"op":"` + op + `"}`), nil
+	}))
+	r := e.helloed()
+	r.send(`{"id":2,"op":"t.slow"}`)
+	within(t, "the handler to start", inFlight, 5*time.Second)
+	r.send(`{"id":3,"op":"t.late"}`)
+	within(t, "the loop to take the request", taken, 5*time.Second)
+	e.cancel()
+	resp := r.recv()
+	if resp.ID != 3 || resp.Code != CodeShuttingDown {
+		t.Fatalf("%+v", resp)
+	}
+	if n := ran.Load(); n != 1 {
+		t.Fatalf("%d handlers ran, want only the one in flight", n)
+	}
+	close(release)
+	resp = r.recv()
+	if resp.ID != 2 || resp.Code != "" || string(resp.Result) != `{"op":"t.slow"}` {
+		t.Fatalf("the request in flight: %+v", resp)
+	}
+	r.expectClosed(3 * time.Second)
+	if err := e.stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestServerShutdownGraceHoldsAgainstAPeerThatStopsReading(t *testing.T) {
 	leakCheck(t)
 	big := json.RawMessage(`{"x":"` + strings.Repeat("a", 60000) + `"}`)

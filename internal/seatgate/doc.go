@@ -96,7 +96,10 @@
 // Responses may come in any order; the id says which request each answers. On
 // shutdown (the context of Serve is done) the server stops accepting, lets
 // requests in flight be answered for up to the grace period and closes
-// everything.
+// everything. A request that the server takes only after the shutdown has
+// begun is answered shutting-down and not started, so its sender knows that
+// nothing of it ran; a request already taken is served, and one still unread
+// when the connection is closed gets no answer, as after any cut connection.
 //
 // A handler that ignores its context keeps its places, on its connection and
 // among the 128, until it returns, even when its connection has gone; so a
