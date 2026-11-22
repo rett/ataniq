@@ -895,8 +895,9 @@ Before it, a requalification ran only while a journal was open.
   command does (the transaction is resumed, and removes the inhibit only
   by its own rules, which qualify its release in that command), prints
   every outcome owed, and exits 1 unless decisions are no longer
-  inhibited at the end. While a transaction is still open (its journal
-  in `txn.json`, held by the inhibit, or one that cannot be read) it
+  inhibited at the end. While a transaction may still be open (its
+  journal in `txn.json`, held by the inhibit, or one that cannot be read,
+  and a `decisions.inhibit` it cannot read, which may hold a journal) it
   prints an outcome owed as `status` does then, `outcome owed, not
   final`, without the `ack` command: settling the transaction may still
   change that outcome. It never acknowledges an outcome.
@@ -921,7 +922,9 @@ Before it, a requalification ran only while a journal was open.
   `current`, no `deploy.json`, no journal (open in `txn.json` or held by
   the inhibit) and nothing in `/opt/authority-host/releases` (a release
   imported and never switched to, or the folder of an import, counts as
-  deployed). Nothing is run, created or changed there,
+  deployed). A `decisions.inhibit` that cannot be read (one that does not
+  parse or is not trusted) may hold a journal, so it is never taken for a
+  host where nothing was deployed: `boot` leaves it as found and exits 1. Nothing is run, created or changed there,
   `decisions.inhibit` and the lock file included. The decision guard
   answers there by the state folder alone: it refuses while
   `/var/lib/authority-host` is missing (before the bootstrap) or holds
@@ -1223,7 +1226,7 @@ see its messages. The text of a broken state file is not repeated either.
 | 1 | Failed; outside a dry run the outcome is in `deploy.json`, except when the state folder, the switch policy or the host's stop list is not trusted, or `releases/`, `current` or `previous` cannot be read (`state: FAILED`), which records nothing, or when the result is `unresolved`, which leaves the journal for the next command; a `boot` after which decisions stay inhibited (its qualification failed and is owed, it found an inhibit it did not write, or the transaction it settled did not end healthy) |
 | 2 | Bad arguments, `--mode` weaker than the switch policy, or a root other than `/` without `--allow-exec`; nothing was done |
 | 3 | Another switch holds the lock, or `status` holds it while a switch is asked for (`flock`, not waited for), or a package step that outlived its switch holds it (said as `surviving helper pid N`); nothing was done |
-| 4 | `boot` found nothing ever deployed (no current release, no release folder, no `deploy.json`, no journal open or held); nothing was run, created or changed, `decisions.inhibit` left as found. A deployed host whose `current` is missing exits 1 |
+| 4 | `boot` found nothing ever deployed (no current release, no release folder, no `deploy.json`, no journal open or held, and no `decisions.inhibit` it cannot read, which may hold one); nothing was run, created or changed, `decisions.inhibit` left as found. A deployed host whose `current` is missing exits 1 |
 
 ### Failure cases
 

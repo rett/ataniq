@@ -182,8 +182,9 @@ func (s *Switcher) bootCurrent() (cur string, ok bool, err error) {
 // journal (open in txn.json, or held by decisions.inhibit) in the state
 // folder, or any entry of opt/authority-host/releases (a release, or the
 // staging folder of an import). Such a host is not one where nothing is
-// deployed: its current is missing. err is what cannot be read, which
-// proves nothing either way.
+// deployed: its current is missing. err is what cannot be read (a
+// decisions.inhibit that cannot be read included, which may hold a
+// journal), which proves nothing either way.
 func (s *Switcher) bootDeployed() (string, error) {
 	if s.stateRoot != nil {
 		for _, name := range []string{DeployFile, JournalFile} {
@@ -195,7 +196,14 @@ func (s *Switcher) bootDeployed() (string, error) {
 				return "", err
 			}
 		}
-		if _, settling, _, err := s.readInhibit(); err == nil && settling != nil {
+		// An inhibit that cannot be read may hold a journal (one that
+		// fails its trust check): that proves nothing either way, and is
+		// never taken for a host with nothing deployed.
+		_, settling, _, err := s.readInhibit()
+		if err != nil {
+			return "", err
+		}
+		if settling != nil {
 			return InhibitFile + " holds a journal", nil
 		}
 	}
@@ -451,13 +459,15 @@ func (s *Switcher) bootLift(run inhibit, cur string) int {
 }
 
 // printOwed prints the outcomes owed, as status shows them, and leaves
-// them owed: while a transaction is still open (its journal in txn.json,
-// held by the inhibit, or one that cannot be read) an outcome owed is not
-// final, and no ack command is printed for it (see owedStatus).
+// them owed: while a transaction may still be open (its journal in
+// txn.json, held by the inhibit, or one that cannot be read, a
+// decisions.inhibit that cannot be read included, which may hold one) an
+// outcome owed is not final, and no ack command is printed for it (see
+// owedStatus).
 func (s *Switcher) printOwed() {
 	_, open, jerr := s.readJournal()
-	_, settling, _, _ := s.readInhibit()
-	lines, err := s.owedStatus(open || jerr != nil || settling != nil)
+	_, settling, _, ierr := s.readInhibit()
+	lines, err := s.owedStatus(open || jerr != nil || settling != nil || ierr != nil)
 	if err != nil {
 		s.printf("boot: %s cannot be read: %s", OwedFile, describe(err))
 		return

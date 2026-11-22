@@ -1198,3 +1198,70 @@ func TestAckWritesTheFailureOfABoot(t *testing.T) {
 		})
 	}
 }
+
+// TestBootTakesAnInhibitItCannotReadAsUnresolved: the journal held by the
+// inhibit after an interrupted healthy end fails its trust check (its mode
+// was changed), so it cannot be read. That may be a transaction still to
+// settle: boot prints an outcome owed as not final, without the ack
+// command, and never takes the host for one where nothing was deployed
+// (exit 4), also when that journal is the only sign of a deployment.
+func TestBootTakesAnInhibitItCannotReadAsUnresolved(t *testing.T) {
+	untrusted := func(e *env) {
+		if err := os.Chmod(e.inhibitPath(), 0o666); err != nil {
+			e.t.Fatal(err)
+		}
+	}
+	t.Run("an outcome owed", func(t *testing.T) {
+		e := activeOwn(t)
+		e.keepOwed = true
+		e.crashAt(CrashJournalMoved, false, rel3)
+		owed := e.owed()
+		if len(owed) != 1 || !strings.Contains(e.stateFile(InhibitFile), `"phase"`) {
+			t.Fatalf("owed %+v, inhibit %s", owed, e.stateFile(InhibitFile))
+		}
+		untrusted(e)
+		e.runner.reset()
+		if code := e.boot(); code != ExitFailed || len(e.runner.calls) != 0 {
+			t.Fatalf("boot: exit %d, ran %v\n%s", code, e.runner.calls, e.last)
+		}
+		if strings.Contains(e.last, "ack --txn") {
+			t.Errorf("boot printed an ack command beside an inhibit it cannot read:\n%s", e.last)
+		}
+		if !strings.Contains(e.last, "outcome owed, not final (request "+q(owed[0].RequestID)+", transaction "+owed[0].Txn+")") {
+			t.Errorf("boot did not print the outcome owed as not final:\n%s", e.last)
+		}
+	})
+	for _, lock := range []bool{true, false} {
+		t.Run(map[bool]string{true: "the only sign of a deployment", false: "the only sign of a deployment, no lock file"}[lock], func(t *testing.T) {
+			e := newEnv(t)
+			e.release(rel1, "s")
+			e.crashAt(CrashJournalMoved, false, rel1)
+			for _, p := range []string{filepath.Join(e.root, BaseDir, "current"), filepath.Join(e.root, StateDir, DeployFile)} {
+				if err := os.Remove(p); err != nil {
+					t.Fatal(err)
+				}
+			}
+			makeWritable(e.relDir(rel1))
+			if err := os.RemoveAll(e.relDir(rel1)); err != nil {
+				t.Fatal(err)
+			}
+			if !lock {
+				if err := os.Remove(filepath.Join(e.root, StateDir, LockFile)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			untrusted(e)
+			before := e.stateFile(InhibitFile)
+			e.runner.reset()
+			if code := e.boot(); code != ExitFailed {
+				t.Errorf("boot: exit %d, want %d\n%s", code, ExitFailed, e.last)
+			}
+			if len(e.runner.calls) != 0 || e.stateFile(InhibitFile) != before {
+				t.Errorf("boot ran %v, changed the inhibit %v", e.runner.calls, e.stateFile(InhibitFile) != before)
+			}
+			if e.guardCheck() != decisionguard.CodeInhibited {
+				t.Errorf("the guard answers %q", e.guardCheck())
+			}
+		})
+	}
+}

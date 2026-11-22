@@ -138,8 +138,10 @@
   for `inhibit-clear`, one it cannot read strictly) stays as found while
   it settles an open journal as any command does, and it never
   acknowledges anything or writes `deploy.json`; a host with nothing
-  deployed (no `current`, release folder, `deploy.json` or journal) is
-  refused with exit 4 and nothing changed, while a deployed host whose
+  deployed (no `current`, release folder, `deploy.json`, journal or
+  inhibit it cannot read, which may hold one) is refused with exit 4 and
+  nothing changed, an outcome owed beside such an inhibit is printed
+  without its `ack` command, while a deployed host whose
   `current` is missing fails closed with exit 1. Exit codes are 0
   ok, 1 failed, 2 usage, 3 locked and 4 nothing deployed (`boot`).
   Known limits (an old journal restored by root can replay a settled
