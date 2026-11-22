@@ -168,24 +168,26 @@ func privateCopy(name string, data []byte) (string, func(), error) {
 // applyPolicy reads the policy and chooses the mode of this switch: the
 // policy's minimum, or --mode when that is at least as strict. A mode weaker
 // than the policy, or signed mode without a signers file and principal, is a
-// usage error; a policy that cannot be trusted or read fails the switch.
+// usage error (usage, with its exit code); a policy that cannot be trusted
+// or read is returned as blocked, for the command to report once it has
+// run, under the lock, the stops a journal still owes (see stopFirst).
 // Nothing is changed or recorded either way.
-func (s *Switcher) applyPolicy() (int, bool) {
+func (s *Switcher) applyPolicy() (code int, usage bool, blocked error) {
 	p, err := s.readPolicy()
 	if err != nil {
-		s.errorf("switch policy %s: %s; nothing done", q(filepath.Join(s.cfg.Root, PolicyDir, PolicyName)), describe(err))
-		return ExitFailed, true
+		s.policy, s.mode, s.trust = Policy{}, ModeManual, trust{}
+		return 0, false, failf(codeOrPolicy(err), "switch policy %s: %s", q(filepath.Join(s.cfg.Root, PolicyDir, PolicyName)), describeDetail(err))
 	}
 	s.policy = p
 	s.mode = p.MinMode
 	switch {
 	case s.cfg.Mode == ModeManual && p.MinMode == ModeSigned:
 		s.errorf("--mode manual is weaker than the switch policy, which requires signed releases")
-		return ExitUsage, true
+		return ExitUsage, true, nil
 	case s.cfg.Mode == ModeSigned:
 		if p.AllowedSigners == "" || p.Principal == "" {
 			s.errorf("--mode signed needs allowed_signers and principal in %s", filepath.Join("/", PolicyDir, PolicyName))
-			return ExitUsage, true
+			return ExitUsage, true, nil
 		}
 		s.mode = ModeSigned
 	}
@@ -193,7 +195,22 @@ func (s *Switcher) applyPolicy() (int, bool) {
 	if s.mode == ModeSigned {
 		s.trust.signed = []signer{{signers: p.AllowedSigners, principal: p.Principal}}
 	}
-	return 0, false
+	return 0, false, nil
+}
+
+// codeOrPolicy is the code of err, a failure to read the policy.
+func codeOrPolicy(err error) string {
+	code, _ := codeOf(err)
+	return code
+}
+
+// describeDetail is the detail of err, or its code when it has none.
+func describeDetail(err error) string {
+	code, detail := codeOf(err)
+	if detail == "" {
+		return code
+	}
+	return detail
 }
 
 // signer is one signature a release must carry: by principal, as the

@@ -260,12 +260,15 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		return ExitUsage
 	}
 
-	if code, done := s.applyPolicy(); done {
+	// The policy and the host's stop list are read before the lock, but
+	// what they lack is required only after it: a transaction stopping the
+	// decision services is resumed first (see stopFirst).
+	code, usage, blocked := s.applyPolicy()
+	if usage {
 		return code
 	}
-	if _, err := s.hostStopList(); err != nil {
-		s.errorf("%s; nothing done", describe(err))
-		return ExitFailed
+	if _, err := s.hostStopList(); err != nil && blocked == nil {
+		blocked = err
 	}
 	what := "switch to " + arg
 	if rollback {
@@ -275,14 +278,21 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	if s.cfg.Dry {
 		dry = ", dry run: nothing is run or changed"
 	}
-	s.printf("ah-switch: %s (mode %s, root %s%s)", what, s.mode, q(s.cfg.Root), dry)
+	if blocked == nil {
+		s.printf("ah-switch: %s (mode %s, root %s%s)", what, s.mode, q(s.cfg.Root), dry)
+	}
 
-	lk, code := s.lock(false)
+	// Blocked, the lock is taken without creating anything: without a
+	// state folder or its lock file there is no journal to resume.
+	lk, code := s.lockWith(false, blocked == nil && !s.cfg.Dry)
 	if lk == nil {
 		return code
 	}
 	defer lk.release()
 	defer s.closeRoots()
+	if blocked != nil {
+		return s.stopFirst(ctx, blocked)
+	}
 
 	a := &attempt{
 		rec: Record{
@@ -580,7 +590,12 @@ func (s *Switcher) activateNew(ctx context.Context, t *txn, newTarget string) in
 // and the exit code; nothing is recorded, since the state folder is not
 // trusted.
 func (s *Switcher) lock(shared bool) (*lock, int) {
-	create := !s.cfg.Dry && !shared
+	return s.lockWith(shared, !s.cfg.Dry && !shared)
+}
+
+// lockWith is lock, creating the state folder and the lock file only with
+// create.
+func (s *Switcher) lockWith(shared, create bool) (*lock, int) {
 	state, err := s.openTrusted(StateDir, create)
 	if !create && errors.Is(err, fs.ErrNotExist) {
 		return &lock{}, ExitOK
@@ -642,6 +657,29 @@ func (s *Switcher) lockHolder(state *os.Root) string {
 		return fmt.Sprintf("surviving helper pid %d (start time matches): stop it or reboot; it is the package step of the %s %s, which outlived its switch and holds the lock", j.HelperPID, (&txn{j: j}).kind(), j.ID)
 	}
 	return errLocked.Error()
+}
+
+// stopFirst is what a command does, under the lock, when the switch policy
+// (its signers file included) or the host's stop list cannot be used: a
+// transaction stopping the decision services is resumed first, with the
+// trust it began with and whatever of the policy could be read, since
+// stopping needs neither (the host's stop list runs when it can be read,
+// each release's list when the release verifies). Then blocked, the
+// error, is reported, and nothing else is done: no other phase is resumed
+// and no new work starts without the policy.
+func (s *Switcher) stopFirst(ctx context.Context, blocked error) int {
+	if s.stateRoot != nil && s.lockFile != nil {
+		if j, ok, err := s.readJournal(); err == nil && ok && j.Phase == PhaseStopping {
+			if code, done := s.openBase(); done {
+				s.errorf("%s; nothing else done", describe(blocked))
+				return code
+			}
+			s.printf("reconcile: the policy or the host's stop list cannot be used (%s); the stops of the interrupted %s %s run first", describe(blocked), (&txn{j: j}).kind(), j.ID)
+			s.reconcile(ctx, false)
+		}
+	}
+	s.errorf("%s; nothing else done", describe(blocked))
+	return ExitFailed
 }
 
 // claim records in the journal of t that this command drives it, with

@@ -226,7 +226,14 @@ transaction began with; see "The journal and recover").
   with the same checks. The policy file, the signers file
   and every folder above them must be owned by root and not writable by
   group or others (the same check as the state folder); otherwise, or when
-  the policy does not parse, the switch stops before it does anything.
+  the policy does not parse, the switch does nothing but the stops a
+  transaction still owes: under the lock, a journal in `stopping` (see
+  "The journal and recover") is resumed first, with the trust it began
+  with, since stopping needs no signers file (the host's stop list runs,
+  and each release's list when the release still verifies); then the
+  error is reported, and nothing else is resumed or started. `recover`
+  does the same, and `recover --services-stopped`, which runs nothing,
+  needs no policy.
   Each file is read from the descriptor that was checked, never opened
   again by its name, and `ssh-keygen` is given a private copy of the
   signers file made from that descriptor (mode 0600, in a new folder of
@@ -461,8 +468,10 @@ The host's stop list is the owner's, never part of a release: one command
 per line, in the format of the release lists, at least one command, and
 owned and checked like the switch policy. It must stop every decision
 service of any release (for example `systemctl stop ataniq-seat.service`).
-A switch or rollback is refused, with nothing done, while it is missing,
-empty or not trusted; `status` says so.
+A switch or rollback is refused while it is missing, empty or not
+trusted, and `status` says so; only the stops a journal in `stopping`
+owes run first (the lists of the releases that verify: the journal then
+stays in `stopping`, since the host's list did not run).
 
 ### The journal and recover
 
@@ -596,9 +605,9 @@ see its messages. The text of a broken state file is not repeated either.
 | A release folder or file writable by group or others, set-id, or not root's | Refused at verify |
 | A release folder without the record of its import, or not the tree its import made | Refused at verify (`provenance-missing`, `provenance-mismatch`); as the old release, it is no fallback |
 | Signature missing or bad in signed mode, on a switch or a rollback | Refused at verify |
-| Switch policy or signers file not root's, writable by others, or not parsing | Refused before anything; nothing recorded |
+| Switch policy or signers file not root's, writable by others, missing, or not parsing | Refused; nothing recorded; only a journal in `stopping` is resumed first, under the lock, so its stops still run |
 | `releases/` missing or not trusted, `current` or `previous` not a link to `releases/<id>` | `state: FAILED`, exit 1; nothing recorded: `deploy.json`, with the package state, the counter evidence and an outcome still to report, stays as it is (`recover` too) |
-| The host's `stop.list` missing, empty or not trusted | Refused before anything; nothing recorded |
+| The host's `stop.list` missing, empty or not trusted | Refused; nothing recorded; a journal in `stopping` still runs the release stop lists that verify first, and stays |
 | `--mode` weaker than the switch policy | Exit 2; nothing done |
 | Counter not above the highest ever attempted | Refused at counter |
 | `--rollback-to` anything but previous | Refused at counter |

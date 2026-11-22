@@ -327,3 +327,97 @@ func TestHostStopListRequired(t *testing.T) {
 		})
 	}
 }
+
+// stoppingSigned leaves a signed host with a first switch whose health
+// failed and whose stop-app keeps failing: its journal stays in stopping.
+func stoppingSigned(t *testing.T) *env {
+	t.Helper()
+	e := newEnv(t)
+	e.policy(signedPolicy)
+	e.signRelease(e.release(rel1, "s"))
+	e.runner.fail["health-probe"] = -1
+	e.runner.fail["stop-app"] = -1
+	if code := e.switchTo(rel1, verifier(&fakeVerifier{})); code != ExitFailed {
+		t.Fatalf("exit %d", code)
+	}
+	if j, ok := e.journal(); !ok || j.Phase != PhaseStopping {
+		t.Fatalf("journal: %+v, %v", j, ok)
+	}
+	delete(e.runner.fail, "stop-app")
+	e.runner.reset()
+	return e
+}
+
+// TestStopsBeforePolicyErrors: under the lock, a transaction stopping the
+// decision services has its stops run before the command requires the
+// switch policy, its signers file or the host's stop list: a signers file
+// gone missing, or a host stop list gone, does not keep the host's own
+// stop list (or the verifiable releases' lists) from running. The error is
+// reported afterwards, and nothing else is done.
+func TestStopsBeforePolicyErrors(t *testing.T) {
+	signers := func(e *env) string { return filepath.Join(e.root, "etc/authority-host/allowed_signers") }
+	t.Run("signers file missing, switch", func(t *testing.T) {
+		e := stoppingSigned(t)
+		os.Remove(signers(e))
+		e.signRelease(e.release(rel2, "s"))
+		if code := e.switchTo(rel2, verifier(&fakeVerifier{})); code != ExitFailed {
+			t.Fatalf("exit %d", code)
+		}
+		e.ran(map[string]int{"stop-all": 1, "stop-app": 0, "ah-noaicheck": 0, "reload-units": 0})
+		if !strings.Contains(e.last, "allowed signers file") || !strings.Contains(e.last, "is not run: it cannot be verified") {
+			t.Errorf("output:\n%s", e.last)
+		}
+		e.noJournal()
+		if rec := e.record(); !rec.ServicesStopped || rec.ID != rel1 {
+			t.Errorf("record: %+v", rec)
+		}
+		e.links(rel1, "")
+	})
+	t.Run("signers file missing, recover", func(t *testing.T) {
+		e := stoppingSigned(t)
+		os.Remove(signers(e))
+		if code := e.recover(RecoverOptions{SetCounter: true, Counter: 1}); code != ExitFailed {
+			t.Fatalf("exit %d", code)
+		}
+		e.ran(map[string]int{"stop-all": 1})
+		e.noJournal()
+		if !strings.Contains(e.last, "allowed signers file") {
+			t.Errorf("output:\n%s", e.last)
+		}
+	})
+	t.Run("host stop list missing", func(t *testing.T) {
+		e := newEnv(t)
+		e.release(rel1, "s")
+		e.runner.fail["health-probe"] = -1
+		e.runner.fail["stop-app"] = 1
+		if code := e.switchTo(rel1); code != ExitFailed {
+			t.Fatalf("exit %d", code)
+		}
+		os.Remove(filepath.Join(e.root, PolicyDir, HostStopList))
+		e.runner.reset()
+		if code := e.rollBack("previous"); code != ExitFailed {
+			t.Fatalf("exit %d", code)
+		}
+		// The release's own list runs; the host's cannot, so the journal
+		// stays in stopping.
+		e.ran(map[string]int{"stop-app": 1, "stop-all": 0})
+		if j, ok := e.journal(); !ok || j.Phase != PhaseStopping || !strings.Contains(j.StopFailures, HostStopList) {
+			t.Errorf("journal: %+v, %v", j, ok)
+		}
+		if !strings.Contains(e.last, "stop-list-missing") {
+			t.Errorf("output:\n%s", e.last)
+		}
+	})
+	t.Run("policy broken, nothing to stop", func(t *testing.T) {
+		e := active(t)
+		e.write(filepath.Join(e.root, PolicyDir, PolicyName), "{", 0o644)
+		e.release(rel3, "2026-11-01")
+		before := digest(t, e.root)
+		if code := e.switchTo(rel3); code != ExitFailed {
+			t.Fatalf("exit %d", code)
+		}
+		if digest(t, e.root) != before || len(e.runner.calls) != 0 {
+			t.Errorf("changed the tree or ran %v", e.runner.calls)
+		}
+	})
+}

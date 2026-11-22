@@ -160,7 +160,10 @@ func (s *Switcher) Recover(ctx context.Context, o RecoverOptions) int {
 		s.errorf("recover takes one of --counter N, --package-state SNAPSHOT and --services-stopped")
 		return ExitUsage
 	}
-	if code, done := s.applyPolicy(); done {
+	// As for a switch: what the policy lacks is required only after the
+	// stops a journal owes have run (see stopFirst).
+	code, usage, blocked := s.applyPolicy()
+	if usage {
 		return code
 	}
 	what := fmt.Sprintf("--counter %d", o.Counter)
@@ -171,21 +174,33 @@ func (s *Switcher) Recover(ctx context.Context, o RecoverOptions) int {
 		what = "--package-state " + q(o.PackageState)
 	}
 	s.printf("ah-switch: recover %s (root %s)", what, q(s.cfg.Root))
-	lk, code := s.lock(false)
+	lk, code := s.lockWith(false, blocked == nil && !s.cfg.Dry)
 	if lk == nil {
 		return code
 	}
 	defer lk.release()
 	defer s.closeRoots()
+	if blocked != nil && s.lockFile == nil {
+		// No state folder or no lock file: no journal to resume.
+		s.errorf("%s; nothing done", describe(blocked))
+		return ExitFailed
+	}
 	if s.stateRoot == nil {
 		s.printf("recover: no state folder; nothing to recover")
 		return ExitFailed
 	}
+	if o.ServicesStopped {
+		// The owner's word runs nothing and needs no policy.
+		if code, done := s.openBase(); done {
+			return code
+		}
+		return s.recoverStopped(ctx)
+	}
+	if blocked != nil {
+		return s.stopFirst(ctx, blocked)
+	}
 	if code, done := s.openBase(); done {
 		return code
-	}
-	if o.ServicesStopped {
-		return s.recoverStopped(ctx)
 	}
 	if code, halt := s.reconcile(ctx, false); halt {
 		return code
