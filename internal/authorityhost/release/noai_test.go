@@ -127,3 +127,96 @@ func TestNoAICheckNotRunWhenItsHashIsWrong(t *testing.T) {
 		t.Error("the check ran a bin/ah-noaicheck whose hash is wrong")
 	}
 }
+
+// TestNoAICheckWithARelativeFolder: a release named by a path relative to
+// the caller's folder is checked, and its no-AI check run, as the folder
+// that path names: the check is started from the folder / with the
+// release's absolute path.
+func TestNoAICheckWithARelativeFolder(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "record")
+	dir := withNoAI(t, "#!/bin/sh\necho \"args: $*\" > "+record+"\nexit 0\n")
+	t.Chdir(filepath.Dir(dir))
+	for _, rel := range []string{filepath.Base(dir), "./" + filepath.Base(dir)} {
+		os.Remove(record)
+		if f := Check(rel, CheckOptions{}); len(f) != 0 {
+			t.Fatalf("%s: %s", rel, lines(f))
+		}
+		data, err := os.ReadFile(record)
+		if err != nil {
+			t.Fatalf("%s: the check did not run: %v", rel, err)
+		}
+		if want := "args: --phase pre --release " + dir + "\n"; string(data) != want {
+			t.Errorf("%s: record %q, want %q", rel, data, want)
+		}
+	}
+}
+
+// privateTemp points the temporary folder at a new empty folder and checks,
+// at the end of the test, that nothing was left in it.
+func privateTemp(t *testing.T) {
+	t.Helper()
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	t.Cleanup(func() {
+		if ents, err := os.ReadDir(tmp); err != nil || len(ents) != 0 {
+			t.Errorf("the temporary folder holds %d entries, %v", len(ents), err)
+		}
+	})
+}
+
+// onNoAICheck sets the hook Check calls after the folder was verified and
+// before the no-AI check is run.
+func onNoAICheck(t *testing.T, f func()) {
+	t.Helper()
+	beforeNoAICheck = f
+	t.Cleanup(func() { beforeNoAICheck = nil })
+}
+
+// TestNoAICheckRunsTheBytesItVerified: what runs is the bin/ah-noaicheck
+// Check verified. A checker replaced in the folder after the verification
+// is not run (noaicheck-changed); a folder renamed away and replaced by
+// another after it still runs the verified checker, not the other's.
+func TestNoAICheckRunsTheBytesItVerified(t *testing.T) {
+	script := func(record, word string) string {
+		return "#!/bin/sh\necho " + word + " >> " + record + "\nexit 0\n"
+	}
+	t.Run("the checker replaced", func(t *testing.T) {
+		record := filepath.Join(t.TempDir(), "record")
+		dir := withNoAI(t, script(record, "verified"))
+		privateTemp(t)
+		onNoAICheck(t, func() {
+			p := filepath.Join(dir, "bin/ah-noaicheck")
+			writeTestFile(t, p+".new", script(record, "other"), 0o755)
+			if err := os.Rename(p+".new", p); err != nil {
+				t.Fatal(err)
+			}
+		})
+		got := codes(Check(dir, CheckOptions{}))
+		if want := []string{"noaicheck-changed"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("findings\n got: %q\nwant: %q", got, want)
+		}
+		if data, err := os.ReadFile(record); err == nil {
+			t.Errorf("a checker ran: %q", data)
+		}
+	})
+	t.Run("the folder replaced", func(t *testing.T) {
+		record := filepath.Join(t.TempDir(), "record")
+		dir := withNoAI(t, script(record, "verified"))
+		other := withNoAI(t, script(record, "other"))
+		privateTemp(t)
+		onNoAICheck(t, func() {
+			if err := os.Rename(dir, dir+".old"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(other, dir); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if f := Check(dir, CheckOptions{}); len(f) != 0 {
+			t.Fatal(lines(f))
+		}
+		if data, err := os.ReadFile(record); err != nil || string(data) != "verified\n" {
+			t.Errorf("record %q, %v; want the verified checker only", data, err)
+		}
+	})
+}

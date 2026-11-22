@@ -79,6 +79,7 @@ const (
 	CodeNoAITimeout = "noaicheck-timeout"
 	CodeNoAIExit    = "noaicheck-exit"
 	CodeNoAIHit     = "noaicheck-hit"
+	CodeNoAIChanged = "noaicheck-changed"
 )
 
 var reasons = map[string]string{
@@ -145,6 +146,7 @@ var reasons = map[string]string{
 	CodeNoAITimeout: "the shipped no-AI check did not finish in 60 seconds",
 	CodeNoAIExit:    "the shipped no-AI check exited with a failure",
 	CodeNoAIHit:     "the shipped no-AI check reported a hit",
+	CodeNoAIChanged: "the shipped no-AI check changed after it was verified, and was not run",
 }
 
 // Finding is one thing a build refused or a check found wrong.

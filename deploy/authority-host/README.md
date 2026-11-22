@@ -1633,6 +1633,19 @@ It checks, in this order, all of them (a pass is no finding):
    `noaicheck-not-started`. It runs only when steps 1 to 4 found nothing:
    a checker whose hash does not match `SHA256SUMS`, with an unsafe mode or
    with a second link, or in a folder with any other finding, is not run.
+   What runs is a private copy of the checker steps 1 and 2 verified: it is
+   read through the folder `check` opened, not through its path again,
+   hashed as it is copied and once more from the copy, into a new folder of
+   mode 0700 in the temporary folder (`TMPDIR`, which must allow programs
+   to run: on a mount with `noexec` the result is `noaicheck-not-started`),
+   and removed afterwards. A checker that changed since it was verified is
+   not run (`noaicheck-changed`). `DIR/<id>` may be relative; the checker
+   is given its absolute path. The checker itself reads the release's
+   `etc/` and `share/` by that path while it runs, so a folder renamed or
+   changed between the verification and that read is read as it is then:
+   doing that takes write access to the release folder or to the folder
+   that holds it, which `check` does not look at (keep both writable by
+   you alone).
    `--root DIR` is given on to it (default: the
    host it runs on, so on a build host that has agent tools of its own it
    reports them: run `check` where the no-AI check is meant to pass, or
