@@ -2,9 +2,11 @@ package noaicheck
 
 import (
 	"bytes"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // secret stands for a key's value; no report may hold it.
@@ -392,5 +394,46 @@ func TestEnvReportOmitsValues(t *testing.T) {
 		"NOTE packages not enforced\nNOTE nft not pinned\nRUN incomplete\nFAILED 2 hit(s)\n"
 	if text.String() != want {
 		t.Errorf("text\n%s\nwant\n%s", text.String(), want)
+	}
+}
+
+// The specifiers of an EnvironmentFile= are replaced once per manager, never
+// multiplied out over the homes, and the expansion and the queue of files
+// count against the run's budget: a unit made to exhaust it ends the run
+// with "incomplete budget", not a hang or a crash.
+func TestEnvExpansionIsBudgeted(t *testing.T) {
+	f := cleanFixture(t)
+	f.file("etc/systemd/user/many.service", "[Service]\nEnvironmentFile=-"+strings.Repeat("%h/", 64)+"x\n")
+	c := f.checker(testLists())
+	within(t, c.CheckEnv)
+	if r := c.Report(); len(r.Hits) != 0 {
+		t.Errorf("hits %v", r.Hits)
+	}
+
+	f = cleanFixture(t)
+	f.file("etc/systemd/system/big.service", "[Service]\nEnvironmentFile=-/x"+strings.Repeat("%h", 200000)+"\n")
+	c = f.checker(testLists())
+	c.t.b = newBudget(limits{entries: 1 << 30, bytes: 1 << 30, time: time.Hour, memory: 1 << 20})
+	within(t, c.CheckEnv)
+	want := Hit{Kind: KindIncomplete, Path: PathBudget, Detail: budgetMemory}
+	if r := c.Report(); len(r.Hits) == 0 || r.Hits[len(r.Hits)-1] != want || r.Complete {
+		t.Errorf("hits %v", r.Hits)
+	}
+
+	f = cleanFixture(t)
+	var src strings.Builder
+	for i := 0; i < 400; i++ {
+		fmt.Fprintf(&src, ". /etc/app/a-file-with-a-long-name-%03d.sh\n", i)
+	}
+	f.file("etc/profile.d/many.sh", src.String())
+	c = f.checker(testLists())
+	c.t.b = newBudget(limits{entries: 300, bytes: 1 << 30, time: time.Hour, memory: 1 << 30})
+	within(t, c.CheckEnv)
+	want = Hit{Kind: KindIncomplete, Path: PathBudget, Detail: budgetEntries}
+	if r := c.Report(); len(r.Hits) == 0 || r.Hits[len(r.Hits)-1] != want {
+		t.Errorf("hits %v", r.Hits)
+	}
+	if c.t.b.memory < 0 {
+		t.Errorf("memory released twice: %d", c.t.b.memory)
 	}
 }

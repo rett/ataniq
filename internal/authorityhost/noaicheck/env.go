@@ -112,6 +112,14 @@ const PathEnvFile = "env-file"
 func (c *Checker) CheckEnv() {
 	done := map[string]bool{}
 	var queue []envFile
+	// Each queued file counts as an entry and holds its memory until it is
+	// read, as a walk's names do; once the budget is spent no more is
+	// queued and the report ends with "incomplete budget".
+	push := func(rel string, s envSyntax) {
+		if c.t.b.entry() && c.t.b.hold(queueCost(rel)) {
+			queue = append(queue, envFile{rel: rel, syntax: s})
+		}
+	}
 	var scan func(rel string, s envSyntax, m *manager)
 	scan = func(rel string, s envSyntax, m *manager) {
 		p, err := c.t.resolve(rel)
@@ -148,7 +156,7 @@ func (c *Checker) CheckEnv() {
 			for _, w := range r.sourced {
 				paths, ok := c.sourcePaths(w, c.homeOf(p))
 				for _, f := range paths {
-					ok = c.envFileGlob(f, func(m string) { queue = append(queue, envFile{rel: m, syntax: syntaxShell}) }) && ok
+					ok = c.envFileGlob(f, func(m string) { push(m, syntaxShell) }) && ok
 				}
 				if !ok {
 					c.hit(KindIncomplete, PathEnvSource, show(p))
@@ -163,19 +171,23 @@ func (c *Checker) CheckEnv() {
 			mgr = *m
 		}
 		for _, ref := range r.files {
-			f, ok := c.expand(ref.path, mgr)
-			if !ok {
+			f, held, err := c.expand(ref.path, mgr)
+			switch {
+			case errors.Is(err, errBudget):
+				return
+			case err != nil:
 				c.hit(KindIncomplete, PathEnvSyntax, show(p))
 				continue
 			}
 			n := 0
-			if !c.envFileGlob(f, func(m string) { n++; queue = append(queue, envFile{rel: m, syntax: syntaxEnvFile}) }) {
+			globbed := c.envFileGlob(f, func(m string) { n++; push(m, syntaxEnvFile) })
+			switch {
+			case !globbed:
 				c.hit(KindIncomplete, PathEnvSyntax, show(p))
-				continue
-			}
-			if !ref.optional && (n == 0 || c.missing(f)) {
+			case !ref.optional && (n == 0 || c.missing(f)):
 				c.hit(KindIncomplete, PathEnvFile, show(clean(f)))
 			}
+			c.t.b.release(held)
 		}
 	}
 	scanDir := func(rel string, s envSyntax) {
@@ -206,8 +218,15 @@ func (c *Checker) CheckEnv() {
 		f := queue[0]
 		queue = queue[1:]
 		scan(f.rel, f.syntax, nil)
+		c.t.b.release(queueCost(f.rel))
 	}
 }
+
+// queueCost is the memory a queued file holds.
+func queueCost(rel string) int64 { return int64(len(rel)) + 48 }
+
+// errSpecifier is returned by expand for a specifier it cannot resolve.
+var errSpecifier = errors.New("specifier not resolved")
 
 // missing reports whether the path p (a file an EnvironmentFile= names,
 // not a glob) is not there within the root.
@@ -221,29 +240,46 @@ func (c *Checker) missing(p string) bool {
 
 // expand returns the path an EnvironmentFile= path stands for in the
 // manager m: each specifier replaced by its value in m's context (see
-// manager.spec), once, so a path is never multiplied out. A specifier m
-// cannot resolve: false.
-func (c *Checker) expand(p string, m manager) (string, bool) {
+// manager.spec, one value per specifier, the same table for every unit of
+// the manager), so a path is never multiplied out. The length of the
+// result is reckoned and held against the run's memory budget before it is
+// built; the caller releases held once it is done with the path. A
+// specifier m cannot resolve is errSpecifier, a budget spent errBudget.
+func (c *Checker) expand(p string, m manager) (string, int64, error) {
 	if !strings.Contains(p, "%") {
-		return p, true
+		return p, 0, nil
+	}
+	n := int64(0)
+	for i := 0; i < len(p); i++ {
+		if p[i] != '%' {
+			n++
+			continue
+		}
+		if i+1 >= len(p) {
+			return "", 0, errSpecifier
+		}
+		v, ok := m.spec(p[i+1])
+		if !ok {
+			return "", 0, errSpecifier
+		}
+		n += int64(len(v))
+		i++
+	}
+	if c.t.b.out() || !c.t.b.hold(n) {
+		return "", 0, errBudget
 	}
 	var b strings.Builder
+	b.Grow(int(n))
 	for i := 0; i < len(p); i++ {
 		if p[i] != '%' {
 			b.WriteByte(p[i])
 			continue
 		}
-		if i+1 >= len(p) {
-			return "", false
-		}
-		v, ok := m.spec(p[i+1])
-		if !ok {
-			return "", false
-		}
+		v, _ := m.spec(p[i+1])
 		b.WriteString(v)
 		i++
 	}
-	return b.String(), true
+	return b.String(), n, nil
 }
 
 // envFileGlob passes the path of an EnvironmentFile= to found, or, when
