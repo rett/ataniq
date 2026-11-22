@@ -31,6 +31,12 @@ func baselineInputs(t *testing.T) BaselineOptions {
 	}
 }
 
+// baselineDir runs Baseline and returns the folder it made.
+func baselineDir(o BaselineOptions) (string, error) {
+	r, err := Baseline(o)
+	return r.Dir, err
+}
+
 func readOut(t *testing.T, dir, rel string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(dir, rel))
@@ -55,7 +61,7 @@ func TestBaselineFillsTheAllowlists(t *testing.T) {
 	o := baselineInputs(t)
 	o.Stamp = "2026-11-22"
 	srcBefore := listing(t, o.Src)
-	out, err := Baseline(o)
+	out, err := baselineDir(o)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,13 +131,13 @@ func TestBaselineFillsTheAllowlists(t *testing.T) {
 // same inputs make the same bytes; without a stamp no stamp is written.
 func TestBaselineIsDeterministic(t *testing.T) {
 	o := baselineInputs(t)
-	a, err := Baseline(o)
+	a, err := baselineDir(o)
 	if err != nil {
 		t.Fatal(err)
 	}
 	o2 := o
 	o2.Out = filepath.Join(t.TempDir(), "baseline")
-	b, err := Baseline(o2)
+	b, err := baselineDir(o2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +158,7 @@ func TestBaselineIsDeterministic(t *testing.T) {
 func TestBaselineDigestIgnoresCounters(t *testing.T) {
 	o := baselineInputs(t)
 	writeTestFile(t, o.NFT, strings.Replace(testNFT, "packets 12 bytes 3456", "packets 99 bytes 1", 1), 0o644)
-	out, err := Baseline(o)
+	out, err := baselineDir(o)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +169,7 @@ func TestBaselineDigestIgnoresCounters(t *testing.T) {
 
 func TestBaselineOutputBuilds(t *testing.T) {
 	o := baselineInputs(t)
-	out, err := Baseline(o)
+	out, err := baselineDir(o)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,11 +188,11 @@ func TestBaselineDefaultOutIsNew(t *testing.T) {
 	t.Setenv("TMPDIR", tmp)
 	o := baselineInputs(t)
 	o.Out = ""
-	a, err := Baseline(o)
+	a, err := baselineDir(o)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := Baseline(o)
+	b, err := baselineDir(o)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +362,7 @@ func TestBaselineAcceptsInputAtTheLimit(t *testing.T) {
 	if info, err := os.Stat(o.Packages); err != nil || info.Size() != MaxInputBytes {
 		t.Fatalf("input size %v, %v", info, err)
 	}
-	out, err := Baseline(o)
+	out, err := baselineDir(o)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,11 +375,107 @@ func TestBaselineAcceptsInputAtTheLimit(t *testing.T) {
 func TestBaselineNoNewlineAtEnd(t *testing.T) {
 	o := baselineInputs(t)
 	writeTestFile(t, o.Ports, "22\n80", 0o644)
-	out, err := Baseline(o)
+	out, err := baselineDir(o)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := body(readOut(t, out, "share/ports.allow")); !reflect.DeepEqual(got, []string{"22", "80"}) {
 		t.Errorf("ports %q", got)
+	}
+}
+
+// Listings for the default-deny report: both policies (with forward), the
+// input policy only (as testNFT), none, and the ways a policy is not one.
+const (
+	nftDefaultDeny = "table inet filter {\n\tchain input {\n\t\ttype filter hook input priority filter; policy drop;\n\t\ttcp dport 22 accept\n\t}\n" +
+		"\tchain forward {\n\t\ttype filter hook forward priority filter; policy drop;\n\t}\n" +
+		"\tchain output {\n\t\ttype filter hook output priority filter; policy drop;\n\t\tip daddr { 192.0.2.1, 192.0.2.2 } tcp dport 443 accept\n\t}\n}\n"
+	nftAcceptAll = "table inet filter {\n\tchain input {\n\t\ttype filter hook input priority filter; policy accept;\n\t}\n" +
+		"\tchain output {\n\t\ttype filter hook output priority filter; policy accept;\n\t}\n}\n"
+)
+
+// TestBaselineReportsAMissingDefaultDeny: baseline enrolls any listing but
+// reports, in its result and in the header of nft.digest, each hook without
+// a base chain of policy drop for IPv4 and IPv6; --require-default-deny
+// refuses such a listing and writes nothing.
+func TestBaselineReportsAMissingDefaultDeny(t *testing.T) {
+	ipOnly := strings.ReplaceAll(nftDefaultDeny, "table inet", "table ip")
+	for _, tc := range []struct {
+		name    string
+		listing string
+		missing []string
+	}{
+		{"both policies", nftDefaultDeny, nil},
+		{"input only", testNFT, []string{"output", "forward"}},
+		{"none", nftAcceptAll, []string{"input", "output", "forward"}},
+		{"an empty table", "table inet filter {\n}\n", []string{"input", "output", "forward"}},
+		{"IPv4 only", ipOnly, []string{"input", "output", "forward"}},
+		{"IPv4 and IPv6 tables", ipOnly + strings.ReplaceAll(nftDefaultDeny, "table inet", "table ip6"), nil},
+		{"a dormant table", strings.Replace(nftDefaultDeny, "table inet filter {\n", "table inet filter {\n\tflags dormant\n", 1), []string{"input", "output", "forward"}},
+		{"an arp table", strings.ReplaceAll(nftDefaultDeny, "table inet", "table arp"), []string{"input", "output", "forward"}},
+		{"the words in a comment", "table inet filter {\n\tchain input {\n\t\ttype filter hook input priority filter; policy accept;\n\t\tcomment \"type filter hook output priority filter; policy drop;\"\n\t}\n}\n", []string{"input", "output", "forward"}},
+		{"a brace in a comment", strings.Replace(nftDefaultDeny, "tcp dport 22 accept", "tcp dport 22 accept comment \"} {\\\" }\"", 1), nil},
+		{"a regular chain", "table inet filter {\n\tchain mine {\n\t\tpolicy drop\n\t}\n}\n", []string{"input", "output", "forward"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := baselineInputs(t)
+			writeTestFile(t, o.NFT, tc.listing, 0o644)
+			res, err := Baseline(o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(res.MissingDefaultDeny, tc.missing) {
+				t.Errorf("missing %q, want %q", res.MissingDefaultDeny, tc.missing)
+			}
+			text := readOut(t, res.Dir, "share/nft.digest")
+			var want []string
+			for _, hook := range tc.missing {
+				want = append(want, "# "+DefaultDenyWarning(hook))
+			}
+			var got []string
+			for _, l := range strings.Split(text, "\n") {
+				if strings.HasPrefix(l, "# WARNING") {
+					got = append(got, l)
+				}
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("nft.digest warnings\n got: %q\nwant: %q\n%s", got, want, text)
+			}
+			if d, err := noaicheck.ParseDigest(strings.NewReader(text)); err != nil || d != noaicheck.NFTDigest([]byte(tc.listing)) {
+				t.Errorf("digest %q, %v", d, err)
+			}
+
+			// With --require-default-deny the same listing is refused, or
+			// enrolled as before when nothing is missing.
+			o.Out = filepath.Join(t.TempDir(), "strict")
+			o.RequireDefaultDeny = true
+			res, err = Baseline(o)
+			if !reflect.DeepEqual(res.MissingDefaultDeny, tc.missing) {
+				t.Errorf("strict: missing %q, want %q", res.MissingDefaultDeny, tc.missing)
+			}
+			if tc.missing == nil {
+				if err != nil || res.Dir != o.Out {
+					t.Errorf("strict: %q, %v", res.Dir, err)
+				}
+				return
+			}
+			var r *Refusal
+			if !errors.As(err, &r) || r.Code != CodeNoDefaultDeny || r.Usage || res.Dir != "" {
+				t.Errorf("strict: %q, %v, want a %s refusal", res.Dir, err, CodeNoDefaultDeny)
+			}
+			if _, err := os.Lstat(o.Out); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("a refused run made the output: %v", err)
+			}
+		})
+	}
+}
+
+// TestDefaultDenyWarningIsOneLine: the words are written into a comment line
+// of nft.digest.
+func TestDefaultDenyWarningIsOneLine(t *testing.T) {
+	for _, hook := range defaultDenyHooks {
+		if w := DefaultDenyWarning(hook); strings.ContainsAny(w, "\n\r") || !strings.HasPrefix(w, "WARNING: no-default-deny "+hook+": ") {
+			t.Errorf("%q", w)
+		}
 	}
 }

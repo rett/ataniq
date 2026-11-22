@@ -22,14 +22,19 @@
   print no hit and is run only when nothing else was found (a checker whose
   hash does not match `SHA256SUMS` is never run). Both print only fixed reasons and plain names, never a
   file's content. `ah-release baseline --src DIR --units FILE --ports FILE
-  --packages FILE --nft FILE [--out DIR] [--stamp TEXT]` makes a scratch copy
+  --packages FILE --nft FILE [--out DIR] [--stamp TEXT]
+  [--require-default-deny]` makes a scratch copy
   of the source tree whose allowlists are filled from files the owner
   collected on the host (the unit names of the no-AI check's `HIT unit`
   lines, `ss -H -ltn` ports, `pacman -Qq`, `nft list ruleset`): it refuses
   anything but a regular file of at most 2 MiB, an invalid line, an empty
   result and an output folder that exists or lies in the source, drops
   duplicates, sorts, takes `nft.digest` with the function of `ah-noaicheck
-  nft-digest`, and never writes into the source. See the README, "Filling the
+  nft-digest`, and never writes into the source. It enrolls any firewall
+  listing, but for each of the hooks input, output and forward without a
+  base chain of `policy drop` for IPv4 and IPv6 it prints a `WARNING:
+  no-default-deny HOOK` line and writes the same words into the header of
+  `nft.digest`; `--require-default-deny` refuses such a listing instead. See the README, "Filling the
   allowlists". `deploy/authority-host` now holds the source tree of the
   first, static release: a hardened Caddyfile (admin endpoint off, server
   timeouts, security headers, `/healthz`, a static site) and its validator,

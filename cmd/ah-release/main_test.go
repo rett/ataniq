@@ -438,8 +438,65 @@ func baselineFiles(t *testing.T) (units, ports, packages, nft string) {
 	write(t, units, "sshd.service\ngetty@.service\n", 0o644)
 	write(t, ports, "22\n443\n", 0o644)
 	write(t, packages, "base\ncaddy\n", 0o644)
-	write(t, nft, "table inet filter {\n\tchain input {\n\t\tcounter packets 1 bytes 2\n\t}\n}\n", 0o644)
+	write(t, nft, defaultDenyNFT, 0o644)
 	return
+}
+
+// defaultDenyNFT is a listing with a base chain of policy drop on each of
+// the hooks input, output and forward.
+const defaultDenyNFT = "table inet filter {\n\tchain input {\n\t\ttype filter hook input priority filter; policy drop;\n\t\tcounter packets 1 bytes 2\n\t}\n" +
+	"\tchain forward {\n\t\ttype filter hook forward priority filter; policy drop;\n\t}\n" +
+	"\tchain output {\n\t\ttype filter hook output priority filter; policy drop;\n\t}\n}\n"
+
+// TestBaselineWarnsWithoutDefaultDeny: a listing without a default deny is
+// enrolled with a WARNING line per missing hook before the result line, the
+// same words are in nft.digest, and --require-default-deny refuses it.
+func TestBaselineWarnsWithoutDefaultDeny(t *testing.T) {
+	units, ports, packages, nft := baselineFiles(t)
+	args := func(out string, more ...string) []string {
+		return append([]string{"baseline", "--src", source(t), "--units", units, "--ports", ports, "--packages", packages, "--nft", nft, "--out", out}, more...)
+	}
+	warn := func(hook string) string {
+		return "WARNING: no-default-deny " + hook + ": the enrolled nft ruleset has no base chain of hook " + hook +
+			" with policy drop for IPv4 and IPv6; nft.digest pins it as it is\n"
+	}
+
+	// Both policies (and forward): no warning, with or without the flag.
+	for _, more := range [][]string{nil, {"--require-default-deny"}} {
+		out := filepath.Join(t.TempDir(), "filled")
+		if code, stdout, errOut := call(args(out, more...)...); code != 0 || stdout != "filled baseline in "+out+"\n" || errOut != "" {
+			t.Errorf("%q: exit %d, %q, %q", more, code, stdout, errOut)
+		}
+	}
+
+	// Input only: a warning for output and forward.
+	write(t, nft, "table inet filter {\n\tchain input {\n\t\ttype filter hook input priority filter; policy drop;\n\t}\n}\n", 0o644)
+	out := filepath.Join(t.TempDir(), "filled")
+	code, stdout, errOut := call(args(out)...)
+	if code != 0 || stdout != warn("output")+warn("forward")+"filled baseline in "+out+"\n" || errOut != "" {
+		t.Errorf("input only: exit %d, %q, %q", code, stdout, errOut)
+	}
+	digest, err := os.ReadFile(filepath.Join(out, "share/nft.digest"))
+	if err != nil || !strings.Contains(string(digest), "# "+warn("output")) || !strings.Contains(string(digest), "# "+warn("forward")) || strings.Contains(string(digest), "hook input with") {
+		t.Errorf("nft.digest: %q, %v", digest, err)
+	}
+
+	// None: a warning for each, and with the flag a refusal and no folder.
+	write(t, nft, "table inet filter {\n\tchain input {\n\t\ttype filter hook input priority filter; policy accept;\n\t}\n}\n", 0o644)
+	out = filepath.Join(t.TempDir(), "filled")
+	code, stdout, errOut = call(args(out)...)
+	if code != 0 || stdout != warn("input")+warn("output")+warn("forward")+"filled baseline in "+out+"\n" || errOut != "" {
+		t.Errorf("none: exit %d, %q, %q", code, stdout, errOut)
+	}
+	out = filepath.Join(t.TempDir(), "strict")
+	code, stdout, errOut = call(args(out, "--require-default-deny")...)
+	if code != 1 || stdout != warn("input")+warn("output")+warn("forward")+
+		"FAIL: no-default-deny the nft listing does not deny every hook by default, and --require-default-deny is given\n" || errOut != "" {
+		t.Errorf("none, strict: exit %d, %q, %q", code, stdout, errOut)
+	}
+	if _, err := os.Lstat(out); !os.IsNotExist(err) {
+		t.Errorf("a refused baseline made the folder: %v", err)
+	}
 }
 
 // TestBaselineFillsTheRealTree: the real source tree, filled, is read back by

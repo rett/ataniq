@@ -30,6 +30,7 @@ const (
 	CodeInputInvalid  = "input-invalid"
 	CodeInputEmpty    = "input-empty"
 	CodeOutExists     = "out-exists"
+	CodeNoDefaultDeny = "no-default-deny"
 
 	// Refusals of build.
 	CodeExists   = "exists"
@@ -100,6 +101,7 @@ var reasons = map[string]string{
 	CodeInputInvalid:  "an input file holds a line that is not valid for its list",
 	CodeInputEmpty:    "an input file holds no entry",
 	CodeOutExists:     "the output folder exists already",
+	CodeNoDefaultDeny: "the nft listing does not deny every hook by default, and --require-default-deny is given",
 
 	CodeExists:   "that release folder exists already",
 	CodeTooLarge: "the release is over a size or entry limit",
