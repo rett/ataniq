@@ -58,7 +58,13 @@ type Manifest struct {
 	BuiltOn         string
 	GoVersion       string
 	PackageSnapshot string
+	// Components is "static" for a release with no decision services, whose
+	// command lists may then hold comments only; empty otherwise.
+	Components string
 }
+
+// ComponentsStatic is the one value of the optional components key.
+const ComponentsStatic = "static"
 
 var manifestKeys = []string{"id", "counter", "commit", "built_on", "go_version", "package_snapshot"}
 
@@ -93,6 +99,9 @@ func ParseManifest(data []byte) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, failf(CodeManifestInvalid, "MANIFEST: counter is not a number")
 	}
+	if c, ok := values["components"]; ok && c != ComponentsStatic {
+		return Manifest{}, failf(CodeManifestInvalid, "MANIFEST: components %s is not static", q(c))
+	}
 	return Manifest{
 		ID:              values["id"],
 		Counter:         n,
@@ -100,6 +109,7 @@ func ParseManifest(data []byte) (Manifest, error) {
 		BuiltOn:         values["built_on"],
 		GoVersion:       values["go_version"],
 		PackageSnapshot: values["package_snapshot"],
+		Components:      values["components"],
 	}, nil
 }
 
@@ -173,10 +183,8 @@ type release struct {
 	sums  []byte
 	files int
 	// Set by checkRelease.
-	manifest   Manifest
-	validators [][]string
-	reloads    [][]string
-	health     []string
+	manifest Manifest
+	lists
 }
 
 func (r *release) Close() error { return r.root.Close() }

@@ -258,6 +258,7 @@ func (e *env) releaseIn(dir, id, snapshot string) string {
 	e.write(filepath.Join(dir, ValidatorsList), "# units\nvalidate-units verify {release}/etc/systemd/app.service\nvalidate-rules -c\n", 0o644)
 	e.write(filepath.Join(dir, ReloadList), "reload-units\n", 0o644)
 	e.write(filepath.Join(dir, HealthCmd), "health-probe http://127.0.0.1/healthz\n", 0o644)
+	e.write(filepath.Join(dir, StopList), "stop-app\n", 0o644)
 	e.sums(dir)
 	return dir
 }

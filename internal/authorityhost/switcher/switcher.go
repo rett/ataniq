@@ -202,7 +202,8 @@ type attempt struct {
 	prevTarget string // what previous pointed at
 	prevExists bool
 	reloads    [][]string
-	health     []string
+	health     [][]string
+	stops      [][]string
 }
 
 // Switch activates the release named id.
@@ -308,7 +309,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	}
 	defer rel.Close()
 	manifest, validators := rel.manifest, rel.validators
-	a.reloads, a.health = rel.reloads, rel.health
+	a.reloads, a.health, a.stops = rel.reloads, rel.health, rel.stops
 
 	// 2. Counter.
 	var highest uint64
@@ -383,7 +384,10 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		for _, r := range a.reloads {
 			s.step(6, "would reload: %s", qargv(r))
 		}
-		s.step(7, "would run %s until it passes, every %s for up to %s", qargv(a.health), HealthInterval, HealthWindow)
+		for _, h := range a.health {
+			s.step(7, "would run %s", qargv(h))
+		}
+		s.step(7, "until every health command passes, every %s for up to %s", HealthInterval, HealthWindow)
 		s.step(8, "would record the result in %s", q(filepath.Join(s.stateDir(), DeployFile)))
 		s.printf("result: dry run passed; nothing changed")
 		return ExitOK
@@ -697,7 +701,7 @@ func (s *Switcher) checkRelease(ctx context.Context, rel *release) error {
 	if err := manifest.Check(rel.id); err != nil {
 		return err
 	}
-	if rel.validators, rel.reloads, rel.health, err = rel.readLists(); err != nil {
+	if rel.lists, err = rel.readLists(manifest.Components == ComponentsStatic); err != nil {
 		return err
 	}
 	rel.manifest = manifest
@@ -764,30 +768,41 @@ func (s *Switcher) reload(ctx context.Context, a *attempt) error {
 	return nil
 }
 
-// checkHealth runs the health command until it passes, every HealthInterval,
-// within HealthWindow.
-func (s *Switcher) checkHealth(ctx context.Context, argv []string) error {
+// checkHealth runs the health commands until every one of them passes in
+// one round, every HealthInterval, within HealthWindow. No command (a static
+// release) is healthy at once.
+func (s *Switcher) checkHealth(ctx context.Context, health [][]string) error {
+	if len(health) == 0 {
+		s.step(7, "no health command: a static release")
+		return nil
+	}
 	deadline := s.cfg.Now().Add(HealthWindow)
 	var last error
+	var lastArgv []string
 	attempts := 0
 	for {
 		attempts++
-		limit := min(HealthAttemptTimeout, deadline.Sub(s.cfg.Now()))
-		if limit < time.Second {
-			limit = time.Second
+		last = nil
+		for _, argv := range health {
+			limit := min(HealthAttemptTimeout, deadline.Sub(s.cfg.Now()))
+			if limit < time.Second {
+				limit = time.Second
+			}
+			if _, err := s.cfg.Runner.Run(ctx, Command{Argv: argv, Timeout: limit}); err != nil {
+				last, lastArgv = err, argv
+				break
+			}
 		}
-		_, err := s.cfg.Runner.Run(ctx, Command{Argv: argv, Timeout: limit})
-		if err == nil {
-			s.step(7, "healthy after %d attempt(s): %s", attempts, qargv(argv))
+		if last == nil {
+			s.step(7, "healthy after %d attempt(s): %d health command(s) passed", attempts, len(health))
 			return nil
 		}
-		last = err
 		if !s.cfg.Now().Add(HealthInterval).Before(deadline) {
 			break
 		}
 		s.cfg.Sleep(HealthInterval)
 	}
-	return failf(CodeHealthFailed, "not healthy after %d attempts in %s: %s", attempts, HealthWindow, summary(last))
+	return failf(CodeHealthFailed, "not healthy after %d attempts in %s: %s: %s", attempts, HealthWindow, q(lastArgv[0]), summary(last))
 }
 
 // goBack is called when the reload or the health check failed after current

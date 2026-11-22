@@ -97,6 +97,9 @@ func releaseIn(t *testing.T, dir, id string, counter int, health string) {
 	write(t, filepath.Join(dir, "MANIFEST"), "id: "+id+"\ncounter: "+strconv.Itoa(counter)+"\ncommit: "+commit+"\nbuilt_on: dev\ngo_version: go\npackage_snapshot: s\n", 0o644)
 	write(t, filepath.Join(dir, "bin/ah-noaicheck"), "#!/bin/sh\nexit 0\n", 0o755)
 	write(t, filepath.Join(dir, "share/health.cmd"), health+"\n", 0o644)
+	write(t, filepath.Join(dir, "share/reload.list"), health+"\n", 0o644)
+	write(t, filepath.Join(dir, "share/validators.list"), health+"\n", 0o644)
+	write(t, filepath.Join(dir, "share/stop.list"), health+"\n", 0o644)
 	var lines []string
 	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {

@@ -46,7 +46,8 @@ connection.
   short commit in lowercase hex (7 to 40 characters).
 - `MANIFEST` holds the keys `id`, `counter`, `commit`, `built_on` (the class of
   the build host, never its name), `go_version` and `package_snapshot`, one
-  `key: value` per line. `id` must be the folder's name, `counter` its counter
+  `key: value` per line, and optionally `components: static` (no other
+  value is accepted). `id` must be the folder's name, `counter` its counter
   and `commit` must start with its short commit. Blank lines and `#` lines are
   skipped; other keys are ignored.
 - `SHA256SUMS` is in the format of `sha256sum`: lowercase hex, two spaces (or a
@@ -66,19 +67,26 @@ connection.
 - In signed mode `SHA256SUMS.sig` is an SSH signature in the namespace
   `authority-host-release`:
   `ssh-keygen -Y sign -f KEY -n authority-host-release SHA256SUMS`.
-- `share/` holds the command lists the switch runs:
-  - `validators.list` (optional): one validator per line, such as
+- `share/` holds the command lists the switch runs. All four are required,
+  and each must hold at least one command, unless the release's `MANIFEST`
+  says `components: static` (a release with no decision services), when a
+  list may hold comment lines only:
+  - `validators.list`: one validator per line, such as
     `systemd-analyze verify {release}/etc/systemd/app.service`,
     `caddy validate --config {release}/etc/caddy/Caddyfile` or
     `nft -c -f {release}/etc/nftables/rules.nft`. `{release}` becomes the
     absolute path of the release folder, so a validator checks the new
     release, not the live one.
-  - `reload.list` (optional): one reload command per line, such as
+  - `reload.list`: one reload command per line, such as
     `systemctl daemon-reload` or `systemctl reload caddy`. These act on what
     `current` points at and may not use `{release}`.
-  - `health.cmd` (required): exactly one command, usually a `curl` of the
-    health endpoints, which exits 0 when the host is healthy. It may not use
-    `{release}` either.
+  - `health.cmd`: one or more health commands, one per line, each of which
+    exits 0 when its part is healthy: usually the front end (`/healthz` on
+    Caddy) and the application's readiness (`/readyz`). Every line must
+    pass. It may not use `{release}` either.
+  - `stop.list`: the commands that stop the decision services, such as
+    `systemctl stop ataniq-seat`, run when no healthy release is left (see
+    the failure cases); the static status page stays. No `{release}`.
 
   In each list, blank lines and `#` lines are skipped. A command is its words
   separated by spaces; no shell runs it, so quotes, pipes, redirections, globs
@@ -88,6 +96,11 @@ connection.
   environment `PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C` and nothing else,
   the working folder `/`, no standard input, and its own process group, killed
   whole at its time limit.
+
+  A signed release contains code that runs as root (its no-AI check, its
+  package step, its units), so these lists are consistency checks of an
+  honest release, not a privilege boundary: the signature is what decides
+  what may run.
 - `bin/ah-noaicheck` is the release's no-AI check, required. `bin/ah-pkgstep`
   is its package step, optional.
 
@@ -232,8 +245,10 @@ rename in step 6, a failure leaves `current` as it was.
    link `current.new` is made and renamed over `current`, so there is never a
    moment without `current`. Then each command of `share/reload.list` runs,
    within 30 seconds each.
-7. **health**: `share/health.cmd` runs until it exits 0, every 2 seconds for up
-   to 60 seconds, each try within 10 seconds.
+7. **health**: the commands of `share/health.cmd` run in order, each within
+   10 seconds, until one round in which every one of them exits 0, every 2
+   seconds for up to 60 seconds. A static release with no health command is
+   healthy at once.
 8. **record**: on a healthy switch `highest-counter` is set to the new counter
    (not on a rollback) and `deploy.json` is written, each by writing a
    temporary file and renaming it over the old one.

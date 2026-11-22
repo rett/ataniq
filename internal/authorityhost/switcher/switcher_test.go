@@ -450,26 +450,89 @@ func TestValidatorFailing(t *testing.T) {
 	}
 }
 
-func TestMissingValidatorsListAllowed(t *testing.T) {
+// TestListsRequired: each of the four lists must be there and hold a
+// command, unless the MANIFEST says components: static, when comment lines
+// are enough.
+func TestListsRequired(t *testing.T) {
+	for _, list := range []string{ValidatorsList, ReloadList, HealthCmd, StopList} {
+		t.Run(filepath.Base(list)+" missing", func(t *testing.T) {
+			e := active(t)
+			dir := e.release(rel3, "2026-11-01")
+			os.Remove(filepath.Join(dir, list))
+			e.sums(dir)
+			if code := e.switchTo(rel3); code != ExitFailed {
+				t.Fatalf("exit %d", code)
+			}
+			e.unchanged("releases/"+rel2, "verify")
+			if rec := e.record(); rec.Error != CodeListMissing {
+				t.Errorf("record: %s: %s", rec.Error, rec.Detail)
+			}
+		})
+		t.Run(filepath.Base(list)+" empty", func(t *testing.T) {
+			e := active(t)
+			dir := e.release(rel3, "2026-11-01")
+			e.write(filepath.Join(dir, list), "# nothing here\n", 0o644)
+			e.sums(dir)
+			if code := e.switchTo(rel3); code != ExitFailed {
+				t.Fatalf("exit %d", code)
+			}
+			if rec := e.record(); rec.Error != CodeListInvalid {
+				t.Errorf("record: %s: %s", rec.Error, rec.Detail)
+			}
+		})
+	}
+	t.Run("static release", func(t *testing.T) {
+		e := active(t)
+		dir := e.release(rel3, "2026-11-01")
+		for _, list := range []string{ValidatorsList, ReloadList, HealthCmd, StopList} {
+			e.write(filepath.Join(dir, list), "# a static release\n", 0o644)
+		}
+		data, _ := os.ReadFile(filepath.Join(dir, ManifestFile))
+		e.write(filepath.Join(dir, ManifestFile), string(data)+"components: static\n", 0o644)
+		e.sums(dir)
+		if code := e.switchTo(rel3); code != ExitOK {
+			t.Fatalf("exit %d", code)
+		}
+		if n := e.runner.called("health-probe") + e.runner.called("validate-units") + e.runner.called("reload-units"); n != 0 {
+			t.Errorf("commands of another release ran: %v", e.runner.calls)
+		}
+	})
+	t.Run("other components", func(t *testing.T) {
+		if _, err := ParseManifest([]byte("id: 0003-ccccccc\ncounter: 3\ncommit: ccccccc0\nbuilt_on: dev\ngo_version: go\npackage_snapshot: s\ncomponents: app\n")); err == nil {
+			t.Errorf("components: app accepted")
+		}
+	})
+}
+
+// TestEveryHealthCommandMustPass: health.cmd may hold several commands (the
+// front end and the application's readiness); a round passes only when all
+// of them pass.
+func TestEveryHealthCommandMustPass(t *testing.T) {
 	e := active(t)
 	dir := e.release(rel3, "2026-11-01")
-	os.Remove(filepath.Join(dir, ValidatorsList))
-	os.Remove(filepath.Join(dir, ReloadList))
+	e.write(filepath.Join(dir, HealthCmd), "health-probe http://127.0.0.1/healthz\nready-probe /run/app/ready\n", 0o644)
 	e.sums(dir)
+	e.runner.fail["ready-probe"] = 2
 	if code := e.switchTo(rel3); code != ExitOK {
 		t.Fatalf("exit %d", code)
 	}
-}
+	if e.runner.called("health-probe") != 3 || e.runner.called("ready-probe") != 3 {
+		t.Errorf("rounds: %v", e.runner.calls)
+	}
 
-func TestMissingHealthCmdRefused(t *testing.T) {
-	e := active(t)
-	dir := e.release(rel3, "2026-11-01")
-	os.Remove(filepath.Join(dir, HealthCmd))
+	// The readiness command never passing fails the switch, although the
+	// front end is healthy.
+	e = active(t)
+	dir = e.release(rel3, "2026-11-01")
+	e.write(filepath.Join(dir, HealthCmd), "health-probe http://127.0.0.1/healthz\nready-probe /run/app/ready\n", 0o644)
 	e.sums(dir)
+	e.runner.fail["ready-probe"] = 30
 	if code := e.switchTo(rel3); code != ExitFailed {
 		t.Fatalf("exit %d", code)
 	}
-	e.unchanged("releases/"+rel2, "verify")
+	if rec := e.record(); rec.Result != ResultRolledBack || rec.Error != CodeHealthFailed || !strings.Contains(rec.Detail, "ready-probe") {
+		t.Errorf("record: %+v", rec)
+	}
 }
 
 func TestPackageStep(t *testing.T) {
@@ -822,12 +885,6 @@ func TestCommandLists(t *testing.T) {
 				t.Errorf("got %q, %v", cmds, err)
 			}
 		})
-	}
-	if _, err := ParseHealthCmd([]byte("a\nb\n")); err == nil {
-		t.Errorf("two health commands accepted")
-	}
-	if _, err := ParseHealthCmd([]byte("# nothing\n")); err == nil {
-		t.Errorf("no health command accepted")
 	}
 }
 
