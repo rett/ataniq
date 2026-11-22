@@ -1240,3 +1240,73 @@ func TestCloseTwiceReturnsWhatTheFirstReturned(t *testing.T) {
 		t.Fatalf("the second Close returned %v, the first %v", second, first)
 	}
 }
+
+// A leftover temporary name of the head that is a second name of another file
+// is refused before anything is written to it: the other file keeps its bytes.
+func TestTheTemporaryHeadIsCheckedBeforeItIsTruncated(t *testing.T) {
+	const keep = "bytes of another file that must stay\n"
+	plant := func(t *testing.T, path string) string {
+		t.Helper()
+		other := filepath.Join(t.TempDir(), "other")
+		if err := os.WriteFile(other, []byte(keep), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Link(other, headPathOf(path)+".new"); err != nil {
+			t.Skip(err)
+		}
+		return other
+	}
+	intact := func(t *testing.T, other string) {
+		t.Helper()
+		got, err := os.ReadFile(other)
+		if err != nil || string(got) != keep {
+			t.Fatalf("the other file is %q, %v; want its bytes unchanged", got, err)
+		}
+	}
+	t.Run("when a head is made at open", func(t *testing.T) {
+		path := newKeyPath(t)
+		k := mustOpenKeys(t, path)
+		mustClose2(t, k)
+		if err := os.Remove(headPathOf(path)); err != nil {
+			t.Fatal(err)
+		}
+		other := plant(t, path)
+		if _, err := OpenKeys(path); !errors.Is(err, ErrNotPrivate) {
+			t.Fatalf("OpenKeys: %v, want %v", err, ErrNotPrivate)
+		}
+		intact(t, other)
+	})
+	t.Run("when a record is added", func(t *testing.T) {
+		path := newKeyPath(t)
+		k := mustOpenKeys(t, path)
+		mustAdd(t, k, 1)
+		other := plant(t, path)
+		if _, err := k.AddKey(aKey(2)); !errors.Is(err, ErrNotPrivate) {
+			t.Fatalf("AddKey: %v, want %v", err, ErrNotPrivate)
+		}
+		intact(t, other)
+	})
+}
+
+// A leftover temporary name of the head that is a plain file of the user with
+// one name, longer than the line, is taken over: the head ends up the line alone.
+func TestALeftoverTemporaryHeadIsTakenOver(t *testing.T) {
+	path := newKeyPath(t)
+	k := mustOpenKeys(t, path)
+	mustAdd(t, k, 1)
+	mustClose2(t, k)
+	junk := bytes.Repeat([]byte("left by a crash "), 40)
+	if err := os.WriteFile(headPathOf(path)+".new", junk, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	k = mustOpenKeys(t, path)
+	mustAdd(t, k, 2)
+	mustClose2(t, k)
+	if _, err := os.Lstat(headPathOf(path) + ".new"); err == nil {
+		t.Fatal("the temporary name of the head is left")
+	}
+	k = mustOpenKeys(t, path)
+	if keys := mustKeys(t, k); len(keys) != 2 {
+		t.Fatalf("%d keys, want 2", len(keys))
+	}
+}

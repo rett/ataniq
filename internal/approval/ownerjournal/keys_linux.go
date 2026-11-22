@@ -857,7 +857,7 @@ func (k *KeyFile) writeHead(count int, digest [sha256.Size]byte) error {
 	dirfd := int(k.dir.Fd())
 	name := k.headName()
 	tmp := name + ".new"
-	fd, err := unix.Openat(dirfd, tmp, unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0o600)
+	fd, err := unix.Openat(dirfd, tmp, unix.O_WRONLY|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0o600)
 	if err != nil {
 		return fmt.Errorf("ownerjournal: the new head of the list: %w", err)
 	}
@@ -870,7 +870,14 @@ func (k *KeyFile) writeHead(count int, digest [sha256.Size]byte) error {
 	if !info.Mode().IsRegular() || !private(info) || info.Sys().(*syscall.Stat_t).Nlink != 1 {
 		return fmt.Errorf("%w: %s is not a plain file of the user with one name", ErrNotPrivate, tmp)
 	}
+	// Opened without O_TRUNC: a name that is another file's second name must
+	// be refused before a byte of that file is touched. What a crash left
+	// under the temporary name, now known to be the user's with one name, is
+	// emptied here.
 	if err := f.Chmod(0o600); err != nil {
+		return err
+	}
+	if err := f.Truncate(0); err != nil {
 		return err
 	}
 	line := fmt.Sprintf("%s %d %s\n", keysHeadHeader, count, hex.EncodeToString(digest[:]))
