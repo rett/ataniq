@@ -43,8 +43,10 @@ type PairResult struct {
 	Words [WordCount]string
 }
 
-// Daemon is the app's port to the daemon. Production wiring comes later; a
-// test uses an in-memory fake.
+// Daemon is the app's port to the daemon. Package seatlink implements it over
+// the seat gate, and the command ataniq-seat wires that in when it is given a
+// gate (without one it answers every pairing [ErrDaemonUnavailable]); a test of
+// this package uses an in-memory fake.
 //
 // Pair returns [ErrCodeRefused] when the daemon does not accept the code
 // (unknown, expired, used or out of tries) and [ErrDaemonUnavailable] when it

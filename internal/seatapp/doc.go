@@ -104,8 +104,8 @@
 //
 // # Seams
 //
-// [Daemon] is the port to the daemon, defined here and implemented later by
-// the wiring. A later page adds a template under templates/, a route in the
+// [Daemon] is the port to the daemon, defined here and implemented over the
+// seat gate by package seatlink, which this package does not import. A later page adds a template under templates/, a route in the
 // route table and its entry in the page inventory (inventory_test.go, which
 // fails for a route that is not listed); it needs no change in the middleware.
 //
