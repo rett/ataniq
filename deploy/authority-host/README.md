@@ -297,20 +297,22 @@ ah-switch [--root DIR] [--dry] inhibit-clear --asked WORDS
 - `--dry` prints every step and what it would do, runs no program and changes
   nothing: no link, no state file, no lock file. It still reads and checks
   the release (sums, manifest, lists, the record of its import, the
-  counter, the package state) and the host's stop list, and it is refused
-  while a switch holds the lock or a transaction is still to resume. A dry
-  run of a request whose outcome is still to be reported (see "The journal
-  and recover") shows that outcome and changes nothing either: not
-  `deploy.json`, not its time, and the outcome stays to be reported to
-  the real request.
+  counter, the package state, a `--noaicheck` program) and the host's
+  stop list, and it is refused while a switch holds the lock or a
+  transaction is still to resume (a journal that does not match the host
+  included). A dry run of a request whose outcome is still to be reported
+  (see "The journal and recover") shows that outcome and changes nothing
+  either: not `deploy.json`, not its time, and the outcome stays to be
+  reported to the real request.
 - `status` prints `current`, `previous`, the highest counter, the trust of
   the switch policy, a transaction still to resume and its phase (with the
   stop commands that failed, when it is stopping), the host's stop list,
-  and the last outcome from `deploy.json` (with `outcome not reported yet
-  (request ...)` while it is still to be reported). It takes the lock shared, so what it
-  prints is one state between two switches: while a switch runs it exits
-  3, and while it reads, a switch is refused with exit 3. It prints all of
-  it or nothing, and it changes nothing.
+  whether decisions are inhibited, and the last outcome from
+  `deploy.json` (with `outcome not reported yet (request ...)` while it is
+  still to be reported). It takes the lock shared, so what it prints is
+  one state between two switches: while a switch runs it exits 3, and
+  while it reads, a switch is refused with exit 3. It prints all of it or
+  nothing, and it changes nothing.
 - `recover --counter N` writes a missing or broken `highest-counter`,
   `recover --package-state SNAPSHOT` settles an unknown package state,
   `recover --services-stopped` settles a transaction whose stop commands
@@ -382,7 +384,8 @@ are stopped and decisions stay inhibited, see step 4).
    check of step 4 runs once before it, on the release's own inputs, while
    nothing has changed or begun, and once more after it, with the
    validators, on the host as the step left it. The transaction begins
-   (`decisions.inhibit`, then the journal) just before the step runs. A changed snapshot and no `bin/ah-pkgstep` is a failure
+   (`decisions.inhibit`, then the journal) just before the step runs. A
+   changed snapshot and no `bin/ah-pkgstep` is a failure
    (`package-step-missing`). The step's progress is journaled in
    `txn.json` (`started`, with its process id and start time once it runs,
    then `done`), and on success the new snapshot is what `deploy.json`
@@ -425,11 +428,12 @@ are stopped and decisions stay inhibited, see step 4).
    host as it now is. A failure of the second, or of a validator, after a
    package step ran is a failure of a host that changed and that nothing
    qualified since: the transaction stops the decision services (the
-   stopping phase, below), decisions stay inhibited, and it exits 1. This phase scans the release's own
-   files (the units under its `etc/systemd` and the environment names they
-   set) and the host's AI binaries and credentials, but not the listening
-   ports and the firewall digest: those are still the old release's until
-   the reload, and are checked in step 8. Any other exit status is a
+   stopping phase, below), decisions stay inhibited, and it exits 1. This
+   phase scans the release's own files (the units under its `etc/systemd`
+   and the environment names they set) and the host's AI binaries and
+   credentials, but not the listening ports and the firewall digest: those
+   are still the old release's until the reload, and are checked in step
+   8. Any other exit status is a
    failure, including the check's own report that it could not finish
    (`HIT incomplete`): it is never a warning.
 5. **validate**: each command of `share/validators.list` must exit 0, within
@@ -716,7 +720,7 @@ see its messages. The text of a broken state file is not repeated either.
 
 | Code | Meaning |
 | --- | --- |
-| 0 | Switched and healthy (recorded, journal removed), a dry run whose checks passed, `status`, `recover` done, or a retried request whose settled outcome was `ok` |
+| 0 | Switched and healthy (recorded, journal removed), a dry run whose checks passed, `status`, `recover` or `inhibit-clear` done, or a retried request whose settled outcome was `ok` |
 | 1 | Failed; outside a dry run the outcome is in `deploy.json`, except when the state folder, the switch policy or the host's stop list is not trusted, or `releases/`, `current` or `previous` cannot be read (`state: FAILED`), which records nothing, or when the result is `unresolved`, which leaves the journal for the next command |
 | 2 | Bad arguments, `--mode` weaker than the switch policy, or a root other than `/` without `--allow-exec`; nothing was done |
 | 3 | Another switch holds the lock, or `status` holds it while a switch is asked for (`flock`, not waited for), or a package step that outlived its switch holds it (said as `surviving helper pid N`); nothing was done |

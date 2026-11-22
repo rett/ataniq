@@ -12,12 +12,13 @@
   switch, its release folders, the append-only
   `/var/lib/authority-host/counters.log` of every counter attempted), and
   a `highest-counter` below the counters used, before recording anything;
-  runs the release's package step (before the check; a step
-  that fails or is interrupted leaves the package state unknown, refusing
-  further switches until the owner states the snapshot or the step runs
-  again to the end; the step holds the switch lock and dies with it), its no-AI
-  check before activation (`--phase pre`: the release's units and the
-  host, without ports and firewall) and its validators;
+  runs its no-AI check before activation (`--phase pre`: the release's
+  units and the host, without ports and firewall) before and after the
+  release's package step (a step that fails or is interrupted leaves the
+  package state unknown, refusing further switches until the owner states
+  the snapshot or the step runs again to the end; the step holds the
+  owner-only switch lock and dies with it, and one that outlives its
+  switch is named by its process id), then its validators;
   renames a new `current` link over the old one, reloads and checks every
   health command within one 60-second deadline, runs the no-AI check
   again (`--phase post`, with the live listeners and a listing of the
@@ -30,10 +31,10 @@
   decision-capable units name in `ConditionPathExists=!` so they do not
   start while it is there, and removes it only when it ends healthy; a
   failure keeps it across a reboot until a healthy switch or
-  `ah-switch inhibit-clear --asked WORDS` (recorded with the time). The
-  no-AI check runs before the package step and again after it. All of it is one
-  transaction journaled in `txn.json`, phase by phase (packages, links,
-  activating, restoring, stopping, done), with the trust it began with;
+  `ah-switch inhibit-clear --asked WORDS` (recorded with the time). All
+  of it is one transaction journaled in `txn.json`, phase by phase
+  (packages, links, activating, restoring, stopping, done), with the trust
+  it began with;
   the next command resumes an interrupted one from its phase, a link
   counts as moved only once its folder is synced, a failed stop keeps the
   transaction open, and a retried request reports the outcome it is still
