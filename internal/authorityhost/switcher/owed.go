@@ -209,11 +209,10 @@ func (s *Switcher) addOwed(rec Record, direction string, requalifyFailed bool) e
 // answerOwed is what a switch or rollback (arg, rollback) does first, once
 // any journal is settled: when an outcome is owed and the request is a
 // retry of it (see matches), it reports that outcome and does nothing
-// else, and the outcome is no longer owed (a dry run leaves it owed, and
-// so does a report that could not be written, which fails the command);
-// when outcomes are owed and the request is another one, it reports them,
-// leaves them owed and refuses the request. done says the command ends
-// there, with code.
+// else; the outcome stays owed until the owner's ack (a report that could
+// not be written fails the command); when outcomes are owed and the
+// request is another one, it reports them, leaves them owed and refuses
+// the request. done says the command ends there, with code.
 func (s *Switcher) answerOwed(arg string, rollback bool) (code int, done bool) {
 	if s.stateRoot == nil {
 		return 0, false
@@ -238,7 +237,7 @@ func (s *Switcher) answerOwed(arg string, rollback bool) (code int, done bool) {
 			s.printf("owed: the %s %s (request %s, transaction %s) ended %s at %s and its outcome is not acknowledged yet", o.kind(), o.ID, q(o.RequestID), o.Txn, o.Result, q(o.Time))
 			s.reportOwed(o)
 		}
-		s.printf("refused: an outcome is owed; run the same request again to have it reported, or ah-switch ack --asked WORDS once it is seen; nothing else is done")
+		s.printf("refused: an outcome is owed; run the same request again to have it reported, and ah-switch ack --asked WORDS once it is seen; nothing else is done")
 		return ExitFailed, true
 	}
 	o := owed[match]
@@ -256,17 +255,16 @@ func (s *Switcher) answerOwed(arg string, rollback bool) (code int, done bool) {
 		s.errorf("the outcome of this %s %s could not be written: %s; it stays owed, and the same request run again reports it", kind, arg, q(err.Error()))
 		return ExitFailed, true
 	}
-	if s.cfg.Dry {
+	// Reporting is not acknowledging: the outcome stays owed until the
+	// owner's ack, whoever runs the request again (a sudo rule for the
+	// switch form allows the deploying user to).
+	switch {
+	case s.cfg.Dry:
 		s.printf("settled: dry run: the outcome is still owed; nothing changed")
-	} else if o.RequalifyFailed {
-		// The failure is not an outcome to report once: it stays owed
-		// until the owner acknowledges it.
+	case o.RequalifyFailed:
 		s.printf("settled: the outcome stays owed: its release did not pass its reload, health check and no-AI check again")
-	} else {
-		rest := append(append([]owedOutcome{}, owed[:match]...), owed[match+1:]...)
-		if err := s.writeOwed(rest); err != nil {
-			s.printf("warning: %s not written: %s; the same request run again reports this outcome once more", OwedFile, q(err.Error()))
-		}
+	default:
+		s.printf("settled: the outcome stays owed until the owner acknowledges it with ah-switch ack --asked WORDS")
 	}
 	if o.Result == ResultOK && !o.RequalifyFailed {
 		return ExitOK, true

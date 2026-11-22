@@ -517,8 +517,9 @@ func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 		return unresolved(DeployFile+" not written", err)
 	}
 	// The outcome is owed before the journal goes, whichever command
-	// settles it; only an acknowledgement or a retry of the same request
-	// takes it back (see answerOwed), never the result line below.
+	// settles it; only the owner's acknowledgement takes it back (a retry
+	// of the same request reports it, see answerOwed), never the result
+	// line below.
 	if err := s.addOwed(rec, t.j.Direction, t.requalifyFailed); err != nil {
 		return unresolved(OwedFile+" not written", err)
 	}
@@ -534,7 +535,7 @@ func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 	if err := s.crash(CrashUnreported); err != nil {
 		return ExitFailed, false
 	}
-	s.step(9, "recorded in %s; the outcome is owed until ah-switch ack --asked WORDS or the same request run again", q(filepath.Join(s.stateDir(), DeployFile)))
+	s.step(9, "recorded in %s; the outcome is owed until ah-switch ack --asked WORDS (the same request run again reports it)", q(filepath.Join(s.stateDir(), DeployFile)))
 	s.printResult(rec)
 	if t.requalifyFailed {
 		s.emit("%s", requalifyFailedLine(rec.CurrentID))

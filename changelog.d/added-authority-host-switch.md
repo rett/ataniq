@@ -61,10 +61,10 @@
   `/var/lib/authority-host/owed.json` (written before the journal is
   removed, never in `deploy.json`, and not taken back by a printed result
   line): the same request run again reports it instead of doing it again
-  (an outcome whose report cannot be written stays owed, exit 1),
+  and leaves it owed (a report that cannot be written exits 1),
   a rollback bound to its request id so that a retry never resolves
-  `previous` anew, any other switch or rollback reports it and is refused
-  until then, and `ah-switch ack --asked WORDS` acknowledges it (recorded
+  `previous` anew, any other switch or rollback reports it and is refused,
+  and only the owner's `ah-switch ack --asked WORDS` takes it back (recorded
   with the time; when the outcomes it prints cannot be written or flushed it
   records nothing, keeps them owed and exits 1, as a retry does; an ack
   interrupted after its record is finished by the next ack, which keeps

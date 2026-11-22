@@ -348,10 +348,65 @@ func TestCrashDoneRunsThePostCheckAgain(t *testing.T) {
 	}
 }
 
+// TestRetryLeavesTheOutcomeOwed: the same request run again reports its
+// owed outcome but does not take it back: only the owner's ack does. A
+// caller allowed only the switch form (the deploying user) therefore cannot
+// consume a failed outcome by asking again and then switch to another
+// release, which, healthy, would remove the decision inhibit without the
+// owner having looked at the host.
+func TestRetryLeavesTheOutcomeOwed(t *testing.T) {
+	e := active(t)
+	e.keepOwed = true
+	e.release(rel3, "2026-11-01")
+	e.runner.fail["health-probe"] = -1
+	e.runner.fail["health-old"] = -1
+	if code := e.switchTo(rel3); code != ExitFailed {
+		t.Fatalf("the failing switch: exit %d\n%s", code, e.last)
+	}
+	delete(e.runner.fail, "health-probe")
+	delete(e.runner.fail, "health-old")
+	rec := e.record()
+	if rec.Result != ResultFailedRecovery || !rec.ServicesStopped {
+		t.Fatalf("record: %+v", rec)
+	}
+	if _, ok := e.inhibited(); !ok {
+		t.Fatalf("not inhibited after a failed recovery")
+	}
+	e.owes(rec.Txn, "forward:"+rel3, ResultFailedRecovery)
+	// The same request, twice: reported each time, still owed.
+	for i := 0; i < 2; i++ {
+		if code := e.switchTo(rel3); code != ExitFailed || !strings.Contains(e.last, "has been settled already; it is not done again") {
+			t.Fatalf("retry %d: exit %d\n%s", i+1, code, e.last)
+		}
+		e.owes(rec.Txn, "forward:"+rel3, ResultFailedRecovery)
+	}
+	// Another release, healthy: refused while the outcome is owed, and
+	// the inhibit stays.
+	e.release("0004-ddddddd", "2026-11-01")
+	e.runner.reset()
+	if code := e.switchTo("0004-ddddddd"); code != ExitFailed || !strings.Contains(e.last, "refused: an outcome is owed") {
+		t.Errorf("another switch after the retries: exit %d\n%s", code, e.last)
+	}
+	if len(e.runner.calls) != 0 {
+		t.Errorf("the refused switch ran %v", e.runner.calls)
+	}
+	if _, ok := e.inhibited(); !ok {
+		t.Fatalf("the inhibit was removed without the owner's ack")
+	}
+	// The owner's ack takes it back; the next switch goes on.
+	if code := e.ack("looked at the host"); code != ExitOK {
+		t.Fatalf("ack: exit %d\n%s", code, e.last)
+	}
+	if code := e.switchTo("0004-ddddddd"); code != ExitOK {
+		t.Errorf("the switch after the ack: exit %d\n%s", code, e.last)
+	}
+}
+
 // TestRetryReportsSettled: a request retried after its transaction was
-// interrupted reports the outcome the resume reached, once, and does not do
-// the request again; a rollback retried after it was completed does not go
-// back again to the release it left (it would, resolving previous anew).
+// interrupted reports the outcome the resume reached, and does not do the
+// request again, for as long as the outcome is owed (until the owner's
+// ack); a rollback retried after it was completed does not go back again
+// to the release it left (it would, resolving previous anew).
 func TestRetryReportsSettled(t *testing.T) {
 	for _, tc := range []struct {
 		point             string
@@ -375,10 +430,19 @@ func TestRetryReportsSettled(t *testing.T) {
 			}
 			e.links(tc.current, tc.previous)
 			e.noJournal()
-			if rec := e.record(); !rec.Rollback || len(e.owed()) != 0 {
+			if rec := e.record(); !rec.Rollback || len(e.owed()) != 1 {
 				t.Errorf("record: %+v, owed %+v", rec, e.owed())
 			}
-			// Asked again, it is a new rollback.
+			// Asked again before the owner's ack, it is reported again
+			// and not done.
+			if code := e.rollBack("previous"); code != tc.code || !strings.Contains(e.last, "has been settled already; it is not done again") {
+				t.Fatalf("a second retry: exit %d\n%s", code, e.last)
+			}
+			e.links(tc.current, tc.previous)
+			if code := e.ack("seen"); code != ExitOK {
+				t.Fatalf("ack: exit %d\n%s", code, e.last)
+			}
+			// Asked again after it, it is a new rollback.
 			if code := e.rollBack("previous"); code != ExitOK {
 				t.Fatalf("a new rollback: exit %d", code)
 			}
@@ -403,8 +467,9 @@ func TestRetryReportsSettled(t *testing.T) {
 	})
 	t.Run("forward", func(t *testing.T) {
 		e := active(t)
-		// A retry that left its outcome owed would make the next request
-		// a retry again, not the counter refusal asserted below.
+		// The retry leaves its outcome owed: the next request is a retry
+		// again until the owner's ack, and only then the counter refusal
+		// asserted below.
 		e.keepOwed = true
 		e.release(rel3, "2026-11-01")
 		e.crashAt(CrashReload, false, rel3)
@@ -418,7 +483,14 @@ func TestRetryReportsSettled(t *testing.T) {
 		// The resume of activating runs the reload, the health and the
 		// post-activation check again; the pre-activation check is not.
 		e.ran(map[string]int{"reload-units": 1, "health-probe": 1, "ah-noaicheck": 1})
-		// Asked again, it is a new switch, refused by its used counter.
+		if code := e.switchTo(rel3); code != ExitOK || !strings.Contains(e.last, "settled: this switch to "+rel3) {
+			t.Fatalf("a second retry: exit %d\n%s", code, e.last)
+		}
+		if code := e.ack("seen"); code != ExitOK {
+			t.Fatalf("ack: exit %d\n%s", code, e.last)
+		}
+		// Asked again after the ack, it is a new switch, refused by its
+		// used counter.
 		if code := e.switchTo(rel3); code != ExitFailed || e.record().Error != CodeCounterNotAbove {
 			t.Fatalf("a new switch: exit %d, %+v", code, e.record())
 		}
@@ -732,9 +804,13 @@ func TestCrashInPackageStep(t *testing.T) {
 			if got := e.highest(); got != "2" {
 				t.Errorf("highest %q", got)
 			}
-			// The retry reports the settled outcome once, then runs anew.
+			// The retry reports the settled outcome; once the owner
+			// acknowledges it, the request runs anew.
 			if code := e.switchTo(rel3); code != ExitFailed || !strings.Contains(e.last, "settled: this switch to "+rel3) {
 				t.Fatalf("retry: exit %d\n%s", code, e.last)
+			}
+			if code := e.ack("seen"); code != ExitOK {
+				t.Fatalf("ack: exit %d\n%s", code, e.last)
 			}
 			e.runner.reset()
 			if code := e.switchTo(rel3); code != ExitOK {
@@ -879,8 +955,8 @@ func TestResumeCrashesToo(t *testing.T) {
 // TestDryRetryChangesNothing: a dry run of a request whose settled outcome
 // is still to be reported shows that outcome and changes nothing (not the
 // record, not its time, not the report still owed); the real retry then
-// reports it once and does not go back again, and only the request after
-// that is a new one.
+// reports it and does not go back again, the outcome stays owed, and only
+// the request after the owner's ack is a new one.
 func TestDryRetryChangesNothing(t *testing.T) {
 	e := active(t)
 	e.keepOwed = true
@@ -913,8 +989,11 @@ func TestDryRetryChangesNothing(t *testing.T) {
 		t.Fatalf("retry: exit %d\n%s", code, e.last)
 	}
 	e.links(rel1, rel2)
-	if owed := e.owed(); len(owed) != 0 {
+	if owed := e.owed(); len(owed) != 1 || owed[0].RequestID != "rollback:"+rel1 {
 		t.Errorf("owed: %+v", owed)
+	}
+	if code := e.ack("seen"); code != ExitOK {
+		t.Fatalf("ack: exit %d\n%s", code, e.last)
 	}
 	if code := e.rollBack("previous"); code != ExitOK {
 		t.Fatalf("a new rollback: exit %d", code)
@@ -927,9 +1006,9 @@ func TestDryRetryChangesNothing(t *testing.T) {
 // outcome owed: owed.json holds it before the journal is removed. The
 // retry reports it and does nothing else; a retried rollback is bound to
 // the release it went to (its request id), never to previous resolved
-// anew, whether it is asked as previous or by that id. A command that
-// printed its result leaves it owed too: a line written is no proof that
-// anyone read it; only ack or the same request clears it.
+// anew, whether it is asked as previous or by that id, and the outcome
+// stays owed. A command that printed its result leaves it owed too: a line
+// written is no proof that anyone read it; only the owner's ack clears it.
 func TestResponseLostAfterJournalRemoved(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -978,9 +1057,8 @@ func TestResponseLostAfterJournalRemoved(t *testing.T) {
 			if len(e.runner.calls) != 0 {
 				t.Errorf("the retry ran %v", e.runner.calls)
 			}
-			if owed := e.owed(); len(owed) != 0 {
-				t.Errorf("owed after the report: %+v", owed)
-			}
+			// Reported is not acknowledged: still owed.
+			e.owes(rec.Txn, want, ResultOK)
 		})
 	}
 	// A command that printed its result leaves it owed; the owner's ack
@@ -1098,7 +1176,8 @@ func (e *env) owedPath() string { return filepath.Join(e.root, StateDir, OwedFil
 // its outcome in owed.json, which no other record replaces. An unrelated
 // request (here a release that is not there) reports that outcome, leaves
 // it owed and is refused, changing nothing; the retried rollback then
-// reports it and does not go back again to the release it left.
+// reports it, does not go back again to the release it left, and leaves it
+// owed for the owner's ack.
 func TestOwedSurvivesUnrelatedRefusal(t *testing.T) {
 	e := active(t)
 	e.keepOwed = true
@@ -1128,8 +1207,8 @@ func TestOwedSurvivesUnrelatedRefusal(t *testing.T) {
 	if len(e.runner.calls) != 0 {
 		t.Errorf("commands run: %v", e.runner.calls)
 	}
-	if _, err := os.Stat(e.owedPath()); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("owed.json after the matching retry: %v", err)
+	if owed := e.owed(); len(owed) != 1 || owed[0].Direction != DirRollback || owed[0].ID != rel1 {
+		t.Errorf("owed after the matching retry: %+v", owed)
 	}
 }
 
@@ -1181,13 +1260,14 @@ func TestOwedKeptWhenTheResultCannotBeWritten(t *testing.T) {
 			if len(e.runner.calls) != 0 {
 				t.Errorf("commands run: %v", e.runner.calls)
 			}
-			// The next retry, with a working output, reports it once.
+			// The next retry, with a working output, reports it; it
+			// stays owed for the owner's ack.
 			if code := e.rollBack("previous"); code != ExitOK || !strings.Contains(e.last, "it is not done again") {
 				t.Fatalf("next retry: exit %d\n%s", code, e.last)
 			}
 			e.links(rel1, rel2)
-			if len(e.owed()) != 0 {
-				t.Errorf("still owed after it was reported: %+v", e.owed())
+			if owed := e.owed(); len(owed) != 1 || owed[0].Direction != DirRollback || owed[0].ID != rel1 {
+				t.Errorf("owed after it was reported: %+v", owed)
 			}
 		})
 	}
