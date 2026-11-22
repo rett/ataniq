@@ -32,39 +32,32 @@ func (c *Checker) CheckPackages() {
 	if !enforced {
 		c.notEnforced(FilePackagesAllow, DetailEmpty, NotePackagesNotEnforced)
 	}
-	p, entries, err := c.t.readDir(pacmanLocal)
-	if errors.Is(err, fs.ErrNotExist) {
-		if enforced {
-			c.hit(KindPackage, show(pacmanLocal), DetailMissing)
+	_, err := c.walk(pacmanLocal, 1, func(e *wentry) bool {
+		if !e.isDir() {
+			return false
 		}
-		return
-	}
-	if err != nil {
-		c.unreadable(pacmanLocal, err)
-		return
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		desc := path.Join(p, e.Name(), "desc")
+		desc := path.Join(e.rel, "desc")
 		_, data, err := c.t.readFile(desc, 1<<20)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				err = errors.New("no desc file")
 			}
 			c.unreadable(desc, err)
-			continue
+			return false
 		}
 		name := descName(string(data))
 		switch {
 		case name == "":
-			c.hit(KindPackage, show(path.Join(p, e.Name())), DetailNoName)
+			c.hit(KindPackage, show(e.rel), DetailNoName)
 		case slices.Contains(c.lists.ForbiddenPackages, name):
 			c.hit(KindPackage, name, DetailForbidden)
 		case enforced && !slices.Contains(c.lists.PackagesAllow, name):
 			c.hit(KindPackage, name, DetailNotAllowed)
 		}
+		return false
+	})
+	if errors.Is(err, fs.ErrNotExist) && enforced {
+		c.hit(KindPackage, show(pacmanLocal), DetailMissing)
 	}
 }
 

@@ -1,7 +1,6 @@
 package noaicheck
 
 import (
-	"io/fs"
 	"path"
 	"slices"
 )
@@ -48,70 +47,73 @@ var nodeModuleRoots = []string{"usr/lib/node_modules", "usr/local/lib/node_modul
 // into, each is a hit of kind "tool".
 var ToolNames = []string{"mise", "npm", "npx", "node", "nodejs", "uv", "uvx", "pipx", "pnpm", "yarn", "bun", "deno"}
 
-// entry is a name found in one of the places binaries are looked for.
-type entry struct {
-	rel  string
-	name string
-}
-
-// binaryEntries lists, once per run, every entry of the places binaries are
+// scanBinaries looks, once per run, through every place binaries are
 // looked for: the fixed bin folders (one level), /opt (down to optDepth),
 // the install folders of every home and every node_modules/.bin below a home
-// or a global module folder.
-func (c *Checker) binaryEntries() []entry {
-	if c.bins != nil {
-		return c.bins
+// or a global module folder. It keeps the paths of the entries named like an
+// agent tool or an installer, not the entries themselves; the walks stream
+// each folder, so a wide folder costs time, not memory.
+func (c *Checker) scanBinaries() {
+	if c.binScanned {
+		return
 	}
-	c.bins = []entry{}
-	seen := map[string]bool{}
-	add := func(rel string, d fs.DirEntry) {
-		if !seen[rel] {
-			seen[rel] = true
-			c.bins = append(c.bins, entry{rel: rel, name: d.Name()})
+	c.binScanned = true
+	match := func(e *wentry) {
+		for _, m := range []struct {
+			names []string
+			dst   *[]string
+		}{{c.lists.AINames, &c.binHits}, {ToolNames, &c.toolHits}} {
+			if slices.Contains(m.names, e.name) && c.t.b.hold(int64(len(e.rel))+32) {
+				*m.dst = append(*m.dst, e.rel)
+			}
 		}
 	}
+	one := func(e *wentry) bool { match(e); return false }
+	all := func(e *wentry) bool { match(e); return true }
 	for _, dir := range BinDirs {
-		c.t.walk(dir, 1, add, c.unreadable)
+		c.walk(dir, 1, one)
 	}
-	c.t.walk("opt", optDepth, add, c.unreadable)
+	c.walk("opt", optDepth, all)
 
-	nodeBins := func(rel string, d fs.DirEntry) {
-		if d.IsDir() && d.Name() == "node_modules" {
-			c.t.walk(path.Join(rel, ".bin"), 1, add, c.unreadable)
+	nodeBins := func(e *wentry) bool {
+		if e.isDir() && e.name == "node_modules" {
+			c.walk(path.Join(e.rel, ".bin"), 1, one)
 		}
+		return true
 	}
 	for _, root := range nodeModuleRoots {
 		if path.Base(root) == "node_modules" {
-			c.t.walk(path.Join(root, ".bin"), 1, add, c.unreadable)
+			c.walk(path.Join(root, ".bin"), 1, one)
 		}
-		c.t.walk(root, installDepth, nodeBins, c.unreadable)
+		c.walk(root, installDepth, nodeBins)
 	}
 	for _, home := range c.homeFolders() {
 		for _, d := range homeInstallDirs {
-			c.t.walk(path.Join(home, d.rel), d.depth, add, c.unreadable)
+			if d.depth == 1 {
+				c.walk(path.Join(home, d.rel), 1, one)
+			} else {
+				c.walk(path.Join(home, d.rel), d.depth, all)
+			}
 		}
-		c.t.walk(home, installDepth, nodeBins, c.unreadable)
+		c.walk(home, installDepth, nodeBins)
 	}
-	return c.bins
 }
 
 // CheckBinaries is check 1: a file, link or folder named exactly like an
 // executable name of ai-names.list in the places binaries are looked for is
 // a hit of kind "binary".
 func (c *Checker) CheckBinaries() {
-	for _, e := range c.binaryEntries() {
-		if slices.Contains(c.lists.AINames, e.name) {
-			c.hit(KindBinary, show(e.rel), "")
-		}
+	c.scanBinaries()
+	for _, rel := range c.binHits {
+		c.hit(KindBinary, show(rel), "")
 	}
 }
 
 // CheckTools is check 2: one of ToolNames in the same places is a hit of
 // kind "tool".
 func (c *Checker) CheckTools() {
-	for _, e := range c.binaryEntries() {
-		if slices.Contains(ToolNames, e.name) {
-			c.hit(KindTool, show(e.rel), "")
-		}
+	c.scanBinaries()
+	for _, rel := range c.toolHits {
+		c.hit(KindTool, show(rel), "")
 	}
 }

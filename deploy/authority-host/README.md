@@ -264,7 +264,14 @@ What it detects, by kind:
 - `policy` (with `--require-policy`): a policy list of the release is
   empty, or `nft.digest` is missing.
 - `unreadable`: a place the check must look into but cannot read, a link
-  loop, or a file too large to read. The check fails closed.
+  loop, a file too large to read, or a file replaced between its check and
+  its opening. The check fails closed.
+- `incomplete`: a check could not cover all it must, so the run proves
+  nothing there: `HIT incomplete <folder> depth` when a walk stopped at its
+  depth limit above a folder it had to enter, and
+  `HIT incomplete budget <limit>` when the run's budget is spent (4 million
+  folder entries, 1 GiB read, 4 minutes, 256 MiB held), after which every
+  later read stops. Neither is ever a pass.
 
 The lists in `share/`, one entry per line, `#` comments and blank lines
 ignored; a line with a path separator (except between the components of a
@@ -288,8 +295,9 @@ Limits, said once:
   egress filter cover that. Names are matched exactly, and the lists need
   upkeep as tools appear.
 - `/opt` is looked into four levels deep, install folders and the search
-  for `node_modules` eight; a tool placed deeper, or anywhere outside the
-  places above, is left to the package allowlist.
+  for `node_modules` eight; a folder deeper than that is not entered, and
+  the run says so (`HIT incomplete`). A tool anywhere outside the places
+  above is left to the package allowlist.
 - A process that renames itself is not caught by name.
 - Ports are those of the network namespace the check runs in; UDP is not
   checked.

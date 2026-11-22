@@ -20,28 +20,27 @@ const commLen = 15
 // process when the check does not run as root, a kernel thread), is passed
 // over; the check runs as root on the host.
 func (c *Checker) CheckProcesses() {
-	p, entries, err := c.t.readDir("proc")
-	if err != nil {
-		c.unreadable("proc", err)
-		return
+	c.walk("proc", 1, func(e *wentry) bool {
+		if isPID(e.name) {
+			c.checkProcess(e.rel)
+		}
+		return false
+	})
+}
+
+// checkProcess checks the process whose folder is dir.
+func (c *Checker) checkProcess(dir string) {
+	var names []string
+	if _, data, err := c.t.readFile(path.Join(dir, "comm"), 4096); err == nil {
+		names = append(names, strings.TrimSuffix(string(data), "\n"))
 	}
-	for _, e := range entries {
-		if !isPID(e.Name()) {
-			continue
-		}
-		dir := path.Join(p, e.Name())
-		var names []string
-		if _, data, err := c.t.readFile(path.Join(dir, "comm"), 4096); err == nil {
-			names = append(names, strings.TrimSuffix(string(data), "\n"))
-		}
-		if target, err := c.t.readlink(path.Join(dir, "exe")); err == nil {
-			names = append(names, path.Base(strings.TrimSuffix(target, " (deleted)")))
-		} else if !gone(err) {
-			c.unreadable(path.Join(dir, "exe"), err)
-		}
-		if m := c.matchProcess(names); m != "" {
-			c.hit(KindProcess, show(dir), m)
-		}
+	if target, err := c.t.readlink(path.Join(dir, "exe")); err == nil {
+		names = append(names, path.Base(strings.TrimSuffix(target, " (deleted)")))
+	} else if !gone(err) {
+		c.unreadable(path.Join(dir, "exe"), err)
+	}
+	if m := c.matchProcess(names); m != "" {
+		c.hit(KindProcess, show(dir), m)
 	}
 }
 

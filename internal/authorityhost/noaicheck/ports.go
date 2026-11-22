@@ -35,6 +35,9 @@ func (c *Checker) CheckPorts() {
 		required   bool
 	}{{"proc/net/tcp", "tcp", true}, {"proc/net/tcp6", "tcp6", false}} {
 		_, data, err := c.t.readFile(f.rel, 64<<20)
+		if errors.Is(err, errBudget) {
+			return
+		}
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				if !f.required {

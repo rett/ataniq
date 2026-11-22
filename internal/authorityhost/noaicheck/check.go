@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -25,6 +24,16 @@ const (
 	KindNFT        = "nft"        // the firewall rules differ from the release's
 	KindUnreadable = "unreadable" // a place the check must look into but cannot
 	KindPolicy     = "policy"     // a release policy list is empty or missing (--require-policy)
+	KindIncomplete = "incomplete" // a check could not cover all it must: the run proves nothing there
+)
+
+// Incomplete hit names and details: a walk cut short by its depth limit
+// ("HIT incomplete <folder> depth"), and the run's budget spent
+// ("HIT incomplete budget <limit>", the limit one of entries, bytes, time
+// or memory).
+const (
+	DetailDepth = "depth"
+	PathBudget  = "budget"
 )
 
 // DetailEmpty is the detail of a policy hit for an empty allowlist; a
@@ -69,7 +78,10 @@ type Checker struct {
 	notes   []string
 	partial bool // a policy was not enforced
 	homes   []string
-	bins    []entry
+
+	binScanned bool
+	binHits    []string // paths named like an agent tool
+	toolHits   []string // paths named like an installer or runtime
 }
 
 // Open opens the tree beneath rootDir for the checks; close it with Close.
@@ -87,20 +99,29 @@ func Open(rootDir string, lists *Lists) (*Checker, error) {
 // Close releases the tree.
 func (c *Checker) Close() error { return c.t.close() }
 
-// Report returns the hits and notes gathered so far.
+// Report returns the hits and notes gathered so far. When the run's budget
+// is spent its last hit is "incomplete budget <limit>".
 func (c *Checker) Report() Report {
 	r := Report{Hits: slices.Clone(c.hits), Notes: slices.Clone(c.notes), Complete: !c.partial}
+	if c.t.b.spent != "" {
+		r.Hits = append(r.Hits, Hit{Kind: KindIncomplete, Path: PathBudget, Detail: c.t.b.spent})
+	}
 	for _, h := range r.Hits {
-		if h.Kind == KindPolicy {
+		if h.Kind == KindPolicy || h.Kind == KindIncomplete {
 			r.Complete = false
 		}
 	}
 	return r
 }
 
+// hit records a hit once. Each counts against the run's memory budget; once
+// that is spent no more is kept, and the report ends with the budget hit.
 func (c *Checker) hit(kind, rel, detail string) {
 	h := Hit{Kind: kind, Path: rel, Detail: detail}
 	if c.seen[h] {
+		return
+	}
+	if !c.t.b.hold(int64(len(kind)+len(rel)+len(detail)) + 96) {
 		return
 	}
 	c.seen[h] = true
@@ -128,12 +149,34 @@ func (c *Checker) notEnforced(list, detail, n string) {
 }
 
 // unreadable records a place the check could not look into. A place that is
-// not there is not a hit.
+// not there is not a hit, and neither is a read refused because the budget
+// is spent (the report says that once).
 func (c *Checker) unreadable(rel string, err error) {
-	if errors.Is(err, fs.ErrNotExist) {
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, errBudget) {
 		return
 	}
 	c.hit(KindUnreadable, show(clean(rel)), describe(err))
+}
+
+// walk walks the tree from start (see tree.walk) and reports what keeps it
+// from covering the folder: a folder it cannot read is a hit of kind
+// "unreadable" (a start that is not there is nothing), and a walk that
+// stopped at maxDepth above a folder visit wanted entered is the hit
+// "incomplete <start> depth". It returns the resolved start, and the
+// start's error.
+func (c *Checker) walk(start string, maxDepth int, visit func(e *wentry) bool) (string, error) {
+	p, deep, err := c.t.walk(start, maxDepth, visit, c.unreadable)
+	if err != nil {
+		if p == "" {
+			p = clean(start)
+		}
+		c.unreadable(p, err)
+		return p, err
+	}
+	if deep {
+		c.hit(KindIncomplete, show(p), DetailDepth)
+	}
+	return p, nil
 }
 
 // RunAll runs every check of the main command in order: the binaries, the
@@ -240,13 +283,10 @@ func (c *Checker) homeFolders() []string {
 		c.unreadable("etc/passwd", err)
 	}
 	cands = append(cands, "/root")
-	p, entries, err := c.t.readDir("home")
-	if err != nil {
-		c.unreadable("home", err)
-	}
-	for _, e := range entries {
-		cands = append(cands, path.Join(p, e.Name()))
-	}
+	c.walk("home", 1, func(e *wentry) bool {
+		cands = append(cands, e.rel)
+		return false
+	})
 	seen := map[string]bool{}
 	c.homes = []string{}
 	for _, h := range cands {

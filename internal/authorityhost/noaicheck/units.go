@@ -1,7 +1,6 @@
 package noaicheck
 
 import (
-	"io/fs"
 	"path"
 	"slices"
 	"strings"
@@ -27,23 +26,16 @@ func (c *Checker) CheckUnits() {
 		dirs = append(dirs, path.Join(home, ".config/systemd/user"))
 	}
 	for _, dir := range dirs {
-		p, entries, err := c.t.readDir(dir)
-		if err != nil {
-			c.unreadable(dir, err)
-			continue
-		}
-		for _, e := range entries {
-			n := e.Name()
-			if !e.IsDir() || !(strings.HasSuffix(n, ".wants") || strings.HasSuffix(n, ".requires") || strings.HasSuffix(n, ".upholds")) {
-				continue
+		c.walk(dir, 2, func(e *wentry) bool {
+			if e.depth == 1 {
+				n := e.name
+				return strings.HasSuffix(n, ".wants") || strings.HasSuffix(n, ".requires") || strings.HasSuffix(n, ".upholds")
 			}
-			wants := path.Join(p, n)
-			c.t.walk(wants, 1, func(rel string, _ fs.DirEntry) {
-				if !c.unitAllowed(path.Base(rel)) {
-					c.hit(KindUnit, show(rel), "")
-				}
-			}, c.unreadable)
-		}
+			if !c.unitAllowed(e.name) {
+				c.hit(KindUnit, show(e.rel), "")
+			}
+			return false
+		})
 	}
 }
 

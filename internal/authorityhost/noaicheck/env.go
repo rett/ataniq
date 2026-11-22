@@ -2,7 +2,6 @@ package noaicheck
 
 import (
 	"errors"
-	"io/fs"
 	"path"
 	"strings"
 )
@@ -102,11 +101,12 @@ func (c *Checker) CheckEnv() {
 		}
 	}
 	scanDir := func(rel string, depth int) {
-		c.t.walk(rel, depth, func(p string, d fs.DirEntry) {
-			if d.Type().IsRegular() {
-				scan(p)
+		c.walk(rel, depth, func(e *wentry) bool {
+			if e.isRegular() {
+				scan(e.rel)
 			}
-		}, c.unreadable)
+			return true
+		})
 	}
 	for _, f := range envFiles {
 		scan(f)
