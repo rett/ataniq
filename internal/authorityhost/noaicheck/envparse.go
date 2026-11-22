@@ -955,6 +955,10 @@ type forList struct {
 // words (". "$profile"" in a loop over /etc/profile.d/*.sh). The value
 // given to XDG_CONFIG_HOME is returned too (xdg, see addXDG).
 //
+// A [[ ... ]] conditional is one expression up to its closing ]]: a
+// parenthesis or operator in it (a regular expression's) does not start a
+// command.
+//
 // The parse is charged to the run's budget as it goes (see parseMeter):
 // a profile whose source references or loop words do not fit, or whose
 // expansions or brace groups nest deeper than maxNesting, stops the parse
@@ -984,6 +988,7 @@ func parseShell(r *envParse, data string, fish bool, funcs map[string]bool, m *p
 	)
 	cmdPos, args, redirect, here, strip := true, argNone, false, false, false
 	declFlag := false // a function's declaration is global or exported (argFuncDecl)
+	cond := false     // in a [[ ... ]] conditional
 	// set records the name n a word assigns or exports, and the value it
 	// gives PATH or XDG_CONFIG_HOME.
 	set := func(n string, w shWord, fn string) {
@@ -1032,6 +1037,20 @@ loop:
 		op, w, eof := l.next()
 		if eof || m.over {
 			break loop
+		}
+		if cond {
+			// Inside [[ ... ]]: its operators, parentheses and words are
+			// one conditional expression, up to the closing ]]. A
+			// newline, ';' or '&' (which cannot be in one) ends it too,
+			// and is read as usual.
+			if op == "" && !w.exp && w.lit == "]]" {
+				cond, cmdPos, args = false, false, argNone
+				continue
+			}
+			if op != "\n" && op != ";" && op != "&" {
+				continue
+			}
+			cond = false
 		}
 		if op != "" {
 			switch op {
@@ -1104,6 +1123,10 @@ loop:
 				continue
 			}
 			if !w.exp && shReserved[w.lit] {
+				continue
+			}
+			if !w.exp && w.lit == "[[" {
+				cond = true
 				continue
 			}
 			cmdPos, args = false, argNone

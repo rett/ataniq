@@ -828,7 +828,9 @@ folder whose `share/` holds the lists (and, in `pre` and `post`, whose
   words: an assignment at the start of a command, the names `export`,
   `declare`, `typeset`, `readonly` and `env` set, `setenv` (csh) and, in
   a `.fish` file, `set`; comments, quoted values, substitutions and
-  here-documents are never read for names. A function body
+  here-documents are never read for names, and a `[[ ... ]]` conditional
+  is one expression up to its `]]` (a parenthesis of a regular
+  expression in it starts no command). A function body
   (`NAME() { ... }`, `function NAME { ... }`) is followed by its braces:
   a plain `local`, `declare` or `typeset` in it is the function's own
   variable and is passed over, but one with a global or export flag

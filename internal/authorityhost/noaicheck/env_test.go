@@ -89,6 +89,8 @@ func TestParseEnv(t *testing.T) {
 		{"a function's export of a computed name", sh, "f() { export \"$1\"; }\n", nil, nil, nil, true},
 		{"after a function a declaration counts again", sh, "f() { local A; }\ndeclare -x OPENAI_API_KEY=x\n", []string{"OPENAI_API_KEY"}, nil, nil, false},
 		{"a profile in the usual style", sh, profileSample, nil, nil, []string{"/etc/profile.d/*.sh"}, false},
+		{"a regular expression in a conditional", sh, "if [[ $o =~ (\\[((no|dont)-?)\\]). ]]; then OPENAI_API_KEY=1; fi\n[[ -n $x && ( $y == . ) ]] && . /etc/app/x.sh\n[[ $a < $b ]] || CODEX_HOME=2\n",
+			[]string{"OPENAI_API_KEY", "CODEX_HOME"}, nil, []string{"/etc/app/x.sh"}, false},
 		{"an unclosed quote", sh, "A='x\n", nil, nil, nil, true},
 		{"an unclosed substitution", sh, "A=$(x\n", nil, nil, nil, true},
 		{"a here-document that never ends", sh, "cat <<EOF\nx\n", nil, nil, nil, true},
