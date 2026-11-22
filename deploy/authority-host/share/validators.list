@@ -1,0 +1,5 @@
+# The validators of the release, run by ah-switch before the switch (see
+# ../README.md, "Layout"). One command per line; {release} is this release's
+# folder. ah-release check requires one validator per shipped file of
+# etc/caddy, etc/nftables and etc/systemd.
+caddy validate --config {release}/etc/caddy/Caddyfile --adapter caddyfile

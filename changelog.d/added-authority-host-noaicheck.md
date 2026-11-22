@@ -1,0 +1,73 @@
+- Add `ah-noaicheck`, the authority host's no-AI check: a small static
+  program that reads a host tree (`--root`, default `/`) and prints one
+  `HIT <kind> <path-or-name>` line per sign of an AI agent tool, then
+  `RUN complete` or `RUN incomplete` and `ok` or `FAILED n hit(s)`
+  (`--json` for one JSON object): an agent binary or an installer such as
+  `npm` or `mise` in the folders of an explicit PATH inventory (the
+  system bin folders, their immediate subfolders and every folder the
+  system and home startup files, and the files they source, put on PATH),
+  anywhere in `/usr/local` and
+  `/opt`, in any `node_modules/.bin`, in a home's bin and install folders
+  or as an executable file anywhere in a home, an agent credential folder
+  in a home, a provider-key variable in an environment file, profile or
+  unit (each read in its own syntax, by name only: a function's plain
+  local declarations passed over but its global or exported ones
+  (`declare -gx`, `typeset -x`) kept, home-relative sources resolved per
+  home, a configured `XDG_CONFIG_HOME` followed, a source in a function
+  body that it cannot resolve only a `NOTE deferred-source` line, and
+  the units read through each systemd manager's effective unit view, with
+  the attached user folders, lookup precedence, masks by link or empty
+  file, dependency entries resolved by name, linked dependency folders,
+  `EnvironmentFile=` resets and each manager's own specifiers), an agent
+  process, an enabled unit not in
+  `units.allow`, a listening TCP port not in `ports.allow`, a package
+  forbidden or not in `packages.allow` and, when the release pins one, a
+  firewall rule set whose digest differs. `--phase pre`, before a switch,
+  also reads the candidate release's own units and the variables its
+  front-end configuration refers to, by format (in a Caddyfile Caddy's
+  `{env.NAME}` and `{$NAME}`, in Caddy's JSON, read as JSON, only
+  `{env.NAME}`; shell-style `$NAME` and `${NAME}` are literal text, never
+  matched, and so is every comment and literal, a `$` in a JSON value
+  included; a reference it cannot read (a `{$NAME:default}` without its
+  closing brace included, which names nothing), or JSON that does not
+  parse, as
+  `HIT incomplete release-syntax <file>`, never its text), merges each
+  candidate unit with its drop-ins (an empty `EnvironmentFile=` dropping
+  the ones before it) before opening the files they name, one unit at a
+  time, charging what it keeps to the run's memory budget and stopping,
+  incomplete, when that is spent, and leaves out
+  the ports, the digest and the installed packages' `packages.allow`
+  check (the old host's packages; forbidden packages are still checked);
+  `--phase post`, after it, runs everything; `full`, the default, checks
+  the host as it is. `--require-policy`, which the switch passes, makes an
+  empty `units.allow`, `packages.allow` or `ports.allow` and a release
+  without `share/nft.digest` a hit (`HIT policy`); without it the
+  unenforced policies are `NOTE` lines and the run is incomplete.
+  Whatever the check cannot cover (a walk at its depth limit, an entry of
+  unknown type, its budget of entries, bytes, time, memory and nesting
+  spent (charged before the work, a profile's nested expansions and loop
+  fan-out included, and each path a source or PATH element stands for in
+  each home and configured `XDG_CONFIG_HOME` folder, streamed one at a
+  time and no longer built once a budget is spent), an
+  unusable `/proc`, a process whose `/proc` folder stays without a name,
+  a socket table without its own protocol's header, a missing or empty
+  pacman database or a package entry without a name, a pinned firewall
+  digest without a listing, a file it cannot parse, a source or PATH
+  folder it cannot resolve, a missing required `EnvironmentFile=`, a
+  list, listing or `nft-digest` FILE that is not a regular file, never
+  read or waited on: `HIT incomplete input <name>`)
+  is a `HIT incomplete` line, and every hit that is not a finding makes
+  the run incomplete, never a pass. `ah-noaicheck ports` checks only the
+  listening ports. It exits 0 clean, 1 on a hit and 2 on an error, never
+  prints a file's content or a value, escapes every path in its errors,
+  and reads its lists from the release's `share/`
+  (`deploy/authority-host/share`), whose forbidden-package list names, by
+  exact name, `nodejs` and each of its LTS series, the package managers
+  that install agent tools, and `ollama` with its accelerator variants. A
+  renamed binary is not caught by
+  name: the package allowlist and the egress filter cover that. Two
+  stated limits are accepted: bash-completion's array-driven startup
+  loop stays `HIT incomplete env-source` (the library is outside the
+  host's package baseline), and an enabled unit whose dependency link
+  leads to a mask is a `NOTE unit masked` line even when a higher folder
+  holds a unit of that name.

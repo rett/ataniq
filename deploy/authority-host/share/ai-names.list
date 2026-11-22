@@ -1,0 +1,74 @@
+# Known AI agent tools, read by ah-noaicheck (see ../README.md).
+#
+# One entry per line; blank lines and lines starting with '#' are ignored.
+# An entry without a leading '.' is an executable name: a file, link or
+# folder with that exact name in a binary or install folder, or a running
+# process of that name, is a hit. An entry starting with '.' is a credential
+# or config path relative to a home folder (components separated by '/'):
+# its presence in any home or in /root is a hit.
+#
+# A renamed binary is not caught by name; the package allowlist and the
+# egress filter cover that. The list needs upkeep as tools appear.
+
+# Executable names.
+claude
+codex
+opencode
+gemini
+amp
+copilot
+github-copilot-cli
+crush
+cursor-agent
+grok
+kilo
+kilocode
+kimi
+qwen
+aider
+goose
+continue
+cn
+cline
+devin
+kiro-cli
+antigravity
+agy
+droid
+llm
+ollama
+
+# Credential and config paths, relative to a home folder.
+.claude
+.claude.json
+.config/claude
+.codex
+.config/opencode
+.local/share/opencode
+.gemini
+.config/amp
+.local/share/amp
+.copilot
+.config/github-copilot
+.config/crush
+.local/share/crush
+.cursor
+.config/cursor
+.grok
+.kilocode
+.config/kilo
+.kimi
+.qwen
+.aider
+.aider.conf.yml
+.config/goose
+.local/share/goose
+.continue
+.cline
+.devin
+.kiro
+.aws/amazonq
+.antigravity
+.factory
+.config/io.datasette.llm
+.ollama

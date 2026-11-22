@@ -1,0 +1,6 @@
+# The reload commands of the release, run by ah-switch after current is
+# moved (see ../README.md, "Layout"). One command per line, no {release} in
+# the arguments.
+# The Caddyfile sets "admin off", so Caddy has no admin endpoint to reload
+# through: "systemctl reload caddy" cannot be used, and Caddy is restarted.
+systemctl restart caddy
