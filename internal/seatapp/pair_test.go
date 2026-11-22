@@ -193,6 +193,8 @@ func TestPairRefusals(t *testing.T) {
 		{"posted credential id differs", func(x *registration) { x.PostedCredID = other.credID }, 400, "credential_invalid"},
 		{"credential id one byte short", func(x *registration) { x.PostedCredID = short(15); x.AuthCredID = short(15) }, 400, "credential_invalid"},
 		{"credential id too long", func(x *registration) { x.PostedCredID = short(1025); x.AuthCredID = short(1025) }, 400, "credential_invalid"},
+		{"credential id of 1024 bytes", func(x *registration) { x.PostedCredID = short(1024); x.AuthCredID = short(1024) }, 400, "credential_invalid"},
+		{"backed up but not backup eligible", func(x *registration) { x.Flags = uvUPAT | 0x10 }, 400, "authenticator_data_invalid"},
 
 		{"garbage key", func(x *registration) { x.SPKI = []byte("not a key") }, 400, "key_invalid"},
 		{"key with trailing data", func(x *registration) { x.SPKI = append(append([]byte{}, x.SPKI...), 0) }, 400, "key_invalid"},
@@ -267,6 +269,38 @@ func TestPairChallengeStates(t *testing.T) {
 	})
 }
 
+// TestPairExpiryIsSampledWhenTheChallengeIsTaken: a request that starts inside
+// the challenge's five minutes and is still being read when they end must not
+// consume it.
+func TestPairExpiryIsSampledWhenTheChallengeIsTaken(t *testing.T) {
+	r := newRig(t)
+	a := newAuthenticator(t)
+	ch := r.getChallenge(t)
+	r.clock.Advance(challengeTTL - time.Second)
+	b, _ := json.Marshal(a.register(t, ch))
+	body := &slowBody{r: bytes.NewReader(b), after: func() { r.clock.Advance(2 * time.Second) }}
+	w := r.do("POST", "/api/pair", body, map[string]string{"Origin": testOrigin, "Content-Type": "application/json"})
+	wantError(t, "read across the expiry", w, 400, "challenge_invalid")
+	if len(r.daemon.requests()) != 0 {
+		t.Error("the daemon was called")
+	}
+}
+
+// slowBody is a request body whose reading takes time: after runs when the
+// end is reached.
+type slowBody struct {
+	r     *bytes.Reader
+	after func()
+}
+
+func (s *slowBody) Read(p []byte) (int, error) {
+	n, err := s.r.Read(p)
+	if err != nil {
+		s.after()
+	}
+	return n, err
+}
+
 func TestPairDaemonErrors(t *testing.T) {
 	a := newAuthenticator(t)
 	for _, tc := range []struct {
@@ -335,7 +369,7 @@ func TestPairOversizedBody(t *testing.T) {
 	}
 	// Not declared (chunked): the read stops at the limit.
 	for _, path := range []string{"/api/pair", "/api/pair-challenge"} {
-		req := httptest.NewRequest("POST", path, stringReader(strings.Repeat(" ", MaxBody+1)))
+		req := newRequest("POST", path, stringReader(strings.Repeat(" ", MaxBody+1)))
 		req.ContentLength = -1
 		req.Header.Set("Origin", testOrigin)
 		req.Header.Set("Content-Type", "application/json")
@@ -344,7 +378,7 @@ func TestPairOversizedBody(t *testing.T) {
 		wantError(t, "undeclared "+path, w, 413, "too_large")
 	}
 	// Exactly the limit is read (and is garbage).
-	req := httptest.NewRequest("POST", "/api/pair", stringReader(`{"code":"`+strings.Repeat("a", MaxBody-20)+`"}`))
+	req := newRequest("POST", "/api/pair", stringReader(`{"code":"`+strings.Repeat("a", MaxBody-20)+`"}`))
 	req.Header.Set("Origin", testOrigin)
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
@@ -426,7 +460,7 @@ func TestPairRateLimit(t *testing.T) {
 		for i := 0; i < pairAttempts+1; i++ {
 			garbage(r, nil)
 		}
-		req := httptest.NewRequest("POST", "/api/pair", strings.NewReader("{"))
+		req := newRequest("POST", "/api/pair", strings.NewReader("{"))
 		req.RemoteAddr = "198.51.100.7:4000"
 		req.Header.Set("Origin", testOrigin)
 		req.Header.Set("Content-Type", "application/json")

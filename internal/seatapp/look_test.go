@@ -14,7 +14,7 @@ import (
 func TestPagesAreWellFormedForAPhone(t *testing.T) {
 	r := newRig(t)
 	titles := map[string]string{}
-	for _, path := range []string{"/", "/pair"} {
+	for _, path := range []string{"/", "/pair/"} {
 		body := r.do("GET", path, nil, nil).Body.String()
 		for _, want := range []string{
 			"<!doctype html>",
@@ -46,13 +46,13 @@ func TestPagesAreWellFormedForAPhone(t *testing.T) {
 			t.Errorf("%s: the viewport stops zooming", path)
 		}
 	}
-	if titles["/"] == titles["/pair"] {
+	if titles["/"] == titles["/pair/"] {
 		t.Errorf("the pages share the title %q", titles["/"])
 	}
 }
 
 func TestPairPageStatesAreWords(t *testing.T) {
-	body := newRig(t).do("GET", "/pair", nil, nil).Body.String()
+	body := newRig(t).do("GET", "/pair/", nil, nil).Body.String()
 	// The status line is a live region for the result, and the script's
 	// failures are words (see the script's messages); the page works without
 	// script by saying so.

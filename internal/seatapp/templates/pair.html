@@ -2,13 +2,15 @@
 <h1>Pair this phone</h1>
 <div id="pair" data-rp-id="{{.RPID}}" data-rp-name="{{.RPName}}">
 <p id="status" role="status">Loading.</p>
-<noscript><p>This page needs script to make a passkey. Turn script on for this site and scan the code again.</p></noscript>
+<noscript><p>This page needs script to make a passkey. Close this tab now, so the code leaves the address bar, then turn script on for this site and scan the code again.</p></noscript>
 <button id="start" type="button" hidden>Make a passkey</button>
 <section id="result" aria-labelledby="result-title" hidden>
 <h2 id="result-title">Six words</h2>
 <ol id="words"></ol>
-<p>Compare these six words with the desk console, then confirm there. Nothing is trusted until you confirm at the desk.</p>
+<p id="compare">Compare these six words with the desk console, then confirm there. Nothing is trusted until you confirm at the desk.</p>
+<p id="mismatch" hidden>The six words the seat sent do not match the ones this phone worked out from its own passkey. Do not confirm at the desk. Cancel this pairing there and start a new one.</p>
 </section>
 </div>
+<script src="/static/words.js"></script>
 <script src="/static/pair.js"></script>
 {{end}}

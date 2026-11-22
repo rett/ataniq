@@ -60,10 +60,14 @@ type Config struct {
 	// browser's Origin header leaves the default port out). Links to the app
 	// always go to the reverse proxy over HTTPS on port 443; the app itself
 	// listens on plain HTTP behind it. The Origin header of every POST must
-	// equal it, and the passkey's client data must name it.
+	// equal it, the Host header must be its host (the proxy passes the Host
+	// it was asked for), and the passkey's client data must name it.
 	Origin string
-	// RPID is the relying party id of the passkeys: the origin's host name
-	// or a parent domain of it, "seat.example" for "https://seat.example".
+	// RPID is the relying party id of the passkeys: exactly the origin's host
+	// name, "seat.example" for "https://seat.example". The seat has a name of
+	// its own, so a parent domain, which would let a passkey be used by every
+	// name below it (and which a browser refuses for a public suffix), is not
+	// accepted.
 	RPID string
 	// Daemon is the port to the daemon. It is required.
 	Daemon Daemon
@@ -80,6 +84,11 @@ type Config struct {
 	// port, when its host is a loopback IP address or "localhost". It is for
 	// tests of this package and no command sets it.
 	AllowInsecureLoopbackForTests bool
+	// AllowNoFetchMetadataForTests lets a POST come without a Sec-Fetch-Site
+	// header. Every browser that makes a passkey sends it, so a POST without
+	// it is refused; this option is for tests of this package, whose requests
+	// are not a browser's, and no command sets it.
+	AllowNoFetchMetadataForTests bool
 }
 
 // canonicalOrigin checks an origin and returns it in the form a browser's
@@ -112,19 +121,22 @@ func canonicalOrigin(o string, insecureLoopback bool) (origin, host string, err 
 type app struct {
 	cfg  Config
 	pair *pairing
+	// host is what the Host header of a request must be: the origin without
+	// its scheme.
+	host string
 }
 
 // New returns the app's handler. It refuses a configuration with an origin
 // that is not https on the default port (see [Config].Origin), a relying party
-// id that is not the origin's host or a parent domain of it, or no daemon.
+// id that is not the origin's host, or no daemon.
 func New(cfg Config) (http.Handler, error) {
 	origin, host, err := canonicalOrigin(cfg.Origin, cfg.AllowInsecureLoopbackForTests)
 	if err != nil {
 		return nil, err
 	}
 	cfg.Origin = origin
-	if cfg.RPID == "" || (cfg.RPID != host && !strings.HasSuffix(host, "."+cfg.RPID)) {
-		return nil, errors.New("seatapp: Config.RPID must be the origin's host or a parent domain of it")
+	if cfg.RPID == "" || cfg.RPID != host {
+		return nil, errors.New("seatapp: Config.RPID must be the origin's host")
 	}
 	if cfg.Daemon == nil {
 		return nil, errors.New("seatapp: Config.Daemon is required")
@@ -135,7 +147,8 @@ func New(cfg Config) (http.Handler, error) {
 	if cfg.Random == nil {
 		cfg.Random = rand.Reader
 	}
-	a := &app{cfg: cfg, pair: newPairing(cfg)}
+	_, hostHeader, _ := strings.Cut(origin, "://")
+	a := &app{cfg: cfg, pair: newPairing(cfg), host: hostHeader}
 
 	mux := http.NewServeMux()
 	for _, rt := range a.routes() {
@@ -156,11 +169,30 @@ func (a *app) routes() []route {
 	return []route{
 		{"GET /healthz", a.healthz},
 		{"GET /{$}", a.page("home")},
-		{"GET /pair", a.page("pair")},
+		// The desk's QR opens /pair/ with the code in the fragment, so that is
+		// the canonical path; /pair goes there with a 308 (a browser keeps the
+		// fragment across a redirect that has none of its own).
+		{"GET /pair/{$}", a.page("pair")},
+		{"GET /pair", a.redirect(pairPath)},
+		{"GET /static/words.js", a.asset("assets/words.js", "text/javascript; charset=utf-8")},
 		{"GET /static/pair.js", a.asset("assets/pair.js", "text/javascript; charset=utf-8")},
 		{"GET /static/app.css", a.asset("assets/app.css", "text/css; charset=utf-8")},
 		{"POST /api/pair-challenge", a.post(a.pair.challenge)},
 		{"POST /api/pair", a.post(a.pair.pair)},
+	}
+}
+
+// pairPath is the canonical path of the pairing page, the one the desk's QR
+// holds and the only one served as a page.
+const pairPath = "/pair/"
+
+// redirect answers with a permanent redirect that keeps the method (308) to a
+// path of the app. The Location holds no fragment: the browser carries over
+// the one it has.
+func (a *app) redirect(to string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", to)
+		writeText(w, http.StatusPermanentRedirect, "moved\n")
 	}
 }
 
@@ -179,7 +211,8 @@ func Server(h http.Handler) *http.Server {
 
 // securityHeaders are on every response, an error included.
 var securityHeaders = [][2]string{
-	{"Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"},
+	{"Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; require-trusted-types-for 'script'"},
+	{"Strict-Transport-Security", "max-age=63072000"},
 	{"X-Content-Type-Options", "nosniff"},
 	{"Referrer-Policy", "no-referrer"},
 	{"X-Frame-Options", "DENY"},
@@ -216,7 +249,12 @@ func (a *app) post(h http.HandlerFunc) http.HandlerFunc {
 			writeText(w, http.StatusForbidden, "forbidden\n")
 			return
 		}
-		if s := r.Header.Get("Sec-Fetch-Site"); s != "" && s != "same-origin" {
+		if r.Host != a.host {
+			writeText(w, http.StatusForbidden, "forbidden\n")
+			return
+		}
+		site := r.Header.Get("Sec-Fetch-Site")
+		if site != "same-origin" && !(site == "" && a.cfg.AllowNoFetchMetadataForTests) {
 			writeText(w, http.StatusForbidden, "forbidden\n")
 			return
 		}

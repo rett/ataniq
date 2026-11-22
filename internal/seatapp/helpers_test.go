@@ -91,7 +91,10 @@ func newRig(t *testing.T, mod ...func(*Config)) *rig {
 		daemon: &fakeDaemon{words: [6]string{"amber", "birch", "cedar", "delta", "ember", "fjord"}},
 		clock:  &clock{t: time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)},
 	}
-	cfg := Config{Origin: testOrigin, RPID: testRPID, Daemon: r.daemon, Now: r.clock.Now, Random: &counterReader{}}
+	// The test requests carry no Sec-Fetch-Site, as a browser's always do; the
+	// tests of that rule turn the option off.
+	cfg := Config{Origin: testOrigin, RPID: testRPID, Daemon: r.daemon, Now: r.clock.Now, Random: &counterReader{},
+		AllowNoFetchMetadataForTests: true}
 	for _, m := range mod {
 		m(&cfg)
 	}
@@ -103,10 +106,23 @@ func newRig(t *testing.T, mod ...func(*Config)) *rig {
 	return r
 }
 
+// newRequest is httptest.NewRequest with the Host of the test origin, which
+// is what the proxy passes on. A "Host" entry in a header map of do or doTo
+// replaces it.
+func newRequest(method, target string, body io.Reader) *http.Request {
+	req := httptest.NewRequest(method, target, body)
+	req.Host = testRPID
+	return req
+}
+
 // do sends a request to the handler.
 func (r *rig) do(method, path string, body io.Reader, header map[string]string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(method, path, body)
+	req := newRequest(method, path, body)
 	for k, v := range header {
+		if k == "Host" {
+			req.Host = v
+			continue
+		}
 		req.Header.Set(k, v)
 	}
 	w := httptest.NewRecorder()
@@ -116,8 +132,12 @@ func (r *rig) do(method, path string, body io.Reader, header map[string]string) 
 
 // doTo sends a request with a string body to a handler.
 func doTo(h http.Handler, method, path, body string, header map[string]string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req := newRequest(method, path, strings.NewReader(body))
 	for k, v := range header {
+		if k == "Host" {
+			req.Host = v
+			continue
+		}
 		req.Header.Set(k, v)
 	}
 	w := httptest.NewRecorder()
@@ -136,7 +156,8 @@ func (r *rig) postJSON(path, body string) *httptest.ResponseRecorder {
 // wantHeaders are the headers every response carries, spelt out so that a
 // change to the app's values fails here.
 var wantHeaders = map[string]string{
-	"Content-Security-Policy":      "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+	"Content-Security-Policy":      "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; require-trusted-types-for 'script'",
+	"Strict-Transport-Security":    "max-age=63072000",
 	"X-Content-Type-Options":       "nosniff",
 	"Referrer-Policy":              "no-referrer",
 	"X-Frame-Options":              "DENY",

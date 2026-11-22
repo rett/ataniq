@@ -10,6 +10,10 @@
 // of an owner-local file named by --origin-file. The app itself speaks plain
 // HTTP behind the proxy.
 //
+// --socket needs --client-addr-header, the header the proxy sets to the
+// client's address on every request: a client of a Unix socket has no address
+// of its own, so the per-source limits would otherwise be one bucket for all.
+//
 // Nothing secret is printed or read from the command line. The daemon port is
 // not wired yet: pairing answers with the fixed code daemon_unavailable.
 package main
@@ -35,7 +39,7 @@ import (
 )
 
 const usageLine = "Usage: ataniq-seat (--origin https://HOST | --origin-file PATH) (--socket PATH | --listen LOOPBACK:PORT) [--rpid HOST] [--socket-mode MODE] [--client-addr-header NAME]\n" +
-	"--origin and --origin-file exclude each other; --socket and --listen exclude each other; --listen takes an IP literal of the loopback range."
+	"--origin and --origin-file exclude each other; --socket and --listen exclude each other; --socket needs --client-addr-header; --listen takes an IP literal of the loopback range."
 
 // maxOriginFile bounds the origin file.
 const maxOriginFile = 1 << 10
@@ -71,7 +75,7 @@ func parse(args []string, errout io.Writer) (o options, code int, ok bool) {
 	mode := fs.String("socket-mode", "0660", "permission bits of the socket file, octal")
 	fs.StringVar(&o.origin, "origin", "", "the app's origin, https://host")
 	fs.StringVar(&o.originFile, "origin-file", "", "owner-local file holding the origin")
-	fs.StringVar(&o.rpid, "rpid", "", "relying party id; the origin's host when empty")
+	fs.StringVar(&o.rpid, "rpid", "", "relying party id, which must be the origin's host; that host when empty")
 	fs.StringVar(&o.socket, "socket", "", "Unix socket path")
 	fs.StringVar(&o.listen, "listen", "", "loopback address and port")
 	fs.StringVar(&o.clientAddrHeader, "client-addr-header", "", "header the proxy sets to the client address")
@@ -87,6 +91,11 @@ func parse(args []string, errout io.Writer) (o options, code int, ok bool) {
 	}
 	if (o.socket == "") == (o.listen == "") {
 		return fail("give exactly one of --socket and --listen")
+	}
+	if o.socket != "" && o.clientAddrHeader == "" {
+		// A client of a Unix socket has no address: without the header the
+		// proxy sets, every client would share one rate-limit bucket.
+		return fail("--socket needs --client-addr-header: a Unix peer has no address, so all clients would share one limit")
 	}
 	if (o.origin == "") == (o.originFile == "") {
 		return fail("give exactly one of --origin and --origin-file")
