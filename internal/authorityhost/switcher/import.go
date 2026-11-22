@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -123,7 +124,16 @@ func within(p, base string) bool {
 	return p == base || base == "/" || strings.HasPrefix(p, base+"/")
 }
 
-// openIncoming opens the incoming folder, which must be a real folder.
+// openIncoming opens the incoming folder, which must be a real folder. The
+// folder belongs to an unprivileged owner, who can swap it for anything
+// between the look and the open, and the switch holds its lock: it is
+// opened once, with O_DIRECTORY, O_NOFOLLOW and O_NONBLOCK, so the kernel
+// refuses a FIFO, a device or a link before opening it (never waiting for
+// a writer), the opened descriptor must be a folder and the very one the
+// look saw, and the root is made from that checked descriptor (through its
+// /proc/self/fd entry, as the checker does), never from the name again.
+// Without /proc the folder is refused: opening by name a second time is
+// what could block.
 func openIncoming(from string) (*os.Root, error) {
 	info, err := os.Lstat(from)
 	if err != nil {
@@ -135,11 +145,31 @@ func openIncoming(from string) (*os.Root, error) {
 	if !info.IsDir() {
 		return nil, failf(CodeReleaseNotFolder, "incoming %s is not a folder (or is a symbolic link)", q(from))
 	}
-	src, err := os.OpenRoot(from)
+	if incomingHook != nil {
+		incomingHook(from)
+	}
+	d, err := os.OpenFile(from, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_NOCTTY, 0)
 	if err != nil {
+		if errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.ELOOP) {
+			return nil, failf(CodeReleaseNotFolder, "incoming %s is not a folder (or is a symbolic link)", q(from))
+		}
 		return nil, err
 	}
-	if opened, err := src.Stat("."); err != nil || !os.SameFile(info, opened) {
+	defer d.Close()
+	opened, err := d.Stat()
+	switch {
+	case err != nil:
+		return nil, err
+	case !opened.IsDir():
+		return nil, failf(CodeReleaseNotFolder, "incoming %s is not a folder (or is a symbolic link)", q(from))
+	case !os.SameFile(info, opened):
+		return nil, failf(CodeFileChanged, "incoming %s changed while it was opened", q(from))
+	}
+	src, err := os.OpenRoot("/proc/self/fd/" + strconv.FormatUint(uint64(d.Fd()), 10))
+	if err != nil {
+		return nil, failf(CodeReadFailed, "incoming %s cannot be opened from its checked descriptor", q(from))
+	}
+	if again, err := src.Stat("."); err != nil || !os.SameFile(opened, again) {
 		src.Close()
 		return nil, failf(CodeFileChanged, "incoming %s changed while it was opened", q(from))
 	}
@@ -238,6 +268,10 @@ func (s *Switcher) copyFile(src, dst *os.Root, rel string, listed fs.FileInfo, t
 	}
 	return out.Sync()
 }
+
+// incomingHook, when a test sets it, is called with the incoming folder
+// between the switch's look at it and its open.
+var incomingHook func(from string)
 
 // importHook, when a test sets it, is called before a file of an import is
 // opened ("open") and before it is copied ("copy").

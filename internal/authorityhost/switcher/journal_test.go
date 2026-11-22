@@ -321,6 +321,9 @@ func TestRetryReportsSettled(t *testing.T) {
 	})
 	t.Run("forward", func(t *testing.T) {
 		e := active(t)
+		// A retry that left its outcome owed would make the next request
+		// a retry again, not the counter refusal asserted below.
+		e.keepOwed = true
 		e.release(rel3, "2026-11-01")
 		e.crashAt(CrashReload, false, rel3)
 		e.runner.reset()
@@ -1045,6 +1048,66 @@ func TestOwedSurvivesUnrelatedRefusal(t *testing.T) {
 	}
 	if _, err := os.Stat(e.owedPath()); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("owed.json after the matching retry: %v", err)
+	}
+}
+
+// brokenOut is an output whose writes (or, buffered, whose flush) fail,
+// as a full filesystem or a dropped session does.
+type brokenOut struct {
+	flush bool // writes are accepted and held; Flush fails
+}
+
+func (b brokenOut) Write(p []byte) (int, error) {
+	if b.flush {
+		return len(p), nil
+	}
+	return 0, errors.New("no space left on device")
+}
+
+func (b brokenOut) Flush() error {
+	if b.flush {
+		return errors.New("no space left on device")
+	}
+	return nil
+}
+
+// TestOwedKeptWhenTheResultCannotBeWritten: a retry that cannot write or
+// flush the outcome it reports has not delivered it: the outcome stays
+// owed and the command fails, so that the next retry reports it and the
+// owner's next --rollback-to previous cannot resolve the rollback's
+// release again.
+func TestOwedKeptWhenTheResultCannotBeWritten(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		out  brokenOut
+	}{{"write fails", brokenOut{}}, {"flush fails", brokenOut{flush: true}}} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := active(t)
+			e.keepOwed = true
+			e.crashAt(CrashUnreported, true, "previous")
+			e.links(rel1, rel2)
+			e.runner.reset()
+			s := e.switcher(func(c *Config) { c.Out, c.Err = tc.out, &e.out })
+			if code := s.RollBack(context.Background(), "previous"); code != ExitFailed {
+				t.Fatalf("retry with a broken output: exit %d\n%s", code, e.out.String())
+			}
+			e.out.Reset()
+			if owed := e.owed(); len(owed) != 1 || owed[0].Direction != DirRollback || owed[0].ID != rel1 {
+				t.Fatalf("owed after the failed write: %+v", owed)
+			}
+			e.links(rel1, rel2)
+			if len(e.runner.calls) != 0 {
+				t.Errorf("commands run: %v", e.runner.calls)
+			}
+			// The next retry, with a working output, reports it once.
+			if code := e.rollBack("previous"); code != ExitOK || !strings.Contains(e.last, "it is not done again") {
+				t.Fatalf("next retry: exit %d\n%s", code, e.last)
+			}
+			e.links(rel1, rel2)
+			if len(e.owed()) != 0 {
+				t.Errorf("still owed after it was reported: %+v", e.owed())
+			}
+		})
 	}
 }
 

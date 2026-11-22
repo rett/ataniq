@@ -44,6 +44,12 @@ type owedOutcome struct {
 	ServicesStopped bool   `json:"services_stopped"`
 	Detail          string `json:"detail"`
 	Time            string `json:"time"`
+	// RequalifyFailed: the transaction was found in phase done and the
+	// release current points at did not pass its reload and health check
+	// again. It is kept apart from Result, which stays the outcome that
+	// was decided: a retry of the request is a failure for as long as it
+	// is owed, and decisions stay inhibited.
+	RequalifyFailed bool `json:"requalify_failed,omitempty"`
 }
 
 // owedFile is the content of owed.json.
@@ -105,6 +111,28 @@ func (o owedOutcome) check() error {
 	return nil
 }
 
+// reportOwed prints the outcome o as it is owed, and, when its
+// requalification failed, that decisions stay inhibited; it says whether it
+// was all written.
+func (s *Switcher) reportOwed(o owedOutcome) error {
+	err := s.printResult(o.record())
+	if o.RequalifyFailed {
+		if werr := s.emit("%s", requalifyFailedLine(o.CurrentID)); err == nil {
+			err = werr
+		}
+	}
+	return err
+}
+
+// requalifyFailedLine is the line that says a transaction found in phase
+// done did not pass its reload and health check again, current being cur.
+func requalifyFailedLine(cur string) string {
+	if cur == "" {
+		cur = "none"
+	}
+	return fmt.Sprintf("result: decisions stay inhibited: %s did not pass its reload and health check again after the interruption; look at the host, acknowledge the outcome with ah-switch ack --asked WORDS, then switch, or run ah-switch inhibit-clear --asked WORDS", cur)
+}
+
 // readOwed reads owed.json; a missing file is nothing owed. One that is
 // not what a switch writes is an error, never taken as nothing owed.
 func (s *Switcher) readOwed() ([]owedOutcome, error) {
@@ -143,7 +171,7 @@ func (s *Switcher) writeOwed(owed []owedOutcome) error {
 // owed.json, replacing an outcome of the same transaction (a settling
 // that is done again). An owed.json that cannot be read is an error: the
 // outcomes it holds would be lost.
-func (s *Switcher) addOwed(rec Record, direction string) error {
+func (s *Switcher) addOwed(rec Record, direction string, requalifyFailed bool) error {
 	owed, err := s.readOwed()
 	if err != nil {
 		return err
@@ -162,6 +190,7 @@ func (s *Switcher) addOwed(rec Record, direction string) error {
 		ServicesStopped: rec.ServicesStopped,
 		Detail:          boundDetail(rec.Detail),
 		Time:            rec.Time,
+		RequalifyFailed: requalifyFailed,
 	}
 	kept := owed[:0]
 	for _, old := range owed {
@@ -179,7 +208,8 @@ func (s *Switcher) addOwed(rec Record, direction string) error {
 // answerOwed is what a switch or rollback (arg, rollback) does first, once
 // any journal is settled: when an outcome is owed and the request is a
 // retry of it (see matches), it reports that outcome and does nothing
-// else, and the outcome is no longer owed (a dry run leaves it owed);
+// else, and the outcome is no longer owed (a dry run leaves it owed, and
+// so does a report that could not be written, which fails the command);
 // when outcomes are owed and the request is another one, it reports them,
 // leaves them owed and refuses the request. done says the command ends
 // there, with code.
@@ -205,7 +235,7 @@ func (s *Switcher) answerOwed(arg string, rollback bool) (code int, done bool) {
 	if match < 0 {
 		for _, o := range owed {
 			s.printf("owed: the %s %s (request %s, transaction %s) ended %s at %s and its outcome is not acknowledged yet", o.kind(), o.ID, q(o.RequestID), o.Txn, o.Result, q(o.Time))
-			s.printResult(o.record())
+			s.reportOwed(o)
 		}
 		s.printf("refused: an outcome is owed; run the same request again to have it reported, or ah-switch ack --asked WORDS once it is seen; nothing else is done")
 		return ExitFailed, true
@@ -219,16 +249,25 @@ func (s *Switcher) answerOwed(arg string, rollback bool) (code int, done bool) {
 	if o.Detail != "" {
 		s.printf("settled: %s", o.Detail)
 	}
-	s.printResult(o.record())
+	// An outcome that could not be written (or flushed) has not been
+	// delivered: it is never taken back then.
+	if err := s.reportOwed(o); err != nil {
+		s.errorf("the outcome of this %s %s could not be written: %s; it stays owed, and the same request run again reports it", kind, arg, q(err.Error()))
+		return ExitFailed, true
+	}
 	if s.cfg.Dry {
 		s.printf("settled: dry run: the outcome is still owed; nothing changed")
+	} else if o.RequalifyFailed {
+		// The failure is not an outcome to report once: it stays owed
+		// until the owner acknowledges it.
+		s.printf("settled: the outcome stays owed: its release did not pass its reload and health check again")
 	} else {
 		rest := append(append([]owedOutcome{}, owed[:match]...), owed[match+1:]...)
 		if err := s.writeOwed(rest); err != nil {
 			s.printf("warning: %s not written: %s; the same request run again reports this outcome once more", OwedFile, q(err.Error()))
 		}
 	}
-	if o.Result == ResultOK {
+	if o.Result == ResultOK && !o.RequalifyFailed {
 		return ExitOK, true
 	}
 	return ExitFailed, true
@@ -283,7 +322,7 @@ func (s *Switcher) Ack(ctx context.Context, words string) int {
 	var txns []string
 	for _, o := range owed {
 		s.printf("ack: the %s %s (request %s, transaction %s) ended %s at %s", o.kind(), o.ID, q(o.RequestID), o.Txn, o.Result, q(o.Time))
-		s.printResult(o.record())
+		s.reportOwed(o)
 		txns = append(txns, o.Txn)
 	}
 	rec, _, err := s.readRecord()
@@ -318,7 +357,11 @@ func (s *Switcher) owedStatus() ([]string, error) {
 	}
 	var lines []string
 	for _, o := range owed {
-		lines = append(lines, fmt.Sprintf("outcome owed (request %s, transaction %s): the %s %s ended %s at %s; the same request run again reports it, ah-switch ack --asked WORDS acknowledges it, and any other switch or rollback is refused until then", q(o.RequestID), o.Txn, o.kind(), o.ID, o.Result, q(o.Time)))
+		line := fmt.Sprintf("outcome owed (request %s, transaction %s): the %s %s ended %s at %s; the same request run again reports it, ah-switch ack --asked WORDS acknowledges it, and any other switch or rollback is refused until then", q(o.RequestID), o.Txn, o.kind(), o.ID, o.Result, q(o.Time))
+		if o.RequalifyFailed {
+			line += "; after an interruption its release did not pass its reload and health check again, so decisions stay inhibited and the same request fails until it is acknowledged"
+		}
+		lines = append(lines, line)
 	}
 	return lines, nil
 }

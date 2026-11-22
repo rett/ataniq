@@ -202,6 +202,17 @@ keeps), is refused (`incoming-overlaps`) before anything is created or
 removed, so an import can never read what it writes or remove its own
 input.
 
+The incoming folder belongs to the deploying user, who can swap it for
+something else while the switch holds its lock, so it is opened once, with
+`O_DIRECTORY`, `O_NOFOLLOW` and `O_NONBLOCK`: a FIFO (even one nobody
+writes to), a device or a link put in its place is refused at once
+(`release-not-folder`), never waited on, and a different folder is refused
+(`file-changed`). The opened descriptor must be a folder and the one the
+switch first looked at, and the copy reads through that descriptor, never
+through the name again. This needs `/proc`, as the switch's check of its
+own and the package step's processes does; without it the incoming folder
+is refused (`read-failed`).
+
 `--from` copies the incoming folder into a fresh folder of `releases/`, the
 import's staging folder, as new files. The staging folder is
 `releases/.import-<id>-<16 random hex digits>`, made new for this import
@@ -581,10 +592,30 @@ The host's stop list is the owner's, never part of a release: one command
 per line, in the format of the release lists, at least one command, and
 owned and checked like the switch policy. It must stop every decision
 service of any release (for example `systemctl stop ataniq-seat.service`).
-A switch or rollback is refused while it is missing, empty or not
-trusted, and `status` says so; only the stops a journal in `stopping`
-owes run first (the lists of the releases that verify: the journal then
-stays in `stopping`, since the host's list did not run).
+A switch or rollback is refused while it is missing, empty, not
+trusted or refused (see below), and `status` says so.
+
+The programs of the host's list are checked as those of the release lists
+are, except that a file of a release is not possible there: a bare name
+(the fixed search path) or an absolute path of a protected host program
+(root-owned, not writable by group or others, one link, an execute bit,
+in folders the switch trusts), which then runs as that path below the root.
+Any other absolute path (a deployment workspace, a home folder, `/tmp`,
+a link) is refused when the list is loaded, with the code
+`stop-list-refused` and a fixed reason, and the whole list is refused: the
+list runs as root whenever the decision services must be stopped, so
+whoever can write a helper it names would choose what runs. An older list
+that names such a helper must be changed to name a protected program.
+
+A refused list would otherwise block the recovery it exists for, so it is
+reported loudly and does not stop the rest: the command prints
+`reconcile: FAILED: the host's stop list cannot be used`, a journal in any
+phase (not only `stopping`) is resumed, and the steps that need the host's
+list (the stopping phase, going back when the new release's own stop list
+does not verify) fail with `stop-list-refused` in their detail, so that
+a transaction that needed it stays in `stopping` with the failure, while
+the stop lists of the releases that verify run. Only new work is refused,
+with exit 1, once that resume has run.
 
 While a journal says `stopping`, every switch, rollback and `recover`
 (but `recover --services-stopped`, which runs nothing) runs the host's
@@ -641,8 +672,16 @@ only its existence matters to the services.
   fails, the outcome is recorded as it was decided, with
   `after an interruption in phase done, ... did not pass its reload and
   health check again` in `detail`, decisions stay inhibited, and the
-  command exits 1. `status` says so while the journal is there
-  (`requalify: ...`).
+  command exits 1 whatever it was asked: it never reports the decided
+  `ok`. Because the reload list was started, a service may be running, so
+  the host's stop list runs (a failing stop command is added to `detail`).
+  The failure is kept apart from the decided outcome: the outcome in
+  `owed.json` carries `requalify_failed: true`, and while it is owed the
+  same request run again fails again (exit 1, `decisions stay inhibited`)
+  and leaves it owed, instead of reporting the old `ok` once and taking it
+  back; `ah-switch ack --asked WORDS` takes it back, and the inhibit stays
+  until a healthy switch or `inhibit-clear`. `status` says so while the
+  journal is there (`requalify: ...`) and afterwards on the owed outcome.
 - Any other end keeps it, with the outcome as its reason: a failure after
   the package step changed the host, a failed recovery, a first switch
   that failed (with its release still `current`), an interrupted package
@@ -748,7 +787,13 @@ things take it back:
   to), it reports the rollback whose outcome is owed and never resolves
   `previous` anew, which would go back to the release the first rollback
   left. A forward switch is retried by the same id. Run the request once
-  more to do it again.
+  more to do it again. When the report cannot be written or flushed (a
+  full filesystem, a dropped session) the outcome has not been delivered:
+  it stays owed, the command exits 1 and says so on its error output, and
+  the next retry reports it.
+  An outcome whose requalification failed (see "The decision inhibit")
+  is the exception: it is reported with exit 1, stays owed, and only
+  `ack` takes it back.
 - **`ah-switch ack --asked WORDS`**, the owner's acknowledgement that the
   outcomes were seen, with in `WORDS` what was asked or seen (1 to 512
   bytes). It prints every outcome owed, records the time, the words and
@@ -824,7 +869,7 @@ parses; the key is no longer written or used. A dry run writes nothing.
 `package-step-failed`, `package-step-interrupted`, `package-state-unknown`,
 `nft-listing-failed`, `noaicheck-failed`, `validator-failed`, `link-failed`,
 `reload-failed`, `health-failed`, `record-failed`, `stop-list-missing`,
-`stop-failed`, `provenance-missing`, `provenance-mismatch` or `interrupted`
+`stop-list-refused`, `stop-failed`, `provenance-missing`, `provenance-mismatch` or `interrupted`
 (the full list is in `internal/authorityhost/switcher/failure.go`). `detail`
 adds fixed words and identifiers: a name that holds anything but printable
 ASCII, or a space, is quoted with Go's escapes and every identifier is cut
@@ -850,6 +895,7 @@ see its messages. The text of a broken state file is not repeated either.
 | Case | What happens |
 | --- | --- |
 | Incoming folder holds a link, special or hard-linked file, or `releases/ID` exists | Refused at import; nothing is left in `releases/` |
+| Incoming folder swapped for a FIFO, a link or another folder while the switch opens it | Refused at import (`release-not-folder`, `file-changed`) at once; nothing waits, nothing is created, the lock is released |
 | Incoming folder is, contains or lies beneath `releases/` or anything in it | Refused at import (`incoming-overlaps`) before anything is created or removed; the incoming folder stays as it is |
 | A staging folder an earlier import left in `releases/` | Left as it is and named by every `--from`; remove it by hand |
 | Wrong sum, file missing or not listed, path escape, link in the release, release folder a link | Refused at verify; `current` unchanged; an import's copy is removed |
@@ -860,6 +906,7 @@ see its messages. The text of a broken state file is not repeated either.
 | Switch policy or signers file not root's, writable by others, missing, or not parsing | Refused; nothing recorded; only a journal in `stopping` is resumed first, under the lock, so its stops still run |
 | `releases/` missing or not trusted, `current` or `previous` not a link to `releases/<id>` | `state: FAILED`, exit 1; nothing recorded: `deploy.json`, with the package state, the counter evidence and an outcome still to report, stays as it is (`recover` too) |
 | The host's `stop.list` missing, empty or not trusted | Refused; nothing recorded; a journal in `stopping` still runs the release stop lists that verify first, and stays |
+| The host's `stop.list` names an absolute program that is not a protected host program | `stop-list-refused`, reported loudly; new work is refused; a journal in any phase is still resumed, with the release stop lists that verify, and one that needs the host's list stays in `stopping` |
 | `--mode` weaker than the switch policy | Exit 2; nothing done |
 | Counter not above the highest ever attempted | Refused at counter |
 | `--rollback-to` anything but previous | Refused at counter |
@@ -875,17 +922,19 @@ see its messages. The text of a broken state file is not repeated either.
 | Going back fails (putting `previous` back included), or the old release is not healthy or fails its no-AI check | The host's `stop.list` and the stop lists of both releases run; `failed-recovery` with `restored_health: failed`; decisions stay inhibited; the console is needed |
 | First switch, or the old release missing or no longer verifying, and the new one fails | `current` stays; the host's and the release's stop lists run; `failed` or `failed-recovery`; decisions stay inhibited, across a reboot |
 | `decisions.inhibit` there after a failure | Decision-capable services may run but refuse every decision; a later healthy switch or `inhibit-clear --asked WORDS` removes it |
-| Reboot or crash after a healthy release was decided (`done`) and before it was settled | The next command runs the reload list and health check of `current` again before removing the inhibit; when they fail, decisions stay inhibited and it exits 1 |
+| Reboot or crash after a healthy release was decided (`done`) and before it was settled | The next command runs the reload list and health check of `current` again before removing the inhibit; when they fail, the host's stop list runs, decisions stay inhibited, the outcome stays owed with `requalify_failed`, and that command and every retry of the same request exit 1 until `ack --asked WORDS` |
 | A stop command fails | `result: unresolved`, exit 1; the journal stays in `stopping`; every later command runs the stops again and does nothing else until they pass, or `recover --services-stopped` |
 | A link folder cannot be synced | `result: unresolved`, exit 1; the journal stays; nothing is recorded as done until the next command syncs it |
 | `--rollback-to` when `previous` points at a missing release | Refused at counter (`no-previous`) |
 | Crash or power loss during the switch | `current` points at a whole release, the old or the new one, and the journal is there; the next command resumes its phase (see "The journal and recover") |
 | The same request run again while its outcome is owed (settled by its own command or by another one, its result line printed or not) | Reports that outcome once and does nothing else; a rollback retried as `previous` goes to no other release; `--dry` only shows it |
+| The same request run again, and its report cannot be written or flushed | The outcome stays owed; exit 1; the next retry reports it |
 | Another switch or rollback while an outcome is owed | Reports the outcomes owed, leaves them owed and is refused, exit 1, nothing recorded or run, until `ack --asked WORDS` or the same request again |
 | `highest-counter` missing or broken while `current` exists, or below a counter the links, `deploy.json` or `counters.log` show was used | Refused before anything, nothing recorded (`counter-missing`, `counter-invalid`); run `recover --counter N` |
 | A journal whose links or counter do not match the host (restored from a backup) | `reconcile: unresolved`, exit 1; nothing resumed, run or moved until `recover --discard-journal TXN` |
 | A journal that cannot be checked against the host (its evidence cannot be read) | `reconcile: unresolved`, exit 1; neither resumed nor discarded until the evidence is readable; a journal in `stopping` still gets the host's stop list first |
 | A journal in `stopping` while `releases/`, the counter or `deploy.json` cannot be used | The host's stop list runs first, under the lock; the journal stays in `stopping` until the rest can run |
+| The journal cannot be saved as `restoring` after the new release failed its reload, health check or no-AI check | The host's stop list and the new release's (when it verifies) run first, under the lock, so that its services do not keep running; then `result: unresolved`, the journal stays in `activating`, and the next command resumes it and goes back |
 | The journal cannot be saved as `stopping` | The host's stop list has run already; `result: unresolved`, and the next command runs the stops again |
 | A release folder of a higher counter is in `releases/` | Refused at counter (`counter-not-above`); build a higher counter |
 | A second switch while one runs | Exit 3; nothing done |

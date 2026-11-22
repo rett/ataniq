@@ -59,6 +59,7 @@ const (
 	CodeIOError            = "io-error"                 // any other error of the system
 	CodeNoEarlierRelease   = "no-earlier-release"
 	CodeStopListMissing    = "stop-list-missing"   // the host's own stop list is missing or holds no command
+	CodeStopListRefused    = "stop-list-refused"   // a program of the host's own stop list is not a bare name or a protected host program
 	CodeStopFailed         = "stop-failed"         // a stop command did not exit 0
 	CodeProvenanceMissing  = "provenance-missing"  // a release folder without the record of the import that made it
 	CodeProvenanceMismatch = "provenance-mismatch" // a release folder that is not the tree its import made

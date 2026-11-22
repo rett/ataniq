@@ -1,6 +1,7 @@
 package switcher
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -488,4 +489,161 @@ func TestImportStagingIsItsOwn(t *testing.T) {
 	if want := strings.Join(append(append([]string{}, left...), rel1, rel2, rel3), " "); strings.Join(got, " ") != want {
 		t.Errorf("releases/ holds %v, want %s", got, want)
 	}
+}
+
+// swapForFifo is an incomingHook that replaces the incoming folder named
+// by from with a FIFO nobody writes to, as an unprivileged owner could do
+// between the switch's look at it and its open. It returns the path of the
+// FIFO. The blocked open of a switch that waits on it is released when the
+// test ends, so that a failing run does not leave it hanging.
+func swapForFifo(t *testing.T) {
+	t.Helper()
+	incomingHook = func(from string) {
+		if err := os.Rename(from, from+".gone"); err != nil {
+			t.Error(err)
+			return
+		}
+		if err := syscall.Mkfifo(from, 0o644); err != nil {
+			t.Error(err)
+			return
+		}
+		t.Cleanup(func() {
+			// Wakes an open that waits for a writer; refused (ENXIO) when
+			// nothing waits.
+			if f, err := os.OpenFile(from, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+				f.Close()
+			}
+		})
+	}
+	t.Cleanup(func() { incomingHook = nil })
+}
+
+// TestIncomingSwappedForFifo: the incoming folder replaced by a FIFO
+// without a writer between the switch's look at it and its open is
+// refused at once, with the code of a path that is not a folder, and
+// never waited on: the open is O_DIRECTORY, O_NOFOLLOW and O_NONBLOCK, and
+// the root is made from that checked descriptor, so there is no second
+// open that could block with the lock held.
+func TestIncomingSwappedForFifo(t *testing.T) {
+	t.Run("openIncoming", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "incoming")
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		swapForFifo(t)
+		done := make(chan error, 1)
+		go func() {
+			r, err := openIncoming(dir)
+			if r != nil {
+				r.Close()
+			}
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatalf("openIncoming accepted it")
+			}
+			if code, _ := codeOf(err); code != CodeReleaseNotFolder {
+				t.Errorf("err %v, want code %s", err, CodeReleaseNotFolder)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("openIncoming waits on a FIFO")
+		}
+	})
+	t.Run("a switch", func(t *testing.T) {
+		e := active(t)
+		in := e.incoming(rel3, "2026-11-01")
+		swapForFifo(t)
+		done := make(chan int, 1)
+		go func() { done <- e.switcher(from(in)).Switch(context.Background(), rel3) }()
+		select {
+		case code := <-done:
+			if code != ExitFailed {
+				t.Fatalf("exit %d\n%s", code, e.out.String())
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the switch waits on a FIFO with the lock held")
+		}
+		e.out.Reset()
+		if rec := e.record(); rec.Error != CodeReleaseNotFolder {
+			t.Errorf("record: %s: %s", rec.Error, rec.Detail)
+		}
+		e.links(rel2, rel1)
+		if _, err := os.Lstat(e.relDir(rel3)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("a release folder was made: %v", err)
+		}
+		// The lock is free: another command runs.
+		incomingHook = nil
+		if code := e.switcher().Status(); code != ExitOK {
+			t.Errorf("status after the refusal: exit %d", code)
+		}
+	})
+	t.Run("a FIFO named as the incoming folder", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "incoming")
+		if err := syscall.Mkfifo(dir, 0o644); err != nil {
+			t.Skip(err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			r, err := openIncoming(dir)
+			if r != nil {
+				r.Close()
+			}
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatalf("openIncoming accepted it")
+			}
+			if code, _ := codeOf(err); code != CodeReleaseNotFolder {
+				t.Errorf("err %v, want code %s", err, CodeReleaseNotFolder)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("openIncoming waits on a FIFO")
+		}
+	})
+	t.Run("swapped for a link", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "incoming")
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		incomingHook = func(from string) {
+			os.Rename(from, from+".gone")
+			os.Symlink(from+".gone", from)
+		}
+		t.Cleanup(func() { incomingHook = nil })
+		r, err := openIncoming(dir)
+		if r != nil {
+			r.Close()
+		}
+		if err == nil {
+			t.Fatalf("openIncoming accepted it")
+		}
+		if code, _ := codeOf(err); code != CodeReleaseNotFolder {
+			t.Errorf("err %v, want code %s", err, CodeReleaseNotFolder)
+		}
+	})
+	t.Run("swapped for another folder", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "incoming")
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		incomingHook = func(from string) {
+			os.Rename(from, from+".gone")
+			os.Mkdir(from, 0o755)
+		}
+		t.Cleanup(func() { incomingHook = nil })
+		r, err := openIncoming(dir)
+		if r != nil {
+			r.Close()
+		}
+		if err == nil {
+			t.Fatalf("openIncoming accepted it")
+		}
+		if code, _ := codeOf(err); code != CodeFileChanged {
+			t.Errorf("err %v, want code %s", err, CodeFileChanged)
+		}
+	})
 }

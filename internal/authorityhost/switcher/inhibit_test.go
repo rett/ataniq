@@ -389,7 +389,16 @@ func TestRebootInDoneRequalifies(t *testing.T) {
 				e.runner.fail["reload-units"] = 1
 			}
 			e.runner.reset()
-			e.recover(resumeOnly)
+			// resumeOnly is refused once the journal is settled, so its
+			// exit code is the failure of that refusal when the
+			// requalification passed, and the failure of the
+			// requalification itself when it did not.
+			if code := e.recover(resumeOnly); code != ExitFailed {
+				t.Errorf("recover: exit %d, want %d\n%s", code, ExitFailed, e.last)
+			}
+			if !tc.reload && !strings.Contains(e.last, "decisions stay inhibited") {
+				t.Errorf("recover did not report the failed requalification:\n%s", e.last)
+			}
 			var ran []string
 			for _, c := range e.runner.calls {
 				ran = append(ran, strings.Fields(c)[0])
@@ -410,7 +419,9 @@ func TestRebootInDoneRequalifies(t *testing.T) {
 				}
 				return
 			}
-			if strings.Join(ran, " ") != "reload-units" {
+			// The reload may have started a service: the host's stop list
+			// runs, and the health check does not.
+			if strings.Join(ran, " ") != "reload-units stop-all" {
 				t.Errorf("ran %v", ran)
 			}
 			in, ok := e.inhibited()
@@ -424,5 +435,65 @@ func TestRebootInDoneRequalifies(t *testing.T) {
 				t.Errorf("the journal stays: %v", err)
 			}
 		})
+	}
+}
+
+// TestRetryAfterFailedRequalification: the request that was interrupted in
+// phase done is asked again after a reboot, and the release it ended on
+// does not pass its health check again. The command fails (it never
+// reports the historical ok), decisions stay inhibited, the outcome stays
+// owed with the failure kept apart from it, the host's stop list runs
+// because the reload may have started services, and a later retry of the
+// same request does not turn the failure into a success.
+func TestRetryAfterFailedRequalification(t *testing.T) {
+	e := activeOwn(t)
+	e.keepOwed = true
+	e.crashAt(CrashDone, false, rel3)
+	e.runner.fail["health-probe"] = -1
+	e.runner.reset()
+	if code := e.switchTo(rel3); code != ExitFailed {
+		t.Fatalf("the retry: exit %d, want %d\n%s", code, ExitFailed, e.last)
+	}
+	if e.runner.called("stop-all") != 1 {
+		t.Errorf("the host's stop list ran %d times, want 1; commands: %v", e.runner.called("stop-all"), e.runner.calls)
+	}
+	if !strings.Contains(e.last, "decisions stay inhibited") {
+		t.Errorf("output:\n%s", e.last)
+	}
+	check := func(when string) {
+		t.Helper()
+		owed := e.owed()
+		if len(owed) != 1 || owed[0].Result != ResultOK || !owed[0].RequalifyFailed {
+			t.Errorf("%s: owed: %+v", when, owed)
+		}
+		if _, ok := e.inhibited(); !ok {
+			t.Errorf("%s: not inhibited", when)
+		}
+		if _, ok := e.journal(); ok {
+			t.Errorf("%s: the journal stays", when)
+		}
+	}
+	check("after the retry")
+	if got := e.status(); !strings.Contains(got, "did not pass its reload and health check again") {
+		t.Errorf("status:\n%s", got)
+	}
+	// The same request again, even with a health check that passes now:
+	// still a failure, still owed.
+	delete(e.runner.fail, "health-probe")
+	for i := 0; i < 2; i++ {
+		if code := e.switchTo(rel3); code != ExitFailed {
+			t.Fatalf("retry %d: exit %d\n%s", i+2, code, e.last)
+		}
+		if strings.Contains(e.last, "result: ok;") && !strings.Contains(e.last, "decisions stay inhibited") {
+			t.Errorf("retry %d reported success:\n%s", i+2, e.last)
+		}
+		check("later retry")
+	}
+	// The owner acknowledges it; the inhibit is the owner's to clear.
+	if code := e.ack("saw the failed requalification"); code != ExitOK {
+		t.Fatalf("ack: exit %d\n%s", code, e.last)
+	}
+	if _, ok := e.inhibited(); !ok {
+		t.Errorf("acknowledging cleared the inhibit")
 	}
 }

@@ -89,10 +89,18 @@ func write(t *testing.T, path, content string, perm fs.FileMode) {
 }
 
 // hostStops writes the host's own stop list, which every switch requires,
-// as the one command prog.
+// as the one command made of the script prog. The script is copied below
+// root as /usr/bin/ah-test-stop, a protected host program of the sandbox
+// root, because a host stop list may name a bare program or an absolute
+// path of a protected host program, and nothing else.
 func hostStops(t *testing.T, root, prog string) {
 	t.Helper()
-	write(t, filepath.Join(root, switcher.PolicyDir, switcher.HostStopList), prog+"\n", 0o644)
+	script, err := os.ReadFile(prog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(root, "usr/bin/ah-test-stop"), string(script), 0o755)
+	write(t, filepath.Join(root, switcher.PolicyDir, switcher.HostStopList), "/usr/bin/ah-test-stop\n", 0o644)
 }
 
 // releaseIn writes into dir a release whose no-AI check and health command

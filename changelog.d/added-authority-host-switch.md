@@ -4,7 +4,9 @@
   (folders and regular files only, within limits of entries, size and
   time; staged in a new folder of its own, the only one it ever removes,
   and refused before anything is created or removed when the incoming
-  folder is, contains or lies beneath `releases/` or anything in it),
+  folder is, contains or lies beneath `releases/` or anything in it; the
+  incoming folder is opened once, without blocking or following a link,
+  so a FIFO swapped in never holds the lock),
   recording the digest of the tree it made (paths, inodes, sizes,
   hashes), and `ah-switch ID` activates an imported release, refusing a
   folder without that record or that no longer matches it: it checks its
@@ -29,7 +31,9 @@
   release (after stopping the failed release's services) with that
   release's own reload and health lists and its no-AI check, or stopping
   the decision services, with the host's own
-  `/etc/authority-host/stop.list` first, when it cannot (that list runs
+  `/etc/authority-host/stop.list` first (its programs are bare names or
+  protected host programs like a release's; any other absolute path
+  refuses the list, loudly, without blocking a journal's recovery), when it cannot (that list runs
   before the stopping phase is saved, and, while a journal is stopping,
   first in every command, under the lock, even when `releases/`, the
   counter or the record cannot be used). Every transaction
@@ -39,18 +43,22 @@
   be read, checking it before each decision; the switch removes it only
   when the transaction ends healthy, after running the reload list and
   health check of `current` again when it finds a healthy transaction
-  not yet settled (a reboot may have come); a failure keeps it across a
-  reboot until a healthy switch or
+  not yet settled (a reboot may have come; when that fails the host's
+  stop list runs, the command and every retry of the same request exit 1
+  and the outcome stays owed with the failure until acknowledged); a
+  failure keeps it across a reboot until a healthy switch or
   `ah-switch inhibit-clear --asked WORDS` (recorded with the time). All
   of it is one transaction journaled in `txn.json`, phase by phase
   (packages, links, activating, restoring, stopping, done), with the trust
   it began with;
   the next command resumes an interrupted one from its phase, a link
   counts as moved only once its folder is synced, a failed stop keeps the
-  transaction open, and every settled outcome is owed in its own file,
+  transaction open (so does a journal that cannot be saved as restoring,
+  after the stops of the failed release and of the host ran), and every settled outcome is owed in its own file,
   `/var/lib/authority-host/owed.json` (written before the journal is
   removed, never in `deploy.json`, and not taken back by a printed result
-  line): the same request run again reports it instead of doing it again,
+  line): the same request run again reports it instead of doing it again
+  (an outcome whose report cannot be written stays owed, exit 1),
   a rollback bound to its request id so that a retry never resolves
   `previous` anew, any other switch or rollback reports it and is refused
   until then, and `ah-switch ack --asked WORDS` acknowledges it (recorded

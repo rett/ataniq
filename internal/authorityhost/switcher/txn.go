@@ -301,11 +301,38 @@ func (s *Switcher) toRecovery(ctx context.Context, t *txn, step string, cause er
 		t.note("there is no earlier release to go back to, so current stays at %s", t.j.ID)
 		return s.toStopping(ctx, t, ResultFailed)
 	}
+	return s.toRestoring(ctx, t)
+}
+
+// toRestoring saves the phase restoring, after an activation failed: the
+// candidate's reload may have started its services. When the phase cannot
+// be saved the transaction stays unresolved in the phase the journal
+// still says, but its services are not left running: the stop list of the
+// candidate (when it verifies) and the host's run first, under the lock,
+// then the failure is reported. The next command resumes the phase.
+func (s *Switcher) toRestoring(ctx context.Context, t *txn) error {
+	durable := t.j.Phase
 	t.j.Phase = PhaseRestoring
 	if err := s.save(t); err != nil {
+		t.j.Phase = durable
+		s.printf("back: FAILED: %s; the services of %s are stopped before the failure is reported", describe(err), t.j.ID)
+		s.stopUnrecorded(ctx, t)
 		return err
 	}
 	return s.crash(CrashRestoring)
+}
+
+// stopUnrecorded stops the decision services of the transaction t whose
+// next phase could not be recorded: the host's stop list, then the stop
+// list of its release when that verifies. A failure of either is reported
+// and changes nothing else: the journal still says what it said.
+func (s *Switcher) stopUnrecorded(ctx context.Context, t *txn) {
+	s.hostStopsFirst(ctx)
+	if cand, err := s.candidate(ctx, t); err == nil {
+		s.runStops(ctx, t.j.ID, cand.stops)
+	} else {
+		s.printf("stop: the stop list of %s is not run: it cannot be verified (%s)", t.j.ID, describe(err))
+	}
 }
 
 // restore is the restoring phase: first the services of the transaction's
@@ -491,7 +518,7 @@ func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 	// The outcome is owed before the journal goes, whichever command
 	// settles it; only an acknowledgement or a retry of the same request
 	// takes it back (see answerOwed), never the result line below.
-	if err := s.addOwed(rec, t.j.Direction); err != nil {
+	if err := s.addOwed(rec, t.j.Direction, t.requalifyFailed); err != nil {
 		return unresolved(OwedFile+" not written", err)
 	}
 	if err := s.crash(CrashRecord); err != nil {
@@ -509,7 +536,7 @@ func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 	s.step(9, "recorded in %s; the outcome is owed until ah-switch ack --asked WORDS or the same request run again", q(filepath.Join(s.stateDir(), DeployFile)))
 	s.printResult(rec)
 	if t.requalifyFailed {
-		s.printf("result: decisions stay inhibited: %s did not pass its reload and health check again after the interruption; look at the host, then switch, or run ah-switch inhibit-clear --asked WORDS", linkText(cur))
+		s.emit("%s", requalifyFailedLine(rec.CurrentID))
 		return ExitFailed, true
 	}
 	if rec.Result == ResultOK {
@@ -531,6 +558,18 @@ func (s *Switcher) requalifyCurrent(ctx context.Context, t *txn, cur string, cur
 		t.requalifyFailed = true
 		t.note("after an interruption in phase done, %s did not pass its reload and health check again (%s); decisions stay inhibited", linkText(cur), describe(err))
 	}
+	// failedAfterReload: the reload list was started, so a service may be
+	// running: the host's stop list runs, whatever the release's own lists
+	// would do.
+	failedAfterReload := func(err error) {
+		failed(err)
+		s.hostStopsFirst(ctx)
+		if len(s.hostStopsFailures) > 0 {
+			t.note("the host's stop list failed (%s); the decision services may still run", joinFailures(s.hostStopsFailures))
+		} else {
+			t.note("the host's stop list ran")
+		}
+	}
 	if !curOK {
 		failed(failf(CodeStateInvalid, "current is missing"))
 		return
@@ -548,11 +587,11 @@ func (s *Switcher) requalifyCurrent(ctx context.Context, t *txn, cur string, cur
 	}
 	t.owned = append(t.owned, rel)
 	if err := s.reload(ctx, rel.reloads); err != nil {
-		failed(err)
+		failedAfterReload(err)
 		return
 	}
 	if err := s.checkHealth(ctx, rel.health); err != nil {
-		failed(err)
+		failedAfterReload(err)
 	}
 }
 
