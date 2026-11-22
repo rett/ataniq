@@ -1,6 +1,8 @@
 package switcher
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -202,5 +204,70 @@ func TestEscapeLine(t *testing.T) {
 	}
 	if got := EscapeLine(strings.Repeat("a", 2*maxLine)); len(got) != maxLine+3 {
 		t.Errorf("long line: %d bytes", len(got))
+	}
+}
+
+// TestStateFilesMustBeTrusted: the files of the state folder (the counter,
+// deploy.json, the journal and the lock) must be regular files with one
+// link, not writable by group or others, of an owner the owner check
+// accepts, as the folder is; a migrated folder can hold files that are not.
+func TestStateFilesMustBeTrusted(t *testing.T) {
+	state := func(e *env, name string) string { return filepath.Join(e.root, StateDir, name) }
+	for _, tc := range []struct {
+		name  string
+		setup func(e *env)
+		mod   func(*Config)
+	}{
+		{"counter writable by its group", func(e *env) { os.Chmod(state(e, HighestFile), 0o664) }, nil},
+		{"counter with a second link", func(e *env) { os.Link(state(e, HighestFile), filepath.Join(e.root, "counter-copy")) }, nil},
+		{"deploy.json writable by others", func(e *env) { os.Chmod(state(e, DeployFile), 0o646) }, nil},
+		{"deploy.json with a second link", func(e *env) { os.Link(state(e, DeployFile), filepath.Join(e.root, "deploy-copy")) }, nil},
+		{"lock writable by others", func(e *env) { os.Chmod(state(e, LockFile), 0o606) }, nil},
+		{"lock with a second link", func(e *env) { os.Link(state(e, LockFile), filepath.Join(e.root, "lock-copy")) }, nil},
+		{"lock not empty", func(e *env) { os.WriteFile(state(e, LockFile), []byte(strings.Repeat("x", 100)), 0o600) }, nil},
+		{"lock not root's", func(e *env) {}, func(c *Config) {
+			c.Owner = func(info fs.FileInfo) error {
+				if info.Name() == LockFile {
+					return errors.New("owned by uid 1000, not root")
+				}
+				return DefaultOwnerCheck(info)
+			}
+		}},
+		{"counter not root's", func(e *env) {}, func(c *Config) {
+			c.Owner = func(info fs.FileInfo) error {
+				if info.Name() == HighestFile {
+					return errors.New("owned by uid 1000, not root")
+				}
+				return DefaultOwnerCheck(info)
+			}
+		}},
+		{"journal writable by its group", func(e *env) {
+			e.crashAt(CrashPrevious, false, rel3)
+			os.Chmod(state(e, JournalFile), 0o620)
+		}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := active(t)
+			e.release(rel3, "2026-11-01")
+			tc.setup(e)
+			e.runner.reset()
+			cur, prev := e.link("current"), e.link("previous")
+			mods := []func(*Config){}
+			if tc.mod != nil {
+				mods = append(mods, tc.mod)
+			}
+			if code := e.switchTo(rel3, mods...); code != ExitFailed {
+				t.Fatalf("exit %d", code)
+			}
+			if !strings.Contains(e.last, "untrusted") {
+				t.Errorf("output does not say why:\n%s", e.last)
+			}
+			if e.link("current") != cur || e.link("previous") != prev {
+				t.Errorf("links moved: current -> %q, previous -> %q", e.link("current"), e.link("previous"))
+			}
+			if e.runner.called("reload-units") != 0 {
+				t.Errorf("commands run: %v", e.runner.calls)
+			}
+		})
 	}
 }

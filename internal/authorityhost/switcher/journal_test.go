@@ -342,8 +342,13 @@ func TestRecordFailureIsNotOK(t *testing.T) {
 	e := active(t)
 	e.release(rel3, "2026-11-01")
 	deploy := filepath.Join(e.root, StateDir, DeployFile)
-	os.Remove(deploy)
-	os.Mkdir(deploy, 0o755)
+	// Once the switch has read deploy.json, a folder takes its name.
+	e.runner.hook = func(argv []string) {
+		if argv[0] == "health-probe" {
+			os.Remove(deploy)
+			os.Mkdir(deploy, 0o755)
+		}
+	}
 	if code := e.switchTo(rel3); code != ExitFailed {
 		t.Fatalf("exit %d", code)
 	}
@@ -353,6 +358,7 @@ func TestRecordFailureIsNotOK(t *testing.T) {
 	if _, ok := e.journal(); !ok {
 		t.Fatalf("the journal was removed although the outcome is not recorded")
 	}
+	e.runner.hook = nil
 	os.Remove(deploy)
 	if code := e.switchTo(rel3); code != ExitFailed {
 		t.Fatalf("retry: exit %d", code)
@@ -372,7 +378,7 @@ func TestStatusTakesTheLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer state.Close()
-	held, err := takeLock(state, true, false)
+	held, err := takeLock(state, true, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,7 +390,7 @@ func TestStatusTakesTheLock(t *testing.T) {
 
 	// A shared lock held by another status does not stop status, but stops
 	// a switch.
-	shared, err := takeLock(state, false, true)
+	shared, err := takeLock(state, false, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

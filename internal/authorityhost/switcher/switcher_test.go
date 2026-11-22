@@ -726,7 +726,7 @@ func TestConcurrentSwitchRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer state.Close()
-	held, err := takeLock(state, true, false)
+	held, err := takeLock(state, true, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

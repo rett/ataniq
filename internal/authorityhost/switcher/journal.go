@@ -1,9 +1,7 @@
 package switcher
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -45,7 +43,7 @@ type journal struct {
 // readJournal reads txn.json; a missing file is no journal. A journal that
 // does not parse, or whose names are not what a switch writes, is an error.
 func (s *Switcher) readJournal() (journal, bool, error) {
-	data, err := readFileIn(s.stateRoot, JournalFile, maxStateFile)
+	data, err := s.readStateFile(JournalFile, maxStateFile)
 	if errors.Is(err, fs.ErrNotExist) {
 		return journal{}, false, nil
 	}
@@ -53,9 +51,7 @@ func (s *Switcher) readJournal() (journal, bool, error) {
 		return journal{}, false, err
 	}
 	var j journal
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&j); err != nil {
+	if err := decodeStrict(data, &j); err != nil {
 		return journal{}, false, failf(CodeStateInvalid, "%s does not parse", JournalFile)
 	}
 	id, err := ParseID(j.ID)
@@ -103,7 +99,7 @@ const (
 // highestAtLeast writes highest-counter as n when it holds less: a counter
 // that a switch attempted stays used.
 func (s *Switcher) highestAtLeast(n uint64) error {
-	cur, present, err := readHighest(s.stateRoot)
+	cur, present, err := s.readHighest()
 	if err == nil && present && cur >= n {
 		return nil
 	}
@@ -148,7 +144,7 @@ func (s *Switcher) reconcile(ctx context.Context) (int, bool) {
 		s.printf("reconcile: a dry run reconciles nothing; run the command without --dry first")
 		return ExitFailed, true
 	}
-	last, _, _ := readRecord(s.stateRoot)
+	last, _, _ := s.readRecord()
 	a := &attempt{
 		rec: Record{
 			ID:              j.ID,
@@ -320,7 +316,7 @@ func (s *Switcher) Recover(ctx context.Context, counter uint64) int {
 	if code, done := s.reconcile(ctx); done {
 		return code
 	}
-	if n, present, err := readHighest(s.stateRoot); err == nil && present {
+	if n, present, err := s.readHighest(); err == nil && present {
 		s.printf("recover: %s holds %d; nothing to recover", HighestFile, n)
 		return ExitFailed
 	}

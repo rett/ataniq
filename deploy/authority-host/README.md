@@ -47,9 +47,14 @@ switch runs it.
   before it changes or records anything. (When `ah-switch` does not run as
   root, as in tests, the folders of the user running it are accepted too.)
   It creates the state folder, mode 0755, when it is missing, holds each
-  folder open while it works, and opens the lock, `highest-counter` and
-  `deploy.json` relative to that folder without following a link. It reads
-  only regular files of a bounded size there.
+  folder open while it works, and opens the lock, `highest-counter`,
+  `deploy.json` and `txn.json` relative to that folder without following a
+  link. Each of them must be a regular file with one link, owned by root (or
+  that user) and not writable by its group or by others, and of a bounded
+  size (the lock empty): a folder made safe after the fact can still hold a
+  file another account can write or hold the lock of, so the files are
+  checked as the folder is. A file that fails this stops the switch before
+  it changes anything; an untrusted `deploy.json` is not even recorded over.
 - The id is the counter, zero-padded to at least four digits, a hyphen and the
   short commit in lowercase hex (7 to 40 characters).
 - `current` and `previous` hold exactly `releases/<id>`, as the switch writes

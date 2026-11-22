@@ -344,7 +344,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	var present bool
 	var err error
 	if s.stateRoot != nil {
-		if highest, present, err = readHighest(s.stateRoot); err != nil {
+		if highest, present, err = s.readHighest(); err != nil {
 			return s.fail(a, 2, err)
 		}
 	}
@@ -530,7 +530,15 @@ func (s *Switcher) lock(shared bool) (*lock, int) {
 		s.errorf("state folder %s: %s", q(s.stateDir()), describe(err))
 		return nil, ExitFailed
 	}
-	lk, err := takeLock(state, create, shared)
+	lk, err := takeLock(state, create, shared, func(info fs.FileInfo) error {
+		if err := s.trusted(filepath.Join(s.stateDir(), LockFile), info, false); err != nil {
+			return err
+		}
+		if links(info) != 1 || info.Size() > maxLockFile {
+			return failf(CodeUntrusted, "%s has more than one link or is not empty", LockFile)
+		}
+		return nil
+	})
 	if errors.Is(err, errLocked) {
 		state.Close()
 		s.errorf("%v (%s); nothing done", err, q(filepath.Join(s.stateDir(), LockFile)))
@@ -607,8 +615,11 @@ func (s *Switcher) readState(a *attempt) (int, bool) {
 	}
 	var last Record
 	if s.stateRoot != nil {
-		if last, _, err = readRecord(s.stateRoot); err != nil {
-			s.printf("warning: %s; the package snapshot is taken as unknown", describe(err))
+		if last, _, err = s.readRecord(); err != nil {
+			// Not recorded: the record is what cannot be trusted.
+			s.printf("state: FAILED: %s", describe(err))
+			s.printf("result: failed before step 1; nothing changed or recorded")
+			return ExitFailed, true
 		}
 	}
 	a.rec.PackageSnapshot = last.PackageSnapshot
@@ -1052,10 +1063,10 @@ func (s *Switcher) status(w io.Writer) error {
 	var rec Record
 	var j journal
 	if s.stateRoot != nil {
-		if highest, present, err = readHighest(s.stateRoot); err != nil {
+		if highest, present, err = s.readHighest(); err != nil {
 			return err
 		}
-		if rec, ok, err = readRecord(s.stateRoot); err != nil {
+		if rec, ok, err = s.readRecord(); err != nil {
 			return err
 		}
 		if j, pending, err = s.readJournal(); err != nil {
