@@ -41,7 +41,9 @@
   a socket table without its own protocol's header, a missing or empty
   pacman database or a package entry without a name, a pinned firewall
   digest without a listing, a file it cannot parse, a source or PATH
-  folder it cannot resolve, a missing required `EnvironmentFile=`)
+  folder it cannot resolve, a missing required `EnvironmentFile=`, a
+  list, listing or `nft-digest` FILE that is not a regular file, never
+  read or waited on: `HIT incomplete input <name>`)
   is a `HIT incomplete` line, and every hit that is not a finding makes
   the run incomplete, never a pass. `ah-noaicheck ports` checks only the
   listening ports. It exits 0 clean, 1 on a hit and 2 on an error, never

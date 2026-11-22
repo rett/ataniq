@@ -825,6 +825,18 @@ clean, 1 any hit, 2 a usage error or a read error it cannot continue past
 (a missing or invalid list, a root, listing or release folder it cannot
 open).
 
+Every file it opens by name (the lists in `share/`, the `--nft-listing`
+FILE and the `nft-digest` FILE) must be a regular file. Its type is
+looked at without following a final link, it is opened without blocking
+and without following a final link, and the opened descriptor must be a
+regular file and the one looked at before a byte is read. A FIFO (one
+without a writer included), a device, a socket, a folder or a link there
+is never read and never waited on: the run prints
+`HIT incomplete input <name>` (the name written like every field) and
+exits 1 at once. `-` (stdin) stays the streaming interface of a listing.
+The root and release folders are opened as folders only, so a FIFO in
+their place is a read error, not a wait.
+
 ### Phases
 
 `--phase` says which moment of a deployment the run checks:
@@ -909,6 +921,7 @@ The `HIT incomplete` lines:
 | `HIT incomplete packages missing` | there is no pacman database (`/var/lib/pacman/local`), so not even the forbidden packages can be checked |
 | `HIT incomplete packages db` | the pacman database lists no package at all |
 | `HIT incomplete <entry> no-name` | a pacman database entry whose `desc` names no package |
+| `HIT incomplete input <name>` | a file the program opens by name (a list, the `--nft-listing` or `nft-digest` FILE) that is not a regular file: a FIFO, a device, a socket, a folder or a link; it is not read and the run stops there |
 | `HIT incomplete nft listing-missing` | the release pins `nft.digest` and no `--nft-listing` was given (`post` and `full`) |
 | `HIT incomplete /proc/net/tcp header` | a socket table that is empty or does not start with its own protocol's header line: `sl local_address rem_address st` for `/proc/net/tcp`, `sl local_address remote_address st` for `/proc/net/tcp6` (checked too when it is there) |
 

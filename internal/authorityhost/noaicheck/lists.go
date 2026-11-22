@@ -193,13 +193,16 @@ func lineErr(n int, what string) error {
 }
 
 // LoadLists reads the data files of the release folder dir (which holds
-// share/). Every list except nft.digest is required.
+// share/). Every list except nft.digest is required. Each is opened with
+// OpenInput: a list that is not a regular file (a FIFO, a device, a
+// folder, a link) is never read or waited on but the *InputError naming
+// it.
 func LoadLists(dir string) (*Lists, error) {
 	share := filepath.Join(dir, "share")
 	l := &Lists{}
 	var err error
 	open := func(name string) (*os.File, error) {
-		return os.Open(filepath.Join(share, name))
+		return OpenInput(filepath.Join(share, name))
 	}
 	read := func(name string, parse func(io.Reader) error) error {
 		f, err := open(name)

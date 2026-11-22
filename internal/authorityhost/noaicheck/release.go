@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path"
 	"path/filepath"
 	"strings"
@@ -103,7 +102,7 @@ func (c *Checker) RunPhase(phase, release string, listing []byte) (Report, error
 // beneath it, by its own path otherwise. A release folder that cannot be
 // opened is an error.
 func (c *Checker) CheckRelease(dir string) error {
-	r, err := os.OpenRoot(dir)
+	r, err := openRoot(dir)
 	if err != nil {
 		return err
 	}
