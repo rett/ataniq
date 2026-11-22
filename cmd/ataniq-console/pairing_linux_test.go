@@ -188,9 +188,11 @@ func TestTheAdapterCarriesThePairingOverTheOwnerClient(t *testing.T) {
 		t.Fatalf("waiting: %+v, %v", st, err)
 	}
 	d.set(func(d *pairDaemon) {
-		d.status = ownerwire.PairStatus{Phase: ownerwire.PairPending, Words: eightWords(), PendingID: pendingID, ExpiresAt: "2026-11-22T10:00:00Z"}
+		d.status = ownerwire.PairStatus{Phase: ownerwire.PairPending, Words: eightWords(), PendingID: pendingID, ExpiresAt: "2026-11-22T10:00:00Z",
+			Kind: "vault-passkey", BackupEligible: true, BackupState: true}
 	})
-	if st, err = a.PairStatus(ctx); err != nil || st.Phase != terminalconsole.PairPending || st.PendingID != pendingID || st.Words[0] != "amber" || st.Words[7] != "haven" {
+	if st, err = a.PairStatus(ctx); err != nil || st.Phase != terminalconsole.PairPending || st.PendingID != pendingID || st.Words[0] != "amber" || st.Words[7] != "haven" ||
+		st.Kind != "vault-passkey" || !st.BackupEligible || !st.BackupState {
 		t.Fatalf("pending: %+v, %v", st, err)
 	}
 	d.set(func(d *pairDaemon) {
