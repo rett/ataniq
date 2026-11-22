@@ -64,6 +64,14 @@
 // # Seams
 //
 // [Daemon] is the port to the daemon, defined here and implemented later by
-// the wiring. A later page adds a template under templates/, a route in [New]
-// and its entry in the page inventory; it needs no change in the middleware.
+// the wiring. A later page adds a template under templates/, a route in the
+// route table and its entry in the page inventory (inventory_test.go, which
+// fails for a route that is not listed); it needs no change in the middleware.
+//
+// An approve control exists in exactly one place, the Card page reached from
+// the Cards list. No other page, notice, link or message may hold or open a
+// decide control. No such page exists yet, and the inventory test checks every
+// page for an inline script or style, an event handler, an address outside the
+// app, a form or control it does not list, and anything that looks like
+// deciding.
 package seatapp

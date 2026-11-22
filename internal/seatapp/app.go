@@ -138,14 +138,30 @@ func New(cfg Config) (http.Handler, error) {
 	a := &app{cfg: cfg, pair: newPairing(cfg)}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", a.healthz)
-	mux.HandleFunc("GET /{$}", a.page("home"))
-	mux.HandleFunc("GET /pair", a.page("pair"))
-	mux.HandleFunc("GET /static/pair.js", a.asset("assets/pair.js", "text/javascript; charset=utf-8"))
-	mux.HandleFunc("GET /static/app.css", a.asset("assets/app.css", "text/css; charset=utf-8"))
-	mux.HandleFunc("POST /api/pair-challenge", a.post(a.pair.challenge))
-	mux.HandleFunc("POST /api/pair", a.post(a.pair.pair))
+	for _, rt := range a.routes() {
+		mux.HandleFunc(rt.pattern, rt.handler)
+	}
 	return a.guard(mux), nil
+}
+
+// route is one entry of the app's route table.
+type route struct {
+	pattern string
+	handler http.HandlerFunc
+}
+
+// routes is the app's whole route table. The page inventory test lists every
+// pattern in it, so a route cannot be added without being inventoried.
+func (a *app) routes() []route {
+	return []route{
+		{"GET /healthz", a.healthz},
+		{"GET /{$}", a.page("home")},
+		{"GET /pair", a.page("pair")},
+		{"GET /static/pair.js", a.asset("assets/pair.js", "text/javascript; charset=utf-8")},
+		{"GET /static/app.css", a.asset("assets/app.css", "text/css; charset=utf-8")},
+		{"POST /api/pair-challenge", a.post(a.pair.challenge)},
+		{"POST /api/pair", a.post(a.pair.pair)},
+	}
 }
 
 // Server returns an http.Server for h with the header, read, write and idle
