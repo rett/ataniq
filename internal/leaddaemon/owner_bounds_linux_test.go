@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -192,5 +193,64 @@ func TestOwnerTheExtensionRefusesAPeerWithNoKnownProcessId(t *testing.T) {
 	}
 	if oc.Counts().NotInspected.Load() != 1 {
 		t.Fatal("not counted")
+	}
+}
+
+// TestOwnerRefusedSeatPairCallsOfAConnectionAreBounded: seat.pair is refused to
+// every connection of a build with no seat source, and each refusal was a line
+// of the daemon's log. The first DecisionRefusalBound refusals of a connection
+// are logged as before; the next ends the connection, once and counted, and no
+// line is written for the calls after it. Every refusal is counted. Another
+// connection is not affected.
+func TestOwnerRefusedSeatPairCallsOfAConnectionAreBounded(t *testing.T) {
+	r := newOwnerRig(t)
+	fakePairService(r.svc)
+	noisy, other := r.dial(), r.dial()
+	valid := ownerwire.SeatPairParams{Code: pairTestCode, CredentialID: make([]byte, 32), PublicKey: make([]byte, 91)}
+	lines := func() int { return strings.Count(r.logs.String(), "a seat.pair call was refused") }
+	for i := 0; i < DecisionRefusalBound; i++ {
+		wantOwnerCode(t, noisy.Call(ownerCtx(t), ownerwire.OpSeatPair, valid, nil), "unavailable")
+	}
+	if got := lines(); got != DecisionRefusalBound {
+		t.Fatalf("%d log lines within the bound, want %d", got, DecisionRefusalBound)
+	}
+	if r.oc.Counts().DecisionFlooded.Load() != 0 {
+		t.Fatal("closed within the bound")
+	}
+	// The next is refused and ends the connection.
+	var closed bool
+	for i := 0; i < 4 && !closed; i++ {
+		_ = noisy.Call(ownerCtx(t), ownerwire.OpSeatPair, valid, nil)
+		closed = r.oc.Counts().DecisionFlooded.Load() > 0
+	}
+	if !closed {
+		t.Fatal("the connection was never closed")
+	}
+	if got := lines(); got > DecisionRefusalBound {
+		t.Fatalf("%d log lines past the bound, want at most %d", got, DecisionRefusalBound)
+	}
+	if got := r.oc.Counts().DecisionFlooded.Load(); got != 1 {
+		t.Fatalf("%d flood closes, want 1", got)
+	}
+	if err := noisy.Call(ownerCtx(t), ownerwire.OpSeatPair, valid, nil); err == nil {
+		t.Fatal("the connection is still open")
+	}
+	if got := r.oc.Counts().DecisionFlooded.Load(); got != 1 {
+		t.Fatalf("%d flood closes after a call on the closed connection, want 1", got)
+	}
+	if got := r.oc.Counts().SeatRefused.Load(); got < uint64(DecisionRefusalBound)+1 {
+		t.Fatalf("%d refusals counted", got)
+	}
+	// Another connection is refused as before, and logs.
+	before := lines()
+	wantOwnerCode(t, other.Call(ownerCtx(t), ownerwire.OpSeatPair, valid, nil), "unavailable")
+	if lines() != before+1 {
+		t.Fatalf("a refusal on another connection wrote no line")
+	}
+	if got := r.svc.called(); len(got) != 0 {
+		t.Fatalf("the service was called: %v", got)
+	}
+	if strings.Contains(r.logs.String(), pairTestCode) {
+		t.Fatalf("the code is in the log:\n%s", r.logs.String())
 	}
 }

@@ -100,6 +100,7 @@ bar and the key bar show which one is active.
 | F12 | Zoom the session terminal to the whole window, or leave zoom. |
 | g | Open the approvals view (see [Approvals](#approvals)). |
 | L | Open the leads view, `--daemon` only (see [Lead control](#lead-control-scratch-daemon-only)). |
+| P | Open the pair-a-phone view, only when the console was given a pairing backend (see [Pair a phone](#pair-a-phone-when-pairing-is-configured)); without one it shows "pairing is not configured" and does nothing. |
 | Esc | Close help or the action list. |
 | q, Ctrl+C | Quit. |
 
@@ -554,6 +555,74 @@ the receipt carries no reason beyond the refusal, so the line says what is likel
 and no more. An attach that cannot be made (for example, the
 attach socket's path is too long for a unix socket address) is told in one line
 and the cockpit comes back.
+
+## Pair a phone (when pairing is configured)
+
+The pair-a-phone view adds a phone as a device that can approve cards, from the
+desk. It exists only when the console is given a pairing backend and the
+approval app's address (`terminalconsole.Options.WithPairing`; no flag of
+`ataniq-console` sets them yet). Without a backend `P` shows "pairing is not
+configured" and does nothing, and the help page does not list it.
+
+`P` (capital P) opens the view from console focus, like `L`: it does nothing in
+session focus, in zoom, over an overlay or over another screen, and the
+single-column pages take it too, but not over a live session. Every key goes to
+the view until Esc closes it, Ctrl+C aside, which quits.
+
+1. The view first reads the daemon's state. With nothing open it explains
+   pairing in a few lines and offers Enter to start. A pairing that is already
+   waiting for its phone cannot show its code a second time, so the view says so
+   and offers Enter for a new code, which ends the open one. A pairing whose six
+   words are waiting for you is shown at once.
+2. Enter asks the daemon for a one-time code and draws a QR code that holds the
+   app's address with `/pair/#` and the code (the code is in the fragment, so
+   it is never in a proxy log), with the seconds the code has left. The code is
+   drawn black on white, with a white margin, whatever the theme is, because a
+   light code on a dark ground is the inverse code that many scanners do not
+   read. It needs the code's columns and its rows plus two lines of text, with
+   a margin of 4 modules; when that does not fit, the view uses the smallest
+   margin that scanners read (2 modules), and only a terminal too small even
+   for that gets the line "terminal too small: need W x H" and never a clipped
+   code. The code stays valid meanwhile. An address so long that its code
+   would not fit the largest QR the console draws also gives the line "pairing
+   origin not configured", not an error of the daemon's. The code appears only in the
+   QR: never as text, in a status line, an error or the title.
+3. The phone scans the code and makes its passkey. The view asks the daemon
+   every two seconds; when the phone's key arrives the view shows six numbered
+   words, large and spaced, and the line "Compare with your phone. Confirm only
+   if they match." The phone shows the same six words. The daemon names the
+   pending key with an id (16 lowercase hex characters) that the view keeps but
+   does not show.
+4. `c` asks "press y to confirm, any other key cancels", because a confirmation
+   adds a deciding key; only `y`, a moment after the `c`, confirms. The
+   confirmation and a rejection carry the id the words were shown for, so the
+   daemon acts on that key and on no other. The question is dropped if the
+   words or the id change meanwhile, or if the terminal is resized. You can
+   confirm only while the whole words screen, the six words and the prompt,
+   fits the terminal with no line cut: on a smaller one `c` does nothing and
+   the view says "terminal too small to show the six words" with "x: reject
+   Esc: close", and `y` checks again. An 80 x 24 terminal holds it for
+   words of ordinary length; a smaller one may not, and long words need more
+   columns. `x` rejects, and nothing is added.
+   After a confirm the view shows "Paired. Kind: unverified (a syncing passkey)."
+   and the key's short id. Nothing is trusted until you confirm here.
+5. Esc closes the view at any time and confirms nothing. Closing while the code
+   waits does not cancel the pairing on the daemon: the code ends by itself when
+   it expires. A code that expired, or a pairing the daemon no longer holds, says
+   so and offers Enter for a new code.
+
+The approval app's address is configuration and is checked before anything is
+drawn: it must be `https` with a host name (an IP address, `localhost` and a name
+with no dot are refused), no port but 443, no path, no user name, no query and
+no fragment. Otherwise the view says only "pairing origin not configured", draws
+no QR and asks the daemon for nothing.
+
+Everything the daemon sends that the view draws (the six words, the id, the
+kind) is cleaned first, and six words that are not each one short printable word
+can be rejected but not confirmed. The text of a daemon's error is never drawn: a
+fixed line says that the code was not made, that the state could not be read
+(the view tries again), or that a confirmation or rejection did not complete.
+See `internal/terminalconsole/pairview`.
 
 ## What is a sample and what is not qualified
 

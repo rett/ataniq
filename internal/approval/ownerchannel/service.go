@@ -64,6 +64,10 @@ type Service struct {
 	// tmu guards the presence trackers, which are not safe for
 	// concurrent use.
 	tmu sync.Mutex
+	// pmu serialises the pairing operations and everything that changes the
+	// list of keys; pr is the one pairing, in memory, which pmu guards.
+	pmu sync.Mutex
+	pr  pairing
 	// slot holds the one verification that may run at a time.
 	slot chan struct{}
 
@@ -152,6 +156,7 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 		idx:       newIndex(),
 	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
+	s.initPairing()
 	// A door that cannot be reached now does not stop the service: the next
 	// tick takes up what it could not.
 	if err := s.Tick(ctx); err != nil && !errors.Is(err, ErrDoorUnavailable) {
@@ -181,7 +186,11 @@ func (s *Service) Close() error {
 	s.mu.Lock()
 	st := s.store
 	s.mu.Unlock()
-	return st.Close()
+	err := st.Close()
+	if s.cfg.Keys != nil {
+		err = errors.Join(err, s.cfg.Keys.Close())
+	}
+	return err
 }
 
 // begin admits a call: it refuses one on a closed or stopped service, and
@@ -223,18 +232,32 @@ func (s *Service) begin(ctx context.Context) (context.Context, func(), error) {
 // restart. It is the one place the service reads the clock. The reading's
 // monotonic part is dropped (Round(0)): the guard is about the wall clock,
 // and a reading from time.Now carries a monotonic one with which After and
-// Sub would ignore a wall clock that was set back.
+// Sub would ignore a wall clock that was set back. What the service shows and
+// journals is this wall reading. The pairing's lifetimes are the exception,
+// see [Service.nowBoth].
 func (s *Service) now() time.Time {
-	t := s.cfg.Now().Round(0)
+	_, wall := s.nowBoth()
+	return wall
+}
+
+// nowBoth is now with the reading as the clock gave it as well: the wall
+// reading, which is what now returns and what the service shows and journals,
+// and the raw one, whose monotonic part (when the clock has one, as time.Now
+// does) the pairing needs to measure the ten minutes of a code and of a
+// pending credential, so that a wall clock set back does not lengthen them.
+// The clock is read once and watched as in now.
+func (s *Service) nowBoth() (raw, wall time.Time) {
+	raw = s.cfg.Now()
+	wall = raw.Round(0)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch {
-	case s.high.IsZero() || t.After(s.high):
-		s.high = t
-	case s.high.Sub(t) > clockBackLimit:
+	case s.high.IsZero() || wall.After(s.high):
+		s.high = wall
+	case s.high.Sub(wall) > clockBackLimit:
 		s.back = true
 	}
-	return t
+	return raw, wall
 }
 
 // clockMovedBack reports whether the clock moved back by more than a minute

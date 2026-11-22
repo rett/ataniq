@@ -56,11 +56,45 @@ const (
 	ownerCodeFailed          clientapi.ErrorCode = "failed"
 )
 
+// The codes of the pairing and key operations, each for one error of the
+// service, with a fixed text of its own. None says anything a peer sent, and
+// none says more than the error: a refusal of the pairing code is the one
+// code whatever was wrong with it.
+const (
+	ownerCodeKeysUnavailable   clientapi.ErrorCode = "keys-unavailable"
+	ownerCodeKeysFull          clientapi.ErrorCode = "keys-full"
+	ownerCodeKeyUnknown        clientapi.ErrorCode = "key-unknown"
+	ownerCodeKeyAmbiguous      clientapi.ErrorCode = "key-ambiguous"
+	ownerCodePairingOpen       clientapi.ErrorCode = "pairing-open"
+	ownerCodePairingNone       clientapi.ErrorCode = "pairing-none"
+	ownerCodePairingExpired    clientapi.ErrorCode = "pairing-expired"
+	ownerCodePairingChanged    clientapi.ErrorCode = "pairing-changed"
+	ownerCodePairingRefused    clientapi.ErrorCode = "pairing-refused"
+	ownerCodeCredentialInvalid clientapi.ErrorCode = "credential-invalid"
+)
+
+// The fixed texts of the pairing codes.
+const (
+	msgOwnerKeysUnavailable   = "the list of deciding keys cannot be used; see the daemon's log"
+	msgOwnerKeysFull          = "the list of deciding keys is full"
+	msgOwnerKeyUnknown        = "no credential has this id"
+	msgOwnerKeyAmbiguous      = "the id names more than one credential; give more of it"
+	msgOwnerPairingOpen       = "a pairing is already open; start again with replace to end it"
+	msgOwnerPairingNone       = "no credential is waiting to be confirmed or rejected"
+	msgOwnerPairingExpired    = "the credential waited too long; the pairing is over"
+	msgOwnerPairingChanged    = "the pending credential is not the one you compared; look at the words again"
+	msgOwnerPairingRefused    = "the pairing was refused"
+	msgOwnerCredentialInvalid = "the credential cannot be used"
+	msgOwnerNoSeat            = "this build has no seat that may pair a phone"
+)
+
 // ownerExt is the extension that serves the owner.* operations.
 type ownerExt struct {
 	oc  *OwnerChannel
 	svc OwnerService
 	reg *ownerConns
+	// seat is [OwnerChannel]'s seat source; nil refuses seat.pair.
+	seat func(v ownerView) (ownerchannel.Source, bool)
 }
 
 var _ clientapi.Extension = (*ownerExt)(nil)
@@ -72,13 +106,14 @@ func OwnerOperations() []string { return ownerwire.Operations() }
 // Operations lists the owner connection's operations.
 func (x *ownerExt) Operations() []string { return OwnerOperations() }
 
-// Mutating is true: a decision, a beat and a change of the limit change
-// things.
+// Mutating is true: a decision, a beat, a change of the limit and the pairing
+// and key writes change things.
 func (x *ownerExt) Mutating() bool { return true }
 
 // Handle serves one operation. A connection that cannot be found is refused
-// for the operations that need to know it (the decider, a decision, a beat and
-// a change of the limit); the reads do not.
+// for the operations that need to know it (the decider, a decision, a beat, a
+// change of the limit, the pairing and key writes and seat.pair); the reads do
+// not.
 func (x *ownerExt) Handle(ctx context.Context, op string, params json.RawMessage) (any, *clientapi.ErrorBody) {
 	switch op {
 	case ownerwire.OpList:
@@ -126,6 +161,28 @@ func (x *ownerExt) Handle(ctx context.Context, op string, params json.RawMessage
 		return x.beat(params)
 	case ownerwire.OpLimitSet:
 		return x.limitSet(ctx, params)
+	case ownerwire.OpPairStatus:
+		if f := ownerNothing(params); f != nil {
+			return nil, f
+		}
+		return ownerResult(x.svc.PairStatus(ctx))(ownerwire.EncodePairStatus, x)
+	case ownerwire.OpKeys:
+		if f := ownerNothing(params); f != nil {
+			return nil, f
+		}
+		return ownerResult(x.svc.Keys(ctx))(ownerwire.EncodeKeysView, x)
+	case ownerwire.OpPairStart:
+		return x.pairStart(ctx, params)
+	case ownerwire.OpPairConfirm:
+		return x.pairConfirm(ctx, params)
+	case ownerwire.OpPairReject:
+		return x.pairReject(ctx, params)
+	case ownerwire.OpKeyRevoke:
+		return x.keyRevoke(ctx, params)
+	case ownerwire.OpKeysOff:
+		return x.keysOff(ctx, params)
+	case ownerwire.OpSeatPair:
+		return x.seatPair(ctx, params)
 	}
 	return nil, &clientapi.ErrorBody{Code: clientapi.CodeUnsupportedOperation, Message: msgOwnerBadParams}
 }
@@ -310,6 +367,139 @@ func (x *ownerExt) limitSet(ctx context.Context, params json.RawMessage) (any, *
 	return ownerResult(x.svc.LimitSet(ctx, x.source(x.reg.view(c)), p))(ownerwire.EncodeLimitView, x)
 }
 
+// pairSource is the source of a write of the pairing and key operations: the
+// connection must be the decider, which the daemon knows and the service takes
+// as given. A write from a connection that is not is refused not-decider
+// before its params are read, and counts against the same per-connection bound
+// as a decision frame: past [DecisionRefusalBound] of them the connection is
+// closed.
+func (x *ownerExt) pairSource() (ownerchannel.Source, *clientapi.ErrorBody) {
+	c, fail := x.connection()
+	if fail != nil {
+		return ownerchannel.Source{}, fail
+	}
+	v := x.reg.view(c)
+	if v.decider {
+		return x.source(v), nil
+	}
+	x.oc.counts.PairNotDecider.Add(1)
+	if x.reg.refuseDecide(c) > DecisionRefusalBound {
+		x.oc.counts.DecisionFlooded.Add(1)
+		x.oc.logf("owner channel: a connection that is not the decider sent more than %d refused writes and was closed (peer pid %d)", DecisionRefusalBound, c.pid)
+		_ = c.Close()
+	} else {
+		x.oc.logf("owner channel: a pairing or key write was refused: the connection is not the decider (peer pid %d)", c.pid)
+	}
+	return ownerchannel.Source{}, &clientapi.ErrorBody{Code: string2code(record.CodeNotDecider), Message: msgOwnerNotDecide}
+}
+
+// pairStart answers owner.pair-start. The code in its result is the only place
+// the code is; it is not logged.
+func (x *ownerExt) pairStart(ctx context.Context, params json.RawMessage) (any, *clientapi.ErrorBody) {
+	s, fail := x.pairSource()
+	if fail != nil {
+		return nil, fail
+	}
+	p, err := ownerwire.DecodePairStartParams(params)
+	if err != nil {
+		return nil, x.fail(err)
+	}
+	return ownerResult(x.svc.PairStart(ctx, s, p))(ownerwire.EncodePairStartResult, x)
+}
+
+// pairConfirm answers owner.pair-confirm. Its params name the pending
+// credential, and the service refuses one that is not the one pending now.
+func (x *ownerExt) pairConfirm(ctx context.Context, params json.RawMessage) (any, *clientapi.ErrorBody) {
+	s, fail := x.pairSource()
+	if fail != nil {
+		return nil, fail
+	}
+	p, err := ownerwire.DecodePairPendingParams(params)
+	if err != nil {
+		return nil, x.fail(err)
+	}
+	return ownerResult(x.svc.PairConfirm(ctx, s, p))(ownerwire.EncodeKeyItem, x)
+}
+
+// pairReject answers owner.pair-reject.
+func (x *ownerExt) pairReject(ctx context.Context, params json.RawMessage) (any, *clientapi.ErrorBody) {
+	s, fail := x.pairSource()
+	if fail != nil {
+		return nil, fail
+	}
+	p, err := ownerwire.DecodePairPendingParams(params)
+	if err != nil {
+		return nil, x.fail(err)
+	}
+	if err := x.svc.PairReject(ctx, s, p); err != nil {
+		return nil, x.fail(err)
+	}
+	return json.RawMessage(ownerwire.EncodeNothing()), nil
+}
+
+// keyRevoke answers owner.key-revoke.
+func (x *ownerExt) keyRevoke(ctx context.Context, params json.RawMessage) (any, *clientapi.ErrorBody) {
+	s, fail := x.pairSource()
+	if fail != nil {
+		return nil, fail
+	}
+	p, err := ownerwire.DecodeKeyRevokeParams(params)
+	if err != nil {
+		return nil, x.fail(err)
+	}
+	return ownerResult(x.svc.KeyRevoke(ctx, s, p))(ownerwire.EncodeKeysView, x)
+}
+
+// keysOff answers owner.keys-off.
+func (x *ownerExt) keysOff(ctx context.Context, params json.RawMessage) (any, *clientapi.ErrorBody) {
+	s, fail := x.pairSource()
+	if fail != nil {
+		return nil, fail
+	}
+	if f := ownerNothing(params); f != nil {
+		return nil, f
+	}
+	return ownerResult(x.svc.KeysOff(ctx, s))(ownerwire.EncodeKeysView, x)
+}
+
+// seatPair answers seat.pair, the seat app's call. It is answered only to a
+// connection the seat source says is a seat, and no build has a seat source: it
+// is refused "unavailable" to every connection, whatever its params, before
+// they are read, so a refused call spends no try of a code and the pairing is
+// not touched. The params are never logged.
+func (x *ownerExt) seatPair(ctx context.Context, params json.RawMessage) (any, *clientapi.ErrorBody) {
+	c, fail := x.connection()
+	if fail != nil {
+		return nil, fail
+	}
+	var s ownerchannel.Source
+	ok := false
+	if x.seat != nil {
+		s, ok = x.seat(x.reg.view(c))
+	}
+	if !ok {
+		x.oc.counts.SeatRefused.Add(1)
+		// The refusals of a connection are bounded as the writes of one that is
+		// not the decider are: the first DecisionRefusalBound are logged, the
+		// next ends the connection (counted once), and the calls after that
+		// write nothing, so a peer cannot flood the log.
+		switch n := x.reg.refuseDecide(c); {
+		case n < DecisionRefusalBound+1:
+			x.oc.logf("owner channel: a seat.pair call was refused: this build has no seat source (peer pid %d)", c.pid)
+		case n == DecisionRefusalBound+1:
+			x.oc.counts.DecisionFlooded.Add(1)
+			x.oc.logf("owner channel: a connection sent more than %d refused seat.pair calls and was closed (peer pid %d)", DecisionRefusalBound, c.pid)
+			_ = c.Close()
+		}
+		return nil, &clientapi.ErrorBody{Code: ownerCodeUnavailable, Message: msgOwnerNoSeat}
+	}
+	p, err := ownerwire.DecodeSeatPairParams(params)
+	if err != nil {
+		return nil, x.fail(err)
+	}
+	return ownerResult(x.svc.PairPresent(ctx, s, p))(ownerwire.EncodeSeatPairResult, x)
+}
+
 // source is what the service is told about the connection. The process, the
 // terminal and the client name are given only for the decider, whose
 // decisions carry them; the session is the one owner.decider named, or the
@@ -343,6 +533,31 @@ func (x *ownerExt) fail(err error) *clientapi.ErrorBody {
 		return &clientapi.ErrorBody{Code: ownerCodeUnavailable, Message: msgOwnerStopping}
 	case errors.Is(err, ownerchannel.ErrClosed), errors.Is(err, ownerchannel.ErrStopped):
 		return &clientapi.ErrorBody{Code: ownerCodeUnavailable, Message: msgOwnerStopped}
+	case errors.Is(err, ownerchannel.ErrKeysUnavailable):
+		// The cause, which may name a path, is in the log and not in the
+		// answer.
+		x.oc.logf("owner channel: the list of deciding keys cannot be used: %s", SafeText(err.Error()))
+		return &clientapi.ErrorBody{Code: ownerCodeKeysUnavailable, Message: msgOwnerKeysUnavailable}
+	case errors.Is(err, ownerchannel.ErrKeysFull):
+		return &clientapi.ErrorBody{Code: ownerCodeKeysFull, Message: msgOwnerKeysFull}
+	case errors.Is(err, ownerchannel.ErrKeyUnknown):
+		return &clientapi.ErrorBody{Code: ownerCodeKeyUnknown, Message: msgOwnerKeyUnknown}
+	case errors.Is(err, ownerchannel.ErrKeyAmbiguous):
+		return &clientapi.ErrorBody{Code: ownerCodeKeyAmbiguous, Message: msgOwnerKeyAmbiguous}
+	case errors.Is(err, ownerchannel.ErrPairingOpen):
+		return &clientapi.ErrorBody{Code: ownerCodePairingOpen, Message: msgOwnerPairingOpen}
+	case errors.Is(err, ownerchannel.ErrNoPairing):
+		return &clientapi.ErrorBody{Code: ownerCodePairingNone, Message: msgOwnerPairingNone}
+	case errors.Is(err, ownerchannel.ErrPairingExpired):
+		return &clientapi.ErrorBody{Code: ownerCodePairingExpired, Message: msgOwnerPairingExpired}
+	case errors.Is(err, ownerchannel.ErrPairingChanged):
+		return &clientapi.ErrorBody{Code: ownerCodePairingChanged, Message: msgOwnerPairingChanged}
+	case errors.Is(err, ownerchannel.ErrPairRefused):
+		return &clientapi.ErrorBody{Code: ownerCodePairingRefused, Message: msgOwnerPairingRefused}
+	case errors.Is(err, ownerchannel.ErrCredentialInvalid):
+		return &clientapi.ErrorBody{Code: ownerCodeCredentialInvalid, Message: msgOwnerCredentialInvalid}
+	case errors.Is(err, ownerchannel.ErrNotSeat):
+		return &clientapi.ErrorBody{Code: ownerCodeUnavailable, Message: msgOwnerNoSeat}
 	case errors.Is(err, ownerchannel.ErrDoorUnavailable):
 		return &clientapi.ErrorBody{Code: ownerCodeDoor, Message: msgOwnerDoor}
 	case errors.Is(err, ownerchannel.ErrJournalReopened):

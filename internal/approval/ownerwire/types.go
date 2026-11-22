@@ -333,3 +333,158 @@ type LimitDay struct {
 	ReachedLimit bool `json:"reached_limit"`
 	Alert        bool `json:"alert"`
 }
+
+// The bounds of the pairing and key forms.
+const (
+	// PairCodeLength is the number of characters of a pairing code, the
+	// length package seatpair makes (a test of the service holds the two
+	// equal). The alphabet is that of Crockford's base32 without I, L, O
+	// and U, in either case.
+	PairCodeLength = 20
+	// PairWords is the number of words of a credential's fingerprint.
+	PairWords = 6
+	// MinCredentialIDBytes and MaxCredentialIDBytes bound a credential id.
+	MinCredentialIDBytes = 16
+	MaxCredentialIDBytes = 1024
+	// MaxPublicKeyBytes caps a credential's public key as the seat sends
+	// it, a DER SubjectPublicKeyInfo. An ES256 key is 91 bytes; whether
+	// the bytes are one is for the daemon.
+	MaxPublicKeyBytes = 512
+	// MaxKeys is the most credentials the list of deciding keys holds,
+	// revoked ones included, which stay listed.
+	MaxKeys = 64
+	// KeyIDLength is the length of a credential's display id: 16
+	// lower-case hexadecimal digits, the first 8 bytes of the SHA-256 of
+	// the credential id.
+	KeyIDLength = 16
+	// MinKeyIDPrefix is the shortest prefix of a display id that
+	// owner.key-revoke takes.
+	MinKeyIDPrefix = 4
+	// PendingIDLength is the length of a pending credential's pending id:
+	// 16 lower-case hexadecimal digits, 8 random bytes the daemon makes when
+	// the credential becomes pending.
+	PendingIDLength = 16
+)
+
+// The phases of a pairing, the words of [PairStatus].Phase.
+const (
+	// PairNone: no pairing is open, and none ended unseen.
+	PairNone = "none"
+	// PairWaiting: a code was made and the phone has not presented it.
+	PairWaiting = "waiting"
+	// PairPending: the phone presented a good credential, and it waits at
+	// the desk for the owner's word.
+	PairPending = "pending"
+	// PairExpired: the pairing ran out, or its code was burnt by wrong
+	// tries, before it was confirmed or rejected.
+	PairExpired = "expired"
+)
+
+// PairStartParams is the params of owner.pair-start.
+type PairStartParams struct {
+	// Replace says that a pairing that is open may be ended and replaced.
+	// Without it, a start while one is open is refused.
+	Replace bool `json:"replace"`
+}
+
+// PairStartResult is the result of owner.pair-start. It holds the pairing
+// code, a secret that this answer alone carries: it is never in a journal, a
+// log, an error or any other answer. A value of the type prints without it.
+type PairStartResult struct {
+	// Code is the one-time pairing code, [PairCodeLength] characters.
+	Code string `json:"code"`
+	// ExpiresAt is when the code ends, a record's time.
+	ExpiresAt string `json:"expires_at"`
+}
+
+// String says what the value is, without the code.
+func (r PairStartResult) String() string { return "ownerwire.PairStartResult{" + r.ExpiresAt + "}" }
+
+// GoString is the same text for the %#v verb.
+func (r PairStartResult) GoString() string { return r.String() }
+
+// PairStatus is the result of owner.pair-status. It never holds the code.
+type PairStatus struct {
+	// Phase is one of [PairNone], [PairWaiting], [PairPending] and
+	// [PairExpired].
+	Phase string `json:"phase"`
+	// Words are the [PairWords] words of the pending credential's
+	// fingerprint, which the phone shows too. They are there exactly when
+	// the phase is pending.
+	Words []string `json:"words,omitempty"`
+	// PendingID names the pending credential: [PendingIDLength] lower-case
+	// hexadecimal digits the daemon drew at random when the credential
+	// became pending. It is there exactly when the phase is pending, and a
+	// confirm or a reject has to give it back, so that the owner's word is
+	// about the credential whose words he compared and not about one that
+	// replaced it.
+	PendingID string `json:"pending_id,omitempty"`
+	// ExpiresAt is when the waiting code or the pending credential ends,
+	// or ended, a record's time; for a code burnt by wrong tries it is the
+	// time of the try that burnt it, in the past. It is left out for the
+	// phase none.
+	ExpiresAt string `json:"expires_at,omitempty"`
+}
+
+// PairPendingParams is the params of owner.pair-confirm and of
+// owner.pair-reject: the pending id the owner saw in [PairStatus] with the
+// words he compared. It is required, and the daemon refuses a call whose id is
+// not that of the credential pending now (pairing-changed), changing nothing.
+type PairPendingParams struct {
+	PendingID string `json:"pending_id"`
+}
+
+// SeatPairParams is the params of seat.pair, the seat app's relay of what
+// the phone said. The code is a secret: nothing here, no refusal, no log,
+// holds it. A value of the type prints without it.
+type SeatPairParams struct {
+	// Code is the pairing code the phone read from the desk's QR.
+	Code string `json:"code"`
+	// CredentialID is the id of the credential the phone made.
+	CredentialID []byte `json:"credential_id"`
+	// PublicKey is the credential's public key, a DER SubjectPublicKeyInfo.
+	PublicKey []byte `json:"public_key"`
+}
+
+// String says what the value is, without the code or the key.
+func (p SeatPairParams) String() string { return "ownerwire.SeatPairParams{}" }
+
+// GoString is the same text for the %#v verb.
+func (p SeatPairParams) GoString() string { return p.String() }
+
+// SeatPairResult is the result of seat.pair: the fingerprint of the
+// credential, which the desk shows and the owner compares.
+type SeatPairResult struct {
+	// Words are the [PairWords] words of the fingerprint.
+	Words []string `json:"words"`
+}
+
+// KeyItem is one credential on the list of deciding keys.
+type KeyItem struct {
+	// ID is the display id: [KeyIDLength] lower-case hexadecimal digits,
+	// the first 8 bytes of the SHA-256 of the credential id. It names the
+	// credential for the owner and holds nothing of the key.
+	ID string `json:"id"`
+	// Kind is what kind of authenticator the key is known to be, a word
+	// ("unverified" for every pairing so far).
+	Kind string `json:"kind"`
+	// PairedAt is when the owner confirmed the pairing, a record's time.
+	PairedAt string `json:"paired_at"`
+	// Revoked says that the credential was revoked. A revoked credential
+	// stays on the list and is never made good again.
+	Revoked bool `json:"revoked"`
+}
+
+// KeysView is the result of owner.keys, of owner.key-revoke and of
+// owner.keys-off: the list of deciding keys, in the order they were paired,
+// at most [MaxKeys].
+type KeysView struct {
+	Keys []KeyItem `json:"keys"`
+}
+
+// KeyRevokeParams is the params of owner.key-revoke.
+type KeyRevokeParams struct {
+	// ID is a display id, or a prefix of one of at least [MinKeyIDPrefix]
+	// digits, that names exactly one credential.
+	ID string `json:"id"`
+}

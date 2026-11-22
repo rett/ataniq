@@ -53,7 +53,7 @@ type ownerConn struct {
 	session string // the session of owner.decider
 	tty     string // the terminal the inspector found, when decider
 	decider bool
-	refused int // decision frames from this connection while it was not the decider
+	refused int // decision frames and pairing writes from this connection while it was not the decider, and its refused seat.pair calls
 }
 
 // Read binds the calling goroutine to the connection on the first call, then
@@ -115,8 +115,9 @@ func (r *ownerConns) readDeadline(c *ownerConn, t time.Time) time.Time {
 	return t
 }
 
-// refuseDecide counts one more decision frame from a connection that is not
-// the decider and returns how many it has sent.
+// refuseDecide counts one more decision frame or pairing write from a
+// connection that is not the decider, or one more refused seat.pair call, and
+// returns how many it has sent.
 func (r *ownerConns) refuseDecide(c *ownerConn) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
