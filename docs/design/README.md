@@ -31,6 +31,13 @@ The [application command contracts](application-contracts.md) document the
 implemented pure typed model, bounded JSON codec and canonical binary bindings,
 with authentication and durable admission kept as explicit service contracts.
 
+The [seat gate](seat-gate.md) specifies version 1 of the link between the seat
+app on the authority host and the daemon: pairing a phone, reading the cards,
+a login, and the owner's decisions by passkey. Its handler for pairing and
+reads and its assertion verifier are built and used by no command; the
+decision path is design only, and phone decisions stay scratch-only until the
+owner channel, the sandbox and the desk's enrollment channel are qualified.
+
 Read [runtime](runtime.md), [client protocol](client-protocol.md),
 [security](security.md), [roles and authority](roles-and-authority.md),
 [approvals](approvals.md), and [work model](work-model.md) together. The
