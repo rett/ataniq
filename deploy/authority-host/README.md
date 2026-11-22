@@ -171,7 +171,10 @@ automatic return to the old release after a failed health check.
 - `allowed_signers` is the ssh allowed signers file and `principal` the
   identity a release must be signed by; both are required for signed mode.
   The signature namespace is fixed: `authority-host-release`.
-- No other key is accepted. The policy file, the signers file and every
+- No other key is accepted. The file must be exactly one JSON object with
+  each key given once: a second object or any other text after it, or a
+  key given twice (which a plain JSON reader would settle by keeping one of
+  them), is refused as `policy-invalid`. The policy file, the signers file and every
   folder above them must be owned by root and not writable by group or
   others (the same check as the state folder); otherwise, or when the
   policy does not parse, the switch stops before it does anything.

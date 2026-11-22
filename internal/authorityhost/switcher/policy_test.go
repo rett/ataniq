@@ -146,6 +146,15 @@ func TestPolicyRefused(t *testing.T) {
 	}{
 		{"unknown key", `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers", "principal": "release@example.invalid", "extra": 1}`, nil, nil, ExitFailed},
 		{"bad mode", `{"min_mode": "trust"}`, nil, nil, ExitFailed},
+		// A second object after the first: the first alone would choose
+		// manual.
+		{"trailing object", `{"min_mode": "manual"}` + "\n" + signedPolicy, nil, nil, ExitFailed},
+		{"trailing word", `{"min_mode": "manual"} x`, nil, nil, ExitFailed},
+		// encoding/json keeps the last of two equal keys.
+		{"duplicate min_mode", `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers", "principal": "release@example.invalid", "min_mode": "manual"}`, nil, nil, ExitFailed},
+		{"duplicate principal", `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers", "principal": "release@example.invalid", "principal": "other@example.invalid"}`, nil, nil, ExitFailed},
+		{"not an object", `["signed"]`, nil, nil, ExitFailed},
+		{"number value", `{"min_mode": 1}`, nil, nil, ExitFailed},
 		{"signed without principal", `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers"}`, nil, nil, ExitFailed},
 		{"principal with a space", `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers", "principal": "a b"}`, nil, nil, ExitFailed},
 		{"principal an option", `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers", "principal": "-Ox"}`, nil, nil, ExitFailed},
@@ -203,5 +212,29 @@ func TestPolicyRefused(t *testing.T) {
 				e.out.Reset()
 			}
 		})
+	}
+}
+
+// TestCheckOneObject: the token walk under every JSON file the switch reads.
+func TestCheckOneObject(t *testing.T) {
+	for _, tc := range []struct {
+		data string
+		ok   bool
+	}{
+		{`{}`, true},
+		{` {"a": 1, "b": {"a": 2}, "c": [1, {"a": 3}]} ` + "\n", true},
+		{`{"a": 1, "a": 1}`, false},
+		{`{"b": {"a": 1, "a": 2}}`, false},
+		{`{"c": [{"a": 1, "a": 2}]}`, false},
+		{`{} {}`, false},
+		{`{}]`, false},
+		{`[]`, false},
+		{`"x"`, false},
+		{``, false},
+		{`{"a": ` + strings.Repeat("[", 20) + strings.Repeat("]", 20) + `}`, false},
+	} {
+		if err := checkOneObject([]byte(tc.data)); (err == nil) != tc.ok {
+			t.Errorf("checkOneObject(%q) = %v", tc.data, err)
+		}
 	}
 }

@@ -1,8 +1,6 @@
 package switcher
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -48,9 +46,9 @@ var principalPattern = regexp.MustCompile(`^[A-Za-z0-9._@+][A-Za-z0-9._@+-]{0,12
 // readPolicy reads the switch policy. A missing policy folder or file is the
 // manual policy. The folder and every folder above it must be trusted, as the
 // state folder is, and so must the file and the allowed signers file it
-// names; a file that does not parse, an unknown key, a mode other than manual
-// or signed, or a signed policy without its signers file and principal is an
-// error.
+// names; a file that is not exactly one JSON object, a key given twice or
+// unknown, a mode other than manual or signed, or a signed policy without its
+// signers file and principal is an error.
 func (s *Switcher) readPolicy() (Policy, error) {
 	dir, err := s.openTrusted(PolicyDir, false)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -68,10 +66,8 @@ func (s *Switcher) readPolicy() (Policy, error) {
 		return Policy{}, err
 	}
 	var p Policy
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&p); err != nil {
-		return Policy{}, failf(CodePolicyInvalid, "%s does not parse (keys: min_mode, allowed_signers, principal)", PolicyName)
+	if err := decodeStrict(data, &p); err != nil {
+		return Policy{}, failf(CodePolicyInvalid, "%s is not one JSON object with each of its keys once (keys: min_mode, allowed_signers, principal)", PolicyName)
 	}
 	p.present = true
 	switch p.MinMode {
