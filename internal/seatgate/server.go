@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"math"
 	"net"
 	"sync"
 	"time"
@@ -71,7 +72,7 @@ type ServerConfig struct {
 
 	MaxConns       int           // concurrent connections, 8
 	MaxInFlight    int           // handlers running at once per connection, 16
-	MaxHandlers    int           // handlers running at once over all connections, MaxConns × MaxInFlight
+	MaxHandlers    int           // handlers running at once over all connections, MaxConns × MaxInFlight (at most the largest int)
 	RequestTimeout time.Duration // the deadline of one request, 30 s
 	RateMax        int           // requests per RatePer per connection, 60
 	RatePer        time.Duration // the rate window, 1 minute
@@ -93,6 +94,9 @@ type ServerConfig struct {
 	// answerHook, for tests, runs when the answer of a request handed to the
 	// handler is ready to be written (written false) and once it is written.
 	answerHook func(id uint64, written bool)
+	// reuseHook, for tests, runs when a request is found to reuse the id of
+	// one whose answer is being written, before it waits for that write.
+	reuseHook func(id uint64)
 }
 
 func (c ServerConfig) withDefaults() ServerConfig {
@@ -108,7 +112,11 @@ func (c ServerConfig) withDefaults() ServerConfig {
 	}
 	n(&c.MaxConns, 8)
 	n(&c.MaxInFlight, 16)
-	n(&c.MaxHandlers, c.MaxConns*c.MaxInFlight)
+	all := math.MaxInt // MaxConns × MaxInFlight, stopping at the largest int
+	if c.MaxConns <= math.MaxInt/c.MaxInFlight {
+		all = c.MaxConns * c.MaxInFlight
+	}
+	n(&c.MaxHandlers, all)
 	n(&c.RateMax, 60)
 	d(&c.RequestTimeout, 30*time.Second)
 	d(&c.RatePer, time.Minute)
@@ -435,7 +443,9 @@ func (c *srvConn) reply(r response) {
 // request that reuses it before then closes the connection (it could not be
 // told from this one); while the answer is being written it is marked, and
 // handle waits for the write before it decides, since the client may have the
-// answer already and reuse the id, as it may.
+// answer already and reuse the id, as it may. A write that fails keeps the id
+// taken: the connection is going and the peer never had the answer, so a
+// request waiting on the write with the id is refused and not served.
 func (c *srvConn) answer(r response) {
 	payload := r.frame()
 	if h := c.s.cfg.answerHook; h != nil {
@@ -446,7 +456,9 @@ func (c *srvConn) answer(r response) {
 	c.mu.Lock()
 	c.ids[r.ID] = true
 	c.mu.Unlock()
-	c.write(payload)
+	if !c.write(payload) {
+		return
+	}
 	if h := c.s.cfg.answerHook; h != nil {
 		h(r.ID, true)
 	}
@@ -455,13 +467,15 @@ func (c *srvConn) answer(r response) {
 	c.mu.Unlock()
 }
 
-// write writes one frame; the caller holds wmu. A write that fails ends the
-// connection.
-func (c *srvConn) write(payload []byte) {
+// write writes one frame and reports whether it was written; the caller holds
+// wmu. A write that fails ends the connection.
+func (c *srvConn) write(payload []byte) bool {
 	c.tc.SetWriteDeadline(time.Now().Add(c.s.cfg.WriteTimeout))
 	if err := writeFrame(c.tc, payload); err != nil {
 		c.kill()
+		return false
 	}
+	return true
 }
 
 // frame is r encoded for the wire: too-large for a result that does not fit a
@@ -494,6 +508,9 @@ func (c *srvConn) handle(req request) bool {
 	writing, dup := c.ids[req.ID]
 	c.mu.Unlock()
 	if writing { // the answer is on its way out, and the id with it
+		if h := c.s.cfg.reuseHook; h != nil {
+			h(req.ID)
+		}
 		c.wmu.Lock()
 		c.wmu.Unlock()
 		c.mu.Lock()

@@ -241,6 +241,19 @@ func TestLoadIdentityRefusesUnsafeFiles(t *testing.T) {
 			t.Fatalf("got %v", err)
 		}
 	})
+	// A second hard link to a file is a name for it that the folder's
+	// permissions do not cover: it is refused as a link is.
+	for _, name := range []string{KeyFile, CertFile} {
+		t.Run(name+" has a second hard link", func(t *testing.T) {
+			dir := mk(t)
+			if err := os.Link(filepath.Join(dir, name), filepath.Join(t.TempDir(), "other.pem")); err != nil {
+				t.Skipf("no hard link here: %v", err)
+			}
+			if _, err := LoadIdentity(dir); err != ErrUnsafe {
+				t.Fatalf("got %v", err)
+			}
+		})
+	}
 	t.Run("folder is a link", func(t *testing.T) {
 		dir := mk(t)
 		link := filepath.Join(t.TempDir(), "link")

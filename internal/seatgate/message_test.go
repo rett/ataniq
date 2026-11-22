@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidOp(t *testing.T) {
@@ -344,6 +345,235 @@ func TestDecodeStrict(t *testing.T) {
 		var g p
 		if err := DecodeStrict(json.RawMessage(in), &g); !errors.Is(err, ErrProtocol) {
 			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// The types of the standard library's own tests of field selection
+// (encoding/json decode_test.go and tagkey_test.go).
+type (
+	jsonS6  struct{ X int }
+	jsonS8  struct{ jsonS9 }
+	jsonS9  struct{ X, Y int }
+	jsonS10 struct {
+		jsonS11
+		jsonS12
+		jsonS13
+	}
+	jsonS11 struct{ jsonS6 }
+	jsonS12 struct{ jsonS6 }
+	jsonS13 struct{ jsonS8 }
+
+	embed1 struct{ Q int }
+	embed2 struct{ Q int }
+
+	unexportedWithMethods struct{}
+
+	badCodeTag struct {
+		Z string `json:" !\"#&'()*+,."`
+	}
+)
+
+func (unexportedWithMethods) F() {}
+
+// embedMarshals is a type with a marshalling method, which json/v2 does not
+// fill as a tagged embedded field of an unexported type, and encoding/json does.
+type embedMarshals struct{ Q int }
+
+func (embedMarshals) MarshalJSON() ([]byte, error) { return []byte("{}"), nil }
+
+// DecodeStrict takes a key only when the standard decoder would fill the field
+// of exactly that name: its table of names follows the decoder's own choice
+// of fields. It used to keep a name the decoder drops (two fields at one depth,
+// or one type embedded by two paths), so the decoder, finding no field of that
+// name, matched the key to another field in another case; it used to drop a
+// tagged embedded struct of an unexported type, which the decoder fills; and it
+// used to take a tag name the decoder does not.
+func TestDecodeStrictChoosesTheDecodersFields(t *testing.T) {
+	type IDA struct{ ID string }
+	type IDB struct{ ID string }
+	type conflict struct {
+		IDA
+		IDB
+		Outer string `json:"id"`
+	}
+	type twoPaths struct {
+		jsonS10
+		Lower int `json:"x"`
+	}
+	type S6 struct {
+		embed1 `json:"embed1"`
+	}
+	type S7 struct {
+		embed1 `json:"embed1"`
+		embed2
+	}
+	type S8 struct {
+		embed1 `json:"embed1"`
+		embed2 `json:"embed2"`
+		Q      int
+	}
+	type S9 struct {
+		unexportedWithMethods `json:"embed"`
+	}
+	// Each of these the decoder's two builds (with and without
+	// GOEXPERIMENT=jsonv2) fill differently, so either may match a key to a
+	// field in another case: they are refused whole.
+	type symbolTag struct {
+		A int `json:"a§b"` // json/v2: "a§b"; encoding/json: "A"
+	}
+	type quoteTag struct {
+		A int `json:"a'b"` // json/v2: "a"; encoding/json: "A"
+	}
+	type embedTag struct {
+		In embed1 `json:",embed"` // json/v2 promotes Q
+	}
+	type methodEmbed struct {
+		embedMarshals `json:"m"` // json/v2 leaves it out, and matches "m" to M
+		M             int
+	}
+
+	// Refused: each key is not the exact name of a field the decoder fills.
+	for name, c := range map[string]struct {
+		in  string
+		dst any
+	}{
+		"a name two fields share, beside its other case":         {`{"id":"first","ID":"second"}`, new(conflict)},
+		"a name two fields share":                                {`{"ID":"second"}`, new(conflict)},
+		"a name of a type embedded twice, beside its other case": {`{"x":1,"X":2}`, new(twoPaths)},
+		"a name of a type embedded twice":                        {`{"X":1,"Y":2}`, new(jsonS10)},
+		"a case variant in a tagged embedded struct":             {`{"embed1":{"q":1}}`, new(S6)},
+		"a tag the decoder does not take":                        {`{" !\"#&'()*+":"x"}`, new(badCodeTag)},
+		"a symbol in a tag":                                      {`{"a§b":1}`, new(symbolTag)},
+		"a symbol in a tag, Go name":                             {`{"A":1}`, new(symbolTag)},
+		"a quote in a tag":                                       {`{"a":1}`, new(quoteTag)},
+		"the embed option":                                       {`{"Q":1}`, new(embedTag)},
+		"the embed option, field name":                           {`{"In":{"Q":1}}`, new(embedTag)},
+		"an embedded type with methods":                          {`{"m":{"Q":1}}`, new(methodEmbed)},
+	} {
+		if err := DecodeStrict(json.RawMessage(c.in), c.dst); !errors.Is(err, ErrProtocol) {
+			t.Errorf("%s: %v, %+v", name, err, c.dst)
+		}
+	}
+
+	// Taken, as the standard decoder takes them.
+	var c conflict
+	if err := DecodeStrict(json.RawMessage(`{"id":"first"}`), &c); err != nil || c.Outer != "first" {
+		t.Errorf("conflict: %+v %v", c, err)
+	}
+	var tp twoPaths
+	if err := DecodeStrict(json.RawMessage(`{"x":1,"Y":2}`), &tp); err != nil || tp.Lower != 1 || tp.Y != 2 {
+		t.Errorf("two paths: %+v %v", tp, err)
+	}
+	var s6 S6
+	if err := DecodeStrict(json.RawMessage(`{"embed1":{"Q":1}}`), &s6); err != nil || s6.embed1.Q != 1 {
+		t.Errorf("S6: %+v %v", s6, err)
+	}
+	var s7 S7
+	if err := DecodeStrict(json.RawMessage(`{"embed1":{"Q":1},"Q":2}`), &s7); err != nil || s7 != (S7{embed1{1}, embed2{2}}) {
+		t.Errorf("S7: %+v %v", s7, err)
+	}
+	var s8 S8
+	if err := DecodeStrict(json.RawMessage(`{"embed1":{"Q":1},"embed2":{"Q":2},"Q":3}`), &s8); err != nil || s8 != (S8{embed1{1}, embed2{2}, 3}) {
+		t.Errorf("S8: %+v %v", s8, err)
+	}
+	var s9 S9
+	if err := DecodeStrict(json.RawMessage(`{"embed":{}}`), &s9); err != nil {
+		t.Errorf("S9: %v", err)
+	}
+	var bad badCodeTag
+	if err := DecodeStrict(json.RawMessage(`{"Z":"x"}`), &bad); err != nil || bad.Z != "x" {
+		t.Errorf("bad tag: %+v %v", bad, err)
+	}
+}
+
+// An interface that holds a pointer is decoded through the pointer, by the
+// standard decoder, so DecodeStrict holds the keys under it to the pointed-to
+// type. It used to look at the field's type alone, an interface, and take any
+// key, so a case variant filled a field there.
+func TestDecodeStrictFollowsAPointerInAnInterface(t *testing.T) {
+	type inner struct {
+		ID string `json:"id"`
+	}
+	type dst struct {
+		P any            `json:"p"`
+		L []any          `json:"l"`
+		A [1]any         `json:"a"`
+		V any            `json:"v"`
+		M map[string]any `json:"m"`
+	}
+	fresh := func() *dst {
+		return &dst{P: &inner{}, L: []any{&inner{}}, A: [1]any{&inner{}}, V: inner{}, M: map[string]any{"k": &inner{}}}
+	}
+	for name, in := range map[string]string{
+		"a case variant":             `{"p":{"ID":"x"}}`,
+		"a field alias":              `{"p":{"id":"a","ID":"b"}}`,
+		"a case variant in a list":   `{"l":[{"ID":"x"}]}`,
+		"a case variant in an array": `{"a":[{"ID":"x"}]}`,
+	} {
+		d := fresh()
+		if err := DecodeStrict(json.RawMessage(in), d); !errors.Is(err, ErrProtocol) {
+			t.Errorf("%s: %v, %+v", name, err, d.P)
+		}
+	}
+	d := fresh()
+	p, l, a := d.P.(*inner), d.L[0].(*inner), d.A[0].(*inner)
+	// A struct held by value, and a map's values, are replaced by the decoder
+	// with what it makes of the object, so any keys go there.
+	in := `{"p":{"id":"x"},"l":[{"id":"y"}],"a":[{"id":"z"}],"v":{"ID":1},"m":{"k":{"ID":2}}}`
+	if err := DecodeStrict(json.RawMessage(in), d); err != nil || p.ID != "x" || l.ID != "y" || a.ID != "z" {
+		t.Fatalf("%v: %+v %+v %+v", err, p, l, a)
+	}
+}
+
+// recursiveLink is a pointer to itself: a value of it is nil or points to
+// another one, without end.
+type recursiveLink *recursiveLink
+
+// A pointer whose chain of types or of values comes back on itself is
+// decoded from null, and anything else is refused, at once. DecodeStrict used
+// to follow such a type for ever, before the decoder was reached, so a
+// handler that decoded into one hung on any params (holding its place among
+// the handlers); and the decoder itself recurses without end on one that is
+// not null, until the stack overflows.
+func TestDecodeStrictEndsOnACycleOfPointers(t *testing.T) {
+	type link struct {
+		Next recursiveLink
+	}
+	type held struct {
+		P any `json:"p"`
+	}
+	decode := func(in string, dst any) error {
+		res := make(chan error, 1)
+		go func() { res <- DecodeStrict(json.RawMessage(in), dst) }()
+		return within(t, "DecodeStrict to return on "+in, res, 5*time.Second)
+	}
+	var l link
+	if err := decode(`{"Next":null}`, &l); err != nil || l.Next != nil {
+		t.Fatalf("null: %v %v", err, l.Next)
+	}
+	for _, in := range []string{`{"Next":{}}`, `{"Next":1}`, `{"Next":[]}`} {
+		if err := decode(in, new(link)); !errors.Is(err, ErrProtocol) {
+			t.Fatalf("%s: %v", in, err)
+		}
+	}
+	self := func() *held { // an interface that holds a pointer to itself
+		h := new(held)
+		h.P = &h.P
+		return h
+	}
+	pair := func() *held { // two interfaces that hold pointers to each other
+		h := new(held)
+		var other any = &h.P
+		h.P = &other
+		return h
+	}
+	for name, mk := range map[string]func() *held{"self": self, "pair": pair} {
+		if err := decode(`{"p":{"x":1}}`, mk()); !errors.Is(err, ErrProtocol) {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if h := mk(); decode(`{"p":null}`, h) != nil || h.P != nil {
+			t.Fatalf("%s, null: %#v", name, h.P)
 		}
 	}
 }

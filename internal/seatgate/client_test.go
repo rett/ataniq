@@ -920,9 +920,17 @@ func TestClientCallLeavesAStalledWriteAtItsContext(t *testing.T) {
 // deadlines, so a test can order a late write cut against the next write.
 type cutConn struct {
 	net.Conn
-	mu      sync.Mutex
-	onWrite func()             // run before each write while set
-	onCut   func(func() error) // run, with the forwarding, for a deadline of about now
+	mu       sync.Mutex
+	onWrite  func()             // run before each write while set
+	onCut    func(func() error) // run, with the forwarding, for a deadline of about now
+	deadline time.Time          // the last write deadline that reached the socket
+}
+
+// writeDeadline is the last write deadline that reached the socket.
+func (c *cutConn) writeDeadline() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.deadline
 }
 
 func (c *cutConn) Write(b []byte) (int, error) {
@@ -939,12 +947,18 @@ func (c *cutConn) SetWriteDeadline(d time.Time) error {
 	c.mu.Lock()
 	f := c.onCut
 	c.mu.Unlock()
+	set := func() error {
+		c.mu.Lock()
+		c.deadline = d
+		c.mu.Unlock()
+		return c.Conn.SetWriteDeadline(d)
+	}
 	if f != nil && !d.IsZero() && time.Until(d) < time.Second {
 		var err error
-		f(func() error { err = c.Conn.SetWriteDeadline(d); return err })
+		f(func() error { err = set(); return err })
 		return err
 	}
-	return c.Conn.SetWriteDeadline(d)
+	return set()
 }
 
 // A call whose context ends while its frame is written must not cut the write
@@ -957,6 +971,11 @@ func (c *cutConn) SetWriteDeadline(d time.Time) error {
 // and A's write goes on only once A's cut has started; the cut reaches the
 // socket only when B is writing. A cut that the fix makes A wait for cannot see
 // B write, so it goes on after a second; the test then takes that long.
+//
+// A's write succeeds, and the cut that came during it must not leave the
+// socket's write deadline expired once A is done: crypto/tls may write outside
+// the calls (the answer to a key update), and a failed write of its own is an
+// error for good. It used to be left at the moment of the cut.
 func TestClientCallCutNeverLandsOnTheNextWrite(t *testing.T) {
 	leakCheck(t)
 	e := startServer(t, bigRate, echo())
@@ -999,6 +1018,9 @@ func TestClientCallCutNeverLandsOnTheNextWrite(t *testing.T) {
 	conn.mu.Unlock()
 	if err := c.Call(ctxA, "owner.list", nil, nil); errors.Is(err, ErrDisconnected) {
 		t.Fatalf("call A: %v", err)
+	}
+	if d := conn.writeDeadline(); time.Until(d) < time.Second {
+		t.Fatalf("after call A the write deadline is %v from now", time.Until(d))
 	}
 
 	conn.mu.Lock()

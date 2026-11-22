@@ -123,11 +123,12 @@ func createExclusive(path string, data []byte) error {
 	return nil
 }
 
-// readSafe reads a regular file that is not a link and has none of the mode
-// bits in forbidden set. It opens first and checks the open file, so the check
-// and the read are of the same file. The open does not wait (O_NONBLOCK), so a
-// FIFO with no writer in place of the file is refused, not waited on for ever;
-// the flag changes nothing for the read of a regular file.
+// readSafe reads a regular file that is not a link, symbolic or hard (its link
+// count is 1), and has none of the mode bits in forbidden set. It opens first
+// and checks the open file, so the check and the read are of the same file.
+// The open does not wait (O_NONBLOCK), so a FIFO with no writer in place of
+// the file is refused, not waited on for ever; the flag changes nothing for
+// the read of a regular file.
 func readSafe(path string, forbidden fs.FileMode) ([]byte, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
@@ -142,6 +143,9 @@ func readSafe(path string, forbidden fs.FileMode) ([]byte, error) {
 		return nil, errors.New("seatgate: cannot read an identity file")
 	}
 	if !st.Mode().IsRegular() || st.Mode().Perm()&forbidden != 0 || st.Size() > maxIdentityFile {
+		return nil, ErrUnsafe
+	}
+	if sys, ok := st.Sys().(*syscall.Stat_t); !ok || sys.Nlink != 1 { // a second hard link
 		return nil, ErrUnsafe
 	}
 	data, err := io.ReadAll(io.LimitReader(f, maxIdentityFile+1))
