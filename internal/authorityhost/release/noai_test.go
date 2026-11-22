@@ -111,3 +111,19 @@ func TestNoAICheckNotRunOnABrokenFolder(t *testing.T) {
 		t.Errorf("findings %q", got)
 	}
 }
+
+// TestNoAICheckNotRunWhenItsHashIsWrong: a bin/ah-noaicheck that is there
+// but differs from its SHA256SUMS entry is already found corrupt, so it is
+// not run; the mismatch is the only finding.
+func TestNoAICheckNotRunWhenItsHashIsWrong(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "ran")
+	dir := withNoAI(t, "#!/bin/sh\nexit 0\n")
+	writeTestFile(t, filepath.Join(dir, "bin/ah-noaicheck"), "#!/bin/sh\necho ran > "+record+"\nexit 0\n", 0o755)
+	got := codes(Check(dir, CheckOptions{}))
+	if want := []string{"sums-mismatch: bin/ah-noaicheck"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("findings\n got: %q\nwant: %q", got, want)
+	}
+	if _, err := os.Stat(record); err == nil {
+		t.Error("the check ran a bin/ah-noaicheck whose hash is wrong")
+	}
+}

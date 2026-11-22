@@ -64,7 +64,8 @@ var topLevel = map[string]bool{
 // writable by group or others), SHA256SUMS against the files and in its
 // canonical form, the MANIFEST (the switch's own reader, and that it
 // describes the folder), the coverage of the command lists (see
-// checkCoverage) and, unless NoNoAICheck, the shipped no-AI check.
+// checkCoverage) and, unless NoNoAICheck, the shipped no-AI check, which
+// it runs only when nothing else was found.
 func Check(dir string, o CheckOptions) []Finding {
 	c := &checker{}
 	clean := filepath.Clean(dir)
@@ -98,7 +99,9 @@ func Check(dir string, o CheckOptions) []Finding {
 	if mok {
 		c.coverage(root, m, id.Name, files)
 	}
-	if !o.NoNoAICheck {
+	// The shipped no-AI check runs only on a folder found sound so far: a
+	// program whose hash, mode or name is already wrong is not run.
+	if !o.NoNoAICheck && len(c.findings) == 0 {
 		if _, ok := files["bin/ah-noaicheck"]; ok {
 			c.runNoAICheck(clean, o)
 		}

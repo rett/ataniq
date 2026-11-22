@@ -16,7 +16,8 @@
   nftables and systemd file, a restart or reload of each shipped family, a
   stop and a restart of every decision service, no decision service in a
   static release), and the release's own no-AI check, which must exit 0 and
-  print no hit. Both print only fixed reasons and plain names, never a
+  print no hit and is run only when nothing else was found (a checker whose
+  hash does not match `SHA256SUMS` is never run). Both print only fixed reasons and plain names, never a
   file's content. `ah-release baseline --src DIR --units FILE --ports FILE
   --packages FILE --nft FILE [--out DIR] [--stamp TEXT]` makes a scratch copy
   of the source tree whose allowlists are filled from files the owner
