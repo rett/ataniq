@@ -345,9 +345,12 @@ const (
 	// count package seatpair makes (a test of the service holds the two
 	// equal).
 	PairWords = 8
-	// MinCredentialIDBytes and MaxCredentialIDBytes bound a credential id.
+	// MinCredentialIDBytes and MaxCredentialIDBytes bound a credential id:
+	// at most 1023 bytes, as WebAuthn level 3, section 4, says and as
+	// package credkind's verifier takes (a test of the service holds the
+	// two equal), so that no credential is paired that cannot be verified.
 	MinCredentialIDBytes = 16
-	MaxCredentialIDBytes = 1024
+	MaxCredentialIDBytes = 1023
 	// MaxPublicKeyBytes caps a credential's public key as the seat sends
 	// it, a DER SubjectPublicKeyInfo. An ES256 key is 91 bytes; whether
 	// the bytes are one is for the daemon.

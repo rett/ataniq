@@ -140,7 +140,7 @@ func TestAKeyThatCannotBeAddedWritesNothing(t *testing.T) {
 	before := fileBytes(t, path)
 	bad := map[string]func(*NewKey){
 		"a short id":        func(n *NewKey) { n.CredentialID = n.CredentialID[:15] },
-		"a long id":         func(n *NewKey) { n.CredentialID = make([]byte, 1025) },
+		"a long id":         func(n *NewKey) { n.CredentialID = make([]byte, 1024) },
 		"no key":            func(n *NewKey) { n.PublicKey = nil },
 		"a long key":        func(n *NewKey) { n.PublicKey = make([]byte, 513) },
 		"no kind":           func(n *NewKey) { n.Kind = "" },

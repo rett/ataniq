@@ -22,6 +22,7 @@ func TestImportsOnlyWhatTheSeamsNoteAllows(t *testing.T) {
 		"ataniq/internal/approval/ownerjournal": true,
 		"ataniq/internal/approval/ownerwire":    true,
 		"ataniq/internal/approval/seatpair":     true,
+		"ataniq/internal/approval/credkind":     true,
 	}
 	banned := map[string]bool{"net": true, "os/exec": true, "syscall": true, "os": true}
 	entries, err := os.ReadDir(".")

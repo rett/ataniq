@@ -90,9 +90,11 @@ const (
 	// records' own bounds make, so a larger file is not one of ours.
 	maxKeysFileBytes = 4 << 20
 
-	// The bounds of what a record holds.
+	// The bounds of what a record holds. A credential id is at most 1023
+	// bytes, as WebAuthn level 3, section 4, says (the wire's
+	// MaxCredentialIDBytes; a test of the service holds the two equal).
 	minCredentialIDLen = 16
-	maxCredentialIDLen = 1024
+	maxCredentialIDLen = 1023
 	maxPublicKeyLen    = 512
 
 	keysHeader = "ataniq-ownerkeys 1"

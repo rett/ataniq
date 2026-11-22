@@ -180,6 +180,7 @@ func TestSeatPairParamsContent(t *testing.T) {
 		"a credential id of 0": change(func(p *SeatPairParams) { p.CredentialID = nil }),
 		"a short id":           change(func(p *SeatPairParams) { p.CredentialID = p.CredentialID[:15] }),
 		"a long id":            change(func(p *SeatPairParams) { p.CredentialID = make([]byte, MaxCredentialIDBytes+1) }),
+		"an id of 1024 bytes":  change(func(p *SeatPairParams) { p.CredentialID = make([]byte, 1024) }),
 		"no key":               change(func(p *SeatPairParams) { p.PublicKey = nil }),
 		"a long key":           change(func(p *SeatPairParams) { p.PublicKey = make([]byte, MaxPublicKeyBytes+1) }),
 	} {
