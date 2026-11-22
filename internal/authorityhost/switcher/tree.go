@@ -193,6 +193,19 @@ func (t *tally) entry(rel string, size int64) error {
 	return t.b.check()
 }
 
+// charge counts n bytes written to the total; a total over the limit is an
+// error.
+func (t *tally) charge(n int64) error {
+	if t.b == nil {
+		return nil
+	}
+	t.bytes += n
+	if t.bytes > t.b.lim.Bytes {
+		return failf(CodeTooLarge, "the release holds more than %d bytes", t.b.lim.Bytes)
+	}
+	return nil
+}
+
 // budgetReader checks the time budget before each read.
 type budgetReader struct {
 	r io.Reader

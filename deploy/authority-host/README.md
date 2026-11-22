@@ -131,8 +131,9 @@ ah-switch --from INCOMING/<id> <id>                 # as root, on the host
 (`releases/.import-<id>` while it is being made) as new files: folders and
 regular files only (a symbolic link, device, fifo, socket or hard-linked
 file is refused), each file opened without following a link and without
-blocking, checked to be the regular file with one link that was listed, and
-read to its size (one that changes while it is copied is refused). Modes are
+blocking, checked to be the regular file with one link that was listed (the
+same inode, of the size the walk saw), and read to that size (one that
+changes while it is copied is refused). Modes are
 set, not copied: folders 0755 and files 0644, or 0755 when the incoming file
 had any execute bit; no set-user-id, set-group-id or sticky bit, extended
 attribute or ACL is carried over, and when the switch runs as root the copy
@@ -147,9 +148,11 @@ to it again without `--from`.
 The work of reading a release is bounded, for the import and for the
 verification of any release: at most 20000 entries (folders and files),
 2 GiB in all and 512 MiB per file, and 10 minutes for the import and the
-hashing together. Going over a limit fails with its own code
-(`too-many-entries`, `too-large`, `file-too-large`, `time-budget`), removes
-the import's copy and releases the lock. Folders are read in batches with
+hashing together. The import charges the bytes it actually writes to the
+2 GiB, as it writes them, so an incoming folder that changes during the copy
+cannot make it write more: the copy stops at the limit. Going over a limit
+fails with its own code (`too-many-entries`, `too-large`, `file-too-large`,
+`time-budget`), removes the import's copy and releases the lock. Folders are read in batches with
 one folder open at a time, every file is opened without blocking, and a
 file that changes size or time, or stops being a regular file, while it is
 read is a failure (`file-changed`).
