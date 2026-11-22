@@ -521,7 +521,8 @@ func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 	// settles it; only the owner's acknowledgement takes it back (a retry
 	// of the same request reports it, see answerOwed), never the result
 	// line below.
-	if err := s.addOwed(rec, t.j.Direction, t.j.RequalifyFailed); err != nil {
+	owed, err := s.addOwed(rec, t.j.Direction, t.j.RequalifyFailed)
+	if err != nil {
 		return unresolved(OwedFile+" not written", err)
 	}
 	if err := s.crash(CrashRecord); err != nil {
@@ -539,10 +540,10 @@ func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 	if err := s.crash(CrashUnreported); err != nil {
 		return ExitFailed, false
 	}
-	s.step(9, "recorded in %s; the outcome is owed until ah-switch ack --asked WORDS (the same request run again reports it)", q(filepath.Join(s.stateDir(), DeployFile)))
+	s.step(9, "recorded in %s; the outcome is owed until %s (the same request run again reports it)", q(filepath.Join(s.stateDir(), DeployFile)), ackCommand(owed))
 	s.printResult(rec)
 	if t.j.RequalifyFailed {
-		s.emit("%s", requalifyFailedLine(rec.CurrentID))
+		s.emit("%s", requalifyFailedLine(rec.CurrentID, ackCommand(owed)))
 		return ExitFailed, true
 	}
 	if rec.Result == ResultOK {

@@ -247,15 +247,38 @@ func (e *env) rollBack(which string) int {
 	return code
 }
 
-// ack runs ah-switch ack --asked words and returns its exit code; its
-// output is in last.
+// ack runs ah-switch ack --txn IDS --asked words, IDS being the
+// transactions owed as status shows them, and returns its exit code; its
+// output is in last. With nothing owed it names a transaction that never
+// was (see neverTxn).
 func (e *env) ack(words string, mod ...func(*Config)) int {
 	e.t.Helper()
-	code := e.switcher(mod...).Ack(context.Background(), words)
-	e.t.Logf("ack: exit %d\n%s", code, e.out.String())
+	return e.ackTxns(e.owedTxns(), words, mod...)
+}
+
+// ackTxns runs ah-switch ack --txn txns --asked words and returns its exit
+// code; its output is in last.
+func (e *env) ackTxns(txns []string, words string, mod ...func(*Config)) int {
+	e.t.Helper()
+	code := e.switcher(mod...).Ack(context.Background(), txns, words)
+	e.t.Logf("ack %v: exit %d\n%s", txns, code, e.out.String())
 	e.last = e.out.String()
 	e.out.Reset()
 	return code
+}
+
+// neverTxn is a transaction id no switch made.
+const neverTxn = "0123456789abcdef0123456789abcdef"
+
+// owedTxns is the transactions of the outcomes owed, or neverTxn when
+// nothing is owed.
+func (e *env) owedTxns() []string {
+	e.t.Helper()
+	ids := owedTxns(e.owed())
+	if len(ids) == 0 {
+		return []string{neverTxn}
+	}
+	return ids
 }
 
 // ackSeen acknowledges, unless keepOwed, the outcomes owed after a command
@@ -268,7 +291,7 @@ func (e *env) ackSeen() {
 		return
 	}
 	var out bytes.Buffer
-	e.switcher(func(c *Config) { c.Out, c.Err = &out, &out }).Ack(context.Background(), "seen by the test")
+	e.switcher(func(c *Config) { c.Out, c.Err = &out, &out }).Ack(context.Background(), e.owedTxns(), "seen by the test")
 }
 
 // resumeOnly is a recover that resumes a journal and then changes nothing:

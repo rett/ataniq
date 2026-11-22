@@ -10,7 +10,7 @@
 //	ah-switch [--root DIR [--allow-exec]] [--dry] recover --services-stopped
 //	ah-switch [--root DIR [--allow-exec]] [--dry] recover --discard-journal TXN
 //	ah-switch [--root DIR] [--dry] inhibit-clear --asked WORDS
-//	ah-switch [--root DIR] [--dry] ack --asked WORDS
+//	ah-switch [--root DIR] [--dry] ack --txn ID[,ID...] --asked WORDS
 //
 // Exit codes: 0 ok, 1 failed (the outcome is recorded), 2 usage, 3 locked.
 package main
@@ -23,6 +23,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"ataniq/internal/authorityhost/switcher"
 )
@@ -39,7 +40,7 @@ const usage = `usage: ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manu
        ah-switch [--root DIR [--allow-exec]] [--dry] recover --services-stopped
        ah-switch [--root DIR [--allow-exec]] [--dry] recover --discard-journal TXN
        ah-switch [--root DIR] [--dry] inhibit-clear --asked WORDS
-       ah-switch [--root DIR] [--dry] ack --asked WORDS
+       ah-switch [--root DIR] [--dry] ack --txn ID[,ID...] --asked WORDS
 `
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -56,6 +57,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	stopped := fs.Bool("services-stopped", false, "recover: the decision services are stopped (settles a switch whose stop commands failed)")
 	pkgState := fs.String("package-state", "", "recover: the package snapshot the host is at, after a package step that did not finish")
 	discard := fs.String("discard-journal", "", "recover: set aside the journal of this transaction (as status shows it), which does not match the host")
+	txns := fs.String("txn", "", "ack: the transactions of every outcome owed, as status shows them, comma-separated")
 	asked := fs.String("asked", "", "inhibit-clear, ack: what the owner asked or saw before removing the decision inhibit or acknowledging the outcomes owed (recorded with the time)")
 	bad := func(format string, a ...any) int {
 		fmt.Fprintf(stderr, "ah-switch: "+format+"\n", a...)
@@ -100,7 +102,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(pos) == 1 && pos[0] == "status" && !set["rollback-to"] {
-		for _, name := range []string{"dry", "mode", "noaicheck", "from", "allow-exec", "counter", "services-stopped", "package-state", "discard-journal", "asked"} {
+		for _, name := range []string{"dry", "mode", "noaicheck", "from", "allow-exec", "counter", "services-stopped", "package-state", "discard-journal", "asked", "txn"} {
 			if set[name] {
 				return bad("status takes only --root")
 			}
@@ -108,7 +110,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return switcher.New(switcher.Config{Root: rootAbs, Out: stdout, Err: stderr}).Status()
 	}
 	if len(pos) == 1 && pos[0] == "inhibit-clear" && !set["rollback-to"] {
-		for _, name := range []string{"mode", "noaicheck", "from", "allow-exec", "counter", "services-stopped", "package-state", "discard-journal"} {
+		for _, name := range []string{"mode", "noaicheck", "from", "allow-exec", "counter", "services-stopped", "package-state", "discard-journal", "txn"} {
 			if set[name] {
 				return bad("inhibit-clear takes only --root, --dry and --asked WORDS")
 			}
@@ -121,16 +123,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(pos) == 1 && pos[0] == "ack" && !set["rollback-to"] {
 		for _, name := range []string{"mode", "noaicheck", "from", "allow-exec", "counter", "services-stopped", "package-state", "discard-journal"} {
 			if set[name] {
-				return bad("ack takes only --root, --dry and --asked WORDS")
+				return bad("ack takes only --root, --dry, --txn ID[,ID...] and --asked WORDS")
 			}
+		}
+		if !set["txn"] || *txns == "" {
+			return bad("ack needs --txn ID[,ID...]: the transactions of every outcome owed, as status shows them")
 		}
 		if !set["asked"] {
 			return bad("ack needs --asked WORDS: what the owner asked or saw of the outcomes owed")
 		}
-		return switcher.New(switcher.Config{Root: rootAbs, Dry: *dry, Out: stdout, Err: stderr}).Ack(context.Background(), *asked)
+		return switcher.New(switcher.Config{Root: rootAbs, Dry: *dry, Out: stdout, Err: stderr}).Ack(context.Background(), strings.Split(*txns, ","), *asked)
 	}
 	if set["asked"] {
 		return bad("--asked is only for inhibit-clear and ack")
+	}
+	if set["txn"] {
+		return bad("--txn is only for ack")
 	}
 	if len(pos) == 1 && pos[0] == "recover" && !set["rollback-to"] {
 		for _, name := range []string{"mode", "noaicheck", "from"} {
