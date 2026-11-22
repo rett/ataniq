@@ -41,11 +41,14 @@
   decision-capable service may start while it is there (and answer its
   readiness probe) but refuses every decision while it is there or cannot
   be read, checking it before each decision; the switch removes it only
-  when the transaction ends healthy, after running the reload list and
-  health check of `current` again when it finds a healthy transaction
-  not yet settled (a reboot may have come; when that fails the host's
-  stop list runs, the command and every retry of the same request exit 1
-  and the outcome stays owed with the failure until acknowledged); a
+  when the transaction ends healthy, after running the reload list,
+  health check and post-activation no-AI check (`--phase post`, the
+  firewall and listeners as they are now) of `current` again when it
+  finds a healthy transaction not yet settled (a reboot may have come;
+  when any of it fails the host's stop list runs, a failed no-AI check is
+  recorded as the check's verdict, the command and every retry of the
+  same request exit 1 and the outcome stays owed with the failure until
+  acknowledged); a
   failure keeps it across a reboot until a healthy switch or
   `ah-switch inhibit-clear --asked WORDS` (recorded with the time). All
   of it is one transaction journaled in `txn.json`, phase by phase
@@ -58,13 +61,14 @@
   `/var/lib/authority-host/owed.json` (written before the journal is
   removed, never in `deploy.json`, and not taken back by a printed result
   line): the same request run again reports it instead of doing it again
-  (an outcome whose report cannot be written stays owed, exit 1),
+  and leaves it owed (a report that cannot be written exits 1),
   a rollback bound to its request id so that a retry never resolves
-  `previous` anew, any other switch or rollback reports it and is refused
-  until then, and `ah-switch ack --asked WORDS` acknowledges it (recorded
+  `previous` anew, any other switch or rollback reports it and is refused,
+  and only the owner's `ah-switch ack --asked WORDS` takes it back (recorded
   with the time; when the outcomes it prints cannot be written or flushed it
-  records nothing, keeps them owed and exits 1, as a retry does); `--dry`
-  only shows it.
+  records nothing, keeps them owed and exits 1, as a retry does; an ack
+  interrupted after its record is finished by the next ack, which keeps
+  the recorded words and time); `--dry` only shows it.
   `ah-switch --rollback-to previous` goes back under the same policy,
   `ah-switch recover --counter N` restores a missing counter,
   `ah-switch recover --package-state SNAPSHOT` settles an unknown package
@@ -79,8 +83,10 @@
   every step and changes nothing, `--root DIR` works on another folder
   (running programs there only with `--allow-exec`), and
   `--noaicheck PATH` runs another no-AI check only when it is protected
-  root-owned code, bound to the transaction by its SHA-256 and checked
-  again before every run, from a private copy made from the checked
+  root-owned code and the switch is not run through sudo (any protected
+  host program, `/usr/bin/true` included, would pass, so a sudo rule for
+  the switch never chooses it), bound to the transaction by its SHA-256
+  and checked again before every run, from a private copy made from the checked
   descriptor and hashed again. A program of a release's lists is a file
   of the release (`{release}/bin/...`, in any list), a protected
   root-owned host program such as `/usr/bin/systemctl`, or a bare name in

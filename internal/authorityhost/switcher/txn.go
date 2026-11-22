@@ -27,8 +27,9 @@ type txn struct {
 	begun bool
 	// requalify: the transaction was found in phase done (a reboot may
 	// have come between its health check and its settling), so the
-	// release current points at is reloaded and checked again before the
-	// inhibit is removed; requalifyFailed: that did not pass.
+	// release current points at is reloaded, health checked and no-AI
+	// checked again before the inhibit is removed; requalifyFailed: that
+	// did not pass.
 	requalify       bool
 	requalifyFailed bool
 }
@@ -516,8 +517,9 @@ func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 		return unresolved(DeployFile+" not written", err)
 	}
 	// The outcome is owed before the journal goes, whichever command
-	// settles it; only an acknowledgement or a retry of the same request
-	// takes it back (see answerOwed), never the result line below.
+	// settles it; only the owner's acknowledgement takes it back (a retry
+	// of the same request reports it, see answerOwed), never the result
+	// line below.
 	if err := s.addOwed(rec, t.j.Direction, t.requalifyFailed); err != nil {
 		return unresolved(OwedFile+" not written", err)
 	}
@@ -533,7 +535,7 @@ func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 	if err := s.crash(CrashUnreported); err != nil {
 		return ExitFailed, false
 	}
-	s.step(9, "recorded in %s; the outcome is owed until ah-switch ack --asked WORDS or the same request run again", q(filepath.Join(s.stateDir(), DeployFile)))
+	s.step(9, "recorded in %s; the outcome is owed until ah-switch ack --asked WORDS (the same request run again reports it)", q(filepath.Join(s.stateDir(), DeployFile)))
 	s.printResult(rec)
 	if t.requalifyFailed {
 		s.emit("%s", requalifyFailedLine(rec.CurrentID))
@@ -550,13 +552,15 @@ func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 // check and its settling the host may have rebooted, and a decision-capable
 // service may then not run at all, or run from a start that nothing
 // checked. That release, verified with the transaction's trust, runs its
-// reload list and its health check again, decisions still inhibited; when
-// any of it fails, t.requalifyFailed is set and noted, the outcome is
-// recorded as it was decided and decisions stay inhibited (see endInhibit).
+// reload list, its health check and its post-activation no-AI check (on the
+// host as it now is) again, decisions still inhibited; when any of it
+// fails, t.requalifyFailed is set and noted (a failed no-AI check also as
+// the record's check), the outcome is recorded as it was decided and
+// decisions stay inhibited (see endInhibit).
 func (s *Switcher) requalifyCurrent(ctx context.Context, t *txn, cur string, curOK bool) {
 	failed := func(err error) {
 		t.requalifyFailed = true
-		t.note("after an interruption in phase done, %s did not pass its reload and health check again (%s); decisions stay inhibited", linkText(cur), describe(err))
+		t.note("after an interruption in phase done, %s did not pass its reload, health check and no-AI check again (%s); decisions stay inhibited", linkText(cur), describe(err))
 	}
 	// failedAfterReload: the reload list was started, so a service may be
 	// running: the host's stop list runs, whatever the release's own lists
@@ -579,7 +583,7 @@ func (s *Switcher) requalifyCurrent(ctx context.Context, t *txn, cur string, cur
 		failed(err)
 		return
 	}
-	s.printf("reconcile: the %s %s was decided before an interruption; %s runs its reload list and health check again before decisions are no longer inhibited", t.kind(), t.j.ID, id.Name)
+	s.printf("reconcile: the %s %s was decided before an interruption; %s runs its reload list, health check and no-AI check again before decisions are no longer inhibited", t.kind(), t.j.ID, id.Name)
 	rel, err := s.openVerified(ctx, id)
 	if err != nil {
 		failed(err)
@@ -591,6 +595,13 @@ func (s *Switcher) requalifyCurrent(ctx context.Context, t *txn, cur string, cur
 		return
 	}
 	if err := s.checkHealth(ctx, rel.health); err != nil {
+		failedAfterReload(err)
+		return
+	}
+	// The verdict of the post-activation check before the interruption is
+	// not reused: the firewall and the listeners may have changed since.
+	if err := s.postCheck(ctx, t.check(), rel); err != nil {
+		t.j.Check = CheckFailed
 		failedAfterReload(err)
 	}
 }

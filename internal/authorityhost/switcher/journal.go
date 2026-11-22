@@ -246,4 +246,5 @@ const (
 	CrashDone             = "done"              // txn.json says done
 	CrashRecord           = "record"            // deploy.json written; txn.json still there
 	CrashUnreported       = "unreported"        // txn.json removed; the result line not printed yet
+	CrashAcked            = "acked"             // ack: deploy.json records the acknowledgement; owed.json still there
 )

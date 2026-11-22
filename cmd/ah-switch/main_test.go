@@ -232,6 +232,50 @@ func makeWritableAll(root string) {
 	})
 }
 
+// TestNoAICheckOverrideRefusedUnderSudo: --noaicheck PATH replaces the
+// release's no-AI check with any protected program of the host, which a
+// root-owned program such as /usr/bin/true is. A sudo rule for the switch
+// (the deploying user's) must not choose it: run through sudo (SUDO_UID or
+// SUDO_USER set) a switch or rollback with --noaicheck is refused before
+// anything is looked at; without sudo the same request goes on.
+func TestNoAICheckOverrideRefusedUnderSudo(t *testing.T) {
+	root := t.TempDir()
+	t.Cleanup(func() { makeWritableAll(root) })
+	health := filepath.Join(t.TempDir(), "health")
+	write(t, health, "#!/bin/sh\nexit 0\n", 0o755)
+	hostStops(t, root, health)
+	write(t, filepath.Join(root, "usr/bin/ah-test-check"), "#!/bin/sh\nexit 0\n", 0o755)
+	os.MkdirAll(filepath.Join(root, switcher.BaseDir, "releases"), 0o755)
+	in := filepath.Join(t.TempDir(), "0001-aaaaaaa")
+	releaseIn(t, in, "0001-aaaaaaa", 1, health)
+	noSudo := func() {
+		for _, v := range []string{"SUDO_UID", "SUDO_USER"} {
+			t.Setenv(v, "")
+			os.Unsetenv(v)
+		}
+	}
+	switchArgs := []string{"--root", root, "--dry", "--noaicheck", "/usr/bin/ah-test-check", "--from", in, "0001-aaaaaaa"}
+	for _, v := range []string{"SUDO_UID", "SUDO_USER"} {
+		t.Run(v, func(t *testing.T) {
+			noSudo()
+			t.Setenv(v, "1000")
+			for _, args := range [][]string{switchArgs, {"--root", root, "--dry", "--noaicheck", "/usr/bin/ah-test-check", "--rollback-to", "previous"}} {
+				code, out, errOut := call(args...)
+				if code != switcher.ExitUsage || !strings.Contains(errOut, "--noaicheck is refused under sudo") || out != "" {
+					t.Errorf("%q under sudo: exit %d\n%s%s", args, code, out, errOut)
+				}
+			}
+		})
+	}
+	t.Run("not under sudo", func(t *testing.T) {
+		noSudo()
+		code, out, errOut := call(switchArgs...)
+		if code != switcher.ExitOK || !strings.Contains(out, "ah-test-check --phase pre") {
+			t.Errorf("exit %d\n%s%s", code, out, errOut)
+		}
+	})
+}
+
 // TestRecover writes a missing highest-counter back.
 func TestRecover(t *testing.T) {
 	root := t.TempDir()

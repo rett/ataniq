@@ -125,12 +125,13 @@ func (s *Switcher) reportOwed(o owedOutcome) error {
 }
 
 // requalifyFailedLine is the line that says a transaction found in phase
-// done did not pass its reload and health check again, current being cur.
+// done did not pass its reload, health check and no-AI check again,
+// current being cur.
 func requalifyFailedLine(cur string) string {
 	if cur == "" {
 		cur = "none"
 	}
-	return fmt.Sprintf("result: decisions stay inhibited: %s did not pass its reload and health check again after the interruption; look at the host, acknowledge the outcome with ah-switch ack --asked WORDS, then switch, or run ah-switch inhibit-clear --asked WORDS", cur)
+	return fmt.Sprintf("result: decisions stay inhibited: %s did not pass its reload, health check and no-AI check again after the interruption; look at the host, acknowledge the outcome with ah-switch ack --asked WORDS, then switch, or run ah-switch inhibit-clear --asked WORDS", cur)
 }
 
 // readOwed reads owed.json; a missing file is nothing owed. One that is
@@ -208,11 +209,10 @@ func (s *Switcher) addOwed(rec Record, direction string, requalifyFailed bool) e
 // answerOwed is what a switch or rollback (arg, rollback) does first, once
 // any journal is settled: when an outcome is owed and the request is a
 // retry of it (see matches), it reports that outcome and does nothing
-// else, and the outcome is no longer owed (a dry run leaves it owed, and
-// so does a report that could not be written, which fails the command);
-// when outcomes are owed and the request is another one, it reports them,
-// leaves them owed and refuses the request. done says the command ends
-// there, with code.
+// else; the outcome stays owed until the owner's ack (a report that could
+// not be written fails the command); when outcomes are owed and the
+// request is another one, it reports them, leaves them owed and refuses
+// the request. done says the command ends there, with code.
 func (s *Switcher) answerOwed(arg string, rollback bool) (code int, done bool) {
 	if s.stateRoot == nil {
 		return 0, false
@@ -237,7 +237,7 @@ func (s *Switcher) answerOwed(arg string, rollback bool) (code int, done bool) {
 			s.printf("owed: the %s %s (request %s, transaction %s) ended %s at %s and its outcome is not acknowledged yet", o.kind(), o.ID, q(o.RequestID), o.Txn, o.Result, q(o.Time))
 			s.reportOwed(o)
 		}
-		s.printf("refused: an outcome is owed; run the same request again to have it reported, or ah-switch ack --asked WORDS once it is seen; nothing else is done")
+		s.printf("refused: an outcome is owed; run the same request again to have it reported, and ah-switch ack --asked WORDS once it is seen; nothing else is done")
 		return ExitFailed, true
 	}
 	o := owed[match]
@@ -255,17 +255,16 @@ func (s *Switcher) answerOwed(arg string, rollback bool) (code int, done bool) {
 		s.errorf("the outcome of this %s %s could not be written: %s; it stays owed, and the same request run again reports it", kind, arg, q(err.Error()))
 		return ExitFailed, true
 	}
-	if s.cfg.Dry {
+	// Reporting is not acknowledging: the outcome stays owed until the
+	// owner's ack, whoever runs the request again (a sudo rule for the
+	// switch form allows the deploying user to).
+	switch {
+	case s.cfg.Dry:
 		s.printf("settled: dry run: the outcome is still owed; nothing changed")
-	} else if o.RequalifyFailed {
-		// The failure is not an outcome to report once: it stays owed
-		// until the owner acknowledges it.
-		s.printf("settled: the outcome stays owed: its release did not pass its reload and health check again")
-	} else {
-		rest := append(append([]owedOutcome{}, owed[:match]...), owed[match+1:]...)
-		if err := s.writeOwed(rest); err != nil {
-			s.printf("warning: %s not written: %s; the same request run again reports this outcome once more", OwedFile, q(err.Error()))
-		}
+	case o.RequalifyFailed:
+		s.printf("settled: the outcome stays owed: its release did not pass its reload, health check and no-AI check again")
+	default:
+		s.printf("settled: the outcome stays owed until the owner acknowledges it with ah-switch ack --asked WORDS")
 	}
 	if o.Result == ResultOK && !o.RequalifyFailed {
 		return ExitOK, true
@@ -279,9 +278,11 @@ const maxAckWords = 512
 // Ack runs ah-switch ack --asked WORDS: the owner's acknowledgement that
 // every outcome owed was seen. words, what the owner asked or saw, are
 // recorded in deploy.json with the time and the transactions acknowledged,
-// then owed.json is removed. It runs no program, is refused while a
-// transaction is open (any command settles it first) and when nothing is
-// owed, and a dry run changes nothing.
+// then owed.json is removed. An ack of the outcomes deploy.json already
+// records as acknowledged (one interrupted before that removal) only
+// removes owed.json and keeps the recorded words and time. It runs no
+// program, is refused while a transaction is open (any command settles it
+// first) and when nothing is owed, and a dry run changes nothing.
 func (s *Switcher) Ack(ctx context.Context, words string) int {
 	if !filepath.IsAbs(s.cfg.Root) {
 		s.errorf("--root %s is not an absolute path", q(s.cfg.Root))
@@ -347,11 +348,26 @@ func (s *Switcher) Ack(ctx context.Context, words string) int {
 		s.printf("ack: would record the owner's words and remove %s", q(filepath.Join(s.stateDir(), OwedFile)))
 		return ExitOK
 	}
+	// The transactions deploy.json records are the commit mark of an
+	// acknowledgement: when they are these, an ack was recorded and killed
+	// before owed.json was removed. Only that removal is finished, and the
+	// owner's original words and time are kept.
+	if rec.OutcomeAckedTxn == strings.Join(txns, " ") {
+		if err := s.writeOwed(nil); err != nil {
+			s.printf("ack: FAILED: %s not removed: %s", OwedFile, q(err.Error()))
+			return ExitFailed
+		}
+		s.printf("ack: %d outcome(s) were acknowledged by the owner at %s (asked: %s) before an interruption: recorded already, so those words are kept and these are not recorded; %s is removed", len(owed), rec.OutcomeAckedAt, q(rec.OutcomeAckedAsked), OwedFile)
+		return ExitOK
+	}
 	rec.OutcomeAckedAt = s.now()
 	rec.OutcomeAckedAsked = words
 	rec.OutcomeAckedTxn = strings.Join(txns, " ")
 	if err := s.rewriteRecord(&rec); err != nil {
 		s.printf("ack: FAILED: %s not written: %s; the outcomes stay owed", DeployFile, q(err.Error()))
+		return ExitFailed
+	}
+	if err := s.crash(CrashAcked); err != nil {
 		return ExitFailed
 	}
 	if err := s.writeOwed(nil); err != nil {
@@ -372,7 +388,7 @@ func (s *Switcher) owedStatus() ([]string, error) {
 	for _, o := range owed {
 		line := fmt.Sprintf("outcome owed (request %s, transaction %s): the %s %s ended %s at %s; the same request run again reports it, ah-switch ack --asked WORDS acknowledges it, and any other switch or rollback is refused until then", q(o.RequestID), o.Txn, o.kind(), o.ID, o.Result, q(o.Time))
 		if o.RequalifyFailed {
-			line += "; after an interruption its release did not pass its reload and health check again, so decisions stay inhibited and the same request fails until it is acknowledged"
+			line += "; after an interruption its release did not pass its reload, health check and no-AI check again, so decisions stay inhibited and the same request fails until it is acknowledged"
 		}
 		lines = append(lines, line)
 	}

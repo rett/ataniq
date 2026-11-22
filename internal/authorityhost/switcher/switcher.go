@@ -1326,7 +1326,7 @@ func (s *Switcher) status(w io.Writer) error {
 				id, _ := s.targetID(j.OldCurrent)
 				cur = id.Name
 			}
-			fmt.Fprintf(w, "requalify: it ended %s before the interruption; the next command runs the reload list and the health check of %s again before decisions are no longer inhibited\n", j.Result, cur)
+			fmt.Fprintf(w, "requalify: it ended %s before the interruption; the next command runs the reload list, the health check and the no-AI check of %s again before decisions are no longer inhibited\n", j.Result, cur)
 		}
 		if j.StopFailures != "" {
 			fmt.Fprintf(w, "stop failures: %s; fix their cause and run a command again, or run ah-switch recover --services-stopped once the decision services are stopped\n", j.StopFailures)

@@ -362,8 +362,9 @@ func TestGuardedServiceQualifies(t *testing.T) {
 // TestRebootInDoneRequalifies: a transaction that reached done (its
 // release healthy and checked) and was interrupted before it was settled,
 // as by a reboot that stopped its service, is settled by the next command
-// only after the reload list and health check of the release current
-// points at pass again; decisions are refused until then. When they do not
+// only after the reload list, health check and post-activation no-AI check
+// of the release current points at pass again; decisions are refused until
+// then. When they do not
 // pass, the outcome is recorded and decisions stay inhibited. status says
 // what the next command does.
 func TestRebootInDoneRequalifies(t *testing.T) {
@@ -382,7 +383,7 @@ func TestRebootInDoneRequalifies(t *testing.T) {
 			if _, ok := e.inhibited(); !ok {
 				t.Fatalf("not inhibited after the crash in done")
 			}
-			if got := e.status(); !strings.Contains(got, "interrupted: switch to "+rel3+" in phase done") || !strings.Contains(got, "runs the reload list and the health check of "+rel3+" again before decisions are no longer inhibited") {
+			if got := e.status(); !strings.Contains(got, "interrupted: switch to "+rel3+" in phase done") || !strings.Contains(got, "runs the reload list, the health check and the no-AI check of "+rel3+" again before decisions are no longer inhibited") {
 				t.Errorf("status:\n%s", got)
 			}
 			if !tc.reload {
@@ -401,15 +402,15 @@ func TestRebootInDoneRequalifies(t *testing.T) {
 			}
 			var ran []string
 			for _, c := range e.runner.calls {
-				ran = append(ran, strings.Fields(c)[0])
+				ran = append(ran, filepath.Base(strings.Fields(c)[0]))
 			}
 			rec := e.record()
 			if rec.Result != ResultOK || rec.ID != rel3 || rec.CurrentID != rel3 {
 				t.Errorf("record: %+v", rec)
 			}
 			if tc.reload {
-				if strings.Join(ran, " ") != "reload-units health-probe" {
-					t.Errorf("ran %v, want the reload list and health check of %s", ran, rel3)
+				if strings.Join(ran, " ") != "reload-units health-probe nft ah-noaicheck" {
+					t.Errorf("ran %v, want the reload list, health check and post-activation check of %s", ran, rel3)
 				}
 				if strings.Join(g.asked, " ") != "refused" {
 					t.Errorf("decisions while the probe ran: %v", g.asked)
@@ -425,10 +426,10 @@ func TestRebootInDoneRequalifies(t *testing.T) {
 				t.Errorf("ran %v", ran)
 			}
 			in, ok := e.inhibited()
-			if !ok || !strings.Contains(in.Reason, "did not pass its reload and health check again") {
+			if !ok || !strings.Contains(in.Reason, "did not pass its reload, health check and no-AI check again") {
 				t.Errorf("inhibit: %+v, %v", in, ok)
 			}
-			if !strings.Contains(rec.Detail, "did not pass its reload and health check again") {
+			if !strings.Contains(rec.Detail, "did not pass its reload, health check and no-AI check again") {
 				t.Errorf("record detail: %q", rec.Detail)
 			}
 			if _, err := os.Stat(filepath.Join(e.root, StateDir, JournalFile)); !errors.Is(err, fs.ErrNotExist) {
@@ -474,7 +475,7 @@ func TestRetryAfterFailedRequalification(t *testing.T) {
 		}
 	}
 	check("after the retry")
-	if got := e.status(); !strings.Contains(got, "did not pass its reload and health check again") {
+	if got := e.status(); !strings.Contains(got, "did not pass its reload, health check and no-AI check again") {
 		t.Errorf("status:\n%s", got)
 	}
 	// The same request again, even with a health check that passes now:
