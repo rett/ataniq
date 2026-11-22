@@ -52,7 +52,7 @@ func validHost(h string) bool {
 }
 
 func numericLabel(l string) bool {
-	if len(l) > 2 && l[0] == '0' && (l[1] == 'x' || l[1] == 'X') {
+	if len(l) >= 2 && l[0] == '0' && (l[1] == 'x' || l[1] == 'X') {
 		l = l[2:]
 		for i := 0; i < len(l); i++ {
 			c := l[i]

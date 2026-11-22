@@ -44,6 +44,9 @@ func TestValidOrigin(t *testing.T) {
 		{"https://192.0.2.1:443", ""},
 		{"https://0x7f.0x1", ""},
 		{"https://0x7f.1", ""},
+		{"https://app.0x", ""},
+		{"https://app.0X", ""},
+		{"https://app.0xff", ""},
 		{"https://2130706433", ""},
 		{"https://[::1]", ""},
 		{"https://[2001:db8::1]:443", ""},
@@ -128,7 +131,8 @@ func TestGoldens(t *testing.T) {
 		{"waiting-80x24", 80, 24, waiting},
 		{"waiting-60x20", 60, 20, waiting},
 		{"waiting-too-small-30x10", 30, 10, waiting},
-		{"waiting-too-small-40x30", 40, 30, waiting},
+		{"waiting-too-small-36x30", 36, 30, waiting},
+		{"waiting-minquiet-40x22", 40, 22, waiting},
 		{"pending-80x24", 80, 24, pending},
 		{"pending-60x20", 60, 20, pending},
 		{"pending-30x20", 30, 20, pending},
@@ -704,11 +708,12 @@ func TestTooSmallSaysSoAndDrawsNoPartOfTheCode(t *testing.T) {
 	b := &fakeBackend{}
 	r := newRig(t, b, testOrigin, 80, 24)
 	r.start()
-	cols, need := qrSize(r.m.rows)
-	if cols != 41 || need != 23 {
-		t.Fatalf("the synthetic code is %dx%d; the golden expects 41x23", cols, need)
+	// Even with the smaller quiet zone the code does not fit these sizes.
+	cols, need := qrSize(r.m.rowsMin)
+	if cols != 37 || need != 21 {
+		t.Fatalf("the synthetic code is %dx%d at the least quiet zone; the golden expects 37x21", cols, need)
 	}
-	for _, sz := range [][2]int{{cols - 1, 40}, {200, need - 1}, {60, 20}, {10, 3}, {1, 1}, {40, 22}} {
+	for _, sz := range [][2]int{{cols - 1, 40}, {200, need - 1}, {60, 20}, {10, 3}, {1, 1}, {30, 22}} {
 		buf := draw(r.m, sz[0], sz[1])
 		for y := 0; y < sz[1]; y++ {
 			for x := 0; x < sz[0]; x++ {
@@ -717,7 +722,7 @@ func TestTooSmallSaysSoAndDrawsNoPartOfTheCode(t *testing.T) {
 				}
 			}
 		}
-		if sz[0] >= 33 && sz[1] >= 1 {
+		if sz[0] >= 36 && sz[1] >= 1 {
 			want := fmt.Sprintf("terminal too small: need %d x %d", cols, need)
 			if s := text(r.m, sz[0], sz[1]); !strings.Contains(s, want) {
 				t.Errorf("size %v: no %q:\n%s", sz, want, s)
@@ -955,4 +960,75 @@ func TestAPendingIDThatIsNotSixteenHexCannotBeConfirmed(t *testing.T) {
 		r.notSee(80, 24, "c: confirm")
 		r.see(80, 24, "x: reject")
 	}
+}
+
+// A code that does not fit with the quiet zone of 4 modules is drawn with
+// the least one (2) when that fits; only a screen too small even for that
+// says so.
+func TestAQRThatNeedsTheSmallerQuietZoneIsDrawnWithIt(t *testing.T) {
+	// A host name of 36 characters makes a version 5 code: 45 x 25 with the
+	// zone of 4, 41 x 23 with the zone of 2.
+	const origin = "https://a-fairly-long-host-name-here.example"
+	r := newRig(t, &fakeBackend{}, origin, 80, 24)
+	r.start()
+	if cols, need := qrSize(r.m.rows); cols != 45 || need != 25 {
+		t.Fatalf("the code with the full zone is %dx%d, want 45x25", cols, need)
+	}
+	if cols, need := qrSize(r.m.rowsMin); cols != 41 || need != 23 {
+		t.Fatalf("the code with the least zone is %dx%d, want 41x23", cols, need)
+	}
+	s := text(r.m, 80, 24)
+	if strings.Contains(s, "too small") || !strings.Contains(s, "▒") {
+		t.Fatalf("the code was not drawn at 80x24:\n%s", s)
+	}
+	golden(t, "waiting-v5-80x24", s)
+	// At 41x23 it still fits; one less does not, and says what it needs.
+	if s := text(r.m, 41, 23); strings.Contains(s, "too small") || !strings.Contains(s, "▒") {
+		t.Fatalf("41x23:\n%s", s)
+	}
+	if s := text(r.m, 40, 23); !strings.Contains(s, "terminal too small: need 41 x 23") || strings.Contains(s, "▒") {
+		t.Fatalf("40x23:\n%s", s)
+	}
+	// With room for the full zone it is the full zone.
+	big := newRig(t, &fakeBackend{}, origin, 80, 40)
+	big.start()
+	buf := draw(big.m, 80, 40)
+	light := 0
+	for y := 0; y < 40; y++ {
+		if c := buf.CellAt(40, y); c != nil && c.Style.Bg == qrLight {
+			light++
+		}
+	}
+	if light != len(big.m.rows) {
+		t.Fatalf("the QR is %d rows tall, want %d (the full zone)", light, len(big.m.rows))
+	}
+}
+
+func TestAnExpiredCodeIsNotLeftDrawnWhenEveryStatusReadFails(t *testing.T) {
+	b := &fakeBackend{}
+	r := newRig(t, b, testOrigin, 80, 24)
+	r.start()
+	b.statErr = errBackend
+	r.now = r.now.Add(11 * time.Minute)
+	r.fire()
+	if r.m.screen != scExpired {
+		t.Fatalf("screen %v, want expired", r.m.screen)
+	}
+	r.notSee(80, 24, "▒", "Expires in")
+}
+
+func TestATooLongOriginShowsTheOriginLineNotTheDaemons(t *testing.T) {
+	// A valid origin of 200 characters: no code of version 10 holds its address.
+	origin := "https://" + strings.Repeat("a", 60) + "." + strings.Repeat("b", 60) + "." + strings.Repeat("c", 60) + ".example"
+	if _, ok := ValidOrigin(origin); !ok {
+		t.Fatal("the test origin is not valid")
+	}
+	r := newRig(t, &fakeBackend{}, origin, 80, 24)
+	r.init()
+	r.press("enter")
+	if r.m.screen != scFailed {
+		t.Fatalf("screen %v", r.m.screen)
+	}
+	r.see(80, 24, noOrigin)
+	r.notSee(80, 24, errCode, "daemon")
 }

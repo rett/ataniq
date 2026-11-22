@@ -163,7 +163,13 @@ func (m *Model) drawLines(d *drawer, w, h int, lines []dline) {
 // drawWaiting draws the QR between two lines of text, centred, or says that
 // the terminal is too small for it. It never draws a part of the code.
 func (m *Model) drawWaiting(d *drawer, w, h int) {
-	cols, need := qrSize(m.rows)
+	rows := m.rows
+	cols, need := qrSize(rows)
+	if w < cols || h < need {
+		// The least quiet zone, when the full one does not fit.
+		rows = m.rowsMin
+		cols, need = qrSize(rows)
+	}
 	if w < cols || h < need {
 		var ls []dline
 		for _, l := range wrap("terminal too small: need "+strconv.Itoa(cols)+" x "+strconv.Itoa(need), w-2) {
@@ -185,8 +191,8 @@ func (m *Model) drawWaiting(d *drawer, w, h int) {
 	m.centre(d, w, h-1, foot, fk)
 	st := uv.Style{Fg: qrDark, Bg: qrLight}
 	x0 := (w - cols) / 2
-	y0 := 1 + (h-2-len(m.rows))/2
-	for i, row := range m.rows {
+	y0 := 1 + (h-2-len(rows))/2
+	for i, row := range rows {
 		x := 0
 		for _, r := range row {
 			d.set(x0+x, y0+i, string(r), 1, st)

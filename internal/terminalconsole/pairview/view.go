@@ -199,7 +199,10 @@ type Model struct {
 	note string
 	// rows are the drawn rows of the QR; the code and the address are not
 	// kept.
-	rows    []string
+	rows []string
+	// rowsMin are the rows with the least quiet zone, for a screen that
+	// does not hold rows.
+	rowsMin []string
 	expires time.Time
 	// words are the six words as drawn, and wordsOK says each is one short
 	// printable word, so the owner may confirm.
@@ -443,7 +446,7 @@ func (m *Model) startOver(replace bool) tea.Cmd {
 	m.gen++
 	m.cycle, m.opening = false, false
 	m.awaitStatus, m.awaitStart, m.awaitConfirm, m.awaitReject = 0, 0, 0, 0
-	m.screen, m.note, m.rows = scStarting, "", nil
+	m.screen, m.note, m.rows, m.rowsMin = scStarting, "", nil, nil
 	return m.startCmd(replace)
 }
 
@@ -456,32 +459,36 @@ func (m *Model) onStarted(v startedMsg) tea.Cmd {
 		m.screen, m.note = scFailed, errStart
 		return nil
 	}
-	rows, ok := m.draw(v.offer.Code)
+	rows, rowsMin, err := m.draw(v.offer.Code)
 	m.expires = v.offer.ExpiresAt
 	switch {
-	case !ok:
-		m.screen, m.note = scFailed, errCode
+	case err != "":
+		m.screen, m.note = scFailed, err
 		return nil
 	case !m.expires.After(m.now()):
 		m.screen, m.note = scExpired, ""
 		return nil
 	}
-	m.rows = rows
+	m.rows, m.rowsMin = rows, rowsMin
 	m.screen, m.note = scWaiting, ""
 	return m.poller()
 }
 
-// draw builds the QR rows of the pairing address for code. The code leaves
-// this function only inside the rows.
-func (m *Model) draw(code string) ([]string, bool) {
+// draw builds the QR rows of the pairing address for code, with the full
+// quiet zone and with the least one. The code leaves this function only
+// inside the rows. The line it returns is empty on success: errCode when the
+// code is not one a fragment can hold, and the origin line when the address
+// is too long for the largest code (the origin is configuration, not the
+// daemon's).
+func (m *Model) draw(code string) (rows, rowsMin []string, errLine string) {
 	if !validCode(code) {
-		return nil, false
+		return nil, nil, errCode
 	}
 	c, err := qr.Encode(m.origin+"/pair/#"+code, qr.M)
 	if err != nil {
-		return nil, false
+		return nil, nil, noOrigin
 	}
-	return c.HalfBlocks(qr.DefaultQuiet), true
+	return c.HalfBlocks(qr.DefaultQuiet), c.HalfBlocks(qr.MinQuiet), ""
 }
 
 // validCode reports whether code is only what a fragment of a pairing
@@ -516,6 +523,11 @@ func (m *Model) onStatus(v statusMsg) tea.Cmd {
 	}
 	if v.err != nil {
 		m.note = errPoll
+		// A code that ran out is not left drawn because no read answers.
+		if m.screen == scWaiting && !m.expires.After(m.now()) {
+			m.end(scExpired)
+			return nil
+		}
 		return m.tickCmd()
 	}
 	m.note = ""
@@ -533,7 +545,7 @@ func (m *Model) onStatus(v statusMsg) tea.Cmd {
 			}
 		case scPending, scConfirm:
 			// The daemon's pairing is another one: the words are not its.
-			m.screen, m.rows = scOpen, nil
+			m.screen, m.rows, m.rowsMin = scOpen, nil, nil
 		}
 	case Pending:
 		if !st.ExpiresAt.IsZero() {
@@ -573,7 +585,7 @@ func (m *Model) onOpening(v statusMsg) tea.Cmd {
 
 // end leaves the polling for a screen with no code or words.
 func (m *Model) end(s screen) {
-	m.screen, m.note, m.rows, m.cycle = s, "", nil, false
+	m.screen, m.note, m.rows, m.rowsMin, m.cycle = s, "", nil, nil, false
 	m.words, m.wordsOK, m.pid = [6]string{}, false, ""
 }
 
@@ -608,7 +620,7 @@ func (m *Model) setWords(in [6]string, id string) {
 	if m.screen != scConfirm || w != m.words || id != m.pid || !ok {
 		m.screen = scPending
 	}
-	m.rows = nil
+	m.rows, m.rowsMin = nil, nil
 	m.words, m.wordsOK, m.pid = w, ok, id
 	if !ok {
 		m.note = errWords
