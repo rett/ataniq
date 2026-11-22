@@ -67,13 +67,24 @@ func TestParseEnv(t *testing.T) {
 		{"a quote across lines", sh, "PS1='\nOPENAI_API_KEY=x\n'\n", nil, nil, nil, false},
 		{"a here-document", sh, "cat <<EOF >/tmp/x\nOPENAI_API_KEY=x\nEOF\ncat <<-'END'\n\tCODEX_HOME=y\n\tEND\nGEMINI_API_KEY=z\n",
 			[]string{"GEMINI_API_KEY"}, nil, nil, false},
+		{"a brace inside a parameter expansion", sh, "o=${o%%[<{().[]*}\nx=\"${x:-{a}}\"\ny=${y:-${z}}\nOPENAI_API_KEY=1\n", []string{"OPENAI_API_KEY"}, nil, nil, false},
 		{"a substitution", sh, "X=$(printf '%s' \"a) OPENAI_API_KEY=1\")\nY=`echo CODEX_HOME=2`\nZ=${A:-OPENAI_ORG=3}\n", nil, nil, nil, false},
 		{"a reference is not a setting", sh, `echo "$OPENAI_API_KEY"` + "\n[ \"$ANTHROPIC_API_KEY\" = x ]", nil, nil, nil, false},
 		{"unset", sh, "unset OPENAI_API_KEY", nil, nil, nil, false},
 		{"once each", sh, "OPENAI_API_KEY=1\nOPENAI_API_KEY=2", []string{"OPENAI_API_KEY"}, nil, nil, false},
 		{"sourced", sh, ". /etc/app/env.sh\nsource \"/etc/app/more.sh\"\n. ./relative.sh\n. \"$HOME/x\"\n", nil, nil,
-			[]string{"/etc/app/env.sh", "/etc/app/more.sh"}, false},
-		{"a profile in the usual style", sh, profileSample, nil, nil, nil, false},
+			[]string{"/etc/app/env.sh", "/etc/app/more.sh", "./relative.sh", "$HOME/x"}, false},
+		{"sourced by a loop variable", sh, "for p in /etc/profile.d/*.sh /etc/x.sh; do\n\ttest -r \"$p\" && . \"$p\"\ndone\n", nil, nil,
+			[]string{"/etc/profile.d/*.sh", "/etc/x.sh"}, false},
+		{"sourced by a loop variable without a list", sh, "for p; do . \"${p}\"; done\n", nil, nil,
+			[]string{"${p}"}, false},
+		{"function-local declarations", sh, completionSample, nil, nil, nil, false},
+		{"a top-level local or declare of a computed name", sh, "local \"$1\"\ndeclare \"$2\"=x\ntypeset -a \"${n}\"\nreadonly \"$v\"\n", nil, nil, nil, false},
+		{"a function's declarations are its own", sh, "f() {\n  local OPENAI_API_KEY=x\n  declare -x CODEX_HOME=y\n  readonly ANTHROPIC_API_KEY\n}\nfunction g { typeset GEMINI_API_KEY=z; }\n", nil, nil, nil, false},
+		{"a function's export still counts", sh, "f() {\n  export OPENAI_API_KEY=x\n  CODEX_HOME=y\n}\n", []string{"OPENAI_API_KEY", "CODEX_HOME"}, nil, nil, false},
+		{"a function's export of a computed name", sh, "f() { export \"$1\"; }\n", nil, nil, nil, true},
+		{"after a function a declaration counts again", sh, "f() { local A; }\ndeclare -x OPENAI_API_KEY=x\n", []string{"OPENAI_API_KEY"}, nil, nil, false},
+		{"a profile in the usual style", sh, profileSample, nil, nil, []string{"/etc/profile.d/*.sh"}, false},
 		{"an unclosed quote", sh, "A='x\n", nil, nil, nil, true},
 		{"an unclosed substitution", sh, "A=$(x\n", nil, nil, nil, true},
 		{"a here-document that never ends", sh, "cat <<EOF\nx\n", nil, nil, nil, true},
@@ -100,9 +111,13 @@ func TestParseEnv(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := parseEnv(tc.syntax, tc.in, strings.Contains(tc.name, "fish"))
+			var sourced []string
+			for _, w := range r.sourced {
+				sourced = append(sourced, w.lit)
+			}
 			if !reflect.DeepEqual(r.names, tc.want) || !reflect.DeepEqual(r.files, tc.files) ||
-				!reflect.DeepEqual(r.sourced, tc.sourced) || r.bad != tc.bad {
-				t.Errorf("got %q %q %q bad=%v, want %q %q %q bad=%v", r.names, r.files, r.sourced, r.bad,
+				!reflect.DeepEqual(sourced, tc.sourced) || r.bad != tc.bad {
+				t.Errorf("got %q %q %q bad=%v, want %q %q %q bad=%v", r.names, r.files, sourced, r.bad,
 					tc.want, tc.files, tc.sourced, tc.bad)
 			}
 			for _, n := range r.names {
@@ -143,6 +158,46 @@ if [ -n "${BASH_VERSION-}" -a -n "${PS1-}" ] && [ "${0#-}" != sh ]; then
 	printf '\033]0;%s\007' "${USER}@${HOSTNAME%%.*}"
 	echo "it's \"quoted\"" > /dev/null 2>&1
 fi
+`
+
+// completionSample is in the style of the packaged bash-completion
+// library: functions whose local declarations name their variables by
+// positional parameters. Loading it sets no login variable, and it must
+// parse.
+const completionSample = `# a completion library
+_comp_get_words()
+{
+    local exclude="" flag i OPTIND=1
+    local cur cword words=()
+    local upargs=() upvars=() vcur vcword vprev vwords
+    while getopts "c:i:n:p:w:" flag "$@"; do
+        case $flag in
+            [cipw]) [[ $OPTARG != *[^_a-zA-Z0-9]* ]] || return 2 ;;
+        esac
+    done
+    local IFS=$' \t\n'
+    local "$2" "$3" "$4" && _comp_upvars -a"${#words[@]}" "$2" ${words[@]+"${words[@]}"} \
+        -v "$3" "$cword" -v "$4" "${cur:0:index}"
+}
+
+function _comp_upvars {
+    if ! (($#)); then
+        return 2
+    fi
+    while (($#)); do
+        case $1 in
+            -a*)
+                [[ ${1#-a} ]] || return 1
+                unset -v "$2" && eval $2=\(\"\${@:3:${1#-a}}\"\) && shift $((${1#-a} + 2)) || return 1
+                ;;
+            -v)
+                unset -v "$2" && eval $2=\"\$3\" && shift 3 || return 1
+                ;;
+        esac
+    done
+}
+
+_comp_have() { { declare -F "$1" || typeset -f "$1"; } >/dev/null 2>&1; }
 `
 
 func TestValidName(t *testing.T) {
@@ -193,6 +248,33 @@ func TestCheckEnv(t *testing.T) {
 		{"syntax that cannot be parsed", func(f *fixture) {
 			f.file("etc/profile.d/odd.sh", "export OPENAI_API_KEY=x\nA='unclosed\n")
 		}, []Hit{env("/etc/profile.d/odd.sh", "OPENAI_API_KEY"), {Kind: KindIncomplete, Path: PathEnvSyntax, Detail: "/etc/profile.d/odd.sh"}}},
+		{"a function library", func(f *fixture) {
+			f.file("etc/bash.bashrc", "[[ -r /usr/share/bash-completion/bash_completion ]] && . /usr/share/bash-completion/bash_completion\n")
+			f.file("usr/share/bash-completion/bash_completion", completionSample)
+		}, nil},
+		{"a profile sources a home-relative file", func(f *fixture) {
+			f.file("etc/profile.d/locale.sh", localeSample)
+			f.file("home/user/.config/locale.conf", "LANG=C.UTF-8\nOPENAI_API_KEY="+secret+"\n")
+		}, []Hit{env("/home/user/.config/locale.conf", "OPENAI_API_KEY")}},
+		{"a home's profile sources its own file", func(f *fixture) {
+			f.file("home/user/.bashrc", "[ -f ~/.bash_aliases ] && . ~/.bash_aliases\nsource \"${HOME}/.env\"\n")
+			f.file("home/user/.bash_aliases", "alias ll='ls -l'\n")
+			f.file("home/user/.env", "export CODEX_HOME=/x\n")
+			f.file("srv/app/.env", "export GEMINI_API_KEY=x\n")
+		}, []Hit{env("/home/user/.env", "CODEX_HOME")}},
+		{"a profile.d loop", func(f *fixture) {
+			f.file("etc/profile", "for profile in /etc/profile.d/*.sh; do\n\ttest -r \"$profile\" && . \"$profile\"\ndone\nunset profile\n")
+			f.file("etc/profile.d/z.sh", "export ANTHROPIC_API_KEY=x\n")
+		}, []Hit{env("/etc/profile.d/z.sh", "ANTHROPIC_API_KEY")}},
+		{"a source the check cannot resolve", func(f *fixture) {
+			f.file("etc/profile.d/dyn.sh", "for f in \"${files[@]}\"; do . \"$f\"; done\n")
+			f.file("home/user/.bashrc", ". ./relative.sh\n")
+			f.file("root/.profile", "load() { . \"$1\"; }\n")
+		}, []Hit{
+			{Kind: KindIncomplete, Path: PathEnvSource, Detail: "/etc/profile.d/dyn.sh"},
+			{Kind: KindIncomplete, Path: PathEnvSource, Detail: "/root/.profile"},
+			{Kind: KindIncomplete, Path: PathEnvSource, Detail: "/home/user/.bashrc"},
+		}},
 		{"a commented-out profile line", func(f *fixture) {
 			f.file("home/user/.bashrc", "# export ANTHROPIC_API_KEY="+secret+"\nexport LANG=C # OPENAI_API_KEY=x\n")
 		}, nil},
@@ -221,6 +303,59 @@ func TestCheckEnv(t *testing.T) {
 		{"too large", func(f *fixture) { f.file("etc/profile", strings.Repeat("#\n", maxEnvFile/2+1)) },
 			[]Hit{{Kind: KindUnreadable, Path: "/etc/profile", Detail: errTooLarge.Error()}}},
 	}, (*Checker).CheckEnv)
+}
+
+// localeSample is in the style of a packaged locale profile: it sources a
+// configuration file from the user's XDG or home folder.
+const localeSample = `#!/bin/sh
+if [ -z "$LANG" ]; then
+  if [ -n "$XDG_CONFIG_HOME" ] && [ -r "$XDG_CONFIG_HOME/locale.conf" ]; then
+    . "$XDG_CONFIG_HOME/locale.conf"
+  elif [ -n "$HOME" ] && [ -r "$HOME/.config/locale.conf" ]; then
+    . "$HOME/.config/locale.conf"
+  elif [ -r /etc/locale.conf ]; then
+    . /etc/locale.conf
+  fi
+fi
+LANG=${LANG:-C.UTF-8}
+export LANG LANGUAGE LC_CTYPE
+`
+
+func TestSourcePaths(t *testing.T) {
+	c := cleanFixture(t).checker(testLists())
+	cases := []struct {
+		lit  string
+		exp  bool
+		home string
+		want []string
+		ok   bool
+	}{
+		{"/etc/x", false, "", []string{"etc/x"}, true},
+		{"/etc/../etc/x", false, "", []string{"etc/x"}, true},
+		{"relative", false, "", nil, false},
+		{"$HOME/x", false, "", nil, false}, // a literal "$HOME" folder name is relative
+		{"~/x", false, "home/user", []string{"home/user/x"}, true},
+		{"~", false, "home/user", []string{"home/user"}, true},
+		{"~other/x", false, "home/user", nil, false},
+		{"$HOME/x", true, "home/user", []string{"home/user/x"}, true},
+		{"${HOME}/.x", true, "srv/app", []string{"srv/app/.x"}, true},
+		{"$HOME/x", true, "", []string{"root/x", "home/user/x", "srv/app/x"}, true},
+		{"$XDG_CONFIG_HOME/locale.conf", true, "home/user", []string{"home/user/.config/locale.conf"}, true},
+		{"${XDG_CONFIG_HOME:-$HOME/.config}/a", true, "home/user", []string{"home/user/.config/a"}, true},
+		{"$HOMEDIR/x", true, "home/user", nil, false},
+		{"$HOME/$X", true, "home/user", nil, false},
+		{"$HOME", true, "home/user", []string{"home/user"}, true},
+		{"$HOMEx", true, "home/user", nil, false},
+		{"$f", true, "", nil, false},
+		{"$(pwd)/x", true, "", nil, false},
+		{"~/$X", true, "home/user", nil, false},
+	}
+	for _, tc := range cases {
+		got, ok := c.sourcePaths(srcWord{lit: tc.lit, exp: tc.exp}, tc.home)
+		if ok != tc.ok || !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("sourcePaths(%q, %v, %q) = %q %v, want %q %v", tc.lit, tc.exp, tc.home, got, ok, tc.want, tc.ok)
+		}
+	}
 }
 
 // No report holds a planted value: in text or JSON.

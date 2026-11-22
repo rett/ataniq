@@ -38,12 +38,12 @@ func ident(b byte) bool { return identStart(b) || (b >= '0' && b <= '9') }
 
 // envParse is what a file sets: the provider-key names (validated, once
 // each), the EnvironmentFile= paths it names (absolute; the last component
-// may be a glob), the files a shell profile sources by a literal absolute
-// path, and whether some of it could not be parsed.
+// may be a glob), the path words of the files a shell profile sources, and
+// whether some of it could not be parsed.
 type envParse struct {
 	names   []string
 	files   []string
-	sourced []string
+	sourced []srcWord
 	bad     bool
 	seen    map[string]bool
 }
@@ -582,7 +582,8 @@ func (l *shLexer) expansion(i int) int {
 }
 
 // group skips from the opening byte at i to its matching close, over
-// quotes and nested expansions, and returns the position after it.
+// quotes and nested expansions, and returns the position after it. A bare
+// "{" inside a ${...} does not nest.
 func (l *shLexer) group(i int, open, close byte) int {
 	depth := 0
 	for i < len(l.s) {
@@ -603,10 +604,12 @@ func (l *shLexer) group(i int, open, close byte) int {
 			var sink strings.Builder
 			i = l.dquote(i+1, &sink, func() {})
 			continue
-		case c == '`' || (c == '$' && i+1 < len(l.s) && l.s[i+1] != open && (l.s[i+1] == '(' || l.s[i+1] == '{')):
+		case c == '`' || (c == '$' && i+1 < len(l.s) && (l.s[i+1] == '(' || l.s[i+1] == '{')):
 			i = l.expansion(i)
 			continue
-		case c == open:
+		case c == open && (open == '(' || depth == 0):
+			// Parentheses nest; inside ${...} only a nested ${ does, as
+			// in bash ("${x:-{a}}" ends at the first "}").
 			depth++
 		case c == close:
 			depth--
@@ -626,26 +629,78 @@ var shReserved = map[string]bool{
 	"while": true, "until": true, "esac": true, "{": true, "}": true, "!": true, "time": true,
 }
 
+// srcWord is the path word of a "." or "source" command: its text with
+// quotes removed and expansions kept as written, and whether it holds an
+// expansion (a word without one is a literal path, "$" and all).
+type srcWord struct {
+	lit string
+	exp bool
+}
+
+// forList is what a for loop's variable takes: the words of its list, or,
+// when there is no list ("for x; do", the positional parameters), none it
+// can name (ok false).
+type forList struct {
+	words []srcWord
+	ok    bool
+}
+
 // parseShell reads a shell profile as a token stream (quotes may span
 // lines; here-documents are skipped; comments start at a word). It keeps
 // the names of the assignments at the start of a command (NAME=value
-// cmd ... included), the names that export, declare, typeset, readonly,
-// local and env set, the first argument of setenv (csh) and, in a fish
-// file, of set. A value is never read for names. An argument of export
-// whose name holds an expansion, an unclosed quote or substitution, or a
-// here-document that never ends is syntax the check cannot parse. A file
-// sourced by a literal absolute path (". /etc/x", "source /etc/x") is
-// returned to be read too.
+// cmd ... included), the names that export, declare, typeset, readonly
+// and env set, the first argument of setenv (csh) and, in a fish file, of
+// set. A value is never read for names.
+//
+// A function body (NAME() { ... }, function NAME { ... }) is followed by
+// its braces: local, declare, typeset and readonly in it declare the
+// function's own variables, not the login environment's, and are passed
+// over, as are a local outside a function (an error in bash) and a
+// declare, typeset or readonly whose name is an expansion. An export
+// whose name is an expansion, an unclosed quote or substitution, or a
+// here-document that never ends is syntax the check cannot parse.
+//
+// The path word of every "." and "source" command is returned (sourced),
+// to be resolved by the caller (see Checker.sourcePaths); a word that is
+// exactly the variable of an earlier "for NAME in WORDS" loop stands for
+// each of those words (". "$profile"" in a loop over /etc/profile.d/*.sh).
 func parseShell(r *envParse, data string, fish bool) {
 	l := &shLexer{s: data}
 	const (
 		argNone = iota
 		argExport
+		argDeclare
+		argIgnore
 		argEnv
 		argFirst
 		argSource
+		argFunc
+		argForName
+		argForIn
+		argForList
 	)
 	cmdPos, args, redirect, here, strip := true, argNone, false, false, false
+	// Function bodies: braces is the stack of open { } groups, each saying
+	// whether it is a function's body; hdr follows NAME ( ) (1 after NAME,
+	// 2 after its "("), and pending says the next { opens a function body.
+	var braces []bool
+	hdr, pending := 0, false
+	inFunc := func() bool {
+		for _, f := range braces {
+			if f {
+				return true
+			}
+		}
+		return false
+	}
+	loops := map[string]forList{}
+	var forVar string
+	var forWords []srcWord
+	endFor := func(ok bool) {
+		if args == argForIn || args == argForList {
+			loops[forVar] = forList{words: forWords, ok: ok && args == argForList}
+		}
+	}
 	for {
 		op, w, eof := l.next()
 		if eof {
@@ -657,11 +712,34 @@ func parseShell(r *envParse, data string, fish bool) {
 				here, strip = true, op == "<<-"
 			case "<", ">", ">>", "<&", ">&", "<>", ">|", "&>", "<<<":
 				redirect = true
+			case "(":
+				if hdr == 1 {
+					hdr = 2
+					continue
+				}
+				hdr, pending = 0, false
+				endFor(false)
+				cmdPos, args = true, argNone
+			case ")":
+				if hdr == 2 {
+					hdr, pending = 0, true
+					continue
+				}
+				hdr, pending = 0, false
+				endFor(false)
+				cmdPos, args = true, argNone
+			case "\n":
+				hdr = 0
+				endFor(true)
+				cmdPos, args = true, argNone
 			default:
+				hdr, pending = 0, false
+				endFor(true)
 				cmdPos, args = true, argNone
 			}
 			continue
 		}
+		hdr = 0
 		switch {
 		case here:
 			l.heredocs = append(l.heredocs, heredoc{delim: w.lit, strip: strip})
@@ -670,10 +748,22 @@ func parseShell(r *envParse, data string, fish bool) {
 		case redirect:
 			redirect = false
 			continue
-		case !w.exp && (w.lit == "{" || w.lit == "}"):
+		case !w.exp && w.lit == "{":
+			if cmdPos || pending {
+				braces = append(braces, pending)
+			}
+			pending = false
+			cmdPos, args = true, argNone
+			continue
+		case !w.exp && w.lit == "}":
+			if cmdPos && len(braces) > 0 {
+				braces = braces[:len(braces)-1]
+			}
+			pending = false
 			cmdPos, args = true, argNone
 			continue
 		}
+		pending = false
 		if cmdPos {
 			if w.assign != "" {
 				r.add(w.assign)
@@ -686,9 +776,17 @@ func parseShell(r *envParse, data string, fish bool) {
 			if w.exp {
 				continue
 			}
+			hdr = 1 // NAME of NAME ( ) { ... }, when "(" follows
 			switch w.lit {
-			case "export", "declare", "typeset", "readonly", "local":
+			case "export":
 				args = argExport
+			case "declare", "typeset", "readonly":
+				args = argDeclare
+				if inFunc() {
+					args = argIgnore
+				}
+			case "local":
+				args = argIgnore
 			case "env":
 				args = argEnv
 			case "setenv":
@@ -699,20 +797,25 @@ func parseShell(r *envParse, data string, fish bool) {
 				}
 			case ".", "source":
 				args = argSource
+			case "function":
+				args = argFunc
+			case "for":
+				args = argForName
 			}
 			continue
 		}
 		switch args {
-		case argExport:
+		case argExport, argDeclare:
 			if !w.exp && (strings.HasPrefix(w.lit, "-") || strings.HasPrefix(w.lit, "+")) {
 				continue
 			}
 			n, known := w.name()
-			if !known {
+			switch {
+			case known:
+				r.add(n)
+			case args == argExport:
 				r.bad = true
-				continue
 			}
-			r.add(n)
 		case argEnv:
 			if w.assign != "" {
 				r.add(w.assign)
@@ -726,13 +829,52 @@ func parseShell(r *envParse, data string, fish bool) {
 			}
 			args = argNone
 		case argSource:
-			if !w.exp && strings.HasPrefix(w.lit, "/") {
-				r.sourced = append(r.sourced, w.lit)
+			if n, ok := plainRef(w); ok {
+				if fl, found := loops[n]; found && fl.ok {
+					r.sourced = append(r.sourced, fl.words...)
+					args = argNone
+					continue
+				}
 			}
+			r.sourced = append(r.sourced, srcWord{lit: w.lit, exp: w.exp})
 			args = argNone
+		case argFunc:
+			// function NAME [()] { ... }
+			hdr, pending, args = 1, true, argNone
+		case argForName:
+			forVar, forWords, args = w.lit, nil, argNone
+			if !w.exp && validName(w.lit) {
+				args = argForIn
+			}
+		case argForIn:
+			if !w.exp && w.lit == "in" {
+				args = argForList
+				continue
+			}
+			endFor(false)
+			args = argNone
+		case argForList:
+			forWords = append(forWords, srcWord{lit: w.lit, exp: w.exp})
 		}
 	}
 	if l.bad {
 		r.bad = true
 	}
+}
+
+// plainRef returns NAME when the word is exactly $NAME or ${NAME}.
+func plainRef(w shWord) (string, bool) {
+	if !w.exp || w.expAt != 0 {
+		return "", false
+	}
+	s := w.lit
+	switch {
+	case strings.HasPrefix(s, "${") && strings.HasSuffix(s, "}"):
+		s = s[2 : len(s)-1]
+	case strings.HasPrefix(s, "$"):
+		s = s[1:]
+	default:
+		return "", false
+	}
+	return s, validName(s)
 }

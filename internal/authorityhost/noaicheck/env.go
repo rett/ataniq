@@ -13,6 +13,11 @@ const maxEnvFile = 4 << 20
 // the check cannot parse: "HIT incomplete env-syntax <file>".
 const PathEnvSyntax = "env-syntax"
 
+// PathEnvSource is the name of the incomplete hit for a profile that
+// sources a file by a path the check cannot resolve:
+// "HIT incomplete env-source <file>".
+const PathEnvSource = "env-source"
+
 // envFile is a file that sets variables, and the syntax it is read in.
 type envFile struct {
 	rel    string
@@ -79,8 +84,10 @@ func ProviderKeyName(name string) bool {
 // scanUnitFiles: links into the release are followed within the root, and
 // each file is read once), every home's profiles, each file an
 // EnvironmentFile= line of those names (a glob in its last component is
-// matched within the root) and each file a profile sources by a literal
-// absolute path.
+// matched within the root) and each file a profile sources (see
+// sourcePaths: a literal absolute path, or one that starts with $HOME, ~ or
+// $XDG_CONFIG_HOME, resolved in each home; a path the check cannot resolve
+// is the hit "incomplete env-source <file>", never passed over).
 //
 // Each file is read in its own syntax (see parseEnv): a profile as shell
 // words, so a comment or a quoted value is never taken for a setting; a
@@ -121,8 +128,14 @@ func (c *Checker) CheckEnv() {
 				}
 			}
 		}
-		for _, f := range r.sourced {
-			queue = append(queue, envFile{clean(f), syntaxShell})
+		for _, w := range r.sourced {
+			paths, ok := c.sourcePaths(w, c.homeOf(p))
+			for _, f := range paths {
+				ok = c.envFileGlob(f, func(m string) { queue = append(queue, envFile{m, syntaxShell}) }) && ok
+			}
+			if !ok {
+				c.hit(KindIncomplete, PathEnvSource, show(p))
+			}
 		}
 	}
 	scanDir := func(rel string, s envSyntax) {
@@ -180,6 +193,83 @@ func (c *Checker) envFileGlob(p string, found func(rel string)) bool {
 		return false
 	})
 	return true
+}
+
+// homeOf returns the home folder p is in, or "" when it is in none: a
+// file a home's profile sources from that home is resolved for that home
+// alone, any other for every home.
+func (c *Checker) homeOf(p string) string {
+	best := ""
+	for _, h := range c.homeFolders() {
+		if (p == h || strings.HasPrefix(p, h+"/")) && len(h) > len(best) {
+			best = h
+		}
+	}
+	return best
+}
+
+// homeForms are the spellings of a home-relative path a sourced word may
+// start with, longest first, and the folder below the home each stands
+// for: $HOME, ${HOME}, and $XDG_CONFIG_HOME in its usual forms (its
+// default, the home's .config, is what is resolved).
+var homeForms = []struct{ form, sub string }{
+	{"${XDG_CONFIG_HOME:-$HOME/.config}", ".config"},
+	{"${XDG_CONFIG_HOME-$HOME/.config}", ".config"},
+	{"${XDG_CONFIG_HOME:-${HOME}/.config}", ".config"},
+	{"${XDG_CONFIG_HOME-${HOME}/.config}", ".config"},
+	{"${XDG_CONFIG_HOME}", ".config"},
+	{"$XDG_CONFIG_HOME", ".config"},
+	{"${HOME}", ""},
+	{"$HOME", ""},
+}
+
+// sourcePaths returns the paths, clean and relative to the root, that the
+// path word w of a "." or "source" command stands for, and whether it
+// could resolve it. A word without an expansion must be an absolute path
+// or start with "~/". A word with an expansion must start with one of
+// homeForms and hold no other: it is resolved in home, or in every home
+// when home is "". Anything else (a relative path, another variable, a
+// command substitution, "~user") cannot be resolved. The last component
+// may be a glob, matched by the caller.
+func (c *Checker) sourcePaths(w srcWord, home string) ([]string, bool) {
+	lit := w.lit
+	sub, rest, relative := "", lit, false
+	switch {
+	case strings.HasPrefix(lit, "~/") || lit == "~":
+		rest, relative = lit[1:], true
+	case w.exp:
+		for _, f := range homeForms {
+			if strings.HasPrefix(lit, f.form) {
+				next := lit[len(f.form):]
+				if f.form[len(f.form)-1] != '}' && next != "" && ident(next[0]) {
+					continue // $HOMEX is another variable
+				}
+				sub, rest, relative = f.sub, next, true
+				break
+			}
+		}
+		if !relative {
+			return nil, false
+		}
+	}
+	if !relative {
+		if !strings.HasPrefix(lit, "/") {
+			return nil, false
+		}
+		return []string{clean(lit)}, true
+	}
+	if (rest != "" && rest[0] != '/') || (w.exp && strings.ContainsAny(rest, "$`")) {
+		return nil, false
+	}
+	homes := []string{home}
+	if home == "" {
+		homes = c.homeFolders()
+	}
+	var out []string
+	for _, h := range homes {
+		out = append(out, clean(path.Join(h, sub, rest)))
+	}
+	return out, true
 }
 
 // isUserUnit reports whether the unit file rel is a user unit: in a
