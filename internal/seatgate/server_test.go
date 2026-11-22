@@ -60,6 +60,14 @@ func startServer(t *testing.T, mut func(*ServerConfig), h Handler) *env {
 // that a server can be started again where one stopped.
 func startServerAt(t *testing.T, addr string, srv, seat Identity, mut func(*ServerConfig), h Handler) *env {
 	t.Helper()
+	return startServerWrapped(t, addr, srv, seat, nil, mut, h)
+}
+
+// startServerWrapped is startServerAt with the listener given to wrap first,
+// when wrap is not nil, so that a test can hold the server's end of a
+// connection.
+func startServerWrapped(t *testing.T, addr string, srv, seat Identity, wrap func(net.Listener) net.Listener, mut func(*ServerConfig), h Handler) *env {
+	t.Helper()
 	e := &env{t: t, srv: srv, seat: seat, done: make(chan error, 1)}
 	var ln net.Listener
 	var err error
@@ -73,6 +81,9 @@ func startServerAt(t *testing.T, addr string, srv, seat Identity, mut func(*Serv
 		t.Fatal(err)
 	}
 	e.addr = ln.Addr().String()
+	if wrap != nil {
+		ln = wrap(ln)
+	}
 	cfg := ServerConfig{TLS: ServerTLS(e.srv, []string{e.seat.Fingerprint()}), Caps: []string{"owner.read", "seat.pair"}}
 	if mut != nil {
 		mut(&cfg)
@@ -1265,5 +1276,139 @@ func TestServerIdIsFreeOnceItsAnswerIsWritten(t *testing.T) {
 	}
 	if resp := r.call(8, "seat.ping", ""); resp.ID != 8 || resp.Code != "" {
 		t.Fatalf("%+v", resp)
+	}
+}
+
+// stallListener hands each connection it accepts to the test as a stallConn.
+type stallListener struct {
+	net.Listener
+	conns chan *stallConn
+}
+
+func (l stallListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	sc := &stallConn{Conn: c, entered: make(chan struct{}), release: make(chan error, 1), closed: make(chan struct{})}
+	select {
+	case l.conns <- sc:
+	default:
+	}
+	return sc, nil
+}
+
+// stallConn is the server's end of a connection whose next write, once armed,
+// is held as a peer that stops reading holds it: it waits until the test lets
+// it go on, or fails it, or the connection is closed.
+type stallConn struct {
+	net.Conn
+	mu        sync.Mutex
+	armed     bool
+	entered   chan struct{} // closed when the held write has started
+	release   chan error    // nil lets the write go on; an error fails it
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func (c *stallConn) arm() {
+	c.mu.Lock()
+	c.armed = true
+	c.mu.Unlock()
+}
+
+func (c *stallConn) Write(b []byte) (int, error) {
+	c.mu.Lock()
+	armed := c.armed
+	c.armed = false
+	c.mu.Unlock()
+	if armed {
+		close(c.entered)
+		select {
+		case err := <-c.release:
+			if err != nil {
+				return 0, err
+			}
+		case <-c.closed:
+			return 0, net.ErrClosed
+		}
+	}
+	return c.Conn.Write(b)
+}
+
+func (c *stallConn) Close() error {
+	c.closeOnce.Do(func() { close(c.closed) })
+	return c.Conn.Close()
+}
+
+// A request that reuses an id while the answer under it is being written waits
+// for that write. If the write fails, the connection is closed and the request
+// is not served: the id was never free and the peer never had the answer. It
+// used to be released after a failed write too, so the request was taken and
+// could reach the handler on a connection that was going. If the write
+// succeeds, the id is free (the peer may have the answer before the server's
+// write returns) and the request is served, after the first was answered.
+//
+// The server's write is held where it meets the socket, and a hook says when
+// the request that reuses the id has been seen while it is held. The clock of
+// the rate limit counts the requests taken past the id check.
+func TestServerIdReusedWhileItsAnswerIsWritten(t *testing.T) {
+	for _, fail := range []bool{true, false} {
+		name := "the write succeeds"
+		if fail {
+			name = "the write fails"
+		}
+		t.Run(name, func(t *testing.T) {
+			leakCheck(t)
+			conns := make(chan *stallConn, 1)
+			seen := make(chan struct{})
+			var seenOnce sync.Once
+			var calls, taken atomic.Int32
+			e := startServerWrapped(t, "127.0.0.1:0", newID(t, "gate"), newID(t, "seat"),
+				func(ln net.Listener) net.Listener { return stallListener{ln, conns} },
+				func(c *ServerConfig) {
+					c.Now = func() time.Time { taken.Add(1); return time.Now() }
+					c.reuseHook = func(id uint64) {
+						if id == 7 {
+							seenOnce.Do(func() { close(seen) })
+						}
+					}
+				}, HandlerFunc(func(context.Context, Peer, string, json.RawMessage) (json.RawMessage, error) {
+					calls.Add(1)
+					return nil, nil
+				}))
+			r := e.helloed()
+			sc := within(t, "the connection", conns, 5*time.Second)
+			sc.arm()
+			r.send(`{"id":7,"op":"t.x"}`)
+			within(t, "the answer's write to start", sc.entered, 5*time.Second)
+			r.send(`{"id":7,"op":"t.x"}`)
+			within(t, "the reuse to be seen while the answer is written", seen, 5*time.Second)
+			if fail {
+				sc.release <- errors.New("the peer is gone")
+				if got := r.expectClosed(3 * time.Second); len(got) != 0 {
+					t.Fatalf("answered: %+v", got)
+				}
+				if err := e.stop(); err != nil {
+					t.Fatal(err)
+				}
+				if n, k := calls.Load(), taken.Load(); n != 1 || k != 1 {
+					t.Fatalf("after a failed write the reuse was taken: %d requests taken, %d handler calls; want 1 and 1", k, n)
+				}
+				return
+			}
+			sc.release <- nil
+			for i := 0; i < 2; i++ {
+				if resp := r.recv(); resp.ID != 7 || resp.Code != "" {
+					t.Fatalf("answer %d: %+v", i, resp)
+				}
+			}
+			if resp := r.call(8, "seat.ping", ""); resp.ID != 8 || resp.Code != "" {
+				t.Fatalf("%+v", resp)
+			}
+			if n := calls.Load(); n != 2 {
+				t.Fatalf("the handler ran %d times, want 2", n)
+			}
+		})
 	}
 }

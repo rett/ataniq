@@ -84,10 +84,15 @@
 //
 // A request that reuses the id of one still in flight (until its answer is
 // written) closes the connection, with no answer to it, since its answer could
-// not be told from the other's. Responses may come in
-// any order; the id says which request each answers. On shutdown (the context
-// of Serve is done) the server stops accepting, lets requests in flight be
-// answered for up to the grace period and closes everything.
+// not be told from the other's. A reuse that the server reads while that
+// answer is being written waits for the write, since a client may have the
+// answer before the server's write returns: if the write succeeds the id is
+// free and the request is served; if it fails the connection is closed and the
+// request is not served. So one id never has two operations in flight.
+// Responses may come in any order; the id says which request each answers. On
+// shutdown (the context of Serve is done) the server stops accepting, lets
+// requests in flight be answered for up to the grace period and closes
+// everything.
 //
 // A handler that ignores its context keeps its places, on its connection and
 // among the 128, until it returns, even when its connection has gone; so a
