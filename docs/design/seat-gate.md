@@ -264,9 +264,10 @@ peer sent counts (`unknown-op`, `bad-params`, `not-pinned`, the pairing codes,
 the record codes passed on); a refusal for the daemon's own state does not
 (`unavailable`, `deadline-exceeded`, `failed`, `door-unavailable`,
 `journal-reopened`, `keys-unavailable`, `keys-full`). The count is in memory. A
-connection is closed only by the transport, for a breach of the wire (see
-`seatgate`), and `leaddaemon.DecisionRefusalBound`, the Unix socket's lifetime
-count, does not apply to the gate.
+connection is closed only by the transport, by its own rules (a breach of the
+wire, a timeout, a shutdown; see `seatgate`), and
+`leaddaemon.DecisionRefusalBound`, the Unix socket's lifetime count, does not
+apply to the gate.
 
 For the operations of G8: no refusal of `seat.login-challenge` or `seat.login`
 counts, since the seat relays them for anyone who reaches its login page, and a
