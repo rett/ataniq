@@ -69,7 +69,7 @@ func TestOwnerTheOwnerOperationsRideTheClientProtocol(t *testing.T) {
 		t.Fatalf("protocols %v", h.Protocols)
 	}
 	for _, op := range ownerwire.Operations() {
-		if !strings.HasPrefix(op, "owner.") || !strings.Contains(strings.Join(h.Operations, " "), op) {
+		if !(strings.HasPrefix(op, "owner.") || op == ownerwire.OpSeatPair) || !strings.Contains(strings.Join(h.Operations, " "), op) {
 			t.Errorf("%s is not listed by hello", op)
 		}
 	}

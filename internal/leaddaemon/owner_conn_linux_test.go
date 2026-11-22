@@ -157,7 +157,7 @@ func TestOwnerTheServersOwnPeerCheckStillHolds(t *testing.T) {
 	}
 	r.run = r.e.startDaemon(cfg)
 	h := ownerHello(t, r.run.socket)
-	if len(h.Operations) != 12 {
+	if len(h.Operations) != 2+len(ownerwire.Operations()) {
 		t.Fatalf("%v", h.Operations)
 	}
 	mu.Lock()

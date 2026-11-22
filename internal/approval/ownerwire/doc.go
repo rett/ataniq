@@ -12,17 +12,25 @@
 //
 // # The operations
 //
-//	operation        params            result
-//	owner.list       none              Listing
-//	owner.show       ShowParams        ShowResult
-//	owner.paths      PageParams        PathsPage
-//	owner.patch      PageParams        PatchPage
-//	owner.decider    DeciderParams     DeciderResult
-//	owner.decide     DecisionFrame     DecideResult
-//	owner.beat       none              nothing
-//	owner.limit      LimitParams       LimitView
-//	owner.limit-set  LimitSetParams    LimitView
-//	owner.looked     none              nothing
+//	operation           params            result
+//	owner.list          none              Listing
+//	owner.show          ShowParams        ShowResult
+//	owner.paths         PageParams        PathsPage
+//	owner.patch         PageParams        PatchPage
+//	owner.decider       DeciderParams     DeciderResult
+//	owner.decide        DecisionFrame     DecideResult
+//	owner.beat          none              nothing
+//	owner.limit         LimitParams       LimitView
+//	owner.limit-set     LimitSetParams    LimitView
+//	owner.looked        none              nothing
+//	owner.pair-start    PairStartParams   PairStartResult
+//	owner.pair-status   none              PairStatus
+//	owner.pair-confirm  none              KeyItem
+//	owner.pair-reject   none              nothing
+//	owner.keys          none              KeysView
+//	owner.key-revoke    KeyRevokeParams   KeysView
+//	owner.keys-off      none              KeysView
+//	seat.pair           SeatPairParams    SeatPairResult
 //
 // [Operations] lists the names. Every type has a Decode and an Encode
 // function named after it; "none" and "nothing" are an empty object, read
@@ -72,6 +80,27 @@
 //
 // The lines of a patch are lead-written. Nothing here escapes them: a
 // surface shows them only through the lead-text escaping.
+//
+// # Pairing a phone and the list of deciding keys
+//
+// The owner at the desk pairs a phone in steps: owner.pair-start makes a
+// one-time pairing code and answers it, once, in [PairStartResult]; the
+// phone's side presents the code with the credential it made (seat.pair, the
+// one name that does not begin with "owner.", which is the seat app's call and
+// not the console's); the desk reads the six words of the credential's
+// fingerprint with owner.pair-status and confirms (owner.pair-confirm) or
+// rejects (owner.pair-reject). A confirmed credential is on the list of
+// deciding keys, which owner.keys reads. owner.key-revoke and owner.keys-off
+// ("phone off") revoke one credential or all of them; a revoked credential
+// stays on the list, marked, and is never made good again.
+//
+// The pairing code is a secret. It is in the result of owner.pair-start and in
+// the params of seat.pair and nowhere else: no other result carries it, a
+// value of either type prints without it, and a refusal never holds it.
+//
+// A credential is shown by its display id, 16 lower-case hexadecimal digits:
+// the first 8 bytes of the SHA-256 of the credential id. It names the
+// credential and holds nothing of the key.
 //
 // # Refusals
 //

@@ -18,8 +18,8 @@ import (
 
 // TestOwnerHelloListsTheOperationsOnlyWithTheHook: a daemon whose ServeHook is
 // not set lists the two base operations and says it mutates nothing, as before;
-// with the owner channel's hook it lists them and then the ten owner.*
-// operations in the wire package's order, says it mutates, and still speaks
+// with the owner channel's hook it lists them and then the owner connection's
+// operations (owner.* and the seat's seat.pair) in the wire package's order, says it mutates, and still speaks
 // only ataniq.client/1.
 func TestOwnerHelloListsTheOperationsOnlyWithTheHook(t *testing.T) {
 	e := newEnv(t)
@@ -32,7 +32,7 @@ func TestOwnerHelloListsTheOperationsOnlyWithTheHook(t *testing.T) {
 	r := newOwnerRig(t)
 	h = ownerHello(t, r.run.socket)
 	want := append([]string{"hello", "status"}, ownerwire.Operations()...)
-	if strings.Join(h.Operations, " ") != strings.Join(want, " ") || len(h.Operations) != 12 || !h.Mutations {
+	if strings.Join(h.Operations, " ") != strings.Join(want, " ") || len(h.Operations) != 2+len(ownerwire.Operations()) || !h.Mutations {
 		t.Fatalf("with the hook: %v mutations %v, want %v", h.Operations, h.Mutations, want)
 	}
 	if strings.Join(h.Protocols, " ") != clientapi.Protocol || clientapi.Protocol != "ataniq.client/1" {

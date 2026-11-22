@@ -304,3 +304,130 @@ func checkLimitView(v *LimitView) error {
 	c.need(v.Suggestion >= 0, "limit.suggestion is negative")
 	return c.result()
 }
+
+// validPairCode reports whether s has the form of a pairing code:
+// [PairCodeLength] characters of Crockford's base32 without I, L, O and U, as
+// package seatpair has it, in either case.
+func validPairCode(s string) bool {
+	if len(s) != PairCodeLength {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c >= '0' && c <= '9':
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z':
+			switch c | 0x20 {
+			case 'i', 'l', 'o', 'u':
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// words checks a fingerprint: [PairWords] words of 3 to 6 lower-case letters.
+func (c *checker) words(w []string, where string) {
+	c.need(len(w) == PairWords, where+" is not "+strconv.Itoa(PairWords)+" words")
+	for i, s := range w {
+		ok := len(s) >= 3 && len(s) <= 6
+		for j := 0; ok && j < len(s); j++ {
+			ok = s[j] >= 'a' && s[j] <= 'z'
+		}
+		c.need(ok, where+"["+strconv.Itoa(i)+"] is not 3 to 6 lower-case letters")
+	}
+}
+
+// word checks a short word: 1 to 32 lower-case letters, digits and dashes,
+// starting with a letter.
+func (c *checker) word(s, where string) {
+	ok := len(s) >= 1 && len(s) <= 32
+	for i := 0; ok && i < len(s); i++ {
+		switch ch := s[i]; {
+		case ch >= 'a' && ch <= 'z':
+		case i > 0 && (ch >= '0' && ch <= '9' || ch == '-'):
+		default:
+			ok = false
+		}
+	}
+	c.need(ok, where+" is not 1 to 32 lower-case letters, digits and dashes, starting with a letter")
+}
+
+func checkPairStartParams(*PairStartParams) error { return nil }
+
+func checkPairStartResult(r *PairStartResult) error {
+	c := &checker{invalid: record.CodeRecordInvalid}
+	c.need(validPairCode(r.Code), "pair.code is not a pairing code")
+	c.time(r.ExpiresAt, "pair.expires_at")
+	return c.result()
+}
+
+func checkPairStatus(s *PairStatus) error {
+	c := &checker{invalid: record.CodeRecordInvalid}
+	switch s.Phase {
+	case PairNone:
+		c.need(s.ExpiresAt == "", "pair.expires_at is given for no pairing")
+	case PairWaiting, PairExpired:
+		c.time(s.ExpiresAt, "pair.expires_at")
+	case PairPending:
+		c.time(s.ExpiresAt, "pair.expires_at")
+	default:
+		c.need(false, "pair.phase is not none, waiting, pending or expired")
+	}
+	if s.Phase == PairPending {
+		c.words(s.Words, "pair.words")
+	} else {
+		c.need(s.Words == nil, "pair.words is given for a pairing that is not pending")
+	}
+	return c.result()
+}
+
+func checkSeatPairParams(p *SeatPairParams) error {
+	c := &checker{invalid: record.CodeRecordInvalid}
+	c.need(validPairCode(p.Code), "seat.code is not a pairing code")
+	c.need(len(p.CredentialID) >= MinCredentialIDBytes && len(p.CredentialID) <= MaxCredentialIDBytes,
+		"seat.credential_id is not "+strconv.Itoa(MinCredentialIDBytes)+" to "+strconv.Itoa(MaxCredentialIDBytes)+" bytes")
+	c.need(len(p.PublicKey) >= 1 && len(p.PublicKey) <= MaxPublicKeyBytes,
+		"seat.public_key is not 1 to "+strconv.Itoa(MaxPublicKeyBytes)+" bytes")
+	return c.result()
+}
+
+func checkSeatPairResult(r *SeatPairResult) error {
+	c := &checker{invalid: record.CodeRecordInvalid}
+	c.words(r.Words, "seat.words")
+	return c.result()
+}
+
+func (c *checker) keyItem(k *KeyItem, where string) {
+	c.need(record.IsLowerHex(k.ID, KeyIDLength), where+".id is not "+strconv.Itoa(KeyIDLength)+" lower-case hexadecimal digits")
+	c.word(k.Kind, where+".kind")
+	c.time(k.PairedAt, where+".paired_at")
+}
+
+func checkKeyItem(k *KeyItem) error {
+	c := &checker{invalid: record.CodeRecordInvalid}
+	c.keyItem(k, "key")
+	return c.result()
+}
+
+func checkKeysView(v *KeysView) error {
+	c := &checker{invalid: record.CodeRecordInvalid}
+	c.need(len(v.Keys) <= MaxKeys, "keys.keys has more than "+strconv.Itoa(MaxKeys)+" keys")
+	seen := make(map[string]struct{}, len(v.Keys))
+	for i := range v.Keys {
+		at := "keys.keys[" + strconv.Itoa(i) + "]"
+		c.keyItem(&v.Keys[i], at)
+		_, dup := seen[v.Keys[i].ID]
+		c.need(!dup, at+" repeats an earlier id")
+		seen[v.Keys[i].ID] = struct{}{}
+	}
+	return c.result()
+}
+
+func checkKeyRevokeParams(p *KeyRevokeParams) error {
+	c := &checker{invalid: record.CodeRecordInvalid}
+	ok := len(p.ID) >= MinKeyIDPrefix && len(p.ID) <= KeyIDLength && record.IsLowerHex(p.ID, len(p.ID))
+	c.need(ok, "key.id is not "+strconv.Itoa(MinKeyIDPrefix)+" to "+strconv.Itoa(KeyIDLength)+" lower-case hexadecimal digits")
+	return c.result()
+}
