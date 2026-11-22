@@ -19,7 +19,8 @@ lists. It ships no timer and no service unit: the recurring run of the
 no-AI check (with what happens when it fails) and a deploy driver that
 fills the incoming folder and calls the switch are separate planned items,
 not part of this feature. Until they exist, the check runs only when a
-switch runs it.
+switch runs it. The folder the switch imports is made by the release
+builder, `ah-release` (see "The release builder" below).
 
 ### Layout
 
@@ -1441,3 +1442,65 @@ home path in `ai-names.list`), a control byte or an inner space is refused:
 - Run by hand as an ordinary user it cannot read other users' processes
   or folders; it says so (`HIT incomplete proc-access`, `HIT unreadable`)
   rather than pass.
+
+## The release builder
+
+`ah-release` (command `cmd/ah-release`, package
+`internal/authorityhost/release`) makes the release folder `ah-switch`
+imports (see "Layout" and "The switch" above) from the binaries and this
+folder's `etc/` and `share/`. It needs only the Go standard library and
+opens no network connection. It is run on the build host, as the building
+user; it needs no root.
+
+```
+ah-release build --out DIR --counter N --commit SHA --go-version V --built-on CLASS --package-snapshot S --bin FILE... --src deploy/authority-host [--components static]
+```
+
+- `--out DIR` is the folder the release folder `DIR/<id>` is made in (it is
+  created when it is missing). The id is the counter zero-padded to four
+  digits, a hyphen and the first 7 digits of the commit, in lowercase.
+  A release that exists already (any entry of that name) is refused and
+  left as it is, and so is a counter below 1.
+- `--commit` is the full commit, 7 to 64 lowercase hex digits (as the
+  switch's `MANIFEST` check reads it). `--go-version` and `--built-on`
+  (the class of the build host, never its name) are 1 to 128 bytes of
+  letters, digits and `._:+-`, stricter than the switch, which takes any
+  text, so that a value can never hold a line break, a comment mark or
+  padding. `--package-snapshot` is as the switch reads it: 1 to 128 bytes
+  of letters, digits and `._:-`. `--components static` writes the
+  `components: static` line.
+- `--bin FILE` (given once per file) is copied to `bin/<name of the file>`,
+  mode 0755; the name is letters, digits and `._@+-`. `ah-noaicheck` and
+  `ah-switch` are required; add `ah-pkgstep` when the release's package
+  snapshot may differ from the host's (a first switch always moves the host
+  to the snapshot, so it needs it).
+- `--src` is the deployment source folder: its `etc/` is copied to
+  `etc/` and its `share/` to `share/`, which must hold the four command
+  lists and the lists of the no-AI check. Nothing else of it is copied (not
+  `bootstrap/`, a deploy script or this file). In those two folders every
+  entry must be a folder or a regular file with a plain name (letters,
+  digits and `._@+-`): a symbolic link, device, fifo or socket, or a name
+  with a space, newline or backslash, refuses the build before anything is
+  written.
+- The folder holds `bin/`, `etc/`, `share/`, `MANIFEST` (the keys `id`,
+  `counter` (no padding), `commit`, `built_on`, `go_version`,
+  `package_snapshot` and, with `--components static`, `components: static`,
+  in that order) and `SHA256SUMS`: lowercase hex, two spaces and the path,
+  sorted by path as `LC_ALL=C sort` sorts (by byte), listing every file but
+  `SHA256SUMS` itself and `SHA256SUMS.sig`, as "Layout" describes it.
+  Folders are 0755 and files 0644, 0755 for `bin/*`, whatever the source's
+  modes (no set-user-id, set-group-id or sticky bit carries over); there is
+  no link, and no time, user or host name in any content, so two builds of
+  the same input are byte-identical.
+- It is made beside its place, as `DIR/.<id>.partial`, and renamed to
+  `DIR/<id>` when whole; a failed build removes the partial folder, and a
+  leftover one (a build killed half way) is refused by name until it is
+  removed by hand. At most 20000 entries, 512 MiB a file and 2 GiB in all,
+  the switch's own limits.
+
+Exit status: 0 ok, 1 refused, 2 usage (an argument that is wrong, with a
+message that does not repeat it). A refusal prints
+`FAIL: <code> <fixed reason>`, with, after a colon, the name of the file it
+is about when that name is plain; it prints nothing from any file. The
+signature (`SHA256SUMS.sig`) is made afterwards, by the owner, with
+`ssh-keygen -Y sign` as "Layout" says; the builder never signs.
