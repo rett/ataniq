@@ -33,6 +33,14 @@ type OwnerService interface {
 	Limit(ctx context.Context, project string) (ownerwire.LimitView, error)
 	LimitSet(ctx context.Context, src ownerchannel.Source, p ownerwire.LimitSetParams) (ownerwire.LimitView, error)
 	Looked(ctx context.Context) error
+	PairStart(ctx context.Context, src ownerchannel.Source, p ownerwire.PairStartParams) (ownerwire.PairStartResult, error)
+	PairStatus(ctx context.Context) (ownerwire.PairStatus, error)
+	PairConfirm(ctx context.Context, src ownerchannel.Source) (ownerwire.KeyItem, error)
+	PairReject(ctx context.Context, src ownerchannel.Source) error
+	PairPresent(ctx context.Context, src ownerchannel.Source, p ownerwire.SeatPairParams) (ownerwire.SeatPairResult, error)
+	Keys(ctx context.Context) (ownerwire.KeysView, error)
+	KeyRevoke(ctx context.Context, src ownerchannel.Source, p ownerwire.KeyRevokeParams) (ownerwire.KeysView, error)
+	KeysOff(ctx context.Context, src ownerchannel.Source) (ownerwire.KeysView, error)
 }
 
 var _ OwnerService = (*ownerchannel.Service)(nil)
@@ -101,6 +109,13 @@ type OwnerChannel struct {
 	// peer sent but its client name through [SafeText]; nil discards them.
 	Log func(format string, a ...any)
 
+	// seat decides whether a connection is a seat and, when it is, the
+	// source the seat's calls are handed to the service with. It is nil: no
+	// seat source exists yet, so seat.pair is refused to every connection,
+	// and no code outside this package can set it. A test of the package
+	// sets it to show what the daemon does once a source exists.
+	seat func(v ownerView) (ownerchannel.Source, bool)
+
 	counts OwnerCounts
 }
 
@@ -133,6 +148,13 @@ type OwnerCounts struct {
 	DecisionFlooded atomic.Uint64
 	// NoConnection counts requests that could not be tied to a connection.
 	NoConnection atomic.Uint64
+	// PairNotDecider counts writes of the pairing operations from a
+	// connection that was not the decider. They count against the same
+	// bound as decision frames ([DecisionRefusalBound]).
+	PairNotDecider atomic.Uint64
+	// SeatRefused counts seat.pair calls, which this build refuses to every
+	// connection: it has no seat source.
+	SeatRefused atomic.Uint64
 }
 
 // Counts returns the counters. The same value is returned each time.
@@ -177,7 +199,7 @@ func (o *OwnerChannel) Serve(l net.Listener, opts *clientapi.Options) (net.Liste
 		return nil, nil, errors.New("owner channel: the service could not be built")
 	}
 	reg := newOwnerConns(o.deciderIdle())
-	ext := &ownerExt{oc: o, svc: svc, reg: reg}
+	ext := &ownerExt{oc: o, svc: svc, reg: reg, seat: o.seat}
 	opts.Extra = append(opts.Extra, ext)
 	base := opts.PeerUID
 	if base == nil {
