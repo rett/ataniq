@@ -97,6 +97,11 @@ type RecoverOptions struct {
 	// ServicesStopped is the owner's statement that the decision services
 	// are stopped, which settles a transaction whose stop commands failed.
 	ServicesStopped bool
+	// PackageState, with SetPackageState, is the owner's statement of the
+	// snapshot the host's packages are at, which settles an unknown
+	// package state: one of the two ends of the step that did not finish.
+	PackageState    string
+	SetPackageState bool
 }
 
 // Recover runs ah-switch recover. Each form takes the lock and checks the
@@ -111,6 +116,10 @@ type RecoverOptions struct {
 //     phase because a stop command failed: the owner states that the
 //     decision services are stopped, and that statement is recorded, with
 //     the time, instead of the stops being run again.
+//   - --package-state SNAPSHOT settles an unknown package state: the owner
+//     states which end of the package step that did not finish the host is
+//     at, and that statement is recorded with the time. A journal is
+//     settled first.
 func (s *Switcher) Recover(ctx context.Context, o RecoverOptions) int {
 	if err := s.checkConfig(); err != nil {
 		s.errorf("%v", err)
@@ -120,16 +129,25 @@ func (s *Switcher) Recover(ctx context.Context, o RecoverOptions) int {
 		s.errorf("recover takes no --from")
 		return ExitUsage
 	}
-	if o.SetCounter == o.ServicesStopped {
-		s.errorf("recover takes one of --counter N and --services-stopped")
+	n := 0
+	for _, set := range []bool{o.SetCounter, o.ServicesStopped, o.SetPackageState} {
+		if set {
+			n++
+		}
+	}
+	if n != 1 {
+		s.errorf("recover takes one of --counter N, --package-state SNAPSHOT and --services-stopped")
 		return ExitUsage
 	}
 	if code, done := s.applyPolicy(); done {
 		return code
 	}
 	what := fmt.Sprintf("--counter %d", o.Counter)
-	if o.ServicesStopped {
+	switch {
+	case o.ServicesStopped:
 		what = "--services-stopped"
+	case o.SetPackageState:
+		what = "--package-state " + q(o.PackageState)
 	}
 	s.printf("ah-switch: recover %s (root %s)", what, q(s.cfg.Root))
 	lk, code := s.lock(false)
@@ -151,6 +169,9 @@ func (s *Switcher) Recover(ctx context.Context, o RecoverOptions) int {
 	}
 	if code, halt := s.reconcile(ctx, false); halt {
 		return code
+	}
+	if o.SetPackageState {
+		return s.recoverPackageState(o.PackageState)
 	}
 	if n, present, err := s.readHighest(); err == nil && present {
 		s.printf("recover: %s holds %d; nothing to recover", HighestFile, n)

@@ -213,6 +213,7 @@ ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manual|signed] [--noaichec
 ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manual|signed] [--noaicheck PATH] --rollback-to previous
 ah-switch [--root DIR] status
 ah-switch [--root DIR [--allow-exec]] [--dry] recover --counter N
+ah-switch [--root DIR [--allow-exec]] [--dry] recover --package-state SNAPSHOT
 ah-switch [--root DIR [--allow-exec]] [--dry] recover --services-stopped
 ```
 
@@ -248,7 +249,8 @@ ah-switch [--root DIR [--allow-exec]] [--dry] recover --services-stopped
   is one state between two switches: while a switch runs it exits 3, and
   while it reads, a switch is refused with exit 3. It prints all of it or
   nothing, and it changes nothing.
-- `recover --counter N` writes a missing or broken `highest-counter`, and
+- `recover --counter N` writes a missing or broken `highest-counter`,
+  `recover --package-state SNAPSHOT` settles an unknown package state, and
   `recover --services-stopped` settles a transaction whose stop commands
   failed; see "The journal and recover".
 
@@ -286,12 +288,33 @@ already ran stays applied, and `deploy.json` says so).
    before the no-AI check and the validators, so that they see the host as
    it will be. A changed snapshot and no `bin/ah-pkgstep` is a failure
    (`package-step-missing`). The step's progress is journaled in
-   `txn.json` (`started`, then `done`) before and after it runs, and on
-   success the new snapshot is what `deploy.json` records from then on,
-   even when a later step fails. A step that was interrupted is not taken
-   as done: the next switch runs it again with the same `--from`, so
-   `bin/ah-pkgstep` must be idempotent: run twice with the same `--from` and
-   `--to` it must end in the same state.
+   `txn.json` (`started`, with its process id and start time once it runs,
+   then `done`), and on success the new snapshot is what `deploy.json`
+   records from then on, even when a later step fails.
+
+   A step that exits with a failure, or is interrupted, may have changed
+   some packages: the host's package state is then **unknown**.
+   `deploy.json` says `package_state: unknown` with the two ends of the step
+   (`package_from`, `package_to`), and records neither as the host's
+   snapshot. Every later switch and rollback is refused
+   (`package-state-unknown`, nothing run) until either the owner states
+   which end the host is at, with
+   `ah-switch recover --package-state SNAPSHOT` (recorded with the time in
+   `package_stated_at`), or a switch to a release of the snapshot the step
+   went to runs the step again, from the same `--from`, to the end. So
+   `bin/ah-pkgstep` must be idempotent: run twice with the same `--from`
+   and `--to` it must end in the same state.
+
+   The step never overlaps another: it runs in its own process group, is
+   killed when the switch dies (where the system has a parent-death signal),
+   and is given the switch's lock file as its descriptor 3, so the lock
+   stays held as long as the step or anything it started keeps that
+   descriptor open. Before an interrupted step is settled, the switch makes
+   sure it has ended: a process of the journaled id and start time still
+   running has its process group killed; a process of that id with another
+   start time is another process; processes left in its group with no
+   such process are refused (`package-state-unknown`), and are the owner's
+   to stop.
 4. **noaicheck**: the switch runs `nft list ruleset` (within 30 seconds; its
    output at most 4 MiB) and writes what it printed to a file of mode 0600
    in a new temporary folder of mode 0700, then runs the new release's
@@ -380,7 +403,7 @@ order:
 
 | Phase | What it means | How the next command resumes it |
 | --- | --- | --- |
-| `packages` | The package step runs or ran; no link was touched | Records the switch as `failed` (`interrupted`, or `package-step-interrupted` when the step was not known to be done) |
+| `packages` | The package step runs or ran; no link was touched | Makes sure the step has ended, then records the switch as `failed`: `interrupted` when the step was done, or `package-step-interrupted` with the package state unknown when it was not |
 | `links` | The counter is used and the links are being moved; nothing was reloaded | Puts `current` and `previous` back exactly as they were and records `rolled-back` (`failed` on a first switch) with the code `interrupted` |
 | `activating` | The links point at the new release; its reload and health run | Verifies the release again, makes and syncs both links again, runs its reload list and health check again: `ok` (`completed after an interruption`), or goes back as a failed health check does |
 | `restoring` | Going back to the old release | Does all of going back again, from putting the links back |
@@ -416,6 +439,11 @@ replayed. `N` must be at least the counter of the releases `current` and
 `previous` point at; take it from the newest release ever deployed. It
 refuses to overwrite a counter that is there.
 
+`ah-switch recover --package-state SNAPSHOT` settles an unknown package
+state: `SNAPSHOT` must be one of the two ends of the step that did not
+finish, the one the host is at. It is recorded as the host's snapshot with
+the time in `package_stated_at`, and switches go on from there.
+
 `ah-switch recover --services-stopped` settles a transaction that stays in
 `stopping` because a stop command keeps failing: it is the owner's
 statement that the decision services are stopped (by hand, or the failing
@@ -434,7 +462,9 @@ check: `passed`, `failed` or `not run`), `failed_step` (`state`, `import`,
 `verify`, `counter`, `packages`, `noaicheck`, `validate`, `switch`,
 `reload`, `health`, `record` or `interrupted`; empty when ok), `error`,
 `detail`, `package_snapshot` (the snapshot the host's packages are known
-to be at), `restored_health` (`ok`, `failed` or empty), `services_stopped`
+to be at), `package_state` (`unknown` after a package step that did not
+finish, with `package_from` and `package_to`; empty when known),
+`package_stated_at` (when the owner last stated it), `restored_health` (`ok`, `failed` or empty), `services_stopped`
 (the decision services were stopped), and `txn`, `requested` and
 `pending_report` (the transaction this record ends, what was asked, and
 whether a later command settled it with nobody shown the outcome yet). A
@@ -445,7 +475,8 @@ dry run writes nothing.
 `sums-mismatch`, `file-not-listed`, `manifest-mismatch`,
 `signature-missing`, `signature-bad`, `list-missing`, `counter-not-above`,
 `counter-missing`, `counter-invalid`, `package-step-missing`,
-`package-step-failed`, `package-step-interrupted`, `nft-listing-failed`,
+`package-step-failed`, `package-step-interrupted`, `package-state-unknown`,
+`nft-listing-failed`,
 `noaicheck-failed`, `validator-failed`, `link-failed`, `reload-failed`,
 `health-failed`, `record-failed`, `stop-list-missing`, `stop-failed` or
 `interrupted` (the full list is in
@@ -482,10 +513,11 @@ see its messages. The text of a broken state file is not repeated either.
 | `--mode` weaker than the switch policy | Exit 2; nothing done |
 | Counter not above the highest ever attempted | Refused at counter |
 | `--rollback-to` anything but previous | Refused at counter |
-| Package step fails, or the snapshot changes and there is none | Refused at packages; `current` unchanged |
+| The snapshot changes and there is no package step | Refused at packages; `current` unchanged |
+| Package step fails | Refused at packages; `current` unchanged; the package state is unknown, and every switch is refused until `recover --package-state` or a switch to the same new snapshot runs the step to the end |
 | No-AI check fails | Refused at noaicheck, after the package step; no validator runs |
 | A validator fails | Refused at validate; nothing reloaded |
-| Crash during the package step | The next command records `package-step-interrupted`; the next switch runs the step again from the same snapshot |
+| Crash during the package step | The next command makes sure the step has ended and records `package-step-interrupted` with the package state unknown |
 | Reload or health fails after the switch | Back to the old release, with its own reload and health lists; `rolled-back` |
 | Going back fails (putting `previous` back included), or the old release is not healthy either | The host's `stop.list` and the stop lists of both releases run; `failed-recovery` with `restored_health: failed`; the console is needed |
 | First switch, or the old release missing or no longer verifying, and the new one fails | `current` stays; the host's and the release's stop lists run; `failed` or `failed-recovery` |

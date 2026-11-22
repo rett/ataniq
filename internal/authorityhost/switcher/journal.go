@@ -64,6 +64,10 @@ type journal struct {
 	PackageFrom  string `json:"package_from"`
 	PackageTo    string `json:"package_to"`
 	PackageState string `json:"package_state"`
+	// The package step's process (the leader of its process group) and its
+	// start time, once it runs: a resume makes sure it has ended.
+	HelperPID   int    `json:"helper_pid"`
+	HelperStart uint64 `json:"helper_start"`
 	// The outcome, once a step failed or the release was activated.
 	Result         string `json:"result"`
 	FailedStep     string `json:"failed_step"`
@@ -132,7 +136,7 @@ func (s *Switcher) checkJournal(j journal) error {
 		return errors.New("requested")
 	case !oneOf(j.Phase, PhasePackages, PhaseLinks, PhaseActivating, PhaseRestoring, PhaseStopping, PhaseDone):
 		return errors.New("phase")
-	case !oneOf(j.PackageState, PackageNone, PackageStarted, PackageDone):
+	case !oneOf(j.PackageState, PackageNone, PackageStarted, PackageUnknown, PackageDone):
 		return errors.New("package_state")
 	case j.PackageState != PackageNone && (!ValidSnapshot(j.PackageTo) || (j.PackageFrom != "" && !ValidSnapshot(j.PackageFrom))):
 		return errors.New("package snapshots")
@@ -144,6 +148,8 @@ func (s *Switcher) checkJournal(j journal) error {
 		return errors.New("restored_health")
 	case j.Phase == PhaseDone && j.Result == "":
 		return errors.New("a done phase without a result")
+	case j.HelperPID < 0 || (j.HelperPID > 0 && j.PackageState == PackageNone):
+		return errors.New("helper_pid")
 	case j.CounterUsed && j.Direction != DirForward:
 		return errors.New("counter_used")
 	}

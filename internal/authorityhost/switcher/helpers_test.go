@@ -34,6 +34,8 @@ type fakeRunner struct {
 	listing []string // content, file mode, folder mode of each listing seen
 	hook    func(argv []string)
 	limits  *[]time.Duration // when set, the time limit of every health-probe and slow-probe run
+	pid     int              // when set, given to a command's OnStart as its process id
+	extra   [][]*os.File     // the ExtraFiles of each command
 }
 
 const fakeRuleset = "table inet filter {\n}\n"
@@ -55,6 +57,10 @@ func (f *fakeRunner) Run(ctx context.Context, c Command) (Output, error) {
 	}
 	f.calls = append(f.calls, strings.Join(argv, " "))
 	f.stdin = append(f.stdin, c.Stdin)
+	f.extra = append(f.extra, c.ExtraFiles)
+	if c.OnStart != nil && f.pid != 0 {
+		c.OnStart(f.pid)
+	}
 	if f.limits != nil && (c.Argv[0] == "health-probe" || c.Argv[0] == "slow-probe") {
 		*f.limits = append(*f.limits, c.Timeout)
 	}

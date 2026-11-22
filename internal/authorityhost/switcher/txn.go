@@ -460,8 +460,15 @@ func (s *Switcher) txnRecord(t *txn, cur string, curOK bool) (Record, error) {
 		}
 		rec.CurrentID = id.Name
 	}
-	if t.j.PackageState == PackageDone {
+	switch t.j.PackageState {
+	case PackageDone:
 		rec.PackageSnapshot = t.j.PackageTo
+		rec.PackageState, rec.PackageFrom, rec.PackageTo, rec.PackageStatedAt = "", "", "", ""
+	case PackageStarted, PackageUnknown:
+		// Never the old snapshot nor the new: unknown until settled.
+		rec.PackageState, rec.PackageFrom, rec.PackageTo = PackageUnknown, t.j.PackageFrom, t.j.PackageTo
+	default:
+		rec.PackageState, rec.PackageFrom, rec.PackageTo, rec.PackageStatedAt = last.PackageState, last.PackageFrom, last.PackageTo, last.PackageStatedAt
 	}
 	return rec, nil
 }
@@ -499,14 +506,20 @@ func (s *Switcher) highestAtLeast(n uint64) error {
 
 // resumePackages is the resume of a packages phase: the transaction stopped
 // before its links, so nothing but the package step was done. A package
-// step that was started and is not known to be done is not repeated
-// blindly: the next switch runs it again from the same snapshot.
+// step that was started and is not known to be done leaves the host's
+// package state unknown, once its process is known to have ended (see
+// helperEnded); it is never taken as done or as not run.
 func (s *Switcher) resumePackages(t *txn) error {
 	switch t.j.PackageState {
 	case PackageDone:
 		t.fail("interrupted", failf(CodeInterrupted, "the %s %s was interrupted before its links; the package step had brought the host to snapshot %s", t.kind(), t.j.ID, q(t.j.PackageTo)))
 	default:
-		t.fail("interrupted", failf(CodePackageInterrupted, "the package step from %s to %s was interrupted: the next switch runs it again from %s", q(t.j.PackageFrom), q(t.j.PackageTo), q(t.j.PackageFrom)))
+		if err := s.helperEnded(t.j.HelperPID, t.j.HelperStart); err != nil {
+			return err
+		}
+		t.j.PackageState = PackageUnknown
+		t.fail("interrupted", failf(CodePackageInterrupted, "the package step from %s to %s was interrupted", q(t.j.PackageFrom), q(t.j.PackageTo)))
+		t.note("%s", describe(packageUnknownError(t.j.PackageFrom, t.j.PackageTo)))
 	}
 	return s.done(t, ResultFailed)
 }

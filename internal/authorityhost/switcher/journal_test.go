@@ -521,8 +521,9 @@ func TestMissingCounterIsRecovery(t *testing.T) {
 
 // TestCrashInPackageStep: a switch that dies while its package step runs, or
 // after it ran but before the journal says so, is recorded as
-// package-step-interrupted, and the next switch runs the step again from the
-// same snapshot; one that dies after the journal says done records the new
+// package-step-interrupted with the package state unknown, and a switch to
+// a release of the snapshot it went to runs the step again from the same
+// snapshot; one that dies after the journal says done records the new
 // snapshot, and the step is not run again. The links never moved.
 func TestCrashInPackageStep(t *testing.T) {
 	for _, tc := range []struct {
@@ -549,6 +550,11 @@ func TestCrashInPackageStep(t *testing.T) {
 			rec := e.record()
 			if rec.Result != ResultFailed || rec.Error != tc.code || rec.PackageSnapshot != tc.snapshot || rec.CurrentID != rel2 {
 				t.Errorf("record: %+v", rec)
+			}
+			// A step not known to be done leaves the package state unknown.
+			if unknown := tc.again == 1; (rec.PackageState == PackageUnknown) != unknown ||
+				unknown && (rec.PackageFrom != "2026-11-01" || rec.PackageTo != "2026-11-15") {
+				t.Errorf("package state: %+v", rec)
 			}
 			e.links(rel2, rel1)
 			if got := e.highest(); got != "2" {

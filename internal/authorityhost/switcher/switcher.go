@@ -107,6 +107,11 @@ type Switcher struct {
 	policy Policy
 	mode   string
 	trust  trust
+	// lockFile is the open lock file of this command, given to the
+	// package step so that it holds the lock too.
+	lockFile *os.File
+	// procs looks at processes (procfs on the host).
+	procs procs
 	// The host's stop list, read once (see hostStopList).
 	hostStops     [][]string
 	hostStopsErr  error
@@ -143,7 +148,7 @@ func New(cfg Config) *Switcher {
 	if cfg.Sleep == nil {
 		cfg.Sleep = time.Sleep
 	}
-	return &Switcher{cfg: cfg}
+	return &Switcher{cfg: cfg, procs: procfs{}}
 }
 
 func (s *Switcher) base() string     { return filepath.Join(s.cfg.Root, BaseDir) }
@@ -391,41 +396,38 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	}
 
 	// 3. Packages, before the check, so that the check sees the host as it
-	// will be.
-	if manifest.PackageSnapshot == a.rec.PackageSnapshot {
+	// will be. On a host whose package state is unknown only a release of
+	// the snapshot the unfinished step went to may switch, by running that
+	// step again; anything else waits for recover --package-state.
+	from, unknown := a.rec.PackageSnapshot, a.rec.PackageState == PackageUnknown
+	if unknown {
+		if manifest.PackageSnapshot != a.rec.PackageTo {
+			return s.fail(a, 3, packageUnknownError(a.rec.PackageFrom, a.rec.PackageTo))
+		}
+		from = a.rec.PackageFrom
+		s.step(3, "the host's package snapshot is unknown: the step from %s to %s runs again", q(a.rec.PackageFrom), q(a.rec.PackageTo))
+	}
+	if manifest.PackageSnapshot == from && !unknown {
 		s.step(3, "package snapshot %s unchanged", q(manifest.PackageSnapshot))
 	} else {
 		ok, err := rel.exists(PackageStepProgram)
 		if err == nil && !ok {
-			err = failf(CodePackageStepMissing, "package snapshot %s -> %s, and the release has no %s", q(a.rec.PackageSnapshot), q(manifest.PackageSnapshot), PackageStepProgram)
+			err = failf(CodePackageStepMissing, "package snapshot %s -> %s, and the release has no %s", q(from), q(manifest.PackageSnapshot), PackageStepProgram)
 		}
 		if err != nil {
 			return s.fail(a, 3, err)
 		}
-		argv := []string{filepath.Join(rel.dir, PackageStepProgram), "--release", rel.dir, "--from", a.rec.PackageSnapshot, "--to", manifest.PackageSnapshot}
+		argv := []string{filepath.Join(rel.dir, PackageStepProgram), "--release", rel.dir, "--from", from, "--to", manifest.PackageSnapshot}
 		if s.cfg.Dry {
 			s.step(3, "would run %s", qargv(argv))
 		} else {
-			t.j.PackageFrom, t.j.PackageTo, t.j.PackageState = a.rec.PackageSnapshot, manifest.PackageSnapshot, PackageStarted
-			if err := s.save(t); err != nil {
-				return s.fail(a, 3, err)
-			}
+			t.j.PackageFrom, t.j.PackageTo = from, manifest.PackageSnapshot
 			a.t = t
-			if err := s.crash(CrashPackageStart); err != nil {
-				return ExitFailed
-			}
-			if _, err := s.cfg.Runner.Run(ctx, Command{Argv: argv, Timeout: PackageStepTimeout}); err != nil {
-				return s.fail(a, 3, failf(CodePackageFailed, "%s", summary(err)))
-			}
-			if err := s.crash(CrashPackageRan); err != nil {
-				return ExitFailed
-			}
-			t.j.PackageState = PackageDone
-			if err := s.save(t); err != nil {
+			if err := s.runPackageStep(ctx, t, argv); err != nil {
+				if errors.Is(err, errCrashed) {
+					return ExitFailed
+				}
 				return s.fail(a, 3, err)
-			}
-			if err := s.crash(CrashPackageDone); err != nil {
-				return ExitFailed
 			}
 			a.rec.PackageSnapshot = manifest.PackageSnapshot
 			s.step(3, "package step done: snapshot %s", q(manifest.PackageSnapshot))
@@ -576,6 +578,7 @@ func (s *Switcher) lock(shared bool) (*lock, int) {
 		return nil, ExitFailed
 	}
 	s.stateRoot = state
+	s.lockFile = lk.f
 	return lk, ExitOK
 }
 
@@ -649,6 +652,7 @@ func (s *Switcher) readState(a *attempt) (Record, int, bool) {
 		}
 	}
 	a.rec.PackageSnapshot = last.PackageSnapshot
+	a.rec.PackageState, a.rec.PackageFrom, a.rec.PackageTo, a.rec.PackageStatedAt = last.PackageState, last.PackageFrom, last.PackageTo, last.PackageStatedAt
 	current := "none"
 	if a.oldExists {
 		current = a.rec.CurrentID
@@ -1140,6 +1144,6 @@ func (s *Switcher) status(w io.Writer) error {
 	if rec.RestoredHealth != "" {
 		fmt.Fprintf(w, "health after going back: %s\n", q(rec.RestoredHealth))
 	}
-	fmt.Fprintf(w, "package snapshot: %s\n", q(rec.PackageSnapshot))
+	fmt.Fprintf(w, "package snapshot: %s\n", packageNote(rec))
 	return nil
 }

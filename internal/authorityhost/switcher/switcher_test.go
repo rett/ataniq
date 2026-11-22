@@ -578,8 +578,10 @@ func TestPackageStep(t *testing.T) {
 		t.Fatal(code)
 	}
 	e.unchanged("releases/"+rel2, "packages")
-	if got := e.record().PackageSnapshot; got != "2026-11-01" {
-		t.Errorf("recorded snapshot %q after a failed step", got)
+	// Neither snapshot is the host's now: a failed step may have changed
+	// some packages.
+	if rec := e.record(); rec.PackageState != PackageUnknown || rec.PackageFrom != "2026-11-01" || rec.PackageTo != "2026-11-15" || rec.Error != CodePackageFailed {
+		t.Errorf("record after a failed step: %+v", rec)
 	}
 }
 

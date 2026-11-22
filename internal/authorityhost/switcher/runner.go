@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -19,6 +20,12 @@ type Command struct {
 	Stdin     []byte // nil reads from /dev/null
 	Timeout   time.Duration
 	MaxOutput int // bound of each stream kept; 0: maxOutput
+	// ExtraFiles are given to the command as its fd 3 and up (the lock,
+	// for the package step).
+	ExtraFiles []*os.File
+	// OnStart, when set, is called with the process id once the command
+	// runs, before it is waited for.
+	OnStart func(pid int)
 }
 
 // Output is what a command wrote, each stream kept up to a bound.
@@ -49,8 +56,10 @@ var CleanEnv = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL=C"}
 const maxOutput = 64 << 10
 
 // ExecRunner runs commands as child processes with CleanEnv, the working
-// folder /, their own process group (killed whole at the time limit) and
-// standard input from /dev/null unless Stdin is given.
+// folder /, their own process group (killed whole at the time limit),
+// standard input from /dev/null unless Stdin is given, and, where the
+// system has it, SIGKILL when the switch dies (so a command never outlives
+// the switch that ran it).
 type ExecRunner struct{}
 
 // LookPath resolves a program: an absolute path is used as it is, a bare name
@@ -127,8 +136,9 @@ func (ExecRunner) Run(ctx context.Context, c Command) (Output, error) {
 	cmd.Args[0] = c.Argv[0]
 	cmd.Env = append([]string(nil), CleanEnv...)
 	cmd.Dir = "/"
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = procAttr()
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.ExtraFiles = c.ExtraFiles
 	cmd.WaitDelay = 2 * time.Second
 	if c.Stdin != nil {
 		cmd.Stdin = bytes.NewReader(c.Stdin)
@@ -139,7 +149,17 @@ func (ExecRunner) Run(ctx context.Context, c Command) (Output, error) {
 	}
 	stdout, stderr := boundedBuffer{max: limit}, boundedBuffer{max: limit}
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err = cmd.Run()
+	// The parent-death signal goes with the thread that started the child:
+	// keep this goroutine on it until the child is waited for.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	err = cmd.Start()
+	if err == nil {
+		if c.OnStart != nil {
+			c.OnStart(cmd.Process.Pid)
+		}
+		err = cmd.Wait()
+	}
 	out := Output{Stdout: stdout.buf.Bytes(), Stderr: stderr.buf.Bytes(), Truncated: stdout.cut || stderr.cut}
 	if err == nil {
 		return out, nil

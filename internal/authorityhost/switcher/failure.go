@@ -48,7 +48,8 @@ const (
 	CodeValidatorFailed    = "validator-failed"   // a validator did not exit 0
 	CodePackageFailed      = "package-step-failed"
 	CodePackageStepMissing = "package-step-missing"     // the snapshot changes and the release has no package step
-	CodePackageInterrupted = "package-step-interrupted" // a package step was interrupted; the next switch runs it again
+	CodePackageInterrupted = "package-step-interrupted" // a package step was interrupted; the host's package state is unknown
+	CodePackageUnknown     = "package-state-unknown"    // the host's package state is unknown (or whether a package step ended cannot be told)
 	CodeLinkFailed         = "link-failed"              // a link could not be written
 	CodeReloadFailed       = "reload-failed"            // a reload command did not exit 0
 	CodeHealthFailed       = "health-failed"            // the health check did not pass in time

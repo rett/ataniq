@@ -241,3 +241,20 @@ func TestDiagnosticsEscaped(t *testing.T) {
 		}
 	}
 }
+
+// TestRecoverForms: recover takes exactly one of its forms.
+func TestRecoverForms(t *testing.T) {
+	root := t.TempDir()
+	for _, args := range [][]string{
+		{"--root", root, "recover", "--counter", "3", "--services-stopped"},
+		{"--root", root, "recover", "--counter", "3", "--package-state", "s"},
+		{"--root", root, "recover", "--package-state", "s", "--services-stopped"},
+		{"--root", root, "--package-state", "s", "0001-aaaaaaa"},
+		{"--root", root, "--services-stopped", "0001-aaaaaaa"},
+		{"--root", root, "--package-state", "s", "status"},
+	} {
+		if code, _, errOut := call(args...); code != switcher.ExitUsage {
+			t.Errorf("%q: exit %d, %q", args, code, errOut)
+		}
+	}
+}

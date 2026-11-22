@@ -29,6 +29,15 @@ type Record struct {
 	Error           string `json:"error"`            // a failure code; empty when ok
 	Detail          string `json:"detail"`           // fixed words and quoted identifiers; empty when ok
 	PackageSnapshot string `json:"package_snapshot"` // the snapshot the package step last brought the host to
+	// PackageState is unknown when a package step did not finish (it
+	// failed or was interrupted): the host is between PackageFrom and
+	// PackageTo, and package_snapshot is not to be relied on. Empty when
+	// known. PackageStatedAt is when the owner last stated the snapshot
+	// (recover --package-state).
+	PackageState    string `json:"package_state"`
+	PackageFrom     string `json:"package_from"`
+	PackageTo       string `json:"package_to"`
+	PackageStatedAt string `json:"package_stated_at"`
 	RestoredHealth  string `json:"restored_health"`  // after going back: ok only when the links, the reload and the health all succeeded; failed; empty otherwise
 	ServicesStopped bool   `json:"services_stopped"` // the decision services were stopped (every stop command passed, or the owner said so)
 	// The transaction this record ends: its id, what was asked (an id, or

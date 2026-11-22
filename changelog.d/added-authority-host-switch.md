@@ -6,7 +6,10 @@
   `SHA256SUMS` over every file and, when the root-owned switch policy
   `/etc/authority-host/switch-policy.json` asks for it, its SSH signature by
   the policy's principal; refuses a counter not above the highest ever
-  attempted; runs the release's package step (before the check), its no-AI
+  attempted; runs the release's package step (before the check; a step
+  that fails or is interrupted leaves the package state unknown, refusing
+  further switches until the owner states the snapshot or the step runs
+  again to the end; the step holds the switch lock and dies with it), its no-AI
   check (given the root and a listing of the firewall) and its validators;
   renames a new `current` link over the old one, reloads and checks every
   health command within one 60-second deadline, going back to the old
@@ -21,7 +24,8 @@
   interrupted transaction reached instead of doing it again.
   `ah-switch --rollback-to previous` goes back under the same policy,
   `ah-switch recover --counter N` restores a missing counter,
-  `ah-switch recover --services-stopped` settles a transaction whose stop
+  `ah-switch recover --package-state SNAPSHOT` settles an unknown package
+  state, `ah-switch recover --services-stopped` settles a transaction whose stop
   commands failed on the owner's word,
   `ah-switch status` shows the state under a shared lock, `--dry` prints
   every step and changes nothing, and `--root DIR` works on another folder
