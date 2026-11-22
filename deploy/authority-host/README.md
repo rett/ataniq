@@ -202,6 +202,17 @@ keeps), is refused (`incoming-overlaps`) before anything is created or
 removed, so an import can never read what it writes or remove its own
 input.
 
+The incoming folder belongs to the deploying user, who can swap it for
+something else while the switch holds its lock, so it is opened once, with
+`O_DIRECTORY`, `O_NOFOLLOW` and `O_NONBLOCK`: a FIFO (even one nobody
+writes to), a device or a link put in its place is refused at once
+(`release-not-folder`), never waited on, and a different folder is refused
+(`file-changed`). The opened descriptor must be a folder and the one the
+switch first looked at, and the copy reads through that descriptor, never
+through the name again. This needs `/proc`, as the switch's check of its
+own and the package step's processes does; without it the incoming folder
+is refused (`read-failed`).
+
 `--from` copies the incoming folder into a fresh folder of `releases/`, the
 import's staging folder, as new files. The staging folder is
 `releases/.import-<id>-<16 random hex digits>`, made new for this import
@@ -884,6 +895,7 @@ see its messages. The text of a broken state file is not repeated either.
 | Case | What happens |
 | --- | --- |
 | Incoming folder holds a link, special or hard-linked file, or `releases/ID` exists | Refused at import; nothing is left in `releases/` |
+| Incoming folder swapped for a FIFO, a link or another folder while the switch opens it | Refused at import (`release-not-folder`, `file-changed`) at once; nothing waits, nothing is created, the lock is released |
 | Incoming folder is, contains or lies beneath `releases/` or anything in it | Refused at import (`incoming-overlaps`) before anything is created or removed; the incoming folder stays as it is |
 | A staging folder an earlier import left in `releases/` | Left as it is and named by every `--from`; remove it by hand |
 | Wrong sum, file missing or not listed, path escape, link in the release, release folder a link | Refused at verify; `current` unchanged; an import's copy is removed |

@@ -4,7 +4,9 @@
   (folders and regular files only, within limits of entries, size and
   time; staged in a new folder of its own, the only one it ever removes,
   and refused before anything is created or removed when the incoming
-  folder is, contains or lies beneath `releases/` or anything in it),
+  folder is, contains or lies beneath `releases/` or anything in it; the
+  incoming folder is opened once, without blocking or following a link,
+  so a FIFO swapped in never holds the lock),
   recording the digest of the tree it made (paths, inodes, sizes,
   hashes), and `ah-switch ID` activates an imported release, refusing a
   folder without that record or that no longer matches it: it checks its
