@@ -52,6 +52,10 @@ switch runs it.
   only regular files of a bounded size there.
 - The id is the counter, zero-padded to at least four digits, a hyphen and the
   short commit in lowercase hex (7 to 40 characters).
+- `current` and `previous` hold exactly `releases/<id>`, as the switch writes
+  them. Any other target (an absolute path, `./`, `..`, a doubled slash),
+  even one that would clean to a release, is refused as `state-invalid`
+  before anything is done; a target is only ever shown escaped.
 - `MANIFEST` holds the keys `id`, `counter`, `commit`, `built_on` (the class of
   the build host, never its name), `go_version` and `package_snapshot` (1 to
   128 bytes of letters, digits and `._:-`, so that the journal and
@@ -384,7 +388,9 @@ nothing.
 `internal/authorityhost/switcher/failure.go`). `detail` adds fixed words and
 identifiers: a name that holds anything but printable ASCII, or a space, is
 quoted with Go's escapes and every identifier is cut at 160 bytes, so a
-planted file name cannot forge a line. What a program the switch runs
+planted file name cannot forge a line. The diagnostics of the command line
+(an unknown flag, a bad value, a path that cannot be resolved) escape what
+was typed in the same way. What a program the switch runs
 writes (the no-AI check, a validator, a reload or health command) is never
 printed or recorded, since a diagnostic can hold a secret: only how it
 ended (`exit status N`, killed, time limit) is. Run the program by hand to
