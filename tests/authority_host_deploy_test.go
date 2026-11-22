@@ -171,7 +171,7 @@ func testAuthorityHostDeploy(t *testing.T) {
 		if got := names(); !slices.Equal(got, []string{"ah-release", "rsync"}) {
 			t.Fatalf("calls: %v", got)
 		}
-		if got := called("ah-release")[0]; got != "ah-release [check] ["+rel+"]" {
+		if got := called("ah-release")[0]; got != "ah-release [check] [--no-noaicheck] ["+rel+"]" {
 			t.Errorf("ah-release: %s", got)
 		}
 		want := "rsync [-a] [-n] [--delete] [--itemize-changes] [-e] [ssh -o BatchMode=yes] [--] [" + rel + "/] [" + ahTestHost + ":incoming/" + ahTestID + "/]"
@@ -283,7 +283,7 @@ func testAuthorityHostDeploy(t *testing.T) {
 			t.Fatalf("self-test called %v", got)
 		}
 		for _, want := range []string{
-			"step 1: ah-release check " + rel,
+			"step 1: ah-release check --no-noaicheck " + rel,
 			"rsync -a -n --delete --itemize-changes -e 'ssh -o BatchMode=yes' -- " + rel + "/ <the authority host>:/srv/incoming/" + ahTestID + "/",
 			"step 3: ssh -o BatchMode=yes -- <the authority host> ",
 			"/usr/local/sbin/ah-switch --from /srv/incoming/" + ahTestID + " " + ahTestID,
@@ -317,6 +317,104 @@ func testAuthorityHostDeploy(t *testing.T) {
 		}
 	})
 
+	t.Run("check never runs the no-AI check on the development host", func(t *testing.T) {
+		rel := ahFakeRelease(t, ahTestID)
+		for _, mode := range [][]string{{"--dry"}, {"--go", "--confirm", ahTestID}, {"--dry", "--remote-check"}, {"--go", "--confirm", ahTestID, "--remote-check"}} {
+			out, code := run(withHost(), append([]string{"--release", rel, "--ah-release", stubRelease}, mode...)...)
+			if code != 0 {
+				t.Fatalf("%v: exit %d\n%s", mode, code, out)
+			}
+			if got := called("ah-release"); len(got) != 1 || got[0] != "ah-release [check] [--no-noaicheck] ["+rel+"]" {
+				t.Errorf("%v: ah-release calls %v", mode, got)
+			}
+			if strings.Contains(out, "ah-release check "+rel) {
+				t.Errorf("%v: the plan shows a check without --no-noaicheck:\n%s", mode, out)
+			}
+		}
+	})
+
+	t.Run("remote check", func(t *testing.T) {
+		rel := ahFakeRelease(t, ahTestID)
+		wantCheck := "sudo \"$HOME/incoming/" + ahTestID + "/bin/ah-noaicheck\" --phase pre --root / --release \"$HOME/incoming/" + ahTestID + "\" --require-policy"
+		wantSwitch := "sudo /usr/local/sbin/ah-switch --from \"$HOME/incoming/" + ahTestID + "\" " + ahTestID
+		sshCall := func(cmd string) string {
+			return "ssh [-o] [BatchMode=yes] [--] [" + ahTestHost + "] [" + cmd + "]"
+		}
+		base := []string{"--release", rel, "--ah-release", stubRelease, "--remote-check"}
+
+		// --dry prints the command and never calls ssh.
+		out, code := run(withHost(), append(base, "--dry")...)
+		if code != 0 {
+			t.Fatalf("dry: exit %d\n%s", code, out)
+		}
+		if got := names(); !slices.Equal(got, []string{"ah-release", "rsync"}) {
+			t.Errorf("dry calls: %v", got)
+		}
+		for _, want := range []string{
+			"step 3, only with --go --confirm " + ahTestID + ": remote no-AI check: ssh -o BatchMode=yes -- <the authority host> ",
+			"/bin/ah-noaicheck\" --phase pre --root / --release ",
+			"--require-policy",
+			"step 4, only with --go --confirm " + ahTestID + ": ssh -o BatchMode=yes -- <the authority host> ",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("the dry output lacks %q:\n%s", want, out)
+			}
+		}
+
+		// --go runs the check before the switch, over ssh, in batch mode.
+		out, code = run(withHost(), append(base, "--go", "--confirm", ahTestID)...)
+		if code != 0 {
+			t.Fatalf("go: exit %d\n%s", code, out)
+		}
+		if got := names(); !slices.Equal(got, []string{"ah-release", "rsync", "ssh", "ssh"}) {
+			t.Fatalf("go calls: %v", got)
+		}
+		if got := called("ssh"); !slices.Equal(got, []string{sshCall(wantCheck), sshCall(wantSwitch)}) {
+			t.Errorf("ssh calls:\n got %q\nwant %q", got, []string{sshCall(wantCheck), sshCall(wantSwitch)})
+		}
+		if !strings.Contains(out, "switched") {
+			t.Errorf("the go output lacks the verdict:\n%s", out)
+		}
+
+		// A remote check that fails stops before the switch: the one ssh
+		// call is the check's, and the run fails.
+		out, code = run(withHost("STUB_FAIL=ssh"), append(base, "--go", "--confirm", ahTestID)...)
+		if code != 1 || !strings.Contains(out, "the switch was not run") || strings.Contains(out, "switched;") {
+			t.Errorf("failing remote check: exit %d\n%s", code, out)
+		}
+		if got := called("ssh"); !slices.Equal(got, []string{sshCall(wantCheck)}) {
+			t.Errorf("the switch was run after a failed remote check: %q", got)
+		}
+		if got := names(); !slices.Equal(got, []string{"ah-release", "rsync", "ssh"}) {
+			t.Errorf("failing remote check calls: %v", got)
+		}
+
+		// Without the flag the host is asked for the switch alone.
+		if _, code := run(withHost(), "--release", rel, "--ah-release", stubRelease, "--go", "--confirm", ahTestID); code != 0 {
+			t.Fatalf("exit %d", code)
+		}
+		if got := called("ssh"); !slices.Equal(got, []string{sshCall(wantSwitch)}) {
+			t.Errorf("without --remote-check: %q", got)
+		}
+
+		// The self-test computes both commands, for an absolute base too.
+		out, code = run(env(), "--release", rel, "--incoming-base", "/srv/incoming", "--remote-check", "--self-test")
+		if code != 0 {
+			t.Fatalf("self-test: exit %d\n%s", code, out)
+		}
+		if got := ahCalls(t, calls); got != nil {
+			t.Fatalf("self-test called %v", got)
+		}
+		for _, want := range []string{
+			"step 3: remote no-AI check: ssh -o BatchMode=yes -- <the authority host> 'sudo /srv/incoming/" + ahTestID + "/bin/ah-noaicheck --phase pre --root / --release /srv/incoming/" + ahTestID + " --require-policy'",
+			"step 4: ssh -o BatchMode=yes -- <the authority host> 'sudo /usr/local/sbin/ah-switch --from /srv/incoming/" + ahTestID + " " + ahTestID + "'",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("the self-test output lacks %q:\n%s", want, out)
+			}
+		}
+	})
+
 	t.Run("a hostile release path is one argument", func(t *testing.T) {
 		rel := filepath.Join(t.TempDir(), "a dir; touch pwned '$(x)'")
 		release := filepath.Join(rel, ahTestID)
@@ -330,7 +428,7 @@ func testAuthorityHostDeploy(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit %d\n%s", code, out)
 		}
-		if got := called("ah-release")[0]; got != "ah-release [check] ["+release+"]" {
+		if got := called("ah-release")[0]; got != "ah-release [check] [--no-noaicheck] ["+release+"]" {
 			t.Errorf("ah-release: %s", got)
 		}
 		if _, err := os.Stat(filepath.Join(workDir, "pwned")); err == nil {

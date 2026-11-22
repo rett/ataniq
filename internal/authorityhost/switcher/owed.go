@@ -319,11 +319,24 @@ func (s *Switcher) Ack(ctx context.Context, words string) int {
 		s.printf("ack: no outcome is owed; nothing to acknowledge")
 		return ExitFailed
 	}
+	// The owner acknowledges what was shown: an outcome that could not be
+	// written or flushed has not been delivered, so it is never taken back
+	// (the rule of a retry, see answerOwed).
 	var txns []string
+	var shown error
 	for _, o := range owed {
-		s.printf("ack: the %s %s (request %s, transaction %s) ended %s at %s", o.kind(), o.ID, q(o.RequestID), o.Txn, o.Result, q(o.Time))
-		s.reportOwed(o)
+		err := s.emit("ack: the %s %s (request %s, transaction %s) ended %s at %s", o.kind(), o.ID, q(o.RequestID), o.Txn, o.Result, q(o.Time))
+		if rerr := s.reportOwed(o); err == nil {
+			err = rerr
+		}
+		if err != nil && shown == nil {
+			shown = err
+		}
 		txns = append(txns, o.Txn)
+	}
+	if shown != nil {
+		s.errorf("the outcomes owed could not be written: %s; they stay owed, nothing is recorded, and ack run again shows and acknowledges them", q(shown.Error()))
+		return ExitFailed
 	}
 	rec, _, err := s.readRecord()
 	if err != nil {

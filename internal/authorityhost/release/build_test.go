@@ -1,8 +1,10 @@
 package release
 
 import (
+	"bytes"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -34,6 +36,7 @@ func TestBuildLayout(t *testing.T) {
 		"SHA256SUMS -rw-r--r-- ",
 		"bin drwxr-xr-x",
 		"bin/ah-noaicheck -rwxr-xr-x " + sumOf([]byte("#!/bin/sh\nexit 0\n")),
+		"bin/ah-pkgstep -rwxr-xr-x " + sumOf([]byte(StaticPackageStep)),
 		"bin/ah-switch -rwxr-xr-x " + sumOf([]byte("#!/bin/sh\nexit 0\n")),
 		"etc drwxr-xr-x",
 		"etc/caddy drwxr-xr-x",
@@ -57,7 +60,7 @@ func TestBuildLayout(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("layout\n got: %q\nwant: %q", got, want)
 	}
-	if files != 11 { // 9 files, MANIFEST and SHA256SUMS
+	if files != 12 { // 10 files, MANIFEST and SHA256SUMS
 		t.Errorf("files = %d", files)
 	}
 	if _, err := os.Lstat(filepath.Join(o.Out, "."+id+".partial")); err == nil {
@@ -102,7 +105,7 @@ func TestBuildSumsFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed) != 10 {
+	if len(listed) != 11 {
 		t.Errorf("%d files listed", len(listed))
 	}
 	for p, sum := range listed {
@@ -362,5 +365,117 @@ func TestBuildOutOfSourceModes(t *testing.T) {
 		if err != nil || info.Mode() != 0o644 {
 			t.Errorf("%s: %v %v", p, info, err)
 		}
+	}
+}
+
+// runStep runs the built ah-pkgstep with the given arguments.
+func runStep(t *testing.T, p string, args ...string) (int, string, string) {
+	t.Helper()
+	cmd := exec.Command("sh", append([]string{p}, args...)...)
+	var out, errOut bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errOut
+	err := cmd.Run()
+	code := 0
+	if err != nil {
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) {
+			t.Fatal(err)
+		}
+		code = ee.ExitCode()
+	}
+	return code, out.String(), errOut.String()
+}
+
+// TestBuildWritesAStaticPackageStep: a static release given no ah-pkgstep
+// carries the builder's no-op one, mode 0755, listed in SHA256SUMS, and
+// check accepts the folder.
+func TestBuildWritesAStaticPackageStep(t *testing.T) {
+	o := testOptions(t, staticSrc(t))
+	id, _, err := Build(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(o.Out, id)
+	p := filepath.Join(dir, "bin", PackageStepName)
+	info, err := os.Lstat(p)
+	if err != nil || info.Mode() != 0o755 {
+		t.Fatalf("bin/ah-pkgstep: %v, %v", info, err)
+	}
+	data, err := os.ReadFile(p)
+	if err != nil || string(data) != StaticPackageStep {
+		t.Fatalf("content %q, %v", data, err)
+	}
+	sums, err := os.ReadFile(filepath.Join(dir, "SHA256SUMS"))
+	if err != nil || !strings.Contains(string(sums), sumOf(data)+"  bin/ah-pkgstep\n") {
+		t.Errorf("SHA256SUMS does not list it: %q, %v", sums, err)
+	}
+	if f := Check(dir, CheckOptions{NoNoAICheck: true}); len(f) != 0 {
+		t.Errorf("check: %s", lines(f))
+	}
+	if strings.ContainsAny(StaticPackageStep, "\r") || !strings.HasPrefix(StaticPackageStep, "#!/bin/sh\n") {
+		t.Errorf("not a plain sh script: %q", StaticPackageStep)
+	}
+}
+
+// TestStaticPackageStepRuns runs the script: it checks its arguments as the
+// switch gives them (the --from may be empty on a first switch), prints one
+// line, changes nothing and gives the same answer twice.
+func TestStaticPackageStepRuns(t *testing.T) {
+	o := testOptions(t, staticSrc(t))
+	id, _, err := Build(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(o.Out, id, "bin", PackageStepName)
+	before := listing(t, o.Out)
+	for i := 0; i < 2; i++ {
+		for _, from := range []string{"", "2026-11-01"} {
+			code, out, errOut := runStep(t, p, "--release", filepath.Join(o.Out, id), "--from", from, "--to", "2026-11-21")
+			if code != 0 || out != "ah-pkgstep: static release, no package change\n" || errOut != "" {
+				t.Errorf("exit %d, %q, %q", code, out, errOut)
+			}
+		}
+	}
+	if after := listing(t, o.Out); !reflect.DeepEqual(before, after) {
+		t.Error("the step changed the release")
+	}
+	for _, args := range [][]string{
+		nil,
+		{"--release", "d", "--from", "a"},
+		{"--release", "d", "--to", "a", "--from", "b"},
+		{"--from", "a", "--release", "d", "--to", "b"},
+		{"--release", "d", "--from", "a", "--to", "b", "extra"},
+	} {
+		code, out, errOut := runStep(t, p, args...)
+		if code != 2 || out != "" || !strings.HasPrefix(errOut, "usage: ah-pkgstep --release DIR --from OLD --to NEW") {
+			t.Errorf("%q: exit %d, %q, %q", args, code, out, errOut)
+		}
+	}
+}
+
+// TestBuildKeepsAGivenPackageStep: a binary named ah-pkgstep is shipped as
+// it is, and a release that is not static gets none made.
+func TestBuildKeepsAGivenPackageStep(t *testing.T) {
+	o := testOptions(t, staticSrc(t))
+	pkg := filepath.Join(t.TempDir(), "ah-pkgstep")
+	writeTestFile(t, pkg, "#!/bin/sh\n# mine\nexit 0\n", 0o755)
+	o.Bins = append(o.Bins, pkg)
+	id, _, err := Build(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(o.Out, id, "bin/ah-pkgstep"))
+	if err != nil || string(data) != "#!/bin/sh\n# mine\nexit 0\n" {
+		t.Errorf("content %q, %v", data, err)
+	}
+
+	o = testOptions(t, staticSrc(t))
+	o.Components = ""
+	id, _, err = Build(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(o.Out, id, "bin/ah-pkgstep")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a release that is not static got a package step: %v", err)
 	}
 }

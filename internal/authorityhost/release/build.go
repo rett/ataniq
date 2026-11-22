@@ -20,6 +20,24 @@ import (
 // candidate, and the switch itself.
 var requiredBins = []string{"ah-noaicheck", "ah-switch"}
 
+// PackageStepName is the file name of a release's package step, and
+// StaticPackageStep is the one the builder writes itself into a static
+// release that is given none: it checks its arguments as the switch gives
+// them, changes nothing and exits 0, so it is idempotent. It is POSIX sh and
+// holds no time, user or host name.
+const PackageStepName = "ah-pkgstep"
+
+const StaticPackageStep = `#!/bin/sh
+# The package step of a static release, written by ah-release build: a static
+# release installs and removes no package, so there is nothing to do.
+if [ "$#" -ne 6 ] || [ "$1" != "--release" ] || [ "$3" != "--from" ] || [ "$5" != "--to" ]; then
+	echo "usage: ah-pkgstep --release DIR --from OLD --to NEW" >&2
+	exit 2
+fi
+echo "ah-pkgstep: static release, no package change"
+exit 0
+`
+
 // Options is what Build makes a release from.
 type Options struct {
 	// Out is the folder the release folder <id> is made in.
@@ -34,7 +52,8 @@ type Options struct {
 	BuiltOn         string
 	PackageSnapshot string
 	// Bins are the files that become bin/<base name>; ah-noaicheck and
-	// ah-switch are required.
+	// ah-switch are required. A static release given no ah-pkgstep gets
+	// the no-op StaticPackageStep.
 	Bins []string
 	// Src is the deployment source folder (deploy/authority-host): its etc/
 	// and share/ are copied.
@@ -109,6 +128,7 @@ type item struct {
 	exec bool
 	root *os.Root // where the source file is, with src below it
 	src  string
+	data []byte // content made by the builder itself, when root is nil
 }
 
 // Build makes the release folder Out/<id> and returns its id and the number
@@ -176,46 +196,57 @@ func Build(o Options) (string, int, error) {
 	return id, files, nil
 }
 
-// plan lists what the release holds, sorted by destination, and opens the
-// source folders; the caller closes them.
-func plan(o Options) ([]item, []io.Closer, error) {
-	var closers []io.Closer
-	items := []item{{dest: "bin", dir: true}}
-	var total int64
-	n := 0
-
-	srcRoot, err := os.OpenRoot(o.Src)
+// sourceItems lists the folders and files of the deployment source folder
+// src that a release or a baseline copies, its etc/ and share/, with their
+// total size and the number of entries; srcRoot is open on src (it is nil
+// when src could not be opened), and the caller closes it.
+func sourceItems(src string) (items []item, srcRoot *os.Root, total int64, n int, err error) {
+	items = []item{{dest: "bin", dir: true}}
+	srcRoot, err = os.OpenRoot(src)
 	if err != nil {
-		return nil, closers, refuse(false, CodeSrc, "")
+		return nil, nil, 0, 0, refuse(false, CodeSrc, "")
 	}
-	closers = append(closers, srcRoot)
 	for _, top := range []string{"etc", "share"} {
 		info, err := srcRoot.Lstat(top)
 		if err != nil || !info.IsDir() {
-			return nil, closers, refuse(false, CodeSrc, "")
+			return nil, srcRoot, 0, 0, refuse(false, CodeSrc, "")
 		}
 		items = append(items, item{dest: top, dir: true})
 		ents, err := walk(srcRoot, top, &n)
 		if err != nil {
-			return nil, closers, ioRefusal(err)
+			return nil, srcRoot, 0, 0, ioRefusal(err)
 		}
 		for _, e := range ents {
 			if !validPath(e.path) {
-				return nil, closers, refuse(false, CodeBadName, "")
+				return nil, srcRoot, 0, 0, refuse(false, CodeBadName, "")
 			}
 			switch {
 			case e.dir():
 				items = append(items, item{dest: e.path, dir: true})
 			case e.regular():
 				if e.size > MaxFileBytes {
-					return nil, closers, refuse(false, CodeTooLarge, e.path)
+					return nil, srcRoot, 0, 0, refuse(false, CodeTooLarge, e.path)
 				}
 				total += e.size
 				items = append(items, item{dest: e.path, root: srcRoot, src: e.path})
 			default:
-				return nil, closers, refuse(false, CodeNotRegular, e.path)
+				return nil, srcRoot, 0, 0, refuse(false, CodeNotRegular, e.path)
 			}
 		}
+	}
+	return items, srcRoot, total, n, nil
+}
+
+// plan lists what the release holds, sorted by destination, and opens the
+// source folders; the caller closes them.
+func plan(o Options) ([]item, []io.Closer, error) {
+	var closers []io.Closer
+	items, srcRoot, total, n, err := sourceItems(o.Src)
+	if srcRoot != nil {
+		closers = append(closers, srcRoot)
+	}
+	if err != nil {
+		return nil, closers, err
 	}
 
 	for _, b := range o.Bins {
@@ -241,6 +272,13 @@ func plan(o Options) ([]item, []io.Closer, error) {
 		}
 		items = append(items, item{dest: "bin/" + name, exec: true, root: root, src: name})
 	}
+	if o.Components == switcher.ComponentsStatic && !hasBin(o.Bins, PackageStepName) {
+		if n++; n > MaxEntries {
+			return nil, closers, refuse(false, CodeTooLarge, "")
+		}
+		total += int64(len(StaticPackageStep))
+		items = append(items, item{dest: "bin/" + PackageStepName, exec: true, data: []byte(StaticPackageStep)})
+	}
 	if total > MaxTotalBytes {
 		return nil, closers, refuse(false, CodeTooLarge, "")
 	}
@@ -248,9 +286,19 @@ func plan(o Options) ([]item, []io.Closer, error) {
 	return items, closers, nil
 }
 
-// write makes the release's content in the new folder stage and returns the
-// number of files, MANIFEST and SHA256SUMS included.
-func write(stage string, o Options, items []item) (int, error) {
+// hasBin reports whether one of the binaries is named name.
+func hasBin(bins []string, name string) bool {
+	for _, b := range bins {
+		if filepath.Base(b) == name {
+			return true
+		}
+	}
+	return false
+}
+
+// writeItems makes the folders and files of items in the new folder stage
+// and returns the digest of each file by its path in the release.
+func writeItems(stage string, items []item) (map[string]string, error) {
 	sums := map[string]string{}
 	var written int64
 	for _, it := range items {
@@ -259,29 +307,48 @@ func write(stage string, o Options, items []item) (int, error) {
 		}
 		p := filepath.Join(stage, filepath.FromSlash(it.dest))
 		if err := os.Mkdir(p, 0o755); err != nil {
-			return 0, ioRefusal(err)
+			return nil, ioRefusal(err)
 		}
 		if err := os.Chmod(p, 0o755); err != nil {
-			return 0, ioRefusal(err)
+			return nil, ioRefusal(err)
 		}
 	}
 	for _, it := range items {
 		if it.dir {
 			continue
 		}
+		dest := filepath.Join(stage, filepath.FromSlash(it.dest))
+		if it.root == nil {
+			sum, err := copyFile(dest, bytes.NewReader(it.data), int64(len(it.data)), it.exec)
+			if err != nil {
+				return nil, ioRefusal(err)
+			}
+			sums[it.dest] = sum
+			continue
+		}
 		in, info, err := openRegular(it.root, it.src)
 		if err != nil {
-			return 0, ioRefusal(err)
+			return nil, ioRefusal(err)
 		}
-		sum, err := copyFile(filepath.Join(stage, filepath.FromSlash(it.dest)), in, info.Size(), it.exec)
+		sum, err := copyFile(dest, in, info.Size(), it.exec)
 		in.Close()
 		if err != nil {
-			return 0, ioRefusal(err)
+			return nil, ioRefusal(err)
 		}
 		if written += info.Size(); written > MaxTotalBytes {
-			return 0, refuse(false, CodeTooLarge, "")
+			return nil, refuse(false, CodeTooLarge, "")
 		}
 		sums[it.dest] = sum
+	}
+	return sums, nil
+}
+
+// write makes the release's content in the new folder stage and returns the
+// number of files, MANIFEST and SHA256SUMS included.
+func write(stage string, o Options, items []item) (int, error) {
+	sums, err := writeItems(stage, items)
+	if err != nil {
+		return 0, err
 	}
 	manifest := o.manifest()
 	if err := writeFile(filepath.Join(stage, switcher.ManifestFile), manifest, 0o644); err != nil {

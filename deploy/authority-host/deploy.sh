@@ -3,7 +3,8 @@
 # Run on the development host, by the owner or with the owner's word.
 #
 #   deploy.sh --release DIR/ID [--incoming-base PATH] [--ah-release FILE]
-#             [--skip-check] [--dry | --go --confirm ID | --self-test]
+#             [--skip-check] [--remote-check]
+#             [--dry | --go --confirm ID | --self-test]
 #
 #   --release DIR/ID     a release folder built by `ah-release build`; the
 #                        folder's name is the release id (COUNTER-COMMIT, for
@@ -15,6 +16,19 @@
 #   --ah-release FILE    the release tool, for `ah-release check`; default
 #                        `ah-release` in PATH.
 #   --skip-check         do not run `ah-release check` (prints a warning).
+#                        The check is `ah-release check --no-noaicheck`: it
+#                        reads the release folder back and never runs the
+#                        release's no-AI check here, which would look at this
+#                        development machine, not at the authority host.
+#   --remote-check       after the copy (--go only; --dry and --self-test
+#                        print the command) run the release's own no-AI check
+#                        on the authority host, over ssh, before the switch:
+#                          sudo INCOMING/ID/bin/ah-noaicheck --phase pre
+#                          --root / --release INCOMING/ID --require-policy
+#                        and stop, without switching, when it exits non-zero.
+#                        It runs the copied binary as root before the switch
+#                        has verified the release, so the deploying user needs
+#                        a sudo rule for it too (see DEPLOY.md).
 #   --dry (the default)  check the release, run `rsync -n` (a listing of what
 #                        would be copied, nothing copied) and print the ssh
 #                        command that --go would run; run nothing else.
@@ -54,7 +68,7 @@ fail() {
 usage() {
   cat >&2 <<EOF
 usage: $DP_NAME --release DIR/ID [--incoming-base PATH] [--ah-release FILE] [--skip-check]
-                 [--dry | --go --confirm ID | --self-test]
+                 [--remote-check] [--dry | --go --confirm ID | --self-test]
 EOF
   exit 2
 }
@@ -120,6 +134,7 @@ RELEASE=
 BASE='~/incoming'
 AHREL=
 SKIP=0
+REMOTE_CHECK=0
 CONFIRM=
 HAVE_CONFIRM=0
 while [ $# -gt 0 ]; do
@@ -129,6 +144,7 @@ while [ $# -gt 0 ]; do
       MODE=${1#--}
       ;;
     --skip-check) SKIP=1 ;;
+    --remote-check) REMOTE_CHECK=1 ;;
     --release | --incoming-base | --ah-release | --confirm)
       [ $# -ge 2 ] || usage
       case $1 in
@@ -179,10 +195,12 @@ case $BASE in
     REL=${BASE#'~/'}
     RSYNC_DEST=$REL/$ID/
     REMOTE_FROM="\"\$HOME/$REL/$ID\""
+    REMOTE_NOAI="\"\$HOME/$REL/$ID/bin/ah-noaicheck\""
     ;;
   *)
     RSYNC_DEST=$BASE/$ID/
     REMOTE_FROM=$(q "$BASE/$ID")
+    REMOTE_NOAI=$(q "$BASE/$ID/bin/ah-noaicheck")
     ;;
 esac
 # The remote shell reads this string. Every word in it is of the characters
@@ -190,6 +208,9 @@ esac
 # the double-quoted "$HOME/..." that the remote shell expands to the deploying
 # user's home; q quotes a word only when it has any other character.
 REMOTE_CMD="sudo /usr/local/sbin/ah-switch --from $REMOTE_FROM $(q "$ID")"
+# The no-AI check of the copied release, run on the host before the switch
+# with --remote-check; built of the same words.
+REMOTE_CHECK_CMD="sudo $REMOTE_NOAI --phase pre --root / --release $REMOTE_FROM --require-policy"
 
 # --- confirm (--go only) ------------------------------------------------------
 if [ "$MODE" = go ]; then
@@ -221,36 +242,47 @@ run_check() {
     printf '%s: warning: --skip-check: the release was NOT checked by ah-release check\n' "$DP_NAME" >&2
     return 0
   fi
-  say "step 1: $(qline "$AHREL" check "$RELEASE_DIR")"
+  say "step 1: $(qline "$AHREL" check --no-noaicheck "$RELEASE_DIR")"
   if [ "$MODE" = self-test ]; then
     return 0
   fi
-  "$AHREL" check "$RELEASE_DIR" || fail "ah-release check failed; nothing was copied"
+  "$AHREL" check --no-noaicheck "$RELEASE_DIR" || fail "ah-release check failed; nothing was copied"
 }
 
 RSYNC_NO=
 [ "$MODE" = go ] || RSYNC_NO='-n '
 RSYNC_SHOW="rsync -a ${RSYNC_NO}--delete --itemize-changes -e 'ssh -o BatchMode=yes' -- $(q "$RELEASE_DIR/") <the authority host>:$(q "$RSYNC_DEST")"
 SSH_SHOW="ssh -o BatchMode=yes -- <the authority host> $(q "$REMOTE_CMD")"
+SSH_CHECK_SHOW="ssh -o BatchMode=yes -- <the authority host> $(q "$REMOTE_CHECK_CMD")"
+# The number of the step that switches: 3, or 4 after a remote check.
+SWITCH_STEP=3
+[ "$REMOTE_CHECK" = 0 ] || SWITCH_STEP=4
 
 run_check
 say "step 2: $RSYNC_SHOW"
 case $MODE in
   self-test)
-    say "step 3: $SSH_SHOW"
+    [ "$REMOTE_CHECK" = 0 ] || say "step 3: remote no-AI check: $SSH_CHECK_SHOW"
+    say "step $SWITCH_STEP: $SSH_SHOW"
     say "self-test: computed the commands above; ah-release, rsync and ssh were not run"
     exit 0
     ;;
   dry)
     rsync -a -n --delete --itemize-changes -e 'ssh -o BatchMode=yes' -- "$RELEASE_DIR/" "$HOST:$RSYNC_DEST" ||
       fail "rsync -n failed (is $BASE there on the host, and owned by the deploying user?); nothing was copied"
-    say "step 3, only with --go --confirm $ID: $SSH_SHOW"
+    [ "$REMOTE_CHECK" = 0 ] || say "step 3, only with --go --confirm $ID: remote no-AI check: $SSH_CHECK_SHOW"
+    say "step $SWITCH_STEP, only with --go --confirm $ID: $SSH_SHOW"
     say "deploy: dry run, nothing was copied and nothing was switched"
     ;;
   go)
     rsync -a --delete --itemize-changes -e 'ssh -o BatchMode=yes' -- "$RELEASE_DIR/" "$HOST:$RSYNC_DEST" ||
       fail "rsync failed; the switch was not run"
-    say "step 3: $SSH_SHOW"
+    if [ "$REMOTE_CHECK" = 1 ]; then
+      say "step 3: remote no-AI check: $SSH_CHECK_SHOW"
+      ssh -o BatchMode=yes -- "$HOST" "$REMOTE_CHECK_CMD" ||
+        fail "the no-AI check of the release on the authority host failed or could not run; the switch was not run (see DEPLOY.md, \"When a step fails\")"
+    fi
+    say "step $SWITCH_STEP: $SSH_SHOW"
     ssh -o BatchMode=yes -- "$HOST" "$REMOTE_CMD" ||
       fail "the switch on the authority host failed or could not run; see DEPLOY.md, \"When a step fails\""
     say "deploy: release $ID switched; verify with ah-switch status on the host (see DEPLOY.md)"

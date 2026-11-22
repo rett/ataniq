@@ -802,7 +802,11 @@ things take it back:
   `outcome_acked_asked`, `outcome_acked_txn`, kept by later records), and
   removes `owed.json`. It runs no program, is refused while a transaction
   is open (run any command to settle it first) or when nothing is owed,
-  and with `--dry` changes nothing.
+  and with `--dry` changes nothing. As with a retry, an outcome that
+  cannot be written or flushed has not been seen: when printing the
+  outcomes fails, `ack` records nothing, keeps `owed.json`, says so on its
+  error output and exits 1, and the same `ack` run again shows and
+  acknowledges them.
 
 Any other switch or rollback while an outcome is owed (another release,
 or one that is not there) first reports the outcomes owed (`owed: the ...
@@ -930,6 +934,7 @@ see its messages. The text of a broken state file is not repeated either.
 | Crash or power loss during the switch | `current` points at a whole release, the old or the new one, and the journal is there; the next command resumes its phase (see "The journal and recover") |
 | The same request run again while its outcome is owed (settled by its own command or by another one, its result line printed or not) | Reports that outcome once and does nothing else; a rollback retried as `previous` goes to no other release; `--dry` only shows it |
 | The same request run again, and its report cannot be written or flushed | The outcome stays owed; exit 1; the next retry reports it |
+| `ack` run when the outcomes it acknowledges cannot be written or flushed | Nothing is recorded and `owed.json` stays; exit 1; run `ack` again |
 | Another switch or rollback while an outcome is owed | Reports the outcomes owed, leaves them owed and is refused, exit 1, nothing recorded or run, until `ack --asked WORDS` or the same request again |
 | `highest-counter` missing or broken while `current` exists, or below a counter the links, `deploy.json` or `counters.log` show was used | Refused before anything, nothing recorded (`counter-missing`, `counter-invalid`); run `recover --counter N` |
 | A journal whose links or counter do not match the host (restored from a backup) | `reconcile: unresolved`, exit 1; nothing resumed, run or moved until `recover --discard-journal TXN` |
@@ -1473,7 +1478,16 @@ ah-release build --out DIR --counter N --commit SHA --go-version V --built-on CL
   mode 0755; the name is letters, digits and `._@+-`. `ah-noaicheck` and
   `ah-switch` are required; add `ah-pkgstep` when the release's package
   snapshot may differ from the host's (a first switch always moves the host
-  to the snapshot, so it needs it).
+  to the snapshot, so it needs it). With `--components static` and no
+  `--bin` named `ah-pkgstep`, the builder writes `bin/ah-pkgstep` itself: a
+  POSIX `sh` script that checks the arguments the switch gives it
+  (`--release DIR --from OLD --to NEW`, anything else exits 2 with a usage
+  line), prints `ah-pkgstep: static release, no package change`, changes
+  nothing and exits 0 (so it is idempotent), mode 0755 and listed in
+  `SHA256SUMS`, with the same bytes in every build. A `--bin` named
+  `ah-pkgstep` is shipped as given, and a release that is not static and is
+  given none has none, so a switch that changes the snapshot refuses it
+  (`package-step-missing`) as before.
 - `--src` is the deployment source folder: its `etc/` is copied to
   `etc/` and its `share/` to `share/`, which must hold the four command
   lists and the lists of the no-AI check. Nothing else of it is copied (not
@@ -1591,6 +1605,75 @@ It checks, in this order, all of them (a pass is no finding):
    host's baseline at deploy time, so it is for a release that has been
    filled. `--no-noaicheck` skips this step (for tests).
 
+### Filling the allowlists
+
+`share/units.allow`, `ports.allow` and `packages.allow` and `nft.digest`
+ship empty (or missing) from this tree, so a release built from it fails its
+own no-AI check under `--require-policy` until they hold the host's baseline.
+The owner collects the baseline **on the host**, from a host that is known to
+be as it should be (everything listed becomes allowed, so read each list
+before it is used), and `ah-release baseline` makes a filled copy of this
+tree from the four files:
+
+```
+ah-release baseline --src deploy/authority-host --units FILE --ports FILE --packages FILE --nft FILE [--out DIR] [--stamp TEXT]
+```
+
+The collection, as root where the command needs it (the files are plain text,
+copied to the build host by any way the owner trusts):
+
+- **Units.** The source is the no-AI check's own view, not
+  `systemctl list-unit-files --state=enabled` (that lists unit files, not the
+  links of the `*.wants`, `*.requires` and `*.upholds` folders of every manager,
+  home and runtime folder the check reads, so it can miss a unit the check
+  reports and name one it never sees). Run the check once, with the
+  allowlists still empty, from the release built from the unfilled tree, and
+  take the `HIT unit` names:
+
+  ```
+  sudo RELEASE/bin/ah-noaicheck --phase pre --require-policy \
+    | sed -n 's/^HIT unit //p' | sed 's|.*/||' | sort -u > units.txt
+  ```
+
+  Each `HIT unit` line ends in the path of the enabled link
+  (`/etc/systemd/system/multi-user.target.wants/sshd.service`); the name is
+  the last part. Every other line it prints (a `HIT` of another kind, such as
+  an agent tool, or `HIT incomplete`) is a finding to fix, never to put in a
+  list. A template (`getty@.service`) may be written in place of an instance.
+- **Ports.** `ss -H -ltn | awk '{n=split($4,a,":"); print a[n]}' | sort -un > ports.txt`:
+  the local port of each listening TCP socket, one decimal number per line.
+- **Packages.** `pacman -Qq > packages.txt`.
+- **Firewall.** `sudo nft list ruleset > nft.txt`.
+
+`baseline` reads each file whole, refusing one that is not a regular file (a
+link, fifo, device or folder), that is over 2 MiB, or whose line is not a
+valid entry of its list: a unit name is letters, digits and `:_.@-` with a
+unit type as its suffix, a port is 1 to 65535 without leading zeros, a
+package name is letters, digits and `@._+-` (a line with a version, a
+repository or a second word is refused), and no line is over 4 KiB or holds
+a control byte, a tab or a non-ASCII byte. Blank lines and lines starting
+with `#` are left out; a duplicate is dropped without a word; an input that
+leaves nothing is refused (`input-empty`), the listing of `nft` too when
+nothing but blank lines is in it. The entries are written sorted (ports by
+number). `nft.digest` is the digest `ah-noaicheck nft-digest nft.txt`
+prints: the same function, so the counters and expiries of a listing do not
+change it.
+
+The result is a new folder, `--out` (it must not exist, and may not be or lie
+in `--src`; it is made beside its place and renamed into it) or, without
+`--out`, a new folder of the temporary folder; it holds the `etc/` and
+`share/` of `--src` with the four files replaced, and is given to
+`ah-release build --src`. Nothing is written into `--src`. Each file starts
+with a header that says what it was taken from (the check's `HIT unit` lines,
+`ss -H -ltn`, `pacman -Qq`, `nft list ruleset`) and, with `--stamp TEXT` (1 to
+128 bytes of letters, digits, spaces and `._:+-`, a date for instance), when;
+the headers hold no host name and no time of the builder's own, so the same
+inputs make the same bytes. Exit status: 0 ok (`filled baseline in <folder>`),
+1 refused (`FAIL: <code> <fixed reason>` with the input's name, and for a bad
+line its number, never its text), 2 usage. A built release is then checked
+with `ah-release check --require-policy` where the no-AI check is meant to
+pass.
+
 ### The source tree of the first release
 
 The first release is static (`--components static`): it runs no decision
@@ -1616,7 +1699,8 @@ and its lists.
   allows.
 - `share/ai-names.list`, `forbidden-packages.list`, `packages.allow`,
   `ports.allow` and `units.allow` are the no-AI check's lists, as before;
-  the allowlists are filled from the host's baseline at deploy time.
+  the allowlists are filled from the host's baseline at deploy time, with
+  `ah-release baseline` (see "Filling the allowlists").
 
 `ah-release build --src deploy/authority-host --components static ...`
 followed by `ah-release check` passes on this tree; a test builds it with

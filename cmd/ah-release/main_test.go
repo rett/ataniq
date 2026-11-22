@@ -5,10 +5,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 
+	"ataniq/internal/authorityhost/noaicheck"
 	"ataniq/internal/authorityhost/switcher"
 )
 
@@ -118,7 +120,7 @@ func TestBuildPrintsOnlyTheIDAndRefusesTwice(t *testing.T) {
 	a, b := bins(t)
 	args := buildArgs(out, source(t), a, b)
 	code, stdout, errOut := call(args...)
-	if code != 0 || stdout != "built release 0003-0123456 (9 files)\n" || errOut != "" {
+	if code != 0 || stdout != "built release 0003-0123456 (10 files)\n" || errOut != "" {
 		t.Fatalf("exit %d, %q, %q", code, stdout, errOut)
 	}
 	code, stdout, errOut = call(args...)
@@ -158,10 +160,8 @@ func TestBuiltFolderIsAcceptedBySwitch(t *testing.T) {
 	out := t.TempDir()
 	a, b := bins(t)
 	// A first switch moves the host to the release's package snapshot, which
-	// needs the release's package step.
-	pkg := filepath.Join(t.TempDir(), "ah-pkgstep")
-	write(t, pkg, "#!/bin/sh\nexit 0\n", 0o755)
-	if code, stdout, errOut := call(buildArgs(out, source(t), a, b, "--bin", pkg)...); code != 0 {
+	// needs the release's package step: a static release gets the builder's.
+	if code, stdout, errOut := call(buildArgs(out, source(t), a, b)...); code != 0 {
 		t.Fatalf("exit %d, %q, %q", code, stdout, errOut)
 	}
 	root := t.TempDir()
@@ -184,9 +184,7 @@ func TestBuiltFolderIsAcceptedBySwitch(t *testing.T) {
 func TestTamperedFolderIsRefusedBySwitch(t *testing.T) {
 	out := t.TempDir()
 	a, b := bins(t)
-	pkg := filepath.Join(t.TempDir(), "ah-pkgstep")
-	write(t, pkg, "#!/bin/sh\nexit 0\n", 0o755)
-	if code, _, _ := call(buildArgs(out, source(t), a, b, "--bin", pkg)...); code != 0 {
+	if code, _, _ := call(buildArgs(out, source(t), a, b)...); code != 0 {
 		t.Fatal("build")
 	}
 	dir := filepath.Join(out, "0003-0123456")
@@ -314,9 +312,7 @@ const repoSource = "../../deploy/authority-host"
 func TestRealStaticRelease(t *testing.T) {
 	out := t.TempDir()
 	a, b := bins(t)
-	pkg := filepath.Join(t.TempDir(), "ah-pkgstep")
-	write(t, pkg, "#!/bin/sh\nexit 0\n", 0o755)
-	code, stdout, errOut := call(buildArgs(out, repoSource, a, b, "--bin", pkg)...)
+	code, stdout, errOut := call(buildArgs(out, repoSource, a, b)...)
 	if code != 0 {
 		t.Fatalf("build: exit %d, %q, %q", code, stdout, errOut)
 	}
@@ -390,5 +386,141 @@ func TestRealTreeHasNoPrivateNames(t *testing.T) {
 				t.Errorf("%s holds %q", p, bad)
 			}
 		}
+	}
+}
+
+// TestStaticReleaseNeedsNoPackageStepFromTheCaller: the folder of a static
+// build with only the two required binaries is accepted by check, and a
+// build that is not static, given none, ships none, so the switch's own check
+// of a changed snapshot refuses it as before.
+func TestStaticReleaseNeedsNoPackageStepFromTheCaller(t *testing.T) {
+	a, b := bins(t)
+	out := t.TempDir()
+	if code, stdout, errOut := call(buildArgs(out, source(t), a, b)...); code != 0 {
+		t.Fatalf("exit %d, %q, %q", code, stdout, errOut)
+	}
+	dir := filepath.Join(out, "0003-0123456")
+	if code, stdout, _ := call("check", "--no-noaicheck", dir); code != 0 || stdout != "ok: release 0003-0123456\n" {
+		t.Errorf("check: exit %d, %q", code, stdout)
+	}
+	if info, err := os.Lstat(filepath.Join(dir, "bin/ah-pkgstep")); err != nil || info.Mode().Perm() != 0o755 {
+		t.Errorf("bin/ah-pkgstep: %v, %v", info, err)
+	}
+
+	// Two builds of the same input are byte-identical, the step included.
+	out2 := t.TempDir()
+	if code, _, _ := call(buildArgs(out2, source(t), a, b)...); code != 0 {
+		t.Fatal("second build")
+	}
+	one, err1 := os.ReadFile(filepath.Join(dir, "SHA256SUMS"))
+	two, err2 := os.ReadFile(filepath.Join(out2, "0003-0123456", "SHA256SUMS"))
+	if err1 != nil || err2 != nil || !bytes.Equal(one, two) {
+		t.Errorf("the sums differ: %v %v", err1, err2)
+	}
+
+	// Without --components static the builder writes none.
+	out3 := t.TempDir()
+	args := buildArgs(out3, source(t), a, b)
+	args = args[:len(args)-2] // drop --components static
+	if code, stdout, errOut := call(args...); code != 0 {
+		t.Fatalf("exit %d, %q, %q", code, stdout, errOut)
+	}
+	if _, err := os.Lstat(filepath.Join(out3, "0003-0123456", "bin/ah-pkgstep")); !os.IsNotExist(err) {
+		t.Errorf("a non-static release got a package step: %v", err)
+	}
+}
+
+// baselineFiles writes the four files the owner collects on the host.
+func baselineFiles(t *testing.T) (units, ports, packages, nft string) {
+	t.Helper()
+	dir := t.TempDir()
+	units, ports, packages, nft = filepath.Join(dir, "units"), filepath.Join(dir, "ports"), filepath.Join(dir, "packages"), filepath.Join(dir, "nft")
+	write(t, units, "sshd.service\ngetty@.service\n", 0o644)
+	write(t, ports, "22\n443\n", 0o644)
+	write(t, packages, "base\ncaddy\n", 0o644)
+	write(t, nft, "table inet filter {\n\tchain input {\n\t\tcounter packets 1 bytes 2\n\t}\n}\n", 0o644)
+	return
+}
+
+// TestBaselineFillsTheRealTree: the real source tree, filled, is read back by
+// the no-AI check's own loader, and the folder builds.
+func TestBaselineFillsTheRealTree(t *testing.T) {
+	units, ports, packages, nft := baselineFiles(t)
+	out := filepath.Join(t.TempDir(), "filled")
+	code, stdout, errOut := call("baseline", "--src", repoSource, "--units", units, "--ports", ports,
+		"--packages", packages, "--nft", nft, "--out", out, "--stamp", "2026-11-22")
+	if code != 0 || stdout != "filled baseline in "+out+"\n" || errOut != "" {
+		t.Fatalf("exit %d, %q, %q", code, stdout, errOut)
+	}
+	l, err := noaicheck.LoadLists(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(l.UnitsAllow, []string{"getty@.service", "sshd.service"}) || !reflect.DeepEqual(l.PortsAllow, []int{22, 443}) ||
+		!reflect.DeepEqual(l.PackagesAllow, []string{"base", "caddy"}) || len(l.NFTDigest) != 64 {
+		t.Errorf("lists %+v", l)
+	}
+	a, b := bins(t)
+	rel := t.TempDir()
+	if code, stdout, errOut := call(buildArgs(rel, out, a, b)...); code != 0 {
+		t.Fatalf("build: exit %d, %q, %q", code, stdout, errOut)
+	}
+	// The source tree itself still ships them empty.
+	if f, err := os.Open(filepath.Join(repoSource, "share/ports.allow")); err != nil {
+		t.Error(err)
+	} else if p, err := noaicheck.ParsePorts(f); err != nil || len(p) != 0 {
+		t.Errorf("the source's ports.allow: %v, %v", p, err)
+	}
+}
+
+func TestBaselineDefaultOut(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	units, ports, packages, nft := baselineFiles(t)
+	code, stdout, errOut := call("baseline", "--src", source(t), "--units", units, "--ports", ports, "--packages", packages, "--nft", nft)
+	if code != 0 || errOut != "" || !strings.HasPrefix(stdout, "filled baseline in "+tmp+"/ah-baseline-") {
+		t.Fatalf("exit %d, %q, %q", code, stdout, errOut)
+	}
+}
+
+func TestBaselineUsageAndRefusals(t *testing.T) {
+	units, ports, packages, nft := baselineFiles(t)
+	src := source(t)
+	out := filepath.Join(t.TempDir(), "out")
+	good := []string{"baseline", "--src", src, "--units", units, "--ports", ports, "--packages", packages, "--nft", nft, "--out", out}
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"no flags", []string{"baseline"}},
+		{"no nft", good[:len(good)-4]},
+		{"unknown flag", append(append([]string(nil), good...), "--no-such")},
+		{"a positional argument", append(append([]string(nil), good...), "extra")},
+		{"stamp with a newline", append(append([]string(nil), good...), "--stamp", "a\nb")},
+	} {
+		code, stdout, errOut := call(tc.args...)
+		if code != 2 || stdout != "" || !strings.Contains(errOut, "ah-release: ") || !strings.Contains(errOut, "baseline") {
+			t.Errorf("%s: exit %d, %q, %q", tc.name, code, stdout, errOut)
+		}
+	}
+	if _, err := os.Lstat(out); err == nil {
+		t.Error("a usage error made the folder")
+	}
+
+	write(t, ports, "22\n99999\n", 0o644)
+	code, stdout, errOut := call(good...)
+	if code != 1 || stdout != "FAIL: input-invalid an input file holds a line that is not valid for its list: ports (line 2)\n" || errOut != "" {
+		t.Errorf("invalid: exit %d, %q, %q", code, stdout, errOut)
+	}
+	write(t, ports, "22\n", 0o644)
+	if code, stdout, _ := call(good...); code != 0 || !strings.HasPrefix(stdout, "filled baseline in ") {
+		t.Fatalf("exit %d, %q", code, stdout)
+	}
+	code, stdout, errOut = call(good...)
+	if code != 1 || stdout != "FAIL: out-exists the output folder exists already\n" || errOut != "" {
+		t.Errorf("second run: exit %d, %q, %q", code, stdout, errOut)
+	}
+	if code, stdout, _ := call("--help"); code != 0 || !strings.Contains(stdout, "ah-release baseline --src DIR") {
+		t.Errorf("--help: exit %d, %q", code, stdout)
 	}
 }
