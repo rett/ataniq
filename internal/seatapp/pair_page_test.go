@@ -121,3 +121,44 @@ func TestScriptsMeetTrustedTypes(t *testing.T) {
 		}
 	}
 }
+
+// TestScriptMessagesTellWhatToDo checks which failures the script lets the
+// owner retry and what it says: a failure before the daemon was asked leaves
+// the code unused, so the same page can try again, and a refusal of the
+// site's name is not a cancellation.
+func TestScriptMessagesTellWhatToDo(t *testing.T) {
+	r := newRig(t)
+	js := r.do("GET", "/static/pair.js", nil, nil).Body.String()
+	for _, want := range []string{
+		`user_verification_required: ["Set a screen lock on this phone, then try again.", true]`,
+		`key_invalid: [`, `credential_invalid: [`, `client_data_invalid: [`, `authenticator_data_invalid: [`, `bad_request: [`,
+		`"The browser refused this site's name for a passkey.`,
+		`e.name === "SecurityError"`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("the script lacks %q", want)
+		}
+	}
+	// Each of the pre-daemon codes is retryable: its entry ends in true.
+	for _, code := range []string{"key_invalid", "credential_invalid", "client_data_invalid", "authenticator_data_invalid", "bad_request"} {
+		m := regexp.MustCompile(code + `: \[".*", (true|false)\]`).FindStringSubmatch(js)
+		if m == nil || m[1] != "true" {
+			t.Errorf("%s is not retryable in the script", code)
+		}
+	}
+	// A refusal of the site's name and a cancellation are two messages.
+	re := regexp.MustCompile(`(?m)^\s*(\w+): \["(.*)", (true|false)\],?$`)
+	texts := map[string]string{}
+	for _, m := range re.FindAllStringSubmatch(js, -1) {
+		texts[m[1]] = m[2]
+	}
+	if texts["site_refused"] == "" || texts["cancelled"] == "" || texts["site_refused"] == texts["cancelled"] {
+		t.Errorf("site_refused %q, cancelled %q", texts["site_refused"], texts["cancelled"])
+	}
+	// With script off, the page says to close the tab so the code leaves the
+	// address bar.
+	page := r.do("GET", "/pair/", nil, nil).Body.String()
+	if !regexp.MustCompile(`(?s)<noscript>.*[Cc]lose this tab.*address bar.*</noscript>`).MatchString(page) {
+		t.Error("the noscript text does not say to close the tab")
+	}
+}

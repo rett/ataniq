@@ -12,13 +12,22 @@
   var mismatch = document.getElementById("mismatch");
 
   // Every failure ends in one of these fixed messages; retry says whether the
-  // same code can be tried again on this page.
+  // same code can be tried again on this page. A failure the seat found before
+  // it asked the desk (the codes from user_verification_required to
+  // bad_request) leaves the code unused, so those are retryable.
   var FAILS = {
     nocode: ["This page needs the code from the desk. Scan the QR code on the desk console again.", false],
     unsupported: ["This browser cannot make the passkey this needs. Open the link in the phone's own browser and scan the code again.", false],
+    site_refused: ["The browser refused this site's name for a passkey. Nothing was paired. Start a new pairing at the desk.", false],
     cancelled: ["The passkey was cancelled or timed out. Nothing was paired. Tap the button to try again.", true],
     network: ["The seat could not be reached. Check the connection, then tap the button to try again.", true],
     challenge_invalid: ["This try expired. Tap the button to try again.", true],
+    user_verification_required: ["Set a screen lock on this phone, then try again.", true],
+    key_invalid: ["This phone's passkey could not be used. Nothing was paired. Tap the button to try again.", true],
+    credential_invalid: ["This phone's passkey could not be used. Nothing was paired. Tap the button to try again.", true],
+    client_data_invalid: ["This phone's passkey could not be used. Nothing was paired. Tap the button to try again.", true],
+    authenticator_data_invalid: ["This phone's passkey could not be used. Nothing was paired. Tap the button to try again.", true],
+    bad_request: ["This phone's passkey could not be used. Nothing was paired. Tap the button to try again.", true],
     daemon_unavailable: ["The desk could not be reached. Try again in a moment.", true],
     code_refused: ["The desk did not accept this code. It may have expired or been used. Start a new pairing at the desk and scan its code.", false],
     rate_limited: ["Too many tries. Wait a while, then scan the code at the desk again.", false],
@@ -101,7 +110,9 @@
         timeout: 120000
       } });
     } catch (e) {
-      throw e && e.name === "NotSupportedError" ? "unsupported" : "cancelled";
+      if (e && e.name === "NotSupportedError") { throw "unsupported"; }
+      if (e && e.name === "SecurityError") { throw "site_refused"; }
+      throw "cancelled"; // NotAllowedError: cancelled, timed out, or no consent
     }
     if (!cred || !cred.response) { throw "cancelled"; }
     var r = cred.response, key = r.getPublicKey();
