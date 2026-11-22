@@ -57,6 +57,10 @@ func (s *Switcher) openVerified(ctx context.Context, id ReleaseID) (*release, er
 		rel.Close()
 		return nil, err
 	}
+	if err := s.checkProvenance(rel); err != nil {
+		rel.Close()
+		return nil, err
+	}
 	return rel, nil
 }
 

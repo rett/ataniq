@@ -17,6 +17,7 @@ func (e *env) signRelease(dir string) {
 	e.t.Helper()
 	os.Chmod(dir, 0o755)
 	e.write(filepath.Join(dir, SignatureFile), "sig", 0o644)
+	e.stamp(dir)
 }
 
 func TestNoPolicyIsManual(t *testing.T) {

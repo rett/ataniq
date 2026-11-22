@@ -2,7 +2,9 @@
   `ah-switch --from INCOMING_DIR ID` imports a release folder into
   `/opt/authority-host/releases/ID` as new, read-only, root-owned files
   (folders and regular files only, within limits of entries, size and
-  time), and `ah-switch ID` activates an imported release: it checks its
+  time), recording the digest of the tree it made (paths, inodes, sizes,
+  hashes), and `ah-switch ID` activates an imported release, refusing a
+  folder without that record or that no longer matches it: it checks its
   `SHA256SUMS` over every file and, when the root-owned switch policy
   `/etc/authority-host/switch-policy.json` asks for it, its SSH signature by
   the policy's principal; refuses a counter not above the highest ever

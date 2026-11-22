@@ -193,6 +193,8 @@ type release struct {
 	b     *budget // nil: no limit (a test's look at a release)
 	sums  []byte
 	files int
+	// digest is the tree's digest (see treeDigest), set by verify.
+	digest string
 	// Set by checkRelease.
 	manifest Manifest
 	lists
@@ -262,6 +264,12 @@ func newRelease(id ReleaseID, root *os.Root, dir, path string, trust entryCheck,
 
 func (r *release) verify(trust entryCheck) error {
 	present := map[string]bool{}
+	entries := map[string]treeEntry{}
+	if info, err := r.root.Stat("."); err == nil {
+		entries["."] = treeEntry{kind: "d", ino: inode(info)}
+	} else {
+		return err
+	}
 	t := tally{b: r.b}
 	err := walkTree(r.root, func(rel string, info fs.FileInfo) error {
 		if err := entryKind(rel, info); err != nil {
@@ -281,6 +289,11 @@ func (r *release) verify(trust entryCheck) error {
 		}
 		if info.Mode().IsRegular() && rel != SumsFile && rel != SignatureFile {
 			present[rel] = true
+		}
+		if info.IsDir() {
+			entries[rel] = treeEntry{kind: "d", ino: inode(info)}
+		} else {
+			entries[rel] = treeEntry{kind: "f", ino: inode(info), size: info.Size()}
 		}
 		return nil
 	})
@@ -325,9 +338,25 @@ func (r *release) verify(trust entryCheck) error {
 		if got != listed[path] {
 			return failf(CodeSumsMismatch, "SHA256 of %s does not match SHA256SUMS", q(path))
 		}
+		e := entries[path]
+		e.sum = got
+		entries[path] = e
+	}
+	if e, ok := entries[SumsFile]; ok {
+		e.sum = sumOf(sums)
+		entries[SumsFile] = e
+	}
+	if e, ok := entries[SignatureFile]; ok {
+		sum, err := r.hashUnlisted(SignatureFile)
+		if err != nil {
+			return err
+		}
+		e.sum = sum
+		entries[SignatureFile] = e
 	}
 	r.sums = sums
 	r.files = len(paths)
+	r.digest = treeDigest(entries)
 	return nil
 }
 

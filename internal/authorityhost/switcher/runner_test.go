@@ -173,6 +173,7 @@ func TestSSHVerifierWithRealKey(t *testing.T) {
 		"release@example.invalid "+string(pub)+"other@example.invalid "+string(otherPub), 0o644)
 	dir := e.release(rel1, "s")
 	run("-Y", "sign", "-q", "-f", key, "-n", SignatureNamespace, filepath.Join(dir, SumsFile))
+	e.stamp(dir)
 	signed := func(c *Config) {
 		c.Verifier = SSHVerifier{Runner: ExecRunner{}, Program: keygen}
 	}
@@ -193,6 +194,7 @@ func TestSSHVerifierWithRealKey(t *testing.T) {
 	// A signature in another namespace is refused.
 	dir = e.release(rel3, "s")
 	run("-Y", "sign", "-q", "-f", key, "-n", "git", filepath.Join(dir, SumsFile))
+	e.stamp(dir)
 	if code := e.switchTo(rel3, signed); code != ExitFailed {
 		t.Fatalf("other namespace: exit %d", code)
 	}
@@ -201,6 +203,7 @@ func TestSSHVerifierWithRealKey(t *testing.T) {
 	// The other identity of the signers file is not the principal.
 	os.Remove(filepath.Join(dir, SignatureFile))
 	run("-Y", "sign", "-q", "-f", other, "-n", SignatureNamespace, filepath.Join(dir, SumsFile))
+	e.stamp(dir)
 	if code := e.switchTo(rel3, signed); code != ExitFailed {
 		t.Fatalf("other listed signer: exit %d", code)
 	}
@@ -211,6 +214,7 @@ func TestSSHVerifierWithRealKey(t *testing.T) {
 	run("-q", "-t", "ed25519", "-N", "", "-C", "stranger", "-f", stranger)
 	os.Remove(filepath.Join(dir, SignatureFile))
 	run("-Y", "sign", "-q", "-f", stranger, "-n", SignatureNamespace, filepath.Join(dir, SumsFile))
+	e.stamp(dir)
 	if code := e.switchTo(rel3, signed); code != ExitFailed {
 		t.Fatalf("unknown signer: exit %d", code)
 	}

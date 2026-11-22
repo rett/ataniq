@@ -758,7 +758,10 @@ func (s *Switcher) openForSwitch(ctx context.Context, a *attempt, id ReleaseID, 
 	if s.cfg.From == "" {
 		rel, err := openRelease(id, s.relRoot, id.Name, relDir, s.entryTrusted, s.budget)
 		if err == nil {
-			if err = s.checkRelease(ctx, rel); err != nil {
+			if err = s.checkRelease(ctx, rel); err == nil {
+				err = s.checkProvenance(rel)
+			}
+			if err != nil {
 				rel.Close()
 			}
 		}
@@ -816,6 +819,9 @@ func (s *Switcher) openForSwitch(ctx context.Context, a *attempt, id ReleaseID, 
 	}
 	err = s.sealTree(tmp)
 	if err == nil {
+		err = s.writeProvenance(rel)
+	}
+	if err == nil {
 		if _, err = s.relRoot.Lstat(id.Name); err == nil {
 			err = failf(CodeReleaseExists, "releases/%s appeared during the import", id.Name)
 		} else if errors.Is(err, fs.ErrNotExist) {
@@ -831,7 +837,7 @@ func (s *Switcher) openForSwitch(ctx context.Context, a *attempt, id ReleaseID, 
 		return nil, s.fail(a, 0, err), true
 	}
 	rel.path = relDir
-	s.step(0, "releases/%s imported and made read-only", id.Name)
+	s.step(0, "releases/%s imported and made read-only; its import record is %s", id.Name, q(filepath.Join(s.stateDir(), ImportedDir, id.Name)))
 	return rel, 0, false
 }
 

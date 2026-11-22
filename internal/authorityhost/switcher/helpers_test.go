@@ -322,6 +322,33 @@ func (e *env) sums(dir string) {
 	}
 	sort.Strings(lines)
 	e.write(filepath.Join(dir, SumsFile), strings.Join(lines, "\n")+"\n", 0o644)
+	e.stamp(dir)
+}
+
+// stamp writes, for a release folder of releases/, the provenance record
+// its import would have made, as the tree is now: tests write release
+// folders in place of an import. A folder outside releases/, or one that
+// does not verify, is left as it is.
+func (e *env) stamp(dir string) {
+	e.t.Helper()
+	if filepath.Dir(dir) != filepath.Join(e.root, BaseDir, "releases") {
+		return
+	}
+	id, err := ParseID(filepath.Base(dir))
+	if err != nil {
+		return
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer root.Close()
+	rel, err := newRelease(id, root, dir, dir, nil, nil)
+	if err != nil {
+		return
+	}
+	data, _ := json.Marshal(provenance{ID: id.Name, Digest: rel.digest, Files: rel.files, Time: "2026-11-21T12:00:00Z"})
+	e.write(filepath.Join(e.root, StateDir, ImportedDir, id.Name), string(data), 0o644)
 }
 
 func (e *env) link(name string) string {

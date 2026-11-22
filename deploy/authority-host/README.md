@@ -41,6 +41,7 @@ switch runs it.
   highest-counter         the highest counter a switch ever attempted
   txn.json                the journal of the transaction under way
   switch.lock             the lock of a running switch
+  imported/<id>           the record of the import that made releases/<id>
 ```
 
 - The switch trusts `/var/lib/authority-host`, `/opt/authority-host` and
@@ -84,11 +85,22 @@ switch runs it.
   symbolic link, device, fifo, socket or hard-linked file anywhere in it is
   refused, so hashing never follows one out of the folder.
 - A release in `releases/` is made by the switch's import (see below), never
-  by copying into `releases/` directly: without `--from` the switch accepts
-  a release folder only when nothing in it is writable by its group or by
-  others, nothing has a set-user-id, set-group-id or sticky bit, and
-  everything is owned by root (or by the user running the switch when that
-  is not root), as the import leaves it.
+  by copying into `releases/` directly. Without `--from` the switch accepts
+  a release folder (to switch to, to roll back to, or as the release to go
+  back to) only when the import's record of it,
+  `/var/lib/authority-host/imported/<id>`, is there (root-owned, checked as
+  the state files are) and names the digest the tree has now: every path,
+  its kind, its inode number and size, and every file's SHA-256. A folder
+  copied in by hand has no record (`provenance-missing`), and one whose
+  files changed or were replaced, even by the same bytes in a new file, no
+  longer matches it (`provenance-mismatch`): a file that existed before the
+  import could still be held open for writing by whoever made it, which no
+  owner or mode check can see. Move such a folder out of `releases/` and
+  import it again with `--from`, which makes a fresh copy (restoring
+  `releases/` from a backup changes the inodes too). The folder must also
+  have nothing writable by its group or by others, no set-user-id,
+  set-group-id or sticky bit, and everything owned by root (or by the user
+  running the switch when that is not root), as the import leaves it.
 - In signed mode `SHA256SUMS.sig` is an SSH signature in the namespace
   `authority-host-release`:
   `ssh-keygen -Y sign -f KEY -n authority-host-release SHA256SUMS`.
@@ -161,7 +173,9 @@ attribute or ACL is carried over, and when the switch runs as root the copy
 is owned by root:root. Only that copy is then verified, signature-checked,
 run and linked; the incoming folder can change afterwards without touching
 it. Once the copy is verified it is made read-only (every write bit
-removed) and renamed to `releases/<id>`. A copy that fails to import or to
+removed), its record is written to
+`/var/lib/authority-host/imported/<id>`, and it is renamed to
+`releases/<id>`. A copy that fails to import or to
 verify is removed; `releases/<id>` must not exist already, or `--from` is
 refused. A release that was imported stays when a later step fails: switch
 to it again without `--from`.
@@ -495,8 +509,9 @@ dry run writes nothing.
 `package-step-failed`, `package-step-interrupted`, `package-state-unknown`,
 `nft-listing-failed`,
 `noaicheck-failed`, `validator-failed`, `link-failed`, `reload-failed`,
-`health-failed`, `record-failed`, `stop-list-missing`, `stop-failed` or
-`interrupted` (the full list is in
+`health-failed`, `record-failed`, `stop-list-missing`, `stop-failed`,
+`provenance-missing`, `provenance-mismatch` or `interrupted` (the full list
+is in
 `internal/authorityhost/switcher/failure.go`). `detail` adds fixed words and
 identifiers: a name that holds anything but printable ASCII, or a space, is
 quoted with Go's escapes and every identifier is cut at 160 bytes, so a
@@ -524,6 +539,7 @@ see its messages. The text of a broken state file is not repeated either.
 | Incoming folder holds a link, special or hard-linked file, or `releases/ID` exists | Refused at import; nothing is left in `releases/` |
 | Wrong sum, file missing or not listed, path escape, link in the release, release folder a link | Refused at verify; `current` unchanged; an import's copy is removed |
 | A release folder or file writable by group or others, set-id, or not root's | Refused at verify |
+| A release folder without the record of its import, or not the tree its import made | Refused at verify (`provenance-missing`, `provenance-mismatch`); as the old release, it is no fallback |
 | Signature missing or bad in signed mode, on a switch or a rollback | Refused at verify |
 | Switch policy or signers file not root's, writable by others, or not parsing | Refused before anything; nothing recorded |
 | The host's `stop.list` missing, empty or not trusted | Refused before anything; nothing recorded |
