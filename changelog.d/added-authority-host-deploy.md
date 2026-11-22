@@ -30,9 +30,9 @@
   changes.
   `DEPLOY.md` links the Caddyfile before the first switch (the shipped
   release restarts caddy in the switch and requires `/healthz` from it) and
-  has the owner acknowledge the outcome (`ah-switch ack --asked WORDS`)
-  before a later switch or a rollback, which the switch refuses while an
-  outcome is owed.
+  has the owner acknowledge the outcome (`ah-switch ack --txn ID[,ID...]
+  --asked WORDS`, the ids copied from `ah-switch status`) before a later
+  switch or a rollback, which the switch refuses while an outcome is owed.
   `DEPLOY.md` ("Who may switch") gives the sudo rule for the deploying
   user, limited to the switch form (`--from INCOMING/ID ID`, an argument
   regex for sudo 1.9.10 or newer) and checked with `sudo -l -U`:

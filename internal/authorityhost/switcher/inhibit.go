@@ -148,7 +148,7 @@ func (s *Switcher) endInhibit(t *txn) error {
 	if err := s.setInhibit(t, reason); err != nil {
 		return err
 	}
-	s.step(9, "decisions stay inhibited (%s): the %s did not end healthy", InhibitFile, t.kind())
+	s.step(9, "decisions stay inhibited (%s): the %s %s did not end healthy", InhibitFile, t.kind(), t.j.ID)
 	return nil
 }
 

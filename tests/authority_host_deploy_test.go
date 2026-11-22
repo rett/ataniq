@@ -471,6 +471,17 @@ func testAuthorityHostDeployDoc(t *testing.T) {
 			t.Errorf("DEPLOY.md does not say %q", want)
 		}
 	}
+	// The baseline's default-deny warning is for a missing active base chain
+	// of type filter with policy drop, and only the first rule of a chain is
+	// read.
+	for _, want := range []string{
+		"no active base chain of type filter with policy drop",
+		"It reads only the first rule of such a chain: a first rule that is an unconditional accept makes the chain not count, while later accepts and jumps are not read",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("DEPLOY.md does not say %q", want)
+		}
+	}
 	if strings.Contains(flat, "runs no command there") {
 		t.Error("DEPLOY.md says --dry runs no command on the host, right after the remote rsync it starts")
 	}
@@ -506,11 +517,14 @@ func testAuthorityHostDeployDoc(t *testing.T) {
 	if strings.Contains(flat, "Do not use it before the first switch") || strings.Contains(flat, "link it now") {
 		t.Error("DEPLOY.md still has the Caddyfile linked after the first switch")
 	}
-	if !strings.Contains(section("### 5.", "### 6."), "ah-switch ack --asked") {
+	if !strings.Contains(section("### 5.", "### 6."), "ah-switch ack --txn TXN --asked") {
 		t.Error("DEPLOY.md step 5 does not acknowledge the outcome from the owner's session")
 	}
+	if !strings.Contains(flat, "copies the --txn value from ah-switch status after reading the outcome, never from a script") {
+		t.Error("DEPLOY.md does not say that the owner copies the ack's --txn from status, never from a script")
+	}
 	rollback := section("### 6.", "## Owner-only items")
-	if ack, back := strings.Index(rollback, "ah-switch ack --asked"), strings.Index(rollback, "--rollback-to previous"); ack < 0 || back < 0 || ack > back {
+	if ack, back := strings.Index(rollback, "ah-switch ack --txn TXN --asked"), strings.Index(rollback, "--rollback-to previous"); ack < 0 || back < 0 || ack > back {
 		t.Error("DEPLOY.md step 6 does not acknowledge the outcome before the rollback")
 	}
 	t.Run("bootstrap copies are root's own", func(t *testing.T) { testAuthorityHostRootCopies(t, section) })

@@ -80,10 +80,15 @@ verify a root-owned copy of that release first, as the README says there), run
 `--src DIR`. `baseline` enrolls any firewall listing, but it prints a `WARNING:
 no-default-deny HOOK` line (and writes the same words into the header of
 `share/nft.digest`) for each of the hooks `input`, `output` and `forward` that has
-no base chain with `policy drop` in a table that is not dormant, for IPv4 and
-IPv6; read them before you build. `--require-default-deny` makes it refuse such a
-listing instead. The host's firewall is the owner's: the baseline pins the rules
-as they are and does not judge them.
+no active base chain of type `filter` with `policy drop` (a chain in a table that
+is not dormant, covering IPv4 and IPv6); read them before you build.
+`--require-default-deny` makes it refuse such a listing instead. It reads only
+the first rule of such a chain: a first rule that is an unconditional `accept`
+makes the chain not count, while later accepts and jumps are not read, so a
+chain with a drop policy whose rules accept everything in another way still
+counts. The warning therefore says that a base chain drops by policy, never
+that its rules drop anything: read the rules yourself. The host's firewall is
+the owner's: the baseline pins the rules as they are and does not judge them.
 
 The baseline records what listens while you collect it, and step 3 leaves
 caddy stopped, so on a fresh host `ports.txt` holds the ssh port and not the
@@ -238,26 +243,34 @@ outcome until you do, and while an outcome is owed the switch refuses a switch
 to another release or a rollback (it prints the outcomes owed and does nothing
 else). Running the same request again only reports the outcome and leaves it
 owed; only your `ack` takes it back, so after every switch you acknowledge
-before the next different switch or a rollback:
+before the next different switch or a rollback. `ack` names the transactions
+it acknowledges: `status` prints the whole command, with the ids filled in
+(`ah-switch ack --txn ID[,ID...] --asked WORDS`), and so do the switch's
+result lines. Read the outcome in `status`, then copy the `--txn` value from
+that output, never from a script or from an earlier session:
 
 ```
-sudo /usr/local/sbin/ah-switch ack --asked "WHAT YOU ASKED OR SAW"
+sudo /usr/local/sbin/ah-switch ack --txn TXN --asked "WHAT YOU ASKED OR SAW"
 ```
 
 `ack` prints every outcome owed, records the time, your words and the
-transactions in `deploy.json`, and removes `owed.json`. Run `status` first and
-read what it says: the words are yours, and nobody types them for you (see
-[the journal and recover](README.md#the-journal-and-recover)).
+transactions in `deploy.json`, and removes `owed.json`. An `ack` whose `--txn`
+is not exactly the transactions owed now is refused and changes nothing, so
+words given before an outcome was seen never acknowledge it. Repeating an `ack`
+for transactions already recorded keeps the first receipt (your first words and
+time) and exits 0. Run `status` first and read what it says: the words are
+yours, and nobody types them for you (see [the journal and
+recover](README.md#the-journal-and-recover)).
 
 ### 6. Roll back
 
 To go back to the release `previous` points at (it is there after the second
 switch; the first switch has nothing to go back to). First acknowledge the last
-outcome, if `status` shows one owed, as at the end of step 5: a rollback while
-an outcome is owed is refused.
+outcome, if `status` shows one owed, as at the end of step 5 (the `--txn` value
+is the one `status` prints): a rollback while an outcome is owed is refused.
 
 ```
-sudo /usr/local/sbin/ah-switch ack --asked "WHAT YOU ASKED OR SAW"
+sudo /usr/local/sbin/ah-switch ack --txn TXN --asked "WHAT YOU ASKED OR SAW"
 sudo /usr/local/sbin/ah-switch --dry --rollback-to previous
 sudo /usr/local/sbin/ah-switch --rollback-to previous
 ```
@@ -284,8 +297,9 @@ and never in this repository:
   missing, and never changes a list that exists. Put the real stop commands in it
   when a decision service exists.
 - **The word for the switch's owner commands.** `ah-switch inhibit-clear --asked WORDS`
-  and `ah-switch ack --asked WORDS` act on the owner's word; nobody types it for
-  the owner. See [the decision inhibit](README.md#the-decision-inhibit) and
+  and `ah-switch ack --txn ID[,ID...] --asked WORDS` act on the owner's word;
+  nobody types it for the owner, and the owner copies the `--txn` value from
+  `ah-switch status` after reading the outcome, never from a script. See [the decision inhibit](README.md#the-decision-inhibit) and
   [the journal and recover](README.md#the-journal-and-recover).
 - **Who may switch.** The driver needs `sudo /usr/local/sbin/ah-switch --from
   INCOMING/ID ID` without a password for the deploying user (`BatchMode`, no
@@ -340,7 +354,7 @@ state; read the message, fix the cause, run the step again.
 | Switch | `phase post: ... (run it by hand to see its hits)`, `failed_step: postcheck` | The release was already activated and caddy restarted: this is not "nothing was changed", and the switch does not print the hits. On the first switch there is no old release, so the result is `failed`: `current` is still the new release, the stop lists ran and decisions stay inhibited; on a later switch it is `rolled-back`. Do not run `--go` for the same id again: its counter is used and a new import of an existing id is refused. From your root session: `ah-switch status` (result, failed step, inhibit); verify the installed copy (`cd /opt/authority-host/releases/ID && sha256sum -c SHA256SUMS`); save the firewall with `nft list ruleset` into a file only root can read (`/root/nft-now.txt`), then, from a real root login, run `/opt/authority-host/releases/ID/bin/ah-noaicheck --phase post --root / --release /opt/authority-host/releases/ID --require-policy --nft-listing /root/nft-now.txt` to read the `HIT` lines (a `HIT port` means `ports.allow` lacks a listener the host now has). Fix the lists, acknowledge the owed outcome as in step 5, then build a release with a higher counter and deploy it: a healthy switch removes the inhibit (see [the decision inhibit](README.md#the-decision-inhibit) and [the failure cases](README.md#failure-cases)) |
 | Switch | `rolled-back` (a reload or health check failed) | The old release is live again. Read why in `ah-switch status`, fix the release and deploy a new one with a higher counter |
 | Switch | `failed` or `failed-recovery` | The decision services were stopped and decisions stay inhibited; the console is needed. Follow [the failure cases](README.md#failure-cases), [the decision inhibit](README.md#the-decision-inhibit) and [the journal and recover](README.md#the-journal-and-recover); `inhibit-clear` and `ack` are the owner's words |
-| Switch | `refused: an outcome is owed` | Nothing was done. Read the outcomes it printed and `status`, then `ah-switch ack --asked WORDS` from your own root session, and run the request again |
+| Switch | `refused: an outcome is owed` | Nothing was done. Read the outcomes it printed and `status`, then run the `ah-switch ack --txn ID[,ID...] --asked WORDS` that `status` prints (the `--txn` copied from it, exactly the ids owed) from your own root session, and run the request again |
 | Switch | exit 3 | Another switch holds the lock; wait for it, then run again. Nothing was done |
 | Switch | exit 2 | Bad arguments or a root other than `/` without `--allow-exec`; nothing was done |
 | Any | You are not sure what the host holds | `sudo /usr/local/sbin/ah-switch status` changes nothing and says what is live, what is owed and what is to resume |

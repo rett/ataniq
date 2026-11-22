@@ -655,8 +655,9 @@ in `stopping`; one command never runs the host's list twice.
 
 `/var/lib/authority-host/decisions.inhibit` is the switch's own file
 (root-owned, mode 0644, written whole and synced with its folder): while
-it is there, every decision-capable service refuses every decision. The
-contract for those services is:
+it is there, every decision-capable service refuses every decision, and so
+does the journal `txn.json` while it is there. The contract for those
+services is:
 
 - A decision-capable service **may start** while the file is there: its
   unit carries no start condition on it. It must, since the switch's
@@ -1022,7 +1023,8 @@ What the switch does not do, so that nobody relies on it:
   switch's checks of an honest release are not a privilege boundary.
 - It does not check that a release's lists cover what the release ships
   (see the lists above), nor that its decision-capable services refuse
-  decisions while the inhibit is there: that is the release builder's job.
+  decisions while the inhibit or the journal `txn.json` is there: that is
+  the release builder's job.
 - The decision inhibit keeps decisions from being taken by a service
   that follows the contract; it neither stops a service nor keeps one
   from starting. Stopping is the stop lists' job, and a service that does
@@ -1554,10 +1556,19 @@ ah-release build --out DIR --counter N --commit SHA --go-version V --built-on CL
   build. A static release must therefore be built with the
   `--package-snapshot` the host has recorded (`package_snapshot` in
   `deploy.json`; any value on a first switch): a fresh snapshot value for
-  every build is refused at the next switch. As with any failed package
-  step, a refused one leaves the host's package state unknown, and every
-  later switch is refused until `ah-switch recover --package-state
-  SNAPSHOT` (see "The journal and recover"). A `--bin` named
+  every build is refused. The switch refuses it at step 3 (see "Steps"),
+  before the transaction begins and before the step runs, whenever the
+  host's snapshot is known and not empty (`package-step-failed`, `build it
+  with the host's --package-snapshot`): `current`, the services, the
+  inhibit and the host's snapshot stay as they are, and the release rebuilt
+  with the host's snapshot switches next. The step itself still refuses
+  when it does run with another `--from`, which is the case while the
+  host's package state is unknown (a step of an earlier release did not
+  finish, and a static release of the snapshot that step went to runs it
+  again from the snapshot it started at); as with any failed package step,
+  that leaves the package state unknown, and every later switch is
+  refused until `ah-switch recover --package-state SNAPSHOT` (see "The
+  journal and recover"). A `--bin` named
   `ah-pkgstep` is shipped as given, and a release that is not static and is
   given none has none, so a switch that changes the snapshot refuses it
   (`package-step-missing`) as before.
@@ -1659,9 +1670,11 @@ It checks, in this order, all of them (a pass is no finding):
      matched by any instance, `x@1`). No unit gates its start on
      `decisions.inhibit` (`ConditionPathExists=` and the like naming it): the
      contract under "The decision inhibit" is that a service starts while
-     it is there and refuses decisions itself, and the builder cannot see
-     the application, so that is for its own tests; what it does check is
-     that no unit file breaks it.
+     it (or the journal `txn.json`) is there and refuses decisions itself,
+     and the builder cannot see the application, so that is for its own
+     tests; what it does check is that no unit file breaks it by a
+     condition on `decisions.inhibit` (a condition on `txn.json` would
+     break it the same way, and is not looked for).
 5. **The no-AI check.** The release's own
    `bin/ah-noaicheck --phase pre --release DIR/<id>` runs as a child of its
    own process group (killed whole at the time limit) with the switch's
@@ -1741,6 +1754,11 @@ copied to the build host by any way the owner trusts):
   list. A template (`getty@.service`) may be written in place of an instance.
 - **Ports.** `ss -H -ltn | awk '{n=split($4,a,":"); print a[n]}' | sort -un > ports.txt`:
   the local port of each listening TCP socket, one decimal number per line.
+  When the baseline is taken with Caddy stopped (as on a fresh host, before
+  the first switch), that file lacks the front end's port: add the intended
+  listener, port 80 for the shipped Caddyfile (or the ports your own
+  Caddyfile serves), before `baseline` runs, or the switch's check after the
+  reload reports it.
 - **Packages.** `pacman -Qq > packages.txt`.
 - **Firewall.** `sudo nft list ruleset > nft.txt`.
 
