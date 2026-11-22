@@ -1,18 +1,20 @@
 # Approvals and delegation
 
 Status: owner-approved direction, specification only for grants; no grant
-format, signer or gate verification is implemented or qualified. The host's
-side of the owner channel is built only in a daemon made with the build tag
-`ataniq_ownerchannel`, over a stand-in door and scratch state, and none of it
-is qualified (see
+format, signer or verification of grants by the gate is implemented or
+qualified. The host's side of the owner channel is built only in a daemon made
+with the build tag `ataniq_ownerchannel`, over a stand-in door and scratch
+state, and none of it is qualified (see
 [the lead daemon guide](../lead-daemon.md#the-owner-channel-tagged-build-only)).
 The link that would carry the owner's decision from a paired phone, a passkey
 assertion over a challenge the daemon binds to its own record, is specified in
-[the seat gate](seat-gate.md) and is not built; until it and the owner channel
-are qualified, it decides nothing real. Today approvals are the owner's direct
-words. The formats, key handling and storage of grants are still to be designed
-and reviewed. A paragraph that begins "Proposed, not yet the
-owner's decision" is a proposal for the owner to decide, not part of the
+[the seat gate](seat-gate.md), a link to the phone and not the gate that
+verifies grants. Its handler for pairing and reads and its assertion verifier
+are built and used by no command; its decision path is not built. Until it and
+the owner channel are qualified, it decides nothing real. Today approvals are
+the owner's direct words. The formats, key handling and storage of grants are
+still to be designed and reviewed. A paragraph that begins "Proposed, not yet
+the owner's decision" is a proposal for the owner to decide, not part of the
 owner-approved direction.
 
 ## Who can approve
