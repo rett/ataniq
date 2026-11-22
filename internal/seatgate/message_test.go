@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -576,4 +577,99 @@ func TestDecodeStrictEndsOnACycleOfPointers(t *testing.T) {
 			t.Fatalf("%s, null: %#v", name, h.P)
 		}
 	}
+}
+
+// A struct's fields are the same on every object of its type, so DecodeStrict
+// works them out once per type and not once per object: a frame of many small
+// objects costs a few allocations an object (the check of each object, about
+// five), not the fifty that the selection of the fields cost each time.
+// Allocations are counted, not time, so that a loaded machine cannot fail it.
+func TestDecodeStrictWorksOutAStructsFieldsOnce(t *testing.T) {
+	type item struct {
+		A, B, C, D, E, F string
+		G, H, I, J       int
+		K                struct{ X, Y int }
+	}
+	type params struct {
+		Items []item `json:"items"`
+	}
+	const n = 2000
+	raw := json.RawMessage(`{"items":[` + strings.Repeat(`{},`, n-1) + `{}]}`)
+	allocs := testing.AllocsPerRun(5, func() {
+		var p params
+		if err := DecodeStrict(raw, &p); err != nil || len(p.Items) != n {
+			t.Fatal(err, len(p.Items))
+		}
+	})
+	if per := allocs / n; per > 10 {
+		t.Fatalf("DecodeStrict makes %.1f allocations an object", per)
+	}
+}
+
+// The cache of a type's fields changes nothing about what is refused: with it
+// warm, by the same type decoded before, a key of another case and a repeated
+// key are still refused, and a refused type is still refused.
+func TestDecodeStrictStaysStrictWithAWarmCache(t *testing.T) {
+	type inner struct {
+		Name string `json:"name"`
+	}
+	type params struct {
+		ID    string  `json:"id"`
+		Inner inner   `json:"inner"`
+		List  []inner `json:"list"`
+	}
+	good := `{"id":"a","inner":{"name":"b"},"list":[{"name":"c"},{"name":"d"}]}`
+	for round := 0; round < 3; round++ { // the first round warms the cache
+		var p params
+		if err := DecodeStrict(json.RawMessage(good), &p); err != nil || p.ID != "a" || p.Inner.Name != "b" || len(p.List) != 2 {
+			t.Fatalf("round %d: %v %+v", round, err, p)
+		}
+		for name, in := range map[string]string{
+			"upper case":          `{"ID":"a"}`,
+			"title case":          `{"Id":"a"}`,
+			"upper case, nested":  `{"inner":{"NAME":"b"}}`,
+			"upper case, in list": `{"list":[{"name":"c"},{"Name":"d"}]}`,
+			"repeated":            `{"id":"a","id":"b"}`,
+			"repeated, nested":    `{"inner":{"name":"b","name":"c"}}`,
+			"repeated, in list":   `{"list":[{"name":"c"},{"name":"d","name":"e"}]}`,
+			"both cases":          `{"id":"a","ID":"b"}`,
+			"unknown":             `{"other":1}`,
+		} {
+			var p params
+			if err := DecodeStrict(json.RawMessage(in), &p); !errors.Is(err, ErrProtocol) {
+				t.Errorf("round %d, %s: %s: %v", round, name, in, err)
+			}
+		}
+		// A type the decoder reads in two builds differently stays refused.
+		var bad struct {
+			X int `json:"x"`
+			Y int `json:",embed"`
+		}
+		if err := DecodeStrict(json.RawMessage(`{"embed":1}`), &bad); !errors.Is(err, ErrProtocol) {
+			t.Errorf("round %d, embed option: %v", round, err)
+		}
+	}
+	// Decodes of one type from many goroutines, the cache cold: the race
+	// detector reads this.
+	type fresh struct {
+		A int `json:"a"`
+		B struct {
+			C int `json:"c"`
+		} `json:"b"`
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var f fresh
+			if err := DecodeStrict(json.RawMessage(`{"a":1,"b":{"c":2}}`), &f); err != nil || f.B.C != 2 {
+				t.Error(err)
+			}
+			if err := DecodeStrict(json.RawMessage(`{"a":1,"B":{"c":2}}`), &f); !errors.Is(err, ErrProtocol) {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
 }
