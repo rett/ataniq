@@ -1,7 +1,7 @@
 - The console has a pair-a-phone view, opened with `P`, for adding a phone as an
   approving device from the desk. It appears only when the console is given a
-  pairing backend and the approval app's address (`Options.WithPairing`; the
-  `ataniq-console` command does not set them yet): without one, `P` shows
+  pairing backend and the approval app's address (`Options.WithPairing`):
+  without one, `P` shows
   "pairing is not configured" and does nothing, and the help page does not list
   it. Enter asks the daemon for a one-time code and the view draws a QR code
   that holds the app's address and the code in its fragment, black on white

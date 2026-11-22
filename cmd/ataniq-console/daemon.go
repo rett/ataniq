@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"strconv"
 	"time"
 
@@ -192,7 +193,7 @@ func reconcileText(completed bool) string {
 }
 
 // daemonRig is what outlives one console of --daemon: the daemon's approvals
-// backend, and the lead client when the daemon has lead control. The loop
+// backend, which is also the backend of the pair-a-phone view, and the lead client when the daemon has lead control. The loop
 // makes a console from it each time it opens one, so that an attach, which
 // ends a console, leaves the connections and the lead client's unconfirmed
 // commands where they were.
@@ -207,18 +208,21 @@ type daemonRig struct {
 }
 
 // newDaemonRig makes the rig for --daemon as the command line makes it: the
-// daemon's approvals as the backend, and, when the daemon's hello lists the
-// lead control's operations, the lead client as the leads view's backend. Every
-// build has the approvals backend; whether the daemon has an owner channel or
-// lead control is found when it is asked. mk makes the lead client. Close
+// daemon's approvals as the backend and, over the same owner client, its
+// pairing as the pair-a-phone view's, with the approval app's origin from the
+// owner-local file (read when the rig is made), and, when the daemon's hello
+// lists the lead control's operations, the lead client as the leads view's
+// backend. Every build has the approvals and the pairing backends; whether the
+// daemon has an owner channel or lead control is found when it is asked. mk makes the lead client. Close
 // ends what the rig holds.
 func newDaemonRig(cfg config, mk newLeadsFunc) (*daemonRig, error) {
-	backend, closeOwner, err := ownerBackend(cfg.daemon)
+	owner, closeOwner, err := ownerBackend(cfg.daemon)
 	if err != nil {
 		return nil, err
 	}
 	r := &daemonRig{cfg: cfg, read: consoleclient.Read, closes: []func(){closeOwner}}
-	r.cfg.options.Backend = backend
+	r.cfg.options.Backend = owner
+	r.cfg.options = r.cfg.options.WithPairing(newPairAdapter(owner), pairOrigin(os.Getenv))
 	if r.leads = detectLeads(cfg.daemon, mk); r.leads != nil {
 		r.cfg.options.Leads = r.leads
 		c := r.leads.c

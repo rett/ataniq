@@ -1,14 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	tea "charm.land/bubbletea/v2"
 
 	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/clientapi"
@@ -69,6 +73,8 @@ func (d *pairDaemon) Handle(_ context.Context, op string, params json.RawMessage
 	}
 	switch op {
 	case ownerwire.OpPairStart:
+		// A start makes a pairing that waits for its phone, as the daemon's.
+		d.status = ownerwire.PairStatus{Phase: ownerwire.PairWaiting, ExpiresAt: d.start.ExpiresAt}
 		return enc(ownerwire.EncodePairStartResult(d.start))
 	case ownerwire.OpPairStatus:
 		return enc(ownerwire.EncodePairStatus(d.status))
@@ -170,6 +176,7 @@ func TestTheAdapterCarriesThePairingOverTheOwnerClient(t *testing.T) {
 		t.Fatal("empty")
 	}
 
+	d.set(func(d *pairDaemon) { d.status = ownerwire.PairStatus{Phase: ownerwire.PairNone} })
 	st, err := a.PairStatus(ctx)
 	if err != nil || st.Phase != terminalconsole.PairNone {
 		t.Fatalf("none: %+v, %v", st, err)
@@ -265,5 +272,141 @@ func TestTheAdapterNeverSendsACallAgain(t *testing.T) {
 	}
 	if err := a.PairReject(context.Background(), pendingID); err == nil || d.count(ownerwire.OpPairReject) != 1 {
 		t.Fatalf("reject: %v, %d calls", err, d.count(ownerwire.OpPairReject))
+	}
+}
+
+// consoleWithOrigin makes the console of --daemon for dir, with the owner-local
+// origin file of a private configuration folder holding origin (no file when
+// origin is empty).
+func consoleWithOrigin(t *testing.T, dir, origin string) *viewDriver {
+	t.Helper()
+	cfgHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfgHome)
+	if origin != "" {
+		folder := filepath.Join(cfgHome, "ataniq", "owner-local")
+		if err := os.MkdirAll(folder, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeOrigin(t, filepath.Join(folder, "seat-origin"), origin+"\n", 0o600)
+	}
+	return ownerConsole(t, dir, &clock{t: time.Now()})
+}
+
+var keyP = tea.KeyPressMsg{Code: 'P', Text: "P", Mod: tea.ModShift}
+
+// TestTheRigGivesBothBackendsTheSameOwner holds the rule that keeps the
+// decider: the pairing backend wraps the very client the approvals use. With
+// two clients the daemon would see two consoles.
+func TestTheRigGivesBothBackendsTheSameOwner(t *testing.T) {
+	d := startPairDaemon(t)
+	cfg, _, ok := parse([]string{"--daemon", d.dir}, &bytes.Buffer{})
+	if !ok {
+		t.Fatal("parse")
+	}
+	r, err := newDaemonRig(cfg, newLeadsClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(r.Close)
+	adapter, ok := r.cfg.options.Pairing.(*pairAdapter)
+	if !ok {
+		t.Fatalf("the pairing backend is %T", r.cfg.options.Pairing)
+	}
+	owner, ok := r.cfg.options.Backend.(*consoleclient.Owner)
+	if !ok {
+		t.Fatalf("the approvals backend is %T", r.cfg.options.Backend)
+	}
+	if adapter.o != owner {
+		t.Fatal("the pairing and the approvals use two owner clients")
+	}
+
+	// Over the socket: the approvals and the pairing together make one
+	// connection, so the daemon is asked who the decider is once.
+	if _, err := owner.List(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.PairStatus(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.List(); err != nil {
+		t.Fatal(err)
+	}
+	if n := d.connections(); n != 1 {
+		t.Fatalf("%d owner connections for the approvals and the pairing, want 1", n)
+	}
+	if d.count(ownerwire.OpPairStatus) != 1 || d.count(ownerwire.OpList) != 2 {
+		t.Fatalf("ops = %v", d.sent())
+	}
+}
+
+func TestThePKeyOpensThePairingViewUnderDaemon(t *testing.T) {
+	d := startPairDaemon(t)
+	v := consoleWithOrigin(t, d.dir, testOrigin)
+	v.send(keyP)
+	screen := v.until("the pair-a-phone view", func(s string) bool { return strings.Contains(s, "PAIR A PHONE") })
+	if strings.Contains(screen, "pairing is not configured") || strings.Contains(screen, "pairing origin not configured") {
+		t.Fatalf("the view is not configured:\n%s", screen)
+	}
+	// The view read the daemon's state first.
+	v.until("the state read", func(string) bool { return d.count(ownerwire.OpPairStatus) >= 1 })
+
+	// Enter asks for a code and draws it; the code is only in the QR.
+	v.send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	v.until("the code asked for", func(string) bool { return d.count(ownerwire.OpPairStart) == 1 })
+	screen = v.until("the QR", func(s string) bool { return strings.Contains(s, "Scan with your") })
+	if strings.Contains(screen, d.start.Code) {
+		t.Fatalf("the code is on the screen as text:\n%s", screen)
+	}
+	if n := d.count(ownerwire.OpPairStart); n != 1 {
+		t.Fatalf("%d starts reached the daemon, want 1", n)
+	}
+
+	// The words and the confirm go through the same connection.
+	d.set(func(d *pairDaemon) {
+		d.status = ownerwire.PairStatus{Phase: ownerwire.PairPending, Words: eightWords(), PendingID: pendingID, ExpiresAt: time.Now().UTC().Add(4 * time.Minute).Format("2006-01-02T15:04:05Z")}
+	})
+	v.until("the eight words", func(s string) bool { return strings.Contains(s, "amber") && strings.Contains(s, "haven") })
+	v.send(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	v.until("the rejection", func(string) bool { return d.count(ownerwire.OpPairReject) == 1 })
+	if n := d.connections(); n != 1 {
+		t.Fatalf("%d owner connections, want 1", n)
+	}
+	d.mu.Lock()
+	ids := append([]string(nil), d.ids...)
+	d.mu.Unlock()
+	if len(ids) != 1 || ids[0] != pendingID {
+		t.Fatalf("the reject named %v", ids)
+	}
+}
+
+func TestThePKeySaysThePairingOriginIsNotConfiguredWithNoFile(t *testing.T) {
+	d := startPairDaemon(t)
+	v := consoleWithOrigin(t, d.dir, "")
+	v.send(keyP)
+	v.until("the line", func(s string) bool { return strings.Contains(s, "pairing origin not configured") })
+	v.send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	// Nothing is asked of the daemon.
+	time.Sleep(100 * time.Millisecond)
+	for _, op := range d.sent() {
+		if strings.HasPrefix(op, "owner.pair") {
+			t.Fatalf("the daemon was sent %v", d.sent())
+		}
+	}
+}
+
+func TestThePKeyIgnoresAnOriginFileThatIsNotSafe(t *testing.T) {
+	d := startPairDaemon(t)
+	cfgHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfgHome)
+	folder := filepath.Join(cfgHome, "ataniq", "owner-local")
+	if err := os.MkdirAll(folder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeOrigin(t, filepath.Join(folder, "seat-origin"), testOrigin+"\n", 0o666)
+	v := ownerConsole(t, d.dir, &clock{t: time.Now()})
+	v.send(keyP)
+	screen := v.until("the line", func(s string) bool { return strings.Contains(s, "pairing origin not configured") })
+	if strings.Contains(screen, "app.example") {
+		t.Fatalf("the origin is on the screen:\n%s", screen)
 	}
 }
