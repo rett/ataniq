@@ -458,7 +458,15 @@ are stopped and decisions stay inhibited, see step 4).
    validators, on the host as the step left it. The transaction begins
    (`decisions.inhibit`, then the journal) just before the step runs. A
    changed snapshot and no `bin/ah-pkgstep` is a failure
-   (`package-step-missing`). The step's progress is journaled in
+   (`package-step-missing`). A static release (`components: static`)
+   changes no package, so one whose snapshot is not the one `deploy.json`
+   records (built with the wrong `--package-snapshot`) is refused here,
+   before the transaction begins and before its step or any check runs
+   (`package-step-failed`, `build it with the host's --package-snapshot`):
+   current, the services, the inhibit and the host's known snapshot stay
+   as they are, and the release rebuilt with that snapshot switches. (On a
+   first switch, with no snapshot recorded, and while the package state is
+   unknown, its step runs as any other.) The step's progress is journaled in
    `txn.json` (`started`, with its process id and start time once it runs,
    then `done`), and on success the new snapshot is what `deploy.json`
    records from then on, even when a later step fails.

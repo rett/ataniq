@@ -477,6 +477,14 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	if manifest.PackageSnapshot == from && !unknown {
 		s.step(3, "package snapshot %s unchanged", q(manifest.PackageSnapshot))
 	} else {
+		// A static release changes no package: one of another snapshot
+		// than the host's known one was built with the wrong
+		// --package-snapshot, and its step can only refuse. It is refused
+		// here, before anything begins, so that the services stay as they
+		// are and the host's snapshot stays known.
+		if manifest.Components == ComponentsStatic && !unknown && from != "" {
+			return s.fail(a, 3, failf(CodePackageFailed, "a static release cannot move the host from package snapshot %s to %s; build it with the host's --package-snapshot %s", q(from), q(manifest.PackageSnapshot), q(from)))
+		}
 		ok, err := rel.exists(PackageStepProgram)
 		if err == nil && !ok {
 			err = failf(CodePackageStepMissing, "package snapshot %s -> %s, and the release has no %s", q(from), q(manifest.PackageSnapshot), PackageStepProgram)

@@ -19,7 +19,9 @@
   a `highest-counter` below the counters used, before recording anything;
   runs its no-AI check before activation (`--phase pre`: the release's
   units and the host, without ports and firewall) before and after the
-  release's package step (a step that fails or is interrupted leaves the
+  release's package step (a static release whose snapshot is not the
+  host's is refused before anything begins; a step that fails or is
+  interrupted leaves the
   package state unknown, refusing further switches until the owner states
   the snapshot or the step runs again to the end; the step holds the
   owner-only switch lock and dies with it, and one that outlives its
