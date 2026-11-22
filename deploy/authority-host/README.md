@@ -1693,10 +1693,19 @@ It checks, in this order, all of them (a pass is no finding):
    read through the folder `check` opened, not through its path again,
    hashed as it is copied and once more from the copy, into a new folder of
    mode 0700 in the temporary folder (`TMPDIR`, which must allow programs
-   to run: on a mount with `noexec` the result is `noaicheck-not-started`),
-   and removed afterwards. A checker that changed since it was verified is
-   not run (`noaicheck-changed`). `DIR/<id>` may be relative; the checker
-   is given its absolute path. The checker itself reads the release's
+   to run: on a mount with `noexec` the result is `noaicheck-not-started`;
+   a relative `TMPDIR` is read from the folder `check` runs in), and
+   removed afterwards. The copy is made, read again and removed through the
+   descriptor of its folder and is started as the open file that was
+   hashed (`/proc/self/fd/N`, so `/proc` must be mounted), not as a path:
+   an account that can rename entries of the temporary folder or above it
+   cannot make another program run in its place, and a copy that is not a
+   regular file of the caller's that group and others cannot write is not
+   run (`noaicheck-not-started`); the most it can do is leave the private
+   folder behind, which `check` then cannot remove. A checker that
+   changed since it was verified is not run (`noaicheck-changed`).
+   `DIR/<id>` and `--root DIR` may be relative; the checker, which runs from
+   the folder `/`, is given their absolute paths. The checker itself reads the release's
    `etc/` and `share/` by that path while it runs, so a folder renamed or
    changed between the verification and that read is read as it is then:
    doing that takes write access to the release folder or to the folder

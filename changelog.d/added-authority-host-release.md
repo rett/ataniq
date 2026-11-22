@@ -23,9 +23,11 @@
   static release), and the release's own no-AI check, which must exit 0 and
   print no hit and is run only when nothing else was found (a checker whose
   hash does not match `SHA256SUMS` is never run; what runs is a private
-  copy of the bytes it verified, a checker changed since is not run,
-  `noaicheck-changed`, and a relative `DIR/<id>` is given to it as an
-  absolute path). Both print only fixed reasons and plain names, never a
+  copy of the bytes it verified, started as the open file that was hashed
+  and not as a path, so a renamed temporary folder cannot swap it; a checker
+  changed since is not run, `noaicheck-changed`; a relative `DIR/<id>`, a
+  relative `--root` and a relative `TMPDIR` are made absolute, since the
+  checker runs from the folder `/`). Both print only fixed reasons and plain names, never a
   file's content. `ah-release baseline --src DIR --units FILE --ports FILE
   --packages FILE --nft FILE [--out DIR] [--stamp TEXT]
   [--require-default-deny]` makes a scratch copy
