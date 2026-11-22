@@ -492,6 +492,103 @@ func TestBootLeavesAFoundInhibit(t *testing.T) {
 	})
 }
 
+// TestBootLeavesNoRecordToTakeOverBesideAJournal: while a journal is
+// pending boot never writes its own record, which a later boot would take
+// over and lift: the inhibit of a readable journal is the transaction's
+// (written back first when it was removed by hand), and a journal that
+// cannot be read gets a plain record. A journal then set aside by recover
+// --discard-journal, or removed by the owner, leaves decisions inhibited
+// at the next boot, which runs nothing and lifts nothing, as discard says:
+// until a transaction ends healthy or inhibit-clear. A discard also
+// replaces a boot record it finds by its own.
+func TestBootLeavesNoRecordToTakeOverBesideAJournal(t *testing.T) {
+	// stale is a journal left in its activating phase whose links no
+	// longer match the host, with its inhibit removed by hand.
+	stale := func(t *testing.T) (*env, journal) {
+		e := activeOwn(t)
+		e.keepOwed = true
+		e.crashAt(CrashActivating, false, rel3)
+		j, _ := e.journal()
+		if err := os.Remove(e.inhibitPath()); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(filepath.Join(e.root, BaseDir, "previous")); err != nil {
+			t.Fatal(err)
+		}
+		e.runner.reset()
+		return e, j
+	}
+	// kept checks that a later boot keeps the inhibit as it is and runs
+	// nothing.
+	kept := func(t *testing.T, e *env, g *guardedApp) {
+		t.Helper()
+		before := e.stateFile(InhibitFile)
+		e.runner.reset()
+		if code := e.boot(); code != ExitFailed {
+			t.Errorf("the next boot: exit %d\n%s", code, e.last)
+		}
+		if _, ok := e.inhibited(); !ok || e.stateFile(InhibitFile) != before || g.decide() != "refused" {
+			t.Errorf("the next boot lifted or changed the inhibit: a decision %s", g.decide())
+		}
+		if len(e.runner.calls) != 0 {
+			t.Errorf("the next boot ran %v", e.runner.calls)
+		}
+	}
+	t.Run("a stale journal, then discarded", func(t *testing.T) {
+		e, j := stale(t)
+		g := guard(e)
+		if code := e.boot(); code != ExitFailed {
+			t.Fatalf("boot: exit %d\n%s", code, e.last)
+		}
+		in, ok := e.inhibited()
+		if !ok || in.Txn != j.Txn || in.Reason == bootReason {
+			t.Errorf("boot beside the stale journal left %+v, %v", in, ok)
+		}
+		if code := e.recover(RecoverOptions{DiscardJournal: j.Txn}); code != ExitOK {
+			t.Fatalf("discard: exit %d\n%s", code, e.last)
+		}
+		if in, ok := e.inhibited(); !ok || in.Txn != j.Txn || !strings.Contains(in.Reason, "set aside by the owner") {
+			t.Errorf("after the discard: %+v, %v", in, ok)
+		}
+		kept(t, e, g)
+	})
+	t.Run("a boot record beside a stale journal, then discarded", func(t *testing.T) {
+		e, j := stale(t)
+		g := guard(e)
+		e.write(e.inhibitPath(), `{"txn": "`+neverTxn+`", "reason": "`+bootReason+`", "time": "2026-11-21T12:00:00Z"}`, 0o644)
+		if code := e.recover(RecoverOptions{DiscardJournal: j.Txn}); code != ExitOK {
+			t.Fatalf("discard: exit %d\n%s", code, e.last)
+		}
+		if in, ok := e.inhibited(); !ok || in.Txn != j.Txn || in.Reason == bootReason || !strings.Contains(in.Reason, "set aside by the owner") {
+			t.Errorf("the discard kept the boot record: %+v, %v", in, ok)
+		}
+		kept(t, e, g)
+	})
+	t.Run("a journal that cannot be read, then removed by the owner", func(t *testing.T) {
+		e := activeOwn(t)
+		g := guard(e)
+		e.write(filepath.Join(e.root, StateDir, JournalFile), "{", 0o644)
+		e.runner.reset()
+		if code := e.boot(); code != ExitFailed {
+			t.Fatalf("boot: exit %d\n%s", code, e.last)
+		}
+		in, ok := e.inhibited()
+		if !ok || in.Reason == bootReason || !strings.HasPrefix(in.Reason, "boot:") || !txnPattern.MatchString(in.Txn) {
+			t.Errorf("boot beside the unreadable journal left %+v, %v", in, ok)
+		}
+		if len(e.runner.calls) != 0 {
+			t.Errorf("boot ran %v", e.runner.calls)
+		}
+		if err := os.Remove(filepath.Join(e.root, StateDir, JournalFile)); err != nil {
+			t.Fatal(err)
+		}
+		if got := e.status(); !strings.Contains(got, "a later boot keeps it") {
+			t.Errorf("status:\n%s", got)
+		}
+		kept(t, e, g)
+	})
+}
+
 // TestBootWithoutARelease: on a host where nothing is deployed (no current
 // release) boot refuses with its own exit code, qualifies nothing, runs
 // nothing and creates nothing: the inhibit is left as found. The decision

@@ -804,7 +804,7 @@ each write an atomic rename, synced):
 | A healthy end | Renames the journal over it, then removes it |
 | `recover --discard-journal` | Rewrites it as a plain record of the discard, whatever was there, then sets the journal aside |
 | `inhibit-clear` | Removes it on the owner's word; refused while a journal is there or it holds one |
-| `boot` | Writes its own record when it is not there (or is the record of a boot that did not finish), then removes that record once `current` qualified again with no journal open; leaves any other as found |
+| `boot` | With no journal pending, writes its own record when it is not there (or is the record of a boot that did not finish), then removes that record once `current` qualified again; leaves any other as found. With a journal pending, never writes its own record: the transaction's is written back first, and beside a journal that cannot be read a plain record that no boot takes over |
 | A failed `boot` | Owes the failure, then rewrites its own record with it |
 
 Only the second step of a healthy end, `boot`'s removal of its own
@@ -825,7 +825,15 @@ Before it, a requalification ran only while a journal was open.
 
 - Under the switch's lock, before it runs anything, it writes
   `decisions.inhibit` with its own record (`txn`: the id of this run,
-  `reason`: starting `boot:`, `time`) when the file is not there. Then it
+  `reason`: starting `boot:`, `time`) when the file is not there and no
+  journal is pending. While a journal is pending (`txn.json`, or one the
+  inhibit holds) it never writes its own record: a journal whose inhibit
+  was removed by hand gets the transaction's back first, as in every
+  command, and one that cannot be read gets a plain record (`reason`:
+  starting `boot: a transaction journal is open and cannot be read`)
+  that no boot takes over, so that after the journal is settled, set
+  aside or removed decisions stay inhibited until a transaction ends
+  healthy or `inhibit-clear`. Then it
   qualifies the release `current` points at as a settling transaction
   does: verified again with the switch policy's trust (its sums, its
   signature in signed mode, the record of its import), then its

@@ -118,8 +118,10 @@
   (a oneshot that fails closed, which only the owner installs and
   enables, by hand), keeps decisions refused after a reboot until the
   host is qualified since that boot: under the lock, before it runs anything, it writes the
-  decision inhibit as its own record when none is there (or takes over the
-  record of a boot that did not finish), qualifies `current` again as a
+  decision inhibit as its own record when none is there and no journal is
+  pending (or takes over the record of a boot that did not finish; beside
+  a pending journal it never writes its own record, only the
+  transaction's or a plain one no boot takes over), qualifies `current` again as a
   settling transaction does (verified with the switch policy's trust, its
   reload list, health check and post-activation no-AI check) and removes
   only that record, only when all of it passed; a failure runs the host's

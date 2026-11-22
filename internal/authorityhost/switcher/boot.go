@@ -19,15 +19,26 @@ const DirBoot = "boot"
 // not finish (see Boot).
 const bootReason = "boot: decisions are refused from the boot until ah-switch boot has qualified current again"
 
+// bootPendingReason is the reason of the inhibit ah-switch boot writes when
+// a journal is open that cannot be read and no inhibit is there (the
+// inhibit of a readable one is the transaction's, see guardJournal). It is
+// not bootReason: no boot takes it over, and only a transaction that ends
+// healthy or the owner's inhibit-clear removes it.
+const bootPendingReason = "boot: a transaction journal is open and cannot be read; decisions stay inhibited until a transaction ends healthy or ah-switch inhibit-clear --asked WORDS"
+
 // Boot runs ah-switch boot, which its unit runs at every boot (see
 // deploy/authority-host/README.md, "Boot requalification"): after a
 // reboot decisions stay refused until the host has been qualified since
 // that boot.
 //
 // Under the lock, before anything is run, it writes decisions.inhibit as
-// its own record (reason boot, the id of this run) when there is none,
-// and takes over the inhibit of an earlier boot that did not finish (see
-// unfinishedBoot), writing it again as this run's. It then qualifies the
+// its own record (reason boot, the id of this run) when there is none and
+// no journal is open, and takes over the inhibit of an earlier boot that
+// did not finish (see unfinishedBoot), writing it again as this run's.
+// While a journal is open it never writes its own record: the inhibit of
+// a readable journal is the transaction's, written back first when it was
+// removed (see guardJournal), and one that cannot be read gets a plain
+// record no boot takes over (bootPendingReason). It then qualifies the
 // release current points at again as a settling transaction does
 // (qualifyAgain: verified with the switch policy's trust, then its reload
 // list, its health check and its post-activation no-AI check), and
@@ -184,9 +195,14 @@ func (s *Switcher) unfinishedBoot(in inhibit, pending bool) bool {
 }
 
 // bootInhibit makes sure decisions are inhibited before boot runs
-// anything: it writes this run's record when there is no inhibit, or when
-// the inhibit is an unfinished boot's, and leaves any other as found.
-// mine says the inhibit is this run's (run); ok false is a failure, said.
+// anything: with no journal pending, it writes this run's record when
+// there is no inhibit, or when the inhibit is an unfinished boot's, and
+// leaves any other as found. With a journal pending (open, held or
+// unreadable) the inhibit is never this run's: one there stays as found,
+// and when none is there (a journal that cannot be read, which
+// guardJournal cannot guard) a plain record is written that no boot takes
+// over. mine says the inhibit is this run's (run); ok false is a failure,
+// said.
 func (s *Switcher) bootInhibit(in inhibit, there bool, ierr error, pending bool) (run inhibit, mine, ok bool) {
 	switch {
 	case ierr != nil:
@@ -197,6 +213,17 @@ func (s *Switcher) bootInhibit(in inhibit, there bool, ierr error, pending bool)
 		return inhibit{}, false, true
 	case there:
 		s.printf("boot: %s is the record of an earlier ah-switch boot (run %s, since %s) that did not finish; this boot takes it over and qualifies current from the start", InhibitFile, q(in.Txn), q(in.Time))
+	case pending:
+		id, err := newTxnID()
+		if err == nil {
+			err = s.writeInhibit(inhibit{Txn: id, Reason: bootPendingReason, Time: s.now()})
+		}
+		if err != nil {
+			s.printf("boot: FAILED: %s not written: %s; nothing is run, and decisions are NOT inhibited", InhibitFile, q(err.Error()))
+			return inhibit{}, false, false
+		}
+		s.printf("boot: decisions inhibited (%s, run %s) for the transaction still open; no boot takes this record over", InhibitFile, id)
+		return inhibit{}, false, true
 	}
 	id, err := newTxnID()
 	if err == nil {

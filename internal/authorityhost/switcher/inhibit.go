@@ -57,10 +57,12 @@ import (
 //	                  then the journal set aside
 //	inhibit-clear     inhibit removed on the owner's word; refused while a
 //	                  journal is there or the inhibit holds one
-//	boot              inhibit written, as boot's own record, when it is not
-//	                  there (or is the record of a boot that did not finish);
-//	                  then that record removed, once current qualified again
-//	                  with no journal open; any other inhibit left as found
+//	boot              with no journal pending: inhibit written, as boot's own
+//	                  record, when it is not there (or is the record of a boot
+//	                  that did not finish); then that record removed, once
+//	                  current qualified again; any other inhibit left as found.
+//	                  With a journal pending never its own record: a plain one,
+//	                  which no boot takes over, when none is there
 //	a failed boot     the failure owed; then boot's record rewritten with it
 //
 // Only the second step of a healthy end, boot's removal of its own record
