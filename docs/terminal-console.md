@@ -572,8 +572,8 @@ the view until Esc closes it, Ctrl+C aside, which quits.
 1. The view first reads the daemon's state. With nothing open it explains
    pairing in a few lines and offers Enter to start. A pairing that is already
    waiting for its phone cannot show its code a second time, so the view says so
-   and offers Enter for a new code, which ends the open one. A pairing whose six
-   words are waiting for you is shown at once.
+   and offers Enter for a new code, which ends the open one. A pairing whose
+   eight words are waiting for you is shown at once.
 2. Enter asks the daemon for a one-time code and draws a QR code that holds the
    app's address with `/pair/#` and the code (the code is in the fragment, so
    it is never in a proxy log), with the seconds the code has left. The code is
@@ -588,9 +588,11 @@ the view until Esc closes it, Ctrl+C aside, which quits.
    origin not configured", not an error of the daemon's. The code appears only in the
    QR: never as text, in a status line, an error or the title.
 3. The phone scans the code and makes its passkey. The view asks the daemon
-   every two seconds; when the phone's key arrives the view shows six numbered
-   words, large and spaced, and the line "Compare with your phone. Confirm only
-   if they match." The phone shows the same six words. The daemon names the
+   every two seconds; when the phone's key arrives the view shows eight numbered
+   words, large and spaced (four to a row, or two when the width does not hold
+   four, or one), and the line "Compare with your phone. Confirm only
+   if they match." The phone shows the same eight words (64 bits of the key's
+   fingerprint). The daemon names the
    pending key with an id (16 lowercase hex characters) that the view keeps but
    does not show.
 4. `c` asks "press y to confirm, any other key cancels", because a confirmation
@@ -598,11 +600,12 @@ the view until Esc closes it, Ctrl+C aside, which quits.
    confirmation and a rejection carry the id the words were shown for, so the
    daemon acts on that key and on no other. The question is dropped if the
    words or the id change meanwhile, or if the terminal is resized. You can
-   confirm only while the whole words screen, the six words and the prompt,
+   confirm only while the whole words screen, the eight words and the prompt,
    fits the terminal with no line cut: on a smaller one `c` does nothing and
-   the view says "terminal too small to show the six words" with "x: reject
+   the view says "terminal too small to show the eight words" with "x: reject
    Esc: close", and `y` checks again. An 80 x 24 terminal holds it for
-   words of ordinary length; a smaller one may not, and long words need more
+   words of ordinary length, and so does one as small as 30 x 19 (the words
+   two to a row); a smaller one may not, and long words need more
    columns. `x` rejects, and nothing is added.
    After a confirm the view shows "Paired. Kind: unverified (a syncing passkey)."
    and the key's short id. Nothing is trusted until you confirm here.
@@ -617,9 +620,9 @@ with no dot are refused), no port but 443, no path, no user name, no query and
 no fragment. Otherwise the view says only "pairing origin not configured", draws
 no QR and asks the daemon for nothing.
 
-Everything the daemon sends that the view draws (the six words, the id, the
-kind) is cleaned first, and six words that are not each one short printable word
-can be rejected but not confirmed. The text of a daemon's error is never drawn: a
+Everything the daemon sends that the view draws (the eight words, the id, the
+kind) is cleaned first, and eight words that are not each one short printable
+word can be rejected but not confirmed. The text of a daemon's error is never drawn: a
 fixed line says that the code was not made, that the state could not be read
 (the view tries again), or that a confirmation or rejection did not complete.
 See `internal/terminalconsole/pairview`.

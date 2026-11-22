@@ -6,9 +6,9 @@
 // encodes it as a QR code (package qr, level M) and draws it, black on white
 // with a quiet zone, whatever the console's theme is, with the seconds the
 // code has left. The phone scans it, makes its passkey and sends its public
-// key through the app; the daemon then shows the key as six short words. The
+// key through the app; the daemon then shows the key as eight short words. The
 // view polls Backend.PairStatus every two seconds, and on the Pending phase
-// shows the six words large and spaced with the line "Compare with your
+// shows the eight words large and spaced with the line "Compare with your
 // phone. Confirm only if they match." Only the owner's c and then y confirm
 // (Backend.PairConfirm); x rejects (Backend.PairReject). Nothing is trusted
 // until the owner confirms at the desk.
@@ -18,7 +18,7 @@
 // and never writes either as text, into a status line, an error or a title.
 // Every string from the backend that is drawn (the words, the id, the kind)
 // is untrusted and is cleaned first; the text of a backend's error is never
-// drawn, a fixed line stands for it. Six words that are not each one short
+// drawn, a fixed line stands for it. Eight words that are not each one short
 // printable word cannot be confirmed, only rejected.
 //
 // The origin is configuration. The view refuses to draw anything but the

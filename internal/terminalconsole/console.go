@@ -26,7 +26,7 @@
 // Options.Leads and package leadctl.
 //
 // With Options.Pairing set (see WithPairing) the P key opens the pair-a-phone
-// view, where a QR code and six words pair a phone from the desk. See package
+// view, where a QR code and eight words pair a phone from the desk. See package
 // pairview.
 //
 // With a window of at least MinCols by MinRows the console draws the cockpit:

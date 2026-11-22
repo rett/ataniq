@@ -32,7 +32,7 @@ import (
 // before it chained with this record (see keySum), a space, and one record in
 // the canonical JSON form of package record: a number, a type (added, revoked
 // or rejected), a time and the credential's display id, and for an added
-// credential its id, its public key, its kind and the six words of its
+// credential its id, its public key, its kind and the eight words of its
 // fingerprint. A rejected pairing is written with its display id and words
 // only.
 //
@@ -77,6 +77,13 @@ const (
 	// MaxKeys is the most credentials the list holds, revoked ones
 	// included (they stay listed). ownerwire.MaxKeys is the same number.
 	MaxKeys = 64
+	// FingerprintWords is the number of words of a credential's fingerprint
+	// that a record holds. It is this package's own copy of
+	// seatpair.FingerprintWords (this package imports only record), and a
+	// test of the service holds the two equal. A list written when a
+	// fingerprint was shorter is not read: nothing was paired in production
+	// before the change, so there is no migration.
+	FingerprintWords = 8
 	// MaxKeyRecords is the most records the file holds.
 	MaxKeyRecords = 4096
 	// maxKeysFileBytes is the most the file holds: far over what the
@@ -133,7 +140,7 @@ type StoredKey struct {
 	Kind string
 	// PairedAt is when the owner confirmed it.
 	PairedAt time.Time
-	// Words are the six words of its fingerprint, as the desk showed them,
+	// Words are the eight words of its fingerprint, as the desk showed them,
 	// one space between.
 	Words string
 	// Revoked says the credential was revoked, and RevokedAt when. A
@@ -150,7 +157,7 @@ type NewKey struct {
 	// a letter.
 	Kind     string
 	PairedAt time.Time
-	// Words are the credential's fingerprint words, six, one space between.
+	// Words are the credential's fingerprint words, eight, one space between.
 	Words string
 }
 
@@ -551,11 +558,11 @@ func validKind(s string) bool {
 	return true
 }
 
-// validWords reports whether s is six words of 3 to 6 lower-case letters with
-// one space between.
+// validWords reports whether s is [FingerprintWords] words of 3 to 6
+// lower-case letters with one space between.
 func validWords(s string) bool {
 	words := strings.Split(s, " ")
-	if len(words) != 6 {
+	if len(words) != FingerprintWords {
 		return false
 	}
 	for _, w := range words {

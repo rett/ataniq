@@ -341,8 +341,10 @@ const (
 	// equal). The alphabet is that of Crockford's base32 without I, L, O
 	// and U, in either case.
 	PairCodeLength = 20
-	// PairWords is the number of words of a credential's fingerprint.
-	PairWords = 6
+	// PairWords is the number of words of a credential's fingerprint, the
+	// count package seatpair makes (a test of the service holds the two
+	// equal).
+	PairWords = 8
 	// MinCredentialIDBytes and MaxCredentialIDBytes bound a credential id.
 	MinCredentialIDBytes = 16
 	MaxCredentialIDBytes = 1024

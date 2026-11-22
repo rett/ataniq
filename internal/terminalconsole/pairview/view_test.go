@@ -464,8 +464,8 @@ func TestBackendTextIsCleanedBeforeItIsDrawn(t *testing.T) {
 	b := &fakeBackend{}
 	r := newRig(t, b, testOrigin, 80, 24)
 	r.start()
-	b.state = State{Phase: Pending, PendingID: testPID, ExpiresAt: epoch.Add(time.Minute), Words: [6]string{
-		"lemon\x1b]52;c;aGk=\x07", "ri\x00ver", "tig\u202eer", "ocean", "maple", "quartz"}}
+	b.state = State{Phase: Pending, PendingID: testPID, ExpiresAt: epoch.Add(time.Minute), Words: [WordCount]string{
+		"lemon\x1b]52;c;aGk=\x07", "ri\x00ver", "tig\u202eer", "ocean", "maple", "quartz", "cedar", "amber"}}
 	r.fire()
 	if r.m.wordsOK {
 		t.Fatal("words with control bytes can be confirmed")
@@ -478,7 +478,7 @@ func TestBackendTextIsCleanedBeforeItIsDrawn(t *testing.T) {
 	}
 	// Words that are too long, empty or with a space are unusable as well.
 	for _, w := range []string{strings.Repeat("a", 40), "", "two words", "  "} {
-		in := sixWords
+		in := testWords
 		in[2] = w
 		b.state.Words = in
 		r.fire()
@@ -487,7 +487,7 @@ func TestBackendTextIsCleanedBeforeItIsDrawn(t *testing.T) {
 		}
 	}
 	// The id and the kind of a paired key are cleaned and bounded.
-	b.state.Words = sixWords
+	b.state.Words = testWords
 	r.fire()
 	b.paired = Paired{ID: "id\x1b[31m-" + strings.Repeat("z", 100), Kind: "hard\x07ware"}
 	r.press("c")
@@ -519,7 +519,7 @@ func TestChangedWordsCancelTheSecondQuestion(t *testing.T) {
 		t.Fatalf("the same words cancelled the question: %v", r.m.screen)
 	}
 	// Other words (another phone) drop it.
-	other := sixWords
+	other := testWords
 	other[0] = "zebra"
 	b.state.Words = other
 	r.fire()
@@ -538,7 +538,7 @@ func TestChangedWordsCancelTheSecondQuestion(t *testing.T) {
 
 func TestReopeningReadsTheDaemonsState(t *testing.T) {
 	// Words waiting for the owner are shown at once.
-	b := &fakeBackend{state: State{Phase: Pending, PendingID: testPID, Words: sixWords, ExpiresAt: epoch.Add(time.Minute)}}
+	b := &fakeBackend{state: State{Phase: Pending, PendingID: testPID, Words: testWords, ExpiresAt: epoch.Add(time.Minute)}}
 	r := newRig(t, b, testOrigin, 80, 24)
 	r.init()
 	if r.m.screen != scPending || len(r.timers) != 1 {
@@ -807,11 +807,11 @@ func TestTheBackendIsCalledOnlyFromCommands(t *testing.T) {
 // where the whole words screen does not fit, c is refused, y re-checks, and
 // the view says so (only x and Esc are offered).
 func TestWordsThatDoNotFitCannotBeConfirmed(t *testing.T) {
-	const msg = "terminal too small to show the six words"
+	const msg = "terminal too small to show the eight words"
 	for _, sz := range []struct {
 		name string
 		w, h int
-	}{{"80x6", 80, 6}, {"12x20", 12, 20}} {
+	}{{"80x6", 80, 6}, {"12x20", 12, 20}, {"30x18", 30, 18}} {
 		t.Run(sz.name, func(t *testing.T) {
 			b := &fakeBackend{}
 			r := newRig(t, b, testOrigin, sz.w, sz.h)
@@ -848,7 +848,7 @@ func TestWordsThatDoNotFitCannotBeConfirmed(t *testing.T) {
 }
 
 func TestWordsThatFitCanBeConfirmed(t *testing.T) {
-	for _, sz := range [][2]int{{80, 24}, {60, 20}, {30, 20}} {
+	for _, sz := range [][2]int{{80, 24}, {60, 20}, {30, 20}, {30, 19}} {
 		b := &fakeBackend{}
 		r := newRig(t, b, testOrigin, sz[0], sz[1])
 		r.start()
@@ -951,7 +951,7 @@ func TestAPendingIDThatIsNotSixteenHexCannotBeConfirmed(t *testing.T) {
 		b := &fakeBackend{}
 		r := newRig(t, b, testOrigin, 80, 24)
 		r.start()
-		r.b.state = State{Phase: Pending, PendingID: id, Words: sixWords, ExpiresAt: r.now.Add(5 * time.Minute)}
+		r.b.state = State{Phase: Pending, PendingID: id, Words: testWords, ExpiresAt: r.now.Add(5 * time.Minute)}
 		r.fire()
 		r.press("c")
 		if r.m.screen == scConfirm {
@@ -1031,4 +1031,36 @@ func TestATooLongOriginShowsTheOriginLineNotTheDaemons(t *testing.T) {
 	}
 	r.see(80, 24, noOrigin)
 	r.notSee(80, 24, errCode, "daemon")
+}
+
+// The eight words are four to a row where the width holds four columns of the
+// widest cell (the numbered word and a gap of four), two to a row below that
+// and one to a row below two columns. At 30 columns they are two to a row, the
+// whole pending screen is 19 rows (so 30x19 is the smallest size at which the
+// owner may confirm), and from 44 columns they are four to a row.
+func TestEightWordsLayInColumnsByWidth(t *testing.T) {
+	layout := func(w int) (rows, perRow int) {
+		r := newRig(t, &fakeBackend{}, testOrigin, w+2, 40)
+		r.start()
+		r.pending()
+		for _, l := range r.m.wordLines(w) {
+			if l.k != lWords {
+				continue
+			}
+			rows++
+			perRow = len(strings.Fields(l.s)) / 2
+		}
+		return rows, perRow
+	}
+	cases := []struct{ w, rows, perRow int }{
+		{80, 2, 4}, {44, 2, 4}, {43, 4, 2}, {20, 4, 2}, {19, 8, 1}, {8, 8, 1},
+	}
+	for _, c := range cases {
+		if rows, per := layout(c.w); rows != c.rows || per != c.perRow {
+			t.Errorf("width %d: %d rows of %d words, want %d of %d", c.w, rows, per, c.rows, c.perRow)
+		}
+	}
+	if WordCount%4 != 0 {
+		t.Errorf("the layouts of 4, 2 and 1 columns need a count they divide: %d", WordCount)
+	}
 }

@@ -3,7 +3,7 @@ package seatpair
 import "time"
 
 // KindUnverified is the kind of every credential this package makes: the
-// pairing proves that the owner at the desk saw the same six words on the
+// pairing proves that the owner at the desk saw the same eight words on the
 // phone, and not what kind of authenticator holds the key (a syncing passkey
 // or a hardware token). A later step may set another kind.
 const KindUnverified = "unverified"
@@ -22,5 +22,5 @@ type Credential struct {
 	PairedAt time.Time
 }
 
-// Fingerprint is the six words of the credential.
+// Fingerprint is the eight words of the credential.
 func (c Credential) Fingerprint() Fingerprint { return FingerprintOf(c.ID, c.SPKI) }

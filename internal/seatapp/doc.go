@@ -15,7 +15,7 @@
 //	GET  /                    a plain status page
 //	GET  /pair/               the pairing page (the code is never in the path or query)
 //	GET  /pair                a 308 to /pair/
-//	GET  /static/words.js     the six words' list and formula
+//	GET  /static/words.js     the words' list and formula
 //	GET  /static/pair.js      the pairing script
 //	GET  /static/app.css      the style sheet
 //	POST /api/pair-challenge  a one-time challenge for a new passkey
@@ -54,8 +54,8 @@
 // (cose.go: the five-entry ES256 COSE_Key of a P-256 point on the curve, in
 // canonical order, definite lengths only) and turns into its canonical DER
 // SPKI, which must equal the posted public key byte for byte. Then it hands
-// the code, the credential id and the key to the [Daemon] port, and the six
-// words that come back are shown on the phone to be compared with the desk
+// the code, the credential id and the key to the [Daemon] port, and the
+// [WordCount] words that come back are shown on the phone to be compared with the desk
 // console. Nothing is trusted until the owner confirms at the desk; this
 // package adds no credential to anything.
 //
@@ -65,12 +65,12 @@
 // key the daemon hears of are one credential's, not that the phone proved it
 // holds the private key.
 //
-// # The six words
+// # The words
 //
-// The script computes the six words itself from the credential the phone
-// made (the first six bytes of SHA-256 of the 4-byte big-endian length and the
-// credential id, then the same for the SPKI; each byte indexes the 256-word
-// list in assets/words.js, the list of the seatpair package, which a test in
+// The script computes the [WordCount] words itself from the credential the
+// phone made (the first eight bytes of SHA-256 of the 4-byte big-endian length
+// and the credential id, then the same for the SPKI; each byte indexes the
+// 256-word list in assets/words.js, the list of the seatpair package, which a test in
 // tests/ holds equal). It shows its own words, and if the words the server
 // returns differ it shows a fixed warning and does not offer the comparison.
 // That protects the link between the app and the daemon, and an honest
@@ -87,7 +87,7 @@
 //
 // # Text nobody on the owner's side wrote
 //
-// [Text] is the one function that renders such text (the six words from the
+// [Text] is the one function that renders such text (the words from the
 // daemon today, a lead's note later): plain text, no link made, no markup, no
 // image; control and bidirectional characters shown as visible escapes; long
 // text cut with a count of what was cut. It is registered in the page

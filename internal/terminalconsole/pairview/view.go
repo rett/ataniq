@@ -22,7 +22,7 @@ const (
 	None Phase = iota
 	// Waiting: the code was made and no phone has used it yet.
 	Waiting
-	// Pending: a phone sent its key; the six words wait for the owner.
+	// Pending: a phone sent its key; the words wait for the owner.
 	Pending
 	// Expired: the code ran out, or the pairing was ended.
 	Expired
@@ -35,8 +35,13 @@ type Offer struct {
 	ExpiresAt time.Time
 }
 
+// WordCount is the number of words of a fingerprint. It is this package's own
+// copy of seatpair.FingerprintWords (this package may import nothing of the
+// repository but the QR encoder), and a test in tests/ holds the two equal.
+const WordCount = 8
+
 // State is the daemon's answer to a status read. Words is the fingerprint of
-// the phone's key, six short words, set on the Pending phase.
+// the phone's key, [WordCount] short words, set on the Pending phase.
 //
 // PendingID names the pending credential the words are the fingerprint of:
 // 16 lowercase hex characters, set on the Pending phase. Confirm and reject
@@ -45,7 +50,7 @@ type Offer struct {
 type State struct {
 	Phase     Phase
 	PendingID string
-	Words     [6]string
+	Words     [WordCount]string
 	ExpiresAt time.Time
 }
 
@@ -153,7 +158,7 @@ const (
 	helpWords        = "Compare with your phone. Confirm only if they match."
 	confirmLine1     = "Add this phone as a device that can approve cards."
 	confirmLine2     = "press y to confirm, any other key cancels"
-	msgTooSmallWords = "terminal too small to show the six words"
+	msgTooSmallWords = "terminal too small to show the eight words"
 	keysTooSmall     = "x: reject   Esc: close"
 	waitingHint      = "Esc: close (the code stays valid until it expires)"
 	maxWordCells     = 16
@@ -172,7 +177,7 @@ const (
 	scStarting                 // PairStart is out
 	scWaiting                  // the QR is drawn
 	scOpen                     // a pairing is open that this view has no code for
-	scPending                  // the six words wait for the owner
+	scPending                  // the words wait for the owner
 	scConfirm                  // the second question
 	scConfirming               // PairConfirm is out
 	scRejecting                // PairReject is out
@@ -204,9 +209,9 @@ type Model struct {
 	// does not hold rows.
 	rowsMin []string
 	expires time.Time
-	// words are the six words as drawn, and wordsOK says each is one short
+	// words are the words as drawn, and wordsOK says each is one short
 	// printable word, so the owner may confirm.
-	words   [6]string
+	words   [WordCount]string
 	wordsOK bool
 	// pid is the pending id the words belong to, as the daemon gave it; it
 	// is valid (see validPendingID) when wordsOK is.
@@ -586,7 +591,7 @@ func (m *Model) onOpening(v statusMsg) tea.Cmd {
 // end leaves the polling for a screen with no code or words.
 func (m *Model) end(s screen) {
 	m.screen, m.note, m.rows, m.rowsMin, m.cycle = s, "", nil, nil, false
-	m.words, m.wordsOK, m.pid = [6]string{}, false, ""
+	m.words, m.wordsOK, m.pid = [WordCount]string{}, false, ""
 }
 
 // validPendingID reports whether id is 16 lowercase hex characters.
@@ -607,8 +612,8 @@ func validPendingID(id string) bool {
 // open is dropped when the words or the pending id are not the ones it was
 // asked for. An id that is not well formed cannot be confirmed (it is still
 // given back on a reject, which the daemon checks).
-func (m *Model) setWords(in [6]string, id string) {
-	var w [6]string
+func (m *Model) setWords(in [WordCount]string, id string) {
+	var w [WordCount]string
 	ok := true
 	for i, s := range in {
 		w[i] = cleanText(s, maxWordCells)

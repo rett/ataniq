@@ -111,7 +111,7 @@ func TestPairHappyPath(t *testing.T) {
 	var out struct {
 		Words []string `json:"words"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || strings.Join(out.Words, " ") != "amber birch cedar delta ember fjord" {
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || strings.Join(out.Words, " ") != "amber birch cedar delta ember fjord garnet heron" {
 		t.Errorf("words %q (%v)", w.Body, err)
 	}
 	checkHeaders(t, "pair", w)

@@ -1,9 +1,9 @@
-// The six words of a new passkey, worked out on the phone from the credential
+// The words of a new passkey, worked out on the phone from the credential
 // it made. The formula is that of the seatpair package of the daemon:
 //
 //   SHA-256( BE32(len(credentialId)) || credentialId || BE32(len(spki)) || spki )
 //
-// BE32 is a 4-byte big-endian length. Each of the first six bytes of the digest
+// BE32 is a 4-byte big-endian length. Each of the first COUNT (eight) bytes of the digest
 // is an index into the 256 words of LIST, which is the list of that package,
 // word for word; a test in tests/ holds the two equal and runs this function
 // against the package's own on a vector and on random inputs.
@@ -44,9 +44,13 @@ window.SeatWords = (function () {
     "wheat", "whisk", "window", "winter", "wolf", "yogurt", "zebra", "zipper"
   ];
 
+  // COUNT is the number of words of a fingerprint. It is the seatpair package's
+  // FingerprintWords; a test in tests/ holds the two equal.
+  var COUNT = 8;
+
   function bytesOf(x) { return new Uint8Array(x); }
 
-  // fingerprint resolves to the array of six words for a credential id and a
+  // fingerprint resolves to the array of COUNT words for a credential id and a
   // public key (DER SPKI), each an ArrayBuffer or a typed array.
   async function fingerprint(credentialId, spki) {
     var id = bytesOf(credentialId), key = bytesOf(spki);
@@ -57,8 +61,8 @@ window.SeatWords = (function () {
     view.setUint32(4 + id.length, key.length, false);
     buf.set(key, 8 + id.length);
     var sum = new Uint8Array(await crypto.subtle.digest("SHA-256", buf));
-    return Array.prototype.slice.call(sum.slice(0, 6)).map(function (b) { return LIST[b]; });
+    return Array.prototype.slice.call(sum.slice(0, COUNT)).map(function (b) { return LIST[b]; });
   }
 
-  return { list: LIST, fingerprint: fingerprint };
+  return { list: LIST, count: COUNT, fingerprint: fingerprint };
 })();

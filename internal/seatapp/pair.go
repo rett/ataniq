@@ -224,7 +224,7 @@ func (p *pairing) pair(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errDaemon)
 	default:
 		// The words come from the daemon, which is not the app's own text.
-		var words [6]string
+		var words [WordCount]string
 		for i, word := range res.Words {
 			words[i] = oneLine(word, maxWordLen)
 		}

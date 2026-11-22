@@ -196,7 +196,7 @@ func (s *Service) PairStart(ctx context.Context, src Source, p ownerwire.PairSta
 }
 
 // PairStatus says where the pairing stands (owner.pair-status): none; waiting
-// for the phone; a credential pending at the desk, with the six words of its
+// for the phone; a credential pending at the desk, with the eight words of its
 // fingerprint and its pending id, which a confirm or a reject must give back;
 // or expired, which is what a pairing that ran out or whose code
 // was burnt reads as, until the next start. It never holds the code.
@@ -228,7 +228,7 @@ func (s *Service) PairStatus(ctx context.Context) (ownerwire.PairStatus, error) 
 // PairPresent is the seat app's call (seat.pair): the pairing code and the
 // credential the phone made. A right code with a good credential makes the
 // credential pending at the desk for ten minutes, and the answer is its
-// fingerprint, six words. It makes no credential: only [Service.PairConfirm]
+// fingerprint, eight words. It makes no credential: only [Service.PairConfirm]
 // does. A refusal of the code or of the pairing's state is [ErrPairRefused] and
 // never says which, a credential that is not an ES256 key or has an id of
 // another length is [ErrCredentialInvalid] and leaves the code unused, and the
@@ -298,7 +298,7 @@ func (s *Service) PairPresent(ctx context.Context, src Source, p ownerwire.SeatP
 	return ownerwire.SeatPairResult{Words: append([]string(nil), fp[:]...)}, nil
 }
 
-// PairConfirm is the owner at the desk saying the six words are the same on
+// PairConfirm is the owner at the desk saying the eight words are the same on
 // the phone (owner.pair-confirm): the pending credential goes on the list of
 // deciding keys with the kind "unverified", and the answer is its row. The
 // params name the credential the owner compared by its pending id (the one
