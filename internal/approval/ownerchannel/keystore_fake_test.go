@@ -59,7 +59,8 @@ func (f *fakeKeys) AddKey(n ownerjournal.NewKey) (ownerjournal.StoredKey, error)
 	}
 	k := ownerjournal.StoredKey{
 		ID: id, CredentialID: bytes.Clone(n.CredentialID), PublicKey: bytes.Clone(n.PublicKey),
-		Kind: n.Kind, PairedAt: n.PairedAt.Truncate(time.Second), Words: n.Words,
+		Kind: n.Kind, AAGUID: n.AAGUID, BackupEligible: n.BackupEligible, BackupState: n.BackupState, Counter: n.Counter,
+		PairedAt: n.PairedAt.Truncate(time.Second), Words: n.Words,
 	}
 	f.keys = append(f.keys, k)
 	f.writes++

@@ -1,12 +1,15 @@
 package ownerchannel
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"ataniq/internal/approval/credkind"
 	"ataniq/internal/approval/ownerjournal"
 	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/approval/presence"
@@ -54,8 +57,9 @@ var (
 	// no pairing, or a credential already pending. It never says which.
 	ErrPairRefused = errors.New("ownerchannel: the pairing code was refused")
 	// ErrCredentialInvalid says the credential is not one that can be put
-	// on the list: its id or its key is not of the form, or it is on the
-	// list already.
+	// on the list: its id or its key is not of the form, its registration
+	// does not hold (see [Service.PairPresent]), or it is on the list
+	// already.
 	ErrCredentialInvalid = errors.New("ownerchannel: the credential cannot be used")
 	// ErrNotSeat says the call did not come from a seat.
 	ErrNotSeat = errors.New("ownerchannel: the call is not from a seat")
@@ -79,7 +83,15 @@ type pairing struct {
 	ends time.Time
 	// id is the display id of the pending credential.
 	id string
+	// claim is the pending credential as package credkind registered it
+	// from the registration the seat relayed: its kind and what its
+	// authenticator claimed. It is nil for a credential presented without
+	// one, and whenever id is "".
+	claim *credkind.Credential
 }
+
+// drop forgets the pending credential: its display id and its claim.
+func (p *pairing) drop() { p.id, p.claim = "", nil }
 
 func (s *Service) initPairing() {
 	s.pr.p = seatpair.NewPairing(s.cfg.PairRand, func() time.Time { return s.pr.at })
@@ -126,7 +138,20 @@ func (s *Service) usableKeys() (KeyStore, []ownerjournal.StoredKey, error) {
 }
 
 func keyItem(k ownerjournal.StoredKey) ownerwire.KeyItem {
-	return ownerwire.KeyItem{ID: k.ID, Kind: k.Kind, PairedAt: record.FormatTime(k.PairedAt), Revoked: k.Revoked}
+	return ownerwire.KeyItem{
+		ID: k.ID, Kind: k.Kind, PairedAt: record.FormatTime(k.PairedAt), Revoked: k.Revoked,
+		AAGUID: formatAAGUID(k.AAGUID), BackupEligible: k.BackupEligible, BackupState: k.BackupState && k.BackupEligible,
+	}
+}
+
+// formatAAGUID writes an AAGUID in the lower-case 8-4-4-4-12 form of the
+// wire, or "" when it is all zero.
+func formatAAGUID(id [16]byte) string {
+	if id == ([16]byte{}) {
+		return ""
+	}
+	h := hex.EncodeToString(id[:])
+	return h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
 }
 
 func keysView(keys []ownerjournal.StoredKey) ownerwire.KeysView {
@@ -190,14 +215,17 @@ func (s *Service) PairStart(ctx context.Context, src Source, p ownerwire.PairSta
 	case err != nil:
 		return ownerwire.PairStartResult{}, fmt.Errorf("ownerchannel: the pairing could not start: %w", err)
 	}
-	s.pr.live, s.pr.id = true, ""
+	s.pr.live = true
+	s.pr.drop()
 	s.pr.ends = now.Add(seatpair.CodeLifetime)
 	return ownerwire.PairStartResult{Code: code, ExpiresAt: record.FormatTime(s.pr.ends)}, nil
 }
 
 // PairStatus says where the pairing stands (owner.pair-status): none; waiting
 // for the phone; a credential pending at the desk, with the eight words of its
-// fingerprint and its pending id, which a confirm or a reject must give back;
+// fingerprint and its pending id, which a confirm or a reject must give back,
+// and, when the seat relayed its registration, what its authenticator claimed
+// (the kind, the AAGUID and the backup flags), for the desk to show as claims;
 // or expired, which is what a pairing that ran out or whose code
 // was burnt reads as, until the next start. It never holds the code.
 func (s *Service) PairStatus(ctx context.Context) (ownerwire.PairStatus, error) {
@@ -216,7 +244,12 @@ func (s *Service) PairStatus(ctx context.Context) (ownerwire.PairStatus, error) 
 		fp, ok := s.pr.p.Pending(mono)
 		id, _ := s.pr.p.PendingID(mono)
 		if ok && id != "" {
-			return ownerwire.PairStatus{Phase: ownerwire.PairPending, Words: append([]string(nil), fp[:]...), PendingID: id, ExpiresAt: record.FormatTime(s.pr.ends)}, nil
+			st := ownerwire.PairStatus{Phase: ownerwire.PairPending, Words: append([]string(nil), fp[:]...), PendingID: id, ExpiresAt: record.FormatTime(s.pr.ends)}
+			if c := s.pr.claim; c != nil {
+				st.Kind, st.AAGUID = c.Kind, formatAAGUID(c.AAGUID)
+				st.BackupEligible, st.BackupState = c.BackupEligible, c.BackupState && c.BackupEligible
+			}
+			return st, nil
 		}
 	}
 	if s.pr.live {
@@ -229,7 +262,20 @@ func (s *Service) PairStatus(ctx context.Context) (ownerwire.PairStatus, error) 
 // credential the phone made. A right code with a good credential makes the
 // credential pending at the desk for ten minutes, and the answer is its
 // fingerprint, eight words. It makes no credential: only [Service.PairConfirm]
-// does. A refusal of the code or of the pairing's state is [ErrPairRefused] and
+// does.
+//
+// When the params carry the registration's authenticator data and relying
+// party id, the credential is registered from them with credkind.Register
+// before the code is looked at: the authenticator data must be of a
+// registration for that relying party with user presence and user
+// verification, and name the same credential id and key as the params, or the
+// call is [ErrCredentialInvalid] and the code is left unused. What it gives,
+// the kind its AAGUID claims, the AAGUID, the backup flags and the sign
+// counter, is kept with the pending credential, shown by [Service.PairStatus]
+// and stored by [Service.PairConfirm]. They are claims: the seat relays them
+// and nothing about the authenticator is attested. Without the authenticator
+// data the credential is of the kind "unverified", which can never log in or
+// decide. A refusal of the code or of the pairing's state is [ErrPairRefused] and
 // never says which, a credential that is not an ES256 key or has an id of
 // another length is [ErrCredentialInvalid] and leaves the code unused, and the
 // fifth wrong code burns it. A credential that is on the list of keys already,
@@ -260,6 +306,18 @@ func (s *Service) PairPresent(ctx context.Context, src Source, p ownerwire.SeatP
 	if err != nil {
 		return ownerwire.SeatPairResult{}, err
 	}
+	// A registration that does not hold refuses before the code is spent on
+	// it, as a key that is not one does.
+	var claim *credkind.Credential
+	if p.AuthenticatorData != nil {
+		c, err := credkind.Register(credkind.RegistrationInput{
+			RPID: p.RPID, CredentialID: p.CredentialID, SPKI: p.PublicKey, AuthenticatorData: p.AuthenticatorData,
+		})
+		if err != nil {
+			return ownerwire.SeatPairResult{}, ErrCredentialInvalid
+		}
+		claim = &c
+	}
 	fp, err := s.pr.p.Present(p.Code, p.CredentialID, p.PublicKey, mono)
 	switch {
 	case err == nil:
@@ -289,18 +347,22 @@ func (s *Service) PairPresent(ctx context.Context, src Source, p ownerwire.SeatP
 			if pid, ok := s.pr.p.PendingID(mono); ok {
 				_ = s.pr.p.Reject(pid)
 			}
-			s.pr.live, s.pr.id = false, ""
+			s.pr.live = false
+			s.pr.drop()
 			return ownerwire.SeatPairResult{}, ErrCredentialInvalid
 		}
 	}
-	s.pr.id = id
+	s.pr.id, s.pr.claim = id, claim
 	s.pr.ends = now.Add(seatpair.PendingLifetime)
 	return ownerwire.SeatPairResult{Words: append([]string(nil), fp[:]...)}, nil
 }
 
 // PairConfirm is the owner at the desk saying the eight words are the same on
 // the phone (owner.pair-confirm): the pending credential goes on the list of
-// deciding keys with the kind "unverified", and the answer is its row. The
+// deciding keys, and the answer is its row. A credential the seat relayed the
+// registration of is stored with the kind credkind.Register gave it, the
+// AAGUID, the backup flags and its sign counter as the baseline of the highest
+// counter seen; one without is stored with the kind "unverified". The
 // params name the credential the owner compared by its pending id (the one
 // [Service.PairStatus] showed with the words), which is checked, under the
 // pairing's lock and in constant time, against the credential pending now: one
@@ -344,11 +406,20 @@ func (s *Service) PairConfirm(ctx context.Context, src Source, p ownerwire.PairP
 	default:
 		return ownerwire.KeyItem{}, fmt.Errorf("ownerchannel: the pairing could not be confirmed: %w", err)
 	}
-	s.pr.live, s.pr.id = false, ""
-	stored, err := ks.AddKey(ownerjournal.NewKey{
+	claim := s.pr.claim
+	s.pr.live = false
+	s.pr.drop()
+	key := ownerjournal.NewKey{
 		CredentialID: cred.ID, PublicKey: cred.SPKI, Kind: cred.Kind, PairedAt: cred.PairedAt.Round(0),
 		Words: cred.Fingerprint().String(),
-	})
+	}
+	// The claim is the confirmed credential's: PairPresent kept it with the
+	// credential it made pending, and the pending id named that one.
+	if claim != nil && bytes.Equal(claim.CredentialID, cred.ID) {
+		key.Kind, key.AAGUID, key.Counter = claim.Kind, claim.AAGUID, claim.SignCount
+		key.BackupEligible, key.BackupState = claim.BackupEligible, claim.BackupState && claim.BackupEligible
+	}
+	stored, err := ks.AddKey(key)
 	if err != nil {
 		s.notice("a pairing was confirmed and its credential could not be put on the list of keys; pair the phone again")
 		return ownerwire.KeyItem{}, keysErr(err)
@@ -406,13 +477,15 @@ func (s *Service) PairReject(ctx context.Context, src Source, p ownerwire.PairPe
 		if err := rejectErr(); err != nil {
 			return err
 		}
-		s.pr.live, s.pr.id = false, ""
+		s.pr.live = false
+		s.pr.drop()
 		return nil
 	}
 	if err := rejectErr(); err != nil {
 		return err
 	}
-	s.pr.live, s.pr.id = false, ""
+	s.pr.live = false
+	s.pr.drop()
 	if err := ks.AppendRejected(ownerjournal.RejectedPairing{ID: id, Words: strings.Join(fp[:], " "), At: now}); err != nil {
 		s.notice("a rejected pairing could not be journaled")
 		return keysErr(err)

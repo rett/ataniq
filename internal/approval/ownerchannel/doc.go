@@ -133,9 +133,12 @@
 // monotonic reading too).
 //
 // A confirmed credential goes on the list of deciding keys, [KeyStore], in
-// [Config].Keys, with the kind "unverified". The service owns the store and
-// closes it. The list only grows: a revoked credential stays on it, marked,
-// and is never made good again. Without a store, or with one that cannot be
+// [Config].Keys, with its kind: the one package credkind registered it with
+// from the registration the seat relayed (the kind its AAGUID claims), with
+// the AAGUID, the backup flags and the sign counter, or "unverified" when the
+// seat relayed none. A kind is a claim, never a fact, and is shown as one. The
+// service owns the store and closes it. The list only grows: a revoked
+// credential stays on it, marked, and is never made good again. Without a store, or with one that cannot be
 // used, every operation on it is refused with [ErrKeysUnavailable], and a
 // list that cannot be read is never taken for an empty one. A confirm and a
 // reject write only after they found the list usable, so a credential stays
