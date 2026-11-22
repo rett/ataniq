@@ -186,8 +186,10 @@ func Dial(ctx context.Context, addr string, cfg ClientConfig) (*Client, error) {
 
 // Run connects and reconnects until ctx is done or the client is closed, and
 // returns then, with every connection closed. Between attempts it waits with
-// exponential backoff from BackoffMin to BackoffMax, jittered; a lost
-// connection is retried after the first wait. Run is for a client made by
+// exponential backoff from BackoffMin to BackoffMax, jittered. The waits start
+// over, at the first, after a connection that stood for DeadAfter or longer
+// is lost; a link that drops sooner, even one that gets its hello answered
+// every time, does not start them over. Run is for a client made by
 // [NewClient]; call it once.
 func (c *Client) Run(ctx context.Context) error {
 	c.mu.Lock()
@@ -274,6 +276,9 @@ func (c *Client) run(ctx context.Context, first *session) {
 		case <-ctx.Done():
 		}
 	}()
+	// attempt is how many waits in a row have found no connection that
+	// stood: it grows with every failed attempt and every connection lost
+	// before DeadAfter, and starts over after one that stood that long.
 	attempt := 0
 	for ctx.Err() == nil {
 		s := first
@@ -289,7 +294,6 @@ func (c *Client) run(ctx context.Context, first *session) {
 				continue
 			}
 		}
-		attempt = 0
 		c.mu.Lock()
 		if c.sess != s {
 			if c.closed {
@@ -307,6 +311,7 @@ func (c *Client) run(ctx context.Context, first *session) {
 			s.fail(ErrClosed)
 		}
 		c.mu.Lock()
+		stood := c.cfg.Now().Sub(c.since)
 		c.sess = nil
 		if err := s.cause(); err != nil && !errors.Is(err, ErrClosed) {
 			c.lastErr = err
@@ -316,8 +321,18 @@ func (c *Client) run(ctx context.Context, first *session) {
 		if ctx.Err() != nil {
 			return
 		}
-		if c.cfg.Sleep(ctx, backoff(c.cfg.BackoffMin, c.cfg.BackoffMax, 0, c.cfg.Rand())) != nil {
+		// A gate that answers the hello and drops the link at once is no
+		// better than one that cannot be reached, so only a connection that
+		// stood for DeadAfter (the time the client itself needs to find a
+		// silent one dead) gives the first wait again.
+		if stood >= c.cfg.DeadAfter {
+			attempt = 0
+		}
+		if c.cfg.Sleep(ctx, backoff(c.cfg.BackoffMin, c.cfg.BackoffMax, attempt, c.cfg.Rand())) != nil {
 			return
+		}
+		if stood < c.cfg.DeadAfter {
+			attempt++
 		}
 	}
 }

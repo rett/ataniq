@@ -123,8 +123,9 @@
 //
 // The client sends seat.ping every 15 s and gives up a connection from which
 // no frame has come for 45 s. It redials with exponential backoff: 1 s doubled
-// to 30 s, jittered into the upper half of each step, starting over after a
-// connection is made. [ClientConfig] can replace the clock (Sleep), the
+// to 30 s, jittered into the upper half of each step, starting over only after
+// a connection that stood for 45 s (a link that drops sooner, hello or no
+// hello, goes on up the steps). [ClientConfig] can replace the clock (Sleep), the
 // random source (Rand) and the dialler, so a test runs the schedule with no
 // waiting. [Client.Connected] says since when the connection has stood.
 // [Client.LastError] says why there is none.
