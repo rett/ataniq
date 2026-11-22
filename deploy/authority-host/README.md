@@ -855,17 +855,26 @@ their place is a read error, not a wait.
     missing is `HIT incomplete env-file`). A file in a folder named `user`
     is a user unit, its `EnvironmentFile=` resolved for every user; any
     other is a system unit;
-  - every file beneath its `etc/caddy` is read for the variables it
-    refers to, and only those: Caddy's placeholders `{env.NAME}` and
-    `{$NAME}` (`{$NAME:default}` too) and the systemd-style `$NAME` and
-    `${NAME}`. Each one named like a provider key is a `HIT env`. A
-    comment (a `#` that starts a word outside quotes) and every literal
-    operand are passed over: a word that only looks like a variable's
-    name is not reported, so no configuration text reaches the report. A
-    `{env.`, `{$` or `${` the check cannot read (no valid name and closing
-    brace after it) is `HIT incomplete release-syntax <file>`, which names
-    the file and nothing of its content. The files beneath `etc/nftables`
-    refer to no environment variable and are not read for names.
+  - every file beneath its `etc/caddy` is read, by its format, for the
+    variables it refers to through a placeholder Caddy itself replaces,
+    and only those. A file whose name ends in `.json` is Caddy's native
+    JSON, read as JSON: only `{env.NAME}` in a string (a key or a value,
+    as decoded) counts, a brace escaped for Caddy (`\{`) is literal, and
+    every other text, a literal `$` and `{$NAME}` included, is a private
+    value, never matched. Any other file is a Caddyfile: `{env.NAME}` and
+    `{$NAME}` (`{$NAME:default}` too) count; a comment (a `#` that starts
+    a word outside quotes) and every literal operand are passed over. In
+    either, shell-style `$NAME` and `${NAME}` are literal text, since
+    Caddy does not read them (a systemd unit's are read by the unit rules
+    above). Each reference named like a provider key is a `HIT env`; a
+    word that only looks like a variable's name is not reported, so no
+    configuration text reaches the report. A `{env.` (or, in a
+    Caddyfile, `{$`) the check cannot read (no valid name and closing
+    brace after it), and JSON that does not parse or nests more than 256
+    levels, is `HIT incomplete release-syntax <file>`, which names the
+    file and a fixed reason, nothing of its content. The files beneath
+    `etc/nftables` refer to no environment variable and are not read for
+    names.
 
   A hit in the release names the file by its path within `--root` when
   the release is beneath it (`/opt/authority-host/releases/<id>/...`),
@@ -912,7 +921,7 @@ The `HIT incomplete` lines:
 | `HIT incomplete budget <limit>` | the run's budget is spent (4 million folder entries and queued files, 1 GiB read, 4 minutes, 256 MiB held, or shell expansions or brace groups nested more than 64 deep); memory is charged before the work is done: specifier expansions, queued files, the unit scan's keys of each manager, and each source reference and loop word a profile's parse keeps (a loop's words once for every source of its variable). Each path a source, a PATH element or an `XDG_CONFIG_HOME` value stands for (in each home, and below each configured `XDG_CONFIG_HOME` folder) is charged as an entry before it is built, one at a time, never as a list of every combination. Every later read and parse stops, and so does every loop of the startup scan |
 | `HIT incomplete env-syntax <file>` | a file whose syntax the check cannot parse, or an `EnvironmentFile=` it cannot resolve |
 | `HIT incomplete env-source <file>` | a profile sources a file by a path the check cannot resolve |
-| `HIT incomplete release-syntax <file>` | a front-end configuration file of the candidate release (`pre`, `post`) holds a variable reference the check cannot read |
+| `HIT incomplete release-syntax <file>` | a front-end configuration file of the candidate release (`pre`, `post`) holds a placeholder the check cannot read, or is Caddy JSON that does not parse |
 | `HIT incomplete env-file <path>` | a required `EnvironmentFile=` (no leading `-`) that is not there, or a required glob that matches nothing |
 | `HIT incomplete path <file>` | a PATH setting whose folder the check cannot resolve |
 | `HIT incomplete proc <why>` | no usable `/proc`: missing, unreadable, without processes, or listing processes of which not one name or executable could be read (`no-identity`) |

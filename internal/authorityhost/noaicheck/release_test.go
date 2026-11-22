@@ -116,32 +116,45 @@ func TestRunPhaseReleaseOutsideTheRoot(t *testing.T) {
 }
 
 // Only recognised references name a variable in the front end's
-// configuration: Caddy's placeholders and the systemd-style forms. A
-// comment, a quoted string's text and a literal operand named like a key
-// are not references, and a reference the check cannot read makes the
-// file incomplete without copying its text.
+// configuration, by the file's format. In a Caddyfile they are Caddy's
+// placeholders {env.NAME} and {$NAME}; in Caddy's native JSON (a ".json"
+// file), read as JSON, only {env.NAME} in a string. Shell-style $NAME and
+// ${NAME} mean nothing to Caddy and are literal text in either, never
+// matched. A comment, a quoted string's text and a literal operand named
+// like a key are not references, and a reference the check cannot read
+// (or JSON it cannot parse) makes the file incomplete without copying its
+// text.
 func TestReleaseRefs(t *testing.T) {
 	cases := []struct {
-		name, in string
-		want     []string
-		bad      bool
+		name, file, in string
+		want           []string
+		bad            bool
 	}{
-		{"placeholders", "{$OPENAI_API_KEY} {env.ANTHROPIC_API_KEY} {$CODEX_HOME:/srv/x}\n", []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CODEX_HOME"}, false},
-		{"systemd-style", "reverse_proxy $GEMINI_API_KEY ${CLAUDE_X}/y\n", []string{"GEMINI_API_KEY", "CLAUDE_X"}, false},
-		{"inside a quoted string", "header X-Key \"Bearer {env.X_API_KEY}\"\n", []string{"X_API_KEY"}, false},
-		{"in JSON", `{"apps":{"http":{"servers":{"a":{"listen":["{env.OPENAI_ORG}"]}}}}}`, []string{"OPENAI_ORG"}, false},
-		{"literal operands", "header X-Name OPENAI_API_KEY\nrespond \"CODEX_HOME\" 200\nX_OPENAI_ORG 1CODEX_HOME\n", nil, false},
-		{"comments", "# {env.OPENAI_API_KEY} GEMINI_API_KEY\nexample.invalid { # $CODEX_HOME\n\trespond ok\n}\n", nil, false},
-		{"a '#' inside a word or quotes is not a comment", "respond \"#{env.OPENAI_ORG}\"\nredir /a#{$CODEX_HOME}\n", []string{"OPENAI_ORG", "CODEX_HOME"}, false},
-		{"other placeholders and dollars", "respond \"{http.request.uri} costs $5 or $$\"\npath_regexp ^/x$\n", nil, false},
-		{"names not like a key are read and not reported", "{env.LANG} {$PORT}\n", nil, false},
-		{"an unreadable env placeholder", "header X {env." + secret + "}\n", nil, true},
-		{"an unclosed env placeholder", "header X {env.OPENAI_API_KEY", nil, true},
-		{"an unreadable braced reference", "x ${" + secret + "}\n{$ X}\n", nil, true},
+		{"placeholders", "Caddyfile", "{$OPENAI_API_KEY} {env.ANTHROPIC_API_KEY} {$CODEX_HOME:/srv/x}\n", []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CODEX_HOME"}, false},
+		{"shell-style is literal text", "Caddyfile", "reverse_proxy $GEMINI_API_KEY ${CLAUDE_X}/y\nheader X \"sk" + "$OPENAI_PART${CODEX_REST}\"\n", nil, false},
+		{"an unreadable shell-style brace is literal text", "site.caddy", "x ${" + secret + "}\n", nil, false},
+		{"inside a quoted string", "Caddyfile", "header X-Key \"Bearer {env.X_API_KEY}\"\n", []string{"X_API_KEY"}, false},
+		{"literal operands", "Caddyfile", "header X-Name OPENAI_API_KEY\nrespond \"CODEX_HOME\" 200\nX_OPENAI_ORG 1CODEX_HOME\n", nil, false},
+		{"comments", "Caddyfile", "# {env.OPENAI_API_KEY} GEMINI_API_KEY\nexample.invalid { # $CODEX_HOME\n\trespond ok\n}\n", nil, false},
+		{"a '#' inside a word or quotes is not a comment", "Caddyfile", "respond \"#{env.OPENAI_ORG}\"\nredir /a#{$CODEX_HOME}\n", []string{"OPENAI_ORG", "CODEX_HOME"}, false},
+		{"other placeholders and dollars", "Caddyfile", "respond \"{http.request.uri} costs $5 or $$\"\npath_regexp ^/x$\n", nil, false},
+		{"names not like a key are read and not reported", "Caddyfile", "{env.LANG} {$PORT}\n", nil, false},
+		{"an unreadable env placeholder", "Caddyfile", "header X {env." + secret + "}\n", nil, true},
+		{"an unclosed env placeholder", "Caddyfile", "header X {env.OPENAI_API_KEY", nil, true},
+		{"an unreadable braced placeholder", "Caddyfile", "{$ X}\n", nil, true},
+		{"in JSON", "caddy.json", `{"apps":{"http":{"servers":{"a":{"listen":["{env.OPENAI_ORG}"]}}}}}`, []string{"OPENAI_ORG"}, false},
+		{"JSON: a literal dollar stays private", "caddy.json",
+			`{"handle":[{"handler":"headers","response":{"set":{"Authorization":["Bearer sk$OPENAI_PART${CODEX_REST}"],"X":["{$GEMINI_API_KEY}"]}}}]}`, nil, false},
+		{"JSON: an escaped placeholder is literal", "caddy.json", `{"body":"\\{env.OPENAI_ORG}"}`, nil, false},
+		{"JSON: a placeholder spelled with escapes", "caddy.json", `{"body":"{env.OPENAI_ORG}"}`, []string{"OPENAI_ORG"}, false},
+		{"JSON: a placeholder in a key", "caddy.json", `{"{env.CODEX_HOME}":1}`, []string{"CODEX_HOME"}, false},
+		{"JSON: an unreadable placeholder", "caddy.json", `{"body":"{env.` + secret + `}"}`, nil, true},
+		{"JSON that does not parse", "caddy.json", `{"body":"x"` + "\n", nil, true},
+		{"JSON nested too deep", "caddy.json", strings.Repeat("[", 100000) + strings.Repeat("]", 100000), nil, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, bad := releaseRefs(tc.in)
+			got, bad := releaseRefs(tc.file, tc.in)
 			if !reflect.DeepEqual(got, tc.want) || bad != tc.bad {
 				t.Errorf("got %q bad=%v, want %q bad=%v", got, bad, tc.want, tc.bad)
 			}
@@ -156,6 +169,9 @@ func TestCheckReleaseNamesOnlyReferences(t *testing.T) {
 	f := cleanFixture(t)
 	f.file(releaseDir+"/etc/caddy/Caddyfile", "# reverse_proxy {env.OPENAI_API_KEY}\nexample.invalid {\n\theader X-Note CODEX_HOME\n}\n")
 	f.file(releaseDir+"/etc/caddy/odd.caddy", "header X {env."+secret+"}\n")
+	f.file(releaseDir+"/etc/caddy/caddy.json", `{"apps":{"http":{"servers":{"a":{"routes":[{"handle":[{"handler":"headers",`+
+		`"response":{"set":{"Authorization":["Bearer sk-planted$OPENAI_PART${CODEX_REST}"]}}}]}]}}}}}`)
+	f.file(releaseDir+"/etc/caddy/shell.caddy", "header X \"Bearer sk-planted$GEMINI_PART\"\n")
 	f.file(releaseDir+"/etc/nftables/rules.nft", "define GEMINI_API_KEY = 1\ntable inet filter { comment \"ANTHROPIC_API_KEY\" }\n")
 	c := f.checker(testLists())
 	var r Report
@@ -176,7 +192,7 @@ func TestCheckReleaseNamesOnlyReferences(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, out := range []string{text.String(), js.String()} {
-		if strings.Contains(out, "sk-") || strings.Contains(out, secret) {
+		if strings.Contains(out, "sk-") || strings.Contains(out, secret) || strings.Contains(out, "_PART") || strings.Contains(out, "_REST") {
 			t.Errorf("a report copies the file's text:\n%s", out)
 		}
 	}

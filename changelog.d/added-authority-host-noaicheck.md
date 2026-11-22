@@ -24,9 +24,12 @@
   forbidden or not in `packages.allow` and, when the release pins one, a
   firewall rule set whose digest differs. `--phase pre`, before a switch,
   also reads the candidate release's own units and the variables its
-  front-end configuration refers to (Caddy's `{env.NAME}` and `{$NAME}`
-  and `$NAME`/`${NAME}`, never a comment or a literal, and a reference it
-  cannot read as `HIT incomplete release-syntax <file>`, never its text)
+  front-end configuration refers to, by format (in a Caddyfile Caddy's
+  `{env.NAME}` and `{$NAME}`, in Caddy's JSON, read as JSON, only
+  `{env.NAME}`; shell-style `$NAME` and `${NAME}` are literal text, never
+  matched, and so is every comment and literal, a `$` in a JSON value
+  included; a reference it cannot read, or JSON that does not parse, as
+  `HIT incomplete release-syntax <file>`, never its text)
   and leaves out the ports and the digest;
   `--phase post`, after it, runs everything; `full`, the default, checks
   the host as it is. `--require-policy`, which the switch passes, makes an

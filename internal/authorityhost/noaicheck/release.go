@@ -1,8 +1,10 @@
 package noaicheck
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"path"
 	"path/filepath"
@@ -28,9 +30,10 @@ const (
 
 // PathReleaseSyntax is the name of the incomplete hit for a front-end
 // configuration file holding a variable reference the check cannot read
-// ("{env." or "{$" or "${" not followed by a name and its closing brace):
-// "HIT incomplete release-syntax <file>". The hit names the file and
-// nothing of its content.
+// ("{env." or, in a Caddyfile, "{$" not followed by a name and its
+// closing brace) or, for Caddy's JSON, JSON it cannot parse:
+// "HIT incomplete release-syntax <file>". The hit names the file and a
+// fixed reason, nothing of its content.
 const PathReleaseSyntax = "release-syntax"
 
 // RunPhase runs the checks of one phase and returns the report:
@@ -95,9 +98,10 @@ func (c *Checker) RunPhase(phase, release string, listing []byte) (Report, error
 // a user unit, its EnvironmentFile= resolved in every user's context, any
 // other a system unit), and every file a unit's EnvironmentFile= names is
 // read on the host like any other. Every file beneath its etc/caddy is
-// read for the variables it refers to (see releaseRefs): each one named
-// like a provider key (see ProviderKeyName) is a hit of kind "env", and a
-// reference the check cannot read is "incomplete release-syntax <file>".
+// read, by its format, for the variables it refers to through Caddy's own
+// placeholders (see releaseRefs): each one named like a provider key (see
+// ProviderKeyName) is a hit of kind "env", and a reference the check
+// cannot read is "incomplete release-syntax <file>".
 // A hit names the file by its path within the root when the release is
 // beneath it, by its own path otherwise. A release folder that cannot be
 // opened is an error.
@@ -191,7 +195,7 @@ func (c *Checker) CheckRelease(dir string) error {
 			if !ok {
 				return
 			}
-			names, bad := releaseRefs(string(data))
+			names, bad := releaseRefs(p, string(data))
 			for _, n := range names {
 				c.hit(KindEnv, at(p), n)
 			}
@@ -228,18 +232,31 @@ func (c *Checker) releaseDisplay(dir string) string {
 	return strings.TrimSuffix(abs, "/")
 }
 
-// releaseRefs returns the variables a front-end configuration file (a
-// Caddyfile or Caddy's JSON) refers to that are named like a provider key,
-// once each, and whether it holds a reference it cannot read. Only a
-// recognised reference names a variable: Caddy's placeholders {env.NAME}
-// and {$NAME} ({$NAME:default} too) and the systemd-style $NAME and
-// ${NAME}. A comment (a '#' that starts a word outside quotes, to the end
-// of its line) is passed over, and so is every literal operand: a word
-// that merely looks like a variable's name is not one. A "{env.", "{$" or
-// "${" not followed by a valid name and its closing brace (or, for {$, a
-// ':' and a default) is a reference the check cannot read; the caller
-// reports the file, never the text.
-func releaseRefs(data string) ([]string, bool) {
+// releaseRefs returns the variables a front-end configuration file named
+// name refers to that are named like a provider key, once each, and
+// whether it holds a reference (or syntax) it cannot read. The format is
+// the file's: Caddy's native JSON for a name ending in ".json" (see
+// caddyJSONRefs), a Caddyfile otherwise (see caddyfileRefs). Only a
+// placeholder Caddy itself replaces names a variable: shell-style $NAME
+// and ${NAME} mean nothing to Caddy, so they are literal text, never
+// matched and never copied (a systemd unit's are read by the unit rules).
+// The caller reports a file it cannot read by its name and a fixed
+// reason, never its text.
+func releaseRefs(name, data string) ([]string, bool) {
+	if strings.HasSuffix(name, ".json") {
+		return caddyJSONRefs(data)
+	}
+	return caddyfileRefs(data)
+}
+
+// caddyfileRefs reads a Caddyfile for Caddy's placeholders {env.NAME} and
+// {$NAME} ({$NAME:default} too). A comment (a '#' that starts a word
+// outside quotes, to the end of its line) is passed over, and so is every
+// literal operand: a word that merely looks like a variable's name is not
+// one. A "{env." or "{$" not followed by a valid name and its closing
+// brace (or, for {$, a ':' and a default) is a reference the check cannot
+// read.
+func caddyfileRefs(data string) ([]string, bool) {
 	var r envParse
 	bad := false
 	var quote byte
@@ -273,10 +290,6 @@ func releaseRefs(data string) ([]string, bool) {
 			name, end = refName(rest[5:], "}")
 		case strings.HasPrefix(rest, "{$"):
 			name, end = refName(rest[2:], "}:")
-		case strings.HasPrefix(rest, "${"):
-			name, end = refName(rest[2:], "}")
-		case c == '$' && len(rest) > 1 && identStart(rest[1]):
-			name, end = refName(rest[1:], "")
 		default:
 			continue
 		}
@@ -288,6 +301,78 @@ func releaseRefs(data string) ([]string, bool) {
 		i += len(rest) - len(end) - 1
 	}
 	return r.names, bad
+}
+
+// maxJSONDepth bounds the nesting of a Caddy JSON file the check follows;
+// Caddy's own configuration nests a few dozen levels at most.
+const maxJSONDepth = 256
+
+// caddyJSONRefs reads Caddy's native JSON configuration as JSON, token by
+// token, and looks in every string (decoded: a key or a value) for the
+// one placeholder Caddy replaces in it that reads the environment,
+// {env.NAME}; a brace escaped for Caddy's replacer ("\{") is literal
+// text. Everything else, a literal '$' and Caddyfile's {$NAME} included,
+// is a literal value: private, never matched. An "{env." not followed by
+// a valid name and its closing brace, JSON that does not parse, and JSON
+// nested deeper than maxJSONDepth are what the check cannot read.
+func caddyJSONRefs(data string) ([]string, bool) {
+	var r envParse
+	bad := false
+	dec := json.NewDecoder(strings.NewReader(data))
+	dec.UseNumber()
+	depth := 0
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			if depth != 0 {
+				return r.names, true // cut short
+			}
+			break
+		}
+		if err != nil {
+			return r.names, true
+		}
+		switch v := tok.(type) {
+		case json.Delim:
+			if v == '{' || v == '[' {
+				depth++
+				if depth > maxJSONDepth {
+					return r.names, true
+				}
+			} else {
+				depth--
+			}
+		case string:
+			if envPlaceholders(v, &r) {
+				bad = true
+			}
+		}
+	}
+	return r.names, bad
+}
+
+// envPlaceholders adds to r the name of every {env.NAME} placeholder in
+// the decoded JSON string s, passing over one whose brace is escaped
+// ("\{env."), and reports whether s holds one it cannot read.
+func envPlaceholders(s string, r *envParse) bool {
+	bad := false
+	for i := 0; ; {
+		j := strings.Index(s[i:], "{env.")
+		if j < 0 {
+			return bad
+		}
+		k := i + j
+		i = k + len("{env.")
+		if k > 0 && s[k-1] == '\\' {
+			continue
+		}
+		name, _ := refName(s[i:], "}")
+		if name == "" {
+			bad = true
+			continue
+		}
+		r.add(name)
+	}
 }
 
 // refName reads the name of a reference at the start of s, up to one of
