@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"time"
 
 	"ataniq/internal/approval/door/doortest"
 	"ataniq/internal/approval/hostadapter"
+	"ataniq/internal/approval/ownerchannel"
+	"ataniq/internal/approval/ownerjournal"
 	"ataniq/internal/exchange/gitenv"
 	"ataniq/internal/leaddaemon"
 )
@@ -51,6 +54,23 @@ func init() {
 		},
 		banner: ownerBanner,
 	}
+}
+
+// openOwnerKeys opens the list of the owner's deciding keys, the file
+// keys.log in the owner folder, and returns it for the service, which closes it.
+// A list that cannot be opened (damaged, not private, held by another process)
+// is no list: the daemon still serves the approvals, its pairing and key
+// operations answer keys-unavailable, and the notice says why once. The file is
+// never repaired or started over, so a damaged list is never taken for an empty
+// one.
+func openOwnerKeys(stateDir string) ownerchannel.KeyStore {
+	path := filepath.Join(stateDir, hostadapter.OwnerDirName, ownerjournal.KeysFileName)
+	k, err := ownerjournal.OpenKeys(path)
+	if err != nil {
+		ownerNotice("the list of deciding keys cannot be opened, so pairing a phone and the keys are refused: " + leaddaemon.SafeText(err.Error()))
+		return nil
+	}
+	return k
 }
 
 // standInEnder ends a request at the stand-in door, which has a withdraw of
@@ -97,6 +117,7 @@ func buildOwnerService(stateDir string) (leaddaemon.OwnerService, func() error, 
 	cfg.Seat.Project, cfg.Seat.RoleName = sc.Project, sc.Role
 	cfg.Seat.Epoch, cfg.Seat.SeatRev = sc.Seat.Epoch, sc.Seat.SeatRev
 	standIn := doortest.New(cfg)
+	keys := openOwnerKeys(stateDir)
 	o, err := hostadapter.Open(context.Background(), hostadapter.OpenConfig{
 		Config: hostadapter.Config{
 			Git: git, Projects: []hostadapter.Project{sc.ProjectOf()}, Suite: suite, Now: time.Now,
@@ -104,8 +125,12 @@ func buildOwnerService(stateDir string) (leaddaemon.OwnerService, func() error, 
 		},
 		StateDir: stateDir, Door: standIn, Ender: standInEnder{standIn},
 		DropDir: sc.Drop, CollectProject: sc.Project,
+		Service: ownerchannel.Config{Keys: keys},
 	})
 	if err != nil {
+		if keys != nil {
+			_ = keys.Close()
+		}
 		return nil, nil, err
 	}
 	return o.Service, o.Close, nil

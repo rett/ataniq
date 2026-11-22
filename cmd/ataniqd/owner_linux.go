@@ -46,6 +46,15 @@ and "work", the folder the runs work in, both under a scratch root and outside
 the state folder, and the daemon refuses to start without them. Starting
 starts no sandbox; one starts when a request is verified. It is provisional and
 unqualified.
+
+The owner connection also pairs a phone: the console starts a pairing, the
+seat's call presents the credential, and the owner confirms at the desk. The
+credentials of the paired phones, the owner's deciding keys, are kept in the
+file owner/keys.log of the state folder (private, append-only, checked when it
+is read). A file that cannot be opened (damaged, not private, held elsewhere)
+is never repaired or started over: the daemon says so once at start, serves the
+approvals, and answers the pairing and key operations "keys-unavailable". The
+seat's call, seat.pair, is refused "unavailable": this build has no seat.
 `
 
 func init() { usage += ownerUsage }

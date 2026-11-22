@@ -367,7 +367,9 @@ func init() {
 }
 
 // mapError turns an error of the client protocol into the error this package
-// returns. A refusal with a code of the approval packages becomes a
+// returns. A refusal with a code of the pairing and key operations becomes a
+// [*PairError] with its fixed text. A refusal with a code of the approval
+// packages becomes a
 // *record.Error with that code; the limit's refusal carries its reason,
 // cleaned, because the limit's rules write it from numbers and the owner needs
 // it, and every other code carries no text. Everything else becomes an
@@ -375,6 +377,9 @@ func init() {
 func mapError(err error) error {
 	var e *clientapi.Error
 	if errors.As(err, &e) {
+		if code, ok := pairCodes[e.Code]; ok {
+			return &PairError{Code: code}
+		}
 		if code, ok := refusalCodes[e.Code]; ok {
 			detail := ""
 			if code == record.CodeLimitRefused {

@@ -3,6 +3,7 @@ package ownerchannel
 import (
 	"context"
 	"errors"
+	"io"
 	"time"
 
 	"ataniq/internal/approval/door"
@@ -351,6 +352,18 @@ type Config struct {
 	// ApprovalLife is how long an approval lasts from its decision. The
 	// zero value is 30 minutes, as the design has it.
 	ApprovalLife time.Duration
+
+	// Keys is the list of the owner's deciding keys, the credentials of the
+	// phones he paired; the service owns it from here and closes it with
+	// itself. It is optional: without it every pairing and key operation is
+	// refused with [ErrKeysUnavailable], and the rest of the service is as
+	// it was. A daemon whose list could not be opened gives none, so a
+	// damaged list refuses the operations and is never taken for an empty
+	// one.
+	Keys KeyStore
+	// PairRand is the random source of the pairing codes; the default is
+	// the system's. A test gives its own.
+	PairRand io.Reader
 
 	// Notice, when set, is called with a host-written line for each thing
 	// the operator should see: an alert, a failed reply.

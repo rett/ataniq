@@ -1,0 +1,24 @@
+ PAIR A PHONE
+
+ Pair a phone so that it can approve cards. The console draws a QR code; the
+ phone scans it, then the phone and this screen show the same six words. You
+ compare them and confirm here. Nothing is trusted until you do.
+
+
+ Enter: start   Esc: close
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
