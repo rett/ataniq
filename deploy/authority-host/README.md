@@ -224,14 +224,26 @@ checks against the new release's lists.
 What it detects, by kind:
 
 - `binary`: a file, link or folder named exactly like an executable name of
-  `ai-names.list` in `/usr/bin`, `/usr/local/bin`, `/usr/local/sbin`,
-  `/usr/sbin`, `/bin`, `/sbin` or `/opt` (a fixed list, not the PATH of
-  whoever runs it), in `/opt` down to four levels, in any
-  `node_modules/.bin`, and in the install folders of every home (the homes
-  of `/etc/passwd`, `/root` and every folder in `/home`): `.local/bin`,
-  `.cargo/bin` and the mise, npm, pnpm, volta, nvm, uv and pipx trees.
+  `ai-names.list`:
+  - in `/usr/bin`, `/usr/sbin`, `/bin`, `/sbin`, `/usr/local/bin` or
+    `/usr/local/sbin` (a fixed list, not the PATH of whoever runs it);
+  - anywhere in `/usr/local` and `/opt`, at every depth;
+  - in any `node_modules/.bin` there, in `/usr/lib/node_modules` or in a
+    home;
+  - in every home (the homes of `/etc/passwd`, `/root` and every folder in
+    `/home`; a home in `/proc`, `/sys` or `/dev` is not walked): in any
+    folder named `bin` at most three levels below it (`bin`, `.local/bin`,
+    `.cargo/bin`, `go/bin`, `src/tool/bin` ...), also when `bin`,
+    `.local/bin`, `.cargo/bin` or `go/bin` is a link to elsewhere, anywhere
+    in the mise, npm, pnpm, volta, nvm, uv and pipx install folders, and,
+    as a regular executable file, anywhere at most six levels below it.
+
+  Every home, `/usr/local` and `/opt` are walked completely, down to 40
+  levels; a deeper folder is not entered and the run is
+  `HIT incomplete <folder> depth`.
 - `tool`: `mise`, `npm`, `npx`, `node`, `nodejs`, `uv`, `uvx`, `pipx`,
-  `pnpm`, `yarn`, `bun` or `deno` in the same places.
+  `pnpm`, `yarn`, `bun` or `deno` in the same places, except as a plain
+  executable file elsewhere in a home.
 - `credential`: a credential or config path of `ai-names.list` (the
   entries starting with `.`, such as `.claude` or `.config/opencode`) in
   any home, in `/root` or in `/`.
@@ -294,10 +306,10 @@ Limits, said once:
 - A renamed binary is not caught by name; the package allowlist and the
   egress filter cover that. Names are matched exactly, and the lists need
   upkeep as tools appear.
-- `/opt` is looked into four levels deep, install folders and the search
-  for `node_modules` eight; a folder deeper than that is not entered, and
-  the run says so (`HIT incomplete`). A tool anywhere outside the places
-  above is left to the package allowlist.
+- A tool outside the places above (say in `/srv`, or an executable file
+  more than six levels down in a home and outside its bin folders) is not
+  caught by name; it is left to the package allowlist and the egress
+  filter.
 - A process that renames itself is not caught by name.
 - Ports are those of the network namespace the check runs in; UDP is not
   checked.

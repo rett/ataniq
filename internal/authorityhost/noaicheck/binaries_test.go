@@ -1,6 +1,9 @@
 package noaicheck
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestCheckBinaries(t *testing.T) {
 	bin := func(p string) Hit { return Hit{Kind: KindBinary, Path: p} }
@@ -16,8 +19,36 @@ func TestCheckBinaries(t *testing.T) {
 		{"opt top", func(f *fixture) { f.file("opt/claude", "x") }, []Hit{bin("/opt/claude")}},
 		{"opt at depth 4", func(f *fixture) { f.file("opt/a/b/c/claude", "x") },
 			[]Hit{bin("/opt/a/b/c/claude")}},
-		{"opt below depth 4 is not looked into, and that is said", func(f *fixture) { f.file("opt/a/b/c/d/claude", "x") },
-			[]Hit{{Kind: KindIncomplete, Path: "/opt", Detail: DetailDepth}}},
+		{"opt at any depth", func(f *fixture) { f.file("opt/a/b/c/d/e/f/g/claude", "x") },
+			[]Hit{bin("/opt/a/b/c/d/e/f/g/claude")}},
+		{"usr/local completely", func(f *fixture) { f.file("usr/local/share/x/y/z/codex", "x") },
+			[]Hit{bin("/usr/local/share/x/y/z/codex")}},
+		{"a tree deeper than the walk goes is incomplete", func(f *fixture) {
+			f.dir("opt/" + strings.Repeat("d/", treeDepth+1))
+		}, []Hit{{Kind: KindIncomplete, Path: "/opt", Detail: DetailDepth}}},
+		{"home bin", func(f *fixture) { f.file("home/user/bin/codex", "x") }, []Hit{bin("/home/user/bin/codex")}},
+		{"home go/bin", func(f *fixture) { f.file("home/user/go/bin/claude", "x") }, []Hit{bin("/home/user/go/bin/claude")}},
+		{"a bin folder three levels below a home", func(f *fixture) { f.file("home/user/src/tool/bin/claude", "x") },
+			[]Hit{bin("/home/user/src/tool/bin/claude")}},
+		{"a bin folder four levels below a home is not one", func(f *fixture) {
+			f.file("home/user/a/b/c/bin/claude", "not executable")
+		}, nil},
+		{"an executable file in a home", func(f *fixture) { f.exe("home/user/a/b/c/d/codex") },
+			[]Hit{bin("/home/user/a/b/c/d/codex")}},
+		{"an executable file below six levels", func(f *fixture) { f.exe("home/user/a/b/c/d/e/f/codex") }, nil},
+		{"a plain file in a home", func(f *fixture) { f.file("home/user/notes/claude", "x") }, nil},
+		{"a linked bin folder", func(f *fixture) {
+			mustRemoveAll(f, "home/user/.local/bin")
+			f.file("srv/tools/bin/claude", "x")
+			f.link("home/user/.local/bin", "/srv/tools/bin")
+		}, []Hit{bin("/srv/tools/bin/claude")}},
+		{"a deep node_modules/.bin in a home", func(f *fixture) {
+			f.link("home/user/a/b/c/d/e/f/g/h/i/node_modules/.bin/claude", "../x/cli.js")
+		}, []Hit{bin("/home/user/a/b/c/d/e/f/g/h/i/node_modules/.bin/claude")}},
+		{"a home in proc is not walked", func(f *fixture) {
+			f.file("etc/passwd", "rtkit:x:133:133::/proc:/usr/bin/nologin\n")
+			f.exe("proc/1/root/claude")
+		}, nil},
 		{"a folder named like a tool", func(f *fixture) { f.dir("opt/codex") }, []Hit{bin("/opt/codex")}},
 		{"home .local/bin", func(f *fixture) { f.file("home/user/.local/bin/claude", "x") },
 			[]Hit{bin("/home/user/.local/bin/claude")}},
@@ -65,6 +96,8 @@ func TestCheckTools(t *testing.T) {
 		{"uv in a home", func(f *fixture) { f.file("home/user/.local/bin/uv", "x") },
 			[]Hit{tool("/home/user/.local/bin/uv")}},
 		{"pipx in opt", func(f *fixture) { f.file("opt/py/bin/pipx", "x") }, []Hit{tool("/opt/py/bin/pipx")}},
+		{"node in a home bin", func(f *fixture) { f.file("home/user/bin/node", "x") }, []Hit{tool("/home/user/bin/node")}},
+		{"an installer as a plain executable elsewhere in a home", func(f *fixture) { f.exe("home/user/src/npm") }, nil},
 		{"nodejs", func(f *fixture) { f.file("usr/sbin/nodejs", "x") }, []Hit{tool("/usr/bin/nodejs")}},
 		{"an agent name is not a tool", func(f *fixture) { f.file("usr/bin/claude", "x") }, nil},
 	}, (*Checker).CheckTools)

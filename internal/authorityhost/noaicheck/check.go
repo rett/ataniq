@@ -265,7 +265,9 @@ func field(s string) string {
 }
 
 // homes are the home folders to look into: every home in etc/passwd except
-// "/", root, and every folder in home/, each resolved and listed once.
+// "/", root, and every folder in home/, each resolved and listed once. A
+// home inside the kernel's own trees (proc/, sys/, dev/), such as a service
+// user's "/proc", is not a place files are put and is not walked.
 func (c *Checker) homeFolders() []string {
 	if c.homes != nil {
 		return c.homes
@@ -299,7 +301,7 @@ func (c *Checker) homeFolders() []string {
 			c.unreadable(rel, err)
 			continue
 		}
-		if r == "." || seen[r] {
+		if r == "." || seen[r] || kernelTree(r) {
 			continue
 		}
 		_, fi, err := c.t.lstat(r)
@@ -310,4 +312,10 @@ func (c *Checker) homeFolders() []string {
 		c.homes = append(c.homes, r)
 	}
 	return c.homes
+}
+
+// kernelTree reports whether rel is in proc/, sys/ or dev/.
+func kernelTree(rel string) bool {
+	first, _, _ := strings.Cut(rel, "/")
+	return first == "proc" || first == "sys" || first == "dev"
 }
