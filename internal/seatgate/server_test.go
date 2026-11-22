@@ -52,8 +52,22 @@ type env struct {
 // configuration before it starts; it may be nil.
 func startServer(t *testing.T, mut func(*ServerConfig), h Handler) *env {
 	t.Helper()
-	e := &env{t: t, srv: newID(t, "gate"), seat: newID(t, "seat"), done: make(chan error, 1)}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	return startServerAt(t, "127.0.0.1:0", newID(t, "gate"), newID(t, "seat"), mut, h)
+}
+
+// startServerAt is startServer on a given address, with given identities, so
+// that a server can be started again where one stopped.
+func startServerAt(t *testing.T, addr string, srv, seat Identity, mut func(*ServerConfig), h Handler) *env {
+	t.Helper()
+	e := &env{t: t, srv: srv, seat: seat, done: make(chan error, 1)}
+	var ln net.Listener
+	var err error
+	for i := 0; i < 100; i++ { // a port just closed may take a moment to be free
+		if ln, err = net.Listen("tcp", addr); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,7 +361,7 @@ func TestServerMapsHandlerErrorsToCodes(t *testing.T) {
 		case "t.coded":
 			return nil, testCoded{"no-such-card"}
 		case "t.plain":
-			return nil, errors.New("SECRET path /home/someone/key")
+			return nil, errors.New("SECRET path /srv/example/key")
 		case "t.wrapped":
 			return nil, fmt.Errorf("SECRET context: %w", NewCodedError("card-expired"))
 		case "t.badcode":
@@ -384,7 +398,7 @@ func TestServerMapsHandlerErrorsToCodes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", c.op, err)
 		}
-		if strings.Contains(string(p), "SECRET") || strings.Contains(string(p), "/home") {
+		if strings.Contains(string(p), "SECRET") || strings.Contains(string(p), "/srv") {
 			t.Errorf("%s: text leaked: %s", c.op, p)
 		}
 		resp, err := decodeResponse(p)

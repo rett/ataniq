@@ -91,4 +91,29 @@
 // its handshake. So a peer that cannot be pinned, but can reach the port, can
 // hold places for up to the handshake time by not finishing; the places are not
 // kept for pinned keys. The port is for the owner's firewall to restrict.
+// # The client
+//
+// [Dial] connects to the gate (TLS, then hello) and returns a [Client] that
+// keeps the connection up; [NewClient] and [Client.Run] do the same for a
+// caller that wants the supervisor in a goroutine of its own. [Client.Call]
+// makes one request over the connection and waits for its answer, many at
+// once if the caller likes, each by its own id.
+//
+// Call never waits longer than its context. With no connection it returns
+// [ErrDisconnected] at once, and so it does when the connection is lost while
+// it waits (the request may or may not have run: the caller decides, nothing is
+// retried or queued here). A coded refusal is a [*RemoteError]. If the gate
+// does not take a request's bytes, a write ends at the context, and then the
+// connection is given up and redialled, since a frame may be half sent.
+//
+// The client sends seat.ping every 15 s and gives up a connection from which
+// no frame has come for 45 s. It redials with exponential backoff: 1 s doubled
+// to 30 s, jittered into the upper half of each step, starting over after a
+// connection is made. [ClientConfig] can replace the clock (Sleep), the
+// random source (Rand) and the dialler, so a test runs the schedule with no
+// waiting. [Client.Connected] says since when the connection has stood.
+// [Client.LastError] says why there is none.
+//
+// A frame from the gate that breaks the rules of the wire (an answer to a
+// request never made, a repeated key, a request) ends the connection.
 package seatgate

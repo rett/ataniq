@@ -217,6 +217,7 @@ type frameMsg struct {
 type srvConn struct {
 	s      *server
 	tc     *tls.Conn
+	raw    net.Conn // closed to end the connection: a TLS close would wait to send an alert to a peer that does not read
 	peer   Peer
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -265,6 +266,7 @@ func (s *server) serveConn(raw net.Conn) {
 	c := &srvConn{
 		s:          s,
 		tc:         tc,
+		raw:        raw,
 		peer:       Peer{Fingerprint: spkiFingerprint(certs[0])},
 		ctx:        ctx,
 		cancel:     cancel,
@@ -346,8 +348,7 @@ func (c *srvConn) finish(graceful bool) {
 		t.Stop()
 	}
 	c.cancel()
-	c.tc.SetWriteDeadline(time.Now().Add(time.Second))
-	c.tc.Close()
+	c.raw.Close()
 	c.waiters.Wait()
 	<-c.readerDone
 }
@@ -356,7 +357,7 @@ func (c *srvConn) finish(graceful bool) {
 // failed write: the loop sees the context done and finishes.
 func (c *srvConn) kill() {
 	c.cancel()
-	c.tc.Close()
+	c.raw.Close()
 }
 
 // reply writes one response. A write that fails ends the connection.
