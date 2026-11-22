@@ -31,6 +31,16 @@ connection.
   switch.lock             the lock of a running switch
 ```
 
+- The switch trusts `/var/lib/authority-host`, `/opt/authority-host` and
+  `/opt/authority-host/releases` only when each of them, and every folder
+  above it up to the root, is a real folder (not a symbolic link), owned by
+  root and not writable by its group or by others; otherwise it stops
+  before it changes or records anything. (When `ah-switch` does not run as
+  root, as in tests, the folders of the user running it are accepted too.)
+  It creates the state folder, mode 0755, when it is missing, holds each
+  folder open while it works, and opens the lock, `highest-counter` and
+  `deploy.json` relative to that folder without following a link. It reads
+  only regular files of a bounded size there.
 - The id is the counter, zero-padded to at least four digits, a hyphen and the
   short commit in lowercase hex (7 to 40 characters).
 - `MANIFEST` holds the keys `id`, `counter`, `commit`, `built_on` (the class of

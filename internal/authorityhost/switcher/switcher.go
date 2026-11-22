@@ -78,6 +78,7 @@ type Config struct {
 	NoAICheck      string // the no-AI check program; default the release's bin/ah-noaicheck
 	Runner         Runner
 	Verifier       Verifier
+	Owner          OwnerCheck // default DefaultOwnerCheck
 	Out            io.Writer // the steps
 	Err            io.Writer // refusals of the arguments and of the lock; default Out
 	Now            func() time.Time
@@ -87,6 +88,11 @@ type Config struct {
 // Switcher runs switches with one Config.
 type Switcher struct {
 	cfg Config
+	// The pinned folders: var/lib/authority-host (nil in a dry run when it
+	// does not exist), opt/authority-host and its releases/.
+	stateRoot *os.Root
+	baseRoot  *os.Root
+	relRoot   *os.Root
 	// afterPrevious, when set, is called between writing previous and
 	// renaming current; an error stops the switch there as a crash would.
 	afterPrevious func() error
@@ -102,6 +108,9 @@ func New(cfg Config) *Switcher {
 	}
 	if cfg.Runner == nil {
 		cfg.Runner = ExecRunner{}
+	}
+	if cfg.Owner == nil {
+		cfg.Owner = DefaultOwnerCheck
 	}
 	if cfg.Verifier == nil {
 		cfg.Verifier = SSHVerifier{Runner: cfg.Runner}
@@ -180,8 +189,6 @@ func (s *Switcher) targetID(target string) (ReleaseID, error) {
 // attempt is the state of one switch.
 type attempt struct {
 	rec        Record
-	current    string // path of the current link
-	previous   string // path of the previous link
 	oldTarget  string // what current pointed at, as written in the link
 	oldExists  bool
 	prevTarget string // what previous pointed at
@@ -228,21 +235,23 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	}
 	s.printf("ah-switch: %s (mode %s, root %s%s)", what, s.cfg.Mode, q(s.cfg.Root), dry)
 
-	lk, code := s.lock()
+	lk, code := s.lock(false)
 	if lk == nil {
 		return code
 	}
 	defer lk.release()
+	defer s.closeRoots()
 
 	a := &attempt{
-		current:  filepath.Join(s.base(), "current"),
-		previous: filepath.Join(s.base(), "previous"),
 		rec: Record{
 			ID:       arg,
 			Mode:     s.cfg.Mode,
 			Rollback: rollback,
 			Check:    CheckNotRun,
 		},
+	}
+	if code, done := s.openBase(a); done {
+		return code
 	}
 	if code, done := s.readState(a); done {
 		return code
@@ -276,7 +285,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	relDir := filepath.Join(s.base(), "releases", id.Name)
 
 	// 1. Verify.
-	rel, err := openRelease(id, relDir)
+	rel, err := openRelease(id, s.relRoot, relDir)
 	if err != nil {
 		return s.fail(a, 1, err)
 	}
@@ -304,10 +313,11 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	s.step(1, "MANIFEST: commit %s, built on %s, %s, package snapshot %s", q(manifest.Commit), q(manifest.BuiltOn), q(manifest.GoVersion), q(manifest.PackageSnapshot))
 
 	// 2. Counter.
-	highestPath := filepath.Join(s.stateDir(), HighestFile)
-	highest, err := readHighest(highestPath)
-	if err != nil {
-		return s.fail(a, 2, err)
+	var highest uint64
+	if s.stateRoot != nil {
+		if highest, err = readHighest(s.stateRoot); err != nil {
+			return s.fail(a, 2, err)
+		}
 	}
 	if rollback {
 		s.step(2, "rollback to previous: the counter rule does not apply; the highest counter stays %d", highest)
@@ -402,7 +412,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		return ExitOK
 	}
 	if a.oldExists {
-		if err := replaceLink(a.previous, a.oldTarget); err != nil {
+		if err := replaceLink(s.baseRoot, "previous", a.oldTarget); err != nil {
 			return s.fail(a, 6, failf(CodeLinkFailed, "previous: %s", q(err.Error())))
 		}
 	}
@@ -411,7 +421,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 			return ExitFailed
 		}
 	}
-	if err := replaceLink(a.current, newTarget); err != nil {
+	if err := replaceLink(s.baseRoot, "current", newTarget); err != nil {
 		s.restorePrevious(a)
 		return s.fail(a, 6, failf(CodeLinkFailed, "current: %s", q(err.Error())))
 	}
@@ -432,7 +442,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	// 8. Record.
 	a.rec.Result = ResultOK
 	if !rollback {
-		if err := writeAtomic(highestPath, []byte(fmt.Sprintf("%d\n", id.Counter)), 0o644); err != nil {
+		if err := writeFileIn(s.stateRoot, HighestFile, []byte(fmt.Sprintf("%d\n", id.Counter)), 0o644); err != nil {
 			s.setFailure(a, stepNames[8], failf(CodeRecordFailed, "%s not written: %s", HighestFile, q(err.Error())))
 			s.step(8, "FAILED: %s: %s", a.rec.Error, a.rec.Detail)
 			s.record(a)
@@ -448,32 +458,66 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	return ExitOK
 }
 
-// lock takes the switch lock. A dry run creates nothing: it takes the lock only
-// when the lock file is there. On failure it returns nil and the exit code.
-func (s *Switcher) lock() (*lock, int) {
-	path := filepath.Join(s.stateDir(), LockFile)
-	if !s.cfg.Dry {
-		if err := os.MkdirAll(s.stateDir(), 0o755); err != nil {
-			s.errorf("%s", q(err.Error()))
-			return nil, ExitFailed
-		}
+// lock opens the state folder, checking it and every folder above it up to
+// the root (see openTrusted), and takes the switch lock in it: exclusive, or
+// shared for status. A dry run and status create nothing: without the state
+// folder or its lock file nobody holds the lock. On failure it returns nil
+// and the exit code; nothing is recorded, since the state folder is not
+// trusted.
+func (s *Switcher) lock(shared bool) (*lock, int) {
+	create := !s.cfg.Dry && !shared
+	state, err := s.openTrusted(StateDir, create)
+	if !create && errors.Is(err, fs.ErrNotExist) {
+		return &lock{}, ExitOK
 	}
-	lk, err := takeLock(path, !s.cfg.Dry)
+	if err != nil {
+		s.errorf("state folder %s: %s", q(s.stateDir()), describe(err))
+		return nil, ExitFailed
+	}
+	lk, err := takeLock(state, create, shared)
 	if errors.Is(err, errLocked) {
-		s.errorf("%v (%s); nothing done", err, q(path))
+		state.Close()
+		s.errorf("%v (%s); nothing done", err, q(filepath.Join(s.stateDir(), LockFile)))
 		return nil, ExitLocked
 	}
 	if err != nil {
-		s.errorf("lock: %s", q(err.Error()))
+		state.Close()
+		s.errorf("lock: %s", describe(err))
 		return nil, ExitFailed
 	}
+	s.stateRoot = state
 	return lk, ExitOK
+}
+
+// openBase opens opt/authority-host and its releases/ folder, checked as the
+// state folder is.
+func (s *Switcher) openBase(a *attempt) (int, bool) {
+	var err error
+	if s.baseRoot, err = s.openTrusted(BaseDir, false); err == nil {
+		s.relRoot, err = s.openTrusted(filepath.Join(BaseDir, "releases"), false)
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		err = failf(CodeStateInvalid, "%s or its releases folder is missing", BaseDir)
+	}
+	if err != nil {
+		return s.failState(a, err), true
+	}
+	return 0, false
+}
+
+func (s *Switcher) closeRoots() {
+	for _, r := range []*os.Root{s.stateRoot, s.baseRoot, s.relRoot} {
+		if r != nil {
+			r.Close()
+		}
+	}
+	s.stateRoot, s.baseRoot, s.relRoot = nil, nil, nil
 }
 
 // readState reads current, previous and the last record.
 func (s *Switcher) readState(a *attempt) (int, bool) {
 	var err error
-	a.oldTarget, a.oldExists, err = readLink(a.current)
+	a.oldTarget, a.oldExists, err = readLink(s.baseRoot, "current")
 	if err != nil {
 		return s.failState(a, err), true
 	}
@@ -485,13 +529,15 @@ func (s *Switcher) readState(a *attempt) (int, bool) {
 		a.rec.PreviousID = id.Name
 		a.rec.CurrentID = id.Name
 	}
-	a.prevTarget, a.prevExists, err = readLink(a.previous)
+	a.prevTarget, a.prevExists, err = readLink(s.baseRoot, "previous")
 	if err != nil {
 		return s.failState(a, err), true
 	}
-	last, _, err := readRecord(filepath.Join(s.stateDir(), DeployFile))
-	if err != nil {
-		s.printf("warning: %s; the package snapshot is taken as unknown", describe(err))
+	var last Record
+	if s.stateRoot != nil {
+		if last, _, err = readRecord(s.stateRoot); err != nil {
+			s.printf("warning: %s; the package snapshot is taken as unknown", describe(err))
+		}
 	}
 	a.rec.PackageSnapshot = last.PackageSnapshot
 	current := "none"
@@ -613,7 +659,7 @@ func (s *Switcher) goBack(ctx context.Context, a *attempt, step string, cause er
 		s.printf("result: failed at %s; no earlier release, current stays at %s", step, a.rec.CurrentID)
 		return ExitFailed
 	}
-	if err := replaceLink(a.current, a.oldTarget); err != nil {
+	if err := replaceLink(s.baseRoot, "current", a.oldTarget); err != nil {
 		a.rec.Result = ResultFailed
 		a.rec.Detail += "; going back failed: " + q(err.Error())
 		s.record(a)
@@ -643,9 +689,9 @@ func (s *Switcher) goBack(ctx context.Context, a *attempt, step string, cause er
 func (s *Switcher) restorePrevious(a *attempt) {
 	var err error
 	if a.prevExists {
-		err = replaceLink(a.previous, a.prevTarget)
-	} else if err = os.Remove(a.previous); errors.Is(err, fs.ErrNotExist) {
-		err = nil
+		err = replaceLink(s.baseRoot, "previous", a.prevTarget)
+	} else {
+		err = removeFileIn(s.baseRoot, "previous")
 	}
 	if err != nil {
 		s.printf("warning: previous not put back: %s", q(err.Error()))
@@ -654,13 +700,13 @@ func (s *Switcher) restorePrevious(a *attempt) {
 
 // record writes deploy.json. A dry run records nothing.
 func (s *Switcher) record(a *attempt) error {
-	if s.cfg.Dry {
+	if s.cfg.Dry || s.stateRoot == nil {
 		return nil
 	}
 	a.rec.Time = s.cfg.Now().UTC().Format(time.RFC3339)
 	data, err := json.MarshalIndent(a.rec, "", "  ")
 	if err == nil {
-		err = writeAtomic(filepath.Join(s.stateDir(), DeployFile), append(data, '\n'), 0o644)
+		err = writeFileIn(s.stateRoot, DeployFile, append(data, '\n'), 0o644)
 	}
 	if err != nil {
 		s.printf("ah-switch: %s not written: %s", DeployFile, q(err.Error()))
@@ -684,33 +730,63 @@ func describe(err error) string {
 	return code + ": " + detail
 }
 
-// Status prints current, previous, the highest counter and the last record.
-func Status(root string, w io.Writer) error {
-	s := New(Config{Root: root})
+// Status prints current, previous, the highest counter and the last record
+// to Out. It checks the state folder and the release folder as a switch does
+// and changes nothing.
+func (s *Switcher) Status() int {
+	if !filepath.IsAbs(s.cfg.Root) {
+		s.errorf("--root %s is not an absolute path", q(s.cfg.Root))
+		return ExitUsage
+	}
+	lk, code := s.lock(true)
+	if lk == nil {
+		return code
+	}
+	defer lk.release()
+	defer s.closeRoots()
+	if err := s.status(s.cfg.Out); err != nil {
+		s.errorf("status: %s", describe(err))
+		return ExitFailed
+	}
+	return ExitOK
+}
+
+func (s *Switcher) status(w io.Writer) error {
+	base, err := s.openTrusted(BaseDir, false)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	s.baseRoot = base
 	for _, name := range []string{"current", "previous"} {
-		target, ok, err := readLink(filepath.Join(s.base(), name))
-		switch {
-		case err != nil:
-			return err
-		case !ok:
-			fmt.Fprintf(w, "%s: none\n", name)
-		default:
-			id, err := s.targetID(target)
-			if err != nil {
-				return fmt.Errorf("%s: %w", name, err)
+		var target string
+		var ok bool
+		if base != nil {
+			if target, ok, err = readLink(base, name); err != nil {
+				return err
 			}
-			fmt.Fprintf(w, "%s: %s\n", name, id.Name)
+		}
+		if !ok {
+			fmt.Fprintf(w, "%s: none\n", name)
+			continue
+		}
+		id, err := s.targetID(target)
+		if err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		fmt.Fprintf(w, "%s: %s\n", name, id.Name)
+	}
+	var highest uint64
+	var rec Record
+	var ok bool
+	if s.stateRoot != nil {
+		if highest, err = readHighest(s.stateRoot); err != nil {
+			return err
+		}
+		if rec, ok, err = readRecord(s.stateRoot); err != nil {
+			return err
 		}
 	}
-	highest, err := readHighest(filepath.Join(s.stateDir(), HighestFile))
-	if err != nil {
-		return err
-	}
 	fmt.Fprintf(w, "highest counter: %d\n", highest)
-	rec, ok, err := readRecord(filepath.Join(s.stateDir(), DeployFile))
-	if err != nil {
-		return err
-	}
 	if !ok {
 		fmt.Fprintln(w, "last switch: none recorded")
 		return nil

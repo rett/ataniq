@@ -12,6 +12,7 @@ import (
 // names a thing is an identifier quoted by q.
 const (
 	CodeStateInvalid     = "state-invalid"      // current, previous or a state file is not what the switch writes
+	CodeUntrusted        = "untrusted"          // a folder or file the switch trusts has the wrong owner, mode or type
 	CodeReleaseMissing   = "release-missing"    // no release folder of that id
 	CodeReleaseNotFolder = "release-not-folder" // the release name is a link or not a folder
 	CodeBadEntry         = "bad-entry"          // a link, device, fifo, socket or hard-linked file in a release
@@ -35,11 +36,11 @@ const (
 	CodeNoAICheckFailed  = "noaicheck-failed"   // the no-AI check did not exit 0
 	CodeValidatorFailed  = "validator-failed"   // a validator did not exit 0
 	CodePackageFailed    = "package-step-failed"
-	CodeLinkFailed       = "link-failed"     // a link could not be written
-	CodeReloadFailed     = "reload-failed"   // a reload command did not exit 0
-	CodeHealthFailed     = "health-failed"   // the health check did not pass in time
-	CodeRecordFailed     = "record-failed"   // a state file could not be written
-	CodeIOError          = "io-error"        // any other error of the system
+	CodeLinkFailed       = "link-failed"   // a link could not be written
+	CodeReloadFailed     = "reload-failed" // a reload command did not exit 0
+	CodeHealthFailed     = "health-failed" // the health check did not pass in time
+	CodeRecordFailed     = "record-failed" // a state file could not be written
+	CodeIOError          = "io-error"      // any other error of the system
 	CodeNoEarlierRelease = "no-earlier-release"
 )
 

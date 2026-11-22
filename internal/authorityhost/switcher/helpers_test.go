@@ -147,6 +147,19 @@ func (e *env) rollBack(which string) int {
 	return code
 }
 
+// status runs status and returns what it printed; it fails the test when
+// status does not exit 0.
+func (e *env) status(mod ...func(*Config)) string {
+	e.t.Helper()
+	code := e.switcher(mod...).Status()
+	out := e.out.String()
+	e.out.Reset()
+	if code != ExitOK {
+		e.t.Fatalf("status: exit %d\n%s", code, out)
+	}
+	return out
+}
+
 func (e *env) relDir(id string) string {
 	return filepath.Join(e.root, BaseDir, "releases", id)
 }

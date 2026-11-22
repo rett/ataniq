@@ -3,10 +3,8 @@ package switcher
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -44,9 +42,13 @@ const (
 	CheckNotRun = "not run"
 )
 
-// readRecord reads deploy.json; a missing file is an empty record.
-func readRecord(path string) (Record, bool, error) {
-	data, err := os.ReadFile(path)
+// maxStateFile bounds the state files the switch reads.
+const maxStateFile = 1 << 20
+
+// readRecord reads deploy.json from the state folder; a missing file is an
+// empty record.
+func readRecord(state *os.Root) (Record, bool, error) {
+	data, err := readFileIn(state, DeployFile, maxStateFile)
 	if errors.Is(err, fs.ErrNotExist) {
 		return Record{}, false, nil
 	}
@@ -60,15 +62,16 @@ func readRecord(path string) (Record, bool, error) {
 	return rec, true, nil
 }
 
-// readHighest reads the highest-counter file; a missing file is 0. Anything
-// else that is not one decimal number is an error, never a guess.
-func readHighest(path string) (uint64, error) {
-	data, err := os.ReadFile(path)
+// readHighest reads the highest-counter file of the state folder; a missing
+// file is 0. Anything else that is not one decimal number is an error, never
+// a guess, and its text is not repeated.
+func readHighest(state *os.Root) (uint64, error) {
+	data, err := readFileIn(state, HighestFile, 64)
 	if errors.Is(err, fs.ErrNotExist) {
 		return 0, nil
 	}
 	if err != nil {
-		return 0, err
+		return 0, failf(CodeCounterInvalid, "%s cannot be read", HighestFile)
 	}
 	n, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
 	if err != nil {
@@ -77,56 +80,10 @@ func readHighest(path string) (uint64, error) {
 	return n, nil
 }
 
-// writeAtomic writes a file by writing a temporary file in the same folder,
-// syncing it and renaming it over the name, then syncing the folder.
-func writeAtomic(path string, data []byte, perm fs.FileMode) error {
-	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	ok := false
-	defer func() {
-		if !ok {
-			os.Remove(tmp)
-		}
-	}()
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Chmod(perm); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return err
-	}
-	ok = true
-	return syncDir(dir)
-}
-
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	return d.Sync()
-}
-
-// readLink reads a symbolic link; a missing name is not an error, a name that
-// is something other than a symbolic link is.
-func readLink(path string) (target string, exists bool, err error) {
-	info, err := os.Lstat(path)
+// readLink reads the symbolic link name of the folder r; a missing name is
+// not an error, a name that is something other than a symbolic link is.
+func readLink(r *os.Root, name string) (target string, exists bool, err error) {
+	info, err := r.Lstat(name)
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", false, nil
 	}
@@ -134,30 +91,31 @@ func readLink(path string) (target string, exists bool, err error) {
 		return "", false, err
 	}
 	if info.Mode()&fs.ModeSymlink == 0 {
-		return "", false, fmt.Errorf("%s is not a symbolic link", path)
+		return "", false, failf(CodeStateInvalid, "%s is not a symbolic link", name)
 	}
-	target, err = os.Readlink(path)
+	target, err = r.Readlink(name)
 	if err != nil {
 		return "", false, err
 	}
 	return target, true, nil
 }
 
-// replaceLink points name at target without a moment where name is missing:
-// it makes a new link next to it and renames that over it.
-func replaceLink(name, target string) error {
+// replaceLink points name of the folder r at target without a moment where
+// name is missing: it makes a new link next to it and renames that over it,
+// then syncs the folder.
+func replaceLink(r *os.Root, name, target string) error {
 	tmp := name + ".new"
-	if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := r.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	if err := os.Symlink(target, tmp); err != nil {
+	if err := r.Symlink(target, tmp); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, name); err != nil {
-		os.Remove(tmp)
+	if err := r.Rename(tmp, name); err != nil {
+		r.Remove(tmp)
 		return err
 	}
-	return syncDir(filepath.Dir(name))
+	return syncRoot(r)
 }
 
 // lock is the switch lock, a flock on a file in the state folder.
@@ -165,21 +123,30 @@ type lock struct{ f *os.File }
 
 var errLocked = errors.New("another ah-switch holds the lock")
 
-// takeLock takes the lock without waiting. With create false (a dry run) a
-// missing lock file means nobody holds it, and nothing is created.
-func takeLock(path string, create bool) (*lock, error) {
-	flags := os.O_RDONLY | syscall.O_NOFOLLOW
+// takeLock takes the lock of the state folder without waiting: exclusive for
+// a switch, shared for status. With create false a missing lock file means
+// nobody holds it, and nothing is created.
+func takeLock(state *os.Root, create, shared bool) (*lock, error) {
+	flags := os.O_RDONLY | syscall.O_NOFOLLOW | syscall.O_NONBLOCK
 	if create {
-		flags = os.O_RDWR | os.O_CREATE | syscall.O_NOFOLLOW
+		flags = os.O_RDWR | os.O_CREATE | syscall.O_NOFOLLOW | syscall.O_NONBLOCK
 	}
-	f, err := os.OpenFile(path, flags, 0o600)
+	f, err := state.OpenFile(LockFile, flags, 0o600)
 	if err != nil {
 		if !create && errors.Is(err, fs.ErrNotExist) {
 			return &lock{}, nil
 		}
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+		f.Close()
+		return nil, failf(CodeStateInvalid, "%s is not a regular file", LockFile)
+	}
+	how := syscall.LOCK_EX
+	if shared {
+		how = syscall.LOCK_SH
+	}
+	if err := syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB); err != nil {
 		f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
 			return nil, errLocked

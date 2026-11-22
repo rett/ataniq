@@ -83,11 +83,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 				return bad("status takes only --root")
 			}
 		}
-		if err := switcher.Status(rootAbs, stdout); err != nil {
-			fmt.Fprintf(stderr, "ah-switch: status: %v\n", err)
-			return switcher.ExitFailed
-		}
-		return switcher.ExitOK
+		return switcher.New(switcher.Config{Root: rootAbs, Out: stdout, Err: stderr}).Status()
 	}
 
 	switch {

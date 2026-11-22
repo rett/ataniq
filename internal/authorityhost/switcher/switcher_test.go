@@ -3,6 +3,7 @@ package switcher
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -620,7 +621,12 @@ func TestCrashBetweenPreviousAndRename(t *testing.T) {
 		t.Fatal(err)
 	}
 	id, _ := ParseID(rel2)
-	if r, err := openRelease(id, target); err != nil {
+	rels, err := os.OpenRoot(filepath.Join(e.root, BaseDir, "releases"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rels.Close()
+	if r, err := openRelease(id, rels, target); err != nil {
 		t.Errorf("current does not verify after the crash: %v", err)
 	} else {
 		r.Close()
@@ -645,7 +651,12 @@ func TestCrashBetweenPreviousAndRename(t *testing.T) {
 func TestConcurrentSwitchRefused(t *testing.T) {
 	e := active(t)
 	e.release(rel3, "2026-11-01")
-	held, err := takeLock(filepath.Join(e.root, StateDir, LockFile), true)
+	state, err := os.OpenRoot(filepath.Join(e.root, StateDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	held, err := takeLock(state, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -826,24 +837,17 @@ func TestCurrentNotALink(t *testing.T) {
 
 func TestStatus(t *testing.T) {
 	e := newEnv(t)
-	var b strings.Builder
-	if err := Status(e.root, &b); err != nil {
-		t.Fatal(err)
-	}
-	if want := "current: none\nprevious: none\nhighest counter: 0\nlast switch: none recorded\n"; b.String() != want {
-		t.Errorf("status of an empty root:\n%s", b.String())
+	if got := e.status(); got != "current: none\nprevious: none\nhighest counter: 0\nlast switch: none recorded\n" {
+		t.Errorf("status of an empty root:\n%s", got)
 	}
 	e.release(rel1, "s")
 	e.release(rel2, "s")
 	e.switchTo(rel1)
 	e.switchTo(rel2)
-	b.Reset()
-	if err := Status(e.root, &b); err != nil {
-		t.Fatal(err)
-	}
+	got := e.status()
 	for _, want := range []string{"current: " + rel2, "previous: " + rel1, "highest counter: 2", "last switch: switch to " + rel2 + ": ok", "no-AI check: passed"} {
-		if !strings.Contains(b.String(), want) {
-			t.Errorf("status lacks %q:\n%s", want, b.String())
+		if !strings.Contains(got, want) {
+			t.Errorf("status lacks %q:\n%s", want, got)
 		}
 	}
 }
@@ -967,4 +971,120 @@ func TestQuoteField(t *testing.T) {
 			t.Errorf("q(%q) = %s, want %s", tc.in, got, tc.want)
 		}
 	}
+}
+
+// TestStateFolderMustBeTrusted: the state folder and every folder above it
+// up to the root must be real folders, not writable by group or others, and
+// owned as the owner check says; otherwise nothing is done or recorded.
+func TestStateFolderMustBeTrusted(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(e *env)
+		mod   func(*Config)
+	}{
+		{"state folder writable by others", func(e *env) {
+			os.Chmod(filepath.Join(e.root, StateDir), 0o777)
+		}, nil},
+		{"parent writable by its group", func(e *env) {
+			os.Chmod(filepath.Join(e.root, "var/lib"), 0o775)
+		}, nil},
+		{"root writable by others", func(e *env) {
+			os.Chmod(e.root, 0o757)
+		}, nil},
+		{"state folder a link", func(e *env) {
+			real := filepath.Join(e.root, "elsewhere")
+			os.Rename(filepath.Join(e.root, StateDir), real)
+			os.Symlink(real, filepath.Join(e.root, StateDir))
+		}, nil},
+		{"owner refused", func(e *env) {}, func(c *Config) {
+			c.Owner = func(fs.FileInfo) error { return errors.New("owned by uid 1000, not root") }
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := active(t)
+			e.release(rel3, "2026-11-01")
+			tc.setup(e)
+			before := digest(t, e.root)
+			mods := []func(*Config){}
+			if tc.mod != nil {
+				mods = append(mods, tc.mod)
+			}
+			if code := e.switchTo(rel3, mods...); code != ExitFailed {
+				t.Fatalf("exit %d", code)
+			}
+			if !strings.Contains(e.last, "untrusted") {
+				t.Errorf("output does not say why:\n%s", e.last)
+			}
+			if digest(t, e.root) != before {
+				t.Errorf("an untrusted state folder was written to")
+			}
+			if len(e.runner.calls) != 0 {
+				t.Errorf("commands run: %v", e.runner.calls)
+			}
+			if code := e.switcher(mods...).Status(); code != ExitFailed {
+				t.Errorf("status: exit %d", code)
+			}
+			e.out.Reset()
+		})
+	}
+}
+
+// TestReleasesFolderMustBeTrusted: opt/authority-host and releases/ are
+// checked as the state folder is.
+func TestReleasesFolderMustBeTrusted(t *testing.T) {
+	e := active(t)
+	e.release(rel3, "2026-11-01")
+	os.Chmod(filepath.Join(e.root, BaseDir, "releases"), 0o777)
+	if code := e.switchTo(rel3); code != ExitFailed {
+		t.Fatalf("exit %d", code)
+	}
+	if rec := e.record(); rec.FailedStep != "state" || rec.Error != CodeUntrusted {
+		t.Errorf("record: %+v", rec)
+	}
+	if got := e.link("current"); got != "releases/"+rel2 {
+		t.Errorf("current -> %q", got)
+	}
+}
+
+// TestStateFilesNotFollowed: a state file that is a link, or too large, is
+// not read through.
+func TestStateFilesNotFollowed(t *testing.T) {
+	t.Run("highest-counter a link", func(t *testing.T) {
+		e := active(t)
+		e.release(rel3, "2026-11-01")
+		other := filepath.Join(t.TempDir(), "counter")
+		e.write(other, "1\n", 0o644)
+		p := filepath.Join(e.root, StateDir, HighestFile)
+		os.Remove(p)
+		os.Symlink(other, p)
+		if code := e.switchTo(rel3); code != ExitFailed {
+			t.Fatalf("exit %d", code)
+		}
+		if rec := e.record(); rec.FailedStep != "counter" || rec.Error != CodeCounterInvalid {
+			t.Errorf("record: %+v", rec)
+		}
+	})
+	t.Run("lock a link", func(t *testing.T) {
+		e := active(t)
+		e.release(rel3, "2026-11-01")
+		other := filepath.Join(t.TempDir(), "lock")
+		e.write(other, "", 0o644)
+		p := filepath.Join(e.root, StateDir, LockFile)
+		os.Remove(p)
+		os.Symlink(other, p)
+		if code := e.switchTo(rel3); code != ExitFailed {
+			t.Fatalf("exit %d", code)
+		}
+		if got := e.link("current"); got != "releases/"+rel2 {
+			t.Errorf("current -> %q", got)
+		}
+	})
+	t.Run("deploy.json too large", func(t *testing.T) {
+		e := active(t)
+		e.write(filepath.Join(e.root, StateDir, DeployFile), strings.Repeat(" ", maxStateFile+1), 0o644)
+		if code := e.switcher().Status(); code != ExitFailed {
+			t.Errorf("status: exit %d", code)
+		}
+		e.out.Reset()
+	})
 }

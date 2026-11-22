@@ -175,15 +175,16 @@ type release struct {
 
 func (r *release) Close() error { return r.root.Close() }
 
-// openRelease opens the release folder dir, which must be a real directory
-// (not a symbolic link), and checks its SHA256SUMS against every file in it.
-// Every entry must be a directory or a regular file: a symbolic link anywhere
-// in the folder is refused, so hashing never follows one out of it.
-func openRelease(id ReleaseID, dir string) (*release, error) {
-	info, err := os.Lstat(dir)
+// openRelease opens the release folder id of the releases folder rels (whose
+// path is dir), which must be a real folder, not a symbolic link, and checks
+// its SHA256SUMS against every file in it. Every entry must be a folder or a
+// regular file: a symbolic link anywhere in the folder is refused, so hashing
+// never follows one out of it.
+func openRelease(id ReleaseID, rels *os.Root, dir string) (*release, error) {
+	info, err := rels.Lstat(id.Name)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, failf(CodeReleaseMissing, "no release folder %s", q(id.Name))
+			return nil, failf(CodeReleaseMissing, "no release folder %s", id.Name)
 		}
 		return nil, err
 	}
@@ -193,9 +194,13 @@ func openRelease(id ReleaseID, dir string) (*release, error) {
 	if !info.IsDir() {
 		return nil, failf(CodeReleaseNotFolder, "releases/%s is not a folder", id.Name)
 	}
-	root, err := os.OpenRoot(dir)
+	root, err := rels.OpenRoot(id.Name)
 	if err != nil {
 		return nil, err
+	}
+	if opened, err := root.Stat("."); err != nil || !os.SameFile(info, opened) {
+		root.Close()
+		return nil, failf(CodeReleaseNotFolder, "releases/%s changed while it was opened", id.Name)
 	}
 	r := &release{id: id, dir: dir, root: root}
 	if err := r.verify(); err != nil {
