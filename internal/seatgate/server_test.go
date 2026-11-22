@@ -3,6 +3,7 @@ package seatgate
 import (
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -427,7 +428,7 @@ func TestServerClosesOnAViolation(t *testing.T) {
 	leakCheck(t)
 	e := startServer(t, nil, echo())
 	big := make([]byte, 4)
-	big[0], big[1], big[2], big[3] = 0, 1, 0, 1 // 65537
+	binary.BigEndian.PutUint32(big, MaxFrame+1)
 	cases := map[string][]byte{
 		"oversize length":  big,
 		"huge length":      {0xff, 0xff, 0xff, 0xff},

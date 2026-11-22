@@ -9,9 +9,15 @@ import (
 )
 
 const (
-	// MaxFrame is the largest payload of a frame, in bytes. A frame is a
-	// 4-byte big-endian length and then that many bytes of one JSON object.
-	MaxFrame = 64 << 10
+	// MaxFrame is the largest payload of a frame, in bytes: 257 KiB. A frame
+	// is a 4-byte big-endian length and then that many bytes of one JSON
+	// object. It is the largest result the owner channel's service answers
+	// (its listing, a show or a page: 256 KiB, MaxPageBytes of package
+	// ownerwire, which this package does not import) and 1 KiB for the
+	// response around it, so that no read of a card is refused too-large.
+	// The same cap holds both ways: the server's reader and its answers, and
+	// the client's requests and its reader.
+	MaxFrame = 256<<10 + 1<<10
 
 	// MaxDepth is how deeply objects and arrays may nest in a frame; the
 	// frame's own object is the first level.
