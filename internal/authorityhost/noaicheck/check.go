@@ -34,8 +34,8 @@ const (
 // Incomplete hit names and details: a walk cut short by its depth limit
 // ("HIT incomplete <folder> depth"), an entry whose type cannot be found
 // ("HIT incomplete <path> type"), and the run's budget spent
-// ("HIT incomplete budget <limit>", the limit one of entries, bytes, time
-// or memory).
+// ("HIT incomplete budget <limit>", the limit one of entries, bytes, time,
+// memory or nesting).
 const (
 	DetailDepth = "depth"
 	DetailType  = "type"

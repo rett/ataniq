@@ -715,7 +715,7 @@ The `HIT incomplete` lines:
 |---|---|
 | `HIT incomplete <folder> depth` | a walk stopped at its depth limit (40 levels) above a folder it had to enter |
 | `HIT incomplete <path> type` | a folder entry whose type the listing did not give and a stat could not find: the walk cannot tell whether to enter it |
-| `HIT incomplete budget <limit>` | the run's budget is spent (4 million folder entries and queued files, 1 GiB read, 4 minutes, 256 MiB held, counting specifier expansions and queued files); every later read stops |
+| `HIT incomplete budget <limit>` | the run's budget is spent (4 million folder entries and queued files, 1 GiB read, 4 minutes, 256 MiB held, or shell expansions or brace groups nested more than 64 deep); memory is charged before the work is done: specifier expansions, queued files, the unit scan's keys of each manager, and each source reference and loop word a profile's parse keeps (a loop's words once for every source of its variable). Every later read and parse stops |
 | `HIT incomplete env-syntax <file>` | a file whose syntax the check cannot parse, or an `EnvironmentFile=` it cannot resolve |
 | `HIT incomplete env-source <file>` | a profile sources a file by a path the check cannot resolve |
 | `HIT incomplete release-syntax <file>` | a front-end configuration file of the candidate release (`pre`, `post`) holds a variable reference the check cannot read |
@@ -930,7 +930,9 @@ folder whose `share/` holds the lists (and, in `pre` and `post`, whose
   while the rules stay the same: `packets N bytes N` of a counter,
   `expires T` of a set element, `used N bytes` of a quota and a final
   `# handle N`. A quoted operand (an interface name, a comment) is never
-  changed, so rules that differ only there have different digests.
+  changed, so rules that differ only there have different digests. The
+  listing is read token by token, never a whole line of tokens at once;
+  past a million tokens the rest of a line is kept as it is.
 - `port` (`post` and `full`): a listening TCP socket, in `/proc/net/tcp`
   or `/proc/net/tcp6`, on a port not in `ports.allow`. Each table must
   start with its own protocol's header line, as the kernel writes it (the

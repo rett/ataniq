@@ -20,7 +20,8 @@
 // environment variable's value. A place the check must look into but cannot
 // read is itself a hit (kind "unreadable"), and so is a check that could
 // not cover all it must (kind "incomplete": a walk stopped by its depth
-// limit, or the run's budget of entries, bytes, time and memory spent), so
+// limit, or the run's budget of entries, bytes, time, memory and nesting
+// spent), so
 // the check fails closed.
 //
 // A run has a phase (see [Checker.RunPhase]): "pre", before a switch, also

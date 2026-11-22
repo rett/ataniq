@@ -238,7 +238,7 @@ func (s *envScan) parse(rel string, syn envSyntax) (string, *envParse) {
 	}
 	r := &envParse{}
 	*r = parseEnv(syn, string(data), strings.HasSuffix(p, ".fish"))
-	if c.t.b.hold(int64(len(p)) + 64*int64(len(r.files)+len(r.sourced)+1)) {
+	if c.t.b.hold(int64(len(p)) + r.cost()) {
 		c.parsed[p] = r
 	}
 	for _, n := range r.names {

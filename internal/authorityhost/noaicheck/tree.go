@@ -72,7 +72,14 @@ const (
 	budgetBytes   = "bytes"
 	budgetTime    = "time"
 	budgetMemory  = "memory"
+	budgetNesting = "nesting"
 )
+
+// maxNesting bounds how deep the shell parser follows nested expansions
+// ($(...), ${...}, quotes in them) and brace groups; a profile nested
+// deeper spends the run's budget ("incomplete budget nesting"). No
+// ordinary profile comes near it.
+const maxNesting = 64
 
 // budget counts a run's work against its limits. Once one is reached, spent
 // names it and every later read fails with errBudget: the run ends early and

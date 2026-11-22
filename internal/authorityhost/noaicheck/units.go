@@ -355,80 +355,104 @@ const (
 // folder that is a link is listed where it leads.
 func (c *Checker) scanUnitFiles(scan func(files []string, m manager)) {
 	for _, m := range c.managers() {
-		v := c.view(m)
-		dropins := map[string][]*uent{}
-		var dropUnits []string
-		seenSub := map[string]bool{}
-		for _, d := range v.dirs {
-			for _, sub := range d.sorder {
-				if !isDropinDir(sub) {
+		c.scanManager(m, scan)
+	}
+}
+
+// scanManager is scanUnitFiles for the manager m. Its keys of names seen
+// and drop-ins by unit are held against the run's budget before they are
+// kept, and released once the manager is done; once the budget is spent
+// the scan stops.
+func (c *Checker) scanManager(m manager, scan func(files []string, m manager)) {
+	b := c.t.b
+	held := int64(0)
+	defer func() { b.release(held) }()
+	keep := func(n int64) bool {
+		if !b.hold(n) {
+			return false
+		}
+		held += n
+		return true
+	}
+	v := c.view(m)
+	dropins := map[string][]*uent{}
+	var dropUnits []string
+	seenSub := map[string]bool{}
+	for _, d := range v.dirs {
+		for _, sub := range d.sorder {
+			if !isDropinDir(sub) {
+				continue
+			}
+			unit := strings.TrimSuffix(sub, ".d")
+			for _, e := range d.subs[sub] {
+				key := sub + "/" + e.name
+				if seenSub[key] {
 					continue
 				}
-				unit := strings.TrimSuffix(sub, ".d")
-				for _, e := range d.subs[sub] {
-					key := sub + "/" + e.name
-					if seenSub[key] || !c.t.b.hold(int64(len(key))+32) {
-						continue
-					}
-					seenSub[key] = true
-					if c.masked(v, unit) || (e.link && c.isMask(e.rel)) {
-						continue
-					}
-					if _, ok := dropins[unit]; !ok {
-						dropUnits = append(dropUnits, unit)
-					}
-					dropins[unit] = append(dropins[unit], e)
+				if !keep(int64(len(key)) + 64) {
+					return
 				}
+				seenSub[key] = true
+				if c.masked(v, unit) || (e.link && c.isMask(e.rel)) {
+					continue
+				}
+				if _, ok := dropins[unit]; !ok {
+					dropUnits = append(dropUnits, unit)
+				}
+				dropins[unit] = append(dropins[unit], e)
 			}
 		}
-		files := func(unit string, main *uent) []string {
-			var out []string
-			if main != nil {
-				if p, k := c.unitTarget(main); k == unitFile {
-					out = append(out, p)
-				}
+	}
+	files := func(unit string, main *uent) []string {
+		var out []string
+		if main != nil {
+			if p, k := c.unitTarget(main); k == unitFile {
+				out = append(out, p)
 			}
-			ds := dropins[unit]
-			slices.SortStableFunc(ds, func(a, b *uent) int { return strings.Compare(a.name, b.name) })
-			for _, e := range ds {
+		}
+		ds := dropins[unit]
+		slices.SortStableFunc(ds, func(a, b *uent) int { return strings.Compare(a.name, b.name) })
+		for _, e := range ds {
+			if p, k := c.unitTarget(e); k == unitFile {
+				out = append(out, p)
+			}
+		}
+		delete(dropins, unit)
+		return out
+	}
+	seen := map[string]bool{}
+	for _, d := range v.dirs {
+		for _, name := range d.order {
+			if seen[name] {
+				continue
+			}
+			if !keep(int64(len(name)) + 64) {
+				return
+			}
+			seen[name] = true
+			if c.masked(v, name) {
+				delete(dropins, name)
+				continue
+			}
+			scan(files(name, v.lookup(name)), m)
+		}
+	}
+	for _, unit := range dropUnits {
+		if _, ok := dropins[unit]; ok {
+			scan(files(unit, nil), m)
+		}
+	}
+	for _, d := range v.dirs {
+		for _, sub := range d.sorder {
+			if !isDepDir(sub) {
+				continue
+			}
+			for _, e := range d.subs[sub] {
+				if v.lookup(e.name) != nil {
+					continue // the unit of its name in the view, read above
+				}
 				if p, k := c.unitTarget(e); k == unitFile {
-					out = append(out, p)
-				}
-			}
-			delete(dropins, unit)
-			return out
-		}
-		seen := map[string]bool{}
-		for _, d := range v.dirs {
-			for _, name := range d.order {
-				if seen[name] {
-					continue
-				}
-				seen[name] = true
-				if c.masked(v, name) {
-					delete(dropins, name)
-					continue
-				}
-				scan(files(name, v.lookup(name)), m)
-			}
-		}
-		for _, unit := range dropUnits {
-			if _, ok := dropins[unit]; ok {
-				scan(files(unit, nil), m)
-			}
-		}
-		for _, d := range v.dirs {
-			for _, sub := range d.sorder {
-				if !isDepDir(sub) {
-					continue
-				}
-				for _, e := range d.subs[sub] {
-					if v.lookup(e.name) != nil {
-						continue // the unit of its name in the view, read above
-					}
-					if p, k := c.unitTarget(e); k == unitFile {
-						scan([]string{p}, m)
-					}
+					scan([]string{p}, m)
 				}
 			}
 		}

@@ -167,6 +167,102 @@ type envRef struct {
 	optional bool
 }
 
+// cost is the memory a parse's result holds: what the caller charges to
+// the run's budget to keep it.
+func (r *envParse) cost() int64 {
+	n := int64(64)
+	for _, w := range r.sourced {
+		n += int64(len(w.lit)) + 48
+	}
+	for _, w := range r.paths {
+		n += int64(len(w.lit)) + 48
+	}
+	for _, w := range r.xdg {
+		n += int64(len(w.lit)) + 48
+	}
+	for _, f := range r.files {
+		n += int64(len(f.path)) + 48
+	}
+	for _, s := range r.names {
+		n += int64(len(s)) + 48
+	}
+	return n
+}
+
+// parseMeter charges the shell parser's work to the run's budget before it
+// is done: each source reference it keeps (a loop's words copied once for
+// every source of the loop's variable included) and each loop word, held
+// while the parse runs, and the nesting of expansions and brace groups
+// against maxNesting. Once a limit is reached (or the run's time is spent)
+// over is set and the parser stops at once; the run ends with
+// "incomplete budget <limit>". Without a budget (b nil, a test of the
+// parser alone) only the nesting is bounded, and a parse stopped by it is
+// syntax the check cannot parse.
+type parseMeter struct {
+	b    *budget
+	held int64
+	over bool
+}
+
+// charge holds n bytes for the parse; false, and over, when they do not
+// fit or the run's time is spent.
+func (m *parseMeter) charge(n int64) bool {
+	switch {
+	case m.over:
+		return false
+	case m.b == nil:
+		return true
+	case m.b.out() || !m.b.hold(n):
+		m.over = true
+		return false
+	}
+	m.held += n
+	return true
+}
+
+// nest reports whether depth is within maxNesting; past it the parse is
+// over and the run's budget spent ("nesting").
+func (m *parseMeter) nest(depth int) bool {
+	if depth <= maxNesting && !m.over {
+		return true
+	}
+	if !m.over && m.b != nil {
+		m.b.exceed(budgetNesting)
+	}
+	m.over = true
+	return false
+}
+
+// tick checks the run's time every so often; false, and over, once it is
+// spent.
+func (m *parseMeter) tick(n int) bool {
+	if m.over {
+		return false
+	}
+	if m.b != nil && n%1024 == 0 && m.b.out() {
+		m.over = true
+	}
+	return !m.over
+}
+
+// done releases what the parse held: the caller holds what it keeps
+// (see envParse.cost).
+func (m *parseMeter) done() {
+	if m.b != nil {
+		m.b.release(m.held)
+	}
+	m.held = 0
+}
+
+// wordsCost is the memory a list of source words holds.
+func wordsCost(ws []srcWord) int64 {
+	n := int64(0)
+	for _, w := range ws {
+		n += int64(len(w.lit)) + 48
+	}
+	return n
+}
+
 func (r *envParse) add(n string) {
 	if !validName(n) || !ProviderKeyName(n) {
 		return
@@ -182,16 +278,20 @@ func (r *envParse) add(n string) {
 
 // parseEnv reads data in the syntax s. fish says a shell file is fish's.
 func parseEnv(s envSyntax, data string, fish bool) envParse {
-	return parseEnvFuncs(s, data, fish, nil)
+	return parseEnvFuncs(s, data, fish, nil, nil)
 }
 
 // parseEnvFuncs is parseEnv with the functions known to add their argument
-// to PATH (see parseShell); those the file defines are added to funcs.
-func parseEnvFuncs(s envSyntax, data string, fish bool, funcs map[string]bool) envParse {
+// to PATH (see parseShell; those the file defines are added to funcs) and
+// the run's budget b (nil for none), which a shell file's parse is charged
+// to as it goes (see parseMeter).
+func parseEnvFuncs(s envSyntax, data string, fish bool, funcs map[string]bool, b *budget) envParse {
 	var r envParse
 	switch s {
 	case syntaxShell:
-		parseShell(&r, data, fish, funcs)
+		m := &parseMeter{b: b}
+		parseShell(&r, data, fish, funcs, m)
+		m.done()
 	case syntaxEnvFile:
 		parseEnvFile(&r, data)
 	case syntaxPam:
@@ -535,6 +635,8 @@ type shLexer struct {
 	i        int
 	bad      bool
 	heredocs []heredoc
+	m        *parseMeter // never nil
+	depth    int         // the expansions open (see group)
 }
 
 type heredoc struct {
@@ -752,6 +854,11 @@ func (l *shLexer) expansion(i int) int {
 // quotes and nested expansions, and returns the position after it. A bare
 // "{" inside a ${...} does not nest.
 func (l *shLexer) group(i int, open, close byte) int {
+	l.depth++
+	defer func() { l.depth-- }()
+	if !l.m.nest(l.depth) {
+		return len(l.s)
+	}
 	depth := 0
 	for i < len(l.s) {
 		c := l.s[i]
@@ -847,8 +954,16 @@ type forList struct {
 // variable of an earlier "for NAME in WORDS" loop stands for each of those
 // words (". "$profile"" in a loop over /etc/profile.d/*.sh). The value
 // given to XDG_CONFIG_HOME is returned too (xdg, see addXDG).
-func parseShell(r *envParse, data string, fish bool, funcs map[string]bool) {
-	l := &shLexer{s: data}
+//
+// The parse is charged to the run's budget as it goes (see parseMeter):
+// a profile whose source references or loop words do not fit, or whose
+// expansions or brace groups nest deeper than maxNesting, stops the parse
+// at once and ends the run with "incomplete budget".
+func parseShell(r *envParse, data string, fish bool, funcs map[string]bool, m *parseMeter) {
+	if m == nil {
+		m = &parseMeter{}
+	}
+	l := &shLexer{s: data, m: m}
 	const (
 		argNone = iota
 		argExport
@@ -909,10 +1024,14 @@ func parseShell(r *envParse, data string, fish bool, funcs map[string]bool) {
 			loops[forVar] = forList{words: forWords, ok: ok && args == argForList}
 		}
 	}
-	for {
+loop:
+	for n := 1; ; n++ {
+		if !m.tick(n) {
+			break loop
+		}
 		op, w, eof := l.next()
-		if eof {
-			break
+		if eof || m.over {
+			break loop
 		}
 		if op != "" {
 			switch op {
@@ -961,6 +1080,9 @@ func parseShell(r *envParse, data string, fish bool, funcs map[string]bool) {
 				f := ""
 				if pending {
 					f = name
+				}
+				if !m.nest(len(braces) + 1) {
+					break loop
 				}
 				braces = append(braces, f)
 			}
@@ -1088,6 +1210,9 @@ func parseShell(r *envParse, data string, fish bool, funcs map[string]bool) {
 			deferred := fn() != ""
 			if n, ok := plainRef(w); ok {
 				if fl, found := loops[n]; found && fl.ok {
+					if !m.charge(wordsCost(fl.words)) {
+						break loop
+					}
 					for _, lw := range fl.words {
 						lw.deferred = deferred
 						r.sourced = append(r.sourced, lw)
@@ -1095,6 +1220,9 @@ func parseShell(r *envParse, data string, fish bool, funcs map[string]bool) {
 					args = argNone
 					continue
 				}
+			}
+			if !m.charge(int64(len(w.lit)) + 48) {
+				break loop
 			}
 			r.sourced = append(r.sourced, srcWord{lit: w.lit, exp: w.exp, deferred: deferred})
 			args = argNone
@@ -1114,10 +1242,13 @@ func parseShell(r *envParse, data string, fish bool, funcs map[string]bool) {
 			endFor(false)
 			args = argNone
 		case argForList:
+			if !m.charge(int64(len(w.lit)) + 48) {
+				break loop
+			}
 			forWords = append(forWords, srcWord{lit: w.lit, exp: w.exp})
 		}
 	}
-	if l.bad {
+	if l.bad || (m.over && m.b == nil) {
 		r.bad = true
 	}
 }

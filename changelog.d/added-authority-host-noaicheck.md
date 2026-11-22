@@ -34,7 +34,9 @@
   without `share/nft.digest` a hit (`HIT policy`); without it the
   unenforced policies are `NOTE` lines and the run is incomplete.
   Whatever the check cannot cover (a walk at its depth limit, an entry of
-  unknown type, its budget of entries, bytes, time and memory spent, an
+  unknown type, its budget of entries, bytes, time, memory and nesting
+  spent (charged before the work, a profile's nested expansions and loop
+  fan-out included), an
   unusable `/proc`, a process whose `/proc` folder stays without a name,
   a socket table without its own protocol's header, a missing or empty
   pacman database or a package entry without a name, a pinned firewall

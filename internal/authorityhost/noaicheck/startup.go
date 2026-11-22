@@ -207,8 +207,8 @@ func (c *Checker) loadStartup(rel string, syn envSyntax) (string, *envParse, err
 		c.funcs = map[string]bool{}
 	}
 	r := &envParse{}
-	*r = parseEnvFuncs(syn, string(data), strings.HasSuffix(p, ".fish"), c.funcs)
-	if c.t.b.hold(int64(len(p)) + 64*int64(len(r.files)+len(r.sourced)+len(r.paths)+len(r.xdg)+1)) {
+	*r = parseEnvFuncs(syn, string(data), strings.HasSuffix(p, ".fish"), c.funcs, c.t.b)
+	if c.t.b.hold(int64(len(p)) + r.cost()) {
 		c.parsed[p] = r
 	}
 	return p, r, nil
