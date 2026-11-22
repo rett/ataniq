@@ -899,13 +899,7 @@ Before it, a requalification ran only while a journal was open.
   the inhibit) and nothing in `/opt/authority-host/releases` (a release
   imported and never switched to, or the folder of an import, counts as
   deployed). Nothing is run, created or changed there,
-  `decisions.inhibit` and the lock file included. A host that shows a
-  deployment but whose `current` is missing is not refused: `boot`
-  writes its record and fails as a failed qualification does (`current
-  is missing although ...`: the inhibit holds the failure, the host's
-  stop list runs, the failure is owed), exit 1, so the owner acknowledges
-  it before the next switch; a journal there is settled as every command
-  settles it, the lock file made when it is missing. The decision guard
+  `decisions.inhibit` and the lock file included. The decision guard
   answers there by the state folder alone: it refuses while
   `/var/lib/authority-host` is missing (before the bootstrap) or holds
   `decisions.inhibit`, and allows on the empty folder the bootstrap makes.
@@ -913,6 +907,13 @@ Before it, a requalification ran only while a journal was open.
   comes with a release, which brings its unit and the reload list that
   starts it, and none was ever switched to. The first switch writes the
   inhibit before anything else, as every transaction does.
+- A host that shows a deployment but whose `current` is missing is not
+  refused with exit 4: `boot` writes its record and fails as a failed
+  qualification does (`current is missing although ...`: the inhibit
+  holds the failure, the host's stop list runs, the failure is owed),
+  exit 1, and the owner acknowledges the failure before the next switch.
+  A journal there is settled as every command settles it, and a missing
+  lock file is made first.
 - A crash anywhere in `boot` leaves decisions refused: the inhibit is
   there from before the first command it runs to its removal, which is
   its last step. The next `boot` takes its record over (above) unless it
