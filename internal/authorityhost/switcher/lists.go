@@ -1,22 +1,24 @@
 package switcher
 
 import (
-	"fmt"
 	"path/filepath"
 	"strings"
 )
 
-// The command lists of a release, under share/.
+// The command lists of a release, under share/. All four are required. They
+// are consistency checks of an honest release, not a privilege boundary: a
+// signed release carries code that runs as root anyway.
 const (
 	ValidatorsList = "share/validators.list"
 	ReloadList     = "share/reload.list"
 	HealthCmd      = "share/health.cmd"
+	StopList       = "share/stop.list"
 )
 
 // ReleasePlaceholder in an argument of a validator is replaced by the absolute
 // path of the release folder, so that a validator checks the files of the
-// release being switched to, not those of the current one. The reload list and
-// the health command act on what is live (current) and may not use it.
+// release being switched to, not those of the current one. The reload, health
+// and stop lists act on what is live (current) and may not use it.
 const ReleasePlaceholder = "{release}"
 
 // shellChars are refused in a listed command: the commands run without a
@@ -39,76 +41,64 @@ func ParseCommandList(name string, data []byte, releaseDir string) ([][]string, 
 		argv := strings.Fields(line)
 		for j, arg := range argv {
 			if releaseDir == "" && strings.Contains(arg, ReleasePlaceholder) {
-				return nil, fmt.Errorf("%s line %d: %s is only for validators; this list acts on what current points at", name, i+1, ReleasePlaceholder)
+				return nil, failf(CodeListInvalid, "%s line %d: %s is only for validators; this list acts on what current points at", name, i+1, ReleasePlaceholder)
 			}
 			arg = strings.ReplaceAll(arg, ReleasePlaceholder, releaseDir)
 			if strings.ContainsAny(strings.ReplaceAll(argv[j], ReleasePlaceholder, ""), shellChars) {
-				return nil, fmt.Errorf("%s line %d: %q: no shell runs these commands, so quoting, pipes, redirections, globs and variables are refused", name, i+1, argv[j])
+				return nil, failf(CodeListInvalid, "%s line %d: %s: no shell runs these commands, so quoting, pipes, redirections, globs and variables are refused", name, i+1, q(argv[j]))
 			}
 			argv[j] = arg
 		}
 		prog := argv[0]
 		if !filepath.IsAbs(prog) && strings.Contains(prog, "/") {
-			return nil, fmt.Errorf("%s line %d: program %q is a relative path; give an absolute path, {release}/..., or a bare name", name, i+1, prog)
+			return nil, failf(CodeListInvalid, "%s line %d: program %s is a relative path; give an absolute path, {release}/..., or a bare name", name, i+1, q(prog))
 		}
 		cmds = append(cmds, argv)
 	}
 	return cmds, nil
 }
 
-// ParseHealthCmd reads share/health.cmd, which holds exactly one command.
-func ParseHealthCmd(data []byte) ([]string, error) {
-	cmds, err := ParseCommandList(HealthCmd, data, "")
-	if err != nil {
-		return nil, err
-	}
-	if len(cmds) != 1 {
-		return nil, fmt.Errorf("%s holds %d commands; it must hold exactly one", HealthCmd, len(cmds))
-	}
-	return cmds[0], nil
+// lists are the command lists of a release.
+type lists struct {
+	validators [][]string // run with {release} replaced, before the switch
+	reloads    [][]string // run after current is moved
+	health     [][]string // each must pass for the release to be healthy
+	stops      [][]string // stop the decision services when no healthy release is left
 }
 
-// readLists reads and parses the command lists of a verified release. The
-// validators and reload lists may be absent; the health command may not.
-func (r *release) readLists() (validators, reloads [][]string, health []string, err error) {
-	read := func(name string, required bool) ([]byte, bool, error) {
-		ok, err := r.exists(name)
+// readLists reads and parses the four command lists of a verified release.
+// Each must be there. Each must hold at least one command, unless the
+// release says in its MANIFEST that it is static (components: static), when
+// a list may hold comment lines only.
+func (r *release) readLists(static bool) (lists, error) {
+	var l lists
+	for _, f := range []struct {
+		name       string
+		releaseDir string
+		into       *[][]string
+	}{
+		{ValidatorsList, r.dir, &l.validators},
+		{ReloadList, "", &l.reloads},
+		{HealthCmd, "", &l.health},
+		{StopList, "", &l.stops},
+	} {
+		ok, err := r.exists(f.name)
 		if err != nil {
-			return nil, false, err
+			return lists{}, err
 		}
 		if !ok {
-			if required {
-				return nil, false, fmt.Errorf("%s missing: a release must name its health check", name)
-			}
-			return nil, false, nil
+			return lists{}, failf(CodeListMissing, "%s missing: a release names its validators, reloads, health checks and stops", f.name)
 		}
-		data, err := r.readSmall(name)
-		return data, err == nil, err
-	}
-	data, ok, err := read(ValidatorsList, false)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	if ok {
-		if validators, err = ParseCommandList(ValidatorsList, data, r.dir); err != nil {
-			return nil, nil, nil, err
+		data, err := r.readSmall(f.name)
+		if err != nil {
+			return lists{}, err
+		}
+		if *f.into, err = ParseCommandList(f.name, data, f.releaseDir); err != nil {
+			return lists{}, err
+		}
+		if len(*f.into) == 0 && !static {
+			return lists{}, failf(CodeListInvalid, "%s holds no command; only a release whose MANIFEST says components: static may leave it empty", f.name)
 		}
 	}
-	data, ok, err = read(ReloadList, false)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	if ok {
-		if reloads, err = ParseCommandList(ReloadList, data, ""); err != nil {
-			return nil, nil, nil, err
-		}
-	}
-	data, _, err = read(HealthCmd, true)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	if health, err = ParseHealthCmd(data); err != nil {
-		return nil, nil, nil, err
-	}
-	return validators, reloads, health, nil
+	return l, nil
 }

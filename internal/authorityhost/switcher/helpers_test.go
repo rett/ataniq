@@ -21,24 +21,55 @@ import (
 // fakeRunner records every command and fails those whose program's base name
 // is in fail (for as many calls as the count says; a negative count fails
 // every call).
+//
+// "nft" prints nftOut. The file given after --nft-listing is recorded as
+// FILE in calls; its content and its mode and its folder's are kept in
+// listing.
 type fakeRunner struct {
-	mu    sync.Mutex
-	calls []string
-	stdin [][]byte
-	fail  map[string]int
+	mu      sync.Mutex
+	calls   []string
+	stdin   [][]byte
+	fail    map[string]int
+	nftOut  string
+	listing []string // content, file mode, folder mode of each listing seen
+	hook    func(argv []string)
 }
+
+const fakeRuleset = "table inet filter {\n}\n"
 
 func (f *fakeRunner) Run(ctx context.Context, c Command) (Output, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, strings.Join(c.Argv, " "))
+	argv := append([]string(nil), c.Argv...)
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == "--nft-listing" {
+			data, err := os.ReadFile(argv[i+1])
+			fi, _ := os.Stat(argv[i+1])
+			di, _ := os.Stat(filepath.Dir(argv[i+1]))
+			if err == nil && fi != nil && di != nil {
+				f.listing = append(f.listing, string(data), fi.Mode().String(), di.Mode().String())
+			}
+			argv[i+1] = "FILE"
+		}
+	}
+	f.calls = append(f.calls, strings.Join(argv, " "))
 	f.stdin = append(f.stdin, c.Stdin)
+	if f.hook != nil {
+		f.hook(c.Argv)
+	}
 	name := filepath.Base(c.Argv[0])
 	if n, ok := f.fail[name]; ok && n != 0 {
 		if n > 0 {
 			f.fail[name] = n - 1
 		}
 		return Output{Stderr: []byte(name + " said no")}, fmt.Errorf("%s: exit status 1", name)
+	}
+	if name == "nft" {
+		out := []byte(f.nftOut)
+		if c.MaxOutput > 0 && len(out) > c.MaxOutput {
+			return Output{Stdout: out[:c.MaxOutput], Truncated: true}, nil
+		}
+		return Output{Stdout: out}, nil
 	}
 	return Output{}, nil
 }
@@ -60,6 +91,7 @@ func (f *fakeRunner) reset() {
 	defer f.mu.Unlock()
 	f.calls = nil
 	f.stdin = nil
+	f.listing = nil
 }
 
 type fakeClock struct {
@@ -80,16 +112,31 @@ func (c *fakeClock) sleep(d time.Duration) {
 }
 
 type fakeVerifier struct {
-	err   error
-	calls int
-	data  []byte
+	err       error
+	calls     int
+	data      []byte
+	signers   string
+	principal string
+	sigs      []string
 }
 
-func (v *fakeVerifier) Verify(ctx context.Context, allowedSigners string, data []byte, signaturePath string) error {
+func (v *fakeVerifier) Verify(ctx context.Context, allowedSigners, principal string, data []byte, signaturePath string) error {
 	v.calls++
 	v.data = data
+	v.signers, v.principal = allowedSigners, principal
+	v.sigs = append(v.sigs, signaturePath)
 	return v.err
 }
+
+// policy writes the switch policy and an allowed signers file below the
+// root.
+func (e *env) policy(content string) {
+	e.t.Helper()
+	e.write(filepath.Join(e.root, "etc/authority-host/allowed_signers"), "release@example.invalid ssh-ed25519 AAAA\n", 0o644)
+	e.write(filepath.Join(e.root, PolicyDir, PolicyName), content, 0o644)
+}
+
+const signedPolicy = `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers", "principal": "release@example.invalid"}`
 
 // env is a temporary root with a fake runner and clock.
 type env struct {
@@ -98,29 +145,35 @@ type env struct {
 	runner *fakeRunner
 	clock  *fakeClock
 	out    bytes.Buffer
+	last   string // the output of the last switchTo or rollBack
+	in     string // the folder incoming releases are written to
 }
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	root := t.TempDir()
+	// An imported release is read-only; make it writable again so that the
+	// temporary folder can be removed (this runs before that removal).
+	t.Cleanup(func() { makeWritable(root) })
 	if err := os.MkdirAll(filepath.Join(root, BaseDir, "releases"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return &env{
 		t:      t,
 		root:   root,
-		runner: &fakeRunner{fail: map[string]int{}},
+		runner: &fakeRunner{fail: map[string]int{}, nftOut: fakeRuleset},
 		clock:  &fakeClock{t: time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)},
 	}
 }
 
 func (e *env) switcher(mod ...func(*Config)) *Switcher {
 	cfg := Config{
-		Root:   e.root,
-		Runner: e.runner,
-		Out:    &e.out,
-		Now:    e.clock.now,
-		Sleep:  e.clock.sleep,
+		Root:      e.root,
+		AllowExec: true,
+		Runner:    e.runner,
+		Out:       &e.out,
+		Now:       e.clock.now,
+		Sleep:     e.clock.sleep,
 	}
 	for _, m := range mod {
 		m(&cfg)
@@ -132,6 +185,7 @@ func (e *env) switchTo(id string, mod ...func(*Config)) int {
 	e.t.Helper()
 	code := e.switcher(mod...).Switch(context.Background(), id)
 	e.t.Logf("switch to %s: exit %d\n%s", id, code, e.out.String())
+	e.last = e.out.String()
 	e.out.Reset()
 	return code
 }
@@ -140,8 +194,22 @@ func (e *env) rollBack(which string) int {
 	e.t.Helper()
 	code := e.switcher().RollBack(context.Background(), which)
 	e.t.Logf("roll back to %s: exit %d\n%s", which, code, e.out.String())
+	e.last = e.out.String()
 	e.out.Reset()
 	return code
+}
+
+// status runs status and returns what it printed; it fails the test when
+// status does not exit 0.
+func (e *env) status(mod ...func(*Config)) string {
+	e.t.Helper()
+	code := e.switcher(mod...).Status()
+	out := e.out.String()
+	e.out.Reset()
+	if code != ExitOK {
+		e.t.Fatalf("status: exit %d\n%s", code, out)
+	}
+	return out
 }
 
 func (e *env) relDir(id string) string {
@@ -162,20 +230,36 @@ func (e *env) write(path, content string, perm fs.FileMode) {
 // SHA256SUMS, and returns its path.
 func (e *env) release(id, snapshot string) string {
 	e.t.Helper()
+	return e.releaseIn(e.relDir(id), id, snapshot)
+}
+
+// incoming writes a release as release does, into a folder outside the
+// root, as the deploying user would copy it there, and returns its path.
+func (e *env) incoming(id, snapshot string) string {
+	e.t.Helper()
+	if e.in == "" {
+		e.in = e.t.TempDir()
+	}
+	return e.releaseIn(filepath.Join(e.in, id), id, snapshot)
+}
+
+func (e *env) releaseIn(dir, id, snapshot string) string {
+	e.t.Helper()
 	rid, err := ParseID(id)
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	dir := e.relDir(id)
 	e.write(filepath.Join(dir, ManifestFile), fmt.Sprintf(
-		"id: %s\ncounter: %d\ncommit: %s0123456789\nbuilt_on: dev\ngo_version: go1.27.2\npackage_snapshot: %s\n",
+		"id: %s\ncounter: %d\ncommit: %s0123456789\nbuilt_on: dev\ngo_version: fixture-go\npackage_snapshot: %s\n",
 		id, rid.Counter, rid.Commit, snapshot), 0o644)
 	e.write(filepath.Join(dir, NoAICheckProgram), "#!/bin/sh\nexit 0\n", 0o755)
+	e.write(filepath.Join(dir, PackageStepProgram), "#!/bin/sh\nexit 0\n", 0o755)
 	e.write(filepath.Join(dir, "bin/app"), "app of "+id+"\n", 0o755)
 	e.write(filepath.Join(dir, "etc/systemd/app.service"), "[Service]\n", 0o644)
 	e.write(filepath.Join(dir, ValidatorsList), "# units\nvalidate-units verify {release}/etc/systemd/app.service\nvalidate-rules -c\n", 0o644)
 	e.write(filepath.Join(dir, ReloadList), "reload-units\n", 0o644)
 	e.write(filepath.Join(dir, HealthCmd), "health-probe http://127.0.0.1/healthz\n", 0o644)
+	e.write(filepath.Join(dir, StopList), "stop-app\n", 0o644)
 	e.sums(dir)
 	return dir
 }
@@ -235,6 +319,16 @@ func (e *env) record() Record {
 	return rec
 }
 
+// deployJSON returns deploy.json as text.
+func (e *env) deployJSON() string {
+	e.t.Helper()
+	data, err := os.ReadFile(filepath.Join(e.root, StateDir, DeployFile))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return string(data)
+}
+
 func (e *env) highest() string {
 	e.t.Helper()
 	data, err := os.ReadFile(filepath.Join(e.root, StateDir, HighestFile))
@@ -283,4 +377,30 @@ func digest(t *testing.T, root string) string {
 		t.Fatal(err)
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// makeWritable adds the owner's write bit to every folder below root.
+func makeWritable(root string) {
+	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			os.Chmod(path, 0o755)
+		}
+		return nil
+	})
+}
+
+// mode returns the permission and special bits of path.
+func mode(t *testing.T, path string) fs.FileMode {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Mode() & (fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)
+}
+
+// checkCall is the call of the no-AI check of the release dir in root, as
+// the fake runner records it.
+func checkCall(prog, root, dir string) string {
+	return prog + " --root " + root + " --release " + dir + " --require-policy --nft-listing FILE"
 }

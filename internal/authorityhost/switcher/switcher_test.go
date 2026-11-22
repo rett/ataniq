@@ -3,6 +3,7 @@ package switcher
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,7 +73,8 @@ func TestCleanSwitch(t *testing.T) {
 	}
 	dir := e.relDir(rel2)
 	want := []string{
-		filepath.Join(dir, NoAICheckProgram) + " --release " + dir,
+		"nft list ruleset",
+		checkCall(filepath.Join(dir, NoAICheckProgram), e.root, dir),
 		"validate-units verify " + dir + "/etc/systemd/app.service",
 		"validate-rules -c",
 		"reload-units",
@@ -97,10 +99,11 @@ func TestDeployRecord(t *testing.T) {
 		CurrentID:       rel2,
 		Counter:         2,
 		Mode:            ModeManual,
+		Trust:           ModeManual,
 		Time:            "2026-11-21T12:00:00Z",
 		Result:          ResultOK,
 		Check:           CheckPassed,
-		PackageSnapshot: "",
+		PackageSnapshot: "2026-11-01",
 	}
 	if rec != want {
 		t.Errorf("deploy.json:\n%+v\nwant\n%+v", rec, want)
@@ -109,7 +112,7 @@ func TestDeployRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"id", "previous_id", "current_id", "counter", "mode", "rollback", "time", "result", "check", "failed_step", "error", "package_snapshot", "restored_health"} {
+	for _, key := range []string{"id", "previous_id", "current_id", "counter", "mode", "trust", "rollback", "time", "result", "check", "failed_step", "error", "detail", "package_snapshot", "restored_health"} {
 		if !strings.Contains(string(data), `"`+key+`":`) {
 			t.Errorf("deploy.json has no %s:\n%s", key, data)
 		}
@@ -128,7 +131,7 @@ func TestDeployRecord(t *testing.T) {
 	rec = e.record()
 	if rec.ID != rel3 || rec.PreviousID != rel2 || rec.CurrentID != rel2 || rec.Counter != 3 ||
 		rec.Result != ResultFailed || rec.Check != CheckFailed || rec.FailedStep != "noaicheck" ||
-		!strings.Contains(rec.Error, "ah-noaicheck said no") {
+		rec.Error != CodeNoAICheckFailed || rec.Detail != "failed (run it by hand to see its hits)" {
 		t.Errorf("deploy.json after a failed check: %+v", rec)
 	}
 }
@@ -141,8 +144,8 @@ func TestWrongSum(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	e.unchanged("releases/"+rel2, "verify")
-	if !strings.Contains(e.record().Error, "bin/app does not match") {
-		t.Errorf("error: %s", e.record().Error)
+	if !strings.Contains(e.record().Detail, "bin/app does not match") {
+		t.Errorf("error: %s: %s", e.record().Error, e.record().Detail)
 	}
 	if len(e.runner.calls) != 0 {
 		t.Errorf("commands run after a failed verification: %v", e.runner.calls)
@@ -157,8 +160,8 @@ func TestExtraFile(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	e.unchanged("releases/"+rel2, "verify")
-	if !strings.Contains(e.record().Error, "not listed in SHA256SUMS: etc/extra.conf") {
-		t.Errorf("error: %s", e.record().Error)
+	if !strings.Contains(e.record().Detail, "not listed in SHA256SUMS: etc/extra.conf") {
+		t.Errorf("error: %s: %s", e.record().Error, e.record().Detail)
 	}
 }
 
@@ -172,8 +175,8 @@ func TestMissingFile(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	e.unchanged("releases/"+rel2, "verify")
-	if !strings.Contains(e.record().Error, "missing: bin/app") {
-		t.Errorf("error: %s", e.record().Error)
+	if !strings.Contains(e.record().Detail, "missing: bin/app") {
+		t.Errorf("error: %s: %s", e.record().Error, e.record().Detail)
 	}
 }
 
@@ -193,8 +196,8 @@ func TestPathEscapeInSums(t *testing.T) {
 				t.Fatalf("exit %d", code)
 			}
 			e.unchanged("releases/"+rel2, "verify")
-			if !strings.Contains(e.record().Error, "escapes the release folder") {
-				t.Errorf("error: %s", e.record().Error)
+			if !strings.Contains(e.record().Detail, "escapes the release folder") {
+				t.Errorf("error: %s: %s", e.record().Error, e.record().Detail)
 			}
 		})
 	}
@@ -236,8 +239,8 @@ func TestSymlinkInsideReleaseRefused(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	e.unchanged("releases/"+rel2, "verify")
-	if !strings.Contains(e.record().Error, "etc/link is a symbolic link") {
-		t.Errorf("error: %s", e.record().Error)
+	if !strings.Contains(e.record().Detail, "etc/link is a symbolic link") {
+		t.Errorf("error: %s: %s", e.record().Error, e.record().Detail)
 	}
 }
 
@@ -256,8 +259,8 @@ func TestSymlinkReleaseFolderRefused(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	e.unchanged("releases/"+rel2, "verify")
-	if !strings.Contains(e.record().Error, "is a symbolic link, not a release folder") {
-		t.Errorf("error: %s", e.record().Error)
+	if !strings.Contains(e.record().Detail, "is a symbolic link, not a release folder") {
+		t.Errorf("error: %s: %s", e.record().Error, e.record().Detail)
 	}
 }
 
@@ -286,8 +289,8 @@ func TestManifestMismatch(t *testing.T) {
 				t.Fatalf("exit %d", code)
 			}
 			e.unchanged("releases/"+rel2, "verify")
-			if !strings.Contains(e.record().Error, tc.want) {
-				t.Errorf("error: %s", e.record().Error)
+			if !strings.Contains(e.record().Detail, tc.want) {
+				t.Errorf("error: %s: %s", e.record().Error, e.record().Detail)
 			}
 		})
 	}
@@ -301,8 +304,8 @@ func TestLowerCounterRefused(t *testing.T) {
 				t.Fatalf("exit %d", code)
 			}
 			e.unchanged("releases/"+rel2, "counter")
-			if !strings.Contains(e.record().Error, "not above the highest ever activated, 2") {
-				t.Errorf("error: %s", e.record().Error)
+			if !strings.Contains(e.record().Detail, "not above the highest ever activated, 2") {
+				t.Errorf("error: %s: %s", e.record().Error, e.record().Detail)
 			}
 			if len(e.runner.calls) != 0 {
 				t.Errorf("commands run: %v", e.runner.calls)
@@ -363,8 +366,8 @@ func TestRollbackRefusedForOtherID(t *testing.T) {
 			t.Fatalf("rollback to %s: exit %d", id, code)
 		}
 		e.unchanged("releases/"+rel2, "counter")
-		if !strings.Contains(e.record().Error, "accepts only previous") {
-			t.Errorf("error: %s", e.record().Error)
+		if !strings.Contains(e.record().Detail, "accepts only previous") {
+			t.Errorf("error: %s: %s", e.record().Error, e.record().Detail)
 		}
 	}
 	if code := e.rollBack("latest"); code != ExitUsage {
@@ -414,8 +417,8 @@ func TestNoAICheckOverride(t *testing.T) {
 	if code := e.switchTo(rel3, func(c *Config) { c.NoAICheck = check }); code != ExitOK {
 		t.Fatalf("exit %d", code)
 	}
-	if want := check + " --release " + e.relDir(rel3); e.runner.calls[0] != want {
-		t.Errorf("first command %q, want %q", e.runner.calls[0], want)
+	if want := checkCall(check, e.root, e.relDir(rel3)); e.runner.calls[1] != want {
+		t.Errorf("check command %q, want %q", e.runner.calls[1], want)
 	}
 }
 
@@ -439,7 +442,7 @@ func TestValidatorFailing(t *testing.T) {
 	}
 	e.unchanged("releases/"+rel2, "validate")
 	rec := e.record()
-	if rec.Check != CheckPassed || !strings.Contains(rec.Error, "validate-rules said no") {
+	if rec.Check != CheckPassed || rec.Error != CodeValidatorFailed || rec.Detail != "validator 2 of 2, validate-rules: failed" {
 		t.Errorf("record: %+v", rec)
 	}
 	if e.runner.called("reload-units") != 0 {
@@ -447,26 +450,89 @@ func TestValidatorFailing(t *testing.T) {
 	}
 }
 
-func TestMissingValidatorsListAllowed(t *testing.T) {
+// TestListsRequired: each of the four lists must be there and hold a
+// command, unless the MANIFEST says components: static, when comment lines
+// are enough.
+func TestListsRequired(t *testing.T) {
+	for _, list := range []string{ValidatorsList, ReloadList, HealthCmd, StopList} {
+		t.Run(filepath.Base(list)+" missing", func(t *testing.T) {
+			e := active(t)
+			dir := e.release(rel3, "2026-11-01")
+			os.Remove(filepath.Join(dir, list))
+			e.sums(dir)
+			if code := e.switchTo(rel3); code != ExitFailed {
+				t.Fatalf("exit %d", code)
+			}
+			e.unchanged("releases/"+rel2, "verify")
+			if rec := e.record(); rec.Error != CodeListMissing {
+				t.Errorf("record: %s: %s", rec.Error, rec.Detail)
+			}
+		})
+		t.Run(filepath.Base(list)+" empty", func(t *testing.T) {
+			e := active(t)
+			dir := e.release(rel3, "2026-11-01")
+			e.write(filepath.Join(dir, list), "# nothing here\n", 0o644)
+			e.sums(dir)
+			if code := e.switchTo(rel3); code != ExitFailed {
+				t.Fatalf("exit %d", code)
+			}
+			if rec := e.record(); rec.Error != CodeListInvalid {
+				t.Errorf("record: %s: %s", rec.Error, rec.Detail)
+			}
+		})
+	}
+	t.Run("static release", func(t *testing.T) {
+		e := active(t)
+		dir := e.release(rel3, "2026-11-01")
+		for _, list := range []string{ValidatorsList, ReloadList, HealthCmd, StopList} {
+			e.write(filepath.Join(dir, list), "# a static release\n", 0o644)
+		}
+		data, _ := os.ReadFile(filepath.Join(dir, ManifestFile))
+		e.write(filepath.Join(dir, ManifestFile), string(data)+"components: static\n", 0o644)
+		e.sums(dir)
+		if code := e.switchTo(rel3); code != ExitOK {
+			t.Fatalf("exit %d", code)
+		}
+		if n := e.runner.called("health-probe") + e.runner.called("validate-units") + e.runner.called("reload-units"); n != 0 {
+			t.Errorf("commands of another release ran: %v", e.runner.calls)
+		}
+	})
+	t.Run("other components", func(t *testing.T) {
+		if _, err := ParseManifest([]byte("id: 0003-ccccccc\ncounter: 3\ncommit: ccccccc0\nbuilt_on: dev\ngo_version: go\npackage_snapshot: s\ncomponents: app\n")); err == nil {
+			t.Errorf("components: app accepted")
+		}
+	})
+}
+
+// TestEveryHealthCommandMustPass: health.cmd may hold several commands (the
+// front end and the application's readiness); a round passes only when all
+// of them pass.
+func TestEveryHealthCommandMustPass(t *testing.T) {
 	e := active(t)
 	dir := e.release(rel3, "2026-11-01")
-	os.Remove(filepath.Join(dir, ValidatorsList))
-	os.Remove(filepath.Join(dir, ReloadList))
+	e.write(filepath.Join(dir, HealthCmd), "health-probe http://127.0.0.1/healthz\nready-probe /run/app/ready\n", 0o644)
 	e.sums(dir)
+	e.runner.fail["ready-probe"] = 2
 	if code := e.switchTo(rel3); code != ExitOK {
 		t.Fatalf("exit %d", code)
 	}
-}
+	if e.runner.called("health-probe") != 3 || e.runner.called("ready-probe") != 3 {
+		t.Errorf("rounds: %v", e.runner.calls)
+	}
 
-func TestMissingHealthCmdRefused(t *testing.T) {
-	e := active(t)
-	dir := e.release(rel3, "2026-11-01")
-	os.Remove(filepath.Join(dir, HealthCmd))
+	// The readiness command never passing fails the switch, although the
+	// front end is healthy.
+	e = active(t)
+	dir = e.release(rel3, "2026-11-01")
+	e.write(filepath.Join(dir, HealthCmd), "health-probe http://127.0.0.1/healthz\nready-probe /run/app/ready\n", 0o644)
 	e.sums(dir)
+	e.runner.fail["ready-probe"] = 30
 	if code := e.switchTo(rel3); code != ExitFailed {
 		t.Fatalf("exit %d", code)
 	}
-	e.unchanged("releases/"+rel2, "verify")
+	if rec := e.record(); rec.Result != ResultRolledBack || rec.Error != CodeHealthFailed || !strings.Contains(rec.Detail, "ready-probe") {
+		t.Errorf("record: %+v", rec)
+	}
 }
 
 func TestPackageStep(t *testing.T) {
@@ -512,11 +578,60 @@ func TestPackageStep(t *testing.T) {
 	}
 }
 
-func TestPackageStepAbsentAllowed(t *testing.T) {
+// TestPackageStepMissingRefused: a changed snapshot needs the release's
+// package step.
+func TestPackageStepMissingRefused(t *testing.T) {
+	e := active(t)
+	dir := e.release(rel3, "2026-11-15")
+	os.Remove(filepath.Join(dir, PackageStepProgram))
+	e.sums(dir)
+	if code := e.switchTo(rel3); code != ExitFailed {
+		t.Fatal(code)
+	}
+	e.unchanged("releases/"+rel2, "packages")
+	if rec := e.record(); rec.Error != CodePackageStepMissing || rec.PackageSnapshot != "2026-11-01" {
+		t.Errorf("record: %+v", rec)
+	}
+	// An unchanged snapshot needs none.
+	dir = e.release("0004-ddddddd", "2026-11-01")
+	os.Remove(filepath.Join(dir, PackageStepProgram))
+	e.sums(dir)
+	if code := e.switchTo("0004-ddddddd"); code != ExitOK {
+		t.Fatal(code)
+	}
+}
+
+// TestPackageStepBeforeCheck: the package step runs before the no-AI check
+// and the validators, so they see the host as it will be; when the check
+// then fails, the new snapshot is what deploy.json records and the step is
+// not run again for it.
+func TestPackageStepBeforeCheck(t *testing.T) {
 	e := active(t)
 	e.release(rel3, "2026-11-15")
+	e.runner.fail["ah-noaicheck"] = 1
+	if code := e.switchTo(rel3); code != ExitFailed {
+		t.Fatal(code)
+	}
+	var order []string
+	for _, c := range e.runner.calls {
+		order = append(order, filepath.Base(strings.Fields(c)[0]))
+	}
+	if strings.Join(order, " ") != "ah-pkgstep nft ah-noaicheck" {
+		t.Errorf("order: %v", order)
+	}
+	e.unchanged("releases/"+rel2, "noaicheck")
+	if rec := e.record(); rec.PackageSnapshot != "2026-11-15" {
+		t.Errorf("record: %+v", rec)
+	}
+	if _, err := os.Stat(filepath.Join(e.root, StateDir, JournalFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("journal left: %v", err)
+	}
+	e.runner.reset()
 	if code := e.switchTo(rel3); code != ExitOK {
 		t.Fatal(code)
+	}
+	if e.runner.called("ah-pkgstep") != 0 {
+		t.Errorf("package step run again: %v", e.runner.calls)
 	}
 }
 
@@ -536,8 +651,9 @@ func TestHealthFailingRollsBack(t *testing.T) {
 	if got := e.link("previous"); got != "releases/"+rel1 {
 		t.Errorf("previous -> %q, want it put back", got)
 	}
-	if got := e.highest(); got != "2" {
-		t.Errorf("highest %q", got)
+	// highest-counter is the highest ever attempted.
+	if got := e.highest(); got != "3" {
+		t.Errorf("highest %q, want 3", got)
 	}
 	rec := e.record()
 	if rec.Result != ResultRolledBack || rec.FailedStep != "health" || rec.CurrentID != rel2 || rec.ID != rel3 || rec.RestoredHealth != "ok" {
@@ -593,59 +709,24 @@ func TestFirstSwitchUnhealthyHasNoWayBack(t *testing.T) {
 		t.Errorf("current -> %q", got)
 	}
 	rec := e.record()
-	if rec.Result != ResultFailed || rec.FailedStep != "health" || !strings.Contains(rec.Error, "no earlier release") {
+	if rec.Result != ResultFailed || rec.FailedStep != "health" || rec.Error != CodeHealthFailed || !strings.Contains(rec.Detail, "no earlier release") {
 		t.Errorf("record: %+v", rec)
 	}
-	if got := e.highest(); got != "" {
-		t.Errorf("highest written after an unhealthy switch: %q", got)
-	}
-}
-
-func TestCrashBetweenPreviousAndRename(t *testing.T) {
-	e := active(t)
-	e.release(rel3, "2026-11-01")
-	before := e.record()
-	s := e.switcher()
-	s.afterPrevious = func() error { return errors.New("crash") }
-	s.Switch(context.Background(), rel3)
-	// current is still the old release, whole and verifiable.
-	if got := e.link("current"); got != "releases/"+rel2 {
-		t.Fatalf("current -> %q", got)
-	}
-	if got := e.link("previous"); got != "releases/"+rel2 {
-		t.Errorf("previous -> %q, want the old current", got)
-	}
-	target, err := filepath.EvalSymlinks(filepath.Join(e.root, BaseDir, "current"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	id, _ := ParseID(rel2)
-	if r, err := openRelease(id, target); err != nil {
-		t.Errorf("current does not verify after the crash: %v", err)
-	} else {
-		r.Close()
-	}
-	if rec := e.record(); rec != before {
-		t.Errorf("deploy.json changed by a crash: %+v", rec)
-	}
-	if got := e.highest(); got != "2" {
-		t.Errorf("highest %q", got)
-	}
-	// The lock went with the crashed process; running the switch again
-	// completes it.
-	e.out.Reset()
-	if code := e.switchTo(rel3); code != ExitOK {
-		t.Fatalf("switch after the crash: exit %d", code)
-	}
-	if e.link("current") != "releases/"+rel3 || e.link("previous") != "releases/"+rel2 {
-		t.Errorf("after recovery: current -> %q, previous -> %q", e.link("current"), e.link("previous"))
+	// The counter was attempted: it is used.
+	if got := e.highest(); got != "1" {
+		t.Errorf("highest %q after an unhealthy first switch, want 1", got)
 	}
 }
 
 func TestConcurrentSwitchRefused(t *testing.T) {
 	e := active(t)
 	e.release(rel3, "2026-11-01")
-	held, err := takeLock(filepath.Join(e.root, StateDir, LockFile), true)
+	state, err := os.OpenRoot(filepath.Join(e.root, StateDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	held, err := takeLock(state, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -709,7 +790,7 @@ func TestDryChangesNothing(t *testing.T) {
 				t.Errorf("--dry ran commands: %v", e.runner.calls)
 			}
 			if tc.code == ExitOK {
-				for _, want := range []string{"step 1/8", "step 2/8", "step 3/8 noaicheck: would run", "step 4/8 validate: would run", "step 5/8", "step 6/8 switch: would point current", "step 7/8 health: would run", "step 8/8 record: would record"} {
+				for _, want := range []string{"step 1/8", "step 2/8", "step 3/8 packages", "step 4/8 noaicheck: would run", "step 5/8 validate: would run", "step 6/8 switch: would point current", "step 7/8 health: would run", "step 8/8 record: would record"} {
 					if !strings.Contains(out, want) {
 						t.Errorf("--dry output lacks %q", want)
 					}
@@ -717,65 +798,6 @@ func TestDryChangesNothing(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestSignedMode(t *testing.T) {
-	signed := func(v Verifier) func(*Config) {
-		return func(c *Config) {
-			c.Mode = ModeSigned
-			c.AllowedSigners = "/etc/authority-host/allowed_signers"
-			c.Verifier = v
-		}
-	}
-	t.Run("good", func(t *testing.T) {
-		e := newEnv(t)
-		dir := e.release(rel1, "s")
-		e.write(filepath.Join(dir, SignatureFile), "sig", 0o644)
-		v := &fakeVerifier{}
-		if code := e.switchTo(rel1, signed(v)); code != ExitOK {
-			t.Fatalf("exit %d", code)
-		}
-		sums, _ := os.ReadFile(filepath.Join(dir, SumsFile))
-		if v.calls != 1 || string(v.data) != string(sums) {
-			t.Errorf("verifier called %d times with %q", v.calls, v.data)
-		}
-		if e.record().Mode != ModeSigned {
-			t.Errorf("mode not recorded")
-		}
-	})
-	t.Run("bad", func(t *testing.T) {
-		e := newEnv(t)
-		dir := e.release(rel1, "s")
-		e.write(filepath.Join(dir, SignatureFile), "sig", 0o644)
-		if code := e.switchTo(rel1, signed(&fakeVerifier{err: errors.New("bad signature")})); code != ExitFailed {
-			t.Fatalf("exit %d", code)
-		}
-		e.unchanged("", "verify")
-		if len(e.runner.calls) != 0 {
-			t.Errorf("commands run: %v", e.runner.calls)
-		}
-	})
-	t.Run("missing", func(t *testing.T) {
-		e := newEnv(t)
-		e.release(rel1, "s")
-		v := &fakeVerifier{}
-		if code := e.switchTo(rel1, signed(v)); code != ExitFailed {
-			t.Fatalf("exit %d", code)
-		}
-		e.unchanged("", "verify")
-		if v.calls != 0 {
-			t.Errorf("verifier called without a signature")
-		}
-	})
-	t.Run("manual ignores it", func(t *testing.T) {
-		e := newEnv(t)
-		dir := e.release(rel1, "s")
-		e.write(filepath.Join(dir, SignatureFile), "sig", 0o644)
-		v := &fakeVerifier{err: errors.New("never asked")}
-		if code := e.switchTo(rel1, func(c *Config) { c.Verifier = v }); code != ExitOK || v.calls != 0 {
-			t.Fatalf("exit %d, verifier calls %d", code, v.calls)
-		}
-	})
 }
 
 func TestConfigRefused(t *testing.T) {
@@ -788,8 +810,7 @@ func TestConfigRefused(t *testing.T) {
 		{"id with path", nil, "../0001-aaaaaaa"},
 		{"upper-case commit", nil, "0001-AAAAAAA"},
 		{"bad mode", func(c *Config) { c.Mode = "trust" }, rel1},
-		{"signed without signers", func(c *Config) { c.Mode = ModeSigned }, rel1},
-		{"signers in manual mode", func(c *Config) { c.AllowedSigners = "/x" }, rel1},
+		{"signed without a policy", func(c *Config) { c.Mode = ModeSigned }, rel1},
 		{"relative root", func(c *Config) { c.Root = "relative" }, rel1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -826,24 +847,17 @@ func TestCurrentNotALink(t *testing.T) {
 
 func TestStatus(t *testing.T) {
 	e := newEnv(t)
-	var b strings.Builder
-	if err := Status(e.root, &b); err != nil {
-		t.Fatal(err)
-	}
-	if want := "current: none\nprevious: none\nhighest counter: 0\nlast switch: none recorded\n"; b.String() != want {
-		t.Errorf("status of an empty root:\n%s", b.String())
+	if got := e.status(); got != "current: none\nprevious: none\nhighest counter: 0\ntrust: manual: no switch policy, unsigned releases are accepted\nlast switch: none recorded\n" {
+		t.Errorf("status of an empty root:\n%s", got)
 	}
 	e.release(rel1, "s")
 	e.release(rel2, "s")
 	e.switchTo(rel1)
 	e.switchTo(rel2)
-	b.Reset()
-	if err := Status(e.root, &b); err != nil {
-		t.Fatal(err)
-	}
+	got := e.status()
 	for _, want := range []string{"current: " + rel2, "previous: " + rel1, "highest counter: 2", "last switch: switch to " + rel2 + ": ok", "no-AI check: passed"} {
-		if !strings.Contains(b.String(), want) {
-			t.Errorf("status lacks %q:\n%s", want, b.String())
+		if !strings.Contains(got, want) {
+			t.Errorf("status lacks %q:\n%s", want, got)
 		}
 	}
 }
@@ -877,12 +891,6 @@ func TestCommandLists(t *testing.T) {
 			}
 		})
 	}
-	if _, err := ParseHealthCmd([]byte("a\nb\n")); err == nil {
-		t.Errorf("two health commands accepted")
-	}
-	if _, err := ParseHealthCmd([]byte("# nothing\n")); err == nil {
-		t.Errorf("no health command accepted")
-	}
 }
 
 func TestParseID(t *testing.T) {
@@ -894,5 +902,266 @@ func TestParseID(t *testing.T) {
 		if _, err := ParseID(bad); err == nil {
 			t.Errorf("ParseID(%q) accepted", bad)
 		}
+	}
+}
+
+// TestChildOutputNeverShown: what a failing program writes reaches neither
+// deploy.json nor the steps, since a diagnostic can hold a secret.
+func TestChildOutputNeverShown(t *testing.T) {
+	for _, prog := range []string{"ah-noaicheck", "validate-rules", "reload-units", "health-probe"} {
+		t.Run(prog, func(t *testing.T) {
+			e := active(t)
+			e.release(rel3, "2026-11-01")
+			e.runner.fail[prog] = -1
+			if code := e.switchTo(rel3); code != ExitFailed {
+				t.Fatalf("exit %d", code)
+			}
+			if strings.Contains(e.last, "said no") || strings.Contains(e.deployJSON(), "said no") {
+				t.Errorf("the program's output was passed on:\n%s\n%s", e.last, e.deployJSON())
+			}
+		})
+	}
+}
+
+// TestPlantedNameEscaped: a file name holding a newline cannot forge a line
+// of the output, and deploy.json holds it escaped.
+func TestPlantedNameEscaped(t *testing.T) {
+	e := active(t)
+	dir := e.release(rel3, "2026-11-01")
+	e.write(filepath.Join(dir, "etc", "x\nresult: ok"), "x", 0o644)
+	if code := e.switchTo(rel3); code != ExitFailed {
+		t.Fatalf("exit %d", code)
+	}
+	for _, line := range strings.Split(e.last, "\n") {
+		if strings.HasPrefix(line, "result: ok") {
+			t.Errorf("a planted name forged a line:\n%s", e.last)
+		}
+	}
+	rec := e.record()
+	if rec.Error != CodeFileNotListed || rec.Detail != `not listed in SHA256SUMS: "etc/x\nresult: ok"` {
+		t.Errorf("record: %s: %s", rec.Error, rec.Detail)
+	}
+}
+
+// TestBadCounterNotEchoed: the text of a broken highest-counter is not
+// repeated anywhere.
+func TestBadCounterNotEchoed(t *testing.T) {
+	e := active(t)
+	e.release(rel3, "2026-11-01")
+	e.write(filepath.Join(e.root, StateDir, HighestFile), "token-of-someone\n", 0o644)
+	if code := e.switchTo(rel3); code != ExitFailed {
+		t.Fatalf("exit %d", code)
+	}
+	if strings.Contains(e.last, "token-of") || strings.Contains(e.deployJSON(), "token-of") {
+		t.Errorf("the counter text was echoed:\n%s\n%s", e.last, e.deployJSON())
+	}
+	if rec := e.record(); rec.Error != CodeCounterInvalid {
+		t.Errorf("record: %+v", rec)
+	}
+}
+
+func TestQuoteField(t *testing.T) {
+	long := strings.Repeat("a", maxField+10)
+	for _, tc := range []struct{ in, want string }{
+		{"bin/app", "bin/app"},
+		{"", `""`},
+		{"a b", `"a b"`},
+		{"x\ny", `"x\ny"`},
+		{"\x1b[2J", `"\x1b[2J"`},
+		{"\xc3\xa9", `"\` + "u00e9\""},
+		{long, strings.Repeat("a", maxField) + "..."},
+	} {
+		if got := q(tc.in); got != tc.want {
+			t.Errorf("q(%q) = %s, want %s", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestStateFolderMustBeTrusted: the state folder and every folder above it
+// up to the root must be real folders, not writable by group or others, and
+// owned as the owner check says; otherwise nothing is done or recorded.
+func TestStateFolderMustBeTrusted(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(e *env)
+		mod   func(*Config)
+	}{
+		{"state folder writable by others", func(e *env) {
+			os.Chmod(filepath.Join(e.root, StateDir), 0o777)
+		}, nil},
+		{"parent writable by its group", func(e *env) {
+			os.Chmod(filepath.Join(e.root, "var/lib"), 0o775)
+		}, nil},
+		{"root writable by others", func(e *env) {
+			os.Chmod(e.root, 0o757)
+		}, nil},
+		{"state folder a link", func(e *env) {
+			real := filepath.Join(e.root, "elsewhere")
+			os.Rename(filepath.Join(e.root, StateDir), real)
+			os.Symlink(real, filepath.Join(e.root, StateDir))
+		}, nil},
+		{"owner refused", func(e *env) {}, func(c *Config) {
+			c.Owner = func(fs.FileInfo) error { return errors.New("owned by uid 1000, not root") }
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := active(t)
+			e.release(rel3, "2026-11-01")
+			tc.setup(e)
+			before := digest(t, e.root)
+			mods := []func(*Config){}
+			if tc.mod != nil {
+				mods = append(mods, tc.mod)
+			}
+			if code := e.switchTo(rel3, mods...); code != ExitFailed {
+				t.Fatalf("exit %d", code)
+			}
+			if !strings.Contains(e.last, "untrusted") {
+				t.Errorf("output does not say why:\n%s", e.last)
+			}
+			if digest(t, e.root) != before {
+				t.Errorf("an untrusted state folder was written to")
+			}
+			if len(e.runner.calls) != 0 {
+				t.Errorf("commands run: %v", e.runner.calls)
+			}
+			if code := e.switcher(mods...).Status(); code != ExitFailed {
+				t.Errorf("status: exit %d", code)
+			}
+			e.out.Reset()
+		})
+	}
+}
+
+// TestReleasesFolderMustBeTrusted: opt/authority-host and releases/ are
+// checked as the state folder is.
+func TestReleasesFolderMustBeTrusted(t *testing.T) {
+	e := active(t)
+	e.release(rel3, "2026-11-01")
+	os.Chmod(filepath.Join(e.root, BaseDir, "releases"), 0o777)
+	if code := e.switchTo(rel3); code != ExitFailed {
+		t.Fatalf("exit %d", code)
+	}
+	if rec := e.record(); rec.FailedStep != "state" || rec.Error != CodeUntrusted {
+		t.Errorf("record: %+v", rec)
+	}
+	if got := e.link("current"); got != "releases/"+rel2 {
+		t.Errorf("current -> %q", got)
+	}
+}
+
+// TestStateFilesNotFollowed: a state file that is a link, or too large, is
+// not read through.
+func TestStateFilesNotFollowed(t *testing.T) {
+	t.Run("highest-counter a link", func(t *testing.T) {
+		e := active(t)
+		e.release(rel3, "2026-11-01")
+		other := filepath.Join(t.TempDir(), "counter")
+		e.write(other, "1\n", 0o644)
+		p := filepath.Join(e.root, StateDir, HighestFile)
+		os.Remove(p)
+		os.Symlink(other, p)
+		if code := e.switchTo(rel3); code != ExitFailed {
+			t.Fatalf("exit %d", code)
+		}
+		if rec := e.record(); rec.FailedStep != "counter" || rec.Error != CodeCounterInvalid {
+			t.Errorf("record: %+v", rec)
+		}
+	})
+	t.Run("lock a link", func(t *testing.T) {
+		e := active(t)
+		e.release(rel3, "2026-11-01")
+		other := filepath.Join(t.TempDir(), "lock")
+		e.write(other, "", 0o644)
+		p := filepath.Join(e.root, StateDir, LockFile)
+		os.Remove(p)
+		os.Symlink(other, p)
+		if code := e.switchTo(rel3); code != ExitFailed {
+			t.Fatalf("exit %d", code)
+		}
+		if got := e.link("current"); got != "releases/"+rel2 {
+			t.Errorf("current -> %q", got)
+		}
+	})
+	t.Run("deploy.json too large", func(t *testing.T) {
+		e := active(t)
+		e.write(filepath.Join(e.root, StateDir, DeployFile), strings.Repeat(" ", maxStateFile+1), 0o644)
+		if code := e.switcher().Status(); code != ExitFailed {
+			t.Errorf("status: exit %d", code)
+		}
+		e.out.Reset()
+	})
+}
+
+// TestOtherRootNeedsAllowExec: with a root other than /, a switch would run
+// the release's programs on this host, so it is refused without AllowExec;
+// a dry run and status run no program and work.
+func TestOtherRootNeedsAllowExec(t *testing.T) {
+	e := active(t)
+	e.release(rel3, "2026-11-01")
+	before := digest(t, e.root)
+	noExec := func(c *Config) { c.AllowExec = false }
+	if code := e.switchTo(rel3, noExec); code != ExitUsage {
+		t.Fatalf("switch: exit %d", code)
+	}
+	if code := e.switcher(noExec).RollBack(context.Background(), "previous"); code != ExitUsage {
+		t.Fatalf("rollback: exit %d", code)
+	}
+	e.out.Reset()
+	if digest(t, e.root) != before || len(e.runner.calls) != 0 {
+		t.Errorf("a refused switch changed the tree or ran %v", e.runner.calls)
+	}
+	if code := e.switchTo(rel3, noExec, func(c *Config) { c.Dry = true }); code != ExitOK {
+		t.Fatalf("dry: exit %d", code)
+	}
+	e.status(noExec)
+}
+
+// TestFirewallListing: the check gets what nft list ruleset printed, in a
+// private file of a private folder that is gone afterwards; a failing or
+// oversized listing fails the check step without running the check.
+func TestFirewallListing(t *testing.T) {
+	e := active(t)
+	e.release(rel3, "2026-11-01")
+	var seen string
+	e.runner.hook = func(argv []string) {
+		for i, a := range argv {
+			if a == "--nft-listing" {
+				seen = argv[i+1]
+			}
+		}
+	}
+	if code := e.switchTo(rel3); code != ExitOK {
+		t.Fatalf("exit %d", code)
+	}
+	if len(e.runner.listing) != 3 || e.runner.listing[0] != fakeRuleset || e.runner.listing[1] != "-rw-------" || e.runner.listing[2] != "drwx------" {
+		t.Errorf("listing seen by the check: %q", e.runner.listing)
+	}
+	if _, err := os.Stat(filepath.Dir(seen)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the listing's folder was left: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		set  func(e *env)
+	}{
+		{"nft fails", func(e *env) { e.runner.fail["nft"] = -1 }},
+		{"listing too large", func(e *env) { e.runner.nftOut = strings.Repeat("x", maxNFTListing+1) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := active(t)
+			e.release(rel3, "2026-11-01")
+			tc.set(e)
+			if code := e.switchTo(rel3); code != ExitFailed {
+				t.Fatalf("exit %d", code)
+			}
+			e.unchanged("releases/"+rel2, "noaicheck")
+			if rec := e.record(); rec.Error != CodeNFTListingFailed {
+				t.Errorf("record: %+v", rec)
+			}
+			if e.runner.called("ah-noaicheck") != 0 {
+				t.Errorf("the check ran without a listing")
+			}
+		})
 	}
 }

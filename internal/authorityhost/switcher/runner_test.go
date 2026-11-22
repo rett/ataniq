@@ -38,7 +38,7 @@ func TestExecRunnerExitStatusAndStdin(t *testing.T) {
 	dir := t.TempDir()
 	prog := script(t, dir, "fail", "echo nope >&2\nexit 4\n")
 	out, err := ExecRunner{}.Run(context.Background(), Command{Argv: []string{prog}, Timeout: 10 * time.Second})
-	if err == nil || !strings.Contains(err.Error(), "exit status 4") || strings.TrimSpace(string(out.Stderr)) != "nope" {
+	if err == nil || err.Error() != "exit status 4" || strings.TrimSpace(string(out.Stderr)) != "nope" {
 		t.Errorf("err %v, stderr %q", err, out.Stderr)
 	}
 	out, err = ExecRunner{}.Run(context.Background(), Command{Argv: []string{"cat"}, Stdin: []byte("data\n"), Timeout: 10 * time.Second})
@@ -66,6 +66,17 @@ func TestExecRunnerTimeoutKillsTheGroup(t *testing.T) {
 	}
 }
 
+// fakeNFT makes the search path a folder whose nft prints listing, for the
+// length of the test.
+func fakeNFT(t *testing.T, listing string) {
+	t.Helper()
+	dir := t.TempDir()
+	script(t, dir, "nft", "cat <<'EOF'\n"+listing+"EOF\n")
+	saved := SearchPath
+	SearchPath = append([]string{dir}, saved...)
+	t.Cleanup(func() { SearchPath = saved })
+}
+
 func TestLookPath(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	p, err := LookPath("sh")
@@ -84,13 +95,16 @@ func TestLookPath(t *testing.T) {
 func TestSwitchWithExecRunner(t *testing.T) {
 	e := newEnv(t)
 	marks := t.TempDir()
+	fakeNFT(t, "table inet filter {\n}\n")
 	dir := e.relDir(rel1)
 	e.release(rel1, "s")
-	e.write(filepath.Join(dir, NoAICheckProgram), "#!/bin/sh\n[ \"$1\" = --release ] && [ -d \"$2\" ] && touch "+marks+"/checked\n", 0o755)
+	// The check is given the root, the release, --require-policy and a
+	// readable listing of the firewall.
+	e.write(filepath.Join(dir, NoAICheckProgram), "#!/bin/sh\n[ \"$1 $2 $3 $4 $5 $6\" = \"--root "+e.root+" --release "+dir+" --require-policy --nft-listing\" ] && grep -q 'table inet filter' \"$7\" && touch "+marks+"/checked\n", 0o755)
 	e.write(filepath.Join(dir, "bin/validate"), "#!/bin/sh\ntouch "+marks+"/validated\n", 0o755)
 	e.write(filepath.Join(dir, ValidatorsList), "{release}/bin/validate\n", 0o644)
-	os.Remove(filepath.Join(dir, ReloadList))
 	health := script(t, marks, "health", "exit 0\n")
+	e.write(filepath.Join(dir, ReloadList), health+"\n", 0o644)
 	e.write(filepath.Join(dir, HealthCmd), health+"\n", 0o644)
 	e.sums(dir)
 	code := e.switchTo(rel1, func(c *Config) { c.Runner = ExecRunner{} })
@@ -111,8 +125,14 @@ func TestSwitchWithExecRunner(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	e.unchanged("releases/"+rel1, "noaicheck")
-	if !strings.Contains(e.record().Error, "an AI tool is installed") {
-		t.Errorf("error: %s", e.record().Error)
+	if rec := e.record(); rec.Error != CodeNoAICheckFailed || rec.Detail != "exit status 1 (run it by hand to see its hits)" {
+		t.Errorf("error: %s: %s", rec.Error, rec.Detail)
+	}
+	// What the check wrote is neither recorded nor printed: a diagnostic
+	// can hold a secret.
+	data, err := os.ReadFile(filepath.Join(e.root, StateDir, DeployFile))
+	if err != nil || strings.Contains(string(data), "AI tool") {
+		t.Errorf("deploy.json carries the check's output: %s, %v", data, err)
 	}
 }
 
@@ -138,17 +158,22 @@ func TestSSHVerifierWithRealKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	signers := filepath.Join(keys, "allowed_signers")
-	if err := os.WriteFile(signers, []byte("release-signer@example.invalid "+string(pub)), 0o644); err != nil {
+	// A second identity in the same signers file: a signature by its key
+	// is not one by the principal the policy names.
+	other := filepath.Join(keys, "other")
+	run("-q", "-t", "ed25519", "-N", "", "-C", "other-signer", "-f", other)
+	otherPub, err := os.ReadFile(other + ".pub")
+	if err != nil {
 		t.Fatal(err)
 	}
 
 	e := newEnv(t)
+	e.policy(signedPolicy)
+	e.write(filepath.Join(e.root, "etc/authority-host/allowed_signers"),
+		"release@example.invalid "+string(pub)+"other@example.invalid "+string(otherPub), 0o644)
 	dir := e.release(rel1, "s")
 	run("-Y", "sign", "-q", "-f", key, "-n", SignatureNamespace, filepath.Join(dir, SumsFile))
 	signed := func(c *Config) {
-		c.Mode = ModeSigned
-		c.AllowedSigners = signers
 		c.Verifier = SSHVerifier{Runner: ExecRunner{}, Program: keygen}
 	}
 	if code := e.switchTo(rel1, signed); code != ExitOK {
@@ -173,11 +198,19 @@ func TestSSHVerifierWithRealKey(t *testing.T) {
 	}
 	e.unchanged("releases/"+rel1, "verify")
 
-	// A key not in the allowed signers is refused.
-	other := filepath.Join(keys, "other")
-	run("-q", "-t", "ed25519", "-N", "", "-C", "stranger", "-f", other)
+	// The other identity of the signers file is not the principal.
 	os.Remove(filepath.Join(dir, SignatureFile))
 	run("-Y", "sign", "-q", "-f", other, "-n", SignatureNamespace, filepath.Join(dir, SumsFile))
+	if code := e.switchTo(rel3, signed); code != ExitFailed {
+		t.Fatalf("other listed signer: exit %d", code)
+	}
+	e.unchanged("releases/"+rel1, "verify")
+
+	// A key not in the allowed signers is refused.
+	stranger := filepath.Join(keys, "stranger")
+	run("-q", "-t", "ed25519", "-N", "", "-C", "stranger", "-f", stranger)
+	os.Remove(filepath.Join(dir, SignatureFile))
+	run("-Y", "sign", "-q", "-f", stranger, "-n", SignatureNamespace, filepath.Join(dir, SumsFile))
 	if code := e.switchTo(rel3, signed); code != ExitFailed {
 		t.Fatalf("unknown signer: exit %d", code)
 	}

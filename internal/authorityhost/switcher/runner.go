@@ -15,20 +15,24 @@ import (
 
 // Command is one program the switch runs: a fixed argument vector, no shell.
 type Command struct {
-	Argv    []string
-	Stdin   []byte // nil reads from /dev/null
-	Timeout time.Duration
+	Argv      []string
+	Stdin     []byte // nil reads from /dev/null
+	Timeout   time.Duration
+	MaxOutput int // bound of each stream kept; 0: maxOutput
 }
 
 // Output is what a command wrote, each stream kept up to a bound.
 type Output struct {
-	Stdout []byte
-	Stderr []byte
+	Stdout    []byte
+	Stderr    []byte
+	Truncated bool // a stream wrote more than the bound
 }
 
 // Runner runs a command. The error is nil only when the command ran and exited
 // with status 0; otherwise it says why (could not start, exit status, killed,
-// time limit).
+// time limit), as a *RunError for ExecRunner. The output is for the caller to
+// use as data (the firewall listing); the switch never prints it or records
+// it, since a diagnostic can hold a secret.
 type Runner interface {
 	Run(ctx context.Context, c Command) (Output, error)
 }
@@ -67,13 +71,43 @@ func LookPath(prog string) (string, error) {
 	return "", fmt.Errorf("program %q not found in %s", prog, strings.Join(SearchPath, ":"))
 }
 
+// RunError is why a command did not exit 0. Its text holds no output of the
+// command and no word of its arguments.
+type RunError struct {
+	NotStarted bool          // the program was not found or could not start
+	Timeout    time.Duration // non-zero: killed at this time limit
+	Status     int           // the exit status; -1 when killed by a signal
+}
+
+func (e *RunError) Error() string {
+	switch {
+	case e.NotStarted:
+		return "did not start"
+	case e.Timeout > 0:
+		return fmt.Sprintf("no exit within %s, killed", e.Timeout)
+	case e.Status < 0:
+		return "killed by a signal"
+	}
+	return fmt.Sprintf("exit status %d", e.Status)
+}
+
+// summary says why a command failed in fixed words: the text of a *RunError,
+// or "failed" for any other error.
+func summary(err error) string {
+	var re *RunError
+	if errors.As(err, &re) {
+		return re.Error()
+	}
+	return "failed"
+}
+
 func (ExecRunner) Run(ctx context.Context, c Command) (Output, error) {
 	if len(c.Argv) == 0 {
-		return Output{}, errors.New("empty command")
+		return Output{}, &RunError{NotStarted: true}
 	}
 	prog, err := LookPath(c.Argv[0])
 	if err != nil {
-		return Output{}, err
+		return Output{}, &RunError{NotStarted: true}
 	}
 	if c.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -90,44 +124,44 @@ func (ExecRunner) Run(ctx context.Context, c Command) (Output, error) {
 	if c.Stdin != nil {
 		cmd.Stdin = bytes.NewReader(c.Stdin)
 	}
-	var stdout, stderr boundedBuffer
+	limit := c.MaxOutput
+	if limit <= 0 {
+		limit = maxOutput
+	}
+	stdout, stderr := boundedBuffer{max: limit}, boundedBuffer{max: limit}
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err = cmd.Run()
-	out := Output{Stdout: stdout.buf.Bytes(), Stderr: stderr.buf.Bytes()}
+	out := Output{Stdout: stdout.buf.Bytes(), Stderr: stderr.buf.Bytes(), Truncated: stdout.cut || stderr.cut}
 	if err == nil {
 		return out, nil
 	}
 	if ctx.Err() != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return out, fmt.Errorf("%s: no exit within %s, killed", c.Argv[0], c.Timeout)
+		return out, &RunError{Timeout: c.Timeout}
 	}
-	return out, fmt.Errorf("%s: %w", c.Argv[0], err)
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return out, &RunError{Status: ee.ExitCode()}
+	}
+	return out, &RunError{NotStarted: true}
 }
 
-// boundedBuffer keeps the first maxOutput bytes written and drops the rest,
-// so a chatty command cannot fill memory.
-type boundedBuffer struct{ buf bytes.Buffer }
+// boundedBuffer keeps the first max bytes written and drops the rest, so a
+// chatty command cannot fill memory; cut says that it dropped some.
+type boundedBuffer struct {
+	buf bytes.Buffer
+	max int
+	cut bool
+}
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
-	if room := maxOutput - b.buf.Len(); room > 0 {
-		if len(p) > room {
+	room := b.max - b.buf.Len()
+	if len(p) > room {
+		b.cut = true
+		if room > 0 {
 			b.buf.Write(p[:room])
-		} else {
-			b.buf.Write(p)
 		}
+	} else {
+		b.buf.Write(p)
 	}
 	return len(p), nil
-}
-
-// tail returns the last few hundred bytes of a command's output, for a
-// message.
-func tail(out Output) string {
-	s := strings.TrimSpace(string(out.Stderr))
-	if s == "" {
-		s = strings.TrimSpace(string(out.Stdout))
-	}
-	const n = 400
-	if len(s) > n {
-		s = "..." + s[len(s)-n:]
-	}
-	return s
 }
