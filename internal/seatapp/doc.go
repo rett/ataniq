@@ -61,6 +61,15 @@
 // text cut with a count of what was cut. It is registered in the page
 // templates as "text", and a page shows no such text any other way.
 //
+// # The look
+//
+// Phone first, operate mode: calm, plain, high contrast, one column. One
+// style sheet (assets/app.css), light and dark by prefers-color-scheme, 16 px
+// side gutters, no horizontal scroll at 320 px, 44 px touch targets, a visible
+// focus, text of at least 16 px, system fonts only, no framework. Tests check
+// the rules a test can: the viewport, the language, a title and the landmarks
+// of each page, and the style sheet's sizes and contrast.
+//
 // # Seams
 //
 // [Daemon] is the port to the daemon, defined here and implemented later by
