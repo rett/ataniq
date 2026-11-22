@@ -47,15 +47,26 @@ const WordCount = 8
 // 16 lowercase hex characters, set on the Pending phase. Confirm and reject
 // carry it back, so that the daemon acts on the credential the owner looked
 // at and on no other.
+//
+// Kind, BackupEligible and BackupState are what the phone's authenticator
+// claimed when it made the credential, on the Pending phase, when the daemon
+// has them: the kind its AAGUID claims ("platform-passkey", "vault-passkey"
+// or "passkey"; empty when nothing was claimed) and its BE and BS flags. They
+// are claims, not facts (nothing about the authenticator is attested), and the
+// view says so: "Claimed, not proven: vault passkey, synced."
 type State struct {
-	Phase     Phase
-	PendingID string
-	Words     [WordCount]string
-	ExpiresAt time.Time
+	Phase          Phase
+	PendingID      string
+	Words          [WordCount]string
+	ExpiresAt      time.Time
+	Kind           string
+	BackupEligible bool
+	BackupState    bool
 }
 
 // Paired is the daemon's answer to a confirm: the id of the new deciding key
-// and its kind (the kind of a syncing passkey is "unverified").
+// and its kind, a claim ("unverified" for a key paired without what its
+// authenticator claimed).
 type Paired struct {
 	ID   string
 	Kind string
@@ -155,6 +166,7 @@ const (
 	msgOpen          = "A pairing is already open. Its code cannot be shown again."
 	msgPaired        = "Paired."
 	kindUnverif      = "Kind: unverified (a syncing passkey)."
+	claimPrefix      = "Claimed, not proven: "
 	helpWords        = "Compare with your phone. Confirm only if they match."
 	confirmLine1     = "Add this phone as a device that can approve cards."
 	confirmLine2     = "press y to confirm, any other key cancels"
@@ -216,6 +228,9 @@ type Model struct {
 	// pid is the pending id the words belong to, as the daemon gave it; it
 	// is valid (see validPendingID) when wordsOK is.
 	pid string
+	// claim is the line that says what the phone's authenticator claimed,
+	// in the view's own words, or "" when the daemon gave no claim.
+	claim string
 	// id and kind are the confirmed key's, cleaned.
 	id, kind string
 	// promptAt is when the second question was asked.
@@ -556,7 +571,7 @@ func (m *Model) onStatus(v statusMsg) tea.Cmd {
 		if !st.ExpiresAt.IsZero() {
 			m.expires = st.ExpiresAt
 		}
-		m.setWords(st.Words, st.PendingID)
+		m.setWords(st.Words, st.PendingID, claimLine(st))
 	case Expired:
 		m.end(scExpired)
 		return nil
@@ -578,7 +593,7 @@ func (m *Model) onOpening(v statusMsg) tea.Cmd {
 	switch v.st.Phase {
 	case Pending:
 		m.expires = v.st.ExpiresAt
-		m.setWords(v.st.Words, v.st.PendingID)
+		m.setWords(v.st.Words, v.st.PendingID, claimLine(v.st))
 	case Waiting:
 		m.expires = v.st.ExpiresAt
 		m.screen = scOpen
@@ -612,7 +627,7 @@ func validPendingID(id string) bool {
 // open is dropped when the words or the pending id are not the ones it was
 // asked for. An id that is not well formed cannot be confirmed (it is still
 // given back on a reject, which the daemon checks).
-func (m *Model) setWords(in [WordCount]string, id string) {
+func (m *Model) setWords(in [WordCount]string, id, claim string) {
 	var w [WordCount]string
 	ok := true
 	for i, s := range in {
@@ -622,11 +637,11 @@ func (m *Model) setWords(in [WordCount]string, id string) {
 		}
 	}
 	ok = ok && validPendingID(id)
-	if m.screen != scConfirm || w != m.words || id != m.pid || !ok {
+	if m.screen != scConfirm || w != m.words || id != m.pid || claim != m.claim || !ok {
 		m.screen = scPending
 	}
 	m.rows, m.rowsMin = nil, nil
-	m.words, m.wordsOK, m.pid = w, ok, id
+	m.words, m.wordsOK, m.pid, m.claim = w, ok, id, claim
 	if !ok {
 		m.note = errWords
 	}
@@ -724,6 +739,40 @@ func (m *Model) onKey(k tea.KeyPressMsg) (tea.Cmd, Action) {
 // cleanText returns s with only its printable characters, trimmed, at most
 // maxCells cells, an ellipsis where it was cut. It is empty if nothing is
 // left. It is the view's sanitiser for every string a backend gives.
+// kindLabel is a kind's word as the owner reads it, for the kinds the view
+// knows, and "" for any other word: the daemon's word is never drawn as it is.
+func kindLabel(kind string) string {
+	switch kind {
+	case "platform-passkey":
+		return "platform passkey"
+	case "vault-passkey":
+		return "vault passkey"
+	case "passkey":
+		return "passkey of an unknown kind"
+	}
+	return ""
+}
+
+// claimLine is the line that says what the authenticator claimed, or "" when
+// the state holds no claim. It is made of the view's own words only.
+func claimLine(st State) string {
+	if st.Kind == "" {
+		return ""
+	}
+	kind := kindLabel(st.Kind)
+	if kind == "" {
+		kind = "a kind this console does not know"
+	}
+	backup := "kept on one device"
+	switch {
+	case st.BackupEligible && st.BackupState:
+		backup = "synced"
+	case st.BackupEligible:
+		backup = "can sync, not synced yet"
+	}
+	return claimPrefix + kind + ", " + backup + "."
+}
+
 func cleanText(s string, maxCells int) string {
 	var b strings.Builder
 	for rest := s; rest != ""; {
