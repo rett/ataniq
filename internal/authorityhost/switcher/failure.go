@@ -44,6 +44,7 @@ const (
 	CodeNoPrevious         = "no-previous"        // nothing to roll back to
 	CodeNoAICheckMissing   = "noaicheck-missing"  // the release has no no-AI check
 	CodeNoAICheckFailed    = "noaicheck-failed"   // the no-AI check did not exit 0
+	CodeNoAICheckChanged   = "noaicheck-changed"  // the --noaicheck program is not the one its transaction checked
 	CodeNFTListingFailed   = "nft-listing-failed" // nft list ruleset failed, or its listing could not be passed on
 	CodeValidatorFailed    = "validator-failed"   // a validator did not exit 0
 	CodePackageFailed      = "package-step-failed"

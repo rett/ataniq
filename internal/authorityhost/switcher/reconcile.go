@@ -28,7 +28,12 @@ func (s *Switcher) reconcile(ctx context.Context, newWork bool) (code int, halt 
 	}
 	t := &txn{j: j, resumed: true}
 	defer t.close()
+	s.claim(t)
 	s.printf("reconcile: an interrupted %s %s was found in phase %s", t.kind(), j.ID, j.Phase)
+	if err := s.staleJournal(j); err != nil {
+		s.printf("reconcile: unresolved: %s; the journal does not match the host and is not resumed: nothing is run or moved. Look at the host, then run ah-switch recover --discard-journal %s to set it aside", describe(err), j.Txn)
+		return ExitFailed, true
+	}
 	if s.cfg.Dry {
 		s.printf("reconcile: a dry run reconciles nothing; run the command without --dry first")
 		return ExitFailed, true
@@ -48,6 +53,52 @@ func (s *Switcher) reconcile(ctx context.Context, newWork bool) (code int, halt 
 	return 0, false
 }
 
+// staleJournal reports why the journal j does not match the host, before
+// anything of it is resumed: where current and previous point must be what
+// the journal's phase allows (in its packages phase the old targets, in any
+// later phase each link its old target or its new one), and a forward
+// journal's counter must not be below the counters the host attempted
+// (highest-counter, counters.log, the last forward switch deploy.json
+// records, the releases the links name). A journal that fails this was not
+// left by the last transaction (one restored from a backup, or written by
+// hand): resuming it would move the links to its releases.
+func (s *Switcher) staleJournal(j journal) error {
+	cur, _, err := readLink(s.baseRoot, "current")
+	if err != nil {
+		return err
+	}
+	prev, _, err := readLink(s.baseRoot, "previous")
+	if err != nil {
+		return err
+	}
+	newT := "releases/" + j.ID
+	prevAfter := j.OldPrevious
+	if j.OldCurrent != "" {
+		prevAfter = j.OldCurrent
+	}
+	curOK := cur == j.OldCurrent || j.Phase != PhasePackages && cur == newT
+	prevOK := prev == j.OldPrevious || j.Phase != PhasePackages && prev == prevAfter
+	if !curOK || !prevOK {
+		return failf(CodeStateInvalid, "current -> %s and previous -> %s are neither the %s %s's old links nor its new ones", linkText(cur), linkText(prev), (&txn{j: j}).kind(), j.ID)
+	}
+	if j.Direction != DirForward {
+		return nil
+	}
+	highest, _, err := s.readHighest()
+	if err != nil {
+		return err
+	}
+	ev, err := s.counterEvidence("", false)
+	if err != nil {
+		return err
+	}
+	ev.see(highest, HighestFile)
+	if j.Counter < ev.counter {
+		return failf(CodeStateInvalid, "its counter %d is below %d, the counter of %s, attempted since", j.Counter, ev.counter, ev.source)
+	}
+	return nil
+}
+
 // journalTrust is the trust a journal's transaction began with.
 func journalTrust(j journal) trust {
 	if j.TrustMode != ModeSigned {
@@ -56,30 +107,51 @@ func journalTrust(j journal) trust {
 	return trust{signed: []signer{{signers: j.TrustSigners, principal: j.TrustPrincipal}}}
 }
 
-// reportSettled answers a retry of a request whose transaction was settled
-// by a later command (a reconciliation) and whose outcome nobody was shown
-// yet: the retry reports that outcome and does nothing else, rather than
-// doing the request again (a retried --rollback-to previous would otherwise
-// resolve previous anew, and go back to the release the first one left).
-// The outcome is reported once; the same request after that is a new one.
+// retryOf reports whether a request (arg, rollback) is a retry of the
+// transaction last records, whose outcome is still to be reported: the
+// same direction and the same request id. A retried rollback is bound to
+// the release the first one went to: asked as previous it is a retry of
+// any rollback whose outcome is owed (previous must not be resolved anew:
+// it would name the release the first one left), asked by an id only of
+// the rollback to that id. A forward switch is a retry of the switch to
+// the same id.
+func retryOf(last Record, arg string, rollback bool) bool {
+	if !last.PendingReport || last.Txn == "" || last.Rollback != rollback {
+		return false
+	}
+	if rollback {
+		return arg == "previous" || last.RequestID == requestID(DirRollback, arg)
+	}
+	return last.RequestID == requestID(DirForward, arg)
+}
+
+// reportSettled answers a retry of a request whose outcome nobody was
+// shown yet (its transaction was settled by a later command, or the
+// command that settled it died before printing its result): the retry
+// reports that outcome and does nothing else, rather than doing the
+// request again (a retried --rollback-to previous would otherwise resolve
+// previous anew, and go back to the release the first one left). The
+// outcome is reported once: the report is cleared after the result line
+// is written, and the same request after that is a new one. A dry run
+// reports it and changes nothing: the report stays owed.
 func (s *Switcher) reportSettled(last Record, arg string, rollback bool) (int, bool) {
-	if !last.PendingReport || last.Txn == "" || last.Rollback != rollback || last.Requested != arg {
+	if !retryOf(last, arg, rollback) {
 		return 0, false
 	}
 	kind := "switch to"
 	if rollback {
 		kind = "rollback to"
 	}
-	s.printf("settled: this %s %s was interrupted and has been settled since; it is not done again", kind, arg)
+	s.printf("settled: this %s %s was interrupted and has been settled since; it is not done again (request %s)", kind, arg, q(last.RequestID))
 	if last.Detail != "" {
 		s.printf("settled: %s", last.Detail)
 	}
-	last.PendingReport = false
-	if err := s.writeRecord(&last); err != nil {
-		s.printf("result: unresolved: %s not written: %s", DeployFile, q(err.Error()))
-		return ExitFailed, true
+	err := s.printResult(last)
+	if s.cfg.Dry {
+		s.printf("settled: dry run: the outcome is still to be reported; nothing changed")
+	} else if err == nil {
+		s.reported(last)
 	}
-	s.printResult(last)
 	if last.Result == ResultOK {
 		return ExitOK, true
 	}
@@ -102,6 +174,9 @@ type RecoverOptions struct {
 	// package state: one of the two ends of the step that did not finish.
 	PackageState    string
 	SetPackageState bool
+	// DiscardJournal, the id of a journal that does not match the host
+	// (see staleJournal), sets that journal aside without resuming it.
+	DiscardJournal string
 }
 
 // Recover runs ah-switch recover. Each form takes the lock and checks the
@@ -129,16 +204,23 @@ func (s *Switcher) Recover(ctx context.Context, o RecoverOptions) int {
 		return ExitUsage
 	}
 	n := 0
-	for _, set := range []bool{o.SetCounter, o.ServicesStopped, o.SetPackageState} {
+	for _, set := range []bool{o.SetCounter, o.ServicesStopped, o.SetPackageState, o.DiscardJournal != ""} {
 		if set {
 			n++
 		}
 	}
 	if n != 1 {
-		s.errorf("recover takes one of --counter N, --package-state SNAPSHOT and --services-stopped")
+		s.errorf("recover takes one of --counter N, --package-state SNAPSHOT, --services-stopped and --discard-journal TXN")
 		return ExitUsage
 	}
-	if code, done := s.applyPolicy(); done {
+	if o.DiscardJournal != "" && !txnPattern.MatchString(o.DiscardJournal) {
+		s.errorf("--discard-journal takes the id of a transaction, 32 hex digits, as status shows it")
+		return ExitUsage
+	}
+	// As for a switch: what the policy lacks is required only after the
+	// stops a journal owes have run (see stopFirst).
+	code, usage, blocked := s.applyPolicy()
+	if usage {
 		return code
 	}
 	what := fmt.Sprintf("--counter %d", o.Counter)
@@ -147,24 +229,40 @@ func (s *Switcher) Recover(ctx context.Context, o RecoverOptions) int {
 		what = "--services-stopped"
 	case o.SetPackageState:
 		what = "--package-state " + q(o.PackageState)
+	case o.DiscardJournal != "":
+		what = "--discard-journal " + o.DiscardJournal
 	}
 	s.printf("ah-switch: recover %s (root %s)", what, q(s.cfg.Root))
-	lk, code := s.lock(false)
+	lk, code := s.lockWith(false, blocked == nil && !s.cfg.Dry)
 	if lk == nil {
 		return code
 	}
 	defer lk.release()
 	defer s.closeRoots()
+	if blocked != nil && s.lockFile == nil {
+		// No state folder or no lock file: no journal to resume.
+		s.errorf("%s; nothing done", describe(blocked))
+		return ExitFailed
+	}
 	if s.stateRoot == nil {
 		s.printf("recover: no state folder; nothing to recover")
 		return ExitFailed
 	}
-	a := &attempt{}
-	if code, done := s.openBase(a); done {
-		return code
-	}
-	if o.ServicesStopped {
+	if o.ServicesStopped || o.DiscardJournal != "" {
+		// The owner's word runs nothing and needs no policy.
+		if code, done := s.openBase(); done {
+			return code
+		}
+		if o.DiscardJournal != "" {
+			return s.recoverDiscard(o.DiscardJournal)
+		}
 		return s.recoverStopped(ctx)
+	}
+	if blocked != nil {
+		return s.stopFirst(ctx, blocked)
+	}
+	if code, done := s.openBase(); done {
+		return code
 	}
 	if code, halt := s.reconcile(ctx, false); halt {
 		return code
@@ -215,6 +313,7 @@ func (s *Switcher) recoverStopped(ctx context.Context) int {
 	}
 	t := &txn{j: j, resumed: true}
 	defer t.close()
+	s.claim(t)
 	t.note("stop failures (%s) settled by the owner's word that the decision services are stopped (recover --services-stopped at %s)", j.StopFailures, s.now())
 	t.j.Stopped = true
 	t.j.StopFailures = ""
@@ -228,5 +327,40 @@ func (s *Switcher) recoverStopped(ctx context.Context) int {
 	}
 	_ = code
 	s.printf("recover: the decision services are recorded as stopped by the owner")
+	return ExitOK
+}
+
+// recoverDiscard sets aside the journal of the transaction id, which must be there and not
+// match the host (see staleJournal): it is renamed to txn-TXN.discarded
+// in the state folder, kept as evidence, and nothing of it is resumed. A
+// journal that matches the host is refused: any command resumes it.
+func (s *Switcher) recoverDiscard(id string) int {
+	j, ok, err := s.readJournal()
+	if err != nil {
+		s.printf("recover: FAILED: %s; look at %s by hand", describe(err), q(filepath.Join(s.stateDir(), JournalFile)))
+		return ExitFailed
+	}
+	if !ok || j.Txn != id {
+		s.printf("recover: FAILED: no journal of the transaction %s; nothing to discard", id)
+		return ExitFailed
+	}
+	if err := s.staleJournal(j); err == nil {
+		s.printf("recover: FAILED: the journal of the %s %s matches the host; it is not discarded: any switch, rollback or recover resumes it", (&txn{j: j}).kind(), j.ID)
+		return ExitFailed
+	}
+	kept := "txn-" + id + ".discarded"
+	if s.cfg.Dry {
+		s.printf("recover: would set the journal aside as %s", q(filepath.Join(s.stateDir(), kept)))
+		return ExitOK
+	}
+	if err := s.stateRoot.Rename(JournalFile, kept); err != nil {
+		s.printf("recover: FAILED: %s", q(err.Error()))
+		return ExitFailed
+	}
+	if err := syncRoot(s.stateRoot); err != nil {
+		s.printf("recover: FAILED: the state folder was not synced: %s", q(err.Error()))
+		return ExitFailed
+	}
+	s.printf("recover: the journal of the %s %s was set aside as %s, by the owner at %s; nothing of it was resumed", (&txn{j: j}).kind(), j.ID, q(filepath.Join(s.stateDir(), kept)), s.now())
 	return ExitOK
 }

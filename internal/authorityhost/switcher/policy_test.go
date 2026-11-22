@@ -49,9 +49,18 @@ func TestSignedPolicy(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	sums, _ := os.ReadFile(filepath.Join(dir, SumsFile))
-	if v.calls != 1 || string(v.data) != string(sums) || v.principal != "release@example.invalid" ||
-		v.signers != filepath.Join(e.root, "etc/authority-host/allowed_signers") {
-		t.Errorf("verifier: %d calls, principal %q, signers %q", v.calls, v.principal, v.signers)
+	if v.calls != 1 || string(v.data) != string(sums) || v.principal != "release@example.invalid" {
+		t.Errorf("verifier: %d calls, principal %q", v.calls, v.principal)
+	}
+	// The verifier is given a private copy of the signers file, made from
+	// the descriptor that was checked, never the file's own path, which
+	// could name another file by the time it is opened.
+	if v.signers == filepath.Join(e.root, "etc/authority-host/allowed_signers") ||
+		v.signersData != "release@example.invalid ssh-ed25519 AAAA\n" || v.signersMode != "-rw-------" || v.signersDirMode != "drwx------" {
+		t.Errorf("verifier's signers file: %q, %q, %s, %s", v.signers, v.signersData, v.signersMode, v.signersDirMode)
+	}
+	if _, err := os.Stat(v.signers); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the private copy was left: %v", err)
 	}
 	if rec := e.record(); rec.Mode != ModeSigned || rec.Trust != ModeSigned {
 		t.Errorf("record: mode %q, trust %q", rec.Mode, rec.Trust)
@@ -152,6 +161,11 @@ func TestPolicyRefused(t *testing.T) {
 		// encoding/json keeps the last of two equal keys.
 		{"duplicate min_mode", `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers", "principal": "release@example.invalid", "min_mode": "manual"}`, nil, nil, ExitFailed},
 		{"duplicate principal", `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers", "principal": "release@example.invalid", "principal": "other@example.invalid"}`, nil, nil, ExitFailed},
+		// encoding/json matches a key to a field without regard to case,
+		// so a case variant would choose the weaker mode.
+		{"case variant of min_mode", `{"Min_Mode": "manual"}`, nil, nil, ExitFailed},
+		{"case variant after min_mode", `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers", "principal": "release@example.invalid", "MIN_MODE": "manual"}`, nil, nil, ExitFailed},
+		{"case variant of principal", `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers", "Principal": "release@example.invalid"}`, nil, nil, ExitFailed},
 		{"not an object", `["signed"]`, nil, nil, ExitFailed},
 		{"number value", `{"min_mode": 1}`, nil, nil, ExitFailed},
 		{"signed without principal", `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers"}`, nil, nil, ExitFailed},
@@ -232,9 +246,37 @@ func TestCheckOneObject(t *testing.T) {
 		{``, false},
 		{`{"a": ` + strings.Repeat("[", 20) + strings.Repeat("]", 20) + `}`, false},
 	} {
-		if err := checkOneObject([]byte(tc.data)); (err == nil) != tc.ok {
+		if err := checkOneObject([]byte(tc.data), nil); (err == nil) != tc.ok {
 			t.Errorf("checkOneObject(%q) = %v", tc.data, err)
 		}
+	}
+}
+
+// TestDeclaredNamesOnly: a key that is not byte for byte a declared name is
+// refused, alone or beside the declared one, in every JSON file the switch
+// reads; the plain decoder would take it for the field.
+func TestDeclaredNamesOnly(t *testing.T) {
+	var p Policy
+	for _, data := range []string{
+		`{"MIN_MODE": "manual"}`,
+		`{"min_mode": "signed", "Min_mode": "manual"}`,
+		`{"min_mode": "signed", "principal": "a", "PRINCIPAL": "b"}`,
+		`{"min_mode": "manual", "present": true}`,
+	} {
+		if err := decodeStrict([]byte(data), &p); err == nil {
+			t.Errorf("decodeStrict(%s) accepted", data)
+		}
+	}
+	if err := decodeStrict([]byte(`{"min_mode": "signed", "allowed_signers": "/s", "principal": "p"}`), &p); err != nil || p.MinMode != ModeSigned {
+		t.Errorf("the declared names: %v, %+v", err, p)
+	}
+	var rec Record
+	if err := decodeStrict([]byte(`{"ID": "0001-aaaaaaa"}`), &rec); err == nil {
+		t.Errorf("a case variant in deploy.json accepted")
+	}
+	var j journal
+	if err := decodeStrict([]byte(`{"Phase": "done"}`), &j); err == nil {
+		t.Errorf("a case variant in the journal accepted")
 	}
 }
 

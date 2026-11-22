@@ -139,6 +139,9 @@ func (s *Switcher) helperEnded(pid int, start uint64) error {
 // and is killed when the switch dies, so no later switch can overlap it.
 // An exit that is not 0 leaves the host's package state unknown.
 func (s *Switcher) runPackageStep(ctx context.Context, t *txn, argv []string) error {
+	if err := s.beginTxn(t); err != nil {
+		return err
+	}
 	t.j.PackageState = PackageStarted
 	t.j.HelperPID, t.j.HelperStart = 0, 0
 	if err := s.save(t); err != nil {
@@ -209,7 +212,8 @@ func (s *Switcher) recoverPackageState(snapshot string) int {
 	rec.PackageSnapshot = snapshot
 	rec.PackageState, rec.PackageFrom, rec.PackageTo = "", "", ""
 	rec.PackageStatedAt = s.now()
-	rec.PendingReport = false
+	// An outcome still to report stays so: only the request it answers
+	// reports it.
 	if err := s.writeRecord(&rec); err != nil {
 		s.printf("recover: FAILED: %s not written: %s", DeployFile, q(err.Error()))
 		return ExitFailed

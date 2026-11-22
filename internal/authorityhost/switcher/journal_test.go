@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 var errCrash = errors.New("crash")
@@ -108,10 +109,12 @@ func (e *env) noJournal() {
 // TestCrashAndResume: a transaction killed between any two of its durable
 // steps is resumed by the next command from the phase its journal names,
 // and ends where that phase leads, running exactly what that phase runs:
-// a links phase puts the links back and runs nothing; an activating phase
-// runs the new release's reload and health again; a restoring phase puts
-// the links back and runs the old release's reload and health again; a
-// stopping phase runs every stop list again; a done phase only records.
+// a links phase puts the links back and goes back (the new release's stop
+// list, the old release's reload and health); an activating phase runs
+// the new release's reload and health again; a restoring phase stops the
+// new release's services, puts the links back and runs the old release's
+// reload and health again; a stopping phase runs every stop list again; a
+// done phase only records.
 // The next command here is a recover, which then has nothing to do: the
 // outcome is the transaction's own.
 func TestCrashAndResume(t *testing.T) {
@@ -133,39 +136,52 @@ func TestCrashAndResume(t *testing.T) {
 		}
 		return out
 	}
-	putBack := want{rel2, rel1, ResultRolledBack, "interrupted", "", false, none}
+	// A links phase puts the links back and then goes back as a failed
+	// health check does: the new release's services stopped, the old
+	// release reloaded and checked.
+	putBack := want{rel2, rel1, ResultRolledBack, "interrupted", "ok", false, with(map[string]int{"stop-app": 1, "reload-old": 1, "health-old": 1})}
 	completed := want{rel3, rel2, ResultOK, "", "", false, with(map[string]int{"reload-units": 1, "health-probe": 1})}
 	recorded := want{rel3, rel2, ResultOK, "", "", false, none}
-	restored := want{rel2, rel1, ResultRolledBack, "health", "ok", false, with(map[string]int{"reload-old": 1, "health-old": 1})}
+	restored := want{rel2, rel1, ResultRolledBack, "health", "ok", false, with(map[string]int{"stop-app": 1, "reload-old": 1, "health-old": 1})}
 	restoredRecorded := want{rel2, rel1, ResultRolledBack, "health", "ok", false, none}
 	stopped := want{rel2, rel1, ResultFailedRecovery, "health", "failed", true, with(map[string]int{"stop-all": 1, "stop-app": 1, "stop-old": 1})}
 	stoppedRecorded := want{rel2, rel1, ResultFailedRecovery, "health", "failed", true, none}
 
+	// Where a crash at each point leaves the links and the counter, before
+	// anything resumes it.
+	type crashed struct{ current, previous, highest string }
+	before := crashed{rel2, rel1, "2"}   // nothing moved yet
+	counted := crashed{rel2, rel1, "3"}  // the counter is written
+	half := crashed{rel2, rel2, "3"}     // previous moved, current not yet
+	moved := crashed{rel3, rel2, "3"}    // both links moved
+	putBackC := crashed{rel2, rel1, "3"} // both links put back
+
 	for _, tc := range []struct {
-		name  string
-		fail  map[string]int // what fails, in the run that crashes and in the resume
-		point string
-		phase string // the journal's phase after the crash
-		want  want
+		name    string
+		fail    map[string]int // what fails, in the run that crashes and in the resume
+		point   string
+		phase   string // the journal's phase after the crash
+		crashed crashed
+		want    want
 	}{
-		{"links", nil, CrashLinks, PhaseLinks, putBack},
-		{"counter", nil, CrashCounter, PhaseLinks, putBack},
-		{"previous", nil, CrashPrevious, PhaseLinks, putBack},
-		{"current", nil, CrashCurrent, PhaseLinks, putBack},
-		{"activating", nil, CrashActivating, PhaseActivating, completed},
-		{"reload", nil, CrashReload, PhaseActivating, completed},
-		{"health", nil, CrashHealth, PhaseActivating, completed},
-		{"postcheck", nil, CrashPostCheck, PhaseActivating, completed},
-		{"done", nil, CrashDone, PhaseDone, recorded},
-		{"record", nil, CrashRecord, PhaseDone, recorded},
-		{"restoring", map[string]int{"health-probe": -1}, CrashRestoring, PhaseRestoring, restored},
-		{"restore-links", map[string]int{"health-probe": -1}, CrashRestoreLinks, PhaseRestoring, restored},
-		{"restore-reload", map[string]int{"health-probe": -1}, CrashRestoreReload, PhaseRestoring, restored},
-		{"restored done", map[string]int{"health-probe": -1}, CrashDone, PhaseDone, restoredRecorded},
-		{"stopping", map[string]int{"health-probe": -1, "health-old": -1}, CrashStopping, PhaseStopping, stopped},
-		{"stopped", map[string]int{"health-probe": -1, "health-old": -1}, CrashStopped, PhaseStopping, stopped},
-		{"stopped done", map[string]int{"health-probe": -1, "health-old": -1}, CrashDone, PhaseDone, stoppedRecorded},
-		{"stopped record", map[string]int{"health-probe": -1, "health-old": -1}, CrashRecord, PhaseDone, stoppedRecorded},
+		{"links", nil, CrashLinks, PhaseLinks, before, putBack},
+		{"counter", nil, CrashCounter, PhaseLinks, counted, putBack},
+		{"previous", nil, CrashPrevious, PhaseLinks, half, putBack},
+		{"current", nil, CrashCurrent, PhaseLinks, moved, putBack},
+		{"activating", nil, CrashActivating, PhaseActivating, moved, completed},
+		{"reload", nil, CrashReload, PhaseActivating, moved, completed},
+		{"health", nil, CrashHealth, PhaseActivating, moved, completed},
+		{"postcheck", nil, CrashPostCheck, PhaseActivating, moved, completed},
+		{"done", nil, CrashDone, PhaseDone, moved, recorded},
+		{"record", nil, CrashRecord, PhaseDone, moved, recorded},
+		{"restoring", map[string]int{"health-probe": -1}, CrashRestoring, PhaseRestoring, moved, restored},
+		{"restore-links", map[string]int{"health-probe": -1}, CrashRestoreLinks, PhaseRestoring, putBackC, restored},
+		{"restore-reload", map[string]int{"health-probe": -1}, CrashRestoreReload, PhaseRestoring, putBackC, restored},
+		{"restored done", map[string]int{"health-probe": -1}, CrashDone, PhaseDone, putBackC, restoredRecorded},
+		{"stopping", map[string]int{"health-probe": -1, "health-old": -1}, CrashStopping, PhaseStopping, putBackC, stopped},
+		{"stopped", map[string]int{"health-probe": -1, "health-old": -1}, CrashStopped, PhaseStopping, putBackC, stopped},
+		{"stopped done", map[string]int{"health-probe": -1, "health-old": -1}, CrashDone, PhaseDone, putBackC, stoppedRecorded},
+		{"stopped record", map[string]int{"health-probe": -1, "health-old": -1}, CrashRecord, PhaseDone, putBackC, stoppedRecorded},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := activeOwn(t)
@@ -177,6 +193,12 @@ func TestCrashAndResume(t *testing.T) {
 			j, ok := e.journal()
 			if !ok || j.Phase != tc.phase || j.ID != rel3 || j.Counter != 3 || j.OldCurrent != "releases/"+rel2 || j.OldPrevious != "releases/"+rel1 || !j.CounterUsed {
 				t.Fatalf("journal after the crash: %+v, %v", j, ok)
+			}
+			// Right after the crash, before any resume: a wrong state
+			// here could be hidden by a resume that repairs it.
+			e.links(tc.crashed.current, tc.crashed.previous)
+			if got := e.highest(); got != tc.crashed.highest {
+				t.Errorf("highest %q right after the crash, want %s", got, tc.crashed.highest)
 			}
 			if rec := e.record(); rec != before && tc.point != CrashRecord {
 				t.Errorf("deploy.json changed by a crash: %+v", rec)
@@ -255,7 +277,7 @@ func TestRetryReportsSettled(t *testing.T) {
 			t.Fatalf("recover: exit %d", code)
 		}
 		e.links(rel1, rel2)
-		if got := e.status(); !strings.Contains(got, "settled after an interruption") {
+		if got := e.status(); !strings.Contains(got, "outcome not reported yet (request rollback:"+rel1+")") {
 			t.Errorf("status:\n%s", got)
 		}
 		if code := e.rollBack("previous"); code != ExitOK {
@@ -383,7 +405,9 @@ func TestRestorePreviousFailing(t *testing.T) {
 	if rec.Result != ResultFailedRecovery || rec.RestoredHealth != "failed" || !rec.ServicesStopped || !strings.Contains(rec.Detail, "going back failed: previous") {
 		t.Errorf("record: %+v", rec)
 	}
-	e.ran(map[string]int{"reload-old": 0, "stop-all": 1, "stop-app": 1, "stop-old": 1})
+	// stop-app: going back first stops rel3's services, then the
+	// stopping phase runs every list.
+	e.ran(map[string]int{"reload-old": 0, "stop-all": 1, "stop-app": 2, "stop-old": 1})
 	e.noJournal()
 }
 
@@ -709,4 +733,201 @@ func TestResumeCrashesToo(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDryRetryChangesNothing: a dry run of a request whose settled outcome
+// is still to be reported shows that outcome and changes nothing (not the
+// record, not its time, not the report still owed); the real retry then
+// reports it once and does not go back again, and only the request after
+// that is a new one.
+func TestDryRetryChangesNothing(t *testing.T) {
+	e := active(t)
+	e.crashAt(CrashHealth, true, "previous")
+	if code := e.recover(resumeOnly); code != ExitFailed {
+		t.Fatalf("recover: exit %d", code)
+	}
+	e.links(rel1, rel2)
+	if rec := e.record(); !rec.PendingReport || rec.RequestID != "rollback:"+rel1 {
+		t.Fatalf("record: %+v", rec)
+	}
+	e.clock.sleep(time.Hour)
+	e.runner.reset()
+	before := digest(t, e.root)
+	dry := e.switcher(func(c *Config) { c.Dry = true })
+	code := dry.RollBack(context.Background(), "previous")
+	out := e.out.String()
+	e.out.Reset()
+	if code != ExitOK || !strings.Contains(out, "settled: this rollback to previous was interrupted and has been settled since") || !strings.Contains(out, "dry run") {
+		t.Fatalf("dry retry: exit %d\n%s", code, out)
+	}
+	if digest(t, e.root) != before {
+		t.Errorf("a dry run changed the tree")
+	}
+	if len(e.runner.calls) != 0 {
+		t.Errorf("a dry run ran %v", e.runner.calls)
+	}
+	// The real retry still finds the outcome to report.
+	if code := e.rollBack("previous"); code != ExitOK || !strings.Contains(e.last, "settled: this rollback to previous") {
+		t.Fatalf("retry: exit %d\n%s", code, e.last)
+	}
+	e.links(rel1, rel2)
+	if rec := e.record(); rec.PendingReport {
+		t.Errorf("record: %+v", rec)
+	}
+	if code := e.rollBack("previous"); code != ExitOK {
+		t.Fatalf("a new rollback: exit %d", code)
+	}
+	e.links(rel2, rel1)
+}
+
+// TestResponseLostAfterJournalRemoved: a command that dies after its
+// journal was removed and before its result line was printed leaves the
+// outcome to report: the record says pending_report before the journal is
+// removed, and only the command that printed the result clears it. The
+// retry reports it and does nothing else; a retried rollback is bound to
+// the release it went to (its request id), never to previous resolved
+// anew, whether it is asked as previous or by that id.
+func TestResponseLostAfterJournalRemoved(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		rollback bool
+		arg      string // the retry
+		cur, pre string // the links after the first command
+	}{
+		{"switch", false, rel3, rel3, rel2},
+		{"rollback, retried as previous", true, "previous", rel1, rel2},
+		{"rollback, retried by its id", true, rel1, rel1, rel2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := active(t)
+			e.release(rel3, "2026-11-01")
+			first := rel3
+			if tc.rollback {
+				first = "previous"
+			}
+			e.crashAt(CrashUnreported, tc.rollback, first)
+			e.noJournal()
+			e.links(tc.cur, tc.pre)
+			rec := e.record()
+			want := "forward:" + rel3
+			if tc.rollback {
+				want = "rollback:" + rel1
+			}
+			if !rec.PendingReport || rec.RequestID != want || rec.Result != ResultOK {
+				t.Fatalf("record: %+v", rec)
+			}
+			if got := e.status(); !strings.Contains(got, "not reported yet") {
+				t.Errorf("status:\n%s", got)
+			}
+			e.runner.reset()
+			var code int
+			if tc.rollback {
+				code = e.rollBack(tc.arg)
+			} else {
+				code = e.switchTo(tc.arg)
+			}
+			if code != ExitOK || !strings.Contains(e.last, "has been settled since; it is not done again") {
+				t.Fatalf("retry: exit %d\n%s", code, e.last)
+			}
+			e.links(tc.cur, tc.pre)
+			if len(e.runner.calls) != 0 {
+				t.Errorf("the retry ran %v", e.runner.calls)
+			}
+			if rec := e.record(); rec.PendingReport {
+				t.Errorf("record after the report: %+v", rec)
+			}
+		})
+	}
+	// A command that printed its result clears the report it owed.
+	e := active(t)
+	if rec := e.record(); rec.PendingReport || rec.RequestID != "forward:"+rel2 {
+		t.Errorf("record of a reported switch: %+v", rec)
+	}
+}
+
+// TestStaleJournalUnresolved: a journal that does not match the host (its
+// links are neither the journal's old state nor its new one, or a forward
+// journal whose counter is below the counters the host attempted since) is
+// stale, such as one restored from a backup: it is never resumed, nothing
+// is run or moved, and only recover --discard-journal TXN, naming it,
+// sets it aside.
+func TestStaleJournalUnresolved(t *testing.T) {
+	journalPath := func(e *env) string { return filepath.Join(e.root, StateDir, JournalFile) }
+	t.Run("links moved on", func(t *testing.T) {
+		e := active(t)
+		e.release(rel3, "2026-11-01")
+		e.crashAt(CrashActivating, false, rel3)
+		old, _ := os.ReadFile(journalPath(e))
+		j, _ := e.journal()
+		if code := e.recover(resumeOnly); code != ExitFailed {
+			t.Fatalf("resume: exit %d", code)
+		}
+		e.release("0004-ddddddd", "2026-11-01")
+		if code := e.switchTo("0004-ddddddd"); code != ExitOK {
+			t.Fatalf("exit %d", code)
+		}
+		// The old journal comes back.
+		e.write(journalPath(e), string(old), 0o600)
+		e.release("0005-eeeeeee", "2026-11-01")
+		e.runner.reset()
+		if code := e.switchTo("0005-eeeeeee"); code != ExitFailed {
+			t.Fatalf("exit %d", code)
+		}
+		if !strings.Contains(e.last, "does not match the host") || !strings.Contains(e.last, "recover --discard-journal "+j.Txn) {
+			t.Errorf("output:\n%s", e.last)
+		}
+		e.links("0004-ddddddd", rel3)
+		if len(e.runner.calls) != 0 {
+			t.Errorf("commands run: %v", e.runner.calls)
+		}
+		if _, ok := e.journal(); !ok {
+			t.Fatalf("the stale journal was removed")
+		}
+		if code := e.recover(RecoverOptions{DiscardJournal: strings.Repeat("0", 32)}); code != ExitFailed {
+			t.Errorf("discard of another txn: exit %d", code)
+		}
+		if code := e.recover(RecoverOptions{DiscardJournal: j.Txn}); code != ExitOK {
+			t.Fatalf("discard: exit %d\n%s", code, e.last)
+		}
+		e.noJournal()
+		if kept, err := os.ReadFile(filepath.Join(e.root, StateDir, "txn-"+j.Txn+".discarded")); err != nil || string(kept) != string(old) {
+			t.Errorf("the discarded journal is not kept: %v", err)
+		}
+		if code := e.switchTo("0005-eeeeeee"); code != ExitOK {
+			t.Fatalf("after the discard: exit %d", code)
+		}
+	})
+	t.Run("counter below the floor", func(t *testing.T) {
+		e := active(t)
+		e.release(rel3, "2026-11-01")
+		e.crashAt(CrashLinks, false, rel3)
+		// Counters attempted since, as far as the host shows.
+		e.write(filepath.Join(e.root, StateDir, HighestFile), "5\n", 0o644)
+		f, _ := os.OpenFile(filepath.Join(e.root, StateDir, CountersLog), os.O_APPEND|os.O_WRONLY, 0)
+		f.WriteString("5 0005-eeeeeee 2026-11-21T12:00:00Z\n")
+		f.Close()
+		e.runner.reset()
+		if code := e.recover(resumeOnly); code != ExitFailed {
+			t.Fatalf("exit %d", code)
+		}
+		if !strings.Contains(e.last, "below 5") {
+			t.Errorf("output:\n%s", e.last)
+		}
+		if _, ok := e.journal(); !ok {
+			t.Fatalf("the stale journal was settled")
+		}
+		e.links(rel2, rel1)
+	})
+	t.Run("a matching journal is not discarded", func(t *testing.T) {
+		e := active(t)
+		e.release(rel3, "2026-11-01")
+		e.crashAt(CrashCurrent, false, rel3)
+		j, _ := e.journal()
+		if code := e.recover(RecoverOptions{DiscardJournal: j.Txn}); code != ExitFailed || !strings.Contains(e.last, "matches the host") {
+			t.Errorf("exit %d\n%s", code, e.last)
+		}
+		if _, ok := e.journal(); !ok {
+			t.Errorf("a matching journal was discarded")
+		}
+	})
 }

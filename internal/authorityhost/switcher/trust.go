@@ -141,6 +141,11 @@ func readFileIn(r *os.Root, name string, max int64) ([]byte, error) {
 		return nil, err
 	}
 	defer f.Close()
+	return readOpened(f, info, name, max)
+}
+
+// readOpened reads f, opened as name and of info, of at most max bytes.
+func readOpened(f *os.File, info fs.FileInfo, name string, max int64) ([]byte, error) {
 	if info.Size() > max {
 		return nil, failf(CodeReadFailed, "%s is larger than %d bytes", q(name), max)
 	}

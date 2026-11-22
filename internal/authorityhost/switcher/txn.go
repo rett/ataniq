@@ -23,6 +23,8 @@ type txn struct {
 	fbErr   error
 	fbSet   bool
 	owned   []*release // opened by the txn, closed by close
+	// begun: decisions.inhibit is known to be there for this transaction.
+	begun bool
 }
 
 func (t *txn) close() {
@@ -33,6 +35,9 @@ func (t *txn) close() {
 }
 
 func (t *txn) forward() bool { return t.j.Direction == DirForward }
+
+// check is the no-AI check the transaction runs, as its journal says.
+func (t *txn) check() checkRef { return checkRef{prog: t.j.CheckProgram, sum: t.j.CheckSHA256} }
 
 // kind is how the transaction is named in a line.
 func (t *txn) kind() string {
@@ -131,6 +136,10 @@ func (s *Switcher) ensureLink(name, target string) error {
 // step that left it unresolved, which keeps the journal for the next
 // command. It returns the exit code and whether the transaction settled.
 func (s *Switcher) drive(ctx context.Context, t *txn) (int, bool) {
+	if err := s.ensureInhibit(t); err != nil {
+		s.printf("result: unresolved: %s; %s stays in phase %s, and the next switch, rollback or recover resumes it", describe(err), JournalFile, t.j.Phase)
+		return ExitFailed, false
+	}
 	for {
 		var err error
 		switch t.j.Phase {
@@ -182,9 +191,13 @@ func (s *Switcher) done(t *txn, result string) error {
 
 // putBack is the resume of a links phase, and what a link that cannot be
 // written in it leads to: current and previous are put back as the journal
-// says they were (or removed where there was none), and synced. Nothing was
-// reloaded in that phase, so nothing else is to undo; the counter stays
-// used.
+// says they were (or removed where there was none), and synced; the
+// counter stays used. Nothing was reloaded in that phase, but the host is
+// not taken as it was: the transaction then goes back as a failed health
+// check does (restoring: the candidate's services stopped, the earlier
+// release reloaded and checked), or, with no earlier release, stops the
+// decision services, so that it ends with decisions inhibited unless that
+// release is qualified again.
 func (s *Switcher) putBack(t *txn, step string, cause error) error {
 	if err := s.ensureLink("current", t.j.OldCurrent); err != nil {
 		return failf(CodeLinkFailed, "current not put back: %s", q(err.Error()))
@@ -198,11 +211,14 @@ func (s *Switcher) putBack(t *txn, step string, cause error) error {
 	t.fail(step, cause)
 	t.note("current and previous were put back")
 	s.printf("back: current -> %s, previous -> %s", linkText(t.j.OldCurrent), linkText(t.j.OldPrevious))
-	result := ResultRolledBack
 	if t.j.OldCurrent == "" {
-		result = ResultFailed
+		return s.toStopping(t, ResultFailed)
 	}
-	return s.done(t, result)
+	t.j.Phase = PhaseRestoring
+	if err := s.save(t); err != nil {
+		return err
+	}
+	return s.crash(CrashRestoring)
 }
 
 func linkText(target string) string {
@@ -245,7 +261,7 @@ func (s *Switcher) activate(ctx context.Context, t *txn) error {
 	if err := s.crash(CrashHealth); err != nil {
 		return err
 	}
-	if err := s.postCheck(ctx, t.j.CheckProgram, cand.dir); err != nil {
+	if err := s.postCheck(ctx, t.check(), cand); err != nil {
 		t.j.Check = CheckFailed
 		return s.toRecovery(ctx, t, stepNames[8], err)
 	}
@@ -288,9 +304,13 @@ func (s *Switcher) toRecovery(ctx context.Context, t *txn, step string, cause er
 	return s.crash(CrashStopping)
 }
 
-// restore is the restoring phase: the old release, verified as the
-// transaction's trust says, is made current again with previous as it was,
-// then its own reload list runs and it must be healthy. Anything of that
+// restore is the restoring phase: first the services of the transaction's
+// release are stopped (its own stop list when it still verifies, the
+// host's otherwise), so that nothing only it runs survives going back; then
+// the old release, verified as the transaction's trust says, is made
+// current again with previous as it was, its own reload list runs, and it
+// must be healthy and pass the no-AI check of its phase post on the host as
+// it now is (the package step may have changed it). Anything of that
 // failing, putting previous back included, is a failed recovery: the
 // decision services are stopped.
 func (s *Switcher) restore(ctx context.Context, t *txn) error {
@@ -307,6 +327,26 @@ func (s *Switcher) restore(ctx context.Context, t *txn) error {
 	if err != nil {
 		s.printf("back: FAILED: the earlier release cannot be used: %s", describe(err))
 		return failed("the earlier release cannot be used (%s)", describe(err))
+	}
+	if cand, err := s.candidate(ctx, t); err == nil {
+		if f := s.runStops(ctx, t.j.ID, cand.stops); len(f) > 0 {
+			t.j.RestoredHealth = "failed"
+			return failed("going back failed: the stop list of %s failed (%s)", t.j.ID, joinFailures(f))
+		}
+	} else {
+		s.printf("back: the stop list of %s is not run: it cannot be verified (%s); the host's stop list runs instead", t.j.ID, describe(err))
+		stops, herr := s.hostStopList()
+		if herr != nil {
+			t.j.RestoredHealth = "failed"
+			return failed("going back failed: the services of %s cannot be stopped: the host's %s: %s", t.j.ID, HostStopList, describe(herr))
+		}
+		if f := s.runStops(ctx, "host", stops); len(f) > 0 {
+			t.j.RestoredHealth = "failed"
+			return failed("going back failed: the host's stop list failed (%s)", joinFailures(f))
+		}
+	}
+	if err := s.crash(CrashCandidateStopped); err != nil {
+		return err
 	}
 	if err := s.ensureLink("current", t.j.OldCurrent); err != nil {
 		t.j.RestoredHealth = "failed"
@@ -331,8 +371,31 @@ func (s *Switcher) restore(ctx context.Context, t *txn) error {
 		t.j.RestoredHealth = "failed"
 		return failed("going back failed: %s", describe(err))
 	}
+	if err := s.crash(CrashRestoreHealth); err != nil {
+		return err
+	}
+	if err := s.postCheck(ctx, t.check(), fb); err != nil {
+		t.j.RestoredHealth = "failed"
+		s.printf("back: FAILED: the no-AI check of %s: %s", fb.id.Name, describe(err))
+		return failed("going back failed: the no-AI check of %s, phase post: %s", fb.id.Name, describe(err))
+	}
 	t.j.RestoredHealth = "ok"
 	return s.done(t, ResultRolledBack)
+}
+
+// runStops runs the stop commands cmds of list, every one whatever the
+// others do, and returns the failures.
+func (s *Switcher) runStops(ctx context.Context, list string, cmds [][]string) []string {
+	var failures []string
+	for _, c := range cmds {
+		if _, err := s.cfg.Runner.Run(ctx, Command{Argv: c, Timeout: ReloadTimeout}); err != nil {
+			s.printf("stop: FAILED: %s: %s", qargv(c), summary(err))
+			failures = append(failures, list+": "+q(c[0])+": "+summary(err))
+			continue
+		}
+		s.printf("stop: ran %s", qargv(c))
+	}
+	return failures
 }
 
 // stop is the stopping phase: the host's own stop list runs, then the stop
@@ -344,14 +407,7 @@ func (s *Switcher) restore(ctx context.Context, t *txn) error {
 func (s *Switcher) stop(ctx context.Context, t *txn) error {
 	var failures []string
 	run := func(list string, cmds [][]string) {
-		for _, c := range cmds {
-			if _, err := s.cfg.Runner.Run(ctx, Command{Argv: c, Timeout: ReloadTimeout}); err != nil {
-				s.printf("stop: FAILED: %s: %s", qargv(c), summary(err))
-				failures = append(failures, list+": "+q(c[0])+": "+summary(err))
-				continue
-			}
-			s.printf("stop: ran %s", qargv(c))
-		}
+		failures = append(failures, s.runStops(ctx, list, cmds)...)
 	}
 	if stops, err := s.hostStopList(); err != nil {
 		s.printf("stop: FAILED: the host's %s: %s", HostStopList, describe(err))
@@ -410,6 +466,10 @@ func (s *Switcher) settle(t *txn) (int, bool) {
 		return unresolved("the link folder was not synced", err)
 	}
 	if t.j.CounterUsed {
+		id, _ := ParseID(t.j.ID)
+		if err := s.counterLogged(id); err != nil {
+			return unresolved(CountersLog+" not written", err)
+		}
 		if err := s.highestAtLeast(t.j.Counter); err != nil {
 			return unresolved(HighestFile+" not written", err)
 		}
@@ -428,11 +488,22 @@ func (s *Switcher) settle(t *txn) (int, bool) {
 	if err := s.crash(CrashRecord); err != nil {
 		return ExitFailed, false
 	}
+	if err := s.endInhibit(t); err != nil {
+		return unresolved(InhibitFile, err)
+	}
 	if err := s.dropJournal(); err != nil {
 		return unresolved(JournalFile+" not removed", err)
 	}
+	if err := s.crash(CrashUnreported); err != nil {
+		return ExitFailed, false
+	}
 	s.step(9, "recorded in %s", q(filepath.Join(s.stateDir(), DeployFile)))
-	s.printResult(rec)
+	// The outcome stays owed until its result line is written, and is
+	// owed still when the command that settled it was not the one asked
+	// for it (a resume).
+	if err := s.printResult(rec); err == nil && !t.resumed {
+		s.reported(rec)
+	}
 	if rec.Result == ResultOK {
 		return ExitOK, true
 	}
@@ -461,9 +532,13 @@ func (s *Switcher) txnRecord(t *txn, cur string, curOK bool) (Record, error) {
 		RestoredHealth:  t.j.RestoredHealth,
 		Txn:             t.j.Txn,
 		Requested:       t.j.Requested,
-		PendingReport:   t.resumed,
+		RequestID:       requestID(t.j.Direction, t.j.ID),
+		PendingReport:   true,
 		ServicesStopped: t.j.Stopped,
 		CounterUsed:     t.j.CounterUsed,
+		// The owner's last clearing of the inhibit stays on record.
+		InhibitClearedAt:    last.InhibitClearedAt,
+		InhibitClearedAsked: last.InhibitClearedAsked,
 	}
 	if t.j.OldCurrent != "" {
 		id, _ := s.targetID(t.j.OldCurrent)
@@ -489,16 +564,16 @@ func (s *Switcher) txnRecord(t *txn, cur string, curOK bool) (Record, error) {
 	return rec, nil
 }
 
-// printResult prints the last line of a settled transaction.
-func (s *Switcher) printResult(rec Record) {
+// printResult prints the last line of a settled transaction, and says
+// whether it was written.
+func (s *Switcher) printResult(rec Record) error {
 	cur := rec.CurrentID
 	if cur == "" {
 		cur = "none"
 	}
 	switch rec.Result {
 	case ResultOK:
-		s.printf("result: ok; current -> %s", cur)
-		return
+		return s.emit("result: ok; current -> %s", cur)
 	}
 	line := fmt.Sprintf("result: %s at %s; current -> %s", rec.Result, rec.FailedStep, cur)
 	if rec.RestoredHealth != "" {
@@ -507,7 +582,7 @@ func (s *Switcher) printResult(rec Record) {
 	if rec.ServicesStopped {
 		line += "; the decision services are stopped"
 	}
-	s.printf("%s", line)
+	return s.emit("%s", line)
 }
 
 // highestAtLeast writes highest-counter as n when it holds less: a counter
@@ -524,7 +599,9 @@ func (s *Switcher) highestAtLeast(n uint64) error {
 // before its links, so nothing but the package step was done. A package
 // step that was started and is not known to be done leaves the host's
 // package state unknown, once its process is known to have ended (see
-// helperEnded); it is never taken as done or as not run.
+// helperEnded); it is never taken as done or as not run. Either way the
+// package step may have changed the host, which nothing checked since:
+// the decision services are stopped, and decisions stay inhibited.
 func (s *Switcher) resumePackages(t *txn) error {
 	switch t.j.PackageState {
 	case PackageDone:
@@ -537,7 +614,18 @@ func (s *Switcher) resumePackages(t *txn) error {
 		t.fail("interrupted", failf(CodePackageInterrupted, "the package step from %s to %s was interrupted", q(t.j.PackageFrom), q(t.j.PackageTo)))
 		t.note("%s", describe(packageUnknownError(t.j.PackageFrom, t.j.PackageTo)))
 	}
-	return s.done(t, ResultFailed)
+	return s.toStopping(t, ResultFailed)
+}
+
+// toStopping ends the transaction t with result, after the decision
+// services are stopped (the stopping phase).
+func (s *Switcher) toStopping(t *txn, result string) error {
+	t.j.Result = result
+	t.j.Phase = PhaseStopping
+	if err := s.save(t); err != nil {
+		return err
+	}
+	return s.crash(CrashStopping)
 }
 
 // now is the time as deploy.json records it.

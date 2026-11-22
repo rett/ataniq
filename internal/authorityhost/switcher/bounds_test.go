@@ -172,11 +172,13 @@ func TestCanonicalLinkTargets(t *testing.T) {
 			if err := os.Symlink(target, cur); err != nil {
 				t.Fatal(err)
 			}
+			before := e.deployJSON()
 			if code := e.switchTo(rel3); code != ExitFailed {
 				t.Fatalf("exit %d", code)
 			}
-			if rec := e.record(); rec.FailedStep != "state" || rec.Error != CodeStateInvalid {
-				t.Errorf("record: %+v", rec)
+			// Reported, never recorded over the record of the host.
+			if !strings.Contains(e.last, "state: FAILED: state-invalid") || e.deployJSON() != before {
+				t.Errorf("output:\n%s\ndeploy.json:\n%s", e.last, e.deployJSON())
 			}
 			if strings.Contains(e.last, "\x1b") || strings.Contains(e.deployJSON(), "\x1b") {
 				t.Errorf("a control byte of a link target was passed on:\n%q", e.last)
@@ -221,10 +223,17 @@ func TestStateFilesMustBeTrusted(t *testing.T) {
 		{"counter writable by its group", func(e *env) { os.Chmod(state(e, HighestFile), 0o664) }, nil},
 		{"counter with a second link", func(e *env) { os.Link(state(e, HighestFile), filepath.Join(e.root, "counter-copy")) }, nil},
 		{"deploy.json writable by others", func(e *env) { os.Chmod(state(e, DeployFile), 0o646) }, nil},
+		{"counters.log writable by its group", func(e *env) { os.Chmod(state(e, CountersLog), 0o664) }, nil},
+		{"counters.log with a second link", func(e *env) { os.Link(state(e, CountersLog), filepath.Join(e.root, "log-copy")) }, nil},
 		{"deploy.json with a second link", func(e *env) { os.Link(state(e, DeployFile), filepath.Join(e.root, "deploy-copy")) }, nil},
 		{"lock writable by others", func(e *env) { os.Chmod(state(e, LockFile), 0o606) }, nil},
 		{"lock with a second link", func(e *env) { os.Link(state(e, LockFile), filepath.Join(e.root, "lock-copy")) }, nil},
 		{"lock not empty", func(e *env) { os.WriteFile(state(e, LockFile), []byte(strings.Repeat("x", 100)), 0o600) }, nil},
+		// A lock file others can read can be locked by them: flock needs
+		// only a descriptor open for reading.
+		{"lock readable by others", func(e *env) { os.Chmod(state(e, LockFile), 0o644) }, nil},
+		{"lock readable by its group", func(e *env) { os.Chmod(state(e, LockFile), 0o640) }, nil},
+		{"lock one byte", func(e *env) { os.WriteFile(state(e, LockFile), []byte("x"), 0o600) }, nil},
 		{"lock not root's", func(e *env) {}, func(c *Config) {
 			c.Owner = func(info fs.FileInfo) error {
 				if info.Name() == LockFile {
@@ -261,6 +270,9 @@ func TestStateFilesMustBeTrusted(t *testing.T) {
 			}
 			if !strings.Contains(e.last, "untrusted") {
 				t.Errorf("output does not say why:\n%s", e.last)
+			}
+			if strings.HasPrefix(tc.name, "lock") && tc.name != "lock writable by others" && tc.mod == nil && !strings.Contains(e.last, "owner-only (mode 0600), empty and with one link") {
+				t.Errorf("output does not say what the lock must be:\n%s", e.last)
 			}
 			if e.link("current") != cur || e.link("previous") != prev {
 				t.Errorf("links moved: current -> %q, previous -> %q", e.link("current"), e.link("previous"))

@@ -264,9 +264,19 @@ func TestRecoverForms(t *testing.T) {
 		{"--root", root, "recover", "--counter", "3", "--services-stopped"},
 		{"--root", root, "recover", "--counter", "3", "--package-state", "s"},
 		{"--root", root, "recover", "--package-state", "s", "--services-stopped"},
+		{"--root", root, "recover", "--discard-journal", "0123456789abcdef0123456789abcdef", "--services-stopped"},
+		{"--root", root, "recover", "--discard-journal", ""},
+		{"--root", root, "recover", "--discard-journal", "x"},
+		{"--root", root, "--discard-journal", "0123456789abcdef0123456789abcdef", "0001-aaaaaaa"},
 		{"--root", root, "--package-state", "s", "0001-aaaaaaa"},
 		{"--root", root, "--services-stopped", "0001-aaaaaaa"},
 		{"--root", root, "--package-state", "s", "status"},
+		{"--root", root, "--noaicheck", "bin/check", "0001-aaaaaaa"},
+		{"--root", root, "inhibit-clear"},
+		{"--root", root, "inhibit-clear", "--asked", ""},
+		{"--root", root, "inhibit-clear", "--asked", "x", "--counter", "3"},
+		{"--root", root, "--asked", "x", "0001-aaaaaaa"},
+		{"--root", root, "--asked", "x", "status"},
 	} {
 		if code, _, errOut := call(args...); code != switcher.ExitUsage {
 			t.Errorf("%q: exit %d, %q", args, code, errOut)

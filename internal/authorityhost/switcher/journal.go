@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io/fs"
+	"os"
 	"path"
 	"regexp"
 )
@@ -68,13 +69,23 @@ type journal struct {
 	// start time, once it runs: a resume makes sure it has ended.
 	HelperPID   int    `json:"helper_pid"`
 	HelperStart uint64 `json:"helper_start"`
+	// The switch that drives the transaction (the one that began it, or
+	// the last one that resumed it) and its start time, when it could be
+	// read: a command refused by the lock tells this switch, still
+	// running, from a package step that outlived it.
+	SwitchPID   int    `json:"switch_pid"`
+	SwitchStart uint64 `json:"switch_start"`
 	// The outcome, once a step failed or the release was activated.
-	Result         string `json:"result"`
-	FailedStep     string `json:"failed_step"`
-	Error          string `json:"error"`
-	Detail         string `json:"detail"`
-	Check          string `json:"check"`
-	CheckProgram   string `json:"check_program"` // the no-AI check the post-activation check runs
+	Result     string `json:"result"`
+	FailedStep string `json:"failed_step"`
+	Error      string `json:"error"`
+	Detail     string `json:"detail"`
+	Check      string `json:"check"`
+	// The no-AI check the transaction runs: empty, the release's own; or
+	// the --noaicheck program (a path on the host) and its SHA-256, checked
+	// again before every run.
+	CheckProgram   string `json:"check_program"`
+	CheckSHA256    string `json:"check_sha256"`
 	RestoredHealth string `json:"restored_health"`
 	Stopped        bool   `json:"stopped"`       // every stop command succeeded, or the owner stated the services are stopped
 	StopFailures   string `json:"stop_failures"` // the stop commands that failed last time
@@ -103,7 +114,12 @@ func oneOf(s string, values ...string) bool {
 // readJournal reads txn.json; a missing file is no journal. A journal that
 // is not exactly what a switch writes is an error: it is never guessed at.
 func (s *Switcher) readJournal() (journal, bool, error) {
-	data, err := s.readStateFile(JournalFile, maxStateFile)
+	return s.readJournalIn(s.stateRoot)
+}
+
+// readJournalIn reads txn.json of the state folder state.
+func (s *Switcher) readJournalIn(state *os.Root) (journal, bool, error) {
+	data, err := s.readStateFileIn(state, JournalFile, maxStateFile)
 	if errors.Is(err, fs.ErrNotExist) {
 		return journal{}, false, nil
 	}
@@ -151,8 +167,12 @@ func (s *Switcher) checkJournal(j journal) error {
 		return errors.New("a done phase without a result")
 	case j.HelperPID < 0 || (j.HelperPID > 0 && j.PackageState == PackageNone):
 		return errors.New("helper_pid")
-	case j.CheckProgram != "" && (!path.IsAbs(j.CheckProgram) || path.Clean(j.CheckProgram) != j.CheckProgram):
+	case j.SwitchPID < 0:
+		return errors.New("switch_pid")
+	case j.CheckProgram != "" && (!path.IsAbs(j.CheckProgram) || path.Clean(j.CheckProgram) != j.CheckProgram || j.CheckProgram == "/"):
 		return errors.New("check_program")
+	case (j.CheckProgram == "") != (j.CheckSHA256 == "") || j.CheckSHA256 != "" && !digestPattern.MatchString(j.CheckSHA256):
+		return errors.New("check_sha256")
 	case j.CounterUsed && j.Direction != DirForward:
 		return errors.New("counter_used")
 	}
@@ -204,23 +224,26 @@ func (s *Switcher) crash(point string) error {
 // The points crash is called at: between every two durable steps of a
 // transaction, in their order.
 const (
-	CrashPackageStart  = "package-start"  // txn.json says packages/started; the package step has not run
-	CrashPackageRan    = "package-ran"    // the package step exited 0; txn.json still says started
-	CrashPackageDone   = "package-done"   // txn.json says packages/done
-	CrashLinks         = "links"          // txn.json says links
-	CrashCounter       = "counter"        // highest-counter written
-	CrashPrevious      = "previous"       // previous written
-	CrashCurrent       = "current"        // current written
-	CrashActivating    = "activating"     // txn.json says activating
-	CrashReload        = "reload"         // the new release's reload list ran
-	CrashHealth        = "health"         // the new release is healthy
-	CrashPostCheck     = "postcheck"      // the post-activation no-AI check passed
-	CrashPutBack       = "put-back"       // the links of a links phase are put back
-	CrashRestoring     = "restoring"      // txn.json says restoring
-	CrashRestoreLinks  = "restore-links"  // current and previous are back
-	CrashRestoreReload = "restore-reload" // the old release's reload list ran
-	CrashStopping      = "stopping"       // txn.json says stopping
-	CrashStopped       = "stopped"        // every stop command ran; txn.json still says stopping
-	CrashDone          = "done"           // txn.json says done
-	CrashRecord        = "record"         // deploy.json written; txn.json still there
+	CrashPackageStart     = "package-start"     // txn.json says packages/started; the package step has not run
+	CrashPackageRan       = "package-ran"       // the package step exited 0; txn.json still says started
+	CrashPackageDone      = "package-done"      // txn.json says packages/done
+	CrashLinks            = "links"             // txn.json says links
+	CrashCounter          = "counter"           // highest-counter written
+	CrashPrevious         = "previous"          // previous written
+	CrashCurrent          = "current"           // current written
+	CrashActivating       = "activating"        // txn.json says activating
+	CrashReload           = "reload"            // the new release's reload list ran
+	CrashHealth           = "health"            // the new release is healthy
+	CrashPostCheck        = "postcheck"         // the post-activation no-AI check passed
+	CrashPutBack          = "put-back"          // the links of a links phase are put back
+	CrashRestoring        = "restoring"         // txn.json says restoring
+	CrashCandidateStopped = "candidate-stopped" // going back: the services of the transaction's release are stopped
+	CrashRestoreLinks     = "restore-links"     // current and previous are back
+	CrashRestoreReload    = "restore-reload"    // the old release's reload list ran
+	CrashRestoreHealth    = "restore-health"    // the old release is healthy; its no-AI check not run yet
+	CrashStopping         = "stopping"          // txn.json says stopping
+	CrashStopped          = "stopped"           // every stop command ran; txn.json still says stopping
+	CrashDone             = "done"              // txn.json says done
+	CrashRecord           = "record"            // deploy.json written; txn.json still there
+	CrashUnreported       = "unreported"        // txn.json removed; the result line not printed yet
 )

@@ -111,3 +111,83 @@ func TestCounterBelowEvidence(t *testing.T) {
 		}
 	})
 }
+
+// TestCountersLog: every forward switch that uses its counter appends
+// "counter id time" to counters.log, and the log is evidence of the
+// counters attempted that no later record, rollback or pruned release
+// folder erases: a highest-counter restored from an older state is refused
+// against it, so the release of an attempted counter cannot come back.
+func TestCountersLog(t *testing.T) {
+	e := active(t)
+	logPath := filepath.Join(e.root, StateDir, CountersLog)
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "1 " + rel1 + " 2026-11-21T12:00:00Z\n2 " + rel2 + " 2026-11-21T12:00:00Z\n"
+	if string(data) != want {
+		t.Errorf("counters.log:\n%s\nwant\n%s", data, want)
+	}
+	if got := mode(t, logPath); got != 0o644 {
+		t.Errorf("counters.log mode %v", got)
+	}
+
+	// rel3 is attempted and goes back; a rollback is recorded after it.
+	e.release(rel3, "2026-11-01")
+	e.runner.fail["health-probe"] = 30
+	if code := e.switchTo(rel3); code != ExitFailed {
+		t.Fatalf("exit %d", code)
+	}
+	delete(e.runner.fail, "health-probe")
+	if code := e.rollBack("previous"); code != ExitOK {
+		t.Fatalf("rollback: exit %d", code)
+	}
+	e.links(rel1, rel2)
+	// highest-counter restored from before rel3, and rel3 pruned: the
+	// links and deploy.json show 2 at most.
+	makeWritable(e.relDir(rel3))
+	os.RemoveAll(e.relDir(rel3))
+	os.Remove(filepath.Join(e.root, StateDir, ImportedDir, rel3))
+	e.write(filepath.Join(e.root, StateDir, HighestFile), "2\n", 0o644)
+	e.release(rel3, "2026-11-01")
+	e.runner.reset()
+	if code := e.switchTo(rel3); code != ExitFailed {
+		t.Fatalf("a replayed counter: exit %d", code)
+	}
+	if !strings.Contains(e.last, "below 3, the counter of "+CountersLog) {
+		t.Errorf("output:\n%s", e.last)
+	}
+	e.links(rel1, rel2)
+	if len(e.runner.calls) != 0 {
+		t.Errorf("commands run: %v", e.runner.calls)
+	}
+	if code := e.recover(RecoverOptions{SetCounter: true, Counter: 2}); code != ExitFailed {
+		t.Errorf("recover below the log: exit %d", code)
+	}
+	if code := e.recover(RecoverOptions{SetCounter: true, Counter: 3}); code != ExitOK {
+		t.Errorf("recover: exit %d", code)
+	}
+	if code := e.switchTo(rel3); code != ExitFailed || e.record().Error != CodeCounterNotAbove {
+		t.Errorf("after recover: exit %d, %+v", code, e.record())
+	}
+
+	// A line cut short by a crash is not taken as an attempt and is cut
+	// off before the next one is appended; any other line that does not
+	// parse stops the switch.
+	f, _ := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString("9 0009-")
+	f.Close()
+	e.release("0004-ddddddd", "2026-11-01")
+	if code := e.switchTo("0004-ddddddd"); code != ExitOK {
+		t.Fatalf("after a torn line: exit %d", code)
+	}
+	data, _ = os.ReadFile(logPath)
+	if lines := strings.Split(string(data), "\n"); len(lines) != 5 || lines[2] != "3 "+rel3+" 2026-11-21T12:00:00Z" || !strings.HasPrefix(lines[3], "4 0004-ddddddd 2026-11-21T") || lines[4] != "" {
+		t.Errorf("counters.log:\n%s", data)
+	}
+	e.write(logPath, "x y z\n", 0o644)
+	e.release("0005-eeeeeee", "2026-11-01")
+	if code := e.switchTo("0005-eeeeeee"); code != ExitFailed || !strings.Contains(e.last, CountersLog) {
+		t.Errorf("a broken log: exit %d\n%s", code, e.last)
+	}
+}
