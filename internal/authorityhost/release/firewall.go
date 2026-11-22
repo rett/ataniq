@@ -16,12 +16,17 @@ func DefaultDenyWarning(hook string) string {
 
 // missingDefaultDeny reads an "nft list ruleset" listing and returns, in the
 // order of defaultDenyHooks, each hook that has no default deny: no base
-// chain of that hook with "policy drop" in a table that is not dormant, of
-// family inet, or of both ip and ip6, so that IPv4 and IPv6 are both
-// dropped by default. A base chain is a chain whose "type ... hook H ...;
-// policy drop;" line stands directly in it. A listing it cannot read in
-// that shape has no default deny anywhere: the result never claims a policy
-// it did not see.
+// chain of type filter of that hook with "policy drop" in a table that is
+// not dormant (a "flags" line naming dormant among its comma-separated
+// flags), of family inet, or of both ip and ip6, so that IPv4 and IPv6 are
+// both dropped by default. A base chain is a chain whose "type filter hook
+// H ...; policy drop;" line stands directly in it. A chain of another type
+// does not count: a nat chain sees only the first packet of a connection,
+// and a route chain, which filters the output hook like a filter chain, is
+// not counted either, so a ruleset that denies by one is reported (a
+// warning too many rather than one too few). A listing it cannot read in that
+// shape has no default deny anywhere: the result never claims a policy it
+// did not see.
 func missingDefaultDeny(listing []byte) []string {
 	type block struct {
 		kind  string // "table", "chain" or "" for any other block
@@ -54,11 +59,13 @@ func missingDefaultDeny(listing []byte) []string {
 			continue
 		case top.kind == "table" && opens == 0 && closes == 0 && len(words) >= 2 && words[0] == "flags":
 			for _, w := range words[1:] {
-				if strings.Trim(w, ",") == "dormant" {
-					tables[top.table].dormant = true
+				for _, flag := range strings.Split(w, ",") {
+					if flag == "dormant" {
+						tables[top.table].dormant = true
+					}
 				}
 			}
-		case top.kind == "chain" && opens == 0 && closes == 0 && len(words) > 0 && words[0] == "type":
+		case top.kind == "chain" && opens == 0 && closes == 0 && len(words) > 1 && words[0] == "type" && words[1] == "filter":
 			hook, policy := "", ""
 			for i := 0; i+1 < len(words); i++ {
 				switch words[i] {
@@ -104,7 +111,9 @@ func missingDefaultDeny(listing []byte) []string {
 
 // nftWords splits a listing line into its words outside quoted text, with
 // ";" a word of its own dropped, and counts its braces outside quotes. A
-// quoted string ("a comment") is one word, never read for its content.
+// quoted string ("a comment") is one word, never read for its content, and
+// an unquoted # ends the line: what follows it is a comment, neither words
+// nor braces.
 func nftWords(line string) (words []string, opens, closes int) {
 	var cur strings.Builder
 	quoted := false
@@ -124,6 +133,10 @@ func nftWords(line string) (words []string, opens, closes int) {
 				quoted = false
 				words = append(words, "\"")
 			}
+		case c == '#':
+			// An unquoted # starts a comment, to the end of the line.
+			flush()
+			return words, opens, closes
 		case c == '"':
 			flush()
 			quoted = true

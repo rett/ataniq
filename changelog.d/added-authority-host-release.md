@@ -35,7 +35,8 @@
   duplicates, sorts, takes `nft.digest` with the function of `ah-noaicheck
   nft-digest`, and never writes into the source. It enrolls any firewall
   listing, but for each of the hooks input, output and forward without a
-  base chain of `policy drop` for IPv4 and IPv6 it prints a `WARNING:
+  base chain of type `filter` with `policy drop` for IPv4 and IPv6 (a `nat`
+  or `route` chain does not count) it prints a `WARNING:
   no-default-deny HOOK` line and writes the same words into the header of
   `nft.digest`; `--require-default-deny` refuses such a listing instead. See the README, "Filling the
   allowlists". `deploy/authority-host` now holds the source tree of the

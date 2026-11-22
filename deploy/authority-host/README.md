@@ -1712,10 +1712,15 @@ change it.
 The digest pins the ruleset as it is: it proves later that the rules did not
 change, not that they were right. The firewall is the owner's, so `baseline`
 enrolls any listing, but it reads the one it hashes for a default deny: for
-each of the hooks `input`, `output` and `forward`, a base chain of that hook
-(a chain whose `type ... hook HOOK ...; policy drop;` line stands in it) with
-`policy drop`, in a table that is not `dormant`, of family `inet` or of both
-`ip` and `ip6`, so that IPv4 and IPv6 are both covered. For each hook without
+each of the hooks `input`, `output` and `forward`, a base chain of type
+`filter` of that hook (a chain whose `type filter hook HOOK ...; policy
+drop;` line stands in it) with `policy drop`, in a table that is not
+`dormant` (its `flags` line, comma-separated, does not name `dormant`), of
+family `inet` or of both `ip` and `ip6`, so that IPv4 and IPv6 are both
+covered. A chain of another type does not count: a `nat` chain sees only the
+first packet of a connection, and a `route` chain (hook `output`) is not
+counted either, so a ruleset that drops by default only in one is reported.
+An unquoted `#` starts a comment, which is not read. For each hook without
 one it prints, before its result line,
 
 ```
