@@ -1,10 +1,13 @@
 # Seat gate protocol, version 1
 
-Status: design only; nothing described here as new is built, and none of it is
-qualified. It is the contract from which the daemon's side of phone decisions
-and the seat app's approve and deny are to be built. A paragraph that begins
-"Owner decision" records a decision the owner has made. Everything else is
-proposed, for the lead to sign off before the build starts; the change to the
+Status: design only for phone decisions, and none of it is qualified. Since the
+first draft the gate's handler for pairing and reads (G3) and the assertion
+verifier with its credential kinds (G5) are built, and the fingerprint is
+eight words; no command uses the handler or the verifier yet. It is the
+contract from which the daemon's side of phone decisions and the seat app's
+approve and deny are to be built. A paragraph that begins "Owner decision"
+records a decision the owner has made. Everything else is proposed, for the
+lead to sign off before the build starts; the change to the
 decision record is also part of the joint contract with the planner's project
 and needs the planner's agreement. Names of packages, files and functions that
 exist today are given as they are in the repository; a name marked "planned"
@@ -23,7 +26,8 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   1.3 with ALPN `ataniq-gate/1`, length-prefixed strict JSON frames of at most
   64 KiB, a `seat.hello` with a capability list, `seat.ping`, coded errors of
   the grammar `[a-z0-9-]{1,40}` and no text on the wire, and the server limits
-  in its package comment. `ServerTLS` takes a list of pinned client keys;
+  in its package comment (among them 60 requests a minute per connection and a
+  30-second deadline per request). `ServerTLS` takes a list of pinned client keys;
   `ClientTLS` takes one pinned server key. `WriteIdentityFiles` and
   `LoadIdentity` keep an identity in a folder (`cert.pem`, `key.pem`, key mode
   0600, folder 0700, never overwritten). No command calls any of it.
@@ -39,12 +43,23 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   [the lead daemon guide](../lead-daemon.md#the-owner-channel-tagged-build-only)).
   There the seat source is nil, so `seat.pair` is refused `unavailable` to every
   connection.
+- The gate's handler, `internal/approval/gatehost` (untagged; only tagged code
+  may import it, and none does yet). It serves `seat.pair` and the four reads
+  to the service with a seat source, answers every refusal with a code, and
+  bounds the refusals of each peer (see [errors](#errors)).
+- The credential kinds and the assertion verifier,
+  `internal/approval/credkind` (standard library only), and a software
+  authenticator for tests, `internal/approval/webauthntest`, which shares no
+  code with the verifier. Only tests use either.
+- The fingerprint of a paired credential is 8 words (see
+  [the pairing fingerprint](#the-pairing-fingerprint)).
 - A decision can be made only at the desk. `Service.Decide` refuses a source
   that is not the decider (`not-decider`) or whose surface has no owner activity
   inside the presence window (`owner-away`), and the record package's decision
   check (`checkDecision`, run by `record.DecodeDecision` and
   `record.EncodeDecision`) requires `confirmed` to be `"code"` and a console
-  block with a process id. No WebAuthn assertion is verified anywhere.
+  block with a process id. No command verifies a WebAuthn assertion: only the
+  tests of `credkind` call the verifier.
 
 ## The listener: inside the daemon
 
@@ -55,9 +70,10 @@ ADDR is one explicit IP address and port; a wildcard address and a host name
 are refused. Without the flag nothing listens. The owner's firewall lets only
 the authority host's address reach the port.
 
-The listener serves `seatgate.Serve` with a handler from a new untagged package
-(planned, G3: `internal/approval/gatehost`), which only tagged code imports.
-The handler hands the service the source
+The listener serves `seatgate.Serve` with the handler of the untagged package
+`internal/approval/gatehost` (built, G3), which only tagged code imports. The
+handler asks the pin check again on every call (`not-pinned`) and hands the
+service the source
 
 ```text
 Surface: "seat"   Session: the first 16 hex digits of the peer's pinned fingerprint   Decider: false
@@ -94,21 +110,23 @@ and the handler adds only the mapping to the service.
 The hello of the gate answers a capability list. A capability names a group of
 operations. The gate serves an operation only when its capability is in that
 list; any other operation, including every `owner.*` operation not listed
-below, is answered `unknown-op`.
+below, is answered `unknown-op` before its params are read. `seat.hello` and
+`seat.ping` are the transport's own and need no capability: `seatgate` answers
+them and never hands them to the handler.
 
 | Capability | Operation | Params | Result | Built by |
 | --- | --- | --- | --- | --- |
-| `pair` | `seat.pair` | `ownerwire.SeatPairParams` | `ownerwire.SeatPairResult` | G3 (service exists) |
-| `read` | `owner.list` | none | `ownerwire.Listing` | G3 (service exists) |
-| `read` | `owner.show` | `ownerwire.ShowParams` | `ownerwire.ShowResult` | G3 (service exists) |
-| `read` | `owner.paths` | `ownerwire.PageParams` | `ownerwire.PathsPage` | G3 (service exists) |
-| `read` | `owner.patch` | `ownerwire.PageParams` | `ownerwire.PatchPage` | G3 (service exists) |
+| `pair` | `seat.pair` | `ownerwire.SeatPairParams` | `ownerwire.SeatPairResult` | G3 (built) |
+| `read` | `owner.list` | none | `ownerwire.Listing` | G3 (built) |
+| `read` | `owner.show` | `ownerwire.ShowParams` | `ownerwire.ShowResult` | G3 (built) |
+| `read` | `owner.paths` | `ownerwire.PageParams` | `ownerwire.PathsPage` | G3 (built) |
+| `read` | `owner.patch` | `ownerwire.PageParams` | `ownerwire.PatchPage` | G3 (built) |
 | `login` | `seat.login-challenge` | none | `SeatChallengeResult` | G8 |
 | `login` | `seat.login` | `SeatLoginParams` | `SeatLoginResult` | G8 |
 | `decide` | `seat.challenge` | `SeatChallengeParams` | `SeatChallengeResult` | G8 |
 | `decide` | `seat.decide` | `SeatDecideParams` | `ownerwire.DecideResult` | G8 |
 
-A gate built before G8 answers `["pair", "read"]`; after G8,
+The handler built in G3 answers `["pair", "read"]` (`gatehost.Caps`); after G8,
 `["pair", "read", "login", "decide"]`. The seat reads the list
 (`seatgate.Client.Caps`) and offers login and decisions only when the gate lists
 them; otherwise it says that the desk does not take phone decisions.
@@ -173,27 +191,34 @@ wire. The seat maps each code to fixed words of its own.
 The transport's codes are those of `internal/seatgate` (`failed`,
 `proto-unsupported`, `bad-hello`, `hello-required`, `hello-repeated`,
 `rate-limited`, `busy`, `deadline-exceeded`, `too-large`, `shutting-down`).
+The transport's `too-large` is a result that does not fit a frame; it is not
+the record package's `record-too-large`, which refuses a record.
 
-The handler answers:
+The handler (`gatehost`, built for pairing and reads) answers:
 
-- A `*record.Error` with its own code, unchanged (`record-invalid`,
-  `record-too-large`, `decision-invalid`, `binding-mismatch`, `review-changed`,
-  `approval-expired`, `approval-consumed`, `approval-void`, `previous-epoch`
-  and the others of `internal/approval/record/code.go`).
+- Its own codes: `unknown-op`, `bad-params` (params that the gate's strict
+  reading, `seatgate.DecodeStrict`, or the operation's `ownerwire` decoder
+  refuses), `not-pinned` (a peer whose key the pin check no longer knows) and
+  `too-many-refusals` (below).
+- A `*record.Error` with its own code, unchanged, for the codes the operations
+  served can meet (`approval-void`, `approval-expired`, `approval-consumed`,
+  `decision-invalid`, `previous-epoch`, `review-changed`, `record-invalid`,
+  `record-too-large`); a refusal with any other code is answered `failed` and
+  logged, so that only listed words reach a seat. G8 adds the codes the
+  decision path meets (`binding-mismatch` among them) to that list.
 - The pairing and key errors of `ownerchannel` with the codes the daemon already
-  gives them, which are also the console's (`consoleclient.PairError`). Of
-  these, `seat.pair` can meet `keys-unavailable`, `pairing-refused` and
-  `credential-invalid`, and the new operations reuse `key-unknown` and
-  `keys-unavailable`. The other pairing codes belong to the desk's operations,
-  which the gate does not serve.
-- The daemon's own: `unavailable` (the service is closed, stopped or stopping),
-  `door-unavailable`, `journal-reopened`, `failed` (anything else; the error
+  gives them, which are also the console's (`consoleclient.PairError`):
+  `pairing-refused`, `credential-invalid`, `keys-unavailable`, `keys-full`,
+  `key-unknown`, `key-ambiguous`, `pairing-open`, `pairing-none`,
+  `pairing-expired` and `pairing-changed`.
+- The daemon's own: `unavailable` (the service is closed, stopped or stopping,
+  or the call was cancelled), `deadline-exceeded`, `door-unavailable`,
+  `journal-reopened`, `failed` (anything else, `ErrNotSeat` included; the error
   goes to the log, never the params).
-- New codes for version 1:
+- New codes for version 1, all from G8:
 
 | Code | Meaning |
 | --- | --- |
-| `unknown-op` | The operation is not one the gate serves, or its capability is not served. |
 | `challenge-stale` | No outstanding challenge has this id (unknown, used, expired, dropped by a restart), or the frame does not match the challenge. The seat says to tap again. |
 | `challenges-full` | 32 challenges are outstanding and none has expired. |
 | `assertion-invalid` | The assertion did not verify, for any reason (client data, origin, relying party, flags, signature). |
@@ -201,14 +226,24 @@ The handler answers:
 | `kind-refused` | The credential's kind is not in the project's accepted kinds. |
 | `origin-unset` | The daemon has no seat origin to check client data against. |
 
-`key-unknown` answers a credential that is not on the list. `ErrNotSeat` cannot
-occur on the gate, whose source is always a seat; it is answered `failed` and
-logged.
+`key-unknown` answers a credential that is not on the list.
 
-The handler bounds the refusals of one peer as the Unix socket bounds a
-connection that is not the decider (`leaddaemon.DecisionRefusalBound`, 16): the
-first 16 refused `seat.pair`, `seat.login` and `seat.decide` calls of a
-connection are logged, and the next one closes the connection.
+### The refusal bound
+
+The handler bounds the refusals of each peer by rate, never by a lifetime
+count, and it never closes a connection for them: the seat has one connection
+that carries every browser's traffic. The bound is keyed by the peer's key
+fingerprint, across its connections. After `gatehost.RefusalBound` (16)
+counted refusals within `gatehost.RefusalWindow` (10 minutes), every request of
+the peer, a read too, is answered `too-many-refusals`, without the service,
+until the oldest of those refusals is 10 minutes old. A refusal of what the
+peer sent counts (`unknown-op`, `bad-params`, `not-pinned`, the pairing codes,
+the record codes passed on); a refusal for the daemon's own state does not
+(`unavailable`, `deadline-exceeded`, `failed`, `door-unavailable`,
+`journal-reopened`, `keys-unavailable`, `keys-full`). The count is in memory. A
+connection is closed only by the transport, for a breach of the wire (see
+`seatgate`), and `leaddaemon.DecisionRefusalBound`, the Unix socket's lifetime
+count, does not apply to the gate.
 
 ## The challenge
 
@@ -331,24 +366,35 @@ taken as a decision, and the reverse.
 
 ### Verifying an assertion
 
-The verifier is the credential kinds' (planned, G5:
-`internal/approval/credkind`, standard library only), after WebAuthn Level 3,
-section 7.2, "Verifying an Authentication Assertion":
+The verifier is built: `credkind.Verify`, and `credkind.Policy.Verify`, which
+first refuses a kind the project's policy does not accept (G5,
+`internal/approval/credkind`, standard library only). It follows WebAuthn
+Level 3, section 7.2, "Verifying an Authentication Assertion", for an ES256 key
+on P-256. The caller gives it what it expects (`credkind.Expect`: the
+challenge, the origin and the relying party id, never values the client sent),
+and it checks:
 
-- the client data's `type` is `webauthn.get`;
-- its `challenge` decodes (base64url, no padding) to the expected challenge,
-  compared in constant time;
-- its `origin` equals the seat origin, and `crossOrigin` is absent or false;
-- the authenticator data's relying party hash is SHA-256 of the relying party
-  id;
-- user presence and user verification are both set, and backup state implies
-  backup eligibility;
-- the signature is a strict DER ECDSA P-256 signature over
-  `authenticator_data || SHA-256(client_data_json)`, checked against the stored
-  public key.
+- the assertion names the registered credential id, byte for byte;
+- the client data is one JSON object, valid UTF-8, with nothing after it and
+  no member named twice; its `type` is `webauthn.get`; its `challenge` decodes
+  (base64url, no padding) to the expected challenge, compared in constant
+  time; its `origin` is the expected origin, compared exactly; `crossOrigin`
+  is absent or false, and `topOrigin` is absent. Other members are allowed and
+  ignored, since browsers add some on purpose: the strict decoders of
+  `ownerwire` and `seatgate` apply to the frame, not to these bytes;
+- the authenticator data starts with the SHA-256 of the relying party id,
+  has user presence and user verification set, the backup state only with
+  backup eligibility, the backup eligibility flag as registered, no attested
+  credential data, and after the counter only the extensions map that its flag
+  announces, in strict canonical CBOR;
+- the signature is a strict DER ECDSA signature, r and s in [1, n-1], over
+  `authenticator_data || SHA-256(client_data_json)`, by the registered public
+  key, which must be canonical DER of a P-256 key.
 
-A sign counter that does not grow is logged, not refused: synced passkeys
-report 0.
+Each refusal is one of a fixed list of errors, holding no part of the input.
+A sign counter that does not grow past the stored one while either is not zero
+is reported (`Result.CounterSuspect`), not refused: synced passkeys report 0 on
+every use.
 
 ## Presence
 
@@ -426,7 +472,7 @@ Owner decision: kinds are pluggable behind one small interface, and two come
 first: a platform passkey and a password vault's passkey. The table that maps a
 claimed AAGUID to a kind is data: it names vendors and their AAGUIDs and pulls in
 no vendor's code. An unknown or all-zero AAGUID gives a passkey of unknown kind.
-The interface (planned, G5) is:
+The interface is built (G5, `credkind.Kind`):
 
 ```text
 Kind{ Name() string
@@ -434,24 +480,30 @@ Kind{ Name() string
       Verify(Credential, AssertionInput, Expect) (Result, error) }
 ```
 
+Its kinds are `platform-passkey`, `vault-passkey` and `passkey` (any other
+AAGUID, shown as "passkey (claimed: unknown)"); all three verify the same way.
+`credkind.Policy` names the accepted kinds and accepts every kind when it names
+none.
+
 A stored kind is a word of the key list's grammar (1 to 32 lower-case letters,
-digits and dashes, starting with a letter). Keys paired before kinds exist keep
-the word `unverified`, which is what `PairConfirm` stores today. The project's
-policy names the accepted kind words and accepts all by default; its place is a
-field of the project's settings (planned, G6, in the host adapter's scratch
-settings), and until it exists every kind is accepted. G6 records the kind at
-pairing; until then every key is `unverified`.
+digits and dashes, starting with a letter). `PairConfirm` stores the word
+`unverified` today, which is not a kind of `credkind`. The project's policy has
+its place in a field of the project's settings (planned, G6, in the host
+adapter's scratch settings), and until it exists every kind is accepted. G6
+records the kind at pairing.
 
 ## The pairing fingerprint
 
 Owner decision: the fingerprint of a paired credential is 8 words, 64 bits: the
-first 8 bytes of the digest `seatpair.FingerprintOf` already takes, each an index
-into the same 256-word list. Today it is 6 words in `ownerwire.PairWords`,
-`seatpair.FingerprintWords`, `seatapp.PairResult`, `pairview.State`, the script
-`internal/seatapp/assets/words.js`, and the key list's check of a row's words
-(`ownerjournal`, six words). The key list keeps the words each key was paired
-with: a row written with six stays readable. The lead assigns the change to the
-task that owns those packages.
+first 8 bytes of the digest `seatpair.FingerprintOf` takes, each an index into
+the same 256-word list. It is built: the count is one constant in each package
+that holds words (`seatpair.FingerprintWords`, `ownerwire.PairWords`,
+`ownerjournal.FingerprintWords`, `seatapp.WordCount`, `pairview.WordCount`,
+which `terminalconsole.PairWordCount` repeats), and the seat's script
+(`internal/seatapp/assets/words.js`) computes the same count. Nothing is paired
+in production, so there is no migration: the key list accepts exactly that many
+words in an added or a rejected row, on write and on replay, and refuses a list
+with a row of any other count, as it refuses any other malformed row.
 
 ## Rotation
 
