@@ -10,9 +10,16 @@ live only in `/etc/authority-host/` on the host.
 ## The switch: ah-switch
 
 `ah-switch` (command `cmd/ah-switch`, package `internal/authorityhost/switcher`)
-is the one way a release becomes live, used by hand on the manual path and by
-the updater later. It needs only the Go standard library and opens no network
+is the one way a release becomes live. It is run by hand, as root, on the
+host. It needs only the Go standard library and opens no network
 connection.
+
+What this tree ships is the switch and the no-AI check program with its
+lists. It ships no timer and no service unit: the recurring run of the
+no-AI check (with what happens when it fails) and a deploy driver that
+fills the incoming folder and calls the switch are separate planned items,
+not part of this feature. Until they exist, the check runs only when a
+switch runs it.
 
 ### Layout
 
@@ -53,9 +60,12 @@ connection.
   skipped; other keys are ignored.
 - `SHA256SUMS` is in the format of `sha256sum`: lowercase hex, two spaces (or a
   space and `*`) and the path relative to the release folder, without `./`,
-  `.` or `..`. It lists every file but itself and `SHA256SUMS.sig`. Build it
-  from inside the folder, for example
-  `find . -type f ! -name 'SHA256SUMS*' -printf '%P\0' | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS`.
+  `.` or `..`. It lists every file but the two top-level metadata files,
+  `SHA256SUMS` itself and `SHA256SUMS.sig` (a file of that name anywhere
+  else is listed like any other). Build it from inside the folder, for
+  example
+  `find . -type f ! -path ./SHA256SUMS ! -path ./SHA256SUMS.sig -printf '%P\0' | LC_ALL=C sort -z | xargs -0 sha256sum -- > SHA256SUMS`
+  (`--` so that no file name is taken as an option).
 - A release holds only folders and regular files with one link each. A
   symbolic link, device, fifo, socket or hard-linked file anywhere in it is
   refused, so hashing never follows one out of the folder.
@@ -208,13 +218,16 @@ ah-switch [--root DIR [--allow-exec]] [--dry] recover --counter N
   is one state between two switches: while a switch runs it exits 3, and
   while it reads, a switch is refused with exit 3. It prints all of it or
   nothing, and it changes nothing.
+- `recover --counter N` writes a missing or broken `highest-counter`; see
+  "Interrupted switches and recover".
 
 Flags may come before or after the id.
 
 ### Steps
 
 `ah-switch ID` prints each step and stops at the first failure. Up to the
-rename in step 6, a failure leaves `current` as it was.
+rename in step 6, a failure leaves `current` as it was (a package step that
+already ran stays applied, and `deploy.json` says so).
 
 0. **import** (only with `--from`): the incoming folder is copied into
    `releases/.import-ID`, as described above.
@@ -229,12 +242,12 @@ rename in step 6, a failure leaves `current` as it was.
    policy (the principal is never discovered from the signature, so another
    identity of a shared signers file cannot authorize a release). Then
    `MANIFEST` must match the id and the command lists must parse.
-2. **counter**: the counter must be above the highest ever activated
+2. **counter**: the counter must be above the highest ever attempted
    (`highest-counter`; none means 0 only on a host that has no `current`
    yet: a missing or broken `highest-counter` while `current` exists is
    refused with `counter-missing` or `counter-invalid`, see `recover`). A
-   rollback skips this rule but accepts
-   only the release `previous` points at.
+   rollback skips this rule but accepts only the release `previous` points
+   at, and only when that release folder is there.
 3. **packages**: when the manifest's `package_snapshot` differs from the one
    recorded in `deploy.json`, the release's
    `bin/ah-pkgstep --release DIR --from OLD --to NEW` runs, within 30 minutes
@@ -329,20 +342,28 @@ replayed. `N` must be at least the counter of the releases `current` and
 `previous` point at; take it from the newest release ever deployed. It
 refuses to overwrite a counter that is there.
 
-`deploy.json` holds `id` (the release asked for), `previous_id` (what `current`
-pointed at before), `current_id` (what it points at after), `counter`, `mode`
-(how the release was verified), `trust` (the policy's minimum, `manual`
-without a policy), `rollback`, `time` (UTC), `result` (`ok`, `failed`, `rolled-back` or `failed-recovery`), `check`
-(the no-AI check: `passed`, `failed` or `not run`), `failed_step` (`state`,
-`verify`, `counter`, `noaicheck`, `validate`, `packages`, `switch`, `reload`,
-`health`, `record` or `interrupted`; empty when ok; `import` for step 0), `error`, `detail`, `package_snapshot`
-and `restored_health`. A dry run writes nothing.
+### deploy.json
 
-`error` is a stable failure code, such as `sums-mismatch`,
-`file-not-listed`, `bad-entry`, `manifest-mismatch`, `signature-bad`,
-`counter-not-above`, `counter-invalid`, `noaicheck-failed`,
-`validator-failed`, `package-step-failed`, `link-failed`, `reload-failed`,
-`health-failed` or `record-failed` (the full list is in
+`deploy.json` (mode 0644) holds `id` (the release asked for), `previous_id`
+(what `current` pointed at before), `current_id` (what it points at after),
+`counter`, `mode` (how the release was verified), `trust` (the policy's
+minimum, `manual` without a policy), `rollback`, `time` (UTC), `result`
+(`ok`, `failed`, `rolled-back` or `failed-recovery`), `check` (the no-AI
+check: `passed`, `failed` or `not run`), `failed_step` (`state`, `import`,
+`verify`, `counter`, `packages`, `noaicheck`, `validate`, `switch`,
+`reload`, `health`, `record` or `interrupted`; empty when ok), `error`,
+`detail`, `package_snapshot` (the snapshot the host's packages are known
+to be at) and `restored_health` (`ok`, `failed` or empty). A dry run writes
+nothing.
+
+`error` is a stable failure code, such as `release-exists`, `bad-entry`,
+`file-changed`, `too-many-entries`, `time-budget`, `untrusted`,
+`sums-mismatch`, `file-not-listed`, `manifest-mismatch`,
+`signature-missing`, `signature-bad`, `list-missing`, `counter-not-above`,
+`counter-missing`, `counter-invalid`, `package-step-missing`,
+`package-step-failed`, `package-step-interrupted`, `nft-listing-failed`,
+`noaicheck-failed`, `validator-failed`, `link-failed`, `reload-failed`,
+`health-failed`, `record-failed` or `interrupted` (the full list is in
 `internal/authorityhost/switcher/failure.go`). `detail` adds fixed words and
 identifiers: a name that holds anything but printable ASCII, or a space, is
 quoted with Go's escapes and every identifier is cut at 160 bytes, so a
@@ -356,9 +377,9 @@ see its messages. The text of a broken state file is not repeated either.
 
 | Code | Meaning |
 | --- | --- |
-| 0 | Switched and healthy, or a dry run whose checks passed |
-| 1 | Failed; outside a dry run the outcome is in `deploy.json` |
-| 2 | Bad arguments; nothing was done |
+| 0 | Switched and healthy (recorded, journal removed), a dry run whose checks passed, `status`, or `recover` done |
+| 1 | Failed; outside a dry run the outcome is in `deploy.json`, except when the state folder or the switch policy is not trusted, which records nothing |
+| 2 | Bad arguments, `--mode` weaker than the switch policy, or a root other than `/` without `--allow-exec`; nothing was done |
 | 3 | Another switch holds the lock, or `status` holds it while a switch is asked for (`flock`, not waited for); nothing was done |
 
 ### Failure cases
@@ -371,7 +392,7 @@ see its messages. The text of a broken state file is not repeated either.
 | Signature missing or bad in signed mode, on a switch or a rollback | Refused at verify |
 | Switch policy or signers file not root's, writable by others, or not parsing | Refused before anything; nothing recorded |
 | `--mode` weaker than the switch policy | Exit 2; nothing done |
-| Counter not above the highest ever activated | Refused at counter |
+| Counter not above the highest ever attempted | Refused at counter |
 | `--rollback-to` anything but previous | Refused at counter |
 | Package step fails, or the snapshot changes and there is none | Refused at packages; `current` unchanged |
 | No-AI check fails | Refused at noaicheck, after the package step; no validator runs |
@@ -381,12 +402,13 @@ see its messages. The text of a broken state file is not repeated either.
 | Going back fails, or the old release is not healthy either | The failed release's `stop.list` runs; `failed-recovery` with `restored_health: failed`; the console is needed |
 | First switch, or the old release missing or no longer verifying, and the new one fails | `current` stays; its `stop.list` runs; `failed` or `failed-recovery` |
 | `--rollback-to` when `previous` points at a missing release | Refused at counter (`no-previous`) |
-| Crash or power loss during the switch | `current` points at a whole release, the old or the new one, and the journal is there; the next command settles it (see below) |
+| Crash or power loss during the switch | `current` points at a whole release, the old or the new one, and the journal is there; the next command settles it (see "Interrupted switches and recover") |
 | `highest-counter` missing or broken while `current` exists | Refused (`counter-missing`, `counter-invalid`); run `recover --counter N` |
 | A second switch while one runs | Exit 3; nothing done |
 
-The switch never deletes a release. Removing old releases (keeping, say, the
-last few and never the targets of `current` or `previous`) is future work.
+The switch never deletes a release (it removes only the copy of an import
+that failed). Removing old releases is not part of this feature: do it by
+hand, never the targets of `current` or `previous`.
 
 ## The no-AI check
 
