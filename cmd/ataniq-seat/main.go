@@ -2,8 +2,13 @@
 // socket or a loopback address. A proxy in front owns the network port and the
 // TLS; this command never listens on a non-loopback address.
 //
-//	ataniq-seat --origin https://seat.example (--socket PATH | --listen 127.0.0.1:PORT)
+//	ataniq-seat (--origin https://HOST | --origin-file PATH) (--socket PATH | --listen 127.0.0.1:PORT)
 //	            [--rpid HOST] [--socket-mode 0660] [--client-addr-header NAME]
+//
+// The origin is the address the reverse proxy serves the app on, https on
+// port 443, and has no default: it comes from --origin or from the first line
+// of an owner-local file named by --origin-file. The app itself speaks plain
+// HTTP behind the proxy.
 //
 // Nothing secret is printed or read from the command line. The daemon port is
 // not wired yet: pairing answers with the fixed code daemon_unavailable.
@@ -22,14 +27,18 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"ataniq/internal/seatapp"
 )
 
-const usageLine = "Usage: ataniq-seat --origin ORIGIN (--socket PATH | --listen LOOPBACK:PORT) [--rpid HOST] [--socket-mode MODE] [--client-addr-header NAME]\n" +
-	"--socket and --listen exclude each other; --listen takes an IP literal of the loopback range."
+const usageLine = "Usage: ataniq-seat (--origin https://HOST | --origin-file PATH) (--socket PATH | --listen LOOPBACK:PORT) [--rpid HOST] [--socket-mode MODE] [--client-addr-header NAME]\n" +
+	"--origin and --origin-file exclude each other; --socket and --listen exclude each other; --listen takes an IP literal of the loopback range."
+
+// maxOriginFile bounds the origin file.
+const maxOriginFile = 1 << 10
 
 // shutdownGrace is how long a shutdown lets requests in flight finish.
 const shutdownGrace = 10 * time.Second
@@ -50,8 +59,8 @@ func main() {
 
 // options is what the flags select.
 type options struct {
-	origin, rpid, socket, listen, clientAddrHeader string
-	socketMode                                     os.FileMode
+	origin, originFile, rpid, socket, listen, clientAddrHeader string
+	socketMode                                                 os.FileMode
 }
 
 // parse reads the flags. On failure it has printed the diagnostic and the
@@ -61,6 +70,7 @@ func parse(args []string, errout io.Writer) (o options, code int, ok bool) {
 	fs.SetOutput(io.Discard)
 	mode := fs.String("socket-mode", "0660", "permission bits of the socket file, octal")
 	fs.StringVar(&o.origin, "origin", "", "the app's origin, https://host")
+	fs.StringVar(&o.originFile, "origin-file", "", "owner-local file holding the origin")
 	fs.StringVar(&o.rpid, "rpid", "", "relying party id; the origin's host when empty")
 	fs.StringVar(&o.socket, "socket", "", "Unix socket path")
 	fs.StringVar(&o.listen, "listen", "", "loopback address and port")
@@ -78,8 +88,15 @@ func parse(args []string, errout io.Writer) (o options, code int, ok bool) {
 	if (o.socket == "") == (o.listen == "") {
 		return fail("give exactly one of --socket and --listen")
 	}
-	if o.origin == "" {
-		return fail("--origin is required")
+	if (o.origin == "") == (o.originFile == "") {
+		return fail("give exactly one of --origin and --origin-file")
+	}
+	if o.originFile != "" {
+		b, err := readSmallFile(o.originFile)
+		if err != nil {
+			return fail("--origin-file: " + err.Error())
+		}
+		o.origin = strings.TrimSpace(string(b))
 	}
 	u, err := url.Parse(o.origin)
 	if err != nil || u.Hostname() == "" {
@@ -99,6 +116,20 @@ func parse(args []string, errout io.Writer) (o options, code int, ok bool) {
 		}
 	}
 	return o, 0, true
+}
+
+// readSmallFile reads a regular file of at most maxOriginFile bytes.
+func readSmallFile(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, errors.New("cannot be read")
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || !fi.Mode().IsRegular() || fi.Size() > maxOriginFile {
+		return nil, errors.New("is not a small regular file")
+	}
+	return io.ReadAll(io.LimitReader(f, maxOriginFile))
 }
 
 // checkLoopback refuses an address that is not an IP literal of the loopback

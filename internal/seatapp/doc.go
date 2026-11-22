@@ -19,6 +19,12 @@
 //	POST /api/pair-challenge  a one-time challenge for a new passkey
 //	POST /api/pair            the passkey's data and the one-time code
 //
+// The origin is the reverse proxy's, https on port 443: [New] refuses any
+// other (an http origin, a port, a path, user information, an address
+// literal), and the only way around it is a test option that takes a loopback
+// host and that no command sets. The app itself listens on plain HTTP behind
+// the proxy.
+//
 // Every response, an error included, carries the security headers (see
 // securityHeaders in app.go). Every request body is cut at [MaxBody] bytes.
 // Every POST needs an Origin header equal to [Config].Origin (a fixed 403

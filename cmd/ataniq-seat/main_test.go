@@ -42,6 +42,8 @@ func TestParse(t *testing.T) {
 		"stray argument":      {"--origin", "https://seat.example", "--socket", "/x", "more"},
 		"unknown flag":        {"--origin", "https://seat.example", "--socket", "/x", "--token", "x"},
 		"origin without host": {"--origin", "seat", "--socket", "/x"},
+		"both origins":        {"--origin", "https://seat.example", "--origin-file", "/x", "--socket", "/x"},
+		"missing origin file": {"--origin-file", "/nonexistent/origin", "--socket", "/x"},
 	}
 	for name, args := range bad {
 		var out bytes.Buffer
@@ -55,6 +57,40 @@ func TestParse(t *testing.T) {
 	o, _, _ := parse([]string{"--origin", "https://seat.example:8443", "--socket", "/x"}, io.Discard)
 	if o.rpid != "seat.example" {
 		t.Errorf("rpid defaults to %q", o.rpid)
+	}
+}
+
+func TestOriginFileAndNoDefaultOrigin(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "origin")
+	os.WriteFile(f, []byte("https://seat.example\n"), 0o600)
+	o, _, ok := parse([]string{"--origin-file", f, "--socket", "/x"}, io.Discard)
+	if !ok || o.origin != "https://seat.example" || o.rpid != "seat.example" {
+		t.Errorf("origin file: %+v %v", o, ok)
+	}
+	big := filepath.Join(dir, "big")
+	os.WriteFile(big, bytes.Repeat([]byte("a"), maxOriginFile+1), 0o600)
+	if _, _, ok := parse([]string{"--origin-file", big, "--socket", "/x"}, io.Discard); ok {
+		t.Error("a large origin file was accepted")
+	}
+	if _, _, ok := parse([]string{"--origin-file", dir, "--socket", "/x"}, io.Discard); ok {
+		t.Error("a directory was accepted as the origin file")
+	}
+	// The origin has no default, and there is no flag to loosen its checks.
+	if _, _, ok := parse([]string{"--socket", "/x"}, io.Discard); ok {
+		t.Error("no origin was accepted")
+	}
+	if _, _, ok := parse([]string{"--origin", "https://seat.example", "--socket", "/x", "--insecure"}, io.Discard); ok {
+		t.Error("an insecure flag exists")
+	}
+	// A bad origin is refused by the app before anything listens.
+	for _, origin := range []string{"http://seat.example", "https://seat.example:8443", "https://seat.example/x", "https://127.0.0.1"} {
+		var out bytes.Buffer
+		ready := false
+		code := run(context.Background(), []string{"--origin", origin, "--listen", "127.0.0.1:9"}, &out, func(net.Addr) { ready = true })
+		if code != 2 || ready {
+			t.Errorf("%s: code %d, ready %v", origin, code, ready)
+		}
 	}
 }
 

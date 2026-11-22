@@ -6,24 +6,80 @@ import (
 	"testing"
 )
 
-func TestNewRefusesBadConfig(t *testing.T) {
+func TestOriginValidation(t *testing.T) {
 	d := &fakeDaemon{}
-	for name, cfg := range map[string]Config{
-		"no origin":        {RPID: "a", Daemon: d},
-		"path in origin":   {Origin: "https://a.example/x", RPID: "a", Daemon: d},
-		"slash in origin":  {Origin: "https://a.example/", RPID: "a", Daemon: d},
-		"query in origin":  {Origin: "https://a.example?x", RPID: "a", Daemon: d},
-		"user in origin":   {Origin: "https://u@a.example", RPID: "a", Daemon: d},
-		"scheme in origin": {Origin: "ftp://a.example", RPID: "a", Daemon: d},
-		"no rpid":          {Origin: "https://a.example", Daemon: d},
-		"no daemon":        {Origin: "https://a.example", RPID: "a"},
+	for _, tc := range []struct {
+		name, origin, rpid string
+		insecure           bool
+		want               string // the origin the app compares with; empty means refused
+	}{
+		{"https host", "https://seat.example", "seat.example", false, "https://seat.example"},
+		{"explicit default port", "https://seat.example:443", "seat.example", false, "https://seat.example"},
+		{"parent domain as rp id", "https://seat.example.org", "example.org", false, "https://seat.example.org"},
+
+		{"empty", "", "seat.example", false, ""},
+		{"empty host", "https://", "seat.example", false, ""},
+		{"empty host with port", "https://:443", "seat.example", false, ""},
+		{"http", "http://seat.example", "seat.example", false, ""},
+		{"http on 80", "http://seat.example:80", "seat.example", false, ""},
+		{"other port", "https://seat.example:8443", "seat.example", false, ""},
+		{"empty port", "https://seat.example:", "seat.example", false, ""},
+		{"path", "https://seat.example/app", "seat.example", false, ""},
+		{"trailing slash", "https://seat.example/", "seat.example", false, ""},
+		{"query", "https://seat.example?x=1", "seat.example", false, ""},
+		{"bare question mark", "https://seat.example?", "seat.example", false, ""},
+		{"fragment", "https://seat.example#x", "seat.example", false, ""},
+		{"user information", "https://owner@seat.example", "seat.example", false, ""},
+		{"user and password", "https://owner:pw@seat.example", "seat.example", false, ""},
+		{"no scheme", "seat.example", "seat.example", false, ""},
+		{"other scheme", "ftp://seat.example", "seat.example", false, ""},
+		{"upper case scheme", "HTTPS://seat.example", "seat.example", false, ""},
+		{"upper case host", "https://Seat.Example", "seat.example", false, ""},
+		{"address literal", "https://192.0.2.1", "192.0.2.1", false, ""},
+		{"loopback literal", "https://127.0.0.1", "127.0.0.1", false, ""},
+		{"v6 literal", "https://[::1]", "::1", false, ""},
+		{"loopback http without the option", "http://127.0.0.1:8080", "127.0.0.1", false, ""},
+		{"space", "https://seat .example", "seat.example", false, ""},
+		{"rp id empty", "https://seat.example", "", false, ""},
+		{"rp id of another host", "https://seat.example", "other.example", false, ""},
+		{"rp id longer than the host", "https://seat.example", "a.seat.example", false, ""},
+		{"rp id that only ends alike", "https://seat.example", "at.example", false, ""},
+
+		{"test option: loopback http with port", "http://127.0.0.1:8080", "127.0.0.1", true, "http://127.0.0.1:8080"},
+		{"test option: v6 loopback", "http://[::1]:8080", "::1", true, "http://[::1]:8080"},
+		{"test option: localhost", "http://localhost:9", "localhost", true, "http://localhost:9"},
+		{"test option: https loopback", "https://127.0.0.1:8443", "127.0.0.1", true, "https://127.0.0.1:8443"},
+		{"test option: a public host is still refused", "http://seat.example", "seat.example", true, ""},
+		{"test option: a public address is refused", "http://192.0.2.1:8080", "192.0.2.1", true, ""},
+		{"test option: a path is still refused", "http://127.0.0.1:8080/x", "127.0.0.1", true, ""},
+		{"test option: user information is still refused", "http://u@127.0.0.1:8080", "127.0.0.1", true, ""},
+		{"test option: a wildcard is not loopback", "http://0.0.0.0:8080", "0.0.0.0", true, ""},
 	} {
-		if _, err := New(cfg); err == nil {
-			t.Errorf("%s: New accepted it", name)
+		h, err := New(Config{Origin: tc.origin, RPID: tc.rpid, Daemon: d, AllowInsecureLoopbackForTests: tc.insecure})
+		if tc.want == "" {
+			if err == nil {
+				t.Errorf("%s: New accepted %q", tc.name, tc.origin)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: %v", tc.name, err)
+			continue
+		}
+		// The origin compared with is the canonical one: a POST with it
+		// passes the origin check and one with the default port spelt out
+		// does not.
+		hdr := map[string]string{"Origin": tc.want, "Content-Type": "application/json"}
+		if got := doTo(h, "POST", "/api/pair-challenge", "{}", hdr).Code; got == 403 {
+			t.Errorf("%s: the origin %q was refused", tc.name, tc.want)
+		}
+		hdr["Origin"] = tc.want + ":443"
+		if got := doTo(h, "POST", "/api/pair-challenge", "{}", hdr).Code; got != 403 {
+			t.Errorf("%s: a spelt-out default port passed the origin check: %d", tc.name, got)
 		}
 	}
-	if _, err := New(Config{Origin: "http://127.0.0.1:8080", RPID: "127.0.0.1", Daemon: d}); err != nil {
-		t.Errorf("a loopback origin with a port: %v", err)
+	if _, err := New(Config{Origin: "https://a.example", RPID: "a.example"}); err == nil {
+		t.Error("no daemon: New accepted it")
 	}
 }
 

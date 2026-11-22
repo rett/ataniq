@@ -7,7 +7,9 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/netip"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -53,12 +55,15 @@ var (
 
 // Config is what New needs.
 type Config struct {
-	// Origin is the app's one origin, scheme and host and no path, for
-	// example "https://seat.example". The Origin header of every POST must
+	// Origin is the app's one origin, "https://" and a host name: no path,
+	// no user information, and no port (or :443, which is dropped, since a
+	// browser's Origin header leaves the default port out). Links to the app
+	// always go to the reverse proxy over HTTPS on port 443; the app itself
+	// listens on plain HTTP behind it. The Origin header of every POST must
 	// equal it, and the passkey's client data must name it.
 	Origin string
-	// RPID is the relying party id of the passkeys: the host name the origin
-	// is under, "seat.example" for the origin above.
+	// RPID is the relying party id of the passkeys: the origin's host name
+	// or a parent domain of it, "seat.example" for "https://seat.example".
 	RPID string
 	// Daemon is the port to the daemon. It is required.
 	Daemon Daemon
@@ -71,6 +76,36 @@ type Config struct {
 	// no header and uses the peer's address. Set it only when the proxy
 	// replaces the header on every request.
 	ClientAddrHeader string
+	// AllowInsecureLoopbackForTests lets Origin be an http origin, or have a
+	// port, when its host is a loopback IP address or "localhost". It is for
+	// tests of this package and no command sets it.
+	AllowInsecureLoopbackForTests bool
+}
+
+// canonicalOrigin checks an origin and returns it in the form a browser's
+// Origin header has, with its host name.
+func canonicalOrigin(o string, insecureLoopback bool) (origin, host string, err error) {
+	bad := errors.New("seatapp: Config.Origin must be https://HOST, with no port, path or user information")
+	u, perr := url.Parse(o)
+	if perr != nil || u.Opaque != "" || u.User != nil || u.Path != "" || u.RawPath != "" || u.RawQuery != "" ||
+		u.ForceQuery || u.Fragment != "" || u.Host == "" || strings.HasSuffix(u.Host, ":") ||
+		u.Hostname() == "" || u.Hostname() != strings.ToLower(u.Hostname()) ||
+		o != u.Scheme+"://"+u.Host {
+		return "", "", bad
+	}
+	host = u.Hostname()
+	ip, ipErr := netip.ParseAddr(host)
+	if insecureLoopback {
+		if (u.Scheme != "http" && u.Scheme != "https") || !(host == "localhost" || (ipErr == nil && ip.IsLoopback())) {
+			return "", "", errors.New("seatapp: the insecure test option takes only a loopback origin")
+		}
+		return o, host, nil
+	}
+	// A passkey is bound to a domain name, so an address literal is no origin.
+	if u.Scheme != "https" || ipErr == nil || (u.Port() != "" && u.Port() != "443") {
+		return "", "", bad
+	}
+	return "https://" + host, host, nil
 }
 
 // app is the handler's state.
@@ -79,17 +114,17 @@ type app struct {
 	pair *pairing
 }
 
-// New returns the app's handler. It refuses a configuration without an
-// origin of the form scheme://host[:port], a relying party id, or a daemon.
+// New returns the app's handler. It refuses a configuration with an origin
+// that is not https on the default port (see [Config].Origin), a relying party
+// id that is not the origin's host or a parent domain of it, or no daemon.
 func New(cfg Config) (http.Handler, error) {
-	u, err := url.Parse(cfg.Origin)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" ||
-		u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" ||
-		cfg.Origin != u.Scheme+"://"+u.Host {
-		return nil, errors.New("seatapp: Config.Origin must be scheme://host[:port]")
+	origin, host, err := canonicalOrigin(cfg.Origin, cfg.AllowInsecureLoopbackForTests)
+	if err != nil {
+		return nil, err
 	}
-	if cfg.RPID == "" {
-		return nil, errors.New("seatapp: Config.RPID is required")
+	cfg.Origin = origin
+	if cfg.RPID == "" || (cfg.RPID != host && !strings.HasSuffix(host, "."+cfg.RPID)) {
+		return nil, errors.New("seatapp: Config.RPID must be the origin's host or a parent domain of it")
 	}
 	if cfg.Daemon == nil {
 		return nil, errors.New("seatapp: Config.Daemon is required")

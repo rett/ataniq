@@ -105,6 +105,17 @@ func (r *rig) do(method, path string, body io.Reader, header map[string]string) 
 	return w
 }
 
+// doTo sends a request with a string body to a handler.
+func doTo(h http.Handler, method, path, body string, header map[string]string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	for k, v := range header {
+		req.Header.Set(k, v)
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	return w
+}
+
 // postJSON sends a well-formed same-origin POST.
 func (r *rig) postJSON(path, body string) *httptest.ResponseRecorder {
 	return r.do("POST", path, strings.NewReader(body), map[string]string{
