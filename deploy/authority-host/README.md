@@ -874,7 +874,9 @@ Before it, a requalification ran only while a journal was open.
   final`, without the `ack` command: settling the transaction may still
   change that outcome. It never acknowledges an outcome.
 - The one inhibit `boot` takes over is the record of a `boot` that did
-  not finish: exactly the record `boot` writes, with no journal open and no
+  not finish: exactly the record `boot` writes (its `reason`, a run id in
+  `txn` and a `time` in UTC to the second, each as `boot` writes it; a
+  record lacking any of them stays as found), with no journal open and no
   outcome owed under its run. That boot died (a power loss, a time limit)
   after it inhibited decisions and before it recorded a failure or removed
   its record; nothing else changed since it found no inhibit, so this boot

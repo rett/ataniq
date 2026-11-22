@@ -1358,7 +1358,7 @@ func (s *Switcher) status(w io.Writer) error {
 	switch {
 	case settling != nil:
 		fmt.Fprintf(w, "decisions: inhibited (%s) by transaction %s, which holds its journal: the %s %s ended %s and was interrupted while it was settled; decision-capable services refuse every decision while it is there; the next switch, rollback or recover qualifies current again before it removes it, and inhibit-clear and ack refuse it until then\n", InhibitFile, q(settling.Txn), (&txn{j: *settling}).kind(), settling.ID, settling.Result)
-	case inhibited && in.Reason == bootReason:
+	case inhibited && in.Reason == bootReason && txnPattern.MatchString(in.Txn) && bootTime(in.Time):
 		fmt.Fprintf(w, "decisions: inhibited (%s) since %s by ah-switch boot (run %s): %s; decision-capable services refuse every decision while it is there; that boot removes it once current passed its reload, health check and no-AI check again (the next boot does, when this one did not finish), as does a transaction that ends healthy, or ah-switch inhibit-clear --asked WORDS\n", InhibitFile, q(in.Time), q(in.Txn), q(in.Reason))
 	case inhibited && strings.HasPrefix(in.Reason, "boot:"):
 		fmt.Fprintf(w, "decisions: inhibited (%s) since %s by ah-switch boot (run %s): %s; decision-capable services refuse every decision while it is there; a later boot keeps it, a transaction that ends healthy removes it, or ah-switch inhibit-clear --asked WORDS\n", InhibitFile, q(in.Time), q(in.Txn), q(in.Reason))

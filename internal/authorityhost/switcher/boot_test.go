@@ -2,6 +2,7 @@ package switcher
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -63,6 +64,17 @@ func (e *env) stateFile(name string) string {
 		e.t.Fatal(err)
 	}
 	return string(data)
+}
+
+// writeInhibitFile writes decisions.inhibit holding in, as the switch
+// writes it.
+func (e *env) writeInhibitFile(in inhibit) {
+	e.t.Helper()
+	data, err := json.Marshal(in)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	e.write(e.inhibitPath(), string(data), 0o644)
 }
 
 // guardCheck is what the decision guard of a decision-capable service
@@ -891,6 +903,101 @@ func TestBootCrashKeepsDecisionsRefused(t *testing.T) {
 			}
 			if code != ExitOK || inhibited || g.decide() != "accepted" || !strings.HasPrefix(e.names(), "reload-old health-old nft") {
 				t.Errorf("the next boot: exit %d, inhibited %v, a decision %s, ran %q", code, inhibited, g.decide(), e.names())
+			}
+		})
+	}
+}
+
+// TestBootTakesOverOnlyAWholeRecord: the one inhibit boot takes over is
+// exactly the record boot writes: its reason, a run id as boot makes it
+// and the time as boot writes it. A record that holds boot's reason but
+// lacks any of the rest, or holds another shape of it, was not written by
+// a boot: it stays as found, and boot runs nothing.
+func TestBootTakesOverOnlyAWholeRecord(t *testing.T) {
+	for name, record := range map[string]string{
+		"no time":        `{"txn": "` + neverTxn + `", "reason": "` + bootReason + `"}`,
+		"an empty time":  `{"txn": "` + neverTxn + `", "reason": "` + bootReason + `", "time": ""}`,
+		"another time":   `{"txn": "` + neverTxn + `", "reason": "` + bootReason + `", "time": "yesterday"}`,
+		"a local time":   `{"txn": "` + neverTxn + `", "reason": "` + bootReason + `", "time": "2026-11-21T03:00:00-09:00"}`,
+		"no run id":      `{"reason": "` + bootReason + `", "time": "2026-11-21T12:00:00Z"}`,
+		"a bad run id":   `{"txn": "0123", "reason": "` + bootReason + `", "time": "2026-11-21T12:00:00Z"}`,
+		"another reason": `{"txn": "` + neverTxn + `", "reason": "` + bootReason + `.", "time": "2026-11-21T12:00:00Z"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			e, g := rebooted(t)
+			e.write(e.inhibitPath(), record, 0o644)
+			e.runner.reset()
+			if code := e.boot(); code != ExitFailed {
+				t.Errorf("boot: exit %d\n%s", code, e.last)
+			}
+			if len(e.runner.calls) != 0 {
+				t.Errorf("boot ran %v", e.runner.calls)
+			}
+			if e.stateFile(InhibitFile) != record || g.decide() != "refused" {
+				t.Errorf("boot changed the record it found: %q", e.stateFile(InhibitFile))
+			}
+			if got := e.status(); !strings.Contains(got, "a later boot keeps it") {
+				t.Errorf("status:\n%s", got)
+			}
+		})
+	}
+	t.Run("a whole record", func(t *testing.T) {
+		e, g := rebooted(t)
+		e.write(e.inhibitPath(), `{"txn": "`+neverTxn+`", "reason": "`+bootReason+`", "time": "2026-11-21T12:00:00Z"}`, 0o644)
+		if code := e.boot(); code != ExitOK || g.decide() != "accepted" {
+			t.Errorf("boot: exit %d, a decision %s\n%s", code, g.decide(), e.last)
+		}
+	})
+}
+
+// TestBootLiftsOnlyItsOwnRecord: once current qualified again, boot reads
+// the inhibit back and removes it only when it is still exactly the record
+// this run wrote. Changed in that instant (another run id, another time,
+// another reason, or removed), it is left as it is, nothing is lifted, and
+// boot exits 1.
+func TestBootLiftsOnlyItsOwnRecord(t *testing.T) {
+	for name, change := range map[string]func(e *env, in inhibit){
+		"another run id": func(e *env, in inhibit) {
+			in.Txn = neverTxn
+			e.writeInhibitFile(in)
+		},
+		"another time": func(e *env, in inhibit) {
+			in.Time = "2026-11-21T13:00:00Z"
+			e.writeInhibitFile(in)
+		},
+		"another reason": func(e *env, in inhibit) {
+			in.Reason = "the owner's note"
+			e.writeInhibitFile(in)
+		},
+		"removed": func(e *env, in inhibit) {
+			if err := os.Remove(e.inhibitPath()); err != nil {
+				e.t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e, _ := rebooted(t)
+			s := e.switcher()
+			var changed string
+			s.crashAt = func(p string) error {
+				if p == CrashBootQualified {
+					in, ok := e.inhibited()
+					if !ok || in.Reason != bootReason {
+						t.Fatalf("at %s the inhibit is %+v, %v", p, in, ok)
+					}
+					change(e, in)
+					changed = e.stateFile(InhibitFile)
+				}
+				return nil
+			}
+			code := s.Boot(context.Background())
+			e.last = e.out.String()
+			e.out.Reset()
+			if code != ExitFailed || !strings.Contains(e.last, "no longer the record this boot wrote") {
+				t.Errorf("boot: exit %d\n%s", code, e.last)
+			}
+			if got := e.stateFile(InhibitFile); got != changed {
+				t.Errorf("boot changed the inhibit after its read-back: %q, want %q", got, changed)
 			}
 		})
 	}

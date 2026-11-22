@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // DirBoot is the direction of the outcome a failed ah-switch boot owes
@@ -238,12 +239,14 @@ func (s *Switcher) noRelease() int {
 
 // unfinishedBoot reports whether the inhibit in is the record of an
 // earlier boot that did not finish: exactly the record boot writes (read
-// strictly), with no journal open and no outcome owed under its run. Such
+// strictly; each of its fields as boot writes it: the reason bootReason,
+// a run id, the time in UTC as now writes it), with no journal open and
+// no outcome owed under its run. Such
 // a boot died after it inhibited decisions and before its failure was
 // recorded or the inhibit lifted; nothing but that boot changed since it
 // found no inhibit, so this boot does what it did, from the start.
 func (s *Switcher) unfinishedBoot(in inhibit, pending bool) bool {
-	if pending || in.Reason != bootReason || !txnPattern.MatchString(in.Txn) {
+	if pending || in.Reason != bootReason || !txnPattern.MatchString(in.Txn) || !bootTime(in.Time) {
 		return false
 	}
 	owed, err := s.readOwed()
@@ -256,6 +259,13 @@ func (s *Switcher) unfinishedBoot(in inhibit, pending bool) bool {
 		}
 	}
 	return true
+}
+
+// bootTime reports whether t is a time as boot writes it (see now):
+// RFC 3339, in UTC, to the second.
+func bootTime(t string) bool {
+	parsed, err := time.Parse(time.RFC3339, t)
+	return err == nil && parsed.UTC().Format(time.RFC3339) == t
 }
 
 // bootInhibit makes sure decisions are inhibited before boot runs
