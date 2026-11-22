@@ -159,14 +159,19 @@ func testAuthorityHostDeploy(t *testing.T) {
 		}
 	})
 
-	t.Run("dry never calls ssh", func(t *testing.T) {
+	// The stub rsync only records its arguments. The real `rsync -n` to
+	// USER@HOST:PATH starts ssh and a remote rsync by itself to read the
+	// host's listing, so --dry does contact the host (read-only); this test
+	// only shows that the driver runs no ssh command of its own, and so never
+	// the switch. --self-test is the mode that starts nothing.
+	t.Run("dry lists with rsync -n and runs no ssh command of its own", func(t *testing.T) {
 		rel := ahFakeRelease(t, ahTestID)
 		out, code := run(withHost(), "--release", rel, "--ah-release", stubRelease, "--dry")
 		if code != 0 {
 			t.Fatalf("exit %d\n%s", code, out)
 		}
 		if got := called("ssh"); got != nil {
-			t.Fatalf("a dry run called ssh: %v", got)
+			t.Fatalf("a dry run ran an ssh command of its own: %v", got)
 		}
 		if got := names(); !slices.Equal(got, []string{"ah-release", "rsync"}) {
 			t.Fatalf("calls: %v", got)
@@ -402,6 +407,24 @@ func testAuthorityHostDeploy(t *testing.T) {
 	})
 }
 
+// testAuthorityHostDeployHelp checks that the driver's own help text is as
+// honest as the manual about what --dry and --self-test start.
+func testAuthorityHostDeployHelp(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(root(t), ahDeployScript))
+	if err != nil {
+		t.Fatal(err)
+	}
+	flat := strings.Join(strings.Fields(strings.ReplaceAll(string(data), "\n#", "\n")), " ")
+	for _, want := range []string{
+		"contacts the host, read-only (ssh and rsync -n)",
+		"starts nothing",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("deploy.sh's help does not say %q", want)
+		}
+	}
+}
+
 // ahFlat joins the lines of a Markdown text into one and drops the code marks.
 func ahFlat(s string) string {
 	return strings.Join(strings.Fields(strings.ReplaceAll(s, "`", "")), " ")
@@ -410,6 +433,7 @@ func ahFlat(s string) string {
 // testAuthorityHostDeployDoc checks the manual: its links resolve and it names
 // the steps, the scripts' flags and the owner-only items.
 func testAuthorityHostDeployDoc(t *testing.T) {
+	t.Run("help", testAuthorityHostDeployHelp)
 	path := filepath.Join(root(t), "deploy/authority-host/DEPLOY.md")
 	if err := checkDoc(root(t), path); err != nil {
 		t.Error(err)
@@ -432,6 +456,19 @@ func testAuthorityHostDeployDoc(t *testing.T) {
 	// owner-only verbs stay with the owner's own root session. Wrapped text is
 	// compared as one line, without code marks.
 	flat := ahFlat(string(data))
+	// --dry reads the host through rsync -n (ssh and a remote rsync, read-only);
+	// only --self-test starts nothing.
+	for _, want := range []string{
+		"--dry contacts the host, read-only (ssh and rsync -n)",
+		"--self-test starts nothing",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("DEPLOY.md does not say %q", want)
+		}
+	}
+	if strings.Contains(flat, "never call ssh") || strings.Contains(flat, "never calls ssh") {
+		t.Error("DEPLOY.md says that a dry run never calls ssh")
+	}
 	for _, want := range []string{
 		"NOPASSWD: /usr/local/sbin/ah-switch ^--from /home/DEPLOYUSER/incoming/",
 		"sudo -l -U DEPLOYUSER",

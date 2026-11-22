@@ -22,7 +22,10 @@
 #                        development machine, not at the authority host.
 #   --dry (the default)  check the release, run `rsync -n` (a listing of what
 #                        would be copied, nothing copied) and print the ssh
-#                        command that --go would run; run nothing else.
+#                        command that --go would run; run nothing else. It
+#                        contacts the host, read-only (ssh and rsync -n); the
+#                        host must be reachable and the incoming folder must
+#                        exist. It copies nothing and runs no command there.
 #   --go --confirm ID    check the release, copy it with rsync, then run the
 #                        switch on the host:
 #                          sudo /usr/local/sbin/ah-switch --from INCOMING/ID ID
@@ -33,6 +36,7 @@
 #                        runs a file of the incoming folder.
 #   --self-test          compute and print every command without running
 #                        ah-release, rsync or ssh, and without AUTHORITY_HOST_SSH.
+#                        It starts nothing and contacts nothing.
 #
 # The host is named only by the environment variable AUTHORITY_HOST_SSH
 # (USER@HOST or an ssh alias), read at run time; it is never written to a file

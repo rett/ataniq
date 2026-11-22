@@ -136,7 +136,12 @@ sh deploy/authority-host/deploy.sh --go  --release DIR/ID --confirm ID
 
 `--dry` checks the release with `ah-release check --no-noaicheck`, runs
 `rsync -n` (a list of what would be copied; nothing is copied) and prints the
-exact ssh command that `--go` runs afterwards:
+exact ssh command that `--go` runs afterwards. `--dry` contacts the host,
+read-only (ssh and `rsync -n`). `rsync -n` starts a remote rsync to read the
+incoming folder, so the host must be reachable; it copies nothing and runs no
+command there. To see the plan without touching the network, `--self-test`
+starts nothing: it computes and prints the same commands (it does not need
+`AUTHORITY_HOST_SSH`, and runs neither `ah-release`, `rsync` nor `ssh`).
 
 ```
 sudo /usr/local/sbin/ah-switch --from "$HOME/incoming/ID" ID

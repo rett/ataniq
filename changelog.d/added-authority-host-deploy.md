@@ -20,9 +20,10 @@
   copies it to the host's incoming folder with `rsync -a --delete`, and runs
   `sudo /usr/local/sbin/ah-switch --from INCOMING/ID ID` over `ssh -o
   BatchMode=yes`. `--dry` (the default) only lists what rsync would copy and
-  prints the ssh command, `--go` does it and is refused unless
+  prints the ssh command (it contacts the host read-only, through ssh and
+  `rsync -n`), `--go` does it and is refused unless
   `--confirm ID` equals the release id, and `--self-test` computes the
-  commands without running ssh or rsync.
+  commands and starts nothing (no ah-release, rsync or ssh).
   The driver never runs a file of the incoming folder: the no-AI check is
   the switch's own, on the verified copy it imports, before anything
   changes.
