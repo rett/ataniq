@@ -119,6 +119,16 @@ verify is removed; `releases/<id>` must not exist already, or `--from` is
 refused. A release that was imported stays when a later step fails: switch
 to it again without `--from`.
 
+The work of reading a release is bounded, for the import and for the
+verification of any release: at most 20000 entries (folders and files),
+2 GiB in all and 512 MiB per file, and 10 minutes for the import and the
+hashing together. Going over a limit fails with its own code
+(`too-many-entries`, `too-large`, `file-too-large`, `time-budget`), removes
+the import's copy and releases the lock. Folders are read in batches with
+one folder open at a time, every file is opened without blocking, and a
+file that changes size or time, or stops being a regular file, while it is
+read is a failure (`file-changed`).
+
 ### Commands
 
 ```

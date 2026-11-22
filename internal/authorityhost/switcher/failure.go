@@ -30,6 +30,10 @@ const (
 	CodeReadFailed       = "read-failed"        // a file could not be read
 	CodeFileChanged      = "file-changed"       // a file or folder changed while it was read
 	CodeReleaseExists    = "release-exists"     // --from names a release that is already imported
+	CodeTooManyEntries   = "too-many-entries"   // a release holds more entries than the limit
+	CodeTooLarge         = "too-large"          // a release holds more bytes than the limit
+	CodeFileTooLarge     = "file-too-large"     // a file of a release is larger than the limit
+	CodeTimeBudget       = "time-budget"        // the import and the hashing took longer than the limit
 	CodeCounterNotAbove  = "counter-not-above"  // the counter is not above the highest
 	CodeCounterInvalid   = "counter-invalid"    // highest-counter does not hold a counter
 	CodeRollbackRefused  = "rollback-refused"   // --rollback-to names a release other than previous

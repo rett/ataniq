@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"syscall"
+	"time"
 )
 
 // readDirBatch is how many entries of a folder are read at a time.
@@ -117,4 +118,93 @@ func (s *Switcher) entryTrusted(rel string, info fs.FileInfo) error {
 		return failf(CodeUntrusted, "%s: %s", q(rel), q(err.Error()))
 	}
 	return nil
+}
+
+// Limits bound the work of reading a release: the import and the hashing.
+// A zero field takes the default.
+type Limits struct {
+	Entries   int           // folders and files of one release
+	Bytes     int64         // bytes of all the files of one release
+	FileBytes int64         // bytes of one file
+	Time      time.Duration // the import and the hashing together
+}
+
+// DefaultLimits are the limits of a switch.
+var DefaultLimits = Limits{
+	Entries:   20000,
+	Bytes:     2 << 30,
+	FileBytes: 512 << 20,
+	Time:      10 * time.Minute,
+}
+
+func (l Limits) withDefaults() Limits {
+	if l.Entries == 0 {
+		l.Entries = DefaultLimits.Entries
+	}
+	if l.Bytes == 0 {
+		l.Bytes = DefaultLimits.Bytes
+	}
+	if l.FileBytes == 0 {
+		l.FileBytes = DefaultLimits.FileBytes
+	}
+	if l.Time == 0 {
+		l.Time = DefaultLimits.Time
+	}
+	return l
+}
+
+// budget is the time left for the import and the hashing of one switch.
+type budget struct {
+	lim      Limits
+	deadline time.Time
+	now      func() time.Time
+}
+
+func (b *budget) check() error {
+	if b == nil || b.now().Before(b.deadline) {
+		return nil
+	}
+	return failf(CodeTimeBudget, "reading the release took longer than %s", b.lim.Time)
+}
+
+// tally counts the entries and bytes of one walk of a release.
+type tally struct {
+	b       *budget
+	entries int
+	bytes   int64
+}
+
+// entry counts one entry of size bytes (0 for a folder).
+func (t *tally) entry(rel string, size int64) error {
+	if t.b == nil {
+		return nil
+	}
+	t.entries++
+	if t.entries > t.b.lim.Entries {
+		return failf(CodeTooManyEntries, "the release holds more than %d entries", t.b.lim.Entries)
+	}
+	if size > t.b.lim.FileBytes {
+		return failf(CodeFileTooLarge, "%s is larger than %d bytes", q(rel), t.b.lim.FileBytes)
+	}
+	t.bytes += size
+	if t.bytes > t.b.lim.Bytes {
+		return failf(CodeTooLarge, "the release holds more than %d bytes", t.b.lim.Bytes)
+	}
+	return t.b.check()
+}
+
+// budgetReader checks the time budget before each read.
+type budgetReader struct {
+	r io.Reader
+	b *budget
+}
+
+func (br budgetReader) Read(p []byte) (int, error) {
+	if err := br.b.check(); err != nil {
+		return 0, err
+	}
+	if len(p) > 1<<20 {
+		p = p[:1<<20]
+	}
+	return br.r.Read(p)
 }

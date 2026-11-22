@@ -169,6 +169,7 @@ type release struct {
 	dir   string // the path the release's programs are given: releases/<id>
 	path  string // where the folder is now: dir, or the import's folder until it is renamed
 	root  *os.Root
+	b     *budget // nil: no limit (a test's look at a release)
 	sums  []byte
 	files int
 	// Set by checkRelease.
@@ -188,7 +189,9 @@ type entryCheck func(rel string, info fs.FileInfo) error
 // link; every entry in it must be a folder or a regular file with one link
 // (so hashing never follows a link out of it) and pass trust, when trust is
 // given; and its SHA256SUMS must match every file in it.
-func openRelease(id ReleaseID, parent *os.Root, name, dir string, trust entryCheck) (*release, error) {
+//
+// The walk and the hashing count against the budget b, when it is given.
+func openRelease(id ReleaseID, parent *os.Root, name, dir string, trust entryCheck, b *budget) (*release, error) {
 	info, err := parent.Lstat(name)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -210,7 +213,7 @@ func openRelease(id ReleaseID, parent *os.Root, name, dir string, trust entryChe
 		root.Close()
 		return nil, failf(CodeReleaseNotFolder, "releases/%s changed while it was opened", id.Name)
 	}
-	r, err := newRelease(id, root, dir, dir, trust)
+	r, err := newRelease(id, root, dir, dir, trust, b)
 	if err != nil {
 		root.Close()
 		return nil, err
@@ -221,8 +224,8 @@ func openRelease(id ReleaseID, parent *os.Root, name, dir string, trust entryChe
 // newRelease verifies the opened folder root as the release id (see
 // openRelease); dir is the path its programs are given, path where it is.
 // It does not close root.
-func newRelease(id ReleaseID, root *os.Root, dir, path string, trust entryCheck) (*release, error) {
-	r := &release{id: id, dir: dir, path: path, root: root}
+func newRelease(id ReleaseID, root *os.Root, dir, path string, trust entryCheck, b *budget) (*release, error) {
+	r := &release{id: id, dir: dir, path: path, root: root, b: b}
 	if trust != nil {
 		info, err := root.Stat(".")
 		if err != nil {
@@ -240,8 +243,16 @@ func newRelease(id ReleaseID, root *os.Root, dir, path string, trust entryCheck)
 
 func (r *release) verify(trust entryCheck) error {
 	present := map[string]bool{}
+	t := tally{b: r.b}
 	err := walkTree(r.root, func(rel string, info fs.FileInfo) error {
 		if err := entryKind(rel, info); err != nil {
+			return err
+		}
+		size := int64(0)
+		if info.Mode().IsRegular() {
+			size = info.Size()
+		}
+		if err := t.entry(rel, size); err != nil {
 			return err
 		}
 		if trust != nil {
@@ -301,17 +312,39 @@ func (r *release) verify(trust entryCheck) error {
 	return nil
 }
 
+// hash returns the SHA-256 of the file path, read to the size fstat gave
+// when it was opened; a file that changes while it is read is an error.
 func (r *release) hash(path string) (string, error) {
-	f, _, err := openFileIn(r.root, path)
+	f, info, err := openFileIn(r.root, path)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
+	if r.b != nil && info.Size() > r.b.lim.FileBytes {
+		return "", failf(CodeFileTooLarge, "%s is larger than %d bytes", q(path), r.b.lim.FileBytes)
+	}
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	var in io.Reader = io.LimitReader(f, info.Size()+1)
+	if r.b != nil {
+		in = budgetReader{in, r.b}
+	}
+	n, err := io.Copy(h, in)
+	if err != nil {
+		if code, _ := codeOf(err); code == CodeTimeBudget {
+			return "", err
+		}
 		return "", failf(CodeReadFailed, "%s: %s", q(path), q(err.Error()))
 	}
+	if after, err := f.Stat(); err != nil || n != info.Size() || !sameContent(info, after) {
+		return "", failf(CodeFileChanged, "%s changed while it was read", q(path))
+	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// sameContent reports whether two fstat results of one open file say that
+// it is still the regular file of the same size and time.
+func sameContent(before, after fs.FileInfo) bool {
+	return after.Mode().IsRegular() && after.Size() == before.Size() && after.ModTime().Equal(before.ModTime())
 }
 
 func (r *release) readSmall(path string) ([]byte, error) {

@@ -44,6 +44,8 @@ func openIncoming(from string) (*os.Root, error) {
 // following a link and without blocking, checked with fstat (a regular file
 // with one link, the one that was listed) and read to its size; one that
 // changes while it is read is refused. It returns the number of files.
+//
+// The walk and the copy count against the switch's budget.
 func (s *Switcher) importTree(src *os.Root, name string) (int, error) {
 	if err := s.relRoot.Mkdir(name, 0o700); err != nil {
 		return 0, err
@@ -54,8 +56,16 @@ func (s *Switcher) importTree(src *os.Root, name string) (int, error) {
 	}
 	defer dst.Close()
 	files := 0
+	t := tally{b: s.budget}
 	err = walkTree(src, func(rel string, info fs.FileInfo) error {
 		if err := entryKind(rel, info); err != nil {
+			return err
+		}
+		size := int64(0)
+		if info.Mode().IsRegular() {
+			size = info.Size()
+		}
+		if err := t.entry(rel, size); err != nil {
 			return err
 		}
 		if info.IsDir() {
@@ -76,17 +86,23 @@ func (s *Switcher) copyFile(src, dst *os.Root, rel string) error {
 	if links(info) != 1 {
 		return failf(CodeBadEntry, "%s has more than one hard link", q(rel))
 	}
+	if info.Size() > s.budget.lim.FileBytes {
+		return failf(CodeFileTooLarge, "%s is larger than %d bytes", q(rel), s.budget.lim.FileBytes)
+	}
 	out, err := dst.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
-	n, err := io.Copy(out, io.LimitReader(in, info.Size()+1))
+	n, err := io.Copy(out, budgetReader{io.LimitReader(in, info.Size()+1), s.budget})
 	if err != nil {
+		if code, _ := codeOf(err); code == CodeTimeBudget {
+			return err
+		}
 		return failf(CodeReadFailed, "%s: %s", q(rel), q(err.Error()))
 	}
 	after, err := in.Stat()
-	if err != nil || n != info.Size() || after.Size() != info.Size() || !after.ModTime().Equal(info.ModTime()) || !after.Mode().IsRegular() {
+	if err != nil || n != info.Size() || !sameContent(info, after) {
 		return failf(CodeFileChanged, "%s changed while it was copied", q(rel))
 	}
 	mode := fs.FileMode(0o644)

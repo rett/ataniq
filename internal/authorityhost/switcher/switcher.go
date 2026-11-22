@@ -80,6 +80,7 @@ type Config struct {
 	Runner         Runner
 	Verifier       Verifier
 	Owner          OwnerCheck // default DefaultOwnerCheck
+	Limits         Limits     // zero fields take DefaultLimits
 	Out            io.Writer  // the steps
 	Err            io.Writer  // refusals of the arguments and of the lock; default Out
 	Now            func() time.Time
@@ -94,6 +95,8 @@ type Switcher struct {
 	stateRoot *os.Root
 	baseRoot  *os.Root
 	relRoot   *os.Root
+	// budget bounds the import and the hashing of one switch.
+	budget *budget
 	// afterPrevious, when set, is called between writing previous and
 	// renaming current; an error stops the switch there as a crash would.
 	afterPrevious func() error
@@ -110,6 +113,7 @@ func New(cfg Config) *Switcher {
 	if cfg.Runner == nil {
 		cfg.Runner = ExecRunner{}
 	}
+	cfg.Limits = cfg.Limits.withDefaults()
 	if cfg.Owner == nil {
 		cfg.Owner = DefaultOwnerCheck
 	}
@@ -293,6 +297,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	relDir := filepath.Join(s.base(), "releases", id.Name)
 
 	// 0. Import (with --from), 1. Verify.
+	s.budget = &budget{lim: s.cfg.Limits, deadline: s.cfg.Now().Add(s.cfg.Limits.Time), now: s.cfg.Now}
 	rel, code, done := s.openForSwitch(ctx, a, id, relDir)
 	if done {
 		return code
@@ -555,7 +560,7 @@ func (s *Switcher) failState(a *attempt, err error) int {
 // the modes, which the import would set.
 func (s *Switcher) openForSwitch(ctx context.Context, a *attempt, id ReleaseID, relDir string) (*release, int, bool) {
 	if s.cfg.From == "" {
-		rel, err := openRelease(id, s.relRoot, id.Name, relDir, s.entryTrusted)
+		rel, err := openRelease(id, s.relRoot, id.Name, relDir, s.entryTrusted, s.budget)
 		if err == nil {
 			if err = s.checkRelease(ctx, rel); err != nil {
 				rel.Close()
@@ -582,7 +587,7 @@ func (s *Switcher) openForSwitch(ctx context.Context, a *attempt, id ReleaseID, 
 	if s.cfg.Dry {
 		// The release holds src open and closes it.
 		s.step(0, "would copy %s into releases/%s as new read-only files", q(s.cfg.From), id.Name)
-		rel, err := newRelease(id, src, relDir, s.cfg.From, nil)
+		rel, err := newRelease(id, src, relDir, s.cfg.From, nil, s.budget)
 		if err == nil {
 			err = s.checkRelease(ctx, rel)
 		}
@@ -602,7 +607,7 @@ func (s *Switcher) openForSwitch(ctx context.Context, a *attempt, id ReleaseID, 
 		return nil, s.fail(a, 0, err), true
 	}
 	s.step(0, "%d files of %s copied into releases/%s", files, q(s.cfg.From), tmp)
-	rel, err := openRelease(id, s.relRoot, tmp, tmpDir, s.entryTrusted)
+	rel, err := openRelease(id, s.relRoot, tmp, tmpDir, s.entryTrusted, s.budget)
 	if err != nil {
 		s.dropImport(tmp)
 		return nil, s.fail(a, 1, err), true

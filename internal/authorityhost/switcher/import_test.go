@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func from(dir string) func(*Config) { return func(c *Config) { c.From = dir } }
@@ -228,5 +229,64 @@ func TestExistingReleaseMustBeTrusted(t *testing.T) {
 				t.Errorf("record: %s: %s", rec.Error, rec.Detail)
 			}
 		})
+	}
+}
+
+// TestLimits: a release with more entries or bytes than the limits, a file
+// larger than the limit, or an import and hashing that take longer than the
+// budget fail with their own code, whether imported or already in
+// releases/; the import's copy is removed and the lock is free afterwards.
+func TestLimits(t *testing.T) {
+	ticking := func(c *Config) {
+		var n time.Duration
+		start := c.Now()
+		c.Now = func() time.Time { n += time.Minute; return start.Add(n) }
+	}
+	for _, tc := range []struct {
+		name, code string
+		mod        func(*Config)
+	}{
+		{"entries", CodeTooManyEntries, func(c *Config) { c.Limits.Entries = 5 }},
+		{"bytes", CodeTooLarge, func(c *Config) { c.Limits.Bytes = 200 }},
+		{"file bytes", CodeFileTooLarge, func(c *Config) { c.Limits.FileBytes = 64 }},
+		{"time", CodeTimeBudget, ticking},
+	} {
+		for _, imported := range []bool{false, true} {
+			name := tc.name + "/existing"
+			if imported {
+				name = tc.name + "/import"
+			}
+			t.Run(name, func(t *testing.T) {
+				e := active(t)
+				mods := []func(*Config){tc.mod}
+				dir := e.relDir(rel3)
+				if imported {
+					dir = e.incoming(rel3, "2026-11-01")
+					mods = append(mods, from(dir))
+				} else {
+					e.release(rel3, "2026-11-01")
+				}
+				e.write(filepath.Join(dir, "share/data"), strings.Repeat("x", 100), 0o644)
+				e.sums(dir)
+				if code := e.switchTo(rel3, mods...); code != ExitFailed {
+					t.Fatalf("exit %d", code)
+				}
+				if rec := e.record(); rec.Error != tc.code {
+					t.Errorf("record: %s: %s, want %s", rec.Error, rec.Detail, tc.code)
+				}
+				if got := e.link("current"); got != "releases/"+rel2 {
+					t.Errorf("current -> %q", got)
+				}
+				if _, err := os.Lstat(filepath.Join(e.root, BaseDir, "releases", importPrefix+rel3)); !errors.Is(err, fs.ErrNotExist) {
+					t.Errorf("the import's copy was left: %v", err)
+				}
+				// The lock was released: the same switch within the limits
+				// passes.
+				mods = mods[1:]
+				if code := e.switchTo(rel3, mods...); code != ExitOK {
+					t.Fatalf("within the limits: exit %d", code)
+				}
+			})
+		}
 	}
 }
