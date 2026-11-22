@@ -36,6 +36,9 @@ const (
 	ExitFailed = 1 // failed; the outcome is recorded in deploy.json (not in a dry run)
 	ExitUsage  = 2 // bad arguments; nothing was done
 	ExitLocked = 3 // another switch holds the lock; nothing was done
+	// ExitNoRelease: boot found no current release and no transaction
+	// open (nothing is deployed); nothing was run or changed.
+	ExitNoRelease = 4
 )
 
 // Modes.
@@ -821,6 +824,15 @@ func (s *Switcher) claim(t *txn) {
 // state folder is. A failure is reported and recorded nowhere (see
 // failState).
 func (s *Switcher) openBase() (int, bool) {
+	if err := s.openReleases(); err != nil {
+		return s.failState(err), true
+	}
+	return 0, false
+}
+
+// openReleases opens opt/authority-host and its releases/ folder, checked
+// as the state folder is, and returns why it cannot.
+func (s *Switcher) openReleases() error {
 	var err error
 	if s.baseRoot, err = s.openTrusted(BaseDir, false); err == nil {
 		s.relRoot, err = s.openTrusted(filepath.Join(BaseDir, "releases"), false)
@@ -828,10 +840,7 @@ func (s *Switcher) openBase() (int, bool) {
 	if errors.Is(err, fs.ErrNotExist) {
 		err = failf(CodeStateInvalid, "%s or its releases folder is missing", BaseDir)
 	}
-	if err != nil {
-		return s.failState(err), true
-	}
-	return 0, false
+	return err
 }
 
 // hasLink reports whether name of r is a symbolic link.
@@ -1346,6 +1355,10 @@ func (s *Switcher) status(w io.Writer) error {
 	switch {
 	case settling != nil:
 		fmt.Fprintf(w, "decisions: inhibited (%s) by transaction %s, which holds its journal: the %s %s ended %s and was interrupted while it was settled; decision-capable services refuse every decision while it is there; the next switch, rollback or recover qualifies current again before it removes it, and inhibit-clear and ack refuse it until then\n", InhibitFile, q(settling.Txn), (&txn{j: *settling}).kind(), settling.ID, settling.Result)
+	case inhibited && in.Reason == bootReason:
+		fmt.Fprintf(w, "decisions: inhibited (%s) since %s by ah-switch boot (run %s): %s; decision-capable services refuse every decision while it is there; that boot removes it once current passed its reload, health check and no-AI check again (the next boot does, when this one did not finish), as does a transaction that ends healthy, or ah-switch inhibit-clear --asked WORDS\n", InhibitFile, q(in.Time), q(in.Txn), q(in.Reason))
+	case inhibited && strings.HasPrefix(in.Reason, "boot:"):
+		fmt.Fprintf(w, "decisions: inhibited (%s) since %s by ah-switch boot (run %s): %s; decision-capable services refuse every decision while it is there; a later boot keeps it, a transaction that ends healthy removes it, or ah-switch inhibit-clear --asked WORDS\n", InhibitFile, q(in.Time), q(in.Txn), q(in.Reason))
 	case inhibited:
 		fmt.Fprintf(w, "decisions: inhibited (%s) since %s by transaction %s: %s; decision-capable services refuse every decision while it is there; a transaction that ends healthy removes it, or ah-switch inhibit-clear --asked WORDS\n", InhibitFile, q(in.Time), q(in.Txn), q(in.Reason))
 	case pending:

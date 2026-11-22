@@ -1,0 +1,708 @@
+package switcher
+
+import (
+	"context"
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"ataniq/internal/authorityhost/decisionguard"
+)
+
+// boot runs ah-switch boot and returns its exit code; its output is in
+// last. Nothing owed is acknowledged after it: boot never acknowledges
+// anything, and the tests look at what it leaves owed.
+func (e *env) boot(mod ...func(*Config)) int {
+	e.t.Helper()
+	code := e.switcher(mod...).Boot(context.Background())
+	e.t.Logf("boot: exit %d\n%s", code, e.out.String())
+	e.last = e.out.String()
+	e.out.Reset()
+	return code
+}
+
+// bootCrashAt runs ah-switch boot, which dies the first time it reaches
+// point.
+func (e *env) bootCrashAt(point string) {
+	e.t.Helper()
+	s := e.switcher()
+	reached := false
+	s.crashAt = func(p string) error {
+		if p == point && !reached {
+			reached = true
+			return errCrash
+		}
+		return nil
+	}
+	code := s.Boot(context.Background())
+	e.t.Logf("boot, crash at %s: exit %d\n%s", point, code, e.out.String())
+	e.last = e.out.String()
+	e.out.Reset()
+	if !reached {
+		e.t.Fatalf("boot never reached %s", point)
+	}
+	if code != ExitFailed {
+		e.t.Fatalf("crash at %s: exit %d", point, code)
+	}
+	if strings.Contains(e.last, "result:") {
+		e.t.Fatalf("a crash printed a result:\n%s", e.last)
+	}
+}
+
+// stateFile is the content of the state file name, "" when it is missing.
+func (e *env) stateFile(name string) string {
+	e.t.Helper()
+	data, err := os.ReadFile(filepath.Join(e.root, StateDir, name))
+	if errors.Is(err, fs.ErrNotExist) {
+		return ""
+	}
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return string(data)
+}
+
+// guardCheck is what the decision guard of a decision-capable service
+// answers now: "" allows, otherwise the code of its refusal.
+func (e *env) guardCheck() string {
+	err := decisionguard.Check(filepath.Join(e.root, StateDir))
+	if err == nil {
+		return ""
+	}
+	var ge *decisionguard.Error
+	if !errors.As(err, &ge) {
+		e.t.Fatalf("the guard returned %v", err)
+	}
+	return ge.Code
+}
+
+// guarded counts the commands that run while decisions.inhibit is not
+// there (the services would then take decisions), and asks the guard at
+// each of them.
+func (e *env) guarded() *int {
+	unguarded := new(int)
+	e.runner.hook = func([]string) {
+		if _, ok := e.inhibited(); !ok || e.guardCheck() == "" {
+			*unguarded++
+		}
+	}
+	return unguarded
+}
+
+// names is the program of every command run since the last reset, by its
+// first word.
+func (e *env) names() string {
+	var ran []string
+	for _, c := range e.runner.calls {
+		ran = append(ran, strings.Fields(c)[0])
+	}
+	return strings.Join(ran, " ")
+}
+
+// rebooted is a host on which rel2 (with its own lists) was switched to
+// healthy, then rebooted: its service does not run, and nothing is owed or
+// inhibited.
+func rebooted(t *testing.T) (*env, *guardedApp) {
+	t.Helper()
+	e := activeOwn(t)
+	e.keepOwed = true
+	if _, ok := e.inhibited(); ok {
+		t.Fatal("inhibited after a healthy switch")
+	}
+	if len(e.owed()) != 0 {
+		t.Fatal("an outcome is owed after the setup")
+	}
+	g := guard(e)
+	return e, g
+}
+
+// TestBootRequalifies: after a reboot, ah-switch boot writes
+// decisions.inhibit (its own record, reason boot) before it runs
+// anything, runs the reload list, the health check and the
+// post-activation no-AI check of the release current points at, as a
+// settling transaction does, and removes the inhibit only once all of it
+// passed. A service that follows the inhibit contract is started by the
+// reload, passes its readiness probe while decisions are refused, and
+// takes decisions only afterwards. Nothing is recorded in deploy.json,
+// and nothing becomes owed.
+func TestBootRequalifies(t *testing.T) {
+	e, g := rebooted(t)
+	deploy := e.stateFile(DeployFile)
+	var seen []inhibit
+	unguarded := e.guarded()
+	hook := e.runner.hook
+	e.runner.hook = func(argv []string) {
+		hook(argv)
+		if in, ok := e.inhibited(); ok {
+			seen = append(seen, in)
+		}
+	}
+	if code := e.boot(); code != ExitOK {
+		t.Fatalf("boot: exit %d\n%s", code, e.last)
+	}
+	checker := filepath.Join(e.relDir(rel2), NoAICheckProgram)
+	if got := e.names(); got != "reload-old health-old nft "+checker {
+		t.Errorf("ran %q, want the reload list, health check and post-activation no-AI check of %s", got, rel2)
+	}
+	if e.runner.calls[3] != postCall(checker, e.root, e.relDir(rel2)) {
+		t.Errorf("the no-AI check ran as %q", e.runner.calls[3])
+	}
+	if *unguarded != 0 {
+		t.Errorf("%d command(s) ran while decisions were not inhibited", *unguarded)
+	}
+	if len(seen) == 0 || seen[0].Reason != bootReason || !txnPattern.MatchString(seen[0].Txn) {
+		t.Errorf("the inhibit while boot ran: %+v", seen)
+	}
+	if strings.Join(g.asked, " ") != "refused" {
+		t.Errorf("decisions while the probe ran: %v", g.asked)
+	}
+	if _, ok := e.inhibited(); ok {
+		t.Error("decisions are still inhibited after a boot that qualified current")
+	}
+	if got := g.decide(); got != "accepted" || !g.started {
+		t.Errorf("after boot: %s, running %v", got, g.started)
+	}
+	if got := e.guardCheck(); got != "" {
+		t.Errorf("the guard refuses after boot: %s", got)
+	}
+	if e.stateFile(DeployFile) != deploy {
+		t.Error("boot changed deploy.json")
+	}
+	if len(e.owed()) != 0 {
+		t.Errorf("owed after boot: %+v", e.owed())
+	}
+	if e.runner.called("stop-all") != 0 {
+		t.Error("the host's stop list ran")
+	}
+	if !strings.Contains(e.last, "result: ok; current -> "+rel2) {
+		t.Errorf("output:\n%s", e.last)
+	}
+	// A second boot does it all again: it is the qualification of this
+	// boot, never one remembered from an earlier run.
+	e.runner.reset()
+	if code := e.boot(); code != ExitOK || e.names() != "reload-old health-old nft "+checker {
+		t.Errorf("a second boot: exit %d, ran %q", code, e.names())
+	}
+}
+
+// TestBootFailureKeepsTheInhibit: when current does not pass its reload,
+// its health check or its post-activation no-AI check, or does not verify
+// again, or the switch policy cannot be used to verify it, boot runs the
+// host's stop list (a service may run from the boot or the reload), keeps
+// decisions.inhibit (rewritten with the failure), adds the failure to
+// owed.json as requalify_failed, and exits 1. status shows the outcome
+// owed with the ack that takes it back; any switch or rollback is refused
+// while it is owed; a later boot keeps the inhibit as it finds it and runs
+// nothing; ack takes back the outcome and leaves the inhibit.
+func TestBootFailureKeepsTheInhibit(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		fail  func(e *env)
+		ran   string // the commands boot runs, by their first word
+		check string // a word of the recorded failure
+	}{
+		{"reload", func(e *env) { e.runner.fail["reload-old"] = -1 }, "reload-old stop-all", CodeReloadFailed},
+		{"health", func(e *env) { e.runner.fail["health-old"] = -1 }, "", CodeHealthFailed},
+		{"no-AI check", func(e *env) { e.runner.failPost = e.relDir(rel2) }, "reload-old health-old nft CHECK stop-all", CodeNoAICheckFailed},
+		{"release changed", func(e *env) {
+			e.write(filepath.Join(e.relDir(rel2), "bin/app"), "changed\n", 0o755)
+		}, "stop-all", CodeSumsMismatch},
+		{"policy unusable", func(e *env) {
+			e.write(filepath.Join(e.root, PolicyDir, PolicyName), "{", 0o644)
+		}, "stop-all", CodePolicyInvalid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, g := rebooted(t)
+			deploy := e.stateFile(DeployFile)
+			tc.fail(e)
+			unguarded := e.guarded()
+			if code := e.boot(); code != ExitFailed {
+				t.Fatalf("boot: exit %d\n%s", code, e.last)
+			}
+			if *unguarded != 0 {
+				t.Errorf("%d command(s) ran while decisions were not inhibited", *unguarded)
+			}
+			checker := filepath.Join(e.relDir(rel2), NoAICheckProgram)
+			if want := strings.ReplaceAll(tc.ran, "CHECK", checker); want != "" && e.names() != want {
+				t.Errorf("ran %q, want %q", e.names(), want)
+			}
+			if n := e.runner.called("stop-all"); n != 1 {
+				t.Errorf("the host's stop list ran %d times, want 1", n)
+			}
+			in, ok := e.inhibited()
+			if !ok || !strings.Contains(in.Reason, "did not pass its reload, health check and no-AI check again") {
+				t.Errorf("inhibit: %+v, %v", in, ok)
+			}
+			owed := e.owed()
+			if len(owed) != 1 {
+				t.Fatalf("owed: %+v", owed)
+			}
+			o := owed[0]
+			if o.Direction != DirBoot || !o.RequalifyFailed || o.Result != ResultFailed || o.ID != rel2 || o.CurrentID != rel2 || o.Txn != in.Txn || o.RequestID != requestID(DirBoot, rel2) {
+				t.Errorf("owed: %+v (inhibit %+v)", o, in)
+			}
+			if !strings.Contains(o.Detail, "after the boot") || !strings.Contains(o.Detail, tc.check) || !strings.Contains(o.Detail, "the host's stop list ran") {
+				t.Errorf("owed detail: %q", o.Detail)
+			}
+			if e.stateFile(DeployFile) != deploy {
+				t.Error("boot changed deploy.json")
+			}
+			if _, ok := e.journal(); ok {
+				t.Error("boot left a journal")
+			}
+			if g.decide() != "refused" || e.guardCheck() != decisionguard.CodeInhibited {
+				t.Errorf("a decision after the failed boot: %s, guard %q", g.decide(), e.guardCheck())
+			}
+			ack := "ah-switch ack --txn " + o.Txn + " --asked WORDS"
+			if !strings.Contains(e.last, "decisions stay inhibited") || !strings.Contains(e.last, ack) {
+				t.Errorf("output:\n%s", e.last)
+			}
+			if tc.name != "policy unusable" {
+				if got := e.status(); !strings.Contains(got, "outcome owed (boot requalification of "+rel2+", transaction "+o.Txn+")") || !strings.Contains(got, ack) || !strings.Contains(got, "after the boot") {
+					t.Errorf("status:\n%s", got)
+				}
+			}
+			// A later boot finds the inhibit and keeps it as it is,
+			// running nothing and acknowledging nothing.
+			inhibitText, owedText := e.stateFile(InhibitFile), e.stateFile(OwedFile)
+			e.runner.reset()
+			delete(e.runner.fail, "reload-old")
+			delete(e.runner.fail, "health-old")
+			e.runner.failPost = ""
+			if code := e.boot(); code != ExitFailed {
+				t.Errorf("a later boot: exit %d\n%s", code, e.last)
+			}
+			if len(e.runner.calls) != 0 {
+				t.Errorf("a later boot ran %v", e.runner.calls)
+			}
+			if e.stateFile(InhibitFile) != inhibitText || e.stateFile(OwedFile) != owedText {
+				t.Error("a later boot changed the inhibit or the outcome owed")
+			}
+			if !strings.Contains(e.last, "outcome owed (boot requalification of "+rel2) {
+				t.Errorf("a later boot did not print what is owed:\n%s", e.last)
+			}
+			if tc.name == "policy unusable" {
+				return
+			}
+			// A switch is refused while the outcome is owed.
+			if code := e.switchTo(rel3); code != ExitFailed || !strings.Contains(e.last, "refused: an outcome is owed") {
+				t.Errorf("a switch while the boot's outcome is owed: exit %d\n%s", code, e.last)
+			}
+			if code := e.ack("saw the failed boot"); code != ExitOK {
+				t.Fatalf("ack: exit %d\n%s", code, e.last)
+			}
+			if !strings.Contains(e.last, "ack: the boot requalification of "+rel2) {
+				t.Errorf("ack output:\n%s", e.last)
+			}
+			if len(e.owed()) != 0 || e.stateFile(InhibitFile) != inhibitText {
+				t.Errorf("after the ack: owed %+v, inhibit changed %v", e.owed(), e.stateFile(InhibitFile) != inhibitText)
+			}
+		})
+	}
+}
+
+// TestBootLeavesAFoundInhibit: an inhibit boot did not write itself in this
+// run stays exactly as boot finds it, whoever wrote it and whatever it
+// says (one it cannot read strictly included), and boot then runs nothing
+// and acknowledges nothing: it prints what is owed and exits 1. A journal
+// still open (in txn.json, or held by the inhibit after an interrupted
+// healthy end) is settled through the normal reconcile path, whose
+// transaction alone may lift the inhibit, by its own rules.
+func TestBootLeavesAFoundInhibit(t *testing.T) {
+	kept := func(t *testing.T, e *env, owedWant int) {
+		t.Helper()
+		before, owedBefore := e.stateFile(InhibitFile), e.stateFile(OwedFile)
+		info, err := os.Lstat(e.inhibitPath())
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.runner.reset()
+		if code := e.boot(); code != ExitFailed {
+			t.Errorf("boot: exit %d\n%s", code, e.last)
+		}
+		if len(e.runner.calls) != 0 {
+			t.Errorf("boot ran %v", e.runner.calls)
+		}
+		after, err := os.Lstat(e.inhibitPath())
+		if err != nil || e.stateFile(InhibitFile) != before || after.Mode() != info.Mode() || !os.SameFile(info, after) {
+			t.Errorf("boot changed the inhibit it found (%v)", err)
+		}
+		if e.stateFile(OwedFile) != owedBefore || len(e.owed()) != owedWant {
+			t.Errorf("boot changed what is owed: %+v", e.owed())
+		}
+		if !strings.Contains(e.last, "stays as found") || !strings.Contains(e.last, "result: decisions stay inhibited") {
+			t.Errorf("output:\n%s", e.last)
+		}
+		if owedWant > 0 && !strings.Contains(e.last, "outcome owed") {
+			t.Errorf("boot did not print what is owed:\n%s", e.last)
+		}
+	}
+	t.Run("a failed transaction's", func(t *testing.T) {
+		e := activeOwn(t)
+		e.runner.fail["health-probe"] = -1
+		e.runner.fail["health-old"] = -1
+		if code := e.switchTo(rel3); code != ExitFailed {
+			t.Fatalf("exit %d", code)
+		}
+		if rec := e.record(); rec.Result != ResultFailedRecovery {
+			t.Fatalf("record: %+v", rec)
+		}
+		delete(e.runner.fail, "health-probe")
+		delete(e.runner.fail, "health-old")
+		kept(t, e, 0)
+	})
+	t.Run("a failed requalification's, still owed", func(t *testing.T) {
+		e := activeOwn(t)
+		e.keepOwed = true
+		e.crashAt(CrashDone, false, rel3)
+		e.runner.fail["health-probe"] = -1
+		if code := e.switchTo(rel3); code != ExitFailed {
+			t.Fatalf("exit %d", code)
+		}
+		delete(e.runner.fail, "health-probe")
+		kept(t, e, 1)
+	})
+	t.Run("one that does not parse", func(t *testing.T) {
+		e := activeOwn(t)
+		e.write(e.inhibitPath(), "the owner's note\n", 0o644)
+		kept(t, e, 0)
+	})
+	t.Run("a boot record that is not trusted", func(t *testing.T) {
+		e := activeOwn(t)
+		e.write(e.inhibitPath(), `{"txn": "`+neverTxn+`", "reason": "`+bootReason+`", "time": "2026-11-21T12:00:00Z"}`, 0o644)
+		if err := os.Chmod(e.inhibitPath(), 0o666); err != nil {
+			t.Fatal(err)
+		}
+		kept(t, e, 0)
+	})
+	t.Run("an empty folder", func(t *testing.T) {
+		e := activeOwn(t)
+		if err := os.Mkdir(e.inhibitPath(), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		e.runner.reset()
+		if code := e.boot(); code != ExitFailed || len(e.runner.calls) != 0 {
+			t.Errorf("boot: exit %d, ran %v", code, e.runner.calls)
+		}
+		if info, err := os.Lstat(e.inhibitPath()); err != nil || !info.IsDir() {
+			t.Errorf("boot changed what it found: %v", err)
+		}
+	})
+	t.Run("an open journal", func(t *testing.T) {
+		e := activeOwn(t)
+		e.keepOwed = true
+		g := guard(e)
+		e.crashAt(CrashActivating, false, rel3)
+		g.started = false
+		unguarded := e.guarded()
+		if code := e.boot(); code != ExitOK {
+			t.Fatalf("boot: exit %d\n%s", code, e.last)
+		}
+		if *unguarded != 0 {
+			t.Errorf("%d command(s) ran while decisions were not inhibited", *unguarded)
+		}
+		e.noJournal()
+		if _, ok := e.inhibited(); ok || g.decide() != "accepted" {
+			t.Errorf("after the transaction ended healthy: inhibited %v, a decision %s", ok, g.decide())
+		}
+		e.owes(e.owed()[0].Txn, requestID(DirForward, rel3), ResultOK)
+		if !strings.Contains(e.last, "outcome owed") {
+			t.Errorf("boot did not print what is owed:\n%s", e.last)
+		}
+	})
+	t.Run("an open journal whose inhibit was removed by hand", func(t *testing.T) {
+		e := activeOwn(t)
+		e.keepOwed = true
+		e.crashAt(CrashActivating, false, rel3)
+		if err := os.Remove(e.inhibitPath()); err != nil {
+			t.Fatal(err)
+		}
+		unguarded := e.guarded()
+		if code := e.boot(); code != ExitOK {
+			t.Fatalf("boot: exit %d\n%s", code, e.last)
+		}
+		if *unguarded != 0 {
+			t.Errorf("%d command(s) ran while decisions were not inhibited", *unguarded)
+		}
+		e.noJournal()
+	})
+	for _, healthy := range []bool{true, false} {
+		name := map[bool]string{true: "a held journal, qualified again", false: "a held journal that does not qualify again"}[healthy]
+		t.Run(name, func(t *testing.T) {
+			e := activeOwn(t)
+			e.keepOwed = true
+			g := guard(e)
+			e.crashAt(CrashJournalMoved, false, rel3)
+			g.started = false
+			if !healthy {
+				e.runner.fail["health-probe"] = -1
+			}
+			e.runner.reset()
+			unguarded := e.guarded()
+			code := e.boot()
+			if *unguarded != 0 {
+				t.Errorf("%d command(s) ran while decisions were not inhibited", *unguarded)
+			}
+			e.noJournal()
+			in, inhibited := e.inhibited()
+			owed := e.owed()
+			if len(owed) != 1 || owed[0].Direction != DirForward || owed[0].RequalifyFailed == healthy {
+				t.Errorf("owed: %+v", owed)
+			}
+			if healthy {
+				if code != ExitOK || inhibited || g.decide() != "accepted" {
+					t.Errorf("exit %d, inhibited %v, a decision %s", code, inhibited, g.decide())
+				}
+				if !strings.HasPrefix(e.names(), "reload-units health-probe nft") {
+					t.Errorf("ran %q", e.names())
+				}
+				return
+			}
+			if code != ExitFailed || !inhibited || !strings.Contains(in.Reason, "did not pass") || g.decide() != "refused" {
+				t.Errorf("exit %d, inhibit %+v %v, a decision %s", code, in, inhibited, g.decide())
+			}
+		})
+	}
+	t.Run("an outcome owed, no inhibit", func(t *testing.T) {
+		// Nothing guards the outcome: boot writes its own inhibit,
+		// qualifies current and lifts it, and the outcome stays owed.
+		e := activeOwn(t)
+		e.keepOwed = true
+		if code := e.switchTo(rel3); code != ExitOK {
+			t.Fatalf("exit %d", code)
+		}
+		owedText := e.stateFile(OwedFile)
+		e.runner.reset()
+		unguarded := e.guarded()
+		if code := e.boot(); code != ExitOK {
+			t.Fatalf("boot: exit %d\n%s", code, e.last)
+		}
+		if *unguarded != 0 || !strings.HasPrefix(e.names(), "reload-units health-probe nft") {
+			t.Errorf("unguarded %d, ran %q", *unguarded, e.names())
+		}
+		if e.stateFile(OwedFile) != owedText {
+			t.Error("boot changed what is owed")
+		}
+		if !strings.Contains(e.last, "outcome owed (request forward:"+rel3) {
+			t.Errorf("boot did not print what is owed:\n%s", e.last)
+		}
+	})
+}
+
+// TestBootWithoutARelease: on a host where nothing is deployed (no current
+// release) boot refuses with its own exit code, qualifies nothing, runs
+// nothing and creates nothing: the inhibit is left as found. The decision
+// guard then answers by the state folder alone. It refuses while the state
+// folder is missing (a host the bootstrap did not prepare) or holds
+// decisions.inhibit, and allows on a prepared state folder without it;
+// no decision-capable service runs there, since every one comes with a
+// release (its unit, its reload list), and none was ever switched to.
+func TestBootWithoutARelease(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(e *env)
+		guard string
+	}{
+		{"no state folder", func(e *env) {}, decisionguard.CodeStateDir},
+		{"no opt/authority-host either", func(e *env) {
+			if err := os.RemoveAll(filepath.Join(e.root, BaseDir)); err != nil {
+				e.t.Fatal(err)
+			}
+		}, decisionguard.CodeStateDir},
+		{"an empty state folder", func(e *env) {
+			if err := os.MkdirAll(filepath.Join(e.root, StateDir), 0o755); err != nil {
+				e.t.Fatal(err)
+			}
+		}, ""},
+		{"an inhibit and a lock, no current", func(e *env) {
+			e.write(filepath.Join(e.root, StateDir, LockFile), "", 0o600)
+			e.write(e.inhibitPath(), `{"txn": "`+neverTxn+`", "reason": "`+bootReason+`", "time": "2026-11-21T12:00:00Z"}`, 0o644)
+		}, decisionguard.CodeInhibited},
+		{"a release folder never switched to", func(e *env) {
+			e.release(rel1, "s")
+			e.write(filepath.Join(e.root, StateDir, LockFile), "", 0o600)
+		}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			tc.setup(e)
+			before := digest(t, e.root)
+			if code := e.boot(); code != ExitNoRelease {
+				t.Errorf("boot: exit %d, want %d\n%s", code, ExitNoRelease, e.last)
+			}
+			if len(e.runner.calls) != 0 {
+				t.Errorf("boot ran %v", e.runner.calls)
+			}
+			if digest(t, e.root) != before {
+				t.Error("boot changed the root")
+			}
+			if !strings.Contains(e.last, "no current release") {
+				t.Errorf("output:\n%s", e.last)
+			}
+			if got := e.guardCheck(); got != tc.guard {
+				t.Errorf("the guard answers %q, want %q", got, tc.guard)
+			}
+		})
+	}
+}
+
+// TestBootCrashKeepsDecisionsRefused: boot dies at every one of its
+// steps, on the way to a qualification that passes and to each kind of
+// failure. At every instant decisions are refused (decisions.inhibit is
+// there) unless boot qualified current in this boot. After the crash a
+// reboot and the next boot keep the inhibit at every command they run,
+// and lift it only by boot's rules: an unfinished boot's own inhibit is
+// taken over and lifted once current qualifies; a failure that was
+// recorded (owed) is kept as found.
+func TestBootCrashKeepsDecisionsRefused(t *testing.T) {
+	reloadFails := func(e *env) { e.runner.fail["reload-old"] = -1 }
+	healthFails := func(e *env) { e.runner.fail["health-old"] = -1 }
+	postFails := func(e *env) { e.runner.failPost = e.relDir(rel2) }
+	for _, tc := range []struct {
+		name  string
+		point string
+		fail  func(e *env)
+	}{
+		{"inhibit", CrashBootInhibit, nil},
+		{"reload", CrashRequalifyReload, nil},
+		{"health", CrashRequalifyHealth, nil},
+		{"qualified", CrashBootQualified, nil},
+		{"lifted", CrashBootLifted, nil},
+		{"reload fails: inhibit", CrashBootInhibit, reloadFails},
+		{"reload fails: failed", CrashBootFailed, reloadFails},
+		{"reload fails: owed", CrashBootOwed, reloadFails},
+		{"reload fails: kept", CrashBootKept, reloadFails},
+		{"health fails: inhibit", CrashBootInhibit, healthFails},
+		{"health fails: reload", CrashRequalifyReload, healthFails},
+		{"health fails: failed", CrashBootFailed, healthFails},
+		{"health fails: owed", CrashBootOwed, healthFails},
+		{"health fails: kept", CrashBootKept, healthFails},
+		{"postcheck fails: inhibit", CrashBootInhibit, postFails},
+		{"postcheck fails: reload", CrashRequalifyReload, postFails},
+		{"postcheck fails: health", CrashRequalifyHealth, postFails},
+		{"postcheck fails: failed", CrashBootFailed, postFails},
+		{"postcheck fails: owed", CrashBootOwed, postFails},
+		{"postcheck fails: kept", CrashBootKept, postFails},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, g := rebooted(t)
+			if tc.fail != nil {
+				tc.fail(e)
+			}
+			unguarded := e.guarded()
+			e.bootCrashAt(tc.point)
+			if *unguarded != 0 {
+				t.Errorf("%d command(s) ran while decisions were not inhibited", *unguarded)
+			}
+			if _, ok := e.journal(); ok {
+				t.Error("boot left a journal")
+			}
+			_, inhibited := e.inhibited()
+			qualified := tc.point == CrashBootLifted
+			if inhibited == qualified {
+				t.Fatalf("after a crash at %s: inhibited %v", tc.point, inhibited)
+			}
+			if want := map[bool]string{true: "refused", false: "accepted"}[inhibited]; g.decide() != want {
+				t.Errorf("after a crash at %s, inhibited %v: a decision is %s", tc.point, inhibited, g.decide())
+			}
+			if got := e.status(); inhibited && !strings.Contains(got, "by ah-switch boot (run ") {
+				t.Errorf("status after a crash at %s:\n%s", tc.point, got)
+			}
+			recorded := tc.point == CrashBootOwed || tc.point == CrashBootKept
+			if owed := e.owed(); recorded != (len(owed) == 1 && owed[0].Direction == DirBoot && owed[0].RequalifyFailed) {
+				t.Errorf("after a crash at %s: owed %+v", tc.point, owed)
+			}
+			// The reboot, with a host that would now qualify, then the
+			// next boot.
+			g.started, g.asked = false, nil
+			delete(e.runner.fail, "reload-old")
+			delete(e.runner.fail, "health-old")
+			e.runner.failPost = ""
+			inhibitText, owedText := e.stateFile(InhibitFile), e.stateFile(OwedFile)
+			e.runner.reset()
+			unguarded = e.guarded()
+			code := e.boot()
+			if *unguarded != 0 {
+				t.Errorf("the next boot ran %d command(s) while decisions were not inhibited", *unguarded)
+			}
+			_, inhibited = e.inhibited()
+			if recorded {
+				if code != ExitFailed || len(e.runner.calls) != 0 || e.stateFile(InhibitFile) != inhibitText || e.stateFile(OwedFile) != owedText {
+					t.Errorf("the next boot after a recorded failure: exit %d, ran %v, inhibit or owed changed", code, e.runner.calls)
+				}
+				if g.decide() != "refused" {
+					t.Error("a decision is accepted after a recorded failure")
+				}
+				return
+			}
+			if code != ExitOK || inhibited || g.decide() != "accepted" || !strings.HasPrefix(e.names(), "reload-old health-old nft") {
+				t.Errorf("the next boot: exit %d, inhibited %v, a decision %s, ran %q", code, inhibited, g.decide(), e.names())
+			}
+		})
+	}
+}
+
+// TestASwitchLiftsWhatBootLeft: after boot died or failed, a switch lifts
+// the inhibit by its own rules (a transaction that ends healthy), once
+// what is owed is acknowledged.
+func TestASwitchLiftsWhatBootLeft(t *testing.T) {
+	for _, point := range []string{CrashBootInhibit, CrashBootKept} {
+		t.Run(point, func(t *testing.T) {
+			e, g := rebooted(t)
+			if point == CrashBootKept {
+				e.runner.fail["health-old"] = -1
+			}
+			e.bootCrashAt(point)
+			delete(e.runner.fail, "health-old")
+			if _, ok := e.inhibited(); !ok {
+				t.Fatal("not inhibited after the crash")
+			}
+			if len(e.owed()) > 0 {
+				if code := e.ack("saw the failed boot"); code != ExitOK {
+					t.Fatalf("ack: exit %d\n%s", code, e.last)
+				}
+			}
+			if code := e.switchTo(rel3); code != ExitOK {
+				t.Fatalf("switch: exit %d\n%s", code, e.last)
+			}
+			if _, ok := e.inhibited(); ok || g.decide() != "accepted" {
+				t.Errorf("after a healthy switch: inhibited %v, a decision %s", ok, g.decide())
+			}
+		})
+	}
+}
+
+// TestBootOutcomeOwed: the outcome a failed boot owes is read back with the
+// checks of owed.json, and no switch or rollback request is a retry of it.
+func TestBootOutcomeOwed(t *testing.T) {
+	good := owedOutcome{Txn: neverTxn, RequestID: requestID(DirBoot, rel2), Direction: DirBoot, Requested: DirBoot, ID: rel2, CurrentID: rel2, Result: ResultFailed, FailedStep: "boot", RequalifyFailed: true}
+	if err := good.check(); err != nil {
+		t.Fatalf("a boot's outcome: %v", err)
+	}
+	for _, arg := range []string{rel2, "previous"} {
+		for _, rollback := range []bool{false, true} {
+			if good.matches(arg, rollback) {
+				t.Errorf("a request (%s, rollback %v) is taken as a retry of the boot's outcome", arg, rollback)
+			}
+		}
+	}
+	for name, mod := range map[string]func(o *owedOutcome){
+		"not requalify_failed": func(o *owedOutcome) { o.RequalifyFailed = false },
+		"result ok":            func(o *owedOutcome) { o.Result = ResultOK },
+		"requested an id":      func(o *owedOutcome) { o.Requested = rel2 },
+		"request id":           func(o *owedOutcome) { o.RequestID = requestID(DirForward, rel2) },
+		"from":                 func(o *owedOutcome) { o.FromID = rel1 },
+		"another current":      func(o *owedOutcome) { o.CurrentID = rel1 },
+		"restored health":      func(o *owedOutcome) { o.RestoredHealth = "ok" },
+		"services stopped":     func(o *owedOutcome) { o.ServicesStopped = true },
+	} {
+		o := good
+		mod(&o)
+		if o.check() == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

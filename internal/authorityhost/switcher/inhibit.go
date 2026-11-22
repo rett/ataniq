@@ -53,14 +53,22 @@ import (
 //	                  then the journal set aside
 //	inhibit-clear     inhibit removed on the owner's word; refused while a
 //	                  journal is there or the inhibit holds one
+//	boot              inhibit written, as boot's own record, when it is not
+//	                  there (or is the record of a boot that did not finish);
+//	                  then that record removed, once current qualified again
+//	                  with no journal open; any other inhibit left as found
+//	a failed boot     the failure owed; then boot's record rewritten with it
 //
-// Only the second step of a healthy end and inhibit-clear make the file
-// absent. The first runs after the transaction's release passed its
-// checks (again, when found in phase done), with no journal left; the
-// second is the owner's. No change makes it absent while a journal is
-// there, and every transaction writes it before anything else: a lookup
-// that finds no file is a host that ended healthy, or that the owner
-// cleared, with no transaction open. (A removal by hand, which only root
+// Only the second step of a healthy end, boot's removal of its own record
+// and inhibit-clear make the file absent. The first runs after the
+// transaction's release passed its checks (again, when found in phase
+// done), with no journal left; the second after current passed its reload,
+// health check and no-AI check since the boot, with no journal open (see
+// Boot); the third is the owner's. No change makes it absent while a
+// journal is there, and every transaction writes it before anything else:
+// a lookup that finds no file is a host that ended healthy or was
+// qualified again since its boot, or that the owner cleared, with no
+// transaction open. (A removal by hand, which only root
 // can do, is outside this; the next command that finds the journal writes
 // the file back.)
 const InhibitFile = "decisions.inhibit"
@@ -113,10 +121,16 @@ func settlingJournal(j journal) bool {
 // whole, and syncs it and the state folder.
 func (s *Switcher) setInhibit(t *txn, reason string) error {
 	in := inhibit{Txn: t.j.Txn, Reason: boundDetail(reason), Time: s.now()}
-	if err := writeJSONIn(s.stateRoot, InhibitFile, in, 0o644); err != nil {
+	if err := s.writeInhibit(in); err != nil {
 		return failf(CodeRecordFailed, "%s not written: %s", InhibitFile, q(err.Error()))
 	}
 	return nil
+}
+
+// writeInhibit writes decisions.inhibit as in, whole, and syncs it and the
+// state folder.
+func (s *Switcher) writeInhibit(in inhibit) error {
+	return writeJSONIn(s.stateRoot, InhibitFile, in, 0o644)
 }
 
 // beginTxn starts the transaction t: decisions are inhibited before the

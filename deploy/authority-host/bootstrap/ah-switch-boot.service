@@ -1,0 +1,37 @@
+# ah-switch-boot.service: at every boot, keep the authority host's decisions
+# refused until the host has been qualified since that boot (see
+# deploy/authority-host/README.md, "Boot requalification").
+#
+# Shipped only: no script installs or enables it. The owner installs it as
+# /etc/systemd/system/ah-switch-boot.service (root:root, mode 0644) and
+# enables it by hand. It runs the switch host-bootstrap.sh installed.
+#
+# It fails closed. ah-switch boot writes decisions.inhibit before it runs
+# anything and removes only its own record, once current passed its reload
+# list, health check and no-AI check; every other end leaves the inhibit,
+# a failure of this unit included (an exit status other than 0, or killed
+# at its time limit). No condition skips it, no other exit status counts
+# as success, and nothing restarts it.
+#
+# No decision-capable service is ordered after this unit or enabled to
+# start on its own: the release's reload list, which ah-switch boot runs
+# once the inhibit is written, starts them. An ordering between them and
+# this unit would deadlock that reload, whose systemctl restart waits for
+# a start job that waits for this unit to finish.
+
+[Unit]
+Description=Authority host: qualify the current release again after the boot (ah-switch boot)
+# What the health check (the front end on loopback) and the no-AI check
+# (the loaded firewall, the listeners) need.
+After=local-fs.target network.target nftables.service caddy.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/ah-switch boot
+# The no-AI check alone may take 5 minutes, the health window 1 minute and
+# each reload command 30 seconds.
+TimeoutStartSec=15min
+
+[Install]
+WantedBy=multi-user.target

@@ -258,4 +258,14 @@ const (
 	CrashInhibitKept      = "inhibit-kept"      // any other end: decisions.inhibit holds the outcome; txn.json still there
 	CrashUnreported       = "unreported"        // txn.json removed; the result line not printed yet
 	CrashAcked            = "acked"             // ack: deploy.json records the acknowledgement; owed.json still there
+	// Qualifying current again (requalifyCurrent, Boot), decisions inhibited.
+	CrashRequalifyReload = "requalify-reload" // current's reload list ran
+	CrashRequalifyHealth = "requalify-health" // current is healthy; its no-AI check not run yet
+	// ah-switch boot (see Boot).
+	CrashBootInhibit   = "boot-inhibit"   // decisions.inhibit is this boot's own record; nothing run yet
+	CrashBootQualified = "boot-qualified" // current passed its reload, health check and no-AI check; the inhibit still there
+	CrashBootLifted    = "boot-lifted"    // the inhibit removed; the result line not printed yet
+	CrashBootFailed    = "boot-failed"    // current did not pass; the host's stop list ran; nothing recorded yet
+	CrashBootOwed      = "boot-owed"      // owed.json holds the failure; the inhibit still this boot's record
+	CrashBootKept      = "boot-kept"      // the inhibit holds the failure; the result line not printed yet
 )

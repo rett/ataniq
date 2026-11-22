@@ -386,3 +386,62 @@ func TestRecoverForms(t *testing.T) {
 		}
 	}
 }
+
+// TestBoot: ah-switch boot takes only --root and --allow-exec; on a root
+// where nothing is deployed it exits 4 and creates nothing; on a host
+// switched to a healthy release it qualifies current again and exits 0,
+// decisions no longer inhibited.
+func TestBoot(t *testing.T) {
+	root := t.TempDir()
+	for _, args := range [][]string{
+		{"--root", root, "boot"},
+		{"--root", root, "--allow-exec", "--dry", "boot"},
+		{"--root", root, "--allow-exec", "--mode", "manual", "boot"},
+		{"--root", root, "--allow-exec", "--from", "/x", "boot"},
+		{"--root", root, "--allow-exec", "--noaicheck", "/x", "boot"},
+		{"--root", root, "--allow-exec", "--counter", "3", "boot"},
+		{"--root", root, "--allow-exec", "--asked", "x", "boot"},
+		{"--root", root, "--allow-exec", "--txn", "0123456789abcdef0123456789abcdef", "boot"},
+		{"--root", root, "--allow-exec", "--rollback-to", "previous", "boot"},
+		{"--root", root, "--allow-exec", "boot", "0001-aaaaaaa"},
+	} {
+		if code, _, errOut := call(args...); code != switcher.ExitUsage || !strings.Contains(errOut, "ah-switch: ") {
+			t.Errorf("%q: exit %d, %q", args, code, errOut)
+		}
+	}
+	code, out, errOut := call("--root", root, "--allow-exec", "boot")
+	if code != switcher.ExitNoRelease || !strings.Contains(out, "no current release") {
+		t.Errorf("boot of an empty root: exit %d\n%s%s", code, out, errOut)
+	}
+	if entries, err := os.ReadDir(root); err != nil || len(entries) != 0 {
+		t.Errorf("boot of an empty root wrote into it: %v, %v", entries, err)
+	}
+	if code, out, _ := call("--help"); code != switcher.ExitOK || !strings.Contains(out, "ah-switch [--root DIR [--allow-exec]] boot") {
+		t.Errorf("--help does not show boot: exit %d\n%s", code, out)
+	}
+
+	root = t.TempDir()
+	t.Cleanup(func() { makeWritableAll(root) })
+	health := filepath.Join(t.TempDir(), "health")
+	write(t, health, "#!/bin/sh\nexit 0\n", 0o755)
+	hostStops(t, root, health)
+	os.MkdirAll(filepath.Join(root, switcher.BaseDir, "releases"), 0o755)
+	in := t.TempDir()
+	releaseIn(t, filepath.Join(in, "0001-aaaaaaa"), "0001-aaaaaaa", 1, health)
+	fakeNFT(t)
+	code, out, errOut = call("0001-aaaaaaa", "--root", root, "--allow-exec", "--from", filepath.Join(in, "0001-aaaaaaa"))
+	if code != switcher.ExitOK {
+		t.Fatalf("switch: exit %d\n%s%s", code, out, errOut)
+	}
+	code, out, errOut = call("--root", root, "--allow-exec", "boot")
+	if code != switcher.ExitOK || !strings.Contains(out, "result: ok; current -> 0001-aaaaaaa, qualified since the boot") {
+		t.Errorf("boot: exit %d\n%s%s", code, out, errOut)
+	}
+	if _, err := os.Lstat(filepath.Join(root, switcher.StateDir, switcher.InhibitFile)); err == nil {
+		t.Error("decisions are inhibited after a boot that qualified current")
+	}
+	code, out, _ = call("--root", root, "status")
+	if code != switcher.ExitOK || !strings.Contains(out, "decisions: not inhibited") || !strings.Contains(out, "outcome owed (request forward:0001-aaaaaaa") {
+		t.Errorf("status after boot: exit %d\n%s", code, out)
+	}
+}
