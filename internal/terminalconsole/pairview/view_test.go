@@ -460,7 +460,7 @@ func TestBackendTextIsCleanedBeforeItIsDrawn(t *testing.T) {
 	b := &fakeBackend{}
 	r := newRig(t, b, testOrigin, 80, 24)
 	r.start()
-	b.state = State{Phase: Pending, ExpiresAt: epoch.Add(time.Minute), Words: [6]string{
+	b.state = State{Phase: Pending, PendingID: testPID, ExpiresAt: epoch.Add(time.Minute), Words: [6]string{
 		"lemon\x1b]52;c;aGk=\x07", "ri\x00ver", "tig\u202eer", "ocean", "maple", "quartz"}}
 	r.fire()
 	if r.m.wordsOK {
@@ -534,7 +534,7 @@ func TestChangedWordsCancelTheSecondQuestion(t *testing.T) {
 
 func TestReopeningReadsTheDaemonsState(t *testing.T) {
 	// Words waiting for the owner are shown at once.
-	b := &fakeBackend{state: State{Phase: Pending, Words: sixWords, ExpiresAt: epoch.Add(time.Minute)}}
+	b := &fakeBackend{state: State{Phase: Pending, PendingID: testPID, Words: sixWords, ExpiresAt: epoch.Add(time.Minute)}}
 	r := newRig(t, b, testOrigin, 80, 24)
 	r.init()
 	if r.m.screen != scPending || len(r.timers) != 1 {
@@ -891,5 +891,68 @@ func TestAResizeDropsTheSecondQuestion(t *testing.T) {
 	r.press("y")
 	if b.count("confirm") != 0 {
 		t.Fatal("y confirmed after a resize")
+	}
+}
+
+func TestConfirmAndRejectNameThePendingCredential(t *testing.T) {
+	b := &fakeBackend{}
+	r := newRig(t, b, testOrigin, 80, 24)
+	r.start()
+	r.pending()
+	r.press("c")
+	r.now = r.now.Add(time.Second)
+	r.press("y")
+	if fmt.Sprint(b.ids) != "[confirm:"+testPID+"]" {
+		t.Fatalf("ids %v", b.ids)
+	}
+	b2 := &fakeBackend{}
+	r = newRig(t, b2, testOrigin, 80, 24)
+	r.start()
+	r.pending()
+	r.press("x")
+	if fmt.Sprint(b2.ids) != "[reject:"+testPID+"]" {
+		t.Fatalf("ids %v", b2.ids)
+	}
+}
+
+func TestAChangedPendingIDDropsTheSecondQuestion(t *testing.T) {
+	b := &fakeBackend{}
+	r := newRig(t, b, testOrigin, 80, 24)
+	r.start()
+	r.pending()
+	r.press("c")
+	// The same words under another credential: not the one the owner saw.
+	b.state.PendingID = "fedcba9876543210"
+	r.fire()
+	if r.m.screen != scPending {
+		t.Fatalf("screen %v, want the question dropped", r.m.screen)
+	}
+	r.now = r.now.Add(time.Second)
+	r.press("y")
+	if b.count("confirm") != 0 {
+		t.Fatalf("calls %v", b.calls)
+	}
+	// A new question names the new id.
+	r.press("c")
+	r.now = r.now.Add(time.Second)
+	r.press("y")
+	if fmt.Sprint(b.ids) != "[confirm:fedcba9876543210]" {
+		t.Fatalf("ids %v", b.ids)
+	}
+}
+
+func TestAPendingIDThatIsNotSixteenHexCannotBeConfirmed(t *testing.T) {
+	for _, id := range []string{"", "0123456789ABCDEF", "0123456789abcde", "0123456789abcdef0", "0123456789abcdeg", "../../etc/passwd"} {
+		b := &fakeBackend{}
+		r := newRig(t, b, testOrigin, 80, 24)
+		r.start()
+		r.b.state = State{Phase: Pending, PendingID: id, Words: sixWords, ExpiresAt: r.now.Add(5 * time.Minute)}
+		r.fire()
+		r.press("c")
+		if r.m.screen == scConfirm {
+			t.Errorf("id %q: the second question is open", id)
+		}
+		r.notSee(80, 24, "c: confirm")
+		r.see(80, 24, "x: reject")
 	}
 }

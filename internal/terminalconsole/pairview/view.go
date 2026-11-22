@@ -37,8 +37,14 @@ type Offer struct {
 
 // State is the daemon's answer to a status read. Words is the fingerprint of
 // the phone's key, six short words, set on the Pending phase.
+//
+// PendingID names the pending credential the words are the fingerprint of:
+// 16 lowercase hex characters, set on the Pending phase. Confirm and reject
+// carry it back, so that the daemon acts on the credential the owner looked
+// at and on no other.
 type State struct {
 	Phase     Phase
+	PendingID string
 	Words     [6]string
 	ExpiresAt time.Time
 }
@@ -59,10 +65,12 @@ type Backend interface {
 	PairStart(ctx context.Context, replace bool) (Offer, error)
 	// PairStatus reads the pairing's state.
 	PairStatus(ctx context.Context) (State, error)
-	// PairConfirm adds the phone's key as a deciding key.
-	PairConfirm(ctx context.Context) (Paired, error)
-	// PairReject ends the pairing without adding anything.
-	PairReject(ctx context.Context) error
+	// PairConfirm adds the phone's key as a deciding key. id is the
+	// State.PendingID the owner compared the words of.
+	PairConfirm(ctx context.Context, id string) (Paired, error)
+	// PairReject ends the pairing without adding anything. id is the
+	// State.PendingID that was shown.
+	PairReject(ctx context.Context, id string) error
 }
 
 // Colors are the colours the view draws its text with. The parent fills them
@@ -197,6 +205,9 @@ type Model struct {
 	// printable word, so the owner may confirm.
 	words   [6]string
 	wordsOK bool
+	// pid is the pending id the words belong to, as the daemon gave it; it
+	// is valid (see validPendingID) when wordsOK is.
+	pid string
 	// id and kind are the confirmed key's, cleaned.
 	id, kind string
 	// promptAt is when the second question was asked.
@@ -362,24 +373,24 @@ func (m *Model) statusCmd() tea.Cmd {
 
 func (m *Model) confirmCmd() tea.Cmd {
 	m.seq++
-	seq, gen, b, to := m.seq, m.gen, m.o.Backend, m.o.Timeout
+	seq, gen, b, to, id := m.seq, m.gen, m.o.Backend, m.o.Timeout, m.pid
 	m.awaitConfirm = seq
 	return func() tea.Msg {
 		ctx, cancel := callCtx(to)
 		defer cancel()
-		p, err := b.PairConfirm(ctx)
+		p, err := b.PairConfirm(ctx, id)
 		return confirmedMsg{owner: m, seq: seq, gen: gen, p: p, err: err}
 	}
 }
 
 func (m *Model) rejectCmd() tea.Cmd {
 	m.seq++
-	seq, gen, b, to := m.seq, m.gen, m.o.Backend, m.o.Timeout
+	seq, gen, b, to, id := m.seq, m.gen, m.o.Backend, m.o.Timeout, m.pid
 	m.awaitReject = seq
 	return func() tea.Msg {
 		ctx, cancel := callCtx(to)
 		defer cancel()
-		err := b.PairReject(ctx)
+		err := b.PairReject(ctx, id)
 		return rejectedMsg{owner: m, seq: seq, gen: gen, err: err}
 	}
 }
@@ -528,7 +539,7 @@ func (m *Model) onStatus(v statusMsg) tea.Cmd {
 		if !st.ExpiresAt.IsZero() {
 			m.expires = st.ExpiresAt
 		}
-		m.setWords(st.Words)
+		m.setWords(st.Words, st.PendingID)
 	case Expired:
 		m.end(scExpired)
 		return nil
@@ -550,7 +561,7 @@ func (m *Model) onOpening(v statusMsg) tea.Cmd {
 	switch v.st.Phase {
 	case Pending:
 		m.expires = v.st.ExpiresAt
-		m.setWords(v.st.Words)
+		m.setWords(v.st.Words, v.st.PendingID)
 	case Waiting:
 		m.expires = v.st.ExpiresAt
 		m.screen = scOpen
@@ -563,12 +574,28 @@ func (m *Model) onOpening(v statusMsg) tea.Cmd {
 // end leaves the polling for a screen with no code or words.
 func (m *Model) end(s screen) {
 	m.screen, m.note, m.rows, m.cycle = s, "", nil, false
-	m.words, m.wordsOK = [6]string{}, false
+	m.words, m.wordsOK, m.pid = [6]string{}, false, ""
+}
+
+// validPendingID reports whether id is 16 lowercase hex characters.
+func validPendingID(id string) bool {
+	if len(id) != 16 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // setWords shows the words of a pending pairing. A second question that was
-// open is dropped when the words are not the ones it was asked for.
-func (m *Model) setWords(in [6]string) {
+// open is dropped when the words or the pending id are not the ones it was
+// asked for. An id that is not well formed cannot be confirmed (it is still
+// given back on a reject, which the daemon checks).
+func (m *Model) setWords(in [6]string, id string) {
 	var w [6]string
 	ok := true
 	for i, s := range in {
@@ -577,11 +604,12 @@ func (m *Model) setWords(in [6]string) {
 			ok = false
 		}
 	}
-	if m.screen != scConfirm || w != m.words || !ok {
+	ok = ok && validPendingID(id)
+	if m.screen != scConfirm || w != m.words || id != m.pid || !ok {
 		m.screen = scPending
 	}
 	m.rows = nil
-	m.words, m.wordsOK = w, ok
+	m.words, m.wordsOK, m.pid = w, ok, id
 	if !ok {
 		m.note = errWords
 	}
