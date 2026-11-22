@@ -802,7 +802,11 @@ things take it back:
   `outcome_acked_asked`, `outcome_acked_txn`, kept by later records), and
   removes `owed.json`. It runs no program, is refused while a transaction
   is open (run any command to settle it first) or when nothing is owed,
-  and with `--dry` changes nothing.
+  and with `--dry` changes nothing. As with a retry, an outcome that
+  cannot be written or flushed has not been seen: when printing the
+  outcomes fails, `ack` records nothing, keeps `owed.json`, says so on its
+  error output and exits 1, and the same `ack` run again shows and
+  acknowledges them.
 
 Any other switch or rollback while an outcome is owed (another release,
 or one that is not there) first reports the outcomes owed (`owed: the ...
@@ -930,6 +934,7 @@ see its messages. The text of a broken state file is not repeated either.
 | Crash or power loss during the switch | `current` points at a whole release, the old or the new one, and the journal is there; the next command resumes its phase (see "The journal and recover") |
 | The same request run again while its outcome is owed (settled by its own command or by another one, its result line printed or not) | Reports that outcome once and does nothing else; a rollback retried as `previous` goes to no other release; `--dry` only shows it |
 | The same request run again, and its report cannot be written or flushed | The outcome stays owed; exit 1; the next retry reports it |
+| `ack` run when the outcomes it acknowledges cannot be written or flushed | Nothing is recorded and `owed.json` stays; exit 1; run `ack` again |
 | Another switch or rollback while an outcome is owed | Reports the outcomes owed, leaves them owed and is refused, exit 1, nothing recorded or run, until `ack --asked WORDS` or the same request again |
 | `highest-counter` missing or broken while `current` exists, or below a counter the links, `deploy.json` or `counters.log` show was used | Refused before anything, nothing recorded (`counter-missing`, `counter-invalid`); run `recover --counter N` |
 | A journal whose links or counter do not match the host (restored from a backup) | `reconcile: unresolved`, exit 1; nothing resumed, run or moved until `recover --discard-journal TXN` |

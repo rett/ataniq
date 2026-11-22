@@ -1,12 +1,14 @@
 package switcher
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1195,6 +1197,58 @@ func TestAck(t *testing.T) {
 				t.Errorf("changed: %v", e.runner.calls)
 			}
 			e.links(rel3, rel2)
+		})
+	}
+}
+
+// TestAckKeptWhenTheOutcomesCannotBeWritten: ack shows the outcomes it
+// acknowledges first; when writing or flushing them fails the owner has not
+// seen them, so nothing is recorded and owed.json stays, as with a retry
+// that cannot report: the command exits 1, and the next ack with a working
+// output acknowledges them.
+func TestAckKeptWhenTheOutcomesCannotBeWritten(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		out  brokenOut
+	}{{"write fails", brokenOut{}}, {"flush fails", brokenOut{flush: true}}} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := active(t)
+			e.keepOwed = true
+			e.crashAt(CrashUnreported, true, "previous")
+			e.links(rel1, rel2)
+			e.runner.reset()
+			owed := e.owed()
+			if len(owed) != 1 {
+				t.Fatalf("owed: %+v", owed)
+			}
+			before, recBefore := digest(t, e.root), e.record()
+			var errs bytes.Buffer
+			s := e.switcher(func(c *Config) { c.Out, c.Err = tc.out, &errs })
+			if code := s.Ack(context.Background(), "looked"); code != ExitFailed {
+				t.Fatalf("ack with a broken output: exit %d", code)
+			}
+			if !strings.Contains(errs.String(), "stay owed") {
+				t.Errorf("the failure is not said: %q", errs.String())
+			}
+			if after := digest(t, e.root); after != before {
+				t.Error("the host's state changed")
+			}
+			if _, err := os.Stat(e.owedPath()); err != nil {
+				t.Errorf("owed.json: %v", err)
+			}
+			if rec := e.record(); rec != recBefore {
+				t.Errorf("an acknowledgement was recorded: %+v", rec)
+			}
+			if got := e.owed(); !reflect.DeepEqual(got, owed) {
+				t.Errorf("owed changed: %+v", got)
+			}
+			// With a working output the same ack goes through.
+			if code := e.ack("looked"); code != ExitOK || len(e.owed()) != 0 {
+				t.Errorf("next ack: exit %d, owed %+v\n%s", code, e.owed(), e.last)
+			}
+			if rec := e.record(); rec.OutcomeAckedAsked != "looked" {
+				t.Errorf("record: %+v", rec)
+			}
 		})
 	}
 }
