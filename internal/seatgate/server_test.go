@@ -1066,3 +1066,49 @@ func TestServerHandlersHaveAServerWideCeiling(t *testing.T) {
 		t.Fatalf("after the handlers returned: %+v", resp)
 	}
 }
+
+// A shutdown keeps its grace even when a connection's loop is stuck writing
+// to a peer that has stopped reading. The loop writes the answers it serves
+// itself (a ping, busy, rate-limited), and used to see the drain only once such
+// a write ended, at WriteTimeout, so Serve could outlast the grace by that.
+func TestServerShutdownGraceHoldsAgainstAPeerThatStopsReading(t *testing.T) {
+	leakCheck(t)
+	big := json.RawMessage(`{"x":"` + strings.Repeat("a", 60000) + `"}`)
+	e := startServer(t, func(c *ServerConfig) {
+		bigRate(c)
+		c.WriteTimeout = time.Minute
+		c.ShutdownGrace = 200 * time.Millisecond
+	}, HandlerFunc(func(context.Context, Peer, string, json.RawMessage) (json.RawMessage, error) {
+		return big, nil
+	}))
+	r := e.helloed()
+	// Big requests for big answers, each with a ping, and never a read: the
+	// answers fill the buffers, a ping's answer then blocks the loop, the
+	// server stops reading, and so at last a write of ours stalls.
+	req := []byte(fmt.Sprintf(`{"id":%%d,"op":"t.big","params":%s}`, big))
+	stalled := false
+	for i := 0; i < 2000 && !stalled; i++ {
+		for _, p := range [][]byte{fmt.Appendf(nil, string(req), 2*i+2), fmt.Appendf(nil, `{"id":%d,"op":"seat.ping"}`, 2*i+3)} {
+			r.c.SetWriteDeadline(time.Now().Add(time.Second))
+			if err := writeFrame(r.c, p); err != nil {
+				var ne net.Error
+				if !errors.As(err, &ne) || !ne.Timeout() {
+					t.Fatal(err)
+				}
+				stalled = true
+				break
+			}
+		}
+	}
+	if !stalled {
+		t.Fatal("the server kept reading")
+	}
+	start := time.Now()
+	e.cancel()
+	if err := e.stop(); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("Serve returned %v after the shutdown began, with a grace of 200ms", d)
+	}
+}

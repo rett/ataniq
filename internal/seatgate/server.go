@@ -300,7 +300,27 @@ func (s *server) serveConn(raw net.Conn) {
 		rate:       &limiter{max: s.cfg.RateMax, per: s.cfg.RatePer},
 		ids:        map[uint64]struct{}{},
 	}
-	defer cancel()
+	// The grace of a shutdown is counted here, from the drain, and not by the
+	// loop, which may be held in a write to a peer that does not read and see
+	// the drain only when that write ends: at the end of the grace the
+	// connection is cut whatever the loop is doing.
+	graceDone := make(chan struct{})
+	go func() {
+		defer close(graceDone)
+		select {
+		case <-s.drain:
+		case <-ctx.Done():
+			return
+		}
+		t := time.NewTimer(s.cfg.ShutdownGrace)
+		defer t.Stop()
+		select {
+		case <-t.C:
+			c.kill()
+		case <-ctx.Done():
+		}
+	}()
+	defer func() { cancel(); <-graceDone }()
 	go c.reader()
 	c.loop()
 }
@@ -358,19 +378,18 @@ func (c *srvConn) loop() {
 }
 
 // finish ends the connection. When graceful, the requests in flight are first
-// given the shutdown grace to be answered. Then everything is cut: the context
-// of the handlers, the connection, the reader and the waiting goroutines.
+// given the rest of the shutdown grace to be answered: serveConn cuts the
+// connection, and so ends the wait, when the grace is over. Then everything is
+// cut: the context of the handlers, the connection, the reader and the waiting
+// goroutines.
 func (c *srvConn) finish(graceful bool) {
 	if graceful {
 		done := make(chan struct{})
 		go func() { c.waiters.Wait(); close(done) }()
-		t := time.NewTimer(c.s.cfg.ShutdownGrace)
 		select {
 		case <-done:
-		case <-t.C:
 		case <-c.ctx.Done():
 		}
-		t.Stop()
 	}
 	c.cancel()
 	c.raw.Close()
