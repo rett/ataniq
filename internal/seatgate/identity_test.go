@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -266,6 +267,28 @@ func TestLoadIdentityRefusesUnsafeFiles(t *testing.T) {
 			t.Fatalf("got %v", err)
 		}
 	})
+	// A FIFO with no writer would block a plain open for ever: the open does
+	// not wait, and the file is then refused for not being a regular one.
+	for _, name := range []string{KeyFile, CertFile} {
+		t.Run(name+" is a FIFO with no writer", func(t *testing.T) {
+			dir := mk(t)
+			fifo := filepath.Join(dir, name)
+			os.Remove(fifo)
+			if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+				t.Skipf("no FIFO here: %v", err)
+			}
+			t.Cleanup(func() { // lets a reader that blocked go, so a failure ends
+				if f, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+					f.Close()
+				}
+			})
+			res := make(chan error, 1)
+			go func() { _, err := LoadIdentity(dir); res <- err }()
+			if err := within(t, "LoadIdentity to return", res, 5*time.Second); err != ErrUnsafe {
+				t.Fatalf("got %v", err)
+			}
+		})
+	}
 	t.Run("missing", func(t *testing.T) {
 		if _, err := LoadIdentity(filepath.Join(t.TempDir(), "nope")); err == nil {
 			t.Fatal("a missing folder loaded")

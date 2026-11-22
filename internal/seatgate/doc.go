@@ -74,6 +74,7 @@
 //
 //	connections open at once                8   (the ninth is closed on arrival)
 //	handlers running at once, per connection 16  (more is answered busy)
+//	handlers running at once, in all        128 (8 × 16; more is answered busy)
 //	deadline of one request                 30 s (answered deadline-exceeded)
 //	requests per connection                 60 per minute, sliding (rate-limited)
 //	TLS handshake                           5 s
@@ -81,11 +82,16 @@
 //	a frame, from its first byte to its last 10 s (a half-sent frame ends the connection)
 //	silence                                 60 s
 //
-// A request that reuses the id of one still in flight closes the connection,
-// since its answer could not be told from the other's. Responses may come in
+// A request that reuses the id of one still in flight (until its answer is
+// written) closes the connection, with no answer to it, since its answer could
+// not be told from the other's. Responses may come in
 // any order; the id says which request each answers. On shutdown (the context
 // of Serve is done) the server stops accepting, lets requests in flight be
 // answered for up to the grace period and closes everything.
+//
+// A handler that ignores its context keeps its places, on its connection and
+// among the 128, until it returns, even when its connection has gone; so a
+// peer that reconnects cannot start more handlers than that.
 //
 // A connection counts against the 8 from the moment it is accepted, before
 // its handshake. So a peer that cannot be pinned, but can reach the port, can

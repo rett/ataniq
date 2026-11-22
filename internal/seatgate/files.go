@@ -125,9 +125,11 @@ func createExclusive(path string, data []byte) error {
 
 // readSafe reads a regular file that is not a link and has none of the mode
 // bits in forbidden set. It opens first and checks the open file, so the check
-// and the read are of the same file.
+// and the read are of the same file. The open does not wait (O_NONBLOCK), so a
+// FIFO with no writer in place of the file is refused, not waited on for ever;
+// the flag changes nothing for the read of a regular file.
 func readSafe(path string, forbidden fs.FileMode) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		if errors.Is(err, syscall.ELOOP) {
 			return nil, ErrUnsafe

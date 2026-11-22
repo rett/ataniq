@@ -22,8 +22,10 @@ type Peer struct {
 // goroutine, so it must be safe for concurrent use. ctx is done when the
 // request's deadline passes, when the connection closes and when a shutdown
 // outlasts its grace period; a handler that ignores it is never stopped, and
-// holds its in-flight slot until it returns. params is the request's params
-// object, or nil when there were none; [DecodeStrict] reads it.
+// holds its in-flight slot, and its place under the server's MaxHandlers,
+// until it returns, even after its connection is gone. params is the
+// request's params object, or nil when there were none; [DecodeStrict] reads
+// it.
 //
 // A returned result must be a JSON object (nil is {}). An error is told to
 // the peer only as a code: if it implements [CodedError] its Code, if that is
@@ -69,6 +71,7 @@ type ServerConfig struct {
 
 	MaxConns       int           // concurrent connections, 8
 	MaxInFlight    int           // handlers running at once per connection, 16
+	MaxHandlers    int           // handlers running at once over all connections, MaxConns × MaxInFlight
 	RequestTimeout time.Duration // the deadline of one request, 30 s
 	RateMax        int           // requests per RatePer per connection, 60
 	RatePer        time.Duration // the rate window, 1 minute
@@ -83,6 +86,13 @@ type ServerConfig struct {
 	// Now is the clock of the rate limit; time.Now when nil. Deadlines on the
 	// network use the real clock.
 	Now func() time.Time
+
+	// hsWatch, for tests, runs as the watcher of a handshake starts, and what
+	// it returns as the watcher ends.
+	hsWatch func() func()
+	// answerHook, for tests, runs when the answer of a request handed to the
+	// handler is ready to be written (written false) and once it is written.
+	answerHook func(id uint64, written bool)
 }
 
 func (c ServerConfig) withDefaults() ServerConfig {
@@ -98,6 +108,7 @@ func (c ServerConfig) withDefaults() ServerConfig {
 	}
 	n(&c.MaxConns, 8)
 	n(&c.MaxInFlight, 16)
+	n(&c.MaxHandlers, c.MaxConns*c.MaxInFlight)
 	n(&c.RateMax, 60)
 	d(&c.RequestTimeout, 30*time.Second)
 	d(&c.RatePer, time.Minute)
@@ -119,9 +130,30 @@ type server struct {
 	root  context.Context
 	drain chan struct{} // closed when the server begins to shut down
 
-	mu     sync.Mutex
-	active int
-	wg     sync.WaitGroup
+	mu       sync.Mutex
+	active   int // connections being served
+	handlers int // handlers that have not returned, of any connection, gone or not
+	wg       sync.WaitGroup
+}
+
+// takeHandler takes a place for a handler under MaxHandlers, or reports that
+// there is none. The place is the handler's until it returns: a handler that
+// ignores its context keeps it after its connection has gone, so a peer that
+// reconnects cannot pile up handlers.
+func (s *server) takeHandler() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.handlers >= s.cfg.MaxHandlers {
+		return false
+	}
+	s.handlers++
+	return true
+}
+
+func (s *server) releaseHandler() {
+	s.mu.Lock()
+	s.handlers--
+	s.mu.Unlock()
 }
 
 // Serve accepts connections on ln until ctx is done, serving each with h. It
@@ -231,8 +263,8 @@ type srvConn struct {
 	wmu sync.Mutex // serialises writes
 
 	mu      sync.Mutex
-	ids     map[uint64]struct{} // requests asked and not yet answered
-	running int                 // handlers that have not returned
+	ids     map[uint64]bool // requests asked and not yet answered: true while the answer is written
+	running int             // handlers that have not returned
 }
 
 func (s *server) serveConn(raw net.Conn) {
@@ -244,17 +276,28 @@ func (s *server) serveConn(raw net.Conn) {
 	}
 	raw.SetDeadline(time.Now().Add(s.cfg.HandshakeTimeout))
 	tc := tls.Server(raw, s.cfg.TLS)
-	hsDone := make(chan struct{})
-	go func() { // a shutdown does not wait for a handshake
+	// A shutdown does not wait for a handshake: a watcher closes the
+	// connection if the drain comes first. It is waited for once the handshake
+	// is over, and says which it saw: one that runs late, when the handshake
+	// has ended and the drain has begun both, may take either, and if it took
+	// the drain the connection is closed now, before any request, and not
+	// under a request later.
+	hsDone, hsCut := make(chan struct{}), make(chan bool, 1)
+	go func() {
+		if h := s.cfg.hsWatch; h != nil {
+			defer h()()
+		}
 		select {
 		case <-s.drain:
 			raw.Close()
+			hsCut <- true
 		case <-hsDone:
+			hsCut <- false
 		}
 	}()
 	err := tc.Handshake()
 	close(hsDone)
-	if err != nil {
+	if <-hsCut || err != nil {
 		return
 	}
 	raw.SetDeadline(time.Time{})
@@ -273,9 +316,29 @@ func (s *server) serveConn(raw net.Conn) {
 		frames:     make(chan frameMsg),
 		readerDone: make(chan struct{}),
 		rate:       &limiter{max: s.cfg.RateMax, per: s.cfg.RatePer},
-		ids:        map[uint64]struct{}{},
+		ids:        map[uint64]bool{},
 	}
-	defer cancel()
+	// The grace of a shutdown is counted here, from the drain, and not by the
+	// loop, which may be held in a write to a peer that does not read and see
+	// the drain only when that write ends: at the end of the grace the
+	// connection is cut whatever the loop is doing.
+	graceDone := make(chan struct{})
+	go func() {
+		defer close(graceDone)
+		select {
+		case <-s.drain:
+		case <-ctx.Done():
+			return
+		}
+		t := time.NewTimer(s.cfg.ShutdownGrace)
+		defer t.Stop()
+		select {
+		case <-t.C:
+			c.kill()
+		case <-ctx.Done():
+		}
+	}()
+	defer func() { cancel(); <-graceDone }()
 	go c.reader()
 	c.loop()
 }
@@ -333,19 +396,18 @@ func (c *srvConn) loop() {
 }
 
 // finish ends the connection. When graceful, the requests in flight are first
-// given the shutdown grace to be answered. Then everything is cut: the context
-// of the handlers, the connection, the reader and the waiting goroutines.
+// given the rest of the shutdown grace to be answered: serveConn cuts the
+// connection, and so ends the wait, when the grace is over. Then everything is
+// cut: the context of the handlers, the connection, the reader and the waiting
+// goroutines.
 func (c *srvConn) finish(graceful bool) {
 	if graceful {
 		done := make(chan struct{})
 		go func() { c.waiters.Wait(); close(done) }()
-		t := time.NewTimer(c.s.cfg.ShutdownGrace)
 		select {
 		case <-done:
-		case <-t.C:
 		case <-c.ctx.Done():
 		}
-		t.Stop()
 	}
 	c.cancel()
 	c.raw.Close()
@@ -362,6 +424,49 @@ func (c *srvConn) kill() {
 
 // reply writes one response. A write that fails ends the connection.
 func (c *srvConn) reply(r response) {
+	payload := r.frame()
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	c.write(payload)
+}
+
+// answer writes the response to a request handed to the handler and then
+// releases its id. The id is the request's until its answer is written, so a
+// request that reuses it before then closes the connection (it could not be
+// told from this one); while the answer is being written it is marked, and
+// handle waits for the write before it decides, since the client may have the
+// answer already and reuse the id, as it may.
+func (c *srvConn) answer(r response) {
+	payload := r.frame()
+	if h := c.s.cfg.answerHook; h != nil {
+		h(r.ID, false)
+	}
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	c.mu.Lock()
+	c.ids[r.ID] = true
+	c.mu.Unlock()
+	c.write(payload)
+	if h := c.s.cfg.answerHook; h != nil {
+		h(r.ID, true)
+	}
+	c.mu.Lock()
+	delete(c.ids, r.ID)
+	c.mu.Unlock()
+}
+
+// write writes one frame; the caller holds wmu. A write that fails ends the
+// connection.
+func (c *srvConn) write(payload []byte) {
+	c.tc.SetWriteDeadline(time.Now().Add(c.s.cfg.WriteTimeout))
+	if err := writeFrame(c.tc, payload); err != nil {
+		c.kill()
+	}
+}
+
+// frame is r encoded for the wire: too-large for a result that does not fit a
+// frame, failed if it cannot be encoded.
+func (r response) frame() []byte {
 	payload, err := r.encode()
 	if err == nil && len(payload) > MaxFrame {
 		payload, err = response{ID: r.ID, Code: CodeTooLarge}.encode()
@@ -369,12 +474,7 @@ func (c *srvConn) reply(r response) {
 	if err != nil {
 		payload, _ = response{ID: r.ID, Code: CodeFailed}.encode()
 	}
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
-	c.tc.SetWriteDeadline(time.Now().Add(c.s.cfg.WriteTimeout))
-	if err := writeFrame(c.tc, payload); err != nil {
-		c.kill()
-	}
+	return payload
 }
 
 // handle takes one decoded request. It returns false when the connection is
@@ -388,15 +488,24 @@ func (c *srvConn) handle(req request) bool {
 		}
 		return c.hello(req)
 	}
+	// The id first: a reuse gets no answer of any kind, since it would go
+	// under the id of the request in flight.
+	c.mu.Lock()
+	writing, dup := c.ids[req.ID]
+	c.mu.Unlock()
+	if writing { // the answer is on its way out, and the id with it
+		c.wmu.Lock()
+		c.wmu.Unlock()
+		c.mu.Lock()
+		_, dup = c.ids[req.ID]
+		c.mu.Unlock()
+	}
+	if dup {
+		return false
+	}
 	if !c.rate.allow(c.s.cfg.Now()) {
 		c.reply(response{ID: req.ID, Code: CodeRateLimited})
 		return true
-	}
-	c.mu.Lock()
-	_, dup := c.ids[req.ID]
-	c.mu.Unlock()
-	if dup {
-		return false
 	}
 	switch req.Op {
 	case OpHello:
@@ -407,13 +516,13 @@ func (c *srvConn) handle(req request) bool {
 		return true
 	}
 	c.mu.Lock()
-	if c.running >= c.s.cfg.MaxInFlight {
+	if c.running >= c.s.cfg.MaxInFlight || !c.s.takeHandler() {
 		c.mu.Unlock()
 		c.reply(response{ID: req.ID, Code: CodeBusy})
 		return true
 	}
 	c.running++
-	c.ids[req.ID] = struct{}{}
+	c.ids[req.ID] = false
 	c.mu.Unlock()
 	c.waiters.Add(1)
 	go c.serve(req)
@@ -437,18 +546,19 @@ func (c *srvConn) hello(req request) bool {
 
 // serve runs one request: the handler in a goroutine of its own, and the wait
 // for it, which ends at the request's deadline whether the handler has
-// returned or not. The id is released before the response is written, so the
-// client, which may reuse it once it has the response, never finds it taken.
+// returned or not. The id is released once the response is written (see
+// answer).
 func (c *srvConn) serve(req request) {
 	defer c.waiters.Done()
 	ctx, cancel := context.WithTimeout(c.ctx, c.s.cfg.RequestTimeout)
 	defer cancel()
 	done := make(chan response, 1)
-	go func() {
+	go func() { // the one goroutine that returns from Handle gives back its places
 		defer func() {
 			c.mu.Lock()
 			c.running--
 			c.mu.Unlock()
+			c.s.releaseHandler()
 		}()
 		done <- c.invoke(ctx, req)
 	}()
@@ -461,10 +571,7 @@ func (c *srvConn) serve(req request) {
 		}
 		r = response{ID: req.ID, Code: CodeDeadline}
 	}
-	c.mu.Lock()
-	delete(c.ids, req.ID)
-	c.mu.Unlock()
-	c.reply(r)
+	c.answer(r)
 }
 
 // invoke calls the handler and turns what comes back, or a panic, into the

@@ -293,13 +293,30 @@ func TestDecodeHelloResult(t *testing.T) {
 }
 
 func TestDecodeStrict(t *testing.T) {
+	type inner struct {
+		Name string `json:"name"`
+	}
+	type Base struct {
+		Kind string `json:"kind"`
+	}
 	type p struct {
-		ID string `json:"id"`
-		N  int    `json:"n"`
+		Base
+		ID    string           `json:"id"`
+		N     int              `json:"n"`
+		In    *inner           `json:"in,omitempty"`
+		List  []inner          `json:"list,omitempty"`
+		ByKey map[string]inner `json:"by_key,omitempty"`
+		Plain string           `json:",omitempty"` // no name in the tag: the field's
 	}
 	var got p
-	if err := DecodeStrict(json.RawMessage(`{"id":"a","n":2}`), &got); err != nil || got != (p{"a", 2}) {
+	if err := DecodeStrict(json.RawMessage(`{"id":"a","n":2}`), &got); err != nil || got.ID != "a" || got.N != 2 {
 		t.Fatalf("%+v %v", got, err)
+	}
+	got = p{}
+	in := `{"id":"a","in":{"name":"x"},"list":[{"name":"y"}],"by_key":{"Any-Key":{"name":"z"}},"Plain":"q","kind":"k"}`
+	if err := DecodeStrict(json.RawMessage(in), &got); err != nil || got.In.Name != "x" || got.List[0].Name != "y" ||
+		got.ByKey["Any-Key"].Name != "z" || got.Plain != "q" || got.Kind != "k" {
+		t.Fatalf("nested: %+v %v", got, err)
 	}
 	got = p{}
 	if err := DecodeStrict(nil, &got); err != nil {
@@ -313,6 +330,16 @@ func TestDecodeStrict(t *testing.T) {
 		"array":         `[]`,
 		"null":          `null`,
 		"float":         `{"n":1.5}`,
+		// Keys are matched in their case, as the wire's own fields are; the
+		// standard decoder would take each of these.
+		"case variant":            `{"ID":"a"}`,
+		"field alias":             `{"id":"a","ID":"b"}`,
+		"case variant, nested":    `{"in":{"Name":"x"}}`,
+		"case variant, in a list": `{"list":[{"NAME":"x"}]}`,
+		"case variant, in a map":  `{"by_key":{"k":{"nAme":"x"}}}`,
+		"case variant, untagged":  `{"plain":"q"}`,
+		"case variant, promoted":  `{"KIND":"k"}`,
+		"embedded struct by name": `{"Base":{"kind":"k"}}`,
 	} {
 		var g p
 		if err := DecodeStrict(json.RawMessage(in), &g); !errors.Is(err, ErrProtocol) {

@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -993,5 +994,276 @@ func TestServerLeaksNoGoroutines(t *testing.T) {
 	}
 	if err := e.stop(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A handler that ignores its context outlives its connection, and keeps a
+// place until it returns: a peer that reconnects cannot start more handlers
+// than the server's ceiling, MaxConns × MaxInFlight by default, however many
+// connections it goes through. Each connection used to count its handlers
+// afresh, so a flapping peer could pile them up without end.
+func TestServerHandlersHaveAServerWideCeiling(t *testing.T) {
+	leakCheck(t)
+	release := make(chan struct{})
+	started := make(chan struct{}, 100)
+	connGone := make(chan struct{}, 100)
+	var mu sync.Mutex
+	running, most := 0, 0
+	e := startServer(t, func(c *ServerConfig) { c.MaxConns, c.MaxInFlight = 3, 1 }, HandlerFunc(
+		func(ctx context.Context, _ Peer, op string, _ json.RawMessage) (json.RawMessage, error) {
+			if op != "t.ignores" {
+				return nil, nil
+			}
+			mu.Lock()
+			running++
+			most = max(most, running)
+			mu.Unlock()
+			defer func() { mu.Lock(); running--; mu.Unlock() }()
+			started <- struct{}{}
+			<-ctx.Done() // the connection has gone
+			connGone <- struct{}{}
+			<-release // and the handler still has not returned
+			return nil, nil
+		}))
+	var freeOnce sync.Once
+	free := func() { freeOnce.Do(func() { close(release) }) }
+	t.Cleanup(free) // a failing test frees its handlers too
+	served, busy := 0, 0
+	for i := 0; i < 6; i++ {
+		r := e.helloed()
+		// The loop takes frames in order: the ping is answered after the
+		// request is refused or its handler started.
+		r.send(`{"id":2,"op":"t.ignores"}`)
+		r.send(`{"id":3,"op":"seat.ping"}`)
+		switch resp := r.recv(); {
+		case resp.ID == 2 && resp.Code == CodeBusy:
+			busy++
+			if resp := r.recv(); resp.ID != 3 || resp.Code != "" {
+				t.Fatalf("connection %d: %+v", i, resp)
+			}
+			r.c.Close()
+		case resp.ID == 3 && resp.Code == "":
+			served++
+			within(t, "the handler to start", started, 5*time.Second)
+			r.c.Close()
+			// The handler sees its connection end, so the connection's
+			// place is (about to be) free; the handler goes on.
+			within(t, "the connection to end", connGone, 5*time.Second)
+		default:
+			t.Fatalf("connection %d: %+v", i, resp)
+		}
+	}
+	mu.Lock()
+	m := most
+	mu.Unlock()
+	if m > 3 || served != 3 || busy != 3 {
+		t.Fatalf("%d handlers ran at once, %d served and %d busy; want at most 3, 3 and 3", m, served, busy)
+	}
+	free()
+	untilTrue(t, "the handlers to return", func() bool { mu.Lock(); defer mu.Unlock(); return running == 0 })
+	// Their places are free again.
+	r := e.helloed()
+	if resp := r.call(2, "t.quick", ""); resp.Code != "" {
+		t.Fatalf("after the handlers returned: %+v", resp)
+	}
+}
+
+// A shutdown keeps its grace even when a connection's loop is stuck writing
+// to a peer that has stopped reading. The loop writes the answers it serves
+// itself (a ping, busy, rate-limited), and used to see the drain only once such
+// a write ended, at WriteTimeout, so Serve could outlast the grace by that.
+func TestServerShutdownGraceHoldsAgainstAPeerThatStopsReading(t *testing.T) {
+	leakCheck(t)
+	big := json.RawMessage(`{"x":"` + strings.Repeat("a", 60000) + `"}`)
+	e := startServer(t, func(c *ServerConfig) {
+		bigRate(c)
+		c.WriteTimeout = time.Minute
+		c.ShutdownGrace = 200 * time.Millisecond
+	}, HandlerFunc(func(context.Context, Peer, string, json.RawMessage) (json.RawMessage, error) {
+		return big, nil
+	}))
+	r := e.helloed()
+	// Big requests for big answers, each with a ping, and never a read: the
+	// answers fill the buffers, a ping's answer then blocks the loop, the
+	// server stops reading, and so at last a write of ours stalls.
+	req := []byte(fmt.Sprintf(`{"id":%%d,"op":"t.big","params":%s}`, big))
+	stalled := false
+	for i := 0; i < 2000 && !stalled; i++ {
+		for _, p := range [][]byte{fmt.Appendf(nil, string(req), 2*i+2), fmt.Appendf(nil, `{"id":%d,"op":"seat.ping"}`, 2*i+3)} {
+			r.c.SetWriteDeadline(time.Now().Add(time.Second))
+			if err := writeFrame(r.c, p); err != nil {
+				var ne net.Error
+				if !errors.As(err, &ne) || !ne.Timeout() {
+					t.Fatal(err)
+				}
+				stalled = true
+				break
+			}
+		}
+	}
+	if !stalled {
+		t.Fatal("the server kept reading")
+	}
+	start := time.Now()
+	e.cancel()
+	if err := e.stop(); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("Serve returned %v after the shutdown began, with a grace of 200ms", d)
+	}
+}
+
+// A shutdown that begins right as a handshake ends still gives the
+// connection's request its grace. The watcher that closes a connection whose
+// handshake a shutdown interrupts was told the handshake was over and not
+// waited for, so if it ran only once the shutdown had begun as well it could
+// pick the shutdown and close the connection, with its request in flight.
+//
+// A hook holds the watcher until the request is in flight and the shutdown has
+// begun; the watcher then picks one of two ready cases at random, so the test
+// makes 16 rounds. A server that waits for its watcher answers no request
+// before the watcher is done, so the hook lets it go after 100 ms.
+func TestServerShutdownRightAsAHandshakeEndsKeepsTheGrace(t *testing.T) {
+	leakCheck(t)
+	for round := 0; round < 16; round++ {
+		gate, decided := make(chan struct{}), make(chan struct{})
+		started, answer := make(chan struct{}), make(chan struct{})
+		e := startServer(t, func(c *ServerConfig) {
+			c.hsWatch = func() func() { <-gate; return func() { close(decided) } }
+		}, HandlerFunc(func(ctx context.Context, _ Peer, _ string, _ json.RawMessage) (json.RawMessage, error) {
+			close(started)
+			select {
+			case <-answer:
+				return json.RawMessage(`{"done":true}`), nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}))
+		r := e.raw()
+		r.send(`{"id":1,"op":"seat.hello","params":{"proto":1,"caps":[],"role":"seat"}}`)
+		r.send(`{"id":2,"op":"t.slow"}`)
+		select {
+		case <-started:
+			e.cancel()
+			untilTrue(t, "the shutdown to begin", func() bool { // the drain is closed before the listener
+				c, err := net.DialTimeout("tcp", e.addr, time.Second)
+				if err == nil {
+					c.Close()
+				}
+				return err != nil
+			})
+			close(gate)
+			within(t, "the watcher", decided, 5*time.Second)
+		case <-time.After(100 * time.Millisecond):
+			close(gate)
+			within(t, "the handler to start", started, 5*time.Second)
+			e.cancel()
+		}
+		close(answer)
+		got := map[uint64]response{}
+		for len(got) < 2 {
+			resp, err := r.recvWithin(5 * time.Second)
+			if err != nil {
+				t.Fatalf("round %d: the connection ended with its request in flight (%v); answers %+v", round, err, got)
+			}
+			got[resp.ID] = resp
+		}
+		if resp := got[2]; resp.Code != "" || string(resp.Result) != `{"done":true}` {
+			t.Fatalf("round %d: %+v", round, resp)
+		}
+		if err := e.stop(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A request that reuses the id of one in flight closes the connection even
+// when the rate is spent: it used to be answered rate-limited first, under the
+// id of the request in flight, which would be answered too.
+func TestServerIdReuseIsCaughtBeforeTheRateLimit(t *testing.T) {
+	leakCheck(t)
+	release := make(chan struct{})
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	e := startServer(t, func(c *ServerConfig) {
+		c.RateMax, c.Now = 1, func() time.Time { return now }
+	}, HandlerFunc(func(ctx context.Context, _ Peer, _ string, _ json.RawMessage) (json.RawMessage, error) {
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return nil, nil
+	}))
+	defer close(release)
+	r := e.helloed()
+	r.send(`{"id":7,"op":"t.block"}`) // spends the rate
+	r.send(`{"id":7,"op":"t.block"}`)
+	if got := r.expectClosed(3 * time.Second); len(got) != 0 {
+		t.Fatalf("answered before the close: %+v", got)
+	}
+}
+
+// The id of a request is its own until its answer is written: a request that
+// reuses it while the answer waits to be written closes the connection, as
+// one that reuses it while the handler runs does. It used to be released
+// before the answer was written, so the second request was taken and answered
+// under the same id.
+func TestServerIdIsHeldUntilItsAnswerIsWritten(t *testing.T) {
+	leakCheck(t)
+	ready, hold := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	var calls atomic.Int32
+	e := startServer(t, func(c *ServerConfig) {
+		c.answerHook = func(id uint64, written bool) {
+			if id == 7 && !written {
+				once.Do(func() { close(ready); <-hold })
+			}
+		}
+	}, HandlerFunc(func(context.Context, Peer, string, json.RawMessage) (json.RawMessage, error) {
+		calls.Add(1)
+		return nil, nil
+	}))
+	var holdOnce sync.Once
+	free := func() { holdOnce.Do(func() { close(hold) }) }
+	t.Cleanup(free)
+	r := e.helloed()
+	r.send(`{"id":7,"op":"t.x"}`)
+	within(t, "the answer to be ready", ready, 5*time.Second)
+	r.send(`{"id":7,"op":"t.x"}`)
+	got := r.expectClosed(3 * time.Second)
+	free()
+	if n := calls.Load(); n != 1 || len(got) != 0 {
+		t.Fatalf("the handler ran %d times, answers before the close %+v", n, got)
+	}
+}
+
+// A client may reuse an id once it has the answer, even while the server has
+// not yet let go of the id after writing that answer.
+func TestServerIdIsFreeOnceItsAnswerIsWritten(t *testing.T) {
+	leakCheck(t)
+	written, hold := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	e := startServer(t, func(c *ServerConfig) {
+		c.answerHook = func(id uint64, w bool) {
+			if id == 7 && w {
+				once.Do(func() { close(written); <-hold })
+			}
+		}
+	}, echo())
+	var holdOnce sync.Once
+	free := func() { holdOnce.Do(func() { close(hold) }) }
+	t.Cleanup(free)
+	r := e.helloed()
+	if resp := r.call(7, "t.x", ""); resp.Code != "" {
+		t.Fatalf("%+v", resp)
+	}
+	within(t, "the answer to be written", written, 5*time.Second)
+	r.send(`{"id":7,"op":"t.x"}`)
+	free()
+	if resp := r.recv(); resp.ID != 7 || resp.Code != "" {
+		t.Fatalf("%+v", resp)
+	}
+	if resp := r.call(8, "seat.ping", ""); resp.ID != 8 || resp.Code != "" {
+		t.Fatalf("%+v", resp)
 	}
 }
