@@ -82,8 +82,9 @@
 //	a frame, from its first byte to its last 10 s (a half-sent frame ends the connection)
 //	silence                                 60 s
 //
-// A request that reuses the id of one still in flight closes the connection,
-// since its answer could not be told from the other's. Responses may come in
+// A request that reuses the id of one still in flight (until its answer is
+// written) closes the connection, with no answer to it, since its answer could
+// not be told from the other's. Responses may come in
 // any order; the id says which request each answers. On shutdown (the context
 // of Serve is done) the server stops accepting, lets requests in flight be
 // answered for up to the grace period and closes everything.

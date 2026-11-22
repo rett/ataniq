@@ -90,6 +90,9 @@ type ServerConfig struct {
 	// hsWatch, for tests, runs as the watcher of a handshake starts, and what
 	// it returns as the watcher ends.
 	hsWatch func() func()
+	// answerHook, for tests, runs when the answer of a request handed to the
+	// handler is ready to be written (written false) and once it is written.
+	answerHook func(id uint64, written bool)
 }
 
 func (c ServerConfig) withDefaults() ServerConfig {
@@ -260,8 +263,8 @@ type srvConn struct {
 	wmu sync.Mutex // serialises writes
 
 	mu      sync.Mutex
-	ids     map[uint64]struct{} // requests asked and not yet answered
-	running int                 // handlers that have not returned
+	ids     map[uint64]bool // requests asked and not yet answered: true while the answer is written
+	running int             // handlers that have not returned
 }
 
 func (s *server) serveConn(raw net.Conn) {
@@ -313,7 +316,7 @@ func (s *server) serveConn(raw net.Conn) {
 		frames:     make(chan frameMsg),
 		readerDone: make(chan struct{}),
 		rate:       &limiter{max: s.cfg.RateMax, per: s.cfg.RatePer},
-		ids:        map[uint64]struct{}{},
+		ids:        map[uint64]bool{},
 	}
 	// The grace of a shutdown is counted here, from the drain, and not by the
 	// loop, which may be held in a write to a peer that does not read and see
@@ -421,6 +424,49 @@ func (c *srvConn) kill() {
 
 // reply writes one response. A write that fails ends the connection.
 func (c *srvConn) reply(r response) {
+	payload := r.frame()
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	c.write(payload)
+}
+
+// answer writes the response to a request handed to the handler and then
+// releases its id. The id is the request's until its answer is written, so a
+// request that reuses it before then closes the connection (it could not be
+// told from this one); while the answer is being written it is marked, and
+// handle waits for the write before it decides, since the client may have the
+// answer already and reuse the id, as it may.
+func (c *srvConn) answer(r response) {
+	payload := r.frame()
+	if h := c.s.cfg.answerHook; h != nil {
+		h(r.ID, false)
+	}
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	c.mu.Lock()
+	c.ids[r.ID] = true
+	c.mu.Unlock()
+	c.write(payload)
+	if h := c.s.cfg.answerHook; h != nil {
+		h(r.ID, true)
+	}
+	c.mu.Lock()
+	delete(c.ids, r.ID)
+	c.mu.Unlock()
+}
+
+// write writes one frame; the caller holds wmu. A write that fails ends the
+// connection.
+func (c *srvConn) write(payload []byte) {
+	c.tc.SetWriteDeadline(time.Now().Add(c.s.cfg.WriteTimeout))
+	if err := writeFrame(c.tc, payload); err != nil {
+		c.kill()
+	}
+}
+
+// frame is r encoded for the wire: too-large for a result that does not fit a
+// frame, failed if it cannot be encoded.
+func (r response) frame() []byte {
 	payload, err := r.encode()
 	if err == nil && len(payload) > MaxFrame {
 		payload, err = response{ID: r.ID, Code: CodeTooLarge}.encode()
@@ -428,12 +474,7 @@ func (c *srvConn) reply(r response) {
 	if err != nil {
 		payload, _ = response{ID: r.ID, Code: CodeFailed}.encode()
 	}
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
-	c.tc.SetWriteDeadline(time.Now().Add(c.s.cfg.WriteTimeout))
-	if err := writeFrame(c.tc, payload); err != nil {
-		c.kill()
-	}
+	return payload
 }
 
 // handle takes one decoded request. It returns false when the connection is
@@ -447,15 +488,24 @@ func (c *srvConn) handle(req request) bool {
 		}
 		return c.hello(req)
 	}
+	// The id first: a reuse gets no answer of any kind, since it would go
+	// under the id of the request in flight.
+	c.mu.Lock()
+	writing, dup := c.ids[req.ID]
+	c.mu.Unlock()
+	if writing { // the answer is on its way out, and the id with it
+		c.wmu.Lock()
+		c.wmu.Unlock()
+		c.mu.Lock()
+		_, dup = c.ids[req.ID]
+		c.mu.Unlock()
+	}
+	if dup {
+		return false
+	}
 	if !c.rate.allow(c.s.cfg.Now()) {
 		c.reply(response{ID: req.ID, Code: CodeRateLimited})
 		return true
-	}
-	c.mu.Lock()
-	_, dup := c.ids[req.ID]
-	c.mu.Unlock()
-	if dup {
-		return false
 	}
 	switch req.Op {
 	case OpHello:
@@ -472,7 +522,7 @@ func (c *srvConn) handle(req request) bool {
 		return true
 	}
 	c.running++
-	c.ids[req.ID] = struct{}{}
+	c.ids[req.ID] = false
 	c.mu.Unlock()
 	c.waiters.Add(1)
 	go c.serve(req)
@@ -496,8 +546,8 @@ func (c *srvConn) hello(req request) bool {
 
 // serve runs one request: the handler in a goroutine of its own, and the wait
 // for it, which ends at the request's deadline whether the handler has
-// returned or not. The id is released before the response is written, so the
-// client, which may reuse it once it has the response, never finds it taken.
+// returned or not. The id is released once the response is written (see
+// answer).
 func (c *srvConn) serve(req request) {
 	defer c.waiters.Done()
 	ctx, cancel := context.WithTimeout(c.ctx, c.s.cfg.RequestTimeout)
@@ -521,10 +571,7 @@ func (c *srvConn) serve(req request) {
 		}
 		r = response{ID: req.ID, Code: CodeDeadline}
 	}
-	c.mu.Lock()
-	delete(c.ids, req.ID)
-	c.mu.Unlock()
-	c.reply(r)
+	c.answer(r)
 }
 
 // invoke calls the handler and turns what comes back, or a panic, into the

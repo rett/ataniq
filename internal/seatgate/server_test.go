@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1174,5 +1175,95 @@ func TestServerShutdownRightAsAHandshakeEndsKeepsTheGrace(t *testing.T) {
 		if err := e.stop(); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// A request that reuses the id of one in flight closes the connection even
+// when the rate is spent: it used to be answered rate-limited first, under the
+// id of the request in flight, which would be answered too.
+func TestServerIdReuseIsCaughtBeforeTheRateLimit(t *testing.T) {
+	leakCheck(t)
+	release := make(chan struct{})
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	e := startServer(t, func(c *ServerConfig) {
+		c.RateMax, c.Now = 1, func() time.Time { return now }
+	}, HandlerFunc(func(ctx context.Context, _ Peer, _ string, _ json.RawMessage) (json.RawMessage, error) {
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return nil, nil
+	}))
+	defer close(release)
+	r := e.helloed()
+	r.send(`{"id":7,"op":"t.block"}`) // spends the rate
+	r.send(`{"id":7,"op":"t.block"}`)
+	if got := r.expectClosed(3 * time.Second); len(got) != 0 {
+		t.Fatalf("answered before the close: %+v", got)
+	}
+}
+
+// The id of a request is its own until its answer is written: a request that
+// reuses it while the answer waits to be written closes the connection, as
+// one that reuses it while the handler runs does. It used to be released
+// before the answer was written, so the second request was taken and answered
+// under the same id.
+func TestServerIdIsHeldUntilItsAnswerIsWritten(t *testing.T) {
+	leakCheck(t)
+	ready, hold := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	var calls atomic.Int32
+	e := startServer(t, func(c *ServerConfig) {
+		c.answerHook = func(id uint64, written bool) {
+			if id == 7 && !written {
+				once.Do(func() { close(ready); <-hold })
+			}
+		}
+	}, HandlerFunc(func(context.Context, Peer, string, json.RawMessage) (json.RawMessage, error) {
+		calls.Add(1)
+		return nil, nil
+	}))
+	var holdOnce sync.Once
+	free := func() { holdOnce.Do(func() { close(hold) }) }
+	t.Cleanup(free)
+	r := e.helloed()
+	r.send(`{"id":7,"op":"t.x"}`)
+	within(t, "the answer to be ready", ready, 5*time.Second)
+	r.send(`{"id":7,"op":"t.x"}`)
+	got := r.expectClosed(3 * time.Second)
+	free()
+	if n := calls.Load(); n != 1 || len(got) != 0 {
+		t.Fatalf("the handler ran %d times, answers before the close %+v", n, got)
+	}
+}
+
+// A client may reuse an id once it has the answer, even while the server has
+// not yet let go of the id after writing that answer.
+func TestServerIdIsFreeOnceItsAnswerIsWritten(t *testing.T) {
+	leakCheck(t)
+	written, hold := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	e := startServer(t, func(c *ServerConfig) {
+		c.answerHook = func(id uint64, w bool) {
+			if id == 7 && w {
+				once.Do(func() { close(written); <-hold })
+			}
+		}
+	}, echo())
+	var holdOnce sync.Once
+	free := func() { holdOnce.Do(func() { close(hold) }) }
+	t.Cleanup(free)
+	r := e.helloed()
+	if resp := r.call(7, "t.x", ""); resp.Code != "" {
+		t.Fatalf("%+v", resp)
+	}
+	within(t, "the answer to be written", written, 5*time.Second)
+	r.send(`{"id":7,"op":"t.x"}`)
+	free()
+	if resp := r.recv(); resp.ID != 7 || resp.Code != "" {
+		t.Fatalf("%+v", resp)
+	}
+	if resp := r.call(8, "seat.ping", ""); resp.ID != 8 || resp.Code != "" {
+		t.Fatalf("%+v", resp)
 	}
 }
