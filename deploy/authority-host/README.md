@@ -700,7 +700,12 @@ without it. The contract for those services is:
   `lstat` of `/var/lib/authority-host/decisions.inhibit`, which refuses
   when it finds the file and when it gets any answer other than "no such
   file" (only existence is checked, so the file's mode and content do not
-  matter). One lookup is one instant: there is no second file and no order
+  matter). It also refuses when `/var/lib/authority-host` itself is
+  missing or is not a real folder (a file or a link): a bare `lstat` of
+  the file alone gets "no such file" there and would allow. Use
+  `decisionguard.Check` (`internal/authorityhost/decisionguard`), which
+  makes that lookup and the folder's, rather than a bare `lstat`. One
+  lookup is one instant: there is no second file and no order
   of lookups to get wrong. Readiness and the static status page do not
   depend on it.
 
