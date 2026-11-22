@@ -19,3 +19,17 @@ func newID(t testing.TB, name string) Identity {
 	}
 	return id
 }
+
+// within receives from ch, failing the test if nothing comes within d, so
+// that a regression fails in seconds rather than at the package timeout.
+func within[T any](t *testing.T, what string, ch <-chan T, d time.Duration) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(d):
+		t.Fatalf("timed out after %v waiting for %s", d, what)
+		var zero T
+		return zero
+	}
+}
