@@ -268,6 +268,86 @@ func TestCrashAndResume(t *testing.T) {
 	}
 }
 
+// TestCrashDoneRunsThePostCheckAgain: a switch killed right after its
+// phase done was saved (CrashDone), resumed after a reboot, runs the
+// post-activation no-AI check of the release current points at again, on
+// the host as it now is, after its reload and health check and before
+// decisions are no longer inhibited: the verdict from before the reboot is
+// not reused. When that check now fails (the firewall changed while the
+// service still answers its health check), decisions stay inhibited, the
+// record says the check failed, the outcome is owed with the failed
+// requalification, and the host's stop list runs.
+func TestCrashDoneRunsThePostCheckAgain(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pass bool // the post-activation check passes after the reboot
+	}{{"passes again", true}, {"fails after the reboot", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := activeOwn(t)
+			e.keepOwed = true
+			e.crashAt(CrashDone, false, rel3)
+			if j, ok := e.journal(); !ok || j.Phase != PhaseDone || j.Check != CheckPassed {
+				t.Fatalf("journal after the crash: %+v, %v", j, ok)
+			}
+			e.runner.reset()
+			if !tc.pass {
+				e.runner.failPost = e.relDir(rel3)
+			}
+			if code := e.recover(resumeOnly); code != ExitFailed {
+				t.Fatalf("recover: exit %d\n%s", code, e.last)
+			}
+			post := "--phase post --root " + e.root + " --release " + e.relDir(rel3) + " --require-policy --nft-listing FILE"
+			var order []string
+			for _, c := range e.runner.calls {
+				if strings.HasSuffix(c, post) {
+					order = append(order, "post-check")
+					continue
+				}
+				order = append(order, filepath.Base(strings.Fields(c)[0]))
+			}
+			e.noJournal()
+			rec := e.record()
+			if rec.Result != ResultOK || rec.CurrentID != rel3 {
+				t.Errorf("record: %+v", rec)
+			}
+			if tc.pass {
+				if got := strings.Join(order, " "); got != "reload-units health-probe nft post-check" {
+					t.Errorf("the resume ran %s, want the reload list, the health check and the post-activation check of %s", got, rel3)
+				}
+				if _, ok := e.inhibited(); ok {
+					t.Errorf("still inhibited after the post-activation check passed again")
+				}
+				if rec.Check != CheckPassed {
+					t.Errorf("record check %q, want %q", rec.Check, CheckPassed)
+				}
+				return
+			}
+			if got := strings.Join(order, " "); got != "reload-units health-probe nft post-check stop-all" {
+				t.Errorf("the resume ran %s", got)
+			}
+			in, ok := e.inhibited()
+			if !ok {
+				t.Fatalf("decisions are no longer inhibited though the post-activation check failed after the reboot\n%s", e.last)
+			}
+			if !strings.Contains(in.Reason, "no-AI check") {
+				t.Errorf("inhibit reason: %q", in.Reason)
+			}
+			if rec.Check != CheckFailed {
+				t.Errorf("record check %q, want %q", rec.Check, CheckFailed)
+			}
+			if !strings.Contains(rec.Detail, "phase post") {
+				t.Errorf("record detail: %q", rec.Detail)
+			}
+			if owed := e.owed(); len(owed) != 1 || !owed[0].RequalifyFailed {
+				t.Errorf("owed: %+v", owed)
+			}
+			if !strings.Contains(e.last, "decisions stay inhibited") {
+				t.Errorf("output:\n%s", e.last)
+			}
+		})
+	}
+}
+
 // TestRetryReportsSettled: a request retried after its transaction was
 // interrupted reports the outcome the resume reached, once, and does not do
 // the request again; a rollback retried after it was completed does not go

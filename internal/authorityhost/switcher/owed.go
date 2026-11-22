@@ -125,12 +125,13 @@ func (s *Switcher) reportOwed(o owedOutcome) error {
 }
 
 // requalifyFailedLine is the line that says a transaction found in phase
-// done did not pass its reload and health check again, current being cur.
+// done did not pass its reload, health check and no-AI check again,
+// current being cur.
 func requalifyFailedLine(cur string) string {
 	if cur == "" {
 		cur = "none"
 	}
-	return fmt.Sprintf("result: decisions stay inhibited: %s did not pass its reload and health check again after the interruption; look at the host, acknowledge the outcome with ah-switch ack --asked WORDS, then switch, or run ah-switch inhibit-clear --asked WORDS", cur)
+	return fmt.Sprintf("result: decisions stay inhibited: %s did not pass its reload, health check and no-AI check again after the interruption; look at the host, acknowledge the outcome with ah-switch ack --asked WORDS, then switch, or run ah-switch inhibit-clear --asked WORDS", cur)
 }
 
 // readOwed reads owed.json; a missing file is nothing owed. One that is
@@ -260,7 +261,7 @@ func (s *Switcher) answerOwed(arg string, rollback bool) (code int, done bool) {
 	} else if o.RequalifyFailed {
 		// The failure is not an outcome to report once: it stays owed
 		// until the owner acknowledges it.
-		s.printf("settled: the outcome stays owed: its release did not pass its reload and health check again")
+		s.printf("settled: the outcome stays owed: its release did not pass its reload, health check and no-AI check again")
 	} else {
 		rest := append(append([]owedOutcome{}, owed[:match]...), owed[match+1:]...)
 		if err := s.writeOwed(rest); err != nil {
@@ -372,7 +373,7 @@ func (s *Switcher) owedStatus() ([]string, error) {
 	for _, o := range owed {
 		line := fmt.Sprintf("outcome owed (request %s, transaction %s): the %s %s ended %s at %s; the same request run again reports it, ah-switch ack --asked WORDS acknowledges it, and any other switch or rollback is refused until then", q(o.RequestID), o.Txn, o.kind(), o.ID, o.Result, q(o.Time))
 		if o.RequalifyFailed {
-			line += "; after an interruption its release did not pass its reload and health check again, so decisions stay inhibited and the same request fails until it is acknowledged"
+			line += "; after an interruption its release did not pass its reload, health check and no-AI check again, so decisions stay inhibited and the same request fails until it is acknowledged"
 		}
 		lines = append(lines, line)
 	}

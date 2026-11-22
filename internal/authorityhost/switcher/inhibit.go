@@ -21,10 +21,10 @@ import (
 // whose release passed its health check and its post-activation no-AI
 // check, or a going back whose release passed its reload, its health check
 // and its post-activation no-AI check; a transaction found in phase done
-// by a later command first runs the reload list and the health check of
-// current again (see requalifyCurrent). Any other end leaves it, across a
-// reboot, until a later transaction ends healthy or the owner runs
-// ah-switch inhibit-clear.
+// by a later command first runs the reload list, the health check and the
+// no-AI check of current again (see requalifyCurrent). Any other end
+// leaves it, across a reboot, until a later transaction ends healthy or
+// the owner runs ah-switch inhibit-clear.
 const InhibitFile = "decisions.inhibit"
 
 // maxInhibitWords bounds the owner's words of inhibit-clear.
@@ -113,14 +113,14 @@ func journalHealthy(j journal) bool {
 
 // endInhibit is the inhibit at the end of the transaction t, once its
 // outcome is recorded: removed when it ended healthy (and, found in phase
-// done, passed its reload and health check again), otherwise kept, with
+// done, passed its reload, health check and no-AI check again), otherwise kept, with
 // the outcome as its reason.
 func (s *Switcher) endInhibit(t *txn) error {
 	if t.requalifyFailed {
-		if err := s.setInhibit(t, fmt.Sprintf("the %s %s ended %s, but after an interruption current did not pass its reload and health check again", t.kind(), t.j.ID, t.j.Result)); err != nil {
+		if err := s.setInhibit(t, fmt.Sprintf("the %s %s ended %s, but after an interruption current did not pass its reload, health check and no-AI check again", t.kind(), t.j.ID, t.j.Result)); err != nil {
 			return err
 		}
-		s.step(9, "decisions stay inhibited (%s): current did not pass its reload and health check again", InhibitFile)
+		s.step(9, "decisions stay inhibited (%s): current did not pass its reload, health check and no-AI check again", InhibitFile)
 		return nil
 	}
 	if t.healthy() {

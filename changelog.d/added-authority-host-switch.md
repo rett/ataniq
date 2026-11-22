@@ -41,11 +41,14 @@
   decision-capable service may start while it is there (and answer its
   readiness probe) but refuses every decision while it is there or cannot
   be read, checking it before each decision; the switch removes it only
-  when the transaction ends healthy, after running the reload list and
-  health check of `current` again when it finds a healthy transaction
-  not yet settled (a reboot may have come; when that fails the host's
-  stop list runs, the command and every retry of the same request exit 1
-  and the outcome stays owed with the failure until acknowledged); a
+  when the transaction ends healthy, after running the reload list,
+  health check and post-activation no-AI check (`--phase post`, the
+  firewall and listeners as they are now) of `current` again when it
+  finds a healthy transaction not yet settled (a reboot may have come;
+  when any of it fails the host's stop list runs, a failed no-AI check is
+  recorded as the check's verdict, the command and every retry of the
+  same request exit 1 and the outcome stays owed with the failure until
+  acknowledged); a
   failure keeps it across a reboot until a healthy switch or
   `ah-switch inhibit-clear --asked WORDS` (recorded with the time). All
   of it is one transaction journaled in `txn.json`, phase by phase
