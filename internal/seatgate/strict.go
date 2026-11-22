@@ -160,10 +160,32 @@ var unmarshalerType = reflect.TypeFor[json.Unmarshaler]()
 // pointer in it, a map's keys) is left to the decoder, which refuses what does
 // not fit. A type that decodes itself (UnmarshalJSON) is out of scope: it
 // reads its own object and must hold its keys to their names itself.
+//
+// A chain of pointers that comes back on itself, by its types (type P *P) or
+// by its values (an interface that holds a pointer to itself), takes null and
+// nothing else: the decoder would follow it without end.
 func exactKeys(raw json.RawMessage, t reflect.Type, v reflect.Value) bool {
+	type hop struct {
+		t reflect.Type
+		p uintptr // the pointer's value, or 0 where there is none
+	}
+	var seen map[hop]bool
 	for {
 		if t.Implements(unmarshalerType) || reflect.PointerTo(t).Implements(unmarshalerType) {
 			return true
+		}
+		if t.Kind() == reflect.Pointer {
+			h := hop{t: t}
+			if v.IsValid() && !v.IsNil() {
+				h.p = v.Pointer()
+			}
+			if seen[h] {
+				return string(bytes.TrimSpace(raw)) == "null"
+			}
+			if seen == nil {
+				seen = map[hop]bool{}
+			}
+			seen[h] = true
 		}
 		switch t.Kind() {
 		case reflect.Interface:

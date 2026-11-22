@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidOp(t *testing.T) {
@@ -522,5 +523,57 @@ func TestDecodeStrictFollowsAPointerInAnInterface(t *testing.T) {
 	in := `{"p":{"id":"x"},"l":[{"id":"y"}],"a":[{"id":"z"}],"v":{"ID":1},"m":{"k":{"ID":2}}}`
 	if err := DecodeStrict(json.RawMessage(in), d); err != nil || p.ID != "x" || l.ID != "y" || a.ID != "z" {
 		t.Fatalf("%v: %+v %+v %+v", err, p, l, a)
+	}
+}
+
+// recursiveLink is a pointer to itself: a value of it is nil or points to
+// another one, without end.
+type recursiveLink *recursiveLink
+
+// A pointer whose chain of types or of values comes back on itself is
+// decoded from null, and anything else is refused, at once. DecodeStrict used
+// to follow such a type for ever, before the decoder was reached, so a
+// handler that decoded into one hung on any params (holding its place among
+// the handlers); and the decoder itself recurses without end on one that is
+// not null, until the stack overflows.
+func TestDecodeStrictEndsOnACycleOfPointers(t *testing.T) {
+	type link struct {
+		Next recursiveLink
+	}
+	type held struct {
+		P any `json:"p"`
+	}
+	decode := func(in string, dst any) error {
+		res := make(chan error, 1)
+		go func() { res <- DecodeStrict(json.RawMessage(in), dst) }()
+		return within(t, "DecodeStrict to return on "+in, res, 5*time.Second)
+	}
+	var l link
+	if err := decode(`{"Next":null}`, &l); err != nil || l.Next != nil {
+		t.Fatalf("null: %v %v", err, l.Next)
+	}
+	for _, in := range []string{`{"Next":{}}`, `{"Next":1}`, `{"Next":[]}`} {
+		if err := decode(in, new(link)); !errors.Is(err, ErrProtocol) {
+			t.Fatalf("%s: %v", in, err)
+		}
+	}
+	self := func() *held { // an interface that holds a pointer to itself
+		h := new(held)
+		h.P = &h.P
+		return h
+	}
+	pair := func() *held { // two interfaces that hold pointers to each other
+		h := new(held)
+		var other any = &h.P
+		h.P = &other
+		return h
+	}
+	for name, mk := range map[string]func() *held{"self": self, "pair": pair} {
+		if err := decode(`{"p":{"x":1}}`, mk()); !errors.Is(err, ErrProtocol) {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if h := mk(); decode(`{"p":null}`, h) != nil || h.P != nil {
+			t.Fatalf("%s, null: %#v", name, h.P)
+		}
 	}
 }
