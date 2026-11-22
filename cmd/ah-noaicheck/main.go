@@ -7,7 +7,9 @@
 //	ah-noaicheck nft-digest FILE
 //
 // It exits 0 when clean, 1 on any hit (an incomplete run included) and 2 on
-// a usage error or a read error it cannot continue past. See
+// a usage error or a read error it cannot continue past. A diagnostic
+// writes every path and word that came from outside the program through
+// the check's bounded field encoder (noaicheck.Field). See
 // deploy/authority-host/README.md.
 package main
 
@@ -16,8 +18,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"ataniq/internal/authorityhost/noaicheck"
 )
@@ -67,7 +71,7 @@ func main() {
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fail := func(err error) int {
-		fmt.Fprintf(stderr, "ah-noaicheck: %v\n", err)
+		fmt.Fprintf(stderr, "ah-noaicheck: %s\n", diag(err))
 		return exitError
 	}
 	usageErr := func(msg string) int {
@@ -109,10 +113,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			fmt.Fprint(stdout, usage)
 			return exitClean
 		}
-		return usageErr(err.Error())
+		return usageErr(noaicheck.Field(err.Error()))
 	}
 	if fs.NArg() > 0 {
-		return usageErr("unexpected argument " + fmt.Sprintf("%q", fs.Arg(0)))
+		return usageErr("unexpected argument " + noaicheck.Field(fs.Arg(0)))
 	}
 	if *root == "" {
 		return usageErr("--root is empty")
@@ -158,6 +162,38 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return exitHit
 	}
 	return exitClean
+}
+
+// diag is err for a diagnostic line: the path of a filesystem error through
+// noaicheck.Field, and any other text as it is when it is printable ASCII,
+// otherwise through noaicheck.Field too, so that nothing from outside the
+// program reaches the terminal raw or unbounded.
+func diag(err error) string {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		prefix := strings.TrimSuffix(err.Error(), pe.Error())
+		return text(prefix) + pe.Op + " " + noaicheck.Field(pe.Path) + ": " + text(pe.Err.Error())
+	}
+	var le *os.LinkError
+	if errors.As(err, &le) {
+		prefix := strings.TrimSuffix(err.Error(), le.Error())
+		return text(prefix) + le.Op + " " + noaicheck.Field(le.Old) + " " + noaicheck.Field(le.New) + ": " + text(le.Err.Error())
+	}
+	return text(err.Error())
+}
+
+// text is s when it is printable ASCII of at most noaicheck.MaxField
+// bytes, otherwise noaicheck.Field(s).
+func text(s string) string {
+	if len(s) > noaicheck.MaxField {
+		return noaicheck.Field(s)
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] >= 0x7f {
+			return noaicheck.Field(s)
+		}
+	}
+	return s
 }
 
 // ownRelease is the release folder this program was started from: the

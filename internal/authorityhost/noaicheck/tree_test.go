@@ -7,6 +7,7 @@ import (
 	"os"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -143,6 +144,22 @@ func TestField(t *testing.T) {
 	for in, want := range cases {
 		if got := field(in); got != want {
 			t.Errorf("field(%q) = %s, want %s", in, got, want)
+		}
+	}
+}
+
+// Field is field, bounded: a longer string is cut to MaxField bytes and
+// "..." follows it, outside any quotes.
+func TestFieldBounded(t *testing.T) {
+	long := strings.Repeat("a", MaxField+10)
+	for in, want := range map[string]string{
+		"/usr/bin/claude": "/usr/bin/claude",
+		"x\nok":           `"x\nok"`,
+		long:              long[:MaxField] + "...",
+		"\x1b" + long:     strconv.QuoteToASCII("\x1b"+long[:MaxField-1]) + "...",
+	} {
+		if got := Field(in); got != want {
+			t.Errorf("Field(%.20q) = %.40s", in, got)
 		}
 	}
 }

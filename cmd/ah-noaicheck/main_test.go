@@ -306,6 +306,50 @@ func TestUsageAndReadErrors(t *testing.T) {
 	}
 }
 
+// A path or flag the caller passed reaches stderr only escaped and bounded:
+// a control byte, a quote or an invalid byte cannot forge a line or reach
+// the terminal, and a long one is cut.
+func TestDiagnosticsAreEscaped(t *testing.T) {
+	root := host(t)
+	rel := release(t, nil)
+	planted := "x\nok\x1b[2J\u202e\xff"
+	long := strings.Repeat("a", 4*noaicheck.MaxField)
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"a flag", []string{"--root", root, "--release", rel, "--" + planted}, `-x\nok\x1b[2J\u202e\xff`},
+		{"an argument", []string{"--root", root, "--release", rel, planted}, `"x\nok\x1b[2J\u202e\xff"`},
+		{"a root", []string{"--root", filepath.Join(root, "missing", planted), "--release", rel}, `missing/x\nok\x1b[2J\u202e\xff"`},
+		{"a release", []string{"--root", root, "--release", filepath.Join(rel, planted)}, `x\nok\x1b[2J\u202e\xff/share/ai-names.list"`},
+		{"a listing", []string{"--root", root, "--release", rel, "--nft-listing", filepath.Join(rel, planted)}, `x\nok\x1b[2J\u202e\xff"`},
+		{"nft-digest", []string{"nft-digest", filepath.Join(rel, planted)}, `x\nok\x1b[2J\u202e\xff"`},
+		{"a long path", []string{"--root", root, "--release", rel, "--nft-listing", "/" + long}, `aaa...: `},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, out, errOut := runCmd(t, "", tc.args...)
+			if code != exitError || out != "" {
+				t.Fatalf("exit %d stdout %q", code, out)
+			}
+			first, rest, _ := strings.Cut(errOut, "\n")
+			for i := 0; i < len(first); i++ {
+				if b := first[i]; b < 0x20 || b >= 0x7f {
+					t.Errorf("a raw byte %#x in %q", b, first)
+					break
+				}
+			}
+			if !strings.Contains(first, tc.want) || !(rest == "" || strings.HasPrefix(rest, "usage: ")) {
+				t.Errorf("stderr %q, want its first line to hold %q", errOut, tc.want)
+			}
+			if len(first) > 3*noaicheck.MaxField {
+				t.Errorf("a diagnostic of %d bytes", len(first))
+			}
+		})
+	}
+}
+
 // The program writes nothing: the tree is the same before and after a run
 // with hits.
 func TestReadsOnly(t *testing.T) {

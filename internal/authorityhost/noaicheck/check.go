@@ -268,6 +268,21 @@ func (r Report) WriteJSON(w io.Writer) error {
 	return enc.Encode(out)
 }
 
+// MaxField bounds a field Field writes.
+const MaxField = 512
+
+// Field writes s as one field of a line, as WriteText does (quoted with
+// Go's ASCII escapes when it holds anything but printable ASCII, a quote
+// or a backslash), cut to MaxField bytes with "..." after it when it is
+// longer. A diagnostic that carries a path or a word from outside the
+// program writes it through Field.
+func Field(s string) string {
+	if len(s) <= MaxField {
+		return field(s)
+	}
+	return field(s[:MaxField]) + "..."
+}
+
 func field(s string) string {
 	if s == "" {
 		return `""`
