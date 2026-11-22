@@ -152,6 +152,11 @@ func TestPolicyRefused(t *testing.T) {
 		// encoding/json keeps the last of two equal keys.
 		{"duplicate min_mode", `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers", "principal": "release@example.invalid", "min_mode": "manual"}`, nil, nil, ExitFailed},
 		{"duplicate principal", `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers", "principal": "release@example.invalid", "principal": "other@example.invalid"}`, nil, nil, ExitFailed},
+		// encoding/json matches a key to a field without regard to case,
+		// so a case variant would choose the weaker mode.
+		{"case variant of min_mode", `{"Min_Mode": "manual"}`, nil, nil, ExitFailed},
+		{"case variant after min_mode", `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers", "principal": "release@example.invalid", "MIN_MODE": "manual"}`, nil, nil, ExitFailed},
+		{"case variant of principal", `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers", "Principal": "release@example.invalid"}`, nil, nil, ExitFailed},
 		{"not an object", `["signed"]`, nil, nil, ExitFailed},
 		{"number value", `{"min_mode": 1}`, nil, nil, ExitFailed},
 		{"signed without principal", `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers"}`, nil, nil, ExitFailed},
@@ -232,9 +237,37 @@ func TestCheckOneObject(t *testing.T) {
 		{``, false},
 		{`{"a": ` + strings.Repeat("[", 20) + strings.Repeat("]", 20) + `}`, false},
 	} {
-		if err := checkOneObject([]byte(tc.data)); (err == nil) != tc.ok {
+		if err := checkOneObject([]byte(tc.data), nil); (err == nil) != tc.ok {
 			t.Errorf("checkOneObject(%q) = %v", tc.data, err)
 		}
+	}
+}
+
+// TestDeclaredNamesOnly: a key that is not byte for byte a declared name is
+// refused, alone or beside the declared one, in every JSON file the switch
+// reads; the plain decoder would take it for the field.
+func TestDeclaredNamesOnly(t *testing.T) {
+	var p Policy
+	for _, data := range []string{
+		`{"MIN_MODE": "manual"}`,
+		`{"min_mode": "signed", "Min_mode": "manual"}`,
+		`{"min_mode": "signed", "principal": "a", "PRINCIPAL": "b"}`,
+		`{"min_mode": "manual", "present": true}`,
+	} {
+		if err := decodeStrict([]byte(data), &p); err == nil {
+			t.Errorf("decodeStrict(%s) accepted", data)
+		}
+	}
+	if err := decodeStrict([]byte(`{"min_mode": "signed", "allowed_signers": "/s", "principal": "p"}`), &p); err != nil || p.MinMode != ModeSigned {
+		t.Errorf("the declared names: %v, %+v", err, p)
+	}
+	var rec Record
+	if err := decodeStrict([]byte(`{"ID": "0001-aaaaaaa"}`), &rec); err == nil {
+		t.Errorf("a case variant in deploy.json accepted")
+	}
+	var j journal
+	if err := decodeStrict([]byte(`{"Phase": "done"}`), &j); err == nil {
+		t.Errorf("a case variant in the journal accepted")
 	}
 }
 

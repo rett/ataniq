@@ -212,9 +212,13 @@ transaction began with; see "The journal and recover").
   identity a release must be signed by; both are required for signed mode.
   The signature namespace is fixed: `authority-host-release`.
 - No other key is accepted. The file must be exactly one JSON object with
-  each key given once: a second object or any other text after it, or a
-  key given twice (which a plain JSON reader would settle by keeping one of
-  them), is refused as `policy-invalid`. The policy file, the signers file
+  each key given once and spelled exactly as above: a second object or any
+  other text after it, a key given twice (which a plain JSON reader would
+  settle by keeping one of them), or a key in other letter case
+  (`MIN_MODE`, `Min_Mode`), alone or beside the key itself (which a plain
+  JSON reader would take for that key), is refused as `policy-invalid`.
+  The state files (`deploy.json`, `txn.json`, the import records) are read
+  with the same checks. The policy file, the signers file
   and every folder above them must be owned by root and not writable by
   group or others (the same check as the state folder); otherwise, or when
   the policy does not parse, the switch stops before it does anything.

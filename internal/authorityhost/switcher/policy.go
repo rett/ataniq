@@ -46,9 +46,10 @@ var principalPattern = regexp.MustCompile(`^[A-Za-z0-9._@+][A-Za-z0-9._@+-]{0,12
 // readPolicy reads the switch policy. A missing policy folder or file is the
 // manual policy. The folder and every folder above it must be trusted, as the
 // state folder is, and so must the file and the allowed signers file it
-// names; a file that is not exactly one JSON object, a key given twice or
-// unknown, a mode other than manual or signed, or a signed policy without its
-// signers file and principal is an error.
+// names; a file that is not exactly one JSON object, a key given twice, not
+// spelled exactly as declared or unknown, a mode other than manual or
+// signed, or a signed policy without its signers file and principal is an
+// error.
 func (s *Switcher) readPolicy() (Policy, error) {
 	dir, err := s.openTrusted(PolicyDir, false)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -67,7 +68,7 @@ func (s *Switcher) readPolicy() (Policy, error) {
 	}
 	var p Policy
 	if err := decodeStrict(data, &p); err != nil {
-		return Policy{}, failf(CodePolicyInvalid, "%s is not one JSON object with each of its keys once (keys: min_mode, allowed_signers, principal)", PolicyName)
+		return Policy{}, failf(CodePolicyInvalid, "%s is not one JSON object with each of its keys once and spelled exactly (keys: min_mode, allowed_signers, principal)", PolicyName)
 	}
 	p.present = true
 	switch p.MinMode {
