@@ -53,6 +53,7 @@ type Pairing struct {
 	// What a right code brought, while the phase is PhasePending. Copies.
 	credentialID []byte
 	spki         []byte
+	fingerprint  Fingerprint
 	presentedAt  time.Time
 	pendingEnds  time.Time
 }
@@ -135,6 +136,7 @@ func (p *Pairing) Start(replace bool) (string, error) {
 func (p *Pairing) forget() {
 	p.credentialID = nil
 	p.spki = nil
+	p.fingerprint = Fingerprint{}
 	p.presentedAt = time.Time{}
 	p.pendingEnds = time.Time{}
 }
@@ -147,19 +149,23 @@ func (p *Pairing) forget() {
 // the code (ErrUsed, ErrBurnt, ErrExpired, ErrWrongCode). For a right code it
 // then checks the credential: the id's length (ErrCredentialID) and the key
 // (ErrKeyFormat, ErrKeyAlgorithm, ErrKeyPoint; see ParseKey), and a refusal
-// there leaves the code unused. On success the code is used and the credential is pending until the time now plus
-// PendingLifetime. Present keeps copies of what it is handed.
-func (p *Pairing) Present(code string, credentialID, spki []byte, now time.Time) error {
+// there leaves the code unused.
+//
+// On success the code is used, the credential is pending until the time now
+// plus PendingLifetime, and Present returns its fingerprint, which the desk
+// console shows to the owner. Present keeps copies of what it is handed. No
+// credential is made until Confirm.
+func (p *Pairing) Present(code string, credentialID, spki []byte, now time.Time) (Fingerprint, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !p.started {
-		return ErrNoPairing
+		return Fingerprint{}, ErrNoPairing
 	}
 	if now.IsZero() {
-		return ErrClock
+		return Fingerprint{}, ErrClock
 	}
 	if p.phase == PhasePending && p.open(now) {
-		return ErrPending
+		return Fingerprint{}, ErrPending
 	}
 	if p.phase == PhasePending {
 		// The wait is over: the pairing ends, its code is used.
@@ -167,21 +173,83 @@ func (p *Pairing) Present(code string, credentialID, spki []byte, now time.Time)
 		p.forget()
 	}
 	if err := p.code.check(code, now); err != nil {
-		return err
+		return Fingerprint{}, err
 	}
 	// The code is right; a credential that is not an ES256 key is refused
 	// without using the code, so the phone may try again with a good one.
 	if err := CheckCredentialID(credentialID); err != nil {
-		return err
+		return Fingerprint{}, err
 	}
 	if _, err := ParseKey(spki); err != nil {
-		return err
+		return Fingerprint{}, err
 	}
 	p.code.used = true
 	p.phase = PhasePending
 	p.credentialID = append([]byte(nil), credentialID...)
 	p.spki = append([]byte(nil), spki...)
+	p.fingerprint = FingerprintOf(p.credentialID, p.spki)
 	p.presentedAt = now
 	p.pendingEnds = now.Add(PendingLifetime)
+	return p.fingerprint, nil
+}
+
+// Pending returns the fingerprint of the credential that waits at the desk at
+// now, and true; or false when none waits (none presented, or its time is over).
+func (p *Pairing) Pending(now time.Time) (Fingerprint, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.phase != PhasePending || !p.open(now) {
+		return Fingerprint{}, false
+	}
+	return p.fingerprint, true
+}
+
+// Confirm is the owner at the desk saying that the six words are the same on
+// the phone. It is the only thing that makes a Credential. It refuses with
+// ErrNotPending when no credential was presented or the pairing ended, with
+// ErrClock for a time that is zero or before the presentation (the credential
+// stays pending), and with ErrPendingExpired at the presentation time plus
+// PendingLifetime and after it, which also ends the pairing. On success the
+// pairing is over, and the Credential carries the id and key as presented,
+// the kind KindUnverified and now as PairedAt.
+func (p *Pairing) Confirm(now time.Time) (Credential, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.phase != PhasePending {
+		return Credential{}, ErrNotPending
+	}
+	if now.IsZero() || now.Before(p.presentedAt) {
+		return Credential{}, ErrClock
+	}
+	if !now.Before(p.pendingEnds) {
+		p.phase = PhaseNone
+		p.forget()
+		return Credential{}, ErrPendingExpired
+	}
+	c := Credential{
+		ID:       p.credentialID,
+		SPKI:     p.spki,
+		Kind:     KindUnverified,
+		PairedAt: now,
+	}
+	p.phase = PhaseNone
+	p.credentialID, p.spki = nil, nil
+	p.forget()
+	return c, nil
+}
+
+// Reject is the owner at the desk saying the words differ, or that the
+// pairing is not wanted. It drops the pending credential and ends the pairing;
+// the code stays used, so the same code makes no second try. It refuses with
+// ErrNotPending when no credential waits. It needs no time: a credential
+// whose time is over may be rejected as well.
+func (p *Pairing) Reject() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.phase != PhasePending {
+		return ErrNotPending
+	}
+	p.phase = PhaseNone
+	p.forget()
 	return nil
 }

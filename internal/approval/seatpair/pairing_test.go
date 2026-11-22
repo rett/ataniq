@@ -55,7 +55,7 @@ func TestPairingStartAndPresent(t *testing.T) {
 		t.Fatalf("phase after Start = %v", ph)
 	}
 	clk.advance(time.Minute)
-	if err := p.Present(code, idA, spkiA, clk.now); err != nil {
+	if err := present(p, code, idA, spkiA, clk.now); err != nil {
 		t.Fatal(err)
 	}
 	if ph := p.Phase(clk.now); ph != PhasePending {
@@ -65,7 +65,7 @@ func TestPairingStartAndPresent(t *testing.T) {
 
 func TestPresentBeforeStart(t *testing.T) {
 	p, clk := newTestPairing()
-	if err := p.Present(countingCode, idA, spkiA, clk.now); err != ErrNoPairing {
+	if err := present(p, countingCode, idA, spkiA, clk.now); err != ErrNoPairing {
 		t.Errorf("Present before Start = %v, want ErrNoPairing", err)
 	}
 }
@@ -74,14 +74,14 @@ func TestPresentWrongCodes(t *testing.T) {
 	p, clk := newTestPairing()
 	code, _ := p.Start(false)
 	for i := 1; i <= MaxTries; i++ {
-		if err := p.Present(wrongCode(code), idA, spkiA, clk.now); err != ErrWrongCode {
+		if err := present(p, wrongCode(code), idA, spkiA, clk.now); err != ErrWrongCode {
 			t.Fatalf("wrong try %d = %v", i, err)
 		}
 	}
-	if err := p.Present(wrongCode(code), idA, spkiA, clk.now); err != ErrBurnt {
+	if err := present(p, wrongCode(code), idA, spkiA, clk.now); err != ErrBurnt {
 		t.Errorf("sixth wrong try = %v, want ErrBurnt", err)
 	}
-	if err := p.Present(code, idA, spkiA, clk.now); err != ErrBurnt {
+	if err := present(p, code, idA, spkiA, clk.now); err != ErrBurnt {
 		t.Errorf("right code after five wrong tries = %v, want ErrBurnt", err)
 	}
 	if ph := p.Phase(clk.now); ph != PhaseNone {
@@ -100,7 +100,7 @@ func TestPresentExpiry(t *testing.T) {
 	if ph := p.Phase(clk.now); ph != PhaseNone {
 		t.Errorf("phase at 10 minutes = %v, want none", ph)
 	}
-	if err := p.Present(code, idA, spkiA, clk.now); err != ErrExpired {
+	if err := present(p, code, idA, spkiA, clk.now); err != ErrExpired {
 		t.Errorf("Present at exactly 10 minutes = %v, want ErrExpired", err)
 	}
 }
@@ -109,7 +109,7 @@ func TestPresentJustBeforeExpiry(t *testing.T) {
 	p, clk := newTestPairing()
 	code, _ := p.Start(false)
 	clk.advance(CodeLifetime - time.Nanosecond)
-	if err := p.Present(code, idA, spkiA, clk.now); err != nil {
+	if err := present(p, code, idA, spkiA, clk.now); err != nil {
 		t.Errorf("Present a nanosecond before 10 minutes = %v", err)
 	}
 }
@@ -117,11 +117,11 @@ func TestPresentJustBeforeExpiry(t *testing.T) {
 func TestSecondPresentWhilePending(t *testing.T) {
 	p, clk := newTestPairing()
 	code, _ := p.Start(false)
-	if err := p.Present(code, idA, spkiA, clk.now); err != nil {
+	if err := present(p, code, idA, spkiA, clk.now); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range []string{code, wrongCode(code), ""} {
-		if err := p.Present(c, idA, spkiA, clk.now); err != ErrPending {
+		if err := present(p, c, idA, spkiA, clk.now); err != ErrPending {
 			t.Errorf("second Present(%q) = %v, want ErrPending", c, err)
 		}
 	}
@@ -138,7 +138,7 @@ func TestPresentCopiesItsInput(t *testing.T) {
 	code, _ := p.Start(false)
 	id := append([]byte(nil), idA...)
 	spki := append([]byte(nil), spkiA...)
-	if err := p.Present(code, id, spki, clk.now); err != nil {
+	if err := present(p, code, id, spki, clk.now); err != nil {
 		t.Fatal(err)
 	}
 	id[0] ^= 0xFF
@@ -164,10 +164,10 @@ func TestStartWhileOpen(t *testing.T) {
 	if second == first {
 		t.Fatal("a replacing Start gave the same code")
 	}
-	if err := p.Present(first, idA, spkiA, clk.now); err != ErrWrongCode {
+	if err := present(p, first, idA, spkiA, clk.now); err != ErrWrongCode {
 		t.Errorf("the replaced code = %v, want ErrWrongCode", err)
 	}
-	if err := p.Present(second, idA, spkiA, clk.now); err != nil {
+	if err := present(p, second, idA, spkiA, clk.now); err != nil {
 		t.Errorf("the new code = %v", err)
 	}
 }
@@ -175,7 +175,7 @@ func TestStartWhileOpen(t *testing.T) {
 func TestStartWhilePending(t *testing.T) {
 	p, clk := newTestPairing()
 	code, _ := p.Start(false)
-	_ = p.Present(code, idA, spkiA, clk.now)
+	_ = present(p, code, idA, spkiA, clk.now)
 	if _, err := p.Start(false); err != ErrPairingOpen {
 		t.Fatalf("Start while pending = %v, want ErrPairingOpen", err)
 	}
@@ -205,7 +205,7 @@ func TestStartWhenOver(t *testing.T) {
 		t.Errorf("Start after expiry = %v", err)
 	}
 	for i := 0; i < MaxTries; i++ {
-		_ = p.Present("nope", idA, spkiA, clk.now)
+		_ = present(p, "nope", idA, spkiA, clk.now)
 	}
 	if _, err := p.Start(false); err != nil {
 		t.Errorf("Start after a burnt code = %v", err)
@@ -228,7 +228,7 @@ func TestPendingLifetimeExactly(t *testing.T) {
 			p, clk := newTestPairing()
 			code, _ := p.Start(false)
 			clk.advance(5 * time.Minute)
-			if err := p.Present(code, idA, spkiA, clk.now); err != nil {
+			if err := present(p, code, idA, spkiA, clk.now); err != nil {
 				t.Fatal(err)
 			}
 			clk.advance(c.after)
@@ -247,10 +247,10 @@ func TestPendingLifetimeExactly(t *testing.T) {
 func TestPresentAfterPendingEnds(t *testing.T) {
 	p, clk := newTestPairing()
 	code, _ := p.Start(false)
-	_ = p.Present(code, idA, spkiA, clk.now)
+	_ = present(p, code, idA, spkiA, clk.now)
 	clk.advance(PendingLifetime)
 	// The code is used; a second presentation is refused as such.
-	if err := p.Present(code, idA, spkiA, clk.now); err != ErrUsed {
+	if err := present(p, code, idA, spkiA, clk.now); err != ErrUsed {
 		t.Errorf("Present after the pending time = %v, want ErrUsed", err)
 	}
 	if p.credentialID != nil {
@@ -261,10 +261,10 @@ func TestPresentAfterPendingEnds(t *testing.T) {
 func TestPairingClockEdges(t *testing.T) {
 	p, clk := newTestPairing()
 	code, _ := p.Start(false)
-	if err := p.Present(code, idA, spkiA, time.Time{}); err != ErrClock {
+	if err := present(p, code, idA, spkiA, time.Time{}); err != ErrClock {
 		t.Errorf("zero time = %v, want ErrClock", err)
 	}
-	if err := p.Present(wrongCode(code), idA, spkiA, clk.now.Add(-time.Second)); err != ErrClock {
+	if err := present(p, wrongCode(code), idA, spkiA, clk.now.Add(-time.Second)); err != ErrClock {
 		t.Errorf("time before the start = %v, want ErrClock", err)
 	}
 	if p.code.Tries() != 0 {
@@ -284,7 +284,7 @@ func TestStartRandomFailureKeepsThePairing(t *testing.T) {
 	if _, err := p.Start(true); err != ErrRandom {
 		t.Fatalf("Start with a failing source = %v, want ErrRandom", err)
 	}
-	if err := p.Present(code, idA, spkiA, clk.now); err != nil {
+	if err := present(p, code, idA, spkiA, clk.now); err != nil {
 		t.Errorf("the old code after a failed replace = %v", err)
 	}
 }
@@ -298,7 +298,7 @@ func TestNewPairingDefaults(t *testing.T) {
 	if len(code) != CodeLength {
 		t.Errorf("code %q", code)
 	}
-	if err := p.Present(code, idA, spkiA, time.Now()); err != nil {
+	if err := present(p, code, idA, spkiA, time.Now()); err != nil {
 		t.Errorf("Present with the default clock = %v", err)
 	}
 }
@@ -308,17 +308,17 @@ func TestPairingTextsHideTheCode(t *testing.T) {
 	code, _ := p.Start(false)
 	var texts []string
 	add := func(err error) { texts = append(texts, fmt.Sprint(err), fmt.Sprintf("%#v", err)) }
-	add(p.Present(wrongCode(code), idA, spkiA, clk.now))
+	add(present(p, wrongCode(code), idA, spkiA, clk.now))
 	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q"} {
 		texts = append(texts, fmt.Sprintf(verb, p), fmt.Sprintf(verb, p.code), fmt.Sprintf(verb, PhaseOpen))
 	}
-	add(p.Present(code, idA, spkiA, clk.now))
-	add(p.Present(code, idA, spkiA, clk.now))
+	add(present(p, code, idA, spkiA, clk.now))
+	add(present(p, code, idA, spkiA, clk.now))
 	_, err := p.Start(false)
 	add(err)
 	for i := 0; i < MaxTries+1; i++ {
 		_, _ = p.Start(true)
-		add(p.Present("WRONG", idA, spkiA, clk.now))
+		add(present(p, "WRONG", idA, spkiA, clk.now))
 	}
 	texts = append(texts, fmt.Sprintf("%v", p), fmt.Sprintf("%+v", p))
 	for _, text := range texts {
@@ -326,4 +326,10 @@ func TestPairingTextsHideTheCode(t *testing.T) {
 			t.Errorf("text %q shows the code", text)
 		}
 	}
+}
+
+// present is Present without the fingerprint, for the tests of the code.
+func present(p *Pairing, code string, id, spki []byte, now time.Time) error {
+	_, err := p.Present(code, id, spki, now)
+	return err
 }

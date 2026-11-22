@@ -28,6 +28,14 @@
 // bits: it shows that the two sides agree on a key the owner has just seen
 // made, within the minutes of a pairing; it is not a long-term name for a key.
 //
+// A pairing is Start (which refuses while one is open, unless asked to replace
+// it), Present (a right code with a good credential makes the credential
+// Pending, with its fingerprint, for at most 10 minutes, exactly; a second
+// Present while one is pending is refused) and then Confirm or Reject. Confirm,
+// the owner at the desk, is the only thing that makes a Credential, with the
+// kind "unverified"; Reject drops the pending one. The code is spent by
+// either: one code brings one credential at most.
+//
 // The package is what the daemon asks. It is not a wire, a daemon, an HTTP
 // handler, a store or a clock: it opens no file and no socket, starts no
 // program and keeps nothing between runs. The random source and the time are

@@ -265,17 +265,17 @@ func TestPresentChecksTheCredential(t *testing.T) {
 		{"trailing byte", idA, append(append([]byte(nil), spkiA...), 0), ErrKeyFormat},
 		{"ed25519", idA, marshal(t, ed), ErrKeyAlgorithm},
 	} {
-		if err := p.Present(code, c.id, c.spki, clk.now); err != c.want {
+		if err := present(p, code, c.id, c.spki, clk.now); err != c.want {
 			t.Errorf("%s: Present = %v, want %v", c.name, err, c.want)
 		}
 		if p.Phase(clk.now) != PhaseOpen || p.code.Used() || p.code.Tries() != 0 {
 			t.Fatalf("%s: the pairing moved: %v", c.name, p)
 		}
 	}
-	if err := p.Present(wrongCode(code), idA, []byte("garbage"), clk.now); err != ErrWrongCode {
+	if err := present(p, wrongCode(code), idA, []byte("garbage"), clk.now); err != ErrWrongCode {
 		t.Errorf("wrong code and garbage key = %v, want ErrWrongCode", err)
 	}
-	if err := p.Present(code, idA, spkiA, clk.now); err != nil {
+	if err := present(p, code, idA, spkiA, clk.now); err != nil {
 		t.Errorf("right code with a good credential after the refusals = %v", err)
 	}
 }

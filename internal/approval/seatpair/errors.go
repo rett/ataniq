@@ -29,6 +29,12 @@ const (
 	ErrPairingOpen Error = "seatpair: a pairing is already open"
 	// ErrPending: a credential is already presented and waits at the desk.
 	ErrPending Error = "seatpair: a credential is already pending"
+	// ErrNotPending: no credential is pending, so there is none to confirm
+	// or reject.
+	ErrNotPending Error = "seatpair: no credential is pending"
+	// ErrPendingExpired: the credential waited at the desk for its 10 minutes
+	// and no longer; the pairing is over.
+	ErrPendingExpired Error = "seatpair: the pending credential expired"
 	// ErrClock: the time handed in is zero or earlier than a time the pairing
 	// has already seen.
 	ErrClock Error = "seatpair: clock is zero or went backwards"
