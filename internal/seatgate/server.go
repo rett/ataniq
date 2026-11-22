@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"math"
 	"net"
 	"sync"
 	"time"
@@ -71,7 +72,7 @@ type ServerConfig struct {
 
 	MaxConns       int           // concurrent connections, 8
 	MaxInFlight    int           // handlers running at once per connection, 16
-	MaxHandlers    int           // handlers running at once over all connections, MaxConns × MaxInFlight
+	MaxHandlers    int           // handlers running at once over all connections, MaxConns × MaxInFlight (at most the largest int)
 	RequestTimeout time.Duration // the deadline of one request, 30 s
 	RateMax        int           // requests per RatePer per connection, 60
 	RatePer        time.Duration // the rate window, 1 minute
@@ -111,7 +112,11 @@ func (c ServerConfig) withDefaults() ServerConfig {
 	}
 	n(&c.MaxConns, 8)
 	n(&c.MaxInFlight, 16)
-	n(&c.MaxHandlers, c.MaxConns*c.MaxInFlight)
+	all := math.MaxInt // MaxConns × MaxInFlight, stopping at the largest int
+	if c.MaxConns <= math.MaxInt/c.MaxInFlight {
+		all = c.MaxConns * c.MaxInFlight
+	}
+	n(&c.MaxHandlers, all)
 	n(&c.RateMax, 60)
 	d(&c.RequestTimeout, 30*time.Second)
 	d(&c.RatePer, time.Minute)

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"runtime"
 	"strings"
@@ -1410,5 +1411,25 @@ func TestServerIdReusedWhileItsAnswerIsWritten(t *testing.T) {
 				t.Fatalf("the handler ran %d times, want 2", n)
 			}
 		})
+	}
+}
+
+// The default ceiling of handlers, MaxConns × MaxInFlight, stops at the
+// largest int. It used to overflow: with huge settings it came out negative
+// (or small), and every request for a handler was answered busy.
+func TestServerDefaultHandlerCeilingSaturates(t *testing.T) {
+	leakCheck(t)
+	if got := (ServerConfig{}).withDefaults().MaxHandlers; got != 128 {
+		t.Fatalf("the default is %d, want 128", got)
+	}
+	for _, c := range [][2]int{{math.MaxInt, 16}, {math.MaxInt/2 + 1, 2}, {math.MaxInt, math.MaxInt}, {3, math.MaxInt}} {
+		if got := (ServerConfig{MaxConns: c[0], MaxInFlight: c[1]}).withDefaults().MaxHandlers; got != math.MaxInt {
+			t.Errorf("MaxConns %d, MaxInFlight %d: MaxHandlers %d, want %d", c[0], c[1], got, math.MaxInt)
+		}
+	}
+	e := startServer(t, func(c *ServerConfig) { c.MaxConns, c.MaxInFlight = math.MaxInt, 16 }, echo())
+	r := e.helloed()
+	if resp := r.call(2, "t.x", ""); resp.Code != "" {
+		t.Fatalf("%+v", resp)
 	}
 }
