@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -73,6 +74,7 @@ type Checker struct {
 	RequirePolicy bool
 
 	t       *tree
+	euid    int // the effective user the check runs as
 	lists   *Lists
 	hits    []Hit
 	seen    map[Hit]bool
@@ -94,7 +96,7 @@ func Open(rootDir string, lists *Lists) (*Checker, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Checker{t: t, lists: lists, seen: map[Hit]bool{}}, nil
+	return &Checker{t: t, euid: os.Geteuid(), lists: lists, seen: map[Hit]bool{}}, nil
 }
 
 // Close releases the tree.

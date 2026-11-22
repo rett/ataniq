@@ -280,7 +280,14 @@ What it detects, by kind:
   ends, an `export` whose name is an expansion, another specifier, a line
   that is not `KEY=VALUE`) is `HIT incomplete env-syntax <file>`.
 - `process`: a running process whose name or executable is named like an
-  executable of `ai-names.list`.
+  executable of `ai-names.list`. A process that ends while it is read and
+  a kernel thread are passed over. A missing or empty `/proc` is
+  `HIT incomplete proc <why>`. A process whose name or executable is
+  refused for lack of permission is a `HIT unreadable` of its own when the
+  check runs as root, and otherwise counted into one
+  `HIT incomplete proc-access <n>`, `n` the number of such processes: run
+  by hand as another user, the check cannot see other users' processes
+  and says so.
 - `unit`: an enabled unit (an entry of a `*.wants`, `*.requires` or
   `*.upholds` folder of `/etc/systemd/system`, `/run/systemd/system`,
   `/etc/systemd/user`, `/run/systemd/user` or a home's
