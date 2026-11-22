@@ -318,8 +318,8 @@ func TestTheRoomForRejectedPairingsEndsBeforeTheRoomForKeys(t *testing.T) {
 	for ; i < MaxKeyRecords && err == nil; i++ {
 		err = k.AppendRejected(RejectedPairing{ID: id, Words: keyWords, At: base})
 	}
-	if !errors.Is(err, ErrKeysFull) || i != maxRejected+1 {
-		t.Fatalf("the %dth rejected pairing: %v, want %v at %d", i, err, ErrKeysFull, maxRejected+1)
+	if !errors.Is(err, ErrKeysFull) || i != maxSpare+1 {
+		t.Fatalf("the %dth rejected pairing: %v, want %v at %d", i, err, ErrKeysFull, maxSpare+1)
 	}
 	// Every credential still fits, and so does its revocation.
 	for n := 0; n < MaxKeys; n++ {
