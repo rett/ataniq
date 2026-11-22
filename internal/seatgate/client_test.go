@@ -915,3 +915,110 @@ func TestClientCallLeavesAStalledWriteAtItsContext(t *testing.T) {
 	}
 	t.Fatal("the socket buffers never filled")
 }
+
+// cutConn is the client's TCP connection with hooks on its writes and its write
+// deadlines, so a test can order a late write cut against the next write.
+type cutConn struct {
+	net.Conn
+	mu      sync.Mutex
+	onWrite func()             // run before each write while set
+	onCut   func(func() error) // run, with the forwarding, for a deadline of about now
+}
+
+func (c *cutConn) Write(b []byte) (int, error) {
+	c.mu.Lock()
+	f := c.onWrite
+	c.mu.Unlock()
+	if f != nil {
+		f()
+	}
+	return c.Conn.Write(b)
+}
+
+func (c *cutConn) SetWriteDeadline(d time.Time) error {
+	c.mu.Lock()
+	f := c.onCut
+	c.mu.Unlock()
+	if f != nil && !d.IsZero() && time.Until(d) < time.Second {
+		var err error
+		f(func() error { err = c.Conn.SetWriteDeadline(d); return err })
+		return err
+	}
+	return c.Conn.SetWriteDeadline(d)
+}
+
+// A call whose context ends while its frame is written must not cut the write
+// of the call after it: the cut of call A lands on the connection only while A
+// still holds the write, or not at all. It used to run in a goroutine that A
+// did not wait for, so it could move the deadline of B's write to now, which
+// failed B and dropped the connection.
+//
+// The hooks force the order of the failure: A's context ends inside A's write,
+// and A's write goes on only once A's cut has started; the cut reaches the
+// socket only when B is writing. A cut that the fix makes A wait for cannot see
+// B write, so it goes on after a second; the test then takes that long.
+func TestClientCallCutNeverLandsOnTheNextWrite(t *testing.T) {
+	leakCheck(t)
+	e := startServer(t, bigRate, echo())
+	var conn *cutConn
+	c := dial(t, e, func(cfg *ClientConfig) {
+		cfg.PingInterval, cfg.DeadAfter = time.Hour, time.Hour
+		cfg.BackoffMin, cfg.BackoffMax = time.Hour, time.Hour
+		cfg.Dial = func(ctx context.Context, addr string) (net.Conn, error) {
+			var d net.Dialer
+			nc, err := d.DialContext(ctx, "tcp", addr)
+			if err != nil {
+				return nil, err
+			}
+			conn = &cutConn{Conn: nc}
+			return conn, nil
+		}
+	})
+	since, _ := c.Connected()
+
+	ctxA, cancelA := context.WithCancel(context.Background())
+	defer cancelA()
+	cutStarted, bWriting, cutDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	conn.mu.Lock()
+	conn.onCut = func(forward func() error) {
+		once.Do(func() {
+			close(cutStarted)
+			select {
+			case <-bWriting:
+			case <-time.After(time.Second):
+			}
+			forward()
+			close(cutDone)
+		})
+	}
+	conn.onWrite = func() { // A's write
+		cancelA()
+		<-cutStarted
+	}
+	conn.mu.Unlock()
+	if err := c.Call(ctxA, "owner.list", nil, nil); errors.Is(err, ErrDisconnected) {
+		t.Fatalf("call A: %v", err)
+	}
+
+	conn.mu.Lock()
+	conn.onWrite = func() { // B's write
+		select {
+		case <-bWriting:
+		default:
+			close(bWriting)
+		}
+		select {
+		case <-cutStarted:
+			<-cutDone
+		default:
+		}
+	}
+	conn.mu.Unlock()
+	if err := c.Call(context.Background(), "owner.list", nil, nil); err != nil {
+		t.Fatalf("call B: %v (%v)", err, c.LastError())
+	}
+	if again, ok := c.Connected(); !ok || !again.Equal(since) {
+		t.Fatal("the connection was given up")
+	}
+}

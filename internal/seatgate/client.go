@@ -583,9 +583,26 @@ func (s *session) call(ctx context.Context, op string, params json.RawMessage) (
 	// A write that the peer does not take ends at WriteTimeout, and at once when
 	// ctx is done: the deadline is moved to now, the write fails and, as a frame
 	// may be half sent, the connection is given up.
+	//
+	// The cut runs in a goroutine of its own, which stopWrite does not wait for
+	// once it has started. So it lands only while this call holds the write: it
+	// and the end of the write take cut in turn, and a cut that comes after the
+	// write has returned does nothing. Else a late cut could move the deadline
+	// of the next caller's write and drop the connection under it.
 	s.tc.SetWriteDeadline(time.Now().Add(s.c.cfg.WriteTimeout))
-	stopWrite := context.AfterFunc(ctx, func() { s.tc.SetWriteDeadline(time.Now()) })
+	var cut sync.Mutex
+	written := false
+	stopWrite := context.AfterFunc(ctx, func() {
+		cut.Lock()
+		defer cut.Unlock()
+		if !written {
+			s.tc.SetWriteDeadline(time.Now())
+		}
+	})
 	err = writeFrame(s.tc, payload)
+	cut.Lock()
+	written = true
+	cut.Unlock()
 	stopWrite()
 	s.wsem <- struct{}{}
 	if err != nil {
