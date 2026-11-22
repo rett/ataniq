@@ -660,9 +660,17 @@ open).
     missing is `HIT incomplete env-file`). A file in a folder named `user`
     is a user unit, its `EnvironmentFile=` resolved for every user; any
     other is a system unit;
-  - every file beneath its `etc/caddy` and `etc/nftables` is read for
-    variable names only: each word named like a provider key is a
-    `HIT env`.
+  - every file beneath its `etc/caddy` is read for the variables it
+    refers to, and only those: Caddy's placeholders `{env.NAME}` and
+    `{$NAME}` (`{$NAME:default}` too) and the systemd-style `$NAME` and
+    `${NAME}`. Each one named like a provider key is a `HIT env`. A
+    comment (a `#` that starts a word outside quotes) and every literal
+    operand are passed over: a word that only looks like a variable's
+    name is not reported, so no configuration text reaches the report. A
+    `{env.`, `{$` or `${` the check cannot read (no valid name and closing
+    brace after it) is `HIT incomplete release-syntax <file>`, which names
+    the file and nothing of its content. The files beneath `etc/nftables`
+    refer to no environment variable and are not read for names.
 
   A hit in the release names the file by its path within `--root` when
   the release is beneath it (`/opt/authority-host/releases/<id>/...`),
@@ -709,6 +717,7 @@ The `HIT incomplete` lines:
 | `HIT incomplete budget <limit>` | the run's budget is spent (4 million folder entries and queued files, 1 GiB read, 4 minutes, 256 MiB held, counting specifier expansions and queued files); every later read stops |
 | `HIT incomplete env-syntax <file>` | a file whose syntax the check cannot parse, or an `EnvironmentFile=` it cannot resolve |
 | `HIT incomplete env-source <file>` | a profile sources a file by a path the check cannot resolve |
+| `HIT incomplete release-syntax <file>` | a front-end configuration file of the candidate release (`pre`, `post`) holds a variable reference the check cannot read |
 | `HIT incomplete env-file <path>` | a required `EnvironmentFile=` (no leading `-`) that is not there, or a required glob that matches nothing |
 | `HIT incomplete path <file>` | a PATH setting whose folder the check cannot resolve |
 | `HIT incomplete proc <why>` | no usable `/proc`: missing, unreadable, without processes, or listing processes of which not one name or executable could be read (`no-identity`) |

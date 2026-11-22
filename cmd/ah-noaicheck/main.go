@@ -55,8 +55,9 @@ normalised listing in FILE ("-" for stdin), the value of share/nft.digest.
 
   --phase PHASE       full (the default): the host as it is, every check;
                       pre (before a switch): also the release's own etc/
-                      (its units, its caddy and nftables files), without
-                      the listening ports and the firewall digest;
+                      (its units, the variables its caddy files refer
+                      to), without the listening ports and the
+                      firewall digest;
                       post (after a switch): pre's checks with the ports
                       and the digest
   --root DIR          check the tree beneath DIR instead of / (default /)

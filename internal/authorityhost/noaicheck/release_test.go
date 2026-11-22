@@ -1,6 +1,7 @@
 package noaicheck
 
 import (
+	"bytes"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -114,10 +115,69 @@ func TestRunPhaseReleaseOutsideTheRoot(t *testing.T) {
 	}
 }
 
-func TestProviderWords(t *testing.T) {
-	got := providerWords("{$OPENAI_API_KEY} {env.ANTHROPIC_API_KEY} X_OPENAI_ORG 1CODEX_HOME OPENAI_API_KEY\n# GEMINI_API_KEY")
-	want := []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("got %q want %q", got, want)
+// Only recognised references name a variable in the front end's
+// configuration: Caddy's placeholders and the systemd-style forms. A
+// comment, a quoted string's text and a literal operand named like a key
+// are not references, and a reference the check cannot read makes the
+// file incomplete without copying its text.
+func TestReleaseRefs(t *testing.T) {
+	cases := []struct {
+		name, in string
+		want     []string
+		bad      bool
+	}{
+		{"placeholders", "{$OPENAI_API_KEY} {env.ANTHROPIC_API_KEY} {$CODEX_HOME:/srv/x}\n", []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CODEX_HOME"}, false},
+		{"systemd-style", "reverse_proxy $GEMINI_API_KEY ${CLAUDE_X}/y\n", []string{"GEMINI_API_KEY", "CLAUDE_X"}, false},
+		{"inside a quoted string", "header X-Key \"Bearer {env.X_API_KEY}\"\n", []string{"X_API_KEY"}, false},
+		{"in JSON", `{"apps":{"http":{"servers":{"a":{"listen":["{env.OPENAI_ORG}"]}}}}}`, []string{"OPENAI_ORG"}, false},
+		{"literal operands", "header X-Name OPENAI_API_KEY\nrespond \"CODEX_HOME\" 200\nX_OPENAI_ORG 1CODEX_HOME\n", nil, false},
+		{"comments", "# {env.OPENAI_API_KEY} GEMINI_API_KEY\nexample.invalid { # $CODEX_HOME\n\trespond ok\n}\n", nil, false},
+		{"a '#' inside a word or quotes is not a comment", "respond \"#{env.OPENAI_ORG}\"\nredir /a#{$CODEX_HOME}\n", []string{"OPENAI_ORG", "CODEX_HOME"}, false},
+		{"other placeholders and dollars", "respond \"{http.request.uri} costs $5 or $$\"\npath_regexp ^/x$\n", nil, false},
+		{"names not like a key are read and not reported", "{env.LANG} {$PORT}\n", nil, false},
+		{"an unreadable env placeholder", "header X {env." + secret + "}\n", nil, true},
+		{"an unclosed env placeholder", "header X {env.OPENAI_API_KEY", nil, true},
+		{"an unreadable braced reference", "x ${" + secret + "}\n{$ X}\n", nil, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, bad := releaseRefs(tc.in)
+			if !reflect.DeepEqual(got, tc.want) || bad != tc.bad {
+				t.Errorf("got %q bad=%v, want %q bad=%v", got, bad, tc.want, tc.bad)
+			}
+		})
+	}
+}
+
+// A comment or a literal in the candidate's configuration is not reported,
+// the firewall's files are not read for names, and an unreadable reference
+// is reported by file with a fixed reason, never by its text.
+func TestCheckReleaseNamesOnlyReferences(t *testing.T) {
+	f := cleanFixture(t)
+	f.file(releaseDir+"/etc/caddy/Caddyfile", "# reverse_proxy {env.OPENAI_API_KEY}\nexample.invalid {\n\theader X-Note CODEX_HOME\n}\n")
+	f.file(releaseDir+"/etc/caddy/odd.caddy", "header X {env."+secret+"}\n")
+	f.file(releaseDir+"/etc/nftables/rules.nft", "define GEMINI_API_KEY = 1\ntable inet filter { comment \"ANTHROPIC_API_KEY\" }\n")
+	c := f.checker(testLists())
+	var r Report
+	var err error
+	within(t, func() { r, err = c.RunPhase(PhasePre, f.abs(releaseDir), nil) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Hit{{Kind: KindIncomplete, Path: PathReleaseSyntax, Detail: "/" + releaseDir + "/etc/caddy/odd.caddy"}}
+	if !reflect.DeepEqual(r.Hits, want) || r.Complete {
+		t.Errorf("hits %v complete %v, want %v", r.Hits, r.Complete, want)
+	}
+	var text, js bytes.Buffer
+	if err := r.WriteText(&text); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.WriteJSON(&js); err != nil {
+		t.Fatal(err)
+	}
+	for _, out := range []string{text.String(), js.String()} {
+		if strings.Contains(out, "sk-") || strings.Contains(out, secret) {
+			t.Errorf("a report copies the file's text:\n%s", out)
+		}
 	}
 }
