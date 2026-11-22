@@ -418,10 +418,14 @@ func testAuthorityHostDeployHelp(t *testing.T) {
 	for _, want := range []string{
 		"contacts the host, read-only (ssh and rsync -n)",
 		"starts nothing",
+		"The remote rsync reads the destination; no files are copied and the switch is not run.",
 	} {
 		if !strings.Contains(flat, want) {
 			t.Errorf("deploy.sh's help does not say %q", want)
 		}
+	}
+	if strings.Contains(flat, "runs no command there") {
+		t.Error("deploy.sh's help says --dry runs no command on the host, right after the remote rsync it starts")
 	}
 }
 
@@ -461,10 +465,14 @@ func testAuthorityHostDeployDoc(t *testing.T) {
 	for _, want := range []string{
 		"--dry contacts the host, read-only (ssh and rsync -n)",
 		"--self-test starts nothing",
+		"the remote rsync reads the destination, no files are copied and the switch is not run",
 	} {
 		if !strings.Contains(flat, want) {
 			t.Errorf("DEPLOY.md does not say %q", want)
 		}
+	}
+	if strings.Contains(flat, "runs no command there") {
+		t.Error("DEPLOY.md says --dry runs no command on the host, right after the remote rsync it starts")
 	}
 	if strings.Contains(flat, "never call ssh") || strings.Contains(flat, "never calls ssh") {
 		t.Error("DEPLOY.md says that a dry run never calls ssh")
@@ -518,6 +526,12 @@ func testAuthorityHostDeployDoc(t *testing.T) {
 	}
 	if !strings.Contains(ahFlat(string(readme)), "inhibit-clear, ack and recover run only from the owner's own root session") {
 		t.Error("README.md does not say that inhibit-clear, ack and recover are the owner's own")
+	}
+	if strings.Contains(ahFlat(string(readme)), "Run the request once more to do it again") {
+		t.Error("README.md still says a retry does the request again, though it only reports the owed outcome until the owner's ack")
+	}
+	if !strings.Contains(ahFlat(string(readme)), "until then a retry only reports") {
+		t.Error("README.md does not say that a retry only reports the owed outcome until the ack")
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.Contains(line, "AUTHORITY_HOST_SSH=") && !strings.Contains(line, "USER@HOST") {

@@ -804,8 +804,9 @@ concern it, and only the second takes it back:
   acknowledgement. A rollback is bound to its request id: retried as `--rollback-to previous` (or by the id it went
   to), it reports the rollback whose outcome is owed and never resolves
   `previous` anew, which would go back to the release the first rollback
-  left. A forward switch is retried by the same id. Run the request once
-  more to do it again. When the report cannot be written or flushed (a
+  left. A forward switch is retried by the same id. To do it again, the
+  owner first takes the owed outcome back with `ack` (below); a request
+  made after that is new work, and until then a retry only reports. When the report cannot be written or flushed (a
   full filesystem, a dropped session) the outcome has not been delivered:
   it stays owed, the command exits 1 and says so on its error output, and
   the next retry reports it. An outcome whose requalification failed (see

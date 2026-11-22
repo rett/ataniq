@@ -25,7 +25,8 @@
 #                        command that --go would run; run nothing else. It
 #                        contacts the host, read-only (ssh and rsync -n); the
 #                        host must be reachable and the incoming folder must
-#                        exist. It copies nothing and runs no command there.
+#                        exist. The remote rsync reads the destination; no
+#                        files are copied and the switch is not run.
 #   --go --confirm ID    check the release, copy it with rsync, then run the
 #                        switch on the host:
 #                          sudo /usr/local/sbin/ah-switch --from INCOMING/ID ID
