@@ -868,7 +868,11 @@ Before it, a requalification ran only while a journal was open.
   command does (the transaction is resumed, and removes the inhibit only
   by its own rules, which qualify its release in that command), prints
   every outcome owed, and exits 1 unless decisions are no longer
-  inhibited at the end. It never acknowledges an outcome.
+  inhibited at the end. While a transaction is still open (its journal
+  in `txn.json`, held by the inhibit, or one that cannot be read) it
+  prints an outcome owed as `status` does then, `outcome owed, not
+  final`, without the `ack` command: settling the transaction may still
+  change that outcome. It never acknowledges an outcome.
 - The one inhibit `boot` takes over is the record of a `boot` that did
   not finish: exactly the record `boot` writes, with no journal open and no
   outcome owed under its run. That boot died (a power loss, a time limit)

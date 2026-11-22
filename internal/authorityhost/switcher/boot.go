@@ -346,9 +346,13 @@ func (s *Switcher) bootLift(run inhibit, cur string) int {
 }
 
 // printOwed prints the outcomes owed, as status shows them, and leaves
-// them owed.
+// them owed: while a transaction is still open (its journal in txn.json,
+// held by the inhibit, or one that cannot be read) an outcome owed is not
+// final, and no ack command is printed for it (see owedStatus).
 func (s *Switcher) printOwed() {
-	lines, err := s.owedStatus(false)
+	_, open, jerr := s.readJournal()
+	_, settling, _, _ := s.readInhibit()
+	lines, err := s.owedStatus(open || jerr != nil || settling != nil)
 	if err != nil {
 		s.printf("boot: %s cannot be read: %s", OwedFile, describe(err))
 		return

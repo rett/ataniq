@@ -79,7 +79,7 @@
   `previous` anew, any other switch or rollback reports it and is refused,
   and only the owner's `ah-switch ack --txn ID[,ID...] --asked WORDS` takes
   it back (naming the transactions of every outcome owed, as `status` and
-  the switch print them, `status` only once no transaction is still open,
+  the switch print them, `status` and `boot` only once no transaction is still open,
   since settling one may change its outcome, so that an ack repeated
   after a newer outcome became owed is never taken for that one: a
   mismatch is refused and changes nothing, a repeat keeps the first

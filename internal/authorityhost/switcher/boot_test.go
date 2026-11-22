@@ -589,6 +589,41 @@ func TestBootLeavesNoRecordToTakeOverBesideAJournal(t *testing.T) {
 	})
 }
 
+// TestBootWithholdsTheAckWhileSettling: an outcome owed while its
+// transaction is still open (in txn.json, or held by the inhibit) is not
+// final: settling it may change it (its requalification may fail). boot
+// prints it as status does then, without the ack command, so that none is
+// copied for an outcome that may change under the same transaction.
+func TestBootWithholdsTheAckWhileSettling(t *testing.T) {
+	for _, point := range []string{CrashRecord, CrashJournalMoved} {
+		t.Run(point, func(t *testing.T) {
+			e := activeOwn(t)
+			e.keepOwed = true
+			e.crashAt(point, false, rel3)
+			owed := e.owed()
+			if len(owed) != 1 {
+				t.Fatalf("owed: %+v", owed)
+			}
+			// The policy cannot be used: the transaction stays open.
+			e.write(filepath.Join(e.root, PolicyDir, PolicyName), "{", 0o644)
+			if code := e.boot(); code != ExitFailed {
+				t.Fatalf("boot: exit %d\n%s", code, e.last)
+			}
+			_, open := e.journal()
+			held := strings.Contains(e.stateFile(InhibitFile), `"phase"`)
+			if !open && !held {
+				t.Fatal("the transaction was settled")
+			}
+			if strings.Contains(e.last, "ack --txn") {
+				t.Errorf("boot printed an ack command while the transaction is open:\n%s", e.last)
+			}
+			if !strings.Contains(e.last, "outcome owed, not final (request "+q(owed[0].RequestID)+", transaction "+owed[0].Txn+")") {
+				t.Errorf("boot did not print the outcome owed as not final:\n%s", e.last)
+			}
+		})
+	}
+}
+
 // TestBootWithoutARelease: on a host where nothing is deployed (no current
 // release) boot refuses with its own exit code, qualifies nothing, runs
 // nothing and creates nothing: the inhibit is left as found. The decision
