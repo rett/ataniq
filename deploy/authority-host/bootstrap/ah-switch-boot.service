@@ -13,11 +13,17 @@
 # at its time limit). No condition skips it, no other exit status counts
 # as success, and nothing restarts it.
 #
-# No decision-capable service is ordered after this unit or enabled to
-# start on its own: the release's reload list, which ah-switch boot runs
-# once the inhibit is written, starts them. An ordering between them and
-# this unit would deadlock that reload, whose systemctl restart waits for
-# a start job that waits for this unit to finish.
+# Only the release's reload list, which ah-switch boot runs once the
+# inhibit is written, starts a decision-capable service: no .wants or
+# .requires link, no socket, timer, path or bus activation, and no
+# dependency from another enabled unit (caddy, for example) starts one. No
+# decision-capable service is ordered after this unit either: an ordering
+# between them and this unit would deadlock that reload, whose systemctl
+# restart waits for a start job that waits for this unit to finish.
+#
+# RemainAfterExit=yes keeps the unit active once it ran in a boot, so
+# systemctl start does nothing then. A later manual rerun is systemctl
+# restart ah-switch-boot.service, or ah-switch boot from a root session.
 
 [Unit]
 Description=Authority host: qualify the current release again after the boot (ah-switch boot)

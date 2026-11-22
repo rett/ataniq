@@ -917,21 +917,28 @@ it fails with exit 4):
    it: the no-AI check finds every enabled unit its list does not name.
 3. `systemctl daemon-reload`, then `systemctl enable
    ah-switch-boot.service`. It runs at the next boot; `systemctl start
-   ah-switch-boot.service` runs it now, as a boot would.
+   ah-switch-boot.service` runs it now, as a boot would, but only when it
+   has not run in this boot yet: the unit stays active after it ran
+   (`RemainAfterExit=yes`), and `start` then does nothing. A later manual
+   rerun is `systemctl restart ah-switch-boot.service`, or `ah-switch
+   boot` from the root session.
 4. After a reboot, `systemctl status ah-switch-boot.service` and
    `ah-switch status` say how it ended; a failed unit leaves decisions
    refused, with the failure owed or the inhibit it found named.
 
-The decision-capable services of a release follow two rules for it: no
-decision-capable service is enabled to start on its own (no link in a
-`.wants` folder), and none is ordered against `ah-switch-boot.service`
-(`After=`, `Before=`, `Requires=` and the like, on either side).
-`ah-switch boot` starts them through the release's reload list once the
-inhibit is written, as a switch does. One enabled on its own could start
-and take a decision before the inhibit is written; an ordering would
-deadlock the reload, whose `systemctl restart` waits for a start job that
-waits for the boot unit to finish. The static release runs no decision
-service.
+The decision-capable services of a release follow two rules for it:
+nothing starts a decision-capable service but the release's reload list,
+so no decision-capable service is enabled to start on its own (no link
+in a `.wants` or `.requires` folder, no socket, timer, path or bus
+activation, and no dependency from another enabled unit, caddy for
+example, that pulls it in), and none is ordered against
+`ah-switch-boot.service` (`After=`, `Before=`, `Requires=` and the like,
+on either side). `ah-switch boot` starts them through the release's
+reload list once the inhibit is written, as a switch does. One started
+by any other path could start and take a decision before the inhibit is
+written; an ordering would deadlock the reload, whose `systemctl
+restart` waits for a start job that waits for the boot unit to finish.
+The static release runs no decision service.
 
 ### The journal and recover
 
