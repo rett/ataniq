@@ -3,11 +3,8 @@ package seatapp
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/sha256"
 	"crypto/subtle"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -254,10 +251,15 @@ func (p *pairing) verify(in pairBody) (PairRequest, *apiError) {
 	if !p.clientDataOK(clientData, in.Challenge) {
 		return fail(errClientData)
 	}
-	if e := p.authDataCheck(authData, credID); e != nil {
+	keySPKI, e := p.authDataCheck(authData, credID)
+	if e != nil {
 		return fail(*e)
 	}
-	if !p256SPKI(spki) {
+	// The key the authenticator made is the key in its attested credential
+	// data. The browser's own SPKI accessor must give that key, byte for byte:
+	// with attestation "none" nothing is signed, so this is what binds the
+	// credential id to the key.
+	if !bytes.Equal(keySPKI, spki) {
 		return fail(errKey)
 	}
 	return PairRequest{Code: in.Code, CredentialID: credID, SPKI: spki}, nil
@@ -326,50 +328,48 @@ const (
 	flagUP = 0x01
 	flagUV = 0x04
 	flagAT = 0x40
+	flagED = 0x80
 )
 
 // authDataCheck parses the authenticator data of a registration and checks the
 // relying party hash, the flags and that the attested credential's id is the
 // posted one. The data is rpIdHash (32), flags (1), counter (4), then the
-// attested credential data: aaguid (16), id length (2), id, and the COSE
-// public key, which is not decoded: the key is taken from the browser's own
-// SPKI accessor.
-func (p *pairing) authDataCheck(ad, credID []byte) *apiError {
+// attested credential data: aaguid (16), id length (2), id, and the COSE_Key
+// of the credential's public key; after it, only the extensions map the ED
+// flag announces. It returns the canonical DER SubjectPublicKeyInfo of the
+// COSE_Key.
+func (p *pairing) authDataCheck(ad, credID []byte) ([]byte, *apiError) {
 	const head = 32 + 1 + 4 + 16 + 2
 	if len(ad) < head {
-		return &errAuthData
+		return nil, &errAuthData
 	}
 	if subtle.ConstantTimeCompare(ad[:32], p.rpIDSum[:]) != 1 {
-		return &errAuthData
+		return nil, &errAuthData
 	}
 	flags := ad[32]
 	if flags&flagUP == 0 || flags&flagAT == 0 {
-		return &errAuthData
+		return nil, &errAuthData
 	}
 	if flags&flagUV == 0 {
-		return &errUserVerification
+		return nil, &errUserVerification
 	}
 	n := int(binary.BigEndian.Uint16(ad[head-2 : head]))
 	if n < minCredentialID || n > maxCredentialID || len(ad) < head+n+1 {
-		return &errAuthData
+		return nil, &errAuthData
 	}
 	if subtle.ConstantTimeCompare(ad[head:head+n], credID) != 1 {
-		return &errCredential
+		return nil, &errCredential
 	}
-	return nil
-}
-
-// p256SPKI reports whether der is the canonical DER SubjectPublicKeyInfo of a
-// point on the P-256 curve.
-func p256SPKI(der []byte) bool {
-	k, err := x509.ParsePKIXPublicKey(der)
-	if err != nil {
-		return false
+	spki, used, e := coseES256(ad[head+n:])
+	if e != nil {
+		return nil, e
 	}
-	pub, ok := k.(*ecdsa.PublicKey)
-	if !ok || pub.Curve != elliptic.P256() {
-		return false
+	rest := ad[head+n+used:]
+	switch {
+	case flags&flagED != 0 && !extensionsOK(rest):
+		return nil, &errAuthData
+	case flags&flagED == 0 && len(rest) != 0:
+		return nil, &errAuthData
 	}
-	again, err := x509.MarshalPKIXPublicKey(pub)
-	return err == nil && bytes.Equal(again, der)
+	return spki, nil
 }

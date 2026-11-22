@@ -40,14 +40,24 @@
 // kept 5 minutes, single use, at most 32 outstanding), makes a passkey with
 // user verification required and attestation "none", and posts the code and
 // the new public key. The server burns the challenge first, then checks the
-// browser's own data with no passkey library and no CBOR decoder: the client
-// data (type, challenge, origin, no cross-origin), the authenticator data
-// (relying party hash, user presence and verification, the attested
-// credential id equal to the posted one) and the public key (DER SPKI of a
-// P-256 key). Then it hands the code, the credential id and the key to the
-// [Daemon] port, and the six words that come back are shown on the phone to be
-// compared with the desk console. Nothing is trusted until the owner confirms
-// at the desk; this package adds no credential to anything.
+// browser's own data with no passkey library: the client data (type,
+// challenge, origin, no cross-origin), the authenticator data (relying party
+// hash, user presence and verification, the attested
+// credential id equal to the posted one) and the public key, which it reads
+// from the attested credential data with a small strict CBOR reader of its own
+// (cose.go: the five-entry ES256 COSE_Key of a P-256 point on the curve, in
+// canonical order, definite lengths only) and turns into its canonical DER
+// SPKI, which must equal the posted public key byte for byte. Then it hands
+// the code, the credential id and the key to the [Daemon] port, and the six
+// words that come back are shown on the phone to be compared with the desk
+// console. Nothing is trusted until the owner confirms at the desk; this
+// package adds no credential to anything.
+//
+// The attestation is "none", so the registration holds no signature: the key
+// is bound to the credential id and to the authenticator data, and is not
+// signed. What the checks give is that the id, the authenticator data and the
+// key the daemon hears of are one credential's, not that the phone proved it
+// holds the private key.
 //
 // A failure is one of a small fixed set of codes, each with its status, and a
 // response never holds anything the request sent. Pairing tries are limited
