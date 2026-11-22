@@ -338,3 +338,31 @@ func testAuthorityHostDeploy(t *testing.T) {
 		}
 	})
 }
+
+// testAuthorityHostDeployDoc checks the manual: its links resolve and it names
+// the steps, the scripts' flags and the owner-only items.
+func testAuthorityHostDeployDoc(t *testing.T) {
+	path := filepath.Join(root(t), "deploy/authority-host/DEPLOY.md")
+	if err := checkDoc(root(t), path); err != nil {
+		t.Error(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"CGO_ENABLED=0", "ah-release build", "host-bootstrap.sh --dry", "host-bootstrap.sh --apply",
+		"--switch-sha256", "--link-caddy", "deploy.sh --dry", "deploy.sh --go", "--confirm",
+		"ah-switch status", "/healthz", "--rollback-to previous", "Owner-only items", "signers file",
+		"When a step fails", "AUTHORITY_HOST_SSH",
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("DEPLOY.md does not mention %q", want)
+		}
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.Contains(line, "AUTHORITY_HOST_SSH=") && !strings.Contains(line, "USER@HOST") {
+			t.Errorf("DEPLOY.md sets the host variable to a value: %s", line)
+		}
+	}
+}

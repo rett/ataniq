@@ -27,6 +27,7 @@ const (
 func TestAuthorityHostDeployScripts(t *testing.T) {
 	t.Run("bootstrap", testAuthorityHostBootstrap)
 	t.Run("deploy", testAuthorityHostDeploy)
+	t.Run("manual", testAuthorityHostDeployDoc)
 }
 
 // ahRun runs a script with sh in dir, with exactly the environment given,
