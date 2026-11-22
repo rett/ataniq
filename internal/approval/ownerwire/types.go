@@ -420,7 +420,9 @@ type PairStatus struct {
 	// replaced it.
 	PendingID string `json:"pending_id,omitempty"`
 	// ExpiresAt is when the waiting code or the pending credential ends,
-	// or ended, a record's time. It is left out for the phase none.
+	// or ended, a record's time; for a code burnt by wrong tries it is the
+	// time of the try that burnt it, in the past. It is left out for the
+	// phase none.
 	ExpiresAt string `json:"expires_at,omitempty"`
 }
 

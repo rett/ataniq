@@ -268,6 +268,13 @@ func (s *Service) PairPresent(ctx context.Context, src Source, p ownerwire.SeatP
 		return ownerwire.SeatPairResult{}, ErrCredentialInvalid
 	case errors.Is(err, seatpair.ErrWrongCode), errors.Is(err, seatpair.ErrUsed), errors.Is(err, seatpair.ErrBurnt),
 		errors.Is(err, seatpair.ErrExpired), errors.Is(err, seatpair.ErrNoPairing), errors.Is(err, seatpair.ErrPending):
+		if errors.Is(err, seatpair.ErrWrongCode) && s.pr.live && s.pr.p.Phase(mono) == seatpair.PhaseNone {
+			// The try was the one that burnt the code. The pairing reads as
+			// expired from this moment, and the desk is told, once: nothing of
+			// the code or of the try is in the line.
+			s.pr.ends = now
+			s.notice("a pairing code was burnt by wrong tries; start the pairing again")
+		}
 		return ownerwire.SeatPairResult{}, ErrPairRefused
 	default:
 		return ownerwire.SeatPairResult{}, fmt.Errorf("ownerchannel: the pairing could not take the credential: %w", err)

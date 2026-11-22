@@ -1391,3 +1391,52 @@ func TestAListedCredentialWithAWrongCodeIsAWrongCode(t *testing.T) {
 		t.Fatalf("the right code after five wrong ones: %v", err)
 	}
 }
+
+// A pairing whose code is burnt by wrong tries reads as expired, with the time
+// of the try that burnt it, which is in the past, and not the time the code
+// would have ended; and the desk is told by a notice, which holds nothing of
+// the code or of what was tried.
+func TestABurntCodeReadsExpiredAtTheTimeItWasBurntAndTheDeskIsTold(t *testing.T) {
+	e, _ := pairEnv(t)
+	ph := newPhone(t, 1)
+	code := e.mustStart()
+	end := record.FormatTime(start.Add(seatpair.CodeLifetime))
+	wrong := "00000000000000000000"
+	for i := 0; i < seatpair.MaxTries-1; i++ {
+		e.advance(time.Second)
+		if _, err := e.present(wrong, ph); !errors.Is(err, ErrPairRefused) {
+			t.Fatal(err)
+		}
+		if n := e.noticed(); len(n) != 0 {
+			t.Fatalf("a notice before the code was burnt: %q", n)
+		}
+	}
+	if st := e.status(); st.Phase != ownerwire.PairWaiting || st.ExpiresAt != end {
+		t.Fatalf("before the last try: %+v", st)
+	}
+	e.advance(time.Second)
+	burnt := e.clock.Now()
+	if _, err := e.present(wrong, ph); !errors.Is(err, ErrPairRefused) {
+		t.Fatal(err)
+	}
+	st := e.status()
+	if st.Phase != ownerwire.PairExpired || st.ExpiresAt != record.FormatTime(burnt) || st.ExpiresAt >= end {
+		t.Fatalf("a burnt code reads %+v, want expired at %s, before %s", st, record.FormatTime(burnt), end)
+	}
+	n := e.noticed()
+	if len(n) != 1 || strings.Contains(strings.ToUpper(n[0]), code) || strings.Contains(n[0], wrong) {
+		t.Fatalf("notices %q", n)
+	}
+	// Nothing more is said of the tries that follow, the code being dead.
+	if _, err := e.present(code, ph); !errors.Is(err, ErrPairRefused) {
+		t.Fatal(err)
+	}
+	if got := e.noticed(); len(got) != 1 {
+		t.Fatalf("notices %q", got)
+	}
+	// A new start clears it.
+	e.mustStart()
+	if st := e.status(); st.Phase != ownerwire.PairWaiting {
+		t.Fatalf("%+v", st)
+	}
+}

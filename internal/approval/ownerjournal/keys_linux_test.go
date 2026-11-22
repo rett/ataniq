@@ -1219,3 +1219,24 @@ func TestAHeadThatCannotBeWrittenStopsTheList(t *testing.T) {
 		t.Fatalf("%d keys: the record that reached the file is not there", len(keys))
 	}
 }
+
+// Close called twice returns what the first call returned.
+func TestCloseTwiceReturnsWhatTheFirstReturned(t *testing.T) {
+	path := newKeyPath(t)
+	k := mustOpenKeys(t, path)
+	first := k.Close()
+	if second := k.Close(); second != first {
+		t.Fatalf("the second Close returned %v, the first %v", second, first)
+	}
+	// A list whose descriptor is closed under it: the first Close reports it,
+	// the second says the same.
+	k = mustOpenKeys(t, newKeyPath(t))
+	k.file.Close()
+	first = k.Close()
+	if first == nil {
+		t.Fatal("the first Close of a list with a closed file returned nil")
+	}
+	if second := k.Close(); second == nil || second.Error() != first.Error() {
+		t.Fatalf("the second Close returned %v, the first %v", second, first)
+	}
+}

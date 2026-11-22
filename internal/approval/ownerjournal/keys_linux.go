@@ -184,6 +184,8 @@ type KeyFile struct {
 	// the record is in the file: every later call is refused with
 	// [ErrUncertain] until the file is opened again.
 	broken bool
+	// closeErr is what the first Close returned.
+	closeErr error
 
 	// damaged is set when a check found the file or the head not what the list
 	// holds; every later call is refused with [ErrDamaged].
@@ -1132,8 +1134,9 @@ func (k *KeyFile) Close() error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if k.closed {
-		return nil
+		return k.closeErr
 	}
 	k.closed = true
-	return k.release()
+	k.closeErr = k.release()
+	return k.closeErr
 }

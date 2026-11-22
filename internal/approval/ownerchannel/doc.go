@@ -145,8 +145,20 @@
 // room for, the call answers that error although the pairing ended, and the
 // status says none. A credential that is on the list already, revoked or not,
 // is refused when it is presented ([ErrCredentialInvalid], after the code was
-// checked) and ends the pairing. Every error of these operations other
-// than a refusal is one of the package's sentinels, each with a fixed text.
+// checked) and ends the pairing. The errors of these operations are a
+// refusal of the connection ([*record.Error]), one of the package's sentinels
+// with a fixed text, or, for the few steps that fail for a reason of their own
+// (the random source, an error of seatpair that has no sentinel here), an
+// error that wraps the cause: [Service.PairStart], [Service.PairPresent] and
+// [Service.PairConfirm] wrap what seatpair returned in such a case, and the
+// daemon answers it "failed" with a fixed text and writes the cause to its
+// log. A pairing that expired, was burnt by wrong tries, or was replaced leaves
+// no record anywhere (the journal and the list hold nothing of it; only a
+// rejection is journaled), and it reads as the phase "expired" until the next
+// start, with the time it ended: the code's or the credential's deadline, or,
+// for a burnt code, the time of the try that burnt it, which is in the past. The
+// desk is told of a burnt code by a notice ([Config].Notice) that holds nothing
+// of the code or of the tries.
 //
 // # Concurrency
 //
