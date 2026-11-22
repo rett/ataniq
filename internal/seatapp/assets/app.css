@@ -3,28 +3,84 @@
  * Mobile first, one column, no framework, system fonts only. The phone's text
  * size and its light or dark setting are followed. Nothing here is fetched
  * from another site.
+ *
+ * Colour system: two voices, Dusk with red alerts. Light value, then dark.
+ * The seat is cool (cyan-blue on blue-slate); the agent, when it appears, is
+ * warm grey. Square corners are the seat's; round corners are the agent's.
+ *
+ * COLOUR ROLES
+ *   ground        --bg #eef1f6, #11131b. Raised surface (the words box, inputs)
+ *                 --field #fbfcfe, #0a0c12.
+ *   text          --fg #161a24, #e7e9f0. Secondary text --muted #4d5466, #a6abb9.
+ *   line          --line #858a96, #5e6270: the functional line (header rule,
+ *                 status bar, box edges), at least 3:1 on --bg. Dusk's own
+ *                 decorative hairline (#c6ccd9, #333747) is only 1.4:1 and 1.6:1,
+ *                 so the nearest value that passes was taken: Dusk's hairline
+ *                 moved toward the text colour until it reached 3:1.
+ *   seat's voice  --seat #09558a, #74c7f7: the spine marker, the seat tag and
+ *                 Approve (--approve #09558a, #0e4a73; --approve-ink #ffffff;
+ *                 --approve-edge #09558a, #74c7f7). Links take it too. Nowhere
+ *                 else: the seat colour is never a state.
+ *   agent's voice --bubble #e9e4da, #2b2824; --bubble-ink #4f4a42, #cdc5b8;
+ *                 --bubble-line #8a8478, #857d70. Low chroma, never the seat's
+ *                 hue, never filled with a state colour. Not used by the
+ *                 pairing pages yet.
+ *   danger        --stop #b3261e, #ff6b5e, with --stop-on #ffffff, #2b0504 on
+ *                 a fill of it. Reserved: refusals, expiry, flagged things.
+ *   hold, warn    --warn #6b4d0a, #e6c378. Quiet, with an icon and a word.
+ *   ok, applied   --ok #2f5743, #b3cfa6. Quiet, so it never competes with the
+ *                 seat or with danger.
+ *   focus ring    --focus: the text colour, 3px with a gap. Never a hue, so it
+ *                 cannot be taken for a state.
+ *   selection     --sel #c9d2e2, #3b4560 with --sel-ink #161a24, #ffffff:
+ *                 neutral, so selected text never takes the seat's colour.
+ * The contrast of every pair in use is checked by look_test.go.
  */
 
 :root {
   color-scheme: light dark;
-  --bg: #ffffff;
-  --fg: #14171a;
-  --muted: #4a5259;
-  --line: #6b747c;
-  --accent: #0b57d0;
-  --accent-fg: #ffffff;
-  --focus: #9a3d00;
+  --bg: #eef1f6;
+  --field: #fbfcfe;
+  --fg: #161a24;
+  --muted: #4d5466;
+  --line: #858a96;
+  --seat: #09558a;
+  --approve: #09558a;
+  --approve-ink: #ffffff;
+  --approve-edge: #09558a;
+  --bubble: #e9e4da;
+  --bubble-ink: #4f4a42;
+  --bubble-line: #8a8478;
+  --stop: #b3261e;
+  --stop-on: #ffffff;
+  --warn: #6b4d0a;
+  --ok: #2f5743;
+  --focus: #161a24;
+  --sel: #c9d2e2;
+  --sel-ink: #161a24;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #101214;
-    --fg: #f2f4f5;
-    --muted: #b6bec5;
-    --line: #8b959d;
-    --accent: #8ab4f8;
-    --accent-fg: #0a1220;
-    --focus: #ffd166;
+    --bg: #11131b;
+    --field: #0a0c12;
+    --fg: #e7e9f0;
+    --muted: #a6abb9;
+    --line: #5e6270;
+    --seat: #74c7f7;
+    --approve: #0e4a73;
+    --approve-ink: #ffffff;
+    --approve-edge: #74c7f7;
+    --bubble: #2b2824;
+    --bubble-ink: #cdc5b8;
+    --bubble-line: #857d70;
+    --stop: #ff6b5e;
+    --stop-on: #2b0504;
+    --warn: #e6c378;
+    --ok: #b3cfa6;
+    --focus: #e7e9f0;
+    --sel: #3b4560;
+    --sel-ink: #ffffff;
   }
 }
 
@@ -108,10 +164,10 @@ button {
   min-width: 44px;
   min-height: 44px;
   padding: 10px 20px;
-  border: 2px solid var(--accent);
-  border-radius: 8px;
-  background: var(--accent);
-  color: var(--accent-fg);
+  border: 2px solid var(--approve-edge);
+  border-radius: 0;
+  background: var(--approve);
+  color: var(--approve-ink);
   font: inherit;
   font-weight: 700;
   cursor: pointer;
@@ -131,8 +187,13 @@ button:disabled {
 }
 
 a {
-  color: var(--accent);
+  color: var(--seat);
   text-decoration: underline;
+}
+
+::selection {
+  background: var(--sel);
+  color: var(--sel-ink);
 }
 
 /* The six words, to be compared with the desk console. */
@@ -140,7 +201,8 @@ a {
   margin-top: 24px;
   padding: 16px;
   border: 2px solid var(--line);
-  border-radius: 8px;
+  border-radius: 0;
+  background: var(--field);
 }
 
 #words {

@@ -138,17 +138,29 @@ func TestStyleSheet(t *testing.T) {
 		for _, m := range cssVar.FindAllStringSubmatch(block, -1) {
 			v[m[1]] = m[2]
 		}
-		for _, k := range []string{"bg", "fg", "muted", "line", "accent", "accent-fg", "focus"} {
+		for _, k := range []string{
+			"bg", "fg", "muted", "line", "focus", "seat", "approve", "approve-ink", "approve-edge",
+			"stop", "stop-on", "warn", "ok", "field",
+		} {
 			if v[k] == "" {
 				t.Fatalf("%s scheme: no --%s", name, k)
 			}
+		}
+		// Approve is a slab with an edge: in the dark scheme the slab
+		// (deep blue) sits near the ground, so the edge is what marks the
+		// control and must reach 3:1; in the light scheme the slab is.
+		edge := "approve-edge"
+		if name == "light" {
+			edge = "approve"
 		}
 		for _, c := range []struct {
 			a, b string
 			min  float64
 		}{
-			{"fg", "bg", 7}, {"muted", "bg", 4.5}, {"accent-fg", "accent", 4.5},
-			{"accent", "bg", 3}, {"line", "bg", 3}, {"focus", "bg", 3},
+			{"fg", "bg", 7}, {"muted", "bg", 4.5}, {"approve-ink", "approve", 7},
+			{edge, "bg", 3}, {"seat", "bg", 4.5}, {"line", "bg", 3}, {"focus", "bg", 3},
+			{"stop", "bg", 4.5}, {"stop", "field", 4.5}, {"stop-on", "stop", 4.5},
+			{"warn", "bg", 4.5}, {"ok", "bg", 4.5},
 		} {
 			if got := contrast(v[c.a], v[c.b]); got < c.min {
 				t.Errorf("%s scheme: --%s on --%s is %.2f:1, under %.1f:1", name, c.a, c.b, got, c.min)
