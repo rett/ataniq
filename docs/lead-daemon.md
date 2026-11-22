@@ -359,6 +359,17 @@ door, which keeps nothing across a restart. Its keys:
   scratch root, outside the state folder and apart from the mirror and the drop
   folder. The daemon
   makes it with mode 0700 when it is not there (its parent must exist).
+- `"kinds"` (optional): the kinds of credential the project accepts for a
+  phone's login and decision, by the names `"platform-passkey"`,
+  `"vault-passkey"` and `"passkey"`, each at most once. Absent or empty, every
+  kind is accepted (`"unverified"`, the stored word of a key paired without a
+  claim, is not a kind). A name that is not one of the three, or a name twice,
+  refuses the settings. A kind is what the phone's authenticator claimed, relayed
+  by the seat and not attested, so the list is advisory: it does not hold
+  against a taken-over seat. The settings carry the list as the credential
+  policy of `internal/approval/credkind` (`Scratch.KindPolicy` in
+  `internal/approval/hostadapter`); this build reads and checks it, and nothing
+  in the daemon applies it yet.
 
 The settings also name the project, its mirror, the role, the target, the
 commit identity, the gates and the folder requests are dropped in. `sandbox`
