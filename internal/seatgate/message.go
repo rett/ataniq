@@ -32,7 +32,7 @@ const (
 	CodeBusy             = "busy"              // more requests in flight than the limit
 	CodeDeadline         = "deadline-exceeded" // the handler did not answer within the request deadline
 	CodeTooLarge         = "too-large"         // a result that does not fit a frame
-	CodeShuttingDown     = "shutting-down"     // the server is stopping
+	CodeShuttingDown     = "shutting-down"     // a request read after the shutdown began, not started: nothing of it ran
 )
 
 // ValidCode reports whether s is a code: 1 to 40 of a-z, 0-9 and hyphen.

@@ -785,6 +785,39 @@ func TestServerRequestDeadline(t *testing.T) {
 	}
 }
 
+// An id has one answer pending at a time, which is not one handler at a time:
+// the answer deadline-exceeded frees the id while a handler that ignores its
+// context still runs, and a request that reuses the id is served then (the
+// wording of the package documentation).
+func TestServerIdIsFreeAtTheDeadlineAnswerWhileItsHandlerStillRuns(t *testing.T) {
+	leakCheck(t)
+	release := make(chan struct{})
+	var running atomic.Int32
+	var overlap atomic.Bool
+	e := startServer(t, func(c *ServerConfig) { c.RequestTimeout = 100 * time.Millisecond }, HandlerFunc(
+		func(ctx context.Context, _ Peer, op string, _ json.RawMessage) (json.RawMessage, error) {
+			if op == "t.ignores" {
+				running.Add(1)
+				defer running.Add(-1)
+				<-release
+				return nil, nil
+			}
+			overlap.Store(running.Load() > 0)
+			return json.RawMessage(`{"ok":true}`), nil
+		}))
+	defer close(release)
+	r := e.helloed()
+	if resp := r.call(2, "t.ignores", ""); resp.Code != CodeDeadline {
+		t.Fatalf("%+v", resp)
+	}
+	if resp := r.call(2, "t.quick", ""); resp.Code != "" || string(resp.Result) != `{"ok":true}` {
+		t.Fatalf("the id was not free: %+v", resp)
+	}
+	if !overlap.Load() {
+		t.Fatal("the first handler had returned: the test did not test the overlap")
+	}
+}
+
 func TestServerConcurrentRequestsOnOneConnection(t *testing.T) {
 	leakCheck(t)
 	e := startServer(t, func(c *ServerConfig) { c.RateMax = 1000 }, HandlerFunc(
@@ -1084,6 +1117,56 @@ func TestServerHandlersHaveAServerWideCeiling(t *testing.T) {
 // to a peer that has stopped reading. The loop writes the answers it serves
 // itself (a ping, busy, rate-limited), and used to see the drain only once such
 // a write ended, at WriteTimeout, so Serve could outlast the grace by that.
+// A request that the connection's loop takes once the shutdown has begun is
+// answered shutting-down and not started: the peer learns that nothing of it
+// ran, where a cut connection would leave it unable to tell. A request already
+// in flight is still given the grace.
+func TestServerShutdownAnswersALateRequestWithoutRunningIt(t *testing.T) {
+	leakCheck(t)
+	var ran atomic.Int32
+	inFlight, release, taken := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	e := startServer(t, func(c *ServerConfig) {
+		c.frameHook = func(op string, drain <-chan struct{}) {
+			if op == "t.late" {
+				close(taken)
+				<-drain // the loop takes this frame only once the shutdown has begun
+			}
+		}
+	}, HandlerFunc(func(ctx context.Context, _ Peer, op string, _ json.RawMessage) (json.RawMessage, error) {
+		ran.Add(1)
+		if op == "t.slow" {
+			close(inFlight)
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		}
+		return json.RawMessage(`{"op":"` + op + `"}`), nil
+	}))
+	r := e.helloed()
+	r.send(`{"id":2,"op":"t.slow"}`)
+	within(t, "the handler to start", inFlight, 5*time.Second)
+	r.send(`{"id":3,"op":"t.late"}`)
+	within(t, "the loop to take the request", taken, 5*time.Second)
+	e.cancel()
+	resp := r.recv()
+	if resp.ID != 3 || resp.Code != CodeShuttingDown {
+		t.Fatalf("%+v", resp)
+	}
+	if n := ran.Load(); n != 1 {
+		t.Fatalf("%d handlers ran, want only the one in flight", n)
+	}
+	close(release)
+	resp = r.recv()
+	if resp.ID != 2 || resp.Code != "" || string(resp.Result) != `{"op":"t.slow"}` {
+		t.Fatalf("the request in flight: %+v", resp)
+	}
+	r.expectClosed(3 * time.Second)
+	if err := e.stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestServerShutdownGraceHoldsAgainstAPeerThatStopsReading(t *testing.T) {
 	leakCheck(t)
 	big := json.RawMessage(`{"x":"` + strings.Repeat("a", 60000) + `"}`)

@@ -97,6 +97,9 @@ type ServerConfig struct {
 	// reuseHook, for tests, runs when a request is found to reuse the id of
 	// one whose answer is being written, before it waits for that write.
 	reuseHook func(id uint64)
+	// frameHook, for tests, runs in a connection's loop after a request is
+	// decoded and before it is taken, with the channel that a shutdown closes.
+	frameHook func(op string, drain <-chan struct{})
 }
 
 func (c ServerConfig) withDefaults() ServerConfig {
@@ -383,6 +386,11 @@ func (c *srvConn) loop() {
 				return
 			}
 			req, err := decodeRequest(m.payload)
+			if err == nil {
+				if h := c.s.cfg.frameHook; h != nil {
+					h(req.Op, c.s.drain)
+				}
+			}
 			if err != nil || !c.handle(req) {
 				c.finish(false)
 				return
@@ -531,6 +539,17 @@ func (c *srvConn) handle(req request) bool {
 	case OpPing:
 		c.reply(response{ID: req.ID})
 		return true
+	}
+	// A request the loop reads once the shutdown has begun is not started:
+	// it is answered shutting-down, which says for certain that nothing of it
+	// ran (unlike a connection cut, after which the peer cannot know), and
+	// the loop ends the connection after the requests in flight are answered.
+	// A frame the loop read before the shutdown began is served as ever.
+	select {
+	case <-c.s.drain:
+		c.reply(response{ID: req.ID, Code: CodeShuttingDown})
+		return true
+	default:
 	}
 	c.mu.Lock()
 	if c.running >= c.s.cfg.MaxInFlight || !c.s.takeHandler() {
