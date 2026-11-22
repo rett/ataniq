@@ -13,7 +13,7 @@ const (
 	// MinCredentialIDLen and MaxCredentialIDLen bound the length in bytes of a
 	// credential id.
 	MinCredentialIDLen = 16
-	MaxCredentialIDLen = 1024
+	MaxCredentialIDLen = 1023
 
 	// maxKeyLen bounds what is parsed at all. A P-256 key is 91 bytes.
 	maxKeyLen = 4096
@@ -23,7 +23,7 @@ const (
 const (
 	// ErrCredentialID: the credential id is shorter than MinCredentialIDLen
 	// or longer than MaxCredentialIDLen.
-	ErrCredentialID Error = "seatpair: credential id must be 16 to 1024 bytes"
+	ErrCredentialID Error = "seatpair: credential id must be 16 to 1023 bytes"
 	// ErrKeyFormat: the bytes are not one DER SubjectPublicKeyInfo and
 	// nothing else (garbage, trailing bytes, or a form that is not the
 	// canonical encoding of its key).
