@@ -2,7 +2,7 @@
 // read-only, for an AI agent tool or its credentials on the host and prints
 // one line per hit, never a file's content or a variable's value:
 //
-//	ah-noaicheck [--root DIR] [--release DIR] [--require-policy] [--nft-listing FILE] [--json]
+//	ah-noaicheck [--phase pre|post|full] [--root DIR] [--release DIR] [--require-policy] [--nft-listing FILE] [--json]
 //	ah-noaicheck ports [--root DIR] [--release DIR] [--require-policy] [--json]
 //	ah-noaicheck nft-digest FILE
 //
@@ -35,7 +35,7 @@ const (
 // maxListing bounds the firewall listing read from a file or stdin.
 const maxListing = 16 << 20
 
-const usage = `usage: ah-noaicheck [--root DIR] [--release DIR] [--require-policy] [--nft-listing FILE] [--json]
+const usage = `usage: ah-noaicheck [--phase pre|post|full] [--root DIR] [--release DIR] [--require-policy] [--nft-listing FILE] [--json]
        ah-noaicheck ports [--root DIR] [--release DIR] [--require-policy] [--json]
        ah-noaicheck nft-digest FILE
 
@@ -53,13 +53,20 @@ and, when the release pins share/nft.digest, the firewall rules. "ports"
 checks only the listening TCP ports. "nft-digest" prints the digest of the
 normalised listing in FILE ("-" for stdin), the value of share/nft.digest.
 
+  --phase PHASE       full (the default): the host as it is, every check;
+                      pre (before a switch): also the release's own etc/
+                      (its units, its caddy and nftables files), without
+                      the listening ports and the firewall digest;
+                      post (after a switch): pre's checks with the ports
+                      and the digest
   --root DIR          check the tree beneath DIR instead of / (default /)
   --release DIR       the release folder whose share/ holds the lists
                       (default: the folder above this program's bin/)
   --require-policy    a release policy left unset is a hit ("HIT policy"):
                       an empty units.allow, packages.allow or ports.allow,
                       or no share/nft.digest; the switch always passes it
-  --nft-listing FILE  the output of "nft list ruleset" ("-" for stdin)
+  --nft-listing FILE  the output of "nft list ruleset" ("-" for stdin);
+                      not read in the pre phase
   --json              write the report as one JSON object
 
 Exit status: 0 clean, 1 any hit, 2 a usage or read error.
@@ -104,9 +111,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	release := fs.String("release", "", "")
 	asJSON := fs.Bool("json", false, "")
 	requirePolicy := fs.Bool("require-policy", false, "")
-	var listingFile *string
+	var listingFile, phase *string
 	if mode == "check" {
 		listingFile = fs.String("nft-listing", "", "")
+		phase = fs.String("phase", noaicheck.PhaseFull, "")
 	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -120,6 +128,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	if *root == "" {
 		return usageErr("--root is empty")
+	}
+	if phase != nil {
+		switch *phase {
+		case noaicheck.PhasePre, noaicheck.PhasePost, noaicheck.PhaseFull:
+		default:
+			return usageErr("--phase is pre, post or full, not " + noaicheck.Field(*phase))
+		}
+		if *phase == noaicheck.PhasePre && *listingFile != "" {
+			return usageErr("--nft-listing is not read in the pre phase")
+		}
 	}
 	if *release == "" {
 		dir, err := ownRelease()
@@ -148,8 +166,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if mode == "ports" {
 		c.CheckPorts()
 		report = c.Report()
-	} else {
-		report = c.RunAll(listing)
+	} else if report, err = c.RunPhase(*phase, *release, listing); err != nil {
+		return fail(fmt.Errorf("the release folder: %w", err))
 	}
 	write := report.WriteText
 	if *asJSON {

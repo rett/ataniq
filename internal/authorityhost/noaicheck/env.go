@@ -110,115 +110,139 @@ const PathEnvFile = "env-file"
 // identifier is ever reported. A file whose syntax the check cannot parse
 // is the hit "incomplete env-syntax <file>".
 func (c *Checker) CheckEnv() {
-	done := map[string]bool{}
-	var queue []envFile
-	// Each queued file counts as an entry and holds its memory until it is
-	// read, as a walk's names do; once the budget is spent no more is
-	// queued and the report ends with "incomplete budget".
-	push := func(rel string, s envSyntax) {
-		if c.t.b.entry() && c.t.b.hold(queueCost(rel)) {
-			queue = append(queue, envFile{rel: rel, syntax: s})
-		}
-	}
-	var scan func(rel string, s envSyntax, m *manager)
-	scan = func(rel string, s envSyntax, m *manager) {
-		p, err := c.t.resolve(rel)
-		if err != nil {
-			c.unreadable(rel, err)
-			return
-		}
-		key := p
-		if m != nil {
-			key += "\x00" + m.key()
-		}
-		if done[key] || p == "dev/null" { // once; a masked file is empty
-			return
-		}
-		done[key] = true
-		r := c.parsed[p]
-		if r == nil {
-			_, data, err := c.t.readFile(p, maxEnvFile)
-			if err != nil {
-				c.unreadable(p, err)
-				return
-			}
-			r = &envParse{}
-			*r = parseEnv(s, string(data), strings.HasSuffix(p, ".fish"))
-			if c.t.b.hold(int64(len(p)) + 64*int64(len(r.files)+len(r.sourced)+1)) {
-				c.parsed[p] = r
-			}
-			for _, n := range r.names {
-				c.hit(KindEnv, show(p), n)
-			}
-			if r.bad {
-				c.hit(KindIncomplete, PathEnvSyntax, show(p))
-			}
-			for _, w := range r.sourced {
-				paths, ok := c.sourcePaths(w, c.homeOf(p))
-				for _, f := range paths {
-					ok = c.envFileGlob(f, func(m string) { push(m, syntaxShell) }) && ok
-				}
-				if !ok {
-					c.hit(KindIncomplete, PathEnvSource, show(p))
-				}
-			}
-		}
-		if len(r.files) == 0 {
-			return
-		}
-		mgr := manager{}
-		if m != nil {
-			mgr = *m
-		}
-		for _, ref := range r.files {
-			f, held, err := c.expand(ref.path, mgr)
-			switch {
-			case errors.Is(err, errBudget):
-				return
-			case err != nil:
-				c.hit(KindIncomplete, PathEnvSyntax, show(p))
-				continue
-			}
-			n := 0
-			globbed := c.envFileGlob(f, func(m string) { n++; push(m, syntaxEnvFile) })
-			switch {
-			case !globbed:
-				c.hit(KindIncomplete, PathEnvSyntax, show(p))
-			case !ref.optional && (n == 0 || c.missing(f)):
-				c.hit(KindIncomplete, PathEnvFile, show(clean(f)))
-			}
-			c.t.b.release(held)
-		}
-	}
-	scanDir := func(rel string, s envSyntax) {
+	s := c.newEnvScan()
+	scanDir := func(rel string, syn envSyntax) {
 		c.walk(rel, 1, func(e *wentry) bool {
 			if e.isRegular() || e.isLink() {
-				scan(e.rel, s, nil)
+				s.scan(e.rel, syn, nil)
 			}
 			return false
 		})
 	}
 	for _, f := range envFiles {
-		scan(f.rel, f.syntax, nil)
+		s.scan(f.rel, f.syntax, nil)
 	}
 	for _, d := range envDirs {
 		scanDir(d.rel, d.syntax)
 	}
-	c.scanUnitFiles(func(rel string, m manager) { scan(rel, syntaxSystemd, &m) })
+	c.scanUnitFiles(func(rel string, m manager) { s.scan(rel, syntaxSystemd, &m) })
 	for _, home := range c.homeFolders() {
 		for _, f := range homeEnvFiles {
-			scan(path.Join(home, f.rel), f.syntax, nil)
+			s.scan(path.Join(home, f.rel), f.syntax, nil)
 		}
 		for _, d := range homeEnvDirs {
 			scanDir(path.Join(home, d.rel), d.syntax)
 		}
 	}
-	// A file may name or source another; done ends a cycle.
-	for len(queue) > 0 {
-		f := queue[0]
-		queue = queue[1:]
-		scan(f.rel, f.syntax, nil)
-		c.t.b.release(queueCost(f.rel))
+	s.drain()
+}
+
+// envScan reads environment files: each once (per manager, for a unit),
+// following the files they name or source through a queue.
+type envScan struct {
+	c     *Checker
+	done  map[string]bool
+	queue []envFile
+}
+
+func (c *Checker) newEnvScan() *envScan { return &envScan{c: c, done: map[string]bool{}} }
+
+// push queues a file. Each queued file counts as an entry and holds its
+// memory until it is read, as a walk's names do; once the budget is spent
+// no more is queued and the report ends with "incomplete budget".
+func (s *envScan) push(rel string, syn envSyntax) {
+	if s.c.t.b.entry() && s.c.t.b.hold(queueCost(rel)) {
+		s.queue = append(s.queue, envFile{rel: rel, syntax: syn})
+	}
+}
+
+// drain reads the queued files, and those they queue; done ends a cycle.
+func (s *envScan) drain() {
+	for len(s.queue) > 0 {
+		f := s.queue[0]
+		s.queue = s.queue[1:]
+		s.scan(f.rel, f.syntax, nil)
+		s.c.t.b.release(queueCost(f.rel))
+	}
+}
+
+// scan reads the file rel of the root in the syntax syn; a unit with the
+// manager m that loads it.
+func (s *envScan) scan(rel string, syn envSyntax, m *manager) {
+	c := s.c
+	p, err := c.t.resolve(rel)
+	if err != nil {
+		c.unreadable(rel, err)
+		return
+	}
+	key := p
+	if m != nil {
+		key += "\x00" + m.key()
+	}
+	if s.done[key] || p == "dev/null" { // once; a masked file is empty
+		return
+	}
+	s.done[key] = true
+	r := c.parsed[p]
+	if r == nil {
+		_, data, err := c.t.readFile(p, maxEnvFile)
+		if err != nil {
+			c.unreadable(p, err)
+			return
+		}
+		r = &envParse{}
+		*r = parseEnv(syn, string(data), strings.HasSuffix(p, ".fish"))
+		if c.t.b.hold(int64(len(p)) + 64*int64(len(r.files)+len(r.sourced)+1)) {
+			c.parsed[p] = r
+		}
+		for _, n := range r.names {
+			c.hit(KindEnv, show(p), n)
+		}
+		if r.bad {
+			c.hit(KindIncomplete, PathEnvSyntax, show(p))
+		}
+		for _, w := range r.sourced {
+			paths, ok := c.sourcePaths(w, c.homeOf(p))
+			for _, f := range paths {
+				ok = c.envFileGlob(f, func(m string) { s.push(m, syntaxShell) }) && ok
+			}
+			if !ok {
+				c.hit(KindIncomplete, PathEnvSource, show(p))
+			}
+		}
+	}
+	mgr := manager{}
+	if m != nil {
+		mgr = *m
+	}
+	s.envFiles(show(p), r.files, mgr)
+}
+
+// envFiles queues the files a unit's EnvironmentFile= lines name, in the
+// manager m (the unit shown as unit): each path's specifiers replaced in
+// m's context and a glob in its last component matched within the root. A
+// path that cannot be resolved is "incomplete env-syntax <unit>", a
+// required file that is not there "incomplete env-file <path>".
+func (s *envScan) envFiles(unit string, files []envRef, m manager) {
+	c := s.c
+	for _, ref := range files {
+		f, held, err := c.expand(ref.path, m)
+		switch {
+		case errors.Is(err, errBudget):
+			return
+		case err != nil:
+			c.hit(KindIncomplete, PathEnvSyntax, unit)
+			continue
+		}
+		n := 0
+		globbed := c.envFileGlob(f, func(rel string) { n++; s.push(rel, syntaxEnvFile) })
+		switch {
+		case !globbed:
+			c.hit(KindIncomplete, PathEnvSyntax, unit)
+		case !ref.optional && (n == 0 || c.missing(f)):
+			c.hit(KindIncomplete, PathEnvFile, show(clean(f)))
+		}
+		c.t.b.release(held)
 	}
 }
 

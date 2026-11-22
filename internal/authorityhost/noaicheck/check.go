@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -69,6 +70,7 @@ type Report struct {
 	Hits     []Hit    `json:"hits"`
 	Notes    []string `json:"notes"`
 	Complete bool     `json:"complete"`
+	Phase    string   `json:"phase,omitempty"` // the phase RunPhase ran
 }
 
 // NotePackagesNotEnforced is the note of an empty package allowlist.
@@ -83,7 +85,8 @@ type Checker struct {
 	RequirePolicy bool
 
 	t       *tree
-	euid    int // the effective user the check runs as
+	rootAbs string // the root folder, absolute
+	euid    int    // the effective user the check runs as
 	lists   *Lists
 	hits    []Hit
 	seen    map[Hit]bool
@@ -108,7 +111,12 @@ func Open(rootDir string, lists *Lists) (*Checker, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Checker{t: t, euid: os.Geteuid(), lists: lists, seen: map[Hit]bool{},
+	abs, err := filepath.Abs(rootDir)
+	if err != nil {
+		t.close()
+		return nil, err
+	}
+	return &Checker{t: t, rootAbs: filepath.Clean(abs), euid: os.Geteuid(), lists: lists, seen: map[Hit]bool{},
 		udirs: map[string]*udir{}, parsed: map[string]*envParse{}}, nil
 }
 
@@ -200,21 +208,13 @@ func (c *Checker) walk(start string, maxDepth int, visit func(e *wentry) bool) (
 	return p, nil
 }
 
-// RunAll runs every check of the main command in order: the binaries, the
+// RunAll runs every check of the full phase in order: the binaries, the
 // tools, the credentials, the environment files, the processes, the enabled
 // units, the listening ports, the packages and the firewall digest (against
-// listing, nil when the caller passed none).
+// listing, nil when the caller passed none). See RunPhase.
 func (c *Checker) RunAll(listing []byte) Report {
-	c.CheckBinaries()
-	c.CheckTools()
-	c.CheckCredentials()
-	c.CheckEnv()
-	c.CheckProcesses()
-	c.CheckUnits()
-	c.CheckPorts()
-	c.CheckPackages()
-	c.CheckNFT(listing)
-	return c.Report()
+	r, _ := c.RunPhase(PhaseFull, "", listing)
+	return r
 }
 
 // WriteText writes the report as lines: one "HIT kind path [detail]" per hit,
@@ -250,15 +250,17 @@ func (r Report) WriteText(w io.Writer) error {
 }
 
 // WriteJSON writes the report as one JSON object with "result" ("ok" or
-// "failed"), "complete", the count, the hits and the notes.
+// "failed"), "complete", the phase (when one ran), the count, the hits and
+// the notes.
 func (r Report) WriteJSON(w io.Writer) error {
 	out := struct {
 		Result   string   `json:"result"`
 		Complete bool     `json:"complete"`
+		Phase    string   `json:"phase,omitempty"`
 		Count    int      `json:"count"`
 		Hits     []Hit    `json:"hits"`
 		Notes    []string `json:"notes"`
-	}{"ok", r.Complete, len(r.Hits), r.Hits, r.Notes}
+	}{"ok", r.Complete, r.Phase, len(r.Hits), r.Hits, r.Notes}
 	if out.Hits == nil {
 		out.Hits = []Hit{}
 	}
