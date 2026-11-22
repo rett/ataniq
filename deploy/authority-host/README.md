@@ -1671,6 +1671,19 @@ It checks, in this order, all of them (a pass is no finding):
    `noaicheck-not-started`. It runs only when steps 1 to 4 found nothing:
    a checker whose hash does not match `SHA256SUMS`, with an unsafe mode or
    with a second link, or in a folder with any other finding, is not run.
+   What runs is a private copy of the checker steps 1 and 2 verified: it is
+   read through the folder `check` opened, not through its path again,
+   hashed as it is copied and once more from the copy, into a new folder of
+   mode 0700 in the temporary folder (`TMPDIR`, which must allow programs
+   to run: on a mount with `noexec` the result is `noaicheck-not-started`),
+   and removed afterwards. A checker that changed since it was verified is
+   not run (`noaicheck-changed`). `DIR/<id>` may be relative; the checker
+   is given its absolute path. The checker itself reads the release's
+   `etc/` and `share/` by that path while it runs, so a folder renamed or
+   changed between the verification and that read is read as it is then:
+   doing that takes write access to the release folder or to the folder
+   that holds it, which `check` does not look at (keep both writable by
+   you alone).
    `--root DIR` is given on to it (default: the
    host it runs on, so on a build host that has agent tools of its own it
    reports them: run `check` where the no-AI check is meant to pass, or
@@ -1737,11 +1750,23 @@ change it.
 The digest pins the ruleset as it is: it proves later that the rules did not
 change, not that they were right. The firewall is the owner's, so `baseline`
 enrolls any listing, but it reads the one it hashes for a default deny: for
-each of the hooks `input`, `output` and `forward`, a base chain of that hook
-(a chain whose `type ... hook HOOK ...; policy drop;` line stands in it) with
-`policy drop`, in a table that is not `dormant`, of family `inet` or of both
-`ip` and `ip6`, so that IPv4 and IPv6 are both covered. For each hook without
-one it prints, before its result line,
+each of the hooks `input`, `output` and `forward`, a base chain of type
+`filter` of that hook (a chain whose `type filter hook HOOK ...; policy
+drop;` line stands in it) with `policy drop`, in a table that is not
+`dormant` (its `flags` line, comma-separated, does not name `dormant`), of
+family `inet` or of both `ip` and `ip6`, so that IPv4 and IPv6 are both
+covered. A chain of another type does not count: a `nat` chain sees only the
+first packet of a connection, and a `route` chain (hook `output`) is not
+counted either, so a ruleset that drops by default only in one is reported.
+An unquoted `#` starts a comment, which is not read. Of the rules it reads
+only the first rule of such a chain: one that accepts every packet (`accept`
+alone, with at most a counter and a comment) makes the chain not count. No
+other rule is read, so a chain whose rules accept everything in another way
+(a later unconditional `accept`, a `jump` or `goto` to a chain that accepts
+everything, an accept behind a match every packet meets) still counts: the
+check says that each hook has a base chain whose policy is drop, not that
+its rules drop anything. For each hook without one it prints, before its
+result line,
 
 ```
 WARNING: no-default-deny HOOK: the enrolled nft ruleset has no base chain of hook HOOK with policy drop for IPv4 and IPv6; nft.digest pins it as it is
@@ -1750,10 +1775,12 @@ WARNING: no-default-deny HOOK: the enrolled nft ruleset has no base chain of hoo
 and writes the same words, as a `# ` comment, into the header of
 `share/nft.digest`, so that whoever reads the release later sees that its
 digest was enrolled over a ruleset without that policy. A listing it cannot
-read in that shape counts as having no default deny: the warning may be one
-too many, never one too few. `--require-default-deny` turns any of these
-into a refusal (`FAIL: no-default-deny ...`, exit 1, after the warnings) and
-writes nothing; use it once the host's rules are final.
+read in that shape counts as having no default deny, so of the policies the
+warning may be one too many, never one too few; of the rules, as above, it
+can say nothing, so read them yourself before the baseline is enrolled.
+`--require-default-deny` turns any of these into a refusal (`FAIL:
+no-default-deny ...`, exit 1, after the warnings) and writes nothing; use it
+once the host's rules are final.
 
 The result is a new folder, `--out` (it must not exist, and may not be or lie
 in `--src`; it is made beside its place and renamed into it) or, without

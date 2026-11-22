@@ -416,6 +416,26 @@ func TestBaselineReportsAMissingDefaultDeny(t *testing.T) {
 		{"the words in a comment", "table inet filter {\n\tchain input {\n\t\ttype filter hook input priority filter; policy accept;\n\t\tcomment \"type filter hook output priority filter; policy drop;\"\n\t}\n}\n", []string{"input", "output", "forward"}},
 		{"a brace in a comment", strings.Replace(nftDefaultDeny, "tcp dport 22 accept", "tcp dport 22 accept comment \"} {\\\" }\"", 1), nil},
 		{"a regular chain", "table inet filter {\n\tchain mine {\n\t\tpolicy drop\n\t}\n}\n", []string{"input", "output", "forward"}},
+		// Only a chain of type filter filters every packet of its hook: a
+		// nat chain sees the first packet of a connection, and a route
+		// chain is not counted either (the warning is then one too many).
+		{"an output nat chain", strings.Replace(nftDefaultDeny, "type filter hook output", "type nat hook output", 1), []string{"output"}},
+		{"an output route chain", strings.Replace(nftDefaultDeny, "type filter hook output", "type route hook output", 1), []string{"output"}},
+		{"an output nat chain beside a filter chain", strings.Replace(nftDefaultDeny, "\tchain output {", "\tchain nat_out {\n\t\ttype nat hook output priority -100; policy accept;\n\t}\n\tchain output {", 1), nil},
+		// What follows an unquoted # is a comment: never a word, never a
+		// brace.
+		{"a drop policy in a # comment", strings.Replace(nftDefaultDeny, "hook input priority filter; policy drop;", "hook input priority filter; policy accept; # was policy drop;", 1), []string{"input"}},
+		{"a # comment on a drop policy", strings.Replace(nftDefaultDeny, "hook input priority filter; policy drop;", "hook input priority filter; policy drop; # not accept", 1), nil},
+		{"a brace in a # comment", strings.Replace(nftDefaultDeny, "tcp dport 22 accept", "tcp dport 22 accept # {", 1), nil},
+		{"a # in a quoted comment", strings.Replace(nftDefaultDeny, "tcp dport 22 accept", "tcp dport 22 accept comment \"# }\"", 1), nil},
+		// Flags are separated by commas.
+		{"dormant among other flags", strings.Replace(nftDefaultDeny, "table inet filter {\n", "table inet filter {\n\tflags owner,dormant\n", 1), []string{"input", "output", "forward"}},
+		{"other flags", strings.Replace(nftDefaultDeny, "table inet filter {\n", "table inet filter {\n\tflags owner,persist\n", 1), nil},
+		// A base chain whose first rule accepts every packet denies
+		// nothing by default; a rule after the first is not read.
+		{"a first rule that accepts all", strings.ReplaceAll(nftDefaultDeny, "policy drop;\n", "policy drop;\n\t\taccept\n"), []string{"input", "output", "forward"}},
+		{"a counted first accept", strings.Replace(nftDefaultDeny, "hook forward priority filter; policy drop;\n", "hook forward priority filter; policy drop;\n\t\tcounter packets 3 bytes 120 accept comment \"all\"\n", 1), []string{"forward"}},
+		{"a first rule that matches", strings.Replace(nftDefaultDeny, "hook forward priority filter; policy drop;\n", "hook forward priority filter; policy drop;\n\t\tct state established accept\n\t\taccept\n", 1), nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o := baselineInputs(t)

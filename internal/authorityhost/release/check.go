@@ -32,12 +32,18 @@ type CheckOptions struct {
 	Timeout time.Duration
 }
 
+// beforeNoAICheck, when not nil, is called after the folder was verified
+// and before the no-AI check is run: a test's hook.
+var beforeNoAICheck func()
+
 // MaxFindings is how many findings Check keeps.
 const MaxFindings = 1000
 
 type checker struct {
 	findings []Finding
 	seen     map[Finding]bool
+	// digests is the SHA-256 of each file sums hashed, by path.
+	digests map[string]string
 }
 
 func (c *checker) add(code, name string) {
@@ -68,8 +74,15 @@ var topLevel = map[string]bool{
 // it runs only when nothing else was found.
 func Check(dir string, o CheckOptions) []Finding {
 	c := &checker{}
-	clean := filepath.Clean(dir)
-	id, err := switcher.ParseID(filepath.Base(clean))
+	id, err := switcher.ParseID(filepath.Base(filepath.Clean(dir)))
+	if err != nil {
+		c.add(CodeFolder, "")
+		return c.findings
+	}
+	// The folder is named by its absolute path from here on: the no-AI
+	// check is started from the folder /, so a relative path would name
+	// another folder there.
+	clean, err := filepath.Abs(dir)
 	if err != nil {
 		c.add(CodeFolder, "")
 		return c.findings
@@ -103,7 +116,10 @@ func Check(dir string, o CheckOptions) []Finding {
 	// program whose hash, mode or name is already wrong is not run.
 	if !o.NoNoAICheck && len(c.findings) == 0 {
 		if _, ok := files["bin/ah-noaicheck"]; ok {
-			c.runNoAICheck(clean, o)
+			if beforeNoAICheck != nil {
+				beforeNoAICheck()
+			}
+			c.runNoAICheck(root, clean, o)
 		}
 	}
 	return c.findings
@@ -211,6 +227,7 @@ func (c *checker) sums(root *os.Root, files map[string]entry) {
 	if !bad && !bytes.Equal(data, sumsText(computed)) {
 		c.add(CodeSumsForm, "")
 	}
+	c.digests = computed
 }
 
 func hashFile(root *os.Root, p string) (string, error) {

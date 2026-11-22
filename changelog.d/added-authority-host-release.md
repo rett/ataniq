@@ -20,7 +20,10 @@
   stop and a restart of every decision service, no decision service in a
   static release), and the release's own no-AI check, which must exit 0 and
   print no hit and is run only when nothing else was found (a checker whose
-  hash does not match `SHA256SUMS` is never run). Both print only fixed reasons and plain names, never a
+  hash does not match `SHA256SUMS` is never run; what runs is a private
+  copy of the bytes it verified, a checker changed since is not run,
+  `noaicheck-changed`, and a relative `DIR/<id>` is given to it as an
+  absolute path). Both print only fixed reasons and plain names, never a
   file's content. `ah-release baseline --src DIR --units FILE --ports FILE
   --packages FILE --nft FILE [--out DIR] [--stamp TEXT]
   [--require-default-deny]` makes a scratch copy
@@ -32,7 +35,9 @@
   duplicates, sorts, takes `nft.digest` with the function of `ah-noaicheck
   nft-digest`, and never writes into the source. It enrolls any firewall
   listing, but for each of the hooks input, output and forward without a
-  base chain of `policy drop` for IPv4 and IPv6 it prints a `WARNING:
+  base chain of type `filter` with `policy drop` for IPv4 and IPv6 (a `nat`
+  or `route` chain does not count, nor one whose first rule accepts every
+  packet; no other rule is read) it prints a `WARNING:
   no-default-deny HOOK` line and writes the same words into the header of
   `nft.digest`; `--require-default-deny` refuses such a listing instead. See the README, "Filling the
   allowlists". `deploy/authority-host` now holds the source tree of the
