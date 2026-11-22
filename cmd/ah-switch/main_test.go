@@ -50,6 +50,10 @@ func TestUsage(t *testing.T) {
 		{"--root", root, "0001-aaaaaaa"},
 		{"--root", root, "--rollback-to", "previous"},
 		{"--root", root, "--allow-exec", "status"},
+		{"--root", root, "recover"},
+		{"--root", root, "--allow-exec", "recover", "--counter", "x"},
+		{"--root", root, "--allow-exec", "--counter", "3", "0001-aaaaaaa"},
+		{"--root", root, "--from", "/x", "recover", "--counter", "3"},
 		{"--root", root, "--no-such-flag", "0001-aaaaaaa"},
 		{"--root", "", "status"},
 	} {
@@ -181,5 +185,28 @@ func TestImportFrom(t *testing.T) {
 	info, err := os.Stat(filepath.Join(root, switcher.BaseDir, "releases", "0001-aaaaaaa", "bin", "ah-noaicheck"))
 	if err != nil || info.Mode().Perm() != 0o555 {
 		t.Errorf("imported check: %v, %v", info, err)
+	}
+}
+
+// TestRecover writes a missing highest-counter back.
+func TestRecover(t *testing.T) {
+	root := t.TempDir()
+	health := filepath.Join(t.TempDir(), "health")
+	write(t, health, "#!/bin/sh\nexit 0\n", 0o755)
+	release(t, root, "0001-aaaaaaa", 1, health)
+	release(t, root, "0002-bbbbbbb", 2, health)
+	fakeNFT(t)
+	if code, out, errOut := call("--root", root, "--allow-exec", "0001-aaaaaaa"); code != switcher.ExitOK {
+		t.Fatalf("switch: exit %d\n%s%s", code, out, errOut)
+	}
+	os.Remove(filepath.Join(root, switcher.StateDir, switcher.HighestFile))
+	if code, out, _ := call("--root", root, "--allow-exec", "0002-bbbbbbb"); code != switcher.ExitFailed || !strings.Contains(out, "recover --counter N") {
+		t.Fatalf("switch without a counter: exit %d\n%s", code, out)
+	}
+	if code, out, errOut := call("--root", root, "--allow-exec", "recover", "--counter", "1"); code != switcher.ExitOK {
+		t.Fatalf("recover: exit %d\n%s%s", code, out, errOut)
+	}
+	if code, out, errOut := call("--root", root, "--allow-exec", "0002-bbbbbbb"); code != switcher.ExitOK {
+		t.Fatalf("switch after recover: exit %d\n%s%s", code, out, errOut)
 	}
 }

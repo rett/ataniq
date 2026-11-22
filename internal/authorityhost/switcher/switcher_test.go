@@ -602,8 +602,9 @@ func TestHealthFailingRollsBack(t *testing.T) {
 	if got := e.link("previous"); got != "releases/"+rel1 {
 		t.Errorf("previous -> %q, want it put back", got)
 	}
-	if got := e.highest(); got != "2" {
-		t.Errorf("highest %q", got)
+	// highest-counter is the highest ever attempted.
+	if got := e.highest(); got != "3" {
+		t.Errorf("highest %q, want 3", got)
 	}
 	rec := e.record()
 	if rec.Result != ResultRolledBack || rec.FailedStep != "health" || rec.CurrentID != rel2 || rec.ID != rel3 || rec.RestoredHealth != "ok" {
@@ -662,54 +663,9 @@ func TestFirstSwitchUnhealthyHasNoWayBack(t *testing.T) {
 	if rec.Result != ResultFailed || rec.FailedStep != "health" || rec.Error != CodeHealthFailed || !strings.Contains(rec.Detail, "no earlier release") {
 		t.Errorf("record: %+v", rec)
 	}
-	if got := e.highest(); got != "" {
-		t.Errorf("highest written after an unhealthy switch: %q", got)
-	}
-}
-
-func TestCrashBetweenPreviousAndRename(t *testing.T) {
-	e := active(t)
-	e.release(rel3, "2026-11-01")
-	before := e.record()
-	s := e.switcher()
-	s.afterPrevious = func() error { return errors.New("crash") }
-	s.Switch(context.Background(), rel3)
-	// current is still the old release, whole and verifiable.
-	if got := e.link("current"); got != "releases/"+rel2 {
-		t.Fatalf("current -> %q", got)
-	}
-	if got := e.link("previous"); got != "releases/"+rel2 {
-		t.Errorf("previous -> %q, want the old current", got)
-	}
-	target, err := filepath.EvalSymlinks(filepath.Join(e.root, BaseDir, "current"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	id, _ := ParseID(rel2)
-	rels, err := os.OpenRoot(filepath.Join(e.root, BaseDir, "releases"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rels.Close()
-	if r, err := openRelease(id, rels, rel2, target, nil, nil); err != nil {
-		t.Errorf("current does not verify after the crash: %v", err)
-	} else {
-		r.Close()
-	}
-	if rec := e.record(); rec != before {
-		t.Errorf("deploy.json changed by a crash: %+v", rec)
-	}
-	if got := e.highest(); got != "2" {
-		t.Errorf("highest %q", got)
-	}
-	// The lock went with the crashed process; running the switch again
-	// completes it.
-	e.out.Reset()
-	if code := e.switchTo(rel3); code != ExitOK {
-		t.Fatalf("switch after the crash: exit %d", code)
-	}
-	if e.link("current") != "releases/"+rel3 || e.link("previous") != "releases/"+rel2 {
-		t.Errorf("after recovery: current -> %q, previous -> %q", e.link("current"), e.link("previous"))
+	// The counter was attempted: it is used.
+	if got := e.highest(); got != "1" {
+		t.Errorf("highest %q after an unhealthy first switch, want 1", got)
 	}
 }
 

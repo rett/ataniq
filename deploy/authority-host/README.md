@@ -28,7 +28,8 @@ connection.
   previous -> releases/<id>
 /var/lib/authority-host/
   deploy.json             the outcome of the last switch
-  highest-counter         the highest counter ever activated
+  highest-counter         the highest counter a switch ever attempted
+  txn.json                the journal of a switch under way
   switch.lock             the lock of a running switch
 ```
 
@@ -173,6 +174,7 @@ automatic return to the old release after a failed health check.
 ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manual|signed] [--noaicheck PATH] [--from INCOMING_DIR] ID
 ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manual|signed] [--noaicheck PATH] --rollback-to previous
 ah-switch [--root DIR] status
+ah-switch [--root DIR [--allow-exec]] [--dry] recover --counter N
 ```
 
 - `--root DIR` is the folder that holds `opt/authority-host`,
@@ -223,7 +225,10 @@ rename in step 6, a failure leaves `current` as it was.
    identity of a shared signers file cannot authorize a release). Then
    `MANIFEST` must match the id and the command lists must parse.
 2. **counter**: the counter must be above the highest ever activated
-   (`highest-counter`; none means 0). A rollback skips this rule but accepts
+   (`highest-counter`; none means 0 only on a host that has no `current`
+   yet: a missing or broken `highest-counter` while `current` exists is
+   refused with `counter-missing` or `counter-invalid`, see `recover`). A
+   rollback skips this rule but accepts
    only the release `previous` points at.
 3. **noaicheck**: the switch runs `nft list ruleset` (within 30 seconds; its
    output at most 4 MiB) and writes what it printed to a file of mode 0600
@@ -241,17 +246,21 @@ rename in step 6, a failure leaves `current` as it was.
    within 30 minutes (taking a filesystem snapshot first is that program's
    job). On success the new snapshot is recorded. Without the program nothing
    is done and the recorded snapshot stays.
-6. **switch**: `previous` is pointed at the old target of `current`, then a new
-   link `current.new` is made and renamed over `current`, so there is never a
-   moment without `current`. Then each command of `share/reload.list` runs,
-   within 30 seconds each.
+6. **switch**: first the journal `txn.json` is written (the release, its
+   counter, the old targets of `current` and `previous`) and synced with its
+   folder, and, on a forward switch, `highest-counter` is set to the new
+   counter: it holds the highest counter ever attempted, so a release whose
+   switch got this far cannot be switched to again, even after it failed or
+   was put back; build the next counter. Then `previous` is pointed at the
+   old target of `current`, and a new link `current.new` is made and renamed
+   over `current`, so there is never a moment without `current`. Then each
+   command of `share/reload.list` runs, within 30 seconds each.
 7. **health**: the commands of `share/health.cmd` run in order, each within
    10 seconds, until one round in which every one of them exits 0, every 2
    seconds for up to 60 seconds. A static release with no health command is
    healthy at once.
-8. **record**: on a healthy switch `highest-counter` is set to the new counter
-   (not on a rollback) and `deploy.json` is written, each by writing a
-   temporary file and renaming it over the old one.
+8. **record**: `deploy.json` is written, by writing a temporary file and
+   renaming it over the old one, and then the journal is removed.
 
 If the reload or the health check fails, the switch goes back: `current` is
 renamed back to the old release, `previous` is put back as it was, the reload
@@ -260,13 +269,41 @@ list runs again and the health check runs again; the result is
 healthy. On the very first switch there is nothing to go back to: `current`
 stays at the new release and the result is `failed`.
 
+### Interrupted switches and recover
+
+A switch that dies (a crash, a power loss, a kill) after it wrote the
+journal leaves `txn.json`. Every switch, rollback and `recover` takes the
+lock and settles such a journal before anything else; `status` shows it
+(`interrupted: ...`) and changes nothing, and `--dry` refuses to go on
+while it is there.
+
+- When `current` already points at the journal's release, that release
+  verifies (as the switch policy says), its reload list passes and it is
+  healthy, the switch is completed: `deploy.json` records `ok` with the
+  detail `completed after an interruption`.
+- Otherwise `current` and `previous` are put back exactly as the journal
+  says they were (so a retried switch never leaves `previous` pointing at
+  the active release), and `deploy.json` records `rolled-back` with the
+  code `interrupted`.
+
+Either way `highest-counter` is at least the journal's counter afterwards
+and the journal is removed. When the links cannot be put back the journal
+stays and the command fails.
+
+`ah-switch recover --counter N` writes `highest-counter` as `N` when it is
+missing or does not hold a number. The switch never guesses it: on a host
+with a `current` link a missing counter could let an old release be
+replayed. `N` must be at least the counter of the releases `current` and
+`previous` point at; take it from the newest release ever deployed. It
+refuses to overwrite a counter that is there.
+
 `deploy.json` holds `id` (the release asked for), `previous_id` (what `current`
 pointed at before), `current_id` (what it points at after), `counter`, `mode`
 (how the release was verified), `trust` (the policy's minimum, `manual`
 without a policy), `rollback`, `time` (UTC), `result` (`ok`, `failed` or `rolled-back`), `check`
 (the no-AI check: `passed`, `failed` or `not run`), `failed_step` (`state`,
 `verify`, `counter`, `noaicheck`, `validate`, `packages`, `switch`, `reload`,
-`health` or `record`; empty when ok; `import` for step 0), `error`, `detail`, `package_snapshot`
+`health`, `record` or `interrupted`; empty when ok; `import` for step 0), `error`, `detail`, `package_snapshot`
 and `restored_health`. A dry run writes nothing.
 
 `error` is a stable failure code, such as `sums-mismatch`,
@@ -309,7 +346,8 @@ see its messages. The text of a broken state file is not repeated either.
 | Package step fails | Refused at packages; `current` unchanged |
 | Reload or health fails after the switch | Back to the old release; `rolled-back` |
 | The old release is not healthy either | `rolled-back` with `restored_health: failed`; the console is needed |
-| Crash or power loss during the switch | `current` points at a whole release, the old or the new one; `previous` may already point at the old one; run `status` and switch again |
+| Crash or power loss during the switch | `current` points at a whole release, the old or the new one, and the journal is there; the next command settles it (see below) |
+| `highest-counter` missing or broken while `current` exists | Refused (`counter-missing`, `counter-invalid`); run `recover --counter N` |
 | A second switch while one runs | Exit 3; nothing done |
 
 The switch never deletes a release. Removing old releases (keeping, say, the

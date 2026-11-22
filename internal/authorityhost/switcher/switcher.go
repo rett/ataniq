@@ -104,9 +104,9 @@ type Switcher struct {
 	// The switch policy and the mode this switch uses.
 	policy Policy
 	mode   string
-	// afterPrevious, when set, is called between writing previous and
-	// renaming current; an error stops the switch there as a crash would.
-	afterPrevious func() error
+	// crashAt, when set, is called at each point of crash; an error stops
+	// the switch there as a crash would.
+	crashAt func(point string) error
 }
 
 // New returns a Switcher, filling in the defaults of cfg.
@@ -270,6 +270,9 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	if code, done := s.openBase(a); done {
 		return code
 	}
+	if code, done := s.reconcile(ctx); done {
+		return code
+	}
 	if code, done := s.readState(a); done {
 		return code
 	}
@@ -313,11 +316,15 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 
 	// 2. Counter.
 	var highest uint64
+	var present bool
 	var err error
 	if s.stateRoot != nil {
-		if highest, err = readHighest(s.stateRoot); err != nil {
+		if highest, present, err = readHighest(s.stateRoot); err != nil {
 			return s.fail(a, 2, err)
 		}
+	}
+	if !present && a.oldExists {
+		return s.fail(a, 2, failf(CodeCounterMissing, "%s is missing although current points at %s; run ah-switch recover --counter N, N the highest counter this host ever switched to (at least %d)", HighestFile, a.rec.PreviousID, s.usedCounter(a)))
 	}
 	if rollback {
 		s.step(2, "rollback to previous: the counter rule does not apply; the highest counter stays %d", highest)
@@ -392,19 +399,47 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		s.printf("result: dry run passed; nothing changed")
 		return ExitOK
 	}
+	// The journal, and the counter as attempted, before any link.
+	j := journal{ID: id.Name, Counter: id.Counter, Rollback: rollback, Phase: PhaseLinks}
+	if a.oldExists {
+		j.OldCurrent = a.oldTarget
+	}
+	if a.prevExists {
+		j.OldPrevious = a.prevTarget
+	}
+	if err := s.writeJournal(j); err != nil {
+		s.dropJournal()
+		return s.fail(a, 6, failf(CodeRecordFailed, "%s not written: %s", JournalFile, q(err.Error())))
+	}
+	if s.crash(CrashJournal) {
+		return ExitFailed
+	}
+	if !rollback {
+		if err := writeFileIn(s.stateRoot, HighestFile, []byte(fmt.Sprintf("%d\n", id.Counter)), 0o644); err != nil {
+			s.dropJournal()
+			return s.fail(a, 6, failf(CodeRecordFailed, "%s not written: %s", HighestFile, q(err.Error())))
+		}
+		s.step(6, "highest counter %d (attempted)", id.Counter)
+	}
+	if s.crash(CrashCounter) {
+		return ExitFailed
+	}
 	if a.oldExists {
 		if err := replaceLink(s.baseRoot, "previous", a.oldTarget); err != nil {
+			s.dropJournal()
 			return s.fail(a, 6, failf(CodeLinkFailed, "previous: %s", q(err.Error())))
 		}
 	}
-	if s.afterPrevious != nil {
-		if err := s.afterPrevious(); err != nil {
-			return ExitFailed
-		}
+	if s.crash(CrashPrevious) {
+		return ExitFailed
 	}
 	if err := replaceLink(s.baseRoot, "current", newTarget); err != nil {
 		s.restorePrevious(a)
+		s.dropJournal()
 		return s.fail(a, 6, failf(CodeLinkFailed, "current: %s", q(err.Error())))
+	}
+	if s.crash(CrashCurrent) {
+		return ExitFailed
 	}
 	a.rec.CurrentID = id.Name
 	if a.oldExists {
@@ -419,22 +454,20 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	if err := s.checkHealth(ctx, a.health); err != nil {
 		return s.goBack(ctx, a, stepNames[7], err)
 	}
-
-	// 8. Record.
-	a.rec.Result = ResultOK
-	if !rollback {
-		if err := writeFileIn(s.stateRoot, HighestFile, []byte(fmt.Sprintf("%d\n", id.Counter)), 0o644); err != nil {
-			s.setFailure(a, stepNames[8], failf(CodeRecordFailed, "%s not written: %s", HighestFile, q(err.Error())))
-			s.step(8, "FAILED: %s: %s", a.rec.Error, a.rec.Detail)
-			s.record(a)
-			return ExitFailed
-		}
-		s.step(8, "highest counter %d", id.Counter)
+	if s.crash(CrashHealth) {
+		return ExitFailed
 	}
+
+	// 8. Record, then drop the journal.
+	a.rec.Result = ResultOK
 	if err := s.record(a); err != nil {
 		return ExitFailed
 	}
 	s.step(8, "recorded in %s", q(filepath.Join(s.stateDir(), DeployFile)))
+	if err := s.dropJournal(); err != nil {
+		s.step(8, "FAILED: %s not removed: %s; the next command completes the switch", JournalFile, q(err.Error()))
+		return ExitFailed
+	}
 	s.printf("result: ok; current -> %s", id.Name)
 	return ExitOK
 }
@@ -486,6 +519,12 @@ func (s *Switcher) openBase(a *attempt) (int, bool) {
 	return 0, false
 }
 
+// hasLink reports whether name of r is a symbolic link.
+func hasLink(r *os.Root, name string) bool {
+	_, ok, err := readLink(r, name)
+	return ok && err == nil
+}
+
 func (s *Switcher) closeRoots() {
 	for _, r := range []*os.Root{s.stateRoot, s.baseRoot, s.relRoot} {
 		if r != nil {
@@ -527,6 +566,18 @@ func (s *Switcher) readState(a *attempt) (int, bool) {
 	}
 	s.printf("state: current %s", current)
 	return 0, false
+}
+
+// usedCounter is the highest counter of the releases current and previous
+// point at: the least highest-counter can be.
+func (s *Switcher) usedCounter(a *attempt) uint64 {
+	n := uint64(0)
+	for _, t := range []string{a.oldTarget, a.prevTarget} {
+		if id, err := s.targetID(t); t != "" && err == nil {
+			n = max(n, id.Counter)
+		}
+	}
+	return n
 }
 
 func (s *Switcher) failState(a *attempt, err error) int {
@@ -818,11 +869,14 @@ func (s *Switcher) goBack(ctx context.Context, a *attempt, step string, cause er
 	if !a.oldExists {
 		a.rec.Result = ResultFailed
 		a.rec.Detail += "; there is no earlier release to go back to, so current stays at " + a.rec.CurrentID
-		s.record(a)
+		if s.record(a) == nil {
+			s.dropJournal()
+		}
 		s.printf("result: failed at %s; no earlier release, current stays at %s", step, a.rec.CurrentID)
 		return ExitFailed
 	}
 	if err := replaceLink(s.baseRoot, "current", a.oldTarget); err != nil {
+		// The journal stays: the next command puts the links back.
 		a.rec.Result = ResultFailed
 		a.rec.Detail += "; going back failed: " + q(err.Error())
 		s.record(a)
@@ -843,7 +897,9 @@ func (s *Switcher) goBack(ctx context.Context, a *attempt, step string, cause er
 		a.rec.RestoredHealth = "ok"
 	}
 	a.rec.Result = ResultRolledBack
-	s.record(a)
+	if s.record(a) == nil {
+		s.dropJournal()
+	}
 	s.printf("result: rolled-back: %s failed at %s, current -> %s (health after going back: %s)", failedID, step, a.rec.CurrentID, a.rec.RestoredHealth)
 	return ExitFailed
 }
@@ -945,17 +1001,35 @@ func (s *Switcher) status(w io.Writer) error {
 		fmt.Fprintf(w, "%s: %s\n", name, id.Name)
 	}
 	var highest uint64
+	var present, ok, pending bool
 	var rec Record
-	var ok bool
+	var j journal
 	if s.stateRoot != nil {
-		if highest, err = readHighest(s.stateRoot); err != nil {
+		if highest, present, err = readHighest(s.stateRoot); err != nil {
 			return err
 		}
 		if rec, ok, err = readRecord(s.stateRoot); err != nil {
 			return err
 		}
+		if j, pending, err = s.readJournal(); err != nil {
+			return err
+		}
 	}
-	fmt.Fprintf(w, "highest counter: %d\n", highest)
+	switch {
+	case present:
+		fmt.Fprintf(w, "highest counter: %d\n", highest)
+	case base != nil && hasLink(base, "current"):
+		fmt.Fprintln(w, "highest counter: missing; run ah-switch recover --counter N before the next switch")
+	default:
+		fmt.Fprintln(w, "highest counter: 0")
+	}
+	if pending {
+		kind := "switch to"
+		if j.Rollback {
+			kind = "rollback to"
+		}
+		fmt.Fprintf(w, "interrupted: %s %s; the next switch, rollback or recover settles it\n", kind, j.ID)
+	}
 	switch {
 	case !s.policy.present:
 		fmt.Fprintln(w, "trust: manual: no switch policy, unsigned releases are accepted")

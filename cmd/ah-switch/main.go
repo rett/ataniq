@@ -5,6 +5,7 @@
 //	ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manual|signed] [--noaicheck PATH] [--from INCOMING_DIR] ID
 //	ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manual|signed] [--noaicheck PATH] --rollback-to previous
 //	ah-switch [--root DIR] status
+//	ah-switch [--root DIR [--allow-exec]] [--dry] recover --counter N
 //
 // Exit codes: 0 ok, 1 failed (the outcome is recorded), 2 usage, 3 locked.
 package main
@@ -28,6 +29,7 @@ func main() {
 const usage = `usage: ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manual|signed] [--noaicheck PATH] [--from INCOMING_DIR] ID
        ah-switch [--root DIR [--allow-exec]] [--dry] [--mode ...] [--noaicheck PATH] --rollback-to previous
        ah-switch [--root DIR] status
+       ah-switch [--root DIR [--allow-exec]] [--dry] recover --counter N
 `
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -40,6 +42,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	noai := fs.String("noaicheck", "", "the no-AI check program (default: the release's bin/ah-noaicheck)")
 	rollback := fs.String("rollback-to", "", "previous: go back to the release previous points at")
 	from := fs.String("from", "", "import the release from this incoming folder into releases/ID first")
+	counter := fs.Uint64("counter", 0, "recover: the highest counter this host ever switched to")
 	bad := func(format string, a ...any) int {
 		fmt.Fprintf(stderr, "ah-switch: "+format+"\n", a...)
 		fmt.Fprint(stderr, usage)
@@ -79,12 +82,26 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(pos) == 1 && pos[0] == "status" && !set["rollback-to"] {
-		for _, name := range []string{"dry", "mode", "noaicheck", "from", "allow-exec"} {
+		for _, name := range []string{"dry", "mode", "noaicheck", "from", "allow-exec", "counter"} {
 			if set[name] {
 				return bad("status takes only --root")
 			}
 		}
 		return switcher.New(switcher.Config{Root: rootAbs, Out: stdout, Err: stderr}).Status()
+	}
+	if len(pos) == 1 && pos[0] == "recover" && !set["rollback-to"] {
+		for _, name := range []string{"mode", "noaicheck", "from"} {
+			if set[name] {
+				return bad("recover takes only --root, --allow-exec, --dry and --counter")
+			}
+		}
+		if !set["counter"] {
+			return bad("recover needs --counter N")
+		}
+		return switcher.New(switcher.Config{Root: rootAbs, Dry: *dry, AllowExec: *allowExec, Out: stdout, Err: stderr}).Recover(context.Background(), *counter)
+	}
+	if set["counter"] {
+		return bad("--counter is only for recover")
 	}
 
 	switch {

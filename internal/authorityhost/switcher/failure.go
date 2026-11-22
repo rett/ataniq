@@ -37,6 +37,8 @@ const (
 	CodeTimeBudget       = "time-budget"        // the import and the hashing took longer than the limit
 	CodeCounterNotAbove  = "counter-not-above"  // the counter is not above the highest
 	CodeCounterInvalid   = "counter-invalid"    // highest-counter does not hold a counter
+	CodeCounterMissing   = "counter-missing"    // highest-counter is missing on a host that has a current release
+	CodeInterrupted      = "interrupted"        // a switch was interrupted and has been put back
 	CodeRollbackRefused  = "rollback-refused"   // --rollback-to names a release other than previous
 	CodeNoPrevious       = "no-previous"        // nothing to roll back to
 	CodeNoAICheckMissing = "noaicheck-missing"  // the release has no no-AI check

@@ -63,22 +63,23 @@ func readRecord(state *os.Root) (Record, bool, error) {
 	return rec, true, nil
 }
 
-// readHighest reads the highest-counter file of the state folder; a missing
-// file is 0. Anything else that is not one decimal number is an error, never
-// a guess, and its text is not repeated.
-func readHighest(state *os.Root) (uint64, error) {
+// readHighest reads the highest-counter file of the state folder: the
+// highest counter a switch ever attempted. A missing file is 0, not present.
+// Anything else that is not one decimal number is an error, never a guess,
+// and its text is not repeated.
+func readHighest(state *os.Root) (n uint64, present bool, err error) {
 	data, err := readFileIn(state, HighestFile, 64)
 	if errors.Is(err, fs.ErrNotExist) {
-		return 0, nil
+		return 0, false, nil
 	}
 	if err != nil {
-		return 0, failf(CodeCounterInvalid, "%s cannot be read", HighestFile)
+		return 0, false, failf(CodeCounterInvalid, "%s cannot be read; run ah-switch recover --counter N", HighestFile)
 	}
-	n, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+	n, err = strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
 	if err != nil {
-		return 0, failf(CodeCounterInvalid, "%s does not hold a counter", HighestFile)
+		return 0, false, failf(CodeCounterInvalid, "%s does not hold a counter; run ah-switch recover --counter N", HighestFile)
 	}
-	return n, nil
+	return n, true, nil
 }
 
 // readLink reads the symbolic link name of the folder r; a missing name is
