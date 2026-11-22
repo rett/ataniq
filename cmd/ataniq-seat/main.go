@@ -4,6 +4,8 @@
 //
 //	ataniq-seat (--origin https://HOST | --origin-file PATH) (--socket PATH | --listen 127.0.0.1:PORT)
 //	            [--rpid HOST] [--socket-mode 0660] [--client-addr-header NAME]
+//	            [--gate HOST:PORT --gate-pin-file PATH --identity DIR]
+//	ataniq-seat gate-init --identity DIR
 //
 // The origin is the address the reverse proxy serves the app on, https on
 // port 443, and has no default: it comes from --origin or from the first line
@@ -14,8 +16,28 @@
 // client's address on every request: a client of a Unix socket has no address
 // of its own, so the per-source limits would otherwise be one bucket for all.
 //
-// Nothing secret is printed or read from the command line. The daemon port is
-// not wired yet: pairing answers with the fixed code daemon_unavailable.
+// gate-init makes the seat's own key for the seat gate: a new identity
+// (package seatgate) written to DIR as cert.pem and key.pem, the key with mode
+// 0600, DIR made with mode 0700 when it is missing. It never overwrites: a
+// file already there is an error and nothing is written. It prints one line,
+// the key's fingerprint (64 lower-case hex digits), which the owner carries to
+// the gate's pin list, and nothing else.
+//
+// --gate, --gate-pin-file and --identity link the app to the daemon through
+// the seat gate (package seatgate, by way of package seatlink), and are given
+// all three or none. --gate is the gate's address, HOST:PORT. --gate-pin-file
+// names a file holding the gate key's fingerprint, which the owner carried
+// here from the gate's host; it must be a regular file, not a link, of at most
+// 1 KiB, that group and other cannot write, and hold exactly one fingerprint
+// (64 lower-case hex digits). --identity is the folder gate-init
+// wrote the seat's key to. The link is kept up in the background, with
+// pinned-key TLS at both ends, and redialled when it drops; while it is down
+// pairing answers daemon_unavailable, and a code the daemon refused answers
+// code_refused. Without the three flags the daemon port is not wired: pairing
+// answers with the fixed code daemon_unavailable.
+//
+// Nothing secret is printed or read from the command line. The pairing code
+// is never printed.
 package main
 
 import (
@@ -36,18 +58,34 @@ import (
 	"time"
 
 	"ataniq/internal/seatapp"
+	"ataniq/internal/seatgate"
+	"ataniq/internal/seatlink"
 )
 
-const usageLine = "Usage: ataniq-seat (--origin https://HOST | --origin-file PATH) (--socket PATH | --listen LOOPBACK:PORT) [--rpid HOST] [--socket-mode MODE] [--client-addr-header NAME]\n" +
-	"--origin and --origin-file exclude each other; --socket and --listen exclude each other; --socket needs --client-addr-header; --listen takes an IP literal of the loopback range."
+const usageLine = "Usage: ataniq-seat (--origin https://HOST | --origin-file PATH) (--socket PATH | --listen LOOPBACK:PORT) [--rpid HOST] [--socket-mode MODE] [--client-addr-header NAME] [--gate HOST:PORT --gate-pin-file PATH --identity DIR]\n" +
+	"--origin and --origin-file exclude each other; --socket and --listen exclude each other; --socket needs --client-addr-header; --listen takes an IP literal of the loopback range; --gate, --gate-pin-file and --identity go together."
+
+const gateInitUsage = "Usage: ataniq-seat gate-init --identity DIR\n" +
+	"Makes the seat's key for the seat gate in DIR and prints its fingerprint; it never overwrites."
+
+// identityName is the name in the certificate of the seat's gate identity.
+const identityName = "ataniq-seat"
 
 // maxOriginFile bounds the origin file.
 const maxOriginFile = 1 << 10
 
+// maxPinFile bounds the gate's pin file.
+const maxPinFile = 1 << 10
+
 // shutdownGrace is how long a shutdown lets requests in flight finish.
 const shutdownGrace = 10 * time.Second
 
-// unwiredDaemon is the daemon port until the production wiring exists.
+// gateLinkHook, when not nil, is called with the gate client once it is made.
+// It is for tests, which watch the link come up; the command never sets it.
+var gateLinkHook func(*seatgate.Client)
+
+// unwiredDaemon is the daemon port without a gate link: every pairing is
+// ErrDaemonUnavailable.
 type unwiredDaemon struct{}
 
 func (unwiredDaemon) Pair(context.Context, seatapp.PairRequest) (seatapp.PairResult, error) {
@@ -56,15 +94,57 @@ func (unwiredDaemon) Pair(context.Context, seatapp.PairRequest) (seatapp.PairRes
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	code := run(ctx, os.Args[1:], os.Stderr, nil)
+	code := dispatch(ctx, os.Args[1:], os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)
+}
+
+// dispatch runs the subcommand args name, or the server, and returns the exit
+// code.
+func dispatch(ctx context.Context, args []string, out, errout io.Writer) int {
+	if len(args) > 0 && args[0] == "gate-init" {
+		return gateInit(args[1:], out, errout)
+	}
+	return run(ctx, args, errout, nil)
+}
+
+// gateInit makes the seat's gate identity in the folder --identity names and
+// prints its fingerprint to out, and nothing else. It returns the exit code.
+func gateInit(args []string, out, errout io.Writer) int {
+	fs := flag.NewFlagSet("ataniq-seat gate-init", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dir := fs.String("identity", "", "folder for the seat's gate key")
+	fail := func(msg string) int {
+		fmt.Fprintf(errout, "ataniq-seat gate-init: %s\n%s\n", msg, gateInitUsage)
+		return 2
+	}
+	if err := fs.Parse(args); err != nil {
+		return fail("bad flags")
+	}
+	if fs.NArg() != 0 {
+		return fail("no arguments are taken")
+	}
+	if *dir == "" {
+		return fail("--identity is required")
+	}
+	// The errors of seatgate's file helpers are fixed texts, with no path
+	// and nothing of the key.
+	id, err := seatgate.WriteIdentityFiles(*dir, identityName)
+	if err != nil {
+		fmt.Fprintf(errout, "ataniq-seat gate-init: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(out, id.Fingerprint())
+	return 0
 }
 
 // options is what the flags select.
 type options struct {
 	origin, originFile, rpid, socket, listen, clientAddrHeader string
 	socketMode                                                 os.FileMode
+	// gate, gatePinFile and identity are the gate link's flags; gatePin is
+	// the fingerprint read from gatePinFile. All are empty without a link.
+	gate, gatePinFile, identity, gatePin string
 }
 
 // parse reads the flags. On failure it has printed the diagnostic and the
@@ -79,6 +159,9 @@ func parse(args []string, errout io.Writer) (o options, code int, ok bool) {
 	fs.StringVar(&o.socket, "socket", "", "Unix socket path")
 	fs.StringVar(&o.listen, "listen", "", "loopback address and port")
 	fs.StringVar(&o.clientAddrHeader, "client-addr-header", "", "header the proxy sets to the client address")
+	fs.StringVar(&o.gate, "gate", "", "the seat gate's address, host:port")
+	fs.StringVar(&o.gatePinFile, "gate-pin-file", "", "file holding the gate key's fingerprint")
+	fs.StringVar(&o.identity, "identity", "", "folder of the seat's gate key, made by gate-init")
 	fail := func(msg string) (options, int, bool) {
 		fmt.Fprintf(errout, "ataniq-seat: %s\n%s\n", msg, usageLine)
 		return options{}, 2, false
@@ -124,7 +207,86 @@ func parse(args []string, errout io.Writer) (o options, code int, ok bool) {
 			return fail(err.Error())
 		}
 	}
+	if n := countSet(o.gate, o.gatePinFile, o.identity); n != 0 && n != 3 {
+		return fail("give --gate, --gate-pin-file and --identity together, or none of them")
+	}
+	if o.gate != "" {
+		if err := checkGate(o.gate); err != nil {
+			return fail(err.Error())
+		}
+		pin, err := readPinFile(o.gatePinFile)
+		if err != nil {
+			return fail("--gate-pin-file: " + err.Error())
+		}
+		o.gatePin = pin
+	}
 	return o, 0, true
+}
+
+// countSet counts the strings that are not empty.
+func countSet(ss ...string) int {
+	n := 0
+	for _, s := range ss {
+		if s != "" {
+			n++
+		}
+	}
+	return n
+}
+
+// checkGate refuses a gate address that is not host:port with a host and a
+// port from 1 to 65535, or whose host is an unspecified address.
+func checkGate(addr string) error {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		return errors.New("--gate is not host:port")
+	}
+	if n, err := strconv.ParseUint(port, 10, 16); err != nil || n == 0 {
+		return errors.New("--gate has no valid port")
+	}
+	if ip, err := netip.ParseAddr(host); err == nil && ip.IsUnspecified() {
+		return errors.New("--gate must name the gate's host, not an unspecified address")
+	}
+	return nil
+}
+
+// readPinFile reads the gate's pin: a regular file, not a link, of at most
+// maxPinFile bytes, that group and other cannot write, holding exactly one
+// fingerprint and nothing but space around it. Its errors hold nothing of the
+// file.
+func readPinFile(path string) (string, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return "", errors.New("cannot be read, or is a link")
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || !fi.Mode().IsRegular() || fi.Size() > maxPinFile {
+		return "", errors.New("is not a small regular file")
+	}
+	if fi.Mode().Perm()&0o022 != 0 {
+		return "", errors.New("is writable by group or other")
+	}
+	b, err := io.ReadAll(io.LimitReader(f, maxPinFile+1))
+	if err != nil || len(b) > maxPinFile {
+		return "", errors.New("is not a small regular file")
+	}
+	pin := strings.TrimSpace(string(b))
+	if !seatgate.ValidFingerprint(pin) {
+		return "", errors.New("does not hold exactly one fingerprint of 64 lower-case hex digits")
+	}
+	return pin, nil
+}
+
+// serverName is the name the seat sends as the TLS server name for the gate:
+// the host of the address when it is a name, none for an address literal.
+// The gate's key is pinned, so the name is not checked.
+func serverName(addr string) string {
+	host, _, _ := net.SplitHostPort(addr)
+	if _, err := netip.ParseAddr(host); err == nil {
+		return ""
+	}
+	return host
 }
 
 // readSmallFile reads a regular file of at most maxOriginFile bytes.
@@ -192,10 +354,38 @@ func run(ctx context.Context, args []string, errout io.Writer, ready func(net.Ad
 	if !ok {
 		return code
 	}
+	var daemon seatapp.Daemon = unwiredDaemon{}
+	var client *seatgate.Client
+	if o.gate != "" {
+		id, err := seatgate.LoadIdentity(o.identity)
+		if err != nil {
+			// seatgate's errors are fixed texts, with no path and nothing
+			// of the key.
+			fmt.Fprintf(errout, "ataniq-seat: --identity: %v\n", err)
+			return 2
+		}
+		client, err = seatgate.NewClient(o.gate, seatgate.ClientConfig{
+			TLS:  seatgate.ClientTLS(id, o.gatePin, serverName(o.gate)),
+			Caps: seatlink.Caps(),
+		})
+		if err != nil {
+			fmt.Fprintf(errout, "ataniq-seat: %v\n", err)
+			return 2
+		}
+		link, err := seatlink.New(client)
+		if err != nil {
+			fmt.Fprintf(errout, "ataniq-seat: %v\n", err)
+			return 2
+		}
+		daemon = link
+		if gateLinkHook != nil {
+			gateLinkHook(client)
+		}
+	}
 	h, err := seatapp.New(seatapp.Config{
 		Origin:           o.origin,
 		RPID:             o.rpid,
-		Daemon:           unwiredDaemon{},
+		Daemon:           daemon,
 		ClientAddrHeader: o.clientAddrHeader,
 	})
 	if err != nil {
@@ -208,6 +398,23 @@ func run(ctx context.Context, args []string, errout io.Writer, ready func(net.Ad
 		return 1
 	}
 	srv := seatapp.Server(h)
+	if client != nil {
+		// The link runs under the signal context, and its own cancel, so it
+		// ends with the server: after the shutdown below has let requests in
+		// flight finish, the deferred cancel stops it and the wait sees it
+		// out.
+		lctx, cancel := context.WithCancel(ctx)
+		linked := make(chan struct{})
+		go func() {
+			defer close(linked)
+			client.Run(lctx)
+		}()
+		defer func() {
+			cancel()
+			<-linked
+		}()
+		fmt.Fprintf(errout, "ataniq-seat: linking to the seat gate at %s\n", o.gate)
+	}
 	fmt.Fprintf(errout, "ataniq-seat: serving on %s\n", l.Addr())
 	if ready != nil {
 		ready(l.Addr())
