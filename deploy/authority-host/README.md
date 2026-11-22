@@ -655,8 +655,9 @@ in `stopping`; one command never runs the host's list twice.
 
 `/var/lib/authority-host/decisions.inhibit` is the switch's own file
 (root-owned, mode 0644, written whole and synced with its folder): while
-it is there, every decision-capable service refuses every decision. The
-contract for those services is:
+it is there, every decision-capable service refuses every decision, and so
+does the journal `txn.json` while it is there. The contract for those
+services is:
 
 - A decision-capable service **may start** while the file is there: its
   unit carries no start condition on it. It must, since the switch's
@@ -1022,7 +1023,8 @@ What the switch does not do, so that nobody relies on it:
   switch's checks of an honest release are not a privilege boundary.
 - It does not check that a release's lists cover what the release ships
   (see the lists above), nor that its decision-capable services refuse
-  decisions while the inhibit is there: that is the release builder's job.
+  decisions while the inhibit or the journal `txn.json` is there: that is
+  the release builder's job.
 - The decision inhibit keeps decisions from being taken by a service
   that follows the contract; it neither stops a service nor keeps one
   from starting. Stopping is the stop lists' job, and a service that does
@@ -1668,9 +1670,11 @@ It checks, in this order, all of them (a pass is no finding):
      matched by any instance, `x@1`). No unit gates its start on
      `decisions.inhibit` (`ConditionPathExists=` and the like naming it): the
      contract under "The decision inhibit" is that a service starts while
-     it is there and refuses decisions itself, and the builder cannot see
-     the application, so that is for its own tests; what it does check is
-     that no unit file breaks it.
+     it (or the journal `txn.json`) is there and refuses decisions itself,
+     and the builder cannot see the application, so that is for its own
+     tests; what it does check is that no unit file breaks it by a
+     condition on `decisions.inhibit` (a condition on `txn.json` would
+     break it the same way, and is not looked for).
 5. **The no-AI check.** The release's own
    `bin/ah-noaicheck --phase pre --release DIR/<id>` runs as a child of its
    own process group (killed whole at the time limit) with the switch's

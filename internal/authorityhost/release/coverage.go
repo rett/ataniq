@@ -78,7 +78,10 @@ type unit struct {
 //     shipped with an execute bit), is stopped in stop.list ("systemctl stop")
 //     and restarted in reload.list, and no unit gates its start on
 //     decisions.inhibit (the decision inhibit contract in the README: a
-//     service starts while it is there and refuses decisions itself).
+//     service starts while the inhibit or the journal txn.json is there and
+//     refuses decisions itself while either is there; only a condition on
+//     the inhibit is looked for, one on txn.json would break the contract
+//     the same way and is not).
 func (c *checker) coverage(root *os.Root, m switcher.Manifest, id string, files map[string]entry) {
 	static := m.Components == switcher.ComponentsStatic
 	relDir := hostRelDir + id
