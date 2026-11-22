@@ -351,7 +351,7 @@ func TestBuildCopiesDeepTrees(t *testing.T) {
 func TestBuildOutOfSourceModes(t *testing.T) {
 	src := staticSrc(t)
 	writeTestFile(t, filepath.Join(src, "share/exec.sh"), "x", 0o777)
-	writeTestFile(t, filepath.Join(src, "share/suid"), "x", 0o4755)
+	writeTestFile(t, filepath.Join(src, "share/suid"), "x", os.ModeSetuid|0o755)
 	o := testOptions(t, src)
 	id, _, err := Build(o)
 	if err != nil {

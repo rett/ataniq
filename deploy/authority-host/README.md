@@ -1504,3 +1504,89 @@ message that does not repeat it). A refusal prints
 is about when that name is plain; it prints nothing from any file. The
 signature (`SHA256SUMS.sig`) is made afterwards, by the owner, with
 `ssh-keygen -Y sign` as "Layout" says; the builder never signs.
+
+### Checking a built release
+
+```
+ah-release check [--no-noaicheck] [--root DIR] [--require-policy] DIR/<id>
+```
+
+`check` reads a built folder back, and is the "coverage" the switch's lists
+leave to the builder (see the lists under "Layout"): the switch checks that
+the lists parse and that their programs are where they must be, never that
+they cover what the release ships. Exit status: 0 ok (`ok: release <id>`),
+1 a check failed, 2 usage. Each failure is one line,
+`FAIL: <code> <fixed reason>`, with, after a colon, the one name it is
+about when that name is plain; at most 50 lines are printed (the last says
+how many more there are), and no line holds the content of a file. It
+reads, never writes, and needs no root.
+
+It checks, in this order, all of them (a pass is no finding):
+
+1. **The folder.** Its name is `<counter>-<short commit>` and it is a real
+   folder; it holds only folders and regular files with one link each and
+   plain names, nested at most 16 deep and at most 20000 in all; nothing at
+   its top but `MANIFEST`, `SHA256SUMS`, `SHA256SUMS.sig`, `bin`, `etc` and
+   `share`; nothing writable by group or others and no set-user-id,
+   set-group-id or sticky bit. Every file of `bin/` has an execute bit, and
+   `bin/ah-noaicheck` and `bin/ah-switch` are there.
+2. **`SHA256SUMS`.** The switch's own parser reads it; every file but
+   itself and `SHA256SUMS.sig` is listed and matches, none listed is
+   missing, and the text is exactly what the builder writes (one line per
+   file, sorted by path, two spaces, no `*`).
+3. **`MANIFEST`.** The switch's own parser reads it, it describes the
+   folder (id, counter, commit) and its `built_on` and `go_version` are
+   what the builder writes.
+4. **Component coverage** (the lists, the switch's parser reading them with
+   `{release}` as the folder's path on the host):
+   - `health.cmd` holds a command. `validators.list`, `reload.list` and
+     `stop.list` do too, unless `MANIFEST` says `components: static`: then
+     `stop.list` may be comments only, and the other two hold what the
+     rules below ask for of what is shipped (nothing is asked of a
+     release that ships no file in the family).
+   - `validators.list` has, for every file shipped under `etc/caddy`,
+     `etc/nftables` and `etc/systemd`, one validator that names it by its
+     path, exactly once: `caddy validate --config {release}/PATH`,
+     `nft -c -f {release}/PATH`, `systemd-analyze verify {release}/PATH`
+     (options such as `--adapter caddyfile` may follow; a command that is
+     none of these is allowed, and covers nothing). A file under a `*.d`
+     folder of `etc/systemd` (a drop-in) is covered by the validator of its
+     unit and needs none; a validator that names a path the release does
+     not ship in that family is a finding too.
+   - `reload.list` restarts or reloads what the release ships: for caddy
+     (`etc/caddy`), `systemctl restart caddy` or `reload caddy`; for
+     `etc/systemd`, `systemctl daemon-reload` and a `systemctl restart` of
+     every service unit; for `etc/nftables`, `nft -f
+     /opt/authority-host/current/etc/nftables/PATH` of a shipped rule
+     file or `systemctl restart nftables`.
+   - Every `{release}/PROGRAM` a list names is a file of the release with
+     an execute bit.
+   - A static release has no unit that starts a program: no file under
+     `etc/systemd`, a drop-in included, with a `[Service]` section and an
+     `ExecStart=` line. Any other release has at least one (a *decision
+     service*), and for each: every `ExecStart=` runs a binary of the
+     release, `/opt/authority-host/current/bin/NAME` (or the release's own
+     `/opt/authority-host/releases/<id>/bin/NAME`) with `bin/NAME` shipped
+     and executable; `stop.list` has a `systemctl stop` of it; `reload.list`
+     has a `systemctl restart` of it (a template unit `x@.service` is
+     matched by any instance, `x@1`). No unit gates its start on
+     `decisions.inhibit` (`ConditionPathExists=` and the like naming it): the
+     contract under "The decision inhibit" is that a service starts while
+     it is there and refuses decisions itself, and the builder cannot see
+     the application, so that is for its own tests; what it does check is
+     that no unit file breaks it.
+5. **The no-AI check.** The release's own
+   `bin/ah-noaicheck --phase pre --release DIR/<id>` runs as a child of its
+   own process group (killed whole at the time limit) with the switch's
+   environment (`PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C`), the
+   folder `/` and no standard input, and must exit 0 within 60 seconds
+   and print no line starting `HIT `; nothing it prints is shown, only
+   `noaicheck-exit`, `noaicheck-hit`, `noaicheck-timeout` or
+   `noaicheck-not-started`. `--root DIR` is given on to it (default: the
+   host it runs on, so on a build host that has agent tools of its own it
+   reports them: run `check` where the no-AI check is meant to pass, or
+   give a `--root`); `--require-policy` is given on to it too, which
+   turns an empty allowlist or a missing `share/nft.digest` into a hit:
+   `share/*.allow` ship empty from this tree and are filled from the
+   host's baseline at deploy time, so it is for a release that has been
+   filled. `--no-noaicheck` skips this step (for tests).

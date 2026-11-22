@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -197,5 +198,108 @@ func TestTamperedFolderIsRefusedBySwitch(t *testing.T) {
 	s := switcher.New(switcher.Config{Root: root, Dry: true, From: dir, Out: &log})
 	if code := s.Switch(t.Context(), "0003-0123456"); code == switcher.ExitOK || !strings.Contains(log.String(), "SHA256") {
 		t.Fatalf("the switch accepts a tampered release (exit %d):\n%s", code, log.String())
+	}
+}
+
+// builtRelease builds the static test release and returns its folder.
+func builtRelease(t *testing.T, mod func(src string)) string {
+	t.Helper()
+	out := t.TempDir()
+	src := source(t)
+	if mod != nil {
+		mod(src)
+	}
+	a, b := bins(t)
+	if code, stdout, errOut := call(buildArgs(out, src, a, b)...); code != 0 {
+		t.Fatalf("build: exit %d, %q, %q", code, stdout, errOut)
+	}
+	return filepath.Join(out, "0003-0123456")
+}
+
+func TestCheckUsage(t *testing.T) {
+	dir := builtRelease(t, nil)
+	for _, args := range [][]string{
+		{"check"},
+		{"check", dir, dir},
+		{"check", "--no-such-flag", dir},
+		{"check", "--no-noaicheck", "--root", "/x", dir},
+		{"check", "--no-noaicheck", "--require-policy", dir},
+		{"check", "--root", "", dir},
+	} {
+		code, stdout, errOut := call(args...)
+		if code != 2 || stdout != "" || !strings.Contains(errOut, "ah-release: ") {
+			t.Errorf("%q: exit %d, %q, %q", args, code, stdout, errOut)
+		}
+	}
+}
+
+func TestCheckPasses(t *testing.T) {
+	dir := builtRelease(t, nil)
+	for _, args := range [][]string{{"check", "--no-noaicheck", dir}, {"check", dir, "--no-noaicheck"}} {
+		code, stdout, errOut := call(args...)
+		if code != 0 || stdout != "ok: release 0003-0123456\n" || errOut != "" {
+			t.Errorf("%q: exit %d, %q, %q", args, code, stdout, errOut)
+		}
+	}
+	// With the no-AI check: the fake one exits 0.
+	if code, stdout, errOut := call("check", dir); code != 0 {
+		t.Errorf("with the no-AI check: exit %d, %q, %q", code, stdout, errOut)
+	}
+}
+
+func TestCheckFailsWithFixedLines(t *testing.T) {
+	// A validator missing; the file's text holds a secret that must not be
+	// printed; a hostile name.
+	dir := builtRelease(t, func(src string) {
+		write(t, filepath.Join(src, "share/validators.list"), "# SECRET-TOKEN-1234\n", 0o644)
+		write(t, filepath.Join(src, "etc/caddy/Caddyfile"), "# SECRET-TOKEN-5678\n:80\n", 0o644)
+	})
+	write(t, filepath.Join(dir, "share/bad\nname"), "SECRET-TOKEN-9999", 0o644)
+	code, stdout, errOut := call("check", "--no-noaicheck", dir)
+	if code != 1 || errOut != "" {
+		t.Fatalf("exit %d, %q", code, errOut)
+	}
+	for _, want := range []string{
+		"FAIL: bad-name a name is not letters, digits and ._@+-\n",
+		"FAIL: validator-missing no validator for a shipped file: etc/caddy/Caddyfile\n",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("stdout lacks %q:\n%s", want, stdout)
+		}
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(stdout, "\n"), "\n") {
+		if !strings.HasPrefix(line, "FAIL: ") {
+			t.Errorf("line %q", line)
+		}
+	}
+	if strings.Contains(stdout, "SECRET") {
+		t.Errorf("a file's content is printed:\n%s", stdout)
+	}
+}
+
+func TestCheckPrintsAtMostFiftyLines(t *testing.T) {
+	dir := builtRelease(t, nil)
+	for i := 0; i < 80; i++ {
+		write(t, filepath.Join(dir, "share", "extra"+strconv.Itoa(i)), "x", 0o644)
+	}
+	code, stdout, _ := call("check", "--no-noaicheck", dir)
+	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+	if code != 1 || len(lines) != 50 || !strings.HasPrefix(lines[49], "FAIL: more-findings ") {
+		t.Errorf("exit %d, %d lines, last %q", code, len(lines), lines[len(lines)-1])
+	}
+}
+
+func TestCheckHitOfTheShippedCheckFails(t *testing.T) {
+	out := t.TempDir()
+	dir := filepath.Join(out, "0003-0123456")
+	a, b := bins(t)
+	write(t, a, "#!/bin/sh\necho 'HIT binary /home/someone/.local/bin/agent'\nexit 1\n", 0o755)
+	if code, _, _ := call(buildArgs(out, source(t), a, b)...); code != 0 {
+		t.Fatal("build")
+	}
+	code, stdout, _ := call("check", dir)
+	want := "FAIL: noaicheck-exit the shipped no-AI check exited with a failure\nFAIL: noaicheck-hit the shipped no-AI check reported a hit\n"
+	if code != 1 || stdout != want {
+		t.Errorf("exit %d, %q", code, stdout)
 	}
 }

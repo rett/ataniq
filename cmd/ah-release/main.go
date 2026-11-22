@@ -3,8 +3,9 @@
 // deploy/authority-host/README.md, "The release builder".
 //
 //	ah-release build --out DIR --counter N --commit SHA --go-version V --built-on CLASS --package-snapshot S --bin FILE... --src deploy/authority-host [--components static]
+//	ah-release check [--no-noaicheck] [--root DIR] [--require-policy] DIR/<id>
 //
-// Exit codes: 0 ok, 1 refused (FAIL lines), 2 usage.
+// Exit codes: 0 ok, 1 refused or check failed (FAIL lines), 2 usage.
 package main
 
 import (
@@ -13,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"ataniq/internal/authorityhost/release"
@@ -30,6 +32,7 @@ func main() {
 }
 
 const usage = `usage: ah-release build --out DIR --counter N --commit SHA --go-version V --built-on CLASS --package-snapshot S --bin FILE... --src DIR [--components static]
+       ah-release check [--no-noaicheck] [--root DIR] [--require-policy] DIR/ID
 `
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -38,7 +41,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	if len(args) == 0 {
-		return bad("give a subcommand: build")
+		return bad("give a subcommand: build or check")
 	}
 	switch args[0] {
 	case "-h", "--help", "help":
@@ -46,6 +49,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitOK
 	case "build":
 		return build(args[1:], stdout, stderr, bad)
+	case "check":
+		return check(args[1:], stdout, stderr, bad)
 	}
 	return bad("unknown subcommand " + switcher.QuoteField(args[0]))
 }
@@ -102,4 +107,55 @@ func build(args []string, stdout, stderr io.Writer, bad func(string) int) int {
 	}
 	fmt.Fprintf(stdout, "built release %s (%d files)\n", id, files)
 	return exitOK
+}
+
+// maxLines is how many FAIL lines check prints.
+const maxLines = 50
+
+func check(args []string, stdout, stderr io.Writer, bad func(string) int) int {
+	fs := flag.NewFlagSet("ah-release check", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	noRun := fs.Bool("no-noaicheck", false, "do not run the shipped no-AI check (for tests)")
+	root := fs.String("root", "", "the --root the no-AI check is given (default: the host it runs on)")
+	policy := fs.Bool("require-policy", false, "give the no-AI check --require-policy: the release must carry its allowlists and nft.digest")
+	// Flags may come before or after the one folder.
+	var pos []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				fmt.Fprint(stdout, usage)
+				return exitOK
+			}
+			return bad(switcher.EscapeLine(err.Error()))
+		}
+		if fs.NArg() == 0 {
+			break
+		}
+		pos = append(pos, fs.Arg(0))
+		args = fs.Args()[1:]
+	}
+	if len(pos) != 1 {
+		return bad("check takes one release folder")
+	}
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if set["root"] && *root == "" {
+		return bad("--root needs a folder")
+	}
+	if *noRun && (set["root"] || set["require-policy"]) {
+		return bad("--root and --require-policy are for the no-AI check, which --no-noaicheck skips")
+	}
+	findings := release.Check(pos[0], release.CheckOptions{NoNoAICheck: *noRun, Root: *root, RequirePolicy: *policy})
+	if len(findings) == 0 {
+		fmt.Fprintf(stdout, "ok: release %s\n", filepath.Base(filepath.Clean(pos[0])))
+		return exitOK
+	}
+	for i, f := range findings {
+		if i == maxLines-1 && len(findings) > maxLines {
+			fmt.Fprintf(stdout, "FAIL: more-findings %d more not shown\n", len(findings)-i)
+			break
+		}
+		fmt.Fprintln(stdout, f)
+	}
+	return exitFailed
 }
