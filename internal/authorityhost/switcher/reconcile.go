@@ -50,11 +50,15 @@ func (s *Switcher) reconcile(ctx context.Context, newWork bool) (code int, halt 
 	if !settled {
 		return ExitFailed, true
 	}
+	if t.requalifyFailed {
+		// The settled outcome is owed with the failure, and decisions stay
+		// inhibited: the command fails, whatever it was asked.
+		return code, true
+	}
 	if t.j.Stopped && newWork {
 		s.printf("reconcile: the interrupted %s %s ended with the decision services stopped; nothing else is done: look at the host, then run the command again", t.kind(), j.ID)
 		return ExitFailed, true
 	}
-	_ = code
 	return 0, false
 }
 

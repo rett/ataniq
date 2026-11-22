@@ -321,6 +321,9 @@ func TestRetryReportsSettled(t *testing.T) {
 	})
 	t.Run("forward", func(t *testing.T) {
 		e := active(t)
+		// A retry that left its outcome owed would make the next request
+		// a retry again, not the counter refusal asserted below.
+		e.keepOwed = true
 		e.release(rel3, "2026-11-01")
 		e.crashAt(CrashReload, false, rel3)
 		e.runner.reset()

@@ -39,8 +39,10 @@
   be read, checking it before each decision; the switch removes it only
   when the transaction ends healthy, after running the reload list and
   health check of `current` again when it finds a healthy transaction
-  not yet settled (a reboot may have come); a failure keeps it across a
-  reboot until a healthy switch or
+  not yet settled (a reboot may have come; when that fails the host's
+  stop list runs, the command and every retry of the same request exit 1
+  and the outcome stays owed with the failure until acknowledged); a
+  failure keeps it across a reboot until a healthy switch or
   `ah-switch inhibit-clear --asked WORDS` (recorded with the time). All
   of it is one transaction journaled in `txn.json`, phase by phase
   (packages, links, activating, restoring, stopping, done), with the trust

@@ -641,8 +641,16 @@ only its existence matters to the services.
   fails, the outcome is recorded as it was decided, with
   `after an interruption in phase done, ... did not pass its reload and
   health check again` in `detail`, decisions stay inhibited, and the
-  command exits 1. `status` says so while the journal is there
-  (`requalify: ...`).
+  command exits 1 whatever it was asked: it never reports the decided
+  `ok`. Because the reload list was started, a service may be running, so
+  the host's stop list runs (a failing stop command is added to `detail`).
+  The failure is kept apart from the decided outcome: the outcome in
+  `owed.json` carries `requalify_failed: true`, and while it is owed the
+  same request run again fails again (exit 1, `decisions stay inhibited`)
+  and leaves it owed, instead of reporting the old `ok` once and taking it
+  back; `ah-switch ack --asked WORDS` takes it back, and the inhibit stays
+  until a healthy switch or `inhibit-clear`. `status` says so while the
+  journal is there (`requalify: ...`) and afterwards on the owed outcome.
 - Any other end keeps it, with the outcome as its reason: a failure after
   the package step changed the host, a failed recovery, a first switch
   that failed (with its release still `current`), an interrupted package
@@ -749,6 +757,9 @@ things take it back:
   `previous` anew, which would go back to the release the first rollback
   left. A forward switch is retried by the same id. Run the request once
   more to do it again.
+  An outcome whose requalification failed (see "The decision inhibit")
+  is the exception: it is reported with exit 1, stays owed, and only
+  `ack` takes it back.
 - **`ah-switch ack --asked WORDS`**, the owner's acknowledgement that the
   outcomes were seen, with in `WORDS` what was asked or seen (1 to 512
   bytes). It prints every outcome owed, records the time, the words and
@@ -875,7 +886,7 @@ see its messages. The text of a broken state file is not repeated either.
 | Going back fails (putting `previous` back included), or the old release is not healthy or fails its no-AI check | The host's `stop.list` and the stop lists of both releases run; `failed-recovery` with `restored_health: failed`; decisions stay inhibited; the console is needed |
 | First switch, or the old release missing or no longer verifying, and the new one fails | `current` stays; the host's and the release's stop lists run; `failed` or `failed-recovery`; decisions stay inhibited, across a reboot |
 | `decisions.inhibit` there after a failure | Decision-capable services may run but refuse every decision; a later healthy switch or `inhibit-clear --asked WORDS` removes it |
-| Reboot or crash after a healthy release was decided (`done`) and before it was settled | The next command runs the reload list and health check of `current` again before removing the inhibit; when they fail, decisions stay inhibited and it exits 1 |
+| Reboot or crash after a healthy release was decided (`done`) and before it was settled | The next command runs the reload list and health check of `current` again before removing the inhibit; when they fail, the host's stop list runs, decisions stay inhibited, the outcome stays owed with `requalify_failed`, and that command and every retry of the same request exit 1 until `ack --asked WORDS` |
 | A stop command fails | `result: unresolved`, exit 1; the journal stays in `stopping`; every later command runs the stops again and does nothing else until they pass, or `recover --services-stopped` |
 | A link folder cannot be synced | `result: unresolved`, exit 1; the journal stays; nothing is recorded as done until the next command syncs it |
 | `--rollback-to` when `previous` points at a missing release | Refused at counter (`no-previous`) |
