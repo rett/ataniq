@@ -378,6 +378,13 @@ ah-switch [--root DIR] [--dry] ack --asked WORDS
 - `ack --asked WORDS` acknowledges the outcomes owed on the owner's word;
   see "The journal and recover".
 
+The switch does not check who calls it. A sudo rule for the deploying user
+must be limited to the switch form (`--from INCOMING/ID ID`, see
+[DEPLOY.md](DEPLOY.md), "Who may switch"): `inhibit-clear`, `ack` and
+`recover` run only from the owner's own root session, and any broader rule
+for the same account, a blanket `NOPASSWD: ALL` for example, defeats the
+separation.
+
 Flags may come before or after the id.
 
 ### Steps

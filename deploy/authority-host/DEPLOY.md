@@ -23,8 +23,9 @@ export AUTHORITY_HOST_SSH=USER@HOST     # your value; not in any file of this re
 - On the authority host: the deploying user can log in with a key, without a
   password (`ssh -o BatchMode=yes` never asks), has a folder it owns for
   incoming releases (default `~/incoming`, outside `/opt/authority-host`; make it
-  once with `mkdir -m 0700 ~/incoming`) and may run
-  `sudo /usr/local/sbin/ah-switch` (see "Who may switch" below).
+  once with `mkdir -m 0700 ~/incoming`) and may run the switch form of
+  `sudo /usr/local/sbin/ah-switch`, and nothing else of it (see "Who may
+  switch" below).
 - Root on the authority host, your own way in, for the bootstrap and for
   anything the switch asks the owner to do.
 
@@ -63,7 +64,8 @@ ah-release check --no-noaicheck DIR/ID
 folder back (sums, manifest, shape, the coverage of the lists) without running
 the release's own no-AI check, which would look at this machine, not at the
 authority host, and report its agent tools. Run the no-AI check where it is
-meant to pass: on the authority host (see `--remote-check` below), or here
+meant to pass: on the authority host, where the switch runs it itself on the
+verified copy of the release before anything changes (see step 4), or here
 with `--root` pointing at a copy of the host's tree. `deploy.sh` runs the same
 `ah-release check --no-noaicheck` again before it copies anything.
 
@@ -111,19 +113,31 @@ hash and every folder above what the script touches. `--apply` then:
 
 With `--link-caddy` it also makes `/etc/caddy/Caddyfile` a link to
 `/opt/authority-host/current/etc/caddy/Caddyfile`, keeping a regular Caddyfile
-once as `/etc/caddy/Caddyfile.pre-authority-host`. Do not use it before the
-first switch has made `current`: until then the link dangles and caddy cannot
-read its configuration. The script never starts, restarts, reloads or enables a
-service; do that yourself, after the first switch (step 5). It is safe to run
-again: what is already right is left as it is.
+once as `/etc/caddy/Caddyfile.pre-authority-host`. Link the Caddyfile before the
+first switch, in this step. The shipped release's `share/reload.list` restarts
+caddy inside the switch (its Caddyfile has `admin off`, so there is nothing to
+reload) and `share/health.cmd` then requires `/healthz` from it, so caddy has to
+read the release's own Caddyfile when the switch restarts it. With the old
+Caddyfile still in place the restart brings up the old configuration: the health
+check fails, and the first switch has no previous release to go back to, so the
+host is left in the failed state (or, if the old configuration happens to answer
+`/healthz`, the switch qualifies it, which is no proof of the release). Until the
+first switch the link dangles, because `current` does not exist yet, and caddy
+cannot read its configuration: leave caddy stopped (do not start, restart or
+enable it) until the first switch creates `current` and restarts it itself. If
+it is already serving the old configuration, leave it alone: it keeps what it
+loaded until that restart, and a reboot before the first switch would leave it
+without a readable configuration. The script never starts, restarts, reloads or
+enables a service. It is safe to run again: what is already right is left as it
+is.
 
 ### 4. Deploy: dry, then go
 
 Before the first deploy read the release's `share/reload.list` and
 `share/health.cmd`: they say whether the switch reloads caddy and whether its
-health check needs caddy to be serving the release's own Caddyfile. The first
-deploy has to follow an order that satisfies them (step 5 says what to do when
-caddy has to be pointed at `current` after the switch).
+health check needs caddy to be serving the release's own Caddyfile. The shipped
+ones need the Caddyfile link of step 3 to be in place before this step; if your
+release's lists differ, make the order satisfy them.
 
 On the development host:
 
@@ -134,7 +148,12 @@ sh deploy/authority-host/deploy.sh --go  --release DIR/ID --confirm ID
 
 `--dry` checks the release with `ah-release check --no-noaicheck`, runs
 `rsync -n` (a list of what would be copied; nothing is copied) and prints the
-exact ssh command that `--go` runs afterwards:
+exact ssh command that `--go` runs afterwards. `--dry` contacts the host,
+read-only (ssh and `rsync -n`). `rsync -n` starts a remote rsync to read the
+incoming folder, so the host must be reachable; it copies nothing and runs no
+command there. To see the plan without touching the network, `--self-test`
+starts nothing: it computes and prints the same commands (it does not need
+`AUTHORITY_HOST_SSH`, and runs neither `ah-release`, `rsync` nor `ssh`).
 
 ```
 sudo /usr/local/sbin/ah-switch --from "$HOME/incoming/ID" ID
@@ -150,23 +169,16 @@ skips `ah-release check` with a warning (use it only when you checked the
 release another way). A failing step stops the later ones: when the copy
 fails nothing is switched.
 
-`--remote-check` adds a step between the copy and the switch: over the same
-`ssh -o BatchMode=yes` it runs the release's own no-AI check on the host,
-
-```
-sudo "$HOME/incoming/ID/bin/ah-noaicheck" --phase pre --root / --release "$HOME/incoming/ID" --require-policy
-```
-
-and stops, without switching, when it exits non-zero (its output is streamed;
-a line starting `HIT` says what it found). `--dry` and `--self-test` print the
-command and never call ssh. It needs the allowlists filled (see [Filling the
-allowlists](README.md#filling-the-allowlists)): `--require-policy` turns an
-empty one into a hit. Mind what it is: it runs a binary of the copied release as
-root *before* the switch has checked the release's sums or signature, so it
-needs a sudo rule for that path as well as for `ah-switch`, and in signed mode
-it runs code the signature has not yet vouched for. Use it in manual mode, or
-leave it off and rely on the no-AI check the switch itself runs on the verified
-release (see [the switch's steps](README.md#steps)).
+The driver never runs a file of the incoming folder: that folder belongs to
+the deploying user, and a program in it would run as root before anyone had
+verified it. The no-AI check is run by the switch itself: after it has
+imported and verified the release (sums, and the signature in signed mode) into
+the root-owned `releases/ID`, and before anything changes, it runs that copy's
+no-AI check, phase `pre`, with `--require-policy`, and refuses the switch when
+it finds anything (see [the switch's steps](README.md#steps)). `--require-policy`
+turns an empty allowlist into a hit, so fill the allowlists first (see [Filling
+the allowlists](README.md#filling-the-allowlists)). A line starting `HIT` in
+the switch's output says what it found.
 
 The switch imports the release into `/opt/authority-host/releases/ID` as new,
 read-only, root-owned files, runs its checks, no-AI check, validators and reloads
@@ -187,17 +199,31 @@ curl -fsS http://127.0.0.1/healthz      # the address and port your Caddyfile se
 last outcome from `deploy.json` as `ok`. The release's `share/health.cmd`
 checks the same things the switch checked; read it to see what "healthy" means.
 
-If the Caddyfile is still the old one, link it now (run the bootstrap again with
-`--link-caddy`, dry first) and restart caddy yourself, then run `status` and
-the health check again. Between the first switch and that restart the host
-keeps serving whatever caddy already has loaded.
+Then acknowledge the outcome, from your own root session on the host (the
+deploying user cannot run this, see "Who may switch"). Every switch owes its
+outcome until you do, and while an outcome is owed the switch refuses a switch
+to another release or a rollback (it prints the outcomes owed and does nothing
+else); only the same request run again, which reports the outcome, would take
+it back instead of you:
+
+```
+sudo /usr/local/sbin/ah-switch ack --asked "WHAT YOU ASKED OR SAW"
+```
+
+`ack` prints every outcome owed, records the time, your words and the
+transactions in `deploy.json`, and removes `owed.json`. Run `status` first and
+read what it says: the words are yours, and nobody types them for you (see
+[the journal and recover](README.md#the-journal-and-recover)).
 
 ### 6. Roll back
 
 To go back to the release `previous` points at (it is there after the second
-switch; the first switch has nothing to go back to):
+switch; the first switch has nothing to go back to). First acknowledge the last
+outcome, if `status` shows one owed, as at the end of step 5: a rollback while
+an outcome is owed is refused.
 
 ```
+sudo /usr/local/sbin/ah-switch ack --asked "WHAT YOU ASKED OR SAW"
 sudo /usr/local/sbin/ah-switch --dry --rollback-to previous
 sudo /usr/local/sbin/ah-switch --rollback-to previous
 ```
@@ -227,14 +253,36 @@ and never in this repository:
   and `ah-switch ack --asked WORDS` act on the owner's word; nobody types it for
   the owner. See [the decision inhibit](README.md#the-decision-inhibit) and
   [the journal and recover](README.md#the-journal-and-recover).
-- **Who may switch.** The driver needs `sudo /usr/local/sbin/ah-switch` without a
-  password for the deploying user (`BatchMode`, no terminal). The switch runs
-  what a release contains as root, so in manual mode whoever can put a folder in
-  the incoming folder and run the switch holds root on the host. Grant that
-  sudo right only for that program, only to the deploying user, and move to
-  signed mode before the host is relied on. Without such a rule `--go` copies the
-  release and then fails at the ssh step; run the printed command yourself, in a
-  terminal on the host, instead.
+- **Who may switch.** The driver needs `sudo /usr/local/sbin/ah-switch --from
+  INCOMING/ID ID` without a password for the deploying user (`BatchMode`, no
+  terminal), and only that form. The switch does not check who calls it, and
+  it also has the owner's verbs: `inhibit-clear`, `ack`, `recover` with its
+  options, `--rollback-to`, and a caller-chosen checker (`--noaicheck`) or
+  alternate root (`--root`). A rule for the whole program would hand all of
+  them to the deploy key, which lives on the development host. So give the
+  deploying user this rule and no other for the switch, in a file of
+  `/etc/sudoers.d` (made with `visudo -f`), with the user's name and home
+  folder in place of `DEPLOYUSER` and `/home/DEPLOYUSER/incoming` (sudo 1.9.10
+  or newer, for the regular expression that limits the arguments):
+
+  ```
+  DEPLOYUSER ALL=(root) NOPASSWD: /usr/local/sbin/ah-switch ^--from /home/DEPLOYUSER/incoming/[0-9]{4}[0-9]*-[0-9a-f]{7}[0-9a-f]* [0-9]{4}[0-9]*-[0-9a-f]{7}[0-9a-f]*$
+  ```
+
+  Check it from your own root session with `sudo -l -U DEPLOYUSER`: it must
+  list that one line for the switch, and no other rule that lets the account
+  run `ah-switch` or become root. `inhibit-clear`, `ack` and `recover` run
+  only from the owner's own root session, never through this rule and never
+  over the deploy key; `status`, `--dry` and `--rollback-to` are run there
+  too. Any broader rule for the same account defeats the separation, for
+  example a blanket `NOPASSWD: ALL`, which some desktop distributions install
+  for the first user: the deploying account must not have one (or be in a
+  group that has one). The rule does not make the switch safe on its own: the
+  switch runs what a release contains as root, so in manual mode whoever can
+  put a folder in the incoming folder holds root on the host. Move to signed
+  mode before the host is relied on. Without the rule `--go` copies the
+  release and then fails at the ssh step; run the printed command yourself, in
+  a terminal on the host, instead.
 
 ## When a step fails
 
@@ -250,11 +298,12 @@ state; read the message, fix the cause, run the step again.
 | Bootstrap | `Caddyfile.pre-authority-host exists and is never overwritten`, or the Caddyfile is a link to elsewhere | Nothing was changed. Move the old backup (or link) away by hand, then run again |
 | `deploy.sh` | `AUTHORITY_HOST_SSH is not set`, a bad release id or a bad `--incoming-base` | Nothing was run. Set the variable, or name a release folder `COUNTER-COMMIT` and a safe incoming folder |
 | `deploy.sh --dry` | `rsync -n failed` | Nothing was copied. Check that the incoming folder exists on the host and belongs to the deploying user, and that ssh works in batch mode |
-| `deploy.sh --go --remote-check` | the no-AI check on the host exited non-zero | The release is in the incoming folder and was not switched. Read the `HIT` lines it printed (and the README's [no-AI check](README.md#the-no-ai-check)), fix the host or the release, and run `--go` again |
 | `deploy.sh --go` | rsync failed | The switch was not run. The partial copy is only in the incoming folder; run `--go` again (rsync resumes) |
 | `deploy.sh --go` | the switch step failed (the output above it is the switch's) | The release is in the incoming folder, possibly already imported. Read the switch's `status` and its outcome, then see below |
+| Switch | the no-AI check found something (`HIT` lines) | Nothing was changed. Read the `HIT` lines (and the README's [no-AI check](README.md#the-no-ai-check)), fix the host or the release, and run `--go` again |
 | Switch | `rolled-back` (a reload or health check failed) | The old release is live again. Read why in `ah-switch status`, fix the release and deploy a new one with a higher counter |
 | Switch | `failed` or `failed-recovery` | The decision services were stopped and decisions stay inhibited; the console is needed. Follow [the failure cases](README.md#failure-cases), [the decision inhibit](README.md#the-decision-inhibit) and [the journal and recover](README.md#the-journal-and-recover); `inhibit-clear` and `ack` are the owner's words |
+| Switch | `refused: an outcome is owed` | Nothing was done. Read the outcomes it printed and `status`, then `ah-switch ack --asked WORDS` from your own root session, and run the request again |
 | Switch | exit 3 | Another switch holds the lock; wait for it, then run again. Nothing was done |
 | Switch | exit 2 | Bad arguments or a root other than `/` without `--allow-exec`; nothing was done |
 | Any | You are not sure what the host holds | `sudo /usr/local/sbin/ah-switch status` changes nothing and says what is live, what is owed and what is to resume |

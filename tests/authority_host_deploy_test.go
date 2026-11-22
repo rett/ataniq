@@ -159,14 +159,19 @@ func testAuthorityHostDeploy(t *testing.T) {
 		}
 	})
 
-	t.Run("dry never calls ssh", func(t *testing.T) {
+	// The stub rsync only records its arguments. The real `rsync -n` to
+	// USER@HOST:PATH starts ssh and a remote rsync by itself to read the
+	// host's listing, so --dry does contact the host (read-only); this test
+	// only shows that the driver runs no ssh command of its own, and so never
+	// the switch. --self-test is the mode that starts nothing.
+	t.Run("dry lists with rsync -n and runs no ssh command of its own", func(t *testing.T) {
 		rel := ahFakeRelease(t, ahTestID)
 		out, code := run(withHost(), "--release", rel, "--ah-release", stubRelease, "--dry")
 		if code != 0 {
 			t.Fatalf("exit %d\n%s", code, out)
 		}
 		if got := called("ssh"); got != nil {
-			t.Fatalf("a dry run called ssh: %v", got)
+			t.Fatalf("a dry run ran an ssh command of its own: %v", got)
 		}
 		if got := names(); !slices.Equal(got, []string{"ah-release", "rsync"}) {
 			t.Fatalf("calls: %v", got)
@@ -319,7 +324,7 @@ func testAuthorityHostDeploy(t *testing.T) {
 
 	t.Run("check never runs the no-AI check on the development host", func(t *testing.T) {
 		rel := ahFakeRelease(t, ahTestID)
-		for _, mode := range [][]string{{"--dry"}, {"--go", "--confirm", ahTestID}, {"--dry", "--remote-check"}, {"--go", "--confirm", ahTestID, "--remote-check"}} {
+		for _, mode := range [][]string{{"--dry"}, {"--go", "--confirm", ahTestID}} {
 			out, code := run(withHost(), append([]string{"--release", rel, "--ah-release", stubRelease}, mode...)...)
 			if code != 0 {
 				t.Fatalf("%v: exit %d\n%s", mode, code, out)
@@ -333,85 +338,50 @@ func testAuthorityHostDeploy(t *testing.T) {
 		}
 	})
 
-	t.Run("remote check", func(t *testing.T) {
+	t.Run("no step executes a file from the incoming folder", func(t *testing.T) {
+		// The incoming folder belongs to the deploying user, so a program in
+		// it must never be run as root before the switch has verified the
+		// copy: the only command sent to the host is the installed switch.
+		// The switch itself runs the no-AI check, on the verified copy.
 		rel := ahFakeRelease(t, ahTestID)
-		wantCheck := "sudo \"$HOME/incoming/" + ahTestID + "/bin/ah-noaicheck\" --phase pre --root / --release \"$HOME/incoming/" + ahTestID + "\" --require-policy"
 		wantSwitch := "sudo /usr/local/sbin/ah-switch --from \"$HOME/incoming/" + ahTestID + "\" " + ahTestID
-		sshCall := func(cmd string) string {
-			return "ssh [-o] [BatchMode=yes] [--] [" + ahTestHost + "] [" + cmd + "]"
-		}
-		base := []string{"--release", rel, "--ah-release", stubRelease, "--remote-check"}
-
-		// --dry prints the command and never calls ssh.
-		out, code := run(withHost(), append(base, "--dry")...)
-		if code != 0 {
-			t.Fatalf("dry: exit %d\n%s", code, out)
-		}
-		if got := names(); !slices.Equal(got, []string{"ah-release", "rsync"}) {
-			t.Errorf("dry calls: %v", got)
-		}
-		for _, want := range []string{
-			"step 3, only with --go --confirm " + ahTestID + ": remote no-AI check: ssh -o BatchMode=yes -- <the authority host> ",
-			"/bin/ah-noaicheck\" --phase pre --root / --release ",
-			"--require-policy",
-			"step 4, only with --go --confirm " + ahTestID + ": ssh -o BatchMode=yes -- <the authority host> ",
-		} {
-			if !strings.Contains(out, want) {
-				t.Errorf("the dry output lacks %q:\n%s", want, out)
+		for _, mode := range [][]string{{"--dry"}, {"--go", "--confirm", ahTestID}, {"--self-test"}} {
+			out, code := run(withHost(), append([]string{"--release", rel, "--ah-release", stubRelease}, mode...)...)
+			if code != 0 {
+				t.Fatalf("%v: exit %d\n%s", mode, code, out)
+			}
+			if strings.Contains(out, "ah-noaicheck") || strings.Contains(out, "remote no-AI check") {
+				t.Errorf("%v: the plan runs a program of the incoming folder:\n%s", mode, out)
+			}
+			for _, line := range called("ssh") {
+				if want := "ssh [-o] [BatchMode=yes] [--] [" + ahTestHost + "] [" + wantSwitch + "]"; line != want {
+					t.Errorf("%v: an ssh call other than the switch:\n got %s\nwant %s", mode, line, want)
+				}
 			}
 		}
-
-		// --go runs the check before the switch, over ssh, in batch mode.
-		out, code = run(withHost(), append(base, "--go", "--confirm", ahTestID)...)
-		if code != 0 {
-			t.Fatalf("go: exit %d\n%s", code, out)
-		}
-		if got := names(); !slices.Equal(got, []string{"ah-release", "rsync", "ssh", "ssh"}) {
-			t.Fatalf("go calls: %v", got)
-		}
-		if got := called("ssh"); !slices.Equal(got, []string{sshCall(wantCheck), sshCall(wantSwitch)}) {
-			t.Errorf("ssh calls:\n got %q\nwant %q", got, []string{sshCall(wantCheck), sshCall(wantSwitch)})
-		}
-		if !strings.Contains(out, "switched") {
-			t.Errorf("the go output lacks the verdict:\n%s", out)
-		}
-
-		// A remote check that fails stops before the switch: the one ssh
-		// call is the check's, and the run fails.
-		out, code = run(withHost("STUB_FAIL=ssh"), append(base, "--go", "--confirm", ahTestID)...)
-		if code != 1 || !strings.Contains(out, "the switch was not run") || strings.Contains(out, "switched;") {
-			t.Errorf("failing remote check: exit %d\n%s", code, out)
-		}
-		if got := called("ssh"); !slices.Equal(got, []string{sshCall(wantCheck)}) {
-			t.Errorf("the switch was run after a failed remote check: %q", got)
+		// --go is exactly the copy and then the switch.
+		if _, code := run(withHost(), "--release", rel, "--ah-release", stubRelease, "--go", "--confirm", ahTestID); code != 0 {
+			t.Fatalf("go: exit %d", code)
 		}
 		if got := names(); !slices.Equal(got, []string{"ah-release", "rsync", "ssh"}) {
-			t.Errorf("failing remote check calls: %v", got)
+			t.Errorf("go calls: %v", got)
 		}
-
-		// Without the flag the host is asked for the switch alone.
-		if _, code := run(withHost(), "--release", rel, "--ah-release", stubRelease, "--go", "--confirm", ahTestID); code != 0 {
-			t.Fatalf("exit %d", code)
+		// The removed flag is refused, before anything runs.
+		out, code := run(withHost(), "--release", rel, "--ah-release", stubRelease, "--go", "--confirm", ahTestID, "--remote-check")
+		if code != 2 || !strings.Contains(out, "usage:") {
+			t.Errorf("--remote-check: exit %d\n%s", code, out)
 		}
-		if got := called("ssh"); !slices.Equal(got, []string{sshCall(wantSwitch)}) {
-			t.Errorf("without --remote-check: %q", got)
+		if got := ahCalls(t, calls); got != nil {
+			t.Errorf("--remote-check: something was called: %v", got)
 		}
-
-		// The self-test computes both commands, for an absolute base too.
-		out, code = run(env(), "--release", rel, "--incoming-base", "/srv/incoming", "--remote-check", "--self-test")
+		// The self-test of an absolute base shows the switch alone, as step 3.
+		out, code = run(env(), "--release", rel, "--incoming-base", "/srv/incoming", "--self-test")
 		if code != 0 {
 			t.Fatalf("self-test: exit %d\n%s", code, out)
 		}
-		if got := ahCalls(t, calls); got != nil {
-			t.Fatalf("self-test called %v", got)
-		}
-		for _, want := range []string{
-			"step 3: remote no-AI check: ssh -o BatchMode=yes -- <the authority host> 'sudo /srv/incoming/" + ahTestID + "/bin/ah-noaicheck --phase pre --root / --release /srv/incoming/" + ahTestID + " --require-policy'",
-			"step 4: ssh -o BatchMode=yes -- <the authority host> 'sudo /usr/local/sbin/ah-switch --from /srv/incoming/" + ahTestID + " " + ahTestID + "'",
-		} {
-			if !strings.Contains(out, want) {
-				t.Errorf("the self-test output lacks %q:\n%s", want, out)
-			}
+		want := "step 3: ssh -o BatchMode=yes -- <the authority host> 'sudo /usr/local/sbin/ah-switch --from /srv/incoming/" + ahTestID + " " + ahTestID + "'"
+		if !strings.Contains(out, want) || strings.Contains(out, "step 4") {
+			t.Errorf("the self-test output lacks %q:\n%s", want, out)
 		}
 	})
 
@@ -437,9 +407,33 @@ func testAuthorityHostDeploy(t *testing.T) {
 	})
 }
 
+// testAuthorityHostDeployHelp checks that the driver's own help text is as
+// honest as the manual about what --dry and --self-test start.
+func testAuthorityHostDeployHelp(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(root(t), ahDeployScript))
+	if err != nil {
+		t.Fatal(err)
+	}
+	flat := strings.Join(strings.Fields(strings.ReplaceAll(string(data), "\n#", "\n")), " ")
+	for _, want := range []string{
+		"contacts the host, read-only (ssh and rsync -n)",
+		"starts nothing",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("deploy.sh's help does not say %q", want)
+		}
+	}
+}
+
+// ahFlat joins the lines of a Markdown text into one and drops the code marks.
+func ahFlat(s string) string {
+	return strings.Join(strings.Fields(strings.ReplaceAll(s, "`", "")), " ")
+}
+
 // testAuthorityHostDeployDoc checks the manual: its links resolve and it names
 // the steps, the scripts' flags and the owner-only items.
 func testAuthorityHostDeployDoc(t *testing.T) {
+	t.Run("help", testAuthorityHostDeployHelp)
 	path := filepath.Join(root(t), "deploy/authority-host/DEPLOY.md")
 	if err := checkDoc(root(t), path); err != nil {
 		t.Error(err)
@@ -457,6 +451,71 @@ func testAuthorityHostDeployDoc(t *testing.T) {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("DEPLOY.md does not mention %q", want)
 		}
+	}
+	// "Who may switch": the sudo rule is limited to the switch form, and the
+	// owner-only verbs stay with the owner's own root session. Wrapped text is
+	// compared as one line, without code marks.
+	flat := ahFlat(string(data))
+	// --dry reads the host through rsync -n (ssh and a remote rsync, read-only);
+	// only --self-test starts nothing.
+	for _, want := range []string{
+		"--dry contacts the host, read-only (ssh and rsync -n)",
+		"--self-test starts nothing",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("DEPLOY.md does not say %q", want)
+		}
+	}
+	if strings.Contains(flat, "never call ssh") || strings.Contains(flat, "never calls ssh") {
+		t.Error("DEPLOY.md says that a dry run never calls ssh")
+	}
+	for _, want := range []string{
+		"NOPASSWD: /usr/local/sbin/ah-switch ^--from /home/DEPLOYUSER/incoming/",
+		"sudo -l -U DEPLOYUSER",
+		"inhibit-clear, ack and recover run only from the owner's own root session",
+		"NOPASSWD: ALL",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("DEPLOY.md does not say %q", want)
+		}
+	}
+	// The first deploy: the shipped release restarts caddy in the switch and
+	// needs /healthz from it, so the Caddyfile link comes before the first
+	// switch (step 3, not after step 4), and the reported outcome is
+	// acknowledged from the owner's session before a later different switch
+	// or rollback, which the switch refuses while an outcome is owed.
+	section := func(from, to string) string {
+		i := strings.Index(flat, from)
+		j := strings.Index(flat, to)
+		if i < 0 || j < i {
+			t.Fatalf("DEPLOY.md lacks the sections %q to %q in order", from, to)
+		}
+		return flat[i:j]
+	}
+	if !strings.Contains(section("### 3.", "### 4."), "Link the Caddyfile before the first switch") {
+		t.Error("DEPLOY.md step 3 does not put the Caddyfile link before the first switch")
+	}
+	if strings.Contains(flat, "Do not use it before the first switch") || strings.Contains(flat, "link it now") {
+		t.Error("DEPLOY.md still has the Caddyfile linked after the first switch")
+	}
+	if !strings.Contains(section("### 5.", "### 6."), "ah-switch ack --asked") {
+		t.Error("DEPLOY.md step 5 does not acknowledge the outcome from the owner's session")
+	}
+	rollback := section("### 6.", "## Owner-only items")
+	if ack, back := strings.Index(rollback, "ah-switch ack --asked"), strings.Index(rollback, "--rollback-to previous"); ack < 0 || back < 0 || ack > back {
+		t.Error("DEPLOY.md step 6 does not acknowledge the outcome before the rollback")
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasSuffix(strings.TrimSpace(line), "NOPASSWD: /usr/local/sbin/ah-switch") {
+			t.Errorf("DEPLOY.md grants the whole switch program: %s", line)
+		}
+	}
+	readme, err := os.ReadFile(filepath.Join(root(t), "deploy/authority-host/README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ahFlat(string(readme)), "inhibit-clear, ack and recover run only from the owner's own root session") {
+		t.Error("README.md does not say that inhibit-clear, ack and recover are the owner's own")
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.Contains(line, "AUTHORITY_HOST_SSH=") && !strings.Contains(line, "USER@HOST") {

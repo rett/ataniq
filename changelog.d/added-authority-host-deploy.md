@@ -20,12 +20,22 @@
   copies it to the host's incoming folder with `rsync -a --delete`, and runs
   `sudo /usr/local/sbin/ah-switch --from INCOMING/ID ID` over `ssh -o
   BatchMode=yes`. `--dry` (the default) only lists what rsync would copy and
-  prints the ssh command, `--go` does it and is refused unless
+  prints the ssh command (it contacts the host read-only, through ssh and
+  `rsync -n`), `--go` does it and is refused unless
   `--confirm ID` equals the release id, and `--self-test` computes the
-  commands without running ssh or rsync. `--remote-check` runs the copied
-  release's no-AI check on the host (`sudo INCOMING/ID/bin/ah-noaicheck
-  --phase pre --root / --release INCOMING/ID --require-policy`, over ssh) after
-  the copy and stops before the switch when it exits non-zero; `--dry` only
-  prints the command.
+  commands and starts nothing (no ah-release, rsync or ssh).
+  The driver never runs a file of the incoming folder: the no-AI check is
+  the switch's own, on the verified copy it imports, before anything
+  changes.
+  `DEPLOY.md` links the Caddyfile before the first switch (the shipped
+  release restarts caddy in the switch and requires `/healthz` from it) and
+  has the owner acknowledge the outcome (`ah-switch ack --asked WORDS`)
+  before a later switch or a rollback, which the switch refuses while an
+  outcome is owed.
+  `DEPLOY.md` ("Who may switch") gives the sudo rule for the deploying
+  user, limited to the switch form (`--from INCOMING/ID ID`, an argument
+  regex for sudo 1.9.10 or newer) and checked with `sudo -l -U`:
+  `inhibit-clear`, `ack` and `recover` run only from the owner's own root
+  session, and a broader rule for the same account defeats that.
   `deploy/authority-host/DEPLOY.md` gives the first-deploy sequence, the
   rollback and what to do when a step fails.
