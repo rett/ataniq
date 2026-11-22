@@ -86,6 +86,10 @@ type ServerConfig struct {
 	// Now is the clock of the rate limit; time.Now when nil. Deadlines on the
 	// network use the real clock.
 	Now func() time.Time
+
+	// hsWatch, for tests, runs as the watcher of a handshake starts, and what
+	// it returns as the watcher ends.
+	hsWatch func() func()
 }
 
 func (c ServerConfig) withDefaults() ServerConfig {
@@ -269,17 +273,28 @@ func (s *server) serveConn(raw net.Conn) {
 	}
 	raw.SetDeadline(time.Now().Add(s.cfg.HandshakeTimeout))
 	tc := tls.Server(raw, s.cfg.TLS)
-	hsDone := make(chan struct{})
-	go func() { // a shutdown does not wait for a handshake
+	// A shutdown does not wait for a handshake: a watcher closes the
+	// connection if the drain comes first. It is waited for once the handshake
+	// is over, and says which it saw: one that runs late, when the handshake
+	// has ended and the drain has begun both, may take either, and if it took
+	// the drain the connection is closed now, before any request, and not
+	// under a request later.
+	hsDone, hsCut := make(chan struct{}), make(chan bool, 1)
+	go func() {
+		if h := s.cfg.hsWatch; h != nil {
+			defer h()()
+		}
 		select {
 		case <-s.drain:
 			raw.Close()
+			hsCut <- true
 		case <-hsDone:
+			hsCut <- false
 		}
 	}()
 	err := tc.Handshake()
 	close(hsDone)
-	if err != nil {
+	if <-hsCut || err != nil {
 		return
 	}
 	raw.SetDeadline(time.Time{})

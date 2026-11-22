@@ -1112,3 +1112,67 @@ func TestServerShutdownGraceHoldsAgainstAPeerThatStopsReading(t *testing.T) {
 		t.Fatalf("Serve returned %v after the shutdown began, with a grace of 200ms", d)
 	}
 }
+
+// A shutdown that begins right as a handshake ends still gives the
+// connection's request its grace. The watcher that closes a connection whose
+// handshake a shutdown interrupts was told the handshake was over and not
+// waited for, so if it ran only once the shutdown had begun as well it could
+// pick the shutdown and close the connection, with its request in flight.
+//
+// A hook holds the watcher until the request is in flight and the shutdown has
+// begun; the watcher then picks one of two ready cases at random, so the test
+// makes 16 rounds. A server that waits for its watcher answers no request
+// before the watcher is done, so the hook lets it go after 100 ms.
+func TestServerShutdownRightAsAHandshakeEndsKeepsTheGrace(t *testing.T) {
+	leakCheck(t)
+	for round := 0; round < 16; round++ {
+		gate, decided := make(chan struct{}), make(chan struct{})
+		started, answer := make(chan struct{}), make(chan struct{})
+		e := startServer(t, func(c *ServerConfig) {
+			c.hsWatch = func() func() { <-gate; return func() { close(decided) } }
+		}, HandlerFunc(func(ctx context.Context, _ Peer, _ string, _ json.RawMessage) (json.RawMessage, error) {
+			close(started)
+			select {
+			case <-answer:
+				return json.RawMessage(`{"done":true}`), nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}))
+		r := e.raw()
+		r.send(`{"id":1,"op":"seat.hello","params":{"proto":1,"caps":[],"role":"seat"}}`)
+		r.send(`{"id":2,"op":"t.slow"}`)
+		select {
+		case <-started:
+			e.cancel()
+			untilTrue(t, "the shutdown to begin", func() bool { // the drain is closed before the listener
+				c, err := net.DialTimeout("tcp", e.addr, time.Second)
+				if err == nil {
+					c.Close()
+				}
+				return err != nil
+			})
+			close(gate)
+			within(t, "the watcher", decided, 5*time.Second)
+		case <-time.After(100 * time.Millisecond):
+			close(gate)
+			within(t, "the handler to start", started, 5*time.Second)
+			e.cancel()
+		}
+		close(answer)
+		got := map[uint64]response{}
+		for len(got) < 2 {
+			resp, err := r.recvWithin(5 * time.Second)
+			if err != nil {
+				t.Fatalf("round %d: the connection ended with its request in flight (%v); answers %+v", round, err, got)
+			}
+			got[resp.ID] = resp
+		}
+		if resp := got[2]; resp.Code != "" || string(resp.Result) != `{"done":true}` {
+			t.Fatalf("round %d: %+v", round, resp)
+		}
+		if err := e.stop(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
