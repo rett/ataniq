@@ -83,8 +83,10 @@
   every step and changes nothing, `--root DIR` works on another folder
   (running programs there only with `--allow-exec`), and
   `--noaicheck PATH` runs another no-AI check only when it is protected
-  root-owned code, bound to the transaction by its SHA-256 and checked
-  again before every run, from a private copy made from the checked
+  root-owned code and the switch is not run through sudo (any protected
+  host program, `/usr/bin/true` included, would pass, so a sudo rule for
+  the switch never chooses it), bound to the transaction by its SHA-256
+  and checked again before every run, from a private copy made from the checked
   descriptor and hashed again. A program of a release's lists is a file
   of the release (`{release}/bin/...`, in any list), a protected
   root-owned host program such as `/usr/bin/systemctl`, or a bare name in

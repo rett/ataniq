@@ -49,7 +49,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	dry := fs.Bool("dry", false, "print every step and what it would do; run nothing, change nothing")
 	allowExec := fs.Bool("allow-exec", false, "with --root other than /: run the release's programs all the same (an isolated test runner only)")
 	mode := fs.String("mode", "", "manual (SHA256SUMS only) or signed (also SHA256SUMS.sig); default and minimum: the switch policy's")
-	noai := fs.String("noaicheck", "", "the no-AI check program instead of the release's bin/ah-noaicheck: an absolute path on the host (below --root), root-owned and protected, bound by its SHA-256")
+	noai := fs.String("noaicheck", "", "the no-AI check program instead of the release's bin/ah-noaicheck: an absolute path on the host (below --root), root-owned and protected, bound by its SHA-256; refused under sudo")
 	rollback := fs.String("rollback-to", "", "previous: go back to the release previous points at")
 	from := fs.String("from", "", "import the release from this incoming folder into releases/ID first")
 	counter := fs.Uint64("counter", 0, "recover: the highest counter this host ever switched to")
@@ -179,6 +179,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// working folder.
 	if *noai != "" && !filepath.IsAbs(*noai) {
 		return bad("--noaicheck %s is not an absolute path", switcher.QuoteField(*noai))
+	}
+	// The override replaces the release's no-AI check with any protected
+	// program of the host (a root-owned /usr/bin/true is one), so it is
+	// the owner's own: a sudo rule for the switch never chooses it.
+	if *noai != "" && (os.Getenv("SUDO_UID") != "" || os.Getenv("SUDO_USER") != "") {
+		return bad("--noaicheck is refused under sudo (SUDO_UID or SUDO_USER is set): it replaces the release's no-AI check, so only the owner's own root session, without SUDO_UID and SUDO_USER, may give it")
 	}
 	fromAbs, err := abs(*from)
 	if err != nil {
