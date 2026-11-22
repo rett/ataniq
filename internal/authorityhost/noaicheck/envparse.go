@@ -45,6 +45,7 @@ type envParse struct {
 	files   []envRef
 	sourced []srcWord
 	paths   []srcWord // the elements PATH settings add (see parseShell)
+	reset   bool      // an empty EnvironmentFile= drops the files named before it (files holds those after the last)
 	bad     bool
 	seen    map[string]bool
 }
@@ -348,7 +349,8 @@ func logicalLines(data string) []string {
 // with systemd's quoting, each NAME=VALUE; only NAME is kept),
 // PassEnvironment= (names) and EnvironmentFile= (one path, a '-' first
 // when it is optional, quoted or not, absolute or starting with %h or %t; a glob in its
-// last component; no specifier but %h, %t and %%). Comments
+// last component; no specifier but %h, %t and %%; an empty one drops the
+// paths named before it and sets reset, see envParse). Comments
 // ('#', ';'), section headers and other keys are passed over. A word that
 // is not NAME=VALUE, an unclosed quote or a path with a specifier is
 // syntax the check cannot parse.
@@ -393,7 +395,10 @@ func parseSystemd(r *envParse, data string) {
 			}
 		case "EnvironmentFile":
 			if value == "" {
-				continue // resets the list
+				// Resets the list: the files named so far, here or in a
+				// file read before this one, are not read by systemd.
+				r.files, r.reset = r.files[:0], true
+				continue
 			}
 			p := strings.TrimPrefix(value, "-")
 			optional := p != value

@@ -106,6 +106,8 @@ func TestParseEnv(t *testing.T) {
 		{"EnvironmentFile optional inside quotes", unit, "EnvironmentFile=\"-/etc/a\"\nEnvironmentFile=/etc/b\n", nil,
 			[]string{"-/etc/a", "/etc/b"}, nil, false},
 		{"EnvironmentFile relative", unit, "EnvironmentFile=relative", nil, nil, nil, true},
+		{"EnvironmentFile reset", unit, "EnvironmentFile=/etc/a\nEnvironmentFile=\nEnvironmentFile=-/etc/b\n", nil,
+			[]string{"-/etc/b"}, nil, false},
 		{"EnvironmentFile with a specifier", unit, "EnvironmentFile=/etc/app/%i.env", nil, nil, nil, true},
 		{"EnvironmentFile in the home or runtime folder", unit, "EnvironmentFile=-%h/.config/app.env\nEnvironmentFile=-%t/app/env.conf\n", nil,
 			[]string{"-%h/.config/app.env", "-%t/app/env.conf"}, nil, false},

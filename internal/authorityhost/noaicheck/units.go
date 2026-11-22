@@ -87,7 +87,7 @@ const homeUnitDir = ".config/systemd/user"
 
 // dirs are the manager's unit folders in order of precedence; a user
 // manager's are those of systemd's user lookup path for its home and
-// runtime folder.
+// runtime folder (the attached folders of portable services included).
 func (m manager) dirs() []lookupDir {
 	if !m.user {
 		return systemDirs
@@ -114,9 +114,11 @@ func (m manager) dirs() []lookupDir {
 		{r("systemd/transient"), false},
 		{r("systemd/generator.early"), false},
 		{h(homeUnitDir), true},
+		{h(homeUnitDir + ".attached"), true},
 		{"etc/xdg/systemd/user", true},
 		{"etc/systemd/user", true},
 		{r("systemd/user"), true},
+		{r("systemd/user.attached"), true},
 		{"run/systemd/user", true},
 		{r("systemd/generator"), false},
 		{h(".local/share/systemd/user"), false},
@@ -276,20 +278,35 @@ func template(name string) string {
 }
 
 // masked reports whether the unit name is masked in the view: the entry
-// systemd loads for it is a link to /dev/null. A mask in a folder of
-// higher precedence hides a unit of the name in every lower one; one in a
-// lower folder is itself hidden.
+// systemd loads for it is a link to /dev/null or an empty file (see
+// systemd.unit(5)). A mask in a folder of higher precedence hides a unit
+// of the name in every lower one; one in a lower folder is itself hidden.
 func (c *Checker) masked(v *view, name string) bool {
 	e := v.lookup(name)
-	return e != nil && e.link && c.isMask(e.rel)
+	return e != nil && (e.link && c.isMask(e.rel) || c.emptyFile(e.rel))
+}
+
+// emptyFile reports whether rel resolves, within the root, to a regular
+// file of no bytes: a unit file systemd treats as masked. A path that
+// cannot be resolved is not one (its error is reported where it is read).
+func (c *Checker) emptyFile(rel string) bool {
+	p, err := c.t.resolve(rel)
+	if err != nil {
+		return false
+	}
+	fi, err := c.t.r.Lstat(p)
+	return err == nil && fi.Mode().IsRegular() && fi.Size() == 0
 }
 
 // unitTarget resolves the unit file entry rel within the root. A link is
 // followed to the file it names, in the tree (into the release's
 // etc/systemd through current, say); a link that loops or climbs above the
-// root is a hit of kind "unit-link", and a link to /dev/null is a mask.
+// root is a hit of kind "unit-link", and a link to /dev/null or an empty
+// file is a mask.
 func (c *Checker) unitTarget(e *uent) (string, unitLink) {
 	switch {
+	case !e.link && c.emptyFile(e.rel):
+		return e.rel, unitMasked
 	case !e.link:
 		return e.rel, unitFile
 	case c.isMask(e.rel):
@@ -308,7 +325,7 @@ func (c *Checker) unitTarget(e *uent) (string, unitLink) {
 	case err != nil:
 		c.unreadable(e.rel, err)
 		return "", unitNone
-	case p == "dev/null":
+	case p == "dev/null", c.emptyFile(p):
 		return p, unitMasked
 	}
 	return p, unitFile
@@ -319,29 +336,68 @@ type unitLink int
 
 const (
 	unitFile   unitLink = iota // a unit file (target holds it)
-	unitMasked                 // a link to /dev/null
+	unitMasked                 // a link to /dev/null, or an empty file
 	unitNone                   // not there, not a file, or a bad link (reported)
 )
 
-// scanUnitFiles calls scan, once per resolved file and manager, for every
-// unit file and drop-in a manager loads, in each manager's effective unit
-// view (see view): the unit systemd loads for each name (the first of it
-// in the folders in order of precedence, not every one), the drop-ins of
-// every drop-in folder (a file name in a folder of higher precedence
-// hiding the same name in a lower one), and the units the dependency
-// folders link to. A masked unit, its drop-ins and a masked drop-in are
-// passed over. A link is followed within the root; a dependency or drop-in
+// scanUnitFiles calls scan, per manager, with the files systemd reads for
+// each unit of the manager's effective unit view (see view), in the order
+// it reads them: the unit file systemd loads for the name (the first of it
+// in the folders in order of precedence, not every one), then the drop-ins
+// of its drop-in folders by file name (a file name in a folder of higher
+// precedence hiding the same name in a lower one). A masked unit (a link to
+// /dev/null or an empty file) and its drop-ins, and a masked drop-in, are
+// passed over. The drop-ins of a folder whose unit the view does not hold
+// (a type's "service.d", an instance's) are a unit of their own. A
+// dependency folder's entry stands for the unit systemd loads by its name:
+// it is read only when the view holds no unit of that name, where its link
+// leads. A link is followed within the root; a dependency or drop-in
 // folder that is a link is listed where it leads.
-func (c *Checker) scanUnitFiles(scan func(rel string, m manager)) {
-	done := map[string]bool{}
-	file := func(e *uent, m manager) {
-		if p, k := c.unitTarget(e); k == unitFile && !done[p+"\x00"+m.key()] {
-			done[p+"\x00"+m.key()] = true
-			scan(p, m)
-		}
-	}
+func (c *Checker) scanUnitFiles(scan func(files []string, m manager)) {
 	for _, m := range c.managers() {
 		v := c.view(m)
+		dropins := map[string][]*uent{}
+		var dropUnits []string
+		seenSub := map[string]bool{}
+		for _, d := range v.dirs {
+			for _, sub := range d.sorder {
+				if !isDropinDir(sub) {
+					continue
+				}
+				unit := strings.TrimSuffix(sub, ".d")
+				for _, e := range d.subs[sub] {
+					key := sub + "/" + e.name
+					if seenSub[key] || !c.t.b.hold(int64(len(key))+32) {
+						continue
+					}
+					seenSub[key] = true
+					if c.masked(v, unit) || (e.link && c.isMask(e.rel)) {
+						continue
+					}
+					if _, ok := dropins[unit]; !ok {
+						dropUnits = append(dropUnits, unit)
+					}
+					dropins[unit] = append(dropins[unit], e)
+				}
+			}
+		}
+		files := func(unit string, main *uent) []string {
+			var out []string
+			if main != nil {
+				if p, k := c.unitTarget(main); k == unitFile {
+					out = append(out, p)
+				}
+			}
+			ds := dropins[unit]
+			slices.SortStableFunc(ds, func(a, b *uent) int { return strings.Compare(a.name, b.name) })
+			for _, e := range ds {
+				if p, k := c.unitTarget(e); k == unitFile {
+					out = append(out, p)
+				}
+			}
+			delete(dropins, unit)
+			return out
+		}
 		seen := map[string]bool{}
 		for _, d := range v.dirs {
 			for _, name := range d.order {
@@ -349,29 +405,30 @@ func (c *Checker) scanUnitFiles(scan func(rel string, m manager)) {
 					continue
 				}
 				seen[name] = true
-				if !c.masked(v, name) {
-					file(d.units[name], m)
+				if c.masked(v, name) {
+					delete(dropins, name)
+					continue
 				}
+				scan(files(name, v.lookup(name)), m)
 			}
 		}
-		seenSub := map[string]bool{}
+		for _, unit := range dropUnits {
+			if _, ok := dropins[unit]; ok {
+				scan(files(unit, nil), m)
+			}
+		}
 		for _, d := range v.dirs {
 			for _, sub := range d.sorder {
+				if !isDepDir(sub) {
+					continue
+				}
 				for _, e := range d.subs[sub] {
-					if isDropinDir(sub) {
-						unit := strings.TrimSuffix(sub, ".d")
-						key := sub + "/" + e.name
-						if seenSub[key] {
-							continue
-						}
-						seenSub[key] = true
-						if c.masked(v, unit) || (e.link && c.isMask(e.rel)) {
-							continue
-						}
-					} else if c.masked(v, e.name) {
-						continue
+					if v.lookup(e.name) != nil {
+						continue // the unit of its name in the view, read above
 					}
-					file(e, m)
+					if p, k := c.unitTarget(e); k == unitFile {
+						scan([]string{p}, m)
+					}
 				}
 			}
 		}
@@ -383,12 +440,14 @@ func (c *Checker) scanUnitFiles(scan func(rel string, m manager)) {
 // *.upholds folder (one that is a link within the root included) of a
 // folder of enablement: /etc/systemd/system, /etc/systemd/system.attached,
 // /run/systemd/system, /run/systemd/system.attached for the system
-// manager; a home's .config/systemd/user, /etc/xdg/systemd/user,
-// /etc/systemd/user, /run/user/UID/systemd/user and /run/systemd/user for
-// a user's. An instance ("getty@tty1.service") is allowed by its own name
-// or by its template's ("getty@.service"). An enabled unit that is masked
-// (its entry links to /dev/null, or the unit systemd loads for its name in
-// the manager's effective view is a mask) is not enabled: it is the note
+// manager; a home's .config/systemd/user and .config/systemd/user.attached,
+// /etc/xdg/systemd/user, /etc/systemd/user, /run/user/UID/systemd/user,
+// /run/user/UID/systemd/user.attached and /run/systemd/user for a user's.
+// An instance ("getty@tty1.service") is allowed by its own name or by its
+// template's ("getty@.service"). An enabled unit that is masked (its entry
+// links to /dev/null or to an empty file, or the unit systemd loads for
+// its name in the manager's effective view is a mask) is not enabled: it
+// is the note
 // "unit masked PATH". A link of an enabled unit that loops or climbs above
 // the root is a hit of kind "unit-link". An empty units.allow allows none;
 // with RequirePolicy it is also the hit "policy units.allow empty".

@@ -12,8 +12,10 @@
   unit (each read in its own syntax, by name only: function-local
   declarations passed over, home-relative sources resolved per home, and
   the units read through each systemd manager's effective unit view, with
-  lookup precedence, masks, linked dependency folders and each manager's
-  own specifiers), an agent process, an enabled unit not in
+  the attached user folders, lookup precedence, masks by link or empty
+  file, dependency entries resolved by name, linked dependency folders,
+  `EnvironmentFile=` resets and each manager's own specifiers), an agent
+  process, an enabled unit not in
   `units.allow`, a listening TCP port not in `ports.allow`, a package
   forbidden or not in `packages.allow` and, when the release pins one, a
   firewall rule set whose digest differs. `--phase pre`, before a switch,

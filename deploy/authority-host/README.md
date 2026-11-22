@@ -794,24 +794,31 @@ folder whose `share/` holds the lists (and, in `pre` and `post`, whose
   `/run/systemd/system`, `/run/systemd/system.attached`, the generator
   folder, `/usr/local/lib/systemd/system`, `/usr/lib/systemd/system` and
   the late generator folder; for a user manager the same order of the
-  user folders (the home's `.config/systemd/user.control` and
-  `.config/systemd/user`, `/run/user/UID/systemd/...`, `/etc/xdg/systemd/user`,
-  `/etc/systemd/user`, `/run/systemd/user`, the home's
-  `.local/share/systemd/user`, `/usr/local/share/systemd/user`,
+  user folders (the home's `.config/systemd/user.control`,
+  `.config/systemd/user` and `.config/systemd/user.attached`,
+  `/run/user/UID/systemd/...` with its `user` and `user.attached`,
+  `/etc/xdg/systemd/user`, `/etc/systemd/user`, `/run/systemd/user`, the
+  home's `.local/share/systemd/user`, `/usr/local/share/systemd/user`,
   `/usr/share/systemd/user`, `/usr/local/lib/systemd/user` and
   `/usr/lib/systemd/user`). The unit read for a name is the first of it
   in that order, not every one (an instance without its own falls back to
-  its template); a mask (a link to `/dev/null`) hides the unit and its
-  drop-ins in every lower folder, while a mask in a lower folder hides
-  nothing. A drop-in file name in a higher folder hides the same name in
-  a lower one. The units the dependency folders (`*.wants`, `*.requires`,
-  `*.upholds`) link to are read too. A unit, dependency folder or drop-in
-  folder that is a link (into `current/etc/systemd`, say) is read where
-  it leads within the root. Each file is read once; a unit keeps the
-  manager that loads it wherever its file is, so its `EnvironmentFile=`
-  specifiers are that manager's: `%h` the user's home (`/root` for the
-  system manager), `%t` `/run/user/UID` (`/run`), `%%` a percent sign,
-  each replaced once.
+  its template); a mask (a link to `/dev/null`, or an empty unit file, as
+  `systemd.unit(5)` defines it) hides the unit and its drop-ins in every
+  lower folder, while a mask in a lower folder hides nothing. A drop-in
+  file name in a higher folder hides the same name in a lower one. An
+  entry of a dependency folder (`*.wants`, `*.requires`, `*.upholds`)
+  stands for the unit systemd loads by its name: the unit of that name in
+  the view (an `/etc` override, say), not the file the link leads to;
+  only a name the view does not hold is read where its link leads. A
+  unit, dependency folder or drop-in folder that is a link (into
+  `current/etc/systemd`, say) is read where it leads within the root.
+  Each file is read once; a unit keeps the manager that loads it wherever
+  its file is, so its `EnvironmentFile=` specifiers are that manager's:
+  `%h` the user's home (`/root` for the system manager), `%t`
+  `/run/user/UID` (`/run`), `%%` a percent sign, each replaced once. The
+  `EnvironmentFile=` lines of a unit and its drop-ins (in file-name
+  order) are evaluated in systemd's order before any file they name is
+  opened: an empty `EnvironmentFile=` drops every one before it.
 
   Each file is read in its own syntax. A shell profile is read as shell
   words: an assignment at the start of a command, the names `export`,
@@ -866,13 +873,15 @@ folder whose `share/` holds the lists (and, in `pre` and `post`, whose
   included) of a folder of enablement: `/etc/systemd/system`,
   `/etc/systemd/system.attached`, `/run/systemd/system` and
   `/run/systemd/system.attached` for the system manager; a home's
-  `.config/systemd/user`, `/etc/xdg/systemd/user`, `/etc/systemd/user`,
-  `/run/user/UID/systemd/user` and `/run/systemd/user` for a user's. An
-  instance is allowed by its own name or by its template's. An enabled
-  unit that is masked (its entry links to `/dev/null`, or the unit the
-  manager's view loads for its name, or its template's, is a mask, in a
-  folder of higher precedence, `/etc` over `/run` over `/usr/lib`) is not
-  enabled: it is the line `NOTE unit masked <path>`, which is not a hit.
+  `.config/systemd/user` and `.config/systemd/user.attached`,
+  `/etc/xdg/systemd/user`, `/etc/systemd/user`,
+  `/run/user/UID/systemd/user`, `/run/user/UID/systemd/user.attached` and
+  `/run/systemd/user` for a user's. An instance is allowed by its own name
+  or by its template's. An enabled unit that is masked (its entry links to
+  `/dev/null` or to an empty file, or the unit the manager's view loads
+  for its name, or its template's, is a mask, in a folder of higher
+  precedence, `/etc` over `/run` over `/usr/lib`) is not enabled: it is
+  the line `NOTE unit masked <path>`, which is not a hit.
 - `unit-link`: a unit link, or a linked dependency or drop-in folder,
   that loops (`loop`) or whose target climbs above the root (`escape`).
 - `package`: an installed package (the pacman database) named in

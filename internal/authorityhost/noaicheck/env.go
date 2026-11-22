@@ -95,7 +95,9 @@ const PathEnvFile = "env-file"
 // release followed within the root), every home's profiles, each file an
 // EnvironmentFile= line of those units names (its %h, %t and %% those of
 // the manager that loads the unit; a glob in its last component matched
-// within the root) and each file a profile sources (see sourcePaths: a
+// within the root; the lines of a unit and its drop-ins evaluated in
+// systemd's order first, an empty EnvironmentFile= dropping those before
+// it) and each file a profile sources (see sourcePaths: a
 // literal absolute path, or one that starts with $HOME, ~ or
 // $XDG_CONFIG_HOME, resolved in each home; a path the check cannot resolve
 // is the hit "incomplete env-source <file>", never passed over). A
@@ -114,21 +116,21 @@ func (c *Checker) CheckEnv() {
 	scanDir := func(rel string, syn envSyntax) {
 		c.walk(rel, 1, func(e *wentry) bool {
 			if e.isRegular() || e.isLink() {
-				s.scan(e.rel, syn, nil)
+				s.scan(e.rel, syn)
 			}
 			return false
 		})
 	}
 	for _, f := range envFiles {
-		s.scan(f.rel, f.syntax, nil)
+		s.scan(f.rel, f.syntax)
 	}
 	for _, d := range envDirs {
 		scanDir(d.rel, d.syntax)
 	}
-	c.scanUnitFiles(func(rel string, m manager) { s.scan(rel, syntaxSystemd, &m) })
+	c.scanUnitFiles(s.unit)
 	for _, home := range c.homeFolders() {
 		for _, f := range homeEnvFiles {
-			s.scan(path.Join(home, f.rel), f.syntax, nil)
+			s.scan(path.Join(home, f.rel), f.syntax)
 		}
 		for _, d := range homeEnvDirs {
 			scanDir(path.Join(home, d.rel), d.syntax)
@@ -161,61 +163,103 @@ func (s *envScan) drain() {
 	for len(s.queue) > 0 {
 		f := s.queue[0]
 		s.queue = s.queue[1:]
-		s.scan(f.rel, f.syntax, nil)
+		s.scan(f.rel, f.syntax)
 		s.c.t.b.release(queueCost(f.rel))
 	}
 }
 
-// scan reads the file rel of the root in the syntax syn; a unit with the
-// manager m that loads it.
-func (s *envScan) scan(rel string, syn envSyntax, m *manager) {
+// scan reads the file rel of the root in the syntax syn (see parse),
+// and queues the files its EnvironmentFile= lines name in the system
+// manager's context (a manager configuration file); once per file.
+func (s *envScan) scan(rel string, syn envSyntax) {
+	p, r := s.parse(rel, syn)
+	if r == nil || s.done[p] {
+		return
+	}
+	s.done[p] = true
+	s.envFiles(show(p), r.files, manager{})
+}
+
+// unit reads the files systemd reads for one unit in the manager m, in
+// its order (the unit file, then its drop-ins; see scanUnitFiles), once
+// per manager and set of files. Each file's names are reported as it is
+// read; then its EnvironmentFile= lines are evaluated in order before any
+// of the files they name is opened: an empty EnvironmentFile= drops every
+// one before it, in its own file or an earlier one, as systemd does, and
+// only those left are queued.
+func (s *envScan) unit(files []string, m manager) {
+	key := m.key() + "\x00" + strings.Join(files, "\x00")
+	if s.done[key] || !s.c.t.b.hold(int64(len(key))+32) {
+		return
+	}
+	s.done[key] = true
+	type ref struct {
+		envRef
+		unit string // the file that names it, as shown
+	}
+	var refs []ref
+	for _, f := range files {
+		p, r := s.parse(f, syntaxSystemd)
+		if r == nil {
+			continue
+		}
+		if r.reset {
+			refs = refs[:0]
+		}
+		for _, x := range r.files {
+			refs = append(refs, ref{x, show(p)})
+		}
+	}
+	for _, x := range refs {
+		s.envFiles(x.unit, []envRef{x.envRef}, m)
+	}
+}
+
+// parse resolves the file rel of the root and returns its resolved path
+// and what it sets in the syntax syn, read and parsed once per run: its
+// provider-key names are reported, its syntax trouble too, and the files
+// it sources are queued, all on the first read. A file that cannot be
+// read is reported and nil; so is a masked file (a link to /dev/null),
+// which is empty.
+func (s *envScan) parse(rel string, syn envSyntax) (string, *envParse) {
 	c := s.c
 	p, err := c.t.resolve(rel)
 	if err != nil {
 		c.unreadable(rel, err)
-		return
+		return "", nil
 	}
-	key := p
-	if m != nil {
-		key += "\x00" + m.key()
+	if p == "dev/null" {
+		return p, nil
 	}
-	if s.done[key] || p == "dev/null" { // once; a masked file is empty
-		return
+	if r := c.parsed[p]; r != nil {
+		return p, r
 	}
-	s.done[key] = true
-	r := c.parsed[p]
-	if r == nil {
-		_, data, err := c.t.readFile(p, maxEnvFile)
-		if err != nil {
-			c.unreadable(p, err)
-			return
+	_, data, err := c.t.readFile(p, maxEnvFile)
+	if err != nil {
+		c.unreadable(p, err)
+		return p, nil
+	}
+	r := &envParse{}
+	*r = parseEnv(syn, string(data), strings.HasSuffix(p, ".fish"))
+	if c.t.b.hold(int64(len(p)) + 64*int64(len(r.files)+len(r.sourced)+1)) {
+		c.parsed[p] = r
+	}
+	for _, n := range r.names {
+		c.hit(KindEnv, show(p), n)
+	}
+	if r.bad {
+		c.hit(KindIncomplete, PathEnvSyntax, show(p))
+	}
+	for _, w := range r.sourced {
+		paths, ok := c.sourcePaths(w, c.homeOf(p))
+		for _, f := range paths {
+			ok = c.envFileGlob(f, func(m string) { s.push(m, syntaxShell) }) && ok
 		}
-		r = &envParse{}
-		*r = parseEnv(syn, string(data), strings.HasSuffix(p, ".fish"))
-		if c.t.b.hold(int64(len(p)) + 64*int64(len(r.files)+len(r.sourced)+1)) {
-			c.parsed[p] = r
-		}
-		for _, n := range r.names {
-			c.hit(KindEnv, show(p), n)
-		}
-		if r.bad {
-			c.hit(KindIncomplete, PathEnvSyntax, show(p))
-		}
-		for _, w := range r.sourced {
-			paths, ok := c.sourcePaths(w, c.homeOf(p))
-			for _, f := range paths {
-				ok = c.envFileGlob(f, func(m string) { s.push(m, syntaxShell) }) && ok
-			}
-			if !ok {
-				c.hit(KindIncomplete, PathEnvSource, show(p))
-			}
+		if !ok {
+			c.hit(KindIncomplete, PathEnvSource, show(p))
 		}
 	}
-	mgr := manager{}
-	if m != nil {
-		mgr = *m
-	}
-	s.envFiles(show(p), r.files, mgr)
+	return p, r
 }
 
 // envFiles queues the files a unit's EnvironmentFile= lines name, in the

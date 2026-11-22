@@ -237,6 +237,100 @@ func TestCheckEnvUnitView(t *testing.T) {
 	}, (*Checker).CheckEnv)
 }
 
+// The unit view matches the manager's: the attached user folders are in
+// the user lookup path, a dependency link stands for the unit systemd
+// loads by its name (an /etc override of the name, not the file the link
+// leads to), an empty unit file is a mask, and an empty EnvironmentFile=
+// drops the files named before it, in the unit or an earlier drop-in,
+// before any is opened.
+func TestCheckEnvManagerView(t *testing.T) {
+	env := func(p, n string) Hit { return Hit{Kind: KindEnv, Path: p, Detail: n} }
+	inc := func(p, d string) Hit { return Hit{Kind: KindIncomplete, Path: p, Detail: d} }
+	runCases(t, []checkCase{
+		{"a home's attached user unit", func(f *fixture) {
+			f.file("home/user/.config/systemd/user.attached/a.service", "[Service]\nEnvironment=GEMINI_API_KEY=x\n")
+		}, []Hit{env("/home/user/.config/systemd/user.attached/a.service", "GEMINI_API_KEY")}},
+		{"a runtime attached user unit", func(f *fixture) {
+			f.file("run/user/1000/systemd/user.attached/a.service", "[Service]\nEnvironment=CODEX_HOME=x\n")
+		}, []Hit{env("/run/user/1000/systemd/user.attached/a.service", "CODEX_HOME")}},
+		{"a dependency link to a vendor file an /etc unit of its name overrides", func(f *fixture) {
+			f.file("usr/lib/systemd/system/app.service", "[Service]\nEnvironment=OPENAI_API_KEY=x\n")
+			f.file("etc/systemd/system/app.service", "[Service]\nEnvironment=LANG=C\n")
+			f.link("etc/systemd/system/multi-user.target.wants/app.service", "/usr/lib/systemd/system/app.service")
+		}, nil},
+		{"a dependency link to a file the view does not hold", func(f *fixture) {
+			f.file("srv/units/app.service", "[Service]\nEnvironment=OPENAI_API_KEY=x\n")
+			f.link("etc/systemd/system/multi-user.target.wants/app.service", "/srv/units/app.service")
+		}, []Hit{env("/srv/units/app.service", "OPENAI_API_KEY")}},
+		{"an empty unit file masks the unit and its drop-ins", func(f *fixture) {
+			f.file("usr/lib/systemd/system/app.service", "[Service]\nEnvironment=OPENAI_API_KEY=x\n")
+			f.file("usr/lib/systemd/system/app.service.d/x.conf", "[Service]\nEnvironment=CODEX_HOME=x\n")
+			f.file("etc/systemd/system/app.service", "")
+		}, nil},
+		{"an empty unit file linked to masks too", func(f *fixture) {
+			f.file("usr/lib/systemd/system/app.service.d/x.conf", "[Service]\nEnvironment=CODEX_HOME=x\n")
+			f.file("srv/empty.service", "")
+			f.link("etc/systemd/system/app.service", "/srv/empty.service")
+		}, nil},
+		{"an empty EnvironmentFile= in a drop-in drops the unit's", func(f *fixture) {
+			f.file("etc/systemd/system/app.service", "[Service]\nEnvironmentFile=/etc/app/missing\nEnvironmentFile=/etc/app/old.env\n")
+			f.file("etc/app/old.env", "OPENAI_API_KEY=x\n")
+			f.file("etc/systemd/system/app.service.d/override.conf", "[Service]\nEnvironmentFile=\nEnvironmentFile=-/etc/app/new.env\n")
+			f.file("etc/app/new.env", "CODEX_HOME=x\n")
+		}, []Hit{env("/etc/app/new.env", "CODEX_HOME")}},
+		{"drop-ins are evaluated in file-name order across folders", func(f *fixture) {
+			f.file("usr/lib/systemd/system/app.service", "[Service]\nExecStart=/usr/bin/app\n")
+			f.file("usr/lib/systemd/system/app.service.d/10-env.conf", "[Service]\nEnvironmentFile=/etc/app/gone\n")
+			f.file("etc/systemd/system/app.service.d/20-reset.conf", "[Service]\nEnvironmentFile=\n")
+			f.file("run/systemd/system/app.service.d/30-env.conf", "[Service]\nEnvironmentFile=/etc/app/later\n")
+		}, []Hit{inc(PathEnvFile, "/etc/app/later")}},
+		{"a reset applies only to what comes before it", func(f *fixture) {
+			f.file("etc/systemd/system/app.service", "[Service]\nEnvironmentFile=\nEnvironmentFile=/etc/app/missing\n")
+		}, []Hit{inc(PathEnvFile, "/etc/app/missing")}},
+	}, (*Checker).CheckEnv)
+}
+
+func TestCheckUnitsManagerView(t *testing.T) {
+	unit := func(p string) Hit { return Hit{Kind: KindUnit, Path: p} }
+	cases := []struct {
+		name  string
+		plant func(f *fixture)
+		want  []Hit
+		notes []string
+	}{
+		{"a home's attached enablement", func(f *fixture) {
+			f.link("home/user/.config/systemd/user.attached/default.target.wants/agent.service", "/x")
+		}, []Hit{unit("/home/user/.config/systemd/user.attached/default.target.wants/agent.service")}, nil},
+		{"a runtime attached user enablement", func(f *fixture) {
+			f.link("run/user/1000/systemd/user.attached/default.target.wants/agent.service", "/x")
+		}, []Hit{unit("/run/user/1000/systemd/user.attached/default.target.wants/agent.service")}, nil},
+		{"an empty unit file masks an enablement", func(f *fixture) {
+			f.file("etc/systemd/system/agent.service", "")
+			f.link("etc/systemd/system/multi-user.target.wants/agent.service", "/usr/lib/systemd/system/agent.service")
+		}, nil, []string{"unit masked /etc/systemd/system/multi-user.target.wants/agent.service"}},
+		{"an enablement linked to an empty file", func(f *fixture) {
+			f.file("srv/empty.service", "")
+			f.link("etc/systemd/system/multi-user.target.wants/agent.service", "/srv/empty.service")
+		}, nil, []string{"unit masked /etc/systemd/system/multi-user.target.wants/agent.service"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := cleanFixture(t)
+			mustRemoveAll(f, "etc/systemd/system/multi-user.target.wants")
+			tc.plant(f)
+			c := f.checker(testLists())
+			within(t, c.CheckUnits)
+			r := c.Report()
+			if !(len(r.Hits) == 0 && len(tc.want) == 0) && !reflect.DeepEqual(r.Hits, tc.want) {
+				t.Errorf("hits %v, want %v", r.Hits, tc.want)
+			}
+			if !(len(r.Notes) == 0 && len(tc.notes) == 0) && !reflect.DeepEqual(r.Notes, tc.notes) {
+				t.Errorf("notes %v, want %v", r.Notes, tc.notes)
+			}
+		})
+	}
+}
+
 // ownerUID is the user id the test's files are owned by.
 func ownerUID(t *testing.T) string {
 	return strconv.Itoa(os.Getuid())
