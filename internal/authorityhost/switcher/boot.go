@@ -91,6 +91,7 @@ func (s *Switcher) Boot(ctx context.Context) int {
 		}
 		defer lk.release()
 	}
+	s.guardJournal()
 	s.stopsOwed(ctx)
 	_, open, jerr := s.readJournal()
 	in, settling, there, ierr := s.readInhibit()

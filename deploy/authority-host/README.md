@@ -713,10 +713,13 @@ matters to the services.
 
 - The switch writes it at the start of every transaction: before the
   package step, or, without one, before the journal says `links`. Every
-  switch, rollback and `recover` that finds a journal whose file is gone
-  (removed by hand) writes it again first, before the journal is checked
-  against the host or anything of it runs, whether the journal is then
-  resumed or found stale (`--dry` writes nothing).
+  switch, rollback, `recover`, `boot`, `ack` and `inhibit-clear` that
+  finds a journal whose file is gone (removed by hand) writes it again
+  first, under the lock, before anything else: before the host's stop
+  list a journal in its stopping phase owes, before the journal is
+  checked against the host or anything of it runs, and before the
+  command refuses anything, whether the journal is then resumed, found
+  stale, refused for a discard or left open (`--dry` writes nothing).
 - It is removed only when the transaction ends healthy: a switch or
   rollback whose release passed its health check and its post-activation
   no-AI check (`ok`), or a going back whose release passed its reload, its
@@ -796,10 +799,10 @@ each write an atomic rename, synced):
 | Who | What it does to the file |
 | --- | --- |
 | A transaction's start | Writes it, before the journal is first written |
-| A switch, rollback or `recover` that finds a journal | Writes it back when it was removed by hand; writes the journal back from it when it holds one, keeping it |
+| Any command but `status` that finds a journal | Writes it back when it was removed by hand, before anything else (a switch, rollback or `recover` also writes the journal back from it when it holds one, keeping it) |
 | An end that is not healthy | Rewrites it with the outcome, then removes the journal |
 | A healthy end | Renames the journal over it, then removes it |
-| `recover --discard-journal` | Writes it when it is not there (or holds the journal), then sets the journal aside |
+| `recover --discard-journal` | Rewrites it as a plain record of the discard, whatever was there, then sets the journal aside |
 | `inhibit-clear` | Removes it on the owner's word; refused while a journal is there or it holds one |
 | `boot` | Writes its own record when it is not there (or is the record of a boot that did not finish), then removes that record once `current` qualified again with no journal open; leaves any other as found |
 | A failed `boot` | Owes the failure, then rewrites its own record with it |

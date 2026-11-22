@@ -307,6 +307,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	}
 	defer lk.release()
 	defer s.closeRoots()
+	s.guardJournal()
 	s.stopsOwed(ctx)
 	if blocked != nil {
 		return s.stopFirst(ctx, blocked, false)

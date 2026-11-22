@@ -222,6 +222,118 @@ func TestEveryCommandRestoresTheInhibitBesideAJournal(t *testing.T) {
 	}
 }
 
+// TestARefusedCommandRestoresTheInhibitBesideAJournal: a command that
+// finds a journal without decisions.inhibit (removed by hand) writes it
+// back before it does anything else, also when it then refuses: a
+// recover --discard-journal of a journal that matches the host or of
+// another transaction, an ack and an inhibit-clear, which are refused
+// while a transaction is open, and a boot whose policy cannot be used.
+// The journal stays as it was, and nothing is run.
+func TestARefusedCommandRestoresTheInhibitBesideAJournal(t *testing.T) {
+	clear := func(e *env) int {
+		code := e.switcher().InhibitClear(context.Background(), "looked")
+		e.last = e.out.String()
+		e.out.Reset()
+		return code
+	}
+	for _, tc := range []struct {
+		name string
+		run  func(e *env, j journal) int
+		want string
+	}{
+		{"a discard of a journal that matches the host", func(e *env, j journal) int {
+			return e.recover(RecoverOptions{DiscardJournal: j.Txn})
+		}, "matches the host"},
+		{"a discard of another transaction", func(e *env, j journal) int {
+			return e.recover(RecoverOptions{DiscardJournal: neverTxn})
+		}, "no journal of the transaction"},
+		{"an ack", func(e *env, j journal) int {
+			return e.ackTxns([]string{neverTxn}, "looked")
+		}, "still open"},
+		{"an inhibit-clear", func(e *env, j journal) int {
+			return clear(e)
+		}, "still open"},
+		{"a boot whose policy cannot be used", func(e *env, j journal) int {
+			e.write(filepath.Join(e.root, PolicyDir, PolicyName), "{", 0o644)
+			return e.boot()
+		}, "switch policy"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := activeOwn(t)
+			g := guard(e)
+			e.crashAt(CrashActivating, false, rel3)
+			j, _ := e.journal()
+			if err := os.Remove(e.inhibitPath()); err != nil {
+				t.Fatal(err)
+			}
+			e.runner.reset()
+			if code := tc.run(e, j); code != ExitFailed || !strings.Contains(e.last, tc.want) {
+				t.Fatalf("exit %d, want %d and %q\n%s", code, ExitFailed, tc.want, e.last)
+			}
+			in, ok := e.inhibited()
+			if !ok || in.Txn != j.Txn || in.Reason == bootReason {
+				t.Errorf("the command left the journal without the transaction's inhibit: %+v, %v", in, ok)
+			}
+			if got := g.decide(); got != "refused" {
+				t.Errorf("a decision is %s beside the open journal", got)
+			}
+			if len(e.runner.calls) != 0 {
+				t.Errorf("commands run: %v", e.runner.calls)
+			}
+			if got, ok := e.journal(); !ok || got.Phase != PhaseActivating {
+				t.Errorf("journal: %+v, %v", got, ok)
+			}
+		})
+	}
+}
+
+// TestTheStopsOwedRunWithTheInhibit: a journal left in its stopping phase
+// whose inhibit was removed by hand: every command writes the inhibit back
+// before it runs the host's stop list, a boot and a command that cannot use
+// the switch policy included, so that no stop command runs while decisions
+// are allowed.
+func TestTheStopsOwedRunWithTheInhibit(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(e *env) int
+	}{
+		{"boot", func(e *env) int { return e.boot() }},
+		{"a switch", func(e *env) int { return e.switchTo(rel3) }},
+		{"a recover", func(e *env) int { return e.recover(resumeOnly) }},
+		{"a switch without a usable policy", func(e *env) int {
+			e.write(filepath.Join(e.root, PolicyDir, PolicyName), "{", 0o644)
+			return e.switchTo(rel3)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := activeOwn(t)
+			e.keepOwed = true
+			e.runner.fail["health-probe"] = -1
+			e.runner.fail["health-old"] = -1
+			e.crashAt(CrashStopping, false, rel3)
+			j, ok := e.journal()
+			if !ok || j.Phase != PhaseStopping {
+				t.Fatalf("journal: %+v, %v", j, ok)
+			}
+			if err := os.Remove(e.inhibitPath()); err != nil {
+				t.Fatal(err)
+			}
+			e.runner.reset()
+			unguarded := e.guarded()
+			tc.run(e)
+			if e.runner.called("stop-all") == 0 {
+				t.Fatalf("the host's stop list did not run: %v", e.runner.calls)
+			}
+			if *unguarded != 0 {
+				t.Errorf("%d command(s) ran while decisions were allowed beside the stopping journal: %v", *unguarded, e.runner.calls)
+			}
+			if in, ok := e.inhibited(); !ok || in.Txn != j.Txn {
+				t.Errorf("inhibit: %+v, %v", in, ok)
+			}
+		})
+	}
+}
+
 // TestDiscardLeavesDecisionsInhibited: recover --discard-journal sets a
 // journal aside on the owner's word that it does not match the host; that
 // qualifies nothing, so it writes the inhibit first when it is not there

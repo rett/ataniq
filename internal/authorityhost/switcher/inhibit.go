@@ -34,10 +34,12 @@ import (
 // crash between the two leaves the inhibit holding a healthy journal in
 // phase done (see readInhibit): the next command writes the journal back
 // from it, the inhibit staying, and qualifies current again before it
-// settles; inhibit-clear and ack refuse it. Every command that finds a
-// journal without the inhibit (removed by hand) writes the inhibit back
-// first (see reconcile), and recover --discard-journal writes it before
-// the journal is set aside.
+// settles; inhibit-clear and ack refuse it. Every command that takes the
+// lock exclusively and finds a journal without the inhibit (removed by
+// hand) writes the inhibit back first, before it runs anything (the stops
+// a stopping journal owes included) and before it refuses anything (see
+// guardJournal), and recover --discard-journal writes its own record of
+// the discard before the journal is set aside.
 //
 // Why no service following the one-lookup contract can accept a decision
 // while the host is not qualified: its lookup is one instant, and these
@@ -45,11 +47,13 @@ import (
 // write an atomic rename, synced):
 //
 //	beginTxn          inhibit written; then the journal
-//	reconcile         inhibit written back when a journal is there without it;
-//	                  a journal held by the inhibit is written back, the inhibit stays
+//	guardJournal      inhibit written back when a journal is there without it,
+//	                  first in every command that takes the lock exclusively
+//	reconcile         the same; a journal held by the inhibit is written back,
+//	                  the inhibit stays
 //	an unhealthy end  inhibit rewritten with the outcome; then the journal removed
 //	a healthy end     journal renamed over the inhibit; then the inhibit removed
-//	discard           inhibit written when it is not there or holds a journal;
+//	discard           inhibit rewritten as a plain record of the discard;
 //	                  then the journal set aside
 //	inhibit-clear     inhibit removed on the owner's word; refused while a
 //	                  journal is there or the inhibit holds one
@@ -166,6 +170,36 @@ func (s *Switcher) ensureInhibit(t *txn) error {
 	return nil
 }
 
+// guardJournal is the first thing every command that takes the lock
+// exclusively does, before it runs anything (the host's stop list owed by
+// a stopping journal included) and before it can refuse: when a journal is
+// open and decisions.inhibit is not there (removed by hand) or cannot be
+// read, the inhibit is written back for that transaction (as ensureInhibit
+// does), so that a journal is never left without it, whatever the command
+// then does or refuses. A dry run writes nothing; a journal that cannot be
+// read is left to the command, which refuses it (boot guards it itself,
+// see bootInhibit). A failure is said, and the command goes on: the stops
+// it owes still run, and its reconcile refuses to resume the journal
+// without the inhibit.
+func (s *Switcher) guardJournal() {
+	if s.cfg.Dry || s.stateRoot == nil || s.lockFile == nil {
+		return
+	}
+	j, open, err := s.readJournal()
+	if err != nil || !open {
+		return
+	}
+	if _, _, there, err := s.readInhibit(); err == nil && there {
+		return
+	}
+	t := &txn{j: j}
+	if err := s.setInhibit(t, fmt.Sprintf("the %s %s was interrupted and its journal is still open", t.kind(), j.ID)); err != nil {
+		s.printf("reconcile: FAILED: %s; %s is there without it, and decisions are NOT inhibited", describe(err), JournalFile)
+		return
+	}
+	s.printf("reconcile: %s was not there beside the journal of the %s %s (transaction %s); it is written back before anything else", InhibitFile, t.kind(), j.ID, j.Txn)
+}
+
 // healthy reports whether the transaction t ended healthy: its release
 // passed its health check and its post-activation no-AI check (ok), or it
 // went back to the earlier release, whose reload, health check and
@@ -231,6 +265,7 @@ func (s *Switcher) InhibitClear(ctx context.Context, words string) int {
 		s.printf("inhibit-clear: no state folder or lock file; nothing to clear")
 		return ExitFailed
 	}
+	s.guardJournal()
 	if j, ok, err := s.readJournal(); err != nil || ok {
 		if err == nil {
 			err = failf(CodeStateInvalid, "the %s %s (transaction %s) is still open in phase %s; run any command to settle it first", (&txn{j: j}).kind(), j.ID, j.Txn, j.Phase)
