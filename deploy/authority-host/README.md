@@ -894,7 +894,10 @@ Before it, a requalification ran only while a journal was open.
   owed (boot requalification of ID, transaction RUN)` with the `ack` that
   takes it back. Every switch and rollback is refused while it is owed,
   and the inhibit stays after the `ack` until a switch ends healthy or the
-  owner runs `inhibit-clear`. `boot` writes nothing to `deploy.json`.
+  owner runs `inhibit-clear`. `boot`'s own qualification writes nothing
+  to `deploy.json`; only when it settles a transaction left open (below)
+  does that settlement record the transaction's outcome there, as it does
+  in any command.
 - An inhibit that is there when `boot` starts stays exactly as found,
   whoever wrote it: a transaction (its outcome, a failed requalification,
   a journal it holds), an earlier failed `boot`, one left for the owner's
@@ -924,9 +927,21 @@ Before it, a requalification ran only while a journal was open.
   start. A failure is written into the record before the stop list runs
   and before it is owed, so a boot that died after that leaves a failure
   record, which no later boot takes over, also once its outcome is
-  acknowledged; a crash before the failure is owed loses only the
-  outcome owed (`status` still shows the failure in the inhibit), never
-  the inhibit.
+  acknowledged; a crash or a kill at the unit's time limit after that
+  never loses the inhibit, but it loses more than the outcome owed
+  (which `status` then only shows in the inhibit). When it comes before
+  or during the host's stop list (a `systemctl stop` that hangs until the
+  time limit, for example), that stop list did not run to its end, and
+  no later command runs it again: the stop list is not resumed. The
+  services the reload started are units of their own and outlive the boot
+  unit, so they may still be running; while the inhibit is there they
+  refuse every decision. Look at them by hand from the root session:
+  `ah-switch status` shows the failure record, `systemctl status UNIT`
+  (or `systemctl list-units`) shows each decision service the stop
+  commands of `/etc/authority-host/stop.list` name, and running those
+  stop commands by hand (`systemctl stop UNIT`) stops them. A later
+  switch that ends healthy lifts the inhibit, as does `inhibit-clear`
+  after you looked at the host.
 - A host where nothing was ever deployed is refused with exit 4: no
   `current`, no `deploy.json`, no journal (open in `txn.json` or held by
   the inhibit) and nothing in `/opt/authority-host/releases` (a release
@@ -971,9 +986,18 @@ stays active (`RemainAfterExit=yes`) and runs
 `caddy.service` (what the health check and the no-AI check need), with a
 time limit of 15 minutes. It fails closed: no condition skips it, no exit
 status but 0 counts as success, nothing restarts it, and a failure (exit
-1, or killed at its time limit) leaves the inhibit `boot` wrote; exit 4,
-on a host where nothing was ever deployed, writes nothing (the guard then
-answers by the state folder alone, above). No
+1, or killed at its time limit) after `boot` wrote the inhibit leaves it.
+Not every exit other than 0 leaves an inhibit: exit 4, on a host where
+nothing was ever deployed, writes nothing (the guard then answers by the
+state folder alone, above); exit 3, the lock held by another command (a
+switch, whose transaction writes its own inhibit, or `status`), exit 2,
+and exit 1 with the state folder missing (`nothing is run or changed`)
+write nothing; and a kill or a crash before `boot`'s first write (while
+it reads the policy or takes the lock) leaves none it wrote. In each of
+those cases `boot` ran nothing, so it started no decision-capable
+service: those start only through the release's reload list, which `boot`
+runs after the inhibit is written (below); whatever inhibit was there
+before stays. No
 script installs or enables it (`host-bootstrap.sh` and `deploy.sh` do
 not touch it), and it changes nothing on a host until the owner does,
 after a first switch ended healthy (on a host where nothing was ever

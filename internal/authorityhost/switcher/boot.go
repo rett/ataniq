@@ -51,7 +51,9 @@ const bootReason = "boot: decisions are refused from the boot until ah-switch bo
 // cannot be read strictly): boot lifts nothing then. It settles an open
 // journal through reconcile, as every command does (that transaction
 // lifts the inhibit by its own rules), and prints what is owed. It never
-// acknowledges anything and never writes deploy.json. Only a host where
+// acknowledges anything, and its own qualification never writes
+// deploy.json (the settlement of an open transaction records that
+// transaction there, as in any command). Only a host where
 // nothing was ever deployed (no current release, and none of what
 // bootDeployed looks for) is refused with ExitNoRelease, nothing created or
 // changed; a deployed host whose current is missing inhibits decisions
@@ -360,7 +362,11 @@ func (s *Switcher) bootSettle(ctx context.Context, blocked error) int {
 // settling transaction's failure (the host's stop list runs, see
 // requalifyFailed), then owed with requalify_failed. A crash after the
 // rewrite never loses the inhibit or its failure, and an ack of the
-// outcome owed leaves a record no boot lifts. When the rewrite fails, the
+// outcome owed leaves a record no boot lifts; one before or during the
+// stop list (a kill at the unit's time limit included) loses that stop
+// list too, which nothing resumes: the services the reload started may
+// still run, refusing decisions while the inhibit is there, until the
+// owner stops them by hand or a switch ends healthy. When the rewrite fails, the
 // run's own record stays and the failure is still owed, which keeps a
 // later boot from taking that record over; the ack of that outcome
 // rewrites the record with the failure before anything else, and refuses

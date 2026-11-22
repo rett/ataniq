@@ -139,7 +139,13 @@
   inhibit it finds (a transaction's, a held journal, a failure, one left
   for `inhibit-clear`, one it cannot read strictly) stays as found while
   it settles an open journal as any command does, and it never
-  acknowledges anything or writes `deploy.json`; a host with nothing
+  acknowledges anything, and its own qualification writes nothing to
+  `deploy.json` (settling an open transaction records that transaction
+  there, as any command does); a crash or a kill at its time limit during
+  the stop list leaves that list unfinished, not resumed, for the owner
+  to finish by hand while decisions stay refused; exits 2, 3 and 4, and a
+  kill before its first write, leave no inhibit of its own (it ran
+  nothing then); a host with nothing
   deployed (no `current`, release folder, `deploy.json`, journal or
   inhibit it cannot read, which may hold one) is refused with exit 4 and
   nothing changed, an outcome owed beside such an inhibit is printed

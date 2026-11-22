@@ -8,10 +8,22 @@
 #
 # It fails closed. ah-switch boot writes decisions.inhibit before it runs
 # anything and removes only its own record, once current passed its reload
-# list, health check and no-AI check; every other end leaves the inhibit,
-# a failure of this unit included (an exit status other than 0, or killed
-# at its time limit). No condition skips it, no other exit status counts
-# as success, and nothing restarts it.
+# list, health check and no-AI check; every other end after that write
+# leaves the inhibit, a failure of this unit included (exit 1, or killed
+# at its time limit). Not every exit other than 0 leaves one: exit 4 (a
+# host where nothing was ever deployed), exit 3 (the lock held by another
+# command), exit 2, exit 1 with the state folder missing, and a kill
+# before the first write leave none written by boot; boot then ran
+# nothing, so it started no decision-capable service. No condition skips
+# it, no other exit status counts as success, and nothing restarts it.
+#
+# A kill at the time limit (or a crash) after the failure is written and
+# before or during the host's stop list leaves that stop list unfinished,
+# and nothing runs it again: services the reload started may still run
+# (refusing decisions while the inhibit is there). The owner looks at them
+# (ah-switch status, systemctl status UNIT for each unit stop.list names)
+# and runs the stop commands by hand; a later healthy switch lifts the
+# inhibit (see the README, "Boot requalification").
 #
 # Only the release's reload list, which ah-switch boot runs once the
 # inhibit is written, starts a decision-capable service: no .wants or
