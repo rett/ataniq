@@ -190,7 +190,7 @@ func TestCrashAndResume(t *testing.T) {
 			for k, v := range tc.fail {
 				e.runner.fail[k] = v
 			}
-			if code := e.recover(RecoverOptions{SetCounter: true, Counter: 9}); code != ExitFailed {
+			if code := e.recover(resumeOnly); code != ExitFailed {
 				t.Fatalf("recover over a present counter: exit %d", code)
 			}
 			if !strings.Contains(e.last, "reconcile: an interrupted switch to "+rel3+" was found in phase "+tc.phase) {
@@ -250,7 +250,7 @@ func TestRetryReportsSettled(t *testing.T) {
 	t.Run("settled by another command", func(t *testing.T) {
 		e := active(t)
 		e.crashAt(CrashHealth, true, "previous")
-		if code := e.recover(RecoverOptions{SetCounter: true, Counter: 9}); code != ExitFailed {
+		if code := e.recover(resumeOnly); code != ExitFailed {
 			t.Fatalf("recover: exit %d", code)
 		}
 		e.links(rel1, rel2)
@@ -282,8 +282,8 @@ func TestRetryReportsSettled(t *testing.T) {
 	t.Run("another request is not a retry", func(t *testing.T) {
 		e := active(t)
 		e.release(rel3, "2026-11-01")
-		e.release("0004-ddddddd", "2026-11-01")
 		e.crashAt(CrashCurrent, false, rel3)
+		e.release("0004-ddddddd", "2026-11-01")
 		if code := e.switchTo("0004-ddddddd"); code != ExitOK {
 			t.Fatalf("exit %d", code)
 		}
@@ -390,7 +390,7 @@ func TestReconcileRecord(t *testing.T) {
 		e := active(t)
 		e.release(rel3, "2026-11-01")
 		e.crashAt(CrashPrevious, false, rel3)
-		if code := e.recover(RecoverOptions{SetCounter: true, Counter: 9}); code != ExitFailed {
+		if code := e.recover(resumeOnly); code != ExitFailed {
 			t.Fatalf("recover with a counter present: exit %d", code)
 		}
 		rec := e.record()
@@ -403,7 +403,7 @@ func TestReconcileRecord(t *testing.T) {
 		e.release(rel3, "2026-11-01")
 		e.crashAt(CrashActivating, false, rel3)
 		e.runner.reset()
-		if code := e.recover(RecoverOptions{SetCounter: true, Counter: 9}); code != ExitFailed {
+		if code := e.recover(resumeOnly); code != ExitFailed {
 			t.Fatalf("recover with a counter present: exit %d", code)
 		}
 		rec := e.record()
@@ -484,13 +484,16 @@ func TestCrashDuringRollback(t *testing.T) {
 // highest-counter is refused, never taken as 0, until recover writes it.
 func TestMissingCounterIsRecovery(t *testing.T) {
 	e := active(t)
-	e.release(rel3, "2026-11-01")
 	os.Remove(filepath.Join(e.root, StateDir, HighestFile))
+	before := e.deployJSON()
 	if code := e.switchTo(rel1); code != ExitFailed {
 		t.Fatalf("exit %d", code)
 	}
-	if rec := e.record(); rec.Error != CodeCounterMissing || !strings.Contains(rec.Detail, "ah-switch recover --counter N") {
-		t.Errorf("record: %+v", rec)
+	if !strings.Contains(e.last, "counter-missing") || !strings.Contains(e.last, "ah-switch recover --counter N") {
+		t.Errorf("output:\n%s", e.last)
+	}
+	if e.deployJSON() != before {
+		t.Errorf("deploy.json was recorded over")
 	}
 	if code := e.rollBack("previous"); code != ExitFailed {
 		t.Fatalf("rollback: exit %d", code)
@@ -508,6 +511,7 @@ func TestMissingCounterIsRecovery(t *testing.T) {
 	if code := counter(5); code != ExitFailed {
 		t.Fatalf("recover over a present counter: exit %d", code)
 	}
+	e.release(rel3, "2026-11-01")
 	if code := e.switchTo(rel3); code != ExitOK {
 		t.Fatalf("switch after recover: exit %d", code)
 	}
@@ -544,7 +548,7 @@ func TestCrashInPackageStep(t *testing.T) {
 			if got := e.highest(); got != "2" {
 				t.Errorf("highest %q: the counter is written with the links", got)
 			}
-			if code := e.recover(RecoverOptions{SetCounter: true, Counter: 9}); code != ExitFailed {
+			if code := e.recover(resumeOnly); code != ExitFailed {
 				t.Fatalf("recover: exit %d", code)
 			}
 			rec := e.record()

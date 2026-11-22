@@ -24,12 +24,13 @@ func activeOwn(t *testing.T) *env {
 	t.Helper()
 	e := newEnv(t)
 	e.release(rel1, "s")
+	if code := e.switchTo(rel1); code != ExitOK {
+		t.Fatalf("switch to %s: exit %d", rel1, code)
+	}
 	e.release(rel2, "s")
 	e.withLists(rel2, "reload-old", "health-old", "stop-old")
-	for _, id := range []string{rel1, rel2} {
-		if code := e.switchTo(id); code != ExitOK {
-			t.Fatalf("switch to %s: exit %d", id, code)
-		}
+	if code := e.switchTo(rel2); code != ExitOK {
+		t.Fatalf("switch to %s: exit %d", rel2, code)
 	}
 	e.release(rel3, "s")
 	e.runner.reset()
@@ -108,7 +109,7 @@ func TestUnverifiableCandidateStillStopped(t *testing.T) {
 	makeWritable(dir)
 	os.WriteFile(filepath.Join(dir, "bin/app"), []byte("changed\n"), 0o755)
 	e.runner.reset()
-	if code := e.recover(RecoverOptions{SetCounter: true, Counter: 9}); code != ExitFailed {
+	if code := e.recover(resumeOnly); code != ExitFailed {
 		t.Fatalf("exit %d", code)
 	}
 	e.ran(map[string]int{"stop-all": 1, "stop-app": 0, "reload-units": 0})
@@ -188,12 +189,12 @@ func TestStopFailureStaysStopping(t *testing.T) {
 	dir := e.release(rel1, "s")
 	e.write(filepath.Join(dir, StopList), "stop-seat\nstop-notify\n", 0o644)
 	e.sums(dir)
-	e.release(rel2, "s")
 	e.runner.fail["health-probe"] = -1
 	e.runner.fail["stop-seat"] = -1
 	if code := e.switchTo(rel1); code != ExitFailed {
 		t.Fatalf("exit %d", code)
 	}
+	e.release(rel2, "s")
 	if strings.Contains(e.last, "decision services are stopped") {
 		t.Errorf("said stopped although a stop failed:\n%s", e.last)
 	}
@@ -277,8 +278,8 @@ func TestRecoverServicesStopped(t *testing.T) {
 // resumed it does nothing else.
 func TestReconcileFailedRecovery(t *testing.T) {
 	e := activeOwn(t)
-	e.release("0004-ddddddd", "s")
 	e.crashAt(CrashActivating, false, rel3)
+	e.release("0004-ddddddd", "s")
 	e.runner.reset()
 	e.runner.fail["health-probe"] = -1
 	e.runner.fail["health-old"] = -1

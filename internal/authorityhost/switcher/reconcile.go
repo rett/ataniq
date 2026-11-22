@@ -107,11 +107,10 @@ type RecoverOptions struct {
 // Recover runs ah-switch recover. Each form takes the lock and checks the
 // state as a switch does.
 //
-//   - --counter N writes highest-counter as N when it is missing or does not
-//     hold a counter, on a host whose current link shows that releases were
-//     switched to: the switch refuses to guess it. N must be at least the
-//     counter of the releases current and previous point at. A journal is
-//     settled first.
+//   - --counter N writes highest-counter as N when it is missing, does not
+//     hold a counter, or holds less than the host shows it used (see
+//     counterEvidence): the switch refuses to guess it. N must be at least
+//     all of that evidence. A journal is settled first.
 //   - --services-stopped settles a transaction that stays in its stopping
 //     phase because a stop command failed: the owner states that the
 //     decision services are stopped, and that statement is recorded, with
@@ -173,28 +172,17 @@ func (s *Switcher) Recover(ctx context.Context, o RecoverOptions) int {
 	if o.SetPackageState {
 		return s.recoverPackageState(o.PackageState)
 	}
-	if n, present, err := s.readHighest(); err == nil && present {
+	ev, err := s.counterEvidence("", true)
+	if err != nil {
+		s.printf("recover: FAILED: %s", describe(evidenceError(err)))
+		return ExitFailed
+	}
+	if n, present, err := s.readHighest(); err == nil && present && n >= ev.counter {
 		s.printf("recover: %s holds %d; nothing to recover", HighestFile, n)
 		return ExitFailed
 	}
-	least := uint64(0)
-	for _, name := range []string{"current", "previous"} {
-		t, ok, err := readLink(s.baseRoot, name)
-		if err != nil {
-			s.printf("recover: FAILED: %s: %s", name, describe(err))
-			return ExitFailed
-		}
-		if ok {
-			id, err := s.targetID(t)
-			if err != nil {
-				s.printf("recover: FAILED: %s: %s", name, describe(err))
-				return ExitFailed
-			}
-			least = max(least, id.Counter)
-		}
-	}
-	if o.Counter < least {
-		s.printf("recover: FAILED: --counter %d is below %d, the counter of a release this host already used", o.Counter, least)
+	if o.Counter < ev.counter {
+		s.printf("recover: FAILED: --counter %d is below %d, the counter of %s", o.Counter, ev.counter, ev.source)
 		return ExitFailed
 	}
 	if s.cfg.Dry {

@@ -20,11 +20,13 @@ const (
 func active(t *testing.T) *env {
 	t.Helper()
 	e := newEnv(t)
+	// Each release is put on the host when it is switched to: a release
+	// folder of a higher counter is evidence that the counter was used.
 	e.release(rel1, "2026-11-01")
-	e.release(rel2, "2026-11-01")
 	if code := e.switchTo(rel1); code != ExitOK {
 		t.Fatalf("switch to %s: exit %d", rel1, code)
 	}
+	e.release(rel2, "2026-11-01")
 	if code := e.switchTo(rel2); code != ExitOK {
 		t.Fatalf("switch to %s: exit %d", rel2, code)
 	}
@@ -48,10 +50,10 @@ func (e *env) unchanged(want, step string) {
 func TestCleanSwitch(t *testing.T) {
 	e := newEnv(t)
 	e.release(rel1, "2026-11-01")
-	e.release(rel2, "2026-11-01")
 	if code := e.switchTo(rel1); code != ExitOK {
 		t.Fatalf("first switch: exit %d", code)
 	}
+	e.release(rel2, "2026-11-01")
 	if got := e.link("current"); got != "releases/"+rel1 {
 		t.Fatalf("current -> %q", got)
 	}
@@ -109,6 +111,7 @@ func TestDeployRecord(t *testing.T) {
 		Result:          ResultOK,
 		Check:           CheckPassed,
 		PackageSnapshot: "2026-11-01",
+		CounterUsed:     true,
 	}
 	if rec != want {
 		t.Errorf("deploy.json:\n%+v\nwant\n%+v", rec, want)
@@ -117,7 +120,7 @@ func TestDeployRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"id", "previous_id", "current_id", "counter", "mode", "trust", "rollback", "time", "result", "check", "failed_step", "error", "detail", "package_snapshot", "restored_health", "services_stopped", "txn", "requested", "pending_report"} {
+	for _, key := range []string{"id", "previous_id", "current_id", "counter", "mode", "trust", "rollback", "time", "result", "check", "failed_step", "error", "detail", "package_snapshot", "restored_health", "services_stopped", "counter_used", "txn", "requested", "pending_report", "package_state"} {
 		if !strings.Contains(string(data), `"`+key+`":`) {
 			t.Errorf("deploy.json has no %s:\n%s", key, data)
 		}
@@ -309,7 +312,7 @@ func TestLowerCounterRefused(t *testing.T) {
 				t.Fatalf("exit %d", code)
 			}
 			e.unchanged("releases/"+rel2, "counter")
-			if !strings.Contains(e.record().Detail, "not above the highest ever activated, 2") {
+			if !strings.Contains(e.record().Detail, "not above the highest ever attempted, 2") {
 				t.Errorf("error: %s: %s", e.record().Error, e.record().Detail)
 			}
 			if len(e.runner.calls) != 0 {
@@ -323,10 +326,13 @@ func TestBadHighestCounterRefused(t *testing.T) {
 	e := active(t)
 	e.release(rel3, "2026-11-01")
 	e.write(filepath.Join(e.root, StateDir, HighestFile), "seven\n", 0o644)
+	before := e.deployJSON()
 	if code := e.switchTo(rel3); code != ExitFailed {
 		t.Fatalf("exit %d", code)
 	}
-	e.unchanged("releases/"+rel2, "counter")
+	if !strings.Contains(e.last, "counter-invalid") || e.deployJSON() != before || e.link("current") != "releases/"+rel2 {
+		t.Errorf("output:\n%s", e.last)
+	}
 }
 
 func TestRollbackToPrevious(t *testing.T) {
@@ -858,8 +864,8 @@ func TestStatus(t *testing.T) {
 		t.Errorf("status of an empty root:\n%s", got)
 	}
 	e.release(rel1, "s")
-	e.release(rel2, "s")
 	e.switchTo(rel1)
+	e.release(rel2, "s")
 	e.switchTo(rel2)
 	got := e.status()
 	for _, want := range []string{"current: " + rel2, "previous: " + rel1, "highest counter: 2", "last switch: switch to " + rel2 + ": ok", "no-AI check: passed"} {
@@ -962,8 +968,8 @@ func TestBadCounterNotEchoed(t *testing.T) {
 	if strings.Contains(e.last, "token-of") || strings.Contains(e.deployJSON(), "token-of") {
 		t.Errorf("the counter text was echoed:\n%s\n%s", e.last, e.deployJSON())
 	}
-	if rec := e.record(); rec.Error != CodeCounterInvalid {
-		t.Errorf("record: %+v", rec)
+	if !strings.Contains(e.last, "counter-invalid") {
+		t.Errorf("output:\n%s", e.last)
 	}
 }
 
@@ -1071,8 +1077,8 @@ func TestStateFilesNotFollowed(t *testing.T) {
 		if code := e.switchTo(rel3); code != ExitFailed {
 			t.Fatalf("exit %d", code)
 		}
-		if rec := e.record(); rec.FailedStep != "counter" || rec.Error != CodeCounterInvalid {
-			t.Errorf("record: %+v", rec)
+		if !strings.Contains(e.last, "counter-invalid") || e.link("current") != "releases/"+rel2 {
+			t.Errorf("output:\n%s", e.last)
 		}
 	})
 	t.Run("lock a link", func(t *testing.T) {

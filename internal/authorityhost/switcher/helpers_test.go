@@ -216,6 +216,11 @@ func (e *env) rollBack(which string) int {
 	return code
 }
 
+// resumeOnly is a recover that resumes a journal and then changes nothing:
+// its snapshot is never the end of a package step, so it is refused once the
+// journal is settled.
+var resumeOnly = RecoverOptions{SetPackageState: true, PackageState: "no-such-snapshot"}
+
 // recover runs recover and returns its exit code; its output is in last.
 func (e *env) recover(o RecoverOptions) int {
 	e.t.Helper()

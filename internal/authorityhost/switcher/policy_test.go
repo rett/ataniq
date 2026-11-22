@@ -94,11 +94,9 @@ func TestSignedPolicy(t *testing.T) {
 func TestRollbackFollowsPolicy(t *testing.T) {
 	e := newEnv(t)
 	e.policy(signedPolicy)
-	for _, id := range []string{rel1, rel2} {
-		e.signRelease(e.release(id, "s"))
-	}
 	good := &fakeVerifier{}
 	for _, id := range []string{rel1, rel2} {
+		e.signRelease(e.release(id, "s"))
 		if code := e.switchTo(id, verifier(good)); code != ExitOK {
 			t.Fatalf("switch to %s: exit %d", id, code)
 		}
@@ -249,12 +247,11 @@ func TestResumeKeepsTrust(t *testing.T) {
 			e.policy(`{"min_mode": "manual", "allowed_signers": "/etc/authority-host/allowed_signers", "principal": "release@example.invalid"}`)
 			signed := func(c *Config) { c.Mode = ModeSigned }
 			ok := &fakeVerifier{}
-			for _, id := range []string{rel1, rel2} {
-				e.signRelease(e.release(id, "s"))
-			}
+			e.signRelease(e.release(rel1, "s"))
 			if code := e.switchTo(rel1, verifier(ok), signed); code != ExitOK {
 				t.Fatalf("exit %d", code)
 			}
+			e.signRelease(e.release(rel2, "s"))
 			s := e.switcher(verifier(ok), signed)
 			s.crashAt = func(p string) error {
 				if p == CrashActivating {
@@ -276,7 +273,7 @@ func TestResumeKeepsTrust(t *testing.T) {
 				v.err = errors.New("not signed by the principal")
 			}
 			e.runner.reset()
-			code := e.switcher(verifier(v)).Recover(t.Context(), RecoverOptions{SetCounter: true, Counter: 9})
+			code := e.switcher(verifier(v)).Recover(t.Context(), resumeOnly)
 			out := e.out.String()
 			e.out.Reset()
 			if code != ExitFailed {

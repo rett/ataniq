@@ -448,6 +448,7 @@ func (s *Switcher) txnRecord(t *txn, cur string, curOK bool) (Record, error) {
 		Requested:       t.j.Requested,
 		PendingReport:   t.resumed,
 		ServicesStopped: t.j.Stopped,
+		CounterUsed:     t.j.CounterUsed,
 	}
 	if t.j.OldCurrent != "" {
 		id, _ := s.targetID(t.j.OldCurrent)

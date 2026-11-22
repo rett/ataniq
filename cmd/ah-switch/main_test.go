@@ -133,7 +133,6 @@ func TestSwitchRollbackAndStatus(t *testing.T) {
 	write(t, health, "#!/bin/sh\nexit 0\n", 0o755)
 	hostStops(t, root, health)
 	release(t, root, "0001-aaaaaaa", 1, health)
-	release(t, root, "0002-bbbbbbb", 2, health)
 
 	code, out, errOut := call("--root", root, "--dry", "0001-aaaaaaa")
 	if code != switcher.ExitOK || !strings.Contains(out, "would point current at releases/0001-aaaaaaa") {
@@ -144,13 +143,16 @@ func TestSwitchRollbackAndStatus(t *testing.T) {
 	}
 	fakeNFT(t)
 	for _, id := range []string{"0001-aaaaaaa", "0002-bbbbbbb"} {
+		if id == "0002-bbbbbbb" {
+			release(t, root, id, 2, health)
+		}
 		code, out, errOut := call(id, "--root", root, "--allow-exec")
 		if code != switcher.ExitOK {
 			t.Fatalf("switch to %s: exit %d\n%s%s", id, code, out, errOut)
 		}
 	}
 	code, out, _ = call("--root", root, "--allow-exec", "0001-aaaaaaa")
-	if code != switcher.ExitFailed || !strings.Contains(out, "not above the highest ever activated") {
+	if code != switcher.ExitFailed || !strings.Contains(out, "not above the highest ever attempted") {
 		t.Errorf("lower counter: exit %d\n%s", code, out)
 	}
 	code, out, _ = call("--root", root, "--allow-exec", "--rollback-to", "previous")
@@ -198,6 +200,15 @@ func TestImportFrom(t *testing.T) {
 	}
 }
 
+func makeWritableAll(root string) {
+	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			os.Chmod(path, 0o755)
+		}
+		return nil
+	})
+}
+
 // TestRecover writes a missing highest-counter back.
 func TestRecover(t *testing.T) {
 	root := t.TempDir()
@@ -205,18 +216,25 @@ func TestRecover(t *testing.T) {
 	write(t, health, "#!/bin/sh\nexit 0\n", 0o755)
 	hostStops(t, root, health)
 	release(t, root, "0001-aaaaaaa", 1, health)
-	release(t, root, "0002-bbbbbbb", 2, health)
 	fakeNFT(t)
 	if code, out, errOut := call("--root", root, "--allow-exec", "0001-aaaaaaa"); code != switcher.ExitOK {
 		t.Fatalf("switch: exit %d\n%s%s", code, out, errOut)
 	}
+	release(t, root, "0002-bbbbbbb", 2, health)
 	os.Remove(filepath.Join(root, switcher.StateDir, switcher.HighestFile))
 	if code, out, _ := call("--root", root, "--allow-exec", "0002-bbbbbbb"); code != switcher.ExitFailed || !strings.Contains(out, "recover --counter N") {
 		t.Fatalf("switch without a counter: exit %d\n%s", code, out)
 	}
+	// releases/0002-bbbbbbb is there: the counter must be at least 2.
+	if code, out, _ := call("--root", root, "--allow-exec", "recover", "--counter", "1"); code != switcher.ExitFailed || !strings.Contains(out, "below 2") {
+		t.Fatalf("recover below the evidence: exit %d\n%s", code, out)
+	}
+	makeWritableAll(root)
+	os.RemoveAll(filepath.Join(root, switcher.BaseDir, "releases", "0002-bbbbbbb"))
 	if code, out, errOut := call("--root", root, "--allow-exec", "recover", "--counter", "1"); code != switcher.ExitOK {
 		t.Fatalf("recover: exit %d\n%s%s", code, out, errOut)
 	}
+	release(t, root, "0002-bbbbbbb", 2, health)
 	if code, out, errOut := call("--root", root, "--allow-exec", "0002-bbbbbbb"); code != switcher.ExitOK {
 		t.Fatalf("switch after recover: exit %d\n%s%s", code, out, errOut)
 	}

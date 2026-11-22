@@ -6,7 +6,9 @@
   `SHA256SUMS` over every file and, when the root-owned switch policy
   `/etc/authority-host/switch-policy.json` asks for it, its SSH signature by
   the policy's principal; refuses a counter not above the highest ever
-  attempted; runs the release's package step (before the check; a step
+  attempted or any counter the host shows (its links, its last recorded
+  switch, its release folders), and a `highest-counter` below the counters
+  used, before recording anything; runs the release's package step (before the check; a step
   that fails or is interrupted leaves the package state unknown, refusing
   further switches until the owner states the snapshot or the step runs
   again to the end; the step holds the switch lock and dies with it), its no-AI

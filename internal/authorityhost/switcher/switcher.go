@@ -295,6 +295,13 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	if code, done := s.reportSettled(last, arg, rollback); done {
 		return code
 	}
+	if err := s.counterState(a); err != nil {
+		// Not recorded: deploy.json is part of the evidence of the
+		// counters used, and recover needs it as it is.
+		s.printf("state: FAILED: %s", describe(err))
+		s.printf("result: failed before step 1; nothing changed or recorded")
+		return ExitFailed
+	}
 
 	// Which release.
 	name := arg
@@ -349,16 +356,23 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 			return s.fail(a, 2, err)
 		}
 	}
-	if !present && a.oldExists {
-		return s.fail(a, 2, failf(CodeCounterMissing, "%s is missing although current points at %s; run ah-switch recover --counter N, N the highest counter this host ever switched to (at least %d)", HighestFile, a.rec.PreviousID, s.usedCounter(a)))
+	ev, err := s.counterEvidence(id.Name, true)
+	if err != nil {
+		return s.fail(a, 2, evidenceError(err))
 	}
-	if rollback {
+	if !present && a.oldExists {
+		// Only a dry run without a state folder gets here.
+		return s.fail(a, 2, failf(CodeCounterMissing, "%s is missing although current points at %s; run ah-switch recover --counter N", HighestFile, a.rec.PreviousID))
+	}
+	switch {
+	case rollback:
 		s.step(2, "rollback to previous: the counter rule does not apply; the highest counter stays %d", highest)
-	} else {
-		if id.Counter <= highest {
-			return s.fail(a, 2, failf(CodeCounterNotAbove, "counter %d is not above the highest ever activated, %d", id.Counter, highest))
-		}
-		s.step(2, "counter %d is above the highest ever activated, %d", id.Counter, highest)
+	case id.Counter <= highest:
+		return s.fail(a, 2, failf(CodeCounterNotAbove, "counter %d is not above the highest ever attempted, %d", id.Counter, highest))
+	case id.Counter <= ev.counter:
+		return s.fail(a, 2, failf(CodeCounterNotAbove, "counter %d is not above %d, the counter of %s; build a release with a higher counter", id.Counter, ev.counter, ev.source))
+	default:
+		s.step(2, "counter %d is above the highest ever attempted, %d, and above every counter this host shows", id.Counter, highest)
 	}
 
 	// The transaction, written first when the package step runs and in any
@@ -665,18 +679,6 @@ func (s *Switcher) readState(a *attempt) (Record, int, bool) {
 func (s *Switcher) releaseThere(id ReleaseID) bool {
 	info, err := s.relRoot.Lstat(id.Name)
 	return err == nil && info.IsDir()
-}
-
-// usedCounter is the highest counter of the releases current and previous
-// point at: the least highest-counter can be.
-func (s *Switcher) usedCounter(a *attempt) uint64 {
-	n := uint64(0)
-	for _, t := range []string{a.oldTarget, a.prevTarget} {
-		if id, err := s.targetID(t); t != "" && err == nil {
-			n = max(n, id.Counter)
-		}
-	}
-	return n
 }
 
 func (s *Switcher) failState(a *attempt, err error) int {
@@ -1088,10 +1090,23 @@ func (s *Switcher) status(w io.Writer) error {
 			return err
 		}
 	}
+	var ev evidence
+	if base != nil {
+		rel, err := s.openTrusted(BaseDir+"/releases", false)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		if rel != nil {
+			s.relRoot = rel
+			if ev, err = s.counterEvidence("", false); err != nil {
+				return err
+			}
+		}
+	}
 	switch {
 	case present:
-		fmt.Fprintf(w, "highest counter: %d\n", highest)
-	case base != nil && hasLink(base, "current"):
+		fmt.Fprintln(w, counterLine(highest, ev))
+	case base != nil && hasLink(base, "current"), ev.counter > 0:
 		fmt.Fprintln(w, "highest counter: missing; run ah-switch recover --counter N before the next switch")
 	default:
 		fmt.Fprintln(w, "highest counter: 0")

@@ -276,11 +276,25 @@ already ran stays applied, and `deploy.json` says so).
    identity of a shared signers file cannot authorize a release). Then
    `MANIFEST` must match the id and the command lists must parse.
 2. **counter**: the counter must be above the highest ever attempted
-   (`highest-counter`; none means 0 only on a host that has no `current`
-   yet: a missing or broken `highest-counter` while `current` exists is
-   refused with `counter-missing` or `counter-invalid`, see `recover`). A
-   rollback skips this rule but accepts only the release `previous` points
-   at, and only when that release folder is there.
+   (`highest-counter`) and above every counter the host shows besides it:
+   the releases `current` and `previous` point at, the counter of the last
+   forward switch `deploy.json` records as having used its counter
+   (`counter_used`), and every other release folder in `releases/` (the
+   counter of its name, and of its `MANIFEST` when that can be read), so a
+   `highest-counter` restored from an older state cannot admit an old
+   release again. A rollback skips this rule but accepts only the release
+   `previous` points at, and only when that release folder is there.
+
+   Before any of the steps, and before anything is recorded, a switch or
+   rollback checks `highest-counter` itself against the counters the host
+   used (the links and `deploy.json`): one that cannot be read
+   (`counter-invalid`), one missing on a host that used counters
+   (`counter-missing`; none means 0 only on a host that has no `current`
+   yet), or one below a counter used (`counter-invalid`) stops it, with
+   nothing recorded, so that `deploy.json` stays as evidence for `recover`.
+   What the evidence needs and cannot read (a link, `deploy.json`, the
+   folder of releases) stops it the same way; it is never taken as no
+   evidence.
 3. **packages**: when the manifest's `package_snapshot` differs from the one
    recorded in `deploy.json`, the release's
    `bin/ah-pkgstep --release DIR --from OLD --to NEW` runs, within 30 minutes
@@ -433,11 +447,12 @@ resolves `previous` anew and goes back to the release the interrupted
 rollback left. Run the request once more to do it again.
 
 `ah-switch recover --counter N` writes `highest-counter` as `N` when it is
-missing or does not hold a number. The switch never guesses it: on a host
-with a `current` link a missing counter could let an old release be
-replayed. `N` must be at least the counter of the releases `current` and
-`previous` point at; take it from the newest release ever deployed. It
-refuses to overwrite a counter that is there.
+missing, does not hold a number, or holds less than the counters the host
+shows (see step 2). The switch never guesses it: on a host with a
+`current` link a missing counter could let an old release be replayed.
+`N` must be at least every counter the host shows, the release folders
+included; take it from the newest release ever deployed. It refuses to
+overwrite a counter that is at least all of that.
 
 `ah-switch recover --package-state SNAPSHOT` settles an unknown package
 state: `SNAPSHOT` must be one of the two ends of the step that did not
@@ -464,7 +479,9 @@ check: `passed`, `failed` or `not run`), `failed_step` (`state`, `import`,
 `detail`, `package_snapshot` (the snapshot the host's packages are known
 to be at), `package_state` (`unknown` after a package step that did not
 finish, with `package_from` and `package_to`; empty when known),
-`package_stated_at` (when the owner last stated it), `restored_health` (`ok`, `failed` or empty), `services_stopped`
+`package_stated_at` (when the owner last stated it), `counter_used` (a
+forward switch that got as far as using its counter: evidence of that
+counter for step 2), `restored_health` (`ok`, `failed` or empty), `services_stopped`
 (the decision services were stopped), and `txn`, `requested` and
 `pending_report` (the transaction this record ends, what was asked, and
 whether a later command settled it with nobody shown the outcome yet). A
@@ -526,7 +543,8 @@ see its messages. The text of a broken state file is not repeated either.
 | `--rollback-to` when `previous` points at a missing release | Refused at counter (`no-previous`) |
 | Crash or power loss during the switch | `current` points at a whole release, the old or the new one, and the journal is there; the next command resumes its phase (see "The journal and recover") |
 | The same request run again after its transaction was settled by another command | Reports that outcome once and does nothing else |
-| `highest-counter` missing or broken while `current` exists | Refused (`counter-missing`, `counter-invalid`); run `recover --counter N` |
+| `highest-counter` missing or broken while `current` exists, or below a counter the links or `deploy.json` show was used | Refused before anything, nothing recorded (`counter-missing`, `counter-invalid`); run `recover --counter N` |
+| A release folder of a higher counter is in `releases/` | Refused at counter (`counter-not-above`); build a higher counter |
 | A second switch while one runs | Exit 3; nothing done |
 
 The switch never deletes a release (it removes only the copy of an import

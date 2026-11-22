@@ -39,11 +39,11 @@ func (f *fakeProcs) killGroup(pgid int) error {
 func TestPackageStateUnknownBlocks(t *testing.T) {
 	e := active(t)
 	e.release(rel3, "2026-11-15")
-	e.release("0004-ddddddd", "2026-11-20")
 	e.runner.fail["ah-pkgstep"] = 1
 	if code := e.switchTo(rel3); code != ExitFailed {
 		t.Fatalf("exit %d", code)
 	}
+	e.release("0004-ddddddd", "2026-11-20")
 	if rec := e.record(); rec.PackageState != PackageUnknown || rec.PackageFrom != "2026-11-01" || rec.PackageTo != "2026-11-15" || !strings.Contains(rec.Detail, "unknown") {
 		t.Fatalf("record: %+v", rec)
 	}
@@ -172,7 +172,7 @@ func TestInterruptedPackageStepMustHaveEnded(t *testing.T) {
 			}
 			s = e.switcher()
 			s.procs = tc.procs
-			code := s.Recover(context.Background(), RecoverOptions{SetCounter: true, Counter: 9})
+			code := s.Recover(context.Background(), resumeOnly)
 			out := e.out.String()
 			e.out.Reset()
 			if code != tc.code {
