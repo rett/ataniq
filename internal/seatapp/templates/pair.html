@@ -1,0 +1,8 @@
+{{define "content"}}
+<h1>Pair this phone</h1>
+<div id="pair" data-rp-id="{{.RPID}}" data-rp-name="{{.RPName}}">
+<p id="status" role="status">Loading.</p>
+<noscript><p>This page needs script to make a passkey. Turn script on for this site and scan the code again.</p></noscript>
+</div>
+<script src="/static/pair.js"></script>
+{{end}}
