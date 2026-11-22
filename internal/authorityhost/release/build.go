@@ -26,10 +26,17 @@ var requiredBins = []string{"ah-noaicheck", "ah-switch"}
 // them and changes nothing. It exits 0 only on a first switch (an empty
 // --from) or an unchanged snapshot (--from equal to --to), so it is
 // idempotent; any other --from is a snapshot the host would be recorded at
-// without being there, and it exits 1 with a line on stderr. A refused step
-// leaves the host's package state unknown, as any failed package step does,
-// and the owner settles it with ah-switch recover --package-state. It is
-// POSIX sh and holds no time, user or host name.
+// without being there, and it exits 1 with a line on stderr. The switch
+// refuses a static release of another snapshot than the host's known,
+// non-empty one in its step 3, before the transaction begins and before this
+// step runs (package-step-failed; current, the services, the inhibit and the
+// host's snapshot are untouched), so the step is not reached by that typo.
+// It still refuses when it runs with another --from, which happens only
+// while the host's package state is unknown (the switch then runs the
+// unfinished step again from its own --from); that refused run leaves the
+// package state unknown, as any failed package step does, and the owner
+// settles it with ah-switch recover --package-state. It is POSIX sh and holds
+// no time, user or host name.
 const PackageStepName = "ah-pkgstep"
 
 const StaticPackageStep = `#!/bin/sh

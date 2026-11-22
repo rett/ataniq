@@ -1554,10 +1554,19 @@ ah-release build --out DIR --counter N --commit SHA --go-version V --built-on CL
   build. A static release must therefore be built with the
   `--package-snapshot` the host has recorded (`package_snapshot` in
   `deploy.json`; any value on a first switch): a fresh snapshot value for
-  every build is refused at the next switch. As with any failed package
-  step, a refused one leaves the host's package state unknown, and every
-  later switch is refused until `ah-switch recover --package-state
-  SNAPSHOT` (see "The journal and recover"). A `--bin` named
+  every build is refused. The switch refuses it at step 3 (see "Steps"),
+  before the transaction begins and before the step runs, whenever the
+  host's snapshot is known and not empty (`package-step-failed`, `build it
+  with the host's --package-snapshot`): `current`, the services, the
+  inhibit and the host's snapshot stay as they are, and the release rebuilt
+  with the host's snapshot switches next. The step itself still refuses
+  when it does run with another `--from`, which is the case while the
+  host's package state is unknown (a step of an earlier release did not
+  finish, and a static release of the snapshot that step went to runs it
+  again from the snapshot it started at); as with any failed package step,
+  that leaves the package state unknown, and every later switch is
+  refused until `ah-switch recover --package-state SNAPSHOT` (see "The
+  journal and recover"). A `--bin` named
   `ah-pkgstep` is shipped as given, and a release that is not static and is
   given none has none, so a switch that changes the snapshot refuses it
   (`package-step-missing`) as before.
