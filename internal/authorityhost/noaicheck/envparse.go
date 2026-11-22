@@ -45,6 +45,7 @@ type envParse struct {
 	files   []envRef
 	sourced []srcWord
 	paths   []srcWord // the elements PATH settings add (see parseShell)
+	xdg     []srcWord // the values given to XDG_CONFIG_HOME, as words (see addXDG)
 	reset   bool      // an empty EnvironmentFile= drops the files named before it (files holds those after the last)
 	bad     bool
 	seen    map[string]bool
@@ -73,6 +74,20 @@ func (r *envParse) addPath(value string, exp bool, fn string, funcs map[string]b
 		}
 	}
 }
+
+// xdgName is the variable whose value says where a home's configuration
+// files are: its value is kept, for the files the check reads there.
+const xdgName = "XDG_CONFIG_HOME"
+
+// addXDG records the value v given to XDG_CONFIG_HOME (exp: it holds an
+// expansion). A value the parser cannot know (an append, fish's set) is
+// recorded as a word that cannot be resolved.
+func (r *envParse) addXDG(v string, exp bool) {
+	r.xdg = append(r.xdg, srcWord{lit: v, exp: exp && strings.ContainsAny(v, "$`")})
+}
+
+// unknownXDG is a value of XDG_CONFIG_HOME the check cannot resolve.
+var unknownXDG = srcWord{lit: "", exp: true}
 
 // splitPath splits a PATH value on the colons outside ${...}, $(...) and
 // `...`.
@@ -257,9 +272,13 @@ func parseEnvFile(r *envParse, data string) {
 				i++
 			}
 		}
-		if name == "PATH" {
+		if name == "PATH" || name == xdgName {
 			v := unquote(strings.TrimRight(data[start:min(i, len(data))], " \t\r"))
-			r.addPath(v, strings.ContainsAny(v, "$`"), "", nil)
+			if name == "PATH" {
+				r.addPath(v, strings.ContainsAny(v, "$`"), "", nil)
+			} else {
+				r.addXDG(v, true)
+			}
 		}
 	}
 }
@@ -309,6 +328,9 @@ func parsePam(r *envParse, data string) {
 			continue
 		}
 		r.add(name)
+		if name == xdgName {
+			r.xdg = append(r.xdg, unknownXDG)
+		}
 	}
 }
 
@@ -775,11 +797,14 @@ var shReserved = map[string]bool{
 }
 
 // srcWord is the path word of a "." or "source" command: its text with
-// quotes removed and expansions kept as written, and whether it holds an
-// expansion (a word without one is a literal path, "$" and all).
+// quotes removed and expansions kept as written, whether it holds an
+// expansion (a word without one is a literal path, "$" and all), and
+// whether the command is in a function body (deferred: it runs when the
+// function is called, not when the file is read).
 type srcWord struct {
-	lit string
-	exp bool
+	lit      string
+	exp      bool
+	deferred bool
 }
 
 // forList is what a for loop's variable takes: the words of its list, or,
@@ -798,11 +823,15 @@ type forList struct {
 // set. A value is never read for names.
 //
 // A function body (NAME() { ... }, function NAME { ... }) is followed by
-// its braces: local, declare, typeset and readonly in it declare the
-// function's own variables, not the login environment's, and are passed
-// over, as are a local outside a function (an error in bash) and a
-// declare, typeset or readonly whose name is an expansion. An export
-// whose name is an expansion, an unclosed quote or substitution, or a
+// its braces: local, declare and typeset in it declare the function's own
+// variables, not the login environment's, and are passed over unless a
+// flag makes them global or exported (-g, -x, -gx: bash's declare -gx
+// sets the login's variable, and an exported one reaches every program the
+// function starts); then each name they assign is kept. readonly in a
+// function sets a global, so each name it assigns is kept too. A local
+// outside a function (an error in bash) and a declare, typeset or
+// readonly whose name is an expansion are passed over. An export whose
+// name is an expansion, an unclosed quote or substitution, or a
 // here-document that never ends is syntax the check cannot parse.
 //
 // The value given to PATH (PATH=..., PATH+=..., export PATH=..., csh's
@@ -813,9 +842,11 @@ type forList struct {
 // element too.
 //
 // The path word of every "." and "source" command is returned (sourced),
-// to be resolved by the caller (see Checker.sourcePaths); a word that is
-// exactly the variable of an earlier "for NAME in WORDS" loop stands for
-// each of those words (". "$profile"" in a loop over /etc/profile.d/*.sh).
+// to be resolved by the caller (see Checker.sourcePaths), marked deferred
+// when the command is in a function body; a word that is exactly the
+// variable of an earlier "for NAME in WORDS" loop stands for each of those
+// words (". "$profile"" in a loop over /etc/profile.d/*.sh). The value
+// given to XDG_CONFIG_HOME is returned too (xdg, see addXDG).
 func parseShell(r *envParse, data string, fish bool, funcs map[string]bool) {
 	l := &shLexer{s: data}
 	const (
@@ -832,9 +863,30 @@ func parseShell(r *envParse, data string, fish bool, funcs map[string]bool) {
 		argForList
 		argSetenv
 		argSetenvPath
+		argSetenvXDG
 		argPathCall
+		argFuncDecl
 	)
 	cmdPos, args, redirect, here, strip := true, argNone, false, false, false
+	declFlag := false // a function's declaration is global or exported (argFuncDecl)
+	// set records the name n a word assigns or exports, and the value it
+	// gives PATH or XDG_CONFIG_HOME.
+	set := func(n string, w shWord, fn string) {
+		r.add(n)
+		eq := strings.IndexByte(w.lit, '=')
+		if eq < 0 {
+			return
+		}
+		v := w.lit[eq+1:]
+		switch {
+		case n == "PATH":
+			r.addPath(v, w.exp, fn, funcs)
+		case n == xdgName && strings.HasSuffix(w.lit[:eq], "+"):
+			r.xdg = append(r.xdg, unknownXDG)
+		case n == xdgName:
+			r.addXDG(v, w.exp)
+		}
+	}
 	// Function bodies: braces is the stack of open { } groups, each the
 	// function's name for a function's body and "" otherwise; hdr follows
 	// NAME ( ) (1 after NAME, 2 after its "("), and pending says the next {
@@ -926,11 +978,7 @@ func parseShell(r *envParse, data string, fish bool, funcs map[string]bool) {
 		pending = false
 		if cmdPos {
 			if w.assign != "" {
-				r.add(w.assign)
-				if w.assign == "PATH" {
-					_, v, _ := strings.Cut(w.lit, "=")
-					r.addPath(v, w.exp, fn(), funcs)
-				}
+				set(w.assign, w, fn())
 				continue
 			}
 			if !w.exp && shReserved[w.lit] {
@@ -947,13 +995,21 @@ func parseShell(r *envParse, data string, fish bool, funcs map[string]bool) {
 			switch w.lit {
 			case "export":
 				args = argExport
-			case "declare", "typeset", "readonly":
+			case "declare", "typeset":
 				args = argDeclare
 				if fn() != "" {
-					args = argIgnore
+					args, declFlag = argFuncDecl, false
+				}
+			case "readonly":
+				args = argDeclare
+				if fn() != "" {
+					args, declFlag = argFuncDecl, true
 				}
 			case "local":
 				args = argIgnore
+				if fn() != "" {
+					args, declFlag = argFuncDecl, false
+				}
 			case "env":
 				args = argEnv
 			case "setenv":
@@ -979,12 +1035,22 @@ func parseShell(r *envParse, data string, fish bool, funcs map[string]bool) {
 			n, known := w.name()
 			switch {
 			case known:
-				r.add(n)
-				if _, v, ok := strings.Cut(w.lit, "="); ok && n == "PATH" {
-					r.addPath(v, w.exp, fn(), funcs)
-				}
+				set(n, w, fn())
 			case args == argExport:
 				r.bad = true
+			}
+		case argFuncDecl:
+			if !w.exp && strings.HasPrefix(w.lit, "+") {
+				continue // +x takes a flag away
+			}
+			if !w.exp && strings.HasPrefix(w.lit, "-") {
+				if strings.ContainsAny(w.lit[1:], "gx") {
+					declFlag = true
+				}
+				continue
+			}
+			if n, known := w.name(); declFlag && known && strings.Contains(w.lit, "=") {
+				set(n, w, fn())
 			}
 		case argEnv:
 			if w.assign != "" {
@@ -1001,22 +1067,36 @@ func parseShell(r *envParse, data string, fish bool, funcs map[string]bool) {
 				args = argSetenvPath
 				continue
 			}
+			if args == argSetenv && !w.exp && w.lit == xdgName {
+				args = argSetenvXDG
+				continue
+			}
+			if args == argFirst && !w.exp && w.lit == xdgName {
+				r.xdg = append(r.xdg, unknownXDG) // fish's set: its value is not read
+			}
 			args = argNone
 		case argSetenvPath:
 			r.addPath(w.lit, w.exp, fn(), funcs)
+			args = argNone
+		case argSetenvXDG:
+			r.addXDG(w.lit, w.exp)
 			args = argNone
 		case argPathCall:
 			r.addPath(w.lit, w.exp, fn(), funcs)
 			args = argNone
 		case argSource:
+			deferred := fn() != ""
 			if n, ok := plainRef(w); ok {
 				if fl, found := loops[n]; found && fl.ok {
-					r.sourced = append(r.sourced, fl.words...)
+					for _, lw := range fl.words {
+						lw.deferred = deferred
+						r.sourced = append(r.sourced, lw)
+					}
 					args = argNone
 					continue
 				}
 			}
-			r.sourced = append(r.sourced, srcWord{lit: w.lit, exp: w.exp})
+			r.sourced = append(r.sourced, srcWord{lit: w.lit, exp: w.exp, deferred: deferred})
 			args = argNone
 		case argFunc:
 			// function NAME [()] { ... }

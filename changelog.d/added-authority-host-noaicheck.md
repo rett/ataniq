@@ -9,8 +9,11 @@
   `/opt`, in any `node_modules/.bin`, in a home's bin and install folders
   or as an executable file anywhere in a home, an agent credential folder
   in a home, a provider-key variable in an environment file, profile or
-  unit (each read in its own syntax, by name only: function-local
-  declarations passed over, home-relative sources resolved per home, and
+  unit (each read in its own syntax, by name only: a function's plain
+  local declarations passed over but its global or exported ones
+  (`declare -gx`, `typeset -x`) kept, home-relative sources resolved per
+  home, a configured `XDG_CONFIG_HOME` followed, a source in a function
+  body that it cannot resolve only a `NOTE deferred-source` line, and
   the units read through each systemd manager's effective unit view, with
   the attached user folders, lookup precedence, masks by link or empty
   file, dependency entries resolved by name, linked dependency folders,

@@ -630,7 +630,8 @@ ah-noaicheck nft-digest FILE
 ```
 
 It prints one line per hit, `HIT <kind> <path-or-name> [detail]`, a
-`NOTE` line for a policy that is not enforced, `RUN complete` or
+`NOTE` line for what is not a hit (a policy that is not enforced, a
+masked unit, a deferred source), `RUN complete` or
 `RUN incomplete`, and a final `ok` or `FAILED n hit(s)`; `--json` writes
 the same as one JSON object (with `"complete"` and `"phase"`). A field
 that holds anything but printable ASCII is quoted with Go's escapes, so a
@@ -826,19 +827,42 @@ folder whose `share/` holds the lists (and, in `pre` and `post`, whose
   a `.fish` file, `set`; comments, quoted values, substitutions and
   here-documents are never read for names. A function body
   (`NAME() { ... }`, `function NAME { ... }`) is followed by its braces:
-  `local`, `declare`, `typeset` and `readonly` in it are the function's
-  own variables and are passed over, as are a `local` outside a function
-  and a `declare`, `typeset` or `readonly` whose name is an expansion
-  (an `export` keeps counting, and one whose name is an expansion cannot
-  be parsed). A file a profile sources (`.` or `source`) is read too
-  when its path is a literal absolute path, starts with `~/`, `$HOME`,
-  `${HOME}` or `$XDG_CONFIG_HOME` (in its usual forms, resolved to the
-  home's `.config`), resolved in the home of the sourcing file or in every
-  home for a system file, or is the variable of an earlier
-  `for NAME in WORDS` loop (`/etc/profile`'s loop over
-  `/etc/profile.d/*.sh`); a glob in its last component is matched. Any
-  other source (a relative path, another variable, a command
-  substitution) is `HIT incomplete env-source <file>`.
+  a plain `local`, `declare` or `typeset` in it is the function's own
+  variable and is passed over, but one with a global or export flag
+  (`declare -g`, `declare -x`, `declare -gx`, `typeset -x`, `local -x`)
+  sets the login's variable or one every program the function starts
+  sees, so each name it assigns counts, and so does each name a
+  `readonly` in a function assigns (it is global). An `export` keeps
+  counting everywhere, and one whose name is an expansion cannot be
+  parsed. A `local` outside a function and a `declare`, `typeset` or
+  `readonly` whose name is an expansion are passed over.
+
+  The startup files are read as one scan: the system's
+  (`/etc/environment`, `/etc/profile`, `/etc/bash.bashrc`, the zsh system
+  files, `/etc/profile.d`, the `environment.d` folders), each home's
+  (`.profile`, `.bash_profile`, `.bash_login`, `.bashrc`, `.zshenv`,
+  `.zprofile`, `.zshrc`, `.zlogin`, `.pam_environment`, its fish and
+  `environment.d` files) and every file one of them sources, transitively.
+  A file a startup file sources (`.` or `source`) is read too when its
+  path is a literal absolute path, starts with `~/`, `$HOME`, `${HOME}` or
+  `$XDG_CONFIG_HOME` (in its usual forms), resolved in the home of the
+  sourcing file or in every home for a system file, or is the variable of
+  an earlier `for NAME in WORDS` loop (`/etc/profile`'s loop over
+  `/etc/profile.d/*.sh`); a glob in its last component is matched.
+  `$XDG_CONFIG_HOME` stands for the home's `.config` and for every folder
+  a startup file gives `XDG_CONFIG_HOME` (`export XDG_CONFIG_HOME=...`,
+  `XDG_CONFIG_HOME=...` in an environment file), resolved like a source's
+  path; the home's fish and `environment.d` files are read below that
+  folder too. A value the check cannot resolve, or one a sourced file
+  gives (too late: the sources are resolved first), is
+  `HIT incomplete env-source <file>` for the file that gives it. Any other
+  source at the top level or in a top-level loop (a relative path,
+  another variable, a command substitution, an array) is
+  `HIT incomplete env-source <file>`. A source in a function body runs
+  only when the function is called, not at login: one the check can
+  resolve is read, and one it cannot is the line
+  `NOTE deferred-source <file>`, which is not a hit and leaves the run
+  complete.
 
   A unit or manager file is read by its `Environment=`,
   `DefaultEnvironment=`, `ManagerEnvironment=` and `PassEnvironment=`
@@ -957,9 +981,11 @@ home path in `ai-names.list`), a control byte or an inner space is refused:
 - A specifier in `EnvironmentFile=` other than `%h`, `%t` and `%%` is
   `HIT incomplete env-syntax`, and so is one in a user unit for a home
   without a known user id.
-- A profile that sources files by a run-time variable (the bash-completion
-  library's loader does) is `HIT incomplete env-source` on every run: a
-  host that must pass does not carry such a profile.
+- A profile that sources files by a run-time variable at its top level
+  is `HIT incomplete env-source` on every run. The packaged
+  bash-completion library is one: its loader's source in a function is
+  only `NOTE deferred-source`, but its array-driven startup loop stays
+  incomplete, so the host does not install it.
 - Run by hand as an ordinary user it cannot read other users' processes
   or folders; it says so (`HIT incomplete proc-access`, `HIT unreadable`)
   rather than pass.

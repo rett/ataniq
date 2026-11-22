@@ -41,7 +41,8 @@ const usage = `usage: ah-noaicheck [--phase pre|post|full] [--root DIR] [--relea
 
 The authority host's no-AI check. It reads only: it writes nothing and runs
 no program. It prints one line per hit ("HIT kind path [detail]"), a "NOTE"
-line for a policy that is not enforced, "RUN complete" or "RUN incomplete",
+line for what is not a hit (a policy that is not enforced, a masked unit, a
+deferred source), "RUN complete" or "RUN incomplete",
 and a final "ok" or "FAILED n hit(s)"; it never prints a file's content or
 a variable's value.
 

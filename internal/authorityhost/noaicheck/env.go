@@ -97,10 +97,11 @@ const PathEnvFile = "env-file"
 // the manager that loads the unit; a glob in its last component matched
 // within the root; the lines of a unit and its drop-ins evaluated in
 // systemd's order first, an empty EnvironmentFile= dropping those before
-// it) and each file a profile sources (see sourcePaths: a
+// it) and each file a profile sources (see startup and sourcePaths: a
 // literal absolute path, or one that starts with $HOME, ~ or
 // $XDG_CONFIG_HOME, resolved in each home; a path the check cannot resolve
-// is the hit "incomplete env-source <file>", never passed over). A
+// is the hit "incomplete env-source <file>", never passed over, except
+// in a function body, where it is the note "deferred-source <file>"). A
 // required EnvironmentFile= that is not there is the hit
 // "incomplete env-file <path>"; an optional one ('-') is passed over.
 //
@@ -112,35 +113,32 @@ const PathEnvFile = "env-file"
 // identifier is ever reported. A file whose syntax the check cannot parse
 // is the hit "incomplete env-syntax <file>".
 func (c *Checker) CheckEnv() {
+	c.reportStartup()
 	s := c.newEnvScan()
-	scanDir := func(rel string, syn envSyntax) {
-		c.walk(rel, 1, func(e *wentry) bool {
+	for _, f := range envFiles {
+		if f.syntax == syntaxSystemd {
+			s.scan(f.rel, f.syntax)
+		}
+	}
+	for _, d := range envDirs {
+		if d.syntax != syntaxSystemd {
+			continue
+		}
+		c.walk(d.rel, 1, func(e *wentry) bool {
 			if e.isRegular() || e.isLink() {
-				s.scan(e.rel, syn)
+				s.scan(e.rel, d.syntax)
 			}
 			return false
 		})
 	}
-	for _, f := range envFiles {
-		s.scan(f.rel, f.syntax)
-	}
-	for _, d := range envDirs {
-		scanDir(d.rel, d.syntax)
-	}
 	c.scanUnitFiles(s.unit)
-	for _, home := range c.homeFolders() {
-		for _, f := range homeEnvFiles {
-			s.scan(path.Join(home, f.rel), f.syntax)
-		}
-		for _, d := range homeEnvDirs {
-			scanDir(path.Join(home, d.rel), d.syntax)
-		}
-	}
 	s.drain()
 }
 
-// envScan reads environment files: each once (per manager, for a unit),
-// following the files they name or source through a queue.
+// envScan reads the systemd manager configuration, the units and the
+// environment files they name: each once (per manager, for a unit),
+// following the files they name through a queue. The startup files and
+// what they source are read by the startup scan (see startup).
 type envScan struct {
 	c     *Checker
 	done  map[string]bool
@@ -217,10 +215,9 @@ func (s *envScan) unit(files []string, m manager) {
 
 // parse resolves the file rel of the root and returns its resolved path
 // and what it sets in the syntax syn, read and parsed once per run: its
-// provider-key names are reported, its syntax trouble too, and the files
-// it sources are queued, all on the first read. A file that cannot be
-// read is reported and nil; so is a masked file (a link to /dev/null),
-// which is empty.
+// provider-key names are reported, and its syntax trouble too, on the
+// first read. A file that cannot be read is reported and nil; so is a
+// masked file (a link to /dev/null), which is empty.
 func (s *envScan) parse(rel string, syn envSyntax) (string, *envParse) {
 	c := s.c
 	p, err := c.t.resolve(rel)
@@ -249,15 +246,6 @@ func (s *envScan) parse(rel string, syn envSyntax) (string, *envParse) {
 	}
 	if r.bad {
 		c.hit(KindIncomplete, PathEnvSyntax, show(p))
-	}
-	for _, w := range r.sourced {
-		paths, ok := c.sourcePaths(w, c.homeOf(p))
-		for _, f := range paths {
-			ok = c.envFileGlob(f, func(m string) { s.push(m, syntaxShell) }) && ok
-		}
-		if !ok {
-			c.hit(KindIncomplete, PathEnvSource, show(p))
-		}
 	}
 	return p, r
 }
@@ -392,7 +380,8 @@ func (c *Checker) homeOf(p string) string {
 // homeForms are the spellings of a home-relative path a sourced word may
 // start with, longest first, and the folder below the home each stands
 // for: $HOME, ${HOME}, and $XDG_CONFIG_HOME in its usual forms (its
-// default, the home's .config, is what is resolved).
+// default, the home's .config, and every folder a startup file gives it
+// for the home, see startup).
 var homeForms = []struct{ form, sub string }{
 	{"${XDG_CONFIG_HOME:-$HOME/.config}", ".config"},
 	{"${XDG_CONFIG_HOME-$HOME/.config}", ".config"},
@@ -405,13 +394,15 @@ var homeForms = []struct{ form, sub string }{
 }
 
 // sourcePaths returns the paths, clean and relative to the root, that the
-// path word w of a "." or "source" command stands for, and whether it
-// could resolve it. A word without an expansion must be an absolute path
-// or start with "~/". A word with an expansion must start with one of
-// homeForms and hold no other: it is resolved in home, or in every home
-// when home is "". Anything else (a relative path, another variable, a
-// command substitution, "~user") cannot be resolved. The last component
-// may be a glob, matched by the caller.
+// path word w of a "." or "source" command (or a PATH element, or a value
+// of XDG_CONFIG_HOME) stands for, and whether it could resolve it. A word
+// without an expansion must be an absolute path or start with "~/". A
+// word with an expansion must start with one of homeForms and hold no
+// other: it is resolved in home, or in every home when home is "", a
+// $XDG_CONFIG_HOME in the home's .config and in each folder the startup
+// files give it (see startup). Anything else (a relative path, another
+// variable, a command substitution, "~user") cannot be resolved. The last
+// component may be a glob, matched by the caller.
 func (c *Checker) sourcePaths(w srcWord, home string) ([]string, bool) {
 	lit := w.lit
 	sub, rest, relative := "", lit, false
@@ -449,6 +440,11 @@ func (c *Checker) sourcePaths(w srcWord, home string) ([]string, bool) {
 	var out []string
 	for _, h := range homes {
 		out = append(out, clean(path.Join(h, sub, rest)))
+		if sub == ".config" && c.su != nil && c.su.ready {
+			for _, d := range c.su.xdg[h] {
+				out = append(out, clean(path.Join(d, rest)))
+			}
+		}
 	}
 	return out, true
 }
