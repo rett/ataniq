@@ -15,6 +15,12 @@
 // length of the text presented. It never appears in an error text or in the
 // text of any value of the package.
 //
+// The credential's key is read in the form the browser's getPublicKey()
+// gives, a DER SubjectPublicKeyInfo, and only an ES256 key is accepted: ECDSA
+// on P-256, a point on the curve, the canonical encoding and no byte after it
+// (ParseKey). A credential id is 16 to 1024 bytes (CheckCredentialID). A bad
+// credential is refused only after a right code, and leaves the code unused.
+//
 // The package is what the daemon asks. It is not a wire, a daemon, an HTTP
 // handler, a store or a clock: it opens no file and no socket, starts no
 // program and keeps nothing between runs. The random source and the time are

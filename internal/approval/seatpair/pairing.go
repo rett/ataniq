@@ -144,8 +144,10 @@ func (p *Pairing) forget() {
 // its own error: no pairing ever started (ErrNoPairing), a time that is zero
 // or before the code's (ErrClock), a credential already pending (ErrPending;
 // the code is not looked at and no try is counted), and then the refusals of
-// the code (ErrUsed, ErrBurnt, ErrExpired, ErrWrongCode). On success the code
-// is used and the credential is pending until the time now plus
+// the code (ErrUsed, ErrBurnt, ErrExpired, ErrWrongCode). For a right code it
+// then checks the credential: the id's length (ErrCredentialID) and the key
+// (ErrKeyFormat, ErrKeyAlgorithm, ErrKeyPoint; see ParseKey), and a refusal
+// there leaves the code unused. On success the code is used and the credential is pending until the time now plus
 // PendingLifetime. Present keeps copies of what it is handed.
 func (p *Pairing) Present(code string, credentialID, spki []byte, now time.Time) error {
 	p.mu.Lock()
@@ -165,6 +167,14 @@ func (p *Pairing) Present(code string, credentialID, spki []byte, now time.Time)
 		p.forget()
 	}
 	if err := p.code.check(code, now); err != nil {
+		return err
+	}
+	// The code is right; a credential that is not an ES256 key is refused
+	// without using the code, so the phone may try again with a good one.
+	if err := CheckCredentialID(credentialID); err != nil {
+		return err
+	}
+	if _, err := ParseKey(spki); err != nil {
 		return err
 	}
 	p.code.used = true

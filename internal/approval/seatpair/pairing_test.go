@@ -31,7 +31,7 @@ func (s *seq) Read(p []byte) (int, error) {
 
 var (
 	idA   = bytes.Repeat([]byte{0xA1}, 32)
-	spkiA = bytes.Repeat([]byte{0x30}, 91)
+	spkiA = spkiOfScalar(scalarOf(0x11))
 )
 
 func newTestPairing() (*Pairing, *fakeClock) {
