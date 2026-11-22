@@ -101,12 +101,22 @@ func (s *Switcher) highestAtLeast(n uint64) error {
 }
 
 // reconcile settles a journal left by an interrupted switch, under the lock,
-// before the command does anything else. When current already points at the
-// release of the journal and that release verifies, reloads and is healthy,
-// the switch is completed; otherwise current and previous are put back
-// exactly as the journal says they were. Either way the outcome is recorded,
-// highest-counter is at least the journal's counter, and the journal is
-// removed. A dry run reconciles nothing and stops.
+// before the command does anything else. A dry run reconciles nothing and
+// stops.
+//
+//   - current still points where it pointed before the switch: no service
+//     was reloaded yet, so previous is put back exactly and the outcome is
+//     recorded as rolled-back with the code interrupted;
+//   - current already points at the journal's release: when that release
+//     verifies, reloads and is healthy, the switch is completed and recorded
+//     as ok; otherwise the switch goes back as a failed health check does
+//     (to the old release, verified, with its own reload and health lists,
+//     or, failing that, stopping the decision services);
+//   - current points anywhere else: nothing is touched and the command
+//     fails, leaving the journal for a person to look at.
+//
+// Afterwards highest-counter is at least the journal's counter and, unless
+// current could not be put back, the journal is removed.
 func (s *Switcher) reconcile(ctx context.Context) (int, bool) {
 	if s.stateRoot == nil {
 		return 0, false
@@ -129,16 +139,22 @@ func (s *Switcher) reconcile(ctx context.Context) (int, bool) {
 		return ExitFailed, true
 	}
 	last, _, _ := readRecord(s.stateRoot)
-	a := &attempt{rec: Record{
-		ID:              j.ID,
-		Counter:         j.Counter,
-		Mode:            s.mode,
-		Trust:           s.policy.Trust(),
-		Rollback:        j.Rollback,
-		Check:           CheckNotRun,
-		PackageSnapshot: last.PackageSnapshot,
-	}}
-	if j.OldCurrent != "" {
+	a := &attempt{
+		rec: Record{
+			ID:              j.ID,
+			Counter:         j.Counter,
+			Mode:            s.mode,
+			Trust:           s.policy.Trust(),
+			Rollback:        j.Rollback,
+			Check:           CheckNotRun,
+			PackageSnapshot: last.PackageSnapshot,
+		},
+		oldTarget:  j.OldCurrent,
+		oldExists:  j.OldCurrent != "",
+		prevTarget: j.OldPrevious,
+		prevExists: j.OldPrevious != "",
+	}
+	if a.oldExists {
 		id, _ := s.targetID(j.OldCurrent)
 		a.rec.PreviousID = id.Name
 	}
@@ -148,48 +164,48 @@ func (s *Switcher) reconcile(ctx context.Context) (int, bool) {
 		s.printf("reconcile: FAILED: current: %s", describe(err))
 		return ExitFailed, true
 	}
-	if curOK && filepath.Clean(cur) == target {
-		if err := s.completeInterrupted(ctx, a, j); err == nil {
-			return 0, false
-		} else {
-			s.printf("reconcile: %s is current but cannot be completed: %s", j.ID, describe(err))
-		}
-	}
-	// Put both links back exactly.
-	var lerr error
-	if j.OldCurrent != "" {
-		lerr = replaceLink(s.baseRoot, "current", j.OldCurrent)
-	} else if curOK && filepath.Clean(cur) != target {
-		lerr = failf(CodeStateInvalid, "current points at neither the old nor the new release")
-	}
-	if lerr == nil {
-		if j.OldPrevious != "" {
-			lerr = replaceLink(s.baseRoot, "previous", j.OldPrevious)
-		} else {
-			lerr = removeFileIn(s.baseRoot, "previous")
-		}
-	}
-	if lerr != nil {
-		s.printf("reconcile: FAILED: the links could not be put back: %s; the journal stays", describe(lerr))
-		return ExitFailed, true
-	}
 	if !j.Rollback {
 		if err := s.highestAtLeast(j.Counter); err != nil {
 			s.printf("reconcile: FAILED: %s not written: %s; the journal stays", HighestFile, q(err.Error()))
 			return ExitFailed, true
 		}
 	}
+	switch {
+	case curOK && filepath.Clean(cur) == target:
+		a.rec.CurrentID = j.ID
+		err := s.completeInterrupted(ctx, a, j)
+		if err == nil {
+			return 0, false
+		}
+		s.printf("reconcile: %s is current but cannot be completed: %s", j.ID, describe(err))
+		s.openFallback(ctx, a)
+		defer func() {
+			if a.fallback != nil {
+				a.fallback.Close()
+			}
+		}()
+		s.goBack(ctx, a, "interrupted", failf(CodeInterrupted, "the switch was interrupted after current was moved and could not be completed: %s", describe(err)))
+		if _, still, _ := s.readJournal(); still {
+			return ExitFailed, true
+		}
+		return 0, false
+	case curOK != a.oldExists || (curOK && filepath.Clean(cur) != filepath.Clean(j.OldCurrent)):
+		s.printf("reconcile: FAILED: current points at neither the old nor the new release; the journal stays")
+		return ExitFailed, true
+	}
+	// current never moved: no service was touched.
+	if err := s.putPrevious(a); err != nil {
+		s.printf("reconcile: FAILED: previous could not be put back: %s; the journal stays", describe(err))
+		return ExitFailed, true
+	}
 	a.rec.FailedStep = "interrupted"
 	a.rec.Error = CodeInterrupted
-	a.rec.Detail = "the switch was interrupted; current and previous were put back"
+	a.rec.Detail = "the switch was interrupted before current was moved; previous was put back"
 	a.rec.CurrentID = a.rec.PreviousID
 	a.rec.Result = ResultRolledBack
-	if j.OldCurrent == "" {
+	if !a.oldExists {
 		a.rec.Result = ResultFailed
-		a.rec.Detail = "the first switch was interrupted; current was left as it was"
-		if curOK {
-			a.rec.CurrentID = j.ID
-		}
+		a.rec.Detail = "the first switch was interrupted before current was made"
 	}
 	if err := s.record(a); err != nil {
 		return ExitFailed, true
@@ -211,8 +227,9 @@ func linkText(target string) string {
 
 // completeInterrupted completes an interrupted switch whose current link is
 // already moved: the release must verify as the policy says, its reload list
-// must pass and it must be healthy. Then the outcome is recorded as ok,
-// highest-counter is made at least the counter and the journal is removed.
+// must pass and it must be healthy. Then the outcome is recorded as ok and
+// the journal is removed. When the release verifies, its stop list is kept
+// in a, whatever happens next.
 func (s *Switcher) completeInterrupted(ctx context.Context, a *attempt, j journal) error {
 	id, _ := ParseID(j.ID)
 	s.budget = &budget{lim: s.cfg.Limits, deadline: s.cfg.Now().Add(s.cfg.Limits.Time), now: s.cfg.Now}
@@ -225,18 +242,12 @@ func (s *Switcher) completeInterrupted(ctx context.Context, a *attempt, j journa
 		return err
 	}
 	a.reloads, a.health, a.stops = rel.reloads, rel.health, rel.stops
-	if err := s.reload(ctx, a); err != nil {
+	if err := s.reload(ctx, a.reloads); err != nil {
 		return err
 	}
 	if err := s.checkHealth(ctx, a.health); err != nil {
 		return err
 	}
-	if !j.Rollback {
-		if err := s.highestAtLeast(j.Counter); err != nil {
-			return failf(CodeRecordFailed, "%s not written: %s", HighestFile, q(err.Error()))
-		}
-	}
-	a.rec.CurrentID = j.ID
 	a.rec.Result = ResultOK
 	a.rec.Detail = "completed after an interruption"
 	if err := s.record(a); err != nil {

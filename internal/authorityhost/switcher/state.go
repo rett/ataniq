@@ -20,13 +20,13 @@ type Record struct {
 	Trust           string `json:"trust"`            // the switch policy's minimum mode; manual without a policy
 	Rollback        bool   `json:"rollback"`         // asked as --rollback-to previous
 	Time            string `json:"time"`             // when it ended, RFC 3339, UTC
-	Result          string `json:"result"`           // ok, failed or rolled-back
+	Result          string `json:"result"`           // ok, failed, rolled-back or failed-recovery
 	Check           string `json:"check"`            // the no-AI check: passed, failed or not run
 	FailedStep      string `json:"failed_step"`      // empty when ok
 	Error           string `json:"error"`            // a failure code; empty when ok
 	Detail          string `json:"detail"`           // fixed words and quoted identifiers; empty when ok
 	PackageSnapshot string `json:"package_snapshot"` // the snapshot the package step last brought the host to
-	RestoredHealth  string `json:"restored_health"`  // after going back: ok or failed; empty otherwise
+	RestoredHealth  string `json:"restored_health"`  // after going back: ok only when the links, the reload and the health all succeeded; failed; empty otherwise
 }
 
 // Results.
@@ -34,6 +34,9 @@ const (
 	ResultOK         = "ok"
 	ResultFailed     = "failed"
 	ResultRolledBack = "rolled-back"
+	// ResultFailedRecovery: the switch failed and no healthy release could be
+	// gone back to; the decision services were stopped.
+	ResultFailedRecovery = "failed-recovery"
 )
 
 // Check results.

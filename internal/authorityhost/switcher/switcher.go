@@ -201,9 +201,14 @@ type attempt struct {
 	oldExists  bool
 	prevTarget string // what previous pointed at
 	prevExists bool
+	prevThere  bool // the release previous points at is a folder
 	reloads    [][]string
 	health     [][]string
-	stops      [][]string
+	stops      [][]string // the candidate's stop list
+	// The release current pointed at, verified, to go back to; nil when
+	// there is none or it cannot be used (fallbackErr says why).
+	fallback    *release
+	fallbackErr error
 }
 
 // Switch activates the release named id.
@@ -291,6 +296,8 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		switch {
 		case !a.prevExists:
 			return s.fail(a, 2, failf(CodeNoPrevious, "there is no previous release to go back to"))
+		case !a.prevThere:
+			return s.fail(a, 2, failf(CodeNoPrevious, "previous points at %s, which is missing or not a folder", prevID))
 		case arg != "previous" && arg != prevID:
 			return s.fail(a, 2, failf(CodeRollbackRefused, "--rollback-to accepts only previous, which points at %s; %s is refused", prevID, arg))
 		case prevID == a.rec.PreviousID:
@@ -313,6 +320,12 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	defer rel.Close()
 	manifest, validators := rel.manifest, rel.validators
 	a.reloads, a.health, a.stops = rel.reloads, rel.health, rel.stops
+	s.openFallback(ctx, a)
+	defer func() {
+		if a.fallback != nil {
+			a.fallback.Close()
+		}
+	}()
 
 	// 2. Counter.
 	var highest uint64
@@ -446,7 +459,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		s.step(6, "previous -> %s", a.oldTarget)
 	}
 	s.step(6, "current -> %s", newTarget)
-	if err := s.reload(ctx, a); err != nil {
+	if err := s.reload(ctx, a.reloads); err != nil {
 		return s.goBack(ctx, a, "reload", err)
 	}
 
@@ -548,10 +561,20 @@ func (s *Switcher) readState(a *attempt) (int, bool) {
 		}
 		a.rec.PreviousID = id.Name
 		a.rec.CurrentID = id.Name
+		if !s.releaseThere(id) {
+			s.printf("warning: current points at %s, which is missing or not a folder", id.Name)
+		}
 	}
 	a.prevTarget, a.prevExists, err = readLink(s.baseRoot, "previous")
 	if err != nil {
 		return s.failState(a, err), true
+	}
+	if a.prevExists {
+		id, err := s.targetID(a.prevTarget)
+		if err != nil {
+			return s.failState(a, fmt.Errorf("previous: %w", err)), true
+		}
+		a.prevThere = s.releaseThere(id)
 	}
 	var last Record
 	if s.stateRoot != nil {
@@ -566,6 +589,12 @@ func (s *Switcher) readState(a *attempt) (int, bool) {
 	}
 	s.printf("state: current %s", current)
 	return 0, false
+}
+
+// releaseThere reports whether releases/<id> is a folder (not a link).
+func (s *Switcher) releaseThere(id ReleaseID) bool {
+	info, err := s.relRoot.Lstat(id.Name)
+	return err == nil && info.IsDir()
 }
 
 // usedCounter is the highest counter of the releases current and previous
@@ -807,8 +836,8 @@ func (s *Switcher) fail(a *attempt, n int, err error) int {
 	return ExitFailed
 }
 
-func (s *Switcher) reload(ctx context.Context, a *attempt) error {
-	for _, r := range a.reloads {
+func (s *Switcher) reload(ctx context.Context, reloads [][]string) error {
+	for _, r := range reloads {
 		_, err := s.cfg.Runner.Run(ctx, Command{Argv: r, Timeout: ReloadTimeout})
 		if err != nil {
 			s.step(6, "reload FAILED: %s: %s", qargv(r), summary(err))
@@ -856,65 +885,21 @@ func (s *Switcher) checkHealth(ctx context.Context, health [][]string) error {
 	return failf(CodeHealthFailed, "not healthy after %d attempts in %s: %s: %s", attempts, HealthWindow, q(lastArgv[0]), summary(last))
 }
 
-// goBack is called when the reload or the health check failed after current
-// was moved: it points current back at the old release, puts previous back,
-// runs the reload list again, checks health again and records the outcome.
-func (s *Switcher) goBack(ctx context.Context, a *attempt, step string, cause error) int {
-	n := 7
-	if step == "reload" {
-		n = 6
+// restorePrevious puts previous back as it was before the switch, warning
+// when it cannot.
+func (s *Switcher) restorePrevious(a *attempt) {
+	if err := s.putPrevious(a); err != nil {
+		s.printf("warning: previous not put back: %s", describe(err))
 	}
-	s.setFailure(a, step, cause)
-	s.step(n, "FAILED: %s", describe(cause))
-	if !a.oldExists {
-		a.rec.Result = ResultFailed
-		a.rec.Detail += "; there is no earlier release to go back to, so current stays at " + a.rec.CurrentID
-		if s.record(a) == nil {
-			s.dropJournal()
-		}
-		s.printf("result: failed at %s; no earlier release, current stays at %s", step, a.rec.CurrentID)
-		return ExitFailed
-	}
-	if err := replaceLink(s.baseRoot, "current", a.oldTarget); err != nil {
-		// The journal stays: the next command puts the links back.
-		a.rec.Result = ResultFailed
-		a.rec.Detail += "; going back failed: " + q(err.Error())
-		s.record(a)
-		s.printf("result: failed at %s and could not go back (%s); current stays at %s", step, q(err.Error()), a.rec.CurrentID)
-		return ExitFailed
-	}
-	failedID := a.rec.CurrentID
-	a.rec.CurrentID = a.rec.PreviousID
-	s.restorePrevious(a)
-	s.printf("back: current -> %s", q(a.oldTarget))
-	if err := s.reload(ctx, a); err != nil {
-		a.rec.Detail += "; reload after going back failed: " + describe(err)
-	}
-	if err := s.checkHealth(ctx, a.health); err != nil {
-		a.rec.RestoredHealth = "failed"
-		a.rec.Detail += "; the release gone back to is not healthy either: " + describe(err)
-	} else {
-		a.rec.RestoredHealth = "ok"
-	}
-	a.rec.Result = ResultRolledBack
-	if s.record(a) == nil {
-		s.dropJournal()
-	}
-	s.printf("result: rolled-back: %s failed at %s, current -> %s (health after going back: %s)", failedID, step, a.rec.CurrentID, a.rec.RestoredHealth)
-	return ExitFailed
 }
 
-// restorePrevious puts previous back as it was before the switch.
-func (s *Switcher) restorePrevious(a *attempt) {
-	var err error
+// putPrevious points previous at what it pointed at before the switch, or
+// removes it when there was none.
+func (s *Switcher) putPrevious(a *attempt) error {
 	if a.prevExists {
-		err = replaceLink(s.baseRoot, "previous", a.prevTarget)
-	} else {
-		err = removeFileIn(s.baseRoot, "previous")
+		return replaceLink(s.baseRoot, "previous", a.prevTarget)
 	}
-	if err != nil {
-		s.printf("warning: previous not put back: %s", q(err.Error()))
-	}
+	return removeFileIn(s.baseRoot, "previous")
 }
 
 // record writes deploy.json. A dry run records nothing.

@@ -262,12 +262,23 @@ rename in step 6, a failure leaves `current` as it was.
 8. **record**: `deploy.json` is written, by writing a temporary file and
    renaming it over the old one, and then the journal is removed.
 
+Before the switch, in step 1, the release `current` points at (the
+fallback) is opened and verified as the switch policy says, and its own
+reload and health lists are read. A fallback that is missing or no longer
+verifies is not used, and the switch says so (`fallback: none: ...`).
+
 If the reload or the health check fails, the switch goes back: `current` is
-renamed back to the old release, `previous` is put back as it was, the reload
-list runs again and the health check runs again; the result is
-`rolled-back`, and `restored_health` says whether the old release came back
-healthy. On the very first switch there is nothing to go back to: `current`
-stays at the new release and the result is `failed`.
+renamed back to the fallback, `previous` is put back as it was, and the
+fallback's own `reload.list` and `health.cmd` run (never the failed
+release's). The result is `rolled-back` with `restored_health: ok` only when
+all of that succeeded. When putting the links back, the fallback's reload
+or its health fails, the failed release's `stop.list` runs to stop the
+decision services (the static status page stays), the result is
+`failed-recovery` with `restored_health: failed`, and the console is needed.
+With no fallback (the very first switch, or one that cannot be used),
+`current` stays at the new release, its `stop.list` runs, and the result is
+`failed` on a first switch and `failed-recovery` otherwise. A stop command
+that fails is noted in `detail`; the others still run.
 
 ### Interrupted switches and recover
 
@@ -300,7 +311,7 @@ refuses to overwrite a counter that is there.
 `deploy.json` holds `id` (the release asked for), `previous_id` (what `current`
 pointed at before), `current_id` (what it points at after), `counter`, `mode`
 (how the release was verified), `trust` (the policy's minimum, `manual`
-without a policy), `rollback`, `time` (UTC), `result` (`ok`, `failed` or `rolled-back`), `check`
+without a policy), `rollback`, `time` (UTC), `result` (`ok`, `failed`, `rolled-back` or `failed-recovery`), `check`
 (the no-AI check: `passed`, `failed` or `not run`), `failed_step` (`state`,
 `verify`, `counter`, `noaicheck`, `validate`, `packages`, `switch`, `reload`,
 `health`, `record` or `interrupted`; empty when ok; `import` for step 0), `error`, `detail`, `package_snapshot`
@@ -344,8 +355,10 @@ see its messages. The text of a broken state file is not repeated either.
 | No-AI check fails | Refused at noaicheck; no validator runs |
 | A validator fails | Refused at validate; nothing reloaded |
 | Package step fails | Refused at packages; `current` unchanged |
-| Reload or health fails after the switch | Back to the old release; `rolled-back` |
-| The old release is not healthy either | `rolled-back` with `restored_health: failed`; the console is needed |
+| Reload or health fails after the switch | Back to the old release, with its own reload and health lists; `rolled-back` |
+| Going back fails, or the old release is not healthy either | The failed release's `stop.list` runs; `failed-recovery` with `restored_health: failed`; the console is needed |
+| First switch, or the old release missing or no longer verifying, and the new one fails | `current` stays; its `stop.list` runs; `failed` or `failed-recovery` |
+| `--rollback-to` when `previous` points at a missing release | Refused at counter (`no-previous`) |
 | Crash or power loss during the switch | `current` points at a whole release, the old or the new one, and the journal is there; the next command settles it (see below) |
 | `highest-counter` missing or broken while `current` exists | Refused (`counter-missing`, `counter-invalid`); run `recover --counter N` |
 | A second switch while one runs | Exit 3; nothing done |

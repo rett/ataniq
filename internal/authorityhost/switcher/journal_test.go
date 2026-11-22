@@ -169,13 +169,13 @@ func TestReconcileRecord(t *testing.T) {
 		e := active(t)
 		e.release(rel3, "2026-11-01")
 		e.crashAt(CrashCurrent, false, rel3)
-		// The settling uses up the failing probes; the links are put
-		// back to rel2 and rel1, so the rollback then goes to rel1.
+		// The settling uses up the failing probes and goes back to rel2
+		// as a failed health check does; the rollback then goes to rel1.
 		e.runner.fail["health-probe"] = 30
 		if code := e.rollBack("previous"); code != ExitOK {
 			t.Fatalf("rollback: exit %d", code)
 		}
-		if !strings.Contains(e.last, "cannot be completed") || !strings.Contains(e.last, "reconcile: put back") {
+		if !strings.Contains(e.last, "cannot be completed") || !strings.Contains(e.last, "back: current -> releases/"+rel2) {
 			t.Errorf("output:\n%s", e.last)
 		}
 		if e.link("current") != "releases/"+rel1 || e.link("previous") != "releases/"+rel2 || e.highest() != "3" {
