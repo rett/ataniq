@@ -345,7 +345,12 @@ ah-switch [--root DIR] [--dry] ack --asked WORDS
   never runs. A program or copy that no longer matches is not run
   (`noaicheck-changed`), which fails the check. The default, the imported
   release's own checker, is a file of the verified, read-only release and
-  runs where it is.
+  runs where it is. The flag is refused, exit 2 before anything is looked
+  at, when `SUDO_UID` or `SUDO_USER` is set in the switch's environment:
+  sudo always sets them and a sudo rule cannot unset them, so a caller with
+  a rule for the switch could otherwise replace the check with a program
+  that always passes. The override is for the owner's own root session; a
+  root shell started with `sudo` is not one, it needs a real root login.
 - `--rollback-to previous` goes back to the release `previous` points at. It
   accepts that release's id too, and refuses any other.
 - `--dry` prints every step and what it would do, runs no program and changes
@@ -675,19 +680,23 @@ only its existence matters to the services.
 - A healthy transaction found in phase `done` by a later command (a
   reboot, or a crash, came between its health check and its settling)
   is not taken as healthy on its word: the release `current` points at,
-  verified again, runs its `reload.list` and its `health.cmd` again,
-  decisions still inhibited, before the inhibit is removed. When either
-  fails, the outcome is recorded as it was decided, with
-  `after an interruption in phase done, ... did not pass its reload and
-  health check again` in `detail`, decisions stay inhibited, and the
-  command exits 1 whatever it was asked: it never reports the decided
-  `ok`. Because the reload list was started, a service may be running, so
-  the host's stop list runs (a failing stop command is added to `detail`).
+  verified again, runs its `reload.list`, its `health.cmd` and its
+  post-activation no-AI check (`--phase post`, with a new firewall listing,
+  so the firewall and listeners as they are now) again, decisions still
+  inhibited, before the inhibit is removed. The verdict of the no-AI check
+  before the interruption is not reused. When any of it fails, the outcome
+  is recorded as it was decided (a failed no-AI check also as the record's
+  check verdict), with `after an interruption in phase done, ... did not
+  pass its reload, health check and no-AI check again` in `detail`,
+  decisions stay inhibited, and the command exits 1 whatever it was asked:
+  it never reports the decided `ok`. Because the reload list was started,
+  a service may be running, so the host's stop list runs (a failing stop
+  command is added to `detail`).
   The failure is kept apart from the decided outcome: the outcome in
   `owed.json` carries `requalify_failed: true`, and while it is owed the
   same request run again fails again (exit 1, `decisions stay inhibited`)
-  and leaves it owed, instead of reporting the old `ok` once and taking it
-  back; `ah-switch ack --asked WORDS` takes it back, and the inhibit stays
+  and leaves it owed, instead of reporting the old `ok`; `ah-switch ack
+  --asked WORDS` takes it back, and the inhibit stays
   until a healthy switch or `inhibit-clear`. `status` says so while the
   journal is there (`requalify: ...`) and afterwards on the owed outcome.
 - Any other end keeps it, with the outcome as its reason: a failure after
@@ -731,7 +740,7 @@ order:
 | `activating` | The links point at the new release; its reload, health and post-activation check run | Verifies the release again, makes and syncs both links again, runs its reload list, health check and post-activation check again: `ok` (`completed after an interruption`), or goes back as a failed health check does |
 | `restoring` | Going back to the old release | Does all of going back again, from stopping the failed release's services |
 | `stopping` | The decision services are being stopped | Runs every stop list again |
-| `done` | The outcome is decided | Syncs the link folder, appends to `counters.log` (when it lacks the counter) and writes `highest-counter` when the counter was used; when the transaction ended healthy, runs the reload list and health check of the release `current` points at again (a reboot may have come; see "The decision inhibit"); records the outcome, removes the inhibit only when that passed, and removes the journal |
+| `done` | The outcome is decided | Syncs the link folder, appends to `counters.log` (when it lacks the counter) and writes `highest-counter` when the counter was used; when the transaction ended healthy, runs the reload list, health check and post-activation no-AI check of the release `current` points at again (a reboot may have come; see "The decision inhibit"); records the outcome, removes the inhibit only when that passed, and removes the journal |
 
 A transaction that dies (a crash, a power loss, a kill) leaves `txn.json`.
 Every switch, rollback and `recover` takes the lock and resumes it from its
@@ -785,23 +794,22 @@ went to, `forward:ID` or `rollback:ID`), its `direction`, what was asked
 `time`. It is written before the journal is removed, by whichever command
 settles the transaction, and it stays owed after the switch printed its
 result line: a line written to the switch's output is no proof that it
-reached the one who asked (a remote session can drop it). Only two
-things take it back:
+reached the one who asked (a remote session can drop it). Two things
+concern it, and only the second takes it back:
 
 - **The same request, run again**, reports the outcome and does nothing
   else (`settled: this ... has been settled already; it is not done
-  again`), and the outcome is no longer owed. A rollback is bound to its
-  request id: retried as `--rollback-to previous` (or by the id it went
+  again`), and the outcome stays owed: any caller allowed the switch form
+  can send the request again, so a retry is a report and never an
+  acknowledgement. A rollback is bound to its request id: retried as `--rollback-to previous` (or by the id it went
   to), it reports the rollback whose outcome is owed and never resolves
   `previous` anew, which would go back to the release the first rollback
   left. A forward switch is retried by the same id. Run the request once
   more to do it again. When the report cannot be written or flushed (a
   full filesystem, a dropped session) the outcome has not been delivered:
   it stays owed, the command exits 1 and says so on its error output, and
-  the next retry reports it.
-  An outcome whose requalification failed (see "The decision inhibit")
-  is the exception: it is reported with exit 1, stays owed, and only
-  `ack` takes it back.
+  the next retry reports it. An outcome whose requalification failed (see
+  "The decision inhibit") is reported with exit 1, as before.
 - **`ah-switch ack --asked WORDS`**, the owner's acknowledgement that the
   outcomes were seen, with in `WORDS` what was asked or seen (1 to 512
   bytes). It prints every outcome owed, records the time, the words and
@@ -813,7 +821,15 @@ things take it back:
   cannot be written or flushed has not been seen: when printing the
   outcomes fails, `ack` records nothing, keeps `owed.json`, says so on its
   error output and exits 1, and the same `ack` run again shows and
-  acknowledges them.
+  acknowledges them. An `ack` killed after it recorded the receipt and
+  before it removed `owed.json` leaves both files: the next `ack` finds the
+  recorded transactions to be exactly those owed, so it only finishes
+  removing `owed.json` and says so, and keeps the owner's first words and
+  time in `deploy.json` (the `WORDS` of the retry are not recorded).
+
+After every switch or rollback, then, the owner's `ack` is needed before
+the next different switch or rollback: a retry of the request does not
+free it.
 
 Any other switch or rollback while an outcome is owed (another release,
 or one that is not there) first reports the outcomes owed (`owed: the ...
@@ -934,15 +950,16 @@ see its messages. The text of a broken state file is not repeated either.
 | Going back fails (putting `previous` back included), or the old release is not healthy or fails its no-AI check | The host's `stop.list` and the stop lists of both releases run; `failed-recovery` with `restored_health: failed`; decisions stay inhibited; the console is needed |
 | First switch, or the old release missing or no longer verifying, and the new one fails | `current` stays; the host's and the release's stop lists run; `failed` or `failed-recovery`; decisions stay inhibited, across a reboot |
 | `decisions.inhibit` there after a failure | Decision-capable services may run but refuse every decision; a later healthy switch or `inhibit-clear --asked WORDS` removes it |
-| Reboot or crash after a healthy release was decided (`done`) and before it was settled | The next command runs the reload list and health check of `current` again before removing the inhibit; when they fail, the host's stop list runs, decisions stay inhibited, the outcome stays owed with `requalify_failed`, and that command and every retry of the same request exit 1 until `ack --asked WORDS` |
+| Reboot or crash after a healthy release was decided (`done`) and before it was settled | The next command runs the reload list, health check and post-activation no-AI check of `current` again before removing the inhibit; when any fails, the host's stop list runs, decisions stay inhibited, the outcome stays owed with `requalify_failed`, and that command and every retry of the same request exit 1 until `ack --asked WORDS` |
 | A stop command fails | `result: unresolved`, exit 1; the journal stays in `stopping`; every later command runs the stops again and does nothing else until they pass, or `recover --services-stopped` |
 | A link folder cannot be synced | `result: unresolved`, exit 1; the journal stays; nothing is recorded as done until the next command syncs it |
 | `--rollback-to` when `previous` points at a missing release | Refused at counter (`no-previous`) |
 | Crash or power loss during the switch | `current` points at a whole release, the old or the new one, and the journal is there; the next command resumes its phase (see "The journal and recover") |
-| The same request run again while its outcome is owed (settled by its own command or by another one, its result line printed or not) | Reports that outcome once and does nothing else; a rollback retried as `previous` goes to no other release; `--dry` only shows it |
+| The same request run again while its outcome is owed (settled by its own command or by another one, its result line printed or not) | Reports that outcome and does nothing else, and the outcome stays owed until `ack`; a rollback retried as `previous` goes to no other release; `--dry` only shows it |
 | The same request run again, and its report cannot be written or flushed | The outcome stays owed; exit 1; the next retry reports it |
+| An `ack` killed after it recorded the receipt and before it removed `owed.json` | Both files stay; the next `ack` removes `owed.json` only and keeps the first words and time |
 | `ack` run when the outcomes it acknowledges cannot be written or flushed | Nothing is recorded and `owed.json` stays; exit 1; run `ack` again |
-| Another switch or rollback while an outcome is owed | Reports the outcomes owed, leaves them owed and is refused, exit 1, nothing recorded or run, until `ack --asked WORDS` or the same request again |
+| Another switch or rollback while an outcome is owed | Reports the outcomes owed, leaves them owed and is refused, exit 1, nothing recorded or run, until the owner's `ack --asked WORDS` (the same request run again only reports the outcome) |
 | `highest-counter` missing or broken while `current` exists, or below a counter the links, `deploy.json` or `counters.log` show was used | Refused before anything, nothing recorded (`counter-missing`, `counter-invalid`); run `recover --counter N` |
 | A journal whose links or counter do not match the host (restored from a backup) | `reconcile: unresolved`, exit 1; nothing resumed, run or moved until `recover --discard-journal TXN` |
 | A journal that cannot be checked against the host (its evidence cannot be read) | `reconcile: unresolved`, exit 1; neither resumed nor discarded until the evidence is readable; a journal in `stopping` still gets the host's stop list first |
