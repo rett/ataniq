@@ -224,24 +224,26 @@ func (s *Switcher) crash(point string) error {
 // The points crash is called at: between every two durable steps of a
 // transaction, in their order.
 const (
-	CrashPackageStart  = "package-start"  // txn.json says packages/started; the package step has not run
-	CrashPackageRan    = "package-ran"    // the package step exited 0; txn.json still says started
-	CrashPackageDone   = "package-done"   // txn.json says packages/done
-	CrashLinks         = "links"          // txn.json says links
-	CrashCounter       = "counter"        // highest-counter written
-	CrashPrevious      = "previous"       // previous written
-	CrashCurrent       = "current"        // current written
-	CrashActivating    = "activating"     // txn.json says activating
-	CrashReload        = "reload"         // the new release's reload list ran
-	CrashHealth        = "health"         // the new release is healthy
-	CrashPostCheck     = "postcheck"      // the post-activation no-AI check passed
-	CrashPutBack       = "put-back"       // the links of a links phase are put back
-	CrashRestoring     = "restoring"      // txn.json says restoring
-	CrashRestoreLinks  = "restore-links"  // current and previous are back
-	CrashRestoreReload = "restore-reload" // the old release's reload list ran
-	CrashStopping      = "stopping"       // txn.json says stopping
-	CrashStopped       = "stopped"        // every stop command ran; txn.json still says stopping
-	CrashDone          = "done"           // txn.json says done
-	CrashRecord        = "record"         // deploy.json written; txn.json still there
-	CrashUnreported    = "unreported"     // txn.json removed; the result line not printed yet
+	CrashPackageStart     = "package-start"     // txn.json says packages/started; the package step has not run
+	CrashPackageRan       = "package-ran"       // the package step exited 0; txn.json still says started
+	CrashPackageDone      = "package-done"      // txn.json says packages/done
+	CrashLinks            = "links"             // txn.json says links
+	CrashCounter          = "counter"           // highest-counter written
+	CrashPrevious         = "previous"          // previous written
+	CrashCurrent          = "current"           // current written
+	CrashActivating       = "activating"        // txn.json says activating
+	CrashReload           = "reload"            // the new release's reload list ran
+	CrashHealth           = "health"            // the new release is healthy
+	CrashPostCheck        = "postcheck"         // the post-activation no-AI check passed
+	CrashPutBack          = "put-back"          // the links of a links phase are put back
+	CrashRestoring        = "restoring"         // txn.json says restoring
+	CrashCandidateStopped = "candidate-stopped" // going back: the services of the transaction's release are stopped
+	CrashRestoreLinks     = "restore-links"     // current and previous are back
+	CrashRestoreReload    = "restore-reload"    // the old release's reload list ran
+	CrashRestoreHealth    = "restore-health"    // the old release is healthy; its no-AI check not run yet
+	CrashStopping         = "stopping"          // txn.json says stopping
+	CrashStopped          = "stopped"           // every stop command ran; txn.json still says stopping
+	CrashDone             = "done"              // txn.json says done
+	CrashRecord           = "record"            // deploy.json written; txn.json still there
+	CrashUnreported       = "unreported"        // txn.json removed; the result line not printed yet
 )

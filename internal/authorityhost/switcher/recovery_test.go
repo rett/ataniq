@@ -38,15 +38,25 @@ func activeOwn(t *testing.T) *env {
 }
 
 // TestGoingBackUsesTheOldReleasesLists: after rel3 fails its health check,
-// the switch goes back to rel2 and runs rel2's reload and health commands,
-// not rel3's, and stops nothing.
+// the switch stops rel3's services with rel3's own stop list, goes back to
+// rel2 and runs rel2's reload and health commands, not rel3's, and its
+// no-AI check; it runs neither the host's stop list nor rel2's.
 func TestGoingBackUsesTheOldReleasesLists(t *testing.T) {
 	e := activeOwn(t)
 	e.runner.fail["health-probe"] = -1
 	if code := e.switchTo(rel3); code != ExitFailed {
 		t.Fatalf("exit %d", code)
 	}
-	e.ran(map[string]int{"reload-units": 1, "reload-old": 1, "health-old": 1, "stop-all": 0, "stop-app": 0, "stop-old": 0})
+	e.ran(map[string]int{"reload-units": 1, "reload-old": 1, "health-old": 1, "stop-all": 0, "stop-app": 1, "stop-old": 0})
+	var order []string
+	for _, c := range e.runner.calls {
+		if f := strings.Fields(c); f[0] == "stop-app" || f[0] == "reload-old" || strings.Contains(c, "--phase post --root "+e.root+" --release "+e.relDir(rel2)+" ") {
+			order = append(order, filepath.Base(f[0]))
+		}
+	}
+	if strings.Join(order, " ") != "stop-app reload-old ah-noaicheck" {
+		t.Errorf("going back ran %v", order)
+	}
 	rec := e.record()
 	if rec.Result != ResultRolledBack || rec.RestoredHealth != "ok" || rec.CurrentID != rel2 || rec.ServicesStopped {
 		t.Errorf("record: %+v", rec)
@@ -72,7 +82,7 @@ func TestFailedRecovery(t *testing.T) {
 			if rec.Result != ResultFailedRecovery || rec.RestoredHealth != "failed" || rec.FailedStep != "health" || !rec.ServicesStopped {
 				t.Errorf("record: %+v", rec)
 			}
-			e.ran(map[string]int{"stop-all": 1, "stop-app": 1, "stop-old": 1})
+			e.ran(map[string]int{"stop-all": 1, "stop-app": 2, "stop-old": 1})
 			if !strings.Contains(e.last, "the decision services are stopped") {
 				t.Errorf("output:\n%s", e.last)
 			}
@@ -286,7 +296,7 @@ func TestReconcileFailedRecovery(t *testing.T) {
 	if code := e.switchTo("0004-ddddddd"); code != ExitFailed {
 		t.Fatalf("exit %d", code)
 	}
-	e.ran(map[string]int{"stop-all": 1, "stop-app": 1, "stop-old": 1, "ah-noaicheck": 0})
+	e.ran(map[string]int{"stop-all": 1, "stop-app": 2, "stop-old": 1, "ah-noaicheck": 0})
 	if !strings.Contains(e.last, "result: failed-recovery") || !strings.Contains(e.last, "nothing else is done") {
 		t.Errorf("output:\n%s", e.last)
 	}

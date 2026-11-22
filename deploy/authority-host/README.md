@@ -40,6 +40,7 @@ switch runs it.
   deploy.json             the outcome of the last switch
   highest-counter         the highest counter a switch ever attempted
   counters.log            every counter a switch attempted, appended
+  decisions.inhibit       while it is there, no decision service starts
   txn.json                the journal of the transaction under way
   switch.lock             the lock of a running switch
   imported/<id>           the record of the import that made releases/<id>
@@ -122,14 +123,19 @@ switch runs it.
     release, not the live one.
   - `reload.list`: one reload command per line, such as
     `systemctl daemon-reload` or `systemctl reload caddy`. These act on what
-    `current` points at and may not use `{release}`.
+    `current` points at and may not use `{release}`. They must (re)start
+    every decision service the release runs (`systemctl restart`, not only
+    `reload`): going back to a release first stops the failed release's
+    services, then runs the reload list of the release gone back to.
   - `health.cmd`: one or more health commands, one per line, each of which
     exits 0 when its part is healthy: usually the front end (`/healthz` on
     Caddy) and the application's readiness (`/readyz`). Every line must
     pass. It may not use `{release}` either.
   - `stop.list`: the commands that stop the decision services, such as
-    `systemctl stop ataniq-seat`, run when no healthy release is left (see
-    the failure cases); the static status page stays. No `{release}`.
+    `systemctl stop ataniq-seat`, run when no healthy release is left, and
+    for the release a switch goes back from, before the earlier release is
+    reloaded (see the failure cases); the static status page stays. No
+    `{release}`.
 
   In each list, blank lines and `#` lines are skipped. A list holds at most 64
   commands and a command at most 32 words. A command is its words
@@ -254,6 +260,7 @@ ah-switch [--root DIR [--allow-exec]] [--dry] recover --counter N
 ah-switch [--root DIR [--allow-exec]] [--dry] recover --package-state SNAPSHOT
 ah-switch [--root DIR [--allow-exec]] [--dry] recover --services-stopped
 ah-switch [--root DIR [--allow-exec]] [--dry] recover --discard-journal TXN
+ah-switch [--root DIR] [--dry] inhibit-clear --asked WORDS
 ```
 
 - `--root DIR` is the folder that holds `opt/authority-host`,
@@ -309,6 +316,8 @@ ah-switch [--root DIR [--allow-exec]] [--dry] recover --discard-journal TXN
   `recover --services-stopped` settles a transaction whose stop commands
   failed, and `recover --discard-journal TXN` sets aside a journal that
   does not match the host; see "The journal and recover".
+- `inhibit-clear --asked WORDS` removes the decision inhibit on the
+  owner's word; see "The decision inhibit".
 
 Flags may come before or after the id.
 
@@ -317,7 +326,8 @@ Flags may come before or after the id.
 `ah-switch ID` prints each step and stops at the first failure. Up to the
 renames in step 6, a failure leaves `current` as it was (a package step
 that already ran stays applied, and `deploy.json` says so, or says that
-the package state is unknown).
+the package state is unknown; after a package step the decision services
+are stopped and decisions stay inhibited, see step 4).
 
 0. **import** (only with `--from`): the incoming folder is copied into
    `releases/.import-ID`, as described above.
@@ -340,7 +350,9 @@ the package state is unknown).
    (`counter_used`), the highest counter of `counters.log`, and every
    other release folder in `releases/` (the counter of its name, and of
    its `MANIFEST` when that can be read), so a `highest-counter` restored
-   from an older state cannot admit an old release again.
+   from an older state cannot admit an old release again. A rollback skips
+   this rule but accepts only the release `previous` points at, and only
+   when that release folder is there.
 
    `counters.log` holds one line `COUNTER ID TIME` per forward switch that
    used its counter, appended and synced (with its folder) before
@@ -351,8 +363,7 @@ the package state is unknown).
    `highest-counter` restored from an older copy. A line cut short by a
    crash (the end of the file after its last newline) is not an attempt
    and is cut off before the next line is appended; any other line that
-   does not parse stops the switch, as unreadable evidence does. A rollback skips this rule but accepts only the release
-   `previous` points at, and only when that release folder is there.
+   does not parse stops the switch, as unreadable evidence does.
 
    Before any of the steps, and before anything is recorded, a switch or
    rollback checks `highest-counter` itself against the counters the host
@@ -367,9 +378,11 @@ the package state is unknown).
 3. **packages**: when the manifest's `package_snapshot` differs from the one
    recorded in `deploy.json`, the release's
    `bin/ah-pkgstep --release DIR --from OLD --to NEW` runs, within 30 minutes
-   (taking a filesystem snapshot first is that program's job). It runs
-   before the no-AI check and the validators, so that they see the host as
-   it will be. A changed snapshot and no `bin/ah-pkgstep` is a failure
+   (taking a filesystem snapshot first is that program's job). The no-AI
+   check of step 4 runs once before it, on the release's own inputs, while
+   nothing has changed or begun, and once more after it, with the
+   validators, on the host as the step left it. The transaction begins
+   (`decisions.inhibit`, then the journal) just before the step runs. A changed snapshot and no `bin/ah-pkgstep` is a failure
    (`package-step-missing`). The step's progress is journaled in
    `txn.json` (`started`, with its process id and start time once it runs,
    then `done`), and on success the new snapshot is what `deploy.json`
@@ -407,7 +420,12 @@ the package state is unknown).
    to stop.
 4. **noaicheck**: the new release's no-AI check runs in its first phase,
    `bin/ah-noaicheck --phase pre --root ROOT --release DIR --require-policy`,
-   and must exit 0 within 5 minutes. This phase scans the release's own
+   and must exit 0 within 5 minutes: before the package step when there is
+   one (a failure then changes nothing), and before the validators on the
+   host as it now is. A failure of the second, or of a validator, after a
+   package step ran is a failure of a host that changed and that nothing
+   qualified since: the transaction stops the decision services (the
+   stopping phase, below), decisions stay inhibited, and it exits 1. This phase scans the release's own
    files (the units under its `etc/systemd` and the environment names they
    set) and the host's AI binaries and credentials, but not the listening
    ports and the firewall digest: those are still the old release's until
@@ -446,19 +464,23 @@ the package state is unknown).
    failed health check does, so a release whose units open a new listener
    or set a provider variable is never recorded as `ok`. The check program
    is journaled, so a resumed activation runs the same one. Going back to
-   the old release does not run the check again: that release passed it
-   when it was switched to.
+   the old release runs the check again, its own (or the journaled
+   override), on the host as it then is: the package step may have changed
+   it since that release passed.
 9. **record**: the journal says `done` with the outcome; the link folder is
    synced once more, `deploy.json` is written (a temporary file renamed over
-   the old one) and the journal is removed. Only then does the switch print
-   `result: ok` and exit 0. When any of that fails it prints `result:
+   the old one), the decision inhibit is removed when the transaction
+   ended healthy (or kept, with the outcome as its reason), and the
+   journal is removed. Only then does the switch print `result: ok` and
+   exit 0. When any of that fails it prints `result:
    unresolved`, exits 1 and leaves the journal, and the next command
    records the outcome.
 
 A link is taken as moved only once its folder is synced. A rename that is
 visible but whose folder could not be synced is not trusted to survive a
-power loss: the switch then puts both links back (as the resume of the
-`links` phase does, below); if that cannot be synced either, it stops with
+power loss: the switch then puts both links back and goes back (as the
+resume of the `links` phase does, below); if that cannot be synced
+either, it stops with
 `result: unresolved` and the journal still in `links`, and the next
 command syncs and settles it. No outcome is recorded, and the journal is
 never removed, before the link folder is synced.
@@ -472,11 +494,17 @@ reload and health lists are read. A fallback that is missing or no longer
 verifies is not used, and the switch says so (`fallback: none: ...`).
 
 If the reload, the health check or the post-activation check fails, the
-journal says `restoring` before anything is put back: `current` is renamed back to the fallback,
-`previous` is put back as it was, both synced, and the fallback's own
-`reload.list` and `health.cmd` run (never the failed release's). The result
-is `rolled-back` with `restored_health: ok` only when all of that
-succeeded, putting `previous` back included. Otherwise (or with no
+journal says `restoring` before anything is put back. First the failed
+release's services are stopped, so that nothing only it runs survives
+going back: its own `stop.list` when it still verifies, the host's own
+stop list when it does not. Then `current` is renamed back to the
+fallback, `previous` is put back as it was, both synced, and the
+fallback's own `reload.list` and `health.cmd` run (never the failed
+release's), then the no-AI check of its phase post (the fallback's own
+`bin/ah-noaicheck`, or the journaled `--noaicheck` program, with a new
+firewall listing), on the host as it now is. The result is `rolled-back`
+with `restored_health: ok` only when all of that succeeded, putting
+`previous` back included. Otherwise (or with no
 fallback: the very first switch, or one that cannot be used, when
 `current` stays at the new release) the journal says `stopping` and the
 decision services are stopped (the static status page stays): first the
@@ -485,7 +513,8 @@ release and of the fallback, each one that verifies (a release that does
 not verify runs no code; the host's list does not depend on any release).
 The result is `failed` on a first switch and `failed-recovery` otherwise,
 with `restored_health: failed` when going back was tried, and
-`services_stopped: true`; the console is needed. A stop command that fails
+`services_stopped: true`; the console is needed, and decisions stay
+inhibited. A stop command that fails
 does not stop the others, but the switch then never says the services are
 stopped: the journal stays in `stopping` with the commands that failed,
 the command prints `result: unresolved` and exits 1, and every later
@@ -499,6 +528,55 @@ A switch or rollback is refused while it is missing, empty or not
 trusted, and `status` says so; only the stops a journal in `stopping`
 owes run first (the lists of the releases that verify: the journal then
 stays in `stopping`, since the host's list did not run).
+
+### The decision inhibit
+
+`/var/lib/authority-host/decisions.inhibit` is the switch's own file
+(root-owned, mode 0644, written whole and synced with its folder): while
+it is there, no decision-capable service starts. The contract for the
+service units is that every decision-capable unit carries
+
+```
+ConditionPathExists=!/var/lib/authority-host/decisions.inhibit
+```
+
+so systemd skips starting it while the file exists, at boot as at any
+other start; the release builder adds it to every such unit (the switch
+does not check the units for it). It holds the id of the transaction that
+set it and why (`txn`, `reason`, `time`); only its existence matters to
+the units.
+
+- The switch writes it at the start of every transaction: before the
+  package step, or, without one, before the journal says `links`. A
+  resumed transaction whose file is gone gets it again before anything
+  of it runs.
+- It is removed only when the transaction ends healthy: a switch or
+  rollback whose release passed its health check and its post-activation
+  no-AI check (`ok`), or a going back whose release passed its reload, its
+  health check and its no-AI check of phase post (`rolled-back` with
+  `restored_health: ok`). The removal is synced before the journal is
+  removed.
+- Any other end keeps it, with the outcome as its reason: a failure after
+  the package step changed the host, a failed recovery, a first switch
+  that failed (with its release still `current`), an interrupted package
+  step. It survives a reboot (it is a file), so a failed release's
+  decision services do not start again at boot. `recover
+  --services-stopped` keeps it too: that the services are stopped is not
+  that the host is qualified.
+- Besides a later transaction that ends healthy, only the owner removes
+  it: `ah-switch inhibit-clear --asked WORDS`, after looking at the host,
+  with in `WORDS` what was asked or seen (1 to 512 bytes). The time and
+  the words are recorded in `deploy.json` (`inhibit_cleared_at`,
+  `inhibit_cleared_asked`) and kept by later records. It runs no program,
+  is refused while a transaction is open (run any command to settle it
+  first) or when there is nothing to clear, and with `--dry` changes
+  nothing. Removing the file does not start anything: start the services
+  by hand, or switch.
+- A failure before any transaction begins (verify, counter, the no-AI
+  check before the package step, or any step when there is no package
+  step) changes nothing on the host, and neither sets nor removes it.
+- `status` says `decisions: inhibited (...)` with the transaction and the
+  reason, or `decisions: not inhibited`.
 
 ### The journal and recover
 
@@ -514,10 +592,10 @@ order:
 
 | Phase | What it means | How the next command resumes it |
 | --- | --- | --- |
-| `packages` | The package step runs or ran; no link was touched | Makes sure the step has ended, then records the switch as `failed`: `interrupted` when the step was done, or `package-step-interrupted` with the package state unknown when it was not |
-| `links` | The counter is used and the links are being moved; nothing was reloaded | Puts `current` and `previous` back exactly as they were and records `rolled-back` (`failed` on a first switch) with the code `interrupted` |
+| `packages` | The package step runs or ran; no link was touched | Makes sure the step has ended, then stops the decision services (the host changed, and nothing checked it) and records the switch as `failed`: `interrupted` when the step was done, or `package-step-interrupted` with the package state unknown when it was not |
+| `links` | The counter is used and the links are being moved; nothing was reloaded | Puts `current` and `previous` back exactly as they were, then goes back as a failed health check does (restoring), so that the old release is qualified again: `rolled-back` with the code `interrupted`; on a first switch the decision services are stopped and it records `failed` |
 | `activating` | The links point at the new release; its reload, health and post-activation check run | Verifies the release again, makes and syncs both links again, runs its reload list, health check and post-activation check again: `ok` (`completed after an interruption`), or goes back as a failed health check does |
-| `restoring` | Going back to the old release | Does all of going back again, from putting the links back |
+| `restoring` | Going back to the old release | Does all of going back again, from stopping the failed release's services |
 | `stopping` | The decision services are being stopped | Runs every stop list again |
 | `done` | The outcome is decided | Syncs the link folder, appends to `counters.log` (when it lacks the counter) and writes `highest-counter` when the counter was used, records the outcome and removes the journal |
 
@@ -587,7 +665,8 @@ the time in `package_stated_at`, and switches go on from there.
 statement that the decision services are stopped (by hand, or the failing
 command was not needed). It runs nothing, and records that statement with
 the time in `detail`, with `services_stopped: true`. Use it only once every
-decision service is really stopped.
+decision service is really stopped. It leaves the decision inhibit (see
+"The decision inhibit"); `inhibit-clear` removes that.
 
 ### deploy.json
 
@@ -608,7 +687,9 @@ counter for step 2), `restored_health` (`ok`, `failed` or empty),
 `services_stopped` (the decision services were stopped), and `txn`,
 `requested`, `request_id` and `pending_report` (the transaction this
 record ends, what was asked, its direction and release as `forward:ID` or
-`rollback:ID`, and whether its outcome is still to be reported). A dry run
+`rollback:ID`, and whether its outcome is still to be reported), and
+`inhibit_cleared_at` and `inhibit_cleared_asked` (when the owner last
+removed the decision inhibit by hand, and the words given). A dry run
 writes nothing.
 
 `error` is a stable failure code, such as `release-exists`, `bad-entry`,
@@ -656,14 +737,17 @@ see its messages. The text of a broken state file is not repeated either.
 | Counter not above the highest ever attempted | Refused at counter |
 | `--rollback-to` anything but previous | Refused at counter |
 | The snapshot changes and there is no package step | Refused at packages; `current` unchanged |
-| Package step fails | Refused at packages; `current` unchanged; the package state is unknown, and every switch is refused until `recover --package-state` or a switch to the same new snapshot runs the step to the end |
-| No-AI check fails before activation (phase pre) | Refused at noaicheck, after the package step; no validator runs |
+| Package step fails | Failed at packages; `current` unchanged; the decision services are stopped and decisions stay inhibited; the package state is unknown, and every switch is refused until `recover --package-state` or a switch to the same new snapshot runs the step to the end |
+| No-AI check fails before the package step (phase pre) | Refused at noaicheck; nothing ran, nothing began |
+| No-AI check (phase pre) or a validator fails after the package step | Failed at noaicheck or validate; `current` unchanged; the decision services are stopped and decisions stay inhibited |
+| No-AI check fails before activation, with no package step | Refused at noaicheck; no validator runs |
 | No-AI check fails after the reload and health (phase post), or `nft` fails | Back to the old release, as for a failed health check; `failed_step: postcheck` |
 | A validator fails | Refused at validate; nothing reloaded |
-| Crash during the package step | The next command makes sure the step has ended and records `package-step-interrupted` with the package state unknown |
-| Reload or health fails after the switch | Back to the old release, with its own reload and health lists; `rolled-back` |
-| Going back fails (putting `previous` back included), or the old release is not healthy either | The host's `stop.list` and the stop lists of both releases run; `failed-recovery` with `restored_health: failed`; the console is needed |
-| First switch, or the old release missing or no longer verifying, and the new one fails | `current` stays; the host's and the release's stop lists run; `failed` or `failed-recovery` |
+| Crash during the package step | The next command makes sure the step has ended, stops the decision services and records `package-step-interrupted` with the package state unknown; decisions stay inhibited |
+| Reload or health fails after the switch | The new release's stop list (the host's, when it no longer verifies), then back to the old release, with its own reload and health lists and its no-AI check; `rolled-back`, and decisions are no longer inhibited |
+| Going back fails (putting `previous` back included), or the old release is not healthy or fails its no-AI check | The host's `stop.list` and the stop lists of both releases run; `failed-recovery` with `restored_health: failed`; decisions stay inhibited; the console is needed |
+| First switch, or the old release missing or no longer verifying, and the new one fails | `current` stays; the host's and the release's stop lists run; `failed` or `failed-recovery`; decisions stay inhibited, across a reboot |
+| `decisions.inhibit` there after a failure | Decision-capable units do not start; a later healthy switch or `inhibit-clear --asked WORDS` removes it |
 | A stop command fails | `result: unresolved`, exit 1; the journal stays in `stopping`; every later command runs the stops again and does nothing else until they pass, or `recover --services-stopped` |
 | A link folder cannot be synced | `result: unresolved`, exit 1; the journal stays; nothing is recorded as done until the next command syncs it |
 | `--rollback-to` when `previous` points at a missing release | Refused at counter (`no-previous`) |
@@ -683,9 +767,15 @@ release folder is evidence of its counter (step 2).
 
 What the switch does not do, so that nobody relies on it:
 
+- A signed release is code that runs as root (its no-AI check, its
+  package step, its units): the signature decides what may run, and the
+  switch's checks of an honest release are not a privilege boundary.
 - It does not check that a release's lists cover what the release ships
-  (see the lists above): a signed release already carries code that runs
-  as root, so that coverage is the release builder's job.
+  (see the lists above), nor that its decision-capable units carry the
+  inhibit condition: that coverage is the release builder's job.
+- The decision inhibit keeps units from starting; it does not stop a
+  service that is running. That is the stop lists' job, and a unit
+  without the condition is not held back by it.
 - The journal makes a switch safe against crashes, power loss and kills,
   and the trust checks keep other accounts out; neither protects against
   someone who is root on the host, who can rewrite any of it.
@@ -696,8 +786,6 @@ What the switch does not do, so that nobody relies on it:
 - A release whose stop list cannot be verified when the services must be
   stopped does not run it: the host's own stop list is what must cover
   every decision service.
-- Going back to the old release runs its reload and health lists, not the
-  no-AI check again.
 - A release folder restored from a backup has new inodes, and needs to be
   imported again with `--from`.
 

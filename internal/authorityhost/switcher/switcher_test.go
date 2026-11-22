@@ -531,8 +531,9 @@ func TestNoAICheckOverrideChanged(t *testing.T) {
 		if e.runner.called("other-check") != 1 {
 			t.Errorf("the changed check ran: %v", e.runner.calls)
 		}
+		// Neither release can be checked with it: going back fails too.
 		rec := e.record()
-		if rec.Result != ResultRolledBack || rec.FailedStep != "postcheck" || rec.Error != CodeNoAICheckChanged {
+		if rec.Result != ResultFailedRecovery || rec.FailedStep != "postcheck" || rec.Error != CodeNoAICheckChanged || !rec.ServicesStopped {
 			t.Errorf("record: %+v", rec)
 		}
 	})
@@ -746,38 +747,81 @@ func TestPackageStepMissingRefused(t *testing.T) {
 	}
 }
 
-// TestPackageStepBeforeCheck: the package step runs before the no-AI check
-// and the validators, so they see the host as it will be; when the check
-// then fails, the new snapshot is what deploy.json records and the step is
-// not run again for it.
+// TestPackageStepBeforeCheck: the no-AI check (phase pre) runs before the
+// package step, on the release's own inputs, and again after it, on the
+// host the step changed, before the validators. A failure of the first
+// changes nothing and begins nothing. A failure of the second, after the
+// package step changed the host, stops the decision services and leaves
+// decisions inhibited; the new snapshot is what deploy.json records and
+// the step is not run again for it.
 func TestPackageStepBeforeCheck(t *testing.T) {
-	e := active(t)
-	e.release(rel3, "2026-11-15")
-	e.runner.fail["ah-noaicheck"] = 1
-	if code := e.switchTo(rel3); code != ExitFailed {
-		t.Fatal(code)
+	order := func(e *env) string {
+		var o []string
+		for _, c := range e.runner.calls {
+			o = append(o, filepath.Base(strings.Fields(c)[0]))
+		}
+		return strings.Join(o, " ")
 	}
-	var order []string
-	for _, c := range e.runner.calls {
-		order = append(order, filepath.Base(strings.Fields(c)[0]))
+	inhibited := func(e *env) bool {
+		_, err := os.Stat(filepath.Join(e.root, StateDir, InhibitFile))
+		return err == nil
 	}
-	if strings.Join(order, " ") != "ah-pkgstep ah-noaicheck" {
-		t.Errorf("order: %v", order)
-	}
-	e.unchanged("releases/"+rel2, "noaicheck")
-	if rec := e.record(); rec.PackageSnapshot != "2026-11-15" {
-		t.Errorf("record: %+v", rec)
-	}
-	if _, err := os.Stat(filepath.Join(e.root, StateDir, JournalFile)); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("journal left: %v", err)
-	}
-	e.runner.reset()
-	if code := e.switchTo(rel3); code != ExitOK {
-		t.Fatal(code)
-	}
-	if e.runner.called("ah-pkgstep") != 0 {
-		t.Errorf("package step run again: %v", e.runner.calls)
-	}
+	t.Run("before the step", func(t *testing.T) {
+		e := active(t)
+		e.release(rel3, "2026-11-15")
+		e.runner.fail["ah-noaicheck"] = 1
+		if code := e.switchTo(rel3); code != ExitFailed {
+			t.Fatal(code)
+		}
+		if got := order(e); got != "ah-noaicheck" {
+			t.Errorf("order: %v", got)
+		}
+		e.unchanged("releases/"+rel2, "noaicheck")
+		if rec := e.record(); rec.PackageSnapshot != "2026-11-01" || rec.ServicesStopped {
+			t.Errorf("record: %+v", rec)
+		}
+		e.noJournal()
+		if inhibited(e) {
+			t.Errorf("decisions inhibited although nothing began")
+		}
+	})
+	t.Run("after the step", func(t *testing.T) {
+		e := active(t)
+		e.release(rel3, "2026-11-15")
+		checks := 0
+		e.runner.hook = func(argv []string) {
+			if filepath.Base(argv[0]) == NoAICheckProgram[len("bin/"):] {
+				if checks++; checks == 2 {
+					e.runner.fail["ah-noaicheck"] = 1
+				}
+			}
+		}
+		if code := e.switchTo(rel3); code != ExitFailed {
+			t.Fatal(code)
+		}
+		e.runner.hook = nil
+		if got := order(e); got != "ah-noaicheck ah-pkgstep ah-noaicheck stop-all stop-app stop-app" {
+			t.Errorf("order: %v", got)
+		}
+		e.unchanged("releases/"+rel2, "noaicheck")
+		if rec := e.record(); rec.PackageSnapshot != "2026-11-15" || !rec.ServicesStopped {
+			t.Errorf("record: %+v", rec)
+		}
+		e.noJournal()
+		if !inhibited(e) {
+			t.Errorf("decisions not inhibited after a failure on a changed host")
+		}
+		e.runner.reset()
+		if code := e.switchTo(rel3); code != ExitOK {
+			t.Fatal(code)
+		}
+		if e.runner.called("ah-pkgstep") != 0 {
+			t.Errorf("package step run again: %v", e.runner.calls)
+		}
+		if inhibited(e) {
+			t.Errorf("decisions still inhibited after a healthy switch")
+		}
+	})
 }
 
 func TestHealthFailingRollsBack(t *testing.T) {
@@ -997,7 +1041,7 @@ func TestCurrentNotALink(t *testing.T) {
 
 func TestStatus(t *testing.T) {
 	e := newEnv(t)
-	if got := e.status(); got != "current: none\nprevious: none\nhighest counter: 0\ntrust: manual: no switch policy, unsigned releases are accepted\nhost stop list: 1 command(s)\nlast switch: none recorded\n" {
+	if got := e.status(); got != "current: none\nprevious: none\nhighest counter: 0\ndecisions: not inhibited\ntrust: manual: no switch policy, unsigned releases are accepted\nhost stop list: 1 command(s)\nlast switch: none recorded\n" {
 		t.Errorf("status of an empty root:\n%s", got)
 	}
 	e.release(rel1, "s")
@@ -1298,8 +1342,20 @@ func TestFirewallListing(t *testing.T) {
 		name string
 		set  func(e *env)
 	}{
-		{"nft fails", func(e *env) { e.runner.fail["nft"] = -1 }},
-		{"listing too large", func(e *env) { e.runner.nftOut = strings.Repeat("x", maxNFTListing+1) }},
+		// For the new release only: the release gone back to lists its
+		// firewall for its own check.
+		{"nft fails", func(e *env) { e.runner.fail["nft"] = 1 }},
+		{"listing too large", func(e *env) {
+			e.runner.nftOut = strings.Repeat("x", maxNFTListing+1)
+			listed := 0
+			e.runner.hook = func(argv []string) {
+				if argv[0] == "nft" {
+					if listed++; listed == 2 {
+						e.runner.nftOut = fakeRuleset
+					}
+				}
+			}
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := active(t)
@@ -1313,7 +1369,7 @@ func TestFirewallListing(t *testing.T) {
 				t.Errorf("record: %+v", rec)
 			}
 			e.links(rel2, rel1)
-			if e.runner.called("ah-noaicheck") != 1 {
+			if strings.Contains(strings.Join(e.runner.calls, "\n"), postCall(filepath.Join(e.relDir(rel3), NoAICheckProgram), e.root, e.relDir(rel3))) {
 				t.Errorf("the post check ran without a listing: %v", e.runner.calls)
 			}
 		})
@@ -1326,7 +1382,7 @@ func TestFirewallListing(t *testing.T) {
 func TestPostCheckFailureGoesBack(t *testing.T) {
 	e := active(t)
 	e.release(rel3, "2026-11-01")
-	e.runner.failPost = true
+	e.runner.failPost = e.relDir(rel3)
 	if code := e.switchTo(rel3); code != ExitFailed {
 		t.Fatalf("exit %d", code)
 	}
@@ -1335,7 +1391,12 @@ func TestPostCheckFailureGoesBack(t *testing.T) {
 		t.Errorf("record: %+v", rec)
 	}
 	e.links(rel2, rel1)
-	e.ran(map[string]int{"ah-noaicheck": 2, "reload-units": 2})
+	// The pre and post checks of rel3, and the post check of rel2 once it
+	// is back.
+	e.ran(map[string]int{"ah-noaicheck": 3, "reload-units": 2, "stop-app": 1})
+	if want := postCall(filepath.Join(e.relDir(rel2), NoAICheckProgram), e.root, e.relDir(rel2)); e.runner.calls[len(e.runner.calls)-1] != want {
+		t.Errorf("the last command %q, want %q", e.runner.calls[len(e.runner.calls)-1], want)
+	}
 	if strings.Contains(e.last, "said no") {
 		t.Errorf("the check's output was shown:\n%s", e.last)
 	}

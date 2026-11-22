@@ -139,6 +139,9 @@ func (s *Switcher) helperEnded(pid int, start uint64) error {
 // and is killed when the switch dies, so no later switch can overlap it.
 // An exit that is not 0 leaves the host's package state unknown.
 func (s *Switcher) runPackageStep(ctx context.Context, t *txn, argv []string) error {
+	if err := s.beginTxn(t); err != nil {
+		return err
+	}
 	t.j.PackageState = PackageStarted
 	t.j.HelperPID, t.j.HelperStart = 0, 0
 	if err := s.save(t); err != nil {

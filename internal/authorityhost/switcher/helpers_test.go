@@ -35,7 +35,7 @@ type fakeRunner struct {
 	hook     func(argv []string)
 	limits   *[]time.Duration // when set, the time limit of every health-probe and slow-probe run
 	pid      int              // when set, given to a command's OnStart as its process id
-	failPost bool             // the post-activation no-AI check fails
+	failPost string           // the post-activation no-AI check of this release folder fails
 	extra    [][]*os.File     // the ExtraFiles of each command
 }
 
@@ -69,7 +69,7 @@ func (f *fakeRunner) Run(ctx context.Context, c Command) (Output, error) {
 		f.hook(c.Argv)
 	}
 	name := filepath.Base(c.Argv[0])
-	if f.failPost && len(c.Argv) > 2 && c.Argv[1] == "--phase" && c.Argv[2] == CheckPhasePost {
+	if f.failPost != "" && len(c.Argv) > 6 && c.Argv[1] == "--phase" && c.Argv[2] == CheckPhasePost && c.Argv[6] == f.failPost {
 		return Output{Stderr: []byte(name + " said no")}, fmt.Errorf("%s: exit status 1", name)
 	}
 	if n, ok := f.fail[name]; ok && n != 0 {

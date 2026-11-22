@@ -9,7 +9,7 @@
 //	opt/authority-host/releases/<id>/   MANIFEST, SHA256SUMS, [SHA256SUMS.sig], bin/, etc/, share/
 //	opt/authority-host/current  -> releases/<id>
 //	opt/authority-host/previous -> releases/<id>
-//	var/lib/authority-host/deploy.json, highest-counter, counters.log, switch.lock
+//	var/lib/authority-host/deploy.json, highest-counter, counters.log, decisions.inhibit, txn.json, switch.lock
 package switcher
 
 import (
@@ -461,6 +461,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		from = a.rec.PackageFrom
 		s.step(3, "the host's package snapshot is unknown: the step from %s to %s runs again", q(a.rec.PackageFrom), q(a.rec.PackageTo))
 	}
+	stepRan := false
 	if manifest.PackageSnapshot == from && !unknown {
 		s.step(3, "package snapshot %s unchanged", q(manifest.PackageSnapshot))
 	} else {
@@ -470,6 +471,11 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		}
 		if err != nil {
 			return s.fail(a, 3, err)
+		}
+		// 4, first: the release's own inputs are checked before the
+		// package step changes the host; nothing has begun yet.
+		if err := s.preCheck(ctx, a, check, rel, ", before the package step"); err != nil {
+			return s.fail(a, 4, err)
 		}
 		argv := []string{filepath.Join(rel.dir, PackageStepProgram), "--release", rel.dir, "--from", from, "--to", manifest.PackageSnapshot}
 		if s.cfg.Dry {
@@ -486,11 +492,18 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 			a.rec.PackageSnapshot = manifest.PackageSnapshot
 			s.step(3, "package step done: snapshot %s", q(manifest.PackageSnapshot))
 		}
+		stepRan = true
 	}
 
 	// 4. The no-AI check of the new release (phase pre), on the host as it
-	// now is.
-	if err := s.preCheck(ctx, a, check, rel); err != nil {
+	// now is: again after a package step, which changed it. A failure from
+	// here on, after a package step, stops the decision services and keeps
+	// decisions inhibited (see fail).
+	when := ""
+	if stepRan {
+		when = ", on the host the package step changed"
+	}
+	if err := s.preCheck(ctx, a, check, rel, when); err != nil {
 		return s.fail(a, 4, err)
 	}
 	t.j.Check = a.rec.Check
@@ -524,7 +537,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		s.step(7, "until every health command passes, a round every %s, within %s in all", HealthInterval, HealthWindow)
 		checkProg, _ := s.checkPath(check, rel)
 		s.step(8, "would run nft list ruleset into a private file, then %s", qargv([]string{checkProg, "--phase", CheckPhasePost, "--root", s.cfg.Root, "--release", rel.dir, "--require-policy", "--nft-listing", "FILE"}))
-		s.step(9, "would record the result in %s", q(filepath.Join(s.stateDir(), DeployFile)))
+		s.step(9, "would record the result in %s, and remove %s (written before anything of the transaction) only if the release passed its health and postcheck", q(filepath.Join(s.stateDir(), DeployFile)), InhibitFile)
 		s.printf("result: dry run passed; nothing changed")
 		return ExitOK
 	}
@@ -541,6 +554,11 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 // folder cannot be synced, puts both links back, as the resume of the links
 // phase does.
 func (s *Switcher) activateNew(ctx context.Context, t *txn, newTarget string) int {
+	if err := s.beginTxn(t); err != nil {
+		s.step(6, "FAILED: %s", describe(err))
+		s.printf("result: failed at switch; nothing moved, nothing recorded; decisions may stay inhibited")
+		return ExitFailed
+	}
 	t.j.Phase = PhaseLinks
 	t.j.CounterUsed = t.forward()
 	if err := s.save(t); err != nil {
@@ -785,6 +803,7 @@ func (s *Switcher) readState(a *attempt) (Record, int, bool) {
 	}
 	a.rec.PackageSnapshot = last.PackageSnapshot
 	a.rec.PackageState, a.rec.PackageFrom, a.rec.PackageTo, a.rec.PackageStatedAt = last.PackageState, last.PackageFrom, last.PackageTo, last.PackageStatedAt
+	a.rec.InhibitClearedAt, a.rec.InhibitClearedAsked = last.InhibitClearedAt, last.InhibitClearedAsked
 	current := "none"
 	if a.oldExists {
 		current = a.rec.CurrentID
@@ -983,9 +1002,11 @@ func (s *Switcher) verifyWith(ctx context.Context, signers []byte, principal str
 }
 
 // fail ends a switch that failed at step n before its links moved: current
-// is untouched. Outside a dry run the outcome is recorded: through the
-// transaction when its journal was written already (the package step ran),
-// directly otherwise.
+// is untouched. Outside a dry run the outcome is recorded: directly when
+// no transaction began, and through the transaction when its journal was
+// written already (the package step ran), which then stops the decision
+// services first: the package step changed the host, which nothing
+// qualified since, so decisions stay inhibited.
 func (s *Switcher) fail(a *attempt, n int, err error) int {
 	s.setFailure(a, stepNames[n], err)
 	s.step(n, "FAILED: %s", describe(err))
@@ -994,14 +1015,14 @@ func (s *Switcher) fail(a *attempt, n int, err error) int {
 		s.printf("result: failed at %s (dry run: nothing recorded); current unchanged", stepNames[n])
 		return ExitFailed
 	}
-	if t := a.t; t != nil {
+	if t := a.t; t != nil && t.begun {
 		t.fail(stepNames[n], err)
 		if t.j.Check == CheckNotRun {
 			t.j.Check = a.rec.Check
 		}
-		if err := s.done(t, ResultFailed); err != nil {
+		if err := s.toStopping(t, ResultFailed); err != nil {
 			if !errors.Is(err, errCrashed) {
-				s.printf("result: unresolved: %s; %s stays, and the next switch, rollback or recover settles it", describe(err), JournalFile)
+				s.printf("result: unresolved: %s; %s stays, and the next switch, rollback or recover resumes it", describe(err), JournalFile)
 			}
 			return ExitFailed
 		}
@@ -1118,6 +1139,14 @@ func (s *Switcher) setFailure(a *attempt, step string, err error) {
 	a.rec.Error, a.rec.Detail = codeOf(err)
 }
 
+// readInhibitIfState is readInhibit when the state folder is open.
+func (s *Switcher) readInhibitIfState() (inhibit, bool, error) {
+	if s.stateRoot == nil {
+		return inhibit{}, false, nil
+	}
+	return s.readInhibit()
+}
+
 // describe is err as a line may show it: its code and its detail.
 func describe(err error) string {
 	code, detail := codeOf(err)
@@ -1218,6 +1247,13 @@ func (s *Switcher) status(w io.Writer) error {
 	default:
 		fmt.Fprintln(w, "highest counter: 0")
 	}
+	if in, ok, err := s.readInhibitIfState(); err != nil {
+		return err
+	} else if ok {
+		fmt.Fprintf(w, "decisions: inhibited (%s) since %s by transaction %s: %s; decision-capable units do not start while it is there; a transaction that ends healthy removes it, or ah-switch inhibit-clear --asked WORDS\n", InhibitFile, q(in.Time), q(in.Txn), q(in.Reason))
+	} else {
+		fmt.Fprintln(w, "decisions: not inhibited")
+	}
 	if pending {
 		t := &txn{j: j}
 		fmt.Fprintf(w, "interrupted: %s %s in phase %s (transaction %s); the next switch, rollback or recover resumes it\n", t.kind(), j.ID, j.Phase, j.Txn)
@@ -1238,7 +1274,10 @@ func (s *Switcher) status(w io.Writer) error {
 	} else {
 		fmt.Fprintf(w, "host stop list: %d command(s)\n", len(stops))
 	}
-	if !ok {
+	if rec.InhibitClearedAt != "" {
+		fmt.Fprintf(w, "inhibit last cleared by the owner at %s, asked: %s\n", q(rec.InhibitClearedAt), q(rec.InhibitClearedAsked))
+	}
+	if !ok || rec.Txn == "" && rec.ID == "" {
 		fmt.Fprintln(w, "last switch: none recorded")
 		return nil
 	}

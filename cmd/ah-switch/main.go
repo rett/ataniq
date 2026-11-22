@@ -9,6 +9,7 @@
 //	ah-switch [--root DIR [--allow-exec]] [--dry] recover --package-state SNAPSHOT
 //	ah-switch [--root DIR [--allow-exec]] [--dry] recover --services-stopped
 //	ah-switch [--root DIR [--allow-exec]] [--dry] recover --discard-journal TXN
+//	ah-switch [--root DIR] [--dry] inhibit-clear --asked WORDS
 //
 // Exit codes: 0 ok, 1 failed (the outcome is recorded), 2 usage, 3 locked.
 package main
@@ -36,6 +37,7 @@ const usage = `usage: ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manu
        ah-switch [--root DIR [--allow-exec]] [--dry] recover --package-state SNAPSHOT
        ah-switch [--root DIR [--allow-exec]] [--dry] recover --services-stopped
        ah-switch [--root DIR [--allow-exec]] [--dry] recover --discard-journal TXN
+       ah-switch [--root DIR] [--dry] inhibit-clear --asked WORDS
 `
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -52,6 +54,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	stopped := fs.Bool("services-stopped", false, "recover: the decision services are stopped (settles a switch whose stop commands failed)")
 	pkgState := fs.String("package-state", "", "recover: the package snapshot the host is at, after a package step that did not finish")
 	discard := fs.String("discard-journal", "", "recover: set aside the journal of this transaction (as status shows it), which does not match the host")
+	asked := fs.String("asked", "", "inhibit-clear: what the owner asked or saw before removing the decision inhibit (recorded with the time)")
 	bad := func(format string, a ...any) int {
 		fmt.Fprintf(stderr, "ah-switch: "+format+"\n", a...)
 		fmt.Fprint(stderr, usage)
@@ -95,12 +98,26 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(pos) == 1 && pos[0] == "status" && !set["rollback-to"] {
-		for _, name := range []string{"dry", "mode", "noaicheck", "from", "allow-exec", "counter", "services-stopped", "package-state", "discard-journal"} {
+		for _, name := range []string{"dry", "mode", "noaicheck", "from", "allow-exec", "counter", "services-stopped", "package-state", "discard-journal", "asked"} {
 			if set[name] {
 				return bad("status takes only --root")
 			}
 		}
 		return switcher.New(switcher.Config{Root: rootAbs, Out: stdout, Err: stderr}).Status()
+	}
+	if len(pos) == 1 && pos[0] == "inhibit-clear" && !set["rollback-to"] {
+		for _, name := range []string{"mode", "noaicheck", "from", "allow-exec", "counter", "services-stopped", "package-state", "discard-journal"} {
+			if set[name] {
+				return bad("inhibit-clear takes only --root, --dry and --asked WORDS")
+			}
+		}
+		if !set["asked"] {
+			return bad("inhibit-clear needs --asked WORDS: what the owner asked or saw")
+		}
+		return switcher.New(switcher.Config{Root: rootAbs, Dry: *dry, Out: stdout, Err: stderr}).InhibitClear(context.Background(), *asked)
+	}
+	if set["asked"] {
+		return bad("--asked is only for inhibit-clear")
 	}
 	if len(pos) == 1 && pos[0] == "recover" && !set["rollback-to"] {
 		for _, name := range []string{"mode", "noaicheck", "from"} {
@@ -143,7 +160,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case set["from"] && *from == "":
 		return bad("--from needs a folder")
 	case !set["rollback-to"] && len(pos) != 1:
-		return bad("give one release id, --rollback-to previous, or status")
+		return bad("give one release id, --rollback-to previous, status, recover or inhibit-clear")
 	}
 	// A path on the host, below --root: never resolved against the
 	// working folder.

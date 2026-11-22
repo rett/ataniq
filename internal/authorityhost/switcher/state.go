@@ -52,6 +52,10 @@ type Record struct {
 	Requested     string `json:"requested"`
 	RequestID     string `json:"request_id"`
 	PendingReport bool   `json:"pending_report"`
+	// When the owner last removed the decision inhibit by hand (ah-switch
+	// inhibit-clear), and the words given with --asked; carried forward.
+	InhibitClearedAt    string `json:"inhibit_cleared_at"`
+	InhibitClearedAsked string `json:"inhibit_cleared_asked"`
 }
 
 // requestID is the request id of a transaction: its direction and the

@@ -22,9 +22,16 @@
   health command within one 60-second deadline, runs the no-AI check
   again (`--phase post`, with the live listeners and a listing of the
   loaded firewall) before recording success, going back to the old
-  release with that release's own reload and health lists, or stopping
+  release (after stopping the failed release's services) with that
+  release's own reload and health lists and its no-AI check, or stopping
   the decision services, with the host's own
-  `/etc/authority-host/stop.list` first, when it cannot. All of it is one
+  `/etc/authority-host/stop.list` first, when it cannot. Every transaction
+  first writes `/var/lib/authority-host/decisions.inhibit`, which
+  decision-capable units name in `ConditionPathExists=!` so they do not
+  start while it is there, and removes it only when it ends healthy; a
+  failure keeps it across a reboot until a healthy switch or
+  `ah-switch inhibit-clear --asked WORDS` (recorded with the time). The
+  no-AI check runs before the package step and again after it. All of it is one
   transaction journaled in `txn.json`, phase by phase (packages, links,
   activating, restoring, stopping, done), with the trust it began with;
   the next command resumes an interrupted one from its phase, a link

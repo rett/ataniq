@@ -118,7 +118,11 @@ func (s *Switcher) checkPath(c checkRef, rel *release) (string, error) {
 // activated, which must exit 0:
 //
 //	CHECK --phase pre --root ROOT --release DIR --require-policy
-func (s *Switcher) preCheck(ctx context.Context, a *attempt, c checkRef, rel *release) error {
+//
+// It runs before the package step, when there is one (the release's own
+// inputs are checked before the host is changed), and again after it, on
+// the host as the step left it; when says which.
+func (s *Switcher) preCheck(ctx context.Context, a *attempt, c checkRef, rel *release, when string) error {
 	check, err := s.checkPath(c, rel)
 	if err != nil {
 		return err
@@ -133,7 +137,7 @@ func (s *Switcher) preCheck(ctx context.Context, a *attempt, c checkRef, rel *re
 		return failf(CodeNoAICheckFailed, "%s (run it by hand to see its hits)", summary(err))
 	}
 	a.rec.Check = CheckPassed
-	s.step(4, "passed (phase pre)")
+	s.step(4, "passed (phase pre%s)", when)
 	return nil
 }
 

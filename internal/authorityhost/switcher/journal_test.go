@@ -109,10 +109,12 @@ func (e *env) noJournal() {
 // TestCrashAndResume: a transaction killed between any two of its durable
 // steps is resumed by the next command from the phase its journal names,
 // and ends where that phase leads, running exactly what that phase runs:
-// a links phase puts the links back and runs nothing; an activating phase
-// runs the new release's reload and health again; a restoring phase puts
-// the links back and runs the old release's reload and health again; a
-// stopping phase runs every stop list again; a done phase only records.
+// a links phase puts the links back and goes back (the new release's stop
+// list, the old release's reload and health); an activating phase runs
+// the new release's reload and health again; a restoring phase stops the
+// new release's services, puts the links back and runs the old release's
+// reload and health again; a stopping phase runs every stop list again; a
+// done phase only records.
 // The next command here is a recover, which then has nothing to do: the
 // outcome is the transaction's own.
 func TestCrashAndResume(t *testing.T) {
@@ -134,10 +136,13 @@ func TestCrashAndResume(t *testing.T) {
 		}
 		return out
 	}
-	putBack := want{rel2, rel1, ResultRolledBack, "interrupted", "", false, none}
+	// A links phase puts the links back and then goes back as a failed
+	// health check does: the new release's services stopped, the old
+	// release reloaded and checked.
+	putBack := want{rel2, rel1, ResultRolledBack, "interrupted", "ok", false, with(map[string]int{"stop-app": 1, "reload-old": 1, "health-old": 1})}
 	completed := want{rel3, rel2, ResultOK, "", "", false, with(map[string]int{"reload-units": 1, "health-probe": 1})}
 	recorded := want{rel3, rel2, ResultOK, "", "", false, none}
-	restored := want{rel2, rel1, ResultRolledBack, "health", "ok", false, with(map[string]int{"reload-old": 1, "health-old": 1})}
+	restored := want{rel2, rel1, ResultRolledBack, "health", "ok", false, with(map[string]int{"stop-app": 1, "reload-old": 1, "health-old": 1})}
 	restoredRecorded := want{rel2, rel1, ResultRolledBack, "health", "ok", false, none}
 	stopped := want{rel2, rel1, ResultFailedRecovery, "health", "failed", true, with(map[string]int{"stop-all": 1, "stop-app": 1, "stop-old": 1})}
 	stoppedRecorded := want{rel2, rel1, ResultFailedRecovery, "health", "failed", true, none}
@@ -400,7 +405,9 @@ func TestRestorePreviousFailing(t *testing.T) {
 	if rec.Result != ResultFailedRecovery || rec.RestoredHealth != "failed" || !rec.ServicesStopped || !strings.Contains(rec.Detail, "going back failed: previous") {
 		t.Errorf("record: %+v", rec)
 	}
-	e.ran(map[string]int{"reload-old": 0, "stop-all": 1, "stop-app": 1, "stop-old": 1})
+	// stop-app: going back first stops rel3's services, then the
+	// stopping phase runs every list.
+	e.ran(map[string]int{"reload-old": 0, "stop-all": 1, "stop-app": 2, "stop-old": 1})
 	e.noJournal()
 }
 
