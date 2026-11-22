@@ -830,20 +830,38 @@ func (s *Switcher) verifySignature(ctx context.Context, rel *release) error {
 		return failf(CodeSignatureMissing, "%s missing; mode signed needs it", SignatureFile)
 	}
 	for _, sg := range s.trust.signed {
-		// The policy's signers file was checked with the policy; one that
-		// only a resumed transaction names is checked here.
-		if err := s.checkSigners(sg.signers); err != nil {
+		// Every signers file is checked here, the policy's and one that
+		// only a resumed transaction names, and read from the descriptor
+		// that was checked.
+		signers, err := s.readSigners(sg.signers)
+		if err != nil {
 			return err
 		}
 		if s.cfg.Dry {
 			s.step(1, "would verify %s as signed by %s against %s", SignatureFile, q(sg.principal), q(sg.signers))
 			continue
 		}
-		if err := s.cfg.Verifier.Verify(ctx, s.signersPath(sg.signers), sg.principal, rel.sums, filepath.Join(rel.path, SignatureFile)); err != nil {
-			_, detail := codeOf(err)
-			return failf(CodeSignatureBad, "%s: %s", SignatureFile, detail)
+		if err := s.verifyWith(ctx, signers, sg.principal, rel); err != nil {
+			return err
 		}
 		s.step(1, "%s verified as signed by %s against %s", SignatureFile, q(sg.principal), q(sg.signers))
+	}
+	return nil
+}
+
+// verifyWith verifies the signature of rel by principal against signers,
+// the content of the checked allowed signers file: the verifier is given a
+// private copy of it, never the file's own path, which could name another
+// file by the time the verifier opens it.
+func (s *Switcher) verifyWith(ctx context.Context, signers []byte, principal string, rel *release) error {
+	copyPath, done, err := privateCopy("allowed_signers", signers)
+	if err != nil {
+		return failf(CodeSignatureBad, "%s: the allowed signers file cannot be passed on: %s", SignatureFile, q(err.Error()))
+	}
+	defer done()
+	if err := s.cfg.Verifier.Verify(ctx, copyPath, principal, rel.sums, filepath.Join(rel.path, SignatureFile)); err != nil {
+		_, detail := codeOf(err)
+		return failf(CodeSignatureBad, "%s: %s", SignatureFile, detail)
 	}
 	return nil
 }

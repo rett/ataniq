@@ -132,6 +132,9 @@ type fakeVerifier struct {
 	signers   string
 	principal string
 	sigs      []string
+	// What the signers file the verifier was given held, and its mode
+	// and its folder's, when it was called.
+	signersData, signersMode, signersDirMode string
 }
 
 func (v *fakeVerifier) Verify(ctx context.Context, allowedSigners, principal string, data []byte, signaturePath string) error {
@@ -139,6 +142,15 @@ func (v *fakeVerifier) Verify(ctx context.Context, allowedSigners, principal str
 	v.data = data
 	v.signers, v.principal = allowedSigners, principal
 	v.sigs = append(v.sigs, signaturePath)
+	if b, err := os.ReadFile(allowedSigners); err == nil {
+		v.signersData = string(b)
+	}
+	if fi, err := os.Stat(allowedSigners); err == nil {
+		v.signersMode = fi.Mode().String()
+	}
+	if di, err := os.Stat(filepath.Dir(allowedSigners)); err == nil {
+		v.signersDirMode = di.Mode().String()
+	}
 	return v.err
 }
 

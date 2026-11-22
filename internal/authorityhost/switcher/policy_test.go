@@ -49,9 +49,18 @@ func TestSignedPolicy(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	sums, _ := os.ReadFile(filepath.Join(dir, SumsFile))
-	if v.calls != 1 || string(v.data) != string(sums) || v.principal != "release@example.invalid" ||
-		v.signers != filepath.Join(e.root, "etc/authority-host/allowed_signers") {
-		t.Errorf("verifier: %d calls, principal %q, signers %q", v.calls, v.principal, v.signers)
+	if v.calls != 1 || string(v.data) != string(sums) || v.principal != "release@example.invalid" {
+		t.Errorf("verifier: %d calls, principal %q", v.calls, v.principal)
+	}
+	// The verifier is given a private copy of the signers file, made from
+	// the descriptor that was checked, never the file's own path, which
+	// could name another file by the time it is opened.
+	if v.signers == filepath.Join(e.root, "etc/authority-host/allowed_signers") ||
+		v.signersData != "release@example.invalid ssh-ed25519 AAAA\n" || v.signersMode != "-rw-------" || v.signersDirMode != "drwx------" {
+		t.Errorf("verifier's signers file: %q, %q, %s, %s", v.signers, v.signersData, v.signersMode, v.signersDirMode)
+	}
+	if _, err := os.Stat(v.signers); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the private copy was left: %v", err)
 	}
 	if rec := e.record(); rec.Mode != ModeSigned || rec.Trust != ModeSigned {
 		t.Errorf("record: mode %q, trust %q", rec.Mode, rec.Trust)

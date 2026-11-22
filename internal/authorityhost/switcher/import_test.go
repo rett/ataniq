@@ -302,10 +302,15 @@ func TestImportChargesWrittenBytes(t *testing.T) {
 		change            func(path string)
 		less              int64
 	}{
+		// The replacement is made while the file it replaces is still
+		// there (and held open), then renamed over it: an inode number
+		// freed first could be given to the new file at once.
 		{"replaced", "open", CodeFileChanged, func(path string) {
+			old, _ := os.Open(path)
+			defer old.Close()
 			data, _ := os.ReadFile(path)
-			os.Remove(path)
-			os.WriteFile(path, data, 0o644)
+			os.WriteFile(path+".new", data, 0o644)
+			os.Rename(path+".new", path)
 		}, 0},
 		{"grown before the copy", "open", CodeFileChanged, func(path string) {
 			f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)

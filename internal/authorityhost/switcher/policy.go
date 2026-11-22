@@ -94,35 +94,75 @@ func (s *Switcher) readPolicy() (Policy, error) {
 	return p, nil
 }
 
+// maxSigners bounds the allowed signers file.
+const maxSigners = 1 << 20
+
 // checkSigners checks that the allowed signers file (a path on the host) and
 // every folder above it are trusted.
 func (s *Switcher) checkSigners(hostPath string) error {
+	_, err := s.readSigners(hostPath)
+	return err
+}
+
+// readSigners reads the allowed signers file (a path on the host) after
+// checking it and every folder above it, from the descriptor it checked.
+func (s *Switcher) readSigners(hostPath string) ([]byte, error) {
 	rel := strings.TrimPrefix(hostPath, "/")
 	dir, err := s.openTrusted(path.Dir(rel), false)
+	var data []byte
 	if err == nil {
 		defer dir.Close()
-		_, err = s.readTrustedFile(dir, filepath.Join(s.cfg.Root, rel), path.Base(rel), 1<<20)
+		data, err = s.readTrustedFile(dir, filepath.Join(s.cfg.Root, rel), path.Base(rel), maxSigners)
 	}
 	if errors.Is(err, fs.ErrNotExist) {
-		return failf(CodePolicyInvalid, "allowed signers file %s is missing", q(hostPath))
+		return nil, failf(CodePolicyInvalid, "allowed signers file %s is missing", q(hostPath))
 	}
-	return err
+	return data, err
 }
 
 // readTrustedFile reads the regular file name of the trusted folder r, of at
 // most max bytes, after checking it as trusted checks a folder: a regular
 // file, not writable by group or others, of an owner the owner check
-// accepts. full names it in messages.
+// accepts. It reads the descriptor it checked, never the name again, so
+// what it returns is what was checked. full names it in messages.
 func (s *Switcher) readTrustedFile(r *os.Root, full, name string, max int64) ([]byte, error) {
 	f, info, err := openFileIn(r, name)
 	if err != nil {
 		return nil, err
 	}
-	f.Close()
+	defer f.Close()
 	if err := s.trusted(full, info, false); err != nil {
 		return nil, err
 	}
-	return readFileIn(r, name, max)
+	return readOpened(f, info, name, max)
+}
+
+// privateCopy writes data to a new file of mode 0600 in a new temporary
+// folder of mode 0700, for a program that needs a path: what it reads is
+// then what the switch checked. The returned func removes both.
+func privateCopy(name string, data []byte) (string, func(), error) {
+	dir, err := os.MkdirTemp("", "ah-switch-")
+	if err != nil {
+		return "", nil, err
+	}
+	done := func() { os.RemoveAll(dir) }
+	if err := os.Chmod(dir, 0o700); err != nil {
+		done()
+		return "", nil, err
+	}
+	p := filepath.Join(dir, name)
+	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err == nil {
+		_, err = f.Write(data)
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}
+	if err != nil {
+		done()
+		return "", nil, err
+	}
+	return p, done, nil
 }
 
 // applyPolicy reads the policy and chooses the mode of this switch: the
@@ -184,10 +224,4 @@ func (t trust) with(o trust) trust {
 		}
 	}
 	return out
-}
-
-// signersPath is the allowed signers file hostPath as the verifier opens
-// it.
-func (s *Switcher) signersPath(hostPath string) string {
-	return filepath.Join(s.cfg.Root, strings.TrimPrefix(hostPath, "/"))
 }

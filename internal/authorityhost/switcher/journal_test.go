@@ -141,31 +141,41 @@ func TestCrashAndResume(t *testing.T) {
 	stopped := want{rel2, rel1, ResultFailedRecovery, "health", "failed", true, with(map[string]int{"stop-all": 1, "stop-app": 1, "stop-old": 1})}
 	stoppedRecorded := want{rel2, rel1, ResultFailedRecovery, "health", "failed", true, none}
 
+	// Where a crash at each point leaves the links and the counter, before
+	// anything resumes it.
+	type crashed struct{ current, previous, highest string }
+	before := crashed{rel2, rel1, "2"}   // nothing moved yet
+	counted := crashed{rel2, rel1, "3"}  // the counter is written
+	half := crashed{rel2, rel2, "3"}     // previous moved, current not yet
+	moved := crashed{rel3, rel2, "3"}    // both links moved
+	putBackC := crashed{rel2, rel1, "3"} // both links put back
+
 	for _, tc := range []struct {
-		name  string
-		fail  map[string]int // what fails, in the run that crashes and in the resume
-		point string
-		phase string // the journal's phase after the crash
-		want  want
+		name    string
+		fail    map[string]int // what fails, in the run that crashes and in the resume
+		point   string
+		phase   string // the journal's phase after the crash
+		crashed crashed
+		want    want
 	}{
-		{"links", nil, CrashLinks, PhaseLinks, putBack},
-		{"counter", nil, CrashCounter, PhaseLinks, putBack},
-		{"previous", nil, CrashPrevious, PhaseLinks, putBack},
-		{"current", nil, CrashCurrent, PhaseLinks, putBack},
-		{"activating", nil, CrashActivating, PhaseActivating, completed},
-		{"reload", nil, CrashReload, PhaseActivating, completed},
-		{"health", nil, CrashHealth, PhaseActivating, completed},
-		{"postcheck", nil, CrashPostCheck, PhaseActivating, completed},
-		{"done", nil, CrashDone, PhaseDone, recorded},
-		{"record", nil, CrashRecord, PhaseDone, recorded},
-		{"restoring", map[string]int{"health-probe": -1}, CrashRestoring, PhaseRestoring, restored},
-		{"restore-links", map[string]int{"health-probe": -1}, CrashRestoreLinks, PhaseRestoring, restored},
-		{"restore-reload", map[string]int{"health-probe": -1}, CrashRestoreReload, PhaseRestoring, restored},
-		{"restored done", map[string]int{"health-probe": -1}, CrashDone, PhaseDone, restoredRecorded},
-		{"stopping", map[string]int{"health-probe": -1, "health-old": -1}, CrashStopping, PhaseStopping, stopped},
-		{"stopped", map[string]int{"health-probe": -1, "health-old": -1}, CrashStopped, PhaseStopping, stopped},
-		{"stopped done", map[string]int{"health-probe": -1, "health-old": -1}, CrashDone, PhaseDone, stoppedRecorded},
-		{"stopped record", map[string]int{"health-probe": -1, "health-old": -1}, CrashRecord, PhaseDone, stoppedRecorded},
+		{"links", nil, CrashLinks, PhaseLinks, before, putBack},
+		{"counter", nil, CrashCounter, PhaseLinks, counted, putBack},
+		{"previous", nil, CrashPrevious, PhaseLinks, half, putBack},
+		{"current", nil, CrashCurrent, PhaseLinks, moved, putBack},
+		{"activating", nil, CrashActivating, PhaseActivating, moved, completed},
+		{"reload", nil, CrashReload, PhaseActivating, moved, completed},
+		{"health", nil, CrashHealth, PhaseActivating, moved, completed},
+		{"postcheck", nil, CrashPostCheck, PhaseActivating, moved, completed},
+		{"done", nil, CrashDone, PhaseDone, moved, recorded},
+		{"record", nil, CrashRecord, PhaseDone, moved, recorded},
+		{"restoring", map[string]int{"health-probe": -1}, CrashRestoring, PhaseRestoring, moved, restored},
+		{"restore-links", map[string]int{"health-probe": -1}, CrashRestoreLinks, PhaseRestoring, putBackC, restored},
+		{"restore-reload", map[string]int{"health-probe": -1}, CrashRestoreReload, PhaseRestoring, putBackC, restored},
+		{"restored done", map[string]int{"health-probe": -1}, CrashDone, PhaseDone, putBackC, restoredRecorded},
+		{"stopping", map[string]int{"health-probe": -1, "health-old": -1}, CrashStopping, PhaseStopping, putBackC, stopped},
+		{"stopped", map[string]int{"health-probe": -1, "health-old": -1}, CrashStopped, PhaseStopping, putBackC, stopped},
+		{"stopped done", map[string]int{"health-probe": -1, "health-old": -1}, CrashDone, PhaseDone, putBackC, stoppedRecorded},
+		{"stopped record", map[string]int{"health-probe": -1, "health-old": -1}, CrashRecord, PhaseDone, putBackC, stoppedRecorded},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := activeOwn(t)
@@ -177,6 +187,12 @@ func TestCrashAndResume(t *testing.T) {
 			j, ok := e.journal()
 			if !ok || j.Phase != tc.phase || j.ID != rel3 || j.Counter != 3 || j.OldCurrent != "releases/"+rel2 || j.OldPrevious != "releases/"+rel1 || !j.CounterUsed {
 				t.Fatalf("journal after the crash: %+v, %v", j, ok)
+			}
+			// Right after the crash, before any resume: a wrong state
+			// here could be hidden by a resume that repairs it.
+			e.links(tc.crashed.current, tc.crashed.previous)
+			if got := e.highest(); got != tc.crashed.highest {
+				t.Errorf("highest %q right after the crash, want %s", got, tc.crashed.highest)
 			}
 			if rec := e.record(); rec != before && tc.point != CrashRecord {
 				t.Errorf("deploy.json changed by a crash: %+v", rec)

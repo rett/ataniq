@@ -222,6 +222,11 @@ transaction began with; see "The journal and recover").
   and every folder above them must be owned by root and not writable by
   group or others (the same check as the state folder); otherwise, or when
   the policy does not parse, the switch stops before it does anything.
+  Each file is read from the descriptor that was checked, never opened
+  again by its name, and `ssh-keygen` is given a private copy of the
+  signers file made from that descriptor (mode 0600, in a new folder of
+  mode 0700, removed afterwards), so what is verified against is what was
+  checked.
 - Without the file the policy is manual: unsigned releases are accepted.
   `deploy.json` then records `trust: manual`, and `status` says
   `trust: manual: no switch policy, unsigned releases are accepted`.
