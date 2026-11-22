@@ -1316,3 +1316,29 @@ func TestBootGuardsAHostWhoseCurrentCannotBeRead(t *testing.T) {
 		})
 	}
 }
+
+// TestBootSaysNothingWasQualifiedWithoutCurrent: on a deployed host whose
+// current is missing, boot's result line, the inhibit's reason and
+// status say that current is missing and nothing was qualified, never
+// that "none" did not pass its checks.
+func TestBootSaysNothingWasQualifiedWithoutCurrent(t *testing.T) {
+	e := activeOwn(t)
+	e.keepOwed = true
+	if err := os.Remove(filepath.Join(e.root, BaseDir, "current")); err != nil {
+		t.Fatal(err)
+	}
+	if code := e.boot(); code != ExitFailed {
+		t.Fatalf("boot: exit %d\n%s", code, e.last)
+	}
+	const want = "current is missing or cannot be read, so nothing was qualified"
+	in, _ := e.inhibited()
+	st := e.status()
+	for what, text := range map[string]string{"boot's output": e.last, "the inhibit's reason": in.Reason, "status": st} {
+		if strings.Contains(text, "none did not pass") || strings.Contains(text, "current did not pass") || !strings.Contains(text, want) {
+			t.Errorf("%s:\n%s", what, text)
+		}
+	}
+	if !strings.Contains(e.last, "result: decisions stay inhibited: "+want+" after the boot") {
+		t.Errorf("result line:\n%s", e.last)
+	}
+}

@@ -161,15 +161,21 @@ func (s *Switcher) reportOwed(o owedOutcome, ack string) error {
 	return err
 }
 
+// nothingQualified says why there is no release that did not pass: the
+// requalification had no current to qualify.
+const nothingQualified = "current is missing or cannot be read, so nothing was qualified"
+
 // requalifyFailedLine is the line that says current, cur, did not pass its
 // reload, health check and no-AI check again when (after the interruption
-// of a transaction found in phase done, or after the boot); ack is the
-// command that acknowledges what is owed.
+// of a transaction found in phase done, or after the boot), or, with no
+// current (cur empty), that nothing was qualified; ack is the command that
+// acknowledges what is owed.
 func requalifyFailedLine(cur, ack, when string) string {
-	if cur == "" {
-		cur = "none"
+	what := nothingQualified
+	if cur != "" {
+		what = cur + " did not pass its reload, health check and no-AI check again"
 	}
-	return fmt.Sprintf("result: decisions stay inhibited: %s did not pass its reload, health check and no-AI check again %s; look at the host, acknowledge the outcome with %s, then switch, or run ah-switch inhibit-clear --asked WORDS", cur, when, ack)
+	return fmt.Sprintf("result: decisions stay inhibited: %s %s; look at the host, acknowledge the outcome with %s, then switch, or run ah-switch inhibit-clear --asked WORDS", what, when, ack)
 }
 
 // ackCommand is the command that acknowledges the outcomes owed: ack names
@@ -536,11 +542,11 @@ func (s *Switcher) owedStatus(pending bool) ([]string, error) {
 			continue
 		}
 		if o.Direction == DirBoot {
-			cur := o.CurrentID
+			cur, what := o.CurrentID, o.CurrentID+" did not pass its reload, health check and no-AI check again"
 			if cur == "" {
-				cur = "current"
+				cur, what = "current", nothingQualified
 			}
-			lines = append(lines, fmt.Sprintf("outcome owed (boot requalification of %s, transaction %s): after the boot at %s, %s did not pass its reload, health check and no-AI check again, so decisions stay inhibited; %s acknowledges it, and any switch or rollback is refused until then", cur, o.Txn, q(o.Time), cur, ackCommand(owed)))
+			lines = append(lines, fmt.Sprintf("outcome owed (boot requalification of %s, transaction %s): after the boot at %s, %s, so decisions stay inhibited; %s acknowledges it, and any switch or rollback is refused until then", cur, o.Txn, q(o.Time), what, ackCommand(owed)))
 			continue
 		}
 		line := fmt.Sprintf("outcome owed (request %s, transaction %s): the %s %s ended %s at %s; the same request run again reports it, %s acknowledges it, and any other switch or rollback is refused until then", q(o.RequestID), o.Txn, o.kind(), o.ID, o.Result, q(o.Time), ackCommand(owed))

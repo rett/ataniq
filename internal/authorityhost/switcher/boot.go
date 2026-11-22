@@ -409,10 +409,15 @@ func (s *Switcher) bootFailed(ctx context.Context, run inhibit, cur string, caus
 }
 
 // bootFailedReason is the reason of the record a failed boot leaves:
-// current (cur, where the link points) did not pass, and why. It starts
-// "boot: after the boot, ", which no boot takes over (see unfinishedBoot).
+// current (cur, where the link points) did not pass, or, with no current
+// (cur empty), nothing was qualified, and why. It starts "boot: after the
+// boot, ", which no boot takes over (see unfinishedBoot).
 func bootFailedReason(cur, why string) string {
-	return boundDetail(fmt.Sprintf("boot: after the boot, %s did not pass its reload, health check and no-AI check again (%s)", linkText(cur), why))
+	what := nothingQualified
+	if cur != "" {
+		what = q(cur) + " did not pass its reload, health check and no-AI check again"
+	}
+	return boundDetail(fmt.Sprintf("boot: after the boot, %s (%s)", what, why))
 }
 
 // ackBootFailure is what ack does first, before it records or removes

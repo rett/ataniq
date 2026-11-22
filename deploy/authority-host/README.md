@@ -946,7 +946,10 @@ Before it, a requalification ran only while a journal was open.
   refused with exit 4: `boot` writes its record and fails as a failed
   qualification does (`current is missing although ...`: the inhibit
   holds the failure, the host's stop list runs, the failure is owed),
-  exit 1, and the owner acknowledges the failure before the next switch.
+  exit 1, with `result: decisions stay inhibited: current is missing or
+  cannot be read, so nothing was qualified after the boot; ...` (`status`
+  says the same of the outcome owed), and the owner acknowledges the
+  failure before the next switch.
   A journal there is settled as every command settles it, and a missing
   lock file is made first. The same holds, in a state folder that is
   there and trusted, when `current` or what would show a deployment
