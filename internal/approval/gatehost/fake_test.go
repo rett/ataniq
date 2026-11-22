@@ -35,7 +35,16 @@ const (
 // looked for too.
 var credID = []byte("marker-credential-id-0123456789")
 
-var words = []string{"apple", "brick", "cloud", "dune", "ember", "frost"}
+// words is a fingerprint of the right length, ownerwire.PairWords words of
+// three lower-case letters each ("aaa", "bbb", ...), derived from the
+// constant so a change of it needs no change here.
+var words = func() []string {
+	w := make([]string, ownerwire.PairWords)
+	for i := range w {
+		w[i] = strings.Repeat(string(rune('a'+i%26)), 3)
+	}
+	return w
+}()
 
 // call is one call the fake received.
 type call struct {
