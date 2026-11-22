@@ -40,6 +40,11 @@ func dial(t *testing.T, e *env, mut func(*ClientConfig)) *Client {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { c.Close() })
+	// Dial returns with the connection made, so there is nothing to wait for:
+	// a client that is not connected here lost its first connection.
+	if _, ok := c.Connected(); !ok {
+		t.Fatalf("dial: not connected after Dial returned (%v)", c.LastError())
+	}
 	return c
 }
 
@@ -282,6 +287,56 @@ func TestDialFailures(t *testing.T) {
 	})
 }
 
+// A caller that ends the context of Dial once Dial has returned, as a
+// deferred cancel does, keeps the connection Dial made. The context bounded
+// the first attempt only; it used to be watched until a goroutine noticed the
+// attempt was over, and closed the connection if it saw the context end first,
+// which a loaded machine made happen to about one Dial in five.
+func TestDialContextEndingAfterDialKeepsTheConnection(t *testing.T) {
+	leakCheck(t)
+	e := startServer(t, func(c *ServerConfig) { c.MaxConns = 1000; bigRate(c) }, echo())
+	for i := 0; i < 50; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// No redial: a lost connection stays lost, and shows.
+		c, err := Dial(ctx, e.addr, fastClient(e, func(c *ClientConfig) { c.BackoffMin, c.BackoffMax = time.Hour, time.Hour }))
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		since, ok := c.Connected()
+		err = c.Call(context.Background(), "owner.list", nil, nil)
+		again, still := c.Connected()
+		c.Close()
+		if !ok || err != nil || !still || !again.Equal(since) {
+			t.Fatalf("dial %d: connected %v, call %v, still connected %v (%v)", i, ok, err, still, c.LastError())
+		}
+	}
+}
+
+// A context that ends while the client waits for the answer to its hello ends
+// the attempt then, not at HelloTimeout.
+func TestDialContextEndsTheWaitForTheHello(t *testing.T) {
+	leakCheck(t)
+	srv, seat := fakeEnv(t)
+	stop := make(chan struct{})
+	addr := fakeGate(t, srv, seat, func(c *tls.Conn) {
+		readHello(t, c)
+		<-stop // never answers
+	})
+	t.Cleanup(func() { close(stop) }) // runs before the gate's own, which waits for it
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	cl, err := Dial(ctx, addr, clientFor(srv, seat, func(c *ClientConfig) { c.HelloTimeout = time.Minute }))
+	if err == nil {
+		cl.Close()
+		t.Fatal("dialled a gate that never answered the hello")
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("the attempt ended after %v, want about 200ms", d)
+	}
+}
+
 // fakeGate is a TLS server that plays the gate by hand, so that a test can make
 // it say what a real one would not. behave is run for each connection, after
 // the handshake.
@@ -419,7 +474,7 @@ func TestClientSaysItsHello(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cl.Close()
-	req := <-got
+	req := within(t, "the hello the gate read", got, 5*time.Second)
 	if req.Op != OpHello || req.ID != 1 || string(req.Params) != `{"proto":1,"caps":["a.b","c"],"role":"seat"}` {
 		t.Fatalf("%+v %s", req, req.Params)
 	}
@@ -643,7 +698,7 @@ func TestClientBackoffStartsOverAfterAConnection(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { c.Run(ctx); close(done) }()
-	defer func() { cancel(); <-done }()
+	defer func() { cancel(); within(t, "Run to return", done, 5*time.Second) }()
 	untilTrue(t, "connection", func() bool { _, ok := c.Connected(); return ok })
 	e.stop()
 	untilTrue(t, "failed attempts", func() bool { mu.Lock(); defer mu.Unlock(); return len(waits) >= 4 })
@@ -720,7 +775,13 @@ func TestClientCallEndsWhenTheServerGoes(t *testing.T) {
 	c := dial(t, e, func(cfg *ClientConfig) { cfg.BackoffMin, cfg.BackoffMax = time.Hour, time.Hour })
 	res := make(chan error, 1)
 	go func() { res <- c.Call(context.Background(), "t.block", nil, nil) }()
-	<-started
+	select {
+	case <-started:
+	case err := <-res:
+		t.Fatalf("the call ended before its handler ran: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler did not start")
+	}
 	e.cancel()
 	select {
 	case err := <-res:
@@ -734,14 +795,23 @@ func TestClientCallEndsWhenTheServerGoes(t *testing.T) {
 
 func TestClientClose(t *testing.T) {
 	leakCheck(t)
+	started := make(chan struct{}, 1)
 	e := startServer(t, nil, HandlerFunc(func(ctx context.Context, _ Peer, _ string, _ json.RawMessage) (json.RawMessage, error) {
+		started <- struct{}{}
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}))
 	c := dial(t, e, nil)
 	res := make(chan error, 1)
 	go func() { res <- c.Call(context.Background(), "t.block", nil, nil) }()
-	time.Sleep(100 * time.Millisecond)
+	// Close while the call waits for its answer.
+	select {
+	case <-started:
+	case err := <-res:
+		t.Fatalf("the call ended before its handler ran: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler did not start")
+	}
 	c.Close()
 	select {
 	case err := <-res:

@@ -867,7 +867,7 @@ func TestServerShutdown(t *testing.T) {
 		}))
 		r := e.helloed()
 		r.send(`{"id":2,"op":"t.slow"}`)
-		<-started
+		within(t, "the handler to start", started, 5*time.Second)
 		e.cancel()
 		time.Sleep(100 * time.Millisecond)
 		close(release)
@@ -896,7 +896,7 @@ func TestServerShutdown(t *testing.T) {
 			}))
 		r := e.helloed()
 		r.send(`{"id":2,"op":"t.slow"}`)
-		<-started
+		within(t, "the handler to start", started, 5*time.Second)
 		start := time.Now()
 		e.cancel()
 		r.expectClosed(5 * time.Second)

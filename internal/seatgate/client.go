@@ -415,18 +415,14 @@ func (c *Client) connect(ctx context.Context) (*session, error) {
 	if err := writeFrame(tc, req); err != nil {
 		return fail(errors.New("seatgate: cannot send the hello"))
 	}
-	// The wait for the answer ends with ctx too.
-	stopWatch := make(chan struct{})
-	defer close(stopWatch)
-	go func() {
-		select {
-		case <-ctx.Done():
-			raw.Close()
-		case <-stopWatch:
-		}
-	}()
+	// The wait for the answer ends with ctx too. The watch is stopped before
+	// anything else is decided: if it already fired, the connection is closed
+	// (or about to be) and the attempt fails; if not, it never will, so a ctx
+	// that ends after connect returns (a Dial whose caller cancels it then)
+	// cannot close the connection of the session.
+	stopWatch := context.AfterFunc(ctx, func() { raw.Close() })
 	p, err := readFrameTimed(tc, time.Now, cfg.HelloTimeout, cfg.FrameTimeout)
-	if err != nil {
+	if !stopWatch() || err != nil {
 		return fail(errors.New("seatgate: no answer to the hello"))
 	}
 	resp, err := decodeResponse(p)
