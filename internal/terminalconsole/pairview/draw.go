@@ -284,7 +284,9 @@ func (m *Model) textLines(w int) []dline {
 		}
 	case scPaired:
 		kind := kindUnverif
-		if m.kind != "" && m.kind != "unverified" {
+		if label := kindLabel(m.kind); label != "" {
+			kind = "Kind, claimed: " + label + "."
+		} else if m.kind != "" && m.kind != "unverified" {
 			kind = "Kind: " + m.kind + "."
 		}
 		add(lText, msgPaired+" "+kind)
@@ -380,6 +382,10 @@ func (m *Model) wordsScreen(w int, confirm, keys bool) []dline {
 	blank()
 	ls = append(ls, m.wordLines(w)...)
 	blank()
+	if m.claim != "" {
+		add(lText, m.claim)
+		blank()
+	}
 	if !keys {
 		return ls
 	}

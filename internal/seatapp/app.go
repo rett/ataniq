@@ -22,11 +22,31 @@ const maxHeaderBytes = 16 << 10
 
 // PairRequest is what the app hands the daemon to pair a phone: the
 // one-time code from the desk, the new credential's id and its public key as
-// DER SPKI. The app has checked the form of all three and nothing else.
+// DER SPKI, and the registration they came in. The app has checked the form
+// of the code and that the registration is one for its relying party, with
+// user presence and user verification, whose credential and key are these;
+// whether the code is the code is the daemon's to say.
 type PairRequest struct {
 	Code         string
 	CredentialID []byte
 	SPKI         []byte
+	// AuthenticatorData is the registration's authenticator data, as the
+	// browser gave it and the app checked it, and RPID the relying party id
+	// it was checked against ([Config].RPID). The daemon registers the
+	// credential from them with its own parser and reads the claims below
+	// again, so a port relays these two and not the fields after them.
+	AuthenticatorData []byte
+	RPID              string
+	// AAGUID, BackupEligible, BackupState, UserVerified and SignCount are
+	// what the app read in AuthenticatorData: the authenticator's claimed
+	// model, its BE, BS and UV flags and its sign counter. With attestation
+	// "none" each is a claim of the authenticator, not a fact, and is shown
+	// as one wherever it is shown.
+	AAGUID         [16]byte
+	BackupEligible bool
+	BackupState    bool
+	UserVerified   bool
+	SignCount      uint32
 }
 
 // WordCount is the number of words of a key's fingerprint. It is this
@@ -43,8 +63,10 @@ type PairResult struct {
 	Words [WordCount]string
 }
 
-// Daemon is the app's port to the daemon. Production wiring comes later; a
-// test uses an in-memory fake.
+// Daemon is the app's port to the daemon. Package seatlink implements it over
+// the seat gate, and the command ataniq-seat wires that in when it is given a
+// gate (without one it answers every pairing [ErrDaemonUnavailable]); a test of
+// this package uses an in-memory fake.
 //
 // Pair returns [ErrCodeRefused] when the daemon does not accept the code
 // (unknown, expired, used or out of tries) and [ErrDaemonUnavailable] when it

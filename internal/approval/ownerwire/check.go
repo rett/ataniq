@@ -378,11 +378,58 @@ func checkPairStatus(s *PairStatus) error {
 	if s.Phase == PairPending {
 		c.words(s.Words, "pair.words")
 		c.need(record.IsLowerHex(s.PendingID, PendingIDLength), "pair.pending_id is not "+strconv.Itoa(PendingIDLength)+" lower-case hexadecimal digits")
+		c.claim(s.Kind, s.AAGUID, s.BackupEligible, s.BackupState, "pair")
 	} else {
 		c.need(s.Words == nil, "pair.words is given for a pairing that is not pending")
 		c.need(s.PendingID == "", "pair.pending_id is given for a pairing that is not pending")
+		c.need(s.Kind == "" && s.AAGUID == "" && !s.BackupEligible && !s.BackupState, "pair.kind, pair.aaguid or a backup flag is given for a pairing that is not pending")
 	}
 	return c.result()
+}
+
+// claim checks what an authenticator claimed: a kind when anything else is
+// given, an AAGUID of its form, the backup state only with eligibility.
+func (c *checker) claim(kind, aaguid string, be, bs bool, where string) {
+	if kind != "" {
+		c.word(kind, where+".kind")
+	}
+	c.need(kind != "" || (aaguid == "" && !be && !bs), where+".aaguid or a backup flag is given with no kind")
+	c.aaguid(aaguid, where+".aaguid")
+	c.need(!bs || be, where+".backup_state is given without backup_eligible")
+}
+
+// aaguid checks an AAGUID: absent, or the lower-case 8-4-4-4-12 form of one
+// that is not all zero (an all-zero AAGUID is left out).
+func (c *checker) aaguid(s, where string) {
+	if s == "" {
+		return
+	}
+	ok := len(s) == 36 && s != "00000000-0000-0000-0000-000000000000"
+	for i := 0; ok && i < len(s); i++ {
+		switch i {
+		case 8, 13, 18, 23:
+			ok = s[i] == '-'
+		default:
+			ok = record.IsLowerHex(s[i:i+1], 1)
+		}
+	}
+	c.need(ok, where+" is not an AAGUID in the lower-case 8-4-4-4-12 form")
+}
+
+// validRPID reports whether s can be a relying party id: 1 to [MaxRPIDBytes]
+// lower-case letters, digits, dots and dashes.
+func validRPID(s string) bool {
+	if len(s) < 1 || len(s) > MaxRPIDBytes {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		switch ch := s[i]; {
+		case ch >= 'a' && ch <= 'z', ch >= '0' && ch <= '9', ch == '.', ch == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func checkPairPendingParams(p *PairPendingParams) error {
@@ -398,6 +445,12 @@ func checkSeatPairParams(p *SeatPairParams) error {
 		"seat.credential_id is not "+strconv.Itoa(MinCredentialIDBytes)+" to "+strconv.Itoa(MaxCredentialIDBytes)+" bytes")
 	c.need(len(p.PublicKey) >= 1 && len(p.PublicKey) <= MaxPublicKeyBytes,
 		"seat.public_key is not 1 to "+strconv.Itoa(MaxPublicKeyBytes)+" bytes")
+	if p.AuthenticatorData == nil && p.RPID == "" {
+		return c.result()
+	}
+	c.need(len(p.AuthenticatorData) >= MinRegistrationDataBytes && len(p.AuthenticatorData) <= MaxRegistrationDataBytes,
+		"seat.authenticator_data is not "+strconv.Itoa(MinRegistrationDataBytes)+" to "+strconv.Itoa(MaxRegistrationDataBytes)+" bytes")
+	c.need(validRPID(p.RPID), "seat.rp_id is not 1 to "+strconv.Itoa(MaxRPIDBytes)+" lower-case letters, digits, dots and dashes")
 	return c.result()
 }
 
@@ -411,6 +464,8 @@ func (c *checker) keyItem(k *KeyItem, where string) {
 	c.need(record.IsLowerHex(k.ID, KeyIDLength), where+".id is not "+strconv.Itoa(KeyIDLength)+" lower-case hexadecimal digits")
 	c.word(k.Kind, where+".kind")
 	c.time(k.PairedAt, where+".paired_at")
+	c.aaguid(k.AAGUID, where+".aaguid")
+	c.need(!k.BackupState || k.BackupEligible, where+".backup_state is given without backup_eligible")
 }
 
 func checkKeyItem(k *KeyItem) error {

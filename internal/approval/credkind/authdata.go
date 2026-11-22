@@ -22,8 +22,8 @@ const (
 const (
 	authHead        = 32 + 1 + 4 // rpIdHash, flags, signCount
 	attestedHead    = 16 + 2     // aaguid, credentialIdLength
-	minCredentialID = 16
-	maxCredentialID = 1023 // WebAuthn level 3, section 4
+	minCredentialID = MinCredentialIDBytes
+	maxCredentialID = MaxCredentialIDBytes
 	maxAssertionAD  = 1024
 	maxRegisterAD   = 4096
 )

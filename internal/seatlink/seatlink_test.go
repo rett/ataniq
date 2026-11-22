@@ -110,6 +110,12 @@ func request() seatapp.PairRequest {
 		Code:         testCode,
 		CredentialID: bytes.Repeat([]byte{7}, 32),
 		SPKI:         bytes.Repeat([]byte{9}, 91),
+		// The link relays the registration as it is; the daemon checks it.
+		AuthenticatorData: bytes.Repeat([]byte{5}, 164),
+		RPID:              "seat.example.test",
+		AAGUID:            [16]byte{1, 2, 3},
+		BackupEligible:    true,
+		UserVerified:      true,
 	}
 }
 
@@ -164,7 +170,8 @@ func TestPairRelaysTheRequest(t *testing.T) {
 	if gotOp != ownerwire.OpSeatPair {
 		t.Errorf("op %q", gotOp)
 	}
-	if got.Code != want.Code || !bytes.Equal(got.CredentialID, want.CredentialID) || !bytes.Equal(got.PublicKey, want.SPKI) {
+	if got.Code != want.Code || !bytes.Equal(got.CredentialID, want.CredentialID) || !bytes.Equal(got.PublicKey, want.SPKI) ||
+		!bytes.Equal(got.AuthenticatorData, want.AuthenticatorData) || got.RPID != want.RPID {
 		t.Errorf("the gate got another request")
 	}
 	for i, w := range words(ownerwire.PairWords) {
@@ -349,6 +356,36 @@ func TestCodeOfAnotherFormIsRefusedUnsent(t *testing.T) {
 	}
 	if n := g.calls.Load(); n != 0 {
 		t.Errorf("a code of another form was sent (%d)", n)
+	}
+}
+
+// A registration the wire does not take is not sent, and is not taken for a
+// refused code: the phone is not told to scan again for it.
+func TestARegistrationOfAnotherFormIsAPlainErrorUnsent(t *testing.T) {
+	seat := newIdentity(t, "seat")
+	g := serveGate(t, []string{seat.Fingerprint()}, answer(ownerwire.SeatPairResult{Words: words(ownerwire.PairWords)}))
+	d, _ := dial(t, g, seat)
+	for name, edit := range map[string]func(*seatapp.PairRequest){
+		"an address as the relying party": func(r *seatapp.PairRequest) { r.RPID = "::1" },
+		"data with no relying party":      func(r *seatapp.PairRequest) { r.RPID = "" },
+		"data too long":                   func(r *seatapp.PairRequest) { r.AuthenticatorData = make([]byte, ownerwire.MaxRegistrationDataBytes+1) },
+	} {
+		r := request()
+		edit(&r)
+		_, err := d.Pair(context.Background(), r)
+		if err == nil || errors.Is(err, seatapp.ErrCodeRefused) || errors.Is(err, seatapp.ErrDaemonUnavailable) {
+			t.Errorf("%s: err %v, want a plain error", name, err)
+		}
+		noCode(t, name, err)
+	}
+	if n := g.calls.Load(); n != 0 {
+		t.Errorf("a registration of another form was sent (%d)", n)
+	}
+	// A request with no registration at all is sent without one.
+	r := request()
+	r.AuthenticatorData, r.RPID = nil, ""
+	if _, err := d.Pair(context.Background(), r); err != nil {
+		t.Fatalf("a request without a registration: %v", err)
 	}
 }
 

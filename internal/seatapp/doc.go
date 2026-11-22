@@ -54,7 +54,10 @@
 // (cose.go: the five-entry ES256 COSE_Key of a P-256 point on the curve, in
 // canonical order, definite lengths only) and turns into its canonical DER
 // SPKI, which must equal the posted public key byte for byte. Then it hands
-// the code, the credential id and the key to the [Daemon] port, and the
+// the code, the credential id and the key to the [Daemon] port, with the
+// authenticator data (at most 4096 bytes) and the relying party id, from which
+// the daemon reads the kind the authenticator's AAGUID claims and its backup
+// flags (claims, not facts: nothing is attested), and the
 // [WordCount] words that come back are shown on the phone to be compared with the desk
 // console. Nothing is trusted until the owner confirms at the desk; this
 // package adds no credential to anything.
@@ -104,8 +107,8 @@
 //
 // # Seams
 //
-// [Daemon] is the port to the daemon, defined here and implemented later by
-// the wiring. A later page adds a template under templates/, a route in the
+// [Daemon] is the port to the daemon, defined here and implemented over the
+// seat gate by package seatlink, which this package does not import. A later page adds a template under templates/, a route in the
 // route table and its entry in the page inventory (inventory_test.go, which
 // fails for a route that is not listed); it needs no change in the middleware.
 //

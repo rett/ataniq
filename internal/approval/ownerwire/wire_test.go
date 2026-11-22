@@ -143,7 +143,7 @@ func forms(t testing.TB) []form {
 		formOf(t, "pair start result", MaxResultBytes, inv, samplePairStartResult(), DecodePairStartResult, EncodePairStartResult),
 		formOf(t, "pair status", MaxResultBytes, inv, samplePairStatus(), DecodePairStatus, EncodePairStatus),
 		formOf(t, "pair pending params", MaxParamsBytes, inv, PairPendingParams{PendingID: samplePendingID}, DecodePairPendingParams, EncodePairPendingParams),
-		formOf(t, "seat pair params", MaxParamsBytes, inv, sampleSeatPairParams(), DecodeSeatPairParams, EncodeSeatPairParams),
+		formOf(t, "seat pair params", MaxSeatPairParamsBytes, inv, sampleSeatPairParams(), DecodeSeatPairParams, EncodeSeatPairParams),
 		formOf(t, "seat pair result", MaxResultBytes, inv, SeatPairResult{Words: sampleWords()}, DecodeSeatPairResult, EncodeSeatPairResult),
 		formOf(t, "key item", MaxResultBytes, inv, sampleKeyItem(), DecodeKeyItem, EncodeKeyItem),
 		formOf(t, "keys view", MaxResultBytes, inv, sampleKeysView(), DecodeKeysView, EncodeKeysView),

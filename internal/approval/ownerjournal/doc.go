@@ -171,7 +171,11 @@
 // day. It is the same in style. It only grows: a credential is added
 // ([KeyFile.AddKey]), revoked ([KeyFile.RevokeKeys]; a revoked credential stays
 // listed and is never made good again), and a rejected pairing is noted
-// ([KeyFile.AppendRejected]) with its display id and words and no key. Every
+// ([KeyFile.AppendRejected]) with its display id and words and no key. A
+// credential carries its kind and what its authenticator claimed at the
+// pairing (the AAGUID, the backup flags and the sign counter), optional on
+// disk: a credential written without them reads as one with none. Its highest
+// sign counter is raised by [KeyFile.RaiseCounter] and never lowered. Every
 // append is on the disk when it returns, the file is read and checked from its
 // first record when it is opened (a chain of digests, the numbers, and the
 // rules of the list), and the same trust checks hold: the folder and the file

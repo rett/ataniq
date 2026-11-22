@@ -9,7 +9,10 @@
 // key through the app; the daemon then shows the key as eight short words. The
 // view polls Backend.PairStatus every two seconds, and on the Pending phase
 // shows the eight words large and spaced with the line "Compare with your
-// phone. Confirm only if they match." Only the owner's c and then y confirm
+// phone. Confirm only if they match.", and, when the state holds what the
+// phone's authenticator claimed (State.Kind and the backup flags), a line that
+// says so in the view's own words and as a claim: "Claimed, not proven: vault
+// passkey, synced." Only the owner's c and then y confirm
 // (Backend.PairConfirm); x rejects (Backend.PairReject). Nothing is trusted
 // until the owner confirms at the desk.
 //

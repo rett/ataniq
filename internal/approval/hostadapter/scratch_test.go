@@ -60,3 +60,54 @@ func TestTheScratchSettingsRefuseARepeatedKey(t *testing.T) {
 		t.Errorf("the same key in two objects: %v", err)
 	}
 }
+
+// The settings may name the kinds of credential the project accepts. Without
+// the key, or with an empty list, every kind is accepted; a name that is not a
+// kind, or a kind twice, refuses the settings.
+func TestTheScratchSettingsNameTheAcceptedKinds(t *testing.T) {
+	load := func(t *testing.T, kinds string) (Scratch, error) {
+		t.Helper()
+		text := scratchJSON(okDoor, okIdentity, okSeat, okGate)
+		if kinds != "" {
+			text = strings.TrimSuffix(text, "}") + `,"kinds":` + kinds + `}`
+		}
+		path := filepath.Join(t.TempDir(), ScratchName)
+		if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return LoadScratch(path)
+	}
+	for _, kinds := range []string{"", `[]`} {
+		s, err := load(t, kinds)
+		if err != nil {
+			t.Fatalf("%q: %v", kinds, err)
+		}
+		p := s.KindPolicy()
+		for _, k := range []string{"platform-passkey", "vault-passkey", "passkey"} {
+			if !p.Accepts(k) {
+				t.Errorf("%q: the kind %s is not accepted", kinds, k)
+			}
+		}
+		if p.Accepts("unverified") {
+			t.Errorf("%q: the kind unverified is accepted", kinds)
+		}
+	}
+	s, err := load(t, `["vault-passkey","platform-passkey"]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := s.KindPolicy(); !p.Accepts("vault-passkey") || !p.Accepts("platform-passkey") || p.Accepts("passkey") {
+		t.Errorf("the policy %+v", p)
+	}
+	for name, kinds := range map[string]string{
+		"a kind that is not one": `["hardware-key"]`,
+		"unverified":             `["unverified"]`,
+		"a kind twice":           `["passkey","passkey"]`,
+		"a kind in capitals":     `["Passkey"]`,
+		"not a list":             `"passkey"`,
+	} {
+		if _, err := load(t, kinds); err == nil {
+			t.Errorf("%s: the settings were taken", name)
+		}
+	}
+}

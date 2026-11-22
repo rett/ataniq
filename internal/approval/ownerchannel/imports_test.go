@@ -11,7 +11,7 @@ import (
 
 // The package imports, of this repository, only the packages the seams note
 // lists for it, and nothing that opens a socket or runs a program. Its test
-// files may also import the stand-in door.
+// files may also import the stand-in door and the software authenticator.
 func TestImportsOnlyWhatTheSeamsNoteAllows(t *testing.T) {
 	allowed := map[string]bool{
 		"ataniq/internal/approval/record":       true,
@@ -22,6 +22,7 @@ func TestImportsOnlyWhatTheSeamsNoteAllows(t *testing.T) {
 		"ataniq/internal/approval/ownerjournal": true,
 		"ataniq/internal/approval/ownerwire":    true,
 		"ataniq/internal/approval/seatpair":     true,
+		"ataniq/internal/approval/credkind":     true,
 	}
 	banned := map[string]bool{"net": true, "os/exec": true, "syscall": true, "os": true}
 	entries, err := os.ReadDir(".")
@@ -48,7 +49,8 @@ func TestImportsOnlyWhatTheSeamsNoteAllows(t *testing.T) {
 			first, _, _ := strings.Cut(path, "/")
 			switch {
 			case first == "ataniq":
-				if !allowed[path] && !(isTest && path == "ataniq/internal/approval/door/doortest") {
+				testOnly := path == "ataniq/internal/approval/door/doortest" || path == "ataniq/internal/approval/webauthntest"
+				if !allowed[path] && !(isTest && testOnly) {
 					t.Errorf("%s imports %s", name, path)
 				}
 			case strings.Contains(first, "."):

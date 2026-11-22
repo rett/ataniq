@@ -9,13 +9,16 @@
 // # Pairing
 //
 // [Daemon.Pair] sends seat.pair with [ownerwire.SeatPairParams], encoded by
-// package ownerwire (which checks its form first), and reads the answer with
+// package ownerwire (which checks its form first), with the registration's
+// authenticator data and relying party id from the request, from which the
+// daemon reads the kind the credential claims, and reads the answer with
 // [ownerwire.DecodeSeatPairResult], which holds it to exactly
 // [ownerwire.PairWords] words of the fingerprint's grammar. The errors the app
 // tells apart are mapped so:
 //
 //	the gate's code pairing-refused             seatapp.ErrCodeRefused
 //	a code ownerwire does not take as a code    seatapp.ErrCodeRefused (nothing is sent)
+//	a registration ownerwire does not take      a plain error (nothing is sent)
 //	seatgate.ErrDisconnected                    seatapp.ErrDaemonUnavailable
 //	the context ended (cancelled or deadline)   seatapp.ErrDaemonUnavailable
 //	anything else (any other code, a closed
@@ -66,6 +69,11 @@ func Caps() []string { return []string{CapPair} }
 // form. It holds nothing of the answer.
 var errBadAnswer = errors.New("seatlink: the gate's answer to the pairing is not of its form")
 
+// errRegistration is the error of a request whose registration the wire does
+// not take (authenticator data of another size, or a relying party id that is
+// not a host name). Nothing is sent: the code is not spent on it.
+var errRegistration = errors.New("seatlink: the registration is not of the wire's form")
+
 // errFailed is the error of a call that failed for a reason the app does not
 // tell apart. It holds nothing of the request; it wraps the transport's error,
 // whose texts are fixed.
@@ -100,17 +108,27 @@ func (d *Daemon) Pair(ctx context.Context, r seatapp.PairRequest) (seatapp.PairR
 	if ctx.Err() != nil {
 		return seatapp.PairResult{}, seatapp.ErrDaemonUnavailable
 	}
-	params, err := ownerwire.EncodeSeatPairParams(ownerwire.SeatPairParams{
+	bare := ownerwire.SeatPairParams{
 		Code:         r.Code,
 		CredentialID: r.CredentialID,
 		PublicKey:    r.SPKI,
-	})
-	if err != nil {
+	}
+	if _, err := ownerwire.EncodeSeatPairParams(bare); err != nil {
 		// The app has checked the credential id's length and that the key
 		// is a P-256 key, both inside the wire's bounds, so what the wire
 		// refuses here is the code: one the daemon could not accept. It is
 		// not sent, and the error holds nothing of it.
 		return seatapp.PairResult{}, seatapp.ErrCodeRefused
+	}
+	// The registration goes with the credential, so that the daemon reads
+	// the kind it claims; the claims the app read are not sent, since the
+	// daemon reads them again itself. A request without a registration
+	// pairs a credential of the kind "unverified".
+	full := bare
+	full.AuthenticatorData, full.RPID = r.AuthenticatorData, r.RPID
+	params, err := ownerwire.EncodeSeatPairParams(full)
+	if err != nil {
+		return seatapp.PairResult{}, errRegistration
 	}
 	var raw json.RawMessage
 	if err := d.c.Call(ctx, ownerwire.OpSeatPair, json.RawMessage(params), &raw); err != nil {

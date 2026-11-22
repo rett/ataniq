@@ -4,6 +4,15 @@ import (
 	"errors"
 )
 
+// The bounds of a credential id, in bytes. WebAuthn level 3, section 4,
+// allows at most 1023; the wire of the pairing (ownerwire) and the key list
+// (ownerjournal) hold the same bounds, so that a credential that is paired can
+// be verified.
+const (
+	MinCredentialIDBytes = 16
+	MaxCredentialIDBytes = 1023
+)
+
 // The names of the kinds.
 const (
 	NamePlatform = "platform-passkey"

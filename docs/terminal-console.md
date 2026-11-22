@@ -599,12 +599,19 @@ the view until Esc closes it, Ctrl+C aside, which quits.
    if they match." The phone shows the same eight words (64 bits of the key's
    fingerprint). The daemon names the
    pending key with an id (16 lowercase hex characters) that the view keeps but
-   does not show.
+   does not show. When the daemon has what the phone's authenticator said of
+   itself when it made the key, the view shows it under the words, as a claim:
+   "Claimed, not proven: vault passkey, synced." The kind is "platform
+   passkey", "vault passkey" or "passkey of an unknown kind" (any other word
+   from the daemon reads "a kind this console does not know"), and the backup
+   is "synced", "can sync, not synced yet" or "kept on one device". Nothing
+   about the authenticator is attested, so this is what the phone says, not a
+   fact: the words are what you compare.
 4. `c` asks "press y to confirm, any other key cancels", because a confirmation
    adds a deciding key; only `y`, a moment after the `c`, confirms. The
    confirmation and a rejection carry the id the words were shown for, so the
    daemon acts on that key and on no other. The question is dropped if the
-   words or the id change meanwhile, or if the terminal is resized. You can
+   words, the id or the claim change meanwhile, or if the terminal is resized. You can
    confirm only while the whole words screen, the eight words and the prompt,
    fits the terminal with no line cut: on a smaller one `c` does nothing and
    the view says "terminal too small to show the eight words" with "x: reject
@@ -612,8 +619,9 @@ the view until Esc closes it, Ctrl+C aside, which quits.
    words of ordinary length, and so does one as small as 30 x 19 (the words
    two to a row); a smaller one may not, and long words need more
    columns. `x` rejects, and nothing is added.
-   After a confirm the view shows "Paired. Kind: unverified (a syncing passkey)."
-   and the key's short id. Nothing is trusted until you confirm here.
+   After a confirm the view shows the key's kind, "Paired. Kind, claimed: vault
+   passkey." (or "Paired. Kind: unverified (a syncing passkey)." for a key
+   paired without a claim), and the key's short id. Nothing is trusted until you confirm here.
 5. Esc closes the view at any time and confirms nothing. Closing while the code
    waits does not cancel the pairing on the daemon: the code ends by itself when
    it expires. A code that expired, or a pairing the daemon no longer holds, says

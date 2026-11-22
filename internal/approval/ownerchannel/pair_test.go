@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"ataniq/internal/approval/credkind"
 	"ataniq/internal/approval/ownerjournal"
 	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/approval/record"
@@ -168,13 +169,18 @@ func TestTheCodesAndTheLimitsAreTheSeatpairs(t *testing.T) {
 		{"the words of a fingerprint", ownerwire.PairWords, seatpair.FingerprintWords},
 		{"the words of a journaled fingerprint", ownerjournal.FingerprintWords, seatpair.FingerprintWords},
 		{"the shortest credential id", ownerwire.MinCredentialIDBytes, seatpair.MinCredentialIDLen},
-		{"the longest credential id", ownerwire.MaxCredentialIDBytes, seatpair.MaxCredentialIDLen},
+		{"the longest credential id the verifier takes", ownerwire.MaxCredentialIDBytes, credkind.MaxCredentialIDBytes},
+		{"the shortest credential id the verifier takes", ownerwire.MinCredentialIDBytes, credkind.MinCredentialIDBytes},
 		{"the keys on the list", ownerwire.MaxKeys, ownerjournal.MaxKeys},
 		{"the length of a display id", ownerwire.KeyIDLength, ownerjournal.DisplayIDLength},
 	} {
 		if c.wire != c.pkg {
 			t.Errorf("%s: the wire says %d, the package %d", c.name, c.wire, c.pkg)
 		}
+	}
+	// Every id the wire passes, seatpair takes.
+	if ownerwire.MaxCredentialIDBytes > seatpair.MaxCredentialIDLen {
+		t.Errorf("the wire passes ids of %d bytes, seatpair takes %d", ownerwire.MaxCredentialIDBytes, seatpair.MaxCredentialIDLen)
 	}
 	// A code seatpair makes passes the wire's form.
 	code, _ := seatpair.NewCode(&countingRand{}, start)
@@ -513,11 +519,14 @@ func TestThePresentationOfTheSeat(t *testing.T) {
 
 	// A malformed call is refused as invalid, before the pairing is asked.
 	for name, p := range map[string]ownerwire.SeatPairParams{
-		"a short code":     good.params(code[:10]),
-		"no credential":    {Code: code, PublicKey: good.spki},
-		"a short id":       {Code: code, CredentialID: good.id[:8], PublicKey: good.spki},
-		"a huge key":       {Code: code, CredentialID: good.id, PublicKey: make([]byte, 600)},
-		"a code with an I": good.params("I" + code[1:]),
+		"a short code":  good.params(code[:10]),
+		"no credential": {Code: code, PublicKey: good.spki},
+		"a short id":    {Code: code, CredentialID: good.id[:8], PublicKey: good.spki},
+		// WebAuthn allows at most 1023 bytes, and the verifier takes no more:
+		// an id it could never verify is not paired.
+		"an id of 1024 bytes": {Code: code, CredentialID: make([]byte, 1024), PublicKey: good.spki},
+		"a huge key":          {Code: code, CredentialID: good.id, PublicKey: make([]byte, 600)},
+		"a code with an I":    good.params("I" + code[1:]),
 	} {
 		_, err := e.svc.PairPresent(context.Background(), seatSrc, p)
 		if c, _ := record.CodeOf(err); c != record.CodeRecordInvalid {

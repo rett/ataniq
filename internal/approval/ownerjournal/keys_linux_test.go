@@ -140,7 +140,7 @@ func TestAKeyThatCannotBeAddedWritesNothing(t *testing.T) {
 	before := fileBytes(t, path)
 	bad := map[string]func(*NewKey){
 		"a short id":        func(n *NewKey) { n.CredentialID = n.CredentialID[:15] },
-		"a long id":         func(n *NewKey) { n.CredentialID = make([]byte, 1025) },
+		"a long id":         func(n *NewKey) { n.CredentialID = make([]byte, 1024) },
 		"no key":            func(n *NewKey) { n.PublicKey = nil },
 		"a long key":        func(n *NewKey) { n.PublicKey = make([]byte, 513) },
 		"no kind":           func(n *NewKey) { n.Kind = "" },
@@ -318,8 +318,8 @@ func TestTheRoomForRejectedPairingsEndsBeforeTheRoomForKeys(t *testing.T) {
 	for ; i < MaxKeyRecords && err == nil; i++ {
 		err = k.AppendRejected(RejectedPairing{ID: id, Words: keyWords, At: base})
 	}
-	if !errors.Is(err, ErrKeysFull) || i != maxRejected+1 {
-		t.Fatalf("the %dth rejected pairing: %v, want %v at %d", i, err, ErrKeysFull, maxRejected+1)
+	if !errors.Is(err, ErrKeysFull) || i != maxSpare+1 {
+		t.Fatalf("the %dth rejected pairing: %v, want %v at %d", i, err, ErrKeysFull, maxSpare+1)
 	}
 	// Every credential still fits, and so does its revocation.
 	for n := 0; n < MaxKeys; n++ {
