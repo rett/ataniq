@@ -43,7 +43,7 @@ builder, `ah-release` (see "The release builder" below).
   highest-counter         the highest counter a switch ever attempted
   counters.log            every counter a switch attempted, appended
   decisions.inhibit       while it is there, every decision service refuses every decision
-  txn.json                the journal of the transaction under way
+  txn.json                the journal of the transaction under way; decision services refuse while it is there too
   switch.lock             the lock of a running switch
   imported/<id>           the record of the import that made releases/<id>
 ```
@@ -656,11 +656,13 @@ contract for those services is:
   such unit; that condition kept the service from starting, so its
   readiness probe could never pass. Do not add it, and remove it where it
   was added.
-- The application **must refuse every decision** while the file is there:
-  it checks the file before each decision (not once at start), and
-  refuses when the file is there or when whether it is there cannot be
-  told (any error other than "no such file"). Readiness and the static
-  status page do not depend on it.
+- The application **must refuse every decision** while the file is there,
+  and while the journal `/var/lib/authority-host/txn.json` is there: it
+  checks both before each decision (not once at start), and refuses when
+  either is there or when whether it is there cannot be told (any error
+  other than "no such file"; only existence is checked, so the journal's
+  mode 0600 does not matter). Readiness and the static status page do not
+  depend on them.
 
 The release builder makes every decision-capable service follow this
 contract (the switch does not check the services for it). The file holds
@@ -676,7 +678,14 @@ only its existence matters to the services.
   no-AI check (`ok`), or a going back whose release passed its reload, its
   health check and its no-AI check of phase post (`rolled-back` with
   `restored_health: ok`). The removal is synced before the journal is
-  removed.
+  removed, so a crash (a power loss) between the two leaves the journal in
+  phase `done` and no inhibit: the journal alone then keeps decisions
+  refused, `status` says `decisions: refused while txn.json is there`, and
+  the next command qualifies `current` again (below), writing the inhibit
+  back first, before it settles. From the inhibit's writing to the
+  journal's removal one of the two files is always there. The other order
+  would leave, after such a crash, an inhibit with no journal to qualify
+  the host again from, which only the owner could clear.
 - A healthy transaction found in phase `done` by a later command (a
   reboot, or a crash, came between its health check and its settling)
   is not taken as healthy on its word: the release `current` points at,

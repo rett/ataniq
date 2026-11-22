@@ -10,6 +10,11 @@
 //	opt/authority-host/current  -> releases/<id>
 //	opt/authority-host/previous -> releases/<id>
 //	var/lib/authority-host/deploy.json, owed.json, highest-counter, counters.log, decisions.inhibit, txn.json, switch.lock
+//
+// A decision-capable service refuses every decision while
+// var/lib/authority-host/decisions.inhibit or var/lib/authority-host/txn.json
+// is there, or while whether either is there cannot be told (see
+// InhibitFile).
 package switcher
 
 import (
@@ -1314,6 +1319,8 @@ func (s *Switcher) status(w io.Writer) error {
 		return err
 	} else if ok {
 		fmt.Fprintf(w, "decisions: inhibited (%s) since %s by transaction %s: %s; decision-capable services refuse every decision while it is there; a transaction that ends healthy removes it, or ah-switch inhibit-clear --asked WORDS\n", InhibitFile, q(in.Time), q(in.Txn), q(in.Reason))
+	} else if pending {
+		fmt.Fprintf(w, "decisions: refused while %s is there: %s was removed, but the transaction is not settled; decision-capable services refuse every decision until it is, and the next switch, rollback or recover settles it\n", JournalFile, InhibitFile)
 	} else {
 		fmt.Fprintln(w, "decisions: not inhibited")
 	}

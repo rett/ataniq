@@ -529,6 +529,9 @@ func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 	if err := s.endInhibit(t); err != nil {
 		return unresolved(InhibitFile, err)
 	}
+	if err := s.crash(CrashInhibitLifted); err != nil {
+		return ExitFailed, false
+	}
 	if err := s.dropJournal(); err != nil {
 		return unresolved(JournalFile+" not removed", err)
 	}

@@ -40,7 +40,9 @@
   first writes `/var/lib/authority-host/decisions.inhibit`; a
   decision-capable service may start while it is there (and answer its
   readiness probe) but refuses every decision while it is there or cannot
-  be read, checking it before each decision; the switch removes it only
+  be read, and while the journal `txn.json` is there, checking both before
+  each decision (a healthy end removes the inhibit before the journal, so
+  a power loss between the two still refuses); the switch removes it only
   when the transaction ends healthy, after running the reload list,
   health check and post-activation no-AI check (`--phase post`, the
   firewall and listeners as they are now) of `current` again when it

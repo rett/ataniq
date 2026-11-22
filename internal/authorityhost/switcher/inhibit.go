@@ -25,6 +25,17 @@ import (
 // no-AI check of current again (see requalifyCurrent). Any other end
 // leaves it, across a reboot, until a later transaction ends healthy or
 // the owner runs ah-switch inhibit-clear.
+//
+// The service also refuses every decision while the journal, txn.json in
+// the same folder, is there (or whether it is there cannot be told): a
+// healthy end removes the inhibit, synced, before it removes the journal,
+// so a crash between the two leaves a journal in phase done and no
+// inhibit, and the next command qualifies current again (writing the
+// inhibit back first) before it settles. A transaction is open from the
+// inhibit's writing to the journal's removal, so at every crash point
+// one of the two files is there until it is settled. (The other order
+// would leave, after a crash between the two, an inhibit with no journal
+// to qualify the host again from, which only the owner could clear.)
 const InhibitFile = "decisions.inhibit"
 
 // maxInhibitWords bounds the owner's words of inhibit-clear.
