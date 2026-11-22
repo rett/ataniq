@@ -1105,3 +1105,96 @@ func TestBootOutcomeOwed(t *testing.T) {
 		}
 	}
 }
+
+// bootRewriteFails runs ah-switch boot, whose rewrite of decisions.inhibit
+// with its failure fails (a folder that is not empty stands where the
+// new file is made), as a write that fails on the host would: boot's own
+// record stays, the host's stop list runs and the failure is owed under
+// its run. It returns that record.
+func (e *env) bootRewriteFails() inhibit {
+	e.t.Helper()
+	blocker := filepath.Join(e.root, StateDir, "."+InhibitFile+".new")
+	s := e.switcher()
+	s.crashAt = func(p string) error {
+		if p == CrashBootInhibit {
+			if err := os.MkdirAll(filepath.Join(blocker, "x"), 0o755); err != nil {
+				e.t.Fatal(err)
+			}
+		}
+		return nil
+	}
+	code := s.Boot(context.Background())
+	e.t.Logf("boot, its rewrite failing: exit %d\n%s", code, e.out.String())
+	e.last = e.out.String()
+	e.out.Reset()
+	if code != ExitFailed || !strings.Contains(e.last, "not rewritten with the failure") {
+		e.t.Fatalf("boot: exit %d\n%s", code, e.last)
+	}
+	in, ok := e.inhibited()
+	owed := e.owed()
+	if !ok || in.Reason != bootReason || len(owed) != 1 || owed[0].Txn != in.Txn || owed[0].Direction != DirBoot {
+		e.t.Fatalf("after the boot: inhibit %+v %v, owed %+v", in, ok, owed)
+	}
+	return in
+}
+
+// TestAckWritesTheFailureOfABoot: a failed boot could not rewrite its
+// inhibit with the failure, so its own record stays, with the failure owed
+// under its run. The ack of that outcome first rewrites the record as the
+// failure, as boot would have, and only then acknowledges it; when it
+// cannot, it refuses and leaves the outcome owed. A later boot keeps the
+// failure record, as it keeps every failure: only a healthy switch or
+// inhibit-clear lifts it. An ack recorded already (deploy.json holds
+// its transactions) and repeated does the same before it finishes.
+func TestAckWritesTheFailureOfABoot(t *testing.T) {
+	blocker := func(e *env) string { return filepath.Join(e.root, StateDir, "."+InhibitFile+".new") }
+	for _, retry := range []bool{false, true} {
+		t.Run(map[bool]string{false: "an ack", true: "an ack recorded already"}[retry], func(t *testing.T) {
+			e, g := rebooted(t)
+			e.runner.fail["health-old"] = -1
+			run := e.bootRewriteFails()
+			delete(e.runner.fail, "health-old")
+			if retry {
+				rec := e.record()
+				rec.OutcomeAckedAt, rec.OutcomeAckedAsked, rec.OutcomeAckedTxn = "2026-11-21T12:00:00Z", "saw it before", run.Txn
+				data, err := json.Marshal(rec)
+				if err != nil {
+					t.Fatal(err)
+				}
+				e.write(filepath.Join(e.root, StateDir, DeployFile), string(data), 0o644)
+			}
+			// The rewrite fails again: nothing is acknowledged.
+			owedText := e.stateFile(OwedFile)
+			if code := e.ack("saw the failed boot"); code != ExitFailed || !strings.Contains(e.last, "not rewritten") {
+				t.Errorf("ack while the inhibit cannot be written: exit %d\n%s", code, e.last)
+			}
+			if e.stateFile(OwedFile) != owedText {
+				t.Error("the outcome is no longer owed after a refused ack")
+			}
+			if in, _ := e.inhibited(); in != run {
+				t.Errorf("inhibit after a refused ack: %+v", in)
+			}
+			if err := os.RemoveAll(blocker(e)); err != nil {
+				t.Fatal(err)
+			}
+			if code := e.ack("saw the failed boot"); code != ExitOK {
+				t.Fatalf("ack: exit %d\n%s", code, e.last)
+			}
+			in, ok := e.inhibited()
+			if !ok || in.Txn != run.Txn || !strings.HasPrefix(in.Reason, "boot: after the boot, "+q("releases/"+rel2)+" did not pass") {
+				t.Errorf("after the ack: inhibit %+v, %v", in, ok)
+			}
+			if len(e.owed()) != 0 {
+				t.Errorf("owed after the ack: %+v", e.owed())
+			}
+			before := e.stateFile(InhibitFile)
+			e.runner.reset()
+			if code := e.boot(); code != ExitFailed || len(e.runner.calls) != 0 || e.stateFile(InhibitFile) != before {
+				t.Errorf("the next boot: exit %d, ran %v, inhibit changed %v\n%s", code, e.runner.calls, e.stateFile(InhibitFile) != before, e.last)
+			}
+			if got := g.decide(); got != "refused" {
+				t.Errorf("a decision is %s after the next boot", got)
+			}
+		})
+	}
+}

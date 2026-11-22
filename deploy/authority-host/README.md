@@ -878,7 +878,10 @@ Before it, a requalification ran only while a journal was open.
   release in `id` and `current_id`, the words in `detail`, starting `after
   the boot`), and `boot` exits 1 with `result: decisions stay inhibited`.
   When the inhibit cannot be rewritten, `boot`'s own record stays and
-  the failure is still owed under its run. `status` shows `outcome
+  the failure is still owed under its run, which keeps a later boot from
+  taking that record over; the `ack` of that outcome first rewrites the
+  record with the failure, and refuses, the outcome still owed, when it
+  cannot (see "The journal and recover"). `status` shows `outcome
   owed (boot requalification of ID, transaction RUN)` with the `ack` that
   takes it back. Every switch and rollback is refused while it is owed,
   and the inhibit stays after the `ack` until a switch ends healthy or the
@@ -1122,6 +1125,13 @@ concern it, and only the second takes it back:
   recorded transactions to be exactly those owed, so it only finishes
   removing `owed.json` and says so, and keeps the owner's first words and
   time in `deploy.json` (the `WORDS` of the retry are not recorded).
+  Before it records or removes anything, an `ack` (that finishing one
+  included) looks at the decision inhibit: when it is still the own record
+  of a `boot` whose failure is owed under its run (that `boot` could not
+  rewrite it with the failure), the record is rewritten with that failure
+  first (`reason` starting `boot: after the boot,`), as `boot` would have
+  written it, so that no later boot takes it over. When that write fails
+  it says so, acknowledges nothing, keeps `owed.json` and exits 1.
 
 After every switch or rollback, then, the owner's `ack` is needed before
 the next different switch or rollback: a retry of the request does not

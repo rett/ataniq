@@ -130,7 +130,8 @@
   reload list, health check and post-activation no-AI check) and removes
   only that record, only when all of it passed; a failure is first
   written into that record (which no later boot takes over, also once its
-  outcome is acknowledged), then runs the host's stop list, is owed
+  outcome is acknowledged; when that write fails, the `ack` of the outcome
+  writes it first, and refuses, the outcome still owed, when it cannot), then runs the host's stop list, is owed
   (`direction: boot`, `requalify_failed`, shown by `status` with its
   `ack`) and keeps decisions inhibited; any other
   inhibit it finds (a transaction's, a held journal, a failure, one left

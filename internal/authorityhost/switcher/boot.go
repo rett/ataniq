@@ -343,13 +343,15 @@ func (s *Switcher) bootSettle(ctx context.Context, blocked error) int {
 // unfinishedBoot), before anything else is done. Then it is handled as a
 // settling transaction's failure (the host's stop list runs, see
 // requalifyFailed), then owed with requalify_failed. A crash after the
-// rewrite loses at most the outcome owed, never the inhibit or its
-// failure, and an ack of the outcome owed leaves a record no boot lifts.
-// When the rewrite fails, the run's own record stays and the failure is
-// still owed, which keeps a later boot from taking that record over.
+// rewrite never loses the inhibit or its failure, and an ack of the
+// outcome owed leaves a record no boot lifts. When the rewrite fails, the
+// run's own record stays and the failure is still owed, which keeps a
+// later boot from taking that record over; the ack of that outcome
+// rewrites the record with the failure before anything else, and refuses
+// when it cannot (see ackBootFailure).
 func (s *Switcher) bootFailed(ctx context.Context, run inhibit, cur string, cause error) int {
 	s.printf("boot: FAILED: %s", describe(cause))
-	kept := inhibit{Txn: run.Txn, Reason: boundDetail(fmt.Sprintf("boot: after the boot, %s did not pass its reload, health check and no-AI check again (%s)", linkText(cur), describe(cause))), Time: s.now()}
+	kept := inhibit{Txn: run.Txn, Reason: bootFailedReason(cur, describe(cause)), Time: s.now()}
 	keptErr := s.writeInhibit(kept)
 	if keptErr != nil {
 		s.printf("boot: FAILED: %s not rewritten with the failure: %s; it stays as this boot wrote it, decisions stay inhibited, and the failure is owed under its run", InhibitFile, q(keptErr.Error()))
@@ -388,6 +390,42 @@ func (s *Switcher) bootFailed(ctx context.Context, run inhibit, cur string, caus
 	s.printf("boot: the failure is owed until %s; decisions stay inhibited (%s)", ackCommand(owed), InhibitFile)
 	s.reportOwed(o, ackCommand(owed))
 	return ExitFailed
+}
+
+// bootFailedReason is the reason of the record a failed boot leaves:
+// current (cur, where the link points) did not pass, and why. It starts
+// "boot: after the boot, ", which no boot takes over (see unfinishedBoot).
+func bootFailedReason(cur, why string) string {
+	return boundDetail(fmt.Sprintf("boot: after the boot, %s did not pass its reload, health check and no-AI check again (%s)", linkText(cur), why))
+}
+
+// ackBootFailure is what ack does first, before it records or removes
+// anything of the outcomes owed: when decisions.inhibit is still the own
+// record of a boot (bootReason) whose failure is owed under its run (that
+// boot could not rewrite it with the failure, see bootFailed), the record
+// is rewritten as that failure, as bootFailed would have written it, so
+// that no later boot takes it over once the outcome is acknowledged.
+// rewrote says it was; err is a write that failed, and the ack must then
+// acknowledge nothing.
+func (s *Switcher) ackBootFailure(owed []owedOutcome) (run string, rewrote bool, err error) {
+	in, settling, _, rerr := s.readInhibit()
+	if rerr != nil || settling != nil || in.Reason != bootReason {
+		return "", false, nil
+	}
+	for _, o := range owed {
+		if o.Direction != DirBoot || o.Txn != in.Txn {
+			continue
+		}
+		cur := ""
+		if o.CurrentID != "" {
+			cur = "releases/" + o.CurrentID
+		}
+		if err := s.writeInhibit(inhibit{Txn: in.Txn, Reason: bootFailedReason(cur, o.Detail), Time: s.now()}); err != nil {
+			return in.Txn, false, err
+		}
+		return in.Txn, true, nil
+	}
+	return "", false, nil
 }
 
 // bootLift removes the inhibit of this run, run, once current (cur) was

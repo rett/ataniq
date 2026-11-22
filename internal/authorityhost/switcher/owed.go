@@ -377,6 +377,9 @@ const maxAckWords = 512
 // exactly the transactions owed now, nothing is acknowledged or recorded,
 // since the owner gave the words before seeing what is owed now (an ack
 // whose answer was lost, repeated after another outcome became owed).
+// Before it records or removes anything, the own record of a failed boot
+// whose failure is owed is rewritten with that failure (see
+// ackBootFailure); when that write fails nothing is acknowledged.
 // words, what the owner asked or saw, are recorded in deploy.json with the
 // time and the transactions acknowledged, then owed.json is removed. An ack
 // of the transactions deploy.json already records as acknowledged (one
@@ -476,6 +479,16 @@ func (s *Switcher) Ack(ctx context.Context, txns []string, words string) int {
 	if s.cfg.Dry {
 		s.printf("ack: would record the owner's words and remove %s", q(filepath.Join(s.stateDir(), OwedFile)))
 		return ExitOK
+	}
+	// A failed boot that could not write its failure into the inhibit left
+	// its own record, which a later boot would take over once nothing is
+	// owed under its run: the failure is written into it first, also by an
+	// ack that only finishes an earlier one.
+	if run, rewrote, err := s.ackBootFailure(owed); err != nil {
+		s.printf("ack: FAILED: %s, still the record of boot run %s, not rewritten with the failure owed under that run: %s; nothing is acknowledged, and the outcomes stay owed", InhibitFile, run, q(err.Error()))
+		return ExitFailed
+	} else if rewrote {
+		s.printf("ack: %s was still the record of boot run %s; it is rewritten with the failure owed under that run, a record no boot takes over, before the outcome is acknowledged", InhibitFile, run)
 	}
 	// When the transactions recorded are these, an ack was recorded and
 	// killed before owed.json was removed. Only that removal is finished,
