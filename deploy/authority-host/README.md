@@ -805,7 +805,7 @@ each write an atomic rename, synced):
 | `recover --discard-journal` | Rewrites it as a plain record of the discard, whatever was there, then sets the journal aside |
 | `inhibit-clear` | Removes it on the owner's word; refused while a journal is there or it holds one |
 | `boot` | With no journal pending, writes its own record when it is not there (or is the record of a boot that did not finish), then removes that record once `current` qualified again; leaves any other as found. With a journal pending, never writes its own record: the transaction's is written back first, and beside a journal that cannot be read a plain record that no boot takes over |
-| A failed `boot` | Owes the failure, then rewrites its own record with it |
+| A failed `boot` | Rewrites its own record with the failure, then runs the host's stop list and owes the failure |
 
 Only the second step of a healthy end, `boot`'s removal of its own
 record and `inhibit-clear` make it absent: the first after the release
@@ -845,13 +845,16 @@ Before it, a requalification ran only while a journal was open.
   qualified since the boot`, exit 0. Every boot does all of it again; a
   qualification is never carried over from an earlier boot.
 - When any of it fails (a release that no longer verifies and a switch
-  policy that cannot be used included), the host's stop list runs, since
-  the reload may have started a service; the failure is added to
+  policy that cannot be used included), the inhibit is first rewritten
+  with the failure (`reason` starting `boot: after the boot,`), before
+  anything else of it is done; then the host's stop list runs, since the
+  reload may have started a service; then the failure is added to
   `owed.json` as an outcome of its own (`direction: boot`,
   `requested: boot`, `result: failed`, `requalify_failed: true`, the
   release in `id` and `current_id`, the words in `detail`, starting `after
-  the boot`); then the inhibit is rewritten with the failure, and `boot`
-  exits 1 with `result: decisions stay inhibited`. `status` shows `outcome
+  the boot`), and `boot` exits 1 with `result: decisions stay inhibited`.
+  When the inhibit cannot be rewritten, `boot`'s own record stays and
+  the failure is still owed under its run. `status` shows `outcome
   owed (boot requalification of ID, transaction RUN)` with the `ack` that
   takes it back. Every switch and rollback is refused while it is owed,
   and the inhibit stays after the `ack` until a switch ends healthy or the
@@ -872,9 +875,12 @@ Before it, a requalification ran only while a journal was open.
   after it inhibited decisions and before it recorded a failure or removed
   its record; nothing else changed since it found no inhibit, so this boot
   writes the record again as its own and qualifies `current` from the
-  start. A failure is owed before the record is rewritten with it, so a
-  boot that died between the two leaves its record with an outcome owed
-  under its run, which no later boot takes over.
+  start. A failure is written into the record before the stop list runs
+  and before it is owed, so a boot that died after that leaves a failure
+  record, which no later boot takes over, also once its outcome is
+  acknowledged; a crash before the failure is owed loses only the
+  outcome owed (`status` still shows the failure in the inhibit), never
+  the inhibit.
 - A host where nothing is deployed (no `current` and no journal) is
   refused with exit 4: nothing is run, created or changed,
   `decisions.inhibit` and the lock file included. The decision guard
@@ -887,8 +893,8 @@ Before it, a requalification ran only while a journal was open.
   inhibit before anything else, as every transaction does.
 - A crash anywhere in `boot` leaves decisions refused: the inhibit is
   there from before the first command it runs to its removal, which is
-  its last step. The next `boot` takes its record over (above) unless a
-  failure was owed, and a switch that ends healthy removes it as it
+  its last step. The next `boot` takes its record over (above) unless it
+  holds a failure, and a switch that ends healthy removes it as it
   removes any.
 
 The unit that runs it at every boot is shipped as

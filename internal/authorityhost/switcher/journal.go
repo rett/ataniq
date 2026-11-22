@@ -265,7 +265,7 @@ const (
 	CrashBootInhibit   = "boot-inhibit"   // decisions.inhibit is this boot's own record; nothing run yet
 	CrashBootQualified = "boot-qualified" // current passed its reload, health check and no-AI check; the inhibit still there
 	CrashBootLifted    = "boot-lifted"    // the inhibit removed; the result line not printed yet
-	CrashBootFailed    = "boot-failed"    // current did not pass; the host's stop list ran; nothing recorded yet
-	CrashBootOwed      = "boot-owed"      // owed.json holds the failure; the inhibit still this boot's record
-	CrashBootKept      = "boot-kept"      // the inhibit holds the failure; the result line not printed yet
+	CrashBootKept      = "boot-kept"      // current did not pass; the inhibit holds the failure; the host's stop list not run, nothing owed yet
+	CrashBootFailed    = "boot-failed"    // the host's stop list ran; nothing owed yet
+	CrashBootOwed      = "boot-owed"      // owed.json holds the failure; the result line not printed yet
 )

@@ -63,7 +63,8 @@ import (
 //	                  current qualified again; any other inhibit left as found.
 //	                  With a journal pending never its own record: a plain one,
 //	                  which no boot takes over, when none is there
-//	a failed boot     the failure owed; then boot's record rewritten with it
+//	a failed boot     boot's record rewritten with the failure; then the
+//	                  host's stop list, then the failure owed
 //
 // Only the second step of a healthy end, boot's removal of its own record
 // and inhibit-clear make the file absent. The first runs after the

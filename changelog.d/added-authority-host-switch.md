@@ -124,9 +124,11 @@
   transaction's or a plain one no boot takes over), qualifies `current` again as a
   settling transaction does (verified with the switch policy's trust, its
   reload list, health check and post-activation no-AI check) and removes
-  only that record, only when all of it passed; a failure runs the host's
-  stop list, is owed (`direction: boot`, `requalify_failed`, shown by
-  `status` with its `ack`) and keeps decisions inhibited; any other
+  only that record, only when all of it passed; a failure is first
+  written into that record (which no later boot takes over, also once its
+  outcome is acknowledged), then runs the host's stop list, is owed
+  (`direction: boot`, `requalify_failed`, shown by `status` with its
+  `ack`) and keeps decisions inhibited; any other
   inhibit it finds (a transaction's, a held journal, a failure, one left
   for `inhibit-clear`, one it cannot read strictly) stays as found while
   it settles an open journal as any command does, and it never

@@ -44,9 +44,10 @@ const bootPendingReason = "boot: a transaction journal is open and cannot be rea
 // list, its health check and its post-activation no-AI check), and
 // removes that inhibit, still this run's, only when all of it passed. A
 // failure (the policy that cannot be used and the release that does not
-// verify included) is handled as a settling transaction's
-// (requalifyFailed: the host's stop list runs), added to owed.json with
-// requalify_failed before the inhibit is rewritten with it, and exits 1.
+// verify included) is written into the inhibit first, then handled as a
+// settling transaction's (requalifyFailed: the host's stop list runs),
+// then added to owed.json with requalify_failed, and exits 1 (see
+// bootFailed).
 //
 // Any other inhibit stays exactly as found (a transaction's, a held
 // journal, a failure, one waiting for the owner's inhibit-clear, one that
@@ -270,13 +271,24 @@ func (s *Switcher) bootSettle(ctx context.Context, blocked error) int {
 }
 
 // bootFailed ends a boot whose qualification of current (cur) failed with
-// cause: handled as a settling transaction's failure (the host's stop list
-// runs, see requalifyFailed), then owed with requalify_failed, then
-// written into this run's inhibit, which stays. A crash between the two
-// leaves the run's own record with its outcome owed, which no later boot
-// takes over.
+// cause. The failure is made durable first: this run's inhibit is
+// rewritten with it, a record no later boot takes over (see
+// unfinishedBoot), before anything else is done. Then it is handled as a
+// settling transaction's failure (the host's stop list runs, see
+// requalifyFailed), then owed with requalify_failed. A crash after the
+// rewrite loses at most the outcome owed, never the inhibit or its
+// failure, and an ack of the outcome owed leaves a record no boot lifts.
+// When the rewrite fails, the run's own record stays and the failure is
+// still owed, which keeps a later boot from taking that record over.
 func (s *Switcher) bootFailed(ctx context.Context, run inhibit, cur string, cause error) int {
 	s.printf("boot: FAILED: %s", describe(cause))
+	kept := inhibit{Txn: run.Txn, Reason: boundDetail(fmt.Sprintf("boot: after the boot, %s did not pass its reload, health check and no-AI check again (%s)", linkText(cur), describe(cause))), Time: s.now()}
+	keptErr := s.writeInhibit(kept)
+	if keptErr != nil {
+		s.printf("boot: FAILED: %s not rewritten with the failure: %s; it stays as this boot wrote it, decisions stay inhibited, and the failure is owed under its run", InhibitFile, q(keptErr.Error()))
+	} else if err := s.crash(CrashBootKept); err != nil {
+		return ExitFailed
+	}
 	notes := s.requalifyFailed(ctx, "after the boot", cur, cause)
 	if err := s.crash(CrashBootFailed); err != nil {
 		return ExitFailed
@@ -300,18 +312,10 @@ func (s *Switcher) bootFailed(ctx context.Context, run inhibit, cur string, caus
 	}
 	owed, err := s.addOwedOutcome(o)
 	if err != nil {
-		s.printf("boot: FAILED: %s not written: %s; %s stays as this boot wrote it, and decisions stay inhibited", OwedFile, describe(err), InhibitFile)
+		s.printf("boot: FAILED: %s not written: %s; %s holds the failure, and decisions stay inhibited", OwedFile, describe(err), InhibitFile)
 		return ExitFailed
 	}
 	if err := s.crash(CrashBootOwed); err != nil {
-		return ExitFailed
-	}
-	kept := inhibit{Txn: run.Txn, Reason: boundDetail(fmt.Sprintf("boot: after the boot, %s did not pass its reload, health check and no-AI check again (%s)", linkText(cur), describe(cause))), Time: s.now()}
-	if err := s.writeInhibit(kept); err != nil {
-		s.printf("boot: FAILED: %s not rewritten with the failure: %s; it stays as this boot wrote it, and decisions stay inhibited", InhibitFile, q(err.Error()))
-		return ExitFailed
-	}
-	if err := s.crash(CrashBootKept); err != nil {
 		return ExitFailed
 	}
 	s.printf("boot: the failure is owed until %s; decisions stay inhibited (%s)", ackCommand(owed), InhibitFile)

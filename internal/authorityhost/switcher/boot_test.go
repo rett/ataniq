@@ -652,8 +652,11 @@ func TestBootWithoutARelease(t *testing.T) {
 // there) unless boot qualified current in this boot. After the crash a
 // reboot and the next boot keep the inhibit at every command they run,
 // and lift it only by boot's rules: an unfinished boot's own inhibit is
-// taken over and lifted once current qualifies; a failure that was
-// recorded (owed) is kept as found.
+// taken over and lifted once current qualifies; a failure is written into
+// the inhibit before anything else of it is done (the stop list, the
+// outcome owed), so from the first step of a failure on the inhibit holds
+// it, and no later boot lifts it: not after the crash, and not after the
+// owner acknowledged the outcome owed.
 func TestBootCrashKeepsDecisionsRefused(t *testing.T) {
 	reloadFails := func(e *env) { e.runner.fail["reload-old"] = -1 }
 	healthFails := func(e *env) { e.runner.fail["health-old"] = -1 }
@@ -669,20 +672,20 @@ func TestBootCrashKeepsDecisionsRefused(t *testing.T) {
 		{"qualified", CrashBootQualified, nil},
 		{"lifted", CrashBootLifted, nil},
 		{"reload fails: inhibit", CrashBootInhibit, reloadFails},
+		{"reload fails: kept", CrashBootKept, reloadFails},
 		{"reload fails: failed", CrashBootFailed, reloadFails},
 		{"reload fails: owed", CrashBootOwed, reloadFails},
-		{"reload fails: kept", CrashBootKept, reloadFails},
 		{"health fails: inhibit", CrashBootInhibit, healthFails},
 		{"health fails: reload", CrashRequalifyReload, healthFails},
+		{"health fails: kept", CrashBootKept, healthFails},
 		{"health fails: failed", CrashBootFailed, healthFails},
 		{"health fails: owed", CrashBootOwed, healthFails},
-		{"health fails: kept", CrashBootKept, healthFails},
 		{"postcheck fails: inhibit", CrashBootInhibit, postFails},
 		{"postcheck fails: reload", CrashRequalifyReload, postFails},
 		{"postcheck fails: health", CrashRequalifyHealth, postFails},
+		{"postcheck fails: kept", CrashBootKept, postFails},
 		{"postcheck fails: failed", CrashBootFailed, postFails},
 		{"postcheck fails: owed", CrashBootOwed, postFails},
-		{"postcheck fails: kept", CrashBootKept, postFails},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e, g := rebooted(t)
@@ -697,10 +700,22 @@ func TestBootCrashKeepsDecisionsRefused(t *testing.T) {
 			if _, ok := e.journal(); ok {
 				t.Error("boot left a journal")
 			}
-			_, inhibited := e.inhibited()
+			in, inhibited := e.inhibited()
 			qualified := tc.point == CrashBootLifted
 			if inhibited == qualified {
 				t.Fatalf("after a crash at %s: inhibited %v", tc.point, inhibited)
+			}
+			// The failure is known from its first step on: the inhibit
+			// holds it; it is owed only once that step is done.
+			known := tc.point == CrashBootKept || tc.point == CrashBootFailed || tc.point == CrashBootOwed
+			if inhibited && known != strings.HasPrefix(in.Reason, "boot: after the boot, ") {
+				t.Errorf("after a crash at %s: the inhibit %+v", tc.point, in)
+			}
+			if inhibited && !known && in.Reason != bootReason {
+				t.Errorf("after a crash at %s: the inhibit %+v is not boot's record", tc.point, in)
+			}
+			if stops := e.runner.called("stop-all"); stops != map[bool]int{true: 1, false: 0}[tc.point == CrashBootFailed || tc.point == CrashBootOwed] {
+				t.Errorf("after a crash at %s: the host's stop list ran %d times", tc.point, stops)
 			}
 			if want := map[bool]string{true: "refused", false: "accepted"}[inhibited]; g.decide() != want {
 				t.Errorf("after a crash at %s, inhibited %v: a decision is %s", tc.point, inhibited, g.decide())
@@ -708,8 +723,8 @@ func TestBootCrashKeepsDecisionsRefused(t *testing.T) {
 			if got := e.status(); inhibited && !strings.Contains(got, "by ah-switch boot (run ") {
 				t.Errorf("status after a crash at %s:\n%s", tc.point, got)
 			}
-			recorded := tc.point == CrashBootOwed || tc.point == CrashBootKept
-			if owed := e.owed(); recorded != (len(owed) == 1 && owed[0].Direction == DirBoot && owed[0].RequalifyFailed) {
+			owedOne := tc.point == CrashBootOwed
+			if owed := e.owed(); owedOne != (len(owed) == 1 && owed[0].Direction == DirBoot && owed[0].RequalifyFailed && owed[0].Txn == in.Txn) {
 				t.Errorf("after a crash at %s: owed %+v", tc.point, owed)
 			}
 			// The reboot, with a host that would now qualify, then the
@@ -726,12 +741,23 @@ func TestBootCrashKeepsDecisionsRefused(t *testing.T) {
 				t.Errorf("the next boot ran %d command(s) while decisions were not inhibited", *unguarded)
 			}
 			_, inhibited = e.inhibited()
-			if recorded {
+			if known {
 				if code != ExitFailed || len(e.runner.calls) != 0 || e.stateFile(InhibitFile) != inhibitText || e.stateFile(OwedFile) != owedText {
-					t.Errorf("the next boot after a recorded failure: exit %d, ran %v, inhibit or owed changed", code, e.runner.calls)
+					t.Errorf("the next boot after a known failure: exit %d, ran %v, inhibit or owed changed", code, e.runner.calls)
 				}
 				if g.decide() != "refused" {
-					t.Error("a decision is accepted after a recorded failure")
+					t.Error("a decision is accepted after a known failure")
+				}
+				// The owner acknowledges what is owed; a later boot
+				// still keeps the failure as found.
+				if owedOne {
+					if code := e.ack("saw the failed boot"); code != ExitOK {
+						t.Fatalf("ack: exit %d\n%s", code, e.last)
+					}
+				}
+				e.runner.reset()
+				if code := e.boot(); code != ExitFailed || len(e.runner.calls) != 0 || e.stateFile(InhibitFile) != inhibitText || g.decide() != "refused" {
+					t.Errorf("a boot after the ack: exit %d, ran %v, a decision %s", code, e.runner.calls, g.decide())
 				}
 				return
 			}
