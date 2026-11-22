@@ -588,7 +588,11 @@ func (s *session) call(ctx context.Context, op string, params json.RawMessage) (
 	// once it has started. So it lands only while this call holds the write: it
 	// and the end of the write take cut in turn, and a cut that comes after the
 	// write has returned does nothing. Else a late cut could move the deadline
-	// of the next caller's write and drop the connection under it.
+	// of the next caller's write and drop the connection under it. A cut that
+	// came while a write that succeeded was under way is undone, under cut:
+	// crypto/tls may write outside the calls (the answer to a key update), and
+	// a write of its own that fails at an expired deadline breaks the
+	// connection for good.
 	s.tc.SetWriteDeadline(time.Now().Add(s.c.cfg.WriteTimeout))
 	var cut sync.Mutex
 	written := false
@@ -602,6 +606,9 @@ func (s *session) call(ctx context.Context, op string, params json.RawMessage) (
 	err = writeFrame(s.tc, payload)
 	cut.Lock()
 	written = true
+	if err == nil { // a cut that came during the write leaves no expired deadline after it
+		s.tc.SetWriteDeadline(time.Now().Add(s.c.cfg.WriteTimeout))
+	}
 	cut.Unlock()
 	stopWrite()
 	s.wsem <- struct{}{}
