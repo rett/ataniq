@@ -27,10 +27,25 @@ func DefaultDenyWarning(hook string) string {
 // warning too many rather than one too few). A listing it cannot read in that
 // shape has no default deny anywhere: the result never claims a policy it
 // did not see.
+//
+// Of the rules it reads only the first rule of such a chain: a chain whose
+// first rule accepts every packet (only "accept", with a counter or a
+// comment; see acceptsAll) does not count. No other rule is read, so a
+// chain whose rules accept everything in another way (a later accept of
+// every packet, a jump to a chain that accepts it, an accept behind a
+// match that every packet meets) still counts as a default deny: the
+// result says that each hook has a base chain whose policy is drop, not
+// that the rules drop anything.
 func missingDefaultDeny(listing []byte) []string {
+	type chain struct {
+		table int
+		hook  string // the hook of its "type filter ... policy drop" line, while it counts
+		ruled bool   // its first rule after that line was read
+	}
 	type block struct {
 		kind  string // "table", "chain" or "" for any other block
 		table int    // index of its table in tables, or -1
+		chain *chain // the chain of a "chain" block
 	}
 	type table struct {
 		family  string
@@ -38,6 +53,7 @@ func missingDefaultDeny(listing []byte) []string {
 		drops   map[string]bool // hook -> a base chain with policy drop
 	}
 	var tables []*table
+	var chains []*chain
 	var stack []block
 	for _, line := range strings.Split(string(listing), "\n") {
 		words, opens, closes := nftWords(line)
@@ -55,7 +71,9 @@ func missingDefaultDeny(listing []byte) []string {
 			stack = append(stack, block{kind: "table", table: len(tables) - 1})
 			continue
 		case len(words) > 0 && words[0] == "chain" && opens == 1 && closes == 0 && top.kind == "table":
-			stack = append(stack, block{kind: "chain", table: top.table})
+			c := &chain{table: top.table}
+			chains = append(chains, c)
+			stack = append(stack, block{kind: "chain", table: top.table, chain: c})
 			continue
 		case top.kind == "table" && opens == 0 && closes == 0 && len(words) >= 2 && words[0] == "flags":
 			for _, w := range words[1:] {
@@ -75,8 +93,13 @@ func missingDefaultDeny(listing []byte) []string {
 					policy = words[i+1]
 				}
 			}
-			if hook != "" && policy == "drop" {
-				tables[top.table].drops[hook] = true
+			if hook != "" && policy == "drop" && !top.chain.ruled {
+				top.chain.hook = hook
+			}
+		case top.kind == "chain" && top.chain.hook != "" && !top.chain.ruled && len(words) > 0 && words[0] != "comment":
+			top.chain.ruled = true
+			if opens == 0 && closes == 0 && acceptsAll(words) {
+				top.chain.hook = ""
 			}
 		}
 		for ; opens > 0; opens-- {
@@ -84,6 +107,11 @@ func missingDefaultDeny(listing []byte) []string {
 		}
 		for ; closes > 0 && len(stack) > 0; closes-- {
 			stack = stack[:len(stack)-1]
+		}
+	}
+	for _, c := range chains {
+		if c.hook != "" {
+			tables[c.table].drops[c.hook] = true
 		}
 	}
 	var missing []string
@@ -107,6 +135,34 @@ func missingDefaultDeny(listing []byte) []string {
 		}
 	}
 	return missing
+}
+
+// acceptsAll reports whether the words of a rule are a verdict accept with
+// nothing that matches: "accept", with at most a counter ("counter" or
+// "counter packets N bytes N") and a quoted comment around it.
+func acceptsAll(words []string) bool {
+	accept := false
+	for i := 0; i < len(words); i++ {
+		switch words[i] {
+		case "accept":
+			if accept {
+				return false
+			}
+			accept = true
+		case "counter":
+			if i+4 < len(words) && words[i+1] == "packets" && words[i+3] == "bytes" {
+				i += 4
+			}
+		case "comment":
+			if i+1 >= len(words) || words[i+1] != "\"" {
+				return false
+			}
+			i++
+		default:
+			return false
+		}
+	}
+	return accept
 }
 
 // nftWords splits a listing line into its words outside quoted text, with

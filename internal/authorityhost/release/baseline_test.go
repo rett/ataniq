@@ -431,6 +431,11 @@ func TestBaselineReportsAMissingDefaultDeny(t *testing.T) {
 		// Flags are separated by commas.
 		{"dormant among other flags", strings.Replace(nftDefaultDeny, "table inet filter {\n", "table inet filter {\n\tflags owner,dormant\n", 1), []string{"input", "output", "forward"}},
 		{"other flags", strings.Replace(nftDefaultDeny, "table inet filter {\n", "table inet filter {\n\tflags owner,persist\n", 1), nil},
+		// A base chain whose first rule accepts every packet denies
+		// nothing by default; a rule after the first is not read.
+		{"a first rule that accepts all", strings.ReplaceAll(nftDefaultDeny, "policy drop;\n", "policy drop;\n\t\taccept\n"), []string{"input", "output", "forward"}},
+		{"a counted first accept", strings.Replace(nftDefaultDeny, "hook forward priority filter; policy drop;\n", "hook forward priority filter; policy drop;\n\t\tcounter packets 3 bytes 120 accept comment \"all\"\n", 1), []string{"forward"}},
+		{"a first rule that matches", strings.Replace(nftDefaultDeny, "hook forward priority filter; policy drop;\n", "hook forward priority filter; policy drop;\n\t\tct state established accept\n\t\taccept\n", 1), nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o := baselineInputs(t)
