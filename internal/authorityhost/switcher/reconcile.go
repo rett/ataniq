@@ -28,6 +28,7 @@ func (s *Switcher) reconcile(ctx context.Context, newWork bool) (code int, halt 
 	}
 	t := &txn{j: j, resumed: true}
 	defer t.close()
+	s.claim(t)
 	s.printf("reconcile: an interrupted %s %s was found in phase %s", t.kind(), j.ID, j.Phase)
 	if s.cfg.Dry {
 		s.printf("reconcile: a dry run reconciles nothing; run the command without --dry first")
@@ -215,6 +216,7 @@ func (s *Switcher) recoverStopped(ctx context.Context) int {
 	}
 	t := &txn{j: j, resumed: true}
 	defer t.close()
+	s.claim(t)
 	t.note("stop failures (%s) settled by the owner's word that the decision services are stopped (recover --services-stopped at %s)", j.StopFailures, s.now())
 	t.j.Stopped = true
 	t.j.StopFailures = ""

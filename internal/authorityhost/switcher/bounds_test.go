@@ -225,6 +225,11 @@ func TestStateFilesMustBeTrusted(t *testing.T) {
 		{"lock writable by others", func(e *env) { os.Chmod(state(e, LockFile), 0o606) }, nil},
 		{"lock with a second link", func(e *env) { os.Link(state(e, LockFile), filepath.Join(e.root, "lock-copy")) }, nil},
 		{"lock not empty", func(e *env) { os.WriteFile(state(e, LockFile), []byte(strings.Repeat("x", 100)), 0o600) }, nil},
+		// A lock file others can read can be locked by them: flock needs
+		// only a descriptor open for reading.
+		{"lock readable by others", func(e *env) { os.Chmod(state(e, LockFile), 0o644) }, nil},
+		{"lock readable by its group", func(e *env) { os.Chmod(state(e, LockFile), 0o640) }, nil},
+		{"lock one byte", func(e *env) { os.WriteFile(state(e, LockFile), []byte("x"), 0o600) }, nil},
 		{"lock not root's", func(e *env) {}, func(c *Config) {
 			c.Owner = func(info fs.FileInfo) error {
 				if info.Name() == LockFile {
@@ -261,6 +266,9 @@ func TestStateFilesMustBeTrusted(t *testing.T) {
 			}
 			if !strings.Contains(e.last, "untrusted") {
 				t.Errorf("output does not say why:\n%s", e.last)
+			}
+			if strings.HasPrefix(tc.name, "lock") && tc.name != "lock writable by others" && tc.mod == nil && !strings.Contains(e.last, "owner-only (mode 0600), empty and with one link") {
+				t.Errorf("output does not say what the lock must be:\n%s", e.last)
 			}
 			if e.link("current") != cur || e.link("previous") != prev {
 				t.Errorf("links moved: current -> %q, previous -> %q", e.link("current"), e.link("previous"))

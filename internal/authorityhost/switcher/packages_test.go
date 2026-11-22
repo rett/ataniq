@@ -234,3 +234,71 @@ func TestExecRunnerExtraFilesAndStart(t *testing.T) {
 		t.Errorf("fd 3 without extra files")
 	}
 }
+
+// TestLockedBySurvivingHelper: a switch refused because the lock is held
+// says who holds it, from the journal: a package step that outlived its
+// switch (its process id and start time match), which must be stopped
+// by hand, or a switch still running; otherwise only that it is locked.
+func TestLockedBySurvivingHelper(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		procs func() *fakeProcs
+		want  string
+	}{
+		{"surviving helper", func() *fakeProcs { return &fakeProcs{started: map[int]uint64{4242: 777}} },
+			"surviving helper pid 4242 (start time matches): stop it or reboot"},
+		{"helper id reused", func() *fakeProcs { return &fakeProcs{started: map[int]uint64{4242: 999}} },
+			"another ah-switch holds the lock"},
+		{"switch running", func() *fakeProcs {
+			return &fakeProcs{started: map[int]uint64{4242: 777, os.Getpid(): 5}}
+		}, "an active ah-switch (process"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := active(t)
+			e.release(rel3, "2026-11-15")
+			e.runner.pid = 4242
+			s := e.switcher()
+			// The switch's own start time, as the journal records it.
+			s.procs = &fakeProcs{started: map[int]uint64{4242: 777, os.Getpid(): 5}}
+			s.crashAt = func(p string) error {
+				if p == CrashPackageRan {
+					return errCrash
+				}
+				return nil
+			}
+			if code := s.Switch(context.Background(), rel3); code != ExitFailed {
+				t.Fatalf("exit %d", code)
+			}
+			e.out.Reset()
+			if j, ok := e.journal(); !ok || j.HelperPID != 4242 || j.SwitchPID != os.Getpid() || j.SwitchStart != 5 {
+				t.Fatalf("journal: %+v", j)
+			}
+			// The step, still running, keeps the lock.
+			state, err := os.OpenRoot(filepath.Join(e.root, StateDir))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer state.Close()
+			held, err := takeLock(state, true, false, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer held.release()
+			s = e.switcher()
+			procs := tc.procs()
+			if tc.name != "switch running" {
+				delete(procs.started, os.Getpid())
+			}
+			s.procs = procs
+			code := s.Recover(context.Background(), resumeOnly)
+			out := e.out.String()
+			e.out.Reset()
+			if code != ExitLocked || !strings.Contains(out, tc.want) {
+				t.Errorf("exit %d\n%s", code, out)
+			}
+			if len(procs.killed) != 0 {
+				t.Errorf("killed %v", procs.killed)
+			}
+		})
+	}
+}

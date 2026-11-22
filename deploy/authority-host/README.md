@@ -55,10 +55,15 @@ switch runs it.
   `deploy.json` and `txn.json` relative to that folder without following a
   link. Each of them must be a regular file with one link, owned by root (or
   that user) and not writable by its group or by others, and of a bounded
-  size (the lock empty): a folder made safe after the fact can still hold a
-  file another account can write or hold the lock of, so the files are
-  checked as the folder is. A file that fails this stops the switch before
-  it changes anything; an untrusted `deploy.json` is not even recorded over.
+  size: a folder made safe after the fact can still hold a file another
+  account can write or hold the lock of, so the files are checked as the
+  folder is. The lock must moreover be owner-only (mode 0600) and empty, as
+  the switch creates it: `flock` needs only a descriptor open for reading,
+  so a lock file others can read (a migrated 0644 one) is a lock another
+  account can hold. A file that fails this stops the switch before it
+  changes anything, and an untrusted `deploy.json` is not even recorded
+  over; for the lock the switch says what it must be: while no `ah-switch`
+  runs, remove it, and the next command creates it again.
 - The id is the counter, zero-padded to at least four digits, a hyphen and the
   short commit in lowercase hex (7 to 40 characters).
 - `current` and `previous` hold exactly `releases/<id>`, as the switch writes
@@ -351,7 +356,14 @@ the package state is unknown).
    killed when the switch dies (where the system has a parent-death signal),
    and is given the switch's lock file as its descriptor 3, so the lock
    stays held as long as the step or anything it started keeps that
-   descriptor open. Before an interrupted step is settled, the switch makes
+   descriptor open. The journal records the step's process id and start
+   time, and the process id and start time of the switch driving the
+   transaction; a command refused by the lock says which holds it: `an
+   active ah-switch (process N) holds the lock`, or `surviving helper pid
+   N (start time matches): stop it or reboot` when the switch is gone and
+   its package step still runs (exit 3 either way, nothing killed or
+   changed). Stop that step by hand, or reboot, then run the command
+   again, which settles the transaction. Before an interrupted step is settled, the switch makes
    sure it has ended: a process of the journaled id and start time still
    running has its process group killed; a process of that id with another
    start time is another process; processes left in its group with no
@@ -559,7 +571,7 @@ see its messages. The text of a broken state file is not repeated either.
 | 0 | Switched and healthy (recorded, journal removed), a dry run whose checks passed, `status`, `recover` done, or a retried request whose settled outcome was `ok` |
 | 1 | Failed; outside a dry run the outcome is in `deploy.json`, except when the state folder, the switch policy or the host's stop list is not trusted, which records nothing, or when the result is `unresolved`, which leaves the journal for the next command |
 | 2 | Bad arguments, `--mode` weaker than the switch policy, or a root other than `/` without `--allow-exec`; nothing was done |
-| 3 | Another switch holds the lock, or `status` holds it while a switch is asked for (`flock`, not waited for); nothing was done |
+| 3 | Another switch holds the lock, or `status` holds it while a switch is asked for (`flock`, not waited for), or a package step that outlived its switch holds it (said as `surviving helper pid N`); nothing was done |
 
 ### Failure cases
 

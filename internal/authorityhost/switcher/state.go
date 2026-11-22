@@ -69,9 +69,6 @@ const (
 // maxStateFile bounds the state files the switch reads.
 const maxStateFile = 1 << 20
 
-// maxLockFile bounds the lock file, which the switch creates empty.
-const maxLockFile = 64
-
 // stateFileTrusted reports why info, a file of the state folder, cannot be
 // trusted: it must be a regular file with one link, not writable by its
 // group or by others, of an owner the owner check accepts. The state folder
@@ -91,7 +88,12 @@ func (s *Switcher) stateFileTrusted(name string, info fs.FileInfo) error {
 // bytes, after checking it with stateFileTrusted. A missing file is
 // fs.ErrNotExist.
 func (s *Switcher) readStateFile(name string, max int64) ([]byte, error) {
-	f, info, err := openFileIn(s.stateRoot, name)
+	return s.readStateFileIn(s.stateRoot, name, max)
+}
+
+// readStateFileIn is readStateFile of the state folder state.
+func (s *Switcher) readStateFileIn(state *os.Root, name string, max int64) ([]byte, error) {
+	f, info, err := openFileIn(state, name)
 	if err != nil {
 		return nil, err
 	}

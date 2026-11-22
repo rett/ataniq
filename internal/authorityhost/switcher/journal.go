@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io/fs"
+	"os"
 	"path"
 	"regexp"
 )
@@ -68,6 +69,12 @@ type journal struct {
 	// start time, once it runs: a resume makes sure it has ended.
 	HelperPID   int    `json:"helper_pid"`
 	HelperStart uint64 `json:"helper_start"`
+	// The switch that drives the transaction (the one that began it, or
+	// the last one that resumed it) and its start time, when it could be
+	// read: a command refused by the lock tells this switch, still
+	// running, from a package step that outlived it.
+	SwitchPID   int    `json:"switch_pid"`
+	SwitchStart uint64 `json:"switch_start"`
 	// The outcome, once a step failed or the release was activated.
 	Result         string `json:"result"`
 	FailedStep     string `json:"failed_step"`
@@ -103,7 +110,12 @@ func oneOf(s string, values ...string) bool {
 // readJournal reads txn.json; a missing file is no journal. A journal that
 // is not exactly what a switch writes is an error: it is never guessed at.
 func (s *Switcher) readJournal() (journal, bool, error) {
-	data, err := s.readStateFile(JournalFile, maxStateFile)
+	return s.readJournalIn(s.stateRoot)
+}
+
+// readJournalIn reads txn.json of the state folder state.
+func (s *Switcher) readJournalIn(state *os.Root) (journal, bool, error) {
+	data, err := s.readStateFileIn(state, JournalFile, maxStateFile)
 	if errors.Is(err, fs.ErrNotExist) {
 		return journal{}, false, nil
 	}
@@ -151,6 +163,8 @@ func (s *Switcher) checkJournal(j journal) error {
 		return errors.New("a done phase without a result")
 	case j.HelperPID < 0 || (j.HelperPID > 0 && j.PackageState == PackageNone):
 		return errors.New("helper_pid")
+	case j.SwitchPID < 0:
+		return errors.New("switch_pid")
 	case j.CheckProgram != "" && (!path.IsAbs(j.CheckProgram) || path.Clean(j.CheckProgram) != j.CheckProgram):
 		return errors.New("check_program")
 	case j.CounterUsed && j.Direction != DirForward:

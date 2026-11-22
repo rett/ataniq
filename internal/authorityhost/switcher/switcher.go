@@ -399,6 +399,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	if a.prevExists {
 		t.j.OldPrevious = a.prevTarget
 	}
+	s.claim(t)
 	t.j.TrustMode = s.trust.mode()
 	if len(s.trust.signed) > 0 {
 		t.j.TrustSigners, t.j.TrustPrincipal = s.trust.signed[0].signers, s.trust.signed[0].principal
@@ -576,18 +577,21 @@ func (s *Switcher) lock(shared bool) (*lock, int) {
 		s.errorf("state folder %s: %s", q(s.stateDir()), describe(err))
 		return nil, ExitFailed
 	}
+	full := filepath.Join(s.stateDir(), LockFile)
 	lk, err := takeLock(state, create, shared, func(info fs.FileInfo) error {
-		if err := s.trusted(filepath.Join(s.stateDir(), LockFile), info, false); err != nil {
+		if err := s.trusted(full, info, false); err != nil {
 			return err
 		}
-		if links(info) != 1 || info.Size() > maxLockFile {
-			return failf(CodeUntrusted, "%s has more than one link or is not empty", LockFile)
+		// flock needs only a descriptor open for reading: a lock file
+		// another account can read is a lock it can hold.
+		if info.Mode().Perm()&0o077 != 0 || info.Size() != 0 || links(info) != 1 {
+			return failf(CodeUntrusted, "%s must be owner-only (mode 0600), empty and with one link, as ah-switch creates it; while no ah-switch runs, remove it and run the command again", q(full))
 		}
 		return nil
 	})
 	if errors.Is(err, errLocked) {
+		s.errorf("%s (%s); nothing done", s.lockHolder(state), q(full))
 		state.Close()
-		s.errorf("%v (%s); nothing done", err, q(filepath.Join(s.stateDir(), LockFile)))
 		return nil, ExitLocked
 	}
 	if err != nil {
@@ -598,6 +602,43 @@ func (s *Switcher) lock(shared bool) (*lock, int) {
 	s.stateRoot = state
 	s.lockFile = lk.f
 	return lk, ExitOK
+}
+
+// lockHolder says who holds the lock of the state folder state, as far as
+// the journal tells: the switch that drives its transaction, still running
+// (its process id and start time match), or the package step it started,
+// which outlived it and keeps the lock through its descriptor 3 and must
+// be stopped by hand (or the host rebooted) before anything can settle the
+// transaction; otherwise only that it is held. Nothing is killed: a
+// process that holds the lock is never taken as gone.
+func (s *Switcher) lockHolder(state *os.Root) string {
+	j, ok, err := s.readJournalIn(state)
+	if err != nil || !ok {
+		return errLocked.Error()
+	}
+	matches := func(pid int, start uint64) bool {
+		if pid <= 0 {
+			return false
+		}
+		st, alive, err := s.procs.start(pid)
+		return err == nil && alive && st == start
+	}
+	switch {
+	case matches(j.SwitchPID, j.SwitchStart):
+		return fmt.Sprintf("an active ah-switch (process %d) holds the lock, driving the %s %s", j.SwitchPID, (&txn{j: j}).kind(), j.ID)
+	case j.PackageState == PackageStarted && matches(j.HelperPID, j.HelperStart):
+		return fmt.Sprintf("surviving helper pid %d (start time matches): stop it or reboot; it is the package step of the %s %s, which outlived its switch and holds the lock", j.HelperPID, (&txn{j: j}).kind(), j.ID)
+	}
+	return errLocked.Error()
+}
+
+// claim records in the journal of t that this command drives it, with
+// its process id and start time (0 when that cannot be read).
+func (s *Switcher) claim(t *txn) {
+	t.j.SwitchPID, t.j.SwitchStart = 0, 0
+	if st, ok, err := s.procs.start(os.Getpid()); err == nil && ok {
+		t.j.SwitchPID, t.j.SwitchStart = os.Getpid(), st
+	}
 }
 
 // openBase opens opt/authority-host and its releases/ folder, checked as the
