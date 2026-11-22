@@ -242,8 +242,9 @@ func TestCheckOneObject(t *testing.T) {
 // only asks for manual is resumed as signed, whatever the resuming command
 // asks: the journal keeps the trust it began with.
 func TestResumeKeepsTrust(t *testing.T) {
-	for _, good := range []bool{true, false} {
-		t.Run(map[bool]string{true: "good signature", false: "bad signature"}[good], func(t *testing.T) {
+	for _, tc := range []string{"good signature", "bad signature", "signers file no longer trusted"} {
+		good := tc == "good signature"
+		t.Run(tc, func(t *testing.T) {
 			e := newEnv(t)
 			e.policy(`{"min_mode": "manual", "allowed_signers": "/etc/authority-host/allowed_signers", "principal": "release@example.invalid"}`)
 			signed := func(c *Config) { c.Mode = ModeSigned }
@@ -270,6 +271,11 @@ func TestResumeKeepsTrust(t *testing.T) {
 			// Resumed by a command that asks for nothing but the policy's
 			// manual minimum.
 			v := &fakeVerifier{}
+			if tc == "signers file no longer trusted" {
+				// The policy no longer names it; the journal does.
+				e.write(filepath.Join(e.root, PolicyDir, PolicyName), `{"min_mode": "manual"}`, 0o644)
+				os.Chmod(filepath.Join(e.root, "etc/authority-host/allowed_signers"), 0o666)
+			}
 			if !good {
 				v.err = errors.New("not signed by the principal")
 			}
@@ -280,7 +286,11 @@ func TestResumeKeepsTrust(t *testing.T) {
 			if code != ExitFailed {
 				t.Fatalf("recover: exit %d\n%s", code, out)
 			}
-			if v.calls == 0 || v.principal != "release@example.invalid" {
+			if tc == "signers file no longer trusted" {
+				if v.calls != 0 || !strings.Contains(out, "writable by its group or by others") {
+					t.Errorf("verified against an untrusted signers file: %+v\n%s", v, out)
+				}
+			} else if v.calls == 0 || v.principal != "release@example.invalid" {
 				t.Fatalf("the resume did not verify the signature: %+v\n%s", v, out)
 			}
 			rec := e.record()

@@ -830,6 +830,11 @@ func (s *Switcher) verifySignature(ctx context.Context, rel *release) error {
 		return failf(CodeSignatureMissing, "%s missing; mode signed needs it", SignatureFile)
 	}
 	for _, sg := range s.trust.signed {
+		// The policy's signers file was checked with the policy; one that
+		// only a resumed transaction names is checked here.
+		if err := s.checkSigners(sg.signers); err != nil {
+			return err
+		}
 		if s.cfg.Dry {
 			s.step(1, "would verify %s as signed by %s against %s", SignatureFile, q(sg.principal), q(sg.signers))
 			continue
