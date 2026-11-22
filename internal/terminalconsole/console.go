@@ -25,6 +25,10 @@
 // a daemon are listed and started, stopped, messaged and attached to. See
 // Options.Leads and package leadctl.
 //
+// With Options.Pairing set (see WithPairing) the P key opens the pair-a-phone
+// view, where a QR code and six words pair a phone from the desk. See package
+// pairview.
+//
 // With a window of at least MinCols by MinRows the console draws the cockpit:
 // three panes, a timeline and a key bar. Below that it falls back to
 // single-column pages.
@@ -151,6 +155,8 @@ type Model struct {
 
 	// lc is the leads view's part of the console.
 	lc leadsState
+	// pv is the pair-a-phone view's part of the console.
+	pv pairState
 }
 
 func clean(s string) string {
@@ -346,6 +352,17 @@ type Options struct {
 	// session), and every key goes to the view before any key of the
 	// console until Esc closes it. See package leadctl.
 	Leads leadctl.Backend
+	// Pairing is where a phone is paired from the desk: the daemon, handed
+	// over by the command (the console imports no client of its own). Nil
+	// means pairing is not configured: the P key shows NoPairing and does
+	// nothing. With a backend P opens the pair-a-phone view, in console
+	// focus only, and every key goes to the view before any key of the
+	// console until Esc closes it. See WithPairing and package pairview.
+	Pairing PairingBackend
+	// PairingOrigin is the approval app's address, such as
+	// "https://app.example": the QR holds it and the one-time code. See
+	// pairview.ValidOrigin.
+	PairingOrigin string
 	// BellOff turns the bell off. The bell rings once for a card that arrives
 	// while the owner is not present, and is on by default.
 	BellOff bool
@@ -360,6 +377,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = min(4096, max(0, v.Width))
 		m.height = min(4096, max(0, v.Height))
 		m.resizeLeads()
+		m.resizePair()
 		return m, tea.Batch(m.onSize(), m.resizeApprovals())
 	case tea.KeyPressMsg:
 		beat := m.activity()
@@ -367,11 +385,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// An open leads screen has every key before the cockpit's own.
 			return m, tea.Batch(beat, m.leadsKey(v))
 		}
+		if m.pairOpen() {
+			// An open pair-a-phone view has every key before the cockpit's own.
+			return m, tea.Batch(beat, m.pairUpdate(v))
+		}
 		if m.opensLeads(v) {
 			return m, tea.Batch(beat, m.openLeads())
 		}
+		if m.opensPair(v) {
+			return m, tea.Batch(beat, m.openPair())
+		}
 		return m, tea.Batch(beat, m.onKey(v))
 	case tea.PasteMsg:
+		if m.pairOpen() {
+			// A paste is nothing to the pair-a-phone view, and it is not the
+			// cockpit's while the view is open.
+			return m, nil
+		}
 		if m.leadsOpen() {
 			// A paste is the leads view's: the message editor takes it.
 			return m, m.leadsUpdate(msg)
@@ -383,7 +413,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.onPaste(v.Content)
 	case tea.MouseMsg:
 		beat := m.activity()
-		if m.apprOpen() || m.leadsOpen() {
+		if m.apprOpen() || m.leadsOpen() || m.pairOpen() {
 			return m, beat
 		}
 		return m, tea.Batch(beat, m.onMouse(v))
@@ -417,6 +447,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	default:
 		// What is left is an open view's own: the answers to its commands
 		// and what its pager asks for.
+		if m.pairOpen() {
+			return m, m.pairUpdate(msg)
+		}
 		if m.leadsOpen() {
 			return m, m.leadsUpdate(msg)
 		}
@@ -577,7 +610,7 @@ func (m *Model) lines() []string {
 			lines = append(lines, l.Conversation...)
 		}
 	case "help":
-		lines = append(lines, "Help", "Up/down or j/k: navigate or scroll", "Enter: open project or conversation", "t: project tasks   Esc: back", "g: approvals   L: lead control", "a: full attach (unavailable)   Ctrl+K: actions", "q or Ctrl-C: quit", "A window of "+sizeText(MinCols, MinRows)+" or more shows the cockpit.")
+		lines = append(lines, "Help", "Up/down or j/k: navigate or scroll", "Enter: open project or conversation", "t: project tasks   Esc: back", "g: approvals   L: lead control"+m.pairHelp(), "a: full attach (unavailable)   Ctrl+K: actions", "q or Ctrl-C: quit", "A window of "+sizeText(MinCols, MinRows)+" or more shows the cockpit.")
 	case "actions":
 		switch {
 		case m.approvalsLive():
@@ -602,6 +635,9 @@ func (m *Model) View() tea.View {
 	}
 	if m.width <= 0 || m.height <= 0 {
 		return m.newView("")
+	}
+	if m.pairOpen() {
+		return m.pairView()
 	}
 	if m.leadsOpen() {
 		return m.leadsView()
