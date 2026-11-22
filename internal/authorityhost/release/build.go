@@ -20,6 +20,24 @@ import (
 // candidate, and the switch itself.
 var requiredBins = []string{"ah-noaicheck", "ah-switch"}
 
+// PackageStepName is the file name of a release's package step, and
+// StaticPackageStep is the one the builder writes itself into a static
+// release that is given none: it checks its arguments as the switch gives
+// them, changes nothing and exits 0, so it is idempotent. It is POSIX sh and
+// holds no time, user or host name.
+const PackageStepName = "ah-pkgstep"
+
+const StaticPackageStep = `#!/bin/sh
+# The package step of a static release, written by ah-release build: a static
+# release installs and removes no package, so there is nothing to do.
+if [ "$#" -ne 6 ] || [ "$1" != "--release" ] || [ "$3" != "--from" ] || [ "$5" != "--to" ]; then
+	echo "usage: ah-pkgstep --release DIR --from OLD --to NEW" >&2
+	exit 2
+fi
+echo "ah-pkgstep: static release, no package change"
+exit 0
+`
+
 // Options is what Build makes a release from.
 type Options struct {
 	// Out is the folder the release folder <id> is made in.
@@ -34,7 +52,8 @@ type Options struct {
 	BuiltOn         string
 	PackageSnapshot string
 	// Bins are the files that become bin/<base name>; ah-noaicheck and
-	// ah-switch are required.
+	// ah-switch are required. A static release given no ah-pkgstep gets
+	// the no-op StaticPackageStep.
 	Bins []string
 	// Src is the deployment source folder (deploy/authority-host): its etc/
 	// and share/ are copied.
@@ -109,6 +128,7 @@ type item struct {
 	exec bool
 	root *os.Root // where the source file is, with src below it
 	src  string
+	data []byte // content made by the builder itself, when root is nil
 }
 
 // Build makes the release folder Out/<id> and returns its id and the number
@@ -241,11 +261,28 @@ func plan(o Options) ([]item, []io.Closer, error) {
 		}
 		items = append(items, item{dest: "bin/" + name, exec: true, root: root, src: name})
 	}
+	if o.Components == switcher.ComponentsStatic && !hasBin(o.Bins, PackageStepName) {
+		if n++; n > MaxEntries {
+			return nil, closers, refuse(false, CodeTooLarge, "")
+		}
+		total += int64(len(StaticPackageStep))
+		items = append(items, item{dest: "bin/" + PackageStepName, exec: true, data: []byte(StaticPackageStep)})
+	}
 	if total > MaxTotalBytes {
 		return nil, closers, refuse(false, CodeTooLarge, "")
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].dest < items[j].dest })
 	return items, closers, nil
+}
+
+// hasBin reports whether one of the binaries is named name.
+func hasBin(bins []string, name string) bool {
+	for _, b := range bins {
+		if filepath.Base(b) == name {
+			return true
+		}
+	}
+	return false
 }
 
 // write makes the release's content in the new folder stage and returns the
@@ -269,11 +306,20 @@ func write(stage string, o Options, items []item) (int, error) {
 		if it.dir {
 			continue
 		}
+		dest := filepath.Join(stage, filepath.FromSlash(it.dest))
+		if it.root == nil {
+			sum, err := copyFile(dest, bytes.NewReader(it.data), int64(len(it.data)), it.exec)
+			if err != nil {
+				return 0, ioRefusal(err)
+			}
+			sums[it.dest] = sum
+			continue
+		}
 		in, info, err := openRegular(it.root, it.src)
 		if err != nil {
 			return 0, ioRefusal(err)
 		}
-		sum, err := copyFile(filepath.Join(stage, filepath.FromSlash(it.dest)), in, info.Size(), it.exec)
+		sum, err := copyFile(dest, in, info.Size(), it.exec)
 		in.Close()
 		if err != nil {
 			return 0, ioRefusal(err)

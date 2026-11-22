@@ -7,7 +7,10 @@
   time in any content, so two builds of one input are byte-identical. It
   refuses an existing release, a counter below 1, a commit or value with
   characters the switch would not read, and a link, fifo, device, socket or
-  odd name in the source. `ah-release check DIR/<id>` reads a built folder
+  odd name in the source. A `--components static` build given no
+  `ah-pkgstep` writes a no-op `bin/ah-pkgstep` of its own (a POSIX `sh`
+  script that checks its arguments and exits 0), so a first switch of a
+  static release needs no hand-made package step. `ah-release check DIR/<id>` reads a built folder
   back: its sums, manifest and shape, the coverage of its command lists that
   the switch leaves to the builder (a validator for every shipped Caddy,
   nftables and systemd file, a restart or reload of each shipped family, a

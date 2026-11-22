@@ -118,7 +118,7 @@ func TestBuildPrintsOnlyTheIDAndRefusesTwice(t *testing.T) {
 	a, b := bins(t)
 	args := buildArgs(out, source(t), a, b)
 	code, stdout, errOut := call(args...)
-	if code != 0 || stdout != "built release 0003-0123456 (9 files)\n" || errOut != "" {
+	if code != 0 || stdout != "built release 0003-0123456 (10 files)\n" || errOut != "" {
 		t.Fatalf("exit %d, %q, %q", code, stdout, errOut)
 	}
 	code, stdout, errOut = call(args...)
@@ -158,10 +158,8 @@ func TestBuiltFolderIsAcceptedBySwitch(t *testing.T) {
 	out := t.TempDir()
 	a, b := bins(t)
 	// A first switch moves the host to the release's package snapshot, which
-	// needs the release's package step.
-	pkg := filepath.Join(t.TempDir(), "ah-pkgstep")
-	write(t, pkg, "#!/bin/sh\nexit 0\n", 0o755)
-	if code, stdout, errOut := call(buildArgs(out, source(t), a, b, "--bin", pkg)...); code != 0 {
+	// needs the release's package step: a static release gets the builder's.
+	if code, stdout, errOut := call(buildArgs(out, source(t), a, b)...); code != 0 {
 		t.Fatalf("exit %d, %q, %q", code, stdout, errOut)
 	}
 	root := t.TempDir()
@@ -184,9 +182,7 @@ func TestBuiltFolderIsAcceptedBySwitch(t *testing.T) {
 func TestTamperedFolderIsRefusedBySwitch(t *testing.T) {
 	out := t.TempDir()
 	a, b := bins(t)
-	pkg := filepath.Join(t.TempDir(), "ah-pkgstep")
-	write(t, pkg, "#!/bin/sh\nexit 0\n", 0o755)
-	if code, _, _ := call(buildArgs(out, source(t), a, b, "--bin", pkg)...); code != 0 {
+	if code, _, _ := call(buildArgs(out, source(t), a, b)...); code != 0 {
 		t.Fatal("build")
 	}
 	dir := filepath.Join(out, "0003-0123456")
@@ -314,9 +310,7 @@ const repoSource = "../../deploy/authority-host"
 func TestRealStaticRelease(t *testing.T) {
 	out := t.TempDir()
 	a, b := bins(t)
-	pkg := filepath.Join(t.TempDir(), "ah-pkgstep")
-	write(t, pkg, "#!/bin/sh\nexit 0\n", 0o755)
-	code, stdout, errOut := call(buildArgs(out, repoSource, a, b, "--bin", pkg)...)
+	code, stdout, errOut := call(buildArgs(out, repoSource, a, b)...)
 	if code != 0 {
 		t.Fatalf("build: exit %d, %q, %q", code, stdout, errOut)
 	}
@@ -390,5 +384,46 @@ func TestRealTreeHasNoPrivateNames(t *testing.T) {
 				t.Errorf("%s holds %q", p, bad)
 			}
 		}
+	}
+}
+
+// TestStaticReleaseNeedsNoPackageStepFromTheCaller: the folder of a static
+// build with only the two required binaries is accepted by check, and a
+// build that is not static, given none, ships none, so the switch's own check
+// of a changed snapshot refuses it as before.
+func TestStaticReleaseNeedsNoPackageStepFromTheCaller(t *testing.T) {
+	a, b := bins(t)
+	out := t.TempDir()
+	if code, stdout, errOut := call(buildArgs(out, source(t), a, b)...); code != 0 {
+		t.Fatalf("exit %d, %q, %q", code, stdout, errOut)
+	}
+	dir := filepath.Join(out, "0003-0123456")
+	if code, stdout, _ := call("check", "--no-noaicheck", dir); code != 0 || stdout != "ok: release 0003-0123456\n" {
+		t.Errorf("check: exit %d, %q", code, stdout)
+	}
+	if info, err := os.Lstat(filepath.Join(dir, "bin/ah-pkgstep")); err != nil || info.Mode().Perm() != 0o755 {
+		t.Errorf("bin/ah-pkgstep: %v, %v", info, err)
+	}
+
+	// Two builds of the same input are byte-identical, the step included.
+	out2 := t.TempDir()
+	if code, _, _ := call(buildArgs(out2, source(t), a, b)...); code != 0 {
+		t.Fatal("second build")
+	}
+	one, err1 := os.ReadFile(filepath.Join(dir, "SHA256SUMS"))
+	two, err2 := os.ReadFile(filepath.Join(out2, "0003-0123456", "SHA256SUMS"))
+	if err1 != nil || err2 != nil || !bytes.Equal(one, two) {
+		t.Errorf("the sums differ: %v %v", err1, err2)
+	}
+
+	// Without --components static the builder writes none.
+	out3 := t.TempDir()
+	args := buildArgs(out3, source(t), a, b)
+	args = args[:len(args)-2] // drop --components static
+	if code, stdout, errOut := call(args...); code != 0 {
+		t.Fatalf("exit %d, %q, %q", code, stdout, errOut)
+	}
+	if _, err := os.Lstat(filepath.Join(out3, "0003-0123456", "bin/ah-pkgstep")); !os.IsNotExist(err) {
+		t.Errorf("a non-static release got a package step: %v", err)
 	}
 }

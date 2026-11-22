@@ -1473,7 +1473,16 @@ ah-release build --out DIR --counter N --commit SHA --go-version V --built-on CL
   mode 0755; the name is letters, digits and `._@+-`. `ah-noaicheck` and
   `ah-switch` are required; add `ah-pkgstep` when the release's package
   snapshot may differ from the host's (a first switch always moves the host
-  to the snapshot, so it needs it).
+  to the snapshot, so it needs it). With `--components static` and no
+  `--bin` named `ah-pkgstep`, the builder writes `bin/ah-pkgstep` itself: a
+  POSIX `sh` script that checks the arguments the switch gives it
+  (`--release DIR --from OLD --to NEW`, anything else exits 2 with a usage
+  line), prints `ah-pkgstep: static release, no package change`, changes
+  nothing and exits 0 (so it is idempotent), mode 0755 and listed in
+  `SHA256SUMS`, with the same bytes in every build. A `--bin` named
+  `ah-pkgstep` is shipped as given, and a release that is not static and is
+  given none has none, so a switch that changes the snapshot refuses it
+  (`package-step-missing`) as before.
 - `--src` is the deployment source folder: its `etc/` is copied to
   `etc/` and its `share/` to `share/`, which must hold the four command
   lists and the lists of the no-AI check. Nothing else of it is copied (not
