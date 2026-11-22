@@ -168,7 +168,7 @@ func (e *env) release(id, snapshot string) string {
 	}
 	dir := e.relDir(id)
 	e.write(filepath.Join(dir, ManifestFile), fmt.Sprintf(
-		"id: %s\ncounter: %d\ncommit: %s0123456789\nbuilt_on: dev\ngo_version: go1.27.2\npackage_snapshot: %s\n",
+		"id: %s\ncounter: %d\ncommit: %s0123456789\nbuilt_on: dev\ngo_version: fixture-go\npackage_snapshot: %s\n",
 		id, rid.Counter, rid.Commit, snapshot), 0o644)
 	e.write(filepath.Join(dir, NoAICheckProgram), "#!/bin/sh\nexit 0\n", 0o755)
 	e.write(filepath.Join(dir, "bin/app"), "app of "+id+"\n", 0o755)
