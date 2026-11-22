@@ -324,8 +324,8 @@ func releaseRefs(name, data string) ([]string, bool) {
 // outside quotes, to the end of its line) is passed over, and so is every
 // literal operand: a word that merely looks like a variable's name is not
 // one. A "{env." or "{$" not followed by a valid name and its closing
-// brace (or, for {$, a ':' and a default) is a reference the check cannot
-// read.
+// brace (or, for {$, a ':' and a default that is itself closed by a '}')
+// is a reference the check cannot read: such a reference adds no name.
 func caddyfileRefs(data string) ([]string, bool) {
 	var r envParse
 	bad := false
@@ -360,6 +360,9 @@ func caddyfileRefs(data string) ([]string, bool) {
 			name, end = refName(rest[5:], "}")
 		case strings.HasPrefix(rest, "{$"):
 			name, end = refName(rest[2:], "}:")
+			if name != "" && end[0] == ':' && strings.IndexByte(end, '}') < 0 {
+				name = "" // a default without its closing brace
+			}
 		default:
 			continue
 		}

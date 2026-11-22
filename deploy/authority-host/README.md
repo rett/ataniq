@@ -1044,7 +1044,9 @@ their place is a read error, not a wait.
     word that only looks like a variable's name is not reported, so no
     configuration text reaches the report. A `{env.` (or, in a
     Caddyfile, `{$`) the check cannot read (no valid name and closing
-    brace after it), and JSON that does not parse or nests more than 256
+    brace after it; for `{$NAME:default}`, no closing brace after the
+    default, which then names nothing and publishes no part of its text),
+    and JSON that does not parse or nests more than 256
     levels, is `HIT incomplete release-syntax <file>`, which names the
     file and a fixed reason, nothing of its content. The files beneath
     `etc/nftables` refer to no environment variable and are not read for

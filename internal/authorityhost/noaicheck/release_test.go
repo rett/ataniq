@@ -269,6 +269,9 @@ func TestReleaseRefs(t *testing.T) {
 		{"an unreadable env placeholder", "Caddyfile", "header X {env." + secret + "}\n", nil, true},
 		{"an unclosed env placeholder", "Caddyfile", "header X {env.OPENAI_API_KEY", nil, true},
 		{"an unreadable braced placeholder", "Caddyfile", "{$ X}\n", nil, true},
+		{"an unclosed default publishes nothing", "Caddyfile", "header X {$OPENAI_PRIVATE_FRAGMENT:tail", nil, true},
+		{"an unclosed default, more text after it", "Caddyfile", "header X {$OPENAI_PRIVATE_FRAGMENT:tail\nrespond ok\n", nil, true},
+		{"an empty default is closed", "Caddyfile", "header X {$OPENAI_PRIVATE_FRAGMENT:}\n", []string{"OPENAI_PRIVATE_FRAGMENT"}, false},
 		{"in JSON", "caddy.json", `{"apps":{"http":{"servers":{"a":{"listen":["{env.OPENAI_ORG}"]}}}}}`, []string{"OPENAI_ORG"}, false},
 		{"JSON: a literal dollar stays private", "caddy.json",
 			`{"handle":[{"handler":"headers","response":{"set":{"Authorization":["Bearer sk$OPENAI_PART${CODEX_REST}"],"X":["{$GEMINI_API_KEY}"]}}}]}`, nil, false},
@@ -320,6 +323,37 @@ func TestCheckReleaseNamesOnlyReferences(t *testing.T) {
 	}
 	for _, out := range []string{text.String(), js.String()} {
 		if strings.Contains(out, "sk-") || strings.Contains(out, secret) || strings.Contains(out, "_PART") || strings.Contains(out, "_REST") {
+			t.Errorf("a report copies the file's text:\n%s", out)
+		}
+	}
+}
+
+// A Caddyfile default placeholder without its closing brace publishes
+// neither its name nor any part of its literal: the file is incomplete,
+// reported by name with the fixed reason, in text and in JSON.
+func TestCheckReleaseUnclosedDefault(t *testing.T) {
+	f := cleanFixture(t)
+	f.file(releaseDir+"/etc/caddy/Caddyfile", "example.invalid {\n\theader X {$OPENAI_PRIVATE_FRAGMENT:tail")
+	c := f.checker(testLists())
+	var r Report
+	var err error
+	within(t, func() { r, err = c.RunPhase(PhasePre, f.abs(releaseDir), nil) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Hit{{Kind: KindIncomplete, Path: PathReleaseSyntax, Detail: "/" + releaseDir + "/etc/caddy/Caddyfile"}}
+	if !reflect.DeepEqual(r.Hits, want) || r.Complete {
+		t.Errorf("hits %v complete %v, want %v", r.Hits, r.Complete, want)
+	}
+	var text, js bytes.Buffer
+	if err := r.WriteText(&text); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.WriteJSON(&js); err != nil {
+		t.Fatal(err)
+	}
+	for _, out := range []string{text.String(), js.String()} {
+		if strings.Contains(out, "OPENAI_PRIVATE") || strings.Contains(out, ":tail") {
 			t.Errorf("a report copies the file's text:\n%s", out)
 		}
 	}

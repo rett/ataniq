@@ -28,7 +28,9 @@
   `{env.NAME}` and `{$NAME}`, in Caddy's JSON, read as JSON, only
   `{env.NAME}`; shell-style `$NAME` and `${NAME}` are literal text, never
   matched, and so is every comment and literal, a `$` in a JSON value
-  included; a reference it cannot read, or JSON that does not parse, as
+  included; a reference it cannot read (a `{$NAME:default}` without its
+  closing brace included, which names nothing), or JSON that does not
+  parse, as
   `HIT incomplete release-syntax <file>`, never its text), merges each
   candidate unit with its drop-ins (an empty `EnvironmentFile=` dropping
   the ones before it) before opening the files they name, and leaves out
