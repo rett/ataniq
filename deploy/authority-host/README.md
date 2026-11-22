@@ -1026,7 +1026,11 @@ their place is a read error, not a wait.
     and then the drop-ins by file name, before any file their
     `EnvironmentFile=` lines name is opened: an empty `EnvironmentFile=`
     drops every one before it, so a required file a later drop-in drops
-    is not reported missing. A file in a folder named `user` is a user
+    is not reported missing. The units are merged one at a time; what a
+    unit file keeps for the merge is charged to the run's memory budget
+    before it is kept and released once that unit is checked, so a
+    release with very many unit files ends `HIT incomplete budget
+    memory` rather than holding them all. A file in a folder named `user` is a user
     unit, its `EnvironmentFile=` resolved for every user; any other is a
     system unit;
   - every file beneath its `etc/caddy` is read, by its format, for the
@@ -1094,7 +1098,7 @@ The `HIT incomplete` lines:
 |---|---|
 | `HIT incomplete <folder> depth` | a walk stopped at its depth limit (40 levels) above a folder it had to enter |
 | `HIT incomplete <path> type` | a folder entry whose type the listing did not give and a stat could not find: the walk cannot tell whether to enter it |
-| `HIT incomplete budget <limit>` | the run's budget is spent (4 million folder entries and queued files, 1 GiB read, 4 minutes, 256 MiB held, or shell expansions or brace groups nested more than 64 deep); memory is charged before the work is done: specifier expansions, queued files, the unit scan's keys of each manager, and each source reference and loop word a profile's parse keeps (a loop's words once for every source of its variable). Each path a source, a PATH element or an `XDG_CONFIG_HOME` value stands for (in each home, and below each configured `XDG_CONFIG_HOME` folder) is charged as an entry before it is built, one at a time, never as a list of every combination. Every later read and parse stops, and so does every loop of the startup scan |
+| `HIT incomplete budget <limit>` | the run's budget is spent (4 million folder entries and queued files, 1 GiB read, 4 minutes, 256 MiB held, or shell expansions or brace groups nested more than 64 deep); memory is charged before the work is done: specifier expansions, queued files, the unit scan's keys of each manager, each source reference and loop word a profile's parse keeps (a loop's words once for every source of its variable), and, for a candidate release's units, what each unit file keeps (its `EnvironmentFile=` lines) and the merged references of one unit at a time, both released once that unit's files are queued. Each path a source, a PATH element or an `XDG_CONFIG_HOME` value stands for (in each home, and below each configured `XDG_CONFIG_HOME` folder) is charged as an entry before it is built, one at a time, never as a list of every combination. Every later read and parse stops, and so does every loop of the startup scan |
 | `HIT incomplete env-syntax <file>` | a file whose syntax the check cannot parse, or an `EnvironmentFile=` it cannot resolve |
 | `HIT incomplete env-source <file>` | a profile sources a file by a path the check cannot resolve |
 | `HIT incomplete release-syntax <file>` | a front-end configuration file of the candidate release (`pre`, `post`) holds a placeholder the check cannot read, or is Caddy JSON that does not parse |

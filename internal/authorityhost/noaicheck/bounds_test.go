@@ -121,6 +121,72 @@ func TestStartupExpansionIsBounded(t *testing.T) {
 	}
 }
 
+// A candidate release with very many admissible unit files, each with many
+// EnvironmentFile= lines, does not hold every parse until the walk ends: what
+// a unit file keeps (its file names) is charged before it is kept, the
+// units are checked one at a time and each one's data is released after its
+// references are checked, and the walk stops as soon as the memory budget is
+// spent. The run ends "incomplete budget memory" within a small memory
+// bound; with a budget that fits it, it finishes and holds nothing back.
+func TestCandidateUnitsAreBounded(t *testing.T) {
+	const (
+		units, lines = 3000, 400
+		memoryBound  = 64 << 20
+		timeBound    = 10 * time.Second
+	)
+	plant := func(f *fixture) {
+		for i := 0; i < units; i++ {
+			var b strings.Builder
+			b.WriteString("[Service]\n")
+			for j := 0; j < lines; j++ {
+				fmt.Fprintf(&b, "EnvironmentFile=-/etc/app/e-%04d-%03d\n", i, j)
+			}
+			f.file(fmt.Sprintf("%s/etc/systemd/u%04d.service", releaseDir, i), b.String())
+		}
+	}
+	t.Run("memory budget spent", func(t *testing.T) {
+		f := cleanFixture(t)
+		plant(f)
+		c := f.checker(testLists())
+		c.t.b = newBudget(limits{entries: 1 << 40, bytes: 1 << 40, time: time.Hour, memory: 8 << 20})
+		var err error
+		mem, took := allocated(func() { within(t, func() { err = c.CheckRelease(f.abs(releaseDir)) }) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := Hit{Kind: KindIncomplete, Path: PathBudget, Detail: budgetMemory}
+		if r := c.Report(); len(r.Hits) == 0 || r.Hits[len(r.Hits)-1] != want || r.Complete {
+			t.Errorf("hits %v", r.Hits)
+		}
+		if c.t.b.memory > c.t.b.lim.memory {
+			t.Errorf("held %d bytes past the budget of %d", c.t.b.memory, c.t.b.lim.memory)
+		}
+		if took > timeBound || mem > memoryBound {
+			t.Errorf("took %v and allocated %d bytes", took, mem)
+		}
+	})
+	t.Run("budget that fits", func(t *testing.T) {
+		f := cleanFixture(t)
+		for i := 0; i < 40; i++ {
+			var b strings.Builder
+			b.WriteString("[Service]\n")
+			for j := 0; j < lines; j++ {
+				fmt.Fprintf(&b, "EnvironmentFile=-/etc/app/e-%04d-%03d\n", i, j)
+			}
+			f.file(fmt.Sprintf("%s/etc/systemd/u%04d.service", releaseDir, i), b.String())
+		}
+		c := f.checker(testLists())
+		var err error
+		within(t, func() { err = c.CheckRelease(f.abs(releaseDir)) })
+		if r := c.Report(); err != nil || !r.Complete || len(r.Hits) != 0 {
+			t.Errorf("err %v hits %v complete %v", err, r.Hits, r.Complete)
+		}
+		if c.t.b.spent != "" {
+			t.Errorf("budget spent: %s", c.t.b.spent)
+		}
+	})
+}
+
 // Parsed alone, without a run's budget, a profile nested too deep is
 // syntax the check cannot parse.
 func TestShellParseNestingWithoutABudget(t *testing.T) {

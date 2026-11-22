@@ -198,7 +198,15 @@ func (c *Checker) CheckRelease(dir string) error {
 			units[key] = ru
 			order = append(order, ru)
 		}
-		f := releaseFile{shown: at(p), r: &u, name: path.Base(e.rel)}
+		// Only what the merge needs is kept, charged before it is kept:
+		// the file's EnvironmentFile= lines and whether one resets them.
+		kept := envParse{reset: u.reset, files: slices.Clone(u.files)}
+		if cost := kept.cost(); c.t.b.hold(cost) {
+			ru.held += cost
+		} else {
+			return
+		}
+		f := releaseFile{shown: at(p), r: &kept, name: path.Base(e.rel)}
 		if dropin {
 			ru.dropins = append(ru.dropins, f)
 		} else {
@@ -207,25 +215,18 @@ func (c *Checker) CheckRelease(dir string) error {
 	})
 	// Each unit's lines are evaluated as systemd merges them, the unit
 	// file and then its drop-ins by file name, before any file they name
-	// is opened: an empty EnvironmentFile= drops those before it.
+	// is opened: an empty EnvironmentFile= drops those before it. The
+	// units go one at a time: a unit's merged references are charged
+	// before they are built, and its files' data and they are released
+	// once the files they name are queued; no unit is checked once the
+	// budget is spent.
 	for _, ru := range order {
-		var refs []unitRef
-		if ru.main != nil {
-			refs = appendUnitRefs(refs, ru.main.shown, ru.main.r)
+		if c.t.b.out() {
+			break
 		}
-		slices.SortStableFunc(ru.dropins, func(a, b releaseFile) int { return strings.Compare(a.name, b.name) })
-		for _, d := range ru.dropins {
-			refs = appendUnitRefs(refs, d.shown, d.r)
-		}
-		managers := []manager{{}}
-		if ru.user {
-			managers = c.managers()[1:]
-		}
-		for _, m := range managers {
-			for _, x := range refs {
-				s.envFiles(x.unit, []envRef{x.envRef}, m)
-			}
-		}
+		c.checkCandUnit(s, ru)
+		c.t.b.release(ru.held)
+		ru.held, ru.main, ru.dropins = 0, nil, nil
 	}
 	for _, d := range strings.Fields(releaseNameDirs) {
 		walk(d, func(e *wentry) {
@@ -254,6 +255,49 @@ type candUnit struct {
 	user    bool
 	main    *releaseFile
 	dropins []releaseFile
+	held    int64 // what its files' kept data holds of the budget
+}
+
+// unitRefCost is the memory a merged EnvironmentFile= reference holds.
+const unitRefCost = 64
+
+// checkCandUnit merges the lines of the candidate unit ru as systemd does
+// and queues the files they name, for every manager that loads it (see
+// CheckRelease). The merged references are charged first, at most one per
+// line of its files, and released when it is done.
+func (c *Checker) checkCandUnit(s *envScan, ru *candUnit) {
+	n := 0
+	if ru.main != nil {
+		n += len(ru.main.r.files)
+	}
+	for _, d := range ru.dropins {
+		n += len(d.r.files)
+	}
+	held := int64(n) * unitRefCost
+	if !c.t.b.hold(held) {
+		return
+	}
+	defer c.t.b.release(held)
+	refs := make([]unitRef, 0, n)
+	if ru.main != nil {
+		refs = appendUnitRefs(refs, ru.main.shown, ru.main.r)
+	}
+	slices.SortStableFunc(ru.dropins, func(a, b releaseFile) int { return strings.Compare(a.name, b.name) })
+	for _, d := range ru.dropins {
+		refs = appendUnitRefs(refs, d.shown, d.r)
+	}
+	managers := []manager{{}}
+	if ru.user {
+		managers = c.managers()[1:]
+	}
+	for _, m := range managers {
+		for _, x := range refs {
+			if c.t.b.out() {
+				return
+			}
+			s.envFiles(x.unit, []envRef{x.envRef}, m)
+		}
+	}
 }
 
 // releaseFile is one file of a candidate unit, as shown in a hit, and
