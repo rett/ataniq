@@ -530,6 +530,12 @@ are stopped and decisions stay inhibited, see step 4).
    8. Any other exit status is a
    failure, including the check's own report that it could not finish
    (`HIT incomplete`): it is never a warning.
+   The switch prints none of the check's `HIT` lines, here or in step 8: a
+   failure shows only `noaicheck-failed`, the exit status and `run it by hand
+   to see its hits`. The owner reads the lines by running the same
+   command by hand, from a real root login, on the imported release
+   (`/opt/authority-host/releases/ID/bin/ah-noaicheck`, with `--nft-listing`
+   for phase `post`).
 5. **validate**: each command of `share/validators.list` must exit 0, within
    30 seconds each.
 6. **switch**: first the journal `txn.json` says `links` (and, on a forward
@@ -1016,7 +1022,7 @@ see its messages. The text of a broken state file is not repeated either.
 
 | Case | What happens |
 | --- | --- |
-| Incoming folder holds a link, special or hard-linked file, or `releases/ID` exists | Refused at import; nothing is left in `releases/` |
+| Incoming folder holds a link, special or hard-linked file, or `releases/ID` exists | Refused at import (`release-exists` for the second: an earlier `--from` of that id was imported and stopped later, and the import is kept); nothing is left in `releases/`, and the release that is there is untouched, but the record of the last switch now shows this refusal (an outcome still owed is reported instead, as for any retry). Switch to it without `--from` when the earlier attempt was refused before its counter was used, or build a new release with a higher counter |
 | Incoming folder swapped for a FIFO, a link or another folder while the switch opens it | Refused at import (`release-not-folder`, `file-changed`) at once; nothing waits, nothing is created, the lock is released |
 | Incoming folder is, contains or lies beneath `releases/` or anything in it | Refused at import (`incoming-overlaps`) before anything is created or removed; the incoming folder stays as it is |
 | A staging folder an earlier import left in `releases/` | Left as it is and named by every `--from`; remove it by hand |
@@ -1035,7 +1041,7 @@ see its messages. The text of a broken state file is not repeated either.
 | The snapshot changes and there is no package step | Refused at packages; `current` unchanged |
 | A static release while the package state is unknown, or on a host with a `current` and no recorded snapshot (`deploy.json` lost) | Refused at packages before anything begins (`package-state-unknown`, `package-step-failed`); nothing runs, the state stays as it was |
 | Package step fails | Failed at packages; `current` unchanged; the decision services are stopped and decisions stay inhibited; the package state is unknown, and every switch is refused until `recover --package-state` or a switch to the same new snapshot runs the step to the end (a release with a package step of its own; a static release is refused) |
-| No-AI check fails before the package step (phase pre) | Refused at noaicheck; nothing ran, nothing began |
+| No-AI check fails before the package step (phase pre) | Refused at noaicheck (`noaicheck-failed`, `run it by hand to see its hits`: the switch never prints the checker's `HIT` lines); nothing ran, nothing began |
 | No-AI check (phase pre) or a validator fails after the package step | Failed at noaicheck or validate; `current` unchanged; the decision services are stopped and decisions stay inhibited |
 | No-AI check fails before activation, with no package step | Refused at noaicheck; no validator runs |
 | No-AI check fails after the reload and health (phase post), or `nft` fails | Back to the old release, as for a failed health check; `failed_step: postcheck` |
@@ -1080,13 +1086,19 @@ What the switch does not do, so that nobody relies on it:
   package step, its units): the signature decides what may run, and the
   switch's checks of an honest release are not a privilege boundary.
 - It does not check that a release's lists cover what the release ships
-  (see the lists above), nor that its decision-capable services refuse
-  decisions while the inhibit is there: that is the release builder's
-  job.
+  (see the lists above), which is the release builder's job, nor that its
+  decision-capable services refuse decisions while the inhibit is there:
+  no program of this tree can see the application. The builder checks only
+  that no unit gates its start on the file; the service's own code must
+  make the one lookup before each decision (the package
+  `internal/authorityhost/decisionguard`, `Check`, refuses on the file in
+  any form and on a missing or linked state folder; see "Checking a built
+  release"), and its own tests must show that it does.
 - The decision inhibit keeps decisions from being taken by a service
   that follows the contract; it neither stops a service nor keeps one
   from starting. Stopping is the stop lists' job, and a service that does
-  not check the file is not held back by it.
+  not check the file (before every decision, not once at start) is not held
+  back by it.
 - The journal makes a switch safe against crashes, power loss and kills,
   and the trust checks keep other accounts out; neither protects against
   someone who is root on the host, who can rewrite any of it.
@@ -1161,7 +1173,12 @@ path or word that came from the caller (a `--root`, `--release` or
 never prints a file's content or a variable's value. Exit status: 0
 clean, 1 any hit, 2 a usage error or a read error it cannot continue past
 (a missing or invalid list, a root, listing or release folder it cannot
-open).
+open). The program that runs it never shows these lines: `ah-switch` prints
+only that the check failed (`noaicheck-failed`, with `run it by hand to see
+its hits`) and `ah-release check` only a code (`noaicheck-hit`,
+`noaicheck-exit`), so the hits of a refused release are read by running the
+check by hand with the arguments the failing step used (see "Steps", step 4,
+and "Checking a built release").
 
 Every file it opens by name (the lists in `share/`, the `--nft-listing`
 FILE and the `nft-digest` FILE) must be a regular file. Its type is
@@ -1617,23 +1634,29 @@ ah-release build --out DIR --counter N --commit SHA --go-version V --built-on CL
   It is mode 0755 and listed in `SHA256SUMS`, with the same bytes in every
   build. A static release must therefore be built with the
   `--package-snapshot` the host has recorded (`package_snapshot` in
-  `deploy.json`; any value on a first switch): a fresh snapshot value for
-  every build is refused. The switch refuses it at step 3 (see "Steps"),
-  before the transaction begins and before the step runs, whenever the
-  host's snapshot is known and not empty (`package-step-failed`, `build it
-  with the host's --package-snapshot`): `current`, the services, the
-  inhibit and the host's snapshot stay as they are, and the release rebuilt
-  with the host's snapshot switches next. The step itself still refuses
-  when it does run with another `--from`, which is the case while the
-  host's package state is unknown (a step of an earlier release did not
-  finish, and a static release of the snapshot that step went to runs it
-  again from the snapshot it started at); as with any failed package step,
-  that leaves the package state unknown, and every later switch is
-  refused until `ah-switch recover --package-state SNAPSHOT` (see "The
-  journal and recover"). In a release that is not static a `--bin` named
-  `ah-pkgstep` is shipped as given, and one given none has none, so a
-  switch that changes the snapshot refuses it (`package-step-missing`) as
-  before.
+  `deploy.json`; any value on a first switch, when the host has no
+  `current`): a fresh snapshot value for every build is refused. The switch
+  refuses a static release at step 3 (see "Steps"), before the transaction
+  begins and before the step runs, in three cases: the host's snapshot is
+  known and not empty and is not the release's (`package-step-failed`,
+  `build it with the host's --package-snapshot S and a higher counter`: the
+  same id again is refused at import, `release-exists`, because the refused
+  release stays imported, so the rebuilt release needs a higher counter
+  too); the host's package state is unknown (a step of an earlier release
+  did not finish: `package-state-unknown`); and the host has a `current` and
+  no recorded snapshot (`deploy.json` missing, or written without one:
+  `package-step-failed`, `a static release cannot establish one`). In none
+  of them do `current`, the services, the inhibit or the host's snapshot
+  change. A static release, whose generated step changes no package, never
+  settles an unknown package state and never establishes a lost snapshot:
+  that takes `ah-switch recover --package-state SNAPSHOT` (see "The journal
+  and recover") or a switch to a release of the right snapshot that has a
+  package step of its own. The generated step's own refusal of another
+  `--from` is a second line: the switch never gives a static release's
+  step any `--from` but an empty one (a first switch). In a release that
+  is not static a `--bin` named `ah-pkgstep` is shipped as given, and one
+  given none has none, so a switch that changes the snapshot refuses it
+  (`package-step-missing`) as before.
 - `--src` is the deployment source folder: its `etc/` is copied to
   `etc/` and its `share/` to `share/`, which must hold the four command
   lists and the lists of the no-AI check. Nothing else of it is copied (not
@@ -1732,9 +1755,20 @@ It checks, in this order, all of them (a pass is no finding):
      matched by any instance, `x@1`). No unit gates its start on
      `decisions.inhibit` (`ConditionPathExists=` and the like naming it): the
      contract under "The decision inhibit" is that a service starts while
-     it is there and refuses decisions itself, and the builder cannot see
-     the application, so that is for its own tests; what it does check is
-     that no unit file breaks it by a condition on `decisions.inhibit`.
+     it is there and refuses every decision unless the file does not exist,
+     by one lookup of that one file before each decision. The builder
+     cannot see the application, so that is for the service's own tests;
+     the package `internal/authorityhost/decisionguard` is that lookup as
+     code: `Check(stateDir)` returns nil only when the state folder is a
+     real folder (a link to one, a file or a missing folder is refused) and
+     `decisions.inhibit` in it does not exist in any form, and otherwise an
+     error whose code is `decision-guard-inhibited` (the file exists),
+     `decision-guard-state-folder` (the folder is missing, a file or a
+     link, or cannot be looked up) or `decision-guard-unreadable` (the
+     lookup of the file failed for any other reason than "does not
+     exist"). A service calls it before every decision, never caches the
+     answer and refuses on any error. What the builder does check is that
+     no unit file breaks the contract by a condition on `decisions.inhibit`.
 5. **The no-AI check.** The release's own
    `bin/ah-noaicheck --phase pre --release DIR/<id>` runs as a child of its
    own process group (killed whole at the time limit) with the switch's
@@ -1750,7 +1784,7 @@ It checks, in this order, all of them (a pass is no finding):
    hashed as it is copied and once more from the copy, into a new folder of
    mode 0700 in the temporary folder (`TMPDIR`, which must allow programs
    to run: on a mount with `noexec` the result is `noaicheck-not-started`;
-   a relative `TMPDIR` is read from the folder `check` runs in), and
+   a relative `TMPDIR` is made absolute first), and
    removed afterwards. The copy is made, read again and removed through the
    descriptor of its folder and is started as the open file that was
    hashed (`/proc/self/fd/N`, so `/proc` must be mounted), not as a path:
@@ -1760,9 +1794,12 @@ It checks, in this order, all of them (a pass is no finding):
    run (`noaicheck-not-started`); the most it can do is leave the private
    folder behind, which `check` then cannot remove. A checker that
    changed since it was verified is not run (`noaicheck-changed`).
-   `DIR/<id>` and `--root DIR` may be relative; the checker, which runs from
-   the folder `/`, is given their absolute paths. The checker itself reads the release's
-   `etc/` and `share/` by that path while it runs, so a folder renamed or
+   `DIR/<id>` and `--root DIR` may be relative, and so may `TMPDIR`: all
+   three are made absolute before the checker is started, which runs from
+   the folder `/` and would otherwise read another tree (so a relative
+   `--root` can never make the check pass over the wrong folder), and
+   `/proc` must be mounted for the start. The checker itself reads the
+   release's `etc/` and `share/` by that path while it runs, so a folder renamed or
    changed between the verification and that read is read as it is then:
    doing that takes write access to the release folder or to the folder
    that holds it, which `check` does not look at (keep both writable by

@@ -27,7 +27,10 @@
   commands and starts nothing (no ah-release, rsync or ssh).
   The driver never runs a file of the incoming folder: the no-AI check is
   the switch's own, on the verified copy it imports, before anything
-  changes.
+  changes. The switch prints no `HIT` line of that check, only that it failed;
+  `DEPLOY.md` has the owner run the checker by hand to read them, and says what
+  a repeated `--go` of an imported release (`release-exists`) and a `rolled-back`
+  result against a `failed-recovery` one mean.
   `DEPLOY.md` links the Caddyfile before the first switch (the shipped
   release restarts caddy in the switch and requires `/healthz` from it) and
   has the owner acknowledge the outcome (`ah-switch ack --txn ID[,ID...]

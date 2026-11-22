@@ -11,11 +11,11 @@
   `bin/ah-pkgstep` of its own (a POSIX `sh`
   script that checks its arguments and exits 0 on a first switch or an
   unchanged snapshot, and refuses with exit 1 a snapshot change it cannot
-  make, which leaves the package state unknown until `ah-switch recover
-  --package-state`), so a first switch of a static release needs no
-  hand-made package step; the build refuses a `--bin ah-pkgstep` with a
-  static release (`static-package-step`, exit 2), because a release that
-  must move the package snapshot is not static. `ah-release check DIR/<id>` reads a built folder
+  make, which the switch refuses before the step ever runs), so a first
+  switch of a static release needs no hand-made package step; the build
+  refuses a `--bin ah-pkgstep` with a static release (`static-package-step`,
+  exit 2), because a release that must move the package snapshot is not
+  static. `ah-release check DIR/<id>` reads a built folder
   back: its sums, manifest and shape, the coverage of its command lists that
   the switch leaves to the builder (a validator for every shipped Caddy,
   nftables and systemd file, a restart or reload of each shipped family, a

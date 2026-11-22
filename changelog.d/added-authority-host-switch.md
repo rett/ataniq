@@ -44,8 +44,10 @@
   first writes `/var/lib/authority-host/decisions.inhibit`, the one file
   a decision-capable service looks up: it may start while the file is
   there (and answer its readiness probe) but refuses every decision unless
-  one lookup before the decision finds no such file (the journal
-  `txn.json` is never there without it: a healthy end renames the journal
+  one lookup before the decision finds no such file (the package
+  `internal/authorityhost/decisionguard` is that lookup as code, `Check`,
+  which refuses on the file in any form and on a missing or linked state
+  folder; the journal `txn.json` is never there without it: a healthy end renames the journal
   over the inhibit, then removes the inhibit, the one step that lets
   decisions through; a power loss between the two leaves the journal in
   the inhibit, which the next command writes back and settles and which
