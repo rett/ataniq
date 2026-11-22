@@ -178,3 +178,63 @@ func FuzzDecodeLimitView(f *testing.F) {
 		`{"days":[],"limit":0,"project":"a","raised_today":false,"suggestion":0}`,
 		`{"days":[{"alert":false,"date":"2026-02-30","reached_limit":false,"uses":0}],"limit":1,"project":"a","raised_today":false,"suggestion":6}`)
 }
+
+func FuzzDecodePairStartParams(f *testing.F) {
+	fuzzForm(f, "pair start params", `{"replace":1}`, `{"replace":"true"}`, `{"replace":true,"code":"x"}`)
+}
+
+func FuzzDecodePairStartResult(f *testing.F) {
+	fuzzForm(f, "pair start result",
+		`{"code":"7ZB0KX4M9TQ2VH6NRC3E","expires_at":"2026-11-20T14:06:40Z"}`,
+		`{"code":"7ZB0KX4M9TQ2VH6NRC3I","expires_at":"2026-11-20T14:06:40Z"}`,
+		`{"code":"7zb0kx4m9tq2vh6nrc3e","expires_at":"2026-11-20T14:06:40Z"}`,
+		`{"code":"7ZB0KX4M9TQ2VH6NRC3E","expires_at":"2026-11-20T14:06:40+00:00"}`)
+}
+
+func FuzzDecodePairStatus(f *testing.F) {
+	const day = `"expires_at":"2026-11-20T14:06:40Z"`
+	const words = `"words":["acorn","bridge","cedar","delta","ember","falcon"]`
+	fuzzForm(f, "pair status",
+		`{"phase":"none"}`, `{"phase":"none",`+day+`}`, `{"phase":"waiting",`+day+`}`,
+		`{"phase":"pending",`+day+`,`+words+`}`, `{"phase":"pending",`+day+`}`,
+		`{"phase":"waiting",`+day+`,`+words+`}`, `{"phase":"waiting",`+day+`,"words":[]}`,
+		`{"phase":"pending",`+day+`,"words":["acorn"]}`, `{"phase":"expired",`+day+`}`,
+		`{"phase":"open",`+day+`}`, `{"phase":"waiting",`+day+`,"code":"7ZB0KX4M9TQ2VH6NRC3E"}`)
+}
+
+func FuzzDecodeSeatPairParams(f *testing.F) {
+	const id = `"credential_id":"QUFBQUFBQUFBQUFBQUFBQQ=="`
+	fuzzForm(f, "seat pair params",
+		`{"code":"7ZB0KX4M9TQ2VH6NRC3E",`+id+`,"public_key":"MAA="}`,
+		`{"code":"7ZB0KX4M9TQ2VH6NRC3E","credential_id":"QUFB","public_key":"MAA="}`,
+		`{"code":"7ZB0KX4M9TQ2VH6NRC3E",`+id+`,"public_key":""}`,
+		`{"code":"short",`+id+`,"public_key":"MAA="}`,
+		`{"code":"7ZB0KX4M9TQ2VH6NRC3E",`+id+`,"public_key":"MAA=","kind":"unverified"}`,
+		`{"code":"7ZB0KX4M9TQ2VH6NRC3E",`+id+`,"public_key":"MAA"}`)
+}
+
+func FuzzDecodeSeatPairResult(f *testing.F) {
+	fuzzForm(f, "seat pair result",
+		`{"words":["acorn","bridge","cedar","delta","ember","falcon"]}`, `{"words":[]}`,
+		`{"words":["acorn","bridge","cedar","delta","ember","Falcon"]}`, `{"words":null}`)
+}
+
+func FuzzDecodeKeyItem(f *testing.F) {
+	fuzzForm(f, "key item",
+		`{"id":"0123456789abcdef","kind":"unverified","paired_at":"2026-11-20T14:06:40Z","revoked":false}`,
+		`{"id":"0123456789ABCDEF","kind":"unverified","paired_at":"2026-11-20T14:06:40Z","revoked":false}`,
+		`{"id":"0123456789abcdef","kind":"","paired_at":"2026-11-20T14:06:40Z","revoked":true}`,
+		`{"id":"0123456789abcdef","kind":"unverified","paired_at":"2026-11-20T14:06:40Z"}`)
+}
+
+func FuzzDecodeKeysView(f *testing.F) {
+	const k = `{"id":"0123456789abcdef","kind":"unverified","paired_at":"2026-11-20T14:06:40Z","revoked":false}`
+	fuzzForm(f, "keys view",
+		`{"keys":[]}`, `{"keys":[`+k+`]}`, `{"keys":[`+k+`,`+k+`]}`, `{"keys":null}`,
+		`{"keys":[`+k+`],"extra":1}`, `{"keys":[{"id":"x"}]}`)
+}
+
+func FuzzDecodeKeyRevokeParams(f *testing.F) {
+	fuzzForm(f, "key revoke params", `{"id":"0123"}`, `{"id":"012"}`, `{"id":"0123456789abcdef0"}`,
+		`{"id":"0123456789ABCDEF"}`, `{"id":"0123","all":true}`)
+}

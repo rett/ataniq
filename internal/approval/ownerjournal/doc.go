@@ -162,6 +162,26 @@
 // the owner has seen what happened. [Store.AppendLooked] moves it forward
 // and [Store.LookedAt] returns it. The mark never moves back.
 //
+// # The list of deciding keys
+//
+// The credentials of the phones the owner paired are a file of their own
+// beside the journal, [OpenKeys] and [KeyFile], not entries of it: the journal's
+// layout is a checked statement of its schema, and this list has a different
+// owner, whose file the design means to put out of the daemon's user's reach one
+// day. It is the same in style. It only grows: a credential is added
+// ([KeyFile.AddKey]), revoked ([KeyFile.RevokeKeys]; a revoked credential stays
+// listed and is never made good again), and a rejected pairing is noted
+// ([KeyFile.AppendRejected]) with its display id and words and no key. Every
+// append is on the disk when it returns, the file is read and checked from its
+// first record when it is opened (a chain of digests, the numbers, and the
+// rules of the list), and the same trust checks hold: the folder and the file
+// are the user's own with modes 0700 and 0600, the file has one name and is not
+// a link, and one open at a time holds it. A file that does not hold is refused
+// with [ErrDamaged] and never repaired, started again or taken for an empty
+// list. The display id of a credential, [KeyDisplayID], is the first 8 bytes
+// of the SHA-256 of its id, in hexadecimal. At most [MaxKeys] credentials are
+// held, revoked ones included.
+//
 // The package is built for Linux only, like the dispatch journal: both rely
 // on the same file locks, and one process may hold both stores.
 package ownerjournal

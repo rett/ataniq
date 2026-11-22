@@ -139,6 +139,14 @@ func forms(t testing.TB) []form {
 		formOf(t, "limit-set params", MaxParamsBytes, inv, LimitSetParams{Project: "project-a", To: 18, Typed: true},
 			DecodeLimitSetParams, EncodeLimitSetParams),
 		formOf(t, "limit view", MaxResultBytes, inv, sampleLimitView(), DecodeLimitView, EncodeLimitView),
+		formOf(t, "pair start params", MaxParamsBytes, inv, PairStartParams{Replace: true}, DecodePairStartParams, EncodePairStartParams),
+		formOf(t, "pair start result", MaxResultBytes, inv, samplePairStartResult(), DecodePairStartResult, EncodePairStartResult),
+		formOf(t, "pair status", MaxResultBytes, inv, samplePairStatus(), DecodePairStatus, EncodePairStatus),
+		formOf(t, "seat pair params", MaxParamsBytes, inv, sampleSeatPairParams(), DecodeSeatPairParams, EncodeSeatPairParams),
+		formOf(t, "seat pair result", MaxResultBytes, inv, SeatPairResult{Words: sampleWords()}, DecodeSeatPairResult, EncodeSeatPairResult),
+		formOf(t, "key item", MaxResultBytes, inv, sampleKeyItem(), DecodeKeyItem, EncodeKeyItem),
+		formOf(t, "keys view", MaxResultBytes, inv, sampleKeysView(), DecodeKeysView, EncodeKeysView),
+		formOf(t, "key revoke params", MaxParamsBytes, inv, KeyRevokeParams{ID: "0123456789abcdef"}, DecodeKeyRevokeParams, EncodeKeyRevokeParams),
 	}
 }
 

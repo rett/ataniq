@@ -208,9 +208,11 @@
 // sets it. With it set, the daemon builds the host's side of an approval card
 // ([OwnerService], package ownerchannel's service in a real build), registers
 // the operations owner.list, owner.show, owner.paths, owner.patch,
-// owner.decider, owner.decide, owner.beat, owner.limit, owner.limit-set and
-// owner.looked ([OwnerOperations]) through the client protocol's extension
-// seam, on the same socket and the same protocol, "ataniq.client/1", and
+// owner.decider, owner.decide, owner.beat, owner.limit, owner.limit-set,
+// owner.looked, the pairing and key operations (owner.pair-start,
+// owner.pair-status, owner.pair-confirm, owner.pair-reject, owner.keys,
+// owner.key-revoke and owner.keys-off) and the seat's seat.pair
+// ([OwnerOperations]) through the client protocol's extension seam, on the same socket and the same protocol, "ataniq.client/1", and
 // closes the service after the server has ended. A daemon without the hook
 // registers none of them, whatever the tag.
 //
@@ -239,6 +241,20 @@
 // service is told too, so that its journal keeps the refusal. The beats of the
 // decider reach the service. [UnescapingIntake] turns the lines of the intake's
 // patch back to raw bytes before the service pages them.
+//
+// The pairing writes (start, confirm, reject, key-revoke, keys-off) are for the
+// decider's connection only: from another they are refused not-decider before
+// their params are read, and count against the same per-connection bound as a
+// decision frame, past which the connection is closed (OwnerCounts). The
+// service decides presence. Each error of the service has a code of its own and
+// a fixed text (keys-unavailable, keys-full, key-unknown, key-ambiguous,
+// pairing-open, pairing-none, pairing-expired, pairing-refused,
+// credential-invalid); a cause that names a path is in the log and not in the
+// answer, and the pairing code, which is in the result of owner.pair-start
+// and nowhere else, is never logged. seat.pair is the seat app's call: it is
+// answered only to a connection a seat source says is a seat, and no build has
+// one, so it is refused "unavailable" to every connection before its params are
+// read.
 //
 // The same-user limit of the socket holds here as everywhere: any process of
 // the owner's user can say it is the console, and one with a terminal of its

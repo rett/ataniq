@@ -55,6 +55,16 @@
 //     [*record.Error] with that code, any other failure an [*Unavailable]
 //     with the fixed text of one of the states above.
 //
+// The methods of owner_pair.go pair a phone and keep the list of deciding keys
+// (PairStart, PairStatus, PairConfirm, PairReject, Keys, KeyRevoke, KeysOff).
+// They return the types of the wire package, send each call once and never
+// again after a failure, refuse locally what the wire package refuses, and
+// decide nothing: the daemon's rules are the daemon's. A refusal with a code of
+// the pairing and key operations is a [*PairError] with a fixed text of this
+// package; the pairing code is in the result of PairStart, which prints
+// without it, and in no error. The seat's call, seat.pair, is not the
+// console's and has no method here.
+//
 // This part is provisional and unqualified. It was proved against a fake
 // daemon on a private socket, not against the daemon's own owner channel.
 //
