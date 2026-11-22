@@ -1,8 +1,11 @@
 package noaicheck
 
 import (
+	"errors"
+	"io/fs"
 	"path"
 	"strings"
+	"syscall"
 )
 
 // maxEnvFile bounds an environment file, profile or unit file; a larger one
@@ -74,88 +77,125 @@ func ProviderKeyName(name string) bool {
 	return false
 }
 
+// PathEnvFile is the name of the incomplete hit for a required
+// EnvironmentFile= (one without a leading '-') that is not there, or a
+// required glob that matches nothing: "HIT incomplete env-file <path>".
+// systemd would not start the unit, and the check cannot know what the
+// file would set once it is there.
+const PathEnvFile = "env-file"
+
 // CheckEnv is check 4: an environment file, shell profile, systemd manager
 // configuration or unit file that sets or passes a variable named like a
 // provider key (see ProviderKeyName) is a hit of kind "env", with the
 // variable's name as its detail; the value is never read into the report.
 // The files are those of /etc/environment, /etc/profile and the shells'
 // system profiles, /etc/profile.d, the environment.d folders, the systemd
-// manager configuration, every unit file and drop-in systemd loads (see
-// scanUnitFiles: links into the release are followed within the root, and
-// each file is read once), every home's profiles, each file an
-// EnvironmentFile= line of those names (a glob in its last component is
-// matched within the root) and each file a profile sources (see
-// sourcePaths: a literal absolute path, or one that starts with $HOME, ~ or
+// manager configuration, every unit file and drop-in a manager loads (see
+// scanUnitFiles: each manager's effective unit view, links into the
+// release followed within the root), every home's profiles, each file an
+// EnvironmentFile= line of those units names (its %h, %t and %% those of
+// the manager that loads the unit; a glob in its last component matched
+// within the root) and each file a profile sources (see sourcePaths: a
+// literal absolute path, or one that starts with $HOME, ~ or
 // $XDG_CONFIG_HOME, resolved in each home; a path the check cannot resolve
-// is the hit "incomplete env-source <file>", never passed over).
+// is the hit "incomplete env-source <file>", never passed over). A
+// required EnvironmentFile= that is not there is the hit
+// "incomplete env-file <path>"; an optional one ('-') is passed over.
 //
 // Each file is read in its own syntax (see parseEnv): a profile as shell
 // words, so a comment or a quoted value is never taken for a setting; a
 // unit by its Environment=, PassEnvironment= and EnvironmentFile= keys; an
-// environment file as KEY=VALUE lines. Only a valid identifier is ever
-// reported. A file whose syntax the check cannot parse is the hit
-// "incomplete env-syntax <file>".
+// environment file as KEY=VALUE lines. Each file is read and parsed once,
+// its EnvironmentFile= lines resolved once per manager. Only a valid
+// identifier is ever reported. A file whose syntax the check cannot parse
+// is the hit "incomplete env-syntax <file>".
 func (c *Checker) CheckEnv() {
 	done := map[string]bool{}
 	var queue []envFile
-	var scan func(rel string, s envSyntax)
-	scan = func(rel string, s envSyntax) {
+	var scan func(rel string, s envSyntax, m *manager)
+	scan = func(rel string, s envSyntax, m *manager) {
 		p, err := c.t.resolve(rel)
 		if err != nil {
 			c.unreadable(rel, err)
 			return
 		}
-		if done[p] || p == "dev/null" { // read once; a masked file is empty
+		key := p
+		if m != nil {
+			key += "\x00" + m.key()
+		}
+		if done[key] || p == "dev/null" { // once; a masked file is empty
 			return
 		}
-		done[p] = true
-		_, data, err := c.t.readFile(p, maxEnvFile)
-		if err != nil {
-			c.unreadable(p, err)
-			return
-		}
-		r := parseEnv(s, string(data), strings.HasSuffix(p, ".fish"))
-		for _, n := range r.names {
-			c.hit(KindEnv, show(p), n)
-		}
-		if r.bad {
-			c.hit(KindIncomplete, PathEnvSyntax, show(p))
-		}
-		for _, spec := range r.files {
-			for _, f := range c.specifiers(spec, isUserUnit(p)) {
-				if !c.envFileGlob(f, func(m string) { queue = append(queue, envFile{m, syntaxEnvFile}) }) {
-					c.hit(KindIncomplete, PathEnvSyntax, show(p))
+		done[key] = true
+		r := c.parsed[p]
+		if r == nil {
+			_, data, err := c.t.readFile(p, maxEnvFile)
+			if err != nil {
+				c.unreadable(p, err)
+				return
+			}
+			r = &envParse{}
+			*r = parseEnv(s, string(data), strings.HasSuffix(p, ".fish"))
+			if c.t.b.hold(int64(len(p)) + 64*int64(len(r.files)+len(r.sourced)+1)) {
+				c.parsed[p] = r
+			}
+			for _, n := range r.names {
+				c.hit(KindEnv, show(p), n)
+			}
+			if r.bad {
+				c.hit(KindIncomplete, PathEnvSyntax, show(p))
+			}
+			for _, w := range r.sourced {
+				paths, ok := c.sourcePaths(w, c.homeOf(p))
+				for _, f := range paths {
+					ok = c.envFileGlob(f, func(m string) { queue = append(queue, envFile{rel: m, syntax: syntaxShell}) }) && ok
+				}
+				if !ok {
+					c.hit(KindIncomplete, PathEnvSource, show(p))
 				}
 			}
 		}
-		for _, w := range r.sourced {
-			paths, ok := c.sourcePaths(w, c.homeOf(p))
-			for _, f := range paths {
-				ok = c.envFileGlob(f, func(m string) { queue = append(queue, envFile{m, syntaxShell}) }) && ok
-			}
+		if len(r.files) == 0 {
+			return
+		}
+		mgr := manager{}
+		if m != nil {
+			mgr = *m
+		}
+		for _, ref := range r.files {
+			f, ok := c.expand(ref.path, mgr)
 			if !ok {
-				c.hit(KindIncomplete, PathEnvSource, show(p))
+				c.hit(KindIncomplete, PathEnvSyntax, show(p))
+				continue
+			}
+			n := 0
+			if !c.envFileGlob(f, func(m string) { n++; queue = append(queue, envFile{rel: m, syntax: syntaxEnvFile}) }) {
+				c.hit(KindIncomplete, PathEnvSyntax, show(p))
+				continue
+			}
+			if !ref.optional && (n == 0 || c.missing(f)) {
+				c.hit(KindIncomplete, PathEnvFile, show(clean(f)))
 			}
 		}
 	}
 	scanDir := func(rel string, s envSyntax) {
 		c.walk(rel, 1, func(e *wentry) bool {
 			if e.isRegular() || e.isLink() {
-				scan(e.rel, s)
+				scan(e.rel, s, nil)
 			}
 			return false
 		})
 	}
 	for _, f := range envFiles {
-		scan(f.rel, f.syntax)
+		scan(f.rel, f.syntax, nil)
 	}
 	for _, d := range envDirs {
 		scanDir(d.rel, d.syntax)
 	}
-	c.scanUnitFiles(func(rel string) { scan(rel, syntaxSystemd) })
+	c.scanUnitFiles(func(rel string, m manager) { scan(rel, syntaxSystemd, &m) })
 	for _, home := range c.homeFolders() {
 		for _, f := range homeEnvFiles {
-			scan(path.Join(home, f.rel), f.syntax)
+			scan(path.Join(home, f.rel), f.syntax, nil)
 		}
 		for _, d := range homeEnvDirs {
 			scanDir(path.Join(home, d.rel), d.syntax)
@@ -165,8 +205,45 @@ func (c *Checker) CheckEnv() {
 	for len(queue) > 0 {
 		f := queue[0]
 		queue = queue[1:]
-		scan(f.rel, f.syntax)
+		scan(f.rel, f.syntax, nil)
 	}
+}
+
+// missing reports whether the path p (a file an EnvironmentFile= names,
+// not a glob) is not there within the root.
+func (c *Checker) missing(p string) bool {
+	if strings.ContainsAny(path.Base(p), "*?[") {
+		return false
+	}
+	_, err := c.t.resolve(p)
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
+}
+
+// expand returns the path an EnvironmentFile= path stands for in the
+// manager m: each specifier replaced by its value in m's context (see
+// manager.spec), once, so a path is never multiplied out. A specifier m
+// cannot resolve: false.
+func (c *Checker) expand(p string, m manager) (string, bool) {
+	if !strings.Contains(p, "%") {
+		return p, true
+	}
+	var b strings.Builder
+	for i := 0; i < len(p); i++ {
+		if p[i] != '%' {
+			b.WriteByte(p[i])
+			continue
+		}
+		if i+1 >= len(p) {
+			return "", false
+		}
+		v, ok := m.spec(p[i+1])
+		if !ok {
+			return "", false
+		}
+		b.WriteString(v)
+		i++
+	}
+	return b.String(), true
 }
 
 // envFileGlob passes the path of an EnvironmentFile= to found, or, when
@@ -270,55 +347,4 @@ func (c *Checker) sourcePaths(w srcWord, home string) ([]string, bool) {
 		out = append(out, clean(path.Join(h, sub, rest)))
 	}
 	return out, true
-}
-
-// isUserUnit reports whether the unit file rel is a user unit: in a
-// systemd/user folder or a home's .config/systemd/user.
-func isUserUnit(rel string) bool {
-	return strings.Contains("/"+rel, "/systemd/user/")
-}
-
-// specifiers returns the paths an EnvironmentFile= path stands for once its
-// specifiers are resolved: %h is every home for a user unit and /root for
-// a system unit, %t every folder of /run/user for a user unit and /run for
-// a system unit, %% a percent sign.
-func (c *Checker) specifiers(p string, user bool) []string {
-	if !strings.Contains(p, "%") {
-		return []string{p}
-	}
-	homes, runs := []string{"/root"}, []string{"/run"}
-	if user {
-		homes, runs = nil, nil
-		for _, h := range c.homeFolders() {
-			homes = append(homes, show(h))
-		}
-		c.walk("run/user", 1, func(e *wentry) bool {
-			if e.isDir() {
-				runs = append(runs, show(e.rel))
-			}
-			return false
-		})
-	}
-	out := []string{""}
-	for i := 0; i < len(p); i++ {
-		var alts []string
-		switch {
-		case p[i] != '%' || i+1 >= len(p):
-			alts = []string{p[i : i+1]}
-		case p[i+1] == 'h':
-			alts, i = homes, i+1
-		case p[i+1] == 't':
-			alts, i = runs, i+1
-		default:
-			alts, i = []string{"%"}, i+1
-		}
-		var next []string
-		for _, o := range out {
-			for _, a := range alts {
-				next = append(next, o+a)
-			}
-		}
-		out = next
-	}
-	return out
 }

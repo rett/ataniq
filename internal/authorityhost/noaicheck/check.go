@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // The kinds of a hit.
@@ -89,6 +90,9 @@ type Checker struct {
 	notes   []string
 	partial bool // a policy was not enforced
 	homes   []string
+	uids    map[string]string // the user id of each home
+	udirs   map[string]*udir  // the unit folders listed so far
+	parsed  map[string]*envParse
 
 	binScanned bool
 	binHits    []string // paths named like an agent tool
@@ -104,7 +108,8 @@ func Open(rootDir string, lists *Lists) (*Checker, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Checker{t: t, euid: os.Geteuid(), lists: lists, seen: map[Hit]bool{}}, nil
+	return &Checker{t: t, euid: os.Geteuid(), lists: lists, seen: map[Hit]bool{},
+		udirs: map[string]*udir{}, parsed: map[string]*envParse{}}, nil
 }
 
 // Close releases the tree.
@@ -296,34 +301,42 @@ func field(s string) string {
 }
 
 // homes are the home folders to look into: every home in etc/passwd except
-// "/", root, and every folder in home/, each resolved and listed once. A
-// home inside the kernel's own trees (proc/, sys/, dev/), such as a service
-// user's "/proc", is not a place files are put and is not walked.
+// "/", root, and every folder in home/, each resolved and listed once, with
+// its user id (that of etc/passwd, 0 for root, the folder's owner for a
+// folder of home/ that etc/passwd does not name). A home inside the
+// kernel's own trees (proc/, sys/, dev/), such as a service user's
+// "/proc", is not a place files are put and is not walked.
 func (c *Checker) homeFolders() []string {
 	if c.homes != nil {
 		return c.homes
 	}
-	var cands []string
+	type cand struct{ home, uid string }
+	var cands []cand
 	if _, data, err := c.t.readFile("etc/passwd", 16<<20); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			f := strings.Split(line, ":")
 			if len(f) < 7 || !strings.HasPrefix(f[5], "/") {
 				continue
 			}
-			cands = append(cands, f[5])
+			uid := f[2]
+			if _, err := strconv.ParseUint(uid, 10, 32); err != nil {
+				uid = ""
+			}
+			cands = append(cands, cand{f[5], uid})
 		}
 	} else {
 		c.unreadable("etc/passwd", err)
 	}
-	cands = append(cands, "/root")
+	cands = append(cands, cand{"/root", "0"})
 	c.walk("home", 1, func(e *wentry) bool {
-		cands = append(cands, e.rel)
+		cands = append(cands, cand{e.rel, ""})
 		return false
 	})
 	seen := map[string]bool{}
 	c.homes = []string{}
+	c.uids = map[string]string{}
 	for _, h := range cands {
-		rel := clean(h)
+		rel := clean(h.home)
 		if rel == "." {
 			continue
 		}
@@ -339,8 +352,13 @@ func (c *Checker) homeFolders() []string {
 		if err != nil || !fi.IsDir() {
 			continue
 		}
+		uid := h.uid
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok && uid == "" {
+			uid = strconv.FormatUint(uint64(st.Uid), 10)
+		}
 		seen[r] = true
 		c.homes = append(c.homes, r)
+		c.uids[r] = uid
 	}
 	return c.homes
 }

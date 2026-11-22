@@ -100,24 +100,32 @@ func TestParseEnv(t *testing.T) {
 		{"manager DefaultEnvironment", unit, "DefaultEnvironment=CLAUDE_CODE_X=1", []string{"CLAUDE_CODE_X"}, nil, nil, false},
 		{"PassEnvironment", unit, "PassEnvironment=LANG OPENAI_API_KEY", []string{"OPENAI_API_KEY"}, nil, nil, false},
 		{"EnvironmentFile", unit, "EnvironmentFile=-/etc/default/app\nEnvironmentFile=\"/etc/app env\"\nEnvironmentFile=-'/etc/x/*.env'\n", nil,
-			[]string{"/etc/default/app", "/etc/app env", "/etc/x/*.env"}, nil, false},
+			[]string{"-/etc/default/app", "/etc/app env", "-/etc/x/*.env"}, nil, false},
+		{"EnvironmentFile optional inside quotes", unit, "EnvironmentFile=\"-/etc/a\"\nEnvironmentFile=/etc/b\n", nil,
+			[]string{"-/etc/a", "/etc/b"}, nil, false},
 		{"EnvironmentFile relative", unit, "EnvironmentFile=relative", nil, nil, nil, true},
 		{"EnvironmentFile with a specifier", unit, "EnvironmentFile=/etc/app/%i.env", nil, nil, nil, true},
 		{"EnvironmentFile in the home or runtime folder", unit, "EnvironmentFile=-%h/.config/app.env\nEnvironmentFile=-%t/app/env.conf\n", nil,
-			[]string{"%h/.config/app.env", "%t/app/env.conf"}, nil, false},
+			[]string{"-%h/.config/app.env", "-%t/app/env.conf"}, nil, false},
 		{"unit unclosed quote", unit, "Environment=\"OPENAI_API_KEY=x", nil, nil, nil, true},
 		{"unit word without a value", unit, "Environment=OPENAI_API_KEY", nil, nil, nil, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := parseEnv(tc.syntax, tc.in, strings.Contains(tc.name, "fish"))
-			var sourced []string
+			var sourced, files []string
 			for _, w := range r.sourced {
 				sourced = append(sourced, w.lit)
 			}
-			if !reflect.DeepEqual(r.names, tc.want) || !reflect.DeepEqual(r.files, tc.files) ||
+			for _, f := range r.files {
+				if f.optional {
+					f.path = "-" + f.path
+				}
+				files = append(files, f.path)
+			}
+			if !reflect.DeepEqual(r.names, tc.want) || !reflect.DeepEqual(files, tc.files) ||
 				!reflect.DeepEqual(sourced, tc.sourced) || r.bad != tc.bad {
-				t.Errorf("got %q %q %q bad=%v, want %q %q %q bad=%v", r.names, r.files, sourced, r.bad,
+				t.Errorf("got %q %q %q bad=%v, want %q %q %q bad=%v", r.names, files, sourced, r.bad,
 					tc.want, tc.files, tc.sourced, tc.bad)
 			}
 			for _, n := range r.names {

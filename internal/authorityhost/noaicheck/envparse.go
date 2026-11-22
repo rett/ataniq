@@ -42,10 +42,19 @@ func ident(b byte) bool { return identStart(b) || (b >= '0' && b <= '9') }
 // whether some of it could not be parsed.
 type envParse struct {
 	names   []string
-	files   []string
+	files   []envRef
 	sourced []srcWord
 	bad     bool
 	seen    map[string]bool
+}
+
+// envRef is a path an EnvironmentFile= line names, as written (it may hold
+// %h, %t or %%, and a glob in its last component), and whether it is
+// optional (written with a leading '-'): systemd refuses to start a unit
+// whose required file is missing.
+type envRef struct {
+	path     string
+	optional bool
 }
 
 func (r *envParse) add(n string) {
@@ -210,8 +219,8 @@ func logicalLines(data string) []string {
 // parseSystemd reads a unit file, drop-in or manager configuration:
 // Environment=, DefaultEnvironment= and ManagerEnvironment= (words split
 // with systemd's quoting, each NAME=VALUE; only NAME is kept),
-// PassEnvironment= (names) and EnvironmentFile= (one path, an optional '-'
-// first, quoted or not, absolute or starting with %h or %t; a glob in its
+// PassEnvironment= (names) and EnvironmentFile= (one path, a '-' first
+// when it is optional, quoted or not, absolute or starting with %h or %t; a glob in its
 // last component; no specifier but %h, %t and %%). Comments
 // ('#', ';'), section headers and other keys are passed over. A word that
 // is not NAME=VALUE, an unclosed quote or a path with a specifier is
@@ -260,8 +269,12 @@ func parseSystemd(r *envParse, data string) {
 				continue // resets the list
 			}
 			p := strings.TrimPrefix(value, "-")
+			optional := p != value
 			if words, ok := splitSystemd(p); ok && len(words) == 1 {
-				p = strings.TrimPrefix(words[0], "-")
+				p = words[0]
+				if strings.HasPrefix(p, "-") {
+					p, optional = p[1:], true
+				}
 			} else {
 				r.bad = true
 				continue
@@ -270,7 +283,7 @@ func parseSystemd(r *envParse, data string) {
 				r.bad = true
 				continue
 			}
-			r.files = append(r.files, p)
+			r.files = append(r.files, envRef{path: p, optional: optional})
 		}
 	}
 }
