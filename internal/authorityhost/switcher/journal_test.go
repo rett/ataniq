@@ -657,3 +657,56 @@ func TestStatusTakesTheLock(t *testing.T) {
 	}
 	e.out.Reset()
 }
+
+// TestResumeCrashesToo: a resume killed at a point of its own is resumed
+// again by the next command, and ends where one resume would have: each
+// phase is safe to redo from its start.
+func TestResumeCrashesToo(t *testing.T) {
+	for _, tc := range []struct {
+		fail          map[string]int
+		first, second string
+		current       string
+		result        string
+		stopped       bool
+	}{
+		{nil, CrashCurrent, CrashPutBack, rel2, ResultRolledBack, false},
+		{nil, CrashActivating, CrashReload, rel3, ResultOK, false},
+		{nil, CrashActivating, CrashPostCheck, rel3, ResultOK, false},
+		{map[string]int{"health-probe": -1}, CrashRestoring, CrashRestoreLinks, rel2, ResultRolledBack, false},
+		{map[string]int{"health-probe": -1}, CrashRestoreReload, CrashRestoreReload, rel2, ResultRolledBack, false},
+		{map[string]int{"health-probe": -1, "health-old": -1}, CrashStopping, CrashStopped, rel2, ResultFailedRecovery, true},
+		{nil, CrashDone, CrashRecord, rel3, ResultOK, false},
+	} {
+		t.Run(tc.first+"/"+tc.second, func(t *testing.T) {
+			e := activeOwn(t)
+			for k, v := range tc.fail {
+				e.runner.fail[k] = v
+			}
+			e.crashAt(tc.first, false, rel3)
+			s := e.switcher()
+			s.crashAt = func(p string) error {
+				if p == tc.second {
+					return errCrash
+				}
+				return nil
+			}
+			if code := s.Recover(context.Background(), resumeOnly); code != ExitFailed {
+				t.Fatalf("the crashing resume: exit %d", code)
+			}
+			e.out.Reset()
+			if _, ok := e.journal(); !ok {
+				t.Fatalf("a crashed resume removed the journal")
+			}
+			if code := e.recover(resumeOnly); code != ExitFailed {
+				t.Fatalf("resume: exit %d", code)
+			}
+			e.noJournal()
+			if got := e.link("current"); got != "releases/"+tc.current {
+				t.Errorf("current -> %q, want %s", got, tc.current)
+			}
+			if rec := e.record(); rec.Result != tc.result || rec.ServicesStopped != tc.stopped || e.highest() != "3" {
+				t.Errorf("record: %+v, highest %q", rec, e.highest())
+			}
+		})
+	}
+}
