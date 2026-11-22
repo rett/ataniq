@@ -1,0 +1,11 @@
+# The allowlist of enabled systemd units, read by ah-noaicheck (see
+# ../README.md). One unit name per line ("sshd.service", or a template such
+# as "getty@.service", which allows every instance of it); blank lines and
+# lines starting with '#' are ignored.
+#
+# An enabled unit is a link in a *.wants, *.requires or *.upholds folder of
+# /etc/systemd/system, /etc/systemd/user or a home's .config/systemd/user.
+# Every enabled unit not named here is a hit, so an empty list fails every
+# host: the lead fills it from the host's baseline before the first deploy.
+# The remote-login unit is left out once remote login is closed, so a release
+# that enables it fails its own check.
