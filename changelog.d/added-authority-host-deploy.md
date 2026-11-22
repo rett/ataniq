@@ -14,12 +14,18 @@
   and never starts, restarts or enables a service.
   Add `deploy/authority-host/deploy.sh`, the deploy driver run on the
   development host: with `AUTHORITY_HOST_SSH` (never printed; the output says
-  `the authority host`) it runs `ah-release check` on a built release folder,
+  `the authority host`) it runs `ah-release check --no-noaicheck` on a built
+  release folder (never the release's no-AI check, which would report this
+  machine's own agent tools),
   copies it to the host's incoming folder with `rsync -a --delete`, and runs
   `sudo /usr/local/sbin/ah-switch --from INCOMING/ID ID` over `ssh -o
   BatchMode=yes`. `--dry` (the default) only lists what rsync would copy and
   prints the ssh command, `--go` does it and is refused unless
   `--confirm ID` equals the release id, and `--self-test` computes the
-  commands without running ssh or rsync.
+  commands without running ssh or rsync. `--remote-check` runs the copied
+  release's no-AI check on the host (`sudo INCOMING/ID/bin/ah-noaicheck
+  --phase pre --root / --release INCOMING/ID --require-policy`, over ssh) after
+  the copy and stops before the switch when it exits non-zero; `--dry` only
+  prints the command.
   `deploy/authority-host/DEPLOY.md` gives the first-deploy sequence, the
   rollback and what to do when a step fails.
