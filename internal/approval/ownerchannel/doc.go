@@ -139,7 +139,13 @@
 // used, every operation on it is refused with [ErrKeysUnavailable], and a
 // list that cannot be read is never taken for an empty one. A confirm and a
 // reject write only after they found the list usable, so a credential stays
-// pending when the list is down or full. Every error of these operations other
+// pending when the list is down. A reject then drops the credential before it
+// writes the journal, because a drop only lowers what anyone may do: if the
+// journal write fails, or the file has as many rejected pairings as it keeps
+// room for, the call answers that error although the pairing ended, and the
+// status says none. A credential that is on the list already, revoked or not,
+// is refused when it is presented ([ErrCredentialInvalid], after the code was
+// checked) and ends the pairing. Every error of these operations other
 // than a refusal is one of the package's sentinels, each with a fixed text.
 //
 // # Concurrency

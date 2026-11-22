@@ -257,7 +257,9 @@
 // and nowhere else, is never logged. seat.pair is the seat app's call: it is
 // answered only to a connection a seat source says is a seat, and no build has
 // one, so it is refused "unavailable" to every connection before its params are
-// read.
+// read. The refused calls of a connection count against the same bound as its
+// refused writes: the first [DecisionRefusalBound] are logged, the next closes
+// the connection and is logged once, and no line is written for any after.
 //
 // The same-user limit of the socket holds here as everywhere: any process of
 // the owner's user can say it is the console, and one with a terminal of its

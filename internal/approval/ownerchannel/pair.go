@@ -232,7 +232,9 @@ func (s *Service) PairStatus(ctx context.Context) (ownerwire.PairStatus, error) 
 // does. A refusal of the code or of the pairing's state is [ErrPairRefused] and
 // never says which, a credential that is not an ES256 key or has an id of
 // another length is [ErrCredentialInvalid] and leaves the code unused, and the
-// fifth wrong code burns it. The source must be a seat ([SurfaceSeat]); the
+// fifth wrong code burns it. A credential that is on the list of keys already,
+// revoked or not, is [ErrCredentialInvalid] as well, but only after the code was
+// right, and it ends the pairing (the code is spent). The source must be a seat ([SurfaceSeat]); the
 // daemon passes only one it knows to be.
 func (s *Service) PairPresent(ctx context.Context, src Source, p ownerwire.SeatPairParams) (ownerwire.SeatPairResult, error) {
 	_, done, err := s.begin(ctx)
@@ -254,7 +256,8 @@ func (s *Service) PairPresent(ctx context.Context, src Source, p ownerwire.SeatP
 	mono, now := s.nowBoth()
 	// A list that cannot take the credential refuses before the code is
 	// spent on it.
-	if _, _, err := s.usableKeys(); err != nil {
+	_, listed, err := s.usableKeys()
+	if err != nil {
 		return ownerwire.SeatPairResult{}, err
 	}
 	fp, err := s.pr.p.Present(p.Code, p.CredentialID, p.PublicKey, mono)
@@ -269,7 +272,21 @@ func (s *Service) PairPresent(ctx context.Context, src Source, p ownerwire.SeatP
 	default:
 		return ownerwire.SeatPairResult{}, fmt.Errorf("ownerchannel: the pairing could not take the credential: %w", err)
 	}
-	s.pr.id = ownerjournal.KeyDisplayID(p.CredentialID)
+	id := ownerjournal.KeyDisplayID(p.CredentialID)
+	// A credential that is on the list already, revoked or not, could only
+	// fail at the confirm, after the pairing was spent and with the wrong
+	// advice. It is refused here, after the code was checked (so a wrong code
+	// still counted its try), and the pairing is ended: the code is used.
+	for _, k := range listed {
+		if k.ID == id {
+			if pid, ok := s.pr.p.PendingID(mono); ok {
+				_ = s.pr.p.Reject(pid)
+			}
+			s.pr.live, s.pr.id = false, ""
+			return ownerwire.SeatPairResult{}, ErrCredentialInvalid
+		}
+	}
+	s.pr.id = id
 	s.pr.ends = now.Add(seatpair.PendingLifetime)
 	return ownerwire.SeatPairResult{Words: append([]string(nil), fp[:]...)}, nil
 }
@@ -338,8 +355,13 @@ func (s *Service) PairConfirm(ctx context.Context, src Source, p ownerwire.PairP
 // The params name the credential by its pending id, as for
 // [Service.PairConfirm]: another credential's id is refused with
 // [ErrPairingChanged] and nothing changes. It is refused with [ErrNoPairing]
-// when none waits. The list is checked first, so a rejection that could not be
-// journaled is not made.
+// when none waits. The list is checked before the pairing is touched, so a
+// list that cannot be used leaves the credential pending. Once that check has
+// passed the credential is dropped and the pairing ended, before the journal is
+// written, because a drop only lowers what anyone may do; when the journal then
+// fails (an error of the store, or the cap on rejected pairings) the call
+// answers that error although the rejection took effect, and the credential is
+// not pending any more, which the status shows.
 func (s *Service) PairReject(ctx context.Context, src Source, p ownerwire.PairPendingParams) error {
 	_, done, err := s.begin(ctx)
 	if err != nil {

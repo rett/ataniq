@@ -479,7 +479,18 @@ func (x *ownerExt) seatPair(ctx context.Context, params json.RawMessage) (any, *
 	}
 	if !ok {
 		x.oc.counts.SeatRefused.Add(1)
-		x.oc.logf("owner channel: a seat.pair call was refused: this build has no seat source (peer pid %d)", c.pid)
+		// The refusals of a connection are bounded as the writes of one that is
+		// not the decider are: the first DecisionRefusalBound are logged, the
+		// next ends the connection (counted once), and the calls after that
+		// write nothing, so a peer cannot flood the log.
+		switch n := x.reg.refuseDecide(c); {
+		case n < DecisionRefusalBound+1:
+			x.oc.logf("owner channel: a seat.pair call was refused: this build has no seat source (peer pid %d)", c.pid)
+		case n == DecisionRefusalBound+1:
+			x.oc.counts.DecisionFlooded.Add(1)
+			x.oc.logf("owner channel: a connection sent more than %d refused seat.pair calls and was closed (peer pid %d)", DecisionRefusalBound, c.pid)
+			_ = c.Close()
+		}
 		return nil, &clientapi.ErrorBody{Code: ownerCodeUnavailable, Message: msgOwnerNoSeat}
 	}
 	p, err := ownerwire.DecodeSeatPairParams(params)

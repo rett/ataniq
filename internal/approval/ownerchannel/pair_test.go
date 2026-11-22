@@ -737,8 +737,8 @@ func TestTheKeyListAndItsRevocations(t *testing.T) {
 	}
 	// A revoked credential is never good again: pairing the same credential
 	// does not undo it, and a new one is a new key.
-	e.pairedUp(phones[0])
-	if _, err := e.confirm(); !errors.Is(err, ErrCredentialInvalid) {
+	code := e.mustStart()
+	if _, err := e.present(code, phones[0]); !errors.Is(err, ErrCredentialInvalid) {
 		t.Fatalf("pairing a revoked credential again: %v", err)
 	}
 	e.pairedUp(newPhone(t, 4))
@@ -1295,5 +1295,99 @@ func TestThePairingKeepsTheMonotonicReadingOfTheClock(t *testing.T) {
 	// What is shown and journaled is wall time, in the record's form.
 	if st := e.status(); st.ExpiresAt != record.FormatTime(now.Add(time.Minute+seatpair.PendingLifetime)) {
 		t.Fatalf("%+v", st)
+	}
+}
+
+// A reject whose journal write fails answers the error, and the rejection has
+// taken effect all the same: the credential is dropped (a drop only lowers what
+// anyone may do) and the pairing is over. The answer says the journal failed;
+// the status says none.
+func TestARejectThatCouldNotBeJournaledStillEndedThePairing(t *testing.T) {
+	for name, fail := range map[string]error{"the store is down": errStoreDown, "the file is full": ownerjournal.ErrKeysFull} {
+		t.Run(name, func(t *testing.T) {
+			e, keys := pairEnv(t)
+			ph := newPhone(t, 1)
+			code, _ := e.pairedUp(ph)
+			id := e.pendingID()
+			keys.failReject = fail
+			if err := e.rejectID(id); err == nil {
+				t.Fatal("a reject that was not journaled answered nil")
+			}
+			if st := e.status(); st.Phase != ownerwire.PairNone || st.PendingID != "" {
+				t.Fatalf("after a failed reject: %+v, want the phase none", st)
+			}
+			keys.failReject = nil
+			if _, err := e.confirmID(id); !errors.Is(err, ErrNoPairing) {
+				t.Fatalf("a confirm of the rejected credential: %v, want %v", err, ErrNoPairing)
+			}
+			if len(keys.keys) != 0 || len(keys.rejected) != 0 {
+				t.Fatalf("%d keys, %d rejected", len(keys.keys), len(keys.rejected))
+			}
+			// The code is spent as for any reject.
+			if _, err := e.present(code, ph); !errors.Is(err, ErrPairRefused) {
+				t.Fatalf("the code after it: %v", err)
+			}
+		})
+	}
+}
+
+// A credential whose display id is on the list already, revoked or not, is
+// refused when it is presented, after the code is checked: the pairing is
+// ended (the code spent) and the answer is ErrCredentialInvalid, not a
+// pending credential that could only fail at the confirm.
+func TestAListedCredentialIsRefusedWhenItIsPresented(t *testing.T) {
+	for _, revoked := range []bool{false, true} {
+		name := "a key in use"
+		if revoked {
+			name = "a revoked key"
+		}
+		t.Run(name, func(t *testing.T) {
+			e, keys := pairEnv(t)
+			ph := newPhone(t, 1)
+			keys.seed(ph.displayID(), revoked)
+			code := e.mustStart()
+			if _, err := e.present(code, ph); !errors.Is(err, ErrCredentialInvalid) {
+				t.Fatalf("a listed credential: %v, want %v", err, ErrCredentialInvalid)
+			}
+			if st := e.status(); st.Phase == ownerwire.PairPending {
+				t.Fatalf("a listed credential is pending: %+v", st)
+			}
+			// The pairing is over and the code spent.
+			if _, err := e.present(code, newPhone(t, 2)); !errors.Is(err, ErrPairRefused) {
+				t.Fatalf("the code after it: %v, want %v", err, ErrPairRefused)
+			}
+			if _, err := e.confirm(); !errors.Is(err, ErrNoPairing) {
+				t.Fatalf("a confirm: %v, want %v", err, ErrNoPairing)
+			}
+			if len(keys.keys) != 1 || len(keys.rejected) != 0 {
+				t.Fatalf("the list changed: %d keys, %d rejected", len(keys.keys), len(keys.rejected))
+			}
+			// And a new pairing with another phone goes through.
+			if _, err := e.pairStart(false); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// The check comes after the code: a wrong code with a listed credential is a
+// wrong code, and counts a try like any other, so the credential's presence on
+// the list is not learned by guessing.
+func TestAListedCredentialWithAWrongCodeIsAWrongCode(t *testing.T) {
+	e, keys := pairEnv(t)
+	ph := newPhone(t, 1)
+	keys.seed(ph.displayID(), false)
+	code := e.mustStart()
+	for i := 0; i < seatpair.MaxTries-1; i++ {
+		if _, err := e.present("00000000000000000000", ph); !errors.Is(err, ErrPairRefused) {
+			t.Fatalf("a wrong code with a listed credential: %v, want %v", err, ErrPairRefused)
+		}
+	}
+	// The tries were counted: the fifth burns the code, even for the right one.
+	if _, err := e.present("00000000000000000001", newPhone(t, 2)); !errors.Is(err, ErrPairRefused) {
+		t.Fatal(err)
+	}
+	if _, err := e.present(code, newPhone(t, 3)); !errors.Is(err, ErrPairRefused) {
+		t.Fatalf("the right code after five wrong ones: %v", err)
 	}
 }
