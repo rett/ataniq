@@ -48,3 +48,34 @@ func TestPairPageAndScript(t *testing.T) {
 		}
 	}
 }
+
+// TestScriptFetchPolicyKeepsTheOrigin pins the request policy of the script's
+// POSTs. The browser rule (Fetch Standard, "append a request Origin header"):
+// for a request that is neither GET nor HEAD and is not a CORS request, which
+// a same-origin fetch is not, the Origin header is "null" when the request's
+// referrer policy is no-referrer. The page's Referrer-Policy response header
+// is no-referrer, which makes that the default policy of every request the
+// page makes, and the app's exact Origin check (see TestPairWrongOriginHeader,
+// which refuses "null") would then refuse the phone's own POST with a 403. So
+// the shared fetch helper sets the policy itself: strict-origin keeps Origin
+// on a same-origin request, and an empty referrer sends no Referer header.
+// What a browser does with it cannot be run here: it needs a real browser.
+func TestScriptFetchPolicyKeepsTheOrigin(t *testing.T) {
+	r := newRig(t)
+	js := r.do("GET", "/static/pair.js", nil, nil).Body.String()
+	for _, want := range []string{`referrerPolicy: "strict-origin"`, `referrer: ""`} {
+		if strings.Count(js, want) != 1 {
+			t.Errorf("the script must hold %s once, in its one fetch helper", want)
+		}
+	}
+	if strings.Count(js, "fetch(") != 1 {
+		t.Errorf("the script holds %d fetch calls, want the one helper", strings.Count(js, "fetch("))
+	}
+	if strings.Contains(js, "no-referrer") {
+		t.Error("the script names the no-referrer policy, which makes a same-origin POST carry Origin: null")
+	}
+	// The response header stays: the page itself leaks no referrer.
+	if got := r.do("GET", "/pair/", nil, nil).Header().Get("Referrer-Policy"); got != "no-referrer" {
+		t.Errorf("Referrer-Policy %q", got)
+	}
+}

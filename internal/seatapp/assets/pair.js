@@ -58,11 +58,15 @@
     return a;
   }
 
+  // The one fetch helper. The page's own Referrer-Policy header would make the
+  // default policy of a request one that sends "Origin: null" on a same-origin
+  // POST, which the seat refuses, so the policy is set here: strict-origin
+  // keeps the Origin header, and the empty referrer sends no Referer.
   async function post(path, body) {
     var resp;
     try {
       resp = await fetch(path, {
-        method: "POST", credentials: "omit", cache: "no-store", referrerPolicy: "no-referrer",
+        method: "POST", credentials: "omit", cache: "no-store", referrer: "", referrerPolicy: "strict-origin",
         headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
       });
     } catch (e) { throw "network"; }
