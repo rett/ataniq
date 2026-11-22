@@ -29,11 +29,18 @@ type PairRequest struct {
 	SPKI         []byte
 }
 
-// PairResult is the daemon's answer to a pairing: the six words of the key's
-// fingerprint, which the phone shows to be compared with the desk console.
-// The words are text the app did not write: it renders them with [Text].
+// WordCount is the number of words of a key's fingerprint. It is this
+// package's own copy of seatpair.FingerprintWords (this package may import
+// nothing of the repository), and the words script's COUNT is the same
+// number; a test in tests/ holds the three equal.
+const WordCount = 8
+
+// PairResult is the daemon's answer to a pairing: the [WordCount] words of the
+// key's fingerprint, which the phone shows to be compared with the desk
+// console. The words are text the app did not write: it renders them with
+// [Text].
 type PairResult struct {
-	Words [6]string
+	Words [WordCount]string
 }
 
 // Daemon is the app's port to the daemon. Production wiring comes later; a

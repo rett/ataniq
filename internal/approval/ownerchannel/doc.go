@@ -115,7 +115,7 @@
 // daemon decides which connection that is.
 //
 // A credential that becomes pending has a pending id, 8 random bytes in 16
-// lower-case hexadecimal digits that [Service.PairStatus] shows with the six
+// lower-case hexadecimal digits that [Service.PairStatus] shows with the eight
 // words. [Service.PairConfirm] and [Service.PairReject] take it back
 // (ownerwire.PairPendingParams, required) and compare it, under the pairing's
 // lock and in constant time, to the credential pending at that moment. The

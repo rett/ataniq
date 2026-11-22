@@ -196,7 +196,7 @@ a {
   color: var(--sel-ink);
 }
 
-/* The six words, to be compared with the desk console. */
+/* The words, to be compared with the desk console. */
 #result {
   margin-top: 24px;
   padding: 16px;

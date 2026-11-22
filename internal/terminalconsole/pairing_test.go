@@ -232,7 +232,7 @@ func TestThePairViewDrawsTheQRPollsAndConfirmsThroughTheConsole(t *testing.T) {
 	}
 	r.see("Scan with your phone's camera. Expires in 600 s.")
 	// The poll goes through the console's own clock.
-	b.state = PairState{Phase: PairPending, PendingID: "0123456789abcdef", Words: [6]string{"lemon", "river", "tiger", "ocean", "maple", "quartz"}, ExpiresAt: r.now.Add(5 * time.Minute)}
+	b.state = PairState{Phase: PairPending, PendingID: "0123456789abcdef", Words: [PairWordCount]string{"lemon", "river", "tiger", "ocean", "maple", "quartz", "cedar", "amber"}, ExpiresAt: r.now.Add(5 * time.Minute)}
 	r.fire()
 	r.see("1 lemon", "Compare with your phone. Confirm only if they match.")
 	// Confirm asks once more, and a confirm that the daemon refuses is a fixed line.

@@ -166,6 +166,7 @@ func TestTheCodesAndTheLimitsAreTheSeatpairs(t *testing.T) {
 	}{
 		{"the code's length", ownerwire.PairCodeLength, seatpair.CodeLength},
 		{"the words of a fingerprint", ownerwire.PairWords, seatpair.FingerprintWords},
+		{"the words of a journaled fingerprint", ownerjournal.FingerprintWords, seatpair.FingerprintWords},
 		{"the shortest credential id", ownerwire.MinCredentialIDBytes, seatpair.MinCredentialIDLen},
 		{"the longest credential id", ownerwire.MaxCredentialIDBytes, seatpair.MaxCredentialIDLen},
 		{"the keys on the list", ownerwire.MaxKeys, ownerjournal.MaxKeys},

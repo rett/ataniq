@@ -22,7 +22,7 @@ const (
 type fakeDaemon struct {
 	mu    sync.Mutex
 	calls []PairRequest
-	words [6]string
+	words [WordCount]string
 	err   error
 }
 
@@ -88,7 +88,7 @@ type rig struct {
 func newRig(t *testing.T, mod ...func(*Config)) *rig {
 	t.Helper()
 	r := &rig{
-		daemon: &fakeDaemon{words: [6]string{"amber", "birch", "cedar", "delta", "ember", "fjord"}},
+		daemon: &fakeDaemon{words: [WordCount]string{"amber", "birch", "cedar", "delta", "ember", "fjord", "garnet", "heron"}},
 		clock:  &clock{t: time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)},
 	}
 	// The test requests carry no Sec-Fetch-Site, as a browser's always do; the

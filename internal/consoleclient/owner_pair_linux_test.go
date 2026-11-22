@@ -18,7 +18,7 @@ const pairCode = "7ZB0KX4M9TQ2VH6NRC3E"
 // A made-up pending id of the form of a real one.
 const pairID = "0f1e2d3c4b5a6978"
 
-var pairWords = []string{"acorn", "bridge", "cedar", "delta", "ember", "falcon"}
+var pairWords = []string{"acorn", "bridge", "cedar", "delta", "ember", "falcon", "garden", "harbor"}
 
 func aKey(revoked bool) ownerwire.KeyItem {
 	return ownerwire.KeyItem{ID: "0123456789abcdef", Kind: "unverified", PairedAt: "2026-11-20T14:06:40Z", Revoked: revoked}

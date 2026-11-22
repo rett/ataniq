@@ -118,7 +118,7 @@ func (f *fakeKeys) seed(id string, revoked bool) {
 	defer f.mu.Unlock()
 	f.keys = append(f.keys, ownerjournal.StoredKey{
 		ID: id, CredentialID: []byte(strings.Repeat("c", 16)), PublicKey: []byte("k"), Kind: "unverified",
-		PairedAt: time.Date(2026, 11, 19, 8, 0, 0, 0, time.UTC), Words: "acorn bridge cedar delta ember falcon", Revoked: revoked,
+		PairedAt: time.Date(2026, 11, 19, 8, 0, 0, 0, time.UTC), Words: "acorn bridge cedar delta ember falcon garden harbor", Revoked: revoked,
 	})
 }
 

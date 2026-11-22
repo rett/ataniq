@@ -87,7 +87,7 @@
 // one-time pairing code and answers it, once, in [PairStartResult]; the
 // phone's side presents the code with the credential it made (seat.pair, the
 // one name that does not begin with "owner.", which is the seat app's call and
-// not the console's); the desk reads the six words of the credential's
+// not the console's); the desk reads the eight words of the credential's
 // fingerprint with owner.pair-status and confirms (owner.pair-confirm) or
 // rejects (owner.pair-reject). owner.pair-status also gives the pending
 // credential a pending id, 8 random bytes in 16 lower-case hexadecimal digits

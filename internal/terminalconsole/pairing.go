@@ -32,6 +32,11 @@ const (
 	PairExpired = pairview.Expired
 )
 
+// PairWordCount is the number of words of a fingerprint in a [PairState]: the
+// view's own copy of seatpair.FingerprintWords, which a test in tests/ holds
+// equal.
+const PairWordCount = pairview.WordCount
+
 // NoPairing is what the P key says when the console has no pairing
 // configured.
 const NoPairing = "pairing is not configured"

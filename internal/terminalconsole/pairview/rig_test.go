@@ -31,7 +31,7 @@ var epoch = time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC)
 // testPID is the pending id of every test: 16 lowercase hex characters.
 const testPID = "0123456789abcdef"
 
-var sixWords = [6]string{"lemon", "river", "tiger", "ocean", "maple", "quartz"}
+var testWords = [WordCount]string{"lemon", "river", "tiger", "ocean", "maple", "quartz", "cedar", "amber"}
 
 // fakeBackend is a Backend for tests.
 type fakeBackend struct {
@@ -202,7 +202,7 @@ func (r *rig) start() {
 // pending moves the daemon to the pending phase and polls once.
 func (r *rig) pending() {
 	r.t.Helper()
-	r.b.state = State{Phase: Pending, PendingID: testPID, Words: sixWords, ExpiresAt: r.now.Add(5 * time.Minute)}
+	r.b.state = State{Phase: Pending, PendingID: testPID, Words: testWords, ExpiresAt: r.now.Add(5 * time.Minute)}
 	r.fire()
 	if r.m.screen != scPending {
 		r.t.Fatalf("screen %v after the poll, want pending", r.m.screen)

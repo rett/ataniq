@@ -193,7 +193,7 @@ func FuzzDecodePairStartResult(f *testing.F) {
 
 func FuzzDecodePairStatus(f *testing.F) {
 	const day = `"expires_at":"2026-11-20T14:06:40Z"`
-	const words = `"words":["acorn","bridge","cedar","delta","ember","falcon"]`
+	const words = `"words":["acorn","bridge","cedar","delta","ember","falcon","garden","harbor"]`
 	fuzzForm(f, "pair status",
 		`{"phase":"none"}`, `{"phase":"none",`+day+`}`, `{"phase":"waiting",`+day+`}`,
 		`{"phase":"pending",`+day+`,`+words+`}`, `{"phase":"pending",`+day+`}`,
@@ -215,8 +215,9 @@ func FuzzDecodeSeatPairParams(f *testing.F) {
 
 func FuzzDecodeSeatPairResult(f *testing.F) {
 	fuzzForm(f, "seat pair result",
-		`{"words":["acorn","bridge","cedar","delta","ember","falcon"]}`, `{"words":[]}`,
-		`{"words":["acorn","bridge","cedar","delta","ember","Falcon"]}`, `{"words":null}`)
+		`{"words":["acorn","bridge","cedar","delta","ember","falcon","garden","harbor"]}`, `{"words":[]}`,
+		`{"words":["acorn","bridge","cedar","delta","ember","falcon"]}`,
+		`{"words":["acorn","bridge","cedar","delta","ember","falcon","garden","Harbor"]}`, `{"words":null}`)
 }
 
 func FuzzDecodeKeyItem(f *testing.F) {

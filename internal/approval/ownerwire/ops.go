@@ -41,11 +41,11 @@ const (
 	// [PairStartParams]. Result: [PairStartResult].
 	OpPairStart = "owner.pair-start"
 	// OpPairStatus reads where the pairing stands: none, waiting for the
-	// phone, a credential pending at the desk (with its six words), or
+	// phone, a credential pending at the desk (with its eight words), or
 	// expired; a pending one has a pending id. Params: none. Result:
 	// [PairStatus].
 	OpPairStatus = "owner.pair-status"
-	// OpPairConfirm is the owner at the desk saying the six words are the
+	// OpPairConfirm is the owner at the desk saying the eight words are the
 	// same on the phone: the pending credential joins the list of deciding
 	// keys. It needs the decider, and names the credential it means by its
 	// pending id. Params: [PairPendingParams]. Result: [KeyItem].
