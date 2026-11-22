@@ -1754,6 +1754,11 @@ copied to the build host by any way the owner trusts):
   list. A template (`getty@.service`) may be written in place of an instance.
 - **Ports.** `ss -H -ltn | awk '{n=split($4,a,":"); print a[n]}' | sort -un > ports.txt`:
   the local port of each listening TCP socket, one decimal number per line.
+  When the baseline is taken with Caddy stopped (as on a fresh host, before
+  the first switch), that file lacks the front end's port: add the intended
+  listener, port 80 for the shipped Caddyfile (or the ports your own
+  Caddyfile serves), before `baseline` runs, or the switch's check after the
+  reload reports it.
 - **Packages.** `pacman -Qq > packages.txt`.
 - **Firewall.** `sudo nft list ruleset > nft.txt`.
 

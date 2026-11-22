@@ -471,6 +471,17 @@ func testAuthorityHostDeployDoc(t *testing.T) {
 			t.Errorf("DEPLOY.md does not say %q", want)
 		}
 	}
+	// The baseline's default-deny warning is for a missing active base chain
+	// of type filter with policy drop, and only the first rule of a chain is
+	// read.
+	for _, want := range []string{
+		"no active base chain of type filter with policy drop",
+		"It reads only the first rule of such a chain: a first rule that is an unconditional accept makes the chain not count, while later accepts and jumps are not read",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("DEPLOY.md does not say %q", want)
+		}
+	}
 	if strings.Contains(flat, "runs no command there") {
 		t.Error("DEPLOY.md says --dry runs no command on the host, right after the remote rsync it starts")
 	}

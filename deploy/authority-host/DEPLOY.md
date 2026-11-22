@@ -80,10 +80,15 @@ verify a root-owned copy of that release first, as the README says there), run
 `--src DIR`. `baseline` enrolls any firewall listing, but it prints a `WARNING:
 no-default-deny HOOK` line (and writes the same words into the header of
 `share/nft.digest`) for each of the hooks `input`, `output` and `forward` that has
-no base chain with `policy drop` in a table that is not dormant, for IPv4 and
-IPv6; read them before you build. `--require-default-deny` makes it refuse such a
-listing instead. The host's firewall is the owner's: the baseline pins the rules
-as they are and does not judge them.
+no active base chain of type `filter` with `policy drop` (a chain in a table that
+is not dormant, covering IPv4 and IPv6); read them before you build.
+`--require-default-deny` makes it refuse such a listing instead. It reads only
+the first rule of such a chain: a first rule that is an unconditional `accept`
+makes the chain not count, while later accepts and jumps are not read, so a
+chain with a drop policy whose rules accept everything in another way still
+counts. The warning therefore says that a base chain drops by policy, never
+that its rules drop anything: read the rules yourself. The host's firewall is
+the owner's: the baseline pins the rules as they are and does not judge them.
 
 The baseline records what listens while you collect it, and step 3 leaves
 caddy stopped, so on a fresh host `ports.txt` holds the ssh port and not the
