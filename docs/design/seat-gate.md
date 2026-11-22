@@ -16,8 +16,8 @@ does not exist yet.
 The seat gate is the link between the seat app, which serves the owner's phone
 from the authority host, and the daemon on an AI host. It carries the pairing of
 a phone, the reads of the cards, a login, and the owner's decisions. Phone
-decisions remain scratch-only (see [limits](#limits-that-stay)): until the
-owner channel and the sandbox that keeps leads off it are qualified, approvals
+decisions remain scratch-only (see [dogfood limits](#dogfood-limits)): until
+the owner channel and the sandbox that keeps leads off it are qualified, approvals
 remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
 
 ## What exists today
@@ -612,12 +612,32 @@ The desk's rule stays: a decision at the console needs the decider's place and
 the owner's activity inside the presence window.
 
 For the surface `seat` only, a verified assertion with user verification
-replaces the presence window. The decider's place is the desk console's (one
-connection on the Unix socket) and a seat never holds it, so `seat.decide` does
-not ask it either; this second point is proposed with the first. A source whose surface is `seat` gets nothing by its surface alone: the
-existing `Service.Decide` still refuses it `not-decider`, and only the path in
-[decide](#decide-seatdecide), after step 6, skips the window. A seat decision is
-not owner activity at the desk, and a desk beat is not presence at the phone.
+replaces the presence window, and only for the decision that assertion signed.
+The decider's place is the desk console's (one connection on the Unix socket)
+and a seat never holds it, so `seat.decide` does not ask it either; this second
+point is proposed with the first. A source whose surface is `seat` gets nothing
+by its surface alone: the existing `Service.Decide` still refuses it
+`not-decider`, and only the path in [decide](#decide-seatdecide), after step 6,
+skips the window. A seat decision is not owner activity at the desk, and a desk
+beat is not presence at the phone.
+
+So a phone decision rests on a whole chain, and on each link of it:
+
+- a seat whose key the owner pinned by hand on the AI host (a pin alone reads
+  cards and decides nothing);
+- a credential that the owner confirmed at the desk while present:
+  `PairConfirm` asks the decider's place and the presence window, after the
+  owner compared all the fingerprint's words; a pairing that is pending,
+  rejected or expired gives no key, and only a key on the list can log in or
+  decide;
+- a desk channel that only the owner's console holds, since that is where the
+  confirm comes from (see [dogfood limits](#dogfood-limits));
+- the seat origin, read by both hosts, to which the credential is bound;
+- and a fresh assertion with user verification over a challenge the daemon
+  drew and bound to its own record of the card.
+
+A key put on the list without the desk is possible only through the same-user
+limit (see [limits](#limits-that-stay)).
 
 The phone and the desk may both hold a card open. The journal takes one decision
 per card; the second is refused as today.
@@ -833,6 +853,31 @@ The owner carries every fingerprint by hand, both ways, at the first exchange.
 - The lead's sandbox must not reach the gate's port. A qualification case that a
   connection from inside the sandbox fails is needed before any real use.
 - Nothing is queued while the phone or the gate is offline.
+
+## Dogfood limits
+
+Phone decisions stay scratch-only, shown with the STAND-IN banner, and approve
+nothing real, until all of these hold:
+
+- the owner channel is qualified;
+- the sandbox that keeps leads off the daemon's user is qualified: from inside
+  it, a lead reaches neither the daemon's socket nor the gate's port, and can
+  neither read nor write the gate key, the pin file, the seat origin file, the
+  key list or the journal;
+- the desk's enrollment channel is protected. A credential is enrolled by
+  `PairConfirm` from the desk's decider, and today the daemon takes as the
+  desk a peer of the same user by the console name it gives and the terminal
+  it is inspected to hold (see
+  [who may connect](../lead-daemon.md#who-may-connect); a same-user process
+  as the decider is the stated limit of that build). With a trusted desk the
+  confirm is sound; without one, "confirmed at the desk" means only "confirmed
+  by some process of the daemon's user", and that process could enroll its
+  own key without editing the key list.
+
+Each needs its qualification case before any real use, beside the one for the
+gate's port. Until then the phone path is a trust assumption that holds only on
+scratch state and the stand-in door, and the shadow dogfood below is all it is
+used for.
 
 ## The build tasks it feeds
 
