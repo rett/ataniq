@@ -305,8 +305,12 @@ What it detects, by kind:
   normalised listing passed with `--nft-listing` (the caller runs
   `nft list ruleset`; the check never does) differs, or no listing was
   passed. `ah-noaicheck nft-digest FILE` prints the digest to pin.
-  Normalising drops blank lines, trailing spaces, counter values, set
-  element expiry, quota use and handle comments.
+  Normalising drops blank lines and trailing spaces and, by their place
+  among the line's unquoted tokens only, the values that change while the
+  rules stay the same: `packets N bytes N` of a counter, `expires T` of a
+  set element, `used N bytes` of a quota and a final `# handle N`. A
+  quoted operand (an interface name, a comment) is never changed, so rules
+  that differ only there have different digests.
 - `port`: a listening TCP socket, in `/proc/net/tcp` or
   `/proc/net/tcp6`, on a port not in `ports.allow`. The main run checks
   it; the `ports` subcommand checks only it.
