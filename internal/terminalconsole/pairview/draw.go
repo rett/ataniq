@@ -163,7 +163,13 @@ func (m *Model) drawLines(d *drawer, w, h int, lines []dline) {
 // drawWaiting draws the QR between two lines of text, centred, or says that
 // the terminal is too small for it. It never draws a part of the code.
 func (m *Model) drawWaiting(d *drawer, w, h int) {
-	cols, need := qrSize(m.rows)
+	rows := m.rows
+	cols, need := qrSize(rows)
+	if w < cols || h < need {
+		// The least quiet zone, when the full one does not fit.
+		rows = m.rowsMin
+		cols, need = qrSize(rows)
+	}
 	if w < cols || h < need {
 		var ls []dline
 		for _, l := range wrap("terminal too small: need "+strconv.Itoa(cols)+" x "+strconv.Itoa(need), w-2) {
@@ -185,8 +191,8 @@ func (m *Model) drawWaiting(d *drawer, w, h int) {
 	m.centre(d, w, h-1, foot, fk)
 	st := uv.Style{Fg: qrDark, Bg: qrLight}
 	x0 := (w - cols) / 2
-	y0 := 1 + (h-2-len(m.rows))/2
-	for i, row := range m.rows {
+	y0 := 1 + (h-2-len(rows))/2
+	for i, row := range rows {
 		x := 0
 		for _, r := range row {
 			d.set(x0+x, y0+i, string(r), 1, st)
@@ -260,32 +266,21 @@ func (m *Model) textLines(w int) []dline {
 		m.noteLine(&ls, w)
 		add(lDim, "Enter: new code (ends the open one)   Esc: close")
 	case scPending, scConfirm, scConfirming, scRejecting:
-		add(lText, "The phone and this screen show six words.")
-		blank()
-		ls = append(ls, m.wordLines(w)...)
-		blank()
-		switch m.screen {
-		case scConfirm:
-			add(lText, confirmLine1)
-			add(lHead, confirmLine2)
+		if (m.screen == scPending || m.screen == scConfirm) && m.wordsOK && !m.wordsFit() {
+			add(lWarn, msgTooSmallWords)
 			blank()
-			add(lDim, "Esc: close")
+			add(lDim, keysTooSmall)
+			return ls
+		}
+		switch m.screen {
 		case scConfirming:
+			ls = m.wordsScreen(w, false, false)
 			add(lText, confirmingTxt)
 		case scRejecting:
+			ls = m.wordsScreen(w, false, false)
 			add(lText, rejectingTxt)
 		default:
-			add(lText, helpWords)
-			if m.expires.After(m.now()) {
-				add(lDim, strconv.Itoa(m.secondsLeft())+" s left")
-			}
-			m.noteLine(&ls, w)
-			blank()
-			keys := "c: confirm   x: reject   Esc: close"
-			if !m.wordsOK {
-				keys = "x: reject   Esc: close"
-			}
-			add(lDim, keys)
+			return m.wordsScreen(w, m.screen == scConfirm, true)
 		}
 	case scPaired:
 		kind := kindUnverif
@@ -364,4 +359,72 @@ func (m *Model) wordLines(w int) []dline {
 		}
 	}
 	return out
+}
+
+// wordsScreen is the whole words screen: the title, the six words and the
+// owner's prompt, which is the second question when confirm is set. With keys
+// unset the prompt is left out (the screens of a call in flight add their
+// own line).
+func (m *Model) wordsScreen(w int, confirm, keys bool) []dline {
+	var ls []dline
+	add := func(k lineKind, s string) {
+		for _, l := range wrap(s, w) {
+			ls = append(ls, dline{l, k})
+		}
+	}
+	blank := func() { add(lText, "") }
+	add(lHead, title)
+	blank()
+	add(lText, "The phone and this screen show six words.")
+	blank()
+	ls = append(ls, m.wordLines(w)...)
+	blank()
+	if !keys {
+		return ls
+	}
+	if confirm {
+		add(lText, confirmLine1)
+		add(lHead, confirmLine2)
+		blank()
+		add(lDim, "Esc: close")
+		return ls
+	}
+	add(lText, helpWords)
+	if m.expires.After(m.now()) {
+		add(lDim, strconv.Itoa(m.secondsLeft())+" s left")
+	}
+	m.noteLine(&ls, w)
+	blank()
+	k := "c: confirm   x: reject   Esc: close"
+	if !m.wordsOK {
+		k = keysTooSmall
+	}
+	add(lDim, k)
+	return ls
+}
+
+// wordsFit reports whether the whole words screen, with the prompt, fits the
+// stored size with no line cut or wrapped off the bottom: the six words in
+// full, and both the pending screen and the second question. The owner may
+// confirm only while it is true.
+func (m *Model) wordsFit() bool {
+	room := m.w - 2
+	if m.w < 4 {
+		room = m.w
+	}
+	if room < 1 {
+		return false
+	}
+	fits := func(ls []dline) bool {
+		if len(ls) > m.h {
+			return false
+		}
+		for _, l := range ls {
+			if ansi.StringWidth(l.s) > room {
+				return false
+			}
+		}
+		return true
+	}
+	return fits(m.wordsScreen(m.w-2, false, true)) && fits(m.wordsScreen(m.w-2, true, true))
 }

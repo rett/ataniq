@@ -44,6 +44,9 @@ func TestValidOrigin(t *testing.T) {
 		{"https://192.0.2.1:443", ""},
 		{"https://0x7f.0x1", ""},
 		{"https://0x7f.1", ""},
+		{"https://app.0x", ""},
+		{"https://app.0X", ""},
+		{"https://app.0xff", ""},
 		{"https://2130706433", ""},
 		{"https://[::1]", ""},
 		{"https://[2001:db8::1]:443", ""},
@@ -128,17 +131,20 @@ func TestGoldens(t *testing.T) {
 		{"waiting-80x24", 80, 24, waiting},
 		{"waiting-60x20", 60, 20, waiting},
 		{"waiting-too-small-30x10", 30, 10, waiting},
-		{"waiting-too-small-40x30", 40, 30, waiting},
+		{"waiting-too-small-36x30", 36, 30, waiting},
+		{"waiting-minquiet-40x22", 40, 22, waiting},
 		{"pending-80x24", 80, 24, pending},
 		{"pending-60x20", 60, 20, pending},
 		{"pending-30x20", 30, 20, pending},
 		{"confirm-80x24", 80, 24, func(t *testing.T) *rig {
 			r := pending(t)
+			r.m.SetSize(80, 24)
 			r.press("c")
 			return r
 		}},
 		{"paired-80x24", 80, 24, func(t *testing.T) *rig {
 			r := pending(t)
+			r.m.SetSize(80, 24)
 			r.b.paired = Paired{ID: "cred-7f3a9b", Kind: "unverified"}
 			r.press("c")
 			r.now = r.now.Add(time.Second)
@@ -458,7 +464,7 @@ func TestBackendTextIsCleanedBeforeItIsDrawn(t *testing.T) {
 	b := &fakeBackend{}
 	r := newRig(t, b, testOrigin, 80, 24)
 	r.start()
-	b.state = State{Phase: Pending, ExpiresAt: epoch.Add(time.Minute), Words: [6]string{
+	b.state = State{Phase: Pending, PendingID: testPID, ExpiresAt: epoch.Add(time.Minute), Words: [6]string{
 		"lemon\x1b]52;c;aGk=\x07", "ri\x00ver", "tig\u202eer", "ocean", "maple", "quartz"}}
 	r.fire()
 	if r.m.wordsOK {
@@ -532,7 +538,7 @@ func TestChangedWordsCancelTheSecondQuestion(t *testing.T) {
 
 func TestReopeningReadsTheDaemonsState(t *testing.T) {
 	// Words waiting for the owner are shown at once.
-	b := &fakeBackend{state: State{Phase: Pending, Words: sixWords, ExpiresAt: epoch.Add(time.Minute)}}
+	b := &fakeBackend{state: State{Phase: Pending, PendingID: testPID, Words: sixWords, ExpiresAt: epoch.Add(time.Minute)}}
 	r := newRig(t, b, testOrigin, 80, 24)
 	r.init()
 	if r.m.screen != scPending || len(r.timers) != 1 {
@@ -702,11 +708,12 @@ func TestTooSmallSaysSoAndDrawsNoPartOfTheCode(t *testing.T) {
 	b := &fakeBackend{}
 	r := newRig(t, b, testOrigin, 80, 24)
 	r.start()
-	cols, need := qrSize(r.m.rows)
-	if cols != 41 || need != 23 {
-		t.Fatalf("the synthetic code is %dx%d; the golden expects 41x23", cols, need)
+	// Even with the smaller quiet zone the code does not fit these sizes.
+	cols, need := qrSize(r.m.rowsMin)
+	if cols != 37 || need != 21 {
+		t.Fatalf("the synthetic code is %dx%d at the least quiet zone; the golden expects 37x21", cols, need)
 	}
-	for _, sz := range [][2]int{{cols - 1, 40}, {200, need - 1}, {60, 20}, {10, 3}, {1, 1}, {40, 22}} {
+	for _, sz := range [][2]int{{cols - 1, 40}, {200, need - 1}, {60, 20}, {10, 3}, {1, 1}, {30, 22}} {
 		buf := draw(r.m, sz[0], sz[1])
 		for y := 0; y < sz[1]; y++ {
 			for x := 0; x < sz[0]; x++ {
@@ -715,7 +722,7 @@ func TestTooSmallSaysSoAndDrawsNoPartOfTheCode(t *testing.T) {
 				}
 			}
 		}
-		if sz[0] >= 33 && sz[1] >= 1 {
+		if sz[0] >= 36 && sz[1] >= 1 {
 			want := fmt.Sprintf("terminal too small: need %d x %d", cols, need)
 			if s := text(r.m, sz[0], sz[1]); !strings.Contains(s, want) {
 				t.Errorf("size %v: no %q:\n%s", sz, want, s)
@@ -794,4 +801,234 @@ func TestTheBackendIsCalledOnlyFromCommands(t *testing.T) {
 	if len(b.calls) != 0 {
 		t.Fatalf("the backend was called outside a command: %v", b.calls)
 	}
+}
+
+// The owner must never confirm with a word off screen or cut: at a size
+// where the whole words screen does not fit, c is refused, y re-checks, and
+// the view says so (only x and Esc are offered).
+func TestWordsThatDoNotFitCannotBeConfirmed(t *testing.T) {
+	const msg = "terminal too small to show the six words"
+	for _, sz := range []struct {
+		name string
+		w, h int
+	}{{"80x6", 80, 6}, {"12x20", 12, 20}} {
+		t.Run(sz.name, func(t *testing.T) {
+			b := &fakeBackend{}
+			r := newRig(t, b, testOrigin, sz.w, sz.h)
+			r.start()
+			r.pending()
+			if r.m.wordsFit() {
+				t.Fatal("wordsFit is true")
+			}
+			r.see(sz.w, sz.h, "too small")
+			golden(t, "pending-too-small-"+sz.name, text(r.m, sz.w, sz.h))
+			r.press("c")
+			if r.m.screen != scPending {
+				t.Fatalf("c opened the second question (screen %v)", r.m.screen)
+			}
+			r.now = r.now.Add(time.Second)
+			r.press("y")
+			if b.count("confirm") != 0 {
+				t.Fatal("confirmed with the words off screen")
+			}
+			r.notSee(sz.w, sz.h, "c: confirm")
+			// Reject stays possible.
+			r.press("x")
+			if b.count("reject") != 1 {
+				t.Fatalf("calls %v, want a reject", b.calls)
+			}
+		})
+	}
+	// The full message at a size that holds it.
+	b := &fakeBackend{}
+	r := newRig(t, b, testOrigin, 80, 6)
+	r.start()
+	r.pending()
+	r.see(80, 6, msg, "x: reject   Esc: close")
+}
+
+func TestWordsThatFitCanBeConfirmed(t *testing.T) {
+	for _, sz := range [][2]int{{80, 24}, {60, 20}, {30, 20}} {
+		b := &fakeBackend{}
+		r := newRig(t, b, testOrigin, sz[0], sz[1])
+		r.start()
+		r.pending()
+		if !r.m.wordsFit() {
+			t.Fatalf("%dx%d: wordsFit is false", sz[0], sz[1])
+		}
+		r.press("c")
+		if r.m.screen != scConfirm {
+			t.Fatalf("%dx%d: screen %v, want the second question", sz[0], sz[1], r.m.screen)
+		}
+	}
+}
+
+func TestYRechecksThatTheWordsFit(t *testing.T) {
+	b := &fakeBackend{}
+	r := newRig(t, b, testOrigin, 80, 24)
+	r.start()
+	r.pending()
+	r.press("c")
+	r.now = r.now.Add(time.Second)
+	// The size shrinks behind the view's back.
+	r.m.w, r.m.h = 80, 6
+	r.press("y")
+	if b.count("confirm") != 0 || r.m.screen == scConfirming {
+		t.Fatalf("y confirmed with the words off screen (screen %v, calls %v)", r.m.screen, b.calls)
+	}
+}
+
+func TestAResizeDropsTheSecondQuestion(t *testing.T) {
+	b := &fakeBackend{}
+	r := newRig(t, b, testOrigin, 80, 24)
+	r.start()
+	r.pending()
+	r.press("c")
+	r.m.SetSize(80, 24) // the same size: nothing changes
+	if r.m.screen != scConfirm {
+		t.Fatalf("an unchanged size dropped the question (screen %v)", r.m.screen)
+	}
+	r.m.SetSize(100, 30)
+	if r.m.screen != scPending {
+		t.Fatalf("a resize left the question open (screen %v)", r.m.screen)
+	}
+	r.now = r.now.Add(time.Second)
+	r.press("y")
+	if b.count("confirm") != 0 {
+		t.Fatal("y confirmed after a resize")
+	}
+}
+
+func TestConfirmAndRejectNameThePendingCredential(t *testing.T) {
+	b := &fakeBackend{}
+	r := newRig(t, b, testOrigin, 80, 24)
+	r.start()
+	r.pending()
+	r.press("c")
+	r.now = r.now.Add(time.Second)
+	r.press("y")
+	if fmt.Sprint(b.ids) != "[confirm:"+testPID+"]" {
+		t.Fatalf("ids %v", b.ids)
+	}
+	b2 := &fakeBackend{}
+	r = newRig(t, b2, testOrigin, 80, 24)
+	r.start()
+	r.pending()
+	r.press("x")
+	if fmt.Sprint(b2.ids) != "[reject:"+testPID+"]" {
+		t.Fatalf("ids %v", b2.ids)
+	}
+}
+
+func TestAChangedPendingIDDropsTheSecondQuestion(t *testing.T) {
+	b := &fakeBackend{}
+	r := newRig(t, b, testOrigin, 80, 24)
+	r.start()
+	r.pending()
+	r.press("c")
+	// The same words under another credential: not the one the owner saw.
+	b.state.PendingID = "fedcba9876543210"
+	r.fire()
+	if r.m.screen != scPending {
+		t.Fatalf("screen %v, want the question dropped", r.m.screen)
+	}
+	r.now = r.now.Add(time.Second)
+	r.press("y")
+	if b.count("confirm") != 0 {
+		t.Fatalf("calls %v", b.calls)
+	}
+	// A new question names the new id.
+	r.press("c")
+	r.now = r.now.Add(time.Second)
+	r.press("y")
+	if fmt.Sprint(b.ids) != "[confirm:fedcba9876543210]" {
+		t.Fatalf("ids %v", b.ids)
+	}
+}
+
+func TestAPendingIDThatIsNotSixteenHexCannotBeConfirmed(t *testing.T) {
+	for _, id := range []string{"", "0123456789ABCDEF", "0123456789abcde", "0123456789abcdef0", "0123456789abcdeg", "../../etc/passwd"} {
+		b := &fakeBackend{}
+		r := newRig(t, b, testOrigin, 80, 24)
+		r.start()
+		r.b.state = State{Phase: Pending, PendingID: id, Words: sixWords, ExpiresAt: r.now.Add(5 * time.Minute)}
+		r.fire()
+		r.press("c")
+		if r.m.screen == scConfirm {
+			t.Errorf("id %q: the second question is open", id)
+		}
+		r.notSee(80, 24, "c: confirm")
+		r.see(80, 24, "x: reject")
+	}
+}
+
+// A code that does not fit with the quiet zone of 4 modules is drawn with
+// the least one (2) when that fits; only a screen too small even for that
+// says so.
+func TestAQRThatNeedsTheSmallerQuietZoneIsDrawnWithIt(t *testing.T) {
+	// A host name of 36 characters makes a version 5 code: 45 x 25 with the
+	// zone of 4, 41 x 23 with the zone of 2.
+	const origin = "https://a-fairly-long-host-name-here.example"
+	r := newRig(t, &fakeBackend{}, origin, 80, 24)
+	r.start()
+	if cols, need := qrSize(r.m.rows); cols != 45 || need != 25 {
+		t.Fatalf("the code with the full zone is %dx%d, want 45x25", cols, need)
+	}
+	if cols, need := qrSize(r.m.rowsMin); cols != 41 || need != 23 {
+		t.Fatalf("the code with the least zone is %dx%d, want 41x23", cols, need)
+	}
+	s := text(r.m, 80, 24)
+	if strings.Contains(s, "too small") || !strings.Contains(s, "▒") {
+		t.Fatalf("the code was not drawn at 80x24:\n%s", s)
+	}
+	golden(t, "waiting-v5-80x24", s)
+	// At 41x23 it still fits; one less does not, and says what it needs.
+	if s := text(r.m, 41, 23); strings.Contains(s, "too small") || !strings.Contains(s, "▒") {
+		t.Fatalf("41x23:\n%s", s)
+	}
+	if s := text(r.m, 40, 23); !strings.Contains(s, "terminal too small: need 41 x 23") || strings.Contains(s, "▒") {
+		t.Fatalf("40x23:\n%s", s)
+	}
+	// With room for the full zone it is the full zone.
+	big := newRig(t, &fakeBackend{}, origin, 80, 40)
+	big.start()
+	buf := draw(big.m, 80, 40)
+	light := 0
+	for y := 0; y < 40; y++ {
+		if c := buf.CellAt(40, y); c != nil && c.Style.Bg == qrLight {
+			light++
+		}
+	}
+	if light != len(big.m.rows) {
+		t.Fatalf("the QR is %d rows tall, want %d (the full zone)", light, len(big.m.rows))
+	}
+}
+
+func TestAnExpiredCodeIsNotLeftDrawnWhenEveryStatusReadFails(t *testing.T) {
+	b := &fakeBackend{}
+	r := newRig(t, b, testOrigin, 80, 24)
+	r.start()
+	b.statErr = errBackend
+	r.now = r.now.Add(11 * time.Minute)
+	r.fire()
+	if r.m.screen != scExpired {
+		t.Fatalf("screen %v, want expired", r.m.screen)
+	}
+	r.notSee(80, 24, "▒", "Expires in")
+}
+
+func TestATooLongOriginShowsTheOriginLineNotTheDaemons(t *testing.T) {
+	// A valid origin of 200 characters: no code of version 10 holds its address.
+	origin := "https://" + strings.Repeat("a", 60) + "." + strings.Repeat("b", 60) + "." + strings.Repeat("c", 60) + ".example"
+	if _, ok := ValidOrigin(origin); !ok {
+		t.Fatal("the test origin is not valid")
+	}
+	r := newRig(t, &fakeBackend{}, origin, 80, 24)
+	r.init()
+	r.press("enter")
+	if r.m.screen != scFailed {
+		t.Fatalf("screen %v", r.m.screen)
+	}
+	r.see(80, 24, noOrigin)
+	r.notSee(80, 24, errCode, "daemon")
 }

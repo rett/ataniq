@@ -6,11 +6,15 @@
   it. Enter asks the daemon for a one-time code and the view draws a QR code
   that holds the app's address and the code in its fragment, black on white
   with a white margin in either theme, with the seconds left; a terminal too
-  small for it gets "terminal too small: need W x H" and never a clipped code.
+  small for it (even with the smallest margin that scanners read) gets
+  "terminal too small: need W x H" and never a clipped code.
   The code appears only inside the QR, never as text. The view reads the
   daemon's state every two seconds; when the phone's key arrives it shows the
   six words, which the phone shows too, and `c` then `y` confirms (a `y` typed
-  with the `c` is not taken) or `x` rejects; Esc closes the view at any time
+  with the `c` is not taken; it is refused while any of the six words is off
+  screen or cut, and the view says the terminal is too small) or `x` rejects;
+  both name the pending key's id, and the question is dropped when the words,
+  the id or the terminal size change; Esc closes the view at any time
   and confirms nothing, and a code left waiting ends by itself when it
   expires. Nothing is trusted until the owner confirms at the desk. The
   address must be `https` with a host name, no port but 443, no path and no

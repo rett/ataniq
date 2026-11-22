@@ -37,8 +37,14 @@ type Offer struct {
 
 // State is the daemon's answer to a status read. Words is the fingerprint of
 // the phone's key, six short words, set on the Pending phase.
+//
+// PendingID names the pending credential the words are the fingerprint of:
+// 16 lowercase hex characters, set on the Pending phase. Confirm and reject
+// carry it back, so that the daemon acts on the credential the owner looked
+// at and on no other.
 type State struct {
 	Phase     Phase
+	PendingID string
 	Words     [6]string
 	ExpiresAt time.Time
 }
@@ -59,10 +65,12 @@ type Backend interface {
 	PairStart(ctx context.Context, replace bool) (Offer, error)
 	// PairStatus reads the pairing's state.
 	PairStatus(ctx context.Context) (State, error)
-	// PairConfirm adds the phone's key as a deciding key.
-	PairConfirm(ctx context.Context) (Paired, error)
-	// PairReject ends the pairing without adding anything.
-	PairReject(ctx context.Context) error
+	// PairConfirm adds the phone's key as a deciding key. id is the
+	// State.PendingID the owner compared the words of.
+	PairConfirm(ctx context.Context, id string) (Paired, error)
+	// PairReject ends the pairing without adding anything. id is the
+	// State.PendingID that was shown.
+	PairReject(ctx context.Context, id string) error
 }
 
 // Colors are the colours the view draws its text with. The parent fills them
@@ -127,32 +135,34 @@ type Action struct{ Kind Kind }
 // The view's own words. The text of a backend's error is never drawn: one of
 // these stands for it.
 const (
-	title         = "PAIR A PHONE"
-	noOrigin      = "pairing origin not configured"
-	errStart      = "the daemon did not make a code; nothing was started"
-	errRead       = "could not read the pairing state"
-	errPoll       = "could not read the pairing state; trying again"
-	errConfirm    = "the confirmation did not complete; the phone is not shown as added"
-	errReject     = "the rejection did not complete; the pairing may still be open"
-	errCode       = "the daemon's code cannot be drawn; nothing was started"
-	errWords      = "the words cannot be shown safely; press x to reject"
-	msgExpired    = "The code expired. Nothing was added."
-	msgGone       = "No pairing is open on the daemon."
-	msgRejected   = "Rejected. Nothing was added."
-	msgOpen       = "A pairing is already open. Its code cannot be shown again."
-	msgPaired     = "Paired."
-	kindUnverif   = "Kind: unverified (a syncing passkey)."
-	helpWords     = "Compare with your phone. Confirm only if they match."
-	confirmLine1  = "Add this phone as a device that can approve cards."
-	confirmLine2  = "press y to confirm, any other key cancels"
-	waitingHint   = "Esc: close (the code stays valid until it expires)"
-	maxWordCells  = 16
-	maxIDCells    = 12
-	maxCodeBytes  = 128
-	startingLine  = "Asking the daemon for a one-time code..."
-	checkingLine  = "Checking for a pairing that is already open..."
-	confirmingTxt = "Confirming..."
-	rejectingTxt  = "Rejecting..."
+	title            = "PAIR A PHONE"
+	noOrigin         = "pairing origin not configured"
+	errStart         = "the daemon did not make a code; nothing was started"
+	errRead          = "could not read the pairing state"
+	errPoll          = "could not read the pairing state; trying again"
+	errConfirm       = "the confirmation did not complete; the phone is not shown as added"
+	errReject        = "the rejection did not complete; the pairing may still be open"
+	errCode          = "the daemon's code cannot be drawn; nothing was started"
+	errWords         = "the words cannot be shown safely; press x to reject"
+	msgExpired       = "The code expired. Nothing was added."
+	msgGone          = "No pairing is open on the daemon."
+	msgRejected      = "Rejected. Nothing was added."
+	msgOpen          = "A pairing is already open. Its code cannot be shown again."
+	msgPaired        = "Paired."
+	kindUnverif      = "Kind: unverified (a syncing passkey)."
+	helpWords        = "Compare with your phone. Confirm only if they match."
+	confirmLine1     = "Add this phone as a device that can approve cards."
+	confirmLine2     = "press y to confirm, any other key cancels"
+	msgTooSmallWords = "terminal too small to show the six words"
+	keysTooSmall     = "x: reject   Esc: close"
+	waitingHint      = "Esc: close (the code stays valid until it expires)"
+	maxWordCells     = 16
+	maxIDCells       = 12
+	maxCodeBytes     = 128
+	startingLine     = "Asking the daemon for a one-time code..."
+	checkingLine     = "Checking for a pairing that is already open..."
+	confirmingTxt    = "Confirming..."
+	rejectingTxt     = "Rejecting..."
 )
 
 type screen int
@@ -189,12 +199,18 @@ type Model struct {
 	note string
 	// rows are the drawn rows of the QR; the code and the address are not
 	// kept.
-	rows    []string
+	rows []string
+	// rowsMin are the rows with the least quiet zone, for a screen that
+	// does not hold rows.
+	rowsMin []string
 	expires time.Time
 	// words are the six words as drawn, and wordsOK says each is one short
 	// printable word, so the owner may confirm.
 	words   [6]string
 	wordsOK bool
+	// pid is the pending id the words belong to, as the daemon gave it; it
+	// is valid (see validPendingID) when wordsOK is.
+	pid string
 	// id and kind are the confirmed key's, cleaned.
 	id, kind string
 	// promptAt is when the second question was asked.
@@ -246,7 +262,13 @@ func (m *Model) Init() tea.Cmd {
 
 // SetSize tells the view the size of its region.
 func (m *Model) SetSize(width, height int) {
-	m.w, m.h = max(0, width), max(0, height)
+	w, h := max(0, width), max(0, height)
+	if (w != m.w || h != m.h) && m.screen == scConfirm {
+		// The second question was asked for a screen the owner saw at the
+		// old size: it is dropped.
+		m.screen = scPending
+	}
+	m.w, m.h = w, h
 }
 
 // Configured reports whether the view has a valid origin and a backend.
@@ -354,24 +376,24 @@ func (m *Model) statusCmd() tea.Cmd {
 
 func (m *Model) confirmCmd() tea.Cmd {
 	m.seq++
-	seq, gen, b, to := m.seq, m.gen, m.o.Backend, m.o.Timeout
+	seq, gen, b, to, id := m.seq, m.gen, m.o.Backend, m.o.Timeout, m.pid
 	m.awaitConfirm = seq
 	return func() tea.Msg {
 		ctx, cancel := callCtx(to)
 		defer cancel()
-		p, err := b.PairConfirm(ctx)
+		p, err := b.PairConfirm(ctx, id)
 		return confirmedMsg{owner: m, seq: seq, gen: gen, p: p, err: err}
 	}
 }
 
 func (m *Model) rejectCmd() tea.Cmd {
 	m.seq++
-	seq, gen, b, to := m.seq, m.gen, m.o.Backend, m.o.Timeout
+	seq, gen, b, to, id := m.seq, m.gen, m.o.Backend, m.o.Timeout, m.pid
 	m.awaitReject = seq
 	return func() tea.Msg {
 		ctx, cancel := callCtx(to)
 		defer cancel()
-		err := b.PairReject(ctx)
+		err := b.PairReject(ctx, id)
 		return rejectedMsg{owner: m, seq: seq, gen: gen, err: err}
 	}
 }
@@ -424,7 +446,7 @@ func (m *Model) startOver(replace bool) tea.Cmd {
 	m.gen++
 	m.cycle, m.opening = false, false
 	m.awaitStatus, m.awaitStart, m.awaitConfirm, m.awaitReject = 0, 0, 0, 0
-	m.screen, m.note, m.rows = scStarting, "", nil
+	m.screen, m.note, m.rows, m.rowsMin = scStarting, "", nil, nil
 	return m.startCmd(replace)
 }
 
@@ -437,32 +459,36 @@ func (m *Model) onStarted(v startedMsg) tea.Cmd {
 		m.screen, m.note = scFailed, errStart
 		return nil
 	}
-	rows, ok := m.draw(v.offer.Code)
+	rows, rowsMin, err := m.draw(v.offer.Code)
 	m.expires = v.offer.ExpiresAt
 	switch {
-	case !ok:
-		m.screen, m.note = scFailed, errCode
+	case err != "":
+		m.screen, m.note = scFailed, err
 		return nil
 	case !m.expires.After(m.now()):
 		m.screen, m.note = scExpired, ""
 		return nil
 	}
-	m.rows = rows
+	m.rows, m.rowsMin = rows, rowsMin
 	m.screen, m.note = scWaiting, ""
 	return m.poller()
 }
 
-// draw builds the QR rows of the pairing address for code. The code leaves
-// this function only inside the rows.
-func (m *Model) draw(code string) ([]string, bool) {
+// draw builds the QR rows of the pairing address for code, with the full
+// quiet zone and with the least one. The code leaves this function only
+// inside the rows. The line it returns is empty on success: errCode when the
+// code is not one a fragment can hold, and the origin line when the address
+// is too long for the largest code (the origin is configuration, not the
+// daemon's).
+func (m *Model) draw(code string) (rows, rowsMin []string, errLine string) {
 	if !validCode(code) {
-		return nil, false
+		return nil, nil, errCode
 	}
 	c, err := qr.Encode(m.origin+"/pair/#"+code, qr.M)
 	if err != nil {
-		return nil, false
+		return nil, nil, noOrigin
 	}
-	return c.HalfBlocks(qr.DefaultQuiet), true
+	return c.HalfBlocks(qr.DefaultQuiet), c.HalfBlocks(qr.MinQuiet), ""
 }
 
 // validCode reports whether code is only what a fragment of a pairing
@@ -497,6 +523,11 @@ func (m *Model) onStatus(v statusMsg) tea.Cmd {
 	}
 	if v.err != nil {
 		m.note = errPoll
+		// A code that ran out is not left drawn because no read answers.
+		if m.screen == scWaiting && !m.expires.After(m.now()) {
+			m.end(scExpired)
+			return nil
+		}
 		return m.tickCmd()
 	}
 	m.note = ""
@@ -514,13 +545,13 @@ func (m *Model) onStatus(v statusMsg) tea.Cmd {
 			}
 		case scPending, scConfirm:
 			// The daemon's pairing is another one: the words are not its.
-			m.screen, m.rows = scOpen, nil
+			m.screen, m.rows, m.rowsMin = scOpen, nil, nil
 		}
 	case Pending:
 		if !st.ExpiresAt.IsZero() {
 			m.expires = st.ExpiresAt
 		}
-		m.setWords(st.Words)
+		m.setWords(st.Words, st.PendingID)
 	case Expired:
 		m.end(scExpired)
 		return nil
@@ -542,7 +573,7 @@ func (m *Model) onOpening(v statusMsg) tea.Cmd {
 	switch v.st.Phase {
 	case Pending:
 		m.expires = v.st.ExpiresAt
-		m.setWords(v.st.Words)
+		m.setWords(v.st.Words, v.st.PendingID)
 	case Waiting:
 		m.expires = v.st.ExpiresAt
 		m.screen = scOpen
@@ -554,13 +585,29 @@ func (m *Model) onOpening(v statusMsg) tea.Cmd {
 
 // end leaves the polling for a screen with no code or words.
 func (m *Model) end(s screen) {
-	m.screen, m.note, m.rows, m.cycle = s, "", nil, false
-	m.words, m.wordsOK = [6]string{}, false
+	m.screen, m.note, m.rows, m.rowsMin, m.cycle = s, "", nil, nil, false
+	m.words, m.wordsOK, m.pid = [6]string{}, false, ""
+}
+
+// validPendingID reports whether id is 16 lowercase hex characters.
+func validPendingID(id string) bool {
+	if len(id) != 16 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // setWords shows the words of a pending pairing. A second question that was
-// open is dropped when the words are not the ones it was asked for.
-func (m *Model) setWords(in [6]string) {
+// open is dropped when the words or the pending id are not the ones it was
+// asked for. An id that is not well formed cannot be confirmed (it is still
+// given back on a reject, which the daemon checks).
+func (m *Model) setWords(in [6]string, id string) {
 	var w [6]string
 	ok := true
 	for i, s := range in {
@@ -569,11 +616,12 @@ func (m *Model) setWords(in [6]string) {
 			ok = false
 		}
 	}
-	if m.screen != scConfirm || w != m.words || !ok {
+	ok = ok && validPendingID(id)
+	if m.screen != scConfirm || w != m.words || id != m.pid || !ok {
 		m.screen = scPending
 	}
-	m.rows = nil
-	m.words, m.wordsOK = w, ok
+	m.rows, m.rowsMin = nil, nil
+	m.words, m.wordsOK, m.pid = w, ok, id
 	if !ok {
 		m.note = errWords
 	}
@@ -631,6 +679,10 @@ func (m *Model) onKey(k tea.KeyPressMsg) (tea.Cmd, Action) {
 			if m.now().Sub(m.promptAt) < confirmDelay {
 				return nil, Action{}
 			}
+			if !m.wordsFit() {
+				m.screen = scPending
+				return nil, Action{}
+			}
 			m.note = ""
 			m.screen = scConfirming
 			return m.confirmCmd(), Action{}
@@ -653,7 +705,7 @@ func (m *Model) onKey(k tea.KeyPressMsg) (tea.Cmd, Action) {
 		}
 	case scPending:
 		switch {
-		case isLetter(k, 'c') && m.wordsOK:
+		case isLetter(k, 'c') && m.wordsOK && m.wordsFit():
 			m.screen, m.note, m.promptAt = scConfirm, "", m.now()
 		case isLetter(k, 'x'):
 			m.note = ""

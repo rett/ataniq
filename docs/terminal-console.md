@@ -579,17 +579,31 @@ the view until Esc closes it, Ctrl+C aside, which quits.
    it is never in a proxy log), with the seconds the code has left. The code is
    drawn black on white, with a white margin, whatever the theme is, because a
    light code on a dark ground is the inverse code that many scanners do not
-   read. It needs the code's columns and its rows plus two lines of text; a
-   smaller terminal gets the line "terminal too small: need W x H" and never a
-   clipped code, and the code stays valid meanwhile. The code appears only in the
+   read. It needs the code's columns and its rows plus two lines of text, with
+   a margin of 4 modules; when that does not fit, the view uses the smallest
+   margin that scanners read (2 modules), and only a terminal too small even
+   for that gets the line "terminal too small: need W x H" and never a clipped
+   code. The code stays valid meanwhile. An address so long that its code
+   would not fit the largest QR the console draws also gives the line "pairing
+   origin not configured", not an error of the daemon's. The code appears only in the
    QR: never as text, in a status line, an error or the title.
 3. The phone scans the code and makes its passkey. The view asks the daemon
    every two seconds; when the phone's key arrives the view shows six numbered
    words, large and spaced, and the line "Compare with your phone. Confirm only
-   if they match." The phone shows the same six words.
+   if they match." The phone shows the same six words. The daemon names the
+   pending key with an id (16 lowercase hex characters) that the view keeps but
+   does not show.
 4. `c` asks "press y to confirm, any other key cancels", because a confirmation
-   adds a deciding key; only `y`, a moment after the `c`, confirms. The question
-   is dropped if the words change meanwhile. `x` rejects, and nothing is added.
+   adds a deciding key; only `y`, a moment after the `c`, confirms. The
+   confirmation and a rejection carry the id the words were shown for, so the
+   daemon acts on that key and on no other. The question is dropped if the
+   words or the id change meanwhile, or if the terminal is resized. You can
+   confirm only while the whole words screen, the six words and the prompt,
+   fits the terminal with no line cut: on a smaller one `c` does nothing and
+   the view says "terminal too small to show the six words" with "x: reject
+   Esc: close", and `y` checks again. An 80 x 24 terminal holds it for
+   words of ordinary length; a smaller one may not, and long words need more
+   columns. `x` rejects, and nothing is added.
    After a confirm the view shows "Paired. Kind: unverified (a syncing passkey)."
    and the key's short id. Nothing is trusted until you confirm here.
 5. Esc closes the view at any time and confirms nothing. Closing while the code

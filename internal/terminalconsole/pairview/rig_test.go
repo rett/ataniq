@@ -28,6 +28,9 @@ const (
 
 var epoch = time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC)
 
+// testPID is the pending id of every test: 16 lowercase hex characters.
+const testPID = "0123456789abcdef"
+
 var sixWords = [6]string{"lemon", "river", "tiger", "ocean", "maple", "quartz"}
 
 // fakeBackend is a Backend for tests.
@@ -41,6 +44,7 @@ type fakeBackend struct {
 	state    State
 	statErr  error
 	paired   Paired
+	ids      []string // the ids confirm and reject were called with, as "confirm:id"
 	confErr  error
 	rejErr   error
 }
@@ -76,13 +80,19 @@ func (f *fakeBackend) PairStatus(context.Context) (State, error) {
 	return f.state, f.statErr
 }
 
-func (f *fakeBackend) PairConfirm(context.Context) (Paired, error) {
+func (f *fakeBackend) PairConfirm(_ context.Context, id string) (Paired, error) {
 	f.log("confirm")
+	f.mu.Lock()
+	f.ids = append(f.ids, "confirm:"+id)
+	f.mu.Unlock()
 	return f.paired, f.confErr
 }
 
-func (f *fakeBackend) PairReject(context.Context) error {
+func (f *fakeBackend) PairReject(_ context.Context, id string) error {
 	f.log("reject")
+	f.mu.Lock()
+	f.ids = append(f.ids, "reject:"+id)
+	f.mu.Unlock()
 	return f.rejErr
 }
 
@@ -192,7 +202,7 @@ func (r *rig) start() {
 // pending moves the daemon to the pending phase and polls once.
 func (r *rig) pending() {
 	r.t.Helper()
-	r.b.state = State{Phase: Pending, Words: sixWords, ExpiresAt: r.now.Add(5 * time.Minute)}
+	r.b.state = State{Phase: Pending, PendingID: testPID, Words: sixWords, ExpiresAt: r.now.Add(5 * time.Minute)}
 	r.fire()
 	if r.m.screen != scPending {
 		r.t.Fatalf("screen %v after the poll, want pending", r.m.screen)

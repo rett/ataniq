@@ -59,12 +59,12 @@ func (f *pairFake) PairStatus(context.Context) (PairState, error) {
 	return f.state, nil
 }
 
-func (f *pairFake) PairConfirm(context.Context) (PairPaired, error) {
+func (f *pairFake) PairConfirm(context.Context, string) (PairPaired, error) {
 	f.log("confirm")
 	return PairPaired{ID: "cred-1", Kind: "unverified"}, errors.New("no")
 }
 
-func (f *pairFake) PairReject(context.Context) error { f.log("reject"); return nil }
+func (f *pairFake) PairReject(context.Context, string) error { f.log("reject"); return nil }
 
 // pairRig drives a console with a pairing backend, a clock of its own and
 // timers it fires by hand.
@@ -232,7 +232,7 @@ func TestThePairViewDrawsTheQRPollsAndConfirmsThroughTheConsole(t *testing.T) {
 	}
 	r.see("Scan with your phone's camera. Expires in 600 s.")
 	// The poll goes through the console's own clock.
-	b.state = PairState{Phase: PairPending, Words: [6]string{"lemon", "river", "tiger", "ocean", "maple", "quartz"}, ExpiresAt: r.now.Add(5 * time.Minute)}
+	b.state = PairState{Phase: PairPending, PendingID: "0123456789abcdef", Words: [6]string{"lemon", "river", "tiger", "ocean", "maple", "quartz"}, ExpiresAt: r.now.Add(5 * time.Minute)}
 	r.fire()
 	r.see("1 lemon", "Compare with your phone. Confirm only if they match.")
 	// Confirm asks once more, and a confirm that the daemon refuses is a fixed line.
