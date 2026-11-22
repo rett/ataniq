@@ -41,11 +41,21 @@ const (
 // missing database is "incomplete packages missing", one that lists no
 // package at all (no installed host has none) "incomplete packages db",
 // and an entry whose desc names no package "incomplete <entry> no-name".
-func (c *Checker) CheckPackages() {
+func (c *Checker) CheckPackages() { c.checkPackages(true) }
+
+// checkPackages is CheckPackages; without allowlist the installed packages
+// are checked against forbidden-packages.list only, never against
+// packages.allow (whose being empty is still a note or a policy hit): the
+// pre phase runs on the host before the switch's package step moves it to
+// the candidate's package set, so a package the old host needs and the
+// candidate drops is not a hit there. The post and full phases check the
+// allowlist.
+func (c *Checker) checkPackages(allowlist bool) {
 	enforced := len(c.lists.PackagesAllow) > 0
 	if !enforced {
 		c.notEnforced(FilePackagesAllow, DetailEmpty, NotePackagesNotEnforced)
 	}
+	enforced = enforced && allowlist
 	entries := 0
 	_, err := c.walk(pacmanLocal, 1, func(e *wentry) bool {
 		if !e.isDir() {

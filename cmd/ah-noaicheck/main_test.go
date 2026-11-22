@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"ataniq/internal/authorityhost/noaicheck"
 )
@@ -359,6 +361,126 @@ func TestUsageAndReadErrors(t *testing.T) {
 		if code, out, _ := runCmd(t, "", args...); code != exitClean || !strings.HasPrefix(out, "usage: ah-noaicheck") {
 			t.Errorf("%v: exit %d", args, code)
 		}
+	}
+}
+
+// runWithin is runCmd that fails the test when the run has not ended
+// within a few seconds, the stand-in for a hang.
+func runWithin(t *testing.T, stdin string, args ...string) (int, string, string) {
+	t.Helper()
+	type result struct {
+		code     int
+		out, err string
+	}
+	done := make(chan result, 1)
+	go func() {
+		var out, errOut bytes.Buffer
+		code := run(args, strings.NewReader(stdin), &out, &errOut)
+		done <- result{code, out.String(), errOut.String()}
+	}()
+	select {
+	case r := <-done:
+		return r.code, r.out, r.err
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%q did not end", args)
+		return 0, "", ""
+	}
+}
+
+func mkfifo(t *testing.T, p string) {
+	t.Helper()
+	if err := syscall.Mkfifo(p, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A file the program opens by name (a list of the release, the
+// --nft-listing FILE, the nft-digest FILE) must be a regular file: a FIFO
+// without a writer, a folder, a device or a link is never read and never
+// waited on, but is "HIT incomplete input <name>", its name written like
+// every field, and the run fails at once. "-" stays stdin, and a missing
+// file stays a read error.
+func TestNamedInputsAreRegularFiles(t *testing.T) {
+	root := host(t)
+	rel := release(t, nil)
+	dir := t.TempDir()
+	write(t, dir, "ruleset", "table inet filter {\n}\n")
+	fifo := filepath.Join(dir, "fifo")
+	mkfifo(t, fifo)
+	planted := filepath.Join(dir, "x\nok")
+	mkfifo(t, planted)
+	link := filepath.Join(dir, "link")
+	symlink(t, dir, "link", "ruleset")
+	withFIFO := func(name string) (string, string) {
+		r := release(t, nil)
+		p := filepath.Join(r, "share", name)
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		mkfifo(t, p)
+		return r, p
+	}
+	withDir := func(name string) (string, string) {
+		r := release(t, nil)
+		p := filepath.Join(r, "share", name)
+		os.Remove(p)
+		if err := os.Mkdir(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return r, p
+	}
+	fifoList, fifoListName := withFIFO("packages.allow")
+	fifoDigest, fifoDigestName := withFIFO("nft.digest")
+	dirList, dirListName := withDir("units.allow")
+	cases := []struct {
+		name string
+		args []string
+		in   string // the name as the hit writes it
+	}{
+		{"a FIFO listing", []string{"--root", root, "--release", rel, "--nft-listing", fifo}, fifo},
+		{"a folder listing", []string{"--root", root, "--release", rel, "--nft-listing", dir}, dir},
+		{"a device listing", []string{"--root", root, "--release", rel, "--nft-listing", "/dev/null"}, "/dev/null"},
+		{"a linked listing", []string{"--root", root, "--release", rel, "--nft-listing", link}, link},
+		{"a planted name", []string{"--root", root, "--release", rel, "--nft-listing", planted}, strconv.Quote(planted)},
+		{"a FIFO for nft-digest", []string{"nft-digest", fifo}, fifo},
+		{"a folder for nft-digest", []string{"nft-digest", dir}, dir},
+		{"a FIFO list", []string{"--root", root, "--release", fifoList}, fifoListName},
+		{"a FIFO nft.digest", []string{"--root", root, "--release", fifoDigest}, fifoDigestName},
+		{"a folder list", []string{"ports", "--root", root, "--release", dirList}, dirListName},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, out, errOut := runWithin(t, "", tc.args...)
+			want := "HIT incomplete input " + tc.in + "\nRUN incomplete\nFAILED 1 hit(s)\n"
+			if code != exitHit || out != want || errOut != "" {
+				t.Errorf("exit %d\nstdout %q\nstderr %q\nwant %q", code, out, errOut, want)
+			}
+		})
+	}
+	code, out, _ := runWithin(t, "", "--root", root, "--release", rel, "--phase", "post", "--nft-listing", fifo, "--json")
+	var r struct {
+		Result   string
+		Complete bool
+		Phase    string
+		Hits     []noaicheck.Hit
+	}
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	want := noaicheck.Hit{Kind: noaicheck.KindIncomplete, Path: noaicheck.PathInput, Detail: fifo}
+	if code != exitHit || r.Result != "failed" || r.Complete || r.Phase != "post" || len(r.Hits) != 1 || r.Hits[0] != want {
+		t.Errorf("json: exit %d %+v", code, r)
+	}
+
+	// A root or release folder that is a FIFO is not waited on either.
+	for _, args := range [][]string{{"--root", fifo, "--release", rel}, {"--root", root, "--release", fifo, "--phase", "pre"}} {
+		if code, out, errOut := runWithin(t, "", args...); code != exitError || out != "" || errOut == "" {
+			t.Errorf("%v: exit %d %q %q", args, code, out, errOut)
+		}
+	}
+	// Stdin is still the streaming interface.
+	if code, out, _ := runWithin(t, "x\n", "nft-digest", "-"); code != exitClean || out != noaicheck.NFTDigest([]byte("x\n"))+"\n" {
+		t.Errorf("stdin: exit %d %q", code, out)
 	}
 }
 

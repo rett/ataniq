@@ -160,7 +160,7 @@ type tree struct {
 }
 
 func openTree(dir string) (*tree, error) {
-	r, err := os.OpenRoot(dir)
+	r, err := openRoot(dir)
 	if err != nil {
 		return nil, err
 	}

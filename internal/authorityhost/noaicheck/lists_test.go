@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -244,5 +245,46 @@ func TestShippedLists(t *testing.T) {
 	}
 	if len(l.PackagesAllow) != 0 || len(l.UnitsAllow) != 0 || len(l.PortsAllow) != 0 || l.NFTDigest != "" {
 		t.Errorf("the shipped allowlists are filled at deploy time, not in the repository: %+v", l)
+	}
+}
+
+// A list that is not a regular file (a FIFO without a writer, a folder, a
+// link) is never read and never waited on: LoadLists returns an
+// *InputError naming the file at once. A list that is not there is still
+// an error of its own.
+func TestLoadListsNamedInputs(t *testing.T) {
+	plant := map[string]func(t *testing.T, p string){
+		"a FIFO": func(t *testing.T, p string) {
+			if err := syscall.Mkfifo(p, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"a folder": func(t *testing.T, p string) {
+			if err := os.Mkdir(p, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"a link": func(t *testing.T, p string) {
+			if err := os.Symlink(FileAINames, p); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for what, make := range plant {
+		for _, name := range []string{FilePackagesAllow, FileNFTDigest} {
+			t.Run(what+" "+name, func(t *testing.T) {
+				files := minimalRelease()
+				files[name] = nil
+				dir := writeRelease(t, files)
+				p := filepath.Join(dir, "share", name)
+				make(t, p)
+				var err error
+				within(t, func() { _, err = LoadLists(dir) })
+				var ie *InputError
+				if !errors.As(err, &ie) || ie.Name != p {
+					t.Errorf("err = %v, want an input error for %s", err, p)
+				}
+			})
+		}
 	}
 }

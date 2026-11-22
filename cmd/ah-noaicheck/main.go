@@ -57,8 +57,9 @@ normalised listing in FILE ("-" for stdin), the value of share/nft.digest.
   --phase PHASE       full (the default): the host as it is, every check;
                       pre (before a switch): also the release's own etc/
                       (its units, the variables its caddy files refer
-                      to), without the listening ports and the
-                      firewall digest;
+                      to), without the listening ports, the firewall
+                      digest and the packages.allow check of installed
+                      packages (forbidden packages are checked);
                       post (after a switch): pre's checks with the ports
                       and the digest
   --root DIR          check the tree beneath DIR instead of / (default /)
@@ -70,6 +71,10 @@ normalised listing in FILE ("-" for stdin), the value of share/nft.digest.
   --nft-listing FILE  the output of "nft list ruleset" ("-" for stdin);
                       not read in the pre phase
   --json              write the report as one JSON object
+
+A list, listing or nft-digest FILE that is not a regular file (a FIFO, a
+device, a folder, a link) is not read or waited on: it is "HIT incomplete
+input <name>" and the run exits 1.
 
 Exit status: 0 clean, 1 any hit, 2 a usage or read error.
 `
@@ -100,6 +105,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return usageErr("nft-digest takes one FILE")
 		}
 		listing, err := readListing(args[0], stdin)
+		if code, ok := inputHit(err, "", false, stdout, stderr); ok {
+			return code
+		}
 		if err != nil {
 			return fail(err)
 		}
@@ -148,13 +156,24 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		*release = dir
 	}
+	runPhase := ""
+	if phase != nil && mode == "check" {
+		runPhase = *phase
+	}
 	lists, err := noaicheck.LoadLists(*release)
+	if code, ok := inputHit(err, runPhase, *asJSON, stdout, stderr); ok {
+		return code
+	}
 	if err != nil {
 		return fail(fmt.Errorf("the release's lists: %w", err))
 	}
 	var listing []byte
 	if listingFile != nil && *listingFile != "" {
-		if listing, err = readListing(*listingFile, stdin); err != nil {
+		listing, err = readListing(*listingFile, stdin)
+		if code, ok := inputHit(err, runPhase, *asJSON, stdout, stderr); ok {
+			return code
+		}
+		if err != nil {
 			return fail(err)
 		}
 	}
@@ -230,12 +249,36 @@ func ownRelease() (string, error) {
 	return filepath.Dir(filepath.Dir(exe)), nil
 }
 
-// readListing reads a firewall listing from path, or from stdin for "-". An
-// empty file is an empty listing (whose digest differs), not a missing one.
+// inputHit reports a named input that is not a regular file (err a
+// *noaicheck.InputError): the report "HIT incomplete input <name>", in the
+// phase the run would have had, and the exit status 1, with ok true. Any
+// other err is not its to report: ok false.
+func inputHit(err error, phase string, asJSON bool, stdout, stderr io.Writer) (int, bool) {
+	var ie *noaicheck.InputError
+	if !errors.As(err, &ie) {
+		return 0, false
+	}
+	r := noaicheck.Report{Hits: []noaicheck.Hit{ie.Hit()}, Phase: phase}
+	write := r.WriteText
+	if asJSON {
+		write = r.WriteJSON
+	}
+	if err := write(stdout); err != nil {
+		fmt.Fprintf(stderr, "ah-noaicheck: %s\n", diag(err))
+		return exitError, true
+	}
+	return exitHit, true
+}
+
+// readListing reads a firewall listing from path, or from stdin for "-",
+// the streaming interface. A named file is opened with noaicheck.OpenInput:
+// one that is not a regular file (a FIFO, a device, a folder, a link) is
+// never read or waited on but a *noaicheck.InputError. An empty file is an
+// empty listing (whose digest differs), not a missing one.
 func readListing(path string, stdin io.Reader) ([]byte, error) {
 	var r io.Reader = stdin
 	if path != "-" {
-		f, err := os.Open(path)
+		f, err := noaicheck.OpenInput(path)
 		if err != nil {
 			return nil, err
 		}

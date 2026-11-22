@@ -825,35 +825,70 @@ clean, 1 any hit, 2 a usage error or a read error it cannot continue past
 (a missing or invalid list, a root, listing or release folder it cannot
 open).
 
+Every file it opens by name (the lists in `share/`, the `--nft-listing`
+FILE and the `nft-digest` FILE) must be a regular file. Its type is
+looked at without following a final link, it is opened without blocking
+and without following a final link, and the opened descriptor must be a
+regular file and the one looked at before a byte is read. A FIFO (one
+without a writer included), a device, a socket, a folder or a link there
+is never read and never waited on: the run prints
+`HIT incomplete input <name>` (the name written like every field) and
+exits 1 at once. `-` (stdin) stays the streaming interface of a listing.
+The root and release folders are opened as folders only, so a FIFO in
+their place is a read error, not a wait.
+
 ### Phases
 
 `--phase` says which moment of a deployment the run checks:
 
 - `pre`, before a switch: the candidate release's own files and the
   host's binaries, tools, credentials, environment files, processes,
-  enabled units and packages. It does not check the listening ports or
-  the firewall digest, which describe services the switch has not
-  started yet, and `--nft-listing` is a usage error in it. The release's
-  own files are those of the folder `--release` names:
+  enabled units and forbidden packages. It does not check the listening
+  ports or the firewall digest, which describe services the switch has
+  not started yet, and `--nft-listing` is a usage error in it. Nor does
+  it check the installed packages against the candidate's
+  `packages.allow`: it runs on the old host, before the switch's package
+  step moves the host to the candidate's package set, so a package the
+  old host has and the candidate drops is not a hit there. A package of
+  `forbidden-packages.list` is, and a package database the check cannot
+  use is still incomplete; `post` and `full` check the allowlist, and
+  with `--require-policy` an empty `packages.allow` is a hit in every
+  phase. The release's own files are those of the folder `--release`
+  names:
   - every file beneath its `etc/systemd` is read as a unit or drop-in,
     with the rules of an installed unit (below): its `Environment=`,
     `PassEnvironment=` and `EnvironmentFile=` names, a link to
     `/dev/null` is a mask and is not read, and every file an
     `EnvironmentFile=` names is read on the host (a required one that is
-    missing is `HIT incomplete env-file`). A file in a folder named `user`
-    is a user unit, its `EnvironmentFile=` resolved for every user; any
-    other is a system unit;
-  - every file beneath its `etc/caddy` is read for the variables it
-    refers to, and only those: Caddy's placeholders `{env.NAME}` and
-    `{$NAME}` (`{$NAME:default}` too) and the systemd-style `$NAME` and
-    `${NAME}`. Each one named like a provider key is a `HIT env`. A
-    comment (a `#` that starts a word outside quotes) and every literal
-    operand are passed over: a word that only looks like a variable's
-    name is not reported, so no configuration text reaches the report. A
-    `{env.`, `{$` or `${` the check cannot read (no valid name and closing
-    brace after it) is `HIT incomplete release-syntax <file>`, which names
-    the file and nothing of its content. The files beneath `etc/nftables`
-    refer to no environment variable and are not read for names.
+    missing is `HIT incomplete env-file`). A unit file and the drop-ins
+    of its drop-in folder beside it (`app.service` and
+    `app.service.d/*`) are merged as systemd merges them, the unit file
+    and then the drop-ins by file name, before any file their
+    `EnvironmentFile=` lines name is opened: an empty `EnvironmentFile=`
+    drops every one before it, so a required file a later drop-in drops
+    is not reported missing. A file in a folder named `user` is a user
+    unit, its `EnvironmentFile=` resolved for every user; any other is a
+    system unit;
+  - every file beneath its `etc/caddy` is read, by its format, for the
+    variables it refers to through a placeholder Caddy itself replaces,
+    and only those. A file whose name ends in `.json` is Caddy's native
+    JSON, read as JSON: only `{env.NAME}` in a string (a key or a value,
+    as decoded) counts, a brace escaped for Caddy (`\{`) is literal, and
+    every other text, a literal `$` and `{$NAME}` included, is a private
+    value, never matched. Any other file is a Caddyfile: `{env.NAME}` and
+    `{$NAME}` (`{$NAME:default}` too) count; a comment (a `#` that starts
+    a word outside quotes) and every literal operand are passed over. In
+    either, shell-style `$NAME` and `${NAME}` are literal text, since
+    Caddy does not read them (a systemd unit's are read by the unit rules
+    above). Each reference named like a provider key is a `HIT env`; a
+    word that only looks like a variable's name is not reported, so no
+    configuration text reaches the report. A `{env.` (or, in a
+    Caddyfile, `{$`) the check cannot read (no valid name and closing
+    brace after it), and JSON that does not parse or nests more than 256
+    levels, is `HIT incomplete release-syntax <file>`, which names the
+    file and a fixed reason, nothing of its content. The files beneath
+    `etc/nftables` refer to no environment variable and are not read for
+    names.
 
   A hit in the release names the file by its path within `--root` when
   the release is beneath it (`/opt/authority-host/releases/<id>/...`),
@@ -897,10 +932,10 @@ The `HIT incomplete` lines:
 |---|---|
 | `HIT incomplete <folder> depth` | a walk stopped at its depth limit (40 levels) above a folder it had to enter |
 | `HIT incomplete <path> type` | a folder entry whose type the listing did not give and a stat could not find: the walk cannot tell whether to enter it |
-| `HIT incomplete budget <limit>` | the run's budget is spent (4 million folder entries and queued files, 1 GiB read, 4 minutes, 256 MiB held, or shell expansions or brace groups nested more than 64 deep); memory is charged before the work is done: specifier expansions, queued files, the unit scan's keys of each manager, and each source reference and loop word a profile's parse keeps (a loop's words once for every source of its variable). Every later read and parse stops |
+| `HIT incomplete budget <limit>` | the run's budget is spent (4 million folder entries and queued files, 1 GiB read, 4 minutes, 256 MiB held, or shell expansions or brace groups nested more than 64 deep); memory is charged before the work is done: specifier expansions, queued files, the unit scan's keys of each manager, and each source reference and loop word a profile's parse keeps (a loop's words once for every source of its variable). Each path a source, a PATH element or an `XDG_CONFIG_HOME` value stands for (in each home, and below each configured `XDG_CONFIG_HOME` folder) is charged as an entry before it is built, one at a time, never as a list of every combination. Every later read and parse stops, and so does every loop of the startup scan |
 | `HIT incomplete env-syntax <file>` | a file whose syntax the check cannot parse, or an `EnvironmentFile=` it cannot resolve |
 | `HIT incomplete env-source <file>` | a profile sources a file by a path the check cannot resolve |
-| `HIT incomplete release-syntax <file>` | a front-end configuration file of the candidate release (`pre`, `post`) holds a variable reference the check cannot read |
+| `HIT incomplete release-syntax <file>` | a front-end configuration file of the candidate release (`pre`, `post`) holds a placeholder the check cannot read, or is Caddy JSON that does not parse |
 | `HIT incomplete env-file <path>` | a required `EnvironmentFile=` (no leading `-`) that is not there, or a required glob that matches nothing |
 | `HIT incomplete path <file>` | a PATH setting whose folder the check cannot resolve |
 | `HIT incomplete proc <why>` | no usable `/proc`: missing, unreadable, without processes, or listing processes of which not one name or executable could be read (`no-identity`) |
@@ -909,6 +944,7 @@ The `HIT incomplete` lines:
 | `HIT incomplete packages missing` | there is no pacman database (`/var/lib/pacman/local`), so not even the forbidden packages can be checked |
 | `HIT incomplete packages db` | the pacman database lists no package at all |
 | `HIT incomplete <entry> no-name` | a pacman database entry whose `desc` names no package |
+| `HIT incomplete input <name>` | a file the program opens by name (a list, the `--nft-listing` or `nft-digest` FILE) that is not a regular file: a FIFO, a device, a socket, a folder or a link; it is not read and the run stops there |
 | `HIT incomplete nft listing-missing` | the release pins `nft.digest` and no `--nft-listing` was given (`post` and `full`) |
 | `HIT incomplete /proc/net/tcp header` | a socket table that is empty or does not start with its own protocol's header line: `sl local_address rem_address st` for `/proc/net/tcp`, `sl local_address remote_address st` for `/proc/net/tcp6` (checked too when it is there) |
 
@@ -1097,7 +1133,8 @@ folder whose `share/` holds the lists (and, in `pre` and `post`, whose
   that loops (`loop`) or whose target climbs above the root (`escape`).
 - `package`: an installed package (the pacman database) named in
   `forbidden-packages.list`, or, once `packages.allow` is filled, any
-  package not in it. While it is empty the check prints
+  package not in it (in `post` and `full`; `pre` checks only the
+  forbidden list, see "Phases"). While it is empty the check prints
   `NOTE packages not enforced` instead. The database is the evidence for
   both, and forbidden packages are checked either way, so a database the
   check cannot use is incomplete, never a pass and never a finding: no
@@ -1174,7 +1211,18 @@ home path in `ai-names.list`), a control byte or an inner space is refused:
   is `HIT incomplete env-source` on every run. The packaged
   bash-completion library is one: its loader's source in a function is
   only `NOTE deferred-source`, but its array-driven startup loop stays
-  incomplete, so the host does not install it.
+  incomplete, so the host does not install it. This is accepted: the
+  library is outside the host's package baseline, and a host that has
+  it fails the check, never passes it.
+- The enabled-unit check (`unit`) takes an entry of a dependency folder
+  as masked when the file its link leads to is a mask (a link to
+  `/dev/null` or an empty file), even when a folder of higher
+  precedence holds a unit of the same name that is not one; systemd
+  would load that unit, so such an entry is a `NOTE unit masked` line
+  where it could be a `HIT unit`. This is accepted: the host's
+  enablement links lead to the unit systemd loads for their name, and
+  the environment check reads the unit of the view, not the link's
+  target.
 - Run by hand as an ordinary user it cannot read other users' processes
   or folders; it says so (`HIT incomplete proc-access`, `HIT unreadable`)
   rather than pass.

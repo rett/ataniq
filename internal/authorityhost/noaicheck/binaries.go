@@ -177,7 +177,11 @@ func (c *Checker) pathDirs() []string {
 	for _, d := range BinDirs {
 		add(d)
 	}
+	b := c.t.b
 	for _, f := range c.startup() {
+		if b.out() {
+			break
+		}
 		if f.r == nil {
 			if f.err != nil {
 				c.unreadable(orElse(f.p, f.rel), f.err)
@@ -186,13 +190,15 @@ func (c *Checker) pathDirs() []string {
 		}
 		home := c.homeOf(f.p)
 		for _, e := range f.r.paths {
-			got, ok := c.sourcePaths(e, home)
+			ok := c.sourcePaths(e, home, func(d string) bool {
+				add(d)
+				return !b.out()
+			})
 			if !ok {
 				c.hit(KindIncomplete, PathPATH, show(f.p))
-				continue
 			}
-			for _, d := range got {
-				add(d)
+			if b.out() {
+				break
 			}
 		}
 	}

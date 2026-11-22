@@ -1,12 +1,15 @@
 package noaicheck
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
-	"os"
 	"path"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -29,20 +32,23 @@ const (
 
 // PathReleaseSyntax is the name of the incomplete hit for a front-end
 // configuration file holding a variable reference the check cannot read
-// ("{env." or "{$" or "${" not followed by a name and its closing brace):
-// "HIT incomplete release-syntax <file>". The hit names the file and
-// nothing of its content.
+// ("{env." or, in a Caddyfile, "{$" not followed by a name and its
+// closing brace) or, for Caddy's JSON, JSON it cannot parse:
+// "HIT incomplete release-syntax <file>". The hit names the file and a
+// fixed reason, nothing of its content.
 const PathReleaseSyntax = "release-syntax"
 
 // RunPhase runs the checks of one phase and returns the report:
 //
 //   - pre, before a switch: the candidate release's own files (see
 //     CheckRelease) and the host's binaries, tools, credentials,
-//     environment files, processes, enabled units and packages; not the
-//     listening ports and not the firewall digest, which describe the
-//     services the switch has not started yet (with RequirePolicy an
-//     empty ports.allow and a missing nft.digest are still hits: the
-//     release must carry them);
+//     environment files, processes, enabled units and forbidden
+//     packages; not the listening ports and not the firewall digest,
+//     which describe the services the switch has not started yet, and
+//     not the installed packages against packages.allow, which the
+//     switch's package step changes after this phase (with
+//     RequirePolicy an empty ports.allow, packages.allow and a missing
+//     nft.digest are still hits: the release must carry them);
 //   - post, after a switch: all of pre, and the listening ports and the
 //     firewall digest against listing;
 //   - full, the default, a check of the host as it is: every check of the
@@ -75,7 +81,7 @@ func (c *Checker) RunPhase(phase, release string, listing []byte) (Report, error
 	} else {
 		c.CheckPorts()
 	}
-	c.CheckPackages()
+	c.checkPackages(phase != PhasePre)
 	if phase == PhasePre {
 		if c.lists.NFTDigest == "" && c.RequirePolicy {
 			c.notEnforced(FileNFTDigest, DetailMissing, "")
@@ -96,14 +102,15 @@ func (c *Checker) RunPhase(phase, release string, listing []byte) (Report, error
 // a user unit, its EnvironmentFile= resolved in every user's context, any
 // other a system unit), and every file a unit's EnvironmentFile= names is
 // read on the host like any other. Every file beneath its etc/caddy is
-// read for the variables it refers to (see releaseRefs): each one named
-// like a provider key (see ProviderKeyName) is a hit of kind "env", and a
-// reference the check cannot read is "incomplete release-syntax <file>".
+// read, by its format, for the variables it refers to through Caddy's own
+// placeholders (see releaseRefs): each one named like a provider key (see
+// ProviderKeyName) is a hit of kind "env", and a reference the check
+// cannot read is "incomplete release-syntax <file>".
 // A hit names the file by its path within the root when the release is
 // beneath it, by its own path otherwise. A release folder that cannot be
 // opened is an error.
 func (c *Checker) CheckRelease(dir string) error {
-	r, err := os.OpenRoot(dir)
+	r, err := openRoot(dir)
 	if err != nil {
 		return err
 	}
@@ -166,6 +173,8 @@ func (c *Checker) CheckRelease(dir string) error {
 		return p, data, true
 	}
 	s := c.newEnvScan()
+	units := map[string]*candUnit{}
+	var order []*candUnit
 	walk(releaseUnits, func(e *wentry) {
 		p, data, ok := read(e)
 		if !ok {
@@ -178,21 +187,53 @@ func (c *Checker) CheckRelease(dir string) error {
 		if u.bad {
 			c.hit(KindIncomplete, PathEnvSyntax, at(p))
 		}
+		dir, name, dropin := releaseUnitName(e.rel)
+		key := strconv.FormatBool(userUnitPath(p)) + "\x00" + dir + "\x00" + name
+		ru := units[key]
+		if ru == nil {
+			if !c.t.b.hold(int64(len(key)) + 96) {
+				return
+			}
+			ru = &candUnit{user: userUnitPath(p)}
+			units[key] = ru
+			order = append(order, ru)
+		}
+		f := releaseFile{shown: at(p), r: &u, name: path.Base(e.rel)}
+		if dropin {
+			ru.dropins = append(ru.dropins, f)
+		} else {
+			ru.main = &f
+		}
+	})
+	// Each unit's lines are evaluated as systemd merges them, the unit
+	// file and then its drop-ins by file name, before any file they name
+	// is opened: an empty EnvironmentFile= drops those before it.
+	for _, ru := range order {
+		var refs []unitRef
+		if ru.main != nil {
+			refs = appendUnitRefs(refs, ru.main.shown, ru.main.r)
+		}
+		slices.SortStableFunc(ru.dropins, func(a, b releaseFile) int { return strings.Compare(a.name, b.name) })
+		for _, d := range ru.dropins {
+			refs = appendUnitRefs(refs, d.shown, d.r)
+		}
 		managers := []manager{{}}
-		if userUnitPath(p) {
+		if ru.user {
 			managers = c.managers()[1:]
 		}
 		for _, m := range managers {
-			s.envFiles(at(p), u.files, m)
+			for _, x := range refs {
+				s.envFiles(x.unit, []envRef{x.envRef}, m)
+			}
 		}
-	})
+	}
 	for _, d := range strings.Fields(releaseNameDirs) {
 		walk(d, func(e *wentry) {
 			p, data, ok := read(e)
 			if !ok {
 				return
 			}
-			names, bad := releaseRefs(string(data))
+			names, bad := releaseRefs(p, string(data))
 			for _, n := range names {
 				c.hit(KindEnv, at(p), n)
 			}
@@ -203,6 +244,38 @@ func (c *Checker) CheckRelease(dir string) error {
 	}
 	s.drain()
 	return nil
+}
+
+// candUnit is a unit of the candidate release in one folder: its unit
+// file and the drop-ins of its drop-in folder beside it, and whether it is
+// a user unit. A unit of the same name in another folder of the release
+// is another candUnit, read on its own: nothing it sets is passed over.
+type candUnit struct {
+	user    bool
+	main    *releaseFile
+	dropins []releaseFile
+}
+
+// releaseFile is one file of a candidate unit, as shown in a hit, and
+// what it sets.
+type releaseFile struct {
+	shown string
+	name  string // its file name
+	r     *envParse
+}
+
+// releaseUnitName returns the unit the release file rel (where it sits,
+// not where a link leads) belongs to, and the folder holding that unit:
+// the unit of its folder and the folder above, and true, when its folder
+// is a drop-in folder ("app.service.d"); its own name and folder
+// otherwise. A type's or a prefix's drop-in folder ("service.d") is a
+// unit of its own, as for installed units.
+func releaseUnitName(rel string) (dir, name string, dropin bool) {
+	folder := path.Dir(rel)
+	if base := path.Base(folder); isDropinDir(base) && folder != "." {
+		return path.Dir(folder), strings.TrimSuffix(base, ".d"), true
+	}
+	return folder, path.Base(rel), false
 }
 
 // userUnitPath reports whether the release file rel is a user unit: a
@@ -229,18 +302,31 @@ func (c *Checker) releaseDisplay(dir string) string {
 	return strings.TrimSuffix(abs, "/")
 }
 
-// releaseRefs returns the variables a front-end configuration file (a
-// Caddyfile or Caddy's JSON) refers to that are named like a provider key,
-// once each, and whether it holds a reference it cannot read. Only a
-// recognised reference names a variable: Caddy's placeholders {env.NAME}
-// and {$NAME} ({$NAME:default} too) and the systemd-style $NAME and
-// ${NAME}. A comment (a '#' that starts a word outside quotes, to the end
-// of its line) is passed over, and so is every literal operand: a word
-// that merely looks like a variable's name is not one. A "{env.", "{$" or
-// "${" not followed by a valid name and its closing brace (or, for {$, a
-// ':' and a default) is a reference the check cannot read; the caller
-// reports the file, never the text.
-func releaseRefs(data string) ([]string, bool) {
+// releaseRefs returns the variables a front-end configuration file named
+// name refers to that are named like a provider key, once each, and
+// whether it holds a reference (or syntax) it cannot read. The format is
+// the file's: Caddy's native JSON for a name ending in ".json" (see
+// caddyJSONRefs), a Caddyfile otherwise (see caddyfileRefs). Only a
+// placeholder Caddy itself replaces names a variable: shell-style $NAME
+// and ${NAME} mean nothing to Caddy, so they are literal text, never
+// matched and never copied (a systemd unit's are read by the unit rules).
+// The caller reports a file it cannot read by its name and a fixed
+// reason, never its text.
+func releaseRefs(name, data string) ([]string, bool) {
+	if strings.HasSuffix(name, ".json") {
+		return caddyJSONRefs(data)
+	}
+	return caddyfileRefs(data)
+}
+
+// caddyfileRefs reads a Caddyfile for Caddy's placeholders {env.NAME} and
+// {$NAME} ({$NAME:default} too). A comment (a '#' that starts a word
+// outside quotes, to the end of its line) is passed over, and so is every
+// literal operand: a word that merely looks like a variable's name is not
+// one. A "{env." or "{$" not followed by a valid name and its closing
+// brace (or, for {$, a ':' and a default) is a reference the check cannot
+// read.
+func caddyfileRefs(data string) ([]string, bool) {
 	var r envParse
 	bad := false
 	var quote byte
@@ -274,10 +360,6 @@ func releaseRefs(data string) ([]string, bool) {
 			name, end = refName(rest[5:], "}")
 		case strings.HasPrefix(rest, "{$"):
 			name, end = refName(rest[2:], "}:")
-		case strings.HasPrefix(rest, "${"):
-			name, end = refName(rest[2:], "}")
-		case c == '$' && len(rest) > 1 && identStart(rest[1]):
-			name, end = refName(rest[1:], "")
 		default:
 			continue
 		}
@@ -289,6 +371,78 @@ func releaseRefs(data string) ([]string, bool) {
 		i += len(rest) - len(end) - 1
 	}
 	return r.names, bad
+}
+
+// maxJSONDepth bounds the nesting of a Caddy JSON file the check follows;
+// Caddy's own configuration nests a few dozen levels at most.
+const maxJSONDepth = 256
+
+// caddyJSONRefs reads Caddy's native JSON configuration as JSON, token by
+// token, and looks in every string (decoded: a key or a value) for the
+// one placeholder Caddy replaces in it that reads the environment,
+// {env.NAME}; a brace escaped for Caddy's replacer ("\{") is literal
+// text. Everything else, a literal '$' and Caddyfile's {$NAME} included,
+// is a literal value: private, never matched. An "{env." not followed by
+// a valid name and its closing brace, JSON that does not parse, and JSON
+// nested deeper than maxJSONDepth are what the check cannot read.
+func caddyJSONRefs(data string) ([]string, bool) {
+	var r envParse
+	bad := false
+	dec := json.NewDecoder(strings.NewReader(data))
+	dec.UseNumber()
+	depth := 0
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			if depth != 0 {
+				return r.names, true // cut short
+			}
+			break
+		}
+		if err != nil {
+			return r.names, true
+		}
+		switch v := tok.(type) {
+		case json.Delim:
+			if v == '{' || v == '[' {
+				depth++
+				if depth > maxJSONDepth {
+					return r.names, true
+				}
+			} else {
+				depth--
+			}
+		case string:
+			if envPlaceholders(v, &r) {
+				bad = true
+			}
+		}
+	}
+	return r.names, bad
+}
+
+// envPlaceholders adds to r the name of every {env.NAME} placeholder in
+// the decoded JSON string s, passing over one whose brace is escaped
+// ("\{env."), and reports whether s holds one it cannot read.
+func envPlaceholders(s string, r *envParse) bool {
+	bad := false
+	for i := 0; ; {
+		j := strings.Index(s[i:], "{env.")
+		if j < 0 {
+			return bad
+		}
+		k := i + j
+		i = k + len("{env.")
+		if k > 0 && s[k-1] == '\\' {
+			continue
+		}
+		name, _ := refName(s[i:], "}")
+		if name == "" {
+			bad = true
+			continue
+		}
+		r.add(name)
+	}
 }
 
 // refName reads the name of a reference at the start of s, up to one of

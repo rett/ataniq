@@ -97,9 +97,16 @@ func (c *Checker) startup() []*startupFile {
 		}
 	}
 
-	// XDG_CONFIG_HOME first, from the files above.
+	// XDG_CONFIG_HOME first, from the files above. Every loop of the scan
+	// stops as soon as a budget is spent: the report says so, and nothing
+	// more is built.
 	xdgBad := map[string]bool{}
+	xdgSeen := map[string]bool{}
+xdg:
 	for _, f := range fixed {
+		if b.out() {
+			break
+		}
 		p, r, _ := c.loadStartup(f.rel, f.syntax)
 		if r == nil {
 			continue
@@ -111,24 +118,34 @@ func (c *Checker) startup() []*startupFile {
 		}
 		for _, w := range r.xdg {
 			for _, h := range homes {
-				dirs, ok := c.sourcePaths(w, h)
-				if !ok {
-					xdgBad[p] = true
-					continue
-				}
-				for _, d := range dirs {
-					if d != path.Join(h, ".config") && !slices.Contains(c.su.xdg[h], d) && b.hold(int64(len(d))+32) {
+				ok := c.sourcePaths(w, h, func(d string) bool {
+					key := h + "\x00" + d
+					if d != path.Join(h, ".config") && !xdgSeen[key] && b.hold(int64(len(key))+64) {
+						xdgSeen[key] = true
 						c.su.xdg[h] = append(c.su.xdg[h], d)
 					}
+					return !b.out()
+				})
+				if !ok {
+					xdgBad[p] = true
+				}
+				if b.out() {
+					break xdg
 				}
 			}
 		}
 	}
 	c.su.ready = true
+more:
 	for _, home := range c.homeFolders() {
 		for _, d := range c.su.xdg[home] {
+			if b.out() {
+				break more
+			}
 			for _, f := range xdgHomeFiles {
-				fixed = append(fixed, envFile{path.Join(d, f.rel), f.syntax})
+				if b.hold(queueCost(f.rel) + int64(len(d))) {
+					fixed = append(fixed, envFile{path.Join(d, f.rel), f.syntax})
+				}
 			}
 			for _, sub := range xdgHomeDirs {
 				listDir(path.Join(d, sub.rel), sub.syntax)
@@ -157,17 +174,22 @@ func (c *Checker) startup() []*startupFile {
 		if sourced && len(r.xdg) > 0 {
 			sf.xdgBad = true // too late: the sources were resolved without it
 		}
+		home := c.homeOf(p)
 		for _, w := range r.sourced {
-			paths, ok := c.sourcePaths(w, c.homeOf(p))
-			for _, s := range paths {
-				ok = c.envFileGlob(s, func(m string) {
+			if b.out() {
+				return
+			}
+			globbed := true
+			ok := c.sourcePaths(w, home, func(s string) bool {
+				globbed = c.envFileGlob(s, func(m string) {
 					if b.entry() && b.hold(queueCost(m)) {
 						queue = append(queue, envFile{m, syntaxShell})
 					}
-				}) && ok
-			}
+				}) && globbed
+				return !b.out()
+			})
 			switch {
-			case ok:
+			case ok && globbed:
 			case w.deferred:
 				sf.deferred = true
 			default:
@@ -176,9 +198,12 @@ func (c *Checker) startup() []*startupFile {
 		}
 	}
 	for _, f := range fixed {
+		if b.out() {
+			break
+		}
 		read(f, false)
 	}
-	for len(queue) > 0 {
+	for len(queue) > 0 && !b.out() {
 		f := queue[0]
 		queue = queue[1:]
 		read(f, true)

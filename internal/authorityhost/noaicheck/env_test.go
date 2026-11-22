@@ -459,7 +459,11 @@ func TestSourcePaths(t *testing.T) {
 		{"~/$X", true, "home/user", nil, false},
 	}
 	for _, tc := range cases {
-		got, ok := c.sourcePaths(srcWord{lit: tc.lit, exp: tc.exp}, tc.home)
+		var got []string
+		ok := c.sourcePaths(srcWord{lit: tc.lit, exp: tc.exp}, tc.home, func(p string) bool {
+			got = append(got, p)
+			return true
+		})
 		if ok != tc.ok || !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("sourcePaths(%q, %v, %q) = %q %v, want %q %v", tc.lit, tc.exp, tc.home, got, ok, tc.want, tc.ok)
 		}

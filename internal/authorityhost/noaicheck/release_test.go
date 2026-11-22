@@ -95,6 +95,133 @@ func TestRunPhasePrePolicy(t *testing.T) {
 	}
 }
 
+// The pre phase runs on the old host, before the package helper moves it
+// to the candidate's package set: an installed package the candidate's
+// packages.allow leaves out is not a hit there (post and full check the
+// allowlist), but a forbidden package is, and a database the check cannot
+// use is still incomplete.
+func TestRunPhasePrePackages(t *testing.T) {
+	plant := func(f *fixture) {
+		f.file(releaseDir+"/etc/systemd/app.service", "[Service]\nExecStart=/usr/bin/app\n")
+		f.file("var/lib/pacman/local/oldlib-1-1/desc", "%NAME%\noldlib\n")
+	}
+	lists := func() *Lists {
+		l := testLists()
+		l.PackagesAllow = []string{"bash"}
+		l.NFTDigest = NFTDigest([]byte("x"))
+		return l
+	}
+	notAllowed := Hit{Kind: KindPackage, Path: "oldlib", Detail: DetailNotAllowed}
+	forbidden := Hit{Kind: KindPackage, Path: "npm", Detail: DetailForbidden}
+	cases := []struct {
+		name  string
+		phase string
+		more  func(f *fixture)
+		want  []Hit
+	}{
+		{"pre: a package the candidate leaves out", PhasePre, nil, nil},
+		{"post: the same package", PhasePost, nil, []Hit{notAllowed}},
+		{"full: the same package", PhaseFull, nil, []Hit{notAllowed}},
+		{"pre: a forbidden package", PhasePre, func(f *fixture) {
+			f.file("var/lib/pacman/local/npm-1-1/desc", "%NAME%\nnpm\n")
+		}, []Hit{forbidden}},
+		{"pre: no database", PhasePre, func(f *fixture) { mustRemoveAll(f, "var/lib/pacman") },
+			[]Hit{{Kind: KindIncomplete, Path: PathPackages, Detail: DetailMissing}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := cleanFixture(t)
+			plant(f)
+			if tc.more != nil {
+				tc.more(f)
+			}
+			f.file("proc/net/tcp", tcpHeader)
+			c := f.checker(lists())
+			c.RequirePolicy = true
+			listing := []byte("x")
+			var r Report
+			var err error
+			within(t, func() { r, err = c.RunPhase(tc.phase, f.abs(releaseDir), listing) })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !(len(r.Hits) == 0 && len(tc.want) == 0) && !reflect.DeepEqual(r.Hits, tc.want) {
+				t.Errorf("hits %v, want %v", r.Hits, tc.want)
+			}
+			if len(tc.want) == 0 && !r.Complete {
+				t.Errorf("a clean pre phase is not complete: %+v", r)
+			}
+		})
+	}
+}
+
+// The candidate's unit files and their drop-ins are merged by unit, as
+// systemd merges them (the unit file, then its drop-ins by file name),
+// before any file their EnvironmentFile= lines name is opened: an empty
+// EnvironmentFile= in a later file drops the ones before it, so a
+// required file it drops is never "incomplete env-file"; one named after
+// the reset, or in another unit, still counts.
+func TestCheckReleaseMergesUnits(t *testing.T) {
+	missing := Hit{Kind: KindIncomplete, Path: PathEnvFile, Detail: "/etc/app/missing"}
+	unit := releaseDir + "/etc/systemd/system/app.service"
+	drop := releaseDir + "/etc/systemd/system/app.service.d/"
+	cases := []struct {
+		name  string
+		plant func(f *fixture)
+		want  []Hit
+	}{
+		{"a required file alone", func(f *fixture) {
+			f.file(unit, "[Service]\nEnvironmentFile=/etc/app/missing\n")
+		}, []Hit{missing}},
+		{"a drop-in resets the unit's", func(f *fixture) {
+			f.file(unit, "[Service]\nEnvironmentFile=/etc/app/missing\n")
+			f.file(drop+"10-env.conf", "[Service]\nEnvironmentFile=\nEnvironmentFile=/etc/app/env\n")
+		}, nil},
+		{"a later drop-in resets an earlier one's", func(f *fixture) {
+			f.file(drop+"10-old.conf", "[Service]\nEnvironmentFile=/etc/app/missing\n")
+			f.file(drop+"20-new.conf", "[Service]\nEnvironmentFile=\n")
+			f.file(unit, "[Service]\nExecStart=/usr/bin/app\n")
+		}, nil},
+		{"a user unit's drop-in resets it", func(f *fixture) {
+			f.file(releaseDir+"/etc/systemd/user/u.service", "[Service]\nEnvironmentFile=/etc/app/missing\n")
+			f.file(releaseDir+"/etc/systemd/user/u.service.d/env.conf", "[Service]\nEnvironmentFile=\n")
+		}, nil},
+		{"a reset before the file keeps it", func(f *fixture) {
+			f.file(drop+"10-reset.conf", "[Service]\nEnvironmentFile=\n")
+			f.file(drop+"20-env.conf", "[Service]\nEnvironmentFile=/etc/app/missing\n")
+		}, []Hit{missing}},
+		{"another unit's reset keeps it", func(f *fixture) {
+			f.file(unit, "[Service]\nEnvironmentFile=/etc/app/missing\n")
+			f.file(releaseDir+"/etc/systemd/system/other.service.d/env.conf", "[Service]\nEnvironmentFile=\n")
+		}, []Hit{missing}},
+		{"a drop-in folder elsewhere keeps it", func(f *fixture) {
+			f.file(releaseDir+"/etc/systemd/app.service", "[Service]\nEnvironmentFile=/etc/app/missing\n")
+			f.file(drop+"10-env.conf", "[Service]\nEnvironmentFile=\n")
+		}, []Hit{missing}},
+		{"a file the reset keeps is read", func(f *fixture) {
+			f.file(unit, "[Service]\nEnvironmentFile=/etc/app/missing\n")
+			f.file(drop+"10-env.conf", "[Service]\nEnvironmentFile=\nEnvironmentFile=/etc/app/env\n")
+			f.file("etc/app/env", "CODEX_HOME=x\n")
+		}, []Hit{{Kind: KindEnv, Path: "/etc/app/env", Detail: "CODEX_HOME"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := cleanFixture(t)
+			f.file("etc/app/env", "LANG=C\n")
+			tc.plant(f)
+			c := f.checker(testLists())
+			var err error
+			within(t, func() { err = c.CheckRelease(f.abs(releaseDir)) })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := c.Report().Hits; !(len(got) == 0 && len(tc.want) == 0) && !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("hits %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // A release outside the root is read where it is and named by its own
 // path; one that cannot be opened is an error; an unknown phase too.
 func TestRunPhaseReleaseOutsideTheRoot(t *testing.T) {
@@ -116,32 +243,45 @@ func TestRunPhaseReleaseOutsideTheRoot(t *testing.T) {
 }
 
 // Only recognised references name a variable in the front end's
-// configuration: Caddy's placeholders and the systemd-style forms. A
-// comment, a quoted string's text and a literal operand named like a key
-// are not references, and a reference the check cannot read makes the
-// file incomplete without copying its text.
+// configuration, by the file's format. In a Caddyfile they are Caddy's
+// placeholders {env.NAME} and {$NAME}; in Caddy's native JSON (a ".json"
+// file), read as JSON, only {env.NAME} in a string. Shell-style $NAME and
+// ${NAME} mean nothing to Caddy and are literal text in either, never
+// matched. A comment, a quoted string's text and a literal operand named
+// like a key are not references, and a reference the check cannot read
+// (or JSON it cannot parse) makes the file incomplete without copying its
+// text.
 func TestReleaseRefs(t *testing.T) {
 	cases := []struct {
-		name, in string
-		want     []string
-		bad      bool
+		name, file, in string
+		want           []string
+		bad            bool
 	}{
-		{"placeholders", "{$OPENAI_API_KEY} {env.ANTHROPIC_API_KEY} {$CODEX_HOME:/srv/x}\n", []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CODEX_HOME"}, false},
-		{"systemd-style", "reverse_proxy $GEMINI_API_KEY ${CLAUDE_X}/y\n", []string{"GEMINI_API_KEY", "CLAUDE_X"}, false},
-		{"inside a quoted string", "header X-Key \"Bearer {env.X_API_KEY}\"\n", []string{"X_API_KEY"}, false},
-		{"in JSON", `{"apps":{"http":{"servers":{"a":{"listen":["{env.OPENAI_ORG}"]}}}}}`, []string{"OPENAI_ORG"}, false},
-		{"literal operands", "header X-Name OPENAI_API_KEY\nrespond \"CODEX_HOME\" 200\nX_OPENAI_ORG 1CODEX_HOME\n", nil, false},
-		{"comments", "# {env.OPENAI_API_KEY} GEMINI_API_KEY\nexample.invalid { # $CODEX_HOME\n\trespond ok\n}\n", nil, false},
-		{"a '#' inside a word or quotes is not a comment", "respond \"#{env.OPENAI_ORG}\"\nredir /a#{$CODEX_HOME}\n", []string{"OPENAI_ORG", "CODEX_HOME"}, false},
-		{"other placeholders and dollars", "respond \"{http.request.uri} costs $5 or $$\"\npath_regexp ^/x$\n", nil, false},
-		{"names not like a key are read and not reported", "{env.LANG} {$PORT}\n", nil, false},
-		{"an unreadable env placeholder", "header X {env." + secret + "}\n", nil, true},
-		{"an unclosed env placeholder", "header X {env.OPENAI_API_KEY", nil, true},
-		{"an unreadable braced reference", "x ${" + secret + "}\n{$ X}\n", nil, true},
+		{"placeholders", "Caddyfile", "{$OPENAI_API_KEY} {env.ANTHROPIC_API_KEY} {$CODEX_HOME:/srv/x}\n", []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CODEX_HOME"}, false},
+		{"shell-style is literal text", "Caddyfile", "reverse_proxy $GEMINI_API_KEY ${CLAUDE_X}/y\nheader X \"sk" + "$OPENAI_PART${CODEX_REST}\"\n", nil, false},
+		{"an unreadable shell-style brace is literal text", "site.caddy", "x ${" + secret + "}\n", nil, false},
+		{"inside a quoted string", "Caddyfile", "header X-Key \"Bearer {env.X_API_KEY}\"\n", []string{"X_API_KEY"}, false},
+		{"literal operands", "Caddyfile", "header X-Name OPENAI_API_KEY\nrespond \"CODEX_HOME\" 200\nX_OPENAI_ORG 1CODEX_HOME\n", nil, false},
+		{"comments", "Caddyfile", "# {env.OPENAI_API_KEY} GEMINI_API_KEY\nexample.invalid { # $CODEX_HOME\n\trespond ok\n}\n", nil, false},
+		{"a '#' inside a word or quotes is not a comment", "Caddyfile", "respond \"#{env.OPENAI_ORG}\"\nredir /a#{$CODEX_HOME}\n", []string{"OPENAI_ORG", "CODEX_HOME"}, false},
+		{"other placeholders and dollars", "Caddyfile", "respond \"{http.request.uri} costs $5 or $$\"\npath_regexp ^/x$\n", nil, false},
+		{"names not like a key are read and not reported", "Caddyfile", "{env.LANG} {$PORT}\n", nil, false},
+		{"an unreadable env placeholder", "Caddyfile", "header X {env." + secret + "}\n", nil, true},
+		{"an unclosed env placeholder", "Caddyfile", "header X {env.OPENAI_API_KEY", nil, true},
+		{"an unreadable braced placeholder", "Caddyfile", "{$ X}\n", nil, true},
+		{"in JSON", "caddy.json", `{"apps":{"http":{"servers":{"a":{"listen":["{env.OPENAI_ORG}"]}}}}}`, []string{"OPENAI_ORG"}, false},
+		{"JSON: a literal dollar stays private", "caddy.json",
+			`{"handle":[{"handler":"headers","response":{"set":{"Authorization":["Bearer sk$OPENAI_PART${CODEX_REST}"],"X":["{$GEMINI_API_KEY}"]}}}]}`, nil, false},
+		{"JSON: an escaped placeholder is literal", "caddy.json", `{"body":"\\{env.OPENAI_ORG}"}`, nil, false},
+		{"JSON: a placeholder spelled with escapes", "caddy.json", `{"body":"{env.OPENAI_ORG}"}`, []string{"OPENAI_ORG"}, false},
+		{"JSON: a placeholder in a key", "caddy.json", `{"{env.CODEX_HOME}":1}`, []string{"CODEX_HOME"}, false},
+		{"JSON: an unreadable placeholder", "caddy.json", `{"body":"{env.` + secret + `}"}`, nil, true},
+		{"JSON that does not parse", "caddy.json", `{"body":"x"` + "\n", nil, true},
+		{"JSON nested too deep", "caddy.json", strings.Repeat("[", 100000) + strings.Repeat("]", 100000), nil, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, bad := releaseRefs(tc.in)
+			got, bad := releaseRefs(tc.file, tc.in)
 			if !reflect.DeepEqual(got, tc.want) || bad != tc.bad {
 				t.Errorf("got %q bad=%v, want %q bad=%v", got, bad, tc.want, tc.bad)
 			}
@@ -156,6 +296,9 @@ func TestCheckReleaseNamesOnlyReferences(t *testing.T) {
 	f := cleanFixture(t)
 	f.file(releaseDir+"/etc/caddy/Caddyfile", "# reverse_proxy {env.OPENAI_API_KEY}\nexample.invalid {\n\theader X-Note CODEX_HOME\n}\n")
 	f.file(releaseDir+"/etc/caddy/odd.caddy", "header X {env."+secret+"}\n")
+	f.file(releaseDir+"/etc/caddy/caddy.json", `{"apps":{"http":{"servers":{"a":{"routes":[{"handle":[{"handler":"headers",`+
+		`"response":{"set":{"Authorization":["Bearer sk-planted$OPENAI_PART${CODEX_REST}"]}}}]}]}}}}}`)
+	f.file(releaseDir+"/etc/caddy/shell.caddy", "header X \"Bearer sk-planted$GEMINI_PART\"\n")
 	f.file(releaseDir+"/etc/nftables/rules.nft", "define GEMINI_API_KEY = 1\ntable inet filter { comment \"ANTHROPIC_API_KEY\" }\n")
 	c := f.checker(testLists())
 	var r Report
@@ -176,7 +319,7 @@ func TestCheckReleaseNamesOnlyReferences(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, out := range []string{text.String(), js.String()} {
-		if strings.Contains(out, "sk-") || strings.Contains(out, secret) {
+		if strings.Contains(out, "sk-") || strings.Contains(out, secret) || strings.Contains(out, "_PART") || strings.Contains(out, "_REST") {
 			t.Errorf("a report copies the file's text:\n%s", out)
 		}
 	}
