@@ -22,6 +22,15 @@ const (
 	CodeOut        = "out"
 	CodeSrc        = "src"
 
+	// Arguments and refusals of baseline.
+	CodeBaselineArgs  = "baseline-args"
+	CodeStamp         = "stamp"
+	CodeInputNotFile  = "input-not-regular"
+	CodeInputTooLarge = "input-too-large"
+	CodeInputInvalid  = "input-invalid"
+	CodeInputEmpty    = "input-empty"
+	CodeOutExists     = "out-exists"
+
 	// Refusals of build.
 	CodeExists   = "exists"
 	CodeTooLarge = "too-large"
@@ -83,6 +92,14 @@ var reasons = map[string]string{
 	CodeBinMissing: "a binary every release needs is not given",
 	CodeOut:        "the output folder is not usable",
 	CodeSrc:        "the source folder lacks etc/ or share/",
+
+	CodeBaselineArgs:  "baseline needs --src, --units, --ports, --packages and --nft",
+	CodeStamp:         "the stamp is not 1 to 128 bytes of letters, digits, spaces and ._:+-",
+	CodeInputNotFile:  "an input file is not a regular file that can be read",
+	CodeInputTooLarge: "an input file is over 2 MiB",
+	CodeInputInvalid:  "an input file holds a line that is not valid for its list",
+	CodeInputEmpty:    "an input file holds no entry",
+	CodeOutExists:     "the output folder exists already",
 
 	CodeExists:   "that release folder exists already",
 	CodeTooLarge: "the release is over a size or entry limit",

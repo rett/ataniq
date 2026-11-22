@@ -61,6 +61,14 @@ ah-release check DIR/ID
 
 `deploy.sh` runs the same check again before it copies anything.
 
+If the release is to pass the no-AI check under `--require-policy`, fill the
+allowlists of the source tree from the host's baseline first, with
+`ah-release baseline` (see [Filling the
+allowlists](README.md#filling-the-allowlists)): collect four files on the host
+(`HIT unit` names, `ss -H -ltn` ports, `pacman -Qq`, `nft list ruleset`), run
+`ah-release baseline --src deploy/authority-host ... --out DIR` and build with
+`--src DIR`.
+
 ### 3. Set the host up, once: bootstrap, dry then apply
 
 Copy the script and the switch binary to the authority host (any way you trust;

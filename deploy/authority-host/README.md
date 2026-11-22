@@ -1600,6 +1600,75 @@ It checks, in this order, all of them (a pass is no finding):
    host's baseline at deploy time, so it is for a release that has been
    filled. `--no-noaicheck` skips this step (for tests).
 
+### Filling the allowlists
+
+`share/units.allow`, `ports.allow` and `packages.allow` and `nft.digest`
+ship empty (or missing) from this tree, so a release built from it fails its
+own no-AI check under `--require-policy` until they hold the host's baseline.
+The owner collects the baseline **on the host**, from a host that is known to
+be as it should be (everything listed becomes allowed, so read each list
+before it is used), and `ah-release baseline` makes a filled copy of this
+tree from the four files:
+
+```
+ah-release baseline --src deploy/authority-host --units FILE --ports FILE --packages FILE --nft FILE [--out DIR] [--stamp TEXT]
+```
+
+The collection, as root where the command needs it (the files are plain text,
+copied to the build host by any way the owner trusts):
+
+- **Units.** The source is the no-AI check's own view, not
+  `systemctl list-unit-files --state=enabled` (that lists unit files, not the
+  links of the `*.wants`, `*.requires` and `*.upholds` folders of every manager,
+  home and runtime folder the check reads, so it can miss a unit the check
+  reports and name one it never sees). Run the check once, with the
+  allowlists still empty, from the release built from the unfilled tree, and
+  take the `HIT unit` names:
+
+  ```
+  sudo RELEASE/bin/ah-noaicheck --phase pre --require-policy \
+    | sed -n 's/^HIT unit //p' | sed 's|.*/||' | sort -u > units.txt
+  ```
+
+  Each `HIT unit` line ends in the path of the enabled link
+  (`/etc/systemd/system/multi-user.target.wants/sshd.service`); the name is
+  the last part. Every other line it prints (a `HIT` of another kind, such as
+  an agent tool, or `HIT incomplete`) is a finding to fix, never to put in a
+  list. A template (`getty@.service`) may be written in place of an instance.
+- **Ports.** `ss -H -ltn | awk '{n=split($4,a,":"); print a[n]}' | sort -un > ports.txt`:
+  the local port of each listening TCP socket, one decimal number per line.
+- **Packages.** `pacman -Qq > packages.txt`.
+- **Firewall.** `sudo nft list ruleset > nft.txt`.
+
+`baseline` reads each file whole, refusing one that is not a regular file (a
+link, fifo, device or folder), that is over 2 MiB, or whose line is not a
+valid entry of its list: a unit name is letters, digits and `:_.@-` with a
+unit type as its suffix, a port is 1 to 65535 without leading zeros, a
+package name is letters, digits and `@._+-` (a line with a version, a
+repository or a second word is refused), and no line is over 4 KiB or holds
+a control byte, a tab or a non-ASCII byte. Blank lines and lines starting
+with `#` are left out; a duplicate is dropped without a word; an input that
+leaves nothing is refused (`input-empty`), the listing of `nft` too when
+nothing but blank lines is in it. The entries are written sorted (ports by
+number). `nft.digest` is the digest `ah-noaicheck nft-digest nft.txt`
+prints: the same function, so the counters and expiries of a listing do not
+change it.
+
+The result is a new folder, `--out` (it must not exist, and may not be or lie
+in `--src`; it is made beside its place and renamed into it) or, without
+`--out`, a new folder of the temporary folder; it holds the `etc/` and
+`share/` of `--src` with the four files replaced, and is given to
+`ah-release build --src`. Nothing is written into `--src`. Each file starts
+with a header that says what it was taken from (the check's `HIT unit` lines,
+`ss -H -ltn`, `pacman -Qq`, `nft list ruleset`) and, with `--stamp TEXT` (1 to
+128 bytes of letters, digits, spaces and `._:+-`, a date for instance), when;
+the headers hold no host name and no time of the builder's own, so the same
+inputs make the same bytes. Exit status: 0 ok (`filled baseline in <folder>`),
+1 refused (`FAIL: <code> <fixed reason>` with the input's name, and for a bad
+line its number, never its text), 2 usage. A built release is then checked
+with `ah-release check --require-policy` where the no-AI check is meant to
+pass.
+
 ### The source tree of the first release
 
 The first release is static (`--components static`): it runs no decision
@@ -1625,7 +1694,8 @@ and its lists.
   allows.
 - `share/ai-names.list`, `forbidden-packages.list`, `packages.allow`,
   `ports.allow` and `units.allow` are the no-AI check's lists, as before;
-  the allowlists are filled from the host's baseline at deploy time.
+  the allowlists are filled from the host's baseline at deploy time, with
+  `ah-release baseline` (see "Filling the allowlists").
 
 `ah-release build --src deploy/authority-host --components static ...`
 followed by `ah-release check` passes on this tree; a test builds it with

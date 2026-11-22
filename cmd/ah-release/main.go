@@ -4,6 +4,7 @@
 //
 //	ah-release build --out DIR --counter N --commit SHA --go-version V --built-on CLASS --package-snapshot S --bin FILE... --src deploy/authority-host [--components static]
 //	ah-release check [--no-noaicheck] [--root DIR] [--require-policy] DIR/<id>
+//	ah-release baseline --src DIR --units FILE --ports FILE --packages FILE --nft FILE [--out DIR] [--stamp TEXT]
 //
 // Exit codes: 0 ok, 1 refused or check failed (FAIL lines), 2 usage.
 package main
@@ -33,6 +34,7 @@ func main() {
 
 const usage = `usage: ah-release build --out DIR --counter N --commit SHA --go-version V --built-on CLASS --package-snapshot S --bin FILE... --src DIR [--components static]
        ah-release check [--no-noaicheck] [--root DIR] [--require-policy] DIR/ID
+       ah-release baseline --src DIR --units FILE --ports FILE --packages FILE --nft FILE [--out DIR] [--stamp TEXT]
 `
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -41,7 +43,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	if len(args) == 0 {
-		return bad("give a subcommand: build or check")
+		return bad("give a subcommand: build, check or baseline")
 	}
 	switch args[0] {
 	case "-h", "--help", "help":
@@ -51,6 +53,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return build(args[1:], stdout, stderr, bad)
 	case "check":
 		return check(args[1:], stdout, stderr, bad)
+	case "baseline":
+		return baseline(args[1:], stdout, stderr, bad)
 	}
 	return bad("unknown subcommand " + switcher.QuoteField(args[0]))
 }
@@ -158,4 +162,44 @@ func check(args []string, stdout, stderr io.Writer, bad func(string) int) int {
 		fmt.Fprintln(stdout, f)
 	}
 	return exitFailed
+}
+
+func baseline(args []string, stdout, stderr io.Writer, bad func(string) int) int {
+	fs := flag.NewFlagSet("ah-release baseline", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	src := fs.String("src", "", "the deployment source folder, deploy/authority-host")
+	units := fs.String("units", "", "the file of unit names, one per line")
+	ports := fs.String("ports", "", "the file of listening TCP ports, one per line")
+	packages := fs.String("packages", "", "the output of pacman -Qq")
+	nft := fs.String("nft", "", "the output of nft list ruleset")
+	out := fs.String("out", "", "the folder made (default: a new folder of the temporary folder)")
+	stamp := fs.String("stamp", "", "a text, a date, the headers of the filled files carry")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fmt.Fprint(stdout, usage)
+			return exitOK
+		}
+		return bad(switcher.EscapeLine(err.Error()))
+	}
+	if fs.NArg() > 0 {
+		return bad("baseline takes no argument, only flags")
+	}
+	dir, err := release.Baseline(release.BaselineOptions{
+		Src: *src, Units: *units, Ports: *ports, Packages: *packages, NFT: *nft,
+		Out: *out, Stamp: *stamp,
+	})
+	if err != nil {
+		var r *release.Refusal
+		if !errors.As(err, &r) {
+			fmt.Fprintln(stdout, release.Finding{Code: release.CodeIO})
+			return exitFailed
+		}
+		if r.Usage {
+			return bad(r.Finding.String()[len("FAIL: "):])
+		}
+		fmt.Fprintln(stdout, r.Finding)
+		return exitFailed
+	}
+	fmt.Fprintf(stdout, "filled baseline in %s\n", switcher.QuoteField(dir))
+	return exitOK
 }
