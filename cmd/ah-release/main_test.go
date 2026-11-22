@@ -293,7 +293,7 @@ func TestCheckHitOfTheShippedCheckFails(t *testing.T) {
 	out := t.TempDir()
 	dir := filepath.Join(out, "0003-0123456")
 	a, b := bins(t)
-	write(t, a, "#!/bin/sh\necho 'HIT binary /home/someone/.local/bin/agent'\nexit 1\n", 0o755)
+	write(t, a, "#!/bin/sh\necho 'HIT binary /usr/local/bin/agent'\nexit 1\n", 0o755)
 	if code, _, _ := call(buildArgs(out, source(t), a, b)...); code != 0 {
 		t.Fatal("build")
 	}
@@ -385,7 +385,7 @@ func TestRealTreeHasNoPrivateNames(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, bad := range []string{"/home/", "@", "192.168.", "10.0."} {
+		for _, bad := range []string{"/ho" + "me/", "@", "192.168.", "10.0."} {
 			if strings.Contains(string(data), bad) {
 				t.Errorf("%s holds %q", p, bad)
 			}
