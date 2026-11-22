@@ -33,10 +33,13 @@ switch runs it.
     bin/  etc/  share/
   current  -> releases/<id>
   previous -> releases/<id>
+/etc/authority-host/
+  switch-policy.json      the switch policy (optional; see below)
+  stop.list               the host's own emergency stop list (required)
 /var/lib/authority-host/
   deploy.json             the outcome of the last switch
   highest-counter         the highest counter a switch ever attempted
-  txn.json                the journal of a switch under way
+  txn.json                the journal of the transaction under way
   switch.lock             the lock of a running switch
 ```
 
@@ -210,6 +213,7 @@ ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manual|signed] [--noaichec
 ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manual|signed] [--noaicheck PATH] --rollback-to previous
 ah-switch [--root DIR] status
 ah-switch [--root DIR [--allow-exec]] [--dry] recover --counter N
+ah-switch [--root DIR [--allow-exec]] [--dry] recover --services-stopped
 ```
 
 - `--root DIR` is the folder that holds `opt/authority-host`,
@@ -237,13 +241,16 @@ ah-switch [--root DIR [--allow-exec]] [--dry] recover --counter N
   release (sums, manifest, lists, counter), and it is refused while a switch
   holds the lock.
 - `status` prints `current`, `previous`, the highest counter, the trust of
-  the switch policy, an interrupted switch still to settle, and the last
-  outcome from `deploy.json`. It takes the lock shared, so what it prints
+  the switch policy, a transaction still to resume and its phase (with the
+  stop commands that failed, when it is stopping), the host's stop list,
+  and the last outcome from `deploy.json` (marked when a later command
+  settled it after an interruption). It takes the lock shared, so what it prints
   is one state between two switches: while a switch runs it exits 3, and
   while it reads, a switch is refused with exit 3. It prints all of it or
   nothing, and it changes nothing.
-- `recover --counter N` writes a missing or broken `highest-counter`; see
-  "Interrupted switches and recover".
+- `recover --counter N` writes a missing or broken `highest-counter`, and
+  `recover --services-stopped` settles a transaction whose stop commands
+  failed; see "The journal and recover".
 
 Flags may come before or after the id.
 
@@ -279,7 +286,7 @@ already ran stays applied, and `deploy.json` says so).
    before the no-AI check and the validators, so that they see the host as
    it will be. A changed snapshot and no `bin/ah-pkgstep` is a failure
    (`package-step-missing`). The step's progress is journaled in
-   `txn.json` (`running`, then `done`) before and after it runs, and on
+   `txn.json` (`started`, then `done`) before and after it runs, and on
    success the new snapshot is what `deploy.json` records from then on,
    even when a later step fails. A step that was interrupted is not taken
    as done: the next switch runs it again with the same `--from`, so
@@ -295,71 +302,112 @@ already ran stays applied, and `deploy.json` says so).
    failing `nft` is `nft-listing-failed`, and the check does not run.
 5. **validate**: each command of `share/validators.list` must exit 0, within
    30 seconds each.
-6. **switch**: first the journal `txn.json` is written (the release, its
-   counter, the old targets of `current` and `previous`) and synced with its
-   folder, and, on a forward switch, `highest-counter` is set to the new
-   counter: it holds the highest counter ever attempted, so a release whose
-   switch got this far cannot be switched to again, even after it failed or
-   was put back; build the next counter. Then `previous` is pointed at the
-   old target of `current`, and a new link `current.new` is made and renamed
-   over `current`, so there is never a moment without `current`. Then each
-   command of `share/reload.list` runs, within 30 seconds each.
+6. **switch**: first the journal `txn.json` says `links` (and, on a forward
+   switch, that the counter is used) and is synced with its folder; on a
+   forward switch `highest-counter` is then set to the new counter: it
+   holds the highest counter ever attempted, so a release whose switch got
+   this far cannot be switched to again, even after it failed or was put
+   back; build the next counter. Then `previous` is pointed at the old
+   target of `current`, and a new link `current.new` is made and renamed
+   over `current`, so there is never a moment without `current`; each
+   rename is followed by a sync of the folder. Then the journal says
+   `activating`, and each command of `share/reload.list` runs, within 30
+   seconds each.
 7. **health**: the commands of `share/health.cmd` run in order until one
    round in which every one of them exits 0, a new round every 2 seconds.
    The 60 seconds are one deadline for the whole check: each command gets at
    most 10 seconds and never more than what is left of the 60, no command
    starts once they are over, and a round that ends after them does not
    count. A static release with no health command is healthy at once.
-8. **record**: `deploy.json` is written, by writing a temporary file and
-   renaming it over the old one, and then the journal is removed. Only when
-   both succeeded does the switch print `result: ok` and exit 0; otherwise
-   it prints `result: failed at record`, exits 1 and leaves the journal, and
-   the next command completes the switch.
+8. **record**: the journal says `done` with the outcome; the link folder is
+   synced once more, `deploy.json` is written (a temporary file renamed over
+   the old one) and the journal is removed. Only then does the switch print
+   `result: ok` and exit 0. When any of that fails it prints `result:
+   unresolved`, exits 1 and leaves the journal, and the next command
+   records the outcome.
 
-A link is replaced by renaming a new link over it and then syncing its
-folder. When that fails, the switch reads the link again before it decides:
-a link that already points at its new target (the rename happened, only
-the sync failed) is taken as moved, with a warning; the journal covers what
-a crash could still lose.
+A link is taken as moved only once its folder is synced. A rename that is
+visible but whose folder could not be synced is not trusted to survive a
+power loss: the switch then puts both links back (as the resume of the
+`links` phase does, below); if that cannot be synced either, it stops with
+`result: unresolved` and the journal still in `links`, and the next
+command syncs and settles it. No outcome is recorded, and the journal is
+never removed, before the link folder is synced.
 
 Before the switch, in step 1, the release `current` points at (the
 fallback) is opened and verified as the switch policy says, and its own
 reload and health lists are read. A fallback that is missing or no longer
 verifies is not used, and the switch says so (`fallback: none: ...`).
 
-If the reload or the health check fails, the switch goes back: `current` is
-renamed back to the fallback, `previous` is put back as it was, and the
-fallback's own `reload.list` and `health.cmd` run (never the failed
-release's). The result is `rolled-back` with `restored_health: ok` only when
-all of that succeeded. When putting the links back, the fallback's reload
-or its health fails, the failed release's `stop.list` runs to stop the
-decision services (the static status page stays), the result is
-`failed-recovery` with `restored_health: failed`, and the console is needed.
-With no fallback (the very first switch, or one that cannot be used),
-`current` stays at the new release, its `stop.list` runs, and the result is
-`failed` on a first switch and `failed-recovery` otherwise. A stop command
-that fails is noted in `detail`; the others still run.
+If the reload or the health check fails, the journal says `restoring`
+before anything is put back: `current` is renamed back to the fallback,
+`previous` is put back as it was, both synced, and the fallback's own
+`reload.list` and `health.cmd` run (never the failed release's). The result
+is `rolled-back` with `restored_health: ok` only when all of that
+succeeded, putting `previous` back included. Otherwise (or with no
+fallback: the very first switch, or one that cannot be used, when
+`current` stays at the new release) the journal says `stopping` and the
+decision services are stopped (the static status page stays): first the
+host's own `/etc/authority-host/stop.list`, then the stop list of the new
+release and of the fallback, each one that verifies (a release that does
+not verify runs no code; the host's list does not depend on any release).
+The result is `failed` on a first switch and `failed-recovery` otherwise,
+with `restored_health: failed` when going back was tried, and
+`services_stopped: true`; the console is needed. A stop command that fails
+does not stop the others, but the switch then never says the services are
+stopped: the journal stays in `stopping` with the commands that failed,
+the command prints `result: unresolved` and exits 1, and every later
+command runs the stops again first (see below).
 
-### Interrupted switches and recover
+The host's stop list is the owner's, never part of a release: one command
+per line, in the format of the release lists, at least one command, and
+owned and checked like the switch policy. It must stop every decision
+service of any release (for example `systemctl stop ataniq-seat.service`).
+A switch or rollback is refused, with nothing done, while it is missing,
+empty or not trusted; `status` says so.
 
-A switch that dies (a crash, a power loss, a kill) after it wrote the
-journal leaves `txn.json`. Every switch, rollback and `recover` takes the
-lock and settles such a journal before anything else; `status` shows it
-(`interrupted: ...`) and changes nothing, and `--dry` refuses to go on
-while it is there.
+### The journal and recover
 
-- When `current` already points at the journal's release, that release
-  verifies (as the switch policy says), its reload list passes and it is
-  healthy, the switch is completed: `deploy.json` records `ok` with the
-  detail `completed after an interruption`.
-- Otherwise `current` and `previous` are put back exactly as the journal
-  says they were (so a retried switch never leaves `previous` pointing at
-  the active release), and `deploy.json` records `rolled-back` with the
-  code `interrupted`.
+Everything a switch or rollback changes on the host is one transaction,
+journaled in `txn.json`: written whole and synced with its folder before
+every change of its phase. It holds the transaction's id, its direction
+(`forward` or `rollback`), what was asked (`previous` or an id), the
+release, its counter, the old targets of `current` and `previous`, the
+trust the transaction began with (the mode and, when signed, the signers
+file and principal: the stricter of the policy and `--mode`), the package
+step's snapshots and progress, and once known the outcome. Its phases, in
+order:
 
-Either way `highest-counter` is at least the journal's counter afterwards
-and the journal is removed. When the links cannot be put back the journal
-stays and the command fails.
+| Phase | What it means | How the next command resumes it |
+| --- | --- | --- |
+| `packages` | The package step runs or ran; no link was touched | Records the switch as `failed` (`interrupted`, or `package-step-interrupted` when the step was not known to be done) |
+| `links` | The counter is used and the links are being moved; nothing was reloaded | Puts `current` and `previous` back exactly as they were and records `rolled-back` (`failed` on a first switch) with the code `interrupted` |
+| `activating` | The links point at the new release; its reload and health run | Verifies the release again, makes and syncs both links again, runs its reload list and health check again: `ok` (`completed after an interruption`), or goes back as a failed health check does |
+| `restoring` | Going back to the old release | Does all of going back again, from putting the links back |
+| `stopping` | The decision services are being stopped | Runs every stop list again |
+| `done` | The outcome is decided | Syncs the link folder, writes `highest-counter` when the counter was used, records the outcome and removes the journal |
+
+A transaction that dies (a crash, a power loss, a kill) leaves `txn.json`.
+Every switch, rollback and `recover` takes the lock and resumes it from its
+phase before anything else: each phase is redone from its start, which is
+safe to do twice, and where the links point never decides what happens.
+`status` shows it (`interrupted: ... in phase ...`) and changes nothing,
+and `--dry` refuses to go on while it is there. A resume verifies releases
+with the trust the transaction began with as well as the policy of the
+time, so a signed transaction is never finished, or gone back from, as a
+manual one. A journal that does not parse, names an unknown phase or is not
+trusted is never guessed at: the command fails and names it.
+
+When the resume ends with the decision services stopped, the command that
+resumed it does nothing else: a new switch never starts on its own after a
+failed recovery. Run it again once the host is looked at.
+
+The outcome of a transaction that a later command settled is recorded with
+`pending_report: true`. When the same request is run again (the same
+direction, and the same `previous` or id), it reports that outcome and does
+nothing else, once: a retried `--rollback-to previous` therefore never
+resolves `previous` anew and goes back to the release the interrupted
+rollback left. Run the request once more to do it again.
 
 `ah-switch recover --counter N` writes `highest-counter` as `N` when it is
 missing or does not hold a number. The switch never guesses it: on a host
@@ -367,6 +415,13 @@ with a `current` link a missing counter could let an old release be
 replayed. `N` must be at least the counter of the releases `current` and
 `previous` point at; take it from the newest release ever deployed. It
 refuses to overwrite a counter that is there.
+
+`ah-switch recover --services-stopped` settles a transaction that stays in
+`stopping` because a stop command keeps failing: it is the owner's
+statement that the decision services are stopped (by hand, or the failing
+command was not needed). It runs nothing, and records that statement with
+the time in `detail`, with `services_stopped: true`. Use it only once every
+decision service is really stopped.
 
 ### deploy.json
 
@@ -379,8 +434,11 @@ check: `passed`, `failed` or `not run`), `failed_step` (`state`, `import`,
 `verify`, `counter`, `packages`, `noaicheck`, `validate`, `switch`,
 `reload`, `health`, `record` or `interrupted`; empty when ok), `error`,
 `detail`, `package_snapshot` (the snapshot the host's packages are known
-to be at) and `restored_health` (`ok`, `failed` or empty). A dry run writes
-nothing.
+to be at), `restored_health` (`ok`, `failed` or empty), `services_stopped`
+(the decision services were stopped), and `txn`, `requested` and
+`pending_report` (the transaction this record ends, what was asked, and
+whether a later command settled it with nobody shown the outcome yet). A
+dry run writes nothing.
 
 `error` is a stable failure code, such as `release-exists`, `bad-entry`,
 `file-changed`, `too-many-entries`, `time-budget`, `untrusted`,
@@ -389,7 +447,8 @@ nothing.
 `counter-missing`, `counter-invalid`, `package-step-missing`,
 `package-step-failed`, `package-step-interrupted`, `nft-listing-failed`,
 `noaicheck-failed`, `validator-failed`, `link-failed`, `reload-failed`,
-`health-failed`, `record-failed` or `interrupted` (the full list is in
+`health-failed`, `record-failed`, `stop-list-missing`, `stop-failed` or
+`interrupted` (the full list is in
 `internal/authorityhost/switcher/failure.go`). `detail` adds fixed words and
 identifiers: a name that holds anything but printable ASCII, or a space, is
 quoted with Go's escapes and every identifier is cut at 160 bytes, so a
@@ -405,8 +464,8 @@ see its messages. The text of a broken state file is not repeated either.
 
 | Code | Meaning |
 | --- | --- |
-| 0 | Switched and healthy (recorded, journal removed), a dry run whose checks passed, `status`, or `recover` done |
-| 1 | Failed; outside a dry run the outcome is in `deploy.json`, except when the state folder or the switch policy is not trusted, which records nothing |
+| 0 | Switched and healthy (recorded, journal removed), a dry run whose checks passed, `status`, `recover` done, or a retried request whose settled outcome was `ok` |
+| 1 | Failed; outside a dry run the outcome is in `deploy.json`, except when the state folder, the switch policy or the host's stop list is not trusted, which records nothing, or when the result is `unresolved`, which leaves the journal for the next command |
 | 2 | Bad arguments, `--mode` weaker than the switch policy, or a root other than `/` without `--allow-exec`; nothing was done |
 | 3 | Another switch holds the lock, or `status` holds it while a switch is asked for (`flock`, not waited for); nothing was done |
 
@@ -419,6 +478,7 @@ see its messages. The text of a broken state file is not repeated either.
 | A release folder or file writable by group or others, set-id, or not root's | Refused at verify |
 | Signature missing or bad in signed mode, on a switch or a rollback | Refused at verify |
 | Switch policy or signers file not root's, writable by others, or not parsing | Refused before anything; nothing recorded |
+| The host's `stop.list` missing, empty or not trusted | Refused before anything; nothing recorded |
 | `--mode` weaker than the switch policy | Exit 2; nothing done |
 | Counter not above the highest ever attempted | Refused at counter |
 | `--rollback-to` anything but previous | Refused at counter |
@@ -427,10 +487,13 @@ see its messages. The text of a broken state file is not repeated either.
 | A validator fails | Refused at validate; nothing reloaded |
 | Crash during the package step | The next command records `package-step-interrupted`; the next switch runs the step again from the same snapshot |
 | Reload or health fails after the switch | Back to the old release, with its own reload and health lists; `rolled-back` |
-| Going back fails, or the old release is not healthy either | The failed release's `stop.list` runs; `failed-recovery` with `restored_health: failed`; the console is needed |
-| First switch, or the old release missing or no longer verifying, and the new one fails | `current` stays; its `stop.list` runs; `failed` or `failed-recovery` |
+| Going back fails (putting `previous` back included), or the old release is not healthy either | The host's `stop.list` and the stop lists of both releases run; `failed-recovery` with `restored_health: failed`; the console is needed |
+| First switch, or the old release missing or no longer verifying, and the new one fails | `current` stays; the host's and the release's stop lists run; `failed` or `failed-recovery` |
+| A stop command fails | `result: unresolved`, exit 1; the journal stays in `stopping`; every later command runs the stops again and does nothing else until they pass, or `recover --services-stopped` |
+| A link folder cannot be synced | `result: unresolved`, exit 1; the journal stays; nothing is recorded as done until the next command syncs it |
 | `--rollback-to` when `previous` points at a missing release | Refused at counter (`no-previous`) |
-| Crash or power loss during the switch | `current` points at a whole release, the old or the new one, and the journal is there; the next command settles it (see "Interrupted switches and recover") |
+| Crash or power loss during the switch | `current` points at a whole release, the old or the new one, and the journal is there; the next command resumes its phase (see "The journal and recover") |
+| The same request run again after its transaction was settled by another command | Reports that outcome once and does nothing else |
 | `highest-counter` missing or broken while `current` exists | Refused (`counter-missing`, `counter-invalid`); run `recover --counter N` |
 | A second switch while one runs | Exit 3; nothing done |
 

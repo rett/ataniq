@@ -30,6 +30,13 @@ type Record struct {
 	Detail          string `json:"detail"`           // fixed words and quoted identifiers; empty when ok
 	PackageSnapshot string `json:"package_snapshot"` // the snapshot the package step last brought the host to
 	RestoredHealth  string `json:"restored_health"`  // after going back: ok only when the links, the reload and the health all succeeded; failed; empty otherwise
+	ServicesStopped bool   `json:"services_stopped"` // the decision services were stopped (every stop command passed, or the owner said so)
+	// The transaction this record ends: its id, what was asked (an id, or
+	// previous) and, when a later command settled it, that nobody was shown
+	// its outcome yet: the same request run again reports it once.
+	Txn           string `json:"txn"`
+	Requested     string `json:"requested"`
+	PendingReport bool   `json:"pending_report"`
 }
 
 // Results.

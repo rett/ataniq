@@ -238,3 +238,66 @@ func TestCheckOneObject(t *testing.T) {
 		}
 	}
 }
+
+// TestResumeKeepsTrust: a transaction begun as signed on a host whose policy
+// only asks for manual is resumed as signed, whatever the resuming command
+// asks: the journal keeps the trust it began with.
+func TestResumeKeepsTrust(t *testing.T) {
+	for _, good := range []bool{true, false} {
+		t.Run(map[bool]string{true: "good signature", false: "bad signature"}[good], func(t *testing.T) {
+			e := newEnv(t)
+			e.policy(`{"min_mode": "manual", "allowed_signers": "/etc/authority-host/allowed_signers", "principal": "release@example.invalid"}`)
+			signed := func(c *Config) { c.Mode = ModeSigned }
+			ok := &fakeVerifier{}
+			for _, id := range []string{rel1, rel2} {
+				e.signRelease(e.release(id, "s"))
+			}
+			if code := e.switchTo(rel1, verifier(ok), signed); code != ExitOK {
+				t.Fatalf("exit %d", code)
+			}
+			s := e.switcher(verifier(ok), signed)
+			s.crashAt = func(p string) error {
+				if p == CrashActivating {
+					return errCrash
+				}
+				return nil
+			}
+			if code := s.Switch(t.Context(), rel2); code != ExitFailed {
+				t.Fatalf("exit %d", code)
+			}
+			e.out.Reset()
+			if j, _ := e.journal(); j.TrustMode != ModeSigned || j.TrustPrincipal != "release@example.invalid" {
+				t.Fatalf("journal trust: %+v", j)
+			}
+			// Resumed by a command that asks for nothing but the policy's
+			// manual minimum.
+			v := &fakeVerifier{}
+			if !good {
+				v.err = errors.New("not signed by the principal")
+			}
+			e.runner.reset()
+			code := e.switcher(verifier(v)).Recover(t.Context(), RecoverOptions{SetCounter: true, Counter: 9})
+			out := e.out.String()
+			e.out.Reset()
+			if code != ExitFailed {
+				t.Fatalf("recover: exit %d\n%s", code, out)
+			}
+			if v.calls == 0 || v.principal != "release@example.invalid" {
+				t.Fatalf("the resume did not verify the signature: %+v\n%s", v, out)
+			}
+			rec := e.record()
+			if good {
+				if rec.Result != ResultOK || rec.Mode != ModeSigned || rec.CurrentID != rel2 {
+					t.Errorf("record: %+v", rec)
+				}
+				return
+			}
+			// Neither the release nor the one to go back to verifies: the
+			// decision services are stopped, nothing is reloaded.
+			if rec.Result != ResultFailedRecovery || !rec.ServicesStopped {
+				t.Errorf("record: %+v", rec)
+			}
+			e.ran(map[string]int{"reload-units": 0, "health-probe": 0, "stop-all": 1})
+		})
+	}
+}

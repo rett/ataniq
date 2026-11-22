@@ -148,10 +148,45 @@ func (s *Switcher) applyPolicy() (int, bool) {
 		}
 		s.mode = ModeSigned
 	}
+	s.trust = trust{}
+	if s.mode == ModeSigned {
+		s.trust.signed = []signer{{signers: p.AllowedSigners, principal: p.Principal}}
+	}
 	return 0, false
 }
 
-// signersPath is the allowed signers file as the verifier opens it.
-func (s *Switcher) signersPath() string {
-	return filepath.Join(s.cfg.Root, strings.TrimPrefix(s.policy.AllowedSigners, "/"))
+// signer is one signature a release must carry: by principal, as the
+// allowed signers file signers (a path on the host) lists it.
+type signer struct{ signers, principal string }
+
+// trust is what a release must carry beyond its sums: a signature for each
+// signer. None is the manual mode.
+type trust struct{ signed []signer }
+
+func (t trust) mode() string {
+	if len(t.signed) == 0 {
+		return ModeManual
+	}
+	return ModeSigned
+}
+
+// with is t and o together: every signature either asks for.
+func (t trust) with(o trust) trust {
+	out := trust{signed: append([]signer(nil), t.signed...)}
+	for _, sg := range o.signed {
+		dup := false
+		for _, have := range out.signed {
+			dup = dup || have == sg
+		}
+		if !dup {
+			out.signed = append(out.signed, sg)
+		}
+	}
+	return out
+}
+
+// signersPath is the allowed signers file hostPath as the verifier opens
+// it.
+func (s *Switcher) signersPath(hostPath string) string {
+	return filepath.Join(s.cfg.Root, strings.TrimPrefix(hostPath, "/"))
 }

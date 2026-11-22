@@ -162,6 +162,13 @@ func newEnv(t *testing.T) *env {
 	if err := os.MkdirAll(filepath.Join(root, BaseDir, "releases"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The host's own stop list, which every switch requires.
+	if err := os.MkdirAll(filepath.Join(root, PolicyDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, PolicyDir, HostStopList), []byte("stop-all\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	return &env{
 		t:      t,
 		root:   root,
@@ -198,6 +205,16 @@ func (e *env) rollBack(which string) int {
 	e.t.Helper()
 	code := e.switcher().RollBack(context.Background(), which)
 	e.t.Logf("roll back to %s: exit %d\n%s", which, code, e.out.String())
+	e.last = e.out.String()
+	e.out.Reset()
+	return code
+}
+
+// recover runs recover and returns its exit code; its output is in last.
+func (e *env) recover(o RecoverOptions) int {
+	e.t.Helper()
+	code := e.switcher().Recover(context.Background(), o)
+	e.t.Logf("recover %+v: exit %d\n%s", o, code, e.out.String())
 	e.last = e.out.String()
 	e.out.Reset()
 	return code

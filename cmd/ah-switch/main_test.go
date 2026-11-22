@@ -88,6 +88,13 @@ func write(t *testing.T, path, content string, perm fs.FileMode) {
 	}
 }
 
+// hostStops writes the host's own stop list, which every switch requires,
+// as the one command prog.
+func hostStops(t *testing.T, root, prog string) {
+	t.Helper()
+	write(t, filepath.Join(root, switcher.PolicyDir, switcher.HostStopList), prog+"\n", 0o644)
+}
+
 // release writes a release whose no-AI check and health command are
 // scripts, with its SHA256SUMS.
 func release(t *testing.T, root, id string, counter int, health string) {
@@ -124,6 +131,7 @@ func TestSwitchRollbackAndStatus(t *testing.T) {
 	root := t.TempDir()
 	health := filepath.Join(t.TempDir(), "health")
 	write(t, health, "#!/bin/sh\nexit 0\n", 0o755)
+	hostStops(t, root, health)
 	release(t, root, "0001-aaaaaaa", 1, health)
 	release(t, root, "0002-bbbbbbb", 2, health)
 
@@ -175,6 +183,7 @@ func TestImportFrom(t *testing.T) {
 	os.MkdirAll(filepath.Join(root, switcher.BaseDir, "releases"), 0o755)
 	health := filepath.Join(t.TempDir(), "health")
 	write(t, health, "#!/bin/sh\nexit 0\n", 0o755)
+	hostStops(t, root, health)
 	incoming := t.TempDir()
 	releaseIn(t, filepath.Join(incoming, "0001-aaaaaaa"), "0001-aaaaaaa", 1, health)
 	t.Chdir(incoming)
@@ -194,6 +203,7 @@ func TestRecover(t *testing.T) {
 	root := t.TempDir()
 	health := filepath.Join(t.TempDir(), "health")
 	write(t, health, "#!/bin/sh\nexit 0\n", 0o755)
+	hostStops(t, root, health)
 	release(t, root, "0001-aaaaaaa", 1, health)
 	release(t, root, "0002-bbbbbbb", 2, health)
 	fakeNFT(t)

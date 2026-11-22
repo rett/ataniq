@@ -55,6 +55,8 @@ const (
 	CodeRecordFailed       = "record-failed"            // a state file could not be written
 	CodeIOError            = "io-error"                 // any other error of the system
 	CodeNoEarlierRelease   = "no-earlier-release"
+	CodeStopListMissing    = "stop-list-missing" // the host's own stop list is missing or holds no command
+	CodeStopFailed         = "stop-failed"       // a stop command did not exit 0
 )
 
 // failure is an error with a stable code and a detail made only of fixed

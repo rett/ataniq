@@ -93,7 +93,12 @@ func TestCleanSwitch(t *testing.T) {
 func TestDeployRecord(t *testing.T) {
 	e := active(t)
 	rec := e.record()
+	if rec.Txn == "" {
+		t.Errorf("no transaction id recorded")
+	}
+	rec.Txn = ""
 	want := Record{
+		Requested:       rel2,
 		ID:              rel2,
 		PreviousID:      rel1,
 		CurrentID:       rel2,
@@ -112,7 +117,7 @@ func TestDeployRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"id", "previous_id", "current_id", "counter", "mode", "trust", "rollback", "time", "result", "check", "failed_step", "error", "detail", "package_snapshot", "restored_health"} {
+	for _, key := range []string{"id", "previous_id", "current_id", "counter", "mode", "trust", "rollback", "time", "result", "check", "failed_step", "error", "detail", "package_snapshot", "restored_health", "services_stopped", "txn", "requested", "pending_report"} {
 		if !strings.Contains(string(data), `"`+key+`":`) {
 			t.Errorf("deploy.json has no %s:\n%s", key, data)
 		}
@@ -847,7 +852,7 @@ func TestCurrentNotALink(t *testing.T) {
 
 func TestStatus(t *testing.T) {
 	e := newEnv(t)
-	if got := e.status(); got != "current: none\nprevious: none\nhighest counter: 0\ntrust: manual: no switch policy, unsigned releases are accepted\nlast switch: none recorded\n" {
+	if got := e.status(); got != "current: none\nprevious: none\nhighest counter: 0\ntrust: manual: no switch policy, unsigned releases are accepted\nhost stop list: 1 command(s)\nlast switch: none recorded\n" {
 		t.Errorf("status of an empty root:\n%s", got)
 	}
 	e.release(rel1, "s")

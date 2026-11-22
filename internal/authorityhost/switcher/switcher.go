@@ -101,9 +101,16 @@ type Switcher struct {
 	relRoot   *os.Root
 	// budget bounds the import and the hashing of one switch.
 	budget *budget
-	// The switch policy and the mode this switch uses.
+	// The switch policy, the mode this switch uses and the signatures a
+	// release must carry for it (more, while a journal is resumed: the
+	// trust its transaction began with).
 	policy Policy
 	mode   string
+	trust  trust
+	// The host's stop list, read once (see hostStopList).
+	hostStops     [][]string
+	hostStopsErr  error
+	hostStopsRead bool
 	// crashAt, when set, is called at each point of crash; an error stops
 	// the switch there as a crash would.
 	crashAt func(point string) error
@@ -188,7 +195,7 @@ func (s *Switcher) targetID(target string) (ReleaseID, error) {
 	return id, nil
 }
 
-// attempt is the state of one switch.
+// attempt is the state of one switch before its transaction begins.
 type attempt struct {
 	rec        Record
 	oldTarget  string // what current pointed at, as written in the link
@@ -196,31 +203,12 @@ type attempt struct {
 	prevTarget string // what previous pointed at
 	prevExists bool
 	prevThere  bool // the release previous points at is a folder
-	reloads    [][]string
-	health     [][]string
-	stops      [][]string // the candidate's stop list
 	// The release current pointed at, verified, to go back to; nil when
 	// there is none or it cannot be used (fallbackErr says why).
 	fallback    *release
 	fallbackErr error
-	// j is the journal written by this switch, if any.
-	j *journal
-}
-
-// journal returns the journal of this switch in phase, carrying the package
-// step's progress when there was one.
-func (a *attempt) journal(phase string) journal {
-	j := journal{ID: a.rec.ID, Counter: a.rec.Counter, Rollback: a.rec.Rollback, Phase: phase}
-	if a.oldExists {
-		j.OldCurrent = a.oldTarget
-	}
-	if a.prevExists {
-		j.OldPrevious = a.prevTarget
-	}
-	if a.j != nil {
-		j.PackageFrom, j.PackageTo, j.PackageState = a.j.PackageFrom, a.j.PackageTo, a.j.PackageState
-	}
-	return j
+	// t is the transaction, once its journal is written.
+	t *txn
 }
 
 // Switch activates the release named id.
@@ -258,6 +246,10 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	if code, done := s.applyPolicy(); done {
 		return code
 	}
+	if _, err := s.hostStopList(); err != nil {
+		s.errorf("%s; nothing done", describe(err))
+		return ExitFailed
+	}
 	what := "switch to " + arg
 	if rollback {
 		what = "roll back to " + arg
@@ -277,20 +269,25 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 
 	a := &attempt{
 		rec: Record{
-			ID:       arg,
-			Mode:     s.mode,
-			Trust:    s.policy.Trust(),
-			Rollback: rollback,
-			Check:    CheckNotRun,
+			ID:        arg,
+			Mode:      s.mode,
+			Trust:     s.policy.Trust(),
+			Rollback:  rollback,
+			Check:     CheckNotRun,
+			Requested: arg,
 		},
 	}
 	if code, done := s.openBase(a); done {
 		return code
 	}
-	if code, done := s.reconcile(ctx); done {
+	if code, halt := s.reconcile(ctx, true); halt {
 		return code
 	}
-	if code, done := s.readState(a); done {
+	last, code, done := s.readState(a)
+	if done {
+		return code
+	}
+	if code, done := s.reportSettled(last, arg, rollback); done {
 		return code
 	}
 
@@ -331,7 +328,6 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	}
 	defer rel.Close()
 	manifest, validators := rel.manifest, rel.validators
-	a.reloads, a.health, a.stops = rel.reloads, rel.health, rel.stops
 	s.openFallback(ctx, a)
 	defer func() {
 		if a.fallback != nil {
@@ -360,6 +356,40 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		s.step(2, "counter %d is above the highest ever activated, %d", id.Counter, highest)
 	}
 
+	// The transaction, written first when the package step runs and in any
+	// case before any link moves.
+	t := &txn{cand: rel, candSet: true, fb: a.fallback, fbErr: a.fallbackErr, fbSet: true}
+	if a.fallback == nil && a.fallbackErr == nil {
+		t.fbErr = errNoFallback
+	}
+	t.j = journal{
+		Direction:    DirForward,
+		Requested:    arg,
+		ID:           id.Name,
+		Counter:      id.Counter,
+		Phase:        PhasePackages,
+		PackageState: PackageNone,
+		Check:        CheckNotRun,
+	}
+	if rollback {
+		t.j.Direction = DirRollback
+	}
+	if a.oldExists {
+		t.j.OldCurrent = a.oldTarget
+	}
+	if a.prevExists {
+		t.j.OldPrevious = a.prevTarget
+	}
+	t.j.TrustMode = s.trust.mode()
+	if len(s.trust.signed) > 0 {
+		t.j.TrustSigners, t.j.TrustPrincipal = s.trust.signed[0].signers, s.trust.signed[0].principal
+	}
+	if !s.cfg.Dry {
+		if t.j.Txn, err = newTxnID(); err != nil {
+			return s.fail(a, 2, err)
+		}
+	}
+
 	// 3. Packages, before the check, so that the check sees the host as it
 	// will be.
 	if manifest.PackageSnapshot == a.rec.PackageSnapshot {
@@ -376,27 +406,28 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		if s.cfg.Dry {
 			s.step(3, "would run %s", qargv(argv))
 		} else {
-			j := a.journal(PhasePackages)
-			j.PackageFrom, j.PackageTo, j.PackageState = a.rec.PackageSnapshot, manifest.PackageSnapshot, PackageRunning
-			if err := s.writeJournal(j); err != nil {
-				s.dropJournal()
-				return s.fail(a, 3, failf(CodeRecordFailed, "%s not written: %s", JournalFile, q(err.Error())))
+			t.j.PackageFrom, t.j.PackageTo, t.j.PackageState = a.rec.PackageSnapshot, manifest.PackageSnapshot, PackageStarted
+			if err := s.save(t); err != nil {
+				return s.fail(a, 3, err)
 			}
-			a.j = &j
-			if s.crash(CrashPackageStart) {
+			a.t = t
+			if err := s.crash(CrashPackageStart); err != nil {
 				return ExitFailed
 			}
 			if _, err := s.cfg.Runner.Run(ctx, Command{Argv: argv, Timeout: PackageStepTimeout}); err != nil {
 				return s.fail(a, 3, failf(CodePackageFailed, "%s", summary(err)))
 			}
-			a.rec.PackageSnapshot = manifest.PackageSnapshot
-			j.PackageState = PackageDone
-			if err := s.writeJournal(j); err != nil {
-				return s.fail(a, 3, failf(CodeRecordFailed, "%s not written: %s", JournalFile, q(err.Error())))
-			}
-			if s.crash(CrashPackageDone) {
+			if err := s.crash(CrashPackageRan); err != nil {
 				return ExitFailed
 			}
+			t.j.PackageState = PackageDone
+			if err := s.save(t); err != nil {
+				return s.fail(a, 3, err)
+			}
+			if err := s.crash(CrashPackageDone); err != nil {
+				return ExitFailed
+			}
+			a.rec.PackageSnapshot = manifest.PackageSnapshot
 			s.step(3, "package step done: snapshot %s", q(manifest.PackageSnapshot))
 		}
 	}
@@ -405,6 +436,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	if err := s.noAICheck(ctx, a, rel); err != nil {
 		return s.fail(a, 4, err)
 	}
+	t.j.Check = a.rec.Check
 
 	// 5. Validators.
 	for i, v := range validators {
@@ -426,92 +458,86 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 			s.step(6, "would point previous at %s", q(a.oldTarget))
 		}
 		s.step(6, "would point current at %s (a new link renamed over it)", q(newTarget))
-		for _, r := range a.reloads {
+		for _, r := range rel.reloads {
 			s.step(6, "would reload: %s", qargv(r))
 		}
-		for _, h := range a.health {
+		for _, h := range rel.health {
 			s.step(7, "would run %s", qargv(h))
 		}
-		s.step(7, "until every health command passes, every %s for up to %s", HealthInterval, HealthWindow)
+		s.step(7, "until every health command passes, a round every %s, within %s in all", HealthInterval, HealthWindow)
 		s.step(8, "would record the result in %s", q(filepath.Join(s.stateDir(), DeployFile)))
 		s.printf("result: dry run passed; nothing changed")
 		return ExitOK
 	}
-	// The journal, and the counter as attempted, before any link.
-	j := a.journal(PhaseLinks)
-	if err := s.writeJournal(j); err != nil {
-		s.dropJournal()
-		return s.fail(a, 6, failf(CodeRecordFailed, "%s not written: %s", JournalFile, q(err.Error())))
-	}
-	if s.crash(CrashJournal) {
+	a.t = t
+	return s.activateNew(ctx, t, newTarget)
+}
+
+// activateNew moves the links of a verified, checked release: the journal
+// says links (and, on a forward switch, that the counter is used) before
+// the counter is written and before either link moves; previous is pointed
+// at the old current, then current at the release, each renamed over the
+// old link and synced. Then the journal says activating, and the
+// transaction is driven from there. A link that cannot be written, or whose
+// folder cannot be synced, puts both links back, as the resume of the links
+// phase does.
+func (s *Switcher) activateNew(ctx context.Context, t *txn, newTarget string) int {
+	t.j.Phase = PhaseLinks
+	t.j.CounterUsed = t.forward()
+	if err := s.save(t); err != nil {
+		s.step(6, "FAILED: %s", describe(err))
+		s.printf("result: failed at switch; nothing moved; %s may stay and the next command settles it", JournalFile)
 		return ExitFailed
 	}
-	if !rollback {
-		if err := writeFileIn(s.stateRoot, HighestFile, []byte(fmt.Sprintf("%d\n", id.Counter)), 0o644); err != nil {
-			s.dropJournal()
-			return s.fail(a, 6, failf(CodeRecordFailed, "%s not written: %s", HighestFile, q(err.Error())))
+	if s.crash(CrashLinks) != nil {
+		return ExitFailed
+	}
+	if t.forward() {
+		if err := s.highestAtLeast(t.j.Counter); err != nil {
+			code, _ := s.drive(ctx, t)
+			return code
 		}
-		s.step(6, "highest counter %d (attempted)", id.Counter)
+		s.step(6, "highest counter %d (attempted)", t.j.Counter)
 	}
-	if s.crash(CrashCounter) {
+	if s.crash(CrashCounter) != nil {
 		return ExitFailed
 	}
-	if a.oldExists {
-		if moved, err := s.setLink("previous", a.oldTarget); !moved {
-			if s.putPrevious(a) == nil {
-				s.dropJournal()
+	linkFailed := func(name string, err error) int {
+		s.step(6, "FAILED: %s: %s", name, q(err.Error()))
+		if err := s.putBack(t, "switch", failf(CodeLinkFailed, "%s: %s", name, q(err.Error()))); err != nil {
+			if !errors.Is(err, errCrashed) {
+				s.printf("result: unresolved: %s; %s stays in phase %s, and the next switch, rollback or recover resumes it", describe(err), JournalFile, t.j.Phase)
 			}
-			return s.fail(a, 6, failf(CodeLinkFailed, "previous: %s", q(err.Error())))
+			return ExitFailed
 		}
+		code, _ := s.drive(ctx, t)
+		return code
 	}
-	if s.crash(CrashPrevious) {
+	if t.j.OldCurrent != "" {
+		if err := replaceLink(s.baseRoot, "previous", t.j.OldCurrent); err != nil {
+			return linkFailed("previous", err)
+		}
+		s.step(6, "previous -> %s", q(t.j.OldCurrent))
+	}
+	if s.crash(CrashPrevious) != nil {
 		return ExitFailed
 	}
-	if moved, err := s.setLink("current", newTarget); !moved {
-		// current is as it was: put previous back too; the journal goes
-		// only when that worked.
-		if s.putPrevious(a) == nil {
-			s.dropJournal()
-		}
-		return s.fail(a, 6, failf(CodeLinkFailed, "current: %s", q(err.Error())))
-	}
-	if s.crash(CrashCurrent) {
-		return ExitFailed
-	}
-	a.rec.CurrentID = id.Name
-	if a.oldExists {
-		s.step(6, "previous -> %s", q(a.oldTarget))
+	if err := replaceLink(s.baseRoot, "current", newTarget); err != nil {
+		return linkFailed("current", err)
 	}
 	s.step(6, "current -> %s", q(newTarget))
-	if err := s.reload(ctx, a.reloads); err != nil {
-		return s.goBack(ctx, a, "reload", err)
-	}
-
-	// 7. Health.
-	if err := s.checkHealth(ctx, a.health); err != nil {
-		return s.goBack(ctx, a, stepNames[7], err)
-	}
-	if s.crash(CrashHealth) {
+	if s.crash(CrashCurrent) != nil {
 		return ExitFailed
 	}
-
-	// 8. Record, then drop the journal. The result is ok only once both are
-	// durable: until then the journal says the switch is not finished, and
-	// the next command completes it.
-	a.rec.Result = ResultOK
-	if err := s.record(a); err != nil {
-		s.step(8, "FAILED: %s not written; the journal stays and the next command completes the switch", DeployFile)
-		s.printf("result: failed at record; current -> %s, healthy, but the outcome is not recorded", id.Name)
+	t.j.Phase = PhaseActivating
+	if err := s.save(t); err != nil {
+		return linkFailed(JournalFile, err)
+	}
+	if s.crash(CrashActivating) != nil {
 		return ExitFailed
 	}
-	s.step(8, "recorded in %s", q(filepath.Join(s.stateDir(), DeployFile)))
-	if err := s.dropJournal(); err != nil {
-		s.step(8, "FAILED: %s not removed: %s; the next command completes the switch", JournalFile, q(err.Error()))
-		s.printf("result: failed at record; current -> %s, healthy, but the journal is still there", id.Name)
-		return ExitFailed
-	}
-	s.printf("result: ok; current -> %s", id.Name)
-	return ExitOK
+	code, _ := s.drive(ctx, t)
+	return code
 }
 
 // lock opens the state folder, checking it and every folder above it up to
@@ -584,17 +610,17 @@ func (s *Switcher) closeRoots() {
 	s.stateRoot, s.baseRoot, s.relRoot = nil, nil, nil
 }
 
-// readState reads current, previous and the last record.
-func (s *Switcher) readState(a *attempt) (int, bool) {
+// readState reads current, previous and the last record, which it returns.
+func (s *Switcher) readState(a *attempt) (Record, int, bool) {
 	var err error
 	a.oldTarget, a.oldExists, err = readLink(s.baseRoot, "current")
 	if err != nil {
-		return s.failState(a, err), true
+		return Record{}, s.failState(a, err), true
 	}
 	if a.oldExists {
 		id, err := s.targetID(a.oldTarget)
 		if err != nil {
-			return s.failState(a, fmt.Errorf("current: %w", err)), true
+			return Record{}, s.failState(a, fmt.Errorf("current: %w", err)), true
 		}
 		a.rec.PreviousID = id.Name
 		a.rec.CurrentID = id.Name
@@ -604,12 +630,12 @@ func (s *Switcher) readState(a *attempt) (int, bool) {
 	}
 	a.prevTarget, a.prevExists, err = readLink(s.baseRoot, "previous")
 	if err != nil {
-		return s.failState(a, err), true
+		return Record{}, s.failState(a, err), true
 	}
 	if a.prevExists {
 		id, err := s.targetID(a.prevTarget)
 		if err != nil {
-			return s.failState(a, fmt.Errorf("previous: %w", err)), true
+			return Record{}, s.failState(a, fmt.Errorf("previous: %w", err)), true
 		}
 		a.prevThere = s.releaseThere(id)
 	}
@@ -619,7 +645,7 @@ func (s *Switcher) readState(a *attempt) (int, bool) {
 			// Not recorded: the record is what cannot be trusted.
 			s.printf("state: FAILED: %s", describe(err))
 			s.printf("result: failed before step 1; nothing changed or recorded")
-			return ExitFailed, true
+			return Record{}, ExitFailed, true
 		}
 	}
 	a.rec.PackageSnapshot = last.PackageSnapshot
@@ -628,7 +654,7 @@ func (s *Switcher) readState(a *attempt) (int, bool) {
 		current = a.rec.CurrentID
 	}
 	s.printf("state: current %s", current)
-	return 0, false
+	return last, 0, false
 }
 
 // releaseThere reports whether releases/<id> is a folder (not a link).
@@ -834,7 +860,7 @@ func (s *Switcher) verifySignature(ctx context.Context, rel *release) error {
 	if err != nil {
 		return err
 	}
-	if s.mode == ModeManual {
+	if len(s.trust.signed) == 0 {
 		note := ""
 		if present {
 			note = " (" + SignatureFile + " is there and is not read)"
@@ -845,20 +871,24 @@ func (s *Switcher) verifySignature(ctx context.Context, rel *release) error {
 	if !present {
 		return failf(CodeSignatureMissing, "%s missing; mode signed needs it", SignatureFile)
 	}
-	if s.cfg.Dry {
-		s.step(1, "would verify %s as signed by %s against %s", SignatureFile, q(s.policy.Principal), q(s.policy.AllowedSigners))
-		return nil
+	for _, sg := range s.trust.signed {
+		if s.cfg.Dry {
+			s.step(1, "would verify %s as signed by %s against %s", SignatureFile, q(sg.principal), q(sg.signers))
+			continue
+		}
+		if err := s.cfg.Verifier.Verify(ctx, s.signersPath(sg.signers), sg.principal, rel.sums, filepath.Join(rel.path, SignatureFile)); err != nil {
+			_, detail := codeOf(err)
+			return failf(CodeSignatureBad, "%s: %s", SignatureFile, detail)
+		}
+		s.step(1, "%s verified as signed by %s against %s", SignatureFile, q(sg.principal), q(sg.signers))
 	}
-	if err := s.cfg.Verifier.Verify(ctx, s.signersPath(), s.policy.Principal, rel.sums, filepath.Join(rel.path, SignatureFile)); err != nil {
-		_, detail := codeOf(err)
-		return failf(CodeSignatureBad, "%s: %s", SignatureFile, detail)
-	}
-	s.step(1, "%s verified as signed by %s against %s", SignatureFile, q(s.policy.Principal), q(s.policy.AllowedSigners))
 	return nil
 }
 
-// fail ends a switch that failed at step n before current was moved: current
-// is untouched. Outside a dry run the outcome is recorded.
+// fail ends a switch that failed at step n before its links moved: current
+// is untouched. Outside a dry run the outcome is recorded: through the
+// transaction when its journal was written already (the package step ran),
+// directly otherwise.
 func (s *Switcher) fail(a *attempt, n int, err error) int {
 	s.setFailure(a, stepNames[n], err)
 	s.step(n, "FAILED: %s", describe(err))
@@ -867,10 +897,23 @@ func (s *Switcher) fail(a *attempt, n int, err error) int {
 		s.printf("result: failed at %s (dry run: nothing recorded); current unchanged", stepNames[n])
 		return ExitFailed
 	}
-	// A journal of the package step goes once the outcome, with the
-	// snapshot the host is at, is recorded.
-	if s.record(a) == nil && a.j != nil {
-		s.dropJournal()
+	if t := a.t; t != nil {
+		t.fail(stepNames[n], err)
+		if t.j.Check == CheckNotRun {
+			t.j.Check = a.rec.Check
+		}
+		if err := s.done(t, ResultFailed); err != nil {
+			if !errors.Is(err, errCrashed) {
+				s.printf("result: unresolved: %s; %s stays, and the next switch, rollback or recover settles it", describe(err), JournalFile)
+			}
+			return ExitFailed
+		}
+		code, _ := s.drive(context.Background(), t)
+		return code
+	}
+	if err := s.record(a); err != nil {
+		s.printf("result: failed at %s; current unchanged; the outcome is not recorded", stepNames[n])
+		return ExitFailed
 	}
 	cur := a.rec.CurrentID
 	if cur == "" {
@@ -936,56 +979,24 @@ func (s *Switcher) checkHealth(ctx context.Context, health [][]string) error {
 	return failf(CodeHealthFailed, "not healthy after %d attempts in %s: %s: %s", attempts, HealthWindow, q(lastArgv[0]), summary(last))
 }
 
-// restorePrevious puts previous back as it was before the switch, warning
-// when it cannot.
-func (s *Switcher) restorePrevious(a *attempt) {
-	if err := s.putPrevious(a); err != nil {
-		s.printf("warning: previous not put back: %s", describe(err))
-	}
-}
-
-// putPrevious points previous at what it pointed at before the switch, or
-// removes it when there was none.
-func (s *Switcher) putPrevious(a *attempt) error {
-	if a.prevExists {
-		if moved, err := s.setLink("previous", a.prevTarget); !moved {
-			return err
-		}
-		return nil
-	}
-	return removeFileIn(s.baseRoot, "previous")
-}
-
-// setLink points the link name of opt/authority-host at target (see
-// replaceLink). When that fails, the link is read again, since the rename
-// may have happened before the folder's sync failed: moved says whether name
-// now points at target. A link that moved is the outcome, with a warning that
-// its folder was not synced; the journal covers what a crash could lose.
-func (s *Switcher) setLink(name, target string) (moved bool, err error) {
-	err = replaceLink(s.baseRoot, name, target)
-	if err == nil {
-		return true, nil
-	}
-	if t, ok, rerr := readLink(s.baseRoot, name); rerr == nil && ok && t == target {
-		s.printf("warning: %s points at %s, but its folder was not synced: %s", name, q(target), q(err.Error()))
-		return true, err
-	}
-	return false, err
-}
-
-// record writes deploy.json. A dry run records nothing.
+// record writes the record of a switch that failed before its transaction
+// began. A dry run records nothing.
 func (s *Switcher) record(a *attempt) error {
 	if s.cfg.Dry || s.stateRoot == nil {
 		return nil
 	}
-	a.rec.Time = s.cfg.Now().UTC().Format(time.RFC3339)
-	a.rec.Detail = boundDetail(a.rec.Detail)
-	err := writeJSONIn(s.stateRoot, DeployFile, a.rec, 0o644)
-	if err != nil {
+	if err := s.writeRecord(&a.rec); err != nil {
 		s.printf("ah-switch: %s not written: %s", DeployFile, q(err.Error()))
 		return err
 	}
 	return nil
+}
+
+// writeRecord writes deploy.json with the time of now.
+func (s *Switcher) writeRecord(rec *Record) error {
+	rec.Time = s.now()
+	rec.Detail = boundDetail(rec.Detail)
+	return writeJSONIn(s.stateRoot, DeployFile, rec, 0o644)
 }
 
 // setFailure records err in the record as the failure of step.
@@ -1082,11 +1093,11 @@ func (s *Switcher) status(w io.Writer) error {
 		fmt.Fprintln(w, "highest counter: 0")
 	}
 	if pending {
-		kind := "switch to"
-		if j.Rollback {
-			kind = "rollback to"
+		t := &txn{j: j}
+		fmt.Fprintf(w, "interrupted: %s %s in phase %s; the next switch, rollback or recover resumes it\n", t.kind(), j.ID, j.Phase)
+		if j.StopFailures != "" {
+			fmt.Fprintf(w, "stop failures: %s; fix their cause and run a command again, or run ah-switch recover --services-stopped once the decision services are stopped\n", j.StopFailures)
 		}
-		fmt.Fprintf(w, "interrupted: %s %s; the next switch, rollback or recover settles it\n", kind, j.ID)
 	}
 	switch {
 	case !s.policy.present:
@@ -1095,6 +1106,11 @@ func (s *Switcher) status(w io.Writer) error {
 		fmt.Fprintln(w, "trust: manual: the switch policy accepts unsigned releases")
 	default:
 		fmt.Fprintf(w, "trust: signed: releases must be signed by %s\n", q(s.policy.Principal))
+	}
+	if stops, err := s.hostStopList(); err != nil {
+		fmt.Fprintf(w, "host stop list: %s; a switch is refused until it is there\n", describe(err))
+	} else {
+		fmt.Fprintf(w, "host stop list: %d command(s)\n", len(stops))
 	}
 	if !ok {
 		fmt.Fprintln(w, "last switch: none recorded")
@@ -1105,6 +1121,12 @@ func (s *Switcher) status(w io.Writer) error {
 		kind = "rollback to"
 	}
 	fmt.Fprintf(w, "last switch: %s %s: %s at %s (mode %s)\n", kind, q(rec.ID), q(rec.Result), q(rec.Time), q(rec.Mode))
+	if rec.PendingReport {
+		fmt.Fprintf(w, "settled after an interruption; the same request run again reports it once\n")
+	}
+	if rec.ServicesStopped {
+		fmt.Fprintf(w, "decision services: stopped\n")
+	}
 	fmt.Fprintf(w, "no-AI check: %s\n", q(rec.Check))
 	if rec.FailedStep != "" {
 		fmt.Fprintf(w, "failed step: %s\n", q(rec.FailedStep))
