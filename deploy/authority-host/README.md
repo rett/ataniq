@@ -1789,7 +1789,8 @@ first packet of a connection, and a `route` chain (hook `output`) is not
 counted either, so a ruleset that drops by default only in one is reported.
 An unquoted `#` starts a comment, which is not read. Of the rules it reads
 only the first rule of such a chain: one that accepts every packet (`accept`
-alone, with at most a counter and a comment) makes the chain not count. No
+alone, with at most a counter, plain or named (`counter name "x"`), and a
+comment) makes the chain not count. No
 other rule is read, so a chain whose rules accept everything in another way
 (a later unconditional `accept`, a `jump` or `goto` to a chain that accepts
 everything, an accept behind a match every packet meets) still counts: the
@@ -1804,7 +1805,8 @@ WARNING: no-default-deny HOOK: the enrolled nft ruleset has no base chain of hoo
 and writes the same words, as a `# ` comment, into the header of
 `share/nft.digest`, so that whoever reads the release later sees that its
 digest was enrolled over a ruleset without that policy. A listing it cannot
-read in that shape counts as having no default deny, so of the policies the
+read in that shape, or that ends inside a block (a listing cut short), counts
+as having no default deny, so of the policies the
 warning may be one too many, never one too few; of the rules, as above, it
 can say nothing, so read them yourself before the baseline is enrolled.
 `--require-default-deny` turns any of these into a refusal (`FAIL:

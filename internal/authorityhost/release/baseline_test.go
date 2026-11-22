@@ -436,6 +436,17 @@ func TestBaselineReportsAMissingDefaultDeny(t *testing.T) {
 		{"a first rule that accepts all", strings.ReplaceAll(nftDefaultDeny, "policy drop;\n", "policy drop;\n\t\taccept\n"), []string{"input", "output", "forward"}},
 		{"a counted first accept", strings.Replace(nftDefaultDeny, "hook forward priority filter; policy drop;\n", "hook forward priority filter; policy drop;\n\t\tcounter packets 3 bytes 120 accept comment \"all\"\n", 1), []string{"forward"}},
 		{"a first rule that matches", strings.Replace(nftDefaultDeny, "hook forward priority filter; policy drop;\n", "hook forward priority filter; policy drop;\n\t\tct state established accept\n\t\taccept\n", 1), nil},
+		{"a loopback first rule is a match", strings.Replace(nftDefaultDeny, "hook forward priority filter; policy drop;\n", "hook forward priority filter; policy drop;\n\t\tiifname lo accept\n", 1), nil},
+		// A named counter (counter name "x") is a counter like the others: a
+		// first rule of only that and accept still accepts every packet.
+		{"a named counter first accept", strings.Replace(nftDefaultDeny, "hook forward priority filter; policy drop;\n", "hook forward priority filter; policy drop;\n\t\tcounter name \"traffic\" accept\n", 1), []string{"forward"}},
+		{"a named counter and a comment on a first accept", strings.Replace(nftDefaultDeny, "hook forward priority filter; policy drop;\n", "hook forward priority filter; policy drop;\n\t\tcounter name \"traffic\" accept comment \"all\"\n", 1), []string{"forward"}},
+		{"a named counter on a first rule that matches", strings.Replace(nftDefaultDeny, "hook forward priority filter; policy drop;\n", "hook forward priority filter; policy drop;\n\t\ttcp dport 22 counter name \"ssh\" accept\n", 1), nil},
+		{"a named counter alone is no accept", strings.Replace(nftDefaultDeny, "hook forward priority filter; policy drop;\n", "hook forward priority filter; policy drop;\n\t\tcounter name \"traffic\"\n", 1), nil},
+		// A listing that ends inside a block was cut: it credits nothing.
+		{"a listing cut inside the last chain", nftDefaultDeny[:strings.Index(nftDefaultDeny, "\t\tip daddr")], []string{"input", "output", "forward"}},
+		{"a listing cut inside a rule block", nftDefaultDeny[:strings.Index(nftDefaultDeny, " 192.0.2.1")], []string{"input", "output", "forward"}},
+		{"a listing cut inside the table", nftDefaultDeny[:strings.LastIndex(nftDefaultDeny, "}\n")], []string{"input", "output", "forward"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o := baselineInputs(t)
