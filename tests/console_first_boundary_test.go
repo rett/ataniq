@@ -96,7 +96,7 @@ var boundaryTable = map[string][]string{
 	pkgDoor:         {pkgRecord},
 	pkgDoorTest:     {pkgRecord, pkgDoor},
 	pkgOwnerJournal: {pkgRecord},
-	pkgOwnerChannel: {pkgRecord, pkgCard, pkgLimits, pkgPresence, pkgDoor, pkgOwnerJournal, pkgOwnerWire, pkgSeatPair},
+	pkgOwnerChannel: {pkgRecord, pkgCard, pkgLimits, pkgPresence, pkgDoor, pkgOwnerJournal, pkgOwnerWire, pkgSeatPair, pkgCredKind},
 	pkgDemo:         {pkgRecord, pkgCard, pkgLimits, pkgPresence, pkgLeadText},
 	pkgConsoleView:  {pkgClientAPI, pkgOwnerWire, pkgRecord, pkgCard, pkgLimits, pkgLeadWire},
 	pkgPager:        {pkgLeadText},
