@@ -1,0 +1,14 @@
+- The daemon built with the owner channel's tag can serve the seat gate, the
+  link of the phone's seat app, with `ataniqd run --owner-channel --seat-gate
+  ADDR`. ADDR is one IP address of the host and a port; a host name, a wildcard,
+  multicast or broadcast address and a zero port are refused. The gate is TLS
+  1.3 with pinned keys: `ataniqd seat-gate init` makes the gate's key in
+  `owner/gate/` of the state folder and prints its fingerprint, and the seat
+  keys it lets in are pinned in `owner/gate/seat-pins` (mode 0600, one
+  fingerprint per line, at most 4), which `ataniqd seat-gate pins` lists and the
+  daemon reads at start. It serves the pairing call and the reads of the cards
+  in frames of up to 257 KiB, so the largest card fits, and decides nothing. A
+  seat whose key is not pinned never reaches the service. At start one line
+  gives the address and the gate's key fingerprint, never a pin. Without the
+  flag nothing listens on the network. Provisional and unqualified, for scratch
+  state only. See `docs/lead-daemon.md`.

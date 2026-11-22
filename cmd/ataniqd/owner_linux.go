@@ -53,17 +53,53 @@ credentials of the paired phones, the owner's deciding keys, are kept in the
 file owner/keys.log of the state folder (private, append-only, checked when it
 is read). A file that cannot be opened (damaged, not private, held elsewhere)
 is never repaired or started over: the daemon says so once at start, serves the
-approvals, and answers the pairing and key operations "keys-unavailable". The
-seat's call, seat.pair, is refused "unavailable": this build has no seat.
+approvals, and answers the pairing and key operations "keys-unavailable". On
+the socket the seat's call, seat.pair, is refused "unavailable": no connection
+of the socket is a seat.
+
+       ataniqd run --owner-channel --seat-gate ADDR
+       ataniqd seat-gate init [--state-dir DIR]
+       ataniqd seat-gate pins [--state-dir DIR]
+
+  --seat-gate ADDR  also serve the seat gate, the link of the seat app on the
+                    authority host, on ADDR: one IP address of this host and
+                    a port, such as 192.0.2.10:7443 or [2001:db8::10]:7443
+                    (a host name, a wildcard, multicast or broadcast address
+                    and a zero port are refused). Only with --owner-channel.
+                    The gate is TLS 1.3 with pinned keys: its own key is in
+                    owner/gate/ of the state folder, and the seat keys it lets
+                    in are in owner/gate/seat-pins (a regular file of the
+                    daemon's user, mode 0600, one fingerprint per line, # for a
+                    comment, at most 4). Both are read at start, so a change of
+                    the pins takes effect at the next start; the daemon refuses
+                    to start without a key or a pin. It serves the pairing call
+                    and the reads of the cards, and decides nothing. At start
+                    it prints one line with the address and the gate's key
+                    fingerprint, and no pin; it stops the gate before it closes
+                    the service.
+  seat-gate init    make the gate's key in owner/gate/ of the state folder and
+                    print its fingerprint, the pin the seat is given. A key
+                    already there is never overwritten.
+  seat-gate pins    print the seat pins as the daemon reads them at start.
 `
 
 func init() { usage += ownerUsage }
 
 // ownerFlags are the flags of run that only a build with the tag has.
-type ownerFlags struct{ set bool }
+type ownerFlags struct {
+	set bool
+	// seatGate is the address of --seat-gate, when gateSet says it was
+	// given.
+	seatGate string
+	gateSet  bool
+}
 
 func (o *ownerFlags) define(fs *flag.FlagSet) {
 	fs.BoolVar(&o.set, "owner-channel", false, "serve the owner connection (owner.* operations)")
+	fs.Func("seat-gate", "serve the seat gate on ADDR, one IP address and port (with --owner-channel)", func(v string) error {
+		o.seatGate, o.gateSet = v, true
+		return nil
+	})
 }
 
 // ownerServiceBuilder builds the host's side of a card in the daemon's state
@@ -93,6 +129,10 @@ var ownerInspector leaddaemon.PeerInspector = leaddaemon.ProcInspector{}
 // returns a code to end with, or -1 to go on. The roots of cfg are final.
 func (a *app) ownerRun(o *ownerFlags, cfg *leaddaemon.Config) (code int) {
 	if !o.set {
+		if o.gateSet {
+			fmt.Fprint(a.stderr, "ataniqd run: --seat-gate needs --owner-channel\n")
+			return leaddaemon.ExitUsage
+		}
 		return -1
 	}
 	build := ownerServiceBuilder
@@ -110,15 +150,25 @@ func (a *app) ownerRun(o *ownerFlags, cfg *leaddaemon.Config) (code int) {
 			return leaddaemon.ExitConfig
 		}
 	}
+	// The seat gate's address, key and pins are read before the daemon takes
+	// a lock too; the gate listens once the service is built.
+	var gate *leaddaemon.SeatGate
+	if o.gateSet {
+		g, code := a.seatGatePrepare(o.seatGate, stateDir)
+		if code >= 0 {
+			return code
+		}
+		gate = g
+	}
 	oc := &leaddaemon.OwnerChannel{
-		Build: func() (leaddaemon.OwnerService, func() error, error) {
+		Build: withSeatGate(gate, func() (leaddaemon.OwnerService, func() error, error) {
 			svc, closer, err := build(stateDir)
 			if err == nil && guard != nil {
 				// The one line at start that says what the door is.
 				fmt.Fprintf(a.stderr, "ataniqd: %s\n", guard.banner)
 			}
 			return svc, closer, err
-		},
+		}),
 		Inspector: ownerInspector,
 		Log:       func(format string, args ...any) { fmt.Fprintf(a.stderr, "ataniqd: "+format+"\n", args...) },
 	}

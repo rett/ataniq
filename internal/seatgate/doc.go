@@ -23,9 +23,13 @@
 // # Frames
 //
 // After the TLS handshake the two ends exchange frames: a 4-byte big-endian
-// length, then that many bytes of one JSON object. A frame is 1 to 65536
-// (64 KiB) bytes; a length of zero or above that is refused before any payload
-// is read. A frame is a request or a response:
+// length, then that many bytes of one JSON object. A frame is 1 to 263168
+// (257 KiB, [MaxFrame]) bytes, in both directions: the largest result of the
+// owner channel's service (256 KiB) and 1 KiB for the response around it. A
+// length of zero or above that is refused before any payload is read, and
+// neither end writes a larger frame (a result that would not fit is answered
+// too-large; a request that would not fit is not sent). A frame is a request
+// or a response:
 //
 //	{"id": 7, "op": "owner.list", "params": {...}}     params may be absent
 //	{"id": 7, "result": {...}}
