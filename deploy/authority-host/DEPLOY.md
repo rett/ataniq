@@ -75,7 +75,13 @@ allowlists of the source tree from the host's baseline first, with
 allowlists](README.md#filling-the-allowlists)): collect four files on the host
 (`HIT unit` names, `ss -H -ltn` ports, `pacman -Qq`, `nft list ruleset`), run
 `ah-release baseline --src deploy/authority-host ... --out DIR` and build with
-`--src DIR`.
+`--src DIR`. `baseline` enrolls any firewall listing, but it prints a `WARNING:
+no-default-deny HOOK` line (and writes the same words into the header of
+`share/nft.digest`) for each of the hooks `input`, `output` and `forward` that has
+no base chain with `policy drop` in a table that is not dormant, for IPv4 and
+IPv6; read them before you build. `--require-default-deny` makes it refuse such a
+listing instead. The host's firewall is the owner's: the baseline pins the rules
+as they are and does not judge them.
 
 ### 3. Set the host up, once: bootstrap, dry then apply
 
@@ -203,8 +209,9 @@ Then acknowledge the outcome, from your own root session on the host (the
 deploying user cannot run this, see "Who may switch"). Every switch owes its
 outcome until you do, and while an outcome is owed the switch refuses a switch
 to another release or a rollback (it prints the outcomes owed and does nothing
-else); only the same request run again, which reports the outcome, would take
-it back instead of you:
+else). Running the same request again only reports the outcome and leaves it
+owed; only your `ack` takes it back, so after every switch you acknowledge
+before the next different switch or a rollback:
 
 ```
 sudo /usr/local/sbin/ah-switch ack --asked "WHAT YOU ASKED OR SAW"
@@ -257,8 +264,10 @@ and never in this repository:
   INCOMING/ID ID` without a password for the deploying user (`BatchMode`, no
   terminal), and only that form. The switch does not check who calls it, and
   it also has the owner's verbs: `inhibit-clear`, `ack`, `recover` with its
-  options, `--rollback-to`, and a caller-chosen checker (`--noaicheck`) or
-  alternate root (`--root`). A rule for the whole program would hand all of
+  options, `--rollback-to`, and a caller-chosen checker (`--noaicheck`, which
+  the switch refuses when `SUDO_UID` or `SUDO_USER` is set, so the owner needs a
+  real root login for it, not a root shell started with `sudo`) or alternate
+  root (`--root`). A rule for the whole program would hand all of
   them to the deploy key, which lives on the development host. So give the
   deploying user this rule and no other for the switch, in a file of
   `/etc/sudoers.d` (made with `visudo -f`), with the user's name and home

@@ -319,8 +319,8 @@ plan() {
   if [ "$LINK_CADDY" = 1 ]; then
     step_caddy
     out "note: $OPT/current does not exist until the first ah-switch makes it. Until then the"
-    out "      Caddyfile link dangles: switch to a release first, then restart caddy."
-    out "      This script never restarts, reloads or enables a service."
+    out "      Caddyfile link dangles: leave caddy as it is, the first switch restarts"
+    out "      caddy itself. This script never restarts, reloads or enables a service."
   else
     out "skipped: $R/etc/caddy/Caddyfile is not linked (pass --link-caddy to do it)"
   fi
