@@ -1051,6 +1051,66 @@ func TestOwedSurvivesUnrelatedRefusal(t *testing.T) {
 	}
 }
 
+// brokenOut is an output whose writes (or, buffered, whose flush) fail,
+// as a full filesystem or a dropped session does.
+type brokenOut struct {
+	flush bool // writes are accepted and held; Flush fails
+}
+
+func (b brokenOut) Write(p []byte) (int, error) {
+	if b.flush {
+		return len(p), nil
+	}
+	return 0, errors.New("no space left on device")
+}
+
+func (b brokenOut) Flush() error {
+	if b.flush {
+		return errors.New("no space left on device")
+	}
+	return nil
+}
+
+// TestOwedKeptWhenTheResultCannotBeWritten: a retry that cannot write or
+// flush the outcome it reports has not delivered it: the outcome stays
+// owed and the command fails, so that the next retry reports it and the
+// owner's next --rollback-to previous cannot resolve the rollback's
+// release again.
+func TestOwedKeptWhenTheResultCannotBeWritten(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		out  brokenOut
+	}{{"write fails", brokenOut{}}, {"flush fails", brokenOut{flush: true}}} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := active(t)
+			e.keepOwed = true
+			e.crashAt(CrashUnreported, true, "previous")
+			e.links(rel1, rel2)
+			e.runner.reset()
+			s := e.switcher(func(c *Config) { c.Out, c.Err = tc.out, &e.out })
+			if code := s.RollBack(context.Background(), "previous"); code != ExitFailed {
+				t.Fatalf("retry with a broken output: exit %d\n%s", code, e.out.String())
+			}
+			e.out.Reset()
+			if owed := e.owed(); len(owed) != 1 || owed[0].Direction != DirRollback || owed[0].ID != rel1 {
+				t.Fatalf("owed after the failed write: %+v", owed)
+			}
+			e.links(rel1, rel2)
+			if len(e.runner.calls) != 0 {
+				t.Errorf("commands run: %v", e.runner.calls)
+			}
+			// The next retry, with a working output, reports it once.
+			if code := e.rollBack("previous"); code != ExitOK || !strings.Contains(e.last, "it is not done again") {
+				t.Fatalf("next retry: exit %d\n%s", code, e.last)
+			}
+			e.links(rel1, rel2)
+			if len(e.owed()) != 0 {
+				t.Errorf("still owed after it was reported: %+v", e.owed())
+			}
+		})
+	}
+}
+
 // TestAck: ah-switch ack --asked WORDS acknowledges every outcome owed:
 // it needs the words, is refused while a transaction is open and when
 // nothing is owed, runs no program, and a dry run changes nothing. An

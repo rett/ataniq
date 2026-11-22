@@ -208,7 +208,8 @@ func (s *Switcher) addOwed(rec Record, direction string, requalifyFailed bool) e
 // answerOwed is what a switch or rollback (arg, rollback) does first, once
 // any journal is settled: when an outcome is owed and the request is a
 // retry of it (see matches), it reports that outcome and does nothing
-// else, and the outcome is no longer owed (a dry run leaves it owed);
+// else, and the outcome is no longer owed (a dry run leaves it owed, and
+// so does a report that could not be written, which fails the command);
 // when outcomes are owed and the request is another one, it reports them,
 // leaves them owed and refuses the request. done says the command ends
 // there, with code.
@@ -248,7 +249,12 @@ func (s *Switcher) answerOwed(arg string, rollback bool) (code int, done bool) {
 	if o.Detail != "" {
 		s.printf("settled: %s", o.Detail)
 	}
-	s.reportOwed(o)
+	// An outcome that could not be written (or flushed) has not been
+	// delivered: it is never taken back then.
+	if err := s.reportOwed(o); err != nil {
+		s.errorf("the outcome of this %s %s could not be written: %s; it stays owed, and the same request run again reports it", kind, arg, q(err.Error()))
+		return ExitFailed, true
+	}
 	if s.cfg.Dry {
 		s.printf("settled: dry run: the outcome is still owed; nothing changed")
 	} else if o.RequalifyFailed {

@@ -756,7 +756,10 @@ things take it back:
   to), it reports the rollback whose outcome is owed and never resolves
   `previous` anew, which would go back to the release the first rollback
   left. A forward switch is retried by the same id. Run the request once
-  more to do it again.
+  more to do it again. When the report cannot be written or flushed (a
+  full filesystem, a dropped session) the outcome has not been delivered:
+  it stays owed, the command exits 1 and says so on its error output, and
+  the next retry reports it.
   An outcome whose requalification failed (see "The decision inhibit")
   is the exception: it is reported with exit 1, stays owed, and only
   `ack` takes it back.
@@ -892,6 +895,7 @@ see its messages. The text of a broken state file is not repeated either.
 | `--rollback-to` when `previous` points at a missing release | Refused at counter (`no-previous`) |
 | Crash or power loss during the switch | `current` points at a whole release, the old or the new one, and the journal is there; the next command resumes its phase (see "The journal and recover") |
 | The same request run again while its outcome is owed (settled by its own command or by another one, its result line printed or not) | Reports that outcome once and does nothing else; a rollback retried as `previous` goes to no other release; `--dry` only shows it |
+| The same request run again, and its report cannot be written or flushed | The outcome stays owed; exit 1; the next retry reports it |
 | Another switch or rollback while an outcome is owed | Reports the outcomes owed, leaves them owed and is refused, exit 1, nothing recorded or run, until `ack --asked WORDS` or the same request again |
 | `highest-counter` missing or broken while `current` exists, or below a counter the links, `deploy.json` or `counters.log` show was used | Refused before anything, nothing recorded (`counter-missing`, `counter-invalid`); run `recover --counter N` |
 | A journal whose links or counter do not match the host (restored from a backup) | `reconcile: unresolved`, exit 1; nothing resumed, run or moved until `recover --discard-journal TXN` |

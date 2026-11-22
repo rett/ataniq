@@ -52,7 +52,8 @@
   transaction open, and every settled outcome is owed in its own file,
   `/var/lib/authority-host/owed.json` (written before the journal is
   removed, never in `deploy.json`, and not taken back by a printed result
-  line): the same request run again reports it instead of doing it again,
+  line): the same request run again reports it instead of doing it again
+  (an outcome whose report cannot be written stays owed, exit 1),
   a rollback bound to its request id so that a retry never resolves
   `previous` anew, any other switch or rollback reports it and is refused
   until then, and `ah-switch ack --asked WORDS` acknowledges it (recorded
