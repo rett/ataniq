@@ -28,10 +28,14 @@
   `{env.NAME}` and `{$NAME}`, in Caddy's JSON, read as JSON, only
   `{env.NAME}`; shell-style `$NAME` and `${NAME}` are literal text, never
   matched, and so is every comment and literal, a `$` in a JSON value
-  included; a reference it cannot read, or JSON that does not parse, as
+  included; a reference it cannot read (a `{$NAME:default}` without its
+  closing brace included, which names nothing), or JSON that does not
+  parse, as
   `HIT incomplete release-syntax <file>`, never its text), merges each
   candidate unit with its drop-ins (an empty `EnvironmentFile=` dropping
-  the ones before it) before opening the files they name, and leaves out
+  the ones before it) before opening the files they name, one unit at a
+  time, charging what it keeps to the run's memory budget and stopping,
+  incomplete, when that is spent, and leaves out
   the ports, the digest and the installed packages' `packages.allow`
   check (the old host's packages; forbidden packages are still checked);
   `--phase post`, after it, runs everything; `full`, the default, checks
