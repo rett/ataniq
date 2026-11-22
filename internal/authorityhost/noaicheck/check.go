@@ -100,11 +100,13 @@ func (c *Checker) unreadable(rel string, err error) {
 }
 
 // RunAll runs every check of the main command in order: the binaries, the
-// tools and the credentials.
+// tools, the credentials, the environment files and the processes.
 func (c *Checker) RunAll() Report {
 	c.CheckBinaries()
 	c.CheckTools()
 	c.CheckCredentials()
+	c.CheckEnv()
+	c.CheckProcesses()
 	return c.Report()
 }
 

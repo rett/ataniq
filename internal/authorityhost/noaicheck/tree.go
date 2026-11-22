@@ -19,6 +19,9 @@ const maxLinks = 40
 // errLoop is returned when resolving a path follows more than maxLinks links.
 var errLoop = errors.New("too many levels of symbolic links")
 
+// errNotRegular is returned when a file to read is not a regular file.
+var errNotRegular = errors.New("not a regular file")
+
 // errTooLarge is returned when a file is larger than the reader allows.
 var errTooLarge = errors.New("file too large")
 
@@ -153,7 +156,7 @@ func (t *tree) readFile(rel string, max int64) (string, []byte, error) {
 		return p, nil, err
 	}
 	if !fi.Mode().IsRegular() {
-		return p, nil, &fs.PathError{Op: "read", Path: show(p), Err: errors.New("not a regular file")}
+		return p, nil, &fs.PathError{Op: "read", Path: show(p), Err: errNotRegular}
 	}
 	f, err := t.r.OpenFile(p, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 	if err != nil {
