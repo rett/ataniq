@@ -414,14 +414,16 @@ hand, never the targets of `current` or `previous`.
 
 `ah-noaicheck` (source in `cmd/ah-noaicheck` and
 `internal/authorityhost/noaicheck`) is a small static program, standard
-library only, shipped in every release. The deploy runs the new release's
-copy before it switches, and a timer runs it every 15 minutes and at boot.
-It reads only: it writes nothing, opens no network connection and runs no
-program; the processes and listening sockets are read from `/proc`. It is
-meant to run as root, which can read every folder it looks into.
+library only, shipped in every release. The switch runs the new release's
+copy (see "The switch"). This tree ships no timer and no service unit for
+it: a recurring run is a separate planned item, so today the check runs
+when the switch runs it or when someone runs it by hand. It reads only:
+it writes nothing, opens no network connection and runs no program; the
+processes and listening sockets are read from `/proc`. It is meant to run
+as root, which can read every folder it looks into.
 
 ```
-ah-noaicheck [--root DIR] [--release DIR] [--require-policy] [--nft-listing FILE] [--json]
+ah-noaicheck [--phase pre|post|full] [--root DIR] [--release DIR] [--require-policy] [--nft-listing FILE] [--json]
 ah-noaicheck ports [--root DIR] [--release DIR] [--require-policy] [--json]
 ah-noaicheck nft-digest FILE
 ```
@@ -429,51 +431,112 @@ ah-noaicheck nft-digest FILE
 It prints one line per hit, `HIT <kind> <path-or-name> [detail]`, a
 `NOTE` line for a policy that is not enforced, `RUN complete` or
 `RUN incomplete`, and a final `ok` or `FAILED n hit(s)`; `--json` writes
-the same as one JSON object (with `"complete"`). A field
+the same as one JSON object (with `"complete"` and `"phase"`). A field
 that holds anything but printable ASCII is quoted with Go's escapes, so a
-planted file name cannot forge a line. It never prints a file's content or
-a variable's value. Exit status: 0 clean, 1 any hit, 2 a usage error or a
-read error it cannot continue past (a missing or invalid list, a root or
-listing it cannot open).
+planted file name cannot forge a line. An error message writes every
+path or word that came from the caller (a `--root`, `--release` or
+`--nft-listing` path, a flag as typed) the same way, cut to 512 bytes. It
+never prints a file's content or a variable's value. Exit status: 0
+clean, 1 any hit, 2 a usage error or a read error it cannot continue past
+(a missing or invalid list, a root, listing or release folder it cannot
+open).
+
+### Phases
+
+`--phase` says which moment of a deployment the run checks:
+
+- `pre`, before a switch: the candidate release's own files and the
+  host's binaries, tools, credentials, environment files, processes,
+  enabled units and packages. It does not check the listening ports or
+  the firewall digest, which describe services the switch has not
+  started yet, and `--nft-listing` is a usage error in it. The release's
+  own files are those of the folder `--release` names:
+  - every file beneath its `etc/systemd` is read as a unit or drop-in,
+    with the rules of an installed unit (below): its `Environment=`,
+    `PassEnvironment=` and `EnvironmentFile=` names, a link to
+    `/dev/null` is a mask and is not read, and every file an
+    `EnvironmentFile=` names is read on the host (a required one that is
+    missing is `HIT incomplete env-file`). A file in a folder named `user`
+    is a user unit, its `EnvironmentFile=` resolved for every user; any
+    other is a system unit;
+  - every file beneath its `etc/caddy` and `etc/nftables` is read for
+    variable names only: each word named like a provider key is a
+    `HIT env`.
+
+  A hit in the release names the file by its path within `--root` when
+  the release is beneath it (`/opt/authority-host/releases/<id>/...`),
+  by its own path otherwise.
+- `post`, after a switch: everything `pre` checks, and the listening
+  ports and the firewall digest against `--nft-listing`.
+- `full`, the default: the host as it is, every check, without a separate
+  read of the release's files (its units are read where the host loads
+  them).
+
+### Policies and completeness
 
 `--require-policy` turns each policy the release leaves unset into a hit,
 `HIT policy <list> empty` or `HIT policy nft.digest missing`: an empty
 `units.allow`, `packages.allow` or `ports.allow`, and a release without
-`share/nft.digest`. The switch always passes it, with the live firewall
-listing: `ah-noaicheck --root R --release DIR --require-policy
---nft-listing FILE`. Without it (a check by hand) an empty
-`packages.allow` and a missing `nft.digest` are `NOTE` lines instead, and
-the run is `RUN incomplete`: it exits 0 when nothing else is found, but it
-did not enforce those policies. `RUN complete` means every policy was
-enforced and nothing stopped a check short.
+`share/nft.digest`. It applies in every phase, `pre` included, though
+`pre` does not check the ports or the digest: the release must carry
+them. Without it (a check by hand) an empty `packages.allow` and a
+missing `nft.digest` are `NOTE` lines instead, and the run is
+`RUN incomplete`: it exits 0 when nothing else is found, but it did not
+enforce those policies.
 
 What is complete and what is not, plainly:
 
-- Complete: a run with `RUN complete` covered every place listed below,
-  to the end, with every policy of the release enforced. The switch's run
-  (as root, `--require-policy`, the live listing) is the one meant to be
-  complete.
+- Complete: `RUN complete` means the run covered every place its phase
+  covers, listed below, to the end, with every policy of the release
+  enforced, and no hit says otherwise.
 - Incomplete, and a failure: anything the check had to cover but could
-  not is a hit (`HIT incomplete ...`, `HIT unreadable ...`, `HIT policy
-  ...`), so the run exits 1. Nothing is skipped silently: a walk stopped
-  by its depth limit, the run's budget spent, a `/proc` it cannot use,
-  processes it may not read, an environment file it cannot parse.
+  not is a hit, so the run exits 1 and says `RUN incomplete`. That is
+  every hit that is not a finding: `HIT incomplete ...`,
+  `HIT unreadable ...`, `HIT unit-link ...` and `HIT policy ...`. A run
+  never prints one of them together with `RUN complete`. Nothing is
+  skipped silently.
 - Incomplete, not a failure: only a check by hand without
   `--require-policy`, where an unenforced policy is a `NOTE` and the run
   is `RUN incomplete` but exits 0.
 
+The `HIT incomplete` lines:
+
+| Line | Meaning |
+|---|---|
+| `HIT incomplete <folder> depth` | a walk stopped at its depth limit (40 levels) above a folder it had to enter |
+| `HIT incomplete <path> type` | a folder entry whose type the listing did not give and a stat could not find: the walk cannot tell whether to enter it |
+| `HIT incomplete budget <limit>` | the run's budget is spent (4 million folder entries and queued files, 1 GiB read, 4 minutes, 256 MiB held, counting specifier expansions and queued files); every later read stops |
+| `HIT incomplete env-syntax <file>` | a file whose syntax the check cannot parse, or an `EnvironmentFile=` it cannot resolve |
+| `HIT incomplete env-source <file>` | a profile sources a file by a path the check cannot resolve |
+| `HIT incomplete env-file <path>` | a required `EnvironmentFile=` (no leading `-`) that is not there, or a required glob that matches nothing |
+| `HIT incomplete path <file>` | a PATH setting whose folder the check cannot resolve |
+| `HIT incomplete proc <why>` | no usable `/proc`: missing, unreadable, without processes, or listing processes of which not one name or executable could be read (`no-identity`) |
+| `HIT incomplete proc-access <n>` | run as another user than root, `n` processes refused their name or executable |
+| `HIT incomplete /proc/net/tcp header` | a socket table that is empty or does not start with the kernel's header line (`/proc/net/tcp6` too, when it is there) |
+
 `--root` (default `/`) checks the tree beneath another folder, for tests;
 links inside it are resolved within it. `--release` names the release
-folder whose `share/` holds the lists; by default it is the folder above
-the program's own `bin/`, so `ah-switch` running the new release's copy
-checks against the new release's lists.
+folder whose `share/` holds the lists (and, in `pre` and `post`, whose
+`etc/` is read); by default it is the folder above the program's own
+`bin/`, so the new release's copy checks against the new release's lists.
 
-What it detects, by kind:
+### What it detects
 
-- `binary`: a file, link or folder named exactly like an executable name of
-  `ai-names.list`:
-  - in `/usr/bin`, `/usr/sbin`, `/bin`, `/sbin`, `/usr/local/bin` or
-    `/usr/local/sbin` (a fixed list, not the PATH of whoever runs it);
+- `binary`: a file, link or folder named exactly like an executable name
+  of `ai-names.list`:
+  - in a folder of the PATH inventory: `/usr/bin`, `/usr/sbin`, `/bin`,
+    `/sbin`, `/usr/local/bin`, `/usr/local/sbin` (a fixed list, not the
+    PATH of whoever runs it), and every folder a PATH setting adds in
+    `/etc/profile`, `/etc/profile.d/*`, `/etc/environment`,
+    `/etc/bash.bashrc` and each home's `.profile`, `.bashrc` and
+    `.zshenv` (`PATH=`, `PATH+=`, `export PATH=`, csh's `setenv PATH`,
+    and the argument of a function that adds its argument to PATH, such
+    as `/etc/profile`'s `append_path`; `~/`, `$HOME` and
+    `$XDG_CONFIG_HOME` are resolved in the file's home, or in every home
+    for a system file; an element that only refers to PATH itself adds
+    nothing; anything else is `HIT incomplete path <file>`);
+  - in every immediate subfolder of `/usr/bin`, `/usr/local/bin` and
+    `/usr/local/sbin` (such as `/usr/bin/core_perl`);
   - anywhere in `/usr/local` and `/opt`, at every depth;
   - in any `node_modules/.bin` there, in `/usr/lib/node_modules` or in a
     home;
@@ -483,7 +546,7 @@ What it detects, by kind:
     `.cargo/bin`, `go/bin`, `src/tool/bin` ...), also when `bin`,
     `.local/bin`, `.cargo/bin` or `go/bin` is a link to elsewhere, anywhere
     in the mise, npm, pnpm, volta, nvm, uv and pipx install folders, and,
-    as a regular executable file, anywhere at most six levels below it.
+    as a regular executable file, anywhere in it.
 
   Every home, `/usr/local` and `/opt` are walked completely, down to 40
   levels; a deeper folder is not entered and the run is
@@ -499,79 +562,125 @@ What it detects, by kind:
   `CODEX_*`) set or passed in `/etc/environment`, `/etc/profile` and the
   shells' system profiles, `/etc/profile.d`, the `environment.d` folders,
   the systemd manager configuration and its drop-ins, a unit file or
-  drop-in systemd loads, a home's profiles, or a file an
-  `EnvironmentFile=` line names. The unit files are those at the top of
-  `/etc/systemd/system`, `/run/systemd/system`, `/usr/lib/systemd/system`,
-  the matching `user` folders and a home's `.config/systemd/user`, the
-  units their `*.wants`, `*.requires` and `*.upholds` folders link to, and
-  the files of their `*.d` drop-in folders. A unit that is a link (into
-  `current/etc/systemd`, say) is read where it leads within the root, each
-  file once; a masked unit (a link to `/dev/null`) is not read. The detail
-  is the variable's name, and only ever a valid identifier
+  drop-in a systemd manager loads, a home's profiles, a file a profile
+  sources, or a file an `EnvironmentFile=` line names. The detail is the
+  variable's name, and only ever a valid identifier
   (`[A-Za-z_][A-Za-z0-9_]*`, at most 128 bytes): no part of a value is
   printed.
 
+  The units are read through each manager's effective unit view: the
+  system manager's, and one user manager's for every home with its user
+  id (from `/etc/passwd`, 0 for `/root`, the folder's owner for a folder
+  of `/home` that `/etc/passwd` does not name). A view holds the
+  manager's unit folders in systemd's order of precedence: for the
+  system manager `/etc/systemd/system.control`,
+  `/run/systemd/system.control`, `/run/systemd/transient`, the early
+  generator folder, `/etc/systemd/system`, `/etc/systemd/system.attached`,
+  `/run/systemd/system`, `/run/systemd/system.attached`, the generator
+  folder, `/usr/local/lib/systemd/system`, `/usr/lib/systemd/system` and
+  the late generator folder; for a user manager the same order of the
+  user folders (the home's `.config/systemd/user.control` and
+  `.config/systemd/user`, `/run/user/UID/systemd/...`, `/etc/xdg/systemd/user`,
+  `/etc/systemd/user`, `/run/systemd/user`, the home's
+  `.local/share/systemd/user`, `/usr/local/share/systemd/user`,
+  `/usr/share/systemd/user`, `/usr/local/lib/systemd/user` and
+  `/usr/lib/systemd/user`). The unit read for a name is the first of it
+  in that order, not every one (an instance without its own falls back to
+  its template); a mask (a link to `/dev/null`) hides the unit and its
+  drop-ins in every lower folder, while a mask in a lower folder hides
+  nothing. A drop-in file name in a higher folder hides the same name in
+  a lower one. The units the dependency folders (`*.wants`, `*.requires`,
+  `*.upholds`) link to are read too. A unit, dependency folder or drop-in
+  folder that is a link (into `current/etc/systemd`, say) is read where
+  it leads within the root. Each file is read once; a unit keeps the
+  manager that loads it wherever its file is, so its `EnvironmentFile=`
+  specifiers are that manager's: `%h` the user's home (`/root` for the
+  system manager), `%t` `/run/user/UID` (`/run`), `%%` a percent sign,
+  each replaced once.
+
   Each file is read in its own syntax. A shell profile is read as shell
   words: an assignment at the start of a command, the names `export`,
-  `declare`, `typeset`, `readonly`, `local` and `env` set, `setenv` (csh)
-  and, in a `.fish` file, `set`; comments, quoted values, substitutions and
-  here-documents are never read for names, and a file a profile sources by
-  a literal absolute path is read too. A unit or manager file is read by
-  its `Environment=`, `DefaultEnvironment=`, `ManagerEnvironment=` and
-  `PassEnvironment=` keys (systemd's quoting) and `EnvironmentFile=` (an
-  optional `-`, quoted or not, `%h` and `%t` resolved, a glob in the last
-  component matched within the root). `/etc/environment`, `environment.d`
-  and the files `EnvironmentFile=` names are `KEY=VALUE` lines;
-  `~/.pam_environment` is read by its first word. What the check cannot
-  parse (an unclosed quote or substitution, a here-document that never
-  ends, an `export` whose name is an expansion, another specifier, a line
-  that is not `KEY=VALUE`) is `HIT incomplete env-syntax <file>`.
+  `declare`, `typeset`, `readonly` and `env` set, `setenv` (csh) and, in
+  a `.fish` file, `set`; comments, quoted values, substitutions and
+  here-documents are never read for names. A function body
+  (`NAME() { ... }`, `function NAME { ... }`) is followed by its braces:
+  `local`, `declare`, `typeset` and `readonly` in it are the function's
+  own variables and are passed over, as are a `local` outside a function
+  and a `declare`, `typeset` or `readonly` whose name is an expansion
+  (an `export` keeps counting, and one whose name is an expansion cannot
+  be parsed). A file a profile sources (`.` or `source`) is read too
+  when its path is a literal absolute path, starts with `~/`, `$HOME`,
+  `${HOME}` or `$XDG_CONFIG_HOME` (in its usual forms, resolved to the
+  home's `.config`), resolved in the home of the sourcing file or in every
+  home for a system file, or is the variable of an earlier
+  `for NAME in WORDS` loop (`/etc/profile`'s loop over
+  `/etc/profile.d/*.sh`); a glob in its last component is matched. Any
+  other source (a relative path, another variable, a command
+  substitution) is `HIT incomplete env-source <file>`.
+
+  A unit or manager file is read by its `Environment=`,
+  `DefaultEnvironment=`, `ManagerEnvironment=` and `PassEnvironment=`
+  keys (systemd's quoting) and `EnvironmentFile=` (quoted or not, a
+  leading `-` for an optional file, the specifiers above, a glob in the
+  last component matched within the root). A required file that is not
+  there, or a required glob that matches nothing, is
+  `HIT incomplete env-file <path>`: systemd would not start the unit,
+  and the check cannot know what the file would set once it is there.
+  `/etc/environment`, `environment.d` and the files `EnvironmentFile=`
+  names are `KEY=VALUE` lines; `~/.pam_environment` is read by its first
+  word. What the check cannot parse (an unclosed quote or substitution, a
+  here-document that never ends, an `export` whose name is an expansion,
+  another specifier, a line that is not `KEY=VALUE`) is
+  `HIT incomplete env-syntax <file>`.
 - `process`: a running process whose name or executable is named like an
   executable of `ai-names.list`. A process that ends while it is read and
-  a kernel thread are passed over. A missing or empty `/proc` is
+  a kernel thread are passed over. A missing or empty `/proc`, or one in
+  which not one process's name or executable could be read, is
   `HIT incomplete proc <why>`. A process whose name or executable is
   refused for lack of permission is a `HIT unreadable` of its own when the
   check runs as root, and otherwise counted into one
   `HIT incomplete proc-access <n>`, `n` the number of such processes: run
   by hand as another user, the check cannot see other users' processes
   and says so.
-- `unit`: an enabled unit (an entry of a `*.wants`, `*.requires` or
-  `*.upholds` folder of `/etc/systemd/system`, `/run/systemd/system`,
-  `/etc/systemd/user`, `/run/systemd/user` or a home's
-  `.config/systemd/user`) not in `units.allow`. An enabled unit that is
-  masked (its entry, or a unit of its name at the top of the same folder,
-  links to `/dev/null`) is not enabled: it is the line
-  `NOTE unit masked <path>`, which is not a hit.
-- `unit-link`: a unit link that loops (`loop`) or whose target climbs
-  above the root (`escape`).
+- `unit`: an enabled unit not in `units.allow`: an entry of a `*.wants`,
+  `*.requires` or `*.upholds` folder (one that is a link within the root
+  included) of a folder of enablement: `/etc/systemd/system`,
+  `/etc/systemd/system.attached`, `/run/systemd/system` and
+  `/run/systemd/system.attached` for the system manager; a home's
+  `.config/systemd/user`, `/etc/xdg/systemd/user`, `/etc/systemd/user`,
+  `/run/user/UID/systemd/user` and `/run/systemd/user` for a user's. An
+  instance is allowed by its own name or by its template's. An enabled
+  unit that is masked (its entry links to `/dev/null`, or the unit the
+  manager's view loads for its name, or its template's, is a mask, in a
+  folder of higher precedence, `/etc` over `/run` over `/usr/lib`) is not
+  enabled: it is the line `NOTE unit masked <path>`, which is not a hit.
+- `unit-link`: a unit link, or a linked dependency or drop-in folder,
+  that loops (`loop`) or whose target climbs above the root (`escape`).
 - `package`: an installed package (the pacman database) named in
   `forbidden-packages.list`, or, once `packages.allow` is filled, any
   package not in it. While it is empty the check prints
   `NOTE packages not enforced` instead.
-- `nft`: when the release has `share/nft.digest`, the SHA-256 of the
-  normalised listing passed with `--nft-listing` (the caller runs
-  `nft list ruleset`; the check never does) differs, or no listing was
-  passed. `ah-noaicheck nft-digest FILE` prints the digest to pin.
-  Normalising drops blank lines and trailing spaces and, by their place
-  among the line's unquoted tokens only, the values that change while the
-  rules stay the same: `packets N bytes N` of a counter, `expires T` of a
-  set element, `used N bytes` of a quota and a final `# handle N`. A
-  quoted operand (an interface name, a comment) is never changed, so rules
-  that differ only there have different digests.
-- `port`: a listening TCP socket, in `/proc/net/tcp` or
-  `/proc/net/tcp6`, on a port not in `ports.allow`. The main run checks
-  it; the `ports` subcommand checks only it.
+- `nft` (`post` and `full`): when the release has `share/nft.digest`, the
+  SHA-256 of the normalised listing passed with `--nft-listing` (the
+  caller runs `nft list ruleset`; the check never does) differs, or no
+  listing was passed. `ah-noaicheck nft-digest FILE` prints the digest to
+  pin. Normalising drops blank lines and trailing spaces and, by their
+  place among the line's unquoted tokens only, the values that change
+  while the rules stay the same: `packets N bytes N` of a counter,
+  `expires T` of a set element, `used N bytes` of a quota and a final
+  `# handle N`. A quoted operand (an interface name, a comment) is never
+  changed, so rules that differ only there have different digests.
+- `port` (`post` and `full`): a listening TCP socket, in `/proc/net/tcp`
+  or `/proc/net/tcp6`, on a port not in `ports.allow`. Each table must
+  start with the kernel's header line; a table with a header and no
+  listening socket is fine. The `ports` subcommand checks only this.
 - `policy` (with `--require-policy`): a policy list of the release is
   empty, or `nft.digest` is missing.
 - `unreadable`: a place the check must look into but cannot read, a link
   loop, a file too large to read, or a file replaced between its check and
   its opening. The check fails closed.
 - `incomplete`: a check could not cover all it must, so the run proves
-  nothing there: `HIT incomplete <folder> depth` when a walk stopped at its
-  depth limit above a folder it had to enter, and
-  `HIT incomplete budget <limit>` when the run's budget is spent (4 million
-  folder entries, 1 GiB read, 4 minutes, 256 MiB held), after which every
-  later read stops. Neither is ever a pass.
+  nothing there (see the table above). Never a pass.
 
 The lists in `share/`, one entry per line, `#` comments and blank lines
 ignored; a line with a path separator (except between the components of a
@@ -587,23 +696,32 @@ home path in `ai-names.list`), a control byte or an inner space is refused:
 - `nft.digest`: the pinned firewall digest; optional for a check by hand,
   required with `--require-policy`.
 
-Limits, said once:
+### Limits
 
 - It is detection, not prevention. The prevention is that nobody logs in,
   the egress filter and the package allowlist.
 - A renamed binary is not caught by name; the package allowlist and the
   egress filter cover that. Names are matched exactly, and the lists need
   upkeep as tools appear.
-- A tool outside the places above (say in `/srv`, or an executable file
-  more than six levels down in a home and outside its bin folders) is not
-  caught by name; it is left to the package allowlist and the egress
-  filter.
+- A tool outside the places above (say in `/srv`, outside every PATH
+  folder and every home) is not caught by name; it is left to the package
+  allowlist and the egress filter.
+- The PATH inventory is read from the files named above, by their PATH
+  settings: a folder a program puts on PATH at run time, or a file those
+  files source, is not in it.
 - A process that renames itself is not caught by name.
 - Ports are those of the network namespace the check runs in; UDP is not
   checked.
-- Enabled units are those linked in `/etc` and `/run` (and the homes);
-  the dependencies the vendor units in `/usr/lib/systemd` declare, and
-  generated units, are left to the package allowlist.
+- Enabled units are those linked in the folders of enablement above; the
+  dependencies vendor units in `/usr/lib/systemd` declare, and those a
+  generator writes, are left to the package allowlist (their unit files
+  are still read for variables).
+- A specifier in `EnvironmentFile=` other than `%h`, `%t` and `%%` is
+  `HIT incomplete env-syntax`, and so is one in a user unit for a home
+  without a known user id.
+- A profile that sources files by a run-time variable (the bash-completion
+  library's loader does) is `HIT incomplete env-source` on every run: a
+  host that must pass does not carry such a profile.
 - Run by hand as an ordinary user it cannot read other users' processes
   or folders; it says so (`HIT incomplete proc-access`, `HIT unreadable`)
   rather than pass.

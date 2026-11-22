@@ -23,6 +23,11 @@
 // limit, or the run's budget of entries, bytes, time and memory spent), so
 // the check fails closed.
 //
+// A run has a phase (see [Checker.RunPhase]): "pre", before a switch, also
+// reads the candidate release's own units and configuration and leaves out
+// the listening ports and the firewall digest; "post", after it, runs every
+// check; "full", the default, checks the host as it is.
+//
 // The lists come from the release (its share/ folder, see [LoadLists]).
 // Stated limits: a renamed binary is not caught by name (the package
 // allowlist and the egress filter cover that), and the lists need upkeep.

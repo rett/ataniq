@@ -7,9 +7,11 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // The kinds of a hit.
@@ -30,13 +32,21 @@ const (
 )
 
 // Incomplete hit names and details: a walk cut short by its depth limit
-// ("HIT incomplete <folder> depth"), and the run's budget spent
+// ("HIT incomplete <folder> depth"), an entry whose type cannot be found
+// ("HIT incomplete <path> type"), and the run's budget spent
 // ("HIT incomplete budget <limit>", the limit one of entries, bytes, time
 // or memory).
 const (
 	DetailDepth = "depth"
+	DetailType  = "type"
 	PathBudget  = "budget"
 )
+
+// findingKinds are the kinds of a hit that is a finding: something the check
+// found. Every other kind (policy, incomplete, unreadable, unit-link, and any
+// later one) says the check could not cover a place, and makes the run
+// incomplete.
+var findingKinds = []string{KindBinary, KindTool, KindCredential, KindEnv, KindProcess, KindUnit, KindPort, KindPackage, KindNFT}
 
 // DetailEmpty is the detail of a policy hit for an empty allowlist; a
 // release without share/nft.digest has the detail "missing" (DetailMissing).
@@ -54,12 +64,13 @@ type Hit struct {
 // Report is the result of a run: the hits, the notes, which are not hits,
 // and whether the run was complete: every check ran over all it covers and
 // every policy of the release was enforced. A run with a NOTE about a policy
-// not enforced is not complete, and neither is one with a hit of kind
-// "policy".
+// not enforced is not complete, and neither is one with any hit that is not
+// a finding (kind "policy", "incomplete", "unreadable" or "unit-link").
 type Report struct {
 	Hits     []Hit    `json:"hits"`
 	Notes    []string `json:"notes"`
 	Complete bool     `json:"complete"`
+	Phase    string   `json:"phase,omitempty"` // the phase RunPhase ran
 }
 
 // NotePackagesNotEnforced is the note of an empty package allowlist.
@@ -74,13 +85,17 @@ type Checker struct {
 	RequirePolicy bool
 
 	t       *tree
-	euid    int // the effective user the check runs as
+	rootAbs string // the root folder, absolute
+	euid    int    // the effective user the check runs as
 	lists   *Lists
 	hits    []Hit
 	seen    map[Hit]bool
 	notes   []string
 	partial bool // a policy was not enforced
 	homes   []string
+	uids    map[string]string // the user id of each home
+	udirs   map[string]*udir  // the unit folders listed so far
+	parsed  map[string]*envParse
 
 	binScanned bool
 	binHits    []string // paths named like an agent tool
@@ -96,7 +111,13 @@ func Open(rootDir string, lists *Lists) (*Checker, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Checker{t: t, euid: os.Geteuid(), lists: lists, seen: map[Hit]bool{}}, nil
+	abs, err := filepath.Abs(rootDir)
+	if err != nil {
+		t.close()
+		return nil, err
+	}
+	return &Checker{t: t, rootAbs: filepath.Clean(abs), euid: os.Geteuid(), lists: lists, seen: map[Hit]bool{},
+		udirs: map[string]*udir{}, parsed: map[string]*envParse{}}, nil
 }
 
 // Close releases the tree.
@@ -110,7 +131,7 @@ func (c *Checker) Report() Report {
 		r.Hits = append(r.Hits, Hit{Kind: KindIncomplete, Path: PathBudget, Detail: c.t.b.spent})
 	}
 	for _, h := range r.Hits {
-		if h.Kind == KindPolicy || h.Kind == KindIncomplete {
+		if !slices.Contains(findingKinds, h.Kind) {
 			r.Complete = false
 		}
 	}
@@ -153,9 +174,14 @@ func (c *Checker) notEnforced(list, detail, n string) {
 
 // unreadable records a place the check could not look into. A place that is
 // not there is not a hit, and neither is a read refused because the budget
-// is spent (the report says that once).
+// is spent (the report says that once). An entry whose type cannot be
+// found is "incomplete <path> type".
 func (c *Checker) unreadable(rel string, err error) {
 	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, errBudget) {
+		return
+	}
+	if errors.Is(err, errUntyped) {
+		c.hit(KindIncomplete, show(clean(rel)), DetailType)
 		return
 	}
 	c.hit(KindUnreadable, show(clean(rel)), describe(err))
@@ -182,21 +208,13 @@ func (c *Checker) walk(start string, maxDepth int, visit func(e *wentry) bool) (
 	return p, nil
 }
 
-// RunAll runs every check of the main command in order: the binaries, the
+// RunAll runs every check of the full phase in order: the binaries, the
 // tools, the credentials, the environment files, the processes, the enabled
 // units, the listening ports, the packages and the firewall digest (against
-// listing, nil when the caller passed none).
+// listing, nil when the caller passed none). See RunPhase.
 func (c *Checker) RunAll(listing []byte) Report {
-	c.CheckBinaries()
-	c.CheckTools()
-	c.CheckCredentials()
-	c.CheckEnv()
-	c.CheckProcesses()
-	c.CheckUnits()
-	c.CheckPorts()
-	c.CheckPackages()
-	c.CheckNFT(listing)
-	return c.Report()
+	r, _ := c.RunPhase(PhaseFull, "", listing)
+	return r
 }
 
 // WriteText writes the report as lines: one "HIT kind path [detail]" per hit,
@@ -232,15 +250,17 @@ func (r Report) WriteText(w io.Writer) error {
 }
 
 // WriteJSON writes the report as one JSON object with "result" ("ok" or
-// "failed"), "complete", the count, the hits and the notes.
+// "failed"), "complete", the phase (when one ran), the count, the hits and
+// the notes.
 func (r Report) WriteJSON(w io.Writer) error {
 	out := struct {
 		Result   string   `json:"result"`
 		Complete bool     `json:"complete"`
+		Phase    string   `json:"phase,omitempty"`
 		Count    int      `json:"count"`
 		Hits     []Hit    `json:"hits"`
 		Notes    []string `json:"notes"`
-	}{"ok", r.Complete, len(r.Hits), r.Hits, r.Notes}
+	}{"ok", r.Complete, r.Phase, len(r.Hits), r.Hits, r.Notes}
 	if out.Hits == nil {
 		out.Hits = []Hit{}
 	}
@@ -253,6 +273,21 @@ func (r Report) WriteJSON(w io.Writer) error {
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	return enc.Encode(out)
+}
+
+// MaxField bounds a field Field writes.
+const MaxField = 512
+
+// Field writes s as one field of a line, as WriteText does (quoted with
+// Go's ASCII escapes when it holds anything but printable ASCII, a quote
+// or a backslash), cut to MaxField bytes with "..." after it when it is
+// longer. A diagnostic that carries a path or a word from outside the
+// program writes it through Field.
+func Field(s string) string {
+	if len(s) <= MaxField {
+		return field(s)
+	}
+	return field(s[:MaxField]) + "..."
 }
 
 func field(s string) string {
@@ -268,34 +303,42 @@ func field(s string) string {
 }
 
 // homes are the home folders to look into: every home in etc/passwd except
-// "/", root, and every folder in home/, each resolved and listed once. A
-// home inside the kernel's own trees (proc/, sys/, dev/), such as a service
-// user's "/proc", is not a place files are put and is not walked.
+// "/", root, and every folder in home/, each resolved and listed once, with
+// its user id (that of etc/passwd, 0 for root, the folder's owner for a
+// folder of home/ that etc/passwd does not name). A home inside the
+// kernel's own trees (proc/, sys/, dev/), such as a service user's
+// "/proc", is not a place files are put and is not walked.
 func (c *Checker) homeFolders() []string {
 	if c.homes != nil {
 		return c.homes
 	}
-	var cands []string
+	type cand struct{ home, uid string }
+	var cands []cand
 	if _, data, err := c.t.readFile("etc/passwd", 16<<20); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			f := strings.Split(line, ":")
 			if len(f) < 7 || !strings.HasPrefix(f[5], "/") {
 				continue
 			}
-			cands = append(cands, f[5])
+			uid := f[2]
+			if _, err := strconv.ParseUint(uid, 10, 32); err != nil {
+				uid = ""
+			}
+			cands = append(cands, cand{f[5], uid})
 		}
 	} else {
 		c.unreadable("etc/passwd", err)
 	}
-	cands = append(cands, "/root")
+	cands = append(cands, cand{"/root", "0"})
 	c.walk("home", 1, func(e *wentry) bool {
-		cands = append(cands, e.rel)
+		cands = append(cands, cand{e.rel, ""})
 		return false
 	})
 	seen := map[string]bool{}
 	c.homes = []string{}
+	c.uids = map[string]string{}
 	for _, h := range cands {
-		rel := clean(h)
+		rel := clean(h.home)
 		if rel == "." {
 			continue
 		}
@@ -311,8 +354,13 @@ func (c *Checker) homeFolders() []string {
 		if err != nil || !fi.IsDir() {
 			continue
 		}
+		uid := h.uid
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok && uid == "" {
+			uid = strconv.FormatUint(uint64(st.Uid), 10)
+		}
 		seen[r] = true
 		c.homes = append(c.homes, r)
+		c.uids[r] = uid
 	}
 	return c.homes
 }
