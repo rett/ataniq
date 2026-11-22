@@ -63,6 +63,16 @@ func TestCheckPackages(t *testing.T) {
 	}
 }
 
+func TestCheckPackagesRequirePolicy(t *testing.T) {
+	c := cleanFixture(t).checker(testLists())
+	c.RequirePolicy = true
+	c.CheckPackages()
+	r := c.Report()
+	if want := []Hit{{KindPolicy, FilePackagesAllow, DetailEmpty}}; !reflect.DeepEqual(r.Hits, want) || len(r.Notes) != 0 || r.Complete {
+		t.Errorf("%+v", r)
+	}
+}
+
 func TestDescName(t *testing.T) {
 	for in, want := range map[string]string{
 		"%NAME%\nbash\n":           "bash",

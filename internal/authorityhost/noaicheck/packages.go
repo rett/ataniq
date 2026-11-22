@@ -24,46 +24,40 @@ const (
 // forbidden-packages.list is a hit of kind "package" with detail
 // "forbidden"; while packages.allow is not empty, every other package not
 // in it is a hit with detail "not-allowed". An empty packages.allow means
-// not enforced yet: the note "packages not enforced", not a hit. A missing
-// database is a hit while the allowlist is enforced.
+// not enforced: the note "packages not enforced" or, with RequirePolicy, the
+// hit "policy packages.allow empty". A missing database is a hit while the
+// allowlist is enforced.
 func (c *Checker) CheckPackages() {
 	enforced := len(c.lists.PackagesAllow) > 0
 	if !enforced {
-		c.note(NotePackagesNotEnforced)
+		c.notEnforced(FilePackagesAllow, DetailEmpty, NotePackagesNotEnforced)
 	}
-	p, entries, err := c.t.readDir(pacmanLocal)
-	if errors.Is(err, fs.ErrNotExist) {
-		if enforced {
-			c.hit(KindPackage, show(pacmanLocal), DetailMissing)
+	_, err := c.walk(pacmanLocal, 1, func(e *wentry) bool {
+		if !e.isDir() {
+			return false
 		}
-		return
-	}
-	if err != nil {
-		c.unreadable(pacmanLocal, err)
-		return
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		desc := path.Join(p, e.Name(), "desc")
+		desc := path.Join(e.rel, "desc")
 		_, data, err := c.t.readFile(desc, 1<<20)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				err = errors.New("no desc file")
 			}
 			c.unreadable(desc, err)
-			continue
+			return false
 		}
 		name := descName(string(data))
 		switch {
 		case name == "":
-			c.hit(KindPackage, show(path.Join(p, e.Name())), DetailNoName)
+			c.hit(KindPackage, show(e.rel), DetailNoName)
 		case slices.Contains(c.lists.ForbiddenPackages, name):
 			c.hit(KindPackage, name, DetailForbidden)
 		case enforced && !slices.Contains(c.lists.PackagesAllow, name):
 			c.hit(KindPackage, name, DetailNotAllowed)
 		}
+		return false
+	})
+	if errors.Is(err, fs.ErrNotExist) && enforced {
+		c.hit(KindPackage, show(pacmanLocal), DetailMissing)
 	}
 }
 

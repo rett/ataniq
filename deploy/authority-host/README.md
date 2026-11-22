@@ -189,19 +189,46 @@ program; the processes and listening sockets are read from `/proc`. It is
 meant to run as root, which can read every folder it looks into.
 
 ```
-ah-noaicheck [--root DIR] [--release DIR] [--nft-listing FILE] [--json]
-ah-noaicheck ports [--root DIR] [--release DIR] [--json]
+ah-noaicheck [--root DIR] [--release DIR] [--require-policy] [--nft-listing FILE] [--json]
+ah-noaicheck ports [--root DIR] [--release DIR] [--require-policy] [--json]
 ah-noaicheck nft-digest FILE
 ```
 
 It prints one line per hit, `HIT <kind> <path-or-name> [detail]`, a
-`NOTE` line for what is not enforced, and a final `ok` or
-`FAILED n hit(s)`; `--json` writes the same as one JSON object. A field
+`NOTE` line for a policy that is not enforced, `RUN complete` or
+`RUN incomplete`, and a final `ok` or `FAILED n hit(s)`; `--json` writes
+the same as one JSON object (with `"complete"`). A field
 that holds anything but printable ASCII is quoted with Go's escapes, so a
 planted file name cannot forge a line. It never prints a file's content or
 a variable's value. Exit status: 0 clean, 1 any hit, 2 a usage error or a
 read error it cannot continue past (a missing or invalid list, a root or
 listing it cannot open).
+
+`--require-policy` turns each policy the release leaves unset into a hit,
+`HIT policy <list> empty` or `HIT policy nft.digest missing`: an empty
+`units.allow`, `packages.allow` or `ports.allow`, and a release without
+`share/nft.digest`. The switch always passes it, with the live firewall
+listing: `ah-noaicheck --root R --release DIR --require-policy
+--nft-listing FILE`. Without it (a check by hand) an empty
+`packages.allow` and a missing `nft.digest` are `NOTE` lines instead, and
+the run is `RUN incomplete`: it exits 0 when nothing else is found, but it
+did not enforce those policies. `RUN complete` means every policy was
+enforced and nothing stopped a check short.
+
+What is complete and what is not, plainly:
+
+- Complete: a run with `RUN complete` covered every place listed below,
+  to the end, with every policy of the release enforced. The switch's run
+  (as root, `--require-policy`, the live listing) is the one meant to be
+  complete.
+- Incomplete, and a failure: anything the check had to cover but could
+  not is a hit (`HIT incomplete ...`, `HIT unreadable ...`, `HIT policy
+  ...`), so the run exits 1. Nothing is skipped silently: a walk stopped
+  by its depth limit, the run's budget spent, a `/proc` it cannot use,
+  processes it may not read, an environment file it cannot parse.
+- Incomplete, not a failure: only a check by hand without
+  `--require-policy`, where an unenforced policy is a `NOTE` and the run
+  is `RUN incomplete` but exits 0.
 
 `--root` (default `/`) checks the tree beneath another folder, for tests;
 links inside it are resolved within it. `--release` names the release
@@ -212,14 +239,26 @@ checks against the new release's lists.
 What it detects, by kind:
 
 - `binary`: a file, link or folder named exactly like an executable name of
-  `ai-names.list` in `/usr/bin`, `/usr/local/bin`, `/usr/local/sbin`,
-  `/usr/sbin`, `/bin`, `/sbin` or `/opt` (a fixed list, not the PATH of
-  whoever runs it), in `/opt` down to four levels, in any
-  `node_modules/.bin`, and in the install folders of every home (the homes
-  of `/etc/passwd`, `/root` and every folder in `/home`): `.local/bin`,
-  `.cargo/bin` and the mise, npm, pnpm, volta, nvm, uv and pipx trees.
+  `ai-names.list`:
+  - in `/usr/bin`, `/usr/sbin`, `/bin`, `/sbin`, `/usr/local/bin` or
+    `/usr/local/sbin` (a fixed list, not the PATH of whoever runs it);
+  - anywhere in `/usr/local` and `/opt`, at every depth;
+  - in any `node_modules/.bin` there, in `/usr/lib/node_modules` or in a
+    home;
+  - in every home (the homes of `/etc/passwd`, `/root` and every folder in
+    `/home`; a home in `/proc`, `/sys` or `/dev` is not walked): in any
+    folder named `bin` at most three levels below it (`bin`, `.local/bin`,
+    `.cargo/bin`, `go/bin`, `src/tool/bin` ...), also when `bin`,
+    `.local/bin`, `.cargo/bin` or `go/bin` is a link to elsewhere, anywhere
+    in the mise, npm, pnpm, volta, nvm, uv and pipx install folders, and,
+    as a regular executable file, anywhere at most six levels below it.
+
+  Every home, `/usr/local` and `/opt` are walked completely, down to 40
+  levels; a deeper folder is not entered and the run is
+  `HIT incomplete <folder> depth`.
 - `tool`: `mise`, `npm`, `npx`, `node`, `nodejs`, `uv`, `uvx`, `pipx`,
-  `pnpm`, `yarn`, `bun` or `deno` in the same places.
+  `pnpm`, `yarn`, `bun` or `deno` in the same places, except as a plain
+  executable file elsewhere in a home.
 - `credential`: a credential or config path of `ai-names.list` (the
   entries starting with `.`, such as `.claude` or `.config/opencode`) in
   any home, in `/root` or in `/`.
@@ -227,15 +266,52 @@ What it detects, by kind:
   `*_AUTH_TOKEN`, `ANTHROPIC_*`, `OPENAI_*`, `GEMINI_*`, `CLAUDE_*`,
   `CODEX_*`) set or passed in `/etc/environment`, `/etc/profile` and the
   shells' system profiles, `/etc/profile.d`, the `environment.d` folders,
-  the systemd manager configuration and its drop-ins, any unit file or
-  drop-in under `/etc/systemd` and `/usr/lib/systemd`, a home's profiles
-  and user units, or a file an `EnvironmentFile=` line names. The detail is
-  the variable's name.
+  the systemd manager configuration and its drop-ins, a unit file or
+  drop-in systemd loads, a home's profiles, or a file an
+  `EnvironmentFile=` line names. The unit files are those at the top of
+  `/etc/systemd/system`, `/run/systemd/system`, `/usr/lib/systemd/system`,
+  the matching `user` folders and a home's `.config/systemd/user`, the
+  units their `*.wants`, `*.requires` and `*.upholds` folders link to, and
+  the files of their `*.d` drop-in folders. A unit that is a link (into
+  `current/etc/systemd`, say) is read where it leads within the root, each
+  file once; a masked unit (a link to `/dev/null`) is not read. The detail
+  is the variable's name, and only ever a valid identifier
+  (`[A-Za-z_][A-Za-z0-9_]*`, at most 128 bytes): no part of a value is
+  printed.
+
+  Each file is read in its own syntax. A shell profile is read as shell
+  words: an assignment at the start of a command, the names `export`,
+  `declare`, `typeset`, `readonly`, `local` and `env` set, `setenv` (csh)
+  and, in a `.fish` file, `set`; comments, quoted values, substitutions and
+  here-documents are never read for names, and a file a profile sources by
+  a literal absolute path is read too. A unit or manager file is read by
+  its `Environment=`, `DefaultEnvironment=`, `ManagerEnvironment=` and
+  `PassEnvironment=` keys (systemd's quoting) and `EnvironmentFile=` (an
+  optional `-`, quoted or not, `%h` and `%t` resolved, a glob in the last
+  component matched within the root). `/etc/environment`, `environment.d`
+  and the files `EnvironmentFile=` names are `KEY=VALUE` lines;
+  `~/.pam_environment` is read by its first word. What the check cannot
+  parse (an unclosed quote or substitution, a here-document that never
+  ends, an `export` whose name is an expansion, another specifier, a line
+  that is not `KEY=VALUE`) is `HIT incomplete env-syntax <file>`.
 - `process`: a running process whose name or executable is named like an
-  executable of `ai-names.list`.
+  executable of `ai-names.list`. A process that ends while it is read and
+  a kernel thread are passed over. A missing or empty `/proc` is
+  `HIT incomplete proc <why>`. A process whose name or executable is
+  refused for lack of permission is a `HIT unreadable` of its own when the
+  check runs as root, and otherwise counted into one
+  `HIT incomplete proc-access <n>`, `n` the number of such processes: run
+  by hand as another user, the check cannot see other users' processes
+  and says so.
 - `unit`: an enabled unit (an entry of a `*.wants`, `*.requires` or
-  `*.upholds` folder of `/etc/systemd/system`, `/etc/systemd/user` or a
-  home's `.config/systemd/user`) not in `units.allow`.
+  `*.upholds` folder of `/etc/systemd/system`, `/run/systemd/system`,
+  `/etc/systemd/user`, `/run/systemd/user` or a home's
+  `.config/systemd/user`) not in `units.allow`. An enabled unit that is
+  masked (its entry, or a unit of its name at the top of the same folder,
+  links to `/dev/null`) is not enabled: it is the line
+  `NOTE unit masked <path>`, which is not a hit.
+- `unit-link`: a unit link that loops (`loop`) or whose target climbs
+  above the root (`escape`).
 - `package`: an installed package (the pacman database) named in
   `forbidden-packages.list`, or, once `packages.allow` is filled, any
   package not in it. While it is empty the check prints
@@ -244,12 +320,26 @@ What it detects, by kind:
   normalised listing passed with `--nft-listing` (the caller runs
   `nft list ruleset`; the check never does) differs, or no listing was
   passed. `ah-noaicheck nft-digest FILE` prints the digest to pin.
-  Normalising drops blank lines, trailing spaces, counter values, set
-  element expiry, quota use and handle comments.
-- `port` (the `ports` subcommand): a listening TCP socket, in
-  `/proc/net/tcp` or `/proc/net/tcp6`, on a port not in `ports.allow`.
+  Normalising drops blank lines and trailing spaces and, by their place
+  among the line's unquoted tokens only, the values that change while the
+  rules stay the same: `packets N bytes N` of a counter, `expires T` of a
+  set element, `used N bytes` of a quota and a final `# handle N`. A
+  quoted operand (an interface name, a comment) is never changed, so rules
+  that differ only there have different digests.
+- `port`: a listening TCP socket, in `/proc/net/tcp` or
+  `/proc/net/tcp6`, on a port not in `ports.allow`. The main run checks
+  it; the `ports` subcommand checks only it.
+- `policy` (with `--require-policy`): a policy list of the release is
+  empty, or `nft.digest` is missing.
 - `unreadable`: a place the check must look into but cannot read, a link
-  loop, or a file too large to read. The check fails closed.
+  loop, a file too large to read, or a file replaced between its check and
+  its opening. The check fails closed.
+- `incomplete`: a check could not cover all it must, so the run proves
+  nothing there: `HIT incomplete <folder> depth` when a walk stopped at its
+  depth limit above a folder it had to enter, and
+  `HIT incomplete budget <limit>` when the run's budget is spent (4 million
+  folder entries, 1 GiB read, 4 minutes, 256 MiB held), after which every
+  later read stops. Neither is ever a pass.
 
 The lists in `share/`, one entry per line, `#` comments and blank lines
 ignored; a line with a path separator (except between the components of a
@@ -260,8 +350,10 @@ home path in `ai-names.list`), a control byte or an inner space is refused:
 - `forbidden-packages.list`: packages the host never needs.
 - `packages.allow`, `units.allow`, `ports.allow`: the allowlists, empty in
   the repository; the lead fills them from the host's baseline at deploy
-  time. An empty `units.allow` or `ports.allow` allows nothing.
-- `nft.digest` (optional): the pinned firewall digest.
+  time. An empty `units.allow` or `ports.allow` allows nothing; with
+  `--require-policy` any of the three empty is a hit.
+- `nft.digest`: the pinned firewall digest; optional for a check by hand,
+  required with `--require-policy`.
 
 Limits, said once:
 
@@ -270,9 +362,16 @@ Limits, said once:
 - A renamed binary is not caught by name; the package allowlist and the
   egress filter cover that. Names are matched exactly, and the lists need
   upkeep as tools appear.
-- `/opt` is looked into four levels deep, install folders and the search
-  for `node_modules` eight; a tool placed deeper, or anywhere outside the
-  places above, is left to the package allowlist.
+- A tool outside the places above (say in `/srv`, or an executable file
+  more than six levels down in a home and outside its bin folders) is not
+  caught by name; it is left to the package allowlist and the egress
+  filter.
 - A process that renames itself is not caught by name.
 - Ports are those of the network namespace the check runs in; UDP is not
   checked.
+- Enabled units are those linked in `/etc` and `/run` (and the homes);
+  the dependencies the vendor units in `/usr/lib/systemd` declare, and
+  generated units, are left to the package allowlist.
+- Run by hand as an ordinary user it cannot read other users' processes
+  or folders; it says so (`HIT incomplete proc-access`, `HIT unreadable`)
+  rather than pass.

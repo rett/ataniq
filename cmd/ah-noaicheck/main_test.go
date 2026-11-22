@@ -94,7 +94,7 @@ func runCmd(t *testing.T, stdin string, args ...string) (int, string, string) {
 
 func TestClean(t *testing.T) {
 	code, out, errOut := runCmd(t, "", "--root", host(t), "--release", release(t, nil))
-	if code != exitClean || out != "NOTE packages not enforced\nNOTE nft not pinned\nok\n" || errOut != "" {
+	if code != exitClean || out != "NOTE packages not enforced\nNOTE nft not pinned\nRUN incomplete\nok\n" || errOut != "" {
 		t.Errorf("exit %d\nstdout %q\nstderr %q", code, out, errOut)
 	}
 }
@@ -122,6 +122,7 @@ func TestEachCheckFails(t *testing.T) {
 		}, "HIT unit /etc/systemd/system/timers.target.wants/agent.timer"},
 		{"package", func(r string) { write(t, r, "var/lib/pacman/local/mise-1-1/desc", "%NAME%\nmise\n") },
 			"HIT package mise forbidden"},
+		{"listening port", func(r string) { write(t, r, "proc/net/tcp6", tcp6Listen8080) }, "HIT port tcp6:[::]:8080"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -144,7 +145,7 @@ func TestPackagesEnforced(t *testing.T) {
 	root := host(t)
 	write(t, root, "var/lib/pacman/local/zsh-5-1/desc", "%NAME%\nzsh\n")
 	code, out, _ := runCmd(t, "", "--root", root, "--release", release(t, map[string]string{"packages.allow": "bash\n"}))
-	if code != exitHit || out != "HIT package zsh not-allowed\nNOTE nft not pinned\nFAILED 1 hit(s)\n" {
+	if code != exitHit || out != "HIT package zsh not-allowed\nNOTE nft not pinned\nRUN incomplete\nFAILED 1 hit(s)\n" {
 		t.Errorf("exit %d\n%s", code, out)
 	}
 }
@@ -184,17 +185,69 @@ func TestNFT(t *testing.T) {
 func TestPorts(t *testing.T) {
 	root := host(t)
 	rel := release(t, nil)
-	if code, out, _ := runCmd(t, "", "ports", "--root", root, "--release", rel); code != exitClean || out != "ok\n" {
+	if code, out, _ := runCmd(t, "", "ports", "--root", root, "--release", rel); code != exitClean || out != "RUN complete\nok\n" {
 		t.Errorf("clean: exit %d\n%s", code, out)
 	}
-	write(t, root, "proc/net/tcp6", "  sl  local_address rem_address   st\n"+
-		"   0: 00000000000000000000000000000000:1F90 00000000000000000000000000000000:0000 0A 0 0 0\n")
+	write(t, root, "proc/net/tcp6", tcp6Listen8080)
 	code, out, _ := runCmd(t, "", "ports", "--root", root, "--release", rel)
-	if code != exitHit || out != "HIT port tcp6:[::]:8080\nFAILED 1 hit(s)\n" {
+	if code != exitHit || out != "HIT port tcp6:[::]:8080\nRUN complete\nFAILED 1 hit(s)\n" {
 		t.Errorf("planted: exit %d\n%s", code, out)
 	}
 	if code, _, _ := runCmd(t, "", "ports", "--root", root, "--release", rel, "--nft-listing", "x"); code != exitError {
 		t.Errorf("ports with --nft-listing: exit %d", code)
+	}
+}
+
+const tcp6Listen8080 = "  sl  local_address rem_address   st\n" +
+	"   0: 00000000000000000000000000000000:1F90 00000000000000000000000000000000:0000 0A 0 0 0\n"
+
+// The switch's call: --require-policy with every policy of the release set
+// passes on a clean host and says the run was complete; each policy left
+// unset is a hit of its own, and so is a pinned digest without a listing.
+func TestRequirePolicy(t *testing.T) {
+	listing := "table inet filter {\n}\n"
+	dir := t.TempDir()
+	file := filepath.Join(dir, "ruleset")
+	write(t, dir, "ruleset", listing)
+	full := map[string]string{"packages.allow": "bash\n", "nft.digest": noaicheck.NFTDigest([]byte(listing)) + "\n"}
+	with := func(name, data string) map[string]string {
+		m := map[string]string{}
+		for k, v := range full {
+			m[k] = v
+		}
+		m[name] = data
+		return m
+	}
+	code, out, errOut := runCmd(t, "", "--root", host(t), "--release", release(t, full), "--require-policy", "--nft-listing", file)
+	if code != exitClean || out != "RUN complete\nok\n" || errOut != "" {
+		t.Errorf("all set: exit %d\n%s%s", code, out, errOut)
+	}
+	cases := []struct {
+		name  string
+		files map[string]string
+		args  []string
+		want  string
+	}{
+		{"empty units.allow", with("units.allow", "# none\n"), []string{"--nft-listing", file}, "HIT policy units.allow empty\n"},
+		{"empty packages.allow", with("packages.allow", ""), []string{"--nft-listing", file}, "HIT policy packages.allow empty\n"},
+		{"empty ports.allow", with("ports.allow", ""), []string{"--nft-listing", file}, "HIT policy ports.allow empty\n"},
+		{"no nft.digest", map[string]string{"packages.allow": "bash\n"}, []string{"--nft-listing", file}, "HIT policy nft.digest missing\n"},
+		{"pinned, no listing", full, nil, "HIT nft ruleset listing-missing\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{"--root", host(t), "--release", release(t, tc.files), "--require-policy"}, tc.args...)
+			code, out, _ := runCmd(t, "", args...)
+			if code != exitHit || !strings.Contains(out, tc.want) || strings.Contains(out, "NOTE") {
+				t.Errorf("exit %d\n%s\nwant %s", code, out, tc.want)
+			}
+		})
+	}
+	// Without the flag the same release prints notes, and the run says it
+	// was not complete.
+	code, out, _ = runCmd(t, "", "--root", host(t), "--release", release(t, map[string]string{"packages.allow": "bash\n"}))
+	if code != exitClean || out != "NOTE nft not pinned\nRUN incomplete\nok\n" {
+		t.Errorf("without the flag: exit %d\n%s", code, out)
 	}
 }
 

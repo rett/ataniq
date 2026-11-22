@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -23,8 +24,74 @@ func TestRunAllClean(t *testing.T) {
 	if err := r.WriteText(&out); err != nil {
 		t.Fatal(err)
 	}
-	if want := "NOTE packages not enforced\nNOTE nft not pinned\nok\n"; out.String() != want {
+	if want := "NOTE packages not enforced\nNOTE nft not pinned\nRUN incomplete\nok\n"; out.String() != want {
 		t.Errorf("text %q, want %q", out.String(), want)
+	}
+}
+
+// With RequirePolicy every policy the release leaves unset is a hit, and a
+// run with every policy set and nothing planted is complete.
+func TestRunAllRequirePolicy(t *testing.T) {
+	listing := []byte("table inet filter {\n}\n")
+	policy := func(list, detail string) Hit { return Hit{Kind: KindPolicy, Path: list, Detail: detail} }
+	cases := []struct {
+		name     string
+		edit     func(l *Lists)
+		want     []Hit
+		complete bool
+	}{
+		{"every policy set", nil, nil, true},
+		{"empty units.allow", func(l *Lists) { l.UnitsAllow = nil }, []Hit{
+			policy(FileUnitsAllow, DetailEmpty),
+			{Kind: KindUnit, Path: "/etc/systemd/system/getty.target.wants/getty@tty1.service"},
+			{Kind: KindUnit, Path: "/etc/systemd/system/multi-user.target.wants/sshd.service"},
+		}, false},
+		{"empty ports.allow", func(l *Lists) { l.PortsAllow = nil }, []Hit{
+			policy(FilePortsAllow, DetailEmpty),
+			{Kind: KindPort, Path: "tcp:0.0.0.0:22"},
+			{Kind: KindPort, Path: "tcp6:[::]:443"},
+		}, false},
+		{"empty packages.allow", func(l *Lists) { l.PackagesAllow = nil }, []Hit{policy(FilePackagesAllow, DetailEmpty)}, false},
+		{"no nft.digest", func(l *Lists) { l.NFTDigest = "" }, []Hit{policy(FileNFTDigest, DetailMissing)}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := testLists()
+			l.PackagesAllow = []string{"bash"}
+			l.NFTDigest = NFTDigest(listing)
+			if tc.edit != nil {
+				tc.edit(l)
+			}
+			c := cleanFixture(t).checker(l)
+			c.RequirePolicy = true
+			var r Report
+			within(t, func() { r = c.RunAll(listing) })
+			if !(len(r.Hits) == 0 && len(tc.want) == 0) && !reflect.DeepEqual(r.Hits, tc.want) {
+				t.Errorf("hits\n got %v\nwant %v", r.Hits, tc.want)
+			}
+			if r.Complete != tc.complete || len(r.Notes) != 0 {
+				t.Errorf("complete %v notes %v, want %v and no notes", r.Complete, r.Notes, tc.complete)
+			}
+			var out bytes.Buffer
+			if err := r.WriteText(&out); err != nil {
+				t.Fatal(err)
+			}
+			if tc.complete && out.String() != "RUN complete\nok\n" {
+				t.Errorf("text %q", out.String())
+			}
+		})
+	}
+}
+
+// A listening port not in ports.allow fails the main run, not only the
+// ports subcommand.
+func TestRunAllChecksPorts(t *testing.T) {
+	f := cleanFixture(t)
+	f.file("proc/net/tcp", tcpHeader+
+		"   0: 00000000:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1 1 0 100 0 0 10 0\n")
+	r := f.checker(testLists()).RunAll(nil)
+	if want := []Hit{{Kind: KindPort, Path: "tcp:0.0.0.0:8080"}}; !reflect.DeepEqual(r.Hits, want) {
+		t.Errorf("hits %v, want %v", r.Hits, want)
 	}
 }
 
@@ -42,6 +109,8 @@ func TestRunAllPlanted(t *testing.T) {
 	f.file("etc/systemd/system/agent.service", "[Service]\nExecStart=/usr/local/bin/claude "+content+"\n")
 	f.file("var/lib/pacman/local/nodejs-22-1/desc", "%NAME%\nnodejs\n")
 	f.file("home/user/.local/bin/x\nok", content) // a name that tries to forge a line
+	f.file("proc/net/tcp6", tcpHeader+
+		"   0: 00000000000000000000000000000000:0BB8 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 3 1 0 100 0 0 10 0\n")
 	l := testLists()
 	l.AINames = append(l.AINames, "x\nok")
 	l.NFTDigest = NFTDigest([]byte("table inet filter {\n}\n"))
@@ -52,7 +121,7 @@ func TestRunAllPlanted(t *testing.T) {
 	for _, h := range r.Hits {
 		kinds[h.Kind] = true
 	}
-	for _, k := range []string{KindBinary, KindTool, KindCredential, KindEnv, KindProcess, KindUnit, KindPackage, KindNFT} {
+	for _, k := range []string{KindBinary, KindTool, KindCredential, KindEnv, KindProcess, KindUnit, KindPort, KindPackage, KindNFT} {
 		if !kinds[k] {
 			t.Errorf("no %s hit in %v", k, r.Hits)
 		}
@@ -99,7 +168,7 @@ func TestWriteJSONClean(t *testing.T) {
 	if err := (Report{}).WriteJSON(&b); err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"result":"ok","count":0,"hits":[],"notes":[]}` + "\n"; b.String() != want {
+	if want := `{"result":"ok","complete":false,"count":0,"hits":[],"notes":[]}` + "\n"; b.String() != want {
 		t.Errorf("got %s want %s", b.String(), want)
 	}
 }

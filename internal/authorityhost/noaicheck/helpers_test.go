@@ -29,6 +29,15 @@ func (f *fixture) file(rel, content string) {
 	}
 }
 
+// exe writes rel as an executable file.
+func (f *fixture) exe(rel string) {
+	f.t.Helper()
+	f.file(rel, "#!binary\n")
+	if err := os.Chmod(f.abs(rel), 0o755); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
 func (f *fixture) dir(rel string) {
 	f.t.Helper()
 	if err := os.MkdirAll(f.abs(rel), 0o755); err != nil {

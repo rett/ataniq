@@ -17,19 +17,27 @@ const tcpListen = "0A"
 // errProcNet is returned for a line of proc/net/tcp that cannot be read.
 var errProcNet = errors.New("malformed line")
 
-// CheckPorts is the check of the ports subcommand: a listening TCP socket
-// (state LISTEN in proc/net/tcp or proc/net/tcp6) on a port not in
-// ports.allow is a hit of kind "port" named "tcp:ADDRESS:PORT" or
+// CheckPorts, run by RunAll and alone by the ports subcommand: a listening
+// TCP socket (state LISTEN in proc/net/tcp or proc/net/tcp6) on a port not
+// in ports.allow is a hit of kind "port" named "tcp:ADDRESS:PORT" or
 // "tcp6:[ADDRESS]:PORT". The files show the sockets of the network
 // namespace of the process that reads them; UDP is not checked. A file that
 // cannot be read is a hit of kind "unreadable", and so is a missing
-// proc/net/tcp; proc/net/tcp6 is missing when IPv6 is off.
+// proc/net/tcp; proc/net/tcp6 is missing when IPv6 is off. An empty
+// ports.allow allows none; with RequirePolicy it is also the hit
+// "policy ports.allow empty".
 func (c *Checker) CheckPorts() {
+	if len(c.lists.PortsAllow) == 0 && c.RequirePolicy {
+		c.notEnforced(FilePortsAllow, DetailEmpty, "")
+	}
 	for _, f := range []struct {
 		rel, proto string
 		required   bool
 	}{{"proc/net/tcp", "tcp", true}, {"proc/net/tcp6", "tcp6", false}} {
 		_, data, err := c.t.readFile(f.rel, 64<<20)
+		if errors.Is(err, errBudget) {
+			return
+		}
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				if !f.required {
