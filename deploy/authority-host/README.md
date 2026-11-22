@@ -215,6 +215,21 @@ the run is `RUN incomplete`: it exits 0 when nothing else is found, but it
 did not enforce those policies. `RUN complete` means every policy was
 enforced and nothing stopped a check short.
 
+What is complete and what is not, plainly:
+
+- Complete: a run with `RUN complete` covered every place listed below,
+  to the end, with every policy of the release enforced. The switch's run
+  (as root, `--require-policy`, the live listing) is the one meant to be
+  complete.
+- Incomplete, and a failure: anything the check had to cover but could
+  not is a hit (`HIT incomplete ...`, `HIT unreadable ...`, `HIT policy
+  ...`), so the run exits 1. Nothing is skipped silently: a walk stopped
+  by its depth limit, the run's budget spent, a `/proc` it cannot use,
+  processes it may not read, an environment file it cannot parse.
+- Incomplete, not a failure: only a check by hand without
+  `--require-policy`, where an unenforced policy is a `NOTE` and the run
+  is `RUN incomplete` but exits 0.
+
 `--root` (default `/`) checks the tree beneath another folder, for tests;
 links inside it are resolved within it. `--release` names the release
 folder whose `share/` holds the lists; by default it is the folder above
@@ -354,3 +369,9 @@ Limits, said once:
 - A process that renames itself is not caught by name.
 - Ports are those of the network namespace the check runs in; UDP is not
   checked.
+- Enabled units are those linked in `/etc` and `/run` (and the homes);
+  the dependencies the vendor units in `/usr/lib/systemd` declare, and
+  generated units, are left to the package allowlist.
+- Run by hand as an ordinary user it cannot read other users' processes
+  or folders; it says so (`HIT incomplete proc-access`, `HIT unreadable`)
+  rather than pass.
