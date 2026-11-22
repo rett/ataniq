@@ -108,6 +108,13 @@
 // the first 8 bytes of the SHA-256 of the credential id. It names the
 // credential and holds nothing of the key.
 //
+// The seat relays the registration's authenticator data and its relying party
+// id with the credential (both optional, for a seat that relays none), and the
+// daemon reads from them what the authenticator claimed: the kind its AAGUID
+// claims, the AAGUID and the backup flags. A pending [PairStatus] and a
+// [KeyItem] carry them as optional members. With attestation "none" they are
+// claims and not facts, and the desk says so where it shows them.
+//
 // # Refusals
 //
 // Every refusal is a [*record.Error] with one of the record package's
