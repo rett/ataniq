@@ -282,6 +282,56 @@ func TestDialFailures(t *testing.T) {
 	})
 }
 
+// A caller that ends the context of Dial once Dial has returned, as a
+// deferred cancel does, keeps the connection Dial made. The context bounded
+// the first attempt only; it used to be watched until a goroutine noticed the
+// attempt was over, and closed the connection if it saw the context end first,
+// which a loaded machine made happen to about one Dial in five.
+func TestDialContextEndingAfterDialKeepsTheConnection(t *testing.T) {
+	leakCheck(t)
+	e := startServer(t, func(c *ServerConfig) { c.MaxConns = 1000; bigRate(c) }, echo())
+	for i := 0; i < 50; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// No redial: a lost connection stays lost, and shows.
+		c, err := Dial(ctx, e.addr, fastClient(e, func(c *ClientConfig) { c.BackoffMin, c.BackoffMax = time.Hour, time.Hour }))
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		since, ok := c.Connected()
+		err = c.Call(context.Background(), "owner.list", nil, nil)
+		again, still := c.Connected()
+		c.Close()
+		if !ok || err != nil || !still || !again.Equal(since) {
+			t.Fatalf("dial %d: connected %v, call %v, still connected %v (%v)", i, ok, err, still, c.LastError())
+		}
+	}
+}
+
+// A context that ends while the client waits for the answer to its hello ends
+// the attempt then, not at HelloTimeout.
+func TestDialContextEndsTheWaitForTheHello(t *testing.T) {
+	leakCheck(t)
+	srv, seat := fakeEnv(t)
+	stop := make(chan struct{})
+	addr := fakeGate(t, srv, seat, func(c *tls.Conn) {
+		readHello(t, c)
+		<-stop // never answers
+	})
+	t.Cleanup(func() { close(stop) }) // runs before the gate's own, which waits for it
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	cl, err := Dial(ctx, addr, clientFor(srv, seat, func(c *ClientConfig) { c.HelloTimeout = time.Minute }))
+	if err == nil {
+		cl.Close()
+		t.Fatal("dialled a gate that never answered the hello")
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("the attempt ended after %v, want about 200ms", d)
+	}
+}
+
 // fakeGate is a TLS server that plays the gate by hand, so that a test can make
 // it say what a real one would not. behave is run for each connection, after
 // the handshake.
