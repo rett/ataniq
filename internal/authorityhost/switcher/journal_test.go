@@ -258,3 +258,57 @@ func TestMissingCounterIsRecovery(t *testing.T) {
 		t.Fatalf("recover a broken counter: exit %d, highest %q", code, e.highest())
 	}
 }
+
+// TestCrashInPackageStep: a switch that dies while its package step runs is
+// recorded as package-step-interrupted, and the next switch runs the step
+// again with the same --from (the step must be idempotent); one that dies
+// after the step finished records the new snapshot, and the step is not run
+// again.
+func TestCrashInPackageStep(t *testing.T) {
+	for _, tc := range []struct {
+		point, snapshot, code string
+		again                 int
+	}{
+		{CrashPackageStart, "2026-11-01", CodePackageInterrupted, 1},
+		{CrashPackageDone, "2026-11-15", CodeInterrupted, 0},
+	} {
+		t.Run(tc.point, func(t *testing.T) {
+			e := active(t)
+			e.release(rel3, "2026-11-15")
+			e.crashAt(tc.point, false, rel3)
+			if j, ok := e.journal(); !ok || j.Phase != PhasePackages || j.PackageFrom != "2026-11-01" || j.PackageTo != "2026-11-15" {
+				t.Fatalf("journal: %+v, %v", j, ok)
+			}
+			if got := e.highest(); got != "2" {
+				t.Errorf("highest %q: the counter is written with the links", got)
+			}
+			e.runner.reset()
+			if code := e.switchTo(rel3); code != ExitOK {
+				t.Fatalf("retry: exit %d", code)
+			}
+			if e.runner.called("ah-pkgstep") != tc.again {
+				t.Errorf("package step runs: %v", e.runner.calls)
+			}
+			if tc.again == 1 && !strings.Contains(strings.Join(e.runner.calls, "\n"), "--from 2026-11-01 --to 2026-11-15") {
+				t.Errorf("package step not run from the old snapshot: %v", e.runner.calls)
+			}
+			if !strings.Contains(e.last, "reconcile: put back") {
+				t.Errorf("output:\n%s", e.last)
+			}
+		})
+	}
+	t.Run("record", func(t *testing.T) {
+		e := active(t)
+		e.release(rel3, "2026-11-15")
+		e.crashAt(CrashPackageStart, false, rel3)
+		e.status()
+		if code := e.switcher().Recover(context.Background(), 9); code != ExitFailed {
+			t.Fatalf("recover: exit %d", code)
+		}
+		e.out.Reset()
+		rec := e.record()
+		if rec.Error != CodePackageInterrupted || rec.PackageSnapshot != "2026-11-01" || !strings.Contains(rec.Detail, "runs it again from 2026-11-01") {
+			t.Errorf("record: %+v", rec)
+		}
+	})
+}

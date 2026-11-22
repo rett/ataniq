@@ -253,6 +253,7 @@ func (e *env) releaseIn(dir, id, snapshot string) string {
 		"id: %s\ncounter: %d\ncommit: %s0123456789\nbuilt_on: dev\ngo_version: fixture-go\npackage_snapshot: %s\n",
 		id, rid.Counter, rid.Commit, snapshot), 0o644)
 	e.write(filepath.Join(dir, NoAICheckProgram), "#!/bin/sh\nexit 0\n", 0o755)
+	e.write(filepath.Join(dir, PackageStepProgram), "#!/bin/sh\nexit 0\n", 0o755)
 	e.write(filepath.Join(dir, "bin/app"), "app of "+id+"\n", 0o755)
 	e.write(filepath.Join(dir, "etc/systemd/app.service"), "[Service]\n", 0o644)
 	e.write(filepath.Join(dir, ValidatorsList), "# units\nvalidate-units verify {release}/etc/systemd/app.service\nvalidate-rules -c\n", 0o644)

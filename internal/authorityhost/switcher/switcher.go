@@ -71,7 +71,7 @@ const (
 // The steps, as printed and as recorded in failed_step. Step 0, the import,
 // runs only with --from. A failure that comes before it (reading current and
 // previous) is recorded as "state", one of the reload list as "reload".
-var stepNames = [...]string{"import", "verify", "counter", "noaicheck", "validate", "packages", "switch", "health", "record"}
+var stepNames = [...]string{"import", "verify", "counter", "packages", "noaicheck", "validate", "switch", "health", "record"}
 
 // Config is what a switch is run with. Zero fields take their defaults.
 type Config struct {
@@ -209,6 +209,24 @@ type attempt struct {
 	// there is none or it cannot be used (fallbackErr says why).
 	fallback    *release
 	fallbackErr error
+	// j is the journal written by this switch, if any.
+	j *journal
+}
+
+// journal returns the journal of this switch in phase, carrying the package
+// step's progress when there was one.
+func (a *attempt) journal(phase string) journal {
+	j := journal{ID: a.rec.ID, Counter: a.rec.Counter, Rollback: a.rec.Rollback, Phase: phase}
+	if a.oldExists {
+		j.OldCurrent = a.oldTarget
+	}
+	if a.prevExists {
+		j.OldPrevious = a.prevTarget
+	}
+	if a.j != nil {
+		j.PackageFrom, j.PackageTo, j.PackageState = a.j.PackageFrom, a.j.PackageTo, a.j.PackageState
+	}
+	return j
 }
 
 // Switch activates the release named id.
@@ -348,50 +366,63 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		s.step(2, "counter %d is above the highest ever activated, %d", id.Counter, highest)
 	}
 
-	// 3. The no-AI check of the new release.
-	if err := s.noAICheck(ctx, a, rel); err != nil {
-		return s.fail(a, 3, err)
+	// 3. Packages, before the check, so that the check sees the host as it
+	// will be.
+	if manifest.PackageSnapshot == a.rec.PackageSnapshot {
+		s.step(3, "package snapshot %s unchanged", q(manifest.PackageSnapshot))
+	} else {
+		ok, err := rel.exists(PackageStepProgram)
+		if err == nil && !ok {
+			err = failf(CodePackageStepMissing, "package snapshot %s -> %s, and the release has no %s", q(a.rec.PackageSnapshot), q(manifest.PackageSnapshot), PackageStepProgram)
+		}
+		if err != nil {
+			return s.fail(a, 3, err)
+		}
+		argv := []string{filepath.Join(rel.dir, PackageStepProgram), "--release", rel.dir, "--from", a.rec.PackageSnapshot, "--to", manifest.PackageSnapshot}
+		if s.cfg.Dry {
+			s.step(3, "would run %s", qargv(argv))
+		} else {
+			j := a.journal(PhasePackages)
+			j.PackageFrom, j.PackageTo, j.PackageState = a.rec.PackageSnapshot, manifest.PackageSnapshot, PackageRunning
+			if err := s.writeJournal(j); err != nil {
+				s.dropJournal()
+				return s.fail(a, 3, failf(CodeRecordFailed, "%s not written: %s", JournalFile, q(err.Error())))
+			}
+			a.j = &j
+			if s.crash(CrashPackageStart) {
+				return ExitFailed
+			}
+			if _, err := s.cfg.Runner.Run(ctx, Command{Argv: argv, Timeout: PackageStepTimeout}); err != nil {
+				return s.fail(a, 3, failf(CodePackageFailed, "%s", summary(err)))
+			}
+			a.rec.PackageSnapshot = manifest.PackageSnapshot
+			j.PackageState = PackageDone
+			if err := s.writeJournal(j); err != nil {
+				return s.fail(a, 3, failf(CodeRecordFailed, "%s not written: %s", JournalFile, q(err.Error())))
+			}
+			if s.crash(CrashPackageDone) {
+				return ExitFailed
+			}
+			s.step(3, "package step done: snapshot %s", q(manifest.PackageSnapshot))
+		}
 	}
 
-	// 4. Validators.
-	if len(validators) == 0 {
-		s.step(4, "no %s: nothing to validate", ValidatorsList)
+	// 4. The no-AI check of the new release, on the host as it now is.
+	if err := s.noAICheck(ctx, a, rel); err != nil {
+		return s.fail(a, 4, err)
 	}
+
+	// 5. Validators.
 	for i, v := range validators {
 		if s.cfg.Dry {
-			s.step(4, "would run %s", qargv(v))
+			s.step(5, "would run %s", qargv(v))
 			continue
 		}
 		_, err := s.cfg.Runner.Run(ctx, Command{Argv: v, Timeout: ValidatorTimeout})
 		if err != nil {
-			return s.fail(a, 4, failf(CodeValidatorFailed, "validator %d of %d, %s: %s", i+1, len(validators), q(v[0]), summary(err)))
+			return s.fail(a, 5, failf(CodeValidatorFailed, "validator %d of %d, %s: %s", i+1, len(validators), q(v[0]), summary(err)))
 		}
-		s.step(4, "ok: %s", qargv(v))
-	}
-
-	// 5. Packages.
-	if manifest.PackageSnapshot == a.rec.PackageSnapshot {
-		s.step(5, "package snapshot %s unchanged", q(manifest.PackageSnapshot))
-	} else {
-		ok, err := rel.exists(PackageStepProgram)
-		if err != nil {
-			return s.fail(a, 5, err)
-		}
-		switch {
-		case !ok:
-			s.step(5, "package snapshot %s -> %s; the release has no %s: nothing to do", q(a.rec.PackageSnapshot), q(manifest.PackageSnapshot), PackageStepProgram)
-		case s.cfg.Dry:
-			argv := []string{filepath.Join(rel.dir, PackageStepProgram), "--release", rel.dir, "--from", a.rec.PackageSnapshot, "--to", manifest.PackageSnapshot}
-			s.step(5, "would run %s", qargv(argv))
-		default:
-			argv := []string{filepath.Join(rel.dir, PackageStepProgram), "--release", rel.dir, "--from", a.rec.PackageSnapshot, "--to", manifest.PackageSnapshot}
-			_, err := s.cfg.Runner.Run(ctx, Command{Argv: argv, Timeout: PackageStepTimeout})
-			if err != nil {
-				return s.fail(a, 5, failf(CodePackageFailed, "%s", summary(err)))
-			}
-			a.rec.PackageSnapshot = manifest.PackageSnapshot
-			s.step(5, "package step done: snapshot %s", q(manifest.PackageSnapshot))
-		}
+		s.step(5, "ok: %s", qargv(v))
 	}
 
 	// 6. Switch, then reload.
@@ -413,13 +444,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		return ExitOK
 	}
 	// The journal, and the counter as attempted, before any link.
-	j := journal{ID: id.Name, Counter: id.Counter, Rollback: rollback, Phase: PhaseLinks}
-	if a.oldExists {
-		j.OldCurrent = a.oldTarget
-	}
-	if a.prevExists {
-		j.OldPrevious = a.prevTarget
-	}
+	j := a.journal(PhaseLinks)
 	if err := s.writeJournal(j); err != nil {
 		s.dropJournal()
 		return s.fail(a, 6, failf(CodeRecordFailed, "%s not written: %s", JournalFile, q(err.Error())))
@@ -643,8 +668,8 @@ func (s *Switcher) noAICheck(ctx context.Context, a *attempt, rel *release) erro
 	}
 	listArgv := []string{"nft", "list", "ruleset"}
 	if s.cfg.Dry {
-		s.step(3, "would run %s into a private file", qargv(listArgv))
-		s.step(3, "would run %s", qargv([]string{check, "--root", s.cfg.Root, "--release", rel.dir, "--require-policy", "--nft-listing", "FILE"}))
+		s.step(4, "would run %s into a private file", qargv(listArgv))
+		s.step(4, "would run %s", qargv([]string{check, "--root", s.cfg.Root, "--release", rel.dir, "--require-policy", "--nft-listing", "FILE"}))
 		return nil
 	}
 	out, err := s.cfg.Runner.Run(ctx, Command{Argv: listArgv, Timeout: NFTListTimeout, MaxOutput: maxNFTListing})
@@ -672,7 +697,7 @@ func (s *Switcher) noAICheck(ctx context.Context, a *attempt, rel *release) erro
 		return failf(CodeNoAICheckFailed, "%s (run it by hand to see its hits)", summary(err))
 	}
 	a.rec.Check = CheckPassed
-	s.step(3, "passed")
+	s.step(4, "passed")
 	return nil
 }
 
@@ -827,7 +852,11 @@ func (s *Switcher) fail(a *attempt, n int, err error) int {
 		s.printf("result: failed at %s (dry run: nothing recorded); current unchanged", stepNames[n])
 		return ExitFailed
 	}
-	s.record(a)
+	// A journal of the package step goes once the outcome, with the
+	// snapshot the host is at, is recorded.
+	if s.record(a) == nil && a.j != nil {
+		s.dropJournal()
+	}
 	cur := a.rec.CurrentID
 	if cur == "" {
 		cur = "none"

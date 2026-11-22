@@ -103,7 +103,7 @@ func TestDeployRecord(t *testing.T) {
 		Time:            "2026-11-21T12:00:00Z",
 		Result:          ResultOK,
 		Check:           CheckPassed,
-		PackageSnapshot: "",
+		PackageSnapshot: "2026-11-01",
 	}
 	if rec != want {
 		t.Errorf("deploy.json:\n%+v\nwant\n%+v", rec, want)
@@ -578,11 +578,60 @@ func TestPackageStep(t *testing.T) {
 	}
 }
 
-func TestPackageStepAbsentAllowed(t *testing.T) {
+// TestPackageStepMissingRefused: a changed snapshot needs the release's
+// package step.
+func TestPackageStepMissingRefused(t *testing.T) {
+	e := active(t)
+	dir := e.release(rel3, "2026-11-15")
+	os.Remove(filepath.Join(dir, PackageStepProgram))
+	e.sums(dir)
+	if code := e.switchTo(rel3); code != ExitFailed {
+		t.Fatal(code)
+	}
+	e.unchanged("releases/"+rel2, "packages")
+	if rec := e.record(); rec.Error != CodePackageStepMissing || rec.PackageSnapshot != "2026-11-01" {
+		t.Errorf("record: %+v", rec)
+	}
+	// An unchanged snapshot needs none.
+	dir = e.release("0004-ddddddd", "2026-11-01")
+	os.Remove(filepath.Join(dir, PackageStepProgram))
+	e.sums(dir)
+	if code := e.switchTo("0004-ddddddd"); code != ExitOK {
+		t.Fatal(code)
+	}
+}
+
+// TestPackageStepBeforeCheck: the package step runs before the no-AI check
+// and the validators, so they see the host as it will be; when the check
+// then fails, the new snapshot is what deploy.json records and the step is
+// not run again for it.
+func TestPackageStepBeforeCheck(t *testing.T) {
 	e := active(t)
 	e.release(rel3, "2026-11-15")
+	e.runner.fail["ah-noaicheck"] = 1
+	if code := e.switchTo(rel3); code != ExitFailed {
+		t.Fatal(code)
+	}
+	var order []string
+	for _, c := range e.runner.calls {
+		order = append(order, filepath.Base(strings.Fields(c)[0]))
+	}
+	if strings.Join(order, " ") != "ah-pkgstep nft ah-noaicheck" {
+		t.Errorf("order: %v", order)
+	}
+	e.unchanged("releases/"+rel2, "noaicheck")
+	if rec := e.record(); rec.PackageSnapshot != "2026-11-15" {
+		t.Errorf("record: %+v", rec)
+	}
+	if _, err := os.Stat(filepath.Join(e.root, StateDir, JournalFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("journal left: %v", err)
+	}
+	e.runner.reset()
 	if code := e.switchTo(rel3); code != ExitOK {
 		t.Fatal(code)
+	}
+	if e.runner.called("ah-pkgstep") != 0 {
+		t.Errorf("package step run again: %v", e.runner.calls)
 	}
 }
 
@@ -741,7 +790,7 @@ func TestDryChangesNothing(t *testing.T) {
 				t.Errorf("--dry ran commands: %v", e.runner.calls)
 			}
 			if tc.code == ExitOK {
-				for _, want := range []string{"step 1/8", "step 2/8", "step 3/8 noaicheck: would run", "step 4/8 validate: would run", "step 5/8", "step 6/8 switch: would point current", "step 7/8 health: would run", "step 8/8 record: would record"} {
+				for _, want := range []string{"step 1/8", "step 2/8", "step 3/8 packages", "step 4/8 noaicheck: would run", "step 5/8 validate: would run", "step 6/8 switch: would point current", "step 7/8 health: would run", "step 8/8 record: would record"} {
 					if !strings.Contains(out, want) {
 						t.Errorf("--dry output lacks %q", want)
 					}

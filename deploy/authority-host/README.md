@@ -103,7 +103,8 @@ connection.
   honest release, not a privilege boundary: the signature is what decides
   what may run.
 - `bin/ah-noaicheck` is the release's no-AI check, required. `bin/ah-pkgstep`
-  is its package step, optional.
+  is its package step, required when the release's package snapshot differs
+  from the host's, and idempotent (see step 3).
 
 ### Putting a release on the host
 
@@ -230,7 +231,20 @@ rename in step 6, a failure leaves `current` as it was.
    refused with `counter-missing` or `counter-invalid`, see `recover`). A
    rollback skips this rule but accepts
    only the release `previous` points at.
-3. **noaicheck**: the switch runs `nft list ruleset` (within 30 seconds; its
+3. **packages**: when the manifest's `package_snapshot` differs from the one
+   recorded in `deploy.json`, the release's
+   `bin/ah-pkgstep --release DIR --from OLD --to NEW` runs, within 30 minutes
+   (taking a filesystem snapshot first is that program's job). It runs
+   before the no-AI check and the validators, so that they see the host as
+   it will be. A changed snapshot and no `bin/ah-pkgstep` is a failure
+   (`package-step-missing`). The step's progress is journaled in
+   `txn.json` (`running`, then `done`) before and after it runs, and on
+   success the new snapshot is what `deploy.json` records from then on,
+   even when a later step fails. A step that was interrupted is not taken
+   as done: the next switch runs it again with the same `--from`, so
+   `bin/ah-pkgstep` must be idempotent: run twice with the same `--from` and
+   `--to` it must end in the same state.
+4. **noaicheck**: the switch runs `nft list ruleset` (within 30 seconds; its
    output at most 4 MiB) and writes what it printed to a file of mode 0600
    in a new temporary folder of mode 0700, then runs the new release's
    `bin/ah-noaicheck --root ROOT --release DIR --require-policy --nft-listing FILE`,
@@ -238,14 +252,8 @@ rename in step 6, a failure leaves `current` as it was.
    Any other exit status is a failure, including the check's own report
    that it could not finish (`HIT incomplete`): it is never a warning. A
    failing `nft` is `nft-listing-failed`, and the check does not run.
-4. **validate**: each command of `share/validators.list` must exit 0, within
-   30 seconds each. A missing list is allowed.
-5. **packages**: when the manifest's `package_snapshot` differs from the one
-   recorded in `deploy.json`, the release's
-   `bin/ah-pkgstep --release DIR --from OLD --to NEW` runs, if it is there,
-   within 30 minutes (taking a filesystem snapshot first is that program's
-   job). On success the new snapshot is recorded. Without the program nothing
-   is done and the recorded snapshot stays.
+5. **validate**: each command of `share/validators.list` must exit 0, within
+   30 seconds each.
 6. **switch**: first the journal `txn.json` is written (the release, its
    counter, the old targets of `current` and `previous`) and synced with its
    folder, and, on a forward switch, `highest-counter` is set to the new
@@ -352,9 +360,10 @@ see its messages. The text of a broken state file is not repeated either.
 | `--mode` weaker than the switch policy | Exit 2; nothing done |
 | Counter not above the highest ever activated | Refused at counter |
 | `--rollback-to` anything but previous | Refused at counter |
-| No-AI check fails | Refused at noaicheck; no validator runs |
+| Package step fails, or the snapshot changes and there is none | Refused at packages; `current` unchanged |
+| No-AI check fails | Refused at noaicheck, after the package step; no validator runs |
 | A validator fails | Refused at validate; nothing reloaded |
-| Package step fails | Refused at packages; `current` unchanged |
+| Crash during the package step | The next command records `package-step-interrupted`; the next switch runs the step again from the same snapshot |
 | Reload or health fails after the switch | Back to the old release, with its own reload and health lists; `rolled-back` |
 | Going back fails, or the old release is not healthy either | The failed release's `stop.list` runs; `failed-recovery` with `restored_health: failed`; the console is needed |
 | First switch, or the old release missing or no longer verifying, and the new one fails | `current` stays; its `stop.list` runs; `failed` or `failed-recovery` |

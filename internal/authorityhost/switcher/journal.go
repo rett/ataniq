@@ -18,7 +18,14 @@ const JournalFile = "txn.json"
 
 // Journal phases.
 const (
-	PhaseLinks = "links" // the links may be changing: the counter is written
+	PhasePackages = "packages" // the package step runs or ran; no link was touched
+	PhaseLinks    = "links"    // the links may be changing: the counter is written
+)
+
+// Package step progress in the journal.
+const (
+	PackageRunning = "running" // the package step was started
+	PackageDone    = "done"    // the package step brought the host to PackageTo
 )
 
 // journal is the content of txn.json.
@@ -29,6 +36,10 @@ type journal struct {
 	OldCurrent  string `json:"old_current"`  // what current pointed at, as written; empty: none
 	OldPrevious string `json:"old_previous"` // what previous pointed at; empty: none
 	Phase       string `json:"phase"`
+	// The package step of this switch, when the snapshot changes.
+	PackageFrom  string `json:"package_from"`
+	PackageTo    string `json:"package_to"`
+	PackageState string `json:"package_state"` // empty, running or done
 }
 
 // readJournal reads txn.json; a missing file is no journal. A journal that
@@ -48,7 +59,8 @@ func (s *Switcher) readJournal() (journal, bool, error) {
 		return journal{}, false, failf(CodeStateInvalid, "%s does not parse", JournalFile)
 	}
 	id, err := ParseID(j.ID)
-	if err != nil || id.Counter != j.Counter || j.Phase != PhaseLinks {
+	if err != nil || id.Counter != j.Counter || (j.Phase != PhaseLinks && j.Phase != PhasePackages) ||
+		(j.PackageState != "" && j.PackageState != PackageRunning && j.PackageState != PackageDone) {
 		return journal{}, false, failf(CodeStateInvalid, "%s does not describe a switch", JournalFile)
 	}
 	for _, t := range []string{j.OldCurrent, j.OldPrevious} {
@@ -83,11 +95,13 @@ func (s *Switcher) crash(point string) bool {
 
 // The points crash is called at, in their order.
 const (
-	CrashJournal  = "journal"  // txn.json written
-	CrashCounter  = "counter"  // highest-counter written
-	CrashPrevious = "previous" // previous written
-	CrashCurrent  = "current"  // current written
-	CrashHealth   = "health"   // the health check passed
+	CrashPackageStart = "package-start" // txn.json written for the package step, which has not run
+	CrashPackageDone  = "package-done"  // the package step ran and txn.json says so
+	CrashJournal      = "journal"       // txn.json written
+	CrashCounter      = "counter"       // highest-counter written
+	CrashPrevious     = "previous"      // previous written
+	CrashCurrent      = "current"       // current written
+	CrashHealth       = "health"        // the health check passed
 )
 
 // highestAtLeast writes highest-counter as n when it holds less: a counter
@@ -158,19 +172,25 @@ func (s *Switcher) reconcile(ctx context.Context) (int, bool) {
 		id, _ := s.targetID(j.OldCurrent)
 		a.rec.PreviousID = id.Name
 	}
+	if j.PackageState == PackageDone {
+		a.rec.PackageSnapshot = j.PackageTo
+	}
 	target := filepath.Join("releases", j.ID)
 	cur, curOK, err := readLink(s.baseRoot, "current")
 	if err != nil {
 		s.printf("reconcile: FAILED: current: %s", describe(err))
 		return ExitFailed, true
 	}
-	if !j.Rollback {
+	if !j.Rollback && j.Phase == PhaseLinks {
 		if err := s.highestAtLeast(j.Counter); err != nil {
 			s.printf("reconcile: FAILED: %s not written: %s; the journal stays", HighestFile, q(err.Error()))
 			return ExitFailed, true
 		}
 	}
 	switch {
+	case j.Phase == PhasePackages && curOK && filepath.Clean(cur) == target:
+		s.printf("reconcile: FAILED: current points at %s although the switch stopped before the links; the journal stays", j.ID)
+		return ExitFailed, true
 	case curOK && filepath.Clean(cur) == target:
 		a.rec.CurrentID = j.ID
 		err := s.completeInterrupted(ctx, a, j)
@@ -206,6 +226,15 @@ func (s *Switcher) reconcile(ctx context.Context) (int, bool) {
 	if !a.oldExists {
 		a.rec.Result = ResultFailed
 		a.rec.Detail = "the first switch was interrupted before current was made"
+	}
+	switch j.PackageState {
+	case PackageRunning:
+		// Not repeated blindly: the next switch runs the step again with
+		// the same --from, and the step must be idempotent.
+		a.rec.Error = CodePackageInterrupted
+		a.rec.Detail += fmt.Sprintf("; the package step from %s to %s was interrupted: the next switch runs it again from %s", q(j.PackageFrom), q(j.PackageTo), q(j.PackageFrom))
+	case PackageDone:
+		a.rec.Detail += fmt.Sprintf("; the package step had brought the host to snapshot %s", q(j.PackageTo))
 	}
 	if err := s.record(a); err != nil {
 		return ExitFailed, true
