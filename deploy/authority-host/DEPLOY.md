@@ -23,8 +23,9 @@ export AUTHORITY_HOST_SSH=USER@HOST     # your value; not in any file of this re
 - On the authority host: the deploying user can log in with a key, without a
   password (`ssh -o BatchMode=yes` never asks), has a folder it owns for
   incoming releases (default `~/incoming`, outside `/opt/authority-host`; make it
-  once with `mkdir -m 0700 ~/incoming`) and may run
-  `sudo /usr/local/sbin/ah-switch` (see "Who may switch" below).
+  once with `mkdir -m 0700 ~/incoming`) and may run the switch form of
+  `sudo /usr/local/sbin/ah-switch`, and nothing else of it (see "Who may
+  switch" below).
 - Root on the authority host, your own way in, for the bootstrap and for
   anything the switch asks the owner to do.
 
@@ -221,14 +222,36 @@ and never in this repository:
   and `ah-switch ack --asked WORDS` act on the owner's word; nobody types it for
   the owner. See [the decision inhibit](README.md#the-decision-inhibit) and
   [the journal and recover](README.md#the-journal-and-recover).
-- **Who may switch.** The driver needs `sudo /usr/local/sbin/ah-switch` without a
-  password for the deploying user (`BatchMode`, no terminal). The switch runs
-  what a release contains as root, so in manual mode whoever can put a folder in
-  the incoming folder and run the switch holds root on the host. Grant that
-  sudo right only for that program, only to the deploying user, and move to
-  signed mode before the host is relied on. Without such a rule `--go` copies the
-  release and then fails at the ssh step; run the printed command yourself, in a
-  terminal on the host, instead.
+- **Who may switch.** The driver needs `sudo /usr/local/sbin/ah-switch --from
+  INCOMING/ID ID` without a password for the deploying user (`BatchMode`, no
+  terminal), and only that form. The switch does not check who calls it, and
+  it also has the owner's verbs: `inhibit-clear`, `ack`, `recover` with its
+  options, `--rollback-to`, and a caller-chosen checker (`--noaicheck`) or
+  alternate root (`--root`). A rule for the whole program would hand all of
+  them to the deploy key, which lives on the development host. So give the
+  deploying user this rule and no other for the switch, in a file of
+  `/etc/sudoers.d` (made with `visudo -f`), with the user's name and home
+  folder in place of `DEPLOYUSER` and `/home/DEPLOYUSER/incoming` (sudo 1.9.10
+  or newer, for the regular expression that limits the arguments):
+
+  ```
+  DEPLOYUSER ALL=(root) NOPASSWD: /usr/local/sbin/ah-switch ^--from /home/DEPLOYUSER/incoming/[0-9]{4}[0-9]*-[0-9a-f]{7}[0-9a-f]* [0-9]{4}[0-9]*-[0-9a-f]{7}[0-9a-f]*$
+  ```
+
+  Check it from your own root session with `sudo -l -U DEPLOYUSER`: it must
+  list that one line for the switch, and no other rule that lets the account
+  run `ah-switch` or become root. `inhibit-clear`, `ack` and `recover` run
+  only from the owner's own root session, never through this rule and never
+  over the deploy key; `status`, `--dry` and `--rollback-to` are run there
+  too. Any broader rule for the same account defeats the separation, for
+  example a blanket `NOPASSWD: ALL`, which some desktop distributions install
+  for the first user: the deploying account must not have one (or be in a
+  group that has one). The rule does not make the switch safe on its own: the
+  switch runs what a release contains as root, so in manual mode whoever can
+  put a folder in the incoming folder holds root on the host. Move to signed
+  mode before the host is relied on. Without the rule `--go` copies the
+  release and then fails at the ssh step; run the printed command yourself, in
+  a terminal on the host, instead.
 
 ## When a step fails
 

@@ -26,5 +26,10 @@
   The driver never runs a file of the incoming folder: the no-AI check is
   the switch's own, on the verified copy it imports, before anything
   changes.
+  `DEPLOY.md` ("Who may switch") gives the sudo rule for the deploying
+  user, limited to the switch form (`--from INCOMING/ID ID`, an argument
+  regex for sudo 1.9.10 or newer) and checked with `sudo -l -U`:
+  `inhibit-clear`, `ack` and `recover` run only from the owner's own root
+  session, and a broader rule for the same account defeats that.
   `deploy/authority-host/DEPLOY.md` gives the first-deploy sequence, the
   rollback and what to do when a step fails.

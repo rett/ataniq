@@ -402,6 +402,11 @@ func testAuthorityHostDeploy(t *testing.T) {
 	})
 }
 
+// ahFlat joins the lines of a Markdown text into one and drops the code marks.
+func ahFlat(s string) string {
+	return strings.Join(strings.Fields(strings.ReplaceAll(s, "`", "")), " ")
+}
+
 // testAuthorityHostDeployDoc checks the manual: its links resolve and it names
 // the steps, the scripts' flags and the owner-only items.
 func testAuthorityHostDeployDoc(t *testing.T) {
@@ -422,6 +427,32 @@ func testAuthorityHostDeployDoc(t *testing.T) {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("DEPLOY.md does not mention %q", want)
 		}
+	}
+	// "Who may switch": the sudo rule is limited to the switch form, and the
+	// owner-only verbs stay with the owner's own root session. Wrapped text is
+	// compared as one line, without code marks.
+	flat := ahFlat(string(data))
+	for _, want := range []string{
+		"NOPASSWD: /usr/local/sbin/ah-switch ^--from /home/DEPLOYUSER/incoming/",
+		"sudo -l -U DEPLOYUSER",
+		"inhibit-clear, ack and recover run only from the owner's own root session",
+		"NOPASSWD: ALL",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("DEPLOY.md does not say %q", want)
+		}
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasSuffix(strings.TrimSpace(line), "NOPASSWD: /usr/local/sbin/ah-switch") {
+			t.Errorf("DEPLOY.md grants the whole switch program: %s", line)
+		}
+	}
+	readme, err := os.ReadFile(filepath.Join(root(t), "deploy/authority-host/README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ahFlat(string(readme)), "inhibit-clear, ack and recover run only from the owner's own root session") {
+		t.Error("README.md does not say that inhibit-clear, ack and recover are the owner's own")
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.Contains(line, "AUTHORITY_HOST_SSH=") && !strings.Contains(line, "USER@HOST") {
