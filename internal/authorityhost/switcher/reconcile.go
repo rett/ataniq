@@ -225,7 +225,7 @@ func (s *Switcher) Recover(ctx context.Context, o RecoverOptions) int {
 		return s.recoverStopped(ctx)
 	}
 	if blocked != nil {
-		return s.stopFirst(ctx, blocked)
+		return s.stopFirst(ctx, blocked, false)
 	}
 	if code, done := s.openBase(); done {
 		return code

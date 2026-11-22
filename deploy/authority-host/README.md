@@ -581,10 +581,30 @@ The host's stop list is the owner's, never part of a release: one command
 per line, in the format of the release lists, at least one command, and
 owned and checked like the switch policy. It must stop every decision
 service of any release (for example `systemctl stop ataniq-seat.service`).
-A switch or rollback is refused while it is missing, empty or not
-trusted, and `status` says so; only the stops a journal in `stopping`
-owes run first (the lists of the releases that verify: the journal then
-stays in `stopping`, since the host's list did not run).
+A switch or rollback is refused while it is missing, empty, not
+trusted or refused (see below), and `status` says so.
+
+The programs of the host's list are checked as those of the release lists
+are, except that a file of a release is not possible there: a bare name
+(the fixed search path) or an absolute path of a protected host program
+(root-owned, not writable by group or others, one link, an execute bit,
+in folders the switch trusts), which then runs as that path below the root.
+Any other absolute path (a deployment workspace, a home folder, `/tmp`,
+a link) is refused when the list is loaded, with the code
+`stop-list-refused` and a fixed reason, and the whole list is refused: the
+list runs as root whenever the decision services must be stopped, so
+whoever can write a helper it names would choose what runs. An older list
+that names such a helper must be changed to name a protected program.
+
+A refused list would otherwise block the recovery it exists for, so it is
+reported loudly and does not stop the rest: the command prints
+`reconcile: FAILED: the host's stop list cannot be used`, a journal in any
+phase (not only `stopping`) is resumed, and the steps that need the host's
+list (the stopping phase, going back when the new release's own stop list
+does not verify) fail with `stop-list-refused` in their detail, so that
+a transaction that needed it stays in `stopping` with the failure, while
+the stop lists of the releases that verify run. Only new work is refused,
+with exit 1, once that resume has run.
 
 While a journal says `stopping`, every switch, rollback and `recover`
 (but `recover --services-stopped`, which runs nothing) runs the host's
@@ -838,7 +858,7 @@ parses; the key is no longer written or used. A dry run writes nothing.
 `package-step-failed`, `package-step-interrupted`, `package-state-unknown`,
 `nft-listing-failed`, `noaicheck-failed`, `validator-failed`, `link-failed`,
 `reload-failed`, `health-failed`, `record-failed`, `stop-list-missing`,
-`stop-failed`, `provenance-missing`, `provenance-mismatch` or `interrupted`
+`stop-list-refused`, `stop-failed`, `provenance-missing`, `provenance-mismatch` or `interrupted`
 (the full list is in `internal/authorityhost/switcher/failure.go`). `detail`
 adds fixed words and identifiers: a name that holds anything but printable
 ASCII, or a space, is quoted with Go's escapes and every identifier is cut
@@ -874,6 +894,7 @@ see its messages. The text of a broken state file is not repeated either.
 | Switch policy or signers file not root's, writable by others, missing, or not parsing | Refused; nothing recorded; only a journal in `stopping` is resumed first, under the lock, so its stops still run |
 | `releases/` missing or not trusted, `current` or `previous` not a link to `releases/<id>` | `state: FAILED`, exit 1; nothing recorded: `deploy.json`, with the package state, the counter evidence and an outcome still to report, stays as it is (`recover` too) |
 | The host's `stop.list` missing, empty or not trusted | Refused; nothing recorded; a journal in `stopping` still runs the release stop lists that verify first, and stays |
+| The host's `stop.list` names an absolute program that is not a protected host program | `stop-list-refused`, reported loudly; new work is refused; a journal in any phase is still resumed, with the release stop lists that verify, and one that needs the host's list stays in `stopping` |
 | `--mode` weaker than the switch policy | Exit 2; nothing done |
 | Counter not above the highest ever attempted | Refused at counter |
 | `--rollback-to` anything but previous | Refused at counter |

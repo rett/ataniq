@@ -275,9 +275,9 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	if usage {
 		return code
 	}
-	if _, err := s.hostStopList(); err != nil && blocked == nil {
-		blocked = err
-	}
+	// A host stop list that cannot be used (refused included) refuses new
+	// work, but keeps no recovery from running: see stopFirst.
+	_, hostErr := s.hostStopList()
 	what := "switch to " + arg
 	if rollback {
 		what = "roll back to " + arg
@@ -286,13 +286,13 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	if s.cfg.Dry {
 		dry = ", dry run: nothing is run or changed"
 	}
-	if blocked == nil {
+	if blocked == nil && hostErr == nil {
 		s.printf("ah-switch: %s (mode %s, root %s%s)", what, s.mode, q(s.cfg.Root), dry)
 	}
 
 	// Blocked, the lock is taken without creating anything: without a
 	// state folder or its lock file there is no journal to resume.
-	lk, code := s.lockWith(false, blocked == nil && !s.cfg.Dry)
+	lk, code := s.lockWith(false, blocked == nil && hostErr == nil && !s.cfg.Dry)
 	if lk == nil {
 		return code
 	}
@@ -300,7 +300,10 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	defer s.closeRoots()
 	s.stopsOwed(ctx)
 	if blocked != nil {
-		return s.stopFirst(ctx, blocked)
+		return s.stopFirst(ctx, blocked, false)
+	}
+	if hostErr != nil {
+		return s.stopFirst(ctx, hostErr, true)
 	}
 
 	a := &attempt{
@@ -748,14 +751,25 @@ func (s *Switcher) hostStopsFirst(ctx context.Context) {
 // each release's list when the release verifies). Then blocked, the
 // error, is reported, and nothing else is done: no other phase is resumed
 // and no new work starts without the policy.
-func (s *Switcher) stopFirst(ctx context.Context, blocked error) int {
+//
+// With anyPhase (the host's stop list is what cannot be used, a refused
+// one included, and the policy is fine) a journal in any phase is resumed
+// first, not only one in stopping: refusing to resume would leave a failed
+// candidate's services running with no way back but editing the list by
+// hand. The host's list fails in the steps that need it, and says so, and
+// the rest of the recovery runs. New work is refused all the same.
+func (s *Switcher) stopFirst(ctx context.Context, blocked error, anyPhase bool) int {
 	if s.stateRoot != nil && s.lockFile != nil {
-		if j, ok, err := s.readJournal(); err == nil && ok && j.Phase == PhaseStopping {
+		if j, ok, err := s.readJournal(); err == nil && ok && (j.Phase == PhaseStopping || anyPhase) {
 			if code, done := s.openBase(); done {
 				s.errorf("%s; nothing else done", describe(blocked))
 				return code
 			}
-			s.printf("reconcile: the policy or the host's stop list cannot be used (%s); the stops of the interrupted %s %s run first", describe(blocked), (&txn{j: j}).kind(), j.ID)
+			if anyPhase {
+				s.printf("reconcile: FAILED: the host's stop list cannot be used (%s); the interrupted %s %s is resumed first, without it where it is not needed", describe(blocked), (&txn{j: j}).kind(), j.ID)
+			} else {
+				s.printf("reconcile: the policy or the host's stop list cannot be used (%s); the stops of the interrupted %s %s run first", describe(blocked), (&txn{j: j}).kind(), j.ID)
+			}
 			s.reconcile(ctx, false)
 		}
 	}
@@ -1327,7 +1341,7 @@ func (s *Switcher) status(w io.Writer) error {
 		fmt.Fprintf(w, "trust: signed: releases must be signed by %s\n", q(s.policy.Principal))
 	}
 	if stops, err := s.hostStopList(); err != nil {
-		fmt.Fprintf(w, "host stop list: %s; a switch is refused until it is there\n", describe(err))
+		fmt.Fprintf(w, "host stop list: %s; a switch is refused until it is usable\n", describe(err))
 	} else {
 		fmt.Fprintf(w, "host stop list: %d command(s)\n", len(stops))
 	}

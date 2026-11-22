@@ -29,7 +29,9 @@
   release (after stopping the failed release's services) with that
   release's own reload and health lists and its no-AI check, or stopping
   the decision services, with the host's own
-  `/etc/authority-host/stop.list` first, when it cannot (that list runs
+  `/etc/authority-host/stop.list` first (its programs are bare names or
+  protected host programs like a release's; any other absolute path
+  refuses the list, loudly, without blocking a journal's recovery), when it cannot (that list runs
   before the stopping phase is saved, and, while a journal is stopping,
   first in every command, under the lock, even when `releases/`, the
   counter or the record cannot be used). Every transaction

@@ -41,6 +41,9 @@ func (s *Switcher) readHostStopList() ([][]string, error) {
 			if len(cmds) == 0 {
 				return nil, failf(CodeStopListMissing, "%s holds no command", q(full))
 			}
+			if err := s.checkHostPrograms(cmds); err != nil {
+				return nil, err
+			}
 			return cmds, nil
 		}
 	}
@@ -71,4 +74,27 @@ func (s *Switcher) openFallback(ctx context.Context, a *attempt) {
 		return
 	}
 	s.step(1, "fallback: %s verified; going back uses its reload and health lists", id.Name)
+}
+
+// checkHostPrograms checks the programs of the host's stop list as those
+// of a release's lists are (see checkPrograms), except that a file of a
+// release is not possible here: a bare name (the runner's fixed search
+// path) or an absolute path of a protected host program (see openProtected,
+// which then runs as that path below the root). Any other absolute path is
+// refused, whatever the reason, with a fixed one: the list runs as root
+// whenever the decision services must be stopped, so whoever can write a
+// helper would choose what runs. The list is refused whole.
+func (s *Switcher) checkHostPrograms(cmds [][]string) error {
+	for _, argv := range cmds {
+		if !filepath.IsAbs(argv[0]) {
+			continue
+		}
+		f, _, full, err := s.openProtected(argv[0])
+		if err != nil {
+			return failf(CodeStopListRefused, "%s: program %s is neither a bare name nor a protected host program", HostStopList, q(argv[0]))
+		}
+		f.Close()
+		argv[0] = full
+	}
+	return nil
 }
