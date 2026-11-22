@@ -1506,9 +1506,19 @@ ah-release build --out DIR --counter N --commit SHA --go-version V --built-on CL
   `--bin` named `ah-pkgstep`, the builder writes `bin/ah-pkgstep` itself: a
   POSIX `sh` script that checks the arguments the switch gives it
   (`--release DIR --from OLD --to NEW`, anything else exits 2 with a usage
-  line), prints `ah-pkgstep: static release, no package change`, changes
-  nothing and exits 0 (so it is idempotent), mode 0755 and listed in
-  `SHA256SUMS`, with the same bytes in every build. A `--bin` named
+  line), changes nothing and exits 0 only when `--from` is empty (a first
+  switch) or equal to `--to` (it then prints `ah-pkgstep: static release,
+  no package change`), so it is idempotent; any other `--from` is refused
+  with exit 1 and one fixed line on its error output (a static release
+  changes no package, so it cannot move the host to another snapshot).
+  It is mode 0755 and listed in `SHA256SUMS`, with the same bytes in every
+  build. A static release must therefore be built with the
+  `--package-snapshot` the host has recorded (`package_snapshot` in
+  `deploy.json`; any value on a first switch): a fresh snapshot value for
+  every build is refused at the next switch. As with any failed package
+  step, a refused one leaves the host's package state unknown, and every
+  later switch is refused until `ah-switch recover --package-state
+  SNAPSHOT` (see "The journal and recover"). A `--bin` named
   `ah-pkgstep` is shipped as given, and a release that is not static and is
   given none has none, so a switch that changes the snapshot refuses it
   (`package-step-missing`) as before.
@@ -1620,7 +1630,10 @@ It checks, in this order, all of them (a pass is no finding):
    folder `/` and no standard input, and must exit 0 within 60 seconds
    and print no line starting `HIT `; nothing it prints is shown, only
    `noaicheck-exit`, `noaicheck-hit`, `noaicheck-timeout` or
-   `noaicheck-not-started`. `--root DIR` is given on to it (default: the
+   `noaicheck-not-started`. It runs only when steps 1 to 4 found nothing:
+   a checker whose hash does not match `SHA256SUMS`, with an unsafe mode or
+   with a second link, or in a folder with any other finding, is not run.
+   `--root DIR` is given on to it (default: the
    host it runs on, so on a build host that has agent tools of its own it
    reports them: run `check` where the no-AI check is meant to pass, or
    give a `--root`); `--require-policy` is given on to it too, which
