@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"reflect"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -113,9 +115,11 @@ func splitObject(data []byte, spec fieldSpec) (map[string]json.RawMessage, error
 // response, into dst, a pointer to a struct, under the rules of the wire: one
 // object (an absent one reads as {}), no repeated key at any depth, no field
 // the struct does not name, no byte after it. A handler decodes its params
-// with it. Like the standard decoder, it matches a field name without regard
-// to case, so a struct should have no two fields whose names differ only in
-// case. The error is a violation and holds no byte of the data.
+// with it. Unlike the standard decoder, it matches a field name in its case,
+// at any depth: a key must be the exact JSON name of a field (its tag's name,
+// or else the field's own), so {"ID":1} does not fill a field named "id", and
+// {"id":1,"ID":2} cannot give one field two values. The error is a violation
+// and holds no byte of the data.
 func DecodeStrict(raw json.RawMessage, dst any) error {
 	if len(raw) == 0 {
 		raw = json.RawMessage("{}")
@@ -123,10 +127,135 @@ func DecodeStrict(raw json.RawMessage, dst any) error {
 	if err := checkObject(raw, MaxDepth); err != nil {
 		return err
 	}
+	if t := reflect.TypeOf(dst); t != nil {
+		if !exactKeys(raw, t) {
+			return violation("fields do not fit")
+		}
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
 		return violation("fields do not fit")
 	}
 	return nil
+}
+
+var unmarshalerType = reflect.TypeFor[json.Unmarshaler]()
+
+// exactKeys reports whether every key of every object in raw that is decoded
+// into a struct field names that field exactly, case included, following the
+// value down through the types of t. raw has passed [checkObject], so it is
+// valid JSON with no repeated key and a bounded depth. What is not a struct's
+// object here (a value of the wrong kind, a type that decodes itself, an
+// interface, a map's keys) is left to the decoder, which refuses what does not
+// fit.
+func exactKeys(raw json.RawMessage, t reflect.Type) bool {
+	for {
+		if t.Implements(unmarshalerType) || reflect.PointerTo(t).Implements(unmarshalerType) {
+			return true
+		}
+		if t.Kind() != reflect.Pointer {
+			break
+		}
+		t = t.Elem()
+	}
+	switch t.Kind() {
+	case reflect.Struct:
+		var m map[string]json.RawMessage
+		if json.Unmarshal(raw, &m) != nil {
+			return true
+		}
+		fields := jsonFields(t)
+		for k, v := range m {
+			ft, ok := fields[k]
+			if !ok || !exactKeys(v, ft) {
+				return false
+			}
+		}
+	case reflect.Map:
+		var m map[string]json.RawMessage
+		if json.Unmarshal(raw, &m) != nil {
+			return true
+		}
+		for _, v := range m {
+			if !exactKeys(v, t.Elem()) {
+				return false
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		var a []json.RawMessage
+		if json.Unmarshal(raw, &a) != nil {
+			return true
+		}
+		for _, v := range a {
+			if !exactKeys(v, t.Elem()) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// jsonFields is the JSON name of each field the standard decoder can fill in
+// struct type t, with the field's type: the name in its tag, or else the
+// field's own; fields of embedded structs without a tag name are promoted,
+// and a shallower field hides a deeper one of the same name. Of two fields at
+// one depth with one name, a tagged one is taken over one that is not, as the
+// decoder does; a name two fields share otherwise is kept, and the decoder
+// refuses it as unknown.
+func jsonFields(t reflect.Type) map[string]reflect.Type {
+	type field struct {
+		t      reflect.Type
+		tagged bool
+	}
+	out := map[string]reflect.Type{}
+	seen := map[reflect.Type]bool{}
+	level := []reflect.Type{t}
+	for len(level) > 0 {
+		var next []reflect.Type
+		found := map[string]field{}
+		for _, st := range level {
+			if seen[st] {
+				continue
+			}
+			seen[st] = true
+			for i := 0; i < st.NumField(); i++ {
+				f := st.Field(i)
+				tag := f.Tag.Get("json")
+				if tag == "-" {
+					continue
+				}
+				name, _, _ := strings.Cut(tag, ",")
+				ft := f.Type
+				if f.Anonymous && name == "" {
+					et := ft
+					if et.Kind() == reflect.Pointer {
+						et = et.Elem()
+					}
+					if et.Kind() == reflect.Struct {
+						next = append(next, et)
+						continue
+					}
+				}
+				if !f.IsExported() {
+					continue
+				}
+				tagged := name != ""
+				if !tagged {
+					name = f.Name
+				}
+				if _, hidden := out[name]; hidden {
+					continue
+				}
+				if prev, ok := found[name]; !ok || tagged && !prev.tagged {
+					found[name] = field{ft, tagged}
+				}
+			}
+		}
+		for name, f := range found {
+			out[name] = f.t
+		}
+		level = next
+	}
+	return out
 }
