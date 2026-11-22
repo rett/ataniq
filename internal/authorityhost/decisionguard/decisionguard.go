@@ -19,7 +19,11 @@
 // a link (even a dangling one), a socket or anything else refuses; so does
 // a missing, unreadable or unusable state folder, and any lookup error
 // other than "does not exist" (permission denied included). A host whose
-// state folder is gone refuses every decision.
+// state folder is gone refuses every decision. "Does not exist" for the
+// guard allows only when the state folder is still, after that lookup,
+// the very folder found before it (the same device and inode, still a real
+// folder): a folder removed, replaced or swapped for a link between the
+// two lookups gives "does not exist" too, and refuses.
 //
 // The function holds no state, starts no goroutine, reads no file content
 // and has no side effect. The error it returns carries a fixed code a
@@ -42,7 +46,8 @@ const GuardFile = "decisions.inhibit"
 // The codes of a refusal. A service may log them; they are fixed.
 const (
 	// CodeStateDir: the state folder is missing, is not a real folder
-	// (a file or a link), or cannot be looked up.
+	// (a file or a link), cannot be looked up, or is no longer the folder
+	// it was when the guard file was looked up in it.
 	CodeStateDir = "decision-guard-state-folder"
 	// CodeInhibited: the guard file exists, in any form.
 	CodeInhibited = "decision-guard-inhibited"
@@ -75,13 +80,27 @@ func Check(stateDir string) error {
 		// is something someone put there.
 		return &Error{Code: CodeStateDir, Dir: stateDir}
 	}
+	if betweenLookups != nil {
+		betweenLookups()
+	}
 	_, err = os.Lstat(filepath.Join(stateDir, GuardFile))
 	switch {
 	case err == nil:
 		return &Error{Code: CodeInhibited, Dir: stateDir}
-	case errors.Is(err, fs.ErrNotExist):
-		return nil
-	default:
+	case !errors.Is(err, fs.ErrNotExist):
 		return &Error{Code: CodeUnreadable, Dir: stateDir}
 	}
+	// "No such file" is also the answer when the folder itself went
+	// between the two lookups (removed, or renamed and replaced): it
+	// allows only when the folder is still the one found first, so that
+	// the missing name is the guard file in that folder.
+	again, err := os.Lstat(stateDir)
+	if err != nil || !again.IsDir() || !os.SameFile(fi, again) {
+		return &Error{Code: CodeStateDir, Dir: stateDir}
+	}
+	return nil
 }
+
+// betweenLookups is a test's hook, nil otherwise: it runs between the
+// lookup of the state folder and the lookup of the guard file in it.
+var betweenLookups func()

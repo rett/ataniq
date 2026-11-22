@@ -411,6 +411,7 @@ func (s *Switcher) Ack(ctx context.Context, txns []string, words string) int {
 		s.printf("ack: no state folder or lock file; nothing is owed")
 		return ExitFailed
 	}
+	s.guardJournal()
 	if j, ok, err := s.readJournal(); err != nil || ok {
 		if err == nil {
 			err = failf(CodeStateInvalid, "the %s %s (transaction %s) is still open in phase %s; run any command to settle it first", (&txn{j: j}).kind(), j.ID, j.Txn, j.Phase)

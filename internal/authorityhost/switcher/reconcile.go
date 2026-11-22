@@ -227,6 +227,7 @@ func (s *Switcher) Recover(ctx context.Context, o RecoverOptions) int {
 	}
 	defer lk.release()
 	defer s.closeRoots()
+	s.guardJournal()
 	if !o.ServicesStopped {
 		// The owner's word that the services are stopped runs nothing.
 		s.stopsOwed(ctx)
@@ -327,7 +328,8 @@ func (s *Switcher) recoverStopped(ctx context.Context) int {
 // renamed to txn-TXN.discarded in the state folder, kept as evidence, and
 // nothing of it is resumed. A journal that matches the host is refused
 // (any command resumes it), and so is one that cannot be checked against
-// the host: evidence that cannot be read proves nothing.
+// the host: evidence that cannot be read proves nothing. Refused or not, a
+// journal found without the inhibit got it back first (see guardJournal).
 func (s *Switcher) recoverDiscard(id string) int {
 	j, ok, err := s.readJournal()
 	if err != nil {
@@ -353,13 +355,14 @@ func (s *Switcher) recoverDiscard(id string) int {
 		return ExitOK
 	}
 	// Setting the journal aside qualifies nothing: decisions stay
-	// inhibited, the inhibit written first when it is not there (or holds
-	// the journal, which would be written back from it).
-	if _, settling, there, err := s.readInhibit(); err != nil || !there || settling != nil {
-		if err := s.setInhibit(&txn{j: j}, fmt.Sprintf("the journal of the %s %s was set aside by the owner; nothing qualified the host since", (&txn{j: j}).kind(), j.ID)); err != nil {
-			s.printf("recover: FAILED: %s; the journal stays", describe(err))
-			return ExitFailed
-		}
+	// inhibited. The inhibit is written first, whatever was there: a plain
+	// record of the discard, which only a transaction that ends healthy or
+	// inhibit-clear removes (never one that holds the journal, which would
+	// be written back from it, nor boot's own record, which a later boot
+	// would take over and lift).
+	if err := s.setInhibit(&txn{j: j}, fmt.Sprintf("the journal of the %s %s was set aside by the owner; nothing qualified the host since", (&txn{j: j}).kind(), j.ID)); err != nil {
+		s.printf("recover: FAILED: %s; the journal stays", describe(err))
+		return ExitFailed
 	}
 	if err := s.stateRoot.Rename(JournalFile, kept); err != nil {
 		s.printf("recover: FAILED: %s", q(err.Error()))

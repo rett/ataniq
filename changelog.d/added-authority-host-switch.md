@@ -46,8 +46,8 @@
   there (and answer its readiness probe) but refuses every decision unless
   one lookup before the decision finds no such file (the package
   `internal/authorityhost/decisionguard` is that lookup as code, `Check`,
-  which refuses on the file in any form and on a missing or linked state
-  folder; the journal `txn.json` is never there without it: a healthy end renames the journal
+  which refuses on the file in any form, on a missing or linked state
+  folder, and on one removed or replaced between its lookups; the journal `txn.json` is never there without it: a healthy end renames the journal
   over the inhibit, then removes the inhibit, the one step that lets
   decisions through; a power loss between the two leaves the journal in
   the inhibit, which the next command writes back and settles and which
@@ -79,7 +79,7 @@
   `previous` anew, any other switch or rollback reports it and is refused,
   and only the owner's `ah-switch ack --txn ID[,ID...] --asked WORDS` takes
   it back (naming the transactions of every outcome owed, as `status` and
-  the switch print them, `status` only once no transaction is still open,
+  the switch print them, `status` and `boot` only once no transaction is still open,
   since settling one may change its outcome, so that an ack repeated
   after a newer outcome became owed is never taken for that one: a
   mismatch is refused and changes nothing, a repeat keeps the first
@@ -94,8 +94,9 @@
   below those attempted since) is never resumed until
   `ah-switch recover --discard-journal TXN` sets it aside (only a journal
   proven stale: one whose evidence cannot be read is neither resumed nor
-  discarded; decisions stay inhibited, and every command that finds a
-  journal writes a missing inhibit back first),
+  discarded; decisions stay inhibited under a plain record of the
+  discard, and every command that finds a journal writes a missing
+  inhibit back first, before it runs a stop or refuses anything),
   `ah-switch recover --services-stopped` settles a transaction whose stop
   commands failed on the owner's word,
   `ah-switch status` shows the state under a shared lock, `--dry` prints
@@ -117,18 +118,24 @@
   (a oneshot that fails closed, which only the owner installs and
   enables, by hand), keeps decisions refused after a reboot until the
   host is qualified since that boot: under the lock, before it runs anything, it writes the
-  decision inhibit as its own record when none is there (or takes over the
-  record of a boot that did not finish), qualifies `current` again as a
+  decision inhibit as its own record when none is there and no journal is
+  pending (or takes over the record of a boot that did not finish; beside
+  a pending journal it never writes its own record, only the
+  transaction's or a plain one no boot takes over), qualifies `current` again as a
   settling transaction does (verified with the switch policy's trust, its
   reload list, health check and post-activation no-AI check) and removes
-  only that record, only when all of it passed; a failure runs the host's
-  stop list, is owed (`direction: boot`, `requalify_failed`, shown by
-  `status` with its `ack`) and keeps decisions inhibited; any other
+  only that record, only when all of it passed; a failure is first
+  written into that record (which no later boot takes over, also once its
+  outcome is acknowledged), then runs the host's stop list, is owed
+  (`direction: boot`, `requalify_failed`, shown by `status` with its
+  `ack`) and keeps decisions inhibited; any other
   inhibit it finds (a transaction's, a held journal, a failure, one left
   for `inhibit-clear`, one it cannot read strictly) stays as found while
   it settles an open journal as any command does, and it never
   acknowledges anything or writes `deploy.json`; a host with nothing
-  deployed is refused with exit 4 and nothing changed. Exit codes are 0
+  deployed (no `current`, release folder, `deploy.json` or journal) is
+  refused with exit 4 and nothing changed, while a deployed host whose
+  `current` is missing fails closed with exit 1. Exit codes are 0
   ok, 1 failed, 2 usage, 3 locked and 4 nothing deployed (`boot`).
   Known limits (an old journal restored by root can replay a settled
   transaction; a package step's descendant that keeps the lock open

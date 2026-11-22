@@ -390,7 +390,8 @@ func TestRecoverForms(t *testing.T) {
 // TestBoot: ah-switch boot takes only --root and --allow-exec; on a root
 // where nothing is deployed it exits 4 and creates nothing; on a host
 // switched to a healthy release it qualifies current again and exits 0,
-// decisions no longer inhibited.
+// decisions no longer inhibited; on that host with current removed it
+// exits 1, decisions inhibited.
 func TestBoot(t *testing.T) {
 	root := t.TempDir()
 	for _, args := range [][]string{
@@ -443,5 +444,17 @@ func TestBoot(t *testing.T) {
 	code, out, _ = call("--root", root, "status")
 	if code != switcher.ExitOK || !strings.Contains(out, "decisions: not inhibited") || !strings.Contains(out, "outcome owed (request forward:0001-aaaaaaa") {
 		t.Errorf("status after boot: exit %d\n%s", code, out)
+	}
+	// A deployed host whose current is missing is not one where nothing
+	// is deployed: boot inhibits decisions and fails, exit 1.
+	if err := os.Remove(filepath.Join(root, switcher.BaseDir, "current")); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut = call("--root", root, "--allow-exec", "boot")
+	if code != switcher.ExitFailed || !strings.Contains(out, "current is missing") {
+		t.Errorf("boot without current on a deployed host: exit %d\n%s%s", code, out, errOut)
+	}
+	if _, err := os.Lstat(filepath.Join(root, switcher.StateDir, switcher.InhibitFile)); err != nil {
+		t.Errorf("decisions are not inhibited after boot found current missing: %v", err)
 	}
 }

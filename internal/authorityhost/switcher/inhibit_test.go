@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"ataniq/internal/authorityhost/decisionguard"
 )
 
 func (e *env) inhibitPath() string { return filepath.Join(e.root, StateDir, InhibitFile) }
@@ -222,6 +224,118 @@ func TestEveryCommandRestoresTheInhibitBesideAJournal(t *testing.T) {
 	}
 }
 
+// TestARefusedCommandRestoresTheInhibitBesideAJournal: a command that
+// finds a journal without decisions.inhibit (removed by hand) writes it
+// back before it does anything else, also when it then refuses: a
+// recover --discard-journal of a journal that matches the host or of
+// another transaction, an ack and an inhibit-clear, which are refused
+// while a transaction is open, and a boot whose policy cannot be used.
+// The journal stays as it was, and nothing is run.
+func TestARefusedCommandRestoresTheInhibitBesideAJournal(t *testing.T) {
+	clear := func(e *env) int {
+		code := e.switcher().InhibitClear(context.Background(), "looked")
+		e.last = e.out.String()
+		e.out.Reset()
+		return code
+	}
+	for _, tc := range []struct {
+		name string
+		run  func(e *env, j journal) int
+		want string
+	}{
+		{"a discard of a journal that matches the host", func(e *env, j journal) int {
+			return e.recover(RecoverOptions{DiscardJournal: j.Txn})
+		}, "matches the host"},
+		{"a discard of another transaction", func(e *env, j journal) int {
+			return e.recover(RecoverOptions{DiscardJournal: neverTxn})
+		}, "no journal of the transaction"},
+		{"an ack", func(e *env, j journal) int {
+			return e.ackTxns([]string{neverTxn}, "looked")
+		}, "still open"},
+		{"an inhibit-clear", func(e *env, j journal) int {
+			return clear(e)
+		}, "still open"},
+		{"a boot whose policy cannot be used", func(e *env, j journal) int {
+			e.write(filepath.Join(e.root, PolicyDir, PolicyName), "{", 0o644)
+			return e.boot()
+		}, "switch policy"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := activeOwn(t)
+			g := guard(e)
+			e.crashAt(CrashActivating, false, rel3)
+			j, _ := e.journal()
+			if err := os.Remove(e.inhibitPath()); err != nil {
+				t.Fatal(err)
+			}
+			e.runner.reset()
+			if code := tc.run(e, j); code != ExitFailed || !strings.Contains(e.last, tc.want) {
+				t.Fatalf("exit %d, want %d and %q\n%s", code, ExitFailed, tc.want, e.last)
+			}
+			in, ok := e.inhibited()
+			if !ok || in.Txn != j.Txn || in.Reason == bootReason {
+				t.Errorf("the command left the journal without the transaction's inhibit: %+v, %v", in, ok)
+			}
+			if got := g.decide(); got != "refused" {
+				t.Errorf("a decision is %s beside the open journal", got)
+			}
+			if len(e.runner.calls) != 0 {
+				t.Errorf("commands run: %v", e.runner.calls)
+			}
+			if got, ok := e.journal(); !ok || got.Phase != PhaseActivating {
+				t.Errorf("journal: %+v, %v", got, ok)
+			}
+		})
+	}
+}
+
+// TestTheStopsOwedRunWithTheInhibit: a journal left in its stopping phase
+// whose inhibit was removed by hand: every command writes the inhibit back
+// before it runs the host's stop list, a boot and a command that cannot use
+// the switch policy included, so that no stop command runs while decisions
+// are allowed.
+func TestTheStopsOwedRunWithTheInhibit(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(e *env) int
+	}{
+		{"boot", func(e *env) int { return e.boot() }},
+		{"a switch", func(e *env) int { return e.switchTo(rel3) }},
+		{"a recover", func(e *env) int { return e.recover(resumeOnly) }},
+		{"a switch without a usable policy", func(e *env) int {
+			e.write(filepath.Join(e.root, PolicyDir, PolicyName), "{", 0o644)
+			return e.switchTo(rel3)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := activeOwn(t)
+			e.keepOwed = true
+			e.runner.fail["health-probe"] = -1
+			e.runner.fail["health-old"] = -1
+			e.crashAt(CrashStopping, false, rel3)
+			j, ok := e.journal()
+			if !ok || j.Phase != PhaseStopping {
+				t.Fatalf("journal: %+v, %v", j, ok)
+			}
+			if err := os.Remove(e.inhibitPath()); err != nil {
+				t.Fatal(err)
+			}
+			e.runner.reset()
+			unguarded := e.guarded()
+			tc.run(e)
+			if e.runner.called("stop-all") == 0 {
+				t.Fatalf("the host's stop list did not run: %v", e.runner.calls)
+			}
+			if *unguarded != 0 {
+				t.Errorf("%d command(s) ran while decisions were allowed beside the stopping journal: %v", *unguarded, e.runner.calls)
+			}
+			if in, ok := e.inhibited(); !ok || in.Txn != j.Txn {
+				t.Errorf("inhibit: %+v, %v", in, ok)
+			}
+		})
+	}
+}
+
 // TestDiscardLeavesDecisionsInhibited: recover --discard-journal sets a
 // journal aside on the owner's word that it does not match the host; that
 // qualifies nothing, so it writes the inhibit first when it is not there
@@ -350,9 +464,9 @@ func TestInhibitClear(t *testing.T) {
 // guardedApp models a decision-capable service under the inhibit
 // contract: its unit carries no start condition, so it starts (on a
 // reload, at boot) whether decisions.inhibit is there or not, and its
-// readiness probe passes only while it runs; before each decision it
-// makes one lookup, and refuses unless decisions.inhibit does not exist
-// (any answer but "no such file" refuses).
+// readiness probe passes only while it runs; before each decision it asks
+// decisionguard.Check, as the contract says, and refuses unless it allows
+// (decisions.inhibit does not exist in a real state folder).
 type guardedApp struct {
 	e       *env
 	started bool
@@ -361,7 +475,7 @@ type guardedApp struct {
 }
 
 func (g *guardedApp) decide() string {
-	if _, err := os.Lstat(filepath.Join(g.e.root, StateDir, InhibitFile)); !errors.Is(err, fs.ErrNotExist) {
+	if decisionguard.Check(filepath.Join(g.e.root, StateDir)) != nil {
 		return "refused"
 	}
 	return "accepted"
@@ -380,6 +494,49 @@ func (g *guardedApp) gate(argv []string) error {
 		g.asked = append(g.asked, g.decide())
 	}
 	return nil
+}
+
+// TestTheReferenceServiceAsksTheGuard: the model service decides by
+// decisionguard.Check, the check the contract names, not by a lookup of
+// its own: it refuses while the state folder is missing or is a link,
+// and while decisions.inhibit is there, and decides only on a real state
+// folder without it.
+func TestTheReferenceServiceAsksTheGuard(t *testing.T) {
+	e := newEnv(t)
+	g := guard(e)
+	state := filepath.Join(e.root, StateDir)
+	if _, err := os.Lstat(state); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the fixture has a state folder: %v", err)
+	}
+	if got := g.decide(); got != "refused" {
+		t.Errorf("without a state folder a decision is %s", got)
+	}
+	other := filepath.Join(e.root, "elsewhere")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(state), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, state); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.decide(); got != "refused" {
+		t.Errorf("with a link for the state folder a decision is %s", got)
+	}
+	if err := os.Remove(state); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(state, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.decide(); got != "accepted" {
+		t.Errorf("on a state folder without the inhibit a decision is %s", got)
+	}
+	e.write(e.inhibitPath(), "", 0o644)
+	if got := g.decide(); got != "refused" {
+		t.Errorf("with the inhibit a decision is %s", got)
+	}
 }
 
 func guard(e *env) *guardedApp {

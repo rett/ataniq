@@ -14,7 +14,7 @@
 //	ah-switch [--root DIR] [--dry] ack --txn ID[,ID...] --asked WORDS
 //
 // Exit codes: 0 ok, 1 failed (the outcome is recorded), 2 usage, 3 locked,
-// 4 boot found no current release.
+// 4 boot found nothing ever deployed.
 package main
 
 import (

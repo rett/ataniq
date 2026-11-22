@@ -219,3 +219,63 @@ func TestCheckSeesEveryChange(t *testing.T) {
 		t.Fatal("allowed with the state folder gone")
 	}
 }
+
+// TestCheckFailsClosedWhenTheFolderGoesBetweenLookups: Check looks the
+// state folder up, then the guard file in it. "No such file" for the
+// guard allows only when it is the guard that is missing from that same
+// folder: a folder removed, replaced or swapped for a link between the two
+// lookups makes the second answer "no such file" too, and refuses.
+func TestCheckFailsClosedWhenTheFolderGoesBetweenLookups(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(t *testing.T, dir string)
+	}{
+		{"removed", func(t *testing.T, dir string) {
+			if err := os.Remove(dir); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"replaced by another folder", func(t *testing.T, dir string) {
+			if err := os.Rename(dir, dir+".old"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"replaced by a link to another folder", func(t *testing.T, dir string) {
+			if err := os.Rename(dir, dir+".old"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(dir+".other", 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(dir+".other", dir); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "state")
+			if err := os.Mkdir(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			betweenLookups = func() { tc.change(t, dir) }
+			t.Cleanup(func() { betweenLookups = nil })
+			err := Check(dir)
+			var ge *Error
+			if !errors.As(err, &ge) || ge.Code != CodeStateDir {
+				t.Fatalf("Check = %v, want %s", err, CodeStateDir)
+			}
+		})
+	}
+	t.Run("unchanged", func(t *testing.T) {
+		dir := t.TempDir()
+		ran := false
+		betweenLookups = func() { ran = true }
+		t.Cleanup(func() { betweenLookups = nil })
+		if err := Check(dir); err != nil || !ran {
+			t.Fatalf("Check = %v, hook ran %v", err, ran)
+		}
+	})
+}
