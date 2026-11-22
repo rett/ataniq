@@ -90,7 +90,7 @@ func TestRoutes(t *testing.T) {
 	}{
 		{"/healthz", "text/plain; charset=utf-8", "ok"},
 		{"/", "text/html; charset=utf-8", "Authority seat"},
-		{"/pair", "text/html; charset=utf-8", "Pair this phone"},
+		{"/pair/", "text/html; charset=utf-8", "Pair this phone"},
 		{"/static/pair.js", "text/javascript; charset=utf-8", ""},
 		{"/static/app.css", "text/css; charset=utf-8", ""},
 	} {
@@ -123,7 +123,8 @@ func TestHeadersOnEveryResponse(t *testing.T) {
 		{"unknown path", "GET", "/nope", "", nil, 404},
 		{"unknown subpath", "GET", "/pair/x", "", nil, 404},
 		{"directory of assets", "GET", "/static/", "", nil, 404},
-		{"wrong method on a page", "POST", "/pair", "", ok, 405},
+		{"wrong method on a page", "POST", "/pair/", "", ok, 405},
+		{"wrong method on the redirect", "POST", "/pair", "", ok, 405},
 		{"wrong method on the api", "GET", "/api/pair", "", nil, 405},
 		{"delete", "DELETE", "/healthz", "", nil, 405},
 		{"no origin", "POST", "/api/pair-challenge", "{}", map[string]string{"Content-Type": "application/json"}, 403},

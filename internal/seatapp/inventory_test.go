@@ -16,13 +16,14 @@ import (
 // by its pattern, and only it.
 var inventory = []struct {
 	pattern string
-	kind    string // "page", "asset", "text" or "api"
+	kind    string // "page", "asset", "text", "redirect" or "api"
 	// controls are the form controls the page may hold, by element and id.
 	controls []string
 }{
 	{"GET /healthz", "text", nil},
 	{"GET /{$}", "page", nil},
-	{"GET /pair", "page", []string{"button#start"}},
+	{"GET /pair/{$}", "page", []string{"button#start"}},
+	{"GET /pair", "redirect", nil},
 	{"GET /static/pair.js", "asset", nil},
 	{"GET /static/app.css", "asset", nil},
 	{"POST /api/pair-challenge", "api", nil},
@@ -139,6 +140,13 @@ func TestPageInventory(t *testing.T) {
 		}
 		path := strings.TrimSuffix(strings.TrimPrefix(e.pattern, "GET "), "{$}")
 		w := r.do("GET", path, nil, nil)
+		if e.kind == "redirect" {
+			if w.Code != 308 || w.Header().Get("Location") != path+"/" {
+				t.Errorf("%s: %d, Location %q", e.pattern, w.Code, w.Header().Get("Location"))
+			}
+			checkHeaders(t, e.pattern, w)
+			continue
+		}
 		if w.Code != 200 {
 			t.Errorf("%s: status %d", e.pattern, w.Code)
 			continue

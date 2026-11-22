@@ -13,7 +13,8 @@
 //
 //	GET  /healthz             "ok"
 //	GET  /                    a plain status page
-//	GET  /pair                the pairing page (the code is never in the path or query)
+//	GET  /pair/               the pairing page (the code is never in the path or query)
+//	GET  /pair                a 308 to /pair/
 //	GET  /static/pair.js      the pairing script
 //	GET  /static/app.css      the style sheet
 //	POST /api/pair-challenge  a one-time challenge for a new passkey

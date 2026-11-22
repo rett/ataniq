@@ -156,11 +156,29 @@ func (a *app) routes() []route {
 	return []route{
 		{"GET /healthz", a.healthz},
 		{"GET /{$}", a.page("home")},
-		{"GET /pair", a.page("pair")},
+		// The desk's QR opens /pair/ with the code in the fragment, so that is
+		// the canonical path; /pair goes there with a 308 (a browser keeps the
+		// fragment across a redirect that has none of its own).
+		{"GET /pair/{$}", a.page("pair")},
+		{"GET /pair", a.redirect(pairPath)},
 		{"GET /static/pair.js", a.asset("assets/pair.js", "text/javascript; charset=utf-8")},
 		{"GET /static/app.css", a.asset("assets/app.css", "text/css; charset=utf-8")},
 		{"POST /api/pair-challenge", a.post(a.pair.challenge)},
 		{"POST /api/pair", a.post(a.pair.pair)},
+	}
+}
+
+// pairPath is the canonical path of the pairing page, the one the desk's QR
+// holds and the only one served as a page.
+const pairPath = "/pair/"
+
+// redirect answers with a permanent redirect that keeps the method (308) to a
+// path of the app. The Location holds no fragment: the browser carries over
+// the one it has.
+func (a *app) redirect(to string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", to)
+		writeText(w, http.StatusPermanentRedirect, "moved\n")
 	}
 }
 

@@ -7,7 +7,18 @@ import (
 
 func TestPairPageAndScript(t *testing.T) {
 	r := newRig(t)
-	page := r.do("GET", "/pair", nil, nil).Body.String()
+	// The desk's QR opens /pair/ with the code in the fragment, so that exact
+	// path is the page; /pair redirects to it.
+	pw := r.do("GET", "/pair/", nil, nil)
+	if pw.Code != 200 {
+		t.Fatalf("GET /pair/: %d", pw.Code)
+	}
+	page := pw.Body.String()
+	rd := r.do("GET", "/pair", nil, nil)
+	if rd.Code != 308 || rd.Header().Get("Location") != "/pair/" {
+		t.Errorf("GET /pair: %d, Location %q, want 308 /pair/", rd.Code, rd.Header().Get("Location"))
+	}
+	checkHeaders(t, "GET /pair", rd)
 	for _, want := range []string{
 		`data-rp-id="seat.example"`, `<script src="/static/pair.js"></script>`, `id="start"`,
 		"Compare these six words with the desk console, then confirm there. Nothing is trusted until you confirm at the desk.",
@@ -18,7 +29,7 @@ func TestPairPageAndScript(t *testing.T) {
 	}
 	// The page is the same whatever the path or query holds: the code is in
 	// the fragment, which the browser never sends.
-	if q := r.do("GET", "/pair?code=SECRET", nil, nil).Body.String(); strings.Contains(q, "SECRET") {
+	if q := r.do("GET", "/pair/?code=SECRET", nil, nil).Body.String(); strings.Contains(q, "SECRET") {
 		t.Error("the query is echoed")
 	}
 	js := r.do("GET", "/static/pair.js", nil, nil).Body.String()
