@@ -648,3 +648,131 @@ func testAuthorityHostFirstDeploy(t *testing.T, data string, section func(from, 
 		t.Error("the HIT troubleshooting row does not say it is about the check before activation")
 	}
 }
+
+// ahBootUnit is the unit that runs ah-switch boot at every boot.
+const ahBootUnit = "deploy/authority-host/bootstrap/ah-switch-boot.service"
+
+// ahUnitKeys reads a systemd unit file into its sections' keys, each with
+// its values in order. Comments and blank lines are skipped.
+func ahUnitKeys(t *testing.T, text string) map[string][]string {
+	t.Helper()
+	keys := map[string][]string{}
+	section := ""
+	for i, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";"):
+		case strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]"):
+			section = strings.Trim(line, "[]")
+		default:
+			k, v, ok := strings.Cut(line, "=")
+			if !ok || section == "" {
+				t.Fatalf("%s line %d is neither a section nor KEY=VALUE: %q", ahBootUnit, i+1, line)
+			}
+			k = section + "." + strings.TrimSpace(k)
+			keys[k] = append(keys[k], strings.TrimSpace(v))
+		}
+	}
+	return keys
+}
+
+// TestAuthorityHostBootUnit checks the unit of ah-switch boot: a oneshot
+// that stays active, runs the installed switch's boot verb as root, and
+// fails closed (no condition skips it, no exit status but 0 is success,
+// nothing restarts it, its failure is the switch's, which leaves the
+// inhibit); it runs after what the health check and the no-AI check need
+// (the front end, the firewall, the network), and no service is ordered
+// after it, since the reload list it runs starts the decision services
+// (an ordering would deadlock that reload). The manual says how the owner
+// installs and enables it, and no script installs or enables it.
+func TestAuthorityHostBootUnit(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(root(t), ahBootUnit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := ahUnitKeys(t, string(data))
+	one := func(key, want string) {
+		t.Helper()
+		if got := keys[key]; len(got) != 1 || got[0] != want {
+			t.Errorf("%s = %q, want exactly %q", key, got, want)
+		}
+	}
+	one("Service.Type", "oneshot")
+	one("Service.RemainAfterExit", "yes")
+	one("Service.ExecStart", "/usr/local/sbin/ah-switch boot")
+	one("Install.WantedBy", "multi-user.target")
+	after := map[string]bool{}
+	for _, v := range keys["Unit.After"] {
+		for _, u := range strings.Fields(v) {
+			after[u] = true
+		}
+	}
+	for _, u := range []string{"local-fs.target", "network.target", "nftables.service", "caddy.service"} {
+		if !after[u] {
+			t.Errorf("Unit.After lacks %s, which the health check or the no-AI check needs", u)
+		}
+	}
+	if got := keys["Service.TimeoutStartSec"]; len(got) != 1 || got[0] != "15min" {
+		t.Errorf("Service.TimeoutStartSec = %q, want 15min: the no-AI check alone may take 5 minutes and the health window 1", got)
+	}
+	for key := range keys {
+		name := key[strings.Index(key, ".")+1:]
+		switch {
+		case strings.HasPrefix(name, "Condition"), strings.HasPrefix(name, "Assert"):
+			t.Errorf("%s: a condition would skip the unit, which then counts as started", key)
+		case name == "SuccessExitStatus", name == "Restart", name == "RestartSec":
+			t.Errorf("%s: a failed boot must stay a failure", key)
+		case name == "User", name == "Group", name == "DynamicUser":
+			t.Errorf("%s: ah-switch boot runs as root", key)
+		case name == "Before", name == "Requires", name == "Wants", name == "BindsTo", name == "Requisite", name == "PartOf":
+			t.Errorf("%s: no unit is ordered after this one or pulled in by it; the reload list starts the decision services", key)
+		case strings.HasPrefix(name, "ExecStart") && name != "ExecStart", strings.HasPrefix(name, "ExecStop"):
+			t.Errorf("%s: the unit runs ah-switch boot and nothing else", key)
+		case name == "DefaultDependencies":
+			t.Errorf("%s: the default dependencies stay", key)
+		}
+	}
+	for _, private := range []string{"/home/", "/root/", "@", ".invalid"} {
+		if strings.Contains(string(data), private) {
+			t.Errorf("%s holds %q", ahBootUnit, private)
+		}
+	}
+	for _, script := range []string{ahBootstrapScript, ahDeployScript} {
+		text, err := os.ReadFile(filepath.Join(root(t), script))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(text), "ah-switch-boot") {
+			t.Errorf("%s names the boot unit: only the owner installs and enables it", script)
+		}
+	}
+	readme, err := os.ReadFile(filepath.Join(root(t), "deploy/authority-host/README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	flat := ahFlat(string(readme))
+	i := strings.Index(flat, "#### Boot requalification")
+	j := strings.Index(flat, "### The journal and recover")
+	if i < 0 || j < i {
+		t.Fatal("README.md lacks the Boot requalification subsection under The decision inhibit")
+	}
+	boot := flat[i:j]
+	for _, want := range []string{
+		ahBootUnit,
+		"install -o root -g root -m 0644 /root/ah-bootstrap/ah-switch-boot.service /etc/systemd/system/ah-switch-boot.service",
+		"systemctl enable ah-switch-boot.service",
+		"ah-switch-boot.service to units.allow",
+		"no decision-capable service is enabled to start on its own",
+		"would deadlock",
+	} {
+		if !strings.Contains(boot, want) {
+			t.Errorf("README.md, Boot requalification, does not say %q", want)
+		}
+	}
+	sum := strings.Index(boot, "sha256sum /root/ah-bootstrap/ah-switch-boot.service")
+	inst := strings.Index(boot, "install -o root")
+	enable := strings.Index(boot, "systemctl enable")
+	if sum < 0 || inst < sum || enable < inst {
+		t.Errorf("README.md does not hash the root-owned copy of the unit before it is installed and enabled (positions %d %d %d)", sum, inst, enable)
+	}
+}

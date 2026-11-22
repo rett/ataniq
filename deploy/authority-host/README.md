@@ -874,6 +874,54 @@ Before it, a requalification ran only while a journal was open.
   failure was owed, and a switch that ends healthy removes it as it
   removes any.
 
+The unit that runs it at every boot is shipped as
+`deploy/authority-host/bootstrap/ah-switch-boot.service`: a oneshot that
+stays active (`RemainAfterExit=yes`) and runs
+`/usr/local/sbin/ah-switch boot` as root, ordered after
+`local-fs.target`, `network.target`, `nftables.service` and
+`caddy.service` (what the health check and the no-AI check need), with a
+time limit of 15 minutes. It fails closed: no condition skips it, no exit
+status but 0 counts as success, nothing restarts it, and a failure (exit
+1 or 4, or killed at its time limit) leaves the inhibit `boot` wrote. No
+script installs or enables it (`host-bootstrap.sh` and `deploy.sh` do
+not touch it), and it changes nothing on a host until the owner does,
+after a first switch ended healthy (on a host where nothing is deployed
+it fails with exit 4):
+
+1. On the build host record its hash with the others of DEPLOY.md step 1
+   (`sha256sum deploy/authority-host/bootstrap/ah-switch-boot.service`)
+   and copy it into the incoming folder with the bootstrap files. On the
+   host, as root, copy it into the root-only folder of DEPLOY.md step 3,
+   compare the hash of that copy with the one from the build host, and
+   install the copy:
+
+   ```
+   cp /home/DEPLOYUSER/incoming/ah-switch-boot.service /root/ah-bootstrap/
+   sha256sum /root/ah-bootstrap/ah-switch-boot.service
+   install -o root -g root -m 0644 /root/ah-bootstrap/ah-switch-boot.service /etc/systemd/system/ah-switch-boot.service
+   ```
+
+2. Before enabling it, add the line `ah-switch-boot.service` to
+   `units.allow` in the release source and switch to a release built with
+   it: the no-AI check finds every enabled unit its list does not name.
+3. `systemctl daemon-reload`, then `systemctl enable
+   ah-switch-boot.service`. It runs at the next boot; `systemctl start
+   ah-switch-boot.service` runs it now, as a boot would.
+4. After a reboot, `systemctl status ah-switch-boot.service` and
+   `ah-switch status` say how it ended; a failed unit leaves decisions
+   refused, with the failure owed or the inhibit it found named.
+
+The decision-capable services of a release follow two rules for it: no
+decision-capable service is enabled to start on its own (no link in a
+`.wants` folder), and none is ordered against `ah-switch-boot.service`
+(`After=`, `Before=`, `Requires=` and the like, on either side).
+`ah-switch boot` starts them through the release's reload list once the
+inhibit is written, as a switch does. One enabled on its own could start
+and take a decision before the inhibit is written; an ordering would
+deadlock the reload, whose `systemctl restart` waits for a start job that
+waits for the boot unit to finish. The static release runs no decision
+service.
+
 ### The journal and recover
 
 Everything a switch or rollback changes on the host is one transaction,
