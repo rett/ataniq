@@ -506,6 +506,7 @@ func testAuthorityHostDeployDoc(t *testing.T) {
 		t.Error("DEPLOY.md step 6 does not acknowledge the outcome before the rollback")
 	}
 	t.Run("bootstrap copies are root's own", func(t *testing.T) { testAuthorityHostRootCopies(t, section) })
+	t.Run("first deploy", func(t *testing.T) { testAuthorityHostFirstDeploy(t, string(data), section) })
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.HasSuffix(strings.TrimSpace(line), "NOPASSWD: /usr/local/sbin/ah-switch") {
 			t.Errorf("DEPLOY.md grants the whole switch program: %s", line)
@@ -564,5 +565,58 @@ func testAuthorityHostRootCopies(t *testing.T, section func(from, to string) str
 	run := strings.Index(fill, "sudo RELEASE/bin/ah-noaicheck")
 	if !strings.Contains(fill, "mkdir -m 0700 /root/ah-baseline") || hash < 0 || verify < hash || run < verify {
 		t.Errorf("README.md baseline does not verify a root-owned copy of the release before running its checker (positions %d %d %d)", hash, verify, run)
+	}
+}
+
+// testAuthorityHostFirstDeploy checks the first-deploy procedure against what
+// the shipped release does: caddy listens on port 80 and is restarted by the
+// switch, whose check after the reload refuses a listener ports.allow does
+// not name; the baseline is taken with caddy stopped; and a failure of that
+// check happens after the activation, not before anything changed.
+func testAuthorityHostFirstDeploy(t *testing.T, data string, section func(from, to string) string) {
+	caddyfile, err := os.ReadFile(filepath.Join(root(t), "deploy/authority-host/etc/caddy/Caddyfile"))
+	if err != nil || !strings.Contains(string(caddyfile), "\n:80 {") {
+		t.Fatalf("the shipped Caddyfile no longer serves :80 (%v): revisit the first-deploy ports", err)
+	}
+	if !strings.Contains(section("### 2.", "### 3."), "add the line 80 to ports.txt") {
+		t.Error("DEPLOY.md step 2 does not add port 80 to the collected ports before the baseline")
+	}
+	for _, flag := range []string{"--dry", "--apply"} {
+		found := false
+		for _, line := range strings.Split(data, "\n") {
+			if strings.Contains(line, "host-bootstrap.sh "+flag+" ") && strings.Contains(line, "--switch-bin") {
+				found = true
+				if !strings.Contains(line, "--link-caddy") {
+					t.Errorf("DEPLOY.md's bootstrap command %q lacks --link-caddy: %s", flag, line)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("DEPLOY.md has no bootstrap command with %s", flag)
+		}
+	}
+	var post, hit string
+	for _, line := range strings.Split(data, "\n") {
+		switch {
+		case strings.HasPrefix(line, "| Switch |") && strings.Contains(line, "postcheck"):
+			post = line
+		case strings.HasPrefix(line, "| Switch |") && strings.Contains(line, "(`HIT` lines"):
+			hit = line
+		}
+	}
+	if post == "" {
+		t.Fatal("DEPLOY.md has no troubleshooting row for a failed post-activation check")
+	}
+	flatPost := ahFlat(post)
+	if strings.Contains(flatPost, "Nothing was changed") {
+		t.Error("DEPLOY.md says nothing was changed after a post-activation check failed")
+	}
+	for _, want := range []string{"already activated", "ah-switch status", "sha256sum -c SHA256SUMS", "ah-noaicheck --phase post", "--nft-listing", "higher counter"} {
+		if !strings.Contains(flatPost, want) {
+			t.Errorf("the post-check troubleshooting row does not say %q", want)
+		}
+	}
+	if !strings.Contains(hit, "before activation") {
+		t.Error("the HIT troubleshooting row does not say it is about the check before activation")
 	}
 }

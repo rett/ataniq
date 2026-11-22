@@ -42,5 +42,12 @@
   build host, and run only those copies (even for `--dry`); the README's
   baseline collection does the same for the release whose checker it runs
   before any switch has verified a release.
+  `DEPLOY.md` adds the front end's port 80 to the collected listeners before
+  the baseline (caddy is stopped while it is taken, and the switch's check
+  after the reload refuses a listener `ports.allow` does not name), carries
+  `--link-caddy` in both bootstrap commands, and says that a failed check
+  after the reload happens after the activation: inspect `status` and the
+  installed release, run the check by hand, acknowledge, deploy a higher
+  counter.
   `deploy/authority-host/DEPLOY.md` gives the first-deploy sequence, the
   rollback and what to do when a step fails.

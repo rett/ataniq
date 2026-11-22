@@ -85,6 +85,16 @@ IPv6; read them before you build. `--require-default-deny` makes it refuse such 
 listing instead. The host's firewall is the owner's: the baseline pins the rules
 as they are and does not judge them.
 
+The baseline records what listens while you collect it, and step 3 leaves
+caddy stopped, so on a fresh host `ports.txt` holds the ssh port and not the
+front end's. The switch restarts caddy and then runs the no-AI check of phase
+`post`, which reports every listening port that `ports.allow` does not name:
+the first switch would end `failed` on its own service. So read `ports.txt`
+and add the line 80 to ports.txt (the port of the shipped Caddyfile's `:80`
+site; use the ports your own Caddyfile serves) before you run `ah-release
+baseline`, and check that it is in `share/ports.allow` of the release you
+build.
+
 ### 3. Set the host up, once: bootstrap, dry then apply
 
 Copy the script and the switch binary to the authority host (any way you trust;
@@ -112,8 +122,8 @@ must be equal, and then the copies are the files you built. Read
 here on run only the copies, even for `--dry`:
 
 ```
-sh /root/ah-bootstrap/host-bootstrap.sh --dry   --switch-bin /root/ah-bootstrap/ah-switch --switch-sha256 HASH_FROM_STEP_1
-sh /root/ah-bootstrap/host-bootstrap.sh --apply --switch-bin /root/ah-bootstrap/ah-switch --switch-sha256 HASH_FROM_STEP_1
+sh /root/ah-bootstrap/host-bootstrap.sh --dry   --switch-bin /root/ah-bootstrap/ah-switch --switch-sha256 HASH_FROM_STEP_1 --link-caddy
+sh /root/ah-bootstrap/host-bootstrap.sh --apply --switch-bin /root/ah-bootstrap/ah-switch --switch-sha256 HASH_FROM_STEP_1 --link-caddy
 ```
 
 `--dry` is the default and changes nothing; it prints every step and checks the
@@ -130,7 +140,7 @@ hash and every folder above what the script touches. `--apply` then:
 - writes no `switch-policy.json`: without it the switch is in manual mode, which
   the first scratch deploys may use (see "Owner-only items").
 
-With `--link-caddy` it also makes `/etc/caddy/Caddyfile` a link to
+`--link-caddy`, which the two commands above carry, also makes `/etc/caddy/Caddyfile` a link to
 `/opt/authority-host/current/etc/caddy/Caddyfile`, keeping a regular Caddyfile
 once as `/etc/caddy/Caddyfile.pre-authority-host`. Link the Caddyfile before the
 first switch, in this step. The shipped release's `share/reload.list` restarts
@@ -156,7 +166,10 @@ Before the first deploy read the release's `share/reload.list` and
 `share/health.cmd`: they say whether the switch reloads caddy and whether its
 health check needs caddy to be serving the release's own Caddyfile. The shipped
 ones need the Caddyfile link of step 3 to be in place before this step; if your
-release's lists differ, make the order satisfy them.
+release's lists differ, make the order satisfy them. Read its `share/ports.allow`
+too: it must name every port the release's services listen on (the shipped
+front end: 80), because the switch's check after the reload refuses a listener
+it does not name.
 
 On the development host:
 
@@ -197,7 +210,8 @@ no-AI check, phase `pre`, with `--require-policy`, and refuses the switch when
 it finds anything (see [the switch's steps](README.md#steps)). `--require-policy`
 turns an empty allowlist into a hit, so fill the allowlists first (see [Filling
 the allowlists](README.md#filling-the-allowlists)). A line starting `HIT` in
-the switch's output says what it found.
+the switch's output says what it found before anything changed; the check that
+runs after the reload prints no hits (see "When a step fails").
 
 The switch imports the release into `/opt/authority-host/releases/ID` as new,
 read-only, root-owned files, runs its checks, no-AI check, validators and reloads
@@ -322,7 +336,8 @@ state; read the message, fix the cause, run the step again.
 | `deploy.sh --dry` | `rsync -n failed` | Nothing was copied. Check that the incoming folder exists on the host and belongs to the deploying user, and that ssh works in batch mode |
 | `deploy.sh --go` | rsync failed | The switch was not run. The partial copy is only in the incoming folder; run `--go` again (rsync resumes) |
 | `deploy.sh --go` | the switch step failed (the output above it is the switch's) | The release is in the incoming folder, possibly already imported. Read the switch's `status` and its outcome, then see below |
-| Switch | the no-AI check found something (`HIT` lines) | Nothing was changed. Read the `HIT` lines (and the README's [no-AI check](README.md#the-no-ai-check)), fix the host or the release, and run `--go` again |
+| Switch | the no-AI check found something before activation (`HIT` lines, step `noaicheck`) | Nothing was changed. Read the `HIT` lines (and the README's [no-AI check](README.md#the-no-ai-check)), fix the host or the release, and run `--go` again |
+| Switch | `phase post: ... (run it by hand to see its hits)`, `failed_step: postcheck` | The release was already activated and caddy restarted: this is not "nothing was changed", and the switch does not print the hits. On the first switch there is no old release, so the result is `failed`: `current` is still the new release, the stop lists ran and decisions stay inhibited; on a later switch it is `rolled-back`. Do not run `--go` for the same id again: its counter is used and a new import of an existing id is refused. From your root session: `ah-switch status` (result, failed step, inhibit); verify the installed copy (`cd /opt/authority-host/releases/ID && sha256sum -c SHA256SUMS`); save the firewall with `nft list ruleset` into a file only root can read (`/root/nft-now.txt`), then, from a real root login, run `/opt/authority-host/releases/ID/bin/ah-noaicheck --phase post --root / --release /opt/authority-host/releases/ID --require-policy --nft-listing /root/nft-now.txt` to read the `HIT` lines (a `HIT port` means `ports.allow` lacks a listener the host now has). Fix the lists, acknowledge the owed outcome as in step 5, then build a release with a higher counter and deploy it: a healthy switch removes the inhibit (see [the decision inhibit](README.md#the-decision-inhibit) and [the failure cases](README.md#failure-cases)) |
 | Switch | `rolled-back` (a reload or health check failed) | The old release is live again. Read why in `ah-switch status`, fix the release and deploy a new one with a higher counter |
 | Switch | `failed` or `failed-recovery` | The decision services were stopped and decisions stay inhibited; the console is needed. Follow [the failure cases](README.md#failure-cases), [the decision inhibit](README.md#the-decision-inhibit) and [the journal and recover](README.md#the-journal-and-recover); `inhibit-clear` and `ack` are the owner's words |
 | Switch | `refused: an outcome is owed` | Nothing was done. Read the outcomes it printed and `status`, then `ah-switch ack --asked WORDS` from your own root session, and run the request again |
