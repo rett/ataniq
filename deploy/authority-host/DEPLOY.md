@@ -113,19 +113,31 @@ hash and every folder above what the script touches. `--apply` then:
 
 With `--link-caddy` it also makes `/etc/caddy/Caddyfile` a link to
 `/opt/authority-host/current/etc/caddy/Caddyfile`, keeping a regular Caddyfile
-once as `/etc/caddy/Caddyfile.pre-authority-host`. Do not use it before the
-first switch has made `current`: until then the link dangles and caddy cannot
-read its configuration. The script never starts, restarts, reloads or enables a
-service; do that yourself, after the first switch (step 5). It is safe to run
-again: what is already right is left as it is.
+once as `/etc/caddy/Caddyfile.pre-authority-host`. Link the Caddyfile before the
+first switch, in this step. The shipped release's `share/reload.list` restarts
+caddy inside the switch (its Caddyfile has `admin off`, so there is nothing to
+reload) and `share/health.cmd` then requires `/healthz` from it, so caddy has to
+read the release's own Caddyfile when the switch restarts it. With the old
+Caddyfile still in place the restart brings up the old configuration: the health
+check fails, and the first switch has no previous release to go back to, so the
+host is left in the failed state (or, if the old configuration happens to answer
+`/healthz`, the switch qualifies it, which is no proof of the release). Until the
+first switch the link dangles, because `current` does not exist yet, and caddy
+cannot read its configuration: leave caddy stopped (do not start, restart or
+enable it) until the first switch creates `current` and restarts it itself. If
+it is already serving the old configuration, leave it alone: it keeps what it
+loaded until that restart, and a reboot before the first switch would leave it
+without a readable configuration. The script never starts, restarts, reloads or
+enables a service. It is safe to run again: what is already right is left as it
+is.
 
 ### 4. Deploy: dry, then go
 
 Before the first deploy read the release's `share/reload.list` and
 `share/health.cmd`: they say whether the switch reloads caddy and whether its
-health check needs caddy to be serving the release's own Caddyfile. The first
-deploy has to follow an order that satisfies them (step 5 says what to do when
-caddy has to be pointed at `current` after the switch).
+health check needs caddy to be serving the release's own Caddyfile. The shipped
+ones need the Caddyfile link of step 3 to be in place before this step; if your
+release's lists differ, make the order satisfy them.
 
 On the development host:
 
@@ -187,17 +199,31 @@ curl -fsS http://127.0.0.1/healthz      # the address and port your Caddyfile se
 last outcome from `deploy.json` as `ok`. The release's `share/health.cmd`
 checks the same things the switch checked; read it to see what "healthy" means.
 
-If the Caddyfile is still the old one, link it now (run the bootstrap again with
-`--link-caddy`, dry first) and restart caddy yourself, then run `status` and
-the health check again. Between the first switch and that restart the host
-keeps serving whatever caddy already has loaded.
+Then acknowledge the outcome, from your own root session on the host (the
+deploying user cannot run this, see "Who may switch"). Every switch owes its
+outcome until you do, and while an outcome is owed the switch refuses a switch
+to another release or a rollback (it prints the outcomes owed and does nothing
+else); only the same request run again, which reports the outcome, would take
+it back instead of you:
+
+```
+sudo /usr/local/sbin/ah-switch ack --asked "WHAT YOU ASKED OR SAW"
+```
+
+`ack` prints every outcome owed, records the time, your words and the
+transactions in `deploy.json`, and removes `owed.json`. Run `status` first and
+read what it says: the words are yours, and nobody types them for you (see
+[the journal and recover](README.md#the-journal-and-recover)).
 
 ### 6. Roll back
 
 To go back to the release `previous` points at (it is there after the second
-switch; the first switch has nothing to go back to):
+switch; the first switch has nothing to go back to). First acknowledge the last
+outcome, if `status` shows one owed, as at the end of step 5: a rollback while
+an outcome is owed is refused.
 
 ```
+sudo /usr/local/sbin/ah-switch ack --asked "WHAT YOU ASKED OR SAW"
 sudo /usr/local/sbin/ah-switch --dry --rollback-to previous
 sudo /usr/local/sbin/ah-switch --rollback-to previous
 ```
@@ -277,6 +303,7 @@ state; read the message, fix the cause, run the step again.
 | Switch | the no-AI check found something (`HIT` lines) | Nothing was changed. Read the `HIT` lines (and the README's [no-AI check](README.md#the-no-ai-check)), fix the host or the release, and run `--go` again |
 | Switch | `rolled-back` (a reload or health check failed) | The old release is live again. Read why in `ah-switch status`, fix the release and deploy a new one with a higher counter |
 | Switch | `failed` or `failed-recovery` | The decision services were stopped and decisions stay inhibited; the console is needed. Follow [the failure cases](README.md#failure-cases), [the decision inhibit](README.md#the-decision-inhibit) and [the journal and recover](README.md#the-journal-and-recover); `inhibit-clear` and `ack` are the owner's words |
+| Switch | `refused: an outcome is owed` | Nothing was done. Read the outcomes it printed and `status`, then `ah-switch ack --asked WORDS` from your own root session, and run the request again |
 | Switch | exit 3 | Another switch holds the lock; wait for it, then run again. Nothing was done |
 | Switch | exit 2 | Bad arguments or a root other than `/` without `--allow-exec`; nothing was done |
 | Any | You are not sure what the host holds | `sudo /usr/local/sbin/ah-switch status` changes nothing and says what is live, what is owed and what is to resume |

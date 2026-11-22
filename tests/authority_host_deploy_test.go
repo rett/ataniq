@@ -479,6 +479,32 @@ func testAuthorityHostDeployDoc(t *testing.T) {
 			t.Errorf("DEPLOY.md does not say %q", want)
 		}
 	}
+	// The first deploy: the shipped release restarts caddy in the switch and
+	// needs /healthz from it, so the Caddyfile link comes before the first
+	// switch (step 3, not after step 4), and the reported outcome is
+	// acknowledged from the owner's session before a later different switch
+	// or rollback, which the switch refuses while an outcome is owed.
+	section := func(from, to string) string {
+		i := strings.Index(flat, from)
+		j := strings.Index(flat, to)
+		if i < 0 || j < i {
+			t.Fatalf("DEPLOY.md lacks the sections %q to %q in order", from, to)
+		}
+		return flat[i:j]
+	}
+	if !strings.Contains(section("### 3.", "### 4."), "Link the Caddyfile before the first switch") {
+		t.Error("DEPLOY.md step 3 does not put the Caddyfile link before the first switch")
+	}
+	if strings.Contains(flat, "Do not use it before the first switch") || strings.Contains(flat, "link it now") {
+		t.Error("DEPLOY.md still has the Caddyfile linked after the first switch")
+	}
+	if !strings.Contains(section("### 5.", "### 6."), "ah-switch ack --asked") {
+		t.Error("DEPLOY.md step 5 does not acknowledge the outcome from the owner's session")
+	}
+	rollback := section("### 6.", "## Owner-only items")
+	if ack, back := strings.Index(rollback, "ah-switch ack --asked"), strings.Index(rollback, "--rollback-to previous"); ack < 0 || back < 0 || ack > back {
+		t.Error("DEPLOY.md step 6 does not acknowledge the outcome before the rollback")
+	}
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.HasSuffix(strings.TrimSpace(line), "NOPASSWD: /usr/local/sbin/ah-switch") {
 			t.Errorf("DEPLOY.md grants the whole switch program: %s", line)
