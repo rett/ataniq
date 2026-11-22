@@ -144,17 +144,22 @@ func TestSSHVerifierWithRealKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	signers := filepath.Join(keys, "allowed_signers")
-	if err := os.WriteFile(signers, []byte("release-signer@example.invalid "+string(pub)), 0o644); err != nil {
+	// A second identity in the same signers file: a signature by its key
+	// is not one by the principal the policy names.
+	other := filepath.Join(keys, "other")
+	run("-q", "-t", "ed25519", "-N", "", "-C", "other-signer", "-f", other)
+	otherPub, err := os.ReadFile(other + ".pub")
+	if err != nil {
 		t.Fatal(err)
 	}
 
 	e := newEnv(t)
+	e.policy(signedPolicy)
+	e.write(filepath.Join(e.root, "etc/authority-host/allowed_signers"),
+		"release@example.invalid "+string(pub)+"other@example.invalid "+string(otherPub), 0o644)
 	dir := e.release(rel1, "s")
 	run("-Y", "sign", "-q", "-f", key, "-n", SignatureNamespace, filepath.Join(dir, SumsFile))
 	signed := func(c *Config) {
-		c.Mode = ModeSigned
-		c.AllowedSigners = signers
 		c.Verifier = SSHVerifier{Runner: ExecRunner{}, Program: keygen}
 	}
 	if code := e.switchTo(rel1, signed); code != ExitOK {
@@ -179,11 +184,19 @@ func TestSSHVerifierWithRealKey(t *testing.T) {
 	}
 	e.unchanged("releases/"+rel1, "verify")
 
-	// A key not in the allowed signers is refused.
-	other := filepath.Join(keys, "other")
-	run("-q", "-t", "ed25519", "-N", "", "-C", "stranger", "-f", other)
+	// The other identity of the signers file is not the principal.
 	os.Remove(filepath.Join(dir, SignatureFile))
 	run("-Y", "sign", "-q", "-f", other, "-n", SignatureNamespace, filepath.Join(dir, SumsFile))
+	if code := e.switchTo(rel3, signed); code != ExitFailed {
+		t.Fatalf("other listed signer: exit %d", code)
+	}
+	e.unchanged("releases/"+rel1, "verify")
+
+	// A key not in the allowed signers is refused.
+	stranger := filepath.Join(keys, "stranger")
+	run("-q", "-t", "ed25519", "-N", "", "-C", "stranger", "-f", stranger)
+	os.Remove(filepath.Join(dir, SignatureFile))
+	run("-Y", "sign", "-q", "-f", stranger, "-n", SignatureNamespace, filepath.Join(dir, SumsFile))
 	if code := e.switchTo(rel3, signed); code != ExitFailed {
 		t.Fatalf("unknown signer: exit %d", code)
 	}

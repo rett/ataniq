@@ -80,16 +80,31 @@ func (c *fakeClock) sleep(d time.Duration) {
 }
 
 type fakeVerifier struct {
-	err   error
-	calls int
-	data  []byte
+	err       error
+	calls     int
+	data      []byte
+	signers   string
+	principal string
+	sigs      []string
 }
 
-func (v *fakeVerifier) Verify(ctx context.Context, allowedSigners string, data []byte, signaturePath string) error {
+func (v *fakeVerifier) Verify(ctx context.Context, allowedSigners, principal string, data []byte, signaturePath string) error {
 	v.calls++
 	v.data = data
+	v.signers, v.principal = allowedSigners, principal
+	v.sigs = append(v.sigs, signaturePath)
 	return v.err
 }
+
+// policy writes the switch policy and an allowed signers file below the
+// root.
+func (e *env) policy(content string) {
+	e.t.Helper()
+	e.write(filepath.Join(e.root, "etc/authority-host/allowed_signers"), "release@example.invalid ssh-ed25519 AAAA\n", 0o644)
+	e.write(filepath.Join(e.root, PolicyDir, PolicyName), content, 0o644)
+}
+
+const signedPolicy = `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers", "principal": "release@example.invalid"}`
 
 // env is a temporary root with a fake runner and clock.
 type env struct {

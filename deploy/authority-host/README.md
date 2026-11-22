@@ -22,7 +22,7 @@ connection.
                           imported by ah-switch --from, read-only
     MANIFEST              key: value lines
     SHA256SUMS            every other file of the folder
-    SHA256SUMS.sig        optional; checked only with --mode signed
+    SHA256SUMS.sig        checked in signed mode (see the switch policy)
     bin/  etc/  share/
   current  -> releases/<id>
   previous -> releases/<id>
@@ -129,19 +129,45 @@ one folder open at a time, every file is opened without blocking, and a
 file that changes size or time, or stops being a regular file, while it is
 read is a failure (`file-changed`).
 
+### The switch policy
+
+`/etc/authority-host/switch-policy.json` (below `--root`) says how strict
+every switch must be: a forward switch, `--rollback-to previous`, and the
+automatic return to the old release after a failed health check.
+
+```
+{"min_mode": "signed",
+ "allowed_signers": "/etc/authority-host/allowed_signers",
+ "principal": "release-signer"}
+```
+
+- `min_mode` is `manual` or `signed`, the weakest mode a switch may use.
+  `--mode` may only be as strict or stricter.
+- `allowed_signers` is the ssh allowed signers file and `principal` the
+  identity a release must be signed by; both are required for signed mode.
+  The signature namespace is fixed: `authority-host-release`.
+- No other key is accepted. The policy file, the signers file and every
+  folder above them must be owned by root and not writable by group or
+  others (the same check as the state folder); otherwise, or when the
+  policy does not parse, the switch stops before it does anything.
+- Without the file the policy is manual: unsigned releases are accepted.
+  `deploy.json` then records `trust: manual`, and `status` says
+  `trust: manual: no switch policy, unsigned releases are accepted`.
+
 ### Commands
 
 ```
-ah-switch [--root DIR] [--dry] [--mode manual|signed] [--allowed-signers FILE] [--noaicheck PATH] [--from INCOMING_DIR] ID
-ah-switch [--root DIR] [--dry] [--noaicheck PATH] --rollback-to previous
+ah-switch [--root DIR] [--dry] [--mode manual|signed] [--noaicheck PATH] [--from INCOMING_DIR] ID
+ah-switch [--root DIR] [--dry] [--mode manual|signed] [--noaicheck PATH] --rollback-to previous
 ah-switch [--root DIR] status
 ```
 
 - `--root DIR` is the folder that holds `opt/authority-host` and
   `var/lib/authority-host`; it is `/` on the host and a scratch folder in tests.
-- `--mode manual` (the default) checks `SHA256SUMS` only. `--mode signed` also
-  checks `SHA256SUMS.sig` against `--allowed-signers FILE` (usually
-  `/etc/authority-host/allowed_signers`), which only that mode accepts.
+- `--mode manual` checks `SHA256SUMS` only; `--mode signed` also checks
+  `SHA256SUMS.sig`. Without `--mode` the switch policy's minimum applies; a
+  mode weaker than the policy is refused (exit 2), and `--mode signed`
+  needs the policy's `allowed_signers` and `principal`.
 - `--from INCOMING_DIR` imports the release from that folder first (see
   above). With `--dry` nothing is imported: the incoming folder is checked
   in place, apart from the owner and the modes, which the import would set.
@@ -153,8 +179,8 @@ ah-switch [--root DIR] status
   nothing: no link, no state file, no lock file. It still reads and checks the
   release (sums, manifest, lists, counter), and it is refused while a switch
   holds the lock.
-- `status` prints `current`, `previous`, the highest counter and the last
-  outcome from `deploy.json`.
+- `status` prints `current`, `previous`, the highest counter, the trust of
+  the switch policy and the last outcome from `deploy.json`.
 
 Flags may come before or after the id.
 
@@ -170,11 +196,12 @@ rename in step 6, a failure leaves `current` as it was.
    file in it must be listed in `SHA256SUMS` and match it; a file not
    listed, a listed file missing or changed, a listed path that escapes the
    folder or is not clean, or a link or special file in the folder is a
-   failure. In signed mode the
-   signature must verify: `ssh-keygen -Y find-principals` names the signer in
-   the allowed signers file and `ssh-keygen -Y verify` checks the sums in the
-   namespace `authority-host-release`. Then `MANIFEST` must match the id and
-   the command lists must parse.
+   failure. In signed mode the signature must verify:
+   `ssh-keygen -Y verify -f ALLOWED_SIGNERS -I PRINCIPAL -n authority-host-release`
+   checks the sums, with the signers file and the principal of the switch
+   policy (the principal is never discovered from the signature, so another
+   identity of a shared signers file cannot authorize a release). Then
+   `MANIFEST` must match the id and the command lists must parse.
 2. **counter**: the counter must be above the highest ever activated
    (`highest-counter`; none means 0). A rollback skips this rule but accepts
    only the release `previous` points at.
@@ -206,8 +233,9 @@ healthy. On the very first switch there is nothing to go back to: `current`
 stays at the new release and the result is `failed`.
 
 `deploy.json` holds `id` (the release asked for), `previous_id` (what `current`
-pointed at before), `current_id` (what it points at after), `counter`, `mode`,
-`rollback`, `time` (UTC), `result` (`ok`, `failed` or `rolled-back`), `check`
+pointed at before), `current_id` (what it points at after), `counter`, `mode`
+(how the release was verified), `trust` (the policy's minimum, `manual`
+without a policy), `rollback`, `time` (UTC), `result` (`ok`, `failed` or `rolled-back`), `check`
 (the no-AI check: `passed`, `failed` or `not run`), `failed_step` (`state`,
 `verify`, `counter`, `noaicheck`, `validate`, `packages`, `switch`, `reload`,
 `health` or `record`; empty when ok; `import` for step 0), `error`, `detail`, `package_snapshot`
@@ -243,7 +271,9 @@ see its messages. The text of a broken state file is not repeated either.
 | Incoming folder holds a link, special or hard-linked file, or `releases/ID` exists | Refused at import; nothing is left in `releases/` |
 | Wrong sum, file missing or not listed, path escape, link in the release, release folder a link | Refused at verify; `current` unchanged; an import's copy is removed |
 | A release folder or file writable by group or others, set-id, or not root's | Refused at verify |
-| Signature missing or bad in signed mode | Refused at verify |
+| Signature missing or bad in signed mode, on a switch or a rollback | Refused at verify |
+| Switch policy or signers file not root's, writable by others, or not parsing | Refused before anything; nothing recorded |
+| `--mode` weaker than the switch policy | Exit 2; nothing done |
 | Counter not above the highest ever activated | Refused at counter |
 | `--rollback-to` anything but previous | Refused at counter |
 | No-AI check fails | Refused at noaicheck; no validator runs |

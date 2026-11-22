@@ -98,6 +98,7 @@ func TestDeployRecord(t *testing.T) {
 		CurrentID:       rel2,
 		Counter:         2,
 		Mode:            ModeManual,
+		Trust:           ModeManual,
 		Time:            "2026-11-21T12:00:00Z",
 		Result:          ResultOK,
 		Check:           CheckPassed,
@@ -110,7 +111,7 @@ func TestDeployRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"id", "previous_id", "current_id", "counter", "mode", "rollback", "time", "result", "check", "failed_step", "error", "detail", "package_snapshot", "restored_health"} {
+	for _, key := range []string{"id", "previous_id", "current_id", "counter", "mode", "trust", "rollback", "time", "result", "check", "failed_step", "error", "detail", "package_snapshot", "restored_health"} {
 		if !strings.Contains(string(data), `"`+key+`":`) {
 			t.Errorf("deploy.json has no %s:\n%s", key, data)
 		}
@@ -730,65 +731,6 @@ func TestDryChangesNothing(t *testing.T) {
 	}
 }
 
-func TestSignedMode(t *testing.T) {
-	signed := func(v Verifier) func(*Config) {
-		return func(c *Config) {
-			c.Mode = ModeSigned
-			c.AllowedSigners = "/etc/authority-host/allowed_signers"
-			c.Verifier = v
-		}
-	}
-	t.Run("good", func(t *testing.T) {
-		e := newEnv(t)
-		dir := e.release(rel1, "s")
-		e.write(filepath.Join(dir, SignatureFile), "sig", 0o644)
-		v := &fakeVerifier{}
-		if code := e.switchTo(rel1, signed(v)); code != ExitOK {
-			t.Fatalf("exit %d", code)
-		}
-		sums, _ := os.ReadFile(filepath.Join(dir, SumsFile))
-		if v.calls != 1 || string(v.data) != string(sums) {
-			t.Errorf("verifier called %d times with %q", v.calls, v.data)
-		}
-		if e.record().Mode != ModeSigned {
-			t.Errorf("mode not recorded")
-		}
-	})
-	t.Run("bad", func(t *testing.T) {
-		e := newEnv(t)
-		dir := e.release(rel1, "s")
-		e.write(filepath.Join(dir, SignatureFile), "sig", 0o644)
-		if code := e.switchTo(rel1, signed(&fakeVerifier{err: errors.New("bad signature")})); code != ExitFailed {
-			t.Fatalf("exit %d", code)
-		}
-		e.unchanged("", "verify")
-		if len(e.runner.calls) != 0 {
-			t.Errorf("commands run: %v", e.runner.calls)
-		}
-	})
-	t.Run("missing", func(t *testing.T) {
-		e := newEnv(t)
-		e.release(rel1, "s")
-		v := &fakeVerifier{}
-		if code := e.switchTo(rel1, signed(v)); code != ExitFailed {
-			t.Fatalf("exit %d", code)
-		}
-		e.unchanged("", "verify")
-		if v.calls != 0 {
-			t.Errorf("verifier called without a signature")
-		}
-	})
-	t.Run("manual ignores it", func(t *testing.T) {
-		e := newEnv(t)
-		dir := e.release(rel1, "s")
-		e.write(filepath.Join(dir, SignatureFile), "sig", 0o644)
-		v := &fakeVerifier{err: errors.New("never asked")}
-		if code := e.switchTo(rel1, func(c *Config) { c.Verifier = v }); code != ExitOK || v.calls != 0 {
-			t.Fatalf("exit %d, verifier calls %d", code, v.calls)
-		}
-	})
-}
-
 func TestConfigRefused(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -799,8 +741,7 @@ func TestConfigRefused(t *testing.T) {
 		{"id with path", nil, "../0001-aaaaaaa"},
 		{"upper-case commit", nil, "0001-AAAAAAA"},
 		{"bad mode", func(c *Config) { c.Mode = "trust" }, rel1},
-		{"signed without signers", func(c *Config) { c.Mode = ModeSigned }, rel1},
-		{"signers in manual mode", func(c *Config) { c.AllowedSigners = "/x" }, rel1},
+		{"signed without a policy", func(c *Config) { c.Mode = ModeSigned }, rel1},
 		{"relative root", func(c *Config) { c.Root = "relative" }, rel1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -837,7 +778,7 @@ func TestCurrentNotALink(t *testing.T) {
 
 func TestStatus(t *testing.T) {
 	e := newEnv(t)
-	if got := e.status(); got != "current: none\nprevious: none\nhighest counter: 0\nlast switch: none recorded\n" {
+	if got := e.status(); got != "current: none\nprevious: none\nhighest counter: 0\ntrust: manual: no switch policy, unsigned releases are accepted\nlast switch: none recorded\n" {
 		t.Errorf("status of an empty root:\n%s", got)
 	}
 	e.release(rel1, "s")

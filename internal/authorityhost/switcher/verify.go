@@ -19,15 +19,16 @@ const signatureTimeout = 30 * time.Second
 
 // Verifier checks the signature of a release's SHA256SUMS.
 type Verifier interface {
-	// Verify reports whether signaturePath is a good signature of data by a
-	// signer named in allowedSigners.
-	Verify(ctx context.Context, allowedSigners string, data []byte, signaturePath string) error
+	// Verify reports whether signaturePath is a good signature of data, in
+	// SignatureNamespace, by the key allowedSigners lists for principal.
+	Verify(ctx context.Context, allowedSigners, principal string, data []byte, signaturePath string) error
 }
 
-// SSHVerifier verifies with ssh-keygen -Y, through a Runner (so with a clean
-// environment and a fixed argument vector). It first asks ssh-keygen which
-// principal of the allowed signers file made the signature, then verifies the
-// data against that principal in SignatureNamespace.
+// SSHVerifier verifies with ssh-keygen -Y verify, through a Runner (so with a
+// clean environment and a fixed argument vector), for the principal the
+// switch policy names: it never asks ssh-keygen which principal made a
+// signature, so another identity of a shared signers file cannot authorize
+// a release.
 type SSHVerifier struct {
 	Runner  Runner
 	Program string // default "ssh-keygen", looked up in SearchPath
@@ -40,25 +41,11 @@ func (v SSHVerifier) program() string {
 	return "ssh-keygen"
 }
 
-func (v SSHVerifier) Verify(ctx context.Context, allowedSigners string, data []byte, signaturePath string) error {
-	out, err := v.Runner.Run(ctx, Command{
-		Argv:    []string{v.program(), "-Y", "find-principals", "-s", signaturePath, "-f", allowedSigners},
-		Timeout: signatureTimeout,
-	})
-	if err != nil {
-		return fmt.Errorf("no allowed signer made this signature: ssh-keygen -Y find-principals: %s", summary(err))
+func (v SSHVerifier) Verify(ctx context.Context, allowedSigners, principal string, data []byte, signaturePath string) error {
+	if principal == "" || strings.HasPrefix(principal, "-") || strings.ContainsAny(principal, " \t\n") {
+		return errors.New("no usable principal")
 	}
-	principal := ""
-	for _, line := range strings.Split(string(out.Stdout), "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			principal = line
-			break
-		}
-	}
-	if principal == "" || strings.ContainsAny(principal, " \t") {
-		return errors.New("ssh-keygen named no usable principal for the signature")
-	}
-	_, err = v.Runner.Run(ctx, Command{
+	_, err := v.Runner.Run(ctx, Command{
 		Argv:    []string{v.program(), "-Y", "verify", "-f", allowedSigners, "-I", principal, "-n", SignatureNamespace, "-s", signaturePath},
 		Stdin:   data,
 		Timeout: signatureTimeout,

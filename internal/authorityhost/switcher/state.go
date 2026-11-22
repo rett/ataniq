@@ -16,7 +16,8 @@ type Record struct {
 	PreviousID      string `json:"previous_id"`      // what current pointed at before it
 	CurrentID       string `json:"current_id"`       // what current points at after it
 	Counter         uint64 `json:"counter"`          // the counter of id
-	Mode            string `json:"mode"`             // manual or signed
+	Mode            string `json:"mode"`             // manual or signed: how the release was verified
+	Trust           string `json:"trust"`            // the switch policy's minimum mode; manual without a policy
 	Rollback        bool   `json:"rollback"`         // asked as --rollback-to previous
 	Time            string `json:"time"`             // when it ended, RFC 3339, UTC
 	Result          string `json:"result"`           // ok, failed or rolled-back

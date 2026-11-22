@@ -71,20 +71,19 @@ var stepNames = [...]string{"import", "verify", "counter", "noaicheck", "validat
 
 // Config is what a switch is run with. Zero fields take their defaults.
 type Config struct {
-	Root           string // default /
-	Dry            bool   // print every step, run no program, change nothing
-	Mode           string // ModeManual (default) or ModeSigned
-	From           string // the incoming folder to import the release from; empty: it is imported already
-	AllowedSigners string // the ssh allowed signers file, for ModeSigned only
-	NoAICheck      string // the no-AI check program; default the release's bin/ah-noaicheck
-	Runner         Runner
-	Verifier       Verifier
-	Owner          OwnerCheck // default DefaultOwnerCheck
-	Limits         Limits     // zero fields take DefaultLimits
-	Out            io.Writer  // the steps
-	Err            io.Writer  // refusals of the arguments and of the lock; default Out
-	Now            func() time.Time
-	Sleep          func(time.Duration)
+	Root      string // default /
+	Dry       bool   // print every step, run no program, change nothing
+	Mode      string // ModeManual or ModeSigned, at least as strict as the policy; empty: the policy's
+	From      string // the incoming folder to import the release from; empty: it is imported already
+	NoAICheck string // the no-AI check program; default the release's bin/ah-noaicheck
+	Runner    Runner
+	Verifier  Verifier
+	Owner     OwnerCheck // default DefaultOwnerCheck
+	Limits    Limits     // zero fields take DefaultLimits
+	Out       io.Writer  // the steps
+	Err       io.Writer  // refusals of the arguments and of the lock; default Out
+	Now       func() time.Time
+	Sleep     func(time.Duration)
 }
 
 // Switcher runs switches with one Config.
@@ -97,6 +96,9 @@ type Switcher struct {
 	relRoot   *os.Root
 	// budget bounds the import and the hashing of one switch.
 	budget *budget
+	// The switch policy and the mode this switch uses.
+	policy Policy
+	mode   string
 	// afterPrevious, when set, is called between writing previous and
 	// renaming current; an error stops the switch there as a crash would.
 	afterPrevious func() error
@@ -106,9 +108,6 @@ type Switcher struct {
 func New(cfg Config) *Switcher {
 	if cfg.Root == "" {
 		cfg.Root = "/"
-	}
-	if cfg.Mode == "" {
-		cfg.Mode = ModeManual
 	}
 	if cfg.Runner == nil {
 		cfg.Runner = ExecRunner{}
@@ -158,14 +157,7 @@ func (s *Switcher) checkConfig() error {
 		return fmt.Errorf("--from %s is not an absolute path", q(s.cfg.From))
 	}
 	switch s.cfg.Mode {
-	case ModeManual:
-		if s.cfg.AllowedSigners != "" {
-			return errors.New("--allowed-signers is only for --mode signed")
-		}
-	case ModeSigned:
-		if s.cfg.AllowedSigners == "" {
-			return errors.New("--mode signed needs --allowed-signers FILE")
-		}
+	case "", ModeManual, ModeSigned:
 	default:
 		return fmt.Errorf("--mode %s is neither manual nor signed", q(s.cfg.Mode))
 	}
@@ -237,6 +229,9 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		return ExitUsage
 	}
 
+	if code, done := s.applyPolicy(); done {
+		return code
+	}
 	what := "switch to " + arg
 	if rollback {
 		what = "roll back to " + arg
@@ -245,7 +240,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	if s.cfg.Dry {
 		dry = ", dry run: nothing is run or changed"
 	}
-	s.printf("ah-switch: %s (mode %s, root %s%s)", what, s.cfg.Mode, q(s.cfg.Root), dry)
+	s.printf("ah-switch: %s (mode %s, root %s%s)", what, s.mode, q(s.cfg.Root), dry)
 
 	lk, code := s.lock(false)
 	if lk == nil {
@@ -257,7 +252,8 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	a := &attempt{
 		rec: Record{
 			ID:       arg,
-			Mode:     s.cfg.Mode,
+			Mode:     s.mode,
+			Trust:    s.policy.Trust(),
 			Rollback: rollback,
 			Check:    CheckNotRun,
 		},
@@ -670,7 +666,7 @@ func (s *Switcher) verifySignature(ctx context.Context, rel *release) error {
 	if err != nil {
 		return err
 	}
-	if s.cfg.Mode == ModeManual {
+	if s.mode == ModeManual {
 		note := ""
 		if present {
 			note = " (" + SignatureFile + " is there and is not read)"
@@ -682,14 +678,14 @@ func (s *Switcher) verifySignature(ctx context.Context, rel *release) error {
 		return failf(CodeSignatureMissing, "%s missing; mode signed needs it", SignatureFile)
 	}
 	if s.cfg.Dry {
-		s.step(1, "would verify %s against %s", SignatureFile, q(s.cfg.AllowedSigners))
+		s.step(1, "would verify %s as signed by %s against %s", SignatureFile, q(s.policy.Principal), q(s.policy.AllowedSigners))
 		return nil
 	}
-	if err := s.cfg.Verifier.Verify(ctx, s.cfg.AllowedSigners, rel.sums, filepath.Join(rel.path, SignatureFile)); err != nil {
+	if err := s.cfg.Verifier.Verify(ctx, s.signersPath(), s.policy.Principal, rel.sums, filepath.Join(rel.path, SignatureFile)); err != nil {
 		_, detail := codeOf(err)
 		return failf(CodeSignatureBad, "%s: %s", SignatureFile, detail)
 	}
-	s.step(1, "%s verified against %s", SignatureFile, q(s.cfg.AllowedSigners))
+	s.step(1, "%s verified as signed by %s against %s", SignatureFile, q(s.policy.Principal), q(s.policy.AllowedSigners))
 	return nil
 }
 
@@ -852,6 +848,12 @@ func (s *Switcher) Status() int {
 	}
 	defer lk.release()
 	defer s.closeRoots()
+	p, err := s.readPolicy()
+	if err != nil {
+		s.errorf("switch policy: %s", describe(err))
+		return ExitFailed
+	}
+	s.policy = p
 	if err := s.status(s.cfg.Out); err != nil {
 		s.errorf("status: %s", describe(err))
 		return ExitFailed
@@ -895,6 +897,14 @@ func (s *Switcher) status(w io.Writer) error {
 		}
 	}
 	fmt.Fprintf(w, "highest counter: %d\n", highest)
+	switch {
+	case !s.policy.present:
+		fmt.Fprintln(w, "trust: manual: no switch policy, unsigned releases are accepted")
+	case s.policy.MinMode == ModeManual:
+		fmt.Fprintln(w, "trust: manual: the switch policy accepts unsigned releases")
+	default:
+		fmt.Fprintf(w, "trust: signed: releases must be signed by %s\n", q(s.policy.Principal))
+	}
 	if !ok {
 		fmt.Fprintln(w, "last switch: none recorded")
 		return nil

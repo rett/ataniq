@@ -13,6 +13,7 @@ import (
 const (
 	CodeStateInvalid     = "state-invalid"      // current, previous or a state file is not what the switch writes
 	CodeUntrusted        = "untrusted"          // a folder or file the switch trusts has the wrong owner, mode or type
+	CodePolicyInvalid    = "policy-invalid"     // the switch policy does not parse or names no usable signers file
 	CodeReleaseMissing   = "release-missing"    // no release folder of that id
 	CodeReleaseNotFolder = "release-not-folder" // the release name is a link or not a folder
 	CodeBadEntry         = "bad-entry"          // a link, device, fifo, socket or hard-linked file in a release
