@@ -408,6 +408,46 @@ func TestFailedRequalificationSurvivesASecondCrash(t *testing.T) {
 	}
 }
 
+// TestStatusWithholdsTheAckWhileSettling: a switch killed once its
+// healthy outcome is recorded and owed (CrashRecord), its journal still
+// there, has an outcome that settling can still change under the same
+// transaction (the requalification may fail). status names that outcome
+// as not final and prints no ack command for it, since ack is refused
+// while the journal is open and the words would be given for an outcome
+// that is not the one owed after settling. Once settled, status prints
+// the ack command, and the outcome it acknowledges is the settled one.
+func TestStatusWithholdsTheAckWhileSettling(t *testing.T) {
+	e := activeOwn(t)
+	e.keepOwed = true
+	e.crashAt(CrashRecord, false, rel3)
+	j, ok := e.journal()
+	if !ok {
+		t.Fatalf("no journal after the crash at %s", CrashRecord)
+	}
+	got := e.status()
+	if strings.Contains(got, "ack --txn") {
+		t.Errorf("status prints an ack command while the transaction is still open:\n%s", got)
+	}
+	if !strings.Contains(got, "outcome owed, not final (request forward:"+rel3+", transaction "+j.Txn+")") || !strings.Contains(got, "settling it may change this outcome") {
+		t.Errorf("status does not say the outcome is not final:\n%s", got)
+	}
+	// The settling changes the outcome: current fails its health check
+	// again.
+	e.runner.fail["health-probe"] = -1
+	if code := e.recover(resumeOnly); code != ExitFailed {
+		t.Fatalf("recover: exit %d\n%s", code, e.last)
+	}
+	e.noJournal()
+	owed := e.owed()
+	if len(owed) != 1 || owed[0].Txn != j.Txn || !owed[0].RequalifyFailed {
+		t.Fatalf("owed after settling: %+v", owed)
+	}
+	got = e.status()
+	if !strings.Contains(got, "ah-switch ack --txn "+j.Txn+" --asked WORDS acknowledges it") || strings.Contains(got, "not final") {
+		t.Errorf("status after settling:\n%s", got)
+	}
+}
+
 // TestRequalifyUnverifiableStillStops: a switch killed in phase done is
 // resumed after its release no longer verifies. Its services may run from
 // the activation before the interruption (or from the boot), so the

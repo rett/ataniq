@@ -1298,7 +1298,7 @@ func (s *Switcher) status(w io.Writer) error {
 		if j, pending, err = s.readJournal(); err != nil {
 			return err
 		}
-		if owed, err = s.owedStatus(); err != nil {
+		if owed, err = s.owedStatus(pending); err != nil {
 			return err
 		}
 	}

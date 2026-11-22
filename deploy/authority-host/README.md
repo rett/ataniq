@@ -368,7 +368,10 @@ ah-switch [--root DIR] [--dry] ack --txn ID[,ID...] --asked WORDS
   stop commands that failed, when it is stopping), the host's stop list,
   whether decisions are inhibited, every outcome owed
   (`outcome owed (request ..., transaction ...)`, with the `ack` command
-  that acknowledges it, its `--txn` filled in), the owner's last
+  that acknowledges it, its `--txn` filled in; while a transaction is
+  still to resume, `outcome owed, not final (...)` and no `ack` command,
+  since settling it may still change the outcome owed under the same
+  transaction and `ack` is refused until then), the owner's last
   acknowledgement, and the last outcome from `deploy.json`. It takes the
   lock shared, so what it prints is
   one state between two switches: while a switch runs it exits 3, and
@@ -843,7 +846,9 @@ concern it, and only the second takes it back:
   asked or seen (1 to 512 bytes), and in `--txn` the transactions of every
   outcome owed, comma-separated, in any order: `status`, the switch's own
   result, a retry and a refused request print the whole command with them
-  filled in (`ah-switch ack --txn ... --asked WORDS`), to be copied. The
+  filled in (`ah-switch ack --txn ... --asked WORDS`), to be copied
+  (`status` only once no transaction is still to resume: until it is
+  settled, the outcome owed is not final). The
   transactions bind the words to the outcomes seen: an `ack` whose `--txn`
   is not exactly the transactions owed now is refused (`ack: refused`,
   exit 1) and records and removes nothing, so an `ack` whose answer was

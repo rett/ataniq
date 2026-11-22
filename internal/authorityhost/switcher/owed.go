@@ -456,14 +456,22 @@ func (s *Switcher) Ack(ctx context.Context, txns []string, words string) int {
 	return ExitOK
 }
 
-// owedStatus is what status prints of owed.json.
-func (s *Switcher) owedStatus() ([]string, error) {
+// owedStatus is what status prints of owed.json. pending: a transaction is
+// still open, so settling it may still change the outcome owed under its
+// transaction (its requalification may fail), and ack is refused until it
+// is settled: no ack command is printed then, so that none is copied for
+// an outcome that is not final.
+func (s *Switcher) owedStatus(pending bool) ([]string, error) {
 	owed, err := s.readOwed()
 	if err != nil {
 		return nil, err
 	}
 	var lines []string
 	for _, o := range owed {
+		if pending {
+			lines = append(lines, fmt.Sprintf("outcome owed, not final (request %s, transaction %s): the %s %s ended %s at %s, but a transaction is still open and settling it may change this outcome; the next switch, rollback or recover settles it, then status shows the command that acknowledges it", q(o.RequestID), o.Txn, o.kind(), o.ID, o.Result, q(o.Time)))
+			continue
+		}
 		line := fmt.Sprintf("outcome owed (request %s, transaction %s): the %s %s ended %s at %s; the same request run again reports it, %s acknowledges it, and any other switch or rollback is refused until then", q(o.RequestID), o.Txn, o.kind(), o.ID, o.Result, q(o.Time), ackCommand(owed))
 		if o.RequalifyFailed {
 			line += "; after an interruption its release did not pass its reload, health check and no-AI check again, so decisions stay inhibited and the same request fails until it is acknowledged"
