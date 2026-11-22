@@ -89,9 +89,10 @@ func (s *Switcher) beginTxn(t *txn) error {
 	return nil
 }
 
-// ensureInhibit makes sure decisions are inhibited while the transaction
-// t is driven: a resumed transaction whose inhibit is gone (removed by
-// hand) gets it again.
+// ensureInhibit makes sure decisions are inhibited while the journal of
+// the transaction t is there: a journal found without the inhibit
+// (removed by hand) gets it again, before it is checked against the host
+// or resumed.
 func (s *Switcher) ensureInhibit(t *txn) error {
 	if t.begun {
 		return nil
@@ -101,7 +102,7 @@ func (s *Switcher) ensureInhibit(t *txn) error {
 		t.begun = true
 		return nil
 	}
-	if err := s.setInhibit(t, fmt.Sprintf("the %s %s was interrupted and is being resumed", t.kind(), t.j.ID)); err != nil {
+	if err := s.setInhibit(t, fmt.Sprintf("the %s %s was interrupted and its journal is still open", t.kind(), t.j.ID)); err != nil {
 		return err
 	}
 	t.begun = true

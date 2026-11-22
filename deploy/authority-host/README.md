@@ -695,9 +695,11 @@ the id of the transaction that set it and why (`txn`, `reason`, `time`);
 only its existence matters to the services.
 
 - The switch writes it at the start of every transaction: before the
-  package step, or, without one, before the journal says `links`. A
-  resumed transaction whose file is gone gets it again before anything
-  of it runs.
+  package step, or, without one, before the journal says `links`. Every
+  switch, rollback and `recover` that finds a journal whose file is gone
+  (removed by hand) writes it again first, before the journal is checked
+  against the host or anything of it runs, whether the journal is then
+  resumed or found stale (`--dry` writes nothing).
 - It is removed only when the transaction ends healthy: a switch or
   rollback whose release passed its health check and its post-activation
   no-AI check (`ok`), or a going back whose release passed its reload, its
@@ -807,7 +809,9 @@ host, runs `ah-switch recover --discard-journal TXN` with the id `status`
 shows. That renames the journal to `txn-TXN.discarded` in the state
 folder (kept as evidence), resumes nothing of it and prints the time; it
 refuses a journal that matches the host (any command resumes that) or
-another id.
+another id. Setting a journal aside qualifies nothing, so decisions stay
+inhibited: it writes `decisions.inhibit` first when it is not there, and
+only a transaction that ends healthy or `inhibit-clear` removes it.
 
 Only a journal proven stale is discarded: one whose links or counter the
 host's evidence contradicts. When that evidence cannot be read (a link,

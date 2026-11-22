@@ -89,7 +89,8 @@
   below those attempted since) is never resumed until
   `ah-switch recover --discard-journal TXN` sets it aside (only a journal
   proven stale: one whose evidence cannot be read is neither resumed nor
-  discarded),
+  discarded; decisions stay inhibited, and every command that finds a
+  journal writes a missing inhibit back first),
   `ah-switch recover --services-stopped` settles a transaction whose stop
   commands failed on the owner's word,
   `ah-switch status` shows the state under a shared lock, `--dry` prints

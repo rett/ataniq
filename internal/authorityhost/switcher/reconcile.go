@@ -30,6 +30,15 @@ func (s *Switcher) reconcile(ctx context.Context, newWork bool) (code int, halt 
 	defer t.close()
 	s.claim(t)
 	s.printf("reconcile: an interrupted %s %s was found in phase %s", t.kind(), j.ID, j.Phase)
+	// A journal is never there without the inhibit: one removed by hand
+	// is written back before anything else, whether the journal is then
+	// resumed or found stale (see InhibitFile). A dry run writes nothing.
+	if !s.cfg.Dry {
+		if err := s.ensureInhibit(t); err != nil {
+			s.printf("reconcile: unresolved: %s; %s stays in phase %s, and nothing else is run or moved", describe(err), JournalFile, j.Phase)
+			return ExitFailed, true
+		}
+	}
 	mismatch, err := s.staleJournal(j)
 	if err != nil {
 		s.printf("reconcile: unresolved: %s; the journal cannot be checked against the host and is not resumed: nothing else is run or moved. Make it readable, then run the command again", describe(err))
@@ -323,8 +332,16 @@ func (s *Switcher) recoverDiscard(id string) int {
 	}
 	kept := "txn-" + id + ".discarded"
 	if s.cfg.Dry {
-		s.printf("recover: would set the journal aside as %s", q(filepath.Join(s.stateDir(), kept)))
+		s.printf("recover: would set the journal aside as %s, decisions still inhibited", q(filepath.Join(s.stateDir(), kept)))
 		return ExitOK
+	}
+	// Setting the journal aside qualifies nothing: decisions stay
+	// inhibited, the inhibit written first when it is not there.
+	if _, there, err := s.readInhibit(); err != nil || !there {
+		if err := s.setInhibit(&txn{j: j}, fmt.Sprintf("the journal of the %s %s was set aside by the owner; nothing qualified the host since", (&txn{j: j}).kind(), j.ID)); err != nil {
+			s.printf("recover: FAILED: %s; the journal stays", describe(err))
+			return ExitFailed
+		}
 	}
 	if err := s.stateRoot.Rename(JournalFile, kept); err != nil {
 		s.printf("recover: FAILED: %s", q(err.Error()))
@@ -334,6 +351,6 @@ func (s *Switcher) recoverDiscard(id string) int {
 		s.printf("recover: FAILED: the state folder was not synced: %s", q(err.Error()))
 		return ExitFailed
 	}
-	s.printf("recover: the journal of the %s %s was set aside as %s, by the owner at %s; nothing of it was resumed", (&txn{j: j}).kind(), j.ID, q(filepath.Join(s.stateDir(), kept)), s.now())
+	s.printf("recover: the journal of the %s %s was set aside as %s, by the owner at %s; nothing of it was resumed, and decisions stay inhibited until a transaction ends healthy or ah-switch inhibit-clear --asked WORDS", (&txn{j: j}).kind(), j.ID, q(filepath.Join(s.stateDir(), kept)), s.now())
 	return ExitOK
 }

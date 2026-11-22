@@ -182,6 +182,74 @@ func TestDecisionInhibit(t *testing.T) {
 	})
 }
 
+// TestEveryCommandRestoresTheInhibitBesideAJournal: decisions.inhibit is
+// there whenever txn.json is, and a command that finds a journal without
+// it (removed by hand) writes it back first, before it checks the journal
+// against the host: a journal that does not match the host is neither
+// resumed nor settled, and it is still never the only guard. A dry run
+// writes nothing.
+func TestEveryCommandRestoresTheInhibitBesideAJournal(t *testing.T) {
+	e := activeOwn(t)
+	e.crashAt(CrashActivating, false, rel3)
+	j, _ := e.journal()
+	os.Remove(e.inhibitPath())
+	// The links no longer match the journal: it is not resumed.
+	if err := os.Remove(filepath.Join(e.root, BaseDir, "previous")); err != nil {
+		t.Fatal(err)
+	}
+	e.runner.reset()
+	if code := e.switchTo(rel3, func(c *Config) { c.Dry = true }); code != ExitFailed {
+		t.Fatalf("dry run: exit %d\n%s", code, e.last)
+	}
+	if _, ok := e.inhibited(); ok {
+		t.Errorf("a dry run wrote the inhibit")
+	}
+	if code := e.recover(resumeOnly); code != ExitFailed || !strings.Contains(e.last, "does not match the host") {
+		t.Fatalf("recover: exit %d\n%s", code, e.last)
+	}
+	in, ok := e.inhibited()
+	if !ok || in.Txn != j.Txn {
+		t.Errorf("a command that found the journal left it without the inhibit: %+v, %v", in, ok)
+	}
+	if len(e.runner.calls) != 0 {
+		t.Errorf("commands run: %v", e.runner.calls)
+	}
+	if got, ok := e.journal(); !ok || got.Phase != PhaseActivating {
+		t.Errorf("journal: %+v, %v", got, ok)
+	}
+}
+
+// TestDiscardLeavesDecisionsInhibited: recover --discard-journal sets a
+// journal aside on the owner's word that it does not match the host; that
+// qualifies nothing, so it writes the inhibit first when it is not there
+// (removed by hand) and never leaves the host with neither guard. Only a
+// healthy end or inhibit-clear removes the inhibit.
+func TestDiscardLeavesDecisionsInhibited(t *testing.T) {
+	e := activeOwn(t)
+	g := guard(e)
+	e.crashAt(CrashActivating, false, rel3)
+	j, _ := e.journal()
+	os.Remove(e.inhibitPath())
+	if err := os.Remove(filepath.Join(e.root, BaseDir, "previous")); err != nil {
+		t.Fatal(err)
+	}
+	e.runner.reset()
+	if code := e.recover(RecoverOptions{DiscardJournal: j.Txn}); code != ExitOK {
+		t.Fatalf("discard: exit %d\n%s", code, e.last)
+	}
+	e.noJournal()
+	in, ok := e.inhibited()
+	if !ok || in.Txn != j.Txn || !strings.Contains(in.Reason, "set aside by the owner") {
+		t.Errorf("inhibit after the discard: %+v, %v", in, ok)
+	}
+	if got := g.decide(); got != "refused" {
+		t.Errorf("after the discard a decision is %s", got)
+	}
+	if len(e.runner.calls) != 0 {
+		t.Errorf("commands run: %v", e.runner.calls)
+	}
+}
+
 // TestInhibitClear: ah-switch inhibit-clear --asked WORDS removes the
 // inhibit on the owner's word and records the time and the words in
 // deploy.json (kept by later switches); it needs the words, is refused
