@@ -209,6 +209,35 @@ func TestCheckBinariesPathInventory(t *testing.T) {
 			f.file("etc/profile.d/x.sh", "PATH=$(cat /etc/paths):$PATH\n")
 			f.file("home/user/.bashrc", "export PATH=$OTHER/bin:$PATH\nPATH=bin:$PATH\n")
 		}, []Hit{inc("/etc/profile.d/x.sh"), inc("/home/user/.bashrc")}},
+		{"a folder a sourced file adds, outside the fixed trees", func(f *fixture) {
+			f.file("etc/profile", profile+". /etc/extra/path.sh\n")
+			f.file("etc/extra/path.sh", "append_path /srv/sourced/bin\nPATH=\"$PATH:/srv/sourced/sbin\"\n")
+			f.file("srv/sourced/bin/claude", "not executable")
+			f.file("srv/sourced/sbin/codex", "not executable")
+		}, []Hit{bin("/srv/sourced/bin/claude"), bin("/srv/sourced/sbin/codex")}},
+		{"a folder a home's sourced file adds", func(f *fixture) {
+			f.file("home/user/.bashrc", ". ~/.paths.sh\n")
+			f.file("home/user/.paths.sh", "export PATH=\"$HOME/x:$PATH\"\n")
+			f.file("home/user/x/claude", "not executable")
+		}, []Hit{bin("/home/user/x/claude")}},
+		{"the login files of bash and zsh", func(f *fixture) {
+			f.file("home/user/.bash_profile", "PATH=/srv/bp:$PATH\n")
+			f.file("home/user/.bash_login", "PATH=/srv/bl:$PATH\n")
+			f.file("root/.zprofile", "path+=(/srv/zp)\nPATH=$PATH:/srv/zp\n")
+			f.file("root/.zshrc", "PATH=$PATH:/srv/zr\n")
+			f.file("root/.zlogin", "PATH=$PATH:/srv/zl\n")
+			for _, d := range []string{"bp", "bl", "zp", "zr", "zl"} {
+				f.file("srv/"+d+"/claude", "not executable")
+			}
+		}, []Hit{bin("/srv/zp/claude"), bin("/srv/zr/claude"), bin("/srv/zl/claude"), bin("/srv/bp/claude"), bin("/srv/bl/claude")}},
+		{"an element a sourced file cannot resolve", func(f *fixture) {
+			f.file("etc/bash.bashrc", ". /etc/extra/dyn.sh\n")
+			f.file("etc/extra/dyn.sh", "PATH=$TOOLS/bin:$PATH\n")
+		}, []Hit{inc("/etc/extra/dyn.sh")}},
+		{"a folder below a configured XDG_CONFIG_HOME", func(f *fixture) {
+			f.file("home/user/.profile", "export XDG_CONFIG_HOME=/srv/cfg\nPATH=\"$XDG_CONFIG_HOME/bin:$PATH\"\n")
+			f.file("srv/cfg/bin/codex", "not executable")
+		}, []Hit{bin("/srv/cfg/bin/codex")}},
 		{"a function's own PATH of its argument", func(f *fixture) {
 			f.file("home/user/.bashrc", "add() { PATH=\"$1:$PATH\"; }\nadd /srv/c\n")
 			f.file("srv/c/claude", "x")

@@ -5,7 +5,8 @@
   (`--json` for one JSON object): an agent binary or an installer such as
   `npm` or `mise` in the folders of an explicit PATH inventory (the
   system bin folders, their immediate subfolders and every folder the
-  system and home profiles put on PATH), anywhere in `/usr/local` and
+  system and home startup files, and the files they source, put on PATH),
+  anywhere in `/usr/local` and
   `/opt`, in any `node_modules/.bin`, in a home's bin and install folders
   or as an executable file anywhere in a home, an agent credential folder
   in a home, a provider-key variable in an environment file, profile or

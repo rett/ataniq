@@ -742,10 +742,13 @@ folder whose `share/` holds the lists (and, in `pre` and `post`, whose
   of `ai-names.list`:
   - in a folder of the PATH inventory: `/usr/bin`, `/usr/sbin`, `/bin`,
     `/sbin`, `/usr/local/bin`, `/usr/local/sbin` (a fixed list, not the
-    PATH of whoever runs it), and every folder a PATH setting adds in
-    `/etc/profile`, `/etc/profile.d/*`, `/etc/environment`,
-    `/etc/bash.bashrc` and each home's `.profile`, `.bashrc` and
-    `.zshenv` (`PATH=`, `PATH+=`, `export PATH=`, csh's `setenv PATH`,
+    PATH of whoever runs it), and every folder a PATH setting adds in a
+    startup file, read by the same scan as the environment (see `env`):
+    the system's and every home's profiles and environment files
+    (`.profile`, `.bash_profile`, `.bash_login`, `.bashrc`, `.zshenv`,
+    `.zprofile`, `.zshrc`, `.zlogin` ...) and every file they source,
+    transitively, so a folder a sourced file adds, wherever it is, is in
+    it (`PATH=`, `PATH+=`, `export PATH=`, csh's `setenv PATH`,
     and the argument of a function that adds its argument to PATH, such
     as `/etc/profile`'s `append_path`; `~/`, `$HOME` and
     `$XDG_CONFIG_HOME` are resolved in the file's home, or in every home
@@ -968,9 +971,9 @@ home path in `ai-names.list`), a control byte or an inner space is refused:
 - A tool outside the places above (say in `/srv`, outside every PATH
   folder and every home) is not caught by name; it is left to the package
   allowlist and the egress filter.
-- The PATH inventory is read from the files named above, by their PATH
-  settings: a folder a program puts on PATH at run time, or a file those
-  files source, is not in it.
+- The PATH inventory is read from the startup files and the files they
+  source, by their PATH settings: a folder a program puts on PATH at run
+  time is not in it.
 - A process that renames itself is not caught by name.
 - Ports are those of the network namespace the check runs in; UDP is not
   checked.

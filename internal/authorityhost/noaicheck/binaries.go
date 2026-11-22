@@ -11,25 +11,14 @@ import (
 
 // BinDirs are the fixed system folders of every user's PATH, looked into one
 // level deep (a folder inside one is not on a PATH). The check uses this
-// fixed list and the PATH settings of the system and home profiles (see
-// pathDirs), not the PATH of whoever runs it.
+// fixed list and the PATH settings of the startup files (see pathDirs),
+// not the PATH of whoever runs it.
 var BinDirs = []string{"usr/bin", "usr/sbin", "bin", "sbin", "usr/local/bin", "usr/local/sbin"}
 
 // BinParents are the system bin folders whose every immediate subfolder is
 // looked into too, as a folder a profile may put on PATH (Arch's perl
 // folders /usr/bin/core_perl, /usr/bin/vendor_perl, ...).
 var BinParents = []string{"usr/bin", "usr/local/bin", "usr/local/sbin"}
-
-// pathFiles are the files whose PATH settings add folders to the binary
-// inventory, besides every file of etc/profile.d; homePathFiles are a
-// home's.
-var (
-	pathFiles = []envFile{
-		{"etc/profile", syntaxShell}, {"etc/environment", syntaxEnvFile}, {"etc/bash.bashrc", syntaxShell},
-	}
-	pathDirFiles  = "etc/profile.d"
-	homePathFiles = []string{".profile", ".bashrc", ".zshenv"}
-)
 
 // PathPATH is the name of the incomplete hit for a PATH setting whose
 // folder the check cannot resolve: "HIT incomplete path <file>".
@@ -156,9 +145,10 @@ func (c *Checker) scanBinaries() {
 }
 
 // pathDirs is the PATH inventory: the folders of BinDirs and every folder a
-// PATH setting adds in /etc/profile, /etc/profile.d/*, /etc/environment,
-// /etc/bash.bashrc and each home's .profile, .bashrc and .zshenv, read with
-// the environment parsers (PATH=..., export PATH=..., PATH+=..., csh's
+// PATH setting adds in a startup file (see startup: the system's and every
+// home's shell profiles and environment files, and transitively every file
+// they source, the same scan the environment check reads), read with the
+// environment parsers (PATH=..., export PATH=..., PATH+=..., csh's
 // setenv PATH ..., and the argument of a function that adds its argument
 // to PATH, such as /etc/profile's append_path). A literal absolute folder
 // is taken as it is; one that starts with ~/, $HOME or $XDG_CONFIG_HOME is
@@ -187,41 +177,23 @@ func (c *Checker) pathDirs() []string {
 	for _, d := range BinDirs {
 		add(d)
 	}
-	funcs := map[string]bool{}
-	read := func(rel string, s envSyntax) {
-		p, data, err := c.t.readFile(rel, maxEnvFile)
-		if err != nil {
-			c.unreadable(rel, err)
-			return
+	for _, f := range c.startup() {
+		if f.r == nil {
+			if f.err != nil {
+				c.unreadable(orElse(f.p, f.rel), f.err)
+			}
+			continue
 		}
-		r := parseEnvFuncs(s, string(data), false, funcs)
-		home := c.homeOf(p)
-		for _, e := range r.paths {
+		home := c.homeOf(f.p)
+		for _, e := range f.r.paths {
 			got, ok := c.sourcePaths(e, home)
 			if !ok {
-				c.hit(KindIncomplete, PathPATH, show(p))
+				c.hit(KindIncomplete, PathPATH, show(f.p))
 				continue
 			}
 			for _, d := range got {
 				add(d)
 			}
-		}
-	}
-	for _, f := range pathFiles[:1] {
-		read(f.rel, f.syntax)
-	}
-	c.walk(pathDirFiles, 1, func(e *wentry) bool {
-		if e.isRegular() || e.isLink() {
-			read(e.rel, syntaxShell)
-		}
-		return false
-	})
-	for _, f := range pathFiles[1:] {
-		read(f.rel, f.syntax)
-	}
-	for _, home := range c.homeFolders() {
-		for _, f := range homePathFiles {
-			read(path.Join(home, f), syntaxShell)
 		}
 	}
 	return dirs
@@ -242,9 +214,9 @@ func (c *Checker) walkLinked(rel string, maxDepth int, visit func(e *wentry) boo
 // executable name of ai-names.list is a hit of kind "binary" when it is
 //
 //   - an entry of a folder of the PATH inventory (see pathDirs: the fixed
-//     system bin folders, BinDirs, and every folder the system and home
-//     profiles put on PATH), or of an immediate subfolder of /usr/bin,
-//     /usr/local/bin or /usr/local/sbin (BinParents);
+//     system bin folders, BinDirs, and every folder the startup files and
+//     the files they source put on PATH), or of an immediate subfolder
+//     of /usr/bin, /usr/local/bin or /usr/local/sbin (BinParents);
 //   - anywhere in /usr/local or /opt (WholeTrees), at any depth;
 //   - an entry of any node_modules/.bin there, in /usr/lib/node_modules or
 //     in a home;
