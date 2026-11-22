@@ -102,6 +102,7 @@ func TestDeployRecord(t *testing.T) {
 	rec.Txn = ""
 	want := Record{
 		Requested:       rel2,
+		RequestID:       "forward:" + rel2,
 		ID:              rel2,
 		PreviousID:      rel1,
 		CurrentID:       rel2,

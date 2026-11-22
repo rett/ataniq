@@ -237,4 +237,5 @@ const (
 	CrashStopped       = "stopped"        // every stop command ran; txn.json still says stopping
 	CrashDone          = "done"           // txn.json says done
 	CrashRecord        = "record"         // deploy.json written; txn.json still there
+	CrashUnreported    = "unreported"     // txn.json removed; the result line not printed yet
 )

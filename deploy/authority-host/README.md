@@ -271,12 +271,16 @@ ah-switch [--root DIR [--allow-exec]] [--dry] recover --services-stopped
   nothing: no link, no state file, no lock file. It still reads and checks
   the release (sums, manifest, lists, the record of its import, the
   counter, the package state) and the host's stop list, and it is refused
-  while a switch holds the lock or a transaction is still to resume.
+  while a switch holds the lock or a transaction is still to resume. A dry
+  run of a request whose outcome is still to be reported (see "The journal
+  and recover") shows that outcome and changes nothing either: not
+  `deploy.json`, not its time, and the outcome stays to be reported to
+  the real request.
 - `status` prints `current`, `previous`, the highest counter, the trust of
   the switch policy, a transaction still to resume and its phase (with the
   stop commands that failed, when it is stopping), the host's stop list,
-  and the last outcome from `deploy.json` (marked when a later command
-  settled it after an interruption). It takes the lock shared, so what it
+  and the last outcome from `deploy.json` (with `outcome not reported yet
+  (request ...)` while it is still to be reported). It takes the lock shared, so what it
   prints is one state between two switches: while a switch runs it exits
   3, and while it reads, a switch is refused with exit 3. It prints all of
   it or nothing, and it changes nothing.
@@ -496,12 +500,21 @@ When the resume ends with the decision services stopped, the command that
 resumed it does nothing else: a new switch never starts on its own after a
 failed recovery. Run it again once the host is looked at.
 
-The outcome of a transaction that a later command settled is recorded with
-`pending_report: true`. When the same request is run again (the same
-direction, and the same `previous` or id), it reports that outcome and does
-nothing else, once: a retried `--rollback-to previous` therefore never
-resolves `previous` anew and goes back to the release the interrupted
-rollback left. Run the request once more to do it again.
+Every transaction records its outcome with `pending_report: true` and its
+request id, `request_id`: its direction and the release it went to
+(`forward:ID` or `rollback:ID`). The record is written before the journal
+is removed, and `pending_report` is cleared only after the result line was
+written, and only by the command that was asked for the transaction:
+an outcome that another command settled (a resume), or whose command died
+after removing the journal and before printing its result, stays to be
+reported. When the same request is run again it reports that outcome and
+does nothing else, once. A rollback is bound to its request id: retried as
+`--rollback-to previous` (or by the id it went to), it reports the
+rollback whose outcome is owed and never resolves `previous` anew, which
+would go back to the release the first rollback left. A forward switch is
+retried by the same id. Run the request once more to do it again. A dry
+run only shows the outcome (see `--dry`); `recover --package-state` keeps
+it owed.
 
 `ah-switch recover --counter N` writes `highest-counter` as `N` when it is
 missing, does not hold a number, or holds less than the counters the host
@@ -540,9 +553,10 @@ not finish, with `package_from` and `package_to`; empty when known),
 forward switch that got as far as using its counter: evidence of that
 counter for step 2), `restored_health` (`ok`, `failed` or empty),
 `services_stopped` (the decision services were stopped), and `txn`,
-`requested` and `pending_report` (the transaction this record ends, what was
-asked, and whether a later command settled it with nobody shown the outcome
-yet). A dry run writes nothing.
+`requested`, `request_id` and `pending_report` (the transaction this
+record ends, what was asked, its direction and release as `forward:ID` or
+`rollback:ID`, and whether its outcome is still to be reported). A dry run
+writes nothing.
 
 `error` is a stable failure code, such as `release-exists`, `bad-entry`,
 `file-changed`, `too-many-entries`, `time-budget`, `untrusted`,
@@ -601,7 +615,7 @@ see its messages. The text of a broken state file is not repeated either.
 | A link folder cannot be synced | `result: unresolved`, exit 1; the journal stays; nothing is recorded as done until the next command syncs it |
 | `--rollback-to` when `previous` points at a missing release | Refused at counter (`no-previous`) |
 | Crash or power loss during the switch | `current` points at a whole release, the old or the new one, and the journal is there; the next command resumes its phase (see "The journal and recover") |
-| The same request run again after its transaction was settled by another command | Reports that outcome once and does nothing else |
+| The same request run again after its transaction was settled by another command, or after its command died between removing the journal and printing the result | Reports that outcome once and does nothing else; a rollback retried as `previous` goes to no other release; `--dry` only shows it |
 | `highest-counter` missing or broken while `current` exists, or below a counter the links or `deploy.json` show was used | Refused before anything, nothing recorded (`counter-missing`, `counter-invalid`); run `recover --counter N` |
 | A release folder of a higher counter is in `releases/` | Refused at counter (`counter-not-above`); build a higher counter |
 | A second switch while one runs | Exit 3; nothing done |

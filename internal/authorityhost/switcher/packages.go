@@ -209,7 +209,8 @@ func (s *Switcher) recoverPackageState(snapshot string) int {
 	rec.PackageSnapshot = snapshot
 	rec.PackageState, rec.PackageFrom, rec.PackageTo = "", "", ""
 	rec.PackageStatedAt = s.now()
-	rec.PendingReport = false
+	// An outcome still to report stays so: only the request it answers
+	// reports it.
 	if err := s.writeRecord(&rec); err != nil {
 		s.printf("recover: FAILED: %s not written: %s", DeployFile, q(err.Error()))
 		return ExitFailed

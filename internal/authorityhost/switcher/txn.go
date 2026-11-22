@@ -431,8 +431,16 @@ func (s *Switcher) settle(t *txn) (int, bool) {
 	if err := s.dropJournal(); err != nil {
 		return unresolved(JournalFile+" not removed", err)
 	}
+	if err := s.crash(CrashUnreported); err != nil {
+		return ExitFailed, false
+	}
 	s.step(9, "recorded in %s", q(filepath.Join(s.stateDir(), DeployFile)))
-	s.printResult(rec)
+	// The outcome stays owed until its result line is written, and is
+	// owed still when the command that settled it was not the one asked
+	// for it (a resume).
+	if err := s.printResult(rec); err == nil && !t.resumed {
+		s.reported(rec)
+	}
 	if rec.Result == ResultOK {
 		return ExitOK, true
 	}
@@ -461,7 +469,8 @@ func (s *Switcher) txnRecord(t *txn, cur string, curOK bool) (Record, error) {
 		RestoredHealth:  t.j.RestoredHealth,
 		Txn:             t.j.Txn,
 		Requested:       t.j.Requested,
-		PendingReport:   t.resumed,
+		RequestID:       requestID(t.j.Direction, t.j.ID),
+		PendingReport:   true,
 		ServicesStopped: t.j.Stopped,
 		CounterUsed:     t.j.CounterUsed,
 	}
@@ -489,16 +498,16 @@ func (s *Switcher) txnRecord(t *txn, cur string, curOK bool) (Record, error) {
 	return rec, nil
 }
 
-// printResult prints the last line of a settled transaction.
-func (s *Switcher) printResult(rec Record) {
+// printResult prints the last line of a settled transaction, and says
+// whether it was written.
+func (s *Switcher) printResult(rec Record) error {
 	cur := rec.CurrentID
 	if cur == "" {
 		cur = "none"
 	}
 	switch rec.Result {
 	case ResultOK:
-		s.printf("result: ok; current -> %s", cur)
-		return
+		return s.emit("result: ok; current -> %s", cur)
 	}
 	line := fmt.Sprintf("result: %s at %s; current -> %s", rec.Result, rec.FailedStep, cur)
 	if rec.RestoredHealth != "" {
@@ -507,7 +516,7 @@ func (s *Switcher) printResult(rec Record) {
 	if rec.ServicesStopped {
 		line += "; the decision services are stopped"
 	}
-	s.printf("%s", line)
+	return s.emit("%s", line)
 }
 
 // highestAtLeast writes highest-counter as n when it holds less: a counter

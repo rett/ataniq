@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 var errCrash = errors.New("crash")
@@ -271,7 +272,7 @@ func TestRetryReportsSettled(t *testing.T) {
 			t.Fatalf("recover: exit %d", code)
 		}
 		e.links(rel1, rel2)
-		if got := e.status(); !strings.Contains(got, "settled after an interruption") {
+		if got := e.status(); !strings.Contains(got, "outcome not reported yet (request rollback:"+rel1+")") {
 			t.Errorf("status:\n%s", got)
 		}
 		if code := e.rollBack("previous"); code != ExitOK {
@@ -724,5 +725,115 @@ func TestResumeCrashesToo(t *testing.T) {
 				t.Errorf("record: %+v, highest %q", rec, e.highest())
 			}
 		})
+	}
+}
+
+// TestDryRetryChangesNothing: a dry run of a request whose settled outcome
+// is still to be reported shows that outcome and changes nothing (not the
+// record, not its time, not the report still owed); the real retry then
+// reports it once and does not go back again, and only the request after
+// that is a new one.
+func TestDryRetryChangesNothing(t *testing.T) {
+	e := active(t)
+	e.crashAt(CrashHealth, true, "previous")
+	if code := e.recover(resumeOnly); code != ExitFailed {
+		t.Fatalf("recover: exit %d", code)
+	}
+	e.links(rel1, rel2)
+	if rec := e.record(); !rec.PendingReport || rec.RequestID != "rollback:"+rel1 {
+		t.Fatalf("record: %+v", rec)
+	}
+	e.clock.sleep(time.Hour)
+	e.runner.reset()
+	before := digest(t, e.root)
+	dry := e.switcher(func(c *Config) { c.Dry = true })
+	code := dry.RollBack(context.Background(), "previous")
+	out := e.out.String()
+	e.out.Reset()
+	if code != ExitOK || !strings.Contains(out, "settled: this rollback to previous was interrupted and has been settled since") || !strings.Contains(out, "dry run") {
+		t.Fatalf("dry retry: exit %d\n%s", code, out)
+	}
+	if digest(t, e.root) != before {
+		t.Errorf("a dry run changed the tree")
+	}
+	if len(e.runner.calls) != 0 {
+		t.Errorf("a dry run ran %v", e.runner.calls)
+	}
+	// The real retry still finds the outcome to report.
+	if code := e.rollBack("previous"); code != ExitOK || !strings.Contains(e.last, "settled: this rollback to previous") {
+		t.Fatalf("retry: exit %d\n%s", code, e.last)
+	}
+	e.links(rel1, rel2)
+	if rec := e.record(); rec.PendingReport {
+		t.Errorf("record: %+v", rec)
+	}
+	if code := e.rollBack("previous"); code != ExitOK {
+		t.Fatalf("a new rollback: exit %d", code)
+	}
+	e.links(rel2, rel1)
+}
+
+// TestResponseLostAfterJournalRemoved: a command that dies after its
+// journal was removed and before its result line was printed leaves the
+// outcome to report: the record says pending_report before the journal is
+// removed, and only the command that printed the result clears it. The
+// retry reports it and does nothing else; a retried rollback is bound to
+// the release it went to (its request id), never to previous resolved
+// anew, whether it is asked as previous or by that id.
+func TestResponseLostAfterJournalRemoved(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		rollback bool
+		arg      string // the retry
+		cur, pre string // the links after the first command
+	}{
+		{"switch", false, rel3, rel3, rel2},
+		{"rollback, retried as previous", true, "previous", rel1, rel2},
+		{"rollback, retried by its id", true, rel1, rel1, rel2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := active(t)
+			e.release(rel3, "2026-11-01")
+			first := rel3
+			if tc.rollback {
+				first = "previous"
+			}
+			e.crashAt(CrashUnreported, tc.rollback, first)
+			e.noJournal()
+			e.links(tc.cur, tc.pre)
+			rec := e.record()
+			want := "forward:" + rel3
+			if tc.rollback {
+				want = "rollback:" + rel1
+			}
+			if !rec.PendingReport || rec.RequestID != want || rec.Result != ResultOK {
+				t.Fatalf("record: %+v", rec)
+			}
+			if got := e.status(); !strings.Contains(got, "not reported yet") {
+				t.Errorf("status:\n%s", got)
+			}
+			e.runner.reset()
+			var code int
+			if tc.rollback {
+				code = e.rollBack(tc.arg)
+			} else {
+				code = e.switchTo(tc.arg)
+			}
+			if code != ExitOK || !strings.Contains(e.last, "has been settled since; it is not done again") {
+				t.Fatalf("retry: exit %d\n%s", code, e.last)
+			}
+			e.links(tc.cur, tc.pre)
+			if len(e.runner.calls) != 0 {
+				t.Errorf("the retry ran %v", e.runner.calls)
+			}
+			if rec := e.record(); rec.PendingReport {
+				t.Errorf("record after the report: %+v", rec)
+			}
+		})
+	}
+	// A command that printed its result clears the report it owed.
+	e := active(t)
+	if rec := e.record(); rec.PendingReport || rec.RequestID != "forward:"+rel2 {
+		t.Errorf("record of a reported switch: %+v", rec)
 	}
 }

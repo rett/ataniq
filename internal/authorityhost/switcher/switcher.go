@@ -159,6 +159,17 @@ func (s *Switcher) printf(format string, args ...any) {
 	fmt.Fprintf(s.cfg.Out, format+"\n", args...)
 }
 
+// emit prints a line as printf does and says whether it was written: a
+// writer that buffers (has Flush) is flushed. A line whose writing failed
+// cannot be taken as shown.
+func (s *Switcher) emit(format string, args ...any) error {
+	_, err := fmt.Fprintf(s.cfg.Out, format+"\n", args...)
+	if f, ok := s.cfg.Out.(interface{ Flush() error }); ok && err == nil {
+		err = f.Flush()
+	}
+	return err
+}
+
 func (s *Switcher) errorf(format string, args ...any) {
 	fmt.Fprintf(s.cfg.Err, "ah-switch: "+format+"\n", args...)
 }
@@ -1021,8 +1032,24 @@ func (s *Switcher) record(a *attempt) error {
 // writeRecord writes deploy.json with the time of now.
 func (s *Switcher) writeRecord(rec *Record) error {
 	rec.Time = s.now()
+	return s.rewriteRecord(rec)
+}
+
+// rewriteRecord writes deploy.json as rec says, its time included.
+func (s *Switcher) rewriteRecord(rec *Record) error {
 	rec.Detail = boundDetail(rec.Detail)
 	return writeJSONIn(s.stateRoot, DeployFile, rec, 0o644)
+}
+
+// reported clears the report rec owes, once its result line was written:
+// deploy.json is written again as it is, its time included, but
+// pending_report. A failure leaves the report owed, which is safe: the
+// same request run again only reports the outcome.
+func (s *Switcher) reported(rec Record) {
+	rec.PendingReport = false
+	if err := s.rewriteRecord(&rec); err != nil {
+		s.printf("warning: %s not written: %s; the same request run again reports this outcome once more", DeployFile, q(err.Error()))
+	}
 }
 
 // setFailure records err in the record as the failure of step.
@@ -1161,7 +1188,7 @@ func (s *Switcher) status(w io.Writer) error {
 	}
 	fmt.Fprintf(w, "last switch: %s %s: %s at %s (mode %s)\n", kind, q(rec.ID), q(rec.Result), q(rec.Time), q(rec.Mode))
 	if rec.PendingReport {
-		fmt.Fprintf(w, "settled after an interruption; the same request run again reports it once\n")
+		fmt.Fprintf(w, "outcome not reported yet (request %s): the same request run again reports it once and does nothing else\n", q(rec.RequestID))
 	}
 	if rec.ServicesStopped {
 		fmt.Fprintf(w, "decision services: stopped\n")

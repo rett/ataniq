@@ -42,12 +42,23 @@ type Record struct {
 	ServicesStopped bool   `json:"services_stopped"` // the decision services were stopped (every stop command passed, or the owner said so)
 	CounterUsed     bool   `json:"counter_used"`     // a forward switch that got as far as using its counter: evidence of it
 	// The transaction this record ends: its id, what was asked (an id, or
-	// previous) and, when a later command settled it, that nobody was shown
-	// its outcome yet: the same request run again reports it once.
+	// previous), its request id (the direction and the release it went to:
+	// forward:<id> or rollback:<id>) and whether its outcome is still to be
+	// reported: set before the journal is removed, and cleared only by the
+	// command that printed the result line, so an outcome nobody was shown
+	// (settled by another command, or a response lost after the journal was
+	// removed) is reported, once, by the same request run again.
 	Txn           string `json:"txn"`
 	Requested     string `json:"requested"`
+	RequestID     string `json:"request_id"`
 	PendingReport bool   `json:"pending_report"`
 }
+
+// requestID is the request id of a transaction: its direction and the
+// release it goes to. A retry is matched to an outcome by it, so a
+// retried rollback resolves the release the first one went to, never
+// previous anew.
+func requestID(direction, id string) string { return direction + ":" + id }
 
 // Results.
 const (
