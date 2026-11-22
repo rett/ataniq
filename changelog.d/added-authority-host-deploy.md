@@ -22,10 +22,9 @@
   BatchMode=yes`. `--dry` (the default) only lists what rsync would copy and
   prints the ssh command, `--go` does it and is refused unless
   `--confirm ID` equals the release id, and `--self-test` computes the
-  commands without running ssh or rsync. `--remote-check` runs the copied
-  release's no-AI check on the host (`sudo INCOMING/ID/bin/ah-noaicheck
-  --phase pre --root / --release INCOMING/ID --require-policy`, over ssh) after
-  the copy and stops before the switch when it exits non-zero; `--dry` only
-  prints the command.
+  commands without running ssh or rsync.
+  The driver never runs a file of the incoming folder: the no-AI check is
+  the switch's own, on the verified copy it imports, before anything
+  changes.
   `deploy/authority-host/DEPLOY.md` gives the first-deploy sequence, the
   rollback and what to do when a step fails.

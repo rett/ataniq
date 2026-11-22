@@ -63,7 +63,8 @@ ah-release check --no-noaicheck DIR/ID
 folder back (sums, manifest, shape, the coverage of the lists) without running
 the release's own no-AI check, which would look at this machine, not at the
 authority host, and report its agent tools. Run the no-AI check where it is
-meant to pass: on the authority host (see `--remote-check` below), or here
+meant to pass: on the authority host, where the switch runs it itself on the
+verified copy of the release before anything changes (see step 4), or here
 with `--root` pointing at a copy of the host's tree. `deploy.sh` runs the same
 `ah-release check --no-noaicheck` again before it copies anything.
 
@@ -150,23 +151,16 @@ skips `ah-release check` with a warning (use it only when you checked the
 release another way). A failing step stops the later ones: when the copy
 fails nothing is switched.
 
-`--remote-check` adds a step between the copy and the switch: over the same
-`ssh -o BatchMode=yes` it runs the release's own no-AI check on the host,
-
-```
-sudo "$HOME/incoming/ID/bin/ah-noaicheck" --phase pre --root / --release "$HOME/incoming/ID" --require-policy
-```
-
-and stops, without switching, when it exits non-zero (its output is streamed;
-a line starting `HIT` says what it found). `--dry` and `--self-test` print the
-command and never call ssh. It needs the allowlists filled (see [Filling the
-allowlists](README.md#filling-the-allowlists)): `--require-policy` turns an
-empty one into a hit. Mind what it is: it runs a binary of the copied release as
-root *before* the switch has checked the release's sums or signature, so it
-needs a sudo rule for that path as well as for `ah-switch`, and in signed mode
-it runs code the signature has not yet vouched for. Use it in manual mode, or
-leave it off and rely on the no-AI check the switch itself runs on the verified
-release (see [the switch's steps](README.md#steps)).
+The driver never runs a file of the incoming folder: that folder belongs to
+the deploying user, and a program in it would run as root before anyone had
+verified it. The no-AI check is run by the switch itself: after it has
+imported and verified the release (sums, and the signature in signed mode) into
+the root-owned `releases/ID`, and before anything changes, it runs that copy's
+no-AI check, phase `pre`, with `--require-policy`, and refuses the switch when
+it finds anything (see [the switch's steps](README.md#steps)). `--require-policy`
+turns an empty allowlist into a hit, so fill the allowlists first (see [Filling
+the allowlists](README.md#filling-the-allowlists)). A line starting `HIT` in
+the switch's output says what it found.
 
 The switch imports the release into `/opt/authority-host/releases/ID` as new,
 read-only, root-owned files, runs its checks, no-AI check, validators and reloads
@@ -250,9 +244,9 @@ state; read the message, fix the cause, run the step again.
 | Bootstrap | `Caddyfile.pre-authority-host exists and is never overwritten`, or the Caddyfile is a link to elsewhere | Nothing was changed. Move the old backup (or link) away by hand, then run again |
 | `deploy.sh` | `AUTHORITY_HOST_SSH is not set`, a bad release id or a bad `--incoming-base` | Nothing was run. Set the variable, or name a release folder `COUNTER-COMMIT` and a safe incoming folder |
 | `deploy.sh --dry` | `rsync -n failed` | Nothing was copied. Check that the incoming folder exists on the host and belongs to the deploying user, and that ssh works in batch mode |
-| `deploy.sh --go --remote-check` | the no-AI check on the host exited non-zero | The release is in the incoming folder and was not switched. Read the `HIT` lines it printed (and the README's [no-AI check](README.md#the-no-ai-check)), fix the host or the release, and run `--go` again |
 | `deploy.sh --go` | rsync failed | The switch was not run. The partial copy is only in the incoming folder; run `--go` again (rsync resumes) |
 | `deploy.sh --go` | the switch step failed (the output above it is the switch's) | The release is in the incoming folder, possibly already imported. Read the switch's `status` and its outcome, then see below |
+| Switch | the no-AI check found something (`HIT` lines) | Nothing was changed. Read the `HIT` lines (and the README's [no-AI check](README.md#the-no-ai-check)), fix the host or the release, and run `--go` again |
 | Switch | `rolled-back` (a reload or health check failed) | The old release is live again. Read why in `ah-switch status`, fix the release and deploy a new one with a higher counter |
 | Switch | `failed` or `failed-recovery` | The decision services were stopped and decisions stay inhibited; the console is needed. Follow [the failure cases](README.md#failure-cases), [the decision inhibit](README.md#the-decision-inhibit) and [the journal and recover](README.md#the-journal-and-recover); `inhibit-clear` and `ack` are the owner's words |
 | Switch | exit 3 | Another switch holds the lock; wait for it, then run again. Nothing was done |
