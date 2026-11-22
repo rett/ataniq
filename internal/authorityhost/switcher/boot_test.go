@@ -585,7 +585,7 @@ func TestBootLeavesNoRecordToTakeOverBesideAJournal(t *testing.T) {
 			t.Fatalf("boot: exit %d\n%s", code, e.last)
 		}
 		in, ok := e.inhibited()
-		if !ok || in.Reason == bootReason || !strings.HasPrefix(in.Reason, "boot:") || !txnPattern.MatchString(in.Txn) {
+		if !ok || in.Reason != unreadableJournalReason || !txnPattern.MatchString(in.Txn) {
 			t.Errorf("boot beside the unreadable journal left %+v, %v", in, ok)
 		}
 		if len(e.runner.calls) != 0 {
@@ -599,6 +599,47 @@ func TestBootLeavesNoRecordToTakeOverBesideAJournal(t *testing.T) {
 		}
 		kept(t, e, g)
 	})
+}
+
+// TestNoBootRecordStaysBesideAJournalItCannotRead: the whole record of a
+// boot that did not finish is there beside a txn.json that cannot be read
+// (an earlier boot, then a journal that went bad). The first command that
+// takes the lock (a boot, or any other) rewrites it as the plain record of
+// a journal that cannot be read, keeping its run id, so that a boot after
+// the owner set the journal aside by hand keeps decisions inhibited
+// instead of taking the record over and lifting it.
+func TestNoBootRecordStaysBesideAJournalItCannotRead(t *testing.T) {
+	for _, tc := range lockedCommands() {
+		t.Run(tc.name, func(t *testing.T) {
+			e := activeOwn(t)
+			e.keepOwed = true
+			g := guard(e)
+			e.write(filepath.Join(e.root, StateDir, JournalFile), "{", 0o600)
+			e.writeInhibitFile(inhibit{Txn: neverTxn, Reason: bootReason, Time: "2026-11-21T12:00:00Z"})
+			e.runner.reset()
+			if code := tc.run(e, journal{}); code == ExitOK {
+				t.Fatalf("exit 0 beside a journal that cannot be read\n%s", e.last)
+			}
+			in, ok := e.inhibited()
+			if !ok || in.Reason != unreadableJournalReason || in.Txn != neverTxn {
+				t.Fatalf("the boot record beside the journal is now %+v, %v\n%s", in, ok, e.last)
+			}
+			if len(e.runner.calls) != 0 {
+				t.Errorf("commands run: %v", e.runner.calls)
+			}
+			if err := os.Remove(filepath.Join(e.root, StateDir, JournalFile)); err != nil {
+				t.Fatal(err)
+			}
+			before := e.stateFile(InhibitFile)
+			e.runner.reset()
+			if code := e.boot(); code != ExitFailed || e.stateFile(InhibitFile) != before || len(e.runner.calls) != 0 {
+				t.Errorf("the next boot: exit %d, ran %v, inhibit changed %v\n%s", code, e.runner.calls, e.stateFile(InhibitFile) != before, e.last)
+			}
+			if got := g.decide(); got != "refused" {
+				t.Errorf("a decision is %s after the next boot", got)
+			}
+		})
+	}
 }
 
 // TestBootWithholdsTheAckWhileSettling: an outcome owed while its
@@ -1062,5 +1103,242 @@ func TestBootOutcomeOwed(t *testing.T) {
 		if o.check() == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+// bootRewriteFails runs ah-switch boot, whose rewrite of decisions.inhibit
+// with its failure fails (a folder that is not empty stands where the
+// new file is made), as a write that fails on the host would: boot's own
+// record stays, the host's stop list runs and the failure is owed under
+// its run. It returns that record.
+func (e *env) bootRewriteFails() inhibit {
+	e.t.Helper()
+	blocker := filepath.Join(e.root, StateDir, "."+InhibitFile+".new")
+	s := e.switcher()
+	s.crashAt = func(p string) error {
+		if p == CrashBootInhibit {
+			if err := os.MkdirAll(filepath.Join(blocker, "x"), 0o755); err != nil {
+				e.t.Fatal(err)
+			}
+		}
+		return nil
+	}
+	code := s.Boot(context.Background())
+	e.t.Logf("boot, its rewrite failing: exit %d\n%s", code, e.out.String())
+	e.last = e.out.String()
+	e.out.Reset()
+	if code != ExitFailed || !strings.Contains(e.last, "not rewritten with the failure") {
+		e.t.Fatalf("boot: exit %d\n%s", code, e.last)
+	}
+	in, ok := e.inhibited()
+	owed := e.owed()
+	if !ok || in.Reason != bootReason || len(owed) != 1 || owed[0].Txn != in.Txn || owed[0].Direction != DirBoot {
+		e.t.Fatalf("after the boot: inhibit %+v %v, owed %+v", in, ok, owed)
+	}
+	return in
+}
+
+// TestAckWritesTheFailureOfABoot: a failed boot could not rewrite its
+// inhibit with the failure, so its own record stays, with the failure owed
+// under its run. The ack of that outcome first rewrites the record as the
+// failure, as boot would have, and only then acknowledges it; when it
+// cannot, it refuses and leaves the outcome owed. A later boot keeps the
+// failure record, as it keeps every failure: only a healthy switch or
+// inhibit-clear lifts it. An ack recorded already (deploy.json holds
+// its transactions) and repeated does the same before it finishes.
+func TestAckWritesTheFailureOfABoot(t *testing.T) {
+	blocker := func(e *env) string { return filepath.Join(e.root, StateDir, "."+InhibitFile+".new") }
+	for _, retry := range []bool{false, true} {
+		t.Run(map[bool]string{false: "an ack", true: "an ack recorded already"}[retry], func(t *testing.T) {
+			e, g := rebooted(t)
+			e.runner.fail["health-old"] = -1
+			run := e.bootRewriteFails()
+			delete(e.runner.fail, "health-old")
+			if retry {
+				rec := e.record()
+				rec.OutcomeAckedAt, rec.OutcomeAckedAsked, rec.OutcomeAckedTxn = "2026-11-21T12:00:00Z", "saw it before", run.Txn
+				data, err := json.Marshal(rec)
+				if err != nil {
+					t.Fatal(err)
+				}
+				e.write(filepath.Join(e.root, StateDir, DeployFile), string(data), 0o644)
+			}
+			// The rewrite fails again: nothing is acknowledged.
+			owedText := e.stateFile(OwedFile)
+			if code := e.ack("saw the failed boot"); code != ExitFailed || !strings.Contains(e.last, "not rewritten") {
+				t.Errorf("ack while the inhibit cannot be written: exit %d\n%s", code, e.last)
+			}
+			if e.stateFile(OwedFile) != owedText {
+				t.Error("the outcome is no longer owed after a refused ack")
+			}
+			if in, _ := e.inhibited(); in != run {
+				t.Errorf("inhibit after a refused ack: %+v", in)
+			}
+			if err := os.RemoveAll(blocker(e)); err != nil {
+				t.Fatal(err)
+			}
+			if code := e.ack("saw the failed boot"); code != ExitOK {
+				t.Fatalf("ack: exit %d\n%s", code, e.last)
+			}
+			in, ok := e.inhibited()
+			if !ok || in.Txn != run.Txn || !strings.HasPrefix(in.Reason, "boot: after the boot, "+q("releases/"+rel2)+" did not pass") {
+				t.Errorf("after the ack: inhibit %+v, %v", in, ok)
+			}
+			if len(e.owed()) != 0 {
+				t.Errorf("owed after the ack: %+v", e.owed())
+			}
+			before := e.stateFile(InhibitFile)
+			e.runner.reset()
+			if code := e.boot(); code != ExitFailed || len(e.runner.calls) != 0 || e.stateFile(InhibitFile) != before {
+				t.Errorf("the next boot: exit %d, ran %v, inhibit changed %v\n%s", code, e.runner.calls, e.stateFile(InhibitFile) != before, e.last)
+			}
+			if got := g.decide(); got != "refused" {
+				t.Errorf("a decision is %s after the next boot", got)
+			}
+		})
+	}
+}
+
+// TestBootTakesAnInhibitItCannotReadAsUnresolved: the journal held by the
+// inhibit after an interrupted healthy end fails its trust check (its mode
+// was changed), so it cannot be read. That may be a transaction still to
+// settle: boot prints an outcome owed as not final, without the ack
+// command, and never takes the host for one where nothing was deployed
+// (exit 4), also when that journal is the only sign of a deployment.
+func TestBootTakesAnInhibitItCannotReadAsUnresolved(t *testing.T) {
+	untrusted := func(e *env) {
+		if err := os.Chmod(e.inhibitPath(), 0o666); err != nil {
+			e.t.Fatal(err)
+		}
+	}
+	t.Run("an outcome owed", func(t *testing.T) {
+		e := activeOwn(t)
+		e.keepOwed = true
+		e.crashAt(CrashJournalMoved, false, rel3)
+		owed := e.owed()
+		if len(owed) != 1 || !strings.Contains(e.stateFile(InhibitFile), `"phase"`) {
+			t.Fatalf("owed %+v, inhibit %s", owed, e.stateFile(InhibitFile))
+		}
+		untrusted(e)
+		e.runner.reset()
+		if code := e.boot(); code != ExitFailed || len(e.runner.calls) != 0 {
+			t.Fatalf("boot: exit %d, ran %v\n%s", code, e.runner.calls, e.last)
+		}
+		if strings.Contains(e.last, "ack --txn") {
+			t.Errorf("boot printed an ack command beside an inhibit it cannot read:\n%s", e.last)
+		}
+		if !strings.Contains(e.last, "outcome owed, not final (request "+q(owed[0].RequestID)+", transaction "+owed[0].Txn+")") {
+			t.Errorf("boot did not print the outcome owed as not final:\n%s", e.last)
+		}
+	})
+	for _, lock := range []bool{true, false} {
+		t.Run(map[bool]string{true: "the only sign of a deployment", false: "the only sign of a deployment, no lock file"}[lock], func(t *testing.T) {
+			e := newEnv(t)
+			e.release(rel1, "s")
+			e.crashAt(CrashJournalMoved, false, rel1)
+			for _, p := range []string{filepath.Join(e.root, BaseDir, "current"), filepath.Join(e.root, StateDir, DeployFile)} {
+				if err := os.Remove(p); err != nil {
+					t.Fatal(err)
+				}
+			}
+			makeWritable(e.relDir(rel1))
+			if err := os.RemoveAll(e.relDir(rel1)); err != nil {
+				t.Fatal(err)
+			}
+			if !lock {
+				if err := os.Remove(filepath.Join(e.root, StateDir, LockFile)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			untrusted(e)
+			before := e.stateFile(InhibitFile)
+			e.runner.reset()
+			if code := e.boot(); code != ExitFailed {
+				t.Errorf("boot: exit %d, want %d\n%s", code, ExitFailed, e.last)
+			}
+			if len(e.runner.calls) != 0 || e.stateFile(InhibitFile) != before {
+				t.Errorf("boot ran %v, changed the inhibit %v", e.runner.calls, e.stateFile(InhibitFile) != before)
+			}
+			if e.guardCheck() != decisionguard.CodeInhibited {
+				t.Errorf("the guard answers %q", e.guardCheck())
+			}
+		})
+	}
+}
+
+// TestBootGuardsAHostWhoseCurrentCannotBeRead: current is there but cannot
+// be read (it is a file, not a link) in an intact state folder, with or
+// without the lock file. What cannot be read proves nothing, so boot does
+// not stop before decisions are inhibited: it makes the lock file when it
+// is missing, writes its record, and fails as a failed qualification does
+// (the failure in the inhibit, the host's stop list, the failure owed),
+// exit 1.
+func TestBootGuardsAHostWhoseCurrentCannotBeRead(t *testing.T) {
+	for _, lock := range []bool{true, false} {
+		t.Run(map[bool]string{true: "with the lock file", false: "without the lock file"}[lock], func(t *testing.T) {
+			e := activeOwn(t)
+			e.keepOwed = true
+			g := guard(e)
+			cur := filepath.Join(e.root, BaseDir, "current")
+			if err := os.Remove(cur); err != nil {
+				t.Fatal(err)
+			}
+			e.write(cur, "releases/"+rel2+"\n", 0o644)
+			if !lock {
+				if err := os.Remove(filepath.Join(e.root, StateDir, LockFile)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e.runner.reset()
+			unguarded := e.guarded()
+			if code := e.boot(); code != ExitFailed {
+				t.Fatalf("boot: exit %d\n%s", code, e.last)
+			}
+			if *unguarded != 0 {
+				t.Errorf("%d command(s) ran while decisions were not inhibited", *unguarded)
+			}
+			in, ok := e.inhibited()
+			if !ok || !strings.HasPrefix(in.Reason, "boot: after the boot, ") || !strings.Contains(in.Reason, "not a symbolic link") {
+				t.Errorf("inhibit: %+v, %v\n%s", in, ok, e.last)
+			}
+			if g.decide() != "refused" || e.guardCheck() != decisionguard.CodeInhibited {
+				t.Errorf("a decision %s, guard %q", g.decide(), e.guardCheck())
+			}
+			if _, err := os.Lstat(filepath.Join(e.root, StateDir, LockFile)); err != nil {
+				t.Errorf("the lock file: %v", err)
+			}
+			if e.runner.called("stop-all") != 1 {
+				t.Errorf("the host's stop list: %v", e.runner.calls)
+			}
+			if owed := e.owed(); len(owed) != 1 || owed[0].Direction != DirBoot || owed[0].Txn != in.Txn {
+				t.Errorf("owed: %+v", owed)
+			}
+		})
+	}
+}
+
+// TestBootSaysNothingWasQualifiedWithoutCurrent: on a deployed host whose
+// current is missing, boot's result line, the inhibit's reason and
+// status say that current is missing and nothing was qualified, never
+// that "none" did not pass its checks.
+func TestBootSaysNothingWasQualifiedWithoutCurrent(t *testing.T) {
+	e := activeOwn(t)
+	e.keepOwed = true
+	if err := os.Remove(filepath.Join(e.root, BaseDir, "current")); err != nil {
+		t.Fatal(err)
+	}
+	if code := e.boot(); code != ExitFailed {
+		t.Fatalf("boot: exit %d\n%s", code, e.last)
+	}
+	const want = "current is missing or cannot be read, so nothing was qualified"
+	in, _ := e.inhibited()
+	st := e.status()
+	for what, text := range map[string]string{"boot's output": e.last, "the inhibit's reason": in.Reason, "status": st} {
+		if strings.Contains(text, "none did not pass") || strings.Contains(text, "current did not pass") || !strings.Contains(text, want) {
+			t.Errorf("%s:\n%s", what, text)
+		}
+	}
+	if !strings.Contains(e.last, "result: decisions stay inhibited: "+want+" after the boot") {
+		t.Errorf("result line:\n%s", e.last)
 	}
 }

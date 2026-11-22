@@ -705,10 +705,19 @@ without it. The contract for those services is:
   matter), and also while `/var/lib/authority-host` itself is missing, is
   not a real folder (a link, a file) or cannot be looked up: a bare
   `lstat` of the file answers "no such file" there too, and would allow.
-  "No such file" allows only when the folder, looked up again after the
-  file, is still the very folder (same device and inode) found before it,
-  so that a folder removed or replaced between the lookups refuses. There
-  is no second file and no order of files to get wrong. Readiness and the
+  The folder is pinned first: opened (it must be readable by the service,
+  as the bootstrap's mode 0755 makes it; one it may not open refuses), and
+  checked to be the real folder its path names. The file is then looked
+  up relative to that open folder, never by the path again, so the answer
+  comes from the folder found, even when it is moved away and put back
+  meanwhile. "No such file" allows only when the folder at the path,
+  looked up again after the file, is still the pinned folder (same device
+  and inode), so that a folder removed or replaced between the lookups
+  refuses. In another language: open the folder with `O_DIRECTORY` and
+  `O_NOFOLLOW`, `fstat` it, look the file up with `fstatat` (not
+  following a link) relative to that descriptor, then `lstat` the folder
+  path and compare. There is no second file and no order of files to get
+  wrong. Readiness and the
   static status page do not depend on it.
 
 The release builder makes every decision-capable service follow this
@@ -727,6 +736,23 @@ matters to the services.
   checked against the host or anything of it runs, and before the
   command refuses anything, whether the journal is then resumed, found
   stale, refused for a discard or left open (`--dry` writes nothing).
+  Beside a journal it can read, it writes that transaction's record.
+  Beside a `txn.json` it cannot read (one that does not parse or is not
+  trusted) it writes a plain record (`reason`: `a transaction journal is
+  open and cannot be read; ...`, with a run id of its own in `txn`). No
+  boot takes that record over, so decisions stay inhibited after the
+  journal is set aside or removed by hand, until a transaction ends
+  healthy or `inhibit-clear` removes it. The file is written only when it
+  is not there. One that is there stays as found, whatever it holds,
+  including one that cannot be read (a note that does not parse, a record
+  that is not trusted, a folder): it is evidence, and every command that
+  refuses keeps it. It is rewritten only by the rules of the commands
+  that own it: `recover --discard-journal` writes its own record whatever
+  was there, a resumed transaction rewrites or removes it at its end, and
+  `boot` follows its own rules (below). One record is rewritten by every
+  command: `boot`'s own record found beside a `txn.json` that cannot be
+  read becomes that plain record, its run id kept, since a later boot
+  would otherwise take it over and lift it once the journal is set aside.
 - It is removed only when the transaction ends healthy: a switch or
   rollback whose release passed its health check and its post-activation
   no-AI check (`ok`), or a going back whose release passed its reload, its
@@ -806,12 +832,12 @@ each write an atomic rename, synced):
 | Who | What it does to the file |
 | --- | --- |
 | A transaction's start | Writes it, before the journal is first written |
-| Any command but `status` that finds a journal | Writes it back when it was removed by hand, before anything else (a switch, rollback or `recover` also writes the journal back from it when it holds one, keeping it) |
+| Any command but `status` that finds a journal | Writes it back when it was removed by hand, before anything else: the transaction's record, or a plain record that no boot takes over when `txn.json` cannot be read. One that is there stays as found, also when it cannot be read, except `boot`'s own record beside a `txn.json` that cannot be read, which becomes that plain record (a switch, rollback or `recover` also writes the journal back from it when it holds one, keeping it) |
 | An end that is not healthy | Rewrites it with the outcome, then removes the journal |
 | A healthy end | Renames the journal over it, then removes it |
 | `recover --discard-journal` | Rewrites it as a plain record of the discard, whatever was there, then sets the journal aside |
 | `inhibit-clear` | Removes it on the owner's word; refused while a journal is there or it holds one |
-| `boot` | With no journal pending, writes its own record when it is not there (or is the record of a boot that did not finish), then removes that record once `current` qualified again; leaves any other as found. With a journal pending, never writes its own record: the transaction's is written back first, and beside a journal that cannot be read a plain record that no boot takes over |
+| `boot` | With no journal pending, writes its own record when it is not there (or is the record of a boot that did not finish), then removes that record once `current` qualified again; leaves any other as found. With a journal pending, never writes its own record: the transaction's is written back first, or the plain record beside a journal that cannot be read, as in any command |
 | A failed `boot` | Rewrites its own record with the failure, then runs the host's stop list and owes the failure |
 
 Only the second step of a healthy end, `boot`'s removal of its own
@@ -836,11 +862,11 @@ Before it, a requalification ran only while a journal was open.
   journal is pending. While a journal is pending (`txn.json`, or one the
   inhibit holds) it never writes its own record: a journal whose inhibit
   was removed by hand gets the transaction's back first, as in every
-  command, and one that cannot be read gets a plain record (`reason`:
-  starting `boot: a transaction journal is open and cannot be read`)
-  that no boot takes over, so that after the journal is settled, set
-  aside or removed decisions stay inhibited until a transaction ends
-  healthy or `inhibit-clear`. Then it
+  command, and one that cannot be read gets the plain record of every
+  command (`reason`: `a transaction journal is open and cannot be
+  read; ...`), which no boot takes over, so that after the journal is
+  settled, set aside or removed decisions stay inhibited until a
+  transaction ends healthy or `inhibit-clear`. Then it
   qualifies the release `current` points at as a settling transaction
   does: verified again with the switch policy's trust (its sums, its
   signature in signed mode, the record of its import), then its
@@ -861,11 +887,17 @@ Before it, a requalification ran only while a journal was open.
   release in `id` and `current_id`, the words in `detail`, starting `after
   the boot`), and `boot` exits 1 with `result: decisions stay inhibited`.
   When the inhibit cannot be rewritten, `boot`'s own record stays and
-  the failure is still owed under its run. `status` shows `outcome
+  the failure is still owed under its run, which keeps a later boot from
+  taking that record over; the `ack` of that outcome first rewrites the
+  record with the failure, and refuses, the outcome still owed, when it
+  cannot (see "The journal and recover"). `status` shows `outcome
   owed (boot requalification of ID, transaction RUN)` with the `ack` that
   takes it back. Every switch and rollback is refused while it is owed,
   and the inhibit stays after the `ack` until a switch ends healthy or the
-  owner runs `inhibit-clear`. `boot` writes nothing to `deploy.json`.
+  owner runs `inhibit-clear`. `boot`'s own qualification writes nothing
+  to `deploy.json`; only when it settles a transaction left open (below)
+  does that settlement record the transaction's outcome there, as it does
+  in any command.
 - An inhibit that is there when `boot` starts stays exactly as found,
   whoever wrote it: a transaction (its outcome, a failed requalification,
   a journal it holds), an earlier failed `boot`, one left for the owner's
@@ -875,8 +907,9 @@ Before it, a requalification ran only while a journal was open.
   command does (the transaction is resumed, and removes the inhibit only
   by its own rules, which qualify its release in that command), prints
   every outcome owed, and exits 1 unless decisions are no longer
-  inhibited at the end. While a transaction is still open (its journal
-  in `txn.json`, held by the inhibit, or one that cannot be read) it
+  inhibited at the end. While a transaction may still be open (its
+  journal in `txn.json`, held by the inhibit, or one that cannot be read,
+  and a `decisions.inhibit` it cannot read, which may hold a journal) it
   prints an outcome owed as `status` does then, `outcome owed, not
   final`, without the `ack` command: settling the transaction may still
   change that outcome. It never acknowledges an outcome.
@@ -884,21 +917,38 @@ Before it, a requalification ran only while a journal was open.
   not finish: exactly the record `boot` writes (its `reason`, a run id in
   `txn` and a `time` in UTC to the second, each as `boot` writes it; a
   record lacking any of them stays as found), with no journal open and no
-  outcome owed under its run. That boot died (a power loss, a time limit)
+  outcome owed under its run. Beside a `txn.json` that cannot be read such
+  a record is not kept: every command rewrites it as the plain record of
+  that journal first (above), so a boot after the journal was set aside by
+  hand does not lift it. That boot died (a power loss, a time limit)
   after it inhibited decisions and before it recorded a failure or removed
   its record; nothing else changed since it found no inhibit, so this boot
   writes the record again as its own and qualifies `current` from the
   start. A failure is written into the record before the stop list runs
   and before it is owed, so a boot that died after that leaves a failure
   record, which no later boot takes over, also once its outcome is
-  acknowledged; a crash before the failure is owed loses only the
-  outcome owed (`status` still shows the failure in the inhibit), never
-  the inhibit.
+  acknowledged; a crash or a kill at the unit's time limit after that
+  never loses the inhibit, but it loses more than the outcome owed
+  (which `status` then only shows in the inhibit). When it comes before
+  or during the host's stop list (a `systemctl stop` that hangs until the
+  time limit, for example), that stop list did not run to its end, and
+  no later command runs it again: the stop list is not resumed. The
+  services the reload started are units of their own and outlive the boot
+  unit, so they may still be running; while the inhibit is there they
+  refuse every decision. Look at them by hand from the root session:
+  `ah-switch status` shows the failure record, `systemctl status UNIT`
+  (or `systemctl list-units`) shows each decision service the stop
+  commands of `/etc/authority-host/stop.list` name, and running those
+  stop commands by hand (`systemctl stop UNIT`) stops them. A later
+  switch that ends healthy lifts the inhibit, as does `inhibit-clear`
+  after you looked at the host.
 - A host where nothing was ever deployed is refused with exit 4: no
   `current`, no `deploy.json`, no journal (open in `txn.json` or held by
   the inhibit) and nothing in `/opt/authority-host/releases` (a release
   imported and never switched to, or the folder of an import, counts as
-  deployed). Nothing is run, created or changed there,
+  deployed). A `decisions.inhibit` that cannot be read (one that does not
+  parse or is not trusted) may hold a journal, so it is never taken for a
+  host where nothing was deployed: `boot` leaves it as found and exits 1. Nothing is run, created or changed there,
   `decisions.inhibit` and the lock file included. The decision guard
   answers there by the state folder alone: it refuses while
   `/var/lib/authority-host` is missing (before the bootstrap) or holds
@@ -911,9 +961,17 @@ Before it, a requalification ran only while a journal was open.
   refused with exit 4: `boot` writes its record and fails as a failed
   qualification does (`current is missing although ...`: the inhibit
   holds the failure, the host's stop list runs, the failure is owed),
-  exit 1, and the owner acknowledges the failure before the next switch.
+  exit 1, with `result: decisions stay inhibited: current is missing or
+  cannot be read, so nothing was qualified after the boot; ...` (`status`
+  says the same of the outcome owed), and the owner acknowledges the
+  failure before the next switch.
   A journal there is settled as every command settles it, and a missing
-  lock file is made first.
+  lock file is made first. The same holds, in a state folder that is
+  there and trusted, when `current` or what would show a deployment
+  cannot be read (a `current` that is a file, not a link, for example):
+  what cannot be read proves nothing, so `boot` makes a missing lock
+  file, writes its record and fails with the error, exit 1, the failure
+  owed; it never stops before the inhibit is written.
 - A crash anywhere in `boot` leaves decisions refused: the inhibit is
   there from before the first command it runs to its removal, which is
   its last step. The next `boot` takes its record over (above) unless it
@@ -928,9 +986,18 @@ stays active (`RemainAfterExit=yes`) and runs
 `caddy.service` (what the health check and the no-AI check need), with a
 time limit of 15 minutes. It fails closed: no condition skips it, no exit
 status but 0 counts as success, nothing restarts it, and a failure (exit
-1, or killed at its time limit) leaves the inhibit `boot` wrote; exit 4,
-on a host where nothing was ever deployed, writes nothing (the guard then
-answers by the state folder alone, above). No
+1, or killed at its time limit) after `boot` wrote the inhibit leaves it.
+Not every exit other than 0 leaves an inhibit: exit 4, on a host where
+nothing was ever deployed, writes nothing (the guard then answers by the
+state folder alone, above); exit 3, the lock held by another command (a
+switch, whose transaction writes its own inhibit, or `status`), exit 2,
+and exit 1 with the state folder missing (`nothing is run or changed`)
+write nothing; and a kill or a crash before `boot`'s first write (while
+it reads the policy or takes the lock) leaves none it wrote. In each of
+those cases `boot` ran nothing, so it started no decision-capable
+service: those start only through the release's reload list, which `boot`
+runs after the inhibit is written (below); whatever inhibit was there
+before stays. No
 script installs or enables it (`host-bootstrap.sh` and `deploy.sh` do
 not touch it), and it changes nothing on a host until the owner does,
 after a first switch ended healthy (on a host where nothing was ever
@@ -1102,6 +1169,13 @@ concern it, and only the second takes it back:
   recorded transactions to be exactly those owed, so it only finishes
   removing `owed.json` and says so, and keeps the owner's first words and
   time in `deploy.json` (the `WORDS` of the retry are not recorded).
+  Before it records or removes anything, an `ack` (that finishing one
+  included) looks at the decision inhibit: when it is still the own record
+  of a `boot` whose failure is owed under its run (that `boot` could not
+  rewrite it with the failure), the record is rewritten with that failure
+  first (`reason` starting `boot: after the boot,`), as `boot` would have
+  written it, so that no later boot takes it over. When that write fails
+  it says so, acknowledges nothing, keeps `owed.json` and exits 1.
 
 After every switch or rollback, then, the owner's `ack` is needed before
 the next different switch or rollback: a retry of the request does not
@@ -1193,7 +1267,7 @@ see its messages. The text of a broken state file is not repeated either.
 | 1 | Failed; outside a dry run the outcome is in `deploy.json`, except when the state folder, the switch policy or the host's stop list is not trusted, or `releases/`, `current` or `previous` cannot be read (`state: FAILED`), which records nothing, or when the result is `unresolved`, which leaves the journal for the next command; a `boot` after which decisions stay inhibited (its qualification failed and is owed, it found an inhibit it did not write, or the transaction it settled did not end healthy) |
 | 2 | Bad arguments, `--mode` weaker than the switch policy, or a root other than `/` without `--allow-exec`; nothing was done |
 | 3 | Another switch holds the lock, or `status` holds it while a switch is asked for (`flock`, not waited for), or a package step that outlived its switch holds it (said as `surviving helper pid N`); nothing was done |
-| 4 | `boot` found nothing ever deployed (no current release, no release folder, no `deploy.json`, no journal open or held); nothing was run, created or changed, `decisions.inhibit` left as found. A deployed host whose `current` is missing exits 1 |
+| 4 | `boot` found nothing ever deployed (no current release, no release folder, no `deploy.json`, no journal open or held, and no `decisions.inhibit` it cannot read, which may hold one); nothing was run, created or changed, `decisions.inhibit` left as found. A deployed host whose `current` is missing exits 1 |
 
 ### Failure cases
 

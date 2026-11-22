@@ -22,13 +22,6 @@ const DirBoot = "boot"
 // not finish (see Boot).
 const bootReason = "boot: decisions are refused from the boot until ah-switch boot has qualified current again"
 
-// bootPendingReason is the reason of the inhibit ah-switch boot writes when
-// a journal is open that cannot be read and no inhibit is there (the
-// inhibit of a readable one is the transaction's, see guardJournal). It is
-// not bootReason: no boot takes it over, and only a transaction that ends
-// healthy or the owner's inhibit-clear removes it.
-const bootPendingReason = "boot: a transaction journal is open and cannot be read; decisions stay inhibited until a transaction ends healthy or ah-switch inhibit-clear --asked WORDS"
-
 // Boot runs ah-switch boot, which its unit runs at every boot (see
 // deploy/authority-host/README.md, "Boot requalification"): after a
 // reboot decisions stay refused until the host has been qualified since
@@ -41,7 +34,8 @@ const bootPendingReason = "boot: a transaction journal is open and cannot be rea
 // While a journal is open it never writes its own record: the inhibit of
 // a readable journal is the transaction's, written back first when it was
 // removed (see guardJournal), and one that cannot be read gets a plain
-// record no boot takes over (bootPendingReason). It then qualifies the
+// record no boot takes over (unreadableJournalReason, also written by
+// guardJournal first). It then qualifies the
 // release current points at again as a settling transaction does
 // (qualifyAgain: verified with the switch policy's trust, then its reload
 // list, its health check and its post-activation no-AI check), and
@@ -57,7 +51,9 @@ const bootPendingReason = "boot: a transaction journal is open and cannot be rea
 // cannot be read strictly): boot lifts nothing then. It settles an open
 // journal through reconcile, as every command does (that transaction
 // lifts the inhibit by its own rules), and prints what is owed. It never
-// acknowledges anything and never writes deploy.json. Only a host where
+// acknowledges anything, and its own qualification never writes
+// deploy.json (the settlement of an open transaction records that
+// transaction there, as in any command). Only a host where
 // nothing was ever deployed (no current release, and none of what
 // bootDeployed looks for) is refused with ExitNoRelease, nothing created or
 // changed; a deployed host whose current is missing inhibits decisions
@@ -100,12 +96,20 @@ func (s *Switcher) Boot(ctx context.Context) int {
 		if err == nil && s.stateRoot == nil {
 			err = failf(CodeStateInvalid, "the state folder %s is missing although %s", q(s.stateDir()), what)
 		}
-		if err != nil {
+		if err != nil && s.stateRoot == nil {
 			s.printf("boot: FAILED: %s; nothing is run or changed", describe(err))
 			return ExitFailed
 		}
-		// Something is deployed, and the state folder has no lock file:
-		// the lock file is made, as every switch makes it.
+		if err != nil {
+			// What cannot be read (current, the release folder, an
+			// inhibit) proves nothing either way: in an intact state
+			// folder the failure is the locked path's, once decisions
+			// are inhibited (it reads the same again below).
+			s.printf("boot: %s; the lock file is made and decisions are inhibited before this fails", describe(err))
+		}
+		// Something is deployed, or what is cannot be read, and the state
+		// folder has no lock file: the lock file is made, as every switch
+		// makes it.
 		s.closeRoots()
 		if lk, code = s.lockWith(false, true); lk == nil {
 			return code
@@ -188,8 +192,9 @@ func (s *Switcher) bootCurrent() (cur string, ok bool, err error) {
 // journal (open in txn.json, or held by decisions.inhibit) in the state
 // folder, or any entry of opt/authority-host/releases (a release, or the
 // staging folder of an import). Such a host is not one where nothing is
-// deployed: its current is missing. err is what cannot be read, which
-// proves nothing either way.
+// deployed: its current is missing. err is what cannot be read (a
+// decisions.inhibit that cannot be read included, which may hold a
+// journal), which proves nothing either way.
 func (s *Switcher) bootDeployed() (string, error) {
 	if s.stateRoot != nil {
 		for _, name := range []string{DeployFile, JournalFile} {
@@ -201,7 +206,14 @@ func (s *Switcher) bootDeployed() (string, error) {
 				return "", err
 			}
 		}
-		if _, settling, _, err := s.readInhibit(); err == nil && settling != nil {
+		// An inhibit that cannot be read may hold a journal (one that
+		// fails its trust check): that proves nothing either way, and is
+		// never taken for a host with nothing deployed.
+		_, settling, _, err := s.readInhibit()
+		if err != nil {
+			return "", err
+		}
+		if settling != nil {
 			return InhibitFile + " holds a journal", nil
 		}
 	}
@@ -273,9 +285,9 @@ func bootTime(t string) bool {
 // there is no inhibit, or when the inhibit is an unfinished boot's, and
 // leaves any other as found. With a journal pending (open, held or
 // unreadable) the inhibit is never this run's: one there stays as found,
-// and when none is there (a journal that cannot be read, which
-// guardJournal cannot guard) a plain record is written that no boot takes
-// over. mine says the inhibit is this run's (run); ok false is a failure,
+// and when none is there (guardJournal could not write it) a plain record
+// is written that no boot takes over, as guardJournal writes it beside a
+// journal that cannot be read. mine says the inhibit is this run's (run); ok false is a failure,
 // said.
 func (s *Switcher) bootInhibit(in inhibit, there bool, ierr error, pending bool) (run inhibit, mine, ok bool) {
 	switch {
@@ -290,7 +302,7 @@ func (s *Switcher) bootInhibit(in inhibit, there bool, ierr error, pending bool)
 	case pending:
 		id, err := newTxnID()
 		if err == nil {
-			err = s.writeInhibit(inhibit{Txn: id, Reason: bootPendingReason, Time: s.now()})
+			err = s.writeInhibit(inhibit{Txn: id, Reason: unreadableJournalReason, Time: s.now()})
 		}
 		if err != nil {
 			s.printf("boot: FAILED: %s not written: %s; nothing is run, and decisions are NOT inhibited", InhibitFile, q(err.Error()))
@@ -349,13 +361,19 @@ func (s *Switcher) bootSettle(ctx context.Context, blocked error) int {
 // unfinishedBoot), before anything else is done. Then it is handled as a
 // settling transaction's failure (the host's stop list runs, see
 // requalifyFailed), then owed with requalify_failed. A crash after the
-// rewrite loses at most the outcome owed, never the inhibit or its
-// failure, and an ack of the outcome owed leaves a record no boot lifts.
-// When the rewrite fails, the run's own record stays and the failure is
-// still owed, which keeps a later boot from taking that record over.
+// rewrite never loses the inhibit or its failure, and an ack of the
+// outcome owed leaves a record no boot lifts; one before or during the
+// stop list (a kill at the unit's time limit included) loses that stop
+// list too, which nothing resumes: the services the reload started may
+// still run, refusing decisions while the inhibit is there, until the
+// owner stops them by hand or a switch ends healthy. When the rewrite fails, the
+// run's own record stays and the failure is still owed, which keeps a
+// later boot from taking that record over; the ack of that outcome
+// rewrites the record with the failure before anything else, and refuses
+// when it cannot (see ackBootFailure).
 func (s *Switcher) bootFailed(ctx context.Context, run inhibit, cur string, cause error) int {
 	s.printf("boot: FAILED: %s", describe(cause))
-	kept := inhibit{Txn: run.Txn, Reason: boundDetail(fmt.Sprintf("boot: after the boot, %s did not pass its reload, health check and no-AI check again (%s)", linkText(cur), describe(cause))), Time: s.now()}
+	kept := inhibit{Txn: run.Txn, Reason: bootFailedReason(cur, describe(cause)), Time: s.now()}
 	keptErr := s.writeInhibit(kept)
 	if keptErr != nil {
 		s.printf("boot: FAILED: %s not rewritten with the failure: %s; it stays as this boot wrote it, decisions stay inhibited, and the failure is owed under its run", InhibitFile, q(keptErr.Error()))
@@ -396,6 +414,47 @@ func (s *Switcher) bootFailed(ctx context.Context, run inhibit, cur string, caus
 	return ExitFailed
 }
 
+// bootFailedReason is the reason of the record a failed boot leaves:
+// current (cur, where the link points) did not pass, or, with no current
+// (cur empty), nothing was qualified, and why. It starts "boot: after the
+// boot, ", which no boot takes over (see unfinishedBoot).
+func bootFailedReason(cur, why string) string {
+	what := nothingQualified
+	if cur != "" {
+		what = q(cur) + " did not pass its reload, health check and no-AI check again"
+	}
+	return boundDetail(fmt.Sprintf("boot: after the boot, %s (%s)", what, why))
+}
+
+// ackBootFailure is what ack does first, before it records or removes
+// anything of the outcomes owed: when decisions.inhibit is still the own
+// record of a boot (bootReason) whose failure is owed under its run (that
+// boot could not rewrite it with the failure, see bootFailed), the record
+// is rewritten as that failure, as bootFailed would have written it, so
+// that no later boot takes it over once the outcome is acknowledged.
+// rewrote says it was; err is a write that failed, and the ack must then
+// acknowledge nothing.
+func (s *Switcher) ackBootFailure(owed []owedOutcome) (run string, rewrote bool, err error) {
+	in, settling, _, rerr := s.readInhibit()
+	if rerr != nil || settling != nil || in.Reason != bootReason {
+		return "", false, nil
+	}
+	for _, o := range owed {
+		if o.Direction != DirBoot || o.Txn != in.Txn {
+			continue
+		}
+		cur := ""
+		if o.CurrentID != "" {
+			cur = "releases/" + o.CurrentID
+		}
+		if err := s.writeInhibit(inhibit{Txn: in.Txn, Reason: bootFailedReason(cur, o.Detail), Time: s.now()}); err != nil {
+			return in.Txn, false, err
+		}
+		return in.Txn, true, nil
+	}
+	return "", false, nil
+}
+
 // bootLift removes the inhibit of this run, run, once current (cur) was
 // qualified again: it must still be exactly what this run wrote.
 func (s *Switcher) bootLift(run inhibit, cur string) int {
@@ -419,13 +478,15 @@ func (s *Switcher) bootLift(run inhibit, cur string) int {
 }
 
 // printOwed prints the outcomes owed, as status shows them, and leaves
-// them owed: while a transaction is still open (its journal in txn.json,
-// held by the inhibit, or one that cannot be read) an outcome owed is not
-// final, and no ack command is printed for it (see owedStatus).
+// them owed: while a transaction may still be open (its journal in
+// txn.json, held by the inhibit, or one that cannot be read, a
+// decisions.inhibit that cannot be read included, which may hold one) an
+// outcome owed is not final, and no ack command is printed for it (see
+// owedStatus).
 func (s *Switcher) printOwed() {
 	_, open, jerr := s.readJournal()
-	_, settling, _, _ := s.readInhibit()
-	lines, err := s.owedStatus(open || jerr != nil || settling != nil)
+	_, settling, _, ierr := s.readInhibit()
+	lines, err := s.owedStatus(open || jerr != nil || settling != nil || ierr != nil)
 	if err != nil {
 		s.printf("boot: %s cannot be read: %s", OwedFile, describe(err))
 		return

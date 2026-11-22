@@ -47,7 +47,9 @@
   one lookup before the decision finds no such file (the package
   `internal/authorityhost/decisionguard` is that lookup as code, `Check`,
   which refuses on the file in any form, on a missing or linked state
-  folder, and on one removed or replaced between its lookups; the journal `txn.json` is never there without it: a healthy end renames the journal
+  folder or one it may not open, and on one removed or replaced between
+  its lookups, and looks the file up in the folder it pinned, so that a
+  folder moved away and put back meanwhile still answers with its guard; the journal `txn.json` is never there without it: a healthy end renames the journal
   over the inhibit, then removes the inhibit, the one step that lets
   decisions through; a power loss between the two leaves the journal in
   the inhibit, which the next command writes back and settles and which
@@ -96,7 +98,11 @@
   proven stale: one whose evidence cannot be read is neither resumed nor
   discarded; decisions stay inhibited under a plain record of the
   discard, and every command that finds a journal writes a missing
-  inhibit back first, before it runs a stop or refuses anything),
+  inhibit back first, before it runs a stop or refuses anything: the
+  transaction's, or beside a journal that cannot be read a plain record
+  no boot takes over, which also replaces boot's own record found there;
+  an inhibit that is there, even one that cannot be read, is kept as
+  evidence by every command that refuses),
   `ah-switch recover --services-stopped` settles a transaction whose stop
   commands failed on the owner's word,
   `ah-switch status` shows the state under a shared lock, `--dry` prints
@@ -126,16 +132,26 @@
   reload list, health check and post-activation no-AI check) and removes
   only that record, only when all of it passed; a failure is first
   written into that record (which no later boot takes over, also once its
-  outcome is acknowledged), then runs the host's stop list, is owed
+  outcome is acknowledged; when that write fails, the `ack` of the outcome
+  writes it first, and refuses, the outcome still owed, when it cannot), then runs the host's stop list, is owed
   (`direction: boot`, `requalify_failed`, shown by `status` with its
   `ack`) and keeps decisions inhibited; any other
   inhibit it finds (a transaction's, a held journal, a failure, one left
   for `inhibit-clear`, one it cannot read strictly) stays as found while
   it settles an open journal as any command does, and it never
-  acknowledges anything or writes `deploy.json`; a host with nothing
-  deployed (no `current`, release folder, `deploy.json` or journal) is
-  refused with exit 4 and nothing changed, while a deployed host whose
-  `current` is missing fails closed with exit 1. Exit codes are 0
+  acknowledges anything, and its own qualification writes nothing to
+  `deploy.json` (settling an open transaction records that transaction
+  there, as any command does); a crash or a kill at its time limit during
+  the stop list leaves that list unfinished, not resumed, for the owner
+  to finish by hand while decisions stay refused; exits 2, 3 and 4, and a
+  kill before its first write, leave no inhibit of its own (it ran
+  nothing then); a host with nothing
+  deployed (no `current`, release folder, `deploy.json`, journal or
+  inhibit it cannot read, which may hold one) is refused with exit 4 and
+  nothing changed, an outcome owed beside such an inhibit is printed
+  without its `ack` command, while a deployed host whose
+  `current` is missing, or cannot be read, fails closed with exit 1
+  (saying that nothing was qualified). Exit codes are 0
   ok, 1 failed, 2 usage, 3 locked and 4 nothing deployed (`boot`).
   Known limits (an old journal restored by root can replay a settled
   transaction; a package step's descendant that keeps the lock open
