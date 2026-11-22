@@ -261,6 +261,12 @@
 // refused writes: the first [DecisionRefusalBound] are logged, the next closes
 // the connection and is logged once, and no line is written for any after.
 //
+// The seat gate (seatgate_linux.go, in the same tagged build) is a second
+// listener of the daemon: a TCP listener with pinned-key TLS for the seat app,
+// opened only by run --owner-channel --seat-gate ADDR. It serves the pairing
+// call and the reads of the cards through package gatehost and decides
+// nothing; docs/lead-daemon.md describes it.
+//
 // The same-user limit of the socket holds here as everywhere: any process of
 // the owner's user can say it is the console, and one with a terminal of its
 // own is granted the place when it is free (owner-channel case OC20). Nothing
