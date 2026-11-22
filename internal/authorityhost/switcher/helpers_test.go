@@ -1,0 +1,286 @@
+package switcher
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// fakeRunner records every command and fails those whose program's base name
+// is in fail (for as many calls as the count says; a negative count fails
+// every call).
+type fakeRunner struct {
+	mu    sync.Mutex
+	calls []string
+	stdin [][]byte
+	fail  map[string]int
+}
+
+func (f *fakeRunner) Run(ctx context.Context, c Command) (Output, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, strings.Join(c.Argv, " "))
+	f.stdin = append(f.stdin, c.Stdin)
+	name := filepath.Base(c.Argv[0])
+	if n, ok := f.fail[name]; ok && n != 0 {
+		if n > 0 {
+			f.fail[name] = n - 1
+		}
+		return Output{Stderr: []byte(name + " said no")}, fmt.Errorf("%s: exit status 1", name)
+	}
+	return Output{}, nil
+}
+
+func (f *fakeRunner) called(name string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.calls {
+		if filepath.Base(strings.Fields(c)[0]) == name {
+			n++
+		}
+	}
+	return n
+}
+
+func (f *fakeRunner) reset() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = nil
+	f.stdin = nil
+}
+
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *fakeClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeClock) sleep(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
+type fakeVerifier struct {
+	err   error
+	calls int
+	data  []byte
+}
+
+func (v *fakeVerifier) Verify(ctx context.Context, allowedSigners string, data []byte, signaturePath string) error {
+	v.calls++
+	v.data = data
+	return v.err
+}
+
+// env is a temporary root with a fake runner and clock.
+type env struct {
+	t      *testing.T
+	root   string
+	runner *fakeRunner
+	clock  *fakeClock
+	out    bytes.Buffer
+}
+
+func newEnv(t *testing.T) *env {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, BaseDir, "releases"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return &env{
+		t:      t,
+		root:   root,
+		runner: &fakeRunner{fail: map[string]int{}},
+		clock:  &fakeClock{t: time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)},
+	}
+}
+
+func (e *env) switcher(mod ...func(*Config)) *Switcher {
+	cfg := Config{
+		Root:   e.root,
+		Runner: e.runner,
+		Out:    &e.out,
+		Now:    e.clock.now,
+		Sleep:  e.clock.sleep,
+	}
+	for _, m := range mod {
+		m(&cfg)
+	}
+	return New(cfg)
+}
+
+func (e *env) switchTo(id string, mod ...func(*Config)) int {
+	e.t.Helper()
+	code := e.switcher(mod...).Switch(context.Background(), id)
+	e.t.Logf("switch to %s: exit %d\n%s", id, code, e.out.String())
+	e.out.Reset()
+	return code
+}
+
+func (e *env) rollBack(which string) int {
+	e.t.Helper()
+	code := e.switcher().RollBack(context.Background(), which)
+	e.t.Logf("roll back to %s: exit %d\n%s", which, code, e.out.String())
+	e.out.Reset()
+	return code
+}
+
+func (e *env) relDir(id string) string {
+	return filepath.Join(e.root, BaseDir, "releases", id)
+}
+
+func (e *env) write(path, content string, perm fs.FileMode) {
+	e.t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		e.t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), perm); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+// release writes a release folder with the given package snapshot and its
+// SHA256SUMS, and returns its path.
+func (e *env) release(id, snapshot string) string {
+	e.t.Helper()
+	rid, err := ParseID(id)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	dir := e.relDir(id)
+	e.write(filepath.Join(dir, ManifestFile), fmt.Sprintf(
+		"id: %s\ncounter: %d\ncommit: %s0123456789\nbuilt_on: dev\ngo_version: go1.27.2\npackage_snapshot: %s\n",
+		id, rid.Counter, rid.Commit, snapshot), 0o644)
+	e.write(filepath.Join(dir, NoAICheckProgram), "#!/bin/sh\nexit 0\n", 0o755)
+	e.write(filepath.Join(dir, "bin/app"), "app of "+id+"\n", 0o755)
+	e.write(filepath.Join(dir, "etc/systemd/app.service"), "[Service]\n", 0o644)
+	e.write(filepath.Join(dir, ValidatorsList), "# units\nvalidate-units verify {release}/etc/systemd/app.service\nvalidate-rules -c\n", 0o644)
+	e.write(filepath.Join(dir, ReloadList), "reload-units\n", 0o644)
+	e.write(filepath.Join(dir, HealthCmd), "health-probe http://127.0.0.1/healthz\n", 0o644)
+	e.sums(dir)
+	return dir
+}
+
+// sums writes SHA256SUMS over every regular file of dir but the sums and the
+// signature.
+func (e *env) sums(dir string) {
+	e.t.Helper()
+	var lines []string
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() {
+			return err
+		}
+		rel, _ := filepath.Rel(dir, path)
+		if rel == SumsFile || rel == SignatureFile {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(data)
+		lines = append(lines, hex.EncodeToString(sum[:])+"  "+filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	sort.Strings(lines)
+	e.write(filepath.Join(dir, SumsFile), strings.Join(lines, "\n")+"\n", 0o644)
+}
+
+func (e *env) link(name string) string {
+	e.t.Helper()
+	target, err := os.Readlink(filepath.Join(e.root, BaseDir, name))
+	if errors.Is(err, fs.ErrNotExist) {
+		return ""
+	}
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return target
+}
+
+func (e *env) record() Record {
+	e.t.Helper()
+	data, err := os.ReadFile(filepath.Join(e.root, StateDir, DeployFile))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	var rec Record
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&rec); err != nil {
+		e.t.Fatal(err)
+	}
+	return rec
+}
+
+func (e *env) highest() string {
+	e.t.Helper()
+	data, err := os.ReadFile(filepath.Join(e.root, StateDir, HighestFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		return ""
+	}
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// digest is a digest of the whole tree below root: every path, its type and
+// mode, a file's content and a link's target.
+func digest(t *testing.T, root string) string {
+	t.Helper()
+	h := sha256.New()
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(root, path)
+		fmt.Fprintf(h, "%s\x00%v\x00", rel, info.Mode())
+		switch {
+		case info.Mode()&fs.ModeSymlink != 0:
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(h, "%s\x00", target)
+		case info.Mode().IsRegular():
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			h.Write(data)
+			h.Write([]byte{0})
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
