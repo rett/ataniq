@@ -1,12 +1,129 @@
 package switcher
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"path"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
 )
+
+// CountersLog is the log of the counters switches attempted, in the state
+// folder: one line "COUNTER ID TIME" per forward switch that used its
+// counter, appended and synced before highest-counter is written. It is
+// only ever appended to, so it keeps the evidence of a counter attempted
+// when deploy.json records a later rollback or failure, when the release
+// folder is removed, or when highest-counter is restored from an older
+// state.
+const CountersLog = "counters.log"
+
+// maxCountersLog bounds counters.log (some 70000 attempts).
+const maxCountersLog = 4 << 20
+
+// readCountersLog returns the highest counter counters.log holds; a missing
+// log is 0. A line cut short by a crash (the last one, without its
+// newline) is not an attempt; any other line that is not "COUNTER ID TIME",
+// ID of that counter and TIME in RFC 3339, is an error, and its text is
+// not repeated.
+func (s *Switcher) readCountersLog() (uint64, error) {
+	data, err := s.readStateFile(CountersLog, maxCountersLog)
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if i := bytes.LastIndexByte(data, '\n'); i+1 < len(data) {
+		data = data[:i+1]
+	}
+	var top uint64
+	for n, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
+		if line == "" && len(data) == 0 {
+			break
+		}
+		f := strings.Split(line, " ")
+		var c uint64
+		var id ReleaseID
+		var perr error
+		if len(f) != 3 {
+			perr = errors.New("fields")
+		} else if c, perr = strconv.ParseUint(f[0], 10, 64); perr == nil {
+			if id, perr = ParseID(f[1]); perr == nil && id.Counter != c {
+				perr = errors.New("counter")
+			}
+			if perr == nil {
+				_, perr = time.Parse(time.RFC3339, f[2])
+			}
+		}
+		if perr != nil {
+			return 0, failf(CodeStateInvalid, "%s line %d is not \"COUNTER ID TIME\"", CountersLog, n+1)
+		}
+		top = max(top, c)
+	}
+	return top, nil
+}
+
+// logCounter appends the attempt of id to counters.log and syncs it and
+// the state folder. The log is opened without following a link and must
+// be trusted as every state file is. A line a crash cut short (the end of
+// the log after its last newline) was never a whole record: it is cut off
+// first, so that it does not become a line that does not parse.
+func (s *Switcher) logCounter(id ReleaseID) error {
+	f, err := s.stateRoot.OpenFile(CountersLog, os.O_RDWR|os.O_APPEND|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if err := s.stateFileTrusted(CountersLog, info); err != nil {
+		return err
+	}
+	line := fmt.Sprintf("%d %s %s\n", id.Counter, id.Name, s.now())
+	size := info.Size()
+	if size+int64(len(line)) > maxCountersLog {
+		return fmt.Errorf("%s would be larger than %d bytes", CountersLog, maxCountersLog)
+	}
+	if size > 0 {
+		data := make([]byte, size)
+		if _, err := f.ReadAt(data, 0); err != nil {
+			return err
+		}
+		if whole := int64(bytes.LastIndexByte(data, '\n') + 1); whole != size {
+			if err := f.Truncate(whole); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := f.WriteString(line); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	return syncRoot(s.stateRoot)
+}
+
+// counterLogged makes sure counters.log holds the attempt of id: it is
+// appended when the log holds no counter as high.
+func (s *Switcher) counterLogged(id ReleaseID) error {
+	top, err := s.readCountersLog()
+	if err != nil {
+		return err
+	}
+	if top >= id.Counter {
+		return nil
+	}
+	return s.logCounter(id)
+}
 
 // maxReleaseEntries bounds the entries of releases/ the evidence reads.
 const maxReleaseEntries = 10000
@@ -29,8 +146,9 @@ func (e *evidence) see(n uint64, source string) {
 
 // counterEvidence gathers what the host shows of the counters it used or
 // holds, besides highest-counter: the releases current and previous point
-// at and the counter of the last forward switch deploy.json records as
-// having used its counter (the counters used), and, with releases, every
+// at, the counter of the last forward switch deploy.json records as having
+// used its counter and the highest of counters.log (the counters used),
+// and, with releases, every
 // release folder in releases/ but skip (the counter in its name and in its
 // MANIFEST, when that can be read). A forward switch must be above all of
 // it. What cannot be read (the links, deploy.json, the folder of releases)
@@ -59,6 +177,11 @@ func (s *Switcher) counterEvidence(skip string, releases bool) (evidence, error)
 		if rec.CounterUsed && !rec.Rollback {
 			ev.see(rec.Counter, DeployFile)
 		}
+		top, err := s.readCountersLog()
+		if err != nil {
+			return ev, err
+		}
+		ev.see(top, CountersLog)
 	}
 	if !releases {
 		return ev, nil

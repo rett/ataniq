@@ -8,6 +8,7 @@
 //	ah-switch [--root DIR [--allow-exec]] [--dry] recover --counter N
 //	ah-switch [--root DIR [--allow-exec]] [--dry] recover --package-state SNAPSHOT
 //	ah-switch [--root DIR [--allow-exec]] [--dry] recover --services-stopped
+//	ah-switch [--root DIR [--allow-exec]] [--dry] recover --discard-journal TXN
 //
 // Exit codes: 0 ok, 1 failed (the outcome is recorded), 2 usage, 3 locked.
 package main
@@ -34,6 +35,7 @@ const usage = `usage: ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manu
        ah-switch [--root DIR [--allow-exec]] [--dry] recover --counter N
        ah-switch [--root DIR [--allow-exec]] [--dry] recover --package-state SNAPSHOT
        ah-switch [--root DIR [--allow-exec]] [--dry] recover --services-stopped
+       ah-switch [--root DIR [--allow-exec]] [--dry] recover --discard-journal TXN
 `
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -49,6 +51,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	counter := fs.Uint64("counter", 0, "recover: the highest counter this host ever switched to")
 	stopped := fs.Bool("services-stopped", false, "recover: the decision services are stopped (settles a switch whose stop commands failed)")
 	pkgState := fs.String("package-state", "", "recover: the package snapshot the host is at, after a package step that did not finish")
+	discard := fs.String("discard-journal", "", "recover: set aside the journal of this transaction (as status shows it), which does not match the host")
 	bad := func(format string, a ...any) int {
 		fmt.Fprintf(stderr, "ah-switch: "+format+"\n", a...)
 		fmt.Fprint(stderr, usage)
@@ -92,7 +95,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(pos) == 1 && pos[0] == "status" && !set["rollback-to"] {
-		for _, name := range []string{"dry", "mode", "noaicheck", "from", "allow-exec", "counter", "services-stopped", "package-state"} {
+		for _, name := range []string{"dry", "mode", "noaicheck", "from", "allow-exec", "counter", "services-stopped", "package-state", "discard-journal"} {
 			if set[name] {
 				return bad("status takes only --root")
 			}
@@ -102,30 +105,34 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(pos) == 1 && pos[0] == "recover" && !set["rollback-to"] {
 		for _, name := range []string{"mode", "noaicheck", "from"} {
 			if set[name] {
-				return bad("recover takes only --root, --allow-exec, --dry and one of --counter N, --package-state SNAPSHOT and --services-stopped")
+				return bad("recover takes only --root, --allow-exec, --dry and one of --counter N, --package-state SNAPSHOT, --services-stopped and --discard-journal TXN")
 			}
 		}
 		forms := 0
-		for _, name := range []string{"counter", "services-stopped", "package-state"} {
+		for _, name := range []string{"counter", "services-stopped", "package-state", "discard-journal"} {
 			if set[name] {
 				forms++
 			}
 		}
 		if forms != 1 {
-			return bad("recover needs one of --counter N, --package-state SNAPSHOT and --services-stopped")
+			return bad("recover needs one of --counter N, --package-state SNAPSHOT, --services-stopped and --discard-journal TXN")
+		}
+		if set["discard-journal"] && *discard == "" {
+			return bad("--discard-journal needs the id of a transaction")
 		}
 		o := switcher.RecoverOptions{
 			Counter: *counter, SetCounter: set["counter"],
 			ServicesStopped: set["services-stopped"] && *stopped,
 			PackageState:    *pkgState, SetPackageState: set["package-state"],
+			DiscardJournal: *discard,
 		}
 		if set["services-stopped"] && !*stopped {
 			return bad("--services-stopped takes no value")
 		}
 		return switcher.New(switcher.Config{Root: rootAbs, Dry: *dry, AllowExec: *allowExec, Out: stdout, Err: stderr}).Recover(context.Background(), o)
 	}
-	if set["counter"] || set["services-stopped"] || set["package-state"] {
-		return bad("--counter, --package-state and --services-stopped are only for recover")
+	if set["counter"] || set["services-stopped"] || set["package-state"] || set["discard-journal"] {
+		return bad("--counter, --package-state, --services-stopped and --discard-journal are only for recover")
 	}
 
 	switch {

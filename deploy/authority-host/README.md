@@ -39,6 +39,7 @@ switch runs it.
 /var/lib/authority-host/
   deploy.json             the outcome of the last switch
   highest-counter         the highest counter a switch ever attempted
+  counters.log            every counter a switch attempted, appended
   txn.json                the journal of the transaction under way
   switch.lock             the lock of a running switch
   imported/<id>           the record of the import that made releases/<id>
@@ -52,8 +53,8 @@ switch runs it.
   root, as in tests, the folders of the user running it are accepted too.)
   It creates the state folder, mode 0755, when it is missing, holds each
   folder open while it works, and opens the lock, `highest-counter`,
-  `deploy.json` and `txn.json` relative to that folder without following a
-  link. Each of them must be a regular file with one link, owned by root (or
+  `counters.log`, `deploy.json` and `txn.json` relative to that folder
+  without following a link. Each of them must be a regular file with one link, owned by root (or
   that user) and not writable by its group or by others, and of a bounded
   size: a folder made safe after the fact can still hold a file another
   account can write or hold the lock of, so the files are checked as the
@@ -252,6 +253,7 @@ ah-switch [--root DIR] status
 ah-switch [--root DIR [--allow-exec]] [--dry] recover --counter N
 ah-switch [--root DIR [--allow-exec]] [--dry] recover --package-state SNAPSHOT
 ah-switch [--root DIR [--allow-exec]] [--dry] recover --services-stopped
+ah-switch [--root DIR [--allow-exec]] [--dry] recover --discard-journal TXN
 ```
 
 - `--root DIR` is the folder that holds `opt/authority-host`,
@@ -292,9 +294,10 @@ ah-switch [--root DIR [--allow-exec]] [--dry] recover --services-stopped
   3, and while it reads, a switch is refused with exit 3. It prints all of
   it or nothing, and it changes nothing.
 - `recover --counter N` writes a missing or broken `highest-counter`,
-  `recover --package-state SNAPSHOT` settles an unknown package state, and
+  `recover --package-state SNAPSHOT` settles an unknown package state,
   `recover --services-stopped` settles a transaction whose stop commands
-  failed; see "The journal and recover".
+  failed, and `recover --discard-journal TXN` sets aside a journal that
+  does not match the host; see "The journal and recover".
 
 Flags may come before or after the id.
 
@@ -323,22 +326,33 @@ the package state is unknown).
    (`highest-counter`) and above every counter the host shows besides it:
    the releases `current` and `previous` point at, the counter of the last
    forward switch `deploy.json` records as having used its counter
-   (`counter_used`), and every other release folder in `releases/` (the
-   counter of its name, and of its `MANIFEST` when that can be read), so a
-   `highest-counter` restored from an older state cannot admit an old
-   release again. A rollback skips this rule but accepts only the release
+   (`counter_used`), the highest counter of `counters.log`, and every
+   other release folder in `releases/` (the counter of its name, and of
+   its `MANIFEST` when that can be read), so a `highest-counter` restored
+   from an older state cannot admit an old release again.
+
+   `counters.log` holds one line `COUNTER ID TIME` per forward switch that
+   used its counter, appended and synced (with its folder) before
+   `highest-counter` is written, and checked like the other state files.
+   It is only ever appended to, so it keeps the evidence of an attempted
+   counter that nothing else shows any more: `deploy.json` recording a
+   later rollback or failure, the release folder removed, or
+   `highest-counter` restored from an older copy. A line cut short by a
+   crash (the end of the file after its last newline) is not an attempt
+   and is cut off before the next line is appended; any other line that
+   does not parse stops the switch, as unreadable evidence does. A rollback skips this rule but accepts only the release
    `previous` points at, and only when that release folder is there.
 
    Before any of the steps, and before anything is recorded, a switch or
    rollback checks `highest-counter` itself against the counters the host
-   used (the links and `deploy.json`): one that cannot be read
+   used (the links, `deploy.json` and `counters.log`): one that cannot be read
    (`counter-invalid`), one missing on a host that used counters
    (`counter-missing`; none means 0 only on a host that has no `current`
    yet), or one below a counter used (`counter-invalid`) stops it, with
    nothing recorded, so that `deploy.json` stays as evidence for `recover`.
-   What the evidence needs and cannot read (a link, `deploy.json`, the
-   folder of releases) stops it the same way; it is never taken as no
-   evidence.
+   What the evidence needs and cannot read (a link, `deploy.json`,
+   `counters.log`, the folder of releases) stops it the same way; it is
+   never taken as no evidence.
 3. **packages**: when the manifest's `package_snapshot` differs from the one
    recorded in `deploy.json`, the release's
    `bin/ah-pkgstep --release DIR --from OLD --to NEW` runs, within 30 minutes
@@ -393,7 +407,8 @@ the package state is unknown).
    30 seconds each.
 6. **switch**: first the journal `txn.json` says `links` (and, on a forward
    switch, that the counter is used) and is synced with its folder; on a
-   forward switch `highest-counter` is then set to the new counter: it
+   forward switch the counter is then appended to `counters.log` and
+   `highest-counter` is set to the new counter: it
    holds the highest counter ever attempted, so a release whose switch got
    this far cannot be switched to again, even after it failed or was put
    back; build the next counter. Then `previous` is pointed at the old
@@ -492,18 +507,35 @@ order:
 | `activating` | The links point at the new release; its reload, health and post-activation check run | Verifies the release again, makes and syncs both links again, runs its reload list, health check and post-activation check again: `ok` (`completed after an interruption`), or goes back as a failed health check does |
 | `restoring` | Going back to the old release | Does all of going back again, from putting the links back |
 | `stopping` | The decision services are being stopped | Runs every stop list again |
-| `done` | The outcome is decided | Syncs the link folder, writes `highest-counter` when the counter was used, records the outcome and removes the journal |
+| `done` | The outcome is decided | Syncs the link folder, appends to `counters.log` (when it lacks the counter) and writes `highest-counter` when the counter was used, records the outcome and removes the journal |
 
 A transaction that dies (a crash, a power loss, a kill) leaves `txn.json`.
 Every switch, rollback and `recover` takes the lock and resumes it from its
 phase before anything else: each phase is redone from its start, which is
 safe to do twice, and where the links point never decides what happens.
-`status` shows it (`interrupted: ... in phase ...`) and changes nothing,
-and `--dry` refuses to go on while it is there. A resume verifies releases
-with the trust the transaction began with as well as the policy of the
-time, so a signed transaction is never finished, or gone back from, as a
-manual one. A journal that does not parse, names an unknown phase or is not
-trusted is never guessed at: the command fails and names it.
+`status` shows it (`interrupted: ... in phase ... (transaction TXN)`) and
+changes nothing, and `--dry` refuses to go on while it is there. A resume
+verifies releases with the trust the transaction began with as well as the
+policy of the time, so a signed transaction is never finished, or gone
+back from, as a manual one. A journal that does not parse, names an
+unknown phase or is not trusted is never guessed at: the command fails and
+names it.
+
+Before anything of a journal is resumed, it must match the host: in its
+`packages` phase `current` and `previous` must be the journal's old
+targets, in any later phase each must be its old target or its new one,
+and a forward journal's counter must not be below the counters the host
+attempted (`highest-counter`, `counters.log`, the last forward switch of
+`deploy.json`, the releases the links name). A journal that does not
+match (one restored from a backup, or written by hand) is stale: resuming
+it would move the links to its releases. It stays unresolved: the command
+prints `reconcile: unresolved: ...`, runs and moves nothing, and exits 1,
+and so does every later command until the owner, having looked at the
+host, runs `ah-switch recover --discard-journal TXN` with the id `status`
+shows. That renames the journal to `txn-TXN.discarded` in the state
+folder (kept as evidence), resumes nothing of it and prints the time; it
+refuses a journal that matches the host (any command resumes that) or
+another id.
 
 When the resume ends with the decision services stopped, the command that
 resumed it does nothing else: a new switch never starts on its own after a
@@ -625,7 +657,8 @@ see its messages. The text of a broken state file is not repeated either.
 | `--rollback-to` when `previous` points at a missing release | Refused at counter (`no-previous`) |
 | Crash or power loss during the switch | `current` points at a whole release, the old or the new one, and the journal is there; the next command resumes its phase (see "The journal and recover") |
 | The same request run again after its transaction was settled by another command, or after its command died between removing the journal and printing the result | Reports that outcome once and does nothing else; a rollback retried as `previous` goes to no other release; `--dry` only shows it |
-| `highest-counter` missing or broken while `current` exists, or below a counter the links or `deploy.json` show was used | Refused before anything, nothing recorded (`counter-missing`, `counter-invalid`); run `recover --counter N` |
+| `highest-counter` missing or broken while `current` exists, or below a counter the links, `deploy.json` or `counters.log` show was used | Refused before anything, nothing recorded (`counter-missing`, `counter-invalid`); run `recover --counter N` |
+| A journal whose links or counter do not match the host (restored from a backup) | `reconcile: unresolved`, exit 1; nothing resumed, run or moved until `recover --discard-journal TXN` |
 | A release folder of a higher counter is in `releases/` | Refused at counter (`counter-not-above`); build a higher counter |
 | A second switch while one runs | Exit 3; nothing done |
 

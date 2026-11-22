@@ -837,3 +837,90 @@ func TestResponseLostAfterJournalRemoved(t *testing.T) {
 		t.Errorf("record of a reported switch: %+v", rec)
 	}
 }
+
+// TestStaleJournalUnresolved: a journal that does not match the host (its
+// links are neither the journal's old state nor its new one, or a forward
+// journal whose counter is below the counters the host attempted since) is
+// stale, such as one restored from a backup: it is never resumed, nothing
+// is run or moved, and only recover --discard-journal TXN, naming it,
+// sets it aside.
+func TestStaleJournalUnresolved(t *testing.T) {
+	journalPath := func(e *env) string { return filepath.Join(e.root, StateDir, JournalFile) }
+	t.Run("links moved on", func(t *testing.T) {
+		e := active(t)
+		e.release(rel3, "2026-11-01")
+		e.crashAt(CrashActivating, false, rel3)
+		old, _ := os.ReadFile(journalPath(e))
+		j, _ := e.journal()
+		if code := e.recover(resumeOnly); code != ExitFailed {
+			t.Fatalf("resume: exit %d", code)
+		}
+		e.release("0004-ddddddd", "2026-11-01")
+		if code := e.switchTo("0004-ddddddd"); code != ExitOK {
+			t.Fatalf("exit %d", code)
+		}
+		// The old journal comes back.
+		e.write(journalPath(e), string(old), 0o600)
+		e.release("0005-eeeeeee", "2026-11-01")
+		e.runner.reset()
+		if code := e.switchTo("0005-eeeeeee"); code != ExitFailed {
+			t.Fatalf("exit %d", code)
+		}
+		if !strings.Contains(e.last, "does not match the host") || !strings.Contains(e.last, "recover --discard-journal "+j.Txn) {
+			t.Errorf("output:\n%s", e.last)
+		}
+		e.links("0004-ddddddd", rel3)
+		if len(e.runner.calls) != 0 {
+			t.Errorf("commands run: %v", e.runner.calls)
+		}
+		if _, ok := e.journal(); !ok {
+			t.Fatalf("the stale journal was removed")
+		}
+		if code := e.recover(RecoverOptions{DiscardJournal: strings.Repeat("0", 32)}); code != ExitFailed {
+			t.Errorf("discard of another txn: exit %d", code)
+		}
+		if code := e.recover(RecoverOptions{DiscardJournal: j.Txn}); code != ExitOK {
+			t.Fatalf("discard: exit %d\n%s", code, e.last)
+		}
+		e.noJournal()
+		if kept, err := os.ReadFile(filepath.Join(e.root, StateDir, "txn-"+j.Txn+".discarded")); err != nil || string(kept) != string(old) {
+			t.Errorf("the discarded journal is not kept: %v", err)
+		}
+		if code := e.switchTo("0005-eeeeeee"); code != ExitOK {
+			t.Fatalf("after the discard: exit %d", code)
+		}
+	})
+	t.Run("counter below the floor", func(t *testing.T) {
+		e := active(t)
+		e.release(rel3, "2026-11-01")
+		e.crashAt(CrashLinks, false, rel3)
+		// Counters attempted since, as far as the host shows.
+		e.write(filepath.Join(e.root, StateDir, HighestFile), "5\n", 0o644)
+		f, _ := os.OpenFile(filepath.Join(e.root, StateDir, CountersLog), os.O_APPEND|os.O_WRONLY, 0)
+		f.WriteString("5 0005-eeeeeee 2026-11-21T12:00:00Z\n")
+		f.Close()
+		e.runner.reset()
+		if code := e.recover(resumeOnly); code != ExitFailed {
+			t.Fatalf("exit %d", code)
+		}
+		if !strings.Contains(e.last, "below 5") {
+			t.Errorf("output:\n%s", e.last)
+		}
+		if _, ok := e.journal(); !ok {
+			t.Fatalf("the stale journal was settled")
+		}
+		e.links(rel2, rel1)
+	})
+	t.Run("a matching journal is not discarded", func(t *testing.T) {
+		e := active(t)
+		e.release(rel3, "2026-11-01")
+		e.crashAt(CrashCurrent, false, rel3)
+		j, _ := e.journal()
+		if code := e.recover(RecoverOptions{DiscardJournal: j.Txn}); code != ExitFailed || !strings.Contains(e.last, "matches the host") {
+			t.Errorf("exit %d\n%s", code, e.last)
+		}
+		if _, ok := e.journal(); !ok {
+			t.Errorf("a matching journal was discarded")
+		}
+	})
+}

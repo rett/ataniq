@@ -223,6 +223,8 @@ func TestStateFilesMustBeTrusted(t *testing.T) {
 		{"counter writable by its group", func(e *env) { os.Chmod(state(e, HighestFile), 0o664) }, nil},
 		{"counter with a second link", func(e *env) { os.Link(state(e, HighestFile), filepath.Join(e.root, "counter-copy")) }, nil},
 		{"deploy.json writable by others", func(e *env) { os.Chmod(state(e, DeployFile), 0o646) }, nil},
+		{"counters.log writable by its group", func(e *env) { os.Chmod(state(e, CountersLog), 0o664) }, nil},
+		{"counters.log with a second link", func(e *env) { os.Link(state(e, CountersLog), filepath.Join(e.root, "log-copy")) }, nil},
 		{"deploy.json with a second link", func(e *env) { os.Link(state(e, DeployFile), filepath.Join(e.root, "deploy-copy")) }, nil},
 		{"lock writable by others", func(e *env) { os.Chmod(state(e, LockFile), 0o606) }, nil},
 		{"lock with a second link", func(e *env) { os.Link(state(e, LockFile), filepath.Join(e.root, "lock-copy")) }, nil},

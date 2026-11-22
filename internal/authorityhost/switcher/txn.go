@@ -410,6 +410,10 @@ func (s *Switcher) settle(t *txn) (int, bool) {
 		return unresolved("the link folder was not synced", err)
 	}
 	if t.j.CounterUsed {
+		id, _ := ParseID(t.j.ID)
+		if err := s.counterLogged(id); err != nil {
+			return unresolved(CountersLog+" not written", err)
+		}
 		if err := s.highestAtLeast(t.j.Counter); err != nil {
 			return unresolved(HighestFile+" not written", err)
 		}

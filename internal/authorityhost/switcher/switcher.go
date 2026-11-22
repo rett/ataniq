@@ -9,7 +9,7 @@
 //	opt/authority-host/releases/<id>/   MANIFEST, SHA256SUMS, [SHA256SUMS.sig], bin/, etc/, share/
 //	opt/authority-host/current  -> releases/<id>
 //	opt/authority-host/previous -> releases/<id>
-//	var/lib/authority-host/deploy.json, highest-counter, switch.lock
+//	var/lib/authority-host/deploy.json, highest-counter, counters.log, switch.lock
 package switcher
 
 import (
@@ -536,11 +536,17 @@ func (s *Switcher) activateNew(ctx context.Context, t *txn, newTarget string) in
 		return ExitFailed
 	}
 	if t.forward() {
-		if err := s.highestAtLeast(t.j.Counter); err != nil {
+		// The log first: it is the evidence no later record erases.
+		id, _ := ParseID(t.j.ID)
+		err := s.logCounter(id)
+		if err == nil {
+			err = s.highestAtLeast(t.j.Counter)
+		}
+		if err != nil {
 			code, _ := s.drive(ctx, t)
 			return code
 		}
-		s.step(6, "highest counter %d (attempted)", t.j.Counter)
+		s.step(6, "highest counter %d (attempted, and in %s)", t.j.Counter, CountersLog)
 	}
 	if s.crash(CrashCounter) != nil {
 		return ExitFailed
@@ -1198,7 +1204,7 @@ func (s *Switcher) status(w io.Writer) error {
 	}
 	if pending {
 		t := &txn{j: j}
-		fmt.Fprintf(w, "interrupted: %s %s in phase %s; the next switch, rollback or recover resumes it\n", t.kind(), j.ID, j.Phase)
+		fmt.Fprintf(w, "interrupted: %s %s in phase %s (transaction %s); the next switch, rollback or recover resumes it\n", t.kind(), j.ID, j.Phase, j.Txn)
 		if j.StopFailures != "" {
 			fmt.Fprintf(w, "stop failures: %s; fix their cause and run a command again, or run ah-switch recover --services-stopped once the decision services are stopped\n", j.StopFailures)
 		}
