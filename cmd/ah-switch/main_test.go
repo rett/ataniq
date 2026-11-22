@@ -88,13 +88,15 @@ func write(t *testing.T, path, content string, perm fs.FileMode) {
 	}
 }
 
-// release writes a release whose no-AI check and health command are
-// scripts, with its SHA256SUMS.
-func release(t *testing.T, root, id string, counter int, health string) {
+// hostStops writes the host's own stop list, which every switch requires,
+// as the one command prog.
+func hostStops(t *testing.T, root, prog string) {
 	t.Helper()
-	releaseIn(t, filepath.Join(root, switcher.BaseDir, "releases", id), id, counter, health)
+	write(t, filepath.Join(root, switcher.PolicyDir, switcher.HostStopList), prog+"\n", 0o644)
 }
 
+// releaseIn writes into dir a release whose no-AI check and health command
+// are scripts, with its SHA256SUMS: an incoming folder, imported with --from.
 func releaseIn(t *testing.T, dir, id string, counter int, health string) {
 	t.Helper()
 	commit := strings.SplitN(id, "-", 2)[1]
@@ -122,12 +124,15 @@ func releaseIn(t *testing.T, dir, id string, counter int, health string) {
 
 func TestSwitchRollbackAndStatus(t *testing.T) {
 	root := t.TempDir()
+	t.Cleanup(func() { makeWritableAll(root) })
 	health := filepath.Join(t.TempDir(), "health")
 	write(t, health, "#!/bin/sh\nexit 0\n", 0o755)
-	release(t, root, "0001-aaaaaaa", 1, health)
-	release(t, root, "0002-bbbbbbb", 2, health)
+	hostStops(t, root, health)
+	os.MkdirAll(filepath.Join(root, switcher.BaseDir, "releases"), 0o755)
+	in := t.TempDir()
+	releaseIn(t, filepath.Join(in, "0001-aaaaaaa"), "0001-aaaaaaa", 1, health)
 
-	code, out, errOut := call("--root", root, "--dry", "0001-aaaaaaa")
+	code, out, errOut := call("--root", root, "--dry", "--from", filepath.Join(in, "0001-aaaaaaa"), "0001-aaaaaaa")
 	if code != switcher.ExitOK || !strings.Contains(out, "would point current at releases/0001-aaaaaaa") {
 		t.Fatalf("dry: exit %d\n%s%s", code, out, errOut)
 	}
@@ -135,14 +140,17 @@ func TestSwitchRollbackAndStatus(t *testing.T) {
 		t.Fatalf("--dry made the state folder")
 	}
 	fakeNFT(t)
-	for _, id := range []string{"0001-aaaaaaa", "0002-bbbbbbb"} {
-		code, out, errOut := call(id, "--root", root, "--allow-exec")
+	for i, id := range []string{"0001-aaaaaaa", "0002-bbbbbbb"} {
+		if i > 0 {
+			releaseIn(t, filepath.Join(in, id), id, i+1, health)
+		}
+		code, out, errOut := call(id, "--root", root, "--allow-exec", "--from", filepath.Join(in, id))
 		if code != switcher.ExitOK {
 			t.Fatalf("switch to %s: exit %d\n%s%s", id, code, out, errOut)
 		}
 	}
 	code, out, _ = call("--root", root, "--allow-exec", "0001-aaaaaaa")
-	if code != switcher.ExitFailed || !strings.Contains(out, "not above the highest ever activated") {
+	if code != switcher.ExitFailed || !strings.Contains(out, "not above the highest ever attempted") {
 		t.Errorf("lower counter: exit %d\n%s", code, out)
 	}
 	code, out, _ = call("--root", root, "--allow-exec", "--rollback-to", "previous")
@@ -175,6 +183,7 @@ func TestImportFrom(t *testing.T) {
 	os.MkdirAll(filepath.Join(root, switcher.BaseDir, "releases"), 0o755)
 	health := filepath.Join(t.TempDir(), "health")
 	write(t, health, "#!/bin/sh\nexit 0\n", 0o755)
+	hostStops(t, root, health)
 	incoming := t.TempDir()
 	releaseIn(t, filepath.Join(incoming, "0001-aaaaaaa"), "0001-aaaaaaa", 1, health)
 	t.Chdir(incoming)
@@ -189,25 +198,78 @@ func TestImportFrom(t *testing.T) {
 	}
 }
 
+func makeWritableAll(root string) {
+	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			os.Chmod(path, 0o755)
+		}
+		return nil
+	})
+}
+
 // TestRecover writes a missing highest-counter back.
 func TestRecover(t *testing.T) {
 	root := t.TempDir()
+	t.Cleanup(func() { makeWritableAll(root) })
 	health := filepath.Join(t.TempDir(), "health")
 	write(t, health, "#!/bin/sh\nexit 0\n", 0o755)
-	release(t, root, "0001-aaaaaaa", 1, health)
-	release(t, root, "0002-bbbbbbb", 2, health)
+	hostStops(t, root, health)
+	os.MkdirAll(filepath.Join(root, switcher.BaseDir, "releases"), 0o755)
+	in := t.TempDir()
+	releaseIn(t, filepath.Join(in, "0001-aaaaaaa"), "0001-aaaaaaa", 1, health)
+	releaseIn(t, filepath.Join(in, "0002-bbbbbbb"), "0002-bbbbbbb", 2, health)
 	fakeNFT(t)
-	if code, out, errOut := call("--root", root, "--allow-exec", "0001-aaaaaaa"); code != switcher.ExitOK {
+	if code, out, errOut := call("--root", root, "--allow-exec", "--from", filepath.Join(in, "0001-aaaaaaa"), "0001-aaaaaaa"); code != switcher.ExitOK {
 		t.Fatalf("switch: exit %d\n%s%s", code, out, errOut)
 	}
 	os.Remove(filepath.Join(root, switcher.StateDir, switcher.HighestFile))
-	if code, out, _ := call("--root", root, "--allow-exec", "0002-bbbbbbb"); code != switcher.ExitFailed || !strings.Contains(out, "recover --counter N") {
+	if code, out, _ := call("--root", root, "--allow-exec", "--from", filepath.Join(in, "0002-bbbbbbb"), "0002-bbbbbbb"); code != switcher.ExitFailed || !strings.Contains(out, "recover --counter N") {
 		t.Fatalf("switch without a counter: exit %d\n%s", code, out)
+	}
+	if code, out, _ := call("--root", root, "--allow-exec", "recover", "--counter", "0"); code != switcher.ExitFailed || !strings.Contains(out, "below 1") {
+		t.Fatalf("recover below the evidence: exit %d\n%s", code, out)
 	}
 	if code, out, errOut := call("--root", root, "--allow-exec", "recover", "--counter", "1"); code != switcher.ExitOK {
 		t.Fatalf("recover: exit %d\n%s%s", code, out, errOut)
 	}
-	if code, out, errOut := call("--root", root, "--allow-exec", "0002-bbbbbbb"); code != switcher.ExitOK {
+	if code, out, errOut := call("--root", root, "--allow-exec", "--from", filepath.Join(in, "0002-bbbbbbb"), "0002-bbbbbbb"); code != switcher.ExitOK {
 		t.Fatalf("switch after recover: exit %d\n%s%s", code, out, errOut)
+	}
+}
+
+// TestDiagnosticsEscaped: what was typed reaches the diagnostics only
+// escaped: an unknown flag, a bad flag value.
+func TestDiagnosticsEscaped(t *testing.T) {
+	root := t.TempDir()
+	for _, args := range [][]string{
+		{"--root", root, "--no\x1b[2J-such", "0001-aaaaaaa"},
+		{"--root", root, "--allow-exec", "recover", "--counter", "x\x1b[2J\ny"},
+		{"--root", root, "--rollback-to", "previous\x1b[2J"},
+		{"--root", root, "--mode", "x\x1b[2J", "0001-aaaaaaa"},
+	} {
+		code, out, errOut := call(args...)
+		if code != switcher.ExitUsage {
+			t.Errorf("%q: exit %d", args, code)
+		}
+		if strings.ContainsAny(out+errOut, "\x1b") {
+			t.Errorf("%q: a control byte was passed on: %q", args, errOut)
+		}
+	}
+}
+
+// TestRecoverForms: recover takes exactly one of its forms.
+func TestRecoverForms(t *testing.T) {
+	root := t.TempDir()
+	for _, args := range [][]string{
+		{"--root", root, "recover", "--counter", "3", "--services-stopped"},
+		{"--root", root, "recover", "--counter", "3", "--package-state", "s"},
+		{"--root", root, "recover", "--package-state", "s", "--services-stopped"},
+		{"--root", root, "--package-state", "s", "0001-aaaaaaa"},
+		{"--root", root, "--services-stopped", "0001-aaaaaaa"},
+		{"--root", root, "--package-state", "s", "status"},
+	} {
+		if code, _, errOut := call(args...); code != switcher.ExitUsage {
+			t.Errorf("%q: exit %d, %q", args, code, errOut)
+		}
 	}
 }

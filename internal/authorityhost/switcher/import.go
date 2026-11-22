@@ -42,10 +42,13 @@ func openIncoming(from string) (*os.Root, error) {
 // no set-id or sticky bit, no extended attribute and no ACL copied, owned by
 // root:root when the switch runs as root. Each file is opened without
 // following a link and without blocking, checked with fstat (a regular file
-// with one link, the one that was listed) and read to its size; one that
-// changes while it is read is refused. It returns the number of files.
+// with one link, the very file the walk listed, of the size it listed) and
+// read to that size; one that changes while it is read is refused. It
+// returns the number of files.
 //
-// The walk and the copy count against the switch's budget.
+// The walk counts the entries against the switch's budget, and the copy
+// charges every byte it writes to the budget's total as it writes it: the
+// copy stops at the limit, and the caller removes the partial copy.
 func (s *Switcher) importTree(src *os.Root, name string) (int, error) {
 	if err := s.relRoot.Mkdir(name, 0o700); err != nil {
 		return 0, err
@@ -61,28 +64,32 @@ func (s *Switcher) importTree(src *os.Root, name string) (int, error) {
 		if err := entryKind(rel, info); err != nil {
 			return err
 		}
-		size := int64(0)
-		if info.Mode().IsRegular() {
-			size = info.Size()
-		}
-		if err := t.entry(rel, size); err != nil {
+		if err := t.entry(rel, 0); err != nil {
 			return err
 		}
 		if info.IsDir() {
 			return dst.Mkdir(rel, 0o700)
 		}
 		files++
-		return s.copyFile(src, dst, rel)
+		return s.copyFile(src, dst, rel, info, &t)
 	})
 	return files, err
 }
 
-func (s *Switcher) copyFile(src, dst *os.Root, rel string) error {
+// copyFile copies the file rel of src, which the walk saw as listed, into
+// dst, charging the bytes written to t.
+func (s *Switcher) copyFile(src, dst *os.Root, rel string, listed fs.FileInfo, t *tally) error {
+	if importHook != nil {
+		importHook("open", rel)
+	}
 	in, info, err := openFileIn(src, rel)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
+	if !os.SameFile(listed, info) || info.Size() != listed.Size() {
+		return failf(CodeFileChanged, "%s changed between the walk and the copy", q(rel))
+	}
 	if links(info) != 1 {
 		return failf(CodeBadEntry, "%s has more than one hard link", q(rel))
 	}
@@ -94,9 +101,13 @@ func (s *Switcher) copyFile(src, dst *os.Root, rel string) error {
 		return err
 	}
 	defer out.Close()
-	n, err := io.Copy(out, budgetReader{io.LimitReader(in, info.Size()+1), s.budget})
+	if importHook != nil {
+		importHook("copy", rel)
+	}
+	n, err := io.Copy(chargedWriter{out, t}, budgetReader{io.LimitReader(in, info.Size()+1), s.budget})
 	if err != nil {
-		if code, _ := codeOf(err); code == CodeTimeBudget {
+		switch code, _ := codeOf(err); code {
+		case CodeTimeBudget, CodeTooLarge:
 			return err
 		}
 		return failf(CodeReadFailed, "%s: %s", q(rel), q(err.Error()))
@@ -118,6 +129,24 @@ func (s *Switcher) copyFile(src, dst *os.Root, rel string) error {
 		return err
 	}
 	return out.Sync()
+}
+
+// importHook, when a test sets it, is called before a file of an import is
+// opened ("open") and before it is copied ("copy").
+var importHook func(stage, rel string)
+
+// chargedWriter charges what it is asked to write to a tally before it
+// writes it, and writes nothing once the tally's total is over its limit.
+type chargedWriter struct {
+	w io.Writer
+	t *tally
+}
+
+func (cw chargedWriter) Write(p []byte) (int, error) {
+	if err := cw.t.charge(int64(len(p))); err != nil {
+		return 0, err
+	}
+	return cw.w.Write(p)
 }
 
 // sealTree makes the imported folder name of releases/ read-only: it removes

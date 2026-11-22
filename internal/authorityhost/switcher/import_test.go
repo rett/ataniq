@@ -61,8 +61,8 @@ func TestImport(t *testing.T) {
 		t.Errorf("the release changed with the incoming folder: %q", data)
 	}
 	// The checks and programs ran on the copy.
-	if want := checkCall(filepath.Join(dir, NoAICheckProgram), e.root, dir); e.runner.calls[1] != want {
-		t.Errorf("check command %q, want %q", e.runner.calls[1], want)
+	if want := preCall(filepath.Join(dir, NoAICheckProgram), e.root, dir); e.runner.calls[0] != want {
+		t.Errorf("check command %q, want %q", e.runner.calls[0], want)
 	}
 	if _, err := os.Lstat(filepath.Join(e.root, BaseDir, "releases", importPrefix+rel3)); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("the import folder was left: %v", err)
@@ -182,7 +182,7 @@ func TestImportDry(t *testing.T) {
 	if digest(t, e.root) != before {
 		t.Errorf("a dry run changed the root")
 	}
-	if !strings.Contains(e.last, "step 0/8 import: would copy") {
+	if !strings.Contains(e.last, "step 0/9 import: would copy") {
 		t.Errorf("output:\n%s", e.last)
 	}
 	os.WriteFile(filepath.Join(in, "bin/app"), []byte("changed\n"), 0o755)
@@ -288,5 +288,70 @@ func TestLimits(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestImportChargesWrittenBytes: a file that is replaced or grows between
+// the walk and the copy is refused, one that grows while it is copied is
+// refused after the one byte more its read allows, and the bytes written
+// are what is charged to the total: one byte below the release's size stops
+// the copy. The partial copy is removed each time.
+func TestImportChargesWrittenBytes(t *testing.T) {
+	for _, tc := range []struct {
+		name, stage, code string
+		change            func(path string)
+		less              int64
+	}{
+		{"replaced", "open", CodeFileChanged, func(path string) {
+			data, _ := os.ReadFile(path)
+			os.Remove(path)
+			os.WriteFile(path, data, 0o644)
+		}, 0},
+		{"grown before the copy", "open", CodeFileChanged, func(path string) {
+			f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+			f.WriteString("more")
+			f.Close()
+		}, 0},
+		{"grown while copied", "copy", CodeFileChanged, func(path string) {
+			f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+			f.WriteString(strings.Repeat("y", 4096))
+			f.Close()
+		}, 0},
+		{"written bytes over the total", "", CodeTooLarge, nil, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := active(t)
+			in := e.incoming(rel3, "2026-11-01")
+			e.write(filepath.Join(in, "share/data"), strings.Repeat("x", 100), 0o644)
+			e.sums(in)
+			var total int64
+			filepath.WalkDir(in, func(path string, d fs.DirEntry, err error) error {
+				if err == nil && d.Type().IsRegular() {
+					info, _ := d.Info()
+					total += info.Size()
+				}
+				return nil
+			})
+			importHook = func(stage, rel string) {
+				if tc.change != nil && stage == tc.stage && rel == "share/data" {
+					tc.change(filepath.Join(in, rel))
+				}
+			}
+			t.Cleanup(func() { importHook = nil })
+			// The bytes of the release as it was listed, less tc.less.
+			limits := func(c *Config) { c.Limits.Bytes = total - tc.less }
+			if code := e.switchTo(rel3, from(in), limits); code != ExitFailed {
+				t.Fatalf("exit %d", code)
+			}
+			if rec := e.record(); rec.Error != tc.code {
+				t.Errorf("record: %s: %s, want %s", rec.Error, rec.Detail, tc.code)
+			}
+			if _, err := os.Lstat(filepath.Join(e.root, BaseDir, "releases", importPrefix+rel3)); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("the partial copy was left: %v", err)
+			}
+			if got := e.link("current"); got != "releases/"+rel2 {
+				t.Errorf("current -> %q", got)
+			}
+		})
 	}
 }

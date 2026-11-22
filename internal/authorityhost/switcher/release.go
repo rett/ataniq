@@ -70,6 +70,14 @@ var manifestKeys = []string{"id", "counter", "commit", "built_on", "go_version",
 
 var commitPattern = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
 
+// snapshotPattern is a package snapshot identifier: what the journal and
+// deploy.json carry, bounded so that both always fit their readers.
+var snapshotPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+
+// ValidSnapshot reports whether s is a package snapshot identifier: 1 to 128
+// bytes of letters, digits and ._:-.
+func ValidSnapshot(s string) bool { return snapshotPattern.MatchString(s) }
+
 // ParseManifest reads key: value lines. Blank lines and lines starting with #
 // are skipped, an unknown key is ignored, a repeated key or a missing or empty
 // required key is an error.
@@ -98,6 +106,9 @@ func ParseManifest(data []byte) (Manifest, error) {
 	n, err := strconv.ParseUint(values["counter"], 10, 64)
 	if err != nil {
 		return Manifest{}, failf(CodeManifestInvalid, "MANIFEST: counter is not a number")
+	}
+	if !ValidSnapshot(values["package_snapshot"]) {
+		return Manifest{}, failf(CodeManifestInvalid, "MANIFEST: package_snapshot is not 1 to 128 bytes of letters, digits and ._:-")
 	}
 	if c, ok := values["components"]; ok && c != ComponentsStatic {
 		return Manifest{}, failf(CodeManifestInvalid, "MANIFEST: components %s is not static", q(c))
@@ -182,6 +193,8 @@ type release struct {
 	b     *budget // nil: no limit (a test's look at a release)
 	sums  []byte
 	files int
+	// digest is the tree's digest (see treeDigest), set by verify.
+	digest string
 	// Set by checkRelease.
 	manifest Manifest
 	lists
@@ -251,6 +264,12 @@ func newRelease(id ReleaseID, root *os.Root, dir, path string, trust entryCheck,
 
 func (r *release) verify(trust entryCheck) error {
 	present := map[string]bool{}
+	entries := map[string]treeEntry{}
+	if info, err := r.root.Stat("."); err == nil {
+		entries["."] = treeEntry{kind: "d", ino: inode(info)}
+	} else {
+		return err
+	}
 	t := tally{b: r.b}
 	err := walkTree(r.root, func(rel string, info fs.FileInfo) error {
 		if err := entryKind(rel, info); err != nil {
@@ -270,6 +289,11 @@ func (r *release) verify(trust entryCheck) error {
 		}
 		if info.Mode().IsRegular() && rel != SumsFile && rel != SignatureFile {
 			present[rel] = true
+		}
+		if info.IsDir() {
+			entries[rel] = treeEntry{kind: "d", ino: inode(info)}
+		} else {
+			entries[rel] = treeEntry{kind: "f", ino: inode(info), size: info.Size()}
 		}
 		return nil
 	})
@@ -314,9 +338,25 @@ func (r *release) verify(trust entryCheck) error {
 		if got != listed[path] {
 			return failf(CodeSumsMismatch, "SHA256 of %s does not match SHA256SUMS", q(path))
 		}
+		e := entries[path]
+		e.sum = got
+		entries[path] = e
+	}
+	if e, ok := entries[SumsFile]; ok {
+		e.sum = sumOf(sums)
+		entries[SumsFile] = e
+	}
+	if e, ok := entries[SignatureFile]; ok {
+		sum, err := r.hashUnlisted(SignatureFile)
+		if err != nil {
+			return err
+		}
+		e.sum = sum
+		entries[SignatureFile] = e
 	}
 	r.sums = sums
 	r.files = len(paths)
+	r.digest = treeDigest(entries)
 	return nil
 }
 

@@ -26,13 +26,17 @@ import (
 // FILE in calls; its content and its mode and its folder's are kept in
 // listing.
 type fakeRunner struct {
-	mu      sync.Mutex
-	calls   []string
-	stdin   [][]byte
-	fail    map[string]int
-	nftOut  string
-	listing []string // content, file mode, folder mode of each listing seen
-	hook    func(argv []string)
+	mu       sync.Mutex
+	calls    []string
+	stdin    [][]byte
+	fail     map[string]int
+	nftOut   string
+	listing  []string // content, file mode, folder mode of each listing seen
+	hook     func(argv []string)
+	limits   *[]time.Duration // when set, the time limit of every health-probe and slow-probe run
+	pid      int              // when set, given to a command's OnStart as its process id
+	failPost bool             // the post-activation no-AI check fails
+	extra    [][]*os.File     // the ExtraFiles of each command
 }
 
 const fakeRuleset = "table inet filter {\n}\n"
@@ -54,10 +58,20 @@ func (f *fakeRunner) Run(ctx context.Context, c Command) (Output, error) {
 	}
 	f.calls = append(f.calls, strings.Join(argv, " "))
 	f.stdin = append(f.stdin, c.Stdin)
+	f.extra = append(f.extra, c.ExtraFiles)
+	if c.OnStart != nil && f.pid != 0 {
+		c.OnStart(f.pid)
+	}
+	if f.limits != nil && (c.Argv[0] == "health-probe" || c.Argv[0] == "slow-probe") {
+		*f.limits = append(*f.limits, c.Timeout)
+	}
 	if f.hook != nil {
 		f.hook(c.Argv)
 	}
 	name := filepath.Base(c.Argv[0])
+	if f.failPost && len(c.Argv) > 2 && c.Argv[1] == "--phase" && c.Argv[2] == CheckPhasePost {
+		return Output{Stderr: []byte(name + " said no")}, fmt.Errorf("%s: exit status 1", name)
+	}
 	if n, ok := f.fail[name]; ok && n != 0 {
 		if n > 0 {
 			f.fail[name] = n - 1
@@ -158,6 +172,13 @@ func newEnv(t *testing.T) *env {
 	if err := os.MkdirAll(filepath.Join(root, BaseDir, "releases"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The host's own stop list, which every switch requires.
+	if err := os.MkdirAll(filepath.Join(root, PolicyDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, PolicyDir, HostStopList), []byte("stop-all\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	return &env{
 		t:      t,
 		root:   root,
@@ -194,6 +215,21 @@ func (e *env) rollBack(which string) int {
 	e.t.Helper()
 	code := e.switcher().RollBack(context.Background(), which)
 	e.t.Logf("roll back to %s: exit %d\n%s", which, code, e.out.String())
+	e.last = e.out.String()
+	e.out.Reset()
+	return code
+}
+
+// resumeOnly is a recover that resumes a journal and then changes nothing:
+// its snapshot is never the end of a package step, so it is refused once the
+// journal is settled.
+var resumeOnly = RecoverOptions{SetPackageState: true, PackageState: "no-such-snapshot"}
+
+// recover runs recover and returns its exit code; its output is in last.
+func (e *env) recover(o RecoverOptions) int {
+	e.t.Helper()
+	code := e.switcher().Recover(context.Background(), o)
+	e.t.Logf("recover %+v: exit %d\n%s", o, code, e.out.String())
 	e.last = e.out.String()
 	e.out.Reset()
 	return code
@@ -290,6 +326,33 @@ func (e *env) sums(dir string) {
 	}
 	sort.Strings(lines)
 	e.write(filepath.Join(dir, SumsFile), strings.Join(lines, "\n")+"\n", 0o644)
+	e.stamp(dir)
+}
+
+// stamp writes, for a release folder of releases/, the provenance record
+// its import would have made, as the tree is now: tests write release
+// folders in place of an import. A folder outside releases/, or one that
+// does not verify, is left as it is.
+func (e *env) stamp(dir string) {
+	e.t.Helper()
+	if filepath.Dir(dir) != filepath.Join(e.root, BaseDir, "releases") {
+		return
+	}
+	id, err := ParseID(filepath.Base(dir))
+	if err != nil {
+		return
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer root.Close()
+	rel, err := newRelease(id, root, dir, dir, nil, nil)
+	if err != nil {
+		return
+	}
+	data, _ := json.Marshal(provenance{ID: id.Name, Digest: rel.digest, Files: rel.files, Time: "2026-11-21T12:00:00Z"})
+	e.write(filepath.Join(e.root, StateDir, ImportedDir, id.Name), string(data), 0o644)
 }
 
 func (e *env) link(name string) string {
@@ -399,8 +462,12 @@ func mode(t *testing.T, path string) fs.FileMode {
 	return info.Mode() & (fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)
 }
 
-// checkCall is the call of the no-AI check of the release dir in root, as
-// the fake runner records it.
-func checkCall(prog, root, dir string) string {
-	return prog + " --root " + root + " --release " + dir + " --require-policy --nft-listing FILE"
+// preCall and postCall are the calls of the no-AI check of the release dir
+// in root, before and after activation, as the fake runner records them.
+func preCall(prog, root, dir string) string {
+	return prog + " --phase pre --root " + root + " --release " + dir + " --require-policy"
+}
+
+func postCall(prog, root, dir string) string {
+	return prog + " --phase post --root " + root + " --release " + dir + " --require-policy --nft-listing FILE"
 }

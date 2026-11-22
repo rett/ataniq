@@ -17,6 +17,7 @@ func (e *env) signRelease(dir string) {
 	e.t.Helper()
 	os.Chmod(dir, 0o755)
 	e.write(filepath.Join(dir, SignatureFile), "sig", 0o644)
+	e.stamp(dir)
 }
 
 func TestNoPolicyIsManual(t *testing.T) {
@@ -94,11 +95,9 @@ func TestSignedPolicy(t *testing.T) {
 func TestRollbackFollowsPolicy(t *testing.T) {
 	e := newEnv(t)
 	e.policy(signedPolicy)
-	for _, id := range []string{rel1, rel2} {
-		e.signRelease(e.release(id, "s"))
-	}
 	good := &fakeVerifier{}
 	for _, id := range []string{rel1, rel2} {
+		e.signRelease(e.release(id, "s"))
 		if code := e.switchTo(id, verifier(good)); code != ExitOK {
 			t.Fatalf("switch to %s: exit %d", id, code)
 		}
@@ -146,6 +145,15 @@ func TestPolicyRefused(t *testing.T) {
 	}{
 		{"unknown key", `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers", "principal": "release@example.invalid", "extra": 1}`, nil, nil, ExitFailed},
 		{"bad mode", `{"min_mode": "trust"}`, nil, nil, ExitFailed},
+		// A second object after the first: the first alone would choose
+		// manual.
+		{"trailing object", `{"min_mode": "manual"}` + "\n" + signedPolicy, nil, nil, ExitFailed},
+		{"trailing word", `{"min_mode": "manual"} x`, nil, nil, ExitFailed},
+		// encoding/json keeps the last of two equal keys.
+		{"duplicate min_mode", `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers", "principal": "release@example.invalid", "min_mode": "manual"}`, nil, nil, ExitFailed},
+		{"duplicate principal", `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers", "principal": "release@example.invalid", "principal": "other@example.invalid"}`, nil, nil, ExitFailed},
+		{"not an object", `["signed"]`, nil, nil, ExitFailed},
+		{"number value", `{"min_mode": 1}`, nil, nil, ExitFailed},
 		{"signed without principal", `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers"}`, nil, nil, ExitFailed},
 		{"principal with a space", `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers", "principal": "a b"}`, nil, nil, ExitFailed},
 		{"principal an option", `{"min_mode": "signed", "allowed_signers": "/etc/authority-host/allowed_signers", "principal": "-Ox"}`, nil, nil, ExitFailed},
@@ -202,6 +210,102 @@ func TestPolicyRefused(t *testing.T) {
 				}
 				e.out.Reset()
 			}
+		})
+	}
+}
+
+// TestCheckOneObject: the token walk under every JSON file the switch reads.
+func TestCheckOneObject(t *testing.T) {
+	for _, tc := range []struct {
+		data string
+		ok   bool
+	}{
+		{`{}`, true},
+		{` {"a": 1, "b": {"a": 2}, "c": [1, {"a": 3}]} ` + "\n", true},
+		{`{"a": 1, "a": 1}`, false},
+		{`{"b": {"a": 1, "a": 2}}`, false},
+		{`{"c": [{"a": 1, "a": 2}]}`, false},
+		{`{} {}`, false},
+		{`{}]`, false},
+		{`[]`, false},
+		{`"x"`, false},
+		{``, false},
+		{`{"a": ` + strings.Repeat("[", 20) + strings.Repeat("]", 20) + `}`, false},
+	} {
+		if err := checkOneObject([]byte(tc.data)); (err == nil) != tc.ok {
+			t.Errorf("checkOneObject(%q) = %v", tc.data, err)
+		}
+	}
+}
+
+// TestResumeKeepsTrust: a transaction begun as signed on a host whose policy
+// only asks for manual is resumed as signed, whatever the resuming command
+// asks: the journal keeps the trust it began with.
+func TestResumeKeepsTrust(t *testing.T) {
+	for _, tc := range []string{"good signature", "bad signature", "signers file no longer trusted"} {
+		good := tc == "good signature"
+		t.Run(tc, func(t *testing.T) {
+			e := newEnv(t)
+			e.policy(`{"min_mode": "manual", "allowed_signers": "/etc/authority-host/allowed_signers", "principal": "release@example.invalid"}`)
+			signed := func(c *Config) { c.Mode = ModeSigned }
+			ok := &fakeVerifier{}
+			e.signRelease(e.release(rel1, "s"))
+			if code := e.switchTo(rel1, verifier(ok), signed); code != ExitOK {
+				t.Fatalf("exit %d", code)
+			}
+			e.signRelease(e.release(rel2, "s"))
+			s := e.switcher(verifier(ok), signed)
+			s.crashAt = func(p string) error {
+				if p == CrashActivating {
+					return errCrash
+				}
+				return nil
+			}
+			if code := s.Switch(t.Context(), rel2); code != ExitFailed {
+				t.Fatalf("exit %d", code)
+			}
+			e.out.Reset()
+			if j, _ := e.journal(); j.TrustMode != ModeSigned || j.TrustPrincipal != "release@example.invalid" {
+				t.Fatalf("journal trust: %+v", j)
+			}
+			// Resumed by a command that asks for nothing but the policy's
+			// manual minimum.
+			v := &fakeVerifier{}
+			if tc == "signers file no longer trusted" {
+				// The policy no longer names it; the journal does.
+				e.write(filepath.Join(e.root, PolicyDir, PolicyName), `{"min_mode": "manual"}`, 0o644)
+				os.Chmod(filepath.Join(e.root, "etc/authority-host/allowed_signers"), 0o666)
+			}
+			if !good {
+				v.err = errors.New("not signed by the principal")
+			}
+			e.runner.reset()
+			code := e.switcher(verifier(v)).Recover(t.Context(), resumeOnly)
+			out := e.out.String()
+			e.out.Reset()
+			if code != ExitFailed {
+				t.Fatalf("recover: exit %d\n%s", code, out)
+			}
+			if tc == "signers file no longer trusted" {
+				if v.calls != 0 || !strings.Contains(out, "writable by its group or by others") {
+					t.Errorf("verified against an untrusted signers file: %+v\n%s", v, out)
+				}
+			} else if v.calls == 0 || v.principal != "release@example.invalid" {
+				t.Fatalf("the resume did not verify the signature: %+v\n%s", v, out)
+			}
+			rec := e.record()
+			if good {
+				if rec.Result != ResultOK || rec.Mode != ModeSigned || rec.CurrentID != rel2 {
+					t.Errorf("record: %+v", rec)
+				}
+				return
+			}
+			// Neither the release nor the one to go back to verifies: the
+			// decision services are stopped, nothing is reloaded.
+			if rec.Result != ResultFailedRecovery || !rec.ServicesStopped {
+				t.Errorf("record: %+v", rec)
+			}
+			e.ran(map[string]int{"reload-units": 0, "health-probe": 0, "stop-all": 1})
 		})
 	}
 }

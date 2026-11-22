@@ -20,11 +20,13 @@ const (
 func active(t *testing.T) *env {
 	t.Helper()
 	e := newEnv(t)
+	// Each release is put on the host when it is switched to: a release
+	// folder of a higher counter is evidence that the counter was used.
 	e.release(rel1, "2026-11-01")
-	e.release(rel2, "2026-11-01")
 	if code := e.switchTo(rel1); code != ExitOK {
 		t.Fatalf("switch to %s: exit %d", rel1, code)
 	}
+	e.release(rel2, "2026-11-01")
 	if code := e.switchTo(rel2); code != ExitOK {
 		t.Fatalf("switch to %s: exit %d", rel2, code)
 	}
@@ -48,10 +50,10 @@ func (e *env) unchanged(want, step string) {
 func TestCleanSwitch(t *testing.T) {
 	e := newEnv(t)
 	e.release(rel1, "2026-11-01")
-	e.release(rel2, "2026-11-01")
 	if code := e.switchTo(rel1); code != ExitOK {
 		t.Fatalf("first switch: exit %d", code)
 	}
+	e.release(rel2, "2026-11-01")
 	if got := e.link("current"); got != "releases/"+rel1 {
 		t.Fatalf("current -> %q", got)
 	}
@@ -73,12 +75,13 @@ func TestCleanSwitch(t *testing.T) {
 	}
 	dir := e.relDir(rel2)
 	want := []string{
-		"nft list ruleset",
-		checkCall(filepath.Join(dir, NoAICheckProgram), e.root, dir),
+		preCall(filepath.Join(dir, NoAICheckProgram), e.root, dir),
 		"validate-units verify " + dir + "/etc/systemd/app.service",
 		"validate-rules -c",
 		"reload-units",
 		"health-probe http://127.0.0.1/healthz",
+		"nft list ruleset",
+		postCall(filepath.Join(dir, NoAICheckProgram), e.root, dir),
 	}
 	if strings.Join(e.runner.calls, "\n") != strings.Join(want, "\n") {
 		t.Errorf("commands run:\n%s\nwant:\n%s", strings.Join(e.runner.calls, "\n"), strings.Join(want, "\n"))
@@ -93,7 +96,12 @@ func TestCleanSwitch(t *testing.T) {
 func TestDeployRecord(t *testing.T) {
 	e := active(t)
 	rec := e.record()
+	if rec.Txn == "" {
+		t.Errorf("no transaction id recorded")
+	}
+	rec.Txn = ""
 	want := Record{
+		Requested:       rel2,
 		ID:              rel2,
 		PreviousID:      rel1,
 		CurrentID:       rel2,
@@ -104,6 +112,7 @@ func TestDeployRecord(t *testing.T) {
 		Result:          ResultOK,
 		Check:           CheckPassed,
 		PackageSnapshot: "2026-11-01",
+		CounterUsed:     true,
 	}
 	if rec != want {
 		t.Errorf("deploy.json:\n%+v\nwant\n%+v", rec, want)
@@ -112,7 +121,7 @@ func TestDeployRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"id", "previous_id", "current_id", "counter", "mode", "trust", "rollback", "time", "result", "check", "failed_step", "error", "detail", "package_snapshot", "restored_health"} {
+	for _, key := range []string{"id", "previous_id", "current_id", "counter", "mode", "trust", "rollback", "time", "result", "check", "failed_step", "error", "detail", "package_snapshot", "restored_health", "services_stopped", "counter_used", "txn", "requested", "pending_report", "package_state"} {
 		if !strings.Contains(string(data), `"`+key+`":`) {
 			t.Errorf("deploy.json has no %s:\n%s", key, data)
 		}
@@ -304,7 +313,7 @@ func TestLowerCounterRefused(t *testing.T) {
 				t.Fatalf("exit %d", code)
 			}
 			e.unchanged("releases/"+rel2, "counter")
-			if !strings.Contains(e.record().Detail, "not above the highest ever activated, 2") {
+			if !strings.Contains(e.record().Detail, "not above the highest ever attempted, 2") {
 				t.Errorf("error: %s: %s", e.record().Error, e.record().Detail)
 			}
 			if len(e.runner.calls) != 0 {
@@ -318,10 +327,13 @@ func TestBadHighestCounterRefused(t *testing.T) {
 	e := active(t)
 	e.release(rel3, "2026-11-01")
 	e.write(filepath.Join(e.root, StateDir, HighestFile), "seven\n", 0o644)
+	before := e.deployJSON()
 	if code := e.switchTo(rel3); code != ExitFailed {
 		t.Fatalf("exit %d", code)
 	}
-	e.unchanged("releases/"+rel2, "counter")
+	if !strings.Contains(e.last, "counter-invalid") || e.deployJSON() != before || e.link("current") != "releases/"+rel2 {
+		t.Errorf("output:\n%s", e.last)
+	}
 }
 
 func TestRollbackToPrevious(t *testing.T) {
@@ -342,7 +354,7 @@ func TestRollbackToPrevious(t *testing.T) {
 	if rec.Result != ResultOK || !rec.Rollback || rec.ID != rel1 || rec.PreviousID != rel2 || rec.CurrentID != rel1 {
 		t.Errorf("record: %+v", rec)
 	}
-	if e.runner.called("ah-noaicheck") != 1 || e.runner.called("health-probe") != 1 {
+	if e.runner.called("ah-noaicheck") != 2 || e.runner.called("health-probe") != 1 {
 		t.Errorf("a rollback runs the same checks: %v", e.runner.calls)
 	}
 	// The id previous points at is accepted too, and the counter still does
@@ -417,8 +429,11 @@ func TestNoAICheckOverride(t *testing.T) {
 	if code := e.switchTo(rel3, func(c *Config) { c.NoAICheck = check }); code != ExitOK {
 		t.Fatalf("exit %d", code)
 	}
-	if want := checkCall(check, e.root, e.relDir(rel3)); e.runner.calls[1] != want {
-		t.Errorf("check command %q, want %q", e.runner.calls[1], want)
+	if want := preCall(check, e.root, e.relDir(rel3)); e.runner.calls[0] != want {
+		t.Errorf("check command %q, want %q", e.runner.calls[0], want)
+	}
+	if want := postCall(check, e.root, e.relDir(rel3)); e.runner.calls[len(e.runner.calls)-1] != want {
+		t.Errorf("post check %q, want %q", e.runner.calls[len(e.runner.calls)-1], want)
 	}
 }
 
@@ -573,8 +588,10 @@ func TestPackageStep(t *testing.T) {
 		t.Fatal(code)
 	}
 	e.unchanged("releases/"+rel2, "packages")
-	if got := e.record().PackageSnapshot; got != "2026-11-01" {
-		t.Errorf("recorded snapshot %q after a failed step", got)
+	// Neither snapshot is the host's now: a failed step may have changed
+	// some packages.
+	if rec := e.record(); rec.PackageState != PackageUnknown || rec.PackageFrom != "2026-11-01" || rec.PackageTo != "2026-11-15" || rec.Error != CodePackageFailed {
+		t.Errorf("record after a failed step: %+v", rec)
 	}
 }
 
@@ -616,7 +633,7 @@ func TestPackageStepBeforeCheck(t *testing.T) {
 	for _, c := range e.runner.calls {
 		order = append(order, filepath.Base(strings.Fields(c)[0]))
 	}
-	if strings.Join(order, " ") != "ah-pkgstep nft ah-noaicheck" {
+	if strings.Join(order, " ") != "ah-pkgstep ah-noaicheck" {
 		t.Errorf("order: %v", order)
 	}
 	e.unchanged("releases/"+rel2, "noaicheck")
@@ -726,7 +743,7 @@ func TestConcurrentSwitchRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer state.Close()
-	held, err := takeLock(state, true, false)
+	held, err := takeLock(state, true, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -790,7 +807,7 @@ func TestDryChangesNothing(t *testing.T) {
 				t.Errorf("--dry ran commands: %v", e.runner.calls)
 			}
 			if tc.code == ExitOK {
-				for _, want := range []string{"step 1/8", "step 2/8", "step 3/8 packages", "step 4/8 noaicheck: would run", "step 5/8 validate: would run", "step 6/8 switch: would point current", "step 7/8 health: would run", "step 8/8 record: would record"} {
+				for _, want := range []string{"step 1/9", "step 2/9", "step 3/9 packages", "step 4/9 noaicheck: would run", "step 5/9 validate: would run", "step 6/9 switch: would point current", "step 7/9 health: would run", "step 8/9 postcheck: would run", "step 9/9 record: would record"} {
 					if !strings.Contains(out, want) {
 						t.Errorf("--dry output lacks %q", want)
 					}
@@ -847,12 +864,12 @@ func TestCurrentNotALink(t *testing.T) {
 
 func TestStatus(t *testing.T) {
 	e := newEnv(t)
-	if got := e.status(); got != "current: none\nprevious: none\nhighest counter: 0\ntrust: manual: no switch policy, unsigned releases are accepted\nlast switch: none recorded\n" {
+	if got := e.status(); got != "current: none\nprevious: none\nhighest counter: 0\ntrust: manual: no switch policy, unsigned releases are accepted\nhost stop list: 1 command(s)\nlast switch: none recorded\n" {
 		t.Errorf("status of an empty root:\n%s", got)
 	}
 	e.release(rel1, "s")
-	e.release(rel2, "s")
 	e.switchTo(rel1)
+	e.release(rel2, "s")
 	e.switchTo(rel2)
 	got := e.status()
 	for _, want := range []string{"current: " + rel2, "previous: " + rel1, "highest counter: 2", "last switch: switch to " + rel2 + ": ok", "no-AI check: passed"} {
@@ -955,8 +972,8 @@ func TestBadCounterNotEchoed(t *testing.T) {
 	if strings.Contains(e.last, "token-of") || strings.Contains(e.deployJSON(), "token-of") {
 		t.Errorf("the counter text was echoed:\n%s\n%s", e.last, e.deployJSON())
 	}
-	if rec := e.record(); rec.Error != CodeCounterInvalid {
-		t.Errorf("record: %+v", rec)
+	if !strings.Contains(e.last, "counter-invalid") {
+		t.Errorf("output:\n%s", e.last)
 	}
 }
 
@@ -1064,8 +1081,8 @@ func TestStateFilesNotFollowed(t *testing.T) {
 		if code := e.switchTo(rel3); code != ExitFailed {
 			t.Fatalf("exit %d", code)
 		}
-		if rec := e.record(); rec.FailedStep != "counter" || rec.Error != CodeCounterInvalid {
-			t.Errorf("record: %+v", rec)
+		if !strings.Contains(e.last, "counter-invalid") || e.link("current") != "releases/"+rel2 {
+			t.Errorf("output:\n%s", e.last)
 		}
 	})
 	t.Run("lock a link", func(t *testing.T) {
@@ -1117,9 +1134,11 @@ func TestOtherRootNeedsAllowExec(t *testing.T) {
 	e.status(noExec)
 }
 
-// TestFirewallListing: the check gets what nft list ruleset printed, in a
-// private file of a private folder that is gone afterwards; a failing or
-// oversized listing fails the check step without running the check.
+// TestFirewallListing: the post-activation check gets what nft list ruleset
+// printed, in a private file of a private folder that is gone afterwards; a
+// failing or oversized listing fails that check without running it, and the
+// switch goes back. The pre-activation check gets no listing: the firewall
+// is still the old release's.
 func TestFirewallListing(t *testing.T) {
 	e := active(t)
 	e.release(rel3, "2026-11-01")
@@ -1155,13 +1174,35 @@ func TestFirewallListing(t *testing.T) {
 			if code := e.switchTo(rel3); code != ExitFailed {
 				t.Fatalf("exit %d", code)
 			}
-			e.unchanged("releases/"+rel2, "noaicheck")
-			if rec := e.record(); rec.Error != CodeNFTListingFailed {
+			rec := e.record()
+			if rec.Error != CodeNFTListingFailed || rec.FailedStep != "postcheck" || rec.Result != ResultRolledBack || rec.Check != CheckFailed {
 				t.Errorf("record: %+v", rec)
 			}
-			if e.runner.called("ah-noaicheck") != 0 {
-				t.Errorf("the check ran without a listing")
+			e.links(rel2, rel1)
+			if e.runner.called("ah-noaicheck") != 1 {
+				t.Errorf("the post check ran without a listing: %v", e.runner.calls)
 			}
 		})
+	}
+}
+
+// TestPostCheckFailureGoesBack: the check after the reload and the health
+// check sees what the new release's units and listeners did; when it fails,
+// the switch goes back before anything is recorded as ok.
+func TestPostCheckFailureGoesBack(t *testing.T) {
+	e := active(t)
+	e.release(rel3, "2026-11-01")
+	e.runner.failPost = true
+	if code := e.switchTo(rel3); code != ExitFailed {
+		t.Fatalf("exit %d", code)
+	}
+	rec := e.record()
+	if rec.Result != ResultRolledBack || rec.FailedStep != "postcheck" || rec.Error != CodeNoAICheckFailed || rec.Check != CheckFailed || rec.RestoredHealth != "ok" {
+		t.Errorf("record: %+v", rec)
+	}
+	e.links(rel2, rel1)
+	e.ran(map[string]int{"ah-noaicheck": 2, "reload-units": 2})
+	if strings.Contains(e.last, "said no") {
+		t.Errorf("the check's output was shown:\n%s", e.last)
 	}
 }

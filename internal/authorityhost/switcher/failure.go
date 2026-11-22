@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // Failure codes: the stable words deploy.json, the status and the steps carry
@@ -47,13 +48,18 @@ const (
 	CodeValidatorFailed    = "validator-failed"   // a validator did not exit 0
 	CodePackageFailed      = "package-step-failed"
 	CodePackageStepMissing = "package-step-missing"     // the snapshot changes and the release has no package step
-	CodePackageInterrupted = "package-step-interrupted" // a package step was interrupted; the next switch runs it again
+	CodePackageInterrupted = "package-step-interrupted" // a package step was interrupted; the host's package state is unknown
+	CodePackageUnknown     = "package-state-unknown"    // the host's package state is unknown (or whether a package step ended cannot be told)
 	CodeLinkFailed         = "link-failed"              // a link could not be written
 	CodeReloadFailed       = "reload-failed"            // a reload command did not exit 0
 	CodeHealthFailed       = "health-failed"            // the health check did not pass in time
 	CodeRecordFailed       = "record-failed"            // a state file could not be written
 	CodeIOError            = "io-error"                 // any other error of the system
 	CodeNoEarlierRelease   = "no-earlier-release"
+	CodeStopListMissing    = "stop-list-missing"   // the host's own stop list is missing or holds no command
+	CodeStopFailed         = "stop-failed"         // a stop command did not exit 0
+	CodeProvenanceMissing  = "provenance-missing"  // a release folder without the record of the import that made it
+	CodeProvenanceMismatch = "provenance-mismatch" // a release folder that is not the tree its import made
 )
 
 // failure is an error with a stable code and a detail made only of fixed
@@ -113,14 +119,62 @@ func q(s string) string {
 	return s
 }
 
-// qargv quotes each word of a command for output.
-func qargv(argv []string) string {
-	out := ""
-	for i, a := range argv {
-		if i > 0 {
-			out += " "
+// maxArgvText bounds a command as qargv shows it.
+const maxArgvText = 1024
+
+// QuoteField is q for the commands of the switch: s fit for one field of a
+// line, bounded and quoted with Go's escapes when it holds anything but
+// printable ASCII other than a space, a quote or a backslash.
+func QuoteField(s string) string { return q(s) }
+
+// maxLine bounds a line EscapeLine returns.
+const maxLine = 512
+
+// EscapeLine returns s fit for a line of a diagnostic: every byte that is
+// not printable ASCII, and the backslash, is written as \xNN, and s is cut
+// at maxLine bytes ("..." follows when it is cut). Spaces and quotes stay,
+// so a sentence reads as one.
+func EscapeLine(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if b.Len() >= maxLine {
+			b.WriteString("...")
+			break
 		}
-		out += q(a)
+		if c := s[i]; c < ' ' || c >= 0x7f || c == '\\' {
+			fmt.Fprintf(&b, "\\x%02x", c)
+		} else {
+			b.WriteByte(c)
+		}
 	}
-	return out
+	return b.String()
+}
+
+// qargv quotes each word of a command for output, at most maxArgvText bytes
+// of it ("..." follows when it is cut).
+func qargv(argv []string) string {
+	var b strings.Builder
+	for i, a := range argv {
+		w := q(a)
+		if i > 0 {
+			w = " " + w
+		}
+		if b.Len()+len(w) > maxArgvText {
+			b.WriteString(" ...")
+			break
+		}
+		b.WriteString(w)
+	}
+	return b.String()
+}
+
+// maxDetail bounds the detail of a failure as it is recorded.
+const maxDetail = 4096
+
+// boundDetail cuts a detail to maxDetail bytes, with "..." when cut.
+func boundDetail(s string) string {
+	if len(s) <= maxDetail {
+		return s
+	}
+	return s[:maxDetail] + "..."
 }

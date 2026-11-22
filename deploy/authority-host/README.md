@@ -33,11 +33,15 @@ switch runs it.
     bin/  etc/  share/
   current  -> releases/<id>
   previous -> releases/<id>
+/etc/authority-host/
+  switch-policy.json      the switch policy (optional; see below)
+  stop.list               the host's own emergency stop list (required)
 /var/lib/authority-host/
   deploy.json             the outcome of the last switch
   highest-counter         the highest counter a switch ever attempted
-  txn.json                the journal of a switch under way
+  txn.json                the journal of the transaction under way
   switch.lock             the lock of a running switch
+  imported/<id>           the record of the import that made releases/<id>
 ```
 
 - The switch trusts `/var/lib/authority-host`, `/opt/authority-host` and
@@ -47,13 +51,24 @@ switch runs it.
   before it changes or records anything. (When `ah-switch` does not run as
   root, as in tests, the folders of the user running it are accepted too.)
   It creates the state folder, mode 0755, when it is missing, holds each
-  folder open while it works, and opens the lock, `highest-counter` and
-  `deploy.json` relative to that folder without following a link. It reads
-  only regular files of a bounded size there.
+  folder open while it works, and opens the lock, `highest-counter`,
+  `deploy.json` and `txn.json` relative to that folder without following a
+  link. Each of them must be a regular file with one link, owned by root (or
+  that user) and not writable by its group or by others, and of a bounded
+  size (the lock empty): a folder made safe after the fact can still hold a
+  file another account can write or hold the lock of, so the files are
+  checked as the folder is. A file that fails this stops the switch before
+  it changes anything; an untrusted `deploy.json` is not even recorded over.
 - The id is the counter, zero-padded to at least four digits, a hyphen and the
   short commit in lowercase hex (7 to 40 characters).
+- `current` and `previous` hold exactly `releases/<id>`, as the switch writes
+  them. Any other target (an absolute path, `./`, `..`, a doubled slash),
+  even one that would clean to a release, is refused as `state-invalid`
+  before anything is done; a target is only ever shown escaped.
 - `MANIFEST` holds the keys `id`, `counter`, `commit`, `built_on` (the class of
-  the build host, never its name), `go_version` and `package_snapshot`, one
+  the build host, never its name), `go_version` and `package_snapshot` (1 to
+  128 bytes of letters, digits and `._:-`, so that the journal and
+  `deploy.json` that carry it always fit their readers), one
   `key: value` per line, and optionally `components: static` (no other
   value is accepted). `id` must be the folder's name, `counter` its counter
   and `commit` must start with its short commit. Blank lines and `#` lines are
@@ -70,11 +85,22 @@ switch runs it.
   symbolic link, device, fifo, socket or hard-linked file anywhere in it is
   refused, so hashing never follows one out of the folder.
 - A release in `releases/` is made by the switch's import (see below), never
-  by copying into `releases/` directly: without `--from` the switch accepts
-  a release folder only when nothing in it is writable by its group or by
-  others, nothing has a set-user-id, set-group-id or sticky bit, and
-  everything is owned by root (or by the user running the switch when that
-  is not root), as the import leaves it.
+  by copying into `releases/` directly. Without `--from` the switch accepts
+  a release folder (to switch to, to roll back to, or as the release to go
+  back to) only when the import's record of it,
+  `/var/lib/authority-host/imported/<id>`, is there (root-owned, checked as
+  the state files are) and names the digest the tree has now: every path,
+  its kind, its inode number and size, and every file's SHA-256. A folder
+  copied in by hand has no record (`provenance-missing`), and one whose
+  files changed or were replaced, even by the same bytes in a new file, no
+  longer matches it (`provenance-mismatch`): a file that existed before the
+  import could still be held open for writing by whoever made it, which no
+  owner or mode check can see. Move such a folder out of `releases/` and
+  import it again with `--from`, which makes a fresh copy (restoring
+  `releases/` from a backup changes the inodes too). The folder must also
+  have nothing writable by its group or by others, no set-user-id,
+  set-group-id or sticky bit, and everything owned by root (or by the user
+  running the switch when that is not root), as the import leaves it.
 - In signed mode `SHA256SUMS.sig` is an SSH signature in the namespace
   `authority-host-release`:
   `ssh-keygen -Y sign -f KEY -n authority-host-release SHA256SUMS`.
@@ -99,7 +125,8 @@ switch runs it.
     `systemctl stop ataniq-seat`, run when no healthy release is left (see
     the failure cases); the static status page stays. No `{release}`.
 
-  In each list, blank lines and `#` lines are skipped. A command is its words
+  In each list, blank lines and `#` lines are skipped. A list holds at most 64
+  commands and a command at most 32 words. A command is its words
   separated by spaces; no shell runs it, so quotes, pipes, redirections, globs
   and variables are refused. The program is an absolute path, `{release}/...`
   in a validator, or a bare name looked up in `/usr/sbin:/usr/bin:/sbin:/bin`
@@ -111,7 +138,13 @@ switch runs it.
   A signed release contains code that runs as root (its no-AI check, its
   package step, its units), so these lists are consistency checks of an
   honest release, not a privilege boundary: the signature is what decides
-  what may run.
+  what may run. For the same reason the switch does not check that the lists
+  cover what the release ships (that `health.cmd` checks the application's
+  readiness and not only the front end, that a release declared static has
+  no decision service, that the validators check every changed rule file):
+  that coverage is the release builder's job, and a health command that
+  passes against a service still running from the old release is a
+  packaging error the switch cannot see.
 - `bin/ah-noaicheck` is the release's no-AI check, required. `bin/ah-pkgstep`
   is its package step, required when the release's package snapshot differs
   from the host's, and idempotent (see step 3).
@@ -131,15 +164,18 @@ ah-switch --from INCOMING/<id> <id>                 # as root, on the host
 (`releases/.import-<id>` while it is being made) as new files: folders and
 regular files only (a symbolic link, device, fifo, socket or hard-linked
 file is refused), each file opened without following a link and without
-blocking, checked to be the regular file with one link that was listed, and
-read to its size (one that changes while it is copied is refused). Modes are
+blocking, checked to be the regular file with one link that was listed (the
+same inode, of the size the walk saw), and read to that size (one that
+changes while it is copied is refused). Modes are
 set, not copied: folders 0755 and files 0644, or 0755 when the incoming file
 had any execute bit; no set-user-id, set-group-id or sticky bit, extended
 attribute or ACL is carried over, and when the switch runs as root the copy
 is owned by root:root. Only that copy is then verified, signature-checked,
 run and linked; the incoming folder can change afterwards without touching
 it. Once the copy is verified it is made read-only (every write bit
-removed) and renamed to `releases/<id>`. A copy that fails to import or to
+removed), its record is written to
+`/var/lib/authority-host/imported/<id>`, and it is renamed to
+`releases/<id>`. A copy that fails to import or to
 verify is removed; `releases/<id>` must not exist already, or `--from` is
 refused. A release that was imported stays when a later step fails: switch
 to it again without `--from`.
@@ -147,18 +183,22 @@ to it again without `--from`.
 The work of reading a release is bounded, for the import and for the
 verification of any release: at most 20000 entries (folders and files),
 2 GiB in all and 512 MiB per file, and 10 minutes for the import and the
-hashing together. Going over a limit fails with its own code
-(`too-many-entries`, `too-large`, `file-too-large`, `time-budget`), removes
-the import's copy and releases the lock. Folders are read in batches with
-one folder open at a time, every file is opened without blocking, and a
+hashing together. The import charges the bytes it actually writes to the
+2 GiB, as it writes them, so an incoming folder that changes during the copy
+cannot make it write more: the copy stops at the limit. Going over a limit
+fails with its own code (`too-many-entries`, `too-large`, `file-too-large`,
+`time-budget`), removes the import's copy and releases the lock. Folders
+are read in batches with one folder open at a time, every file is opened without blocking, and a
 file that changes size or time, or stops being a regular file, while it is
 read is a failure (`file-changed`).
 
 ### The switch policy
 
 `/etc/authority-host/switch-policy.json` (below `--root`) says how strict
-every switch must be: a forward switch, `--rollback-to previous`, and the
-automatic return to the old release after a failed health check.
+every switch must be: a forward switch, `--rollback-to previous`, the
+automatic return to the old release after a failed health check, and the
+resume of an interrupted transaction (which also keeps the trust the
+transaction began with; see "The journal and recover").
 
 ```
 {"min_mode": "signed",
@@ -171,10 +211,13 @@ automatic return to the old release after a failed health check.
 - `allowed_signers` is the ssh allowed signers file and `principal` the
   identity a release must be signed by; both are required for signed mode.
   The signature namespace is fixed: `authority-host-release`.
-- No other key is accepted. The policy file, the signers file and every
-  folder above them must be owned by root and not writable by group or
-  others (the same check as the state folder); otherwise, or when the
-  policy does not parse, the switch stops before it does anything.
+- No other key is accepted. The file must be exactly one JSON object with
+  each key given once: a second object or any other text after it, or a
+  key given twice (which a plain JSON reader would settle by keeping one of
+  them), is refused as `policy-invalid`. The policy file, the signers file
+  and every folder above them must be owned by root and not writable by
+  group or others (the same check as the state folder); otherwise, or when
+  the policy does not parse, the switch stops before it does anything.
 - Without the file the policy is manual: unsigned releases are accepted.
   `deploy.json` then records `trust: manual`, and `status` says
   `trust: manual: no switch policy, unsigned releases are accepted`.
@@ -186,6 +229,8 @@ ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manual|signed] [--noaichec
 ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manual|signed] [--noaicheck PATH] --rollback-to previous
 ah-switch [--root DIR] status
 ah-switch [--root DIR [--allow-exec]] [--dry] recover --counter N
+ah-switch [--root DIR [--allow-exec]] [--dry] recover --package-state SNAPSHOT
+ah-switch [--root DIR [--allow-exec]] [--dry] recover --services-stopped
 ```
 
 - `--root DIR` is the folder that holds `opt/authority-host`,
@@ -209,30 +254,37 @@ ah-switch [--root DIR [--allow-exec]] [--dry] recover --counter N
 - `--rollback-to previous` goes back to the release `previous` points at. It
   accepts that release's id too, and refuses any other.
 - `--dry` prints every step and what it would do, runs no program and changes
-  nothing: no link, no state file, no lock file. It still reads and checks the
-  release (sums, manifest, lists, counter), and it is refused while a switch
-  holds the lock.
+  nothing: no link, no state file, no lock file. It still reads and checks
+  the release (sums, manifest, lists, the record of its import, the
+  counter, the package state) and the host's stop list, and it is refused
+  while a switch holds the lock or a transaction is still to resume.
 - `status` prints `current`, `previous`, the highest counter, the trust of
-  the switch policy, an interrupted switch still to settle, and the last
-  outcome from `deploy.json`. It takes the lock shared, so what it prints
-  is one state between two switches: while a switch runs it exits 3, and
-  while it reads, a switch is refused with exit 3. It prints all of it or
-  nothing, and it changes nothing.
-- `recover --counter N` writes a missing or broken `highest-counter`; see
-  "Interrupted switches and recover".
+  the switch policy, a transaction still to resume and its phase (with the
+  stop commands that failed, when it is stopping), the host's stop list,
+  and the last outcome from `deploy.json` (marked when a later command
+  settled it after an interruption). It takes the lock shared, so what it
+  prints is one state between two switches: while a switch runs it exits
+  3, and while it reads, a switch is refused with exit 3. It prints all of
+  it or nothing, and it changes nothing.
+- `recover --counter N` writes a missing or broken `highest-counter`,
+  `recover --package-state SNAPSHOT` settles an unknown package state, and
+  `recover --services-stopped` settles a transaction whose stop commands
+  failed; see "The journal and recover".
 
 Flags may come before or after the id.
 
 ### Steps
 
 `ah-switch ID` prints each step and stops at the first failure. Up to the
-rename in step 6, a failure leaves `current` as it was (a package step that
-already ran stays applied, and `deploy.json` says so).
+renames in step 6, a failure leaves `current` as it was (a package step
+that already ran stays applied, and `deploy.json` says so, or says that
+the package state is unknown).
 
 0. **import** (only with `--from`): the incoming folder is copied into
    `releases/.import-ID`, as described above.
 1. **verify**: `releases/ID` (or the import's copy) must be a folder, not a
-   symbolic link, and pass the check of an imported release above. Every
+   symbolic link, and pass the check of an imported release above (without
+   `--from`, the record of its import included). Every
    file in it must be listed in `SHA256SUMS` and match it; a file not
    listed, a listed file missing or changed, a listed path that escapes the
    folder or is not clean, or a link or special file in the folder is a
@@ -243,11 +295,25 @@ already ran stays applied, and `deploy.json` says so).
    identity of a shared signers file cannot authorize a release). Then
    `MANIFEST` must match the id and the command lists must parse.
 2. **counter**: the counter must be above the highest ever attempted
-   (`highest-counter`; none means 0 only on a host that has no `current`
-   yet: a missing or broken `highest-counter` while `current` exists is
-   refused with `counter-missing` or `counter-invalid`, see `recover`). A
-   rollback skips this rule but accepts only the release `previous` points
-   at, and only when that release folder is there.
+   (`highest-counter`) and above every counter the host shows besides it:
+   the releases `current` and `previous` point at, the counter of the last
+   forward switch `deploy.json` records as having used its counter
+   (`counter_used`), and every other release folder in `releases/` (the
+   counter of its name, and of its `MANIFEST` when that can be read), so a
+   `highest-counter` restored from an older state cannot admit an old
+   release again. A rollback skips this rule but accepts only the release
+   `previous` points at, and only when that release folder is there.
+
+   Before any of the steps, and before anything is recorded, a switch or
+   rollback checks `highest-counter` itself against the counters the host
+   used (the links and `deploy.json`): one that cannot be read
+   (`counter-invalid`), one missing on a host that used counters
+   (`counter-missing`; none means 0 only on a host that has no `current`
+   yet), or one below a counter used (`counter-invalid`) stops it, with
+   nothing recorded, so that `deploy.json` stays as evidence for `recover`.
+   What the evidence needs and cannot read (a link, `deploy.json`, the
+   folder of releases) stops it the same way; it is never taken as no
+   evidence.
 3. **packages**: when the manifest's `package_snapshot` differs from the one
    recorded in `deploy.json`, the release's
    `bin/ah-pkgstep --release DIR --from OLD --to NEW` runs, within 30 minutes
@@ -255,92 +321,186 @@ already ran stays applied, and `deploy.json` says so).
    before the no-AI check and the validators, so that they see the host as
    it will be. A changed snapshot and no `bin/ah-pkgstep` is a failure
    (`package-step-missing`). The step's progress is journaled in
-   `txn.json` (`running`, then `done`) before and after it runs, and on
-   success the new snapshot is what `deploy.json` records from then on,
-   even when a later step fails. A step that was interrupted is not taken
-   as done: the next switch runs it again with the same `--from`, so
-   `bin/ah-pkgstep` must be idempotent: run twice with the same `--from` and
-   `--to` it must end in the same state.
-4. **noaicheck**: the switch runs `nft list ruleset` (within 30 seconds; its
-   output at most 4 MiB) and writes what it printed to a file of mode 0600
-   in a new temporary folder of mode 0700, then runs the new release's
-   `bin/ah-noaicheck --root ROOT --release DIR --require-policy --nft-listing FILE`,
-   which must exit 0 within 5 minutes; the folder is removed afterwards.
-   Any other exit status is a failure, including the check's own report
-   that it could not finish (`HIT incomplete`): it is never a warning. A
-   failing `nft` is `nft-listing-failed`, and the check does not run.
+   `txn.json` (`started`, with its process id and start time once it runs,
+   then `done`), and on success the new snapshot is what `deploy.json`
+   records from then on, even when a later step fails.
+
+   A step that exits with a failure, or is interrupted, may have changed
+   some packages: the host's package state is then **unknown**.
+   `deploy.json` says `package_state: unknown` with the two ends of the step
+   (`package_from`, `package_to`), and records neither as the host's
+   snapshot. Every later switch and rollback is refused
+   (`package-state-unknown`, nothing run) until either the owner states
+   which end the host is at, with
+   `ah-switch recover --package-state SNAPSHOT` (recorded with the time in
+   `package_stated_at`), or a switch to a release of the snapshot the step
+   went to runs the step again, from the same `--from`, to the end. So
+   `bin/ah-pkgstep` must be idempotent: run twice with the same `--from`
+   and `--to` it must end in the same state.
+
+   The step never overlaps another: it runs in its own process group, is
+   killed when the switch dies (where the system has a parent-death signal),
+   and is given the switch's lock file as its descriptor 3, so the lock
+   stays held as long as the step or anything it started keeps that
+   descriptor open. Before an interrupted step is settled, the switch makes
+   sure it has ended: a process of the journaled id and start time still
+   running has its process group killed; a process of that id with another
+   start time is another process; processes left in its group with no
+   such process are refused (`package-state-unknown`), and are the owner's
+   to stop.
+4. **noaicheck**: the new release's no-AI check runs in its first phase,
+   `bin/ah-noaicheck --phase pre --root ROOT --release DIR --require-policy`,
+   and must exit 0 within 5 minutes. This phase scans the release's own
+   files (the units under its `etc/systemd` and the environment names they
+   set) and the host's AI binaries and credentials, but not the listening
+   ports and the firewall digest: those are still the old release's until
+   the reload, and are checked in step 8. Any other exit status is a
+   failure, including the check's own report that it could not finish
+   (`HIT incomplete`): it is never a warning.
 5. **validate**: each command of `share/validators.list` must exit 0, within
    30 seconds each.
-6. **switch**: first the journal `txn.json` is written (the release, its
-   counter, the old targets of `current` and `previous`) and synced with its
-   folder, and, on a forward switch, `highest-counter` is set to the new
-   counter: it holds the highest counter ever attempted, so a release whose
-   switch got this far cannot be switched to again, even after it failed or
-   was put back; build the next counter. Then `previous` is pointed at the
-   old target of `current`, and a new link `current.new` is made and renamed
-   over `current`, so there is never a moment without `current`. Then each
-   command of `share/reload.list` runs, within 30 seconds each.
-7. **health**: the commands of `share/health.cmd` run in order, each within
-   10 seconds, until one round in which every one of them exits 0, every 2
-   seconds for up to 60 seconds. A static release with no health command is
-   healthy at once.
-8. **record**: `deploy.json` is written, by writing a temporary file and
-   renaming it over the old one, and then the journal is removed. Only when
-   both succeeded does the switch print `result: ok` and exit 0; otherwise
-   it prints `result: failed at record`, exits 1 and leaves the journal, and
-   the next command completes the switch.
+6. **switch**: first the journal `txn.json` says `links` (and, on a forward
+   switch, that the counter is used) and is synced with its folder; on a
+   forward switch `highest-counter` is then set to the new counter: it
+   holds the highest counter ever attempted, so a release whose switch got
+   this far cannot be switched to again, even after it failed or was put
+   back; build the next counter. Then `previous` is pointed at the old
+   target of `current`, and a new link `current.new` is made and renamed
+   over `current`, so there is never a moment without `current`; each
+   rename is followed by a sync of the folder. Then the journal says
+   `activating`, and each command of `share/reload.list` runs, within 30
+   seconds each.
+7. **health**: the commands of `share/health.cmd` run in order until one
+   round in which every one of them exits 0, a new round every 2 seconds.
+   The 60 seconds are one deadline for the whole check: each command gets at
+   most 10 seconds and never more than what is left of the 60, no command
+   starts once they are over, and a round that ends after them does not
+   count. A static release with no health command is healthy at once.
+8. **postcheck**: the no-AI check runs again, in its last phase, on the host
+   as the reload left it: the switch runs `nft list ruleset` (within 30
+   seconds; its output at most 4 MiB), writes what it printed to a file of
+   mode 0600 in a new temporary folder of mode 0700, and runs
+   `bin/ah-noaicheck --phase post --root ROOT --release DIR --require-policy --nft-listing FILE`,
+   which checks everything, the live listeners and the loaded firewall
+   against the release's pinned digest included, and must exit 0 within 5
+   minutes; the folder is removed afterwards. A failure, or a failing `nft`
+   (`nft-listing-failed`, and the check does not run), goes back as a
+   failed health check does, so a release whose units open a new listener
+   or set a provider variable is never recorded as `ok`. The check program
+   is journaled, so a resumed activation runs the same one. Going back to
+   the old release does not run the check again: that release passed it
+   when it was switched to.
+9. **record**: the journal says `done` with the outcome; the link folder is
+   synced once more, `deploy.json` is written (a temporary file renamed over
+   the old one) and the journal is removed. Only then does the switch print
+   `result: ok` and exit 0. When any of that fails it prints `result:
+   unresolved`, exits 1 and leaves the journal, and the next command
+   records the outcome.
 
-A link is replaced by renaming a new link over it and then syncing its
-folder. When that fails, the switch reads the link again before it decides:
-a link that already points at its new target (the rename happened, only
-the sync failed) is taken as moved, with a warning; the journal covers what
-a crash could still lose.
+A link is taken as moved only once its folder is synced. A rename that is
+visible but whose folder could not be synced is not trusted to survive a
+power loss: the switch then puts both links back (as the resume of the
+`links` phase does, below); if that cannot be synced either, it stops with
+`result: unresolved` and the journal still in `links`, and the next
+command syncs and settles it. No outcome is recorded, and the journal is
+never removed, before the link folder is synced.
+
+`--noaicheck PATH` replaces the release's check in both phases.
 
 Before the switch, in step 1, the release `current` points at (the
 fallback) is opened and verified as the switch policy says, and its own
 reload and health lists are read. A fallback that is missing or no longer
 verifies is not used, and the switch says so (`fallback: none: ...`).
 
-If the reload or the health check fails, the switch goes back: `current` is
-renamed back to the fallback, `previous` is put back as it was, and the
-fallback's own `reload.list` and `health.cmd` run (never the failed
-release's). The result is `rolled-back` with `restored_health: ok` only when
-all of that succeeded. When putting the links back, the fallback's reload
-or its health fails, the failed release's `stop.list` runs to stop the
-decision services (the static status page stays), the result is
-`failed-recovery` with `restored_health: failed`, and the console is needed.
-With no fallback (the very first switch, or one that cannot be used),
-`current` stays at the new release, its `stop.list` runs, and the result is
-`failed` on a first switch and `failed-recovery` otherwise. A stop command
-that fails is noted in `detail`; the others still run.
+If the reload, the health check or the post-activation check fails, the
+journal says `restoring` before anything is put back: `current` is renamed back to the fallback,
+`previous` is put back as it was, both synced, and the fallback's own
+`reload.list` and `health.cmd` run (never the failed release's). The result
+is `rolled-back` with `restored_health: ok` only when all of that
+succeeded, putting `previous` back included. Otherwise (or with no
+fallback: the very first switch, or one that cannot be used, when
+`current` stays at the new release) the journal says `stopping` and the
+decision services are stopped (the static status page stays): first the
+host's own `/etc/authority-host/stop.list`, then the stop list of the new
+release and of the fallback, each one that verifies (a release that does
+not verify runs no code; the host's list does not depend on any release).
+The result is `failed` on a first switch and `failed-recovery` otherwise,
+with `restored_health: failed` when going back was tried, and
+`services_stopped: true`; the console is needed. A stop command that fails
+does not stop the others, but the switch then never says the services are
+stopped: the journal stays in `stopping` with the commands that failed,
+the command prints `result: unresolved` and exits 1, and every later
+command runs the stops again first (see below).
 
-### Interrupted switches and recover
+The host's stop list is the owner's, never part of a release: one command
+per line, in the format of the release lists, at least one command, and
+owned and checked like the switch policy. It must stop every decision
+service of any release (for example `systemctl stop ataniq-seat.service`).
+A switch or rollback is refused, with nothing done, while it is missing,
+empty or not trusted; `status` says so.
 
-A switch that dies (a crash, a power loss, a kill) after it wrote the
-journal leaves `txn.json`. Every switch, rollback and `recover` takes the
-lock and settles such a journal before anything else; `status` shows it
-(`interrupted: ...`) and changes nothing, and `--dry` refuses to go on
-while it is there.
+### The journal and recover
 
-- When `current` already points at the journal's release, that release
-  verifies (as the switch policy says), its reload list passes and it is
-  healthy, the switch is completed: `deploy.json` records `ok` with the
-  detail `completed after an interruption`.
-- Otherwise `current` and `previous` are put back exactly as the journal
-  says they were (so a retried switch never leaves `previous` pointing at
-  the active release), and `deploy.json` records `rolled-back` with the
-  code `interrupted`.
+Everything a switch or rollback changes on the host is one transaction,
+journaled in `txn.json`: written whole and synced with its folder before
+every change of its phase. It holds the transaction's id, its direction
+(`forward` or `rollback`), what was asked (`previous` or an id), the
+release, its counter, the old targets of `current` and `previous`, the
+trust the transaction began with (the mode and, when signed, the signers
+file and principal: the stricter of the policy and `--mode`), the package
+step's snapshots and progress, and once known the outcome. Its phases, in
+order:
 
-Either way `highest-counter` is at least the journal's counter afterwards
-and the journal is removed. When the links cannot be put back the journal
-stays and the command fails.
+| Phase | What it means | How the next command resumes it |
+| --- | --- | --- |
+| `packages` | The package step runs or ran; no link was touched | Makes sure the step has ended, then records the switch as `failed`: `interrupted` when the step was done, or `package-step-interrupted` with the package state unknown when it was not |
+| `links` | The counter is used and the links are being moved; nothing was reloaded | Puts `current` and `previous` back exactly as they were and records `rolled-back` (`failed` on a first switch) with the code `interrupted` |
+| `activating` | The links point at the new release; its reload, health and post-activation check run | Verifies the release again, makes and syncs both links again, runs its reload list, health check and post-activation check again: `ok` (`completed after an interruption`), or goes back as a failed health check does |
+| `restoring` | Going back to the old release | Does all of going back again, from putting the links back |
+| `stopping` | The decision services are being stopped | Runs every stop list again |
+| `done` | The outcome is decided | Syncs the link folder, writes `highest-counter` when the counter was used, records the outcome and removes the journal |
+
+A transaction that dies (a crash, a power loss, a kill) leaves `txn.json`.
+Every switch, rollback and `recover` takes the lock and resumes it from its
+phase before anything else: each phase is redone from its start, which is
+safe to do twice, and where the links point never decides what happens.
+`status` shows it (`interrupted: ... in phase ...`) and changes nothing,
+and `--dry` refuses to go on while it is there. A resume verifies releases
+with the trust the transaction began with as well as the policy of the
+time, so a signed transaction is never finished, or gone back from, as a
+manual one. A journal that does not parse, names an unknown phase or is not
+trusted is never guessed at: the command fails and names it.
+
+When the resume ends with the decision services stopped, the command that
+resumed it does nothing else: a new switch never starts on its own after a
+failed recovery. Run it again once the host is looked at.
+
+The outcome of a transaction that a later command settled is recorded with
+`pending_report: true`. When the same request is run again (the same
+direction, and the same `previous` or id), it reports that outcome and does
+nothing else, once: a retried `--rollback-to previous` therefore never
+resolves `previous` anew and goes back to the release the interrupted
+rollback left. Run the request once more to do it again.
 
 `ah-switch recover --counter N` writes `highest-counter` as `N` when it is
-missing or does not hold a number. The switch never guesses it: on a host
-with a `current` link a missing counter could let an old release be
-replayed. `N` must be at least the counter of the releases `current` and
-`previous` point at; take it from the newest release ever deployed. It
-refuses to overwrite a counter that is there.
+missing, does not hold a number, or holds less than the counters the host
+shows (see step 2). The switch never guesses it: on a host with a
+`current` link a missing counter could let an old release be replayed.
+`N` must be at least every counter the host shows, the release folders
+included; take it from the newest release ever deployed. It refuses to
+overwrite a counter that is at least all of that.
+
+`ah-switch recover --package-state SNAPSHOT` settles an unknown package
+state: `SNAPSHOT` must be one of the two ends of the step that did not
+finish, the one the host is at. It is recorded as the host's snapshot with
+the time in `package_stated_at`, and switches go on from there.
+
+`ah-switch recover --services-stopped` settles a transaction that stays in
+`stopping` because a stop command keeps failing: it is the owner's
+statement that the decision services are stopped (by hand, or the failing
+command was not needed). It runs nothing, and records that statement with
+the time in `detail`, with `services_stopped: true`. Use it only once every
+decision service is really stopped.
 
 ### deploy.json
 
@@ -351,25 +511,35 @@ minimum, `manual` without a policy), `rollback`, `time` (UTC), `result`
 (`ok`, `failed`, `rolled-back` or `failed-recovery`), `check` (the no-AI
 check: `passed`, `failed` or `not run`), `failed_step` (`state`, `import`,
 `verify`, `counter`, `packages`, `noaicheck`, `validate`, `switch`,
-`reload`, `health`, `record` or `interrupted`; empty when ok), `error`,
-`detail`, `package_snapshot` (the snapshot the host's packages are known
-to be at) and `restored_health` (`ok`, `failed` or empty). A dry run writes
-nothing.
+`reload`, `health`, `postcheck`, `record` or `interrupted`; empty when ok),
+`error`, `detail`, `package_snapshot` (the snapshot the host's packages are
+known to be at), `package_state` (`unknown` after a package step that did
+not finish, with `package_from` and `package_to`; empty when known),
+`package_stated_at` (when the owner last stated it), `counter_used` (a
+forward switch that got as far as using its counter: evidence of that
+counter for step 2), `restored_health` (`ok`, `failed` or empty),
+`services_stopped` (the decision services were stopped), and `txn`,
+`requested` and `pending_report` (the transaction this record ends, what was
+asked, and whether a later command settled it with nobody shown the outcome
+yet). A dry run writes nothing.
 
 `error` is a stable failure code, such as `release-exists`, `bad-entry`,
 `file-changed`, `too-many-entries`, `time-budget`, `untrusted`,
 `sums-mismatch`, `file-not-listed`, `manifest-mismatch`,
 `signature-missing`, `signature-bad`, `list-missing`, `counter-not-above`,
 `counter-missing`, `counter-invalid`, `package-step-missing`,
-`package-step-failed`, `package-step-interrupted`, `nft-listing-failed`,
-`noaicheck-failed`, `validator-failed`, `link-failed`, `reload-failed`,
-`health-failed`, `record-failed` or `interrupted` (the full list is in
-`internal/authorityhost/switcher/failure.go`). `detail` adds fixed words and
-identifiers: a name that holds anything but printable ASCII, or a space, is
-quoted with Go's escapes and every identifier is cut at 160 bytes, so a
-planted file name cannot forge a line. What a program the switch runs
-writes (the no-AI check, a validator, a reload or health command) is never
-printed or recorded, since a diagnostic can hold a secret: only how it
+`package-step-failed`, `package-step-interrupted`, `package-state-unknown`,
+`nft-listing-failed`, `noaicheck-failed`, `validator-failed`, `link-failed`,
+`reload-failed`, `health-failed`, `record-failed`, `stop-list-missing`,
+`stop-failed`, `provenance-missing`, `provenance-mismatch` or `interrupted`
+(the full list is in `internal/authorityhost/switcher/failure.go`). `detail`
+adds fixed words and identifiers: a name that holds anything but printable
+ASCII, or a space, is quoted with Go's escapes and every identifier is cut
+at 160 bytes, so a planted file name cannot forge a line. The diagnostics of
+the command line (an unknown flag, a bad value, a path that cannot be
+resolved) escape what was typed in the same way. What a program the switch
+runs writes (the no-AI check, a validator, a reload or health command) is
+never printed or recorded, since a diagnostic can hold a secret: only how it
 ended (`exit status N`, killed, time limit) is. Run the program by hand to
 see its messages. The text of a broken state file is not repeated either.
 
@@ -377,8 +547,8 @@ see its messages. The text of a broken state file is not repeated either.
 
 | Code | Meaning |
 | --- | --- |
-| 0 | Switched and healthy (recorded, journal removed), a dry run whose checks passed, `status`, or `recover` done |
-| 1 | Failed; outside a dry run the outcome is in `deploy.json`, except when the state folder or the switch policy is not trusted, which records nothing |
+| 0 | Switched and healthy (recorded, journal removed), a dry run whose checks passed, `status`, `recover` done, or a retried request whose settled outcome was `ok` |
+| 1 | Failed; outside a dry run the outcome is in `deploy.json`, except when the state folder, the switch policy or the host's stop list is not trusted, which records nothing, or when the result is `unresolved`, which leaves the journal for the next command |
 | 2 | Bad arguments, `--mode` weaker than the switch policy, or a root other than `/` without `--allow-exec`; nothing was done |
 | 3 | Another switch holds the lock, or `status` holds it while a switch is asked for (`flock`, not waited for); nothing was done |
 
@@ -389,26 +559,57 @@ see its messages. The text of a broken state file is not repeated either.
 | Incoming folder holds a link, special or hard-linked file, or `releases/ID` exists | Refused at import; nothing is left in `releases/` |
 | Wrong sum, file missing or not listed, path escape, link in the release, release folder a link | Refused at verify; `current` unchanged; an import's copy is removed |
 | A release folder or file writable by group or others, set-id, or not root's | Refused at verify |
+| A release folder without the record of its import, or not the tree its import made | Refused at verify (`provenance-missing`, `provenance-mismatch`); as the old release, it is no fallback |
 | Signature missing or bad in signed mode, on a switch or a rollback | Refused at verify |
 | Switch policy or signers file not root's, writable by others, or not parsing | Refused before anything; nothing recorded |
+| The host's `stop.list` missing, empty or not trusted | Refused before anything; nothing recorded |
 | `--mode` weaker than the switch policy | Exit 2; nothing done |
 | Counter not above the highest ever attempted | Refused at counter |
 | `--rollback-to` anything but previous | Refused at counter |
-| Package step fails, or the snapshot changes and there is none | Refused at packages; `current` unchanged |
-| No-AI check fails | Refused at noaicheck, after the package step; no validator runs |
+| The snapshot changes and there is no package step | Refused at packages; `current` unchanged |
+| Package step fails | Refused at packages; `current` unchanged; the package state is unknown, and every switch is refused until `recover --package-state` or a switch to the same new snapshot runs the step to the end |
+| No-AI check fails before activation (phase pre) | Refused at noaicheck, after the package step; no validator runs |
+| No-AI check fails after the reload and health (phase post), or `nft` fails | Back to the old release, as for a failed health check; `failed_step: postcheck` |
 | A validator fails | Refused at validate; nothing reloaded |
-| Crash during the package step | The next command records `package-step-interrupted`; the next switch runs the step again from the same snapshot |
+| Crash during the package step | The next command makes sure the step has ended and records `package-step-interrupted` with the package state unknown |
 | Reload or health fails after the switch | Back to the old release, with its own reload and health lists; `rolled-back` |
-| Going back fails, or the old release is not healthy either | The failed release's `stop.list` runs; `failed-recovery` with `restored_health: failed`; the console is needed |
-| First switch, or the old release missing or no longer verifying, and the new one fails | `current` stays; its `stop.list` runs; `failed` or `failed-recovery` |
+| Going back fails (putting `previous` back included), or the old release is not healthy either | The host's `stop.list` and the stop lists of both releases run; `failed-recovery` with `restored_health: failed`; the console is needed |
+| First switch, or the old release missing or no longer verifying, and the new one fails | `current` stays; the host's and the release's stop lists run; `failed` or `failed-recovery` |
+| A stop command fails | `result: unresolved`, exit 1; the journal stays in `stopping`; every later command runs the stops again and does nothing else until they pass, or `recover --services-stopped` |
+| A link folder cannot be synced | `result: unresolved`, exit 1; the journal stays; nothing is recorded as done until the next command syncs it |
 | `--rollback-to` when `previous` points at a missing release | Refused at counter (`no-previous`) |
-| Crash or power loss during the switch | `current` points at a whole release, the old or the new one, and the journal is there; the next command settles it (see "Interrupted switches and recover") |
-| `highest-counter` missing or broken while `current` exists | Refused (`counter-missing`, `counter-invalid`); run `recover --counter N` |
+| Crash or power loss during the switch | `current` points at a whole release, the old or the new one, and the journal is there; the next command resumes its phase (see "The journal and recover") |
+| The same request run again after its transaction was settled by another command | Reports that outcome once and does nothing else |
+| `highest-counter` missing or broken while `current` exists, or below a counter the links or `deploy.json` show was used | Refused before anything, nothing recorded (`counter-missing`, `counter-invalid`); run `recover --counter N` |
+| A release folder of a higher counter is in `releases/` | Refused at counter (`counter-not-above`); build a higher counter |
 | A second switch while one runs | Exit 3; nothing done |
 
 The switch never deletes a release (it removes only the copy of an import
 that failed). Removing old releases is not part of this feature: do it by
-hand, never the targets of `current` or `previous`.
+hand, never the targets of `current` or `previous`, and keep in mind that a
+release folder is evidence of its counter (step 2).
+
+### Limits
+
+What the switch does not do, so that nobody relies on it:
+
+- It does not check that a release's lists cover what the release ships
+  (see the lists above): a signed release already carries code that runs
+  as root, so that coverage is the release builder's job.
+- The journal makes a switch safe against crashes, power loss and kills,
+  and the trust checks keep other accounts out; neither protects against
+  someone who is root on the host, who can rewrite any of it.
+- The package step is killed when the switch dies only on Linux (the
+  parent-death signal), and only the step itself: a process it starts in
+  another process group, or one that closes its descriptor 3, is outside
+  what the switch tracks. A step that does that must end its own children.
+- A release whose stop list cannot be verified when the services must be
+  stopped does not run it: the host's own stop list is what must cover
+  every decision service.
+- Going back to the old release runs its reload and health lists, not the
+  no-AI check again.
+- A release folder restored from a backup has new inodes, and needs to be
+  imported again with `--from`.
 
 ## The no-AI check
 

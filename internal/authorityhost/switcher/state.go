@@ -3,8 +3,11 @@ package switcher
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -26,7 +29,24 @@ type Record struct {
 	Error           string `json:"error"`            // a failure code; empty when ok
 	Detail          string `json:"detail"`           // fixed words and quoted identifiers; empty when ok
 	PackageSnapshot string `json:"package_snapshot"` // the snapshot the package step last brought the host to
+	// PackageState is unknown when a package step did not finish (it
+	// failed or was interrupted): the host is between PackageFrom and
+	// PackageTo, and package_snapshot is not to be relied on. Empty when
+	// known. PackageStatedAt is when the owner last stated the snapshot
+	// (recover --package-state).
+	PackageState    string `json:"package_state"`
+	PackageFrom     string `json:"package_from"`
+	PackageTo       string `json:"package_to"`
+	PackageStatedAt string `json:"package_stated_at"`
 	RestoredHealth  string `json:"restored_health"`  // after going back: ok only when the links, the reload and the health all succeeded; failed; empty otherwise
+	ServicesStopped bool   `json:"services_stopped"` // the decision services were stopped (every stop command passed, or the owner said so)
+	CounterUsed     bool   `json:"counter_used"`     // a forward switch that got as far as using its counter: evidence of it
+	// The transaction this record ends: its id, what was asked (an id, or
+	// previous) and, when a later command settled it, that nobody was shown
+	// its outcome yet: the same request run again reports it once.
+	Txn           string `json:"txn"`
+	Requested     string `json:"requested"`
+	PendingReport bool   `json:"pending_report"`
 }
 
 // Results.
@@ -49,10 +69,53 @@ const (
 // maxStateFile bounds the state files the switch reads.
 const maxStateFile = 1 << 20
 
+// maxLockFile bounds the lock file, which the switch creates empty.
+const maxLockFile = 64
+
+// stateFileTrusted reports why info, a file of the state folder, cannot be
+// trusted: it must be a regular file with one link, not writable by its
+// group or by others, of an owner the owner check accepts. The state folder
+// is checked, but a file that was already in it when it was made safe (a
+// migrated folder) is checked here.
+func (s *Switcher) stateFileTrusted(name string, info fs.FileInfo) error {
+	if err := s.trusted(filepath.Join(s.stateDir(), name), info, false); err != nil {
+		return err
+	}
+	if links(info) != 1 {
+		return failf(CodeUntrusted, "%s has more than one link", q(name))
+	}
+	return nil
+}
+
+// readStateFile reads the file name of the state folder, of at most max
+// bytes, after checking it with stateFileTrusted. A missing file is
+// fs.ErrNotExist.
+func (s *Switcher) readStateFile(name string, max int64) ([]byte, error) {
+	f, info, err := openFileIn(s.stateRoot, name)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if err := s.stateFileTrusted(name, info); err != nil {
+		return nil, err
+	}
+	if info.Size() > max {
+		return nil, failf(CodeReadFailed, "%s is larger than %d bytes", q(name), max)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, max+1))
+	if err != nil {
+		return nil, failf(CodeReadFailed, "%s: %s", q(name), q(err.Error()))
+	}
+	if int64(len(data)) > max {
+		return nil, failf(CodeReadFailed, "%s is larger than %d bytes", q(name), max)
+	}
+	return data, nil
+}
+
 // readRecord reads deploy.json from the state folder; a missing file is an
 // empty record.
-func readRecord(state *os.Root) (Record, bool, error) {
-	data, err := readFileIn(state, DeployFile, maxStateFile)
+func (s *Switcher) readRecord() (Record, bool, error) {
+	data, err := s.readStateFile(DeployFile, maxStateFile)
 	if errors.Is(err, fs.ErrNotExist) {
 		return Record{}, false, nil
 	}
@@ -60,22 +123,41 @@ func readRecord(state *os.Root) (Record, bool, error) {
 		return Record{}, false, err
 	}
 	var rec Record
-	if err := json.Unmarshal(data, &rec); err != nil {
+	if err := decodeStrict(data, &rec); err != nil {
 		return Record{}, false, failf(CodeStateInvalid, "%s does not parse", DeployFile)
 	}
 	return rec, true, nil
+}
+
+// writeJSONIn writes v as JSON to the state file name of r, whole (see
+// writeFileIn). What does not fit maxStateFile, the bound its reader takes,
+// is refused before anything is written: a state file the switch wrote can
+// always be read back by it.
+func writeJSONIn(r *os.Root, name string, v any, perm fs.FileMode) error {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if len(data) > maxStateFile {
+		return fmt.Errorf("%s would be %d bytes, more than the %d its reader takes", name, len(data), maxStateFile)
+	}
+	return writeFileIn(r, name, data, perm)
 }
 
 // readHighest reads the highest-counter file of the state folder: the
 // highest counter a switch ever attempted. A missing file is 0, not present.
 // Anything else that is not one decimal number is an error, never a guess,
 // and its text is not repeated.
-func readHighest(state *os.Root) (n uint64, present bool, err error) {
-	data, err := readFileIn(state, HighestFile, 64)
+func (s *Switcher) readHighest() (n uint64, present bool, err error) {
+	data, err := s.readStateFile(HighestFile, 64)
 	if errors.Is(err, fs.ErrNotExist) {
 		return 0, false, nil
 	}
 	if err != nil {
+		if code, _ := codeOf(err); code == CodeUntrusted {
+			return 0, false, err
+		}
 		return 0, false, failf(CodeCounterInvalid, "%s cannot be read; run ah-switch recover --counter N", HighestFile)
 	}
 	n, err = strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
@@ -134,8 +216,10 @@ var errLocked = errors.New("another ah-switch holds the lock")
 
 // takeLock takes the lock of the state folder without waiting: exclusive for
 // a switch, shared for status. With create false a missing lock file means
-// nobody holds it, and nothing is created.
-func takeLock(state *os.Root, create, shared bool) (*lock, error) {
+// nobody holds it, and nothing is created. check, when given, is asked
+// about the opened lock file before it is locked: a lock file another
+// account can write or hold is no lock.
+func takeLock(state *os.Root, create, shared bool, check func(fs.FileInfo) error) (*lock, error) {
 	flags := os.O_RDONLY | syscall.O_NOFOLLOW | syscall.O_NONBLOCK
 	if create {
 		flags = os.O_RDWR | os.O_CREATE | syscall.O_NOFOLLOW | syscall.O_NONBLOCK
@@ -147,9 +231,16 @@ func takeLock(state *os.Root, create, shared bool) (*lock, error) {
 		}
 		return nil, err
 	}
-	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
 		f.Close()
 		return nil, failf(CodeStateInvalid, "%s is not a regular file", LockFile)
+	}
+	if check != nil {
+		if err := check(info); err != nil {
+			f.Close()
+			return nil, err
+		}
 	}
 	how := syscall.LOCK_EX
 	if shared {

@@ -98,9 +98,14 @@ func TestSwitchWithExecRunner(t *testing.T) {
 	fakeNFT(t, "table inet filter {\n}\n")
 	dir := e.relDir(rel1)
 	e.release(rel1, "s")
-	// The check is given the root, the release, --require-policy and a
-	// readable listing of the firewall.
-	e.write(filepath.Join(dir, NoAICheckProgram), "#!/bin/sh\n[ \"$1 $2 $3 $4 $5 $6\" = \"--root "+e.root+" --release "+dir+" --require-policy --nft-listing\" ] && grep -q 'table inet filter' \"$7\" && touch "+marks+"/checked\n", 0o755)
+	// The check is given its phase, the root, the release and
+	// --require-policy, and after activation a readable listing of the
+	// firewall.
+	e.write(filepath.Join(dir, NoAICheckProgram), "#!/bin/sh\n"+
+		"case \"$2\" in\n"+
+		"pre) [ \"$*\" = \"--phase pre --root "+e.root+" --release "+dir+" --require-policy\" ] && touch "+marks+"/checked-pre ;;\n"+
+		"post) [ \"$1 $2 $3 $4 $5 $6 $7 $8\" = \"--phase post --root "+e.root+" --release "+dir+" --require-policy --nft-listing\" ] && grep -q 'table inet filter' \"$9\" && touch "+marks+"/checked-post ;;\n"+
+		"*) exit 3 ;;\nesac\n", 0o755)
 	e.write(filepath.Join(dir, "bin/validate"), "#!/bin/sh\ntouch "+marks+"/validated\n", 0o755)
 	e.write(filepath.Join(dir, ValidatorsList), "{release}/bin/validate\n", 0o644)
 	health := script(t, marks, "health", "exit 0\n")
@@ -111,7 +116,7 @@ func TestSwitchWithExecRunner(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("exit %d", code)
 	}
-	for _, m := range []string{"checked", "validated"} {
+	for _, m := range []string{"checked-pre", "checked-post", "validated"} {
 		if _, err := os.Stat(filepath.Join(marks, m)); err != nil {
 			t.Errorf("%s: %v", m, err)
 		}
@@ -173,6 +178,7 @@ func TestSSHVerifierWithRealKey(t *testing.T) {
 		"release@example.invalid "+string(pub)+"other@example.invalid "+string(otherPub), 0o644)
 	dir := e.release(rel1, "s")
 	run("-Y", "sign", "-q", "-f", key, "-n", SignatureNamespace, filepath.Join(dir, SumsFile))
+	e.stamp(dir)
 	signed := func(c *Config) {
 		c.Verifier = SSHVerifier{Runner: ExecRunner{}, Program: keygen}
 	}
@@ -193,6 +199,7 @@ func TestSSHVerifierWithRealKey(t *testing.T) {
 	// A signature in another namespace is refused.
 	dir = e.release(rel3, "s")
 	run("-Y", "sign", "-q", "-f", key, "-n", "git", filepath.Join(dir, SumsFile))
+	e.stamp(dir)
 	if code := e.switchTo(rel3, signed); code != ExitFailed {
 		t.Fatalf("other namespace: exit %d", code)
 	}
@@ -201,6 +208,7 @@ func TestSSHVerifierWithRealKey(t *testing.T) {
 	// The other identity of the signers file is not the principal.
 	os.Remove(filepath.Join(dir, SignatureFile))
 	run("-Y", "sign", "-q", "-f", other, "-n", SignatureNamespace, filepath.Join(dir, SumsFile))
+	e.stamp(dir)
 	if code := e.switchTo(rel3, signed); code != ExitFailed {
 		t.Fatalf("other listed signer: exit %d", code)
 	}
@@ -211,6 +219,7 @@ func TestSSHVerifierWithRealKey(t *testing.T) {
 	run("-q", "-t", "ed25519", "-N", "", "-C", "stranger", "-f", stranger)
 	os.Remove(filepath.Join(dir, SignatureFile))
 	run("-Y", "sign", "-q", "-f", stranger, "-n", SignatureNamespace, filepath.Join(dir, SumsFile))
+	e.stamp(dir)
 	if code := e.switchTo(rel3, signed); code != ExitFailed {
 		t.Fatalf("unknown signer: exit %d", code)
 	}

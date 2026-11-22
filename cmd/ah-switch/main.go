@@ -6,6 +6,8 @@
 //	ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manual|signed] [--noaicheck PATH] --rollback-to previous
 //	ah-switch [--root DIR] status
 //	ah-switch [--root DIR [--allow-exec]] [--dry] recover --counter N
+//	ah-switch [--root DIR [--allow-exec]] [--dry] recover --package-state SNAPSHOT
+//	ah-switch [--root DIR [--allow-exec]] [--dry] recover --services-stopped
 //
 // Exit codes: 0 ok, 1 failed (the outcome is recorded), 2 usage, 3 locked.
 package main
@@ -30,6 +32,8 @@ const usage = `usage: ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manu
        ah-switch [--root DIR [--allow-exec]] [--dry] [--mode ...] [--noaicheck PATH] --rollback-to previous
        ah-switch [--root DIR] status
        ah-switch [--root DIR [--allow-exec]] [--dry] recover --counter N
+       ah-switch [--root DIR [--allow-exec]] [--dry] recover --package-state SNAPSHOT
+       ah-switch [--root DIR [--allow-exec]] [--dry] recover --services-stopped
 `
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -43,6 +47,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	rollback := fs.String("rollback-to", "", "previous: go back to the release previous points at")
 	from := fs.String("from", "", "import the release from this incoming folder into releases/ID first")
 	counter := fs.Uint64("counter", 0, "recover: the highest counter this host ever switched to")
+	stopped := fs.Bool("services-stopped", false, "recover: the decision services are stopped (settles a switch whose stop commands failed)")
+	pkgState := fs.String("package-state", "", "recover: the package snapshot the host is at, after a package step that did not finish")
 	bad := func(format string, a ...any) int {
 		fmt.Fprintf(stderr, "ah-switch: "+format+"\n", a...)
 		fmt.Fprint(stderr, usage)
@@ -59,7 +65,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 				fs.PrintDefaults()
 				return switcher.ExitOK
 			}
-			return bad("%v", err)
+			// The flag package's message repeats what was typed.
+			return bad("%s", switcher.EscapeLine(err.Error()))
 		}
 		if fs.NArg() == 0 {
 			break
@@ -77,12 +84,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return filepath.Abs(p)
 	}
 	rootAbs, err := abs(*root)
-	if err != nil || *root == "" {
-		return bad("--root %q: %v", *root, err)
+	if *root == "" {
+		return bad("--root needs a folder")
+	}
+	if err != nil {
+		return bad("--root %s: %s", switcher.QuoteField(*root), switcher.EscapeLine(err.Error()))
 	}
 
 	if len(pos) == 1 && pos[0] == "status" && !set["rollback-to"] {
-		for _, name := range []string{"dry", "mode", "noaicheck", "from", "allow-exec", "counter"} {
+		for _, name := range []string{"dry", "mode", "noaicheck", "from", "allow-exec", "counter", "services-stopped", "package-state"} {
 			if set[name] {
 				return bad("status takes only --root")
 			}
@@ -92,16 +102,30 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(pos) == 1 && pos[0] == "recover" && !set["rollback-to"] {
 		for _, name := range []string{"mode", "noaicheck", "from"} {
 			if set[name] {
-				return bad("recover takes only --root, --allow-exec, --dry and --counter")
+				return bad("recover takes only --root, --allow-exec, --dry and one of --counter N, --package-state SNAPSHOT and --services-stopped")
 			}
 		}
-		if !set["counter"] {
-			return bad("recover needs --counter N")
+		forms := 0
+		for _, name := range []string{"counter", "services-stopped", "package-state"} {
+			if set[name] {
+				forms++
+			}
 		}
-		return switcher.New(switcher.Config{Root: rootAbs, Dry: *dry, AllowExec: *allowExec, Out: stdout, Err: stderr}).Recover(context.Background(), *counter)
+		if forms != 1 {
+			return bad("recover needs one of --counter N, --package-state SNAPSHOT and --services-stopped")
+		}
+		o := switcher.RecoverOptions{
+			Counter: *counter, SetCounter: set["counter"],
+			ServicesStopped: set["services-stopped"] && *stopped,
+			PackageState:    *pkgState, SetPackageState: set["package-state"],
+		}
+		if set["services-stopped"] && !*stopped {
+			return bad("--services-stopped takes no value")
+		}
+		return switcher.New(switcher.Config{Root: rootAbs, Dry: *dry, AllowExec: *allowExec, Out: stdout, Err: stderr}).Recover(context.Background(), o)
 	}
-	if set["counter"] {
-		return bad("--counter is only for recover")
+	if set["counter"] || set["services-stopped"] || set["package-state"] {
+		return bad("--counter, --package-state and --services-stopped are only for recover")
 	}
 
 	switch {
@@ -116,11 +140,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	noaiAbs, err := abs(*noai)
 	if err != nil {
-		return bad("--noaicheck: %v", err)
+		return bad("--noaicheck %s: %s", switcher.QuoteField(*noai), switcher.EscapeLine(err.Error()))
 	}
 	fromAbs, err := abs(*from)
 	if err != nil {
-		return bad("--from: %v", err)
+		return bad("--from %s: %s", switcher.QuoteField(*from), switcher.EscapeLine(err.Error()))
 	}
 
 	s := switcher.New(switcher.Config{

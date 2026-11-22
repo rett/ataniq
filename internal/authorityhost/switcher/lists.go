@@ -21,6 +21,13 @@ const (
 // and stop lists act on what is live (current) and may not use it.
 const ReleasePlaceholder = "{release}"
 
+// Bounds of a command list: commands per list and words per command, so
+// that a list cannot hold the lock beyond its time limits or fill memory.
+const (
+	MaxListCommands = 64
+	MaxCommandArgs  = 32
+)
+
 // shellChars are refused in a listed command: the commands run without a
 // shell, so quoting, pipes, redirections and variables would be passed on
 // literally, which is never what their author meant.
@@ -30,7 +37,8 @@ const shellChars = "|&;<>$`'\"\\*?~(){}"
 // or tabs, no shell. Blank lines and lines starting with # are skipped. The
 // program is an absolute path or a bare name (looked up in the runner's fixed
 // search path); a relative path with a slash is refused. {release} in any
-// argument becomes releaseDir; with releaseDir empty it is refused.
+// argument becomes releaseDir; with releaseDir empty it is refused. A list
+// holds at most MaxListCommands commands of at most MaxCommandArgs words.
 func ParseCommandList(name string, data []byte, releaseDir string) ([][]string, error) {
 	var cmds [][]string
 	for i, line := range strings.Split(string(data), "\n") {
@@ -39,6 +47,12 @@ func ParseCommandList(name string, data []byte, releaseDir string) ([][]string, 
 			continue
 		}
 		argv := strings.Fields(line)
+		if len(argv) > MaxCommandArgs {
+			return nil, failf(CodeListInvalid, "%s line %d: more than %d words", name, i+1, MaxCommandArgs)
+		}
+		if len(cmds) == MaxListCommands {
+			return nil, failf(CodeListInvalid, "%s: more than %d commands", name, MaxListCommands)
+		}
 		for j, arg := range argv {
 			if releaseDir == "" && strings.Contains(arg, ReleasePlaceholder) {
 				return nil, failf(CodeListInvalid, "%s line %d: %s is only for validators; this list acts on what current points at", name, i+1, ReleasePlaceholder)
