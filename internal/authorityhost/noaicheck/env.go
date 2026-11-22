@@ -393,9 +393,14 @@ var homeForms = []struct{ form, sub string }{
 	{"$HOME", ""},
 }
 
-// sourcePaths returns the paths, clean and relative to the root, that the
-// path word w of a "." or "source" command (or a PATH element, or a value
-// of XDG_CONFIG_HOME) stands for, and whether it could resolve it. A word
+// sourcePaths passes to yield, one at a time, the paths, clean and
+// relative to the root, that the path word w of a "." or "source" command
+// (or a PATH element, or a value of XDG_CONFIG_HOME) stands for, and
+// returns whether it could resolve it. The paths are streamed, never
+// gathered: each is charged against the run's budget (an entry) before it
+// is built, and none is built once a budget is spent or yield returns
+// false, so a word that stands for many folders in many homes costs no
+// more than the budget allows. A word
 // without an expansion must be an absolute path or start with "~/". A
 // word with an expansion must start with one of homeForms and hold no
 // other: it is resolved in home, or in every home when home is "", a
@@ -403,7 +408,7 @@ var homeForms = []struct{ form, sub string }{
 // files give it (see startup). Anything else (a relative path, another
 // variable, a command substitution, "~user") cannot be resolved. The last
 // component may be a glob, matched by the caller.
-func (c *Checker) sourcePaths(w srcWord, home string) ([]string, bool) {
+func (c *Checker) sourcePaths(w srcWord, home string, yield func(rel string) bool) bool {
 	lit := w.lit
 	sub, rest, relative := "", lit, false
 	switch {
@@ -421,30 +426,37 @@ func (c *Checker) sourcePaths(w srcWord, home string) ([]string, bool) {
 			}
 		}
 		if !relative {
-			return nil, false
+			return false
 		}
 	}
+	b := c.t.b
 	if !relative {
 		if !strings.HasPrefix(lit, "/") {
-			return nil, false
+			return false
 		}
-		return []string{clean(lit)}, true
+		if b.entry() {
+			yield(clean(lit))
+		}
+		return true
 	}
 	if (rest != "" && rest[0] != '/') || (w.exp && strings.ContainsAny(rest, "$`")) {
-		return nil, false
+		return false
 	}
 	homes := []string{home}
 	if home == "" {
 		homes = c.homeFolders()
 	}
-	var out []string
 	for _, h := range homes {
-		out = append(out, clean(path.Join(h, sub, rest)))
+		if !b.entry() || !yield(clean(path.Join(h, sub, rest))) {
+			return true
+		}
 		if sub == ".config" && c.su != nil && c.su.ready {
 			for _, d := range c.su.xdg[h] {
-				out = append(out, clean(path.Join(d, rest)))
+				if !b.entry() || !yield(clean(path.Join(d, rest))) {
+					return true
+				}
 			}
 		}
 	}
-	return out, true
+	return true
 }

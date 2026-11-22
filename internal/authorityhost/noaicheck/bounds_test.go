@@ -69,6 +69,58 @@ func TestShellParseIsBounded(t *testing.T) {
 	}
 }
 
+// The startup scan's own expansion is charged too: a profile that gives
+// XDG_CONFIG_HOME many literal folders and one that sources many files
+// relative to it stand for the product of the two lists, which the scan
+// streams, charging each path before it builds it, and stops building
+// (both loops) as soon as a budget is spent, so the run ends with
+// "incomplete budget" within a small time and memory bound.
+func TestStartupExpansionIsBounded(t *testing.T) {
+	const (
+		dirs, sources = 2000, 2000
+		timeBound     = 3 * time.Second
+		memoryBound   = 48 << 20
+	)
+	var xdg, src, paths strings.Builder
+	for i := 0; i < dirs; i++ {
+		fmt.Fprintf(&xdg, "export XDG_CONFIG_HOME=/cfg/folder-%04d\n", i)
+	}
+	for i := 0; i < sources; i++ {
+		fmt.Fprintf(&src, ". \"$XDG_CONFIG_HOME/source-%04d.sh\"\n", i)
+		fmt.Fprintf(&paths, "export PATH=\"$XDG_CONFIG_HOME/bin-%04d:$PATH\"\n", i)
+	}
+	entries := limits{entries: 20000, bytes: 1 << 40, time: time.Hour, memory: 1 << 40}
+	cases := []struct {
+		name    string
+		profile string
+		check   func(c *Checker)
+		lim     limits
+		detail  string
+	}{
+		{"sources, entries", src.String(), (*Checker).CheckEnv, entries, budgetEntries},
+		{"sources, memory", src.String(), (*Checker).CheckEnv, limits{entries: 1 << 40, bytes: 1 << 40, time: time.Hour, memory: 6 << 20}, budgetMemory},
+		{"sources, time", src.String(), (*Checker).CheckEnv, limits{entries: 1 << 40, bytes: 1 << 40, time: 100 * time.Millisecond, memory: 1 << 40}, budgetTime},
+		{"PATH folders, entries", paths.String(), (*Checker).CheckBinaries, entries, budgetEntries},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := cleanFixture(t)
+			f.file("home/user/.profile", xdg.String())
+			f.file("home/user/.bashrc", tc.profile)
+			c := f.checker(testLists())
+			c.t.b = newBudget(tc.lim)
+			mem, took := allocated(func() { within(t, func() { tc.check(c) }) })
+			want := Hit{Kind: KindIncomplete, Path: PathBudget, Detail: tc.detail}
+			if r := c.Report(); len(r.Hits) == 0 || r.Hits[len(r.Hits)-1] != want || r.Complete {
+				t.Errorf("hits %v", r.Hits)
+			}
+			if took > timeBound || mem > memoryBound {
+				t.Errorf("took %v and allocated %d bytes", took, mem)
+			}
+		})
+	}
+}
+
 // Parsed alone, without a run's budget, a profile nested too deep is
 // syntax the check cannot parse.
 func TestShellParseNestingWithoutABudget(t *testing.T) {

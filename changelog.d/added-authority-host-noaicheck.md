@@ -36,7 +36,9 @@
   Whatever the check cannot cover (a walk at its depth limit, an entry of
   unknown type, its budget of entries, bytes, time, memory and nesting
   spent (charged before the work, a profile's nested expansions and loop
-  fan-out included), an
+  fan-out included, and each path a source or PATH element stands for in
+  each home and configured `XDG_CONFIG_HOME` folder, streamed one at a
+  time and no longer built once a budget is spent), an
   unusable `/proc`, a process whose `/proc` folder stays without a name,
   a socket table without its own protocol's header, a missing or empty
   pacman database or a package entry without a name, a pinned firewall
