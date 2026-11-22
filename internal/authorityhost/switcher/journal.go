@@ -76,12 +76,16 @@ type journal struct {
 	SwitchPID   int    `json:"switch_pid"`
 	SwitchStart uint64 `json:"switch_start"`
 	// The outcome, once a step failed or the release was activated.
-	Result         string `json:"result"`
-	FailedStep     string `json:"failed_step"`
-	Error          string `json:"error"`
-	Detail         string `json:"detail"`
-	Check          string `json:"check"`
-	CheckProgram   string `json:"check_program"` // the no-AI check the post-activation check runs
+	Result     string `json:"result"`
+	FailedStep string `json:"failed_step"`
+	Error      string `json:"error"`
+	Detail     string `json:"detail"`
+	Check      string `json:"check"`
+	// The no-AI check the transaction runs: empty, the release's own; or
+	// the --noaicheck program (a path on the host) and its SHA-256, checked
+	// again before every run.
+	CheckProgram   string `json:"check_program"`
+	CheckSHA256    string `json:"check_sha256"`
 	RestoredHealth string `json:"restored_health"`
 	Stopped        bool   `json:"stopped"`       // every stop command succeeded, or the owner stated the services are stopped
 	StopFailures   string `json:"stop_failures"` // the stop commands that failed last time
@@ -165,8 +169,10 @@ func (s *Switcher) checkJournal(j journal) error {
 		return errors.New("helper_pid")
 	case j.SwitchPID < 0:
 		return errors.New("switch_pid")
-	case j.CheckProgram != "" && (!path.IsAbs(j.CheckProgram) || path.Clean(j.CheckProgram) != j.CheckProgram):
+	case j.CheckProgram != "" && (!path.IsAbs(j.CheckProgram) || path.Clean(j.CheckProgram) != j.CheckProgram || j.CheckProgram == "/"):
 		return errors.New("check_program")
+	case (j.CheckProgram == "") != (j.CheckSHA256 == "") || j.CheckSHA256 != "" && !digestPattern.MatchString(j.CheckSHA256):
+		return errors.New("check_sha256")
 	case j.CounterUsed && j.Direction != DirForward:
 		return errors.New("counter_used")
 	}

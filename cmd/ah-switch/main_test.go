@@ -271,6 +271,7 @@ func TestRecoverForms(t *testing.T) {
 		{"--root", root, "--package-state", "s", "0001-aaaaaaa"},
 		{"--root", root, "--services-stopped", "0001-aaaaaaa"},
 		{"--root", root, "--package-state", "s", "status"},
+		{"--root", root, "--noaicheck", "bin/check", "0001-aaaaaaa"},
 	} {
 		if code, _, errOut := call(args...); code != switcher.ExitUsage {
 			t.Errorf("%q: exit %d, %q", args, code, errOut)

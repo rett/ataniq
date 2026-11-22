@@ -45,7 +45,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	dry := fs.Bool("dry", false, "print every step and what it would do; run nothing, change nothing")
 	allowExec := fs.Bool("allow-exec", false, "with --root other than /: run the release's programs all the same (an isolated test runner only)")
 	mode := fs.String("mode", "", "manual (SHA256SUMS only) or signed (also SHA256SUMS.sig); default and minimum: the switch policy's")
-	noai := fs.String("noaicheck", "", "the no-AI check program (default: the release's bin/ah-noaicheck)")
+	noai := fs.String("noaicheck", "", "the no-AI check program instead of the release's bin/ah-noaicheck: an absolute path on the host (below --root), root-owned and protected, bound by its SHA-256")
 	rollback := fs.String("rollback-to", "", "previous: go back to the release previous points at")
 	from := fs.String("from", "", "import the release from this incoming folder into releases/ID first")
 	counter := fs.Uint64("counter", 0, "recover: the highest counter this host ever switched to")
@@ -145,9 +145,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case !set["rollback-to"] && len(pos) != 1:
 		return bad("give one release id, --rollback-to previous, or status")
 	}
-	noaiAbs, err := abs(*noai)
-	if err != nil {
-		return bad("--noaicheck %s: %s", switcher.QuoteField(*noai), switcher.EscapeLine(err.Error()))
+	// A path on the host, below --root: never resolved against the
+	// working folder.
+	if *noai != "" && !filepath.IsAbs(*noai) {
+		return bad("--noaicheck %s is not an absolute path", switcher.QuoteField(*noai))
 	}
 	fromAbs, err := abs(*from)
 	if err != nil {
@@ -159,7 +160,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		Dry:       *dry,
 		AllowExec: *allowExec,
 		Mode:      *mode,
-		NoAICheck: noaiAbs,
+		NoAICheck: *noai,
 		From:      fromAbs,
 		Out:       stdout,
 		Err:       stderr,

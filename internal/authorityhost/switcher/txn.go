@@ -34,6 +34,9 @@ func (t *txn) close() {
 
 func (t *txn) forward() bool { return t.j.Direction == DirForward }
 
+// check is the no-AI check the transaction runs, as its journal says.
+func (t *txn) check() checkRef { return checkRef{prog: t.j.CheckProgram, sum: t.j.CheckSHA256} }
+
 // kind is how the transaction is named in a line.
 func (t *txn) kind() string {
 	if t.forward() {
@@ -245,7 +248,7 @@ func (s *Switcher) activate(ctx context.Context, t *txn) error {
 	if err := s.crash(CrashHealth); err != nil {
 		return err
 	}
-	if err := s.postCheck(ctx, t.j.CheckProgram, cand.dir); err != nil {
+	if err := s.postCheck(ctx, t.check(), cand); err != nil {
 		t.j.Check = CheckFailed
 		return s.toRecovery(ctx, t, stepNames[8], err)
 	}

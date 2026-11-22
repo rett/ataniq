@@ -422,12 +422,27 @@ func TestNoAICheckFailingBlocksSwitch(t *testing.T) {
 	}
 }
 
+// override is the host path of the --noaicheck program the override
+// tests write below the root.
+const override = "/usr/local/sbin/other-check"
+
+func overrideCheck(c *Config) { c.NoAICheck = override }
+
+// TestNoAICheckOverride: --noaicheck names a program on the host (below the
+// root), which replaces the release's check in both phases; the journal
+// binds it by its SHA-256.
 func TestNoAICheckOverride(t *testing.T) {
 	e := active(t)
 	e.release(rel3, "2026-11-01")
-	check := filepath.Join(t.TempDir(), "other-check")
+	check := filepath.Join(e.root, override)
 	e.write(check, "#!/bin/sh\nexit 0\n", 0o755)
-	if code := e.switchTo(rel3, func(c *Config) { c.NoAICheck = check }); code != ExitOK {
+	var journaled journal
+	e.runner.hook = func(argv []string) {
+		if argv[0] == "health-probe" {
+			journaled, _ = e.journal()
+		}
+	}
+	if code := e.switchTo(rel3, overrideCheck); code != ExitOK {
 		t.Fatalf("exit %d", code)
 	}
 	if want := preCall(check, e.root, e.relDir(rel3)); e.runner.calls[0] != want {
@@ -436,6 +451,118 @@ func TestNoAICheckOverride(t *testing.T) {
 	if want := postCall(check, e.root, e.relDir(rel3)); e.runner.calls[len(e.runner.calls)-1] != want {
 		t.Errorf("post check %q, want %q", e.runner.calls[len(e.runner.calls)-1], want)
 	}
+	if journaled.CheckProgram != override || journaled.CheckSHA256 != sumOf([]byte("#!/bin/sh\nexit 0\n")) {
+		t.Errorf("journal: %q %q", journaled.CheckProgram, journaled.CheckSHA256)
+	}
+}
+
+// TestNoAICheckOverrideMustBeProtected: an override that is not protected
+// code (writable by its group or others, its folder or a folder above it
+// writable by others, a link, a second link, not a regular file, not
+// root's) is refused before anything runs or changes; so is a relative
+// path.
+func TestNoAICheckOverrideMustBeProtected(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(e *env, path string)
+		mod   func(*Config)
+	}{
+		{"writable by its group", func(e *env, p string) { os.Chmod(p, 0o775) }, nil},
+		{"folder writable by others", func(e *env, p string) { os.Chmod(filepath.Dir(p), 0o777) }, nil},
+		{"folder above writable by others", func(e *env, p string) { os.Chmod(filepath.Dir(filepath.Dir(p)), 0o777) }, nil},
+		{"a link", func(e *env, p string) {
+			os.Rename(p, p+".real")
+			os.Symlink(p+".real", p)
+		}, nil},
+		{"a second link", func(e *env, p string) { os.Link(p, filepath.Join(filepath.Dir(p), "copy")) }, nil},
+		{"a folder", func(e *env, p string) { os.Remove(p); os.Mkdir(p, 0o755) }, nil},
+		{"missing", func(e *env, p string) { os.Remove(p) }, nil},
+		{"not root's", func(e *env, p string) {}, func(c *Config) {
+			c.Owner = func(info fs.FileInfo) error {
+				if info.Name() == filepath.Base(override) {
+					return errors.New("owned by uid 1000, not root")
+				}
+				return DefaultOwnerCheck(info)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := active(t)
+			e.release(rel3, "2026-11-01")
+			check := filepath.Join(e.root, override)
+			e.write(check, "#!/bin/sh\nexit 0\n", 0o755)
+			tc.setup(e, check)
+			mods := []func(*Config){overrideCheck}
+			if tc.mod != nil {
+				mods = append(mods, tc.mod)
+			}
+			if code := e.switchTo(rel3, mods...); code != ExitFailed {
+				t.Fatalf("exit %d", code)
+			}
+			e.unchanged("releases/"+rel2, "noaicheck")
+			if len(e.runner.calls) != 0 {
+				t.Errorf("commands run: %v", e.runner.calls)
+			}
+		})
+	}
+	e := active(t)
+	if code := e.switchTo(rel1, func(c *Config) { c.NoAICheck = "usr/local/sbin/other-check" }); code != ExitUsage {
+		t.Errorf("a relative override: exit %d", code)
+	}
+}
+
+// TestNoAICheckOverrideChanged: the override is checked again, against
+// the SHA-256 its transaction journaled, before every run, a resumed one
+// included: one changed after the check before activation is never run;
+// the release goes back as on a failed check.
+func TestNoAICheckOverrideChanged(t *testing.T) {
+	t.Run("between the checks", func(t *testing.T) {
+		e := activeOwn(t)
+		check := filepath.Join(e.root, override)
+		e.write(check, "#!/bin/sh\nexit 0\n", 0o755)
+		e.runner.hook = func(argv []string) {
+			if argv[0] == "health-probe" {
+				e.write(check, "#!/bin/sh\nexit 0 # changed\n", 0o755)
+			}
+		}
+		if code := e.switchTo(rel3, overrideCheck); code != ExitFailed {
+			t.Fatalf("exit %d", code)
+		}
+		if e.runner.called("other-check") != 1 {
+			t.Errorf("the changed check ran: %v", e.runner.calls)
+		}
+		rec := e.record()
+		if rec.Result != ResultRolledBack || rec.FailedStep != "postcheck" || rec.Error != CodeNoAICheckChanged {
+			t.Errorf("record: %+v", rec)
+		}
+	})
+	t.Run("before a resume", func(t *testing.T) {
+		e := activeOwn(t)
+		check := filepath.Join(e.root, override)
+		e.write(check, "#!/bin/sh\nexit 0\n", 0o755)
+		s := e.switcher(overrideCheck)
+		s.crashAt = func(p string) error {
+			if p == CrashActivating {
+				return errCrash
+			}
+			return nil
+		}
+		if code := s.Switch(context.Background(), rel3); code != ExitFailed {
+			t.Fatalf("exit %d", code)
+		}
+		e.out.Reset()
+		e.write(check, "#!/bin/sh\nexit 0 # changed\n", 0o755)
+		e.runner.reset()
+		if code := e.recover(resumeOnly); code != ExitFailed {
+			t.Fatalf("exit %d", code)
+		}
+		if e.runner.called("other-check") != 0 {
+			t.Errorf("the changed check ran: %v", e.runner.calls)
+		}
+		if rec := e.record(); rec.Result == ResultOK || rec.Error != CodeNoAICheckChanged {
+			t.Errorf("record: %+v", rec)
+		}
+	})
 }
 
 func TestNoAICheckMissing(t *testing.T) {

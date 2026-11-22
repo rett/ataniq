@@ -43,8 +43,11 @@
   `ah-switch recover --services-stopped` settles a transaction whose stop
   commands failed on the owner's word,
   `ah-switch status` shows the state under a shared lock, `--dry` prints
-  every step and changes nothing, and `--root DIR` works on another folder
-  (running programs there only with `--allow-exec`). The outcome is
-  written to `/var/lib/authority-host/deploy.json` as stable failure codes,
-  never a program's output. Exit codes are 0 ok, 1 failed, 2 usage and 3
+  every step and changes nothing, `--root DIR` works on another folder
+  (running programs there only with `--allow-exec`), and
+  `--noaicheck PATH` runs another no-AI check only when it is protected
+  root-owned code, bound to the transaction by its SHA-256 and checked
+  again before every run. The outcome is written to
+  `/var/lib/authority-host/deploy.json` as stable failure codes, never a
+  program's output. Exit codes are 0 ok, 1 failed, 2 usage and 3
   locked. See `deploy/authority-host/README.md`.

@@ -124,8 +124,9 @@ func TestSwitchWithExecRunner(t *testing.T) {
 
 	// A failing check from a script blocks the next switch.
 	e.release(rel2, "s")
-	fail := script(t, marks, "noai-fail", "echo 'an AI tool is installed' >&2\nexit 1\n")
-	code = e.switchTo(rel2, func(c *Config) { c.Runner = ExecRunner{}; c.NoAICheck = fail })
+	// An override is a protected program on the host (below the root).
+	e.write(filepath.Join(e.root, "usr/local/sbin/noai-fail"), "#!/bin/sh\necho 'an AI tool is installed' >&2\nexit 1\n", 0o755)
+	code = e.switchTo(rel2, func(c *Config) { c.Runner = ExecRunner{}; c.NoAICheck = "/usr/local/sbin/noai-fail" })
 	if code != ExitFailed {
 		t.Fatalf("exit %d", code)
 	}

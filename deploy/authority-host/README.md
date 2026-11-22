@@ -273,7 +273,18 @@ ah-switch [--root DIR [--allow-exec]] [--dry] recover --discard-journal TXN
   above). With `--dry` nothing is imported: the incoming folder is checked
   in place, apart from the owner and the modes, which the import would set.
 - `--noaicheck PATH` runs another no-AI check program instead of the
-  release's `bin/ah-noaicheck`.
+  release's `bin/ah-noaicheck`. `PATH` is an absolute path on the host
+  (below `--root`), and the program must be protected code: a regular
+  file with one link, owned by root and not writable by its group or by
+  others, in folders that are all real folders, owned by root and not
+  writable by group or others, from the root down; otherwise the switch
+  is refused at noaicheck before anything runs. Its SHA-256 is taken
+  through the descriptor that was checked and journaled with the
+  transaction, and before every run of it (each phase, a resumed one
+  included) it is checked again and hashed again: a program that no
+  longer matches is not run (`noaicheck-changed`), which fails the check.
+  The default, the imported release's own checker, is covered by the
+  release's verification.
 - `--rollback-to previous` goes back to the release `previous` points at. It
   accepts that release's id too, and refuses any other.
 - `--dry` prints every step and what it would do, runs no program and changes
@@ -452,7 +463,8 @@ power loss: the switch then puts both links back (as the resume of the
 command syncs and settles it. No outcome is recorded, and the journal is
 never removed, before the link folder is synced.
 
-`--noaicheck PATH` replaces the release's check in both phases.
+`--noaicheck PATH` replaces the release's check in both phases, checked
+again against the SHA-256 its transaction journaled before each run.
 
 Before the switch, in step 1, the release `current` points at (the
 fallback) is opened and verified as the switch policy says, and its own

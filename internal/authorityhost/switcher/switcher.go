@@ -19,6 +19,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -81,7 +82,7 @@ type Config struct {
 	AllowExec bool   // with a Root other than /: run programs all the same (an isolated test runner)
 	Mode      string // ModeManual or ModeSigned, at least as strict as the policy; empty: the policy's
 	From      string // the incoming folder to import the release from; empty: it is imported already
-	NoAICheck string // the no-AI check program; default the release's bin/ah-noaicheck
+	NoAICheck string // the no-AI check program, a path on the host (below Root), protected code; default the release's bin/ah-noaicheck
 	Runner    Runner
 	Verifier  Verifier
 	Owner     OwnerCheck // default DefaultOwnerCheck
@@ -192,6 +193,9 @@ func (s *Switcher) checkConfig() error {
 	case "", ModeManual, ModeSigned:
 	default:
 		return fmt.Errorf("--mode %s is neither manual nor signed", q(s.cfg.Mode))
+	}
+	if c := s.cfg.NoAICheck; c != "" && (!path.IsAbs(c) || path.Clean(c) != c || c == "/") {
+		return fmt.Errorf("--noaicheck %s is not a clean absolute path", q(c))
 	}
 	return nil
 }
@@ -397,6 +401,17 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		s.step(2, "counter %d is above the highest ever attempted, %d, and above every counter this host shows", id.Counter, highest)
 	}
 
+	// The no-AI check: an override is checked as protected code and bound
+	// by its SHA-256 now, before anything runs; the release's own must be
+	// in it.
+	check, err := s.newCheckRef()
+	if err == nil {
+		_, err = s.checkPath(check, rel)
+	}
+	if err != nil {
+		return s.fail(a, 4, err)
+	}
+
 	// The transaction, written first when the package step runs and in any
 	// case before any link moves.
 	t := &txn{cand: rel, candSet: true, fb: a.fallback, fbErr: a.fallbackErr, fbSet: true}
@@ -411,6 +426,8 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		Phase:        PhasePackages,
 		PackageState: PackageNone,
 		Check:        CheckNotRun,
+		CheckProgram: check.prog,
+		CheckSHA256:  check.sum,
 	}
 	if rollback {
 		t.j.Direction = DirRollback
@@ -473,12 +490,10 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 
 	// 4. The no-AI check of the new release (phase pre), on the host as it
 	// now is.
-	check, err := s.preCheck(ctx, a, rel)
-	if err != nil {
+	if err := s.preCheck(ctx, a, check, rel); err != nil {
 		return s.fail(a, 4, err)
 	}
 	t.j.Check = a.rec.Check
-	t.j.CheckProgram = check
 
 	// 5. Validators.
 	for i, v := range validators {
@@ -507,7 +522,8 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 			s.step(7, "would run %s", qargv(h))
 		}
 		s.step(7, "until every health command passes, a round every %s, within %s in all", HealthInterval, HealthWindow)
-		s.step(8, "would run nft list ruleset into a private file, then %s", qargv([]string{check, "--phase", CheckPhasePost, "--root", s.cfg.Root, "--release", rel.dir, "--require-policy", "--nft-listing", "FILE"}))
+		checkProg, _ := s.checkPath(check, rel)
+		s.step(8, "would run nft list ruleset into a private file, then %s", qargv([]string{checkProg, "--phase", CheckPhasePost, "--root", s.cfg.Root, "--release", rel.dir, "--require-policy", "--nft-listing", "FILE"}))
 		s.step(9, "would record the result in %s", q(filepath.Join(s.stateDir(), DeployFile)))
 		s.printf("result: dry run passed; nothing changed")
 		return ExitOK
