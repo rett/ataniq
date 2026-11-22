@@ -8,6 +8,8 @@ import (
 	"io/fs"
 	"path"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -40,11 +42,13 @@ const PathReleaseSyntax = "release-syntax"
 //
 //   - pre, before a switch: the candidate release's own files (see
 //     CheckRelease) and the host's binaries, tools, credentials,
-//     environment files, processes, enabled units and packages; not the
-//     listening ports and not the firewall digest, which describe the
-//     services the switch has not started yet (with RequirePolicy an
-//     empty ports.allow and a missing nft.digest are still hits: the
-//     release must carry them);
+//     environment files, processes, enabled units and forbidden
+//     packages; not the listening ports and not the firewall digest,
+//     which describe the services the switch has not started yet, and
+//     not the installed packages against packages.allow, which the
+//     switch's package step changes after this phase (with
+//     RequirePolicy an empty ports.allow, packages.allow and a missing
+//     nft.digest are still hits: the release must carry them);
 //   - post, after a switch: all of pre, and the listening ports and the
 //     firewall digest against listing;
 //   - full, the default, a check of the host as it is: every check of the
@@ -77,7 +81,7 @@ func (c *Checker) RunPhase(phase, release string, listing []byte) (Report, error
 	} else {
 		c.CheckPorts()
 	}
-	c.CheckPackages()
+	c.checkPackages(phase != PhasePre)
 	if phase == PhasePre {
 		if c.lists.NFTDigest == "" && c.RequirePolicy {
 			c.notEnforced(FileNFTDigest, DetailMissing, "")
@@ -169,6 +173,8 @@ func (c *Checker) CheckRelease(dir string) error {
 		return p, data, true
 	}
 	s := c.newEnvScan()
+	units := map[string]*candUnit{}
+	var order []*candUnit
 	walk(releaseUnits, func(e *wentry) {
 		p, data, ok := read(e)
 		if !ok {
@@ -181,14 +187,46 @@ func (c *Checker) CheckRelease(dir string) error {
 		if u.bad {
 			c.hit(KindIncomplete, PathEnvSyntax, at(p))
 		}
+		dir, name, dropin := releaseUnitName(e.rel)
+		key := strconv.FormatBool(userUnitPath(p)) + "\x00" + dir + "\x00" + name
+		ru := units[key]
+		if ru == nil {
+			if !c.t.b.hold(int64(len(key)) + 96) {
+				return
+			}
+			ru = &candUnit{user: userUnitPath(p)}
+			units[key] = ru
+			order = append(order, ru)
+		}
+		f := releaseFile{shown: at(p), r: &u, name: path.Base(e.rel)}
+		if dropin {
+			ru.dropins = append(ru.dropins, f)
+		} else {
+			ru.main = &f
+		}
+	})
+	// Each unit's lines are evaluated as systemd merges them, the unit
+	// file and then its drop-ins by file name, before any file they name
+	// is opened: an empty EnvironmentFile= drops those before it.
+	for _, ru := range order {
+		var refs []unitRef
+		if ru.main != nil {
+			refs = appendUnitRefs(refs, ru.main.shown, ru.main.r)
+		}
+		slices.SortStableFunc(ru.dropins, func(a, b releaseFile) int { return strings.Compare(a.name, b.name) })
+		for _, d := range ru.dropins {
+			refs = appendUnitRefs(refs, d.shown, d.r)
+		}
 		managers := []manager{{}}
-		if userUnitPath(p) {
+		if ru.user {
 			managers = c.managers()[1:]
 		}
 		for _, m := range managers {
-			s.envFiles(at(p), u.files, m)
+			for _, x := range refs {
+				s.envFiles(x.unit, []envRef{x.envRef}, m)
+			}
 		}
-	})
+	}
 	for _, d := range strings.Fields(releaseNameDirs) {
 		walk(d, func(e *wentry) {
 			p, data, ok := read(e)
@@ -206,6 +244,38 @@ func (c *Checker) CheckRelease(dir string) error {
 	}
 	s.drain()
 	return nil
+}
+
+// candUnit is a unit of the candidate release in one folder: its unit
+// file and the drop-ins of its drop-in folder beside it, and whether it is
+// a user unit. A unit of the same name in another folder of the release
+// is another candUnit, read on its own: nothing it sets is passed over.
+type candUnit struct {
+	user    bool
+	main    *releaseFile
+	dropins []releaseFile
+}
+
+// releaseFile is one file of a candidate unit, as shown in a hit, and
+// what it sets.
+type releaseFile struct {
+	shown string
+	name  string // its file name
+	r     *envParse
+}
+
+// releaseUnitName returns the unit the release file rel (where it sits,
+// not where a link leads) belongs to, and the folder holding that unit:
+// the unit of its folder and the folder above, and true, when its folder
+// is a drop-in folder ("app.service.d"); its own name and folder
+// otherwise. A type's or a prefix's drop-in folder ("service.d") is a
+// unit of its own, as for installed units.
+func releaseUnitName(rel string) (dir, name string, dropin bool) {
+	folder := path.Dir(rel)
+	if base := path.Base(folder); isDropinDir(base) && folder != "." {
+		return path.Dir(folder), strings.TrimSuffix(base, ".d"), true
+	}
+	return folder, path.Base(rel), false
 }
 
 // userUnitPath reports whether the release file rel is a user unit: a

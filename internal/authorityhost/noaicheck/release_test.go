@@ -95,6 +95,133 @@ func TestRunPhasePrePolicy(t *testing.T) {
 	}
 }
 
+// The pre phase runs on the old host, before the package helper moves it
+// to the candidate's package set: an installed package the candidate's
+// packages.allow leaves out is not a hit there (post and full check the
+// allowlist), but a forbidden package is, and a database the check cannot
+// use is still incomplete.
+func TestRunPhasePrePackages(t *testing.T) {
+	plant := func(f *fixture) {
+		f.file(releaseDir+"/etc/systemd/app.service", "[Service]\nExecStart=/usr/bin/app\n")
+		f.file("var/lib/pacman/local/oldlib-1-1/desc", "%NAME%\noldlib\n")
+	}
+	lists := func() *Lists {
+		l := testLists()
+		l.PackagesAllow = []string{"bash"}
+		l.NFTDigest = NFTDigest([]byte("x"))
+		return l
+	}
+	notAllowed := Hit{Kind: KindPackage, Path: "oldlib", Detail: DetailNotAllowed}
+	forbidden := Hit{Kind: KindPackage, Path: "npm", Detail: DetailForbidden}
+	cases := []struct {
+		name  string
+		phase string
+		more  func(f *fixture)
+		want  []Hit
+	}{
+		{"pre: a package the candidate leaves out", PhasePre, nil, nil},
+		{"post: the same package", PhasePost, nil, []Hit{notAllowed}},
+		{"full: the same package", PhaseFull, nil, []Hit{notAllowed}},
+		{"pre: a forbidden package", PhasePre, func(f *fixture) {
+			f.file("var/lib/pacman/local/npm-1-1/desc", "%NAME%\nnpm\n")
+		}, []Hit{forbidden}},
+		{"pre: no database", PhasePre, func(f *fixture) { mustRemoveAll(f, "var/lib/pacman") },
+			[]Hit{{Kind: KindIncomplete, Path: PathPackages, Detail: DetailMissing}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := cleanFixture(t)
+			plant(f)
+			if tc.more != nil {
+				tc.more(f)
+			}
+			f.file("proc/net/tcp", tcpHeader)
+			c := f.checker(lists())
+			c.RequirePolicy = true
+			listing := []byte("x")
+			var r Report
+			var err error
+			within(t, func() { r, err = c.RunPhase(tc.phase, f.abs(releaseDir), listing) })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !(len(r.Hits) == 0 && len(tc.want) == 0) && !reflect.DeepEqual(r.Hits, tc.want) {
+				t.Errorf("hits %v, want %v", r.Hits, tc.want)
+			}
+			if len(tc.want) == 0 && !r.Complete {
+				t.Errorf("a clean pre phase is not complete: %+v", r)
+			}
+		})
+	}
+}
+
+// The candidate's unit files and their drop-ins are merged by unit, as
+// systemd merges them (the unit file, then its drop-ins by file name),
+// before any file their EnvironmentFile= lines name is opened: an empty
+// EnvironmentFile= in a later file drops the ones before it, so a
+// required file it drops is never "incomplete env-file"; one named after
+// the reset, or in another unit, still counts.
+func TestCheckReleaseMergesUnits(t *testing.T) {
+	missing := Hit{Kind: KindIncomplete, Path: PathEnvFile, Detail: "/etc/app/missing"}
+	unit := releaseDir + "/etc/systemd/system/app.service"
+	drop := releaseDir + "/etc/systemd/system/app.service.d/"
+	cases := []struct {
+		name  string
+		plant func(f *fixture)
+		want  []Hit
+	}{
+		{"a required file alone", func(f *fixture) {
+			f.file(unit, "[Service]\nEnvironmentFile=/etc/app/missing\n")
+		}, []Hit{missing}},
+		{"a drop-in resets the unit's", func(f *fixture) {
+			f.file(unit, "[Service]\nEnvironmentFile=/etc/app/missing\n")
+			f.file(drop+"10-env.conf", "[Service]\nEnvironmentFile=\nEnvironmentFile=/etc/app/env\n")
+		}, nil},
+		{"a later drop-in resets an earlier one's", func(f *fixture) {
+			f.file(drop+"10-old.conf", "[Service]\nEnvironmentFile=/etc/app/missing\n")
+			f.file(drop+"20-new.conf", "[Service]\nEnvironmentFile=\n")
+			f.file(unit, "[Service]\nExecStart=/usr/bin/app\n")
+		}, nil},
+		{"a user unit's drop-in resets it", func(f *fixture) {
+			f.file(releaseDir+"/etc/systemd/user/u.service", "[Service]\nEnvironmentFile=/etc/app/missing\n")
+			f.file(releaseDir+"/etc/systemd/user/u.service.d/env.conf", "[Service]\nEnvironmentFile=\n")
+		}, nil},
+		{"a reset before the file keeps it", func(f *fixture) {
+			f.file(drop+"10-reset.conf", "[Service]\nEnvironmentFile=\n")
+			f.file(drop+"20-env.conf", "[Service]\nEnvironmentFile=/etc/app/missing\n")
+		}, []Hit{missing}},
+		{"another unit's reset keeps it", func(f *fixture) {
+			f.file(unit, "[Service]\nEnvironmentFile=/etc/app/missing\n")
+			f.file(releaseDir+"/etc/systemd/system/other.service.d/env.conf", "[Service]\nEnvironmentFile=\n")
+		}, []Hit{missing}},
+		{"a drop-in folder elsewhere keeps it", func(f *fixture) {
+			f.file(releaseDir+"/etc/systemd/app.service", "[Service]\nEnvironmentFile=/etc/app/missing\n")
+			f.file(drop+"10-env.conf", "[Service]\nEnvironmentFile=\n")
+		}, []Hit{missing}},
+		{"a file the reset keeps is read", func(f *fixture) {
+			f.file(unit, "[Service]\nEnvironmentFile=/etc/app/missing\n")
+			f.file(drop+"10-env.conf", "[Service]\nEnvironmentFile=\nEnvironmentFile=/etc/app/env\n")
+			f.file("etc/app/env", "CODEX_HOME=x\n")
+		}, []Hit{{Kind: KindEnv, Path: "/etc/app/env", Detail: "CODEX_HOME"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := cleanFixture(t)
+			f.file("etc/app/env", "LANG=C\n")
+			tc.plant(f)
+			c := f.checker(testLists())
+			var err error
+			within(t, func() { err = c.CheckRelease(f.abs(releaseDir)) })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := c.Report().Hits; !(len(got) == 0 && len(tc.want) == 0) && !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("hits %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // A release outside the root is read where it is and named by its own
 // path; one that cannot be opened is an error; an unknown phase too.
 func TestRunPhaseReleaseOutsideTheRoot(t *testing.T) {

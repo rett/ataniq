@@ -843,18 +843,32 @@ their place is a read error, not a wait.
 
 - `pre`, before a switch: the candidate release's own files and the
   host's binaries, tools, credentials, environment files, processes,
-  enabled units and packages. It does not check the listening ports or
-  the firewall digest, which describe services the switch has not
-  started yet, and `--nft-listing` is a usage error in it. The release's
-  own files are those of the folder `--release` names:
+  enabled units and forbidden packages. It does not check the listening
+  ports or the firewall digest, which describe services the switch has
+  not started yet, and `--nft-listing` is a usage error in it. Nor does
+  it check the installed packages against the candidate's
+  `packages.allow`: it runs on the old host, before the switch's package
+  step moves the host to the candidate's package set, so a package the
+  old host has and the candidate drops is not a hit there. A package of
+  `forbidden-packages.list` is, and a package database the check cannot
+  use is still incomplete; `post` and `full` check the allowlist, and
+  with `--require-policy` an empty `packages.allow` is a hit in every
+  phase. The release's own files are those of the folder `--release`
+  names:
   - every file beneath its `etc/systemd` is read as a unit or drop-in,
     with the rules of an installed unit (below): its `Environment=`,
     `PassEnvironment=` and `EnvironmentFile=` names, a link to
     `/dev/null` is a mask and is not read, and every file an
     `EnvironmentFile=` names is read on the host (a required one that is
-    missing is `HIT incomplete env-file`). A file in a folder named `user`
-    is a user unit, its `EnvironmentFile=` resolved for every user; any
-    other is a system unit;
+    missing is `HIT incomplete env-file`). A unit file and the drop-ins
+    of its drop-in folder beside it (`app.service` and
+    `app.service.d/*`) are merged as systemd merges them, the unit file
+    and then the drop-ins by file name, before any file their
+    `EnvironmentFile=` lines name is opened: an empty `EnvironmentFile=`
+    drops every one before it, so a required file a later drop-in drops
+    is not reported missing. A file in a folder named `user` is a user
+    unit, its `EnvironmentFile=` resolved for every user; any other is a
+    system unit;
   - every file beneath its `etc/caddy` is read, by its format, for the
     variables it refers to through a placeholder Caddy itself replaces,
     and only those. A file whose name ends in `.json` is Caddy's native
@@ -1119,7 +1133,8 @@ folder whose `share/` holds the lists (and, in `pre` and `post`, whose
   that loops (`loop`) or whose target climbs above the root (`escape`).
 - `package`: an installed package (the pacman database) named in
   `forbidden-packages.list`, or, once `packages.allow` is filled, any
-  package not in it. While it is empty the check prints
+  package not in it (in `post` and `full`; `pre` checks only the
+  forbidden list, see "Phases"). While it is empty the check prints
   `NOTE packages not enforced` instead. The database is the evidence for
   both, and forbidden packages are checked either way, so a database the
   check cannot use is incomplete, never a pass and never a finding: no

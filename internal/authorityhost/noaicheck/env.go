@@ -191,26 +191,38 @@ func (s *envScan) unit(files []string, m manager) {
 		return
 	}
 	s.done[key] = true
-	type ref struct {
-		envRef
-		unit string // the file that names it, as shown
-	}
-	var refs []ref
+	var refs []unitRef
 	for _, f := range files {
 		p, r := s.parse(f, syntaxSystemd)
 		if r == nil {
 			continue
 		}
-		if r.reset {
-			refs = refs[:0]
-		}
-		for _, x := range r.files {
-			refs = append(refs, ref{x, show(p)})
-		}
+		refs = appendUnitRefs(refs, show(p), r)
 	}
 	for _, x := range refs {
 		s.envFiles(x.unit, []envRef{x.envRef}, m)
 	}
+}
+
+// unitRef is an EnvironmentFile= line of a unit, with the file that names
+// it as shown.
+type unitRef struct {
+	envRef
+	unit string
+}
+
+// appendUnitRefs adds to refs, the EnvironmentFile= lines of a unit's
+// files read so far in systemd's order, those of its next file r (shown as
+// shown): an empty EnvironmentFile= in r drops every one before it, in r
+// or an earlier file.
+func appendUnitRefs(refs []unitRef, shown string, r *envParse) []unitRef {
+	if r.reset {
+		refs = refs[:0]
+	}
+	for _, x := range r.files {
+		refs = append(refs, unitRef{x, shown})
+	}
+	return refs
 }
 
 // parse resolves the file rel of the root and returns its resolved path
