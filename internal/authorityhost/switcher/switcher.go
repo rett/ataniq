@@ -10,6 +10,11 @@
 //	opt/authority-host/current  -> releases/<id>
 //	opt/authority-host/previous -> releases/<id>
 //	var/lib/authority-host/deploy.json, owed.json, highest-counter, counters.log, decisions.inhibit, txn.json, switch.lock
+//
+// A decision-capable service refuses every decision while
+// var/lib/authority-host/decisions.inhibit or var/lib/authority-host/txn.json
+// is there, or while whether either is there cannot be told (see
+// InhibitFile).
 package switcher
 
 import (
@@ -472,6 +477,14 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	if manifest.PackageSnapshot == from && !unknown {
 		s.step(3, "package snapshot %s unchanged", q(manifest.PackageSnapshot))
 	} else {
+		// A static release changes no package: one of another snapshot
+		// than the host's known one was built with the wrong
+		// --package-snapshot, and its step can only refuse. It is refused
+		// here, before anything begins, so that the services stay as they
+		// are and the host's snapshot stays known.
+		if manifest.Components == ComponentsStatic && !unknown && from != "" {
+			return s.fail(a, 3, failf(CodePackageFailed, "a static release cannot move the host from package snapshot %s to %s; build it with the host's --package-snapshot %s", q(from), q(manifest.PackageSnapshot), q(from)))
+		}
 		ok, err := rel.exists(PackageStepProgram)
 		if err == nil && !ok {
 			err = failf(CodePackageStepMissing, "package snapshot %s -> %s, and the release has no %s", q(from), q(manifest.PackageSnapshot), PackageStepProgram)
@@ -1314,6 +1327,8 @@ func (s *Switcher) status(w io.Writer) error {
 		return err
 	} else if ok {
 		fmt.Fprintf(w, "decisions: inhibited (%s) since %s by transaction %s: %s; decision-capable services refuse every decision while it is there; a transaction that ends healthy removes it, or ah-switch inhibit-clear --asked WORDS\n", InhibitFile, q(in.Time), q(in.Txn), q(in.Reason))
+	} else if pending {
+		fmt.Fprintf(w, "decisions: refused while %s is there: %s was removed, but the transaction is not settled; decision-capable services refuse every decision until it is, and the next switch, rollback or recover settles it\n", JournalFile, InhibitFile)
 	} else {
 		fmt.Fprintln(w, "decisions: not inhibited")
 	}
@@ -1326,7 +1341,11 @@ func (s *Switcher) status(w io.Writer) error {
 				id, _ := s.targetID(j.OldCurrent)
 				cur = id.Name
 			}
-			fmt.Fprintf(w, "requalify: it ended %s before the interruption; the next command runs the reload list, the health check and the no-AI check of %s again before decisions are no longer inhibited\n", j.Result, cur)
+			if j.RequalifyFailed {
+				fmt.Fprintf(w, "requalify: it ended %s before the interruption, and %s did not pass its reload list, health check and no-AI check again; the next command records that, and decisions stay inhibited\n", j.Result, cur)
+			} else {
+				fmt.Fprintf(w, "requalify: it ended %s before the interruption; the next command runs the reload list, the health check and the no-AI check of %s again before decisions are no longer inhibited\n", j.Result, cur)
+			}
 		}
 		if j.StopFailures != "" {
 			fmt.Fprintf(w, "stop failures: %s; fix their cause and run a command again, or run ah-switch recover --services-stopped once the decision services are stopped\n", j.StopFailures)

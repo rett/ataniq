@@ -50,7 +50,7 @@ func (s *Switcher) reconcile(ctx context.Context, newWork bool) (code int, halt 
 	if !settled {
 		return ExitFailed, true
 	}
-	if t.requalifyFailed {
+	if t.j.RequalifyFailed {
 		// The settled outcome is owed with the failure, and decisions stay
 		// inhibited: the command fails, whatever it was asked.
 		return code, true

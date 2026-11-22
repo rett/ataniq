@@ -277,7 +277,8 @@ func TestInhibitClear(t *testing.T) {
 // contract: its unit carries no start condition, so it starts (on a
 // reload, at boot) whether decisions.inhibit is there or not, and its
 // readiness probe passes only while it runs; it refuses every decision
-// while the file is there, and when the file cannot be read.
+// while decisions.inhibit or txn.json is there, and when whether either
+// is there cannot be told.
 type guardedApp struct {
 	e       *env
 	started bool
@@ -286,11 +287,13 @@ type guardedApp struct {
 }
 
 func (g *guardedApp) decide() string {
-	_, err := os.Stat(g.e.inhibitPath())
-	if errors.Is(err, fs.ErrNotExist) {
-		return "accepted"
+	for _, name := range []string{InhibitFile, JournalFile} {
+		_, err := os.Lstat(filepath.Join(g.e.root, StateDir, name))
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "refused"
+		}
 	}
-	return "refused"
+	return "accepted"
 }
 
 func (g *guardedApp) gate(argv []string) error {
@@ -402,14 +405,16 @@ func TestRebootInDoneRequalifies(t *testing.T) {
 			}
 			var ran []string
 			for _, c := range e.runner.calls {
-				ran = append(ran, filepath.Base(strings.Fields(c)[0]))
+				ran = append(ran, strings.Fields(c)[0])
 			}
 			rec := e.record()
 			if rec.Result != ResultOK || rec.ID != rel3 || rec.CurrentID != rel3 {
 				t.Errorf("record: %+v", rec)
 			}
 			if tc.reload {
-				if strings.Join(ran, " ") != "reload-units health-probe nft ah-noaicheck" {
+				// The checker is the one of the verified release current
+				// points at, by its full path.
+				if strings.Join(ran, " ") != "reload-units health-probe nft "+filepath.Join(e.relDir(rel3), NoAICheckProgram) {
 					t.Errorf("ran %v, want the reload list, health check and post-activation check of %s", ran, rel3)
 				}
 				if strings.Join(g.asked, " ") != "refused" {
@@ -496,5 +501,55 @@ func TestRetryAfterFailedRequalification(t *testing.T) {
 	}
 	if _, ok := e.inhibited(); !ok {
 		t.Errorf("acknowledging cleared the inhibit")
+	}
+}
+
+// TestNoDecisionWhileAJournalIsOpen: no crash point of a transaction leaves
+// a state in which the published contract lets a decision through while
+// its journal is still there. The case it guards: a healthy settling
+// removes decisions.inhibit before txn.json; a crash (a power loss) between
+// the two leaves a journal in phase done and no inhibit, and at boot a
+// service that follows the contract must still refuse, until the next
+// command has qualified the host again (the reload list, health check and
+// post-activation no-AI check of current) and settled the transaction.
+func TestNoDecisionWhileAJournalIsOpen(t *testing.T) {
+	for _, point := range []string{CrashLinks, CrashCounter, CrashPrevious, CrashCurrent, CrashActivating, CrashReload, CrashHealth, CrashPostCheck, CrashDone, CrashRecord, CrashInhibitLifted, CrashUnreported} {
+		t.Run(point, func(t *testing.T) {
+			e := activeOwn(t)
+			g := guard(e)
+			g.started = true
+			e.keepOwed = true
+			e.crashAt(point, false, rel3)
+			_, open := e.journal()
+			if open && g.decide() != "refused" {
+				t.Fatalf("after a crash at %s, with %s still there, the contract lets a decision through", point, JournalFile)
+			}
+			if point != CrashInhibitLifted {
+				return
+			}
+			if _, ok := e.inhibited(); ok || !open {
+				t.Fatalf("a crash at %s: inhibited %v, journal there %v", point, ok, open)
+			}
+			if got := e.status(); !strings.Contains(got, "decisions: refused while "+JournalFile+" is there") {
+				t.Errorf("status:\n%s", got)
+			}
+			// The reboot, then the next command: current is qualified
+			// again, decisions refused all the while, then settled.
+			g.started, g.asked = false, nil
+			e.runner.reset()
+			if code := e.recover(resumeOnly); code != ExitFailed {
+				t.Fatalf("recover: exit %d\n%s", code, e.last)
+			}
+			e.noJournal()
+			if e.runner.called("reload-units") != 1 || e.runner.called("health-probe") != 1 {
+				t.Errorf("the resume did not qualify current again: %v", e.runner.calls)
+			}
+			if strings.Join(g.asked, " ") != "refused" {
+				t.Errorf("decisions while the probe ran: %v", g.asked)
+			}
+			if got := g.decide(); got != "accepted" || !g.started {
+				t.Errorf("after the resume: %s, running %v", got, g.started)
+			}
+		})
 	}
 }

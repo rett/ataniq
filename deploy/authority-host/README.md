@@ -43,7 +43,7 @@ builder, `ah-release` (see "The release builder" below).
   highest-counter         the highest counter a switch ever attempted
   counters.log            every counter a switch attempted, appended
   decisions.inhibit       while it is there, every decision service refuses every decision
-  txn.json                the journal of the transaction under way
+  txn.json                the journal of the transaction under way; decision services refuse while it is there too
   switch.lock             the lock of a running switch
   imported/<id>           the record of the import that made releases/<id>
 ```
@@ -309,7 +309,7 @@ ah-switch [--root DIR [--allow-exec]] [--dry] recover --package-state SNAPSHOT
 ah-switch [--root DIR [--allow-exec]] [--dry] recover --services-stopped
 ah-switch [--root DIR [--allow-exec]] [--dry] recover --discard-journal TXN
 ah-switch [--root DIR] [--dry] inhibit-clear --asked WORDS
-ah-switch [--root DIR] [--dry] ack --asked WORDS
+ah-switch [--root DIR] [--dry] ack --txn ID[,ID...] --asked WORDS
 ```
 
 - `--root DIR` is the folder that holds `opt/authority-host`,
@@ -367,7 +367,8 @@ ah-switch [--root DIR] [--dry] ack --asked WORDS
   the switch policy, a transaction still to resume and its phase (with the
   stop commands that failed, when it is stopping), the host's stop list,
   whether decisions are inhibited, every outcome owed
-  (`outcome owed (request ..., transaction ...)`), the owner's last
+  (`outcome owed (request ..., transaction ...)`, with the `ack` command
+  that acknowledges it, its `--txn` filled in), the owner's last
   acknowledgement, and the last outcome from `deploy.json`. It takes the
   lock shared, so what it prints is
   one state between two switches: while a switch runs it exits 3, and
@@ -380,8 +381,9 @@ ah-switch [--root DIR] [--dry] ack --asked WORDS
   does not match the host; see "The journal and recover".
 - `inhibit-clear --asked WORDS` removes the decision inhibit on the
   owner's word; see "The decision inhibit".
-- `ack --asked WORDS` acknowledges the outcomes owed on the owner's word;
-  see "The journal and recover".
+- `ack --txn ID[,ID...] --asked WORDS` acknowledges the outcomes owed,
+  named by their transactions, on the owner's word; see "The journal and
+  recover".
 
 The switch does not check who calls it. A sudo rule for the deploying user
 must be limited to the switch form (`--from INCOMING/ID ID`, see
@@ -456,7 +458,15 @@ are stopped and decisions stay inhibited, see step 4).
    validators, on the host as the step left it. The transaction begins
    (`decisions.inhibit`, then the journal) just before the step runs. A
    changed snapshot and no `bin/ah-pkgstep` is a failure
-   (`package-step-missing`). The step's progress is journaled in
+   (`package-step-missing`). A static release (`components: static`)
+   changes no package, so one whose snapshot is not the one `deploy.json`
+   records (built with the wrong `--package-snapshot`) is refused here,
+   before the transaction begins and before its step or any check runs
+   (`package-step-failed`, `build it with the host's --package-snapshot`):
+   current, the services, the inhibit and the host's known snapshot stay
+   as they are, and the release rebuilt with that snapshot switches. (On a
+   first switch, with no snapshot recorded, and while the package state is
+   unknown, its step runs as any other.) The step's progress is journaled in
    `txn.json` (`started`, with its process id and start time once it runs,
    then `done`), and on success the new snapshot is what `deploy.json`
    records from then on, even when a later step fails.
@@ -656,11 +666,13 @@ contract for those services is:
   such unit; that condition kept the service from starting, so its
   readiness probe could never pass. Do not add it, and remove it where it
   was added.
-- The application **must refuse every decision** while the file is there:
-  it checks the file before each decision (not once at start), and
-  refuses when the file is there or when whether it is there cannot be
-  told (any error other than "no such file"). Readiness and the static
-  status page do not depend on it.
+- The application **must refuse every decision** while the file is there,
+  and while the journal `/var/lib/authority-host/txn.json` is there: it
+  checks both before each decision (not once at start), and refuses when
+  either is there or when whether it is there cannot be told (any error
+  other than "no such file"; only existence is checked, so the journal's
+  mode 0600 does not matter). Readiness and the static status page do not
+  depend on them.
 
 The release builder makes every decision-capable service follow this
 contract (the switch does not check the services for it). The file holds
@@ -676,7 +688,14 @@ only its existence matters to the services.
   no-AI check (`ok`), or a going back whose release passed its reload, its
   health check and its no-AI check of phase post (`rolled-back` with
   `restored_health: ok`). The removal is synced before the journal is
-  removed.
+  removed, so a crash (a power loss) between the two leaves the journal in
+  phase `done` and no inhibit: the journal alone then keeps decisions
+  refused, `status` says `decisions: refused while txn.json is there`, and
+  the next command qualifies `current` again (below), writing the inhibit
+  back first, before it settles. From the inhibit's writing to the
+  journal's removal one of the two files is always there. The other order
+  would leave, after such a crash, an inhibit with no journal to qualify
+  the host again from, which only the owner could clear.
 - A healthy transaction found in phase `done` by a later command (a
   reboot, or a crash, came between its health check and its settling)
   is not taken as healthy on its word: the release `current` points at,
@@ -689,14 +708,19 @@ only its existence matters to the services.
   check verdict), with `after an interruption in phase done, ... did not
   pass its reload, health check and no-AI check again` in `detail`,
   decisions stay inhibited, and the command exits 1 whatever it was asked:
-  it never reports the decided `ok`. Because the reload list was started,
-  a service may be running, so the host's stop list runs (a failing stop
-  command is added to `detail`).
+  it never reports the decided `ok`. Whatever failed, the release not
+  verifying again included, a service may be running (from the activation
+  before the interruption, from the boot or from the reload), so the
+  host's stop list runs (a failing stop command is added to `detail`).
+  The failure is journaled (`requalify_failed` in `txn.json`) before the
+  outcome is recorded: a settling interrupted after that records the
+  failure again, without qualifying `current` a second time, so a later
+  check that passes never turns it into a success.
   The failure is kept apart from the decided outcome: the outcome in
   `owed.json` carries `requalify_failed: true`, and while it is owed the
   same request run again fails again (exit 1, `decisions stay inhibited`)
   and leaves it owed, instead of reporting the old `ok`; `ah-switch ack
-  --asked WORDS` takes it back, and the inhibit stays
+  --txn ID --asked WORDS` takes it back, and the inhibit stays
   until a healthy switch or `inhibit-clear`. `status` says so while the
   journal is there (`requalify: ...`) and afterwards on the owed outcome.
 - Any other end keeps it, with the outcome as its reason: a failure after
@@ -810,9 +834,21 @@ concern it, and only the second takes it back:
   it stays owed, the command exits 1 and says so on its error output, and
   the next retry reports it. An outcome whose requalification failed (see
   "The decision inhibit") is reported with exit 1, as before.
-- **`ah-switch ack --asked WORDS`**, the owner's acknowledgement that the
-  outcomes were seen, with in `WORDS` what was asked or seen (1 to 512
-  bytes). It prints every outcome owed, records the time, the words and
+- **`ah-switch ack --txn ID[,ID...] --asked WORDS`**, the owner's
+  acknowledgement that the outcomes were seen, with in `WORDS` what was
+  asked or seen (1 to 512 bytes), and in `--txn` the transactions of every
+  outcome owed, comma-separated, in any order: `status`, the switch's own
+  result, a retry and a refused request print the whole command with them
+  filled in (`ah-switch ack --txn ... --asked WORDS`), to be copied. The
+  transactions bind the words to the outcomes seen: an `ack` whose `--txn`
+  is not exactly the transactions owed now is refused (`ack: refused`,
+  exit 1) and records and removes nothing, so an `ack` whose answer was
+  lost and that is repeated after another outcome became owed never
+  acknowledges that newer outcome with words given before it was seen.
+  An `ack` of the transactions `deploy.json` already records as
+  acknowledged keeps that receipt (its first words and time), exits 0 and
+  leaves any outcome owed since as it is, saying so with the command that
+  acknowledges it. It prints every outcome owed, records the time, the words and
   the transactions in `deploy.json` (`outcome_acked_at`,
   `outcome_acked_asked`, `outcome_acked_txn`, kept by later records), and
   removes `owed.json`. It runs no program, is refused while a transaction
@@ -913,7 +949,7 @@ see its messages. The text of a broken state file is not repeated either.
 
 | Code | Meaning |
 | --- | --- |
-| 0 | Switched and healthy (recorded, journal removed), a dry run whose checks passed, `status`, `recover`, `inhibit-clear` or `ack` done, or a retried request whose settled outcome was `ok` |
+| 0 | Switched and healthy (recorded, journal removed), a dry run whose checks passed, `status`, `recover`, `inhibit-clear` or `ack` done (or an `ack` of transactions acknowledged already), or a retried request whose settled outcome was `ok` |
 | 1 | Failed; outside a dry run the outcome is in `deploy.json`, except when the state folder, the switch policy or the host's stop list is not trusted, or `releases/`, `current` or `previous` cannot be read (`state: FAILED`), which records nothing, or when the result is `unresolved`, which leaves the journal for the next command |
 | 2 | Bad arguments, `--mode` weaker than the switch policy, or a root other than `/` without `--allow-exec`; nothing was done |
 | 3 | Another switch holds the lock, or `status` holds it while a switch is asked for (`flock`, not waited for), or a package step that outlived its switch holds it (said as `surviving helper pid N`); nothing was done |
@@ -950,7 +986,7 @@ see its messages. The text of a broken state file is not repeated either.
 | Going back fails (putting `previous` back included), or the old release is not healthy or fails its no-AI check | The host's `stop.list` and the stop lists of both releases run; `failed-recovery` with `restored_health: failed`; decisions stay inhibited; the console is needed |
 | First switch, or the old release missing or no longer verifying, and the new one fails | `current` stays; the host's and the release's stop lists run; `failed` or `failed-recovery`; decisions stay inhibited, across a reboot |
 | `decisions.inhibit` there after a failure | Decision-capable services may run but refuse every decision; a later healthy switch or `inhibit-clear --asked WORDS` removes it |
-| Reboot or crash after a healthy release was decided (`done`) and before it was settled | The next command runs the reload list, health check and post-activation no-AI check of `current` again before removing the inhibit; when any fails, the host's stop list runs, decisions stay inhibited, the outcome stays owed with `requalify_failed`, and that command and every retry of the same request exit 1 until `ack --asked WORDS` |
+| Reboot or crash after a healthy release was decided (`done`) and before it was settled | The next command runs the reload list, health check and post-activation no-AI check of `current` again before removing the inhibit; when any fails, the host's stop list runs, decisions stay inhibited, the outcome stays owed with `requalify_failed`, and that command and every retry of the same request exit 1 until `ack --txn ID --asked WORDS` |
 | A stop command fails | `result: unresolved`, exit 1; the journal stays in `stopping`; every later command runs the stops again and does nothing else until they pass, or `recover --services-stopped` |
 | A link folder cannot be synced | `result: unresolved`, exit 1; the journal stays; nothing is recorded as done until the next command syncs it |
 | `--rollback-to` when `previous` points at a missing release | Refused at counter (`no-previous`) |
@@ -959,7 +995,9 @@ see its messages. The text of a broken state file is not repeated either.
 | The same request run again, and its report cannot be written or flushed | The outcome stays owed; exit 1; the next retry reports it |
 | An `ack` killed after it recorded the receipt and before it removed `owed.json` | Both files stay; the next `ack` removes `owed.json` only and keeps the first words and time |
 | `ack` run when the outcomes it acknowledges cannot be written or flushed | Nothing is recorded and `owed.json` stays; exit 1; run `ack` again |
-| Another switch or rollback while an outcome is owed | Reports the outcomes owed, leaves them owed and is refused, exit 1, nothing recorded or run, until the owner's `ack --asked WORDS` (the same request run again only reports the outcome) |
+| `ack` whose `--txn` is not the transactions owed now | `ack: refused`, exit 1; nothing recorded or removed; it prints the `ack` command for what is owed |
+| An `ack` whose answer was lost, repeated after another outcome became owed | The first receipt stays; the newer outcome stays owed; exit 0, and it prints the `ack` command for the newer outcome |
+| Another switch or rollback while an outcome is owed | Reports the outcomes owed, leaves them owed and is refused, exit 1, nothing recorded or run, until the owner's `ack --txn ID --asked WORDS` (the same request run again only reports the outcome) |
 | `highest-counter` missing or broken while `current` exists, or below a counter the links, `deploy.json` or `counters.log` show was used | Refused before anything, nothing recorded (`counter-missing`, `counter-invalid`); run `recover --counter N` |
 | A journal whose links or counter do not match the host (restored from a backup) | `reconcile: unresolved`, exit 1; nothing resumed, run or moved until `recover --discard-journal TXN` |
 | A journal that cannot be checked against the host (its evidence cannot be read) | `reconcile: unresolved`, exit 1; neither resumed nor discarded until the evidence is readable; a journal in `stopping` still gets the host's stop list first |

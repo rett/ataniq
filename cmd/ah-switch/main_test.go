@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,6 +30,19 @@ func call(args ...string) (int, string, string) {
 	var out, errOut strings.Builder
 	code := run(args, &out, &errOut)
 	return code, out.String(), errOut.String()
+}
+
+var ackPattern = regexp.MustCompile(`ah-switch ack --txn ([0-9a-f,]+) --asked WORDS`)
+
+// ackTxn is the --txn of the ack command the output out shows, as the
+// owner copies it.
+func ackTxn(t *testing.T, out string) string {
+	t.Helper()
+	m := ackPattern.FindStringSubmatch(out)
+	if m == nil {
+		t.Fatalf("the output shows no ack command:\n%s", out)
+	}
+	return m[1]
 }
 
 func TestUsage(t *testing.T) {
@@ -165,12 +179,13 @@ func TestSwitchRollbackAndStatus(t *testing.T) {
 		if code != switcher.ExitOK {
 			t.Fatalf("switch to %s: exit %d\n%s%s", id, code, out, errOut)
 		}
+		txn := ackTxn(t, out)
 		// The outcome is owed until the owner acknowledges it.
 		code, out, errOut = call("--root", root, "--allow-exec", "0009-fffffff")
-		if code != switcher.ExitFailed || !strings.Contains(out, "owed: the switch to "+id) {
+		if code != switcher.ExitFailed || !strings.Contains(out, "owed: the switch to "+id) || ackTxn(t, out) != txn {
 			t.Errorf("a request while an outcome is owed: exit %d\n%s%s", code, out, errOut)
 		}
-		if code, out, errOut := call("--root", root, "ack", "--asked", "result seen"); code != switcher.ExitOK {
+		if code, out, errOut := call("--root", root, "ack", "--txn", txn, "--asked", "result seen"); code != switcher.ExitOK {
 			t.Fatalf("ack: exit %d\n%s%s", code, out, errOut)
 		}
 	}
@@ -288,10 +303,11 @@ func TestRecover(t *testing.T) {
 	releaseIn(t, filepath.Join(in, "0001-aaaaaaa"), "0001-aaaaaaa", 1, health)
 	releaseIn(t, filepath.Join(in, "0002-bbbbbbb"), "0002-bbbbbbb", 2, health)
 	fakeNFT(t)
-	if code, out, errOut := call("--root", root, "--allow-exec", "--from", filepath.Join(in, "0001-aaaaaaa"), "0001-aaaaaaa"); code != switcher.ExitOK {
+	code, out, errOut := call("--root", root, "--allow-exec", "--from", filepath.Join(in, "0001-aaaaaaa"), "0001-aaaaaaa")
+	if code != switcher.ExitOK {
 		t.Fatalf("switch: exit %d\n%s%s", code, out, errOut)
 	}
-	if code, out, errOut := call("--root", root, "ack", "--asked", "result seen"); code != switcher.ExitOK {
+	if code, out, errOut := call("--root", root, "ack", "--txn", ackTxn(t, out), "--asked", "result seen"); code != switcher.ExitOK {
 		t.Fatalf("ack: exit %d\n%s%s", code, out, errOut)
 	}
 	os.Remove(filepath.Join(root, switcher.StateDir, switcher.HighestFile))
@@ -353,6 +369,15 @@ func TestRecoverForms(t *testing.T) {
 		{"--root", root, "ack", "--asked", ""},
 		{"--root", root, "ack", "--asked", "x", "--allow-exec"},
 		{"--root", root, "--rollback-to", "previous", "ack", "--asked", "x"},
+		{"--root", root, "ack", "--asked", "x"},
+		{"--root", root, "ack", "--txn", "", "--asked", "x"},
+		{"--root", root, "ack", "--txn", "0123456789abcdef0123456789abcdef", "--asked", ""},
+		{"--root", root, "ack", "--txn", "0123456789abcdef0123456789abcdeF", "--asked", "x"},
+		{"--root", root, "ack", "--txn", "0123456789abcdef0123456789abcdef,", "--asked", "x"},
+		{"--root", root, "ack", "--txn", "0123456789abcdef0123456789abcdef,0123456789abcdef0123456789abcdef", "--asked", "x"},
+		{"--root", root, "--txn", "0123456789abcdef0123456789abcdef", "0001-aaaaaaa"},
+		{"--root", root, "--txn", "0123456789abcdef0123456789abcdef", "status"},
+		{"--root", root, "inhibit-clear", "--asked", "x", "--txn", "0123456789abcdef0123456789abcdef"},
 	} {
 		if code, _, errOut := call(args...); code != switcher.ExitUsage {
 			t.Errorf("%q: exit %d, %q", args, code, errOut)

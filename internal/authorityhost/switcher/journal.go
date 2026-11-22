@@ -89,6 +89,12 @@ type journal struct {
 	RestoredHealth string `json:"restored_health"`
 	Stopped        bool   `json:"stopped"`       // every stop command succeeded, or the owner stated the services are stopped
 	StopFailures   string `json:"stop_failures"` // the stop commands that failed last time
+	// RequalifyFailed: the transaction was found in phase done, healthy,
+	// and current did not pass its reload, health check and no-AI check
+	// again (see requalifyCurrent). Journaled before the outcome is
+	// recorded, so that a settling interrupted after that records the
+	// failure again and never qualifies it away.
+	RequalifyFailed bool `json:"requalify_failed"`
 }
 
 var txnPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
@@ -175,6 +181,8 @@ func (s *Switcher) checkJournal(j journal) error {
 		return errors.New("check_sha256")
 	case j.CounterUsed && j.Direction != DirForward:
 		return errors.New("counter_used")
+	case j.RequalifyFailed && (j.Phase != PhaseDone || !journalHealthy(j)):
+		return errors.New("requalify_failed")
 	}
 	switch j.TrustMode {
 	case ModeManual:
@@ -245,6 +253,7 @@ const (
 	CrashStopped          = "stopped"           // every stop command ran; txn.json still says stopping
 	CrashDone             = "done"              // txn.json says done
 	CrashRecord           = "record"            // deploy.json written; txn.json still there
+	CrashInhibitLifted    = "inhibit-lifted"    // a healthy end: decisions.inhibit removed; txn.json still there
 	CrashUnreported       = "unreported"        // txn.json removed; the result line not printed yet
 	CrashAcked            = "acked"             // ack: deploy.json records the acknowledgement; owed.json still there
 )

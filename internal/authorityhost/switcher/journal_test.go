@@ -296,14 +296,16 @@ func TestCrashDoneRunsThePostCheckAgain(t *testing.T) {
 			if code := e.recover(resumeOnly); code != ExitFailed {
 				t.Fatalf("recover: exit %d\n%s", code, e.last)
 			}
-			post := "--phase post --root " + e.root + " --release " + e.relDir(rel3) + " --require-policy --nft-listing FILE"
+			// The checker is the one of the verified release current
+			// points at, by its full path.
+			post := postCall(filepath.Join(e.relDir(rel3), NoAICheckProgram), e.root, e.relDir(rel3))
 			var order []string
 			for _, c := range e.runner.calls {
-				if strings.HasSuffix(c, post) {
+				if c == post {
 					order = append(order, "post-check")
 					continue
 				}
-				order = append(order, filepath.Base(strings.Fields(c)[0]))
+				order = append(order, strings.Fields(c)[0])
 			}
 			e.noJournal()
 			rec := e.record()
@@ -345,6 +347,96 @@ func TestCrashDoneRunsThePostCheckAgain(t *testing.T) {
 				t.Errorf("output:\n%s", e.last)
 			}
 		})
+	}
+}
+
+// TestFailedRequalificationSurvivesASecondCrash: a switch killed in phase
+// done (CrashDone) is resumed, its post-activation check fails after the
+// reboot, and that resume is itself killed once the outcome is recorded
+// and owed (CrashRecord), its journal still there. The next resume, whose
+// check would pass now, does not turn the recorded failure into a
+// success: the failed requalification is in the journal, the outcome stays
+// owed with it, decisions stay inhibited and the command exits 1.
+func TestFailedRequalificationSurvivesASecondCrash(t *testing.T) {
+	e := activeOwn(t)
+	e.keepOwed = true
+	e.crashAt(CrashDone, false, rel3)
+	e.runner.failPost = e.relDir(rel3)
+	s := e.switcher()
+	s.crashAt = func(p string) error {
+		if p == CrashRecord {
+			return errCrash
+		}
+		return nil
+	}
+	if code := s.Recover(context.Background(), resumeOnly); code != ExitFailed {
+		t.Fatalf("the crashing resume: exit %d", code)
+	}
+	e.t.Logf("the crashing resume:\n%s", e.out.String())
+	e.out.Reset()
+	if owed := e.owed(); len(owed) != 1 || !owed[0].RequalifyFailed {
+		t.Fatalf("owed after the crash: %+v", owed)
+	}
+	if j, ok := e.journal(); !ok || !j.RequalifyFailed {
+		t.Fatalf("after the crashed resume: journal %+v, %v", j, ok)
+	}
+	if got := e.status(); !strings.Contains(got, "did not pass its reload list, health check and no-AI check again; the next command records that") {
+		t.Errorf("status:\n%s", got)
+	}
+	// The post-activation check passes now.
+	e.runner.failPost = ""
+	e.runner.reset()
+	if code := e.recover(resumeOnly); code != ExitFailed {
+		t.Fatalf("resume: exit %d\n%s", code, e.last)
+	}
+	e.noJournal()
+	if owed := e.owed(); len(owed) != 1 || owed[0].Result != ResultOK || !owed[0].RequalifyFailed {
+		t.Errorf("the recorded failure was replaced: owed %+v", owed)
+	}
+	if _, ok := e.inhibited(); !ok {
+		t.Errorf("decisions are no longer inhibited after a requalification that failed\n%s", e.last)
+	}
+	if rec := e.record(); rec.Check != CheckFailed || !strings.Contains(rec.Detail, "did not pass its reload, health check and no-AI check again") {
+		t.Errorf("record: %+v", rec)
+	}
+	if !strings.Contains(e.last, "decisions stay inhibited") {
+		t.Errorf("output:\n%s", e.last)
+	}
+	// The failure is carried, not qualified away by a second attempt.
+	if n := e.runner.called("reload-units"); n != 0 {
+		t.Errorf("the settling of a recorded failure ran the reload list %d times", n)
+	}
+}
+
+// TestRequalifyUnverifiableStillStops: a switch killed in phase done is
+// resumed after its release no longer verifies. Its services may run from
+// the activation before the interruption (or from the boot), so the
+// host's stop list runs, as when the reload, health or no-AI check fails
+// again, and decisions stay inhibited.
+func TestRequalifyUnverifiableStillStops(t *testing.T) {
+	e := activeOwn(t)
+	e.keepOwed = true
+	e.crashAt(CrashDone, false, rel3)
+	e.write(filepath.Join(e.relDir(rel3), "bin/app"), "not what SHA256SUMS says\n", 0o755)
+	e.runner.reset()
+	if code := e.recover(resumeOnly); code != ExitFailed {
+		t.Fatalf("recover: exit %d\n%s", code, e.last)
+	}
+	e.noJournal()
+	if n := e.runner.called("stop-all"); n != 1 {
+		t.Errorf("the host's stop list ran %d times, want 1; commands: %v", n, e.runner.calls)
+	}
+	if n := e.runner.called("reload-units"); n != 0 {
+		t.Errorf("a release that does not verify was reloaded")
+	}
+	if _, ok := e.inhibited(); !ok {
+		t.Errorf("not inhibited")
+	}
+	if owed := e.owed(); len(owed) != 1 || !owed[0].RequalifyFailed {
+		t.Errorf("owed: %+v", owed)
+	}
+	if rec := e.record(); !strings.Contains(rec.Detail, "the host's stop list ran") {
+		t.Errorf("record detail: %q", rec.Detail)
 	}
 }
 
@@ -1191,7 +1283,7 @@ func TestOwedSurvivesUnrelatedRefusal(t *testing.T) {
 	if code := e.switchTo("0009-fffffff"); code != ExitFailed {
 		t.Fatalf("unrelated request: exit %d", code)
 	}
-	if !strings.Contains(e.last, "owed: the rollback to "+rel1) || !strings.Contains(e.last, "ah-switch ack --asked WORDS") {
+	if !strings.Contains(e.last, "owed: the rollback to "+rel1) || !strings.Contains(e.last, "ah-switch ack --txn "+e.owed()[0].Txn+" --asked WORDS") {
 		t.Errorf("output:\n%s", e.last)
 	}
 	if got := e.deployJSON(); got != before {
@@ -1384,7 +1476,7 @@ func TestAckKeptWhenTheOutcomesCannotBeWritten(t *testing.T) {
 			before, recBefore := digest(t, e.root), e.record()
 			var errs bytes.Buffer
 			s := e.switcher(func(c *Config) { c.Out, c.Err = tc.out, &errs })
-			if code := s.Ack(context.Background(), "looked"); code != ExitFailed {
+			if code := s.Ack(context.Background(), owedTxns(owed), "looked"); code != ExitFailed {
 				t.Fatalf("ack with a broken output: exit %d", code)
 			}
 			if !strings.Contains(errs.String(), "stay owed") {
@@ -1438,7 +1530,7 @@ func TestAckCrashAfterRecord(t *testing.T) {
 		}
 		return nil
 	}
-	if code := s.Ack(context.Background(), "the first look"); code != ExitFailed {
+	if code := s.Ack(context.Background(), owedTxns(owed), "the first look"); code != ExitFailed {
 		t.Fatalf("ack killed after its record: exit %d\n%s", code, e.out.String())
 	}
 	e.out.Reset()
@@ -1475,5 +1567,73 @@ func TestAckCrashAfterRecord(t *testing.T) {
 	// Nothing is owed now: a later ack has nothing to acknowledge.
 	if code := e.ack("once more"); code != ExitFailed || !strings.Contains(e.last, "nothing to acknowledge") {
 		t.Errorf("ack with nothing owed: exit %d\n%s", code, e.last)
+	}
+}
+
+// TestAckBoundToTheOutcomesSeen: ack names the transactions of the
+// outcomes the owner saw. The ack of outcome A removes owed.json but its
+// answer is lost; a switch to B then settles and owes B. Repeating A's ack
+// must not take B back with words given before B was seen: it keeps A's
+// receipt, leaves B owed and says so. An ack naming transactions that are
+// not owed, and not acknowledged before, is refused and changes nothing.
+func TestAckBoundToTheOutcomesSeen(t *testing.T) {
+	const rel4 = "0004-ddddddd"
+	e := active(t)
+	e.keepOwed = true
+	e.release(rel3, "2026-11-01")
+	if code := e.switchTo(rel3); code != ExitOK {
+		t.Fatalf("switch to %s: exit %d", rel3, code)
+	}
+	a := e.owedTxns()
+	if !strings.Contains(e.last, "ah-switch ack --txn "+a[0]+" --asked WORDS") {
+		t.Errorf("the switch does not show the ack command:\n%s", e.last)
+	}
+	if got := e.status(); !strings.Contains(got, "ah-switch ack --txn "+a[0]+" --asked WORDS acknowledges it") {
+		t.Errorf("status:\n%s", got)
+	}
+	before := e.deployJSON()
+	if code := e.ackTxns([]string{neverTxn}, "not what is owed"); code != ExitFailed || !strings.Contains(e.last, "refused") || !strings.Contains(e.last, "ah-switch ack --txn "+a[0]+" --asked WORDS") {
+		t.Errorf("an ack of other transactions: exit %d\n%s", code, e.last)
+	}
+	if e.deployJSON() != before || !reflect.DeepEqual(e.owedTxns(), a) {
+		t.Fatalf("a refused ack changed the state")
+	}
+	if code := e.ackTxns(a, "words for A"); code != ExitOK || len(e.owed()) != 0 {
+		t.Fatalf("ack of A: exit %d\n%s", code, e.last)
+	}
+	receipt := e.record()
+	// The answer was lost; the owner repeats it: nothing owed, A's receipt
+	// stands.
+	e.clock.sleep(time.Hour)
+	if code := e.ackTxns(a, "words for A, again"); code != ExitOK || !strings.Contains(e.last, "recorded already") {
+		t.Errorf("the repeated ack of A: exit %d\n%s", code, e.last)
+	}
+	if e.record() != receipt {
+		t.Errorf("the repeated ack changed the receipt: %+v", e.record())
+	}
+	// B settles and is owed; A's ack, repeated once more, leaves it owed.
+	e.release(rel4, "2026-11-01")
+	if code := e.switchTo(rel4); code != ExitOK {
+		t.Fatalf("switch to %s: exit %d", rel4, code)
+	}
+	b := e.owedTxns()
+	before = e.deployJSON()
+	if code := e.ackTxns(a, "words for A"); code != ExitOK {
+		t.Errorf("the repeated ack of A after B: exit %d\n%s", code, e.last)
+	}
+	if !reflect.DeepEqual(e.owedTxns(), b) {
+		t.Fatalf("the repeated ack of A took B back: owed %+v", e.owed())
+	}
+	if e.deployJSON() != before {
+		t.Errorf("the repeated ack of A changed deploy.json:\n%s", e.deployJSON())
+	}
+	if !strings.Contains(e.last, "not acknowledged by this") || !strings.Contains(e.last, "ah-switch ack --txn "+b[0]+" --asked WORDS") {
+		t.Errorf("output:\n%s", e.last)
+	}
+	if code := e.ackTxns(b, "words for B"); code != ExitOK || len(e.owed()) != 0 {
+		t.Fatalf("ack of B: exit %d\n%s", code, e.last)
+	}
+	if rec := e.record(); rec.OutcomeAckedTxn != b[0] || rec.OutcomeAckedAsked != "words for B" {
+		t.Errorf("record: %+v", rec)
 	}
 }

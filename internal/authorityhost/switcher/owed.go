@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -112,12 +113,13 @@ func (o owedOutcome) check() error {
 }
 
 // reportOwed prints the outcome o as it is owed, and, when its
-// requalification failed, that decisions stay inhibited; it says whether it
-// was all written.
-func (s *Switcher) reportOwed(o owedOutcome) error {
+// requalification failed, that decisions stay inhibited (ack is the command
+// that acknowledges what is owed, see ackCommand); it says whether it was
+// all written.
+func (s *Switcher) reportOwed(o owedOutcome, ack string) error {
 	err := s.printResult(o.record())
 	if o.RequalifyFailed {
-		if werr := s.emit("%s", requalifyFailedLine(o.CurrentID)); err == nil {
+		if werr := s.emit("%s", requalifyFailedLine(o.CurrentID, ack)); err == nil {
 			err = werr
 		}
 	}
@@ -126,12 +128,63 @@ func (s *Switcher) reportOwed(o owedOutcome) error {
 
 // requalifyFailedLine is the line that says a transaction found in phase
 // done did not pass its reload, health check and no-AI check again,
-// current being cur.
-func requalifyFailedLine(cur string) string {
+// current being cur; ack is the command that acknowledges what is owed.
+func requalifyFailedLine(cur, ack string) string {
 	if cur == "" {
 		cur = "none"
 	}
-	return fmt.Sprintf("result: decisions stay inhibited: %s did not pass its reload, health check and no-AI check again after the interruption; look at the host, acknowledge the outcome with ah-switch ack --asked WORDS, then switch, or run ah-switch inhibit-clear --asked WORDS", cur)
+	return fmt.Sprintf("result: decisions stay inhibited: %s did not pass its reload, health check and no-AI check again after the interruption; look at the host, acknowledge the outcome with %s, then switch, or run ah-switch inhibit-clear --asked WORDS", cur, ack)
+}
+
+// ackCommand is the command that acknowledges the outcomes owed: ack names
+// the transactions of every one of them, as status shows them.
+func ackCommand(owed []owedOutcome) string {
+	return "ah-switch ack --txn " + strings.Join(owedTxns(owed), ",") + " --asked WORDS"
+}
+
+// owedTxns is the transactions of the outcomes owed, in their order.
+func owedTxns(owed []owedOutcome) []string {
+	var ids []string
+	for _, o := range owed {
+		ids = append(ids, o.Txn)
+	}
+	return ids
+}
+
+// sameTxns reports whether a and b name the same transactions, in any
+// order.
+func sameTxns(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	a, b = append([]string(nil), a...), append([]string(nil), b...)
+	sort.Strings(a)
+	sort.Strings(b)
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// checkAckTxns reports what in the transactions given to ack is not a set
+// of transaction ids; its text holds none of them.
+func checkAckTxns(txns []string) error {
+	if len(txns) == 0 || len(txns) > maxOwed {
+		return fmt.Errorf("1 to %d transactions", maxOwed)
+	}
+	seen := map[string]bool{}
+	for _, id := range txns {
+		if !txnPattern.MatchString(id) {
+			return errors.New("a transaction id is 32 hex digits")
+		}
+		if seen[id] {
+			return errors.New("a transaction is named twice")
+		}
+		seen[id] = true
+	}
+	return nil
 }
 
 // readOwed reads owed.json; a missing file is nothing owed. One that is
@@ -170,12 +223,12 @@ func (s *Switcher) writeOwed(owed []owedOutcome) error {
 
 // addOwed adds the outcome of the settled transaction rec records to
 // owed.json, replacing an outcome of the same transaction (a settling
-// that is done again). An owed.json that cannot be read is an error: the
-// outcomes it holds would be lost.
-func (s *Switcher) addOwed(rec Record, direction string, requalifyFailed bool) error {
+// that is done again), and returns the outcomes owed then. An owed.json
+// that cannot be read is an error: the outcomes it holds would be lost.
+func (s *Switcher) addOwed(rec Record, direction string, requalifyFailed bool) ([]owedOutcome, error) {
 	owed, err := s.readOwed()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	o := owedOutcome{
 		Txn:             rec.Txn,
@@ -199,11 +252,11 @@ func (s *Switcher) addOwed(rec Record, direction string, requalifyFailed bool) e
 			kept = append(kept, old)
 		}
 	}
-	kept = append(kept, o)
-	if len(kept) > maxOwed {
-		return failf(CodeRecordFailed, "%s would hold more than %d outcomes; acknowledge them with ah-switch ack --asked WORDS", OwedFile, maxOwed)
+	if len(kept)+1 > maxOwed {
+		return nil, failf(CodeRecordFailed, "%s would hold more than %d outcomes; acknowledge them with %s", OwedFile, maxOwed, ackCommand(kept))
 	}
-	return s.writeOwed(kept)
+	kept = append(kept, o)
+	return kept, s.writeOwed(kept)
 }
 
 // answerOwed is what a switch or rollback (arg, rollback) does first, once
@@ -232,12 +285,13 @@ func (s *Switcher) answerOwed(arg string, rollback bool) (code int, done bool) {
 			match = i
 		}
 	}
+	ack := ackCommand(owed)
 	if match < 0 {
 		for _, o := range owed {
 			s.printf("owed: the %s %s (request %s, transaction %s) ended %s at %s and its outcome is not acknowledged yet", o.kind(), o.ID, q(o.RequestID), o.Txn, o.Result, q(o.Time))
-			s.reportOwed(o)
+			s.reportOwed(o, ack)
 		}
-		s.printf("refused: an outcome is owed; run the same request again to have it reported, and ah-switch ack --asked WORDS once it is seen; nothing else is done")
+		s.printf("refused: an outcome is owed; run the same request again to have it reported, and %s once it is seen; nothing else is done", ack)
 		return ExitFailed, true
 	}
 	o := owed[match]
@@ -251,7 +305,7 @@ func (s *Switcher) answerOwed(arg string, rollback bool) (code int, done bool) {
 	}
 	// An outcome that could not be written (or flushed) has not been
 	// delivered: it is never taken back then.
-	if err := s.reportOwed(o); err != nil {
+	if err := s.reportOwed(o, ack); err != nil {
 		s.errorf("the outcome of this %s %s could not be written: %s; it stays owed, and the same request run again reports it", kind, arg, q(err.Error()))
 		return ExitFailed, true
 	}
@@ -264,7 +318,7 @@ func (s *Switcher) answerOwed(arg string, rollback bool) (code int, done bool) {
 	case o.RequalifyFailed:
 		s.printf("settled: the outcome stays owed: its release did not pass its reload, health check and no-AI check again")
 	default:
-		s.printf("settled: the outcome stays owed until the owner acknowledges it with ah-switch ack --asked WORDS")
+		s.printf("settled: the outcome stays owed until the owner acknowledges it with %s", ack)
 	}
 	if o.Result == ResultOK && !o.RequalifyFailed {
 		return ExitOK, true
@@ -275,15 +329,22 @@ func (s *Switcher) answerOwed(arg string, rollback bool) (code int, done bool) {
 // maxAckWords bounds the owner's words of ack.
 const maxAckWords = 512
 
-// Ack runs ah-switch ack --asked WORDS: the owner's acknowledgement that
-// every outcome owed was seen. words, what the owner asked or saw, are
-// recorded in deploy.json with the time and the transactions acknowledged,
-// then owed.json is removed. An ack of the outcomes deploy.json already
-// records as acknowledged (one interrupted before that removal) only
-// removes owed.json and keeps the recorded words and time. It runs no
-// program, is refused while a transaction is open (any command settles it
-// first) and when nothing is owed, and a dry run changes nothing.
-func (s *Switcher) Ack(ctx context.Context, words string) int {
+// Ack runs ah-switch ack --txn ID[,ID...] --asked WORDS: the owner's
+// acknowledgement that every outcome owed was seen. txns names the
+// transactions of the outcomes the owner saw (status, the same request run
+// again and ack itself print them): when they are not, in any order,
+// exactly the transactions owed now, nothing is acknowledged or recorded,
+// since the owner gave the words before seeing what is owed now (an ack
+// whose answer was lost, repeated after another outcome became owed).
+// words, what the owner asked or saw, are recorded in deploy.json with the
+// time and the transactions acknowledged, then owed.json is removed. An ack
+// of the transactions deploy.json already records as acknowledged (one
+// interrupted before that removal, or repeated after it) keeps the recorded
+// words and time: it only finishes the removal when they are still owed,
+// and leaves any outcome owed since as it is. It runs no program, is
+// refused while a transaction is open (any command settles it first) and
+// when nothing is owed, and a dry run changes nothing.
+func (s *Switcher) Ack(ctx context.Context, txns []string, words string) int {
 	if !filepath.IsAbs(s.cfg.Root) {
 		s.errorf("--root %s is not an absolute path", q(s.cfg.Root))
 		return ExitUsage
@@ -291,6 +352,10 @@ func (s *Switcher) Ack(ctx context.Context, words string) int {
 	words = strings.TrimSpace(words)
 	if words == "" || len(words) > maxAckWords {
 		s.errorf("ack needs --asked WORDS: what the owner asked or saw, 1 to %d bytes", maxAckWords)
+		return ExitUsage
+	}
+	if err := checkAckTxns(txns); err != nil {
+		s.errorf("ack needs --txn ID[,ID...]: the transactions of every outcome owed, as status shows them (%s)", err.Error())
 		return ExitUsage
 	}
 	s.printf("ah-switch: ack (root %s)", q(s.cfg.Root))
@@ -316,43 +381,56 @@ func (s *Switcher) Ack(ctx context.Context, words string) int {
 		s.printf("ack: FAILED: %s", describe(err))
 		return ExitFailed
 	}
-	if len(owed) == 0 {
-		s.printf("ack: no outcome is owed; nothing to acknowledge")
+	rec, _, err := s.readRecord()
+	if err != nil {
+		s.printf("ack: FAILED: %s; the acknowledgement could not be recorded", describe(err))
+		return ExitFailed
+	}
+	// The transactions deploy.json records are the commit mark of an
+	// acknowledgement.
+	acked := strings.Fields(rec.OutcomeAckedTxn)
+	ids := owedTxns(owed)
+	if !sameTxns(txns, ids) {
+		if len(acked) > 0 && sameTxns(txns, acked) {
+			s.printf("ack: transaction(s) %s were acknowledged by the owner at %s (asked: %s): recorded already, so those words are kept and these are not recorded", strings.Join(acked, ","), rec.OutcomeAckedAt, q(rec.OutcomeAckedAsked))
+			if len(owed) > 0 {
+				s.printf("ack: the outcomes owed since (transaction(s) %s) are not acknowledged by this; look at them with ah-switch status, then run %s", strings.Join(ids, ","), ackCommand(owed))
+			}
+			return ExitOK
+		}
+		if len(owed) == 0 {
+			s.printf("ack: no outcome is owed; nothing to acknowledge")
+			return ExitFailed
+		}
+		s.printf("ack: refused: --txn names %s, but the outcomes owed are transaction(s) %s; nothing is acknowledged or recorded. Look at them with ah-switch status, then run %s", strings.Join(txns, ","), strings.Join(ids, ","), ackCommand(owed))
 		return ExitFailed
 	}
 	// The owner acknowledges what was shown: an outcome that could not be
 	// written or flushed has not been delivered, so it is never taken back
 	// (the rule of a retry, see answerOwed).
-	var txns []string
+	ack := ackCommand(owed)
 	var shown error
 	for _, o := range owed {
 		err := s.emit("ack: the %s %s (request %s, transaction %s) ended %s at %s", o.kind(), o.ID, q(o.RequestID), o.Txn, o.Result, q(o.Time))
-		if rerr := s.reportOwed(o); err == nil {
+		if rerr := s.reportOwed(o, ack); err == nil {
 			err = rerr
 		}
 		if err != nil && shown == nil {
 			shown = err
 		}
-		txns = append(txns, o.Txn)
 	}
 	if shown != nil {
 		s.errorf("the outcomes owed could not be written: %s; they stay owed, nothing is recorded, and ack run again shows and acknowledges them", q(shown.Error()))
-		return ExitFailed
-	}
-	rec, _, err := s.readRecord()
-	if err != nil {
-		s.printf("ack: FAILED: %s; the acknowledgement could not be recorded", describe(err))
 		return ExitFailed
 	}
 	if s.cfg.Dry {
 		s.printf("ack: would record the owner's words and remove %s", q(filepath.Join(s.stateDir(), OwedFile)))
 		return ExitOK
 	}
-	// The transactions deploy.json records are the commit mark of an
-	// acknowledgement: when they are these, an ack was recorded and killed
-	// before owed.json was removed. Only that removal is finished, and the
-	// owner's original words and time are kept.
-	if rec.OutcomeAckedTxn == strings.Join(txns, " ") {
+	// When the transactions recorded are these, an ack was recorded and
+	// killed before owed.json was removed. Only that removal is finished,
+	// and the owner's original words and time are kept.
+	if sameTxns(acked, ids) {
 		if err := s.writeOwed(nil); err != nil {
 			s.printf("ack: FAILED: %s not removed: %s", OwedFile, q(err.Error()))
 			return ExitFailed
@@ -362,7 +440,7 @@ func (s *Switcher) Ack(ctx context.Context, words string) int {
 	}
 	rec.OutcomeAckedAt = s.now()
 	rec.OutcomeAckedAsked = words
-	rec.OutcomeAckedTxn = strings.Join(txns, " ")
+	rec.OutcomeAckedTxn = strings.Join(ids, " ")
 	if err := s.rewriteRecord(&rec); err != nil {
 		s.printf("ack: FAILED: %s not written: %s; the outcomes stay owed", DeployFile, q(err.Error()))
 		return ExitFailed
@@ -386,7 +464,7 @@ func (s *Switcher) owedStatus() ([]string, error) {
 	}
 	var lines []string
 	for _, o := range owed {
-		line := fmt.Sprintf("outcome owed (request %s, transaction %s): the %s %s ended %s at %s; the same request run again reports it, ah-switch ack --asked WORDS acknowledges it, and any other switch or rollback is refused until then", q(o.RequestID), o.Txn, o.kind(), o.ID, o.Result, q(o.Time))
+		line := fmt.Sprintf("outcome owed (request %s, transaction %s): the %s %s ended %s at %s; the same request run again reports it, %s acknowledges it, and any other switch or rollback is refused until then", q(o.RequestID), o.Txn, o.kind(), o.ID, o.Result, q(o.Time), ackCommand(owed))
 		if o.RequalifyFailed {
 			line += "; after an interruption its release did not pass its reload, health check and no-AI check again, so decisions stay inhibited and the same request fails until it is acknowledged"
 		}

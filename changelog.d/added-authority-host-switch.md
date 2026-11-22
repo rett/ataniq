@@ -19,7 +19,9 @@
   a `highest-counter` below the counters used, before recording anything;
   runs its no-AI check before activation (`--phase pre`: the release's
   units and the host, without ports and firewall) before and after the
-  release's package step (a step that fails or is interrupted leaves the
+  release's package step (a static release whose snapshot is not the
+  host's is refused before anything begins; a step that fails or is
+  interrupted leaves the
   package state unknown, refusing further switches until the owner states
   the snapshot or the step runs again to the end; the step holds the
   owner-only switch lock and dies with it, and one that outlives its
@@ -40,12 +42,16 @@
   first writes `/var/lib/authority-host/decisions.inhibit`; a
   decision-capable service may start while it is there (and answer its
   readiness probe) but refuses every decision while it is there or cannot
-  be read, checking it before each decision; the switch removes it only
+  be read, and while the journal `txn.json` is there, checking both before
+  each decision (a healthy end removes the inhibit before the journal, so
+  a power loss between the two still refuses); the switch removes it only
   when the transaction ends healthy, after running the reload list,
   health check and post-activation no-AI check (`--phase post`, the
   firewall and listeners as they are now) of `current` again when it
   finds a healthy transaction not yet settled (a reboot may have come;
-  when any of it fails the host's stop list runs, a failed no-AI check is
+  when any of it fails, the release not verifying again included, the
+  host's stop list runs, the failure is journaled so that an interrupted
+  settling never qualifies it away, a failed no-AI check is
   recorded as the check's verdict, the command and every retry of the
   same request exit 1 and the outcome stays owed with the failure until
   acknowledged); a
@@ -64,7 +70,11 @@
   and leaves it owed (a report that cannot be written exits 1),
   a rollback bound to its request id so that a retry never resolves
   `previous` anew, any other switch or rollback reports it and is refused,
-  and only the owner's `ah-switch ack --asked WORDS` takes it back (recorded
+  and only the owner's `ah-switch ack --txn ID[,ID...] --asked WORDS` takes
+  it back (naming the transactions of every outcome owed, as `status` and
+  the switch print them, so that an ack repeated after a newer outcome
+  became owed is never taken for that one: a mismatch is refused and
+  changes nothing, a repeat keeps the first receipt; recorded
   with the time; when the outcomes it prints cannot be written or flushed it
   records nothing, keeps them owed and exits 1, as a retry does; an ack
   interrupted after its record is finished by the next ack, which keeps

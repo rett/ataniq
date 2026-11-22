@@ -366,3 +366,53 @@ func TestEarlyStateFailureKeepsTheRecord(t *testing.T) {
 		})
 	}
 }
+
+// staticRelease writes a static release (comment-only lists, components:
+// static) of the package snapshot snapshot. Its ah-pkgstep is the fixture's;
+// the fake runner fails it as the builder's static step refuses a
+// snapshot change.
+func (e *env) staticRelease(id, snapshot string) {
+	e.t.Helper()
+	dir := e.release(id, snapshot)
+	for _, list := range []string{ValidatorsList, ReloadList, HealthCmd, StopList} {
+		e.write(filepath.Join(dir, list), "# a static release\n", 0o644)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, ManifestFile))
+	e.write(filepath.Join(dir, ManifestFile), string(data)+"components: static\n", 0o644)
+	e.sums(dir)
+}
+
+// TestStaticReleaseOfAnotherSnapshot: a static release changes no package,
+// so one built with a package snapshot other than the host's (a wrong
+// --package-snapshot) can never switch. It is refused before the
+// transaction begins: nothing runs (not its package step, not a stop
+// list), decisions are not inhibited, current is unchanged and the host's
+// package snapshot stays known, so the same release rebuilt with the
+// host's snapshot switches next.
+func TestStaticReleaseOfAnotherSnapshot(t *testing.T) {
+	e := active(t)
+	e.staticRelease(rel3, "2026-11-15")
+	e.runner.fail["ah-pkgstep"] = -1
+	if code := e.switchTo(rel3); code != ExitFailed {
+		t.Fatalf("exit %d\n%s", code, e.last)
+	}
+	e.unchanged("releases/"+rel2, "packages")
+	if rec := e.record(); rec.Error != CodePackageFailed || rec.PackageState != "" || rec.PackageSnapshot != "2026-11-01" || rec.ServicesStopped {
+		t.Errorf("record: %+v", rec)
+	}
+	if len(e.runner.calls) != 0 {
+		t.Errorf("commands run: %v", e.runner.calls)
+	}
+	if _, ok := e.inhibited(); ok {
+		t.Errorf("decisions inhibited although nothing began")
+	}
+	e.noJournal()
+	if !strings.Contains(e.last, "--package-snapshot") {
+		t.Errorf("output:\n%s", e.last)
+	}
+	const rel4 = "0004-ddddddd"
+	e.staticRelease(rel4, "2026-11-01")
+	if code := e.switchTo(rel4); code != ExitOK {
+		t.Fatalf("the static release of the host's snapshot: exit %d\n%s", code, e.last)
+	}
+}
