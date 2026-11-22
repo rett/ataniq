@@ -238,7 +238,10 @@ func TestShippedLists(t *testing.T) {
 			t.Errorf("ai-names.list lacks %s", p)
 		}
 	}
-	for _, p := range []string{"nodejs", "npm", "mise", "mise-bin", "uv", "pipx", "cargo", "rust", "go", "python-pip"} {
+	// The node series and local model runtimes are the names of the Arch
+	// core and extra repositories; the list matches names exactly.
+	for _, p := range []string{"nodejs", "npm", "mise", "mise-bin", "uv", "pipx", "cargo", "rust", "go", "python-pip",
+		"nodejs-lts-iron", "nodejs-lts-jod", "nodejs-lts-krypton", "ollama", "ollama-cuda", "ollama-rocm", "ollama-vulkan"} {
 		if !slices.Contains(l.ForbiddenPackages, p) {
 			t.Errorf("forbidden-packages.list lacks %s", p)
 		}

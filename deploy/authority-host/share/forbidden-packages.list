@@ -4,10 +4,15 @@
 # packages.allow is empty; the package allowlist is the real control, this
 # list only makes the worst cases fail before it is filled.
 
+# Names are matched exactly, so every series of a family is named: the
+# names are those of the Arch core and extra repositories (each nodejs-lts-*
+# provides nodejs but is installed under its own name).
+
 # Runtimes and package managers that install agent tools.
 nodejs
 nodejs-lts-iron
 nodejs-lts-jod
+nodejs-lts-krypton
 npm
 pnpm
 yarn
@@ -24,3 +29,9 @@ cargo
 rust
 rustup
 go
+
+# Local model runtimes, with their accelerator variants.
+ollama
+ollama-cuda
+ollama-rocm
+ollama-vulkan

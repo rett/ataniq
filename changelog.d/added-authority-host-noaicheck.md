@@ -61,7 +61,10 @@
   listening ports. It exits 0 clean, 1 on a hit and 2 on an error, never
   prints a file's content or a value, escapes every path in its errors,
   and reads its lists from the release's `share/`
-  (`deploy/authority-host/share`). A renamed binary is not caught by
+  (`deploy/authority-host/share`), whose forbidden-package list names, by
+  exact name, `nodejs` and each of its LTS series, the package managers
+  that install agent tools, and `ollama` with its accelerator variants. A
+  renamed binary is not caught by
   name: the package allowlist and the egress filter cover that. Two
   stated limits are accepted: bash-completion's array-driven startup
   loop stays `HIT incomplete env-source` (the library is outside the
