@@ -44,6 +44,13 @@ func (f *fixture) link(rel, target string) {
 	}
 }
 
+func mustRemoveAll(f *fixture, rel string) {
+	f.t.Helper()
+	if err := os.RemoveAll(f.abs(rel)); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
 // unreadable makes the folder rel unreadable for the rest of the test.
 func (f *fixture) unreadable(rel string) {
 	f.t.Helper()

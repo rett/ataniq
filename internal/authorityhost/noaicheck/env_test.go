@@ -110,7 +110,7 @@ func TestEnvReportOmitsValues(t *testing.T) {
 	f.file("etc/environment", "ANTHROPIC_API_KEY="+secret+"\n")
 	f.file("etc/profile.d/x.sh", "export OPENAI_API_KEY='"+secret+"'\n")
 	c := f.checker(testLists())
-	r := c.RunAll()
+	r := c.RunAll(nil)
 	if len(r.Hits) != 2 {
 		t.Fatalf("hits %v", r.Hits)
 	}
@@ -126,7 +126,8 @@ func TestEnvReportOmitsValues(t *testing.T) {
 			t.Errorf("the report holds the value:\n%s", out)
 		}
 	}
-	want := "HIT env /etc/environment ANTHROPIC_API_KEY\nHIT env /etc/profile.d/x.sh OPENAI_API_KEY\nFAILED 2 hit(s)\n"
+	want := "HIT env /etc/environment ANTHROPIC_API_KEY\nHIT env /etc/profile.d/x.sh OPENAI_API_KEY\n" +
+		"NOTE packages not enforced\nNOTE nft not pinned\nFAILED 2 hit(s)\n"
 	if text.String() != want {
 		t.Errorf("text\n%s\nwant\n%s", text.String(), want)
 	}

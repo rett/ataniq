@@ -100,13 +100,19 @@ func (c *Checker) unreadable(rel string, err error) {
 }
 
 // RunAll runs every check of the main command in order: the binaries, the
-// tools, the credentials, the environment files and the processes.
-func (c *Checker) RunAll() Report {
+// tools, the credentials, the environment files, the processes, the enabled
+// units, the packages and the firewall digest (against listing, nil when the
+// caller passed none). The listening ports are the ports subcommand's
+// (CheckPorts).
+func (c *Checker) RunAll(listing []byte) Report {
 	c.CheckBinaries()
 	c.CheckTools()
 	c.CheckCredentials()
 	c.CheckEnv()
 	c.CheckProcesses()
+	c.CheckUnits()
+	c.CheckPackages()
+	c.CheckNFT(listing)
 	return c.Report()
 }
 
