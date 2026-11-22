@@ -127,32 +127,34 @@ type Action struct{ Kind Kind }
 // The view's own words. The text of a backend's error is never drawn: one of
 // these stands for it.
 const (
-	title         = "PAIR A PHONE"
-	noOrigin      = "pairing origin not configured"
-	errStart      = "the daemon did not make a code; nothing was started"
-	errRead       = "could not read the pairing state"
-	errPoll       = "could not read the pairing state; trying again"
-	errConfirm    = "the confirmation did not complete; the phone is not shown as added"
-	errReject     = "the rejection did not complete; the pairing may still be open"
-	errCode       = "the daemon's code cannot be drawn; nothing was started"
-	errWords      = "the words cannot be shown safely; press x to reject"
-	msgExpired    = "The code expired. Nothing was added."
-	msgGone       = "No pairing is open on the daemon."
-	msgRejected   = "Rejected. Nothing was added."
-	msgOpen       = "A pairing is already open. Its code cannot be shown again."
-	msgPaired     = "Paired."
-	kindUnverif   = "Kind: unverified (a syncing passkey)."
-	helpWords     = "Compare with your phone. Confirm only if they match."
-	confirmLine1  = "Add this phone as a device that can approve cards."
-	confirmLine2  = "press y to confirm, any other key cancels"
-	waitingHint   = "Esc: close (the code stays valid until it expires)"
-	maxWordCells  = 16
-	maxIDCells    = 12
-	maxCodeBytes  = 128
-	startingLine  = "Asking the daemon for a one-time code..."
-	checkingLine  = "Checking for a pairing that is already open..."
-	confirmingTxt = "Confirming..."
-	rejectingTxt  = "Rejecting..."
+	title            = "PAIR A PHONE"
+	noOrigin         = "pairing origin not configured"
+	errStart         = "the daemon did not make a code; nothing was started"
+	errRead          = "could not read the pairing state"
+	errPoll          = "could not read the pairing state; trying again"
+	errConfirm       = "the confirmation did not complete; the phone is not shown as added"
+	errReject        = "the rejection did not complete; the pairing may still be open"
+	errCode          = "the daemon's code cannot be drawn; nothing was started"
+	errWords         = "the words cannot be shown safely; press x to reject"
+	msgExpired       = "The code expired. Nothing was added."
+	msgGone          = "No pairing is open on the daemon."
+	msgRejected      = "Rejected. Nothing was added."
+	msgOpen          = "A pairing is already open. Its code cannot be shown again."
+	msgPaired        = "Paired."
+	kindUnverif      = "Kind: unverified (a syncing passkey)."
+	helpWords        = "Compare with your phone. Confirm only if they match."
+	confirmLine1     = "Add this phone as a device that can approve cards."
+	confirmLine2     = "press y to confirm, any other key cancels"
+	msgTooSmallWords = "terminal too small to show the six words"
+	keysTooSmall     = "x: reject   Esc: close"
+	waitingHint      = "Esc: close (the code stays valid until it expires)"
+	maxWordCells     = 16
+	maxIDCells       = 12
+	maxCodeBytes     = 128
+	startingLine     = "Asking the daemon for a one-time code..."
+	checkingLine     = "Checking for a pairing that is already open..."
+	confirmingTxt    = "Confirming..."
+	rejectingTxt     = "Rejecting..."
 )
 
 type screen int
@@ -246,7 +248,13 @@ func (m *Model) Init() tea.Cmd {
 
 // SetSize tells the view the size of its region.
 func (m *Model) SetSize(width, height int) {
-	m.w, m.h = max(0, width), max(0, height)
+	w, h := max(0, width), max(0, height)
+	if (w != m.w || h != m.h) && m.screen == scConfirm {
+		// The second question was asked for a screen the owner saw at the
+		// old size: it is dropped.
+		m.screen = scPending
+	}
+	m.w, m.h = w, h
 }
 
 // Configured reports whether the view has a valid origin and a backend.
@@ -631,6 +639,10 @@ func (m *Model) onKey(k tea.KeyPressMsg) (tea.Cmd, Action) {
 			if m.now().Sub(m.promptAt) < confirmDelay {
 				return nil, Action{}
 			}
+			if !m.wordsFit() {
+				m.screen = scPending
+				return nil, Action{}
+			}
 			m.note = ""
 			m.screen = scConfirming
 			return m.confirmCmd(), Action{}
@@ -653,7 +665,7 @@ func (m *Model) onKey(k tea.KeyPressMsg) (tea.Cmd, Action) {
 		}
 	case scPending:
 		switch {
-		case isLetter(k, 'c') && m.wordsOK:
+		case isLetter(k, 'c') && m.wordsOK && m.wordsFit():
 			m.screen, m.note, m.promptAt = scConfirm, "", m.now()
 		case isLetter(k, 'x'):
 			m.note = ""

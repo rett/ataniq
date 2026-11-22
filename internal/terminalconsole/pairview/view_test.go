@@ -134,11 +134,13 @@ func TestGoldens(t *testing.T) {
 		{"pending-30x20", 30, 20, pending},
 		{"confirm-80x24", 80, 24, func(t *testing.T) *rig {
 			r := pending(t)
+			r.m.SetSize(80, 24)
 			r.press("c")
 			return r
 		}},
 		{"paired-80x24", 80, 24, func(t *testing.T) *rig {
 			r := pending(t)
+			r.m.SetSize(80, 24)
 			r.b.paired = Paired{ID: "cred-7f3a9b", Kind: "unverified"}
 			r.press("c")
 			r.now = r.now.Add(time.Second)
@@ -793,5 +795,101 @@ func TestTheBackendIsCalledOnlyFromCommands(t *testing.T) {
 	m.Draw(uv.NewBuffer(80, 24), uv.Rect(0, 0, 80, 24))
 	if len(b.calls) != 0 {
 		t.Fatalf("the backend was called outside a command: %v", b.calls)
+	}
+}
+
+// The owner must never confirm with a word off screen or cut: at a size
+// where the whole words screen does not fit, c is refused, y re-checks, and
+// the view says so (only x and Esc are offered).
+func TestWordsThatDoNotFitCannotBeConfirmed(t *testing.T) {
+	const msg = "terminal too small to show the six words"
+	for _, sz := range []struct {
+		name string
+		w, h int
+	}{{"80x6", 80, 6}, {"12x20", 12, 20}} {
+		t.Run(sz.name, func(t *testing.T) {
+			b := &fakeBackend{}
+			r := newRig(t, b, testOrigin, sz.w, sz.h)
+			r.start()
+			r.pending()
+			if r.m.wordsFit() {
+				t.Fatal("wordsFit is true")
+			}
+			r.see(sz.w, sz.h, "too small")
+			golden(t, "pending-too-small-"+sz.name, text(r.m, sz.w, sz.h))
+			r.press("c")
+			if r.m.screen != scPending {
+				t.Fatalf("c opened the second question (screen %v)", r.m.screen)
+			}
+			r.now = r.now.Add(time.Second)
+			r.press("y")
+			if b.count("confirm") != 0 {
+				t.Fatal("confirmed with the words off screen")
+			}
+			r.notSee(sz.w, sz.h, "c: confirm")
+			// Reject stays possible.
+			r.press("x")
+			if b.count("reject") != 1 {
+				t.Fatalf("calls %v, want a reject", b.calls)
+			}
+		})
+	}
+	// The full message at a size that holds it.
+	b := &fakeBackend{}
+	r := newRig(t, b, testOrigin, 80, 6)
+	r.start()
+	r.pending()
+	r.see(80, 6, msg, "x: reject   Esc: close")
+}
+
+func TestWordsThatFitCanBeConfirmed(t *testing.T) {
+	for _, sz := range [][2]int{{80, 24}, {60, 20}, {30, 20}} {
+		b := &fakeBackend{}
+		r := newRig(t, b, testOrigin, sz[0], sz[1])
+		r.start()
+		r.pending()
+		if !r.m.wordsFit() {
+			t.Fatalf("%dx%d: wordsFit is false", sz[0], sz[1])
+		}
+		r.press("c")
+		if r.m.screen != scConfirm {
+			t.Fatalf("%dx%d: screen %v, want the second question", sz[0], sz[1], r.m.screen)
+		}
+	}
+}
+
+func TestYRechecksThatTheWordsFit(t *testing.T) {
+	b := &fakeBackend{}
+	r := newRig(t, b, testOrigin, 80, 24)
+	r.start()
+	r.pending()
+	r.press("c")
+	r.now = r.now.Add(time.Second)
+	// The size shrinks behind the view's back.
+	r.m.w, r.m.h = 80, 6
+	r.press("y")
+	if b.count("confirm") != 0 || r.m.screen == scConfirming {
+		t.Fatalf("y confirmed with the words off screen (screen %v, calls %v)", r.m.screen, b.calls)
+	}
+}
+
+func TestAResizeDropsTheSecondQuestion(t *testing.T) {
+	b := &fakeBackend{}
+	r := newRig(t, b, testOrigin, 80, 24)
+	r.start()
+	r.pending()
+	r.press("c")
+	r.m.SetSize(80, 24) // the same size: nothing changes
+	if r.m.screen != scConfirm {
+		t.Fatalf("an unchanged size dropped the question (screen %v)", r.m.screen)
+	}
+	r.m.SetSize(100, 30)
+	if r.m.screen != scPending {
+		t.Fatalf("a resize left the question open (screen %v)", r.m.screen)
+	}
+	r.now = r.now.Add(time.Second)
+	r.press("y")
+	if b.count("confirm") != 0 {
+		t.Fatal("y confirmed after a resize")
 	}
 }
