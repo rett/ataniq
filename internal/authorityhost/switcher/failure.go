@@ -28,6 +28,8 @@ const (
 	CodeListMissing      = "list-missing"       // a required command list is missing
 	CodeListInvalid      = "list-invalid"       // a command list does not parse
 	CodeReadFailed       = "read-failed"        // a file could not be read
+	CodeFileChanged      = "file-changed"       // a file or folder changed while it was read
+	CodeReleaseExists    = "release-exists"     // --from names a release that is already imported
 	CodeCounterNotAbove  = "counter-not-above"  // the counter is not above the highest
 	CodeCounterInvalid   = "counter-invalid"    // highest-counter does not hold a counter
 	CodeRollbackRefused  = "rollback-refused"   // --rollback-to names a release other than previous

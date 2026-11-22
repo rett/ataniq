@@ -626,7 +626,7 @@ func TestCrashBetweenPreviousAndRename(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rels.Close()
-	if r, err := openRelease(id, rels, target); err != nil {
+	if r, err := openRelease(id, rels, rel2, target, nil); err != nil {
 		t.Errorf("current does not verify after the crash: %v", err)
 	} else {
 		r.Close()

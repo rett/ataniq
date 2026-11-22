@@ -165,23 +165,31 @@ func ParseSums(data []byte) (map[string]string, error) {
 
 // release is an opened, verified release folder.
 type release struct {
-	id       ReleaseID
-	dir      string
-	root     *os.Root
-	sums     []byte
-	files    int
-	manifest Manifest
+	id    ReleaseID
+	dir   string // the path the release's programs are given: releases/<id>
+	path  string // where the folder is now: dir, or the import's folder until it is renamed
+	root  *os.Root
+	sums  []byte
+	files int
+	// Set by checkRelease.
+	manifest   Manifest
+	validators [][]string
+	reloads    [][]string
+	health     []string
 }
 
 func (r *release) Close() error { return r.root.Close() }
 
-// openRelease opens the release folder id of the releases folder rels (whose
-// path is dir), which must be a real folder, not a symbolic link, and checks
-// its SHA256SUMS against every file in it. Every entry must be a folder or a
-// regular file: a symbolic link anywhere in the folder is refused, so hashing
-// never follows one out of it.
-func openRelease(id ReleaseID, rels *os.Root, dir string) (*release, error) {
-	info, err := rels.Lstat(id.Name)
+// entryCheck is called for the release folder (as ".") and every entry in it.
+type entryCheck func(rel string, info fs.FileInfo) error
+
+// openRelease opens the folder name of parent as the release id, whose path
+// for its programs is dir. The folder must be a real folder, not a symbolic
+// link; every entry in it must be a folder or a regular file with one link
+// (so hashing never follows a link out of it) and pass trust, when trust is
+// given; and its SHA256SUMS must match every file in it.
+func openRelease(id ReleaseID, parent *os.Root, name, dir string, trust entryCheck) (*release, error) {
+	info, err := parent.Lstat(name)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, failf(CodeReleaseMissing, "no release folder %s", id.Name)
@@ -194,7 +202,7 @@ func openRelease(id ReleaseID, rels *os.Root, dir string) (*release, error) {
 	if !info.IsDir() {
 		return nil, failf(CodeReleaseNotFolder, "releases/%s is not a folder", id.Name)
 	}
-	root, err := rels.OpenRoot(id.Name)
+	root, err := parent.OpenRoot(name)
 	if err != nil {
 		return nil, err
 	}
@@ -202,44 +210,58 @@ func openRelease(id ReleaseID, rels *os.Root, dir string) (*release, error) {
 		root.Close()
 		return nil, failf(CodeReleaseNotFolder, "releases/%s changed while it was opened", id.Name)
 	}
-	r := &release{id: id, dir: dir, root: root}
-	if err := r.verify(); err != nil {
+	r, err := newRelease(id, root, dir, dir, trust)
+	if err != nil {
 		root.Close()
 		return nil, err
 	}
 	return r, nil
 }
 
-func (r *release) verify() error {
+// newRelease verifies the opened folder root as the release id (see
+// openRelease); dir is the path its programs are given, path where it is.
+// It does not close root.
+func newRelease(id ReleaseID, root *os.Root, dir, path string, trust entryCheck) (*release, error) {
+	r := &release{id: id, dir: dir, path: path, root: root}
+	if trust != nil {
+		info, err := root.Stat(".")
+		if err != nil {
+			return nil, err
+		}
+		if err := trust(".", info); err != nil {
+			return nil, err
+		}
+	}
+	if err := r.verify(trust); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+func (r *release) verify(trust entryCheck) error {
+	present := map[string]bool{}
+	err := walkTree(r.root, func(rel string, info fs.FileInfo) error {
+		if err := entryKind(rel, info); err != nil {
+			return err
+		}
+		if trust != nil {
+			if err := trust(rel, info); err != nil {
+				return err
+			}
+		}
+		if info.Mode().IsRegular() && rel != SumsFile && rel != SignatureFile {
+			present[rel] = true
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
 	sums, err := r.readSmall(SumsFile)
 	if err != nil {
 		return err
 	}
 	listed, err := ParseSums(sums)
-	if err != nil {
-		return err
-	}
-	present := map[string]bool{}
-	err = fs.WalkDir(r.root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if path == "." {
-			return nil
-		}
-		switch t := d.Type(); {
-		case t&fs.ModeSymlink != 0:
-			return failf(CodeBadEntry, "%s is a symbolic link; a release holds only folders and regular files", q(path))
-		case t.IsDir():
-			return nil
-		case !t.IsRegular():
-			return failf(CodeBadEntry, "%s is not a regular file", q(path))
-		}
-		if path != SumsFile && path != SignatureFile {
-			present[path] = true
-		}
-		return nil
-	})
 	if err != nil {
 		return err
 	}
@@ -279,30 +301,8 @@ func (r *release) verify() error {
 	return nil
 }
 
-// openRegular opens a regular file of the release and checks that what was
-// opened is the entry that was looked at, not something put there since.
-func (r *release) openRegular(path string) (*os.File, error) {
-	before, err := r.root.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !before.Mode().IsRegular() {
-		return nil, failf(CodeBadEntry, "%s is not a regular file", q(path))
-	}
-	f, err := r.root.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	after, err := f.Stat()
-	if err != nil || !os.SameFile(before, after) {
-		f.Close()
-		return nil, failf(CodeReadFailed, "%s changed while it was read", q(path))
-	}
-	return f, nil
-}
-
 func (r *release) hash(path string) (string, error) {
-	f, err := r.openRegular(path)
+	f, _, err := openFileIn(r.root, path)
 	if err != nil {
 		return "", err
 	}
@@ -315,25 +315,14 @@ func (r *release) hash(path string) (string, error) {
 }
 
 func (r *release) readSmall(path string) ([]byte, error) {
-	f, err := r.openRegular(path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			if path == SumsFile {
-				return nil, failf(CodeSumsMissing, "%s missing in the release", path)
-			}
-			return nil, failf(CodeFileMissing, "%s missing in the release", q(path))
+	data, err := readFileIn(r.root, path, maxSmallFile)
+	if errors.Is(err, fs.ErrNotExist) {
+		if path == SumsFile {
+			return nil, failf(CodeSumsMissing, "%s missing in the release", path)
 		}
-		return nil, err
+		return nil, failf(CodeFileMissing, "%s missing in the release", q(path))
 	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, maxSmallFile+1))
-	if err != nil {
-		return nil, failf(CodeReadFailed, "%s: %s", q(path), q(err.Error()))
-	}
-	if len(data) > maxSmallFile {
-		return nil, failf(CodeReadFailed, "%s is larger than %d bytes", q(path), maxSmallFile)
-	}
-	return data, nil
+	return data, err
 }
 
 // exists reports whether path is a regular file of the release; anything else

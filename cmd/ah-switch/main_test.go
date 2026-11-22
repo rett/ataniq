@@ -33,6 +33,9 @@ func TestUsage(t *testing.T) {
 		{"--root", root, "--allowed-signers", "/x", "0001-aaaaaaa"},
 		{"--root", root, "7-aaaaaaa"},
 		{"--root", root, "--dry", "status"},
+		{"--root", root, "--from", "/x", "status"},
+		{"--root", root, "--from", "/x", "--rollback-to", "previous"},
+		{"--root", root, "--from", "", "0001-aaaaaaa"},
 		{"--root", root, "--no-such-flag", "0001-aaaaaaa"},
 		{"--root", "", "status"},
 	} {
@@ -71,7 +74,11 @@ func write(t *testing.T, path, content string, perm fs.FileMode) {
 // scripts, with its SHA256SUMS.
 func release(t *testing.T, root, id string, counter int, health string) {
 	t.Helper()
-	dir := filepath.Join(root, switcher.BaseDir, "releases", id)
+	releaseIn(t, filepath.Join(root, switcher.BaseDir, "releases", id), id, counter, health)
+}
+
+func releaseIn(t *testing.T, dir, id string, counter int, health string) {
+	t.Helper()
 	commit := strings.SplitN(id, "-", 2)[1]
 	write(t, filepath.Join(dir, "MANIFEST"), "id: "+id+"\ncounter: "+strconv.Itoa(counter)+"\ncommit: "+commit+"\nbuilt_on: dev\ngo_version: go\npackage_snapshot: s\n", 0o644)
 	write(t, filepath.Join(dir, "bin/ah-noaicheck"), "#!/bin/sh\nexit 0\n", 0o755)
@@ -127,5 +134,33 @@ func TestSwitchRollbackAndStatus(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("status lacks %q:\n%s", want, out)
 		}
+	}
+}
+
+// TestImportFrom imports a release from an incoming folder given relative to
+// the working folder.
+func TestImportFrom(t *testing.T) {
+	root := t.TempDir()
+	t.Cleanup(func() {
+		filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err == nil && d.IsDir() {
+				os.Chmod(path, 0o755)
+			}
+			return nil
+		})
+	})
+	os.MkdirAll(filepath.Join(root, switcher.BaseDir, "releases"), 0o755)
+	health := filepath.Join(t.TempDir(), "health")
+	write(t, health, "#!/bin/sh\nexit 0\n", 0o755)
+	incoming := t.TempDir()
+	releaseIn(t, filepath.Join(incoming, "0001-aaaaaaa"), "0001-aaaaaaa", 1, health)
+	t.Chdir(incoming)
+	code, out, errOut := call("--root", root, "--from", "0001-aaaaaaa", "0001-aaaaaaa")
+	if code != switcher.ExitOK {
+		t.Fatalf("exit %d\n%s%s", code, out, errOut)
+	}
+	info, err := os.Stat(filepath.Join(root, switcher.BaseDir, "releases", "0001-aaaaaaa", "bin", "ah-noaicheck"))
+	if err != nil || info.Mode().Perm() != 0o555 {
+		t.Errorf("imported check: %v, %v", info, err)
 	}
 }

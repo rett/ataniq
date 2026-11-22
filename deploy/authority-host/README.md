@@ -18,7 +18,8 @@ connection.
 
 ```
 /opt/authority-host/
-  releases/<id>/          id = <counter>-<short commit>, e.g. 0007-ab12cd3
+  releases/<id>/          id = <counter>-<short commit>, e.g. 0007-ab12cd3;
+                          imported by ah-switch --from, read-only
     MANIFEST              key: value lines
     SHA256SUMS            every other file of the folder
     SHA256SUMS.sig        optional; checked only with --mode signed
@@ -53,8 +54,15 @@ connection.
   `.` or `..`. It lists every file but itself and `SHA256SUMS.sig`. Build it
   from inside the folder, for example
   `find . -type f ! -name 'SHA256SUMS*' -printf '%P\0' | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS`.
-- A release holds only folders and regular files. A symbolic link anywhere in
-  it is refused, so hashing never follows one out of the folder.
+- A release holds only folders and regular files with one link each. A
+  symbolic link, device, fifo, socket or hard-linked file anywhere in it is
+  refused, so hashing never follows one out of the folder.
+- A release in `releases/` is made by the switch's import (see below), never
+  by copying into `releases/` directly: without `--from` the switch accepts
+  a release folder only when nothing in it is writable by its group or by
+  others, nothing has a set-user-id, set-group-id or sticky bit, and
+  everything is owned by root (or by the user running the switch when that
+  is not root), as the import leaves it.
 - In signed mode `SHA256SUMS.sig` is an SSH signature in the namespace
   `authority-host-release`:
   `ssh-keygen -Y sign -f KEY -n authority-host-release SHA256SUMS`.
@@ -83,10 +91,38 @@ connection.
 - `bin/ah-noaicheck` is the release's no-AI check, required. `bin/ah-pkgstep`
   is its package step, optional.
 
+### Putting a release on the host
+
+The release folder is first copied, as the deploying user, into an incoming
+folder that user owns, outside `/opt/authority-host`; then root imports it
+and switches to it:
+
+```
+rsync -a --delete RELEASE/ HOST:INCOMING/<id>/     # as the deploying user
+ah-switch --from INCOMING/<id> <id>                 # as root, on the host
+```
+
+`--from` copies the incoming folder into a fresh folder of `releases/`
+(`releases/.import-<id>` while it is being made) as new files: folders and
+regular files only (a symbolic link, device, fifo, socket or hard-linked
+file is refused), each file opened without following a link and without
+blocking, checked to be the regular file with one link that was listed, and
+read to its size (one that changes while it is copied is refused). Modes are
+set, not copied: folders 0755 and files 0644, or 0755 when the incoming file
+had any execute bit; no set-user-id, set-group-id or sticky bit, extended
+attribute or ACL is carried over, and when the switch runs as root the copy
+is owned by root:root. Only that copy is then verified, signature-checked,
+run and linked; the incoming folder can change afterwards without touching
+it. Once the copy is verified it is made read-only (every write bit
+removed) and renamed to `releases/<id>`. A copy that fails to import or to
+verify is removed; `releases/<id>` must not exist already, or `--from` is
+refused. A release that was imported stays when a later step fails: switch
+to it again without `--from`.
+
 ### Commands
 
 ```
-ah-switch [--root DIR] [--dry] [--mode manual|signed] [--allowed-signers FILE] [--noaicheck PATH] ID
+ah-switch [--root DIR] [--dry] [--mode manual|signed] [--allowed-signers FILE] [--noaicheck PATH] [--from INCOMING_DIR] ID
 ah-switch [--root DIR] [--dry] [--noaicheck PATH] --rollback-to previous
 ah-switch [--root DIR] status
 ```
@@ -96,6 +132,9 @@ ah-switch [--root DIR] status
 - `--mode manual` (the default) checks `SHA256SUMS` only. `--mode signed` also
   checks `SHA256SUMS.sig` against `--allowed-signers FILE` (usually
   `/etc/authority-host/allowed_signers`), which only that mode accepts.
+- `--from INCOMING_DIR` imports the release from that folder first (see
+  above). With `--dry` nothing is imported: the incoming folder is checked
+  in place, apart from the owner and the modes, which the import would set.
 - `--noaicheck PATH` runs another no-AI check program instead of the
   release's `bin/ah-noaicheck`.
 - `--rollback-to previous` goes back to the release `previous` points at. It
@@ -114,10 +153,14 @@ Flags may come before or after the id.
 `ah-switch ID` prints each step and stops at the first failure. Up to the
 rename in step 6, a failure leaves `current` as it was.
 
-1. **verify**: `releases/ID` must be a folder, not a symbolic link. Every file
-   in it must be listed in `SHA256SUMS` and match it; a file not listed, a
-   listed file missing or changed, a listed path that escapes the folder or is
-   not clean, or a symbolic link in the folder is a failure. In signed mode the
+0. **import** (only with `--from`): the incoming folder is copied into
+   `releases/.import-ID`, as described above.
+1. **verify**: `releases/ID` (or the import's copy) must be a folder, not a
+   symbolic link, and pass the check of an imported release above. Every
+   file in it must be listed in `SHA256SUMS` and match it; a file not
+   listed, a listed file missing or changed, a listed path that escapes the
+   folder or is not clean, or a link or special file in the folder is a
+   failure. In signed mode the
    signature must verify: `ssh-keygen -Y find-principals` names the signer in
    the allowed signers file and `ssh-keygen -Y verify` checks the sums in the
    namespace `authority-host-release`. Then `MANIFEST` must match the id and
@@ -157,7 +200,7 @@ pointed at before), `current_id` (what it points at after), `counter`, `mode`,
 `rollback`, `time` (UTC), `result` (`ok`, `failed` or `rolled-back`), `check`
 (the no-AI check: `passed`, `failed` or `not run`), `failed_step` (`state`,
 `verify`, `counter`, `noaicheck`, `validate`, `packages`, `switch`, `reload`,
-`health` or `record`; empty when ok), `error`, `detail`, `package_snapshot`
+`health` or `record`; empty when ok; `import` for step 0), `error`, `detail`, `package_snapshot`
 and `restored_health`. A dry run writes nothing.
 
 `error` is a stable failure code, such as `sums-mismatch`,
@@ -187,7 +230,9 @@ see its messages. The text of a broken state file is not repeated either.
 
 | Case | What happens |
 | --- | --- |
-| Wrong sum, file missing or not listed, path escape, link in the release, release folder a link | Refused at verify; `current` unchanged |
+| Incoming folder holds a link, special or hard-linked file, or `releases/ID` exists | Refused at import; nothing is left in `releases/` |
+| Wrong sum, file missing or not listed, path escape, link in the release, release folder a link | Refused at verify; `current` unchanged; an import's copy is removed |
+| A release folder or file writable by group or others, set-id, or not root's | Refused at verify |
 | Signature missing or bad in signed mode | Refused at verify |
 | Counter not above the highest ever activated | Refused at counter |
 | `--rollback-to` anything but previous | Refused at counter |

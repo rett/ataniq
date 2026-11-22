@@ -64,23 +64,24 @@ const (
 	HealthAttemptTimeout = 10 * time.Second
 )
 
-// The steps, as printed and as recorded in failed_step. A failure that comes
-// before step 1 (reading current and previous) is recorded as "state", one of
-// the reload list as "reload".
-var stepNames = [...]string{"", "verify", "counter", "noaicheck", "validate", "packages", "switch", "health", "record"}
+// The steps, as printed and as recorded in failed_step. Step 0, the import,
+// runs only with --from. A failure that comes before it (reading current and
+// previous) is recorded as "state", one of the reload list as "reload".
+var stepNames = [...]string{"import", "verify", "counter", "noaicheck", "validate", "packages", "switch", "health", "record"}
 
 // Config is what a switch is run with. Zero fields take their defaults.
 type Config struct {
 	Root           string // default /
 	Dry            bool   // print every step, run no program, change nothing
 	Mode           string // ModeManual (default) or ModeSigned
+	From           string // the incoming folder to import the release from; empty: it is imported already
 	AllowedSigners string // the ssh allowed signers file, for ModeSigned only
 	NoAICheck      string // the no-AI check program; default the release's bin/ah-noaicheck
 	Runner         Runner
 	Verifier       Verifier
 	Owner          OwnerCheck // default DefaultOwnerCheck
-	Out            io.Writer // the steps
-	Err            io.Writer // refusals of the arguments and of the lock; default Out
+	Out            io.Writer  // the steps
+	Err            io.Writer  // refusals of the arguments and of the lock; default Out
 	Now            func() time.Time
 	Sleep          func(time.Duration)
 }
@@ -149,6 +150,9 @@ func (s *Switcher) checkConfig() error {
 	if !filepath.IsAbs(s.cfg.Root) {
 		return fmt.Errorf("--root %s is not an absolute path", q(s.cfg.Root))
 	}
+	if s.cfg.From != "" && !filepath.IsAbs(s.cfg.From) {
+		return fmt.Errorf("--from %s is not an absolute path", q(s.cfg.From))
+	}
 	switch s.cfg.Mode {
 	case ModeManual:
 		if s.cfg.AllowedSigners != "" {
@@ -214,6 +218,10 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		return ExitUsage
 	}
 	if rollback {
+		if s.cfg.From != "" {
+			s.errorf("--rollback-to takes no --from")
+			return ExitUsage
+		}
 		if arg != "previous" {
 			if _, err := ParseID(arg); err != nil {
 				s.errorf("--rollback-to takes previous")
@@ -284,36 +292,18 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	a.rec.Counter = id.Counter
 	relDir := filepath.Join(s.base(), "releases", id.Name)
 
-	// 1. Verify.
-	rel, err := openRelease(id, s.relRoot, relDir)
-	if err != nil {
-		return s.fail(a, 1, err)
-	}
-	defer rel.Close()
-	s.step(1, "releases/%s: %d files match %s", id.Name, rel.files, SumsFile)
-	if code, done := s.verifySignature(ctx, a, rel); done {
+	// 0. Import (with --from), 1. Verify.
+	rel, code, done := s.openForSwitch(ctx, a, id, relDir)
+	if done {
 		return code
 	}
-	data, err := rel.readSmall(ManifestFile)
-	if err != nil {
-		return s.fail(a, 1, err)
-	}
-	manifest, err := ParseManifest(data)
-	if err != nil {
-		return s.fail(a, 1, err)
-	}
-	if err := manifest.Check(id); err != nil {
-		return s.fail(a, 1, err)
-	}
-	validators, reloads, health, err := rel.readLists()
-	if err != nil {
-		return s.fail(a, 1, err)
-	}
-	a.reloads, a.health = reloads, health
-	s.step(1, "MANIFEST: commit %s, built on %s, %s, package snapshot %s", q(manifest.Commit), q(manifest.BuiltOn), q(manifest.GoVersion), q(manifest.PackageSnapshot))
+	defer rel.Close()
+	manifest, validators := rel.manifest, rel.validators
+	a.reloads, a.health = rel.reloads, rel.health
 
 	// 2. Counter.
 	var highest uint64
+	var err error
 	if s.stateRoot != nil {
 		if highest, err = readHighest(s.stateRoot); err != nil {
 			return s.fail(a, 2, err)
@@ -557,10 +547,123 @@ func (s *Switcher) failState(a *attempt, err error) int {
 	return ExitFailed
 }
 
-func (s *Switcher) verifySignature(ctx context.Context, a *attempt, rel *release) (int, bool) {
+// openForSwitch opens and verifies the release to switch to. With --from it
+// first imports the incoming folder into a new folder of releases/ and
+// verifies only that copy; the copy becomes releases/<id>, read-only, once it
+// is verified, and is removed when it is not. A dry run with --from imports
+// nothing: it verifies the incoming folder in place, apart from the owner and
+// the modes, which the import would set.
+func (s *Switcher) openForSwitch(ctx context.Context, a *attempt, id ReleaseID, relDir string) (*release, int, bool) {
+	if s.cfg.From == "" {
+		rel, err := openRelease(id, s.relRoot, id.Name, relDir, s.entryTrusted)
+		if err == nil {
+			if err = s.checkRelease(ctx, rel); err != nil {
+				rel.Close()
+			}
+		}
+		if err != nil {
+			if code, _ := codeOf(err); code == CodeReleaseMissing {
+				err = failf(CodeReleaseMissing, "no release folder %s; import one with --from", id.Name)
+			}
+			return nil, s.fail(a, 1, err), true
+		}
+		return rel, 0, false
+	}
+	if _, err := s.relRoot.Lstat(id.Name); !errors.Is(err, fs.ErrNotExist) {
+		if err == nil {
+			err = failf(CodeReleaseExists, "releases/%s exists; --from imports only a new release (switch to it without --from)", id.Name)
+		}
+		return nil, s.fail(a, 0, err), true
+	}
+	src, err := openIncoming(s.cfg.From)
+	if err != nil {
+		return nil, s.fail(a, 0, err), true
+	}
+	if s.cfg.Dry {
+		// The release holds src open and closes it.
+		s.step(0, "would copy %s into releases/%s as new read-only files", q(s.cfg.From), id.Name)
+		rel, err := newRelease(id, src, relDir, s.cfg.From, nil)
+		if err == nil {
+			err = s.checkRelease(ctx, rel)
+		}
+		if err != nil {
+			src.Close()
+			return nil, s.fail(a, 1, err), true
+		}
+		return rel, 0, false
+	}
+	defer src.Close()
+	tmp := importPrefix + id.Name
+	tmpDir := filepath.Join(s.base(), "releases", tmp)
+	s.dropImport(tmp)
+	files, err := s.importTree(src, tmp)
+	if err != nil {
+		s.dropImport(tmp)
+		return nil, s.fail(a, 0, err), true
+	}
+	s.step(0, "%d files of %s copied into releases/%s", files, q(s.cfg.From), tmp)
+	rel, err := openRelease(id, s.relRoot, tmp, tmpDir, s.entryTrusted)
+	if err != nil {
+		s.dropImport(tmp)
+		return nil, s.fail(a, 1, err), true
+	}
+	rel.path, rel.dir = tmpDir, relDir
+	if err := s.checkRelease(ctx, rel); err != nil {
+		rel.Close()
+		s.dropImport(tmp)
+		return nil, s.fail(a, 1, err), true
+	}
+	err = s.sealTree(tmp)
+	if err == nil {
+		if _, err = s.relRoot.Lstat(id.Name); err == nil {
+			err = failf(CodeReleaseExists, "releases/%s appeared during the import", id.Name)
+		} else if errors.Is(err, fs.ErrNotExist) {
+			err = s.relRoot.Rename(tmp, id.Name)
+		}
+	}
+	if err == nil {
+		err = syncRoot(s.relRoot)
+	}
+	if err != nil {
+		rel.Close()
+		s.dropImport(tmp)
+		return nil, s.fail(a, 0, err), true
+	}
+	rel.path = relDir
+	s.step(0, "releases/%s imported and made read-only", id.Name)
+	return rel, 0, false
+}
+
+// checkRelease checks what step 1 checks after the sums: the signature, the
+// manifest and the command lists, keeping the parsed values in rel.
+func (s *Switcher) checkRelease(ctx context.Context, rel *release) error {
+	s.step(1, "releases/%s: %d files match %s", rel.id.Name, rel.files, SumsFile)
+	if err := s.verifySignature(ctx, rel); err != nil {
+		return err
+	}
+	data, err := rel.readSmall(ManifestFile)
+	if err != nil {
+		return err
+	}
+	manifest, err := ParseManifest(data)
+	if err != nil {
+		return err
+	}
+	if err := manifest.Check(rel.id); err != nil {
+		return err
+	}
+	if rel.validators, rel.reloads, rel.health, err = rel.readLists(); err != nil {
+		return err
+	}
+	rel.manifest = manifest
+	s.step(1, "MANIFEST: commit %s, built on %s, %s, package snapshot %s", q(manifest.Commit), q(manifest.BuiltOn), q(manifest.GoVersion), q(manifest.PackageSnapshot))
+	return nil
+}
+
+func (s *Switcher) verifySignature(ctx context.Context, rel *release) error {
 	present, err := rel.exists(SignatureFile)
 	if err != nil {
-		return s.fail(a, 1, err), true
+		return err
 	}
 	if s.cfg.Mode == ModeManual {
 		note := ""
@@ -568,21 +671,21 @@ func (s *Switcher) verifySignature(ctx context.Context, a *attempt, rel *release
 			note = " (" + SignatureFile + " is there and is not read)"
 		}
 		s.step(1, "signature not checked: mode manual%s", note)
-		return 0, false
+		return nil
 	}
 	if !present {
-		return s.fail(a, 1, failf(CodeSignatureMissing, "%s missing; mode signed needs it", SignatureFile)), true
+		return failf(CodeSignatureMissing, "%s missing; mode signed needs it", SignatureFile)
 	}
 	if s.cfg.Dry {
 		s.step(1, "would verify %s against %s", SignatureFile, q(s.cfg.AllowedSigners))
-		return 0, false
+		return nil
 	}
-	if err := s.cfg.Verifier.Verify(ctx, s.cfg.AllowedSigners, rel.sums, filepath.Join(rel.dir, SignatureFile)); err != nil {
+	if err := s.cfg.Verifier.Verify(ctx, s.cfg.AllowedSigners, rel.sums, filepath.Join(rel.path, SignatureFile)); err != nil {
 		_, detail := codeOf(err)
-		return s.fail(a, 1, failf(CodeSignatureBad, "%s: %s", SignatureFile, detail)), true
+		return failf(CodeSignatureBad, "%s: %s", SignatureFile, detail)
 	}
 	s.step(1, "%s verified against %s", SignatureFile, q(s.cfg.AllowedSigners))
-	return 0, false
+	return nil
 }
 
 // fail ends a switch that failed at step n before current was moved: current

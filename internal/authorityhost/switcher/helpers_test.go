@@ -99,11 +99,15 @@ type env struct {
 	clock  *fakeClock
 	out    bytes.Buffer
 	last   string // the output of the last switchTo or rollBack
+	in     string // the folder incoming releases are written to
 }
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	root := t.TempDir()
+	// An imported release is read-only; make it writable again so that the
+	// temporary folder can be removed (this runs before that removal).
+	t.Cleanup(func() { makeWritable(root) })
 	if err := os.MkdirAll(filepath.Join(root, BaseDir, "releases"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -178,11 +182,25 @@ func (e *env) write(path, content string, perm fs.FileMode) {
 // SHA256SUMS, and returns its path.
 func (e *env) release(id, snapshot string) string {
 	e.t.Helper()
+	return e.releaseIn(e.relDir(id), id, snapshot)
+}
+
+// incoming writes a release as release does, into a folder outside the
+// root, as the deploying user would copy it there, and returns its path.
+func (e *env) incoming(id, snapshot string) string {
+	e.t.Helper()
+	if e.in == "" {
+		e.in = e.t.TempDir()
+	}
+	return e.releaseIn(filepath.Join(e.in, id), id, snapshot)
+}
+
+func (e *env) releaseIn(dir, id, snapshot string) string {
+	e.t.Helper()
 	rid, err := ParseID(id)
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	dir := e.relDir(id)
 	e.write(filepath.Join(dir, ManifestFile), fmt.Sprintf(
 		"id: %s\ncounter: %d\ncommit: %s0123456789\nbuilt_on: dev\ngo_version: fixture-go\npackage_snapshot: %s\n",
 		id, rid.Counter, rid.Commit, snapshot), 0o644)
@@ -309,4 +327,24 @@ func digest(t *testing.T, root string) string {
 		t.Fatal(err)
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// makeWritable adds the owner's write bit to every folder below root.
+func makeWritable(root string) {
+	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			os.Chmod(path, 0o755)
+		}
+		return nil
+	})
+}
+
+// mode returns the permission and special bits of path.
+func mode(t *testing.T, path string) fs.FileMode {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Mode() & (fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)
 }
