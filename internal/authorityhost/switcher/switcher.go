@@ -1261,13 +1261,21 @@ func (s *Switcher) status(w io.Writer) error {
 	if in, ok, err := s.readInhibitIfState(); err != nil {
 		return err
 	} else if ok {
-		fmt.Fprintf(w, "decisions: inhibited (%s) since %s by transaction %s: %s; decision-capable units do not start while it is there; a transaction that ends healthy removes it, or ah-switch inhibit-clear --asked WORDS\n", InhibitFile, q(in.Time), q(in.Txn), q(in.Reason))
+		fmt.Fprintf(w, "decisions: inhibited (%s) since %s by transaction %s: %s; decision-capable services refuse every decision while it is there; a transaction that ends healthy removes it, or ah-switch inhibit-clear --asked WORDS\n", InhibitFile, q(in.Time), q(in.Txn), q(in.Reason))
 	} else {
 		fmt.Fprintln(w, "decisions: not inhibited")
 	}
 	if pending {
 		t := &txn{j: j}
 		fmt.Fprintf(w, "interrupted: %s %s in phase %s (transaction %s); the next switch, rollback or recover resumes it\n", t.kind(), j.ID, j.Phase, j.Txn)
+		if j.Phase == PhaseDone && journalHealthy(j) {
+			cur := j.ID
+			if j.Result != ResultOK && j.OldCurrent != "" {
+				id, _ := s.targetID(j.OldCurrent)
+				cur = id.Name
+			}
+			fmt.Fprintf(w, "requalify: it ended %s before the interruption; the next command runs the reload list and the health check of %s again before decisions are no longer inhibited\n", j.Result, cur)
+		}
 		if j.StopFailures != "" {
 			fmt.Fprintf(w, "stop failures: %s; fix their cause and run a command again, or run ah-switch recover --services-stopped once the decision services are stopped\n", j.StopFailures)
 		}

@@ -37,6 +37,9 @@ type fakeRunner struct {
 	pid      int              // when set, given to a command's OnStart as its process id
 	failPost string           // the post-activation no-AI check of this release folder fails
 	extra    [][]*os.File     // the ExtraFiles of each command
+	// gate, when set, is asked about every command after hook: an error
+	// is the command's failure (a model of what the command acts on).
+	gate func(argv []string) error
 }
 
 const fakeRuleset = "table inet filter {\n}\n"
@@ -67,6 +70,11 @@ func (f *fakeRunner) Run(ctx context.Context, c Command) (Output, error) {
 	}
 	if f.hook != nil {
 		f.hook(c.Argv)
+	}
+	if f.gate != nil {
+		if err := f.gate(c.Argv); err != nil {
+			return Output{}, err
+		}
 	}
 	name := filepath.Base(c.Argv[0])
 	if f.failPost != "" && len(c.Argv) > 6 && c.Argv[1] == "--phase" && c.Argv[2] == CheckPhasePost && c.Argv[6] == f.failPost {

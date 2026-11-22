@@ -114,7 +114,9 @@ func (e *env) noJournal() {
 // the new release's reload and health again; a restoring phase stops the
 // new release's services, puts the links back and runs the old release's
 // reload and health again; a stopping phase runs every stop list again; a
-// done phase only records.
+// done phase records, after the reload list and health check of the
+// release current points at ran again when the transaction ended healthy
+// (a reboot may have come between its health check and its settling).
 // The next command here is a recover, which then has nothing to do: the
 // outcome is the transaction's own.
 func TestCrashAndResume(t *testing.T) {
@@ -141,9 +143,9 @@ func TestCrashAndResume(t *testing.T) {
 	// release reloaded and checked.
 	putBack := want{rel2, rel1, ResultRolledBack, "interrupted", "ok", false, with(map[string]int{"stop-app": 1, "reload-old": 1, "health-old": 1})}
 	completed := want{rel3, rel2, ResultOK, "", "", false, with(map[string]int{"reload-units": 1, "health-probe": 1})}
-	recorded := want{rel3, rel2, ResultOK, "", "", false, none}
+	recorded := want{rel3, rel2, ResultOK, "", "", false, with(map[string]int{"reload-units": 1, "health-probe": 1})}
 	restored := want{rel2, rel1, ResultRolledBack, "health", "ok", false, with(map[string]int{"stop-app": 1, "reload-old": 1, "health-old": 1})}
-	restoredRecorded := want{rel2, rel1, ResultRolledBack, "health", "ok", false, none}
+	restoredRecorded := want{rel2, rel1, ResultRolledBack, "health", "ok", false, with(map[string]int{"reload-old": 1, "health-old": 1})}
 	stopped := want{rel2, rel1, ResultFailedRecovery, "health", "failed", true, with(map[string]int{"stop-all": 1, "stop-app": 1, "stop-old": 1})}
 	stoppedRecorded := want{rel2, rel1, ResultFailedRecovery, "health", "failed", true, none}
 
@@ -382,7 +384,9 @@ func TestSyncFailureKeepsTheJournal(t *testing.T) {
 		}
 		e.noJournal()
 		e.links(rel3, rel2)
-		e.ran(map[string]int{"reload-units": 0, "health-probe": 0})
+		// Found in phase done: current is reloaded and checked again
+		// before decisions are no longer inhibited.
+		e.ran(map[string]int{"reload-units": 1, "health-probe": 1})
 	})
 }
 

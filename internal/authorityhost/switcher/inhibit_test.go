@@ -272,3 +272,157 @@ func TestInhibitClear(t *testing.T) {
 		}
 	})
 }
+
+// guardedApp models a decision-capable service under the inhibit
+// contract: its unit carries no start condition, so it starts (on a
+// reload, at boot) whether decisions.inhibit is there or not, and its
+// readiness probe passes only while it runs; it refuses every decision
+// while the file is there, and when the file cannot be read.
+type guardedApp struct {
+	e       *env
+	started bool
+	// What a decision asked while the readiness probe ran got, in order.
+	asked []string
+}
+
+func (g *guardedApp) decide() string {
+	_, err := os.Stat(g.e.inhibitPath())
+	if errors.Is(err, fs.ErrNotExist) {
+		return "accepted"
+	}
+	return "refused"
+}
+
+func (g *guardedApp) gate(argv []string) error {
+	switch filepath.Base(argv[0]) {
+	case "reload-units", "reload-old":
+		g.started = true
+	case "stop-app", "stop-old", "stop-all":
+		g.started = false
+	case "health-probe", "health-old":
+		if !g.started {
+			return errors.New("not ready: the service is not running")
+		}
+		g.asked = append(g.asked, g.decide())
+	}
+	return nil
+}
+
+func guard(e *env) *guardedApp {
+	g := &guardedApp{e: e}
+	e.runner.gate = g.gate
+	return g
+}
+
+// TestGuardedServiceQualifies: a service that obeys the inhibit contract
+// (it may start while decisions.inhibit is there, and refuses every
+// decision while it is) is started by the reload list, passes its
+// readiness probe while decisions are still refused, and takes decisions
+// only once the transaction removed the inhibit: on a first switch, on a
+// later one, and when the switch goes back to the earlier release.
+func TestGuardedServiceQualifies(t *testing.T) {
+	t.Run("first and later switch", func(t *testing.T) {
+		e := newEnv(t)
+		g := guard(e)
+		e.release(rel1, "s")
+		if code := e.switchTo(rel1); code != ExitOK {
+			t.Fatalf("first switch: exit %d", code)
+		}
+		e.release(rel2, "s")
+		if code := e.switchTo(rel2); code != ExitOK {
+			t.Fatalf("second switch: exit %d", code)
+		}
+		if strings.Join(g.asked, " ") != "refused refused" {
+			t.Errorf("decisions while the probes ran: %v", g.asked)
+		}
+		if got := g.decide(); got != "accepted" || !g.started {
+			t.Errorf("after the switch: %s, running %v", got, g.started)
+		}
+	})
+	t.Run("going back", func(t *testing.T) {
+		e := activeOwn(t)
+		g := guard(e)
+		g.started = true
+		e.runner.failPost = e.relDir(rel3)
+		if code := e.switchTo(rel3); code != ExitFailed {
+			t.Fatalf("exit %d", code)
+		}
+		if rec := e.record(); rec.Result != ResultRolledBack || rec.RestoredHealth != "ok" {
+			t.Fatalf("record: %+v", rec)
+		}
+		if strings.Join(g.asked, " ") != "refused refused" {
+			t.Errorf("decisions while the probes ran: %v", g.asked)
+		}
+		if got := g.decide(); got != "accepted" || !g.started {
+			t.Errorf("after going back: %s, running %v", got, g.started)
+		}
+	})
+}
+
+// TestRebootInDoneRequalifies: a transaction that reached done (its
+// release healthy and checked) and was interrupted before it was settled,
+// as by a reboot that stopped its service, is settled by the next command
+// only after the reload list and health check of the release current
+// points at pass again; decisions are refused until then. When they do not
+// pass, the outcome is recorded and decisions stay inhibited. status says
+// what the next command does.
+func TestRebootInDoneRequalifies(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		reload bool // the reload after the reboot passes
+	}{{"healthy again", true}, {"not healthy after the reboot", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := activeOwn(t)
+			g := guard(e)
+			g.started = true
+			e.crashAt(CrashDone, false, rel3)
+			// The reboot: the service is not running, and the inhibit
+			// is still there.
+			g.started, g.asked = false, nil
+			if _, ok := e.inhibited(); !ok {
+				t.Fatalf("not inhibited after the crash in done")
+			}
+			if got := e.status(); !strings.Contains(got, "interrupted: switch to "+rel3+" in phase done") || !strings.Contains(got, "runs the reload list and the health check of "+rel3+" again before decisions are no longer inhibited") {
+				t.Errorf("status:\n%s", got)
+			}
+			if !tc.reload {
+				e.runner.fail["reload-units"] = 1
+			}
+			e.runner.reset()
+			e.recover(resumeOnly)
+			var ran []string
+			for _, c := range e.runner.calls {
+				ran = append(ran, strings.Fields(c)[0])
+			}
+			rec := e.record()
+			if rec.Result != ResultOK || rec.ID != rel3 || rec.CurrentID != rel3 {
+				t.Errorf("record: %+v", rec)
+			}
+			if tc.reload {
+				if strings.Join(ran, " ") != "reload-units health-probe" {
+					t.Errorf("ran %v, want the reload list and health check of %s", ran, rel3)
+				}
+				if strings.Join(g.asked, " ") != "refused" {
+					t.Errorf("decisions while the probe ran: %v", g.asked)
+				}
+				if got := g.decide(); got != "accepted" || !g.started {
+					t.Errorf("after the resume: %s, running %v", got, g.started)
+				}
+				return
+			}
+			if strings.Join(ran, " ") != "reload-units" {
+				t.Errorf("ran %v", ran)
+			}
+			in, ok := e.inhibited()
+			if !ok || !strings.Contains(in.Reason, "did not pass its reload and health check again") {
+				t.Errorf("inhibit: %+v, %v", in, ok)
+			}
+			if !strings.Contains(rec.Detail, "did not pass its reload and health check again") {
+				t.Errorf("record detail: %q", rec.Detail)
+			}
+			if _, err := os.Stat(filepath.Join(e.root, StateDir, JournalFile)); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("the journal stays: %v", err)
+			}
+		})
+	}
+}
