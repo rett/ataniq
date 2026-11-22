@@ -713,7 +713,7 @@ The `HIT incomplete` lines:
 | `HIT incomplete path <file>` | a PATH setting whose folder the check cannot resolve |
 | `HIT incomplete proc <why>` | no usable `/proc`: missing, unreadable, without processes, or listing processes of which not one name or executable could be read (`no-identity`) |
 | `HIT incomplete proc-access <n>` | run as another user than root, `n` processes refused their name or executable |
-| `HIT incomplete /proc/net/tcp header` | a socket table that is empty or does not start with the kernel's header line (`/proc/net/tcp6` too, when it is there) |
+| `HIT incomplete /proc/net/tcp header` | a socket table that is empty or does not start with its own protocol's header line: `sl local_address rem_address st` for `/proc/net/tcp`, `sl local_address remote_address st` for `/proc/net/tcp6` (checked too when it is there) |
 
 `--root` (default `/`) checks the tree beneath another folder, for tests;
 links inside it are resolved within it. `--release` names the release
@@ -873,8 +873,12 @@ folder whose `share/` holds the lists (and, in `pre` and `post`, whose
   changed, so rules that differ only there have different digests.
 - `port` (`post` and `full`): a listening TCP socket, in `/proc/net/tcp`
   or `/proc/net/tcp6`, on a port not in `ports.allow`. Each table must
-  start with the kernel's header line; a table with a header and no
-  listening socket is fine. The `ports` subcommand checks only this.
+  start with its own protocol's header line, as the kernel writes it (the
+  IPv4 table's third column is `rem_address`, the IPv6 table's
+  `remote_address`); a table with a header and no listening socket is
+  fine, and a row whose address is not of the table's family is a
+  `HIT unreadable` malformed line. The `ports` subcommand checks only
+  this.
 - `policy` (with `--require-policy`): a policy list of the release is
   empty, or `nft.digest` is missing.
 - `unreadable`: a place the check must look into but cannot read, a link

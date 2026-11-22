@@ -188,6 +188,10 @@ func TestPorts(t *testing.T) {
 	if code, out, _ := runCmd(t, "", "ports", "--root", root, "--release", rel); code != exitClean || out != "RUN complete\nok\n" {
 		t.Errorf("clean: exit %d\n%s", code, out)
 	}
+	write(t, root, "proc/net/tcp6", tcp6Listen8080[:strings.IndexByte(tcp6Listen8080, '\n')+1])
+	if code, out, _ := runCmd(t, "", "ports", "--root", root, "--release", rel); code != exitClean || out != "RUN complete\nok\n" {
+		t.Errorf("an IPv6 table with no listener: exit %d\n%s", code, out)
+	}
 	write(t, root, "proc/net/tcp6", tcp6Listen8080)
 	code, out, _ := runCmd(t, "", "ports", "--root", root, "--release", rel)
 	if code != exitHit || out != "HIT port tcp6:[::]:8080\nRUN complete\nFAILED 1 hit(s)\n" {
@@ -198,7 +202,9 @@ func TestPorts(t *testing.T) {
 	}
 }
 
-const tcp6Listen8080 = "  sl  local_address rem_address   st\n" +
+// tcp6Listen8080 is a proc/net/tcp6 with the kernel's IPv6 header (its
+// remote column spelled remote_address) and one listening socket.
+const tcp6Listen8080 = "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n" +
 	"   0: 00000000000000000000000000000000:1F90 00000000000000000000000000000000:0000 0A 0 0 0\n"
 
 // The switch's call: --require-policy with every policy of the release set

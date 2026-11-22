@@ -109,7 +109,7 @@ func TestRunAllPlanted(t *testing.T) {
 	f.file("etc/systemd/system/agent.service", "[Service]\nExecStart=/usr/local/bin/claude "+content+"\n")
 	f.file("var/lib/pacman/local/nodejs-22-1/desc", "%NAME%\nnodejs\n")
 	f.file("home/user/.local/bin/x\nok", content) // a name that tries to forge a line
-	f.file("proc/net/tcp6", tcpHeader+
+	f.file("proc/net/tcp6", tcp6Header+
 		"   0: 00000000000000000000000000000000:0BB8 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 3 1 0 100 0 0 10 0\n")
 	l := testLists()
 	l.AINames = append(l.AINames, "x\nok")

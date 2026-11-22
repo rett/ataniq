@@ -18,13 +18,19 @@ const tcpListen = "0A"
 var errProcNet = errors.New("malformed line")
 
 // errNoHeader is returned for a socket table that is empty or does not
-// start with the kernel's header line ("sl local_address rem_address st
-// ..."): it is not a table the check can trust to list every socket.
+// start with its protocol's header line (see remoteColumn): it is not a
+// table the check can trust to list every socket.
 var errNoHeader = errors.New("no header")
 
+// remoteColumn is the name the kernel gives the third column of each
+// protocol's table: proc/net/tcp starts "sl local_address rem_address st",
+// proc/net/tcp6 "sl local_address remote_address st". Each table is held
+// to its own protocol's header; the other spelling is refused.
+var remoteColumn = map[string]string{"tcp": "rem_address", "tcp6": "remote_address"}
+
 // DetailHeader is the detail of "HIT incomplete /proc/net/tcp header", a
-// socket table that is empty or has no valid header line. A table with a
-// header and no listening socket is fine.
+// socket table that is empty or has no valid header line for its
+// protocol. A table with a header and no listening socket is fine.
 const DetailHeader = "header"
 
 // CheckPorts, run by RunAll and alone by the ports subcommand: a listening
@@ -34,8 +40,9 @@ const DetailHeader = "header"
 // namespace of the process that reads them; UDP is not checked. A file that
 // cannot be read is a hit of kind "unreadable", and so is a missing
 // proc/net/tcp; proc/net/tcp6 is missing when IPv6 is off. A table that is
-// there but empty or without the kernel's header line is
-// "incomplete <file> header". An empty
+// there but empty or without its protocol's header line (see
+// remoteColumn) is "incomplete <file> header"; a row whose address is not
+// of the table's family is a malformed line. An empty
 // ports.allow allows none; with RequirePolicy it is also the hit
 // "policy ports.allow empty".
 func (c *Checker) CheckPorts() {
@@ -60,7 +67,7 @@ func (c *Checker) CheckPorts() {
 			c.hit(KindUnreadable, show(f.rel), describe(err))
 			continue
 		}
-		socks, err := listening(string(data))
+		socks, err := listening(string(data), f.proto)
 		switch {
 		case errors.Is(err, errNoHeader):
 			c.hit(KindIncomplete, show(f.rel), DetailHeader)
@@ -77,12 +84,15 @@ func (c *Checker) CheckPorts() {
 }
 
 // listening returns the local address of every listening socket in the
-// content of proc/net/tcp or tcp6. Content that does not start with the
-// header line is errNoHeader. The lines it can read are returned with an
-// error naming the first one it cannot.
-func listening(data string) ([]netip.AddrPort, error) {
+// content of the table of proto ("tcp" for proc/net/tcp, "tcp6" for
+// proc/net/tcp6). Content that does not start with that protocol's header
+// line is errNoHeader. The lines it can read are returned with an error
+// naming the first one it cannot; a local address of the other family
+// (four bytes in tcp6, sixteen in tcp) is a line it cannot read.
+func listening(data, proto string) ([]netip.AddrPort, error) {
 	lines := strings.Split(data, "\n")
-	if h := strings.Fields(lines[0]); len(h) < 4 || h[0] != "sl" || h[1] != "local_address" || h[2] != "rem_address" || h[3] != "st" {
+	remote, ok := remoteColumn[proto]
+	if h := strings.Fields(lines[0]); !ok || len(h) < 4 || h[0] != "sl" || h[1] != "local_address" || h[2] != remote || h[3] != "st" {
 		return nil, errNoHeader
 	}
 	var out []netip.AddrPort
@@ -100,7 +110,7 @@ func listening(data string) ([]netip.AddrPort, error) {
 			continue
 		}
 		ap, err := parseProcAddr(f[1])
-		if err != nil {
+		if err != nil || ap.Addr().Is4() != (proto == "tcp") {
 			bad = firstBad(bad, i)
 			continue
 		}
