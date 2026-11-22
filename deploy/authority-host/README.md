@@ -696,13 +696,20 @@ without it. The contract for those services is:
   readiness probe could never pass. Do not add it, and remove it where it
   was added.
 - The application **must refuse every decision unless the file does not
-  exist**: one lookup before each decision (not once at start), such as an
-  `lstat` of `/var/lib/authority-host/decisions.inhibit`, which refuses
-  when it finds the file and when it gets any answer other than "no such
-  file" (only existence is checked, so the file's mode and content do not
-  matter). One lookup is one instant: there is no second file and no order
-  of lookups to get wrong. Readiness and the static status page do not
-  depend on it.
+  exist**: one check before each decision (not once at start). The
+  package `internal/authorityhost/decisionguard` is that check as code
+  (`Check("/var/lib/authority-host")`); a service in Go calls it, and one
+  in another language does what it does. It refuses when it finds the
+  file in any form and when it gets any answer other than "no such file"
+  (only existence is checked, so the file's mode and content do not
+  matter), and also while `/var/lib/authority-host` itself is missing, is
+  not a real folder (a link, a file) or cannot be looked up: a bare
+  `lstat` of the file answers "no such file" there too, and would allow.
+  "No such file" allows only when the folder, looked up again after the
+  file, is still the very folder (same device and inode) found before it,
+  so that a folder removed or replaced between the lookups refuses. There
+  is no second file and no order of files to get wrong. Readiness and the
+  static status page do not depend on it.
 
 The release builder makes every decision-capable service follow this
 contract (the switch does not check the services for it). The file holds
