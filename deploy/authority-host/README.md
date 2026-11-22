@@ -203,7 +203,11 @@ ah-switch [--root DIR [--allow-exec]] [--dry] recover --counter N
   release (sums, manifest, lists, counter), and it is refused while a switch
   holds the lock.
 - `status` prints `current`, `previous`, the highest counter, the trust of
-  the switch policy and the last outcome from `deploy.json`.
+  the switch policy, an interrupted switch still to settle, and the last
+  outcome from `deploy.json`. It takes the lock shared, so what it prints
+  is one state between two switches: while a switch runs it exits 3, and
+  while it reads, a switch is refused with exit 3. It prints all of it or
+  nothing, and it changes nothing.
 
 Flags may come before or after the id.
 
@@ -268,7 +272,16 @@ rename in step 6, a failure leaves `current` as it was.
    seconds for up to 60 seconds. A static release with no health command is
    healthy at once.
 8. **record**: `deploy.json` is written, by writing a temporary file and
-   renaming it over the old one, and then the journal is removed.
+   renaming it over the old one, and then the journal is removed. Only when
+   both succeeded does the switch print `result: ok` and exit 0; otherwise
+   it prints `result: failed at record`, exits 1 and leaves the journal, and
+   the next command completes the switch.
+
+A link is replaced by renaming a new link over it and then syncing its
+folder. When that fails, the switch reads the link again before it decides:
+a link that already points at its new target (the rename happened, only
+the sync failed) is taken as moved, with a warning; the journal covers what
+a crash could still lose.
 
 Before the switch, in step 1, the release `current` points at (the
 fallback) is opened and verified as the switch policy says, and its own
@@ -346,7 +359,7 @@ see its messages. The text of a broken state file is not repeated either.
 | 0 | Switched and healthy, or a dry run whose checks passed |
 | 1 | Failed; outside a dry run the outcome is in `deploy.json` |
 | 2 | Bad arguments; nothing was done |
-| 3 | Another switch holds the lock (`flock`, not waited for); nothing was done |
+| 3 | Another switch holds the lock, or `status` holds it while a switch is asked for (`flock`, not waited for); nothing was done |
 
 ### Failure cases
 

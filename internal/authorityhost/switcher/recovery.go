@@ -93,7 +93,7 @@ func (s *Switcher) goBack(ctx context.Context, a *attempt, step string, cause er
 // that current could not be put back, so the journal must stay for the next
 // command.
 func (s *Switcher) restore(ctx context.Context, a *attempt) (keepJournal bool, err error) {
-	if err := replaceLink(s.baseRoot, "current", a.oldTarget); err != nil {
+	if moved, err := s.setLink("current", a.oldTarget); !moved {
 		return true, failf(CodeLinkFailed, "current: %s", q(err.Error()))
 	}
 	a.rec.CurrentID = a.fallback.id.Name

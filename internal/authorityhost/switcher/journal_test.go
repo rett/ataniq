@@ -312,3 +312,92 @@ func TestCrashInPackageStep(t *testing.T) {
 		}
 	})
 }
+
+// TestLinkSyncFailure: when the rename of a link succeeded and only the sync
+// of its folder failed, the switch reads the link again and goes on from
+// where it really points.
+func TestLinkSyncFailure(t *testing.T) {
+	e := active(t)
+	e.release(rel3, "2026-11-01")
+	saved := syncLinkDir
+	syncLinkDir = func(*os.Root) error { return errors.New("sync failed") }
+	t.Cleanup(func() { syncLinkDir = saved })
+	if code := e.switchTo(rel3); code != ExitOK {
+		t.Fatalf("exit %d", code)
+	}
+	if e.link("current") != "releases/"+rel3 || e.link("previous") != "releases/"+rel2 {
+		t.Errorf("current -> %q, previous -> %q", e.link("current"), e.link("previous"))
+	}
+	if !strings.Contains(e.last, "warning: current points at releases/"+rel3+", but its folder was not synced") {
+		t.Errorf("output:\n%s", e.last)
+	}
+	if rec := e.record(); rec.Result != ResultOK || rec.CurrentID != rel3 {
+		t.Errorf("record: %+v", rec)
+	}
+}
+
+// TestRecordFailureIsNotOK: a switch whose deploy.json cannot be written is
+// not reported ok; its journal stays, and the next command completes it.
+func TestRecordFailureIsNotOK(t *testing.T) {
+	e := active(t)
+	e.release(rel3, "2026-11-01")
+	deploy := filepath.Join(e.root, StateDir, DeployFile)
+	os.Remove(deploy)
+	os.Mkdir(deploy, 0o755)
+	if code := e.switchTo(rel3); code != ExitFailed {
+		t.Fatalf("exit %d", code)
+	}
+	if strings.Contains(e.last, "result: ok") || !strings.Contains(e.last, "result: failed at record") {
+		t.Errorf("output:\n%s", e.last)
+	}
+	if _, ok := e.journal(); !ok {
+		t.Fatalf("the journal was removed although the outcome is not recorded")
+	}
+	os.Remove(deploy)
+	if code := e.switchTo(rel3); code != ExitFailed {
+		t.Fatalf("retry: exit %d", code)
+	}
+	if !strings.Contains(e.last, "reconcile: completed: current -> "+rel3) {
+		t.Errorf("output:\n%s", e.last)
+	}
+}
+
+// TestStatusTakesTheLock: status reads under the shared lock, so it is
+// refused while a switch runs, and prints nothing when part of the state
+// cannot be read.
+func TestStatusTakesTheLock(t *testing.T) {
+	e := active(t)
+	state, err := os.OpenRoot(filepath.Join(e.root, StateDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	held, err := takeLock(state, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := e.switcher().Status(); code != ExitLocked {
+		t.Errorf("status during a switch: exit %d", code)
+	}
+	e.out.Reset()
+	held.release()
+
+	// A shared lock held by another status does not stop status, but stops
+	// a switch.
+	shared, err := takeLock(state, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.status()
+	e.release(rel3, "2026-11-01")
+	if code := e.switchTo(rel3); code != ExitLocked {
+		t.Errorf("switch during status: exit %d", code)
+	}
+	shared.release()
+
+	e.write(filepath.Join(e.root, StateDir, DeployFile), "{", 0o644)
+	if code := e.switcher().Status(); code != ExitFailed || strings.Contains(e.out.String(), "current:") {
+		t.Errorf("status of a broken deploy.json: exit %d, printed %q", code, e.out.String())
+	}
+	e.out.Reset()
+}

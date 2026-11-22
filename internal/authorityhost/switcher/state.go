@@ -120,8 +120,12 @@ func replaceLink(r *os.Root, name, target string) error {
 		r.Remove(tmp)
 		return err
 	}
-	return syncRoot(r)
+	return syncLinkDir(r)
 }
+
+// syncLinkDir syncs the folder of a link after its rename; a variable so that
+// a test can make it fail after the rename succeeded.
+var syncLinkDir = syncRoot
 
 // lock is the switch lock, a flock on a file in the state folder.
 type lock struct{ f *os.File }

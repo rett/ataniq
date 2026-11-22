@@ -21,6 +21,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -463,17 +464,22 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		return ExitFailed
 	}
 	if a.oldExists {
-		if err := replaceLink(s.baseRoot, "previous", a.oldTarget); err != nil {
-			s.dropJournal()
+		if moved, err := s.setLink("previous", a.oldTarget); !moved {
+			if s.putPrevious(a) == nil {
+				s.dropJournal()
+			}
 			return s.fail(a, 6, failf(CodeLinkFailed, "previous: %s", q(err.Error())))
 		}
 	}
 	if s.crash(CrashPrevious) {
 		return ExitFailed
 	}
-	if err := replaceLink(s.baseRoot, "current", newTarget); err != nil {
-		s.restorePrevious(a)
-		s.dropJournal()
+	if moved, err := s.setLink("current", newTarget); !moved {
+		// current is as it was: put previous back too; the journal goes
+		// only when that worked.
+		if s.putPrevious(a) == nil {
+			s.dropJournal()
+		}
 		return s.fail(a, 6, failf(CodeLinkFailed, "current: %s", q(err.Error())))
 	}
 	if s.crash(CrashCurrent) {
@@ -496,14 +502,19 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		return ExitFailed
 	}
 
-	// 8. Record, then drop the journal.
+	// 8. Record, then drop the journal. The result is ok only once both are
+	// durable: until then the journal says the switch is not finished, and
+	// the next command completes it.
 	a.rec.Result = ResultOK
 	if err := s.record(a); err != nil {
+		s.step(8, "FAILED: %s not written; the journal stays and the next command completes the switch", DeployFile)
+		s.printf("result: failed at record; current -> %s, healthy, but the outcome is not recorded", id.Name)
 		return ExitFailed
 	}
 	s.step(8, "recorded in %s", q(filepath.Join(s.stateDir(), DeployFile)))
 	if err := s.dropJournal(); err != nil {
 		s.step(8, "FAILED: %s not removed: %s; the next command completes the switch", JournalFile, q(err.Error()))
+		s.printf("result: failed at record; current -> %s, healthy, but the journal is still there", id.Name)
 		return ExitFailed
 	}
 	s.printf("result: ok; current -> %s", id.Name)
@@ -926,9 +937,29 @@ func (s *Switcher) restorePrevious(a *attempt) {
 // removes it when there was none.
 func (s *Switcher) putPrevious(a *attempt) error {
 	if a.prevExists {
-		return replaceLink(s.baseRoot, "previous", a.prevTarget)
+		if moved, err := s.setLink("previous", a.prevTarget); !moved {
+			return err
+		}
+		return nil
 	}
 	return removeFileIn(s.baseRoot, "previous")
+}
+
+// setLink points the link name of opt/authority-host at target (see
+// replaceLink). When that fails, the link is read again, since the rename
+// may have happened before the folder's sync failed: moved says whether name
+// now points at target. A link that moved is the outcome, with a warning that
+// its folder was not synced; the journal covers what a crash could lose.
+func (s *Switcher) setLink(name, target string) (moved bool, err error) {
+	err = replaceLink(s.baseRoot, name, target)
+	if err == nil {
+		return true, nil
+	}
+	if t, ok, rerr := readLink(s.baseRoot, name); rerr == nil && ok && t == target {
+		s.printf("warning: %s points at %s, but its folder was not synced: %s", name, q(target), q(err.Error()))
+		return true, err
+	}
+	return false, err
 }
 
 // record writes deploy.json. A dry run records nothing.
@@ -963,9 +994,11 @@ func describe(err error) string {
 	return code + ": " + detail
 }
 
-// Status prints current, previous, the highest counter and the last record
-// to Out. It checks the state folder and the release folder as a switch does
-// and changes nothing.
+// Status prints current, previous, the highest counter, the trust, a pending
+// journal and the last record to Out. It takes the lock shared, so that what
+// it prints is one state between two switches (a running switch makes it
+// exit with ExitLocked), checks the folders as a switch does, prints nothing
+// when any of it cannot be read, and changes nothing.
 func (s *Switcher) Status() int {
 	if !filepath.IsAbs(s.cfg.Root) {
 		s.errorf("--root %s is not an absolute path", q(s.cfg.Root))
@@ -983,10 +1016,12 @@ func (s *Switcher) Status() int {
 		return ExitFailed
 	}
 	s.policy = p
-	if err := s.status(s.cfg.Out); err != nil {
+	var b strings.Builder
+	if err := s.status(&b); err != nil {
 		s.errorf("status: %s", describe(err))
 		return ExitFailed
 	}
+	io.WriteString(s.cfg.Out, b.String())
 	return ExitOK
 }
 
