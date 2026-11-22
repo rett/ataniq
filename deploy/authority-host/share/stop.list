@@ -1,0 +1,4 @@
+# The commands that stop the decision services, run by ah-switch when no
+# healthy release is left (see ../README.md, "Layout"). This release is
+# static (components: static): it runs no decision service, so nothing is
+# stopped here, and the static status page stays.
