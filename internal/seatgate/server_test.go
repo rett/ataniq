@@ -995,3 +995,74 @@ func TestServerLeaksNoGoroutines(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A handler that ignores its context outlives its connection, and keeps a
+// place until it returns: a peer that reconnects cannot start more handlers
+// than the server's ceiling, MaxConns × MaxInFlight by default, however many
+// connections it goes through. Each connection used to count its handlers
+// afresh, so a flapping peer could pile them up without end.
+func TestServerHandlersHaveAServerWideCeiling(t *testing.T) {
+	leakCheck(t)
+	release := make(chan struct{})
+	started := make(chan struct{}, 100)
+	connGone := make(chan struct{}, 100)
+	var mu sync.Mutex
+	running, most := 0, 0
+	e := startServer(t, func(c *ServerConfig) { c.MaxConns, c.MaxInFlight = 3, 1 }, HandlerFunc(
+		func(ctx context.Context, _ Peer, op string, _ json.RawMessage) (json.RawMessage, error) {
+			if op != "t.ignores" {
+				return nil, nil
+			}
+			mu.Lock()
+			running++
+			most = max(most, running)
+			mu.Unlock()
+			defer func() { mu.Lock(); running--; mu.Unlock() }()
+			started <- struct{}{}
+			<-ctx.Done() // the connection has gone
+			connGone <- struct{}{}
+			<-release // and the handler still has not returned
+			return nil, nil
+		}))
+	var freeOnce sync.Once
+	free := func() { freeOnce.Do(func() { close(release) }) }
+	t.Cleanup(free) // a failing test frees its handlers too
+	served, busy := 0, 0
+	for i := 0; i < 6; i++ {
+		r := e.helloed()
+		// The loop takes frames in order: the ping is answered after the
+		// request is refused or its handler started.
+		r.send(`{"id":2,"op":"t.ignores"}`)
+		r.send(`{"id":3,"op":"seat.ping"}`)
+		switch resp := r.recv(); {
+		case resp.ID == 2 && resp.Code == CodeBusy:
+			busy++
+			if resp := r.recv(); resp.ID != 3 || resp.Code != "" {
+				t.Fatalf("connection %d: %+v", i, resp)
+			}
+			r.c.Close()
+		case resp.ID == 3 && resp.Code == "":
+			served++
+			within(t, "the handler to start", started, 5*time.Second)
+			r.c.Close()
+			// The handler sees its connection end, so the connection's
+			// place is (about to be) free; the handler goes on.
+			within(t, "the connection to end", connGone, 5*time.Second)
+		default:
+			t.Fatalf("connection %d: %+v", i, resp)
+		}
+	}
+	mu.Lock()
+	m := most
+	mu.Unlock()
+	if m > 3 || served != 3 || busy != 3 {
+		t.Fatalf("%d handlers ran at once, %d served and %d busy; want at most 3, 3 and 3", m, served, busy)
+	}
+	free()
+	untilTrue(t, "the handlers to return", func() bool { mu.Lock(); defer mu.Unlock(); return running == 0 })
+	// Their places are free again.
+	r := e.helloed()
+	if resp := r.call(2, "t.quick", ""); resp.Code != "" {
+		t.Fatalf("after the handlers returned: %+v", resp)
+	}
+}

@@ -22,8 +22,10 @@ type Peer struct {
 // goroutine, so it must be safe for concurrent use. ctx is done when the
 // request's deadline passes, when the connection closes and when a shutdown
 // outlasts its grace period; a handler that ignores it is never stopped, and
-// holds its in-flight slot until it returns. params is the request's params
-// object, or nil when there were none; [DecodeStrict] reads it.
+// holds its in-flight slot, and its place under the server's MaxHandlers,
+// until it returns, even after its connection is gone. params is the
+// request's params object, or nil when there were none; [DecodeStrict] reads
+// it.
 //
 // A returned result must be a JSON object (nil is {}). An error is told to
 // the peer only as a code: if it implements [CodedError] its Code, if that is
@@ -69,6 +71,7 @@ type ServerConfig struct {
 
 	MaxConns       int           // concurrent connections, 8
 	MaxInFlight    int           // handlers running at once per connection, 16
+	MaxHandlers    int           // handlers running at once over all connections, MaxConns × MaxInFlight
 	RequestTimeout time.Duration // the deadline of one request, 30 s
 	RateMax        int           // requests per RatePer per connection, 60
 	RatePer        time.Duration // the rate window, 1 minute
@@ -98,6 +101,7 @@ func (c ServerConfig) withDefaults() ServerConfig {
 	}
 	n(&c.MaxConns, 8)
 	n(&c.MaxInFlight, 16)
+	n(&c.MaxHandlers, c.MaxConns*c.MaxInFlight)
 	n(&c.RateMax, 60)
 	d(&c.RequestTimeout, 30*time.Second)
 	d(&c.RatePer, time.Minute)
@@ -119,9 +123,30 @@ type server struct {
 	root  context.Context
 	drain chan struct{} // closed when the server begins to shut down
 
-	mu     sync.Mutex
-	active int
-	wg     sync.WaitGroup
+	mu       sync.Mutex
+	active   int // connections being served
+	handlers int // handlers that have not returned, of any connection, gone or not
+	wg       sync.WaitGroup
+}
+
+// takeHandler takes a place for a handler under MaxHandlers, or reports that
+// there is none. The place is the handler's until it returns: a handler that
+// ignores its context keeps it after its connection has gone, so a peer that
+// reconnects cannot pile up handlers.
+func (s *server) takeHandler() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.handlers >= s.cfg.MaxHandlers {
+		return false
+	}
+	s.handlers++
+	return true
+}
+
+func (s *server) releaseHandler() {
+	s.mu.Lock()
+	s.handlers--
+	s.mu.Unlock()
 }
 
 // Serve accepts connections on ln until ctx is done, serving each with h. It
@@ -407,7 +432,7 @@ func (c *srvConn) handle(req request) bool {
 		return true
 	}
 	c.mu.Lock()
-	if c.running >= c.s.cfg.MaxInFlight {
+	if c.running >= c.s.cfg.MaxInFlight || !c.s.takeHandler() {
 		c.mu.Unlock()
 		c.reply(response{ID: req.ID, Code: CodeBusy})
 		return true
@@ -444,11 +469,12 @@ func (c *srvConn) serve(req request) {
 	ctx, cancel := context.WithTimeout(c.ctx, c.s.cfg.RequestTimeout)
 	defer cancel()
 	done := make(chan response, 1)
-	go func() {
+	go func() { // the one goroutine that returns from Handle gives back its places
 		defer func() {
 			c.mu.Lock()
 			c.running--
 			c.mu.Unlock()
+			c.s.releaseHandler()
 		}()
 		done <- c.invoke(ctx, req)
 	}()
