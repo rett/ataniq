@@ -727,6 +727,20 @@ matters to the services.
   checked against the host or anything of it runs, and before the
   command refuses anything, whether the journal is then resumed, found
   stale, refused for a discard or left open (`--dry` writes nothing).
+  Beside a journal it can read, it writes that transaction's record.
+  Beside a `txn.json` it cannot read (one that does not parse or is not
+  trusted) it writes a plain record (`reason`: `a transaction journal is
+  open and cannot be read; ...`, with a run id of its own in `txn`). No
+  boot takes that record over, so decisions stay inhibited after the
+  journal is set aside or removed by hand, until a transaction ends
+  healthy or `inhibit-clear` removes it. The file is written only when it
+  is not there. One that is there stays as found, whatever it holds,
+  including one that cannot be read (a note that does not parse, a record
+  that is not trusted, a folder): it is evidence, and every command that
+  refuses keeps it. It is rewritten only by the rules of the commands
+  that own it: `recover --discard-journal` writes its own record whatever
+  was there, a resumed transaction rewrites or removes it at its end, and
+  `boot` follows its own rules (below).
 - It is removed only when the transaction ends healthy: a switch or
   rollback whose release passed its health check and its post-activation
   no-AI check (`ok`), or a going back whose release passed its reload, its
@@ -806,12 +820,12 @@ each write an atomic rename, synced):
 | Who | What it does to the file |
 | --- | --- |
 | A transaction's start | Writes it, before the journal is first written |
-| Any command but `status` that finds a journal | Writes it back when it was removed by hand, before anything else (a switch, rollback or `recover` also writes the journal back from it when it holds one, keeping it) |
+| Any command but `status` that finds a journal | Writes it back when it was removed by hand, before anything else: the transaction's record, or a plain record that no boot takes over when `txn.json` cannot be read. One that is there stays as found, also when it cannot be read (a switch, rollback or `recover` also writes the journal back from it when it holds one, keeping it) |
 | An end that is not healthy | Rewrites it with the outcome, then removes the journal |
 | A healthy end | Renames the journal over it, then removes it |
 | `recover --discard-journal` | Rewrites it as a plain record of the discard, whatever was there, then sets the journal aside |
 | `inhibit-clear` | Removes it on the owner's word; refused while a journal is there or it holds one |
-| `boot` | With no journal pending, writes its own record when it is not there (or is the record of a boot that did not finish), then removes that record once `current` qualified again; leaves any other as found. With a journal pending, never writes its own record: the transaction's is written back first, and beside a journal that cannot be read a plain record that no boot takes over |
+| `boot` | With no journal pending, writes its own record when it is not there (or is the record of a boot that did not finish), then removes that record once `current` qualified again; leaves any other as found. With a journal pending, never writes its own record: the transaction's is written back first, or the plain record beside a journal that cannot be read, as in any command |
 | A failed `boot` | Rewrites its own record with the failure, then runs the host's stop list and owes the failure |
 
 Only the second step of a healthy end, `boot`'s removal of its own
@@ -836,11 +850,11 @@ Before it, a requalification ran only while a journal was open.
   journal is pending. While a journal is pending (`txn.json`, or one the
   inhibit holds) it never writes its own record: a journal whose inhibit
   was removed by hand gets the transaction's back first, as in every
-  command, and one that cannot be read gets a plain record (`reason`:
-  starting `boot: a transaction journal is open and cannot be read`)
-  that no boot takes over, so that after the journal is settled, set
-  aside or removed decisions stay inhibited until a transaction ends
-  healthy or `inhibit-clear`. Then it
+  command, and one that cannot be read gets the plain record of every
+  command (`reason`: `a transaction journal is open and cannot be
+  read; ...`), which no boot takes over, so that after the journal is
+  settled, set aside or removed decisions stay inhibited until a
+  transaction ends healthy or `inhibit-clear`. Then it
   qualifies the release `current` points at as a settling transaction
   does: verified again with the switch policy's trust (its sums, its
   signature in signed mode, the record of its import), then its

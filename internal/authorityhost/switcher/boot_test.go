@@ -585,7 +585,7 @@ func TestBootLeavesNoRecordToTakeOverBesideAJournal(t *testing.T) {
 			t.Fatalf("boot: exit %d\n%s", code, e.last)
 		}
 		in, ok := e.inhibited()
-		if !ok || in.Reason == bootReason || !strings.HasPrefix(in.Reason, "boot:") || !txnPattern.MatchString(in.Txn) {
+		if !ok || in.Reason != unreadableJournalReason || !txnPattern.MatchString(in.Txn) {
 			t.Errorf("boot beside the unreadable journal left %+v, %v", in, ok)
 		}
 		if len(e.runner.calls) != 0 {

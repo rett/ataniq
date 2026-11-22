@@ -22,13 +22,6 @@ const DirBoot = "boot"
 // not finish (see Boot).
 const bootReason = "boot: decisions are refused from the boot until ah-switch boot has qualified current again"
 
-// bootPendingReason is the reason of the inhibit ah-switch boot writes when
-// a journal is open that cannot be read and no inhibit is there (the
-// inhibit of a readable one is the transaction's, see guardJournal). It is
-// not bootReason: no boot takes it over, and only a transaction that ends
-// healthy or the owner's inhibit-clear removes it.
-const bootPendingReason = "boot: a transaction journal is open and cannot be read; decisions stay inhibited until a transaction ends healthy or ah-switch inhibit-clear --asked WORDS"
-
 // Boot runs ah-switch boot, which its unit runs at every boot (see
 // deploy/authority-host/README.md, "Boot requalification"): after a
 // reboot decisions stay refused until the host has been qualified since
@@ -41,7 +34,8 @@ const bootPendingReason = "boot: a transaction journal is open and cannot be rea
 // While a journal is open it never writes its own record: the inhibit of
 // a readable journal is the transaction's, written back first when it was
 // removed (see guardJournal), and one that cannot be read gets a plain
-// record no boot takes over (bootPendingReason). It then qualifies the
+// record no boot takes over (unreadableJournalReason, also written by
+// guardJournal first). It then qualifies the
 // release current points at again as a settling transaction does
 // (qualifyAgain: verified with the switch policy's trust, then its reload
 // list, its health check and its post-activation no-AI check), and
@@ -273,9 +267,9 @@ func bootTime(t string) bool {
 // there is no inhibit, or when the inhibit is an unfinished boot's, and
 // leaves any other as found. With a journal pending (open, held or
 // unreadable) the inhibit is never this run's: one there stays as found,
-// and when none is there (a journal that cannot be read, which
-// guardJournal cannot guard) a plain record is written that no boot takes
-// over. mine says the inhibit is this run's (run); ok false is a failure,
+// and when none is there (guardJournal could not write it) a plain record
+// is written that no boot takes over, as guardJournal writes it beside a
+// journal that cannot be read. mine says the inhibit is this run's (run); ok false is a failure,
 // said.
 func (s *Switcher) bootInhibit(in inhibit, there bool, ierr error, pending bool) (run inhibit, mine, ok bool) {
 	switch {
@@ -290,7 +284,7 @@ func (s *Switcher) bootInhibit(in inhibit, there bool, ierr error, pending bool)
 	case pending:
 		id, err := newTxnID()
 		if err == nil {
-			err = s.writeInhibit(inhibit{Txn: id, Reason: bootPendingReason, Time: s.now()})
+			err = s.writeInhibit(inhibit{Txn: id, Reason: unreadableJournalReason, Time: s.now()})
 		}
 		if err != nil {
 			s.printf("boot: FAILED: %s not written: %s; nothing is run, and decisions are NOT inhibited", InhibitFile, q(err.Error()))

@@ -49,6 +49,8 @@ import (
 //	beginTxn          inhibit written; then the journal
 //	guardJournal      inhibit written back when a journal is there without it,
 //	                  first in every command that takes the lock exclusively
+//	                  (a plain record no boot takes over when the journal
+//	                  cannot be read); one there is never rewritten by it
 //	reconcile         the same; a journal held by the inhibit is written back,
 //	                  the inhibit stays
 //	an unhealthy end  inhibit rewritten with the outcome; then the journal removed
@@ -153,16 +155,41 @@ func (s *Switcher) beginTxn(t *txn) error {
 	return nil
 }
 
+// unreadableJournalReason is the reason of the plain record written when a
+// journal is open that cannot be read and no inhibit is there (see
+// guardJournal): it is not bootReason, so no boot takes it over, and only a
+// transaction that ends healthy or the owner's inhibit-clear removes it,
+// also once the journal was set aside or removed by hand.
+const unreadableJournalReason = "a transaction journal is open and cannot be read; decisions stay inhibited until a transaction ends healthy or ah-switch inhibit-clear --asked WORDS"
+
+// inhibitThere reports whether decisions.inhibit is there, in any form
+// (one that cannot be read included): its presence, apart from its
+// content. err is a lookup that answers neither.
+func (s *Switcher) inhibitThere() (bool, error) {
+	_, err := s.stateRoot.Lstat(InhibitFile)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // ensureInhibit makes sure decisions are inhibited while the journal of
 // the transaction t is there: a journal found without the inhibit
 // (removed by hand) gets it again, before it is checked against the host
-// or resumed.
+// or resumed. An inhibit that is there stays as found, whatever it holds
+// (one that cannot be read is evidence, kept when the journal is then
+// refused); the transaction rewrites or removes it at its end, as any
+// transaction does. A lookup that answers neither is an error: nothing is
+// resumed then.
 func (s *Switcher) ensureInhibit(t *txn) error {
 	if t.begun {
 		return nil
 	}
-	_, _, ok, err := s.readInhibit()
-	if err == nil && ok {
+	there, err := s.inhibitThere()
+	if err != nil {
+		return failf(CodeStateInvalid, "%s cannot be looked up: %s", InhibitFile, q(err.Error()))
+	}
+	if there {
 		t.begun = true
 		return nil
 	}
@@ -176,23 +203,39 @@ func (s *Switcher) ensureInhibit(t *txn) error {
 // guardJournal is the first thing every command that takes the lock
 // exclusively does, before it runs anything (the host's stop list owed by
 // a stopping journal included) and before it can refuse: when a journal is
-// open and decisions.inhibit is not there (removed by hand) or cannot be
-// read, the inhibit is written back for that transaction (as ensureInhibit
-// does), so that a journal is never left without it, whatever the command
-// then does or refuses. A dry run writes nothing; a journal that cannot be
-// read is left to the command, which refuses it (boot guards it itself,
-// see bootInhibit). A failure is said, and the command goes on: the stops
-// it owes still run, and its reconcile refuses to resume the journal
-// without the inhibit.
+// there and decisions.inhibit is not (removed by hand), the inhibit is
+// written back, so that a journal is never left without it, whatever the
+// command then does or refuses. For a journal that can be read it is that
+// transaction's (as ensureInhibit writes it); for one that cannot be read
+// (it does not parse, or it is not trusted) a plain record with a run id
+// of its own and unreadableJournalReason, which no boot takes over (see
+// unfinishedBoot). An inhibit that is there stays as found, one that
+// cannot be read included: it is evidence, and a command that refuses
+// keeps it (only recover --discard-journal, a resumed transaction's end
+// and boot's own rules rewrite one). A dry run writes nothing. A failure
+// is said, and the command goes on: the stops it owes still run, and its
+// reconcile refuses to resume a journal without the inhibit.
 func (s *Switcher) guardJournal() {
 	if s.cfg.Dry || s.stateRoot == nil || s.lockFile == nil {
 		return
 	}
-	j, open, err := s.readJournal()
-	if err != nil || !open {
+	j, open, jerr := s.readJournal()
+	if jerr == nil && !open {
 		return
 	}
-	if _, _, there, err := s.readInhibit(); err == nil && there {
+	if there, err := s.inhibitThere(); err != nil || there {
+		return
+	}
+	if jerr != nil {
+		id, err := newTxnID()
+		if err == nil {
+			err = s.writeInhibit(inhibit{Txn: id, Reason: unreadableJournalReason, Time: s.now()})
+		}
+		if err != nil {
+			s.printf("reconcile: FAILED: %s not written: %s; %s is there and cannot be read, and decisions are NOT inhibited", InhibitFile, q(err.Error()), JournalFile)
+			return
+		}
+		s.printf("reconcile: %s was not there beside %s, which cannot be read (%s); a plain record (run %s) is written before anything else, which no boot takes over", InhibitFile, JournalFile, describe(jerr), id)
 		return
 	}
 	t := &txn{j: j}

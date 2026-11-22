@@ -289,6 +289,191 @@ func TestARefusedCommandRestoresTheInhibitBesideAJournal(t *testing.T) {
 	}
 }
 
+// lockedCommands is every command that takes the lock exclusively, as a
+// test runs it: each returns its exit code, its output in last.
+func lockedCommands() []struct {
+	name string
+	run  func(e *env, j journal) int
+} {
+	return []struct {
+		name string
+		run  func(e *env, j journal) int
+	}{
+		{"a switch", func(e *env, j journal) int { return e.switchTo(rel3) }},
+		{"a rollback", func(e *env, j journal) int { return e.rollBack("previous") }},
+		{"a recover", func(e *env, j journal) int { return e.recover(resumeOnly) }},
+		{"a discard of another transaction", func(e *env, j journal) int {
+			return e.recover(RecoverOptions{DiscardJournal: neverTxn})
+		}},
+		{"an ack", func(e *env, j journal) int { return e.ackTxns([]string{neverTxn}, "looked") }},
+		{"an inhibit-clear", func(e *env, j journal) int {
+			code := e.switcher().InhibitClear(context.Background(), "looked")
+			e.last = e.out.String()
+			e.out.Reset()
+			return code
+		}},
+		{"a boot", func(e *env, j journal) int { return e.boot() }},
+	}
+}
+
+// TestEveryCommandGuardsAJournalItCannotRead: txn.json is there and cannot
+// be read (it does not parse, or it is not trusted) and decisions.inhibit
+// was removed by hand. Every command that takes the lock exclusively
+// refuses, and first writes a plain record that no boot takes over, so
+// that a journal is never there without the inhibit; nothing is run. Once
+// the owner sets the journal aside by hand, the next boot keeps that
+// record as it is: only a transaction that ends healthy or inhibit-clear
+// removes it.
+func TestEveryCommandGuardsAJournalItCannotRead(t *testing.T) {
+	for _, journalCase := range []struct {
+		name string
+		make func(e *env)
+	}{
+		{"does not parse", func(e *env) {
+			e.write(filepath.Join(e.root, StateDir, JournalFile), `{"txn":"x"}`, 0o600)
+		}},
+		{"not trusted", func(e *env) {
+			e.crashAt(CrashActivating, false, rel3)
+			if err := os.Chmod(filepath.Join(e.root, StateDir, JournalFile), 0o666); err != nil {
+				e.t.Fatal(err)
+			}
+		}},
+	} {
+		for _, tc := range lockedCommands() {
+			t.Run(journalCase.name+"/"+tc.name, func(t *testing.T) {
+				e := activeOwn(t)
+				e.keepOwed = true
+				g := guard(e)
+				journalCase.make(e)
+				if err := os.Remove(e.inhibitPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+					t.Fatal(err)
+				}
+				journalText := e.stateFile(JournalFile)
+				e.runner.reset()
+				if code := tc.run(e, journal{}); code == ExitOK {
+					t.Fatalf("exit 0 beside a journal that cannot be read\n%s", e.last)
+				}
+				in, ok := e.inhibited()
+				if !ok || in.Reason != unreadableJournalReason || !txnPattern.MatchString(in.Txn) || !bootTime(in.Time) {
+					t.Fatalf("the command left the journal that cannot be read with %+v, %v\n%s", in, ok, e.last)
+				}
+				if got := g.decide(); got != "refused" {
+					t.Errorf("a decision is %s beside the journal", got)
+				}
+				if len(e.runner.calls) != 0 {
+					t.Errorf("commands run: %v", e.runner.calls)
+				}
+				if e.stateFile(JournalFile) != journalText {
+					t.Error("the journal was changed")
+				}
+				// The owner sets the journal aside by hand: no boot
+				// lifts the record.
+				if err := os.Remove(filepath.Join(e.root, StateDir, JournalFile)); err != nil {
+					t.Fatal(err)
+				}
+				before := e.stateFile(InhibitFile)
+				if got := e.status(); !strings.Contains(got, "a later boot keeps it") {
+					t.Errorf("status:\n%s", got)
+				}
+				e.runner.reset()
+				if code := e.boot(); code != ExitFailed || e.stateFile(InhibitFile) != before || len(e.runner.calls) != 0 {
+					t.Errorf("the next boot: exit %d, ran %v, inhibit changed %v\n%s", code, e.runner.calls, e.stateFile(InhibitFile) != before, e.last)
+				}
+				if got := g.decide(); got != "refused" {
+					t.Errorf("a decision is %s after the next boot", got)
+				}
+			})
+		}
+	}
+}
+
+// TestARefusalKeepsAnInhibitItCannotRead: a readable journal that does not
+// match the host is open, and decisions.inhibit is there but cannot be
+// read (a note that does not parse, a record that is not trusted, a
+// folder). Presence is not content: every command that refuses keeps that
+// inhibit exactly as found, as evidence, and runs nothing. Only recover
+// --discard-journal of that transaction, whose contract is to write its
+// own record whatever was there, replaces it.
+func TestARefusalKeepsAnInhibitItCannotRead(t *testing.T) {
+	for _, inhibitCase := range []struct {
+		name string
+		make func(e *env)
+	}{
+		{"does not parse", func(e *env) { e.write(e.inhibitPath(), "the owner's note\n", 0o644) }},
+		{"not trusted", func(e *env) {
+			e.write(e.inhibitPath(), `{"txn": "`+neverTxn+`", "reason": "the owner's", "time": "2026-11-21T12:00:00Z"}`, 0o644)
+			if err := os.Chmod(e.inhibitPath(), 0o666); err != nil {
+				e.t.Fatal(err)
+			}
+		}},
+		{"a folder", func(e *env) {
+			if err := os.Mkdir(e.inhibitPath(), 0o755); err != nil {
+				e.t.Fatal(err)
+			}
+		}},
+	} {
+		// stale is a journal left in its activating phase whose links no
+		// longer match the host, beside the inhibit of inhibitCase.
+		stale := func(t *testing.T) (*env, journal) {
+			e := activeOwn(t)
+			e.keepOwed = true
+			e.crashAt(CrashActivating, false, rel3)
+			j, _ := e.journal()
+			if err := os.Remove(e.inhibitPath()); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(filepath.Join(e.root, BaseDir, "previous")); err != nil {
+				t.Fatal(err)
+			}
+			inhibitCase.make(e)
+			e.runner.reset()
+			return e, j
+		}
+		for _, tc := range lockedCommands() {
+			t.Run(inhibitCase.name+"/"+tc.name, func(t *testing.T) {
+				e, j := stale(t)
+				g := guard(e)
+				before, err := os.Lstat(e.inhibitPath())
+				if err != nil {
+					t.Fatal(err)
+				}
+				text := ""
+				if !before.IsDir() {
+					text = e.stateFile(InhibitFile)
+				}
+				if code := tc.run(e, j); code == ExitOK {
+					t.Fatalf("exit 0\n%s", e.last)
+				}
+				after, err := os.Lstat(e.inhibitPath())
+				if err != nil || !os.SameFile(before, after) || after.Mode() != before.Mode() || (!before.IsDir() && e.stateFile(InhibitFile) != text) {
+					t.Errorf("the refusal changed the inhibit it could not read (%v)\n%s", err, e.last)
+				}
+				if got := g.decide(); got != "refused" {
+					t.Errorf("a decision is %s beside the journal", got)
+				}
+				if len(e.runner.calls) != 0 {
+					t.Errorf("commands run: %v", e.runner.calls)
+				}
+				if got, ok := e.journal(); !ok || got.Txn != j.Txn || got.Phase != PhaseActivating {
+					t.Errorf("journal: %+v, %v", got, ok)
+				}
+			})
+		}
+		if inhibitCase.name == "a folder" {
+			continue
+		}
+		t.Run(inhibitCase.name+"/the discard of that journal", func(t *testing.T) {
+			e, j := stale(t)
+			if code := e.recover(RecoverOptions{DiscardJournal: j.Txn}); code != ExitOK {
+				t.Fatalf("discard: exit %d\n%s", code, e.last)
+			}
+			if in, ok := e.inhibited(); !ok || in.Txn != j.Txn || !strings.Contains(in.Reason, "set aside by the owner") {
+				t.Errorf("after the discard: %+v, %v", in, ok)
+			}
+		})
+	}
+}
+
 // TestTheStopsOwedRunWithTheInhibit: a journal left in its stopping phase
 // whose inhibit was removed by hand: every command writes the inhibit back
 // before it runs the host's stop list, a boot and a command that cannot use
