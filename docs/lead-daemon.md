@@ -94,16 +94,21 @@ The command is Linux only. On another platform it prints that and exits 1.
 ### Commands and flags
 
 ```text
-ataniqd run [--state-dir DIR] [--runtime-dir DIR] [--owner-channel]
+ataniqd run [--state-dir DIR] [--runtime-dir DIR] [--owner-channel [--seat-gate ADDR]]
 ataniqd status [--socket PATH] [--json]
 ataniqd version
+ataniqd seat-gate init|pins [--state-dir DIR]
 ```
+
+`--owner-channel`, `--seat-gate` and `seat-gate` are in the tagged build only
+(see [the owner channel](#the-owner-channel-tagged-build-only)).
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `run --state-dir DIR` | `$XDG_STATE_HOME/ataniq`, else `$HOME/.local/state/ataniq` | The state folder. |
 | `run --runtime-dir DIR` | `$XDG_RUNTIME_DIR/ataniq` | The folder that holds `daemon.sock`. |
 | `run --owner-channel` | off | Tagged build only (tag `ataniq_ownerchannel`): serve the owner connection. See [the owner channel](#the-owner-channel-tagged-build-only). |
+| `run --seat-gate ADDR` | off | Tagged build only, with `--owner-channel`: also serve the seat gate on ADDR. See [the seat gate](#the-seat-gate). |
 | `status --socket PATH` | `$XDG_RUNTIME_DIR/ataniq/daemon.sock` | The socket to ask. |
 | `status --json` | off | Print the status result as JSON. |
 
@@ -274,6 +279,64 @@ standard error, the STAND-IN banner:
 ```text
 ataniqd: owner channel: STAND-IN door, scratch state: no real approval
 ```
+
+### The seat gate
+
+```text
+ataniqd seat-gate init [--state-dir DIR]
+ataniqd seat-gate pins [--state-dir DIR]
+ataniqd run --owner-channel --seat-gate ADDR [--state-dir DIR] [--runtime-dir DIR]
+```
+
+The seat gate is the link of the seat app, which serves the owner's phone from
+the authority host, to this daemon (see
+[the seat gate's design](design/seat-gate.md)). It is a TCP listener inside the
+daemon, in the tagged build only, and opened only with `--seat-gate`, which
+needs `--owner-channel`. Without the flag nothing listens on the network. It is
+provisional and **not qualified**, and it serves the same scratch service as
+the owner connection, behind the STAND-IN banner.
+
+- ADDR is one IP address of this host and a port, such as `192.0.2.10:7443` or
+  `[2001:db8::10]:7443`. A host name, a wildcard address (`0.0.0.0`, `[::]`), a
+  multicast or broadcast address, an address with a zone and a zero port are
+  refused with exit code 10 before the daemon takes a lock. The owner's
+  firewall must let only the authority host reach the port.
+- The gate's key is in `owner/gate/` of the state folder (`cert.pem` and
+  `key.pem`, the key 0600, the folder 0700). `ataniqd seat-gate init` makes it
+  and prints its fingerprint, the pin the seat is given; a key already there is
+  never overwritten, so a new key is made only after the old one is moved away
+  by hand.
+- The seat keys the gate lets in are pinned in `owner/gate/seat-pins`: a regular
+  file (not a link) of the daemon's user, mode 0600, at most 4 KiB, one key
+  fingerprint (64 lower-case hexadecimal digits) per line, at most 4. A blank
+  line and a line that starts with `#` are skipped. `ataniqd seat-gate pins`
+  prints the pins as the daemon reads them. The owner edits the file by hand;
+  the daemon reads it at start, so a change takes effect at the next start.
+- The daemon refuses to start, with exit code 10, without the key, without the
+  pin file, with a file that is not as above, or with no pin; the message names
+  the line at fault by its number and never prints a pin.
+- The gate starts once the service is built and stops, before the service is
+  closed, when the daemon shuts down; a gate that cannot listen (the port is
+  taken) stops the daemon with exit code 18. At start the daemon prints one
+  line with the address and the gate's key fingerprint, and no pin:
+
+```text
+ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>
+```
+
+The gate speaks TLS 1.3 with pinned keys, strict frames of at most 257 KiB
+(the largest listing, card or page and the response around it) and the limits
+of `internal/seatgate`. It serves the capabilities `pair` and `read`: the
+seat's pairing call, `seat.pair`, and the reads `owner.list`, `owner.show`,
+`owner.paths` and `owner.patch`, through `internal/approval/gatehost`, with a
+seat source that is never the decider. Every other operation is refused
+`unknown-op`; no decision can be made over the gate. A seat whose key is not
+pinned is refused in the handshake and never reaches the service. On the
+daemon's socket `seat.pair` stays refused: no connection there is a seat.
+
+Same-user limit: a process of the daemon's user that is not in a sandbox can
+read the gate's key and add a pin. Until the sandbox is qualified, the gate is
+for scratch state only.
 
 ### The scratch settings
 
