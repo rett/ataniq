@@ -740,7 +740,10 @@ matters to the services.
   refuses keeps it. It is rewritten only by the rules of the commands
   that own it: `recover --discard-journal` writes its own record whatever
   was there, a resumed transaction rewrites or removes it at its end, and
-  `boot` follows its own rules (below).
+  `boot` follows its own rules (below). One record is rewritten by every
+  command: `boot`'s own record found beside a `txn.json` that cannot be
+  read becomes that plain record, its run id kept, since a later boot
+  would otherwise take it over and lift it once the journal is set aside.
 - It is removed only when the transaction ends healthy: a switch or
   rollback whose release passed its health check and its post-activation
   no-AI check (`ok`), or a going back whose release passed its reload, its
@@ -820,7 +823,7 @@ each write an atomic rename, synced):
 | Who | What it does to the file |
 | --- | --- |
 | A transaction's start | Writes it, before the journal is first written |
-| Any command but `status` that finds a journal | Writes it back when it was removed by hand, before anything else: the transaction's record, or a plain record that no boot takes over when `txn.json` cannot be read. One that is there stays as found, also when it cannot be read (a switch, rollback or `recover` also writes the journal back from it when it holds one, keeping it) |
+| Any command but `status` that finds a journal | Writes it back when it was removed by hand, before anything else: the transaction's record, or a plain record that no boot takes over when `txn.json` cannot be read. One that is there stays as found, also when it cannot be read, except `boot`'s own record beside a `txn.json` that cannot be read, which becomes that plain record (a switch, rollback or `recover` also writes the journal back from it when it holds one, keeping it) |
 | An end that is not healthy | Rewrites it with the outcome, then removes the journal |
 | A healthy end | Renames the journal over it, then removes it |
 | `recover --discard-journal` | Rewrites it as a plain record of the discard, whatever was there, then sets the journal aside |
@@ -898,7 +901,10 @@ Before it, a requalification ran only while a journal was open.
   not finish: exactly the record `boot` writes (its `reason`, a run id in
   `txn` and a `time` in UTC to the second, each as `boot` writes it; a
   record lacking any of them stays as found), with no journal open and no
-  outcome owed under its run. That boot died (a power loss, a time limit)
+  outcome owed under its run. Beside a `txn.json` that cannot be read such
+  a record is not kept: every command rewrites it as the plain record of
+  that journal first (above), so a boot after the journal was set aside by
+  hand does not lift it. That boot died (a power loss, a time limit)
   after it inhibited decisions and before it recorded a failure or removed
   its record; nothing else changed since it found no inhibit, so this boot
   writes the record again as its own and qualifies `current` from the

@@ -601,6 +601,47 @@ func TestBootLeavesNoRecordToTakeOverBesideAJournal(t *testing.T) {
 	})
 }
 
+// TestNoBootRecordStaysBesideAJournalItCannotRead: the whole record of a
+// boot that did not finish is there beside a txn.json that cannot be read
+// (an earlier boot, then a journal that went bad). The first command that
+// takes the lock (a boot, or any other) rewrites it as the plain record of
+// a journal that cannot be read, keeping its run id, so that a boot after
+// the owner set the journal aside by hand keeps decisions inhibited
+// instead of taking the record over and lifting it.
+func TestNoBootRecordStaysBesideAJournalItCannotRead(t *testing.T) {
+	for _, tc := range lockedCommands() {
+		t.Run(tc.name, func(t *testing.T) {
+			e := activeOwn(t)
+			e.keepOwed = true
+			g := guard(e)
+			e.write(filepath.Join(e.root, StateDir, JournalFile), "{", 0o600)
+			e.writeInhibitFile(inhibit{Txn: neverTxn, Reason: bootReason, Time: "2026-11-21T12:00:00Z"})
+			e.runner.reset()
+			if code := tc.run(e, journal{}); code == ExitOK {
+				t.Fatalf("exit 0 beside a journal that cannot be read\n%s", e.last)
+			}
+			in, ok := e.inhibited()
+			if !ok || in.Reason != unreadableJournalReason || in.Txn != neverTxn {
+				t.Fatalf("the boot record beside the journal is now %+v, %v\n%s", in, ok, e.last)
+			}
+			if len(e.runner.calls) != 0 {
+				t.Errorf("commands run: %v", e.runner.calls)
+			}
+			if err := os.Remove(filepath.Join(e.root, StateDir, JournalFile)); err != nil {
+				t.Fatal(err)
+			}
+			before := e.stateFile(InhibitFile)
+			e.runner.reset()
+			if code := e.boot(); code != ExitFailed || e.stateFile(InhibitFile) != before || len(e.runner.calls) != 0 {
+				t.Errorf("the next boot: exit %d, ran %v, inhibit changed %v\n%s", code, e.runner.calls, e.stateFile(InhibitFile) != before, e.last)
+			}
+			if got := g.decide(); got != "refused" {
+				t.Errorf("a decision is %s after the next boot", got)
+			}
+		})
+	}
+}
+
 // TestBootWithholdsTheAckWhileSettling: an outcome owed while its
 // transaction is still open (in txn.json, or held by the inhibit) is not
 // final: settling it may change it (its requalification may fail). boot

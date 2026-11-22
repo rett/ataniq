@@ -98,8 +98,9 @@
   discard, and every command that finds a journal writes a missing
   inhibit back first, before it runs a stop or refuses anything: the
   transaction's, or beside a journal that cannot be read a plain record
-  no boot takes over; an inhibit that is there, even one that cannot be
-  read, is kept as evidence by every command that refuses),
+  no boot takes over, which also replaces boot's own record found there;
+  an inhibit that is there, even one that cannot be read, is kept as
+  evidence by every command that refuses),
   `ah-switch recover --services-stopped` settles a transaction whose stop
   commands failed on the owner's word,
   `ah-switch status` shows the state under a shared lock, `--dry` prints

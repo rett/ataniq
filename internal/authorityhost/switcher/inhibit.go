@@ -50,7 +50,9 @@ import (
 //	guardJournal      inhibit written back when a journal is there without it,
 //	                  first in every command that takes the lock exclusively
 //	                  (a plain record no boot takes over when the journal
-//	                  cannot be read); one there is never rewritten by it
+//	                  cannot be read); one there is not rewritten by it,
+//	                  but for boot's own record beside a journal that cannot
+//	                  be read, which becomes that plain record
 //	reconcile         the same; a journal held by the inhibit is written back,
 //	                  the inhibit stays
 //	an unhealthy end  inhibit rewritten with the outcome; then the journal removed
@@ -212,9 +214,13 @@ func (s *Switcher) ensureInhibit(t *txn) error {
 // unfinishedBoot). An inhibit that is there stays as found, one that
 // cannot be read included: it is evidence, and a command that refuses
 // keeps it (only recover --discard-journal, a resumed transaction's end
-// and boot's own rules rewrite one). A dry run writes nothing. A failure
-// is said, and the command goes on: the stops it owes still run, and its
-// reconcile refuses to resume a journal without the inhibit.
+// and boot's own rules rewrite one). The one exception is boot's own
+// record (bootReason) beside a journal that cannot be read: it is
+// rewritten as that plain record, its run id kept, since a later boot
+// would take it over and lift it once the journal is set aside by hand. A
+// dry run writes nothing. A failure is said, and the command goes on: the
+// stops it owes still run, and its reconcile refuses to resume a journal
+// without the inhibit.
 func (s *Switcher) guardJournal() {
 	if s.cfg.Dry || s.stateRoot == nil || s.lockFile == nil {
 		return
@@ -223,7 +229,14 @@ func (s *Switcher) guardJournal() {
 	if jerr == nil && !open {
 		return
 	}
-	if there, err := s.inhibitThere(); err != nil || there {
+	there, err := s.inhibitThere()
+	if err != nil {
+		return
+	}
+	if there {
+		if jerr != nil {
+			s.unbootBesideUnreadable()
+		}
 		return
 	}
 	if jerr != nil {
@@ -244,6 +257,24 @@ func (s *Switcher) guardJournal() {
 		return
 	}
 	s.printf("reconcile: %s was not there beside the journal of the %s %s (transaction %s); it is written back before anything else", InhibitFile, t.kind(), j.ID, j.Txn)
+}
+
+// unbootBesideUnreadable rewrites boot's own record (bootReason), found
+// beside a journal that cannot be read, as the plain record of such a
+// journal (unreadableJournalReason), keeping its run id: no boot takes that
+// over. Any other inhibit is left as found. A failure is said; the record
+// then stays boot's, which a boot leaves as found while the journal is
+// there.
+func (s *Switcher) unbootBesideUnreadable() {
+	in, settling, _, err := s.readInhibit()
+	if err != nil || settling != nil || in.Reason != bootReason {
+		return
+	}
+	if err := s.writeInhibit(inhibit{Txn: in.Txn, Reason: unreadableJournalReason, Time: s.now()}); err != nil {
+		s.printf("reconcile: FAILED: %s (the record of boot run %s) not rewritten beside %s, which cannot be read: %s; it stays as it is, and decisions stay inhibited", InhibitFile, q(in.Txn), JournalFile, q(err.Error()))
+		return
+	}
+	s.printf("reconcile: %s was the record of boot run %s beside %s, which cannot be read; it is rewritten as a plain record, which no boot takes over", InhibitFile, q(in.Txn), JournalFile)
 }
 
 // healthy reports whether the transaction t ended healthy: its release
