@@ -157,13 +157,20 @@ automatic return to the old release after a failed health check.
 ### Commands
 
 ```
-ah-switch [--root DIR] [--dry] [--mode manual|signed] [--noaicheck PATH] [--from INCOMING_DIR] ID
-ah-switch [--root DIR] [--dry] [--mode manual|signed] [--noaicheck PATH] --rollback-to previous
+ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manual|signed] [--noaicheck PATH] [--from INCOMING_DIR] ID
+ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manual|signed] [--noaicheck PATH] --rollback-to previous
 ah-switch [--root DIR] status
 ```
 
-- `--root DIR` is the folder that holds `opt/authority-host` and
-  `var/lib/authority-host`; it is `/` on the host and a scratch folder in tests.
+- `--root DIR` is the folder that holds `opt/authority-host`,
+  `var/lib/authority-host` and `etc/authority-host`; it is `/` on the host
+  and a scratch folder in tests. It is also passed to the no-AI check, which
+  then scans that folder. The programs a switch runs (validators, the
+  package step, reloads, the stop list and health commands) act on the host
+  itself whatever the root, so with a root other than `/` a switch or
+  rollback is refused (exit 2) unless `--allow-exec` is given too, which is
+  meant only for an isolated test runner whose commands touch nothing live.
+  Without it only `--dry` and `status` work there; they run no program.
 - `--mode manual` checks `SHA256SUMS` only; `--mode signed` also checks
   `SHA256SUMS.sig`. Without `--mode` the switch policy's minimum applies; a
   mode weaker than the policy is refused (exit 2), and `--mode signed`
@@ -205,8 +212,14 @@ rename in step 6, a failure leaves `current` as it was.
 2. **counter**: the counter must be above the highest ever activated
    (`highest-counter`; none means 0). A rollback skips this rule but accepts
    only the release `previous` points at.
-3. **noaicheck**: the new release's `bin/ah-noaicheck --release DIR` must exit
-   0, within 5 minutes.
+3. **noaicheck**: the switch runs `nft list ruleset` (within 30 seconds; its
+   output at most 4 MiB) and writes what it printed to a file of mode 0600
+   in a new temporary folder of mode 0700, then runs the new release's
+   `bin/ah-noaicheck --root ROOT --release DIR --require-policy --nft-listing FILE`,
+   which must exit 0 within 5 minutes; the folder is removed afterwards.
+   Any other exit status is a failure, including the check's own report
+   that it could not finish (`HIT incomplete`): it is never a warning. A
+   failing `nft` is `nft-listing-failed`, and the check does not run.
 4. **validate**: each command of `share/validators.list` must exit 0, within
    30 seconds each. A missing list is allowed.
 5. **packages**: when the manifest's `package_snapshot` differs from the one

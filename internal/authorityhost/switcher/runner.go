@@ -15,15 +15,17 @@ import (
 
 // Command is one program the switch runs: a fixed argument vector, no shell.
 type Command struct {
-	Argv    []string
-	Stdin   []byte // nil reads from /dev/null
-	Timeout time.Duration
+	Argv      []string
+	Stdin     []byte // nil reads from /dev/null
+	Timeout   time.Duration
+	MaxOutput int // bound of each stream kept; 0: maxOutput
 }
 
 // Output is what a command wrote, each stream kept up to a bound.
 type Output struct {
-	Stdout []byte
-	Stderr []byte
+	Stdout    []byte
+	Stderr    []byte
+	Truncated bool // a stream wrote more than the bound
 }
 
 // Runner runs a command. The error is nil only when the command ran and exited
@@ -122,10 +124,14 @@ func (ExecRunner) Run(ctx context.Context, c Command) (Output, error) {
 	if c.Stdin != nil {
 		cmd.Stdin = bytes.NewReader(c.Stdin)
 	}
-	var stdout, stderr boundedBuffer
+	limit := c.MaxOutput
+	if limit <= 0 {
+		limit = maxOutput
+	}
+	stdout, stderr := boundedBuffer{max: limit}, boundedBuffer{max: limit}
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err = cmd.Run()
-	out := Output{Stdout: stdout.buf.Bytes(), Stderr: stderr.buf.Bytes()}
+	out := Output{Stdout: stdout.buf.Bytes(), Stderr: stderr.buf.Bytes(), Truncated: stdout.cut || stderr.cut}
 	if err == nil {
 		return out, nil
 	}
@@ -139,17 +145,23 @@ func (ExecRunner) Run(ctx context.Context, c Command) (Output, error) {
 	return out, &RunError{NotStarted: true}
 }
 
-// boundedBuffer keeps the first maxOutput bytes written and drops the rest,
-// so a chatty command cannot fill memory.
-type boundedBuffer struct{ buf bytes.Buffer }
+// boundedBuffer keeps the first max bytes written and drops the rest, so a
+// chatty command cannot fill memory; cut says that it dropped some.
+type boundedBuffer struct {
+	buf bytes.Buffer
+	max int
+	cut bool
+}
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
-	if room := maxOutput - b.buf.Len(); room > 0 {
-		if len(p) > room {
+	room := b.max - b.buf.Len()
+	if len(p) > room {
+		b.cut = true
+		if room > 0 {
 			b.buf.Write(p[:room])
-		} else {
-			b.buf.Write(p)
 		}
+	} else {
+		b.buf.Write(p)
 	}
 	return len(p), nil
 }

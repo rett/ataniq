@@ -66,6 +66,17 @@ func TestExecRunnerTimeoutKillsTheGroup(t *testing.T) {
 	}
 }
 
+// fakeNFT makes the search path a folder whose nft prints listing, for the
+// length of the test.
+func fakeNFT(t *testing.T, listing string) {
+	t.Helper()
+	dir := t.TempDir()
+	script(t, dir, "nft", "cat <<'EOF'\n"+listing+"EOF\n")
+	saved := SearchPath
+	SearchPath = append([]string{dir}, saved...)
+	t.Cleanup(func() { SearchPath = saved })
+}
+
 func TestLookPath(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	p, err := LookPath("sh")
@@ -84,9 +95,12 @@ func TestLookPath(t *testing.T) {
 func TestSwitchWithExecRunner(t *testing.T) {
 	e := newEnv(t)
 	marks := t.TempDir()
+	fakeNFT(t, "table inet filter {\n}\n")
 	dir := e.relDir(rel1)
 	e.release(rel1, "s")
-	e.write(filepath.Join(dir, NoAICheckProgram), "#!/bin/sh\n[ \"$1\" = --release ] && [ -d \"$2\" ] && touch "+marks+"/checked\n", 0o755)
+	// The check is given the root, the release, --require-policy and a
+	// readable listing of the firewall.
+	e.write(filepath.Join(dir, NoAICheckProgram), "#!/bin/sh\n[ \"$1 $2 $3 $4 $5 $6\" = \"--root "+e.root+" --release "+dir+" --require-policy --nft-listing\" ] && grep -q 'table inet filter' \"$7\" && touch "+marks+"/checked\n", 0o755)
 	e.write(filepath.Join(dir, "bin/validate"), "#!/bin/sh\ntouch "+marks+"/validated\n", 0o755)
 	e.write(filepath.Join(dir, ValidatorsList), "{release}/bin/validate\n", 0o644)
 	os.Remove(filepath.Join(dir, ReloadList))

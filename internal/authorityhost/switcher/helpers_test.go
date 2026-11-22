@@ -21,24 +21,55 @@ import (
 // fakeRunner records every command and fails those whose program's base name
 // is in fail (for as many calls as the count says; a negative count fails
 // every call).
+//
+// "nft" prints nftOut. The file given after --nft-listing is recorded as
+// FILE in calls; its content and its mode and its folder's are kept in
+// listing.
 type fakeRunner struct {
-	mu    sync.Mutex
-	calls []string
-	stdin [][]byte
-	fail  map[string]int
+	mu      sync.Mutex
+	calls   []string
+	stdin   [][]byte
+	fail    map[string]int
+	nftOut  string
+	listing []string // content, file mode, folder mode of each listing seen
+	hook    func(argv []string)
 }
+
+const fakeRuleset = "table inet filter {\n}\n"
 
 func (f *fakeRunner) Run(ctx context.Context, c Command) (Output, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, strings.Join(c.Argv, " "))
+	argv := append([]string(nil), c.Argv...)
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == "--nft-listing" {
+			data, err := os.ReadFile(argv[i+1])
+			fi, _ := os.Stat(argv[i+1])
+			di, _ := os.Stat(filepath.Dir(argv[i+1]))
+			if err == nil && fi != nil && di != nil {
+				f.listing = append(f.listing, string(data), fi.Mode().String(), di.Mode().String())
+			}
+			argv[i+1] = "FILE"
+		}
+	}
+	f.calls = append(f.calls, strings.Join(argv, " "))
 	f.stdin = append(f.stdin, c.Stdin)
+	if f.hook != nil {
+		f.hook(c.Argv)
+	}
 	name := filepath.Base(c.Argv[0])
 	if n, ok := f.fail[name]; ok && n != 0 {
 		if n > 0 {
 			f.fail[name] = n - 1
 		}
 		return Output{Stderr: []byte(name + " said no")}, fmt.Errorf("%s: exit status 1", name)
+	}
+	if name == "nft" {
+		out := []byte(f.nftOut)
+		if c.MaxOutput > 0 && len(out) > c.MaxOutput {
+			return Output{Stdout: out[:c.MaxOutput], Truncated: true}, nil
+		}
+		return Output{Stdout: out}, nil
 	}
 	return Output{}, nil
 }
@@ -60,6 +91,7 @@ func (f *fakeRunner) reset() {
 	defer f.mu.Unlock()
 	f.calls = nil
 	f.stdin = nil
+	f.listing = nil
 }
 
 type fakeClock struct {
@@ -129,18 +161,19 @@ func newEnv(t *testing.T) *env {
 	return &env{
 		t:      t,
 		root:   root,
-		runner: &fakeRunner{fail: map[string]int{}},
+		runner: &fakeRunner{fail: map[string]int{}, nftOut: fakeRuleset},
 		clock:  &fakeClock{t: time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)},
 	}
 }
 
 func (e *env) switcher(mod ...func(*Config)) *Switcher {
 	cfg := Config{
-		Root:   e.root,
-		Runner: e.runner,
-		Out:    &e.out,
-		Now:    e.clock.now,
-		Sleep:  e.clock.sleep,
+		Root:      e.root,
+		AllowExec: true,
+		Runner:    e.runner,
+		Out:       &e.out,
+		Now:       e.clock.now,
+		Sleep:     e.clock.sleep,
 	}
 	for _, m := range mod {
 		m(&cfg)
@@ -362,4 +395,10 @@ func mode(t *testing.T, path string) fs.FileMode {
 		t.Fatal(err)
 	}
 	return info.Mode() & (fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)
+}
+
+// checkCall is the call of the no-AI check of the release dir in root, as
+// the fake runner records it.
+func checkCall(prog, root, dir string) string {
+	return prog + " --root " + root + " --release " + dir + " --require-policy --nft-listing FILE"
 }

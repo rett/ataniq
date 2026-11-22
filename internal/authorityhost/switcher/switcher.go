@@ -53,9 +53,13 @@ const (
 	PackageStepProgram = "bin/ah-pkgstep"
 )
 
+// maxNFTListing bounds the firewall listing given to the no-AI check.
+const maxNFTListing = 4 << 20
+
 // Time limits.
 const (
 	NoAICheckTimeout     = 5 * time.Minute
+	NFTListTimeout       = 30 * time.Second
 	ValidatorTimeout     = 30 * time.Second
 	PackageStepTimeout   = 30 * time.Minute
 	ReloadTimeout        = 30 * time.Second
@@ -73,6 +77,7 @@ var stepNames = [...]string{"import", "verify", "counter", "noaicheck", "validat
 type Config struct {
 	Root      string // default /
 	Dry       bool   // print every step, run no program, change nothing
+	AllowExec bool   // with a Root other than /: run programs all the same (an isolated test runner)
 	Mode      string // ModeManual or ModeSigned, at least as strict as the policy; empty: the policy's
 	From      string // the incoming folder to import the release from; empty: it is imported already
 	NoAICheck string // the no-AI check program; default the release's bin/ah-noaicheck
@@ -152,6 +157,9 @@ func (s *Switcher) step(n int, format string, args ...any) {
 func (s *Switcher) checkConfig() error {
 	if !filepath.IsAbs(s.cfg.Root) {
 		return fmt.Errorf("--root %s is not an absolute path", q(s.cfg.Root))
+	}
+	if filepath.Clean(s.cfg.Root) != "/" && !s.cfg.Dry && !s.cfg.AllowExec {
+		return fmt.Errorf("--root %s is not /: a switch there would run the release's programs on this host; use --dry, status, or --allow-exec in an isolated runner", q(s.cfg.Root))
 	}
 	if s.cfg.From != "" && !filepath.IsAbs(s.cfg.From) {
 		return fmt.Errorf("--from %s is not an absolute path", q(s.cfg.From))
@@ -320,30 +328,8 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	}
 
 	// 3. The no-AI check of the new release.
-	check := s.cfg.NoAICheck
-	if check == "" {
-		check = filepath.Join(rel.dir, NoAICheckProgram)
-		ok, err := rel.exists(NoAICheckProgram)
-		if err == nil && !ok {
-			err = failf(CodeNoAICheckMissing, "%s missing in the release", NoAICheckProgram)
-		}
-		if err != nil {
-			return s.fail(a, 3, err)
-		}
-	} else if info, err := os.Stat(check); err != nil || !info.Mode().IsRegular() {
-		return s.fail(a, 3, failf(CodeNoAICheckMissing, "no-AI check %s is not a regular file", q(check)))
-	}
-	argv := []string{check, "--release", rel.dir}
-	if s.cfg.Dry {
-		s.step(3, "would run %s", qargv(argv))
-	} else {
-		_, err := s.cfg.Runner.Run(ctx, Command{Argv: argv, Timeout: NoAICheckTimeout})
-		if err != nil {
-			a.rec.Check = CheckFailed
-			return s.fail(a, 3, failf(CodeNoAICheckFailed, "%s (run it by hand to see its hits)", summary(err)))
-		}
-		a.rec.Check = CheckPassed
-		s.step(3, "passed")
+	if err := s.noAICheck(ctx, a, rel); err != nil {
+		return s.fail(a, 3, err)
 	}
 
 	// 4. Validators.
@@ -546,6 +532,64 @@ func (s *Switcher) failState(a *attempt, err error) int {
 	s.record(a)
 	s.printf("result: failed before step 1; nothing changed")
 	return ExitFailed
+}
+
+// noAICheck runs the no-AI check of the release (or the --noaicheck program)
+// on the root, with the firewall listing it compares against the release's
+// pinned digest:
+//
+//	CHECK --root ROOT --release DIR --require-policy --nft-listing FILE
+//
+// FILE is what "nft list ruleset" printed, written to a private file in a
+// private temporary folder that is removed afterwards. Any exit status but 0
+// fails, including the check's "HIT incomplete" when it could not finish.
+func (s *Switcher) noAICheck(ctx context.Context, a *attempt, rel *release) error {
+	check := s.cfg.NoAICheck
+	if check == "" {
+		check = filepath.Join(rel.dir, NoAICheckProgram)
+		ok, err := rel.exists(NoAICheckProgram)
+		if err == nil && !ok {
+			err = failf(CodeNoAICheckMissing, "%s missing in the release", NoAICheckProgram)
+		}
+		if err != nil {
+			return err
+		}
+	} else if info, err := os.Stat(check); err != nil || !info.Mode().IsRegular() {
+		return failf(CodeNoAICheckMissing, "no-AI check %s is not a regular file", q(check))
+	}
+	listArgv := []string{"nft", "list", "ruleset"}
+	if s.cfg.Dry {
+		s.step(3, "would run %s into a private file", qargv(listArgv))
+		s.step(3, "would run %s", qargv([]string{check, "--root", s.cfg.Root, "--release", rel.dir, "--require-policy", "--nft-listing", "FILE"}))
+		return nil
+	}
+	out, err := s.cfg.Runner.Run(ctx, Command{Argv: listArgv, Timeout: NFTListTimeout, MaxOutput: maxNFTListing})
+	if err == nil && out.Truncated {
+		err = errors.New("larger than the limit")
+	}
+	if err != nil {
+		return failf(CodeNFTListingFailed, "%s: %s", qargv(listArgv), summary(err))
+	}
+	tmp, err := os.MkdirTemp("", "ah-switch-nft-")
+	if err != nil {
+		return failf(CodeNFTListingFailed, "temporary folder: %s", q(err.Error()))
+	}
+	defer os.RemoveAll(tmp)
+	if err := os.Chmod(tmp, 0o700); err != nil {
+		return failf(CodeNFTListingFailed, "temporary folder: %s", q(err.Error()))
+	}
+	listing := filepath.Join(tmp, "nft-ruleset")
+	if err := os.WriteFile(listing, out.Stdout, 0o600); err != nil {
+		return failf(CodeNFTListingFailed, "listing: %s", q(err.Error()))
+	}
+	argv := []string{check, "--root", s.cfg.Root, "--release", rel.dir, "--require-policy", "--nft-listing", listing}
+	if _, err := s.cfg.Runner.Run(ctx, Command{Argv: argv, Timeout: NoAICheckTimeout}); err != nil {
+		a.rec.Check = CheckFailed
+		return failf(CodeNoAICheckFailed, "%s (run it by hand to see its hits)", summary(err))
+	}
+	a.rec.Check = CheckPassed
+	s.step(3, "passed")
+	return nil
 }
 
 // openForSwitch opens and verifies the release to switch to. With --from it

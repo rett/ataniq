@@ -73,7 +73,8 @@ func TestCleanSwitch(t *testing.T) {
 	}
 	dir := e.relDir(rel2)
 	want := []string{
-		filepath.Join(dir, NoAICheckProgram) + " --release " + dir,
+		"nft list ruleset",
+		checkCall(filepath.Join(dir, NoAICheckProgram), e.root, dir),
 		"validate-units verify " + dir + "/etc/systemd/app.service",
 		"validate-rules -c",
 		"reload-units",
@@ -416,8 +417,8 @@ func TestNoAICheckOverride(t *testing.T) {
 	if code := e.switchTo(rel3, func(c *Config) { c.NoAICheck = check }); code != ExitOK {
 		t.Fatalf("exit %d", code)
 	}
-	if want := check + " --release " + e.relDir(rel3); e.runner.calls[0] != want {
-		t.Errorf("first command %q, want %q", e.runner.calls[0], want)
+	if want := checkCall(check, e.root, e.relDir(rel3)); e.runner.calls[1] != want {
+		t.Errorf("check command %q, want %q", e.runner.calls[1], want)
 	}
 }
 
@@ -1028,4 +1029,77 @@ func TestStateFilesNotFollowed(t *testing.T) {
 		}
 		e.out.Reset()
 	})
+}
+
+// TestOtherRootNeedsAllowExec: with a root other than /, a switch would run
+// the release's programs on this host, so it is refused without AllowExec;
+// a dry run and status run no program and work.
+func TestOtherRootNeedsAllowExec(t *testing.T) {
+	e := active(t)
+	e.release(rel3, "2026-11-01")
+	before := digest(t, e.root)
+	noExec := func(c *Config) { c.AllowExec = false }
+	if code := e.switchTo(rel3, noExec); code != ExitUsage {
+		t.Fatalf("switch: exit %d", code)
+	}
+	if code := e.switcher(noExec).RollBack(context.Background(), "previous"); code != ExitUsage {
+		t.Fatalf("rollback: exit %d", code)
+	}
+	e.out.Reset()
+	if digest(t, e.root) != before || len(e.runner.calls) != 0 {
+		t.Errorf("a refused switch changed the tree or ran %v", e.runner.calls)
+	}
+	if code := e.switchTo(rel3, noExec, func(c *Config) { c.Dry = true }); code != ExitOK {
+		t.Fatalf("dry: exit %d", code)
+	}
+	e.status(noExec)
+}
+
+// TestFirewallListing: the check gets what nft list ruleset printed, in a
+// private file of a private folder that is gone afterwards; a failing or
+// oversized listing fails the check step without running the check.
+func TestFirewallListing(t *testing.T) {
+	e := active(t)
+	e.release(rel3, "2026-11-01")
+	var seen string
+	e.runner.hook = func(argv []string) {
+		for i, a := range argv {
+			if a == "--nft-listing" {
+				seen = argv[i+1]
+			}
+		}
+	}
+	if code := e.switchTo(rel3); code != ExitOK {
+		t.Fatalf("exit %d", code)
+	}
+	if len(e.runner.listing) != 3 || e.runner.listing[0] != fakeRuleset || e.runner.listing[1] != "-rw-------" || e.runner.listing[2] != "drwx------" {
+		t.Errorf("listing seen by the check: %q", e.runner.listing)
+	}
+	if _, err := os.Stat(filepath.Dir(seen)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the listing's folder was left: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		set  func(e *env)
+	}{
+		{"nft fails", func(e *env) { e.runner.fail["nft"] = -1 }},
+		{"listing too large", func(e *env) { e.runner.nftOut = strings.Repeat("x", maxNFTListing+1) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := active(t)
+			e.release(rel3, "2026-11-01")
+			tc.set(e)
+			if code := e.switchTo(rel3); code != ExitFailed {
+				t.Fatalf("exit %d", code)
+			}
+			e.unchanged("releases/"+rel2, "noaicheck")
+			if rec := e.record(); rec.Error != CodeNFTListingFailed {
+				t.Errorf("record: %+v", rec)
+			}
+			if e.runner.called("ah-noaicheck") != 0 {
+				t.Errorf("the check ran without a listing")
+			}
+		})
+	}
 }

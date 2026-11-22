@@ -14,6 +14,17 @@ import (
 	"ataniq/internal/authorityhost/switcher"
 )
 
+// fakeNFT puts a folder whose nft prints an empty ruleset first in the
+// switch's search path, so that no test lists the firewall of the host.
+func fakeNFT(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "nft"), "#!/bin/sh\necho 'table inet filter {'\necho '}'\n", 0o755)
+	saved := switcher.SearchPath
+	switcher.SearchPath = append([]string{dir}, saved...)
+	t.Cleanup(func() { switcher.SearchPath = saved })
+}
+
 func call(args ...string) (int, string, string) {
 	var out, errOut strings.Builder
 	code := run(args, &out, &errOut)
@@ -36,6 +47,9 @@ func TestUsage(t *testing.T) {
 		{"--root", root, "--from", "/x", "status"},
 		{"--root", root, "--from", "/x", "--rollback-to", "previous"},
 		{"--root", root, "--from", "", "0001-aaaaaaa"},
+		{"--root", root, "0001-aaaaaaa"},
+		{"--root", root, "--rollback-to", "previous"},
+		{"--root", root, "--allow-exec", "status"},
 		{"--root", root, "--no-such-flag", "0001-aaaaaaa"},
 		{"--root", "", "status"},
 	} {
@@ -112,17 +126,18 @@ func TestSwitchRollbackAndStatus(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(root, switcher.StateDir)); err == nil {
 		t.Fatalf("--dry made the state folder")
 	}
+	fakeNFT(t)
 	for _, id := range []string{"0001-aaaaaaa", "0002-bbbbbbb"} {
-		code, out, errOut := call(id, "--root", root)
+		code, out, errOut := call(id, "--root", root, "--allow-exec")
 		if code != switcher.ExitOK {
 			t.Fatalf("switch to %s: exit %d\n%s%s", id, code, out, errOut)
 		}
 	}
-	code, out, _ = call("--root", root, "0001-aaaaaaa")
+	code, out, _ = call("--root", root, "--allow-exec", "0001-aaaaaaa")
 	if code != switcher.ExitFailed || !strings.Contains(out, "not above the highest ever activated") {
 		t.Errorf("lower counter: exit %d\n%s", code, out)
 	}
-	code, out, _ = call("--root", root, "--rollback-to", "previous")
+	code, out, _ = call("--root", root, "--allow-exec", "--rollback-to", "previous")
 	if code != switcher.ExitOK {
 		t.Fatalf("rollback: exit %d\n%s", code, out)
 	}
@@ -155,7 +170,8 @@ func TestImportFrom(t *testing.T) {
 	incoming := t.TempDir()
 	releaseIn(t, filepath.Join(incoming, "0001-aaaaaaa"), "0001-aaaaaaa", 1, health)
 	t.Chdir(incoming)
-	code, out, errOut := call("--root", root, "--from", "0001-aaaaaaa", "0001-aaaaaaa")
+	fakeNFT(t)
+	code, out, errOut := call("--root", root, "--allow-exec", "--from", "0001-aaaaaaa", "0001-aaaaaaa")
 	if code != switcher.ExitOK {
 		t.Fatalf("exit %d\n%s%s", code, out, errOut)
 	}

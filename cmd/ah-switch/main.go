@@ -2,8 +2,8 @@
 // release folder under /opt/authority-host/releases, rolls back to the previous
 // one, or shows the state. See deploy/authority-host/README.md.
 //
-//	ah-switch [--root DIR] [--dry] [--mode manual|signed] [--noaicheck PATH] [--from INCOMING_DIR] ID
-//	ah-switch [--root DIR] [--dry] [--noaicheck PATH] --rollback-to previous
+//	ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manual|signed] [--noaicheck PATH] [--from INCOMING_DIR] ID
+//	ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manual|signed] [--noaicheck PATH] --rollback-to previous
 //	ah-switch [--root DIR] status
 //
 // Exit codes: 0 ok, 1 failed (the outcome is recorded), 2 usage, 3 locked.
@@ -25,8 +25,8 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-const usage = `usage: ah-switch [--root DIR] [--dry] [--mode manual|signed] [--noaicheck PATH] [--from INCOMING_DIR] ID
-       ah-switch [--root DIR] [--dry] [--mode ...] [--noaicheck PATH] --rollback-to previous
+const usage = `usage: ah-switch [--root DIR [--allow-exec]] [--dry] [--mode manual|signed] [--noaicheck PATH] [--from INCOMING_DIR] ID
+       ah-switch [--root DIR [--allow-exec]] [--dry] [--mode ...] [--noaicheck PATH] --rollback-to previous
        ah-switch [--root DIR] status
 `
 
@@ -35,6 +35,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(io.Discard)
 	root := fs.String("root", "/", "the folder that holds opt/authority-host and var/lib/authority-host")
 	dry := fs.Bool("dry", false, "print every step and what it would do; run nothing, change nothing")
+	allowExec := fs.Bool("allow-exec", false, "with --root other than /: run the release's programs all the same (an isolated test runner only)")
 	mode := fs.String("mode", "", "manual (SHA256SUMS only) or signed (also SHA256SUMS.sig); default and minimum: the switch policy's")
 	noai := fs.String("noaicheck", "", "the no-AI check program (default: the release's bin/ah-noaicheck)")
 	rollback := fs.String("rollback-to", "", "previous: go back to the release previous points at")
@@ -78,7 +79,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(pos) == 1 && pos[0] == "status" && !set["rollback-to"] {
-		for _, name := range []string{"dry", "mode", "noaicheck", "from"} {
+		for _, name := range []string{"dry", "mode", "noaicheck", "from", "allow-exec"} {
 			if set[name] {
 				return bad("status takes only --root")
 			}
@@ -108,6 +109,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	s := switcher.New(switcher.Config{
 		Root:      rootAbs,
 		Dry:       *dry,
+		AllowExec: *allowExec,
 		Mode:      *mode,
 		NoAICheck: noaiAbs,
 		From:      fromAbs,
