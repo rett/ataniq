@@ -586,59 +586,77 @@ func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 // service may then not run at all, or run from a start that nothing
 // checked. That release, verified with the transaction's trust, runs its
 // reload list, its health check and its post-activation no-AI check (on the
-// host as it now is) again, decisions still inhibited. When any of it
-// fails (the release not verifying again included) the host's stop list
-// runs, since a service may run from the activation before the
-// interruption, from the boot or from the reload; t.j.RequalifyFailed is
-// set and noted (a failed no-AI check also as the record's check) and
+// host as it now is) again, decisions still inhibited (see qualifyAgain).
+// When any of it fails (the release not verifying again included) the
+// failure is handled as requalifyFailed says; t.j.RequalifyFailed is set
+// and noted (a failed no-AI check also as the record's check) and
 // journaled before the outcome is recorded, as it was decided, with
 // decisions inhibited (see keepInhibit). The error is that journal not
 // being written: the transaction then stays unresolved.
 func (s *Switcher) requalifyCurrent(ctx context.Context, t *txn, cur string, curOK bool) error {
-	err := s.qualifyAgain(ctx, t, cur, curOK)
+	intro := fmt.Sprintf("reconcile: the %s %s was decided before an interruption; ", t.kind(), t.j.ID)
+	checkFailed, err := s.qualifyAgain(ctx, t.check(), cur, curOK, intro)
 	if err == nil {
 		return nil
 	}
 	t.j.RequalifyFailed = true
-	t.note("after an interruption in phase done, %s did not pass its reload, health check and no-AI check again (%s); decisions stay inhibited", linkText(cur), describe(err))
-	s.hostStopsFirst(ctx)
-	if len(s.hostStopsFailures) > 0 {
-		t.note("the host's stop list failed (%s); the decision services may still run", joinFailures(s.hostStopsFailures))
-	} else {
-		t.note("the host's stop list ran")
+	if checkFailed {
+		t.j.Check = CheckFailed
+	}
+	for _, n := range s.requalifyFailed(ctx, "after an interruption in phase done", cur, err) {
+		t.note("%s", n)
 	}
 	return s.save(t)
 }
 
-// qualifyAgain is the reload list, health check and post-activation no-AI
-// check of requalifyCurrent; it returns the first failure.
-func (s *Switcher) qualifyAgain(ctx context.Context, t *txn, cur string, curOK bool) error {
+// qualifyAgain runs, decisions still inhibited, the reload list, the health
+// check and the post-activation no-AI check (the program check names) of
+// the release current points at (cur), verified again as the switch's
+// trust says, and returns the first failure; checkFailed says it was the
+// no-AI check's. intro begins the line that says it runs. The verdict of an
+// earlier post-activation check is never reused: the firewall and the
+// listeners may have changed since.
+func (s *Switcher) qualifyAgain(ctx context.Context, check checkRef, cur string, curOK bool, intro string) (checkFailed bool, err error) {
 	if !curOK {
-		return failf(CodeStateInvalid, "current is missing")
+		return false, failf(CodeStateInvalid, "current is missing")
 	}
 	id, err := s.targetID(cur)
 	if err != nil {
-		return err
+		return false, err
 	}
-	s.printf("reconcile: the %s %s was decided before an interruption; %s runs its reload list, health check and no-AI check again before decisions are no longer inhibited", t.kind(), t.j.ID, id.Name)
+	s.printf("%s%s runs its reload list, health check and no-AI check again before decisions are no longer inhibited", intro, id.Name)
 	rel, err := s.openVerified(ctx, id)
 	if err != nil {
-		return err
+		return false, err
 	}
-	t.owned = append(t.owned, rel)
+	defer rel.Close()
 	if err := s.reload(ctx, rel.reloads); err != nil {
-		return err
+		return false, err
 	}
 	if err := s.checkHealth(ctx, rel.health); err != nil {
-		return err
+		return false, err
 	}
-	// The verdict of the post-activation check before the interruption is
-	// not reused: the firewall and the listeners may have changed since.
-	if err := s.postCheck(ctx, t.check(), rel); err != nil {
-		t.j.Check = CheckFailed
-		return err
+	if err := s.postCheck(ctx, check, rel); err != nil {
+		return true, err
 	}
-	return nil
+	return false, nil
+}
+
+// requalifyFailed is what follows a requalification of current (cur) that
+// failed with err, whichever command ran it: decisions stay inhibited, and
+// since a service may run (from an activation before an interruption, from
+// the boot or from the reload) the host's stop list runs. It returns the
+// words the record of the failure carries: when it happened (when), what
+// failed, and how the stop list ended.
+func (s *Switcher) requalifyFailed(ctx context.Context, when, cur string, err error) []string {
+	notes := []string{fmt.Sprintf("%s, %s did not pass its reload, health check and no-AI check again (%s); decisions stay inhibited", when, linkText(cur), describe(err))}
+	s.hostStopsFirst(ctx)
+	if len(s.hostStopsFailures) > 0 {
+		notes = append(notes, fmt.Sprintf("the host's stop list failed (%s); the decision services may still run", joinFailures(s.hostStopsFailures)))
+	} else {
+		notes = append(notes, "the host's stop list ran")
+	}
+	return notes
 }
 
 // txnRecord is the record of the settled transaction t, current pointing
