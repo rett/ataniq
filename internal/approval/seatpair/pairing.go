@@ -68,6 +68,10 @@ type Pairing struct {
 	pendingID    string
 	presentedAt  time.Time
 	pendingEnds  time.Time
+	// pendingLapsed is the latch of the pending credential's time: set the
+	// first time it is seen at or past pendingEnds, and kept until the
+	// pending credential is dropped.
+	pendingLapsed bool
 }
 
 // NewPairing returns a Pairing with no pairing open. Start takes its random
@@ -86,12 +90,19 @@ func NewPairing(rand io.Reader, clock func() time.Time) *Pairing {
 
 // open reports whether the pairing is still going at now: a code that is
 // not past its time and not used, or a pending credential not past its time.
+// It is also where the latches of expiry are set: a code or a pending
+// credential seen past its time is past it for every later reading, so a clock
+// that steps back never makes one usable again (see Code for the rule about
+// monotonic and wall readings).
 func (p *Pairing) open(now time.Time) bool {
 	switch p.phase {
 	case PhaseOpen:
-		return now.Before(p.code.expires) && !p.code.Burnt()
+		return !p.code.expired(now) && !p.code.Burnt()
 	case PhasePending:
-		return now.Before(p.pendingEnds)
+		if p.pendingLapsed || !now.Before(p.pendingEnds) {
+			p.pendingLapsed = true
+		}
+		return !p.pendingLapsed
 	}
 	return false
 }
@@ -152,6 +163,7 @@ func (p *Pairing) forget() {
 	p.pendingID = ""
 	p.presentedAt = time.Time{}
 	p.pendingEnds = time.Time{}
+	p.pendingLapsed = false
 }
 
 // Present is what the phone says, relayed: the pairing code, the id of the
@@ -250,9 +262,11 @@ func sameID(a, b string) bool {
 // that makes a Credential. It refuses with ErrNotPending when no credential
 // was presented or the pairing ended, with ErrPendingID when the id is not the
 // pending credential's (the pairing was replaced, or ran out and another
-// began; nothing changes), with ErrClock for a time that is zero or before the presentation (the credential
-// stays pending), and with ErrPendingExpired at the presentation time plus
-// PendingLifetime and after it, which also ends the pairing. On success the
+// began; nothing changes), with ErrClock for a time that is zero or before the
+// presentation (the credential stays pending), and with ErrPendingExpired at
+// the presentation time plus PendingLifetime and after it, or at any time once
+// the credential has been seen past its time (the latch of Code's comment),
+// which also ends the pairing. On success the
 // pairing is over, and the Credential carries the id and key as presented,
 // the kind KindUnverified and now as PairedAt.
 func (p *Pairing) Confirm(now time.Time, pendingID string) (Credential, error) {
@@ -264,10 +278,10 @@ func (p *Pairing) Confirm(now time.Time, pendingID string) (Credential, error) {
 	if !sameID(pendingID, p.pendingID) {
 		return Credential{}, ErrPendingID
 	}
-	if now.IsZero() || now.Before(p.presentedAt) {
+	if !p.pendingLapsed && (now.IsZero() || now.Before(p.presentedAt)) {
 		return Credential{}, ErrClock
 	}
-	if !now.Before(p.pendingEnds) {
+	if p.pendingLapsed || !now.Before(p.pendingEnds) {
 		p.phase = PhaseNone
 		p.forget()
 		return Credential{}, ErrPendingExpired

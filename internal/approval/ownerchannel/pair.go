@@ -67,7 +67,9 @@ type pairing struct {
 	p *seatpair.Pairing
 	// at is the time handed to the pairing's clock by the call that is
 	// running, so that the code's time and the time the service reports are
-	// one.
+	// one. It is the clock's own reading, monotonic part included (see
+	// [Service.nowBoth]): the pairing's deadlines are measured by it. What the
+	// service shows and journals is the wall reading of the same call.
 	at time.Time
 	// live is whether a pairing was started and not ended by a confirm, a
 	// reject or a replacement; with the phase none it reads as expired.
@@ -173,14 +175,14 @@ func (s *Service) PairStart(ctx context.Context, src Source, p ownerwire.PairSta
 	defer done()
 	s.pmu.Lock()
 	defer s.pmu.Unlock()
-	now := s.now()
+	mono, now := s.nowBoth()
 	if err := s.pairGate(src, now, true); err != nil {
 		return ownerwire.PairStartResult{}, err
 	}
 	if _, _, err := s.usableKeys(); err != nil {
 		return ownerwire.PairStartResult{}, err
 	}
-	s.pr.at = now
+	s.pr.at = mono
 	code, err := s.pr.p.Start(p.Replace)
 	switch {
 	case errors.Is(err, seatpair.ErrPairingOpen):
@@ -206,13 +208,13 @@ func (s *Service) PairStatus(ctx context.Context) (ownerwire.PairStatus, error) 
 	defer done()
 	s.pmu.Lock()
 	defer s.pmu.Unlock()
-	now := s.now()
-	switch s.pr.p.Phase(now) {
+	mono, _ := s.nowBoth()
+	switch s.pr.p.Phase(mono) {
 	case seatpair.PhaseOpen:
 		return ownerwire.PairStatus{Phase: ownerwire.PairWaiting, ExpiresAt: record.FormatTime(s.pr.ends)}, nil
 	case seatpair.PhasePending:
-		fp, ok := s.pr.p.Pending(now)
-		id, _ := s.pr.p.PendingID(now)
+		fp, ok := s.pr.p.Pending(mono)
+		id, _ := s.pr.p.PendingID(mono)
 		if ok && id != "" {
 			return ownerwire.PairStatus{Phase: ownerwire.PairPending, Words: append([]string(nil), fp[:]...), PendingID: id, ExpiresAt: record.FormatTime(s.pr.ends)}, nil
 		}
@@ -249,13 +251,13 @@ func (s *Service) PairPresent(ctx context.Context, src Source, p ownerwire.SeatP
 	}
 	s.pmu.Lock()
 	defer s.pmu.Unlock()
-	now := s.now()
+	mono, now := s.nowBoth()
 	// A list that cannot take the credential refuses before the code is
 	// spent on it.
 	if _, _, err := s.usableKeys(); err != nil {
 		return ownerwire.SeatPairResult{}, err
 	}
-	fp, err := s.pr.p.Present(p.Code, p.CredentialID, p.PublicKey, now)
+	fp, err := s.pr.p.Present(p.Code, p.CredentialID, p.PublicKey, mono)
 	switch {
 	case err == nil:
 	case errors.Is(err, seatpair.ErrCredentialID), errors.Is(err, seatpair.ErrKeyFormat),
@@ -292,7 +294,7 @@ func (s *Service) PairConfirm(ctx context.Context, src Source, p ownerwire.PairP
 	defer done()
 	s.pmu.Lock()
 	defer s.pmu.Unlock()
-	now := s.now()
+	mono, now := s.nowBoth()
 	if err := s.pairGate(src, now, true); err != nil {
 		return ownerwire.KeyItem{}, err
 	}
@@ -306,7 +308,7 @@ func (s *Service) PairConfirm(ctx context.Context, src Source, p ownerwire.PairP
 	if len(keys) >= ownerjournal.MaxKeys {
 		return ownerwire.KeyItem{}, ErrKeysFull
 	}
-	cred, err := s.pr.p.Confirm(now, p.PendingID)
+	cred, err := s.pr.p.Confirm(mono, p.PendingID)
 	switch {
 	case err == nil:
 	case errors.Is(err, seatpair.ErrNotPending):
@@ -320,7 +322,7 @@ func (s *Service) PairConfirm(ctx context.Context, src Source, p ownerwire.PairP
 	}
 	s.pr.live, s.pr.id = false, ""
 	stored, err := ks.AddKey(ownerjournal.NewKey{
-		CredentialID: cred.ID, PublicKey: cred.SPKI, Kind: cred.Kind, PairedAt: cred.PairedAt,
+		CredentialID: cred.ID, PublicKey: cred.SPKI, Kind: cred.Kind, PairedAt: cred.PairedAt.Round(0),
 		Words: cred.Fingerprint().String(),
 	})
 	if err != nil {
@@ -346,7 +348,7 @@ func (s *Service) PairReject(ctx context.Context, src Source, p ownerwire.PairPe
 	defer done()
 	s.pmu.Lock()
 	defer s.pmu.Unlock()
-	now := s.now()
+	mono, now := s.nowBoth()
 	if err := s.pairGate(src, now, true); err != nil {
 		return err
 	}
@@ -357,7 +359,7 @@ func (s *Service) PairReject(ctx context.Context, src Source, p ownerwire.PairPe
 	if err != nil {
 		return err
 	}
-	fp, ok := s.pr.p.Pending(now)
+	fp, ok := s.pr.p.Pending(mono)
 	id := s.pr.id
 	rejectErr := func() error {
 		switch err := s.pr.p.Reject(p.PendingID); {

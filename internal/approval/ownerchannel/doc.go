@@ -124,6 +124,14 @@
 // with [ErrPairingChanged] and nothing changes (the daemon's code is
 // pairing-changed). A replacement or an expired pairing has a new id.
 //
+// The ten minutes of a code and of a pending credential are measured with the
+// clock's reading as [Config].Now gives it, monotonic part included (a reading
+// from time.Now has one), so a wall clock set back does not lengthen them; what
+// the service shows and journals is the wall reading. A code or a pending
+// credential that has been seen expired stays expired, whatever the clock reads
+// afterwards (package seatpair states the exact rule, for clocks without a
+// monotonic reading too).
+//
 // A confirmed credential goes on the list of deciding keys, [KeyStore], in
 // [Config].Keys, with the kind "unverified". The service owns the store and
 // closes it. The list only grows: a revoked credential stays on it, marked,

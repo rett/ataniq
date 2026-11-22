@@ -45,6 +45,20 @@
 // owner's word is about the credential whose six words he compared, never about
 // one that took its place while he looked.
 //
+// Time. The package judges the readings it is handed with Time.Before and
+// Time.Add and keeps them as they are, so a reading from time.Now, which
+// carries a monotonic part, makes the ten minutes of a code and of a pending
+// credential monotonic minutes: a wall clock set back or forward does not
+// change them. A reading without one (a fake clock's) is judged by its wall
+// time: set back to between the issue and the deadline, the clock gives the
+// code or the credential more wall time, to its own deadline and no further;
+// set back to before the issue (or the presentation) it is refused ErrClock.
+// In both cases expiry is a latch: once Present, Phase, Pending, PendingID,
+// Start or Confirm has seen a code or a pending credential past its time, it is
+// past it for good and no later reading makes it live; a used or a burnt code
+// is spent for good as well. A reading far in the future therefore ends a
+// pairing for good, which fails safe.
+//
 // The package is what the daemon asks. It is not a wire, a daemon, an HTTP
 // handler, a store or a clock: it opens no file and no socket, starts no
 // program and keeps nothing between runs. The random source and the time are

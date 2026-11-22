@@ -1221,3 +1221,79 @@ func TestAWordWithTheWrongIDChangesNothing(t *testing.T) {
 		t.Fatalf("the right id: %v", err)
 	}
 }
+
+// A code that was seen expired does not come back when the wall clock is set
+// back: the seat's call, which has no presence to check, is the one that could
+// otherwise be fed an old code.
+func TestAnExpiredCodeDoesNotComeBackWhenTheClockIsSetBack(t *testing.T) {
+	e, _ := pairEnv(t)
+	ph := newPhone(t, 1)
+	code := e.mustStart()
+	e.advance(seatpair.CodeLifetime + time.Minute)
+	if _, err := e.present(code, ph); !errors.Is(err, ErrPairRefused) {
+		t.Fatalf("an expired code: %v", err)
+	}
+	e.clock.Set(start.Add(5 * time.Minute))
+	if _, err := e.present(code, ph); !errors.Is(err, ErrPairRefused) {
+		t.Fatalf("the code after the clock was set back: %v, want %v", err, ErrPairRefused)
+	}
+	if st := e.status(); st.Phase != ownerwire.PairExpired {
+		t.Fatalf("after the clock was set back: %+v", st)
+	}
+	// The pairing is over: a new one needs no replace.
+	if _, err := e.pairStart(false); err != nil {
+		t.Fatalf("a start after it: %v", err)
+	}
+}
+
+// Likewise a pending credential that was seen past its time.
+func TestAnExpiredPendingCredentialDoesNotComeBackWhenTheClockIsSetBack(t *testing.T) {
+	e, keys := pairEnv(t)
+	e.pairedUp(newPhone(t, 1))
+	seen := e.pendingID()
+	e.advance(seatpair.PendingLifetime)
+	if st := e.status(); st.Phase != ownerwire.PairExpired {
+		t.Fatalf("at the end: %+v", st)
+	}
+	e.clock.Set(start.Add(time.Minute))
+	if st := e.status(); st.Phase != ownerwire.PairExpired || st.PendingID != "" {
+		t.Fatalf("after the clock was set back: %+v", st)
+	}
+	if _, err := e.confirmID(seen); !errors.Is(err, ErrPairingExpired) {
+		t.Fatalf("a confirm after the clock was set back: %v, want %v", err, ErrPairingExpired)
+	}
+	if len(keys.keys) != 0 {
+		t.Fatal("an expired credential was put on the list")
+	}
+}
+
+// The pairing's deadlines are measured with the clock's reading as the clock
+// gives it, monotonic part included: the service hands the pairing the reading
+// it took, and keeps its other, wall-clock watch on a copy without it.
+func TestThePairingKeepsTheMonotonicReadingOfTheClock(t *testing.T) {
+	has := func(tm time.Time) bool { return strings.Contains(tm.String(), "m=") }
+	e, _ := pairEnv(t)
+	now := time.Now()
+	if !has(now) {
+		t.Skip("this clock has no monotonic reading")
+	}
+	e.clock.Set(now)
+	code := e.mustStart()
+	if !has(e.svc.pr.at) {
+		t.Fatalf("the pairing was given a reading without a monotonic part: %v", e.svc.pr.at)
+	}
+	e.advance(time.Minute)
+	if _, err := e.present(code, newPhone(t, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if !has(e.svc.pr.at) {
+		t.Fatalf("seat.pair gave the pairing a reading without a monotonic part: %v", e.svc.pr.at)
+	}
+	if st := e.status(); st.Phase != ownerwire.PairPending {
+		t.Fatalf("%+v", st)
+	}
+	// What is shown and journaled is wall time, in the record's form.
+	if st := e.status(); st.ExpiresAt != record.FormatTime(now.Add(time.Minute+seatpair.PendingLifetime)) {
+		t.Fatalf("%+v", st)
+	}
+}
