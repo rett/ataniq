@@ -912,10 +912,41 @@ What the switch does not do, so that nobody relies on it:
 - The journal makes a switch safe against crashes, power loss and kills,
   and the trust checks keep other accounts out; neither protects against
   someone who is root on the host, who can rewrite any of it.
+- An old journal put back can replay a transaction that was settled
+  already. The condition: someone who can write the root-owned state
+  folder (root) restores an earlier `txn.json` from a backup, while the
+  links and the counters still allow it. For example, a switch to release
+  3 that reached `activating`, failed its health check and went back to
+  release 2 leaves both links and the counter floor (3) where that
+  journal permits them; restoring that journal alone makes the next
+  command run release 3 again, without a new request. A rollback journal
+  restored after later rollbacks put the links back to the same pair is
+  accepted the same way. The switch compares the journal with the links
+  and the counters (see "The journal and recover"), but keeps no record of
+  which transactions were settled to compare it with. This is accepted:
+  restoring state files is a root action, and a backup of the state folder
+  must never be restored over a host that switched since (restore the
+  whole host, or none of it).
 - The package step is killed when the switch dies only on Linux (the
   parent-death signal), and only the step itself: a process it starts in
   another process group, or one that closes its descriptor 3, is outside
   what the switch tracks. A step that does that must end its own children.
+- A descendant of the package step that keeps its descriptor 3 (the
+  switch lock) open can keep every command out indefinitely. The
+  condition: the switch dies during the package step, Linux signals only
+  the step itself, and a process the step started (in its process group
+  or not) survives and still holds the inherited descriptor. Every later
+  switch, rollback, `recover`, `ack` and `inhibit-clear` then exits 3 with
+  the generic lock message once the journaled step and switch are gone
+  (the descendant is not named), and the journal and the decision inhibit
+  stay. Find the process that holds the lock (for example
+  `fuser -v /var/lib/authority-host/switch.lock`), stop it, or reboot; the
+  next command then settles the transaction. This is accepted: a package
+  step must end its own children before it exits.
+- The staging folder of an import that was interrupted (a crash while it
+  copied) is not removed by any later command: no journal names it, and a
+  folder the switch cannot prove it made is never removed. Every `--from`
+  names it; remove it by hand.
 - A release whose stop list cannot be verified when the services must be
   stopped does not run it: the host's own stop list is what must cover
   every decision service.

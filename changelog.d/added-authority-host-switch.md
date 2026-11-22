@@ -78,4 +78,7 @@
   release is verified. The outcome is written to
   `/var/lib/authority-host/deploy.json` as stable failure codes, never a
   program's output. Exit codes are 0 ok, 1 failed, 2 usage and 3
-  locked. See `deploy/authority-host/README.md`.
+  locked. Known limits (an old journal restored by root can replay a
+  settled transaction; a package step's descendant that keeps the lock
+  open keeps every command out until it is stopped) are in
+  `deploy/authority-host/README.md`.
