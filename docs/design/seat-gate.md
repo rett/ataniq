@@ -55,11 +55,16 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   [the pairing fingerprint](#the-pairing-fingerprint)).
 - A decision can be made only at the desk. `Service.Decide` refuses a source
   that is not the decider (`not-decider`) or whose surface has no owner activity
-  inside the presence window (`owner-away`), and the record package's decision
+  inside the presence window (`owner-away`). No command verifies a WebAuthn
+  assertion: only the tests of `credkind` call the verifier.
+- The decision record can say that a decision was confirmed by passkey (G8a,
+  [the record change](#the-record-change)): the record package's decision
   check (`checkDecision`, run by `record.DecodeDecision` and
-  `record.EncodeDecision`) requires `confirmed` to be `"code"` and a console
-  block with a process id. No command verifies a WebAuthn assertion: only the
-  tests of `credkind` call the verifier.
+  `record.EncodeDecision`) holds a record with `confirmed: "code"` to a
+  console block and no seat block, as before, and one with
+  `confirmed: "passkey"` to a seat block and no console block;
+  `record.AssertionDigest` computes the block's `assertion_sha256`. Nothing
+  writes a passkey record yet.
 
 ## The listener: inside the daemon
 
@@ -735,8 +740,10 @@ code it does not know gets the last line:
 
 Owner decision: the decision record gains `confirmed: "passkey"` and a seat
 block. The fields of the block below are proposed. This changes the joint contract with the planner's project
-(`internal/approval/record`), so the planner must agree to it before G8 merges,
-and G8 adds a passkey vector to the record package's test data.
+(`internal/approval/record`), so the planner must agree to it before G8 merges.
+It is built (G8a): `record.ConfirmedPasskey`, the block `record.SeatBlock`,
+and the passkey vector `decision-valid-passkey.json` with invalid vectors for
+each way of carrying the wrong blocks, in the record package's test data.
 
 A decision record carries exactly one of two blocks, as `confirmed` says:
 
@@ -764,8 +771,11 @@ A decision record carries exactly one of two blocks, as `confirmed` says:
   fingerprint, the same as the journal's activity entry.
 
 The record package's decision check holds a record to one of the two shapes.
-G8 chooses the Go form (for example an optional block for each), as long as the
-bytes are as here. The record keeps only the digest, because of its 8 KiB cap;
+The Go form is an optional block for each: `Decision.Console` and
+`Decision.Seat` are struct values whose tags say `omitempty`, so a block whose
+fields are all empty is left out on writing, and one written so is refused on
+reading, as an empty optional string is; the Go type of the console block is
+unchanged for the callers that fill it. The record keeps only the digest, because of its 8 KiB cap;
 the evidence an auditor needs to check the signature again is in the journal
 entry of the decision (see
 [the journal entry](#the-journal-entry-of-a-phone-decision)).
