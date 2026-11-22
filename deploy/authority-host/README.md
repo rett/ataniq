@@ -530,7 +530,7 @@ decision service is really stopped.
 `counter`, `mode` (how the release was verified), `trust` (the policy's
 minimum, `manual` without a policy), `rollback`, `time` (UTC), `result`
 (`ok`, `failed`, `rolled-back` or `failed-recovery`), `check` (the no-AI
-check: `passed`, `failed` or `not run`), `failed_step` (`state`, `import`,
+check: `passed`, `failed` or `not run`), `failed_step` (`import`,
 `verify`, `counter`, `packages`, `noaicheck`, `validate`, `switch`,
 `reload`, `health`, `postcheck`, `record` or `interrupted`; empty when ok),
 `error`, `detail`, `package_snapshot` (the snapshot the host's packages are
@@ -569,7 +569,7 @@ see its messages. The text of a broken state file is not repeated either.
 | Code | Meaning |
 | --- | --- |
 | 0 | Switched and healthy (recorded, journal removed), a dry run whose checks passed, `status`, `recover` done, or a retried request whose settled outcome was `ok` |
-| 1 | Failed; outside a dry run the outcome is in `deploy.json`, except when the state folder, the switch policy or the host's stop list is not trusted, which records nothing, or when the result is `unresolved`, which leaves the journal for the next command |
+| 1 | Failed; outside a dry run the outcome is in `deploy.json`, except when the state folder, the switch policy or the host's stop list is not trusted, or `releases/`, `current` or `previous` cannot be read (`state: FAILED`), which records nothing, or when the result is `unresolved`, which leaves the journal for the next command |
 | 2 | Bad arguments, `--mode` weaker than the switch policy, or a root other than `/` without `--allow-exec`; nothing was done |
 | 3 | Another switch holds the lock, or `status` holds it while a switch is asked for (`flock`, not waited for), or a package step that outlived its switch holds it (said as `surviving helper pid N`); nothing was done |
 
@@ -583,6 +583,7 @@ see its messages. The text of a broken state file is not repeated either.
 | A release folder without the record of its import, or not the tree its import made | Refused at verify (`provenance-missing`, `provenance-mismatch`); as the old release, it is no fallback |
 | Signature missing or bad in signed mode, on a switch or a rollback | Refused at verify |
 | Switch policy or signers file not root's, writable by others, or not parsing | Refused before anything; nothing recorded |
+| `releases/` missing or not trusted, `current` or `previous` not a link to `releases/<id>` | `state: FAILED`, exit 1; nothing recorded: `deploy.json`, with the package state, the counter evidence and an outcome still to report, stays as it is (`recover` too) |
 | The host's `stop.list` missing, empty or not trusted | Refused before anything; nothing recorded |
 | `--mode` weaker than the switch policy | Exit 2; nothing done |
 | Counter not above the highest ever attempted | Refused at counter |

@@ -857,8 +857,13 @@ func TestCurrentNotALink(t *testing.T) {
 	if code := e.switchTo(rel1); code != ExitFailed {
 		t.Fatalf("exit %d", code)
 	}
-	if rec := e.record(); rec.FailedStep != "state" {
-		t.Errorf("record: %+v", rec)
+	// Reported, not recorded: deploy.json is never written over from a
+	// state that could not be read.
+	if !strings.Contains(e.last, "state: FAILED: state-invalid") {
+		t.Errorf("output:\n%s", e.last)
+	}
+	if _, err := os.Stat(filepath.Join(e.root, StateDir, DeployFile)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("deploy.json written: %v", err)
 	}
 }
 
@@ -1056,11 +1061,12 @@ func TestReleasesFolderMustBeTrusted(t *testing.T) {
 	e := active(t)
 	e.release(rel3, "2026-11-01")
 	os.Chmod(filepath.Join(e.root, BaseDir, "releases"), 0o777)
+	before := e.deployJSON()
 	if code := e.switchTo(rel3); code != ExitFailed {
 		t.Fatalf("exit %d", code)
 	}
-	if rec := e.record(); rec.FailedStep != "state" || rec.Error != CodeUntrusted {
-		t.Errorf("record: %+v", rec)
+	if !strings.Contains(e.last, "state: FAILED: untrusted") || e.deployJSON() != before {
+		t.Errorf("output:\n%s\ndeploy.json:\n%s", e.last, e.deployJSON())
 	}
 	if got := e.link("current"); got != "releases/"+rel2 {
 		t.Errorf("current -> %q", got)

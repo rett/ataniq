@@ -160,8 +160,7 @@ func (s *Switcher) Recover(ctx context.Context, o RecoverOptions) int {
 		s.printf("recover: no state folder; nothing to recover")
 		return ExitFailed
 	}
-	a := &attempt{}
-	if code, done := s.openBase(a); done {
+	if code, done := s.openBase(); done {
 		return code
 	}
 	if o.ServicesStopped {

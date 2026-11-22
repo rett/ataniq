@@ -69,8 +69,9 @@ const (
 )
 
 // The steps, as printed and as recorded in failed_step. Step 0, the import,
-// runs only with --from. A failure that comes before it (reading current and
-// previous) is recorded as "state", one of the reload list as "reload".
+// runs only with --from. A failure that comes before it (reading releases/,
+// current and previous) is reported as "state" and recorded nowhere (see
+// failState); one of the reload list is recorded as "reload".
 var stepNames = [...]string{"import", "verify", "counter", "packages", "noaicheck", "validate", "switch", "health", "postcheck", "record"}
 
 // Config is what a switch is run with. Zero fields take their defaults.
@@ -282,7 +283,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 			Requested: arg,
 		},
 	}
-	if code, done := s.openBase(a); done {
+	if code, done := s.openBase(); done {
 		return code
 	}
 	if code, halt := s.reconcile(ctx, true); halt {
@@ -642,8 +643,9 @@ func (s *Switcher) claim(t *txn) {
 }
 
 // openBase opens opt/authority-host and its releases/ folder, checked as the
-// state folder is.
-func (s *Switcher) openBase(a *attempt) (int, bool) {
+// state folder is. A failure is reported and recorded nowhere (see
+// failState).
+func (s *Switcher) openBase() (int, bool) {
 	var err error
 	if s.baseRoot, err = s.openTrusted(BaseDir, false); err == nil {
 		s.relRoot, err = s.openTrusted(filepath.Join(BaseDir, "releases"), false)
@@ -652,7 +654,7 @@ func (s *Switcher) openBase(a *attempt) (int, bool) {
 		err = failf(CodeStateInvalid, "%s or its releases folder is missing", BaseDir)
 	}
 	if err != nil {
-		return s.failState(a, err), true
+		return s.failState(err), true
 	}
 	return 0, false
 }
@@ -677,12 +679,12 @@ func (s *Switcher) readState(a *attempt) (Record, int, bool) {
 	var err error
 	a.oldTarget, a.oldExists, err = readLink(s.baseRoot, "current")
 	if err != nil {
-		return Record{}, s.failState(a, err), true
+		return Record{}, s.failState(err), true
 	}
 	if a.oldExists {
 		id, err := s.targetID(a.oldTarget)
 		if err != nil {
-			return Record{}, s.failState(a, fmt.Errorf("current: %w", err)), true
+			return Record{}, s.failState(fmt.Errorf("current: %w", err)), true
 		}
 		a.rec.PreviousID = id.Name
 		a.rec.CurrentID = id.Name
@@ -692,12 +694,12 @@ func (s *Switcher) readState(a *attempt) (Record, int, bool) {
 	}
 	a.prevTarget, a.prevExists, err = readLink(s.baseRoot, "previous")
 	if err != nil {
-		return Record{}, s.failState(a, err), true
+		return Record{}, s.failState(err), true
 	}
 	if a.prevExists {
 		id, err := s.targetID(a.prevTarget)
 		if err != nil {
-			return Record{}, s.failState(a, fmt.Errorf("previous: %w", err)), true
+			return Record{}, s.failState(fmt.Errorf("previous: %w", err)), true
 		}
 		a.prevThere = s.releaseThere(id)
 	}
@@ -726,12 +728,14 @@ func (s *Switcher) releaseThere(id ReleaseID) bool {
 	return err == nil && info.IsDir()
 }
 
-func (s *Switcher) failState(a *attempt, err error) int {
-	s.setFailure(a, "state", err)
+// failState ends a command whose state (releases/, current, previous)
+// cannot be read before anything else is done. It is reported and not
+// recorded: deploy.json is the record of the host's package state, the
+// counters it used and an outcome still to report, none of which this
+// command read, so writing over it could only lose them.
+func (s *Switcher) failState(err error) int {
 	s.printf("state: FAILED: %s", describe(err))
-	a.rec.Result = ResultFailed
-	s.record(a)
-	s.printf("result: failed before step 1; nothing changed")
+	s.printf("result: failed before step 1; nothing changed or recorded")
 	return ExitFailed
 }
 

@@ -172,11 +172,13 @@ func TestCanonicalLinkTargets(t *testing.T) {
 			if err := os.Symlink(target, cur); err != nil {
 				t.Fatal(err)
 			}
+			before := e.deployJSON()
 			if code := e.switchTo(rel3); code != ExitFailed {
 				t.Fatalf("exit %d", code)
 			}
-			if rec := e.record(); rec.FailedStep != "state" || rec.Error != CodeStateInvalid {
-				t.Errorf("record: %+v", rec)
+			// Reported, never recorded over the record of the host.
+			if !strings.Contains(e.last, "state: FAILED: state-invalid") || e.deployJSON() != before {
+				t.Errorf("output:\n%s\ndeploy.json:\n%s", e.last, e.deployJSON())
 			}
 			if strings.Contains(e.last, "\x1b") || strings.Contains(e.deployJSON(), "\x1b") {
 				t.Errorf("a control byte of a link target was passed on:\n%q", e.last)

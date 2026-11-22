@@ -302,3 +302,67 @@ func TestLockedBySurvivingHelper(t *testing.T) {
 		})
 	}
 }
+
+// TestEarlyStateFailureKeepsTheRecord: a failure to read the state before
+// anything else (releases/ unavailable, a link that is not what the switch
+// writes) is reported and recorded nowhere: deploy.json, which holds the
+// unknown package state, the counter evidence and any pending outcome,
+// stays as it is, and once the state is readable again the package state
+// still blocks. recover leaves it too.
+func TestEarlyStateFailureKeepsTheRecord(t *testing.T) {
+	releases := func(e *env) string { return filepath.Join(e.root, BaseDir, "releases") }
+	for _, tc := range []struct {
+		name          string
+		spoil, repair func(e *env)
+	}{
+		{"releases missing", func(e *env) { os.Rename(releases(e), releases(e)+".away") }, func(e *env) { os.Rename(releases(e)+".away", releases(e)) }},
+		{"releases writable by others", func(e *env) { os.Chmod(releases(e), 0o777) }, func(e *env) { os.Chmod(releases(e), 0o755) }},
+		{"current not releases/<id>", func(e *env) {
+			cur := filepath.Join(e.root, BaseDir, "current")
+			os.Remove(cur)
+			os.Symlink(e.relDir(rel2), cur)
+		}, func(e *env) {
+			cur := filepath.Join(e.root, BaseDir, "current")
+			os.Remove(cur)
+			os.Symlink("releases/"+rel2, cur)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := active(t)
+			e.release(rel3, "2026-11-15")
+			e.runner.fail["ah-pkgstep"] = 1
+			if code := e.switchTo(rel3); code != ExitFailed {
+				t.Fatalf("exit %d", code)
+			}
+			before := e.deployJSON()
+			if rec := e.record(); rec.PackageState != PackageUnknown {
+				t.Fatalf("record: %+v", rec)
+			}
+			tc.spoil(e)
+			e.runner.reset()
+			if code := e.switchTo("0004-ddddddd"); code != ExitFailed {
+				t.Fatalf("exit %d", code)
+			}
+			if !strings.Contains(e.last, "state: FAILED") || !strings.Contains(e.last, "nothing changed or recorded") {
+				t.Errorf("output:\n%s", e.last)
+			}
+			if code := e.rollBack("previous"); code != ExitFailed {
+				t.Fatalf("rollback: exit %d", code)
+			}
+			if code := e.recover(RecoverOptions{SetCounter: true, Counter: 9}); code != ExitFailed {
+				t.Fatalf("recover: exit %d", code)
+			}
+			if got := e.deployJSON(); got != before {
+				t.Errorf("deploy.json was written:\n%s\nwas\n%s", got, before)
+			}
+			if len(e.runner.calls) != 0 {
+				t.Errorf("commands run: %v", e.runner.calls)
+			}
+			tc.repair(e)
+			e.release("0004-ddddddd", "2026-11-20")
+			if code := e.switchTo("0004-ddddddd"); code != ExitFailed || e.record().Error != CodePackageUnknown {
+				t.Errorf("after the repair: exit %d, %+v", code, e.record())
+			}
+		})
+	}
+}
