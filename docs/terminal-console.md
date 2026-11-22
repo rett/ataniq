@@ -620,7 +620,7 @@ the view until Esc closes it, Ctrl+C aside, which quits.
    two to a row); a smaller one may not, and long words need more
    columns. `x` rejects, and nothing is added.
    After a confirm the view shows the key's kind, "Paired. Kind, claimed: vault
-   passkey." (or "Paired. Kind: unverified (a syncing passkey)." for a key
+   passkey." (or "Paired. Kind: unverified (no claim made)." for a key
    paired without a claim), and the key's short id. Nothing is trusted until you confirm here.
 5. Esc closes the view at any time and confirms nothing. Closing while the code
    waits does not cancel the pairing on the daemon: the code ends by itself when

@@ -42,7 +42,7 @@ func TestThePhasesOfTheAdapterAreTheWiresOwn(t *testing.T) {
 
 func TestStateFromTakesAPendingStatusOnlyWithTheViewsWordCount(t *testing.T) {
 	end := "2026-11-22T10:00:00Z"
-	st, err := stateFrom(wirePairPending, eightWords(), pendingID, end)
+	st, err := stateFrom(wirePairPending, eightWords(), pendingID, end, claim{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,19 +51,31 @@ func TestStateFromTakesAPendingStatusOnlyWithTheViewsWordCount(t *testing.T) {
 		!st.ExpiresAt.Equal(time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC)) {
 		t.Fatalf("state = %+v", st)
 	}
+	// What the authenticator claimed goes through as it is, flags included.
+	for _, c := range []claim{
+		{kind: "platform-passkey", backupEligible: true, backupState: true},
+		{kind: "vault-passkey", backupEligible: true},
+		{kind: "passkey"},
+		{},
+	} {
+		st, err := stateFrom(wirePairPending, eightWords(), pendingID, end, c)
+		if err != nil || st.Kind != c.kind || st.BackupEligible != c.backupEligible || st.BackupState != c.backupState {
+			t.Errorf("claim %+v: state %+v, error %v", c, st, err)
+		}
+	}
 	// Any other count is a bad answer, and none of the words is passed on.
 	for _, n := range []int{0, 1, terminalconsole.PairWordCount - 1, terminalconsole.PairWordCount + 1, 2 * terminalconsole.PairWordCount} {
 		words := make([]string, n)
 		for i := range words {
 			words[i] = "word"
 		}
-		st, err := stateFrom(wirePairPending, words, pendingID, end)
+		st, err := stateFrom(wirePairPending, words, pendingID, end, claim{})
 		if !errors.Is(err, errPairAnswer) || st != (terminalconsole.PairState{}) {
 			t.Errorf("%d words: state %+v, error %v", n, st, err)
 		}
 	}
 	// A pending status with no id cannot be confirmed or rejected.
-	if _, err := stateFrom(wirePairPending, eightWords(), "", end); !errors.Is(err, errPairAnswer) {
+	if _, err := stateFrom(wirePairPending, eightWords(), "", end, claim{}); !errors.Is(err, errPairAnswer) {
 		t.Errorf("no id: %v", err)
 	}
 }
@@ -77,20 +89,20 @@ func TestStateFromReadsTheOtherPhasesAndRefusesWhatItDoesNotKnow(t *testing.T) {
 		{wirePairWaiting, terminalconsole.PairWaiting},
 		{wirePairExpired, terminalconsole.PairExpired},
 	} {
-		st, err := stateFrom(c.phase, nil, "", end)
+		st, err := stateFrom(c.phase, nil, "", end, claim{})
 		if err != nil || st.Phase != c.want || st.ExpiresAt.IsZero() {
 			t.Errorf("%s: %+v, %v", c.phase, st, err)
 		}
 		// Words and an id are not carried by a phase that has none.
-		st, _ = stateFrom(c.phase, eightWords(), pendingID, end)
-		if st.PendingID != "" || st.Words != [terminalconsole.PairWordCount]string{} {
+		st, _ = stateFrom(c.phase, eightWords(), pendingID, end, claim{kind: "passkey", backupEligible: true, backupState: true})
+		if st.PendingID != "" || st.Words != [terminalconsole.PairWordCount]string{} || st.Kind != "" || st.BackupEligible || st.BackupState {
 			t.Errorf("%s carries words or an id: %+v", c.phase, st)
 		}
-		if _, err := stateFrom(c.phase, nil, "", ""); !errors.Is(err, errPairAnswer) {
+		if _, err := stateFrom(c.phase, nil, "", "", claim{}); !errors.Is(err, errPairAnswer) {
 			t.Errorf("%s with no time: %v", c.phase, err)
 		}
 	}
-	st, err := stateFrom(wirePairNone, nil, "", "")
+	st, err := stateFrom(wirePairNone, nil, "", "", claim{})
 	if err != nil || st.Phase != terminalconsole.PairNone || !st.ExpiresAt.IsZero() {
 		t.Errorf("none: %+v, %v", st, err)
 	}
@@ -98,7 +110,7 @@ func TestStateFromReadsTheOtherPhasesAndRefusesWhatItDoesNotKnow(t *testing.T) {
 		{"", ""}, {"open", end}, {"PENDING", end}, {wirePairWaiting, "yesterday"},
 		{wirePairWaiting, "2026-11-22 10:00:00"}, {wirePairWaiting, "2026-11-22T10:00:00+01:00"}, {wirePairNone, "garbage"},
 	} {
-		if st, err := stateFrom(c.phase, eightWords(), pendingID, c.expires); !errors.Is(err, errPairAnswer) || st != (terminalconsole.PairState{}) {
+		if st, err := stateFrom(c.phase, eightWords(), pendingID, c.expires, claim{}); !errors.Is(err, errPairAnswer) || st != (terminalconsole.PairState{}) {
 			t.Errorf("%q %q: %+v, %v", c.phase, c.expires, st, err)
 		}
 	}

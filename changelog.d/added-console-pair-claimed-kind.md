@@ -3,4 +3,5 @@
   it: "Claimed, not proven: vault passkey, synced." The line uses the view's own
   words for the known kinds and backup states, and a change of the claim drops
   the confirm question. A confirmed key of a known kind reads "Paired. Kind,
-  claimed: vault passkey."
+  claimed: vault passkey." A key paired without a claim reads "Paired. Kind:
+  unverified (no claim made)."

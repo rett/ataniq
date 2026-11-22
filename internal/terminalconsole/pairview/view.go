@@ -165,7 +165,7 @@ const (
 	msgRejected      = "Rejected. Nothing was added."
 	msgOpen          = "A pairing is already open. Its code cannot be shown again."
 	msgPaired        = "Paired."
-	kindUnverif      = "Kind: unverified (a syncing passkey)."
+	kindUnverif      = "Kind: unverified (no claim made)."
 	claimPrefix      = "Claimed, not proven: "
 	helpWords        = "Compare with your phone. Confirm only if they match."
 	confirmLine1     = "Add this phone as a device that can approve cards."

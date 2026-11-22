@@ -18,7 +18,7 @@
 // The credential's key is read in the form the browser's getPublicKey()
 // gives, a DER SubjectPublicKeyInfo, and only an ES256 key is accepted: ECDSA
 // on P-256, a point on the curve, the canonical encoding and no byte after it
-// (ParseKey). A credential id is 16 to 1024 bytes (CheckCredentialID). A bad
+// (ParseKey). A credential id is 16 to 1023 bytes (CheckCredentialID). A bad
 // credential is refused only after a right code, and leaves the code unused.
 //
 // The fingerprint of a credential is eight words, which the desk console and the

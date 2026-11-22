@@ -83,7 +83,7 @@ func (a *pairAdapter) PairStatus(ctx context.Context) (terminalconsole.PairState
 	if err != nil {
 		return terminalconsole.PairState{}, err
 	}
-	return stateFrom(st.Phase, st.Words, st.PendingID, st.ExpiresAt)
+	return stateFrom(st.Phase, st.Words, st.PendingID, st.ExpiresAt, claim{kind: st.Kind, backupEligible: st.BackupEligible, backupState: st.BackupState})
 }
 
 // PairConfirm adds the pending phone's key as a deciding key.
@@ -116,13 +116,24 @@ func offerFrom(code, expires string) (terminalconsole.PairOffer, error) {
 	return terminalconsole.PairOffer{Code: code, ExpiresAt: at}, nil
 }
 
+// claim is what the pending credential's authenticator claimed, as the wire
+// spells it (ownerwire.PairStatus.Kind, BackupEligible and BackupState). The
+// adapter passes it on as it is: it is the view's to word as a claim and to
+// bound, and the adapter judges none of it.
+type claim struct {
+	kind           string
+	backupEligible bool
+	backupState    bool
+}
+
 // stateFrom makes the view's state of the wire's status. A pending status
 // has exactly terminalconsole.PairWordCount words and a pending id; with any
 // other count the view would show a fingerprint that is not the one the phone
-// shows, so the answer is a bad one and no words are passed on. A phase the
-// adapter does not know, and a time it cannot read (none has no time), are bad
-// answers too.
-func stateFrom(phase string, words []string, pendingID, expires string) (terminalconsole.PairState, error) {
+// shows, so the answer is a bad one and no words are passed on. The claim is
+// passed on for a pending status only, as the wire sends it only then. A
+// phase the adapter does not know, and a time it cannot read (none has no
+// time), are bad answers too.
+func stateFrom(phase string, words []string, pendingID, expires string, c claim) (terminalconsole.PairState, error) {
 	var st terminalconsole.PairState
 	switch phase {
 	case wirePairNone:
@@ -139,6 +150,9 @@ func stateFrom(phase string, words []string, pendingID, expires string) (termina
 		}
 		copy(st.Words[:], words)
 		st.PendingID = pendingID
+		st.Kind = c.kind
+		st.BackupEligible = c.backupEligible
+		st.BackupState = c.backupState
 	case wirePairExpired:
 		st.Phase = terminalconsole.PairExpired
 	default:

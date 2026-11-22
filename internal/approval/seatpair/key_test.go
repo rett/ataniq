@@ -217,7 +217,7 @@ func TestCheckCredentialID(t *testing.T) {
 		ok bool
 	}{
 		{0, false}, {1, false}, {15, false}, {16, true}, {32, true},
-		{1024, true}, {1025, false}, {1 << 20, false},
+		{1023, true}, {1024, false}, {1025, false}, {1 << 20, false},
 	} {
 		err := CheckCredentialID(make([]byte, c.n))
 		if c.ok && err != nil || !c.ok && err != ErrCredentialID {
