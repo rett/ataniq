@@ -705,10 +705,19 @@ without it. The contract for those services is:
   matter), and also while `/var/lib/authority-host` itself is missing, is
   not a real folder (a link, a file) or cannot be looked up: a bare
   `lstat` of the file answers "no such file" there too, and would allow.
-  "No such file" allows only when the folder, looked up again after the
-  file, is still the very folder (same device and inode) found before it,
-  so that a folder removed or replaced between the lookups refuses. There
-  is no second file and no order of files to get wrong. Readiness and the
+  The folder is pinned first: opened (it must be readable by the service,
+  as the bootstrap's mode 0755 makes it; one it may not open refuses), and
+  checked to be the real folder its path names. The file is then looked
+  up relative to that open folder, never by the path again, so the answer
+  comes from the folder found, even when it is moved away and put back
+  meanwhile. "No such file" allows only when the folder at the path,
+  looked up again after the file, is still the pinned folder (same device
+  and inode), so that a folder removed or replaced between the lookups
+  refuses. In another language: open the folder with `O_DIRECTORY` and
+  `O_NOFOLLOW`, `fstat` it, look the file up with `fstatat` (not
+  following a link) relative to that descriptor, then `lstat` the folder
+  path and compare. There is no second file and no order of files to get
+  wrong. Readiness and the
   static status page do not depend on it.
 
 The release builder makes every decision-capable service follow this

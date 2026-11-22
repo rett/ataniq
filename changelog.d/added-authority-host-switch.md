@@ -47,7 +47,9 @@
   one lookup before the decision finds no such file (the package
   `internal/authorityhost/decisionguard` is that lookup as code, `Check`,
   which refuses on the file in any form, on a missing or linked state
-  folder, and on one removed or replaced between its lookups; the journal `txn.json` is never there without it: a healthy end renames the journal
+  folder or one it may not open, and on one removed or replaced between
+  its lookups, and looks the file up in the folder it pinned, so that a
+  folder moved away and put back meanwhile still answers with its guard; the journal `txn.json` is never there without it: a healthy end renames the journal
   over the inhibit, then removes the inhibit, the one step that lets
   decisions through; a power loss between the two leaves the journal in
   the inhibit, which the next command writes back and settles and which

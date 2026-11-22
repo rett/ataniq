@@ -279,3 +279,104 @@ func TestCheckFailsClosedWhenTheFolderGoesBetweenLookups(t *testing.T) {
 		}
 	})
 }
+
+// TestCheckAsksThePinnedFolder: the guard file is looked up in the very
+// folder Check found, held open from its first lookup to its last, never
+// by its path again. A guarded folder that is moved away and replaced by
+// one without the guard, then put back before Check looks at the path a
+// last time, refuses: the lookup in the middle is answered by the folder
+// that holds the guard. A guarded folder removed for good refuses too, as
+// does an unguarded one replaced by a folder or a link (the folder at the
+// path is no longer the one asked), and an unchanged folder allows.
+func TestCheckAsksThePinnedFolder(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		guarded bool
+		middle  func(t *testing.T, dir string) // between the first lookup and the guard's
+		end     func(t *testing.T, dir string) // between the guard's and the last
+		want    string
+	}{
+		{"replaced, then put back before the last lookup", true, func(t *testing.T, dir string) {
+			if err := os.Rename(dir, dir+".away"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, func(t *testing.T, dir string) {
+			if err := os.Remove(dir); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(dir+".away", dir); err != nil {
+				t.Fatal(err)
+			}
+		}, CodeInhibited},
+		{"moved away, then put back before the last lookup", true, func(t *testing.T, dir string) {
+			if err := os.Rename(dir, dir+".away"); err != nil {
+				t.Fatal(err)
+			}
+		}, func(t *testing.T, dir string) {
+			if err := os.Rename(dir+".away", dir); err != nil {
+				t.Fatal(err)
+			}
+		}, CodeInhibited},
+		{"a guarded folder removed for good", true, func(t *testing.T, dir string) {
+			if err := os.RemoveAll(dir); err != nil {
+				t.Fatal(err)
+			}
+		}, nil, "refused"},
+		{"an unguarded folder removed for good", false, func(t *testing.T, dir string) {
+			if err := os.Remove(dir); err != nil {
+				t.Fatal(err)
+			}
+		}, nil, CodeStateDir},
+		{"replaced by a folder after the guard's lookup", false, nil, func(t *testing.T, dir string) {
+			if err := os.Rename(dir, dir+".old"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, CodeStateDir},
+		{"replaced by a link to itself after the guard's lookup", false, nil, func(t *testing.T, dir string) {
+			if err := os.Rename(dir, dir+".old"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(dir+".old", dir); err != nil {
+				t.Fatal(err)
+			}
+		}, CodeStateDir},
+		{"unchanged", false, func(t *testing.T, dir string) {}, func(t *testing.T, dir string) {}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "state")
+			if err := os.Mkdir(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tc.guarded {
+				mustWrite(t, filepath.Join(dir, GuardFile), "{}")
+			}
+			ran := 0
+			if tc.middle != nil {
+				betweenLookups = func() { ran++; tc.middle(t, dir) }
+			}
+			if tc.end != nil {
+				beforeRecheck = func() { ran++; tc.end(t, dir) }
+			}
+			t.Cleanup(func() { betweenLookups, beforeRecheck = nil, nil })
+			err := Check(dir)
+			var ge *Error
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("Check = %v, want nil", err)
+			case tc.want == "refused" && err == nil:
+				t.Fatal("Check allowed")
+			case tc.want != "" && tc.want != "refused" && (!errors.As(err, &ge) || ge.Code != tc.want):
+				t.Fatalf("Check = %v, want %s", err, tc.want)
+			}
+			if tc.want == "" && ran != 2 {
+				t.Errorf("the hooks ran %d times", ran)
+			}
+		})
+	}
+}
