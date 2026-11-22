@@ -1211,7 +1211,18 @@ home path in `ai-names.list`), a control byte or an inner space is refused:
   is `HIT incomplete env-source` on every run. The packaged
   bash-completion library is one: its loader's source in a function is
   only `NOTE deferred-source`, but its array-driven startup loop stays
-  incomplete, so the host does not install it.
+  incomplete, so the host does not install it. This is accepted: the
+  library is outside the host's package baseline, and a host that has
+  it fails the check, never passes it.
+- The enabled-unit check (`unit`) takes an entry of a dependency folder
+  as masked when the file its link leads to is a mask (a link to
+  `/dev/null` or an empty file), even when a folder of higher
+  precedence holds a unit of the same name that is not one; systemd
+  would load that unit, so such an entry is a `NOTE unit masked` line
+  where it could be a `HIT unit`. This is accepted: the host's
+  enablement links lead to the unit systemd loads for their name, and
+  the environment check reads the unit of the view, not the link's
+  target.
 - Run by hand as an ordinary user it cannot read other users' processes
   or folders; it says so (`HIT incomplete proc-access`, `HIT unreadable`)
   rather than pass.

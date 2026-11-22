@@ -58,4 +58,9 @@
   prints a file's content or a value, escapes every path in its errors,
   and reads its lists from the release's `share/`
   (`deploy/authority-host/share`). A renamed binary is not caught by
-  name: the package allowlist and the egress filter cover that.
+  name: the package allowlist and the egress filter cover that. Two
+  stated limits are accepted: bash-completion's array-driven startup
+  loop stays `HIT incomplete env-source` (the library is outside the
+  host's package baseline), and an enabled unit whose dependency link
+  leads to a mask is a `NOTE unit masked` line even when a higher folder
+  holds a unit of that name.
