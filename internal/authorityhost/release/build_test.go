@@ -213,6 +213,11 @@ func TestBuildRefusals(t *testing.T) {
 		{"snapshot with a slash", func(t *testing.T, o *Options) { o.PackageSnapshot = "a/b" }, CodeSnapshot, true},
 		{"snapshot too long", func(t *testing.T, o *Options) { o.PackageSnapshot = strings.Repeat("a", 129) }, CodeSnapshot, true},
 		{"components other than static", func(t *testing.T, o *Options) { o.Components = "dynamic" }, CodeComponents, true},
+		{"a static release with its own ah-pkgstep", func(t *testing.T, o *Options) {
+			p := filepath.Join(t.TempDir(), PackageStepName)
+			writeTestFile(t, p, "#!/bin/sh\nexit 0\n", 0o755)
+			o.Bins = append(o.Bins, p)
+		}, CodeStaticStep, true},
 		{"no ah-switch", func(t *testing.T, o *Options) { o.Bins = o.Bins[:1] }, CodeBinMissing, true},
 		{"no ah-noaicheck", func(t *testing.T, o *Options) { o.Bins = o.Bins[1:] }, CodeBinMissing, true},
 		{"two binaries of one name", func(t *testing.T, o *Options) { o.Bins = append(o.Bins, o.Bins[0]) }, CodeBinTwice, true},
@@ -462,9 +467,12 @@ func TestStaticPackageStepRuns(t *testing.T) {
 }
 
 // TestBuildKeepsAGivenPackageStep: a binary named ah-pkgstep is shipped as
-// it is, and a release that is not static gets none made.
+// it is by a release that is not static (a static release is the generated
+// no-op and refuses one, see TestBuildRefusals), and a release that is not
+// static, given none, gets none made.
 func TestBuildKeepsAGivenPackageStep(t *testing.T) {
 	o := testOptions(t, staticSrc(t))
+	o.Components = ""
 	pkg := filepath.Join(t.TempDir(), "ah-pkgstep")
 	writeTestFile(t, pkg, "#!/bin/sh\n# mine\nexit 0\n", 0o755)
 	o.Bins = append(o.Bins, pkg)

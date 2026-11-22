@@ -1601,8 +1601,12 @@ ah-release build --out DIR --counter N --commit SHA --go-version V --built-on CL
   mode 0755; the name is letters, digits and `._@+-`. `ah-noaicheck` and
   `ah-switch` are required; add `ah-pkgstep` when the release's package
   snapshot may differ from the host's (a first switch always moves the host
-  to the snapshot, so it needs it). With `--components static` and no
-  `--bin` named `ah-pkgstep`, the builder writes `bin/ah-pkgstep` itself: a
+  to the snapshot, so it needs it). With `--components static` the builder
+  writes `bin/ah-pkgstep` itself, and refuses a `--bin` named `ah-pkgstep`
+  (`static-package-step`, a usage error, exit 2, nothing made): a static
+  release is this generated no-op and changes no package, so a release that
+  must move the package snapshot is not static (build it without
+  `--components static` and with its own step). The generated step is a
   POSIX `sh` script that checks the arguments the switch gives it
   (`--release DIR --from OLD --to NEW`, anything else exits 2 with a usage
   line), changes nothing and exits 0 only when `--from` is empty (a first
@@ -1626,10 +1630,10 @@ ah-release build --out DIR --counter N --commit SHA --go-version V --built-on CL
   again from the snapshot it started at); as with any failed package step,
   that leaves the package state unknown, and every later switch is
   refused until `ah-switch recover --package-state SNAPSHOT` (see "The
-  journal and recover"). A `--bin` named
-  `ah-pkgstep` is shipped as given, and a release that is not static and is
-  given none has none, so a switch that changes the snapshot refuses it
-  (`package-step-missing`) as before.
+  journal and recover"). In a release that is not static a `--bin` named
+  `ah-pkgstep` is shipped as given, and one given none has none, so a
+  switch that changes the snapshot refuses it (`package-step-missing`) as
+  before.
 - `--src` is the deployment source folder: its `etc/` is copied to
   `etc/` and its `share/` to `share/`, which must hold the four command
   lists and the lists of the no-AI check. Nothing else of it is copied (not
@@ -1745,10 +1749,19 @@ It checks, in this order, all of them (a pass is no finding):
    read through the folder `check` opened, not through its path again,
    hashed as it is copied and once more from the copy, into a new folder of
    mode 0700 in the temporary folder (`TMPDIR`, which must allow programs
-   to run: on a mount with `noexec` the result is `noaicheck-not-started`),
-   and removed afterwards. A checker that changed since it was verified is
-   not run (`noaicheck-changed`). `DIR/<id>` may be relative; the checker
-   is given its absolute path. The checker itself reads the release's
+   to run: on a mount with `noexec` the result is `noaicheck-not-started`;
+   a relative `TMPDIR` is read from the folder `check` runs in), and
+   removed afterwards. The copy is made, read again and removed through the
+   descriptor of its folder and is started as the open file that was
+   hashed (`/proc/self/fd/N`, so `/proc` must be mounted), not as a path:
+   an account that can rename entries of the temporary folder or above it
+   cannot make another program run in its place, and a copy that is not a
+   regular file of the caller's that group and others cannot write is not
+   run (`noaicheck-not-started`); the most it can do is leave the private
+   folder behind, which `check` then cannot remove. A checker that
+   changed since it was verified is not run (`noaicheck-changed`).
+   `DIR/<id>` and `--root DIR` may be relative; the checker, which runs from
+   the folder `/`, is given their absolute paths. The checker itself reads the release's
    `etc/` and `share/` by that path while it runs, so a folder renamed or
    changed between the verification and that read is read as it is then:
    doing that takes write access to the release folder or to the folder
@@ -1845,7 +1858,8 @@ first packet of a connection, and a `route` chain (hook `output`) is not
 counted either, so a ruleset that drops by default only in one is reported.
 An unquoted `#` starts a comment, which is not read. Of the rules it reads
 only the first rule of such a chain: one that accepts every packet (`accept`
-alone, with at most a counter and a comment) makes the chain not count. No
+alone, with at most a counter, plain or named (`counter name "x"`), and a
+comment) makes the chain not count. No
 other rule is read, so a chain whose rules accept everything in another way
 (a later unconditional `accept`, a `jump` or `goto` to a chain that accepts
 everything, an accept behind a match every packet meets) still counts: the
@@ -1860,7 +1874,8 @@ WARNING: no-default-deny HOOK: the enrolled nft ruleset has no base chain of hoo
 and writes the same words, as a `# ` comment, into the header of
 `share/nft.digest`, so that whoever reads the release later sees that its
 digest was enrolled over a ruleset without that policy. A listing it cannot
-read in that shape counts as having no default deny, so of the policies the
+read in that shape, or that ends inside a block (a listing cut short), counts
+as having no default deny, so of the policies the
 warning may be one too many, never one too few; of the rules, as above, it
 can say nothing, so read them yourself before the baseline is enrolled.
 `--require-default-deny` turns any of these into a refusal (`FAIL:

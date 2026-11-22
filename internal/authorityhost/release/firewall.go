@@ -25,8 +25,8 @@ func DefaultDenyWarning(hook string) string {
 // and a route chain, which filters the output hook like a filter chain, is
 // not counted either, so a ruleset that denies by one is reported (a
 // warning too many rather than one too few). A listing it cannot read in that
-// shape has no default deny anywhere: the result never claims a policy it
-// did not see.
+// shape, or one that ends inside a block (a cut listing), has no default
+// deny anywhere: the result never claims a policy it did not see.
 //
 // Of the rules it reads only the first rule of such a chain: a chain whose
 // first rule accepts every packet (only "accept", with a counter or a
@@ -109,6 +109,11 @@ func missingDefaultDeny(listing []byte) []string {
 			stack = stack[:len(stack)-1]
 		}
 	}
+	if len(stack) > 0 {
+		// The listing ends inside a block: it was cut, and a chain it shows
+		// may have had a first rule that accepts everything. Nothing counts.
+		return append([]string(nil), defaultDenyHooks...)
+	}
 	for _, c := range chains {
 		if c.hook != "" {
 			tables[c.table].drops[c.hook] = true
@@ -139,7 +144,8 @@ func missingDefaultDeny(listing []byte) []string {
 
 // acceptsAll reports whether the words of a rule are a verdict accept with
 // nothing that matches: "accept", with at most a counter ("counter" or
-// "counter packets N bytes N") and a quoted comment around it.
+// "counter packets N bytes N" or a named counter, "counter name "x"") and a
+// quoted comment around it.
 func acceptsAll(words []string) bool {
 	accept := false
 	for i := 0; i < len(words); i++ {
@@ -152,6 +158,10 @@ func acceptsAll(words []string) bool {
 		case "counter":
 			if i+4 < len(words) && words[i+1] == "packets" && words[i+3] == "bytes" {
 				i += 4
+			} else if i+2 < len(words) && words[i+1] == "name" && words[i+2] == "\"" {
+				// A named counter: nftWords reads its quoted name as one
+				// word, the closing quote.
+				i += 2
 			}
 		case "comment":
 			if i+1 >= len(words) || words[i+1] != "\"" {

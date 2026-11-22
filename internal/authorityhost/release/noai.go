@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path"
@@ -22,12 +23,19 @@ const NoAICheckTimeout = 60 * time.Second
 // maxNoAIOutput bounds what is read of the check's output.
 const maxNoAIOutput = 4 << 20
 
+// beforeNoAIStart, when not nil, is called after the private copy of the
+// checker is made and verified and before it is started. It is a hook for
+// tests.
+var beforeNoAIStart func()
+
 // runNoAICheck runs the release's own bin/ah-noaicheck on the release dir
 // (an absolute path) in its first phase, with the flags a release check uses
 // (see the README, "The switch", step 4), as a child of its own process
 // group with the switch's fixed environment, the folder / and no standard
 // input. What runs is a private copy of the checker Check verified (see
-// privateCopy), not the file the folder's path names now. It adds a finding
+// privateCopy), started as the descriptor that was hashed, not as a path. It
+// is given the absolute path of --root, as of the release, since it runs
+// from the folder /. It adds a finding
 // when the program does not start, does not finish in the timeout, exits
 // non-zero or prints any line that starts "HIT ". Nothing it prints is shown.
 //
@@ -40,7 +48,14 @@ func (c *checker) runNoAICheck(root *os.Root, dir string, o CheckOptions) {
 	}
 	args := []string{"--phase", "pre", "--release", dir}
 	if o.Root != "" {
-		args = append(args, "--root", o.Root)
+		// The checker runs from the folder /, so a root relative to the
+		// caller's folder would name another tree there.
+		abs, err := filepath.Abs(o.Root)
+		if err != nil {
+			c.add(CodeNoAIStart, "")
+			return
+		}
+		args = append(args, "--root", abs)
 	}
 	if o.RequirePolicy {
 		args = append(args, "--require-policy")
@@ -52,7 +67,15 @@ func (c *checker) runNoAICheck(root *os.Root, dir string, o CheckOptions) {
 		return
 	}
 	defer done()
-	cmd := exec.CommandContext(ctx, prog, args...)
+	defer prog.Close()
+	if beforeNoAIStart != nil {
+		beforeNoAIStart()
+	}
+	// The copy is started as the descriptor Check hashed, the child's
+	// descriptor 3, not as the path of its folder, which may name another
+	// file by now.
+	cmd := exec.CommandContext(ctx, "/proc/self/fd/3", args...)
+	cmd.ExtraFiles = []*os.File{prog}
 	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL=C"}
 	cmd.Dir = "/"
 	cmd.SysProcAttr = procAttr()
@@ -97,32 +120,63 @@ func (c *checker) runNoAICheck(root *os.Root, dir string, o CheckOptions) {
 }
 
 // privateCopy copies the file p of root, a file Check verified, into a new
-// folder of mode 0700 in the temporary folder, the copy of mode 0700, and
-// returns the copy's path and what removes the folder. The bytes are read
-// through root, the descriptor of the folder Check verified, hashed as they
-// are copied and hashed again from the copy, each time against the SHA-256
-// Check found: a file that changed since is noaicheck-changed, a copy that
-// cannot be made noaicheck-not-started, and nothing is run (ok false).
-func (c *checker) privateCopy(root *os.Root, p string) (copyPath string, done func(), ok bool) {
+// folder of mode 0700 in the temporary folder (made absolute, so a relative
+// TMPDIR names the same folder wherever the check runs), the copy of mode
+// 0700, and returns the copy opened for reading and what removes it and its
+// folder. The bytes are read through root, the descriptor of the folder
+// Check verified, hashed as they are copied and hashed again from the copy,
+// each time against the SHA-256 Check found: a file that changed since is
+// noaicheck-changed, a copy that cannot be made noaicheck-not-started, and
+// nothing is run (ok false).
+//
+// The copy is made, opened again and removed through the descriptor of its
+// folder, and the hash of the second read is the one of the descriptor that
+// is then started (see runNoAICheck), so an account that renames the folder
+// or an entry above it cannot make what runs another file than what was
+// hashed: the path of the folder is resolved once, when it is opened. The
+// file opened again must be the copy's own kind: a regular file of this
+// user's that no one else can write (ownPrivate), so a file put in its place
+// is not run; the check then does not start.
+func (c *checker) privateCopy(root *os.Root, p string) (prog *os.File, done func(), ok bool) {
 	want, known := c.digests[p]
 	f, info, err := openRegular(root, p)
 	if err != nil || !known {
 		c.add(CodeNoAIChanged, "")
-		return "", nil, false
+		return nil, nil, false
 	}
 	defer f.Close()
-	tmp, err := os.MkdirTemp("", "ah-release-check-")
+	parent, err := filepath.Abs(os.TempDir())
 	if err != nil {
 		c.add(CodeNoAIStart, "")
-		return "", nil, false
+		return nil, nil, false
 	}
-	done = func() { os.RemoveAll(tmp) }
-	copyPath = filepath.Join(tmp, path.Base(p))
-	out, err := os.OpenFile(copyPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o700)
+	tmp, err := os.MkdirTemp(parent, "ah-release-check-")
 	if err != nil {
-		done()
 		c.add(CodeNoAIStart, "")
-		return "", nil, false
+		return nil, nil, false
+	}
+	dir, err := os.OpenRoot(tmp)
+	if err != nil {
+		os.Remove(tmp)
+		c.add(CodeNoAIStart, "")
+		return nil, nil, false
+	}
+	name := path.Base(p)
+	done = func() {
+		// Only the copy is removed, through the folder's descriptor; the
+		// folder by its path, which removes it only when it is empty.
+		dir.Remove(name)
+		dir.Close()
+		os.Remove(tmp)
+	}
+	fail := func(code string) (*os.File, func(), bool) {
+		done()
+		c.add(code, "")
+		return nil, nil, false
+	}
+	out, err := dir.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o700)
+	if err != nil {
+		return fail(CodeNoAIStart)
 	}
 	h := sha256.New()
 	n, err := io.Copy(io.MultiWriter(out, h), io.LimitReader(f, info.Size()+1))
@@ -133,28 +187,31 @@ func (c *checker) privateCopy(root *os.Root, p string) (copyPath string, done fu
 		err = cerr
 	}
 	if err != nil {
-		done()
-		c.add(CodeNoAIStart, "")
-		return "", nil, false
+		return fail(CodeNoAIStart)
 	}
-	if n != info.Size() || hex.EncodeToString(h.Sum(nil)) != want || hashPath(copyPath) != want {
-		done()
-		c.add(CodeNoAIChanged, "")
-		return "", nil, false
+	prog, err = dir.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return fail(CodeNoAIStart)
 	}
-	return copyPath, done, true
+	if st, err := prog.Stat(); err != nil || !ownPrivate(st) {
+		prog.Close()
+		return fail(CodeNoAIStart)
+	}
+	again := sha256.New()
+	if _, err := io.Copy(again, prog); err != nil {
+		prog.Close()
+		return fail(CodeNoAIStart)
+	}
+	if n != info.Size() || hex.EncodeToString(h.Sum(nil)) != want || hex.EncodeToString(again.Sum(nil)) != want {
+		prog.Close()
+		return fail(CodeNoAIChanged)
+	}
+	return prog, done, true
 }
 
-// hashPath is the SHA-256 of the file p, or "" when it cannot be read.
-func hashPath(p string) string {
-	f, err := os.Open(p)
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return ""
-	}
-	return hex.EncodeToString(h.Sum(nil))
+// ownPrivate reports whether st is a regular file of this user that group
+// and others cannot write.
+func ownPrivate(st fs.FileInfo) bool {
+	sys, ok := st.Sys().(*syscall.Stat_t)
+	return ok && st.Mode().IsRegular() && st.Mode().Perm()&0o022 == 0 && sys.Uid == uint32(os.Geteuid())
 }

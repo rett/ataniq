@@ -2,6 +2,7 @@ package release
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -219,4 +220,145 @@ func TestNoAICheckRunsTheBytesItVerified(t *testing.T) {
 			t.Errorf("record %q, %v; want the verified checker only", data, err)
 		}
 	})
+}
+
+// TestNoAICheckGivesTheCheckerAnAbsoluteRoot: the checker is started from the
+// folder /, so a --root given relative to the caller's folder names another
+// tree there (and the check passes over the wrong one): it is given on as
+// the absolute path of the tree the caller named, and the checker is told
+// the same tree for the relative and the absolute form.
+func TestNoAICheckGivesTheCheckerAnAbsoluteRoot(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "record")
+	dir := withNoAI(t, "#!/bin/sh\necho \"args: $*\" > "+record+"\nexit 0\n")
+	parent := t.TempDir()
+	if err := os.Mkdir(filepath.Join(parent, "stage"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(parent)
+	want := filepath.Join(parent, "stage")
+	for _, root := range []string{"stage", "./stage", want, "stage/../stage"} {
+		os.Remove(record)
+		if f := Check(dir, CheckOptions{Root: root}); len(f) != 0 {
+			t.Fatalf("%s: %s", root, lines(f))
+		}
+		data, err := os.ReadFile(record)
+		if err != nil {
+			t.Fatalf("%s: the check did not run: %v", root, err)
+		}
+		if got := "args: --phase pre --release " + dir + " --root " + want + "\n"; string(data) != got {
+			t.Errorf("--root %s: record %q, want %q", root, data, got)
+		}
+	}
+}
+
+// TestNoAICheckWithARelativeTemporaryFolder: a TMPDIR relative to the
+// caller's folder is a usable temporary folder: the checker runs, and
+// nothing is left in it.
+func TestNoAICheckWithARelativeTemporaryFolder(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "record")
+	dir := withNoAI(t, "#!/bin/sh\necho ran > "+record+"\nexit 0\n")
+	parent := t.TempDir()
+	if err := os.Mkdir(filepath.Join(parent, "work"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(parent)
+	t.Setenv("TMPDIR", "work")
+	if f := Check(dir, CheckOptions{}); len(f) != 0 {
+		t.Fatal(lines(f))
+	}
+	if data, err := os.ReadFile(record); err != nil || string(data) != "ran\n" {
+		t.Errorf("the checker did not run: %q, %v", data, err)
+	}
+	if ents, err := os.ReadDir(filepath.Join(parent, "work")); err != nil || len(ents) != 0 {
+		t.Errorf("the temporary folder holds %d entries, %v", len(ents), err)
+	}
+}
+
+// TestNoAICheckRunsTheCopyItHashedNotItsPath: the private copy is hashed and
+// started as a file Check holds open, not as a path it resolves again. A
+// private folder renamed away between the hash and the start, and another
+// folder with a program of the same name put in its place (what an account
+// that can rename entries of the temporary folder can do), does not run the
+// other program.
+func TestNoAICheckRunsTheCopyItHashedNotItsPath(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "record")
+	dir := withNoAI(t, "#!/bin/sh\necho verified >> "+record+"\nexit 0\n")
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	swapped := false
+	beforeNoAIStart = func() {
+		ents, err := os.ReadDir(tmp)
+		if err != nil || len(ents) != 1 {
+			t.Errorf("the temporary folder holds %d entries, %v; want the one private folder", len(ents), err)
+			return
+		}
+		p := filepath.Join(tmp, ents[0].Name())
+		if err := os.Rename(p, p+".moved"); err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, filepath.Join(p, "ah-noaicheck"), "#!/bin/sh\necho other >> "+record+"\nexit 0\n", 0o700)
+		swapped = true
+	}
+	t.Cleanup(func() { beforeNoAIStart = nil })
+	got := codes(Check(dir, CheckOptions{}))
+	if !swapped {
+		t.Fatal("the hook did not run")
+	}
+	if len(got) != 0 {
+		t.Errorf("findings %q", got)
+	}
+	if data, err := os.ReadFile(record); err != nil || string(data) != "verified\n" {
+		t.Errorf("record %q, %v; want the verified checker only", data, err)
+	}
+}
+
+// TestNoAICheckStartsACompiledChecker: the copy is started as an open
+// descriptor, which a compiled program (not only a script) must survive.
+func TestNoAICheckStartsACompiledChecker(t *testing.T) {
+	for _, tc := range []struct {
+		prog string
+		want []string
+	}{{"true", nil}, {"false", []string{"noaicheck-exit"}}} {
+		bin, err := exec.LookPath(tc.prog)
+		if err != nil {
+			t.Skip("no", tc.prog, err)
+		}
+		data, err := os.ReadFile(bin)
+		if err != nil || len(data) < 4 || string(data[:4]) != "\x7fELF" {
+			t.Skip(tc.prog, "is not a compiled program here")
+		}
+		o := testOptions(t, staticSrc(t))
+		checker := filepath.Join(t.TempDir(), "ah-noaicheck")
+		writeTestFile(t, checker, string(data), 0o755)
+		o.Bins = []string{checker, o.Bins[1]}
+		privateTemp(t)
+		if got := codes(Check(built(t, o), CheckOptions{})); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: findings %q, want %q", tc.prog, got, tc.want)
+		}
+	}
+}
+
+// TestOwnPrivate: the copy that is started is a regular file of this user
+// that group and others cannot write.
+func TestOwnPrivate(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "f")
+	writeTestFile(t, p, "x", 0o700)
+	info, err := os.Stat(p)
+	if err != nil || !ownPrivate(info) {
+		t.Fatalf("a file of this user, mode 0700: %v, %v", info, err)
+	}
+	for _, mode := range []os.FileMode{0o720, 0o702, 0o777} {
+		os.Chmod(p, mode)
+		if info, _ := os.Stat(p); ownPrivate(info) {
+			t.Errorf("mode %o is accepted", mode)
+		}
+	}
+	if info, err := os.Stat(filepath.Dir(p)); err != nil || ownPrivate(info) {
+		t.Errorf("a folder is accepted: %v, %v", info, err)
+	}
+	if os.Geteuid() != 0 {
+		if info, err := os.Stat("/bin/sh"); err == nil && ownPrivate(info) {
+			t.Error("/bin/sh, a file of another user, is accepted")
+		}
+	}
 }
