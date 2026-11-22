@@ -53,6 +53,30 @@ func (s *ownerCmdService) LimitSet(context.Context, ownerchannel.Source, ownerwi
 	return ownerwire.LimitView{}, errors.New("not here")
 }
 func (s *ownerCmdService) Looked(context.Context) error { return nil }
+func (s *ownerCmdService) PairStart(context.Context, ownerchannel.Source, ownerwire.PairStartParams) (ownerwire.PairStartResult, error) {
+	return ownerwire.PairStartResult{}, errors.New("not here")
+}
+func (s *ownerCmdService) PairStatus(context.Context) (ownerwire.PairStatus, error) {
+	return ownerwire.PairStatus{Phase: ownerwire.PairNone}, nil
+}
+func (s *ownerCmdService) PairConfirm(context.Context, ownerchannel.Source) (ownerwire.KeyItem, error) {
+	return ownerwire.KeyItem{}, errors.New("not here")
+}
+func (s *ownerCmdService) PairReject(context.Context, ownerchannel.Source) error {
+	return errors.New("not here")
+}
+func (s *ownerCmdService) PairPresent(context.Context, ownerchannel.Source, ownerwire.SeatPairParams) (ownerwire.SeatPairResult, error) {
+	return ownerwire.SeatPairResult{}, errors.New("not here")
+}
+func (s *ownerCmdService) Keys(context.Context) (ownerwire.KeysView, error) {
+	return ownerwire.KeysView{Keys: []ownerwire.KeyItem{}}, nil
+}
+func (s *ownerCmdService) KeyRevoke(context.Context, ownerchannel.Source, ownerwire.KeyRevokeParams) (ownerwire.KeysView, error) {
+	return ownerwire.KeysView{}, errors.New("not here")
+}
+func (s *ownerCmdService) KeysOff(context.Context, ownerchannel.Source) (ownerwire.KeysView, error) {
+	return ownerwire.KeysView{}, errors.New("not here")
+}
 
 // ownerCmdTerminal is a PeerInspector that finds every peer on a terminal.
 type ownerCmdTerminal struct{}
