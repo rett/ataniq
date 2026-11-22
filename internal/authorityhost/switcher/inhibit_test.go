@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"ataniq/internal/authorityhost/decisionguard"
 )
 
 func (e *env) inhibitPath() string { return filepath.Join(e.root, StateDir, InhibitFile) }
@@ -462,9 +464,9 @@ func TestInhibitClear(t *testing.T) {
 // guardedApp models a decision-capable service under the inhibit
 // contract: its unit carries no start condition, so it starts (on a
 // reload, at boot) whether decisions.inhibit is there or not, and its
-// readiness probe passes only while it runs; before each decision it
-// makes one lookup, and refuses unless decisions.inhibit does not exist
-// (any answer but "no such file" refuses).
+// readiness probe passes only while it runs; before each decision it asks
+// decisionguard.Check, as the contract says, and refuses unless it allows
+// (decisions.inhibit does not exist in a real state folder).
 type guardedApp struct {
 	e       *env
 	started bool
@@ -473,7 +475,7 @@ type guardedApp struct {
 }
 
 func (g *guardedApp) decide() string {
-	if _, err := os.Lstat(filepath.Join(g.e.root, StateDir, InhibitFile)); !errors.Is(err, fs.ErrNotExist) {
+	if decisionguard.Check(filepath.Join(g.e.root, StateDir)) != nil {
 		return "refused"
 	}
 	return "accepted"
@@ -492,6 +494,49 @@ func (g *guardedApp) gate(argv []string) error {
 		g.asked = append(g.asked, g.decide())
 	}
 	return nil
+}
+
+// TestTheReferenceServiceAsksTheGuard: the model service decides by
+// decisionguard.Check, the check the contract names, not by a lookup of
+// its own: it refuses while the state folder is missing or is a link,
+// and while decisions.inhibit is there, and decides only on a real state
+// folder without it.
+func TestTheReferenceServiceAsksTheGuard(t *testing.T) {
+	e := newEnv(t)
+	g := guard(e)
+	state := filepath.Join(e.root, StateDir)
+	if _, err := os.Lstat(state); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the fixture has a state folder: %v", err)
+	}
+	if got := g.decide(); got != "refused" {
+		t.Errorf("without a state folder a decision is %s", got)
+	}
+	other := filepath.Join(e.root, "elsewhere")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(state), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, state); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.decide(); got != "refused" {
+		t.Errorf("with a link for the state folder a decision is %s", got)
+	}
+	if err := os.Remove(state); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(state, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.decide(); got != "accepted" {
+		t.Errorf("on a state folder without the inhibit a decision is %s", got)
+	}
+	e.write(e.inhibitPath(), "", 0o644)
+	if got := g.decide(); got != "refused" {
+		t.Errorf("with the inhibit a decision is %s", got)
+	}
 }
 
 func guard(e *env) *guardedApp {
