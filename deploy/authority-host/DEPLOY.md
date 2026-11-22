@@ -263,6 +263,21 @@ time) and exits 0. Run `status` first and read what it says: the words are
 yours, and nobody types them for you (see [the journal and
 recover](README.md#the-journal-and-recover)).
 
+Verification of the first deploy is not finished until the boot unit is
+installed. Neither script installs it, and without it nothing requalifies
+the host after a reboot: `ah-switch boot` runs from
+`ah-switch-boot.service` at every boot, and the unit is the owner's to
+install by hand. Install and enable it with the steps of [Boot
+requalification](README.md#boot-requalification) in the README (the
+unit's installation, the hash comparison, `systemctl enable`), then
+confirm it with `systemctl status ah-switch-boot.service` and `ah-switch
+status` after a reboot. `share/units.allow` of the release must name
+`ah-switch-boot.service` before the unit is enabled: the no-AI check
+finds every enabled unit its list does not name, so enabling it first
+makes that check fail, at the next switch and at the boot itself. Add
+the line to `share/units.allow` in the release source and deploy a
+release built with it first.
+
 ### 6. Roll back
 
 To go back to the release `previous` points at (it is there after the second
