@@ -25,6 +25,13 @@ func keysPathOf(state string) string {
 	return filepath.Join(state, hostadapter.OwnerDirName, ownerjournal.KeysFileName)
 }
 
+// keyWords is a fingerprint of as many words as the list of keys holds, so
+// that the test follows the list's count and names no count of its own.
+func keyWords() string {
+	pool := []string{"acorn", "bridge", "cedar", "delta", "ember", "falcon", "garden", "harbor", "island", "jungle"}
+	return strings.Join(pool[:ownerjournal.FingerprintWords], " ")
+}
+
 // noticed collects what the builder tells the operator, in place of the
 // standard error.
 func noticed(t *testing.T) func() string {
@@ -83,7 +90,7 @@ func TestTheBuilderGivesTheServiceTheListOfKeys(t *testing.T) {
 	// What a key put there is back at the next build.
 	if _, err := k.AddKey(ownerjournal.NewKey{
 		CredentialID: []byte(strings.Repeat("c", 16)), PublicKey: []byte("k"), Kind: "unverified",
-		PairedAt: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC), Words: "acorn bridge cedar delta ember falcon",
+		PairedAt: time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC), Words: keyWords(),
 	}); err != nil {
 		t.Fatal(err)
 	}
