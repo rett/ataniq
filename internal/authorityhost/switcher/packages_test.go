@@ -2,6 +2,7 @@ package switcher
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -407,12 +408,105 @@ func TestStaticReleaseOfAnotherSnapshot(t *testing.T) {
 		t.Errorf("decisions inhibited although nothing began")
 	}
 	e.noJournal()
-	if !strings.Contains(e.last, "--package-snapshot") {
+	// The same id rebuilt would be refused as release-exists: the
+	// message asks for the host's snapshot and a higher counter.
+	if !strings.Contains(e.last, "build it with the host's --package-snapshot 2026-11-01 and a higher counter") {
 		t.Errorf("output:\n%s", e.last)
 	}
 	const rel4 = "0004-ddddddd"
 	e.staticRelease(rel4, "2026-11-01")
 	if code := e.switchTo(rel4); code != ExitOK {
 		t.Fatalf("the static release of the host's snapshot: exit %d\n%s", code, e.last)
+	}
+}
+
+// staticStep models the builder's generated bin/ah-pkgstep of a static
+// release on the fake runner: it changes nothing and exits 0 when --from
+// is empty or equal to --to, and fails for any other --from.
+func staticStep(argv []string) error {
+	if filepath.Base(argv[0]) != "ah-pkgstep" {
+		return nil
+	}
+	var from, to string
+	for i := 1; i+1 < len(argv); i++ {
+		switch argv[i] {
+		case "--from":
+			from = argv[i+1]
+		case "--to":
+			to = argv[i+1]
+		}
+	}
+	if from != "" && from != to {
+		return errors.New("ah-pkgstep: exit status 1")
+	}
+	return nil
+}
+
+// TestStaticReleaseCannotSettleAnUnknownState: a first switch whose real
+// package step fails leaves the package state unknown, from no snapshot
+// to S. A static release of snapshot S would run its generated step with
+// an empty --from, which changes nothing and exits 0: that must not be
+// taken as the step finished. It is refused before anything begins,
+// nothing runs, and the state stays unknown until the owner states it or
+// a release with a package step of its own runs the step to the end.
+func TestStaticReleaseCannotSettleAnUnknownState(t *testing.T) {
+	e := newEnv(t)
+	e.release(rel1, "2026-11-15")
+	e.runner.fail["ah-pkgstep"] = 1
+	if code := e.switchTo(rel1); code != ExitFailed {
+		t.Fatalf("first switch: exit %d\n%s", code, e.last)
+	}
+	if rec := e.record(); rec.PackageState != PackageUnknown || rec.PackageFrom != "" || rec.PackageTo != "2026-11-15" {
+		t.Fatalf("record after the failed step: %+v", rec)
+	}
+	e.runner.gate = staticStep
+	e.staticRelease(rel2, "2026-11-15")
+	e.runner.reset()
+	if code := e.switchTo(rel2); code != ExitFailed {
+		t.Fatalf("the static release: exit %d\n%s", code, e.last)
+	}
+	if n := e.runner.called("ah-pkgstep"); n != 0 {
+		t.Errorf("the static release's step ran %d times", n)
+	}
+	rec := e.record()
+	if rec.PackageState != PackageUnknown || rec.PackageSnapshot != "" || rec.Error != CodePackageUnknown {
+		t.Errorf("record: %+v", rec)
+	}
+	if !strings.Contains(e.last, "a static release changes no package") {
+		t.Errorf("output:\n%s", e.last)
+	}
+	e.noJournal()
+}
+
+// TestStaticReleaseCannotEstablishASnapshot: on a host with a current
+// release whose deploy.json is gone (only root removes it), the package
+// snapshot is not known; a static release must not be taken for a first
+// switch, whose generated step exits 0 for an empty --from, and record
+// its own snapshot as the host's. It is refused before anything begins,
+// and so is it again once the refusal itself is recorded.
+func TestStaticReleaseCannotEstablishASnapshot(t *testing.T) {
+	e := active(t)
+	e.runner.gate = staticStep
+	if err := os.Remove(filepath.Join(e.root, StateDir, DeployFile)); err != nil {
+		t.Fatal(err)
+	}
+	e.staticRelease(rel3, "another")
+	for _, want := range []string{"deploy.json is missing", "records no package snapshot"} {
+		if code := e.switchTo(rel3); code != ExitFailed {
+			t.Fatalf("exit %d\n%s", code, e.last)
+		}
+		if !strings.Contains(e.last, want) || !strings.Contains(e.last, "a static release cannot establish one") {
+			t.Errorf("output lacks %q:\n%s", want, e.last)
+		}
+		e.unchanged("releases/"+rel2, "packages")
+		if rec := e.record(); rec.PackageSnapshot != "" || rec.Error != CodePackageFailed {
+			t.Errorf("record: %+v", rec)
+		}
+		if len(e.runner.calls) != 0 {
+			t.Errorf("commands run: %v", e.runner.calls)
+		}
+		if _, ok := e.inhibited(); ok {
+			t.Errorf("decisions inhibited although nothing began")
+		}
 	}
 }

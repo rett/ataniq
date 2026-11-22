@@ -186,7 +186,7 @@ func (s *Switcher) runPackageStep(ctx context.Context, t *txn, argv []string) er
 // packageUnknownError is the refusal of a switch on a host whose package
 // state is unknown.
 func packageUnknownError(from, to string) error {
-	return failf(CodePackageUnknown, "the host's package snapshot is unknown: the package step from %s to %s did not finish; run ah-switch recover --package-state SNAPSHOT (%s or %s, the one the host is at), or switch to a release of snapshot %s, which runs the step again", q(from), q(to), q(from), q(to), q(to))
+	return failf(CodePackageUnknown, "the host's package snapshot is unknown: the package step from %s to %s did not finish; run ah-switch recover --package-state SNAPSHOT (%s or %s, the one the host is at), or switch to a release of snapshot %s with a package step of its own, which runs the step again", q(from), q(to), q(from), q(to), q(to))
 }
 
 // recoverPackageState records the owner's statement of the snapshot the

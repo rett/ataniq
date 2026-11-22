@@ -477,8 +477,11 @@ func joinFailures(f []string) string {
 
 // settle is the done phase: the link folder is synced (a link is not taken
 // as moved before that), the counter is made at least the transaction's
-// when it was used, deploy.json records the outcome and the journal is
-// removed. Any of that failing keeps the journal, and the next command
+// when it was used, deploy.json records the outcome, and the transaction
+// ends: healthy, the journal is renamed over decisions.inhibit and that
+// is removed (see InhibitFile); otherwise the inhibit is rewritten with
+// the outcome and the journal removed. Any of that failing keeps the
+// journal (in the inhibit, after the rename), and the next command
 // settles it again; the result is printed only once it is recorded. A
 // transaction found in this phase that ended healthy is qualified again
 // first (see requalifyCurrent): a reboot may have come since its health
@@ -528,14 +531,39 @@ func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 	if err := s.crash(CrashRecord); err != nil {
 		return ExitFailed, false
 	}
-	if err := s.endInhibit(t); err != nil {
-		return unresolved(InhibitFile, err)
-	}
-	if err := s.crash(CrashInhibitLifted); err != nil {
-		return ExitFailed, false
-	}
-	if err := s.dropJournal(); err != nil {
-		return unresolved(JournalFile+" not removed", err)
+	if t.healthy() && !t.j.RequalifyFailed {
+		// The journal goes into the inhibit, then the inhibit goes: the
+		// one step that opens decisions (see InhibitFile). A failure
+		// after the rename leaves the inhibit holding the journal, which
+		// the next command settles.
+		if err := s.stateRoot.Rename(JournalFile, InhibitFile); err != nil {
+			return unresolved(JournalFile+" not renamed to "+InhibitFile, err)
+		}
+		held := func(what string, err error) (int, bool) {
+			s.step(9, "FAILED: %s: %s", what, q(err.Error()))
+			s.printf("result: unresolved: the outcome (%s) is recorded, but %s holds the journal and decisions stay inhibited; the next switch, rollback or recover qualifies current again and settles it", t.j.Result, InhibitFile)
+			return ExitFailed, false
+		}
+		if err := syncRoot(s.stateRoot); err != nil {
+			return held("the state folder was not synced", err)
+		}
+		if err := s.crash(CrashJournalMoved); err != nil {
+			return ExitFailed, false
+		}
+		if err := removeFileIn(s.stateRoot, InhibitFile); err != nil {
+			return held(InhibitFile+" not removed", err)
+		}
+		s.step(9, "decisions no longer inhibited: %s removed", InhibitFile)
+	} else {
+		if err := s.keepInhibit(t); err != nil {
+			return unresolved(InhibitFile, err)
+		}
+		if err := s.crash(CrashInhibitKept); err != nil {
+			return ExitFailed, false
+		}
+		if err := s.dropJournal(); err != nil {
+			return unresolved(JournalFile+" not removed", err)
+		}
 	}
 	if err := s.crash(CrashUnreported); err != nil {
 		return ExitFailed, false
@@ -564,7 +592,7 @@ func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 // interruption, from the boot or from the reload; t.j.RequalifyFailed is
 // set and noted (a failed no-AI check also as the record's check) and
 // journaled before the outcome is recorded, as it was decided, with
-// decisions inhibited (see endInhibit). The error is that journal not
+// decisions inhibited (see keepInhibit). The error is that journal not
 // being written: the transaction then stays unresolved.
 func (s *Switcher) requalifyCurrent(ctx context.Context, t *txn, cur string, curOK bool) error {
 	err := s.qualifyAgain(ctx, t, cur, curOK)

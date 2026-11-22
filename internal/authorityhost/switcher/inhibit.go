@@ -10,32 +10,59 @@ import (
 )
 
 // InhibitFile is the switch's decision inhibit, in the state folder
-// (var/lib/authority-host/decisions.inhibit): while it is there, every
-// decision-capable service refuses every decision. Such a service may
-// start while it is there (it must, to answer its readiness probe): the
-// application checks the file before each decision and refuses when it is
-// there or cannot be read. No unit carries a start condition on it. The
-// switch writes it, owned by root, mode 0644, synced with its folder, at
-// the start of every transaction, before any package step or link, and
-// removes it only when the transaction ends healthy: a switch or rollback
-// whose release passed its health check and its post-activation no-AI
-// check, or a going back whose release passed its reload, its health check
-// and its post-activation no-AI check; a transaction found in phase done
-// by a later command first runs the reload list, the health check and the
+// (var/lib/authority-host/decisions.inhibit), and the one guard of
+// decisions: a decision-capable service makes one lookup before each
+// decision and refuses unless the file does not exist (any answer but "no
+// such file" refuses). Such a service may start while it is there (it
+// must, to answer its readiness probe); no unit carries a start condition
+// on it. The switch writes it, owned by root, mode 0644 (0600 while it
+// holds the journal, below), synced with its folder, at the start of every transaction, before any package step or
+// link and before the journal (txn.json) is first written, and removes it
+// only when the transaction ends healthy: a switch or rollback whose
+// release passed its health check and its post-activation no-AI check, or
+// a going back whose release passed its reload, its health check and its
+// post-activation no-AI check; a transaction found in phase done by a
+// later command first runs the reload list, the health check and the
 // no-AI check of current again (see requalifyCurrent). Any other end
 // leaves it, across a reboot, until a later transaction ends healthy or
 // the owner runs ah-switch inhibit-clear.
 //
-// The service also refuses every decision while the journal, txn.json in
-// the same folder, is there (or whether it is there cannot be told): a
-// healthy end removes the inhibit, synced, before it removes the journal,
-// so a crash between the two leaves a journal in phase done and no
-// inhibit, and the next command qualifies current again (writing the
-// inhibit back first) before it settles. A transaction is open from the
-// inhibit's writing to the journal's removal, so at every crash point
-// one of the two files is there until it is settled. (The other order
-// would leave, after a crash between the two, an inhibit with no journal
-// to qualify the host again from, which only the owner could clear.)
+// The journal is never there without it. A healthy end renames the
+// journal over it (the journal is gone and the inhibit, now holding that
+// journal, is there, in one atomic step), syncs the folder, then removes
+// it: that removal is the one step of the switch that opens decisions. A
+// crash between the two leaves the inhibit holding a healthy journal in
+// phase done (see readInhibit): the next command writes the journal back
+// from it, the inhibit staying, and qualifies current again before it
+// settles; inhibit-clear and ack refuse it. Every command that finds a
+// journal without the inhibit (removed by hand) writes the inhibit back
+// first (see reconcile), and recover --discard-journal writes it before
+// the journal is set aside.
+//
+// Why no service following the one-lookup contract can accept a decision
+// while the host is not qualified: its lookup is one instant, and these
+// are all the changes of the file (each under the switch's lock, each
+// write an atomic rename, synced):
+//
+//	beginTxn          inhibit written; then the journal
+//	reconcile         inhibit written back when a journal is there without it;
+//	                  a journal held by the inhibit is written back, the inhibit stays
+//	an unhealthy end  inhibit rewritten with the outcome; then the journal removed
+//	a healthy end     journal renamed over the inhibit; then the inhibit removed
+//	discard           inhibit written when it is not there or holds a journal;
+//	                  then the journal set aside
+//	inhibit-clear     inhibit removed on the owner's word; refused while a
+//	                  journal is there or the inhibit holds one
+//
+// Only the second step of a healthy end and inhibit-clear make the file
+// absent. The first runs after the transaction's release passed its
+// checks (again, when found in phase done), with no journal left; the
+// second is the owner's. No change makes it absent while a journal is
+// there, and every transaction writes it before anything else: a lookup
+// that finds no file is a host that ended healthy, or that the owner
+// cleared, with no transaction open. (A removal by hand, which only root
+// can do, is outside this; the next command that finds the journal writes
+// the file back.)
 const InhibitFile = "decisions.inhibit"
 
 // maxInhibitWords bounds the owner's words of inhibit-clear.
@@ -50,20 +77,36 @@ type inhibit struct {
 }
 
 // readInhibit reads decisions.inhibit; a missing file is none. Only its
-// existence matters to the services; its content is for status.
-func (s *Switcher) readInhibit() (inhibit, bool, error) {
+// existence matters to the services; its content is for the switch and
+// status, in one of two shapes: the record of why decisions are
+// inhibited, or the journal a healthy end renamed over it and did not
+// remove yet (settling, a transaction about to be settled, never an
+// outcome: see InhibitFile). A file of neither shape is an error, with
+// there true.
+func (s *Switcher) readInhibit() (in inhibit, settling *journal, there bool, err error) {
 	data, err := s.readStateFile(InhibitFile, maxStateFile)
 	if errors.Is(err, fs.ErrNotExist) {
-		return inhibit{}, false, nil
+		return inhibit{}, nil, false, nil
 	}
 	if err != nil {
-		return inhibit{}, false, err
+		return inhibit{}, nil, false, err
 	}
-	var in inhibit
-	if err := decodeStrict(data, &in); err != nil {
-		return inhibit{}, true, failf(CodeStateInvalid, "%s does not parse", InhibitFile)
+	if decodeStrict(data, &in) == nil {
+		return in, nil, true, nil
 	}
-	return in, true, nil
+	var j journal
+	if decodeStrict(data, &j) != nil || s.checkJournal(j) != nil || !settlingJournal(j) {
+		return inhibit{}, nil, true, failf(CodeStateInvalid, "%s does not parse", InhibitFile)
+	}
+	in = inhibit{Txn: j.Txn, Reason: fmt.Sprintf("the %s %s ended %s and was being settled; current is qualified again before decisions are no longer inhibited", (&txn{j: j}).kind(), j.ID, j.Result)}
+	return in, &j, true, nil
+}
+
+// settlingJournal reports whether j is what a healthy end renames over
+// decisions.inhibit: in phase done, healthy, its requalification not
+// failed.
+func settlingJournal(j journal) bool {
+	return j.Phase == PhaseDone && journalHealthy(j) && !j.RequalifyFailed
 }
 
 // setInhibit writes decisions.inhibit for the transaction t with reason,
@@ -89,19 +132,20 @@ func (s *Switcher) beginTxn(t *txn) error {
 	return nil
 }
 
-// ensureInhibit makes sure decisions are inhibited while the transaction
-// t is driven: a resumed transaction whose inhibit is gone (removed by
-// hand) gets it again.
+// ensureInhibit makes sure decisions are inhibited while the journal of
+// the transaction t is there: a journal found without the inhibit
+// (removed by hand) gets it again, before it is checked against the host
+// or resumed.
 func (s *Switcher) ensureInhibit(t *txn) error {
 	if t.begun {
 		return nil
 	}
-	_, ok, err := s.readInhibit()
+	_, _, ok, err := s.readInhibit()
 	if err == nil && ok {
 		t.begun = true
 		return nil
 	}
-	if err := s.setInhibit(t, fmt.Sprintf("the %s %s was interrupted and is being resumed", t.kind(), t.j.ID)); err != nil {
+	if err := s.setInhibit(t, fmt.Sprintf("the %s %s was interrupted and its journal is still open", t.kind(), t.j.ID)); err != nil {
 		return err
 	}
 	t.begun = true
@@ -122,23 +166,16 @@ func journalHealthy(j journal) bool {
 	return j.Result == ResultOK || j.Result == ResultRolledBack && j.RestoredHealth == "ok"
 }
 
-// endInhibit is the inhibit at the end of the transaction t, once its
-// outcome is recorded: removed when it ended healthy (and, found in phase
-// done, passed its reload, health check and no-AI check again), otherwise kept, with
-// the outcome as its reason.
-func (s *Switcher) endInhibit(t *txn) error {
+// keepInhibit is the inhibit at an end of the transaction t that is not
+// healthy, or whose requalification failed, once its outcome is recorded
+// and before its journal is removed: rewritten with the outcome as its
+// reason, so that it stays when the journal goes.
+func (s *Switcher) keepInhibit(t *txn) error {
 	if t.j.RequalifyFailed {
 		if err := s.setInhibit(t, fmt.Sprintf("the %s %s ended %s, but after an interruption current did not pass its reload, health check and no-AI check again", t.kind(), t.j.ID, t.j.Result)); err != nil {
 			return err
 		}
 		s.step(9, "decisions stay inhibited (%s): current did not pass its reload, health check and no-AI check again", InhibitFile)
-		return nil
-	}
-	if t.healthy() {
-		if err := removeFileIn(s.stateRoot, InhibitFile); err != nil {
-			return failf(CodeRecordFailed, "%s not removed: %s", InhibitFile, q(err.Error()))
-		}
-		s.step(9, "decisions no longer inhibited: %s removed", InhibitFile)
 		return nil
 	}
 	reason := fmt.Sprintf("the %s %s ended %s at %s", t.kind(), t.j.ID, t.j.Result, t.j.FailedStep)
@@ -156,7 +193,9 @@ func (s *Switcher) endInhibit(t *txn) error {
 // explicit removal of the decision inhibit, after looking at the host.
 // words, what the owner asked (or said), are recorded in deploy.json with
 // the time. It runs no program. It is refused while a transaction is open
-// (any command settles it first) and when there is no inhibit.
+// (any command settles it first), the journal of one that ended healthy
+// held by the inhibit included (the host is qualified again first), and
+// when there is no inhibit.
 func (s *Switcher) InhibitClear(ctx context.Context, words string) int {
 	if !filepath.IsAbs(s.cfg.Root) {
 		s.errorf("--root %s is not an absolute path", q(s.cfg.Root))
@@ -185,13 +224,17 @@ func (s *Switcher) InhibitClear(ctx context.Context, words string) int {
 		s.printf("inhibit-clear: FAILED: %s", describe(err))
 		return ExitFailed
 	}
-	in, ok, err := s.readInhibit()
+	in, settling, ok, err := s.readInhibit()
 	if err != nil && !ok {
 		s.printf("inhibit-clear: FAILED: %s", describe(err))
 		return ExitFailed
 	}
 	if !ok {
 		s.printf("inhibit-clear: decisions are not inhibited; nothing to clear")
+		return ExitFailed
+	}
+	if settling != nil {
+		s.printf("inhibit-clear: FAILED: %s holds the journal of the %s %s (transaction %s), which ended %s and was interrupted while it was settled: the host must be qualified again first, which inhibit-clear does not do; run any switch, rollback or recover to qualify current again and settle it", InhibitFile, (&txn{j: *settling}).kind(), settling.ID, settling.Txn, settling.Result)
 		return ExitFailed
 	}
 	rec, _, rerr := s.readRecord()

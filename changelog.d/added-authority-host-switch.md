@@ -20,10 +20,12 @@
   runs its no-AI check before activation (`--phase pre`: the release's
   units and the host, without ports and firewall) before and after the
   release's package step (a static release whose snapshot is not the
-  host's is refused before anything begins; a step that fails or is
-  interrupted leaves the
-  package state unknown, refusing further switches until the owner states
-  the snapshot or the step runs again to the end; the step holds the
+  host's is refused before anything begins, and so is one while the
+  package state is unknown or on a host with a `current` and no recorded
+  snapshot, which its no-op step could only certify; a step that fails or
+  is interrupted leaves the package state unknown, refusing further
+  switches until the owner states the snapshot or a release with its own
+  step runs it again to the end; the step holds the
   owner-only switch lock and dies with it, and one that outlives its
   switch is named by its process id), then its validators;
   renames a new `current` link over the old one, reloads and checks every
@@ -39,12 +41,15 @@
   before the stopping phase is saved, and, while a journal is stopping,
   first in every command, under the lock, even when `releases/`, the
   counter or the record cannot be used). Every transaction
-  first writes `/var/lib/authority-host/decisions.inhibit`; a
-  decision-capable service may start while it is there (and answer its
-  readiness probe) but refuses every decision while it is there or cannot
-  be read, and while the journal `txn.json` is there, checking both before
-  each decision (a healthy end removes the inhibit before the journal, so
-  a power loss between the two still refuses); the switch removes it only
+  first writes `/var/lib/authority-host/decisions.inhibit`, the one file
+  a decision-capable service looks up: it may start while the file is
+  there (and answer its readiness probe) but refuses every decision unless
+  one lookup before the decision finds no such file (the journal
+  `txn.json` is never there without it: a healthy end renames the journal
+  over the inhibit, then removes the inhibit, the one step that lets
+  decisions through; a power loss between the two leaves the journal in
+  the inhibit, which the next command writes back and settles and which
+  `inhibit-clear` and `ack` refuse); the switch removes it only
   when the transaction ends healthy, after running the reload list,
   health check and post-activation no-AI check (`--phase post`, the
   firewall and listeners as they are now) of `current` again when it
@@ -72,10 +77,11 @@
   `previous` anew, any other switch or rollback reports it and is refused,
   and only the owner's `ah-switch ack --txn ID[,ID...] --asked WORDS` takes
   it back (naming the transactions of every outcome owed, as `status` and
-  the switch print them, so that an ack repeated after a newer outcome
-  became owed is never taken for that one: a mismatch is refused and
-  changes nothing, a repeat keeps the first receipt; recorded
-  with the time; when the outcomes it prints cannot be written or flushed it
+  the switch print them, `status` only once no transaction is still open,
+  since settling one may change its outcome, so that an ack repeated
+  after a newer outcome became owed is never taken for that one: a
+  mismatch is refused and changes nothing, a repeat keeps the first
+  receipt; recorded with the time; when the outcomes it prints cannot be written or flushed it
   records nothing, keeps them owed and exits 1, as a retry does; an ack
   interrupted after its record is finished by the next ack, which keeps
   the recorded words and time); `--dry` only shows it.
@@ -86,7 +92,8 @@
   below those attempted since) is never resumed until
   `ah-switch recover --discard-journal TXN` sets it aside (only a journal
   proven stale: one whose evidence cannot be read is neither resumed nor
-  discarded),
+  discarded; decisions stay inhibited, and every command that finds a
+  journal writes a missing inhibit back first),
   `ah-switch recover --services-stopped` settles a transaction whose stop
   commands failed on the owner's word,
   `ah-switch status` shows the state under a shared lock, `--dry` prints
