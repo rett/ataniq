@@ -106,7 +106,7 @@ func TestCheckNFT(t *testing.T) {
 		{"same", pinned, []byte(ruleset), nil, nil},
 		{"differs", pinned, []byte("table inet filter {\n}\n"), []Hit{{KindNFT, "ruleset", DetailDigestDiffers}}, nil},
 		{"empty listing", pinned, []byte{}, []Hit{{KindNFT, "ruleset", DetailDigestDiffers}}, nil},
-		{"no listing", pinned, nil, []Hit{{KindNFT, "ruleset", DetailListingMissing}}, nil},
+		{"no listing", pinned, nil, []Hit{{KindIncomplete, PathNFT, DetailListingMissing}}, nil},
 		{"not pinned", "", []byte(ruleset), nil, []string{NoteNFTNotPinned}},
 		{"not pinned, no listing", "", nil, nil, []string{NoteNFTNotPinned}},
 	}
@@ -131,6 +131,9 @@ func TestCheckNFT(t *testing.T) {
 			}
 			if !(len(r.Notes) == 0 && len(tc.wantNotes) == 0) && !reflect.DeepEqual(r.Notes, tc.wantNotes) {
 				t.Errorf("notes %v, want %v", r.Notes, tc.wantNotes)
+			}
+			if tc.listing == nil && tc.digest != "" && r.Complete {
+				t.Error("a missing listing left the run complete")
 			}
 		})
 	}

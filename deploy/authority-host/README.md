@@ -630,7 +630,8 @@ ah-noaicheck nft-digest FILE
 ```
 
 It prints one line per hit, `HIT <kind> <path-or-name> [detail]`, a
-`NOTE` line for a policy that is not enforced, `RUN complete` or
+`NOTE` line for what is not a hit (a policy that is not enforced, a
+masked unit, a deferred source), `RUN complete` or
 `RUN incomplete`, and a final `ok` or `FAILED n hit(s)`; `--json` writes
 the same as one JSON object (with `"complete"` and `"phase"`). A field
 that holds anything but printable ASCII is quoted with Go's escapes, so a
@@ -660,9 +661,17 @@ open).
     missing is `HIT incomplete env-file`). A file in a folder named `user`
     is a user unit, its `EnvironmentFile=` resolved for every user; any
     other is a system unit;
-  - every file beneath its `etc/caddy` and `etc/nftables` is read for
-    variable names only: each word named like a provider key is a
-    `HIT env`.
+  - every file beneath its `etc/caddy` is read for the variables it
+    refers to, and only those: Caddy's placeholders `{env.NAME}` and
+    `{$NAME}` (`{$NAME:default}` too) and the systemd-style `$NAME` and
+    `${NAME}`. Each one named like a provider key is a `HIT env`. A
+    comment (a `#` that starts a word outside quotes) and every literal
+    operand are passed over: a word that only looks like a variable's
+    name is not reported, so no configuration text reaches the report. A
+    `{env.`, `{$` or `${` the check cannot read (no valid name and closing
+    brace after it) is `HIT incomplete release-syntax <file>`, which names
+    the file and nothing of its content. The files beneath `etc/nftables`
+    refer to no environment variable and are not read for names.
 
   A hit in the release names the file by its path within `--root` when
   the release is beneath it (`/opt/authority-host/releases/<id>/...`),
@@ -706,14 +715,20 @@ The `HIT incomplete` lines:
 |---|---|
 | `HIT incomplete <folder> depth` | a walk stopped at its depth limit (40 levels) above a folder it had to enter |
 | `HIT incomplete <path> type` | a folder entry whose type the listing did not give and a stat could not find: the walk cannot tell whether to enter it |
-| `HIT incomplete budget <limit>` | the run's budget is spent (4 million folder entries and queued files, 1 GiB read, 4 minutes, 256 MiB held, counting specifier expansions and queued files); every later read stops |
+| `HIT incomplete budget <limit>` | the run's budget is spent (4 million folder entries and queued files, 1 GiB read, 4 minutes, 256 MiB held, or shell expansions or brace groups nested more than 64 deep); memory is charged before the work is done: specifier expansions, queued files, the unit scan's keys of each manager, and each source reference and loop word a profile's parse keeps (a loop's words once for every source of its variable). Every later read and parse stops |
 | `HIT incomplete env-syntax <file>` | a file whose syntax the check cannot parse, or an `EnvironmentFile=` it cannot resolve |
 | `HIT incomplete env-source <file>` | a profile sources a file by a path the check cannot resolve |
+| `HIT incomplete release-syntax <file>` | a front-end configuration file of the candidate release (`pre`, `post`) holds a variable reference the check cannot read |
 | `HIT incomplete env-file <path>` | a required `EnvironmentFile=` (no leading `-`) that is not there, or a required glob that matches nothing |
 | `HIT incomplete path <file>` | a PATH setting whose folder the check cannot resolve |
 | `HIT incomplete proc <why>` | no usable `/proc`: missing, unreadable, without processes, or listing processes of which not one name or executable could be read (`no-identity`) |
 | `HIT incomplete proc-access <n>` | run as another user than root, `n` processes refused their name or executable |
-| `HIT incomplete /proc/net/tcp header` | a socket table that is empty or does not start with the kernel's header line (`/proc/net/tcp6` too, when it is there) |
+| `HIT incomplete proc-identity <n>` | `n` processes whose `/proc` folder stays but which give no name: `comm` missing or empty and no executable (a process whose folder is gone has ended and is passed over) |
+| `HIT incomplete packages missing` | there is no pacman database (`/var/lib/pacman/local`), so not even the forbidden packages can be checked |
+| `HIT incomplete packages db` | the pacman database lists no package at all |
+| `HIT incomplete <entry> no-name` | a pacman database entry whose `desc` names no package |
+| `HIT incomplete nft listing-missing` | the release pins `nft.digest` and no `--nft-listing` was given (`post` and `full`) |
+| `HIT incomplete /proc/net/tcp header` | a socket table that is empty or does not start with its own protocol's header line: `sl local_address rem_address st` for `/proc/net/tcp`, `sl local_address remote_address st` for `/proc/net/tcp6` (checked too when it is there) |
 
 `--root` (default `/`) checks the tree beneath another folder, for tests;
 links inside it are resolved within it. `--release` names the release
@@ -727,10 +742,13 @@ folder whose `share/` holds the lists (and, in `pre` and `post`, whose
   of `ai-names.list`:
   - in a folder of the PATH inventory: `/usr/bin`, `/usr/sbin`, `/bin`,
     `/sbin`, `/usr/local/bin`, `/usr/local/sbin` (a fixed list, not the
-    PATH of whoever runs it), and every folder a PATH setting adds in
-    `/etc/profile`, `/etc/profile.d/*`, `/etc/environment`,
-    `/etc/bash.bashrc` and each home's `.profile`, `.bashrc` and
-    `.zshenv` (`PATH=`, `PATH+=`, `export PATH=`, csh's `setenv PATH`,
+    PATH of whoever runs it), and every folder a PATH setting adds in a
+    startup file, read by the same scan as the environment (see `env`):
+    the system's and every home's profiles and environment files
+    (`.profile`, `.bash_profile`, `.bash_login`, `.bashrc`, `.zshenv`,
+    `.zprofile`, `.zshrc`, `.zlogin` ...) and every file they source,
+    transitively, so a folder a sourced file adds, wherever it is, is in
+    it (`PATH=`, `PATH+=`, `export PATH=`, csh's `setenv PATH`,
     and the argument of a function that adds its argument to PATH, such
     as `/etc/profile`'s `append_path`; `~/`, `$HOME` and
     `$XDG_CONFIG_HOME` are resolved in the file's home, or in every home
@@ -780,44 +798,76 @@ folder whose `share/` holds the lists (and, in `pre` and `post`, whose
   `/run/systemd/system`, `/run/systemd/system.attached`, the generator
   folder, `/usr/local/lib/systemd/system`, `/usr/lib/systemd/system` and
   the late generator folder; for a user manager the same order of the
-  user folders (the home's `.config/systemd/user.control` and
-  `.config/systemd/user`, `/run/user/UID/systemd/...`, `/etc/xdg/systemd/user`,
-  `/etc/systemd/user`, `/run/systemd/user`, the home's
-  `.local/share/systemd/user`, `/usr/local/share/systemd/user`,
+  user folders (the home's `.config/systemd/user.control`,
+  `.config/systemd/user` and `.config/systemd/user.attached`,
+  `/run/user/UID/systemd/...` with its `user` and `user.attached`,
+  `/etc/xdg/systemd/user`, `/etc/systemd/user`, `/run/systemd/user`, the
+  home's `.local/share/systemd/user`, `/usr/local/share/systemd/user`,
   `/usr/share/systemd/user`, `/usr/local/lib/systemd/user` and
   `/usr/lib/systemd/user`). The unit read for a name is the first of it
   in that order, not every one (an instance without its own falls back to
-  its template); a mask (a link to `/dev/null`) hides the unit and its
-  drop-ins in every lower folder, while a mask in a lower folder hides
-  nothing. A drop-in file name in a higher folder hides the same name in
-  a lower one. The units the dependency folders (`*.wants`, `*.requires`,
-  `*.upholds`) link to are read too. A unit, dependency folder or drop-in
-  folder that is a link (into `current/etc/systemd`, say) is read where
-  it leads within the root. Each file is read once; a unit keeps the
-  manager that loads it wherever its file is, so its `EnvironmentFile=`
-  specifiers are that manager's: `%h` the user's home (`/root` for the
-  system manager), `%t` `/run/user/UID` (`/run`), `%%` a percent sign,
-  each replaced once.
+  its template); a mask (a link to `/dev/null`, or an empty unit file, as
+  `systemd.unit(5)` defines it) hides the unit and its drop-ins in every
+  lower folder, while a mask in a lower folder hides nothing. A drop-in
+  file name in a higher folder hides the same name in a lower one. An
+  entry of a dependency folder (`*.wants`, `*.requires`, `*.upholds`)
+  stands for the unit systemd loads by its name: the unit of that name in
+  the view (an `/etc` override, say), not the file the link leads to;
+  only a name the view does not hold is read where its link leads. A
+  unit, dependency folder or drop-in folder that is a link (into
+  `current/etc/systemd`, say) is read where it leads within the root.
+  Each file is read once; a unit keeps the manager that loads it wherever
+  its file is, so its `EnvironmentFile=` specifiers are that manager's:
+  `%h` the user's home (`/root` for the system manager), `%t`
+  `/run/user/UID` (`/run`), `%%` a percent sign, each replaced once. The
+  `EnvironmentFile=` lines of a unit and its drop-ins (in file-name
+  order) are evaluated in systemd's order before any file they name is
+  opened: an empty `EnvironmentFile=` drops every one before it.
 
   Each file is read in its own syntax. A shell profile is read as shell
   words: an assignment at the start of a command, the names `export`,
   `declare`, `typeset`, `readonly` and `env` set, `setenv` (csh) and, in
   a `.fish` file, `set`; comments, quoted values, substitutions and
-  here-documents are never read for names. A function body
+  here-documents are never read for names, and a `[[ ... ]]` conditional
+  is one expression up to its `]]` (a parenthesis of a regular
+  expression in it starts no command). A function body
   (`NAME() { ... }`, `function NAME { ... }`) is followed by its braces:
-  `local`, `declare`, `typeset` and `readonly` in it are the function's
-  own variables and are passed over, as are a `local` outside a function
-  and a `declare`, `typeset` or `readonly` whose name is an expansion
-  (an `export` keeps counting, and one whose name is an expansion cannot
-  be parsed). A file a profile sources (`.` or `source`) is read too
-  when its path is a literal absolute path, starts with `~/`, `$HOME`,
-  `${HOME}` or `$XDG_CONFIG_HOME` (in its usual forms, resolved to the
-  home's `.config`), resolved in the home of the sourcing file or in every
-  home for a system file, or is the variable of an earlier
-  `for NAME in WORDS` loop (`/etc/profile`'s loop over
-  `/etc/profile.d/*.sh`); a glob in its last component is matched. Any
-  other source (a relative path, another variable, a command
-  substitution) is `HIT incomplete env-source <file>`.
+  a plain `local`, `declare` or `typeset` in it is the function's own
+  variable and is passed over, but one with a global or export flag
+  (`declare -g`, `declare -x`, `declare -gx`, `typeset -x`, `local -x`)
+  sets the login's variable or one every program the function starts
+  sees, so each name it assigns counts, and so does each name a
+  `readonly` in a function assigns (it is global). An `export` keeps
+  counting everywhere, and one whose name is an expansion cannot be
+  parsed. A `local` outside a function and a `declare`, `typeset` or
+  `readonly` whose name is an expansion are passed over.
+
+  The startup files are read as one scan: the system's
+  (`/etc/environment`, `/etc/profile`, `/etc/bash.bashrc`, the zsh system
+  files, `/etc/profile.d`, the `environment.d` folders), each home's
+  (`.profile`, `.bash_profile`, `.bash_login`, `.bashrc`, `.zshenv`,
+  `.zprofile`, `.zshrc`, `.zlogin`, `.pam_environment`, its fish and
+  `environment.d` files) and every file one of them sources, transitively.
+  A file a startup file sources (`.` or `source`) is read too when its
+  path is a literal absolute path, starts with `~/`, `$HOME`, `${HOME}` or
+  `$XDG_CONFIG_HOME` (in its usual forms), resolved in the home of the
+  sourcing file or in every home for a system file, or is the variable of
+  an earlier `for NAME in WORDS` loop (`/etc/profile`'s loop over
+  `/etc/profile.d/*.sh`); a glob in its last component is matched.
+  `$XDG_CONFIG_HOME` stands for the home's `.config` and for every folder
+  a startup file gives `XDG_CONFIG_HOME` (`export XDG_CONFIG_HOME=...`,
+  `XDG_CONFIG_HOME=...` in an environment file), resolved like a source's
+  path; the home's fish and `environment.d` files are read below that
+  folder too. A value the check cannot resolve, or one a sourced file
+  gives (too late: the sources are resolved first), is
+  `HIT incomplete env-source <file>` for the file that gives it. Any other
+  source at the top level or in a top-level loop (a relative path,
+  another variable, a command substitution, an array) is
+  `HIT incomplete env-source <file>`. A source in a function body runs
+  only when the function is called, not at login: one the check can
+  resolve is read, and one it cannot is the line
+  `NOTE deferred-source <file>`, which is not a hit and leaves the run
+  complete.
 
   A unit or manager file is read by its `Environment=`,
   `DefaultEnvironment=`, `ManagerEnvironment=` and `PassEnvironment=`
@@ -834,10 +884,14 @@ folder whose `share/` holds the lists (and, in `pre` and `post`, whose
   another specifier, a line that is not `KEY=VALUE`) is
   `HIT incomplete env-syntax <file>`.
 - `process`: a running process whose name or executable is named like an
-  executable of `ai-names.list`. A process that ends while it is read and
-  a kernel thread are passed over. A missing or empty `/proc`, or one in
+  executable of `ai-names.list`. A process that ends while it is read (its
+  `/proc` folder is gone) and a kernel thread are passed over. Only a
+  name that is not empty counts. A missing or empty `/proc`, or one in
   which not one process's name or executable could be read, is
-  `HIT incomplete proc <why>`. A process whose name or executable is
+  `HIT incomplete proc <why>`; a process whose folder stays but which
+  gives no name (its `comm` missing or empty, and no executable) is
+  counted into one `HIT incomplete proc-identity <n>`, so one readable
+  process cannot hide others the check cannot see. A process whose name or executable is
   refused for lack of permission is a `HIT unreadable` of its own when the
   check runs as root, and otherwise counted into one
   `HIT incomplete proc-access <n>`, `n` the number of such processes: run
@@ -848,33 +902,47 @@ folder whose `share/` holds the lists (and, in `pre` and `post`, whose
   included) of a folder of enablement: `/etc/systemd/system`,
   `/etc/systemd/system.attached`, `/run/systemd/system` and
   `/run/systemd/system.attached` for the system manager; a home's
-  `.config/systemd/user`, `/etc/xdg/systemd/user`, `/etc/systemd/user`,
-  `/run/user/UID/systemd/user` and `/run/systemd/user` for a user's. An
-  instance is allowed by its own name or by its template's. An enabled
-  unit that is masked (its entry links to `/dev/null`, or the unit the
-  manager's view loads for its name, or its template's, is a mask, in a
-  folder of higher precedence, `/etc` over `/run` over `/usr/lib`) is not
-  enabled: it is the line `NOTE unit masked <path>`, which is not a hit.
+  `.config/systemd/user` and `.config/systemd/user.attached`,
+  `/etc/xdg/systemd/user`, `/etc/systemd/user`,
+  `/run/user/UID/systemd/user`, `/run/user/UID/systemd/user.attached` and
+  `/run/systemd/user` for a user's. An instance is allowed by its own name
+  or by its template's. An enabled unit that is masked (its entry links to
+  `/dev/null` or to an empty file, or the unit the manager's view loads
+  for its name, or its template's, is a mask, in a folder of higher
+  precedence, `/etc` over `/run` over `/usr/lib`) is not enabled: it is
+  the line `NOTE unit masked <path>`, which is not a hit.
 - `unit-link`: a unit link, or a linked dependency or drop-in folder,
   that loops (`loop`) or whose target climbs above the root (`escape`).
 - `package`: an installed package (the pacman database) named in
   `forbidden-packages.list`, or, once `packages.allow` is filled, any
   package not in it. While it is empty the check prints
-  `NOTE packages not enforced` instead.
+  `NOTE packages not enforced` instead. The database is the evidence for
+  both, and forbidden packages are checked either way, so a database the
+  check cannot use is incomplete, never a pass and never a finding: no
+  database is `HIT incomplete packages missing`, one that lists no
+  package `HIT incomplete packages db`, and an entry without a name
+  `HIT incomplete <entry> no-name`.
 - `nft` (`post` and `full`): when the release has `share/nft.digest`, the
   SHA-256 of the normalised listing passed with `--nft-listing` (the
-  caller runs `nft list ruleset`; the check never does) differs, or no
-  listing was passed. `ah-noaicheck nft-digest FILE` prints the digest to
+  caller runs `nft list ruleset`; the check never does) differs. No
+  listing at all is not a finding but missing evidence,
+  `HIT incomplete nft listing-missing`. `ah-noaicheck nft-digest FILE` prints the digest to
   pin. Normalising drops blank lines and trailing spaces and, by their
   place among the line's unquoted tokens only, the values that change
   while the rules stay the same: `packets N bytes N` of a counter,
   `expires T` of a set element, `used N bytes` of a quota and a final
   `# handle N`. A quoted operand (an interface name, a comment) is never
-  changed, so rules that differ only there have different digests.
+  changed, so rules that differ only there have different digests. The
+  listing is read token by token, never a whole line of tokens at once;
+  past a million tokens the rest of a line is kept as it is.
 - `port` (`post` and `full`): a listening TCP socket, in `/proc/net/tcp`
   or `/proc/net/tcp6`, on a port not in `ports.allow`. Each table must
-  start with the kernel's header line; a table with a header and no
-  listening socket is fine. The `ports` subcommand checks only this.
+  start with its own protocol's header line, as the kernel writes it (the
+  IPv4 table's third column is `rem_address`, the IPv6 table's
+  `remote_address`); a table with a header and no listening socket is
+  fine, and a row whose address is not of the table's family is a
+  `HIT unreadable` malformed line. The `ports` subcommand checks only
+  this.
 - `policy` (with `--require-policy`): a policy list of the release is
   empty, or `nft.digest` is missing.
 - `unreadable`: a place the check must look into but cannot read, a link
@@ -907,9 +975,9 @@ home path in `ai-names.list`), a control byte or an inner space is refused:
 - A tool outside the places above (say in `/srv`, outside every PATH
   folder and every home) is not caught by name; it is left to the package
   allowlist and the egress filter.
-- The PATH inventory is read from the files named above, by their PATH
-  settings: a folder a program puts on PATH at run time, or a file those
-  files source, is not in it.
+- The PATH inventory is read from the startup files and the files they
+  source, by their PATH settings: a folder a program puts on PATH at run
+  time is not in it.
 - A process that renames itself is not caught by name.
 - Ports are those of the network namespace the check runs in; UDP is not
   checked.
@@ -920,9 +988,11 @@ home path in `ai-names.list`), a control byte or an inner space is refused:
 - A specifier in `EnvironmentFile=` other than `%h`, `%t` and `%%` is
   `HIT incomplete env-syntax`, and so is one in a user unit for a home
   without a known user id.
-- A profile that sources files by a run-time variable (the bash-completion
-  library's loader does) is `HIT incomplete env-source` on every run: a
-  host that must pass does not carry such a profile.
+- A profile that sources files by a run-time variable at its top level
+  is `HIT incomplete env-source` on every run. The packaged
+  bash-completion library is one: its loader's source in a function is
+  only `NOTE deferred-source`, but its array-driven startup loop stays
+  incomplete, so the host does not install it.
 - Run by hand as an ordinary user it cannot read other users' processes
   or folders; it says so (`HIT incomplete proc-access`, `HIT unreadable`)
   rather than pass.

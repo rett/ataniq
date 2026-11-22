@@ -131,10 +131,17 @@ func TestCheckCredentials(t *testing.T) {
 	}, (*Checker).CheckCredentials)
 }
 
-// A link loop and an unreadable folder in a place the check looks into end
-// the check with an "unreadable" hit, not a hang or a crash.
-func TestLoopsAndUnreadableFolders(t *testing.T) {
-	skipIfRoot(t)
+// The binary, tool and credential checks run together, as in a run.
+func binaryChecks(c *Checker) {
+	c.CheckBinaries()
+	c.CheckTools()
+	c.CheckCredentials()
+}
+
+// A link loop in a place the check looks into ends the check with an
+// "unreadable" hit, not a hang or a crash. A loop fails for every user,
+// root included, so these cases run as any user.
+func TestLinkLoops(t *testing.T) {
 	unr := func(p, why string) Hit { return Hit{Kind: KindUnreadable, Path: p, Detail: why} }
 	runCases(t, []checkCase{
 		{"a loop as an install folder", func(f *fixture) {
@@ -147,17 +154,28 @@ func TestLoopsAndUnreadableFolders(t *testing.T) {
 		}, nil},
 		{"a loop as a home", func(f *fixture) { f.link("home/ring", "ring") },
 			[]Hit{unr("/home/ring", errLoop.Error())}},
+		{"a loop as a bin folder of a profile's PATH", func(f *fixture) {
+			f.file("etc/profile.d/x.sh", "PATH=$PATH:/srv/ring\n")
+			f.link("srv/ring", "ring")
+		}, []Hit{unr("/srv/ring", errLoop.Error())}},
+	}, binaryChecks)
+}
+
+// An unreadable folder in a place the check looks into is an "unreadable"
+// hit. Root reads a folder whatever its mode, so a folder without
+// permissions cannot stand for one when the tests run as root: these
+// cases alone are skipped there.
+func TestUnreadableFolders(t *testing.T) {
+	skipIfRoot(t)
+	unr := func(p, why string) Hit { return Hit{Kind: KindUnreadable, Path: p, Detail: why} }
+	runCases(t, []checkCase{
 		{"an unreadable folder in a home", func(f *fixture) {
 			f.unreadable("home/user/.local/share/mise")
 		}, []Hit{unr("/home/user/.local/share/mise", "permission denied")}},
 		{"an unreadable bin folder", func(f *fixture) {
 			f.unreadable("usr/local/bin")
 		}, []Hit{unr("/usr/local/bin", "permission denied")}},
-	}, func(c *Checker) {
-		c.CheckBinaries()
-		c.CheckTools()
-		c.CheckCredentials()
-	})
+	}, binaryChecks)
 }
 
 // The PATH inventory: the folders the system and home profiles put on
@@ -209,6 +227,35 @@ func TestCheckBinariesPathInventory(t *testing.T) {
 			f.file("etc/profile.d/x.sh", "PATH=$(cat /etc/paths):$PATH\n")
 			f.file("home/user/.bashrc", "export PATH=$OTHER/bin:$PATH\nPATH=bin:$PATH\n")
 		}, []Hit{inc("/etc/profile.d/x.sh"), inc("/home/user/.bashrc")}},
+		{"a folder a sourced file adds, outside the fixed trees", func(f *fixture) {
+			f.file("etc/profile", profile+". /etc/extra/path.sh\n")
+			f.file("etc/extra/path.sh", "append_path /srv/sourced/bin\nPATH=\"$PATH:/srv/sourced/sbin\"\n")
+			f.file("srv/sourced/bin/claude", "not executable")
+			f.file("srv/sourced/sbin/codex", "not executable")
+		}, []Hit{bin("/srv/sourced/bin/claude"), bin("/srv/sourced/sbin/codex")}},
+		{"a folder a home's sourced file adds", func(f *fixture) {
+			f.file("home/user/.bashrc", ". ~/.paths.sh\n")
+			f.file("home/user/.paths.sh", "export PATH=\"$HOME/x:$PATH\"\n")
+			f.file("home/user/x/claude", "not executable")
+		}, []Hit{bin("/home/user/x/claude")}},
+		{"the login files of bash and zsh", func(f *fixture) {
+			f.file("home/user/.bash_profile", "PATH=/srv/bp:$PATH\n")
+			f.file("home/user/.bash_login", "PATH=/srv/bl:$PATH\n")
+			f.file("root/.zprofile", "path+=(/srv/zp)\nPATH=$PATH:/srv/zp\n")
+			f.file("root/.zshrc", "PATH=$PATH:/srv/zr\n")
+			f.file("root/.zlogin", "PATH=$PATH:/srv/zl\n")
+			for _, d := range []string{"bp", "bl", "zp", "zr", "zl"} {
+				f.file("srv/"+d+"/claude", "not executable")
+			}
+		}, []Hit{bin("/srv/zp/claude"), bin("/srv/zr/claude"), bin("/srv/zl/claude"), bin("/srv/bp/claude"), bin("/srv/bl/claude")}},
+		{"an element a sourced file cannot resolve", func(f *fixture) {
+			f.file("etc/bash.bashrc", ". /etc/extra/dyn.sh\n")
+			f.file("etc/extra/dyn.sh", "PATH=$TOOLS/bin:$PATH\n")
+		}, []Hit{inc("/etc/extra/dyn.sh")}},
+		{"a folder below a configured XDG_CONFIG_HOME", func(f *fixture) {
+			f.file("home/user/.profile", "export XDG_CONFIG_HOME=/srv/cfg\nPATH=\"$XDG_CONFIG_HOME/bin:$PATH\"\n")
+			f.file("srv/cfg/bin/codex", "not executable")
+		}, []Hit{bin("/srv/cfg/bin/codex")}},
 		{"a function's own PATH of its argument", func(f *fixture) {
 			f.file("home/user/.bashrc", "add() { PATH=\"$1:$PATH\"; }\nadd /srv/c\n")
 			f.file("srv/c/claude", "x")

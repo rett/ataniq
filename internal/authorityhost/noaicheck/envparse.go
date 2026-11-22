@@ -45,6 +45,8 @@ type envParse struct {
 	files   []envRef
 	sourced []srcWord
 	paths   []srcWord // the elements PATH settings add (see parseShell)
+	xdg     []srcWord // the values given to XDG_CONFIG_HOME, as words (see addXDG)
+	reset   bool      // an empty EnvironmentFile= drops the files named before it (files holds those after the last)
 	bad     bool
 	seen    map[string]bool
 }
@@ -72,6 +74,20 @@ func (r *envParse) addPath(value string, exp bool, fn string, funcs map[string]b
 		}
 	}
 }
+
+// xdgName is the variable whose value says where a home's configuration
+// files are: its value is kept, for the files the check reads there.
+const xdgName = "XDG_CONFIG_HOME"
+
+// addXDG records the value v given to XDG_CONFIG_HOME (exp: it holds an
+// expansion). A value the parser cannot know (an append, fish's set) is
+// recorded as a word that cannot be resolved.
+func (r *envParse) addXDG(v string, exp bool) {
+	r.xdg = append(r.xdg, srcWord{lit: v, exp: exp && strings.ContainsAny(v, "$`")})
+}
+
+// unknownXDG is a value of XDG_CONFIG_HOME the check cannot resolve.
+var unknownXDG = srcWord{lit: "", exp: true}
 
 // splitPath splits a PATH value on the colons outside ${...}, $(...) and
 // `...`.
@@ -151,6 +167,102 @@ type envRef struct {
 	optional bool
 }
 
+// cost is the memory a parse's result holds: what the caller charges to
+// the run's budget to keep it.
+func (r *envParse) cost() int64 {
+	n := int64(64)
+	for _, w := range r.sourced {
+		n += int64(len(w.lit)) + 48
+	}
+	for _, w := range r.paths {
+		n += int64(len(w.lit)) + 48
+	}
+	for _, w := range r.xdg {
+		n += int64(len(w.lit)) + 48
+	}
+	for _, f := range r.files {
+		n += int64(len(f.path)) + 48
+	}
+	for _, s := range r.names {
+		n += int64(len(s)) + 48
+	}
+	return n
+}
+
+// parseMeter charges the shell parser's work to the run's budget before it
+// is done: each source reference it keeps (a loop's words copied once for
+// every source of the loop's variable included) and each loop word, held
+// while the parse runs, and the nesting of expansions and brace groups
+// against maxNesting. Once a limit is reached (or the run's time is spent)
+// over is set and the parser stops at once; the run ends with
+// "incomplete budget <limit>". Without a budget (b nil, a test of the
+// parser alone) only the nesting is bounded, and a parse stopped by it is
+// syntax the check cannot parse.
+type parseMeter struct {
+	b    *budget
+	held int64
+	over bool
+}
+
+// charge holds n bytes for the parse; false, and over, when they do not
+// fit or the run's time is spent.
+func (m *parseMeter) charge(n int64) bool {
+	switch {
+	case m.over:
+		return false
+	case m.b == nil:
+		return true
+	case m.b.out() || !m.b.hold(n):
+		m.over = true
+		return false
+	}
+	m.held += n
+	return true
+}
+
+// nest reports whether depth is within maxNesting; past it the parse is
+// over and the run's budget spent ("nesting").
+func (m *parseMeter) nest(depth int) bool {
+	if depth <= maxNesting && !m.over {
+		return true
+	}
+	if !m.over && m.b != nil {
+		m.b.exceed(budgetNesting)
+	}
+	m.over = true
+	return false
+}
+
+// tick checks the run's time every so often; false, and over, once it is
+// spent.
+func (m *parseMeter) tick(n int) bool {
+	if m.over {
+		return false
+	}
+	if m.b != nil && n%1024 == 0 && m.b.out() {
+		m.over = true
+	}
+	return !m.over
+}
+
+// done releases what the parse held: the caller holds what it keeps
+// (see envParse.cost).
+func (m *parseMeter) done() {
+	if m.b != nil {
+		m.b.release(m.held)
+	}
+	m.held = 0
+}
+
+// wordsCost is the memory a list of source words holds.
+func wordsCost(ws []srcWord) int64 {
+	n := int64(0)
+	for _, w := range ws {
+		n += int64(len(w.lit)) + 48
+	}
+	return n
+}
+
 func (r *envParse) add(n string) {
 	if !validName(n) || !ProviderKeyName(n) {
 		return
@@ -166,16 +278,20 @@ func (r *envParse) add(n string) {
 
 // parseEnv reads data in the syntax s. fish says a shell file is fish's.
 func parseEnv(s envSyntax, data string, fish bool) envParse {
-	return parseEnvFuncs(s, data, fish, nil)
+	return parseEnvFuncs(s, data, fish, nil, nil)
 }
 
 // parseEnvFuncs is parseEnv with the functions known to add their argument
-// to PATH (see parseShell); those the file defines are added to funcs.
-func parseEnvFuncs(s envSyntax, data string, fish bool, funcs map[string]bool) envParse {
+// to PATH (see parseShell; those the file defines are added to funcs) and
+// the run's budget b (nil for none), which a shell file's parse is charged
+// to as it goes (see parseMeter).
+func parseEnvFuncs(s envSyntax, data string, fish bool, funcs map[string]bool, b *budget) envParse {
 	var r envParse
 	switch s {
 	case syntaxShell:
-		parseShell(&r, data, fish, funcs)
+		m := &parseMeter{b: b}
+		parseShell(&r, data, fish, funcs, m)
+		m.done()
 	case syntaxEnvFile:
 		parseEnvFile(&r, data)
 	case syntaxPam:
@@ -256,9 +372,13 @@ func parseEnvFile(r *envParse, data string) {
 				i++
 			}
 		}
-		if name == "PATH" {
+		if name == "PATH" || name == xdgName {
 			v := unquote(strings.TrimRight(data[start:min(i, len(data))], " \t\r"))
-			r.addPath(v, strings.ContainsAny(v, "$`"), "", nil)
+			if name == "PATH" {
+				r.addPath(v, strings.ContainsAny(v, "$`"), "", nil)
+			} else {
+				r.addXDG(v, true)
+			}
 		}
 	}
 }
@@ -308,6 +428,9 @@ func parsePam(r *envParse, data string) {
 			continue
 		}
 		r.add(name)
+		if name == xdgName {
+			r.xdg = append(r.xdg, unknownXDG)
+		}
 	}
 }
 
@@ -348,7 +471,8 @@ func logicalLines(data string) []string {
 // with systemd's quoting, each NAME=VALUE; only NAME is kept),
 // PassEnvironment= (names) and EnvironmentFile= (one path, a '-' first
 // when it is optional, quoted or not, absolute or starting with %h or %t; a glob in its
-// last component; no specifier but %h, %t and %%). Comments
+// last component; no specifier but %h, %t and %%; an empty one drops the
+// paths named before it and sets reset, see envParse). Comments
 // ('#', ';'), section headers and other keys are passed over. A word that
 // is not NAME=VALUE, an unclosed quote or a path with a specifier is
 // syntax the check cannot parse.
@@ -393,7 +517,10 @@ func parseSystemd(r *envParse, data string) {
 			}
 		case "EnvironmentFile":
 			if value == "" {
-				continue // resets the list
+				// Resets the list: the files named so far, here or in a
+				// file read before this one, are not read by systemd.
+				r.files, r.reset = r.files[:0], true
+				continue
 			}
 			p := strings.TrimPrefix(value, "-")
 			optional := p != value
@@ -508,6 +635,8 @@ type shLexer struct {
 	i        int
 	bad      bool
 	heredocs []heredoc
+	m        *parseMeter // never nil
+	depth    int         // the expansions open (see group)
 }
 
 type heredoc struct {
@@ -725,6 +854,11 @@ func (l *shLexer) expansion(i int) int {
 // quotes and nested expansions, and returns the position after it. A bare
 // "{" inside a ${...} does not nest.
 func (l *shLexer) group(i int, open, close byte) int {
+	l.depth++
+	defer func() { l.depth-- }()
+	if !l.m.nest(l.depth) {
+		return len(l.s)
+	}
 	depth := 0
 	for i < len(l.s) {
 		c := l.s[i]
@@ -770,11 +904,14 @@ var shReserved = map[string]bool{
 }
 
 // srcWord is the path word of a "." or "source" command: its text with
-// quotes removed and expansions kept as written, and whether it holds an
-// expansion (a word without one is a literal path, "$" and all).
+// quotes removed and expansions kept as written, whether it holds an
+// expansion (a word without one is a literal path, "$" and all), and
+// whether the command is in a function body (deferred: it runs when the
+// function is called, not when the file is read).
 type srcWord struct {
-	lit string
-	exp bool
+	lit      string
+	exp      bool
+	deferred bool
 }
 
 // forList is what a for loop's variable takes: the words of its list, or,
@@ -793,11 +930,15 @@ type forList struct {
 // set. A value is never read for names.
 //
 // A function body (NAME() { ... }, function NAME { ... }) is followed by
-// its braces: local, declare, typeset and readonly in it declare the
-// function's own variables, not the login environment's, and are passed
-// over, as are a local outside a function (an error in bash) and a
-// declare, typeset or readonly whose name is an expansion. An export
-// whose name is an expansion, an unclosed quote or substitution, or a
+// its braces: local, declare and typeset in it declare the function's own
+// variables, not the login environment's, and are passed over unless a
+// flag makes them global or exported (-g, -x, -gx: bash's declare -gx
+// sets the login's variable, and an exported one reaches every program the
+// function starts); then each name they assign is kept. readonly in a
+// function sets a global, so each name it assigns is kept too. A local
+// outside a function (an error in bash) and a declare, typeset or
+// readonly whose name is an expansion are passed over. An export whose
+// name is an expansion, an unclosed quote or substitution, or a
 // here-document that never ends is syntax the check cannot parse.
 //
 // The value given to PATH (PATH=..., PATH+=..., export PATH=..., csh's
@@ -808,11 +949,25 @@ type forList struct {
 // element too.
 //
 // The path word of every "." and "source" command is returned (sourced),
-// to be resolved by the caller (see Checker.sourcePaths); a word that is
-// exactly the variable of an earlier "for NAME in WORDS" loop stands for
-// each of those words (". "$profile"" in a loop over /etc/profile.d/*.sh).
-func parseShell(r *envParse, data string, fish bool, funcs map[string]bool) {
-	l := &shLexer{s: data}
+// to be resolved by the caller (see Checker.sourcePaths), marked deferred
+// when the command is in a function body; a word that is exactly the
+// variable of an earlier "for NAME in WORDS" loop stands for each of those
+// words (". "$profile"" in a loop over /etc/profile.d/*.sh). The value
+// given to XDG_CONFIG_HOME is returned too (xdg, see addXDG).
+//
+// A [[ ... ]] conditional is one expression up to its closing ]]: a
+// parenthesis or operator in it (a regular expression's) does not start a
+// command.
+//
+// The parse is charged to the run's budget as it goes (see parseMeter):
+// a profile whose source references or loop words do not fit, or whose
+// expansions or brace groups nest deeper than maxNesting, stops the parse
+// at once and ends the run with "incomplete budget".
+func parseShell(r *envParse, data string, fish bool, funcs map[string]bool, m *parseMeter) {
+	if m == nil {
+		m = &parseMeter{}
+	}
+	l := &shLexer{s: data, m: m}
 	const (
 		argNone = iota
 		argExport
@@ -827,9 +982,31 @@ func parseShell(r *envParse, data string, fish bool, funcs map[string]bool) {
 		argForList
 		argSetenv
 		argSetenvPath
+		argSetenvXDG
 		argPathCall
+		argFuncDecl
 	)
 	cmdPos, args, redirect, here, strip := true, argNone, false, false, false
+	declFlag := false // a function's declaration is global or exported (argFuncDecl)
+	cond := false     // in a [[ ... ]] conditional
+	// set records the name n a word assigns or exports, and the value it
+	// gives PATH or XDG_CONFIG_HOME.
+	set := func(n string, w shWord, fn string) {
+		r.add(n)
+		eq := strings.IndexByte(w.lit, '=')
+		if eq < 0 {
+			return
+		}
+		v := w.lit[eq+1:]
+		switch {
+		case n == "PATH":
+			r.addPath(v, w.exp, fn, funcs)
+		case n == xdgName && strings.HasSuffix(w.lit[:eq], "+"):
+			r.xdg = append(r.xdg, unknownXDG)
+		case n == xdgName:
+			r.addXDG(v, w.exp)
+		}
+	}
 	// Function bodies: braces is the stack of open { } groups, each the
 	// function's name for a function's body and "" otherwise; hdr follows
 	// NAME ( ) (1 after NAME, 2 after its "("), and pending says the next {
@@ -852,10 +1029,28 @@ func parseShell(r *envParse, data string, fish bool, funcs map[string]bool) {
 			loops[forVar] = forList{words: forWords, ok: ok && args == argForList}
 		}
 	}
-	for {
+loop:
+	for n := 1; ; n++ {
+		if !m.tick(n) {
+			break loop
+		}
 		op, w, eof := l.next()
-		if eof {
-			break
+		if eof || m.over {
+			break loop
+		}
+		if cond {
+			// Inside [[ ... ]]: its operators, parentheses and words are
+			// one conditional expression, up to the closing ]]. A
+			// newline, ';' or '&' (which cannot be in one) ends it too,
+			// and is read as usual.
+			if op == "" && !w.exp && w.lit == "]]" {
+				cond, cmdPos, args = false, false, argNone
+				continue
+			}
+			if op != "\n" && op != ";" && op != "&" {
+				continue
+			}
+			cond = false
 		}
 		if op != "" {
 			switch op {
@@ -905,6 +1100,9 @@ func parseShell(r *envParse, data string, fish bool, funcs map[string]bool) {
 				if pending {
 					f = name
 				}
+				if !m.nest(len(braces) + 1) {
+					break loop
+				}
 				braces = append(braces, f)
 			}
 			pending = false
@@ -921,14 +1119,14 @@ func parseShell(r *envParse, data string, fish bool, funcs map[string]bool) {
 		pending = false
 		if cmdPos {
 			if w.assign != "" {
-				r.add(w.assign)
-				if w.assign == "PATH" {
-					_, v, _ := strings.Cut(w.lit, "=")
-					r.addPath(v, w.exp, fn(), funcs)
-				}
+				set(w.assign, w, fn())
 				continue
 			}
 			if !w.exp && shReserved[w.lit] {
+				continue
+			}
+			if !w.exp && w.lit == "[[" {
+				cond = true
 				continue
 			}
 			cmdPos, args = false, argNone
@@ -942,13 +1140,21 @@ func parseShell(r *envParse, data string, fish bool, funcs map[string]bool) {
 			switch w.lit {
 			case "export":
 				args = argExport
-			case "declare", "typeset", "readonly":
+			case "declare", "typeset":
 				args = argDeclare
 				if fn() != "" {
-					args = argIgnore
+					args, declFlag = argFuncDecl, false
+				}
+			case "readonly":
+				args = argDeclare
+				if fn() != "" {
+					args, declFlag = argFuncDecl, true
 				}
 			case "local":
 				args = argIgnore
+				if fn() != "" {
+					args, declFlag = argFuncDecl, false
+				}
 			case "env":
 				args = argEnv
 			case "setenv":
@@ -974,12 +1180,22 @@ func parseShell(r *envParse, data string, fish bool, funcs map[string]bool) {
 			n, known := w.name()
 			switch {
 			case known:
-				r.add(n)
-				if _, v, ok := strings.Cut(w.lit, "="); ok && n == "PATH" {
-					r.addPath(v, w.exp, fn(), funcs)
-				}
+				set(n, w, fn())
 			case args == argExport:
 				r.bad = true
+			}
+		case argFuncDecl:
+			if !w.exp && strings.HasPrefix(w.lit, "+") {
+				continue // +x takes a flag away
+			}
+			if !w.exp && strings.HasPrefix(w.lit, "-") {
+				if strings.ContainsAny(w.lit[1:], "gx") {
+					declFlag = true
+				}
+				continue
+			}
+			if n, known := w.name(); declFlag && known && strings.Contains(w.lit, "=") {
+				set(n, w, fn())
 			}
 		case argEnv:
 			if w.assign != "" {
@@ -996,22 +1212,42 @@ func parseShell(r *envParse, data string, fish bool, funcs map[string]bool) {
 				args = argSetenvPath
 				continue
 			}
+			if args == argSetenv && !w.exp && w.lit == xdgName {
+				args = argSetenvXDG
+				continue
+			}
+			if args == argFirst && !w.exp && w.lit == xdgName {
+				r.xdg = append(r.xdg, unknownXDG) // fish's set: its value is not read
+			}
 			args = argNone
 		case argSetenvPath:
 			r.addPath(w.lit, w.exp, fn(), funcs)
+			args = argNone
+		case argSetenvXDG:
+			r.addXDG(w.lit, w.exp)
 			args = argNone
 		case argPathCall:
 			r.addPath(w.lit, w.exp, fn(), funcs)
 			args = argNone
 		case argSource:
+			deferred := fn() != ""
 			if n, ok := plainRef(w); ok {
 				if fl, found := loops[n]; found && fl.ok {
-					r.sourced = append(r.sourced, fl.words...)
+					if !m.charge(wordsCost(fl.words)) {
+						break loop
+					}
+					for _, lw := range fl.words {
+						lw.deferred = deferred
+						r.sourced = append(r.sourced, lw)
+					}
 					args = argNone
 					continue
 				}
 			}
-			r.sourced = append(r.sourced, srcWord{lit: w.lit, exp: w.exp})
+			if !m.charge(int64(len(w.lit)) + 48) {
+				break loop
+			}
+			r.sourced = append(r.sourced, srcWord{lit: w.lit, exp: w.exp, deferred: deferred})
 			args = argNone
 		case argFunc:
 			// function NAME [()] { ... }
@@ -1029,10 +1265,13 @@ func parseShell(r *envParse, data string, fish bool, funcs map[string]bool) {
 			endFor(false)
 			args = argNone
 		case argForList:
+			if !m.charge(int64(len(w.lit)) + 48) {
+				break loop
+			}
 			forWords = append(forWords, srcWord{lit: w.lit, exp: w.exp})
 		}
 	}
-	if l.bad {
+	if l.bad || (m.over && m.b == nil) {
 		r.bad = true
 	}
 }

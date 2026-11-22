@@ -34,8 +34,8 @@ const (
 // Incomplete hit names and details: a walk cut short by its depth limit
 // ("HIT incomplete <folder> depth"), an entry whose type cannot be found
 // ("HIT incomplete <path> type"), and the run's budget spent
-// ("HIT incomplete budget <limit>", the limit one of entries, bytes, time
-// or memory).
+// ("HIT incomplete budget <limit>", the limit one of entries, bytes, time,
+// memory or nesting).
 const (
 	DetailDepth = "depth"
 	DetailType  = "type"
@@ -96,6 +96,8 @@ type Checker struct {
 	uids    map[string]string // the user id of each home
 	udirs   map[string]*udir  // the unit folders listed so far
 	parsed  map[string]*envParse
+	su      *startupScan    // the startup files, once read (see startup)
+	funcs   map[string]bool // the shell functions that add their argument to PATH
 
 	binScanned bool
 	binHits    []string // paths named like an agent tool

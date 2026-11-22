@@ -82,11 +82,15 @@ func TestParseEnv(t *testing.T) {
 			[]string{"${p}"}, false},
 		{"function-local declarations", sh, completionSample, nil, nil, nil, false},
 		{"a top-level local or declare of a computed name", sh, "local \"$1\"\ndeclare \"$2\"=x\ntypeset -a \"${n}\"\nreadonly \"$v\"\n", nil, nil, nil, false},
-		{"a function's declarations are its own", sh, "f() {\n  local OPENAI_API_KEY=x\n  declare -x CODEX_HOME=y\n  readonly ANTHROPIC_API_KEY\n}\nfunction g { typeset GEMINI_API_KEY=z; }\n", nil, nil, nil, false},
+		{"a function's plain declarations are its own", sh, "f() {\n  local OPENAI_API_KEY=x\n  declare CODEX_HOME=y\n  readonly ANTHROPIC_API_KEY\n  local -r X_API_KEY=1\n  declare -x OPENAI_ORG\n  declare +x Y_API_KEY=1\n}\nfunction g { typeset GEMINI_API_KEY=z; }\n", nil, nil, nil, false},
+		{"a function's global or exported declarations count", sh, "f() {\n  declare -gx OPENAI_API_KEY=x\n  declare -x CODEX_HOME=y\n  typeset -x GEMINI_API_KEY=z\n  declare -g CLAUDE_X=1\n  local -x X_AUTH_TOKEN=1\n  readonly ANTHROPIC_API_KEY=2\n  declare -r -x OPENAI_ORG=3\n}\n",
+			[]string{"OPENAI_API_KEY", "CODEX_HOME", "GEMINI_API_KEY", "CLAUDE_X", "X_AUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_ORG"}, nil, nil, false},
 		{"a function's export still counts", sh, "f() {\n  export OPENAI_API_KEY=x\n  CODEX_HOME=y\n}\n", []string{"OPENAI_API_KEY", "CODEX_HOME"}, nil, nil, false},
 		{"a function's export of a computed name", sh, "f() { export \"$1\"; }\n", nil, nil, nil, true},
 		{"after a function a declaration counts again", sh, "f() { local A; }\ndeclare -x OPENAI_API_KEY=x\n", []string{"OPENAI_API_KEY"}, nil, nil, false},
 		{"a profile in the usual style", sh, profileSample, nil, nil, []string{"/etc/profile.d/*.sh"}, false},
+		{"a regular expression in a conditional", sh, "if [[ $o =~ (\\[((no|dont)-?)\\]). ]]; then OPENAI_API_KEY=1; fi\n[[ -n $x && ( $y == . ) ]] && . /etc/app/x.sh\n[[ $a < $b ]] || CODEX_HOME=2\n",
+			[]string{"OPENAI_API_KEY", "CODEX_HOME"}, nil, []string{"/etc/app/x.sh"}, false},
 		{"an unclosed quote", sh, "A='x\n", nil, nil, nil, true},
 		{"an unclosed substitution", sh, "A=$(x\n", nil, nil, nil, true},
 		{"a here-document that never ends", sh, "cat <<EOF\nx\n", nil, nil, nil, true},
@@ -106,6 +110,8 @@ func TestParseEnv(t *testing.T) {
 		{"EnvironmentFile optional inside quotes", unit, "EnvironmentFile=\"-/etc/a\"\nEnvironmentFile=/etc/b\n", nil,
 			[]string{"-/etc/a", "/etc/b"}, nil, false},
 		{"EnvironmentFile relative", unit, "EnvironmentFile=relative", nil, nil, nil, true},
+		{"EnvironmentFile reset", unit, "EnvironmentFile=/etc/a\nEnvironmentFile=\nEnvironmentFile=-/etc/b\n", nil,
+			[]string{"-/etc/b"}, nil, false},
 		{"EnvironmentFile with a specifier", unit, "EnvironmentFile=/etc/app/%i.env", nil, nil, nil, true},
 		{"EnvironmentFile in the home or runtime folder", unit, "EnvironmentFile=-%h/.config/app.env\nEnvironmentFile=-%t/app/env.conf\n", nil,
 			[]string{"-%h/.config/app.env", "-%t/app/env.conf"}, nil, false},
@@ -282,7 +288,6 @@ func TestCheckEnv(t *testing.T) {
 			f.file("root/.profile", "load() { . \"$1\"; }\n")
 		}, []Hit{
 			{Kind: KindIncomplete, Path: PathEnvSource, Detail: "/etc/profile.d/dyn.sh"},
-			{Kind: KindIncomplete, Path: PathEnvSource, Detail: "/root/.profile"},
 			{Kind: KindIncomplete, Path: PathEnvSource, Detail: "/home/user/.bashrc"},
 		}},
 		{"a commented-out profile line", func(f *fixture) {
@@ -312,6 +317,99 @@ func TestCheckEnv(t *testing.T) {
 			[]Hit{{Kind: KindUnreadable, Path: "/etc/environment", Detail: errNotRegular.Error()}}},
 		{"too large", func(f *fixture) { f.file("etc/profile", strings.Repeat("#\n", maxEnvFile/2+1)) },
 			[]Hit{{Kind: KindUnreadable, Path: "/etc/profile", Detail: errTooLarge.Error()}}},
+	}, (*Checker).CheckEnv)
+}
+
+// A source in a function body runs only when the function is called: one
+// the check cannot resolve is a note, not an incomplete run, and one it
+// can resolve is still read. An unresolvable source at the top level or in
+// a top-level loop stays incomplete.
+func TestCheckEnvDeferredSource(t *testing.T) {
+	inc := func(p string) Hit { return Hit{Kind: KindIncomplete, Path: PathEnvSource, Detail: p} }
+	cases := []struct {
+		name  string
+		plant func(f *fixture)
+		want  []Hit
+		notes []string
+	}{
+		{"a completion loader in a function", func(f *fixture) {
+			f.file("etc/bash.bashrc", ". /usr/share/bash-completion/bash_completion\n")
+			f.file("usr/share/bash-completion/bash_completion", completionLoaderSample)
+		}, nil, []string{"deferred-source /usr/share/bash-completion/bash_completion"}},
+		{"a resolvable source in a function is read", func(f *fixture) {
+			f.file("home/user/.bashrc", "work() {\n  . ~/.work.sh\n  for x in /etc/app/*.sh; do . \"$x\"; done\n}\n")
+			f.file("home/user/.work.sh", "export OPENAI_API_KEY=x\n")
+			f.file("etc/app/a.sh", "export CODEX_HOME=x\n")
+		}, []Hit{{Kind: KindEnv, Path: "/home/user/.work.sh", Detail: "OPENAI_API_KEY"}, {Kind: KindEnv, Path: "/etc/app/a.sh", Detail: "CODEX_HOME"}}, nil},
+		{"a top-level loop over an array stays incomplete", func(f *fixture) {
+			f.file("etc/bash.bashrc", "for f in \"${startup[@]}\"; do . \"$f\"; done\nload() { . \"$1\"; }\n")
+		}, []Hit{inc("/etc/bash.bashrc")}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := cleanFixture(t)
+			tc.plant(f)
+			c := f.checker(testLists())
+			within(t, c.CheckEnv)
+			r := c.Report()
+			if !(len(r.Hits) == 0 && len(tc.want) == 0) && !reflect.DeepEqual(r.Hits, tc.want) {
+				t.Errorf("hits %v, want %v", r.Hits, tc.want)
+			}
+			if !(len(r.Notes) == 0 && len(tc.notes) == 0) && !reflect.DeepEqual(r.Notes, tc.notes) {
+				t.Errorf("notes %v, want %v", r.Notes, tc.notes)
+			}
+			if len(tc.want) == 0 && !r.Complete {
+				t.Errorf("a deferred source made the run incomplete: %+v", r)
+			}
+		})
+	}
+}
+
+// completionLoaderSample is in the style of the packaged bash-completion
+// library's loader: a function that sources a completion file found at
+// run time.
+const completionLoaderSample = `_comp_load()
+{
+    local compfile
+    for compfile in "$@"; do
+        [[ -f $compfile ]] && . "$compfile" && return 0
+    done
+    . "$compfile"
+}
+`
+
+// XDG_CONFIG_HOME given in a startup file is read: a source by it is
+// resolved in the folder it names as well as the home's .config, and the
+// home's fish and environment.d files are read there; a value the check
+// cannot resolve, or one given by a sourced file, is incomplete.
+func TestCheckEnvXDGConfigHome(t *testing.T) {
+	env := func(p, n string) Hit { return Hit{Kind: KindEnv, Path: p, Detail: n} }
+	inc := func(p string) Hit { return Hit{Kind: KindIncomplete, Path: PathEnvSource, Detail: p} }
+	runCases(t, []checkCase{
+		{"a home's own value", func(f *fixture) {
+			f.file("home/user/.profile", "export XDG_CONFIG_HOME=\"$HOME/cfg\"\n")
+			f.file("etc/profile.d/locale.sh", localeSample)
+			f.file("home/user/cfg/locale.conf", "OPENAI_API_KEY=x\n")
+			f.file("home/user/cfg/fish/config.fish", "set -gx CODEX_HOME /x\n")
+			f.file("home/user/cfg/environment.d/a.conf", "GEMINI_API_KEY=x\n")
+			f.file("srv/app/cfg/locale.conf", "ANTHROPIC_API_KEY=x\n")
+		}, []Hit{env("/home/user/cfg/fish/config.fish", "CODEX_HOME"), env("/home/user/cfg/environment.d/a.conf", "GEMINI_API_KEY"),
+			env("/home/user/cfg/locale.conf", "OPENAI_API_KEY")}},
+		{"a system value for every home", func(f *fixture) {
+			f.file("etc/environment", "XDG_CONFIG_HOME=/etc/xdgcfg\n")
+			f.file("home/user/.bashrc", ". \"${XDG_CONFIG_HOME}/x.sh\"\n")
+			f.file("etc/xdgcfg/x.sh", "export OPENAI_API_KEY=x\n")
+		}, []Hit{env("/etc/xdgcfg/x.sh", "OPENAI_API_KEY")}},
+		{"its usual default", func(f *fixture) {
+			f.file("home/user/.profile", "export XDG_CONFIG_HOME=\"${XDG_CONFIG_HOME:-$HOME/.config}\"\n")
+		}, nil},
+		{"a value the check cannot resolve", func(f *fixture) {
+			f.file("home/user/.bashrc", "export XDG_CONFIG_HOME=$(xdg-dir)\n")
+		}, []Hit{inc("/home/user/.bashrc")}},
+		{"a value given by a sourced file", func(f *fixture) {
+			f.file("home/user/.bashrc", ". ~/.more.sh\n")
+			f.file("home/user/.more.sh", "XDG_CONFIG_HOME=~/later\n")
+		}, []Hit{inc("/home/user/.more.sh")}},
 	}, (*Checker).CheckEnv)
 }
 

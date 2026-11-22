@@ -125,12 +125,19 @@ func cleanFixture(t *testing.T) *fixture {
 	f.file("proc/net/tcp", tcpHeader+
 		"   0: 00000000:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1 1 0 100 0 0 10 0\n"+
 		"   1: 0100007F:9C40 0100007F:0016 01 00000000:00000000 00:00000000 00000000  1000        0 2 1 0 20 4 30 10 -1\n")
-	f.file("proc/net/tcp6", tcpHeader+
+	f.file("proc/net/tcp6", tcp6Header+
 		"   0: 00000000000000000000000000000000:01BB 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 3 1 0 100 0 0 10 0\n")
 	return f
 }
 
-const tcpHeader = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+// tcpHeader and tcp6Header are the kernel's header lines of proc/net/tcp
+// and proc/net/tcp6, in the shape the kernel writes them (the IPv4 table's
+// padded with spaces to its row width, the IPv6 table's columns wider and
+// its remote column spelled out).
+const (
+	tcpHeader  = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode                                                     \n"
+	tcp6Header = "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+)
 
 // checker opens a Checker on the fixture.
 func (f *fixture) checker(l *Lists) *Checker {

@@ -18,12 +18,21 @@ const (
 )
 
 // The folders of a release the release check reads: its units, read like
-// installed units, and its front end's and firewall's configuration, read
-// for the names of provider-key variables only.
+// installed units, and its front end's configuration, read for the
+// variables it refers to by name only. The firewall's configuration
+// (etc/nftables) refers to no environment variable and is not read for
+// names.
 const (
 	releaseUnits    = "etc/systemd"
-	releaseNameDirs = "etc/caddy etc/nftables"
+	releaseNameDirs = "etc/caddy"
 )
+
+// PathReleaseSyntax is the name of the incomplete hit for a front-end
+// configuration file holding a variable reference the check cannot read
+// ("{env." or "{$" or "${" not followed by a name and its closing brace):
+// "HIT incomplete release-syntax <file>". The hit names the file and
+// nothing of its content.
+const PathReleaseSyntax = "release-syntax"
 
 // RunPhase runs the checks of one phase and returns the report:
 //
@@ -86,11 +95,13 @@ func (c *Checker) RunPhase(phase, release string, listing []byte) (Report, error
 // /dev/null is a mask and is not read; a file in a folder named "user" is
 // a user unit, its EnvironmentFile= resolved in every user's context, any
 // other a system unit), and every file a unit's EnvironmentFile= names is
-// read on the host like any other. Every file beneath its etc/caddy and
-// etc/nftables is read for names only: each word named like a provider key
-// (see ProviderKeyName) is a hit of kind "env". A hit names the file by
-// its path within the root when the release is beneath it, by its own path
-// otherwise. A release folder that cannot be opened is an error.
+// read on the host like any other. Every file beneath its etc/caddy is
+// read for the variables it refers to (see releaseRefs): each one named
+// like a provider key (see ProviderKeyName) is a hit of kind "env", and a
+// reference the check cannot read is "incomplete release-syntax <file>".
+// A hit names the file by its path within the root when the release is
+// beneath it, by its own path otherwise. A release folder that cannot be
+// opened is an error.
 func (c *Checker) CheckRelease(dir string) error {
 	r, err := os.OpenRoot(dir)
 	if err != nil {
@@ -181,8 +192,12 @@ func (c *Checker) CheckRelease(dir string) error {
 			if !ok {
 				return
 			}
-			for _, n := range providerWords(string(data)) {
+			names, bad := releaseRefs(string(data))
+			for _, n := range names {
 				c.hit(KindEnv, at(p), n)
+			}
+			if bad {
+				c.hit(KindIncomplete, PathReleaseSyntax, at(p))
 			}
 		})
 	}
@@ -214,21 +229,85 @@ func (c *Checker) releaseDisplay(dir string) string {
 	return strings.TrimSuffix(abs, "/")
 }
 
-// providerWords returns the words of data named like a provider key, once
-// each: every run of identifier bytes is a word.
-func providerWords(data string) []string {
+// releaseRefs returns the variables a front-end configuration file (a
+// Caddyfile or Caddy's JSON) refers to that are named like a provider key,
+// once each, and whether it holds a reference it cannot read. Only a
+// recognised reference names a variable: Caddy's placeholders {env.NAME}
+// and {$NAME} ({$NAME:default} too) and the systemd-style $NAME and
+// ${NAME}. A comment (a '#' that starts a word outside quotes, to the end
+// of its line) is passed over, and so is every literal operand: a word
+// that merely looks like a variable's name is not one. A "{env.", "{$" or
+// "${" not followed by a valid name and its closing brace (or, for {$, a
+// ':' and a default) is a reference the check cannot read; the caller
+// reports the file, never the text.
+func releaseRefs(data string) ([]string, bool) {
 	var r envParse
-	for i := 0; i < len(data); {
-		if !identStart(data[i]) || (i > 0 && ident(data[i-1])) {
+	bad := false
+	var quote byte
+	word := true // at the start of a word: a '#' here starts a comment
+	for i := 0; i < len(data); i++ {
+		c := data[i]
+		switch {
+		case quote != 0 && c == '\\' && quote == '"':
 			i++
 			continue
+		case quote != 0 && c == quote:
+			quote = 0
+			continue
+		case quote == 0 && (c == '"' || c == '`'):
+			quote, word = c, false
+			continue
+		case quote == 0 && word && c == '#':
+			for i < len(data) && data[i] != '\n' {
+				i++
+			}
+			continue
+		case c == ' ' || c == '\t' || c == '\r' || c == '\n':
+			word = true
+			continue
 		}
-		j := i
-		for j < len(data) && ident(data[j]) {
-			j++
+		word = false
+		rest := data[i:]
+		var name, end string
+		switch {
+		case strings.HasPrefix(rest, "{env."):
+			name, end = refName(rest[5:], "}")
+		case strings.HasPrefix(rest, "{$"):
+			name, end = refName(rest[2:], "}:")
+		case strings.HasPrefix(rest, "${"):
+			name, end = refName(rest[2:], "}")
+		case c == '$' && len(rest) > 1 && identStart(rest[1]):
+			name, end = refName(rest[1:], "")
+		default:
+			continue
 		}
-		r.add(data[i:j])
-		i = j
+		if name == "" {
+			bad = true
+			continue
+		}
+		r.add(name)
+		i += len(rest) - len(end) - 1
 	}
-	return r.names
+	return r.names, bad
+}
+
+// refName reads the name of a reference at the start of s, up to one of
+// the bytes of stops (none: the name ends at the first byte that is not an
+// identifier's), and returns it with the rest of s from that stop on; ""
+// when there is no valid name, or no stop after it.
+func refName(s, stops string) (string, string) {
+	j := 0
+	for j < len(s) && ident(s[j]) {
+		j++
+	}
+	if !validName(s[:j]) {
+		return "", s
+	}
+	if stops == "" {
+		return s[:j], s[j:]
+	}
+	if j >= len(s) || strings.IndexByte(stops, s[j]) < 0 {
+		return "", s
+	}
+	return s[:j], s[j:]
 }

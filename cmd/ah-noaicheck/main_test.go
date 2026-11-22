@@ -177,7 +177,7 @@ func TestNFT(t *testing.T) {
 		t.Errorf("changed rules: exit %d\n%s", code, out)
 	}
 	code, out, _ = runCmd(t, "", "--root", host(t), "--release", rel)
-	if code != exitHit || !strings.Contains(out, "HIT nft ruleset listing-missing\n") {
+	if code != exitHit || !strings.Contains(out, "HIT incomplete nft listing-missing\n") || !strings.Contains(out, "RUN incomplete\n") {
 		t.Errorf("no listing: exit %d\n%s", code, out)
 	}
 }
@@ -187,6 +187,10 @@ func TestPorts(t *testing.T) {
 	rel := release(t, nil)
 	if code, out, _ := runCmd(t, "", "ports", "--root", root, "--release", rel); code != exitClean || out != "RUN complete\nok\n" {
 		t.Errorf("clean: exit %d\n%s", code, out)
+	}
+	write(t, root, "proc/net/tcp6", tcp6Listen8080[:strings.IndexByte(tcp6Listen8080, '\n')+1])
+	if code, out, _ := runCmd(t, "", "ports", "--root", root, "--release", rel); code != exitClean || out != "RUN complete\nok\n" {
+		t.Errorf("an IPv6 table with no listener: exit %d\n%s", code, out)
 	}
 	write(t, root, "proc/net/tcp6", tcp6Listen8080)
 	code, out, _ := runCmd(t, "", "ports", "--root", root, "--release", rel)
@@ -198,7 +202,9 @@ func TestPorts(t *testing.T) {
 	}
 }
 
-const tcp6Listen8080 = "  sl  local_address rem_address   st\n" +
+// tcp6Listen8080 is a proc/net/tcp6 with the kernel's IPv6 header (its
+// remote column spelled remote_address) and one listening socket.
+const tcp6Listen8080 = "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n" +
 	"   0: 00000000000000000000000000000000:1F90 00000000000000000000000000000000:0000 0A 0 0 0\n"
 
 // The switch's call: --require-policy with every policy of the release set
@@ -232,7 +238,7 @@ func TestRequirePolicy(t *testing.T) {
 		{"empty packages.allow", with("packages.allow", ""), []string{"--nft-listing", file}, "HIT policy packages.allow empty\n"},
 		{"empty ports.allow", with("ports.allow", ""), []string{"--nft-listing", file}, "HIT policy ports.allow empty\n"},
 		{"no nft.digest", map[string]string{"packages.allow": "bash\n"}, []string{"--nft-listing", file}, "HIT policy nft.digest missing\n"},
-		{"pinned, no listing", full, nil, "HIT nft ruleset listing-missing\n"},
+		{"pinned, no listing", full, nil, "HIT incomplete nft listing-missing\nRUN incomplete\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
