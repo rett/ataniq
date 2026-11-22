@@ -45,6 +45,12 @@ var errEscape = errors.New("link climbs above the root")
 // that cannot be read.
 var errDirent = errors.New("malformed directory entry")
 
+// errUntyped is passed to a walk's fail for an entry whose type the kernel
+// did not give in the listing and a stat could not find: the walk cannot
+// tell whether it is a folder to enter. The check reports it as
+// "incomplete <path> type".
+var errUntyped = errors.New("entry type unknown")
+
 // limits bound the work of one run, shared by every check: the folder
 // entries listed, the bytes of files read, the time since the tree was
 // opened, and the memory held for names waiting their turn in a walk and
@@ -389,11 +395,17 @@ const (
 	dirBatch  = 1024
 )
 
-// dent is a listed entry before it is visited.
+// dent is a listed entry before it is visited; untyped says its type could
+// not be found (it is then visited as an irregular entry and reported).
 type dent struct {
-	name string
-	typ  fs.FileMode
+	name    string
+	typ     fs.FileMode
+	untyped bool
 }
+
+// testHookDirent, set by a test only, can give an entry another d_type and
+// make its stat fail with an error.
+var testHookDirent func(name string) (byte, error)
 
 // dirStream reads one open folder's entries in batches.
 type dirStream struct {
@@ -445,14 +457,23 @@ func (t *tree) next(d *dirStream) ([]dent, int64, error) {
 			continue
 		}
 		e := dent{name: string(name)}
-		typ, ok := direntType(rec[18])
+		dtype, hookErr := rec[18], error(nil)
+		if testHookDirent != nil {
+			if t, err := testHookDirent(e.name); t != 0 || err != nil {
+				dtype, hookErr = t, err
+			}
+		}
+		typ, ok := direntType(dtype)
 		if !ok {
 			m, err := statAt(d.fd, e.name)
+			if hookErr != nil {
+				err = hookErr
+			}
 			if errors.Is(err, syscall.ENOENT) {
 				continue // gone since it was listed
 			}
 			if err != nil {
-				m = fs.ModeIrregular
+				m, e.untyped = fs.ModeIrregular, true
 			}
 			typ = m.Type()
 		}
@@ -541,6 +562,9 @@ func (w *walker) batch(fd int, dir string, depth int, batch []dent) error {
 			return errBudget
 		}
 		e := wentry{rel: path.Join(dir, d.name), name: d.name, typ: d.typ, depth: depth, dirfd: fd}
+		if d.untyped {
+			w.fail(e.rel, &fs.PathError{Op: "stat", Path: show(e.rel), Err: errUntyped})
+		}
 		if !w.visit(&e) || !e.isDir() {
 			continue
 		}

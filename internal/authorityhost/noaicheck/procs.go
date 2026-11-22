@@ -21,6 +21,11 @@ const (
 	PathProcAccess = "proc-access"
 )
 
+// DetailNoIdentity is the detail of "HIT incomplete proc no-identity":
+// proc/ lists processes but the name and executable of none of them could
+// be read, so the view of the processes is not usable.
+const DetailNoIdentity = "no-identity"
+
 // procState is what reading one process gave.
 type procState int
 
@@ -36,19 +41,24 @@ const (
 // of kind "process", with the matched name as its detail.
 //
 // The check fails closed: a missing or unreadable proc/, or one without a
-// single process, is "incomplete proc". A process that ends while it is
-// read is passed over, and so is a kernel thread (its comm is read, it has
-// no exe). A process whose comm or exe is refused for lack of permission,
+// single process, is "incomplete proc", and so is a proc/ that lists
+// processes of which not one name or executable could be read
+// ("incomplete proc no-identity"). A process that ends while it is read is
+// passed over, and so is a kernel thread (its comm is read, it has no exe). A process whose comm or exe is refused for lack of permission,
 // twice, is not passed over: run as root (the host's case) each is a hit of
 // kind "unreadable"; run as another user the run ends with one
 // "incomplete proc-access N", N the number of such processes.
 func (c *Checker) CheckProcesses() {
-	pids, denied := 0, 0
+	pids, denied, seen := 0, 0, 0
 	_, _, err := c.t.walk("proc", 1, func(e *wentry) bool {
 		if isPID(e.name) {
 			pids++
-			if c.checkProcess(e.rel) == procDenied {
+			st, identified := c.checkProcess(e.rel)
+			if st == procDenied {
 				denied++
+			}
+			if identified {
+				seen++
 			}
 		}
 		return false
@@ -62,15 +72,19 @@ func (c *Checker) CheckProcesses() {
 		c.hit(KindIncomplete, PathProc, describe(err))
 	case pids == 0:
 		c.hit(KindIncomplete, PathProc, "no processes")
+	case seen == 0:
+		c.hit(KindIncomplete, PathProc, DetailNoIdentity)
 	}
 	if denied > 0 && c.euid != 0 {
 		c.hit(KindIncomplete, PathProcAccess, strconv.Itoa(denied))
 	}
 }
 
-// checkProcess checks the process whose folder is dir.
-func (c *Checker) checkProcess(dir string) procState {
+// checkProcess checks the process whose folder is dir, and says whether its
+// name or executable was read.
+func (c *Checker) checkProcess(dir string) (procState, bool) {
 	var names []string
+	identified := false
 	comm := path.Join(dir, "comm")
 	data, err := retryDenied(func() ([]byte, error) {
 		_, data, err := c.t.readFile(comm, 4096)
@@ -79,10 +93,11 @@ func (c *Checker) checkProcess(dir string) procState {
 	switch {
 	case err == nil:
 		names = append(names, strings.TrimSuffix(string(data), "\n"))
+		identified = true
 	case vanished(err):
-		return procGone
+		return procGone, false
 	case denied(err):
-		return c.deniedProcess(comm, err)
+		return c.deniedProcess(comm, err), false
 	default:
 		c.unreadable(comm, err)
 	}
@@ -94,19 +109,20 @@ func (c *Checker) checkProcess(dir string) procState {
 	switch {
 	case err == nil:
 		names = append(names, path.Base(strings.TrimSuffix(string(target), " (deleted)")))
+		identified = true
 	case errors.Is(err, fs.ErrNotExist) && len(names) > 0:
 		// A kernel thread (or a zombie): comm and no executable.
 	case vanished(err):
-		return procGone
+		return procGone, identified
 	case denied(err):
-		return c.deniedProcess(exe, err)
+		return c.deniedProcess(exe, err), identified
 	default:
 		c.unreadable(exe, err)
 	}
 	if m := c.matchProcess(names); m != "" {
 		c.hit(KindProcess, show(dir), m)
 	}
-	return procRead
+	return procRead, identified
 }
 
 // deniedProcess records a process refused for lack of permission: as root

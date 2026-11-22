@@ -30,13 +30,21 @@ const (
 )
 
 // Incomplete hit names and details: a walk cut short by its depth limit
-// ("HIT incomplete <folder> depth"), and the run's budget spent
+// ("HIT incomplete <folder> depth"), an entry whose type cannot be found
+// ("HIT incomplete <path> type"), and the run's budget spent
 // ("HIT incomplete budget <limit>", the limit one of entries, bytes, time
 // or memory).
 const (
 	DetailDepth = "depth"
+	DetailType  = "type"
 	PathBudget  = "budget"
 )
+
+// findingKinds are the kinds of a hit that is a finding: something the check
+// found. Every other kind (policy, incomplete, unreadable, unit-link, and any
+// later one) says the check could not cover a place, and makes the run
+// incomplete.
+var findingKinds = []string{KindBinary, KindTool, KindCredential, KindEnv, KindProcess, KindUnit, KindPort, KindPackage, KindNFT}
 
 // DetailEmpty is the detail of a policy hit for an empty allowlist; a
 // release without share/nft.digest has the detail "missing" (DetailMissing).
@@ -54,8 +62,8 @@ type Hit struct {
 // Report is the result of a run: the hits, the notes, which are not hits,
 // and whether the run was complete: every check ran over all it covers and
 // every policy of the release was enforced. A run with a NOTE about a policy
-// not enforced is not complete, and neither is one with a hit of kind
-// "policy".
+// not enforced is not complete, and neither is one with any hit that is not
+// a finding (kind "policy", "incomplete", "unreadable" or "unit-link").
 type Report struct {
 	Hits     []Hit    `json:"hits"`
 	Notes    []string `json:"notes"`
@@ -110,7 +118,7 @@ func (c *Checker) Report() Report {
 		r.Hits = append(r.Hits, Hit{Kind: KindIncomplete, Path: PathBudget, Detail: c.t.b.spent})
 	}
 	for _, h := range r.Hits {
-		if h.Kind == KindPolicy || h.Kind == KindIncomplete {
+		if !slices.Contains(findingKinds, h.Kind) {
 			r.Complete = false
 		}
 	}
@@ -153,9 +161,14 @@ func (c *Checker) notEnforced(list, detail, n string) {
 
 // unreadable records a place the check could not look into. A place that is
 // not there is not a hit, and neither is a read refused because the budget
-// is spent (the report says that once).
+// is spent (the report says that once). An entry whose type cannot be
+// found is "incomplete <path> type".
 func (c *Checker) unreadable(rel string, err error) {
 	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, errBudget) {
+		return
+	}
+	if errors.Is(err, errUntyped) {
+		c.hit(KindIncomplete, show(clean(rel)), DetailType)
 		return
 	}
 	c.hit(KindUnreadable, show(clean(rel)), describe(err))

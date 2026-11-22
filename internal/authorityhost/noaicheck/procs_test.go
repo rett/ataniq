@@ -56,6 +56,18 @@ func TestCheckProcessesFailsClosed(t *testing.T) {
 		}, []Hit{inc(PathProc, "not a directory")}},
 		{"a kernel thread", func(f *fixture) { f.file("proc/2/comm", "kthreadd\n") }, nil},
 		{"a process that ended", func(f *fixture) { f.dir("proc/83") }, nil},
+		{"processes without one identity", func(f *fixture) {
+			mustRemoveAll(f, "proc")
+			f.dir("proc/1")
+			f.dir("proc/42")
+			f.file("proc/net/tcp", tcpHeader)
+		}, []Hit{inc(PathProc, DetailNoIdentity)}},
+		{"one identity among processes that ended", func(f *fixture) {
+			mustRemoveAll(f, "proc")
+			f.file("proc/7/comm", "bash\n")
+			f.dir("proc/8")
+			f.dir("proc/9")
+		}, nil},
 	}, (*Checker).CheckProcesses)
 }
 

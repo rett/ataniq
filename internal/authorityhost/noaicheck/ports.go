@@ -17,13 +17,25 @@ const tcpListen = "0A"
 // errProcNet is returned for a line of proc/net/tcp that cannot be read.
 var errProcNet = errors.New("malformed line")
 
+// errNoHeader is returned for a socket table that is empty or does not
+// start with the kernel's header line ("sl local_address rem_address st
+// ..."): it is not a table the check can trust to list every socket.
+var errNoHeader = errors.New("no header")
+
+// DetailHeader is the detail of "HIT incomplete /proc/net/tcp header", a
+// socket table that is empty or has no valid header line. A table with a
+// header and no listening socket is fine.
+const DetailHeader = "header"
+
 // CheckPorts, run by RunAll and alone by the ports subcommand: a listening
 // TCP socket (state LISTEN in proc/net/tcp or proc/net/tcp6) on a port not
 // in ports.allow is a hit of kind "port" named "tcp:ADDRESS:PORT" or
 // "tcp6:[ADDRESS]:PORT". The files show the sockets of the network
 // namespace of the process that reads them; UDP is not checked. A file that
 // cannot be read is a hit of kind "unreadable", and so is a missing
-// proc/net/tcp; proc/net/tcp6 is missing when IPv6 is off. An empty
+// proc/net/tcp; proc/net/tcp6 is missing when IPv6 is off. A table that is
+// there but empty or without the kernel's header line is
+// "incomplete <file> header". An empty
 // ports.allow allows none; with RequirePolicy it is also the hit
 // "policy ports.allow empty".
 func (c *Checker) CheckPorts() {
@@ -49,7 +61,11 @@ func (c *Checker) CheckPorts() {
 			continue
 		}
 		socks, err := listening(string(data))
-		if err != nil {
+		switch {
+		case errors.Is(err, errNoHeader):
+			c.hit(KindIncomplete, show(f.rel), DetailHeader)
+			continue
+		case err != nil:
 			c.hit(KindUnreadable, show(f.rel), describe(err))
 		}
 		for _, s := range socks {
@@ -61,12 +77,17 @@ func (c *Checker) CheckPorts() {
 }
 
 // listening returns the local address of every listening socket in the
-// content of proc/net/tcp or tcp6. The lines it can read are returned with
-// an error naming the first one it cannot.
+// content of proc/net/tcp or tcp6. Content that does not start with the
+// header line is errNoHeader. The lines it can read are returned with an
+// error naming the first one it cannot.
 func listening(data string) ([]netip.AddrPort, error) {
+	lines := strings.Split(data, "\n")
+	if h := strings.Fields(lines[0]); len(h) < 4 || h[0] != "sl" || h[1] != "local_address" || h[2] != "rem_address" || h[3] != "st" {
+		return nil, errNoHeader
+	}
 	var out []netip.AddrPort
 	var bad error
-	for i, line := range strings.Split(data, "\n") {
+	for i, line := range lines {
 		f := strings.Fields(line)
 		if i == 0 || len(f) == 0 {
 			continue // the header

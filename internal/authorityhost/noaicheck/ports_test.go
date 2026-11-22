@@ -48,12 +48,34 @@ func TestCheckPorts(t *testing.T) {
 		{"a malformed line", func(f *fixture) {
 			f.file("proc/net/tcp", tcpHeader+"   0: junk\n"+listen("00000000:0050"))
 		}, []Hit{{Kind: KindUnreadable, Path: "/proc/net/tcp", Detail: "malformed line 2"}, port("tcp:0.0.0.0:80")}},
+		{"an empty tcp table", func(f *fixture) { f.file("proc/net/tcp", "") },
+			[]Hit{{Kind: KindIncomplete, Path: "/proc/net/tcp", Detail: DetailHeader}}},
+		{"a headerless tcp table", func(f *fixture) {
+			f.file("proc/net/tcp", listen("00000000:0050"))
+		}, []Hit{{Kind: KindIncomplete, Path: "/proc/net/tcp", Detail: DetailHeader}}},
+		{"a headerless tcp6 table", func(f *fixture) { f.file("proc/net/tcp6", "\n") },
+			[]Hit{{Kind: KindIncomplete, Path: "/proc/net/tcp6", Detail: DetailHeader}}},
+		{"a header and no listeners", func(f *fixture) {
+			f.file("proc/net/tcp", tcpHeader)
+			f.file("proc/net/tcp6", tcpHeader)
+		}, nil},
 		{"proc/net as a link to self/net", func(f *fixture) {
 			mustRemoveAll(f, "proc/net")
 			f.file("proc/42/net/tcp", tcpHeader+listen("00000000:0019"))
 			f.link("proc/net", "self/net")
 		}, []Hit{port("tcp:0.0.0.0:25")}},
 	}, (*Checker).CheckPorts)
+}
+
+func TestListeningNeedsAHeader(t *testing.T) {
+	for _, in := range []string{"", "\n", "x y z w\n", "  sl  local_address rem_address\n"} {
+		if _, err := listening(in); !errors.Is(err, errNoHeader) {
+			t.Errorf("listening(%q): %v", in, err)
+		}
+	}
+	if socks, err := listening(tcpHeader); err != nil || len(socks) != 0 {
+		t.Errorf("a header only: %v %v", socks, err)
+	}
 }
 
 func TestListeningReportsTheFirstBadLine(t *testing.T) {

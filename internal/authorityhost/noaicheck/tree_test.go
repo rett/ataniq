@@ -300,3 +300,42 @@ func TestStatAt(t *testing.T) {
 		}
 	}
 }
+
+// An entry whose type the kernel did not give and a stat cannot find is
+// reported to the walk's fail as errUntyped, and the check makes it
+// "incomplete <path> type": the walk cannot know whether to enter it.
+func TestWalkReportsAnUnresolvedType(t *testing.T) {
+	f := newFixture(t)
+	f.dir("opt/a/inner")
+	f.file("opt/b", "")
+	defer func() { testHookDirent = nil }()
+	testHookDirent = func(name string) (byte, error) {
+		if name == "a" {
+			return syscall.DT_UNKNOWN, syscall.EIO
+		}
+		return 0, nil
+	}
+	c := f.checker(testLists())
+	c.walk("opt", 4, func(*wentry) bool { return true })
+	want := []Hit{{Kind: KindIncomplete, Path: "/opt/a", Detail: DetailType}}
+	if r := c.Report(); !reflect.DeepEqual(r.Hits, want) || r.Complete {
+		t.Errorf("hits %v complete %v", r.Hits, r.Complete)
+	}
+}
+
+// Every hit that keeps the check from covering a place makes the run
+// incomplete; a finding alone does not.
+func TestCoverageHitsClearComplete(t *testing.T) {
+	for kind, complete := range map[string]bool{
+		KindUnreadable: false, KindUnitLink: false, KindIncomplete: false, KindPolicy: false,
+		"some-new-kind": false,
+		KindBinary:      true, KindTool: true, KindCredential: true, KindEnv: true, KindProcess: true,
+		KindUnit: true, KindPort: true, KindPackage: true, KindNFT: true,
+	} {
+		c := newFixture(t).checker(testLists())
+		c.hit(kind, "/x", "")
+		if got := c.Report().Complete; got != complete {
+			t.Errorf("a %s hit: complete %v, want %v", kind, got, complete)
+		}
+	}
+}

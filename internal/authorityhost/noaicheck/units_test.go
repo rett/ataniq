@@ -155,8 +155,9 @@ func TestCheckUnitsMaskedAndRuntime(t *testing.T) {
 			if !(len(r.Notes) == 0 && len(tc.notes) == 0) && !reflect.DeepEqual(r.Notes, tc.notes) {
 				t.Errorf("notes %v, want %v", r.Notes, tc.notes)
 			}
-			if !r.Complete {
-				t.Error("a masked unit made the run incomplete")
+			coverage := len(tc.want) > 0 && tc.want[0].Kind == KindUnitLink
+			if r.Complete == coverage {
+				t.Errorf("complete %v", r.Complete)
 			}
 		})
 	}
