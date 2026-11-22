@@ -46,7 +46,7 @@ func (v SSHVerifier) Verify(ctx context.Context, allowedSigners string, data []b
 		Timeout: signatureTimeout,
 	})
 	if err != nil {
-		return fmt.Errorf("no allowed signer made this signature: %v %s", err, tail(out))
+		return fmt.Errorf("no allowed signer made this signature: ssh-keygen -Y find-principals: %s", summary(err))
 	}
 	principal := ""
 	for _, line := range strings.Split(string(out.Stdout), "\n") {
@@ -58,13 +58,13 @@ func (v SSHVerifier) Verify(ctx context.Context, allowedSigners string, data []b
 	if principal == "" || strings.ContainsAny(principal, " \t") {
 		return errors.New("ssh-keygen named no usable principal for the signature")
 	}
-	out, err = v.Runner.Run(ctx, Command{
+	_, err = v.Runner.Run(ctx, Command{
 		Argv:    []string{v.program(), "-Y", "verify", "-f", allowedSigners, "-I", principal, "-n", SignatureNamespace, "-s", signaturePath},
 		Stdin:   data,
 		Timeout: signatureTimeout,
 	})
 	if err != nil {
-		return fmt.Errorf("signature does not verify: %v %s", err, tail(out))
+		return fmt.Errorf("signature does not verify: ssh-keygen -Y verify: %s", summary(err))
 	}
 	return nil
 }

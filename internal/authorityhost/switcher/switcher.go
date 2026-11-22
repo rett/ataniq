@@ -21,7 +21,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -139,7 +138,7 @@ func (s *Switcher) step(n int, format string, args ...any) {
 
 func (s *Switcher) checkConfig() error {
 	if !filepath.IsAbs(s.cfg.Root) {
-		return fmt.Errorf("--root %q is not an absolute path", s.cfg.Root)
+		return fmt.Errorf("--root %s is not an absolute path", q(s.cfg.Root))
 	}
 	switch s.cfg.Mode {
 	case ModeManual:
@@ -151,7 +150,7 @@ func (s *Switcher) checkConfig() error {
 			return errors.New("--mode signed needs --allowed-signers FILE")
 		}
 	default:
-		return fmt.Errorf("--mode %q is neither manual nor signed", s.cfg.Mode)
+		return fmt.Errorf("--mode %s is neither manual nor signed", q(s.cfg.Mode))
 	}
 	return nil
 }
@@ -163,15 +162,19 @@ func (s *Switcher) targetID(target string) (ReleaseID, error) {
 	if filepath.IsAbs(t) {
 		rel, err := filepath.Rel(s.base(), t)
 		if err != nil {
-			return ReleaseID{}, err
+			return ReleaseID{}, failf(CodeStateInvalid, "link target %s is not a folder of releases/", q(target))
 		}
 		t = rel
 	}
 	dir, name := filepath.Split(t)
 	if dir != "releases/" {
-		return ReleaseID{}, fmt.Errorf("link target %q is not a folder of releases/", target)
+		return ReleaseID{}, failf(CodeStateInvalid, "link target %s is not a folder of releases/", q(target))
 	}
-	return ParseID(name)
+	id, err := ParseID(name)
+	if err != nil {
+		return ReleaseID{}, failf(CodeStateInvalid, "link target %s is not a release id", q(target))
+	}
+	return id, nil
 }
 
 // attempt is the state of one switch.
@@ -223,7 +226,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	if s.cfg.Dry {
 		dry = ", dry run: nothing is run or changed"
 	}
-	s.printf("ah-switch: %s (mode %s, root %s%s)", what, s.cfg.Mode, s.cfg.Root, dry)
+	s.printf("ah-switch: %s (mode %s, root %s%s)", what, s.cfg.Mode, q(s.cfg.Root), dry)
 
 	lk, code := s.lock()
 	if lk == nil {
@@ -258,11 +261,11 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		}
 		switch {
 		case !a.prevExists:
-			return s.fail(a, 2, errors.New("there is no previous release to go back to"))
+			return s.fail(a, 2, failf(CodeNoPrevious, "there is no previous release to go back to"))
 		case arg != "previous" && arg != prevID:
-			return s.fail(a, 2, fmt.Errorf("--rollback-to accepts only previous, which points at %s; %s is refused", prevID, arg))
+			return s.fail(a, 2, failf(CodeRollbackRefused, "--rollback-to accepts only previous, which points at %s; %s is refused", prevID, arg))
 		case prevID == a.rec.PreviousID:
-			return s.fail(a, 2, fmt.Errorf("previous and current both point at %s; there is nothing to go back to", prevID))
+			return s.fail(a, 2, failf(CodeNoPrevious, "previous and current both point at %s; there is nothing to go back to", prevID))
 		}
 		name = prevID
 		a.rec.ID = name
@@ -298,7 +301,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		return s.fail(a, 1, err)
 	}
 	a.reloads, a.health = reloads, health
-	s.step(1, "MANIFEST: commit %s, built on %s, %s, package snapshot %s", manifest.Commit, manifest.BuiltOn, manifest.GoVersion, manifest.PackageSnapshot)
+	s.step(1, "MANIFEST: commit %s, built on %s, %s, package snapshot %s", q(manifest.Commit), q(manifest.BuiltOn), q(manifest.GoVersion), q(manifest.PackageSnapshot))
 
 	// 2. Counter.
 	highestPath := filepath.Join(s.stateDir(), HighestFile)
@@ -310,7 +313,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		s.step(2, "rollback to previous: the counter rule does not apply; the highest counter stays %d", highest)
 	} else {
 		if id.Counter <= highest {
-			return s.fail(a, 2, fmt.Errorf("counter %d is not above the highest ever activated, %d", id.Counter, highest))
+			return s.fail(a, 2, failf(CodeCounterNotAbove, "counter %d is not above the highest ever activated, %d", id.Counter, highest))
 		}
 		s.step(2, "counter %d is above the highest ever activated, %d", id.Counter, highest)
 	}
@@ -321,22 +324,22 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		check = filepath.Join(rel.dir, NoAICheckProgram)
 		ok, err := rel.exists(NoAICheckProgram)
 		if err == nil && !ok {
-			err = fmt.Errorf("%s missing in the release", NoAICheckProgram)
+			err = failf(CodeNoAICheckMissing, "%s missing in the release", NoAICheckProgram)
 		}
 		if err != nil {
 			return s.fail(a, 3, err)
 		}
 	} else if info, err := os.Stat(check); err != nil || !info.Mode().IsRegular() {
-		return s.fail(a, 3, fmt.Errorf("no-AI check %s is not a regular file", check))
+		return s.fail(a, 3, failf(CodeNoAICheckMissing, "no-AI check %s is not a regular file", q(check)))
 	}
 	argv := []string{check, "--release", rel.dir}
 	if s.cfg.Dry {
-		s.step(3, "would run %s", strings.Join(argv, " "))
+		s.step(3, "would run %s", qargv(argv))
 	} else {
-		out, err := s.cfg.Runner.Run(ctx, Command{Argv: argv, Timeout: NoAICheckTimeout})
+		_, err := s.cfg.Runner.Run(ctx, Command{Argv: argv, Timeout: NoAICheckTimeout})
 		if err != nil {
 			a.rec.Check = CheckFailed
-			return s.fail(a, 3, withOutput(err, out))
+			return s.fail(a, 3, failf(CodeNoAICheckFailed, "%s (run it by hand to see its hits)", summary(err)))
 		}
 		a.rec.Check = CheckPassed
 		s.step(3, "passed")
@@ -346,21 +349,21 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	if len(validators) == 0 {
 		s.step(4, "no %s: nothing to validate", ValidatorsList)
 	}
-	for _, v := range validators {
+	for i, v := range validators {
 		if s.cfg.Dry {
-			s.step(4, "would run %s", strings.Join(v, " "))
+			s.step(4, "would run %s", qargv(v))
 			continue
 		}
-		out, err := s.cfg.Runner.Run(ctx, Command{Argv: v, Timeout: ValidatorTimeout})
+		_, err := s.cfg.Runner.Run(ctx, Command{Argv: v, Timeout: ValidatorTimeout})
 		if err != nil {
-			return s.fail(a, 4, withOutput(err, out))
+			return s.fail(a, 4, failf(CodeValidatorFailed, "validator %d of %d, %s: %s", i+1, len(validators), q(v[0]), summary(err)))
 		}
-		s.step(4, "ok: %s", strings.Join(v, " "))
+		s.step(4, "ok: %s", qargv(v))
 	}
 
 	// 5. Packages.
 	if manifest.PackageSnapshot == a.rec.PackageSnapshot {
-		s.step(5, "package snapshot %s unchanged", manifest.PackageSnapshot)
+		s.step(5, "package snapshot %s unchanged", q(manifest.PackageSnapshot))
 	} else {
 		ok, err := rel.exists(PackageStepProgram)
 		if err != nil {
@@ -368,17 +371,18 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		}
 		switch {
 		case !ok:
-			s.step(5, "package snapshot %q -> %q; the release has no %s: nothing to do", a.rec.PackageSnapshot, manifest.PackageSnapshot, PackageStepProgram)
+			s.step(5, "package snapshot %s -> %s; the release has no %s: nothing to do", q(a.rec.PackageSnapshot), q(manifest.PackageSnapshot), PackageStepProgram)
 		case s.cfg.Dry:
-			s.step(5, "would run %s --release %s --from %q --to %q", filepath.Join(rel.dir, PackageStepProgram), rel.dir, a.rec.PackageSnapshot, manifest.PackageSnapshot)
+			argv := []string{filepath.Join(rel.dir, PackageStepProgram), "--release", rel.dir, "--from", a.rec.PackageSnapshot, "--to", manifest.PackageSnapshot}
+			s.step(5, "would run %s", qargv(argv))
 		default:
 			argv := []string{filepath.Join(rel.dir, PackageStepProgram), "--release", rel.dir, "--from", a.rec.PackageSnapshot, "--to", manifest.PackageSnapshot}
-			out, err := s.cfg.Runner.Run(ctx, Command{Argv: argv, Timeout: PackageStepTimeout})
+			_, err := s.cfg.Runner.Run(ctx, Command{Argv: argv, Timeout: PackageStepTimeout})
 			if err != nil {
-				return s.fail(a, 5, withOutput(err, out))
+				return s.fail(a, 5, failf(CodePackageFailed, "%s", summary(err)))
 			}
 			a.rec.PackageSnapshot = manifest.PackageSnapshot
-			s.step(5, "package step done: snapshot %s", manifest.PackageSnapshot)
+			s.step(5, "package step done: snapshot %s", q(manifest.PackageSnapshot))
 		}
 	}
 
@@ -390,16 +394,16 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		}
 		s.step(6, "would point current at %s (a new link renamed over it)", newTarget)
 		for _, r := range a.reloads {
-			s.step(6, "would reload: %s", strings.Join(r, " "))
+			s.step(6, "would reload: %s", qargv(r))
 		}
-		s.step(7, "would run %s until it passes, every %s for up to %s", strings.Join(a.health, " "), HealthInterval, HealthWindow)
-		s.step(8, "would record the result in %s", filepath.Join(s.stateDir(), DeployFile))
+		s.step(7, "would run %s until it passes, every %s for up to %s", qargv(a.health), HealthInterval, HealthWindow)
+		s.step(8, "would record the result in %s", q(filepath.Join(s.stateDir(), DeployFile)))
 		s.printf("result: dry run passed; nothing changed")
 		return ExitOK
 	}
 	if a.oldExists {
 		if err := replaceLink(a.previous, a.oldTarget); err != nil {
-			return s.fail(a, 6, fmt.Errorf("previous: %w", err))
+			return s.fail(a, 6, failf(CodeLinkFailed, "previous: %s", q(err.Error())))
 		}
 	}
 	if s.afterPrevious != nil {
@@ -409,7 +413,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	}
 	if err := replaceLink(a.current, newTarget); err != nil {
 		s.restorePrevious(a)
-		return s.fail(a, 6, fmt.Errorf("current: %w", err))
+		return s.fail(a, 6, failf(CodeLinkFailed, "current: %s", q(err.Error())))
 	}
 	a.rec.CurrentID = id.Name
 	if a.oldExists {
@@ -429,9 +433,8 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	a.rec.Result = ResultOK
 	if !rollback {
 		if err := writeAtomic(highestPath, []byte(fmt.Sprintf("%d\n", id.Counter)), 0o644); err != nil {
-			a.rec.FailedStep = stepNames[8]
-			a.rec.Error = "highest-counter not written: " + err.Error()
-			s.step(8, "FAILED: %s", a.rec.Error)
+			s.setFailure(a, stepNames[8], failf(CodeRecordFailed, "%s not written: %s", HighestFile, q(err.Error())))
+			s.step(8, "FAILED: %s: %s", a.rec.Error, a.rec.Detail)
 			s.record(a)
 			return ExitFailed
 		}
@@ -440,7 +443,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	if err := s.record(a); err != nil {
 		return ExitFailed
 	}
-	s.step(8, "recorded in %s", filepath.Join(s.stateDir(), DeployFile))
+	s.step(8, "recorded in %s", q(filepath.Join(s.stateDir(), DeployFile)))
 	s.printf("result: ok; current -> %s", id.Name)
 	return ExitOK
 }
@@ -451,17 +454,17 @@ func (s *Switcher) lock() (*lock, int) {
 	path := filepath.Join(s.stateDir(), LockFile)
 	if !s.cfg.Dry {
 		if err := os.MkdirAll(s.stateDir(), 0o755); err != nil {
-			s.errorf("%v", err)
+			s.errorf("%s", q(err.Error()))
 			return nil, ExitFailed
 		}
 	}
 	lk, err := takeLock(path, !s.cfg.Dry)
 	if errors.Is(err, errLocked) {
-		s.errorf("%v (%s); nothing done", err, path)
+		s.errorf("%v (%s); nothing done", err, q(path))
 		return nil, ExitLocked
 	}
 	if err != nil {
-		s.errorf("lock: %v", err)
+		s.errorf("lock: %s", q(err.Error()))
 		return nil, ExitFailed
 	}
 	return lk, ExitOK
@@ -488,7 +491,7 @@ func (s *Switcher) readState(a *attempt) (int, bool) {
 	}
 	last, _, err := readRecord(filepath.Join(s.stateDir(), DeployFile))
 	if err != nil {
-		s.printf("warning: %v; the package snapshot is taken as unknown", err)
+		s.printf("warning: %s; the package snapshot is taken as unknown", describe(err))
 	}
 	a.rec.PackageSnapshot = last.PackageSnapshot
 	current := "none"
@@ -500,10 +503,9 @@ func (s *Switcher) readState(a *attempt) (int, bool) {
 }
 
 func (s *Switcher) failState(a *attempt, err error) int {
-	s.printf("state: FAILED: %v", err)
+	s.setFailure(a, "state", err)
+	s.printf("state: FAILED: %s", describe(err))
 	a.rec.Result = ResultFailed
-	a.rec.FailedStep = "state"
-	a.rec.Error = err.Error()
 	s.record(a)
 	s.printf("result: failed before step 1; nothing changed")
 	return ExitFailed
@@ -523,26 +525,26 @@ func (s *Switcher) verifySignature(ctx context.Context, a *attempt, rel *release
 		return 0, false
 	}
 	if !present {
-		return s.fail(a, 1, fmt.Errorf("%s missing; mode signed needs it", SignatureFile)), true
+		return s.fail(a, 1, failf(CodeSignatureMissing, "%s missing; mode signed needs it", SignatureFile)), true
 	}
 	if s.cfg.Dry {
-		s.step(1, "would verify %s against %s", SignatureFile, s.cfg.AllowedSigners)
+		s.step(1, "would verify %s against %s", SignatureFile, q(s.cfg.AllowedSigners))
 		return 0, false
 	}
 	if err := s.cfg.Verifier.Verify(ctx, s.cfg.AllowedSigners, rel.sums, filepath.Join(rel.dir, SignatureFile)); err != nil {
-		return s.fail(a, 1, fmt.Errorf("%s: %w", SignatureFile, err)), true
+		_, detail := codeOf(err)
+		return s.fail(a, 1, failf(CodeSignatureBad, "%s: %s", SignatureFile, detail)), true
 	}
-	s.step(1, "%s verified against %s", SignatureFile, s.cfg.AllowedSigners)
+	s.step(1, "%s verified against %s", SignatureFile, q(s.cfg.AllowedSigners))
 	return 0, false
 }
 
 // fail ends a switch that failed at step n before current was moved: current
 // is untouched. Outside a dry run the outcome is recorded.
 func (s *Switcher) fail(a *attempt, n int, err error) int {
-	s.step(n, "FAILED: %v", err)
+	s.setFailure(a, stepNames[n], err)
+	s.step(n, "FAILED: %s", describe(err))
 	a.rec.Result = ResultFailed
-	a.rec.FailedStep = stepNames[n]
-	a.rec.Error = err.Error()
 	if s.cfg.Dry {
 		s.printf("result: failed at %s (dry run: nothing recorded); current unchanged", stepNames[n])
 		return ExitFailed
@@ -558,12 +560,12 @@ func (s *Switcher) fail(a *attempt, n int, err error) int {
 
 func (s *Switcher) reload(ctx context.Context, a *attempt) error {
 	for _, r := range a.reloads {
-		out, err := s.cfg.Runner.Run(ctx, Command{Argv: r, Timeout: ReloadTimeout})
+		_, err := s.cfg.Runner.Run(ctx, Command{Argv: r, Timeout: ReloadTimeout})
 		if err != nil {
-			s.step(6, "reload FAILED: %s: %v", strings.Join(r, " "), withOutput(err, out))
-			return withOutput(err, out)
+			s.step(6, "reload FAILED: %s: %s", qargv(r), summary(err))
+			return failf(CodeReloadFailed, "%s: %s", q(r[0]), summary(err))
 		}
-		s.step(6, "reloaded: %s", strings.Join(r, " "))
+		s.step(6, "reloaded: %s", qargv(r))
 	}
 	return nil
 }
@@ -580,18 +582,18 @@ func (s *Switcher) checkHealth(ctx context.Context, argv []string) error {
 		if limit < time.Second {
 			limit = time.Second
 		}
-		out, err := s.cfg.Runner.Run(ctx, Command{Argv: argv, Timeout: limit})
+		_, err := s.cfg.Runner.Run(ctx, Command{Argv: argv, Timeout: limit})
 		if err == nil {
-			s.step(7, "healthy after %d attempt(s): %s", attempts, strings.Join(argv, " "))
+			s.step(7, "healthy after %d attempt(s): %s", attempts, qargv(argv))
 			return nil
 		}
-		last = withOutput(err, out)
+		last = err
 		if !s.cfg.Now().Add(HealthInterval).Before(deadline) {
 			break
 		}
 		s.cfg.Sleep(HealthInterval)
 	}
-	return fmt.Errorf("not healthy after %d attempts in %s: %v", attempts, HealthWindow, last)
+	return failf(CodeHealthFailed, "not healthy after %d attempts in %s: %s", attempts, HealthWindow, summary(last))
 }
 
 // goBack is called when the reload or the health check failed after current
@@ -602,33 +604,32 @@ func (s *Switcher) goBack(ctx context.Context, a *attempt, step string, cause er
 	if step == "reload" {
 		n = 6
 	}
-	s.step(n, "FAILED: %v", cause)
-	a.rec.FailedStep = step
-	a.rec.Error = cause.Error()
+	s.setFailure(a, step, cause)
+	s.step(n, "FAILED: %s", describe(cause))
 	if !a.oldExists {
 		a.rec.Result = ResultFailed
-		a.rec.Error += "; there is no earlier release to go back to, so current stays at " + a.rec.CurrentID
+		a.rec.Detail += "; there is no earlier release to go back to, so current stays at " + a.rec.CurrentID
 		s.record(a)
 		s.printf("result: failed at %s; no earlier release, current stays at %s", step, a.rec.CurrentID)
 		return ExitFailed
 	}
 	if err := replaceLink(a.current, a.oldTarget); err != nil {
 		a.rec.Result = ResultFailed
-		a.rec.Error += "; going back failed: " + err.Error()
+		a.rec.Detail += "; going back failed: " + q(err.Error())
 		s.record(a)
-		s.printf("result: failed at %s and could not go back (%v); current stays at %s", step, err, a.rec.CurrentID)
+		s.printf("result: failed at %s and could not go back (%s); current stays at %s", step, q(err.Error()), a.rec.CurrentID)
 		return ExitFailed
 	}
 	failedID := a.rec.CurrentID
 	a.rec.CurrentID = a.rec.PreviousID
 	s.restorePrevious(a)
-	s.printf("back: current -> %s", a.oldTarget)
+	s.printf("back: current -> %s", q(a.oldTarget))
 	if err := s.reload(ctx, a); err != nil {
-		a.rec.Error += "; reload after going back failed: " + err.Error()
+		a.rec.Detail += "; reload after going back failed: " + describe(err)
 	}
 	if err := s.checkHealth(ctx, a.health); err != nil {
 		a.rec.RestoredHealth = "failed"
-		a.rec.Error += "; the release gone back to is not healthy either: " + err.Error()
+		a.rec.Detail += "; the release gone back to is not healthy either: " + describe(err)
 	} else {
 		a.rec.RestoredHealth = "ok"
 	}
@@ -647,7 +648,7 @@ func (s *Switcher) restorePrevious(a *attempt) {
 		err = nil
 	}
 	if err != nil {
-		s.printf("warning: previous not put back: %v", err)
+		s.printf("warning: previous not put back: %s", q(err.Error()))
 	}
 }
 
@@ -662,17 +663,25 @@ func (s *Switcher) record(a *attempt) error {
 		err = writeAtomic(filepath.Join(s.stateDir(), DeployFile), append(data, '\n'), 0o644)
 	}
 	if err != nil {
-		s.printf("ah-switch: %s not written: %v", DeployFile, err)
+		s.printf("ah-switch: %s not written: %s", DeployFile, q(err.Error()))
 		return err
 	}
 	return nil
 }
 
-func withOutput(err error, out Output) error {
-	if t := tail(out); t != "" {
-		return fmt.Errorf("%w: %s", err, t)
+// setFailure records err in the record as the failure of step.
+func (s *Switcher) setFailure(a *attempt, step string, err error) {
+	a.rec.FailedStep = step
+	a.rec.Error, a.rec.Detail = codeOf(err)
+}
+
+// describe is err as a line may show it: its code and its detail.
+func describe(err error) string {
+	code, detail := codeOf(err)
+	if detail == "" {
+		return code
 	}
-	return err
+	return code + ": " + detail
 }
 
 // Status prints current, previous, the highest counter and the last record.
@@ -710,17 +719,20 @@ func Status(root string, w io.Writer) error {
 	if rec.Rollback {
 		kind = "rollback to"
 	}
-	fmt.Fprintf(w, "last switch: %s %s: %s at %s (mode %s)\n", kind, rec.ID, rec.Result, rec.Time, rec.Mode)
-	fmt.Fprintf(w, "no-AI check: %s\n", rec.Check)
+	fmt.Fprintf(w, "last switch: %s %s: %s at %s (mode %s)\n", kind, q(rec.ID), q(rec.Result), q(rec.Time), q(rec.Mode))
+	fmt.Fprintf(w, "no-AI check: %s\n", q(rec.Check))
 	if rec.FailedStep != "" {
-		fmt.Fprintf(w, "failed step: %s\n", rec.FailedStep)
+		fmt.Fprintf(w, "failed step: %s\n", q(rec.FailedStep))
 	}
 	if rec.Error != "" {
-		fmt.Fprintf(w, "error: %s\n", rec.Error)
+		fmt.Fprintf(w, "error: %s\n", q(rec.Error))
+	}
+	if rec.Detail != "" {
+		fmt.Fprintf(w, "detail: %s\n", q(rec.Detail))
 	}
 	if rec.RestoredHealth != "" {
-		fmt.Fprintf(w, "health after going back: %s\n", rec.RestoredHealth)
+		fmt.Fprintf(w, "health after going back: %s\n", q(rec.RestoredHealth))
 	}
-	fmt.Fprintf(w, "package snapshot: %s\n", rec.PackageSnapshot)
+	fmt.Fprintf(w, "package snapshot: %s\n", q(rec.PackageSnapshot))
 	return nil
 }

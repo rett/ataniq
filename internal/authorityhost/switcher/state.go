@@ -24,7 +24,8 @@ type Record struct {
 	Result          string `json:"result"`           // ok, failed or rolled-back
 	Check           string `json:"check"`            // the no-AI check: passed, failed or not run
 	FailedStep      string `json:"failed_step"`      // empty when ok
-	Error           string `json:"error"`            // empty when ok
+	Error           string `json:"error"`            // a failure code; empty when ok
+	Detail          string `json:"detail"`           // fixed words and quoted identifiers; empty when ok
 	PackageSnapshot string `json:"package_snapshot"` // the snapshot the package step last brought the host to
 	RestoredHealth  string `json:"restored_health"`  // after going back: ok or failed; empty otherwise
 }
@@ -54,7 +55,7 @@ func readRecord(path string) (Record, bool, error) {
 	}
 	var rec Record
 	if err := json.Unmarshal(data, &rec); err != nil {
-		return Record{}, false, fmt.Errorf("%s: %w", path, err)
+		return Record{}, false, failf(CodeStateInvalid, "%s does not parse", DeployFile)
 	}
 	return rec, true, nil
 }
@@ -71,7 +72,7 @@ func readHighest(path string) (uint64, error) {
 	}
 	n, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("%s does not hold a counter: %q", path, strings.TrimSpace(string(data)))
+		return 0, failf(CodeCounterInvalid, "%s does not hold a counter", HighestFile)
 	}
 	return n, nil
 }

@@ -109,7 +109,7 @@ func TestDeployRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"id", "previous_id", "current_id", "counter", "mode", "rollback", "time", "result", "check", "failed_step", "error", "package_snapshot", "restored_health"} {
+	for _, key := range []string{"id", "previous_id", "current_id", "counter", "mode", "rollback", "time", "result", "check", "failed_step", "error", "detail", "package_snapshot", "restored_health"} {
 		if !strings.Contains(string(data), `"`+key+`":`) {
 			t.Errorf("deploy.json has no %s:\n%s", key, data)
 		}
@@ -128,7 +128,7 @@ func TestDeployRecord(t *testing.T) {
 	rec = e.record()
 	if rec.ID != rel3 || rec.PreviousID != rel2 || rec.CurrentID != rel2 || rec.Counter != 3 ||
 		rec.Result != ResultFailed || rec.Check != CheckFailed || rec.FailedStep != "noaicheck" ||
-		!strings.Contains(rec.Error, "ah-noaicheck said no") {
+		rec.Error != CodeNoAICheckFailed || rec.Detail != "failed (run it by hand to see its hits)" {
 		t.Errorf("deploy.json after a failed check: %+v", rec)
 	}
 }
@@ -141,8 +141,8 @@ func TestWrongSum(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	e.unchanged("releases/"+rel2, "verify")
-	if !strings.Contains(e.record().Error, "bin/app does not match") {
-		t.Errorf("error: %s", e.record().Error)
+	if !strings.Contains(e.record().Detail, "bin/app does not match") {
+		t.Errorf("error: %s: %s", e.record().Error, e.record().Detail)
 	}
 	if len(e.runner.calls) != 0 {
 		t.Errorf("commands run after a failed verification: %v", e.runner.calls)
@@ -157,8 +157,8 @@ func TestExtraFile(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	e.unchanged("releases/"+rel2, "verify")
-	if !strings.Contains(e.record().Error, "not listed in SHA256SUMS: etc/extra.conf") {
-		t.Errorf("error: %s", e.record().Error)
+	if !strings.Contains(e.record().Detail, "not listed in SHA256SUMS: etc/extra.conf") {
+		t.Errorf("error: %s: %s", e.record().Error, e.record().Detail)
 	}
 }
 
@@ -172,8 +172,8 @@ func TestMissingFile(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	e.unchanged("releases/"+rel2, "verify")
-	if !strings.Contains(e.record().Error, "missing: bin/app") {
-		t.Errorf("error: %s", e.record().Error)
+	if !strings.Contains(e.record().Detail, "missing: bin/app") {
+		t.Errorf("error: %s: %s", e.record().Error, e.record().Detail)
 	}
 }
 
@@ -193,8 +193,8 @@ func TestPathEscapeInSums(t *testing.T) {
 				t.Fatalf("exit %d", code)
 			}
 			e.unchanged("releases/"+rel2, "verify")
-			if !strings.Contains(e.record().Error, "escapes the release folder") {
-				t.Errorf("error: %s", e.record().Error)
+			if !strings.Contains(e.record().Detail, "escapes the release folder") {
+				t.Errorf("error: %s: %s", e.record().Error, e.record().Detail)
 			}
 		})
 	}
@@ -236,8 +236,8 @@ func TestSymlinkInsideReleaseRefused(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	e.unchanged("releases/"+rel2, "verify")
-	if !strings.Contains(e.record().Error, "etc/link is a symbolic link") {
-		t.Errorf("error: %s", e.record().Error)
+	if !strings.Contains(e.record().Detail, "etc/link is a symbolic link") {
+		t.Errorf("error: %s: %s", e.record().Error, e.record().Detail)
 	}
 }
 
@@ -256,8 +256,8 @@ func TestSymlinkReleaseFolderRefused(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	e.unchanged("releases/"+rel2, "verify")
-	if !strings.Contains(e.record().Error, "is a symbolic link, not a release folder") {
-		t.Errorf("error: %s", e.record().Error)
+	if !strings.Contains(e.record().Detail, "is a symbolic link, not a release folder") {
+		t.Errorf("error: %s: %s", e.record().Error, e.record().Detail)
 	}
 }
 
@@ -286,8 +286,8 @@ func TestManifestMismatch(t *testing.T) {
 				t.Fatalf("exit %d", code)
 			}
 			e.unchanged("releases/"+rel2, "verify")
-			if !strings.Contains(e.record().Error, tc.want) {
-				t.Errorf("error: %s", e.record().Error)
+			if !strings.Contains(e.record().Detail, tc.want) {
+				t.Errorf("error: %s: %s", e.record().Error, e.record().Detail)
 			}
 		})
 	}
@@ -301,8 +301,8 @@ func TestLowerCounterRefused(t *testing.T) {
 				t.Fatalf("exit %d", code)
 			}
 			e.unchanged("releases/"+rel2, "counter")
-			if !strings.Contains(e.record().Error, "not above the highest ever activated, 2") {
-				t.Errorf("error: %s", e.record().Error)
+			if !strings.Contains(e.record().Detail, "not above the highest ever activated, 2") {
+				t.Errorf("error: %s: %s", e.record().Error, e.record().Detail)
 			}
 			if len(e.runner.calls) != 0 {
 				t.Errorf("commands run: %v", e.runner.calls)
@@ -363,8 +363,8 @@ func TestRollbackRefusedForOtherID(t *testing.T) {
 			t.Fatalf("rollback to %s: exit %d", id, code)
 		}
 		e.unchanged("releases/"+rel2, "counter")
-		if !strings.Contains(e.record().Error, "accepts only previous") {
-			t.Errorf("error: %s", e.record().Error)
+		if !strings.Contains(e.record().Detail, "accepts only previous") {
+			t.Errorf("error: %s: %s", e.record().Error, e.record().Detail)
 		}
 	}
 	if code := e.rollBack("latest"); code != ExitUsage {
@@ -439,7 +439,7 @@ func TestValidatorFailing(t *testing.T) {
 	}
 	e.unchanged("releases/"+rel2, "validate")
 	rec := e.record()
-	if rec.Check != CheckPassed || !strings.Contains(rec.Error, "validate-rules said no") {
+	if rec.Check != CheckPassed || rec.Error != CodeValidatorFailed || rec.Detail != "validator 2 of 2, validate-rules: failed" {
 		t.Errorf("record: %+v", rec)
 	}
 	if e.runner.called("reload-units") != 0 {
@@ -593,7 +593,7 @@ func TestFirstSwitchUnhealthyHasNoWayBack(t *testing.T) {
 		t.Errorf("current -> %q", got)
 	}
 	rec := e.record()
-	if rec.Result != ResultFailed || rec.FailedStep != "health" || !strings.Contains(rec.Error, "no earlier release") {
+	if rec.Result != ResultFailed || rec.FailedStep != "health" || rec.Error != CodeHealthFailed || !strings.Contains(rec.Detail, "no earlier release") {
 		t.Errorf("record: %+v", rec)
 	}
 	if got := e.highest(); got != "" {
@@ -893,6 +893,78 @@ func TestParseID(t *testing.T) {
 	for _, bad := range []string{"", "7-ab12cd3", "0007", "0007-ab12", "0007-ab12cd3/..", "0007-ab12cd3 ", "x007-ab12cd3", "0007_ab12cd3"} {
 		if _, err := ParseID(bad); err == nil {
 			t.Errorf("ParseID(%q) accepted", bad)
+		}
+	}
+}
+
+// TestChildOutputNeverShown: what a failing program writes reaches neither
+// deploy.json nor the steps, since a diagnostic can hold a secret.
+func TestChildOutputNeverShown(t *testing.T) {
+	for _, prog := range []string{"ah-noaicheck", "validate-rules", "reload-units", "health-probe"} {
+		t.Run(prog, func(t *testing.T) {
+			e := active(t)
+			e.release(rel3, "2026-11-01")
+			e.runner.fail[prog] = -1
+			if code := e.switchTo(rel3); code != ExitFailed {
+				t.Fatalf("exit %d", code)
+			}
+			if strings.Contains(e.last, "said no") || strings.Contains(e.deployJSON(), "said no") {
+				t.Errorf("the program's output was passed on:\n%s\n%s", e.last, e.deployJSON())
+			}
+		})
+	}
+}
+
+// TestPlantedNameEscaped: a file name holding a newline cannot forge a line
+// of the output, and deploy.json holds it escaped.
+func TestPlantedNameEscaped(t *testing.T) {
+	e := active(t)
+	dir := e.release(rel3, "2026-11-01")
+	e.write(filepath.Join(dir, "etc", "x\nresult: ok"), "x", 0o644)
+	if code := e.switchTo(rel3); code != ExitFailed {
+		t.Fatalf("exit %d", code)
+	}
+	for _, line := range strings.Split(e.last, "\n") {
+		if strings.HasPrefix(line, "result: ok") {
+			t.Errorf("a planted name forged a line:\n%s", e.last)
+		}
+	}
+	rec := e.record()
+	if rec.Error != CodeFileNotListed || rec.Detail != `not listed in SHA256SUMS: "etc/x\nresult: ok"` {
+		t.Errorf("record: %s: %s", rec.Error, rec.Detail)
+	}
+}
+
+// TestBadCounterNotEchoed: the text of a broken highest-counter is not
+// repeated anywhere.
+func TestBadCounterNotEchoed(t *testing.T) {
+	e := active(t)
+	e.release(rel3, "2026-11-01")
+	e.write(filepath.Join(e.root, StateDir, HighestFile), "token-of-someone\n", 0o644)
+	if code := e.switchTo(rel3); code != ExitFailed {
+		t.Fatalf("exit %d", code)
+	}
+	if strings.Contains(e.last, "token-of") || strings.Contains(e.deployJSON(), "token-of") {
+		t.Errorf("the counter text was echoed:\n%s\n%s", e.last, e.deployJSON())
+	}
+	if rec := e.record(); rec.Error != CodeCounterInvalid {
+		t.Errorf("record: %+v", rec)
+	}
+}
+
+func TestQuoteField(t *testing.T) {
+	long := strings.Repeat("a", maxField+10)
+	for _, tc := range []struct{ in, want string }{
+		{"bin/app", "bin/app"},
+		{"", `""`},
+		{"a b", `"a b"`},
+		{"x\ny", `"x\ny"`},
+		{"\x1b[2J", `"\x1b[2J"`},
+		{"\xc3\xa9", `"\` + "u00e9\""},
+		{long, strings.Repeat("a", maxField) + "..."},
+	} {
+		if got := q(tc.in); got != tc.want {
+			t.Errorf("q(%q) = %s, want %s", tc.in, got, tc.want)
 		}
 	}
 }

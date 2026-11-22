@@ -98,6 +98,7 @@ type env struct {
 	runner *fakeRunner
 	clock  *fakeClock
 	out    bytes.Buffer
+	last   string // the output of the last switchTo or rollBack
 }
 
 func newEnv(t *testing.T) *env {
@@ -132,6 +133,7 @@ func (e *env) switchTo(id string, mod ...func(*Config)) int {
 	e.t.Helper()
 	code := e.switcher(mod...).Switch(context.Background(), id)
 	e.t.Logf("switch to %s: exit %d\n%s", id, code, e.out.String())
+	e.last = e.out.String()
 	e.out.Reset()
 	return code
 }
@@ -140,6 +142,7 @@ func (e *env) rollBack(which string) int {
 	e.t.Helper()
 	code := e.switcher().RollBack(context.Background(), which)
 	e.t.Logf("roll back to %s: exit %d\n%s", which, code, e.out.String())
+	e.last = e.out.String()
 	e.out.Reset()
 	return code
 }
@@ -233,6 +236,16 @@ func (e *env) record() Record {
 		e.t.Fatal(err)
 	}
 	return rec
+}
+
+// deployJSON returns deploy.json as text.
+func (e *env) deployJSON() string {
+	e.t.Helper()
+	data, err := os.ReadFile(filepath.Join(e.root, StateDir, DeployFile))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return string(data)
 }
 
 func (e *env) highest() string {

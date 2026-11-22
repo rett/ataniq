@@ -38,7 +38,7 @@ func TestExecRunnerExitStatusAndStdin(t *testing.T) {
 	dir := t.TempDir()
 	prog := script(t, dir, "fail", "echo nope >&2\nexit 4\n")
 	out, err := ExecRunner{}.Run(context.Background(), Command{Argv: []string{prog}, Timeout: 10 * time.Second})
-	if err == nil || !strings.Contains(err.Error(), "exit status 4") || strings.TrimSpace(string(out.Stderr)) != "nope" {
+	if err == nil || err.Error() != "exit status 4" || strings.TrimSpace(string(out.Stderr)) != "nope" {
 		t.Errorf("err %v, stderr %q", err, out.Stderr)
 	}
 	out, err = ExecRunner{}.Run(context.Background(), Command{Argv: []string{"cat"}, Stdin: []byte("data\n"), Timeout: 10 * time.Second})
@@ -111,8 +111,14 @@ func TestSwitchWithExecRunner(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	e.unchanged("releases/"+rel1, "noaicheck")
-	if !strings.Contains(e.record().Error, "an AI tool is installed") {
-		t.Errorf("error: %s", e.record().Error)
+	if rec := e.record(); rec.Error != CodeNoAICheckFailed || rec.Detail != "exit status 1 (run it by hand to see its hits)" {
+		t.Errorf("error: %s: %s", rec.Error, rec.Detail)
+	}
+	// What the check wrote is neither recorded nor printed: a diagnostic
+	// can hold a secret.
+	data, err := os.ReadFile(filepath.Join(e.root, StateDir, DeployFile))
+	if err != nil || strings.Contains(string(data), "AI tool") {
+		t.Errorf("deploy.json carries the check's output: %s, %v", data, err)
 	}
 }
 

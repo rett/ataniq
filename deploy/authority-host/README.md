@@ -147,8 +147,22 @@ pointed at before), `current_id` (what it points at after), `counter`, `mode`,
 `rollback`, `time` (UTC), `result` (`ok`, `failed` or `rolled-back`), `check`
 (the no-AI check: `passed`, `failed` or `not run`), `failed_step` (`state`,
 `verify`, `counter`, `noaicheck`, `validate`, `packages`, `switch`, `reload`,
-`health` or `record`; empty when ok), `error`, `package_snapshot` and
-`restored_health`. A dry run writes nothing.
+`health` or `record`; empty when ok), `error`, `detail`, `package_snapshot`
+and `restored_health`. A dry run writes nothing.
+
+`error` is a stable failure code, such as `sums-mismatch`,
+`file-not-listed`, `bad-entry`, `manifest-mismatch`, `signature-bad`,
+`counter-not-above`, `counter-invalid`, `noaicheck-failed`,
+`validator-failed`, `package-step-failed`, `link-failed`, `reload-failed`,
+`health-failed` or `record-failed` (the full list is in
+`internal/authorityhost/switcher/failure.go`). `detail` adds fixed words and
+identifiers: a name that holds anything but printable ASCII, or a space, is
+quoted with Go's escapes and every identifier is cut at 160 bytes, so a
+planted file name cannot forge a line. What a program the switch runs
+writes (the no-AI check, a validator, a reload or health command) is never
+printed or recorded, since a diagnostic can hold a secret: only how it
+ended (`exit status N`, killed, time limit) is. Run the program by hand to
+see its messages. The text of a broken state file is not repeated either.
 
 ### Exit codes
 

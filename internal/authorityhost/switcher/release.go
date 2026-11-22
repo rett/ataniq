@@ -41,11 +41,11 @@ var idPattern = regexp.MustCompile(`^([0-9]{4,18})-([0-9a-f]{7,40})$`)
 func ParseID(s string) (ReleaseID, error) {
 	m := idPattern.FindStringSubmatch(s)
 	if m == nil {
-		return ReleaseID{}, fmt.Errorf("release id %q is not <counter>-<short commit>, such as 0007-ab12cd3", s)
+		return ReleaseID{}, fmt.Errorf("release id %s is not <counter>-<short commit>, such as 0007-ab12cd3", q(s))
 	}
 	n, err := strconv.ParseUint(m[1], 10, 64)
 	if err != nil {
-		return ReleaseID{}, fmt.Errorf("release id %q: counter: %w", s, err)
+		return ReleaseID{}, fmt.Errorf("release id %s: the counter is out of range", q(s))
 	}
 	return ReleaseID{Name: s, Counter: n, Commit: m[2]}, nil
 }
@@ -76,22 +76,22 @@ func ParseManifest(data []byte) (Manifest, error) {
 		}
 		key, value, ok := strings.Cut(line, ":")
 		if !ok {
-			return Manifest{}, fmt.Errorf("MANIFEST line %d: not key: value", i+1)
+			return Manifest{}, failf(CodeManifestInvalid, "MANIFEST line %d: not key: value", i+1)
 		}
 		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
 		if _, dup := values[key]; dup {
-			return Manifest{}, fmt.Errorf("MANIFEST line %d: %s given twice", i+1, key)
+			return Manifest{}, failf(CodeManifestInvalid, "MANIFEST line %d: %s given twice", i+1, q(key))
 		}
 		values[key] = value
 	}
 	for _, key := range manifestKeys {
 		if values[key] == "" {
-			return Manifest{}, fmt.Errorf("MANIFEST: %s missing or empty", key)
+			return Manifest{}, failf(CodeManifestInvalid, "MANIFEST: %s missing or empty", key)
 		}
 	}
 	n, err := strconv.ParseUint(values["counter"], 10, 64)
 	if err != nil {
-		return Manifest{}, fmt.Errorf("MANIFEST: counter %q is not a number", values["counter"])
+		return Manifest{}, failf(CodeManifestInvalid, "MANIFEST: counter is not a number")
 	}
 	return Manifest{
 		ID:              values["id"],
@@ -106,13 +106,13 @@ func ParseManifest(data []byte) (Manifest, error) {
 // Check reports whether the manifest describes the release named id.
 func (m Manifest) Check(id ReleaseID) error {
 	if m.ID != id.Name {
-		return fmt.Errorf("MANIFEST id %q is not the folder's name %q", m.ID, id.Name)
+		return failf(CodeManifestMismatch, "MANIFEST id %s is not the folder's name %s", q(m.ID), id.Name)
 	}
 	if m.Counter != id.Counter {
-		return fmt.Errorf("MANIFEST counter %d is not the counter %d of %s", m.Counter, id.Counter, id.Name)
+		return failf(CodeManifestMismatch, "MANIFEST counter %d is not the counter %d of %s", m.Counter, id.Counter, id.Name)
 	}
 	if !commitPattern.MatchString(m.Commit) || !strings.HasPrefix(m.Commit, id.Commit) {
-		return fmt.Errorf("MANIFEST commit %q does not start with %s", m.Commit, id.Commit)
+		return failf(CodeManifestMismatch, "MANIFEST commit %s does not start with %s", q(m.Commit), id.Commit)
 	}
 	return nil
 }
@@ -136,29 +136,29 @@ func ParseSums(data []byte) (map[string]string, error) {
 			continue
 		}
 		if strings.HasPrefix(line, `\`) {
-			return nil, fmt.Errorf("SHA256SUMS line %d: escaped names are not accepted", n)
+			return nil, failf(CodeSumsMalformed, "SHA256SUMS line %d: escaped names are not accepted", n)
 		}
 		m := sumLine.FindStringSubmatch(line)
 		if m == nil {
-			return nil, fmt.Errorf("SHA256SUMS line %d: not <sha256>  <path>", n)
+			return nil, failf(CodeSumsMalformed, "SHA256SUMS line %d: not <sha256>  <path>", n)
 		}
 		path := m[2]
 		if !fs.ValidPath(path) || path == "." || strings.Contains(path, `\`) {
-			return nil, fmt.Errorf("SHA256SUMS line %d: path %q escapes the release folder or is not clean (relative, no ./, no . or ..)", n, path)
+			return nil, failf(CodeSumsMalformed, "SHA256SUMS line %d: path %s escapes the release folder or is not clean (relative, no ./, no . or ..)", n, q(path))
 		}
 		if path == SumsFile || path == SignatureFile {
-			return nil, fmt.Errorf("SHA256SUMS line %d: %s must not be listed", n, path)
+			return nil, failf(CodeSumsMalformed, "SHA256SUMS line %d: %s must not be listed", n, path)
 		}
 		if _, dup := sums[path]; dup {
-			return nil, fmt.Errorf("SHA256SUMS line %d: %s listed twice", n, path)
+			return nil, failf(CodeSumsMalformed, "SHA256SUMS line %d: %s listed twice", n, q(path))
 		}
 		sums[path] = m[1]
 	}
 	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("SHA256SUMS: %w", err)
+		return nil, failf(CodeSumsMalformed, "SHA256SUMS: a line is too long")
 	}
 	if len(sums) == 0 {
-		return nil, errors.New("SHA256SUMS lists no file")
+		return nil, failf(CodeSumsMalformed, "SHA256SUMS lists no file")
 	}
 	return sums, nil
 }
@@ -183,15 +183,15 @@ func openRelease(id ReleaseID, dir string) (*release, error) {
 	info, err := os.Lstat(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("no release folder %s", dir)
+			return nil, failf(CodeReleaseMissing, "no release folder %s", q(id.Name))
 		}
 		return nil, err
 	}
 	if info.Mode()&fs.ModeSymlink != 0 {
-		return nil, fmt.Errorf("%s is a symbolic link, not a release folder", dir)
+		return nil, failf(CodeReleaseNotFolder, "releases/%s is a symbolic link, not a release folder", id.Name)
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("%s is not a folder", dir)
+		return nil, failf(CodeReleaseNotFolder, "releases/%s is not a folder", id.Name)
 	}
 	root, err := os.OpenRoot(dir)
 	if err != nil {
@@ -224,11 +224,11 @@ func (r *release) verify() error {
 		}
 		switch t := d.Type(); {
 		case t&fs.ModeSymlink != 0:
-			return fmt.Errorf("%s is a symbolic link; a release holds only folders and regular files", path)
+			return failf(CodeBadEntry, "%s is a symbolic link; a release holds only folders and regular files", q(path))
 		case t.IsDir():
 			return nil
 		case !t.IsRegular():
-			return fmt.Errorf("%s is not a regular file", path)
+			return failf(CodeBadEntry, "%s is not a regular file", q(path))
 		}
 		if path != SumsFile && path != SignatureFile {
 			present[path] = true
@@ -246,7 +246,11 @@ func (r *release) verify() error {
 	}
 	if len(extra) > 0 {
 		sort.Strings(extra)
-		return fmt.Errorf("not listed in SHA256SUMS: %s", strings.Join(extra, ", "))
+		more := ""
+		if len(extra) > 1 {
+			more = fmt.Sprintf(" and %d more", len(extra)-1)
+		}
+		return failf(CodeFileNotListed, "not listed in SHA256SUMS: %s%s", q(extra[0]), more)
 	}
 	paths := make([]string, 0, len(listed))
 	for path := range listed {
@@ -255,14 +259,14 @@ func (r *release) verify() error {
 	sort.Strings(paths)
 	for _, path := range paths {
 		if !present[path] {
-			return fmt.Errorf("listed in SHA256SUMS but missing: %s", path)
+			return failf(CodeFileMissing, "listed in SHA256SUMS but missing: %s", q(path))
 		}
 		got, err := r.hash(path)
 		if err != nil {
 			return err
 		}
 		if got != listed[path] {
-			return fmt.Errorf("SHA256 of %s does not match SHA256SUMS", path)
+			return failf(CodeSumsMismatch, "SHA256 of %s does not match SHA256SUMS", q(path))
 		}
 	}
 	r.sums = sums
@@ -278,7 +282,7 @@ func (r *release) openRegular(path string) (*os.File, error) {
 		return nil, err
 	}
 	if !before.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", path)
+		return nil, failf(CodeBadEntry, "%s is not a regular file", q(path))
 	}
 	f, err := r.root.Open(path)
 	if err != nil {
@@ -287,7 +291,7 @@ func (r *release) openRegular(path string) (*os.File, error) {
 	after, err := f.Stat()
 	if err != nil || !os.SameFile(before, after) {
 		f.Close()
-		return nil, fmt.Errorf("%s changed while it was read", path)
+		return nil, failf(CodeReadFailed, "%s changed while it was read", q(path))
 	}
 	return f, nil
 }
@@ -300,7 +304,7 @@ func (r *release) hash(path string) (string, error) {
 	defer f.Close()
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
-		return "", fmt.Errorf("%s: %w", path, err)
+		return "", failf(CodeReadFailed, "%s: %s", q(path), q(err.Error()))
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
@@ -309,17 +313,20 @@ func (r *release) readSmall(path string) ([]byte, error) {
 	f, err := r.openRegular(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("%s missing in the release", path)
+			if path == SumsFile {
+				return nil, failf(CodeSumsMissing, "%s missing in the release", path)
+			}
+			return nil, failf(CodeFileMissing, "%s missing in the release", q(path))
 		}
 		return nil, err
 	}
 	defer f.Close()
 	data, err := io.ReadAll(io.LimitReader(f, maxSmallFile+1))
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, failf(CodeReadFailed, "%s: %s", q(path), q(err.Error()))
 	}
 	if len(data) > maxSmallFile {
-		return nil, fmt.Errorf("%s is larger than %d bytes", path, maxSmallFile)
+		return nil, failf(CodeReadFailed, "%s is larger than %d bytes", q(path), maxSmallFile)
 	}
 	return data, nil
 }
@@ -335,7 +342,7 @@ func (r *release) exists(path string) (bool, error) {
 		return false, err
 	}
 	if !info.Mode().IsRegular() {
-		return false, fmt.Errorf("%s is not a regular file", path)
+		return false, failf(CodeBadEntry, "%s is not a regular file", q(path))
 	}
 	return true, nil
 }

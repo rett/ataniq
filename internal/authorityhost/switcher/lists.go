@@ -1,7 +1,6 @@
 package switcher
 
 import (
-	"fmt"
 	"path/filepath"
 	"strings"
 )
@@ -39,17 +38,17 @@ func ParseCommandList(name string, data []byte, releaseDir string) ([][]string, 
 		argv := strings.Fields(line)
 		for j, arg := range argv {
 			if releaseDir == "" && strings.Contains(arg, ReleasePlaceholder) {
-				return nil, fmt.Errorf("%s line %d: %s is only for validators; this list acts on what current points at", name, i+1, ReleasePlaceholder)
+				return nil, failf(CodeListInvalid, "%s line %d: %s is only for validators; this list acts on what current points at", name, i+1, ReleasePlaceholder)
 			}
 			arg = strings.ReplaceAll(arg, ReleasePlaceholder, releaseDir)
 			if strings.ContainsAny(strings.ReplaceAll(argv[j], ReleasePlaceholder, ""), shellChars) {
-				return nil, fmt.Errorf("%s line %d: %q: no shell runs these commands, so quoting, pipes, redirections, globs and variables are refused", name, i+1, argv[j])
+				return nil, failf(CodeListInvalid, "%s line %d: %s: no shell runs these commands, so quoting, pipes, redirections, globs and variables are refused", name, i+1, q(argv[j]))
 			}
 			argv[j] = arg
 		}
 		prog := argv[0]
 		if !filepath.IsAbs(prog) && strings.Contains(prog, "/") {
-			return nil, fmt.Errorf("%s line %d: program %q is a relative path; give an absolute path, {release}/..., or a bare name", name, i+1, prog)
+			return nil, failf(CodeListInvalid, "%s line %d: program %s is a relative path; give an absolute path, {release}/..., or a bare name", name, i+1, q(prog))
 		}
 		cmds = append(cmds, argv)
 	}
@@ -63,7 +62,7 @@ func ParseHealthCmd(data []byte) ([]string, error) {
 		return nil, err
 	}
 	if len(cmds) != 1 {
-		return nil, fmt.Errorf("%s holds %d commands; it must hold exactly one", HealthCmd, len(cmds))
+		return nil, failf(CodeListInvalid, "%s holds %d commands; it must hold exactly one", HealthCmd, len(cmds))
 	}
 	return cmds[0], nil
 }
@@ -78,7 +77,7 @@ func (r *release) readLists() (validators, reloads [][]string, health []string, 
 		}
 		if !ok {
 			if required {
-				return nil, false, fmt.Errorf("%s missing: a release must name its health check", name)
+				return nil, false, failf(CodeListMissing, "%s missing: a release must name its health check", name)
 			}
 			return nil, false, nil
 		}
