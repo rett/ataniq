@@ -44,8 +44,102 @@ type envParse struct {
 	names   []string
 	files   []envRef
 	sourced []srcWord
+	paths   []srcWord // the elements PATH settings add (see parseShell)
 	bad     bool
 	seen    map[string]bool
+}
+
+// addPath records the elements of a value given to PATH, split on the
+// colons outside an expansion. An element that only refers to PATH itself
+// ($PATH, ${PATH}, ${PATH:+$PATH:}) adds nothing and is dropped from it.
+// In a function (fn not ""), an element that is a positional parameter
+// ($1, "$@") makes the function one that adds its argument to PATH: it is
+// recorded in funcs, and a later call's argument is an element (see
+// parseShell). exp says the value holds an expansion.
+func (r *envParse) addPath(value string, exp bool, fn string, funcs map[string]bool) {
+	for _, e := range splitPath(value) {
+		if exp {
+			e = dropPathRefs(e)
+		}
+		switch {
+		case e == "":
+		case exp && fn != "" && positional(e):
+			if funcs != nil {
+				funcs[fn] = true
+			}
+		default:
+			r.paths = append(r.paths, srcWord{lit: e, exp: exp && strings.ContainsAny(e, "$`")})
+		}
+	}
+}
+
+// splitPath splits a PATH value on the colons outside ${...}, $(...) and
+// `...`.
+func splitPath(v string) []string {
+	var out []string
+	depth, start := 0, 0
+	tick := false
+	for i := 0; i < len(v); i++ {
+		switch c := v[i]; {
+		case c == '\\':
+			i++
+		case c == '`':
+			tick = !tick
+		case c == '$' && i+1 < len(v) && (v[i+1] == '{' || v[i+1] == '('):
+			depth++
+			i++
+		case (c == '(' || c == '{') && depth > 0:
+			depth++
+		case (c == '}' || c == ')') && depth > 0:
+			depth--
+		case c == ':' && depth == 0 && !tick:
+			out = append(out, v[start:i])
+			start = i + 1
+		}
+	}
+	return append(out, v[start:])
+}
+
+// dropPathRefs removes from a PATH element every reference to PATH itself:
+// $PATH and every ${PATH...} expansion.
+func dropPathRefs(e string) string {
+	var b strings.Builder
+	for i := 0; i < len(e); i++ {
+		if e[i] != '$' {
+			b.WriteByte(e[i])
+			continue
+		}
+		rest := e[i+1:]
+		switch {
+		case strings.HasPrefix(rest, "PATH") && (len(rest) == 4 || !ident(rest[4])):
+			i += 4
+		case strings.HasPrefix(rest, "{PATH") && len(rest) > 5 && !ident(rest[5]):
+			depth := 0
+			j := i + 1
+			for ; j < len(e); j++ {
+				if e[j] == '{' {
+					depth++
+				} else if e[j] == '}' {
+					depth--
+					if depth == 0 {
+						break
+					}
+				}
+			}
+			i = j
+		default:
+			b.WriteByte(e[i])
+		}
+	}
+	return b.String()
+}
+
+// positional reports whether e is a positional parameter ($1 to $9, ${1},
+// $@, $*).
+func positional(e string) bool {
+	e = strings.TrimSuffix(strings.TrimPrefix(e, "${"), "}")
+	e = strings.TrimPrefix(e, "$")
+	return len(e) == 1 && (e[0] >= '1' && e[0] <= '9' || e[0] == '@' || e[0] == '*')
 }
 
 // envRef is a path an EnvironmentFile= line names, as written (it may hold
@@ -72,10 +166,16 @@ func (r *envParse) add(n string) {
 
 // parseEnv reads data in the syntax s. fish says a shell file is fish's.
 func parseEnv(s envSyntax, data string, fish bool) envParse {
+	return parseEnvFuncs(s, data, fish, nil)
+}
+
+// parseEnvFuncs is parseEnv with the functions known to add their argument
+// to PATH (see parseShell); those the file defines are added to funcs.
+func parseEnvFuncs(s envSyntax, data string, fish bool, funcs map[string]bool) envParse {
 	var r envParse
 	switch s {
 	case syntaxShell:
-		parseShell(&r, data, fish)
+		parseShell(&r, data, fish, funcs)
 	case syntaxEnvFile:
 		parseEnvFile(&r, data)
 	case syntaxPam:
@@ -91,8 +191,9 @@ func parseEnv(s envSyntax, data string, fish bool) envParse {
 // parseEnvFile reads KEY=VALUE lines as pam_env and systemd read them:
 // blank lines and lines starting with '#' or ';' are skipped, an optional
 // "export " comes first, the value may be in double or single quotes (across
-// lines) and a backslash escapes the next byte. Only the key is kept. A line
-// that is not of this form is syntax the check cannot parse.
+// lines) and a backslash escapes the next byte. Only the key is kept, and
+// the value of PATH, for its elements. A line that is not of this form is
+// syntax the check cannot parse.
 func parseEnvFile(r *envParse, data string) {
 	i := 0
 	for i < len(data) {
@@ -128,6 +229,7 @@ func parseEnvFile(r *envParse, data string) {
 		}
 		r.add(name)
 		i = k + 1
+		start := i
 		// The value: to the end of the line, quotes and escapes honoured.
 	value:
 		for i < len(data) {
@@ -154,7 +256,32 @@ func parseEnvFile(r *envParse, data string) {
 				i++
 			}
 		}
+		if name == "PATH" {
+			v := unquote(strings.TrimRight(data[start:min(i, len(data))], " \t\r"))
+			r.addPath(v, strings.ContainsAny(v, "$`"), "", nil)
+		}
 	}
+}
+
+// unquote removes the quotes and backslashes of a KEY=VALUE value.
+func unquote(v string) string {
+	var b strings.Builder
+	var q byte
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case c == '\\' && q != '\'' && i+1 < len(v):
+			i++
+			b.WriteByte(v[i])
+		case q == 0 && (c == '"' || c == '\''):
+			q = c
+		case c == q:
+			q = 0
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }
 
 func lineEnd(data string, i int) int {
@@ -673,11 +800,18 @@ type forList struct {
 // whose name is an expansion, an unclosed quote or substitution, or a
 // here-document that never ends is syntax the check cannot parse.
 //
+// The value given to PATH (PATH=..., PATH+=..., export PATH=..., csh's
+// setenv PATH ...) is returned split into its elements (paths, see
+// addPath). A function that adds its positional parameter to PATH (as
+// /etc/profile's append_path does) is recorded in funcs, which holds such
+// functions across files, and the argument of a call of one is an
+// element too.
+//
 // The path word of every "." and "source" command is returned (sourced),
 // to be resolved by the caller (see Checker.sourcePaths); a word that is
 // exactly the variable of an earlier "for NAME in WORDS" loop stands for
 // each of those words (". "$profile"" in a loop over /etc/profile.d/*.sh).
-func parseShell(r *envParse, data string, fish bool) {
+func parseShell(r *envParse, data string, fish bool, funcs map[string]bool) {
 	l := &shLexer{s: data}
 	const (
 		argNone = iota
@@ -691,20 +825,24 @@ func parseShell(r *envParse, data string, fish bool) {
 		argForName
 		argForIn
 		argForList
+		argSetenv
+		argSetenvPath
+		argPathCall
 	)
 	cmdPos, args, redirect, here, strip := true, argNone, false, false, false
-	// Function bodies: braces is the stack of open { } groups, each saying
-	// whether it is a function's body; hdr follows NAME ( ) (1 after NAME,
-	// 2 after its "("), and pending says the next { opens a function body.
-	var braces []bool
-	hdr, pending := 0, false
-	inFunc := func() bool {
-		for _, f := range braces {
-			if f {
-				return true
+	// Function bodies: braces is the stack of open { } groups, each the
+	// function's name for a function's body and "" otherwise; hdr follows
+	// NAME ( ) (1 after NAME, 2 after its "("), and pending says the next {
+	// opens the body of the function name.
+	var braces []string
+	hdr, pending, name := 0, false, ""
+	fn := func() string {
+		for i := len(braces) - 1; i >= 0; i-- {
+			if braces[i] != "" {
+				return braces[i]
 			}
 		}
-		return false
+		return ""
 	}
 	loops := map[string]forList{}
 	var forVar string
@@ -763,7 +901,11 @@ func parseShell(r *envParse, data string, fish bool) {
 			continue
 		case !w.exp && w.lit == "{":
 			if cmdPos || pending {
-				braces = append(braces, pending)
+				f := ""
+				if pending {
+					f = name
+				}
+				braces = append(braces, f)
 			}
 			pending = false
 			cmdPos, args = true, argNone
@@ -780,6 +922,10 @@ func parseShell(r *envParse, data string, fish bool) {
 		if cmdPos {
 			if w.assign != "" {
 				r.add(w.assign)
+				if w.assign == "PATH" {
+					_, v, _ := strings.Cut(w.lit, "=")
+					r.addPath(v, w.exp, fn(), funcs)
+				}
 				continue
 			}
 			if !w.exp && shReserved[w.lit] {
@@ -789,13 +935,16 @@ func parseShell(r *envParse, data string, fish bool) {
 			if w.exp {
 				continue
 			}
-			hdr = 1 // NAME of NAME ( ) { ... }, when "(" follows
+			hdr, name = 1, w.lit // NAME of NAME ( ) { ... }, when "(" follows
+			if funcs[w.lit] {
+				args = argPathCall
+			}
 			switch w.lit {
 			case "export":
 				args = argExport
 			case "declare", "typeset", "readonly":
 				args = argDeclare
-				if inFunc() {
+				if fn() != "" {
 					args = argIgnore
 				}
 			case "local":
@@ -803,7 +952,7 @@ func parseShell(r *envParse, data string, fish bool) {
 			case "env":
 				args = argEnv
 			case "setenv":
-				args = argFirst
+				args = argSetenv
 			case "set":
 				if fish {
 					args = argFirst
@@ -826,6 +975,9 @@ func parseShell(r *envParse, data string, fish bool) {
 			switch {
 			case known:
 				r.add(n)
+				if _, v, ok := strings.Cut(w.lit, "="); ok && n == "PATH" {
+					r.addPath(v, w.exp, fn(), funcs)
+				}
 			case args == argExport:
 				r.bad = true
 			}
@@ -833,13 +985,23 @@ func parseShell(r *envParse, data string, fish bool) {
 			if w.assign != "" {
 				r.add(w.assign)
 			}
-		case argFirst:
+		case argFirst, argSetenv:
 			if !w.exp && strings.HasPrefix(w.lit, "-") {
 				continue
 			}
 			if !w.exp {
 				r.add(w.lit)
 			}
+			if args == argSetenv && !w.exp && w.lit == "PATH" {
+				args = argSetenvPath
+				continue
+			}
+			args = argNone
+		case argSetenvPath:
+			r.addPath(w.lit, w.exp, fn(), funcs)
+			args = argNone
+		case argPathCall:
+			r.addPath(w.lit, w.exp, fn(), funcs)
 			args = argNone
 		case argSource:
 			if n, ok := plainRef(w); ok {
@@ -853,7 +1015,7 @@ func parseShell(r *envParse, data string, fish bool) {
 			args = argNone
 		case argFunc:
 			// function NAME [()] { ... }
-			hdr, pending, args = 1, true, argNone
+			hdr, pending, name, args = 1, true, w.lit, argNone
 		case argForName:
 			forVar, forWords, args = w.lit, nil, argNone
 			if !w.exp && validName(w.lit) {

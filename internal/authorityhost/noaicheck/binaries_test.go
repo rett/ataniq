@@ -1,6 +1,7 @@
 package noaicheck
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -35,7 +36,11 @@ func TestCheckBinaries(t *testing.T) {
 		}, nil},
 		{"an executable file in a home", func(f *fixture) { f.exe("home/user/a/b/c/d/codex") },
 			[]Hit{bin("/home/user/a/b/c/d/codex")}},
-		{"an executable file below six levels", func(f *fixture) { f.exe("home/user/a/b/c/d/e/f/codex") }, nil},
+		{"an executable file at any depth of a home", func(f *fixture) { f.exe("home/user/a/b/c/d/e/f/g/h/codex") },
+			[]Hit{bin("/home/user/a/b/c/d/e/f/g/h/codex")}},
+		{"a home deeper than the walk goes is incomplete", func(f *fixture) {
+			f.dir("home/user/" + strings.Repeat("d/", treeDepth+1))
+		}, []Hit{{Kind: KindIncomplete, Path: "/home/user", Detail: DetailDepth}}},
 		{"a plain file in a home", func(f *fixture) { f.file("home/user/notes/claude", "x") }, nil},
 		{"a linked bin folder", func(f *fixture) {
 			mustRemoveAll(f, "home/user/.local/bin")
@@ -153,4 +158,82 @@ func TestLoopsAndUnreadableFolders(t *testing.T) {
 		c.CheckTools()
 		c.CheckCredentials()
 	})
+}
+
+// The PATH inventory: the folders the system and home profiles put on
+// PATH are looked into one level deep, as are the immediate subfolders of
+// the system bin folders; a PATH setting the check cannot resolve is
+// "incomplete path <file>".
+func TestCheckBinariesPathInventory(t *testing.T) {
+	bin := func(p string) Hit { return Hit{Kind: KindBinary, Path: p} }
+	inc := func(file string) Hit { return Hit{Kind: KindIncomplete, Path: PathPATH, Detail: file} }
+	const profile = "append_path () {\n    case \":$PATH:\" in\n        *:\"$1\":*) ;;\n        *) PATH=\"${PATH:+$PATH:}$1\"\n    esac\n}\n" +
+		"append_path '/usr/local/sbin'\nappend_path '/usr/bin'\nexport PATH\n"
+	runCases(t, []checkCase{
+		{"clean", func(f *fixture) {
+			f.file("etc/profile", profile)
+			f.file("etc/profile.d/perlbin.sh", "[ -d /usr/bin/core_perl ] && append_path '/usr/bin/core_perl'\nexport PATH\n")
+			f.file("etc/profile.d/perlbin.csh", "[ -d /usr/bin/core_perl ] && setenv PATH ${PATH}:/usr/bin/core_perl\n")
+		}, nil},
+		{"an immediate subfolder of /usr/bin", func(f *fixture) { f.file("usr/bin/core_perl/claude", "x") },
+			[]Hit{bin("/usr/bin/core_perl/claude")}},
+		{"deeper in /usr/bin is not on a PATH", func(f *fixture) { f.file("usr/bin/a/b/claude", "x") }, nil},
+		{"a folder a profile.d function call adds", func(f *fixture) {
+			f.file("etc/profile", profile)
+			f.file("etc/profile.d/tools.sh", "append_path '/srv/tools/bin'\n")
+			f.file("srv/tools/bin/claude", "not executable")
+		}, []Hit{bin("/srv/tools/bin/claude")}},
+		{"a folder etc/environment adds", func(f *fixture) {
+			f.file("etc/environment", "PATH=\"/usr/local/sbin:/usr/local/bin:/usr/bin:/srv/env/bin\"\n")
+			f.file("srv/env/bin/codex", "x")
+		}, []Hit{bin("/srv/env/bin/codex")}},
+		{"a folder csh's setenv adds", func(f *fixture) {
+			f.file("etc/profile.d/x.csh", "setenv PATH ${PATH}:/srv/csh/bin\n")
+			f.file("srv/csh/bin/claude", "x")
+		}, []Hit{bin("/srv/csh/bin/claude")}},
+		{"a home folder a home's profile adds", func(f *fixture) {
+			f.file("home/user/.profile", "export PATH=\"$HOME/tools:$PATH\"\n")
+			f.file("home/user/tools/claude", "not executable")
+		}, []Hit{bin("/home/user/tools/claude")}},
+		{"a home folder a system profile adds, in every home", func(f *fixture) {
+			f.file("etc/profile.d/mine.sh", "PATH=$PATH:~/.mybin\n")
+			f.file("srv/app/.mybin/codex", "not executable")
+		}, []Hit{bin("/srv/app/.mybin/codex")}},
+		{"a folder bash.bashrc and .zshenv add", func(f *fixture) {
+			f.file("etc/bash.bashrc", "PATH+=:/srv/a\n")
+			f.file("root/.zshenv", "export PATH=/srv/b:$PATH\n")
+			f.file("srv/a/claude", "x")
+			f.file("srv/b/codex", "x")
+		}, []Hit{bin("/srv/a/claude"), bin("/srv/b/codex")}},
+		{"PATH settings the check cannot resolve", func(f *fixture) {
+			f.file("etc/profile.d/x.sh", "PATH=$(cat /etc/paths):$PATH\n")
+			f.file("home/user/.bashrc", "export PATH=$OTHER/bin:$PATH\nPATH=bin:$PATH\n")
+		}, []Hit{inc("/etc/profile.d/x.sh"), inc("/home/user/.bashrc")}},
+		{"a function's own PATH of its argument", func(f *fixture) {
+			f.file("home/user/.bashrc", "add() { PATH=\"$1:$PATH\"; }\nadd /srv/c\n")
+			f.file("srv/c/claude", "x")
+		}, []Hit{bin("/srv/c/claude")}},
+	}, (*Checker).CheckBinaries)
+}
+
+func TestSplitPath(t *testing.T) {
+	for in, want := range map[string][]string{
+		"/a:/b":                {"/a", "/b"},
+		"${PATH:+$PATH:}$1":    {"${PATH:+$PATH:}$1"},
+		"$(x a:b):/c":          {"$(x a:b)", "/c"},
+		"`x a:b`:/c":           {"`x a:b`", "/c"},
+		"":                     {""},
+		"$HOME/bin:${X:-/y:z}": {"$HOME/bin", "${X:-/y:z}"},
+	} {
+		if got := splitPath(in); !reflect.DeepEqual(got, want) {
+			t.Errorf("splitPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for in, want := range map[string]string{
+		"$PATH": "", "${PATH}": "", "${PATH:+$PATH:}$1": "$1", "$1${PATH:+:${PATH}}": "$1", "$PATHX": "$PATHX", "/a$PATH": "/a",
+	} {
+		if got := dropPathRefs(in); got != want {
+			t.Errorf("dropPathRefs(%q) = %q, want %q", in, got, want)
+		}
+	}
 }
