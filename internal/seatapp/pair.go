@@ -28,7 +28,7 @@ const (
 	maxCodeLen        = 64
 	maxWordLen        = 32
 	minCredentialID   = 16
-	maxCredentialID   = 1024
+	maxCredentialID   = 1023 // WebAuthn level 3, section 4: at most 1023 bytes
 )
 
 // apiError is a failure of the API: a status and a fixed code. A response
@@ -142,13 +142,15 @@ func (p *pairing) challenge(w http.ResponseWriter, r *http.Request) {
 }
 
 // take burns a challenge: it is removed whether or not it is still good, and
-// the result says whether it was known and unexpired.
-func (p *pairing) take(enc string, now time.Time) bool {
+// the result says whether it was known and unexpired. The time is read here,
+// under the lock, and not when the request began: a request still being read
+// when the challenge expires does not consume it.
+func (p *pairing) take(enc string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	exp, ok := p.challenges[enc]
 	delete(p.challenges, enc)
-	return ok && now.Before(exp)
+	return ok && p.cfg.Now().Before(exp)
 }
 
 // pairBody is the body of POST /api/pair.
@@ -187,8 +189,7 @@ func decodeBody(body io.Reader, v any) error {
 // pair answers POST /api/pair: it checks what the browser made and, when it
 // holds, hands the code, the credential id and the key to the daemon.
 func (p *pairing) pair(w http.ResponseWriter, r *http.Request) {
-	now := p.cfg.Now()
-	if !p.pairLimit.allow(source(r, p.cfg.ClientAddrHeader), now) {
+	if !p.pairLimit.allow(source(r, p.cfg.ClientAddrHeader), p.cfg.Now()) {
 		writeError(w, errRateLimited)
 		return
 	}
@@ -202,7 +203,7 @@ func (p *pairing) pair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The challenge is burned before anything else is looked at.
-	if !p.take(in.Challenge, now) {
+	if !p.take(in.Challenge) {
 		writeError(w, errChallenge)
 		return
 	}
@@ -327,6 +328,8 @@ func (p *pairing) clientDataOK(raw []byte, challenge string) bool {
 const (
 	flagUP = 0x01
 	flagUV = 0x04
+	flagBE = 0x08
+	flagBS = 0x10
 	flagAT = 0x40
 	flagED = 0x80
 )
@@ -348,6 +351,11 @@ func (p *pairing) authDataCheck(ad, credID []byte) ([]byte, *apiError) {
 	}
 	flags := ad[32]
 	if flags&flagUP == 0 || flags&flagAT == 0 {
+		return nil, &errAuthData
+	}
+	// WebAuthn level 3, section 7.1: a credential that is backed up is backup
+	// eligible.
+	if flags&flagBS != 0 && flags&flagBE == 0 {
 		return nil, &errAuthData
 	}
 	if flags&flagUV == 0 {

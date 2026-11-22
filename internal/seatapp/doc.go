@@ -29,9 +29,14 @@
 //
 // Every response, an error included, carries the security headers (see
 // securityHeaders in app.go). Every request body is cut at [MaxBody] bytes.
-// Every POST needs an Origin header equal to [Config].Origin (a fixed 403
-// otherwise), the JSON content type, and, when the browser sends one,
-// Sec-Fetch-Site same-origin.
+// Every POST needs an Origin header equal to [Config].Origin, a Host header
+// equal to the origin's host, Sec-Fetch-Site same-origin (every browser that
+// can make a passkey sends it, so a POST without it is refused) (a fixed 403
+// otherwise), and the JSON content type. The relying party id is exactly the
+// origin's host. The content security policy includes
+// require-trusted-types-for 'script', which the scripts meet by setting text
+// only with textContent, and every response carries
+// Strict-Transport-Security.
 //
 // # Pairing
 //
@@ -43,7 +48,7 @@
 // the new public key. The server burns the challenge first, then checks the
 // browser's own data with no passkey library: the client data (type,
 // challenge, origin, no cross-origin), the authenticator data (relying party
-// hash, user presence and verification, the attested
+// hash, user presence and verification, backup state consistent, the attested
 // credential id equal to the posted one) and the public key, which it reads
 // from the attested credential data with a small strict CBOR reader of its own
 // (cose.go: the five-entry ES256 COSE_Key of a P-256 point on the curve, in

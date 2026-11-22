@@ -225,7 +225,7 @@ func TestNoCookiesAnywhere(t *testing.T) {
 	for _, e := range inventory {
 		method, path, _ := strings.Cut(e.pattern, " ")
 		path = strings.TrimSuffix(path, "{$}")
-		req := httptest.NewRequest(method, path, strings.NewReader("{}"))
+		req := newRequest(method, path, strings.NewReader("{}"))
 		req.Header.Set("Origin", testOrigin)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Cookie", "a=b")

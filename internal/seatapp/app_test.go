@@ -2,6 +2,7 @@ package seatapp
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -15,7 +16,9 @@ func TestOriginValidation(t *testing.T) {
 	}{
 		{"https host", "https://seat.example", "seat.example", false, "https://seat.example"},
 		{"explicit default port", "https://seat.example:443", "seat.example", false, "https://seat.example"},
-		{"parent domain as rp id", "https://seat.example.org", "example.org", false, "https://seat.example.org"},
+		{"rp id of a parent domain", "https://seat.example.org", "example.org", false, ""},
+		{"rp id of a public suffix", "https://seat.example.co.uk", "co.uk", false, ""},
+		{"rp id with a trailing dot", "https://seat.example", "seat.example.", false, ""},
 
 		{"empty", "", "seat.example", false, ""},
 		{"empty host", "https://", "seat.example", false, ""},
@@ -55,7 +58,7 @@ func TestOriginValidation(t *testing.T) {
 		{"test option: user information is still refused", "http://u@127.0.0.1:8080", "127.0.0.1", true, ""},
 		{"test option: a wildcard is not loopback", "http://0.0.0.0:8080", "0.0.0.0", true, ""},
 	} {
-		h, err := New(Config{Origin: tc.origin, RPID: tc.rpid, Daemon: d, AllowInsecureLoopbackForTests: tc.insecure})
+		h, err := New(Config{Origin: tc.origin, RPID: tc.rpid, Daemon: d, AllowInsecureLoopbackForTests: tc.insecure, AllowNoFetchMetadataForTests: true})
 		if tc.want == "" {
 			if err == nil {
 				t.Errorf("%s: New accepted %q", tc.name, tc.origin)
@@ -69,7 +72,8 @@ func TestOriginValidation(t *testing.T) {
 		// The origin compared with is the canonical one: a POST with it
 		// passes the origin check and one with the default port spelt out
 		// does not.
-		hdr := map[string]string{"Origin": tc.want, "Content-Type": "application/json"}
+		_, hostOnly, _ := strings.Cut(tc.want, "://")
+		hdr := map[string]string{"Origin": tc.want, "Content-Type": "application/json", "Host": hostOnly}
 		if got := doTo(h, "POST", "/api/pair-challenge", "{}", hdr).Code; got == 403 {
 			t.Errorf("%s: the origin %q was refused", tc.name, tc.want)
 		}
@@ -188,5 +192,62 @@ func TestServerLimits(t *testing.T) {
 	s := Server(http.NotFoundHandler())
 	if s.ReadHeaderTimeout <= 0 || s.ReadTimeout <= 0 || s.WriteTimeout <= 0 || s.IdleTimeout <= 0 || s.MaxHeaderBytes <= 0 {
 		t.Errorf("a limit is not set: %+v", s)
+	}
+}
+
+// TestPostNeedsTheHostAndFetchMetadata: on every POST the Host is the
+// origin's own host (a proxy that passes another one is a misconfiguration the
+// app refuses to serve), and the browser's Sec-Fetch-Site is there and says
+// same-origin; every browser that can make a passkey sends it, so its absence
+// is a client that is not one.
+func TestPostNeedsTheHostAndFetchMetadata(t *testing.T) {
+	r := newRig(t, func(c *Config) { c.AllowNoFetchMetadataForTests = false })
+	post := func(path, host, site string) int {
+		req := httptest.NewRequest("POST", path, strings.NewReader("{}"))
+		req.Host = host
+		req.Header.Set("Origin", testOrigin)
+		req.Header.Set("Content-Type", "application/json")
+		if site != "" {
+			req.Header.Set("Sec-Fetch-Site", site)
+		}
+		w := httptest.NewRecorder()
+		r.h.ServeHTTP(w, req)
+		return w.Code
+	}
+	for _, path := range []string{"/api/pair-challenge", "/api/pair"} {
+		if c := post(path, "seat.example", "same-origin"); c == 403 {
+			t.Errorf("%s: the right host and site were refused", path)
+		}
+		for _, tc := range []struct{ what, host, site string }{
+			{"no fetch metadata", "seat.example", ""},
+			{"a different host", "other.example", "same-origin"},
+			{"a parent domain as host", "example", "same-origin"},
+			{"the host with a port", "seat.example:443", "same-origin"},
+			{"an empty host", "", "same-origin"},
+			{"cross-site", "seat.example", "cross-site"},
+			{"none (typed address)", "seat.example", "none"},
+		} {
+			if c := post(path, tc.host, tc.site); c != 403 {
+				t.Errorf("%s %s: %d, want 403", path, tc.what, c)
+			}
+		}
+	}
+	// The same-origin Host is case-folded by the browser; the app compares it
+	// as sent, so a differently cased one is refused too.
+	if c := post("/api/pair-challenge", "Seat.Example", "same-origin"); c != 403 {
+		t.Errorf("upper case host: %d", c)
+	}
+}
+
+// TestNoFetchMetadataOptionIsOnlyForTests: the option exists in Config for
+// tests, and the default (a zero Config value) requires the header.
+func TestNoFetchMetadataOptionIsOnlyForTests(t *testing.T) {
+	h, err := New(Config{Origin: testOrigin, RPID: testRPID, Daemon: &fakeDaemon{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := doTo(h, "POST", "/api/pair-challenge", "{}", map[string]string{"Origin": testOrigin, "Content-Type": "application/json"})
+	if w.Code != 403 {
+		t.Errorf("a POST with no Sec-Fetch-Site: %d", w.Code)
 	}
 }

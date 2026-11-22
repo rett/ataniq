@@ -102,3 +102,22 @@ func TestPageShowsItsOwnWordsAndWarnsOnADifference(t *testing.T) {
 		}
 	}
 }
+
+// TestScriptsMeetTrustedTypes: the policy requires Trusted Types for script
+// sinks, so the scripts may reach no sink that takes markup, a script address
+// or code: they set text with textContent and nothing else. (This is a check
+// of the source; that the browser accepts the page needs a real browser.)
+func TestScriptsMeetTrustedTypes(t *testing.T) {
+	r := newRig(t)
+	csp := r.do("GET", "/pair/", nil, nil).Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "require-trusted-types-for 'script'") {
+		t.Fatalf("CSP %q", csp)
+	}
+	sinks := regexp.MustCompile(`innerHTML|outerHTML|insertAdjacentHTML|document\.write|createContextualFragment|srcdoc|\.setAttribute\(|\.src\s*=|\.href\s*=|\.action\s*=|new Function|eval\(|setTimeout\(\s*["']|setInterval\(\s*["']|importScripts|createElement\(\s*["']script|DOMParser|\.text\s*=|\.innerText`)
+	for _, path := range []string{"/static/pair.js", "/static/words.js"} {
+		js := r.do("GET", path, nil, nil).Body.String()
+		if m := sinks.FindString(js); m != "" {
+			t.Errorf("%s reaches the sink %q", path, m)
+		}
+	}
+}

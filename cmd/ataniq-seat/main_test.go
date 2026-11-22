@@ -17,7 +17,7 @@ func TestParse(t *testing.T) {
 	good := [][]string{
 		{"--origin", "https://seat.example", "--socket", "/run/seat/http.sock", "--client-addr-header", "X-Real-IP"},
 		{"--origin", "https://seat.example", "--listen", "127.0.0.1:8080"},
-		{"--origin", "https://seat.example", "--listen", "[::1]:8080", "--rpid", "example"},
+		{"--origin", "https://seat.example", "--listen", "[::1]:8080", "--rpid", "seat.example"},
 		{"--origin", "https://seat.example", "--listen", "127.9.9.9:1"},
 	}
 	for _, args := range good {

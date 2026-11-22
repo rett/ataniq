@@ -75,7 +75,7 @@ func parse(args []string, errout io.Writer) (o options, code int, ok bool) {
 	mode := fs.String("socket-mode", "0660", "permission bits of the socket file, octal")
 	fs.StringVar(&o.origin, "origin", "", "the app's origin, https://host")
 	fs.StringVar(&o.originFile, "origin-file", "", "owner-local file holding the origin")
-	fs.StringVar(&o.rpid, "rpid", "", "relying party id; the origin's host when empty")
+	fs.StringVar(&o.rpid, "rpid", "", "relying party id, which must be the origin's host; that host when empty")
 	fs.StringVar(&o.socket, "socket", "", "Unix socket path")
 	fs.StringVar(&o.listen, "listen", "", "loopback address and port")
 	fs.StringVar(&o.clientAddrHeader, "client-addr-header", "", "header the proxy sets to the client address")
