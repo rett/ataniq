@@ -42,20 +42,26 @@ type Record struct {
 	ServicesStopped bool   `json:"services_stopped"` // the decision services were stopped (every stop command passed, or the owner said so)
 	CounterUsed     bool   `json:"counter_used"`     // a forward switch that got as far as using its counter: evidence of it
 	// The transaction this record ends: its id, what was asked (an id, or
-	// previous), its request id (the direction and the release it went to:
-	// forward:<id> or rollback:<id>) and whether its outcome is still to be
-	// reported: set before the journal is removed, and cleared only by the
-	// command that printed the result line, so an outcome nobody was shown
-	// (settled by another command, or a response lost after the journal was
-	// removed) is reported, once, by the same request run again.
-	Txn           string `json:"txn"`
-	Requested     string `json:"requested"`
-	RequestID     string `json:"request_id"`
-	PendingReport bool   `json:"pending_report"`
+	// previous) and its request id (the direction and the release it went
+	// to: forward:<id> or rollback:<id>). Whether its outcome is still
+	// owed is not recorded here but in owed.json (see OwedFile), which a
+	// later record cannot replace.
+	Txn       string `json:"txn"`
+	Requested string `json:"requested"`
+	RequestID string `json:"request_id"`
+	// PendingReport is no longer written or used (owed.json holds the
+	// outcomes owed); an earlier deploy.json that has it still parses.
+	PendingReport bool `json:"pending_report,omitempty"`
 	// When the owner last removed the decision inhibit by hand (ah-switch
 	// inhibit-clear), and the words given with --asked; carried forward.
 	InhibitClearedAt    string `json:"inhibit_cleared_at"`
 	InhibitClearedAsked string `json:"inhibit_cleared_asked"`
+	// When the owner last acknowledged the outcomes owed (ah-switch ack),
+	// the words given with --asked and the transactions acknowledged;
+	// carried forward.
+	OutcomeAckedAt    string `json:"outcome_acked_at"`
+	OutcomeAckedAsked string `json:"outcome_acked_asked"`
+	OutcomeAckedTxn   string `json:"outcome_acked_txn"`
 }
 
 // requestID is the request id of a transaction: its direction and the

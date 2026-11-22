@@ -108,9 +108,11 @@ func TestSwitchWithExecRunner(t *testing.T) {
 		"*) exit 3 ;;\nesac\n", 0o755)
 	e.write(filepath.Join(dir, "bin/validate"), "#!/bin/sh\ntouch "+marks+"/validated\n", 0o755)
 	e.write(filepath.Join(dir, ValidatorsList), "{release}/bin/validate\n", 0o644)
-	health := script(t, marks, "health", "exit 0\n")
-	e.write(filepath.Join(dir, ReloadList), health+"\n", 0o644)
-	e.write(filepath.Join(dir, HealthCmd), health+"\n", 0o644)
+	// A program of the release's own lists is a file of the release.
+	e.write(filepath.Join(dir, "bin/health"), "#!/bin/sh\nexit 0\n", 0o755)
+	e.write(filepath.Join(dir, ReloadList), "{release}/bin/health\n", 0o644)
+	e.write(filepath.Join(dir, HealthCmd), "{release}/bin/health\n", 0o644)
+	e.write(filepath.Join(dir, StopList), "{release}/bin/health\n", 0o644)
 	e.sums(dir)
 	code := e.switchTo(rel1, func(c *Config) { c.Runner = ExecRunner{} })
 	if code != ExitOK {

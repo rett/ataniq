@@ -25,6 +25,12 @@ type txn struct {
 	owned   []*release // opened by the txn, closed by close
 	// begun: decisions.inhibit is known to be there for this transaction.
 	begun bool
+	// requalify: the transaction was found in phase done (a reboot may
+	// have come between its health check and its settling), so the
+	// release current points at is reloaded and checked again before the
+	// inhibit is removed; requalifyFailed: that did not pass.
+	requalify       bool
+	requalifyFailed bool
 }
 
 func (t *txn) close() {
@@ -140,13 +146,16 @@ func (s *Switcher) drive(ctx context.Context, t *txn) (int, bool) {
 		s.printf("result: unresolved: %s; %s stays in phase %s, and the next switch, rollback or recover resumes it", describe(err), JournalFile, t.j.Phase)
 		return ExitFailed, false
 	}
+	if t.resumed && t.j.Phase == PhaseDone {
+		t.requalify = true
+	}
 	for {
 		var err error
 		switch t.j.Phase {
 		case PhasePackages:
-			err = s.resumePackages(t)
+			err = s.resumePackages(ctx, t)
 		case PhaseLinks:
-			err = s.putBack(t, "interrupted", failf(CodeInterrupted, "the %s %s was interrupted before it was activated", t.kind(), t.j.ID))
+			err = s.putBack(ctx, t, "interrupted", failf(CodeInterrupted, "the %s %s was interrupted before it was activated", t.kind(), t.j.ID))
 		case PhaseActivating:
 			err = s.activate(ctx, t)
 		case PhaseRestoring:
@@ -154,7 +163,7 @@ func (s *Switcher) drive(ctx context.Context, t *txn) (int, bool) {
 		case PhaseStopping:
 			err = s.stop(ctx, t)
 		case PhaseDone:
-			return s.settle(t)
+			return s.settle(ctx, t)
 		}
 		if err != nil {
 			if !errors.Is(err, errCrashed) {
@@ -198,7 +207,7 @@ func (s *Switcher) done(t *txn, result string) error {
 // release reloaded and checked), or, with no earlier release, stops the
 // decision services, so that it ends with decisions inhibited unless that
 // release is qualified again.
-func (s *Switcher) putBack(t *txn, step string, cause error) error {
+func (s *Switcher) putBack(ctx context.Context, t *txn, step string, cause error) error {
 	if err := s.ensureLink("current", t.j.OldCurrent); err != nil {
 		return failf(CodeLinkFailed, "current not put back: %s", q(err.Error()))
 	}
@@ -212,7 +221,7 @@ func (s *Switcher) putBack(t *txn, step string, cause error) error {
 	t.note("current and previous were put back")
 	s.printf("back: current -> %s, previous -> %s", linkText(t.j.OldCurrent), linkText(t.j.OldPrevious))
 	if t.j.OldCurrent == "" {
-		return s.toStopping(t, ResultFailed)
+		return s.toStopping(ctx, t, ResultFailed)
 	}
 	t.j.Phase = PhaseRestoring
 	if err := s.save(t); err != nil {
@@ -289,19 +298,14 @@ func (s *Switcher) toRecovery(ctx context.Context, t *txn, step string, cause er
 	s.step(n, "FAILED: %s", describe(cause))
 	t.fail(step, cause)
 	if t.j.OldCurrent == "" {
-		t.j.Result = ResultFailed
 		t.note("there is no earlier release to go back to, so current stays at %s", t.j.ID)
-		t.j.Phase = PhaseStopping
-	} else {
-		t.j.Phase = PhaseRestoring
+		return s.toStopping(ctx, t, ResultFailed)
 	}
+	t.j.Phase = PhaseRestoring
 	if err := s.save(t); err != nil {
 		return err
 	}
-	if t.j.Phase == PhaseRestoring {
-		return s.crash(CrashRestoring)
-	}
-	return s.crash(CrashStopping)
+	return s.crash(CrashRestoring)
 }
 
 // restore is the restoring phase: first the services of the transaction's
@@ -315,13 +319,8 @@ func (s *Switcher) toRecovery(ctx context.Context, t *txn, step string, cause er
 // decision services are stopped.
 func (s *Switcher) restore(ctx context.Context, t *txn) error {
 	failed := func(format string, args ...any) error {
-		t.j.Result = ResultFailedRecovery
 		t.note(format, args...)
-		t.j.Phase = PhaseStopping
-		if err := s.save(t); err != nil {
-			return err
-		}
-		return s.crash(CrashStopping)
+		return s.toStopping(ctx, t, ResultFailedRecovery)
 	}
 	fb, err := s.fallback(ctx, t)
 	if err != nil {
@@ -409,12 +408,10 @@ func (s *Switcher) stop(ctx context.Context, t *txn) error {
 	run := func(list string, cmds [][]string) {
 		failures = append(failures, s.runStops(ctx, list, cmds)...)
 	}
-	if stops, err := s.hostStopList(); err != nil {
-		s.printf("stop: FAILED: the host's %s: %s", HostStopList, describe(err))
-		failures = append(failures, "the host's "+HostStopList+": "+describe(err))
-	} else {
-		run("host", stops)
-	}
+	// The host's list, run once per command, first (it may have run
+	// already, before anything that could fail: see hostStopsFirst).
+	s.hostStopsFirst(ctx)
+	failures = append(failures, s.hostStopsFailures...)
 	if cand, err := s.candidate(ctx, t); err == nil {
 		run(t.j.ID, cand.stops)
 	} else {
@@ -455,8 +452,11 @@ func joinFailures(f []string) string {
 // as moved before that), the counter is made at least the transaction's
 // when it was used, deploy.json records the outcome and the journal is
 // removed. Any of that failing keeps the journal, and the next command
-// settles it again; the result is printed only once it is recorded.
-func (s *Switcher) settle(t *txn) (int, bool) {
+// settles it again; the result is printed only once it is recorded. A
+// transaction found in this phase that ended healthy is qualified again
+// first (see requalifyCurrent): a reboot may have come since its health
+// check.
+func (s *Switcher) settle(ctx context.Context, t *txn) (int, bool) {
 	unresolved := func(what string, err error) (int, bool) {
 		s.step(9, "FAILED: %s: %s", what, q(err.Error()))
 		s.printf("result: unresolved: the outcome (%s) is not recorded yet; %s stays, and the next switch, rollback or recover records it", t.j.Result, JournalFile)
@@ -478,12 +478,21 @@ func (s *Switcher) settle(t *txn) (int, bool) {
 	if err != nil {
 		return unresolved("current cannot be read", err)
 	}
+	if t.requalify && t.healthy() {
+		s.requalifyCurrent(ctx, t, cur, curOK)
+	}
 	rec, err := s.txnRecord(t, cur, curOK)
 	if err != nil {
 		return unresolved(DeployFile+" not written", err)
 	}
 	if err := s.writeRecord(&rec); err != nil {
 		return unresolved(DeployFile+" not written", err)
+	}
+	// The outcome is owed before the journal goes, whichever command
+	// settles it; only an acknowledgement or a retry of the same request
+	// takes it back (see answerOwed), never the result line below.
+	if err := s.addOwed(rec, t.j.Direction); err != nil {
+		return unresolved(OwedFile+" not written", err)
 	}
 	if err := s.crash(CrashRecord); err != nil {
 		return ExitFailed, false
@@ -497,17 +506,54 @@ func (s *Switcher) settle(t *txn) (int, bool) {
 	if err := s.crash(CrashUnreported); err != nil {
 		return ExitFailed, false
 	}
-	s.step(9, "recorded in %s", q(filepath.Join(s.stateDir(), DeployFile)))
-	// The outcome stays owed until its result line is written, and is
-	// owed still when the command that settled it was not the one asked
-	// for it (a resume).
-	if err := s.printResult(rec); err == nil && !t.resumed {
-		s.reported(rec)
+	s.step(9, "recorded in %s; the outcome is owed until ah-switch ack --asked WORDS or the same request run again", q(filepath.Join(s.stateDir(), DeployFile)))
+	s.printResult(rec)
+	if t.requalifyFailed {
+		s.printf("result: decisions stay inhibited: %s did not pass its reload and health check again after the interruption; look at the host, then switch, or run ah-switch inhibit-clear --asked WORDS", linkText(cur))
+		return ExitFailed, true
 	}
 	if rec.Result == ResultOK {
 		return ExitOK, true
 	}
 	return ExitFailed, true
+}
+
+// requalifyCurrent qualifies again the release current points at (cur),
+// for a healthy transaction t found in phase done: between its health
+// check and its settling the host may have rebooted, and a decision-capable
+// service may then not run at all, or run from a start that nothing
+// checked. That release, verified with the transaction's trust, runs its
+// reload list and its health check again, decisions still inhibited; when
+// any of it fails, t.requalifyFailed is set and noted, the outcome is
+// recorded as it was decided and decisions stay inhibited (see endInhibit).
+func (s *Switcher) requalifyCurrent(ctx context.Context, t *txn, cur string, curOK bool) {
+	failed := func(err error) {
+		t.requalifyFailed = true
+		t.note("after an interruption in phase done, %s did not pass its reload and health check again (%s); decisions stay inhibited", linkText(cur), describe(err))
+	}
+	if !curOK {
+		failed(failf(CodeStateInvalid, "current is missing"))
+		return
+	}
+	id, err := s.targetID(cur)
+	if err != nil {
+		failed(err)
+		return
+	}
+	s.printf("reconcile: the %s %s was decided before an interruption; %s runs its reload list and health check again before decisions are no longer inhibited", t.kind(), t.j.ID, id.Name)
+	rel, err := s.openVerified(ctx, id)
+	if err != nil {
+		failed(err)
+		return
+	}
+	t.owned = append(t.owned, rel)
+	if err := s.reload(ctx, rel.reloads); err != nil {
+		failed(err)
+		return
+	}
+	if err := s.checkHealth(ctx, rel.health); err != nil {
+		failed(err)
+	}
 }
 
 // txnRecord is the record of the settled transaction t, current pointing
@@ -533,12 +579,15 @@ func (s *Switcher) txnRecord(t *txn, cur string, curOK bool) (Record, error) {
 		Txn:             t.j.Txn,
 		Requested:       t.j.Requested,
 		RequestID:       requestID(t.j.Direction, t.j.ID),
-		PendingReport:   true,
 		ServicesStopped: t.j.Stopped,
 		CounterUsed:     t.j.CounterUsed,
-		// The owner's last clearing of the inhibit stays on record.
+		// The owner's last clearing of the inhibit, and last
+		// acknowledgement, stay on record.
 		InhibitClearedAt:    last.InhibitClearedAt,
 		InhibitClearedAsked: last.InhibitClearedAsked,
+		OutcomeAckedAt:      last.OutcomeAckedAt,
+		OutcomeAckedAsked:   last.OutcomeAckedAsked,
+		OutcomeAckedTxn:     last.OutcomeAckedTxn,
 	}
 	if t.j.OldCurrent != "" {
 		id, _ := s.targetID(t.j.OldCurrent)
@@ -602,7 +651,7 @@ func (s *Switcher) highestAtLeast(n uint64) error {
 // helperEnded); it is never taken as done or as not run. Either way the
 // package step may have changed the host, which nothing checked since:
 // the decision services are stopped, and decisions stay inhibited.
-func (s *Switcher) resumePackages(t *txn) error {
+func (s *Switcher) resumePackages(ctx context.Context, t *txn) error {
 	switch t.j.PackageState {
 	case PackageDone:
 		t.fail("interrupted", failf(CodeInterrupted, "the %s %s was interrupted before its links; the package step had brought the host to snapshot %s", t.kind(), t.j.ID, q(t.j.PackageTo)))
@@ -614,14 +663,19 @@ func (s *Switcher) resumePackages(t *txn) error {
 		t.fail("interrupted", failf(CodePackageInterrupted, "the package step from %s to %s was interrupted", q(t.j.PackageFrom), q(t.j.PackageTo)))
 		t.note("%s", describe(packageUnknownError(t.j.PackageFrom, t.j.PackageTo)))
 	}
-	return s.toStopping(t, ResultFailed)
+	return s.toStopping(ctx, t, ResultFailed)
 }
 
 // toStopping ends the transaction t with result, after the decision
-// services are stopped (the stopping phase).
-func (s *Switcher) toStopping(t *txn, result string) error {
+// services are stopped (the stopping phase). The host's stop list runs
+// first, before the phase is saved: a journal that cannot be written
+// must not keep the decision services running. Then the phase is saved;
+// when that fails the transaction is unresolved, and the next command
+// runs the stops again.
+func (s *Switcher) toStopping(ctx context.Context, t *txn, result string) error {
 	t.j.Result = result
 	t.j.Phase = PhaseStopping
+	s.hostStopsFirst(ctx)
 	if err := s.save(t); err != nil {
 		return err
 	}

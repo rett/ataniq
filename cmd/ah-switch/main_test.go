@@ -97,16 +97,25 @@ func hostStops(t *testing.T, root, prog string) {
 
 // releaseIn writes into dir a release whose no-AI check and health command
 // are scripts, with its SHA256SUMS: an incoming folder, imported with --from.
+// Its lists run its own bin/health, a copy of the script health: a program
+// of a release's lists is a file of the release (or a protected host
+// program).
 func releaseIn(t *testing.T, dir, id string, counter int, health string) {
 	t.Helper()
 	commit := strings.SplitN(id, "-", 2)[1]
+	script, err := os.ReadFile(health)
+	if err != nil {
+		t.Fatal(err)
+	}
 	write(t, filepath.Join(dir, "MANIFEST"), "id: "+id+"\ncounter: "+strconv.Itoa(counter)+"\ncommit: "+commit+"\nbuilt_on: dev\ngo_version: go\npackage_snapshot: s\n", 0o644)
 	write(t, filepath.Join(dir, "bin/ah-noaicheck"), "#!/bin/sh\nexit 0\n", 0o755)
 	write(t, filepath.Join(dir, "bin/ah-pkgstep"), "#!/bin/sh\nexit 0\n", 0o755)
-	write(t, filepath.Join(dir, "share/health.cmd"), health+"\n", 0o644)
-	write(t, filepath.Join(dir, "share/reload.list"), health+"\n", 0o644)
-	write(t, filepath.Join(dir, "share/validators.list"), health+"\n", 0o644)
-	write(t, filepath.Join(dir, "share/stop.list"), health+"\n", 0o644)
+	write(t, filepath.Join(dir, "bin/health"), string(script), 0o755)
+	own := "{release}/bin/health"
+	write(t, filepath.Join(dir, "share/health.cmd"), own+"\n", 0o644)
+	write(t, filepath.Join(dir, "share/reload.list"), own+"\n", 0o644)
+	write(t, filepath.Join(dir, "share/validators.list"), own+"\n", 0o644)
+	write(t, filepath.Join(dir, "share/stop.list"), own+"\n", 0o644)
 	var lines []string
 	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -148,6 +157,14 @@ func TestSwitchRollbackAndStatus(t *testing.T) {
 		if code != switcher.ExitOK {
 			t.Fatalf("switch to %s: exit %d\n%s%s", id, code, out, errOut)
 		}
+		// The outcome is owed until the owner acknowledges it.
+		code, out, errOut = call("--root", root, "--allow-exec", "0009-fffffff")
+		if code != switcher.ExitFailed || !strings.Contains(out, "owed: the switch to "+id) {
+			t.Errorf("a request while an outcome is owed: exit %d\n%s%s", code, out, errOut)
+		}
+		if code, out, errOut := call("--root", root, "ack", "--asked", "result seen"); code != switcher.ExitOK {
+			t.Fatalf("ack: exit %d\n%s%s", code, out, errOut)
+		}
 	}
 	code, out, _ = call("--root", root, "--allow-exec", "0001-aaaaaaa")
 	if code != switcher.ExitFailed || !strings.Contains(out, "not above the highest ever attempted") {
@@ -161,7 +178,7 @@ func TestSwitchRollbackAndStatus(t *testing.T) {
 	if code != switcher.ExitOK {
 		t.Fatalf("status: exit %d", code)
 	}
-	for _, want := range []string{"current: 0001-aaaaaaa", "previous: 0002-bbbbbbb", "highest counter: 2", "last switch: rollback to 0001-aaaaaaa: ok"} {
+	for _, want := range []string{"current: 0001-aaaaaaa", "previous: 0002-bbbbbbb", "highest counter: 2", "last switch: rollback to 0001-aaaaaaa: ok", "outcome owed (request rollback:0001-aaaaaaa"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("status lacks %q:\n%s", want, out)
 		}
@@ -222,6 +239,9 @@ func TestRecover(t *testing.T) {
 	if code, out, errOut := call("--root", root, "--allow-exec", "--from", filepath.Join(in, "0001-aaaaaaa"), "0001-aaaaaaa"); code != switcher.ExitOK {
 		t.Fatalf("switch: exit %d\n%s%s", code, out, errOut)
 	}
+	if code, out, errOut := call("--root", root, "ack", "--asked", "result seen"); code != switcher.ExitOK {
+		t.Fatalf("ack: exit %d\n%s%s", code, out, errOut)
+	}
 	os.Remove(filepath.Join(root, switcher.StateDir, switcher.HighestFile))
 	if code, out, _ := call("--root", root, "--allow-exec", "--from", filepath.Join(in, "0002-bbbbbbb"), "0002-bbbbbbb"); code != switcher.ExitFailed || !strings.Contains(out, "recover --counter N") {
 		t.Fatalf("switch without a counter: exit %d\n%s", code, out)
@@ -277,6 +297,10 @@ func TestRecoverForms(t *testing.T) {
 		{"--root", root, "inhibit-clear", "--asked", "x", "--counter", "3"},
 		{"--root", root, "--asked", "x", "0001-aaaaaaa"},
 		{"--root", root, "--asked", "x", "status"},
+		{"--root", root, "ack"},
+		{"--root", root, "ack", "--asked", ""},
+		{"--root", root, "ack", "--asked", "x", "--allow-exec"},
+		{"--root", root, "--rollback-to", "previous", "ack", "--asked", "x"},
 	} {
 		if code, _, errOut := call(args...); code != switcher.ExitUsage {
 			t.Errorf("%q: exit %d, %q", args, code, errOut)

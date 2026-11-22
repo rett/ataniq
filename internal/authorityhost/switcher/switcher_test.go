@@ -99,7 +99,11 @@ func TestDeployRecord(t *testing.T) {
 	if rec.Txn == "" {
 		t.Errorf("no transaction id recorded")
 	}
-	rec.Txn = ""
+	// The test's owner acknowledged the outcome (see ackSeen).
+	if rec.OutcomeAckedTxn != rec.Txn || rec.OutcomeAckedAsked != "seen by the test" || rec.OutcomeAckedAt != "2026-11-21T12:00:00Z" {
+		t.Errorf("acknowledgement: %+v", rec)
+	}
+	rec.Txn, rec.OutcomeAckedTxn, rec.OutcomeAckedAsked, rec.OutcomeAckedAt = "", "", "", ""
 	want := Record{
 		Requested:       rel2,
 		RequestID:       "forward:" + rel2,
@@ -122,7 +126,7 @@ func TestDeployRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"id", "previous_id", "current_id", "counter", "mode", "trust", "rollback", "time", "result", "check", "failed_step", "error", "detail", "package_snapshot", "restored_health", "services_stopped", "counter_used", "txn", "requested", "pending_report", "package_state"} {
+	for _, key := range []string{"id", "previous_id", "current_id", "counter", "mode", "trust", "rollback", "time", "result", "check", "failed_step", "error", "detail", "package_snapshot", "restored_health", "services_stopped", "counter_used", "txn", "requested", "request_id", "package_state", "outcome_acked_at", "outcome_acked_asked", "outcome_acked_txn"} {
 		if !strings.Contains(string(data), `"`+key+`":`) {
 			t.Errorf("deploy.json has no %s:\n%s", key, data)
 		}
@@ -445,11 +449,21 @@ func TestNoAICheckOverride(t *testing.T) {
 	if code := e.switchTo(rel3, overrideCheck); code != ExitOK {
 		t.Fatalf("exit %d", code)
 	}
-	if want := preCall(check, e.root, e.relDir(rel3)); e.runner.calls[0] != want {
-		t.Errorf("check command %q, want %q", e.runner.calls[0], want)
+	// It runs from a private copy in the state folder (see
+	// TestNoAICheckOverrideRunsAPrivateCopy).
+	copied := func(call string) string {
+		prog := strings.Fields(call)[0]
+		if filepath.Base(prog) != filepath.Base(override) || !strings.HasPrefix(prog, filepath.Join(e.root, StateDir, ".check-")) {
+			t.Errorf("check program %q is no private copy", prog)
+		}
+		return prog
 	}
-	if want := postCall(check, e.root, e.relDir(rel3)); e.runner.calls[len(e.runner.calls)-1] != want {
-		t.Errorf("post check %q, want %q", e.runner.calls[len(e.runner.calls)-1], want)
+	first, last := e.runner.calls[0], e.runner.calls[len(e.runner.calls)-1]
+	if want := preCall(copied(first), e.root, e.relDir(rel3)); first != want {
+		t.Errorf("check command %q, want %q", first, want)
+	}
+	if want := postCall(copied(last), e.root, e.relDir(rel3)); last != want {
+		t.Errorf("post check %q, want %q", last, want)
 	}
 	if journaled.CheckProgram != override || journaled.CheckSHA256 != sumOf([]byte("#!/bin/sh\nexit 0\n")) {
 		t.Errorf("journal: %q %q", journaled.CheckProgram, journaled.CheckSHA256)
@@ -1060,20 +1074,27 @@ func TestCommandLists(t *testing.T) {
 	for _, tc := range []struct {
 		name, data, release, want string
 		argv                      []string
+		live                      bool // a reload, health or stop list
 	}{
-		{"plain", "nft -c -f {release}/etc/nftables/rules.nft\n", "/r", "", []string{"nft", "-c", "-f", "/r/etc/nftables/rules.nft"}},
-		{"absolute", "  /usr/bin/caddy validate  \n# comment\n\n", "/r", "", []string{"/usr/bin/caddy", "validate"}},
-		{"release program", "{release}/bin/check\n", "/r", "", []string{"/r/bin/check"}},
-		{"relative program", "bin/check\n", "/r", "relative path", nil},
-		{"pipe", "a | b\n", "/r", "no shell", nil},
-		{"variable", "a $HOME\n", "/r", "no shell", nil},
-		{"quote", "a 'b c'\n", "/r", "no shell", nil},
-		{"redirect", "a >/x\n", "/r", "no shell", nil},
-		{"glob", "a /etc/*.conf\n", "/r", "no shell", nil},
-		{"placeholder outside validators", "a {release}/x\n", "", "only for validators", nil},
+		{"plain", "nft -c -f {release}/etc/nftables/rules.nft\n", "/r", "", []string{"nft", "-c", "-f", "/r/etc/nftables/rules.nft"}, false},
+		{"absolute", "  /usr/bin/caddy validate  \n# comment\n\n", "/r", "", []string{"/usr/bin/caddy", "validate"}, false},
+		{"release program", "{release}/bin/check\n", "/r", "", []string{"/r/bin/check"}, false},
+		{"release program of a live list", "{release}/bin/health --ready\n", "/r", "", []string{"/r/bin/health", "--ready"}, true},
+		{"release program out of the release", "{release}/../x/bin/check\n", "/r", "a clean path inside the release", nil, true},
+		{"release program not clean", "{release}/bin//check\n", "/r", "a clean path inside the release", nil, true},
+		{"release folder as a program", "{release}\n", "/r", "a clean path inside the release", nil, true},
+		{"placeholder inside a program", "/x{release}/bin/check\n", "/r", "a clean path inside the release", nil, true},
+		{"placeholder without a release", "{release}/bin/check\n", "", "only for the lists of a release", nil, true},
+		{"relative program", "bin/check\n", "/r", "relative path", nil, false},
+		{"pipe", "a | b\n", "/r", "no shell", nil, false},
+		{"variable", "a $HOME\n", "/r", "no shell", nil, false},
+		{"quote", "a 'b c'\n", "/r", "no shell", nil, false},
+		{"redirect", "a >/x\n", "/r", "no shell", nil, false},
+		{"glob", "a /etc/*.conf\n", "/r", "no shell", nil, false},
+		{"placeholder outside validators", "a {release}/x\n", "/r", "only for validators", nil, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cmds, err := ParseCommandList("list", []byte(tc.data), tc.release)
+			cmds, err := ParseCommandList("list", []byte(tc.data), tc.release, !tc.live)
 			if tc.want != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.want) {
 					t.Errorf("err %v, want %q", err, tc.want)

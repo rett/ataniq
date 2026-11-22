@@ -9,7 +9,7 @@
 //	opt/authority-host/releases/<id>/   MANIFEST, SHA256SUMS, [SHA256SUMS.sig], bin/, etc/, share/
 //	opt/authority-host/current  -> releases/<id>
 //	opt/authority-host/previous -> releases/<id>
-//	var/lib/authority-host/deploy.json, highest-counter, counters.log, decisions.inhibit, txn.json, switch.lock
+//	var/lib/authority-host/deploy.json, owed.json, highest-counter, counters.log, decisions.inhibit, txn.json, switch.lock
 package switcher
 
 import (
@@ -118,6 +118,10 @@ type Switcher struct {
 	hostStops     [][]string
 	hostStopsErr  error
 	hostStopsRead bool
+	// The host's stop list ran in this command (see hostStopsFirst), with
+	// these failures: it is not run twice by one command.
+	hostStopsRan      bool
+	hostStopsFailures []string
 	// crashAt, when set, is called at each point of crash; an error stops
 	// the switch there as a crash would.
 	crashAt func(point string) error
@@ -294,6 +298,7 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	}
 	defer lk.release()
 	defer s.closeRoots()
+	s.stopsOwed(ctx)
 	if blocked != nil {
 		return s.stopFirst(ctx, blocked)
 	}
@@ -314,11 +319,10 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 	if code, halt := s.reconcile(ctx, true); halt {
 		return code
 	}
-	last, code, done := s.readState(a)
-	if done {
+	if code, done := s.answerOwed(arg, rollback); done {
 		return code
 	}
-	if code, done := s.reportSettled(last, arg, rollback); done {
+	if _, code, done := s.readState(a); done {
 		return code
 	}
 	if err := s.counterState(a); err != nil {
@@ -587,7 +591,7 @@ func (s *Switcher) activateNew(ctx context.Context, t *txn, newTarget string) in
 	}
 	linkFailed := func(name string, err error) int {
 		s.step(6, "FAILED: %s: %s", name, q(err.Error()))
-		if err := s.putBack(t, "switch", failf(CodeLinkFailed, "%s: %s", name, q(err.Error()))); err != nil {
+		if err := s.putBack(ctx, t, "switch", failf(CodeLinkFailed, "%s: %s", name, q(err.Error()))); err != nil {
 			if !errors.Is(err, errCrashed) {
 				s.printf("result: unresolved: %s; %s stays in phase %s, and the next switch, rollback or recover resumes it", describe(err), JournalFile, t.j.Phase)
 			}
@@ -699,6 +703,43 @@ func (s *Switcher) lockHolder(state *os.Root) string {
 	return errLocked.Error()
 }
 
+// stopsOwed runs, under the lock and before anything else, the host's stop
+// list of a transaction left in its stopping phase: nothing that can fail
+// on the way to its resume (releases/ that cannot be used, a counter or a
+// record that cannot be read, a journal that cannot be checked against the
+// host, a policy that cannot be used) keeps the stops it owes from
+// running. The resume runs the rest (see stop) and records it; when it
+// cannot, the journal stays in stopping and every command runs them
+// again. A dry run runs nothing.
+func (s *Switcher) stopsOwed(ctx context.Context) {
+	if s.cfg.Dry || s.stateRoot == nil || s.lockFile == nil {
+		return
+	}
+	j, ok, err := s.readJournal()
+	if err != nil || !ok || j.Phase != PhaseStopping {
+		return
+	}
+	s.printf("reconcile: the interrupted %s %s is stopping the decision services: the host's %s runs first", (&txn{j: j}).kind(), j.ID, HostStopList)
+	s.hostStopsFirst(ctx)
+}
+
+// hostStopsFirst runs the host's stop list, once per command, and keeps
+// its failures for the stopping phase (see stop): the list that depends on
+// no release runs before anything is saved or read that could fail.
+func (s *Switcher) hostStopsFirst(ctx context.Context) {
+	if s.hostStopsRan {
+		return
+	}
+	s.hostStopsRan = true
+	stops, err := s.hostStopList()
+	if err != nil {
+		s.printf("stop: FAILED: the host's %s: %s", HostStopList, describe(err))
+		s.hostStopsFailures = []string{"the host's " + HostStopList + ": " + describe(err)}
+		return
+	}
+	s.hostStopsFailures = s.runStops(ctx, "host", stops)
+}
+
 // stopFirst is what a command does, under the lock, when the switch policy
 // (its signers file included) or the host's stop list cannot be used: a
 // transaction stopping the decision services is resumed first, with the
@@ -804,6 +845,7 @@ func (s *Switcher) readState(a *attempt) (Record, int, bool) {
 	a.rec.PackageSnapshot = last.PackageSnapshot
 	a.rec.PackageState, a.rec.PackageFrom, a.rec.PackageTo, a.rec.PackageStatedAt = last.PackageState, last.PackageFrom, last.PackageTo, last.PackageStatedAt
 	a.rec.InhibitClearedAt, a.rec.InhibitClearedAsked = last.InhibitClearedAt, last.InhibitClearedAsked
+	a.rec.OutcomeAckedAt, a.rec.OutcomeAckedAsked, a.rec.OutcomeAckedTxn = last.OutcomeAckedAt, last.OutcomeAckedAsked, last.OutcomeAckedTxn
 	current := "none"
 	if a.oldExists {
 		current = a.rec.CurrentID
@@ -861,9 +903,15 @@ func (s *Switcher) openForSwitch(ctx context.Context, a *attempt, id ReleaseID, 
 		return nil, s.fail(a, 0, err), true
 	}
 	src, err := openIncoming(s.cfg.From)
+	if err == nil {
+		if err = s.incomingApart(s.cfg.From, src); err != nil {
+			src.Close()
+		}
+	}
 	if err != nil {
 		return nil, s.fail(a, 0, err), true
 	}
+	s.reportLeftImports()
 	if s.cfg.Dry {
 		// The release holds src open and closes it.
 		s.step(0, "would copy %s into releases/%s as new read-only files", q(s.cfg.From), id.Name)
@@ -878,9 +926,14 @@ func (s *Switcher) openForSwitch(ctx context.Context, a *attempt, id ReleaseID, 
 		return rel, 0, false
 	}
 	defer src.Close()
-	tmp := importPrefix + id.Name
+	// The staging folder is this import's own: a new name, made here
+	// (mkdir fails on a name that is there), and the only folder the import
+	// ever removes.
+	tmp, err := s.newStaging(id)
+	if err != nil {
+		return nil, s.fail(a, 0, err), true
+	}
 	tmpDir := filepath.Join(s.base(), "releases", tmp)
-	s.dropImport(tmp)
 	files, err := s.importTree(src, tmp)
 	if err != nil {
 		s.dropImport(tmp)
@@ -941,6 +994,9 @@ func (s *Switcher) checkRelease(ctx context.Context, rel *release) error {
 		return err
 	}
 	if rel.lists, err = rel.readLists(manifest.Components == ComponentsStatic); err != nil {
+		return err
+	}
+	if err := s.checkPrograms(rel); err != nil {
 		return err
 	}
 	rel.manifest = manifest
@@ -1020,7 +1076,7 @@ func (s *Switcher) fail(a *attempt, n int, err error) int {
 		if t.j.Check == CheckNotRun {
 			t.j.Check = a.rec.Check
 		}
-		if err := s.toStopping(t, ResultFailed); err != nil {
+		if err := s.toStopping(context.Background(), t, ResultFailed); err != nil {
 			if !errors.Is(err, errCrashed) {
 				s.printf("result: unresolved: %s; %s stays, and the next switch, rollback or recover resumes it", describe(err), JournalFile)
 			}
@@ -1122,17 +1178,6 @@ func (s *Switcher) rewriteRecord(rec *Record) error {
 	return writeJSONIn(s.stateRoot, DeployFile, rec, 0o644)
 }
 
-// reported clears the report rec owes, once its result line was written:
-// deploy.json is written again as it is, its time included, but
-// pending_report. A failure leaves the report owed, which is safe: the
-// same request run again only reports the outcome.
-func (s *Switcher) reported(rec Record) {
-	rec.PendingReport = false
-	if err := s.rewriteRecord(&rec); err != nil {
-		s.printf("warning: %s not written: %s; the same request run again reports this outcome once more", DeployFile, q(err.Error()))
-	}
-}
-
 // setFailure records err in the record as the failure of step.
 func (s *Switcher) setFailure(a *attempt, step string, err error) {
 	a.rec.FailedStep = step
@@ -1215,6 +1260,7 @@ func (s *Switcher) status(w io.Writer) error {
 	var present, ok, pending bool
 	var rec Record
 	var j journal
+	var owed []string
 	if s.stateRoot != nil {
 		if highest, present, err = s.readHighest(); err != nil {
 			return err
@@ -1223,6 +1269,9 @@ func (s *Switcher) status(w io.Writer) error {
 			return err
 		}
 		if j, pending, err = s.readJournal(); err != nil {
+			return err
+		}
+		if owed, err = s.owedStatus(); err != nil {
 			return err
 		}
 	}
@@ -1250,13 +1299,21 @@ func (s *Switcher) status(w io.Writer) error {
 	if in, ok, err := s.readInhibitIfState(); err != nil {
 		return err
 	} else if ok {
-		fmt.Fprintf(w, "decisions: inhibited (%s) since %s by transaction %s: %s; decision-capable units do not start while it is there; a transaction that ends healthy removes it, or ah-switch inhibit-clear --asked WORDS\n", InhibitFile, q(in.Time), q(in.Txn), q(in.Reason))
+		fmt.Fprintf(w, "decisions: inhibited (%s) since %s by transaction %s: %s; decision-capable services refuse every decision while it is there; a transaction that ends healthy removes it, or ah-switch inhibit-clear --asked WORDS\n", InhibitFile, q(in.Time), q(in.Txn), q(in.Reason))
 	} else {
 		fmt.Fprintln(w, "decisions: not inhibited")
 	}
 	if pending {
 		t := &txn{j: j}
 		fmt.Fprintf(w, "interrupted: %s %s in phase %s (transaction %s); the next switch, rollback or recover resumes it\n", t.kind(), j.ID, j.Phase, j.Txn)
+		if j.Phase == PhaseDone && journalHealthy(j) {
+			cur := j.ID
+			if j.Result != ResultOK && j.OldCurrent != "" {
+				id, _ := s.targetID(j.OldCurrent)
+				cur = id.Name
+			}
+			fmt.Fprintf(w, "requalify: it ended %s before the interruption; the next command runs the reload list and the health check of %s again before decisions are no longer inhibited\n", j.Result, cur)
+		}
 		if j.StopFailures != "" {
 			fmt.Fprintf(w, "stop failures: %s; fix their cause and run a command again, or run ah-switch recover --services-stopped once the decision services are stopped\n", j.StopFailures)
 		}
@@ -1277,6 +1334,12 @@ func (s *Switcher) status(w io.Writer) error {
 	if rec.InhibitClearedAt != "" {
 		fmt.Fprintf(w, "inhibit last cleared by the owner at %s, asked: %s\n", q(rec.InhibitClearedAt), q(rec.InhibitClearedAsked))
 	}
+	for _, line := range owed {
+		fmt.Fprintln(w, line)
+	}
+	if rec.OutcomeAckedAt != "" {
+		fmt.Fprintf(w, "outcomes last acknowledged by the owner at %s (transactions %s), asked: %s\n", q(rec.OutcomeAckedAt), q(rec.OutcomeAckedTxn), q(rec.OutcomeAckedAsked))
+	}
 	if !ok || rec.Txn == "" && rec.ID == "" {
 		fmt.Fprintln(w, "last switch: none recorded")
 		return nil
@@ -1286,9 +1349,6 @@ func (s *Switcher) status(w io.Writer) error {
 		kind = "rollback to"
 	}
 	fmt.Fprintf(w, "last switch: %s %s: %s at %s (mode %s)\n", kind, q(rec.ID), q(rec.Result), q(rec.Time), q(rec.Mode))
-	if rec.PendingReport {
-		fmt.Fprintf(w, "outcome not reported yet (request %s): the same request run again reports it once and does nothing else\n", q(rec.RequestID))
-	}
 	if rec.ServicesStopped {
 		fmt.Fprintf(w, "decision services: stopped\n")
 	}

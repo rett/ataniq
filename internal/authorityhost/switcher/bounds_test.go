@@ -14,17 +14,17 @@ import (
 // MaxCommandArgs words.
 func TestListBounds(t *testing.T) {
 	ok := strings.Repeat("cmd\n", MaxListCommands)
-	if cmds, err := ParseCommandList("list", []byte(ok), ""); err != nil || len(cmds) != MaxListCommands {
+	if cmds, err := ParseCommandList("list", []byte(ok), "", false); err != nil || len(cmds) != MaxListCommands {
 		t.Errorf("%d commands: %d, %v", MaxListCommands, len(cmds), err)
 	}
-	if _, err := ParseCommandList("list", []byte(ok+"cmd\n"), ""); err == nil || !strings.Contains(err.Error(), "more than 64 commands") {
+	if _, err := ParseCommandList("list", []byte(ok+"cmd\n"), "", false); err == nil || !strings.Contains(err.Error(), "more than 64 commands") {
 		t.Errorf("%d commands: %v", MaxListCommands+1, err)
 	}
 	words := "cmd" + strings.Repeat(" a", MaxCommandArgs-1)
-	if _, err := ParseCommandList("list", []byte(words+"\n"), ""); err != nil {
+	if _, err := ParseCommandList("list", []byte(words+"\n"), "", false); err != nil {
 		t.Errorf("%d words: %v", MaxCommandArgs, err)
 	}
-	if _, err := ParseCommandList("list", []byte(words+" a\n"), ""); err == nil || !strings.Contains(err.Error(), "more than 32 words") {
+	if _, err := ParseCommandList("list", []byte(words+" a\n"), "", false); err == nil || !strings.Contains(err.Error(), "more than 32 words") {
 		t.Errorf("%d words: %v", MaxCommandArgs+1, err)
 	}
 }

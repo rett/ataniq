@@ -360,3 +360,132 @@ func TestImportChargesWrittenBytes(t *testing.T) {
 		})
 	}
 }
+
+// TestImportNeverDeletesItsInput: an incoming folder that is, lies beneath
+// or contains the folder of releases/ (a staging folder of an import, a
+// release, releases/ itself, also through a symbolic link of a folder
+// above it) is refused before anything is created or removed: the
+// incoming files stay as they were and releases/ holds what it held.
+func TestImportNeverDeletesItsInput(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// in returns the incoming folder, written below e.root.
+		in func(e *env) string
+	}{
+		{"the staging name of the id", func(e *env) string {
+			return e.releaseIn(filepath.Join(e.root, BaseDir, "releases", importPrefix+rel3), rel3, "2026-11-01")
+		}},
+		{"beneath a staging folder", func(e *env) string {
+			return e.releaseIn(filepath.Join(e.root, BaseDir, "releases", importPrefix+rel3+"-0123", "inner", rel3), rel3, "2026-11-01")
+		}},
+		{"beneath a release", func(e *env) string {
+			return e.releaseIn(filepath.Join(e.relDir(rel1), "incoming", rel3), rel3, "2026-11-01")
+		}},
+		{"through a link to a staging folder", func(e *env) string {
+			held := filepath.Join(e.root, BaseDir, "releases", importPrefix+rel3)
+			e.releaseIn(filepath.Join(held, rel3), rel3, "2026-11-01")
+			link := filepath.Join(e.t.TempDir(), "link")
+			if err := os.Symlink(held, link); err != nil {
+				e.t.Fatal(err)
+			}
+			return filepath.Join(link, rel3)
+		}},
+		{"containing releases", func(e *env) string {
+			return filepath.Join(e.root, BaseDir)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := active(t)
+			in := tc.in(e)
+			releases := filepath.Join(e.root, BaseDir, "releases")
+			names := func() string {
+				entries, _ := os.ReadDir(releases)
+				var n []string
+				for _, ent := range entries {
+					n = append(n, ent.Name())
+				}
+				return strings.Join(n, " ")
+			}
+			before, list := digest(t, in), names()
+			if code := e.switchTo(rel3, from(in)); code != ExitFailed {
+				t.Fatalf("exit %d", code)
+			}
+			if rec := e.record(); rec.Error != CodeIncomingOverlaps || rec.FailedStep != "import" {
+				t.Errorf("record: %s at %s: %s", rec.Error, rec.FailedStep, rec.Detail)
+			}
+			if _, err := os.Stat(in); err != nil {
+				t.Fatalf("the incoming folder is gone: %v", err)
+			}
+			if digest(t, in) != before {
+				t.Errorf("the incoming folder changed")
+			}
+			if got := names(); got != list {
+				t.Errorf("releases/ holds %s, want %s", got, list)
+			}
+			if got := e.link("current"); got != "releases/"+rel2 {
+				t.Errorf("current -> %q", got)
+			}
+			if len(e.runner.calls) != 0 {
+				t.Errorf("commands run: %v", e.runner.calls)
+			}
+		})
+	}
+}
+
+// TestImportStagingIsItsOwn: an import stages in a folder of its own,
+// made new for it, and removes only that one: a folder an earlier import
+// left (under the old fixed name or any other .import- name) is neither
+// used nor removed, and the switch says it is there.
+func TestImportStagingIsItsOwn(t *testing.T) {
+	e := active(t)
+	releases := filepath.Join(e.root, BaseDir, "releases")
+	left := []string{importPrefix + rel3, importPrefix + rel3 + "-feedc0de"}
+	for _, name := range left {
+		e.write(filepath.Join(releases, name, "kept"), "kept\n", 0o644)
+	}
+	var staged []string
+	importHook = func(stage, rel string) {
+		if stage == "open" && rel == ManifestFile {
+			entries, _ := os.ReadDir(releases)
+			for _, ent := range entries {
+				if strings.HasPrefix(ent.Name(), importPrefix) && ent.Name() != left[0] && ent.Name() != left[1] {
+					staged = append(staged, ent.Name())
+				}
+			}
+		}
+	}
+	t.Cleanup(func() { importHook = nil })
+	e.runner.fail["validate-rules"] = 1
+	in := e.incoming(rel3, "2026-11-01")
+	if code := e.switchTo(rel3, from(in)); code != ExitFailed {
+		t.Fatalf("exit %d", code)
+	}
+	if len(staged) != 1 || !strings.HasPrefix(staged[0], importPrefix+rel3+"-") {
+		t.Fatalf("staging folders seen during the copy: %v", staged)
+	}
+	if _, err := os.Lstat(filepath.Join(releases, staged[0])); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the import's own staging folder was left: %v", err)
+	}
+	for _, name := range left {
+		if data, err := os.ReadFile(filepath.Join(releases, name, "kept")); err != nil || string(data) != "kept\n" {
+			t.Errorf("%s was touched: %v", name, err)
+		}
+		if !strings.Contains(e.last, "releases/"+name+" was left by an earlier import") {
+			t.Errorf("%s not reported:\n%s", name, e.last)
+		}
+	}
+	// A failing import removes its own staging folder only.
+	in4 := e.incoming("0004-ddddddd", "2026-11-01")
+	e.write(filepath.Join(in4, "etc/extra"), "x", 0o644)
+	if code := e.switchTo("0004-ddddddd", from(in4)); code != ExitFailed || e.record().Error != CodeFileNotListed {
+		t.Fatalf("exit %d, %+v", code, e.record())
+	}
+	entries, _ := os.ReadDir(releases)
+	var got []string
+	for _, ent := range entries {
+		got = append(got, ent.Name())
+	}
+	if want := strings.Join(append(append([]string{}, left...), rel1, rel2, rel3), " "); strings.Join(got, " ") != want {
+		t.Errorf("releases/ holds %v, want %s", got, want)
+	}
+}

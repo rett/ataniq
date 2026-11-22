@@ -1,6 +1,7 @@
 package switcher
 
 import (
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -15,10 +16,13 @@ const (
 	StopList       = "share/stop.list"
 )
 
-// ReleasePlaceholder in an argument of a validator is replaced by the absolute
-// path of the release folder, so that a validator checks the files of the
-// release being switched to, not those of the current one. The reload, health
-// and stop lists act on what is live (current) and may not use it.
+// ReleasePlaceholder is replaced by the absolute path of the release
+// folder: at the start of a program, {release}/PATH, in every list (a
+// program of the release itself, which must be a file of it), and in an
+// argument of a validator, so that a validator checks the files of the
+// release being switched to, not those of the current one. The arguments
+// of the reload, health and stop lists act on what is live (current) and
+// may not use it.
 const ReleasePlaceholder = "{release}"
 
 // Bounds of a command list: commands per list and words per command, so
@@ -35,11 +39,15 @@ const shellChars = "|&;<>$`'\"\\*?~(){}"
 
 // ParseCommandList reads one command per line: arguments separated by spaces
 // or tabs, no shell. Blank lines and lines starting with # are skipped. The
-// program is an absolute path or a bare name (looked up in the runner's fixed
-// search path); a relative path with a slash is refused. {release} in any
-// argument becomes releaseDir; with releaseDir empty it is refused. A list
-// holds at most MaxListCommands commands of at most MaxCommandArgs words.
-func ParseCommandList(name string, data []byte, releaseDir string) ([][]string, error) {
+// program is an absolute path, {release}/PATH (PATH clean and inside the
+// release) or a bare name (looked up in the runner's fixed search path); a
+// relative path with a slash is refused. {release} becomes releaseDir: in
+// the program, and in the other arguments only with args (a validator).
+// With releaseDir empty it is refused anywhere. A list holds at most
+// MaxListCommands commands of at most MaxCommandArgs words. Where an
+// absolute program may lie is checked once the release is known (see
+// checkPrograms).
+func ParseCommandList(name string, data []byte, releaseDir string, args bool) ([][]string, error) {
 	var cmds [][]string
 	for i, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
@@ -54,8 +62,18 @@ func ParseCommandList(name string, data []byte, releaseDir string) ([][]string, 
 			return nil, failf(CodeListInvalid, "%s: more than %d commands", name, MaxListCommands)
 		}
 		for j, arg := range argv {
-			if releaseDir == "" && strings.Contains(arg, ReleasePlaceholder) {
-				return nil, failf(CodeListInvalid, "%s line %d: %s is only for validators; this list acts on what current points at", name, i+1, ReleasePlaceholder)
+			if strings.Contains(arg, ReleasePlaceholder) {
+				switch {
+				case releaseDir == "":
+					return nil, failf(CodeListInvalid, "%s line %d: %s is only for the lists of a release", name, i+1, ReleasePlaceholder)
+				case j == 0:
+					rest, ok := strings.CutPrefix(arg, ReleasePlaceholder+"/")
+					if !ok || rest == "" || path.Clean(rest) != rest || rest == ".." || strings.HasPrefix(rest, "../") || strings.Contains(rest, ReleasePlaceholder) {
+						return nil, failf(CodeListInvalid, "%s line %d: program %s: %s in a program is %s/PATH, a clean path inside the release", name, i+1, q(arg), ReleasePlaceholder, ReleasePlaceholder)
+					}
+				case !args:
+					return nil, failf(CodeListInvalid, "%s line %d: %s is only for validators; this list acts on what current points at", name, i+1, ReleasePlaceholder)
+				}
 			}
 			arg = strings.ReplaceAll(arg, ReleasePlaceholder, releaseDir)
 			if strings.ContainsAny(strings.ReplaceAll(argv[j], ReleasePlaceholder, ""), shellChars) {
@@ -87,14 +105,14 @@ type lists struct {
 func (r *release) readLists(static bool) (lists, error) {
 	var l lists
 	for _, f := range []struct {
-		name       string
-		releaseDir string
-		into       *[][]string
+		name string
+		args bool
+		into *[][]string
 	}{
-		{ValidatorsList, r.dir, &l.validators},
-		{ReloadList, "", &l.reloads},
-		{HealthCmd, "", &l.health},
-		{StopList, "", &l.stops},
+		{ValidatorsList, true, &l.validators},
+		{ReloadList, false, &l.reloads},
+		{HealthCmd, false, &l.health},
+		{StopList, false, &l.stops},
 	} {
 		ok, err := r.exists(f.name)
 		if err != nil {
@@ -107,7 +125,7 @@ func (r *release) readLists(static bool) (lists, error) {
 		if err != nil {
 			return lists{}, err
 		}
-		if *f.into, err = ParseCommandList(f.name, data, f.releaseDir); err != nil {
+		if *f.into, err = ParseCommandList(f.name, data, r.dir, f.args); err != nil {
 			return lists{}, err
 		}
 		if len(*f.into) == 0 && !static {
@@ -115,4 +133,51 @@ func (r *release) readLists(static bool) (lists, error) {
 		}
 	}
 	return l, nil
+}
+
+// checkPrograms checks where the program of every command of the lists of
+// rel lies, once rel is verified: a bare name (the runner's fixed search
+// path); {release}/PATH, a file of rel with an execute bit (verified with
+// it, and read-only since its import); or an absolute path of a protected
+// host program (see openProtected), which then runs as that path below the
+// root. Any other absolute path (a deployment workspace, a home folder,
+// /tmp, a link) is refused: its bytes are not what was verified, and
+// whoever can write them would choose what runs.
+func (s *Switcher) checkPrograms(rel *release) error {
+	for _, l := range []struct {
+		name string
+		cmds [][]string
+	}{
+		{ValidatorsList, rel.validators},
+		{ReloadList, rel.reloads},
+		{HealthCmd, rel.health},
+		{StopList, rel.stops},
+	} {
+		for _, argv := range l.cmds {
+			prog := argv[0]
+			if !filepath.IsAbs(prog) {
+				continue
+			}
+			bad := func(err error) error {
+				return failf(CodeListInvalid, "%s: program %s is neither a file of the release (%s/PATH) nor a protected host program: %s", l.name, q(prog), ReleasePlaceholder, describe(err))
+			}
+			if inside, ok := strings.CutPrefix(prog, rel.dir+"/"); ok {
+				info, err := rel.root.Lstat(inside)
+				switch {
+				case err != nil:
+					return bad(err)
+				case !info.Mode().IsRegular() || info.Mode()&0o111 == 0:
+					return bad(failf(CodeBadEntry, "%s is not an executable regular file of the release", q(inside)))
+				}
+				continue
+			}
+			f, _, full, err := s.openProtected(prog)
+			if err != nil {
+				return bad(err)
+			}
+			f.Close()
+			argv[0] = full
+		}
+	}
+	return nil
 }

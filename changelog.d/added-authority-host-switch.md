@@ -2,7 +2,10 @@
   `ah-switch --from INCOMING_DIR ID` imports a release folder into
   `/opt/authority-host/releases/ID` as new, read-only, root-owned files
   (folders and regular files only, within limits of entries, size and
-  time), recording the digest of the tree it made (paths, inodes, sizes,
+  time; staged in a new folder of its own, the only one it ever removes,
+  and refused before anything is created or removed when the incoming
+  folder is, contains or lies beneath `releases/` or anything in it),
+  recording the digest of the tree it made (paths, inodes, sizes,
   hashes), and `ah-switch ID` activates an imported release, refusing a
   folder without that record or that no longer matches it: it checks its
   `SHA256SUMS` over every file and, when the root-owned switch policy
@@ -26,28 +29,40 @@
   release (after stopping the failed release's services) with that
   release's own reload and health lists and its no-AI check, or stopping
   the decision services, with the host's own
-  `/etc/authority-host/stop.list` first, when it cannot. Every transaction
-  first writes `/var/lib/authority-host/decisions.inhibit`, which
-  decision-capable units name in `ConditionPathExists=!` so they do not
-  start while it is there, and removes it only when it ends healthy; a
-  failure keeps it across a reboot until a healthy switch or
+  `/etc/authority-host/stop.list` first, when it cannot (that list runs
+  before the stopping phase is saved, and, while a journal is stopping,
+  first in every command, under the lock, even when `releases/`, the
+  counter or the record cannot be used). Every transaction
+  first writes `/var/lib/authority-host/decisions.inhibit`; a
+  decision-capable service may start while it is there (and answer its
+  readiness probe) but refuses every decision while it is there or cannot
+  be read, checking it before each decision; the switch removes it only
+  when the transaction ends healthy, after running the reload list and
+  health check of `current` again when it finds a healthy transaction
+  not yet settled (a reboot may have come); a failure keeps it across a
+  reboot until a healthy switch or
   `ah-switch inhibit-clear --asked WORDS` (recorded with the time). All
   of it is one transaction journaled in `txn.json`, phase by phase
   (packages, links, activating, restoring, stopping, done), with the trust
   it began with;
   the next command resumes an interrupted one from its phase, a link
   counts as moved only once its folder is synced, a failed stop keeps the
-  transaction open, and a retried request reports the outcome it is still
-  owed (`pending_report`, set before the journal is removed and cleared
-  only once the result line is written, so a lost response is reported
-  too) instead of doing it again, a rollback bound to its request id so
-  that a retry never resolves `previous` anew; `--dry` only shows it.
+  transaction open, and every settled outcome is owed in its own file,
+  `/var/lib/authority-host/owed.json` (written before the journal is
+  removed, never in `deploy.json`, and not taken back by a printed result
+  line): the same request run again reports it instead of doing it again,
+  a rollback bound to its request id so that a retry never resolves
+  `previous` anew, any other switch or rollback reports it and is refused
+  until then, and `ah-switch ack --asked WORDS` acknowledges it (recorded
+  with the time); `--dry` only shows it.
   `ah-switch --rollback-to previous` goes back under the same policy,
   `ah-switch recover --counter N` restores a missing counter,
   `ah-switch recover --package-state SNAPSHOT` settles an unknown package
   state, a journal that does not match the host (its links, or a counter
   below those attempted since) is never resumed until
-  `ah-switch recover --discard-journal TXN` sets it aside,
+  `ah-switch recover --discard-journal TXN` sets it aside (only a journal
+  proven stale: one whose evidence cannot be read is neither resumed nor
+  discarded),
   `ah-switch recover --services-stopped` settles a transaction whose stop
   commands failed on the owner's word,
   `ah-switch status` shows the state under a shared lock, `--dry` prints
@@ -55,7 +70,15 @@
   (running programs there only with `--allow-exec`), and
   `--noaicheck PATH` runs another no-AI check only when it is protected
   root-owned code, bound to the transaction by its SHA-256 and checked
-  again before every run. The outcome is written to
+  again before every run, from a private copy made from the checked
+  descriptor and hashed again. A program of a release's lists is a file
+  of the release (`{release}/bin/...`, in any list), a protected
+  root-owned host program such as `/usr/bin/systemctl`, or a bare name in
+  the fixed search path; any other absolute path is refused when the
+  release is verified. The outcome is written to
   `/var/lib/authority-host/deploy.json` as stable failure codes, never a
   program's output. Exit codes are 0 ok, 1 failed, 2 usage and 3
-  locked. See `deploy/authority-host/README.md`.
+  locked. Known limits (an old journal restored by root can replay a
+  settled transaction; a package step's descendant that keeps the lock
+  open keeps every command out until it is stopped) are in
+  `deploy/authority-host/README.md`.

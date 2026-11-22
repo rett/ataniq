@@ -98,6 +98,33 @@ func (e *env) ran(want map[string]int) {
 	}
 }
 
+// owed reads owed.json: the outcomes owed, none when it is missing.
+func (e *env) owed() []owedOutcome {
+	e.t.Helper()
+	data, err := os.ReadFile(filepath.Join(e.root, StateDir, OwedFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	var f owedFile
+	if err := json.Unmarshal(data, &f); err != nil {
+		e.t.Fatal(err)
+	}
+	return f.Outcomes
+}
+
+// owes checks that the outcome of the transaction txn, of request
+// requestID, with result, is the one outcome owed.
+func (e *env) owes(txn, requestID, result string) {
+	e.t.Helper()
+	owed := e.owed()
+	if len(owed) != 1 || owed[0].Txn != txn || owed[0].RequestID != requestID || owed[0].Result != result {
+		e.t.Errorf("owed: %+v, want %s %s %s", owed, txn, requestID, result)
+	}
+}
+
 // noJournal checks that the journal is gone.
 func (e *env) noJournal() {
 	e.t.Helper()
@@ -114,7 +141,9 @@ func (e *env) noJournal() {
 // the new release's reload and health again; a restoring phase stops the
 // new release's services, puts the links back and runs the old release's
 // reload and health again; a stopping phase runs every stop list again; a
-// done phase only records.
+// done phase records, after the reload list and health check of the
+// release current points at ran again when the transaction ended healthy
+// (a reboot may have come between its health check and its settling).
 // The next command here is a recover, which then has nothing to do: the
 // outcome is the transaction's own.
 func TestCrashAndResume(t *testing.T) {
@@ -141,9 +170,9 @@ func TestCrashAndResume(t *testing.T) {
 	// release reloaded and checked.
 	putBack := want{rel2, rel1, ResultRolledBack, "interrupted", "ok", false, with(map[string]int{"stop-app": 1, "reload-old": 1, "health-old": 1})}
 	completed := want{rel3, rel2, ResultOK, "", "", false, with(map[string]int{"reload-units": 1, "health-probe": 1})}
-	recorded := want{rel3, rel2, ResultOK, "", "", false, none}
+	recorded := want{rel3, rel2, ResultOK, "", "", false, with(map[string]int{"reload-units": 1, "health-probe": 1})}
 	restored := want{rel2, rel1, ResultRolledBack, "health", "ok", false, with(map[string]int{"stop-app": 1, "reload-old": 1, "health-old": 1})}
-	restoredRecorded := want{rel2, rel1, ResultRolledBack, "health", "ok", false, none}
+	restoredRecorded := want{rel2, rel1, ResultRolledBack, "health", "ok", false, with(map[string]int{"reload-old": 1, "health-old": 1})}
 	stopped := want{rel2, rel1, ResultFailedRecovery, "health", "failed", true, with(map[string]int{"stop-all": 1, "stop-app": 1, "stop-old": 1})}
 	stoppedRecorded := want{rel2, rel1, ResultFailedRecovery, "health", "failed", true, none}
 
@@ -208,6 +237,7 @@ func TestCrashAndResume(t *testing.T) {
 			}
 
 			// The next command resumes it.
+			e.keepOwed = true
 			e.runner.reset()
 			e.runner.fail = map[string]int{}
 			for k, v := range tc.fail {
@@ -226,9 +256,11 @@ func TestCrashAndResume(t *testing.T) {
 			}
 			rec := e.record()
 			if rec.ID != rel3 || rec.Result != tc.want.result || rec.FailedStep != tc.want.step || rec.RestoredHealth != tc.want.restored ||
-				rec.ServicesStopped != tc.want.stopped || rec.CurrentID != tc.want.current || rec.Txn != j.Txn || rec.Requested != rel3 || !rec.PendingReport {
+				rec.ServicesStopped != tc.want.stopped || rec.CurrentID != tc.want.current || rec.Txn != j.Txn || rec.Requested != rel3 {
 				t.Errorf("record: %+v", rec)
 			}
+			// Settled by another command: the outcome is owed.
+			e.owes(j.Txn, "forward:"+rel3, tc.want.result)
 			e.ran(tc.want.ran)
 		})
 	}
@@ -251,17 +283,18 @@ func TestRetryReportsSettled(t *testing.T) {
 	} {
 		t.Run("rollback/"+tc.point, func(t *testing.T) {
 			e := active(t)
+			e.keepOwed = true
 			e.crashAt(tc.point, true, "previous")
 			if code := e.rollBack("previous"); code != tc.code {
 				t.Fatalf("retry: exit %d", code)
 			}
-			if !strings.Contains(e.last, "settled: this rollback to previous was interrupted and has been settled since; it is not done again") {
+			if !strings.Contains(e.last, "settled: this rollback to previous has been settled already; it is not done again") {
 				t.Errorf("output:\n%s", e.last)
 			}
 			e.links(tc.current, tc.previous)
 			e.noJournal()
-			if rec := e.record(); rec.PendingReport || !rec.Rollback {
-				t.Errorf("record: %+v", rec)
+			if rec := e.record(); !rec.Rollback || len(e.owed()) != 0 {
+				t.Errorf("record: %+v, owed %+v", rec, e.owed())
 			}
 			// Asked again, it is a new rollback.
 			if code := e.rollBack("previous"); code != ExitOK {
@@ -272,12 +305,13 @@ func TestRetryReportsSettled(t *testing.T) {
 	}
 	t.Run("settled by another command", func(t *testing.T) {
 		e := active(t)
+		e.keepOwed = true
 		e.crashAt(CrashHealth, true, "previous")
 		if code := e.recover(resumeOnly); code != ExitFailed {
 			t.Fatalf("recover: exit %d", code)
 		}
 		e.links(rel1, rel2)
-		if got := e.status(); !strings.Contains(got, "outcome not reported yet (request rollback:"+rel1+")") {
+		if got := e.status(); !strings.Contains(got, "outcome owed (request rollback:"+rel1+", transaction ") {
 			t.Errorf("status:\n%s", got)
 		}
 		if code := e.rollBack("previous"); code != ExitOK {
@@ -306,9 +340,19 @@ func TestRetryReportsSettled(t *testing.T) {
 	})
 	t.Run("another request is not a retry", func(t *testing.T) {
 		e := active(t)
+		e.keepOwed = true
 		e.release(rel3, "2026-11-01")
 		e.crashAt(CrashCurrent, false, rel3)
 		e.release("0004-ddddddd", "2026-11-01")
+		// It settles the interrupted switch, whose outcome is then owed:
+		// it reports it and is refused until the owner acknowledges it.
+		if code := e.switchTo("0004-ddddddd"); code != ExitFailed || !strings.Contains(e.last, "owed: the switch to "+rel3) {
+			t.Fatalf("exit %d\n%s", code, e.last)
+		}
+		e.links(rel2, rel1)
+		if code := e.ack("the put-back switch was seen"); code != ExitOK {
+			t.Fatalf("ack: exit %d\n%s", code, e.last)
+		}
 		if code := e.switchTo("0004-ddddddd"); code != ExitOK {
 			t.Fatalf("exit %d", code)
 		}
@@ -382,7 +426,9 @@ func TestSyncFailureKeepsTheJournal(t *testing.T) {
 		}
 		e.noJournal()
 		e.links(rel3, rel2)
-		e.ran(map[string]int{"reload-units": 0, "health-probe": 0})
+		// Found in phase done: current is reloaded and checked again
+		// before decisions are no longer inhibited.
+		e.ran(map[string]int{"reload-units": 1, "health-probe": 1})
 	})
 }
 
@@ -441,16 +487,25 @@ func TestReconcileRecord(t *testing.T) {
 	})
 	t.Run("activating but unhealthy", func(t *testing.T) {
 		e := active(t)
+		e.keepOwed = true
 		e.release(rel3, "2026-11-01")
 		e.crashAt(CrashActivating, false, rel3)
 		// The resume uses up the failing probes and goes back to rel2, as a
-		// failed health check does; the rollback then goes to rel1.
+		// failed health check does; its outcome is owed, so the rollback is
+		// refused until it is acknowledged, and then goes to rel1.
 		e.runner.fail["health-probe"] = 30
-		if code := e.rollBack("previous"); code != ExitOK {
+		if code := e.rollBack("previous"); code != ExitFailed {
 			t.Fatalf("rollback: exit %d", code)
 		}
-		if !strings.Contains(e.last, "back: current -> releases/"+rel2) {
+		if !strings.Contains(e.last, "back: current -> releases/"+rel2) || !strings.Contains(e.last, "owed: the switch to "+rel3) {
 			t.Errorf("output:\n%s", e.last)
+		}
+		e.links(rel2, rel1)
+		if code := e.ack("looked"); code != ExitOK {
+			t.Fatalf("ack: exit %d", code)
+		}
+		if code := e.rollBack("previous"); code != ExitOK {
+			t.Fatalf("rollback: exit %d", code)
 		}
 		e.links(rel1, rel2)
 		if e.highest() != "3" {
@@ -575,6 +630,7 @@ func TestCrashInPackageStep(t *testing.T) {
 			if got := e.highest(); got != "2" {
 				t.Errorf("highest %q: the counter is written with the links", got)
 			}
+			e.keepOwed = true
 			if code := e.recover(resumeOnly); code != ExitFailed {
 				t.Fatalf("recover: exit %d", code)
 			}
@@ -742,13 +798,14 @@ func TestResumeCrashesToo(t *testing.T) {
 // that is a new one.
 func TestDryRetryChangesNothing(t *testing.T) {
 	e := active(t)
+	e.keepOwed = true
 	e.crashAt(CrashHealth, true, "previous")
 	if code := e.recover(resumeOnly); code != ExitFailed {
 		t.Fatalf("recover: exit %d", code)
 	}
 	e.links(rel1, rel2)
-	if rec := e.record(); !rec.PendingReport || rec.RequestID != "rollback:"+rel1 {
-		t.Fatalf("record: %+v", rec)
+	if owed := e.owed(); len(owed) != 1 || owed[0].RequestID != "rollback:"+rel1 {
+		t.Fatalf("owed: %+v", owed)
 	}
 	e.clock.sleep(time.Hour)
 	e.runner.reset()
@@ -757,7 +814,7 @@ func TestDryRetryChangesNothing(t *testing.T) {
 	code := dry.RollBack(context.Background(), "previous")
 	out := e.out.String()
 	e.out.Reset()
-	if code != ExitOK || !strings.Contains(out, "settled: this rollback to previous was interrupted and has been settled since") || !strings.Contains(out, "dry run") {
+	if code != ExitOK || !strings.Contains(out, "settled: this rollback to previous has been settled already") || !strings.Contains(out, "dry run") {
 		t.Fatalf("dry retry: exit %d\n%s", code, out)
 	}
 	if digest(t, e.root) != before {
@@ -771,8 +828,8 @@ func TestDryRetryChangesNothing(t *testing.T) {
 		t.Fatalf("retry: exit %d\n%s", code, e.last)
 	}
 	e.links(rel1, rel2)
-	if rec := e.record(); rec.PendingReport {
-		t.Errorf("record: %+v", rec)
+	if owed := e.owed(); len(owed) != 0 {
+		t.Errorf("owed: %+v", owed)
 	}
 	if code := e.rollBack("previous"); code != ExitOK {
 		t.Fatalf("a new rollback: exit %d", code)
@@ -782,11 +839,12 @@ func TestDryRetryChangesNothing(t *testing.T) {
 
 // TestResponseLostAfterJournalRemoved: a command that dies after its
 // journal was removed and before its result line was printed leaves the
-// outcome to report: the record says pending_report before the journal is
-// removed, and only the command that printed the result clears it. The
+// outcome owed: owed.json holds it before the journal is removed. The
 // retry reports it and does nothing else; a retried rollback is bound to
 // the release it went to (its request id), never to previous resolved
-// anew, whether it is asked as previous or by that id.
+// anew, whether it is asked as previous or by that id. A command that
+// printed its result leaves it owed too: a line written is no proof that
+// anyone read it; only ack or the same request clears it.
 func TestResponseLostAfterJournalRemoved(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -800,6 +858,7 @@ func TestResponseLostAfterJournalRemoved(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := active(t)
+			e.keepOwed = true
 			e.release(rel3, "2026-11-01")
 			first := rel3
 			if tc.rollback {
@@ -813,10 +872,11 @@ func TestResponseLostAfterJournalRemoved(t *testing.T) {
 			if tc.rollback {
 				want = "rollback:" + rel1
 			}
-			if !rec.PendingReport || rec.RequestID != want || rec.Result != ResultOK {
+			if rec.RequestID != want || rec.Result != ResultOK {
 				t.Fatalf("record: %+v", rec)
 			}
-			if got := e.status(); !strings.Contains(got, "not reported yet") {
+			e.owes(rec.Txn, want, ResultOK)
+			if got := e.status(); !strings.Contains(got, "outcome owed (request "+want) {
 				t.Errorf("status:\n%s", got)
 			}
 			e.runner.reset()
@@ -826,22 +886,36 @@ func TestResponseLostAfterJournalRemoved(t *testing.T) {
 			} else {
 				code = e.switchTo(tc.arg)
 			}
-			if code != ExitOK || !strings.Contains(e.last, "has been settled since; it is not done again") {
+			if code != ExitOK || !strings.Contains(e.last, "has been settled already; it is not done again") {
 				t.Fatalf("retry: exit %d\n%s", code, e.last)
 			}
 			e.links(tc.cur, tc.pre)
 			if len(e.runner.calls) != 0 {
 				t.Errorf("the retry ran %v", e.runner.calls)
 			}
-			if rec := e.record(); rec.PendingReport {
-				t.Errorf("record after the report: %+v", rec)
+			if owed := e.owed(); len(owed) != 0 {
+				t.Errorf("owed after the report: %+v", owed)
 			}
 		})
 	}
-	// A command that printed its result clears the report it owed.
-	e := active(t)
-	if rec := e.record(); rec.PendingReport || rec.RequestID != "forward:"+rel2 {
-		t.Errorf("record of a reported switch: %+v", rec)
+	// A command that printed its result leaves it owed; the owner's ack
+	// clears it, recorded with the words and the time.
+	e := newEnv(t)
+	e.keepOwed = true
+	e.release(rel1, "2026-11-01")
+	if code := e.switchTo(rel1); code != ExitOK || !strings.Contains(e.last, "result: ok") {
+		t.Fatalf("switch: exit %d\n%s", code, e.last)
+	}
+	rec := e.record()
+	e.owes(rec.Txn, "forward:"+rel1, ResultOK)
+	if code := e.ack("result ok seen on the console"); code != ExitOK {
+		t.Fatalf("ack: exit %d\n%s", code, e.last)
+	}
+	if owed := e.owed(); len(owed) != 0 {
+		t.Errorf("owed after the ack: %+v", owed)
+	}
+	if rec := e.record(); rec.OutcomeAckedAsked != "result ok seen on the console" || rec.OutcomeAckedTxn != rec.Txn || rec.OutcomeAckedAt == "" {
+		t.Errorf("record of the ack: %+v", rec)
 	}
 }
 
@@ -930,4 +1004,134 @@ func TestStaleJournalUnresolved(t *testing.T) {
 			t.Errorf("a matching journal was discarded")
 		}
 	})
+}
+
+// owedPath is owed.json of the root of e.
+func (e *env) owedPath() string { return filepath.Join(e.root, StateDir, OwedFile) }
+
+// TestOwedSurvivesUnrelatedRefusal: a rollback whose reply was lost owes
+// its outcome in owed.json, which no other record replaces. An unrelated
+// request (here a release that is not there) reports that outcome, leaves
+// it owed and is refused, changing nothing; the retried rollback then
+// reports it and does not go back again to the release it left.
+func TestOwedSurvivesUnrelatedRefusal(t *testing.T) {
+	e := active(t)
+	e.keepOwed = true
+	e.crashAt(CrashUnreported, true, "previous")
+	e.links(rel1, rel2)
+	if _, err := os.Stat(e.owedPath()); err != nil {
+		t.Fatalf("owed.json: %v", err)
+	}
+	before := e.deployJSON()
+	e.runner.reset()
+	if code := e.switchTo("0009-fffffff"); code != ExitFailed {
+		t.Fatalf("unrelated request: exit %d", code)
+	}
+	if !strings.Contains(e.last, "owed: the rollback to "+rel1) || !strings.Contains(e.last, "ah-switch ack --asked WORDS") {
+		t.Errorf("output:\n%s", e.last)
+	}
+	if got := e.deployJSON(); got != before {
+		t.Errorf("deploy.json changed by the refused request:\n%s", got)
+	}
+	if _, err := os.Stat(e.owedPath()); err != nil {
+		t.Fatalf("owed.json after the unrelated request: %v", err)
+	}
+	if code := e.rollBack("previous"); code != ExitOK || !strings.Contains(e.last, "it is not done again") {
+		t.Fatalf("retry: exit %d\n%s", code, e.last)
+	}
+	e.links(rel1, rel2)
+	if len(e.runner.calls) != 0 {
+		t.Errorf("commands run: %v", e.runner.calls)
+	}
+	if _, err := os.Stat(e.owedPath()); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("owed.json after the matching retry: %v", err)
+	}
+}
+
+// TestAck: ah-switch ack --asked WORDS acknowledges every outcome owed:
+// it needs the words, is refused while a transaction is open and when
+// nothing is owed, runs no program, and a dry run changes nothing. An
+// owed.json that is not what a switch writes, or not trusted, refuses
+// every switch and rollback (and ack) rather than being taken as nothing
+// owed.
+func TestAck(t *testing.T) {
+	t.Run("refusals and dry run", func(t *testing.T) {
+		e := active(t)
+		e.keepOwed = true
+		if code := e.ack("looked"); code != ExitFailed || !strings.Contains(e.last, "nothing to acknowledge") {
+			t.Errorf("nothing owed: exit %d\n%s", code, e.last)
+		}
+		e.release(rel3, "2026-11-01")
+		e.runner.fail["stop-app"] = -1
+		e.runner.fail["health-probe"] = -1
+		if code := e.switchTo(rel3); code != ExitFailed {
+			t.Fatalf("exit %d", code)
+		}
+		if _, ok := e.journal(); !ok {
+			t.Fatalf("no journal open")
+		}
+		if code := e.ack("looked"); code != ExitFailed || !strings.Contains(e.last, "still open") {
+			t.Errorf("journal open: exit %d\n%s", code, e.last)
+		}
+		delete(e.runner.fail, "stop-app")
+		if code := e.recover(resumeOnly); code != ExitFailed {
+			t.Fatalf("recover: exit %d", code)
+		}
+		if len(e.owed()) != 1 {
+			t.Fatalf("owed: %+v", e.owed())
+		}
+		if code := e.ack(" "); code != ExitUsage {
+			t.Errorf("no words: exit %d", code)
+		}
+		e.runner.reset()
+		before := digest(t, e.root)
+		if code := e.ack("looked", func(c *Config) { c.Dry = true }); code != ExitOK || digest(t, e.root) != before {
+			t.Errorf("dry: exit %d\n%s", code, e.last)
+		}
+		if code := e.ack("looked"); code != ExitOK || len(e.owed()) != 0 {
+			t.Errorf("ack: exit %d, owed %+v\n%s", code, e.owed(), e.last)
+		}
+		if len(e.runner.calls) != 0 {
+			t.Errorf("commands run: %v", e.runner.calls)
+		}
+		if got := e.status(); !strings.Contains(got, "outcomes last acknowledged by the owner at") || strings.Contains(got, "outcome owed") {
+			t.Errorf("status:\n%s", got)
+		}
+	})
+	for _, tc := range []struct {
+		name   string
+		break_ func(path string)
+	}{
+		{"writable by others", func(path string) { os.Chmod(path, 0o666) }},
+		{"not parsing", func(path string) { os.WriteFile(path, []byte("{\"outcomes\": []}"), 0o644) }},
+		{"an unknown direction", func(path string) {
+			data, _ := os.ReadFile(path)
+			os.WriteFile(path, []byte(strings.Replace(string(data), `"direction": "forward"`, `"direction": "sideways"`, 1)), 0o644)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := active(t)
+			e.keepOwed = true
+			e.release(rel3, "2026-11-01")
+			if code := e.switchTo(rel3); code != ExitOK {
+				t.Fatalf("exit %d", code)
+			}
+			tc.break_(e.owedPath())
+			before := e.deployJSON()
+			e.runner.reset()
+			if code := e.rollBack("previous"); code != ExitFailed || !strings.Contains(e.last, "state: FAILED") {
+				t.Errorf("rollback: exit %d\n%s", code, e.last)
+			}
+			if code := e.switchTo(rel3); code != ExitFailed {
+				t.Errorf("the same request: exit %d", code)
+			}
+			if code := e.ack("looked"); code != ExitFailed {
+				t.Errorf("ack: exit %d", code)
+			}
+			if e.deployJSON() != before || len(e.runner.calls) != 0 {
+				t.Errorf("changed: %v", e.runner.calls)
+			}
+			e.links(rel3, rel2)
+		})
+	}
 }

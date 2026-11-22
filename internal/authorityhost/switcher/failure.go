@@ -32,6 +32,7 @@ const (
 	CodeReadFailed         = "read-failed"        // a file could not be read
 	CodeFileChanged        = "file-changed"       // a file or folder changed while it was read
 	CodeReleaseExists      = "release-exists"     // --from names a release that is already imported
+	CodeIncomingOverlaps   = "incoming-overlaps"  // the --from folder is, contains or lies beneath releases/ or an entry of it
 	CodeTooManyEntries     = "too-many-entries"   // a release holds more entries than the limit
 	CodeTooLarge           = "too-large"          // a release holds more bytes than the limit
 	CodeFileTooLarge       = "file-too-large"     // a file of a release is larger than the limit

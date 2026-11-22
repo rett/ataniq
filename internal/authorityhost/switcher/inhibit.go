@@ -10,17 +10,21 @@ import (
 )
 
 // InhibitFile is the switch's decision inhibit, in the state folder
-// (var/lib/authority-host/decisions.inhibit): while it is there, no
-// decision-capable service starts, since every such unit carries
-// ConditionPathExists=!/var/lib/authority-host/decisions.inhibit (the
-// release builder adds it). The switch writes it, owned by root, mode
-// 0644, synced with its folder, at the start of every transaction, before
-// any package step or link, and removes it only when the transaction ends
-// healthy: a switch or rollback whose release passed its health check and
-// its post-activation no-AI check, or a going back whose release passed its
-// reload, its health check and its post-activation no-AI check. Any other
-// end leaves it, across a reboot, until a later transaction ends healthy
-// or the owner runs ah-switch inhibit-clear.
+// (var/lib/authority-host/decisions.inhibit): while it is there, every
+// decision-capable service refuses every decision. Such a service may
+// start while it is there (it must, to answer its readiness probe): the
+// application checks the file before each decision and refuses when it is
+// there or cannot be read. No unit carries a start condition on it. The
+// switch writes it, owned by root, mode 0644, synced with its folder, at
+// the start of every transaction, before any package step or link, and
+// removes it only when the transaction ends healthy: a switch or rollback
+// whose release passed its health check and its post-activation no-AI
+// check, or a going back whose release passed its reload, its health check
+// and its post-activation no-AI check; a transaction found in phase done
+// by a later command first runs the reload list and the health check of
+// current again (see requalifyCurrent). Any other end leaves it, across a
+// reboot, until a later transaction ends healthy or the owner runs
+// ah-switch inhibit-clear.
 const InhibitFile = "decisions.inhibit"
 
 // maxInhibitWords bounds the owner's words of inhibit-clear.
@@ -35,7 +39,7 @@ type inhibit struct {
 }
 
 // readInhibit reads decisions.inhibit; a missing file is none. Only its
-// existence matters to the units; its content is for status.
+// existence matters to the services; its content is for status.
 func (s *Switcher) readInhibit() (inhibit, bool, error) {
 	data, err := s.readStateFile(InhibitFile, maxStateFile)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -99,13 +103,26 @@ func (s *Switcher) ensureInhibit(t *txn) error {
 // post-activation no-AI check passed (rolled-back with restored health
 // ok).
 func (t *txn) healthy() bool {
-	return t.j.Result == ResultOK || t.j.Result == ResultRolledBack && t.j.RestoredHealth == "ok"
+	return journalHealthy(t.j)
+}
+
+// journalHealthy is healthy of the transaction j journals.
+func journalHealthy(j journal) bool {
+	return j.Result == ResultOK || j.Result == ResultRolledBack && j.RestoredHealth == "ok"
 }
 
 // endInhibit is the inhibit at the end of the transaction t, once its
-// outcome is recorded: removed when it ended healthy, otherwise kept, with
+// outcome is recorded: removed when it ended healthy (and, found in phase
+// done, passed its reload and health check again), otherwise kept, with
 // the outcome as its reason.
 func (s *Switcher) endInhibit(t *txn) error {
+	if t.requalifyFailed {
+		if err := s.setInhibit(t, fmt.Sprintf("the %s %s ended %s, but after an interruption current did not pass its reload and health check again", t.kind(), t.j.ID, t.j.Result)); err != nil {
+			return err
+		}
+		s.step(9, "decisions stay inhibited (%s): current did not pass its reload and health check again", InhibitFile)
+		return nil
+	}
 	if t.healthy() {
 		if err := removeFileIn(s.stateRoot, InhibitFile); err != nil {
 			return failf(CodeRecordFailed, "%s not removed: %s", InhibitFile, q(err.Error()))
@@ -185,6 +202,6 @@ func (s *Switcher) InhibitClear(ctx context.Context, words string) int {
 		s.printf("inhibit-clear: FAILED: %s not removed: %s", InhibitFile, q(err.Error()))
 		return ExitFailed
 	}
-	s.printf("inhibit-clear: %s removed by the owner at %s (asked: %s); decision-capable units may start again", InhibitFile, rec.InhibitClearedAt, q(words))
+	s.printf("inhibit-clear: %s removed by the owner at %s (asked: %s); decision-capable services take decisions again", InhibitFile, rec.InhibitClearedAt, q(words))
 	return ExitOK
 }

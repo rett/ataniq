@@ -1,6 +1,7 @@
 package switcher
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -430,4 +431,133 @@ func TestStopsBeforePolicyErrors(t *testing.T) {
 			t.Errorf("changed the tree or ran %v", e.runner.calls)
 		}
 	})
+}
+
+// stoppingFirst is a first switch to rel1 left in its stopping phase: its
+// health check failed and its own stop command keeps failing.
+func stoppingFirst(t *testing.T) *env {
+	t.Helper()
+	e := newEnv(t)
+	e.release(rel1, "s")
+	e.runner.fail["health-probe"] = -1
+	e.runner.fail["stop-app"] = -1
+	if code := e.switchTo(rel1); code != ExitFailed {
+		t.Fatalf("exit %d", code)
+	}
+	if j, ok := e.journal(); !ok || j.Phase != PhaseStopping {
+		t.Fatalf("journal: %+v, %v", j, ok)
+	}
+	e.runner.reset()
+	return e
+}
+
+// TestHostStopsComeFirst: a transaction in its stopping phase gets the
+// host's stop list run, under the lock, before anything that can fail on
+// the way to it: releases/ that cannot be used, a counter or a record
+// that cannot be read, a journal that cannot be checked against the host;
+// and a transaction that must stop the decision services runs the host's
+// stop list before it saves that phase, so that a journal that cannot be
+// written does not keep the stops from running. The journal stays.
+func TestHostStopsComeFirst(t *testing.T) {
+	commands := []struct {
+		name string
+		run  func(e *env) int
+	}{
+		{"switch", func(e *env) int { return e.switchTo(rel2) }},
+		{"rollback", func(e *env) int { return e.rollBack("previous") }},
+		{"recover --counter", func(e *env) int { return e.recover(RecoverOptions{SetCounter: true, Counter: 1}) }},
+		{"recover --discard-journal", func(e *env) int {
+			j, _ := e.journal()
+			return e.recover(RecoverOptions{DiscardJournal: j.Txn})
+		}},
+	}
+	for _, broken := range []struct {
+		name   string
+		break_ func(e *env)
+	}{
+		{"releases untrusted", func(e *env) { os.Chmod(filepath.Join(e.root, BaseDir, "releases"), 0o777) }},
+		{"releases missing", func(e *env) {
+			makeWritable(filepath.Join(e.root, BaseDir, "releases"))
+			os.Rename(filepath.Join(e.root, BaseDir, "releases"), filepath.Join(e.root, BaseDir, "elsewhere"))
+		}},
+		{"counter unreadable", func(e *env) { e.write(filepath.Join(e.root, StateDir, HighestFile), "x\n", 0o644) }},
+		{"record unreadable", func(e *env) { e.write(filepath.Join(e.root, StateDir, DeployFile), "{", 0o644) }},
+	} {
+		for _, c := range commands {
+			t.Run(broken.name+"/"+c.name, func(t *testing.T) {
+				e := stoppingFirst(t)
+				broken.break_(e)
+				if code := c.run(e); code != ExitFailed {
+					t.Fatalf("exit %d", code)
+				}
+				e.ran(map[string]int{"stop-all": 1, "ah-noaicheck": 0, "reload-units": 0})
+				if j, ok := e.journal(); !ok || j.Phase != PhaseStopping {
+					t.Errorf("journal: %+v, %v", j, ok)
+				}
+			})
+		}
+	}
+	t.Run("saving the stopping phase fails", func(t *testing.T) {
+		e := active(t)
+		e.release(rel3, "2026-11-15")
+		checks := 0
+		e.runner.gate = func(argv []string) error {
+			if filepath.Base(argv[0]) != "ah-noaicheck" {
+				return nil
+			}
+			if checks++; checks == 2 {
+				// The check after the package step fails, and the journal
+				// cannot be written any more.
+				os.MkdirAll(filepath.Join(e.root, StateDir, "."+JournalFile+".new", "x"), 0o755)
+				return errors.New("exit status 1")
+			}
+			return nil
+		}
+		if code := e.switchTo(rel3); code != ExitFailed {
+			t.Fatalf("exit %d", code)
+		}
+		e.ran(map[string]int{"ah-pkgstep": 1, "stop-all": 1})
+		if !strings.Contains(e.last, "result: unresolved") {
+			t.Errorf("output:\n%s", e.last)
+		}
+	})
+}
+
+// TestDiscardNeedsProof: recover --discard-journal sets a journal aside
+// only when the host proves it stale; a journal that cannot be checked
+// (a counter or record that cannot be read) is unresolved, never
+// discarded, and is not resumed either.
+func TestDiscardNeedsProof(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		break_ func(e *env)
+	}{
+		{"counter unreadable", func(e *env) { e.write(filepath.Join(e.root, StateDir, HighestFile), "x\n", 0o644) }},
+		{"counters.log unreadable", func(e *env) { e.write(filepath.Join(e.root, StateDir, CountersLog), "not a line\n", 0o644) }},
+		{"record unreadable", func(e *env) { e.write(filepath.Join(e.root, StateDir, DeployFile), "{", 0o644) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := active(t)
+			e.release(rel3, "2026-11-01")
+			e.crashAt(CrashActivating, false, rel3)
+			j, _ := e.journal()
+			tc.break_(e)
+			e.runner.reset()
+			if code := e.recover(RecoverOptions{DiscardJournal: j.Txn}); code != ExitFailed {
+				t.Fatalf("exit %d\n%s", code, e.last)
+			}
+			if !strings.Contains(e.last, "cannot be checked against the host") {
+				t.Errorf("output:\n%s", e.last)
+			}
+			if got, ok := e.journal(); !ok || got.Txn != j.Txn {
+				t.Errorf("the journal was set aside: %+v, %v", got, ok)
+			}
+			if code := e.switchTo(rel3); code != ExitFailed || !strings.Contains(e.last, "cannot be checked against the host") || strings.Contains(e.last, "discard-journal") {
+				t.Errorf("resume: exit %d\n%s", code, e.last)
+			}
+			if len(e.runner.calls) != 0 {
+				t.Errorf("commands run: %v", e.runner.calls)
+			}
+		})
+	}
 }
