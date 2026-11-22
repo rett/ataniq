@@ -70,6 +70,14 @@ var manifestKeys = []string{"id", "counter", "commit", "built_on", "go_version",
 
 var commitPattern = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
 
+// snapshotPattern is a package snapshot identifier: what the journal and
+// deploy.json carry, bounded so that both always fit their readers.
+var snapshotPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+
+// ValidSnapshot reports whether s is a package snapshot identifier: 1 to 128
+// bytes of letters, digits and ._:-.
+func ValidSnapshot(s string) bool { return snapshotPattern.MatchString(s) }
+
 // ParseManifest reads key: value lines. Blank lines and lines starting with #
 // are skipped, an unknown key is ignored, a repeated key or a missing or empty
 // required key is an error.
@@ -98,6 +106,9 @@ func ParseManifest(data []byte) (Manifest, error) {
 	n, err := strconv.ParseUint(values["counter"], 10, 64)
 	if err != nil {
 		return Manifest{}, failf(CodeManifestInvalid, "MANIFEST: counter is not a number")
+	}
+	if !ValidSnapshot(values["package_snapshot"]) {
+		return Manifest{}, failf(CodeManifestInvalid, "MANIFEST: package_snapshot is not 1 to 128 bytes of letters, digits and ._:-")
 	}
 	if c, ok := values["components"]; ok && c != ComponentsStatic {
 		return Manifest{}, failf(CodeManifestInvalid, "MANIFEST: components %s is not static", q(c))

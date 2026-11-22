@@ -75,11 +75,7 @@ func (s *Switcher) readJournal() (journal, bool, error) {
 
 // writeJournal writes txn.json whole and syncs the state folder.
 func (s *Switcher) writeJournal(j journal) error {
-	data, err := json.MarshalIndent(j, "", "  ")
-	if err != nil {
-		return err
-	}
-	return writeFileIn(s.stateRoot, JournalFile, append(data, '\n'), 0o600)
+	return writeJSONIn(s.stateRoot, JournalFile, j, 0o600)
 }
 
 func (s *Switcher) dropJournal() error {

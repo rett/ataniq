@@ -3,6 +3,7 @@ package switcher
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"strconv"
@@ -64,6 +65,22 @@ func readRecord(state *os.Root) (Record, bool, error) {
 		return Record{}, false, failf(CodeStateInvalid, "%s does not parse", DeployFile)
 	}
 	return rec, true, nil
+}
+
+// writeJSONIn writes v as JSON to the state file name of r, whole (see
+// writeFileIn). What does not fit maxStateFile, the bound its reader takes,
+// is refused before anything is written: a state file the switch wrote can
+// always be read back by it.
+func writeJSONIn(r *os.Root, name string, v any, perm fs.FileMode) error {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if len(data) > maxStateFile {
+		return fmt.Errorf("%s would be %d bytes, more than the %d its reader takes", name, len(data), maxStateFile)
+	}
+	return writeFileIn(r, name, data, perm)
 }
 
 // readHighest reads the highest-counter file of the state folder: the

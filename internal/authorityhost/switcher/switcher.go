@@ -14,7 +14,6 @@ package switcher
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -889,8 +888,11 @@ func (s *Switcher) reload(ctx context.Context, reloads [][]string) error {
 }
 
 // checkHealth runs the health commands until every one of them passes in
-// one round, every HealthInterval, within HealthWindow. No command (a static
-// release) is healthy at once.
+// one round, every HealthInterval. HealthWindow is one absolute deadline for
+// all of it: each command gets at most HealthAttemptTimeout and never more
+// than what is left of the window, a round that ends after the deadline does
+// not count, and no command starts once the window is over. No command (a
+// static release) is healthy at once.
 func (s *Switcher) checkHealth(ctx context.Context, health [][]string) error {
 	if len(health) == 0 {
 		s.step(7, "no health command: a static release")
@@ -905,13 +907,17 @@ func (s *Switcher) checkHealth(ctx context.Context, health [][]string) error {
 		last = nil
 		for _, argv := range health {
 			limit := min(HealthAttemptTimeout, deadline.Sub(s.cfg.Now()))
-			if limit < time.Second {
-				limit = time.Second
+			if limit <= 0 {
+				last, lastArgv = fixedError("the health window ended"), argv
+				break
 			}
 			if _, err := s.cfg.Runner.Run(ctx, Command{Argv: argv, Timeout: limit}); err != nil {
 				last, lastArgv = err, argv
 				break
 			}
+		}
+		if last == nil && s.cfg.Now().After(deadline) {
+			last, lastArgv = fixedError("the round ended after the health window"), health[len(health)-1]
 		}
 		if last == nil {
 			s.step(7, "healthy after %d attempt(s): %d health command(s) passed", attempts, len(health))
@@ -968,10 +974,8 @@ func (s *Switcher) record(a *attempt) error {
 		return nil
 	}
 	a.rec.Time = s.cfg.Now().UTC().Format(time.RFC3339)
-	data, err := json.MarshalIndent(a.rec, "", "  ")
-	if err == nil {
-		err = writeFileIn(s.stateRoot, DeployFile, append(data, '\n'), 0o644)
-	}
+	a.rec.Detail = boundDetail(a.rec.Detail)
+	err := writeJSONIn(s.stateRoot, DeployFile, a.rec, 0o644)
 	if err != nil {
 		s.printf("ah-switch: %s not written: %s", DeployFile, q(err.Error()))
 		return err

@@ -91,12 +91,21 @@ func (e *RunError) Error() string {
 	return fmt.Sprintf("exit status %d", e.Status)
 }
 
-// summary says why a command failed in fixed words: the text of a *RunError,
-// or "failed" for any other error.
+// fixedError is an error whose text is fixed words of the switch itself.
+type fixedError string
+
+func (e fixedError) Error() string { return string(e) }
+
+// summary says why a command failed in fixed words: the text of a *RunError
+// or of a fixedError, or "failed" for any other error.
 func summary(err error) string {
 	var re *RunError
 	if errors.As(err, &re) {
 		return re.Error()
+	}
+	var fe fixedError
+	if errors.As(err, &fe) {
+		return fe.Error()
 	}
 	return "failed"
 }

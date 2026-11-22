@@ -53,7 +53,9 @@ switch runs it.
 - The id is the counter, zero-padded to at least four digits, a hyphen and the
   short commit in lowercase hex (7 to 40 characters).
 - `MANIFEST` holds the keys `id`, `counter`, `commit`, `built_on` (the class of
-  the build host, never its name), `go_version` and `package_snapshot`, one
+  the build host, never its name), `go_version` and `package_snapshot` (1 to
+  128 bytes of letters, digits and `._:-`, so that the journal and
+  `deploy.json` that carry it always fit their readers), one
   `key: value` per line, and optionally `components: static` (no other
   value is accepted). `id` must be the folder's name, `counter` its counter
   and `commit` must start with its short commit. Blank lines and `#` lines are
@@ -99,7 +101,8 @@ switch runs it.
     `systemctl stop ataniq-seat`, run when no healthy release is left (see
     the failure cases); the static status page stays. No `{release}`.
 
-  In each list, blank lines and `#` lines are skipped. A command is its words
+  In each list, blank lines and `#` lines are skipped. A list holds at most 64
+  commands and a command at most 32 words. A command is its words
   separated by spaces; no shell runs it, so quotes, pipes, redirections, globs
   and variables are refused. The program is an absolute path, `{release}/...`
   in a validator, or a bare name looked up in `/usr/sbin:/usr/bin:/sbin:/bin`
@@ -111,7 +114,13 @@ switch runs it.
   A signed release contains code that runs as root (its no-AI check, its
   package step, its units), so these lists are consistency checks of an
   honest release, not a privilege boundary: the signature is what decides
-  what may run.
+  what may run. For the same reason the switch does not check that the lists
+  cover what the release ships (that `health.cmd` checks the application's
+  readiness and not only the front end, that a release declared static has
+  no decision service, that the validators check every changed rule file):
+  that coverage is the release builder's job, and a health command that
+  passes against a service still running from the old release is a
+  packaging error the switch cannot see.
 - `bin/ah-noaicheck` is the release's no-AI check, required. `bin/ah-pkgstep`
   is its package step, required when the release's package snapshot differs
   from the host's, and idempotent (see step 3).
@@ -286,10 +295,12 @@ already ran stays applied, and `deploy.json` says so).
    old target of `current`, and a new link `current.new` is made and renamed
    over `current`, so there is never a moment without `current`. Then each
    command of `share/reload.list` runs, within 30 seconds each.
-7. **health**: the commands of `share/health.cmd` run in order, each within
-   10 seconds, until one round in which every one of them exits 0, every 2
-   seconds for up to 60 seconds. A static release with no health command is
-   healthy at once.
+7. **health**: the commands of `share/health.cmd` run in order until one
+   round in which every one of them exits 0, a new round every 2 seconds.
+   The 60 seconds are one deadline for the whole check: each command gets at
+   most 10 seconds and never more than what is left of the 60, no command
+   starts once they are over, and a round that ends after them does not
+   count. A static release with no health command is healthy at once.
 8. **record**: `deploy.json` is written, by writing a temporary file and
    renaming it over the old one, and then the journal is removed. Only when
    both succeeded does the switch print `result: ok` and exit 0; otherwise

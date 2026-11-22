@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // Failure codes: the stable words deploy.json, the status and the steps carry
@@ -113,14 +114,34 @@ func q(s string) string {
 	return s
 }
 
-// qargv quotes each word of a command for output.
+// maxArgvText bounds a command as qargv shows it.
+const maxArgvText = 1024
+
+// qargv quotes each word of a command for output, at most maxArgvText bytes
+// of it ("..." follows when it is cut).
 func qargv(argv []string) string {
-	out := ""
+	var b strings.Builder
 	for i, a := range argv {
+		w := q(a)
 		if i > 0 {
-			out += " "
+			w = " " + w
 		}
-		out += q(a)
+		if b.Len()+len(w) > maxArgvText {
+			b.WriteString(" ...")
+			break
+		}
+		b.WriteString(w)
 	}
-	return out
+	return b.String()
+}
+
+// maxDetail bounds the detail of a failure as it is recorded.
+const maxDetail = 4096
+
+// boundDetail cuts a detail to maxDetail bytes, with "..." when cut.
+func boundDetail(s string) string {
+	if len(s) <= maxDetail {
+		return s
+	}
+	return s[:maxDetail] + "..."
 }

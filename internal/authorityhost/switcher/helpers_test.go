@@ -33,6 +33,7 @@ type fakeRunner struct {
 	nftOut  string
 	listing []string // content, file mode, folder mode of each listing seen
 	hook    func(argv []string)
+	limits  *[]time.Duration // when set, the time limit of every health-probe and slow-probe run
 }
 
 const fakeRuleset = "table inet filter {\n}\n"
@@ -54,6 +55,9 @@ func (f *fakeRunner) Run(ctx context.Context, c Command) (Output, error) {
 	}
 	f.calls = append(f.calls, strings.Join(argv, " "))
 	f.stdin = append(f.stdin, c.Stdin)
+	if f.limits != nil && (c.Argv[0] == "health-probe" || c.Argv[0] == "slow-probe") {
+		*f.limits = append(*f.limits, c.Timeout)
+	}
 	if f.hook != nil {
 		f.hook(c.Argv)
 	}
