@@ -61,8 +61,8 @@ func TestImport(t *testing.T) {
 		t.Errorf("the release changed with the incoming folder: %q", data)
 	}
 	// The checks and programs ran on the copy.
-	if want := checkCall(filepath.Join(dir, NoAICheckProgram), e.root, dir); e.runner.calls[1] != want {
-		t.Errorf("check command %q, want %q", e.runner.calls[1], want)
+	if want := preCall(filepath.Join(dir, NoAICheckProgram), e.root, dir); e.runner.calls[0] != want {
+		t.Errorf("check command %q, want %q", e.runner.calls[0], want)
 	}
 	if _, err := os.Lstat(filepath.Join(e.root, BaseDir, "releases", importPrefix+rel3)); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("the import folder was left: %v", err)
@@ -182,7 +182,7 @@ func TestImportDry(t *testing.T) {
 	if digest(t, e.root) != before {
 		t.Errorf("a dry run changed the root")
 	}
-	if !strings.Contains(e.last, "step 0/8 import: would copy") {
+	if !strings.Contains(e.last, "step 0/9 import: would copy") {
 		t.Errorf("output:\n%s", e.last)
 	}
 	os.WriteFile(filepath.Join(in, "bin/app"), []byte("changed\n"), 0o755)

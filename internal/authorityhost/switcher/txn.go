@@ -245,6 +245,14 @@ func (s *Switcher) activate(ctx context.Context, t *txn) error {
 	if err := s.crash(CrashHealth); err != nil {
 		return err
 	}
+	if err := s.postCheck(ctx, t.j.CheckProgram, cand.dir); err != nil {
+		t.j.Check = CheckFailed
+		return s.toRecovery(ctx, t, stepNames[8], err)
+	}
+	t.j.Check = CheckPassed
+	if err := s.crash(CrashPostCheck); err != nil {
+		return err
+	}
 	if t.resumed {
 		t.note("completed after an interruption")
 	}
@@ -256,8 +264,11 @@ func (s *Switcher) activate(ctx context.Context, t *txn) error {
 // decision services.
 func (s *Switcher) toRecovery(ctx context.Context, t *txn, step string, cause error) error {
 	n := 7
-	if step == "reload" {
+	switch step {
+	case "reload":
 		n = 6
+	case stepNames[8]:
+		n = 8
 	}
 	s.step(n, "FAILED: %s", describe(cause))
 	t.fail(step, cause)
@@ -391,7 +402,7 @@ func joinFailures(f []string) string {
 // settles it again; the result is printed only once it is recorded.
 func (s *Switcher) settle(t *txn) (int, bool) {
 	unresolved := func(what string, err error) (int, bool) {
-		s.step(8, "FAILED: %s: %s", what, q(err.Error()))
+		s.step(9, "FAILED: %s: %s", what, q(err.Error()))
 		s.printf("result: unresolved: the outcome (%s) is not recorded yet; %s stays, and the next switch, rollback or recover records it", t.j.Result, JournalFile)
 		return ExitFailed, false
 	}
@@ -420,7 +431,7 @@ func (s *Switcher) settle(t *txn) (int, bool) {
 	if err := s.dropJournal(); err != nil {
 		return unresolved(JournalFile+" not removed", err)
 	}
-	s.step(8, "recorded in %s", q(filepath.Join(s.stateDir(), DeployFile)))
+	s.step(9, "recorded in %s", q(filepath.Join(s.stateDir(), DeployFile)))
 	s.printResult(rec)
 	if rec.Result == ResultOK {
 		return ExitOK, true

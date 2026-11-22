@@ -14,9 +14,12 @@
   that fails or is interrupted leaves the package state unknown, refusing
   further switches until the owner states the snapshot or the step runs
   again to the end; the step holds the switch lock and dies with it), its no-AI
-  check (given the root and a listing of the firewall) and its validators;
+  check before activation (`--phase pre`: the release's units and the
+  host, without ports and firewall) and its validators;
   renames a new `current` link over the old one, reloads and checks every
-  health command within one 60-second deadline, going back to the old
+  health command within one 60-second deadline, runs the no-AI check
+  again (`--phase post`, with the live listeners and a listing of the
+  loaded firewall) before recording success, going back to the old
   release with that release's own reload and health lists, or stopping
   the decision services, with the host's own
   `/etc/authority-host/stop.list` first, when it cannot. All of it is one

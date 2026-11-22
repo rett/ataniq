@@ -74,6 +74,7 @@ type journal struct {
 	Error          string `json:"error"`
 	Detail         string `json:"detail"`
 	Check          string `json:"check"`
+	CheckProgram   string `json:"check_program"` // the no-AI check the post-activation check runs
 	RestoredHealth string `json:"restored_health"`
 	Stopped        bool   `json:"stopped"`       // every stop command succeeded, or the owner stated the services are stopped
 	StopFailures   string `json:"stop_failures"` // the stop commands that failed last time
@@ -150,6 +151,8 @@ func (s *Switcher) checkJournal(j journal) error {
 		return errors.New("a done phase without a result")
 	case j.HelperPID < 0 || (j.HelperPID > 0 && j.PackageState == PackageNone):
 		return errors.New("helper_pid")
+	case j.CheckProgram != "" && (!path.IsAbs(j.CheckProgram) || path.Clean(j.CheckProgram) != j.CheckProgram):
+		return errors.New("check_program")
 	case j.CounterUsed && j.Direction != DirForward:
 		return errors.New("counter_used")
 	}
@@ -211,6 +214,7 @@ const (
 	CrashActivating    = "activating"     // txn.json says activating
 	CrashReload        = "reload"         // the new release's reload list ran
 	CrashHealth        = "health"         // the new release is healthy
+	CrashPostCheck     = "postcheck"      // the post-activation no-AI check passed
 	CrashPutBack       = "put-back"       // the links of a links phase are put back
 	CrashRestoring     = "restoring"      // txn.json says restoring
 	CrashRestoreLinks  = "restore-links"  // current and previous are back

@@ -155,6 +155,7 @@ func TestCrashAndResume(t *testing.T) {
 		{"activating", nil, CrashActivating, PhaseActivating, completed},
 		{"reload", nil, CrashReload, PhaseActivating, completed},
 		{"health", nil, CrashHealth, PhaseActivating, completed},
+		{"postcheck", nil, CrashPostCheck, PhaseActivating, completed},
 		{"done", nil, CrashDone, PhaseDone, recorded},
 		{"record", nil, CrashRecord, PhaseDone, recorded},
 		{"restoring", map[string]int{"health-probe": -1}, CrashRestoring, PhaseRestoring, restored},
@@ -273,7 +274,9 @@ func TestRetryReportsSettled(t *testing.T) {
 		if !strings.Contains(e.last, "reconcile: an interrupted switch to "+rel3) || !strings.Contains(e.last, "settled: this switch to "+rel3) {
 			t.Errorf("output:\n%s", e.last)
 		}
-		e.ran(map[string]int{"reload-units": 1, "health-probe": 1, "ah-noaicheck": 0})
+		// The resume of activating runs the reload, the health and the
+		// post-activation check again; the pre-activation check is not.
+		e.ran(map[string]int{"reload-units": 1, "health-probe": 1, "ah-noaicheck": 1})
 		// Asked again, it is a new switch, refused by its used counter.
 		if code := e.switchTo(rel3); code != ExitFailed || e.record().Error != CodeCounterNotAbove {
 			t.Fatalf("a new switch: exit %d, %+v", code, e.record())

@@ -26,16 +26,17 @@ import (
 // FILE in calls; its content and its mode and its folder's are kept in
 // listing.
 type fakeRunner struct {
-	mu      sync.Mutex
-	calls   []string
-	stdin   [][]byte
-	fail    map[string]int
-	nftOut  string
-	listing []string // content, file mode, folder mode of each listing seen
-	hook    func(argv []string)
-	limits  *[]time.Duration // when set, the time limit of every health-probe and slow-probe run
-	pid     int              // when set, given to a command's OnStart as its process id
-	extra   [][]*os.File     // the ExtraFiles of each command
+	mu       sync.Mutex
+	calls    []string
+	stdin    [][]byte
+	fail     map[string]int
+	nftOut   string
+	listing  []string // content, file mode, folder mode of each listing seen
+	hook     func(argv []string)
+	limits   *[]time.Duration // when set, the time limit of every health-probe and slow-probe run
+	pid      int              // when set, given to a command's OnStart as its process id
+	failPost bool             // the post-activation no-AI check fails
+	extra    [][]*os.File     // the ExtraFiles of each command
 }
 
 const fakeRuleset = "table inet filter {\n}\n"
@@ -68,6 +69,9 @@ func (f *fakeRunner) Run(ctx context.Context, c Command) (Output, error) {
 		f.hook(c.Argv)
 	}
 	name := filepath.Base(c.Argv[0])
+	if f.failPost && len(c.Argv) > 2 && c.Argv[1] == "--phase" && c.Argv[2] == CheckPhasePost {
+		return Output{Stderr: []byte(name + " said no")}, fmt.Errorf("%s: exit status 1", name)
+	}
 	if n, ok := f.fail[name]; ok && n != 0 {
 		if n > 0 {
 			f.fail[name] = n - 1
@@ -458,8 +462,12 @@ func mode(t *testing.T, path string) fs.FileMode {
 	return info.Mode() & (fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)
 }
 
-// checkCall is the call of the no-AI check of the release dir in root, as
-// the fake runner records it.
-func checkCall(prog, root, dir string) string {
-	return prog + " --root " + root + " --release " + dir + " --require-policy --nft-listing FILE"
+// preCall and postCall are the calls of the no-AI check of the release dir
+// in root, before and after activation, as the fake runner records them.
+func preCall(prog, root, dir string) string {
+	return prog + " --phase pre --root " + root + " --release " + dir + " --require-policy"
+}
+
+func postCall(prog, root, dir string) string {
+	return prog + " --phase post --root " + root + " --release " + dir + " --require-policy --nft-listing FILE"
 }

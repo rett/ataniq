@@ -343,14 +343,15 @@ already ran stays applied, and `deploy.json` says so).
    start time is another process; processes left in its group with no
    such process are refused (`package-state-unknown`), and are the owner's
    to stop.
-4. **noaicheck**: the switch runs `nft list ruleset` (within 30 seconds; its
-   output at most 4 MiB) and writes what it printed to a file of mode 0600
-   in a new temporary folder of mode 0700, then runs the new release's
-   `bin/ah-noaicheck --root ROOT --release DIR --require-policy --nft-listing FILE`,
-   which must exit 0 within 5 minutes; the folder is removed afterwards.
-   Any other exit status is a failure, including the check's own report
-   that it could not finish (`HIT incomplete`): it is never a warning. A
-   failing `nft` is `nft-listing-failed`, and the check does not run.
+4. **noaicheck**: the new release's no-AI check runs in its first phase,
+   `bin/ah-noaicheck --phase pre --root ROOT --release DIR --require-policy`,
+   and must exit 0 within 5 minutes. This phase scans the release's own
+   files (the units under its `etc/systemd` and the environment names they
+   set) and the host's AI binaries and credentials, but not the listening
+   ports and the firewall digest: those are still the old release's until
+   the reload, and are checked in step 8. Any other exit status is a
+   failure, including the check's own report that it could not finish
+   (`HIT incomplete`): it is never a warning.
 5. **validate**: each command of `share/validators.list` must exit 0, within
    30 seconds each.
 6. **switch**: first the journal `txn.json` says `links` (and, on a forward
@@ -370,7 +371,21 @@ already ran stays applied, and `deploy.json` says so).
    most 10 seconds and never more than what is left of the 60, no command
    starts once they are over, and a round that ends after them does not
    count. A static release with no health command is healthy at once.
-8. **record**: the journal says `done` with the outcome; the link folder is
+8. **postcheck**: the no-AI check runs again, in its last phase, on the host
+   as the reload left it: the switch runs `nft list ruleset` (within 30
+   seconds; its output at most 4 MiB), writes what it printed to a file of
+   mode 0600 in a new temporary folder of mode 0700, and runs
+   `bin/ah-noaicheck --phase post --root ROOT --release DIR --require-policy --nft-listing FILE`,
+   which checks everything, the live listeners and the loaded firewall
+   against the release's pinned digest included, and must exit 0 within 5
+   minutes; the folder is removed afterwards. A failure, or a failing `nft`
+   (`nft-listing-failed`, and the check does not run), goes back as a
+   failed health check does, so a release whose units open a new listener
+   or set a provider variable is never recorded as `ok`. The check program
+   is journaled, so a resumed activation runs the same one. Going back to
+   the old release does not run the check again: that release passed it
+   when it was switched to.
+9. **record**: the journal says `done` with the outcome; the link folder is
    synced once more, `deploy.json` is written (a temporary file renamed over
    the old one) and the journal is removed. Only then does the switch print
    `result: ok` and exit 0. When any of that fails it prints `result:
@@ -385,12 +400,15 @@ power loss: the switch then puts both links back (as the resume of the
 command syncs and settles it. No outcome is recorded, and the journal is
 never removed, before the link folder is synced.
 
+`--noaicheck PATH` replaces the release's check in both phases.
+
 Before the switch, in step 1, the release `current` points at (the
 fallback) is opened and verified as the switch policy says, and its own
 reload and health lists are read. A fallback that is missing or no longer
 verifies is not used, and the switch says so (`fallback: none: ...`).
 
-If the reload or the health check fails, the journal says `restoring`
+If the reload, the health check or the post-activation check fails, the
+journal says `restoring`
 before anything is put back: `current` is renamed back to the fallback,
 `previous` is put back as it was, both synced, and the fallback's own
 `reload.list` and `health.cmd` run (never the failed release's). The result
@@ -433,7 +451,7 @@ order:
 | --- | --- | --- |
 | `packages` | The package step runs or ran; no link was touched | Makes sure the step has ended, then records the switch as `failed`: `interrupted` when the step was done, or `package-step-interrupted` with the package state unknown when it was not |
 | `links` | The counter is used and the links are being moved; nothing was reloaded | Puts `current` and `previous` back exactly as they were and records `rolled-back` (`failed` on a first switch) with the code `interrupted` |
-| `activating` | The links point at the new release; its reload and health run | Verifies the release again, makes and syncs both links again, runs its reload list and health check again: `ok` (`completed after an interruption`), or goes back as a failed health check does |
+| `activating` | The links point at the new release; its reload, health and post-activation check run | Verifies the release again, makes and syncs both links again, runs its reload list, health check and post-activation check again: `ok` (`completed after an interruption`), or goes back as a failed health check does |
 | `restoring` | Going back to the old release | Does all of going back again, from putting the links back |
 | `stopping` | The decision services are being stopped | Runs every stop list again |
 | `done` | The outcome is decided | Syncs the link folder, writes `highest-counter` when the counter was used, records the outcome and removes the journal |
@@ -489,7 +507,8 @@ minimum, `manual` without a policy), `rollback`, `time` (UTC), `result`
 (`ok`, `failed`, `rolled-back` or `failed-recovery`), `check` (the no-AI
 check: `passed`, `failed` or `not run`), `failed_step` (`state`, `import`,
 `verify`, `counter`, `packages`, `noaicheck`, `validate`, `switch`,
-`reload`, `health`, `record` or `interrupted`; empty when ok), `error`,
+`reload`, `health`, `postcheck`, `record` or `interrupted`; empty when
+ok), `error`,
 `detail`, `package_snapshot` (the snapshot the host's packages are known
 to be at), `package_state` (`unknown` after a package step that did not
 finish, with `package_from` and `package_to`; empty when known),
@@ -548,7 +567,8 @@ see its messages. The text of a broken state file is not repeated either.
 | `--rollback-to` anything but previous | Refused at counter |
 | The snapshot changes and there is no package step | Refused at packages; `current` unchanged |
 | Package step fails | Refused at packages; `current` unchanged; the package state is unknown, and every switch is refused until `recover --package-state` or a switch to the same new snapshot runs the step to the end |
-| No-AI check fails | Refused at noaicheck, after the package step; no validator runs |
+| No-AI check fails before activation (phase pre) | Refused at noaicheck, after the package step; no validator runs |
+| No-AI check fails after the reload and health (phase post), or `nft` fails | Back to the old release, as for a failed health check; `failed_step: postcheck` |
 | A validator fails | Refused at validate; nothing reloaded |
 | Crash during the package step | The next command makes sure the step has ended and records `package-step-interrupted` with the package state unknown |
 | Reload or health fails after the switch | Back to the old release, with its own reload and health lists; `rolled-back` |

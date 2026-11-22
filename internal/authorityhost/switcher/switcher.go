@@ -71,7 +71,7 @@ const (
 // The steps, as printed and as recorded in failed_step. Step 0, the import,
 // runs only with --from. A failure that comes before it (reading current and
 // previous) is recorded as "state", one of the reload list as "reload".
-var stepNames = [...]string{"import", "verify", "counter", "packages", "noaicheck", "validate", "switch", "health", "record"}
+var stepNames = [...]string{"import", "verify", "counter", "packages", "noaicheck", "validate", "switch", "health", "postcheck", "record"}
 
 // Config is what a switch is run with. Zero fields take their defaults.
 type Config struct {
@@ -163,7 +163,7 @@ func (s *Switcher) errorf(format string, args ...any) {
 }
 
 func (s *Switcher) step(n int, format string, args ...any) {
-	s.printf("step %d/8 %s: %s", n, stepNames[n], fmt.Sprintf(format, args...))
+	s.printf("step %d/9 %s: %s", n, stepNames[n], fmt.Sprintf(format, args...))
 }
 
 func (s *Switcher) checkConfig() error {
@@ -448,11 +448,14 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 		}
 	}
 
-	// 4. The no-AI check of the new release, on the host as it now is.
-	if err := s.noAICheck(ctx, a, rel); err != nil {
+	// 4. The no-AI check of the new release (phase pre), on the host as it
+	// now is.
+	check, err := s.preCheck(ctx, a, rel)
+	if err != nil {
 		return s.fail(a, 4, err)
 	}
 	t.j.Check = a.rec.Check
+	t.j.CheckProgram = check
 
 	// 5. Validators.
 	for i, v := range validators {
@@ -481,7 +484,8 @@ func (s *Switcher) run(ctx context.Context, arg string, rollback bool) int {
 			s.step(7, "would run %s", qargv(h))
 		}
 		s.step(7, "until every health command passes, a round every %s, within %s in all", HealthInterval, HealthWindow)
-		s.step(8, "would record the result in %s", q(filepath.Join(s.stateDir(), DeployFile)))
+		s.step(8, "would run nft list ruleset into a private file, then %s", qargv([]string{check, "--phase", CheckPhasePost, "--root", s.cfg.Root, "--release", rel.dir, "--require-policy", "--nft-listing", "FILE"}))
+		s.step(9, "would record the result in %s", q(filepath.Join(s.stateDir(), DeployFile)))
 		s.printf("result: dry run passed; nothing changed")
 		return ExitOK
 	}
@@ -688,64 +692,6 @@ func (s *Switcher) failState(a *attempt, err error) int {
 	s.record(a)
 	s.printf("result: failed before step 1; nothing changed")
 	return ExitFailed
-}
-
-// noAICheck runs the no-AI check of the release (or the --noaicheck program)
-// on the root, with the firewall listing it compares against the release's
-// pinned digest:
-//
-//	CHECK --root ROOT --release DIR --require-policy --nft-listing FILE
-//
-// FILE is what "nft list ruleset" printed, written to a private file in a
-// private temporary folder that is removed afterwards. Any exit status but 0
-// fails, including the check's "HIT incomplete" when it could not finish.
-func (s *Switcher) noAICheck(ctx context.Context, a *attempt, rel *release) error {
-	check := s.cfg.NoAICheck
-	if check == "" {
-		check = filepath.Join(rel.dir, NoAICheckProgram)
-		ok, err := rel.exists(NoAICheckProgram)
-		if err == nil && !ok {
-			err = failf(CodeNoAICheckMissing, "%s missing in the release", NoAICheckProgram)
-		}
-		if err != nil {
-			return err
-		}
-	} else if info, err := os.Stat(check); err != nil || !info.Mode().IsRegular() {
-		return failf(CodeNoAICheckMissing, "no-AI check %s is not a regular file", q(check))
-	}
-	listArgv := []string{"nft", "list", "ruleset"}
-	if s.cfg.Dry {
-		s.step(4, "would run %s into a private file", qargv(listArgv))
-		s.step(4, "would run %s", qargv([]string{check, "--root", s.cfg.Root, "--release", rel.dir, "--require-policy", "--nft-listing", "FILE"}))
-		return nil
-	}
-	out, err := s.cfg.Runner.Run(ctx, Command{Argv: listArgv, Timeout: NFTListTimeout, MaxOutput: maxNFTListing})
-	if err == nil && out.Truncated {
-		err = errors.New("larger than the limit")
-	}
-	if err != nil {
-		return failf(CodeNFTListingFailed, "%s: %s", qargv(listArgv), summary(err))
-	}
-	tmp, err := os.MkdirTemp("", "ah-switch-nft-")
-	if err != nil {
-		return failf(CodeNFTListingFailed, "temporary folder: %s", q(err.Error()))
-	}
-	defer os.RemoveAll(tmp)
-	if err := os.Chmod(tmp, 0o700); err != nil {
-		return failf(CodeNFTListingFailed, "temporary folder: %s", q(err.Error()))
-	}
-	listing := filepath.Join(tmp, "nft-ruleset")
-	if err := os.WriteFile(listing, out.Stdout, 0o600); err != nil {
-		return failf(CodeNFTListingFailed, "listing: %s", q(err.Error()))
-	}
-	argv := []string{check, "--root", s.cfg.Root, "--release", rel.dir, "--require-policy", "--nft-listing", listing}
-	if _, err := s.cfg.Runner.Run(ctx, Command{Argv: argv, Timeout: NoAICheckTimeout}); err != nil {
-		a.rec.Check = CheckFailed
-		return failf(CodeNoAICheckFailed, "%s (run it by hand to see its hits)", summary(err))
-	}
-	a.rec.Check = CheckPassed
-	s.step(4, "passed")
-	return nil
 }
 
 // openForSwitch opens and verifies the release to switch to. With --from it
