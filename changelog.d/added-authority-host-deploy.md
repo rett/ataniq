@@ -1,0 +1,25 @@
+- Add `deploy/authority-host/bootstrap/host-bootstrap.sh`, the one-time
+  setup of the authority host, run on the host as root. `--dry` (the
+  default) prints every step and changes nothing; `--apply` creates
+  `/opt/authority-host/releases`, `/etc/authority-host` and
+  `/var/lib/authority-host` (0755, root:root), installs the host's
+  `stop.list` (the single line `/usr/bin/true`, an existing list is kept)
+  and installs the switch binary given with `--switch-bin` as
+  `/usr/local/sbin/ah-switch` only when its SHA-256 is the one given with
+  `--switch-sha256`. It writes no switch policy (the first scratch deploys
+  run in manual mode), links the Caddyfile to the current release only with
+  `--link-caddy` (keeping the old file once as
+  `Caddyfile.pre-authority-host`), refuses any folder above what it touches
+  that is not a real folder owned by root and closed to group and others,
+  and never starts, restarts or enables a service.
+  Add `deploy/authority-host/deploy.sh`, the deploy driver run on the
+  development host: with `AUTHORITY_HOST_SSH` (never printed; the output says
+  `the authority host`) it runs `ah-release check` on a built release folder,
+  copies it to the host's incoming folder with `rsync -a --delete`, and runs
+  `sudo /usr/local/sbin/ah-switch --from INCOMING/ID ID` over `ssh -o
+  BatchMode=yes`. `--dry` (the default) only lists what rsync would copy and
+  prints the ssh command, `--go` does it and is refused unless
+  `--confirm ID` equals the release id, and `--self-test` computes the
+  commands without running ssh or rsync.
+  `deploy/authority-host/DEPLOY.md` gives the first-deploy sequence, the
+  rollback and what to do when a step fails.
