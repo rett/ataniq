@@ -36,8 +36,10 @@ const (
 	ExitFailed = 1 // failed; the outcome is recorded in deploy.json (not in a dry run)
 	ExitUsage  = 2 // bad arguments; nothing was done
 	ExitLocked = 3 // another switch holds the lock; nothing was done
-	// ExitNoRelease: boot found no current release and no transaction
-	// open (nothing is deployed); nothing was run or changed.
+	// ExitNoRelease: boot found nothing ever deployed (no current release,
+	// no release folder, no deploy.json, no journal open or held); nothing
+	// was run or changed. A deployed host whose current is missing fails
+	// with ExitFailed.
 	ExitNoRelease = 4
 )
 

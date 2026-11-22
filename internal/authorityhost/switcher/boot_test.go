@@ -625,7 +625,8 @@ func TestBootWithholdsTheAckWhileSettling(t *testing.T) {
 }
 
 // TestBootWithoutARelease: on a host where nothing is deployed (no current
-// release) boot refuses with its own exit code, qualifies nothing, runs
+// release, no release folder, no deploy.json, no journal) boot refuses
+// with its own exit code, qualifies nothing, runs
 // nothing and creates nothing: the inhibit is left as found. The decision
 // guard then answers by the state folder alone. It refuses while the state
 // folder is missing (a host the bootstrap did not prepare) or holds
@@ -653,10 +654,6 @@ func TestBootWithoutARelease(t *testing.T) {
 			e.write(filepath.Join(e.root, StateDir, LockFile), "", 0o600)
 			e.write(e.inhibitPath(), `{"txn": "`+neverTxn+`", "reason": "`+bootReason+`", "time": "2026-11-21T12:00:00Z"}`, 0o644)
 		}, decisionguard.CodeInhibited},
-		{"a release folder never switched to", func(e *env) {
-			e.release(rel1, "s")
-			e.write(filepath.Join(e.root, StateDir, LockFile), "", 0o600)
-		}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEnv(t)
@@ -676,6 +673,102 @@ func TestBootWithoutARelease(t *testing.T) {
 			}
 			if got := e.guardCheck(); got != tc.guard {
 				t.Errorf("the guard answers %q, want %q", got, tc.guard)
+			}
+		})
+	}
+}
+
+// TestBootOnADeployedHostWithoutCurrent: a host that shows a deployment
+// (deploy.json, a release folder, a journal open or held) is not one where
+// nothing is deployed, even when current is missing: boot inhibits
+// decisions and fails as a failed qualification does ("current is
+// missing": the host's stop list runs, the failure is owed), exit 1, never
+// exit 4; a journal is settled as any command settles it, the lock file
+// made when it is missing.
+func TestBootOnADeployedHostWithoutCurrent(t *testing.T) {
+	noCurrent := func(e *env) {
+		if err := os.Remove(filepath.Join(e.root, BaseDir, "current")); err != nil {
+			e.t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T) *env
+		owed  bool // the failure is boot's, owed; otherwise a journal is settled
+	}{
+		{"current removed", func(t *testing.T) *env {
+			e := activeOwn(t)
+			noCurrent(e)
+			return e
+		}, true},
+		{"current and the lock file removed", func(t *testing.T) *env {
+			e := activeOwn(t)
+			noCurrent(e)
+			if err := os.Remove(filepath.Join(e.root, StateDir, LockFile)); err != nil {
+				t.Fatal(err)
+			}
+			return e
+		}, true},
+		{"only deploy.json", func(t *testing.T) *env {
+			e := activeOwn(t)
+			if err := os.RemoveAll(filepath.Join(e.root, BaseDir)); err != nil {
+				t.Fatal(err)
+			}
+			return e
+		}, true},
+		{"a release folder never switched to", func(t *testing.T) *env {
+			e := newEnv(t)
+			e.release(rel1, "s")
+			e.write(filepath.Join(e.root, StateDir, LockFile), "", 0o600)
+			return e
+		}, true},
+		{"a first switch interrupted, its lock file removed", func(t *testing.T) *env {
+			e := newEnv(t)
+			e.release(rel1, "s")
+			e.crashAt(CrashLinks, false, rel1)
+			if err := os.Remove(filepath.Join(e.root, StateDir, LockFile)); err != nil {
+				t.Fatal(err)
+			}
+			return e
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := tc.setup(t)
+			e.keepOwed = true
+			g := guard(e)
+			e.runner.reset()
+			unguarded := e.guarded()
+			if code := e.boot(); code != ExitFailed {
+				t.Fatalf("boot: exit %d, want %d\n%s", code, ExitFailed, e.last)
+			}
+			if *unguarded != 0 {
+				t.Errorf("%d command(s) ran while decisions were not inhibited", *unguarded)
+			}
+			in, ok := e.inhibited()
+			if !ok || g.decide() != "refused" || e.guardCheck() != decisionguard.CodeInhibited {
+				t.Errorf("after boot: inhibit %+v %v, a decision %s", in, ok, g.decide())
+			}
+			if e.runner.called("stop-all") == 0 {
+				t.Errorf("the host's stop list did not run: %v", e.runner.calls)
+			}
+			if tc.owed {
+				owed := e.owed()
+				if len(owed) != 1 || owed[0].Direction != DirBoot || owed[0].Txn != in.Txn || !strings.Contains(owed[0].Detail, "current is missing") {
+					t.Errorf("owed: %+v (inhibit %+v)", owed, in)
+				}
+				if !strings.Contains(in.Reason, "current is missing") {
+					t.Errorf("inhibit: %+v", in)
+				}
+				// A later boot keeps it as found.
+				e.runner.reset()
+				if code := e.boot(); code != ExitFailed || len(e.runner.calls) != 0 {
+					t.Errorf("a later boot: exit %d, ran %v", code, e.runner.calls)
+				}
+				return
+			}
+			e.noJournal()
+			if rec := e.record(); rec.Result == ResultOK {
+				t.Errorf("record: %+v", rec)
 			}
 		})
 	}

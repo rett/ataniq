@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"path/filepath"
 	"strings"
 )
 
@@ -54,9 +56,11 @@ const bootPendingReason = "boot: a transaction journal is open and cannot be rea
 // cannot be read strictly): boot lifts nothing then. It settles an open
 // journal through reconcile, as every command does (that transaction
 // lifts the inhibit by its own rules), and prints what is owed. It never
-// acknowledges anything and never writes deploy.json. A host with no
-// current release and no journal (nothing deployed) is refused with
-// ExitNoRelease, and nothing is created or changed.
+// acknowledges anything and never writes deploy.json. Only a host where
+// nothing was ever deployed (no current release, and none of what
+// bootDeployed looks for) is refused with ExitNoRelease, nothing created or
+// changed; a deployed host whose current is missing inhibits decisions
+// and fails as any failed qualification does ("current is missing").
 func (s *Switcher) Boot(ctx context.Context) int {
 	if err := s.checkConfig(); err != nil {
 		s.errorf("%v", err)
@@ -85,17 +89,21 @@ func (s *Switcher) Boot(ctx context.Context) int {
 		// No state folder, or no lock file in it: no switch ever took
 		// the lock here.
 		_, ok, err := s.bootCurrent()
+		what := "current is there"
 		if err == nil && !ok {
-			return s.noRelease()
+			what, err = s.bootDeployed()
+			if err == nil && what == "" {
+				return s.noRelease()
+			}
 		}
 		if err == nil && s.stateRoot == nil {
-			err = failf(CodeStateInvalid, "the state folder %s is missing although current is there", q(s.stateDir()))
+			err = failf(CodeStateInvalid, "the state folder %s is missing although %s", q(s.stateDir()), what)
 		}
 		if err != nil {
 			s.printf("boot: FAILED: %s; nothing is run or changed", describe(err))
 			return ExitFailed
 		}
-		// A current release, and a state folder without its lock file:
+		// Something is deployed, and the state folder has no lock file:
 		// the lock file is made, as every switch makes it.
 		s.closeRoots()
 		if lk, code = s.lockWith(false, true); lk == nil {
@@ -110,7 +118,16 @@ func (s *Switcher) Boot(ctx context.Context) int {
 	cur, curOK, cerr := s.bootCurrent()
 	pending := jerr != nil || open || settling != nil
 	if !pending && cerr == nil && !curOK {
-		return s.noRelease()
+		// No current: nothing deployed, or a deployed host whose current
+		// is missing, which fails below once decisions are inhibited.
+		what, err := s.bootDeployed()
+		if err == nil && what == "" {
+			return s.noRelease()
+		}
+		cerr = err
+		if err == nil {
+			cerr = failf(CodeStateInvalid, "current is missing although %s", what)
+		}
 	}
 	run, mine, ok := s.bootInhibit(in, there, ierr, pending)
 	if !ok {
@@ -165,10 +182,56 @@ func (s *Switcher) bootCurrent() (cur string, ok bool, err error) {
 	return readLink(base, "current")
 }
 
-// noRelease is the refusal of boot on a host where nothing is deployed:
-// nothing is run, created or changed, decisions.inhibit included.
+// bootDeployed says what shows that something was deployed on a host
+// whose current is missing, "" when nothing does: deploy.json or a
+// journal (open in txn.json, or held by decisions.inhibit) in the state
+// folder, or any entry of opt/authority-host/releases (a release, or the
+// staging folder of an import). Such a host is not one where nothing is
+// deployed: its current is missing. err is what cannot be read, which
+// proves nothing either way.
+func (s *Switcher) bootDeployed() (string, error) {
+	if s.stateRoot != nil {
+		for _, name := range []string{DeployFile, JournalFile} {
+			_, err := s.stateRoot.Lstat(name)
+			if err == nil {
+				return name + " is there", nil
+			}
+			if !errors.Is(err, fs.ErrNotExist) {
+				return "", err
+			}
+		}
+		if _, settling, _, err := s.readInhibit(); err == nil && settling != nil {
+			return InhibitFile + " holds a journal", nil
+		}
+	}
+	rel, err := s.openTrusted(filepath.Join(BaseDir, "releases"), false)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	defer rel.Close()
+	d, err := rel.Open(".")
+	if err != nil {
+		return "", err
+	}
+	defer d.Close()
+	names, err := d.Readdirnames(1)
+	if len(names) > 0 {
+		return fmt.Sprintf("releases/%s is there", q(names[0])), nil
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return "", nil
+}
+
+// noRelease is the refusal of boot on a host where nothing was ever
+// deployed: nothing is run, created or changed, decisions.inhibit
+// included.
 func (s *Switcher) noRelease() int {
-	s.printf("boot: refused: there is no current release and no transaction open (nothing is deployed): nothing is qualified, run or changed, and %s is left as found", InhibitFile)
+	s.printf("boot: refused: there is no current release, no release folder, no %s and no transaction open (nothing is deployed): nothing is qualified, run or changed, and %s is left as found", DeployFile, InhibitFile)
 	s.printf("boot: no decision-capable service runs without a release, since each comes with one; the decision guard answers by the state folder alone: it refuses while that folder is missing or %s is there, and allows otherwise", InhibitFile)
 	return ExitNoRelease
 }

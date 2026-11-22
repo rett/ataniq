@@ -885,9 +885,18 @@ Before it, a requalification ran only while a journal was open.
   acknowledged; a crash before the failure is owed loses only the
   outcome owed (`status` still shows the failure in the inhibit), never
   the inhibit.
-- A host where nothing is deployed (no `current` and no journal) is
-  refused with exit 4: nothing is run, created or changed,
-  `decisions.inhibit` and the lock file included. The decision guard
+- A host where nothing was ever deployed is refused with exit 4: no
+  `current`, no `deploy.json`, no journal (open in `txn.json` or held by
+  the inhibit) and nothing in `/opt/authority-host/releases` (a release
+  imported and never switched to, or the folder of an import, counts as
+  deployed). Nothing is run, created or changed there,
+  `decisions.inhibit` and the lock file included. A host that shows a
+  deployment but whose `current` is missing is not refused: `boot`
+  writes its record and fails as a failed qualification does (`current
+  is missing although ...`: the inhibit holds the failure, the host's
+  stop list runs, the failure is owed), exit 1, so the owner acknowledges
+  it before the next switch; a journal there is settled as every command
+  settles it, the lock file made when it is missing. The decision guard
   answers there by the state folder alone: it refuses while
   `/var/lib/authority-host` is missing (before the bootstrap) or holds
   `decisions.inhibit`, and allows on the empty folder the bootstrap makes.
@@ -909,11 +918,15 @@ stays active (`RemainAfterExit=yes`) and runs
 `caddy.service` (what the health check and the no-AI check need), with a
 time limit of 15 minutes. It fails closed: no condition skips it, no exit
 status but 0 counts as success, nothing restarts it, and a failure (exit
-1 or 4, or killed at its time limit) leaves the inhibit `boot` wrote. No
+1, or killed at its time limit) leaves the inhibit `boot` wrote; exit 4,
+on a host where nothing was ever deployed, writes nothing (the guard then
+answers by the state folder alone, above). No
 script installs or enables it (`host-bootstrap.sh` and `deploy.sh` do
 not touch it), and it changes nothing on a host until the owner does,
-after a first switch ended healthy (on a host where nothing is deployed
-it fails with exit 4):
+after a first switch ended healthy (on a host where nothing was ever
+deployed it fails with exit 4; enabled after an import and before the
+first switch, it fails with exit 1 and owes a failure, `current is
+missing`, which the owner acknowledges before that switch):
 
 1. On the build host record its hash with the others of DEPLOY.md step 1
    (`sha256sum deploy/authority-host/bootstrap/ah-switch-boot.service`)
@@ -1163,7 +1176,7 @@ see its messages. The text of a broken state file is not repeated either.
 | 1 | Failed; outside a dry run the outcome is in `deploy.json`, except when the state folder, the switch policy or the host's stop list is not trusted, or `releases/`, `current` or `previous` cannot be read (`state: FAILED`), which records nothing, or when the result is `unresolved`, which leaves the journal for the next command; a `boot` after which decisions stay inhibited (its qualification failed and is owed, it found an inhibit it did not write, or the transaction it settled did not end healthy) |
 | 2 | Bad arguments, `--mode` weaker than the switch policy, or a root other than `/` without `--allow-exec`; nothing was done |
 | 3 | Another switch holds the lock, or `status` holds it while a switch is asked for (`flock`, not waited for), or a package step that outlived its switch holds it (said as `surviving helper pid N`); nothing was done |
-| 4 | `boot` found no current release and no transaction open (nothing is deployed); nothing was run, created or changed, `decisions.inhibit` left as found |
+| 4 | `boot` found nothing ever deployed (no current release, no release folder, no `deploy.json`, no journal open or held); nothing was run, created or changed, `decisions.inhibit` left as found. A deployed host whose `current` is missing exits 1 |
 
 ### Failure cases
 
