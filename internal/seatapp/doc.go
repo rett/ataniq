@@ -53,6 +53,14 @@
 // to 5 per source address per 15 minutes, in memory; the source is the
 // address in [Config].ClientAddrHeader when that is set, else the peer.
 //
+// # Text nobody on the owner's side wrote
+//
+// [Text] is the one function that renders such text (the six words from the
+// daemon today, a lead's note later): plain text, no link made, no markup, no
+// image; control and bidirectional characters shown as visible escapes; long
+// text cut with a count of what was cut. It is registered in the page
+// templates as "text", and a page shows no such text any other way.
+//
 // # Seams
 //
 // [Daemon] is the port to the daemon, defined here and implemented later by

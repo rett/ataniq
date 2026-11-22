@@ -29,6 +29,7 @@ const (
 	challengeRequests = 20
 	daemonTimeout     = 15 * time.Second
 	maxCodeLen        = 64
+	maxWordLen        = 32
 	minCredentialID   = 16
 	maxCredentialID   = 1024
 )
@@ -224,7 +225,12 @@ func (p *pairing) pair(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		writeError(w, errDaemon)
 	default:
-		writeJSON(w, http.StatusOK, map[string]any{"words": res.Words})
+		// The words come from the daemon, which is not the app's own text.
+		var words [6]string
+		for i, word := range res.Words {
+			words[i] = oneLine(word, maxWordLen)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"words": words})
 	}
 }
 

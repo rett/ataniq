@@ -37,7 +37,7 @@ const rpName = "Authority seat"
 var pages = func() map[string]*template.Template {
 	m := map[string]*template.Template{}
 	for _, name := range pageNames {
-		t := template.New("layout.html")
+		t := template.New("layout.html").Funcs(template.FuncMap{"text": Text})
 		template.Must(t.ParseFS(templateFS, "templates/layout.html", "templates/"+name+".html"))
 		m[name] = t
 	}
