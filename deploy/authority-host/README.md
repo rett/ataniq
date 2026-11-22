@@ -828,8 +828,9 @@ concern it, and only the second takes it back:
   acknowledgement. A rollback is bound to its request id: retried as `--rollback-to previous` (or by the id it went
   to), it reports the rollback whose outcome is owed and never resolves
   `previous` anew, which would go back to the release the first rollback
-  left. A forward switch is retried by the same id. Run the request once
-  more to do it again. When the report cannot be written or flushed (a
+  left. A forward switch is retried by the same id. To do it again, the
+  owner first takes the owed outcome back with `ack` (below); a request
+  made after that is new work, and until then a retry only reports. When the report cannot be written or flushed (a
   full filesystem, a dropped session) the outcome has not been delivered:
   it stays owed, the command exits 1 and says so on its error output, and
   the next retry reports it. An outcome whose requalification failed (see
@@ -1716,7 +1717,17 @@ copied to the build host by any way the owner trusts):
   home and runtime folder the check reads, so it can miss a unit the check
   reports and name one it never sees). Run the check once, with the
   allowlists still empty, from the release built from the unfilled tree, and
-  take the `HIT unit` names:
+  take the `HIT unit` names. No switch has imported and verified that
+  release yet, so RELEASE is a root-owned copy you verify first, never the
+  folder the deploying user copied in: as root, copy the release folder
+  into a new folder only root can write (`mkdir -m 0700 /root/ah-baseline`,
+  `cp -R INCOMING/ID /root/ah-baseline/`, so RELEASE is
+  `/root/ah-baseline/ID`), compare `sha256sum RELEASE/SHA256SUMS` with the
+  hash of `SHA256SUMS` you took from the build host by hand, and then, in
+  RELEASE, `sha256sum -c SHA256SUMS` must pass, `find . ! -type d ! -type f`
+  must print nothing, and `find . -type f ! -name SHA256SUMS ! -name
+  SHA256SUMS.sig | wc -l` must equal `wc -l < SHA256SUMS`. Only then run
+  that copy's checker:
 
   ```
   sudo RELEASE/bin/ah-noaicheck --phase pre --require-policy \

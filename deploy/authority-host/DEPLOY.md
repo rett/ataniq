@@ -41,11 +41,11 @@ mkdir -p build/authority-host
 CGO_ENABLED=0 sh scripts/go-tool.sh build -trimpath -o build/authority-host/ah-switch ./cmd/ah-switch
 CGO_ENABLED=0 sh scripts/go-tool.sh build -trimpath -o build/authority-host/ah-noaicheck ./cmd/ah-noaicheck
 ldd build/authority-host/ah-switch      # "not a dynamic executable"
-sha256sum build/authority-host/ah-switch
+sha256sum build/authority-host/ah-switch deploy/authority-host/bootstrap/host-bootstrap.sh
 ```
 
-Keep the `sha256sum` line: you type that hash on the host in step 3. Do not copy
-it from the host.
+Keep the two `sha256sum` lines (the switch binary and the bootstrap script): you
+type those hashes on the host in step 3. Do not copy them from the host.
 
 ### 2. Build the release
 
@@ -73,7 +73,9 @@ If the release is to pass the no-AI check under `--require-policy`, fill the
 allowlists of the source tree from the host's baseline first, with
 `ah-release baseline` (see [Filling the
 allowlists](README.md#filling-the-allowlists)): collect four files on the host
-(`HIT unit` names, `ss -H -ltn` ports, `pacman -Qq`, `nft list ruleset`), run
+(`HIT unit` names, `ss -H -ltn` ports, `pacman -Qq`, `nft list ruleset`; the
+unit names come from running the unfilled release's own checker as root, so
+verify a root-owned copy of that release first, as the README says there), run
 `ah-release baseline --src deploy/authority-host ... --out DIR` and build with
 `--src DIR`. `baseline` enrolls any firewall listing, but it prints a `WARNING:
 no-default-deny HOOK` line (and writes the same words into the header of
@@ -82,6 +84,16 @@ no base chain with `policy drop` in a table that is not dormant, for IPv4 and
 IPv6; read them before you build. `--require-default-deny` makes it refuse such a
 listing instead. The host's firewall is the owner's: the baseline pins the rules
 as they are and does not judge them.
+
+The baseline records what listens while you collect it, and step 3 leaves
+caddy stopped, so on a fresh host `ports.txt` holds the ssh port and not the
+front end's. The switch restarts caddy and then runs the no-AI check of phase
+`post`, which reports every listening port that `ports.allow` does not name:
+the first switch would end `failed` on its own service. So read `ports.txt`
+and add the line 80 to ports.txt (the port of the shipped Caddyfile's `:80`
+site; use the ports your own Caddyfile serves) before you run `ah-release
+baseline`, and check that it is in `share/ports.allow` of the release you
+build.
 
 ### 3. Set the host up, once: bootstrap, dry then apply
 
@@ -93,14 +105,25 @@ rsync -a -e 'ssh -o BatchMode=yes' deploy/authority-host/bootstrap/host-bootstra
   build/authority-host/ah-switch "$AUTHORITY_HOST_SSH":incoming/
 ```
 
-Then, on the host, as root: read the script, copy both files to a folder only
-root can write (for example `/root`) and run them from there, because the
-incoming folder belongs to the deploying user, who could change a file in it
-after you read it.
+Then, on the host, as root, copy both files into a new folder only root can
+write, and judge and run only those copies. The incoming folder belongs to the
+deploying user, who can change a file in it at any moment, so nothing in it is
+read, hashed or run in place:
 
 ```
-sh /root/host-bootstrap.sh --dry   --switch-bin /root/ah-switch --switch-sha256 HASH_FROM_STEP_1
-sh /root/host-bootstrap.sh --apply --switch-bin /root/ah-switch --switch-sha256 HASH_FROM_STEP_1
+mkdir -m 0700 /root/ah-bootstrap
+cp /home/DEPLOYUSER/incoming/host-bootstrap.sh /home/DEPLOYUSER/incoming/ah-switch /root/ah-bootstrap/
+sha256sum /root/ah-bootstrap/host-bootstrap.sh /root/ah-bootstrap/ah-switch
+```
+
+Compare the two hashes with the lines you kept in step 1, typed by hand: they
+must be equal, and then the copies are the files you built. Read
+`/root/ah-bootstrap/host-bootstrap.sh` (the copy, not the incoming file). From
+here on run only the copies, even for `--dry`:
+
+```
+sh /root/ah-bootstrap/host-bootstrap.sh --dry   --switch-bin /root/ah-bootstrap/ah-switch --switch-sha256 HASH_FROM_STEP_1 --link-caddy
+sh /root/ah-bootstrap/host-bootstrap.sh --apply --switch-bin /root/ah-bootstrap/ah-switch --switch-sha256 HASH_FROM_STEP_1 --link-caddy
 ```
 
 `--dry` is the default and changes nothing; it prints every step and checks the
@@ -117,7 +140,7 @@ hash and every folder above what the script touches. `--apply` then:
 - writes no `switch-policy.json`: without it the switch is in manual mode, which
   the first scratch deploys may use (see "Owner-only items").
 
-With `--link-caddy` it also makes `/etc/caddy/Caddyfile` a link to
+`--link-caddy`, which the two commands above carry, also makes `/etc/caddy/Caddyfile` a link to
 `/opt/authority-host/current/etc/caddy/Caddyfile`, keeping a regular Caddyfile
 once as `/etc/caddy/Caddyfile.pre-authority-host`. Link the Caddyfile before the
 first switch, in this step. The shipped release's `share/reload.list` restarts
@@ -143,7 +166,10 @@ Before the first deploy read the release's `share/reload.list` and
 `share/health.cmd`: they say whether the switch reloads caddy and whether its
 health check needs caddy to be serving the release's own Caddyfile. The shipped
 ones need the Caddyfile link of step 3 to be in place before this step; if your
-release's lists differ, make the order satisfy them.
+release's lists differ, make the order satisfy them. Read its `share/ports.allow`
+too: it must name every port the release's services listen on (the shipped
+front end: 80), because the switch's check after the reload refuses a listener
+it does not name.
 
 On the development host:
 
@@ -156,8 +182,8 @@ sh deploy/authority-host/deploy.sh --go  --release DIR/ID --confirm ID
 `rsync -n` (a list of what would be copied; nothing is copied) and prints the
 exact ssh command that `--go` runs afterwards. `--dry` contacts the host,
 read-only (ssh and `rsync -n`). `rsync -n` starts a remote rsync to read the
-incoming folder, so the host must be reachable; it copies nothing and runs no
-command there. To see the plan without touching the network, `--self-test`
+incoming folder, so the host must be reachable; the remote rsync reads the
+destination, no files are copied and the switch is not run. To see the plan without touching the network, `--self-test`
 starts nothing: it computes and prints the same commands (it does not need
 `AUTHORITY_HOST_SSH`, and runs neither `ah-release`, `rsync` nor `ssh`).
 
@@ -184,7 +210,8 @@ no-AI check, phase `pre`, with `--require-policy`, and refuses the switch when
 it finds anything (see [the switch's steps](README.md#steps)). `--require-policy`
 turns an empty allowlist into a hit, so fill the allowlists first (see [Filling
 the allowlists](README.md#filling-the-allowlists)). A line starting `HIT` in
-the switch's output says what it found.
+the switch's output says what it found before anything changed; the check that
+runs after the reload prints no hits (see "When a step fails").
 
 The switch imports the release into `/opt/authority-host/releases/ID` as new,
 read-only, root-owned files, runs its checks, no-AI check, validators and reloads
@@ -309,7 +336,8 @@ state; read the message, fix the cause, run the step again.
 | `deploy.sh --dry` | `rsync -n failed` | Nothing was copied. Check that the incoming folder exists on the host and belongs to the deploying user, and that ssh works in batch mode |
 | `deploy.sh --go` | rsync failed | The switch was not run. The partial copy is only in the incoming folder; run `--go` again (rsync resumes) |
 | `deploy.sh --go` | the switch step failed (the output above it is the switch's) | The release is in the incoming folder, possibly already imported. Read the switch's `status` and its outcome, then see below |
-| Switch | the no-AI check found something (`HIT` lines) | Nothing was changed. Read the `HIT` lines (and the README's [no-AI check](README.md#the-no-ai-check)), fix the host or the release, and run `--go` again |
+| Switch | the no-AI check found something before activation (`HIT` lines, step `noaicheck`) | Nothing was changed. Read the `HIT` lines (and the README's [no-AI check](README.md#the-no-ai-check)), fix the host or the release, and run `--go` again |
+| Switch | `phase post: ... (run it by hand to see its hits)`, `failed_step: postcheck` | The release was already activated and caddy restarted: this is not "nothing was changed", and the switch does not print the hits. On the first switch there is no old release, so the result is `failed`: `current` is still the new release, the stop lists ran and decisions stay inhibited; on a later switch it is `rolled-back`. Do not run `--go` for the same id again: its counter is used and a new import of an existing id is refused. From your root session: `ah-switch status` (result, failed step, inhibit); verify the installed copy (`cd /opt/authority-host/releases/ID && sha256sum -c SHA256SUMS`); save the firewall with `nft list ruleset` into a file only root can read (`/root/nft-now.txt`), then, from a real root login, run `/opt/authority-host/releases/ID/bin/ah-noaicheck --phase post --root / --release /opt/authority-host/releases/ID --require-policy --nft-listing /root/nft-now.txt` to read the `HIT` lines (a `HIT port` means `ports.allow` lacks a listener the host now has). Fix the lists, acknowledge the owed outcome as in step 5, then build a release with a higher counter and deploy it: a healthy switch removes the inhibit (see [the decision inhibit](README.md#the-decision-inhibit) and [the failure cases](README.md#failure-cases)) |
 | Switch | `rolled-back` (a reload or health check failed) | The old release is live again. Read why in `ah-switch status`, fix the release and deploy a new one with a higher counter |
 | Switch | `failed` or `failed-recovery` | The decision services were stopped and decisions stay inhibited; the console is needed. Follow [the failure cases](README.md#failure-cases), [the decision inhibit](README.md#the-decision-inhibit) and [the journal and recover](README.md#the-journal-and-recover); `inhibit-clear` and `ack` are the owner's words |
 | Switch | `refused: an outcome is owed` | Nothing was done. Read the outcomes it printed and `status`, then `ah-switch ack --asked WORDS` from your own root session, and run the request again |

@@ -21,7 +21,8 @@
   `sudo /usr/local/sbin/ah-switch --from INCOMING/ID ID` over `ssh -o
   BatchMode=yes`. `--dry` (the default) only lists what rsync would copy and
   prints the ssh command (it contacts the host read-only, through ssh and
-  `rsync -n`), `--go` does it and is refused unless
+  `rsync -n`; the remote rsync reads the destination, no files are copied and
+  the switch is not run), `--go` does it and is refused unless
   `--confirm ID` equals the release id, and `--self-test` computes the
   commands and starts nothing (no ah-release, rsync or ssh).
   The driver never runs a file of the incoming folder: the no-AI check is
@@ -37,5 +38,17 @@
   regex for sudo 1.9.10 or newer) and checked with `sudo -l -U`:
   `inhibit-clear`, `ack` and `recover` run only from the owner's own root
   session, and a broader rule for the same account defeats that.
+  `DEPLOY.md` has root copy the bootstrap script and the switch binary
+  into a new root-only folder, compare their hashes with those typed from the
+  build host, and run only those copies (even for `--dry`); the README's
+  baseline collection does the same for the release whose checker it runs
+  before any switch has verified a release.
+  `DEPLOY.md` adds the front end's port 80 to the collected listeners before
+  the baseline (caddy is stopped while it is taken, and the switch's check
+  after the reload refuses a listener `ports.allow` does not name), carries
+  `--link-caddy` in both bootstrap commands, and says that a failed check
+  after the reload happens after the activation: inspect `status` and the
+  installed release, run the check by hand, acknowledge, deploy a higher
+  counter.
   `deploy/authority-host/DEPLOY.md` gives the first-deploy sequence, the
   rollback and what to do when a step fails.

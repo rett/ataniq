@@ -418,10 +418,14 @@ func testAuthorityHostDeployHelp(t *testing.T) {
 	for _, want := range []string{
 		"contacts the host, read-only (ssh and rsync -n)",
 		"starts nothing",
+		"The remote rsync reads the destination; no files are copied and the switch is not run.",
 	} {
 		if !strings.Contains(flat, want) {
 			t.Errorf("deploy.sh's help does not say %q", want)
 		}
+	}
+	if strings.Contains(flat, "runs no command there") {
+		t.Error("deploy.sh's help says --dry runs no command on the host, right after the remote rsync it starts")
 	}
 }
 
@@ -461,10 +465,14 @@ func testAuthorityHostDeployDoc(t *testing.T) {
 	for _, want := range []string{
 		"--dry contacts the host, read-only (ssh and rsync -n)",
 		"--self-test starts nothing",
+		"the remote rsync reads the destination, no files are copied and the switch is not run",
 	} {
 		if !strings.Contains(flat, want) {
 			t.Errorf("DEPLOY.md does not say %q", want)
 		}
+	}
+	if strings.Contains(flat, "runs no command there") {
+		t.Error("DEPLOY.md says --dry runs no command on the host, right after the remote rsync it starts")
 	}
 	if strings.Contains(flat, "never call ssh") || strings.Contains(flat, "never calls ssh") {
 		t.Error("DEPLOY.md says that a dry run never calls ssh")
@@ -505,6 +513,8 @@ func testAuthorityHostDeployDoc(t *testing.T) {
 	if ack, back := strings.Index(rollback, "ah-switch ack --asked"), strings.Index(rollback, "--rollback-to previous"); ack < 0 || back < 0 || ack > back {
 		t.Error("DEPLOY.md step 6 does not acknowledge the outcome before the rollback")
 	}
+	t.Run("bootstrap copies are root's own", func(t *testing.T) { testAuthorityHostRootCopies(t, section) })
+	t.Run("first deploy", func(t *testing.T) { testAuthorityHostFirstDeploy(t, string(data), section) })
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.HasSuffix(strings.TrimSpace(line), "NOPASSWD: /usr/local/sbin/ah-switch") {
 			t.Errorf("DEPLOY.md grants the whole switch program: %s", line)
@@ -517,9 +527,110 @@ func testAuthorityHostDeployDoc(t *testing.T) {
 	if !strings.Contains(ahFlat(string(readme)), "inhibit-clear, ack and recover run only from the owner's own root session") {
 		t.Error("README.md does not say that inhibit-clear, ack and recover are the owner's own")
 	}
+	if strings.Contains(ahFlat(string(readme)), "Run the request once more to do it again") {
+		t.Error("README.md still says a retry does the request again, though it only reports the owed outcome until the owner's ack")
+	}
+	if !strings.Contains(ahFlat(string(readme)), "until then a retry only reports") {
+		t.Error("README.md does not say that a retry only reports the owed outcome until the ack")
+	}
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.Contains(line, "AUTHORITY_HOST_SSH=") && !strings.Contains(line, "USER@HOST") {
 			t.Errorf("DEPLOY.md sets the host variable to a value: %s", line)
 		}
+	}
+}
+
+// testAuthorityHostRootCopies checks that the manual never has root read,
+// judge or run a file of the deploying user's incoming folder in place: the
+// copies go into a new root-only folder first, their hashes are compared with
+// the ones typed from the build host, and only the copies run, even for
+// --dry. The baseline procedure does the same for the release's checker.
+func testAuthorityHostRootCopies(t *testing.T, section func(from, to string) string) {
+	step1 := section("### 1.", "### 2.")
+	if !strings.Contains(step1, "sha256sum build/authority-host/ah-switch deploy/authority-host/bootstrap/host-bootstrap.sh") {
+		t.Error("DEPLOY.md step 1 does not record a hash of the bootstrap script as well as of the switch")
+	}
+	step3 := section("### 3.", "### 4.")
+	mk := strings.Index(step3, "mkdir -m 0700 /root/ah-bootstrap")
+	cp := strings.Index(step3, "cp /home/DEPLOYUSER/incoming/host-bootstrap.sh")
+	sum := strings.Index(step3, "sha256sum /root/ah-bootstrap/host-bootstrap.sh /root/ah-bootstrap/ah-switch")
+	dry := strings.Index(step3, "sh /root/ah-bootstrap/host-bootstrap.sh --dry")
+	if mk < 0 || cp < mk || sum < cp || dry < sum {
+		t.Errorf("DEPLOY.md step 3 does not copy into a new root-only folder, hash the copies, then run them (positions %d %d %d %d)", mk, cp, sum, dry)
+	}
+	for _, bad := range []string{"read the script, copy both files", "sh /root/host-bootstrap.sh", "--switch-bin /root/ah-switch"} {
+		if strings.Contains(step3, bad) {
+			t.Errorf("DEPLOY.md step 3 still has %q", bad)
+		}
+	}
+	readme, err := os.ReadFile(filepath.Join(root(t), "deploy/authority-host/README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rf := ahFlat(string(readme))
+	i := strings.Index(rf, "### Filling the allowlists")
+	j := strings.Index(rf, "### The source tree of the first release")
+	if i < 0 || j < i {
+		t.Fatal("README.md lacks the section Filling the allowlists")
+	}
+	fill := rf[i:j]
+	hash := strings.Index(fill, "sha256sum RELEASE/SHA256SUMS")
+	verify := strings.Index(fill, "sha256sum -c SHA256SUMS")
+	run := strings.Index(fill, "sudo RELEASE/bin/ah-noaicheck")
+	if !strings.Contains(fill, "mkdir -m 0700 /root/ah-baseline") || hash < 0 || verify < hash || run < verify {
+		t.Errorf("README.md baseline does not verify a root-owned copy of the release before running its checker (positions %d %d %d)", hash, verify, run)
+	}
+}
+
+// testAuthorityHostFirstDeploy checks the first-deploy procedure against what
+// the shipped release does: caddy listens on port 80 and is restarted by the
+// switch, whose check after the reload refuses a listener ports.allow does
+// not name; the baseline is taken with caddy stopped; and a failure of that
+// check happens after the activation, not before anything changed.
+func testAuthorityHostFirstDeploy(t *testing.T, data string, section func(from, to string) string) {
+	caddyfile, err := os.ReadFile(filepath.Join(root(t), "deploy/authority-host/etc/caddy/Caddyfile"))
+	if err != nil || !strings.Contains(string(caddyfile), "\n:80 {") {
+		t.Fatalf("the shipped Caddyfile no longer serves :80 (%v): revisit the first-deploy ports", err)
+	}
+	if !strings.Contains(section("### 2.", "### 3."), "add the line 80 to ports.txt") {
+		t.Error("DEPLOY.md step 2 does not add port 80 to the collected ports before the baseline")
+	}
+	for _, flag := range []string{"--dry", "--apply"} {
+		found := false
+		for _, line := range strings.Split(data, "\n") {
+			if strings.Contains(line, "host-bootstrap.sh "+flag+" ") && strings.Contains(line, "--switch-bin") {
+				found = true
+				if !strings.Contains(line, "--link-caddy") {
+					t.Errorf("DEPLOY.md's bootstrap command %q lacks --link-caddy: %s", flag, line)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("DEPLOY.md has no bootstrap command with %s", flag)
+		}
+	}
+	var post, hit string
+	for _, line := range strings.Split(data, "\n") {
+		switch {
+		case strings.HasPrefix(line, "| Switch |") && strings.Contains(line, "postcheck"):
+			post = line
+		case strings.HasPrefix(line, "| Switch |") && strings.Contains(line, "(`HIT` lines"):
+			hit = line
+		}
+	}
+	if post == "" {
+		t.Fatal("DEPLOY.md has no troubleshooting row for a failed post-activation check")
+	}
+	flatPost := ahFlat(post)
+	if strings.Contains(flatPost, "Nothing was changed") {
+		t.Error("DEPLOY.md says nothing was changed after a post-activation check failed")
+	}
+	for _, want := range []string{"already activated", "ah-switch status", "sha256sum -c SHA256SUMS", "ah-noaicheck --phase post", "--nft-listing", "higher counter"} {
+		if !strings.Contains(flatPost, want) {
+			t.Errorf("the post-check troubleshooting row does not say %q", want)
+		}
+	}
+	if !strings.Contains(hit, "before activation") {
+		t.Error("the HIT troubleshooting row does not say it is about the check before activation")
 	}
 }
