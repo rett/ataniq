@@ -172,8 +172,22 @@ rsync -a --delete RELEASE/ HOST:INCOMING/<id>/     # as the deploying user
 ah-switch --from INCOMING/<id> <id>                 # as root, on the host
 ```
 
-`--from` copies the incoming folder into a fresh folder of `releases/`
-(`releases/.import-<id>` while it is being made) as new files: folders and
+The incoming folder must lie outside `releases/`: one that is, contains
+or lies beneath `releases/` or anything in it (a release, a staging folder
+of an import), compared by the real path with every symbolic link resolved
+and by device and inode from the folder up to the root (which a bind mount
+keeps), is refused (`incoming-overlaps`) before anything is created or
+removed, so an import can never read what it writes or remove its own
+input.
+
+`--from` copies the incoming folder into a fresh folder of `releases/`, the
+import's staging folder, as new files. The staging folder is
+`releases/.import-<id>-<16 random hex digits>`, made new for this import
+(`mkdir`, which fails on a name that is there), and it is the only folder
+the import ever removes: a folder another import left (a switch that died
+while it imported) is neither used nor removed, and every `--from` names
+it (`warning: releases/.import-... was left by an earlier import`) for the
+owner to look at and remove by hand. The copy holds folders and
 regular files only (a symbolic link, device, fifo, socket or hard-linked
 file is refused), each file opened without following a link and without
 blocking, checked to be the regular file with one link that was listed (the
@@ -331,8 +345,9 @@ that already ran stays applied, and `deploy.json` says so, or says that
 the package state is unknown; after a package step the decision services
 are stopped and decisions stay inhibited, see step 4).
 
-0. **import** (only with `--from`): the incoming folder is copied into
-   `releases/.import-ID`, as described above.
+0. **import** (only with `--from`): the incoming folder is copied into a
+   staging folder of its own, `releases/.import-ID-RANDOM`, as described
+   above.
 1. **verify**: `releases/ID` (or the import's copy) must be a folder, not a
    symbolic link, and pass the check of an imported release above (without
    `--from`, the record of its import included). Every
@@ -730,6 +745,8 @@ see its messages. The text of a broken state file is not repeated either.
 | Case | What happens |
 | --- | --- |
 | Incoming folder holds a link, special or hard-linked file, or `releases/ID` exists | Refused at import; nothing is left in `releases/` |
+| Incoming folder is, contains or lies beneath `releases/` or anything in it | Refused at import (`incoming-overlaps`) before anything is created or removed; the incoming folder stays as it is |
+| A staging folder an earlier import left in `releases/` | Left as it is and named by every `--from`; remove it by hand |
 | Wrong sum, file missing or not listed, path escape, link in the release, release folder a link | Refused at verify; `current` unchanged; an import's copy is removed |
 | A release folder or file writable by group or others, set-id, or not root's | Refused at verify |
 | A release folder without the record of its import, or not the tree its import made | Refused at verify (`provenance-missing`, `provenance-mismatch`); as the old release, it is no fallback |
@@ -762,8 +779,8 @@ see its messages. The text of a broken state file is not repeated either.
 | A release folder of a higher counter is in `releases/` | Refused at counter (`counter-not-above`); build a higher counter |
 | A second switch while one runs | Exit 3; nothing done |
 
-The switch never deletes a release (it removes only the copy of an import
-that failed). Removing old releases is not part of this feature: do it by
+The switch never deletes a release (it removes only the staging folder
+of an import that it made itself and that failed). Removing old releases is not part of this feature: do it by
 hand, never the targets of `current` or `previous`, and keep in mind that a
 release folder is evidence of its counter (step 2).
 

@@ -861,9 +861,15 @@ func (s *Switcher) openForSwitch(ctx context.Context, a *attempt, id ReleaseID, 
 		return nil, s.fail(a, 0, err), true
 	}
 	src, err := openIncoming(s.cfg.From)
+	if err == nil {
+		if err = s.incomingApart(s.cfg.From, src); err != nil {
+			src.Close()
+		}
+	}
 	if err != nil {
 		return nil, s.fail(a, 0, err), true
 	}
+	s.reportLeftImports()
 	if s.cfg.Dry {
 		// The release holds src open and closes it.
 		s.step(0, "would copy %s into releases/%s as new read-only files", q(s.cfg.From), id.Name)
@@ -878,9 +884,14 @@ func (s *Switcher) openForSwitch(ctx context.Context, a *attempt, id ReleaseID, 
 		return rel, 0, false
 	}
 	defer src.Close()
-	tmp := importPrefix + id.Name
+	// The staging folder is this import's own: a new name, made here
+	// (mkdir fails on a name that is there), and the only folder the import
+	// ever removes.
+	tmp, err := s.newStaging(id)
+	if err != nil {
+		return nil, s.fail(a, 0, err), true
+	}
 	tmpDir := filepath.Join(s.base(), "releases", tmp)
-	s.dropImport(tmp)
 	files, err := s.importTree(src, tmp)
 	if err != nil {
 		s.dropImport(tmp)

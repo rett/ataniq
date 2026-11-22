@@ -2,7 +2,10 @@
   `ah-switch --from INCOMING_DIR ID` imports a release folder into
   `/opt/authority-host/releases/ID` as new, read-only, root-owned files
   (folders and regular files only, within limits of entries, size and
-  time), recording the digest of the tree it made (paths, inodes, sizes,
+  time; staged in a new folder of its own, the only one it ever removes,
+  and refused before anything is created or removed when the incoming
+  folder is, contains or lies beneath `releases/` or anything in it),
+  recording the digest of the tree it made (paths, inodes, sizes,
   hashes), and `ah-switch ID` activates an imported release, refusing a
   folder without that record or that no longer matches it: it checks its
   `SHA256SUMS` over every file and, when the root-owned switch policy

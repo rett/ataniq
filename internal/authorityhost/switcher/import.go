@@ -1,16 +1,127 @@
 package switcher
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"syscall"
 )
 
 // importPrefix starts the name of the folder in releases/ an import is made
-// in; it is renamed to the release's id once the copy is verified.
+// in, .import-<id>-<random>, new for each import; it is renamed to the
+// release's id once the copy is verified.
 const importPrefix = ".import-"
+
+// maxLeftReported bounds the folders of earlier imports a switch names.
+const maxLeftReported = 8
+
+// newStaging makes the staging folder of an import of id in releases/: a
+// name no other import uses (16 random hex digits after the id), created
+// with mkdir, which fails on a name that is there, mode 0700. Only a
+// folder this returned is ever removed by the import that made it.
+func (s *Switcher) newStaging(id ReleaseID) (string, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	name := importPrefix + id.Name + "-" + hex.EncodeToString(b[:])
+	if err := s.relRoot.Mkdir(name, 0o700); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
+// reportLeftImports names the folders of releases/ an earlier import left
+// (a switch that died while it imported): they are never used or removed
+// by another import; the owner looks at them and removes them by hand.
+func (s *Switcher) reportLeftImports() {
+	d, err := s.relRoot.Open(".")
+	if err != nil {
+		return
+	}
+	defer d.Close()
+	names, _ := d.Readdirnames(-1)
+	sort.Strings(names)
+	n := 0
+	for _, name := range names {
+		if !strings.HasPrefix(name, importPrefix) {
+			continue
+		}
+		if n++; n <= maxLeftReported {
+			s.printf("warning: releases/%s was left by an earlier import; it is not used or removed: look at it, then remove it by hand", q(name))
+		}
+	}
+	if n > maxLeftReported {
+		s.printf("warning: %d more folders of earlier imports are in releases/", n-maxLeftReported)
+	}
+}
+
+// incomingApart refuses an incoming folder from (opened as src) that is,
+// contains or lies beneath releases/ or anything in it (a staging folder
+// of an import, a release): copying it would read what the import writes,
+// and removing a failed copy could remove the input. Both the real paths,
+// every symbolic link resolved, and the folders themselves (device and
+// inode, which a bind mount keeps) are compared: no folder from src up to
+// the root may be releases/, and no folder from releases/ up to the root
+// may be src. A path that cannot be resolved or read is refused too.
+func (s *Switcher) incomingApart(from string, src *os.Root) error {
+	relPath := filepath.Join(s.base(), "releases")
+	overlap := func() error {
+		return failf(CodeIncomingOverlaps, "incoming %s is, contains or lies beneath %s; copy the release to an incoming folder outside it", q(from), q(relPath))
+	}
+	unreadable := func(err error) error {
+		return failf(CodeIncomingOverlaps, "incoming %s cannot be told apart from %s: %s", q(from), q(relPath), q(err.Error()))
+	}
+	fromReal, err := filepath.EvalSymlinks(from)
+	if err != nil {
+		return unreadable(err)
+	}
+	relReal, err := filepath.EvalSymlinks(relPath)
+	if err != nil {
+		return unreadable(err)
+	}
+	if within(fromReal, relReal) || within(relReal, fromReal) {
+		return overlap()
+	}
+	srcInfo, err := src.Stat(".")
+	if err != nil {
+		return unreadable(err)
+	}
+	relInfo, err := s.relRoot.Stat(".")
+	if err != nil {
+		return unreadable(err)
+	}
+	for _, w := range []struct {
+		start string
+		other fs.FileInfo
+	}{{fromReal, relInfo}, {relReal, srcInfo}} {
+		for p := w.start; ; p = filepath.Dir(p) {
+			info, err := os.Stat(p)
+			if err != nil {
+				return unreadable(err)
+			}
+			if os.SameFile(info, w.other) {
+				return overlap()
+			}
+			if p == filepath.Dir(p) {
+				break
+			}
+		}
+	}
+	return nil
+}
+
+// within reports whether the clean absolute path p is base or lies
+// beneath it.
+func within(p, base string) bool {
+	return p == base || base == "/" || strings.HasPrefix(p, base+"/")
+}
 
 // openIncoming opens the incoming folder, which must be a real folder.
 func openIncoming(from string) (*os.Root, error) {
@@ -35,8 +146,8 @@ func openIncoming(from string) (*os.Root, error) {
 	return src, nil
 }
 
-// importTree copies the incoming folder src into the new folder name of
-// releases/ as new inodes: folders and regular files only (a link, device,
+// importTree copies the incoming folder src into the staging folder name of
+// releases/, which newStaging made, as new inodes: folders and regular files only (a link, device,
 // fifo, socket or hard-linked file is refused), folders mode 0700 for now
 // and files 0644, or 0755 when the incoming file had any execute bit, with
 // no set-id or sticky bit, no extended attribute and no ACL copied, owned by
@@ -50,9 +161,6 @@ func openIncoming(from string) (*os.Root, error) {
 // charges every byte it writes to the budget's total as it writes it: the
 // copy stops at the limit, and the caller removes the partial copy.
 func (s *Switcher) importTree(src *os.Root, name string) (int, error) {
-	if err := s.relRoot.Mkdir(name, 0o700); err != nil {
-		return 0, err
-	}
 	dst, err := s.relRoot.OpenRoot(name)
 	if err != nil {
 		return 0, err
@@ -193,9 +301,10 @@ func (s *Switcher) sealTree(name string) error {
 	return nil
 }
 
-// dropImport removes a folder an import left in releases/, making it
-// writable first. It is best effort: what it cannot remove stays, under a
-// name no switch uses.
+// dropImport removes the staging folder name that this very import made
+// (see newStaging), making it writable first; it is never given another
+// folder. It is best effort: what it cannot remove stays, under a name no
+// switch uses, and later switches name it (see reportLeftImports).
 func (s *Switcher) dropImport(name string) {
 	if _, err := s.relRoot.Lstat(name); err != nil {
 		return
