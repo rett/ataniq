@@ -9,8 +9,11 @@
   characters the switch would not read, and a link, fifo, device, socket or
   odd name in the source. A `--components static` build given no
   `ah-pkgstep` writes a no-op `bin/ah-pkgstep` of its own (a POSIX `sh`
-  script that checks its arguments and exits 0), so a first switch of a
-  static release needs no hand-made package step. `ah-release check DIR/<id>` reads a built folder
+  script that checks its arguments and exits 0 on a first switch or an
+  unchanged snapshot, and refuses with exit 1 a snapshot change it cannot
+  make, which leaves the package state unknown until `ah-switch recover
+  --package-state`), so a first switch of a static release needs no
+  hand-made package step. `ah-release check DIR/<id>` reads a built folder
   back: its sums, manifest and shape, the coverage of its command lists that
   the switch leaves to the builder (a validator for every shipped Caddy,
   nftables and systemd file, a restart or reload of each shipped family, a

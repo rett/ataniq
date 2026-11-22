@@ -23,16 +23,26 @@ var requiredBins = []string{"ah-noaicheck", "ah-switch"}
 // PackageStepName is the file name of a release's package step, and
 // StaticPackageStep is the one the builder writes itself into a static
 // release that is given none: it checks its arguments as the switch gives
-// them, changes nothing and exits 0, so it is idempotent. It is POSIX sh and
-// holds no time, user or host name.
+// them and changes nothing. It exits 0 only on a first switch (an empty
+// --from) or an unchanged snapshot (--from equal to --to), so it is
+// idempotent; any other --from is a snapshot the host would be recorded at
+// without being there, and it exits 1 with a line on stderr. A refused step
+// leaves the host's package state unknown, as any failed package step does,
+// and the owner settles it with ah-switch recover --package-state. It is
+// POSIX sh and holds no time, user or host name.
 const PackageStepName = "ah-pkgstep"
 
 const StaticPackageStep = `#!/bin/sh
 # The package step of a static release, written by ah-release build: a static
-# release installs and removes no package, so there is nothing to do.
+# release installs and removes no package, so it has nothing to do on a first
+# switch or an unchanged snapshot, and cannot move the host to another one.
 if [ "$#" -ne 6 ] || [ "$1" != "--release" ] || [ "$3" != "--from" ] || [ "$5" != "--to" ]; then
 	echo "usage: ah-pkgstep --release DIR --from OLD --to NEW" >&2
 	exit 2
+fi
+if [ -n "$4" ] && [ "$4" != "$6" ]; then
+	echo "ah-pkgstep: refused: a static release changes no package, and its package snapshot is not the host's (build it with the host's --package-snapshot)" >&2
+	exit 1
 fi
 echo "ah-pkgstep: static release, no package change"
 exit 0
