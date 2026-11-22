@@ -1265,3 +1265,54 @@ func TestBootTakesAnInhibitItCannotReadAsUnresolved(t *testing.T) {
 		})
 	}
 }
+
+// TestBootGuardsAHostWhoseCurrentCannotBeRead: current is there but cannot
+// be read (it is a file, not a link) in an intact state folder, with or
+// without the lock file. What cannot be read proves nothing, so boot does
+// not stop before decisions are inhibited: it makes the lock file when it
+// is missing, writes its record, and fails as a failed qualification does
+// (the failure in the inhibit, the host's stop list, the failure owed),
+// exit 1.
+func TestBootGuardsAHostWhoseCurrentCannotBeRead(t *testing.T) {
+	for _, lock := range []bool{true, false} {
+		t.Run(map[bool]string{true: "with the lock file", false: "without the lock file"}[lock], func(t *testing.T) {
+			e := activeOwn(t)
+			e.keepOwed = true
+			g := guard(e)
+			cur := filepath.Join(e.root, BaseDir, "current")
+			if err := os.Remove(cur); err != nil {
+				t.Fatal(err)
+			}
+			e.write(cur, "releases/"+rel2+"\n", 0o644)
+			if !lock {
+				if err := os.Remove(filepath.Join(e.root, StateDir, LockFile)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e.runner.reset()
+			unguarded := e.guarded()
+			if code := e.boot(); code != ExitFailed {
+				t.Fatalf("boot: exit %d\n%s", code, e.last)
+			}
+			if *unguarded != 0 {
+				t.Errorf("%d command(s) ran while decisions were not inhibited", *unguarded)
+			}
+			in, ok := e.inhibited()
+			if !ok || !strings.HasPrefix(in.Reason, "boot: after the boot, ") || !strings.Contains(in.Reason, "not a symbolic link") {
+				t.Errorf("inhibit: %+v, %v\n%s", in, ok, e.last)
+			}
+			if g.decide() != "refused" || e.guardCheck() != decisionguard.CodeInhibited {
+				t.Errorf("a decision %s, guard %q", g.decide(), e.guardCheck())
+			}
+			if _, err := os.Lstat(filepath.Join(e.root, StateDir, LockFile)); err != nil {
+				t.Errorf("the lock file: %v", err)
+			}
+			if e.runner.called("stop-all") != 1 {
+				t.Errorf("the host's stop list: %v", e.runner.calls)
+			}
+			if owed := e.owed(); len(owed) != 1 || owed[0].Direction != DirBoot || owed[0].Txn != in.Txn {
+				t.Errorf("owed: %+v", owed)
+			}
+		})
+	}
+}

@@ -939,7 +939,12 @@ Before it, a requalification ran only while a journal was open.
   holds the failure, the host's stop list runs, the failure is owed),
   exit 1, and the owner acknowledges the failure before the next switch.
   A journal there is settled as every command settles it, and a missing
-  lock file is made first.
+  lock file is made first. The same holds, in a state folder that is
+  there and trusted, when `current` or what would show a deployment
+  cannot be read (a `current` that is a file, not a link, for example):
+  what cannot be read proves nothing, so `boot` makes a missing lock
+  file, writes its record and fails with the error, exit 1, the failure
+  owed; it never stops before the inhibit is written.
 - A crash anywhere in `boot` leaves decisions refused: the inhibit is
   there from before the first command it runs to its removal, which is
   its last step. The next `boot` takes its record over (above) unless it

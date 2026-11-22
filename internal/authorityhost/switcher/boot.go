@@ -94,12 +94,20 @@ func (s *Switcher) Boot(ctx context.Context) int {
 		if err == nil && s.stateRoot == nil {
 			err = failf(CodeStateInvalid, "the state folder %s is missing although %s", q(s.stateDir()), what)
 		}
-		if err != nil {
+		if err != nil && s.stateRoot == nil {
 			s.printf("boot: FAILED: %s; nothing is run or changed", describe(err))
 			return ExitFailed
 		}
-		// Something is deployed, and the state folder has no lock file:
-		// the lock file is made, as every switch makes it.
+		if err != nil {
+			// What cannot be read (current, the release folder, an
+			// inhibit) proves nothing either way: in an intact state
+			// folder the failure is the locked path's, once decisions
+			// are inhibited (it reads the same again below).
+			s.printf("boot: %s; the lock file is made and decisions are inhibited before this fails", describe(err))
+		}
+		// Something is deployed, or what is cannot be read, and the state
+		// folder has no lock file: the lock file is made, as every switch
+		// makes it.
 		s.closeRoots()
 		if lk, code = s.lockWith(false, true); lk == nil {
 			return code
