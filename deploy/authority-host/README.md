@@ -260,7 +260,25 @@ What it detects, by kind:
   the files of their `*.d` drop-in folders. A unit that is a link (into
   `current/etc/systemd`, say) is read where it leads within the root, each
   file once; a masked unit (a link to `/dev/null`) is not read. The detail
-  is the variable's name.
+  is the variable's name, and only ever a valid identifier
+  (`[A-Za-z_][A-Za-z0-9_]*`, at most 128 bytes): no part of a value is
+  printed.
+
+  Each file is read in its own syntax. A shell profile is read as shell
+  words: an assignment at the start of a command, the names `export`,
+  `declare`, `typeset`, `readonly`, `local` and `env` set, `setenv` (csh)
+  and, in a `.fish` file, `set`; comments, quoted values, substitutions and
+  here-documents are never read for names, and a file a profile sources by
+  a literal absolute path is read too. A unit or manager file is read by
+  its `Environment=`, `DefaultEnvironment=`, `ManagerEnvironment=` and
+  `PassEnvironment=` keys (systemd's quoting) and `EnvironmentFile=` (an
+  optional `-`, quoted or not, `%h` and `%t` resolved, a glob in the last
+  component matched within the root). `/etc/environment`, `environment.d`
+  and the files `EnvironmentFile=` names are `KEY=VALUE` lines;
+  `~/.pam_environment` is read by its first word. What the check cannot
+  parse (an unclosed quote or substitution, a here-document that never
+  ends, an `export` whose name is an expansion, another specifier, a line
+  that is not `KEY=VALUE`) is `HIT incomplete env-syntax <file>`.
 - `process`: a running process whose name or executable is named like an
   executable of `ai-names.list`.
 - `unit`: an enabled unit (an entry of a `*.wants`, `*.requires` or

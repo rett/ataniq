@@ -9,39 +9,47 @@ import (
 // is a hit of kind "unreadable".
 const maxEnvFile = 4 << 20
 
-// envFiles are the system files that set variables for every login or
-// service.
-var envFiles = []string{
-	"etc/environment", "etc/profile", "etc/bash.bashrc", "etc/zsh/zshenv", "etc/zsh/zprofile",
-	"etc/zsh/zshrc", "etc/zsh/zlogin", "etc/systemd/system.conf", "etc/systemd/user.conf",
+// PathEnvSyntax is the name of the incomplete hit for a file whose syntax
+// the check cannot parse: "HIT incomplete env-syntax <file>".
+const PathEnvSyntax = "env-syntax"
+
+// envFile is a file that sets variables, and the syntax it is read in.
+type envFile struct {
+	rel    string
+	syntax envSyntax
 }
 
-// envDirs are folders whose regular files set variables, with how deep each
-// is looked into.
-var envDirs = []struct {
-	rel   string
-	depth int
-}{
-	{"etc/profile.d", 1},
-	{"etc/environment.d", 1},
-	{"etc/systemd/system.conf.d", 1},
-	{"etc/systemd/user.conf.d", 1},
-	{"usr/lib/environment.d", 1},
+// envFiles are the system files that set variables for every login or
+// service.
+var envFiles = []envFile{
+	{"etc/environment", syntaxEnvFile},
+	{"etc/profile", syntaxShell}, {"etc/bash.bashrc", syntaxShell},
+	{"etc/zsh/zshenv", syntaxShell}, {"etc/zsh/zprofile", syntaxShell},
+	{"etc/zsh/zshrc", syntaxShell}, {"etc/zsh/zlogin", syntaxShell},
+	{"etc/systemd/system.conf", syntaxSystemd}, {"etc/systemd/user.conf", syntaxSystemd},
+}
+
+// envDirs are folders whose regular files set variables, one level deep.
+var envDirs = []envFile{
+	{"etc/profile.d", syntaxShell},
+	{"etc/environment.d", syntaxEnvFile},
+	{"usr/lib/environment.d", syntaxEnvFile},
+	{"etc/systemd/system.conf.d", syntaxSystemd},
+	{"etc/systemd/user.conf.d", syntaxSystemd},
 }
 
 // homeEnvFiles are a home's shell profiles and environment files, and
 // homeEnvDirs its folders of them.
 var (
-	homeEnvFiles = []string{
-		".profile", ".bash_profile", ".bash_login", ".bashrc", ".zshenv", ".zprofile", ".zshrc",
-		".zlogin", ".pam_environment", ".config/fish/config.fish",
+	homeEnvFiles = []envFile{
+		{".profile", syntaxShell}, {".bash_profile", syntaxShell}, {".bash_login", syntaxShell},
+		{".bashrc", syntaxShell}, {".zshenv", syntaxShell}, {".zprofile", syntaxShell},
+		{".zshrc", syntaxShell}, {".zlogin", syntaxShell}, {".pam_environment", syntaxPam},
+		{".config/fish/config.fish", syntaxShell},
 	}
-	homeEnvDirs = []struct {
-		rel   string
-		depth int
-	}{
-		{".config/environment.d", 1},
-		{".config/fish/conf.d", 1},
+	homeEnvDirs = []envFile{
+		{".config/environment.d", syntaxEnvFile},
+		{".config/fish/conf.d", syntaxShell},
 	}
 )
 
@@ -69,12 +77,22 @@ func ProviderKeyName(name string) bool {
 // system profiles, /etc/profile.d, the environment.d folders, the systemd
 // manager configuration, every unit file and drop-in systemd loads (see
 // scanUnitFiles: links into the release are followed within the root, and
-// each file is read once), every home's profiles, and each file an
-// EnvironmentFile= line of those names.
+// each file is read once), every home's profiles, each file an
+// EnvironmentFile= line of those names (a glob in its last component is
+// matched within the root) and each file a profile sources by a literal
+// absolute path.
+//
+// Each file is read in its own syntax (see parseEnv): a profile as shell
+// words, so a comment or a quoted value is never taken for a setting; a
+// unit by its Environment=, PassEnvironment= and EnvironmentFile= keys; an
+// environment file as KEY=VALUE lines. Only a valid identifier is ever
+// reported. A file whose syntax the check cannot parse is the hit
+// "incomplete env-syntax <file>".
 func (c *Checker) CheckEnv() {
 	done := map[string]bool{}
-	var queue []string
-	scan := func(rel string) {
+	var queue []envFile
+	var scan func(rel string, s envSyntax)
+	scan = func(rel string, s envSyntax) {
 		p, err := c.t.resolve(rel)
 		if err != nil {
 			c.unreadable(rel, err)
@@ -89,126 +107,128 @@ func (c *Checker) CheckEnv() {
 			c.unreadable(p, err)
 			return
 		}
-		names, files := envNames(string(data))
-		for _, n := range names {
+		r := parseEnv(s, string(data), strings.HasSuffix(p, ".fish"))
+		for _, n := range r.names {
 			c.hit(KindEnv, show(p), n)
 		}
-		for _, f := range files {
-			queue = append(queue, clean(f))
+		if r.bad {
+			c.hit(KindIncomplete, PathEnvSyntax, show(p))
+		}
+		for _, spec := range r.files {
+			for _, f := range c.specifiers(spec, isUserUnit(p)) {
+				if !c.envFileGlob(f, func(m string) { queue = append(queue, envFile{m, syntaxEnvFile}) }) {
+					c.hit(KindIncomplete, PathEnvSyntax, show(p))
+				}
+			}
+		}
+		for _, f := range r.sourced {
+			queue = append(queue, envFile{clean(f), syntaxShell})
 		}
 	}
-	scanDir := func(rel string, depth int) {
-		c.walk(rel, depth, func(e *wentry) bool {
-			if e.isRegular() {
-				scan(e.rel)
+	scanDir := func(rel string, s envSyntax) {
+		c.walk(rel, 1, func(e *wentry) bool {
+			if e.isRegular() || e.isLink() {
+				scan(e.rel, s)
 			}
-			return true
+			return false
 		})
 	}
 	for _, f := range envFiles {
-		scan(f)
+		scan(f.rel, f.syntax)
 	}
 	for _, d := range envDirs {
-		scanDir(d.rel, d.depth)
+		scanDir(d.rel, d.syntax)
 	}
-	c.scanUnitFiles(scan)
+	c.scanUnitFiles(func(rel string) { scan(rel, syntaxSystemd) })
 	for _, home := range c.homeFolders() {
 		for _, f := range homeEnvFiles {
-			scan(path.Join(home, f))
+			scan(path.Join(home, f.rel), f.syntax)
 		}
 		for _, d := range homeEnvDirs {
-			scanDir(path.Join(home, d.rel), d.depth)
+			scanDir(path.Join(home, d.rel), d.syntax)
 		}
 	}
-	// An EnvironmentFile= may name another; done ends a cycle.
+	// A file may name or source another; done ends a cycle.
 	for len(queue) > 0 {
 		f := queue[0]
 		queue = queue[1:]
-		scan(f)
+		scan(f.rel, f.syntax)
 	}
 }
 
-// envNames returns the provider-key names a file sets or passes, once each,
-// and the absolute paths its EnvironmentFile= lines name. It reads:
-// assignments (NAME=, NAME+=) anywhere on a line, as in /etc/environment,
-// a shell profile or a unit's Environment= and DefaultEnvironment=; the
-// names after export, declare, typeset or readonly; the first name after
-// setenv (csh) or after set's options (fish); and the names of
-// PassEnvironment=. Lines starting with '#' or ';' are comments.
-func envNames(data string) (names, envFiles []string) {
-	seen := map[string]bool{}
-	add := func(n string) {
-		if ProviderKeyName(n) && !seen[n] {
-			seen[n] = true
-			names = append(names, n)
-		}
+// envFileGlob passes the path of an EnvironmentFile= to found, or, when
+// its last component is a glob, every entry of its folder that matches.
+// A glob in a folder's name, or a pattern that is not valid, cannot be
+// resolved: false.
+func (c *Checker) envFileGlob(p string, found func(rel string)) bool {
+	rel := clean(p)
+	dir, base := path.Split(rel)
+	if strings.ContainsAny(dir, "*?[") {
+		return false
 	}
-	for _, line := range strings.Split(data, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || line[0] == '#' || line[0] == ';' {
-			continue
+	if !strings.ContainsAny(base, "*?[") {
+		found(rel)
+		return true
+	}
+	if _, err := path.Match(base, ""); err != nil {
+		return false
+	}
+	c.walk(dir, 1, func(e *wentry) bool {
+		if ok, _ := path.Match(base, e.name); ok && !strings.HasPrefix(e.name, ".") {
+			found(e.rel)
 		}
-		for _, n := range assignedNames(line) {
-			add(n)
+		return false
+	})
+	return true
+}
+
+// isUserUnit reports whether the unit file rel is a user unit: in a
+// systemd/user folder or a home's .config/systemd/user.
+func isUserUnit(rel string) bool {
+	return strings.Contains("/"+rel, "/systemd/user/")
+}
+
+// specifiers returns the paths an EnvironmentFile= path stands for once its
+// specifiers are resolved: %h is every home for a user unit and /root for
+// a system unit, %t every folder of /run/user for a user unit and /run for
+// a system unit, %% a percent sign.
+func (c *Checker) specifiers(p string, user bool) []string {
+	if !strings.Contains(p, "%") {
+		return []string{p}
+	}
+	homes, runs := []string{"/root"}, []string{"/run"}
+	if user {
+		homes, runs = nil, nil
+		for _, h := range c.homeFolders() {
+			homes = append(homes, show(h))
 		}
-		fields := strings.FieldsFunc(line, func(r rune) bool {
-			return r == ' ' || r == '\t' || r == '"' || r == '\'' || r == ';'
+		c.walk("run/user", 1, func(e *wentry) bool {
+			if e.isDir() {
+				runs = append(runs, show(e.rel))
+			}
+			return false
 		})
-		if len(fields) == 0 {
-			continue
-		}
-		key, value, isKey := strings.Cut(fields[0], "=")
-		switch {
-		case fields[0] == "export" || fields[0] == "declare" || fields[0] == "typeset" || fields[0] == "readonly":
-			for _, f := range fields[1:] {
-				if !strings.HasPrefix(f, "-") {
-					n, _, _ := strings.Cut(f, "=")
-					add(n)
-				}
-			}
-		case fields[0] == "setenv" || fields[0] == "set":
-			for _, f := range fields[1:] {
-				if !strings.HasPrefix(f, "-") {
-					add(f)
-					break
-				}
-			}
-		case isKey && strings.TrimSpace(key) == "PassEnvironment":
-			add(value)
-			for _, f := range fields[1:] {
-				add(f)
-			}
-		case isKey && strings.TrimSpace(key) == "EnvironmentFile":
-			f := strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(line, "EnvironmentFile=")), "-")
-			if strings.HasPrefix(f, "/") {
-				envFiles = append(envFiles, f)
-			}
-		}
 	}
-	return names, envFiles
-}
-
-// assignedNames returns every NAME of a NAME= or NAME+= on the line, where
-// NAME is a shell identifier not preceded by an identifier byte or '$'.
-func assignedNames(line string) []string {
-	var out []string
-	for i := 0; i < len(line); {
-		if !identStart(line[i]) || (i > 0 && (ident(line[i-1]) || line[i-1] == '$')) {
-			i++
-			continue
+	out := []string{""}
+	for i := 0; i < len(p); i++ {
+		var alts []string
+		switch {
+		case p[i] != '%' || i+1 >= len(p):
+			alts = []string{p[i : i+1]}
+		case p[i+1] == 'h':
+			alts, i = homes, i+1
+		case p[i+1] == 't':
+			alts, i = runs, i+1
+		default:
+			alts, i = []string{"%"}, i+1
 		}
-		j := i + 1
-		for j < len(line) && ident(line[j]) {
-			j++
+		var next []string
+		for _, o := range out {
+			for _, a := range alts {
+				next = append(next, o+a)
+			}
 		}
-		if j < len(line) && (line[j] == '=' || (line[j] == '+' && j+1 < len(line) && line[j+1] == '=')) {
-			out = append(out, line[i:j])
-		}
-		i = j
+		out = next
 	}
 	return out
 }
-
-func identStart(b byte) bool { return b == '_' || (b|0x20 >= 'a' && b|0x20 <= 'z') }
-
-func ident(b byte) bool { return identStart(b) || (b >= '0' && b <= '9') }
