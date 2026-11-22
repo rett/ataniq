@@ -124,26 +124,47 @@ switch runs it.
     release, not the live one.
   - `reload.list`: one reload command per line, such as
     `systemctl daemon-reload` or `systemctl reload caddy`. These act on what
-    `current` points at and may not use `{release}`. They must (re)start
+    `current` points at, and their arguments may not use `{release}` (a
+    program of the release itself may: `{release}/bin/...`, see below).
+    They must (re)start
     every decision service the release runs (`systemctl restart`, not only
     `reload`): going back to a release first stops the failed release's
     services, then runs the reload list of the release gone back to.
   - `health.cmd`: one or more health commands, one per line, each of which
     exits 0 when its part is healthy: usually the front end (`/healthz` on
     Caddy) and the application's readiness (`/readyz`). Every line must
-    pass. It may not use `{release}` either.
+    pass. Its arguments may not use `{release}` either.
   - `stop.list`: the commands that stop the decision services, such as
     `systemctl stop ataniq-seat`, run when no healthy release is left, and
     for the release a switch goes back from, before the earlier release is
     reloaded (see the failure cases); the static status page stays. No
-    `{release}`.
+    `{release}` in its arguments.
 
   In each list, blank lines and `#` lines are skipped. A list holds at most 64
   commands and a command at most 32 words. A command is its words
   separated by spaces; no shell runs it, so quotes, pipes, redirections, globs
-  and variables are refused. The program is an absolute path, `{release}/...`
-  in a validator, or a bare name looked up in `/usr/sbin:/usr/bin:/sbin:/bin`
-  (never in the caller's `PATH`). Every program the switch runs gets the
+  and variables are refused. The program is one of:
+
+  - `{release}/PATH`, in any of the four lists: a file of the release
+    itself, with an execute bit (`PATH` clean, inside the release), which
+    was verified with it and is read-only since its import. It runs as
+    `/opt/authority-host/releases/<id>/PATH`, that release's own folder.
+  - An absolute path of a protected host program, such as
+    `/usr/bin/systemctl`: a regular file with one link and an execute bit,
+    owned by root and not writable by its group or by others, in folders
+    that are all real folders (not symbolic links: `/usr/bin/systemctl`,
+    not `/bin/systemctl` where `/bin` is a link), owned by root and not
+    writable by group or others, from the root down; it is checked below
+    `--root` and runs as that path below `--root` (the same path on the
+    host).
+  - A bare name looked up in `/usr/sbin:/usr/bin:/sbin:/bin` (never in the
+    caller's `PATH`).
+
+  Any other absolute path (a deployment workspace, a home folder, `/tmp`,
+  a symbolic link, a file another account owns or can write) is refused
+  when the release is verified (`list-invalid`), before anything runs: its
+  bytes are not what was verified, and whoever can write them would choose
+  what runs as root. Every program the switch runs gets the
   environment `PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C` and nothing else,
   the working folder `/`, no standard input, and its own process group, killed
   whole at its time limit.
@@ -304,10 +325,15 @@ ah-switch [--root DIR] [--dry] ack --asked WORDS
   is refused at noaicheck before anything runs. Its SHA-256 is taken
   through the descriptor that was checked and journaled with the
   transaction, and before every run of it (each phase, a resumed one
-  included) it is checked again and hashed again: a program that no
-  longer matches is not run (`noaicheck-changed`), which fails the check.
-  The default, the imported release's own checker, is covered by the
-  release's verification.
+  included) it is checked again and copied from the descriptor that was
+  checked into a private copy (mode 0700, in a new folder of mode 0700 in
+  the state folder, removed after the run), hashed as it is copied and
+  hashed again from the copy; that copy is what runs, so an override
+  replaced meanwhile (while the switch lists the firewall, for example)
+  never runs. A program or copy that no longer matches is not run
+  (`noaicheck-changed`), which fails the check. The default, the imported
+  release's own checker, is a file of the verified, read-only release and
+  runs where it is.
 - `--rollback-to previous` goes back to the release `previous` points at. It
   accepts that release's id too, and refuses any other.
 - `--dry` prints every step and what it would do, runs no program and changes
@@ -511,7 +537,9 @@ command syncs and settles it. No outcome is recorded, and the journal is
 never removed, before the link folder is synced.
 
 `--noaicheck PATH` replaces the release's check in both phases, checked
-again against the SHA-256 its transaction journaled before each run.
+again against the SHA-256 its transaction journaled before each run and
+run from a private copy made before the run (in phase post, before the
+firewall listing).
 
 Before the switch, in step 1, the release `current` points at (the
 fallback) is opened and verified as the switch policy says, and its own
@@ -825,6 +853,7 @@ see its messages. The text of a broken state file is not repeated either.
 | Incoming folder is, contains or lies beneath `releases/` or anything in it | Refused at import (`incoming-overlaps`) before anything is created or removed; the incoming folder stays as it is |
 | A staging folder an earlier import left in `releases/` | Left as it is and named by every `--from`; remove it by hand |
 | Wrong sum, file missing or not listed, path escape, link in the release, release folder a link | Refused at verify; `current` unchanged; an import's copy is removed |
+| A list's program is an absolute path outside the release that is not a protected host program, or `{release}/PATH` that is not an executable file of the release | Refused at verify (`list-invalid`); nothing runs |
 | A release folder or file writable by group or others, set-id, or not root's | Refused at verify |
 | A release folder without the record of its import, or not the tree its import made | Refused at verify (`provenance-missing`, `provenance-mismatch`); as the old release, it is no fallback |
 | Signature missing or bad in signed mode, on a switch or a rollback | Refused at verify |

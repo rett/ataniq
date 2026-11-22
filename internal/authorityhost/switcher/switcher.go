@@ -996,6 +996,9 @@ func (s *Switcher) checkRelease(ctx context.Context, rel *release) error {
 	if rel.lists, err = rel.readLists(manifest.Components == ComponentsStatic); err != nil {
 		return err
 	}
+	if err := s.checkPrograms(rel); err != nil {
+		return err
+	}
 	rel.manifest = manifest
 	s.step(1, "MANIFEST: commit %s, built on %s, %s, package snapshot %s", q(manifest.Commit), q(manifest.BuiltOn), q(manifest.GoVersion), q(manifest.PackageSnapshot))
 	return nil

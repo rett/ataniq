@@ -97,16 +97,25 @@ func hostStops(t *testing.T, root, prog string) {
 
 // releaseIn writes into dir a release whose no-AI check and health command
 // are scripts, with its SHA256SUMS: an incoming folder, imported with --from.
+// Its lists run its own bin/health, a copy of the script health: a program
+// of a release's lists is a file of the release (or a protected host
+// program).
 func releaseIn(t *testing.T, dir, id string, counter int, health string) {
 	t.Helper()
 	commit := strings.SplitN(id, "-", 2)[1]
+	script, err := os.ReadFile(health)
+	if err != nil {
+		t.Fatal(err)
+	}
 	write(t, filepath.Join(dir, "MANIFEST"), "id: "+id+"\ncounter: "+strconv.Itoa(counter)+"\ncommit: "+commit+"\nbuilt_on: dev\ngo_version: go\npackage_snapshot: s\n", 0o644)
 	write(t, filepath.Join(dir, "bin/ah-noaicheck"), "#!/bin/sh\nexit 0\n", 0o755)
 	write(t, filepath.Join(dir, "bin/ah-pkgstep"), "#!/bin/sh\nexit 0\n", 0o755)
-	write(t, filepath.Join(dir, "share/health.cmd"), health+"\n", 0o644)
-	write(t, filepath.Join(dir, "share/reload.list"), health+"\n", 0o644)
-	write(t, filepath.Join(dir, "share/validators.list"), health+"\n", 0o644)
-	write(t, filepath.Join(dir, "share/stop.list"), health+"\n", 0o644)
+	write(t, filepath.Join(dir, "bin/health"), string(script), 0o755)
+	own := "{release}/bin/health"
+	write(t, filepath.Join(dir, "share/health.cmd"), own+"\n", 0o644)
+	write(t, filepath.Join(dir, "share/reload.list"), own+"\n", 0o644)
+	write(t, filepath.Join(dir, "share/validators.list"), own+"\n", 0o644)
+	write(t, filepath.Join(dir, "share/stop.list"), own+"\n", 0o644)
 	var lines []string
 	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {

@@ -70,7 +70,12 @@
   (running programs there only with `--allow-exec`), and
   `--noaicheck PATH` runs another no-AI check only when it is protected
   root-owned code, bound to the transaction by its SHA-256 and checked
-  again before every run. The outcome is written to
+  again before every run, from a private copy made from the checked
+  descriptor and hashed again. A program of a release's lists is a file
+  of the release (`{release}/bin/...`, in any list), a protected
+  root-owned host program such as `/usr/bin/systemctl`, or a bare name in
+  the fixed search path; any other absolute path is refused when the
+  release is verified. The outcome is written to
   `/var/lib/authority-host/deploy.json` as stable failure codes, never a
   program's output. Exit codes are 0 ok, 1 failed, 2 usage and 3
   locked. See `deploy/authority-host/README.md`.

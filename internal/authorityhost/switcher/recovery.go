@@ -34,7 +34,7 @@ func (s *Switcher) readHostStopList() ([][]string, error) {
 		var data []byte
 		data, err = s.readTrustedFile(dir, full, HostStopList, maxSmallFile)
 		if err == nil {
-			cmds, err := ParseCommandList(HostStopList, data, "")
+			cmds, err := ParseCommandList(HostStopList, data, "", false)
 			if err != nil {
 				return nil, err
 			}
