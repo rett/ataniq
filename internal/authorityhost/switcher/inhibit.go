@@ -127,7 +127,7 @@ func journalHealthy(j journal) bool {
 // done, passed its reload, health check and no-AI check again), otherwise kept, with
 // the outcome as its reason.
 func (s *Switcher) endInhibit(t *txn) error {
-	if t.requalifyFailed {
+	if t.j.RequalifyFailed {
 		if err := s.setInhibit(t, fmt.Sprintf("the %s %s ended %s, but after an interruption current did not pass its reload, health check and no-AI check again", t.kind(), t.j.ID, t.j.Result)); err != nil {
 			return err
 		}

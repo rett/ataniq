@@ -698,9 +698,14 @@ only its existence matters to the services.
   check verdict), with `after an interruption in phase done, ... did not
   pass its reload, health check and no-AI check again` in `detail`,
   decisions stay inhibited, and the command exits 1 whatever it was asked:
-  it never reports the decided `ok`. Because the reload list was started,
-  a service may be running, so the host's stop list runs (a failing stop
-  command is added to `detail`).
+  it never reports the decided `ok`. Whatever failed, the release not
+  verifying again included, a service may be running (from the activation
+  before the interruption, from the boot or from the reload), so the
+  host's stop list runs (a failing stop command is added to `detail`).
+  The failure is journaled (`requalify_failed` in `txn.json`) before the
+  outcome is recorded: a settling interrupted after that records the
+  failure again, without qualifying `current` a second time, so a later
+  check that passes never turns it into a success.
   The failure is kept apart from the decided outcome: the outcome in
   `owed.json` carries `requalify_failed: true`, and while it is owed the
   same request run again fails again (exit 1, `decisions stay inhibited`)

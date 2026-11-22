@@ -348,6 +348,96 @@ func TestCrashDoneRunsThePostCheckAgain(t *testing.T) {
 	}
 }
 
+// TestFailedRequalificationSurvivesASecondCrash: a switch killed in phase
+// done (CrashDone) is resumed, its post-activation check fails after the
+// reboot, and that resume is itself killed once the outcome is recorded
+// and owed (CrashRecord), its journal still there. The next resume, whose
+// check would pass now, does not turn the recorded failure into a
+// success: the failed requalification is in the journal, the outcome stays
+// owed with it, decisions stay inhibited and the command exits 1.
+func TestFailedRequalificationSurvivesASecondCrash(t *testing.T) {
+	e := activeOwn(t)
+	e.keepOwed = true
+	e.crashAt(CrashDone, false, rel3)
+	e.runner.failPost = e.relDir(rel3)
+	s := e.switcher()
+	s.crashAt = func(p string) error {
+		if p == CrashRecord {
+			return errCrash
+		}
+		return nil
+	}
+	if code := s.Recover(context.Background(), resumeOnly); code != ExitFailed {
+		t.Fatalf("the crashing resume: exit %d", code)
+	}
+	e.t.Logf("the crashing resume:\n%s", e.out.String())
+	e.out.Reset()
+	if owed := e.owed(); len(owed) != 1 || !owed[0].RequalifyFailed {
+		t.Fatalf("owed after the crash: %+v", owed)
+	}
+	if j, ok := e.journal(); !ok || !j.RequalifyFailed {
+		t.Fatalf("after the crashed resume: journal %+v, %v", j, ok)
+	}
+	if got := e.status(); !strings.Contains(got, "did not pass its reload list, health check and no-AI check again; the next command records that") {
+		t.Errorf("status:\n%s", got)
+	}
+	// The post-activation check passes now.
+	e.runner.failPost = ""
+	e.runner.reset()
+	if code := e.recover(resumeOnly); code != ExitFailed {
+		t.Fatalf("resume: exit %d\n%s", code, e.last)
+	}
+	e.noJournal()
+	if owed := e.owed(); len(owed) != 1 || owed[0].Result != ResultOK || !owed[0].RequalifyFailed {
+		t.Errorf("the recorded failure was replaced: owed %+v", owed)
+	}
+	if _, ok := e.inhibited(); !ok {
+		t.Errorf("decisions are no longer inhibited after a requalification that failed\n%s", e.last)
+	}
+	if rec := e.record(); rec.Check != CheckFailed || !strings.Contains(rec.Detail, "did not pass its reload, health check and no-AI check again") {
+		t.Errorf("record: %+v", rec)
+	}
+	if !strings.Contains(e.last, "decisions stay inhibited") {
+		t.Errorf("output:\n%s", e.last)
+	}
+	// The failure is carried, not qualified away by a second attempt.
+	if n := e.runner.called("reload-units"); n != 0 {
+		t.Errorf("the settling of a recorded failure ran the reload list %d times", n)
+	}
+}
+
+// TestRequalifyUnverifiableStillStops: a switch killed in phase done is
+// resumed after its release no longer verifies. Its services may run from
+// the activation before the interruption (or from the boot), so the
+// host's stop list runs, as when the reload, health or no-AI check fails
+// again, and decisions stay inhibited.
+func TestRequalifyUnverifiableStillStops(t *testing.T) {
+	e := activeOwn(t)
+	e.keepOwed = true
+	e.crashAt(CrashDone, false, rel3)
+	e.write(filepath.Join(e.relDir(rel3), "bin/app"), "not what SHA256SUMS says\n", 0o755)
+	e.runner.reset()
+	if code := e.recover(resumeOnly); code != ExitFailed {
+		t.Fatalf("recover: exit %d\n%s", code, e.last)
+	}
+	e.noJournal()
+	if n := e.runner.called("stop-all"); n != 1 {
+		t.Errorf("the host's stop list ran %d times, want 1; commands: %v", n, e.runner.calls)
+	}
+	if n := e.runner.called("reload-units"); n != 0 {
+		t.Errorf("a release that does not verify was reloaded")
+	}
+	if _, ok := e.inhibited(); !ok {
+		t.Errorf("not inhibited")
+	}
+	if owed := e.owed(); len(owed) != 1 || !owed[0].RequalifyFailed {
+		t.Errorf("owed: %+v", owed)
+	}
+	if rec := e.record(); !strings.Contains(rec.Detail, "the host's stop list ran") {
+		t.Errorf("record detail: %q", rec.Detail)
+	}
+}
+
 // TestRetryLeavesTheOutcomeOwed: the same request run again reports its
 // owed outcome but does not take it back: only the owner's ack does. A
 // caller allowed only the switch form (the deploying user) therefore cannot

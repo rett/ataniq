@@ -47,7 +47,9 @@
   health check and post-activation no-AI check (`--phase post`, the
   firewall and listeners as they are now) of `current` again when it
   finds a healthy transaction not yet settled (a reboot may have come;
-  when any of it fails the host's stop list runs, a failed no-AI check is
+  when any of it fails, the release not verifying again included, the
+  host's stop list runs, the failure is journaled so that an interrupted
+  settling never qualifies it away, a failed no-AI check is
   recorded as the check's verdict, the command and every retry of the
   same request exit 1 and the outcome stays owed with the failure until
   acknowledged); a
