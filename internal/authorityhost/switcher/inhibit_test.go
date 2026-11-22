@@ -78,6 +78,9 @@ func TestDecisionInhibit(t *testing.T) {
 		if code := e.switchTo(rel1); code != ExitFailed {
 			t.Fatalf("exit %d", code)
 		}
+		if want := "decisions stay inhibited (decisions.inhibit): the switch to " + rel1 + " did not end healthy"; !strings.Contains(e.last, want) {
+			t.Errorf("output lacks %q:\n%s", want, e.last)
+		}
 		in, ok := e.inhibited()
 		if !ok || in.Txn != e.record().Txn || !strings.Contains(in.Reason, "ended failed at health") || !strings.Contains(in.Reason, "stopped") {
 			t.Fatalf("inhibit: %+v, %v", in, ok)
