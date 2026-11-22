@@ -630,7 +630,85 @@ process on the AI host of the daemon's user that can append a pin to the gate's
 pin file could deny cards. The owner's passkey asks for user verification at each
 use anyway, so a deny costs one more verification.
 
+A deny is offered when `Card.Deny` allows it, not `Card.MayApprove`: it needs
+no reading and no sign-off, so an owner who sees a dangerous change refuses it
+without first attesting that he reviewed it. Its frame carries `signed_off: []`
+and the owner's reason, which may be empty; the frame's check refuses a deny
+with sign-offs. A deny is never held and does not count as a use.
+
 Leaving a card undecided sends nothing.
+
+## The phone's side
+
+What the seat app does with a decision (G9), proposed:
+
+- The Card page is the only page with a decide form. Approve is offered when
+  `Card.MayApprove` allows it, with one sign-off per flagged path; deny when
+  `Card.Deny` allows it, with a reason field and no sign-offs.
+- Before the phone asks for user verification, the page shows the action the
+  owner chose and the card it is for (its id and project, and what it would
+  do, as the card shows them). One tap asks one fresh assertion for that one
+  action; nothing is submitted by itself.
+- The browser never sends a path or a binding. `POST /api/decide-challenge`
+  carries the action, the reason and the sign-offs as the indexes of the
+  flagged paths. The seat builds the frame from its own copy of the card (read
+  through the seat link, its digest checked), keeps the frame with the session
+  and the challenge id, server-side, and answers the challenge. `POST
+  /api/decide` carries the challenge id and the assertion. Both bodies fit the
+  app's cap on every request (`seatapp.MaxBody`, 8 KiB): an assertion within
+  the caps of `Assertion` is under 6 KiB in base64.
+- The app's `Permissions-Policy` header forbids `publickey-credentials-get`
+  today; G7 allows it to the app's own origin, for the login and the Card
+  page.
+- A cancelled or failed user verification sends nothing and leaves the card as
+  it was; the next tap asks a new challenge, which replaces the old one.
+
+Before the owner submits, the page tells apart: a cancel ("Cancelled. Nothing
+was sent."), a challenge that ran out ("This took too long. Tap again."), and a
+desk it cannot reach ("The desk cannot be reached. Nothing was sent.").
+
+After the owner submits, only a refusal says for certain that this decision
+was not taken. Every other answer to `seat.decide` (`unavailable`,
+`deadline-exceeded`, `door-unavailable`, `journal-reopened`, `failed`), the
+seat's own timeout, and no answer at all (`seatgate.ErrDisconnected`) mean the
+outcome is unknown: the decision may be journaled and on its way to the door,
+or not. Then the seat:
+
+- never sends the decision again, by itself or on a tap, and queues nothing;
+- shows "Decision sent. Outcome unknown." and offers only "Look again";
+- on "Look again", once the gate is back, reads the same card with
+  `owner.show` and shows what it says: decided, with the outcome; held; a
+  decision on its way to the door; an outcome the door left unknown, which is
+  settled at the desk; or pending, and only then may the owner decide again,
+  with a new challenge.
+
+So that reading the card can tell a decision on its way from none, G8 gives
+`ownerwire.ShowResult` a mark for a card whose decision the journal holds and
+the door has not yet taken (planned), on the socket and the gate alike. G9
+tests the lost answer.
+
+A held approve (past the project's limit for the day) comes back pending with
+the held mark and the host's line. The page shows, under the host's line:
+"Held: the project's limit for today is reached. Nothing was applied. Raise
+the limit at the desk, then approve again here or at the desk." A held approve
+uses nothing and is never released by itself; a later approve needs a new tap
+and a new assertion. An expired card cannot be renewed by asking a new
+challenge: issue refuses it.
+
+The words for the codes, proposed; the seat shows no text of the gate's, and a
+code it does not know gets the last line:
+
+| Codes | The phone says |
+| --- | --- |
+| `challenge-stale` | This took too long, or the card changed. Look at the card and tap again. |
+| `binding-mismatch`, `review-changed` | The card changed. Look at it again. |
+| `approval-expired` | The card's time ran out. |
+| `approval-consumed`, `approval-void`, `previous-epoch`, `decision-invalid` | The card cannot be decided now. Look at it again. |
+| `assertion-invalid` | The phone's answer was not accepted. If this repeats, check the seat at the desk. |
+| `key-revoked`, `key-unknown` | This phone's passkey is no longer paired. Pair it again at the desk. (The session ends.) |
+| `kind-refused` | This project does not take decisions from this kind of passkey. |
+| `challenges-full`, `busy`, `rate-limited`, `too-many-refusals` | The desk is busy. Try again in a few minutes. |
+| any other | Something went wrong. Look at the card again. |
 
 ## The record change
 
@@ -781,18 +859,25 @@ and a passkey record that `record.DecodeDecision` and `record.EncodeDecision`
 accept while a record with both blocks, or neither, is refused.
 
 Others: G1 places the function that makes an origin canonical; G6 adds the key
-list's kind, backup flag and counter; G7 builds the seat's side of the login;
-and the task that owns `internal/seatgate` raises the frame cap with
-`frame-large`.
+list's kind, backup flag and counter; G7 builds the seat's side of the login
+and allows `publickey-credentials-get`; G8 also adds the mark of a decision on
+its way to `ownerwire.ShowResult`; and the task that owns `internal/seatgate`
+raises the frame cap with `frame-large`.
 
-G9, the seat app's approve and deny, implements: the decide form on the Card
-page only, offered when the card package's `Card.MayApprove` allows it, with one
-sign-off per flagged path; `navigator.credentials.get` with user verification
-"required" and `allowCredentials` from the session's credential, asked only
-after the owner tapped approve or deny with the sign-offs complete, never
-submitted by itself; the challenge recomputed by the seat link before the phone
-is asked; a deny through the same steps; the daemon's line through `Text`; and
-each code above mapped to fixed words.
+G9, the seat app's approve and deny, implements
+[the phone's side](#the-phones-side): the decide form on the Card page only,
+approve offered by `Card.MayApprove` with one sign-off per flagged path and deny
+by `Card.Deny` with none; `navigator.credentials.get` with user verification
+"required" and `allowCredentials` holding only the session's credential, asked
+only after the owner tapped approve or deny, never submitted by itself; the
+challenge recomputed by the seat link before the phone is asked; the frame kept
+by the seat, with only indexes, the reason and the assertion from the browser;
+the lost answer, the held line and the words for each code. Its tests show,
+each failing before the code: a deny of a flagged card with no sign-off ticked;
+an approve with a sign-off missing, which is not offered; a lost answer, which
+is not sent again and is reconciled by reading the card; a held approve; and a
+challenge that the seat link recomputes differently, which asks nothing of the
+phone.
 
 ## Dogfood
 
