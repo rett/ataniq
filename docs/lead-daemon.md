@@ -248,6 +248,13 @@ tests of that code run with `make test-ownerchannel` (the tagged packages with
 the tag, and again with the tags `ataniq_ownerchannel` and `ataniq_canary` for the
 packages that hold both); `make test` stays untagged and skips them.
 
+`make ownerchannel-build` builds the daemon with the tag, and nothing else, into
+`build/owner/ataniqd` (the folder is ignored by git). It runs `make doctor`
+first and starts nothing. It is the one target that builds a binary with the
+tag: no release, no CI job and no other target uses it or depends on it, and the
+tests in `tests/ownerchannel_tag_test.go` refuse any other recipe that names
+the tag. The binary is for the owner's own trial of the unqualified channel.
+
 ### Starting it
 
 ```text

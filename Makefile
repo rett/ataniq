@@ -1,4 +1,4 @@
-.PHONY: bootstrap doctor test test-canary test-ownerchannel canary-build test-dev test-patched qualification-host-build qualification-leadsandbox-build changelog-fold changelog-check
+.PHONY: bootstrap doctor test test-canary test-ownerchannel ownerchannel-build canary-build test-dev test-patched qualification-host-build qualification-leadsandbox-build changelog-fold changelog-check
 
 # The patched charmbracelet modules in third_party/patched are directory
 # replacements, so ./... does not reach them; they are tested by package name
@@ -41,12 +41,25 @@ test-canary: doctor
 # package that holds a Go file whose build constraint names a tag it sets, found
 # here by the same grep as make test-canary (it reads the same folders and the
 # same line forms), and ./tests/, which holds the checks of both tags. It builds
-# no binary and runs nothing but tests.
+# no binary and runs nothing but tests (make ownerchannel-build builds the
+# daemon).
 test-ownerchannel: doctor
 	@own=$$(grep -rl --include='*.go' --exclude-dir='.?*' --exclude-dir='_*' --exclude-dir=testdata -E '^[[:space:]]*//(go:build|[[:space:]]*\+build)[[:space:]].*ataniq_ownerchannel' . | while IFS= read -r f; do dirname "$$f"; done | LC_ALL=C sort -u); \
 	both=$$(grep -rl --include='*.go' --exclude-dir='.?*' --exclude-dir='_*' --exclude-dir=testdata -E '^[[:space:]]*//(go:build|[[:space:]]*\+build)[[:space:]].*ataniq_(canary|ownerchannel)' . | while IFS= read -r f; do dirname "$$f"; done | LC_ALL=C sort -u); \
 	sh scripts/go-tool.sh test -tags ataniq_ownerchannel $$own ./tests/ && \
 	sh scripts/go-tool.sh test -tags ataniq_ownerchannel,ataniq_canary $$both ./tests/
+
+# The daemon with the owner channel, built with the owner channel's build tag
+# into build/owner/, which git ignores, and nothing else: no console, no holder,
+# no other command. The owner channel is provisional and unqualified, so this
+# is a build for the owner's own trial, never a release's: no release, no CI job
+# and no other target uses it, and none depends on it. It is the one target that
+# builds a binary with that tag; tests/ownerchannel_tag_test.go refuses any
+# other recipe that names it, and any line in this one but the mkdir and the
+# build. Building it runs nothing.
+ownerchannel-build: doctor
+	@mkdir -p build/owner
+	@sh scripts/go-tool.sh build -tags ataniq_ownerchannel -trimpath -o build/owner/ataniqd ./cmd/ataniqd
 
 # The binaries of the attended canary run, built with the canary build tag into
 # build/canary/, which git ignores: the daemon, the holder, the provisioning
