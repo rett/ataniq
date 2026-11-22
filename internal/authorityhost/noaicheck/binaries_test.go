@@ -131,10 +131,17 @@ func TestCheckCredentials(t *testing.T) {
 	}, (*Checker).CheckCredentials)
 }
 
-// A link loop and an unreadable folder in a place the check looks into end
-// the check with an "unreadable" hit, not a hang or a crash.
-func TestLoopsAndUnreadableFolders(t *testing.T) {
-	skipIfRoot(t)
+// The binary, tool and credential checks run together, as in a run.
+func binaryChecks(c *Checker) {
+	c.CheckBinaries()
+	c.CheckTools()
+	c.CheckCredentials()
+}
+
+// A link loop in a place the check looks into ends the check with an
+// "unreadable" hit, not a hang or a crash. A loop fails for every user,
+// root included, so these cases run as any user.
+func TestLinkLoops(t *testing.T) {
 	unr := func(p, why string) Hit { return Hit{Kind: KindUnreadable, Path: p, Detail: why} }
 	runCases(t, []checkCase{
 		{"a loop as an install folder", func(f *fixture) {
@@ -147,17 +154,28 @@ func TestLoopsAndUnreadableFolders(t *testing.T) {
 		}, nil},
 		{"a loop as a home", func(f *fixture) { f.link("home/ring", "ring") },
 			[]Hit{unr("/home/ring", errLoop.Error())}},
+		{"a loop as a bin folder of a profile's PATH", func(f *fixture) {
+			f.file("etc/profile.d/x.sh", "PATH=$PATH:/srv/ring\n")
+			f.link("srv/ring", "ring")
+		}, []Hit{unr("/srv/ring", errLoop.Error())}},
+	}, binaryChecks)
+}
+
+// An unreadable folder in a place the check looks into is an "unreadable"
+// hit. Root reads a folder whatever its mode, so a folder without
+// permissions cannot stand for one when the tests run as root: these
+// cases alone are skipped there.
+func TestUnreadableFolders(t *testing.T) {
+	skipIfRoot(t)
+	unr := func(p, why string) Hit { return Hit{Kind: KindUnreadable, Path: p, Detail: why} }
+	runCases(t, []checkCase{
 		{"an unreadable folder in a home", func(f *fixture) {
 			f.unreadable("home/user/.local/share/mise")
 		}, []Hit{unr("/home/user/.local/share/mise", "permission denied")}},
 		{"an unreadable bin folder", func(f *fixture) {
 			f.unreadable("usr/local/bin")
 		}, []Hit{unr("/usr/local/bin", "permission denied")}},
-	}, func(c *Checker) {
-		c.CheckBinaries()
-		c.CheckTools()
-		c.CheckCredentials()
-	})
+	}, binaryChecks)
 }
 
 // The PATH inventory: the folders the system and home profiles put on

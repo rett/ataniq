@@ -87,14 +87,17 @@ func TestReadFileRefusesNonRegular(t *testing.T) {
 }
 
 // A walk does not follow links, ends on a loop and reports an unreadable
-// folder instead of stopping.
+// folder instead of stopping. Root reads a folder whatever its mode, so
+// run as root the walk is checked without the unreadable folder.
 func TestWalk(t *testing.T) {
-	skipIfRoot(t)
+	root := os.Geteuid() == 0
 	f := newFixture(t)
 	f.file("opt/a/b/c/d/e", "")
 	f.link("opt/loop", ".")
 	f.link("opt/a/up", "../..")
-	f.unreadable("opt/locked")
+	if !root {
+		f.unreadable("opt/locked")
+	}
 	tr, err := openTree(f.root)
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +113,10 @@ func TestWalk(t *testing.T) {
 	if !deep {
 		t.Error("a walk stopped by its depth did not say so")
 	}
-	want := map[string]bool{"opt/a/b/c/d": true, "opt/loop": true, "opt/a/up": true, "opt/locked": true}
+	want := map[string]bool{"opt/a/b/c/d": true, "opt/loop": true, "opt/a/up": true}
+	if !root {
+		want["opt/locked"] = true
+	}
 	for _, s := range seen {
 		if s == "opt/a/b/c/d/e" {
 			t.Error("walked deeper than 4 levels")
@@ -120,7 +126,10 @@ func TestWalk(t *testing.T) {
 	if len(want) != 0 {
 		t.Errorf("not visited: %v (visited %v)", want, seen)
 	}
-	if len(failed) != 1 || failed[0] != "opt/locked" {
+	switch {
+	case root && len(failed) != 0:
+		t.Errorf("failed = %v, want none", failed)
+	case !root && (len(failed) != 1 || failed[0] != "opt/locked"):
 		t.Errorf("failed = %v, want opt/locked", failed)
 	}
 }
