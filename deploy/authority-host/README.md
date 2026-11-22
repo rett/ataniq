@@ -1616,7 +1616,7 @@ before it is used), and `ah-release baseline` makes a filled copy of this
 tree from the four files:
 
 ```
-ah-release baseline --src deploy/authority-host --units FILE --ports FILE --packages FILE --nft FILE [--out DIR] [--stamp TEXT]
+ah-release baseline --src deploy/authority-host --units FILE --ports FILE --packages FILE --nft FILE [--out DIR] [--stamp TEXT] [--require-default-deny]
 ```
 
 The collection, as root where the command needs it (the files are plain text,
@@ -1659,6 +1659,27 @@ number). `nft.digest` is the digest `ah-noaicheck nft-digest nft.txt`
 prints: the same function, so the counters and expiries of a listing do not
 change it.
 
+The digest pins the ruleset as it is: it proves later that the rules did not
+change, not that they were right. The firewall is the owner's, so `baseline`
+enrolls any listing, but it reads the one it hashes for a default deny: for
+each of the hooks `input`, `output` and `forward`, a base chain of that hook
+(a chain whose `type ... hook HOOK ...; policy drop;` line stands in it) with
+`policy drop`, in a table that is not `dormant`, of family `inet` or of both
+`ip` and `ip6`, so that IPv4 and IPv6 are both covered. For each hook without
+one it prints, before its result line,
+
+```
+WARNING: no-default-deny HOOK: the enrolled nft ruleset has no base chain of hook HOOK with policy drop for IPv4 and IPv6; nft.digest pins it as it is
+```
+
+and writes the same words, as a `# ` comment, into the header of
+`share/nft.digest`, so that whoever reads the release later sees that its
+digest was enrolled over a ruleset without that policy. A listing it cannot
+read in that shape counts as having no default deny: the warning may be one
+too many, never one too few. `--require-default-deny` turns any of these
+into a refusal (`FAIL: no-default-deny ...`, exit 1, after the warnings) and
+writes nothing; use it once the host's rules are final.
+
 The result is a new folder, `--out` (it must not exist, and may not be or lie
 in `--src`; it is made beside its place and renamed into it) or, without
 `--out`, a new folder of the temporary folder; it holds the `etc/` and
@@ -1668,8 +1689,8 @@ with a header that says what it was taken from (the check's `HIT unit` lines,
 `ss -H -ltn`, `pacman -Qq`, `nft list ruleset`) and, with `--stamp TEXT` (1 to
 128 bytes of letters, digits, spaces and `._:+-`, a date for instance), when;
 the headers hold no host name and no time of the builder's own, so the same
-inputs make the same bytes. Exit status: 0 ok (`filled baseline in <folder>`),
-1 refused (`FAIL: <code> <fixed reason>` with the input's name, and for a bad
+inputs make the same bytes. Exit status: 0 ok (`filled baseline in <folder>`,
+after any `WARNING` line), 1 refused (`FAIL: <code> <fixed reason>` with the input's name, and for a bad
 line its number, never its text), 2 usage. A built release is then checked
 with `ah-release check --require-policy` where the no-AI check is meant to
 pass.

@@ -418,8 +418,10 @@ func TestBuildWritesAStaticPackageStep(t *testing.T) {
 }
 
 // TestStaticPackageStepRuns runs the script: it checks its arguments as the
-// switch gives them (the --from may be empty on a first switch), prints one
-// line, changes nothing and gives the same answer twice.
+// switch gives them (the --from may be empty on a first switch), succeeds
+// only on a first switch or an unchanged snapshot, refuses a changed one
+// (exit 1, a line on stderr), changes nothing and gives the same answer
+// twice.
 func TestStaticPackageStepRuns(t *testing.T) {
 	o := testOptions(t, staticSrc(t))
 	id, _, err := Build(o)
@@ -429,10 +431,16 @@ func TestStaticPackageStepRuns(t *testing.T) {
 	p := filepath.Join(o.Out, id, "bin", PackageStepName)
 	before := listing(t, o.Out)
 	for i := 0; i < 2; i++ {
-		for _, from := range []string{"", "2026-11-01"} {
+		for _, from := range []string{"", "2026-11-21"} {
 			code, out, errOut := runStep(t, p, "--release", filepath.Join(o.Out, id), "--from", from, "--to", "2026-11-21")
 			if code != 0 || out != "ah-pkgstep: static release, no package change\n" || errOut != "" {
-				t.Errorf("exit %d, %q, %q", code, out, errOut)
+				t.Errorf("from %q: exit %d, %q, %q", from, code, out, errOut)
+			}
+		}
+		for _, from := range []string{"2026-11-01", "2026-11-21x"} {
+			code, out, errOut := runStep(t, p, "--release", filepath.Join(o.Out, id), "--from", from, "--to", "2026-11-21")
+			if code != 1 || out != "" || errOut != "ah-pkgstep: refused: a static release changes no package, and its package snapshot is not the host's (build it with the host's --package-snapshot)\n" {
+				t.Errorf("from %q: exit %d, %q, %q", from, code, out, errOut)
 			}
 		}
 	}

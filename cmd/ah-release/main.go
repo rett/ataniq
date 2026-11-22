@@ -4,7 +4,7 @@
 //
 //	ah-release build --out DIR --counter N --commit SHA --go-version V --built-on CLASS --package-snapshot S --bin FILE... --src deploy/authority-host [--components static]
 //	ah-release check [--no-noaicheck] [--root DIR] [--require-policy] DIR/<id>
-//	ah-release baseline --src DIR --units FILE --ports FILE --packages FILE --nft FILE [--out DIR] [--stamp TEXT]
+//	ah-release baseline --src DIR --units FILE --ports FILE --packages FILE --nft FILE [--out DIR] [--stamp TEXT] [--require-default-deny]
 //
 // Exit codes: 0 ok, 1 refused or check failed (FAIL lines), 2 usage.
 package main
@@ -34,7 +34,7 @@ func main() {
 
 const usage = `usage: ah-release build --out DIR --counter N --commit SHA --go-version V --built-on CLASS --package-snapshot S --bin FILE... --src DIR [--components static]
        ah-release check [--no-noaicheck] [--root DIR] [--require-policy] DIR/ID
-       ah-release baseline --src DIR --units FILE --ports FILE --packages FILE --nft FILE [--out DIR] [--stamp TEXT]
+       ah-release baseline --src DIR --units FILE --ports FILE --packages FILE --nft FILE [--out DIR] [--stamp TEXT] [--require-default-deny]
 `
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -174,6 +174,7 @@ func baseline(args []string, stdout, stderr io.Writer, bad func(string) int) int
 	nft := fs.String("nft", "", "the output of nft list ruleset")
 	out := fs.String("out", "", "the folder made (default: a new folder of the temporary folder)")
 	stamp := fs.String("stamp", "", "a text, a date, the headers of the filled files carry")
+	strict := fs.Bool("require-default-deny", false, "refuse an nft listing without a policy drop base chain of hook input, output and forward")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Fprint(stdout, usage)
@@ -184,10 +185,15 @@ func baseline(args []string, stdout, stderr io.Writer, bad func(string) int) int
 	if fs.NArg() > 0 {
 		return bad("baseline takes no argument, only flags")
 	}
-	dir, err := release.Baseline(release.BaselineOptions{
+	res, err := release.Baseline(release.BaselineOptions{
 		Src: *src, Units: *units, Ports: *ports, Packages: *packages, NFT: *nft,
-		Out: *out, Stamp: *stamp,
+		Out: *out, Stamp: *stamp, RequireDefaultDeny: *strict,
 	})
+	// A ruleset without a default deny is enrolled, loudly, unless
+	// --require-default-deny refuses it; the same words are in nft.digest.
+	for _, hook := range res.MissingDefaultDeny {
+		fmt.Fprintln(stdout, release.DefaultDenyWarning(hook))
+	}
 	if err != nil {
 		var r *release.Refusal
 		if !errors.As(err, &r) {
@@ -200,6 +206,6 @@ func baseline(args []string, stdout, stderr io.Writer, bad func(string) int) int
 		fmt.Fprintln(stdout, r.Finding)
 		return exitFailed
 	}
-	fmt.Fprintf(stdout, "filled baseline in %s\n", switcher.QuoteField(dir))
+	fmt.Fprintf(stdout, "filled baseline in %s\n", switcher.QuoteField(res.Dir))
 	return exitOK
 }

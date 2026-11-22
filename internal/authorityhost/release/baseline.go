@@ -36,6 +36,21 @@ type BaselineOptions struct {
 	Out string
 	// Stamp is a text (a date) the headers of the filled files carry.
 	Stamp string
+	// RequireDefaultDeny refuses a listing that does not deny each hook of
+	// defaultDenyHooks by default (see missingDefaultDeny); without it such
+	// a listing is enrolled, with a warning.
+	RequireDefaultDeny bool
+}
+
+// BaselineResult is what Baseline made.
+type BaselineResult struct {
+	// Dir is the folder made; empty when Baseline refused.
+	Dir string
+	// MissingDefaultDeny is each hook ("input", "output", "forward") the
+	// nft listing does not deny by default, in that order. Baseline writes
+	// a DefaultDenyWarning line for each into the header of nft.digest; it
+	// is set as well when RequireDefaultDeny refused the listing.
+	MissingDefaultDeny []string
 }
 
 // stampPattern is what a stamp may hold: it is written into a comment.
@@ -74,18 +89,37 @@ const (
 // a host name. Nothing is written into Src, and an output folder that exists
 // already, or lies in Src, is refused; the folder is made beside its place
 // and renamed into it, so a failed run leaves nothing.
-func Baseline(o BaselineOptions) (string, error) {
+//
+// The firewall listing is enrolled as it is, but each hook it does not deny
+// by default is reported in the result and in the header of nft.digest, so
+// that a later reader sees that the digest pins a ruleset without that
+// policy; with RequireDefaultDeny such a listing is refused instead.
+func Baseline(o BaselineOptions) (BaselineResult, error) {
 	if o.Src == "" || o.Units == "" || o.Ports == "" || o.Packages == "" || o.NFT == "" {
-		return "", refuse(true, CodeBaselineArgs, "")
+		return BaselineResult{}, refuse(true, CodeBaselineArgs, "")
 	}
 	if o.Stamp != "" && !stampPattern.MatchString(o.Stamp) {
-		return "", refuse(true, CodeStamp, "")
+		return BaselineResult{}, refuse(true, CodeStamp, "")
 	}
-	texts, err := baselineTexts(o)
+	texts, missing, err := baselineTexts(o)
 	if err != nil {
-		return "", err
+		return BaselineResult{}, err
 	}
+	res := BaselineResult{MissingDefaultDeny: missing}
+	if o.RequireDefaultDeny && len(missing) > 0 {
+		return res, refuse(false, CodeNoDefaultDeny, "")
+	}
+	dir, err := writeBaseline(o, texts)
+	if err != nil {
+		return res, err
+	}
+	res.Dir = dir
+	return res, nil
+}
 
+// writeBaseline writes the copy of the source with texts in place of its
+// files and returns the folder made.
+func writeBaseline(o BaselineOptions, texts map[string]string) (string, error) {
 	items, srcRoot, _, _, err := sourceItems(o.Src)
 	if srcRoot != nil {
 		defer srcRoot.Close()
@@ -211,8 +245,9 @@ func resolve(p string) (string, error) {
 }
 
 // baselineTexts reads the four inputs and returns the text of each file of
-// share/ that is made from them, by its path in the release.
-func baselineTexts(o BaselineOptions) (map[string]string, error) {
+// share/ that is made from them, by its path in the release, and the hooks
+// the firewall listing does not deny by default.
+func baselineTexts(o BaselineOptions) (map[string]string, []string, error) {
 	stamp := ""
 	if o.Stamp != "" {
 		stamp = " (" + o.Stamp + ")"
@@ -220,26 +255,26 @@ func baselineTexts(o BaselineOptions) (map[string]string, error) {
 
 	unitData, err := readInput(o.Units, "units")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	units, err := entries("units", unitData, func(line string) (string, bool) {
 		return line, baselineUnit.MatchString(line)
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sort.Strings(units)
 
 	portData, err := readInput(o.Ports, "ports")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	portLines, err := entries("ports", portData, func(line string) (string, bool) {
 		p, err := strconv.Atoi(line)
 		return line, err == nil && p >= 1 && p <= 65535 && line == strconv.Itoa(p)
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sort.Slice(portLines, func(i, j int) bool {
 		a, _ := strconv.Atoi(portLines[i])
@@ -249,24 +284,29 @@ func baselineTexts(o BaselineOptions) (map[string]string, error) {
 
 	pkgData, err := readInput(o.Packages, "packages")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	packages, err := entries("packages", pkgData, func(line string) (string, bool) {
 		return line, packageName.MatchString(line)
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sort.Strings(packages)
 
 	nftData, err := readInput(o.NFT, "nft")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(noaicheck.NormaliseNFT(nftData)) == 0 {
-		return nil, refuse(false, CodeInputEmpty, "nft")
+		return nil, nil, refuse(false, CodeInputEmpty, "nft")
 	}
 	digest := noaicheck.NFTDigest(nftData)
+	missing := missingDefaultDeny(nftData)
+	warnings := ""
+	for _, hook := range missing {
+		warnings += "#\n# " + DefaultDenyWarning(hook) + "\n"
+	}
 
 	texts := map[string]string{
 		shareUnits: "# The allowlist of enabled systemd units, read by ah-noaicheck (see\n" +
@@ -288,7 +328,7 @@ func baselineTexts(o BaselineOptions) (map[string]string, error) {
 		shareNFT: "# The SHA-256 of the normalised firewall listing, read by ah-noaicheck (see\n" +
 			"# ../README.md), the digest \"ah-noaicheck nft-digest FILE\" prints.\n#\n" +
 			"# Filled by \"ah-release baseline\" from the output of \"nft list ruleset\" on the\n" +
-			"# host" + stamp + ".\n" + digest + "\n",
+			"# host" + stamp + ".\n" + warnings + digest + "\n",
 	}
 
 	// What is written is what the no-AI check reads back.
@@ -305,10 +345,10 @@ func baselineTexts(o BaselineOptions) (map[string]string, error) {
 		},
 	} {
 		if err := parse(texts[dest]); err != nil {
-			return nil, ioRefusal(fmt.Errorf("baseline %s: %w", dest, err))
+			return nil, nil, ioRefusal(fmt.Errorf("baseline %s: %w", dest, err))
 		}
 	}
-	return texts, nil
+	return texts, missing, nil
 }
 
 // readInput reads the input file path, which must be a regular file of at
