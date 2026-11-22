@@ -37,5 +37,10 @@
   regex for sudo 1.9.10 or newer) and checked with `sudo -l -U`:
   `inhibit-clear`, `ack` and `recover` run only from the owner's own root
   session, and a broader rule for the same account defeats that.
+  `DEPLOY.md` has root copy the bootstrap script and the switch binary
+  into a new root-only folder, compare their hashes with those typed from the
+  build host, and run only those copies (even for `--dry`); the README's
+  baseline collection does the same for the release whose checker it runs
+  before any switch has verified a release.
   `deploy/authority-host/DEPLOY.md` gives the first-deploy sequence, the
   rollback and what to do when a step fails.

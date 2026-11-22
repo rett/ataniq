@@ -505,6 +505,7 @@ func testAuthorityHostDeployDoc(t *testing.T) {
 	if ack, back := strings.Index(rollback, "ah-switch ack --asked"), strings.Index(rollback, "--rollback-to previous"); ack < 0 || back < 0 || ack > back {
 		t.Error("DEPLOY.md step 6 does not acknowledge the outcome before the rollback")
 	}
+	t.Run("bootstrap copies are root's own", func(t *testing.T) { testAuthorityHostRootCopies(t, section) })
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.HasSuffix(strings.TrimSpace(line), "NOPASSWD: /usr/local/sbin/ah-switch") {
 			t.Errorf("DEPLOY.md grants the whole switch program: %s", line)
@@ -521,5 +522,47 @@ func testAuthorityHostDeployDoc(t *testing.T) {
 		if strings.Contains(line, "AUTHORITY_HOST_SSH=") && !strings.Contains(line, "USER@HOST") {
 			t.Errorf("DEPLOY.md sets the host variable to a value: %s", line)
 		}
+	}
+}
+
+// testAuthorityHostRootCopies checks that the manual never has root read,
+// judge or run a file of the deploying user's incoming folder in place: the
+// copies go into a new root-only folder first, their hashes are compared with
+// the ones typed from the build host, and only the copies run, even for
+// --dry. The baseline procedure does the same for the release's checker.
+func testAuthorityHostRootCopies(t *testing.T, section func(from, to string) string) {
+	step1 := section("### 1.", "### 2.")
+	if !strings.Contains(step1, "sha256sum build/authority-host/ah-switch deploy/authority-host/bootstrap/host-bootstrap.sh") {
+		t.Error("DEPLOY.md step 1 does not record a hash of the bootstrap script as well as of the switch")
+	}
+	step3 := section("### 3.", "### 4.")
+	mk := strings.Index(step3, "mkdir -m 0700 /root/ah-bootstrap")
+	cp := strings.Index(step3, "cp /home/DEPLOYUSER/incoming/host-bootstrap.sh")
+	sum := strings.Index(step3, "sha256sum /root/ah-bootstrap/host-bootstrap.sh /root/ah-bootstrap/ah-switch")
+	dry := strings.Index(step3, "sh /root/ah-bootstrap/host-bootstrap.sh --dry")
+	if mk < 0 || cp < mk || sum < cp || dry < sum {
+		t.Errorf("DEPLOY.md step 3 does not copy into a new root-only folder, hash the copies, then run them (positions %d %d %d %d)", mk, cp, sum, dry)
+	}
+	for _, bad := range []string{"read the script, copy both files", "sh /root/host-bootstrap.sh", "--switch-bin /root/ah-switch"} {
+		if strings.Contains(step3, bad) {
+			t.Errorf("DEPLOY.md step 3 still has %q", bad)
+		}
+	}
+	readme, err := os.ReadFile(filepath.Join(root(t), "deploy/authority-host/README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rf := ahFlat(string(readme))
+	i := strings.Index(rf, "### Filling the allowlists")
+	j := strings.Index(rf, "### The source tree of the first release")
+	if i < 0 || j < i {
+		t.Fatal("README.md lacks the section Filling the allowlists")
+	}
+	fill := rf[i:j]
+	hash := strings.Index(fill, "sha256sum RELEASE/SHA256SUMS")
+	verify := strings.Index(fill, "sha256sum -c SHA256SUMS")
+	run := strings.Index(fill, "sudo RELEASE/bin/ah-noaicheck")
+	if !strings.Contains(fill, "mkdir -m 0700 /root/ah-baseline") || hash < 0 || verify < hash || run < verify {
+		t.Errorf("README.md baseline does not verify a root-owned copy of the release before running its checker (positions %d %d %d)", hash, verify, run)
 	}
 }

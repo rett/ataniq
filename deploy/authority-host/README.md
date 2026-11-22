@@ -1665,7 +1665,17 @@ copied to the build host by any way the owner trusts):
   home and runtime folder the check reads, so it can miss a unit the check
   reports and name one it never sees). Run the check once, with the
   allowlists still empty, from the release built from the unfilled tree, and
-  take the `HIT unit` names:
+  take the `HIT unit` names. No switch has imported and verified that
+  release yet, so RELEASE is a root-owned copy you verify first, never the
+  folder the deploying user copied in: as root, copy the release folder
+  into a new folder only root can write (`mkdir -m 0700 /root/ah-baseline`,
+  `cp -R INCOMING/ID /root/ah-baseline/`, so RELEASE is
+  `/root/ah-baseline/ID`), compare `sha256sum RELEASE/SHA256SUMS` with the
+  hash of `SHA256SUMS` you took from the build host by hand, and then, in
+  RELEASE, `sha256sum -c SHA256SUMS` must pass, `find . ! -type d ! -type f`
+  must print nothing, and `find . -type f ! -name SHA256SUMS ! -name
+  SHA256SUMS.sig | wc -l` must equal `wc -l < SHA256SUMS`. Only then run
+  that copy's checker:
 
   ```
   sudo RELEASE/bin/ah-noaicheck --phase pre --require-policy \

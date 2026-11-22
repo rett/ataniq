@@ -41,11 +41,11 @@ mkdir -p build/authority-host
 CGO_ENABLED=0 sh scripts/go-tool.sh build -trimpath -o build/authority-host/ah-switch ./cmd/ah-switch
 CGO_ENABLED=0 sh scripts/go-tool.sh build -trimpath -o build/authority-host/ah-noaicheck ./cmd/ah-noaicheck
 ldd build/authority-host/ah-switch      # "not a dynamic executable"
-sha256sum build/authority-host/ah-switch
+sha256sum build/authority-host/ah-switch deploy/authority-host/bootstrap/host-bootstrap.sh
 ```
 
-Keep the `sha256sum` line: you type that hash on the host in step 3. Do not copy
-it from the host.
+Keep the two `sha256sum` lines (the switch binary and the bootstrap script): you
+type those hashes on the host in step 3. Do not copy them from the host.
 
 ### 2. Build the release
 
@@ -73,7 +73,9 @@ If the release is to pass the no-AI check under `--require-policy`, fill the
 allowlists of the source tree from the host's baseline first, with
 `ah-release baseline` (see [Filling the
 allowlists](README.md#filling-the-allowlists)): collect four files on the host
-(`HIT unit` names, `ss -H -ltn` ports, `pacman -Qq`, `nft list ruleset`), run
+(`HIT unit` names, `ss -H -ltn` ports, `pacman -Qq`, `nft list ruleset`; the
+unit names come from running the unfilled release's own checker as root, so
+verify a root-owned copy of that release first, as the README says there), run
 `ah-release baseline --src deploy/authority-host ... --out DIR` and build with
 `--src DIR`. `baseline` enrolls any firewall listing, but it prints a `WARNING:
 no-default-deny HOOK` line (and writes the same words into the header of
@@ -93,14 +95,25 @@ rsync -a -e 'ssh -o BatchMode=yes' deploy/authority-host/bootstrap/host-bootstra
   build/authority-host/ah-switch "$AUTHORITY_HOST_SSH":incoming/
 ```
 
-Then, on the host, as root: read the script, copy both files to a folder only
-root can write (for example `/root`) and run them from there, because the
-incoming folder belongs to the deploying user, who could change a file in it
-after you read it.
+Then, on the host, as root, copy both files into a new folder only root can
+write, and judge and run only those copies. The incoming folder belongs to the
+deploying user, who can change a file in it at any moment, so nothing in it is
+read, hashed or run in place:
 
 ```
-sh /root/host-bootstrap.sh --dry   --switch-bin /root/ah-switch --switch-sha256 HASH_FROM_STEP_1
-sh /root/host-bootstrap.sh --apply --switch-bin /root/ah-switch --switch-sha256 HASH_FROM_STEP_1
+mkdir -m 0700 /root/ah-bootstrap
+cp /home/DEPLOYUSER/incoming/host-bootstrap.sh /home/DEPLOYUSER/incoming/ah-switch /root/ah-bootstrap/
+sha256sum /root/ah-bootstrap/host-bootstrap.sh /root/ah-bootstrap/ah-switch
+```
+
+Compare the two hashes with the lines you kept in step 1, typed by hand: they
+must be equal, and then the copies are the files you built. Read
+`/root/ah-bootstrap/host-bootstrap.sh` (the copy, not the incoming file). From
+here on run only the copies, even for `--dry`:
+
+```
+sh /root/ah-bootstrap/host-bootstrap.sh --dry   --switch-bin /root/ah-bootstrap/ah-switch --switch-sha256 HASH_FROM_STEP_1
+sh /root/ah-bootstrap/host-bootstrap.sh --apply --switch-bin /root/ah-bootstrap/ah-switch --switch-sha256 HASH_FROM_STEP_1
 ```
 
 `--dry` is the default and changes nothing; it prints every step and checks the
