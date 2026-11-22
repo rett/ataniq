@@ -182,6 +182,44 @@
 // of the SHA-256 of its id, in hexadecimal. At most [MaxKeys] credentials are
 // held, revoked ones included.
 //
+// Two checks keep the chain honest beyond the open. While the list is open the
+// file is read again and its whole chain checked before every append, and by
+// [KeyFile.Keys] when the file's size, times or inode (or the head's) are not
+// what they were when last checked; a list that fails is marked damaged and
+// refuses every call with [ErrDamaged], so damage in place of the same length
+// is found and a record is never appended to a damaged chain. And a second
+// small file beside the list, keys.head ([KeysHeadFileName]), keeps the head of
+// the chain, the number of records and the digest of the last, written after
+// each record is on the disk (a temporary name, synced, renamed over, the folder
+// synced) and held to the list's own trust checks. At open a file with fewer
+// records than the head, or whose digest at the head's count differs, is
+// damaged ("suffix lost"): records lost from the end, a revocation among them,
+// are found and no key is made good again by it. A file ahead of the head by
+// records that chain from it is a crash between the two writes (one record, or
+// the several of one revocation of many credentials): it is accepted and the
+// head is made right. A head missing for a list that has records is damage; for
+// a list with none it is made.
+//
+// What remains, for the owner to know: whoever can write both files, the user
+// or root, can rewrite them consistently (the digests are not a signature, and
+// the head is a file in the same folder); the checks find damage and loss, not
+// a forger who holds the folder. The fix in design is the one the list's folder
+// mode already points to, to make both files root's and read-only to the daemon.
+//
+// A list that fails a check is left as it is. A torn last line (a crash in the
+// middle of an append, or a disk that lost its tail) makes the file damaged for
+// good until the owner repairs it by hand, as follows: stop the daemon; keep a
+// copy of keys.log and keys.head; read keys.head, whose second-to-last field
+// is the number of records the list had when it last wrote the head, and count
+// the whole lines of keys.log after its header; if the torn line is a partial
+// line after as many whole records as the head says (or one more, which a crash
+// between the append and the head would make), remove that partial line only,
+// and start the daemon, which then repairs the head if it is one behind; if the
+// file has fewer whole records than the head says, records were lost and the
+// list must not be trusted: look at the copy, and put back the last good copy
+// of both files, or start a new list and pair the phones again. Never edit
+// keys.head to make a list open.
+//
 // The package is built for Linux only, like the dispatch journal: both rely
 // on the same file locks, and one process may hold both stores.
 package ownerjournal

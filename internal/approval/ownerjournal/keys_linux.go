@@ -38,10 +38,25 @@ import (
 //
 // The digests find damage: a changed, missing, reordered or half-written
 // record. They are not a signature: whoever can write the file can write
-// digests that hold, and records lost from the end of the file leave a
-// shorter list that still holds, like the journal's. What keeps the file from
-// being written is the folder's mode, and in the design an owner who accepts
-// one privileged step makes it root's and read-only to the daemon.
+// digests that hold. Two things beside them keep the chain honest. While the
+// list is open it is read again and checked whole before every append, and by
+// Keys when the file's size, times or inode are not what they were when it was
+// last checked, so damage in place, of the same length, is found and the list
+// is marked damaged and refuses everything. And a second small file in the
+// same folder, keys.head ([KeysHeadFileName]), keeps the head of the chain:
+// the number of records and the digest of the last, written crash-consistently
+// (a temporary name, synced, renamed over, the folder synced) after each
+// record is appended and synced. At open a file with fewer records than the
+// head, or whose digest at the head's count is not the head's, is damaged
+// ("suffix lost"), so records lost from the end, a revocation among them, are
+// found. A file ahead of the head by records that chain from it is the crash
+// between the two writes (one record, or the several of one revocation of many
+// credentials): it is accepted and the head is made right. The head has the
+// trust checks of the list. What remains: whoever can write both files can
+// write both consistently, and a head that is lost is not made again for a
+// list with records. What keeps the files from being written is the folder's
+// mode, and in the design an owner who accepts one privileged step makes it
+// root's and read-only to the daemon.
 
 // The errors of the key list that are not those of the journal's store, found
 // with errors.Is. [ErrLocked], [ErrNotPrivate], [ErrDamaged], [ErrClosed] and
@@ -74,6 +89,14 @@ const (
 	maxPublicKeyLen    = 512
 
 	keysHeader = "ataniq-ownerkeys 1"
+	// keysHeadHeader starts the line of the head file.
+	keysHeadHeader = "ataniq-ownerkeys-head 1"
+	// maxKeysHeadBytes is the most the head file holds.
+	maxKeysHeadBytes = 256
+	// KeysHeadFileName is the name of the head file the list keeps beside its
+	// own, when the list is KeysFileName: the list's name without ".log"
+	// and ".head". Another name for the list gives its name and ".head".
+	KeysHeadFileName = "keys.head"
 	// DisplayIDLength is the length of a display id.
 	DisplayIDLength = 16
 	keysNewSuffix   = ".new"
@@ -162,9 +185,32 @@ type KeyFile struct {
 	// [ErrUncertain] until the file is opened again.
 	broken bool
 
+	// damaged is set when a check found the file or the head not what the list
+	// holds; every later call is refused with [ErrDamaged].
+	damaged error
+
 	size int64
 	prev [sha256.Size]byte
 	list keyList
+	// digests are the digests of the chain as the file had them at open; they
+	// are for the check of the head, and are not kept up.
+	digests [][sha256.Size]byte
+	// stamp and headStamp are what the stat of the list and of the head
+	// showed when each was last checked.
+	fstamp, hstamp fileStamp
+}
+
+// fileStamp is what a file's stat shows that a change in place moves: its
+// size, its modification and status-change times, and its inode.
+type fileStamp struct {
+	size       int64
+	mtime, ctm int64
+	dev, ino   uint64
+}
+
+func stampOf(info os.FileInfo) fileStamp {
+	st := info.Sys().(*syscall.Stat_t)
+	return fileStamp{size: info.Size(), mtime: st.Mtim.Nano(), ctm: st.Ctim.Nano(), dev: uint64(st.Dev), ino: st.Ino}
 }
 
 // keyList is what the records make: the credentials, and how many records and
@@ -238,6 +284,9 @@ func OpenKeys(path string) (_ *KeyFile, err error) {
 		return nil, err
 	}
 	if err = k.replay(); err != nil {
+		return nil, err
+	}
+	if err = k.checkHeadAtOpen(); err != nil {
 		return nil, err
 	}
 	return k, nil
@@ -407,53 +456,81 @@ func keysDamaged(format string, a ...any) error {
 // not name and anything after the object.
 var keyReader = record.Reader{MaxDepth: 2, Noun: "record"}
 
-// replay reads the whole file, checks each record against the digest chain and
-// the rules of the list, and makes the list.
-func (k *KeyFile) replay() error {
-	info, err := k.file.Stat()
-	if err != nil {
-		return err
-	}
-	if info.Size() > maxKeysFileBytes {
-		return keysDamaged("the file is larger than %d bytes", maxKeysFileBytes)
-	}
-	data, err := io.ReadAll(io.NewSectionReader(k.file, 0, info.Size()))
-	if err != nil {
-		return err
-	}
-	if int64(len(data)) != info.Size() {
-		return keysDamaged("the file changed while it was read")
+// parseKeys checks data, the whole file, against the digest chain and the rules
+// of the list, and returns the list it makes and the digests of the chain: the
+// first is that of the header, and digest i is that of the line after i
+// records.
+func parseKeys(data []byte) (keyList, [][sha256.Size]byte, error) {
+	if len(data) > maxKeysFileBytes {
+		return keyList{}, nil, keysDamaged("the file is larger than %d bytes", maxKeysFileBytes)
 	}
 	if len(data) == 0 || data[len(data)-1] != '\n' {
-		return keysDamaged("the file does not end with a whole line")
+		return keyList{}, nil, keysDamaged("the file does not end with a whole line")
 	}
 	lines := bytes.Split(data[:len(data)-1], []byte{'\n'})
 	if string(lines[0]) != keysHeader {
-		return keysDamaged("the file is not a list of keys of this version")
+		return keyList{}, nil, keysDamaged("the file is not a list of keys of this version")
 	}
-	k.prev = sha256.Sum256(lines[0])
-	k.list = keyList{}
+	var list keyList
+	prev := sha256.Sum256(lines[0])
+	digests := [][sha256.Size]byte{prev}
 	for i, line := range lines[1:] {
 		seq := int64(i + 1)
 		sum, rec, ok := bytes.Cut(line, []byte{' '})
 		if !ok || len(sum) != 2*sha256.Size {
-			return keysDamaged("record %d has no digest", seq)
+			return keyList{}, nil, keysDamaged("record %d has no digest", seq)
 		}
-		want := keySum(k.prev, rec)
+		want := keySum(prev, rec)
 		if !bytes.Equal(sum, []byte(hex.EncodeToString(want[:]))) {
-			return keysDamaged("record %d does not follow the one before it", seq)
+			return keyList{}, nil, keysDamaged("record %d does not follow the one before it", seq)
 		}
 		var r keyRecord
 		if err := keyReader.Unmarshal(rec, "record", &r); err != nil {
-			return keysDamaged("record %d is not well formed", seq)
+			return keyList{}, nil, keysDamaged("record %d is not well formed", seq)
 		}
-		if err := k.list.apply(&r, seq); err != nil {
-			return err
+		if err := list.apply(&r, seq); err != nil {
+			return keyList{}, nil, err
 		}
-		k.prev = want
-		k.list.records++
+		prev = want
+		list.records++
+		digests = append(digests, prev)
 	}
-	k.size = info.Size()
+	return list, digests, nil
+}
+
+// readKeys reads the whole file from the descriptor that was locked, and
+// returns what it holds with the stat it was read under.
+func (k *KeyFile) readKeys() (keyList, [][sha256.Size]byte, fileStamp, error) {
+	info, err := k.file.Stat()
+	if err != nil {
+		return keyList{}, nil, fileStamp{}, err
+	}
+	if info.Size() > maxKeysFileBytes {
+		return keyList{}, nil, fileStamp{}, keysDamaged("the file is larger than %d bytes", maxKeysFileBytes)
+	}
+	data, err := io.ReadAll(io.NewSectionReader(k.file, 0, info.Size()))
+	if err != nil {
+		return keyList{}, nil, fileStamp{}, err
+	}
+	if int64(len(data)) != info.Size() {
+		return keyList{}, nil, fileStamp{}, keysDamaged("the file changed while it was read")
+	}
+	list, digests, err := parseKeys(data)
+	if err != nil {
+		return keyList{}, nil, fileStamp{}, err
+	}
+	return list, digests, stampOf(info), nil
+}
+
+// replay reads the whole file, checks each record against the digest chain and
+// the rules of the list, and makes the list.
+func (k *KeyFile) replay() error {
+	list, digests, stamp, err := k.readKeys()
+	if err != nil {
+		return err
+	}
+	k.list, k.prev, k.size, k.fstamp = list, digests[len(digests)-1], stamp.size, stamp
+	k.digests = digests
 	return nil
 }
 
@@ -564,17 +641,118 @@ func (k *KeyFile) usable() error {
 		return ErrClosed
 	case k.broken:
 		return ErrUncertain
+	case k.damaged != nil:
+		return k.damaged
 	}
 	return k.checkPath()
 }
 
+// damage marks the list damaged, for good, and returns the error that says so.
+func (k *KeyFile) damage(err error) error {
+	k.damaged = err
+	return err
+}
+
+// changed reports whether the list's file or its head is not what the stat
+// showed when each was last checked: another size, time or inode, or no head
+// where there was one.
+func (k *KeyFile) changed() bool {
+	info, err := k.file.Stat()
+	if err != nil || stampOf(info) != k.fstamp {
+		return true
+	}
+	head, err := os.Lstat(k.headPath())
+	return err != nil || stampOf(head) != k.hstamp
+}
+
+// chainOf checks the digest chain of data, the whole file, and returns the
+// number of records and the digest of the last. It checks the bytes and not
+// the rules of the list, which were checked when the records were read or
+// written: a chain that holds with the count and last digest the list has
+// means the file is the one the list was made from.
+func chainOf(data []byte) (int, [sha256.Size]byte, error) {
+	var none [sha256.Size]byte
+	if len(data) == 0 || data[len(data)-1] != '\n' {
+		return 0, none, keysDamaged("the file does not end with a whole line")
+	}
+	rest := data
+	line, rest, _ := bytes.Cut(rest, []byte{'\n'})
+	if string(line) != keysHeader {
+		return 0, none, keysDamaged("the file is not a list of keys of this version")
+	}
+	prev := sha256.Sum256(line)
+	n := 0
+	for len(rest) > 0 {
+		line, rest, _ = bytes.Cut(rest, []byte{'\n'})
+		sum, rec, ok := bytes.Cut(line, []byte{' '})
+		if !ok || len(sum) != 2*sha256.Size {
+			return 0, none, keysDamaged("record %d has no digest", n+1)
+		}
+		var got [sha256.Size]byte
+		if _, err := hex.Decode(got[:], sum); err != nil || keySum(prev, rec) != got {
+			return 0, none, keysDamaged("record %d does not follow the one before it", n+1)
+		}
+		prev = got
+		n++
+	}
+	return n, prev, nil
+}
+
+// verify reads the file again from the descriptor that was locked and checks
+// the whole chain against the list as it was read, and the head against both.
+// A failure that is damage marks the list damaged. The caller holds mu.
+func (k *KeyFile) verify() error {
+	info, err := k.file.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size() > maxKeysFileBytes {
+		return k.damage(keysDamaged("the file is larger than %d bytes", maxKeysFileBytes))
+	}
+	data, err := io.ReadAll(io.NewSectionReader(k.file, 0, info.Size()))
+	if err != nil {
+		return err
+	}
+	if int64(len(data)) != info.Size() {
+		return k.damage(keysDamaged("the file changed while it was read"))
+	}
+	n, last, err := chainOf(data)
+	if err != nil {
+		return k.damage(err)
+	}
+	if n != k.list.records || last != k.prev {
+		return k.damage(keysDamaged("the file is not the list that was read"))
+	}
+	h, ok, err := k.readHead()
+	if err != nil {
+		if errors.Is(err, ErrDamaged) {
+			return k.damage(err)
+		}
+		return err
+	}
+	if !ok || h.count != k.list.records || h.digest != k.prev {
+		return k.damage(keysDamaged("the head of the list is not the list's"))
+	}
+	k.fstamp = stampOf(info)
+	return nil
+}
+
 // Keys returns the list, in the order the credentials were added. Revoked
-// credentials are in it, marked. The slices are copies.
+// credentials are in it, marked. The slices are copies. When the file's size,
+// times or inode, or the head's, are not what they were when they were last
+// checked, the file is read again and checked whole first, and a list that
+// fails the check is marked damaged and refuses this call and every later one
+// with [ErrDamaged].
 func (k *KeyFile) Keys() ([]StoredKey, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if err := k.usable(); err != nil {
 		return nil, err
+	}
+	if k.changed() {
+		if err := k.verify(); err != nil {
+			return nil, err
+		}
 	}
 	out := make([]StoredKey, len(k.list.keys))
 	for i, s := range k.list.keys {
@@ -583,6 +761,168 @@ func (k *KeyFile) Keys() ([]StoredKey, error) {
 		out[i] = s
 	}
 	return out, nil
+}
+
+// head is what the head file says: the number of records and the digest of the
+// last one.
+type head struct {
+	count  int
+	digest [sha256.Size]byte
+}
+
+// headName is the name of the head file: the list's name without ".log", and
+// ".head".
+func (k *KeyFile) headName() string {
+	return strings.TrimSuffix(filepath.Base(k.path), ".log") + ".head"
+}
+
+func (k *KeyFile) headPath() string { return filepath.Join(filepath.Dir(k.path), k.headName()) }
+
+// readHead reads the head file under the checks of the list's own: a plain
+// file of the user with mode 0600 and one name, not a link. It returns false
+// when there is no such file. A file that is not of the form is damage.
+func (k *KeyFile) readHead() (h head, present bool, err error) {
+	fd, err := unix.Openat(int(k.dir.Fd()), k.headName(), unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+	switch {
+	case errors.Is(err, unix.ENOENT):
+		return head{}, false, nil
+	case errors.Is(err, unix.ELOOP):
+		return head{}, false, fmt.Errorf("%w: the head of the list is a symbolic link", ErrNotPrivate)
+	case err != nil:
+		return head{}, false, fmt.Errorf("ownerjournal: the head of the list: %w", err)
+	}
+	f := os.NewFile(uintptr(fd), k.headPath())
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return head{}, false, err
+	}
+	if !privateFile(info) {
+		return head{}, false, fmt.Errorf("%w: the head of the list must be a plain file of the user with mode 0600 and one name", ErrNotPrivate)
+	}
+	if info.Size() > maxKeysHeadBytes {
+		return head{}, false, keysDamaged("the head of the list is larger than %d bytes", maxKeysHeadBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxKeysHeadBytes+1))
+	if err != nil {
+		return head{}, false, err
+	}
+	h, ok := parseHead(data)
+	if !ok {
+		return head{}, false, keysDamaged("the head of the list is not of the form")
+	}
+	k.hstamp = stampOf(info)
+	return h, true, nil
+}
+
+func parseHead(data []byte) (head, bool) {
+	line, rest, ok := bytes.Cut(data, []byte{'\n'})
+	if !ok || len(rest) != 0 {
+		return head{}, false
+	}
+	fields := strings.Split(string(line), " ")
+	if len(fields) != 4 || fields[0]+" "+fields[1] != keysHeadHeader {
+		return head{}, false
+	}
+	n := 0
+	if len(fields[2]) < 1 || len(fields[2]) > 5 {
+		return head{}, false
+	}
+	for _, c := range fields[2] {
+		if c < '0' || c > '9' {
+			return head{}, false
+		}
+		n = n*10 + int(c-'0')
+	}
+	if n > MaxKeyRecords || !record.IsLowerHex(fields[3], 2*sha256.Size) {
+		return head{}, false
+	}
+	var h head
+	h.count = n
+	raw, err := hex.DecodeString(fields[3])
+	if err != nil {
+		return head{}, false
+	}
+	copy(h.digest[:], raw)
+	return h, true
+}
+
+// writeHead makes the head file say count records and digest, crash-consistently:
+// the line is written under another name in the folder, synced, renamed over the
+// head, and the folder synced, so the head is always the old one or the new one
+// whole.
+func (k *KeyFile) writeHead(count int, digest [sha256.Size]byte) error {
+	dirfd := int(k.dir.Fd())
+	name := k.headName()
+	tmp := name + ".new"
+	fd, err := unix.Openat(dirfd, tmp, unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0o600)
+	if err != nil {
+		return fmt.Errorf("ownerjournal: the new head of the list: %w", err)
+	}
+	f := os.NewFile(uintptr(fd), filepath.Join(filepath.Dir(k.path), tmp))
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || !private(info) || info.Sys().(*syscall.Stat_t).Nlink != 1 {
+		return fmt.Errorf("%w: %s is not a plain file of the user with one name", ErrNotPrivate, tmp)
+	}
+	if err := f.Chmod(0o600); err != nil {
+		return err
+	}
+	line := fmt.Sprintf("%s %d %s\n", keysHeadHeader, count, hex.EncodeToString(digest[:]))
+	if _, err := f.WriteAt([]byte(line), 0); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := unix.Renameat(dirfd, tmp, dirfd, name); err != nil {
+		return fmt.Errorf("ownerjournal: naming the new head of the list: %w", err)
+	}
+	if err := k.dir.Sync(); err != nil {
+		return err
+	}
+	if info, err = f.Stat(); err != nil {
+		return err
+	}
+	k.hstamp = stampOf(info)
+	return nil
+}
+
+// checkHeadAtOpen compares the head with the list that was just read. A list
+// with fewer records than the head, or whose digest at the head's count is not
+// the head's, has lost its suffix or is another list: damaged. A list ahead of
+// the head by records that chain from it (at most one write's worth) is the
+// crash between the append and the head: accepted, and the head is made right.
+// A head that is missing is damage for a list with records, and is made for one
+// without.
+func (k *KeyFile) checkHeadAtOpen() error {
+	digests := k.digests
+	k.digests = nil
+	h, ok, err := k.readHead()
+	if err != nil {
+		return err
+	}
+	n := k.list.records
+	if !ok {
+		if n != 0 {
+			return keysDamaged("the head of the list (%s) is missing", k.headName())
+		}
+		return k.writeHead(0, k.prev)
+	}
+	switch {
+	case n < h.count:
+		return keysDamaged("suffix lost: the list has %d records and its head says %d", n, h.count)
+	case digests[h.count] != h.digest:
+		return keysDamaged("the list does not chain from its head (suffix lost, or another list)")
+	case n == h.count:
+		return nil
+	case n-h.count > MaxKeys:
+		return keysDamaged("the list is %d records ahead of its head", n-h.count)
+	}
+	return k.writeHead(n, k.prev)
 }
 
 // encodeKeyRecord writes a record as a line: its digest, a space, the record and a line
@@ -615,6 +955,11 @@ func (k *KeyFile) write(rs []keyRecord) error {
 		k.broken = true
 		return fmt.Errorf("%w: the file is not the size it was", ErrUncertain)
 	}
+	// Before anything is added the whole chain is read again and checked, so
+	// that a record is never appended to a chain that was damaged in place.
+	if err := k.verify(); err != nil {
+		return err
+	}
 	var buf []byte
 	prev := k.prev
 	for i := range rs {
@@ -634,6 +979,19 @@ func (k *KeyFile) write(rs []keyRecord) error {
 	}
 	k.size += int64(len(buf))
 	k.prev = prev
+	// The head follows the record, which is on the disk. A failure here leaves
+	// the file one write ahead of the head, which the next open takes for what
+	// it is; this list refuses everything until then.
+	if err := k.writeHead(k.list.records+len(rs), prev); err != nil {
+		k.broken = true
+		return errors.Join(ErrUncertain, err)
+	}
+	info, err = k.file.Stat()
+	if err != nil {
+		k.broken = true
+		return errors.Join(ErrUncertain, err)
+	}
+	k.fstamp = stampOf(info)
 	return nil
 }
 
