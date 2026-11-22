@@ -2,12 +2,13 @@
 // read-only, for an AI agent tool or its credentials on the host and prints
 // one line per hit, never a file's content or a variable's value:
 //
-//	ah-noaicheck [--root DIR] [--release DIR] [--nft-listing FILE] [--json]
-//	ah-noaicheck ports [--root DIR] [--release DIR] [--json]
+//	ah-noaicheck [--root DIR] [--release DIR] [--require-policy] [--nft-listing FILE] [--json]
+//	ah-noaicheck ports [--root DIR] [--release DIR] [--require-policy] [--json]
 //	ah-noaicheck nft-digest FILE
 //
-// It exits 0 when clean, 1 on any hit and 2 on a usage error or a read error
-// it cannot continue past. See deploy/authority-host/README.md.
+// It exits 0 when clean, 1 on any hit (an incomplete run included) and 2 on
+// a usage error or a read error it cannot continue past. See
+// deploy/authority-host/README.md.
 package main
 
 import (
@@ -30,26 +31,30 @@ const (
 // maxListing bounds the firewall listing read from a file or stdin.
 const maxListing = 16 << 20
 
-const usage = `usage: ah-noaicheck [--root DIR] [--release DIR] [--nft-listing FILE] [--json]
-       ah-noaicheck ports [--root DIR] [--release DIR] [--json]
+const usage = `usage: ah-noaicheck [--root DIR] [--release DIR] [--require-policy] [--nft-listing FILE] [--json]
+       ah-noaicheck ports [--root DIR] [--release DIR] [--require-policy] [--json]
        ah-noaicheck nft-digest FILE
 
 The authority host's no-AI check. It reads only: it writes nothing and runs
 no program. It prints one line per hit ("HIT kind path [detail]"), a "NOTE"
-line for what is not enforced, and a final "ok" or "FAILED n hit(s)"; it
-never prints a file's content or a variable's value.
+line for a policy that is not enforced, "RUN complete" or "RUN incomplete",
+and a final "ok" or "FAILED n hit(s)"; it never prints a file's content or
+a variable's value.
 
 The first form checks for agent binaries, installers and runtimes, agent
 credential folders, provider-key variables in environment files, profiles
-and units, agent processes, enabled units not in units.allow, packages
-forbidden or not in packages.allow and, when the release pins
-share/nft.digest, the firewall rules. "ports" checks the listening TCP
-ports against ports.allow. "nft-digest" prints the digest of the
+and units, agent processes, enabled units not in units.allow, listening
+TCP ports not in ports.allow, packages forbidden or not in packages.allow
+and, when the release pins share/nft.digest, the firewall rules. "ports"
+checks only the listening TCP ports. "nft-digest" prints the digest of the
 normalised listing in FILE ("-" for stdin), the value of share/nft.digest.
 
   --root DIR          check the tree beneath DIR instead of / (default /)
   --release DIR       the release folder whose share/ holds the lists
                       (default: the folder above this program's bin/)
+  --require-policy    a release policy left unset is a hit ("HIT policy"):
+                      an empty units.allow, packages.allow or ports.allow,
+                      or no share/nft.digest; the switch always passes it
   --nft-listing FILE  the output of "nft list ruleset" ("-" for stdin)
   --json              write the report as one JSON object
 
@@ -94,6 +99,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	root := fs.String("root", "/", "")
 	release := fs.String("release", "", "")
 	asJSON := fs.Bool("json", false, "")
+	requirePolicy := fs.Bool("require-policy", false, "")
 	var listingFile *string
 	if mode == "check" {
 		listingFile = fs.String("nft-listing", "", "")
@@ -133,6 +139,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return fail(err)
 	}
 	defer c.Close()
+	c.RequirePolicy = *requirePolicy
 	var report noaicheck.Report
 	if mode == "ports" {
 		c.CheckPorts()

@@ -189,19 +189,31 @@ program; the processes and listening sockets are read from `/proc`. It is
 meant to run as root, which can read every folder it looks into.
 
 ```
-ah-noaicheck [--root DIR] [--release DIR] [--nft-listing FILE] [--json]
-ah-noaicheck ports [--root DIR] [--release DIR] [--json]
+ah-noaicheck [--root DIR] [--release DIR] [--require-policy] [--nft-listing FILE] [--json]
+ah-noaicheck ports [--root DIR] [--release DIR] [--require-policy] [--json]
 ah-noaicheck nft-digest FILE
 ```
 
 It prints one line per hit, `HIT <kind> <path-or-name> [detail]`, a
-`NOTE` line for what is not enforced, and a final `ok` or
-`FAILED n hit(s)`; `--json` writes the same as one JSON object. A field
+`NOTE` line for a policy that is not enforced, `RUN complete` or
+`RUN incomplete`, and a final `ok` or `FAILED n hit(s)`; `--json` writes
+the same as one JSON object (with `"complete"`). A field
 that holds anything but printable ASCII is quoted with Go's escapes, so a
 planted file name cannot forge a line. It never prints a file's content or
 a variable's value. Exit status: 0 clean, 1 any hit, 2 a usage error or a
 read error it cannot continue past (a missing or invalid list, a root or
 listing it cannot open).
+
+`--require-policy` turns each policy the release leaves unset into a hit,
+`HIT policy <list> empty` or `HIT policy nft.digest missing`: an empty
+`units.allow`, `packages.allow` or `ports.allow`, and a release without
+`share/nft.digest`. The switch always passes it, with the live firewall
+listing: `ah-noaicheck --root R --release DIR --require-policy
+--nft-listing FILE`. Without it (a check by hand) an empty
+`packages.allow` and a missing `nft.digest` are `NOTE` lines instead, and
+the run is `RUN incomplete`: it exits 0 when nothing else is found, but it
+did not enforce those policies. `RUN complete` means every policy was
+enforced and nothing stopped a check short.
 
 `--root` (default `/`) checks the tree beneath another folder, for tests;
 links inside it are resolved within it. `--release` names the release
@@ -246,8 +258,11 @@ What it detects, by kind:
   passed. `ah-noaicheck nft-digest FILE` prints the digest to pin.
   Normalising drops blank lines, trailing spaces, counter values, set
   element expiry, quota use and handle comments.
-- `port` (the `ports` subcommand): a listening TCP socket, in
-  `/proc/net/tcp` or `/proc/net/tcp6`, on a port not in `ports.allow`.
+- `port`: a listening TCP socket, in `/proc/net/tcp` or
+  `/proc/net/tcp6`, on a port not in `ports.allow`. The main run checks
+  it; the `ports` subcommand checks only it.
+- `policy` (with `--require-policy`): a policy list of the release is
+  empty, or `nft.digest` is missing.
 - `unreadable`: a place the check must look into but cannot read, a link
   loop, or a file too large to read. The check fails closed.
 
@@ -260,8 +275,10 @@ home path in `ai-names.list`), a control byte or an inner space is refused:
 - `forbidden-packages.list`: packages the host never needs.
 - `packages.allow`, `units.allow`, `ports.allow`: the allowlists, empty in
   the repository; the lead fills them from the host's baseline at deploy
-  time. An empty `units.allow` or `ports.allow` allows nothing.
-- `nft.digest` (optional): the pinned firewall digest.
+  time. An empty `units.allow` or `ports.allow` allows nothing; with
+  `--require-policy` any of the three empty is a hit.
+- `nft.digest`: the pinned firewall digest; optional for a check by hand,
+  required with `--require-policy`.
 
 Limits, said once:
 

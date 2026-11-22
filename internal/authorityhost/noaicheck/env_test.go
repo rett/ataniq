@@ -127,7 +127,7 @@ func TestEnvReportOmitsValues(t *testing.T) {
 		}
 	}
 	want := "HIT env /etc/environment ANTHROPIC_API_KEY\nHIT env /etc/profile.d/x.sh OPENAI_API_KEY\n" +
-		"NOTE packages not enforced\nNOTE nft not pinned\nFAILED 2 hit(s)\n"
+		"NOTE packages not enforced\nNOTE nft not pinned\nRUN incomplete\nFAILED 2 hit(s)\n"
 	if text.String() != want {
 		t.Errorf("text\n%s\nwant\n%s", text.String(), want)
 	}

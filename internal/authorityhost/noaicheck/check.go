@@ -24,7 +24,12 @@ const (
 	KindPackage    = "package"    // a package forbidden or not in packages.allow
 	KindNFT        = "nft"        // the firewall rules differ from the release's
 	KindUnreadable = "unreadable" // a place the check must look into but cannot
+	KindPolicy     = "policy"     // a release policy list is empty or missing (--require-policy)
 )
+
+// DetailEmpty is the detail of a policy hit for an empty allowlist; a
+// release without share/nft.digest has the detail "missing" (DetailMissing).
+const DetailEmpty = "empty"
 
 // Hit is one finding: a kind, the path or name it is about and, for some
 // kinds, a detail (the variable's name, the matched tool, a reason). None of
@@ -35,10 +40,15 @@ type Hit struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-// Report is the result of a run: the hits and the notes, which are not hits.
+// Report is the result of a run: the hits, the notes, which are not hits,
+// and whether the run was complete: every check ran over all it covers and
+// every policy of the release was enforced. A run with a NOTE about a policy
+// not enforced is not complete, and neither is one with a hit of kind
+// "policy".
 type Report struct {
-	Hits  []Hit    `json:"hits"`
-	Notes []string `json:"notes"`
+	Hits     []Hit    `json:"hits"`
+	Notes    []string `json:"notes"`
+	Complete bool     `json:"complete"`
 }
 
 // NotePackagesNotEnforced is the note of an empty package allowlist.
@@ -46,13 +56,20 @@ const NotePackagesNotEnforced = "packages not enforced"
 
 // Checker runs the checks over one tree with one release's lists.
 type Checker struct {
-	t     *tree
-	lists *Lists
-	hits  []Hit
-	seen  map[Hit]bool
-	notes []string
-	homes []string
-	bins  []entry
+	// RequirePolicy turns each policy a release leaves unset into a hit of
+	// kind "policy" instead of a note or a silent default: an empty
+	// units.allow, packages.allow or ports.allow, and no share/nft.digest.
+	// The switch always sets it; a person checking by hand may not.
+	RequirePolicy bool
+
+	t       *tree
+	lists   *Lists
+	hits    []Hit
+	seen    map[Hit]bool
+	notes   []string
+	partial bool // a policy was not enforced
+	homes   []string
+	bins    []entry
 }
 
 // Open opens the tree beneath rootDir for the checks; close it with Close.
@@ -72,7 +89,13 @@ func (c *Checker) Close() error { return c.t.close() }
 
 // Report returns the hits and notes gathered so far.
 func (c *Checker) Report() Report {
-	return Report{Hits: slices.Clone(c.hits), Notes: slices.Clone(c.notes)}
+	r := Report{Hits: slices.Clone(c.hits), Notes: slices.Clone(c.notes), Complete: !c.partial}
+	for _, h := range r.Hits {
+		if h.Kind == KindPolicy {
+			r.Complete = false
+		}
+	}
+	return r
 }
 
 func (c *Checker) hit(kind, rel, detail string) {
@@ -90,6 +113,20 @@ func (c *Checker) note(n string) {
 	}
 }
 
+// notEnforced records a policy of the release that is left unset: with
+// RequirePolicy a hit of kind "policy" naming the list, without it the note
+// n. Either way the run is not complete.
+func (c *Checker) notEnforced(list, detail, n string) {
+	c.partial = true
+	if c.RequirePolicy {
+		c.hit(KindPolicy, list, detail)
+		return
+	}
+	if n != "" {
+		c.note(n)
+	}
+}
+
 // unreadable records a place the check could not look into. A place that is
 // not there is not a hit.
 func (c *Checker) unreadable(rel string, err error) {
@@ -101,9 +138,8 @@ func (c *Checker) unreadable(rel string, err error) {
 
 // RunAll runs every check of the main command in order: the binaries, the
 // tools, the credentials, the environment files, the processes, the enabled
-// units, the packages and the firewall digest (against listing, nil when the
-// caller passed none). The listening ports are the ports subcommand's
-// (CheckPorts).
+// units, the listening ports, the packages and the firewall digest (against
+// listing, nil when the caller passed none).
 func (c *Checker) RunAll(listing []byte) Report {
 	c.CheckBinaries()
 	c.CheckTools()
@@ -111,13 +147,15 @@ func (c *Checker) RunAll(listing []byte) Report {
 	c.CheckEnv()
 	c.CheckProcesses()
 	c.CheckUnits()
+	c.CheckPorts()
 	c.CheckPackages()
 	c.CheckNFT(listing)
 	return c.Report()
 }
 
 // WriteText writes the report as lines: one "HIT kind path [detail]" per hit,
-// one "NOTE text" per note, and a final "ok" or "FAILED n hit(s)". A field
+// one "NOTE text" per note, "RUN complete" or "RUN incomplete", and a final
+// "ok" or "FAILED n hit(s)". A field
 // that holds anything but printable ASCII (a space, a control byte, any
 // other Unicode), a quote or a backslash is written quoted with Go's ASCII
 // escapes, so that a planted name cannot forge a line or the terminal.
@@ -133,6 +171,11 @@ func (r Report) WriteText(w io.Writer) error {
 	for _, n := range r.Notes {
 		b.WriteString("NOTE " + n + "\n")
 	}
+	if r.Complete {
+		b.WriteString("RUN complete\n")
+	} else {
+		b.WriteString("RUN incomplete\n")
+	}
 	if len(r.Hits) == 0 {
 		b.WriteString("ok\n")
 	} else {
@@ -142,15 +185,16 @@ func (r Report) WriteText(w io.Writer) error {
 	return err
 }
 
-// WriteJSON writes the report as one JSON object with the hits, the notes,
-// the count and "result" ("ok" or "failed").
+// WriteJSON writes the report as one JSON object with "result" ("ok" or
+// "failed"), "complete", the count, the hits and the notes.
 func (r Report) WriteJSON(w io.Writer) error {
 	out := struct {
-		Result string   `json:"result"`
-		Count  int      `json:"count"`
-		Hits   []Hit    `json:"hits"`
-		Notes  []string `json:"notes"`
-	}{"ok", len(r.Hits), r.Hits, r.Notes}
+		Result   string   `json:"result"`
+		Complete bool     `json:"complete"`
+		Count    int      `json:"count"`
+		Hits     []Hit    `json:"hits"`
+		Notes    []string `json:"notes"`
+	}{"ok", r.Complete, len(r.Hits), r.Hits, r.Notes}
 	if out.Hits == nil {
 		out.Hits = []Hit{}
 	}

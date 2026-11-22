@@ -24,12 +24,13 @@ const (
 // forbidden-packages.list is a hit of kind "package" with detail
 // "forbidden"; while packages.allow is not empty, every other package not
 // in it is a hit with detail "not-allowed". An empty packages.allow means
-// not enforced yet: the note "packages not enforced", not a hit. A missing
-// database is a hit while the allowlist is enforced.
+// not enforced: the note "packages not enforced" or, with RequirePolicy, the
+// hit "policy packages.allow empty". A missing database is a hit while the
+// allowlist is enforced.
 func (c *Checker) CheckPackages() {
 	enforced := len(c.lists.PackagesAllow) > 0
 	if !enforced {
-		c.note(NotePackagesNotEnforced)
+		c.notEnforced(FilePackagesAllow, DetailEmpty, NotePackagesNotEnforced)
 	}
 	p, entries, err := c.t.readDir(pacmanLocal)
 	if errors.Is(err, fs.ErrNotExist) {

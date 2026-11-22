@@ -72,6 +72,15 @@ func TestCheckNFT(t *testing.T) {
 		{"not pinned", "", []byte(ruleset), nil, []string{NoteNFTNotPinned}},
 		{"not pinned, no listing", "", nil, nil, []string{NoteNFTNotPinned}},
 	}
+	t.Run("not pinned, policy required", func(t *testing.T) {
+		c := newFixture(t).checker(testLists())
+		c.RequirePolicy = true
+		c.CheckNFT([]byte(ruleset))
+		r := c.Report()
+		if want := []Hit{{KindPolicy, FileNFTDigest, DetailMissing}}; !reflect.DeepEqual(r.Hits, want) || len(r.Notes) != 0 || r.Complete {
+			t.Errorf("%+v", r)
+		}
+	})
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			l := testLists()

@@ -16,8 +16,12 @@ var unitDirs = []string{"etc/systemd/system", "etc/systemd/user"}
 // or *.upholds folder of /etc/systemd/system, /etc/systemd/user or a home's
 // .config/systemd/user) whose name is not in units.allow is a hit of kind
 // "unit". An instance ("getty@tty1.service") is allowed by its own name or
-// by its template's ("getty@.service"). An empty units.allow allows none.
+// by its template's ("getty@.service"). An empty units.allow allows none;
+// with RequirePolicy it is also the hit "policy units.allow empty".
 func (c *Checker) CheckUnits() {
+	if len(c.lists.UnitsAllow) == 0 && c.RequirePolicy {
+		c.notEnforced(FileUnitsAllow, DetailEmpty, "")
+	}
 	dirs := slices.Clone(unitDirs)
 	for _, home := range c.homeFolders() {
 		dirs = append(dirs, path.Join(home, ".config/systemd/user"))

@@ -58,10 +58,10 @@ func NFTDigest(listing []byte) string {
 // of kind "nft" with detail "digest-differs", and no listing (nil) is a hit
 // with detail "listing-missing". The caller runs "nft list ruleset"; the
 // check never does. Without a pinned digest the note "nft not pinned" is
-// written.
+// written or, with RequirePolicy, the hit "policy nft.digest missing".
 func (c *Checker) CheckNFT(listing []byte) {
 	if c.lists.NFTDigest == "" {
-		c.note(NoteNFTNotPinned)
+		c.notEnforced(FileNFTDigest, DetailMissing, NoteNFTNotPinned)
 		return
 	}
 	switch {
