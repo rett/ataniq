@@ -1543,8 +1543,12 @@ ah-release build --out DIR --counter N --commit SHA --go-version V --built-on CL
   mode 0755; the name is letters, digits and `._@+-`. `ah-noaicheck` and
   `ah-switch` are required; add `ah-pkgstep` when the release's package
   snapshot may differ from the host's (a first switch always moves the host
-  to the snapshot, so it needs it). With `--components static` and no
-  `--bin` named `ah-pkgstep`, the builder writes `bin/ah-pkgstep` itself: a
+  to the snapshot, so it needs it). With `--components static` the builder
+  writes `bin/ah-pkgstep` itself, and refuses a `--bin` named `ah-pkgstep`
+  (`static-package-step`, a usage error, exit 2, nothing made): a static
+  release is this generated no-op and changes no package, so a release that
+  must move the package snapshot is not static (build it without
+  `--components static` and with its own step). The generated step is a
   POSIX `sh` script that checks the arguments the switch gives it
   (`--release DIR --from OLD --to NEW`, anything else exits 2 with a usage
   line), changes nothing and exits 0 only when `--from` is empty (a first
@@ -1568,10 +1572,10 @@ ah-release build --out DIR --counter N --commit SHA --go-version V --built-on CL
   again from the snapshot it started at); as with any failed package step,
   that leaves the package state unknown, and every later switch is
   refused until `ah-switch recover --package-state SNAPSHOT` (see "The
-  journal and recover"). A `--bin` named
-  `ah-pkgstep` is shipped as given, and a release that is not static and is
-  given none has none, so a switch that changes the snapshot refuses it
-  (`package-step-missing`) as before.
+  journal and recover"). In a release that is not static a `--bin` named
+  `ah-pkgstep` is shipped as given, and one given none has none, so a
+  switch that changes the snapshot refuses it (`package-step-missing`) as
+  before.
 - `--src` is the deployment source folder: its `etc/` is copied to
   `etc/` and its `share/` to `share/`, which must hold the four command
   lists and the lists of the no-AI check. Nothing else of it is copied (not

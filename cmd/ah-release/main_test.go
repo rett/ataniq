@@ -64,6 +64,8 @@ func TestUsage(t *testing.T) {
 	src := source(t)
 	a, b := bins(t)
 	good := buildArgs(out, src, a, b)
+	ownStep := filepath.Join(t.TempDir(), "ah-pkgstep")
+	write(t, ownStep, "#!/bin/sh\nexit 0\n", 0o755)
 	swap := func(flag, value string) []string {
 		args := append([]string(nil), good...)
 		for i := range args {
@@ -93,6 +95,7 @@ func TestUsage(t *testing.T) {
 		{"built on empty", swap("--built-on", "")},
 		{"snapshot with a slash", swap("--package-snapshot", "a/b")},
 		{"components dynamic", swap("--components", "dynamic")},
+		{"a static release with its own ah-pkgstep", append(append([]string(nil), good...), "--bin", ownStep)},
 		{"out empty", swap("--out", "")},
 		{"src empty", swap("--src", "")},
 		{"only one bin", []string{"build", "--out", out, "--counter", "3", "--commit", commit, "--go-version", "g", "--built-on", "d",
@@ -427,6 +430,35 @@ func TestStaticReleaseNeedsNoPackageStepFromTheCaller(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(out3, "0003-0123456", "bin/ah-pkgstep")); !os.IsNotExist(err) {
 		t.Errorf("a non-static release got a package step: %v", err)
+	}
+}
+
+// TestStaticReleaseRefusesItsOwnPackageStep: a static release is the
+// generated no-op step and changes no package, so build refuses one that is
+// given its own ah-pkgstep, as a usage error (exit 2) with its own code and
+// the usage lines, and makes nothing; the same arguments for a release that
+// is not static ship the step.
+func TestStaticReleaseRefusesItsOwnPackageStep(t *testing.T) {
+	a, b := bins(t)
+	step := filepath.Join(t.TempDir(), "ah-pkgstep")
+	write(t, step, "#!/bin/sh\n# mine\nexit 0\n", 0o755)
+	out := t.TempDir()
+	args := buildArgs(out, source(t), a, b, "--bin", step)
+	code, stdout, errOut := call(args...)
+	if code != 2 || stdout != "" || !strings.HasPrefix(errOut, "ah-release: static-package-step ") || !strings.Contains(errOut, "usage: ah-release build") {
+		t.Errorf("exit %d, stdout %q, stderr %q", code, stdout, errOut)
+	}
+	if entries, err := os.ReadDir(out); err != nil || len(entries) != 0 {
+		t.Errorf("a refused build made %v, %v", entries, err)
+	}
+
+	dynamic := buildArgs(out, source(t), a, b, "--bin", step)
+	dynamic = append(dynamic[:len(dynamic)-4:len(dynamic)-4], dynamic[len(dynamic)-2:]...) // drop --components static
+	if code, stdout, errOut := call(dynamic...); code != 0 {
+		t.Fatalf("not static: exit %d, %q, %q", code, stdout, errOut)
+	}
+	if data, err := os.ReadFile(filepath.Join(out, "0003-0123456", "bin/ah-pkgstep")); err != nil || !strings.Contains(string(data), "# mine") {
+		t.Errorf("the given step was not shipped: %q, %v", data, err)
 	}
 }
 

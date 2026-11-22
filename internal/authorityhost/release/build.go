@@ -22,8 +22,9 @@ var requiredBins = []string{"ah-noaicheck", "ah-switch"}
 
 // PackageStepName is the file name of a release's package step, and
 // StaticPackageStep is the one the builder writes itself into a static
-// release that is given none: it checks its arguments as the switch gives
-// them and changes nothing. It exits 0 only on a first switch (an empty
+// release, which is refused a step of its own (static means this no-op, so a
+// release that must move the package snapshot is not static): it checks its
+// arguments as the switch gives them and changes nothing. It exits 0 only on a first switch (an empty
 // --from) or an unchanged snapshot (--from equal to --to), so it is
 // idempotent; any other --from is a snapshot the host would be recorded at
 // without being there, and it exits 1 with a line on stderr. The switch
@@ -69,8 +70,9 @@ type Options struct {
 	BuiltOn         string
 	PackageSnapshot string
 	// Bins are the files that become bin/<base name>; ah-noaicheck and
-	// ah-switch are required. A static release given no ah-pkgstep gets
-	// the no-op StaticPackageStep.
+	// ah-switch are required. A static release gets the no-op
+	// StaticPackageStep and is refused an ah-pkgstep of its own (a release
+	// that must move the package snapshot is not static).
 	Bins []string
 	// Src is the deployment source folder (deploy/authority-host): its etc/
 	// and share/ are copied.
@@ -123,6 +125,11 @@ func (o Options) validate() *Refusal {
 		if !seen[name] {
 			return refuse(true, CodeBinMissing, "bin/"+name)
 		}
+	}
+	if o.Components == switcher.ComponentsStatic && seen[PackageStepName] {
+		// A static release is the generated no-op: it changes no package, and
+		// the switch refuses a static release that would move the snapshot.
+		return refuse(true, CodeStaticStep, "bin/"+PackageStepName)
 	}
 	return nil
 }

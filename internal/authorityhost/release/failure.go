@@ -16,6 +16,7 @@ const (
 	CodeBuiltOn    = "built-on"
 	CodeSnapshot   = "package-snapshot"
 	CodeComponents = "components"
+	CodeStaticStep = "static-package-step"
 	CodeBinName    = "bin-name"
 	CodeBinTwice   = "bin-twice"
 	CodeBinMissing = "bin-missing"
@@ -89,6 +90,7 @@ var reasons = map[string]string{
 	CodeBuiltOn:    "the build host class is not 1 to 128 bytes of letters, digits and ._:+-",
 	CodeSnapshot:   "the package snapshot is not 1 to 128 bytes of letters, digits and ._:-",
 	CodeComponents: "components is not static",
+	CodeStaticStep: "a static release is the generated no-op and ships no ah-pkgstep of its own: build a release that is not static to ship one",
 	CodeBinName:    "a binary name is not letters, digits and ._@+- or is not a regular file",
 	CodeBinTwice:   "two binaries have one name",
 	CodeBinMissing: "a binary every release needs is not given",
