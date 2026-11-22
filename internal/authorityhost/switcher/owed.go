@@ -280,9 +280,11 @@ const maxAckWords = 512
 // Ack runs ah-switch ack --asked WORDS: the owner's acknowledgement that
 // every outcome owed was seen. words, what the owner asked or saw, are
 // recorded in deploy.json with the time and the transactions acknowledged,
-// then owed.json is removed. It runs no program, is refused while a
-// transaction is open (any command settles it first) and when nothing is
-// owed, and a dry run changes nothing.
+// then owed.json is removed. An ack of the outcomes deploy.json already
+// records as acknowledged (one interrupted before that removal) only
+// removes owed.json and keeps the recorded words and time. It runs no
+// program, is refused while a transaction is open (any command settles it
+// first) and when nothing is owed, and a dry run changes nothing.
 func (s *Switcher) Ack(ctx context.Context, words string) int {
 	if !filepath.IsAbs(s.cfg.Root) {
 		s.errorf("--root %s is not an absolute path", q(s.cfg.Root))
@@ -348,11 +350,26 @@ func (s *Switcher) Ack(ctx context.Context, words string) int {
 		s.printf("ack: would record the owner's words and remove %s", q(filepath.Join(s.stateDir(), OwedFile)))
 		return ExitOK
 	}
+	// The transactions deploy.json records are the commit mark of an
+	// acknowledgement: when they are these, an ack was recorded and killed
+	// before owed.json was removed. Only that removal is finished, and the
+	// owner's original words and time are kept.
+	if rec.OutcomeAckedTxn == strings.Join(txns, " ") {
+		if err := s.writeOwed(nil); err != nil {
+			s.printf("ack: FAILED: %s not removed: %s", OwedFile, q(err.Error()))
+			return ExitFailed
+		}
+		s.printf("ack: %d outcome(s) were acknowledged by the owner at %s (asked: %s) before an interruption: recorded already, so those words are kept and these are not recorded; %s is removed", len(owed), rec.OutcomeAckedAt, q(rec.OutcomeAckedAsked), OwedFile)
+		return ExitOK
+	}
 	rec.OutcomeAckedAt = s.now()
 	rec.OutcomeAckedAsked = words
 	rec.OutcomeAckedTxn = strings.Join(txns, " ")
 	if err := s.rewriteRecord(&rec); err != nil {
 		s.printf("ack: FAILED: %s not written: %s; the outcomes stay owed", DeployFile, q(err.Error()))
+		return ExitFailed
+	}
+	if err := s.crash(CrashAcked); err != nil {
 		return ExitFailed
 	}
 	if err := s.writeOwed(nil); err != nil {

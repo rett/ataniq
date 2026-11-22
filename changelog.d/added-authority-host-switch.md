@@ -66,8 +66,9 @@
   `previous` anew, any other switch or rollback reports it and is refused
   until then, and `ah-switch ack --asked WORDS` acknowledges it (recorded
   with the time; when the outcomes it prints cannot be written or flushed it
-  records nothing, keeps them owed and exits 1, as a retry does); `--dry`
-  only shows it.
+  records nothing, keeps them owed and exits 1, as a retry does; an ack
+  interrupted after its record is finished by the next ack, which keeps
+  the recorded words and time); `--dry` only shows it.
   `ah-switch --rollback-to previous` goes back under the same policy,
   `ah-switch recover --counter N` restores a missing counter,
   `ah-switch recover --package-state SNAPSHOT` settles an unknown package

@@ -1332,3 +1332,68 @@ func TestAckKeptWhenTheOutcomesCannotBeWritten(t *testing.T) {
 		})
 	}
 }
+
+// TestAckCrashAfterRecord: an ack killed after deploy.json records the
+// acknowledgement (its words, time and transactions) and before owed.json
+// is removed leaves both. The transactions recorded are the commit mark:
+// the next ack of the same outcomes only finishes the removal and keeps the
+// owner's original receipt, its words and time, whatever words it is given.
+func TestAckCrashAfterRecord(t *testing.T) {
+	e := active(t)
+	e.keepOwed = true
+	e.release(rel3, "2026-11-01")
+	if code := e.switchTo(rel3); code != ExitOK {
+		t.Fatalf("switch: exit %d", code)
+	}
+	owed := e.owed()
+	if len(owed) != 1 {
+		t.Fatalf("owed: %+v", owed)
+	}
+	s := e.switcher()
+	reached := false
+	s.crashAt = func(p string) error {
+		if p == CrashAcked {
+			reached = true
+			return errCrash
+		}
+		return nil
+	}
+	if code := s.Ack(context.Background(), "the first look"); code != ExitFailed {
+		t.Fatalf("ack killed after its record: exit %d\n%s", code, e.out.String())
+	}
+	e.out.Reset()
+	if !reached {
+		t.Fatalf("ack never reached %s", CrashAcked)
+	}
+	first := e.record()
+	if first.OutcomeAckedAsked != "the first look" || first.OutcomeAckedTxn != owed[0].Txn || first.OutcomeAckedAt == "" {
+		t.Fatalf("record after the crash: %+v", first)
+	}
+	if got := e.owed(); !reflect.DeepEqual(got, owed) {
+		t.Fatalf("owed after the crash: %+v", got)
+	}
+	// Later, the owner acknowledges again, in other words.
+	e.clock.sleep(time.Hour)
+	e.runner.reset()
+	if code := e.ack("other words later"); code != ExitOK {
+		t.Fatalf("the retried ack: exit %d\n%s", code, e.last)
+	}
+	if got := e.owed(); len(got) != 0 {
+		t.Errorf("owed after the retried ack: %+v", got)
+	}
+	rec := e.record()
+	if rec.OutcomeAckedAsked != first.OutcomeAckedAsked || rec.OutcomeAckedAt != first.OutcomeAckedAt || rec.OutcomeAckedTxn != first.OutcomeAckedTxn {
+		t.Errorf("the original receipt (%q at %s, %s) was overwritten: %q at %s, %s",
+			first.OutcomeAckedAsked, first.OutcomeAckedAt, first.OutcomeAckedTxn, rec.OutcomeAckedAsked, rec.OutcomeAckedAt, rec.OutcomeAckedTxn)
+	}
+	if !strings.Contains(e.last, "recorded already") {
+		t.Errorf("the retried ack does not say the acknowledgement was recorded already:\n%s", e.last)
+	}
+	if len(e.runner.calls) != 0 {
+		t.Errorf("commands run: %v", e.runner.calls)
+	}
+	// Nothing is owed now: a later ack has nothing to acknowledge.
+	if code := e.ack("once more"); code != ExitFailed || !strings.Contains(e.last, "nothing to acknowledge") {
+		t.Errorf("ack with nothing owed: exit %d\n%s", code, e.last)
+	}
+}
