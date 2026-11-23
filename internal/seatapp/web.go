@@ -50,7 +50,10 @@ const (
 
 // fits reports whether the Card page shows a lead's text whole: Text cuts
 // none of it at max.
-func fits(l Lead, max int) bool { return utf8.RuneCountInString(l.str()) <= max }
+func fits(l Lead, max int) bool { return fitsText(l.str(), max) }
+
+// fitsText reports whether Text cuts none of s at max.
+func fitsText(s string, max int) bool { return utf8.RuneCountInString(s) <= max }
 
 // allFit reports whether every one of ls fits at max.
 func allFit(ls []Lead, max int) bool {
@@ -75,7 +78,12 @@ func rowsWhole(rows []PathRow) bool {
 // wholeOf says which parts of c the Card page shows whole, with the caps
 // the template cuts them at.
 func wholeOf(c Card) Whole {
-	w := Whole{Rows: true, Lists: true, Refs: true, Flagged: true, Differs: true}
+	w := AllWhole
+	for _, n := range []string{c.Project, c.Role, c.Verb, c.Feature, c.Target, c.Class} {
+		w.Names = w.Names && fitsText(n, maxName)
+	}
+	w.Plan = allFit(c.Plan, maxText)
+	w.Note = allFit(c.Note, maxText)
 	if c.Diff != nil {
 		w.Rows = rowsWhole(c.Diff.Rows)
 	}

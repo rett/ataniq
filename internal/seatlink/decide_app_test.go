@@ -272,6 +272,42 @@ func TestSeatDecideCutFlaggedPathsOnThePhone(t *testing.T) {
 	}
 }
 
+// TestSeatDecideCutPlanOnThePhone: on the Card page of a card whose plan
+// has a line longer than the page shows, Approve is not offered and the
+// page says why; a tap of Approve anyway is refused before the desk is
+// asked; Deny stays. The plan is under the binding, so the owner approves
+// such a card at the desk, where it is read whole.
+func TestSeatDecideCutPlanOnThePhone(t *testing.T) {
+	r := newPhoneRig(t)
+	p := r.desk.reads.pending
+	p.PlanText = record.Text("Merge the feature.\n" + strings.Repeat("z", 4001))
+	p.Binding.PlanSHA256 = record.PlanDigest(string(p.PlanText))
+	digest, err := record.BindingDigest(p.Binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.BindingSHA256 = digest
+	b, err := record.EncodePending(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.desk.reads.mu.Lock()
+	r.desk.reads.pending, r.desk.reads.bytes = p, b
+	r.desk.reads.mu.Unlock()
+	page := r.open(t).Body.String()
+	if strings.Contains(page, `id="approve"`) || !strings.Contains(page, `id="deny"`) ||
+		!strings.Contains(page, "Approve is not offered: "+reasonCutPlan+".") {
+		t.Fatal("the Card page offers Approve for a plan line it cut")
+	}
+	w := r.tapPage(page, "approve", []int{0, 1})
+	if m := said(t, w); w.Code != 409 || m["error"] != "not_allowed" || m["say"] != "This cannot be sent: "+reasonCutPlan+"." {
+		t.Errorf("an approve of a card with a cut plan line: %d %v", w.Code, m)
+	}
+	if c, _ := r.desk.counts(); c != 0 {
+		t.Errorf("the desk was asked %d challenges", c)
+	}
+}
+
 // TestSeatDecidePagesOfAReplacedReview: the pages of a card's whole path
 // list read straight away, before its Card page, count for the review they
 // were read for. The card is replaced by one of the same id and page count

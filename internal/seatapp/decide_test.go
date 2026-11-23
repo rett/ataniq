@@ -229,7 +229,7 @@ func TestSeatDecideChallengeTakesTheCardAsShown(t *testing.T) {
 	q := r.daemon.decideChs[0]
 	want := DecideChallengeRequest{ID: testCardID, BindingSHA256: strings.Repeat("ab", 32), Approve: true, SignedOff: []int{0},
 		Credential: "0123456789abcdef", Reading: Reading{Opened: opened, PagesRead: []int{0, 1, 2}, Pages: 3, Review: strings.Repeat("ef", 32),
-			Whole: Whole{Rows: true, Lists: true, Refs: true, Flagged: true, Differs: true}}, Now: r.clock.Now()}
+			Whole: AllWhole}, Now: r.clock.Now()}
 	if !reflect.DeepEqual(q, want) {
 		t.Errorf("the port got %+v\nwant %+v", q, want)
 	}
@@ -331,28 +331,45 @@ func TestSeatDecideTapOfAStalePage(t *testing.T) {
 
 // TestSeatCardPartsShownWhole: the session's reading says which parts of
 // the card the Card page showed whole. A path or a ref longer than the page
-// shows (maxPath characters of its escaped text) makes its part not whole,
-// and the port's offer is asked with that reading; one of exactly maxPath
-// characters is whole. A page of the whole path list that cuts a path does
+// shows (maxPath characters of its escaped text), a name of the header
+// longer than maxName, or a line of the plan or of the note longer than
+// maxText makes its part not whole, and the port's offer is asked with that
+// reading; one of exactly the cap is whole. A page of the whole path list that cuts a path does
 // not count as read, and says so.
 func TestSeatCardPartsShownWhole(t *testing.T) {
 	long := NewLead(strings.Repeat("x", maxPath+1))
 	edge := NewLead(strings.Repeat("x", maxPath))
-	all := Whole{Rows: true, Lists: true, Refs: true, Flagged: true, Differs: true}
+	all := AllWhole
+	off := func(f func(*Whole)) Whole {
+		w := AllWhole
+		f(&w)
+		return w
+	}
+	longName := strings.Repeat("x", maxName+1)
+	longLine := NewLead(strings.Repeat("y", maxText+1))
 	for name, tc := range map[string]struct {
 		change func(*Card)
 		want   Whole
 	}{
-		"nothing long":        {func(*Card) {}, all},
-		"a path at the cap":   {func(c *Card) { c.Diff.Rows[0].Path = edge; c.Flagged[0].Path = edge }, all},
-		"a row":               {func(c *Card) { c.Diff.Rows[1].Path = long }, Whole{Lists: true, Refs: true, Flagged: true, Differs: true}},
-		"a list's path":       {func(c *Card) { c.Lists[0].Paths[0] = long }, Whole{Rows: true, Refs: true, Flagged: true, Differs: true}},
-		"a ref":               {func(c *Card) { c.Refs[0].Ref = long }, Whole{Rows: true, Lists: true, Flagged: true, Differs: true}},
-		"a merged-into ref":   {func(c *Card) { c.Refs[0].MergedInto = &MergedInto{Ref: long, Tip: strings.Repeat("3", 40)} }, Whole{Rows: true, Lists: true, Flagged: true, Differs: true}},
-		"a flagged path":      {func(c *Card) { c.Flagged[0].Path = long }, Whole{Rows: true, Lists: true, Refs: true, Differs: true}},
-		"a flagged path rule": {func(c *Card) { c.Flagged[0].Pattern = long }, Whole{Rows: true, Lists: true, Refs: true, Differs: true}},
-		"a differs path":      {func(c *Card) { c.Differs.PathsAdded = []Lead{long} }, Whole{Rows: true, Lists: true, Refs: true, Flagged: true}},
-		"a differs ref":       {func(c *Card) { c.Differs.RefsRemoved = []Lead{long} }, Whole{Rows: true, Lists: true, Refs: true, Flagged: true}},
+		"nothing long":      {func(*Card) {}, all},
+		"a path at the cap": {func(c *Card) { c.Diff.Rows[0].Path = edge; c.Flagged[0].Path = edge }, all},
+		"names at the cap":  {func(c *Card) { c.Project, c.Target = longName[1:], longName[1:] }, all},
+		"lines at the cap": {func(c *Card) {
+			c.Plan[0], c.Note[0] = NewLead(strings.Repeat("y", maxText)), NewLead(strings.Repeat("y", maxText))
+		}, all},
+		"the project":         {func(c *Card) { c.Project = longName }, off(func(w *Whole) { w.Names = false })},
+		"the target":          {func(c *Card) { c.Target = longName }, off(func(w *Whole) { w.Names = false })},
+		"the feature":         {func(c *Card) { c.Feature = longName }, off(func(w *Whole) { w.Names = false })},
+		"a plan line":         {func(c *Card) { c.Plan[1] = longLine }, off(func(w *Whole) { w.Plan = false })},
+		"a note line":         {func(c *Card) { c.Note[1] = longLine }, off(func(w *Whole) { w.Note = false })},
+		"a row":               {func(c *Card) { c.Diff.Rows[1].Path = long }, off(func(w *Whole) { w.Rows = false })},
+		"a list's path":       {func(c *Card) { c.Lists[0].Paths[0] = long }, off(func(w *Whole) { w.Lists = false })},
+		"a ref":               {func(c *Card) { c.Refs[0].Ref = long }, off(func(w *Whole) { w.Refs = false })},
+		"a merged-into ref":   {func(c *Card) { c.Refs[0].MergedInto = &MergedInto{Ref: long, Tip: strings.Repeat("3", 40)} }, off(func(w *Whole) { w.Refs = false })},
+		"a flagged path":      {func(c *Card) { c.Flagged[0].Path = long }, off(func(w *Whole) { w.Flagged = false })},
+		"a flagged path rule": {func(c *Card) { c.Flagged[0].Pattern = long }, off(func(w *Whole) { w.Flagged = false })},
+		"a differs path":      {func(c *Card) { c.Differs.PathsAdded = []Lead{long} }, off(func(w *Whole) { w.Differs = false })},
+		"a differs ref":       {func(c *Card) { c.Differs.RefsRemoved = []Lead{long} }, off(func(w *Whole) { w.Differs = false })},
 	} {
 		r := newRig(t)
 		c := sampleCard()

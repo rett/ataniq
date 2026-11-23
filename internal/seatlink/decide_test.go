@@ -295,7 +295,7 @@ func (r *decideRig) show(t *testing.T) seatapp.Card {
 }
 
 // shownWhole says that the Card page showed every part of the card whole.
-var shownWhole = seatapp.Whole{Rows: true, Lists: true, Refs: true, Flagged: true, Differs: true}
+var shownWhole = seatapp.AllWhole
 
 // approve is the request of an approve of the shown card with every flagged
 // path signed off, read whole a second ago.
@@ -711,6 +711,9 @@ func TestSeatLinkCutPartsAreNotRead(t *testing.T) {
 		off  func(*seatapp.Whole)
 		want string
 	}{
+		{func(w *seatapp.Whole) { w.Names = false }, reasonCutNames},
+		{func(w *seatapp.Whole) { w.Plan = false }, reasonCutPlan},
+		{func(w *seatapp.Whole) { w.Note = false }, reasonCutNote},
 		{func(w *seatapp.Whole) { w.Refs = false }, reasonCutRefs},
 		{func(w *seatapp.Whole) { w.Rows = false }, reasonCutRows},
 		{func(w *seatapp.Whole) { w.Lists = false }, reasonCutLists},

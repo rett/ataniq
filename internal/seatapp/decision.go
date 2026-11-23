@@ -27,16 +27,23 @@ type Reading struct {
 	Review    string
 }
 
-// Whole says, for each part of a card, that the Card page showed every path
-// and ref of it whole: none was cut by [Text]. A part the card does not have
-// is whole. The zero Whole says that nothing was shown whole.
+// Whole says, for each part of a card, that the Card page showed every
+// name, line, path and ref of it whole: none was cut by [Text]. A part the
+// card does not have is whole. The zero Whole says that nothing was shown
+// whole.
 type Whole struct {
-	// Rows are the diff's rows on the card, Lists the four lists, Refs the
-	// ref lines with the branch each deleted one was merged into, Flagged
-	// the flagged paths with their rules, and Differs the paths and refs of
-	// the "differs from" block.
-	Rows, Lists, Refs, Flagged, Differs bool
+	// Names are the names of the card's header and of the confirm box (the
+	// project, the role, the verb, the feature, the target and the class),
+	// Plan the plan's lines, Rows the diff's rows on the card, Lists the
+	// four lists, Refs the ref lines with the branch each deleted one was
+	// merged into, Flagged the flagged paths with their rules, Note the
+	// lines of the lead's note, and Differs the paths and refs of the
+	// "differs from" block.
+	Names, Plan, Rows, Lists, Refs, Flagged, Note, Differs bool
 }
+
+// AllWhole is the Whole of a page that showed every part whole.
+var AllWhole = Whole{Names: true, Plan: true, Rows: true, Lists: true, Refs: true, Flagged: true, Note: true, Differs: true}
 
 // Offer is what the Card page may offer for a card as a session read it,
 // as the port's card model answers: approve and deny, each with the host's

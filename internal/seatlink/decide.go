@@ -155,10 +155,14 @@ const reasonNotShown = "the card changed; look at it again"
 // gate's pin.
 const reasonNotOffered = "the desk does not take decisions from the phone now"
 
-// The host's lines for a card the phone did not show whole: a path or a ref
-// longer than the page shows. Approve is not offered for it on the phone,
-// and is not sent; the owner reads it, and approves, at the desk.
+// The host's lines for a card the phone did not show whole: a name, a line
+// of the plan or of the note, a path or a ref longer than the page shows.
+// Approve is not offered for it on the phone, and is not sent; the owner
+// reads it, and approves, at the desk.
 const (
+	reasonCutNames   = "a name of the card (its project, target or feature) is too long to show whole on the phone; approve at the desk"
+	reasonCutPlan    = "a line of the plan is too long to show whole on the phone; approve at the desk"
+	reasonCutNote    = "a line of the lead's note is too long to show whole on the phone; approve at the desk"
 	reasonCutRefs    = "a ref is too long to show whole on the phone; approve at the desk"
 	reasonCutRows    = "a changed path is too long to show whole on the phone; approve at the desk"
 	reasonCutLists   = "a path in a list is too long to show whole on the phone; approve at the desk"
@@ -172,6 +176,10 @@ const (
 // read the same on the page.
 func cutWhy(c card.Card, w seatapp.Whole) string {
 	switch {
+	case !w.Names:
+		return reasonCutNames
+	case len(c.Plan.Lines) != 0 && !w.Plan:
+		return reasonCutPlan
 	case len(c.Refs) != 0 && !w.Refs:
 		return reasonCutRefs
 	case c.Diff != nil && !c.Diff.Truncated && !w.Rows:
@@ -180,6 +188,8 @@ func cutWhy(c card.Card, w seatapp.Whole) string {
 		return reasonCutLists
 	case len(c.Flagged) != 0 && !w.Flagged:
 		return reasonCutFlagged
+	case len(c.Note.Lines()) != 0 && !w.Note:
+		return reasonCutNote
 	case c.Differs != nil && !w.Differs:
 		return reasonCutDiffers
 	}
@@ -209,7 +219,7 @@ func (d *Daemon) Offer(id, binding string, r seatapp.Reading, now time.Time) sea
 	// way: the owner learns why the phone cannot approve this card.
 	if why := cutWhy(c, r.Whole); why != "" {
 		whole := r
-		whole.Whole = seatapp.Whole{Rows: true, Lists: true, Refs: true, Flagged: true, Differs: true}
+		whole.Whole = seatapp.AllWhole
 		if ok, _ := mayOffer(c, whole, now); ok {
 			out.Approve, out.ApproveWhy = false, why
 		}

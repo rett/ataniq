@@ -951,11 +951,24 @@ How it is built (G9), where the points above left a choice:
   `Card.Approve` (MayApprove with the boxes ticked) or `Card.Deny` to build
   the frame; a decision they refuse is not sent. Approve is withheld, and
   not sent, for a card the page did not show whole: the page says which
-  part ("a ref", "a changed path", "a path in a list", "a flagged path",
+  part ("a name of the card", "a line of the plan", "a ref", "a changed
+  path", "a path in a list", "a flagged path", "a line of the lead's note",
   "a path or a ref of how the card differs" is too long to show whole on the
   phone; approve at the desk). So two flagged paths that read the same on
   the page because both were cut are never signed off by their index. Deny
-  stays. A prune's ref line shows the branch its deleted ref was merged
+  stays. The names are those the header and the confirm box show, cut at
+  64 characters: the project, the role, the verb, the feature, the target
+  branch and the class. The project and the target are the owner's own
+  configuration (the scratch settings' `project`, a name of at most 63
+  characters, which is never cut, and `target`, a branch under
+  `refs/heads/` of up to 200 bytes, which can be), and the feature is the
+  lead's, at most 48; the record itself bounds neither the project nor an
+  effect's ref, so the rule is kept for all of them rather than trusted
+  to the configuration: a project whose target branch has a name over 64
+  characters is approved at the desk. The plan's lines and the note's
+  lines are cut at 4000 characters: the plan is the host's text under the
+  binding, which a lead's request shapes, and the note is the lead's, at
+  most 2 KiB, so a note line is never cut while that cap stands. A prune's ref line shows the branch its deleted ref was merged
   into and that branch's tip (the first 12 digits), as the desk does. The
   Card page of a card that ended, or whose decision is on its way, has no
   form.

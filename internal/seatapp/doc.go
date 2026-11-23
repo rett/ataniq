@@ -212,9 +212,11 @@
 // the session's reading of it (kept server-side, see [Reading]) counts the
 // page's rows, lists, refs and "differs from" block once the page was
 // served, each only when the page showed every path and ref of it whole
-// ([Whole]), and a cut path list by the pages of it the session was served
-// that cut no path, each with the review digest it was read for. The port
-// withholds Approve for a part not shown whole. A HEAD of a card page is
+// ([Whole], which also says whether the header's names and the lines of
+// the plan and of the note were shown whole), and a cut path list by the
+// pages of it the session was served that cut no path, each with the review
+// digest it was read for. The port withholds Approve for a part not shown
+// whole. A HEAD of a card page is
 // refused 405: only a GET answered with its page is a read, and only once
 // the page was written and flushed without an error. A Card page's read
 // (which settles a lost answer and keeps the page's form) is checked again
