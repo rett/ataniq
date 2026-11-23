@@ -285,8 +285,8 @@ func TestSeatLinkBudgetNeverOverTheGate(t *testing.T) {
 
 // TestSeatLinkDecideRoom: through the link, a challenge is asked only with
 // room for its decision; a tap past the room is ErrBusy and reaches no gate.
-// The decision of every challenge drawn is sent even so: 6 challenges, each
-// of them with the room of its decision, fill the 12, whichever sessions
+// The decision of every challenge drawn is sent even so: 5 challenges, each
+// of them with the room of its decision, fill the 10, whichever sessions
 // drew them. A challenge the app dropped lets its decision's room go.
 func TestSeatLinkDecideRoom(t *testing.T) {
 	r := newDecideRig(t)

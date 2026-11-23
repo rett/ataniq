@@ -7,8 +7,10 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/approval/webauthntest"
@@ -146,5 +148,100 @@ func TestSeatLinkGenesisOverTheSeatApp(t *testing.T) {
 		if strings.Contains(page, "decide.js") || strings.Contains(page, `id="approve"`) {
 			t.Fatal("a project page holds a decide control")
 		}
+	}
+}
+
+// An owner who taps every 5 seconds is never told the desk is busy. The
+// interview on the pages, through the seat app, the link, the gate and a real
+// thread store, with the link's clocks moved by hand: the six rounds of the
+// web app path answered one by one, then two changes of an answer, each tap
+// followed at once by the page its post redirects to, and the card list
+// opened among them. Each tap is one call of the gate, whatever the page
+// after it asks, and the room of the interview is not spent: on the phone
+// trial every tap cost two, and the interview ran out of room at its fifth
+// round.
+func TestSeatLinkGenesisPhonePaceNeverBusy(t *testing.T) {
+	seat := newIdentity(t, "seat")
+	store := newStoreDesk(t)
+	var desk *fakeDesk
+	g := serveGateCaps(t, []string{seat.Fingerprint()}, []string{"pair", "read", "login", "genesis"},
+		func(ctx context.Context, peer seatgate.Peer, op string, params json.RawMessage) (json.RawMessage, error) {
+			switch op {
+			case OpLoginChallenge, OpLogin:
+				return desk.handle(ctx, peer, op, params)
+			case "owner.list":
+				return ownerwire.EncodeListing(ownerwire.Listing{Pending: []ownerwire.PendingItem{}, Recent: []ownerwire.RecentItem{}, Rules: []ownerwire.Rule{}})
+			}
+			return store.handle(ctx, peer, op, params)
+		})
+	desk = newFakeDesk(g.id.Fingerprint())
+	phone, err := webauthntest.New(seatRPID, seatOrigin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desk.pair(t, phone)
+	d := dialPinned(t, g, seat)
+	clock := &testClock{t: decideNow}
+	d.gnow = clock.now
+	d.budget.now = clock.now
+	br := newBrowser(seatApp(t, d))
+	if w := br.loginWith(t, phone); w.Code != 200 {
+		t.Fatalf("login: %d %s", w.Code, w.Body)
+	}
+	const pace = 5 * time.Second
+	// tap posts a form, follows its redirect as the browser does, and checks
+	// that the tap was one call of the gate and neither answer was busy.
+	taps := 0
+	tap := func(what, path string, form url.Values) *httptest.ResponseRecorder {
+		t.Helper()
+		clock.advance(pace)
+		taps++
+		before := g.calls.Load()
+		w := br.postForm(path, form)
+		if w.Code != http.StatusSeeOther {
+			t.Fatalf("%s: %d to %q", what, w.Code, w.Header().Get("Location"))
+		}
+		loc := w.Header().Get("Location")
+		page := br.do("GET", loc, "")
+		if page.Code != 200 || strings.Contains(page.Body.String(), "busy") || strings.Contains(loc, "note=busy") {
+			t.Fatalf("%s: the page after it (%q) is %d, busy or not shown:\n%s", what, loc, page.Code, page.Body)
+		}
+		if n := g.calls.Load() - before; n != 1 {
+			t.Fatalf("%s: %d calls of the gate for the tap and the page after it, want 1", what, n)
+		}
+		return w
+	}
+	w := tap("the start", "/projects/new", nil)
+	thread := strings.TrimPrefix(w.Header().Get("Location"), "/projects/")
+	rounds := []url.Values{
+		{"n0": {"kind"}, "a0": {"software"}},
+		{"n0": {"software.sub_kind"}, "a0": {"web_app"}, "n1": {"goal"}, "a1": {"own_use"}, "n2": {"audience"}, "a2": {"me"}},
+		{"n0": {"software.stack"}, "a0": {"~other"}, "t0": {"Go"}, "n1": {"software.data"}, "a1": {"~host"}, "n2": {"software.auth"}, "a2": {"passkey"}},
+		{"n0": {"software.deploy_kind"}, "a0": {"local"}, "n1": {"hosts"}, "a1": {"this_computer"}, "n2": {"budget_band"}, "a2": {"none"}},
+		{"n0": {"deliverables"}, "m0": {"first_version"}, "n1": {"quality_bar"}, "a1": {"solid"}, "n2": {"schedule"}, "a2": {"~skip"}},
+		{"n0": {"review_points"}, "m0": {"plan", "demo"}},
+	}
+	for i, form := range rounds {
+		form.Set("round", strconv.Itoa(i+1))
+		tap("round "+strconv.Itoa(i+1), "/projects/"+thread+"/answer", form)
+		if i == 3 {
+			// The card list is opened on the way: it lists the project in
+			// progress, and asks the gate once.
+			clock.advance(pace)
+			if body := br.do("GET", "/cards/", "").Body.String(); !strings.Contains(body, thread) {
+				t.Fatalf("the card list lacks the project:\n%s", body)
+			}
+		}
+	}
+	// Two changes of an answer, on the summary.
+	tap("the first change", "/projects/"+thread+"/change", url.Values{"node": {"goal"}, "a0": {"share"}})
+	tap("the second change", "/projects/"+thread+"/change", url.Values{"node": {"goal"}, "a0": {"own_use"}})
+	if taps != 9 {
+		t.Fatalf("%d taps, want 9", taps)
+	}
+	// Nine taps and one list: ten calls of the interview in 50 seconds, in a
+	// room of genesisRoom.
+	if n := len(d.budget.sent[kindGenesis]); n != 10 || n > genesisRoom {
+		t.Errorf("%d calls of the interview in the window, want 10 (room %d)", n, genesisRoom)
 	}
 }

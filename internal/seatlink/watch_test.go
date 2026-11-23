@@ -267,12 +267,12 @@ func goroutinesIn(name string) int {
 }
 
 // TestSeatLinkWaitRoomArithmetic: the waits' room is taken from the reads',
-// the interview's from the reads', the decisions' and anyone's, and the
+// the interview's from the reads' and the decisions', and the
 // rooms and the pings are the gate's rate. (The compile-time checks in
 // budget.go say the same; this keeps the numbers of the plan in view.)
 func TestSeatLinkWaitRoomArithmetic(t *testing.T) {
 	got := []int{pingRoom, decideRoom, publicRoom, readRoom, waitRoom, genesisRoom}
-	if want := []int{6, 12, 12, 14, 6, 10}; !slices.Equal(got, want) {
+	if want := []int{6, 10, 12, 14, 6, 12}; !slices.Equal(got, want) {
 		t.Errorf("the rooms (pings, decisions, anyone's, reads, waits, genesis) are %v, want %v", got, want)
 	}
 	if sum := pingRoom + decideRoom + publicRoom + readRoom + waitRoom + genesisRoom; sum != GateRate {

@@ -588,6 +588,107 @@ func TestSeatLinkGenesisMemoryForgetsReadsThatOverlappedAChange(t *testing.T) {
 	}
 }
 
+// An answer that came back is the thread's next round: the page its post
+// redirects to is one call of the gate with the answer, not two, and it shows
+// the answer's view. The view lives viewFresh, and a call on another thread
+// leaves it where it is.
+func TestSeatLinkGenesisAnswerIsTheNextRound(t *testing.T) {
+	_, d, g, clock := genesisGate(t, []string{"genesis"})
+	a := call(t, d, seatapp.GenesisCall{Verb: seatapp.GenesisVerbStart})
+	b := call(t, d, seatapp.GenesisCall{Verb: seatapp.GenesisVerbStart})
+	pick := func(th string) seatapp.GenesisCall {
+		return seatapp.GenesisCall{Verb: seatapp.GenesisVerbAnswer, Thread: th, Round: 1,
+			Answers: []seatapp.GenesisAnswer{{Node: "kind", Pick: seatapp.GenesisPick{Kind: seatapp.GenesisKindChoice, IDs: []string{"software"}}}}}
+	}
+	ansA := call(t, d, pick(a.Thread))
+	n := g.calls.Load()
+	if r := call(t, d, seatapp.GenesisCall{Verb: seatapp.GenesisVerbRound, Thread: a.Thread}); !reflect.DeepEqual(r, ansA) || r.Round != 2 || g.calls.Load() != n {
+		t.Fatalf("the round after the answer: %+v (%d calls), want the answer's %+v and none", r, g.calls.Load()-n, ansA)
+	}
+	// Another thread's answer leaves this thread's memory as it is.
+	ansB := call(t, d, pick(b.Thread))
+	n = g.calls.Load()
+	if r := call(t, d, seatapp.GenesisCall{Verb: seatapp.GenesisVerbRound, Thread: a.Thread}); !reflect.DeepEqual(r, ansA) || g.calls.Load() != n {
+		t.Fatalf("the round of the first thread after an answer on the second: %+v (%d calls)", r, g.calls.Load()-n)
+	}
+	if r := call(t, d, seatapp.GenesisCall{Verb: seatapp.GenesisVerbRound, Thread: b.Thread}); !reflect.DeepEqual(r, ansB) || g.calls.Load() != n {
+		t.Fatalf("the round of the second thread: %+v (%d calls)", r, g.calls.Load()-n)
+	}
+	// It lives viewFresh, counted from the answer.
+	clock.advance(viewFresh - time.Second)
+	call(t, d, seatapp.GenesisCall{Verb: seatapp.GenesisVerbRound, Thread: a.Thread})
+	if g.calls.Load() != n {
+		t.Fatal("a round just inside viewFresh asked the gate")
+	}
+	clock.advance(time.Second)
+	call(t, d, seatapp.GenesisCall{Verb: seatapp.GenesisVerbRound, Thread: a.Thread})
+	if g.calls.Load() != n+1 {
+		t.Fatalf("a round at viewFresh was answered from the memory (%d calls)", g.calls.Load()-n)
+	}
+}
+
+// An answer the gate refused keeps nothing and forgets its thread, and so does
+// one the link could not read: the next round asks the gate, which says where
+// the thread stands.
+func TestSeatLinkGenesisRefusedAnswerKeepsNothing(t *testing.T) {
+	f, d, g, _ := genesisGate(t, []string{"genesis"})
+	st := call(t, d, seatapp.GenesisCall{Verb: seatapp.GenesisVerbStart})
+	// The start's view is kept; a refused answer drops it.
+	f.set(nil, "genesis-stale-round")
+	_, err := d.Genesis(bg, seatapp.GenesisCall{Verb: seatapp.GenesisVerbAnswer, Thread: st.Thread, Round: 1,
+		Answers: []seatapp.GenesisAnswer{{Node: "kind", Pick: seatapp.GenesisPick{Kind: seatapp.GenesisKindChoice, IDs: []string{"software"}}}}})
+	if !errors.Is(err, seatapp.ErrGenesisStaleRound) {
+		t.Fatalf("a refused answer: %v", err)
+	}
+	f.set(nil, "")
+	n := g.calls.Load()
+	if r := call(t, d, seatapp.GenesisCall{Verb: seatapp.GenesisVerbRound, Thread: st.Thread}); r.Round != 1 || g.calls.Load() != n+1 {
+		t.Fatalf("the round after a refused answer: %+v (%d calls), want one call and round 1", r, g.calls.Load()-n)
+	}
+}
+
+// Two changes of threads that overlap keep neither answer, and the memory is
+// left holding nothing of the thread: each began or ended while the other
+// was out. A change that ran alone is kept.
+func TestSeatLinkGenesisMemoryKeepsNeitherOfTwoOverlappingChanges(t *testing.T) {
+	const th = "0123456789abcdef"
+	now := decideNow
+	var m genesisMemory
+	first := seatapp.GenesisCall{Verb: seatapp.GenesisVerbAnswer, Thread: th}
+	second := seatapp.GenesisCall{Verb: seatapp.GenesisVerbChange, Thread: th}
+	g1, _, _ := m.before(first, now)
+	g2, _, _ := m.before(second, now)
+	m.after(first, res(th, 2), g1, now)
+	m.after(second, res(th, 3), g2, now)
+	if _, _, ok := m.before(seatapp.GenesisCall{Verb: seatapp.GenesisVerbRound, Thread: th}, now); ok || len(m.views) != 0 {
+		t.Fatalf("overlapping changes left %d views kept", len(m.views))
+	}
+	// The same two, ended in the other order.
+	m = genesisMemory{}
+	g1, _, _ = m.before(first, now)
+	g2, _, _ = m.before(second, now)
+	m.after(second, res(th, 3), g2, now)
+	m.after(first, res(th, 2), g1, now)
+	if len(m.views) != 0 {
+		t.Fatalf("overlapping changes, ended the other way, left %d views kept", len(m.views))
+	}
+	// A change on another thread that overlaps keeps neither as well (the
+	// link holds one generation), but what was kept of a third thread
+	// before both began stays.
+	m = genesisMemory{}
+	other := "fedcba9876543210"
+	og, _, _ := m.before(seatapp.GenesisCall{Verb: seatapp.GenesisVerbRound, Thread: other}, now)
+	m.after(seatapp.GenesisCall{Verb: seatapp.GenesisVerbRound, Thread: other}, res(other, 1), og, now)
+	g1, _, _ = m.before(first, now)
+	m.after(first, res(th, 2), g1, now)
+	if _, got, ok := m.before(seatapp.GenesisCall{Verb: seatapp.GenesisVerbRound, Thread: other}, now); !ok || got.Round != 1 {
+		t.Fatalf("another thread's memory after a change: %d (%v), want its round 1 kept", got.Round, ok)
+	}
+	if _, got, ok := m.before(seatapp.GenesisCall{Verb: seatapp.GenesisVerbRound, Thread: th}, now); !ok || got.Round != 2 {
+		t.Fatalf("the changed thread's memory: %d (%v), want the answer's round 2", got.Round, ok)
+	}
+}
+
 // A summary's rows carry no question when the thread is walked under a
 // catalog this build does not hold.
 func TestSeatLinkGenesisRowsOfAnotherCatalogHaveNoQuestion(t *testing.T) {
