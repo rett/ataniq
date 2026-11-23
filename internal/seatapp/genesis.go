@@ -88,7 +88,8 @@ func changeHref(thread, node string) string {
 var genesisNotes = map[string]string{
 	"bad":         "That answer was not accepted. Look at the question again.",
 	"secret":      "That looks like a password or key. Never type those here; say that a credential is needed instead.",
-	"over-cap":    "That answer is too long for the project. Give a shorter one.",
+	"over-cap":    "That answer would take the project past what it can hold, so it was not taken. Give a shorter one.",
+	"long":        "Your own words were too long, so nothing was sent. Keep them to about 200 letters (accents and emoji take more room) and send again.",
 	"unknown":     "That project is not open. It may have been finished, discarded or left for 14 days.",
 	"done":        "This project is finished. Its answers can no longer change.",
 	"stale":       "That round was already answered.",
@@ -114,6 +115,8 @@ func noteWord(err error) string {
 		return "bad"
 	case errors.Is(err, ErrGenesisSecretShaped):
 		return "secret"
+	case errors.Is(err, errOwnWordsTooLong):
+		return "long"
 	case errors.Is(err, ErrGenesisOverCap):
 		return "over-cap"
 	case errors.Is(err, ErrGenesisUnknownThread):
@@ -559,10 +562,17 @@ const (
 // errNoPick is the error of a question of the form left unanswered.
 var errNoPick = errors.New("seatapp: no answer")
 
+// errOwnWordsTooLong is the error of own words past [MaxGenesisOther] bytes,
+// which the page tells apart from a brief past its cap: what the owner typed
+// was too long, and nothing was sent. The field's maxlength is 200 too, but a
+// browser counts it in UTF-16 code units, not in bytes, so text with accents
+// or emoji can be cut short of it and still be too long here.
+var errOwnWordsTooLong = errors.New("seatapp: own words past their cap")
+
 // pickOf reads the answer to question i of a posted form: the option ids of
 // a<i> (one choice) or m<i> (several), the owner's own words t<i>, or one of
 // the three other picks. Own words with no pick made are an "other". It
-// returns errNoPick when nothing was given, ErrGenesisOverCap for own words
+// returns errNoPick when nothing was given, errOwnWordsTooLong for own words
 // past their cap, and ErrGenesisBadAnswer for a form that does not agree with
 // itself (two kinds at once, own words with an option, words that are not
 // plain text). Nothing of the form is in an error.
@@ -575,7 +585,7 @@ func pickOf(form url.Values, i int) (GenesisPick, error) {
 	}
 	if text != "" {
 		if len(text) > MaxGenesisOther {
-			return GenesisPick{}, ErrGenesisOverCap
+			return GenesisPick{}, errOwnWordsTooLong
 		}
 		if !plainText(text) {
 			return GenesisPick{}, ErrGenesisBadAnswer

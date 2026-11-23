@@ -2,7 +2,7 @@
   daemon's gate lists `genesis`: a "New project" button on the card list and
   the projects in progress, then pages of one to three multiple-choice
   questions of the desk's own catalog (each option with a one-line example,
-  "Other" in your own words of up to 200 characters, "You decide for me" and
+  "Other" in your own words, a short note of about 200 letters (200 bytes), "You decide for me" and
   "Skip" where the question allows them), a summary grouped by what you chose,
   what was decided for you and the defaults, a "Change" on each row, "Looks
   right: finish" and "Discard this project". The pages are made on the server

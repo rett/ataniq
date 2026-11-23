@@ -323,8 +323,9 @@
 // refusal is never retried. A question is a fieldset of real inputs: radio
 // buttons for a single choice, a yes-or-no question and a scale of 1 to 5,
 // check boxes for a multiple choice, each option with its label and its
-// example as text; "Other" with a text field of 200 characters only where
-// the question takes the owner's own words, and "You decide for me" and
+// example as text; "Other" with a text field for a short note (200 bytes,
+// "about 200 letters" on the page, maxlength 200) only where the question
+// takes the owner's own words, and "You decide for me" and
 // "Skip" only where it allows them. A form whose fields do not agree (two
 // kinds at once, own words with an option, words that are not plain text or
 // are past 200 bytes) is refused before the port is asked. Every refusal is

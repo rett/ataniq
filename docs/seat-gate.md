@@ -452,8 +452,9 @@ three multiple-choice questions about a project you want to make (what kind,
 what it is for, who it is for, how it is built or published, by when). The
 questions are the desk's own, from its fixed catalog, and so is the order they
 come in. Each question offers its options, each with a one-line example, and,
-where the question allows them, "Other" (your own words, up to 200
-characters), "You decide for me" and "Skip". After the last round you read the
+where the question allows them, "Other" (your own words, a short note of
+about 200 letters: the cap is 200 bytes, so accents and emoji take more room),
+"You decide for me" and "Skip". After the last round you read the
 summary: what you chose, what was decided for you and what was left to its
 default; "Change" on a row asks that question again (a change clears the later
 answers that depended on it, and the page says how many), "Looks right:

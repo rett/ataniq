@@ -562,7 +562,7 @@ func TestGenesisFormsThatDoNotAgreeAreNotSent(t *testing.T) {
 		"words with a control byte": {url.Values{"round": {"2"}, "n0": {"kind"}, "t0": {"MARKER\x07words"}}, "bad"},
 		"words not utf-8":           {url.Values{"round": {"2"}, "n0": {"kind"}, "t0": {"MARKER\xffwords"}}, "bad"},
 		"words twice":               {url.Values{"round": {"2"}, "n0": {"kind"}, "t0": {"MARKER", "words"}}, "bad"},
-		"words over 200 bytes":      {url.Values{"round": {"2"}, "n0": {"kind"}, "t0": {"MARKER" + long}}, "over-cap"},
+		"words over 200 bytes":      {url.Values{"round": {"2"}, "n0": {"kind"}, "t0": {"MARKER" + long}}, "long"},
 	} {
 		r, g, s := genesisRig(t)
 		w := r.postForm("/projects/"+testThread+"/answer", c.form, s)
@@ -588,7 +588,7 @@ func TestGenesisRefusalsAreFixedNotes(t *testing.T) {
 	}{
 		{ErrGenesisSecretShaped, "/projects/" + testThread + "?note=secret", "That looks like a password or key. Never type those here; say that a credential is needed instead."},
 		{ErrGenesisBadAnswer, "/projects/" + testThread + "?note=bad", "That answer was not accepted. Look at the question again."},
-		{ErrGenesisOverCap, "/projects/" + testThread + "?note=over-cap", "That answer is too long for the project. Give a shorter one."},
+		{ErrGenesisOverCap, "/projects/" + testThread + "?note=over-cap", "That answer would take the project past what it can hold, so it was not taken. Give a shorter one."},
 		{ErrGenesisDone, "/projects/" + testThread + "?note=done", "This project is finished. Its answers can no longer change."},
 		{ErrGenesisStaleRound, "/projects/" + testThread + "?note=stale", "That round was already answered."},
 		{ErrGenesisUnknownThread, "/projects/?note=unknown", "That project is not open. It may have been finished, discarded or left for 14 days."},
@@ -628,6 +628,35 @@ func TestGenesisRefusalsAreFixedNotes(t *testing.T) {
 	if page := r.getWith("/projects/"+testThread+"?note=%3Cscript%3E", s).Body.String(); strings.Contains(page, "note-line") || strings.Contains(page, "script%3E") {
 		t.Error("an unknown note was shown")
 	}
+}
+
+// The cap of the owner's own words is in bytes, and the field says so in plain
+// words: a short note, about 200 letters. Its maxlength is 200 too, as near as
+// HTML comes (a browser counts UTF-16 code units), so words of fewer than 200
+// letters with accents can still be too long; the note then says what
+// happened, and nothing is sent.
+func TestGenesisOwnWordsAreCappedInBytes(t *testing.T) {
+	r, g, s := genesisRig(t)
+	page := r.getWith("/projects/"+testThread, s).Body.String()
+	if !strings.Contains(page, "Your own words (a short note, about 200 letters; never a password or key)") ||
+		!strings.Contains(page, `maxlength="200"`) || strings.Contains(page, "200 characters") {
+		t.Errorf("the own words' field:\n%s", page)
+	}
+	// 150 letters of two bytes each: 300 bytes.
+	w := r.postForm("/projects/"+testThread+"/answer", url.Values{"round": {"2"}, "n0": {"kind"}, "t0": {strings.Repeat("é", 150)}}, s)
+	seeOtherTo(t, "accented words past 200 bytes", w, "/projects/"+testThread+"?note=long")
+	for _, c := range g.seen() {
+		if c.Verb == GenesisVerbAnswer {
+			t.Errorf("the port was given %+v", c)
+		}
+	}
+	note := r.getWith("/projects/"+testThread+"?note=long", s).Body.String()
+	if !strings.Contains(note, "Your own words were too long, so nothing was sent. Keep them to about 200 letters (accents and emoji take more room) and send again.") {
+		t.Errorf("the page after:\n%s", note)
+	}
+	// 200 bytes are taken.
+	w = r.postForm("/projects/"+testThread+"/answer", url.Values{"round": {"2"}, "n0": {"kind"}, "t0": {strings.Repeat("é", 100)}}, s)
+	seeOtherTo(t, "200 bytes", w, "/projects/"+testThread)
 }
 
 // The start: a new project's page, or the project list with a line when two

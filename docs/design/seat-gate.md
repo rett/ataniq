@@ -2089,8 +2089,13 @@ A round's page shows "Round N of M" and the required answers given, and each
 question as a fieldset of real inputs: radio buttons for a single choice, a
 yes-or-no question and a scale of 1 to 5, check boxes for a multiple choice,
 each option with its label and its example as text; "Other" with a text field
-of `maxlength` 200 only when the question allows it, and "You decide for me"
-and "Skip" only when the question allows them; one submit button. The summary
+of `maxlength` 200 only when the question allows it, labelled "a short note,
+about 200 letters" (the cap is 200 bytes, and a browser counts `maxlength` in
+UTF-16 code units, so words with accents or emoji can be cut short of it and
+still be too long; the post is then refused before the port is asked, with the
+note "Your own words were too long, so nothing was sent. ..."), and "You
+decide for me" and "Skip" only when the question allows them; one submit
+button. The summary
 shows the three groups (what you chose, what was decided for you, the
 defaults), the owner's own words quoted and marked as the owner's, a "Change"
 link on each row whose question the link holds, a "Looks right: finish" button
