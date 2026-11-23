@@ -43,12 +43,21 @@ self.addEventListener("push", function (event) {
   event.waitUntil(self.registration.showNotification(titleOf(event), { tag: TAG, renotify: false }));
 });
 
-// openCards focuses a window of this origin that is open, if there is one,
-// and takes it to the Cards list; otherwise it opens a window on the list.
+// openCards takes a window of this origin that is open, if there is one, to
+// the Cards list and focuses it; otherwise it opens a window on the list.
+// The windows asked for include those the worker does not control (the page
+// that registered it stays uncontrolled until it is loaded again, and the
+// worker does not take control of it), so a tap works at the first notice too. Such a
+// window cannot be navigated by a worker, so navigate() comes first, before
+// anything that uses up the tap's one permission to show a window, and when
+// it is refused the list is opened in a window of its own. Only a window that
+// was navigated is focused.
 function openCards() {
   return self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(function (windows) {
     if (windows.length > 0) {
-      return windows[0].focus().then(function (w) { return w.navigate(CARDS_PATH); });
+      return windows[0].navigate(CARDS_PATH).then(function (w) {
+        return w ? w.focus() : w;
+      });
     }
     return self.clients.openWindow(CARDS_PATH);
   }).catch(function () {

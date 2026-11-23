@@ -21,7 +21,7 @@
 //
 // run serves the seatnotice protocol (package seatnotice) on the Unix socket
 // --socket, an absolute path, made with mode 0660 (its group is the process's
-// group: the unit runs as group seat). Only the user --seat-user, looked up
+// group: the unit runs as its own group, seat-notify, which the seat's unit joins as a supplementary group). Only the user --seat-user, looked up
 // once at the start (the command refuses to start when the name is unknown),
 // is served: the kernel's peer credentials decide, the socket's mode is not
 // relied on. --vapid-key is the key file vapid-init made. --subscriptions is
@@ -86,7 +86,7 @@ const defaultPushHosts = "web.push.apple.com"
 // reach.
 const defaultTTL = time.Hour
 
-// socketMode is the socket's permission bits: the seat's group may connect;
+// socketMode is the socket's permission bits: the notifier's group, which the seat joins, may connect;
 // the kernel's peer credentials decide who is served.
 const socketMode = 0o660
 

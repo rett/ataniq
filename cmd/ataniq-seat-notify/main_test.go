@@ -335,6 +335,33 @@ func TestRunServesTheSeatUser(t *testing.T) {
 	}
 }
 
+// TestRunNotifyWaitsForASlowPush: a push that the push service takes 2.5
+// seconds over, longer than the 2 seconds of the other calls, is still
+// accepted and counted through the socket, with the client's and the server's
+// default deadlines for a notify.
+func TestRunNotifyWaitsForASlowPush(t *testing.T) {
+	p := newPush(t)
+	r := start(t, p, uint32(os.Getuid()))
+	c := r.client(t)
+	ctx := context.Background()
+	hold := make(chan struct{})
+	p.mu.Lock()
+	p.hold["/p/slow"] = hold
+	p.mu.Unlock()
+	if err := c.Subscribe(ctx, p.subscription(t, "/p/slow")); err != nil {
+		t.Fatal(err)
+	}
+	time.AfterFunc(2500*time.Millisecond, func() { close(hold) })
+	begin := time.Now()
+	sent, err := c.NotifySent(ctx, 2)
+	if err != nil || sent != 1 {
+		t.Fatalf("a push that took %v: sent %d: %v", time.Since(begin), sent, err)
+	}
+	if time.Since(begin) < 2*time.Second {
+		t.Errorf("the push was held for only %v", time.Since(begin))
+	}
+}
+
 // TestRunServesOnlyTheSeatUser: a peer that is not the seat user's id is
 // closed unread, and the subscriptions it would have changed are not.
 func TestRunServesOnlyTheSeatUser(t *testing.T) {

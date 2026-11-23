@@ -10,6 +10,7 @@ import (
 	"image"
 	"image/png"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -740,8 +741,9 @@ func TestPushServiceWorkerHeaders(t *testing.T) {
 
 // TestSeatCSPOpensManifestAndWorkerOnly: the policy has the two directives of
 // the notices, both 'self', and its other directives are as they were: closed
-// by default, no inline, Trusted Types required, and no trusted-types
-// directive (which is what lets push.js make its one policy).
+// by default, no inline, Trusted Types required, and a trusted-types
+// directive that names the one policy push.js makes, seat-sw, and nothing
+// else, with no allow-duplicates.
 func TestSeatCSPOpensManifestAndWorkerOnly(t *testing.T) {
 	r := newRig(t)
 	csp := r.do("GET", "/healthz", nil, nil).Header().Get("Content-Security-Policy")
@@ -753,12 +755,12 @@ func TestSeatCSPOpensManifestAndWorkerOnly(t *testing.T) {
 	want := map[string]string{
 		"default-src": "'none'", "script-src": "'self'", "style-src": "'self'", "connect-src": "'self'", "img-src": "'self'",
 		"manifest-src": "'self'", "worker-src": "'self'", "base-uri": "'none'", "form-action": "'self'",
-		"frame-ancestors": "'none'", "require-trusted-types-for": "'script'",
+		"frame-ancestors": "'none'", "require-trusted-types-for": "'script'", "trusted-types": "seat-sw",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("CSP directives %v, want %v", got, want)
 	}
-	if strings.Contains(csp, "unsafe") || strings.Contains(csp, "trusted-types ") || strings.Contains(csp, "data:") || strings.Contains(csp, "blob:") {
+	if strings.Contains(csp, "unsafe") || strings.Contains(csp, "allow-duplicates") || strings.Contains(csp, "'none'; trusted") || strings.Contains(csp, "data:") || strings.Contains(csp, "blob:") {
 		t.Errorf("CSP %q", csp)
 	}
 }
@@ -906,6 +908,25 @@ func TestSeatServiceWorkerTapOpensOnlyTheCardList(t *testing.T) {
 		if !strings.Contains(js, want) {
 			t.Errorf("sw.js lacks %q", want)
 		}
+	}
+	// A tap works before the worker controls any page: the windows asked for
+	// include the uncontrolled ones, the worker does not claim the page or
+	// handle requests to control it, and a window is navigated before it is
+	// focused (a worker cannot navigate an uncontrolled window, and the
+	// refusal opens the list in a window of its own, which focus() must not
+	// have used the tap's permission for first).
+	if n := strings.Count(js, "matchAll("); n != 1 {
+		t.Errorf("sw.js asks for windows in %d places", n)
+	}
+	if strings.Contains(js, "clients.claim") || strings.Contains(js, `"fetch"`) {
+		t.Error("sw.js claims clients or handles fetches")
+	}
+	nav, foc := strings.Index(js, ".navigate(CARDS_PATH)"), strings.Index(js, ".focus()")
+	if nav < 0 || foc < 0 || nav > foc {
+		t.Errorf("sw.js focuses before it navigates (navigate at %d, focus at %d)", nav, foc)
+	}
+	if !strings.Contains(js, "}).catch(function () {\n    return self.clients.openWindow(CARDS_PATH);") {
+		t.Error("a window that cannot be navigated does not fall back to opening the list")
 	}
 	if strings.Contains(click, "event.data") {
 		t.Error("the click handler reads event data")
@@ -1202,5 +1223,53 @@ func TestSeatPushScriptRegistersThroughAPolicy(t *testing.T) {
 	// The register call is given the policy's answer, not a string.
 	if !strings.Contains(js, "register(swScriptURL(), ") {
 		t.Error("push.js registers with something other than the policy's answer")
+	}
+}
+
+// TestSeatCSPNamesEveryTrustedTypesPolicy: every policy any script of the app
+// creates is one the CSP's trusted-types directive names, and the directive
+// names no policy that no script creates, so a policy the page makes is not
+// refused and none can be made that the app does not know.
+func TestSeatCSPNamesEveryTrustedTypesPolicy(t *testing.T) {
+	r := newRig(t, withPush(&fakePush{}))
+	csp := r.do("GET", "/healthz", nil, nil).Header().Get("Content-Security-Policy")
+	var named []string
+	for _, d := range strings.Split(csp, ";") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(d), "trusted-types "); ok {
+			named = strings.Fields(v)
+		}
+	}
+	scripts, err := fs.Glob(assetFS, "assets/*.js")
+	if err != nil || len(scripts) == 0 {
+		t.Fatalf("scripts %v: %v", scripts, err)
+	}
+	created := map[string]bool{}
+	for _, p := range scripts {
+		b, err := fs.ReadFile(assetFS, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		code := codeOnly(string(b))
+		if strings.Contains(code, "createPolicy") {
+			for _, m := range regexp.MustCompile(`createPolicy\(\s*([^,)]*)`).FindAllStringSubmatch(code, -1) {
+				name := strings.Trim(strings.TrimSpace(m[1]), `"'`)
+				created[name] = true
+			}
+			if n := len(regexp.MustCompile(`createPolicy\(`).FindAllString(code, -1)); n != 1 {
+				t.Errorf("%s makes %d policies", p, n)
+			}
+		}
+	}
+	if len(created) == 0 {
+		t.Fatal("no script makes a policy: the directive is for nothing")
+	}
+	want := make([]string, 0, len(created))
+	for n := range created {
+		want = append(want, n)
+	}
+	sort.Strings(want)
+	sort.Strings(named)
+	if !reflect.DeepEqual(named, want) {
+		t.Errorf("the CSP names the policies %v, the scripts make %v", named, want)
 	}
 }

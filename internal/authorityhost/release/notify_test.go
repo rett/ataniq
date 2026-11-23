@@ -150,6 +150,15 @@ func TestNotifyCoverage(t *testing.T) {
 			replace(t, s, "share/validators.list", "caddy validate", "systemd-analyze verify {release}/etc/systemd/system/ataniq-seat-notify-two.service\ncaddy validate")
 			replace(t, s, "share/reload.list", "systemctl restart caddy", "systemctl restart ataniq-seat-notify-two.service\nsystemctl restart caddy")
 		}, want: []string{"stop-missing: ataniq-seat-notify-two"}},
+		{name: "a unit of the notifier's name that runs the seat's binary is stopped", mutate: func(t *testing.T, s string) {
+			replace(t, s, "etc/systemd/system/ataniq-seat-notify.service", "{release}/bin/ataniq-seat-notify", "{release}/bin/ataniq-seat")
+		}, want: []string{"stop-missing: ataniq-seat-notify"}},
+		{name: "a drop-in of the notifier's name that runs another binary is stopped", mutate: func(t *testing.T, s string) {
+			set(t, s, "etc/systemd/system/ataniq-seat-notify.service.d/10-x.conf", "[Service]\nExecStart=\nExecStart={release}/bin/ataniq-seat run\n")
+		}, want: []string{"stop-missing: ataniq-seat-notify"}},
+		{name: "a second ExecStart of the notifier's unit that runs another binary is stopped", mutate: func(t *testing.T, s string) {
+			replace(t, s, "etc/systemd/system/ataniq-seat-notify.service", "\nRestart=on-failure", "\nExecStart={release}/bin/ataniq-seat\nRestart=on-failure")
+		}, want: []string{"stop-missing: ataniq-seat-notify"}},
 		{name: "the notifier alone is no decision service", mutate: func(t *testing.T, s string) {
 			os.Remove(filepath.Join(s, "etc/systemd/system/ataniq-seat.service"))
 			replace(t, s, "share/validators.list", "systemd-analyze verify {release}/etc/systemd/system/ataniq-seat.service\n", "")
@@ -170,8 +179,8 @@ func TestNotifyCoverage(t *testing.T) {
 	}
 }
 
-// TestNotifyUnit: the notifier's unit runs as its own user, in the group
-// seat, with the arguments the design asks for, no network address of its own
+// TestNotifyUnit: the notifier's unit runs as its own user, in a group of its
+// own (seat-notify, never the seat's), with the arguments the design asks for, no network address of its own
 // (the owner's drop-in allows the resolver and the push range), no listener,
 // the seat's hardening, and never an [Install] section.
 func TestNotifyUnit(t *testing.T) {
@@ -201,7 +210,7 @@ func TestNotifyUnit(t *testing.T) {
 		t.Errorf("ExecStart has other arguments: %q", exec)
 	}
 	for key, want := range map[string]string{
-		"Service.User": "seat-notify", "Service.Group": "seat",
+		"Service.User": "seat-notify", "Service.Group": "seat-notify",
 		"Service.EnvironmentFile":         "/etc/authority-host/seat-notify/seat-notify.env",
 		"Service.RuntimeDirectory":        "seat-notify",
 		"Service.RuntimeDirectoryMode":    "0750",
@@ -235,13 +244,15 @@ func TestNotifyUnit(t *testing.T) {
 		t.Errorf("SystemCallFilter %q", got)
 	}
 	// The seat's hardening is the notifier's: every hardening key of the
-	// seat's unit is there with the same value, but the sizes, the user and
-	// the network.
+	// seat's unit is there with the same value, but the sizes, the user, the
+	// groups and the network. SupplementaryGroups is the one key the seat's
+	// unit has and the notifier's does not: it is how the seat reaches the
+	// notifier's group (see TestNotifyGroupIsolation).
 	seat := unitKeys(string(mustRead(t, filepath.Join(seatTree, "etc/systemd/system/ataniq-seat.service"))))
 	own := map[string]bool{
 		"Service.User": true, "Service.Group": true, "Service.ExecStart": true, "Service.EnvironmentFile": true,
 		"Service.RuntimeDirectory": true, "Service.StateDirectory": true, "Service.MemoryMax": true, "Service.TasksMax": true,
-		"Unit.Description": true,
+		"Unit.Description": true, "Service.SupplementaryGroups": true,
 	}
 	for k, v := range seat {
 		if own[k] || k[0] == '[' {
@@ -343,8 +354,41 @@ func TestNotifySeatUnitTakesTheOptionalFlag(t *testing.T) {
 			t.Errorf("%s = %q, want %q", key, got, want)
 		}
 	}
-	if _, ok := keys["Service.SupplementaryGroups"]; ok {
-		t.Error("the seat needs no supplementary group: its own group owns the notifier's socket folder")
+}
+
+// TestNotifyGroupIsolation: the notifier, the one unit with egress, has a
+// group of its own and none of the seat's, so it cannot reach the seat's
+// socket (/run/seat, group seat); the seat reaches the notifier's socket by
+// naming the notifier's group, and only that, as supplementary.
+func TestNotifyGroupIsolation(t *testing.T) {
+	notifier := unitKeys(string(mustRead(t, filepath.Join(notifyTree, "etc/systemd/system/ataniq-seat-notify.service"))))
+	seat := unitKeys(string(mustRead(t, filepath.Join(seatTree, "etc/systemd/system/ataniq-seat.service"))))
+	if got := notifier["Service.Group"]; len(got) != 1 || got[0] != "seat-notify" {
+		t.Errorf("the notifier's Group = %q, want seat-notify", got)
+	}
+	if got, ok := notifier["Service.SupplementaryGroups"]; ok {
+		t.Errorf("the notifier has supplementary groups %q", got)
+	}
+	for k, vs := range notifier {
+		if !strings.HasPrefix(k, "Service.") || k == "Service.RuntimeDirectory" || k == "Service.StateDirectory" {
+			continue
+		}
+		for _, v := range vs {
+			if k == "Service.ExecStart" || k == "Service.User" {
+				continue
+			}
+			for _, f := range strings.Fields(v) {
+				if f == "seat" {
+					t.Errorf("the notifier's %s names the group seat: %q", k, v)
+				}
+			}
+		}
+	}
+	if got := seat["Service.SupplementaryGroups"]; len(got) != 1 || got[0] != "seat-notify" {
+		t.Errorf("the seat's SupplementaryGroups = %q, want exactly seat-notify", got)
+	}
+	if got := seat["Service.Group"]; len(got) != 1 || got[0] != "seat" {
+		t.Errorf("the seat's Group = %q", got)
 	}
 }
 

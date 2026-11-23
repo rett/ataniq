@@ -22,9 +22,12 @@ const (
 	// subscriptions together, whatever the seat asks: a seat that went wrong
 	// cannot make the phone buzz without end. Each push attempt counts.
 	maxPushesPerHour = 30
-	// pushTimeout bounds one push; the connection's turn (2 seconds, see
-	// seatnotice.DefaultDeadline) bounds all the pushes of one notify.
-	pushTimeout = 5 * time.Second
+	// pushTimeout bounds one push; notifyTimeout bounds all the pushes of
+	// one notify, within the connection's turn for a notify (15 seconds, see
+	// seatnotice.DefaultNotifyDeadline) so the notifier answers before the
+	// seat gives up, and the seat's own call bound is longer still.
+	pushTimeout   = 5 * time.Second
+	notifyTimeout = 12 * time.Second
 	// codeRateLimited is answered when the hour's pushes are spent and none
 	// could be sent; the seat tries again after its own backoff.
 	codeRateLimited = "rate_limited"
@@ -85,7 +88,10 @@ type notifier struct {
 	// turn lets one notify send at a time; a call that cannot get it before
 	// its context ends is answered unavailable.
 	turn chan struct{}
-	logf func(format string, args ...any)
+	// total bounds all the pushes of one notify, pushWait each; notifyTimeout
+	// and pushTimeout unless a test sets them.
+	total, pushWait time.Duration
+	logf            func(format string, args ...any)
 }
 
 var _ seatnotice.Handler = (*notifier)(nil)
@@ -94,6 +100,7 @@ func newNotifier(key *webpush.VAPIDKey, st *store, push pusher, allow func(strin
 	return &notifier{
 		pub: key.PublicKeyString(), store: st, push: push, allow: allow, ttl: ttl,
 		limit: limit, turn: make(chan struct{}, 1), logf: logf,
+		total: notifyTimeout, pushWait: pushTimeout,
 	}
 }
 
@@ -167,8 +174,8 @@ func (n *notifier) Unsubscribe(ctx context.Context, endpointSHA256 string) error
 
 // Notify sends {"n":N} to every subscription, one after the other, with the
 // topic "waiting", urgency normal and the configured TTL, as far as the
-// call's context allows (its turn is 2 seconds) and the hour's bound of
-// pushes. A subscription the push service says is gone is dropped; any other
+// call's context allows (its turn is 15 seconds; the notify is bounded to 12
+// in all, each push to 5) and the hour's bound of pushes. A subscription the push service says is gone is dropped; any other
 // failure keeps it. It returns how many pushes the service accepted. When
 // none was and something other than a gone subscription stopped them, it
 // answers rate_limited (the hour's pushes were spent) or unavailable, so the
@@ -182,6 +189,8 @@ func (n *notifier) Notify(ctx context.Context, count int) (int, error) {
 	if len(subs) == 0 {
 		return 0, nil
 	}
+	ctx, cancelAll := context.WithTimeout(ctx, n.total)
+	defer cancelAll()
 	select {
 	case n.turn <- struct{}{}:
 		defer func() { <-n.turn }()
@@ -209,7 +218,7 @@ func (n *notifier) Notify(ctx context.Context, count int) (int, error) {
 			failed++
 			continue
 		}
-		pctx, cancel := context.WithTimeout(ctx, pushTimeout)
+		pctx, cancel := context.WithTimeout(ctx, n.pushWait)
 		err := n.push.Send(pctx, ws, payload, opt)
 		cancel()
 		switch {

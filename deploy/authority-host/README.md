@@ -2432,7 +2432,12 @@ release or in this repository.
    `seat:seat` 0660 in a 0750 folder, as a member of the group; the group
    gives it nothing else, as the seat's files are 0600 and its state
    folder 0700). Caddy reads its groups when it starts: the switch's
-   reload restarts it.
+   reload restarts it. Also make the notifier's group now,
+   `groupadd --system seat-notify`: the seat's unit names it as a
+   supplementary group (how the seat reaches the notifier's socket, see "The
+   notifier"), and a unit that names a group the host does not know does not
+   start, so the group must exist before the first switch to a seat release,
+   with or without the notifier.
 2. The owner's files, in a new folder `/etc/authority-host/seat`
    (root-owned, 0755), each root-owned, mode 0644 and not writable by
    group or others:
@@ -2601,7 +2606,9 @@ and this folder's.
 
 - `etc/systemd/system/ataniq-seat-notify.service`: the service. It runs
   `{release}/bin/ataniq-seat-notify run` (the release's own binary) as user
-  `seat-notify` and group `seat`, with
+  `seat-notify` and group `seat-notify` (a group of its own: the notifier is
+  in no group of the seat's, so it cannot reach the seat's socket in
+  `/run/seat`), with
   `--socket /run/seat-notify/notify.sock`, `--seat-user seat`,
   `--vapid-key /var/lib/seat-notify/vapid.pem`,
   `--subscriptions /var/lib/seat-notify/subscriptions.json` and
@@ -2609,16 +2616,20 @@ and this folder's.
   `EnvironmentFile=/etc/authority-host/seat-notify/seat-notify.env`. The
   push host is the command's default, exactly `web.push.apple.com`, and the
   TTL its default, one hour. `RuntimeDirectory=seat-notify` makes
-  `/run/seat-notify` (`seat-notify:seat`, 0750), where the unit makes its
-  socket with mode 0660 and group `seat` (the unit's group), so that the
-  seat's user reaches it; `StateDirectory=seat-notify` makes
+  `/run/seat-notify` (`seat-notify:seat-notify`, 0750), where the unit makes
+  its socket with mode 0660 and group `seat-notify` (the unit's group), so
+  that the seat's user reaches it as a member of that group: the seat's unit
+  names `SupplementaryGroups=seat-notify`; `StateDirectory=seat-notify` makes
   `/var/lib/seat-notify` (0700) for the key and the subscriptions. The
   network: `IPAddressDeny=any` and no `IPAddressAllow=` in the file (the
   owner's drop-in allows the resolver and the push range, below),
   `SocketBindDeny=any` (no listener on any address) and
   `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`. The hardening and the
   `SystemCallFilter=@system-service ~@privileged @resources` are the seat's
-  (a test holds every key the two units share to the same value), with
+  (a test holds every key the two units share to the same value, but the
+  user, the groups, the folders, the sizes and the network, which differ on
+  purpose; another holds that the notifier names no group `seat` and the
+  seat's unit names `seat-notify` as its one supplementary group), with
   `MemoryMax=128M` and `TasksMax=32`. It has no `[Install]` section and is
   never enabled: only the release's `reload.list` starts it.
 - `share/validators.list`: the seat's list with
@@ -2633,7 +2644,11 @@ and this folder's.
 the notifier decides nothing. `ah-release check` asks every unit that starts
 a program to be stopped in `stop.list`, and excuses this one unit, by its
 name, from that (and from counting as the decision service a release that is
-not static must have); it asks it a validator and a restart like any other.
+not static must have), but only while every `ExecStart` of the unit and of
+its drop-ins runs the release's `bin/ataniq-seat-notify` and no other binary
+of the release: a unit of that name that runs another binary (the seat's, say)
+is stopped like any other, so the name cannot hide a decision service. It
+asks it a validator and a restart like any other.
 `units.allow` and `ports.allow` are not changed either: the unit is never
 enabled, and it listens on no TCP port. The seat's unit gets one optional
 word, `$SEAT_NOTIFY_ARGS`, which is nothing unless the owner's `seat.env`
@@ -2654,7 +2669,8 @@ either.
   host does not know it) and the kernel's peer credentials decide for each
   connection, not the socket's mode. A connection of any other user is
   closed unread. One request and one answer per connection, 2 seconds at
-  most.
+  most, except `notify`, which sends its pushes before it answers and has 15
+  seconds (the request is still read within the 2).
 - `info` answers the VAPID public key (what the phone subscribes with) and
   how many subscriptions it holds. `subscribe` keeps a subscription (at
   most 4; the same endpoint again replaces its keys; an endpoint that is not
@@ -2668,9 +2684,11 @@ either.
   nothing else, encrypted for that subscription, with the topic `waiting`
   (a notice not yet delivered is replaced by the next), urgency `normal` and
   a TTL of one hour. A subscription the push service says is gone (404 or
-  410) is dropped; one that failed otherwise is kept. The sends all fit the
-  connection's 2 seconds; a slow push service may leave later subscriptions
-  for the seat's next try, a minute on. At most 30 pushes are made in any
+  410) is dropped; one that failed otherwise is kept. One push is
+  given 5 seconds and the whole notify 12, inside the connection's 15 (the
+  seat's own bound on the call is 20), so up to four subscriptions fit when the
+  push service answers in the usual time; a slow push service may leave later
+  subscriptions for the seat's next try. At most 30 pushes are made in any
   hour, all subscriptions together, whatever the seat asks: past that the
   answer is `rate_limited` and nothing is sent.
 - The only host it posts to is `web.push.apple.com`: no other name, no
@@ -2710,18 +2728,28 @@ placeholders (`seat.example`, `203.0.113.53`, `198.51.100.0/24`,
 once, by hand") is done first. None of this is in the release or in this
 repository.
 
-1. The user: `useradd --system --no-create-home --shell /usr/bin/nologin seat-notify`.
-   The unit runs it in the group `seat`, which is how the seat's user reaches
-   the socket; Caddy is a member of that group too (the seat's step 1), and
-   the socket's folder is open to it, but the kernel's peer check lets only
-   the seat user's id in.
+1. The group and the user: `groupadd --system seat-notify` (already made by
+   the seat's step 1, which the seat's unit needs), then
+   `useradd --system --no-create-home --shell /usr/bin/nologin --gid seat-notify seat-notify`,
+   and the seat's user into the group, `usermod -aG seat-notify seat` (the
+   unit's `SupplementaryGroups=seat-notify` gives the running seat the
+   group; the membership makes it true for a shell too, for `send-test`
+   below). The notifier is in the group `seat-notify` and no other: it must
+   not be in the group `seat` (nor `usermod -aG seat seat-notify`), because
+   the seat's socket, `/run/seat/http.sock`, is open to that group and the
+   notifier, the one unit with egress, would then speak to the seat in
+   Caddy's place. Caddy is not a member of `seat-notify`: only the seat's
+   user and the notifier reach the notifier's socket, and the kernel's peer
+   check lets only the seat user's id in.
 2. The key, before the first switch: as root,
-   `install -d -o seat-notify -g seat -m 0700 /var/lib/seat-notify`, then,
+   `install -d -o seat-notify -g seat-notify -m 0700 /var/lib/seat-notify`, then,
    from a root-owned copy of the release you verified (as the seat's step 4
    does), `sudo -u seat-notify RELEASE/bin/ataniq-seat-notify vapid-init --key /var/lib/seat-notify/vapid.pem`.
    It makes the key (mode 0600, never overwriting) and prints the public key
-   only. Without the key the notifier does not start, and the switch's
-   reload fails.
+   only. Without the key the notifier exits at its start and systemd
+   restarts it every 5 seconds without end (see "A notifier that cannot
+   start", below): the switch does not notice, so check the notifier after
+   the switch.
 3. The owner's file, in a new folder `/etc/authority-host/seat-notify`
    (root-owned, 0755): `seat-notify.env` (root-owned, mode 0600 is enough,
    systemd reads it):
@@ -2773,10 +2801,12 @@ There is nothing to enable: a switch to a release that has the notifier
 (`ah-switch --from INCOMING/ID ID`, as in [DEPLOY.md](DEPLOY.md)) verifies
 it, runs its validators, moves `current`, and its reload list restarts the
 notifier, then the seat and Caddy, while decisions are inhibited. The
-health check does not look at the notifier: it decides nothing. At every
+health check does not look at the notifier: it decides nothing, so a notifier
+that cannot start does not fail the switch (see "A notifier that cannot
+start", below): check it yourself. At every
 boot, `ah-switch boot` runs the same reload list. Check it with
 `systemctl status ataniq-seat-notify.service` and `ls -l /run/seat-notify`
-(the socket, `seat-notify:seat`, mode 0660).
+(the socket, `seat-notify:seat-notify`, mode 0660).
 
 To test it, once the switch is done, tell the notifier a count by hand, as
 the seat user, the only user it serves:
@@ -2794,13 +2824,54 @@ journal (`journalctl -u ataniq-seat-notify.service`) has the counts.
 
 ### What breaks if the notifier is down
 
-Nothing but notices. The seat tries again a minute later after a failed
-call and logs it at most once a minute, with no endpoint or key in the line;
+Nothing but notices. After a failed call the seat tries again a minute
+later, then 2, 4, 8, 16 and 30 minutes apart (a call the notifier took ends
+that), and logs it at most once a minute, with no endpoint or key in the
+line; calls the notifier did not answer do not use up the seat's 30 notices a
+day (at most 200 calls of any end are made a day);
 the pages, the cards, the decisions and the phone's polls do not depend on
-the notifier. One caution at a switch: the reload list restarts the notifier,
-and a restart that fails (a missing key, a subscriptions file that is not
-as the command writes it) fails the reload, like any command of the list,
-and the switch goes back. Fix the file and switch again.
+the notifier.
+
+### A notifier that cannot start
+
+The switch does not catch it. The unit is `Type=simple`, so
+`systemctl restart ataniq-seat-notify.service` in the reload list succeeds as
+soon as the process is forked, and the notifier then exits at its start when
+it cannot go on: a missing or unsafe key (`--vapid-key`), a subscriptions file
+that is not as the command writes it (`--subscriptions`), among them one that
+holds a host `--push-hosts` no longer allows, a user `--seat-user` the host
+does not know, or a subject that is not a `mailto:` or `https:` value. The
+reload list reports success, the health check is the seat's and looks at
+nothing of the notifier, and the switch ends `ok`. Meanwhile
+`Restart=on-failure` with `RestartSec=5s` starts it again every 5 seconds
+without end (two starts in 10 seconds stay under systemd's start limit, so
+it is never given up on) while the switch reports success. The seat's own
+step is different: its health check needs the seat on its socket, so a seat
+that cannot start fails the switch.
+
+How the owner sees it, after a switch that has the notifier, and at any time:
+
+- `systemctl status ataniq-seat-notify.service` says `activating
+  (auto-restart)` with the exit status of the last try, where a running
+  notifier says `active (running)`;
+- `journalctl -u ataniq-seat-notify.service` has a fixed line saying what was
+  refused (`--vapid-key: ...`, `--subscriptions: ...`, `--seat-user is not a
+  user of this host`, `--vapid-subject is not a valid contact`) repeated every
+  5 seconds, and no `serving the seat user on the socket`;
+- `ls -l /run/seat-notify` has no `notify.sock`, and `send-test` (above) fails
+  with `the notifier is not reachable`;
+- the phone shows nothing wrong at first: the Notices section reads what the
+  phone holds ("Notices are on.") and does not ask the notifier, so the first
+  sign there is that **Enable notices** ends in "Could not turn on notices. Try
+  again later.", and a card that waits brings no notice. The seat's journal
+  has its line about a notifier that did not take the count, at most one a
+  minute.
+
+Fix the file, restart the unit by hand (`systemctl restart
+ataniq-seat-notify.service`) or switch again, and check as above. Nothing
+else is affected meanwhile, and the switch is not rolled back on its account:
+the notices are an extra, and the host's decision path does not depend on
+them.
 
 ### Rollback
 

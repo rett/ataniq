@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -232,6 +233,12 @@ type app struct {
 	// lastPoll is the time, in Unix nanoseconds, of the last accepted poll,
 	// 0 before the first; the notices stay quiet while it is recent.
 	lastPoll atomic.Int64
+	// pollSaw is what the owner has seen on a page: the count of cards
+	// waiting when the last live poll was accepted, with the number of such
+	// polls, which the notices' goroutine takes once each (see sawWaiting).
+	pollMu      sync.Mutex
+	pollSeq     uint64
+	pollWaiting int
 	// push is the notifier's PushPort, nil when Config.Notifier is not one:
 	// the pages then show nothing of notices and the routes of push.go
 	// answer 404. pushes bounds the push API per credential.
@@ -381,9 +388,12 @@ func Server(h http.Handler) *http.Server {
 // and worker-src are the two the notices need and nothing else: the web app
 // manifest, and the service worker (/sw.js) that shows a push. The page
 // registers the worker through a Trusted Types policy of its own, since the
-// register call is a script sink (see push.js); no other policy exists.
+// register call is a script sink (see push.js); no other policy exists, and
+// the trusted-types directive names it, seat-sw, and nothing else (no
+// allow-duplicates, no default), so a script that runs on the origin cannot
+// make a policy of its own to reach a sink.
 var securityHeaders = [][2]string{
-	{"Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; require-trusted-types-for 'script'"},
+	{"Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types seat-sw"},
 	{"Strict-Transport-Security", "max-age=63072000"},
 	{"X-Content-Type-Options", "nosniff"},
 	{"Referrer-Policy", "no-referrer"},

@@ -26,6 +26,10 @@ type Client struct {
 	// Deadline is how long one call may last, [DefaultDeadline] when zero.
 	// A context that ends sooner ends the call sooner.
 	Deadline time.Duration
+	// NotifyDeadline is how long a notify may last,
+	// [DefaultNotifyDeadline] when zero: a notify waits for the pushes to
+	// the phone's subscriptions, which the other calls do not.
+	NotifyDeadline time.Duration
 }
 
 var _ Notifier = (*Client)(nil)
@@ -49,6 +53,12 @@ func (c *Client) call(ctx context.Context, req request) (response, error) {
 	d := c.Deadline
 	if d <= 0 {
 		d = DefaultDeadline
+	}
+	if req.Op == OpNotify {
+		d = c.NotifyDeadline
+		if d <= 0 {
+			d = DefaultNotifyDeadline
+		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, d)
 	defer cancel()

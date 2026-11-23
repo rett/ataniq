@@ -331,7 +331,10 @@ repository: the placeholders below are `seat.example` for the seat's name and
 
 3. **Set the host up for the seat, once, by hand**, from your own root
    session, as [the README](README.md#setting-the-host-up-for-it-once-by-hand)
-   says: the user `seat` and Caddy in its group; the folder
+   says: the user `seat` and Caddy in its group, and the group `seat-notify`
+   (`groupadd --system seat-notify`, which the seat's unit names as a
+   supplementary group, so it must exist before the first switch even
+   without the notifier); the folder
    `/etc/authority-host/seat` with `origin` (`https://seat.example`),
    `gate.pin`, `seat.env` (`SEAT_GATE=203.0.113.20:GATEPORT`) and
    `site.caddy` (the site `http://seat.example` that imports `seat`); the
@@ -431,7 +434,9 @@ Apple's push service for this unit, and nothing else.
 
 3. **Set the host up for the notifier, once, by hand**, from your own root
    session, as [the README](README.md#setting-the-host-up-for-it-once-by-hand-1)
-   says, in this order: the user `seat-notify`; the folder
+   says, in this order: the group and the user `seat-notify` and the seat's
+   user in the group (the group is made in the seat's step 3, which the
+   seat's unit needs, so make it before that first switch); the folder
    `/var/lib/seat-notify` and the VAPID key, made with `vapid-init` from a
    root-owned copy of the release you verified (it prints the public key
    only); the folder `/etc/authority-host/seat-notify` with
@@ -451,7 +456,9 @@ Apple's push service for this unit, and nothing else.
    (`systemd-analyze verify` and `test -L` of both units), moves `current`,
    and its reload list restarts the notifier, then the seat and Caddy while
    decisions are inhibited. The health check is the seat's: the notifier
-   decides nothing, and is not part of it.
+   decides nothing, and is not part of it, so a notifier that cannot start
+   (the unit is `Type=simple`) does not fail the switch: it is restarted every
+   5 seconds while the switch ends `ok`. Step 5 is how you see it.
 
 5. **Verify**, as in step 5, and also:
 
@@ -461,8 +468,13 @@ Apple's push service for this unit, and nothing else.
    sudo -u seat RELEASE/bin/ataniq-seat-notify send-test --socket /run/seat-notify/notify.sock 3
    ```
 
-   The socket is `seat-notify:seat`, mode 0660; the test prints `sent K`
-   (0 until a phone has subscribed). Then acknowledge the outcome as in
+   The socket is `seat-notify:seat-notify`, mode 0660; the test prints `sent K`
+   (0 until a phone has subscribed). `systemctl status` must say
+   `active (running)`; `activating (auto-restart)`, no socket in
+   `/run/seat-notify` or a `send-test` that says the notifier is not reachable
+   means the notifier is exiting at its start and being restarted every 5
+   seconds, whatever the switch said (see the table below, and
+   [the README](README.md#a-notifier-that-cannot-start)). Then acknowledge the outcome as in
    step 5. The host's own stop list is not changed: the notifier decides
    nothing.
 
@@ -571,7 +583,7 @@ state; read the message, fix the cause, run the step again.
 | Switch (seat release) | the health check fails on the seat's socket (`curl ... --unix-socket /run/seat/http.sock ...`) | The release was activated: the result is `rolled-back` or `failed`, as in the rows above. Read `journalctl -u ataniq-seat.service`: a missing key (`--identity`), origin or pin file, or a gate address the drop-in does not allow, stops the seat at its start. Fix it, acknowledge, and deploy a release with a higher counter |
 | Switch (release with the notifier) | `step 4/9 noaicheck: FAILED` and, run by hand, `HIT incomplete env-file /etc/authority-host/seat-notify/seat-notify.env` | Nothing was changed. The notifier's environment file is missing: write it (see "Deploying the notifier", step 3) and switch to the imported release again from your root session, without `--from` |
 | Switch (release with the notifier) | `step 5/9 validate: FAILED: validator-failed: validator 5 of 5, ...` (`test -L /etc/systemd/system/ataniq-seat-notify.service`) | Nothing was changed. The notifier's unit link is missing or is not a link: make it with `ln -s /opt/authority-host/current/etc/systemd/system/ataniq-seat-notify.service /etc/systemd/system/ataniq-seat-notify.service` and switch to the imported release again without `--from`. The seat's own link is validator 4 of 5 |
-| Switch (release with the notifier) | a reload command fails at `systemctl restart ataniq-seat-notify.service`: the result is `rolled-back` or `failed`, as in the rows above | The release was activated. Read `journalctl -u ataniq-seat-notify.service`: a missing or unsafe key (`--vapid-key`), a subscriptions file that is not as the command writes it (`--subscriptions`), or a subject that is not a `mailto:` or `https:` value stops it at its start. Fix it, acknowledge, and deploy a release with a higher counter |
+| After a switch (release with the notifier) | The switch ended `ok`, but `systemctl status ataniq-seat-notify.service` says `activating (auto-restart)`, there is no `/run/seat-notify/notify.sock`, or `send-test` says the notifier is not reachable | The switch did not see it and did not go back: with `Type=simple` the restart in the reload list succeeds once the process is forked, the health check is the seat's, and `Restart=on-failure` restarts the notifier every 5 seconds without end. Read `journalctl -u ataniq-seat-notify.service`: a missing or unsafe key (`--vapid-key`), a subscriptions file that is not as the command writes it (`--subscriptions`; also one that holds a host `--push-hosts` no longer allows), a user `--seat-user` the host does not know, or a subject that is not a `mailto:` or `https:` value stops it at its start. Fix the file and `systemctl restart ataniq-seat-notify.service`; no new release is needed unless the fix is in the release. Until then there are no notices and nothing else is affected |
 | Switch | exit 3 | Another switch holds the lock; wait for it, then run again. Nothing was done |
 | Switch | exit 2 | Bad arguments or a root other than `/` without `--allow-exec`; nothing was done |
 | Any | You are not sure what the host holds | `sudo /usr/local/sbin/ah-switch status` changes nothing and says what is live, what is owed and what is to resume |

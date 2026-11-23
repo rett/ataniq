@@ -1489,7 +1489,11 @@ The unit's release is `deploy/authority-host/notify`, laid over the seat's (see
 
 `internal/seatnotice` holds the codec, the client and the server. The client's
 call and the server's turn with a connection each end 2 seconds after they
-begin. One connection carries one request and one answer.
+begin, except a notify, which sends its pushes before it answers and has 15
+seconds (the request is still read within the 2). The notifier holds one push
+to 5 seconds and all the pushes of a notify to 12, so that its answer is in
+before the 15 end, and the seat's own bound on the call is 20 seconds: the
+client's deadline is what ends a slow call. One connection carries one request and one answer.
 
 - A frame is a 4-byte big-endian length and then that many bytes of one JSON
   object; the length is 1 to 4096. The object is strict: valid UTF-8, no byte
@@ -1514,8 +1518,10 @@ begin. One connection carries one request and one answer.
 - Who may call: the server reads the peer's user id from the kernel
   (`SO_PEERCRED`) and serves only the one id it was given, the seat user's,
   looked up once at the notifier's start; a connection of any other user is
-  closed unread. The socket's mode (0660, group `seat`) lets the seat's group
-  connect and is not what decides. On a system that cannot read a peer's user
+  closed unread. The socket's mode (0660, group `seat-notify`, a group of the
+  notifier's own that the seat's unit joins) lets the seat connect and is not
+  what decides; the notifier is in no group of the seat's, so it cannot reach
+  the seat's socket. On a system that cannot read a peer's user
   id every connection is refused. At most 16 connections are served at once.
 
 ### What a notice shows, and never shows
@@ -1559,12 +1565,22 @@ one of the holds below applies. The rules:
 3. No notice while a browser polled in the last 60 seconds: a page that polls is
    open and the owner is looking at it. Only the time of the last accepted poll
    is kept, with no part of it or of its session.
-4. After a call to the notifier that failed, nothing is sent for 1 minute; a
-   failure is logged at most once a minute, with fixed text.
+   The count of cards waiting that a live poll found is also kept (a number,
+   no more), and counts as seen: the floor of rule 2 is at least that count,
+   so a card the owner looked at on the page does not bring a notice a minute
+   after the page is closed. A card that comes after the last poll does.
+4. After a call to the notifier that failed, nothing is sent for 1 minute; each
+   failure after it doubles the wait, to a longest of 30 minutes, and a call
+   the notifier took ends the run. A failure is logged at most once a minute,
+   with fixed text.
 5. At most 30 calls to the notifier in a window of 24 hours that begins with the
-   first of them. Every call counts, whatever its end, since a call that failed
-   may have been taken. A notice that is due past the 30th waits for the window
-   to end.
+   first of them, counting only the calls the notifier answered: one it took
+   and one it refused with a code (`rate_limited` too). A call that got no
+   answer (a timeout, a connection refused or lost) is not counted, since
+   nothing was sent to the phone for it, so a notifier that is down for an hour
+   does not use up the day's notices. As a safety valve, at most 200 calls of
+   any end in the same kind of window. A notice that is due past either bound
+   waits for its window to end.
 6. The tally, the floor and the back-off are in memory only: a restart of the
    seat resets them. At worst one more notice is sent for the cards then
    waiting, if no page is polling.
@@ -1585,7 +1601,13 @@ other script loaded.
   body, a body that is not JSON). The text is the worker's own.
 - `notificationclick`: it closes the notification, then takes a window of the
   seat's origin that is open (if any) to `/cards/` and focuses it, or opens a
-  window on `/cards/`.
+  window on `/cards/`. The windows it looks at include those the worker does
+  not control (`includeUncontrolled`): the page that registered it stays
+  uncontrolled, since the worker does not take control of pages, so at the
+  first notice that page may be the only one open. A worker cannot navigate
+  such a window, so it navigates first, before anything that uses up the tap's
+  permission to show a window, and when the navigation is refused it opens
+  `/cards/` in a window of its own; a window is focused only once navigated.
 
 `/sw.js` is served with `Cache-Control: no-cache`, the one response of the app
 that is not `no-store`, so that the browser checks the script for a change with
@@ -1641,8 +1663,8 @@ shows nothing about notices, and the pages carry no manifest link.
 
 ### The page's security
 
-The content security policy gains two sources and nothing else:
-`manifest-src 'self'` and `worker-src 'self'`. The policy stays closed
+The content security policy gains two sources and one directive, and nothing
+else: `manifest-src 'self'`, `worker-src 'self'` and `trusted-types seat-sw`. The policy stays closed
 (`default-src 'none'`; scripts, styles, connections and images from the app's
 own origin only; nothing inline) and still requires Trusted Types for script
 sinks (`require-trusted-types-for 'script'`).
@@ -1657,10 +1679,15 @@ pages' scripts use (the others set text, and navigate or make links, and reach
 no sink that takes markup, code or a script address). So `push.js` makes one policy,
 `seat-sw`, whose `createScriptURL` answers for the address `/sw.js` and throws
 for any other, and gives `register()` its answer; a test of the script's source
-holds it to one policy and one `register()` call. The CSP names no policy
-(there is no `trusted-types` directive), so the browser does not limit the
-policy names; what limits the policy is its own function, and the code that
-runs under the page's `script-src 'self'`. Not checked in a real browser: that
+holds it to one policy and one `register()` call. The CSP's `trusted-types`
+directive names that policy, `seat-sw`, and no other (no `default`, no
+`allow-duplicates`), so the browser refuses any other policy name and a second
+policy of the same name: a script that runs on the origin cannot make a policy
+of its own to reach a sink. A test holds that every policy any script of the
+app creates (`push.js` is the only one that creates any: `pair.js`, `words.js`,
+`login.js`, `decide.js`, `session.js` and `watch.js` set text and make no
+policy) is named there, and that the directive names no other. What limits the
+`seat-sw` policy itself is its own function. Not checked in a real browser: that
 iOS Safari, in the Home Screen app, accepts the registration under this rule
 is for the phone trial to show. If the registration is refused there, Enable
 notices ends in "Could not turn on notices. Try again later." and nothing else
@@ -1682,13 +1709,13 @@ seat asks:
   (`endpoint_refused`).
 - A notify sends `{"n":N}` to each subscription in turn, with the topic
   `waiting`, urgency normal and a time to live of 1 hour (what a push service
-  keeps a notice for when the phone cannot be reached), within the connection's
-  2 seconds. A subscription the push service reports gone (404 or 410) is
+  keeps a notice for when the phone cannot be reached), each push within 5
+  seconds and all of them within 12. A subscription the push service reports gone (404 or 410) is
   dropped; one that failed otherwise is kept.
 - At most 30 pushes in any hour, every subscription together, whatever the
   seat asks, and each attempt counts. When none could be sent for that reason
-  it answers `rate_limited`, and the seat treats it as any failure (back-off of
-  a minute).
+  it answers `rate_limited`, which the seat counts as an answered call and
+  treats as any failure (the back-off above).
 - It logs fixed lines and counts, never an endpoint, a key or the contact.
 
 The unit's egress is the host's one outbound path besides the gate's, and the
@@ -1933,6 +1960,17 @@ The owner carries every fingerprint by hand, both ways, at the first exchange.
   can turn into a decision, so more logins started from notices are more
   chances for it. A taken-over seat can also fake or spam notices, up to the
   notifier's 30 pushes an hour, and can fill the notifier's subscription places.
+  Within the notifier's host policy (the one push host, https on port 443) and
+  its bounds, that is: it can subscribe endpoints of its own on the push host
+  (made with the public VAPID key, up to the 4 places, which leaves none for
+  the owner's phone: `too_many`), replace the keys of an endpoint the notifier
+  holds, which breaks that phone's delivery until it subscribes again, remove
+  the owner's subscription when it knows the hash of its endpoint (it sees the
+  endpoint once, when the phone subscribes), and cause up to 30 pushes an hour.
+  It cannot make the notifier reach any other host or send any text but the
+  count. The notifier's own unit is in a group of its own and not the seat's,
+  so a taken-over notifier cannot reach the seat's socket and speak to the seat
+  in the front proxy's place.
 - Notices have no quiet hours, no email or other fallback, no notice for a
   single card and no question cards; Apple's push service sees the timing and
   size of each push. They are not phone-tested.

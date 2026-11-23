@@ -400,7 +400,7 @@ func (r *rig) postJSON(path, body string) *httptest.ResponseRecorder {
 // wantHeaders are the headers every response carries, spelt out so that a
 // change to the app's values fails here.
 var wantHeaders = map[string]string{
-	"Content-Security-Policy":      "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; require-trusted-types-for 'script'",
+	"Content-Security-Policy":      "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types seat-sw",
 	"Strict-Transport-Security":    "max-age=63072000",
 	"X-Content-Type-Options":       "nosniff",
 	"Referrer-Policy":              "no-referrer",

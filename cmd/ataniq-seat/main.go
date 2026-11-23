@@ -60,9 +60,11 @@
 // service, while this command reaches nothing but the gate and that socket.
 // When cards wait that the owner has not been told of, and no page of the
 // app has polled for a minute, the command tells it one integer, how many
-// cards wait (at most 999, never more than 30 times a day), and nothing
-// about them. A notifier that does not answer is logged at most once a
-// minute and tried again after that minute. The same socket carries the
+// cards wait (at most 999, never more than 30 answered calls a day), and
+// nothing about them. A notifier that does not answer is logged at most once a
+// minute and tried again after a wait that starts at a minute and doubles to
+// half an hour; calls it did not answer do not count toward the 30, and at
+// most 200 calls of any end are made a day. The same socket carries the
 // phone's turning notices on and off (the card list's controls, which the app
 // serves only when the flag is set): the app relays a subscription to the
 // notifier and keeps none. Without the flag nothing is told to anyone and

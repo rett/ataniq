@@ -62,7 +62,8 @@
 // content type. The relying party id is exactly the
 // origin's host. The content security policy includes
 // require-trusted-types-for 'script', which the scripts meet by setting text
-// only with textContent, and every response carries
+// only with textContent, with trusted-types naming the one policy push.js
+// makes (seat-sw) and no other, and every response carries
 // Strict-Transport-Security. The Permissions-Policy allows
 // publickey-credentials-create to the app's own origin, and
 // publickey-credentials-get to the app's own origin on the login page and on
