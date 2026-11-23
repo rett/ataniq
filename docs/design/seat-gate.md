@@ -777,10 +777,10 @@ or not. Then the seat:
   settled at the desk; or pending, and only then may the owner decide again,
   with a new challenge.
 
-So that reading the card can tell a decision on its way from none, G8 gives
-`ownerwire.ShowResult` a mark for a card whose decision the journal holds and
-the door has not yet taken (planned), on the socket and the gate alike. G9
-tests the lost answer.
+So that reading the card can tell a decision on its way from none,
+`ownerwire.ShowResult` has a mark for a card whose decision the journal holds
+and the door has not yet taken (built, G8b: `on_its_way`, left out when false),
+on the socket and the gate alike. G9 tests the lost answer.
 
 A held approve (past the project's limit for the day) comes back pending with
 the held mark and the host's line. The page shows, under the host's line:
