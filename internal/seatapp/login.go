@@ -59,7 +59,8 @@ var (
 	// more: it expired, was used, or was dropped.
 	ErrChallengeStale = errors.New("seatapp: the challenge is no longer outstanding")
 	// ErrBusy says that the gate did not take the call for its load: the
-	// rate of the seat's connection is spent, or too much is in flight.
+	// rate of the seat's connection is spent, or too much is in flight; or
+	// that the port did not send it, its room at the gate being spent.
 	ErrBusy = errors.New("seatapp: the desk is busy")
 )
 
@@ -77,10 +78,13 @@ const (
 	loginSourceRequests = 10
 	loginSourceWindow   = 15 * time.Minute
 	// loginAllRequests and loginAllWindow bound the login challenges of all
-	// sources together. Each login asks the gate twice (the challenge and the
-	// login), so logins take at most 16 of the 60 requests a minute that
-	// the gate takes on the seat's one connection, and the rest are left to
-	// the owner's reads and decisions.
+	// sources together, so that strangers cannot fill the store of them. They
+	// do not bound the gate's calls: a challenge may be answered at any time
+	// in its life, so the logins of a minute can be more. The port counts
+	// every call it sends the gate, and keeps logins and pairings to their
+	// own room there (package seatlink: 12 calls in 80 seconds, 6 logins),
+	// apart from the owner's reads and decisions; a login past it is
+	// answered desk_busy.
 	loginAllRequests = 8
 	loginAllWindow   = time.Minute
 	// The bounds of an assertion, those of the gate's wire.

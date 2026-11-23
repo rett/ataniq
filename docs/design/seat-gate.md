@@ -600,11 +600,41 @@ login's answer names the credential the assertion named, by its raw id and its
 display id.
 
 Anyone who reaches the seat can ask for a login challenge, and the gate takes
-60 requests a minute on the seat's one connection, which every browser shares.
-So the seat limits login challenges to 10 per source in 15 minutes and to 8 a
-minute from all sources together: each login asks the gate twice, so logins
-take at most 16 of the 60 a minute, and the room left is the owner's reads and
-decisions. A source is the client address the proxy sets, as for the pairing.
+60 requests a minute on the seat's one connection, which every browser shares,
+pings included; it answers any more `rate-limited`. So the seat limits login
+challenges to 10 per source in 15 minutes and to 8 a minute from all sources
+together, which keeps strangers from filling its store of them. A source is
+the client address the proxy sets, as for the pairing.
+
+Those limits do not bound the seat's calls of the gate by themselves: a login
+challenge may be answered at any time in its 5 minutes, so more logins than
+challenges may come in one minute; the first page of a card's path list asks
+the gate twice when the seat does not know the card's review; and the seat
+pings the gate every 15 seconds. So the seat link counts every call it
+sends (`seatlink`'s budget), by kind, over 80 seconds (the gate's minute and
+the 20 seconds a call is taken to wait at most between the seat's count and
+the gate's: the 15 seconds the app gives a call and 5 of the network, so
+calls counted 80 seconds apart never meet in one of the gate's minutes), and
+sends none past the room of its kind:
+
+| Kind | Calls | Room in 80 s |
+| --- | --- | --- |
+| Pings | `seat.ping`, every 15 s (`seatlink.PingInterval`, which `ataniq-seat` sets) | 6 |
+| Anyone's | `seat.pair`, `seat.login-challenge`, `seat.login` | 12 (6 logins) |
+| Reads | `owner.list`, `owner.show`, `owner.paths`, of every session together | 26 |
+| Decisions | `seat.challenge`, `seat.decide` | 16 (8 decisions) |
+
+The rooms add up to the gate's 60, so the gate's rate never refuses a call
+the seat sent. A call without room is not sent: the phone says the desk is
+busy (`desk_busy`, the problem "The desk is busy", or `rate_limited` for a
+pairing), before anything is asked. A decision's challenge is asked only
+when the room of decisions holds it and its `seat.decide` as well: the room
+of the decision is kept for the credential's last challenge (a new tap of the
+same credential takes its place) until the decision is sent, or the
+challenge's life ends (5 minutes at most). So a decision the phone signed
+is never refused for the gate's rate: strangers' logins and pairings, and
+reads, cannot take its room, and a tap past it is told the desk is busy
+before any challenge is drawn or the passkey asked.
 The seat relays pairings for anyone who reaches its pairing page, and the
 gate counts each pairing the daemon refuses against the seat's refusal bound
 (16 in 10 minutes; see [the refusal bound](#the-refusal-bound)), past which
@@ -616,10 +646,10 @@ sent a little more than 10 minutes apart are not counted closer at the gate.
 The pairing code's own limit, 5 wrong codes, stays.
 Only a session reads cards, and the reads of one credential's sessions are
 limited to 20 a minute (a card page asks the gate once; the first page of a
-card's path list may ask twice, to learn the card's review), so one phone's
-reads and every login together stay within the 60. When the gate answers
-`rate-limited`, `busy` or `too-many-refusals`, the phone says that the desk is
-busy and to try again in a minute, and nothing is retried by itself.
+card's path list may ask twice, to learn the card's review), within the
+room of all reads above. When the gate answers `rate-limited`, `busy` or
+`too-many-refusals`, the phone says that the desk is busy and to try again in
+a minute, and nothing is retried by itself.
 
 Reads after a revoke: the reads are the pin's, not a credential's, since the
 daemon keeps no session. A seat session whose key was revoked still reads cards
@@ -886,8 +916,11 @@ How it is built (G9), where the points above left a choice:
   on the wire are not sent: the phone says "This is too large to send."
   (`too_large`), and nothing was decided. Such a decision is made at the
   desk until the transport sends the params as given.
-- Decision challenges are limited to 10 a minute per credential, so that
-  logins (16), reads (20) and decisions stay within the gate's 60.
+- Decision challenges are limited to 10 a minute per credential, and the
+  seat link asks one only when the room of decisions at the gate (16 calls
+  in 80 seconds, see [login](#login-seatlogin-challenge-and-seatlogin)) holds
+  it and its decision: a decision the phone signed is never refused for the
+  gate's rate.
 - `Permissions-Policy` allows `publickey-credentials-get` on a Card page that
   holds the form; the page without it forbids it as every other response
   does. A link that cannot decide (a gate whose hello did not list

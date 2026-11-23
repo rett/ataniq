@@ -102,6 +102,9 @@ func (d *Daemon) LoginChallenge(ctx context.Context) (seatapp.LoginChallenge, er
 		}
 		return seatapp.LoginChallenge{}, seatapp.ErrNotOffered
 	}
+	if !d.budget.take(kindPublic) {
+		return seatapp.LoginChallenge{}, seatapp.ErrBusy
+	}
 	var raw json.RawMessage
 	if err := d.c.Call(ctx, OpLoginChallenge, nil, &raw); err != nil {
 		return seatapp.LoginChallenge{}, mapCall(ctx, OpLoginChallenge, err, loginCodes)
@@ -156,6 +159,9 @@ func (d *Daemon) Login(ctx context.Context, r seatapp.LoginRequest) (seatapp.Log
 	})
 	if err != nil {
 		return seatapp.LoginResult{}, seatapp.ErrLoginRefused
+	}
+	if !d.budget.take(kindPublic) {
+		return seatapp.LoginResult{}, seatapp.ErrBusy
 	}
 	var raw json.RawMessage
 	if err := d.c.Call(ctx, OpLogin, json.RawMessage(params), &raw); err != nil {

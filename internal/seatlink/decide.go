@@ -363,6 +363,24 @@ func (d *Daemon) DecideChallenge(ctx context.Context, r seatapp.DecideChallengeR
 	if err != nil {
 		return seatapp.DecideChallenge{}, err
 	}
+	// The room of the decision is kept with the challenge's: a challenge is
+	// asked only when its seat.decide will have room too.
+	if !d.budget.reserve(r.Credential) {
+		return seatapp.DecideChallenge{}, seatapp.ErrBusy
+	}
+	ch, err := d.challenge(ctx, frame, wire)
+	if err != nil {
+		d.budget.release(r.Credential)
+		return seatapp.DecideChallenge{}, err
+	}
+	d.budget.bind(r.Credential, ch.ID, ch.Expires)
+	return ch, nil
+}
+
+// challenge sends seat.challenge with the params on the wire and checks the
+// answer: its form, and that its challenge is the one the gate's pin, the
+// frame and the daemon's nonce give.
+func (d *Daemon) challenge(ctx context.Context, frame ownerwire.DecisionFrame, wire json.RawMessage) (seatapp.DecideChallenge, error) {
 	var raw json.RawMessage
 	if err := d.c.Call(ctx, OpDecideChallenge, wire, &raw); err != nil {
 		return seatapp.DecideChallenge{}, mapCall(ctx, OpDecideChallenge, err, refusalCodes)
@@ -416,6 +434,9 @@ func (d *Daemon) Decide(ctx context.Context, r seatapp.DecideRequest) (seatapp.D
 	if err != nil {
 		return seatapp.DecideResult{}, err
 	}
+	// A decision is counted in the room its challenge kept, and is never
+	// refused for room: the phone has answered.
+	d.budget.spend(r.ChallengeID)
 	var raw json.RawMessage
 	if err := d.c.Call(ctx, OpDecide, wire, &raw); err != nil {
 		return seatapp.DecideResult{}, mapDecide(err)

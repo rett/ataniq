@@ -87,6 +87,9 @@ func (d *Daemon) List(ctx context.Context) (seatapp.Listing, error) {
 	if err := d.reading(ctx); err != nil {
 		return seatapp.Listing{}, err
 	}
+	if !d.budget.take(kindRead) {
+		return seatapp.Listing{}, seatapp.ErrBusy
+	}
 	var raw json.RawMessage
 	if err := d.c.Call(ctx, ownerwire.OpList, nil, &raw); err != nil {
 		return seatapp.Listing{}, mapCall(ctx, ownerwire.OpList, err, readCodes)
@@ -136,6 +139,9 @@ func (d *Daemon) Show(ctx context.Context, id string) (seatapp.Card, error) {
 	params, err := ownerwire.EncodeShowParams(ownerwire.ShowParams{ID: id})
 	if err != nil {
 		return seatapp.Card{}, seatapp.ErrNoCard
+	}
+	if !d.budget.take(kindRead) {
+		return seatapp.Card{}, seatapp.ErrBusy
 	}
 	var raw json.RawMessage
 	if err := d.c.Call(ctx, ownerwire.OpShow, json.RawMessage(params), &raw); err != nil {
@@ -205,6 +211,9 @@ func (d *Daemon) Pages(ctx context.Context, id string, n int) (seatapp.PathsPage
 	params, err := ownerwire.EncodePageParams(q)
 	if err != nil {
 		return seatapp.PathsPage{}, seatapp.ErrNoCard
+	}
+	if !d.budget.take(kindRead) {
+		return seatapp.PathsPage{}, seatapp.ErrBusy
 	}
 	var raw json.RawMessage
 	if err := d.c.Call(ctx, ownerwire.OpPaths, json.RawMessage(params), &raw); err != nil {

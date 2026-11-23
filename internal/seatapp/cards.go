@@ -212,8 +212,12 @@ var (
 // The limits of the reads.
 const (
 	// readRequests and readWindow bound the reads of one credential's
-	// sessions, so that with logins (at most 16 a minute) the reads of a
-	// phone stay within the gate's 60 a minute.
+	// sessions. A read may ask the gate more than once (the first page of a
+	// card's path list asks twice when the card was not shown), so they do
+	// not bound the gate's calls: the port counts every call it sends, and
+	// keeps the reads of all sessions to their own room there (package
+	// seatlink: 26 calls in 80 seconds); a read past it is the problem "The
+	// desk is busy".
 	readRequests = 20
 	readWindow   = time.Minute
 	// maxPage is the highest page number asked for.

@@ -19,9 +19,12 @@ const (
 	// carry, each below it: a decision record of 8 KiB holds fewer.
 	maxSignOffs = 300
 	// decideRequests and decideWindow bound the decision challenges one
-	// credential's sessions may ask for. With logins (16 a minute), reads
-	// (20) and one decision per challenge, a phone stays within the gate's
-	// 60 requests a minute.
+	// credential's sessions may ask for. The port keeps the decisions to a
+	// room of their own at the gate (package seatlink: 16 calls in 80
+	// seconds, 8 decisions), which logins, pairings and reads cannot take,
+	// and asks a challenge only with room for its decision as well: a tap
+	// past it is answered desk_busy before any challenge, and a decision the
+	// phone signed is never refused for the gate's rate.
 	decideRequests = 10
 	decideWindow   = time.Minute
 	// decideTTL is the longest a decision's challenge is kept; the daemon's

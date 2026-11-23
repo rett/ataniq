@@ -19,6 +19,7 @@
 //	the gate's code pairing-refused             seatapp.ErrCodeRefused
 //	a code ownerwire does not take as a code    seatapp.ErrCodeRefused (nothing is sent)
 //	a registration ownerwire does not take      a plain error (nothing is sent)
+//	the link's budget for the call spent        seatapp.ErrBusy (nothing is sent)
 //	seatgate.ErrDisconnected                    seatapp.ErrDaemonUnavailable
 //	the context ended (cancelled or deadline)   seatapp.ErrDaemonUnavailable
 //	anything else (any other code, a closed
@@ -132,6 +133,20 @@
 // deadline and an answer not of its form are seatapp.ErrOutcomeUnknown, and
 // any other code is a [*RefusedError], whose outcome the app treats as
 // unknown too.
+//
+// # The gate's rate
+//
+// The gate takes [GateRate] requests a minute on the seat's one connection,
+// pings included, and every browser's traffic shares it. The link counts
+// every call it sends, by kind, over [BudgetWindow], and sends none past
+// the room of its kind (see budget.go): anyone's (pairings and logins),
+// reads, and decisions, beside the pings of the transport every
+// [PingInterval]. A call without room is seatapp.ErrBusy and is not sent.
+// The rooms and the pings add up to GateRate, so the gate's rate never
+// refuses a call the link sent. A decision's challenge is asked only with
+// room for its seat.decide as well, kept for the credential's last challenge
+// until the decision is sent or [HoldLife] ends; seat.decide is never
+// refused for room.
 package seatlink
 
 import (
@@ -139,6 +154,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/seatapp"
@@ -208,6 +224,8 @@ type Daemon struct {
 	reviews reviews
 	// shown are the cards the link showed, from which a decision is built.
 	shown shownCards
+	// budget counts the calls the link sends, by kind (see budget.go).
+	budget budget
 }
 
 // Option sets an option of [New].
@@ -232,7 +250,7 @@ func New(c *seatgate.Client, opts ...Option) (*Daemon, error) {
 	if c == nil {
 		return nil, errors.New("seatlink: a client is required")
 	}
-	d := &Daemon{c: c}
+	d := &Daemon{c: c, budget: budget{now: time.Now}}
 	for _, o := range opts {
 		if err := o(d); err != nil {
 			return nil, err
@@ -268,6 +286,9 @@ func (d *Daemon) Pair(ctx context.Context, r seatapp.PairRequest) (seatapp.PairR
 	params, err := ownerwire.EncodeSeatPairParams(full)
 	if err != nil {
 		return seatapp.PairResult{}, errRegistration
+	}
+	if !d.budget.take(kindPublic) {
+		return seatapp.PairResult{}, seatapp.ErrBusy
 	}
 	var raw json.RawMessage
 	if err := d.c.Call(ctx, ownerwire.OpSeatPair, json.RawMessage(params), &raw); err != nil {

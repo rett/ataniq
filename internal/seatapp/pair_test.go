@@ -313,6 +313,7 @@ func TestPairDaemonErrors(t *testing.T) {
 		{"code refused, wrapped", fmt.Errorf("daemon said no: %w", ErrCodeRefused), 403, "code_refused"},
 		{"unavailable", ErrDaemonUnavailable, 503, "daemon_unavailable"},
 		{"unavailable, wrapped", fmt.Errorf("dial /run/private/path: %w", ErrDaemonUnavailable), 503, "daemon_unavailable"},
+		{"the port's room spent", ErrBusy, 429, "rate_limited"},
 		{"anything else", errors.New("secret internal detail K7M2-Q9XA /home/someone"), 502, "daemon_error"},
 	} {
 		r := newRig(t)

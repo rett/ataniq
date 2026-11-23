@@ -159,19 +159,22 @@
 //
 // # The gate's rate
 //
-// The gate takes 60 requests a minute on its connection, and the seat has one
-// connection, which every browser's requests share. So the seat spends that
-// rate on the owner. Every login asks the gate twice (the challenge and the
-// login), and the login challenges are limited to 10 per source in 15
-// minutes and to 8 a minute from all sources together, so logins, which
-// anyone who reaches the login page can start, take at most 16 of the 60 a
-// minute. A source is the address in [Config].ClientAddrHeader, as for the
-// pairing. Only a session can read cards, and the reads of one credential's
-// sessions are limited to 20 a minute (a page asks the gate once, and the
-// first page of a card's path list may ask twice), so that logins and one
-// phone's reads stay within the 60, with room left for decisions. When the
-// gate answers that its rate is spent, the phone says the desk is busy and to
-// try again in a minute; nothing is retried by itself.
+// The gate takes 60 requests a minute on its connection, pings included,
+// and the seat has one connection, which every browser's requests share. The
+// login challenges are limited to 10 per source in 15 minutes and to 8 a
+// minute from all sources together; a source is the address in
+// [Config].ClientAddrHeader, as for the pairing. Only a session can read
+// cards, and the reads of one credential's sessions are limited to 20 a
+// minute; decision challenges to 10 a minute per credential. These limits do
+// not bound the gate's calls by themselves (a login challenge may be answered
+// minutes later, and the first page of a card's path list may ask the gate
+// twice), so the port counts every call it sends and keeps each kind to its
+// own room at the gate (package seatlink): anyone's pairings and logins,
+// reads, and decisions, which the others cannot take, and a decision's
+// challenge only with room for the decision too. A call without room is
+// [ErrBusy], and nothing is sent. When the port or the gate says the rate is
+// spent, the phone says the desk is busy and to try again in a minute;
+// nothing is retried by itself.
 //
 // # The cards
 //

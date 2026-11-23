@@ -252,6 +252,9 @@ func (p *pairing) pair(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errCodeRefused)
 	case errors.Is(err, ErrDaemonUnavailable):
 		writeError(w, errDaemonUnavailable)
+	case errors.Is(err, ErrBusy):
+		// The port's room for the gate's calls is spent: nothing was sent.
+		writeError(w, errRateLimited)
 	case err != nil:
 		writeError(w, errDaemon)
 	default:
