@@ -47,12 +47,14 @@ type pageForm struct {
 // cardReading is one session's reading of one card, kept server-side with
 // the session.
 type cardReading struct {
-	// binding, expires and flagged are of the card the Card page last
-	// showed: its binding digest, its expiry and how many flagged paths it
-	// has. binding is empty while only pages of its path list were read.
+	// binding, expires, flagged and whole are of the card the Card page
+	// last showed: its binding digest, its expiry, how many flagged paths
+	// it has, and the parts of it the page showed whole. binding is empty
+	// while only pages of its path list were read.
 	binding string
 	expires time.Time
 	flagged int
+	whole   Whole
 	// opened is when the Card page last showed it.
 	opened time.Time
 	// pages is the page count of the whole path list, and read the pages of
@@ -78,7 +80,7 @@ type cardReading struct {
 
 // public is the reading as the port takes it.
 func (r *cardReading) public() Reading {
-	out := Reading{Opened: r.opened, Pages: r.pages}
+	out := Reading{Opened: r.opened, Whole: r.whole, Pages: r.pages}
 	for n := range r.read {
 		out.PagesRead = append(out.PagesRead, n)
 	}
@@ -148,7 +150,7 @@ func (ss *sessions) opened(k tokenKey, c Card, now time.Time) Reading {
 		if r.binding != "" && r.binding != c.BindingSHA256 {
 			r.pages, r.read = 0, nil
 		}
-		r.binding, r.expires, r.flagged, r.opened = c.BindingSHA256, c.Expires, len(c.Flagged), now
+		r.binding, r.expires, r.flagged, r.opened, r.whole = c.BindingSHA256, c.Expires, len(c.Flagged), now, wholeOf(c)
 		r.live = !c.Ended && !c.OnItsWay && (c.State == "" || c.State == "pending")
 		r.sent = false
 		out = r.public()

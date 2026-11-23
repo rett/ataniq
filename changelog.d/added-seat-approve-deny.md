@@ -1,7 +1,10 @@
 - `ataniq-seat` approves and denies on the phone, from the Card page only
   (`/cards/{id}`), when the seat gate offers decisions: one sign-off box per
-  flagged path and Approve, offered when the card model allows it and
-  enabled once every box is ticked; Deny, with an optional reason, available
+  flagged path and Approve, offered when the card model allows it and the
+  page showed every part of the card whole (a part with a path or a ref of
+  more than 1024 characters, cut on the page, is not read; Approve is then
+  withheld and the page says which part, and a page of the whole path list
+  that cuts a path does not count) and enabled once every box is ticked; Deny, with an optional reason, available
   with no box ticked. A tap asks `POST /api/decide-challenge`; the seat
   builds the decision from the card it showed (the browser sends only the
   id of the page's form, the action, the indexes of the boxes and the

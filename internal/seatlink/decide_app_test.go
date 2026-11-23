@@ -233,6 +233,29 @@ func TestSeatDecideStaleTabOfOneSession(t *testing.T) {
 	}
 }
 
+// TestSeatDecideCutFlaggedPathsOnThePhone: on the Card page whose two
+// flagged paths are too long to be shown whole (and read the same there),
+// Approve and the sign-off boxes are not offered, the page says why (the
+// first part it cut: the two paths are changed paths too, in the rows
+// above), and a tap of Approve anyway is refused before the desk is asked;
+// Deny stays.
+func TestSeatDecideCutFlaggedPathsOnThePhone(t *testing.T) {
+	r := newPhoneRig(t)
+	longFlagged(t, r.decideRig)
+	page := r.open(t).Body.String()
+	if strings.Contains(page, `id="approve"`) || strings.Contains(page, `id="signoff-0"`) || !strings.Contains(page, `id="deny"`) ||
+		!strings.Contains(page, "Approve is not offered: "+reasonCutRows+".") {
+		t.Fatal("the Card page offers Approve for flagged paths it cut")
+	}
+	w := r.tapPage(page, "approve", []int{0, 1})
+	if m := said(t, w); w.Code != 409 || m["error"] != "not_allowed" || m["say"] != "This cannot be sent: "+reasonCutRows+"." {
+		t.Errorf("an approve of cut flagged paths: %d %v", w.Code, m)
+	}
+	if c, _ := r.desk.counts(); c != 0 {
+		t.Errorf("the desk was asked %d challenges", c)
+	}
+}
+
 // TestSeatDecideTamperedChallenge: a challenge the gate answers that is not
 // the card's never reaches the browser, so the phone's passkey is never
 // asked; nothing is decided.

@@ -198,7 +198,9 @@
 // ticked, which sends no sign-off. The phone reads a card on one page, so
 // the session's reading of it (kept server-side, see [Reading]) counts the
 // page's rows, lists, refs and "differs from" block once the page was
-// served, and a cut path list by the pages of it the session was served.
+// served, each only when the page showed every path and ref of it whole
+// ([Whole]), and a cut path list by the pages of it the session was served
+// that cut no path. The port withholds Approve for a part not shown whole.
 //
 // A tap asks POST /api/decide-challenge with the card, the id of the page's
 // form, the action, the indexes of the boxes ticked and the reason; the

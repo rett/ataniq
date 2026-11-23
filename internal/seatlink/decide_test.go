@@ -241,13 +241,16 @@ func (r *decideRig) show(t *testing.T) seatapp.Card {
 	return c
 }
 
+// shownWhole says that the Card page showed every part of the card whole.
+var shownWhole = seatapp.Whole{Rows: true, Lists: true, Refs: true, Flagged: true, Differs: true}
+
 // approve is the request of an approve of the shown card with every flagged
-// path signed off, read a second ago.
+// path signed off, read whole a second ago.
 func (r *decideRig) approve() seatapp.DecideChallengeRequest {
 	p := r.desk.reads.pending
 	return seatapp.DecideChallengeRequest{
 		ID: p.ID, BindingSHA256: p.BindingSHA256, Approve: true, SignedOff: []int{0, 1},
-		Credential: r.credential, Reading: seatapp.Reading{Opened: decideNow.Add(-time.Second)}, Now: decideNow,
+		Credential: r.credential, Reading: seatapp.Reading{Opened: decideNow.Add(-time.Second), Whole: shownWhole}, Now: decideNow,
 	}
 }
 
@@ -530,7 +533,7 @@ func truncated(t *testing.T, r *decideRig) {
 func TestSeatLinkOffer(t *testing.T) {
 	r := newDecideRig(t)
 	p := r.desk.reads.pending
-	read := seatapp.Reading{Opened: decideNow}
+	read := seatapp.Reading{Opened: decideNow, Whole: shownWhole}
 	if o := r.link.Offer(p.ID, p.BindingSHA256, read, decideNow); o.Approve || o.Deny {
 		t.Errorf("a card not shown: %+v", o)
 	}
@@ -576,6 +579,100 @@ func TestSeatLinkOffer(t *testing.T) {
 	q.Reading.Pages, q.Reading.PagesRead = 2, []int{0, 1}
 	if _, err := r.link.DecideChallenge(context.Background(), q); err != nil {
 		t.Errorf("a challenge for a cut list read whole: %v", err)
+	}
+}
+
+// longFlagged makes the rig's record a card whose two flagged paths are
+// longer than the Card page shows and differ only past the cut, so that
+// their labels on the page are the same.
+func longFlagged(t *testing.T, r *decideRig) {
+	t.Helper()
+	p := r.desk.reads.pending
+	long := strings.Repeat("a", 1024)
+	s := p.Binding.Summary
+	s.Paths[0].Path, s.Paths[1].Path = record.Text(long+"/one"), record.Text(long+"/two")
+	s.Flagged[0] = record.Flag{Kind: record.FlagExecConfig, Path: record.Text(long + "/one")}
+	s.Flagged[1] = record.Flag{Kind: record.FlagExecConfig, Path: record.Text(long + "/two")}
+	digest, err := record.BindingDigest(p.Binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.BindingSHA256 = digest
+	b, err := record.EncodePending(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.desk.reads.pending, r.desk.reads.bytes = p, b
+}
+
+// TestSeatLinkCutPartsAreNotRead: a part of the card the Card page did not
+// show whole counts as not read, and Approve is neither offered nor sent for
+// it, with the host's line that says which part. Two flagged paths whose
+// labels on the page are the same (they differ only past the cut) are not
+// signed off by their index: the desk is asked no challenge. Deny is still
+// offered. Each part, cut alone, withholds Approve.
+func TestSeatLinkCutPartsAreNotRead(t *testing.T) {
+	r := newDecideRig(t)
+	longFlagged(t, r)
+	c := r.show(t)
+	if a, b := fmtLead(c.Flagged[0].Path), fmtLead(c.Flagged[1].Path); a != b {
+		t.Fatalf("the labels differ: the test does not show what it means to")
+	}
+	p := r.desk.reads.pending
+	cut := shownWhole
+	cut.Flagged = false
+	read := seatapp.Reading{Opened: decideNow.Add(-time.Second), Whole: cut}
+	if o := r.link.Offer(p.ID, p.BindingSHA256, read, decideNow); o.Approve || o.ApproveWhy != reasonCutFlagged || !o.Deny {
+		t.Errorf("a cut flagged path: %+v", o)
+	}
+	q := r.approve()
+	q.BindingSHA256, q.Reading = p.BindingSHA256, read
+	var na *seatapp.NotAllowedError
+	if _, err := r.link.DecideChallenge(context.Background(), q); !errors.As(err, &na) || na.Reason != reasonCutFlagged {
+		t.Errorf("an approve of cut flagged paths: %v", err)
+	}
+	if n, _ := r.desk.counts(); n != 0 {
+		t.Errorf("the desk was asked %d challenges", n)
+	}
+	q.Approve, q.SignedOff = false, nil
+	if _, err := r.link.DecideChallenge(context.Background(), q); err != nil {
+		t.Errorf("a deny of a card with cut flagged paths: %v", err)
+	}
+
+	// Each part alone, on the test card (which has refs, rows, lists and
+	// flagged paths, and here a "differs from" block).
+	r = newDecideRig(t)
+	r.show(t)
+	p = r.desk.reads.pending
+	c2, _ := r.link.shown.get(p.ID)
+	c2.Differs = &card.Differs{EarlierID: "ap-20261119-0001"}
+	r.link.shown.put(p.ID, c2)
+	for _, tc := range []struct {
+		off  func(*seatapp.Whole)
+		want string
+	}{
+		{func(w *seatapp.Whole) { w.Refs = false }, reasonCutRefs},
+		{func(w *seatapp.Whole) { w.Rows = false }, reasonCutRows},
+		{func(w *seatapp.Whole) { w.Lists = false }, reasonCutLists},
+		{func(w *seatapp.Whole) { w.Flagged = false }, reasonCutFlagged},
+		{func(w *seatapp.Whole) { w.Differs = false }, reasonCutDiffers},
+	} {
+		w := shownWhole
+		tc.off(&w)
+		if o := r.link.Offer(p.ID, p.BindingSHA256, seatapp.Reading{Opened: decideNow.Add(-time.Second), Whole: w}, decideNow); o.Approve || o.ApproveWhy != tc.want {
+			t.Errorf("%s: %+v", tc.want, o)
+		}
+	}
+	if o := r.link.Offer(p.ID, p.BindingSHA256, seatapp.Reading{Opened: decideNow.Add(-time.Second), Whole: shownWhole}, decideNow); !o.Approve {
+		t.Errorf("every part whole: %+v", o)
+	}
+	// The card model's reading has the parts not shown whole as not read,
+	// whatever else holds Approve back.
+	if rd := readingOf(c2, seatapp.Reading{Opened: decideNow}); rd.Paths || rd.Refs || rd.Differs || rd.Lists != [card.NumLists]bool{} {
+		t.Errorf("a reading with nothing whole counts as read: %+v", rd)
+	}
+	if rd := readingOf(c2, seatapp.Reading{Opened: decideNow, Whole: shownWhole}); !rd.Paths || !rd.Refs || !rd.Differs || !rd.Lists[card.NumLists-1] {
+		t.Errorf("a reading with everything whole: %+v", rd)
 	}
 }
 

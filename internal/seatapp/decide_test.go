@@ -196,7 +196,8 @@ func TestSeatDecideChallengeTakesTheCardAsShown(t *testing.T) {
 	}
 	q := r.daemon.decideChs[0]
 	want := DecideChallengeRequest{ID: testCardID, BindingSHA256: strings.Repeat("ab", 32), Approve: true, SignedOff: []int{0},
-		Credential: "0123456789abcdef", Reading: Reading{Opened: opened, PagesRead: []int{0, 1, 2}, Pages: 3}, Now: r.clock.Now()}
+		Credential: "0123456789abcdef", Reading: Reading{Opened: opened, PagesRead: []int{0, 1, 2}, Pages: 3,
+			Whole: Whole{Rows: true, Lists: true, Refs: true, Flagged: true, Differs: true}}, Now: r.clock.Now()}
 	if !reflect.DeepEqual(q, want) {
 		t.Errorf("the port got %+v\nwant %+v", q, want)
 	}
@@ -284,6 +285,67 @@ func TestSeatDecideTapOfAStalePage(t *testing.T) {
 		if w := r.postFromPage("/api/decide-challenge", tapOf(f), s); w.Code != 200 {
 			t.Errorf("a tab of the binding read last: %d %s", w.Code, w.Body)
 		}
+	}
+}
+
+// TestSeatCardPartsShownWhole: the session's reading says which parts of
+// the card the Card page showed whole. A path or a ref longer than the page
+// shows (maxPath characters of its escaped text) makes its part not whole,
+// and the port's offer is asked with that reading; one of exactly maxPath
+// characters is whole. A page of the whole path list that cuts a path does
+// not count as read, and says so.
+func TestSeatCardPartsShownWhole(t *testing.T) {
+	long := NewLead(strings.Repeat("x", maxPath+1))
+	edge := NewLead(strings.Repeat("x", maxPath))
+	all := Whole{Rows: true, Lists: true, Refs: true, Flagged: true, Differs: true}
+	for name, tc := range map[string]struct {
+		change func(*Card)
+		want   Whole
+	}{
+		"nothing long":        {func(*Card) {}, all},
+		"a path at the cap":   {func(c *Card) { c.Diff.Rows[0].Path = edge; c.Flagged[0].Path = edge }, all},
+		"a row":               {func(c *Card) { c.Diff.Rows[1].Path = long }, Whole{Lists: true, Refs: true, Flagged: true, Differs: true}},
+		"a list's path":       {func(c *Card) { c.Lists[0].Paths[0] = long }, Whole{Rows: true, Refs: true, Flagged: true, Differs: true}},
+		"a ref":               {func(c *Card) { c.Refs[0].Ref = long }, Whole{Rows: true, Lists: true, Flagged: true, Differs: true}},
+		"a merged-into ref":   {func(c *Card) { c.Refs[0].MergedInto = &MergedInto{Ref: long, Tip: strings.Repeat("3", 40)} }, Whole{Rows: true, Lists: true, Flagged: true, Differs: true}},
+		"a flagged path":      {func(c *Card) { c.Flagged[0].Path = long }, Whole{Rows: true, Lists: true, Refs: true, Differs: true}},
+		"a flagged path rule": {func(c *Card) { c.Flagged[0].Pattern = long }, Whole{Rows: true, Lists: true, Refs: true, Differs: true}},
+		"a differs path":      {func(c *Card) { c.Differs.PathsAdded = []Lead{long} }, Whole{Rows: true, Lists: true, Refs: true, Flagged: true}},
+		"a differs ref":       {func(c *Card) { c.Differs.RefsRemoved = []Lead{long} }, Whole{Rows: true, Lists: true, Refs: true, Flagged: true}},
+	} {
+		r := newRig(t)
+		c := sampleCard()
+		tc.change(&c)
+		r.daemon.card = c
+		s := r.login(t)
+		r.openCard(t, s)
+		if got := r.daemon.offers[len(r.daemon.offers)-1].Whole; got != tc.want {
+			t.Errorf("%s: the offer was asked with %+v, want %+v", name, got, tc.want)
+		}
+	}
+
+	// The branch a prune's deleted ref was merged into is on the page.
+	r := newRig(t)
+	r.daemon.card.Refs[0].Deletes = true
+	r.daemon.card.Refs[0].MergedInto = &MergedInto{Ref: NewLead("refs/heads/main"), Tip: strings.Repeat("4", 40)}
+	s := r.login(t)
+	if body := r.openCard(t, s); !strings.Contains(body, `<span class="meta">merged into</span> <span class="lead mono">refs/heads/main</span> <span class="meta">(444444444444)</span>`) {
+		t.Error("the Card page does not say where the deleted branch was merged")
+	}
+
+	// A page of the whole path list with a path cut is not read.
+	r.daemon.page = PathsPage{Pages: 2, Rows: []PathRow{{Path: long, Status: "M"}}}
+	w := r.getWith("/cards/"+testCardID+"/paths/0", s)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "A path on this page is too long to show whole on the phone, so this page does not count as read.") {
+		t.Errorf("a page with a cut path: %d", w.Code)
+	}
+	r.daemon.page = PathsPage{Pages: 2, Rows: []PathRow{{Path: edge, Status: "M"}}}
+	if w := r.getWith("/cards/"+testCardID+"/paths/1", s); strings.Contains(w.Body.String(), "too long to show whole") {
+		t.Error("a page with no path cut says one is")
+	}
+	r.challengeOf(t, s, approveBody)
+	if rd := r.daemon.decideChs[0].Reading; len(rd.PagesRead) != 1 || rd.PagesRead[0] != 1 {
+		t.Errorf("the pages read are %v, want [1]", rd.PagesRead)
 	}
 }
 

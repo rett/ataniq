@@ -127,6 +127,16 @@ type Ref struct {
 	Ref      Lead
 	Old, New string
 	Deletes  bool
+	// MergedInto says where the commits of a branch a prune deletes stay
+	// reachable: the branch and its tip. Only a delete has it.
+	MergedInto *MergedInto
+}
+
+// MergedInto names the branch, and its tip, that holds the commits of a
+// branch a prune deletes.
+type MergedInto struct {
+	Ref Lead
+	Tip string
 }
 
 // Diff is a card's diff summary and its rows.
@@ -306,6 +316,9 @@ type (
 		Title string
 		ID    string
 		Page  PathsPage
+		// Cut says that a path of the page is too long to be shown whole,
+		// so the page does not count as read.
+		Cut bool
 		// Number is the page's number from 1; Prev, Next and Back are the
 		// app's own addresses, empty when there is none.
 		Number           int
@@ -416,8 +429,11 @@ func (a *app) pathsPage(w http.ResponseWriter, r *http.Request, s Session) {
 		a.problem(w, problemFailed)
 		return
 	}
-	a.sess.readPage(s.key, id, n, p.Pages)
-	d := pathsData{Title: pageTitles["paths"], ID: id, Page: p, Number: n + 1, Back: cardHref(id)}
+	// A page counts as read only when it showed every path whole.
+	d := pathsData{Title: pageTitles["paths"], ID: id, Page: p, Number: n + 1, Back: cardHref(id), Cut: !rowsWhole(p.Rows)}
+	if !d.Cut {
+		a.sess.readPage(s.key, id, n, p.Pages)
+	}
 	if n > 0 {
 		d.Prev = pathsHref(id, n-1)
 	}

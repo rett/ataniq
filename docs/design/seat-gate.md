@@ -799,15 +799,29 @@ How it is built (G9), where the points above left a choice:
 - The phone reads a card on one page. So the session's reading of a card,
   which the seat keeps server-side (`seatapp.Reading`), counts the Card
   page's rows, its four lists, its refs and its "differs from" block as read
-  to their end once the page was served to the session, and a cut path list
-  only by the pages of the whole list the session was served, for the card's
-  review. `seatlink` builds the card model's `Reading` from it, and asks
-  `Card.MayApprove` with every flagged path signed off to offer Approve (a
-  card that opened under 400 ms ago is offered, since the tap is judged
-  again), `Card.Deny` to offer Deny, and `Card.Approve` (MayApprove with the
-  boxes ticked) or `Card.Deny` to build the frame; a decision they refuse is
-  not sent. The Card page of a card that ended, or whose decision is on its
-  way, has no form.
+  to their end once the page was served to the session, each only when the
+  page showed it whole (`seatapp.Whole`), and a cut path list only by the
+  pages of the whole list the session was served that showed every path
+  whole, for the card's review. The page shows a path or a ref (a ref
+  line's ref, the branch a prune's deleted ref was merged into, a flagged
+  path and its rule, a path or ref of the "differs from" block) up to 1024
+  characters of its escaped text, and cuts a longer one with a count of
+  what it left out; a part with a cut item is not read, and a page of the
+  path list with one says that it does not count. `seatlink` builds the card
+  model's `Reading` from it, and asks `Card.MayApprove` with every flagged
+  path signed off to offer Approve (a card that opened under 400 ms ago is
+  offered, since the tap is judged again), `Card.Deny` to offer Deny, and
+  `Card.Approve` (MayApprove with the boxes ticked) or `Card.Deny` to build
+  the frame; a decision they refuse is not sent. Approve is withheld, and
+  not sent, for a card the page did not show whole: the page says which
+  part ("a ref", "a changed path", "a path in a list", "a flagged path",
+  "a path or a ref of how the card differs" is too long to show whole on the
+  phone; approve at the desk). So two flagged paths that read the same on
+  the page because both were cut are never signed off by their index. Deny
+  stays. A prune's ref line shows the branch its deleted ref was merged
+  into and that branch's tip (the first 12 digits), as the desk does. The
+  Card page of a card that ended, or whose decision is on its way, has no
+  form.
 - One tap on Approve or Deny asks `POST /api/decide-challenge` with the card,
   the id of the page's form, the action, the indexes of the boxes ticked and
   the reason. Each Card page that holds the form has a form id of its own

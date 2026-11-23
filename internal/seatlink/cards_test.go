@@ -400,6 +400,32 @@ func TestSeatLinkCardsOverTheSeatApp(t *testing.T) {
 	}
 }
 
+// TestSeatLinkPruneSaysWhereTheBranchStays: a prune card's ref line keeps
+// the branch its deleted branch was merged into, and that branch's tip, as
+// the desk shows them.
+func TestSeatLinkPruneSaysWhereTheBranchStays(t *testing.T) {
+	f, d, _ := readGate(t, []string{"read"})
+	b, err := os.ReadFile("../approval/record/testdata/pending-valid-prune.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := record.DecodePending(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.pending, f.bytes = p, b
+	f.mu.Unlock()
+	c, err := d.Show(context.Background(), p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Refs) != 1 || c.Refs[0].MergedInto == nil || fmtLead(c.Refs[0].MergedInto.Ref) != "refs/heads/develop" ||
+		c.Refs[0].MergedInto.Tip != "93c8d68b93c8d68b93c8d68b93c8d68b93c8d68b" || !c.Refs[0].Deletes {
+		t.Errorf("the prune's ref line: %+v", c.Refs)
+	}
+}
+
 // TestSeatLinkHeldAndEarlierCard: the held mark and the earlier card of a
 // show reach the phone; an earlier record that is not its digest's is a bad
 // answer.

@@ -120,14 +120,16 @@ func (s *shownCards) put(id string, c card.Card) {
 }
 
 // readingOf is the card model's reading of a card as one session read it on
-// the phone. The Card page holds the card whole, so it counts as the rows,
-// the four lists, the refs and the "differs from" block read to their end;
-// a cut path list counts only by the pages of the whole list the session
-// read, for the card's own review.
+// the phone. The Card page holds the card on one page, so it counts the
+// rows, the four lists, the refs and the "differs from" block as read to
+// their end when the page showed each of them whole (seatapp.Whole), and
+// not when a path or a ref of it was too long to be shown whole; a cut path
+// list counts only by the pages of the whole list the session read, for the
+// card's own review.
 func readingOf(c card.Card, r seatapp.Reading) card.Reading {
-	rd := card.Reading{Opened: r.Opened, Paths: true, Refs: true, Differs: true}
+	rd := card.Reading{Opened: r.Opened, Paths: r.Whole.Rows, Refs: r.Whole.Refs, Differs: r.Whole.Differs}
 	for k := range rd.Lists {
-		rd.Lists[k] = true
+		rd.Lists[k] = r.Whole.Lists
 	}
 	if c.Diff != nil {
 		for _, n := range r.PagesRead {
@@ -141,28 +143,76 @@ func readingOf(c card.Card, r seatapp.Reading) card.Reading {
 // binding asked.
 const reasonNotShown = "the card changed; look at it again"
 
+// The host's lines for a card the phone did not show whole: a path or a ref
+// longer than the page shows. Approve is not offered for it on the phone,
+// and is not sent; the owner reads it, and approves, at the desk.
+const (
+	reasonCutRefs    = "a ref is too long to show whole on the phone; approve at the desk"
+	reasonCutRows    = "a changed path is too long to show whole on the phone; approve at the desk"
+	reasonCutLists   = "a path in a list is too long to show whole on the phone; approve at the desk"
+	reasonCutFlagged = "a flagged path is too long to show whole on the phone; approve at the desk"
+	reasonCutDiffers = "a path or a ref of how the card differs is too long to show whole on the phone; approve at the desk"
+)
+
+// cutWhy says which part of c, in the order the Card page shows them, the
+// page did not show whole, or "" when it showed every part c has whole. A
+// flagged path cut is never signed off by its index: two such paths may
+// read the same on the page.
+func cutWhy(c card.Card, w seatapp.Whole) string {
+	switch {
+	case len(c.Refs) != 0 && !w.Refs:
+		return reasonCutRefs
+	case c.Diff != nil && !c.Diff.Truncated && !w.Rows:
+		return reasonCutRows
+	case c.Diff != nil && !w.Lists:
+		return reasonCutLists
+	case len(c.Flagged) != 0 && !w.Flagged:
+		return reasonCutFlagged
+	case c.Differs != nil && !w.Differs:
+		return reasonCutDiffers
+	}
+	return ""
+}
+
 // Offer says what the Card page may offer for a card the link showed at the
-// binding given, as a session read it: an approve when the card model's
-// MayApprove allows it with every flagged path signed off (the sign-offs are
-// the owner's to tick on the page; a card that opened under 400 ms ago is
-// offered, since the tap comes later and is judged then), and a deny when
-// its Deny allows one with no reason. It asks the gate nothing.
+// binding given, as a session read it: an approve when the page showed every
+// part of the card whole and the card model's MayApprove allows it with
+// every flagged path signed off (the sign-offs are the owner's to tick on
+// the page; a card that opened under 400 ms ago is offered, since the tap
+// comes later and is judged then), and a deny when its Deny allows one with
+// no reason. It asks the gate nothing.
 func (d *Daemon) Offer(id, binding string, r seatapp.Reading, now time.Time) seatapp.Offer {
 	c, ok := d.shown.get(id)
 	if !ok || c.BindingSHA256 != binding || binding == "" {
 		return seatapp.Offer{ApproveWhy: reasonNotShown, DenyWhy: reasonNotShown}
 	}
 	var out seatapp.Offer
+	out.Approve, out.ApproveWhy = mayOffer(c, r, now)
+	// A part the page cut is the line given when nothing else is in the
+	// way: the owner learns why the phone cannot approve this card.
+	if why := cutWhy(c, r.Whole); why != "" {
+		whole := r
+		whole.Whole = seatapp.Whole{Rows: true, Lists: true, Refs: true, Flagged: true, Differs: true}
+		if ok, _ := mayOffer(c, whole, now); ok {
+			out.Approve, out.ApproveWhy = false, why
+		}
+	}
+	_, out.Deny, out.DenyWhy = c.Deny("", now)
+	return out
+}
+
+// mayOffer is MayApprove of the session's reading with every flagged path
+// signed off; a card that opened under 400 ms ago is offered.
+func mayOffer(c card.Card, r seatapp.Reading, now time.Time) (bool, string) {
 	rd := readingOf(c, r)
 	for _, f := range c.Flagged {
 		rd.SignedOff = append(rd.SignedOff, f.SignOff())
 	}
-	out.Approve, out.ApproveWhy = c.MayApprove(rd, now)
-	if !out.Approve && out.ApproveWhy == card.ReasonJustOpened {
-		out.Approve, out.ApproveWhy = true, ""
+	ok, why := c.MayApprove(rd, now)
+	if !ok && why == card.ReasonJustOpened {
+		return true, ""
 	}
-	_, out.Deny, out.DenyWhy = c.Deny("", now)
-	return out
+	return ok, why
 }
 
 // decidable checks what both decision calls need before anything is sent: a
@@ -202,6 +252,9 @@ func frameOf(c card.Card, r seatapp.DecideChallengeRequest) (ownerwire.DecisionF
 	}
 	if r.Reason != "" {
 		return ownerwire.DecisionFrame{}, errFrame
+	}
+	if why := cutWhy(c, r.Reading.Whole); why != "" {
+		return ownerwire.DecisionFrame{}, &seatapp.NotAllowedError{Reason: why}
 	}
 	seen := make(map[int]bool, len(r.SignedOff))
 	for _, i := range r.SignedOff {

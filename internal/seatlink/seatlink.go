@@ -92,7 +92,11 @@
 // ("The challenge", "Decide" and "The phone's side"), and only when the
 // gate's hello listed "decide" and the link has the gate's pin. Offer asks
 // the gate nothing: it answers what the Card page may offer by the card
-// model's rules (MayApprove with every flagged path signed off, and Deny).
+// model's rules (MayApprove with every flagged path signed off, and Deny),
+// and withholds Approve, saying which part, for a card the page did not
+// show whole (seatapp.Whole): a part with a path or a ref too long to be
+// shown whole is not read, and a flagged path cut is never signed off by
+// its index, since two of them may read the same on the page.
 // DecideChallenge freezes the decision from the card Show kept, at the
 // binding the Card page showed: the action, the flagged paths signed off by
 // their index, in the card's order, and the reason, through the card

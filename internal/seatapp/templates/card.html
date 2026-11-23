@@ -25,7 +25,7 @@
 {{with .Refs}}<section aria-labelledby="refs">
 <h2 id="refs">Refs it moves</h2>
 <ul class="rows">
-{{range .}}<li><span class="lead mono">{{lead .Ref maxPath}}</span> <span class="meta">{{text .Kind maxName}}: {{short .Old}} to {{if .Deletes}}deleted{{else}}{{short .New}}{{end}}</span></li>
+{{range .}}<li><span class="lead mono">{{lead .Ref maxPath}}</span> <span class="meta">{{text .Kind maxName}}: {{short .Old}} to {{if .Deletes}}deleted{{else}}{{short .New}}{{end}}</span>{{with .MergedInto}}<br><span class="meta">merged into</span> <span class="lead mono">{{lead .Ref maxPath}}</span> <span class="meta">({{short .Tip}})</span>{{end}}</li>
 {{end}}</ul>
 </section>
 {{end}}{{with .Diff}}<section aria-labelledby="diff">

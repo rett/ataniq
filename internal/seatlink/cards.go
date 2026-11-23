@@ -262,7 +262,11 @@ func viewOf(c card.Card) seatapp.Card {
 		Note:          leads(c.Note.Lines()),
 	}
 	for _, r := range c.Refs {
-		v.Refs = append(v.Refs, seatapp.Ref{Kind: r.Kind, Ref: lead(r.Ref), Old: r.Old, New: r.New, Deletes: r.Deletes})
+		ref := seatapp.Ref{Kind: r.Kind, Ref: lead(r.Ref), Old: r.Old, New: r.New, Deletes: r.Deletes}
+		if m := r.MergedInto; m != nil {
+			ref.MergedInto = &seatapp.MergedInto{Ref: lead(m.Ref), Tip: m.Tip}
+		}
+		v.Refs = append(v.Refs, ref)
 	}
 	if c.Diff != nil {
 		diff := &seatapp.Diff{Files: c.Diff.Files, Added: c.Diff.Added, Removed: c.Diff.Removed, NewBytes: c.Diff.NewBytes, Truncated: c.Diff.Truncated}

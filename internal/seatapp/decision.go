@@ -6,18 +6,33 @@ import (
 )
 
 // Reading is what one session did with one card: when the Card page last
-// showed it, and which pages of its whole path list the session read. The
-// Card page holds the card whole (its rows, its lists, its refs and the
-// "differs from" block), so a page the session was served counts as all of
-// that read to its end; the whole path list of a card whose rows are cut
-// counts only page by page.
+// showed it, which parts of the card that page showed whole, and which pages
+// of its whole path list the session read. The Card page holds the card on
+// one page (its rows, its lists, its refs, its flagged paths and the
+// "differs from" block), so a part it showed whole counts as read to its end
+// once the page was served; a part with a path or a ref too long to be shown
+// whole is not read, and the whole path list of a card whose rows are cut
+// counts only page by page, by the pages that showed every path whole.
 type Reading struct {
 	// Opened is when the Card page last showed the card to the session.
 	Opened time.Time
+	// Whole are the parts of the card the Card page showed whole.
+	Whole Whole
 	// PagesRead are the numbers of the pages of the whole path list the
 	// session read, each once, and Pages how many pages that list had.
 	PagesRead []int
 	Pages     int
+}
+
+// Whole says, for each part of a card, that the Card page showed every path
+// and ref of it whole: none was cut by [Text]. A part the card does not have
+// is whole. The zero Whole says that nothing was shown whole.
+type Whole struct {
+	// Rows are the diff's rows on the card, Lists the four lists, Refs the
+	// ref lines with the branch each deleted one was merged into, Flagged
+	// the flagged paths with their rules, and Differs the paths and refs of
+	// the "differs from" block.
+	Rows, Lists, Refs, Flagged, Differs bool
 }
 
 // Offer is what the Card page may offer for a card as a session read it,
