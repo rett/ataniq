@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -162,6 +163,61 @@ func TestSeatGateWithAnOriginServesLoginAndDecide(t *testing.T) {
 	want := ownerchannel.Gate{Instance: gateFP, Origin: "https://seat.example", RPID: "seat.example"}
 	if g := svc.seen(); len(g) != 1 || g[0] != want {
 		t.Fatalf("the service was handed %+v", g)
+	}
+}
+
+// watchingGateService is a gate's service that can also wait for a change of
+// the pending cards: it answers the empty set at once.
+type watchingGateService struct {
+	*decidingGateService
+	waits atomic.Int64
+}
+
+func (s *watchingGateService) WaitPending(_ context.Context, since string) (ownerwire.SeatWaitResult, error) {
+	s.waits.Add(1)
+	return ownerwire.SeatWaitResult{Version: ownerwire.PendingVersion(nil), Cards: []ownerwire.SeatWaitCard{}}, nil
+}
+
+var _ gatehost.WaitPort = (*watchingGateService)(nil)
+
+// A service that can wait gives the gate the capability watch and the
+// operation seat.wait, with or without a seat origin: it decides nothing. A
+// service that cannot, as the others of these tests, has neither (their
+// loops over the gate's operations expect unknown-op for seat.wait too).
+func TestSeatGateServesWatchWhenTheServiceCanWait(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		origin string
+		caps   string
+	}{
+		{"with an origin", "https://seat.example\n", "pair read login decide watch"},
+		{"without an origin", "", "pair read watch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &watchingGateService{decidingGateService: &decidingGateService{gateService: gateSetup(t, "")}}
+			ownerServiceBuilder = func(string) (leaddaemon.OwnerService, func() error, error) {
+				return svc, func() error { return nil }, nil
+			}
+			env, _ := writeOrigin(t, tc.origin, 0o600)
+			_, _, c, stop := runGate(t, env)
+			defer stop()
+			if got := strings.Join(c.Caps(), " "); got != tc.caps {
+				t.Fatalf("the gate's capabilities: %q, want %q", got, tc.caps)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			var res ownerwire.SeatWaitResult
+			if err := c.Call(ctx, ownerwire.OpSeatWait, json.RawMessage(`{"since":""}`), &res); err != nil || res.Version != ownerwire.PendingVersion(nil) {
+				t.Fatalf("seat.wait: %+v %v", res, err)
+			}
+			var re *seatgate.RemoteError
+			if err := c.Call(ctx, ownerwire.OpSeatWait, json.RawMessage(`{"since":"x"}`), nil); !errors.As(err, &re) || re.Code != gatehost.CodeBadParams {
+				t.Fatalf("seat.wait with a bad version: %v", err)
+			}
+			if n := svc.waits.Load(); n != 1 {
+				t.Fatalf("the service waited %d times", n)
+			}
+		})
 	}
 }
 

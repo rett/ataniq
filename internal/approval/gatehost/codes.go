@@ -75,6 +75,7 @@ var sentinels = []struct {
 	{ownerchannel.ErrAssertionInvalid, ownerwire.CodeAssertionInvalid},
 	{ownerchannel.ErrKeyRevoked, ownerwire.CodeKeyRevoked},
 	{ownerchannel.ErrKindRefused, ownerwire.CodeKindRefused},
+	{ownerchannel.ErrWaitFull, ownerwire.CodeWaitFull},
 }
 
 // passedRefusals are the refusal codes of the service that a seat is told as
