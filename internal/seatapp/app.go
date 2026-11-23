@@ -127,7 +127,9 @@ type Daemon interface {
 // when it drops a challenge whose decision it will then never send: a new
 // tap of the session took its place, or the tap was burnt or refused before
 // its decision was sent. The room is let go then rather than at the end of
-// the challenge's life. A port without it is not told.
+// the challenge's life. A session's end (logout, idle time, eviction) does
+// not tell it: the room of a decision pending then is left to the
+// challenge's life. A port without it is not told.
 type ChallengeDropper interface {
 	DropChallenge(id string)
 }

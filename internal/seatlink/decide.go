@@ -434,7 +434,8 @@ func (d *Daemon) challenge(ctx context.Context, frame ownerwire.DecisionFrame, w
 // [seatapp.ErrTooLarge], and a decision whose challenge's room is no
 // longer kept (its life ended), with no room left, is [seatapp.ErrBusy];
 // a decision of a challenge the link drew, in its life, always has its
-// room. Once it is sent, only a refusal says for
+// room; a decision refused before it is sent lets that room go. Once it is
+// sent, only a refusal says for
 // certain that nothing was decided: a refusal code maps as for the
 // challenge; the codes unavailable, deadline-exceeded, door-unavailable,
 // journal-reopened and failed, a lost link, the seat's own deadline, and an
@@ -442,6 +443,14 @@ func (d *Daemon) challenge(ctx context.Context, frame ownerwire.DecisionFrame, w
 // a [*RefusedError], whose outcome the app treats as unknown too. Nothing is
 // retried.
 func (d *Daemon) Decide(ctx context.Context, r seatapp.DecideRequest) (seatapp.DecideResult, error) {
+	// A decision that returns before its answer is counted is never sent,
+	// so the room kept for it goes with it (the app has burnt the challenge).
+	sent := false
+	defer func() {
+		if !sent {
+			d.budget.drop(kindDecide, r.ChallengeID)
+		}
+	}()
 	if err := d.decidable(ctx); err != nil {
 		return seatapp.DecideResult{}, err
 	}
@@ -469,6 +478,7 @@ func (d *Daemon) Decide(ctx context.Context, r seatapp.DecideRequest) (seatapp.D
 	if !d.budget.answer(kindDecide, r.ChallengeID) {
 		return seatapp.DecideResult{}, seatapp.ErrBusy
 	}
+	sent = true
 	var raw json.RawMessage
 	if err := d.c.Call(ctx, OpDecide, wire, &raw); err != nil {
 		return seatapp.DecideResult{}, mapDecide(err)

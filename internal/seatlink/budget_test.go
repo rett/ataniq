@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/approval/webauthntest"
 	"ataniq/internal/seatapp"
 	"ataniq/internal/seatgate"
@@ -198,14 +199,13 @@ func TestSeatLinkBudgetConcurrentChallenges(t *testing.T) {
 }
 
 // TestSeatLinkBudgetNeverOverTheGate: a long run of every kind of call, at
-// random, as the link's callers make them. Sessions draw challenges, in
-// several sessions of each credential: of each challenge drawn, a third
-// are answered at once, a third later (unless a new tap of the same
-// session replaces it first, as the app keeps one decision a session and
-// drops the one replaced), and a third never. In every BudgetWindow, which
-// holds every minute of the gate's, the calls of each kind stay within its
-// room, and a decision whose challenge is in its life is never refused; the
-// rooms and the pings are the gate's rate.
+// random, as the link's callers make them. Sessions draw challenges: of each
+// challenge drawn, a third are answered at once, a third later (unless a
+// new tap of the same session replaces it first, as the app keeps one
+// decision a session and drops the one replaced), and a third never. In
+// every BudgetWindow, which holds every minute of the gate's, the calls of
+// each kind stay within its room, and a decision whose challenge is in its
+// life is never refused; the rooms and the pings are the gate's rate.
 func TestSeatLinkBudgetNeverOverTheGate(t *testing.T) {
 	clock := &testClock{t: decideNow}
 	b := &budget{now: clock.now}
@@ -215,9 +215,10 @@ func TestSeatLinkBudgetNeverOverTheGate(t *testing.T) {
 		id string
 		at time.Time
 	}
-	// pending is each session's one decision to come: sessions 0 to 7,
-	// two of each of 4 credentials (the credential does not matter to the
-	// room, which is each challenge's own).
+	// pending is each session's one decision to come: sessions 0 to 7, one
+	// decision each. The budget sees neither sessions nor credentials; the
+	// model shows one hold for each challenge drawn and not answered,
+	// whoever drew it.
 	pending := map[int]later{}
 	for step := 0; step < 20000; step++ {
 		clock.advance(time.Duration(rnd.IntN(2000)) * time.Millisecond)
@@ -317,14 +318,72 @@ func TestSeatLinkDecideRoom(t *testing.T) {
 	}
 	drawn = append(drawn[2:], ch)
 	for i, ch := range drawn {
-		if _, err := r.link.Decide(context.Background(), r.sign(t, ch)); err != nil && errors.Is(err, seatapp.ErrBusy) {
-			t.Errorf("the decision of challenge %d: %v", i+1, err)
+		// Each is answered, or refused by the desk: never for room.
+		if _, err := r.link.Decide(context.Background(), r.sign(t, ch)); err != nil && !errors.Is(err, seatapp.ErrCannotDecide) {
+			t.Errorf("the decision of challenge %d: %v, want an answer or a refusal of the desk", i+1, err)
 		}
 	}
 	// The room comes back with the window.
 	clock.advance(BudgetWindow)
 	if _, err := r.link.DecideChallenge(context.Background(), r.approve()); err != nil {
 		t.Errorf("a challenge after the window: %v", err)
+	}
+}
+
+// TestSeatLinkDecideRefusedBeforeSentLetsTheRoomGo: a decision that returns
+// before it is sent (a gate that is not connected, an assertion or a frame
+// not of the wire's form) lets the room kept for its challenge go, so
+// the full allowance of decision challenges is drawn and answered after it.
+// Without that, the three keep their rooms until their challenges' life
+// ends, and the challenges past them are refused for room.
+func TestSeatLinkDecideRefusedBeforeSentLetsTheRoomGo(t *testing.T) {
+	r := newDecideRig(t)
+	clock := &testClock{t: decideNow}
+	r.link.budget.now = clock.now
+	r.show(t)
+	var drawn []seatapp.DecideChallenge
+	for i := 0; i < decideRoom/2; i++ {
+		ch, err := r.link.DecideChallenge(context.Background(), r.approve())
+		if err != nil {
+			t.Fatalf("challenge %d: %v", i+1, err)
+		}
+		drawn = append(drawn, ch)
+	}
+	if _, err := r.link.DecideChallenge(context.Background(), r.approve()); err != seatapp.ErrBusy {
+		t.Fatalf("a challenge past the room: %v, want %v", err, seatapp.ErrBusy)
+	}
+	// Not connected: the context is over before anything is sent.
+	gone, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := r.link.Decide(gone, r.sign(t, drawn[0])); !errors.Is(err, seatapp.ErrDaemonUnavailable) {
+		t.Errorf("a gate not connected: %v, want %v", err, seatapp.ErrDaemonUnavailable)
+	}
+	// Params the wire's encoder refuses: client data over its cap.
+	big := r.sign(t, drawn[1])
+	big.ClientDataJSON = bytes.Repeat([]byte("a"), ownerwire.MaxClientDataBytes+1)
+	if _, err := r.link.Decide(context.Background(), big); !errors.Is(err, errFrame) {
+		t.Errorf("client data over its cap: %v, want %v", err, errFrame)
+	}
+	// A frame not of the wire's form.
+	bad := r.sign(t, drawn[2])
+	bad.Frame.ID = ""
+	if _, err := r.link.Decide(context.Background(), bad); !errors.Is(err, errFrame) {
+		t.Errorf("a frame not of the wire's form: %v, want %v", err, errFrame)
+	}
+	if _, decides := r.desk.counts(); decides != 0 {
+		t.Errorf("%d decisions reached the desk", decides)
+	}
+	// The rooms of the three are free again, which a challenge takes (two
+	// calls of the room), and the decisions of every one the link still
+	// keeps are answered.
+	ch, err := r.link.DecideChallenge(context.Background(), r.approve())
+	if err != nil {
+		t.Fatalf("a challenge after the refused decisions: %v", err)
+	}
+	for i, ch := range append(drawn[3:], ch) {
+		if _, err := r.link.Decide(context.Background(), r.sign(t, ch)); err != nil && errors.Is(err, seatapp.ErrBusy) {
+			t.Errorf("the decision of challenge %d: %v", i+4, err)
+		}
 	}
 }
 

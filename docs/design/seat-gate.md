@@ -976,8 +976,11 @@ How it is built (G9), where the points above left a choice:
   characters is approved at the desk. The plan's lines and the note's
   lines are cut at 4000 characters: the plan is the host's text under the
   binding, which a lead's request shapes, and the note is the lead's, at
-  most 2 KiB, so a note line is never cut while that cap stands. A prune's ref line shows the branch its deleted ref was merged
-  into and that branch's tip (the first 12 digits), as the desk does. The
+  most 2 KiB of raw bytes; its escaped text (a control or an invalid byte
+  becomes `\xNN`) can be several times longer, so a note line can be cut,
+  and is covered like the plan. A prune's ref line shows the branch its
+  deleted ref was merged into and that branch's tip (the first 12 digits),
+  as the desk does. The
   Card page of a card that ended, or whose decision is on its way, has no
   form.
 - One tap on Approve or Deny asks `POST /api/decide-challenge` with the card,
@@ -1256,6 +1259,14 @@ The owner carries every fingerprint by hand, both ways, at the first exchange.
   login challenges hold for up to 5 minutes. While they keep it up the owner
   cannot pair a phone, or log in on one; a login the phone already answered
   is never refused for room, and the desk is never touched.
+- An ended session keeps its decision's room. A session that ends (logout,
+  idle time, eviction) with a decision challenge pending does not drop it:
+  the room of its decision is kept until the challenge's life ends (5
+  minutes), not let go at once.
+- The owner's abandoned logins cost room too. An unanswered login challenge,
+  the owner's own included, keeps one call of the public room for up to 5
+  minutes, so the owner's repeated cancelled logins can make a later login
+  or a pairing answer `desk_busy` for that time.
 - A taken-over seat host can send refused pairings without bound. The gate
   counts no refused pairing, so that strangers cannot shut the seat out
   through the honest seat app; a seat host that is taken over talks to the

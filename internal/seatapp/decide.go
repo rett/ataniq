@@ -13,7 +13,10 @@ import (
 // The limits of a decision from the phone.
 const (
 	// maxReadings is the most cards a session keeps its readings of; the
-	// one read least recently goes first.
+	// one read least recently goes first, but never one marked sent: that
+	// mark is what keeps a lost answer from being followed by a second
+	// decision unseen. A table of marked readings only grows past it, by
+	// the marks (at most one for each decision pending).
 	maxReadings = 16
 	// maxSignOffs is the most sign-off indexes a decide-challenge body may
 	// carry, each below it: a decision record of 8 KiB holds fewer.
@@ -125,7 +128,8 @@ func (ss *sessions) with(k tokenKey, f func(*session)) bool {
 }
 
 // reading returns the session's reading of a card, made when it has none
-// and create is true. With the table full, the one used least recently goes.
+// and create is true. With the table full, the one used least recently goes,
+// of those not marked sent; when every reading is marked, none goes.
 func (s *session) reading(id string, create bool) *cardReading {
 	s.tick++
 	if r, ok := s.cards[id]; ok {
@@ -143,9 +147,15 @@ func (s *session) reading(id string, create bool) *cardReading {
 		var at uint64
 		first := true
 		for k, r := range s.cards {
+			if r.sent {
+				continue
+			}
 			if first || r.touched < at {
 				oldest, at, first = k, r.touched, false
 			}
+		}
+		if first {
+			break
 		}
 		delete(s.cards, oldest)
 	}

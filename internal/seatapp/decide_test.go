@@ -1266,3 +1266,94 @@ func TestSeatDecideChecksThePortsAnswer(t *testing.T) {
 		t.Errorf("another reason: %d %s", w.Code, w.Body)
 	}
 }
+
+// TestSeatReadingsKeepTheSentMark: the table of a session's readings never
+// drops one marked sent, whatever else is read: a card whose decision is in
+// flight, or whose answer was lost, keeps its mark through 16 or more reads
+// of other cards, and a lost answer after them still marks it again, so a
+// read that began before the loss does not offer the form, and one that
+// begins after it does. With every reading marked the table grows by the
+// marks and drops none.
+func TestSeatReadingsKeepTheSentMark(t *testing.T) {
+	now := time.Date(2026, 11, 20, 15, 0, 0, 0, time.UTC)
+	ss := newSessions(func() time.Time { return now })
+	var k tokenKey
+	k[0] = 1
+	ss.add(k, Session{})
+	card := func(id string) Card { return Card{ID: id, BindingSHA256: "b" + id, State: "pending"} }
+	read := func(id string) {
+		t.Helper()
+		if !ss.opened(k, card(id), now, ss.begin(), pageForm{}) {
+			t.Fatalf("the read of %s was not noted", id)
+		}
+	}
+	sentOf := func(id string) (sent, kept bool) {
+		ss.with(k, func(s *session) {
+			if r, ok := s.cards[id]; ok {
+				sent, kept = r.sent, true
+			}
+		})
+		return
+	}
+	size := func() (n int) {
+		ss.with(k, func(s *session) { n = len(s.cards) })
+		return
+	}
+
+	read("x")
+	if !ss.markSent(k, "x") {
+		t.Fatal("the decision of x was not marked sent")
+	}
+	// The other cards are read in another tab of the session, while x's
+	// decision is in flight.
+	for i := 0; i < 3*maxReadings; i++ {
+		read(fmt.Sprintf("other-%d", i))
+	}
+	if sent, kept := sentOf("x"); !kept || !sent {
+		t.Fatalf("after %d other reads x's reading: kept %v, sent %v", 3*maxReadings, kept, sent)
+	}
+	if n := size(); n != maxReadings {
+		t.Errorf("%d readings, want the cap of %d", n, maxReadings)
+	}
+	// Its answer is lost: it is marked again, so a read that began before
+	// the loss does not clear it, and one that begins after does.
+	before := ss.begin()
+	ss.lost(k, "x")
+	if _, fresh := ss.peek(k, card("x"), now, before); fresh {
+		t.Error("a read that began before the loss was taken as fresh")
+	}
+	if ss.opened(k, card("x"), now, before, pageForm{id: "f"}) {
+		t.Error("a read that began before the loss offered the form")
+	}
+	if _, fresh := ss.peek(k, card("x"), now, ss.begin()); !fresh {
+		t.Error("a read that began after the loss was not fresh")
+	}
+	if !ss.opened(k, card("x"), now, ss.begin(), pageForm{id: "f"}) {
+		t.Error("a read that began after the loss did not offer the form")
+	}
+	if sent, _ := sentOf("x"); sent {
+		t.Error("x is still marked sent after a read began after the loss")
+	}
+
+	// Every reading marked: the table grows past the cap by the marks.
+	ss2 := newSessions(func() time.Time { return now })
+	ss2.add(k, Session{})
+	for i := 0; i < maxReadings+3; i++ {
+		id := fmt.Sprintf("m-%d", i)
+		if !ss2.opened(k, card(id), now, ss2.begin(), pageForm{}) || !ss2.markSent(k, id) {
+			t.Fatalf("card %s was not read and marked", id)
+		}
+	}
+	n := 0
+	ss2.with(k, func(s *session) {
+		n = len(s.cards)
+		for id, r := range s.cards {
+			if !r.sent {
+				t.Errorf("%s lost its mark", id)
+			}
+		}
+	})
+	if n != maxReadings+3 {
+		t.Errorf("%d readings, want %d marked ones all kept", n, maxReadings+3)
+	}
+}
