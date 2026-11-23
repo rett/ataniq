@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -680,6 +681,85 @@ func TestSeatLinkCutPartsAreNotRead(t *testing.T) {
 	}
 	if rd := readingOf(c2, seatapp.Reading{Opened: decideNow, Whole: shownWhole}); !rd.Paths || !rd.Refs || !rd.Differs || !rd.Lists[card.NumLists-1] {
 		t.Errorf("a reading with everything whole: %+v", rd)
+	}
+}
+
+// ampFlagged makes the rig's record a card whose four flagged paths are
+// mostly '&', n of them each: each well under the page's cut, the decision
+// frame under its cap, and each '&' five bytes longer once escaped for HTML.
+func ampFlagged(t *testing.T, r *decideRig, n int) {
+	t.Helper()
+	p := r.desk.reads.pending
+	s := p.Binding.Summary
+	s.Flagged = nil
+	for i := 0; i < 4; i++ {
+		path := record.Text("d" + strconv.Itoa(i) + "/" + strings.Repeat("&", n))
+		s.Paths[i].Path = path
+		s.Flagged = append(s.Flagged, record.Flag{Kind: record.FlagExecConfig, Path: path})
+	}
+	digest, err := record.BindingDigest(p.Binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.BindingSHA256 = digest
+	b, err := record.EncodePending(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.desk.reads.pending, r.desk.reads.bytes = p, b
+}
+
+// TestSeatLinkDecisionOnTheWire: the transport marshals the params again,
+// escaping & as \u0026, so the link checks the bytes the gate will read. A
+// frame of flagged paths full of & that the wire's encoder takes (3931
+// bytes against the cap of 9216) but that is over the cap once escaped is
+// ErrTooLarge, and nothing reaches the gate; on the base it reached the gate
+// and was refused bad-params, a refusal the gate counts. One that fits once
+// escaped is decided, with the paths as they are. The bytes the link hands
+// the transport are a fixed point of its marshal.
+func TestSeatLinkDecisionOnTheWire(t *testing.T) {
+	r := newDecideRig(t)
+	ampFlagged(t, r, 900)
+	r.show(t)
+	q := r.approve()
+	q.BindingSHA256, q.SignedOff = r.desk.reads.pending.BindingSHA256, []int{0, 1, 2, 3}
+	c, _ := r.link.shown.get(q.ID)
+	f, err := frameOf(c, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params, err := ownerwire.EncodeSeatChallengeParams(ownerwire.SeatChallengeParams{Frame: f, Credential: r.credential})
+	if err != nil || len(params) > ownerwire.MaxSeatChallengeParamsBytes {
+		t.Fatalf("the params are %d bytes (%v): the test does not show what it means to", len(params), err)
+	}
+	before := r.gate.calls.Load()
+	if _, err := r.link.DecideChallenge(context.Background(), q); !errors.Is(err, seatapp.ErrTooLarge) {
+		t.Errorf("params over the cap on the wire: %v, want %v", err, seatapp.ErrTooLarge)
+	}
+	if n := r.gate.calls.Load() - before; n != 0 {
+		t.Errorf("%d calls reached the gate", n)
+	}
+
+	r = newDecideRig(t)
+	ampFlagged(t, r, 200)
+	r.show(t)
+	q = r.approve()
+	q.BindingSHA256, q.SignedOff = r.desk.reads.pending.BindingSHA256, []int{0, 1, 2, 3}
+	ch, err := r.link.DecideChallenge(context.Background(), q)
+	if err != nil {
+		t.Fatalf("params that fit on the wire: %v", err)
+	}
+	if _, err := r.link.Decide(context.Background(), r.sign(t, ch)); err != nil {
+		t.Fatalf("decide: %v", err)
+	}
+	if got := r.desk.decided[0].SignedOff; len(got) != 4 || string(got[0].Path) != "d0/"+strings.Repeat("&", 200) {
+		t.Errorf("the desk got the sign-offs %d", len(got))
+	}
+
+	wire, err := onWire([]byte(`{"a":"<&>\u2028"}`), func([]byte) error { return nil })
+	again, _ := json.Marshal(wire)
+	if err != nil || !bytes.Equal(again, wire) || string(wire) != `{"a":"\u003c\u0026\u003e\u2028"}` {
+		t.Errorf("onWire gives %s (%v), marshalled again %s", wire, err, again)
 	}
 }
 

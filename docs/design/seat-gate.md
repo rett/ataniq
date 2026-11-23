@@ -859,6 +859,20 @@ How it is built (G9), where the points above left a choice:
   5672 bytes for an assertion at the bounds of `Assertion`, under
   `seatapp.MaxBody`; a body of MaxBody bytes is read and one byte more is
   refused (413), whether its length was declared or not.
+- The link checks the params of `seat.challenge` and `seat.decide` as the
+  gate will read them. The seat's transport (`seatgate.Client.Call`)
+  marshals the params it is handed again with `encoding/json`, which escapes
+  `<`, `>`, `&`, U+2028 and U+2029 for HTML (`\u0026` is six bytes for one),
+  so a frame within its cap can grow past the gate's cap in transit: four
+  flagged paths of 900 `&` each make params of 3931 bytes that are over
+  9 KiB on the wire, which the gate refuses `bad-params` (a refusal it
+  counts). The link escapes the params first, as the transport does, checks
+  those bytes with the daemon's decoder (`ownerwire.DecodeSeatChallengeParams`
+  and `DecodeSeatDecideParams`, size cap included), and hands the transport
+  exactly them, which its marshal leaves as they are. Params over the cap
+  on the wire are not sent: the phone says "This is too large to send."
+  (`too_large`), and nothing was decided. Such a decision is made at the
+  desk until the transport sends the params as given.
 - Decision challenges are limited to 10 a minute per credential, so that
   logins (16), reads (20) and decisions stay within the gate's 60.
 - `Permissions-Policy` allows `publickey-credentials-get` on a Card page that

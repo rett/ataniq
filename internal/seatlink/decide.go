@@ -273,6 +273,30 @@ func frameOf(c card.Card, r seatapp.DecideChallengeRequest) (ownerwire.DecisionF
 	return ownerwire.DecisionFrame{ID: dec.ID, BindingSHA256: dec.BindingSHA256, Decision: record.DecisionApprove, SignedOff: signed}, nil
 }
 
+// onWire returns params as the gate reads them, after the decoder given
+// (the daemon's own, of ownerwire) took exactly those bytes. Client.Call
+// marshals the params it is handed again with encoding/json, which escapes
+// <, >, & and U+2028 and U+2029 for HTML (as \u003c and so on), so the bytes
+// on the wire may be longer than those the wire's encoder checked: a frame
+// with flagged paths full of & can pass its cap here and be refused
+// bad-params by the gate. The link escapes them first, in the same way,
+// checks the escaped bytes, and hands the transport exactly them, which its
+// marshal leaves as they are. Params whose bytes on the wire are over the
+// cap are [seatapp.ErrTooLarge], and nothing is sent.
+func onWire(params []byte, decode func([]byte) error) (json.RawMessage, error) {
+	wire, err := json.Marshal(json.RawMessage(params))
+	if err != nil {
+		return nil, errFrame
+	}
+	if err := decode(wire); err != nil {
+		if code, ok := record.CodeOf(err); ok && code == record.CodeRecordTooLarge {
+			return nil, seatapp.ErrTooLarge
+		}
+		return nil, errFrame
+	}
+	return wire, nil
+}
+
 // frameView is the frame as the app keeps it.
 func frameView(f ownerwire.DecisionFrame) seatapp.DecisionFrame {
 	out := seatapp.DecisionFrame{ID: f.ID, BindingSHA256: f.BindingSHA256, Approve: f.Decision == record.DecisionApprove, Reason: f.Reason}
@@ -304,7 +328,8 @@ func wireFrame(f seatapp.DecisionFrame) ownerwire.DecisionFrame {
 // asked nothing. A card the link did not show at that binding is
 // [seatapp.ErrCardChanged]; a decision the card model does not allow (an
 // approve with a flagged path not signed off, a card past its expiry) is a
-// [*seatapp.NotAllowedError]. Neither is sent.
+// [*seatapp.NotAllowedError]; params over the gate's cap once on the wire
+// are [seatapp.ErrTooLarge]. None is sent.
 func (d *Daemon) DecideChallenge(ctx context.Context, r seatapp.DecideChallengeRequest) (seatapp.DecideChallenge, error) {
 	if err := d.decidable(ctx); err != nil {
 		return seatapp.DecideChallenge{}, err
@@ -324,8 +349,12 @@ func (d *Daemon) DecideChallenge(ctx context.Context, r seatapp.DecideChallengeR
 	if err != nil {
 		return seatapp.DecideChallenge{}, errFrame
 	}
+	wire, err := onWire(params, func(b []byte) error { _, err := ownerwire.DecodeSeatChallengeParams(b); return err })
+	if err != nil {
+		return seatapp.DecideChallenge{}, err
+	}
 	var raw json.RawMessage
-	if err := d.c.Call(ctx, OpDecideChallenge, json.RawMessage(params), &raw); err != nil {
+	if err := d.c.Call(ctx, OpDecideChallenge, wire, &raw); err != nil {
 		return seatapp.DecideChallenge{}, mapCall(ctx, OpDecideChallenge, err, refusalCodes)
 	}
 	var probe ownerwire.SeatChallengeResult
@@ -350,7 +379,8 @@ func (d *Daemon) DecideChallenge(ctx context.Context, r seatapp.DecideChallengeR
 // Decide hands the daemon the frame the app kept for a challenge and the
 // phone's assertion over it (seat.decide), and returns the daemon's outcome.
 // Before anything is sent, a gate that is not connected is
-// [seatapp.ErrDaemonUnavailable]. Once it is sent, only a refusal says for
+// [seatapp.ErrDaemonUnavailable], and params over the gate's cap once on the
+// wire are [seatapp.ErrTooLarge]. Once it is sent, only a refusal says for
 // certain that nothing was decided: a refusal code maps as for the
 // challenge; the codes unavailable, deadline-exceeded, door-unavailable,
 // journal-reopened and failed, a lost link, the seat's own deadline, and an
@@ -372,8 +402,12 @@ func (d *Daemon) Decide(ctx context.Context, r seatapp.DecideRequest) (seatapp.D
 	if err != nil || ownerwire.CheckDecisionFrame(wireFrame(r.Frame)) != nil {
 		return seatapp.DecideResult{}, errFrame
 	}
+	wire, err := onWire(params, func(b []byte) error { _, err := ownerwire.DecodeSeatDecideParams(b); return err })
+	if err != nil {
+		return seatapp.DecideResult{}, err
+	}
 	var raw json.RawMessage
-	if err := d.c.Call(ctx, OpDecide, json.RawMessage(params), &raw); err != nil {
+	if err := d.c.Call(ctx, OpDecide, wire, &raw); err != nil {
 		return seatapp.DecideResult{}, mapDecide(err)
 	}
 	var probe ownerwire.DecideResult

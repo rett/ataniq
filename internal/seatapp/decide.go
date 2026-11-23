@@ -396,6 +396,8 @@ func decideFailure(err error) (decideError, bool) {
 		return errDecideDiffers, true
 	case errors.Is(err, ErrDaemonUnavailable):
 		return errDecideUnreached, true
+	case errors.Is(err, ErrTooLarge):
+		return errDecideTooLarge, true
 	case errors.Is(err, ErrOutcomeUnknown):
 		return errDecideUnknown, false
 	}

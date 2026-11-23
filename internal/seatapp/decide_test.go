@@ -468,6 +468,25 @@ func TestSeatPathPagesKeepTheirReview(t *testing.T) {
 	}
 }
 
+// TestSeatDecideTooLargeIsCertain: a decision whose words the port finds
+// too large for the gate is not sent: the phone says so, and the card is
+// not left marked sent.
+func TestSeatDecideTooLargeIsCertain(t *testing.T) {
+	r := newRig(t)
+	s := r.login(t)
+	r.openCard(t, s)
+	r.daemon.decideChErr = ErrTooLarge
+	wantFailure(t, "a challenge too large", r.postWith("/api/decide-challenge", approveBody, s), 413, "too_large", sayTooLarge)
+	r.daemon.decideChErr = nil
+	id := r.challengeOf(t, s, approveBody)
+	r.daemon.decideErr = ErrTooLarge
+	wantFailure(t, "a decision too large", r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s), 413, "too_large", sayTooLarge)
+	r.daemon.decideErr = nil
+	if w := r.postWith("/api/decide-challenge", approveBody, s); w.Code != 200 {
+		t.Errorf("a tap after a decision too large: %d %s", w.Code, w.Body)
+	}
+}
+
 // TestSeatDecideBodies: a body that is not a decision of the form the page
 // sends is refused, and the port is not asked.
 func TestSeatDecideBodies(t *testing.T) {

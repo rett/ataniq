@@ -203,7 +203,9 @@ var (
 	ErrNoCard = errors.New("seatapp: no card of this id")
 	// ErrCardChanged says that the card's review changed while it was read.
 	ErrCardChanged = errors.New("seatapp: the card changed")
-	// ErrTooLarge says that the answer does not fit the gate's frame.
+	// ErrTooLarge says that the answer does not fit the gate's frame, or,
+	// for a decision, that its words do not fit the gate's cap on them
+	// once on the wire; a decision too large is not sent.
 	ErrTooLarge = errors.New("seatapp: too large for the phone")
 )
 

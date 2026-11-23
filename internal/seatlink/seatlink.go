@@ -107,7 +107,10 @@
 // daemon calls too; a challenge that differs is seatapp.ErrChallengeDiffers
 // and is never handed on, so the phone is never asked to sign it. Decide
 // sends seat.decide with the frame and the assertion, and nothing is
-// retried. The codes, on both calls:
+// retried. Both check their params as the gate will read them, once the
+// transport's marshal has escaped them for HTML, and send exactly those
+// bytes; params over the gate's cap on the wire are seatapp.ErrTooLarge and
+// are not sent. The codes, on both calls:
 //
 //	challenge-stale                             seatapp.ErrChallengeStale
 //	binding-mismatch, review-changed            seatapp.ErrCardChanged
