@@ -32,6 +32,22 @@ const CodeTooManyRefusals = "too-many-refusals"
 // door-unavailable, journal-reopened, keys-unavailable, keys-full) does not
 // count: a seat that polls while the door is down is not shut out for it.
 //
+// The words of seat.genesis follow the same line, by whose fault the refusal
+// is. genesis-bad-answer, genesis-secret-shaped, genesis-over-cap and
+// genesis-unknown-thread count: each is what the peer sent (an answer the
+// question does not allow, text that looks like a credential, an answer past a
+// cap, a thread it was never given), and a seat that keeps sending them is the
+// misuse the bound is for; the seat's own pages never send one, and a thread
+// that expired or was dropped answers unknown-thread once and the page stops
+// asking. bad-params counts as everywhere. genesis-busy (a third open thread)
+// and genesis-done (a call to a finished thread) do not: they answer the state
+// of the daemon's store, which a seat in good order meets (a second tab, a
+// start after two threads were left open, an answer sent twice after the
+// first one finished the thread) and which says nothing against the peer, so a
+// double tap must not shut the owner out for ten minutes. They stay bounded by
+// the gate's own 60 requests a minute and by the store's own limits (two open
+// threads, eight files); they are kept out of this table by being absent.
+//
 // wait-full, the answer to a seat.wait past the peer's two held waits or the
 // service's own limit, does not count either, and must not: it is a load
 // answer, not a misuse. A seat that reconnects while its old wait is still
@@ -55,6 +71,12 @@ var counted = func() map[string]bool {
 		CodeKeyAmbiguous:      true,
 		// An assertion that does not verify is what the peer sent.
 		ownerwire.CodeAssertionInvalid: true,
+		// The refusals of seat.genesis that are what the peer sent. Not
+		// genesis-busy and genesis-done: see above.
+		ownerwire.CodeGenesisBadAnswer:     true,
+		ownerwire.CodeGenesisSecretShaped:  true,
+		ownerwire.CodeGenesisOverCap:       true,
+		ownerwire.CodeGenesisUnknownThread: true,
 	}
 	for c := range passedRefusals {
 		m[string(c)] = true
