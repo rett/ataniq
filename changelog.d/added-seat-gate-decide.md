@@ -8,8 +8,10 @@
   verification over a challenge the daemon draws from its own record of the
   card, kept in memory for 5 minutes and one use by the seat that asked (at
   most 32 decision and 16 login challenges; a restart drops them), verified
-  against a key on `owner/keys.log` that is not revoked, of a kind the
-  scratch settings' `"kinds"` accept, and the seat origin. The key is checked
+  against a key on `owner/keys.log` that is not revoked and of a kind the
+  verifier knows, and the seat origin. A login belongs to no project, so the
+  scratch settings' `"kinds"` apply when a decision's challenge is asked and
+  when the decision is made, not at a login. The key is checked
   again right before the decision is journaled, so a revoke at the desk that
   returned first wins. A phone decision is journaled as confirmed by passkey
   with the assertion's evidence, needs no activity at the desk, and goes

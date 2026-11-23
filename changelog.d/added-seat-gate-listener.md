@@ -7,8 +7,11 @@
   keys it lets in are pinned in `owner/gate/seat-pins` (mode 0600, one
   fingerprint per line, at most 4), which `ataniqd seat-gate pins` lists and the
   daemon reads at start. It serves the pairing call and the reads of the cards
-  in frames of up to 257 KiB, so the largest card fits, and decides nothing. A
-  seat whose key is not pinned never reaches the service. At start one line
+  in frames of up to 257 KiB, so the largest card fits. With the seat origin
+  configured it also serves a login and a decision from the phone, and without
+  one it serves only the pairing call and the reads and decides nothing (see
+  the entry on the login and the decision). A seat whose key is not pinned
+  never reaches the service. At start one line
   gives the address and the gate's key fingerprint, never a pin. Without the
   flag nothing listens on the network. Provisional and unqualified, for scratch
   state only. See `docs/lead-daemon.md`.
