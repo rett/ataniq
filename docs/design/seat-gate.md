@@ -605,6 +605,15 @@ So the seat limits login challenges to 10 per source in 15 minutes and to 8 a
 minute from all sources together: each login asks the gate twice, so logins
 take at most 16 of the 60 a minute, and the room left is the owner's reads and
 decisions. A source is the client address the proxy sets, as for the pairing.
+The seat relays pairings for anyone who reaches its pairing page, and the
+gate counts each pairing the daemon refuses against the seat's refusal bound
+(16 in 10 minutes; see [the refusal bound](#the-refusal-bound)), past which
+it refuses every request of the seat, the owner's too. So besides 5 tries per
+source in 15 minutes, the seat hands the daemon at most 6 pairings in 11
+minutes from all sources together (a body the seat refuses itself is not
+counted); the window is a minute longer than the gate's so that pairings
+sent a little more than 10 minutes apart are not counted closer at the gate.
+The pairing code's own limit, 5 wrong codes, stays.
 Only a session reads cards, and the reads of one credential's sessions are
 limited to 20 a minute (a card page asks the gate once; the first page of a
 card's path list may ask twice, to learn the card's review), so one phone's

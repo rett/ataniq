@@ -106,7 +106,10 @@
 // A failure is one of a small fixed set of codes, each with its status, and a
 // response never holds anything the request sent. Pairing tries are limited
 // to 5 per source address per 15 minutes, in memory; the source is the
-// address in [Config].ClientAddrHeader when that is set, else the peer.
+// address in [Config].ClientAddrHeader when that is set, else the peer. The
+// pairings handed to the daemon are limited to 6 in 11 minutes from all
+// sources together: the gate counts each one the daemon refuses against the
+// seat's refusal bound, past which it refuses every request of the seat.
 //
 // # Login
 //
