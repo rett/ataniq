@@ -364,6 +364,17 @@ type Config struct {
 	// PairRand is the random source of the pairing codes; the default is
 	// the system's. A test gives its own.
 	PairRand io.Reader
+	// ChallengeRand is the random source of the seat gate's challenge ids
+	// and nonces; the default is the system's (crypto/rand). A test gives
+	// its own.
+	ChallengeRand io.Reader
+	// SeatLog, when set, is called with one host-written line for each
+	// outstanding challenge of the seat gate that expires or is dropped,
+	// and for each refusal of the seat's calls the gate cannot see the
+	// cause of (which check of an assertion failed). A line names the gate
+	// session and never holds anything the seat sent. It is telemetry, not
+	// the journal: nothing of it is kept.
+	SeatLog func(line string)
 
 	// Notice, when set, is called with a host-written line for each thing
 	// the operator should see: an alert, a failed reply.
