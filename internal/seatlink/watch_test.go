@@ -272,7 +272,7 @@ func goroutinesIn(name string) int {
 // budget.go say the same; this keeps the numbers of the plan in view.)
 func TestSeatLinkWaitRoomArithmetic(t *testing.T) {
 	got := []int{pingRoom, decideRoom, publicRoom, readRoom, waitRoom, genesisRoom}
-	if want := []int{6, 12, 10, 16, 6, 10}; !slices.Equal(got, want) {
+	if want := []int{6, 12, 12, 14, 6, 10}; !slices.Equal(got, want) {
 		t.Errorf("the rooms (pings, decisions, anyone's, reads, waits, genesis) are %v, want %v", got, want)
 	}
 	if sum := pingRoom + decideRoom + publicRoom + readRoom + waitRoom + genesisRoom; sum != GateRate {

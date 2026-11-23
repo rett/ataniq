@@ -35,7 +35,7 @@ const (
 
 // The room of each kind of call in BudgetWindow. The six add up to GateRate:
 //
-//	pings 6 + decisions 12 + anyone's 10 + reads 16 + waits 6 + genesis 10 = 60
+//	pings 6 + decisions 12 + anyone's 12 + reads 14 + waits 6 + genesis 10 = 60
 //
 // The room of seat.genesis (10) was made when the interview's pages came:
 // before it the rooms were pings 6, decisions 16, anyone's 12, reads 20 and
@@ -43,10 +43,11 @@ const (
 // without meeting "busy" (each answer is one call; the page it redirects to
 // is answered from the link's memory, see genesis.go), and holds the list of
 // open projects the card list shows, which the link asks at most once in 20
-// seconds. The 10 were taken from reads (20 to 16: three card lists that
-// reload every 20 seconds take 12 of the 16), decisions (16 to 12: 6
-// decisions, each a passkey tap, in 80 seconds) and anyone's (12 to 10: 5
-// logins in 80 seconds).
+// seconds. The 10 were taken from reads (20 to 14: three card lists that
+// reload every 20 seconds take 12 of the 14) and decisions (16 to 12: 6
+// decisions, each a passkey tap, in 80 seconds). Anyone's room stays 12:
+// strangers can hold it with login challenges they never answer, and a
+// smaller one would let fewer of them keep the owner from logging in.
 const (
 	// pingRoom is the pings: one every PingInterval is 6 at most in
 	// BudgetWindow, and 5 in a minute of the gate's.
@@ -57,16 +58,16 @@ const (
 	// challenge, or the challenge's life ends.
 	decideRoom = 12
 	// publicRoom is seat.pair, seat.login-challenge and seat.login, which the
-	// seat relays for anyone who reaches its pages: 5 logins. A login
+	// seat relays for anyone who reaches its pages: 6 logins. A login
 	// challenge is drawn only with room for its seat.login as well, kept
 	// for that challenge until the login is sent or the challenge's life
 	// ends, so a login is never refused for room once the phone has
 	// answered. Strangers who draw login challenges and never answer them
 	// keep that room until their challenges' life ends.
-	publicRoom = 10
+	publicRoom = 12
 	// readRoom is owner.list, owner.show and owner.paths, the reads of every
 	// session together.
-	readRoom = 16
+	readRoom = 14
 	// waitRoom is seat.wait, the watcher's one long wait (watch.go). The
 	// watcher keeps one wait in flight, and the gate holds it up to 25
 	// seconds, so an idle seat sends one about every 25 seconds: 4 in

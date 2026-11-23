@@ -13,7 +13,6 @@
   `seat.genesis` has a new verb, `list`, which answers the open projects, so a
   restarted seat finds them again. The seat keeps 10 of the gate's 60 calls a
   minute (in its 80-second window) for the interview, taken from the reads (now
-  16), the decisions (now 12, 6 decisions) and anyone's pairings and logins
-  (now 10, 5 logins). `ataniq-seat` needs nothing configured for it, and logs
-  the capabilities each hello of the gate lists, with whether the phone offers
-  "New project".
+  14) and the decisions (now 12, 6 decisions). `ataniq-seat` needs nothing
+  configured for it, and logs the capabilities each hello of the gate lists,
+  with whether the phone offers "New project".
