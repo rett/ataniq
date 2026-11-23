@@ -707,8 +707,9 @@ with the list closed and notices on, a notice says that cards wait
   directly; it is decided like any card. One branch prune is open at a time.
 - Approve or Deny with the passkey as for a real card. An approved trial card
   ends **not-applied**, with the line `applied: nothing (trial)`: the door took
-  the approval, the use passed its checks, and nothing moved. The project's
-  daily limit counts trial approvals as any.
+  the approval, the use passed its checks, and nothing moved. An outcome that is
+  unknown (the trial never makes one) keeps the host's own line, not the
+  trial's. The project's daily limit counts trial approvals as any.
 - The journal, `owner/journal.db` of the state folder, keeps each decision with
   the evidence of its assertion, and each outcome with the trial's line.
 

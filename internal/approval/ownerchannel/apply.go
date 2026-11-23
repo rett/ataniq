@@ -230,7 +230,8 @@ func (s *Service) journalOutcome(ctx context.Context, dl *ownerjournal.Delivery,
 // ref by design, so that the host's lines, which speak of a ref, would not be
 // true of it. When the service's intake is one, the line of every outcome the
 // service journals, shows and replies with is the intake's own (made one line
-// of at most 500 bytes); an empty answer keeps the host's line. The state of
+// of at most 500 bytes); an empty answer keeps the host's line, and so does an
+// unknown outcome, which is never given the line of an intake. The state of
 // the outcome is the one Apply returned either way. The one such intake is
 // the phone trial's (package hostadapter, in a build with the tag
 // ataniq_ownerchannel), which applies nothing.
@@ -241,7 +242,10 @@ type OutcomeLiner interface {
 // outcomeLine is the line of an outcome: the intake's when it is an
 // [OutcomeLiner] that gives one, the host's otherwise.
 func (s *Service) outcomeLine(o door.Outcome) string {
-	if l, ok := s.cfg.Intake.(OutcomeLiner); ok {
+	// An unknown outcome keeps the host's line: the liner speaks for an
+	// intake that moved nothing, and nothing is known of this outcome, not
+	// even that.
+	if l, ok := s.cfg.Intake.(OutcomeLiner); ok && o != door.OutcomeUnknown {
 		if text := line(l.OutcomeLine(o)); text != "" {
 			return text
 		}
