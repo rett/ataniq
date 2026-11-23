@@ -48,7 +48,7 @@ const CodeTooManyRefusals = "too-many-refusals"
 // good answer. None of them says anything against the peer, and a few taps
 // must not shut the owner out of approvals for ten minutes. They stay bounded
 // elsewhere: by the seat's own 30 project requests a minute for each
-// credential, by the seat link's room of 10 interview calls, by the gate's 60
+// credential, by the seat link's room of 12 interview calls, by the gate's 60
 // requests a minute, and by the store's own limits (two open threads, eight
 // files). They are kept out of this table by being absent.
 //

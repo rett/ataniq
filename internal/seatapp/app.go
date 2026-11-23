@@ -229,6 +229,13 @@ type app struct {
 	// geneses bounds the project pages and posts of each credential's
 	// sessions (see genesis.go).
 	geneses *limiter
+	// glog is the rate limit of the journal line for that limit (see
+	// genesisAllow).
+	glog struct {
+		mu   sync.Mutex
+		last time.Time
+		held int
+	}
 	// watches bounds the watch polls of each credential's sessions, apart
 	// from the reads; watchHold is how long a poll is held.
 	watches   *limiter

@@ -212,3 +212,46 @@ func TestHelloLineWords(t *testing.T) {
 		}
 	}
 }
+
+// The link's refusals for room reach the command's log: with the room of
+// the interview spent, the next call is busy, and the journal has the one
+// line, which names the kind and holds nothing of the call.
+func TestRunLogsTheLinksRefusalForRoom(t *testing.T) {
+	dir, fp := seatKey(t)
+	gid, addr, _ := startGenesisGate(t, fp, []string{"pair", "read", "genesis"})
+	links := watchLink(t)
+	got := make(chan seatapp.Daemon, 1)
+	daemonHook = func(d seatapp.Daemon) { got <- d }
+	t.Cleanup(func() { daemonHook = nil })
+	stderr := &lockedBuffer{}
+	stop := serveTo(t, []string{"--origin", seatOrigin, "--listen", freeLoopback(t),
+		"--gate", addr, "--gate-pin-file", pinFile(t, gid.Fingerprint()+"\n", 0o600), "--identity", dir,
+		"--decision-guard", stateDir(t)}, stderr)
+	waitConnected(t, <-links)
+	port, ok := (<-got).(seatapp.Genesis)
+	if !ok {
+		t.Fatal("the app's daemon is no Genesis port")
+	}
+	const thread = "0123456789abcdef"
+	busy := 0
+	for i := 0; i < 20; i++ {
+		_, err := port.Genesis(context.Background(), seatapp.GenesisCall{Verb: seatapp.GenesisVerbRound, Thread: thread})
+		if errors.Is(err, seatapp.ErrBusy) {
+			busy++
+		}
+	}
+	if code := stop(); code != 0 {
+		t.Errorf("shutdown code %d", code)
+	}
+	if busy == 0 {
+		t.Fatal("no call was refused for room")
+	}
+	out := stderr.String()
+	const line = "ataniq-seat: the link has no room for a call of kind genesis (12 of 12 in the last 80 seconds); the page says the desk is busy\n"
+	if strings.Count(out, line) != 1 || strings.Count(out, "the link has no room") != 1 {
+		t.Errorf("stderr lacks the one line: %q", out)
+	}
+	if strings.Contains(out, thread) {
+		t.Errorf("stderr holds the thread: %q", out)
+	}
+}

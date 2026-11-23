@@ -445,6 +445,15 @@ func run(ctx context.Context, args []string, errout io.Writer, ready func(net.Ad
 	if !ok {
 		return code
 	}
+	// The link's refusals and the guard's are logged from other goroutines
+	// than this one, so every write to errout that can come from them goes
+	// through logf, one at a time.
+	var logMu sync.Mutex
+	logf := func(format string, args ...any) {
+		logMu.Lock()
+		defer logMu.Unlock()
+		fmt.Fprintf(errout, format, args...)
+	}
 	var daemon seatapp.Daemon = unwiredDaemon{}
 	var client *seatgate.Client
 	var link *seatlink.Daemon
@@ -466,7 +475,7 @@ func run(ctx context.Context, args []string, errout io.Writer, ready func(net.Ad
 			fmt.Fprintf(errout, "ataniq-seat: %v\n", err)
 			return 2
 		}
-		link, err = seatlink.New(client, seatlink.WithGatePin(o.gatePin))
+		link, err = seatlink.New(client, seatlink.WithGatePin(o.gatePin), seatlink.WithLogf(logf))
 		if err != nil {
 			fmt.Fprintf(errout, "ataniq-seat: %v\n", err)
 			return 2
@@ -477,14 +486,6 @@ func run(ctx context.Context, args []string, errout io.Writer, ready func(net.Ad
 		}
 	}
 	// Every decision's challenge and every decision asks the guard first.
-	// The refusals are logged from the handlers' goroutines, so from here on
-	// every write to errout goes through logf, one at a time.
-	var logMu sync.Mutex
-	logf := func(format string, args ...any) {
-		logMu.Lock()
-		defer logMu.Unlock()
-		fmt.Fprintf(errout, format, args...)
-	}
 	daemon = newGuardedDaemon(daemon, o.guardDir, func(code string) {
 		logf("ataniq-seat: a decision was refused, decisions are paused on this host: %s\n", code)
 	})
