@@ -1504,6 +1504,29 @@ their place is a read error, not a wait.
     `etc/nftables` refer to no environment variable and are not read for
     names.
 
+    A Caddyfile's `import` is followed (the first operand of an `import`
+    line, not a comment or a quoted text): an absolute path, with a glob
+    in its last component matched within the root, names a file of the
+    host, which the check reads where the host holds it as it reads an
+    owner-local `EnvironmentFile=` (the shipped Caddyfile imports the
+    owner's `/etc/authority-host/seat/site.caddy`); a bare name with a dot
+    or a glob character, in an imported file, is a file beside it; a bare
+    name without them is a snippet's name and is passed over. The imported
+    file gets the same scan as the release's own (a `{env.NAME}` or
+    `{$NAME}` named like a provider key is a `HIT env` naming that file),
+    and a second one: a `reverse_proxy` upstream (its operands, and the
+    `to` lines of its block) that is not a Unix socket (`unix//PATH`),
+    `localhost`, a loopback IP literal or a bare port, or that a
+    placeholder stands for or a `dynamic` line finds at run time, is
+    `HIT proxy <file> outbound-target`, never the target's text. Its own
+    imports are followed in turn, down to 8 levels. An imported file that
+    is not there is `HIT incomplete caddy-import <path>`, a placeholder
+    or a relative path with a separator in an `import`, or a file past 8
+    levels, is incomplete too (`release-syntax <file>`, `caddy-import
+    <file>`), and one that cannot be read is `HIT unreadable`: the
+    import is a pass only when the file was read. The release's own files
+    are not given the upstream scan.
+
   A hit in the release names the file by its path within `--root` when
   the release is beneath it (`/opt/authority-host/releases/<id>/...`),
   by its own path otherwise.
@@ -1549,7 +1572,8 @@ The `HIT incomplete` lines:
 | `HIT incomplete budget <limit>` | the run's budget is spent (4 million folder entries and queued files, 1 GiB read, 4 minutes, 256 MiB held, or shell expansions or brace groups nested more than 64 deep); memory is charged before the work is done: specifier expansions, queued files, the unit scan's keys of each manager, each source reference and loop word a profile's parse keeps (a loop's words once for every source of its variable), and, for a candidate release's units, what each unit file keeps (its `EnvironmentFile=` lines) and the merged references of one unit at a time, both released once that unit's files are queued. Each path a source, a PATH element or an `XDG_CONFIG_HOME` value stands for (in each home, and below each configured `XDG_CONFIG_HOME` folder) is charged as an entry before it is built, one at a time, never as a list of every combination. Every later read and parse stops, and so does every loop of the startup scan |
 | `HIT incomplete env-syntax <file>` | a file whose syntax the check cannot parse, or an `EnvironmentFile=` it cannot resolve |
 | `HIT incomplete env-source <file>` | a profile sources a file by a path the check cannot resolve |
-| `HIT incomplete release-syntax <file>` | a front-end configuration file of the candidate release (`pre`, `post`) holds a placeholder the check cannot read, or is Caddy JSON that does not parse |
+| `HIT incomplete release-syntax <file>` | a front-end configuration file of the candidate release (`pre`, `post`) or a file it imports holds a placeholder the check cannot read, is Caddy JSON that does not parse, or has an `import` whose path the check cannot follow (a placeholder, a relative path with a separator) |
+| `HIT incomplete caddy-import <path>` | a file a Caddyfile of the candidate release imports (`pre`, `post`) that is not there, or an import nested deeper than 8 levels (the importing file is named) |
 | `HIT incomplete env-file <path>` | a required `EnvironmentFile=` (no leading `-`) that is not there, or a required glob that matches nothing |
 | `HIT incomplete path <file>` | a PATH setting whose folder the check cannot resolve |
 | `HIT incomplete proc <why>` | no usable `/proc`: missing, unreadable, without processes, or listing processes of which not one name or executable could be read (`no-identity`) |
@@ -1608,6 +1632,9 @@ folder whose `share/` holds the lists (and, in `pre` and `post`, whose
 - `credential`: a credential or config path of `ai-names.list` (the
   entries starting with `.`, such as `.claude` or `.config/opencode`) in
   any home, in `/root` or in `/`.
+- `proxy`: a `reverse_proxy` upstream of a file a Caddyfile of the candidate
+  release imports (`pre`, `post`) that leaves the host (see the `etc/caddy`
+  item of the phases): `HIT proxy <file> outbound-target`.
 - `env`: a variable named like a provider key (`*_API_KEY`,
   `*_AUTH_TOKEN`, `ANTHROPIC_*`, `OPENAI_*`, `GEMINI_*`, `CLAUDE_*`,
   `CODEX_*`) set or passed in `/etc/environment`, `/etc/profile` and the
@@ -2437,7 +2464,15 @@ anything changes; without `site.caddy` the validator `caddy validate`
 fails at step 5, before anything changes, and so does `test -L` without the
 unit's link of step 5. The no-AI check reads
 `seat.env` as any environment file of a unit: a variable named like a
-provider key in it is a hit.
+provider key in it is a hit. It reads `site.caddy` too, as the file the
+release's Caddyfile imports (see "What it detects"): a provider-key
+placeholder in it, or a `reverse_proxy` to anything but this host, is a hit,
+and without it the check says `HIT incomplete caddy-import
+/etc/authority-host/seat/site.caddy` at step 4, before the validator runs.
+Keep `site.caddy` to the site address and `import seat`: the check reads it
+at every switch, but Caddy reads it again at every restart, a boot
+included, so a change made after the switch is not checked until the next
+one.
 
 ### Enabling it
 
