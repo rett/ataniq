@@ -218,10 +218,12 @@ func seatApp(t *testing.T, d seatapp.Daemon) http.Handler {
 }
 
 // browser is a phone's browser in front of the app: it keeps the app's
-// cookies.
+// cookies. With fetchSite set, its POSTs carry Sec-Fetch-Site: same-origin,
+// as a page's script's do.
 type browser struct {
-	h       http.Handler
-	cookies map[string]*http.Cookie
+	h         http.Handler
+	cookies   map[string]*http.Cookie
+	fetchSite bool
 }
 
 func newBrowser(h http.Handler) *browser { return &browser{h: h, cookies: map[string]*http.Cookie{}} }
@@ -236,6 +238,9 @@ func (b *browser) do(method, path, body string) *httptest.ResponseRecorder {
 	if method == "POST" {
 		req.Header.Set("Origin", seatOrigin)
 		req.Header.Set("Content-Type", "application/json")
+		if b.fetchSite {
+			req.Header.Set("Sec-Fetch-Site", "same-origin")
+		}
 	}
 	for _, c := range b.cookies {
 		req.AddCookie(c)

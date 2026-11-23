@@ -1,8 +1,10 @@
 // Decide: approve or deny the card this page shows, with one fresh passkey
 // assertion for each decision the owner taps. Only the Card page loads this
 // script. The seat keeps the decision server-side; the browser sends only
-// the action, the indexes of the flagged paths signed off, the reason, and
-// then the assertion. Nothing is sent by itself, nothing is sent twice, and
+// the id of this page's form, the action, the indexes of the flagged paths
+// signed off, the reason, and then the assertion. The form's id ties the tap
+// to the card this page shows: a page left open after the card was replaced
+// is told to look again, before any challenge is asked. Nothing is sent by itself, nothing is sent twice, and
 // nothing is kept to send later. No dependency; every text put on the page
 // is set with textContent, never as markup.
 "use strict";
@@ -22,6 +24,7 @@
   var cancelBtn = document.getElementById("confirm-cancel");
   var look = document.getElementById("look");
   var card = root.dataset.card;
+  var form = root.dataset.form;
 
   // The page's own words, for what happens in the browser. The seat's
   // answers carry their own fixed words, in "say".
@@ -134,7 +137,7 @@
   // ask asks the seat for the challenge of one decision, and shows what it
   // is for before the passkey is asked.
   async function ask(action) {
-    var body = { card: card, action: action, signed_off: [], reason: "" };
+    var body = { card: card, form: form, action: action, signed_off: [], reason: "" };
     if (action === "approve") {
       body.signed_off = boxes.filter(function (b) { return b.checked; }).map(function (b) { return Number(b.value); });
     } else if (reasonEl) {

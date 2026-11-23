@@ -107,6 +107,39 @@ func (r *phoneRig) confirm(t *testing.T, tapped *httptest.ResponseRecorder) *htt
 	return r.browser.do("POST", "/api/decide", decideJSON(ch.ID, as))
 }
 
+// tapPage posts a tap as the script of the Card page whose body is given
+// does: with that page's form, and the Sec-Fetch-Site header a browser
+// sends.
+func (r *phoneRig) tapPage(page, action string, signedOff []int) *httptest.ResponseRecorder {
+	_, after, _ := strings.Cut(page, ` data-form="`)
+	form, _, _ := strings.Cut(after, `"`)
+	body, _ := json.Marshal(map[string]any{"card": r.desk.reads.pending.ID, "form": form, "action": action, "signed_off": signedOff, "reason": ""})
+	r.browser.fetchSite = true
+	defer func() { r.browser.fetchSite = false }()
+	return r.browser.do("POST", "/api/decide-challenge", string(body))
+}
+
+// replace makes the desk's card a replacement of the one shown: the same
+// id, a binding of its own (another plan token), as a stand-in door that
+// restarted and was asked again would.
+func (r *phoneRig) replace(t *testing.T) {
+	t.Helper()
+	p := r.desk.reads.pending
+	p.Binding.PlanToken = "h-00000001"
+	digest, err := record.BindingDigest(p.Binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.BindingSHA256 = digest
+	b, err := record.EncodePending(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.desk.reads.mu.Lock()
+	r.desk.reads.pending, r.desk.reads.bytes = p, b
+	r.desk.reads.mu.Unlock()
+}
+
 func decideJSON(id string, as webauthntest.Assertion) string {
 	var m map[string]string
 	json.Unmarshal([]byte(loginJSON(as)), &m)
@@ -166,6 +199,37 @@ func TestSeatDecideFromThePhone(t *testing.T) {
 	}
 	if f := r.desk.decided[1]; f.Decision != "deny" || len(f.SignedOff) != 0 || f.Reason != "not this one" {
 		t.Errorf("the desk got %+v", f)
+	}
+}
+
+// TestSeatDecideStaleTabOfOneSession: one session, two tabs. The first
+// tab shows the card; the card is replaced (the same id, another binding)
+// and the second tab shows the replacement, which the link now holds. The
+// first tab's tap is refused "the card changed" before the desk is asked
+// for a challenge, so the passkey is never asked for a card the tab did not
+// show; the second tab's tap decides the replacement.
+func TestSeatDecideStaleTabOfOneSession(t *testing.T) {
+	r := newPhoneRig(t)
+	first := r.open(t).Body.String()
+	old := r.desk.reads.pending.BindingSHA256
+	r.replace(t)
+	second := r.open(t).Body.String()
+	if !strings.Contains(first, "binding "+old[:12]) || !strings.Contains(second, "binding "+r.desk.reads.pending.BindingSHA256[:12]) {
+		t.Fatal("the tabs do not show the two bindings")
+	}
+	w := r.tapPage(first, "approve", []int{0, 1})
+	if m := said(t, w); w.Code != 409 || m["error"] != "card_changed" || m["challenge"] != nil {
+		t.Errorf("the first tab's tap: %d %v", w.Code, m)
+	}
+	if c, _ := r.desk.counts(); c != 0 {
+		t.Fatalf("the desk was asked %d challenges for the first tab", c)
+	}
+	w = r.confirm(t, r.tapPage(second, "approve", []int{0, 1}))
+	if m := said(t, w); w.Code != 200 || m["state"] != "approved" {
+		t.Errorf("the second tab's decision: %d %v", w.Code, m)
+	}
+	if f := r.desk.decided[0]; f.BindingSHA256 != r.desk.reads.pending.BindingSHA256 || f.BindingSHA256 == old {
+		t.Errorf("the desk decided the binding %s", f.BindingSHA256)
 	}
 }
 

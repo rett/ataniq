@@ -200,10 +200,14 @@
 // page's rows, lists, refs and "differs from" block once the page was
 // served, and a cut path list by the pages of it the session was served.
 //
-// A tap asks POST /api/decide-challenge with the card, the action, the
-// indexes of the boxes ticked and the reason; the browser never sends a
-// path or a binding. The app takes the binding the Card page showed this
-// session from its own reading and hands the port the rest; the port freezes
+// A tap asks POST /api/decide-challenge with the card, the id of the page's
+// form, the action, the indexes of the boxes ticked and the reason; the
+// browser never sends a path or a binding. Each Card page with the form has
+// a form id of its own, which the app keeps with the binding that page
+// showed; the app takes the binding the session read last from its own
+// reading, and takes the tap only when its form's page showed that binding,
+// so a tab left open on a card that was replaced since is told to look
+// again before any challenge is asked. It hands the port the rest; the port freezes
 // the decision from the card it showed, asks the daemon for its challenge
 // and recomputes it before the app sees it (package seatlink). The app keeps
 // the frozen frame and the challenge's id with the session, one decision at
@@ -227,10 +231,10 @@
 // words. Every failure is a fixed code with the app's fixed words ("say");
 // a passkey that is no longer paired ends the session. Decision challenges
 // are limited to 10 a minute per credential. Both bodies fit [MaxBody]
-// (8192 bytes): the largest the page sends is 1198 bytes for a challenge
-// (300 sign-off indexes and a card id of 51 characters; a deny's reason of
-// 500 bytes, every one escaped, is 1106) and 5672 bytes for an assertion at
-// the wire's bounds.
+// (8192 bytes): the largest the page sends is 1230 bytes for a challenge
+// (the form's id, 300 sign-off indexes and a card id of 51 characters; a
+// deny's reason of 500 bytes, every one escaped, is 1138) and 5672 bytes for
+// an assertion at the wire's bounds.
 //
 // # Text nobody on the owner's side wrote
 //
@@ -242,7 +246,7 @@
 // a page shows no such text any other way: a test reads every template and
 // fails for an action that writes a value by any other function, but for the
 // few the app fills itself (a page's title, a problem's fixed words, the
-// relying party and the app's own addresses).
+// relying party, the app's own addresses and the id of a page's form).
 //
 // # The look
 //

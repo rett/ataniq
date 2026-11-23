@@ -297,9 +297,10 @@ type (
 		RPID string
 		// Offer is what the decide form offers, and Decide says the page
 		// holds the form: the card is pending and approve or deny is
-		// offered.
+		// offered. Form is the id of this page's form, which a tap names.
 		Offer  Offer
 		Decide bool
+		Form   string
 	}
 	pathsData struct {
 		Title string
@@ -372,6 +373,18 @@ func (a *app) cardPage(w http.ResponseWriter, r *http.Request, s Session) {
 	if !c.Ended && !c.OnItsWay && (c.State == "" || c.State == "pending") {
 		d.Offer = a.cfg.Daemon.Offer(id, c.BindingSHA256, reading, now)
 		d.Decide = d.Offer.Approve || d.Offer.Deny
+	}
+	if d.Decide {
+		// Each page's form has an id of its own, kept with the binding the
+		// page shows, so that a tap is taken only for the card its page
+		// showed. Without one the page has no form.
+		form, err := newFormID(a.cfg.Random)
+		if err != nil {
+			d.Decide = false
+		} else {
+			a.sess.addForm(s.key, id, pageForm{id: form, binding: c.BindingSHA256})
+			d.Form = form
+		}
 	}
 	if d.Decide {
 		// The one page that asks the phone for a decision's assertion.

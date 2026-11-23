@@ -781,8 +781,8 @@ What the seat app does with a decision (G9, built):
   do, as the card shows them). One tap asks one fresh assertion for that one
   action; nothing is submitted by itself.
 - The browser never sends a path or a binding. `POST /api/decide-challenge`
-  carries the action, the reason and the sign-offs as the indexes of the
-  flagged paths. The seat builds the frame from its own copy of the card (read
+  carries the id of the Card page's form, the action, the reason and the
+  sign-offs as the indexes of the flagged paths. The seat builds the frame from its own copy of the card (read
   through the seat link, its digest checked), keeps the frame with the session
   and the challenge id, server-side, and answers the challenge. `POST
   /api/decide` carries the challenge id and the assertion. Both bodies fit the
@@ -809,10 +809,22 @@ How it is built (G9), where the points above left a choice:
   not sent. The Card page of a card that ended, or whose decision is on its
   way, has no form.
 - One tap on Approve or Deny asks `POST /api/decide-challenge` with the card,
-  the action, the indexes of the boxes ticked and the reason. The seat takes
-  the binding the Card page showed this session from its own reading; the
-  link freezes the frame from the card it showed at that binding, asks
-  `seat.challenge`, and recomputes the challenge before the browser sees it.
+  the id of the page's form, the action, the indexes of the boxes ticked and
+  the reason. Each Card page that holds the form has a form id of its own
+  (16 random bytes), which the seat keeps with the session's reading of the
+  card beside the binding that page showed (the last 8 pages of a card). The
+  seat takes the binding the session read last from its own reading, and
+  takes the tap only when the page of its form showed that binding: a tab
+  left open on a card that was replaced since (the same id, another binding,
+  read in another tab of the same session) is answered "The card changed.
+  Look at it again." (`card_changed`), and a form the session was never
+  served "Look at the card again first." (`look_again`), before any
+  challenge is drawn or the passkey asked. A tap without a form id is
+  refused (`bad_request`); only a request with no `Sec-Fetch-Site`, which
+  the test option alone lets through and no browser sends, may leave it
+  out. The link freezes the frame from the card it showed at that binding,
+  asks `seat.challenge`, and recomputes the challenge before the browser
+  sees it.
   The seat keeps one decision per session; a new tap replaces it. The page
   then names the action, the card, its project, what it does, its target and
   its revision (the binding's first 12 digits), and a second tap, on the
@@ -820,8 +832,9 @@ How it is built (G9), where the points above left a choice:
   session's credential. `POST /api/decide` burns the kept decision first,
   takes the assertion only for its id and the session's credential, and
   sends the kept frame.
-- The largest bodies the page sends are 1198 bytes for a challenge (300
-  sign-off indexes; a deny's reason of 500 bytes all escaped is 1106) and
+- The largest bodies the page sends are 1230 bytes for a challenge (the
+  form's id and 300 sign-off indexes; a deny's reason of 500 bytes all
+  escaped is 1138) and
   5672 bytes for an assertion at the bounds of `Assertion`, under
   `seatapp.MaxBody`; a body of MaxBody bytes is read and one byte more is
   refused (413), whether its length was declared or not.

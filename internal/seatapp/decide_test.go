@@ -94,7 +94,7 @@ func TestSeatDecideFormOnTheCardPage(t *testing.T) {
 	checkHeadersGet(t, "the Card page", w, "(self)")
 	body := w.Body.String()
 	for _, want := range []string{
-		`<section id="decide" aria-labelledby="decide-title" data-rp-id="seat.example" data-card="` + testCardID + `">`,
+		`<section id="decide" aria-labelledby="decide-title" data-rp-id="seat.example" data-card="` + testCardID + `" data-form="`,
 		`<input type="checkbox" id="signoff-0" class="signoff" value="0">`,
 		`<input type="checkbox" id="signoff-1" class="signoff" value="1">`,
 		`<button id="approve" type="button" hidden disabled>Approve</button>`,
@@ -116,6 +116,9 @@ func TestSeatDecideFormOnTheCardPage(t *testing.T) {
 	}
 	if strings.Count(body, "<form") != 0 || strings.Count(body, `id="decide"`) != 1 {
 		t.Error("not one decide section, without a form element")
+	}
+	if f := formOf(body); !validFormID(f) || f == formOf(r.getWith("/cards/"+testCardID, s).Body.String()) {
+		t.Errorf("the page's form id %q is not one of its own", f)
 	}
 
 	// Approve not offered: the host's line says why, and deny stays.
@@ -211,6 +214,79 @@ func TestSeatDecideChallengeTakesTheCardAsShown(t *testing.T) {
 	wantFailure(t, "another session", r.postWith("/api/decide-challenge", approveBody, other), 409, "look_again", sayLookFirst)
 }
 
+// formOf returns the id of the decide form of a Card page's body.
+func formOf(body string) string {
+	_, after, ok := strings.Cut(body, ` data-form="`)
+	if !ok {
+		return ""
+	}
+	form, _, _ := strings.Cut(after, `"`)
+	return form
+}
+
+// tapOf is the body of a tap of the page whose form is given: an approve
+// with the one flagged path signed off.
+func tapOf(form string) string {
+	b, _ := json.Marshal(map[string]any{"card": testCardID, "form": form, "action": "approve", "signed_off": []int{0}, "reason": ""})
+	return string(b)
+}
+
+// postFromPage sends a POST as a page's script does: with the Sec-Fetch-Site
+// header that every browser sends.
+func (r *rig) postFromPage(path, body string, s *http.Cookie) *httptest.ResponseRecorder {
+	req := newRequest("POST", path, strings.NewReader(body))
+	req.Header.Set("Origin", testOrigin)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.AddCookie(s)
+	return r.recorder(req)
+}
+
+// TestSeatDecideTapOfAStalePage: two tabs of one session. The first shows
+// the card; the card is replaced by one of the same id and another binding,
+// and the second tab shows the replacement. A tap of the first tab is
+// refused before the port is asked (so no challenge is drawn and the
+// passkey is not asked), and the tap of the second is taken. A page's tap
+// must name its form: one with none, or with a form the session was never
+// served, is refused too. Two pages of the same binding are both good.
+func TestSeatDecideTapOfAStalePage(t *testing.T) {
+	r := newRig(t)
+	s := r.login(t)
+	first := formOf(r.openCard(t, s))
+	r.daemon.card.BindingSHA256 = strings.Repeat("cd", 32)
+	second := formOf(r.openCard(t, s))
+	if first == "" || second == "" || first == second {
+		t.Fatalf("the forms %q and %q", first, second)
+	}
+	wantFailure(t, "the first tab's tap", r.postFromPage("/api/decide-challenge", tapOf(first), s), 409, "card_changed", sayChanged)
+	wantFailure(t, "a tap of no form", r.postFromPage("/api/decide-challenge", tapOf(""), s), 400, "bad_request", sayFailed)
+	other := b64.EncodeToString(bytes.Repeat([]byte{0x42}, formBytes))
+	wantFailure(t, "a form never served", r.postFromPage("/api/decide-challenge", tapOf(other), s), 409, "look_again", sayLookFirst)
+	wantFailure(t, "a form of another shape", r.postFromPage("/api/decide-challenge", tapOf("x"), s), 400, "bad_request", sayFailed)
+	if n, _ := r.daemon.decideCounts(); n != 0 {
+		t.Fatalf("the port was asked %d challenges", n)
+	}
+	// Another session's form is not this session's.
+	s2 := r.login(t)
+	elsewhere := formOf(r.openCard(t, s2))
+	wantFailure(t, "another session's form", r.postFromPage("/api/decide-challenge", tapOf(elsewhere), s), 409, "look_again", sayLookFirst)
+
+	w := r.postFromPage("/api/decide-challenge", tapOf(second), s)
+	if w.Code != 200 || answer(t, w)["binding"] != "cdcdcdcdcdcd" {
+		t.Fatalf("the second tab's tap: %d %s", w.Code, w.Body)
+	}
+	if q := r.daemon.decideChs[0]; q.BindingSHA256 != strings.Repeat("cd", 32) {
+		t.Errorf("the port was asked for the binding %s", q.BindingSHA256)
+	}
+	// A third tab of the same binding: the second tab's form still holds.
+	third := formOf(r.openCard(t, s))
+	for _, f := range []string{second, third} {
+		if w := r.postFromPage("/api/decide-challenge", tapOf(f), s); w.Code != 200 {
+			t.Errorf("a tab of the binding read last: %d %s", w.Code, w.Body)
+		}
+	}
+}
+
 // TestSeatDecideBodies: a body that is not a decision of the form the page
 // sends is refused, and the port is not asked.
 func TestSeatDecideBodies(t *testing.T) {
@@ -250,8 +326,8 @@ func TestSeatDecideBodies(t *testing.T) {
 
 // TestSeatDecideBodySizes: both bodies of a decision fit the app's cap on a
 // request, MaxBody (8192 bytes): the largest decide-challenge the page sends
-// (300 sign-off indexes, or a deny's reason of 500 bytes that are all
-// escaped) and the largest decide (an assertion at the wire's bounds:
+// (its form's id and 300 sign-off indexes, or a deny's reason of 500 bytes
+// that are all escaped) and the largest decide (an assertion at the wire's bounds:
 // credential id 1023 bytes, authenticator data 1024, client data 2048,
 // signature 72, all base64url). A body of exactly MaxBody bytes is read; one
 // byte more is refused 413 and the port is not asked.
@@ -260,8 +336,9 @@ func TestSeatDecideBodySizes(t *testing.T) {
 	for i := range idx {
 		idx[i] = i
 	}
-	big, _ := json.Marshal(map[string]any{"card": "ap-" + strings.Repeat("a", 48), "action": "approve", "signed_off": idx, "reason": ""})
-	longDeny, _ := json.Marshal(map[string]any{"card": "ap-" + strings.Repeat("a", 48), "action": "deny", "signed_off": []int{}, "reason": strings.Repeat(`"`, 500)})
+	form := strings.Repeat("A", formLen)
+	big, _ := json.Marshal(map[string]any{"card": "ap-" + strings.Repeat("a", 48), "form": form, "action": "approve", "signed_off": idx, "reason": ""})
+	longDeny, _ := json.Marshal(map[string]any{"card": "ap-" + strings.Repeat("a", 48), "form": form, "action": "deny", "signed_off": []int{}, "reason": strings.Repeat(`"`, 500)})
 	assertion, _ := json.Marshal(map[string]string{
 		"challenge_id":       strings.Repeat("a", 16),
 		"credential_id":      b64.EncodeToString(make([]byte, maxCredentialID)),

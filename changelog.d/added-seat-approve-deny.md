@@ -4,7 +4,10 @@
   enabled once every box is ticked; Deny, with an optional reason, available
   with no box ticked. A tap asks `POST /api/decide-challenge`; the seat
   builds the decision from the card it showed (the browser sends only the
-  action, the indexes of the boxes and the reason), recomputes the daemon's
+  id of the page's form, the action, the indexes of the boxes and the
+  reason), takes the tap only when that page showed the binding the session
+  read last (a tab left open on a card replaced since is told the card
+  changed, before any challenge or passkey), recomputes the daemon's
   challenge before the phone is asked, and shows the action, the card, its
   project, target and revision; a second tap asks one passkey assertion with
   user verification for the session's own credential, sent once by

@@ -190,8 +190,9 @@ func TestSeatTemplatesShowOnlyThroughText(t *testing.T) {
 	formatters := map[string]bool{"text": true, "lead": true, "when": true, "until": true, "num": true, "short": true, "cardHref": true, "pathsHref": true}
 	// The fields the app fills itself: the page title and the problem's
 	// words (fixed words of this package), the relying party (the config),
-	// and addresses made by cardHref and pathsHref.
-	appFields := map[string]bool{".Title": true, ".Message": true, ".RPID": true, ".RPName": true, ".Prev": true, ".Next": true, ".Back": true}
+	// addresses made by cardHref and pathsHref, and the id of a page's
+	// decide form, which the app draws.
+	appFields := map[string]bool{".Title": true, ".Message": true, ".RPID": true, ".RPName": true, ".Prev": true, ".Next": true, ".Back": true, ".Form": true}
 	action := regexp.MustCompile(`\{\{-?\s*(.*?)\s*-?\}\}`)
 	files, err := fs.Glob(templateFS, "templates/*.html")
 	if err != nil || len(files) < 7 {
