@@ -8,6 +8,9 @@
 //     record an interview fills, and every refusal code of the family.
 //   - catalog holds the question catalog, as data, and the walker that picks
 //     the next round and applies the owner's answers to a brief.
+//   - thread holds the thread store: the daemon's persistent record of the
+//     interviews begun on the phone, the one writer of them, which serves
+//     the seven verbs of the wire to the seat gate.
 //   - package approval/ownerwire holds the words of the wire the phone
 //     speaks to ask the questions and send the answers: the one gate
 //     operation seat.genesis, with its strict forms and the gate codes
