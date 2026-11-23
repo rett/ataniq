@@ -121,6 +121,12 @@
 // makes one request over the connection and waits for its answer, many at
 // once if the caller likes, each by its own id.
 //
+// Params given as a json.RawMessage are sent byte for byte, never encoded
+// again, so params a caller checked against a cap are the params the gate
+// reads; other params are encoded with encoding/json. Params that are not one
+// object of the strict form above, or a request over the frame cap, are
+// refused with [ErrBadCall] and not sent, and the connection stays.
+//
 // Call never waits longer than its context. With no connection it returns
 // [ErrDisconnected] at once, and so it does when the connection is lost while
 // it waits (the request may or may not have run: the caller decides, nothing is
