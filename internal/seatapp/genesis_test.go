@@ -271,21 +271,28 @@ func TestGenesisNeedsASession(t *testing.T) {
 }
 
 // A post that does not come from the app's own page is refused before
-// anything: another origin, no Origin, another site, another host, or a body
-// that is not a form.
+// anything: another origin, "Origin: null", no Origin without the browser's
+// same-origin fetch metadata, another site, another host, or a body that is
+// not a form.
 func TestGenesisCrossOriginPostsAreRefused(t *testing.T) {
 	r, g, s := genesisRig(t)
 	body := url.Values{"round": {"1"}, "n0": {"kind"}, "a0": {"software"}}.Encode()
 	for name, h := range map[string]map[string]string{
-		"another origin":  {"Origin": "https://evil.example"},
-		"no origin":       {"Origin": ""},
-		"cross-site":      {"Sec-Fetch-Site": "cross-site"},
-		"same-site":       {"Sec-Fetch-Site": "same-site"},
-		"no fetch site":   {"Sec-Fetch-Site": ""},
-		"another host":    {"Host": "evil.example"},
-		"json":            {"Content-Type": "application/json"},
-		"multipart":       {"Content-Type": "multipart/form-data; boundary=x"},
-		"no content type": {"Content-Type": ""},
+		"another origin":             {"Origin": "https://evil.example"},
+		"origin null":                {"Origin": "null"},
+		"origin null, cross-site":    {"Origin": "null", "Sec-Fetch-Site": "cross-site"},
+		"origin null, no fetch site": {"Origin": "null", "Sec-Fetch-Site": ""},
+		"no origin, cross-site":      {"Origin": "", "Sec-Fetch-Site": "cross-site"},
+		"no origin, same-site":       {"Origin": "", "Sec-Fetch-Site": "same-site"},
+		"no origin, fetch site none": {"Origin": "", "Sec-Fetch-Site": "none"},
+		"no origin, no fetch site":   {"Origin": "", "Sec-Fetch-Site": ""},
+		"cross-site":                 {"Sec-Fetch-Site": "cross-site"},
+		"same-site":                  {"Sec-Fetch-Site": "same-site"},
+		"no fetch site":              {"Sec-Fetch-Site": ""},
+		"another host":               {"Host": "evil.example"},
+		"json":                       {"Content-Type": "application/json"},
+		"multipart":                  {"Content-Type": "multipart/form-data; boundary=x"},
+		"no content type":            {"Content-Type": ""},
 	} {
 		for _, path := range []string{"/projects/new", "/projects/" + testThread + "/answer", "/projects/" + testThread + "/discard"} {
 			header := map[string]string{"Origin": testOrigin, "Content-Type": "application/x-www-form-urlencoded", "Cookie": s.Name + "=" + s.Value}
@@ -307,6 +314,127 @@ func TestGenesisCrossOriginPostsAreRefused(t *testing.T) {
 	}
 	if c := g.seen(); len(c) != 0 {
 		t.Fatalf("the port was called: %+v", c)
+	}
+}
+
+// A form's post passes the origin check in exactly the cases a browser sends
+// from the app's own page under its same-origin referrer policy: an Origin
+// header equal to the app's origin, or no Origin header at all, each with
+// Sec-Fetch-Site same-origin and the app's host. "Origin: null" (what a
+// browser sends under no-referrer) is refused whatever the fetch metadata
+// says, as is an Origin sent twice. A script's JSON POST, whose fetch sets
+// its own policy, still needs the Origin header.
+func TestGenesisFormOriginCases(t *testing.T) {
+	r, g, s := genesisRig(t)
+	post := func(header map[string]string) int {
+		h := map[string]string{"Content-Type": "application/x-www-form-urlencoded", "Cookie": s.Name + "=" + s.Value}
+		for k, v := range header {
+			h[k] = v
+		}
+		return r.do("POST", "/projects/new", strings.NewReader(""), h).Code
+	}
+	for _, c := range []struct {
+		name   string
+		header map[string]string
+		ok     bool
+	}{
+		{"the app's origin, same-origin", map[string]string{"Origin": testOrigin, "Sec-Fetch-Site": "same-origin"}, true},
+		{"no origin, same-origin", map[string]string{"Origin": "", "Sec-Fetch-Site": "same-origin"}, true},
+		{"origin null, same-origin", map[string]string{"Origin": "null", "Sec-Fetch-Site": "same-origin"}, false},
+		{"origin null, cross-site", map[string]string{"Origin": "null", "Sec-Fetch-Site": "cross-site"}, false},
+		{"origin null, no fetch site", map[string]string{"Origin": "null", "Sec-Fetch-Site": ""}, false},
+		{"the app's origin, cross-site", map[string]string{"Origin": testOrigin, "Sec-Fetch-Site": "cross-site"}, false},
+		{"the app's origin, no fetch site", map[string]string{"Origin": testOrigin, "Sec-Fetch-Site": ""}, false},
+		{"no origin, cross-site", map[string]string{"Origin": "", "Sec-Fetch-Site": "cross-site"}, false},
+		{"no origin, same-site", map[string]string{"Origin": "", "Sec-Fetch-Site": "same-site"}, false},
+		{"no origin, none", map[string]string{"Origin": "", "Sec-Fetch-Site": "none"}, false},
+		{"no origin, no fetch site", map[string]string{"Origin": "", "Sec-Fetch-Site": ""}, false},
+		{"no origin, another host", map[string]string{"Origin": "", "Sec-Fetch-Site": "same-origin", "Host": "evil.example"}, false},
+		{"another origin, same-origin", map[string]string{"Origin": "https://evil.example", "Sec-Fetch-Site": "same-origin"}, false},
+		{"an empty origin, same-origin", nil, false},
+	} {
+		code := 0
+		if c.header == nil {
+			// An Origin header that is there and empty is not a missing one.
+			req := newRequest("POST", "/projects/new", strings.NewReader(""))
+			req.Header["Origin"] = []string{""}
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.AddCookie(s)
+			w := httptest.NewRecorder()
+			r.h.ServeHTTP(w, req)
+			code = w.Code
+		} else {
+			code = post(c.header)
+		}
+		if c.ok && code != http.StatusSeeOther {
+			t.Errorf("%s: %d, want the post taken (303)", c.name, code)
+		}
+		if !c.ok && code != http.StatusForbidden {
+			t.Errorf("%s: %d, want 403", c.name, code)
+		}
+	}
+	// The Origin header twice, even both the app's, is refused.
+	req := newRequest("POST", "/projects/new", strings.NewReader(""))
+	req.Header["Origin"] = []string{testOrigin, testOrigin}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(s)
+	w := httptest.NewRecorder()
+	r.h.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("two Origin headers: %d", w.Code)
+	}
+	starts := 0
+	for _, c := range g.seen() {
+		if c.Verb == GenesisVerbStart {
+			starts++
+		}
+	}
+	if starts != 2 {
+		t.Errorf("%d starts reached the port, want the two posts taken", starts)
+	}
+	// A script's POST is held to the Origin header: none is refused, even
+	// with the same-origin fetch metadata.
+	if w := r.do("POST", "/api/logout", strings.NewReader("{}"), map[string]string{"Content-Type": "application/json", "Sec-Fetch-Site": "same-origin",
+		"Cookie": s.Name + "=" + s.Value}); w.Code != http.StatusForbidden {
+		t.Errorf("a JSON POST with no Origin: %d", w.Code)
+	}
+}
+
+// Every page that holds a form answers with the referrer policy same-origin,
+// under which a browser sends a form's post to the app with the app's origin
+// in its Origin header. Under no-referrer it would send "Origin: null", which
+// the app refuses: every form of the project pages would answer 403. The page
+// inventory holds every page with a form to the same rule.
+func TestFormPagesKeepTheOriginOnTheirPosts(t *testing.T) {
+	r, g, s := genesisRig(t)
+	sum := sampleSummary()
+	pages := []struct {
+		name, path string
+		set        func()
+	}{
+		{"the card list", "/cards/", nil},
+		{"the project list", "/projects/", nil},
+		{"a round", "/projects/" + testThread, nil},
+		{"the summary", "/projects/" + testThread, func() { g.set(GenesisVerbRound, &sum, nil) }},
+		{"a change", "/projects/" + testThread + "/change/kind", nil},
+		{"the discard step", "/projects/" + testThread + "/discard", nil},
+	}
+	for _, p := range pages {
+		if p.set != nil {
+			p.set()
+		}
+		w := r.getWith(p.path, s)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "<form") {
+			t.Errorf("%s: %d, or no form on it", p.name, w.Code)
+			continue
+		}
+		got := w.Header().Values("Referrer-Policy")
+		if len(got) != 1 || got[0] != "same-origin" {
+			t.Errorf("%s: Referrer-Policy %q, want exactly same-origin", p.name, got)
+		}
+		if strings.Contains(strings.Join(got, ","), "no-referrer") {
+			t.Errorf("%s: a no-referrer policy makes every form post carry Origin: null", p.name)
+		}
 	}
 }
 

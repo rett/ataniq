@@ -71,7 +71,11 @@
 // can make a passkey sends it, so a POST without it is refused, and no
 // option of [Config] lets one through) (a fixed 403 otherwise), and the JSON
 // content type, or, for the forms of the project pages, the form's
-// (application/x-www-form-urlencoded). The relying party id is exactly the
+// (application/x-www-form-urlencoded). A form's post may also come with no
+// Origin header at all, with Sec-Fetch-Site same-origin; "Origin: null" is
+// refused. The referrer policy of every response is same-origin, under which
+// a browser keeps the Origin header of a form's post to the app (under
+// no-referrer it would send "Origin: null"). The relying party id is exactly the
 // origin's host. The content security policy includes
 // require-trusted-types-for 'script', which the scripts meet by setting text
 // only with textContent, with trusted-types naming the one policy push.js

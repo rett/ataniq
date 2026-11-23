@@ -177,8 +177,10 @@ together:
 - **Pass `Sec-Fetch-Site` and `Origin` through untouched.** Every POST needs
   `Origin` equal to the seat origin and `Sec-Fetch-Site: same-origin`, as a
   browser sends them; a POST without them is answered 403, and no option lets
-  one through. A proxy that removes or rewrites either breaks pairing, login and
-  decisions.
+  one through. The one difference is a plain form's post of the project pages,
+  which may also come with no `Origin` header at all when `Sec-Fetch-Site`
+  says `same-origin`; `Origin: null` is refused there too. A proxy that removes
+  or rewrites either breaks pairing, login, decisions and the project pages.
 - **Overwrite the client-address header on every request.** `--socket` needs
   `--client-addr-header NAME`, the header the proxy sets to the client's address,
   because a Unix peer has no address and every client would share one limit. The
@@ -189,8 +191,12 @@ together:
   With `--listen` the option is not required; give it only when the proxy
   overwrites the header on every request.
 - **No caching.** Every response carries `Cache-Control: no-store`, and the
-  security headers (content security policy, HSTS, `Permissions-Policy`) that
-  the passkey calls rely on. Do not cache and do not remove or change them. The
+  security headers (content security policy, HSTS, `Permissions-Policy`,
+  `Referrer-Policy: same-origin`) that the passkey calls and the forms rely
+  on. Do not cache and do not remove or change them. The referrer policy in
+  particular must stay `same-origin`: under `no-referrer` a browser posts the
+  project pages' forms with `Origin: null`, which the seat refuses, so a proxy
+  that sets its own `Referrer-Policy` on the seat's site breaks every form. The
   one exception is the notices' service worker, `/sw.js`, which the seat serves
   with `Cache-Control: no-cache` so that the phone checks it for a change; the
   shipped Caddy sets `no-store` on it as on everything else, which does no harm.

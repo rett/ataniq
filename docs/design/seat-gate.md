@@ -2081,7 +2081,16 @@ short form and says that nothing has started and no agent was given the brief.
 Every act is a plain form posted to the app (`/projects/new`, and
 `/projects/{thread}/answer`, `/change`, `/finish`, `/discard`), with the checks
 of every changing request of the seat (Origin, Host, `Sec-Fetch-Site:
-same-origin`, the body's size) and the form's content type, and a session. A
+same-origin`, the body's size) and the form's content type, and a session.
+A browser posts a form with the referrer policy of the page that holds it, so
+every response of the seat carries `Referrer-Policy: same-origin`: nothing of
+an address leaves for another origin, and a same-origin post keeps its
+`Origin` header (under `no-referrer` it would be `Origin: null`, and every
+form would be refused). A form's post passes with `Origin` equal to the seat
+origin, or with no `Origin` header at all when `Sec-Fetch-Site` says
+`same-origin`; `Origin: null` and any other origin are refused. The scripts'
+JSON posts set their own policy (`strict-origin`) and always need `Origin`.
+The page inventory test holds every page with a form to the policy. A
 post calls the port once and is answered with a 303 to a page
 (post/redirect/get), never with a page: a reload sends nothing again, and a
 refusal of the gate is never retried. A form whose fields do not agree (two

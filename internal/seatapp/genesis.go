@@ -17,7 +17,7 @@ import (
 // question page of a round, the summary, the page that changes one answer,
 // the discard step and the finished page, all made on the server, with no
 // script. Each act is a plain HTML form posted to the app, which checks it
-// as it checks every changing request (sameOrigin), calls the [Genesis] port
+// as it checks every changing request (formOrigin), calls the [Genesis] port
 // once, and answers with a redirect to a page (post/redirect/get), never
 // with a page of its own: a reload never sends a form again. A refusal is
 // one of the fixed notes below, named in the redirect's query; nothing the
@@ -217,11 +217,37 @@ func (a *app) genesisPort() (Genesis, bool) {
 }
 
 // sameOrigin answers a request that changes something and does not come
-// from the app's own pages: its Origin header is not the app's origin, its
-// Host header not the origin's host, or its Sec-Fetch-Site not
-// same-origin. It reports whether the request passed.
+// from the app's own pages: its Host header is not the origin's host, its
+// Sec-Fetch-Site not same-origin, or its Origin header not the app's origin.
+// It reports whether the request passed. It is the check of a script's POST
+// (post), whose fetch sets its own referrer policy and so always sends the
+// Origin header; a form's post is checked by formOrigin.
 func (a *app) sameOrigin(w http.ResponseWriter, r *http.Request) bool {
-	if r.Header.Get("Origin") != a.cfg.Origin || r.Host != a.host || r.Header.Get("Sec-Fetch-Site") != "same-origin" {
+	return a.originCheck(w, r, false)
+}
+
+// formOrigin is sameOrigin for a plain HTML form's post, which a browser
+// sends with the page's own referrer policy (same-origin, see
+// securityHeaders): an Origin header equal to the app's origin, the case of
+// every browser in use, or, for a browser that leaves the header out of a
+// form's post, no Origin header at all. The browser's own Sec-Fetch-Site,
+// which no page can set, must say same-origin in both cases, and the Host
+// header must be the origin's host. "Origin: null", which a browser sends for
+// a post under the no-referrer policy, from a sandboxed frame or after a
+// cross-origin redirect, is refused, as is any other origin.
+func (a *app) formOrigin(w http.ResponseWriter, r *http.Request) bool {
+	return a.originCheck(w, r, true)
+}
+
+// originCheck is the check of sameOrigin and formOrigin: absentOK lets a
+// request with no Origin header at all pass on its Sec-Fetch-Site alone.
+func (a *app) originCheck(w http.ResponseWriter, r *http.Request, absentOK bool) bool {
+	origin, sent := r.Header["Origin"]
+	originOK := sent && len(origin) == 1 && origin[0] == a.cfg.Origin
+	if !sent && absentOK {
+		originOK = true
+	}
+	if !originOK || r.Host != a.host || r.Header.Get("Sec-Fetch-Site") != "same-origin" {
 		writeText(w, http.StatusForbidden, "forbidden\n")
 		return false
 	}
@@ -229,12 +255,12 @@ func (a *app) sameOrigin(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // form wraps the handler of a plain HTML form's post with the checks of
-// every changing request (sameOrigin), the form's content type and a
+// every changing request (formOrigin), the form's content type and a
 // session: a post without a live session goes to the login page, and the
 // handler is not run. The body is cut at MaxBody by the guard.
 func (a *app) form(h func(http.ResponseWriter, *http.Request, Session)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !a.sameOrigin(w, r) {
+		if !a.formOrigin(w, r) {
 			return
 		}
 		mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
