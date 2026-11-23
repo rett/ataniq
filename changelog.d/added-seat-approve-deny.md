@@ -16,7 +16,11 @@
   user verification for the session's own credential, sent once by
   `POST /api/decide`. A cancel sends nothing. A lost answer shows "Decision
   sent. Outcome unknown." and only "Look again", and the card is not decided
-  again until it is read again; nothing is queued. A held approve shows the
+  again until its Card page is read again by a GET whose read began after
+  the decision was sent (an earlier read may show the card as it was, and
+  then says to look again); nothing is queued. The pages of a card's whole
+  path list count for the review they were read for, so pages read before
+  a card was replaced do not count for the replacement. A held approve shows the
   host's line and the held words. Each refusal is fixed words; a passkey no
   longer paired ends the session. Decision challenges are limited to 10 a
   minute per credential, and an expired card gets none. A request body over

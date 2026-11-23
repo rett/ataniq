@@ -200,7 +200,9 @@
 // page's rows, lists, refs and "differs from" block once the page was
 // served, each only when the page showed every path and ref of it whole
 // ([Whole]), and a cut path list by the pages of it the session was served
-// that cut no path. The port withholds Approve for a part not shown whole.
+// that cut no path, each with the review digest it was read for. The port
+// withholds Approve for a part not shown whole. A HEAD of a card page is
+// refused 405: only a GET answered with its page is a read.
 //
 // A tap asks POST /api/decide-challenge with the card, the id of the page's
 // form, the action, the indexes of the boxes ticked and the reason; the
@@ -227,7 +229,8 @@
 // Once a decision is sent, only a refusal says that nothing was decided.
 // Any other answer, and no answer, is "Decision sent. Outcome unknown.":
 // the card is marked sent before the port is asked, and only a new read of
-// the card (its page; the script offers only "Look again") clears the mark,
+// the card (its page, from a read of the port that began after the mark;
+// the script offers only "Look again") clears the mark,
 // so a lost answer is never followed by a second decision unseen and
 // nothing is queued. A held approve shows the host's line and the held
 // words. Every failure is a fixed code with the app's fixed words ("say");

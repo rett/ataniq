@@ -2,6 +2,7 @@ package seatapp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -196,7 +197,7 @@ func TestSeatDecideChallengeTakesTheCardAsShown(t *testing.T) {
 	}
 	q := r.daemon.decideChs[0]
 	want := DecideChallengeRequest{ID: testCardID, BindingSHA256: strings.Repeat("ab", 32), Approve: true, SignedOff: []int{0},
-		Credential: "0123456789abcdef", Reading: Reading{Opened: opened, PagesRead: []int{0, 1, 2}, Pages: 3,
+		Credential: "0123456789abcdef", Reading: Reading{Opened: opened, PagesRead: []int{0, 1, 2}, Pages: 3, Review: strings.Repeat("ef", 32),
 			Whole: Whole{Rows: true, Lists: true, Refs: true, Flagged: true, Differs: true}}, Now: r.clock.Now()}
 	if !reflect.DeepEqual(q, want) {
 		t.Errorf("the port got %+v\nwant %+v", q, want)
@@ -334,18 +335,136 @@ func TestSeatCardPartsShownWhole(t *testing.T) {
 	}
 
 	// A page of the whole path list with a path cut is not read.
-	r.daemon.page = PathsPage{Pages: 2, Rows: []PathRow{{Path: long, Status: "M"}}}
+	r.daemon.page = PathsPage{Pages: 2, Review: strings.Repeat("ef", 32), Rows: []PathRow{{Path: long, Status: "M"}}}
 	w := r.getWith("/cards/"+testCardID+"/paths/0", s)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "A path on this page is too long to show whole on the phone, so this page does not count as read.") {
 		t.Errorf("a page with a cut path: %d", w.Code)
 	}
-	r.daemon.page = PathsPage{Pages: 2, Rows: []PathRow{{Path: edge, Status: "M"}}}
+	r.daemon.page = PathsPage{Pages: 2, Review: strings.Repeat("ef", 32), Rows: []PathRow{{Path: edge, Status: "M"}}}
 	if w := r.getWith("/cards/"+testCardID+"/paths/1", s); strings.Contains(w.Body.String(), "too long to show whole") {
 		t.Error("a page with no path cut says one is")
 	}
 	r.challengeOf(t, s, approveBody)
 	if rd := r.daemon.decideChs[0].Reading; len(rd.PagesRead) != 1 || rd.PagesRead[0] != 1 {
 		t.Errorf("the pages read are %v, want [1]", rd.PagesRead)
+	}
+}
+
+// showHooked is the fake port with a hook run once inside Show, after the
+// card was read and before it is returned: what happens while a read is on
+// its way back.
+type showHooked struct {
+	*fakeDaemon
+	hook func()
+}
+
+func (d *showHooked) Show(ctx context.Context, id string) (Card, error) {
+	c, err := d.fakeDaemon.Show(ctx, id)
+	d.mu.Lock()
+	h := d.hook
+	d.hook = nil
+	d.mu.Unlock()
+	if h != nil {
+		h()
+	}
+	return c, err
+}
+
+// TestSeatHeadIsNoRead: a HEAD of a card page is refused 405 and asks the
+// port nothing, so it counts as no read of a page of the path list and does
+// not settle a lost answer; a GET does both.
+func TestSeatHeadIsNoRead(t *testing.T) {
+	r := newRig(t)
+	s := r.login(t)
+	r.openCard(t, s)
+	head := func(path string) *httptest.ResponseRecorder {
+		req := newRequest("HEAD", path, nil)
+		req.AddCookie(s)
+		return r.recorder(req)
+	}
+	before := r.daemon.readCount()
+	for _, path := range []string{"/cards/", "/cards/" + testCardID, "/cards/" + testCardID + "/paths/0", "/cards/" + testCardID + "/paths/1"} {
+		if w := head(path); w.Code != 405 || w.Header().Get("Allow") != "GET" {
+			t.Errorf("HEAD %s: %d, Allow %q", path, w.Code, w.Header().Get("Allow"))
+		}
+	}
+	if n := r.daemon.readCount(); n != before {
+		t.Errorf("the port was asked %d reads for HEADs", n-before)
+	}
+	r.challengeOf(t, s, approveBody)
+	if rd := r.daemon.decideChs[0].Reading; len(rd.PagesRead) != 0 {
+		t.Errorf("HEADs counted as reads of the pages %v", rd.PagesRead)
+	}
+	// A lost answer stands after a HEAD of the Card page.
+	r.daemon.decideErr = ErrOutcomeUnknown
+	id := r.challengeOf(t, s, approveBody)
+	r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s)
+	head("/cards/" + testCardID)
+	wantFailure(t, "a tap after a HEAD", r.postWith("/api/decide-challenge", approveBody, s), 409, "sent_unknown", saySentUnknown)
+	r.daemon.decideErr = nil
+	r.openCard(t, s)
+	if w := r.postWith("/api/decide-challenge", approveBody, s); w.Code != 200 {
+		t.Errorf("a tap after a GET: %d %s", w.Code, w.Body)
+	}
+}
+
+// TestSeatDecideStaleReadKeepsTheMark: a GET of the Card page whose read
+// began before a decision of the card was sent, and whose answer was lost,
+// shows the card as it was read, so it does not settle the lost answer: the
+// page holds no form and says to look again, and a tap is still refused. A
+// GET that begins after the send settles it.
+func TestSeatDecideStaleReadKeepsTheMark(t *testing.T) {
+	var hd *showHooked
+	r := newRig(t, func(c *Config) {
+		hd = &showHooked{fakeDaemon: c.Daemon.(*fakeDaemon)}
+		c.Daemon = hd
+	})
+	s := r.login(t)
+	r.openCard(t, s)
+	id := r.challengeOf(t, s, approveBody)
+	r.daemon.decideErr = ErrOutcomeUnknown
+	hd.hook = func() {
+		// The decision is sent and its answer lost while the GET's read is
+		// on its way back.
+		if w := r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s); w.Code != 502 {
+			t.Errorf("the decision: %d %s", w.Code, w.Body)
+		}
+	}
+	w := r.getWith("/cards/"+testCardID, s)
+	body := w.Body.String()
+	if w.Code != 200 || strings.Contains(body, `id="decide"`) || !strings.Contains(body, "A decision of this card was sent and its outcome is not known. Look at it again.") {
+		t.Errorf("the page of a read that began before the send: %d", w.Code)
+	}
+	r.clock.Advance(time.Second)
+	wantFailure(t, "a tap after the stale read", r.postWith("/api/decide-challenge", approveBody, s), 409, "sent_unknown", saySentUnknown)
+	r.daemon.decideErr = nil
+	r.openCard(t, s)
+	if w := r.postWith("/api/decide-challenge", approveBody, s); w.Code != 200 {
+		t.Errorf("a tap after a read that began after the send: %d %s", w.Code, w.Body)
+	}
+}
+
+// TestSeatPathPagesKeepTheirReview: the pages of a path list count with the
+// review each was read for; a page of another review starts the count
+// again, so pages read before the card was replaced do not count for the
+// replacement.
+func TestSeatPathPagesKeepTheirReview(t *testing.T) {
+	r := newRig(t)
+	s := r.login(t)
+	for _, n := range []string{"0", "1"} {
+		r.getWith("/cards/"+testCardID+"/paths/"+n, s)
+	}
+	r.daemon.page.Review = strings.Repeat("aa", 32)
+	r.getWith("/cards/"+testCardID+"/paths/2", s)
+	r.openCard(t, s)
+	r.challengeOf(t, s, approveBody)
+	if rd := r.daemon.decideChs[0].Reading; rd.Review != strings.Repeat("aa", 32) || len(rd.PagesRead) != 1 || rd.PagesRead[0] != 2 {
+		t.Errorf("the reading is of the review %s, pages %v", rd.Review, rd.PagesRead)
+	}
+	// A page without a review is no page.
+	r.daemon.page.Review = ""
+	if w := r.getWith("/cards/"+testCardID+"/paths/0", s); w.Code != 502 {
+		t.Errorf("a page without its review: %d", w.Code)
 	}
 }
 

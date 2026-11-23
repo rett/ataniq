@@ -220,7 +220,7 @@ func (d *Daemon) Pages(ctx context.Context, id string, n int) (seatapp.PathsPage
 		}
 		return seatapp.PathsPage{}, errReadAnswer
 	}
-	out := seatapp.PathsPage{N: p.Page, Pages: p.Pages}
+	out := seatapp.PathsPage{N: p.Page, Pages: p.Pages, Review: p.ReviewDigest}
 	for _, pc := range p.Paths {
 		out.Rows = append(out.Rows, pathRow(card.RowOf(pc)))
 	}

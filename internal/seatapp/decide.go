@@ -57,17 +57,21 @@ type cardReading struct {
 	whole   Whole
 	// opened is when the Card page last showed it.
 	opened time.Time
-	// pages is the page count of the whole path list, and read the pages of
-	// it the session read.
-	pages int
-	read  map[int]bool
+	// pages is the page count of the whole path list, review the review
+	// digest those pages were of, and read the pages of it the session
+	// read. A page of another review or count starts the count again.
+	pages  int
+	review string
+	read   map[int]bool
 	// live says the card was pending when last shown: not ended and no
 	// decision on its way.
 	live bool
 	// sent says a decision of the card was sent and no answer settled it.
 	// Only a new read of the card (the Card page, "Look again") clears it,
-	// so a lost answer is never followed by a second decision unseen.
-	sent bool
+	// so a lost answer is never followed by a second decision unseen; a read
+	// that began before the decision was marked sent (sentAt) does not.
+	sent   bool
+	sentAt uint64
 	// forms are the decide forms of the Card pages of the card served to
 	// the session, oldest first, each with the binding its page showed. A
 	// tap names its page's form, and is taken only when that page showed
@@ -80,7 +84,7 @@ type cardReading struct {
 
 // public is the reading as the port takes it.
 func (r *cardReading) public() Reading {
-	out := Reading{Opened: r.opened, Whole: r.whole, Pages: r.pages}
+	out := Reading{Opened: r.opened, Whole: r.whole, Pages: r.pages, Review: r.review}
 	for n := range r.read {
 		out.PagesRead = append(out.PagesRead, n)
 	}
@@ -140,31 +144,49 @@ func (s *session) reading(id string, create bool) *cardReading {
 	return r
 }
 
-// opened notes that the Card page showed c to the session at now, and
-// returns the session's reading of it. A read of the card settles a lost
-// answer: what the page shows is the card's state now.
-func (ss *sessions) opened(k tokenKey, c Card, now time.Time) Reading {
+// begin returns the mark of a read that begins now: a decision marked sent
+// later has a higher one.
+func (ss *sessions) begin() uint64 {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	return ss.seq
+}
+
+// opened notes that the Card page showed c to the session at now, from a
+// read that began at the mark since, and returns the session's reading of
+// it, and fresh. A read of the card settles a lost answer: what the page
+// shows is the card's state now. A read that began before a decision of the
+// card that is still unsettled was marked sent may show the card as it was
+// before it, so it changes nothing and is not fresh.
+func (ss *sessions) opened(k tokenKey, c Card, now time.Time, since uint64) (Reading, bool) {
 	var out Reading
+	fresh := true
 	ss.with(k, func(s *session) {
 		r := s.reading(c.ID, true)
+		if r.sent && r.sentAt > since {
+			fresh = false
+			out = r.public()
+			return
+		}
 		if r.binding != "" && r.binding != c.BindingSHA256 {
-			r.pages, r.read = 0, nil
+			r.pages, r.review, r.read = 0, "", nil
 		}
 		r.binding, r.expires, r.flagged, r.opened, r.whole = c.BindingSHA256, c.Expires, len(c.Flagged), now, wholeOf(c)
 		r.live = !c.Ended && !c.OnItsWay && (c.State == "" || c.State == "pending")
 		r.sent = false
 		out = r.public()
 	})
-	return out
+	return out, fresh
 }
 
 // readPage notes that the session read page n of pages of a card's whole
-// path list. A page count other than the one kept starts the count again.
-func (ss *sessions) readPage(k tokenKey, id string, n, pages int) {
+// path list, of the review given. A page count or a review other than the
+// one kept starts the count again.
+func (ss *sessions) readPage(k tokenKey, id string, n, pages int, review string) {
 	ss.with(k, func(s *session) {
 		r := s.reading(id, true)
-		if r.pages != pages || r.read == nil {
-			r.pages, r.read = pages, map[int]bool{}
+		if r.pages != pages || r.review != review || r.read == nil {
+			r.pages, r.review, r.read = pages, review, map[int]bool{}
 		}
 		r.read[n] = true
 	})
@@ -254,7 +276,8 @@ func (ss *sessions) markSent(k tokenKey, id string) bool {
 	ok := false
 	ss.with(k, func(s *session) {
 		if r := s.reading(id, false); r != nil && r.live && !r.sent {
-			r.sent, ok = true, true
+			ss.seq++
+			r.sent, r.sentAt, ok = true, ss.seq, true
 		}
 	})
 	return ok

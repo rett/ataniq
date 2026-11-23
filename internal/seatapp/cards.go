@@ -191,7 +191,10 @@ type Differs struct {
 type PathsPage struct {
 	// N is the page's number, from 0, and Pages how many there are.
 	N, Pages int
-	Rows     []PathRow
+	// Review is the review digest the page is of, the card's when it was
+	// read; the session's reading keeps it with the page.
+	Review string
+	Rows   []PathRow
 }
 
 // The errors of the reads of a Daemon that the app tells apart.
@@ -308,9 +311,13 @@ type (
 		// Offer is what the decide form offers, and Decide says the page
 		// holds the form: the card is pending and approve or deny is
 		// offered. Form is the id of this page's form, which a tap names.
-		Offer  Offer
-		Decide bool
-		Form   string
+		// Unsettled says the page's read began before a decision of the
+		// card, still unsettled, was sent: it may show the card as it was
+		// before, so it holds no form and asks to look again.
+		Offer     Offer
+		Decide    bool
+		Form      string
+		Unsettled bool
 	}
 	pathsData struct {
 		Title string
@@ -368,6 +375,7 @@ func (a *app) cardPage(w http.ResponseWriter, r *http.Request, s Session) {
 		return
 	}
 	defer cancel()
+	since := a.sess.begin()
 	c, err := a.cfg.Daemon.Show(ctx, id)
 	if err != nil {
 		a.problem(w, readProblem(err))
@@ -382,8 +390,9 @@ func (a *app) cardPage(w http.ResponseWriter, r *http.Request, s Session) {
 	// The page is the session's reading of the card: a lost answer is
 	// settled by it. The decide form is the page's only when the card is
 	// pending and the card model offers approve or deny.
-	reading := a.sess.opened(s.key, c, now)
-	if !c.Ended && !c.OnItsWay && (c.State == "" || c.State == "pending") {
+	reading, fresh := a.sess.opened(s.key, c, now, since)
+	d.Unsettled = !fresh
+	if fresh && !c.Ended && !c.OnItsWay && (c.State == "" || c.State == "pending") {
 		d.Offer = a.cfg.Daemon.Offer(id, c.BindingSHA256, reading, now)
 		d.Decide = d.Offer.Approve || d.Offer.Deny
 	}
@@ -425,14 +434,14 @@ func (a *app) pathsPage(w http.ResponseWriter, r *http.Request, s Session) {
 		a.problem(w, readProblem(err))
 		return
 	}
-	if p.N != n || p.Pages < 1 || p.N >= p.Pages {
+	if p.N != n || p.Pages < 1 || p.N >= p.Pages || p.Review == "" {
 		a.problem(w, problemFailed)
 		return
 	}
 	// A page counts as read only when it showed every path whole.
 	d := pathsData{Title: pageTitles["paths"], ID: id, Page: p, Number: n + 1, Back: cardHref(id), Cut: !rowsWhole(p.Rows)}
 	if !d.Cut {
-		a.sess.readPage(s.key, id, n, p.Pages)
+		a.sess.readPage(s.key, id, n, p.Pages, p.Review)
 	}
 	if n > 0 {
 		d.Prev = pathsHref(id, n-1)

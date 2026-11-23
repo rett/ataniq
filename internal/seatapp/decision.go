@@ -19,9 +19,12 @@ type Reading struct {
 	// Whole are the parts of the card the Card page showed whole.
 	Whole Whole
 	// PagesRead are the numbers of the pages of the whole path list the
-	// session read, each once, and Pages how many pages that list had.
+	// session read, each once, Pages how many pages that list had, and
+	// Review the review digest those pages were of, as the port answered
+	// them ([PathsPage].Review).
 	PagesRead []int
 	Pages     int
+	Review    string
 }
 
 // Whole says, for each part of a card, that the Card page showed every path

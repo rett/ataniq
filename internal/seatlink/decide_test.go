@@ -562,7 +562,7 @@ func TestSeatLinkOffer(t *testing.T) {
 	if o := r.link.Offer(p.ID, p.BindingSHA256, read, decideNow); o.Approve || o.ApproveWhy != card.ReasonPathPages || !o.Deny {
 		t.Errorf("a cut list, no page read: %+v", o)
 	}
-	read.Pages, read.PagesRead = 2, []int{1}
+	read.Pages, read.PagesRead, read.Review = 2, []int{1}, p.Binding.Summary.ReviewDigest
 	if o := r.link.Offer(p.ID, p.BindingSHA256, read, decideNow); o.Approve {
 		t.Errorf("a cut list, one page of two read: %+v", o)
 	}
@@ -576,7 +576,14 @@ func TestSeatLinkOffer(t *testing.T) {
 	if _, err := r.link.DecideChallenge(context.Background(), q); err == nil {
 		t.Error("a challenge for a cut list with no page read")
 	}
-	q.Reading.Pages, q.Reading.PagesRead = 2, []int{0, 1}
+	q.Reading.Pages, q.Reading.PagesRead, q.Reading.Review = 2, []int{0, 1}, strings.Repeat("e", 64)
+	if _, err := r.link.DecideChallenge(context.Background(), q); err == nil {
+		t.Error("a challenge for a cut list whose pages were read for another review")
+	}
+	if o := r.link.Offer(p.ID, p.BindingSHA256, q.Reading, decideNow); o.Approve {
+		t.Errorf("a cut list whose pages were read for another review: %+v", o)
+	}
+	q.Reading.Review = p.Binding.Summary.ReviewDigest
 	if _, err := r.link.DecideChallenge(context.Background(), q); err != nil {
 		t.Errorf("a challenge for a cut list read whole: %v", err)
 	}

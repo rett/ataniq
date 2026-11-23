@@ -125,7 +125,8 @@ func (s *shownCards) put(id string, c card.Card) {
 // their end when the page showed each of them whole (seatapp.Whole), and
 // not when a path or a ref of it was too long to be shown whole; a cut path
 // list counts only by the pages of the whole list the session read, for the
-// card's own review.
+// card's own review: a page counts with the review it was read for, so a
+// page of another review counts for nothing.
 func readingOf(c card.Card, r seatapp.Reading) card.Reading {
 	rd := card.Reading{Opened: r.Opened, Paths: r.Whole.Rows, Refs: r.Whole.Refs, Differs: r.Whole.Differs}
 	for k := range rd.Lists {
@@ -133,7 +134,7 @@ func readingOf(c card.Card, r seatapp.Reading) card.Reading {
 	}
 	if c.Diff != nil {
 		for _, n := range r.PagesRead {
-			rd.ReadPage(card.Page{Kind: card.PagePaths, N: n, Pages: r.Pages, ReviewDigest: c.Diff.ReviewDigest})
+			rd.ReadPage(card.Page{Kind: card.PagePaths, N: n, Pages: r.Pages, ReviewDigest: r.Review})
 		}
 	}
 	return rd

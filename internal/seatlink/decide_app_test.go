@@ -256,6 +256,53 @@ func TestSeatDecideCutFlaggedPathsOnThePhone(t *testing.T) {
 	}
 }
 
+// TestSeatDecidePagesOfAReplacedReview: the pages of a card's whole path
+// list read straight away, before its Card page, count for the review they
+// were read for. The card is replaced by one of the same id and page count
+// and another review; its Card page does not offer Approve, and a tap of
+// Approve is refused before the desk is asked. Reading the new review's
+// pages offers it.
+func TestSeatDecidePagesOfAReplacedReview(t *testing.T) {
+	r := newPhoneRig(t)
+	truncated(t, r.decideRig)
+	id := r.desk.reads.pending.ID
+	for _, n := range []string{"0", "1"} {
+		if w := r.browser.do("GET", "/cards/"+id+"/paths/"+n, ""); w.Code != 200 {
+			t.Fatalf("page %s: %d %s", n, w.Code, w.Body)
+		}
+	}
+	p := r.desk.reads.pending
+	p.Binding.Summary.ReviewDigest = strings.Repeat("e", 64)
+	digest, err := record.BindingDigest(p.Binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.BindingSHA256 = digest
+	b, err := record.EncodePending(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.desk.reads.mu.Lock()
+	r.desk.reads.pending, r.desk.reads.bytes = p, b
+	r.desk.reads.mu.Unlock()
+	page := r.open(t).Body.String()
+	if strings.Contains(page, `id="approve"`) {
+		t.Error("the replacement is offered Approve on the pages of the old review")
+	}
+	if w := r.tapPage(page, "approve", []int{0, 1}); w.Code != 409 || said(t, w)["error"] != "not_allowed" {
+		t.Errorf("a tap of Approve: %d %s", w.Code, w.Body)
+	}
+	if c, _ := r.desk.counts(); c != 0 {
+		t.Errorf("the desk was asked %d challenges", c)
+	}
+	for _, n := range []string{"0", "1"} {
+		r.browser.do("GET", "/cards/"+id+"/paths/"+n, "")
+	}
+	if page := r.open(t).Body.String(); !strings.Contains(page, `id="approve"`) {
+		t.Error("the replacement's own pages read, Approve is not offered")
+	}
+}
+
 // TestSeatDecideTamperedChallenge: a challenge the gate answers that is not
 // the card's never reaches the browser, so the phone's passkey is never
 // asked; nothing is decided.

@@ -802,7 +802,14 @@ How it is built (G9), where the points above left a choice:
   to their end once the page was served to the session, each only when the
   page showed it whole (`seatapp.Whole`), and a cut path list only by the
   pages of the whole list the session was served that showed every path
-  whole, for the card's review. The page shows a path or a ref (a ref
+  whole, for the card's review: the seat keeps with the pages the review
+  digest each was read for (the page's own, which the link checked), a page
+  of another review or page count starts the count again, and the link
+  counts the pages only for the review they were read for, so pages read
+  before a card was replaced (the same id and page count, another review)
+  count for nothing on the replacement. Only a GET that the seat answered
+  with the page is a read: a `HEAD` of a card page is refused 405 and asks
+  the daemon nothing. The page shows a path or a ref (a ref
   line's ref, the branch a prune's deleted ref was merged into, a flagged
   path and its rule, a path or ref of the "differs from" block) up to 1024
   characters of its escaped text, and cuts a longer one with a count of
@@ -872,7 +879,12 @@ or not. Then the seat:
 - never sends the decision again, by itself or on a tap, and queues nothing
   (built: the card is marked sent before the decision is sent, a refusal
   clears the mark, and any other answer leaves it until a new read of the
-  card; while it stands, a tap is refused without asking the daemon);
+  card: a GET of its Card page whose read of the daemon began after the
+  mark was set. A `HEAD` is no read, and a GET whose read began before the
+  mark may show the card as it was before the decision, so its page holds
+  no form, says "A decision of this card was sent and its outcome is not
+  known. Look at it again." and leaves the mark. While it stands, a tap is
+  refused without asking the daemon);
 - shows "Decision sent. Outcome unknown." and offers only "Look again", the
   Card page read afresh;
 - on "Look again", once the gate is back, reads the same card with
