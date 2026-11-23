@@ -23,8 +23,8 @@
   answer was lost (a read made while the decision was on its way, or begun
   before, may show the card as it was, and then says to look again); nothing
   is queued. A page counts as read, and a Card page settles a lost answer,
-  only once it was written to the phone. The pages of a card's whole path
-  list count for the review they were read for, so pages read before a card
+  only once it was written and flushed to the connection (a proxy in front may
+  still lose it). The pages of a card's whole path list count for the review they were read for, so pages read before a card
   was replaced do not count for the replacement. A held approve shows the
   host's line and the held words. Each refusal is fixed words; a passkey no
   longer paired ends the session. Decision challenges are limited to 10 a
