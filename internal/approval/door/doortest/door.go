@@ -194,6 +194,18 @@ func New(cfg Config) *Door {
 	}
 }
 
+// RaiseNumber makes the number of the next pending id at least n. It never
+// lowers it. A host that keeps the stand-in's ids apart from those of an
+// earlier run (the stand-in keeps nothing across a restart) raises it past the
+// numbers of the ids it knows were used.
+func (d *Door) RaiseNumber(n int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if n > d.number {
+		d.number = n
+	}
+}
+
 // SetEpoch changes the seat's epoch, as a handover does. Every request and
 // every record of another epoch that is not yet used becomes void, and is
 // refused previous-epoch from then on.

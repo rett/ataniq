@@ -93,7 +93,7 @@ tries the phone end to end without a lead, a mirror or a sandbox:
 
        ataniqd trial init --state-dir DIR
        ataniqd run --owner-channel --trial --state-dir DIR [--seat-gate ADDR]
-       ataniqd trial submit --kind finish|prune [--count N] [--socket PATH]
+       ataniqd trial submit --kind finish|branch-prune [--count N] [--socket PATH]
 
   trial init        write the trial's settings, owner/scratch.json of DIR
                     ("trial": true: a sample project, role and target, the
@@ -108,12 +108,14 @@ tries the phone end to end without a lead, a mirror or a sandbox:
                     the journal's evidence) and applies nothing: an approved
                     card ends not-applied, "applied: nothing (trial)". Only
                     with --owner-channel; the daemon refuses trial settings
-                    without --trial and other settings with it, and prints a
+                    without --trial and other settings with it, and a state or
+                    runtime folder that is, lies inside or contains a default
+                    folder of the account (so give --runtime-dir), and prints a
                     TRIAL line after the STAND-IN banner at start.
   trial submit      ask the trial daemon on the socket (default the runtime
                     folder's daemon.sock) for N sample cards (1 to 10, default
-                    1) of a kind: finish, a sample feature finish, or prune, a
-                    sample branch prune, one at a time. It prints one line per
+                    1) of a kind: finish, a sample feature finish, or branch-prune,
+                    a sample branch prune, one at a time. It prints one line per
                     card, or per refusal. Exit codes: 0 every card was made, 1
                     a refusal or a failure, 2 usage, 20 no daemon, 21
                     unauthorized, 22 a protocol error (a daemon that is not a
@@ -153,8 +155,11 @@ var ownerServiceBuilder func(stateDir string) (leaddaemon.OwnerService, func() e
 // the state folder and the settings that run before the daemon starts, and the
 // line the daemon prints once the service is built.
 type ownerGuardSet struct {
-	check  func(stateDir string, getenv func(string) string) error
-	banner string
+	check func(stateDir string, getenv func(string) string) error
+	// checkRuntime, when set, checks the runtime folder (the daemon's socket
+	// is in it) before the daemon takes a lock.
+	checkRuntime func(runtimeDir string, getenv func(string) string) error
+	banner       string
 	// note, when set, is a second line printed after the banner.
 	note string
 }
@@ -199,6 +204,12 @@ func (a *app) ownerRun(o *ownerFlags, cfg *leaddaemon.Config) (code int) {
 	// lock or makes a socket: a refusal is a configuration the daemon refuses.
 	if guard != nil {
 		if err := guard.check(stateDir, a.getenv); err != nil {
+			fmt.Fprintf(a.stderr, "ataniqd run: --owner-channel: %s\n", leaddaemon.SafeText(err.Error()))
+			return leaddaemon.ExitConfig
+		}
+	}
+	if guard != nil && guard.checkRuntime != nil {
+		if err := guard.checkRuntime(cfg.RuntimeDir, a.getenv); err != nil {
 			fmt.Fprintf(a.stderr, "ataniqd run: --owner-channel: %s\n", leaddaemon.SafeText(err.Error()))
 			return leaddaemon.ExitConfig
 		}

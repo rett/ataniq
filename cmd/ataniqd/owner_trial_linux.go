@@ -54,8 +54,9 @@ var trialGuard = &ownerGuardSet{
 		_, err := checkTrialScratch(stateDir, getenv)
 		return err
 	},
-	banner: ownerBanner,
-	note:   trialNote,
+	checkRuntime: checkTrialRuntime,
+	banner:       ownerBanner,
+	note:         trialNote,
 }
 
 // checkTrialScratch reads the settings of the state folder and applies the
@@ -74,6 +75,32 @@ func checkTrialScratch(stateDir string, getenv func(string) string) (hostadapter
 		return hostadapter.Scratch{}, err
 	}
 	return sc, nil
+}
+
+// checkTrialRuntime refuses a runtime folder that is, lies inside or contains a
+// default state or runtime folder of the account, as the state folder is
+// refused: the trial serves its socket in the runtime folder and must not take
+// the place of the account's own daemon there (that includes the default
+// runtime folder a run without --runtime-dir uses).
+func checkTrialRuntime(runtimeDir string, getenv func(string) string) error {
+	defaults, err := defaultFolders(getenv)
+	if err != nil {
+		return err
+	}
+	run, err := resolvePath(runtimeDir)
+	if err != nil {
+		return fmt.Errorf("the phone trial cannot resolve the runtime folder: %v", err)
+	}
+	for _, d := range defaults {
+		c, err := resolvePath(d)
+		if err != nil {
+			return fmt.Errorf("cannot resolve the default folder %q: %v", d, err)
+		}
+		if related(run, c) {
+			return fmt.Errorf("the phone trial refuses the runtime folder %q: it is, lies inside or contains the default folder %q; give --runtime-dir a scratch folder", runtimeDir, d)
+		}
+	}
+	return nil
 }
 
 // trialRig is the trial of one run: its builder keeps the trial it built, so
@@ -139,20 +166,52 @@ type trialSubmitParams struct {
 	Count int    `json:"count,omitempty"`
 }
 
-// trialSubmitResult is its result: one entry per sample, in order.
+// trialSubmitResult is its result: one entry per sample, in order. When the
+// daemon stopped making samples after some (the call was cancelled, or a sample
+// failed), Cards holds those already made and Stopped says why in one fixed
+// line, so that the caller sees which cards exist.
 type trialSubmitResult struct {
-	Cards []hostadapter.TrialCard `json:"cards"`
+	Cards   []hostadapter.TrialCard `json:"cards"`
+	Stopped string                  `json:"stopped,omitempty"`
 }
 
 // The fixed messages of trial.submit's errors.
 const (
-	msgTrialBadParams = "trial.submit takes {\"kind\": \"finish\" or \"prune\", \"count\": 1 to 10}"
+	msgTrialBadParams = "trial.submit takes {\"kind\": \"finish\" or \"branch-prune\", \"count\": 1 to 10}"
 	msgTrialFailed    = "the trial could not make a sample card"
+	msgTrialCanceled  = "the call ended before every sample card was made"
 )
 
-// trialExt serves trial.submit on the daemon's socket, which only the
-// daemon's own user reaches (the server's peer check).
-type trialExt struct{ trial *hostadapter.Trial }
+// trialExt serves trial.submit on the daemon's socket.
+//
+// The operation needs no decider's place, which the owner operations that
+// decide a card ask for. It decides nothing and applies nothing: it only asks
+// the trial's stand-in door for a sample card, the way a lead's request would,
+// and a card made that way still waits for the owner's decision with a passkey
+// (the phone, through the gate) before anything of the trial happens, and then
+// applies nothing. The guard of the operation is the server's peer check:
+// every connection to the daemon's socket is read for its user id before a
+// byte is, and a user other than the daemon's own is answered unauthorized and
+// closed. Any process of that user can open the socket (the daemon's
+// documented limit for every operation), and so can make sample cards: at most
+// trialMaxCount a call, within the stand-in door's own caps (6 requests a
+// minute, 8 not yet final), and a refused one leaves nothing in the host's
+// memory. That is all the operation gives such a process, which is why it needs
+// no decider.
+type trialExt struct {
+	trial *hostadapter.Trial
+	// submit, when set, makes the sample card instead of the trial: a test
+	// uses it to stop the call between two cards.
+	submit func(ctx context.Context, kind string) (hostadapter.TrialCard, error)
+}
+
+// makeCard makes one sample card of the kind.
+func (x *trialExt) makeCard(ctx context.Context, kind string) (hostadapter.TrialCard, error) {
+	if x.submit != nil {
+		return x.submit(ctx, kind)
+	}
+	return x.trial.Submit(ctx, kind)
+}
 
 func (x *trialExt) Operations() []string { return []string{trialOpSubmit} }
 
@@ -175,15 +234,23 @@ func (x *trialExt) Handle(ctx context.Context, op string, params json.RawMessage
 	if p.Count == 0 {
 		p.Count = 1
 	}
-	if (p.Kind != hostadapter.TrialFinish && p.Kind != hostadapter.TrialPrune) || p.Count < 1 || p.Count > trialMaxCount {
+	if (p.Kind != hostadapter.TrialFinish && p.Kind != hostadapter.TrialBranchPrune) || p.Count < 1 || p.Count > trialMaxCount {
 		return nil, bad
 	}
 	out := trialSubmitResult{Cards: []hostadapter.TrialCard{}}
 	for i := 0; i < p.Count; i++ {
-		c, err := x.trial.Submit(ctx, p.Kind)
+		c, err := x.makeCard(ctx, p.Kind)
 		if err != nil {
-			ownerNotice("trial.submit: " + leaddaemon.SafeText(err.Error()))
-			return nil, &clientapi.ErrorBody{Code: clientapi.CodeInternal, Message: msgTrialFailed}
+			ownerNotice(fmt.Sprintf("trial.submit: after %d of %d cards: %s", len(out.Cards), p.Count, leaddaemon.SafeText(err.Error())))
+			if len(out.Cards) == 0 {
+				return nil, &clientapi.ErrorBody{Code: clientapi.CodeInternal, Message: msgTrialFailed}
+			}
+			// The cards already made exist on the phone: say which.
+			out.Stopped = msgTrialFailed
+			if ctx.Err() != nil {
+				out.Stopped = msgTrialCanceled
+			}
+			return out, nil
 		}
 		out.Cards = append(out.Cards, c)
 	}
@@ -250,14 +317,14 @@ func (a *app) trialSubmit(args []string) int {
 	var kind, socket string
 	var count int
 	if code := a.flags("trial submit", args, func(fs *flag.FlagSet) {
-		fs.StringVar(&kind, "kind", "", "finish or prune")
+		fs.StringVar(&kind, "kind", "", "finish or branch-prune")
 		fs.IntVar(&count, "count", 1, "how many sample cards, 1 to 10")
 		fs.StringVar(&socket, "socket", "", "socket path")
 	}); code >= 0 {
 		return code
 	}
-	if (kind != hostadapter.TrialFinish && kind != hostadapter.TrialPrune) || count < 1 || count > trialMaxCount {
-		fmt.Fprintf(a.stderr, "ataniqd trial submit: --kind is finish or prune, and --count 1 to %d\n", trialMaxCount)
+	if (kind != hostadapter.TrialFinish && kind != hostadapter.TrialBranchPrune) || count < 1 || count > trialMaxCount {
+		fmt.Fprintf(a.stderr, "ataniqd trial submit: --kind is finish or branch-prune, and --count 1 to %d\n", trialMaxCount)
 		return leaddaemon.ExitUsage
 	}
 	if socket == "" {
@@ -312,6 +379,10 @@ func (a *app) trialSubmit(args []string) int {
 		code = leaddaemon.ExitFailure
 		fmt.Fprintf(a.stdout, "no card: %s (request %s) %s: %s: %s\n", leaddaemon.SafeText(what), leaddaemon.SafeText(c.RequestID),
 			leaddaemon.SafeText(c.State), leaddaemon.SafeText(c.Code), leaddaemon.SafeText(c.Detail))
+	}
+	if res.Stopped != "" {
+		fmt.Fprintf(a.stderr, "ataniqd trial submit: stopped after %d of %d cards: %s\n", len(res.Cards), count, leaddaemon.SafeText(res.Stopped))
+		return leaddaemon.ExitFailure
 	}
 	if len(res.Cards) != count {
 		fmt.Fprintf(a.stderr, "ataniqd trial submit: the daemon answered %d cards for %d\n", len(res.Cards), count)

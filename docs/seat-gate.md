@@ -686,13 +686,14 @@ in on the phone. Then, on the lead host, as the daemon's user:
 
 ```sh
 ./build/owner/ataniqd trial submit --socket /scratch/trial/run/daemon.sock --kind finish
-./build/owner/ataniqd trial submit --socket /scratch/trial/run/daemon.sock --kind prune
+./build/owner/ataniqd trial submit --socket /scratch/trial/run/daemon.sock --kind branch-prune
 ./build/owner/ataniqd trial submit --socket /scratch/trial/run/daemon.sock --kind finish --count 3
 ```
 
-Each prints one line per card (`card ap-...: finish trial-login-retry-1 (request
+The kind is `finish` or `branch-prune` (nothing else, `prune` included). Each
+prints one line per card (`card ap-...: finish trial-login-retry-1 (request
 rq-trial-...)`) or per refusal (`no card: ...`, with the door's code, such as
-`request-duplicate` for a second prune while one is open). With the card list
+`request-duplicate` for a second branch prune while one is open). With the card list
 open on the phone a new card arrives by itself ([Live refresh](#live-refresh));
 with the list closed and notices on, a notice says that cards wait
 ([Notices](#notices)).
@@ -701,25 +702,37 @@ with the list closed and notices on, a notice says that cards wait
   with the stand-in's plan token), three or four changed paths with their
   patch, and, on every other card, the `Makefile`, a flagged path that needs its
   own sign-off before Approve.
-- A prune card deletes two or three sample branches. The daemon takes no prune
+- A branch-prune card deletes two or three sample branches. The daemon takes no prune
   request from a lead yet, so the trial asks the stand-in door to plan it
-  directly; it is decided like any card. One prune is open at a time.
+  directly; it is decided like any card. One branch prune is open at a time.
 - Approve or Deny with the passkey as for a real card. An approved trial card
   ends **not-applied**, with the line `applied: nothing (trial)`: the door took
-  the approval, the use passed its checks, and nothing moved. The project's
-  daily limit counts trial approvals as any.
+  the approval, the use passed its checks, and nothing moved. An outcome that is
+  unknown (the trial never makes one) keeps the host's own line, not the
+  trial's. The project's daily limit counts trial approvals as any.
 - The journal, `owner/journal.db` of the state folder, keeps each decision with
   the evidence of its assertion, and each outcome with the trial's line.
 
 `--trial` needs `--owner-channel` (exit 2 without it). The daemon refuses the
-trial's settings without `--trial`, and other settings with it (exit 10), before
-it takes a lock. `trial submit` makes 1 to 10 cards (`--count`, default 1) and
+trial's settings without `--trial`, and other settings with it (exit 10), and a
+state folder or a runtime folder that is, lies inside or contains the account's
+default state or runtime folder (exit 10; so `--runtime-dir` is required in
+practice, as the default runtime folder is one), before it takes a lock. `trial submit` makes 1 to 10 cards (`--count`, default 1) and
 exits 0 when every card was made, 1 after a refusal or a failure, 2 for usage,
 20 when no daemon answers, 21 unauthorized and 22 for a protocol error, which is
-also the answer of a daemon not started with `--trial`. The stand-in door keeps
+also the answer of a daemon not started with `--trial`. A call that stops after
+some of its cards (it ended, or a sample failed) prints the lines of the cards
+already made, which are on the phone, and then `stopped after N of M cards`,
+exit 1. A refused request leaves nothing of its sample in the daemon's memory.
+The operation needs no decider's place: it decides and applies nothing, and the
+daemon's own-user check on its socket is its guard (any process of that user
+can make sample cards, within the stand-in door's own caps). The stand-in door keeps
 nothing across a restart: the sample cards are gone after one, and the journal
-keeps what was decided. The card numbers start from the time of day, so that a
-restart makes no card whose id the journal holds a decision for.
+keeps what was decided. The card numbers start from the time of day (the UTC
+seconds of the day times 1000, plus 1) and, when the journal holds ids of the
+day, past the highest number it names, so that a restart, in the same second or
+after the clock was set back, makes no card whose id the journal holds an entry
+for. The plain scratch pass numbers its stand-in's cards the same way.
 
 ## Limits
 

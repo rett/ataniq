@@ -43,7 +43,8 @@ import (
 // What is a sample: the request (no lead wrote it), and the host's findings
 // for it. The trial host below stands for the merge, the suite, the review and
 // the mirror with values it makes up and keeps in memory: no git runs, no
-// sandbox starts, and no file but the journal and the key list is written. Its
+// sandbox starts, and the host reads and writes no file (the service writes its
+// journal and the key list, and "trial init" the settings). Its
 // Apply moves nothing and says so: an approved trial card ends not-applied,
 // with the line [TrialLine]. Trial settings name no mirror, no drop folder and
 // no sandbox, so there is nothing a trial card could be applied to.
@@ -53,26 +54,23 @@ import (
 const TrialLine = "applied: nothing (trial)"
 
 // The kinds of sample card [Trial.Submit] makes.
-var (
+const (
 	// TrialFinish is a feature finish: a sample feature, its merge, a suite
 	// record, a review with three or four changed paths and, every other
 	// card, a flagged path that needs its own sign-off.
 	TrialFinish = "finish"
-	// TrialPrune is a branch prune of two or three sample branches. The
+	// TrialBranchPrune is a branch prune of two or three sample branches. The
 	// service takes no prune request from a lead yet, so the trial asks the
 	// stand-in door to plan it directly; deciding it goes through the
-	// service as any card does.
-	//
-	// Its word is the last of the record's verb "branch prune", made from the
-	// verb rather than written as a literal of its own: the package's test
-	// that no maintenance entry point exists refuses every non-test string
-	// literal that is a git maintenance subcommand, and this word is the
-	// record's verb, never a git command (nothing of the trial runs git).
-	TrialPrune = record.VerbBranchPrune[len("branch "):]
+	// service as any card does. Its word has the verb's two words joined,
+	// "branch-prune", so that it is no git maintenance subcommand (the
+	// package's test that no maintenance entry point exists refuses every
+	// non-test string literal that is one); nothing of the trial runs git.
+	TrialBranchPrune = "branch-prune"
 )
 
 // TrialKinds are the kinds of sample card, in the order they are named.
-var TrialKinds = []string{TrialFinish, TrialPrune}
+var TrialKinds = []string{TrialFinish, TrialBranchPrune}
 
 // TrialScratch returns the settings "ataniqd trial init" writes: a sample
 // project, role and target, a seat at epoch 1 and revision 1, the stand-in
@@ -240,10 +238,10 @@ func OpenTrial(ctx context.Context, cfg TrialConfig) (*Trial, error) {
 	dcfg.Seat.Holder = record.Holder{Kind: "lead", DisplayID: sc.Role + "@e" + strconv.FormatInt(sc.Seat.Epoch, 10), Runtime: "trial"}
 	dcfg.Command = "qargi"
 	// The stand-in keeps nothing across a restart and the journal keeps
-	// everything, so the card numbers start from the time of day: a restart
-	// does not make a card whose id the journal holds a decision for.
-	secs := started.UTC().Hour()*3600 + started.UTC().Minute()*60 + started.UTC().Second()
-	dcfg.FirstNumber = secs*1000 + 1
+	// everything, so the card numbers start from the time of day, and past
+	// the journal's own once it is open: a restart does not make a card
+	// whose id the journal holds a decision for.
+	dcfg.FirstNumber = StandInFirstNumber(started)
 	standIn := doortest.New(dcfg)
 	host := newTrialHost(sc.Project, sc.Target)
 
@@ -251,6 +249,10 @@ func OpenTrial(ctx context.Context, cfg TrialConfig) (*Trial, error) {
 	journal, err := ownerjournal.Open(jpath)
 	if err != nil {
 		return nil, fmt.Errorf("hostadapter: the journal: %w", err)
+	}
+	if err := seedNumbers(standIn, journal, started); err != nil {
+		_ = journal.Close()
+		return nil, err
 	}
 	svcCfg := cfg.Service
 	svcCfg.Journal = journal
@@ -315,7 +317,7 @@ func (e trialEnder) EndRequest(_ context.Context, id string) error { return e.d.
 type TrialCard struct {
 	Kind      string `json:"kind"`
 	RequestID string `json:"request_id"`
-	// Feature is the sample feature of a finish, empty for a prune.
+	// Feature is the sample feature of a finish, empty for a branch prune.
 	Feature   string `json:"feature,omitempty"`
 	State     string `json:"state"`
 	PendingID string `json:"pending_id,omitempty"`
@@ -341,20 +343,20 @@ func trialNote(n int) record.Text {
 }
 
 // Submit makes one sample card of the kind given ([TrialFinish] or
-// [TrialPrune]) and returns what became of it. A finish goes through the
+// [TrialBranchPrune]) and returns what became of it. A finish goes through the
 // service's Submit, as a lead's request does: the stand-in door admits it, the
 // trial host stands for the merge, the suite and the review, and the door
-// plans it. A prune is admitted and planned at the stand-in door directly. A
-// refusal (the door's caps, a duplicate prune) is a card in the state refused,
+// plans it. A branch prune is admitted and planned at the stand-in door directly. A
+// refusal (the door's caps, a duplicate branch prune) is a card in the state refused,
 // not an error.
 func (t *Trial) Submit(ctx context.Context, kind string) (TrialCard, error) {
 	switch kind {
 	case TrialFinish:
 		return t.submitFinish(ctx)
-	case TrialPrune:
+	case TrialBranchPrune:
 		return t.submitPrune(ctx)
 	}
-	return TrialCard{}, errors.New("hostadapter: the kind of a trial card is finish or prune")
+	return TrialCard{}, errors.New("hostadapter: the kind of a trial card is finish or branch-prune")
 }
 
 // request makes the bytes of a sample request.
@@ -386,19 +388,24 @@ func (t *Trial) submitFinish(ctx context.Context) (TrialCard, error) {
 	if err != nil {
 		return TrialCard{}, err
 	}
+	if st.State == ownerchannel.RequestRefused {
+		// No card was made, so nothing of the sample is wanted: a refused
+		// request leaves nothing in the host's memory.
+		t.host.dropFeature(name)
+	}
 	return TrialCard{Kind: TrialFinish, RequestID: req.RequestID, Feature: name, State: string(st.State),
 		PendingID: st.PendingID, Code: string(st.Code), Detail: st.Detail}, nil
 }
 
 func (t *Trial) submitPrune(ctx context.Context) (TrialCard, error) {
 	n := t.next()
-	effects := t.host.addBranches(t.stamp, n, 2+n%2)
+	effects := t.host.newBranches(t.stamp, n, 2+n%2)
 	note := trialNote(n)
 	req, b, err := t.request(n, record.VerbBranchPrune, []string{}, "", note)
 	if err != nil {
 		return TrialCard{}, err
 	}
-	out := TrialCard{Kind: TrialPrune, RequestID: req.RequestID}
+	out := TrialCard{Kind: TrialBranchPrune, RequestID: req.RequestID}
 	refused := func(err error) (TrialCard, error) {
 		var e *record.Error
 		if !errors.As(err, &e) {
@@ -410,8 +417,12 @@ func (t *Trial) submitPrune(ctx context.Context) (TrialCard, error) {
 	if _, err := t.door.Admit(ctx, door.RecordOf(b)); err != nil {
 		return refused(err)
 	}
+	// The sample branches are known to the host only once the door took the
+	// request, and only for as long as there may be a card for them.
+	t.host.addBranches(effects)
 	rec, err := t.door.Plan(ctx, door.PlanInput{Request: door.RecordOf(b), Note: note, Evidence: []record.Evidence{}, Deletes: effects})
 	if err != nil {
+		t.host.dropBranches(effects)
 		_ = t.door.Withdraw(req.RequestID)
 		return refused(err)
 	}
@@ -467,6 +478,7 @@ type trialChange struct {
 
 // trialReview is the review of one sample merge.
 type trialReview struct {
+	feature             string
 	base, merge, digest string
 	changes             []trialChange
 }
@@ -519,21 +531,58 @@ func (h *trialHost) addFeature(name, stamp string, n int) string {
 	return tip
 }
 
-// addBranches makes k merged sample branches and returns the effects of a
-// prune that deletes them.
-func (h *trialHost) addBranches(stamp string, n, k int) []record.Effect {
+// dropFeature forgets the sample feature name and what the host made for it
+// (its merges, and their suite records), for a request that was refused: no
+// card was made, so nothing will ask for them.
+func (h *trialHost) dropFeature(name string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	delete(h.features, name)
+	for merge, r := range h.merges {
+		if r.feature == name {
+			delete(h.merges, merge)
+			delete(h.evidence, trialEvidenceID(merge))
+		}
+	}
+}
+
+// newBranches makes the effects of a prune that deletes k merged sample
+// branches. It records nothing: [trialHost.addBranches] does, once the door
+// has taken the request.
+func (h *trialHost) newBranches(stamp string, n, k int) []record.Effect {
 	var out []record.Effect
 	for i := 1; i <= k; i++ {
 		ref := fmt.Sprintf("refs/heads/feature/trial-done-%d-%d", n, i)
 		tip := trialID("trial branch", stamp, ref)
-		h.branches[ref] = tip
 		out = append(out, record.Effect{Kind: record.EffectRef, Ref: ref, Old: tip, New: strings.Repeat("0", 40),
 			MergedInto: &record.MergedInto{Ref: h.target, Tip: h.tip}})
 	}
 	return out
 }
+
+// addBranches records the sample branches of the effects, which a card of the
+// prune will ask the host for.
+func (h *trialHost) addBranches(effects []record.Effect) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, e := range effects {
+		h.branches[e.Ref] = e.Old
+	}
+}
+
+// dropBranches forgets the sample branches of the effects, for a prune the door
+// refused to plan.
+func (h *trialHost) dropBranches(effects []record.Effect) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, e := range effects {
+		delete(h.branches, e.Ref)
+	}
+}
+
+// trialEvidenceID is the id of the suite record of a merge: it says that no
+// suite ran.
+func trialEvidenceID(merge string) string { return "trial-no-suite-ran-" + merge[:12] }
 
 // errTrialUnknown is the refusal of a name or a commit the trial did not make.
 func errTrialUnknown(what string) error {
@@ -582,7 +631,7 @@ func (h *trialHost) Build(_ context.Context, in ownerchannel.MergeInput) (ownerc
 	for _, c := range f.changes {
 		parts = append(parts, c.status, c.path, strings.Join(c.added, "\n"), strings.Join(c.removed, "\n"))
 	}
-	h.merges[merge] = trialReview{base: in.TargetTip, merge: merge, digest: trialDigest(parts...), changes: f.changes}
+	h.merges[merge] = trialReview{feature: in.Feature, base: in.TargetTip, merge: merge, digest: trialDigest(parts...), changes: f.changes}
 	h.pins[in.Key] = merge
 	return ownerchannel.BuiltMerge{Commit: merge, Parents: [2]string{in.TargetTip, in.FeatureTip}}, nil
 }
@@ -615,7 +664,7 @@ func (h *trialHost) Verify(_ context.Context, in ownerchannel.VerifyInput) (owne
 	if _, ok := h.merges[in.Merge]; !ok {
 		return ownerchannel.Verification{Detail: ownerchannel.VerifyCouldNotRun}, nil
 	}
-	ev := record.Evidence{Kind: record.EvidenceSuite, RecordID: "trial-no-suite-ran-" + in.Merge[:12],
+	ev := record.Evidence{Kind: record.EvidenceSuite, RecordID: trialEvidenceID(in.Merge),
 		RecordSHA256: trialDigest("trial: no suite ran on the merge", in.Merge)}
 	h.evidence[ev.RecordID] = ev
 	return ownerchannel.Verification{Clean: true, Evidence: ev}, nil

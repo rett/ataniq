@@ -149,6 +149,16 @@ func Open(ctx context.Context, cfg OpenConfig) (*Opened, error) {
 	if err != nil {
 		return fail(fmt.Errorf("hostadapter: the journal: %w", err))
 	}
+	// A stand-in door keeps nothing across a restart and the journal keeps
+	// everything: its next card number starts past every number of the day
+	// that the journal holds an entry for, so that no card gets the id of one
+	// that was decided before the restart (see [StandInFirstNumber]).
+	if r, ok := cfg.Door.(numberRaiser); ok {
+		if err := seedNumbers(r, journal, cfg.now()); err != nil {
+			_ = journal.Close()
+			return fail(err)
+		}
+	}
 	sc := cfg.Service
 	sc.Journal = journal
 	sc.Reopen = func() (ownerchannel.Journal, error) { return ownerjournal.Open(jpath) }
