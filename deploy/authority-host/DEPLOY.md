@@ -331,7 +331,10 @@ repository: the placeholders below are `seat.example` for the seat's name and
 
 3. **Set the host up for the seat, once, by hand**, from your own root
    session, as [the README](README.md#setting-the-host-up-for-it-once-by-hand)
-   says: the user `seat` and Caddy in its group; the folder
+   says: the user `seat` and Caddy in its group, and the group `seat-notify`
+   (`groupadd --system seat-notify`, which the seat's unit names as a
+   supplementary group, so it must exist before the first switch even
+   without the notifier); the folder
    `/etc/authority-host/seat` with `origin` (`https://seat.example`),
    `gate.pin`, `seat.env` (`SEAT_GATE=203.0.113.20:GATEPORT`) and
    `site.caddy` (the site `http://seat.example` that imports `seat`); the
@@ -431,7 +434,9 @@ Apple's push service for this unit, and nothing else.
 
 3. **Set the host up for the notifier, once, by hand**, from your own root
    session, as [the README](README.md#setting-the-host-up-for-it-once-by-hand-1)
-   says, in this order: the user `seat-notify`; the folder
+   says, in this order: the group and the user `seat-notify` and the seat's
+   user in the group (the group is made in the seat's step 3, which the
+   seat's unit needs, so make it before that first switch); the folder
    `/var/lib/seat-notify` and the VAPID key, made with `vapid-init` from a
    root-owned copy of the release you verified (it prints the public key
    only); the folder `/etc/authority-host/seat-notify` with
@@ -461,7 +466,7 @@ Apple's push service for this unit, and nothing else.
    sudo -u seat RELEASE/bin/ataniq-seat-notify send-test --socket /run/seat-notify/notify.sock 3
    ```
 
-   The socket is `seat-notify:seat`, mode 0660; the test prints `sent K`
+   The socket is `seat-notify:seat-notify`, mode 0660; the test prints `sent K`
    (0 until a phone has subscribed). Then acknowledge the outcome as in
    step 5. The host's own stop list is not changed: the notifier decides
    nothing.

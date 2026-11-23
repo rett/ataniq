@@ -2432,7 +2432,12 @@ release or in this repository.
    `seat:seat` 0660 in a 0750 folder, as a member of the group; the group
    gives it nothing else, as the seat's files are 0600 and its state
    folder 0700). Caddy reads its groups when it starts: the switch's
-   reload restarts it.
+   reload restarts it. Also make the notifier's group now,
+   `groupadd --system seat-notify`: the seat's unit names it as a
+   supplementary group (how the seat reaches the notifier's socket, see "The
+   notifier"), and a unit that names a group the host does not know does not
+   start, so the group must exist before the first switch to a seat release,
+   with or without the notifier.
 2. The owner's files, in a new folder `/etc/authority-host/seat`
    (root-owned, 0755), each root-owned, mode 0644 and not writable by
    group or others:
@@ -2601,7 +2606,9 @@ and this folder's.
 
 - `etc/systemd/system/ataniq-seat-notify.service`: the service. It runs
   `{release}/bin/ataniq-seat-notify run` (the release's own binary) as user
-  `seat-notify` and group `seat`, with
+  `seat-notify` and group `seat-notify` (a group of its own: the notifier is
+  in no group of the seat's, so it cannot reach the seat's socket in
+  `/run/seat`), with
   `--socket /run/seat-notify/notify.sock`, `--seat-user seat`,
   `--vapid-key /var/lib/seat-notify/vapid.pem`,
   `--subscriptions /var/lib/seat-notify/subscriptions.json` and
@@ -2609,16 +2616,20 @@ and this folder's.
   `EnvironmentFile=/etc/authority-host/seat-notify/seat-notify.env`. The
   push host is the command's default, exactly `web.push.apple.com`, and the
   TTL its default, one hour. `RuntimeDirectory=seat-notify` makes
-  `/run/seat-notify` (`seat-notify:seat`, 0750), where the unit makes its
-  socket with mode 0660 and group `seat` (the unit's group), so that the
-  seat's user reaches it; `StateDirectory=seat-notify` makes
+  `/run/seat-notify` (`seat-notify:seat-notify`, 0750), where the unit makes
+  its socket with mode 0660 and group `seat-notify` (the unit's group), so
+  that the seat's user reaches it as a member of that group: the seat's unit
+  names `SupplementaryGroups=seat-notify`; `StateDirectory=seat-notify` makes
   `/var/lib/seat-notify` (0700) for the key and the subscriptions. The
   network: `IPAddressDeny=any` and no `IPAddressAllow=` in the file (the
   owner's drop-in allows the resolver and the push range, below),
   `SocketBindDeny=any` (no listener on any address) and
   `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`. The hardening and the
   `SystemCallFilter=@system-service ~@privileged @resources` are the seat's
-  (a test holds every key the two units share to the same value), with
+  (a test holds every key the two units share to the same value, but the
+  user, the groups, the folders, the sizes and the network, which differ on
+  purpose; another holds that the notifier names no group `seat` and the
+  seat's unit names `seat-notify` as its one supplementary group), with
   `MemoryMax=128M` and `TasksMax=32`. It has no `[Install]` section and is
   never enabled: only the release's `reload.list` starts it.
 - `share/validators.list`: the seat's list with
@@ -2710,13 +2721,21 @@ placeholders (`seat.example`, `203.0.113.53`, `198.51.100.0/24`,
 once, by hand") is done first. None of this is in the release or in this
 repository.
 
-1. The user: `useradd --system --no-create-home --shell /usr/bin/nologin seat-notify`.
-   The unit runs it in the group `seat`, which is how the seat's user reaches
-   the socket; Caddy is a member of that group too (the seat's step 1), and
-   the socket's folder is open to it, but the kernel's peer check lets only
-   the seat user's id in.
+1. The group and the user: `groupadd --system seat-notify` (already made by
+   the seat's step 1, which the seat's unit needs), then
+   `useradd --system --no-create-home --shell /usr/bin/nologin --gid seat-notify seat-notify`,
+   and the seat's user into the group, `usermod -aG seat-notify seat` (the
+   unit's `SupplementaryGroups=seat-notify` gives the running seat the
+   group; the membership makes it true for a shell too, for `send-test`
+   below). The notifier is in the group `seat-notify` and no other: it must
+   not be in the group `seat` (nor `usermod -aG seat seat-notify`), because
+   the seat's socket, `/run/seat/http.sock`, is open to that group and the
+   notifier, the one unit with egress, would then speak to the seat in
+   Caddy's place. Caddy is not a member of `seat-notify`: only the seat's
+   user and the notifier reach the notifier's socket, and the kernel's peer
+   check lets only the seat user's id in.
 2. The key, before the first switch: as root,
-   `install -d -o seat-notify -g seat -m 0700 /var/lib/seat-notify`, then,
+   `install -d -o seat-notify -g seat-notify -m 0700 /var/lib/seat-notify`, then,
    from a root-owned copy of the release you verified (as the seat's step 4
    does), `sudo -u seat-notify RELEASE/bin/ataniq-seat-notify vapid-init --key /var/lib/seat-notify/vapid.pem`.
    It makes the key (mode 0600, never overwriting) and prints the public key
@@ -2776,7 +2795,7 @@ notifier, then the seat and Caddy, while decisions are inhibited. The
 health check does not look at the notifier: it decides nothing. At every
 boot, `ah-switch boot` runs the same reload list. Check it with
 `systemctl status ataniq-seat-notify.service` and `ls -l /run/seat-notify`
-(the socket, `seat-notify:seat`, mode 0660).
+(the socket, `seat-notify:seat-notify`, mode 0660).
 
 To test it, once the switch is done, tell the notifier a count by hand, as
 the seat user, the only user it serves:

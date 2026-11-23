@@ -12,9 +12,12 @@
 # enabled: only the release's reload list starts it (systemctl restart). It
 # decides nothing, so the release's stop list does not stop it.
 #
-# The unit's user is seat-notify and its group is seat: the socket's folder,
-# /run/seat-notify, is made seat-notify:seat 0750 and the socket seat:seat 0660
-# (group seat), so the seat's user reaches it; the kernel's peer credentials
+# The unit's user is seat-notify and its group is seat-notify, a group of its
+# own and not the seat's: the socket's folder, /run/seat-notify, is made
+# seat-notify:seat-notify 0750 and the socket seat-notify:seat-notify 0660, so
+# the seat's unit reaches it by naming seat-notify in its SupplementaryGroups=,
+# and the notifier, the one unit with egress, is in no group that reaches the
+# seat's own socket, /run/seat (group seat). The kernel's peer credentials
 # let only the seat user's id in (--seat-user).
 #
 # Owner-local values are not here. The owner writes, on the host:
@@ -37,15 +40,16 @@ After=network.target
 [Service]
 Type=simple
 User=seat-notify
-Group=seat
+Group=seat-notify
 EnvironmentFile=/etc/authority-host/seat-notify/seat-notify.env
 ExecStart={release}/bin/ataniq-seat-notify run --socket /run/seat-notify/notify.sock --seat-user seat --vapid-key /var/lib/seat-notify/vapid.pem --subscriptions /var/lib/seat-notify/subscriptions.json --vapid-subject ${NOTIFY_SUBJECT}
 Restart=on-failure
 RestartSec=5s
 
-# The socket's folder, /run/seat-notify (seat-notify:seat, 0750): the seat
-# reaches the socket as a member of the group seat. The key and the
-# subscriptions are in /var/lib/seat-notify (0700).
+# The socket's folder, /run/seat-notify (seat-notify:seat-notify, 0750): the
+# seat reaches the socket as a member of the group seat-notify (its unit's
+# SupplementaryGroups=). The key and the subscriptions are in
+# /var/lib/seat-notify (0700).
 RuntimeDirectory=seat-notify
 RuntimeDirectoryMode=0750
 StateDirectory=seat-notify

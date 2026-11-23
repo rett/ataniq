@@ -1,6 +1,6 @@
 - The authority host's release source has the notifier's part in
   `deploy/authority-host/notify/`, laid over the base tree and the seat's part:
-  `ataniq-seat-notify.service` (user `seat-notify`, group `seat`, socket
+  `ataniq-seat-notify.service` (user and group `seat-notify`, a group of its own that the seat's unit joins as a supplementary group, socket
   `/run/seat-notify/notify.sock` with mode 0660 in `RuntimeDirectory=`, key and
   subscriptions in `/var/lib/seat-notify`, `IPAddressDeny=any` and no allow in
   the file: the owner's drop-in allows the resolver and the push service's
