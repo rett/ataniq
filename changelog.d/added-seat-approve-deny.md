@@ -24,9 +24,11 @@
   was replaced do not count for the replacement. A held approve shows the
   host's line and the held words. Each refusal is fixed words; a passkey no
   longer paired ends the session. Decision challenges are limited to 10 a
-  minute per credential, and an expired card gets none. A decision whose words
-  are over the seat gate's cap once escaped on the wire (flagged paths full of
-  `&`, which the transport writes as `\u0026`) is not sent and the phone says
-  "This is too large to send."; it is decided at the desk. A request body over
-  8 KiB sent without a declared length is now refused 413, as one with it is.
+  minute per credential, and an expired card gets none. A decision's words go
+  to the seat gate exactly as the seat checked them against the gate's cap (a
+  flagged path full of `&`, `<` or `>` is no longer escaped on the way, so it
+  does not grow past the cap); a decision whose words are over the cap is not
+  sent and the phone says "This is too large to send."; it is decided at the
+  desk. A request body over 8 KiB sent without a declared length is now
+  refused 413, as one with it is.
   Scratch state and the STAND-IN door only; unqualified.

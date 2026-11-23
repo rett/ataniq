@@ -22,7 +22,8 @@ var (
 	// ErrReserved is returned by Call for an operation the transport owns.
 	ErrReserved = errors.New("seatgate: seat.hello and seat.ping belong to the transport")
 	// ErrBadCall is returned by Call for an operation name outside its
-	// grammar, or params that do not encode as one JSON object.
+	// grammar, params that are not one JSON object of the wire's strict form,
+	// or a request that would not fit a frame.
 	ErrBadCall = errors.New("seatgate: the operation or its params are not valid")
 )
 
@@ -338,8 +339,13 @@ func (c *Client) run(ctx context.Context, first *session) {
 }
 
 // Call makes one request over the current connection and waits for its answer.
-// params is encoded as a JSON object (nil for none); result, if not nil, is
-// decoded from the answer with [DecodeStrict].
+// params is a JSON object (nil for none): a [json.RawMessage] is sent byte for
+// byte as given, never encoded again, and any other value is encoded with
+// encoding/json. Either way the bytes must be one object of the wire's strict
+// form (as [DecodeStrict] reads it: no byte before or after it, no key twice,
+// not nested too deeply) and the request must fit a frame, or Call returns
+// [ErrBadCall] and sends nothing. result, if not nil, is decoded from the
+// answer with [DecodeStrict].
 //
 // It returns [ErrDisconnected] at once if there is no connection, or when the
 // connection is lost while it waits; a [*RemoteError] if the gate refused with
@@ -356,13 +362,9 @@ func (c *Client) call(ctx context.Context, op string, params any, result any) er
 	if !ValidOp(op) {
 		return ErrBadCall
 	}
-	var raw json.RawMessage
-	if params != nil {
-		b, err := json.Marshal(params)
-		if err != nil || !isObject(b) {
-			return ErrBadCall
-		}
-		raw = b
+	raw, err := encodeParams(params)
+	if err != nil {
+		return err
 	}
 	c.mu.Lock()
 	s, closed := c.sess, c.closed
@@ -384,6 +386,32 @@ func (c *Client) call(ctx context.Context, op string, params any, result any) er
 		return DecodeStrict(r.Result, result)
 	}
 	return nil
+}
+
+// encodeParams gives the bytes of a call's params: nil for none, a
+// [json.RawMessage] as it is, anything else as encoding/json writes it. A
+// RawMessage is not marshalled again, since encoding/json would rewrite it (it
+// escapes <, > and & for HTML, each in six bytes): params their
+// caller checked against a cap reach the gate as they were checked. The bytes
+// are held to the strict form the gate reads a frame in, the frame's own
+// object being one level of the nesting, so that params the gate would take
+// as a violation of the wire, and drop the link for, are refused here and
+// never sent.
+func encodeParams(params any) (json.RawMessage, error) {
+	if params == nil {
+		return nil, nil
+	}
+	b, ok := params.(json.RawMessage)
+	if !ok {
+		var err error
+		if b, err = json.Marshal(params); err != nil {
+			return nil, ErrBadCall
+		}
+	}
+	if checkObject(b, MaxDepth-1) != nil {
+		return nil, ErrBadCall
+	}
+	return b, nil
 }
 
 // session is one connection, from after its hello.

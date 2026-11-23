@@ -146,14 +146,22 @@ func ReadSeatPins(path string) ([]string, error) {
 	return pins, nil
 }
 
-// CanonicalSeatOrigin makes a seat origin canonical, by the rules the seat app
-// and the daemon share (docs/design/seat-gate.md, "The seat origin"): it takes
-// https://HOST or https://HOST:443, HOST a lower-case domain name of letters,
-// digits, dots and dashes (labels of 1 to 63 bytes that neither start nor end
-// with a dash, at most 253 bytes, the last label not all digits), and no
-// address literal, other port, path, query, fragment or user information. It
-// returns https://HOST and the relying party id, HOST. The error is fixed and
-// holds nothing of s.
+// CanonicalSeatOrigin makes a seat origin canonical, by the daemon's rules: it
+// takes https://HOST or https://HOST:443, HOST a lower-case domain name of
+// letters, digits, dots and dashes (labels of 1 to 63 bytes that neither start
+// nor end with a dash, at most 253 bytes, the last label not all digits), and
+// no address literal, other port, path, query, fragment or user information.
+// It returns https://HOST and the relying party id, HOST. The error is fixed
+// and holds nothing of s.
+//
+// The seat app does not call it: seatapp.New checks its own origin with rules
+// of its own (built on net/url), which take some hosts this function refuses
+// (an underscore, a trailing dot, a last label of digits alone), and the
+// desk's pairing view has a third check. They agree on the canonical form of
+// an origin they all take, and a disagreement only makes the logins and
+// decisions of such a seat fail, since the gate verifies against its own
+// origin (docs/design/seat-gate.md, "The seat origin", lists the
+// disagreements; the one function all three were to call is not built).
 func CanonicalSeatOrigin(s string) (origin, rpID string, err error) {
 	bad := errors.New("the seat origin is not https:// and a lower-case domain name, with no port but 443, path, query, fragment or user information")
 	host, ok := strings.CutPrefix(s, "https://")

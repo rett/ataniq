@@ -284,27 +284,25 @@ func frameOf(c card.Card, r seatapp.DecideChallengeRequest) (ownerwire.DecisionF
 }
 
 // onWire returns params as the gate reads them, after the decoder given
-// (the daemon's own, of ownerwire) took exactly those bytes. Client.Call
-// marshals the params it is handed again with encoding/json, which escapes
-// <, >, & and U+2028 and U+2029 for HTML (as \u003c and so on), so the bytes
-// on the wire may be longer than those the wire's encoder checked: a frame
-// with flagged paths full of & can pass its cap here and be refused
-// bad-params by the gate. The link escapes them first, in the same way,
-// checks the escaped bytes, and hands the transport exactly them, which its
-// marshal leaves as they are. Params whose bytes on the wire are over the
-// cap are [seatapp.ErrTooLarge], and nothing is sent.
+// (the daemon's own, of ownerwire) took exactly those bytes. The transport
+// sends a json.RawMessage byte for byte (seatgate.Client.Call), so these are
+// the bytes on the wire, and the gate's cap is checked on them here. Params
+// over the cap are [seatapp.ErrTooLarge], and nothing is sent.
 func onWire(params []byte, decode func([]byte) error) (json.RawMessage, error) {
-	wire, err := json.Marshal(json.RawMessage(params))
-	if err != nil {
-		return nil, errFrame
+	if err := decode(params); err != nil {
+		return nil, paramsError(err)
 	}
-	if err := decode(wire); err != nil {
-		if code, ok := record.CodeOf(err); ok && code == record.CodeRecordTooLarge {
-			return nil, seatapp.ErrTooLarge
-		}
-		return nil, errFrame
+	return params, nil
+}
+
+// paramsError is the error of params the wire's encoder or decoder refused:
+// [seatapp.ErrTooLarge] for params over their cap, which the phone says it
+// cannot send, and errFrame for any other refusal.
+func paramsError(err error) error {
+	if code, ok := record.CodeOf(err); ok && code == record.CodeRecordTooLarge {
+		return seatapp.ErrTooLarge
 	}
-	return wire, nil
+	return errFrame
 }
 
 // frameView is the frame as the app keeps it.
@@ -338,8 +336,8 @@ func wireFrame(f seatapp.DecisionFrame) ownerwire.DecisionFrame {
 // asked nothing. A card the link did not show at that binding is
 // [seatapp.ErrCardChanged]; a decision the card model does not allow (an
 // approve with a flagged path not signed off, a card past its expiry) is a
-// [*seatapp.NotAllowedError]; params over the gate's cap once on the wire
-// are [seatapp.ErrTooLarge]. None is sent.
+// [*seatapp.NotAllowedError]; params over the gate's cap are
+// [seatapp.ErrTooLarge]. None is sent.
 func (d *Daemon) DecideChallenge(ctx context.Context, r seatapp.DecideChallengeRequest) (seatapp.DecideChallenge, error) {
 	if err := d.decidable(ctx); err != nil {
 		return seatapp.DecideChallenge{}, err
@@ -357,7 +355,7 @@ func (d *Daemon) DecideChallenge(ctx context.Context, r seatapp.DecideChallengeR
 	}
 	params, err := ownerwire.EncodeSeatChallengeParams(ownerwire.SeatChallengeParams{Frame: frame, Credential: r.Credential})
 	if err != nil {
-		return seatapp.DecideChallenge{}, errFrame
+		return seatapp.DecideChallenge{}, paramsError(err)
 	}
 	wire, err := onWire(params, func(b []byte) error { _, err := ownerwire.DecodeSeatChallengeParams(b); return err })
 	if err != nil {
@@ -407,8 +405,8 @@ func (d *Daemon) challenge(ctx context.Context, frame ownerwire.DecisionFrame, w
 // Decide hands the daemon the frame the app kept for a challenge and the
 // phone's assertion over it (seat.decide), and returns the daemon's outcome.
 // Before anything is sent, a gate that is not connected is
-// [seatapp.ErrDaemonUnavailable], and params over the gate's cap once on the
-// wire are [seatapp.ErrTooLarge]. Once it is sent, only a refusal says for
+// [seatapp.ErrDaemonUnavailable], and params over the gate's cap are
+// [seatapp.ErrTooLarge]. Once it is sent, only a refusal says for
 // certain that nothing was decided: a refusal code maps as for the
 // challenge; the codes unavailable, deadline-exceeded, door-unavailable,
 // journal-reopened and failed, a lost link, the seat's own deadline, and an
@@ -427,8 +425,11 @@ func (d *Daemon) Decide(ctx context.Context, r seatapp.DecideRequest) (seatapp.D
 			ClientDataJSON: r.ClientDataJSON, Signature: r.Signature,
 		},
 	})
-	if err != nil || ownerwire.CheckDecisionFrame(wireFrame(r.Frame)) != nil {
+	if ownerwire.CheckDecisionFrame(wireFrame(r.Frame)) != nil {
 		return seatapp.DecideResult{}, errFrame
+	}
+	if err != nil {
+		return seatapp.DecideResult{}, paramsError(err)
 	}
 	wire, err := onWire(params, func(b []byte) error { _, err := ownerwire.DecodeSeatDecideParams(b); return err })
 	if err != nil {

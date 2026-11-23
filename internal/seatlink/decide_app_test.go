@@ -3,6 +3,7 @@ package seatlink
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -41,6 +42,9 @@ type phoneRig struct {
 	*decideRig
 	clock   *testClock
 	browser *browser
+	// page is the body of the last Card page open was answered with that
+	// held the decide form: the page a tap is made on.
+	page string
 }
 
 func newPhoneRig(t *testing.T) *phoneRig {
@@ -67,16 +71,30 @@ func newPhoneRigAt(t *testing.T, start time.Time) *phoneRig {
 func (r *phoneRig) open(t *testing.T) *httptest.ResponseRecorder {
 	t.Helper()
 	w := r.browser.do("GET", "/cards/"+r.desk.reads.pending.ID, "")
+	if pageForm(w.Body.String()) != "" {
+		r.page = w.Body.String()
+	}
 	r.clock.advance(time.Second)
 	return w
 }
 
-// tap posts a decision's tap, as the page's script does.
+// pageForm is the id of the decide form of a Card page's body, "" for none.
+func pageForm(page string) string {
+	_, after, ok := strings.Cut(page, ` data-form="`)
+	if !ok {
+		return ""
+	}
+	form, _, _ := strings.Cut(after, `"`)
+	return form
+}
+
+// tap posts a decision's tap, as the script of the last Card page open
+// was answered with does: with that page's form.
 func (r *phoneRig) tap(action string, signedOff []int, reason string) *httptest.ResponseRecorder {
 	if signedOff == nil {
 		signedOff = []int{}
 	}
-	body, _ := json.Marshal(map[string]any{"card": r.desk.reads.pending.ID, "action": action, "signed_off": signedOff, "reason": reason})
+	body, _ := json.Marshal(map[string]any{"card": r.desk.reads.pending.ID, "form": pageForm(r.page), "action": action, "signed_off": signedOff, "reason": reason})
 	return r.browser.do("POST", "/api/decide-challenge", string(body))
 }
 
@@ -111,9 +129,7 @@ func (r *phoneRig) confirm(t *testing.T, tapped *httptest.ResponseRecorder) *htt
 // does: with that page's form, and the Sec-Fetch-Site header a browser
 // sends.
 func (r *phoneRig) tapPage(page, action string, signedOff []int) *httptest.ResponseRecorder {
-	_, after, _ := strings.Cut(page, ` data-form="`)
-	form, _, _ := strings.Cut(after, `"`)
-	body, _ := json.Marshal(map[string]any{"card": r.desk.reads.pending.ID, "form": form, "action": action, "signed_off": signedOff, "reason": ""})
+	body, _ := json.Marshal(map[string]any{"card": r.desk.reads.pending.ID, "form": pageForm(page), "action": action, "signed_off": signedOff, "reason": ""})
 	r.browser.fetchSite = true
 	defer func() { r.browser.fetchSite = false }()
 	return r.browser.do("POST", "/api/decide-challenge", string(body))
@@ -307,7 +323,10 @@ func TestSeatDecidePagesOfAReplacedReview(t *testing.T) {
 // "decide", and on a link without the gate's pin, the Card page holds no
 // decide form, loads no deciding script and does not allow
 // publickey-credentials-get; it says the desk takes no decisions from the
-// phone. A tap anyway is refused before anything is sent.
+// phone. A tap anyway is refused before anything is sent: the page served
+// the session no form, so the tap names one it was never served, and is
+// told to look again. The link itself refuses the challenge of a gate
+// without "decide" as not offered.
 func TestSeatDecideReadOnlyGateHasNoForm(t *testing.T) {
 	for name, mk := range map[string]func(t *testing.T) (*decideRig, seatapp.Daemon){
 		"no decide": func(t *testing.T) (*decideRig, seatapp.Daemon) {
@@ -343,9 +362,15 @@ func TestSeatDecideReadOnlyGateHasNoForm(t *testing.T) {
 			t.Errorf("%s: Permissions-Policy %q", name, pp)
 		}
 		clock.advance(time.Second)
-		tap, _ := json.Marshal(map[string]any{"card": r.desk.reads.pending.ID, "action": "approve", "signed_off": []int{0, 1}, "reason": ""})
-		if w := b.do("POST", "/api/decide-challenge", string(tap)); w.Code == 200 || (name == "no decide" && said(t, w)["error"] != "decide_unavailable") {
+		// The page has no form, so a tap anyway names one it was never served.
+		tap, _ := json.Marshal(map[string]any{"card": r.desk.reads.pending.ID, "form": strings.Repeat("A", 22), "action": "approve", "signed_off": []int{0, 1}, "reason": ""})
+		if w := b.do("POST", "/api/decide-challenge", string(tap)); w.Code != 409 || said(t, w)["error"] != "look_again" {
 			t.Errorf("%s: a tap anyway: %d %s", name, w.Code, w.Body)
+		}
+		if name == "no decide" {
+			if _, err := r.link.DecideChallenge(context.Background(), r.approve()); !errors.Is(err, seatapp.ErrNotOffered) {
+				t.Errorf("%s: the link's challenge: %v, want %v", name, err, seatapp.ErrNotOffered)
+			}
 		}
 		if c, _ := r.desk.counts(); c != 0 {
 			t.Errorf("%s: the desk was asked %d challenges", name, c)

@@ -53,7 +53,9 @@ func (r *rig) postWith(path, body string, cookies ...*http.Cookie) *httptest.Res
 	return w
 }
 
-// getWith sends a GET with cookies.
+// getWith sends a GET with cookies. The form of a Card page it is
+// answered with is kept for the session cookie, as the page's tab keeps it
+// (see tap).
 func (r *rig) getWith(path string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
 	req := newRequest("GET", path, nil)
 	for _, c := range cookies {
@@ -61,6 +63,16 @@ func (r *rig) getWith(path string, cookies ...*http.Cookie) *httptest.ResponseRe
 	}
 	w := httptest.NewRecorder()
 	r.h.ServeHTTP(w, req)
+	if form := formOf(w.Body.String()); strings.HasPrefix(path, "/cards/") && form != "" {
+		for _, c := range cookies {
+			if c.Name == SessionCookie {
+				if r.forms == nil {
+					r.forms = map[string]string{}
+				}
+				r.forms[c.Value] = form
+			}
+		}
+	}
 	return w
 }
 

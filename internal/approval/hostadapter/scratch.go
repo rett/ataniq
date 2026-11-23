@@ -71,9 +71,12 @@ type Scratch struct {
 	// under one of them. The command checks both against the account; this
 	// package checks only their form.
 	Roots []string `json:"roots"`
-	// Kinds are the kinds of credential the project accepts for a phone's
-	// login and decision, by the names of package credkind
-	// ("platform-passkey", "vault-passkey", "passkey"), each at most once.
+	// Kinds are the kinds of credential the project accepts for a decision
+	// from the phone, by the names of package credkind ("platform-passkey",
+	// "vault-passkey", "passkey"), each at most once. The policy is applied
+	// when the decision's challenge is drawn (seat.challenge) and again when
+	// the decision is verified (seat.decide); a login belongs to no project,
+	// so it is not asked, and a login only needs a kind the verifier knows.
 	// Absent or empty, every kind is accepted. A kind is a claim of the
 	// phone's authenticator, relayed by the seat and not attested, so the
 	// policy is advisory: it does not hold against a taken-over seat.

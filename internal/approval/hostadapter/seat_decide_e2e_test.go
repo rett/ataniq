@@ -211,7 +211,16 @@ func (w *decideWorld) onFault(f func(point string) error) {
 type decSeat struct {
 	*pairWorld
 	c *seatgate.Client
+
+	// forms holds the id of the decide form of the last Card page show
+	// was answered with, for each session and card, as the page's tab
+	// holds it: a tap names it.
+	mu    sync.Mutex
+	forms map[string]string
 }
+
+// formKey is the key of a session's Card page of a card in forms.
+func formKey(sess *http.Cookie, card string) string { return sess.Value + " " + card }
 
 // newSeat connects a seat with the key given and the gate's real pin, and
 // puts a link and an app over it. Its client reconnects within a fraction of
@@ -244,7 +253,7 @@ func (w *decideWorld) newSeat(id seatgate.Identity) *decSeat {
 	w.t.Cleanup(web.Close)
 	pw := *w.pairWorld
 	pw.link, pw.web = link, web
-	return &decSeat{pairWorld: &pw, c: c}
+	return &decSeat{pairWorld: &pw, c: c, forms: map[string]string{}}
 }
 
 // since is when the seat's present connection was made, or the zero time.
@@ -426,15 +435,23 @@ func (w *decideWorld) onlyDecided(challenges ...string) map[ownerjournal.Kind]in
 }
 
 // tap is the owner's tap on Approve or Deny on the Card page: POST
-// /api/decide-challenge with the card, the action, the indexes of the boxes
-// ticked and the reason.
+// /api/decide-challenge with the card, the id of the form of the last Card
+// page of the card show was answered with for the session, the action, the
+// indexes of the boxes ticked and the reason, as the page's script sends
+// them.
 func (s *decSeat) tap(sess *http.Cookie, card, action string, signedOff []int, reason string) reply {
 	s.t.Helper()
 	if signedOff == nil {
 		signedOff = []int{}
 	}
+	s.mu.Lock()
+	form, ok := s.forms[formKey(sess, card)]
+	s.mu.Unlock()
+	if !ok {
+		s.t.Fatalf("a tap on %s before its Card page with the form was shown to the session", card)
+	}
 	return s.post("/api/decide-challenge", map[string]any{
-		"card": card, "action": action, "signed_off": signedOff, "reason": reason,
+		"card": card, "form": form, "action": action, "signed_off": signedOff, "reason": reason,
 	}, sess)
 }
 
@@ -473,6 +490,12 @@ func (s *decSeat) show(sess *http.Cookie, card string) string {
 	page := s.get("/cards/"+card, sess)
 	if page.status != http.StatusOK {
 		s.t.Fatalf("GET /cards/%s: %d %q", card, page.status, page.body)
+	}
+	if _, after, ok := strings.Cut(string(page.body), ` data-form="`); ok {
+		form, _, _ := strings.Cut(after, `"`)
+		s.mu.Lock()
+		s.forms[formKey(sess, card)] = form
+		s.mu.Unlock()
 	}
 	s.rig.clock.Advance(time.Second)
 	return string(page.body)
