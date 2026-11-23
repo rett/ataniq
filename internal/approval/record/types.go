@@ -325,7 +325,8 @@ type Decision struct {
 	Subject   Subject `json:"subject"`
 	PlanToken string  `json:"plan_token"`
 	// SignedOff are the flagged paths the owner signed off, in the order
-	// of the binding's flagged list; see [SignOffsEqual].
+	// of the binding's flagged list; see [SignOffsEqual]. A deny confirmed
+	// by passkey has none.
 	SignedOff []SignOff `json:"signed_off"`
 	// Uses is 1 for an approve and 0 for a deny.
 	Uses int64 `json:"uses"`

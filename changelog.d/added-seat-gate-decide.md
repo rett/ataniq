@@ -12,7 +12,9 @@
   scratch settings' `"kinds"` accept, and the seat origin. The key is checked
   again right before the decision is journaled, so a revoke at the desk that
   returned first wins. A phone decision is journaled as confirmed by passkey
-  with the assertion's evidence, needs no activity at the desk, and goes
+  with the assertion's evidence (a decision record confirmed by passkey that
+  denies and carries sign-offs is refused `decision-invalid`), needs no
+  activity at the desk, and goes
   through the day's limit as at the desk (an approve past it is held, a deny
   never). The highest sign counter is kept, and one that does not grow is
   reported as a possible copy, not refused. Without an origin, or with a file

@@ -59,6 +59,10 @@
     "code": "decision-invalid",
     "why": "a decision confirmed by passkey with a console block and no seat block"
   },
+  "decision-invalid-passkey-deny-sign-off.json": {
+    "code": "decision-invalid",
+    "why": "a deny confirmed by passkey that carries sign-offs; a deny signs off nothing"
+  },
   "decision-invalid-reason-too-long.json": {
     "code": "decision-invalid",
     "why": "a deny whose reason is more than 500 bytes"

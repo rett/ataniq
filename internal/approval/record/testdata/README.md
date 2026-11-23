@@ -275,7 +275,7 @@ The parts of a binding must agree with each other. These are content rules
 | `project` | A filled string |
 | `subject` | The subject, above, without `holder` |
 | `plan_token` | A filled string |
-| `signed_off` | A list of `{kind, path}`: `kind` is a flag kind, `path` a text. No two entries are the same |
+| `signed_off` | A list of `{kind, path}`: `kind` is a flag kind, `path` a text. No two entries are the same. A deny confirmed by `passkey` has none |
 | `uses` | 1 for an approve, 0 for a deny |
 | `decided_at`, `expires_at` | Times |
 | `confirmed` | `code` or `passkey`: how the owner confirmed. It says which one of `console` and `seat` the decision has |
