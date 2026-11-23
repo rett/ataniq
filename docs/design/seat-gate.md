@@ -965,19 +965,19 @@ How it is built (G9), where the points above left a choice:
   `seatapp.MaxBody`; a body of MaxBody bytes is read and one byte more is
   refused (413), whether its length was declared or not.
 - The link checks the params of `seat.challenge` and `seat.decide` as the
-  gate will read them. The seat's transport (`seatgate.Client.Call`)
-  marshals the params it is handed again with `encoding/json`, which escapes
-  `<`, `>`, `&`, U+2028 and U+2029 for HTML (`\u0026` is six bytes for one),
-  so a frame within its cap can grow past the gate's cap in transit: four
-  flagged paths of 900 `&` each make params of 3931 bytes that are over
-  9 KiB on the wire, which the gate refuses `bad-params` (a refusal it
-  counts). The link escapes the params first, as the transport does, checks
+  gate will read them: it encodes them with the wire's encoder, checks
   those bytes with the daemon's decoder (`ownerwire.DecodeSeatChallengeParams`
   and `DecodeSeatDecideParams`, size cap included), and hands the transport
-  exactly them, which its marshal leaves as they are. Params over the cap
-  on the wire are not sent: the phone says "This is too large to send."
-  (`too_large`), and nothing was decided. Such a decision is made at the
-  desk until the transport sends the params as given.
+  exactly them. The seat's transport (`seatgate.Client.Call`) sends params
+  given as a `json.RawMessage` byte for byte and never encodes them again,
+  so `<`, `>`, `&`, U+2028 and U+2029 in a flagged path stay one character
+  each on the wire, as the encoder counted them, and are not escaped for
+  HTML into six bytes (which made a frame within its cap, such as one with
+  flagged paths full of `&`, grow past the gate's cap in transit). The
+  transport still holds the bytes to the wire's strict form and the frame
+  cap before it sends them, and the gate still reads them strictly. Params
+  over the cap are not sent: the phone says "This is too large to send."
+  (`too_large`), nothing was decided, and the decision is made at the desk.
 - Decision challenges are limited to 10 a minute per credential, and the
   seat link asks one only when the room of decisions at the gate (16 calls
   in 80 seconds, see [login](#login-seatlogin-challenge-and-seatlogin)) holds
