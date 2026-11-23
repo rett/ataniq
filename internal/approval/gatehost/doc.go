@@ -67,6 +67,14 @@
 // Params are never logged and never put in an error, whatever happened to
 // them.
 //
+// A deciding handler checks one more thing of seat.pair: a registration the
+// seat relays (its rp_id given) must be for the gate's own relying party id,
+// the one every login and decision is checked against, or it is refused
+// credential-invalid without the service, so the pairing code is not spent
+// on it. A key registered for another relying party could never log in. A
+// pairing with no registration is passed on (its key stays unverified), and
+// a handler made with [New], which has no seat origin, passes every one on.
+//
 // # Codes
 //
 // A refusal is told to the seat as a code and nothing else (package seatgate

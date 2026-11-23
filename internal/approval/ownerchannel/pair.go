@@ -269,7 +269,10 @@ func (s *Service) PairStatus(ctx context.Context) (ownerwire.PairStatus, error) 
 // before the code is looked at: the authenticator data must be of a
 // registration for that relying party with user presence and user
 // verification, and name the same credential id and key as the params, or the
-// call is [ErrCredentialInvalid] and the code is left unused. What it gives,
+// call is [ErrCredentialInvalid] and the code is left unused. The relying
+// party id is the seat's word: a seat gate that has a seat origin refuses,
+// credential-invalid and before this call, a registration for any other
+// relying party than its own (package gatehost). What it gives,
 // the kind its AAGUID claims, the AAGUID, the backup flags and the sign
 // counter, is kept with the pending credential, shown by [Service.PairStatus]
 // and stored by [Service.PairConfirm]. They are claims: the seat relays them

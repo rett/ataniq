@@ -510,3 +510,55 @@ func TestADecidingHandlerOverTheGate(t *testing.T) {
 		t.Fatalf("calls %+v", calls)
 	}
 }
+
+// registeredPair is the params of a seat.pair that relays a registration for
+// the relying party rpID.
+func registeredPair(t *testing.T, rpID string) json.RawMessage {
+	t.Helper()
+	b, err := ownerwire.EncodeSeatPairParams(ownerwire.SeatPairParams{
+		Code: pairCode, CredentialID: credID, PublicKey: []byte("marker-public-key"),
+		AuthenticatorData: bytes.Repeat([]byte{0xaa}, ownerwire.MinRegistrationDataBytes), RPID: rpID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// A gate with a seat origin registers a credential only for its own relying
+// party: a seat.pair whose registration names another is refused
+// credential-invalid before the service, so the pairing code is not spent on
+// it and no key that could never log in is paired. A registration for the
+// gate's own relying party, and a pairing with no registration (which stays
+// unverified), reach the service as before; so does any registration on a gate
+// without an origin, which has no relying party of its own.
+func TestAPairingForAnotherRelyingPartyIsRefused(t *testing.T) {
+	f := &fakePort{open: true, code: pairCode}
+	h, _, _ := newDeciding(t, f, &fakeSeat{})
+	for _, rp := range []string{"other.example", "seat.example.evil", "example"} {
+		if _, err := h.Handle(context.Background(), seat, ownerwire.OpSeatPair, registeredPair(t, rp)); codeOfErr(err) != CodeCredentialInvalid {
+			t.Fatalf("%s: %v", rp, err)
+		}
+	}
+	if n := len(f.seen()); n != 0 {
+		t.Fatalf("the service had %d calls", n)
+	}
+	if _, err := h.Handle(context.Background(), seat, ownerwire.OpSeatPair, registeredPair(t, theGate.RPID)); err != nil {
+		t.Fatalf("the gate's own relying party: %v", err)
+	}
+	if c := f.seen(); len(c) != 1 || c[0].pair.RPID != theGate.RPID {
+		t.Fatalf("the service saw %+v", c)
+	}
+	f.mu.Lock()
+	f.open = true
+	f.mu.Unlock()
+	if _, err := h.Handle(context.Background(), seat, ownerwire.OpSeatPair, validParams(t, ownerwire.OpSeatPair)); err != nil {
+		t.Fatalf("no registration: %v", err)
+	}
+
+	g := &fakePort{open: true, code: pairCode}
+	plain, _ := newHandler(t, g)
+	if _, err := plain.Handle(context.Background(), seat, ownerwire.OpSeatPair, registeredPair(t, "other.example")); err != nil {
+		t.Fatalf("a gate without an origin: %v", err)
+	}
+}
