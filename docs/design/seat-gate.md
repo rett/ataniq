@@ -992,9 +992,9 @@ How it is built (G9), where the points above left a choice:
   Look at it again." (`card_changed`), and a form the session was never
   served "Look at the card again first." (`look_again`), before any
   challenge is drawn or the passkey asked. A tap without a form id is
-  refused (`bad_request`), with `Sec-Fetch-Site` or without it (the test
-  option that lets a request without that header through lets no tap leave
-  the form out). The link freezes the frame from the card it showed at that
+  refused (`bad_request`). The app has no option that lets a POST come
+  without `Sec-Fetch-Site: same-origin`: its tests and the end-to-end rigs
+  send the header, as a browser does. The link freezes the frame from the card it showed at that
   binding, asks `seat.challenge`, and recomputes the challenge before the
   browser sees it.
   The seat keeps one decision per session; a new tap replaces it. The page

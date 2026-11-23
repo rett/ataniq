@@ -211,7 +211,7 @@ func (f *fakeDesk) handle(_ context.Context, _ seatgate.Peer, op string, params 
 // test options for requests that are not a browser's.
 func seatApp(t *testing.T, d seatapp.Daemon) http.Handler {
 	t.Helper()
-	h, err := seatapp.New(seatapp.Config{Origin: seatOrigin, RPID: seatRPID, Daemon: d, AllowNoFetchMetadataForTests: true})
+	h, err := seatapp.New(seatapp.Config{Origin: seatOrigin, RPID: seatRPID, Daemon: d})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,14 +219,13 @@ func seatApp(t *testing.T, d seatapp.Daemon) http.Handler {
 }
 
 // browser is a phone's browser in front of the app: it keeps the app's
-// cookies. With fetchSite set, its POSTs carry Sec-Fetch-Site: same-origin,
-// as a page's script's do; with source set, its requests carry it as the
-// client's address, in the header the clock rig's app reads.
+// cookies, and its POSTs carry Sec-Fetch-Site: same-origin, as a page's
+// script's do; with source set, its requests carry it as the client's
+// address, in the header the clock rig's app reads.
 type browser struct {
-	h         http.Handler
-	cookies   map[string]*http.Cookie
-	fetchSite bool
-	source    string
+	h       http.Handler
+	cookies map[string]*http.Cookie
+	source  string
 }
 
 func newBrowser(h http.Handler) *browser { return &browser{h: h, cookies: map[string]*http.Cookie{}} }
@@ -241,9 +240,7 @@ func (b *browser) do(method, path, body string) *httptest.ResponseRecorder {
 	if method == "POST" {
 		req.Header.Set("Origin", seatOrigin)
 		req.Header.Set("Content-Type", "application/json")
-		if b.fetchSite {
-			req.Header.Set("Sec-Fetch-Site", "same-origin")
-		}
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 	}
 	if b.source != "" {
 		req.Header.Set(clientHeader, b.source)

@@ -245,7 +245,7 @@ func (w *pairWorld) startSeat() {
 		// login challenge by its clock, and the app drops one that the
 		// time it holds says is over.
 		Now:                           w.rig.clock.Now,
-		AllowInsecureLoopbackForTests: true, AllowNoFetchMetadataForTests: true,
+		AllowInsecureLoopbackForTests: true,
 	})
 	if err != nil {
 		w.t.Fatal(err)
@@ -294,9 +294,10 @@ func (r reply) str(t *testing.T, key string) string {
 // code is the code of an error reply of the app.
 func (r reply) code(t *testing.T) string { return r.str(t, "error") }
 
-// post sends a POST the way the proxy in front of the app does: the app's
-// host name as the Host, its origin as the Origin, JSON, and the cookies
-// given.
+// post sends a POST the way a page's script does through the proxy in
+// front of the app: the app's host name as the Host, its origin as the
+// Origin, Sec-Fetch-Site: same-origin (which every browser that makes a
+// passkey sends, and which the app requires), JSON, and the cookies given.
 func (w *pairWorld) post(path string, body any, cookies ...*http.Cookie) reply {
 	w.t.Helper()
 	b, err := json.Marshal(body)
@@ -309,6 +310,7 @@ func (w *pairWorld) post(path string, body any, cookies ...*http.Cookie) reply {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Origin", pairOrigin)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	return w.send(req, cookies)
 }
 

@@ -375,7 +375,7 @@ func newClockRig(t *testing.T) *clockRig {
 	d.link.budget.now = clock.now
 	r := &phoneRig{decideRig: d, clock: clock}
 	h, err := seatapp.New(seatapp.Config{Origin: seatOrigin, RPID: seatRPID, Daemon: d.link, Now: clock.now,
-		AllowNoFetchMetadataForTests: true, ClientAddrHeader: clientHeader})
+		ClientAddrHeader: clientHeader})
 	if err != nil {
 		t.Fatal(err)
 	}

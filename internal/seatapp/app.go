@@ -169,13 +169,6 @@ type Config struct {
 	// port, when its host is a loopback IP address or "localhost". It is for
 	// tests of this package and no command sets it.
 	AllowInsecureLoopbackForTests bool
-	// AllowNoFetchMetadataForTests lets a POST come without a Sec-Fetch-Site
-	// header. Every browser that makes a passkey sends it, so a POST without
-	// it is refused; this option is for tests of this package, whose requests
-	// are not a browser's, and no command sets it. It lets nothing else
-	// through: a decision's tap names the id of its Card page's form, with
-	// the header or without it.
-	AllowNoFetchMetadataForTests bool
 }
 
 // canonicalOrigin checks an origin and returns it in the form a browser's
@@ -380,7 +373,7 @@ func (a *app) post(h http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		site := r.Header.Get("Sec-Fetch-Site")
-		if site != "same-origin" && !(site == "" && a.cfg.AllowNoFetchMetadataForTests) {
+		if site != "same-origin" {
 			writeText(w, http.StatusForbidden, "forbidden\n")
 			return
 		}

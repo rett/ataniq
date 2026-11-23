@@ -56,7 +56,7 @@ func newPhoneRig(t *testing.T) *phoneRig {
 func newPhoneRigAt(t *testing.T, start time.Time) *phoneRig {
 	t.Helper()
 	r := &phoneRig{decideRig: newDecideRig(t), clock: &testClock{t: start}}
-	h, err := seatapp.New(seatapp.Config{Origin: seatOrigin, RPID: seatRPID, Daemon: r.link, Now: r.clock.now, AllowNoFetchMetadataForTests: true})
+	h, err := seatapp.New(seatapp.Config{Origin: seatOrigin, RPID: seatRPID, Daemon: r.link, Now: r.clock.now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,8 +130,6 @@ func (r *phoneRig) confirm(t *testing.T, tapped *httptest.ResponseRecorder) *htt
 // sends.
 func (r *phoneRig) tapPage(page, action string, signedOff []int) *httptest.ResponseRecorder {
 	body, _ := json.Marshal(map[string]any{"card": r.desk.reads.pending.ID, "form": pageForm(page), "action": action, "signed_off": signedOff, "reason": ""})
-	r.browser.fetchSite = true
-	defer func() { r.browser.fetchSite = false }()
 	return r.browser.do("POST", "/api/decide-challenge", string(body))
 }
 
@@ -380,7 +378,7 @@ func TestSeatDecideReadOnlyGateHasNoForm(t *testing.T) {
 	} {
 		r, port := mk(t)
 		clock := &testClock{t: decideNow}
-		h, err := seatapp.New(seatapp.Config{Origin: seatOrigin, RPID: seatRPID, Daemon: port, Now: clock.now, AllowNoFetchMetadataForTests: true})
+		h, err := seatapp.New(seatapp.Config{Origin: seatOrigin, RPID: seatRPID, Daemon: port, Now: clock.now})
 		if err != nil {
 			t.Fatal(err)
 		}

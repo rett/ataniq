@@ -281,10 +281,9 @@ func (r *rig) postFromPage(path, body string, s *http.Cookie) *httptest.Response
 // refused before the port is asked (so no challenge is drawn and the
 // passkey is not asked), and the tap of the second is taken. A page's tap
 // must name its form: one with none, or with a form the session was never
-// served, is refused too. A tap without the form is refused when it comes
-// without Sec-Fetch-Site as well, which the rig's test option lets through
-// and which once let a tap leave the form out. Two pages of the same
-// binding are both good.
+// served, is refused too, and so is a body that leaves the form out (which
+// a test option, now gone, once let through without Sec-Fetch-Site). Two
+// pages of the same binding are both good.
 func TestSeatDecideTapOfAStalePage(t *testing.T) {
 	r := newRig(t)
 	s := r.login(t)
@@ -296,12 +295,9 @@ func TestSeatDecideTapOfAStalePage(t *testing.T) {
 	}
 	wantFailure(t, "the first tab's tap", r.postFromPage("/api/decide-challenge", tapOf(first), s), 409, "card_changed", sayChanged)
 	wantFailure(t, "a tap of no form", r.postFromPage("/api/decide-challenge", tapOf(""), s), 400, "bad_request", sayFailed)
-	if !r.app.cfg.AllowNoFetchMetadataForTests {
-		t.Fatal("the rig does not let a request without Sec-Fetch-Site through: the test does not show what it means to")
-	}
 	noForm, _ := json.Marshal(map[string]any{"card": testCardID, "action": "approve", "signed_off": []int{0}, "reason": ""})
-	wantFailure(t, "a tap of no form without Sec-Fetch-Site", r.postWith("/api/decide-challenge", string(noForm), s), 400, "bad_request", sayFailed)
-	wantFailure(t, "a deny of no form without Sec-Fetch-Site", r.postWith("/api/decide-challenge", denyBody("no"), s), 400, "bad_request", sayFailed)
+	wantFailure(t, "a tap that leaves the form out", r.postFromPage("/api/decide-challenge", string(noForm), s), 400, "bad_request", sayFailed)
+	wantFailure(t, "a deny that leaves the form out", r.postFromPage("/api/decide-challenge", denyBody("no"), s), 400, "bad_request", sayFailed)
 	other := b64.EncodeToString(bytes.Repeat([]byte{0x42}, formBytes))
 	wantFailure(t, "a form never served", r.postFromPage("/api/decide-challenge", tapOf(other), s), 409, "look_again", sayLookFirst)
 	wantFailure(t, "a form of another shape", r.postFromPage("/api/decide-challenge", tapOf("x"), s), 400, "bad_request", sayFailed)

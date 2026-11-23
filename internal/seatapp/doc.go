@@ -47,8 +47,9 @@
 // securityHeaders in app.go). Every request body is cut at [MaxBody] bytes.
 // Every POST needs an Origin header equal to [Config].Origin, a Host header
 // equal to the origin's host, Sec-Fetch-Site same-origin (every browser that
-// can make a passkey sends it, so a POST without it is refused) (a fixed 403
-// otherwise), and the JSON content type. The relying party id is exactly the
+// can make a passkey sends it, so a POST without it is refused, and no
+// option of [Config] lets one through) (a fixed 403 otherwise), and the JSON
+// content type. The relying party id is exactly the
 // origin's host. The content security policy includes
 // require-trusted-types-for 'script', which the scripts meet by setting text
 // only with textContent, and every response carries
