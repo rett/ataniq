@@ -11,6 +11,7 @@ import (
 
 	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/genesis/brief"
+	"ataniq/internal/genesis/thread"
 )
 
 // gateWord is the word the seat gate answers a refusal of the brief or the
@@ -147,5 +148,25 @@ func TestTheGateWordsOfGenesisAreAllUsedOnce(t *testing.T) {
 	t.Logf("the words of seat.genesis: %v", words)
 	if len(words) != 6 {
 		t.Errorf("%d gate words, want 6", len(words))
+	}
+}
+
+// The thread store answers a refusal of the brief or the walker with the word
+// this file holds, for every code, and no other: the store's own table is the
+// test's.
+func TestTheThreadStoreMapsRefusalsAsTheWireDoes(t *testing.T) {
+	for code, want := range gateWord {
+		got, ok := thread.GateWord(code)
+		if !ok || got != want {
+			t.Errorf("%s: the store answers %q (known %v), want %q", code, got, ok, want)
+		}
+	}
+	for name, value := range declaredCodes(t) {
+		if _, ok := thread.GateWord(brief.Code(value)); !ok {
+			t.Errorf("the store does not know the refusal code %s", name)
+		}
+	}
+	if _, ok := thread.GateWord("no_such_code"); ok {
+		t.Error("the store knows a code that does not exist")
 	}
 }

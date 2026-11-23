@@ -21,9 +21,9 @@ subscription pages N3 and the notifier unit N4; see [notices](#notices)).
 The notices are built and tested on loopback with fakes, not deployed and not
 phone-tested: nothing of them has run on a phone, and no real browser has
 checked the page's Trusted Types registration of the service worker. Not built
-yet: the phone trial (G13); question cards; the daemon's and the seat's side of
-the guided new project (only its wire is built, see
-[guided new project](#guided-new-project)); and
+yet: the phone trial (G13); question cards; the seat's side of the guided new
+project (its wire, the daemon's thread store and the gate's route are built,
+see [guided new project](#guided-new-project)); and
 the one function that makes an origin canonical (G1;
 [the seat origin](#the-seat-origin) lists where the three checks in use
 disagree). This document is the contract that
@@ -151,8 +151,11 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   `ownerwire.Operations`), `SeatGenesisParams`, `SeatGenesisResult` and their
   parts, and the six codes `genesis-busy`, `genesis-unknown-thread`,
   `genesis-bad-answer`, `genesis-over-cap`, `genesis-secret-shaped` and
-  `genesis-done`. Wire only: no handler serves the capability `genesis`, the
-  daemon holds no thread and the seat has no page for it.
+  `genesis-done`. The daemon's side is built too (genesis G4): the thread
+  store, `internal/genesis/thread`, which keeps the threads in
+  `STATE/owner/genesis/`; the gate handler's route and the capability
+  `genesis` (`gatehost.WithGenesis`); and the daemon's wiring
+  (`SeatGate.GenesisDir`). The seat has no page for it yet.
 - The release of the seat for the authority host, `deploy/authority-host/seat`
   (G12, built, not deployed): the unit `ataniq-seat.service`, the Caddyfile
   and the validators, reload, stop and health lists, laid over the base
@@ -230,7 +233,7 @@ them and never hands them to the handler.
 | `decide` | `seat.challenge` | `SeatChallengeParams` | `SeatChallengeResult` | G8b (built) |
 | `decide` | `seat.decide` | `SeatDecideParams` | `ownerwire.DecideResult` | G8b (built) |
 | `watch` | `seat.wait` | `ownerwire.SeatWaitParams` | `ownerwire.SeatWaitResult` | G14 (built) |
-| `genesis` | `seat.genesis` | `ownerwire.SeatGenesisParams` | `ownerwire.SeatGenesisResult` | genesis G3 (wire built; no handler serves it) |
+| `genesis` | `seat.genesis` | `ownerwire.SeatGenesisParams` | `ownerwire.SeatGenesisResult` | genesis G3 (wire) and G4 (handler and thread store), built |
 
 A handler made with `gatehost.New` answers `["pair", "read"]` (`gatehost.Caps`);
 one made with `gatehost.NewDeciding`, `["pair", "read", "login", "decide"]`
@@ -239,17 +242,21 @@ origin is configured and its service can decide from the phone (see
 [the seat origin](#the-seat-origin)). Either handler adds `watch` after them
 (`Handler.Caps`) when its service can wait (`gatehost.WaitPort`, which the
 owner channel's service is), with or without a seat origin: a wait decides
-nothing. The daemon's start line names `watch` among what the gate serves. The
-seat reads the list (`seatgate.Client.Caps`) and offers login and decisions
+nothing. Either handler adds `genesis` last (`Handler.Caps`) when it was given
+the daemon's thread store (`gatehost.WithGenesis`, a `gatehost.GenesisPort`),
+with or without a seat origin: an answer decides nothing either. The daemon's
+start line names every capability the gate lists, in its order, in words
+(`pair, read, login, decide, watch and genesis`). The seat reads the list (`seatgate.Client.Caps`) and offers login and decisions
 only when the gate lists them; otherwise it says that the desk does not take
 phone logins, or does not take decisions from the phone. It starts its watcher
 only when the gate lists `watch`; otherwise its pages say "Not live".
 
-No handler lists `genesis` yet: the words of `seat.genesis` are built and the
-capability is not served, so a gate answers the operation `unknown-op` like any
-operation whose capability it does not list. The handler that will serve it
-(the daemon's genesis task) lists `genesis` after the others, and a seat offers
-"New project" only when it finds it there, as it does for `watch`.
+A handler without the thread store does not list `genesis`, and answers the
+operation `unknown-op` before its params are read, like any operation whose
+capability it does not list. The daemon gives its handler the store whenever
+the gate starts (`SeatGate.GenesisDir`, `owner/genesis/` of the state folder);
+a seat offers "New project" only when it finds `genesis` in the list, as it
+does for `watch`.
 
 The gate never serves `owner.decide`, `owner.decider`, `owner.beat`,
 `owner.looked`, `owner.limit`, `owner.limit-set`, the desk's pairing operations
@@ -394,8 +401,7 @@ the host's thread store. The other refusals of those packages (`brief_invalid`,
 fault of the host, not of what the owner sent, and are answered `failed`. A test
 (`internal/genesis`, `wirecodes_test.go`) holds the map complete: a refusal code
 added to the brief fails it until the code is mapped. Whether a genesis refusal
-counts for [the refusal bound](#the-refusal-bound) is decided when a handler
-serves `genesis`.
+counts for [the refusal bound](#the-refusal-bound) is told there.
 
 `key-unknown` answers a credential that is not on the list. There is no code
 for a missing seat origin: a gate without one does not serve `login` and
@@ -442,6 +448,20 @@ held waits, does not count either: a seat that reconnects while the gate still
 holds its old wait would meet it with no fault of its own, and counting it
 would let a reconnect loop shut a good seat out for 10 minutes. Its log line is
 limited instead, to one a minute for each peer.
+
+Of `seat.genesis`, `genesis-bad-answer`, `genesis-secret-shaped`,
+`genesis-over-cap` and `genesis-unknown-thread` count, with `bad-params`: each
+is what the peer sent (an answer the question does not allow, text that looks
+like a credential, an answer past a cap, a thread it was never given), and a
+seat that keeps sending them is the misuse the bound is for. The seat's own
+pages send none of them in good order; a thread that expired or was dropped
+answers `genesis-unknown-thread` once and the page stops asking. `genesis-busy`
+and `genesis-done` do not count: they answer the state of the thread store,
+which a seat in good order meets (a second tab, a start while two threads are
+open, an answer sent twice after the thread finished), and a double tap must
+not shut the owner out for 10 minutes. They stay bounded by the gate's 60
+requests a minute and by the store's own limits (two open threads, eight
+files).
 
 ## The challenge
 
@@ -1811,10 +1831,14 @@ anything.
 
 Status: the wire is built (`ownerwire`, `genesis.go`) and tested, with the
 forms of the question catalog and the brief held in step by tests of
-`internal/genesis`. Nothing else is: no handler serves the capability
-`genesis`, the daemon holds no thread store, the seat has no "New project"
-entry and no question page. It is a plan of the owner's, not yet a feature
-(the daemon's store and the seat's pages follow, in that order).
+`internal/genesis`. The daemon's side is built too (genesis G4): the thread
+store (`internal/genesis/thread`), the gate handler's route and the capability
+`genesis` (`internal/approval/gatehost`), and the daemon's wiring
+(`internal/leaddaemon`, `cmd/ataniqd`); an end-to-end test runs a whole
+interview over the real gate with the seat's link replaced by a raw frame
+sender. Not built: the seat link's call and the seat's pages, so the seat has no
+"New project" entry and no question page. It is a plan of the owner's, not yet
+a feature the owner can use (the seat's link and pages follow, in that order).
 
 The owner starts a new project on the phone by answering a few multiple-choice
 questions. The questions are the host's own, from a versioned catalog
@@ -1916,10 +1940,76 @@ passes the wire. The fuzz tests (`FuzzDecodeSeatGenesisParams`,
 is a `*record.Error` with a detail that can be shown as it is, and that what
 decodes encodes to no more bytes and to itself.
 
-Not built, and decided when the daemon's task is written: the thread store and
-its journal, the expiry of a thread, which genesis refusals the refusal bound
-counts, and the room of `seat.genesis` in the gate's 60 calls a minute (the
-rooms above add up to all 60, so the call needs one made for it).
+### The thread store
+
+`internal/genesis/thread`, the daemon's own record of the interviews, and the
+only writer of them. It never executes anything and reads nothing outside its
+folder, `STATE/owner/genesis/`, which the gate makes with mode 0700 when it
+starts and opens as an `os.Root`, so no link is followed and nothing outside
+the folder is reached. The store refuses a folder that is a link, is not the
+daemon user's, is writable by group or other or holds more than 64 files; the
+daemon then does not start the gate (exit 18), since it does not run with the
+folder in doubt.
+
+- **A thread** is `{id, state, brief, created, updated, catalog digest}`: the id
+  is 16 lower-case hexadecimal digits from `crypto/rand`, the state `open`,
+  `finished` or `discarded`, the brief the `ataniq.project-brief/1` record of
+  `internal/genesis/brief`, and the catalog digest that of the catalog the
+  thread was started under (a thread stays on one version). One file each, named
+  by the id with the suffix `.json`, mode 0600, in the canonical form of the
+  brief's strict JSON with a digest of the file's own content, schema
+  `ataniq.genesis-thread/1`.
+- **Writing** is atomic: a temporary file of the same folder, written, synced,
+  renamed over the thread's file, and the folder synced. A call changes the
+  thread in memory only after the file is written, so a write that fails leaves
+  the old thread. One mutex serialises every call of a store, and a call holds
+  it for its own work and the one write; the log lines and the removal of
+  pruned files come after it is let go. A restart serves the same state.
+- **Reading** is strict, at open only (the store is the only writer). A file
+  that is not a regular file of the daemon's user with no mode bit but 0600's,
+  is over its cap, is not strict JSON in the canonical form, names another id
+  than its file, holds a brief that does not decode or was started under
+  another catalog than the thread's or the store's, or whose digest (of the file
+  or of a finished brief) does not match, is not served: the log says so once, in
+  fixed text naming the file (`genesis: the thread file <name> is not served:
+  <check>`), and the file is left as it is. It is never repaired or overwritten,
+  and its id is not used again.
+- **The verbs** are the wire's, exactly. `start` refuses a third open thread
+  `genesis-busy` and answers the first round, `catalog.Next` of an empty brief.
+  `round` answers the question round the thread is at, or the summary when the
+  walk is done (every required field filled, six rounds, or no question left);
+  a finished thread answers its summary and digest. `answer` must name the
+  thread's current round and nodes of it (else `genesis-bad-answer`); each
+  answer goes through `catalog.Apply`, and one failing fails the whole call and
+  changes nothing; text that looks like a secret is refused
+  `genesis-secret-shaped`, a field or brief over its cap `genesis-over-cap`.
+  `change` names a node that has an answer and replaces it through
+  `catalog.Apply`, which clears the closure of the node's invalidations, keeps
+  the cleared values in the brief's history and says how many in `reset`; the
+  next round asks the cleared questions again, under the next round number.
+  `summary` reads the summary at any time. `finish` freezes the brief and
+  answers its digest, at any time on an open thread (there is no separate
+  "enough": the owner reads the summary and finishes), and again on a finished
+  one with the same digest; afterwards `answer` and `change` are
+  `genesis-done`. `discard` drops the thread and empties its brief. A discarded
+  or expired thread is `genesis-unknown-thread` for every call. The mapping of
+  the brief's refusal codes to the gate's words is the store's own table
+  (`thread.GateWord`), held equal to the wire's by a test of `internal/genesis`.
+- **Limits.** At most 2 open threads; at most 8 files, the oldest finished or
+  discarded thread removed first when a start would pass it; a thread
+  untouched (no answer, change, finish or discard; a read does not count) for
+  14 days is discarded on the next access or at open, and keeps no answer. The
+  store's clock and its source of ids are injectable, which the tests use.
+- **The log** holds fixed texts and no answer or brief content: `genesis: a
+  thread was started`, `... finished`, `... discarded`, `... expired`, `genesis:
+  an answer was refused as secret-shaped (N since the store was opened)` (a
+  count only), and the line about a file that is not served. A thread's id is
+  not in them.
+
+Not built: the room of `seat.genesis` in the seat's 60 calls a minute (the rooms
+above add up to all 60, so the seat link needs one made for it), which is the
+seat link's task and not the gate's, and the view of the threads for the desk,
+which the console will need.
 
 ## The record change
 

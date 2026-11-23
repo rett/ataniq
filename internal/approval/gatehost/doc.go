@@ -43,6 +43,7 @@
 //	seat.challenge        decide      ownerwire.SeatChallengeParams   ownerwire.SeatChallengeResult
 //	seat.decide           decide      ownerwire.SeatDecideParams      ownerwire.DecideResult
 //	seat.wait             watch       ownerwire.SeatWaitParams        ownerwire.SeatWaitResult
+//	seat.genesis          genesis     ownerwire.SeatGenesisParams     ownerwire.SeatGenesisResult
 //
 // An operation whose capability the handler does not serve is refused
 // unknown-op before its params are read and without the service, and so is
@@ -69,6 +70,25 @@
 // wait-full before anything is looked at. A slot is held for exactly the life
 // of the call, and the handler starts no goroutine of its own. A wait takes
 // one of the gate's handler places while it is held, as any request does.
+//
+// # The interview
+//
+// seat.genesis is the guided new-project interview: one operation of seven
+// verbs (start, round, answer, change, summary, finish, discard), each with
+// the members its verb takes, which the wire's decoder holds. The handler gives
+// the decoded params to the daemon's thread store ([GenesisPort], given with
+// [WithGenesis]) and encodes its result with the wire's encoder. The handler
+// serves it, and lists genesis last in its hello, only when it was given the
+// port: it needs no service that can wait and no seat origin, as an answer
+// decides nothing. Without the port the operation is unknown-op before its
+// params are read. One thread's calls are serialised by the store, not by the
+// handler, which holds no state for it.
+//
+// The port refuses with the gate's word, which the handler passes on when it is
+// one of genesis-busy, genesis-unknown-thread, genesis-bad-answer,
+// genesis-over-cap, genesis-secret-shaped, genesis-done and bad-params; any
+// other word or error is answered failed, and the cause, which the store words
+// without a byte of an answer, is logged.
 //
 // # Params
 //
@@ -130,6 +150,11 @@
 // previous-epoch, review-changed, record-invalid and record-too-large. A refusal with any other code is
 // answered failed and logged, so that only words from this list reach a seat.
 //
+// The thread store's refusals are told as the six words of seat.genesis
+// (genesis-busy and the rest, above): a third open thread, a thread the store
+// does not hold, an answer the question does not allow, an answer past a cap,
+// text that looks like a secret, and an answer or change to a finished thread.
+//
 // The handler adds codes of its own: unknown-op, bad-params, not-pinned,
 // wait-full and too-many-refusals (below). A result the service returned that its encoder
 // refuses is answered failed.
@@ -159,6 +184,14 @@
 // that reconnects while its old wait unwinds meets it with no fault of its
 // own; counting it would let a reconnect loop shut a good seat out for ten
 // minutes. Its log line is limited instead, to one a minute for each peer.
+//
+// Of seat.genesis, genesis-bad-answer, genesis-secret-shaped, genesis-over-cap
+// and genesis-unknown-thread count (a seat that keeps sending them is the
+// misuse the bound is for); genesis-busy and genesis-done do not, as they answer
+// the state of the thread store, which a seat in good order meets (a second
+// tab, an answer sent twice after the thread finished), and a double tap must
+// not shut the owner out. They are bounded by the gate's 60 requests a minute
+// and the store's own limits.
 //
 // After [RefusalBound] (16, the owner connection's bound on refused writes)
 // counted refusals within [RefusalWindow] (10 minutes), every request of the
