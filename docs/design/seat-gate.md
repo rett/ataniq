@@ -32,10 +32,12 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   `LoadIdentity` keep an identity in a folder (`cert.pem`, `key.pem`, key mode
   0600, folder 0700, never overwritten). No command calls any of it.
 - The seat app, `internal/seatapp` (standard library only), and the command
-  `ataniq-seat`. They serve the pairing page and its API, and the login page
-  and its API with the seat's sessions (G7, see
-  [login](#login-seatlogin-challenge-and-seatlogin)). `seatapp.Daemon` has
-  `Pair`, `LoginChallenge` and `Login`; `internal/seatlink` implements it over
+  `ataniq-seat`. They serve the pairing page and its API, the login page and
+  its API with the seat's sessions, and the card pages, read-only, behind a
+  session (G7; see [login](#login-seatlogin-challenge-and-seatlogin) and
+  [the phone's side](#the-phones-side)). `seatapp.Daemon` has
+  `Pair`, `LoginChallenge`, `Login`, `List`, `Show` and `Pages`;
+  `internal/seatlink` implements it over
   the gate, and `ataniq-seat` wires that in when it is given a gate (without
   one, every call answers `ErrDaemonUnavailable`). The daemon's side of the
   login operations is G8's and is not built, so a gate today does not list
@@ -535,9 +537,12 @@ So the seat limits login challenges to 10 per source in 15 minutes and to 8 a
 minute from all sources together: each login asks the gate twice, so logins
 take at most 16 of the 60 a minute, and the room left is the owner's reads and
 decisions. A source is the client address the proxy sets, as for the pairing.
-When the gate answers `rate-limited`, `busy` or `too-many-refusals`, the phone
-says that the desk is busy and to try again in a minute, and nothing is retried
-by itself.
+Only a session reads cards, and the reads of one credential's sessions are
+limited to 20 a minute (a card page asks the gate once; the first page of a
+card's path list may ask twice, to learn the card's review), so one phone's
+reads and every login together stay within the 60. When the gate answers
+`rate-limited`, `busy` or `too-many-refusals`, the phone says that the desk is
+busy and to try again in a minute, and nothing is retried by itself.
 
 Reads after a revoke: the reads are the pin's, not a credential's, since the
 daemon keeps no session. A seat session whose key was revoked still reads cards
@@ -682,6 +687,17 @@ with sign-offs. A deny is never held and does not count as a use.
 Leaving a card undecided sends nothing.
 
 ## The phone's side
+
+What the seat app shows (G7, built): the card list (`GET /cards/`), the card
+page (`GET /cards/{id}`) and the pages of a card's whole path list (`GET
+/cards/{id}/paths/{n}`), each behind a session and read-only. The seat link
+builds the card from the record's bytes with `internal/approval/card`, after
+the bytes' digest is checked and the record decodes as the card asked for, so
+the seat never shows a card rendered elsewhere. A lead's text is shown as the
+desk console shows it, through the lead-text escaping, and then through
+`seatapp.Text`. Each page says that the desk runs a STAND-IN door on scratch
+state and that nothing on it is a real approval, and that approve and deny are
+at the desk. No page has a decide control.
 
 What the seat app does with a decision (G9), proposed:
 

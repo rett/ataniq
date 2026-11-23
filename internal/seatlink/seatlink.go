@@ -53,6 +53,31 @@
 //	rate-limited, busy, too-many-refusals       seatapp.ErrBusy
 //
 // and the rest as for the pairing.
+//
+// # Cards
+//
+// [Daemon.List], [Daemon.Show] and [Daemon.Pages] read the cards with
+// owner.list, owner.show and owner.paths, and only when the gate's hello
+// listed "read". Show builds the card the phone shows from the record's
+// bytes, never from anything the gate rendered: the result is read with
+// [ownerwire.DecodeShowResult], which takes nothing beside the record and its
+// marks, the bytes must be their digest's, they must decode as the pending
+// record of the card asked for, and the card model ([card.New]) checks them
+// again, the binding's digest among it. A lead's text leaves the card model
+// only through the lead-text escaping, so the phone shows it as the desk
+// console does, and the app then shows it through its Text. Pages asks for
+// the review the card was shown with (the link remembers it, and shows the
+// card first when it does not know it) and takes only the page asked for. An
+// id that is not a card's is not sent. The codes:
+//
+//	approval-void                               seatapp.ErrNoCard
+//	review-changed                              seatapp.ErrCardChanged
+//	too-large                                   seatapp.ErrTooLarge
+//	unknown-op                                  seatapp.ErrNotOffered
+//	rate-limited, busy, too-many-refusals       seatapp.ErrBusy
+//
+// and the rest as for the pairing. A record the card model refuses is no
+// card; the phone says it could not be read.
 package seatlink
 
 import (
@@ -125,6 +150,8 @@ type Daemon struct {
 	// pin is the gate key's fingerprint, from which the link recomputes a
 	// login challenge; empty when the link was made without it.
 	pin string
+	// reviews are the review digests of the cards the link showed.
+	reviews reviews
 }
 
 // Option sets an option of [New].

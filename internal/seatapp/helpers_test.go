@@ -43,6 +43,15 @@ type fakeDaemon struct {
 	logins      []LoginRequest
 	loginChs    int
 	challengeNo int
+
+	// The reads: what they answer, the error they all answer, how many
+	// were asked and the ids asked for.
+	listing Listing
+	card    Card
+	page    PathsPage
+	readErr error
+	reads   int
+	shown   []string
 }
 
 func (d *fakeDaemon) LoginChallenge(context.Context) (LoginChallenge, error) {
@@ -75,7 +84,73 @@ func (d *fakeDaemon) Login(_ context.Context, r LoginRequest) (LoginResult, erro
 func (d *fakeDaemon) count() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return len(d.calls) + d.loginChs + len(d.logins)
+	return len(d.calls) + d.loginChs + len(d.logins) + d.reads
+}
+
+func (d *fakeDaemon) List(context.Context) (Listing, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.reads++
+	return d.listing, d.readErr
+}
+
+func (d *fakeDaemon) Show(_ context.Context, id string) (Card, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.reads++
+	d.shown = append(d.shown, id)
+	if d.readErr != nil {
+		return Card{}, d.readErr
+	}
+	c := d.card
+	if c.ID == "" {
+		c.ID = id
+	}
+	return c, nil
+}
+
+func (d *fakeDaemon) Pages(_ context.Context, id string, n int) (PathsPage, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.reads++
+	d.shown = append(d.shown, id)
+	if d.readErr != nil {
+		return PathsPage{}, d.readErr
+	}
+	p := d.page
+	p.N = n
+	return p, nil
+}
+
+// readCount is the number of reads the daemon was asked.
+func (d *fakeDaemon) readCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.reads
+}
+
+// testCardID is the id of the fakes' card.
+const testCardID = "ap-20261122-0001"
+
+// sampleCard is a card with every section, of plain text.
+func sampleCard() Card {
+	at := time.Date(2026, 11, 22, 11, 0, 0, 0, time.UTC)
+	return Card{
+		ID: testCardID, Project: "ataniq", Role: "lead", Verb: "feature finish", Feature: "seat-glue",
+		Target: "develop", Class: "ref-move", Asked: at, Expires: at.Add(4 * time.Hour),
+		BindingSHA256: strings.Repeat("ab", 32),
+		Plan:          []Lead{NewLead("Merge the seat glue."), NewLead("Then run the suite.")},
+		Refs:          []Ref{{Kind: "update", Ref: NewLead("refs/heads/develop"), Old: strings.Repeat("1", 40), New: strings.Repeat("2", 40)}},
+		Diff: &Diff{Files: 2, Added: 10, Removed: 3, Truncated: true, Rows: []PathRow{
+			{Path: NewLead("internal/seatapp/cards.go"), Status: "A", Added: 10},
+			{Path: NewLead("docs/seat.md"), Status: "M", Removed: 3},
+		}},
+		Lists:    []List{{Label: "binary files", Paths: []Lead{NewLead("logo.png")}}, {Label: "symlinks"}},
+		Flagged:  []Flagged{{Kind: "exec-config", Reason: "changes how the build runs", Path: NewLead("Makefile"), Pattern: NewLead("Makefile")}},
+		Evidence: []Evidence{{Kind: "suite", RecordID: "sr-20261122-0001"}},
+		Note:     []Lead{NewLead("Two lines"), NewLead("of a note.")},
+		Differs:  &Differs{EarlierID: "ap-20261121-0003", ReadAt: at.Add(-time.Hour), Lines: []string{"The feature's tip moved: 111111111111 to 222222222222."}},
+	}
 }
 
 func (d *fakeDaemon) Pair(_ context.Context, r PairRequest) (PairResult, error) {
@@ -146,6 +221,15 @@ func newRig(t *testing.T, mod ...func(*Config)) *rig {
 			words:    [WordCount]string{"amber", "birch", "cedar", "delta", "ember", "fjord", "garnet", "heron"},
 			loginCh:  LoginChallenge{Challenge: bytes.Repeat([]byte{0x5a}, 32), Allow: [][]byte{testCredentialID}},
 			loginRes: LoginResult{Credential: "0123456789abcdef", CredentialID: testCredentialID, Kind: "platform-passkey"},
+			listing: Listing{
+				Pending: []Item{{ID: testCardID, Project: "ataniq", Verb: "feature finish", Feature: "seat-glue",
+					Asked: time.Date(2026, 11, 22, 11, 0, 0, 0, time.UTC), Expires: time.Date(2026, 11, 22, 15, 0, 0, 0, time.UTC), Held: true}},
+				Recent: []Recent{{ID: "ap-20261121-0003", Project: "ataniq", Verb: "prune", State: "denied", Line: "denied at the desk",
+					At: time.Date(2026, 11, 21, 18, 0, 0, 0, time.UTC)}},
+				NotListed: 2,
+			},
+			card: sampleCard(),
+			page: PathsPage{Pages: 3, Rows: []PathRow{{Path: NewLead("a/b.go"), Status: "M", Added: 1}}},
 		},
 		clock: &clock{t: time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)},
 	}

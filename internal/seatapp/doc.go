@@ -1,6 +1,6 @@
 // Package seatapp is the seat web app: the pages and the small JSON API a
-// phone uses to pair with the desk and to log in, and the seams the cards,
-// decisions and journal pages will use later.
+// phone uses to pair with the desk, to log in and to read the cards, and the
+// seams the decisions and journal pages will use later.
 //
 // The app is the standard library only. Pages are made on the server with
 // html/template, each act a plain form where an act is a form; the scripts
@@ -27,6 +27,11 @@
 //	POST /api/login-challenge  the daemon's login challenge and its allow-list
 //	POST /api/login            the passkey's assertion over it; starts a session
 //	POST /api/logout           ends the session
+//	GET  /cards/               the card list (a session)
+//	GET  /cards                a 308 to /cards/
+//	GET  /cards/{id}           one card, read-only (a session)
+//	GET  /cards/{id}/paths/{n} page n of a card's whole path list (a session)
+//	GET  /static/session.js    the logout script
 //
 // The origin is the reverse proxy's, https on port 443: [New] refuses any
 // other (an http origin, a port, a path, user information, an address
@@ -150,16 +155,45 @@
 // minutes and to 8 a minute from all sources together, so logins, which
 // anyone who reaches the login page can start, take at most 16 of the 60 a
 // minute. A source is the address in [Config].ClientAddrHeader, as for the
-// pairing. When the gate answers that its rate is spent, the phone says the
-// desk is busy and to try again in a minute; nothing is retried by itself.
+// pairing. Only a session can read cards, and the reads of one credential's
+// sessions are limited to 20 a minute (a page asks the gate once, and the
+// first page of a card's path list may ask twice), so that logins and one
+// phone's reads stay within the 60, with room left for decisions. When the
+// gate answers that its rate is spent, the phone says the desk is busy and to
+// try again in a minute; nothing is retried by itself.
+//
+// # The cards
+//
+// The card pages need a session: a request without a live one is sent to the
+// login page (a 303), and nothing of the page, and no call to the daemon, is
+// made for it. Every response, these included, carries Cache-Control:
+// no-store. The list shows the waiting cards and the recent ones; a card
+// shows its sections in the order the card model gives them (the facts, what
+// came after, the plan, the refs, the changes and their rows, the four lists,
+// the flagged paths, the evidence, the lead's note labelled "Lead-stated, not
+// checked", and how it differs from an earlier card), and links to the pages
+// of its whole path list when its rows are cut. Each page says that the desk
+// runs a STAND-IN door on scratch state and that nothing on it is a real
+// approval, and that the seat only shows cards: approve and deny are at the
+// desk. A card id or page number that is not of its form is a 404 and is not
+// asked of the daemon.
+//
+// The [Daemon] port builds a card from the record's bytes with the card model
+// and checks their digest (package seatlink); the app takes a [Card] of plain
+// values and never markup. Text a lead wrote is a [Lead], whose only way onto
+// a page is [Text].
 //
 // # Text nobody on the owner's side wrote
 //
 // [Text] is the one function that renders such text (the words from the
-// daemon today, a lead's note later): plain text, no link made, no markup, no
-// image; control and bidirectional characters shown as visible escapes; long
-// text cut with a count of what was cut. It is registered in the page
-// templates as "text", and a page shows no such text any other way.
+// daemon, a card's host fields, a lead's paths, plan and note): plain text, no
+// link made, no markup, no image; control and bidirectional characters shown
+// as visible escapes; long text cut with a count of what was cut. It is
+// registered in the page templates as "text", and as "lead" for a [Lead], and
+// a page shows no such text any other way: a test reads every template and
+// fails for an action that writes a value by any other function, but for the
+// few the app fills itself (a page's title, a problem's fixed words, the
+// relying party and the app's own addresses).
 //
 // # The look
 //
@@ -173,14 +207,16 @@
 // # Seams
 //
 // [Daemon] is the port to the daemon, defined here and implemented over the
-// seat gate by package seatlink, which this package does not import. A later page adds a template under templates/, a route in the
-// route table and its entry in the page inventory (inventory_test.go, which
+// seat gate by package seatlink, which this package does not import. A later
+// page adds a template under templates/, a route in the route table and its
+// entry in the page inventory (inventory_test.go, which
 // fails for a route that is not listed); it needs no change in the middleware.
 //
 // An approve control exists in exactly one place, the Card page reached from
 // the Cards list. No other page, notice, link or message may hold or open a
-// decide control. No such page exists yet, and the inventory test checks every
-// page for an inline script or style, an event handler, an address outside the
-// app, a form or control it does not list, and anything that looks like
-// deciding.
+// decide control. The Card page exists and is read-only: no page holds a
+// decide control yet, and no route takes a decision. The inventory test
+// fetches every page, the card pages with a session, and checks each for an
+// inline script or style, an event handler, an address outside the app, a
+// form or control it does not list, and anything that looks like deciding.
 package seatapp

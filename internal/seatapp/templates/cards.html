@@ -1,0 +1,29 @@
+{{define "content"}}
+<h1>Cards</h1>
+{{template "standin"}}
+<section aria-labelledby="waiting">
+<h2 id="waiting">Waiting for you</h2>
+{{with .Listing.Pending}}<ul class="cards">
+{{range .}}<li><a href="{{cardHref .ID}}">
+<span class="what">{{text .Project maxName}} · {{text .Verb maxName}}{{if .Feature}} {{text .Feature maxName}}{{end}}</span>
+<span class="meta">{{text .ID maxID}}. Asked {{when .Asked}}. Ends {{until $.Now .Expires}}.</span>
+{{if .Held}}<span class="held">Held: decided past the limit.</span>{{end}}
+</a></li>
+{{end}}</ul>
+{{else}}<p>No card is waiting.</p>
+{{end}}{{if .Listing.NotListed}}<p>{{num .Listing.NotListed}} more waiting cards are not listed here. Read them at the desk.</p>
+{{end}}</section>
+<section aria-labelledby="recent">
+<h2 id="recent">Recent</h2>
+{{with .Listing.Recent}}<ul class="cards">
+{{range .}}<li><a href="{{cardHref .ID}}">
+<span class="what">{{text .Project maxName}} · {{text .Verb maxName}}{{if .Feature}} {{text .Feature maxName}}{{end}}</span>
+<span class="meta">{{text .ID maxID}}. {{text .State maxID}}, {{when .At}}.</span>
+{{if .Line}}<span class="line">{{text .Line maxLine}}</span>{{end}}
+</a></li>
+{{end}}</ul>
+{{else}}<p>Nothing recent.</p>
+{{end}}</section>
+{{template "readonly"}}
+{{template "leave"}}
+{{end}}

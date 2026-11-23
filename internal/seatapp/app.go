@@ -80,11 +80,23 @@ type PairResult struct {
 // holds, [ErrLoginRefused] for a login it did not accept, and
 // [ErrDaemonUnavailable] when it cannot be reached.
 //
+// List, Show and Pages are the reads of the cards (owner.list, owner.show and
+// owner.paths): the list, one card built from its record's bytes, and page n
+// of a card's whole path list. They return [ErrNoCard] for a card the daemon
+// does not have, [ErrCardChanged] for a page of a review that is no longer
+// the card's, [ErrTooLarge] for an answer that does not fit the gate's frame,
+// [ErrNotOffered] when the gate does not offer reads, [ErrBusy] when it does
+// not take the call for its load, and [ErrDaemonUnavailable] when it cannot
+// be reached. No read decides anything.
+//
 // The app maps any other error to a fixed code and never shows its text.
 type Daemon interface {
 	Pair(ctx context.Context, r PairRequest) (PairResult, error)
 	LoginChallenge(ctx context.Context) (LoginChallenge, error)
 	Login(ctx context.Context, r LoginRequest) (LoginResult, error)
+	List(ctx context.Context) (Listing, error)
+	Show(ctx context.Context, id string) (Card, error)
+	Pages(ctx context.Context, id string, n int) (PathsPage, error)
 }
 
 // The errors a Daemon returns that the app tells apart.
@@ -163,6 +175,8 @@ type app struct {
 	pair  *pairing
 	login *logins
 	sess  *sessions
+	// reads bounds the reads of each credential's sessions.
+	reads *limiter
 	// host is what the Host header of a request must be: the origin without
 	// its scheme.
 	host string
@@ -196,7 +210,8 @@ func newApp(cfg Config) (*app, http.Handler, error) {
 		cfg.Random = rand.Reader
 	}
 	_, hostHeader, _ := strings.Cut(origin, "://")
-	a := &app{cfg: cfg, pair: newPairing(cfg), login: newLogins(cfg), sess: newSessions(cfg.Now), host: hostHeader}
+	a := &app{cfg: cfg, pair: newPairing(cfg), login: newLogins(cfg), sess: newSessions(cfg.Now),
+		reads: newLimiter(readRequests, readWindow), host: hostHeader}
 
 	mux := http.NewServeMux()
 	for _, rt := range a.routes() {
@@ -233,11 +248,16 @@ func (a *app) routes() []route {
 		{"POST /api/login-challenge", a.post(a.loginChallenge)},
 		{"POST /api/login", a.post(a.loginPost)},
 		{"POST /api/logout", a.post(a.logout)},
+		{"GET /cards/{$}", a.authed(a.cardList)},
+		{"GET /cards", a.redirect(cardsPath)},
+		{"GET /cards/{id}", a.authed(a.cardPage)},
+		{"GET /cards/{id}/paths/{n}", a.authed(a.pathsPage)},
+		{"GET /static/session.js", a.asset("assets/session.js", "text/javascript; charset=utf-8")},
 	}
 }
 
 // afterLogin is where the login page goes once a session is made.
-const afterLogin = "/"
+const afterLogin = cardsPath
 
 // pairPath is the canonical path of the pairing page, the one the desk's QR
 // holds and the only one served as a page.

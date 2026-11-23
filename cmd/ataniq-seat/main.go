@@ -33,10 +33,11 @@
 // wrote the seat's key to. The link is kept up in the background, with
 // pinned-key TLS at both ends, and redialled when it drops; while it is down
 // pairing answers daemon_unavailable, and a code the daemon refused answers
-// code_refused. The login (/login/) asks the daemon through the same link,
-// and the link recomputes each login challenge from the pin before the phone
-// is asked. Without the three flags the daemon port is not wired: pairing
-// and login answer with the fixed code daemon_unavailable.
+// code_refused. The login (/login/) and the card pages (/cards/, read-only,
+// behind a session) ask the daemon through the same link, and the link
+// recomputes each login challenge from the pin before the phone is asked.
+// Without the three flags the daemon port is not wired: pairing and login
+// answer with the fixed code daemon_unavailable.
 //
 // Nothing secret is printed or read from the command line. The pairing code
 // is never printed.
@@ -100,6 +101,18 @@ func (unwiredDaemon) LoginChallenge(context.Context) (seatapp.LoginChallenge, er
 
 func (unwiredDaemon) Login(context.Context, seatapp.LoginRequest) (seatapp.LoginResult, error) {
 	return seatapp.LoginResult{}, seatapp.ErrDaemonUnavailable
+}
+
+func (unwiredDaemon) List(context.Context) (seatapp.Listing, error) {
+	return seatapp.Listing{}, seatapp.ErrDaemonUnavailable
+}
+
+func (unwiredDaemon) Show(context.Context, string) (seatapp.Card, error) {
+	return seatapp.Card{}, seatapp.ErrDaemonUnavailable
+}
+
+func (unwiredDaemon) Pages(context.Context, string, int) (seatapp.PathsPage, error) {
+	return seatapp.PathsPage{}, seatapp.ErrDaemonUnavailable
 }
 
 func main() {
