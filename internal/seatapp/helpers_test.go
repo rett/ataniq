@@ -153,6 +153,16 @@ func sampleCard() Card {
 	}
 }
 
+func (d *fakeDaemon) Offer(string, string, Reading, time.Time) Offer { return Offer{} }
+
+func (d *fakeDaemon) DecideChallenge(context.Context, DecideChallengeRequest) (DecideChallenge, error) {
+	return DecideChallenge{}, ErrDaemonUnavailable
+}
+
+func (d *fakeDaemon) Decide(context.Context, DecideRequest) (DecideResult, error) {
+	return DecideResult{}, ErrDaemonUnavailable
+}
+
 func (d *fakeDaemon) Pair(_ context.Context, r PairRequest) (PairResult, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()

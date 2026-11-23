@@ -81,7 +81,49 @@
 //	rate-limited, busy, too-many-refusals       seatapp.ErrBusy
 //
 // and the rest as for the pairing. A record the card model refuses is no
-// card; the phone says it could not be read.
+// card; the phone says it could not be read. A card Show built is kept,
+// with its review, so that a decision is built from the card the phone was
+// shown; Show also passes on the daemon's mark of a decision on its way.
+//
+// # Decisions
+//
+// [Daemon.Offer], [Daemon.DecideChallenge] and [Daemon.Decide] are a
+// decision from the phone, in the form docs/design/seat-gate.md gives it
+// ("The challenge", "Decide" and "The phone's side"), and only when the
+// gate's hello listed "decide" and the link has the gate's pin. Offer asks
+// the gate nothing: it answers what the Card page may offer by the card
+// model's rules (MayApprove with every flagged path signed off, and Deny).
+// DecideChallenge freezes the decision from the card Show kept, at the
+// binding the Card page showed: the action, the flagged paths signed off by
+// their index, in the card's order, and the reason, through the card
+// model's Approve (MayApprove with the session's reading) or Deny; a
+// decision they refuse is not sent. It sends seat.challenge, and recomputes
+// the challenge the daemon answers from the gate's pin, the frozen frame and
+// the daemon's nonce with ownerwire.DecisionChallenge, the function the
+// daemon calls too; a challenge that differs is seatapp.ErrChallengeDiffers
+// and is never handed on, so the phone is never asked to sign it. Decide
+// sends seat.decide with the frame and the assertion, and nothing is
+// retried. The codes, on both calls:
+//
+//	challenge-stale                             seatapp.ErrChallengeStale
+//	binding-mismatch, review-changed            seatapp.ErrCardChanged
+//	approval-expired                            seatapp.ErrCardExpired
+//	approval-consumed, approval-void,
+//	previous-epoch, decision-invalid            seatapp.ErrCannotDecide
+//	assertion-invalid                           seatapp.ErrAssertionRefused
+//	key-revoked, key-unknown                    seatapp.ErrKeyRevoked
+//	kind-refused                                seatapp.ErrKindRefused
+//	challenges-full, rate-limited, busy,
+//	too-many-refusals                           seatapp.ErrBusy
+//	unknown-op                                  seatapp.ErrNotOffered
+//
+// Before a decision is sent, a gate that is not connected is
+// seatapp.ErrDaemonUnavailable. After it is sent, only a refusal above says
+// for certain that nothing was decided: unavailable, deadline-exceeded,
+// door-unavailable, journal-reopened and failed, a lost link, the seat's own
+// deadline and an answer not of its form are seatapp.ErrOutcomeUnknown, and
+// any other code is a [*RefusedError], whose outcome the app treats as
+// unknown too.
 package seatlink
 
 import (
@@ -115,7 +157,7 @@ const (
 
 // Caps is the capability list the seat says in its hello
 // ([seatgate.ClientConfig].Caps), in a new slice.
-func Caps() []string { return []string{CapPair, CapRead, CapLogin} }
+func Caps() []string { return []string{CapPair, CapRead, CapLogin, CapDecide} }
 
 // errBadAnswer is the error of an answer that is not a pairing result of its
 // form. It holds nothing of the answer.
@@ -156,6 +198,8 @@ type Daemon struct {
 	pin string
 	// reviews are the review digests of the cards the link showed.
 	reviews reviews
+	// shown are the cards the link showed, from which a decision is built.
+	shown shownCards
 }
 
 // Option sets an option of [New].

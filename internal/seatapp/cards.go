@@ -96,6 +96,10 @@ type Card struct {
 	// card exists because a run refused.
 	State, Line          string
 	Ended, Held, Refused bool
+	// OnItsWay is the mark of a card whose decision the daemon's journal
+	// holds and the door has not taken yet: no other decision of it is
+	// taken meanwhile.
+	OnItsWay bool
 	// Plan is the plan text, line by line.
 	Plan []Lead
 	// Refs are the refs the approval would move or delete.

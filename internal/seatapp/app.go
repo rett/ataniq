@@ -89,6 +89,25 @@ type PairResult struct {
 // not take the call for its load, and [ErrDaemonUnavailable] when it cannot
 // be reached. No read decides anything.
 //
+// Offer, DecideChallenge and Decide are a decision from the phone. Offer
+// asks the gate nothing: it says what the Card page may offer for a card the
+// port showed, as a session read it, by the card model's rules for approve
+// and deny. DecideChallenge freezes the decision the owner tapped from the
+// card the port showed (never from anything a browser sent but the action,
+// the indexes of the sign-offs and the reason), asks the daemon for its
+// challenge (seat.challenge), and returns it only after the port recomputed
+// it from the gate's key, the frozen frame and the daemon's nonce
+// ([ErrChallengeDiffers] otherwise, and nothing is asked of the phone).
+// Decide hands the daemon the phone's assertion over it (seat.decide). They
+// return [*NotAllowedError] for a decision the card model does not allow,
+// [ErrCardChanged] for a card the port did not show at that binding,
+// [ErrNotOffered] when the gate does not offer decisions, [ErrBusy] for its
+// load, the errors of the daemon's refusals ([ErrChallengeStale],
+// [ErrCardExpired], [ErrCannotDecide], [ErrAssertionRefused], [ErrKeyRevoked],
+// [ErrKindRefused]), and [ErrDaemonUnavailable] when nothing was sent. Once
+// Decide has sent the decision, a lost answer is [ErrOutcomeUnknown], never
+// ErrDaemonUnavailable.
+//
 // The app maps any other error to a fixed code and never shows its text.
 type Daemon interface {
 	Pair(ctx context.Context, r PairRequest) (PairResult, error)
@@ -97,6 +116,9 @@ type Daemon interface {
 	List(ctx context.Context) (Listing, error)
 	Show(ctx context.Context, id string) (Card, error)
 	Pages(ctx context.Context, id string, n int) (PathsPage, error)
+	Offer(id, bindingSHA256 string, r Reading, now time.Time) Offer
+	DecideChallenge(ctx context.Context, r DecideChallengeRequest) (DecideChallenge, error)
+	Decide(ctx context.Context, r DecideRequest) (DecideResult, error)
 }
 
 // The errors a Daemon returns that the app tells apart.

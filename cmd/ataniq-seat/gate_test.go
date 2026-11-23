@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 
 	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/approval/webauthntest"
+	"ataniq/internal/seatapp"
 	"ataniq/internal/seatgate"
 )
 
@@ -324,6 +326,21 @@ func TestNoGateFlagsKeepTheUnwiredPort(t *testing.T) {
 		t.Errorf("stderr speaks of a gate: %q", stderr.String())
 	}
 	noCodeIn(t, "stderr", stderr.String())
+}
+
+// The unwired port offers no decision and sends none: a challenge and a
+// decision are both daemon unavailable, which says nothing was sent.
+func TestUnwiredPortDecidesNothing(t *testing.T) {
+	var d unwiredDaemon
+	if o := d.Offer("ap-20261122-0001", strings.Repeat("ab", 32), seatapp.Reading{}, time.Now()); o.Approve || o.Deny {
+		t.Errorf("offer %+v", o)
+	}
+	if _, err := d.DecideChallenge(context.Background(), seatapp.DecideChallengeRequest{}); !errors.Is(err, seatapp.ErrDaemonUnavailable) {
+		t.Errorf("challenge: %v", err)
+	}
+	if _, err := d.Decide(context.Background(), seatapp.DecideRequest{}); !errors.Is(err, seatapp.ErrDaemonUnavailable) {
+		t.Errorf("decide: %v", err)
+	}
 }
 
 // The gate flags go together, the address must be host:port, and the pin file

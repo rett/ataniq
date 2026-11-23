@@ -88,7 +88,7 @@ const shutdownGrace = 10 * time.Second
 var gateLinkHook func(*seatgate.Client)
 
 // unwiredDaemon is the daemon port without a gate link: every call is
-// ErrDaemonUnavailable.
+// ErrDaemonUnavailable, and a card is offered no decision.
 type unwiredDaemon struct{}
 
 func (unwiredDaemon) Pair(context.Context, seatapp.PairRequest) (seatapp.PairResult, error) {
@@ -113,6 +113,18 @@ func (unwiredDaemon) Show(context.Context, string) (seatapp.Card, error) {
 
 func (unwiredDaemon) Pages(context.Context, string, int) (seatapp.PathsPage, error) {
 	return seatapp.PathsPage{}, seatapp.ErrDaemonUnavailable
+}
+
+func (unwiredDaemon) Offer(string, string, seatapp.Reading, time.Time) seatapp.Offer {
+	return seatapp.Offer{}
+}
+
+func (unwiredDaemon) DecideChallenge(context.Context, seatapp.DecideChallengeRequest) (seatapp.DecideChallenge, error) {
+	return seatapp.DecideChallenge{}, seatapp.ErrDaemonUnavailable
+}
+
+func (unwiredDaemon) Decide(context.Context, seatapp.DecideRequest) (seatapp.DecideResult, error) {
+	return seatapp.DecideResult{}, seatapp.ErrDaemonUnavailable
 }
 
 func main() {

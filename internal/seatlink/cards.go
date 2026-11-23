@@ -172,8 +172,10 @@ func (d *Daemon) Show(ctx context.Context, id string) (seatapp.Card, error) {
 	if c.Diff != nil {
 		d.reviews.put(id, c.Diff.ReviewDigest)
 	}
+	d.shown.put(id, c)
 	v := viewOf(c)
 	v.Line = line
+	v.OnItsWay = shown.OnItsWay
 	return v, nil
 }
 
