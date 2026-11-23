@@ -3,7 +3,7 @@
 // time, whether that moved. It reads and shows; it sends nothing but that
 // poll, and the poll carries no card text.
 //
-// The card list reloads when its version moved (at most once every ten
+// The card list reloads when its version moved (at most once every twenty
 // seconds, never over a form field with typed text). A Card page never
 // reloads by itself, since the owner may be ticking sign-offs: it shows a
 // banner, and turns off the controls the page marks with data-offer. The
@@ -40,7 +40,7 @@
   var LIMITED_WAIT = 60000;
   var BACKOFF_FIRST = 5000;
   var BACKOFF_LAST = 60000;
-  var RELOAD_GAP = 10000;      // the page is reloaded at most this often
+  var RELOAD_GAP = 20000;      // the page is reloaded only once its own read is this old
   var RELOAD_RETRY = 2000;
 
   var live = root.dataset.live === "yes";
@@ -112,7 +112,7 @@
       el.type !== "checkbox" && el.type !== "radio";
   }
 
-  // wantReload reloads the list once ten seconds have passed since this page
+  // wantReload reloads the list once twenty seconds have passed since this page
   // was loaded, and not while a field holds typed text. A reload pending is
   // never set twice.
   function wantReload() {

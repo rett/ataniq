@@ -197,10 +197,10 @@ func TestSeatWatchScriptHandlesEveryAnswer(t *testing.T) {
 	// The statuses of the transport, and the waits: 429 backs off a minute,
 	// an error five seconds doubling to a minute, offline thirty seconds,
 	// a replaced poll a hold's length,
-	// a request is cut at thirty seconds, and a reload waits ten.
+	// a request is cut at thirty seconds, and a reload waits twenty.
 	for _, want := range []string{
 		"resp.status === 429", "LIMITED_WAIT = 60000", "BACKOFF_FIRST = 5000", "BACKOFF_LAST = 60000", "backoff * 2",
-		"OFFLINE_WAIT = 30000", "REPLACED_WAIT = 25000", "REQUEST_TIMEOUT = 30000", "RELOAD_GAP = 10000",
+		"OFFLINE_WAIT = 30000", "REPLACED_WAIT = 25000", "REQUEST_TIMEOUT = 30000", "RELOAD_GAP = 20000",
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("watch.js lacks %q", want)

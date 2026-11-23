@@ -331,11 +331,15 @@ up without a reload, and a card that was decided, withdrawn or replaced
 (at the desk, on another phone or by the daemon) stops being offered:
 
 - **The card list** reloads itself when the set of waiting cards changed, at
-  most once every 10 seconds, and never while a field on it holds typed text.
+  most once every 20 seconds, and never while a field on it holds typed text.
   A new card that came in through the daemon's door is seen within about 30
   seconds, the interval at which the daemon looks at the door; a decision made
   at the desk or on the phone is seen within a few seconds, and a page that
-  just reloaded waits for its 10 seconds before it reloads again.
+  just reloaded waits until it is 20 seconds old before it reloads again.
+  Every reload is a read of the desk, and the seat's reads share 20 calls in 80
+  seconds (see below). With several card lists open at once, in a busy period,
+  the reloads can use most of those 20, and a tap of yours on a card may then be
+  answered "The desk is busy" for a moment: close the lists you are not looking at.
 - **A Card page** never reloads by itself, since you may be ticking boxes.
   When its card was decided elsewhere or changed, the page says "This card
   changed or was decided elsewhere. Look again." with the links "Back to the

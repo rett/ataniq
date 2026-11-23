@@ -1368,8 +1368,16 @@ an answer is written into the page. One status line (`#watch-status`) says:
 | Session ended. Log in again. | The answer was `ended`. It polls no more. |
 | This card changed or was decided elsewhere. Look again. | On a Card page: the card is `changed` or `gone`, or it is `unknown` and the version moved. With the links "Back to the cards" and "Reload". |
 
-- The card list reloads when its version moved, at most once every 10 seconds
-  since it was loaded, and not while a field holds typed text.
+- The card list reloads when its version moved, at most once every 20 seconds
+  since it was loaded (a reload is put off until the page's own read, which is
+  the page's load, is 20 seconds old), and not while a field holds typed text.
+  The gap keeps the reloads inside the reads' room: each reload is one
+  `owner.list`, and the reads have 20 calls in 80 seconds. It is a stated
+  limit, not a bound: three card lists open in a busy period (the watcher
+  publishes up to about 6 changes in 80 seconds, each list reloads at most
+  every 20 seconds, so a list takes up to 4 of the 20 reads) can still use
+  most of the 20, and the owner's own taps on a card may then be answered
+  `desk_busy` until the room frees. No second room is built for the reloads.
 - A Card page never reloads by itself, since the owner may be ticking
   sign-offs. When its card is `changed` or `gone` it shows the line above,
   disables every control the page marks with the attribute `data-offer` (the
