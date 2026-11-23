@@ -19,6 +19,7 @@ address or key belongs in a file of this repository.
 | Lead host (the host of the daemon) | `ataniqd run --owner-channel --seat-gate ADDR`: the daemon with the owner channel and the gate, a TCP listener on one address of this host. | Tag `ataniq_ownerchannel`: `make ownerchannel-build` builds `build/owner/ataniqd`. A build without the tag has no gate and no `seat-gate` command. |
 | Lead host | `ataniq-console --daemon DIR`: the desk. It starts a pairing and confirms it; it holds the decider's place. | Untagged. |
 | Authority host (the seat host) | `ataniq-seat`: the seat web app, which links to the gate. It listens on a Unix socket or a loopback address only. | Untagged, and static for a release: see [Deploying the seat app](../deploy/authority-host/DEPLOY.md#deploying-the-seat-app) (`CGO_ENABLED=0 sh scripts/go-tool.sh build -trimpath -o build/authority-host/ataniq-seat ./cmd/ataniq-seat`). No Makefile target builds it. |
+| Authority host | `ataniq-seat-notify`, the notifier (optional): the one unit that sends the phone a push notice that cards wait. The seat tells it how many cards wait over a Unix socket. | Untagged, static, built with the seat's release: see [the README](../deploy/authority-host/README.md#the-notifier) and [Notices](#notices). |
 | Authority host | Caddy on port 80, in front of the seat's socket: it keeps the Host, names the client's address and forwards. | Shipped in `deploy/authority-host/seat/` (see [the README](../deploy/authority-host/README.md#the-seat-app)); the owner writes its site file. |
 | The owner's network | A front proxy that owns port 443 and the TLS for the seat origin and forwards plain HTTP to port 80 of the authority host. | The owner's own; none is shipped. |
 | The owner's phone | A browser with a passkey. It talks to the seat origin only, never to the gate. | |
@@ -27,7 +28,11 @@ The seat dials the gate; the gate never dials out. The link is TLS 1.3 with a
 key pinned at each end: the gate holds a list of seat key fingerprints, the seat
 holds one gate key fingerprint. The owner carries each fingerprint by hand from
 one host to the other. A seat whose key is not pinned is refused in the
-handshake and never reaches the service.
+handshake and never reaches the service. The seat reaches no other network
+address than the gate's. With notices on it also dials the notifier's local
+Unix socket, which is not a network address; the push to the phone, through
+Apple's push service, is the notifier's, a separate unit (see
+[Notices](#notices)).
 
 On the authority host the seat is deployed as a release: `deploy/authority-host/seat/`
 holds its unit (`ataniq-seat.service`), its Caddyfile and its lists (validators,
@@ -51,6 +56,8 @@ Not yet: a production mode of the daemon (the gate is for the scratch
 5. Start the daemon and the seat ([Starting](#starting)).
 6. Pair the phone, log in and decide ([Pairing](#pairing),
    [Login and decisions](#login-and-decisions)).
+7. Optional, on the authority host: set up the notifier and turn notices on at
+   the phone ([Notices](#notices)).
 
 ## Keys
 
@@ -180,7 +187,13 @@ together:
   overwrites the header on every request.
 - **No caching.** Every response carries `Cache-Control: no-store`, and the
   security headers (content security policy, HSTS, `Permissions-Policy`) that
-  the passkey calls rely on. Do not cache and do not remove or change them.
+  the passkey calls rely on. Do not cache and do not remove or change them. The
+  one exception is the notices' service worker, `/sw.js`, which the seat serves
+  with `Cache-Control: no-cache` so that the phone checks it for a change; the
+  shipped Caddy sets `no-store` on it as on everything else, which does no harm.
+  The content security policy includes `manifest-src 'self'` and
+  `worker-src 'self'`, which the notices need; a proxy that rewrites the policy
+  must keep them, or the Home Screen app and its worker are refused.
 - **Allow a held request on `/api/watch`.** The live refresh polls
   `POST /api/watch`, which the seat holds for up to 25 seconds before it
   answers. The front proxy's read timeout (how long it waits for the seat's
@@ -250,6 +263,13 @@ ataniq-seat --origin-file PATH --socket PATH --client-addr-header NAME \
 `--gate`, `--gate-pin-file` and `--identity` go together; without them the seat
 runs unlinked, pairing and login answer `daemon_unavailable` and no card offers a
 decision.
+
+`--notify-socket PATH`, an absolute path, is optional and needs the gate link:
+it names the Unix socket of the notifier, and turns notices on (see
+[Notices](#notices)). Without it the seat tells no one anything, the card list
+shows nothing about notices and the notices' routes answer 404. On the authority
+host the flag is `SEAT_NOTIFY_ARGS=--notify-socket /run/seat-notify/notify.sock`
+in the owner's `seat.env`.
 
 `--decision-guard DIR` (default `/var/lib/authority-host`) is the folder the
 seat asks, with `decisionguard.Check`, before it relays any decision's challenge
@@ -399,6 +419,136 @@ read timeout for the seat must be above 30 seconds and its buffering of
 `/api/watch` must be off, so that the answer reaches the phone when the seat
 writes it (see [The reverse proxy](#the-reverse-proxy)).
 
+## Notices
+
+A notice is a small push that the owner's phone shows when cards are waiting and
+no page of the seat is open: one line, "3 waiting". It is optional and off until
+the notifier is set up and the seat is started with `--notify-socket`. It is a
+hint to look and nothing else: it shows no card, has no button, and a tap opens
+the card list; a decision still needs the Card page and the passkey. The design
+is [Notices](design/seat-gate.md#notices).
+
+Built and tested on loopback, not deployed and not tried on a phone yet. The
+steps below are written from the code; what the iPhone itself does (its
+prompts, its settings, whether it accepts the service worker's registration
+under the page's Trusted Types rule) is for the phone trial to confirm.
+
+What runs. The seat tells the notifier one number over a Unix socket (how many
+cards wait); the notifier, a separate unit with its own user, holds the push key
+and the phone's subscription, and sends the push to Apple's push service, which
+delivers it. The notifier's setup is the owner's, once, by hand, on the
+authority host: the user, the key, the contact, the unit's drop-in that allows
+its one outbound path, the firewall rule and the line in `seat.env`. It is in
+[the README](../deploy/authority-host/README.md#the-notifier) (what it does and
+how to set it up) and in
+[DEPLOY.md](../deploy/authority-host/DEPLOY.md#deploying-the-notifier) (the
+order of the steps).
+
+### When a notice is sent
+
+The seat sends one when the number of waiting cards is above what it last told
+the notifier, unless:
+
+- a page of the seat polled in the last 60 seconds (a page that is open and
+  visible is one you are looking at; a hidden tab or a phone that has put the
+  page to sleep asks nothing, so close the pages and wait a minute when you
+  test);
+- the count came back up after a dip, to no more than what was last told, and
+  fewer than 2 minutes have passed since the last notice (a card decided and
+  another asked is not a new notice at once): so with the count not rising,
+  there is at most one notice every 2 minutes;
+- 30 notices were already attempted in the 24 hours since the first of them;
+- the last attempt failed less than a minute ago;
+- the seat is not live: the gate does not list `watch` (see
+  [Live refresh](#live-refresh)), or the link to the desk is down ("Not live: the
+  desk is out of reach"). No notice is stored for later; once the seat is live
+  again the count is judged afresh, and cards still above what was told then
+  bring the notice.
+
+Restarting the seat starts the tally anew, so a restart can send one more notice
+for the cards then waiting. The notifier holds a limit of its own, 30 pushes in
+any hour for all subscriptions together, whatever the seat asks. When the phone cannot
+be reached, Apple's push service keeps a notice for up to 1 hour (the notifier
+asks it to), and a newer notice replaces an older one not yet delivered.
+
+### Turning notices on, on the phone
+
+1. The notifier is set up and the seat runs with `--notify-socket`. You can see
+   it: the card list has a **Notices** section at its foot. Without that
+   section there is no notifier configured (see "Troubleshooting").
+2. On the iPhone, open the seat's address in Safari and log in as usual.
+   Notices work only from the Home Screen app, so add the seat's page to the
+   Home Screen (Share, then Add to Home Screen; the app is named "Seat" and
+   opens on the card list), and open it from the new icon. In Safari the
+   section says "Open this page from the Home Screen app to turn on notices." and
+   has no button.
+3. In the Home Screen app, open the card list. If it shows the login page, log in
+   there.
+4. Tap **Enable notices** and allow the phone's prompt. The status line says
+   "Working." and then "Notices are on."; the button becomes **Stop notices**.
+   The permission is asked only by that tap.
+5. Test it ([Testing it](#testing-it)).
+
+The status line is the page's own (a fixed text, never one the seat or the
+phone sent):
+
+| Status line | Meaning |
+| --- | --- |
+| "This browser cannot show notices." | The browser lacks service workers, push or notifications. No button. |
+| "Open this page from the Home Screen app to turn on notices." | The page is open in Safari, not from the Home Screen. No button. |
+| "Working." | A tap is being carried out. |
+| "Notices are on." / "Notices are off." | This phone's browser holds a push subscription or not. It is the browser's own state: it does not ask the notifier. |
+| "Notices need your permission. Change it in the phone's settings." | The prompt was refused or dismissed, or notifications are off for the app. Allow them in the phone's notification settings for the Seat app, then tap Enable again. |
+| "Could not turn on notices. Try again later." / "Could not stop notices. Try again later." | Any other failure; see "Troubleshooting". |
+| "No room for another phone. Stop notices on another phone first." | The notifier holds 4 subscriptions already. |
+| "Too many tries. Wait a minute." | More than 6 calls in a minute from one passkey's sessions. |
+| "Session ended. Log in again." | The session is gone. |
+
+### Turning notices off
+
+Tap **Stop notices** on that phone: the notifier forgets the subscription and
+the phone drops it ("Notices are off."). If the notifier cannot be reached the
+phone keeps its subscription and you can tap again. To stop every notice from
+the host, stop the notifier (`systemctl stop ataniq-seat-notify.service`) or
+remove the `SEAT_NOTIFY_ARGS` line from `seat.env` and restart the seat (see
+[the README's rollback](../deploy/authority-host/README.md#rollback-1)); the
+phone's Notices section disappears (with the flag removed; with the notifier
+only stopped it stays and its taps fail).
+
+### Testing it
+
+As the seat user, the only user the notifier serves, on the authority host:
+
+```sh
+sudo -u seat RELEASE/bin/ataniq-seat-notify send-test --socket /run/seat-notify/notify.sock 3
+```
+
+It prints `sent K`, how many pushes Apple's push service accepted. `sent 0` with
+no phone subscribed shows only that the socket, the user check and the answer
+work. With a phone subscribed, the phone shows "3 waiting". A test spends from
+the notifier's 30 pushes an hour. The second test is real: close the seat's pages
+on the phone, wait a minute, and bring a request to the desk; the notice follows
+within about 30 seconds, the interval at which the daemon looks at its door. A
+notice never asks for a decision: tap it, log in if asked, and the card list
+is there.
+
+### What a notice costs in privacy, and what a taken-over host can do
+
+The text is encrypted to the phone, so Apple's push service reads no count. It
+sees that the notifier sent a push to the phone's subscription, when, how large
+it was and the push's headers (among them the contact the owner put in
+`NOTIFY_SUBJECT`). A taken-over seat can fake or spam notices, up to the
+notifier's 30 pushes an hour, and can fill the four subscription places so that
+the phone is refused; a taken-over notifier can send the phone any push but the
+phone shows only "N waiting" or "Cards are waiting" and a link to the card list.
+Neither can decide a card. Every notice that is false is a reason to log in, and
+the seat can turn a login into a decision (see [Limits](#limits)). The full
+list is in [the design](design/seat-gate.md#what-a-taken-over-seat-or-notifier-can-do).
+
+Not built: quiet hours (a notice comes at any hour the rules allow), an email or
+other fallback when the phone cannot be reached, a notice for a single card and
+question cards.
+
 ## Credential kinds
 
 A paired credential has a kind, which is what the phone's authenticator
@@ -490,8 +640,10 @@ The ones an operator meets:
   it can say that nothing changed, or that a gone card is live. The daemon still
   checks the card's binding on every decision, so a stale offer is refused, not
   taken.
-- Notices on the phone are not built: nothing tells the phone that a card is
-  waiting while no page of the seat is open.
+- Notices (see [Notices](#notices)) are not tried on a phone. They have no quiet
+  hours and no fallback when the phone cannot be reached, none for a single card
+  and no question cards. A taken-over seat can fake or spam them, and each one
+  is a reason to log in, which the seat can turn into a decision.
 
 ## Troubleshooting
 
@@ -543,3 +695,23 @@ What the phone shows, by the code the seat's API answers:
 | Nothing visible, but `POST /api/watch` answers 429 in the proxy's log or the browser's tools | `rate_limited` | More than 12 polls a minute from one passkey's sessions, as more than four tabs open at once make. The page waits 60 seconds and asks again. | Close the extra tabs. |
 | "This card changed or was decided elsewhere. Look again." | `changed` or `gone` (the card's state in the poll's answer) | The card, which was waiting when the page was read, was decided on another page or phone or at the desk, replaced, expired or withdrawn since. Not shown for a card that was already decided, ended or expired when the page was read, nor on the page whose own confirm sent the decision. | Reload, or go back to the cards. |
 | A line `seat.wait refused wait-full (peer ...)` in the daemon's log | `wait-full` | The gate already holds two waits for that seat key (or the daemon's eight). Normal for a moment when the seat reconnects. Not counted against the seat. | Nothing if it stops. If it repeats every minute, look for a second `ataniq-seat` with the same identity. |
+
+Notices (see [Notices](#notices)). The notifier's own lines are in its journal
+(`journalctl -u ataniq-seat-notify.service`): fixed text and counts, never an
+endpoint or a key. The seat logs one fixed line, at most one a minute, when a
+call to the notifier failed: `seatapp: the notifier did not take the count;
+trying again in a minute`.
+
+| What you see | Cause | What to do |
+| --- | --- | --- |
+| The card list has no Notices section, and `/sw.js` answers 404 | No notifier is configured for the seat: it was started without `--notify-socket` (on the authority host, no `SEAT_NOTIFY_ARGS` line in `seat.env`, or the release has no notifier). | Set the notifier up ([the README](../deploy/authority-host/README.md#the-notifier)), add the line to `seat.env`, and switch or restart the seat. |
+| The section is there with no button, and says "Open this page from the Home Screen app to turn on notices." | The page is open in Safari, not from the Home Screen. | Add it to the Home Screen and open it from there. |
+| "Notices need your permission. Change it in the phone's settings." | The prompt was refused or dismissed, or notifications are off for the Seat app. The phone asks once. | Allow notifications for the Seat app in the phone's settings, then tap Enable notices again. |
+| "Could not turn on notices. Try again later." | The seat could not reach the notifier (`unavailable`, 503 in the browser's tools), the notifier refused the subscription (`endpoint_refused`, 422: the phone's push service is not on the notifier's host list; `bad_subscription`, 400), the notifier answered with a code the seat does not know (`notifier_error`, 502), or the phone refused to register the service worker or to subscribe. | Check `systemctl status ataniq-seat-notify.service`, that `/run/seat-notify/notify.sock` is there (`seat-notify:seat`, 0660). Read the notifier's journal. |
+| "No room for another phone. Stop notices on another phone first." | `too_many`: the notifier holds 4 subscriptions. | Tap Stop notices on the other phone. A subscription that Apple's push service reports gone is dropped at the next push. Otherwise stop the notifier, move `subscriptions.json` aside, start it and subscribe again (see [the README's rollback](../deploy/authority-host/README.md#rollback-1)). |
+| Nothing arrives, and `send-test` fails with `seatnotice: refused: unavailable` | The notifier cannot reach Apple's push service: the owner's drop-in (`egress.conf`) or the firewall rule is missing or wrong, the resolver is not allowed, or the endpoint's host is not on the notifier's list. Its journal says `notify: 0 of N pushes accepted, N failed`. | Check the drop-in's `IPAddressAllow=` lines and the firewall rule. See [the README](../deploy/authority-host/README.md#the-notifier), setup step 4. |
+| Nothing arrives, the page says "Notices are on.", and the journal's `notify:` line has a count above 0 before `dropped as gone` | The subscription is gone (Apple's push service answered 404 or 410 for it), and the notifier dropped it. The page reads the phone's own subscription, so it still says on. | Tap Stop notices, then Enable notices again. |
+| Nothing arrives, and `send-test` fails with `seatnotice: refused: rate_limited`, or the journal says `held back by the hourly bound` | The notifier already made its 30 pushes of the hour. | Wait; the hour ages out. |
+| `send-test` fails with `seatnotice: the notifier is not reachable` or `the notifier did not answer` | The unit is not running, the socket is not there, or `send-test` was not run as the seat user (any other user is closed unread). | Run it as `seat` and check the unit. |
+| Nothing arrives, `send-test` works, and cards wait | The rules did not call for a notice: a page of the seat polled in the last minute; the count did not rise above what was last told, or came back after a dip within 2 minutes; 30 notices were attempted in the 24 hours; the last attempt failed less than a minute ago; or the seat is not live (the gate does not list `watch`, or the link is down). | See [When a notice is sent](#when-a-notice-is-sent). Close the seat's pages on the phone, wait a minute, and bring a new request to the desk. |
+| The notice reads "Cards are waiting" with no count | The push was not `{"n":N}` with N from 0 to 999 as the service worker reads it, so the worker shows its plain text. The notifier and the worker the phone holds do not agree, or the push did not come from this notifier. | Make sure the seat and the notifier are of one release. The phone's browser checks the service worker for a change when it starts it. |

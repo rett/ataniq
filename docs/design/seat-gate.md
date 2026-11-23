@@ -15,9 +15,13 @@ call of `decisionguard.Check` in `ataniq-seat` before any challenge or
 decision is relayed (`decisions_inhibited`), and live refresh (G14, first
 part: the gate's long wait `seat.wait` under the capability `watch`, the
 seat's one watcher, and the pages' own refresh; see
-[live refresh](#live-refresh-seatwait)). Not built yet: the phone trial
-(G13); notices on the phone (the rest of G14: the notice core N1, the service
-worker and subscription pages N3, the notifier unit N4); question cards; and
+[live refresh](#live-refresh-seatwait)), and notices on the phone (the rest
+of G14: the notice core N1, the push library N2, the service worker and
+subscription pages N3 and the notifier unit N4; see [notices](#notices)).
+The notices are built and tested on loopback with fakes, not deployed and not
+phone-tested: nothing of them has run on a phone, and no real browser has
+checked the page's Trusted Types registration of the service worker. Not built
+yet: the phone trial (G13); question cards; and
 the one function that makes an origin canonical (G1;
 [the seat origin](#the-seat-origin) lists where the three checks in use
 disagree). This document is the contract that
@@ -128,6 +132,17 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   `POST /api/watch` and the script `/static/watch.js` (`watchpoll.go`,
   `watch.go`, `assets/watch.js`). Without a gate that lists `watch`, the
   pages say "Not live" and still work by reload.
+- Notices on the phone (G14, the rest; see [notices](#notices)). The protocol
+  between the seat and the notifier is `internal/seatnotice` (standard library
+  only; the seat imports it and never the push code), the push code is
+  `internal/webpush` (VAPID and the message encryption of RFC 8291, the one POST
+  to a push service; only the notifier imports it), and the notifier is the
+  command `ataniq-seat-notify` (`cmd/ataniq-seat-notify`). The seat's side is
+  the notice core in `internal/seatapp` (`notice.go`), the push routes
+  (`push.go`), the card list's Notices section, the service worker and the
+  manifest (`assets/sw.js`, `assets/push.js`, `assets/manifest.webmanifest`),
+  and the flag `--notify-socket` of `ataniq-seat`. Built and tested, not
+  deployed, not phone-tested.
 - The release of the seat for the authority host, `deploy/authority-host/seat`
   (G12, built, not deployed): the unit `ataniq-seat.service`, the Caddyfile
   and the validators, reload, stop and health lists, laid over the base
@@ -1428,13 +1443,309 @@ slow or stuck connection may hold. A poll answered within 25 seconds fits both
 timeouts as they are, and a front proxy with a read timeout above 30 seconds
 (see [the operator guide](../seat-gate.md#the-reverse-proxy)).
 
-### What a notice will add
+Notices, which tell the phone that a card is waiting while no page is open,
+follow the watcher's state described above: they are the reason the watcher
+runs when no browser is looking (see [the notices section](#notices)).
 
-Notices on the phone (G14's other part) are not built. They need a sink the
-owner has not chosen, and new egress from the authority host, which is the
-owner's to allow. When built they follow the watcher's state, carry the count
-only, decide nothing and open `/cards/` only (see
-[limits that stay](#limits-that-stay)).
+## Notices
+
+Status: built (G14, the rest: N1 the notice core, N2 the push library, N3 the
+service worker and the pages, N4 the notifier unit) and tested on loopback with
+fakes. Not deployed, not phone-tested, not qualified, and scratch-only like the
+rest of the phone path. Live refresh updates a page that is open; a notice
+tells the owner that a card is waiting when none is. It is a hint that the
+owner should look, and nothing else.
+
+### The three processes
+
+```text
+ataniq-seat  --(Unix socket, one request and one answer)-->  ataniq-seat-notify  --(HTTPS)-->  Apple's push service  -->  the phone
+ (seat user)      a count, 0 to 999, and the phone's              (own user)                      web.push.apple.com
+                  subscription                                    VAPID key, subscriptions
+```
+
+- The seat (`ataniq-seat`) decides when to notify, from the state its watcher
+  holds. About the cards it tells the notifier one integer, how many are
+  waiting, and nothing else: no card, id, text or time crosses the socket (the
+  port the app calls, `seatapp.Notifier`, has no method that could carry one).
+  The same socket carries the phone's subscription, which the seat relays when
+  the owner turns notices on or off and keeps nowhere. The seat reaches the
+  notifier's socket and still no other network address than the gate's: the
+  socket is not a network address and gives it no way out.
+- The notifier (`ataniq-seat-notify`) is a separate unit with its own user. It
+  holds the VAPID key and the push subscriptions, and is the only part that
+  talks to a push service, through the package `internal/webpush`. The seat
+  never imports that package (a test of the seat's imports holds it to that).
+- Apple's push service takes the encrypted message and delivers it to the
+  phone, which wakes the service worker of the Home Screen app.
+
+The split is so that the seat, which holds the phone's session and relays its
+decisions, keeps no way out to the network but the gate: a notice never
+decides, and what the notifier reaches does not widen what the seat reaches.
+The unit's release is `deploy/authority-host/notify`, laid over the seat's (see
+[the authority host's README](../../deploy/authority-host/README.md#the-notifier)).
+
+### The socket's protocol
+
+`internal/seatnotice` holds the codec, the client and the server. The client's
+call and the server's turn with a connection each end 2 seconds after they
+begin. One connection carries one request and one answer.
+
+- A frame is a 4-byte big-endian length and then that many bytes of one JSON
+  object; the length is 1 to 4096. The object is strict: valid UTF-8, no byte
+  before or after it, no repeated key at any depth, no key that the operation
+  does not have, every key in its exact case, nested at most 4 levels.
+- The requests: `{"op":"info"}`; `{"op":"notify","n":N}`, with N an integer 0 to
+  999 written as plain digits (no sign, leading zero, fraction or exponent);
+  `{"op":"subscribe","sub":{"endpoint":URL,"p256dh":B64,"auth":B64}}`; and
+  `{"op":"unsubscribe","endpoint_sha256":HEX}`.
+- A subscription is bounded on the wire: the endpoint is an https URL of at most
+  2048 bytes with a host, no user information, no fragment and only visible
+  ASCII; `p256dh` is the unpadded base64url of a 65-byte uncompressed P-256
+  point (the first byte 0x04); `auth` is the unpadded base64url of 16 bytes. An
+  unsubscribe names a subscription by the SHA-256 of its endpoint, 64 lower-case
+  hex digits, so that the endpoint travels once, in the subscribe.
+- The answers: `{"ok":true}` with the fields of the operation (`info`:
+  `vapid_public` and `subscriptions`; `notify`: `sent`), or
+  `{"ok":false,"code":CODE}` with a code of `[a-z0-9_]{1,40}`. The notifier
+  uses `bad_subscription`, `too_many`, `endpoint_refused`, `unavailable` and
+  `rate_limited`. A frame that breaks a rule is a protocol violation, and what
+  the client and the server report of it holds no byte of what the peer sent.
+- Who may call: the server reads the peer's user id from the kernel
+  (`SO_PEERCRED`) and serves only the one id it was given, the seat user's,
+  looked up once at the notifier's start; a connection of any other user is
+  closed unread. The socket's mode (0660, group `seat`) lets the seat's group
+  connect and is not what decides. On a system that cannot read a peer's user
+  id every connection is refused. At most 16 connections are served at once.
+
+### What a notice shows, and never shows
+
+A notice shows one line, "N waiting" (N the count, 0 to 999), or "Cards are
+waiting" when the push is anything the service worker does not understand. It
+has no body text, no buttons and no data. Its tag is `waiting`, so a newer
+notice replaces an older one in the phone's list instead of piling up, and it
+does not sound again on a replacement (`renotify` is false). Tapping it opens
+the card list, `/cards/`, a fixed address, whatever the push said.
+
+A notice never:
+
+- decides: it has no action, and a decision needs a POST with a fresh passkey
+  assertion on the Card page, as before;
+- carries a card: the push holds only `{"n":N}`; no text of a lead, project,
+  verb or id is in it, and none is ever given to the notifier;
+- links anywhere but `/cards/`: no `next` address, no deciding or identifying
+  link, and the worker, not the push, supplies the text and the link, from the
+  seat's own origin.
+
+### The trigger rules
+
+The notice core (`internal/seatapp/notice.go`) is pure: each call is given the
+time and the watcher's state. The app's goroutine, started by `seatapp.Open`
+when `--notify-socket` is given, applies it. A notice is due when the cards
+waiting are more than what the core last announced, and then it is sent unless
+one of the holds below applies. The rules:
+
+1. Only a live state counts. When the watcher is not running (the gate does not
+   list `watch`) or is offline (the link to the gate is down), the core says
+   nothing, since the count may be old. No notice is stored for later:
+   when the watcher is live again the count is judged afresh, and cards still
+   above what was told bring the notice then.
+2. A count above the one last announced is due at once. A card decided and
+   another asked is not a new notice within 2 minutes of the last one: the
+   count that comes back up from a dip, to no more than what was announced, is
+   due only once those 2 minutes have passed (the floor it must exceed is then
+   the least the count was in the meantime). So when the count does not rise,
+   there is at most one notice per 2 minutes.
+3. No notice while a browser polled in the last 60 seconds: a page that polls is
+   open and the owner is looking at it. Only the time of the last accepted poll
+   is kept, with no part of it or of its session.
+4. After a call to the notifier that failed, nothing is sent for 1 minute; a
+   failure is logged at most once a minute, with fixed text.
+5. At most 30 calls to the notifier in a window of 24 hours that begins with the
+   first of them. Every call counts, whatever its end, since a call that failed
+   may have been taken. A notice that is due past the 30th waits for the window
+   to end.
+6. The tally, the floor and the back-off are in memory only: a restart of the
+   seat resets them. At worst one more notice is sent for the cards then
+   waiting, if no page is polling.
+
+The count told to the notifier is the number of cards waiting, at most 999. The
+notifier has bounds of its own that do not trust the seat (below).
+
+### The service worker
+
+`/sw.js` is the worker the page registers (scope `/`, which the script's own
+address already gives; the seat answers `Service-Worker-Allowed: /`). It
+handles two events and nothing else: no handler of requests, no store, no
+other script loaded.
+
+- `push`: it shows a notification whose title is "N waiting" when the body is
+  JSON, an object whose one member is `n`, an integer 0 to 999; it shows
+  "Cards are waiting" for every other push (another member, another type, no
+  body, a body that is not JSON). The text is the worker's own.
+- `notificationclick`: it closes the notification, then takes a window of the
+  seat's origin that is open (if any) to `/cards/` and focuses it, or opens a
+  window on `/cards/`.
+
+`/sw.js` is served with `Cache-Control: no-cache`, the one response of the app
+that is not `no-store`, so that the browser checks the script for a change with
+a conditional request; the shipped Caddy sets `no-store` on everything it
+forwards, which makes the browser fetch it each time. The manifest
+(`/manifest.webmanifest`: name "Authority seat", start address `/cards/`,
+scope `/`, display `standalone`) and the icons are served without a session;
+they hold nothing of the owner's.
+
+### The phone
+
+On iPhone, notices work only from the Home Screen app: the page says so, and
+`push.js` reads whether it runs standalone (`navigator.standalone` or the
+`display-mode: standalone` query) and, when it does not, shows "Open this page
+from the Home Screen app to turn on notices." and offers no button. The page
+also says "This browser cannot show notices." when the browser lacks service
+workers, push or notifications.
+
+The Notices section is on the card list only, behind a session. Enable notices
+does, in this order, inside the one tap that the browser accepts a permission
+prompt from: ask the permission; register the worker; ask the seat for the push
+key (`POST /api/push/info`); subscribe the browser with it (user-visible
+only); hand the seat the subscription (`POST /api/push/subscribe`), which
+relays it to the notifier. A subscription the seat did not take is dropped in
+the browser again. Stop notices names the subscription by the hash of its
+endpoint (`POST /api/push/unsubscribe`), has the notifier forget it, and then
+drops it in the browser; if the notifier fails, the browser keeps its
+subscription and the tap can be made again. The notifier keeps at most 4
+subscriptions; the same endpoint again replaces its keys, and a fifth is
+refused (`too_many`), which the page shows as "No room for another phone. Stop
+notices on another phone first."
+
+Every text the script puts on the page is a constant of its own, set as text,
+never as markup and never taken from an answer of the seat or the browser. It
+reads an answer only for its status and for the one code `too_many`.
+
+The three routes need a session, count as a use of it (they are the owner's
+taps, unlike a poll), take a body that is one JSON object of exactly the call's
+fields, and are limited to 6 calls a minute for a credential, the three
+together. A call to the notifier is bounded to 5 seconds. They answer only
+`{"ok":true,...}` or `{"ok":false,"code":CODE}`, with the code
+`no_session` (401), `bad_subscription` (400), `too_many` (409),
+`endpoint_refused` (422), `unavailable` (503, which also covers a notifier that
+cannot be reached or is too slow) or `notifier_error` (502, a refusal with a
+code the seat does not tell apart), and `rate_limited` (429) from the limit.
+Nothing the browser sent, and nothing of the notifier's text, is in an answer;
+no page, answer or log of the seat shows an endpoint back. The seat checks the
+subscription's form before it relays it, and the notifier checks again.
+
+Without `--notify-socket` none of this exists: `/sw.js`, `/manifest.webmanifest`,
+`/static/push.js`, the icons and the three routes answer 404, the card list
+shows nothing about notices, and the pages carry no manifest link.
+
+### The page's security
+
+The content security policy gains two sources and nothing else:
+`manifest-src 'self'` and `worker-src 'self'`. The policy stays closed
+(`default-src 'none'`; scripts, styles, connections and images from the app's
+own origin only; nothing inline) and still requires Trusted Types for script
+sinks (`require-trusted-types-for 'script'`).
+
+The sink finding. The Service Workers standard makes the `register()` call of
+`navigator.serviceWorker` a script-address sink: it takes a TrustedScriptURL or
+a string (see the `ServiceWorkerContainer` interface in
+[the standard](https://w3c.github.io/ServiceWorker/)), so with the rule above a
+page must give it the answer of a Trusted Types policy rather than a plain
+string. It is the one script-address sink the
+pages' scripts use (the others set text, and navigate or make links, and reach
+no sink that takes markup, code or a script address). So `push.js` makes one policy,
+`seat-sw`, whose `createScriptURL` answers for the address `/sw.js` and throws
+for any other, and gives `register()` its answer; a test of the script's source
+holds it to one policy and one `register()` call. The CSP names no policy
+(there is no `trusted-types` directive), so the browser does not limit the
+policy names; what limits the policy is its own function, and the code that
+runs under the page's `script-src 'self'`. Not checked in a real browser: that
+iOS Safari, in the Home Screen app, accepts the registration under this rule
+is for the phone trial to show. If the registration is refused there, Enable
+notices ends in "Could not turn on notices. Try again later." and nothing else
+changes.
+
+### The notifier unit
+
+`ataniq-seat-notify run` keeps the subscriptions in a strict file of mode 0600
+(read exactly as the command writes it, written atomically, at most 4
+subscriptions, at most 16 KiB) and the VAPID key in a file of mode 0600 made by
+`vapid-init`, which never overwrites a key. Its bounds, which hold whatever the
+seat asks:
+
+- It keeps and posts only to an https endpoint on port 443 whose host is on its
+  list: exactly `web.push.apple.com` unless the command is given another list
+  (`--push-hosts`, which the unit does not pass), with no wildcard, no
+  subdomain, no IP address, no redirect followed and no proxy from the
+  environment. It refuses another endpoint when it is subscribed
+  (`endpoint_refused`).
+- A notify sends `{"n":N}` to each subscription in turn, with the topic
+  `waiting`, urgency normal and a time to live of 1 hour (what a push service
+  keeps a notice for when the phone cannot be reached), within the connection's
+  2 seconds. A subscription the push service reports gone (404 or 410) is
+  dropped; one that failed otherwise is kept.
+- At most 30 pushes in any hour, every subscription together, whatever the
+  seat asks, and each attempt counts. When none could be sent for that reason
+  it answers `rate_limited`, and the seat treats it as any failure (back-off of
+  a minute).
+- It logs fixed lines and counts, never an endpoint, a key or the contact.
+
+The unit's egress is the host's one outbound path besides the gate's, and the
+authority host's README records that the owner approved it for Apple's push
+service, for this unit and for nothing else. The unit's own
+`IPAddressDeny=any` stays; the owner's drop-in allows the resolver and the push
+service's address range and no other address, and the host's firewall, the
+owner's own rule, keeps the unit's user to the resolver and to TCP port 443 of
+that range. The host check above is the command's own and is made again by the
+sender; the kernel's rule is what holds when the command does not. The unit
+holds no provider key and is no AI tool (the no-AI check reads its unit and
+environment file as it reads the seat's). See
+[the README](../../deploy/authority-host/README.md#the-notifier) and
+[DEPLOY.md](../../deploy/authority-host/DEPLOY.md#deploying-the-notifier) for
+the unit, the drop-in and the order of the owner's steps.
+
+### Privacy
+
+The payload is encrypted to the phone's key (aes128gcm, RFC 8291), so Apple's
+push service cannot read it. It does see that the notifier sent a push to a
+subscription, when, and how large the message was: the body is the encryption's
+fixed header and tag and the payload `{"n":N}`, so its size says at most how
+many digits N has. It also sees the headers of the request, which are in the
+clear: the topic `waiting`, the urgency and the time to live, and the VAPID
+token's audience, its expiry and the owner's contact (`--vapid-subject`, a
+`mailto:` or `https:` value of the owner's own, which is in no release), and
+the notifier's network address. The seat host sees the subscription's endpoint
+once, when the phone subscribes, and keeps none.
+
+### What a taken-over seat or notifier can do
+
+- A taken-over seat can tell the notifier any count, 0 to 999: it can fake a
+  notice ("999 waiting") or send none. It can spam, but only up to the
+  notifier's 30 pushes an hour. It can fill the notifier's four subscription
+  places with endpoints on the allowed host so that the owner's phone is refused
+  (`too_many`), and it can have the notifier forget a subscription whose
+  endpoint it has seen pass through it, since the phone's calls go through
+  the seat. It cannot send anything else, because it holds no VAPID key and the
+  notifier takes only a count from it. It can decide nothing, as before.
+- A taken-over notifier holds the VAPID key and the endpoints, so it can send
+  the phone any push. The worker shows a push as "N waiting" or "Cards are
+  waiting" only, with the one link `/cards/`, so it cannot put a text, a link or
+  an action on the phone. It learns a count and nothing of a card. Its network
+  rule is an address range and a port, not a host name: what the range holds
+  besides the push service is reachable from the notifier, which is what the
+  owner's rule allows. It can decide nothing.
+- A notice that is false costs the owner a look. What it can lead to is a
+  login: see the last bullet of [limits that stay](#limits-that-stay).
+
+### What does not exist
+
+Quiet hours are not built: a notice is sent at any hour the rules above allow.
+There is no email or other fallback, so a phone that cannot be reached gets
+nothing (the push service keeps one notice for the time to live, the latest of
+the topic). There is no notice for a single card, no text of a card and no
+count past 999; and no question cards, so a notice never asks the owner
+anything.
 
 ## The record change
 
@@ -1615,11 +1926,16 @@ The owner carries every fingerprint by hand, both ways, at the first exchange.
   current. It cannot make a decision of it that the daemon would take: the
   binding check at the daemon stays the authority (see
   [live refresh](#live-refresh-seatwait)).
-- Notices are not built. Nothing tells the owner's phone that a card is
-  waiting while no page of the seat is open; live refresh updates a page that
-  is. A notice will carry no text of a card and no action, and the limit above
-  grows with it: more logins started from notices are more gestures that a
-  taken-over seat can turn into a decision.
+- Notices (see [notices](#notices)) tell the owner's phone that a card is
+  waiting while no page of the seat is open, and nothing more. A notice carries
+  no text of a card and no action, and the limit above grows with it: each
+  notice is a reason to log in, and a login is a gesture that a taken-over seat
+  can turn into a decision, so more logins started from notices are more
+  chances for it. A taken-over seat can also fake or spam notices, up to the
+  notifier's 30 pushes an hour, and can fill the notifier's subscription places.
+- Notices have no quiet hours, no email or other fallback, no notice for a
+  single card and no question cards; Apple's push service sees the timing and
+  size of each push. They are not phone-tested.
 
 ## Dogfood limits
 
@@ -1700,9 +2016,15 @@ G14, live refresh (built, first part), implements
 `ownerchannel`; the capability `watch` and the per-peer limit of two waits in
 `gatehost`; the watcher, the wait room and the read room of 20 in `seatlink`;
 `POST /api/watch`, `sessions.look` and the script of the pages in `seatapp`;
-and the start of the watcher in `ataniq-seat`. The notices of G14 (the notice
-core, the service worker, the notifier unit) and the phone trial (G13) are not
-built.
+and the start of the watcher in `ataniq-seat`.
+
+G14's notices (built, not deployed, not phone-tested) implement
+[notices](#notices): `internal/seatnotice` (the protocol), `internal/webpush`
+(VAPID, the message encryption, the one POST), the notice core and the push
+routes in `internal/seatapp`, the service worker, the manifest and the card
+list's Notices section, `--notify-socket` of `ataniq-seat`, and the notifier
+`ataniq-seat-notify` with its release in `deploy/authority-host/notify`. The
+phone trial (G13) is not built.
 
 ## Dogfood
 
