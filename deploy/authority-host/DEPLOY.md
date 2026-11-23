@@ -295,6 +295,83 @@ It accepts that release's id too and refuses any other. A rollback does not need
 the incoming folder. A rollback skips the rule that a counter must be higher,
 but the release it goes back to is checked and qualified again like any other.
 
+## Deploying the seat app
+
+The seat app, `ataniq-seat`, the phone's page, is deployed as a release that
+is not static: this folder with `seat/` laid over it. What it installs and
+why is in [the README](README.md#the-seat-app); this is the order. Nothing
+of it is automatic either, and no value of the host is in a file of this
+repository: the placeholders below are `seat.example` for the seat's name and
+`203.0.113.20` for the gate's address.
+
+1. **Build the seat's binary, static**, beside the other two (step 1), and
+   keep its hash:
+
+   ```
+   CGO_ENABLED=0 sh scripts/go-tool.sh build -trimpath -o build/authority-host/ataniq-seat ./cmd/ataniq-seat
+   ldd build/authority-host/ataniq-seat      # "not a dynamic executable"
+   sha256sum build/authority-host/ataniq-seat
+   ```
+
+2. **Make the release.** Lay the seat's part over a copy of this folder,
+   fill the allowlists as in step 2 (`ah-release baseline --src SRC ... --out
+   FILLED`), and build without `--components static`, with the binary and
+   the package snapshot the host records (`ah-switch status` shows it; the
+   release then needs no package step):
+
+   ```
+   mkdir SRC
+   cp -R deploy/authority-host/etc deploy/authority-host/share SRC/
+   cp -R deploy/authority-host/seat/. SRC/
+   ah-release build --out DIR --counter N --commit SHA --go-version V --built-on CLASS --package-snapshot S \
+     --bin build/authority-host/ah-switch --bin build/authority-host/ah-noaicheck --bin build/authority-host/ataniq-seat \
+     --src FILLED
+   ah-release check --no-noaicheck DIR/ID
+   ```
+
+3. **Set the host up for the seat, once, by hand**, from your own root
+   session, as [the README](README.md#setting-the-host-up-for-it-once-by-hand)
+   says: the user `seat` and Caddy in its group; the folder
+   `/etc/authority-host/seat` with `origin` (`https://seat.example`),
+   `gate.pin`, `seat.env` (`SEAT_GATE=203.0.113.20:GATEPORT`) and
+   `site.caddy` (the site `http://seat.example` that imports `seat`); the
+   drop-in `/etc/systemd/system/ataniq-seat.service.d/gate.conf` with
+   `IPAddressAllow=203.0.113.20`, and your firewall's rule that keeps the
+   user `seat` to the gate's port; the seat's key, made with `gate-init`
+   from a root-owned copy of the release you verified, and its fingerprint
+   carried to the gate's pin list; and the unit's link,
+   `ln -s /opt/authority-host/current/etc/systemd/system/ataniq-seat.service /etc/systemd/system/ataniq-seat.service`.
+   The proxy in front of the host must pass `Host`, `Origin` and
+   `Sec-Fetch-Site` unchanged and name the client in `X-Forwarded-For`.
+
+4. **Deploy: dry, then go**, as in step 4. The switch runs the release's
+   no-AI check (it reads `seat.env`), its validators (`caddy validate`, which
+   reads `site.caddy`, and `systemd-analyze verify` of the unit), moves
+   `current`, and its reload list restarts systemd's view of the unit, the
+   seat and Caddy while decisions are inhibited. Its health check needs both
+   the front end and the seat on its socket.
+
+5. **Verify**, as in step 5, and also:
+
+   ```
+   systemctl status ataniq-seat.service
+   curl -fsS --unix-socket /run/seat/http.sock http://localhost/healthz
+   ```
+
+   Then acknowledge the outcome as in step 5.
+
+6. **The host's stop list.** Once that switch ended `ok`, replace the line
+   `/usr/bin/true` of `/etc/authority-host/stop.list` with
+   `systemctl stop ataniq-seat.service`, so that the host's own list stops
+   the seat whatever release is live. Not before: `systemctl stop` of a unit
+   systemd does not know fails.
+
+To roll back, take step 6 of the first deploy (`ack`, then `--rollback-to
+previous`): the seat release's own stop list stops the seat first. Going
+back to the first, static, release leaves the seat stopped and its unit's
+link dangling: put `/usr/bin/true` back in the host's stop list until a seat
+release is live again (see [the README](README.md#rollback)).
+
 ## Owner-only items
 
 These are written by the owner, on the host, never by a script of this folder
@@ -311,7 +388,13 @@ and never in this repository:
 - **The host's stop list.** `/etc/authority-host/stop.list` is the owner's own;
   the bootstrap installs the single line `/usr/bin/true` only when the file is
   missing, and never changes a list that exists. Put the real stop commands in it
-  when a decision service exists.
+  when a decision service exists: for the seat app,
+  `systemctl stop ataniq-seat.service`, once a switch to its release ended `ok`
+  (see "Deploying the seat app").
+- **The seat app's files.** `/etc/authority-host/seat/` (`origin`, `gate.pin`,
+  `seat.env`, `site.caddy`), the drop-in that allows the gate's address, the
+  user `seat`, the seat's key in `/var/lib/seat/identity` and the unit's link
+  are the owner's, made by hand (see [the README](README.md#setting-the-host-up-for-it-once-by-hand)).
 - **The word for the switch's owner commands.** `ah-switch inhibit-clear --asked WORDS`
   and `ah-switch ack --txn ID[,ID...] --asked WORDS` act on the owner's word;
   nobody types it for the owner, and the owner copies the `--txn` value from
@@ -373,6 +456,9 @@ state; read the message, fix the cause, run the step again.
 | Switch | `result: failed-recovery at STEP; current -> ID; health after going back: failed; the decision services are stopped`: going back did not work either (or the old release could not be used, then the `health after going back` part may be missing) | Not rolled back: no release is known healthy. The host's stop list and the releases' ran, the decision services are stopped and decisions stay inhibited (across a reboot). `status` shows the last switch as `failed-recovery`, with `decision services: stopped`, `health after going back: failed` and `decisions: inhibited`. The console is needed: from your own root session read the `back:` and `stop:` lines of the output and `detail` in `status`, look at what `current` points at and at the services by hand, and repair the host. Then acknowledge the owed outcome first (`ack`, as in step 5): a switch to any other release, one with a higher counter included, is refused while it is owed. After that the host is qualified again by a healthy switch (a new release with a higher counter, which removes the inhibit), or by your word, `inhibit-clear --asked WORDS` after you looked at the host. See [the failure cases](README.md#failure-cases), [the decision inhibit](README.md#the-decision-inhibit) and [the journal and recover](README.md#the-journal-and-recover) |
 | Switch | `result: failed at STEP; current -> ID; the decision services are stopped`, with no `health after going back` part: a first switch (no old release to go back to), or a failure after the package step changed the host | As `failed-recovery`: the decision services are stopped and decisions stay inhibited, and on a first switch `current` stays the new release. Repair the host, acknowledge the owed outcome first (`ack`, as in step 5: a switch to another release is refused while it is owed), then a healthy switch of a higher counter, or `inhibit-clear`; `status` shows `failed` and `decision services: stopped` |
 | Switch | `refused: an outcome is owed` | Nothing was done. Read the outcomes it printed and `status`, then run the `ah-switch ack --txn ID[,ID...] --asked WORDS` that `status` prints (the `--txn` copied from it, exactly the ids owed) from your own root session, and run the request again |
+| Switch (seat release) | `step 4/9 noaicheck: FAILED` and, run by hand, `HIT incomplete env-file /etc/authority-host/seat/seat.env` | Nothing was changed. The seat's environment file is missing: write it (see "Deploying the seat app", step 3) and switch to the imported release again from your root session, without `--from` |
+| Switch (seat release) | `step 5/9 validate: FAILED: validator-failed: validator 1 of 2, ...` (`caddy validate`) | Nothing was changed. Usually `/etc/authority-host/seat/site.caddy` is missing or wrong; fix it and switch to the imported release again without `--from` |
+| Switch (seat release) | the health check fails on the seat's socket (`curl ... --unix-socket /run/seat/http.sock ...`) | The release was activated: the result is `rolled-back` or `failed`, as in the rows above. Read `journalctl -u ataniq-seat.service`: a missing key (`--identity`), origin or pin file, or a gate address the drop-in does not allow, stops the seat at its start. Fix it, acknowledge, and deploy a release with a higher counter |
 | Switch | exit 3 | Another switch holds the lock; wait for it, then run again. Nothing was done |
 | Switch | exit 2 | Bad arguments or a root other than `/` without `--allow-exec`; nothing was done |
 | Any | You are not sure what the host holds | `sudo /usr/local/sbin/ah-switch status` changes nothing and says what is live, what is owed and what is to resume |

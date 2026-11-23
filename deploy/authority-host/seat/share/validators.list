@@ -1,0 +1,10 @@
+# The validators of the release, run by ah-switch before the switch (see
+# ../README.md, "Layout"). One command per line; {release} is this release's
+# folder. ah-release check requires one validator per shipped file of
+# etc/caddy, etc/nftables and etc/systemd.
+# The Caddyfile imports the owner's /etc/authority-host/seat/site.caddy, which
+# must be there for it to validate.
+caddy validate --config {release}/etc/caddy/Caddyfile --adapter caddyfile
+# The seat's unit runs {release}/bin/ataniq-seat, which the switch's import
+# has put in place before this runs.
+systemd-analyze verify {release}/etc/systemd/system/ataniq-seat.service

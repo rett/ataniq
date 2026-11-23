@@ -15,12 +15,14 @@ host. It needs only the Go standard library and opens no network
 connection.
 
 What this tree ships is the switch and the no-AI check program with its
-lists. It ships no timer and no service unit: the recurring run of the
-no-AI check (with what happens when it fails) and a deploy driver that
-fills the incoming folder and calls the switch are separate planned items,
-not part of this feature. Until they exist, the check runs only when a
-switch runs it. The folder the switch imports is made by the release
-builder, `ah-release` (see "The release builder" below).
+lists, and in `seat/` the seat app's part of a release: its service unit,
+its Caddy configuration and its command lists (see "The seat app" below).
+It ships no timer: the recurring run of the no-AI check (with what happens
+when it fails) and a deploy driver that fills the incoming folder and calls
+the switch are separate planned items, not part of this feature. Until they
+exist, the check runs only when a switch runs it. The folder the switch
+imports is made by the release builder, `ah-release` (see "The release
+builder" below).
 
 ### Layout
 
@@ -2236,3 +2238,235 @@ stand-in binaries and checks it, and the switch's own dry run accepts the
 result. The validators (`caddy validate`) are not run by the tests: they
 need Caddy, which is not a developer prerequisite; the switch runs them
 on the host.
+
+The seat app's release is made from this tree with the seat's part laid
+over it; see "The seat app".
+
+## The seat app
+
+`ataniq-seat` (command `cmd/ataniq-seat`) is the page the owner's phone
+uses: pairing, login, the cards and the decisions, relayed to the daemon
+on an AI host through the seat gate. On the authority host it runs as its
+own user, `seat`, behind Caddy, on a Unix socket, and reaches nothing on
+the network but the gate. It starts no model and calls no provider: it
+talks to Caddy through its socket and to the gate's one address, and
+nothing else.
+
+### What it ships
+
+The seat's part of the release source is `seat/`, laid over this folder:
+it holds only `etc/` and `share/`, and replaces the four command lists and
+the Caddyfile of this folder and adds the unit. The no-AI check's lists
+(`ai-names.list`, `forbidden-packages.list` and the allowlists) are this
+folder's alone.
+
+- `etc/systemd/system/ataniq-seat.service`: the service. It runs
+  `{release}/bin/ataniq-seat` (the release's own binary; see "The release
+  builder", `--src`) as user and group `seat`, with
+  `--origin-file /etc/authority-host/seat/origin`,
+  `--socket /run/seat/http.sock --socket-mode 0660`,
+  `--client-addr-header X-Seat-Client-Addr`, `--gate ${SEAT_GATE}` (from
+  the owner's `EnvironmentFile=/etc/authority-host/seat/seat.env`),
+  `--gate-pin-file /etc/authority-host/seat/gate.pin`,
+  `--identity /var/lib/seat/identity` and
+  `--decision-guard /var/lib/authority-host`. `RuntimeDirectory=seat`
+  makes `/run/seat` (`seat:seat`, 0750) for the socket, and
+  `StateDirectory=seat` makes `/var/lib/seat` (0700) for the seat's gate
+  key. The network: `IPAddressDeny=any` (the owner's drop-in allows the
+  gate's address, below), `SocketBindDeny=any` (no listener on any
+  address) and `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`. The
+  hardening is that of the design: `NoNewPrivileges`, an empty capability
+  set, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`,
+  `PrivateDevices`, `ProtectProc=invisible`, `ProcSubset=pid`, the
+  kernel, clock, host name and control group protections,
+  `RestrictNamespaces`, `RestrictRealtime`, `RestrictSUIDSGID`,
+  `LockPersonality`, `MemoryDenyWriteExecute`, `RemoveIPC`, a private
+  keyring, `SystemCallArchitectures=native`,
+  `SystemCallFilter=@system-service ~@privileged @resources` (a filtered
+  call fails with `EPERM`), `UMask=0077`, `MemoryMax=256M` and
+  `TasksMax=64`. It has no `[Install]` section and is never enabled: only
+  the release's `reload.list` starts it, after the switch, or `ah-switch
+  boot`, wrote the decision inhibit (see "Boot requalification": no
+  `.wants` link, socket, timer or path starts a decision-capable service,
+  and none is ordered after the boot unit). It carries no condition on
+  `decisions.inhibit`: it starts while the inhibit is there.
+- `etc/caddy/Caddyfile`: this folder's Caddyfile, its `:80` status site
+  unchanged, with the snippet `(seat)` and, at its end,
+  `import /etc/authority-host/seat/site.caddy`, the owner's site file
+  (below). The snippet is the design's proxy rules:
+  - `reverse_proxy unix//run/seat/http.sock`, with
+    `header_up Host {hostport}`: the app gets the Host the phone asked for,
+    and checks it against its origin;
+  - `Origin` and `Sec-Fetch-Site` go on as they came: nothing sets or
+    removes them, and the app checks both on every POST;
+  - `header_up X-Seat-Client-Addr {client_ip}`: the client's address, set
+    on every request, so a value the client sent is never passed on
+    (`--client-addr-header` names it for the app's per-source limits). The
+    global options trust the proxies of the private ranges
+    (`trusted_proxies static private_ranges`) and take the rightmost
+    address of `X-Forwarded-For` that is not one of them
+    (`trusted_proxies_strict`), or the peer's address;
+  - nothing is cached: the app sends `Cache-Control: no-store`, the
+    snippet sets it again on the way out (`header_down`) and drops
+    `Server`, and Caddy has no cache;
+  - `request_body` at most 64 KB (the app's own bound is 8 KiB).
+- `share/validators.list`: `caddy validate` of the Caddyfile and
+  `systemd-analyze verify {release}/etc/systemd/system/ataniq-seat.service`.
+- `share/reload.list`: `systemctl daemon-reload`,
+  `systemctl restart ataniq-seat.service`, `systemctl restart caddy`.
+- `share/health.cmd`: the front end's `/healthz`, and the seat's own over
+  its socket,
+  `curl -fsS --max-time 5 --unix-socket /run/seat/http.sock http://localhost/healthz`.
+- `share/stop.list`: `systemctl stop ataniq-seat.service`.
+
+`ataniq-seat` listens on no TCP port, so `ports.allow` does not change,
+and since its unit is never enabled `units.allow` does not either.
+
+### The decision guard
+
+The seat follows the contract of "The decision inhibit": before it relays
+a decision's challenge or a decision to the gate, every time, it asks
+`decisionguard.Check("/var/lib/authority-host")`. While
+`decisions.inhibit` is there in any form, or the folder or the file
+cannot be looked up (the folder missing, a link, not open to `seat`),
+nothing is relayed and the phone shows "Decisions are paused on this
+host. Nothing was sent." under the code `decisions-inhibited`; the card
+stays as it was, and the owner taps again once decisions are taken again.
+Each refusal is logged with the guard's code (`ataniq-seat: a decision was
+refused, decisions are paused on this host: decision-guard-inhibited`).
+Pairing, login and the reading of cards decide nothing and go on. The
+unit's `ProtectSystem=strict` leaves `/var/lib/authority-host` readable,
+which is all the guard needs (the bootstrap makes it 0755).
+
+### Making the seat's release
+
+From the repository root on the development host (a folder of your own
+in place of `SRC`):
+
+```
+mkdir SRC
+cp -R deploy/authority-host/etc deploy/authority-host/share SRC/
+cp -R deploy/authority-host/seat/. SRC/
+CGO_ENABLED=0 sh scripts/go-tool.sh build -trimpath -o build/authority-host/ataniq-seat ./cmd/ataniq-seat
+ldd build/authority-host/ataniq-seat      # "not a dynamic executable"
+```
+
+Fill the allowlists of `SRC` as "Filling the allowlists" says
+(`ah-release baseline --src SRC ... --out FILLED`), then build it
+without `--components static` (a release with a decision service is not
+static) and check it:
+
+```
+ah-release build --out DIR --counter N --commit SHA --go-version V --built-on CLASS --package-snapshot S \
+  --bin build/authority-host/ah-switch --bin build/authority-host/ah-noaicheck --bin build/authority-host/ataniq-seat \
+  --src FILLED
+ah-release check --no-noaicheck DIR/ID
+```
+
+`S` is the snapshot the host records (`package_snapshot` in `deploy.json`,
+shown by `ah-switch status`): the release then changes no package and
+needs no `bin/ah-pkgstep`. A release that is not static gets no
+generated step, so a snapshot other than the host's is refused by the
+switch at step 3 (`package-step-missing`) unless the release carries a
+package step of its own. A test builds this release from the two trees
+with stand-in binaries, checks it, and has the switch's dry run accept it;
+another reads the unit and the Caddyfile as the no-AI check reads a
+release. Neither runs `caddy validate`, `systemd-analyze verify` or
+`systemd-analyze security`: the switch runs the validators on the host.
+
+### Setting the host up for it, once, by hand
+
+The owner does these on the host, as root, before the first switch to the
+seat's release, with the real values in place of the placeholders
+(`seat.example`, `203.0.113.20`, `GATEPORT`). None of them is in the
+release or in this repository.
+
+1. The user, and Caddy's way to the socket: `useradd --system --no-create-home --shell /usr/bin/nologin seat`,
+   then `usermod -aG seat caddy` (Caddy reaches `/run/seat/http.sock`,
+   `seat:seat` 0660 in a 0750 folder, as a member of the group; the group
+   gives it nothing else, as the seat's files are 0600 and its state
+   folder 0700). Caddy reads its groups when it starts: the switch's
+   reload restarts it.
+2. The owner's files, in a new folder `/etc/authority-host/seat`
+   (root-owned, 0755), each root-owned, mode 0644 and not writable by
+   group or others:
+   - `origin`: `https://seat.example`, the seat's origin (the name the
+     phone uses, served on 443 by the proxy in front);
+   - `gate.pin`: the gate key's fingerprint, carried from the AI host;
+   - `seat.env` (mode 0600 is enough, systemd reads it):
+     `SEAT_GATE=203.0.113.20:GATEPORT`, the gate's address as an IP
+     literal (the seat reaches no resolver);
+   - `site.caddy`: the seat's site,
+     ```
+     http://seat.example {
+     	import seat
+     }
+     ```
+3. The gate's address for the unit, in a drop-in of its own,
+   `/etc/systemd/system/ataniq-seat.service.d/gate.conf`:
+   ```
+   [Service]
+   IPAddressAllow=203.0.113.20
+   ```
+   `IPAddressAllow=` allows an address, not a port: the host firewall
+   (the owner's) keeps the `seat` user to the gate's port, for example
+   with an output rule on `meta skuid`.
+4. The seat's gate key, before the first switch: as root,
+   `install -d -o seat -g seat -m 0700 /var/lib/seat`, then run the
+   release's `ataniq-seat gate-init --identity /var/lib/seat/identity` from
+   a root-owned copy of the release you verified, as "Filling the
+   allowlists" verifies one (`RELEASE/bin/ataniq-seat`, never a file of the
+   incoming folder), then `chown -R seat:seat /var/lib/seat/identity`. It
+   prints the key's fingerprint, which you carry to the gate's pin list on
+   the AI host. Without the key the seat does not start, and the switch's
+   health check fails.
+5. The unit's link, which `daemon-reload` follows into `current`:
+   `ln -s /opt/authority-host/current/etc/systemd/system/ataniq-seat.service /etc/systemd/system/ataniq-seat.service`.
+   It dangles until `current` is the seat's release, and systemd passes
+   over it meanwhile.
+
+Without `seat.env` the no-AI check reports `HIT incomplete env-file
+/etc/authority-host/seat/seat.env` and the switch stops at step 4 before
+anything changes; without `site.caddy` the validator `caddy validate`
+fails at step 5, before anything changes. The no-AI check reads
+`seat.env` as any environment file of a unit: a variable named like a
+provider key in it is a hit.
+
+### Enabling it
+
+There is nothing to enable: a switch to the seat's release
+(`ah-switch --from INCOMING/ID ID`, as in [DEPLOY.md](DEPLOY.md)) verifies
+it, runs its validators, moves `current`, and its reload list restarts the
+seat and Caddy while decisions are inhibited; the health check needs both
+the front end and the seat on its socket, and the inhibit goes only when
+the release passed its checks. At every boot, `ah-switch boot` runs the
+same reload list. Check it with `ah-switch status`,
+`systemctl status ataniq-seat.service` and
+`curl -fsS --unix-socket /run/seat/http.sock http://localhost/healthz`.
+
+### How the switch stops it
+
+The release's own `stop.list` stops it (`systemctl stop
+ataniq-seat.service`): for the release a switch goes back from, and when
+no healthy release is left. The host's own `/etc/authority-host/stop.list`
+must stop every decision service of any release, so once the first switch
+to the seat's release ended `ok`, replace its line `/usr/bin/true` with
+`systemctl stop ataniq-seat.service` (not before: `systemctl stop` of a
+unit systemd does not know fails, exit 5, and a stop list that fails
+leaves a transaction in `stopping`). Until then the seat release's own
+list covers it. While the seat is stopped, decisions are not made at all;
+the static status page stays.
+
+### Rollback
+
+`ah-switch --rollback-to previous` goes back as for any release: the seat
+release's `stop.list` stops the seat, `current` goes back, and the earlier
+release's reload list runs. Back to another seat release, that restarts
+the seat from that release's binary. Back to the first (static) release,
+the seat stays stopped and the unit's link dangles: `systemctl stop
+ataniq-seat.service` then fails for a unit systemd does not know, so put
+`/usr/bin/true` back in the host's stop list (or remove the link) until
+a seat release is `current` again, or the next stop the host's list must
+make fails and the transaction stays in `stopping`. The seat's state is
+its key, in `/var/lib/seat`, which no switch touches; sessions are in
+memory and end with the process.
