@@ -16,9 +16,10 @@ import (
 // encoding/json: a key must match its tag byte for byte.
 //
 // A field is optional when its tag says omitempty: a pointer that may be
-// nil, or a string that may be empty. An optional field that is empty is
-// left out on writing, and refused when it is present and empty on reading,
-// so that a value has one form. Every other field must be present.
+// nil, a string that may be empty, or a struct whose fields may all be
+// their zero values. An optional field that is empty is left out on
+// writing, and refused when it is present and empty on reading, so that a
+// value has one form. Every other field must be present.
 
 // field is one field of a record type.
 type field struct {
@@ -130,6 +131,9 @@ func fromValue(v value, dst reflect.Value, where string) error {
 			}
 			if fields[i].optional && f.Kind() == reflect.String && f.Len() == 0 {
 				return errors.New(name + " is empty; an empty optional field is left out")
+			}
+			if fields[i].optional && f.Kind() == reflect.Struct && f.IsZero() {
+				return errors.New(name + " has nothing but empty fields; an empty optional block is left out")
 			}
 		}
 		for i, f := range fields {

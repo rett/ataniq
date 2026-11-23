@@ -62,11 +62,27 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   [the pairing fingerprint](#the-pairing-fingerprint)).
 - A decision can be made only at the desk. `Service.Decide` refuses a source
   that is not the decider (`not-decider`) or whose surface has no owner activity
-  inside the presence window (`owner-away`), and the record package's decision
+  inside the presence window (`owner-away`). No command verifies a WebAuthn
+  assertion: only the tests of `credkind` call the verifier.
+- The decision record can say that a decision was confirmed by passkey (G8a,
+  [the record change](#the-record-change)): the record package's decision
   check (`checkDecision`, run by `record.DecodeDecision` and
-  `record.EncodeDecision`) requires `confirmed` to be `"code"` and a console
-  block with a process id. No command verifies a WebAuthn assertion: only the
-  tests of `credkind` call the verifier.
+  `record.EncodeDecision`) holds a record with `confirmed: "code"` to a
+  console block and no seat block, as before, and one with
+  `confirmed: "passkey"` to a seat block and no console block;
+  `record.AssertionDigest` computes the block's `assertion_sha256`. Nothing
+  writes a passkey record yet.
+- The words of the four gate operations are in `ownerwire` (G8a, see
+  [the new types](#the-new-types)): their names, apart from the list the
+  socket serves (`ownerwire.GateOperations`, not `ownerwire.Operations`), their
+  params and results with strict decoders and caps, the gate's new codes, and
+  the challenge function with the vectors below. No handler serves them yet.
+- The owner journal takes a decision confirmed by passkey (G8a, see
+  [the journal entry](#the-journal-entry-of-a-phone-decision)): its activity
+  from the seat block and its evidence beside it, read back with
+  `ownerjournal.Store.EvidenceOf`. The list of deciding keys keeps the highest
+  sign counter (`ownerjournal.KeyFile.RaiseCounter`). The owner channel's
+  service does not call either for a phone decision yet.
 
 ## The listener: inside the daemon
 
@@ -151,8 +167,9 @@ them.
 
 ### The new types
 
-All are in `ownerwire` (planned, G8). Every byte string is standard base64 in
-the JSON, as in `SeatPairParams`.
+All are in `ownerwire` (built, G8a), each with a Decode and an Encode function
+named after it. Every byte string is standard base64 in the JSON, as in
+`SeatPairParams`.
 
 - `Assertion`: `credential_id` (`MinCredentialIDBytes` to
   `MaxCredentialIDBytes`, the bounds of a pairing), `authenticator_data` (37 to
@@ -176,15 +193,20 @@ the JSON, as in `SeatPairParams`.
 
 The params of `seat.challenge` are capped at `MaxFrameBytes` plus 1 KiB, those
 of `seat.decide` at `MaxFrameBytes` plus 8 KiB, and those of `seat.login` at
-8 KiB. A result has the caps of the result types it reuses.
+8 KiB. A result has the caps of the result types it reuses: `DecideResult` and
+the small results `MaxResultBytes` (16 KiB). The result of
+`seat.login-challenge` may allow 16 credentials of 1023 bytes, more than that,
+so it has a cap of its own, `ownerwire.MaxSeatLoginChallengeBytes` (32 KiB).
 
 The params of `seat.decide` and `seat.login` are read in two parts, so that the
 challenge is burnt before anything about the content is judged (see
 [decide](#decide-seatdecide)). The handler reads the envelope with
-`seatgate.DecodeStrict` and the type's decoder: the members and their JSON
+`seatgate.DecodeStrict` and the type's decoder (`ownerwire.DecodeSeatDecideParams`,
+`ownerwire.DecodeSeatLoginParams`): the members and their JSON
 types, each byte string's base64 and length, the challenge id's grammar, and
 the whole within its cap (`bad-params`). The service takes the entry, and only
-then checks the frame's content (`bad-params`); the assertion's content, the
+then checks the frame's content with `ownerwire.CheckDecisionFrame`
+(`bad-params`); the assertion's content, the
 strict DER of the signature among it, is the verifier's (`assertion-invalid`).
 The params of `seat.challenge` burn nothing and are read whole by the handler.
 
@@ -244,7 +266,8 @@ The handler (`gatehost`, built for pairing and reads) answers:
   or the call was cancelled), `deadline-exceeded`, `door-unavailable`,
   `journal-reopened`, `failed` (anything else, `ErrNotSeat` included; the error
   goes to the log, never the params).
-- New codes for version 1, all from G8:
+- New codes for version 1, all from G8 (their words are declared in
+  `ownerwire`, `ownerwire.CodeChallengeStale` and the others):
 
 | Code | Meaning |
 | --- | --- |
@@ -340,9 +363,10 @@ F(x) = BE32(len(x)) || x
   is none, as for every approve.
 - `nonce` is the 32 raw bytes, last.
 
-One function computes the challenge and both digests, in `ownerwire` (planned,
-G8), and both the daemon and the seat link call it. Its tests hold the vectors
-below.
+One function computes the challenge and both digests, in `ownerwire` (built,
+G8a: `ownerwire.DecisionChallenge`, with `ownerwire.SignedOffDigest` and
+`ownerwire.ReasonDigest`; `ownerwire.LoginChallenge` for a login), and both the
+daemon and the seat link call it. Its tests hold the vectors below.
 
 #### Test vectors
 
@@ -461,16 +485,28 @@ the seat renders it with `seatapp.Text`.
 
 #### The journal entry of a phone decision
 
-`ownerjournal` is in G8's scope. `AppendDecision` and `AppendHeld` take the
+`ownerjournal` is in G8's scope, and this part is built (G8a).
+`AppendDecision` and `AppendHeld` take the
 activity of a decision from the record's confirmation: for `confirmed: "code"`
-from the `console` block, as today, byte for byte; for `confirmed: "passkey"`
-the surface `seat`, the seat block's session and no last desk activity, in the
-same write. A passkey record has no console block, so the code as it stands
-would write an empty surface.
+from the `console` block, as before, byte for byte; for `confirmed: "passkey"`
+the surface `seat` (`ownerjournal.SurfaceSeat`), the seat block's session and
+no last desk activity, in the same write. They refuse a passkey decision that
+comes with a last desk activity.
 
 The decision's entry, held or not, also keeps the evidence of the assertion
-beside the record: the four fields of the assertion, the nonce, the instance
-and the seat origin the daemon checked against. The record keeps only a digest
+beside the record (`ownerjournal.SeatEvidence`, given in `Seen.Evidence`): the
+four fields of the assertion, the nonce, the instance
+and the seat origin the daemon checked against. A body of the journal holds at
+most 4096 bytes, and the largest evidence the bounds of `Assertion` take is
+more than that, so it is kept in two parts, each body within its bound: the
+decision or held entry keeps what was signed (the client data, the signature
+and the nonce), and its activity entry who signed it and where from (the
+credential id, the authenticator data, the instance and the origin). The
+journal refuses a passkey decision without the evidence, or with evidence
+whose assertion digest or credential is not the record's, and
+`Store.EvidenceOf` reads the two parts back and checks them against the record
+again (`ErrDamaged` when they do not hold). A build from before the evidence
+reads such a body as damaged. The record keeps only a digest
 of the assertion, because of its 8 KiB cap (`record.MaxDecisionBytes`). With
 the credential's public key from the key list (a revoked key stays on it), an
 auditor can recompute the challenge from the record and the evidence, check the
@@ -773,8 +809,10 @@ code it does not know gets the last line:
 
 Owner decision: the decision record gains `confirmed: "passkey"` and a seat
 block. The fields of the block below are proposed. This changes the joint contract with the planner's project
-(`internal/approval/record`), so the planner must agree to it before G8 merges,
-and G8 adds a passkey vector to the record package's test data.
+(`internal/approval/record`), so the planner must agree to it before G8 merges.
+It is built (G8a): `record.ConfirmedPasskey`, the block `record.SeatBlock`,
+and the passkey vector `decision-valid-passkey.json` with invalid vectors for
+each way of carrying the wrong blocks, in the record package's test data.
 
 A decision record carries exactly one of two blocks, as `confirmed` says:
 
@@ -802,8 +840,11 @@ A decision record carries exactly one of two blocks, as `confirmed` says:
   fingerprint, the same as the journal's activity entry.
 
 The record package's decision check holds a record to one of the two shapes.
-G8 chooses the Go form (for example an optional block for each), as long as the
-bytes are as here. The record keeps only the digest, because of its 8 KiB cap;
+The Go form is an optional block for each: `Decision.Console` and
+`Decision.Seat` are struct values whose tags say `omitempty`, so a block whose
+fields are all empty is left out on writing, and one written so is refused on
+reading, as an empty optional string is; the Go type of the console block is
+unchanged for the callers that fill it. The record keeps only the digest, because of its 8 KiB cap;
 the evidence an auditor needs to check the signature again is in the journal
 entry of the decision (see
 [the journal entry](#the-journal-entry-of-a-phone-decision)).

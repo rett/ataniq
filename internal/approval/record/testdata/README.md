@@ -40,6 +40,7 @@ the result must give the same bytes.
 | `pending-valid-prune.json` | The pending record for that prune, with the id of `request-valid-prune.json` and the digest of its bytes: one effect that deletes a ref and says where it was merged, no merge, no summary, no evidence |
 | `decision-valid.json` | The approve that answers `pending-valid.json`, with its two sign-offs in the order of the flagged list |
 | `decision-valid-deny.json` | A deny of the same record, with a reason |
+| `decision-valid-passkey.json` | The approve of `decision-valid.json` confirmed on the owner's phone: `confirmed` is `passkey`, and a seat block stands where the console block was. Its `assertion_sha256` is the digest of the sample assertion below, and its `credential` the display id of that assertion's credential id |
 
 ## Beside the valid records
 
@@ -139,12 +140,14 @@ record with several faults has, beyond the order of the five steps.
 ### Values
 
 - **Present and optional.** Every field of a form must be present, a list
-  that is empty included (`"argv":[]`). The optional fields are the six
+  that is empty included (`"argv":[]`). The optional fields are the eight
   marked so below: `feature_sha`, `merge`, `summary`, `holder`,
-  `merged_into` and `reason`. An optional field that has no value is left
-  out. It is never written as an empty string: `"feature_sha":""` and
-  `"reason":""` are refused. This is what makes the canonical bytes of a
-  value the only ones.
+  `merged_into`, `reason`, `console` and `seat`. An optional field that has
+  no value is left out. It is never written as an empty string:
+  `"feature_sha":""` and `"reason":""` are refused. Nor is an optional
+  object written with every field empty (empty strings, `0`, `false`): a
+  seat block whose four fields are empty strings is refused. This is what
+  makes the canonical bytes of a value the only ones.
 - **Text.** A path, the plan text and the note are a JSON string when their
   bytes are valid UTF-8 with no control character, and otherwise the object
   `{"b64": "..."}` with that one key, in standard base64 with padding and
@@ -275,10 +278,26 @@ The parts of a binding must agree with each other. These are content rules
 | `signed_off` | A list of `{kind, path}`: `kind` is a flag kind, `path` a text. No two entries are the same |
 | `uses` | 1 for an approve, 0 for a deny |
 | `decided_at`, `expires_at` | Times |
-| `confirmed` | `code` |
+| `confirmed` | `code` or `passkey`: how the owner confirmed. It says which one of `console` and `seat` the decision has |
 | `remark` | A string. It may be empty |
 | `reason` | *Optional.* An approve must not have it. A deny may have it: at most 500 bytes. A longer one is `decision-invalid`, not `record-too-large` |
-| `console` | `pid`: an integer of 1 or more. `tty`: a string that may be empty. `client` and `surface`: filled strings. `decider`: `true` or `false`. `session`: 16 lower-case hexadecimal digits |
+| `console` | *Optional.* For `code` it must be there; for `passkey` it must be absent. `pid`: an integer of 1 or more. `tty`: a string that may be empty. `client` and `surface`: filled strings. `decider`: `true` or `false`. `session`: 16 lower-case hexadecimal digits |
+| `seat` | *Optional.* For `passkey` it must be there; for `code` it must be absent. `assertion_sha256`: a digest, that of the assertion below. `challenge_id`: 16 lower-case hexadecimal digits. `credential`: 16 lower-case hexadecimal digits, the display id of the credential. `session`: 16 lower-case hexadecimal digits |
+
+So a decision carries exactly one of the two blocks: a decision with both,
+with neither, or with the block its `confirmed` does not name is
+`decision-invalid`, and so is a `confirmed` that is neither word.
+
+The `assertion_sha256` of a seat block is the digest of the four fields of
+the WebAuthn assertion that confirmed the decision, each with its length in
+front as four bytes, big-endian: `credential_id`, `authenticator_data`,
+`client_data_json` and `signature`, in that order. For the sample assertion
+whose credential id is the 16 bytes 0x00 to 0x0f, whose authenticator data
+is 37 bytes of 0xaa, whose client data is `{"type":"webauthn.get"}` and
+whose signature is the 8 bytes `3006020101020101` (hex), it is
+`7d6c723c90db49417f74b3e73ebc5c8abd774f0e0d942f82ebd4fb6784b60ac0`. The
+display id of a credential is the first 8 bytes of the SHA-256 of its id,
+in lower-case hexadecimal: `be45cb2605bf36be` for that credential id.
 
 No record has a field for a verdict or for a held mark; a record that brings
 one has a field its form does not name.

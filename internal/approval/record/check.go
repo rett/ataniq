@@ -345,11 +345,26 @@ func checkDecision(d *Decision) error {
 	}
 	c.time(d.DecidedAt, "decision.decided_at")
 	c.time(d.ExpiresAt, "decision.expires_at")
-	c.need(d.Confirmed == ConfirmedCode, "decision.confirmed is not "+ConfirmedCode)
-	c.need(d.Console.PID >= 1, "decision.console.pid is not a process id")
-	c.filled(d.Console.Client, "decision.console.client")
-	c.filled(d.Console.Surface, "decision.console.surface")
-	c.need(len(d.Console.Session) == 16 && all(d.Console.Session, isHexByte), "decision.console.session is not 16 lower-case hexadecimal digits")
+	// A decision carries exactly one of the two blocks, the one its
+	// confirmation names.
+	switch d.Confirmed {
+	case ConfirmedCode:
+		c.need(d.Seat == (SeatBlock{}), "decision.seat is given for a decision confirmed by "+ConfirmedCode)
+		c.need(d.Console != (Console{}), "decision.console is missing for a decision confirmed by "+ConfirmedCode)
+		c.need(d.Console.PID >= 1, "decision.console.pid is not a process id")
+		c.filled(d.Console.Client, "decision.console.client")
+		c.filled(d.Console.Surface, "decision.console.surface")
+		c.need(len(d.Console.Session) == 16 && all(d.Console.Session, isHexByte), "decision.console.session is not 16 lower-case hexadecimal digits")
+	case ConfirmedPasskey:
+		c.need(d.Console == (Console{}), "decision.console is given for a decision confirmed by "+ConfirmedPasskey)
+		c.need(d.Seat != (SeatBlock{}), "decision.seat is missing for a decision confirmed by "+ConfirmedPasskey)
+		c.sha256(d.Seat.AssertionSHA256, "decision.seat.assertion_sha256")
+		c.need(IsLowerHex(d.Seat.ChallengeID, 16), "decision.seat.challenge_id is not 16 lower-case hexadecimal digits")
+		c.need(IsLowerHex(d.Seat.Credential, 16), "decision.seat.credential is not 16 lower-case hexadecimal digits")
+		c.need(IsLowerHex(d.Seat.Session, 16), "decision.seat.session is not 16 lower-case hexadecimal digits")
+	default:
+		c.need(false, "decision.confirmed is not "+ConfirmedCode+" or "+ConfirmedPasskey)
+	}
 	return c.result()
 }
 

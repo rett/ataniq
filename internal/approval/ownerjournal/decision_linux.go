@@ -35,15 +35,23 @@ var (
 
 // Seen is what the journal keeps beside a decision about the moment it was
 // made. Where it came from (the surface and the session) is read from the
-// decision record's console block.
+// decision record's confirmation: the console block of a decision confirmed
+// by code, and for one confirmed by passkey the surface [SurfaceSeat] and the
+// seat block's session.
 type Seen struct {
-	// LastActivity is the owner's last activity before the decision, and
-	// the zero time when there was none.
+	// LastActivity is the owner's last activity at the desk before the
+	// decision, and the zero time when there was none. A decision confirmed
+	// by passkey has none: the assertion stands in for it.
 	LastActivity time.Time
 	// ShownSHA256 is the digest of what the card showed when he decided
 	// (64 lower-case hexadecimal digits), or empty when the caller has
 	// none.
 	ShownSHA256 string
+	// Evidence is the evidence of the passkey assertion that confirmed the
+	// decision. A decision confirmed by passkey needs it, and it must be of
+	// the assertion the record's seat block names; one confirmed by code
+	// has none.
+	Evidence *SeatEvidence
 }
 
 func (v Seen) check() error {
@@ -216,19 +224,25 @@ type DoorDecision struct {
 
 // The bodies of the kinds of this file.
 type (
+	// The bodies of a decision, a held and an activity entry have the
+	// members of the evidence too when the decision was confirmed by
+	// passkey; see [SeatEvidence].
 	decisionBody struct {
 		Approve       bool   `json:"approve"`
 		BindingSHA256 string `json:"binding_sha256"`
+		signedBody
 	}
 	heldBody struct {
 		BindingSHA256    string `json:"binding_sha256"`
 		PendingExpiresAt string `json:"pending_expires_at"`
+		signedBody
 	}
 	activityBody struct {
 		LastActivity string `json:"last_activity"`
 		Session      string `json:"session"`
 		ShownSHA256  string `json:"shown_sha256"`
 		Surface      string `json:"surface"`
+		signerBody
 	}
 	refusedBody struct {
 		Code    string `json:"code"`
@@ -291,14 +305,15 @@ func (t *txn) undecided(project, id string) error {
 	return nil
 }
 
-// addActivity appends the activity entry that goes with the entry e.
-func (t *txn) addActivity(e Entry, surface, session string, v Seen) error {
-	b, err := body(map[string]any{
+// addActivity appends the activity entry that goes with the entry e. more
+// are members its body has beside its own, or nil.
+func (t *txn) addActivity(e Entry, surface, session string, v Seen, more map[string]any) error {
+	b, err := body(with(map[string]any{
 		"last_activity": stamp(v.LastActivity),
 		"session":       session,
 		"shown_sha256":  v.ShownSHA256,
 		"surface":       surface,
-	})
+	}, more))
 	if err != nil {
 		return err
 	}
@@ -310,7 +325,12 @@ func (t *txn) addActivity(e Entry, surface, session string, v Seen) error {
 // an approve inside the day's limit, or a deny. decision is the decision
 // record as the door will get it; it is checked with
 // [record.DecodeDecision] and kept byte for byte. With the decision, in the
-// same write, goes its activity entry.
+// same write, goes its activity entry, whose surface and session come from
+// the record's confirmation (see [Seen]). A decision confirmed by passkey
+// keeps the evidence of its assertion as well ([Store.EvidenceOf]); it is
+// refused without it, with evidence of another assertion or credential than
+// the record names, or with a last activity at the desk, and a decision
+// confirmed by code is refused with evidence.
 //
 // When it returns without an error the decision is durable, and only then
 // is it handed to the door, with [Decision.Bytes]. After the door answered,
@@ -330,7 +350,11 @@ func (s *Store) AppendDecision(decision []byte, seen Seen) (*Decision, error) {
 	if err := seen.check(); err != nil {
 		return nil, err
 	}
-	b, err := body(map[string]any{"approve": rec.Decision == record.DecisionApprove, "binding_sha256": rec.BindingSHA256})
+	how, err := confirmationOf(rec, seen)
+	if err != nil {
+		return nil, err
+	}
+	b, err := body(with(map[string]any{"approve": rec.Decision == record.DecisionApprove, "binding_sha256": rec.BindingSHA256}, how.own))
 	if err != nil {
 		return nil, err
 	}
@@ -343,7 +367,7 @@ func (s *Store) AppendDecision(decision []byte, seen Seen) (*Decision, error) {
 		if err != nil {
 			return err
 		}
-		return t.addActivity(e, rec.Console.Surface, rec.Console.Session, seen)
+		return t.addActivity(e, how.surface, how.session, seen, how.activity)
 	})
 	if err != nil {
 		return nil, err
@@ -371,8 +395,9 @@ func readDecision(decision []byte) (record.Decision, time.Time, error) {
 // time the card ends. The two must name the same id, binding digest and
 // project. A deny is never held and is refused here.
 //
-// A held entry is never handed to the door and never listed by
-// [Store.Undelivered]. The card is decided again later: that writes
+// Its activity entry, and the evidence of a decision confirmed by passkey,
+// are as for [Store.AppendDecision]. A held entry is never handed to the door
+// and never listed by [Store.Undelivered]. The card is decided again later: that writes
 // another held entry or, when the day has room, a decision, and either
 // closes this one. A held entry whose pending record ran out is closed by
 // [Store.ExpireHeld].
@@ -398,7 +423,11 @@ func (s *Store) AppendHeld(decision, pending []byte, seen Seen) (HeldCard, error
 	if err := seen.check(); err != nil {
 		return HeldCard{}, err
 	}
-	b, err := body(map[string]any{"binding_sha256": rec.BindingSHA256, "pending_expires_at": stamp(expires)})
+	how, err := confirmationOf(rec, seen)
+	if err != nil {
+		return HeldCard{}, err
+	}
+	b, err := body(with(map[string]any{"binding_sha256": rec.BindingSHA256, "pending_expires_at": stamp(expires)}, how.own))
 	if err != nil {
 		return HeldCard{}, err
 	}
@@ -411,7 +440,7 @@ func (s *Store) AppendHeld(decision, pending []byte, seen Seen) (HeldCard, error
 		if err != nil {
 			return err
 		}
-		return t.addActivity(e, rec.Console.Surface, rec.Console.Session, seen)
+		return t.addActivity(e, how.surface, how.session, seen, how.activity)
 	})
 	if err != nil {
 		return HeldCard{}, err
@@ -459,7 +488,7 @@ func (s *Store) AppendRefused(r Refused) error {
 		if err != nil {
 			return err
 		}
-		return t.addActivity(e, r.Surface, r.Session, seen)
+		return t.addActivity(e, r.Surface, r.Session, seen, nil)
 	})
 	return err
 }

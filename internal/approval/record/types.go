@@ -56,8 +56,13 @@ const (
 	DecisionApprove = "approve"
 	DecisionDeny    = "deny"
 	// ConfirmedCode says the owner confirmed by typing the card's code.
-	// The code itself is in no record.
+	// The code itself is in no record. A decision confirmed so has a
+	// console block and no seat block.
 	ConfirmedCode = "code"
+	// ConfirmedPasskey says the owner confirmed on his phone, through the
+	// seat app, with a fresh passkey assertion over a challenge the daemon
+	// drew. A decision confirmed so has a seat block and no console block.
+	ConfirmedPasskey = "passkey"
 )
 
 // The kinds of flag, as the intake names them. A flagged path needs its own
@@ -328,7 +333,8 @@ type Decision struct {
 	// approval ends unused.
 	DecidedAt string `json:"decided_at"`
 	ExpiresAt string `json:"expires_at"`
-	// Confirmed is [ConfirmedCode].
+	// Confirmed is [ConfirmedCode] or [ConfirmedPasskey], and says which of
+	// the two blocks below the decision carries: exactly one of them.
 	Confirmed string `json:"confirmed"`
 	// Remark is the owner's remark, which may be empty.
 	Remark string `json:"remark"`
@@ -336,8 +342,14 @@ type Decision struct {
 	// approve has none, and a deny may have none; then the field is left
 	// out.
 	Reason string `json:"reason,omitempty"`
-	// Console says where the decision was made.
-	Console Console `json:"console"`
+	// Console says where the decision was made, for a decision confirmed
+	// by code. A decision confirmed by passkey has none, and then the field
+	// is left out.
+	Console Console `json:"console,omitempty"`
+	// Seat says which passkey assertion confirmed the decision and over
+	// which challenge, for a decision confirmed by passkey. A decision
+	// confirmed by code has none, and then the field is left out.
+	Seat SeatBlock `json:"seat,omitempty"`
 }
 
 // SignOff is the owner's sign-off of one flagged path.
@@ -361,5 +373,26 @@ type Console struct {
 	Surface string `json:"surface"`
 	// Session is the id the surface made for this run of itself: 16
 	// lower-case hexadecimal digits.
+	Session string `json:"session"`
+}
+
+// SeatBlock says how a decision made on the owner's phone, through the seat
+// app and the seat gate, was confirmed. The daemon fills all of it from the
+// challenge it drew and the assertion it verified; the seat never sends it.
+// The record keeps only the digest of the assertion: the journal entry of
+// the decision keeps its bytes.
+type SeatBlock struct {
+	// AssertionSHA256 is [AssertionDigest] of the assertion that confirmed
+	// the decision: 64 lower-case hexadecimal digits.
+	AssertionSHA256 string `json:"assertion_sha256"`
+	// ChallengeID is the id of the challenge the assertion signed: 16
+	// lower-case hexadecimal digits.
+	ChallengeID string `json:"challenge_id"`
+	// Credential is the display id of the credential that signed: 16
+	// lower-case hexadecimal digits, the first 8 bytes of the SHA-256 of
+	// the credential id.
+	Credential string `json:"credential"`
+	// Session is the gate session the decision came through: the first 16
+	// hexadecimal digits of the seat's pinned key fingerprint.
 	Session string `json:"session"`
 }
