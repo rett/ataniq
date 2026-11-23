@@ -566,10 +566,10 @@ and the kind. The daemon keeps no session.
 
 The seat's side (G7, built): the seat link recomputes the login challenge
 from the gate's pin and the nonce before it hands it to the browser, and stops
-on a mismatch as for a decision (`seatlink.LoginChallengeOf`, held to the
-login vector above). This document places that function in `ownerwire`, for
-the daemon and the seat to share; `ownerwire` has no login type yet, so the
-seat link has its own, and G8 is to move it there. The seat keeps each login
+on a mismatch as for a decision. It calls `ownerwire.LoginChallenge`, the
+function the daemon calls too (held to the login vector above), and reads and
+writes the login's words with the decoders and encoders of `ownerwire` (G8b);
+`seatlink.LoginChallengeOf` is that function as an array. The seat keeps each login
 challenge id with the browser that asked for it, server-side, under a login
 cookie of that browser (`__Host-seat-login`, 5 minutes), and takes the
 browser's assertion for it only with that cookie, burning the entry first. It

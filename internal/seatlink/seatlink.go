@@ -41,10 +41,14 @@
 // link asks neither unless the gate's hello listed the capability "login"
 // ([seatapp.ErrNotOffered] otherwise). Before a login challenge reaches the
 // phone, the link recomputes it from the gate key's fingerprint, which [New]
-// is given with [WithGatePin], and the daemon's nonce ([LoginChallengeOf]); a
-// challenge that differs is an error and nothing is asked of the phone. A
-// login's answer must name the credential the assertion named, by its raw id
-// and by its display id ([DisplayID]). The codes:
+// is given with [WithGatePin], and the daemon's nonce, with the one function
+// the daemon uses too (ownerwire.LoginChallenge); a challenge that differs is
+// an error and nothing is asked of the phone. The words of both calls are
+// package ownerwire's (ownerwire.SeatLoginChallengeResult,
+// ownerwire.SeatLoginParams, ownerwire.SeatLoginResult), read and written
+// with its decoders and encoders. A login's answer must name the credential
+// the assertion named, by its raw id and by its display id ([DisplayID]). The
+// codes:
 //
 //	challenge-stale                             seatapp.ErrChallengeStale
 //	assertion-invalid, key-unknown,
