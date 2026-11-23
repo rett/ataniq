@@ -77,8 +77,9 @@ type unit struct {
 //   - A static release has no unit that starts a program; any other release
 //     has at least one, which runs a binary of the release
 //     (/opt/authority-host/current/bin/NAME or its own releases/<id>/bin/NAME,
-//     shipped with an execute bit), is stopped in stop.list ("systemctl stop")
-//     and restarted in reload.list, and no unit gates its start on
+//     shipped with an execute bit), is stopped in stop.list ("systemctl stop",
+//     but for the units of notStopped, which decide nothing) and restarted in
+//     reload.list, and no unit gates its start on
 //     decisions.inhibit (the decision inhibit contract in the README: the
 //     inhibit is the one guard file, the journal txn.json never being there
 //     without it; a service starts while the inhibit is there and refuses
@@ -127,6 +128,14 @@ func (c *checker) coverage(root *os.Root, m switcher.Manifest, id string, files 
 	c.validators(relDir, files, l.validators)
 	c.reloadsAndStops(static, relDir, id, files, l, units)
 }
+
+// notStopped names the units that start a program and need no line in
+// stop.list. stop.list stops the decision services (see the README, "Layout");
+// the notifier of the seat's notices decides nothing: it is told how many
+// cards wait and tells the phone, and the decision stays with the seat's
+// own refusals. It is restarted by the reload list like any unit. The name is
+// the unit's, without ".service"; no other unit is excused.
+var notStopped = map[string]bool{"ataniq-seat-notify": true}
 
 // units reads every file under etc/systemd and returns those that start a
 // program. It also reports a unit that gates its start on the inhibit.
@@ -453,7 +462,13 @@ func (c *checker) reloadsAndStops(static bool, relDir, id string, files map[stri
 		}
 		return
 	}
-	if len(units) == 0 {
+	// The notifier alone is no service: a release that is not static runs a
+	// decision service, which the notifier is not.
+	service := false
+	for _, u := range units {
+		service = service || !notStopped[u.name]
+	}
+	if !service {
 		c.add(CodeNoService, "")
 	}
 	seen := map[string]bool{}
@@ -467,7 +482,7 @@ func (c *checker) reloadsAndStops(static bool, relDir, id string, files map[stri
 			continue
 		}
 		seen[u.name] = true
-		if !does(l.stops, u.name, "stop") {
+		if !notStopped[u.name] && !does(l.stops, u.name, "stop") {
 			c.add(CodeStopNone, u.name)
 		}
 		if !does(l.reloads, u.name, "restart") {
