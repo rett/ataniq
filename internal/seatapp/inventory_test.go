@@ -28,7 +28,7 @@ var inventory = []struct {
 }{
 	{"GET /healthz", "text", nil, "", false},
 	{"GET /{$}", "page", []string{"a#login"}, "", false},
-	{"GET /pair/{$}", "page", []string{"button#start"}, "", false},
+	{"GET /pair/{$}", "page", []string{"button#start", "a#login-link"}, "", false},
 	{"GET /pair", "redirect", nil, "", false},
 	{"GET /static/words.js", "asset", nil, "", false},
 	{"GET /static/pair.js", "asset", nil, "", false},

@@ -310,6 +310,11 @@ Pairing adds the phone's passkey to the daemon's key list. It needs the desk.
 3. The phone shows eight numbered words. The console shows eight words too, and
    the line "Compare with your phone. Confirm only if they match." Compare every
    word, in order, on the desk. The words are 64 bits of the key's fingerprint.
+   When they match what the phone worked out, the phone also shows the fixed
+   line "When the desk has confirmed these words, log in:" and a "Log in" link
+   to `/login/` on the same site. The phone is not told when the desk confirms,
+   so the page does not redirect or refresh by itself: follow the link once
+   the desk has confirmed (step 4).
 4. On a match press `c`, then `y` a moment later. `x` rejects. The credential is
    trusted only after this confirm; until then it can neither log in nor decide.
    If the phone says the words the seat sent do not match its own, do not
