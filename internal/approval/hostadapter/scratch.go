@@ -81,6 +81,15 @@ type Scratch struct {
 	// phone's authenticator, relayed by the seat and not attested, so the
 	// policy is advisory: it does not hold against a taken-over seat.
 	Kinds []string `json:"kinds,omitempty"`
+	// Trial says that the settings are a phone trial's, made by "ataniqd
+	// trial init" (see [TrialScratch] and trial.go): the daemon then serves
+	// sample cards only, with --trial, and an approval applies nothing.
+	// Trial settings name the project, the role, the target, the seat, the
+	// door and the kinds, and nothing else: no mirror, drop folder, sandbox
+	// template, work folder, gate, identity or root, so a trial has nothing
+	// it could apply to. The daemon refuses trial settings without --trial
+	// and other settings with it.
+	Trial bool `json:"trial,omitempty"`
 }
 
 // KindPolicy is the project's policy on the kinds of credential, as package
@@ -133,6 +142,12 @@ func LoadScratch(path string) (Scratch, error) {
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return Scratch{}, errors.New("hostadapter: the scratch settings hold text after the object")
+	}
+	if s.Trial {
+		if err := s.checkTrial(); err != nil {
+			return Scratch{}, err
+		}
+		return s, nil
 	}
 	if s.Seat.Epoch < 0 || s.Seat.SeatRev < 0 || s.Drop == "" || !filepath.IsAbs(s.Drop) || filepath.Clean(s.Drop) != s.Drop {
 		return Scratch{}, errors.New("hostadapter: the scratch settings name no clean absolute drop folder, or a negative number")
