@@ -82,13 +82,13 @@
 <p>A decision here goes to the desk's STAND-IN door on scratch state. Your phone asks for your face, finger or passcode once for each decision.</p>
 {{if .Offer.Approve}}{{if .Card.Flagged}}<fieldset id="signoffs">
 <legend>Sign off each flagged path to approve</legend>
-{{range $i, $f := .Card.Flagged}}<label class="check" for="signoff-{{num $i}}"><input type="checkbox" id="signoff-{{num $i}}" class="signoff" value="{{num $i}}"> <span class="lead mono">{{lead $f.Path maxPath}}</span> <span class="meta">{{text $f.Kind maxName}}</span></label>
+{{range $i, $f := .Card.Flagged}}<label class="check" for="signoff-{{num $i}}"><input type="checkbox" id="signoff-{{num $i}}" class="signoff" value="{{num $i}}" data-offer="open"> <span class="lead mono">{{lead $f.Path maxPath}}</span> <span class="meta">{{text $f.Kind maxName}}</span></label>
 {{end}}</fieldset>
-{{end}}<button id="approve" type="button" hidden disabled>Approve</button>
+{{end}}<button id="approve" type="button" data-offer="open" hidden disabled>Approve</button>
 {{else}}<p class="note">Approve is not offered: {{text .Offer.ApproveWhy maxLine}}.</p>
 {{end}}{{if .Offer.Deny}}<label for="reason" class="field" id="reason-label" hidden>Why deny (optional)</label>
-<textarea id="reason" rows="3" maxlength="500" hidden></textarea>
-<button id="deny" type="button" class="deny" hidden>Deny</button>
+<textarea id="reason" rows="3" maxlength="500" data-offer="open" hidden></textarea>
+<button id="deny" type="button" class="deny" data-offer="open" hidden>Deny</button>
 {{end}}<div id="confirm" hidden>
 <p id="confirm-action" class="confirm-action"></p>
 <dl class="facts">
@@ -98,7 +98,7 @@
 {{if .Card.Target}}<dt>Into</dt><dd>{{text .Card.Target maxName}}</dd>
 {{end}}<dt>Revision</dt><dd class="mono">binding {{short .Card.BindingSHA256}}</dd>
 </dl>
-<button id="confirm-go" type="button"></button>
+<button id="confirm-go" type="button" data-offer="open"></button>
 <button id="confirm-cancel" type="button" class="quiet">Cancel</button>
 </div>
 <p id="decide-status" role="status"></p>

@@ -127,12 +127,12 @@ func TestSeatDecideFormOnTheCardPage(t *testing.T) {
 	body := w.Body.String()
 	for _, want := range []string{
 		`<section id="decide" aria-labelledby="decide-title" data-rp-id="seat.example" data-card="` + testCardID + `" data-form="`,
-		`<input type="checkbox" id="signoff-0" class="signoff" value="0">`,
-		`<input type="checkbox" id="signoff-1" class="signoff" value="1">`,
-		`<button id="approve" type="button" hidden disabled>Approve</button>`,
-		`<textarea id="reason" rows="3" maxlength="500" hidden></textarea>`,
-		`<button id="deny" type="button" class="deny" hidden>Deny</button>`,
-		`<div id="confirm" hidden>`, `<button id="confirm-go" type="button"></button>`,
+		`<input type="checkbox" id="signoff-0" class="signoff" value="0" data-offer="open">`,
+		`<input type="checkbox" id="signoff-1" class="signoff" value="1" data-offer="open">`,
+		`<button id="approve" type="button" data-offer="open" hidden disabled>Approve</button>`,
+		`<textarea id="reason" rows="3" maxlength="500" data-offer="open" hidden></textarea>`,
+		`<button id="deny" type="button" class="deny" data-offer="open" hidden>Deny</button>`,
+		`<div id="confirm" hidden>`, `<button id="confirm-go" type="button" data-offer="open"></button>`,
 		"<dt>Project</dt><dd>ataniq</dd>", "<dt>What</dt><dd>feature finish seat-glue</dd>", "<dt>Into</dt><dd>develop</dd>",
 		"<dt>Revision</dt><dd class=\"mono\">binding abababababab</dd>", "<dt>Card</dt><dd>" + testCardID + "</dd>",
 		`<a id="look" href="/cards/` + testCardID + `" hidden>Look again</a>`,
