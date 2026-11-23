@@ -1,0 +1,88 @@
+# ataniq-seat.service: the seat app of the authority host (cmd/ataniq-seat),
+# the phone's pages for pairing, login, the cards and the decisions, served on
+# a Unix socket to Caddy in front (see deploy/authority-host/README.md, "The
+# seat app").
+#
+# The release ships it as etc/systemd/system/ataniq-seat.service; ah-release
+# build replaces the placeholder of ExecStart with the release's own folder,
+# so it runs the binary of its own release. The owner links it once, by
+# hand, as
+# /etc/systemd/system/ataniq-seat.service -> the same file under
+# /opt/authority-host/current. It has no [Install] section and is never
+# enabled: no .wants link, socket, timer or path starts it. Only the
+# release's reload list starts it (systemctl restart), after the switch or
+# ah-switch boot wrote the decision inhibit, and the stop lists stop it.
+#
+# It carries no start condition on decisions.inhibit: it starts while the
+# inhibit is there, and refuses every decision itself while it is, asking
+# decisionguard.Check of /var/lib/authority-host before each decision it
+# relays (--decision-guard).
+#
+# Owner-local values are not here. The owner writes, on the host:
+#   /etc/authority-host/seat/origin     the seat's origin, https://NAME
+#   /etc/authority-host/seat/gate.pin   the gate key's fingerprint
+#   /etc/authority-host/seat/seat.env   SEAT_GATE=ADDRESS:PORT, the gate
+#   /etc/systemd/system/ataniq-seat.service.d/gate.conf
+#                                       IPAddressAllow=ADDRESS, the gate's
+# and makes the seat's key with ataniq-seat gate-init (see the README).
+# Without the environment file the unit does not start, and the no-AI check
+# reports it (HIT incomplete env-file); without the drop-in the seat reaches
+# no address at all.
+
+[Unit]
+Description=Authority host: the seat app (ataniq-seat)
+After=network.target
+
+[Service]
+Type=simple
+User=seat
+Group=seat
+EnvironmentFile=/etc/authority-host/seat/seat.env
+ExecStart={release}/bin/ataniq-seat --origin-file /etc/authority-host/seat/origin --socket /run/seat/http.sock --socket-mode 0660 --client-addr-header X-Seat-Client-Addr --gate ${SEAT_GATE} --gate-pin-file /etc/authority-host/seat/gate.pin --identity /var/lib/seat/identity --decision-guard /var/lib/authority-host
+Restart=on-failure
+RestartSec=5s
+
+# The socket's folder, /run/seat (seat:seat, 0750): Caddy reaches the socket
+# as a member of the group seat. The seat's key, /var/lib/seat (0700).
+RuntimeDirectory=seat
+RuntimeDirectoryMode=0750
+StateDirectory=seat
+StateDirectoryMode=0700
+UMask=0077
+
+# The network: no address but the gate's, which the owner's drop-in allows
+# (IPAddressAllow=); the host firewall limits that address to the gate port.
+# No listener on any address: the app serves its Unix socket only.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+SocketBindDeny=any
+
+# Hardening.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+MemoryMax=256M
+TasksMax=64

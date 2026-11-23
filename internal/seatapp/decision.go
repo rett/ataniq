@@ -157,6 +157,12 @@ var (
 	// ErrKindRefused says that the card's project does not take decisions
 	// from the credential's kind.
 	ErrKindRefused = errors.New("seatapp: the project does not take this kind of passkey")
+	// ErrDecisionsInhibited says that the host the seat runs on takes no
+	// decision now, and that nothing was sent to the daemon: on the
+	// authority host, the release switch's decision inhibit is there, or
+	// cannot be looked up (package decisionguard). The port returns it
+	// before it relays a challenge or a decision.
+	ErrDecisionsInhibited = errors.New("seatapp: decisions are paused on this host")
 )
 
 // NotAllowedError says that the port's card model does not allow the

@@ -403,6 +403,7 @@ const (
 	sayNoSession   = "The session ended. Log in again."
 	sayTooLarge    = "This is too large to send."
 	sayNotAllowed  = "This cannot be sent: "
+	sayInhibited   = "Decisions are paused on this host. Nothing was sent."
 )
 
 // decideError is a failure of a decision: a status, a fixed code and the
@@ -435,6 +436,10 @@ var (
 	errDecideNoSession  = decideError{http.StatusUnauthorized, "session_ended", sayNoSession}
 	errDecideBad        = decideError{http.StatusBadRequest, "bad_request", sayFailed}
 	errDecideTooLarge   = decideError{http.StatusRequestEntityTooLarge, "too_large", sayTooLarge}
+	// errDecideInhibited is the authority host's own refusal (package
+	// decisionguard), not the desk's; its code is the one the host's
+	// decision contract names.
+	errDecideInhibited = decideError{http.StatusServiceUnavailable, "decisions-inhibited", sayInhibited}
 )
 
 func writeDecideError(w http.ResponseWriter, e decideError) {
@@ -480,6 +485,8 @@ func decideFailure(err error) (decideError, bool) {
 		return errDecideDiffers, true
 	case errors.Is(err, ErrDaemonUnavailable):
 		return errDecideUnreached, true
+	case errors.Is(err, ErrDecisionsInhibited):
+		return errDecideInhibited, true
 	case errors.Is(err, ErrTooLarge):
 		return errDecideTooLarge, true
 	case errors.Is(err, ErrOutcomeUnknown):
