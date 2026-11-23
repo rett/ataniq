@@ -41,7 +41,7 @@ var inventory = []struct {
 	{"POST /api/login-challenge", "api", nil, "", false},
 	{"POST /api/login", "api", nil, "", false},
 	{"POST /api/logout", "api", nil, "", false},
-	{pattern: "GET /cards/{$}", kind: "page", controls: []string{"a", "button#logout"}, authed: true},
+	{pattern: "GET /cards/{$}", kind: "page", controls: []string{"a", "button#logout", "button#enable-notices", "button#stop-notices"}, authed: true},
 	{pattern: "GET /cards", kind: "redirect"},
 	{pattern: "GET /cards/{id}", kind: "page", controls: []string{"a#paths", "a#back", "button#logout",
 		"input#signoff-0", "button#approve", "textarea#reason", "button#deny", "button#confirm-go", "button#confirm-cancel", "a#look"},
@@ -53,6 +53,15 @@ var inventory = []struct {
 	{pattern: "POST /api/decide", kind: "api"},
 	{pattern: "GET /static/watch.js", kind: "asset"},
 	{pattern: "POST /api/watch", kind: "api"},
+	{pattern: "GET /manifest.webmanifest", kind: "asset"},
+	{pattern: "GET /sw.js", kind: "asset"},
+	{pattern: "GET /static/push.js", kind: "asset"},
+	{pattern: "GET /static/icon-192.png", kind: "asset"},
+	{pattern: "GET /static/icon-512.png", kind: "asset"},
+	{pattern: "GET /static/apple-touch-icon.png", kind: "asset"},
+	{pattern: "POST /api/push/info", kind: "api"},
+	{pattern: "POST /api/push/subscribe", kind: "api"},
+	{pattern: "POST /api/push/unsubscribe", kind: "api"},
 }
 
 // passkeyRoutes are the pages whose Permissions-Policy allows
@@ -70,6 +79,15 @@ var cookieRoutes = map[string][]string{
 	"POST /api/decide-challenge": {SessionCookie},
 	"POST /api/decide":           {SessionCookie},
 }
+
+// pushPages are the pages that may load the notices' script and link the web
+// app manifest: the card list, and no other. The service worker, the
+// manifest and the icons are listed routes of their own.
+var pushPages = map[string]bool{"GET /cards/{$}": true}
+
+// cacheOverride are the responses whose Cache-Control is not "no-store": a
+// browser checks the service worker's script for a change with each start.
+var cacheOverride = map[string]map[string]string{"GET /sw.js": {"Cache-Control": "no-cache"}}
 
 // deciders are the routes allowed to hold a decide control: the Card page,
 // and no other.
@@ -203,7 +221,8 @@ func mentionsDeciding(js string) bool {
 }
 
 func TestPageInventory(t *testing.T) {
-	r := newRig(t)
+	// The notifier is a PushPort, so the notices' routes and controls exist.
+	r := newRig(t, withPush(&fakePush{}))
 	session := r.login(t)
 	for _, e := range inventory {
 		if !strings.HasPrefix(e.pattern, "GET ") {
@@ -230,9 +249,12 @@ func TestPageInventory(t *testing.T) {
 			t.Errorf("%s: status %d", e.pattern, w.Code)
 			continue
 		}
-		if passkeyRoutes[e.pattern] {
+		switch {
+		case passkeyRoutes[e.pattern]:
 			checkHeadersGet(t, e.pattern, w, "(self)")
-		} else {
+		case cacheOverride[e.pattern] != nil:
+			checkHeadersWith(t, e.pattern, w, "()", cacheOverride[e.pattern])
+		default:
 			checkHeaders(t, e.pattern, w)
 		}
 		body := w.Body.String()
@@ -248,6 +270,20 @@ func TestPageInventory(t *testing.T) {
 			// inventory's page shows it.
 			if deciders[e.pattern] && !strings.Contains(body, `<script src="/static/decide.js"></script>`) {
 				t.Errorf("%s: a decider without its form", e.pattern)
+			}
+			// The notices' script and the manifest are the card list's alone.
+			if pushPages[e.pattern] {
+				for _, p := range []string{"<script src=\"/static/push.js\"></script>", "<link rel=\"manifest\" href=\"/manifest.webmanifest\">", "<link rel=\"apple-touch-icon\""} {
+					if !strings.Contains(body, p) {
+						t.Errorf("%s: lacks %q", e.pattern, p)
+					}
+				}
+			} else {
+				for _, p := range []string{"/static/push.js", "/manifest.webmanifest", "apple-touch-icon", "notices"} {
+					if strings.Contains(body, p) {
+						t.Errorf("%s: holds %q, which only the card list may", e.pattern, p)
+					}
+				}
 			}
 			if strings.Contains(strings.ToLower(body), "<form") {
 				t.Errorf("%s: a form, and none exists yet", e.pattern)

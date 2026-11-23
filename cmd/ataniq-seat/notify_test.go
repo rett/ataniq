@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,7 +81,8 @@ func TestRunTellsTheNotifierHowManyWait(t *testing.T) {
 	links := watchLink(t)
 	var stderr *bytes.Buffer
 	var stop func() int
-	_, stderr, stop = serve(t, []string{"--origin", seatOrigin, "--listen", freeLoopback(t),
+	var addr net.Addr
+	addr, stderr, stop = serve(t, []string{"--origin", seatOrigin, "--listen", freeLoopback(t),
 		"--gate", ln.Addr().String(), "--gate-pin-file", pinFile(t, g.id.Fingerprint()+"\n", 0o600), "--identity", dir,
 		"--notify-socket", sock})
 	waitConnected(t, <-links)
@@ -95,6 +97,17 @@ func TestRunTellsTheNotifierHowManyWait(t *testing.T) {
 	if got := fake.Notified(); len(got) != 1 || got[0] != 2 {
 		t.Errorf("the notifier was told %v, want [2]", got)
 	}
+	// With the notifier's socket the seat also serves the phone's side of
+	// the notices: the service worker's script is there, and no session is
+	// needed for it.
+	resp, err := http.Get("http://" + addr.String() + "/sw.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 || resp.Header.Get("Service-Worker-Allowed") != "/" {
+		t.Errorf("sw.js: %d %v", resp.StatusCode, resp.Header)
+	}
 	if code := stop(); code != 0 {
 		t.Errorf("shutdown code %d: %s", code, stderr.String())
 	}
@@ -105,9 +118,20 @@ func TestRunTellsTheNotifierHowManyWait(t *testing.T) {
 
 // TestRunWithoutNotifySocketStartsNoNotices: no flag, no goroutine.
 func TestRunWithoutNotifySocketStartsNoNotices(t *testing.T) {
-	_, stderr, stop := serve(t, []string{"--origin", seatOrigin, "--listen", freeLoopback(t)})
+	addr, stderr, stop := serve(t, []string{"--origin", seatOrigin, "--listen", freeLoopback(t)})
 	if n := goroutinesIn("noticeLoop"); n != 0 {
 		t.Errorf("%d notice goroutines without the flag", n)
+	}
+	// Nor is there a phone's side of the notices.
+	for _, p := range []string{"/sw.js", "/manifest.webmanifest", "/static/push.js"} {
+		resp, err := http.Get("http://" + addr.String() + p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 404 {
+			t.Errorf("%s without the flag: %d", p, resp.StatusCode)
+		}
 	}
 	if code := stop(); code != 0 {
 		t.Errorf("shutdown %d: %s", code, stderr.String())

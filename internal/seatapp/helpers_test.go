@@ -400,7 +400,7 @@ func (r *rig) postJSON(path, body string) *httptest.ResponseRecorder {
 // wantHeaders are the headers every response carries, spelt out so that a
 // change to the app's values fails here.
 var wantHeaders = map[string]string{
-	"Content-Security-Policy":      "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; require-trusted-types-for 'script'",
+	"Content-Security-Policy":      "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; require-trusted-types-for 'script'",
 	"Strict-Transport-Security":    "max-age=63072000",
 	"X-Content-Type-Options":       "nosniff",
 	"Referrer-Policy":              "no-referrer",
@@ -421,7 +421,18 @@ func checkHeaders(t *testing.T, what string, w *httptest.ResponseRecorder) {
 // publickey-credentials-get is get.
 func checkHeadersGet(t *testing.T, what string, w *httptest.ResponseRecorder, get string) {
 	t.Helper()
+	checkHeadersWith(t, what, w, get, nil)
+}
+
+// checkHeadersWith is checkHeadersGet for a response that has other values
+// than wantHeaders' for the headers of override (the service worker's script
+// is "no-cache", not "no-store").
+func checkHeadersWith(t *testing.T, what string, w *httptest.ResponseRecorder, get string, override map[string]string) {
+	t.Helper()
 	for k, v := range wantHeaders {
+		if o, ok := override[k]; ok {
+			v = o
+		}
 		if got := w.Header().Get(k); got != v {
 			t.Errorf("%s: header %s = %q, want %q", what, k, got, v)
 		}

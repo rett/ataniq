@@ -36,6 +36,16 @@
 //	GET  /static/decide.js     the decide script, which only the Card page loads
 //	POST /api/decide-challenge the daemon's challenge for one decision (a session)
 //	POST /api/decide           the passkey's assertion over it (a session)
+//	GET  /manifest.webmanifest the web app manifest of the Home Screen app (a PushPort)
+//	GET  /sw.js                the service worker that shows a push (a PushPort)
+//	GET  /static/push.js       the notices' controls script, the card list's alone (a PushPort)
+//	GET  /static/icon-192.png, /static/icon-512.png, /static/apple-touch-icon.png   the icons (a PushPort)
+//	POST /api/push/info        the push key and the number of subscriptions (a session, a PushPort)
+//	POST /api/push/subscribe   a subscription to hand the notifier (a session, a PushPort)
+//	POST /api/push/unsubscribe the hash of an endpoint to forget (a session, a PushPort)
+//
+// The routes marked PushPort exist only when [Config].Notifier is also a
+// [PushPort]; without one they answer 404 and no page mentions notices.
 //
 // The origin is the reverse proxy's, https on port 443: [New] refuses any
 // other (an http origin, a port, a path, user information, an address
