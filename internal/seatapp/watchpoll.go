@@ -215,6 +215,7 @@ func (a *app) watchPost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errRateLimited)
 		return
 	}
+	a.polled()
 	wt, ok := a.watcher()
 	if !ok {
 		writeJSON(w, http.StatusOK, watchAnswer{State: watchOffline, Card: cardUnknown})

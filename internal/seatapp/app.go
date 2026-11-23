@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -174,6 +175,15 @@ type Config struct {
 	// port, when its host is a loopback IP address or "localhost". It is for
 	// tests of this package and no command sets it.
 	AllowInsecureLoopbackForTests bool
+	// Notifier, when set, is told how many cards wait, and nothing else,
+	// when the count rises and no browser is looking (see [Notifier] and
+	// [Open]); [New] refuses a configuration that sets it, since only Open
+	// can stop what it starts. Nil starts nothing.
+	Notifier Notifier
+	// Logf, when set, receives the app's own log lines (each ends in a
+	// newline): so far the notices' failures, at most one a minute. They
+	// hold nothing but fixed text.
+	Logf func(format string, args ...any)
 }
 
 // canonicalOrigin checks an origin and returns it in the form a browser's
@@ -216,6 +226,14 @@ type app struct {
 	// from the reads; watchHold is how long a poll is held.
 	watches   *limiter
 	watchHold time.Duration
+	// lastPoll is the time, in Unix nanoseconds, of the last accepted poll,
+	// 0 before the first; the notices stay quiet while it is recent.
+	lastPoll atomic.Int64
+	// noticeTimer is the notices' timer; the real one when nil. For tests.
+	noticeTimer noticeTimer
+	// noticeParked, when set, is called each time the notices' goroutine is
+	// about to wait for a change or a timer. For tests.
+	noticeParked func()
 	// host is what the Host header of a request must be: the origin without
 	// its scheme.
 	host string
@@ -225,6 +243,9 @@ type app struct {
 // that is not https on the default port (see [Config].Origin), a relying party
 // id that is not the origin's host, or no daemon.
 func New(cfg Config) (http.Handler, error) {
+	if cfg.Notifier != nil {
+		return nil, errors.New("seatapp: Config.Notifier starts a goroutine: use Open, and Close it")
+	}
 	_, h, err := newApp(cfg)
 	return h, err
 }
