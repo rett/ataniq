@@ -147,7 +147,10 @@
 // decision is sent, the app drops the challenge
 // ([seatapp.ChallengeDropper]), or the challenge's life ends ([HoldLife] at
 // most): the seat.decide of a challenge the link drew, in its life, is never
-// refused for room, whichever session or credential drew it.
+// refused for room, whichever session or credential drew it. A login
+// challenge is asked only with room for its seat.login as well, kept for it
+// in the same way, so a login is never refused for room once the phone has
+// answered; strangers can still use up anyone's room with login challenges.
 package seatlink
 
 import (

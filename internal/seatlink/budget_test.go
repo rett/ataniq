@@ -403,6 +403,42 @@ func (r *clockRig) answer(t *testing.T, b *browser, a *webauthntest.Authenticato
 	return b.do("POST", "/api/login", loginJSON(as)).Code
 }
 
+// TestSeatOwnerLoginAfterThePasskey: the owner draws a login challenge, and
+// while the phone asks for the face, strangers, each from an address of its
+// own, draw login challenges and post assertions the desk does not know.
+// The owner's login is then taken: its room was kept with its challenge, so
+// it is never refused for room after the passkey. Strangers can still use
+// up the room for challenges: the ones past it are refused before anything
+// is sent. On the base the owner's login was answered desk_busy.
+func TestSeatOwnerLoginAfterThePasskey(t *testing.T) {
+	r := newClockRig(t)
+	a, err := webauthntest.New(seatRPID, seatOrigin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drawn, refused := 0, 0
+	w := r.browser.loginAround(t, r.phone, func() {
+		for i := 0; i < 7; i++ {
+			b, code := r.stranger()
+			switch code {
+			case 200:
+				drawn++
+				r.answer(t, b, a)
+			case 503:
+				refused++
+			default:
+				t.Fatalf("a stranger's challenge: %d", code)
+			}
+		}
+	})
+	if w.Code != 200 {
+		t.Errorf("the owner's login after the passkey: %d %s", w.Code, w.Body)
+	}
+	if drawn == 0 || refused == 0 {
+		t.Errorf("strangers drew %d challenges and %d were refused: the test does not show what it means to", drawn, refused)
+	}
+}
+
 // TestSeatDecideNeverRefusedOnRate: within the documented allowances (8
 // login challenges a minute from all sources, each answered within its
 // life; 20 reads a minute for the owner's credential, each the first page
@@ -411,19 +447,33 @@ func (r *clockRig) answer(t *testing.T, b *browser, a *webauthntest.Authenticato
 // their logins and the owner reads, and the decision the phone then signs
 // is decided, not refused on the gate's rate. On the base the gate refused
 // it rate-limited after the passkey was asked. The calls the link has no
-// room for are refused before they are sent, as "the desk is busy".
+// room for are refused before they are sent, as "the desk is busy": a
+// stranger's login challenge past anyone's room, with the room of its
+// login, and reads past theirs.
 func TestSeatDecideNeverRefusedOnRate(t *testing.T) {
 	r := newClockRig(t)
 	a, err := webauthntest.New(seatRPID, seatOrigin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var held []*browser
-	for i := 0; i < 8; i++ {
-		b, _ := r.stranger()
-		held = append(held, b)
+	busy := 0
+	strangers := func(n int) {
+		for i := 0; i < n; i++ {
+			b, code := r.stranger()
+			if code == 503 {
+				busy++
+				continue
+			}
+			if code != 200 {
+				t.Fatalf("a stranger's challenge: %d", code)
+			}
+			if got := r.answer(t, b, a); got == 503 {
+				t.Errorf("a stranger's login of a challenge drawn refused for room")
+			}
+		}
 	}
-	r.clock.advance(61 * time.Second)
+	strangers(8)
+	r.clock.advance(BudgetWindow + time.Second)
 	if w := r.browser.loginWith(t, r.phone); w.Code != 200 {
 		t.Fatalf("the owner's login: %d %s", w.Code, w.Body)
 	}
@@ -432,16 +482,7 @@ func TestSeatDecideNeverRefusedOnRate(t *testing.T) {
 	if tap.Code != 200 {
 		t.Fatalf("tap: %d %s", tap.Code, tap.Body)
 	}
-	for i := 0; i < 7; i++ {
-		b, _ := r.stranger()
-		held = append(held, b)
-	}
-	busy := 0
-	for _, b := range held {
-		if r.answer(t, b, a) == 503 {
-			busy++
-		}
-	}
+	strangers(7)
 	before := r.gate.calls.Load()
 	reads := 0
 	for i := 0; i < 19; i++ {
@@ -465,6 +506,6 @@ func TestSeatDecideNeverRefusedOnRate(t *testing.T) {
 		t.Errorf("the decision after the passkey: %d %v", w.Code, m)
 	}
 	if busy == 0 {
-		t.Error("no stranger's login was refused for room")
+		t.Error("no stranger's login challenge was refused for room")
 	}
 }

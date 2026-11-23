@@ -657,6 +657,15 @@ the same moment, each keep theirs. So a decision the phone signed is never
 refused for the gate's rate: strangers' logins and pairings, reads and other
 sessions' challenges cannot take its room, and a tap past it is told the desk
 is busy before any challenge is drawn or the passkey asked.
+A login challenge is asked in the same way: only when anyone's room holds it
+and its `seat.login` as well, the room of the login kept for that one
+challenge until the login is sent or the challenge's life ends (5 minutes at
+most). So the owner's login is never refused for room once the phone has
+answered. Strangers can still use up the login challenges, and with them the
+owner's: 8 a minute from all sources, and anyone's room, which 6 challenges
+fill for as long as they are not answered (5 minutes at most), and which
+pairings share. That keeps the owner from logging in on the phone, or
+pairing one, while it lasts; it never touches the desk.
 The seat relays pairings for anyone who reaches its pairing page, and the
 gate counts each pairing the daemon refuses against the seat's refusal bound
 (16 in 10 minutes; see [the refusal bound](#the-refusal-bound)), past which

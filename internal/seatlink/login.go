@@ -88,7 +88,10 @@ func (d *Daemon) offers(capability string) bool {
 // LoginChallenge asks the daemon for a login challenge (seat.login-challenge)
 // and checks it: the challenge must be the one the gate's pin and the
 // daemon's nonce give, or nothing is asked of the phone. It returns
-// [seatapp.ErrNotOffered] when the gate does not list "login".
+// [seatapp.ErrNotOffered] when the gate does not list "login", and
+// [seatapp.ErrBusy], before anything is sent, when anyone's room has no
+// space for the challenge and its login together: the room of the login is
+// kept with the challenge.
 func (d *Daemon) LoginChallenge(ctx context.Context) (seatapp.LoginChallenge, error) {
 	if ctx.Err() != nil {
 		return seatapp.LoginChallenge{}, seatapp.ErrDaemonUnavailable
@@ -102,9 +105,24 @@ func (d *Daemon) LoginChallenge(ctx context.Context) (seatapp.LoginChallenge, er
 		}
 		return seatapp.LoginChallenge{}, seatapp.ErrNotOffered
 	}
-	if !d.budget.take(kindPublic) {
+	// The room of the login's seat.login is kept with the challenge's, for
+	// this challenge alone: once the phone has answered, the login is never
+	// refused for room.
+	token, ok := d.budget.reserve(kindPublic)
+	if !ok {
 		return seatapp.LoginChallenge{}, seatapp.ErrBusy
 	}
+	out, err := d.loginChallenge(ctx)
+	if err != nil {
+		d.budget.release(token)
+		return seatapp.LoginChallenge{}, err
+	}
+	d.budget.bind(token, out.ID, out.Expires)
+	return out, nil
+}
+
+// loginChallenge sends seat.login-challenge and checks the answer.
+func (d *Daemon) loginChallenge(ctx context.Context) (seatapp.LoginChallenge, error) {
 	var raw json.RawMessage
 	if err := d.c.Call(ctx, OpLoginChallenge, nil, &raw); err != nil {
 		return seatapp.LoginChallenge{}, mapCall(ctx, OpLoginChallenge, err, loginCodes)
@@ -138,6 +156,8 @@ func (d *Daemon) LoginChallenge(ctx context.Context) (seatapp.LoginChallenge, er
 // Login hands the daemon a browser's assertion over a login challenge
 // (seat.login) and returns the credential that logged in. The answer must
 // name the credential the assertion named, by its raw id and its display id.
+// The login of a challenge the link drew, in its life, has the room its
+// challenge kept, so it is never refused for room after the passkey.
 func (d *Daemon) Login(ctx context.Context, r seatapp.LoginRequest) (seatapp.LoginResult, error) {
 	if ctx.Err() != nil {
 		return seatapp.LoginResult{}, seatapp.ErrDaemonUnavailable
@@ -160,7 +180,10 @@ func (d *Daemon) Login(ctx context.Context, r seatapp.LoginRequest) (seatapp.Log
 	if err != nil {
 		return seatapp.LoginResult{}, seatapp.ErrLoginRefused
 	}
-	if !d.budget.take(kindPublic) {
+	// The login is counted in the room its challenge kept, and is never
+	// refused for room; one of a challenge whose room is not kept (its life
+	// ended, or the link did not draw it) is sent only with room.
+	if !d.budget.answer(kindPublic, r.ChallengeID) {
 		return seatapp.LoginResult{}, seatapp.ErrBusy
 	}
 	var raw json.RawMessage

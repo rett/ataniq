@@ -44,7 +44,12 @@ const (
 	// challenge, or the challenge's life ends.
 	decideRoom = 16
 	// publicRoom is seat.pair, seat.login-challenge and seat.login, which the
-	// seat relays for anyone who reaches its pages: 6 logins.
+	// seat relays for anyone who reaches its pages: 6 logins. A login
+	// challenge is drawn only with room for its seat.login as well, kept
+	// for that challenge until the login is sent or the challenge's life
+	// ends, so a login is never refused for room once the phone has
+	// answered. Strangers who draw login challenges and never answer them
+	// keep that room until their challenges' life ends.
 	publicRoom = 12
 	// readRoom is owner.list, owner.show and owner.paths, the reads of every
 	// session together.
@@ -81,10 +86,10 @@ func (k kind) room() int {
 	return decideRoom
 }
 
-// hold is the room kept for the answer to one challenge the link drew
-// (the seat.decide of a decision's challenge): its kind, the challenge's id
-// (empty while it is being asked) and when the room is let go if no answer
-// came.
+// hold is the room kept for the answer to one challenge the link drew (the
+// seat.decide of a decision's challenge, the seat.login of a login
+// challenge): its kind, the challenge's id (empty while it is being asked)
+// and when the room is let go if no answer came.
 type hold struct {
 	kind  kind
 	id    string

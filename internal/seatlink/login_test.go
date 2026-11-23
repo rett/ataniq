@@ -268,6 +268,14 @@ func (b *browser) do(method, path, body string) *httptest.ResponseRecorder {
 // answer to the login, or to the challenge when that failed.
 func (b *browser) loginWith(t *testing.T, a *webauthntest.Authenticator) *httptest.ResponseRecorder {
 	t.Helper()
+	return b.loginAround(t, a, nil)
+}
+
+// loginAround is loginWith that runs between, when it is not nil, after the
+// phone made its assertion and before it is posted: what happens while the
+// owner is at the passkey sheet.
+func (b *browser) loginAround(t *testing.T, a *webauthntest.Authenticator, between func()) *httptest.ResponseRecorder {
+	t.Helper()
 	w := b.do("POST", "/api/login-challenge", "{}")
 	if w.Code != 200 {
 		return w
@@ -286,6 +294,9 @@ func (b *browser) loginWith(t *testing.T, a *webauthntest.Authenticator) *httpte
 	as, err := a.Get(challenge)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if between != nil {
+		between()
 	}
 	return b.do("POST", "/api/login", loginJSON(as))
 }
