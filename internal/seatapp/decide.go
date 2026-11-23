@@ -162,32 +162,69 @@ func (ss *sessions) begin() uint64 {
 	return ss.seq
 }
 
-// opened notes that the Card page showed c to the session at now, from a
-// read that began at the mark since, and returns the session's reading of
-// it, and fresh. A read of the card settles a lost answer: what the page
-// shows is the card's state now. A read made while a decision of the card
-// is on its way, or that began before an unsettled decision of the card was
-// last marked (sent, or its answer lost), may show the card as it was
-// before the decision, so it changes nothing and is not fresh.
-func (ss *sessions) opened(k tokenKey, c Card, now time.Time, since uint64) (Reading, bool) {
+// stale reports whether a read that began at the mark since may show the
+// card as it was before an unsettled decision of it: the decision is on
+// its way, or it was last marked (sent, or its answer lost) after since.
+func (r *cardReading) stale(since uint64) bool {
+	return r.sent && (r.inFlight || r.sentAt > since)
+}
+
+// note makes r the reading of c as the Card page showed it at now: a read
+// of the card settles a lost answer, since what the page shows is the
+// card's state now.
+func (r *cardReading) note(c Card, now time.Time) {
+	if r.binding != "" && r.binding != c.BindingSHA256 {
+		r.pages, r.review, r.read = 0, "", nil
+	}
+	r.binding, r.expires, r.flagged, r.opened, r.whole = c.BindingSHA256, c.Expires, len(c.Flagged), now, wholeOf(c)
+	r.live = !c.Ended && !c.OnItsWay && (c.State == "" || c.State == "pending")
+	r.sent = false
+}
+
+// peek returns the reading the session would have of c if the Card page
+// that shows it at now, from a read that began at the mark since, is
+// written, and whether that read is fresh. It changes nothing: opened notes
+// the read once the page was written. A read that is not fresh (see stale)
+// would change nothing, and the reading returned is the one kept.
+func (ss *sessions) peek(k tokenKey, c Card, now time.Time, since uint64) (Reading, bool) {
 	var out Reading
 	fresh := true
 	ss.with(k, func(s *session) {
-		r := s.reading(c.ID, true)
-		if r.sent && (r.inFlight || r.sentAt > since) {
+		r := &cardReading{}
+		if kept, ok := s.cards[c.ID]; ok {
+			cp := *kept
+			r = &cp
+		}
+		if r.stale(since) {
 			fresh = false
 			out = r.public()
 			return
 		}
-		if r.binding != "" && r.binding != c.BindingSHA256 {
-			r.pages, r.review, r.read = 0, "", nil
-		}
-		r.binding, r.expires, r.flagged, r.opened, r.whole = c.BindingSHA256, c.Expires, len(c.Flagged), now, wholeOf(c)
-		r.live = !c.Ended && !c.OnItsWay && (c.State == "" || c.State == "pending")
-		r.sent = false
+		r.note(c, now)
 		out = r.public()
 	})
 	return out, fresh
+}
+
+// opened notes that the Card page that showed c to the session at now, from
+// a read that began at the mark since, was written, with the decide form f
+// when f.id is not empty. It checks the read again: a decision of the card
+// sent, or an answer lost, since it began makes it stale, and then nothing
+// is noted, the form neither, and opened reports false.
+func (ss *sessions) opened(k tokenKey, c Card, now time.Time, since uint64, f pageForm) bool {
+	noted := false
+	ss.with(k, func(s *session) {
+		r := s.reading(c.ID, true)
+		if r.stale(since) {
+			return
+		}
+		r.note(c, now)
+		if f.id != "" {
+			r.addForm(f)
+		}
+		noted = true
+	})
+	return noted
 }
 
 // readPage notes that the session read page n of pages of a card's whole
@@ -203,17 +240,13 @@ func (ss *sessions) readPage(k tokenKey, id string, n, pages int, review string)
 	})
 }
 
-// addForm notes the decide form of a Card page that showed a card at the
-// binding given to the session. The oldest form goes when there are
-// maxForms.
-func (ss *sessions) addForm(k tokenKey, id string, f pageForm) {
-	ss.with(k, func(s *session) {
-		r := s.reading(id, true)
-		if len(r.forms) >= maxForms {
-			r.forms = append(r.forms[:0:0], r.forms[len(r.forms)-maxForms+1:]...)
-		}
-		r.forms = append(r.forms, f)
-	})
+// addForm notes the decide form of a Card page that showed the card at the
+// binding given. The oldest form goes when there are maxForms.
+func (r *cardReading) addForm(f pageForm) {
+	if len(r.forms) >= maxForms {
+		r.forms = append(r.forms[:0:0], r.forms[len(r.forms)-maxForms+1:]...)
+	}
+	r.forms = append(r.forms, f)
 }
 
 // form returns the binding the page of a form showed, and whether the

@@ -215,7 +215,11 @@
 // ([Whole]), and a cut path list by the pages of it the session was served
 // that cut no path, each with the review digest it was read for. The port
 // withholds Approve for a part not shown whole. A HEAD of a card page is
-// refused 405: only a GET answered with its page is a read.
+// refused 405: only a GET answered with its page is a read, and only once
+// the page was written and flushed without an error. A Card page's read
+// (which settles a lost answer and keeps the page's form) is checked again
+// then, and is not noted when a decision of the card was sent, or an answer
+// lost, since the read began.
 //
 // A tap asks POST /api/decide-challenge with the card, the id of the page's
 // form, the action, the indexes of the boxes ticked and the reason; the

@@ -927,7 +927,12 @@ How it is built (G9), where the points above left a choice:
   before a card was replaced (the same id and page count, another review)
   count for nothing on the replacement. Only a GET that the seat answered
   with the page is a read: a `HEAD` of a card page is refused 405 and asks
-  the daemon nothing. The page shows a path or a ref (a ref
+  the daemon nothing, and a page counts (a read of the card, which settles
+  a lost answer and keeps the page's form; a page of the path list) only
+  once it was written whole and flushed to the connection without an
+  error. A Card page's read is checked again then: a decision of the card
+  sent, or an answer lost, since the read began leaves it stale, and
+  nothing is noted. The page shows a path or a ref (a ref
   line's ref, the branch a prune's deleted ref was merged into, a flagged
   path and its rule, a path or ref of the "differs from" block) up to 1024
   characters of its escaped text, and cuts a longer one with a count of

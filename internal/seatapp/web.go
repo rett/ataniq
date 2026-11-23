@@ -3,6 +3,7 @@ package seatapp
 import (
 	"bytes"
 	"embed"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -194,18 +195,28 @@ func (a *app) page(name string) http.HandlerFunc {
 	}
 }
 
-// render answers a page made from data, with status. The template is
-// executed into a buffer first, so that a failure sends nothing
-// half-written.
-func (a *app) render(w http.ResponseWriter, name string, status int, data any) {
+// render answers a page made from data, with status, and reports whether
+// the page was written: executed, and handed whole to the connection
+// (written and flushed without an error). The template is executed into a
+// buffer first, so that a failure sends nothing half-written. What a page
+// counts for (a read of the card, a page of its path list) is noted only
+// once render reported it written.
+func (a *app) render(w http.ResponseWriter, name string, status int, data any) bool {
 	var buf bytes.Buffer
 	if err := pages[name].Execute(&buf, data); err != nil {
 		writeText(w, http.StatusInternalServerError, "internal error\n")
-		return
+		return false
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	w.Write(buf.Bytes())
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		return false
+	}
+	// A writer that cannot flush is taken at its Write.
+	if err := http.NewResponseController(w).Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return false
+	}
+	return true
 }
 
 // passkeyPage is page for a page that asks the phone for a passkey assertion:

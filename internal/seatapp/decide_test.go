@@ -569,6 +569,134 @@ func TestSeatDecideReadAcrossTheLoss(t *testing.T) {
 	}
 }
 
+// brokenWriter is a response writer whose connection is gone: what is
+// written is kept in body, and Write fails, or, with flushFails, Write
+// takes it and the flush fails.
+type brokenWriter struct {
+	header     http.Header
+	body       bytes.Buffer
+	flushFails bool
+}
+
+func (w *brokenWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = http.Header{}
+	}
+	return w.header
+}
+
+func (w *brokenWriter) WriteHeader(int) {}
+
+func (w *brokenWriter) Write(b []byte) (int, error) {
+	w.body.Write(b)
+	if w.flushFails {
+		return len(b), nil
+	}
+	return 0, errors.New("write: broken pipe")
+}
+
+// FlushError is the flush http.ResponseController asks for.
+func (w *brokenWriter) FlushError() error {
+	if w.flushFails {
+		return errors.New("flush: broken pipe")
+	}
+	return nil
+}
+
+// getBroken GETs path with the session s into a broken writer.
+func (r *rig) getBroken(path string, s *http.Cookie, flushFails bool) *brokenWriter {
+	req := newRequest("GET", path, nil)
+	req.AddCookie(s)
+	w := &brokenWriter{flushFails: flushFails}
+	r.h.ServeHTTP(w, req)
+	return w
+}
+
+// TestSeatPagesNotWrittenCountForNothing: a Card page or a page of the
+// path list that was not written to the phone (the write or its flush
+// failed: the phone went away) counts for nothing. It does not settle a
+// lost answer, its form is not taken, and a path page is not credited as
+// read. On the base each was noted before the page was written.
+func TestSeatPagesNotWrittenCountForNothing(t *testing.T) {
+	for _, flushFails := range []bool{false, true} {
+		r := newRig(t)
+		s := r.login(t)
+		r.openCard(t, s)
+		id := r.challengeOf(t, s, approveBody)
+		r.daemon.decideErr = ErrOutcomeUnknown
+		r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s)
+		r.daemon.decideErr = nil
+		r.getBroken("/cards/"+testCardID, s, flushFails)
+		r.clock.Advance(time.Second)
+		wantFailure(t, "a tap after a Card page not written", r.tap(approveBody, s), 409, "sent_unknown", saySentUnknown)
+
+		// A Card page that offers the form but was not written: its form
+		// is not taken.
+		r.openCard(t, s)
+		w := r.getBroken("/cards/"+testCardID, s, flushFails)
+		if flushFails {
+			form := formOf(w.body.String())
+			if form == "" {
+				t.Fatal("the page not flushed holds no form")
+			}
+			wantFailure(t, "the form of a page not written", r.postWith("/api/decide-challenge", r.withForm(tapOf(form), s), s), 409, "look_again", sayLookFirst)
+		}
+
+		// A page of the path list not written is no read.
+		r.getBroken("/cards/"+testCardID+"/paths/0", s, flushFails)
+		r.challengeOf(t, s, approveBody)
+		if rd := r.daemon.decideChs[len(r.daemon.decideChs)-1].Reading; len(rd.PagesRead) != 0 {
+			t.Errorf("flush fails %v: pages not written counted as read: %v", flushFails, rd.PagesRead)
+		}
+		r.getWith("/cards/"+testCardID+"/paths/0", s)
+		r.challengeOf(t, s, approveBody)
+		if rd := r.daemon.decideChs[len(r.daemon.decideChs)-1].Reading; len(rd.PagesRead) != 1 {
+			t.Errorf("flush fails %v: a page written is not counted: %v", flushFails, rd.PagesRead)
+		}
+	}
+}
+
+// hookedWriter is a recorder that runs hook once, as the page is written:
+// what happens while the page is on its way to the phone.
+type hookedWriter struct {
+	*httptest.ResponseRecorder
+	hook func()
+}
+
+func (w *hookedWriter) Write(b []byte) (int, error) {
+	if h := w.hook; h != nil {
+		w.hook = nil
+		h()
+	}
+	return w.ResponseRecorder.Write(b)
+}
+
+// TestSeatDecideSentWhilePageIsWritten: a decision of the card sent, and
+// its answer lost, while a Card page that offers the form is being written
+// makes that read stale: once written it does not settle the lost answer,
+// and its form is not taken.
+func TestSeatDecideSentWhilePageIsWritten(t *testing.T) {
+	r := newRig(t)
+	s := r.login(t)
+	r.openCard(t, s)
+	w := &hookedWriter{ResponseRecorder: httptest.NewRecorder(), hook: func() {
+		id := r.challengeOf(t, s, approveBody)
+		r.daemon.decideErr = ErrOutcomeUnknown
+		r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s)
+	}}
+	req := newRequest("GET", "/cards/"+testCardID, nil)
+	req.AddCookie(s)
+	r.h.ServeHTTP(w, req)
+	form := formOf(w.Body.String())
+	if form == "" {
+		t.Fatal("the page holds no form: the test does not show what it means to")
+	}
+	r.daemon.decideErr = nil
+	r.clock.Advance(time.Second)
+	wantFailure(t, "a tap after the page", r.tap(approveBody, s), 409, "sent_unknown", saySentUnknown)
+	wantFailure(t, "a tap of its form", r.postWith("/api/decide-challenge", r.withForm(tapOf(form), s), s), 409, "look_again", sayLookFirst)
+}
+
 // TestSeatPathPagesKeepTheirReview: the pages of a path list count with the
 // review each was read for; a page of another review starts the count
 // again, so pages read before the card was replaced do not count for the

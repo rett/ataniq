@@ -395,31 +395,40 @@ func (a *app) cardPage(w http.ResponseWriter, r *http.Request, s Session) {
 	now := a.cfg.Now()
 	d := cardData{Title: pageTitles["card"], Now: now, Card: c, RPID: a.cfg.RPID}
 	// The page is the session's reading of the card: a lost answer is
-	// settled by it. The decide form is the page's only when the card is
-	// pending and the card model offers approve or deny.
-	reading, fresh := a.sess.opened(s.key, c, now, since)
+	// settled by it, once the page was written. The decide form is the
+	// page's only when the card is pending and the card model offers
+	// approve or deny.
+	reading, fresh := a.sess.peek(s.key, c, now, since)
 	d.Unsettled = !fresh
 	if fresh && !c.Ended && !c.OnItsWay && (c.State == "" || c.State == "pending") {
 		d.Offer = a.cfg.Daemon.Offer(id, c.BindingSHA256, reading, now)
 		d.Decide = d.Offer.Approve || d.Offer.Deny
 	}
+	var form pageForm
 	if d.Decide {
 		// Each page's form has an id of its own, kept with the binding the
 		// page shows, so that a tap is taken only for the card its page
 		// showed. Without one the page has no form.
-		form, err := newFormID(a.cfg.Random)
+		fid, err := newFormID(a.cfg.Random)
 		if err != nil {
 			d.Decide = false
 		} else {
-			a.sess.addForm(s.key, id, pageForm{id: form, binding: c.BindingSHA256})
-			d.Form = form
+			form = pageForm{id: fid, binding: c.BindingSHA256}
+			d.Form = fid
 		}
 	}
 	if d.Decide {
 		// The one page that asks the phone for a decision's assertion.
 		w.Header().Set("Permissions-Policy", permissionsPolicy("(self)"))
 	}
-	a.render(w, "card", http.StatusOK, d)
+	// Only a page that was written is a read of the card: then the read is
+	// noted, with its form, unless a decision of the card was sent or its
+	// answer lost since the read began (opened checks again). A page that
+	// was not written, or a read that went stale meanwhile, notes nothing,
+	// so its form, if it got one, is not taken.
+	if a.render(w, "card", http.StatusOK, d) && fresh {
+		a.sess.opened(s.key, c, now, since, form)
+	}
 }
 
 // pathsPage answers GET /cards/{id}/paths/{n}: a page of a card's whole path
@@ -445,18 +454,18 @@ func (a *app) pathsPage(w http.ResponseWriter, r *http.Request, s Session) {
 		a.problem(w, problemFailed)
 		return
 	}
-	// A page counts as read only when it showed every path whole.
+	// A page counts as read only when it showed every path whole, and
+	// only once it was written.
 	d := pathsData{Title: pageTitles["paths"], ID: id, Page: p, Number: n + 1, Back: cardHref(id), Cut: !rowsWhole(p.Rows)}
-	if !d.Cut {
-		a.sess.readPage(s.key, id, n, p.Pages, p.Review)
-	}
 	if n > 0 {
 		d.Prev = pathsHref(id, n-1)
 	}
 	if n+1 < p.Pages {
 		d.Next = pathsHref(id, n+1)
 	}
-	a.render(w, "paths", http.StatusOK, d)
+	if a.render(w, "paths", http.StatusOK, d) && !d.Cut {
+		a.sess.readPage(s.key, id, n, p.Pages, p.Review)
+	}
 }
 
 // problem answers a problem page.
