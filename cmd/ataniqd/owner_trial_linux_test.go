@@ -248,3 +248,85 @@ func TestTrialRunSubmitsSampleCardsThatTheSeatSees(t *testing.T) {
 		t.Errorf("trial submit with no daemon: exit %d, %q", code, tb.err.String())
 	}
 }
+
+// stubHandler is the daemon's base handler of a test server that only serves
+// the extension.
+type stubHandler struct{}
+
+func (stubHandler) Hello(context.Context) clientapi.HelloResult {
+	return clientapi.HelloResult{Version: "9.9.9-test"}
+}
+
+func (stubHandler) Status(context.Context) (clientapi.StatusResult, error) {
+	return clientapi.StatusResult{}, nil
+}
+
+// trialServer serves trial.submit with the sample cards of submit on a private
+// socket, and returns the socket's path.
+func trialServer(t *testing.T, submit func(context.Context, string) (hostadapter.TrialCard, error)) string {
+	t.Helper()
+	l, path, err := clientapi.Listen(shortDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- clientapi.Serve(ctx, l, stubHandler{}, clientapi.Options{Extra: []clientapi.Extension{&trialExt{submit: submit}}})
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("the server did not stop")
+		}
+	})
+	return path
+}
+
+// A trial.submit that stops after some of its cards, because the call ended or
+// a sample failed, returns the cards already made with the reason, so that the
+// owner knows which cards exist on the phone: the command prints their lines,
+// then says it stopped after how many of how many, and exits 1. With no card
+// made at all it is the plain failure.
+func TestTrialSubmitReportsTheCardsMadeBeforeItStopped(t *testing.T) {
+	var notices []string
+	old := ownerNotice
+	ownerNotice = func(line string) { notices = append(notices, line) }
+	t.Cleanup(func() { ownerNotice = old })
+
+	made := 0
+	socket := trialServer(t, func(ctx context.Context, kind string) (hostadapter.TrialCard, error) {
+		made++
+		if made%3 == 0 {
+			return hostadapter.TrialCard{}, context.Canceled
+		}
+		return hostadapter.TrialCard{Kind: kind, RequestID: "rq-stub", State: "pending", PendingID: "ap-stub-" + string(rune('0'+made)), Feature: "stub"}, nil
+	})
+	run := func(count string) (int, string, string) {
+		tb := newTestApp(t, nil)
+		code := tb.run([]string{"trial", "submit", "--socket", socket, "--kind", "finish", "--count", count})
+		return code, tb.out.String(), tb.err.String()
+	}
+	// Cards 1 and 2 are made, the third stops: the lines of the two, then the
+	// reason.
+	code, out, serr := run("5")
+	if code != leaddaemon.ExitFailure || strings.Count(out, "card ap-stub-") != 2 || !strings.Contains(out, "card ap-stub-1:") || !strings.Contains(out, "card ap-stub-2:") ||
+		!strings.Contains(serr, "stopped after 2 of 5 cards") || strings.Contains(serr, "protocol error") {
+		t.Fatalf("a call that stopped after two: exit %d, %q, %q", code, out, serr)
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "after 2 of 5 cards") {
+		t.Errorf("the daemon noted %q", notices)
+	}
+	// A call that makes all its cards is as before.
+	made = 0
+	if code, out, serr = run("2"); code != leaddaemon.ExitOK || strings.Count(out, "card ap-stub-") != 2 || serr != "" {
+		t.Errorf("a whole call: exit %d, %q, %q", code, out, serr)
+	}
+	// The first card failing is the plain failure, with no cards to show.
+	made = 2
+	if code, out, serr = run("3"); code != leaddaemon.ExitFailure || out != "" || !strings.Contains(serr, msgTrialFailed) || strings.Contains(serr, "stopped after") {
+		t.Errorf("a call whose first card failed: exit %d, %q, %q", code, out, serr)
+	}
+}

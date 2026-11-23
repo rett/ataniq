@@ -718,7 +718,13 @@ trial's settings without `--trial`, and other settings with it (exit 10), before
 it takes a lock. `trial submit` makes 1 to 10 cards (`--count`, default 1) and
 exits 0 when every card was made, 1 after a refusal or a failure, 2 for usage,
 20 when no daemon answers, 21 unauthorized and 22 for a protocol error, which is
-also the answer of a daemon not started with `--trial`. The stand-in door keeps
+also the answer of a daemon not started with `--trial`. A call that stops after
+some of its cards (it ended, or a sample failed) prints the lines of the cards
+already made, which are on the phone, and then `stopped after N of M cards`,
+exit 1. A refused request leaves nothing of its sample in the daemon's memory.
+The operation needs no decider's place: it decides and applies nothing, and the
+daemon's own-user check on its socket is its guard (any process of that user
+can make sample cards, within the stand-in door's own caps). The stand-in door keeps
 nothing across a restart: the sample cards are gone after one, and the journal
 keeps what was decided. The card numbers start from the time of day (the UTC
 seconds of the day times 1000, plus 1) and, when the journal holds ids of the

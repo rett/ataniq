@@ -387,13 +387,18 @@ func (t *Trial) submitFinish(ctx context.Context) (TrialCard, error) {
 	if err != nil {
 		return TrialCard{}, err
 	}
+	if st.State == ownerchannel.RequestRefused {
+		// No card was made, so nothing of the sample is wanted: a refused
+		// request leaves nothing in the host's memory.
+		t.host.dropFeature(name)
+	}
 	return TrialCard{Kind: TrialFinish, RequestID: req.RequestID, Feature: name, State: string(st.State),
 		PendingID: st.PendingID, Code: string(st.Code), Detail: st.Detail}, nil
 }
 
 func (t *Trial) submitPrune(ctx context.Context) (TrialCard, error) {
 	n := t.next()
-	effects := t.host.addBranches(t.stamp, n, 2+n%2)
+	effects := t.host.newBranches(t.stamp, n, 2+n%2)
 	note := trialNote(n)
 	req, b, err := t.request(n, record.VerbBranchPrune, []string{}, "", note)
 	if err != nil {
@@ -411,8 +416,12 @@ func (t *Trial) submitPrune(ctx context.Context) (TrialCard, error) {
 	if _, err := t.door.Admit(ctx, door.RecordOf(b)); err != nil {
 		return refused(err)
 	}
+	// The sample branches are known to the host only once the door took the
+	// request, and only for as long as there may be a card for them.
+	t.host.addBranches(effects)
 	rec, err := t.door.Plan(ctx, door.PlanInput{Request: door.RecordOf(b), Note: note, Evidence: []record.Evidence{}, Deletes: effects})
 	if err != nil {
+		t.host.dropBranches(effects)
 		_ = t.door.Withdraw(req.RequestID)
 		return refused(err)
 	}
@@ -468,6 +477,7 @@ type trialChange struct {
 
 // trialReview is the review of one sample merge.
 type trialReview struct {
+	feature             string
 	base, merge, digest string
 	changes             []trialChange
 }
@@ -520,21 +530,58 @@ func (h *trialHost) addFeature(name, stamp string, n int) string {
 	return tip
 }
 
-// addBranches makes k merged sample branches and returns the effects of a
-// prune that deletes them.
-func (h *trialHost) addBranches(stamp string, n, k int) []record.Effect {
+// dropFeature forgets the sample feature name and what the host made for it
+// (its merges, and their suite records), for a request that was refused: no
+// card was made, so nothing will ask for them.
+func (h *trialHost) dropFeature(name string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	delete(h.features, name)
+	for merge, r := range h.merges {
+		if r.feature == name {
+			delete(h.merges, merge)
+			delete(h.evidence, trialEvidenceID(merge))
+		}
+	}
+}
+
+// newBranches makes the effects of a prune that deletes k merged sample
+// branches. It records nothing: [trialHost.addBranches] does, once the door
+// has taken the request.
+func (h *trialHost) newBranches(stamp string, n, k int) []record.Effect {
 	var out []record.Effect
 	for i := 1; i <= k; i++ {
 		ref := fmt.Sprintf("refs/heads/feature/trial-done-%d-%d", n, i)
 		tip := trialID("trial branch", stamp, ref)
-		h.branches[ref] = tip
 		out = append(out, record.Effect{Kind: record.EffectRef, Ref: ref, Old: tip, New: strings.Repeat("0", 40),
 			MergedInto: &record.MergedInto{Ref: h.target, Tip: h.tip}})
 	}
 	return out
 }
+
+// addBranches records the sample branches of the effects, which a card of the
+// prune will ask the host for.
+func (h *trialHost) addBranches(effects []record.Effect) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, e := range effects {
+		h.branches[e.Ref] = e.Old
+	}
+}
+
+// dropBranches forgets the sample branches of the effects, for a prune the door
+// refused to plan.
+func (h *trialHost) dropBranches(effects []record.Effect) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, e := range effects {
+		delete(h.branches, e.Ref)
+	}
+}
+
+// trialEvidenceID is the id of the suite record of a merge: it says that no
+// suite ran.
+func trialEvidenceID(merge string) string { return "trial-no-suite-ran-" + merge[:12] }
 
 // errTrialUnknown is the refusal of a name or a commit the trial did not make.
 func errTrialUnknown(what string) error {
@@ -583,7 +630,7 @@ func (h *trialHost) Build(_ context.Context, in ownerchannel.MergeInput) (ownerc
 	for _, c := range f.changes {
 		parts = append(parts, c.status, c.path, strings.Join(c.added, "\n"), strings.Join(c.removed, "\n"))
 	}
-	h.merges[merge] = trialReview{base: in.TargetTip, merge: merge, digest: trialDigest(parts...), changes: f.changes}
+	h.merges[merge] = trialReview{feature: in.Feature, base: in.TargetTip, merge: merge, digest: trialDigest(parts...), changes: f.changes}
 	h.pins[in.Key] = merge
 	return ownerchannel.BuiltMerge{Commit: merge, Parents: [2]string{in.TargetTip, in.FeatureTip}}, nil
 }
@@ -616,7 +663,7 @@ func (h *trialHost) Verify(_ context.Context, in ownerchannel.VerifyInput) (owne
 	if _, ok := h.merges[in.Merge]; !ok {
 		return ownerchannel.Verification{Detail: ownerchannel.VerifyCouldNotRun}, nil
 	}
-	ev := record.Evidence{Kind: record.EvidenceSuite, RecordID: "trial-no-suite-ran-" + in.Merge[:12],
+	ev := record.Evidence{Kind: record.EvidenceSuite, RecordID: trialEvidenceID(in.Merge),
 		RecordSHA256: trialDigest("trial: no suite ran on the merge", in.Merge)}
 	h.evidence[ev.RecordID] = ev
 	return ownerchannel.Verification{Clean: true, Evidence: ev}, nil

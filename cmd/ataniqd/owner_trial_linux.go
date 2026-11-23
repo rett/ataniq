@@ -139,20 +139,52 @@ type trialSubmitParams struct {
 	Count int    `json:"count,omitempty"`
 }
 
-// trialSubmitResult is its result: one entry per sample, in order.
+// trialSubmitResult is its result: one entry per sample, in order. When the
+// daemon stopped making samples after some (the call was cancelled, or a sample
+// failed), Cards holds those already made and Stopped says why in one fixed
+// line, so that the caller sees which cards exist.
 type trialSubmitResult struct {
-	Cards []hostadapter.TrialCard `json:"cards"`
+	Cards   []hostadapter.TrialCard `json:"cards"`
+	Stopped string                  `json:"stopped,omitempty"`
 }
 
 // The fixed messages of trial.submit's errors.
 const (
 	msgTrialBadParams = "trial.submit takes {\"kind\": \"finish\" or \"branch-prune\", \"count\": 1 to 10}"
 	msgTrialFailed    = "the trial could not make a sample card"
+	msgTrialCanceled  = "the call ended before every sample card was made"
 )
 
-// trialExt serves trial.submit on the daemon's socket, which only the
-// daemon's own user reaches (the server's peer check).
-type trialExt struct{ trial *hostadapter.Trial }
+// trialExt serves trial.submit on the daemon's socket.
+//
+// The operation needs no decider's place, which the owner operations that
+// decide a card ask for. It decides nothing and applies nothing: it only asks
+// the trial's stand-in door for a sample card, the way a lead's request would,
+// and a card made that way still waits for the owner's decision with a passkey
+// (the phone, through the gate) before anything of the trial happens, and then
+// applies nothing. The guard of the operation is the server's peer check:
+// every connection to the daemon's socket is read for its user id before a
+// byte is, and a user other than the daemon's own is answered unauthorized and
+// closed. Any process of that user can open the socket (the daemon's
+// documented limit for every operation), and so can make sample cards: at most
+// trialMaxCount a call, within the stand-in door's own caps (6 requests a
+// minute, 8 not yet final), and a refused one leaves nothing in the host's
+// memory. That is all the operation gives such a process, which is why it needs
+// no decider.
+type trialExt struct {
+	trial *hostadapter.Trial
+	// submit, when set, makes the sample card instead of the trial: a test
+	// uses it to stop the call between two cards.
+	submit func(ctx context.Context, kind string) (hostadapter.TrialCard, error)
+}
+
+// makeCard makes one sample card of the kind.
+func (x *trialExt) makeCard(ctx context.Context, kind string) (hostadapter.TrialCard, error) {
+	if x.submit != nil {
+		return x.submit(ctx, kind)
+	}
+	return x.trial.Submit(ctx, kind)
+}
 
 func (x *trialExt) Operations() []string { return []string{trialOpSubmit} }
 
@@ -180,10 +212,18 @@ func (x *trialExt) Handle(ctx context.Context, op string, params json.RawMessage
 	}
 	out := trialSubmitResult{Cards: []hostadapter.TrialCard{}}
 	for i := 0; i < p.Count; i++ {
-		c, err := x.trial.Submit(ctx, p.Kind)
+		c, err := x.makeCard(ctx, p.Kind)
 		if err != nil {
-			ownerNotice("trial.submit: " + leaddaemon.SafeText(err.Error()))
-			return nil, &clientapi.ErrorBody{Code: clientapi.CodeInternal, Message: msgTrialFailed}
+			ownerNotice(fmt.Sprintf("trial.submit: after %d of %d cards: %s", len(out.Cards), p.Count, leaddaemon.SafeText(err.Error())))
+			if len(out.Cards) == 0 {
+				return nil, &clientapi.ErrorBody{Code: clientapi.CodeInternal, Message: msgTrialFailed}
+			}
+			// The cards already made exist on the phone: say which.
+			out.Stopped = msgTrialFailed
+			if ctx.Err() != nil {
+				out.Stopped = msgTrialCanceled
+			}
+			return out, nil
 		}
 		out.Cards = append(out.Cards, c)
 	}
@@ -312,6 +352,10 @@ func (a *app) trialSubmit(args []string) int {
 		code = leaddaemon.ExitFailure
 		fmt.Fprintf(a.stdout, "no card: %s (request %s) %s: %s: %s\n", leaddaemon.SafeText(what), leaddaemon.SafeText(c.RequestID),
 			leaddaemon.SafeText(c.State), leaddaemon.SafeText(c.Code), leaddaemon.SafeText(c.Detail))
+	}
+	if res.Stopped != "" {
+		fmt.Fprintf(a.stderr, "ataniqd trial submit: stopped after %d of %d cards: %s\n", len(res.Cards), count, leaddaemon.SafeText(res.Stopped))
+		return leaddaemon.ExitFailure
 	}
 	if len(res.Cards) != count {
 		fmt.Fprintf(a.stderr, "ataniqd trial submit: the daemon answered %d cards for %d\n", len(res.Cards), count)

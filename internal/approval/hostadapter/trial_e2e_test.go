@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"ataniq/internal/approval/credkind"
 	"ataniq/internal/approval/door"
@@ -314,5 +315,104 @@ func TestTrialKindsAreFinishAndBranchPrune(t *testing.T) {
 		if c, err := tr.Submit(context.Background(), kind); err == nil {
 			t.Errorf("the kind %q makes %+v", kind, c)
 		}
+	}
+}
+
+// sizes returns how much the trial host keeps in memory.
+func (h *trialHost) sizes() (features, merges, branches, pins, evidence int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.features), len(h.merges), len(h.branches), len(h.pins), len(h.evidence)
+}
+
+// A request the door or the service refused makes no card, and leaves nothing
+// of its sample in the host's memory: the sample feature of a refused finish
+// and the sample branches of a refused prune are not kept, however many are
+// refused. The accepted ones are kept as before.
+func TestTrialRefusedSubmissionsDoNotGrowTheHost(t *testing.T) {
+	clock := doortest.NewClock(start)
+	state := filepath.Join(privateDir(t), "state")
+	sc, err := WriteTrialScratch(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr, err := OpenTrial(context.Background(), TrialConfig{StateDir: state, Scratch: sc, Now: clock.Now, Manual: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tr.Close() })
+	ctx := context.Background()
+
+	// The door admits doortest.RequestsPerMinute requests a minute: the rest
+	// are refused.
+	for i := 0; i < doortest.RequestsPerMinute; i++ {
+		submitTrial(t, tr, TrialFinish)
+	}
+	f0, m0, b0, p0, e0 := tr.host.sizes()
+	if f0 != doortest.RequestsPerMinute || m0 != f0 || p0 != f0 || e0 != f0 || b0 != 0 {
+		t.Fatalf("after %d cards the host keeps %d, %d, %d, %d, %d", f0, f0, m0, b0, p0, e0)
+	}
+	for i := 0; i < 25; i++ {
+		c, err := tr.Submit(ctx, TrialFinish)
+		if err != nil || c.State != string(ownerchannel.RequestRefused) || c.Code != string(record.CodeRequestRate) {
+			t.Fatalf("a finish past the rate: %+v, %v", c, err)
+		}
+	}
+	if f, m, b, p, e := tr.host.sizes(); f != f0 || m != m0 || b != b0 || p != p0 || e != e0 {
+		t.Errorf("refused finishes grew the host: %d, %d, %d, %d, %d from %d, %d, %d, %d, %d", f, m, b, p, e, f0, m0, b0, p0, e0)
+	}
+
+	// A minute later a prune is made, and the ones refused as duplicates leave
+	// nothing.
+	clock.Advance(2 * time.Minute)
+	submitTrial(t, tr, TrialBranchPrune)
+	_, _, b1, _, _ := tr.host.sizes()
+	if b1 < 2 || b1 > 3 {
+		t.Fatalf("the prune left %d branches, want 2 or 3", b1)
+	}
+	for i := 0; i < 5; i++ {
+		c, err := tr.Submit(ctx, TrialBranchPrune)
+		if err != nil || c.State != string(ownerchannel.RequestRefused) {
+			t.Fatalf("a duplicate prune: %+v, %v", c, err)
+		}
+	}
+	if _, _, b, _, _ := tr.host.sizes(); b != b1 {
+		t.Errorf("refused prunes grew the host's branches from %d to %d", b1, b)
+	}
+}
+
+// A feature the host drops takes its merges and their suite records with it,
+// and nothing else.
+func TestTrialHostDropsAFeatureWithItsMerges(t *testing.T) {
+	h := newTrialHost("trial-project", "refs/heads/develop")
+	var keep, drop string
+	for n, name := range []string{"trial-keep-1", "trial-drop-2"} {
+		tip := h.addFeature(name, "stamp", n+1)
+		b, err := h.Build(context.Background(), ownerchannel.MergeInput{Project: "trial-project", Feature: name, FeatureTip: tip, TargetTip: h.tip, Key: "key-" + name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.Verify(context.Background(), ownerchannel.VerifyInput{Project: "trial-project", Merge: b.Commit}); err != nil {
+			t.Fatal(err)
+		}
+		if n == 0 {
+			keep = name
+		} else {
+			drop = name
+		}
+	}
+	if f, m, _, _, e := h.sizes(); f != 2 || m != 2 || e != 2 {
+		t.Fatalf("the host keeps %d, %d, %d", f, m, e)
+	}
+	h.dropFeature(drop)
+	f, m, _, _, e := h.sizes()
+	if f != 1 || m != 1 || e != 1 {
+		t.Errorf("after the drop the host keeps %d features, %d merges, %d records", f, m, e)
+	}
+	h.mu.Lock()
+	_, kept := h.features[keep]
+	h.mu.Unlock()
+	if !kept {
+		t.Error("the drop took the other feature")
 	}
 }
