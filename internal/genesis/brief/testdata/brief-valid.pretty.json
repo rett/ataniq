@@ -1,0 +1,126 @@
+{
+  "catalog": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "fields": {
+    "goal": {
+      "at": "2026-11-23T10:03:00Z",
+      "node": "goal",
+      "provenance": "owner-chosen",
+      "round": 3,
+      "value": "share"
+    },
+    "hosts": {
+      "at": "2026-11-23T10:05:00Z",
+      "confirmed": true,
+      "node": "hosts",
+      "provenance": "supervisor-inferred",
+      "round": 3,
+      "value": "own_server"
+    },
+    "kind": {
+      "at": "2026-11-23T10:00:00Z",
+      "node": "kind",
+      "provenance": "owner-chosen",
+      "round": 1,
+      "value": "software"
+    },
+    "review_points": {
+      "at": "2026-11-23T10:04:00Z",
+      "node": "review_points",
+      "provenance": "default",
+      "round": 3,
+      "value": [
+        "demo",
+        "publish"
+      ]
+    },
+    "software.deploy_kind": {
+      "at": "2026-11-23T10:05:00Z",
+      "confirmed": false,
+      "node": "software.deploy_kind",
+      "provenance": "supervisor-inferred",
+      "round": 3,
+      "value": "local"
+    },
+    "software.sub_kind": {
+      "at": "2026-11-23T10:01:00Z",
+      "node": "software.sub_kind",
+      "provenance": "owner-chosen",
+      "round": 2,
+      "value": "web_app"
+    }
+  },
+  "history": [
+    {
+      "at": "2026-11-23T10:03:00Z",
+      "field": "goal",
+      "old": {
+        "at": "2026-11-23T10:01:00Z",
+        "node": "goal",
+        "provenance": "owner-chosen",
+        "round": 2,
+        "value": "try"
+      },
+      "reason": "replaced"
+    },
+    {
+      "at": "2026-11-23T10:06:00Z",
+      "cause": "software.sub_kind",
+      "field": "software.stack",
+      "old": {
+        "at": "2026-11-23T10:02:00Z",
+        "node": "software.stack",
+        "provenance": "owner-chosen",
+        "round": 3,
+        "value": "go"
+      },
+      "reason": "invalidated"
+    },
+    {
+      "at": "2026-11-23T10:06:00Z",
+      "cause": "software.sub_kind",
+      "field": "software.data",
+      "old": {
+        "at": "2026-11-23T10:02:00Z",
+        "node": "software.data",
+        "provenance": "owner-chosen",
+        "round": 3,
+        "value": "local"
+      },
+      "reason": "invalidated"
+    },
+    {
+      "at": "2026-11-23T10:06:00Z",
+      "cause": "software.sub_kind",
+      "field": "software.auth",
+      "old": {
+        "at": "2026-11-23T10:04:00Z",
+        "node": "software.auth",
+        "provenance": "owner-chosen",
+        "round": 3,
+        "value": {
+          "other": "a sign-in link sent by email"
+        }
+      },
+      "reason": "invalidated"
+    },
+    {
+      "at": "2026-11-23T10:07:00Z",
+      "field": "audience",
+      "old": {
+        "at": "2026-11-23T10:01:00Z",
+        "node": "audience",
+        "provenance": "owner-chosen",
+        "round": 2,
+        "value": "few"
+      },
+      "reason": "cleared"
+    }
+  ],
+  "history_dropped": 0,
+  "kind": "software",
+  "notes": [
+    "The club meets on Tuesdays; bookings open a week ahead."
+  ],
+  "rounds": 3,
+  "schema": "ataniq.project-brief/1"
+}
