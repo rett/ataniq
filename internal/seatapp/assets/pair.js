@@ -10,6 +10,10 @@
   var wordsEl = document.getElementById("words");
   var compare = document.getElementById("compare");
   var mismatch = document.getElementById("mismatch");
+  // The fixed line that points at the login page, a static element of the
+  // page. It is shown with the words only when they match; the phone is not
+  // told when the desk confirms, so there is no redirect.
+  var loginNext = document.getElementById("login-next");
 
   // Every failure ends in one of these fixed messages; retry says whether the
   // same code can be tried again on this page. A failure the seat found before
@@ -143,6 +147,7 @@
     // When the seat's words differ, the comparison is not offered at all.
     mismatch.hidden = res.same;
     compare.hidden = !res.same;
+    loginNext.hidden = !res.same;
     say(res.same ? "Paired on this phone, waiting for you at the desk." :
       "The words do not match. Do not confirm.");
     button.hidden = true;
