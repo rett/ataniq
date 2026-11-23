@@ -244,3 +244,27 @@ func FuzzDecodePairPendingParams(f *testing.F) {
 	fuzzForm(f, "pair pending params", `{"pending_id":"0f1e2d3c4b5a6978"}`, `{"pending_id":""}`,
 		`{"pending_id":"0F1E2D3C4B5A6978"}`, `{"pending_id":"0f1e2d3c4b5a6978","x":1}`, `{}`)
 }
+
+func FuzzDecodeSeatWaitParams(f *testing.F) {
+	const v = "9ac6d04d66be695b1abd73a004de6e86"
+	fuzzForm(f, "seat wait params", `{"since":""}`, `{"since":"`+v[:31]+`"}`, `{"since":"`+v+`0"}`,
+		`{"since":"9AC6D04D66BE695B1ABD73A004DE6E86"}`, `{"since":null}`, `{"since":1}`, `{}`, `{"since":"`+v+`","x":1}`)
+}
+
+func FuzzDecodeSeatWaitResult(f *testing.F) {
+	const v = `"version":"9ac6d04d66be695b1abd73a004de6e86"`
+	const b = `"binding_sha256":"12969c837bce0f6598da9ece4c5e885ec6a669e731f542dbb4a05d3313aabf6c"`
+	const card = `{` + b + `,"held":false,"id":"ap-1","kind":"approval"}`
+	fuzzForm(f, "seat wait result",
+		`{"cards":[],"more":false,`+v+`,"waiting":0}`,
+		`{"cards":[`+card+`],"more":false,`+v+`,"waiting":1}`,
+		`{"cards":[`+card+`],"more":true,`+v+`,"waiting":2}`,
+		`{"cards":[`+card+`],"more":true,`+v+`,"waiting":1}`,
+		`{"cards":[`+card+`],"more":false,`+v+`,"waiting":2}`,
+		`{"cards":[`+card+`,`+card+`],"more":false,`+v+`,"waiting":2}`,
+		`{"cards":[],"more":false,`+v+`,"waiting":-1}`,
+		`{"cards":[{`+b+`,"held":false,"id":"ap-1","kind":"Approval"}],"more":false,`+v+`,"waiting":1}`,
+		`{"cards":[{`+b+`,"held":false,"id":"ap-1","kind":"approval","text":"x"}],"more":false,`+v+`,"waiting":1}`,
+		`{"cards":null,"more":false,`+v+`,"waiting":0}`,
+		`{"cards":[],"more":false,"version":"","waiting":0}`)
+}

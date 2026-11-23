@@ -36,8 +36,9 @@
 // function named after it; "none" and "nothing" are an empty object, read
 // by [DecodeNothing].
 //
-// Four more operations are the seat gate's alone, a login and a decision
-// from the owner's phone; the daemon's Unix socket neither serves nor
+// Five more operations are the seat gate's alone, a login and a decision
+// from the owner's phone and the long wait that tells the seat when the
+// pending cards changed; the daemon's Unix socket neither serves nor
 // announces them, and [GateOperations] lists them apart:
 //
 //	operation             params               result
@@ -45,6 +46,7 @@
 //	seat.login            SeatLoginParams      SeatLoginResult
 //	seat.challenge        SeatChallengeParams  SeatChallengeResult
 //	seat.decide           SeatDecideParams     DecideResult
+//	seat.wait             SeatWaitParams       SeatWaitResult
 //
 // # Strict decoding
 //
@@ -84,6 +86,18 @@
 // [CheckDecisionFrame] only after it took the challenge, so that a malformed
 // frame still burns it. [Assertion.Digest] is the digest a passkey decision
 // record keeps of the assertion.
+//
+// # The wait for a change
+//
+// seat.wait (the capability "watch") lets the seat learn that the pending set
+// changed without asking again and again. Its params carry the version the
+// seat last saw, or none; its result carries the version of the pending set
+// now, the count, and at most [MaxSeatWaitCards] cards, each only an id, a
+// kind, the binding digest and the held mark, never card text. [PendingVersion]
+// is the one function that makes a version: a digest of a canonical encoding of
+// the whole set, independent of its order, so the same set has the same version
+// after a restart. The gate answers [CodeWaitFull] when it already holds as many
+// waits for a seat as it allows.
 //
 // # Records travel as bytes
 //
@@ -144,7 +158,7 @@
 //
 // Every refusal is a [*record.Error] with one of the record package's
 // codes; this package declares no refusal of its own. It names the words the
-// seat gate answers its four operations with when the daemon refuses one
+// seat gate answers its operations with when the daemon refuses one
 // ([CodeChallengeStale] and the others), which no decoder here answers with. A decision frame that is wrong is
 // decision-invalid, any other payload record-invalid, a payload over its
 // cap record-too-large, and a record whose digest is not its bytes' own
