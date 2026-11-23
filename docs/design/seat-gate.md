@@ -1017,14 +1017,15 @@ outcome is unknown: the decision may be journaled and on its way to the door,
 or not. Then the seat:
 
 - never sends the decision again, by itself or on a tap, and queues nothing
-  (built: the card is marked sent before the decision is sent, a refusal
-  clears the mark, and any other answer leaves it until a new read of the
-  card: a GET of its Card page whose read of the daemon began after the
-  mark was set. A `HEAD` is no read, and a GET whose read began before the
-  mark may show the card as it was before the decision, so its page holds
-  no form, says "A decision of this card was sent and its outcome is not
-  known. Look at it again." and leaves the mark. While it stands, a tap is
-  refused without asking the daemon);
+  (built: the card is marked sent, and in flight, before the decision is
+  sent; a refusal clears the mark, and any other answer leaves it, marks it
+  again and ends the flight, until a new read of the card: a GET of its
+  Card page whose read of the daemon began after the answer was lost. A
+  `HEAD` is no read, and a GET made while the decision is in flight, or
+  whose read began before the mark, may show the card as it was before the
+  decision, so its page holds no form, says "A decision of this card was
+  sent and its outcome is not known. Look at it again." and leaves the
+  mark. While it stands, a tap is refused without asking the daemon);
 - shows "Decision sent. Outcome unknown." and offers only "Look again", the
   Card page read afresh;
 - on "Look again", once the gate is back, reads the same card with

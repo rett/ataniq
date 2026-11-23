@@ -241,9 +241,10 @@
 //
 // Once a decision is sent, only a refusal says that nothing was decided.
 // Any other answer, and no answer, is "Decision sent. Outcome unknown.":
-// the card is marked sent before the port is asked, and only a new read of
-// the card (its page, from a read of the port that began after the mark;
-// the script offers only "Look again") clears the mark,
+// the card is marked sent, and in flight, before the port is asked; a lost
+// answer marks it again and ends the flight, and only a new read of the
+// card (its page, from a read of the port that began after the answer was
+// lost; the script offers only "Look again") clears the mark,
 // so a lost answer is never followed by a second decision unseen and
 // nothing is queued. A held approve shows the host's line and the held
 // words. Every failure is a fixed code with the app's fixed words ("say");

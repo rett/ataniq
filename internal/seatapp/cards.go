@@ -317,8 +317,9 @@ type (
 		// Offer is what the decide form offers, and Decide says the page
 		// holds the form: the card is pending and approve or deny is
 		// offered. Form is the id of this page's form, which a tap names.
-		// Unsettled says the page's read began before a decision of the
-		// card, still unsettled, was sent: it may show the card as it was
+		// Unsettled says the page's read was made while a decision of the
+		// card was on its way, or began before an unsettled decision of the
+		// card was sent or its answer lost: it may show the card as it was
 		// before, so it holds no form and asks to look again.
 		Offer     Offer
 		Decide    bool

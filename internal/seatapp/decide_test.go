@@ -484,6 +484,91 @@ func TestSeatDecideStaleReadKeepsTheMark(t *testing.T) {
 	}
 }
 
+// TestSeatDecideReadInFlight: a GET of the Card page that begins after a
+// decision of the card was sent, and before its answer came, may show the
+// card as it was before the decision was journaled: it holds no form and
+// does not settle the decision. When the answer is then lost, the next tap
+// is still refused, and only a read that begins after the loss settles it.
+// On the base that read was served a form and cleared the mark, and the
+// next tap drew a new challenge.
+func TestSeatDecideReadInFlight(t *testing.T) {
+	r := newRig(t)
+	s := r.login(t)
+	r.openCard(t, s)
+	id := r.challengeOf(t, s, approveBody)
+	var during *httptest.ResponseRecorder
+	r.daemon.decideHook = func() { during = r.getWith("/cards/"+testCardID, s) }
+	r.daemon.decideErr = ErrOutcomeUnknown
+	wantFailure(t, "the lost answer", r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s), 502, "outcome_unknown", sayUnknown)
+	r.daemon.decideHook = nil
+	if body := during.Body.String(); during.Code != 200 || strings.Contains(body, `id="decide"`) ||
+		!strings.Contains(body, "A decision of this card was sent and its outcome is not known. Look at it again.") {
+		t.Errorf("the page read while the decision was on its way: %d", during.Code)
+	}
+	r.clock.Advance(time.Second)
+	wantFailure(t, "a tap after the read in flight", r.tap(approveBody, s), 409, "sent_unknown", saySentUnknown)
+	if c, _ := r.daemon.decideCounts(); c != 1 {
+		t.Errorf("%d challenges drawn", c)
+	}
+	r.daemon.decideErr = nil
+	r.openCard(t, s)
+	if w := r.tap(approveBody, s); w.Code != 200 {
+		t.Errorf("a tap after a read that began after the loss: %d %s", w.Code, w.Body)
+	}
+	// A certain answer settles the decision whatever was read meanwhile.
+	id = r.challengeOf(t, s, approveBody)
+	r.daemon.decideHook = func() { during = r.getWith("/cards/"+testCardID, s) }
+	r.daemon.decideErr = ErrAssertionRefused
+	r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s)
+	r.daemon.decideHook = nil
+	if strings.Contains(during.Body.String(), `id="decide"`) {
+		t.Error("a read while a decision was on its way offered the form")
+	}
+	r.openCard(t, s)
+	if w := r.tap(approveBody, s); w.Code != 200 {
+		t.Errorf("a tap after a refusal: %d %s", w.Code, w.Body)
+	}
+}
+
+// TestSeatDecideReadAcrossTheLoss: a GET of the Card page whose read began
+// while a decision of the card was on its way, and came back after the
+// decision's answer was lost, may show the card as it was before: it holds
+// no form and does not settle the lost answer.
+func TestSeatDecideReadAcrossTheLoss(t *testing.T) {
+	var hd *showHooked
+	r := newRig(t, func(c *Config) {
+		hd = &showHooked{fakeDaemon: c.Daemon.(*fakeDaemon)}
+		c.Daemon = hd
+	})
+	s := r.login(t)
+	r.openCard(t, s)
+	id := r.challengeOf(t, s, approveBody)
+	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan *httptest.ResponseRecorder)
+	r.daemon.decideHook = func() {
+		hd.mu.Lock()
+		hd.hook = func() { close(entered); <-release }
+		hd.mu.Unlock()
+		go func() { done <- r.getWith("/cards/"+testCardID, s) }()
+		<-entered
+	}
+	r.daemon.decideErr = ErrOutcomeUnknown
+	wantFailure(t, "the lost answer", r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s), 502, "outcome_unknown", sayUnknown)
+	r.daemon.decideHook = nil
+	close(release)
+	w := <-done
+	if body := w.Body.String(); w.Code != 200 || strings.Contains(body, `id="decide"`) ||
+		!strings.Contains(body, "A decision of this card was sent and its outcome is not known. Look at it again.") {
+		t.Errorf("the page of a read that began while the decision was on its way: %d", w.Code)
+	}
+	r.clock.Advance(time.Second)
+	wantFailure(t, "a tap after that read", r.tap(approveBody, s), 409, "sent_unknown", saySentUnknown)
+	r.openCard(t, s)
+	r.daemon.decideErr = nil
+	if w := r.tap(approveBody, s); w.Code != 200 {
+		t.Errorf("a tap after a read that began after the loss: %d %s", w.Code, w.Body)
+	}
+}
+
 // TestSeatPathPagesKeepTheirReview: the pages of a path list count with the
 // review each was read for; a page of another review starts the count
 // again, so pages read before the card was replaced do not count for the

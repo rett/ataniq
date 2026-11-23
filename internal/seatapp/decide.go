@@ -70,12 +70,18 @@ type cardReading struct {
 	// live says the card was pending when last shown: not ended and no
 	// decision on its way.
 	live bool
-	// sent says a decision of the card was sent and no answer settled it.
-	// Only a new read of the card (the Card page, "Look again") clears it,
-	// so a lost answer is never followed by a second decision unseen; a read
-	// that began before the decision was marked sent (sentAt) does not.
-	sent   bool
-	sentAt uint64
+	// sent says a decision of the card was sent and no answer settled it:
+	// it is on its way (inFlight), or its answer was lost. A certain answer
+	// clears it; otherwise only a new read of the card (the Card page,
+	// "Look again") that began after the answer was lost does, so a lost
+	// answer is never followed by a second decision unseen. sentAt is the
+	// mark of the last time the decision was marked: when it was sent, and
+	// again when its answer was lost. A read made while the decision is on
+	// its way, or that began before the mark, may show the card as it was
+	// before the decision was journaled, so it does not clear it.
+	sent     bool
+	inFlight bool
+	sentAt   uint64
 	// forms are the decide forms of the Card pages of the card served to
 	// the session, oldest first, each with the binding its page showed. A
 	// tap names its page's form, and is taken only when that page showed
@@ -159,15 +165,16 @@ func (ss *sessions) begin() uint64 {
 // opened notes that the Card page showed c to the session at now, from a
 // read that began at the mark since, and returns the session's reading of
 // it, and fresh. A read of the card settles a lost answer: what the page
-// shows is the card's state now. A read that began before a decision of the
-// card that is still unsettled was marked sent may show the card as it was
-// before it, so it changes nothing and is not fresh.
+// shows is the card's state now. A read made while a decision of the card
+// is on its way, or that began before an unsettled decision of the card was
+// last marked (sent, or its answer lost), may show the card as it was
+// before the decision, so it changes nothing and is not fresh.
 func (ss *sessions) opened(k tokenKey, c Card, now time.Time, since uint64) (Reading, bool) {
 	var out Reading
 	fresh := true
 	ss.with(k, func(s *session) {
 		r := s.reading(c.ID, true)
-		if r.sent && r.sentAt > since {
+		if r.sent && (r.inFlight || r.sentAt > since) {
 			fresh = false
 			out = r.public()
 			return
@@ -298,7 +305,7 @@ func (ss *sessions) markSent(k tokenKey, id string) bool {
 	ss.with(k, func(s *session) {
 		if r := s.reading(id, false); r != nil && r.live && !r.sent {
 			ss.seq++
-			r.sent, r.sentAt, ok = true, ss.seq, true
+			r.sent, r.inFlight, r.sentAt, ok = true, true, ss.seq, true
 		}
 	})
 	return ok
@@ -310,7 +317,20 @@ func (ss *sessions) markSent(k tokenKey, id string) bool {
 func (ss *sessions) settle(k tokenKey, id string, stillLive bool) {
 	ss.with(k, func(s *session) {
 		if r := s.reading(id, false); r != nil {
-			r.sent, r.live = false, stillLive
+			r.sent, r.inFlight, r.live = false, false, stillLive
+		}
+	})
+}
+
+// lost notes that the answer to a decision that was sent was lost: the
+// decision stays sent, and is marked again, so that a read made while it
+// was on its way does not settle it; only a read that begins now or later
+// does.
+func (ss *sessions) lost(k tokenKey, id string) {
+	ss.with(k, func(s *session) {
+		if r := s.reading(id, false); r != nil && r.sent {
+			ss.seq++
+			r.inFlight, r.sentAt = false, ss.seq
 		}
 	})
 }
@@ -587,8 +607,8 @@ type decideBody struct {
 // first, whatever comes next, takes the assertion only for that decision's
 // challenge and the session's credential, marks the card's decision sent,
 // and hands the port the frame it kept, never one the browser sent. A lost
-// answer leaves the mark: the card is decided again only after a new read
-// of it.
+// answer leaves the mark, and marks it again: the card is decided again
+// only after a read of it that began after the answer was lost.
 func (a *app) decidePost(w http.ResponseWriter, r *http.Request) {
 	s, ok := a.decideSession(w, r)
 	if !ok {
@@ -647,6 +667,8 @@ func (a *app) decidePost(w http.ResponseWriter, r *http.Request) {
 		e, certain := decideFailure(err)
 		if certain {
 			a.sess.settle(s.key, pd.card, true)
+		} else {
+			a.sess.lost(s.key, pd.card)
 		}
 		a.failDecide(w, r, e)
 		return
