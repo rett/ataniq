@@ -455,17 +455,23 @@ func TestSeatLinkWatchCoalesces(t *testing.T) {
 	}
 }
 
-// TestSeatLinkWatchBackoff: after a gate error the watcher publishes offline
-// and waits 1, 2, 4, 8, 16, 30, 30 seconds between tries; an answer ends the
-// run of failures, and the next failure starts again at 1 second.
+// TestSeatLinkWatchBackoff: after a gate error (a code the gate answers with)
+// the watcher waits 1, 2, 4, 8, 16, 30, 30 seconds between tries, and says
+// nothing of the link: the gate answered, so the state is not offline (see
+// TestSeatLinkWatchAnyAnswerLiftsOffline for the failures that are). An
+// answer ends the run of failures, and the next failure starts again at 1
+// second.
 func TestSeatLinkWatchBackoff(t *testing.T) {
 	desk := newWaitDesk()
 	r := newWatchRig(t, desk, []string{"pair", "read", "watch"})
 	r.d.wt = watchTimes{sleep: r.rec.sleep}
-	var offlineSeen atomic.Int64
+	var offlineSeen, watchingSeen atomic.Int64
 	desk.script = func(n int, since string) (bool, error) {
 		if n > 1 && n <= 8 && r.d.Watch().Offline {
 			offlineSeen.Add(1)
+		}
+		if n > 1 && n <= 8 && r.d.Watch().Watching {
+			watchingSeen.Add(1)
 		}
 		switch {
 		case n <= 7:
@@ -490,8 +496,69 @@ func TestSeatLinkWatchBackoff(t *testing.T) {
 	if len(got) < len(want) || !slices.Equal(got[:len(want)], want) {
 		t.Errorf("sleeps %v, want %v first", got, want)
 	}
-	if n := offlineSeen.Load(); n != 7 {
-		t.Errorf("the state said offline at %d of the 7 retries", n)
+	if n := offlineSeen.Load(); n != 0 {
+		t.Errorf("the state said offline at %d of the 7 retries: the gate answered each", n)
+	}
+	if n := watchingSeen.Load(); n != 7 {
+		t.Errorf("the state said it watches at %d of the 7 retries", n)
+	}
+}
+
+// TestSeatLinkWatchAnyAnswerLiftsOffline: a call that fails without an answer
+// of the gate's (here, one that outlasts the call's time) publishes offline,
+// and the next answer of any kind lifts it at once, a coded refusal such as
+// wait-full or bad-params as much as a result: a code proves the link is up,
+// and the state must not say the desk is out of reach until the next wait is
+// held and answered, which is up to 25 seconds later. A coded refusal alone
+// never says offline.
+func TestSeatLinkWatchAnyAnswerLiftsOffline(t *testing.T) {
+	desk := newWaitDesk()
+	desk.hold = time.Minute
+	r := newWatchRig(t, desk, []string{"pair", "read", "watch"})
+	times := fastTimes(nil)
+	times.call = 60 * time.Millisecond
+	r.d.wt = times
+	// offlineAt is the state's offline mark as each wait arrived.
+	var mu sync.Mutex
+	offlineAt := map[int]bool{}
+	desk.script = func(n int, since string) (bool, error) {
+		mu.Lock()
+		offlineAt[n] = r.d.Watch().Offline
+		mu.Unlock()
+		switch n {
+		case 1, 3, 5:
+			// No answer within the call's time: the caller's call fails
+			// with its own timeout.
+			time.Sleep(400 * time.Millisecond)
+			return true, seatgate.NewCodedError("late")
+		case 2:
+			return true, seatgate.NewCodedError("bad-params")
+		case 4:
+			return true, seatgate.NewCodedError(ownerwire.CodeWaitFull)
+		case 6:
+			return true, seatgate.NewCodedError("unavailable")
+		}
+		return false, nil
+	}
+	eventually(t, "connected", func() bool { _, ok := r.c.Connected(); return ok })
+	r.d.budget.now = roomy()
+	r.d.StartWatch()
+	eventually(t, "the seventh wait", func() bool { return desk.waits() >= 7 })
+	<-desk.held
+	mu.Lock()
+	defer mu.Unlock()
+	// Wait 1 found the state online; 1 timed out (offline); 2 arrived with
+	// it offline and its code lifted it; 3 timed out; 4 arrived offline and
+	// wait-full lifted it; 5 timed out; 6 arrived offline and a coded refusal
+	// lifted it, and said nothing of offline itself; 7 arrived online.
+	want := map[int]bool{1: false, 2: true, 3: false, 4: true, 5: false, 6: true, 7: false}
+	for n, w := range want {
+		if offlineAt[n] != w {
+			t.Errorf("the state was offline=%v as wait %d arrived, want %v (%v)", offlineAt[n], n, w, offlineAt)
+		}
+	}
+	if s := r.d.Watch(); s.Offline || !s.Watching {
+		t.Errorf("state %+v", s)
 	}
 }
 

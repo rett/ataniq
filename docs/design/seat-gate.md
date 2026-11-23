@@ -1222,8 +1222,14 @@ that was replaced under the same id, or held, wakes the seat.
 `ownerchannel.Service.WaitPending` (`wait.go`) answers `seat.wait`:
 
 - The hold is at most `Config.WaitHold`, 25 seconds by default, and in any case
-  ends 1.5 seconds before the deadline of the request (the gate's 30 seconds),
-  so the gate never cuts a held wait with `deadline-exceeded`.
+  ends at least 1.5 seconds before the deadline of the request (the gate's 30
+  seconds). The look at the end of a hold may wait for the token of another
+  wait's look and for the one-second floor, and then asks the door, so a slow
+  door can still run it past the deadline. The gate then cuts the request with
+  `deadline-exceeded`: the margin makes that rare, and does not rule it out. The
+  seat's watcher takes it like any refusal with a code, backs off (1 second,
+  doubling) and asks again with the version it kept, so it costs a pause and no
+  card.
 - What wakes a held wait: a poke after each write of the journal and of the
   handles (a decision, a held decision, a refusal, a count, a limit, an alert,
   a delivery, a use, an outcome, and an `ExpireHeld` that closed a card); a
@@ -1280,10 +1286,15 @@ hello lists `watch`.
   idle seat sends one wait about every 25 seconds, 4 in 80 seconds, which
   leaves 2 for the waits that a change cut short. With no room the watcher
   sleeps until some frees; nothing is refused, the pages lag.
-- On a gate error or a lost link it publishes "offline" and tries again after
-  1 second, doubled at each failure in a row to 30 seconds, keeping its
-  `since`; a link that is back lifts "offline" at once. After `wait-full` it
-  pauses 5 seconds and publishes nothing.
+- On a lost link, or a call that fails with no answer of the gate's (its own
+  29-second timeout, an answer not of the wire's form), it publishes "offline"
+  and tries again after 1 second, doubled at each failure in a row to 30
+  seconds, keeping its `since`; a link that is back lifts "offline" at once.
+  Any answer of the gate lifts "offline" as it arrives, a coded refusal (such
+  as `bad-params` or `unavailable`) too, since a code proves the link is up:
+  it does not wait for a wait that the gate then holds for 25 seconds. A coded
+  refusal is retried with the same doubling and publishes no "offline" of its
+  own. After `wait-full` it pauses 5 seconds.
 - It publishes its state (`seatapp.WatchState`: whether it watches, the
   version, the count, the cards, `more`, offline, and when) and a broadcast
   that is closed at each change. A subscriber takes the channel first and the
@@ -1316,9 +1327,16 @@ Host, `Origin` and `Sec-Fetch-Site: same-origin` rules, a JSON body of at most
   another version than the poll's. Otherwise it is held until the state
   changes, 25 seconds pass (`watchHold`, under the 30-second write timeouts of
   the seat and of the shipped Caddyfile), a newer poll of the same session takes
-  its place, the browser goes away, or the session ends. At most one poll of a
-  session is held, which bounds the held requests by the number of sessions.
-- Answer: `state`, one of `same`, `changed`, `offline` and `ended`, the
+  its place (`replaced`), the browser goes away, or the session ends. At most 3
+  polls of a session are held, one for each tab, and a fourth takes the place
+  of the oldest, which bounds the held requests by three times the number of
+  sessions. A replaced poll is answered with its own state, which the script
+  waits out for 25 seconds before it asks again: an answer `same` would be
+  asked again at once, and two tabs of one session would take each other's
+  place in turn and use up the credential's 12 polls a minute. With the tabs
+  held and the replaced one waiting, each tab polls about every 25 seconds,
+  so up to four tabs stay within the limit.
+- Answer: `state`, one of `same`, `changed`, `replaced`, `offline` and `ended`, the
   `version` and `waiting` (the count), and `card`, one of `live`, `changed`,
   `gone` and `unknown`. The answer holds no text of a card. `card` is `gone`
   when the card is not in the list and the list is the whole set, `changed`
@@ -1332,7 +1350,16 @@ can be told of a change it already shows, and never misses one it does not.
 
 `/static/watch.js` serves the card list and the Card page, with the element
 `#watch`, whose `data-live`, `data-version`, `data-card` and `data-binding`
-carry what the page was made from. It polls once at a time, at least 2 seconds
+carry what the page was made from. The Card page names its card and binding
+only when the card is pending: a decided, ended, expired or refused card is not
+in the pending set, so a page that named it would be told `gone` for a card
+that moved long ago, or that this session decided on the page before. Such a
+page carries `data-still` instead, polls for the status line only and never
+reloads. A page that sent its decision marks the document (`data-sent`) when
+its confirm button is tapped, and clears the mark when the card is known to be
+as it was; the script then withdraws the offer when the card is `gone` and
+does not show the line "decided elsewhere", since the page itself says what
+became of the decision. It polls once at a time, at least 2 seconds
 apart, and not while the page is hidden; it polls at once when the page is shown
 again. It puts on the page only texts that are its own constants, set as text
 and never as markup, so that the page's content security policy
@@ -1347,13 +1374,23 @@ an answer is written into the page. One status line (`#watch-status`) says:
 | Session ended. Log in again. | The answer was `ended`. It polls no more. |
 | This card changed or was decided elsewhere. Look again. | On a Card page: the card is `changed` or `gone`, or it is `unknown` and the version moved. With the links "Back to the cards" and "Reload". |
 
-- The card list reloads when its version moved, at most once every 10 seconds
-  since it was loaded, and not while a field holds typed text.
+- The card list reloads when its version moved, at most once every 20 seconds
+  since it was loaded (a reload is put off until the page's own read, which is
+  the page's load, is 20 seconds old), and not while a field holds typed text.
+  The gap keeps the reloads inside the reads' room: each reload is one
+  `owner.list`, and the reads have 20 calls in 80 seconds. It is a stated
+  limit, not a bound: three card lists open in a busy period (the watcher
+  publishes up to about 6 changes in 80 seconds, each list reloads at most
+  every 20 seconds, so a list takes up to 4 of the 20 reads) can still use
+  most of the 20, and the owner's own taps on a card may then be answered
+  `desk_busy` until the room frees. No second room is built for the reloads.
 - A Card page never reloads by itself, since the owner may be ticking
   sign-offs. When its card is `changed` or `gone` it shows the line above,
   disables every control the page marks with the attribute `data-offer` (the
   sign-off boxes, the reason, Approve, Deny and the confirm button), marks the
-  document so that the decide script keeps them off, and polls no more.
+  document so that the decide script keeps them off in every path that would turn
+  a control on (a cancel at the confirm step does not enable the confirm button
+  of a stale page), and polls no more.
 - A 429 answer is waited out for 60 seconds; any other failure of the poll is
   retried after 5 seconds, doubling to 60, with nothing shown.
 

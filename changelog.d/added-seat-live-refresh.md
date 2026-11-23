@@ -1,5 +1,5 @@
 - The phone's pages of `ataniq-seat` update by themselves. The card list
-  reloads when the set of waiting cards changes (at most once every 10 seconds,
+  reloads when the set of waiting cards changes (at most once every 20 seconds,
   never over typed text), and a Card page, which never reloads by itself, says
   "This card changed or was decided elsewhere. Look again." and disables
   Approve, Deny and their controls when its card was decided elsewhere or

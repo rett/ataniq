@@ -69,6 +69,8 @@
   function refresh() {
     if (approveBtn) { approveBtn.disabled = stale() || busy || !allSigned(); }
     if (denyBtn) { denyBtn.disabled = stale() || busy; }
+    // The confirm button is an offer as well: a stale page keeps it off.
+    if (stale()) { goBtn.disabled = true; }
   }
 
   function showForm(on) {
@@ -79,8 +81,9 @@
   function back(text) {
     pending = null;
     busy = false;
+    delete document.documentElement.dataset.sent;
     confirmEl.hidden = true;
-    goBtn.disabled = false;
+    goBtn.disabled = stale();
     cancelBtn.disabled = false;
     showForm(true);
     refresh();
@@ -239,6 +242,9 @@
     var p = pending;
     pending = null;
     busy = true;
+    // From here the card may be decided by this page: the live refresh
+    // script, which finds it gone, does not say it was decided elsewhere.
+    document.documentElement.dataset.sent = "yes";
     goBtn.disabled = true;
     cancelBtn.disabled = true;
     confirm(p).catch(function () { onlyLook(SAY.unknown); });

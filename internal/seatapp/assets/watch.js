@@ -3,11 +3,14 @@
 // time, whether that moved. It reads and shows; it sends nothing but that
 // poll, and the poll carries no card text.
 //
-// The card list reloads when its version moved (at most once every ten
+// The card list reloads when its version moved (at most once every twenty
 // seconds, never over a form field with typed text). A Card page never
 // reloads by itself, since the owner may be ticking sign-offs: it shows a
 // banner, and turns off the controls the page marks with data-offer. The
-// page's own script honours the stale mark this script puts on the document.
+// page's own script honours the stale mark this script puts on the document,
+// and this script honours the sent mark the page's script puts there when it
+// sends its form, so that a card this very page moved is not said to have
+// been moved elsewhere.
 //
 // Every text put on the page is one of the constants below, set with
 // textContent, never as markup, and never taken from the seat's answer.
@@ -33,10 +36,11 @@
   var REQUEST_TIMEOUT = 30000; // the seat holds a poll for 25 seconds at most
   var MIN_GAP = 2000;          // the least time between the starts of two polls
   var OFFLINE_WAIT = 30000;
+  var REPLACED_WAIT = 25000;   // after a poll was replaced by another tab's: a hold's length
   var LIMITED_WAIT = 60000;
   var BACKOFF_FIRST = 5000;
   var BACKOFF_LAST = 60000;
-  var RELOAD_GAP = 10000;      // the page is reloaded at most this often
+  var RELOAD_GAP = 20000;      // the page is reloaded only once its own read is this old
   var RELOAD_RETRY = 2000;
 
   var live = root.dataset.live === "yes";
@@ -44,6 +48,9 @@
   var binding = root.dataset.binding || "";
   var version = root.dataset.version || "";
   var onCard = card !== "";
+  // A Card page of a card that is not pending names no card; it is no list,
+  // so it never reloads.
+  var still = root.dataset.still === "yes";
 
   var loadedAt = Date.now();
   var stopped = false;     // nothing more is asked: the session ended, or the card is gone for good
@@ -105,7 +112,7 @@
       el.type !== "checkbox" && el.type !== "radio";
   }
 
-  // wantReload reloads the list once ten seconds have passed since this page
+  // wantReload reloads the list once twenty seconds have passed since this page
   // was loaded, and not while a field holds typed text. A reload pending is
   // never set twice.
   function wantReload() {
@@ -175,8 +182,8 @@
     handle(data, began);
   }
 
-  // handle acts on an answer: its state is one of same, changed, offline and
-  // ended, and, for a Card page, its card is one of live, changed, gone and
+  // handle acts on an answer: its state is one of same, changed, replaced,
+  // offline and ended, and, for a Card page, its card is one of live, changed, gone and
   // unknown.
   function handle(data, began) {
     var next = Math.max(0, MIN_GAP - (Date.now() - began));
@@ -189,6 +196,13 @@
     case "offline":
       say(TEXT.offline);
       schedule(OFFLINE_WAIT);
+      return;
+    case "replaced":
+      // Another tab of this session took this poll's place. Asking again at
+      // once would take that tab's place in turn, and the tabs would end
+      // each other's polls without end: wait out a hold instead.
+      quiet();
+      schedule(REPLACED_WAIT);
       return;
     case "changed":
       if (validVersion(data.version)) { version = data.version; }
@@ -207,7 +221,9 @@
         stopped = true;
         cancel();
         withdraw();
-        showBanner();
+        // The page sent its form, which moved the card: the page says what
+        // became of it, and "elsewhere" would be wrong.
+        if (document.documentElement.dataset.sent !== "yes") { showBanner(); }
         return;
       }
       switch (cs) {
@@ -225,7 +241,7 @@
       }
     } else {
       quiet();
-      if (data.state === "changed") { wantReload(); }
+      if (data.state === "changed" && !still) { wantReload(); }
     }
     schedule(next);
   }
