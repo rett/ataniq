@@ -1,0 +1,17 @@
+{{define "content"}}
+<h1>New project</h1>
+{{if .Note}}<p class="note-line" role="status">{{.Note}}</p>
+{{end}}{{if .Reset}}<p class="note-line" role="status">Your change cleared {{num .Reset}} later answers. Their questions are asked again.</p>
+{{end}}<p class="progress">Round {{num .View.Round}} of {{num .View.Of}}. {{num .View.Filled}} of {{num .View.Total}} required answers given.</p>
+<form id="answer" action="{{projectHref .View.Thread "answer"}}" method="post">
+<input type="hidden" id="round" name="round" value="{{num .View.Round}}">
+{{range .Questions}}{{template "question" .}}
+{{end}}<button id="send" type="submit">Next</button>
+</form>
+<p class="note">An answer only describes the project. Nothing starts, and no agent is given it.</p>
+<nav aria-label="Project">
+<p><a id="project-list" href="/projects/">Back to the project list</a></p>
+<p><a id="discard-link" href="{{projectHref .View.Thread "discard"}}">Discard this project</a></p>
+</nav>
+{{template "leave"}}
+{{end}}

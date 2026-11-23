@@ -1,6 +1,7 @@
 // Package seatapp is the seat web app: the pages and the small JSON API a
 // phone uses to pair with the desk, to log in, to read the cards and to
-// approve or deny one, and the seams the journal pages will use later.
+// approve or deny one, the pages of the guided new-project interview, and
+// the seams the journal pages will use later.
 //
 // The app is the standard library only. Pages are made on the server with
 // html/template, each act a plain form where an act is a form; the scripts
@@ -43,9 +44,19 @@
 //	POST /api/push/info        the push key and the number of subscriptions (a session, a PushPort)
 //	POST /api/push/subscribe   a subscription to hand the notifier (a session, a PushPort)
 //	POST /api/push/unsubscribe the hash of an endpoint to forget (a session, a PushPort)
+//	GET  /projects/            the open new projects and the start (a session, a Genesis)
+//	GET  /projects             a 308 to /projects/
+//	POST /projects/new         a form: start a new project (a session, a Genesis)
+//	GET  /projects/{thread}    the project's round, its summary, or its finished brief (a session, a Genesis)
+//	GET  /projects/{thread}/change/{node}   one answer's question, to answer again (a session, a Genesis)
+//	GET  /projects/{thread}/discard         the step before a discard (a session, a Genesis)
+//	POST /projects/{thread}/answer, /change, /finish, /discard   forms (a session, a Genesis)
 //
 // The routes marked PushPort exist only when [Config].Notifier is also a
-// [PushPort]; without one they answer 404 and no page mentions notices.
+// [PushPort]; without one they answer 404 and no page mentions notices. The
+// routes marked Genesis answer the "not offered" page (a post: a redirect to
+// the project list, which answers it) unless [Config].Daemon is also a
+// [Genesis] whose calls are offered.
 //
 // The origin is the reverse proxy's, https on port 443: [New] refuses any
 // other (an http origin, a port, a path, user information, an address
@@ -59,7 +70,8 @@
 // equal to the origin's host, Sec-Fetch-Site same-origin (every browser that
 // can make a passkey sends it, so a POST without it is refused, and no
 // option of [Config] lets one through) (a fixed 403 otherwise), and the JSON
-// content type. The relying party id is exactly the
+// content type, or, for the forms of the project pages, the form's
+// (application/x-www-form-urlencoded). The relying party id is exactly the
 // origin's host. The content security policy includes
 // require-trusted-types-for 'script', which the scripts meet by setting text
 // only with textContent, with trusted-types naming the one policy push.js
@@ -284,6 +296,46 @@
 // deny's reason of 500 bytes, every one escaped, is 1138) and 5672 bytes for
 // an assertion at the wire's bounds.
 //
+// # New projects
+//
+// When the [Daemon] is also a [Genesis] and its list of open projects is
+// offered, the card list shows the projects in progress (from the list, which
+// the port may answer from its memory of the last one) and a "New project"
+// button; without it, or when the port answers [ErrNotOffered], the card list
+// shows nothing of projects and every project page answers "New projects are
+// not offered". A project is a thread of the guided interview the daemon
+// keeps (seat.genesis): the owner answers rounds of one to three questions of
+// the host's catalog, reads the summary, changes an answer, and finishes or
+// discards it. Finishing keeps the answers as the project's brief, at the
+// desk; nothing starts, and no agent is given the brief.
+//
+// The pages are made on the server, with no script but the logout's, and
+// each act is a plain HTML form posted to the app: a start, the answers of
+// a round, the change of one answer, a finish, a discard (after a step of its
+// own). A post passes the checks of every changing request (the Origin and
+// Host headers, Sec-Fetch-Site same-origin), with the form's content type,
+// and needs a session; it calls the port once and is answered with a 303 to
+// a page (post/redirect/get), so a reload never sends a form again and a
+// refusal is never retried. A question is a fieldset of real inputs: radio
+// buttons for a single choice, a yes-or-no question and a scale of 1 to 5,
+// check boxes for a multiple choice, each option with its label and its
+// example as text; "Other" with a text field of 200 characters only where
+// the question takes the owner's own words, and "You decide for me" and
+// "Skip" only where it allows them. A form whose fields do not agree (two
+// kinds at once, own words with an option, words that are not plain text or
+// are past 200 bytes) is refused before the port is asked. Every refusal is
+// one of a fixed set of notes, named by a word in the redirect's query, on
+// the page it redirects to; a page never shows a refused answer's text, and
+// what the owner typed is in no address, page or log line. A thread id in an
+// address is 16 lower-case hexadecimal digits and a node id of the catalog's
+// grammar, or the page is a 404 (a post goes to the project list) and nothing
+// is asked of the port. A summary shows the three groups (what you chose,
+// what was decided for you, the defaults), the owner's own words quoted and
+// marked as such, and a "Change" link for each row whose question the port
+// holds. The pages and posts of one credential are limited to 30 a minute;
+// the port keeps the interview to its own room at the gate. No project page
+// holds an approve or decide control, and the page inventory says so.
+//
 // # Text nobody on the owner's side wrote
 //
 // [Text] is the one function that renders such text (the words from the
@@ -312,12 +364,14 @@
 // page adds a template under templates/, a route in the route table and its
 // entry in the page inventory (inventory_test.go, which
 // fails for a route that is not listed); it needs no change in the middleware.
+// [Genesis] is an optional port beside it, found by a type assertion.
 //
 // An approve control exists in exactly one place, the Card page reached from
 // the Cards list. No other page, notice, link or message may hold or open a
 // decide control, and only the Card page loads the decide script. The
 // inventory test fetches every page, the card pages with a session, and
 // checks each for an inline script or style, an event handler, an address
-// outside the app, a form or control it does not list, and, on every page
-// but the Card page, anything that looks like deciding.
+// outside the app, a form or control it does not list, a form that is not a
+// plain post to a project route, and, on every page but the Card page,
+// anything that looks like deciding.
 package seatapp

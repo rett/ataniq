@@ -17,3 +17,36 @@
 <p id="notices-status" role="status" aria-live="polite"></p>
 </section>
 <script src="/static/push.js"></script>{{end}}
+
+{{define "projects"}}<section id="projects" aria-labelledby="projects-h">
+<h2 id="projects-h">New projects</h2>
+{{if .Listed}}{{with .Threads}}<p>Projects in progress:</p>
+<ul class="cards">
+{{range .}}<li><a href="{{projectHref .Thread ""}}">
+<span class="what">Project {{short .Thread}}</span>
+<span class="meta">{{if eq .State "summary"}}All questions answered: read the summary and finish.{{else}}Round {{num .Round}} of {{num .Of}}.{{end}} {{num .Filled}} of {{num .Total}} required answers given.</span>
+</a></li>
+{{end}}</ul>
+{{else}}<p>No project is in progress.</p>
+{{end}}{{else}}<p>The projects in progress cannot be listed now.</p>
+{{end}}{{if .CanStart}}<form id="start-project" action="/projects/new" method="post">
+<p>Answer a few questions about a project you want to make. Nothing starts and no agent is given anything: the answers are kept at the desk.</p>
+<button id="start-project-go" type="submit">New project</button>
+</form>
+{{else}}<p>Two projects are open. Finish or discard one before you start another.</p>
+{{end}}</section>{{end}}
+
+{{define "question"}}<fieldset class="question">
+<legend>{{text .Q.Prompt maxLine}}</legend>
+<input type="hidden" id="{{field "n" .I}}" name="{{field "n" .I}}" value="{{text .Q.ID maxID}}">
+<ul class="options">
+{{if eq .Q.Type "scale"}}{{range steps}}<li><label class="option" for="{{oid $.I .}}"><input type="radio" id="{{oid $.I .}}" name="{{pickName $.Multi $.I}}" value="{{num .}}"> <span class="choice">{{num .}}</span>{{if eq . 1}} <span class="example">the least</span>{{end}}{{if eq . 5}} <span class="example">the most</span>{{end}}</label></li>
+{{end}}{{else}}{{range $j, $o := .Q.Options}}<li><label class="option" for="{{oid $.I $j}}"><input type="{{inputType $.Multi}}" id="{{oid $.I $j}}" name="{{pickName $.Multi $.I}}" value="{{text $o.ID maxID}}"> <span class="choice">{{text $o.Label maxName}}</span> <span class="example">{{text $o.Example maxLine}}</span></label></li>
+{{end}}{{end}}{{if .Q.Other}}<li><label class="option" for="{{qid .I "other"}}"><input type="{{inputType .Multi}}" id="{{qid .I "other"}}" name="{{pickName .Multi .I}}" value="~other"> <span class="choice">Other</span> <span class="example">Say it in your own words below.</span></label>
+<label class="field" for="{{qid .I "text"}}">Your own words (up to 200 characters; never a password or key)</label>
+<input type="text" id="{{qid .I "text"}}" name="{{field "t" .I}}" maxlength="200" autocomplete="off" spellcheck="true"></li>
+{{end}}{{if .Q.YouDecide}}<li><label class="option" for="{{qid .I "host"}}"><input type="{{inputType .Multi}}" id="{{qid .I "host"}}" name="{{pickName .Multi .I}}" value="~host"> <span class="choice">You decide for me</span> <span class="example">The desk picks, and the summary lists it.</span></label></li>
+{{end}}{{if .Q.Skip}}<li><label class="option" for="{{qid .I "skip"}}"><input type="{{inputType .Multi}}" id="{{qid .I "skip"}}" name="{{pickName .Multi .I}}" value="~skip"> <span class="choice">Skip</span> <span class="example">Leave it to its default.</span></label></li>
+{{end}}</ul>
+</fieldset>{{end}}
+

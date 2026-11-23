@@ -1,0 +1,18 @@
+{{define "content"}}
+<h1>Project brief kept</h1>
+{{if .Note}}<p class="note-line" role="status">{{.Note}}</p>
+{{end}}<p>The brief is kept at the desk as <span class="mono">{{short .View.Digest}}</span>.</p>
+<p>Nothing has started, and no agent was given the brief yet. Planning the project is a later step.</p>
+{{range .Groups}}<section>
+<h2>{{.Heading}}</h2>
+{{with .Rows}}<dl class="facts">
+{{range .}}<dt>{{text .Label maxLine}}</dt>
+<dd>{{if .OwnersWords}}<q class="owners">{{text .Value maxLine}}</q> <span class="meta">(your own words)</span>{{else}}{{text .Value maxLine}}{{end}}</dd>
+{{end}}</dl>
+{{else}}<p>{{.Empty}}</p>
+{{end}}</section>
+{{end}}<nav aria-label="Project">
+<p><a id="project-list" href="/projects/">Back to the project list</a></p>
+</nav>
+{{template "leave"}}
+{{end}}
