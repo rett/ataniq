@@ -60,7 +60,10 @@
 //   - List answers the open threads, oldest first, each with its state
 //     (question or summary), round and progress, and nothing of its answers;
 //     a finished or discarded thread is not listed. It is a read, as Round
-//     and Summary are: it touches no thread.
+//     and Summary are: it touches no thread. It lists at most [MaxOpen], the
+//     oldest, and never fails for more: a folder may hold more open threads
+//     (files restored by hand), the newer ones are served by id, and Start is
+//     refused genesis-busy while [MaxOpen] or more are open.
 //   - A finished thread is frozen: an answer, a change or a discard is
 //     refused genesis-done, and its brief digest is the one finish returned. Finish
 //     may be called at any time on an open thread (the owner's "enough"), and

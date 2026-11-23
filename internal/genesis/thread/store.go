@@ -621,6 +621,13 @@ func (s *Store) Discard(ctx context.Context, id string) (ownerwire.SeatGenesisRe
 // round and progress) and none of its answers. A finished or discarded thread
 // is not listed, and a thread that expires now is discarded first. It is a
 // read: it touches no thread.
+//
+// It lists at most [ownerwire.MaxGenesisThreads] threads, the oldest, and
+// never fails for more: the store never opens more than [MaxOpen] itself, but
+// a folder may hold more open threads than that (files restored by hand from
+// a copy), and the wire's list holds no more. The newer ones are still served
+// by id, and Start is refused genesis-busy while [MaxOpen] or more are open,
+// until the owner finishes or discards enough of them, or they expire.
 func (s *Store) List(ctx context.Context) (ownerwire.SeatGenesisResult, error) {
 	return s.run(ctx, func(t *tx) (ownerwire.SeatGenesisResult, error) {
 		if err := t.expireAll(); err != nil {
@@ -638,6 +645,9 @@ func (s *Store) List(ctx context.Context) (ownerwire.SeatGenesisResult, error) {
 			}
 			return open[i].id < open[j].id
 		})
+		if len(open) > ownerwire.MaxGenesisThreads {
+			open = open[:ownerwire.MaxGenesisThreads]
+		}
 		res := ownerwire.SeatGenesisResult{State: ownerwire.GenesisStateThreads, Nodes: []ownerwire.GenesisNode{}, Threads: []ownerwire.GenesisThread{}}
 		for _, r := range open {
 			v, err := view(s.cat, r, 0)

@@ -2032,7 +2032,10 @@ gate; it is fixed by hand and the daemon restarted.
   answers the open threads, oldest first (by the time each was started, then
   by id), each with the state, round and progress `round` would answer and
   nothing of its brief; it expires what is due first, as `start` does, and
-  touches no thread. A discarded
+  touches no thread. It lists at most 2, the oldest, and never fails for
+  more: the store never opens a third, but a folder may hold more open
+  threads (files restored by hand from a copy); the newer ones are still
+  served by id, and `start` is `genesis-busy` while two or more are open. A discarded
   or expired thread is `genesis-unknown-thread` for every call. The mapping of
   the brief's refusal codes to the gate's words is the store's own table
   (`thread.GateWord`), held equal to the wire's by a test of `internal/genesis`.

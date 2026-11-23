@@ -932,6 +932,52 @@ func TestRefusalsAreGateWords(t *testing.T) {
 	}
 }
 
+// A folder may hold more open threads than the store would open (files
+// restored by hand): List still answers, with the two oldest, in the wire's
+// form; the third is served by id; and Start is refused busy.
+func TestListNeverFailsOnMoreOpenThreadsThanItShows(t *testing.T) {
+	w := newWorld(t)
+	a := w.ok(w.s.Start(ctx)).Thread
+	w.clock.advance(time.Minute)
+	b := w.ok(w.s.Start(ctx)).Thread
+	// A third open thread, from another folder whose ids start elsewhere,
+	// started an hour before the two: the oldest of the three.
+	other := newWorld(t)
+	other.rand.n = 100
+	other.clock.advance(-time.Hour)
+	c := other.ok(other.s.Start(ctx)).Thread
+	other.ok(other.s.Answer(ctx, c, 1, webApp[0]))
+	other.s.Close()
+	data, err := os.ReadFile(filepath.Join(other.dir, c+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(w.dir, c+".json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w.open()
+	list := w.ok(w.s.List(ctx))
+	if len(list.Threads) != 2 || list.Threads[0].Thread != c || list.Threads[1].Thread != a || list.Threads[0].Round != 2 {
+		t.Fatalf("the list of three open: %+v", list.Threads)
+	}
+	if got := w.ok(w.s.Genesis(ctx, ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbList})); len(got.Threads) != 2 {
+		t.Fatalf("the list through the wire's verb: %+v", got.Threads)
+	}
+	if r := w.ok(w.s.Round(ctx, b)); r.Thread != b {
+		t.Fatalf("the newest is not served by id: %+v", r)
+	}
+	_, err = w.s.Start(ctx)
+	refused(t, err, ownerwire.CodeGenesisBusy)
+	// One discarded: the list shows the other two, and a start is still
+	// refused while two are open.
+	w.ok(w.s.Discard(ctx, c))
+	if l := w.ok(w.s.List(ctx)); len(l.Threads) != 2 || l.Threads[0].Thread != a || l.Threads[1].Thread != b {
+		t.Fatalf("after a discard: %+v", l.Threads)
+	}
+	_, err = w.s.Start(ctx)
+	refused(t, err, ownerwire.CodeGenesisBusy)
+}
+
 // List answers the open threads, oldest first, each where it stands and with
 // nothing of its answers; a finished, discarded or expired thread is not
 // listed; it touches no thread; and a restart lists the same.
