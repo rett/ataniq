@@ -50,7 +50,7 @@ func (c *capture) none(t *testing.T, what string) {
 
 // htmlBytes are characters encoding/json escapes for HTML when it marshals,
 // each into six bytes: <, >, &, U+2028 and U+2029.
-const htmlBytes = "<>&  "
+const htmlBytes = "<>&\u2028\u2029"
 
 // rawParams is a params object {"x":"..."} of characters encoding/json would
 // escape, padded with 'a' so that the request of id to t.got is exactly n
@@ -108,7 +108,7 @@ func TestClientSendsRawParamsAsGiven(t *testing.T) {
 	}
 
 	// id 4: small params with the characters and white space, as given.
-	small := json.RawMessage(`{"path": "a&b/<c>` + " " + `", "n" : [1, 2]}`)
+	small := json.RawMessage(`{"path": "a&b/<c>` + "\u2028" + `", "n" : [1, 2]}`)
 	if err := c.Call(ctx, "t.got", small, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestClientRefusesRawParamsTheGateWouldNot(t *testing.T) {
 	nest := func(n int) string { return strings.Repeat(`{"a":`, n-1) + `{}` + strings.Repeat(`}`, n-1) }
 	for name, raw := range map[string]string{
 		"a key twice":           `{"a":1,"a":2}`,
-		"a key twice, escaped":  `{"a":1,"a":2}`,
+		"a key twice, escaped":  `{"a":1,"\u0061":2}`,
 		"a key twice, deeper":   `{"a":{"b":1,"b":2}}`,
 		"nested past the frame": nest(MaxDepth),
 		"space before":          ` {}`,

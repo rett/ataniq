@@ -391,7 +391,7 @@ func (c *Client) call(ctx context.Context, op string, params any, result any) er
 // encodeParams gives the bytes of a call's params: nil for none, a
 // [json.RawMessage] as it is, anything else as encoding/json writes it. A
 // RawMessage is not marshalled again, since encoding/json would rewrite it (it
-// escapes <, > and & for HTML, & being six bytes for one): params their
+// escapes <, > and & for HTML, each in six bytes): params their
 // caller checked against a cap reach the gate as they were checked. The bytes
 // are held to the strict form the gate reads a frame in, the frame's own
 // object being one level of the nesting, so that params the gate would take
