@@ -87,12 +87,14 @@ func TestValidateSubscriptionBounds(t *testing.T) {
 		"p256dh long":       func(s *Subscription) { s.P256DH = b64(append(point(1), 0)) },
 		"p256dh compressed": func(s *Subscription) { p := point(1); p[0] = 0x02; s.P256DH = b64(p) },
 		"p256dh padded":     func(s *Subscription) { s.P256DH += "=" },
-		"p256dh std alpha":  func(s *Subscription) { s.P256DH = strings.NewReplacer("-", "+", "_", "/").Replace(b64(bytes.Repeat([]byte{0x04, 0xfb, 0xff}, 22)[:65])) },
-		"p256dh non canon":  func(s *Subscription) { s.P256DH = s.P256DH[:len(s.P256DH)-1] + "B" },
-		"auth short":        func(s *Subscription) { s.Auth = b64([]byte("0123456789abcde")) },
-		"auth long":         func(s *Subscription) { s.Auth = b64([]byte("0123456789abcdefg")) },
-		"auth empty":        func(s *Subscription) { s.Auth = "" },
-		"auth garbage":      func(s *Subscription) { s.Auth = "!!!!!!!!!!!!!!!!!!!!!!" },
+		"p256dh std alpha": func(s *Subscription) {
+			s.P256DH = strings.NewReplacer("-", "+", "_", "/").Replace(b64(bytes.Repeat([]byte{0x04, 0xfb, 0xff}, 22)[:65]))
+		},
+		"p256dh non canon": func(s *Subscription) { s.P256DH = s.P256DH[:len(s.P256DH)-1] + "B" },
+		"auth short":       func(s *Subscription) { s.Auth = b64([]byte("0123456789abcde")) },
+		"auth long":        func(s *Subscription) { s.Auth = b64([]byte("0123456789abcdefg")) },
+		"auth empty":       func(s *Subscription) { s.Auth = "" },
+		"auth garbage":     func(s *Subscription) { s.Auth = "!!!!!!!!!!!!!!!!!!!!!!" },
 	}
 	for name, mod := range cases {
 		s := ok
