@@ -181,6 +181,15 @@ together:
 - **No caching.** Every response carries `Cache-Control: no-store`, and the
   security headers (content security policy, HSTS, `Permissions-Policy`) that
   the passkey calls rely on. Do not cache and do not remove or change them.
+- **Allow a held request on `/api/watch`.** The live refresh polls
+  `POST /api/watch`, which the seat holds for up to 25 seconds before it
+  answers. The front proxy's read timeout (how long it waits for the seat's
+  answer) must be above 30 seconds, and its buffering must be off for that
+  path. The shipped Caddy's `write 30s` and the seat's own 30-second write
+  timeout are above the 25 seconds and need no change; do not lower them. A
+  proxy that cuts the request earlier makes every page poll again and again,
+  each time answered by an error that the page waits out with a growing
+  pause, so the page lags without saying why.
 - **No redirects.** Serve the paths as asked, with no change of host, scheme or
   path. The pairing QR carries its one-time code in the address fragment, which
   must reach the app as the desk drew it. (The app itself answers `/pair`,
@@ -221,11 +230,13 @@ it serves, never a pin (the origin file is read at start too, and a missing or
 unusable one only narrows what the gate serves):
 
 ```text
-ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>, seat origin https://seat.example; it serves pair, read, login and decide
-ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>; it serves pair and read only: no seat origin is configured (the owner-local seat-origin file is missing or empty)
+ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>, seat origin https://seat.example; it serves pair, read, login, decide and watch
+ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>; it serves pair, read and watch only: no seat origin is configured (the owner-local seat-origin file is missing or empty)
 ```
 
-The first line is the one to look for. Compare the printed fingerprint with the
+The first line is the one to look for. `watch` is the live refresh (see
+[Live refresh](#live-refresh)); a daemon whose service cannot wait would leave
+it out ("login and decide", "pair and read only"). Compare the printed fingerprint with the
 one `seat-gate init` gave and with the seat's pin file.
 
 On the authority host:
@@ -292,8 +303,8 @@ verification each time. A login decides nothing; it starts a session in the
 minutes idle, 12 hours at most, at logout, or when the seat restarts.
 
 **Cards.** After the login the phone shows the waiting cards (`/cards/`) and each
-card's page. Each page carries the STAND-IN banner. Reload a page to read again:
-live refresh is not yet built.
+card's page. Each page carries the STAND-IN banner. The card list and the Card page update
+by themselves, see [Live refresh](#live-refresh).
 
 **Approve and deny.** A decision is made only on a card's own page, with a fresh
 passkey every time: one tap on Approve or Deny names the action and the card,
@@ -312,6 +323,70 @@ card. Nothing is submitted by itself, and one assertion decides one card once.
   answer, or none, shows "Decision sent. Outcome unknown." with "Look again":
   the seat never sends the decision twice by itself. Read the card again before
   deciding again.
+
+## Live refresh
+
+What the owner sees. With the card list or a Card page open, a new card shows
+up without a reload, and a card that was decided, withdrawn or replaced
+(at the desk, on another phone or by the daemon) stops being offered:
+
+- **The card list** reloads itself when the set of waiting cards changed, at
+  most once every 10 seconds, and never while a field on it holds typed text.
+  A new card that came in through the daemon's door is seen within about 30
+  seconds, the interval at which the daemon looks at the door; a decision made
+  at the desk or on the phone is seen within a few seconds, and a page that
+  just reloaded waits for its 10 seconds before it reloads again.
+- **A Card page** never reloads by itself, since you may be ticking boxes.
+  When its card was decided elsewhere or changed, the page says "This card
+  changed or was decided elsewhere. Look again." with the links "Back to the
+  cards" and "Reload", and the sign-off boxes, the reason field, Approve, Deny
+  and the confirm button are disabled. Reload to read the card as it is now.
+- **The status line**, under the page's text, is empty while the page is live.
+  It says "Not live" when the page was made while the seat watched nothing (the
+  gate does not list `watch`, or the link was not up; the page polls no more,
+  so reload it), "Not live: the desk is out of reach" while the link to the
+  gate or the daemon fails (the page asks again every 30 seconds), and "Session
+  ended. Log in again." when the session is gone.
+- A tab that is hidden asks nothing, and asks at once when it is shown again.
+
+What it costs. The seat keeps one long call at the gate for the whole seat,
+whatever the number of pages and phones open: a held request that the gate
+answers when the set of cards changes or after 25 seconds. The pages ask the
+seat, not the gate. The gate takes 60 requests a minute on the seat's one link,
+and the seat keeps a room for each kind of call within every 80 seconds: pings
+6, decisions 16, pairing and login (anyone's) 12, reads 20 and waits 6, 60 in
+all. An idle seat sends one wait about every 25 seconds. A page's poll is not
+a request that keeps the session alive: a session still ends 30 minutes after
+the last page you loaded or tap you made, however long a page stays open.
+
+A stale offer is never what decides. Live refresh only withdraws an offer
+sooner; a tap on an old page is refused by the seat or the daemon as before
+("The card changed. Look at it again.").
+
+How to tell it works.
+
+1. Start the daemon and read its start line: it ends in "decide and watch", or
+   "pair, read and watch only" without a seat origin. A line without `watch`
+   means no live refresh (the daemon's service cannot wait).
+2. Open `/cards/` on the phone. The status line is empty. A line "Not live"
+   means the gate does not list `watch` or the link was down when the page was
+   made.
+3. Bring a request to the desk and watch the list; it updates without a reload
+   within about 30 seconds. Decide a card at the desk: the page of that card
+   shows the banner above.
+4. The daemon's log (its standard error; `journalctl` if you run the daemon
+   under a unit) has one line when the gate answers a wait `wait-full`, at most
+   one a minute for each seat:
+   `ataniqd: seat gate: seat.wait refused wait-full (peer <16 hex digits>)`.
+   One at a reconnect is harmless. The seat pauses 5 seconds after it and
+   shows nothing. A line every minute means the gate holds waits for the same
+   seat key from somewhere else, such as a second `ataniq-seat` using the same
+   identity: stop the extra one.
+
+Behind a proxy. A held request lasts up to 25 seconds, so the front proxy's
+read timeout for the seat must be above 30 seconds and its buffering of
+`/api/watch` must be off, so that the answer reaches the phone when the seat
+writes it (see [The reverse proxy](#the-reverse-proxy)).
 
 ## Credential kinds
 
@@ -400,6 +475,12 @@ The ones an operator meets:
 - The lead's sandbox must not reach the gate's port, and no qualification case
   shows it yet.
 - Nothing is queued while the phone or the gate is offline.
+- A held poll costs the gate nothing, but a taken-over seat can fake liveness:
+  it can say that nothing changed, or that a gone card is live. The daemon still
+  checks the card's binding on every decision, so a stale offer is refused, not
+  taken.
+- Notices on the phone are not built: nothing tells the phone that a card is
+  waiting while no page of the seat is open.
 
 ## Troubleshooting
 
@@ -412,7 +493,7 @@ At the daemon's start:
 | `the gate's key in ... cannot be used` (exit 10) | No key, or the folder or files are not safe. | `ataniqd seat-gate init`; the folder must not be writable by group or other. |
 | `... pins no seat key, so no seat could connect`, or a message about the pin file naming a line (exit 10) | No pin, no file, a link, a mode wider than 0600, another owner, more than 4 pins, a repeat or a line that is not a fingerprint. | Fix `seat-pins`; `ataniqd seat-gate pins` shows what is read. |
 | `seat gate: cannot listen on ...` (exit 18) | The port is taken or the address is not the host's. | Free the port or change ADDR. |
-| Start line says `it serves pair and read only` | No usable origin file (missing, empty, refused or not canonical), or a service that cannot decide. | Fix the origin file and restart; the phone says the desk does not take phone logins until then. |
+| Start line says `it serves pair and read only`, or `pair, read and watch only` | No usable origin file (missing, empty, refused or not canonical), or a service that cannot decide. | Fix the origin file and restart; the phone says the desk does not take phone logins until then. |
 
 At the seat's start (exit 2 with a message on standard error): `--gate-pin-file:`
 followed by "cannot be read, or is a link", "is writable by group or other" or "does
@@ -445,3 +526,9 @@ What the phone shows, by the code the seat's API answers:
 | "Decision sent. Outcome unknown." | `outcome_unknown` | The answer was lost after the decision was sent. | Tap "Look again" and read the card; never retry blindly. |
 | "The session ended. Log in again." | `session_ended` | Idle 30 minutes, 12 hours, a seat restart, or a logout. | Log in. |
 | "This is too large to send." | `too_large` | The card or decision does not fit the gate's frame. | Decide at the desk. |
+| Status line "Not live" | (none: the page's own) | The page was made while the seat watched nothing: the gate does not list `watch` (the daemon's start line has no `watch`), or the link was down. | Reload. Check the daemon's start line and the link. |
+| Status line "Not live: the desk is out of reach" | `offline` (answer of `POST /api/watch`) | The seat's link to the gate is down or its last wait failed; the watcher retries after 1 second, doubling to 30. The page asks again every 30 seconds. | Check the daemon, the firewall and both pins as for `daemon_unavailable`. It clears by itself once the link is back. |
+| Status line "Session ended. Log in again." | `ended` (answer of `POST /api/watch`) | Idle 30 minutes without a page load or tap (a poll does not count), 12 hours, a seat restart, a logout, or a revoked key. | Log in. |
+| Nothing visible, but `POST /api/watch` answers 429 in the proxy's log or the browser's tools | `rate_limited` | More than 12 polls a minute from one passkey's sessions, as many tabs open at once make. The page waits 60 seconds and asks again. | Close the extra tabs. |
+| "This card changed or was decided elsewhere. Look again." | `changed` or `gone` (the card's state in the poll's answer) | The card was decided, replaced, expired or withdrawn since the page was read. | Reload, or go back to the cards. |
+| A line `seat.wait refused wait-full (peer ...)` in the daemon's log | `wait-full` | The gate already holds two waits for that seat key (or the daemon's eight). Normal for a moment when the seat reconnects. Not counted against the seat. | Nothing if it stops. If it repeats every minute, look for a second `ataniq-seat` with the same identity. |

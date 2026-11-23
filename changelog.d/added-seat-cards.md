@@ -11,6 +11,6 @@
   page that the desk runs a STAND-IN door on scratch state. The list and the
   pages of a card's path list have no decide control. Reads are limited to 20
   a minute per paired credential, and the reads of every session together to
-  26 calls of the seat gate in 80 seconds (the first page of a card's path
+  20 calls of the seat gate in 80 seconds (the first page of a card's path
   list may call it twice); a read past them says the desk is busy and asks
   nothing.

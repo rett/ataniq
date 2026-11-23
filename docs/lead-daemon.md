@@ -342,19 +342,24 @@ the owner connection, behind the STAND-IN banner.
   pin. With an origin:
 
 ```text
-ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>, seat origin https://seat.example; it serves pair, read, login and decide
+ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>, seat origin https://seat.example; it serves pair, read, login, decide and watch
 ```
 
   Without one, the line says why:
 
 ```text
-ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>; it serves pair and read only: no seat origin is configured (the owner-local seat-origin file is missing or empty)
+ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>; it serves pair, read and watch only: no seat origin is configured (the owner-local seat-origin file is missing or empty)
 ```
+
+  `watch` is in the line because the daemon's service can wait for a change of
+  the pending cards, which every real start does; a service that cannot would
+  leave it out, and the line would end in "login and decide" or "pair and read
+  only".
 
 The gate speaks TLS 1.3 with pinned keys, strict frames of at most 257 KiB
 (the largest listing, card or page and the response around it) and the limits
-of `internal/seatgate`. It serves the capabilities `pair` and `read`: the
-seat's pairing call, `seat.pair`, and the reads `owner.list`, `owner.show`,
+of `internal/seatgate`. It serves the capabilities `pair`, `read` and
+`watch`: the seat's pairing call, `seat.pair`, and the reads `owner.list`, `owner.show`,
 `owner.paths` and `owner.patch`, through `internal/approval/gatehost`, with a
 seat source that is never the decider. With a seat origin it also serves
 `login` (`seat.login-challenge`, `seat.login`) and `decide`
@@ -366,10 +371,15 @@ draws from its own record of the card, verified against a key on
 kept in memory for 5 minutes and one use; a restart drops every one. A
 decision from the phone is journaled as confirmed by passkey, with the
 evidence of the assertion, and needs no activity at the desk; it is not
-activity at the desk either. Every other operation is refused `unknown-op`.
+activity at the desk either. With `watch` it serves the seat's long wait,
+`seat.wait`, which answers when the set of pending cards changes (see
+[live refresh](design/seat-gate.md#live-refresh-seatwait)): it decides nothing,
+it carries only each card's id, kind, binding digest and held mark, never card
+text, and it is served with or without a seat origin. The gate holds at most
+two waits at once for a seat. Every other operation is refused `unknown-op`.
 A seat whose key is not pinned is refused in the handshake and never reaches
-the service. On the daemon's socket `seat.pair` stays refused and the four
-seat operations are not served: no connection there is a seat. `owner.show`
+the service. On the daemon's socket `seat.pair` stays refused and the five
+seat operations (the four of login and decision, and `seat.wait`) are not served: no connection there is a seat. `owner.show`
 marks a card whose decision is journaled and not yet taken by the door
 (`"on_its_way": true`), on the socket and the gate alike.
 

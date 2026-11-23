@@ -8,12 +8,19 @@ origin, G8b), and `ataniq-seat`, given a gate, serves the pairing page, the
 login page, the card pages and the Card page's approve and deny control
 (G7 and G9). A phone decision is verified, journaled and written as a
 passkey record by the service. Phone decisions are scratch-only, shown with
-the STAND-IN banner, and approve nothing real. Not built yet: the release of
-`ataniq-seat` on the authority host (G12); the call of `decisionguard.Check`
-in `ataniq-seat` before any challenge or decision is relayed; the phone trial
-(G13); `owner.wait` (live refresh) and notices (G14); and the one function
-that makes an origin canonical (G1; [the seat origin](#the-seat-origin) lists
-where the three checks in use disagree). This document is the contract that
+the STAND-IN banner, and approve nothing real. Also built: the release of
+`ataniq-seat` for the authority host (G12: its unit, Caddyfile and command
+lists in `deploy/authority-host/seat`, built and tested, not deployed), the
+call of `decisionguard.Check` in `ataniq-seat` before any challenge or
+decision is relayed (`decisions_inhibited`), and live refresh (G14, first
+part: the gate's long wait `seat.wait` under the capability `watch`, the
+seat's one watcher, and the pages' own refresh; see
+[live refresh](#live-refresh-seatwait)). Not built yet: the phone trial
+(G13); notices on the phone (the rest of G14: the notice core N1, the service
+worker and subscription pages N3, the notifier unit N4); question cards; and
+the one function that makes an origin canonical (G1;
+[the seat origin](#the-seat-origin) lists where the three checks in use
+disagree). This document is the contract that
 the code follows. A paragraph that begins "Owner decision" records a decision
 the owner has made. Everything else is proposed, for the lead to sign off, and
 where a paragraph says built the code does what it says; the change to the
@@ -108,6 +115,29 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   `ownerjournal.Store.EvidenceOf`. The list of deciding keys keeps the highest
   sign counter (`ownerjournal.KeyFile.RaiseCounter`, through the service's
   `KeyStore` port). The service writes both for a phone decision (G8b).
+- Live refresh (G14, first part; see [live refresh](#live-refresh-seatwait)).
+  The words are in `ownerwire`: `seat.wait` (`ownerwire.OpSeatWait`, in
+  `ownerwire.GateOperations` and not in `ownerwire.Operations`),
+  `SeatWaitParams`, `SeatWaitResult`, `SeatWaitCard`, the code `wait-full`
+  and `ownerwire.PendingVersion`. The daemon's side is
+  `ownerchannel.Service.WaitPending` (`wait.go`); the gate's is the
+  capability `gatehost.CapWatch` (`"watch"`), listed only when the service
+  can wait, with at most `gatehost.MaxWaitsPerPeer` (2) held waits for each
+  peer; the seat's is the watcher of `internal/seatlink` (`watch.go`), which
+  `ataniq-seat` starts, and `internal/seatapp` serves the browser's long poll
+  `POST /api/watch` and the script `/static/watch.js` (`watchpoll.go`,
+  `watch.go`, `assets/watch.js`). Without a gate that lists `watch`, the
+  pages say "Not live" and still work by reload.
+- The release of the seat for the authority host, `deploy/authority-host/seat`
+  (G12, built, not deployed): the unit `ataniq-seat.service`, the Caddyfile
+  and the validators, reload, stop and health lists, laid over the base
+  release (see
+  [the authority host's README](../../deploy/authority-host/README.md#the-seat-app)).
+  `ataniq-seat` asks `decisionguard.Check` of the host's state folder
+  (`--decision-guard`) before it relays any decision's challenge or decision,
+  and for the card page's buttons: while `decisions.inhibit` is there, or
+  the folder cannot be read, nothing is relayed (`decisions_inhibited`, see
+  [the phone's side](#the-phones-side)).
 
 ## The listener: inside the daemon
 
@@ -174,15 +204,20 @@ them and never hands them to the handler.
 | `login` | `seat.login` | `SeatLoginParams` | `SeatLoginResult` | G8b (built) |
 | `decide` | `seat.challenge` | `SeatChallengeParams` | `SeatChallengeResult` | G8b (built) |
 | `decide` | `seat.decide` | `SeatDecideParams` | `ownerwire.DecideResult` | G8b (built) |
+| `watch` | `seat.wait` | `ownerwire.SeatWaitParams` | `ownerwire.SeatWaitResult` | G14 (built) |
 
 A handler made with `gatehost.New` answers `["pair", "read"]` (`gatehost.Caps`);
 one made with `gatehost.NewDeciding`, `["pair", "read", "login", "decide"]`
 (`gatehost.DecidingCaps`), and the daemon makes that one only when the seat
 origin is configured and its service can decide from the phone (see
-[the seat origin](#the-seat-origin)). The seat reads the list
-(`seatgate.Client.Caps`) and offers login and decisions only when the gate lists
-them; otherwise it says that the desk does not take phone logins, or does not
-take decisions from the phone.
+[the seat origin](#the-seat-origin)). Either handler adds `watch` after them
+(`Handler.Caps`) when its service can wait (`gatehost.WaitPort`, which the
+owner channel's service is), with or without a seat origin: a wait decides
+nothing. The daemon's start line names `watch` among what the gate serves. The
+seat reads the list (`seatgate.Client.Caps`) and offers login and decisions
+only when the gate lists them; otherwise it says that the desk does not take
+phone logins, or does not take decisions from the phone. It starts its watcher
+only when the gate lists `watch`; otherwise its pages say "Not live".
 
 The gate never serves `owner.decide`, `owner.decider`, `owner.beat`,
 `owner.looked`, `owner.limit`, `owner.limit-set`, the desk's pairing operations
@@ -190,10 +225,10 @@ The gate never serves `owner.decide`, `owner.decider`, `owner.beat`,
 `owner.pair-reject`) or the key operations (`owner.keys`, `owner.key-revoke`,
 `owner.keys-off`). A key is revoked at the desk only.
 
-The four new operations are the gate's alone. They are not added to
-`ownerwire.Operations()`, which is the list the daemon's Unix socket serves and
-announces; G8 lists them separately, so the socket neither announces nor serves
-them.
+The four new operations of G8, and `seat.wait` of G14, are the gate's alone.
+They are not added to `ownerwire.Operations()`, which is the list the daemon's
+Unix socket serves and announces; `ownerwire.GateOperations()` lists them
+separately, so the socket neither announces nor serves them.
 
 ### The new types
 
@@ -302,8 +337,8 @@ The handler (`gatehost`, built for pairing and reads) answers:
   or the call was cancelled), `deadline-exceeded`, `door-unavailable`,
   `journal-reopened`, `failed` (anything else, `ErrNotSeat` included; the error
   goes to the log, never the params).
-- New codes for version 1, all from G8 (their words are declared in
-  `ownerwire`, `ownerwire.CodeChallengeStale` and the others):
+- New codes for version 1, all from G8 but the last (their words are declared
+  in `ownerwire`, `ownerwire.CodeChallengeStale` and the others):
 
 | Code | Meaning |
 | --- | --- |
@@ -312,6 +347,7 @@ The handler (`gatehost`, built for pairing and reads) answers:
 | `assertion-invalid` | The assertion names another credential than the challenge's, or did not verify, for any reason (client data, origin, relying party, flags, signature). The daemon's log names which check failed, from the verifier's fixed list, never the bytes. |
 | `key-revoked` | The credential is on the list and revoked. |
 | `kind-refused` | The credential's stored kind is not a kind the verifier knows (`unverified` included), or not one the project accepts. |
+| `wait-full` | G14. A `seat.wait` came while the gate already holds two waits for the peer, or the daemon's service already holds its eight. It is a load answer, not a misuse: it is not counted by the refusal bound (see [live refresh](#live-refresh-seatwait)). |
 
 `key-unknown` answers a credential that is not on the list. There is no code
 for a missing seat origin: a gate without one does not serve `login` and
@@ -353,6 +389,11 @@ call) and `not-pinned`. Of `seat.challenge` and
 `kind-refused` do not count either: they come of normal use (a double tap, a
 slow owner, a card that changed, "phone off" at the desk). `bad-params`,
 `key-unknown`, `assertion-invalid` and the record codes passed on count.
+`wait-full`, the answer of G14's `seat.wait` to a wait past the limits of
+held waits, does not count either: a seat that reconnects while the gate still
+holds its old wait would meet it with no fault of its own, and counting it
+would let a reconnect loop shut a good seat out for 10 minutes. Its log line is
+limited instead, to one a minute for each peer.
 
 ## The challenge
 
@@ -648,11 +689,13 @@ sends none past the room of its kind:
 | --- | --- | --- |
 | Pings | `seat.ping`, every 15 s (`seatlink.PingInterval`, which `ataniq-seat` sets) | 6 |
 | Anyone's | `seat.pair`, `seat.login-challenge`, `seat.login` | 12 (6 logins) |
-| Reads | `owner.list`, `owner.show`, `owner.paths`, of every session together | 26 |
+| Reads | `owner.list`, `owner.show`, `owner.paths`, of every session together | 20 |
 | Decisions | `seat.challenge`, `seat.decide` | 16 (8 decisions) |
+| Waits | `seat.wait`, the watcher's one long wait (see [live refresh](#live-refresh-seatwait)) | 6 |
 
-The rooms add up to the gate's 60, so the gate's rate never refuses a call
-the seat sent. A call without room is not sent: the phone says the desk is
+The rooms add up to the gate's 60 (6 + 16 + 12 + 20 + 6, a sum the code checks
+when it is compiled; before the watcher the reads had 26 and there was no room
+for waits), so the gate's rate never refuses a call the seat sent. A call without room is not sent: the phone says the desk is
 busy (`desk_busy`, the problem "The desk is busy", or `rate_limited` for a
 pairing), before anything is asked. A decision's challenge is asked only
 when the room of decisions holds it and its `seat.decide` as well: the room
@@ -1116,6 +1159,246 @@ again. A challenge the seat link recomputes differently says that the desk's
 challenge is not this card's and that the passkey was not asked. A held
 approve shows the host's line and, under it, the held words above.
 
+## Live refresh: seat.wait
+
+Status: built (G14, first part) and tested on loopback; not qualified, and
+scratch-only like the rest of the phone path. Without it the owner reloads a
+page to see a new card. With it, the seat watches the set of pending cards at
+the gate with one long call, and the pages ask the seat, not the gate, whether
+it moved.
+
+The owner's goal is to monitor and approve the running tasks as they come up.
+The seat has one connection to the gate with 60 requests a minute to spend, so
+the design keeps the number of calls of the gate independent of the number of
+browsers: the seat holds one wait for the whole seat, and the browsers' polls
+end at the seat.
+
+### The operation
+
+`seat.wait`, capability `watch`, the gate's alone (in `ownerwire.GateOperations`,
+not in `ownerwire.Operations`; the daemon's socket neither serves nor announces
+it). The gate lists `watch` in its hello when its service can wait
+(`gatehost.WaitPort`, which `ownerchannel.Service` is); a seat that does not
+find it there starts no watcher.
+
+- Params, `ownerwire.SeatWaitParams`: `since`, always written, either empty (the
+  seat has no version yet) or a version of 32 lower-case hexadecimal digits;
+  anything else is `bad-params`.
+- Result, `ownerwire.SeatWaitResult`: `version` (32 hex digits), `waiting` (how
+  many cards are pending, the whole set), `cards` (a list of
+  `ownerwire.SeatWaitCard`: `id`, `kind`, `binding_sha256` and `held`, never a
+  line of a card's text; at most `ownerwire.MaxSeatWaitCards`, 128, none twice)
+  and `more` (true when `waiting` is more than the cards listed). The result
+  is at most `ownerwire.MaxSeatWaitResultBytes` (24 KiB). `kind` is a word of
+  at most 16 bytes; every card today is `approval`
+  (`ownerwire.CardKindApproval`), and the field is there so that a card of
+  another kind can be told apart later. `held` is the daemon's mark "decided
+  past the project's limit for the day".
+- Answer: at once when `since` is empty or is not the pending set's version;
+  otherwise the call is held until the version changes, until the hold ends, or
+  until the request ends. A hold that ends with no change answers the current
+  result, whose version is `since`, so the seat takes an equal version as "no
+  change".
+
+### The version
+
+`ownerwire.PendingVersion` is the one function that makes a version: the first
+16 bytes, in lower-case hexadecimal, of the SHA-256 of a canonical encoding of
+the whole pending set: the domain string `ataniq.seat-wait.pending/1`, the
+number of cards, and for each card in the order of its kind, id, binding digest
+and held mark, each field as a 4-byte big-endian length and its bytes (the
+held mark one byte). The order of the items given does not matter. The set
+hashed is the whole set, not the at most 128 cards of a result, so a change
+past the list changes the version too.
+
+It is a digest and not a counter on purpose: a daemon that restarts with the
+same pending set answers the same version, so a seat that held it is not woken
+for nothing. A field left out of the digest would be a change a seat never
+hears of; the kind, the binding digest and the held mark are in it, so a card
+that was replaced under the same id, or held, wakes the seat.
+
+### The daemon's bounds
+
+`ownerchannel.Service.WaitPending` (`wait.go`) answers `seat.wait`:
+
+- The hold is at most `Config.WaitHold`, 25 seconds by default, and in any case
+  ends 1.5 seconds before the deadline of the request (the gate's 30 seconds),
+  so the gate never cuts a held wait with `deadline-exceeded`.
+- What wakes a held wait: a poke after each write of the journal and of the
+  handles (a decision, a held decision, a refusal, a count, a limit, an alert,
+  a delivery, a use, an outcome, and an `ExpireHeld` that closed a card); a
+  poke at the end of each tick (every 30 seconds by default,
+  `hostadapter.DefaultTickEvery`), which is also how a change at the door that
+  the daemon did not write, such as a new card or a void by the broker, is
+  noticed: such a card reaches the seat within about a tick, not at once; a timer at the
+  earliest expiry of a pending card, since the door ends a card by the clock
+  and writes nothing; and the end of the hold, which looks once more.
+  Nothing watches the door itself. A "looked" mark wakes nobody: no version
+  covers it.
+- The door is listed at most once a second for the whole service (the 1-second
+  floor), however many waits are held and however many pokes come. A poke
+  within the second is answered by one look at its end; a look that was made
+  while a poke came (its own `ExpireHeld` pokes) is followed by one more a
+  second later, which finds nothing to poke, so a wait cannot spin on its own
+  side effects.
+- At most `Config.WaitMax` (8) waits are held at once; one more is refused
+  with `ownerchannel.ErrWaitFull`, which the gate answers `wait-full`.
+- A held wait takes no lock of the service while it waits, and a wait that
+  ends, by an answer or by its request, leaves no goroutine and no timer.
+
+### The gate's bounds, and wait-full
+
+`gatehost` holds at most `gatehost.MaxWaitsPerPeer` (2) waits at once for a
+peer, across its connections. The seat holds one; the second is room for a
+reconnect, since the seat's old wait unwinds (up to 25 seconds) while its new
+connection already asks. A third, or a call the service itself refuses with
+`ErrWaitFull`, is answered `wait-full` before anything is looked at. A held
+wait takes one of the connection's 16 handler places while it is held, and
+counts as one request of the 60 a minute when it is sent.
+
+`wait-full` is not counted by [the refusal bound](#the-refusal-bound). It is a
+load answer, not a misuse: counting it would let a reconnect that meets its
+own unwinding wait, or a few seats' waits held by the service, shut a good
+seat out, with its reads and its decisions, for 10 minutes. Its log line
+(`seat gate: seat.wait refused wait-full (peer <16 hex digits>)`) is written
+at most once a minute for each peer instead, so a loop cannot fill the log
+either. The seat answers it with a pause of 5 seconds and shows no fault.
+
+### The seat's single watcher
+
+One goroutine of `internal/seatlink` (`watch.go`), started once by
+`ataniq-seat`, keeps one `seat.wait` in flight for the whole seat, whether or
+not a browser is open. It does nothing and spends no room until the gate's
+hello lists `watch`.
+
+- One wait at a time, with the version of its last answer as `since` and a
+  context of 29 seconds (the 25 of the hold and 4 of the network; the gate cuts
+  a request at 30).
+- After an answer that changed the version it waits 2 seconds before the next
+  wait, so that a burst of changes is a few wakes and not a wait for each.
+- Its room is the kind of call `kindWait`, 6 in the budget's 80 seconds. An
+  idle seat sends one wait about every 25 seconds, 4 in 80 seconds, which
+  leaves 2 for the waits that a change cut short. With no room the watcher
+  sleeps until some frees; nothing is refused, the pages lag.
+- On a gate error or a lost link it publishes "offline" and tries again after
+  1 second, doubled at each failure in a row to 30 seconds, keeping its
+  `since`; a link that is back lifts "offline" at once. After `wait-full` it
+  pauses 5 seconds and publishes nothing.
+- It publishes its state (`seatapp.WatchState`: whether it watches, the
+  version, the count, the cards, `more`, offline, and when) and a broadcast
+  that is closed at each change. A subscriber takes the channel first and the
+  state after, so it misses no change. Publishing never blocks and starts no
+  goroutine.
+
+The seat's 60 requests a minute are now split in rooms of pings 6, decisions
+16, anyone's (`seat.pair`, `seat.login-challenge`, `seat.login`) 12, reads 20
+and waits 6, which add up to 60. The waits' 6 come from the reads, which had 26
+(see [login](#login-seatlogin-challenge-and-seatlogin)); the code checks the
+sum, and that an idle watcher's waits fit their room with two to spare, when it
+is compiled.
+
+### The browser's long poll
+
+The browser does not talk to the gate. `POST /api/watch` (`internal/seatapp`,
+`watchpoll.go`) goes through the same checks as every POST of the app (the
+Host, `Origin` and `Sec-Fetch-Site: same-origin` rules, a JSON body of at most
+`seatapp.MaxBody`) and asks the seat's watcher, never the gate.
+
+- Body: `version` (what the page has, up to 64 hex digits, possibly none) and,
+  for a Card page, `card` (the id) and `binding` (64 hex digits).
+- The session is looked at with `sessions.look`, which does not mark it used: a
+  poll never extends the session's idle time (see below). A request without a
+  live session is answered 200 with the state `ended`.
+- A credential's polls are limited to 12 a minute, apart from the reads, since
+  a poll asks the gate nothing and costs it no room; a script that polls
+  without pause is answered 429 `rate_limited`.
+- It is answered at once when the watcher does not watch, is offline, or has
+  another version than the poll's. Otherwise it is held until the state
+  changes, 25 seconds pass (`watchHold`, under the 30-second write timeouts of
+  the seat and of the shipped Caddyfile), a newer poll of the same session takes
+  its place, the browser goes away, or the session ends. At most one poll of a
+  session is held, which bounds the held requests by the number of sessions.
+- Answer: `state`, one of `same`, `changed`, `offline` and `ended`, the
+  `version` and `waiting` (the count), and `card`, one of `live`, `changed`,
+  `gone` and `unknown`. The answer holds no text of a card. `card` is `gone`
+  when the card is not in the list and the list is the whole set, `changed`
+  when it is listed with another binding, `unknown` when the watcher cannot say
+  (more cards than listed, offline, or no card named) and `live` otherwise.
+
+A page takes the watcher's version before it reads the daemon for its own
+content (`watchVersion`), so a change between the two makes the page's version
+older than what it shows and its first poll answers `changed` at once: a page
+can be told of a change it already shows, and never misses one it does not.
+
+`/static/watch.js` serves the card list and the Card page, with the element
+`#watch`, whose `data-live`, `data-version`, `data-card` and `data-binding`
+carry what the page was made from. It polls once at a time, at least 2 seconds
+apart, and not while the page is hidden; it polls at once when the page is shown
+again. It puts on the page only texts that are its own constants, set as text
+and never as markup, so that the page's content security policy
+(`script-src 'self'`, `require-trusted-types-for 'script'`) holds and nothing of
+an answer is written into the page. One status line (`#watch-status`) says:
+
+| Line | When |
+| --- | --- |
+| (empty) | The page is live and the last answer was good. |
+| Not live | The page was made while the seat watched nothing (the gate lists no `watch`, or the link is not up). The script polls no more; reload to try again. |
+| Not live: the desk is out of reach | The answer was `offline`. It asks again after 30 seconds. |
+| Session ended. Log in again. | The answer was `ended`. It polls no more. |
+| This card changed or was decided elsewhere. Look again. | On a Card page: the card is `changed` or `gone`, or it is `unknown` and the version moved. With the links "Back to the cards" and "Reload". |
+
+- The card list reloads when its version moved, at most once every 10 seconds
+  since it was loaded, and not while a field holds typed text.
+- A Card page never reloads by itself, since the owner may be ticking
+  sign-offs. When its card is `changed` or `gone` it shows the line above,
+  disables every control the page marks with the attribute `data-offer` (the
+  sign-off boxes, the reason, Approve, Deny and the confirm button), marks the
+  document so that the decide script keeps them off, and polls no more.
+- A 429 answer is waited out for 60 seconds; any other failure of the poll is
+  retried after 5 seconds, doubling to 60, with nothing shown.
+
+### The stale-offer rule
+
+A wake only prompts a fresh read. The poll tells a page that something moved;
+the page then reloads from the seat, or withdraws its offer. It never builds
+its content, or its offer to decide, from an answer. The authority stays where
+it was: the seat takes a tap on Approve or Deny only when the page's form
+showed the binding the session read last (`card_changed`), the daemon draws a
+challenge from its own record and refuses a decision whose binding or state
+moved (`binding-mismatch`, `challenge-stale`, `approval-consumed`,
+`approval-void`), and the assertion binds the card's digest. A stale Approve is
+refused at the daemon whether or not the script ever ran; live refresh only
+withdraws the offer sooner, so that the owner is not left to find out by a
+refusal.
+
+### A poll never extends a session
+
+A session ends after 30 minutes without a request and at 12 hours at most. The
+poll is a request that does not count: a page left open does not keep its
+session alive, and the poll's answer `ended` tells the page when the session is
+gone. A page that reloads itself because the list changed is a page request,
+which counts, as it is the owner's own sight of a new card. That a poll does not
+extend the idle time is a settled design choice, not a limit of the build.
+
+### Why not server-sent events
+
+A stream would update at once with no polling, and is not used. The seat's
+`WriteTimeout` is 30 seconds, as is the `write` timeout of the shipped Caddyfile
+(`deploy/authority-host/seat/etc/caddy/Caddyfile`); either cuts a response that
+is still open at 30 seconds, so a stream would have to be reopened every 30
+seconds and would need those timeouts lifted for one path, which widens what a
+slow or stuck connection may hold. A poll answered within 25 seconds fits both
+timeouts as they are, and a front proxy with a read timeout above 30 seconds
+(see [the operator guide](../seat-gate.md#the-reverse-proxy)).
+
+### What a notice will add
+
+Notices on the phone (G14's other part) are not built. They need a sink the
+owner has not chosen, and new egress from the authority host, which is the
+owner's to allow. When built they follow the watcher's state, carry the count
+only, decide nothing and open `/cards/` only (see
+[limits that stay](#limits-that-stay)).
+
 ## The record change
 
 Owner decision: the decision record gains `confirmed: "passkey"` and a seat
@@ -1284,6 +1567,22 @@ The owner carries every fingerprint by hand, both ways, at the first exchange.
 - The lead's sandbox must not reach the gate's port. A qualification case that a
   connection from inside the sandbox fails is needed before any real use.
 - Nothing is queued while the phone or the gate is offline.
+- A held poll costs the gate nothing. The browser's `/api/watch` is answered
+  by the seat from the watcher's state and never reaches the gate, so more
+  tabs or more phones add no call, and no room, of the 60 a minute. What the
+  gate holds is the seat's one wait.
+- A taken-over seat can fake liveness. The version, the card list and the
+  states a page is told ("same", "changed", "live") come from the seat, and a
+  seat that is taken over can say "same" for ever, or "live" of a card that
+  is gone, so the page shows an offer that the owner cannot trust to be
+  current. It cannot make a decision of it that the daemon would take: the
+  binding check at the daemon stays the authority (see
+  [live refresh](#live-refresh-seatwait)).
+- Notices are not built. Nothing tells the owner's phone that a card is
+  waiting while no page of the seat is open; live refresh updates a page that
+  is. A notice will carry no text of a card and no action, and the limit above
+  grows with it: more logins started from notices are more gestures that a
+  taken-over seat can turn into a decision.
 
 ## Dogfood limits
 
@@ -1357,6 +1656,16 @@ an approve with a sign-off missing, which is not offered; a lost answer, which
 is not sent again and is reconciled by reading the card; a held approve; and a
 challenge that the seat link recomputes differently, which asks nothing of the
 phone.
+
+G14, live refresh (built, first part), implements
+[live refresh](#live-refresh-seatwait): the words of `seat.wait`, the code
+`wait-full` and `PendingVersion` in `ownerwire`; `Service.WaitPending` in
+`ownerchannel`; the capability `watch` and the per-peer limit of two waits in
+`gatehost`; the watcher, the wait room and the read room of 20 in `seatlink`;
+`POST /api/watch`, `sessions.look` and the script of the pages in `seatapp`;
+and the start of the watcher in `ataniq-seat`. The notices of G14 (the notice
+core, the service worker, the notifier unit) and the phone trial (G13) are not
+built.
 
 ## Dogfood
 
