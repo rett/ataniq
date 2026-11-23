@@ -53,16 +53,28 @@ const (
 	publicRoom = 12
 	// readRoom is owner.list, owner.show and owner.paths, the reads of every
 	// session together.
-	readRoom = 26
+	readRoom = 20
+	// waitRoom is seat.wait, the watcher's one long wait (watch.go). The
+	// watcher keeps one wait in flight, and the gate holds it up to 25
+	// seconds, so an idle seat sends one about every 25 seconds: 4 in
+	// BudgetWindow (at 0, 25, 50 and 75 seconds), which leaves 2 for the
+	// waits that a change cut short. With no room the watcher sleeps until
+	// some frees rather than sending; the page lags, and nothing is
+	// refused. The room is taken from readRoom (26 before the watcher), so
+	// the rooms still add up to GateRate.
+	waitRoom = 6
 )
 
 // The rooms and the pings are the gate's rate: either difference below is
 // a negative constant, which does not convert to uint, if they are not.
 const (
-	_ = uint(GateRate - pingRoom - decideRoom - publicRoom - readRoom)
-	_ = uint(pingRoom + decideRoom + publicRoom + readRoom - GateRate)
+	_ = uint(GateRate - pingRoom - decideRoom - publicRoom - readRoom - waitRoom)
+	_ = uint(pingRoom + decideRoom + publicRoom + readRoom + waitRoom - GateRate)
 	// The pings of BudgetWindow fit their room.
 	_ = uint(pingRoom - int(BudgetWindow/PingInterval) - 1)
+	// An idle watcher's waits of BudgetWindow (one every WatchHold, the
+	// first at the window's start) fit their room with 2 to spare.
+	_ = uint(waitRoom - 2 - (int(BudgetWindow/WatchHold) + 1))
 )
 
 // kind is a kind of call the link sends.
@@ -72,6 +84,7 @@ const (
 	kindPublic kind = iota
 	kindRead
 	kindDecide
+	kindWait
 	numKinds
 )
 
@@ -82,6 +95,8 @@ func (k kind) room() int {
 		return publicRoom
 	case kindRead:
 		return readRoom
+	case kindWait:
+		return waitRoom
 	}
 	return decideRoom
 }
@@ -163,6 +178,32 @@ func (b *budget) takeLocked(k kind, now time.Time) bool {
 	}
 	b.sent[k] = append(b.sent[k], now)
 	return true
+}
+
+// takeOrWait is take for a caller that sleeps rather than refuses: it counts
+// the call and returns (true, 0) when the kind has room, and otherwise
+// counts nothing and returns how long until room frees, as the calls
+// counted age out of BudgetWindow (never less than a millisecond).
+func (b *budget) takeOrWait(k kind) (bool, time.Duration) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := b.now()
+	b.prune(now)
+	if b.takeLocked(k, now) {
+		return true, 0
+	}
+	// The call counted index need-1 of the kind is the one whose ageing
+	// leaves room. Holds, which have no life known here, are not counted
+	// as ageing; a kind with fewer calls than that waits a second.
+	need := b.used(k) - k.room() + 1
+	if need > len(b.sent[k]) {
+		return false, time.Second
+	}
+	wait := b.sent[k][need-1].Add(BudgetWindow).Sub(now)
+	if wait < time.Millisecond {
+		wait = time.Millisecond
+	}
+	return false, wait
 }
 
 // reserve counts a challenge of a kind and keeps the room of its answer,
