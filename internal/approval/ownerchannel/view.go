@@ -166,7 +166,7 @@ func (s *Service) recentOf(p record.Pending, e door.Entry) (time.Time, string) {
 			at = r.decidedAt
 		}
 	case record.StateApplied, record.StateNotApplied, record.StateUnknown:
-		text = outcomeLine(door.Outcome(e.State))
+		text = s.outcomeLine(door.Outcome(e.State))
 		if journaled && r.outcomeState == e.State {
 			text, at = r.outcomeLine, r.outcomeAt
 		}
