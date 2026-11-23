@@ -21,7 +21,9 @@ subscription pages N3 and the notifier unit N4; see [notices](#notices)).
 The notices are built and tested on loopback with fakes, not deployed and not
 phone-tested: nothing of them has run on a phone, and no real browser has
 checked the page's Trusted Types registration of the service worker. Not built
-yet: the phone trial (G13); question cards; and
+yet: the phone trial (G13); question cards; the daemon's and the seat's side of
+the guided new project (only its wire is built, see
+[guided new project](#guided-new-project)); and
 the one function that makes an origin canonical (G1;
 [the seat origin](#the-seat-origin) lists where the three checks in use
 disagree). This document is the contract that
@@ -143,6 +145,14 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   manifest (`assets/sw.js`, `assets/push.js`, `assets/manifest.webmanifest`),
   and the flag `--notify-socket` of `ataniq-seat`. Built and tested, not
   deployed, not phone-tested.
+- The words of the guided new project (the genesis wire, G3 of the genesis
+  plan; see [guided new project](#guided-new-project)): `seat.genesis`
+  (`ownerwire.OpSeatGenesis`, in `ownerwire.GateOperations` and not in
+  `ownerwire.Operations`), `SeatGenesisParams`, `SeatGenesisResult` and their
+  parts, and the six codes `genesis-busy`, `genesis-unknown-thread`,
+  `genesis-bad-answer`, `genesis-over-cap`, `genesis-secret-shaped` and
+  `genesis-done`. Wire only: no handler serves the capability `genesis`, the
+  daemon holds no thread and the seat has no page for it.
 - The release of the seat for the authority host, `deploy/authority-host/seat`
   (G12, built, not deployed): the unit `ataniq-seat.service`, the Caddyfile
   and the validators, reload, stop and health lists, laid over the base
@@ -220,6 +230,7 @@ them and never hands them to the handler.
 | `decide` | `seat.challenge` | `SeatChallengeParams` | `SeatChallengeResult` | G8b (built) |
 | `decide` | `seat.decide` | `SeatDecideParams` | `ownerwire.DecideResult` | G8b (built) |
 | `watch` | `seat.wait` | `ownerwire.SeatWaitParams` | `ownerwire.SeatWaitResult` | G14 (built) |
+| `genesis` | `seat.genesis` | `ownerwire.SeatGenesisParams` | `ownerwire.SeatGenesisResult` | genesis G3 (wire built; no handler serves it) |
 
 A handler made with `gatehost.New` answers `["pair", "read"]` (`gatehost.Caps`);
 one made with `gatehost.NewDeciding`, `["pair", "read", "login", "decide"]`
@@ -234,14 +245,20 @@ only when the gate lists them; otherwise it says that the desk does not take
 phone logins, or does not take decisions from the phone. It starts its watcher
 only when the gate lists `watch`; otherwise its pages say "Not live".
 
+No handler lists `genesis` yet: the words of `seat.genesis` are built and the
+capability is not served, so a gate answers the operation `unknown-op` like any
+operation whose capability it does not list. The handler that will serve it
+(the daemon's genesis task) lists `genesis` after the others, and a seat offers
+"New project" only when it finds it there, as it does for `watch`.
+
 The gate never serves `owner.decide`, `owner.decider`, `owner.beat`,
 `owner.looked`, `owner.limit`, `owner.limit-set`, the desk's pairing operations
 (`owner.pair-start`, `owner.pair-status`, `owner.pair-confirm`,
 `owner.pair-reject`) or the key operations (`owner.keys`, `owner.key-revoke`,
 `owner.keys-off`). A key is revoked at the desk only.
 
-The four new operations of G8, and `seat.wait` of G14, are the gate's alone.
-They are not added to `ownerwire.Operations()`, which is the list the daemon's
+The four new operations of G8, `seat.wait` of G14 and `seat.genesis` are the
+gate's alone. They are not added to `ownerwire.Operations()`, which is the list the daemon's
 Unix socket serves and announces; `ownerwire.GateOperations()` lists them
 separately, so the socket neither announces nor serves them.
 
@@ -363,6 +380,22 @@ The handler (`gatehost`, built for pairing and reads) answers:
 | `key-revoked` | The credential is on the list and revoked. |
 | `kind-refused` | The credential's stored kind is not a kind the verifier knows (`unverified` included), or not one the project accepts. |
 | `wait-full` | G14. A `seat.wait` came while the gate already holds two waits for the peer, or the daemon's service already holds its eight. It is a load answer, not a misuse: it is not counted by the refusal bound (see [live refresh](#live-refresh-seatwait)). |
+| `genesis-busy` | Genesis. A `start` of `seat.genesis` came while the seat already holds two open threads. A state of the host, not a misuse. |
+| `genesis-unknown-thread` | Genesis. The thread of the call is none the host holds: never started, discarded, expired, or of another seat. |
+| `genesis-bad-answer` | Genesis. An answer or a change the question does not allow: an unknown node, a node whose condition does not hold, an option the question does not hold, a round that is not the thread's, a form of answer the question does not take, or other text that is empty or holds a control character. The brief's `node_unknown`, `node_not_eligible`, `answer_invalid`, `round_invalid`, `value_invalid` and `field_name`. |
+| `genesis-over-cap` | Genesis. An answer that would take a field, a note or the brief past its cap. The brief's `too_large`. |
+| `genesis-secret-shaped` | Genesis. Text that looks like a key, a token or a password (a private key block, a well-known key prefix, an assignment such as a password, a long run of random-looking characters). Credentials are never typed on the phone. The brief's `secret_shaped`. |
+| `genesis-done` | Genesis. An answer or a change to a thread that is finished. |
+
+The six genesis words are the gate's words for the refusals of the host's
+genesis packages (`internal/genesis/brief`, `code.go`) and for three states of
+the host's thread store. The other refusals of those packages (`brief_invalid`,
+`domain_mismatch`, `not_inferred`, `catalog_invalid`, `catalog_mismatch`) are a
+fault of the host, not of what the owner sent, and are answered `failed`. A test
+(`internal/genesis`, `wirecodes_test.go`) holds the map complete: a refusal code
+added to the brief fails it until the code is mapped. Whether a genesis refusal
+counts for [the refusal bound](#the-refusal-bound) is decided when a handler
+serves `genesis`.
 
 `key-unknown` answers a credential that is not on the list. There is no code
 for a missing seat origin: a gate without one does not serve `login` and
@@ -1773,6 +1806,120 @@ nothing (the push service keeps one notice for the time to live, the latest of
 the topic). There is no notice for a single card, no text of a card and no
 count past 999; and no question cards, so a notice never asks the owner
 anything.
+
+## Guided new project
+
+Status: the wire is built (`ownerwire`, `genesis.go`) and tested, with the
+forms of the question catalog and the brief held in step by tests of
+`internal/genesis`. Nothing else is: no handler serves the capability
+`genesis`, the daemon holds no thread store, the seat has no "New project"
+entry and no question page. It is a plan of the owner's, not yet a feature
+(the daemon's store and the seat's pages follow, in that order).
+
+The owner starts a new project on the phone by answering a few multiple-choice
+questions. The questions are the host's own, from a versioned catalog
+(`internal/genesis/catalog`), walked by host code: no agent chooses or words a
+question. The answers fill a typed project brief (`internal/genesis/brief`) and
+nothing else. An answer is a message from the owner and never an authority:
+no member of these forms is, or leads to, a decision record, a contract, a plan
+token or an approval, and a question page never shows Approve.
+
+### One operation, seven verbs
+
+`seat.genesis`, capability `genesis`, the gate's alone. Its params are
+`ownerwire.SeatGenesisParams`, a union tagged by `verb`. A verb takes exactly
+the members below, and a member of another verb is refused `bad-params`:
+
+| Verb | Members | What the host does |
+| --- | --- | --- |
+| `start` | none | Opens a thread, chooses its id (16 lower-case hexadecimal digits) and answers its first round. At most 2 threads are open for a seat; a third is `genesis-busy`. Starting is free. |
+| `round` | `thread` | Answers where the thread stands. |
+| `answer` | `thread`, `round`, `answers` | Applies 1 to 3 answers, each to another node, to the round named, and answers the next round or the summary. |
+| `change` | `thread`, `node`, `answer` | Replaces an earlier answer. It clears the answers that depended on it (the catalog's invalidation closure), keeps them in the brief's history, and says how many in `reset`. |
+| `summary` | `thread` | Answers the summary. |
+| `finish` | `thread` | Freezes the brief and answers its digest. After it, `answer` and `change` are `genesis-done`. |
+| `discard` | `thread` | Drops the thread. |
+
+An answer is `{node, kind, ids, text}`, and a change's `answer` is
+`{kind, ids, text}`. The kind is one of `choice` (exactly one id), `choices`
+(1 to 8 ids, none twice), `other` (the owner's own text, 1 to 200 bytes of plain
+text, not blank), `you_decide` and `skip` (neither ids nor text). An id is 1 to
+32 lower-case letters, digits, `_` and `-`, starting with a letter or a digit
+(a step of a scale is `1` to `5`; a yes-or-no answer is `yes` or `no`). The wire
+holds the form; whether the thread exists, the node is a question of the
+round, the option is one of the question and the text looks like a secret are
+the host's, and each has its code above. The text of an `other` is checked for
+secrets by the host on the way in and refused `genesis-secret-shaped`: a
+password, a key or a token is never typed on the phone, and the brief records
+only that a credential is needed, by reference.
+
+### The result
+
+`ownerwire.SeatGenesisResult`, a union tagged by `state`:
+
+| State | `round` | `nodes` | `groups` | `digest` | `reset` |
+| --- | --- | --- | --- | --- | --- |
+| `question` | 1 to `of` | 1 to 3 questions | none | none | 0 or more |
+| `summary` | 0 to `of` | none | given | none | 0 or more |
+| `finished` | 0 to `of` | none | given | given | 0 |
+| `discarded` | 0 | none | none | none | 0 (progress 0 of 0) |
+
+Always: `thread`, `of` (the most rounds, 1 to 6), `progress` (`filled` of
+`total` required fields), `catalog_digest` (the digest of the catalog the thread
+is walked under, 64 lower-case hexadecimal digits: a thread stays on one
+version) and `reset`.
+
+A question (`nodes[]`) is `{id, type, prompt, topic, options[{id, label,
+example}], allow_other, allow_you_decide, can_skip}`: `type` is `single`,
+`multi`, `yesno` (two options) or `scale` (none; the steps are 1 to 5), and a
+single or multiple choice has 2 to 8 options. A summary groups its rows by who
+set the field: `you_chose`, `decided_for_you` and `defaults`, each a list of
+`{node, field, label, value, untrusted}`, at most 64 rows in all and no field
+twice. `label` is the question as the catalog words it and `value` the answer
+as text: the labels of the chosen options, joined, or the owner's own text.
+
+Every text in a result is plain text the host owns: the catalog's, or the
+owner's own `other` text, which is in a row with `untrusted: true` (at most 200
+bytes). The seat escapes every text it shows, and shows an untrusted one as
+quoted data; an agent given the brief gets that text as quoted data and never
+as an instruction.
+
+### Caps
+
+| What | Cap |
+| --- | --- |
+| Params | 4 KiB (`MaxSeatGenesisParamsBytes`) |
+| Result | 16 KiB (`MaxSeatGenesisResultBytes`); one over is `record-too-large` |
+| Open threads for a seat | 2 (`MaxGenesisThreads`, the host's) |
+| Rounds | 6 (`MaxGenesisRounds`); questions in a round 3; answers in a call 3 |
+| Options of a question, choices of an answer | 8 |
+| Prompt, option label, option example | 160, 60 and 100 bytes (the catalog's) |
+| The owner's `other` text | 200 bytes |
+| Value text of a summary row | 512 bytes |
+| Summary rows | 64 |
+
+The result cap is the binding one for a summary: 64 rows of short texts take
+about 8 KiB, and a host with more to say shortens its texts. The v1 catalog's
+largest result, over walks that answer every question with the longest text it
+takes, is a few KiB (a test runs the walks of v1 through the wire's forms).
+
+### What a test pins
+
+The decoders refuse a member of another verb or state, an answer whose kind and
+members disagree, a thread id, node id, choice id or field name outside its
+grammar, text over its cap and a result over its cap. `internal/genesis` holds
+the wire in step with the host: the caps equal the catalog's and the brief's,
+the grammars accept exactly what the brief's do, every refusal code of the brief
+has its gate word or none, and every result of the v1 catalog's walks
+passes the wire. The fuzz tests (`FuzzDecodeSeatGenesisParams`,
+`FuzzDecodeSeatGenesisResult`) hold that a decoder never panics, that a refusal
+is a `*record.Error` with a detail that can be shown as it is, and that what
+decodes encodes to no more bytes and to itself.
+
+Not built, and decided when the daemon's task is written: the thread store and
+its journal, the expiry of a thread, which genesis refusals the refusal bound
+counts, and the room of `seat.genesis` in the gate's 60 calls a minute (the
+rooms above add up to all 60, so the call needs one made for it).
 
 ## The record change
 

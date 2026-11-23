@@ -178,9 +178,9 @@ func TestDecodeRefuses(t *testing.T) {
 		{"long other", goal(`{"at":"2026-11-23T10:03:00Z","node":"goal","provenance":"owner-chosen","round":3,"value":{"other":"` + strings.Repeat("a ", 101) + `"}}`), CodeTooLarge},
 		{"other with another key", goal(`{"at":"2026-11-23T10:03:00Z","node":"goal","provenance":"owner-chosen","round":3,"value":{"other":"x","more":"y"}}`), CodeBriefInvalid},
 		{"value a number", goal(`{"at":"2026-11-23T10:03:00Z","node":"goal","provenance":"owner-chosen","round":3,"value":3}`), CodeValueInvalid},
-		{"secret in other", goal(`{"at":"2026-11-23T10:03:00Z","node":"goal","provenance":"owner-chosen","round":3,"value":{"other":"use ghp_aB3dE5gH7jK9mN1pQ3sT5vX7zA9cD1fG3hJ5"}}`), CodeSecretShaped},
+		{"secret in other", goal(`{"at":"2026-11-23T10:03:00Z","node":"goal","provenance":"owner-chosen","round":3,"value":{"other":"use ` + keyShape(t, "github") + `"}}`), CodeSecretShaped},
 		{"secret in a choice", goal(`{"at":"2026-11-23T10:03:00Z","node":"goal","provenance":"owner-chosen","round":3,"value":"0123456789abcdef0123456789abcdef"}`), CodeSecretShaped},
-		{"secret in a note", replace(`"notes":[`, `"notes":["password=hunter2",`), CodeSecretShaped},
+		{"secret in a note", replace(`"notes":[`, `"notes":["`+keyShape(t, "password")+`",`), CodeSecretShaped},
 		{"empty note", replace(`"notes":[`, `"notes":["",`), CodeValueInvalid},
 		{"nine notes", replace(`"notes":[`, `"notes":["a","b","c","d","e","f","g","h",`), CodeTooLarge},
 		{"reason", replace(`"reason":"cleared"`, `"reason":"removed"`), CodeBriefInvalid},
@@ -268,7 +268,7 @@ func TestSetRefusesAndLeavesTheBrief(t *testing.T) {
 		{"round zero", "goal", One("x"), OwnerChosen, "goal", 0, CodeValueInvalid},
 		{"round too high", "goal", One("x"), OwnerChosen, "goal", MaxRound + 1, CodeValueInvalid},
 		{"repeated choice", "review_points", Many("a", "a"), OwnerChosen, "review_points", 3, CodeValueInvalid},
-		{"secret", "goal", OtherText("token=abc123"), OwnerChosen, "goal", 3, CodeSecretShaped},
+		{"secret", "goal", OtherText(Untrusted(keyShape(t, "token-case") + "123")), OwnerChosen, "goal", 3, CodeSecretShaped},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -426,7 +426,7 @@ func TestNotes(t *testing.T) {
 	b = New(testCatalog)
 	wantCode(t, b.AddNote(Untrusted(strings.Repeat("a", MaxFreeText+1))), CodeTooLarge)
 	wantCode(t, b.AddNote("line\nbreak"), CodeValueInvalid)
-	wantCode(t, b.AddNote("-----BEGIN OPENSSH PRIVATE KEY-----"), CodeSecretShaped)
+	wantCode(t, b.AddNote(Untrusted(pem())), CodeSecretShaped)
 	must(t, b.AddNote(Untrusted(strings.Repeat("é", MaxFreeText/2))))
 }
 
@@ -477,25 +477,10 @@ func TestDecodeDoesNotUpgrade(t *testing.T) {
 }
 
 func TestSecretShaped(t *testing.T) {
-	refused := []string{
-		"-----BEGIN RSA PRIVATE KEY-----",
-		"my key is sk-abcdefghijklmnop1234",
-		"sk_live_51HxAbCdEfGhIjKlMn",
-		"ghp_aB3dE5gH7jK9mN1pQ3sT5vX7zA9cD1fG3hJ5",
-		"github_pat_11ABCDEFG0123456789",
-		"xoxb-123456789012-abcdefghij",
-		"AKIAIOSFODNN7EXAMPLE",
-		"password=hunter2",
-		"use Token=abc",
-		"api_key=xyz",
-		"0123456789abcdef0123456789abcdef",
-		"commit d670460b4b4aece5915caf5c68d12f560a9fe3e4 is it",
-		"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-		"key: Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MEFCQ0RFRkdISUpL",
-	}
-	for _, s := range refused {
+	// The samples are built at run time: see secrets_test.go.
+	for name, s := range keyShaped() {
 		if !SecretShaped(s) {
-			t.Errorf("not refused: %q", s)
+			t.Errorf("not refused: %s: %q", name, s)
 		}
 	}
 	passed := []string{
@@ -511,7 +496,7 @@ func TestSecretShaped(t *testing.T) {
 		"a token of thanks",
 		"bypass=on",
 		"sk-",
-		"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+		strings.Repeat("deadbeef", 5),
 		"",
 	}
 	for _, s := range passed {
