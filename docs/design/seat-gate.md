@@ -1222,8 +1222,14 @@ that was replaced under the same id, or held, wakes the seat.
 `ownerchannel.Service.WaitPending` (`wait.go`) answers `seat.wait`:
 
 - The hold is at most `Config.WaitHold`, 25 seconds by default, and in any case
-  ends 1.5 seconds before the deadline of the request (the gate's 30 seconds),
-  so the gate never cuts a held wait with `deadline-exceeded`.
+  ends at least 1.5 seconds before the deadline of the request (the gate's 30
+  seconds). The look at the end of a hold may wait for the token of another
+  wait's look and for the one-second floor, and then asks the door, so a slow
+  door can still run it past the deadline. The gate then cuts the request with
+  `deadline-exceeded`: the margin makes that rare, and does not rule it out. The
+  seat's watcher takes it like any refusal with a code, backs off (1 second,
+  doubling) and asks again with the version it kept, so it costs a pause and no
+  card.
 - What wakes a held wait: a poke after each write of the journal and of the
   handles (a decision, a held decision, a refusal, a count, a limit, an alert,
   a delivery, a use, an outcome, and an `ExpireHeld` that closed a card); a
