@@ -65,6 +65,10 @@ func resultOf(p ownerwire.SeatGenesisParams) ownerwire.SeatGenesisResult {
 		r.State, r.Nodes, r.Round, r.Progress = ownerwire.GenesisStateDiscarded, []ownerwire.GenesisNode{}, 0, ownerwire.GenesisProgress{}
 	case ownerwire.GenesisVerbChange:
 		r.Reset = 3
+	case ownerwire.GenesisVerbList:
+		r = ownerwire.SeatGenesisResult{State: ownerwire.GenesisStateThreads, Nodes: []ownerwire.GenesisNode{}, Threads: []ownerwire.GenesisThread{
+			{Thread: aThread, State: ownerwire.GenesisStateQuestion, Round: 1, Of: 6, Filled: 0, Total: 1},
+		}}
 	}
 	return r
 }
@@ -100,7 +104,7 @@ func newGenesisHandler(t *testing.T, g GenesisPort) (*Handler, *logBook) {
 	return h, lb
 }
 
-// everyVerb are params of each of the seven verbs, each with the members it
+// everyVerb are params of each of the eight verbs, each with the members it
 // takes.
 func everyVerb() []ownerwire.SeatGenesisParams {
 	return []ownerwire.SeatGenesisParams{
@@ -115,6 +119,7 @@ func everyVerb() []ownerwire.SeatGenesisParams {
 		{Verb: ownerwire.GenesisVerbSummary, Thread: aThread},
 		{Verb: ownerwire.GenesisVerbFinish, Thread: aThread},
 		{Verb: ownerwire.GenesisVerbDiscard, Thread: aThread},
+		{Verb: ownerwire.GenesisVerbList},
 	}
 }
 
@@ -306,6 +311,8 @@ func TestGenesisParamsAreReadStrictly(t *testing.T) {
 		"no params":                   ``,
 		"not json":                    `not json`,
 		"a start with a thread":       `{"verb":"start","thread":"0123456789abcdef"}`,
+		"a list with a thread":        `{"verb":"list","thread":"0123456789abcdef"}`,
+		"a list with a round":         `{"verb":"list","round":1}`,
 		"a round without a thread":    `{"verb":"round"}`,
 		"a thread of another form":    `{"verb":"round","thread":"0123456789ABCDEF"}`,
 		"a short thread":              `{"verb":"round","thread":"0123456789abcde"}`,
@@ -486,5 +493,39 @@ func TestGenesisNeedsAPinnedKey(t *testing.T) {
 	_, err := h.Handle(context.Background(), seatgate.Peer{Fingerprint: otherFP}, ownerwire.OpSeatGenesis, genesisParams(t, everyVerb()[0]))
 	if codeOfErr(err) != CodeNotPinned || len(g.seen()) != 0 {
 		t.Fatalf("%v, %d calls", err, len(g.seen()))
+	}
+}
+
+// A list is a read like round: it reaches the store with no member, answers
+// the open threads, and a seat that lists often is never shut out by it; a
+// result of another state, or one with a thread of its own, is not sent.
+func TestGenesisListIsServedAndFree(t *testing.T) {
+	g := &fakeGenesis{}
+	h, lb := newGenesisHandler(t, g)
+	list := genesisParams(t, ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbList})
+	for i := 0; i < 3*RefusalBound; i++ {
+		out, err := h.Handle(context.Background(), seat, ownerwire.OpSeatGenesis, list)
+		if err != nil {
+			t.Fatalf("list %d: %v", i, err)
+		}
+		got, err := ownerwire.DecodeSeatGenesisResult(out)
+		if err != nil || got.State != ownerwire.GenesisStateThreads || len(got.Threads) != 1 || got.Threads[0].Thread != aThread {
+			t.Fatalf("list %d answered %s: %v", i, out, err)
+		}
+	}
+	if seen := g.seen(); len(seen) != 3*RefusalBound || !reflect.DeepEqual(seen[0], ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbList}) {
+		t.Fatalf("the store was given %+v", seen)
+	}
+	if len(lb.all()) != 0 || len(h.Counts()) != 0 {
+		t.Fatalf("a list logged or counted: %q %v", lb.all(), h.Counts())
+	}
+	bad := resultOf(ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbList})
+	bad.Thread = aThread
+	h, lb = newGenesisHandler(t, &fakeGenesis{result: &bad})
+	if _, err := h.Handle(context.Background(), seat, ownerwire.OpSeatGenesis, list); codeOfErr(err) != CodeFailed {
+		t.Fatalf("a list naming a thread of its own: %v", err)
+	}
+	if l := lb.all(); len(l) != 1 || !strings.Contains(l[0], "the service's result does not encode") {
+		t.Fatalf("log %q", l)
 	}
 }

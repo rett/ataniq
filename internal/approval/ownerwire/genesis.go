@@ -10,7 +10,8 @@ import (
 // This file holds the words of seat.genesis, the one operation of the guided
 // new-project interview: the owner on the phone starts a thread, answers its
 // rounds of questions, changes an earlier answer, reads the summary and
-// finishes or discards the thread. The questions and the brief they fill are
+// finishes or discards the thread, and the seat lists the threads that are
+// open. The questions and the brief they fill are
 // the host's: see packages internal/genesis/catalog and internal/genesis/brief.
 // This file is only the wire. It cannot import them, so it holds the same
 // grammars and caps as forms of its own, and a test of package genesis holds
@@ -86,6 +87,10 @@ const (
 	GenesisVerbFinish = "finish"
 	// GenesisVerbDiscard drops the thread: the thread.
 	GenesisVerbDiscard = "discard"
+	// GenesisVerbList reads the seat's open threads: no other member. It
+	// is how a seat that lost its own memory of them (a restart) finds the
+	// threads it started; it answers the state threads.
+	GenesisVerbList = "list"
 )
 
 // The kinds of an answer.
@@ -114,6 +119,9 @@ const (
 	GenesisStateFinished = "finished"
 	// GenesisStateDiscarded is the thread dropped.
 	GenesisStateDiscarded = "discarded"
+	// GenesisStateThreads is the answer to a list: the seat's open
+	// threads, and no thread of its own.
+	GenesisStateThreads = "threads"
 )
 
 // The types of a question, the catalog's words.
@@ -184,6 +192,7 @@ type GenesisAnswer struct {
 //
 //	verb     members
 //	start    none
+//	list     none
 //	round    thread
 //	answer   thread, round, answers
 //	change   thread, node, answer
@@ -194,7 +203,8 @@ type SeatGenesisParams struct {
 	// Verb is one of the verbs.
 	Verb string `json:"verb"`
 	// Thread is the thread's id, [GenesisThreadLength] lower-case
-	// hexadecimal digits the host chose. Every verb but start names one.
+	// hexadecimal digits the host chose. Every verb but start and list
+	// names one.
 	Thread string `json:"thread,omitempty"`
 	// Round is the number of the round the answers are for, 1 to
 	// [MaxGenesisRounds]. Only an answer has one.
@@ -288,18 +298,24 @@ type GenesisGroups struct {
 //	summary    0 to of       none   given   none    0 or more
 //	finished   0 to of       none   given   given   0
 //	discarded  0             none   none    none    0 (progress 0 of 0)
+//	threads    0 (of 0)      none   none    none    0 (progress 0 of 0)
+//
+// Every state but threads names its thread and its catalog digest; threads
+// names neither, and is the only state with a list of threads (0 to
+// [MaxGenesisThreads] of them), which every other state leaves out.
 //
 // Every text in it is plain text the host owns: the catalog's, or the
 // owner's own "other" text in a row marked Untrusted.
 type SeatGenesisResult struct {
 	// State is one of the states.
 	State string `json:"state"`
-	// Thread is the thread's id.
-	Thread string `json:"thread"`
+	// Thread is the thread's id; left out for threads.
+	Thread string `json:"thread,omitempty"`
 	// Round is the number of the round asked now, or of the last round
 	// answered.
 	Round int `json:"round"`
-	// Of is the most rounds the interview has, 1 to [MaxGenesisRounds].
+	// Of is the most rounds the interview has, 1 to [MaxGenesisRounds]; 0
+	// for threads.
 	Of int `json:"of"`
 	// Progress says how many required fields are filled.
 	Progress GenesisProgress `json:"progress"`
@@ -315,8 +331,29 @@ type SeatGenesisResult struct {
 	// digits; given for finished.
 	Digest string `json:"digest,omitempty"`
 	// CatalogDigest is the digest of the question catalog the thread is
-	// walked under, 64 lower-case hexadecimal digits.
-	CatalogDigest string `json:"catalog_digest"`
+	// walked under, 64 lower-case hexadecimal digits; left out for threads.
+	CatalogDigest string `json:"catalog_digest,omitempty"`
+	// Threads are the seat's open threads, oldest first, at most
+	// [MaxGenesisThreads]; given, and possibly empty, for threads only.
+	Threads []GenesisThread `json:"threads,omitempty"`
+}
+
+// GenesisThread is one open thread in the answer to a list: where it stands,
+// and none of its answers.
+type GenesisThread struct {
+	// Thread is the thread's id.
+	Thread string `json:"thread"`
+	// State is question while a round waits for answers, and summary when
+	// the walk is done and the summary waits to be finished.
+	State string `json:"state"`
+	// Round is the round asked now (1 to Of), or the last round answered
+	// (0 to Of) for a summary.
+	Round int `json:"round"`
+	// Of is the most rounds the interview has, 1 to [MaxGenesisRounds].
+	Of int `json:"of"`
+	// Filled and Total are the thread's progress, as in [GenesisProgress].
+	Filled int `json:"filled"`
+	Total  int `json:"total"`
 }
 
 var (
@@ -325,7 +362,7 @@ var (
 )
 
 // DecodeSeatGenesisParams reads the params of seat.genesis: a verb that is
-// one of the seven, and exactly the members that verb takes, each within its
+// one of the eight, and exactly the members that verb takes, each within its
 // grammar and caps. Params over [MaxSeatGenesisParamsBytes] are refused
 // record-too-large; anything else that is wrong, such as a member of another
 // verb, a thread id of another form, an answer whose kind and members do not
@@ -346,8 +383,8 @@ func EncodeSeatGenesisParams(p SeatGenesisParams) ([]byte, error) {
 // [MaxSeatGenesisResultBytes] is refused record-too-large; anything else
 // that is wrong, such as a member the state does not take, more than
 // [MaxGenesisNodes] questions, a question with a number of options its type
-// does not allow, or a summary of more than [MaxGenesisRows] rows,
-// record-invalid.
+// does not allow, a summary of more than [MaxGenesisRows] rows, or a list
+// of more than [MaxGenesisThreads] threads, record-invalid.
 func DecodeSeatGenesisResult(data []byte) (SeatGenesisResult, error) {
 	return seatGenesisResultForm.decode(data)
 }
@@ -465,13 +502,13 @@ func (c *checker) pick(kind string, ids []string, text, where string) {
 func checkSeatGenesisParams(p *SeatGenesisParams) error {
 	c := &checker{invalid: record.CodeRecordInvalid}
 	switch p.Verb {
-	case GenesisVerbStart, GenesisVerbRound, GenesisVerbAnswer, GenesisVerbChange, GenesisVerbSummary, GenesisVerbFinish, GenesisVerbDiscard:
+	case GenesisVerbStart, GenesisVerbList, GenesisVerbRound, GenesisVerbAnswer, GenesisVerbChange, GenesisVerbSummary, GenesisVerbFinish, GenesisVerbDiscard:
 	default:
-		c.need(false, "genesis.verb is not start, round, answer, change, summary, finish or discard")
+		c.need(false, "genesis.verb is not start, list, round, answer, change, summary, finish or discard")
 		return c.result()
 	}
-	if p.Verb == GenesisVerbStart {
-		c.need(p.Thread == "", "genesis.thread is given for a start")
+	if p.Verb == GenesisVerbStart || p.Verb == GenesisVerbList {
+		c.need(p.Thread == "", "genesis.thread is given for a "+p.Verb)
 	} else {
 		c.threadID(p.Thread, "genesis.thread")
 	}
@@ -548,14 +585,53 @@ func (c *checker) genesisRows(rows []GenesisRow, seen map[string]struct{}, where
 	}
 }
 
+// genesisThreads checks the threads of a list: at most [MaxGenesisThreads],
+// each open (a question or a summary), with its round and progress within
+// their bounds, and none twice.
+func (c *checker) genesisThreads(ts []GenesisThread) {
+	c.need(ts != nil, "genesis.threads is missing for a threads")
+	c.need(len(ts) <= MaxGenesisThreads, "genesis.threads is more than "+strconv.Itoa(MaxGenesisThreads)+" threads")
+	seen := make(map[string]struct{}, len(ts))
+	for i := range ts {
+		t, at := &ts[i], "genesis.threads["+strconv.Itoa(i)+"]"
+		c.threadID(t.Thread, at+".thread")
+		_, dup := seen[t.Thread]
+		c.need(!dup, at+" repeats an earlier thread")
+		seen[t.Thread] = struct{}{}
+		c.need(t.Of >= 1 && t.Of <= MaxGenesisRounds, at+".of is not 1 to "+strconv.Itoa(MaxGenesisRounds))
+		switch t.State {
+		case GenesisStateQuestion:
+			c.need(t.Round >= 1 && t.Round <= t.Of, at+".round is not 1 to of")
+		case GenesisStateSummary:
+			c.need(t.Round >= 0 && t.Round <= t.Of, at+".round is not 0 to of")
+		default:
+			c.need(false, at+".state is not question or summary")
+		}
+		c.need(t.Filled >= 0 && t.Filled <= t.Total && t.Total <= MaxGenesisRows,
+			at+" is not filled of total, with total at most "+strconv.Itoa(MaxGenesisRows))
+	}
+}
+
 func checkSeatGenesisResult(r *SeatGenesisResult) error {
 	c := &checker{invalid: record.CodeRecordInvalid}
 	switch r.State {
 	case GenesisStateQuestion, GenesisStateSummary, GenesisStateFinished, GenesisStateDiscarded:
+	case GenesisStateThreads:
+		// A list names no thread of its own and nothing of one.
+		c.need(r.Thread == "", "genesis.thread is given for a threads")
+		c.need(r.CatalogDigest == "", "genesis.catalog_digest is given for a threads")
+		c.need(r.Round == 0 && r.Of == 0 && r.Reset == 0 && r.Progress == GenesisProgress{},
+			"genesis.round, of, reset or progress is given for a threads")
+		c.need(len(r.Nodes) == 0, "genesis.nodes is given for a threads")
+		c.need(r.Groups == nil, "genesis.groups is given for a threads")
+		c.need(r.Digest == "", "genesis.digest is given for a threads")
+		c.genesisThreads(r.Threads)
+		return c.result()
 	default:
-		c.need(false, "genesis.state is not question, summary, finished or discarded")
+		c.need(false, "genesis.state is not question, summary, finished, discarded or threads")
 		return c.result()
 	}
+	c.need(r.Threads == nil, "genesis.threads is given for a "+r.State)
 	c.threadID(r.Thread, "genesis.thread")
 	c.need(record.IsLowerHex(r.CatalogDigest, 64), "genesis.catalog_digest is not 64 lower-case hexadecimal digits")
 	c.need(r.Of >= 1 && r.Of <= MaxGenesisRounds, "genesis.of is not 1 to "+strconv.Itoa(MaxGenesisRounds))

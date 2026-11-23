@@ -461,7 +461,9 @@ which a seat in good order meets (a second tab, a start while two threads are
 open, an answer sent twice after the thread finished), and a double tap must
 not shut the owner out for 10 minutes. They stay bounded by the gate's 60
 requests a minute and by the store's own limits (two open threads, eight
-files).
+files). A `list` names no thread and takes no answer, so in good order it meets
+none of the counted codes: like `round`, it is a read the seat may send as
+often as its own room allows.
 
 ## The challenge
 
@@ -1848,7 +1850,7 @@ nothing else. An answer is a message from the owner and never an authority:
 no member of these forms is, or leads to, a decision record, a contract, a plan
 token or an approval, and a question page never shows Approve.
 
-### One operation, seven verbs
+### One operation, eight verbs
 
 `seat.genesis`, capability `genesis`, the gate's alone. Its params are
 `ownerwire.SeatGenesisParams`, a union tagged by `verb`. A verb takes exactly
@@ -1857,6 +1859,7 @@ the members below, and a member of another verb is refused `bad-params`:
 | Verb | Members | What the host does |
 | --- | --- | --- |
 | `start` | none | Opens a thread, chooses its id (16 lower-case hexadecimal digits) and answers its first round. At most 2 threads are open for a seat; a third is `genesis-busy`. Starting is free. |
+| `list` | none | Answers the seat's open threads (state `threads`), oldest first, each where it stands and none of its answers. A finished or discarded thread is not listed. It is how a seat that lost its own memory of the threads it started (a restart) finds them, so that `genesis-busy` never locks the owner out until a thread expires. A read, free like `round`. |
 | `round` | `thread` | Answers where the thread stands. |
 | `answer` | `thread`, `round`, `answers` | Applies 1 to 3 answers, each to another node, to the round named, and answers the next round or the summary. |
 | `change` | `thread`, `node`, `answer` | Replaces an earlier answer. It clears the answers that depended on it (the catalog's invalidation closure), keeps them in the brief's history, and says how many in `reset`. |
@@ -1887,11 +1890,17 @@ only that a credential is needed, by reference.
 | `summary` | 0 to `of` | none | given | none | 0 or more |
 | `finished` | 0 to `of` | none | given | given | 0 |
 | `discarded` | 0 | none | none | none | 0 (progress 0 of 0) |
+| `threads` | 0 (`of` 0) | none | none | none | 0 (progress 0 of 0) |
 
-Always: `thread`, `of` (the most rounds, 1 to 6), `progress` (`filled` of
-`total` required fields), `catalog_digest` (the digest of the catalog the thread
-is walked under, 64 lower-case hexadecimal digits: a thread stays on one
-version) and `reset`.
+Always but for `threads`: `thread`, `of` (the most rounds, 1 to 6), `progress`
+(`filled` of `total` required fields), `catalog_digest` (the digest of the
+catalog the thread is walked under, 64 lower-case hexadecimal digits: a thread
+stays on one version) and `reset`. `threads`, the answer to `list`, names no
+thread and no catalog (both are left out) and is the only state with a list,
+`threads`: 0 to 2 entries, oldest first, each `{thread, state, round, of,
+filled, total}`, where `state` is `question` (a round waits; `round` 1 to `of`)
+or `summary` (the walk is done; `round` 0 to `of`). No entry holds a brief's
+text. Every other state leaves the list out.
 
 A question (`nodes[]`) is `{id, type, prompt, topic, options[{id, label,
 example}], allow_other, allow_you_decide, can_skip}`: `type` is `single`,
@@ -1931,7 +1940,8 @@ takes, is a few KiB (a test runs the walks of v1 through the wire's forms).
 
 The decoders refuse a member of another verb or state, an answer whose kind and
 members disagree, a thread id, node id, choice id or field name outside its
-grammar, text over its cap and a result over its cap. `internal/genesis` holds
+grammar, text over its cap, a result over its cap, and a list of more than two
+threads, of a thread twice or of a thread that is not open. `internal/genesis` holds
 the wire in step with the host: the caps equal the catalog's and the brief's,
 the grammars accept exactly what the brief's do, every refusal code of the brief
 has its gate word or none, and every result of the v1 catalog's walks
@@ -1991,7 +2001,11 @@ folder in doubt.
   answers its digest, at any time on an open thread (there is no separate
   "enough": the owner reads the summary and finishes), and again on a finished
   one with the same digest; afterwards `answer` and `change` are
-  `genesis-done`. `discard` drops the thread and empties its brief. A discarded
+  `genesis-done`. `discard` drops the thread and empties its brief. `list`
+  answers the open threads, oldest first (by the time each was started, then
+  by id), each with the state, round and progress `round` would answer and
+  nothing of its brief; it expires what is due first, as `start` does, and
+  touches no thread. A discarded
   or expired thread is `genesis-unknown-thread` for every call. The mapping of
   the brief's refusal codes to the gate's words is the store's own table
   (`thread.GateWord`), held equal to the wire's by a test of `internal/genesis`.

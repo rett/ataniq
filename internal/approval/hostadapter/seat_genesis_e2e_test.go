@@ -293,6 +293,18 @@ func TestGenesisInterviewOverTheGate(t *testing.T) {
 		t.Fatalf("after the restart, the other thread: %+v, want %+v", got, beforeB)
 	}
 	seat.refused(gStart(), ownerwire.CodeGenesisBusy)
+	// A seat that lost its own memory of the threads (a restart of the seat)
+	// finds them with a list: both, each where it stands (the two were
+	// started in one second, so their order is the ids').
+	listed := seat.ok(ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbList})
+	rounds := map[string]int{}
+	for _, e := range listed.Threads {
+		rounds[e.Thread] = e.Round
+	}
+	if listed.State != ownerwire.GenesisStateThreads || len(listed.Threads) != 2 ||
+		rounds[aThread] != beforeA.Round || rounds[bThread] != beforeB.Round {
+		t.Fatalf("the list after the restart: %+v", listed)
+	}
 
 	// The first thread goes on to the end.
 	for i := 1; i < len(webAppRounds); i++ {

@@ -569,6 +569,41 @@ func (s *Store) Discard(ctx context.Context, id string) (ownerwire.SeatGenesisRe
 	})
 }
 
+// List answers the open threads, oldest first: where each stands (its state,
+// round and progress) and none of its answers. A finished or discarded thread
+// is not listed, and a thread that expires now is discarded first. It is a
+// read: it touches no thread.
+func (s *Store) List(ctx context.Context) (ownerwire.SeatGenesisResult, error) {
+	return s.run(ctx, func(t *tx) (ownerwire.SeatGenesisResult, error) {
+		if err := t.expireAll(); err != nil {
+			return ownerwire.SeatGenesisResult{}, err
+		}
+		var open []record
+		for _, r := range s.threads {
+			if r.state == StateOpen {
+				open = append(open, r)
+			}
+		}
+		sort.Slice(open, func(i, j int) bool {
+			if !open[i].created.Equal(open[j].created) {
+				return open[i].created.Before(open[j].created)
+			}
+			return open[i].id < open[j].id
+		})
+		res := ownerwire.SeatGenesisResult{State: ownerwire.GenesisStateThreads, Nodes: []ownerwire.GenesisNode{}, Threads: []ownerwire.GenesisThread{}}
+		for _, r := range open {
+			v, err := view(s.cat, r, 0)
+			if err != nil {
+				return ownerwire.SeatGenesisResult{}, err
+			}
+			res.Threads = append(res.Threads, ownerwire.GenesisThread{
+				Thread: r.id, State: v.State, Round: v.Round, Of: v.Of, Filled: v.Progress.Filled, Total: v.Progress.Total,
+			})
+		}
+		return res, nil
+	})
+}
+
 // Genesis serves seat.genesis: it checks the params once more by the wire's
 // own form and hands them to their verb. A refusal is a [*Refusal] with the
 // gate's word; any other error is the host's own fault.
@@ -579,6 +614,8 @@ func (s *Store) Genesis(ctx context.Context, p ownerwire.SeatGenesisParams) (own
 	switch p.Verb {
 	case ownerwire.GenesisVerbStart:
 		return s.Start(ctx)
+	case ownerwire.GenesisVerbList:
+		return s.List(ctx)
 	case ownerwire.GenesisVerbRound:
 		return s.Round(ctx, p.Thread)
 	case ownerwire.GenesisVerbAnswer:

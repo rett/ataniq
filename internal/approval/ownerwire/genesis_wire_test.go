@@ -136,10 +136,11 @@ func vector[T any](t *testing.T, name, js string, want T, dec func([]byte) (T, e
 	}
 }
 
-// The params of each of the seven verbs, as the one canonical spelling.
+// The params of each of the eight verbs, as the one canonical spelling.
 func TestSeatGenesisParamsVectors(t *testing.T) {
 	dec, enc := DecodeSeatGenesisParams, EncodeSeatGenesisParams
 	vector(t, "start", `{"verb":"start"}`, SeatGenesisParams{Verb: GenesisVerbStart}, dec, enc)
+	vector(t, "list", `{"verb":"list"}`, SeatGenesisParams{Verb: GenesisVerbList}, dec, enc)
 	for _, verb := range []string{GenesisVerbRound, GenesisVerbSummary, GenesisVerbFinish, GenesisVerbDiscard} {
 		vector(t, verb, `{"thread":"`+genThread+`","verb":"`+verb+`"}`, SeatGenesisParams{Verb: verb, Thread: genThread}, dec, enc)
 	}
@@ -191,6 +192,93 @@ func TestSeatGenesisResultVectors(t *testing.T) {
 	discarded := SeatGenesisResult{State: GenesisStateDiscarded, Thread: genThread, Of: 6, Nodes: []GenesisNode{}, CatalogDigest: genCatalog}
 	vector(t, "discarded", `{"catalog_digest":"`+genCatalog+`","nodes":[],"of":6,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"discarded","thread":"`+genThread+`"}`,
 		discarded, dec, enc)
+
+	vector(t, "threads", `{"nodes":[],"of":0,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"threads","threads":[`+
+		`{"filled":1,"of":6,"round":2,"state":"question","thread":"`+genThread+`","total":7},`+
+		`{"filled":7,"of":6,"round":4,"state":"summary","thread":"fedcba9876543210","total":7}]}`,
+		sampleThreads(), dec, enc)
+	vector(t, "no threads", `{"nodes":[],"of":0,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"threads","threads":[]}`,
+		SeatGenesisResult{State: GenesisStateThreads, Nodes: []GenesisNode{}, Threads: []GenesisThread{}}, dec, enc)
+}
+
+// sampleThreads is the answer to a list with two open threads.
+func sampleThreads() SeatGenesisResult {
+	return SeatGenesisResult{State: GenesisStateThreads, Nodes: []GenesisNode{}, Threads: []GenesisThread{
+		{Thread: genThread, State: GenesisStateQuestion, Round: 2, Of: 6, Filled: 1, Total: 7},
+		{Thread: "fedcba9876543210", State: GenesisStateSummary, Round: 4, Of: 6, Filled: 7, Total: 7},
+	}}
+}
+
+// What the answer to a list may hold: the open threads and nothing of a
+// thread of its own; and no other state holds a list.
+func TestSeatGenesisThreadsIsAClosedState(t *testing.T) {
+	if _, err := EncodeSeatGenesisResult(sampleThreads()); err != nil {
+		t.Fatalf("the sample is refused: %v", err)
+	}
+	cases := map[string]func(*SeatGenesisResult){
+		"a thread of its own": func(r *SeatGenesisResult) { r.Thread = genThread },
+		"a catalog digest":    func(r *SeatGenesisResult) { r.CatalogDigest = genCatalog },
+		"a round":             func(r *SeatGenesisResult) { r.Round = 1 },
+		"an of":               func(r *SeatGenesisResult) { r.Of = 6 },
+		"progress":            func(r *SeatGenesisResult) { r.Progress = GenesisProgress{Filled: 1, Total: 2} },
+		"a reset":             func(r *SeatGenesisResult) { r.Reset = 1 },
+		"nodes":               func(r *SeatGenesisResult) { r.Nodes = genesisNodes()[:1] },
+		"groups":              func(r *SeatGenesisResult) { r.Groups = genesisRows() },
+		"a digest":            func(r *SeatGenesisResult) { r.Digest = genBrief },
+		"no list":             func(r *SeatGenesisResult) { r.Threads = nil },
+		"three threads": func(r *SeatGenesisResult) {
+			r.Threads = append(r.Threads, GenesisThread{Thread: "00000000000000aa", State: GenesisStateQuestion, Round: 1, Of: 6, Total: 1})
+		},
+		"a thread twice":           func(r *SeatGenesisResult) { r.Threads[1].Thread = r.Threads[0].Thread },
+		"a thread in capitals":     func(r *SeatGenesisResult) { r.Threads[0].Thread = strings.ToUpper("abcdef0123456789") },
+		"a short thread":           func(r *SeatGenesisResult) { r.Threads[0].Thread = genThread[:15] },
+		"a finished thread":        func(r *SeatGenesisResult) { r.Threads[0].State = GenesisStateFinished },
+		"a discarded thread":       func(r *SeatGenesisResult) { r.Threads[0].State = GenesisStateDiscarded },
+		"a thread of no state":     func(r *SeatGenesisResult) { r.Threads[0].State = "" },
+		"a question of round zero": func(r *SeatGenesisResult) { r.Threads[0].Round = 0 },
+		"a round over of":          func(r *SeatGenesisResult) { r.Threads[1].Round = 7 },
+		"a negative round":         func(r *SeatGenesisResult) { r.Threads[1].Round = -1 },
+		"of zero":                  func(r *SeatGenesisResult) { r.Threads[0].Of = 0 },
+		"of seven":                 func(r *SeatGenesisResult) { r.Threads[0].Of = 7 },
+		"filled over total":        func(r *SeatGenesisResult) { r.Threads[0].Filled = 8 },
+		"a negative fill":          func(r *SeatGenesisResult) { r.Threads[0].Filled = -1 },
+		"a total over 64":          func(r *SeatGenesisResult) { r.Threads[0].Total = 65 },
+	}
+	for name, change := range cases {
+		r := sampleThreads()
+		change(&r)
+		_, err := EncodeSeatGenesisResult(r)
+		refused(t, err, record.CodeRecordInvalid, "threads: "+name)
+	}
+	// No other state holds a list, even an empty one.
+	for name, r := range map[string]SeatGenesisResult{"question": sampleSeatGenesisResult()} {
+		for _, ts := range [][]GenesisThread{{}, sampleThreads().Threads[:1]} {
+			r.Threads = ts
+			_, err := EncodeSeatGenesisResult(r)
+			refused(t, err, record.CodeRecordInvalid, name+" with a list")
+		}
+	}
+	// The decoder refuses the same, from the JSON.
+	for name, in := range map[string]string{
+		"no list":                      `{"nodes":[],"of":0,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"threads"}`,
+		"a list that is null":          `{"nodes":[],"of":0,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"threads","threads":null}`,
+		"an empty thread":              `{"nodes":[],"of":0,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"threads","thread":"","threads":[]}`,
+		"a member of a row":            `{"nodes":[],"of":0,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"threads","threads":[{"filled":0,"of":6,"round":1,"state":"question","thread":"` + genThread + `","total":1,"brief":"x"}]}`,
+		"a question's list":            `{"catalog_digest":"` + genCatalog + `","nodes":[],"of":6,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"discarded","thread":"` + genThread + `","threads":[]}`,
+		"a question without a thread":  `{"catalog_digest":"` + genCatalog + `","nodes":[],"of":6,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"discarded"}`,
+		"a question without a catalog": `{"nodes":[],"of":6,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"discarded","thread":"` + genThread + `"}`,
+	} {
+		_, err := DecodeSeatGenesisResult([]byte(in))
+		refused(t, err, record.CodeRecordInvalid, name)
+	}
+	// The largest list is small.
+	big := sampleThreads()
+	for i := range big.Threads {
+		big.Threads[i].Round, big.Threads[i].Filled, big.Threads[i].Total = MaxGenesisRounds, MaxGenesisRows, MaxGenesisRows
+	}
+	if out, err := EncodeSeatGenesisResult(big); err != nil || len(out) > 512 {
+		t.Errorf("the largest list: %d bytes, %v", len(out), err)
+	}
 }
 
 // A verb takes exactly its members: each member of another verb is refused,
@@ -203,6 +291,7 @@ func TestSeatGenesisParamsAreAClosedUnion(t *testing.T) {
 	}
 	takes := map[string]members{
 		GenesisVerbStart:   {},
+		GenesisVerbList:    {},
 		GenesisVerbRound:   {thread: true},
 		GenesisVerbAnswer:  {thread: true, round: true, answers: true},
 		GenesisVerbChange:  {thread: true, node: true, answer: true},
@@ -271,7 +360,7 @@ func TestSeatGenesisParamsAreAClosedUnion(t *testing.T) {
 	// An empty list is not a missing one, and a verb is a closed word.
 	_, err := EncodeSeatGenesisParams(SeatGenesisParams{Verb: GenesisVerbRound, Thread: genThread, Answers: []GenesisAnswer{}})
 	refused(t, err, record.CodeRecordInvalid, "an empty list of answers for a round")
-	for _, verb := range []string{"", "Start", "begin", "start ", "answers", "answer\n", "restart", "decide", "approve"} {
+	for _, verb := range []string{"", "Start", "begin", "start ", "answers", "answer\n", "restart", "decide", "approve", "List", "lists", "threads"} {
 		_, err := EncodeSeatGenesisParams(SeatGenesisParams{Verb: verb})
 		refused(t, err, record.CodeRecordInvalid, "the verb "+strconv.Quote(verb))
 		_, err = DecodeSeatGenesisParams([]byte(`{"verb":` + strconv.Quote(verb) + `}`))
@@ -280,6 +369,8 @@ func TestSeatGenesisParamsAreAClosedUnion(t *testing.T) {
 	// The decoder refuses the same, from the JSON.
 	for name, in := range map[string]string{
 		"start with a thread":       `{"thread":"` + genThread + `","verb":"start"}`,
+		"list with a thread":        `{"thread":"` + genThread + `","verb":"list"}`,
+		"list with a round":         `{"round":1,"verb":"list"}`,
 		"round without a thread":    `{"verb":"round"}`,
 		"round with a round":        `{"round":1,"thread":"` + genThread + `","verb":"round"}`,
 		"a thread that is null":     `{"thread":null,"verb":"round"}`,
