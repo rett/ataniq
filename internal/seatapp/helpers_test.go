@@ -52,6 +52,20 @@ type fakeDaemon struct {
 	readErr error
 	reads   int
 	shown   []string
+
+	// The decisions: what Offer answers and the readings it was asked
+	// with; what DecideChallenge answers (decideCh changes the challenge it
+	// makes) and was asked; what Decide answers, runs while it is asked,
+	// and was asked.
+	offer       Offer
+	offers      []Reading
+	decideCh    func(*DecideChallenge)
+	decideChErr error
+	decideChs   []DecideChallengeRequest
+	decideRes   DecideResult
+	decideErr   error
+	decideHook  func()
+	decides     []DecideRequest
 }
 
 func (d *fakeDaemon) LoginChallenge(context.Context) (LoginChallenge, error) {
@@ -84,7 +98,7 @@ func (d *fakeDaemon) Login(_ context.Context, r LoginRequest) (LoginResult, erro
 func (d *fakeDaemon) count() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return len(d.calls) + d.loginChs + len(d.logins) + d.reads
+	return len(d.calls) + d.loginChs + len(d.logins) + d.reads + len(d.decideChs) + len(d.decides)
 }
 
 func (d *fakeDaemon) List(context.Context) (Listing, error) {
@@ -153,14 +167,60 @@ func sampleCard() Card {
 	}
 }
 
-func (d *fakeDaemon) Offer(string, string, Reading, time.Time) Offer { return Offer{} }
-
-func (d *fakeDaemon) DecideChallenge(context.Context, DecideChallengeRequest) (DecideChallenge, error) {
-	return DecideChallenge{}, ErrDaemonUnavailable
+// Offer answers d.offer, and notes the reading it was asked with.
+func (d *fakeDaemon) Offer(id, binding string, r Reading, now time.Time) Offer {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.offers = append(d.offers, r)
+	return d.offer
 }
 
-func (d *fakeDaemon) Decide(context.Context, DecideRequest) (DecideResult, error) {
-	return DecideResult{}, ErrDaemonUnavailable
+// DecideChallenge answers d.decideChErr, or a challenge for the frame the
+// card's flagged paths give the request, with a new id each time.
+func (d *fakeDaemon) DecideChallenge(_ context.Context, r DecideChallengeRequest) (DecideChallenge, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.decideChs = append(d.decideChs, r)
+	if d.decideChErr != nil {
+		return DecideChallenge{}, d.decideChErr
+	}
+	d.challengeNo++
+	f := DecisionFrame{ID: r.ID, BindingSHA256: r.BindingSHA256, Approve: r.Approve, Reason: r.Reason}
+	for _, i := range r.SignedOff {
+		fl := d.card.Flagged[i]
+		f.SignedOff = append(f.SignedOff, SignOff{Kind: fl.Kind, Path: fl.Path.str()})
+	}
+	ch := DecideChallenge{ID: fmt.Sprintf("%016x", 1<<40+d.challengeNo), Challenge: bytes.Repeat([]byte{0x6b}, 32), Frame: f}
+	if d.decideCh != nil {
+		d.decideCh(&ch)
+	}
+	return ch, nil
+}
+
+// Decide notes the request, runs d.decideHook, and answers d.decideRes or
+// d.decideErr.
+func (d *fakeDaemon) Decide(_ context.Context, r DecideRequest) (DecideResult, error) {
+	d.mu.Lock()
+	d.decides = append(d.decides, r)
+	hook := d.decideHook
+	d.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.decideErr != nil {
+		return DecideResult{}, d.decideErr
+	}
+	return d.decideRes, nil
+}
+
+// decideCounts returns how many challenges and decisions the daemon was
+// asked.
+func (d *fakeDaemon) decideCounts() (challenges, decides int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.decideChs), len(d.decides)
 }
 
 func (d *fakeDaemon) Pair(_ context.Context, r PairRequest) (PairResult, error) {
@@ -238,8 +298,10 @@ func newRig(t *testing.T, mod ...func(*Config)) *rig {
 					At: time.Date(2026, 11, 21, 18, 0, 0, 0, time.UTC)}},
 				NotListed: 2,
 			},
-			card: sampleCard(),
-			page: PathsPage{Pages: 3, Rows: []PathRow{{Path: NewLead("a/b.go"), Status: "M", Added: 1}}},
+			card:      sampleCard(),
+			offer:     Offer{Approve: true, Deny: true},
+			decideRes: DecideResult{State: "approved", Line: "approved on the phone"},
+			page:      PathsPage{Pages: 3, Rows: []PathRow{{Path: NewLead("a/b.go"), Status: "M", Added: 1}}},
 		},
 		clock: &clock{t: time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)},
 	}

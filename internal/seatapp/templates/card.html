@@ -44,7 +44,7 @@
 </section>
 {{end}}{{end}}{{with .Flagged}}<section aria-labelledby="flagged">
 <h2 id="flagged">Flagged paths</h2>
-<p>Each needs its own sign-off at the desk.</p>
+<p>Each needs its own sign-off before an approve.</p>
 <ul class="rows flags">
 {{range .}}<li><span class="lead mono">{{lead .Path maxPath}}</span> <span class="meta">{{text .Kind maxName}}: {{text .Reason maxLine}}{{if not .Pattern.Empty}}. Rule: {{lead .Pattern maxPath}}{{end}}</span></li>
 {{end}}</ul>
@@ -77,7 +77,37 @@
 {{end}}</section>
 {{end}}{{if .DiffersRefused}}<p>{{text .DiffersRefused maxLine}}</p>
 {{end}}{{end}}
-{{template "readonly"}}
-<p><a id="back" href="/cards/">Back to the cards</a></p>
+{{if .Decide}}<section id="decide" aria-labelledby="decide-title" data-rp-id="{{.RPID}}" data-card="{{text .Card.ID maxID}}">
+<h2 id="decide-title">Decide on the phone</h2>
+<p>A decision here goes to the desk's STAND-IN door on scratch state. Your phone asks for your face, finger or passcode once for each decision.</p>
+{{if .Offer.Approve}}{{if .Card.Flagged}}<fieldset id="signoffs">
+<legend>Sign off each flagged path to approve</legend>
+{{range $i, $f := .Card.Flagged}}<label class="check" for="signoff-{{num $i}}"><input type="checkbox" id="signoff-{{num $i}}" class="signoff" value="{{num $i}}"> <span class="lead mono">{{lead $f.Path maxPath}}</span> <span class="meta">{{text $f.Kind maxName}}</span></label>
+{{end}}</fieldset>
+{{end}}<button id="approve" type="button" hidden disabled>Approve</button>
+{{else}}<p class="note">Approve is not offered: {{text .Offer.ApproveWhy maxLine}}.</p>
+{{end}}{{if .Offer.Deny}}<label for="reason" class="field" id="reason-label" hidden>Why deny (optional)</label>
+<textarea id="reason" rows="3" maxlength="500" hidden></textarea>
+<button id="deny" type="button" class="deny" hidden>Deny</button>
+{{end}}<div id="confirm" hidden>
+<p id="confirm-action" class="confirm-action"></p>
+<dl class="facts">
+<dt>Card</dt><dd>{{text .Card.ID maxID}}</dd>
+<dt>Project</dt><dd>{{text .Card.Project maxName}}</dd>
+<dt>What</dt><dd>{{text .Card.Verb maxName}}{{if .Card.Feature}} {{text .Card.Feature maxName}}{{end}}</dd>
+{{if .Card.Target}}<dt>Into</dt><dd>{{text .Card.Target maxName}}</dd>
+{{end}}<dt>Revision</dt><dd class="mono">binding {{short .Card.BindingSHA256}}</dd>
+</dl>
+<button id="confirm-go" type="button"></button>
+<button id="confirm-cancel" type="button" class="quiet">Cancel</button>
+</div>
+<p id="decide-status" role="status"></p>
+<p><a id="look" href="{{cardHref .Card.ID}}" hidden>Look again</a></p>
+<noscript><p>Deciding on the phone needs script. Turn script on for this site, or decide at the desk.</p></noscript>
+</section>
+<script src="/static/decide.js"></script>
+{{else if .Card.OnItsWay}}<p class="held">A decision of this card is on its way to the door. Look at it again in a moment.</p>
+{{else if not .Card.Ended}}<p class="readonly">This card cannot be decided now{{if .Offer.DenyWhy}}: {{text .Offer.DenyWhy maxLine}}{{end}}. Look at it at the desk.</p>
+{{end}}<p><a id="back" href="/cards/">Back to the cards</a></p>
 {{template "leave"}}
 {{end}}

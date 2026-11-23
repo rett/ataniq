@@ -72,12 +72,21 @@ type Session struct {
 	CredentialID []byte
 	// Kind is the kind word the daemon stores for it.
 	Kind string
+	// key is the session's key in the app's table, for the state the app
+	// keeps with it (see decide.go).
+	key tokenKey
 }
 
 // session is one session as the app keeps it.
 type session struct {
 	Session
 	created, used time.Time
+	// cards are the session's readings of the cards it was shown, and
+	// decision the one decision it has a challenge for (see decide.go).
+	cards    map[string]*cardReading
+	decision *pendingDecision
+	// tick counts the uses of the readings, to drop the least used.
+	tick uint64
 }
 
 // sessions holds the sessions, server-side, in memory: a restart ends them
@@ -117,7 +126,9 @@ func (ss *sessions) get(value string) (Session, bool) {
 		return Session{}, false
 	}
 	s.used = now
-	return s.Session, true
+	out := s.Session
+	out.key = k
+	return out, true
 }
 
 // add keeps a new session under k. Sessions no longer live are dropped first;

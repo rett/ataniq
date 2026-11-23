@@ -197,8 +197,10 @@ type app struct {
 	pair  *pairing
 	login *logins
 	sess  *sessions
-	// reads bounds the reads of each credential's sessions.
-	reads *limiter
+	// reads bounds the reads of each credential's sessions, and decides
+	// their decision challenges.
+	reads   *limiter
+	decides *limiter
 	// host is what the Host header of a request must be: the origin without
 	// its scheme.
 	host string
@@ -233,7 +235,7 @@ func newApp(cfg Config) (*app, http.Handler, error) {
 	}
 	_, hostHeader, _ := strings.Cut(origin, "://")
 	a := &app{cfg: cfg, pair: newPairing(cfg), login: newLogins(cfg), sess: newSessions(cfg.Now),
-		reads: newLimiter(readRequests, readWindow), host: hostHeader}
+		reads: newLimiter(readRequests, readWindow), decides: newLimiter(decideRequests, decideWindow), host: hostHeader}
 
 	mux := http.NewServeMux()
 	for _, rt := range a.routes() {
@@ -275,6 +277,9 @@ func (a *app) routes() []route {
 		{"GET /cards/{id}", a.authed(a.cardPage)},
 		{"GET /cards/{id}/paths/{n}", a.authed(a.pathsPage)},
 		{"GET /static/session.js", a.asset("assets/session.js", "text/javascript; charset=utf-8")},
+		{"GET /static/decide.js", a.asset("assets/decide.js", "text/javascript; charset=utf-8")},
+		{"POST /api/decide-challenge", a.post(a.decideChallenge)},
+		{"POST /api/decide", a.post(a.decidePost)},
 	}
 }
 

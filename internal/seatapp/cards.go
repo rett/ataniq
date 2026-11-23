@@ -293,6 +293,13 @@ type (
 		Title string
 		Now   time.Time
 		Card  Card
+		// RPID is the passkey's relying party, for the decide form.
+		RPID string
+		// Offer is what the decide form offers, and Decide says the page
+		// holds the form: the card is pending and approve or deny is
+		// offered.
+		Offer  Offer
+		Decide bool
 	}
 	pathsData struct {
 		Title string
@@ -356,7 +363,21 @@ func (a *app) cardPage(w http.ResponseWriter, r *http.Request, s Session) {
 		a.problem(w, problemFailed)
 		return
 	}
-	a.render(w, "card", http.StatusOK, cardData{Title: pageTitles["card"], Now: a.cfg.Now(), Card: c})
+	now := a.cfg.Now()
+	d := cardData{Title: pageTitles["card"], Now: now, Card: c, RPID: a.cfg.RPID}
+	// The page is the session's reading of the card: a lost answer is
+	// settled by it. The decide form is the page's only when the card is
+	// pending and the card model offers approve or deny.
+	reading := a.sess.opened(s.key, c, now)
+	if !c.Ended && !c.OnItsWay && (c.State == "" || c.State == "pending") {
+		d.Offer = a.cfg.Daemon.Offer(id, c.BindingSHA256, reading, now)
+		d.Decide = d.Offer.Approve || d.Offer.Deny
+	}
+	if d.Decide {
+		// The one page that asks the phone for a decision's assertion.
+		w.Header().Set("Permissions-Policy", permissionsPolicy("(self)"))
+	}
+	a.render(w, "card", http.StatusOK, d)
 }
 
 // pathsPage answers GET /cards/{id}/paths/{n}: a page of a card's whole path
@@ -382,6 +403,7 @@ func (a *app) pathsPage(w http.ResponseWriter, r *http.Request, s Session) {
 		a.problem(w, problemFailed)
 		return
 	}
+	a.sess.readPage(s.key, id, n, p.Pages)
 	d := pathsData{Title: pageTitles["paths"], ID: id, Page: p, Number: n + 1, Back: cardHref(id)}
 	if n > 0 {
 		d.Prev = pathsHref(id, n-1)

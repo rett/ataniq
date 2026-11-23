@@ -2,8 +2,9 @@
 
 Status: design only for phone decisions, and none of it is qualified. Since the
 first draft the gate's handler for pairing and reads (G3), the assertion
-verifier with its credential kinds (G5) and the seat's login and sessions (G7)
-are built, and the fingerprint is eight words; no command uses the handler or the verifier yet. It is the
+verifier with its credential kinds (G5), the seat's login and sessions (G7)
+and the seat app's approve and deny (G9) are built, and the fingerprint is
+eight words; no command uses the handler or the verifier yet. It is the
 contract from which the daemon's side of phone decisions and the seat app's
 approve and deny are to be built. A paragraph that begins "Owner decision"
 records a decision the owner has made. Everything else is proposed, for the
@@ -33,10 +34,12 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   0600, folder 0700, never overwritten). No command calls any of it.
 - The seat app, `internal/seatapp` (standard library only), and the command
   `ataniq-seat`. They serve the pairing page and its API, the login page and
-  its API with the seat's sessions, and the card pages, read-only, behind a
-  session (G7; see [login](#login-seatlogin-challenge-and-seatlogin) and
+  its API with the seat's sessions, the card pages behind a session (G7),
+  and the Card page's decide form with its API (G9; see
+  [login](#login-seatlogin-challenge-and-seatlogin) and
   [the phone's side](#the-phones-side)). `seatapp.Daemon` has
-  `Pair`, `LoginChallenge`, `Login`, `List`, `Show` and `Pages`;
+  `Pair`, `LoginChallenge`, `Login`, `List`, `Show`, `Pages`, `Offer`,
+  `DecideChallenge` and `Decide`;
   `internal/seatlink` implements it over
   the gate, and `ataniq-seat` wires that in when it is given a gate (without
   one, every call answers `ErrDaemonUnavailable`). The daemon's side of the
@@ -748,16 +751,18 @@ Leaving a card undecided sends nothing.
 
 What the seat app shows (G7, built): the card list (`GET /cards/`), the card
 page (`GET /cards/{id}`) and the pages of a card's whole path list (`GET
-/cards/{id}/paths/{n}`), each behind a session and read-only. The seat link
+/cards/{id}/paths/{n}`), each behind a session and, as G7 built them,
+read-only (G9 adds the Card page's decide form, below). The seat link
 builds the card from the record's bytes with `internal/approval/card`, after
 the bytes' digest is checked and the record decodes as the card asked for, so
 the seat never shows a card rendered elsewhere. A lead's text is shown as the
 desk console shows it, through the lead-text escaping, and then through
 `seatapp.Text`. Each page says that the desk runs a STAND-IN door on scratch
-state and that nothing on it is a real approval, and that approve and deny are
-at the desk. No page has a decide control.
+state and that nothing on it is a real approval. The list and the path pages
+say that approve and deny are on a card's own page or at the desk; the Card
+page holds the decide form, and no other page has a decide control.
 
-What the seat app does with a decision (G9), proposed:
+What the seat app does with a decision (G9, built):
 
 - The Card page is the only page with a decide form. Approve is offered when
   `Card.MayApprove` allows it, with one sign-off per flagged path; deny when
@@ -780,6 +785,43 @@ What the seat app does with a decision (G9), proposed:
 - A cancelled or failed user verification sends nothing and leaves the card as
   it was; the next tap asks a new challenge, which replaces the old one.
 
+How it is built (G9), where the points above left a choice:
+
+- The phone reads a card on one page. So the session's reading of a card,
+  which the seat keeps server-side (`seatapp.Reading`), counts the Card
+  page's rows, its four lists, its refs and its "differs from" block as read
+  to their end once the page was served to the session, and a cut path list
+  only by the pages of the whole list the session was served, for the card's
+  review. `seatlink` builds the card model's `Reading` from it, and asks
+  `Card.MayApprove` with every flagged path signed off to offer Approve (a
+  card that opened under 400 ms ago is offered, since the tap is judged
+  again), `Card.Deny` to offer Deny, and `Card.Approve` (MayApprove with the
+  boxes ticked) or `Card.Deny` to build the frame; a decision they refuse is
+  not sent. The Card page of a card that ended, or whose decision is on its
+  way, has no form.
+- One tap on Approve or Deny asks `POST /api/decide-challenge` with the card,
+  the action, the indexes of the boxes ticked and the reason. The seat takes
+  the binding the Card page showed this session from its own reading; the
+  link freezes the frame from the card it showed at that binding, asks
+  `seat.challenge`, and recomputes the challenge before the browser sees it.
+  The seat keeps one decision per session; a new tap replaces it. The page
+  then names the action, the card, its project, what it does, its target and
+  its revision (the binding's first 12 digits), and a second tap, on the
+  confirm button, asks one assertion with `allowCredentials` holding only the
+  session's credential. `POST /api/decide` burns the kept decision first,
+  takes the assertion only for its id and the session's credential, and
+  sends the kept frame.
+- The largest bodies the page sends are 1198 bytes for a challenge (300
+  sign-off indexes; a deny's reason of 500 bytes all escaped is 1106) and
+  5672 bytes for an assertion at the bounds of `Assertion`, under
+  `seatapp.MaxBody`; a body of MaxBody bytes is read and one byte more is
+  refused (413), whether its length was declared or not.
+- Decision challenges are limited to 10 a minute per credential, so that
+  logins (16), reads (20) and decisions stay within the gate's 60.
+- `Permissions-Policy` allows `publickey-credentials-get` on a Card page that
+  holds the form; the page without it forbids it as every other response
+  does.
+
 Before the owner submits, the page tells apart: a cancel ("Cancelled. Nothing
 was sent."), a challenge that ran out ("This took too long. Tap again."), and a
 desk it cannot reach ("The desk cannot be reached. Nothing was sent.").
@@ -791,8 +833,12 @@ seat's own timeout, and no answer at all (`seatgate.ErrDisconnected`) mean the
 outcome is unknown: the decision may be journaled and on its way to the door,
 or not. Then the seat:
 
-- never sends the decision again, by itself or on a tap, and queues nothing;
-- shows "Decision sent. Outcome unknown." and offers only "Look again";
+- never sends the decision again, by itself or on a tap, and queues nothing
+  (built: the card is marked sent before the decision is sent, a refusal
+  clears the mark, and any other answer leaves it until a new read of the
+  card; while it stands, a tap is refused without asking the daemon);
+- shows "Decision sent. Outcome unknown." and offers only "Look again", the
+  Card page read afresh;
 - on "Look again", once the gate is back, reads the same card with
   `owner.show` and shows what it says: decided, with the outcome; held; a
   decision on its way to the door; an outcome the door left unknown, which is
@@ -826,6 +872,14 @@ code it does not know gets the last line:
 | `kind-refused` | This project does not take decisions from this kind of passkey. |
 | `challenges-full`, `busy`, `rate-limited`, `too-many-refusals` | The desk is busy. Try again in a few minutes. |
 | any other | Something went wrong. Look at the card again. |
+
+Built so (G9). An answer to `seat.decide` with one of the five codes that
+leave the outcome unknown, the seat's own timeout and no answer say
+"Decision sent. Outcome unknown."; a code of "any other" after a decision was
+sent says the last line and also leaves the card marked sent until it is read
+again. A challenge the seat link recomputes differently says that the desk's
+challenge is not this card's and that the passkey was not asked. A held
+approve shows the host's line and, under it, the held words above.
 
 ## The record change
 
@@ -1011,7 +1065,7 @@ and allows `publickey-credentials-get`; G8 also adds the mark of a decision on
 its way to `ownerwire.ShowResult`; and the task that owns `internal/seatgate`
 raises the frame cap with `frame-large`.
 
-G9, the seat app's approve and deny, implements
+G9, the seat app's approve and deny, implements (built)
 [the phone's side](#the-phones-side): the decide form on the Card page only,
 approve offered by `Card.MayApprove` with one sign-off per flagged path and deny
 by `Card.Deny` with none; `navigator.credentials.get` with user verification

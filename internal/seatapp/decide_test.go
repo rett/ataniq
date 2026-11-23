@@ -1,0 +1,662 @@
+package seatapp
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+)
+
+// openCard shows the card to the session, as the Card page does, and lets
+// a second pass, as before a tap.
+func (r *rig) openCard(t *testing.T, s *http.Cookie) string {
+	t.Helper()
+	w := r.getWith("/cards/"+testCardID, s)
+	if w.Code != 200 {
+		t.Fatalf("card: %d", w.Code)
+	}
+	r.clock.Advance(time.Second)
+	return w.Body.String()
+}
+
+// answer decodes a JSON answer.
+func answer(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil {
+		t.Fatalf("answer %d %q: %v", w.Code, w.Body, err)
+	}
+	return m
+}
+
+// approveBody is the body of an approve of the test card with its one
+// flagged path signed off.
+const approveBody = `{"card":"` + testCardID + `","action":"approve","signed_off":[0],"reason":""}`
+
+// denyBody is the body of a deny with a reason.
+func denyBody(reason string) string {
+	b, _ := json.Marshal(map[string]any{"card": testCardID, "action": "deny", "signed_off": []int{}, "reason": reason})
+	return string(b)
+}
+
+// challengeOf asks for a decision's challenge and returns its id.
+func (r *rig) challengeOf(t *testing.T, s *http.Cookie, body string) string {
+	t.Helper()
+	w := r.postWith("/api/decide-challenge", body, s)
+	if w.Code != 200 {
+		t.Fatalf("decide-challenge: %d %s", w.Code, w.Body)
+	}
+	id, _ := answer(t, w)["challenge_id"].(string)
+	return id
+}
+
+// decideBodyOf is the body of POST /api/decide with an assertion of the
+// credential given.
+func decideBodyOf(challengeID string, credentialID []byte) string {
+	b, _ := json.Marshal(map[string]string{
+		"challenge_id":       challengeID,
+		"credential_id":      b64.EncodeToString(credentialID),
+		"client_data_json":   b64.EncodeToString([]byte(`{"type":"webauthn.get"}`)),
+		"authenticator_data": b64.EncodeToString(bytes.Repeat([]byte{0xaa}, 37)),
+		"signature":          b64.EncodeToString([]byte{0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01}),
+	})
+	return string(b)
+}
+
+// wantFailure checks a failure's status, code and words.
+func wantFailure(t *testing.T, what string, w *httptest.ResponseRecorder, status int, code, say string) {
+	t.Helper()
+	m := answer(t, w)
+	if w.Code != status || m["error"] != code || m["say"] != say {
+		t.Errorf("%s: %d %v, want %d %s %q", what, w.Code, m, status, code, say)
+	}
+}
+
+// TestSeatDecideFormOnTheCardPage: the Card page of a pending card holds the
+// decide form: one sign-off box per flagged path, approve and deny, the
+// reason, and the screen that names the action, the card, its project, what
+// it does, its target and its revision before the passkey is asked; and it
+// alone allows publickey-credentials-get. The lead's text in it is shown
+// through Text.
+func TestSeatDecideFormOnTheCardPage(t *testing.T) {
+	r := newRig(t)
+	c := sampleCard()
+	c.Flagged = append(c.Flagged, Flagged{Kind: "symlink", Reason: "a symbolic link", Path: NewLead(hostile)})
+	r.daemon.card = c
+	s := r.login(t)
+	w := r.getWith("/cards/"+testCardID, s)
+	checkHeadersGet(t, "the Card page", w, "(self)")
+	body := w.Body.String()
+	for _, want := range []string{
+		`<section id="decide" aria-labelledby="decide-title" data-rp-id="seat.example" data-card="` + testCardID + `">`,
+		`<input type="checkbox" id="signoff-0" class="signoff" value="0">`,
+		`<input type="checkbox" id="signoff-1" class="signoff" value="1">`,
+		`<button id="approve" type="button" hidden disabled>Approve</button>`,
+		`<textarea id="reason" rows="3" maxlength="500" hidden></textarea>`,
+		`<button id="deny" type="button" class="deny" hidden>Deny</button>`,
+		`<div id="confirm" hidden>`, `<button id="confirm-go" type="button"></button>`,
+		"<dt>Project</dt><dd>ataniq</dd>", "<dt>What</dt><dd>feature finish seat-glue</dd>", "<dt>Into</dt><dd>develop</dd>",
+		"<dt>Revision</dt><dd class=\"mono\">binding abababababab</dd>", "<dt>Card</dt><dd>" + testCardID + "</dd>",
+		`<a id="look" href="/cards/` + testCardID + `" hidden>Look again</a>`,
+		`<p id="decide-status" role="status"></p>`, "<noscript>", `<script src="/static/decide.js"></script>`,
+		"&lt;script&gt;alert(1)&lt;/script&gt;",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the form lacks %q", want)
+		}
+	}
+	if strings.Contains(body, "<script>alert") || strings.Contains(body, "‮") {
+		t.Error("the lead's text reached the form raw")
+	}
+	if strings.Count(body, "<form") != 0 || strings.Count(body, `id="decide"`) != 1 {
+		t.Error("not one decide section, without a form element")
+	}
+
+	// Approve not offered: the host's line says why, and deny stays.
+	r.daemon.offer = Offer{ApproveWhy: "the path list is cut on the card, and a page of the whole list was not read", Deny: true}
+	body = r.getWith("/cards/"+testCardID, s).Body.String()
+	if strings.Contains(body, `id="approve"`) || strings.Contains(body, `id="signoff-0"`) || !strings.Contains(body, `id="deny"`) ||
+		!strings.Contains(body, "Approve is not offered: the path list is cut on the card, and a page of the whole list was not read.") {
+		t.Error("approve not offered")
+	}
+	// Neither offered: no form, no deciding script, no passkey.
+	r.daemon.offer = Offer{ApproveWhy: "this request is past its expiry", DenyWhy: "this request is past its expiry"}
+	w = r.getWith("/cards/"+testCardID, s)
+	checkHeaders(t, "a card offered nothing", w)
+	body = w.Body.String()
+	if strings.Contains(body, `id="decide"`) || strings.Contains(body, "decide.js") || !strings.Contains(body, "This card cannot be decided now: this request is past its expiry.") {
+		t.Error("a card offered nothing")
+	}
+	// A card that ended, or whose decision is on its way, offers nothing,
+	// and the port is not asked.
+	r.daemon.offer = Offer{Approve: true, Deny: true}
+	before := len(r.daemon.offers)
+	r.daemon.card.State, r.daemon.card.Ended = "approved", true
+	if body := r.getWith("/cards/"+testCardID, s).Body.String(); strings.Contains(body, `id="decide"`) {
+		t.Error("an ended card has the form")
+	}
+	r.daemon.card.State, r.daemon.card.Ended, r.daemon.card.OnItsWay = "", false, true
+	body = r.getWith("/cards/"+testCardID, s).Body.String()
+	if strings.Contains(body, `id="decide"`) || !strings.Contains(body, "A decision of this card is on its way to the door.") {
+		t.Error("a card whose decision is on its way")
+	}
+	if len(r.daemon.offers) != before {
+		t.Error("the port was asked an offer for a card that is not pending")
+	}
+	// The list and the path pages have no form and no deciding script.
+	for _, path := range []string{"/cards/", "/cards/" + testCardID + "/paths/0"} {
+		w := r.getWith(path, s)
+		checkHeaders(t, path, w)
+		if strings.Contains(w.Body.String(), `id="decide"`) || strings.Contains(w.Body.String(), "decide.js") {
+			t.Errorf("%s has the decide form", path)
+		}
+	}
+}
+
+// TestSeatDecideChallengeTakesTheCardAsShown: a decision's challenge needs a
+// session and the session's reading of the card. The port is handed the
+// binding the page showed, the action, the indexes, the session's
+// credential, its reading (the pages of the whole path list read included)
+// and the app's clock; the browser gets the challenge and the session's one
+// credential as the allow-list.
+func TestSeatDecideChallengeTakesTheCardAsShown(t *testing.T) {
+	r := newRig(t)
+	w := r.postJSON("/api/decide-challenge", approveBody)
+	wantFailure(t, "no session", w, 401, "session_ended", sayNoSession)
+	s := r.login(t)
+	wantFailure(t, "a card not read", r.postWith("/api/decide-challenge", approveBody, s), 409, "look_again", sayLookFirst)
+	if n, _ := r.daemon.decideCounts(); n != 0 {
+		t.Fatalf("the port was asked %d challenges", n)
+	}
+	opened := r.clock.Now()
+	r.openCard(t, s)
+	for _, n := range []string{"2", "0", "1"} {
+		if w := r.getWith("/cards/"+testCardID+"/paths/"+n, s); w.Code != 200 {
+			t.Fatalf("page %s: %d", n, w.Code)
+		}
+	}
+	w = r.postWith("/api/decide-challenge", approveBody, s)
+	if w.Code != 200 {
+		t.Fatalf("challenge: %d %s", w.Code, w.Body)
+	}
+	m := answer(t, w)
+	if m["allow"].([]any)[0] != b64.EncodeToString(testCredentialID) || len(m["allow"].([]any)) != 1 ||
+		m["challenge"] != b64.EncodeToString(bytes.Repeat([]byte{0x6b}, 32)) || m["action"] != "approve" ||
+		m["card"] != testCardID || m["binding"] != "abababababab" || m["expires_in"] != float64(300) || m["signed_off"] != float64(1) {
+		t.Errorf("answer %v", m)
+	}
+	q := r.daemon.decideChs[0]
+	want := DecideChallengeRequest{ID: testCardID, BindingSHA256: strings.Repeat("ab", 32), Approve: true, SignedOff: []int{0},
+		Credential: "0123456789abcdef", Reading: Reading{Opened: opened, PagesRead: []int{0, 1, 2}, Pages: 3}, Now: r.clock.Now()}
+	if !reflect.DeepEqual(q, want) {
+		t.Errorf("the port got %+v\nwant %+v", q, want)
+	}
+	// The card page asked the port's offer with the session's reading.
+	if len(r.daemon.offers) == 0 || !r.daemon.offers[0].Opened.Equal(opened) {
+		t.Errorf("offers %+v", r.daemon.offers)
+	}
+	// A deny goes with its reason and no sign-off.
+	r.challengeOf(t, s, denyBody("not this one"))
+	if q := r.daemon.decideChs[1]; q.Approve || len(q.SignedOff) != 0 || q.Reason != "not this one" {
+		t.Errorf("deny %+v", q)
+	}
+	// Another session of the same credential has not read the card.
+	other := r.login(t)
+	wantFailure(t, "another session", r.postWith("/api/decide-challenge", approveBody, other), 409, "look_again", sayLookFirst)
+}
+
+// TestSeatDecideBodies: a body that is not a decision of the form the page
+// sends is refused, and the port is not asked.
+func TestSeatDecideBodies(t *testing.T) {
+	r := newRig(t)
+	s := r.login(t)
+	r.openCard(t, s)
+	many := make([]string, maxSignOffs+1)
+	for i := range many {
+		many[i] = strconv.Itoa(i)
+	}
+	for name, body := range map[string]string{
+		"another action":         `{"card":"` + testCardID + `","action":"later","signed_off":[],"reason":""}`,
+		"a deny with a sign-off": `{"card":"` + testCardID + `","action":"deny","signed_off":[0],"reason":""}`,
+		"an approve's reason":    `{"card":"` + testCardID + `","action":"approve","signed_off":[0],"reason":"x"}`,
+		"an index twice":         `{"card":"` + testCardID + `","action":"approve","signed_off":[0,0],"reason":""}`,
+		"an index past":          `{"card":"` + testCardID + `","action":"approve","signed_off":[1],"reason":""}`,
+		"a negative index":       `{"card":"` + testCardID + `","action":"approve","signed_off":[-1],"reason":""}`,
+		"too many indexes":       `{"card":"` + testCardID + `","action":"approve","signed_off":[` + strings.Join(many, ",") + `],"reason":""}`,
+		"a bad card id":          `{"card":"AP-1","action":"approve","signed_off":[0],"reason":""}`,
+		"a binding":              `{"card":"` + testCardID + `","action":"approve","signed_off":[0],"reason":"","binding_sha256":"00"}`,
+		"a path":                 `{"card":"` + testCardID + `","action":"approve","signed_off":["Makefile"],"reason":""}`,
+		"not JSON":               `card=` + testCardID,
+		"two objects":            approveBody + approveBody,
+	} {
+		wantFailure(t, name, r.postWith("/api/decide-challenge", body, s), 400, "bad_request", sayFailed)
+	}
+	if n, _ := r.daemon.decideCounts(); n != 0 {
+		t.Errorf("the port was asked %d challenges", n)
+	}
+	// The decide route takes the same care.
+	r.challengeOf(t, s, approveBody)
+	wantFailure(t, "a short credential", r.postWith("/api/decide", decideBodyOf(r.daemon.decideChs[0].ID, []byte{1}), s), 409, "challenge_expired", sayTooLong)
+	if _, n := r.daemon.decideCounts(); n != 0 {
+		t.Errorf("the port was asked %d decisions", n)
+	}
+}
+
+// TestSeatDecideBodySizes: both bodies of a decision fit the app's cap on a
+// request, MaxBody (8192 bytes): the largest decide-challenge the page sends
+// (300 sign-off indexes, or a deny's reason of 500 bytes that are all
+// escaped) and the largest decide (an assertion at the wire's bounds:
+// credential id 1023 bytes, authenticator data 1024, client data 2048,
+// signature 72, all base64url). A body of exactly MaxBody bytes is read; one
+// byte more is refused 413 and the port is not asked.
+func TestSeatDecideBodySizes(t *testing.T) {
+	idx := make([]int, maxSignOffs)
+	for i := range idx {
+		idx[i] = i
+	}
+	big, _ := json.Marshal(map[string]any{"card": "ap-" + strings.Repeat("a", 48), "action": "approve", "signed_off": idx, "reason": ""})
+	longDeny, _ := json.Marshal(map[string]any{"card": "ap-" + strings.Repeat("a", 48), "action": "deny", "signed_off": []int{}, "reason": strings.Repeat(`"`, 500)})
+	assertion, _ := json.Marshal(map[string]string{
+		"challenge_id":       strings.Repeat("a", 16),
+		"credential_id":      b64.EncodeToString(make([]byte, maxCredentialID)),
+		"client_data_json":   b64.EncodeToString(make([]byte, maxClientData)),
+		"authenticator_data": b64.EncodeToString(make([]byte, maxAuthData)),
+		"signature":          b64.EncodeToString(make([]byte, maxSignature)),
+	})
+	t.Logf("largest bodies: decide-challenge %d (approve) and %d (deny) bytes, decide %d bytes, cap %d", len(big), len(longDeny), len(assertion), MaxBody)
+	for name, n := range map[string]int{"approve": len(big), "deny": len(longDeny), "decide": len(assertion)} {
+		if n > 6<<10 {
+			t.Errorf("the largest %s body is %d bytes, over 6 KiB", name, n)
+		}
+	}
+	pad := func(body string, n int) string { return body + strings.Repeat(" ", n-len(body)) }
+
+	r := newRig(t)
+	s := r.login(t)
+	r.openCard(t, s)
+	for _, chunked := range []bool{false, true} {
+		send := func(path, body string) *httptest.ResponseRecorder {
+			req := newRequest("POST", path, strings.NewReader(body))
+			req.Header.Set("Origin", testOrigin)
+			req.Header.Set("Content-Type", "application/json")
+			req.AddCookie(s)
+			if chunked {
+				req.ContentLength = -1
+			}
+			return r.recorder(req)
+		}
+		before, _ := r.daemon.decideCounts()
+		if w := send("/api/decide-challenge", pad(approveBody, MaxBody)); w.Code != 200 {
+			t.Errorf("chunked %v: a challenge body of MaxBody bytes: %d %s", chunked, w.Code, w.Body)
+		}
+		if n, _ := r.daemon.decideCounts(); n != before+1 {
+			t.Errorf("chunked %v: the port was not asked", chunked)
+		}
+		w := send("/api/decide-challenge", pad(approveBody, MaxBody+1))
+		if w.Code != 413 {
+			t.Errorf("chunked %v: a challenge body of MaxBody+1 bytes: %d", chunked, w.Code)
+		}
+		if n, _ := r.daemon.decideCounts(); n != before+1 {
+			t.Errorf("chunked %v: the port was asked for a body past the cap", chunked)
+		}
+		id := r.challengeOf(t, s, approveBody)
+		_, decided := r.daemon.decideCounts()
+		w = send("/api/decide", pad(decideBodyOf(id, testCredentialID), MaxBody+1))
+		if w.Code != 413 {
+			t.Errorf("chunked %v: a decide body of MaxBody+1 bytes: %d", chunked, w.Code)
+		}
+		id = r.challengeOf(t, s, approveBody)
+		if w := send("/api/decide", pad(decideBodyOf(id, testCredentialID), MaxBody)); w.Code != 200 {
+			t.Errorf("chunked %v: a decide body of MaxBody bytes: %d %s", chunked, w.Code, w.Body)
+		}
+		if _, n := r.daemon.decideCounts(); n != decided+1 {
+			t.Errorf("chunked %v: %d decisions sent, want %d", chunked, n, decided+1)
+		}
+		r.openCard(t, s) // the decision settled the card; read it again
+	}
+}
+
+// TestSeatDecideSendsTheKeptFrame: the decision sent is the frame the port
+// froze for the challenge, kept by the app, with the browser's assertion
+// and the session's credential; the answer is the daemon's state and line
+// through Text.
+func TestSeatDecideSendsTheKeptFrame(t *testing.T) {
+	r := newRig(t)
+	r.daemon.decideRes = DecideResult{State: "approved", Line: "approved \x1b[2J <b>on the phone</b>"}
+	s := r.login(t)
+	r.openCard(t, s)
+	id := r.challengeOf(t, s, approveBody)
+	w := r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s)
+	if w.Code != 200 {
+		t.Fatalf("decide: %d %s", w.Code, w.Body)
+	}
+	m := answer(t, w)
+	if m["state"] != "approved" || m["line"] != Text("approved \x1b[2J <b>on the phone</b>", maxLine) || m["held"] != false || m["say"] != sayDone {
+		t.Errorf("answer %v", m)
+	}
+	got := r.daemon.decides[0]
+	want := DecisionFrame{ID: testCardID, BindingSHA256: strings.Repeat("ab", 32), Approve: true, SignedOff: []SignOff{{Kind: "exec-config", Path: "Makefile"}}}
+	if got.ChallengeID != id || !reflect.DeepEqual(got.Frame, want) || !bytes.Equal(got.CredentialID, testCredentialID) ||
+		!bytes.Equal(got.AuthenticatorData, bytes.Repeat([]byte{0xaa}, 37)) {
+		t.Errorf("the port got %+v", got)
+	}
+	// The card was decided: it is not decided again until it is read again.
+	wantFailure(t, "after the decision", r.postWith("/api/decide-challenge", approveBody, s), 409, "cannot_decide", sayCannot)
+}
+
+// TestSeatDecideOnce: one challenge is sent at most once. A second tap with
+// the same challenge, as a double tap makes, reaches nobody; a new challenge
+// replaces the old one, which is then refused; an assertion of another
+// credential than the session's is not sent; a challenge that ran out is
+// not sent.
+func TestSeatDecideOnce(t *testing.T) {
+	r := newRig(t)
+	s := r.login(t)
+	r.openCard(t, s)
+	id := r.challengeOf(t, s, approveBody)
+	r.daemon.decideErr = ErrChallengeStale // a refusal, so the card stays as it was
+	r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s)
+	wantFailure(t, "a double tap", r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s), 409, "challenge_expired", sayTooLong)
+	if _, n := r.daemon.decideCounts(); n != 1 {
+		t.Errorf("%d decisions sent", n)
+	}
+	r.daemon.decideErr = nil
+
+	first := r.challengeOf(t, s, approveBody)
+	second := r.challengeOf(t, s, denyBody(""))
+	if first == second {
+		t.Fatal("one challenge twice")
+	}
+	wantFailure(t, "a replaced challenge", r.postWith("/api/decide", decideBodyOf(first, testCredentialID), s), 409, "challenge_expired", sayTooLong)
+	wantFailure(t, "after a refused one", r.postWith("/api/decide", decideBodyOf(second, testCredentialID), s), 409, "challenge_expired", sayTooLong)
+
+	id = r.challengeOf(t, s, approveBody)
+	wantFailure(t, "another credential", r.postWith("/api/decide", decideBodyOf(id, bytes.Repeat([]byte{0x22}, 32)), s), 403, "assertion_refused", sayAssertion)
+
+	id = r.challengeOf(t, s, approveBody)
+	r.clock.Advance(decideTTL)
+	wantFailure(t, "a challenge that ran out", r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s), 409, "challenge_expired", sayTooLong)
+	// The daemon's own expiry, when sooner, is the challenge's.
+	r.daemon.decideCh = func(c *DecideChallenge) { c.Expires = r.clock.Now().Add(time.Minute) }
+	r.openCard(t, s)
+	id = r.challengeOf(t, s, approveBody)
+	r.clock.Advance(time.Minute)
+	wantFailure(t, "past the daemon's expiry", r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s), 409, "challenge_expired", sayTooLong)
+	if _, n := r.daemon.decideCounts(); n != 1 {
+		t.Errorf("%d decisions sent", n)
+	}
+	// No session, no decision.
+	wantFailure(t, "no session", r.postJSON("/api/decide", decideBodyOf(id, testCredentialID)), 401, "session_ended", sayNoSession)
+}
+
+// TestSeatDecideCancelLeavesTheCard: a challenge the phone never answered (a
+// cancelled or failed prompt) sends nothing and changes nothing: the card
+// still offers the form, and the next tap asks a new challenge.
+func TestSeatDecideCancelLeavesTheCard(t *testing.T) {
+	r := newRig(t)
+	s := r.login(t)
+	r.openCard(t, s)
+	r.challengeOf(t, s, approveBody)
+	if body := r.openCard(t, s); !strings.Contains(body, `id="decide"`) {
+		t.Error("the form is gone after a cancel")
+	}
+	id := r.challengeOf(t, s, approveBody)
+	if w := r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s); w.Code != 200 {
+		t.Errorf("the next tap: %d %s", w.Code, w.Body)
+	}
+	if c, d := r.daemon.decideCounts(); c != 2 || d != 1 {
+		t.Errorf("%d challenges and %d decisions", c, d)
+	}
+}
+
+// TestSeatDecideLostAnswer: when the answer to a decision is lost the
+// phone says so, and the card is not decided again, by a tap or by the
+// script, until it is read again: a read that fails changes nothing, a read
+// that shows the decision on its way offers nothing, and a read that shows
+// it pending offers the form again. A decision in flight blocks a second
+// one too. Only a refusal settles a decision at once.
+func TestSeatDecideLostAnswer(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		e    decideError
+	}{
+		{"outcome unknown", ErrOutcomeUnknown, errDecideUnknown},
+		{"an error the app does not tell apart", errors.New("seatlink: the gate refused seat.decide: shutting-down <i>"), errDecideFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			s := r.login(t)
+			r.openCard(t, s)
+			id := r.challengeOf(t, s, approveBody)
+			var during *httptest.ResponseRecorder
+			r.daemon.decideHook = func() { during = r.postWith("/api/decide-challenge", approveBody, s) }
+			r.daemon.decideErr = tc.err
+			w := r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s)
+			wantFailure(t, "the lost answer", w, 502, tc.e.code, tc.e.say)
+			if strings.Contains(w.Body.String(), "shutting") || strings.Contains(w.Body.String(), "<i>") {
+				t.Error("the error's text is shown")
+			}
+			wantFailure(t, "a tap while it was in flight", during, 409, "sent_unknown", saySentUnknown)
+			r.daemon.decideHook = nil
+			wantFailure(t, "a tap after", r.postWith("/api/decide-challenge", approveBody, s), 409, "sent_unknown", saySentUnknown)
+
+			r.daemon.readErr = ErrDaemonUnavailable
+			if w := r.getWith("/cards/"+testCardID, s); w.Code != 503 {
+				t.Errorf("look again, the desk down: %d", w.Code)
+			}
+			wantFailure(t, "still unknown", r.postWith("/api/decide-challenge", approveBody, s), 409, "sent_unknown", saySentUnknown)
+
+			r.daemon.readErr = nil
+			r.daemon.card.OnItsWay = true
+			if body := r.openCard(t, s); strings.Contains(body, `id="decide"`) || !strings.Contains(body, "on its way to the door") {
+				t.Error("on its way: the form is offered")
+			}
+			wantFailure(t, "on its way", r.postWith("/api/decide-challenge", approveBody, s), 409, "cannot_decide", sayCannot)
+
+			r.daemon.card.OnItsWay = false
+			if body := r.openCard(t, s); !strings.Contains(body, `id="decide"`) {
+				t.Error("pending again: no form")
+			}
+			r.daemon.decideErr = nil
+			id = r.challengeOf(t, s, approveBody)
+			if w := r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s); w.Code != 200 {
+				t.Errorf("decided after looking again: %d %s", w.Code, w.Body)
+			}
+			if c, d := r.daemon.decideCounts(); c != 2 || d != 2 {
+				t.Errorf("%d challenges and %d decisions", c, d)
+			}
+		})
+	}
+	// A refusal says nothing was decided: the next tap may come at once.
+	r := newRig(t)
+	s := r.login(t)
+	r.openCard(t, s)
+	id := r.challengeOf(t, s, approveBody)
+	r.daemon.decideErr = ErrAssertionRefused
+	wantFailure(t, "refused", r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s), 403, "assertion_refused", sayAssertion)
+	r.challengeOf(t, s, approveBody)
+}
+
+// TestSeatDecideHeld: an approve past the project's limit for the day comes
+// back held: the host's line, the held words under it, and the card still
+// pending, so a later approve may come with a new tap and a new assertion.
+func TestSeatDecideHeld(t *testing.T) {
+	r := newRig(t)
+	r.daemon.decideRes = DecideResult{State: "pending", Line: "held: the limit of ataniq for today is reached", Held: true}
+	s := r.login(t)
+	r.openCard(t, s)
+	id := r.challengeOf(t, s, approveBody)
+	w := r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s)
+	m := answer(t, w)
+	if w.Code != 200 || m["held"] != true || m["state"] != "pending" || m["line"] != "held: the limit of ataniq for today is reached" ||
+		m["say"] != "Held: the project's limit for today is reached. Nothing was applied. Raise the limit at the desk, then approve again here or at the desk." {
+		t.Errorf("held: %d %v", w.Code, m)
+	}
+	r.challengeOf(t, s, approveBody)
+	r.daemon.card.Held = true
+	if body := r.openCard(t, s); !strings.Contains(body, "Held: decided past the limit.") || !strings.Contains(body, `id="decide"`) {
+		t.Error("the held card: no mark or no form")
+	}
+}
+
+// TestSeatDecideWords: each error of the port is fixed words of the app,
+// with its code and status; no error's text is shown. A passkey that is no
+// longer paired ends the session.
+func TestSeatDecideWords(t *testing.T) {
+	for _, tc := range []struct {
+		err    error
+		status int
+		code   string
+		say    string
+	}{
+		{ErrChallengeStale, 409, "challenge_stale", "This took too long, or the card changed. Look at the card and tap again."},
+		{ErrCardChanged, 409, "card_changed", "The card changed. Look at it again."},
+		{ErrCardExpired, 409, "card_expired", "The card's time ran out."},
+		{ErrCannotDecide, 409, "cannot_decide", "The card cannot be decided now. Look at it again."},
+		{ErrAssertionRefused, 403, "assertion_refused", "The phone's answer was not accepted. If this repeats, check the seat at the desk."},
+		{ErrKindRefused, 403, "kind_refused", "This project does not take decisions from this kind of passkey."},
+		{ErrBusy, 503, "desk_busy", "The desk is busy. Try again in a few minutes."},
+		{ErrNotOffered, 503, "decide_unavailable", "The desk does not take decisions from the phone now."},
+		{ErrDaemonUnavailable, 503, "daemon_unavailable", "The desk cannot be reached. Nothing was sent."},
+		{ErrChallengeDiffers, 502, "challenge_differs", sayDiffers},
+		{&NotAllowedError{Reason: "1 flagged path is not signed off"}, 409, "not_allowed", "This cannot be sent: 1 flagged path is not signed off."},
+		{errors.New("a text <i>of the daemon</i>"), 502, "failed", "Something went wrong. Look at the card again."},
+		{ErrKeyRevoked, 403, "key_revoked", "This phone's passkey is no longer paired. Pair it again at the desk."},
+	} {
+		for _, route := range []string{"/api/decide-challenge", "/api/decide"} {
+			if route == "/api/decide" && errors.Is(tc.err, ErrChallengeDiffers) {
+				continue
+			}
+			r := newRig(t)
+			s := r.login(t)
+			r.openCard(t, s)
+			var w *httptest.ResponseRecorder
+			if route == "/api/decide-challenge" {
+				r.daemon.decideChErr = tc.err
+				w = r.postWith(route, approveBody, s)
+			} else {
+				id := r.challengeOf(t, s, approveBody)
+				r.daemon.decideErr = tc.err
+				w = r.postWith(route, decideBodyOf(id, testCredentialID), s)
+			}
+			wantFailure(t, route+" "+tc.code, w, tc.status, tc.code, tc.say)
+			if strings.Contains(w.Body.String(), "of the daemon") {
+				t.Errorf("%s %s: the error's text is shown", route, tc.code)
+			}
+			_, live := r.sessionOf(s.Value)
+			gone := cookieOf(w, SessionCookie)
+			if tc.code == "key_revoked" {
+				if live || gone == nil || gone.MaxAge >= 0 {
+					t.Errorf("%s: the session goes on after key_revoked", route)
+				}
+			} else if !live || gone != nil {
+				t.Errorf("%s %s: the session ended", route, tc.code)
+			}
+		}
+	}
+}
+
+// TestSeatDecideExpiredCard: a card past its expiry is not renewed by
+// asking a new challenge: the app refuses it and asks the port nothing.
+func TestSeatDecideExpiredCard(t *testing.T) {
+	r := newRig(t)
+	r.daemon.card.Expires = r.clock.Now().Add(10 * time.Minute)
+	s := r.login(t)
+	r.openCard(t, s)
+	r.clock.Advance(10 * time.Minute)
+	wantFailure(t, "expired", r.postWith("/api/decide-challenge", approveBody, s), 409, "card_expired", sayExpired)
+	wantFailure(t, "an expired deny", r.postWith("/api/decide-challenge", denyBody(""), s), 409, "card_expired", sayExpired)
+	if n, _ := r.daemon.decideCounts(); n != 0 {
+		t.Errorf("the port was asked %d challenges", n)
+	}
+}
+
+// TestSeatDecideRate: a credential's sessions ask at most 10 decision
+// challenges a minute, so a phone cannot spend the gate's rate.
+func TestSeatDecideRate(t *testing.T) {
+	r := newRig(t)
+	s := r.login(t)
+	r.openCard(t, s)
+	for i := 0; i < decideRequests; i++ {
+		r.challengeOf(t, s, approveBody)
+	}
+	wantFailure(t, "past the bound", r.postWith("/api/decide-challenge", approveBody, s), 429, "rate_limited", sayRate)
+	if n, _ := r.daemon.decideCounts(); n != decideRequests {
+		t.Errorf("the port was asked %d challenges", n)
+	}
+	r.clock.Advance(decideWindow)
+	r.openCard(t, s)
+	r.challengeOf(t, s, approveBody)
+}
+
+// TestSeatDecideScript: the decide script asks the passkey in one place,
+// with user verification required and the session's one credential
+// allowed, posts only to the app's own addresses, sends nothing by itself
+// (no timer), keeps nothing to send later, and sets no text but with
+// textContent.
+func TestSeatDecideScript(t *testing.T) {
+	js := newRig(t).do("GET", "/static/decide.js", nil, nil).Body.String()
+	for _, want := range []string{
+		`userVerification: "required"`, `allowCredentials: [{ type: "public-key", id: p.allow }]`,
+		`"/api/decide-challenge"`, `"/api/decide"`, `credentials: "same-origin"`, `referrerPolicy: "strict-origin"`,
+		`pending = null;`, "textContent", "Decision sent. Outcome unknown.", "Cancelled. Nothing was sent.",
+		"This took too long. Tap again.", "The seat cannot be reached. Nothing was sent.",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("the script lacks %q", want)
+		}
+	}
+	if n := strings.Count(js, "navigator.credentials.get("); n != 1 {
+		t.Errorf("%d places ask for an assertion", n)
+	}
+	if n := strings.Count(js, `post("/api/decide",`); n != 1 {
+		t.Errorf("%d places send a decision", n)
+	}
+	for _, bad := range []string{
+		"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "Function(", "http://", "https://",
+		"document.cookie", "setTimeout", "setInterval", "localStorage", "sessionStorage", "indexedDB", "serviceWorker", "sendBeacon",
+		".submit(", "no-referrer",
+	} {
+		if strings.Contains(js, bad) {
+			t.Errorf("the script holds %q", bad)
+		}
+	}
+}
+
+// TestSeatDecideChecksThePortsAnswer: a challenge whose frame is not the
+// decision asked (another card, binding, action, sign-offs or reason), or
+// that is not of its form, is not handed to the browser.
+func TestSeatDecideChecksThePortsAnswer(t *testing.T) {
+	for name, change := range map[string]func(*DecideChallenge){
+		"another card":      func(c *DecideChallenge) { c.Frame.ID = "ap-20261122-0002" },
+		"another binding":   func(c *DecideChallenge) { c.Frame.BindingSHA256 = strings.Repeat("cd", 32) },
+		"another action":    func(c *DecideChallenge) { c.Frame.Approve = !c.Frame.Approve },
+		"a sign-off less":   func(c *DecideChallenge) { c.Frame.SignedOff = nil },
+		"a short challenge": func(c *DecideChallenge) { c.Challenge = c.Challenge[:31] },
+		"a bad id":          func(c *DecideChallenge) { c.ID = "XYZ" },
+		"already expired":   func(c *DecideChallenge) { c.Expires = time.Date(2026, 11, 22, 11, 0, 0, 0, time.UTC) },
+	} {
+		r := newRig(t)
+		r.daemon.decideCh = change
+		s := r.login(t)
+		r.openCard(t, s)
+		w := r.postWith("/api/decide-challenge", approveBody, s)
+		if w.Code == 200 || strings.Contains(w.Body.String(), "challenge\"") {
+			t.Errorf("%s: %d %s", name, w.Code, w.Body)
+		}
+	}
+	r := newRig(t)
+	r.daemon.decideCh = func(c *DecideChallenge) { c.Frame.Reason = "another" }
+	s := r.login(t)
+	r.openCard(t, s)
+	if w := r.postWith("/api/decide-challenge", denyBody("mine"), s); w.Code == 200 {
+		t.Errorf("another reason: %d %s", w.Code, w.Body)
+	}
+}

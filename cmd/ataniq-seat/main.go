@@ -33,11 +33,13 @@
 // wrote the seat's key to. The link is kept up in the background, with
 // pinned-key TLS at both ends, and redialled when it drops; while it is down
 // pairing answers daemon_unavailable, and a code the daemon refused answers
-// code_refused. The login (/login/) and the card pages (/cards/, read-only,
-// behind a session) ask the daemon through the same link, and the link
-// recomputes each login challenge from the pin before the phone is asked.
-// Without the three flags the daemon port is not wired: pairing and login
-// answer with the fixed code daemon_unavailable.
+// code_refused. The login (/login/), the card pages (/cards/, behind a
+// session) and the Card page's approve and deny ask the daemon through the
+// same link, and the link recomputes each login challenge and each
+// decision's challenge from the pin before the phone is asked. Phone
+// decisions are for scratch state and the STAND-IN door only. Without the
+// three flags the daemon port is not wired: pairing and login answer with
+// the fixed code daemon_unavailable, and no card offers a decision.
 //
 // Nothing secret is printed or read from the command line. The pairing code
 // is never printed.

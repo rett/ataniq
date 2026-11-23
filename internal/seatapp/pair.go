@@ -185,6 +185,12 @@ func decodeBody(body io.Reader, v any) error {
 		return err
 	}
 	if _, err := dec.Token(); err != io.EOF {
+		// A body cut at MaxBody says so, whether its length was declared
+		// or not.
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			return err
+		}
 		return errors.New("data after the object")
 	}
 	return nil
