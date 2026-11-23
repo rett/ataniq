@@ -5,3 +5,6 @@
 <p id="logout-status" role="status"></p>
 </footer>
 <script src="/static/session.js"></script>{{end}}
+
+{{define "watch"}}<div id="watch" data-live="{{if .Live}}yes{{else}}no{{end}}" data-version="{{.Version}}"{{if .Card}} data-card="{{.Card}}" data-binding="{{.Binding}}"{{end}}></div>
+<script src="/static/watch.js"></script>{{end}}

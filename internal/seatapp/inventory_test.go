@@ -51,6 +51,8 @@ var inventory = []struct {
 	{pattern: "GET /static/decide.js", kind: "asset"},
 	{pattern: "POST /api/decide-challenge", kind: "api"},
 	{pattern: "POST /api/decide", kind: "api"},
+	{pattern: "GET /static/watch.js", kind: "asset"},
+	{pattern: "POST /api/watch", kind: "api"},
 }
 
 // passkeyRoutes are the pages whose Permissions-Policy allows
