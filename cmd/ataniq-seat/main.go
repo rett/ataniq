@@ -62,8 +62,11 @@
 // app has polled for a minute, the command tells it one integer, how many
 // cards wait (at most 999, never more than 30 times a day), and nothing
 // about them. A notifier that does not answer is logged at most once a
-// minute and tried again after that minute. Without the flag nothing is told
-// to anyone and nothing changes.
+// minute and tried again after that minute. The same socket carries the
+// phone's turning notices on and off (the card list's controls, which the app
+// serves only when the flag is set): the app relays a subscription to the
+// notifier and keeps none. Without the flag nothing is told to anyone and
+// nothing changes.
 //
 // Nothing secret is printed or read from the command line. The pairing code
 // is never printed.
@@ -501,7 +504,7 @@ func run(ctx context.Context, args []string, errout io.Writer, ready func(net.Ad
 			fmt.Fprintf(errout, "ataniq-seat: --notify-socket: %v\n", err)
 			return 2
 		}
-		cfg.Notifier = nc
+		cfg.Notifier = pushNotifier{nc}
 	}
 	// Open starts the notices' goroutine when there is a notifier; Close,
 	// deferred here, stops it when the command ends.

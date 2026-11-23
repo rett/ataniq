@@ -9,3 +9,11 @@
 {{define "watch"}}<p id="watch-status" role="status" aria-live="polite"></p>
 <div id="watch" data-live="{{if .Live}}yes{{else}}no{{end}}" data-version="{{.Version}}"{{if .Card}} data-card="{{.Card}}" data-binding="{{.Binding}}"{{else if .Still}} data-still="yes"{{end}}></div>
 <script src="/static/watch.js"></script>{{end}}
+
+{{define "push"}}<section id="notices" aria-labelledby="notices-h">
+<h2 id="notices-h">Notices</h2>
+<p>Notices work only from the Home Screen app on iPhone. Add this page to your Home Screen, open it from there, then tap Enable.</p>
+<p><button id="enable-notices" type="button" hidden>Enable notices</button> <button id="stop-notices" type="button" class="quiet" hidden>Stop notices</button></p>
+<p id="notices-status" role="status" aria-live="polite"></p>
+</section>
+<script src="/static/push.js"></script>{{end}}

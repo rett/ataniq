@@ -309,6 +309,9 @@ type (
 		Listing Listing
 		// Watch is the watcher's version taken before the page's read.
 		Watch watchPage
+		// Push says the app has a PushPort: the page then offers the
+		// notices' controls and links the web app manifest.
+		Push bool
 	}
 	cardData struct {
 		Title string
@@ -375,7 +378,7 @@ func (a *app) cardList(w http.ResponseWriter, r *http.Request, s Session) {
 		a.problem(w, readProblem(err))
 		return
 	}
-	a.render(w, "cards", http.StatusOK, cardsData{Title: pageTitles["cards"], Now: a.cfg.Now(), Listing: l, Watch: wp})
+	a.render(w, "cards", http.StatusOK, cardsData{Title: pageTitles["cards"], Now: a.cfg.Now(), Listing: l, Watch: wp, Push: a.push != nil})
 }
 
 // cardPage answers GET /cards/{id}: one card, read-only.
