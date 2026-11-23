@@ -1661,8 +1661,8 @@ shows nothing about notices, and the pages carry no manifest link.
 
 ### The page's security
 
-The content security policy gains two sources and nothing else:
-`manifest-src 'self'` and `worker-src 'self'`. The policy stays closed
+The content security policy gains two sources and one directive, and nothing
+else: `manifest-src 'self'`, `worker-src 'self'` and `trusted-types seat-sw`. The policy stays closed
 (`default-src 'none'`; scripts, styles, connections and images from the app's
 own origin only; nothing inline) and still requires Trusted Types for script
 sinks (`require-trusted-types-for 'script'`).
@@ -1677,10 +1677,15 @@ pages' scripts use (the others set text, and navigate or make links, and reach
 no sink that takes markup, code or a script address). So `push.js` makes one policy,
 `seat-sw`, whose `createScriptURL` answers for the address `/sw.js` and throws
 for any other, and gives `register()` its answer; a test of the script's source
-holds it to one policy and one `register()` call. The CSP names no policy
-(there is no `trusted-types` directive), so the browser does not limit the
-policy names; what limits the policy is its own function, and the code that
-runs under the page's `script-src 'self'`. Not checked in a real browser: that
+holds it to one policy and one `register()` call. The CSP's `trusted-types`
+directive names that policy, `seat-sw`, and no other (no `default`, no
+`allow-duplicates`), so the browser refuses any other policy name and a second
+policy of the same name: a script that runs on the origin cannot make a policy
+of its own to reach a sink. A test holds that every policy any script of the
+app creates (`push.js` is the only one that creates any: `pair.js`, `words.js`,
+`login.js`, `decide.js`, `session.js` and `watch.js` set text and make no
+policy) is named there, and that the directive names no other. What limits the
+`seat-sw` policy itself is its own function. Not checked in a real browser: that
 iOS Safari, in the Home Screen app, accepts the registration under this rule
 is for the phone trial to show. If the registration is refused there, Enable
 notices ends in "Could not turn on notices. Try again later." and nothing else
