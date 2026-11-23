@@ -4,6 +4,8 @@
   not name the same credential and key or lacks user verification, and keeps
   the kind its AAGUID claims (`platform-passkey`, `vault-passkey` or
   `passkey`), the AAGUID, the backup flags and the sign counter. The pending
-  `owner.pair-status` and the key list show them as optional members, and
-  `keys.log` keeps them, with a counter record that only raises the highest
-  sign counter. A key paired without them stays of the kind `unverified`.
+  `owner.pair-status` and the key list show the kind, the AAGUID and the
+  backup flags as optional members, and not the sign counter, which is kept
+  internally: `keys.log` keeps all of them, with a counter record that only
+  raises the highest sign counter. A key paired without them stays of the kind
+  `unverified`, which can neither log in nor decide.
