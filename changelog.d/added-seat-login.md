@@ -7,14 +7,20 @@
   HttpOnly, SameSite=Strict) holding a fresh 256-bit value kept server-side,
   ended after 30 minutes idle, 12 hours at most, or by `POST /api/logout`; the
   Log out button goes to the login page only when the seat answered the
-  logout, and otherwise says "Logout not confirmed" and stays. Login
+  logout with its own acknowledgement (no redirect is followed), and
+  otherwise says "Logout not confirmed" and stays. Login
   challenges are limited to 10 per client in 15 minutes and 8 a minute in all.
   The seat counts every call it sends the gate, by kind, over 80 seconds, and
   keeps each kind to its room there: pings 6, pairings and logins 12 (6
   logins), reads 26, decisions 16 (8 decisions), which make the gate's 60 a
   minute; a call without room is not sent and the phone says the desk is busy.
-  A decision's challenge is asked only with room for the decision too, so a
-  decision the phone signed is never refused for the gate's rate.
+  A decision's challenge is asked only with room for the decision too, kept
+  for that one challenge, so a decision the phone signed is never refused for
+  the gate's rate, from any session of the passkey. A login challenge is
+  likewise asked only with room for its login, so the owner's login is never
+  refused as busy after the passkey; strangers who draw login challenges
+  can still use up the room for challenges, the owner's too, for up to 5
+  minutes at a time, and with it the room for pairings.
   A login belongs to no project and to no card: it proves that the phone holds
   a paired key of a kind the daemon knows, and decides nothing. The login
   page, and the Card page when it offers a decision, alone allow

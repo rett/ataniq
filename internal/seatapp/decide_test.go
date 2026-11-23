@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -228,7 +229,7 @@ func TestSeatDecideChallengeTakesTheCardAsShown(t *testing.T) {
 	q := r.daemon.decideChs[0]
 	want := DecideChallengeRequest{ID: testCardID, BindingSHA256: strings.Repeat("ab", 32), Approve: true, SignedOff: []int{0},
 		Credential: "0123456789abcdef", Reading: Reading{Opened: opened, PagesRead: []int{0, 1, 2}, Pages: 3, Review: strings.Repeat("ef", 32),
-			Whole: Whole{Rows: true, Lists: true, Refs: true, Flagged: true, Differs: true}}, Now: r.clock.Now()}
+			Whole: AllWhole}, Now: r.clock.Now()}
 	if !reflect.DeepEqual(q, want) {
 		t.Errorf("the port got %+v\nwant %+v", q, want)
 	}
@@ -280,10 +281,9 @@ func (r *rig) postFromPage(path, body string, s *http.Cookie) *httptest.Response
 // refused before the port is asked (so no challenge is drawn and the
 // passkey is not asked), and the tap of the second is taken. A page's tap
 // must name its form: one with none, or with a form the session was never
-// served, is refused too. A tap without the form is refused when it comes
-// without Sec-Fetch-Site as well, which the rig's test option lets through
-// and which once let a tap leave the form out. Two pages of the same
-// binding are both good.
+// served, is refused too, and so is a body that leaves the form out (which
+// a test option, now gone, once let through without Sec-Fetch-Site). Two
+// pages of the same binding are both good.
 func TestSeatDecideTapOfAStalePage(t *testing.T) {
 	r := newRig(t)
 	s := r.login(t)
@@ -295,12 +295,9 @@ func TestSeatDecideTapOfAStalePage(t *testing.T) {
 	}
 	wantFailure(t, "the first tab's tap", r.postFromPage("/api/decide-challenge", tapOf(first), s), 409, "card_changed", sayChanged)
 	wantFailure(t, "a tap of no form", r.postFromPage("/api/decide-challenge", tapOf(""), s), 400, "bad_request", sayFailed)
-	if !r.app.cfg.AllowNoFetchMetadataForTests {
-		t.Fatal("the rig does not let a request without Sec-Fetch-Site through: the test does not show what it means to")
-	}
 	noForm, _ := json.Marshal(map[string]any{"card": testCardID, "action": "approve", "signed_off": []int{0}, "reason": ""})
-	wantFailure(t, "a tap of no form without Sec-Fetch-Site", r.postWith("/api/decide-challenge", string(noForm), s), 400, "bad_request", sayFailed)
-	wantFailure(t, "a deny of no form without Sec-Fetch-Site", r.postWith("/api/decide-challenge", denyBody("no"), s), 400, "bad_request", sayFailed)
+	wantFailure(t, "a tap that leaves the form out", r.postFromPage("/api/decide-challenge", string(noForm), s), 400, "bad_request", sayFailed)
+	wantFailure(t, "a deny that leaves the form out", r.postFromPage("/api/decide-challenge", denyBody("no"), s), 400, "bad_request", sayFailed)
 	other := b64.EncodeToString(bytes.Repeat([]byte{0x42}, formBytes))
 	wantFailure(t, "a form never served", r.postFromPage("/api/decide-challenge", tapOf(other), s), 409, "look_again", sayLookFirst)
 	wantFailure(t, "a form of another shape", r.postFromPage("/api/decide-challenge", tapOf("x"), s), 400, "bad_request", sayFailed)
@@ -330,28 +327,45 @@ func TestSeatDecideTapOfAStalePage(t *testing.T) {
 
 // TestSeatCardPartsShownWhole: the session's reading says which parts of
 // the card the Card page showed whole. A path or a ref longer than the page
-// shows (maxPath characters of its escaped text) makes its part not whole,
-// and the port's offer is asked with that reading; one of exactly maxPath
-// characters is whole. A page of the whole path list that cuts a path does
+// shows (maxPath characters of its escaped text), a name of the header
+// longer than maxName, or a line of the plan or of the note longer than
+// maxText makes its part not whole, and the port's offer is asked with that
+// reading; one of exactly the cap is whole. A page of the whole path list that cuts a path does
 // not count as read, and says so.
 func TestSeatCardPartsShownWhole(t *testing.T) {
 	long := NewLead(strings.Repeat("x", maxPath+1))
 	edge := NewLead(strings.Repeat("x", maxPath))
-	all := Whole{Rows: true, Lists: true, Refs: true, Flagged: true, Differs: true}
+	all := AllWhole
+	off := func(f func(*Whole)) Whole {
+		w := AllWhole
+		f(&w)
+		return w
+	}
+	longName := strings.Repeat("x", maxName+1)
+	longLine := NewLead(strings.Repeat("y", maxText+1))
 	for name, tc := range map[string]struct {
 		change func(*Card)
 		want   Whole
 	}{
-		"nothing long":        {func(*Card) {}, all},
-		"a path at the cap":   {func(c *Card) { c.Diff.Rows[0].Path = edge; c.Flagged[0].Path = edge }, all},
-		"a row":               {func(c *Card) { c.Diff.Rows[1].Path = long }, Whole{Lists: true, Refs: true, Flagged: true, Differs: true}},
-		"a list's path":       {func(c *Card) { c.Lists[0].Paths[0] = long }, Whole{Rows: true, Refs: true, Flagged: true, Differs: true}},
-		"a ref":               {func(c *Card) { c.Refs[0].Ref = long }, Whole{Rows: true, Lists: true, Flagged: true, Differs: true}},
-		"a merged-into ref":   {func(c *Card) { c.Refs[0].MergedInto = &MergedInto{Ref: long, Tip: strings.Repeat("3", 40)} }, Whole{Rows: true, Lists: true, Flagged: true, Differs: true}},
-		"a flagged path":      {func(c *Card) { c.Flagged[0].Path = long }, Whole{Rows: true, Lists: true, Refs: true, Differs: true}},
-		"a flagged path rule": {func(c *Card) { c.Flagged[0].Pattern = long }, Whole{Rows: true, Lists: true, Refs: true, Differs: true}},
-		"a differs path":      {func(c *Card) { c.Differs.PathsAdded = []Lead{long} }, Whole{Rows: true, Lists: true, Refs: true, Flagged: true}},
-		"a differs ref":       {func(c *Card) { c.Differs.RefsRemoved = []Lead{long} }, Whole{Rows: true, Lists: true, Refs: true, Flagged: true}},
+		"nothing long":      {func(*Card) {}, all},
+		"a path at the cap": {func(c *Card) { c.Diff.Rows[0].Path = edge; c.Flagged[0].Path = edge }, all},
+		"names at the cap":  {func(c *Card) { c.Project, c.Target = longName[1:], longName[1:] }, all},
+		"lines at the cap": {func(c *Card) {
+			c.Plan[0], c.Note[0] = NewLead(strings.Repeat("y", maxText)), NewLead(strings.Repeat("y", maxText))
+		}, all},
+		"the project":         {func(c *Card) { c.Project = longName }, off(func(w *Whole) { w.Names = false })},
+		"the target":          {func(c *Card) { c.Target = longName }, off(func(w *Whole) { w.Names = false })},
+		"the feature":         {func(c *Card) { c.Feature = longName }, off(func(w *Whole) { w.Names = false })},
+		"a plan line":         {func(c *Card) { c.Plan[1] = longLine }, off(func(w *Whole) { w.Plan = false })},
+		"a note line":         {func(c *Card) { c.Note[1] = longLine }, off(func(w *Whole) { w.Note = false })},
+		"a row":               {func(c *Card) { c.Diff.Rows[1].Path = long }, off(func(w *Whole) { w.Rows = false })},
+		"a list's path":       {func(c *Card) { c.Lists[0].Paths[0] = long }, off(func(w *Whole) { w.Lists = false })},
+		"a ref":               {func(c *Card) { c.Refs[0].Ref = long }, off(func(w *Whole) { w.Refs = false })},
+		"a merged-into ref":   {func(c *Card) { c.Refs[0].MergedInto = &MergedInto{Ref: long, Tip: strings.Repeat("3", 40)} }, off(func(w *Whole) { w.Refs = false })},
+		"a flagged path":      {func(c *Card) { c.Flagged[0].Path = long }, off(func(w *Whole) { w.Flagged = false })},
+		"a flagged path rule": {func(c *Card) { c.Flagged[0].Pattern = long }, off(func(w *Whole) { w.Flagged = false })},
+		"a differs path":      {func(c *Card) { c.Differs.PathsAdded = []Lead{long} }, off(func(w *Whole) { w.Differs = false })},
+		"a differs ref":       {func(c *Card) { c.Differs.RefsRemoved = []Lead{long} }, off(func(w *Whole) { w.Differs = false })},
 	} {
 		r := newRig(t)
 		c := sampleCard()
@@ -481,6 +495,219 @@ func TestSeatDecideStaleReadKeepsTheMark(t *testing.T) {
 	if w := r.tap(approveBody, s); w.Code != 200 {
 		t.Errorf("a tap after a read that began after the send: %d %s", w.Code, w.Body)
 	}
+}
+
+// TestSeatDecideReadInFlight: a GET of the Card page that begins after a
+// decision of the card was sent, and before its answer came, may show the
+// card as it was before the decision was journaled: it holds no form and
+// does not settle the decision. When the answer is then lost, the next tap
+// is still refused, and only a read that begins after the loss settles it.
+// On the base that read was served a form and cleared the mark, and the
+// next tap drew a new challenge.
+func TestSeatDecideReadInFlight(t *testing.T) {
+	r := newRig(t)
+	s := r.login(t)
+	r.openCard(t, s)
+	id := r.challengeOf(t, s, approveBody)
+	var during *httptest.ResponseRecorder
+	r.daemon.decideHook = func() { during = r.getWith("/cards/"+testCardID, s) }
+	r.daemon.decideErr = ErrOutcomeUnknown
+	wantFailure(t, "the lost answer", r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s), 502, "outcome_unknown", sayUnknown)
+	r.daemon.decideHook = nil
+	if body := during.Body.String(); during.Code != 200 || strings.Contains(body, `id="decide"`) ||
+		!strings.Contains(body, "A decision of this card was sent and its outcome is not known. Look at it again.") {
+		t.Errorf("the page read while the decision was on its way: %d", during.Code)
+	}
+	r.clock.Advance(time.Second)
+	wantFailure(t, "a tap after the read in flight", r.tap(approveBody, s), 409, "sent_unknown", saySentUnknown)
+	if c, _ := r.daemon.decideCounts(); c != 1 {
+		t.Errorf("%d challenges drawn", c)
+	}
+	r.daemon.decideErr = nil
+	r.openCard(t, s)
+	if w := r.tap(approveBody, s); w.Code != 200 {
+		t.Errorf("a tap after a read that began after the loss: %d %s", w.Code, w.Body)
+	}
+	// A certain answer settles the decision whatever was read meanwhile.
+	id = r.challengeOf(t, s, approveBody)
+	r.daemon.decideHook = func() { during = r.getWith("/cards/"+testCardID, s) }
+	r.daemon.decideErr = ErrAssertionRefused
+	r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s)
+	r.daemon.decideHook = nil
+	if strings.Contains(during.Body.String(), `id="decide"`) {
+		t.Error("a read while a decision was on its way offered the form")
+	}
+	r.openCard(t, s)
+	if w := r.tap(approveBody, s); w.Code != 200 {
+		t.Errorf("a tap after a refusal: %d %s", w.Code, w.Body)
+	}
+}
+
+// TestSeatDecideReadAcrossTheLoss: a GET of the Card page whose read began
+// while a decision of the card was on its way, and came back after the
+// decision's answer was lost, may show the card as it was before: it holds
+// no form and does not settle the lost answer.
+func TestSeatDecideReadAcrossTheLoss(t *testing.T) {
+	var hd *showHooked
+	r := newRig(t, func(c *Config) {
+		hd = &showHooked{fakeDaemon: c.Daemon.(*fakeDaemon)}
+		c.Daemon = hd
+	})
+	s := r.login(t)
+	r.openCard(t, s)
+	id := r.challengeOf(t, s, approveBody)
+	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan *httptest.ResponseRecorder)
+	r.daemon.decideHook = func() {
+		hd.mu.Lock()
+		hd.hook = func() { close(entered); <-release }
+		hd.mu.Unlock()
+		go func() { done <- r.getWith("/cards/"+testCardID, s) }()
+		<-entered
+	}
+	r.daemon.decideErr = ErrOutcomeUnknown
+	wantFailure(t, "the lost answer", r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s), 502, "outcome_unknown", sayUnknown)
+	r.daemon.decideHook = nil
+	close(release)
+	w := <-done
+	if body := w.Body.String(); w.Code != 200 || strings.Contains(body, `id="decide"`) ||
+		!strings.Contains(body, "A decision of this card was sent and its outcome is not known. Look at it again.") {
+		t.Errorf("the page of a read that began while the decision was on its way: %d", w.Code)
+	}
+	r.clock.Advance(time.Second)
+	wantFailure(t, "a tap after that read", r.tap(approveBody, s), 409, "sent_unknown", saySentUnknown)
+	r.openCard(t, s)
+	r.daemon.decideErr = nil
+	if w := r.tap(approveBody, s); w.Code != 200 {
+		t.Errorf("a tap after a read that began after the loss: %d %s", w.Code, w.Body)
+	}
+}
+
+// brokenWriter is a response writer whose connection is gone: what is
+// written is kept in body, and Write fails, or, with flushFails, Write
+// takes it and the flush fails.
+type brokenWriter struct {
+	header     http.Header
+	body       bytes.Buffer
+	flushFails bool
+}
+
+func (w *brokenWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = http.Header{}
+	}
+	return w.header
+}
+
+func (w *brokenWriter) WriteHeader(int) {}
+
+func (w *brokenWriter) Write(b []byte) (int, error) {
+	w.body.Write(b)
+	if w.flushFails {
+		return len(b), nil
+	}
+	return 0, errors.New("write: broken pipe")
+}
+
+// FlushError is the flush http.ResponseController asks for.
+func (w *brokenWriter) FlushError() error {
+	if w.flushFails {
+		return errors.New("flush: broken pipe")
+	}
+	return nil
+}
+
+// getBroken GETs path with the session s into a broken writer.
+func (r *rig) getBroken(path string, s *http.Cookie, flushFails bool) *brokenWriter {
+	req := newRequest("GET", path, nil)
+	req.AddCookie(s)
+	w := &brokenWriter{flushFails: flushFails}
+	r.h.ServeHTTP(w, req)
+	return w
+}
+
+// TestSeatPagesNotWrittenCountForNothing: a Card page or a page of the
+// path list that was not written to the phone (the write or its flush
+// failed: the phone went away) counts for nothing. It does not settle a
+// lost answer, its form is not taken, and a path page is not credited as
+// read. On the base each was noted before the page was written.
+func TestSeatPagesNotWrittenCountForNothing(t *testing.T) {
+	for _, flushFails := range []bool{false, true} {
+		r := newRig(t)
+		s := r.login(t)
+		r.openCard(t, s)
+		id := r.challengeOf(t, s, approveBody)
+		r.daemon.decideErr = ErrOutcomeUnknown
+		r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s)
+		r.daemon.decideErr = nil
+		r.getBroken("/cards/"+testCardID, s, flushFails)
+		r.clock.Advance(time.Second)
+		wantFailure(t, "a tap after a Card page not written", r.tap(approveBody, s), 409, "sent_unknown", saySentUnknown)
+
+		// A Card page that offers the form but was not written: its form
+		// is not taken.
+		r.openCard(t, s)
+		w := r.getBroken("/cards/"+testCardID, s, flushFails)
+		if flushFails {
+			form := formOf(w.body.String())
+			if form == "" {
+				t.Fatal("the page not flushed holds no form")
+			}
+			wantFailure(t, "the form of a page not written", r.postWith("/api/decide-challenge", r.withForm(tapOf(form), s), s), 409, "look_again", sayLookFirst)
+		}
+
+		// A page of the path list not written is no read.
+		r.getBroken("/cards/"+testCardID+"/paths/0", s, flushFails)
+		r.challengeOf(t, s, approveBody)
+		if rd := r.daemon.decideChs[len(r.daemon.decideChs)-1].Reading; len(rd.PagesRead) != 0 {
+			t.Errorf("flush fails %v: pages not written counted as read: %v", flushFails, rd.PagesRead)
+		}
+		r.getWith("/cards/"+testCardID+"/paths/0", s)
+		r.challengeOf(t, s, approveBody)
+		if rd := r.daemon.decideChs[len(r.daemon.decideChs)-1].Reading; len(rd.PagesRead) != 1 {
+			t.Errorf("flush fails %v: a page written is not counted: %v", flushFails, rd.PagesRead)
+		}
+	}
+}
+
+// hookedWriter is a recorder that runs hook once, as the page is written:
+// what happens while the page is on its way to the phone.
+type hookedWriter struct {
+	*httptest.ResponseRecorder
+	hook func()
+}
+
+func (w *hookedWriter) Write(b []byte) (int, error) {
+	if h := w.hook; h != nil {
+		w.hook = nil
+		h()
+	}
+	return w.ResponseRecorder.Write(b)
+}
+
+// TestSeatDecideSentWhilePageIsWritten: a decision of the card sent, and
+// its answer lost, while a Card page that offers the form is being written
+// makes that read stale: once written it does not settle the lost answer,
+// and its form is not taken.
+func TestSeatDecideSentWhilePageIsWritten(t *testing.T) {
+	r := newRig(t)
+	s := r.login(t)
+	r.openCard(t, s)
+	w := &hookedWriter{ResponseRecorder: httptest.NewRecorder(), hook: func() {
+		id := r.challengeOf(t, s, approveBody)
+		r.daemon.decideErr = ErrOutcomeUnknown
+		r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s)
+	}}
+	req := newRequest("GET", "/cards/"+testCardID, nil)
+	req.AddCookie(s)
+	r.h.ServeHTTP(w, req)
+	form := formOf(w.Body.String())
+	if form == "" {
+		t.Fatal("the page holds no form: the test does not show what it means to")
+	}
+	r.daemon.decideErr = nil
+	r.clock.Advance(time.Second)
+	wantFailure(t, "a tap after the page", r.tap(approveBody, s), 409, "sent_unknown", saySentUnknown)
+	wantFailure(t, "a tap of its form", r.postWith("/api/decide-challenge", r.withForm(tapOf(form), s), s), 409, "look_again", sayLookFirst)
 }
 
 // TestSeatPathPagesKeepTheirReview: the pages of a path list count with the
@@ -711,6 +938,49 @@ func TestSeatDecideOnce(t *testing.T) {
 	wantFailure(t, "no session", r.postJSON("/api/decide", decideBodyOf(id, testCredentialID)), 401, "session_ended", sayNoSession)
 }
 
+// TestSeatDecideDropsWhatItWillNotSend: the app tells the port of each
+// challenge whose decision it will never send, so that the room the port
+// keeps for it goes at once: one a new tap of the session replaced, one
+// burnt by a tap that named another challenge, by another credential's
+// assertion or by its expiry, and one whose answer the app did not take.
+// A challenge whose decision was sent is not dropped.
+func TestSeatDecideDropsWhatItWillNotSend(t *testing.T) {
+	r := newRig(t)
+	s := r.login(t)
+	r.openCard(t, s)
+	var want []string
+	first := r.challengeOf(t, s, approveBody)
+	second := r.challengeOf(t, s, denyBody(""))
+	want = append(want, first)
+	r.postWith("/api/decide", decideBodyOf(first, testCredentialID), s)
+	want = append(want, second)
+	id := r.challengeOf(t, s, approveBody)
+	r.postWith("/api/decide", decideBodyOf(id, bytes.Repeat([]byte{0x22}, 32)), s)
+	want = append(want, id)
+	id = r.challengeOf(t, s, approveBody)
+	r.clock.Advance(decideTTL)
+	r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s)
+	want = append(want, id)
+	r.openCard(t, s)
+	// An answer of the port the app does not take.
+	r.daemon.decideCh = func(c *DecideChallenge) { c.Frame.Approve = false }
+	w := r.tap(approveBody, s)
+	wantFailure(t, "a challenge of another frame", w, 502, "failed", sayFailed)
+	r.daemon.decideCh = nil
+	want = append(want, fmt.Sprintf("%016x", 1<<40+r.daemon.challengeNo))
+	if got := r.daemon.droppedIDs(); !reflect.DeepEqual(got, want) {
+		t.Errorf("dropped %v, want %v", got, want)
+	}
+	// A decision sent is not dropped, whatever its answer.
+	id = r.challengeOf(t, s, approveBody)
+	if w := r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s); w.Code != 200 {
+		t.Fatalf("the decision: %d %s", w.Code, w.Body)
+	}
+	if got := r.daemon.droppedIDs(); !reflect.DeepEqual(got, want) {
+		t.Errorf("a decision sent was dropped: %v", got)
+	}
+}
+
 // TestSeatDecideCancelLeavesTheCard: a challenge the phone never answered (a
 // cancelled or failed prompt) sends nothing and changes nothing: the card
 // still offers the form, and the next tap asks a new challenge.
@@ -934,6 +1204,26 @@ func TestSeatDecideScript(t *testing.T) {
 	}
 	if n := strings.Count(js, `post("/api/decide",`); n != 1 {
 		t.Errorf("%d places send a decision", n)
+	}
+	// A cancel sends nothing: the cancel button only goes back, and in
+	// confirm every way the passkey sheet ends without an assertion goes
+	// back and returns before the one place that sends the decision.
+	_, onCancel, _ := strings.Cut(js, `cancelBtn.addEventListener("click", function () {`)
+	onCancel, _, _ = strings.Cut(onCancel, "});")
+	if !strings.Contains(onCancel, "back(SAY.cancelled);") || strings.Contains(onCancel, "post(") || strings.Contains(onCancel, "credentials") {
+		t.Errorf("the cancel button does more than go back: %q", onCancel)
+	}
+	_, sheet, _ := strings.Cut(js, "cred = await navigator.credentials.get(")
+	sheet, _, _ = strings.Cut(sheet, `post("/api/decide",`)
+	for _, want := range []string{
+		`if (e && e.name === "NotSupportedError") { back(SAY.unsupported); return; }`,
+		`if (e && e.name === "SecurityError") { back(SAY.site_refused); return; }`,
+		"back(SAY.cancelled); // NotAllowedError: cancelled, timed out, or no consent\n      return;",
+		"if (!cred || !cred.response) { back(SAY.cancelled); return; }",
+	} {
+		if !strings.Contains(sheet, want) {
+			t.Errorf("the passkey sheet's end before the decision is sent lacks %q", want)
+		}
 	}
 	for _, bad := range []string{
 		"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "Function(", "http://", "https://",

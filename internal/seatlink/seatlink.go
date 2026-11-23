@@ -118,6 +118,8 @@
 //	approval-expired                            seatapp.ErrCardExpired
 //	approval-consumed, approval-void,
 //	previous-epoch, decision-invalid            seatapp.ErrCannotDecide
+//	record-too-large (a decision record the
+//	journal could not hold)                     seatapp.ErrTooLarge
 //	assertion-invalid                           seatapp.ErrAssertionRefused
 //	key-revoked, key-unknown                    seatapp.ErrKeyRevoked
 //	kind-refused                                seatapp.ErrKindRefused
@@ -143,9 +145,14 @@
 // [PingInterval]. A call without room is seatapp.ErrBusy and is not sent.
 // The rooms and the pings add up to GateRate, so the gate's rate never
 // refuses a call the link sent. A decision's challenge is asked only with
-// room for its seat.decide as well, kept for the credential's last challenge
-// until the decision is sent or [HoldLife] ends; seat.decide is never
-// refused for room.
+// room for its seat.decide as well, kept for that one challenge until the
+// decision is sent, the app drops the challenge
+// ([seatapp.ChallengeDropper]), or the challenge's life ends ([HoldLife] at
+// most): the seat.decide of a challenge the link drew, in its life, is never
+// refused for room, whichever session or credential drew it. A login
+// challenge is asked only with room for its seat.login as well, kept for it
+// in the same way, so a login is never refused for room once the phone has
+// answered; strangers can still use up anyone's room with login challenges.
 package seatlink
 
 import (
@@ -226,6 +233,10 @@ type Daemon struct {
 	// budget counts the calls the link sends, by kind (see budget.go).
 	budget budget
 }
+
+// The link keeps room for the decision of each challenge it draws, so it
+// takes the app's word when a challenge is dropped.
+var _ seatapp.ChallengeDropper = (*Daemon)(nil)
 
 // Option sets an option of [New].
 type Option func(*Daemon) error

@@ -3,6 +3,7 @@ package ownerchannel
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
 	"fmt"
@@ -333,8 +334,10 @@ func (s *Service) SeatLogin(ctx context.Context, src Source, g Gate, p ownerwire
 // ([ErrKeyRevoked]), and of a kind the verifier knows and the card's project
 // accepts ([ErrKindRefused]); the frame's binding digest is that of the
 // daemon's own record (binding-mismatch); and its sign-offs are the record's
-// flagged list for an approve, and none for a deny (decision-invalid). So the
-// phone is never asked to sign what would be refused. None of these refusals
+// flagged list for an approve, and none for a deny (decision-invalid); and the
+// decision's record, as a decide would write it, fits the record's cap
+// (record-too-large, the code the record gives). So the phone is never asked
+// to sign what would be refused. None of these refusals
 // is journaled: no decision was made.
 //
 // The challenge is ownerwire.DecisionChallenge of the gate's instance, of a
@@ -406,6 +409,22 @@ func (s *Service) SeatChallenge(ctx context.Context, src Source, g Gate, p owner
 		}
 	} else if len(f.SignedOff) != 0 {
 		return ownerwire.SeatChallengeResult{}, refuse(record.CodeDecisionInvalid, "a deny has no sign-off")
+	}
+	// The decision must become a record the journal can hold before the
+	// phone is asked: the record of this frame, confirmed by passkey, with
+	// a seat block of the lengths it will have, is the size of the record
+	// a decide would write. One that does not fit (its sign-offs are too
+	// long for the record's cap, say) is refused now, with the code the
+	// record gives, and not after the passkey.
+	probe := s.decisionRecord(pending, own, s.now())
+	probe.Confirmed = record.ConfirmedPasskey
+	probe.Seat = record.SeatBlock{
+		AssertionSHA256: strings.Repeat("0", sha256.Size*2), ChallengeID: strings.Repeat("0", ownerwire.ChallengeIDLength),
+		Credential: k.ID, Session: src.Session,
+	}
+	if _, err := record.EncodeDecision(probe); err != nil {
+		c, _ := code(err)
+		return ownerwire.SeatChallengeResult{}, refuse(c, detailOf(err))
 	}
 	nonce, err := s.seat.drawNonce(ownerwire.NonceBytes)
 	if err != nil {

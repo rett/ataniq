@@ -142,6 +142,11 @@ func (d *decideDesk) challenge(params json.RawMessage) (json.RawMessage, error) 
 	if ownerwire.SignedOffDigest(want) != ownerwire.SignedOffDigest(q.Frame.SignedOff) {
 		return nil, seatgate.NewCodedError(codeDecisionInvalid)
 	}
+	// The daemon draws a challenge only for a decision whose record fits
+	// the record's cap (ownerchannel's SeatChallenge).
+	if !recordFits(pending, q.Frame, q.Credential) {
+		return nil, seatgate.NewCodedError(codeRecordTooLarge)
+	}
 	nonce := make([]byte, 32)
 	rand.Read(nonce)
 	idb := make([]byte, 8)
@@ -158,6 +163,33 @@ func (d *decideDesk) challenge(params json.RawMessage) (json.RawMessage, error) 
 		d.tamper(q.Frame, &res)
 	}
 	return ownerwire.EncodeSeatChallengeResult(res)
+}
+
+// recordFits reports whether the decision record of the frame f for the
+// pending record p, confirmed by passkey through the credential given,
+// fits the record's cap, as the daemon checks it before it draws a
+// challenge: the journal holds no larger one.
+func recordFits(p record.Pending, f ownerwire.DecisionFrame, credential string) bool {
+	rec := record.Decision{
+		Schema: record.SchemaDecision, ID: p.ID, Planner: p.Planner, Decision: f.Decision,
+		BindingSHA256: p.BindingSHA256, Project: p.Binding.Project,
+		Subject: record.Subject{
+			Kind: p.Binding.Subject.Kind, RoleName: p.Binding.Subject.RoleName,
+			Epoch: p.Binding.Subject.Epoch, SeatRev: p.Binding.Subject.SeatRev,
+		},
+		PlanToken: p.Binding.PlanToken, SignedOff: append([]record.SignOff{}, f.SignedOff...),
+		DecidedAt: record.FormatTime(decideNow), ExpiresAt: record.FormatTime(decideNow.Add(time.Hour)),
+		Reason: f.Reason, Confirmed: record.ConfirmedPasskey,
+		Seat: record.SeatBlock{
+			AssertionSHA256: strings.Repeat("0", 64), ChallengeID: strings.Repeat("0", 16),
+			Credential: credential, Session: strings.Repeat("0", 16),
+		},
+	}
+	if f.Decision == record.DecisionApprove {
+		rec.Uses = 1
+	}
+	_, err := record.EncodeDecision(rec)
+	return err == nil
 }
 
 func (d *decideDesk) decide(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
@@ -263,7 +295,7 @@ func (r *decideRig) show(t *testing.T) seatapp.Card {
 }
 
 // shownWhole says that the Card page showed every part of the card whole.
-var shownWhole = seatapp.Whole{Rows: true, Lists: true, Refs: true, Flagged: true, Differs: true}
+var shownWhole = seatapp.AllWhole
 
 // approve is the request of an approve of the shown card with every flagged
 // path signed off, read whole a second ago.
@@ -679,6 +711,9 @@ func TestSeatLinkCutPartsAreNotRead(t *testing.T) {
 		off  func(*seatapp.Whole)
 		want string
 	}{
+		{func(w *seatapp.Whole) { w.Names = false }, reasonCutNames},
+		{func(w *seatapp.Whole) { w.Plan = false }, reasonCutPlan},
+		{func(w *seatapp.Whole) { w.Note = false }, reasonCutNote},
 		{func(w *seatapp.Whole) { w.Refs = false }, reasonCutRefs},
 		{func(w *seatapp.Whole) { w.Rows = false }, reasonCutRows},
 		{func(w *seatapp.Whole) { w.Lists = false }, reasonCutLists},
@@ -767,11 +802,14 @@ func (r *decideRig) challengeParams(t *testing.T, q seatapp.DecideChallengeReque
 // TestSeatLinkDecisionOnTheWire: the transport sends the params byte for
 // byte, so the link checks the gate's cap on the bytes the wire's encoder
 // wrote, and the gate is handed exactly those, with <, > and & as they are.
-// A decision whose flagged paths are made of them, with params of exactly
-// the cap of seat.challenge (9216 bytes), is drawn and decided, with the
-// paths as they are; once escaped for HTML its params would be far over the
-// cap, and the seat refused it as too large. One byte more is ErrTooLarge,
-// and nothing reaches the gate.
+// Params of exactly the cap of seat.challenge (9216 bytes), flagged paths
+// made of those characters (once escaped for HTML they would be far over
+// the cap), reach the gate as they are; their decision record would be over
+// the record's cap of 8 KiB, which the journal holds, so the daemon refuses
+// the challenge record-too-large, and the link says for certain that
+// nothing was decided (ErrTooLarge). One byte more is ErrTooLarge too, and
+// nothing reaches the gate. A decision of such paths whose record fits is
+// drawn and decided, with the paths as they are.
 func TestSeatLinkDecisionOnTheWire(t *testing.T) {
 	// Ten paths of 869 bytes leave a little room under the cap, which the
 	// last path takes.
@@ -797,18 +835,15 @@ func TestSeatLinkDecisionOnTheWire(t *testing.T) {
 		r.show(t)
 		q := r.approveAll()
 		before := r.gate.calls.Load()
-		ch, err := r.link.DecideChallenge(context.Background(), q)
+		_, err := r.link.DecideChallenge(context.Background(), q)
+		if !errors.Is(err, seatapp.ErrTooLarge) {
+			t.Errorf("%s: %v, want %v", tc.name, err, seatapp.ErrTooLarge)
+		}
 		if tc.extra > 0 {
-			if !errors.Is(err, seatapp.ErrTooLarge) {
-				t.Errorf("%s: %v, want %v", tc.name, err, seatapp.ErrTooLarge)
-			}
 			if n := r.gate.calls.Load() - before; n != 0 {
 				t.Errorf("%s: %d calls reached the gate", tc.name, n)
 			}
 			continue
-		}
-		if err != nil {
-			t.Fatalf("%s: %v", tc.name, err)
 		}
 		want, err := r.challengeParams(t, q)
 		if err != nil || len(want) != ownerwire.MaxSeatChallengeParamsBytes {
@@ -817,26 +852,82 @@ func TestSeatLinkDecisionOnTheWire(t *testing.T) {
 		if got := r.desk.wireOf(0); !bytes.Equal(got, want) {
 			t.Fatalf("%s: the gate was handed %d bytes that differ from the %d the link checked", tc.name, len(got), len(want))
 		}
-		if _, err := r.link.Decide(context.Background(), r.sign(t, ch)); err != nil {
-			t.Fatalf("%s: decide: %v", tc.name, err)
-		}
-		if got := r.desk.wireOf(1); bytes.Contains(got, []byte(`\u0026`)) || !bytes.Contains(got, []byte(ps[0])) {
-			t.Errorf("%s: the params of seat.decide were rewritten on the way", tc.name)
-		}
-		var got []string
-		for _, s := range r.desk.decided[0].SignedOff {
-			got = append(got, string(s.Path))
-		}
-		slices.Sort(got)
-		if !slices.Equal(got, ps) {
-			t.Errorf("%s: the desk got the sign-offs of %d paths, not the paths shown", tc.name, len(got))
+		r.desk.mu.Lock()
+		drawn, decided := len(r.desk.entries), len(r.desk.decided)
+		r.desk.mu.Unlock()
+		if drawn != 0 || decided != 0 {
+			t.Errorf("%s: a decision the journal cannot hold was drawn or decided", tc.name)
 		}
 	}
 
-	// onWire hands on the very bytes it checked.
+	// Paths of the same characters whose record fits are decided as they
+	// are: the most whole paths of 869 bytes whose record fits.
+	var fit []string
+	for n := 1; ; n++ {
+		ps := htmlPaths(n, 869)
+		r := newDecideRig(t)
+		htmlFlagged(t, r, ps)
+		f := ownerwire.DecisionFrame{ID: r.desk.reads.pending.ID, BindingSHA256: r.desk.reads.pending.BindingSHA256, Decision: record.DecisionApprove}
+		for _, p := range ps {
+			f.SignedOff = append(f.SignedOff, record.SignOff{Kind: record.FlagExecConfig, Path: record.Text(p)})
+		}
+		if !recordFits(r.desk.reads.pending, f, r.credential) {
+			break
+		}
+		fit = ps
+	}
+	if len(fit) < 5 {
+		t.Fatalf("only %d paths fit the record: the test does not show what it means to", len(fit))
+	}
+	r = newDecideRig(t)
+	htmlFlagged(t, r, fit)
+	r.show(t)
+	q := r.approveAll()
+	ch, err := r.link.DecideChallenge(context.Background(), q)
+	if err != nil {
+		t.Fatalf("a decision whose record fits: %v", err)
+	}
+	want, err := r.challengeParams(t, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.desk.wireOf(0); !bytes.Equal(got, want) {
+		t.Fatalf("the gate was handed %d bytes that differ from the %d the link checked", len(got), len(want))
+	}
+	if _, err := r.link.Decide(context.Background(), r.sign(t, ch)); err != nil {
+		t.Fatalf("decide: %v", err)
+	}
+	if got := r.desk.wireOf(1); bytes.Contains(got, []byte(`\u0026`)) || !bytes.Contains(got, []byte(fit[0])) {
+		t.Error("the params of seat.decide were rewritten on the way")
+	}
+	var got []string
+	for _, s := range r.desk.decided[0].SignedOff {
+		got = append(got, string(s.Path))
+	}
+	slices.Sort(got)
+	if !slices.Equal(got, fit) {
+		t.Errorf("the desk got the sign-offs of %d paths, not the paths shown", len(got))
+	}
+
+	// onWire hands on the very bytes it checked, and only when the decoder
+	// it was given takes them: a refusal of the decoder gives no bytes, and
+	// the error the phone is told (ErrTooLarge for params over their cap).
 	in := []byte(`{"a":"<&>` + "\u2028" + `"}`)
-	if wire, err := onWire(in, func([]byte) error { return nil }); err != nil || !bytes.Equal(wire, in) {
-		t.Errorf("onWire gives %s (%v), want %s", wire, err, in)
+	var asked []byte
+	if wire, err := onWire(in, func(b []byte) error { asked = b; return nil }); err != nil || !bytes.Equal(wire, in) || !bytes.Equal(asked, in) {
+		t.Errorf("onWire gives %s (%v), want %s, having asked the decoder of %s", wire, err, in, asked)
+	}
+	for _, tc := range []struct {
+		refusal error
+		want    error
+	}{
+		{&record.Error{Code: record.CodeRecordTooLarge}, seatapp.ErrTooLarge},
+		{&record.Error{Code: record.CodeDecisionInvalid}, errFrame},
+		{errors.New("not of the form"), errFrame},
+	} {
+		if wire, err := onWire(in, func([]byte) error { return tc.refusal }); wire != nil || !errors.Is(err, tc.want) {
+			t.Errorf("onWire with a decoder that refuses %v: %s (%v), want %v", tc.refusal, wire, err, tc.want)
+		}
 	}
 }
 
@@ -853,6 +944,7 @@ func TestSeatLinkDecideCodes(t *testing.T) {
 		"approval-void":     seatapp.ErrCannotDecide,
 		"previous-epoch":    seatapp.ErrCannotDecide,
 		"decision-invalid":  seatapp.ErrCannotDecide,
+		"record-too-large":  seatapp.ErrTooLarge,
 		"assertion-invalid": seatapp.ErrAssertionRefused,
 		"key-revoked":       seatapp.ErrKeyRevoked,
 		"key-unknown":       seatapp.ErrKeyRevoked,

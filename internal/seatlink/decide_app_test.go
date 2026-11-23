@@ -56,7 +56,7 @@ func newPhoneRig(t *testing.T) *phoneRig {
 func newPhoneRigAt(t *testing.T, start time.Time) *phoneRig {
 	t.Helper()
 	r := &phoneRig{decideRig: newDecideRig(t), clock: &testClock{t: start}}
-	h, err := seatapp.New(seatapp.Config{Origin: seatOrigin, RPID: seatRPID, Daemon: r.link, Now: r.clock.now, AllowNoFetchMetadataForTests: true})
+	h, err := seatapp.New(seatapp.Config{Origin: seatOrigin, RPID: seatRPID, Daemon: r.link, Now: r.clock.now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,8 +130,6 @@ func (r *phoneRig) confirm(t *testing.T, tapped *httptest.ResponseRecorder) *htt
 // sends.
 func (r *phoneRig) tapPage(page, action string, signedOff []int) *httptest.ResponseRecorder {
 	body, _ := json.Marshal(map[string]any{"card": r.desk.reads.pending.ID, "form": pageForm(page), "action": action, "signed_off": signedOff, "reason": ""})
-	r.browser.fetchSite = true
-	defer func() { r.browser.fetchSite = false }()
 	return r.browser.do("POST", "/api/decide-challenge", string(body))
 }
 
@@ -272,6 +270,81 @@ func TestSeatDecideCutFlaggedPathsOnThePhone(t *testing.T) {
 	}
 }
 
+// TestSeatDecideCancelThroughTheLink: the owner taps, and cancels at the
+// passkey sheet: the script sends nothing (TestSeatDecideScript in package
+// seatapp holds it to that). The card still offers the form; the next tap
+// draws a new challenge, in place of the cancelled one, whose room at the
+// gate the link lets go at once; and the new one is decided. An assertion
+// over the cancelled challenge, sent after all, is refused before the desk
+// is asked.
+func TestSeatDecideCancelThroughTheLink(t *testing.T) {
+	r := newPhoneRig(t)
+	r.open(t)
+	cancelled := r.tap("approve", []int{0, 1}, "")
+	if cancelled.Code != 200 {
+		t.Fatalf("tap: %d %s", cancelled.Code, cancelled.Body)
+	}
+	if page := r.open(t).Body.String(); pageForm(page) == "" {
+		t.Fatal("the form is gone after a cancel")
+	}
+	tap := r.tap("approve", []int{0, 1}, "")
+	if tap.Code != 200 {
+		t.Fatalf("the next tap: %d %s", tap.Code, tap.Body)
+	}
+	r.link.budget.mu.Lock()
+	holds := len(r.link.budget.holds)
+	r.link.budget.mu.Unlock()
+	if holds != 1 {
+		t.Errorf("%d decisions' rooms kept, want the one of the challenge pending", holds)
+	}
+	if w := r.confirm(t, tap); w.Code != 200 || said(t, w)["state"] != "approved" {
+		t.Errorf("the decision after a cancel: %d %s", w.Code, w.Body)
+	}
+	_, before := r.desk.counts()
+	if w := r.confirm(t, cancelled); w.Code != 409 || said(t, w)["error"] != "challenge_expired" {
+		t.Errorf("the cancelled challenge's assertion: %d %s", w.Code, w.Body)
+	}
+	if _, after := r.desk.counts(); after != before {
+		t.Errorf("the cancelled challenge's decision reached the desk")
+	}
+}
+
+// TestSeatDecideCutPlanOnThePhone: on the Card page of a card whose plan
+// has a line longer than the page shows, Approve is not offered and the
+// page says why; a tap of Approve anyway is refused before the desk is
+// asked; Deny stays. The plan is under the binding, so the owner approves
+// such a card at the desk, where it is read whole.
+func TestSeatDecideCutPlanOnThePhone(t *testing.T) {
+	r := newPhoneRig(t)
+	p := r.desk.reads.pending
+	p.PlanText = record.Text("Merge the feature.\n" + strings.Repeat("z", 4001))
+	p.Binding.PlanSHA256 = record.PlanDigest(string(p.PlanText))
+	digest, err := record.BindingDigest(p.Binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.BindingSHA256 = digest
+	b, err := record.EncodePending(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.desk.reads.mu.Lock()
+	r.desk.reads.pending, r.desk.reads.bytes = p, b
+	r.desk.reads.mu.Unlock()
+	page := r.open(t).Body.String()
+	if strings.Contains(page, `id="approve"`) || !strings.Contains(page, `id="deny"`) ||
+		!strings.Contains(page, "Approve is not offered: "+reasonCutPlan+".") {
+		t.Fatal("the Card page offers Approve for a plan line it cut")
+	}
+	w := r.tapPage(page, "approve", []int{0, 1})
+	if m := said(t, w); w.Code != 409 || m["error"] != "not_allowed" || m["say"] != "This cannot be sent: "+reasonCutPlan+"." {
+		t.Errorf("an approve of a card with a cut plan line: %d %v", w.Code, m)
+	}
+	if c, _ := r.desk.counts(); c != 0 {
+		t.Errorf("the desk was asked %d challenges", c)
+	}
+}
+
 // TestSeatDecidePagesOfAReplacedReview: the pages of a card's whole path
 // list read straight away, before its Card page, count for the review they
 // were read for. The card is replaced by one of the same id and page count
@@ -344,7 +417,7 @@ func TestSeatDecideReadOnlyGateHasNoForm(t *testing.T) {
 	} {
 		r, port := mk(t)
 		clock := &testClock{t: decideNow}
-		h, err := seatapp.New(seatapp.Config{Origin: seatOrigin, RPID: seatRPID, Daemon: port, Now: clock.now, AllowNoFetchMetadataForTests: true})
+		h, err := seatapp.New(seatapp.Config{Origin: seatOrigin, RPID: seatRPID, Daemon: port, Now: clock.now})
 		if err != nil {
 			t.Fatal(err)
 		}

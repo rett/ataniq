@@ -3,6 +3,7 @@ package seatapp
 import (
 	"bytes"
 	"embed"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -49,7 +50,10 @@ const (
 
 // fits reports whether the Card page shows a lead's text whole: Text cuts
 // none of it at max.
-func fits(l Lead, max int) bool { return utf8.RuneCountInString(l.str()) <= max }
+func fits(l Lead, max int) bool { return fitsText(l.str(), max) }
+
+// fitsText reports whether Text cuts none of s at max.
+func fitsText(s string, max int) bool { return utf8.RuneCountInString(s) <= max }
 
 // allFit reports whether every one of ls fits at max.
 func allFit(ls []Lead, max int) bool {
@@ -74,7 +78,12 @@ func rowsWhole(rows []PathRow) bool {
 // wholeOf says which parts of c the Card page shows whole, with the caps
 // the template cuts them at.
 func wholeOf(c Card) Whole {
-	w := Whole{Rows: true, Lists: true, Refs: true, Flagged: true, Differs: true}
+	w := AllWhole
+	for _, n := range []string{c.Project, c.Role, c.Verb, c.Feature, c.Target, c.Class} {
+		w.Names = w.Names && fitsText(n, maxName)
+	}
+	w.Plan = allFit(c.Plan, maxText)
+	w.Note = allFit(c.Note, maxText)
 	if c.Diff != nil {
 		w.Rows = rowsWhole(c.Diff.Rows)
 	}
@@ -194,18 +203,28 @@ func (a *app) page(name string) http.HandlerFunc {
 	}
 }
 
-// render answers a page made from data, with status. The template is
-// executed into a buffer first, so that a failure sends nothing
-// half-written.
-func (a *app) render(w http.ResponseWriter, name string, status int, data any) {
+// render answers a page made from data, with status, and reports whether
+// the page was written: executed, and handed whole to the connection
+// (written and flushed without an error). The template is executed into a
+// buffer first, so that a failure sends nothing half-written. What a page
+// counts for (a read of the card, a page of its path list) is noted only
+// once render reported it written.
+func (a *app) render(w http.ResponseWriter, name string, status int, data any) bool {
 	var buf bytes.Buffer
 	if err := pages[name].Execute(&buf, data); err != nil {
 		writeText(w, http.StatusInternalServerError, "internal error\n")
-		return
+		return false
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	w.Write(buf.Bytes())
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		return false
+	}
+	// A writer that cannot flush is taken at its Write.
+	if err := http.NewResponseController(w).Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return false
+	}
+	return true
 }
 
 // passkeyPage is page for a page that asks the phone for a passkey assertion:

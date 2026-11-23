@@ -407,20 +407,34 @@ func TestSeatLoginGoesToTheCards(t *testing.T) {
 
 // TestSeatSessionScript: the logout script posts to the app's own address
 // with the session's cookie and sets no text but with textContent. It goes
-// to the login page only when the seat answered the logout: the one
-// location.assign is under the answer's ok, and an answer that is not ok,
-// or none (the catch), shows "Logout not confirmed" and leaves the button.
+// to the login page only when the seat answered the logout with its own
+// acknowledgement: the fetch refuses a redirect, the one location.assign
+// is under an answer of 200, not redirected, whose JSON is the seat's
+// {"next":"/login/"} (which the seat sends), and any other answer, or none
+// (the catch), shows "Logout not confirmed" and leaves the button.
 // The test reads the script; no script engine is among the tools.
 func TestSeatSessionScript(t *testing.T) {
 	js := newRig(t).do("GET", "/static/session.js", nil, nil).Body.String()
 	for _, want := range []string{`"/api/logout"`, `credentials: "same-origin"`, `referrerPolicy: "strict-origin"`, `location.assign("/login/")`,
-		"ended = resp.ok;", "} catch (e) { ended = false; }", "Logout not confirmed", "button.disabled = false;"} {
+		`redirect: "error"`, "if (resp.status === 200 && !resp.redirected) { data = await resp.json(); }",
+		`ended = !!data && typeof data === "object" && data.next === "/login/";`,
+		"} catch (e) { ended = false; }", "Logout not confirmed", "button.disabled = false;"} {
 		if !strings.Contains(js, want) {
 			t.Errorf("the script lacks %q", want)
 		}
 	}
 	if n := strings.Count(js, "location."); n != 1 {
 		t.Errorf("the script moves the page in %d places", n)
+	}
+	if strings.Contains(js, "resp.ok") || strings.Count(js, "ended = ") != 3 {
+		t.Error("the script takes an answer other than the seat's acknowledgement as a logout")
+	}
+	// The acknowledgement the script waits for is the one the seat sends.
+	ra := newRig(t)
+	s := ra.login(t)
+	if w := ra.postWith("/api/logout", "{}", s); w.Code != 200 || w.Body.String() != `{"next":"/login/"}`+"\n" ||
+		!strings.HasPrefix(w.Header().Get("Content-Type"), "application/json") {
+		t.Errorf("the logout's answer: %d %q", w.Code, w.Body)
 	}
 	guard, after, ok := strings.Cut(js, "if (ended) {")
 	if !ok || strings.Contains(guard, "location.") || !strings.HasPrefix(strings.TrimSpace(after), `location.assign("/login/");`) {

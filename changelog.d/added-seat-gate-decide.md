@@ -6,7 +6,8 @@
   `https://` and a lower-case domain name, read once at start. Each login and
   each decision, a deny included, is a passkey assertion with user
   verification over a challenge the daemon draws from its own record of the
-  card, kept in memory for 5 minutes and one use by the seat that asked (at
+  card (and only for a decision whose record fits the journal's 8 KiB; one
+  that would not is refused `record-too-large` before the phone is asked), kept in memory for 5 minutes and one use by the seat that asked (at
   most 32 decision and 16 login challenges; a restart drops them), verified
   against a key on `owner/keys.log` that is not revoked and of a kind the
   verifier knows, and the seat origin. A login belongs to no project, so the

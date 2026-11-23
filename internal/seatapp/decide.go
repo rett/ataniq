@@ -22,8 +22,9 @@ const (
 	// credential's sessions may ask for. The port keeps the decisions to a
 	// room of their own at the gate (package seatlink: 16 calls in 80
 	// seconds, 8 decisions), which logins, pairings and reads cannot take,
-	// and asks a challenge only with room for its decision as well: a tap
-	// past it is answered desk_busy before any challenge, and a decision the
+	// and asks a challenge only with room for its decision as well, kept for
+	// that challenge until the app drops it (ChallengeDropper): a tap past
+	// it is answered desk_busy before any challenge, and a decision the
 	// phone signed is never refused for the gate's rate.
 	decideRequests = 10
 	decideWindow   = time.Minute
@@ -69,12 +70,18 @@ type cardReading struct {
 	// live says the card was pending when last shown: not ended and no
 	// decision on its way.
 	live bool
-	// sent says a decision of the card was sent and no answer settled it.
-	// Only a new read of the card (the Card page, "Look again") clears it,
-	// so a lost answer is never followed by a second decision unseen; a read
-	// that began before the decision was marked sent (sentAt) does not.
-	sent   bool
-	sentAt uint64
+	// sent says a decision of the card was sent and no answer settled it:
+	// it is on its way (inFlight), or its answer was lost. A certain answer
+	// clears it; otherwise only a new read of the card (the Card page,
+	// "Look again") that began after the answer was lost does, so a lost
+	// answer is never followed by a second decision unseen. sentAt is the
+	// mark of the last time the decision was marked: when it was sent, and
+	// again when its answer was lost. A read made while the decision is on
+	// its way, or that began before the mark, may show the card as it was
+	// before the decision was journaled, so it does not clear it.
+	sent     bool
+	inFlight bool
+	sentAt   uint64
 	// forms are the decide forms of the Card pages of the card served to
 	// the session, oldest first, each with the binding its page showed. A
 	// tap names its page's form, and is taken only when that page showed
@@ -155,31 +162,69 @@ func (ss *sessions) begin() uint64 {
 	return ss.seq
 }
 
-// opened notes that the Card page showed c to the session at now, from a
-// read that began at the mark since, and returns the session's reading of
-// it, and fresh. A read of the card settles a lost answer: what the page
-// shows is the card's state now. A read that began before a decision of the
-// card that is still unsettled was marked sent may show the card as it was
-// before it, so it changes nothing and is not fresh.
-func (ss *sessions) opened(k tokenKey, c Card, now time.Time, since uint64) (Reading, bool) {
+// stale reports whether a read that began at the mark since may show the
+// card as it was before an unsettled decision of it: the decision is on
+// its way, or it was last marked (sent, or its answer lost) after since.
+func (r *cardReading) stale(since uint64) bool {
+	return r.sent && (r.inFlight || r.sentAt > since)
+}
+
+// note makes r the reading of c as the Card page showed it at now: a read
+// of the card settles a lost answer, since what the page shows is the
+// card's state now.
+func (r *cardReading) note(c Card, now time.Time) {
+	if r.binding != "" && r.binding != c.BindingSHA256 {
+		r.pages, r.review, r.read = 0, "", nil
+	}
+	r.binding, r.expires, r.flagged, r.opened, r.whole = c.BindingSHA256, c.Expires, len(c.Flagged), now, wholeOf(c)
+	r.live = !c.Ended && !c.OnItsWay && (c.State == "" || c.State == "pending")
+	r.sent = false
+}
+
+// peek returns the reading the session would have of c if the Card page
+// that shows it at now, from a read that began at the mark since, is
+// written, and whether that read is fresh. It changes nothing: opened notes
+// the read once the page was written. A read that is not fresh (see stale)
+// would change nothing, and the reading returned is the one kept.
+func (ss *sessions) peek(k tokenKey, c Card, now time.Time, since uint64) (Reading, bool) {
 	var out Reading
 	fresh := true
 	ss.with(k, func(s *session) {
-		r := s.reading(c.ID, true)
-		if r.sent && r.sentAt > since {
+		r := &cardReading{}
+		if kept, ok := s.cards[c.ID]; ok {
+			cp := *kept
+			r = &cp
+		}
+		if r.stale(since) {
 			fresh = false
 			out = r.public()
 			return
 		}
-		if r.binding != "" && r.binding != c.BindingSHA256 {
-			r.pages, r.review, r.read = 0, "", nil
-		}
-		r.binding, r.expires, r.flagged, r.opened, r.whole = c.BindingSHA256, c.Expires, len(c.Flagged), now, wholeOf(c)
-		r.live = !c.Ended && !c.OnItsWay && (c.State == "" || c.State == "pending")
-		r.sent = false
+		r.note(c, now)
 		out = r.public()
 	})
 	return out, fresh
+}
+
+// opened notes that the Card page that showed c to the session at now, from
+// a read that began at the mark since, was written, with the decide form f
+// when f.id is not empty. It checks the read again: a decision of the card
+// sent, or an answer lost, since it began makes it stale, and then nothing
+// is noted, the form neither, and opened reports false.
+func (ss *sessions) opened(k tokenKey, c Card, now time.Time, since uint64, f pageForm) bool {
+	noted := false
+	ss.with(k, func(s *session) {
+		r := s.reading(c.ID, true)
+		if r.stale(since) {
+			return
+		}
+		r.note(c, now)
+		if f.id != "" {
+			r.addForm(f)
+		}
+		noted = true
+	})
+	return noted
 }
 
 // readPage notes that the session read page n of pages of a card's whole
@@ -195,17 +240,13 @@ func (ss *sessions) readPage(k tokenKey, id string, n, pages int, review string)
 	})
 }
 
-// addForm notes the decide form of a Card page that showed a card at the
-// binding given to the session. The oldest form goes when there are
-// maxForms.
-func (ss *sessions) addForm(k tokenKey, id string, f pageForm) {
-	ss.with(k, func(s *session) {
-		r := s.reading(id, true)
-		if len(r.forms) >= maxForms {
-			r.forms = append(r.forms[:0:0], r.forms[len(r.forms)-maxForms+1:]...)
-		}
-		r.forms = append(r.forms, f)
-	})
+// addForm notes the decide form of a Card page that showed the card at the
+// binding given. The oldest form goes when there are maxForms.
+func (r *cardReading) addForm(f pageForm) {
+	if len(r.forms) >= maxForms {
+		r.forms = append(r.forms[:0:0], r.forms[len(r.forms)-maxForms+1:]...)
+	}
+	r.forms = append(r.forms, f)
 }
 
 // form returns the binding the page of a form showed, and whether the
@@ -254,9 +295,26 @@ func (ss *sessions) readingOf(k tokenKey, id string) (cardReading, bool) {
 	return out, found
 }
 
-// keepDecision keeps the session's one decision; a new one replaces the old.
-func (ss *sessions) keepDecision(k tokenKey, d pendingDecision) {
-	ss.with(k, func(s *session) { s.decision = &d })
+// keepDecision keeps the session's one decision; a new one replaces the old,
+// which is returned, and whether there was one.
+func (ss *sessions) keepDecision(k tokenKey, d pendingDecision) (pendingDecision, bool) {
+	var old pendingDecision
+	replaced := false
+	ss.with(k, func(s *session) {
+		if s.decision != nil {
+			old, replaced = *s.decision, true
+		}
+		s.decision = &d
+	})
+	return old, replaced
+}
+
+// dropChallenge tells the port, when it keeps room for a decision's
+// challenge, that the decision of the challenge given will never be sent.
+func (a *app) dropChallenge(id string) {
+	if dr, ok := a.cfg.Daemon.(ChallengeDropper); ok && id != "" {
+		dr.DropChallenge(id)
+	}
 }
 
 // takeDecision burns the session's decision: it is removed whatever comes
@@ -280,7 +338,7 @@ func (ss *sessions) markSent(k tokenKey, id string) bool {
 	ss.with(k, func(s *session) {
 		if r := s.reading(id, false); r != nil && r.live && !r.sent {
 			ss.seq++
-			r.sent, r.sentAt, ok = true, ss.seq, true
+			r.sent, r.inFlight, r.sentAt, ok = true, true, ss.seq, true
 		}
 	})
 	return ok
@@ -292,7 +350,20 @@ func (ss *sessions) markSent(k tokenKey, id string) bool {
 func (ss *sessions) settle(k tokenKey, id string, stillLive bool) {
 	ss.with(k, func(s *session) {
 		if r := s.reading(id, false); r != nil {
-			r.sent, r.live = false, stillLive
+			r.sent, r.inFlight, r.live = false, false, stillLive
+		}
+	})
+}
+
+// lost notes that the answer to a decision that was sent was lost: the
+// decision stays sent, and is marked again, so that a read made while it
+// was on its way does not settle it; only a read that begins now or later
+// does.
+func (ss *sessions) lost(k tokenKey, id string) {
+	ss.with(k, func(s *session) {
+		if r := s.reading(id, false); r != nil && r.sent {
+			ss.seq++
+			r.inFlight, r.sentAt = false, ss.seq
 		}
 	})
 }
@@ -525,6 +596,7 @@ func (a *app) decideChallenge(w http.ResponseWriter, r *http.Request) {
 	f := ch.Frame
 	if len(ch.Challenge) != challengeSize || !validChallengeID(ch.ID) || f.ID != in.Card || f.BindingSHA256 != rd.binding ||
 		f.Approve != approve || (approve && len(f.SignedOff) != len(in.SignedOff)) || (!approve && (len(f.SignedOff) != 0 || f.Reason != in.Reason)) {
+		a.dropChallenge(ch.ID)
 		writeDecideError(w, errDecideFailed)
 		return
 	}
@@ -533,10 +605,15 @@ func (a *app) decideChallenge(w http.ResponseWriter, r *http.Request) {
 		expires = ch.Expires
 	}
 	if !now.Before(expires) {
+		a.dropChallenge(ch.ID)
 		writeDecideError(w, errDecideTooLong)
 		return
 	}
-	a.sess.keepDecision(s.key, pendingDecision{card: in.Card, challengeID: ch.ID, frame: f, expires: expires})
+	// The session keeps one decision: the one this tap replaces is never
+	// sent.
+	if old, ok := a.sess.keepDecision(s.key, pendingDecision{card: in.Card, challengeID: ch.ID, frame: f, expires: expires}); ok {
+		a.dropChallenge(old.challengeID)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"challenge_id": ch.ID,
 		"challenge":    b64.EncodeToString(ch.Challenge),
@@ -563,14 +640,24 @@ type decideBody struct {
 // first, whatever comes next, takes the assertion only for that decision's
 // challenge and the session's credential, marks the card's decision sent,
 // and hands the port the frame it kept, never one the browser sent. A lost
-// answer leaves the mark: the card is decided again only after a new read
-// of it.
+// answer leaves the mark, and marks it again: the card is decided again
+// only after a read of it that began after the answer was lost.
 func (a *app) decidePost(w http.ResponseWriter, r *http.Request) {
 	s, ok := a.decideSession(w, r)
 	if !ok {
 		return
 	}
 	pd, ok := a.sess.takeDecision(s.key)
+	// A decision burnt here and not sent is never sent: its challenge is
+	// dropped.
+	sent := false
+	if ok {
+		defer func() {
+			if !sent {
+				a.dropChallenge(pd.challengeID)
+			}
+		}()
+	}
 	var in decideBody
 	if err := decodeBody(r.Body, &in); err != nil {
 		writeDecideError(w, decideBodyError(err))
@@ -604,6 +691,7 @@ func (a *app) decidePost(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), daemonTimeout)
 	defer cancel()
+	sent = true
 	res, err := a.cfg.Daemon.Decide(ctx, DecideRequest{
 		ChallengeID: pd.challengeID, Frame: pd.frame,
 		CredentialID: credID, AuthenticatorData: authData, ClientDataJSON: clientData, Signature: sig,
@@ -612,6 +700,8 @@ func (a *app) decidePost(w http.ResponseWriter, r *http.Request) {
 		e, certain := decideFailure(err)
 		if certain {
 			a.sess.settle(s.key, pd.card, true)
+		} else {
+			a.sess.lost(s.key, pd.card)
 		}
 		a.failDecide(w, r, e)
 		return

@@ -40,6 +40,11 @@ const (
 	codeUnavailable      = "unavailable"
 	codeDoorUnavailable  = "door-unavailable"
 	codeJournalReopened  = "journal-reopened"
+	// codeRecordTooLarge is the daemon's refusal of a decision whose record
+	// would be over the record's cap: on seat.challenge, before any
+	// challenge is drawn, and on seat.decide, before anything is journaled.
+	// Either way nothing was decided.
+	codeRecordTooLarge = string(record.CodeRecordTooLarge)
 )
 
 // refusalCodes are the codes of the gate that refuse a decision for certain,
@@ -54,6 +59,7 @@ var refusalCodes = map[string]error{
 	codeApprovalVoid:               seatapp.ErrCannotDecide,
 	codePreviousEpoch:              seatapp.ErrCannotDecide,
 	codeDecisionInvalid:            seatapp.ErrCannotDecide,
+	codeRecordTooLarge:             seatapp.ErrTooLarge,
 	ownerwire.CodeAssertionInvalid: seatapp.ErrAssertionRefused,
 	ownerwire.CodeKeyRevoked:       seatapp.ErrKeyRevoked,
 	codeKeyUnknown:                 seatapp.ErrKeyRevoked,
@@ -149,10 +155,14 @@ const reasonNotShown = "the card changed; look at it again"
 // gate's pin.
 const reasonNotOffered = "the desk does not take decisions from the phone now"
 
-// The host's lines for a card the phone did not show whole: a path or a ref
-// longer than the page shows. Approve is not offered for it on the phone,
-// and is not sent; the owner reads it, and approves, at the desk.
+// The host's lines for a card the phone did not show whole: a name, a line
+// of the plan or of the note, a path or a ref longer than the page shows.
+// Approve is not offered for it on the phone, and is not sent; the owner
+// reads it, and approves, at the desk.
 const (
+	reasonCutNames   = "a name of the card (its project, target or feature) is too long to show whole on the phone; approve at the desk"
+	reasonCutPlan    = "a line of the plan is too long to show whole on the phone; approve at the desk"
+	reasonCutNote    = "a line of the lead's note is too long to show whole on the phone; approve at the desk"
 	reasonCutRefs    = "a ref is too long to show whole on the phone; approve at the desk"
 	reasonCutRows    = "a changed path is too long to show whole on the phone; approve at the desk"
 	reasonCutLists   = "a path in a list is too long to show whole on the phone; approve at the desk"
@@ -166,6 +176,10 @@ const (
 // read the same on the page.
 func cutWhy(c card.Card, w seatapp.Whole) string {
 	switch {
+	case !w.Names:
+		return reasonCutNames
+	case len(c.Plan.Lines) != 0 && !w.Plan:
+		return reasonCutPlan
 	case len(c.Refs) != 0 && !w.Refs:
 		return reasonCutRefs
 	case c.Diff != nil && !c.Diff.Truncated && !w.Rows:
@@ -174,6 +188,8 @@ func cutWhy(c card.Card, w seatapp.Whole) string {
 		return reasonCutLists
 	case len(c.Flagged) != 0 && !w.Flagged:
 		return reasonCutFlagged
+	case len(c.Note.Lines()) != 0 && !w.Note:
+		return reasonCutNote
 	case c.Differs != nil && !w.Differs:
 		return reasonCutDiffers
 	}
@@ -203,7 +219,7 @@ func (d *Daemon) Offer(id, binding string, r seatapp.Reading, now time.Time) sea
 	// way: the owner learns why the phone cannot approve this card.
 	if why := cutWhy(c, r.Whole); why != "" {
 		whole := r
-		whole.Whole = seatapp.Whole{Rows: true, Lists: true, Refs: true, Flagged: true, Differs: true}
+		whole.Whole = seatapp.AllWhole
 		if ok, _ := mayOffer(c, whole, now); ok {
 			out.Approve, out.ApproveWhy = false, why
 		}
@@ -361,18 +377,27 @@ func (d *Daemon) DecideChallenge(ctx context.Context, r seatapp.DecideChallengeR
 	if err != nil {
 		return seatapp.DecideChallenge{}, err
 	}
-	// The room of the decision is kept with the challenge's: a challenge is
-	// asked only when its seat.decide will have room too.
-	if !d.budget.reserve(r.Credential) {
+	// The room of the decision is kept with the challenge's, for this
+	// challenge alone: a challenge is asked only when its seat.decide will
+	// have room too.
+	token, ok := d.budget.reserve(kindDecide)
+	if !ok {
 		return seatapp.DecideChallenge{}, seatapp.ErrBusy
 	}
 	ch, err := d.challenge(ctx, frame, wire)
 	if err != nil {
-		d.budget.release(r.Credential)
+		d.budget.release(token)
 		return seatapp.DecideChallenge{}, err
 	}
-	d.budget.bind(r.Credential, ch.ID, ch.Expires)
+	d.budget.bind(token, ch.ID, ch.Expires)
 	return ch, nil
+}
+
+// DropChallenge lets the room kept for the decision of a challenge go: the
+// app dropped the challenge, and its decision will never be sent
+// (seatapp.ChallengeDropper).
+func (d *Daemon) DropChallenge(id string) {
+	d.budget.drop(kindDecide, id)
 }
 
 // challenge sends seat.challenge with the params on the wire and checks the
@@ -405,8 +430,11 @@ func (d *Daemon) challenge(ctx context.Context, frame ownerwire.DecisionFrame, w
 // Decide hands the daemon the frame the app kept for a challenge and the
 // phone's assertion over it (seat.decide), and returns the daemon's outcome.
 // Before anything is sent, a gate that is not connected is
-// [seatapp.ErrDaemonUnavailable], and params over the gate's cap are
-// [seatapp.ErrTooLarge]. Once it is sent, only a refusal says for
+// [seatapp.ErrDaemonUnavailable], params over the gate's cap are
+// [seatapp.ErrTooLarge], and a decision whose challenge's room is no
+// longer kept (its life ended), with no room left, is [seatapp.ErrBusy];
+// a decision of a challenge the link drew, in its life, always has its
+// room. Once it is sent, only a refusal says for
 // certain that nothing was decided: a refusal code maps as for the
 // challenge; the codes unavailable, deadline-exceeded, door-unavailable,
 // journal-reopened and failed, a lost link, the seat's own deadline, and an
@@ -436,8 +464,11 @@ func (d *Daemon) Decide(ctx context.Context, r seatapp.DecideRequest) (seatapp.D
 		return seatapp.DecideResult{}, err
 	}
 	// A decision is counted in the room its challenge kept, and is never
-	// refused for room: the phone has answered.
-	d.budget.spend(r.ChallengeID)
+	// refused for room: the phone has answered. One whose challenge's room
+	// is no longer kept (its life ended) is sent only with room.
+	if !d.budget.answer(kindDecide, r.ChallengeID) {
+		return seatapp.DecideResult{}, seatapp.ErrBusy
+	}
 	var raw json.RawMessage
 	if err := d.c.Call(ctx, OpDecide, wire, &raw); err != nil {
 		return seatapp.DecideResult{}, mapDecide(err)

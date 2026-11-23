@@ -66,6 +66,22 @@ type fakeDaemon struct {
 	decideErr   error
 	decideHook  func()
 	decides     []DecideRequest
+	// dropped are the challenges the app dropped (ChallengeDropper).
+	dropped []string
+}
+
+// DropChallenge notes the challenge the app dropped.
+func (d *fakeDaemon) DropChallenge(id string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.dropped = append(d.dropped, id)
+}
+
+// droppedIDs returns the challenges the app dropped.
+func (d *fakeDaemon) droppedIDs() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.dropped...)
 }
 
 func (d *fakeDaemon) LoginChallenge(context.Context) (LoginChallenge, error) {
@@ -308,10 +324,10 @@ func newRig(t *testing.T, mod ...func(*Config)) *rig {
 		},
 		clock: &clock{t: time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)},
 	}
-	// The test requests carry no Sec-Fetch-Site, as a browser's always do; the
-	// tests of that rule turn the option off.
+	// The test requests carry Sec-Fetch-Site: same-origin on every POST, as
+	// a browser's do (newRequest); the tests of that rule leave it out.
 	cfg := Config{Origin: testOrigin, RPID: testRPID, Daemon: r.daemon, Now: r.clock.Now, Random: &counterReader{},
-		AllowNoFetchMetadataForTests: true, ClientAddrHeader: testClientHeader}
+		ClientAddrHeader: testClientHeader}
 	for _, m := range mod {
 		m(&cfg)
 	}
@@ -329,6 +345,11 @@ func newRig(t *testing.T, mod ...func(*Config)) *rig {
 func newRequest(method, target string, body io.Reader) *http.Request {
 	req := httptest.NewRequest(method, target, body)
 	req.Host = testRPID
+	if method == "POST" {
+		// Every browser that makes a passkey sends it, and the app refuses
+		// a POST without it.
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+	}
 	return req
 }
 
@@ -336,11 +357,14 @@ func newRequest(method, target string, body io.Reader) *http.Request {
 func (r *rig) do(method, path string, body io.Reader, header map[string]string) *httptest.ResponseRecorder {
 	req := newRequest(method, path, body)
 	for k, v := range header {
-		if k == "Host" {
+		switch {
+		case k == "Host":
 			req.Host = v
-			continue
+		case v == "":
+			req.Header.Del(k)
+		default:
+			req.Header.Set(k, v)
 		}
-		req.Header.Set(k, v)
 	}
 	w := httptest.NewRecorder()
 	r.h.ServeHTTP(w, req)
@@ -351,11 +375,14 @@ func (r *rig) do(method, path string, body io.Reader, header map[string]string) 
 func doTo(h http.Handler, method, path, body string, header map[string]string) *httptest.ResponseRecorder {
 	req := newRequest(method, path, strings.NewReader(body))
 	for k, v := range header {
-		if k == "Host" {
+		switch {
+		case k == "Host":
 			req.Host = v
-			continue
+		case v == "":
+			req.Header.Del(k)
+		default:
+			req.Header.Set(k, v)
 		}
-		req.Header.Set(k, v)
 	}
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)

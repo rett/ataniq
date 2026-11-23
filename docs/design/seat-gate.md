@@ -369,9 +369,16 @@ door (`decision-invalid`, as `Service.Decide` says it); the credential named is
 on the list (`key-unknown`), not revoked (`key-revoked`), and of a kind the
 verifier knows and the record's project accepts (`kind-refused`);
 `frame.binding_sha256` equals the binding digest of the daemon's own pending
-record (`binding-mismatch`); and the sign-offs equal the record's flagged list
-for an approve and are none for a deny (`decision-invalid`). So the phone is
-never asked to sign what would be refused. None of these refusals is an entry
+record (`binding-mismatch`); the sign-offs equal the record's flagged list
+for an approve and are none for a deny (`decision-invalid`); and the
+decision's record, as `seat.decide` would write it (the frame's fields with
+the daemon's own, confirmed by passkey, with a seat block of the lengths it
+will have), fits the record's cap of 8 KiB (`record-too-large`, the code
+`record.EncodeDecision` gives). A pending record may flag more than a
+decision record can sign off, and the params of `seat.challenge` may be
+larger than a decision record, so a challenge within its cap may still be
+for a decision the journal cannot hold. So the phone is never asked to sign
+what would be refused. None of these refusals is an entry
 of the owner journal: no decision was made (see
 [what is journaled](#what-is-journaled-and-what-is-logged)).
 
@@ -609,9 +616,11 @@ ended), and keeps the value server-side as its digest. The session's cookie
 is `__Host-seat`, Secure, HttpOnly and SameSite=Strict; a session ends 30
 minutes after its last request and 12 hours after the login, or at a
 logout (`POST /api/logout`). The page goes to the login page only once the
-seat answered the logout; when the answer is lost, or is not a success, the
-session may still be live, so the page says "Logout not confirmed" and the
-button stays. Every later
+seat answered the logout: a 200, not redirected (the script's fetch refuses
+a redirect), whose body is the seat's JSON acknowledgement
+`{"next":"/login/"}`; when the answer is lost, or is anything else (a
+proxy's page, say), the session may still be live, so the page says
+"Logout not confirmed" and the button stays. Every later
 decision of the session is to use exactly the session's credential
 (`allowCredentials` holding only its raw id; G9). The seat link checks that a
 login's answer names the credential the assertion named, by its raw id and its
@@ -647,21 +656,40 @@ the seat sent. A call without room is not sent: the phone says the desk is
 busy (`desk_busy`, the problem "The desk is busy", or `rate_limited` for a
 pairing), before anything is asked. A decision's challenge is asked only
 when the room of decisions holds it and its `seat.decide` as well: the room
-of the decision is kept for the credential's last challenge (a new tap of the
-same credential takes its place) until the decision is sent, or the
-challenge's life ends (5 minutes at most). So a decision the phone signed
-is never refused for the gate's rate: strangers' logins and pairings, and
-reads, cannot take its room, and a tap past it is told the desk is busy
-before any challenge is drawn or the passkey asked.
-The seat relays pairings for anyone who reaches its pairing page, and the
-gate counts each pairing the daemon refuses against the seat's refusal bound
-(16 in 10 minutes; see [the refusal bound](#the-refusal-bound)), past which
-it refuses every request of the seat, the owner's too. So besides 5 tries per
-source in 15 minutes, the seat hands the daemon at most 6 pairings in 11
-minutes from all sources together (a body the seat refuses itself is not
-counted); the window is a minute longer than the gate's so that pairings
-sent a little more than 10 minutes apart are not counted closer at the gate.
-The pairing code's own limit, 5 wrong codes, stays.
+of the decision is kept for that one challenge, under a token the link gives
+before the challenge is asked, until the decision is sent, the seat app
+drops the challenge (a new tap of the same session takes its place, or the
+tap is burnt before its decision is sent), or the challenge's life ends (5
+minutes at most). Each challenge has its own room, so several sessions of
+one credential (a synced passkey in two browsers), and challenges asked at
+the same moment, each keep theirs. So a decision the phone signed is never
+refused for the gate's rate: strangers' logins and pairings, reads and other
+sessions' challenges cannot take its room, and a tap past it is told the desk
+is busy before any challenge is drawn or the passkey asked.
+A login challenge is asked in the same way: only when anyone's room holds it
+and its `seat.login` as well, the room of the login kept for that one
+challenge until the login is sent or the challenge's life ends (5 minutes at
+most). So the owner's login is never refused for room once the phone has
+answered. Strangers can still use up the login challenges, and with them the
+owner's: 8 a minute from all sources, and anyone's room, which 6 challenges
+fill for as long as they are not answered (5 minutes at most), and which
+pairings share. That keeps the owner from logging in on the phone, or
+pairing one, while it lasts; it never touches the desk.
+The seat relays pairings for anyone who reaches its pairing page. The gate
+does not count a refused pairing against the seat's refusal bound (see
+[the refusal bound](#the-refusal-bound)), so strangers cannot shut the
+owner's seat out with them. Besides 5 tries per source in 15 minutes, the
+seat still hands the daemon at most 6 pairings in 11 minutes from all
+sources together (a body the seat refuses itself is not counted): that
+bounds what anyone who reaches the page can make the seat send, which is
+the daemon's log lines of refused pairings, the tries at an open pairing
+code, and the pairings' share of anyone's room above. Its cost: two sources
+that post well-formed registrations keep the owner's own pairing answered
+`rate_limited` for as long as they keep it up, and pairings and logins
+share anyone's room, so strangers at either page delay the other. They can
+deny pairing and logging in on the phone, never the desk (see
+[limits that stay](#limits-that-stay)). The pairing code's own limit, 5
+wrong codes, stays.
 Only a session reads cards, and the reads of one credential's sessions are
 limited to 20 a minute (a card page asks the gate once; the first page of a
 card's path list may ask twice, to learn the card's review), within the
@@ -914,7 +942,12 @@ How it is built (G9), where the points above left a choice:
   before a card was replaced (the same id and page count, another review)
   count for nothing on the replacement. Only a GET that the seat answered
   with the page is a read: a `HEAD` of a card page is refused 405 and asks
-  the daemon nothing. The page shows a path or a ref (a ref
+  the daemon nothing, and a page counts (a read of the card, which settles
+  a lost answer and keeps the page's form; a page of the path list) only
+  once it was written whole and flushed to the connection without an
+  error. A Card page's read is checked again then: a decision of the card
+  sent, or an answer lost, since the read began leaves it stale, and
+  nothing is noted. The page shows a path or a ref (a ref
   line's ref, the branch a prune's deleted ref was merged into, a flagged
   path and its rule, a path or ref of the "differs from" block) up to 1024
   characters of its escaped text, and cuts a longer one with a count of
@@ -926,11 +959,24 @@ How it is built (G9), where the points above left a choice:
   `Card.Approve` (MayApprove with the boxes ticked) or `Card.Deny` to build
   the frame; a decision they refuse is not sent. Approve is withheld, and
   not sent, for a card the page did not show whole: the page says which
-  part ("a ref", "a changed path", "a path in a list", "a flagged path",
+  part ("a name of the card", "a line of the plan", "a ref", "a changed
+  path", "a path in a list", "a flagged path", "a line of the lead's note",
   "a path or a ref of how the card differs" is too long to show whole on the
   phone; approve at the desk). So two flagged paths that read the same on
   the page because both were cut are never signed off by their index. Deny
-  stays. A prune's ref line shows the branch its deleted ref was merged
+  stays. The names are those the header and the confirm box show, cut at
+  64 characters: the project, the role, the verb, the feature, the target
+  branch and the class. The project and the target are the owner's own
+  configuration (the scratch settings' `project`, a name of at most 63
+  characters, which is never cut, and `target`, a branch under
+  `refs/heads/` of up to 200 bytes, which can be), and the feature is the
+  lead's, at most 48; the record itself bounds neither the project nor an
+  effect's ref, so the rule is kept for all of them rather than trusted
+  to the configuration: a project whose target branch has a name over 64
+  characters is approved at the desk. The plan's lines and the note's
+  lines are cut at 4000 characters: the plan is the host's text under the
+  binding, which a lead's request shapes, and the note is the lead's, at
+  most 2 KiB, so a note line is never cut while that cap stands. A prune's ref line shows the branch its deleted ref was merged
   into and that branch's tip (the first 12 digits), as the desk does. The
   Card page of a card that ended, or whose decision is on its way, has no
   form.
@@ -946,9 +992,9 @@ How it is built (G9), where the points above left a choice:
   Look at it again." (`card_changed`), and a form the session was never
   served "Look at the card again first." (`look_again`), before any
   challenge is drawn or the passkey asked. A tap without a form id is
-  refused (`bad_request`), with `Sec-Fetch-Site` or without it (the test
-  option that lets a request without that header through lets no tap leave
-  the form out). The link freezes the frame from the card it showed at that
+  refused (`bad_request`). The app has no option that lets a POST come
+  without `Sec-Fetch-Site: same-origin`: its tests and the end-to-end rigs
+  send the header, as a browser does. The link freezes the frame from the card it showed at that
   binding, asks `seat.challenge`, and recomputes the challenge before the
   browser sees it.
   The seat keeps one decision per session; a new tap replaces it. The page
@@ -978,6 +1024,10 @@ How it is built (G9), where the points above left a choice:
   cap before it sends them, and the gate still reads them strictly. Params
   over the cap are not sent: the phone says "This is too large to send."
   (`too_large`), nothing was decided, and the decision is made at the desk.
+  A decision whose record the daemon finds over the record's cap is refused
+  `record-too-large` before its challenge is drawn (or, on `seat.decide`,
+  before anything is journaled); the seat link takes that code as a certain
+  refusal, and the phone says the same, "This is too large to send.".
 - Decision challenges are limited to 10 a minute per credential, and the
   seat link asks one only when the room of decisions at the gate (16 calls
   in 80 seconds, see [login](#login-seatlogin-challenge-and-seatlogin)) holds
@@ -1004,14 +1054,15 @@ outcome is unknown: the decision may be journaled and on its way to the door,
 or not. Then the seat:
 
 - never sends the decision again, by itself or on a tap, and queues nothing
-  (built: the card is marked sent before the decision is sent, a refusal
-  clears the mark, and any other answer leaves it until a new read of the
-  card: a GET of its Card page whose read of the daemon began after the
-  mark was set. A `HEAD` is no read, and a GET whose read began before the
-  mark may show the card as it was before the decision, so its page holds
-  no form, says "A decision of this card was sent and its outcome is not
-  known. Look at it again." and leaves the mark. While it stands, a tap is
-  refused without asking the daemon);
+  (built: the card is marked sent, and in flight, before the decision is
+  sent; a refusal clears the mark, and any other answer leaves it, marks it
+  again and ends the flight, until a new read of the card: a GET of its
+  Card page whose read of the daemon began after the answer was lost. A
+  `HEAD` is no read, and a GET made while the decision is in flight, or
+  whose read began before the mark, may show the card as it was before the
+  decision, so its page holds no form, says "A decision of this card was
+  sent and its outcome is not known. Look at it again." and leaves the
+  mark. While it stands, a tap is refused without asking the daemon);
 - shows "Decision sent. Outcome unknown." and offers only "Look again", the
   Card page read afresh;
 - on "Look again", once the gate is back, reads the same card with
@@ -1190,6 +1241,29 @@ The owner carries every fingerprint by hand, both ways, at the first exchange.
   challenge for another; the assertion binds the binding digest, not what the
   phone showed. Showing a short tag of the binding at the desk and on the phone
   is a later change.
+- A taken-over seat can turn a login into a decision. The seat chooses the
+  challenge the browser signs, and the phone's passkey sheet shows only the
+  site. A taken-over seat host, or whatever terminates TLS in front of it,
+  can hand a decision's challenge to the login page, so each Face ID the
+  owner gives that origin, a login's included, is worth one decision of any
+  pending card, with any sign-offs. The separate login and decision domains
+  keep a confused honest seat from taking one for the other; they do not
+  hold against a hostile one. One gesture is still one decision: it cannot
+  mint more, and the desk's own decisions are untouched.
+- Strangers can deny the phone. Whoever reaches the seat's pages can spend
+  the limits the seat keeps for everyone: 6 pairings in 11 minutes, 8 login
+  challenges a minute, and anyone's room at the gate, which 6 unanswered
+  login challenges hold for up to 5 minutes. While they keep it up the owner
+  cannot pair a phone, or log in on one; a login the phone already answered
+  is never refused for room, and the desk is never touched.
+- A taken-over seat host can send refused pairings without bound. The gate
+  counts no refused pairing, so that strangers cannot shut the seat out
+  through the honest seat app; a seat host that is taken over talks to the
+  gate itself, at its 60 requests a minute, and fills the daemon's log with
+  refused pairings (`credential-invalid` is answered before the code is
+  looked at, so it costs the sender nothing). Guessing stays bounded: the
+  daemon burns a pairing code after 5 wrong codes, and such a seat can
+  burn the owner's open code, as before.
 - The lead's sandbox must not reach the gate's port. A qualification case that a
   connection from inside the sandbox fails is needed before any real use.
 - Nothing is queued while the phone or the gate is offline.

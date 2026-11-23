@@ -47,8 +47,9 @@
 // securityHeaders in app.go). Every request body is cut at [MaxBody] bytes.
 // Every POST needs an Origin header equal to [Config].Origin, a Host header
 // equal to the origin's host, Sec-Fetch-Site same-origin (every browser that
-// can make a passkey sends it, so a POST without it is refused) (a fixed 403
-// otherwise), and the JSON content type. The relying party id is exactly the
+// can make a passkey sends it, so a POST without it is refused, and no
+// option of [Config] lets one through) (a fixed 403 otherwise), and the JSON
+// content type. The relying party id is exactly the
 // origin's host. The content security policy includes
 // require-trusted-types-for 'script', which the scripts meet by setting text
 // only with textContent, and every response carries
@@ -108,8 +109,12 @@
 // to 5 per source address per 15 minutes, in memory; the source is the
 // address in [Config].ClientAddrHeader when that is set, else the peer. The
 // pairings handed to the daemon are limited to 6 in 11 minutes from all
-// sources together: the gate counts each one the daemon refuses against the
-// seat's refusal bound, past which it refuses every request of the seat.
+// sources together. The gate does not count a refused pairing against the
+// seat's refusal bound, so strangers cannot shut the seat out with them; the
+// bound is for the daemon's log, the tries at an open pairing code and the
+// room at the gate for anyone's calls. Its cost: strangers who spend it keep
+// the owner's own pairing waiting (rate_limited) while they keep it up, never
+// the desk.
 //
 // # Login
 //
@@ -145,9 +150,10 @@
 // the form the app makes is not looked up. A session ends 30 minutes after
 // its last request ([SessionIdle]) and 12 hours after the login whatever its
 // use ([SessionMax]), and at POST /api/logout. The logout script goes to
-// the login page only when the seat answered the logout; with no answer, or
-// another, the session may still be live, and the page says "Logout not
-// confirmed" and leaves the button to tap again. At most 16 are kept; a new
+// the login page only when the seat answered the logout with its JSON
+// acknowledgement, not redirected (its fetch refuses a redirect); with no
+// answer, or another, the session may still be live, and the page says
+// "Logout not confirmed" and leaves the button to tap again. At most 16 are kept; a new
 // one drops the one used least recently.
 //
 // Both cookies are __Host- cookies, Secure, HttpOnly and SameSite=Strict,
@@ -171,7 +177,11 @@
 // twice), so the port counts every call it sends and keeps each kind to its
 // own room at the gate (package seatlink): anyone's pairings and logins,
 // reads, and decisions, which the others cannot take, and a decision's
-// challenge only with room for the decision too. A call without room is
+// challenge only with room for the decision too, kept for that challenge
+// until its decision is sent, and a login challenge only with room for its
+// login, so a login is not refused for room after the passkey. The app
+// tells a port that keeps such room ([ChallengeDropper]) of each decision's
+// challenge whose decision it will not send. A call without room is
 // [ErrBusy], and nothing is sent. When the port or the gate says the rate is
 // spent, the phone says the desk is busy and to try again in a minute;
 // nothing is retried by itself.
@@ -208,10 +218,16 @@
 // the session's reading of it (kept server-side, see [Reading]) counts the
 // page's rows, lists, refs and "differs from" block once the page was
 // served, each only when the page showed every path and ref of it whole
-// ([Whole]), and a cut path list by the pages of it the session was served
-// that cut no path, each with the review digest it was read for. The port
-// withholds Approve for a part not shown whole. A HEAD of a card page is
-// refused 405: only a GET answered with its page is a read.
+// ([Whole], which also says whether the header's names and the lines of
+// the plan and of the note were shown whole), and a cut path list by the
+// pages of it the session was served that cut no path, each with the review
+// digest it was read for. The port withholds Approve for a part not shown
+// whole. A HEAD of a card page is
+// refused 405: only a GET answered with its page is a read, and only once
+// the page was written and flushed without an error. A Card page's read
+// (which settles a lost answer and keeps the page's form) is checked again
+// then, and is not noted when a decision of the card was sent, or an answer
+// lost, since the read began.
 //
 // A tap asks POST /api/decide-challenge with the card, the id of the page's
 // form, the action, the indexes of the boxes ticked and the reason; the
@@ -237,9 +253,10 @@
 //
 // Once a decision is sent, only a refusal says that nothing was decided.
 // Any other answer, and no answer, is "Decision sent. Outcome unknown.":
-// the card is marked sent before the port is asked, and only a new read of
-// the card (its page, from a read of the port that began after the mark;
-// the script offers only "Look again") clears the mark,
+// the card is marked sent, and in flight, before the port is asked; a lost
+// answer marks it again and ends the flight, and only a new read of the
+// card (its page, from a read of the port that began after the answer was
+// lost; the script offers only "Look again") clears the mark,
 // so a lost answer is never followed by a second decision unseen and
 // nothing is queued. A held approve shows the host's line and the held
 // words. Every failure is a fixed code with the app's fixed words ("say");

@@ -244,7 +244,7 @@ func (w *decideWorld) newSeat(id seatgate.Identity) *decSeat {
 	}
 	app, err := seatapp.New(seatapp.Config{
 		Origin: pairOrigin, RPID: pairRPID, Daemon: link, Now: w.rig.clock.Now,
-		AllowInsecureLoopbackForTests: true, AllowNoFetchMetadataForTests: true,
+		AllowInsecureLoopbackForTests: true,
 	})
 	if err != nil {
 		w.t.Fatal(err)
