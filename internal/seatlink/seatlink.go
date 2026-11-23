@@ -90,7 +90,8 @@
 // [Daemon.Offer], [Daemon.DecideChallenge] and [Daemon.Decide] are a
 // decision from the phone, in the form docs/design/seat-gate.md gives it
 // ("The challenge", "Decide" and "The phone's side"), and only when the
-// gate's hello listed "decide" and the link has the gate's pin. Offer asks
+// gate's hello listed "decide" and the link has the gate's pin; without
+// them Offer offers neither, so the Card page holds no form. Offer asks
 // the gate nothing: it answers what the Card page may offer by the card
 // model's rules (MayApprove with every flagged path signed off, and Deny),
 // and withholds Approve, saying which part, for a card the page did not

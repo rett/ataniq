@@ -881,7 +881,12 @@ How it is built (G9), where the points above left a choice:
   logins (16), reads (20) and decisions stay within the gate's 60.
 - `Permissions-Policy` allows `publickey-credentials-get` on a Card page that
   holds the form; the page without it forbids it as every other response
-  does.
+  does. A link that cannot decide (a gate whose hello did not list
+  `decide`, as after a session's seat reconnected to a read-only gate, or a
+  link without the gate's pin) offers neither approve nor deny, so its Card
+  page holds no form, loads no deciding script, forbids the passkey, and
+  says "This card cannot be decided now: the desk does not take decisions
+  from the phone now."
 
 Before the owner submits, the page tells apart: a cancel ("Cancelled. Nothing
 was sent."), a challenge that ran out ("This took too long. Tap again."), and a

@@ -303,6 +303,70 @@ func TestSeatDecidePagesOfAReplacedReview(t *testing.T) {
 	}
 }
 
+// TestSeatDecideReadOnlyGateHasNoForm: on a gate whose hello lists no
+// "decide", and on a link without the gate's pin, the Card page holds no
+// decide form, loads no deciding script and does not allow
+// publickey-credentials-get; it says the desk takes no decisions from the
+// phone. A tap anyway is refused before anything is sent.
+func TestSeatDecideReadOnlyGateHasNoForm(t *testing.T) {
+	for name, mk := range map[string]func(t *testing.T) (*decideRig, seatapp.Daemon){
+		"no decide": func(t *testing.T) (*decideRig, seatapp.Daemon) {
+			r := newDecideRig(t, "pair", "read", "login")
+			return r, r.link
+		},
+		// A link without the gate's pin asks no login, so the session is
+		// made through a pinned link to the same desk.
+		"no pin": func(t *testing.T) (*decideRig, seatapp.Daemon) {
+			r := newDecideRig(t)
+			pinned := dialPinned(t, r.gate, r.seat)
+			r.link.pin = ""
+			return r, loginVia{Daemon: r.link, login: pinned}
+		},
+	} {
+		r, port := mk(t)
+		clock := &testClock{t: decideNow}
+		h, err := seatapp.New(seatapp.Config{Origin: seatOrigin, RPID: seatRPID, Daemon: port, Now: clock.now, AllowNoFetchMetadataForTests: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		b := newBrowser(h)
+		if w := b.loginWith(t, r.phone); w.Code != 200 {
+			t.Fatalf("%s: login: %d %s", name, w.Code, w.Body)
+		}
+		w := b.do("GET", "/cards/"+r.desk.reads.pending.ID, "")
+		body := w.Body.String()
+		if w.Code != 200 || strings.Contains(body, `id="decide"`) || strings.Contains(body, "decide.js") ||
+			!strings.Contains(body, "This card cannot be decided now: "+reasonNotOffered+".") {
+			t.Errorf("%s: the Card page: %d", name, w.Code)
+		}
+		if pp := w.Header().Get("Permissions-Policy"); !strings.Contains(pp, "publickey-credentials-get=(),") {
+			t.Errorf("%s: Permissions-Policy %q", name, pp)
+		}
+		clock.advance(time.Second)
+		tap, _ := json.Marshal(map[string]any{"card": r.desk.reads.pending.ID, "action": "approve", "signed_off": []int{0, 1}, "reason": ""})
+		if w := b.do("POST", "/api/decide-challenge", string(tap)); w.Code == 200 || (name == "no decide" && said(t, w)["error"] != "decide_unavailable") {
+			t.Errorf("%s: a tap anyway: %d %s", name, w.Code, w.Body)
+		}
+		if c, _ := r.desk.counts(); c != 0 {
+			t.Errorf("%s: the desk was asked %d challenges", name, c)
+		}
+	}
+}
+
+// loginVia is a port whose logins are another port's.
+type loginVia struct {
+	*Daemon
+	login *Daemon
+}
+
+func (l loginVia) LoginChallenge(ctx context.Context) (seatapp.LoginChallenge, error) {
+	return l.login.LoginChallenge(ctx)
+}
+
+func (l loginVia) Login(ctx context.Context, q seatapp.LoginRequest) (seatapp.LoginResult, error) {
+	return l.login.Login(ctx, q)
+}
+
 // TestSeatDecideTamperedChallenge: a challenge the gate answers that is not
 // the card's never reaches the browser, so the phone's passkey is never
 // asked; nothing is decided.

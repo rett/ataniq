@@ -144,6 +144,11 @@ func readingOf(c card.Card, r seatapp.Reading) card.Reading {
 // binding asked.
 const reasonNotShown = "the card changed; look at it again"
 
+// reasonNotOffered is the host's line for a card on a link that cannot
+// decide: a gate whose hello did not list "decide", or a link without the
+// gate's pin.
+const reasonNotOffered = "the desk does not take decisions from the phone now"
+
 // The host's lines for a card the phone did not show whole: a path or a ref
 // longer than the page shows. Approve is not offered for it on the phone,
 // and is not sent; the owner reads it, and approves, at the desk.
@@ -181,8 +186,13 @@ func cutWhy(c card.Card, w seatapp.Whole) string {
 // every flagged path signed off (the sign-offs are the owner's to tick on
 // the page; a card that opened under 400 ms ago is offered, since the tap
 // comes later and is judged then), and a deny when its Deny allows one with
-// no reason. It asks the gate nothing.
+// no reason. A link that cannot decide (no gate pin, or a gate that does
+// not list "decide") offers neither, so the page holds no form and no
+// passkey is asked for. It asks the gate nothing.
 func (d *Daemon) Offer(id, binding string, r seatapp.Reading, now time.Time) seatapp.Offer {
+	if d.pin == "" || !d.offers(CapDecide) {
+		return seatapp.Offer{ApproveWhy: reasonNotOffered, DenyWhy: reasonNotOffered}
+	}
 	c, ok := d.shown.get(id)
 	if !ok || c.BindingSHA256 != binding || binding == "" {
 		return seatapp.Offer{ApproveWhy: reasonNotShown, DenyWhy: reasonNotShown}
