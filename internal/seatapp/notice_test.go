@@ -179,7 +179,7 @@ func TestNoticeCoreDailyCap(t *testing.T) {
 func TestNoticeCoreFailureBacksOffAndRetriesTheSameCount(t *testing.T) {
 	var c noticeCore
 	d := c.decide(t0, live(1), time.Time{})
-	c.attempt(t0)
+	c.tried(t0)
 	if !c.failed(t0) {
 		t.Error("the first failure is not logged")
 	}
@@ -195,9 +195,126 @@ func TestNoticeCoreFailureBacksOffAndRetriesTheSameCount(t *testing.T) {
 	if !d.Send || d.N != 3 {
 		t.Errorf("after the back-off: %+v", d)
 	}
-	// A failure counts for the day's tally, and a success ends the back-off.
-	if c.dayCalls != 1 {
-		t.Errorf("calls %d", c.dayCalls)
+	// A call that got no answer does not count for the day's tally.
+	if c.dayCalls != 0 {
+		t.Errorf("answered calls %d after a call that got no answer", c.dayCalls)
+	}
+}
+
+func TestNoticeCoreBackoffDoublesToThirtyMinutesAndASuccessResets(t *testing.T) {
+	var c noticeCore
+	now := t0
+	var waits []time.Duration
+	for i := 0; i < 8; i++ {
+		d := c.decide(now, live(1), time.Time{})
+		if !d.Send {
+			t.Fatalf("failure %d: %+v", i, d)
+		}
+		c.tried(now)
+		c.failed(now)
+		waits = append(waits, c.backoffUntil.Sub(now))
+		now = c.backoffUntil
+	}
+	want := []time.Duration{time.Minute, 2 * time.Minute, 4 * time.Minute, 8 * time.Minute, 16 * time.Minute, 30 * time.Minute, 30 * time.Minute, 30 * time.Minute}
+	if !reflect.DeepEqual(waits, want) {
+		t.Fatalf("waits %v, want %v", waits, want)
+	}
+	// One that the notifier took ends the run: the next failure waits a
+	// minute again.
+	c.tried(now)
+	c.attempt(now)
+	c.sent(now, 1)
+	d := c.decide(now.Add(noticeSpacing), live(2), time.Time{})
+	if !d.Send {
+		t.Fatalf("after a success: %+v", d)
+	}
+	c.tried(now)
+	c.failed(now)
+	if got := c.backoffUntil.Sub(now); got != noticeBackoff {
+		t.Errorf("the wait after a success and a failure is %v, want %v", got, noticeBackoff)
+	}
+}
+
+// The reviewer's demonstration: the notifier is down for 40 minutes, then
+// back; a card that arrives two hours on still gets its notice, the same day.
+func TestNoticeCoreAnOutageDoesNotSpendTheDay(t *testing.T) {
+	var c noticeCore
+	now := t0
+	calls := 0
+	for now.Before(t0.Add(40 * time.Minute)) {
+		d := c.decide(now, live(1), time.Time{})
+		if !d.Send {
+			now = d.Wake
+			continue
+		}
+		c.tried(now)
+		c.failed(now) // no answer: nothing for the day's tally
+		calls++
+		now = c.backoffUntil
+	}
+	if calls == 0 || calls >= noticeDailyMax {
+		t.Fatalf("%d failed calls in 40 minutes", calls)
+	}
+	if c.dayCalls != 0 {
+		t.Fatalf("%d calls counted for the day after calls that got no answer", c.dayCalls)
+	}
+	// Back, with the card still waiting: the notice goes at the next try.
+	d := c.decide(c.backoffUntil, live(1), time.Time{})
+	if !d.Send {
+		t.Fatalf("after the outage: %+v", d)
+	}
+	c.tried(c.backoffUntil)
+	c.attempt(c.backoffUntil)
+	c.sent(c.backoffUntil, 1)
+	// Two hours on a card comes: a notice the same day.
+	later := t0.Add(2 * time.Hour)
+	if d := c.decide(later, live(2), time.Time{}); !d.Send || d.N != 2 {
+		t.Errorf("a card two hours later: %+v", d)
+	}
+}
+
+func TestNoticeCoreAnsweredCallsCountAndTheSafetyValveHolds(t *testing.T) {
+	// A call the notifier answered with a refusal counts toward the 30.
+	var c noticeCore
+	now := t0
+	for i := 1; i <= noticeDailyMax; i++ {
+		c.tried(now)
+		c.attempt(now) // an answer, rate_limited say
+		c.failed(now)
+		now = c.backoffUntil
+		c.decide(now, live(i), time.Time{})
+	}
+	d := c.decide(now, live(1), time.Time{})
+	if d.Send {
+		t.Fatalf("a call past %d answered calls in a day: %+v", noticeDailyMax, d)
+	}
+	if want := t0.Add(noticeDay); !d.Wake.Equal(want) {
+		t.Errorf("wake %v, want %v", d.Wake, want)
+	}
+
+	// Calls that got no answer do not count for the 30, but at most
+	// noticeTryMax of any end are made in a day.
+	var v noticeCore
+	for i := 0; i < noticeTryMax; i++ {
+		at := t0.Add(time.Duration(i) * time.Second)
+		v.tried(at)
+		v.failed(at)
+	}
+	end := t0.Add(time.Duration(noticeTryMax) * time.Second)
+	// The back-off is long past; only the valve holds.
+	at := end.Add(noticeBackoffMax)
+	d = v.decide(at, live(1), time.Time{})
+	if d.Send {
+		t.Fatalf("a call past %d in a day: %+v", noticeTryMax, d)
+	}
+	if want := t0.Add(noticeDay); !d.Wake.Equal(want) {
+		t.Errorf("wake %v, want %v", d.Wake, want)
+	}
+	if d := v.decide(t0.Add(noticeDay), live(1), time.Time{}); !d.Send {
+		t.Errorf("no call when the day is out: %+v", d)
+	}
+	if v.dayCalls != 0 {
+		t.Errorf("answered calls %d, want none", v.dayCalls)
 	}
 }
 
@@ -546,10 +663,11 @@ func TestNoticeErrorBacksOffWithoutAStorm(t *testing.T) {
 	// A minute after the failure it tries once more, and fails again.
 	nr.pass(t, time.Second)
 	nr.expect(t, 1, 1)
-	nr.pass(t, 59*time.Second)
+	// The wait doubles: two minutes now.
+	nr.pass(t, 119*time.Second)
 	nr.expect(t, 1, 1)
-	// The notifier is back: the next try, a minute later, goes through, and
-	// then it is quiet.
+	// The notifier is back: the next try, two minutes after the last, goes
+	// through, and then it is quiet.
 	nr.n.setErr(nil)
 	nr.pass(t, time.Second)
 	nr.expect(t, 1, 1, 1)
@@ -753,4 +871,48 @@ func TestNoticeToldOnlyIntegers(t *testing.T) {
 	})
 	nr.parked(t, before+1)
 	nr.expect(t, 2)
+}
+
+// Through the goroutine: calls that got no answer do not spend the day's
+// cap, a refusal with a code does, and the wait between failures doubles.
+func TestNoticeOutageThenRecoveryStillNotifiesTheSameDay(t *testing.T) {
+	nr := newNoticeRig(t)
+	nr.n.setErr(errors.New("the notifier is not reachable"))
+	nr.change(t, 1)
+	for i := 0; i < 40; i++ {
+		nr.pass(t, time.Minute)
+	}
+	calls := len(nr.n.got())
+	if calls < 2 || calls >= 20 {
+		t.Fatalf("%d calls in 40 minutes of outage: the wait does not double", calls)
+	}
+	nr.n.setErr(nil)
+	nr.pass(t, noticeBackoffMax)
+	nr.expect(t, append(nr.n.got()[:calls:calls], 1)...)
+	// A card two hours on: told.
+	nr.pass(t, 2*time.Hour)
+	nr.change(t, 2)
+	if got := nr.n.got(); got[len(got)-1] != 2 {
+		t.Fatalf("no notice for a card after the outage: %v", got)
+	}
+}
+
+func TestNoticeACodedRefusalCountsTowardTheDay(t *testing.T) {
+	nr := newNoticeRig(t)
+	nr.n.setErr(&PushError{Code: "rate_limited"})
+	nr.change(t, 1)
+	// Each try, as far as the back-off lets it, is an answered call; 30 of
+	// them end the day's notices.
+	for i := 0; i < 200 && len(nr.n.got()) < noticeDailyMax; i++ {
+		nr.pass(t, noticeBackoffMax)
+	}
+	if n := len(nr.n.got()); n != noticeDailyMax {
+		t.Fatalf("%d calls answered with a refusal, want %d", n, noticeDailyMax)
+	}
+	nr.n.setErr(nil)
+	nr.pass(t, noticeBackoffMax)
+	nr.change(t, 2)
+	if n := len(nr.n.got()); n != noticeDailyMax {
+		t.Fatalf("a call after %d answered calls in a day: %d", noticeDailyMax, n)
+	}
 }

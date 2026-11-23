@@ -32,6 +32,13 @@ func pushError(err error) error {
 	return err
 }
 
+// Notify is the client's, with a refusal handed on as a [*seatapp.PushError]:
+// the app counts a call the notifier answered, with a code, toward its day's
+// cap, and one that got no answer not.
+func (n pushNotifier) Notify(ctx context.Context, count int) error {
+	return pushError(n.Client.Notify(ctx, count))
+}
+
 func (n pushNotifier) Info(ctx context.Context) (string, int, error) {
 	info, err := n.Client.Info(ctx)
 	if err != nil {

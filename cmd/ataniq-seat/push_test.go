@@ -172,3 +172,28 @@ func TestPushValidationMatchesTheNotifiers(t *testing.T) {
 		t.Error("the good subscription is refused")
 	}
 }
+
+// TestPushNotifierNotifyAnswersAreTheApps: the app counts a notify the
+// notifier answered with a code toward its day's cap (a *seatapp.PushError),
+// and one that got no answer not, so the command's Notify hands a coded
+// refusal on as the app's and any other failure as it is.
+func TestPushNotifierNotifyAnswersAreTheApps(t *testing.T) {
+	fake := &seatnotice.FakeHandler{}
+	n := pushAdapterRig(t, fake)
+	ctx := context.Background()
+	var pe *seatapp.PushError
+	if err := n.Notify(ctx, 3); err != nil {
+		t.Fatalf("a notify the notifier took: %v", err)
+	}
+	fake.Err = seatnotice.NewCodedError("rate_limited")
+	if err := n.Notify(ctx, 3); !errors.As(err, &pe) || pe.Code != "rate_limited" {
+		t.Errorf("a rate-limited answer: %v", err)
+	}
+	away, err := seatnotice.NewClient(filepath.Join(t.TempDir(), "none.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (pushNotifier{away}).Notify(ctx, 3); err == nil || errors.As(err, &pe) {
+		t.Errorf("a notifier that is not there: %v", err)
+	}
+}

@@ -2813,8 +2813,11 @@ journal (`journalctl -u ataniq-seat-notify.service`) has the counts.
 
 ### What breaks if the notifier is down
 
-Nothing but notices. The seat tries again a minute later after a failed
-call and logs it at most once a minute, with no endpoint or key in the line;
+Nothing but notices. After a failed call the seat tries again a minute
+later, then 2, 4, 8, 16 and 30 minutes apart (a call the notifier took ends
+that), and logs it at most once a minute, with no endpoint or key in the
+line; calls the notifier did not answer do not use up the seat's 30 notices a
+day (at most 200 calls of any end are made a day);
 the pages, the cards, the decisions and the phone's polls do not depend on
 the notifier. One caution at a switch: the reload list restarts the notifier,
 and a restart that fails (a missing key, a subscriptions file that is not

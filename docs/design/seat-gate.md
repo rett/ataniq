@@ -1559,12 +1559,18 @@ one of the holds below applies. The rules:
 3. No notice while a browser polled in the last 60 seconds: a page that polls is
    open and the owner is looking at it. Only the time of the last accepted poll
    is kept, with no part of it or of its session.
-4. After a call to the notifier that failed, nothing is sent for 1 minute; a
-   failure is logged at most once a minute, with fixed text.
+4. After a call to the notifier that failed, nothing is sent for 1 minute; each
+   failure after it doubles the wait, to a longest of 30 minutes, and a call
+   the notifier took ends the run. A failure is logged at most once a minute,
+   with fixed text.
 5. At most 30 calls to the notifier in a window of 24 hours that begins with the
-   first of them. Every call counts, whatever its end, since a call that failed
-   may have been taken. A notice that is due past the 30th waits for the window
-   to end.
+   first of them, counting only the calls the notifier answered: one it took
+   and one it refused with a code (`rate_limited` too). A call that got no
+   answer (a timeout, a connection refused or lost) is not counted, since
+   nothing was sent to the phone for it, so a notifier that is down for an hour
+   does not use up the day's notices. As a safety valve, at most 200 calls of
+   any end in the same kind of window. A notice that is due past either bound
+   waits for its window to end.
 6. The tally, the floor and the back-off are in memory only: a restart of the
    seat resets them. At worst one more notice is sent for the cards then
    waiting, if no page is polling.
@@ -1687,8 +1693,8 @@ seat asks:
   dropped; one that failed otherwise is kept.
 - At most 30 pushes in any hour, every subscription together, whatever the
   seat asks, and each attempt counts. When none could be sent for that reason
-  it answers `rate_limited`, and the seat treats it as any failure (back-off of
-  a minute).
+  it answers `rate_limited`, which the seat counts as an answered call and
+  treats as any failure (the back-off above).
 - It logs fixed lines and counts, never an endpoint, a key or the contact.
 
 The unit's egress is the host's one outbound path besides the gate's, and the

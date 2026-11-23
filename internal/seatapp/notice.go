@@ -18,6 +18,13 @@ import (
 //
 // A notice never decides: the phone's text is fixed and its only link is the
 // Cards list. See the notices section of the live refresh design.
+//
+// Notify's error tells the app whether the notifier answered: a refusal with
+// a code is a [*PushError] (what package seatnotice's client returns as its
+// coded error, wrapped by the command), and counts toward the day's cap of
+// noticeDailyMax like a success; any other error (a timeout, a connection
+// refused or lost) is a call that got no answer, which is backed off and not
+// counted.
 type Notifier interface {
 	Notify(ctx context.Context, n int) error
 }
@@ -34,13 +41,24 @@ const (
 	// within it is not a new notice. A count above what was announced is
 	// one at once.
 	noticeSpacing = 2 * time.Minute
-	// noticeDailyMax is the most notifier calls in noticeDay.
+	// noticeDailyMax is the most calls the notifier answered in noticeDay: a
+	// call that did not get an answer (a timeout, a refused or lost
+	// connection) is not counted, since nothing was sent to the phone for
+	// it; noticeTryMax bounds those in the same day.
 	noticeDailyMax = 30
 	noticeDay      = 24 * time.Hour
-	// noticeBackoff is the wait after a call that failed, and the least
-	// time between two lines in the log about it.
-	noticeBackoff = time.Minute
-	noticeLogGap  = time.Minute
+	// noticeTryMax is the most calls of any end in noticeDay, a safety valve
+	// for a notifier that is unreachable for a long time: with the back-off
+	// below it is a few dozen calls a day, so only a fault in this package
+	// could reach it.
+	noticeTryMax = 200
+	// noticeBackoff is the wait after the first call that failed; each
+	// failure after it doubles the wait, up to noticeBackoffMax, and a call
+	// the notifier took ends it. noticeLogGap is the least time between two
+	// lines in the log about a failure.
+	noticeBackoff    = time.Minute
+	noticeBackoffMax = 30 * time.Minute
+	noticeLogGap     = time.Minute
 	// noticeCall bounds one call to the notifier.
 	noticeCall = 10 * time.Second
 	// noticeMaxN is the largest count told to the notifier.
@@ -58,14 +76,18 @@ const (
 // noticeSpacing has passed, the least the count was in the meantime (so a
 // card decided and another asked is a new notice, but only after the
 // spacing). Then it is held back while a browser polled within noticeQuiet,
-// while a failed call is backed off, and past noticeDailyMax calls in a day.
+// while a failed call is backed off, past noticeDailyMax answered calls in a
+// day, and past noticeTryMax calls of any end in a day.
 type noticeCore struct {
 	floor, low   int
 	lastSent     time.Time
 	backoffUntil time.Time
+	backoff      time.Duration
 	lastLog      time.Time
 	dayStart     time.Time
 	dayCalls     int
+	tryStart     time.Time
+	tries        int
 }
 
 // noticeDecision is what the core says about one state. Send says to tell
@@ -122,14 +144,29 @@ func (c *noticeCore) decide(now time.Time, st WatchState, lastPoll time.Time) no
 	if !c.dayStart.IsZero() && now.Before(c.dayStart.Add(noticeDay)) && c.dayCalls >= noticeDailyMax {
 		hold(c.dayStart.Add(noticeDay))
 	}
+	if !c.tryStart.IsZero() && now.Before(c.tryStart.Add(noticeDay)) && c.tries >= noticeTryMax {
+		hold(c.tryStart.Add(noticeDay))
+	}
 	if !wake.IsZero() {
 		return noticeDecision{Wake: wake}
 	}
 	return noticeDecision{Send: true, N: min(w, noticeMaxN), Waiting: w}
 }
 
-// attempt records a call to the notifier at now, for the day's tally. It
-// counts calls whatever their end: a call that failed may have been taken.
+// tried records a call to the notifier at now, whatever its end, for the
+// safety valve of noticeTryMax in a day.
+func (c *noticeCore) tried(now time.Time) {
+	if c.tryStart.IsZero() || !now.Before(c.tryStart.Add(noticeDay)) {
+		c.tryStart, c.tries = now, 0
+	}
+	c.tries++
+}
+
+// attempt records a call the notifier answered at now (a count taken, or a
+// refusal with a code, rate_limited too), for the day's tally of
+// noticeDailyMax. A call that got no answer is not recorded here: the cap is
+// on the notices the phone could get, and a notifier that is down must not
+// spend it.
 func (c *noticeCore) attempt(now time.Time) {
 	if c.dayStart.IsZero() || !now.Before(c.dayStart.Add(noticeDay)) {
 		c.dayStart, c.dayCalls = now, 0
@@ -137,16 +174,24 @@ func (c *noticeCore) attempt(now time.Time) {
 	c.dayCalls++
 }
 
-// sent records that the notifier took the count waiting.
+// sent records that the notifier took the count waiting, and ends the
+// back-off.
 func (c *noticeCore) sent(now time.Time, waiting int) {
 	c.floor, c.low, c.lastSent = waiting, waiting, now
-	c.backoffUntil = time.Time{}
+	c.backoffUntil, c.backoff = time.Time{}, 0
 }
 
 // failed records a call that did not go through, and reports whether to log
-// it: at most one line in noticeLogGap.
+// it: at most one line in noticeLogGap. The wait before the next call is
+// noticeBackoff after the first failure and doubles with each one after it,
+// to noticeBackoffMax; only sent ends the run of failures.
 func (c *noticeCore) failed(now time.Time) (logIt bool) {
-	c.backoffUntil = now.Add(noticeBackoff)
+	if c.backoff == 0 {
+		c.backoff = noticeBackoff
+	} else {
+		c.backoff = min(c.backoff*2, noticeBackoffMax)
+	}
+	c.backoffUntil = now.Add(c.backoff)
 	if c.lastLog.IsZero() || !now.Before(c.lastLog.Add(noticeLogGap)) {
 		c.lastLog = now
 		return true
@@ -245,7 +290,7 @@ func (a *app) noticeLoop(ctx context.Context, w Watcher, n Notifier, timer notic
 		now := a.cfg.Now()
 		d := core.decide(now, st, a.lastPollTime())
 		if d.Send {
-			core.attempt(now)
+			core.tried(now)
 			cctx, cancel := context.WithTimeout(ctx, noticeCall)
 			err := n.Notify(cctx, d.N)
 			cancel()
@@ -253,11 +298,17 @@ func (a *app) noticeLoop(ctx context.Context, w Watcher, n Notifier, timer notic
 				return
 			}
 			now = a.cfg.Now()
+			// A call counts toward the day's cap when the notifier
+			// answered it: it took the count, or refused it with a code.
+			var pe *PushError
+			if err == nil || errors.As(err, &pe) {
+				core.attempt(now)
+			}
 			if err != nil {
 				if core.failed(now) && a.cfg.Logf != nil {
 					// Fixed text: nothing of the error, which a port
 					// of another kind could fill with anything.
-					a.cfg.Logf("seatapp: the notifier did not take the count; trying again in a minute\n")
+					a.cfg.Logf("seatapp: the notifier did not take the count; trying again later\n")
 				}
 			} else {
 				core.sent(now, d.Waiting)
