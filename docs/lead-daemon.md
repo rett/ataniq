@@ -342,24 +342,26 @@ the owner connection, behind the STAND-IN banner.
   pin. With an origin:
 
 ```text
-ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>, seat origin https://seat.example; it serves pair, read, login, decide and watch
+ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>, seat origin https://seat.example; it serves pair, read, login, decide, watch and genesis
 ```
 
   Without one, the line says why:
 
 ```text
-ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>; it serves pair, read and watch only: no seat origin is configured (the owner-local seat-origin file is missing or empty)
+ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>; it serves pair, read, watch and genesis only: no seat origin is configured (the owner-local seat-origin file is missing or empty)
 ```
 
   `watch` is in the line because the daemon's service can wait for a change of
   the pending cards, which every real start does; a service that cannot would
-  leave it out, and the line would end in "login and decide" or "pair and read
-  only".
+  leave it out. `genesis` is in the line because the gate opens the thread store
+  of the guided new-project interview (below), which every start of the gate
+  does. The line says in words the capabilities the gate lists in its hello,
+  in their order.
 
 The gate speaks TLS 1.3 with pinned keys, strict frames of at most 257 KiB
 (the largest listing, card or page and the response around it) and the limits
-of `internal/seatgate`. It serves the capabilities `pair`, `read` and
-`watch`: the seat's pairing call, `seat.pair`, and the reads `owner.list`, `owner.show`,
+of `internal/seatgate`. It serves the capabilities `pair`, `read`, `watch`
+and `genesis`: the seat's pairing call, `seat.pair`, and the reads `owner.list`, `owner.show`,
 `owner.paths` and `owner.patch`, through `internal/approval/gatehost`, with a
 seat source that is never the decider. With a seat origin it also serves
 `login` (`seat.login-challenge`, `seat.login`) and `decide`
@@ -376,10 +378,24 @@ activity at the desk either. With `watch` it serves the seat's long wait,
 [live refresh](design/seat-gate.md#live-refresh-seatwait)): it decides nothing,
 it carries only each card's id, kind, binding digest and held mark, never card
 text, and it is served with or without a seat origin. The gate holds at most
-two waits at once for a seat. Every other operation is refused `unknown-op`.
+two waits at once for a seat. With `genesis` it serves the guided new-project
+interview, `seat.genesis` (see [the design](design/seat-gate.md#guided-new-project)):
+the owner's answers to a few multiple-choice questions fill a typed project
+brief, one thread per interview, and an answer is a message from the owner and
+never an approval. The daemon keeps the threads in `owner/genesis/` of the state
+folder, one file each (mode 0600, written whole and synced), in a folder it
+makes with mode 0700 when the gate starts and refuses, stopping the daemon at
+its serve step, when it is a link, not the daemon user's or writable by group
+or others. At most two threads are open at once (a third is `genesis-busy`),
+eight files are kept, a thread untouched for 14 days is discarded, and a file
+that is not as the daemon wrote it is not served and is logged once by name, in
+fixed text that holds no answer, and never repaired. The store's log lines
+(`ataniqd: genesis: a thread was started`, `... finished`, `... discarded`,
+`... expired`, an answer refused as secret-shaped, by count only) hold no
+answer. Every other operation is refused `unknown-op`.
 A seat whose key is not pinned is refused in the handshake and never reaches
-the service. On the daemon's socket `seat.pair` stays refused and the five
-seat operations (the four of login and decision, and `seat.wait`) are not served: no connection there is a seat. `owner.show`
+the service. On the daemon's socket `seat.pair` stays refused and the six
+seat operations (the four of login and decision, `seat.wait` and `seat.genesis`) are not served: no connection there is a seat. `owner.show`
 marks a card whose decision is journaled and not yet taken by the door
 (`"on_its_way": true`), on the socket and the gate alike.
 

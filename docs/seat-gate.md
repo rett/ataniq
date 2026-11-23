@@ -248,13 +248,16 @@ it serves, never a pin (the origin file is read at start too, and a missing or
 unusable one only narrows what the gate serves):
 
 ```text
-ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>, seat origin https://seat.example; it serves pair, read, login, decide and watch
-ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>; it serves pair, read and watch only: no seat origin is configured (the owner-local seat-origin file is missing or empty)
+ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>, seat origin https://seat.example; it serves pair, read, login, decide, watch and genesis
+ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>; it serves pair, read, watch and genesis only: no seat origin is configured (the owner-local seat-origin file is missing or empty)
 ```
 
 The first line is the one to look for. `watch` is the live refresh (see
 [Live refresh](#live-refresh)); a daemon whose service cannot wait would leave
-it out ("login and decide", "pair and read only"). Compare the printed fingerprint with the
+it out. `genesis` is the guided new-project interview, whose threads the daemon
+keeps in `owner/genesis/` of the state folder (see
+[the design](design/seat-gate.md#guided-new-project)); the line lists the
+capabilities of the gate's hello, in words. Compare the printed fingerprint with the
 one `seat-gate init` gave and with the seat's pin file.
 
 On the authority host:
@@ -406,9 +409,9 @@ sooner; a tap on an old page is refused by the seat or the daemon as before
 
 How to tell it works.
 
-1. Start the daemon and read its start line: it ends in "decide and watch", or
-   "pair, read and watch only" without a seat origin. A line without `watch`
-   means no live refresh (the daemon's service cannot wait).
+1. Start the daemon and read its start line: it ends in "decide, watch and
+   genesis", or "pair, read, watch and genesis only" without a seat origin. A
+   line without `watch` means no live refresh (the daemon's service cannot wait).
 2. Open `/cards/` on the phone. The status line is empty. A line "Not live"
    means the gate does not list `watch` or the link was down when the page was
    made.
@@ -773,7 +776,8 @@ At the daemon's start:
 | `the gate's key in ... cannot be used` (exit 10) | No key, or the folder or files are not safe. | `ataniqd seat-gate init`; the folder must not be writable by group or other. |
 | `... pins no seat key, so no seat could connect`, or a message about the pin file naming a line (exit 10) | No pin, no file, a link, a mode wider than 0600, another owner, more than 4 pins, a repeat or a line that is not a fingerprint. | Fix `seat-pins`; `ataniqd seat-gate pins` shows what is read. |
 | `seat gate: cannot listen on ...` (exit 18) | The port is taken or the address is not the host's. | Free the port or change ADDR. |
-| Start line says `it serves pair and read only`, or `pair, read and watch only` | No usable origin file (missing, empty, refused or not canonical), or a service that cannot decide. | Fix the origin file and restart; the phone says the desk does not take phone logins until then. |
+| `seat gate: the guided interview's thread store cannot be opened: ...` (exit 18) | The folder `owner/genesis/` of the state folder is a link, is not the daemon user's, is writable by group or other, holds too many files, or cannot be made or read. | Fix or move the folder by hand; the daemon never repairs it and does not start the gate with it in doubt. |
+| Start line says `it serves pair, read, watch and genesis only` (before the thread store, `pair, read and watch only`) | No usable origin file (missing, empty, refused or not canonical), or a service that cannot decide. | Fix the origin file and restart; the phone says the desk does not take phone logins until then. |
 
 At the seat's start (exit 2 with a message on standard error): `--gate-pin-file:`
 followed by "cannot be read, or is a link", "is writable by group or other" or "does

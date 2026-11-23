@@ -31,6 +31,13 @@ func seatGateDir(stateDir string) string {
 	return filepath.Join(stateDir, hostadapter.OwnerDirName, leaddaemon.SeatGateDirName)
 }
 
+// genesisDir is the folder of the guided interview's thread store in a state
+// folder: owner/genesis. The gate opens the store there (package
+// genesis/thread) and makes the folder, mode 0700, when it is not there.
+func genesisDir(stateDir string) string {
+	return filepath.Join(stateDir, hostadapter.OwnerDirName, leaddaemon.GenesisDirName)
+}
+
 // seatGatePrepare reads what the gate needs before the daemon takes a lock:
 // the address of --seat-gate, the gate's key in the state folder and the pin
 // file beside it. It returns the gate, or a code to end with: a configuration
@@ -60,7 +67,7 @@ func (a *app) seatGatePrepare(addr, stateDir string) (*leaddaemon.SeatGate, int)
 	}
 	origin, why := seatGateOrigin(a.getenv)
 	return &leaddaemon.SeatGate{
-		Addr: ap, Identity: id, Pins: pins, Origin: origin, NoOrigin: why,
+		Addr: ap, Identity: id, Pins: pins, Origin: origin, NoOrigin: why, GenesisDir: genesisDir(stateDir),
 		Log:    func(format string, args ...any) { fmt.Fprintf(a.stderr, "ataniqd: "+format+"\n", args...) },
 		Listen: seatGateListen,
 	}, -1
