@@ -1374,7 +1374,9 @@ an answer is written into the page. One status line (`#watch-status`) says:
   sign-offs. When its card is `changed` or `gone` it shows the line above,
   disables every control the page marks with the attribute `data-offer` (the
   sign-off boxes, the reason, Approve, Deny and the confirm button), marks the
-  document so that the decide script keeps them off, and polls no more.
+  document so that the decide script keeps them off in every path that would turn
+  a control on (a cancel at the confirm step does not enable the confirm button
+  of a stale page), and polls no more.
 - A 429 answer is waited out for 60 seconds; any other failure of the poll is
   retried after 5 seconds, doubling to 60, with nothing shown.
 

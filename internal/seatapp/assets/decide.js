@@ -69,6 +69,8 @@
   function refresh() {
     if (approveBtn) { approveBtn.disabled = stale() || busy || !allSigned(); }
     if (denyBtn) { denyBtn.disabled = stale() || busy; }
+    // The confirm button is an offer as well: a stale page keeps it off.
+    if (stale()) { goBtn.disabled = true; }
   }
 
   function showForm(on) {
@@ -81,7 +83,7 @@
     busy = false;
     delete document.documentElement.dataset.sent;
     confirmEl.hidden = true;
-    goBtn.disabled = false;
+    goBtn.disabled = stale();
     cancelBtn.disabled = false;
     showForm(true);
     refresh();
