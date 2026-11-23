@@ -5,7 +5,7 @@
 //	ataniq-seat (--origin https://HOST | --origin-file PATH) (--socket PATH | --listen 127.0.0.1:PORT)
 //	            [--rpid HOST] [--socket-mode 0660] [--client-addr-header NAME]
 //	            [--gate HOST:PORT --gate-pin-file PATH --identity DIR]
-//	            [--decision-guard DIR]
+//	            [--decision-guard DIR] [--notify-socket PATH]
 //	ataniq-seat gate-init --identity DIR
 //
 // The origin is the address the reverse proxy serves the app on, https on
@@ -53,6 +53,18 @@
 // is ever relayed). Pairing, login and the reading of cards decide nothing
 // and are not guarded. Each refusal is logged with the guard's fixed code.
 //
+// --notify-socket names the Unix socket of the notifier, an absolute path, and
+// needs the gate link (the notices follow the cards the link watches). The
+// notifier is a separate unit, not part of this command: it holds the push
+// key and the subscriptions and is the only part that talks to a push
+// service, while this command reaches nothing but the gate and that socket.
+// When cards wait that the owner has not been told of, and no page of the
+// app has polled for a minute, the command tells it one integer, how many
+// cards wait (at most 999, never more than 30 times a day), and nothing
+// about them. A notifier that does not answer is logged at most once a
+// minute and tried again after that minute. Without the flag nothing is told
+// to anyone and nothing changes.
+//
 // Nothing secret is printed or read from the command line. The pairing code
 // is never printed.
 package main
@@ -79,10 +91,11 @@ import (
 	"ataniq/internal/seatapp"
 	"ataniq/internal/seatgate"
 	"ataniq/internal/seatlink"
+	"ataniq/internal/seatnotice"
 )
 
-const usageLine = "Usage: ataniq-seat (--origin https://HOST | --origin-file PATH) (--socket PATH | --listen LOOPBACK:PORT) [--rpid HOST] [--socket-mode MODE] [--client-addr-header NAME] [--gate HOST:PORT --gate-pin-file PATH --identity DIR] [--decision-guard DIR]\n" +
-	"--origin and --origin-file exclude each other; --socket and --listen exclude each other; --socket needs --client-addr-header; --listen takes an IP literal of the loopback range; --gate, --gate-pin-file and --identity go together; --decision-guard is an absolute folder (default " + defaultGuardDir + ")."
+const usageLine = "Usage: ataniq-seat (--origin https://HOST | --origin-file PATH) (--socket PATH | --listen LOOPBACK:PORT) [--rpid HOST] [--socket-mode MODE] [--client-addr-header NAME] [--gate HOST:PORT --gate-pin-file PATH --identity DIR] [--decision-guard DIR] [--notify-socket PATH]\n" +
+	"--origin and --origin-file exclude each other; --socket and --listen exclude each other; --socket needs --client-addr-header; --listen takes an IP literal of the loopback range; --gate, --gate-pin-file and --identity go together; --decision-guard is an absolute folder (default " + defaultGuardDir + "); --notify-socket is the absolute path of the separate notifier unit's socket and needs --gate."
 
 const gateInitUsage = "Usage: ataniq-seat gate-init --identity DIR\n" +
 	"Makes the seat's key for the seat gate in DIR and prints its fingerprint; it never overwrites."
@@ -203,6 +216,8 @@ type options struct {
 	// guardDir is the state folder decisionguard.Check is asked of before
 	// each decision is relayed.
 	guardDir string
+	// notifySocket is the notifier unit's socket, empty for no notices.
+	notifySocket string
 }
 
 // parse reads the flags. On failure it has printed the diagnostic and the
@@ -221,6 +236,7 @@ func parse(args []string, errout io.Writer) (o options, code int, ok bool) {
 	fs.StringVar(&o.gatePinFile, "gate-pin-file", "", "file holding the gate key's fingerprint")
 	fs.StringVar(&o.identity, "identity", "", "folder of the seat's gate key, made by gate-init")
 	fs.StringVar(&o.guardDir, "decision-guard", defaultGuardDir, "the authority host's state folder, which holds decisions.inhibit")
+	fs.StringVar(&o.notifySocket, "notify-socket", "", "absolute path of the Unix socket of the notifier, a separate unit that sends the push; empty for no notices")
 	fail := func(msg string) (options, int, bool) {
 		fmt.Fprintf(errout, "ataniq-seat: %s\n%s\n", msg, usageLine)
 		return options{}, 2, false
@@ -271,6 +287,14 @@ func parse(args []string, errout io.Writer) (o options, code int, ok bool) {
 	}
 	if n := countSet(o.gate, o.gatePinFile, o.identity); n != 0 && n != 3 {
 		return fail("give --gate, --gate-pin-file and --identity together, or none of them")
+	}
+	if o.notifySocket != "" {
+		if !filepath.IsAbs(o.notifySocket) {
+			return fail("--notify-socket must be an absolute path")
+		}
+		if o.gate == "" {
+			return fail("--notify-socket needs the gate link: the notices follow the cards it watches")
+		}
 	}
 	if o.gate != "" {
 		if err := checkGate(o.gate); err != nil {
@@ -462,16 +486,31 @@ func run(ctx context.Context, args []string, errout io.Writer, ready func(net.Ad
 	if daemonHook != nil {
 		daemonHook(daemon)
 	}
-	h, err := seatapp.New(seatapp.Config{
+	cfg := seatapp.Config{
 		Origin:           o.origin,
 		RPID:             o.rpid,
 		Daemon:           daemon,
 		ClientAddrHeader: o.clientAddrHeader,
-	})
+		Logf:             logf,
+	}
+	if o.notifySocket != "" {
+		// The notifier is a separate unit: this command dials its socket,
+		// once for each call, and tells it a count.
+		nc, err := seatnotice.NewClient(o.notifySocket)
+		if err != nil {
+			fmt.Fprintf(errout, "ataniq-seat: --notify-socket: %v\n", err)
+			return 2
+		}
+		cfg.Notifier = nc
+	}
+	// Open starts the notices' goroutine when there is a notifier; Close,
+	// deferred here, stops it when the command ends.
+	h, err := seatapp.Open(cfg)
 	if err != nil {
 		fmt.Fprintf(errout, "ataniq-seat: %v\n", err)
 		return 2
 	}
+	defer h.Close()
 	l, err := listen(o)
 	if err != nil {
 		fmt.Fprintf(errout, "ataniq-seat: %v\n", err)
