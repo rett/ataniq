@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -709,6 +710,49 @@ func TestSeatDecideOnce(t *testing.T) {
 	}
 	// No session, no decision.
 	wantFailure(t, "no session", r.postJSON("/api/decide", decideBodyOf(id, testCredentialID)), 401, "session_ended", sayNoSession)
+}
+
+// TestSeatDecideDropsWhatItWillNotSend: the app tells the port of each
+// challenge whose decision it will never send, so that the room the port
+// keeps for it goes at once: one a new tap of the session replaced, one
+// burnt by a tap that named another challenge, by another credential's
+// assertion or by its expiry, and one whose answer the app did not take.
+// A challenge whose decision was sent is not dropped.
+func TestSeatDecideDropsWhatItWillNotSend(t *testing.T) {
+	r := newRig(t)
+	s := r.login(t)
+	r.openCard(t, s)
+	var want []string
+	first := r.challengeOf(t, s, approveBody)
+	second := r.challengeOf(t, s, denyBody(""))
+	want = append(want, first)
+	r.postWith("/api/decide", decideBodyOf(first, testCredentialID), s)
+	want = append(want, second)
+	id := r.challengeOf(t, s, approveBody)
+	r.postWith("/api/decide", decideBodyOf(id, bytes.Repeat([]byte{0x22}, 32)), s)
+	want = append(want, id)
+	id = r.challengeOf(t, s, approveBody)
+	r.clock.Advance(decideTTL)
+	r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s)
+	want = append(want, id)
+	r.openCard(t, s)
+	// An answer of the port the app does not take.
+	r.daemon.decideCh = func(c *DecideChallenge) { c.Frame.Approve = false }
+	w := r.tap(approveBody, s)
+	wantFailure(t, "a challenge of another frame", w, 502, "failed", sayFailed)
+	r.daemon.decideCh = nil
+	want = append(want, fmt.Sprintf("%016x", 1<<40+r.daemon.challengeNo))
+	if got := r.daemon.droppedIDs(); !reflect.DeepEqual(got, want) {
+		t.Errorf("dropped %v, want %v", got, want)
+	}
+	// A decision sent is not dropped, whatever its answer.
+	id = r.challengeOf(t, s, approveBody)
+	if w := r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s); w.Code != 200 {
+		t.Fatalf("the decision: %d %s", w.Code, w.Body)
+	}
+	if got := r.daemon.droppedIDs(); !reflect.DeepEqual(got, want) {
+		t.Errorf("a decision sent was dropped: %v", got)
+	}
 }
 
 // TestSeatDecideCancelLeavesTheCard: a challenge the phone never answered (a

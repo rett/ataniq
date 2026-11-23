@@ -361,18 +361,27 @@ func (d *Daemon) DecideChallenge(ctx context.Context, r seatapp.DecideChallengeR
 	if err != nil {
 		return seatapp.DecideChallenge{}, err
 	}
-	// The room of the decision is kept with the challenge's: a challenge is
-	// asked only when its seat.decide will have room too.
-	if !d.budget.reserve(r.Credential) {
+	// The room of the decision is kept with the challenge's, for this
+	// challenge alone: a challenge is asked only when its seat.decide will
+	// have room too.
+	token, ok := d.budget.reserve(kindDecide)
+	if !ok {
 		return seatapp.DecideChallenge{}, seatapp.ErrBusy
 	}
 	ch, err := d.challenge(ctx, frame, wire)
 	if err != nil {
-		d.budget.release(r.Credential)
+		d.budget.release(token)
 		return seatapp.DecideChallenge{}, err
 	}
-	d.budget.bind(r.Credential, ch.ID, ch.Expires)
+	d.budget.bind(token, ch.ID, ch.Expires)
 	return ch, nil
+}
+
+// DropChallenge lets the room kept for the decision of a challenge go: the
+// app dropped the challenge, and its decision will never be sent
+// (seatapp.ChallengeDropper).
+func (d *Daemon) DropChallenge(id string) {
+	d.budget.drop(kindDecide, id)
 }
 
 // challenge sends seat.challenge with the params on the wire and checks the
@@ -405,8 +414,11 @@ func (d *Daemon) challenge(ctx context.Context, frame ownerwire.DecisionFrame, w
 // Decide hands the daemon the frame the app kept for a challenge and the
 // phone's assertion over it (seat.decide), and returns the daemon's outcome.
 // Before anything is sent, a gate that is not connected is
-// [seatapp.ErrDaemonUnavailable], and params over the gate's cap are
-// [seatapp.ErrTooLarge]. Once it is sent, only a refusal says for
+// [seatapp.ErrDaemonUnavailable], params over the gate's cap are
+// [seatapp.ErrTooLarge], and a decision whose challenge's room is no
+// longer kept (its life ended), with no room left, is [seatapp.ErrBusy];
+// a decision of a challenge the link drew, in its life, always has its
+// room. Once it is sent, only a refusal says for
 // certain that nothing was decided: a refusal code maps as for the
 // challenge; the codes unavailable, deadline-exceeded, door-unavailable,
 // journal-reopened and failed, a lost link, the seat's own deadline, and an
@@ -436,8 +448,11 @@ func (d *Daemon) Decide(ctx context.Context, r seatapp.DecideRequest) (seatapp.D
 		return seatapp.DecideResult{}, err
 	}
 	// A decision is counted in the room its challenge kept, and is never
-	// refused for room: the phone has answered.
-	d.budget.spend(r.ChallengeID)
+	// refused for room: the phone has answered. One whose challenge's room
+	// is no longer kept (its life ended) is sent only with room.
+	if !d.budget.answer(kindDecide, r.ChallengeID) {
+		return seatapp.DecideResult{}, seatapp.ErrBusy
+	}
 	var raw json.RawMessage
 	if err := d.c.Call(ctx, OpDecide, wire, &raw); err != nil {
 		return seatapp.DecideResult{}, mapDecide(err)

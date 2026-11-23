@@ -66,6 +66,22 @@ type fakeDaemon struct {
 	decideErr   error
 	decideHook  func()
 	decides     []DecideRequest
+	// dropped are the challenges the app dropped (ChallengeDropper).
+	dropped []string
+}
+
+// DropChallenge notes the challenge the app dropped.
+func (d *fakeDaemon) DropChallenge(id string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.dropped = append(d.dropped, id)
+}
+
+// droppedIDs returns the challenges the app dropped.
+func (d *fakeDaemon) droppedIDs() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.dropped...)
 }
 
 func (d *fakeDaemon) LoginChallenge(context.Context) (LoginChallenge, error) {

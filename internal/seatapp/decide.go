@@ -22,8 +22,9 @@ const (
 	// credential's sessions may ask for. The port keeps the decisions to a
 	// room of their own at the gate (package seatlink: 16 calls in 80
 	// seconds, 8 decisions), which logins, pairings and reads cannot take,
-	// and asks a challenge only with room for its decision as well: a tap
-	// past it is answered desk_busy before any challenge, and a decision the
+	// and asks a challenge only with room for its decision as well, kept for
+	// that challenge until the app drops it (ChallengeDropper): a tap past
+	// it is answered desk_busy before any challenge, and a decision the
 	// phone signed is never refused for the gate's rate.
 	decideRequests = 10
 	decideWindow   = time.Minute
@@ -254,9 +255,26 @@ func (ss *sessions) readingOf(k tokenKey, id string) (cardReading, bool) {
 	return out, found
 }
 
-// keepDecision keeps the session's one decision; a new one replaces the old.
-func (ss *sessions) keepDecision(k tokenKey, d pendingDecision) {
-	ss.with(k, func(s *session) { s.decision = &d })
+// keepDecision keeps the session's one decision; a new one replaces the old,
+// which is returned, and whether there was one.
+func (ss *sessions) keepDecision(k tokenKey, d pendingDecision) (pendingDecision, bool) {
+	var old pendingDecision
+	replaced := false
+	ss.with(k, func(s *session) {
+		if s.decision != nil {
+			old, replaced = *s.decision, true
+		}
+		s.decision = &d
+	})
+	return old, replaced
+}
+
+// dropChallenge tells the port, when it keeps room for a decision's
+// challenge, that the decision of the challenge given will never be sent.
+func (a *app) dropChallenge(id string) {
+	if dr, ok := a.cfg.Daemon.(ChallengeDropper); ok && id != "" {
+		dr.DropChallenge(id)
+	}
 }
 
 // takeDecision burns the session's decision: it is removed whatever comes
@@ -525,6 +543,7 @@ func (a *app) decideChallenge(w http.ResponseWriter, r *http.Request) {
 	f := ch.Frame
 	if len(ch.Challenge) != challengeSize || !validChallengeID(ch.ID) || f.ID != in.Card || f.BindingSHA256 != rd.binding ||
 		f.Approve != approve || (approve && len(f.SignedOff) != len(in.SignedOff)) || (!approve && (len(f.SignedOff) != 0 || f.Reason != in.Reason)) {
+		a.dropChallenge(ch.ID)
 		writeDecideError(w, errDecideFailed)
 		return
 	}
@@ -533,10 +552,15 @@ func (a *app) decideChallenge(w http.ResponseWriter, r *http.Request) {
 		expires = ch.Expires
 	}
 	if !now.Before(expires) {
+		a.dropChallenge(ch.ID)
 		writeDecideError(w, errDecideTooLong)
 		return
 	}
-	a.sess.keepDecision(s.key, pendingDecision{card: in.Card, challengeID: ch.ID, frame: f, expires: expires})
+	// The session keeps one decision: the one this tap replaces is never
+	// sent.
+	if old, ok := a.sess.keepDecision(s.key, pendingDecision{card: in.Card, challengeID: ch.ID, frame: f, expires: expires}); ok {
+		a.dropChallenge(old.challengeID)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"challenge_id": ch.ID,
 		"challenge":    b64.EncodeToString(ch.Challenge),
@@ -571,6 +595,16 @@ func (a *app) decidePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pd, ok := a.sess.takeDecision(s.key)
+	// A decision burnt here and not sent is never sent: its challenge is
+	// dropped.
+	sent := false
+	if ok {
+		defer func() {
+			if !sent {
+				a.dropChallenge(pd.challengeID)
+			}
+		}()
+	}
 	var in decideBody
 	if err := decodeBody(r.Body, &in); err != nil {
 		writeDecideError(w, decideBodyError(err))
@@ -604,6 +638,7 @@ func (a *app) decidePost(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), daemonTimeout)
 	defer cancel()
+	sent = true
 	res, err := a.cfg.Daemon.Decide(ctx, DecideRequest{
 		ChallengeID: pd.challengeID, Frame: pd.frame,
 		CredentialID: credID, AuthenticatorData: authData, ClientDataJSON: clientData, Signature: sig,

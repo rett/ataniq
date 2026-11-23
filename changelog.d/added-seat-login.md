@@ -13,8 +13,9 @@
   keeps each kind to its room there: pings 6, pairings and logins 12 (6
   logins), reads 26, decisions 16 (8 decisions), which make the gate's 60 a
   minute; a call without room is not sent and the phone says the desk is busy.
-  A decision's challenge is asked only with room for the decision too, so a
-  decision the phone signed is never refused for the gate's rate.
+  A decision's challenge is asked only with room for the decision too, kept
+  for that one challenge, so a decision the phone signed is never refused for
+  the gate's rate, from any session of the passkey.
   A login belongs to no project and to no card: it proves that the phone holds
   a paired key of a kind the daemon knows, and decides nothing. The login
   page, and the Card page when it offers a decision, alone allow

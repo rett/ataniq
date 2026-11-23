@@ -647,12 +647,16 @@ the seat sent. A call without room is not sent: the phone says the desk is
 busy (`desk_busy`, the problem "The desk is busy", or `rate_limited` for a
 pairing), before anything is asked. A decision's challenge is asked only
 when the room of decisions holds it and its `seat.decide` as well: the room
-of the decision is kept for the credential's last challenge (a new tap of the
-same credential takes its place) until the decision is sent, or the
-challenge's life ends (5 minutes at most). So a decision the phone signed
-is never refused for the gate's rate: strangers' logins and pairings, and
-reads, cannot take its room, and a tap past it is told the desk is busy
-before any challenge is drawn or the passkey asked.
+of the decision is kept for that one challenge, under a token the link gives
+before the challenge is asked, until the decision is sent, the seat app
+drops the challenge (a new tap of the same session takes its place, or the
+tap is burnt before its decision is sent), or the challenge's life ends (5
+minutes at most). Each challenge has its own room, so several sessions of
+one credential (a synced passkey in two browsers), and challenges asked at
+the same moment, each keep theirs. So a decision the phone signed is never
+refused for the gate's rate: strangers' logins and pairings, reads and other
+sessions' challenges cannot take its room, and a tap past it is told the desk
+is busy before any challenge is drawn or the passkey asked.
 The seat relays pairings for anyone who reaches its pairing page, and the
 gate counts each pairing the daemon refuses against the seat's refusal bound
 (16 in 10 minutes; see [the refusal bound](#the-refusal-bound)), past which

@@ -39,8 +39,9 @@ const (
 	// BudgetWindow, and 5 in a minute of the gate's.
 	pingRoom = 6
 	// decideRoom is seat.challenge and seat.decide: 8 decisions. A challenge
-	// is drawn only with room for its seat.decide as well, kept until the
-	// decision is sent or the challenge's life ends.
+	// is drawn only with room for its seat.decide as well, kept for that
+	// challenge alone until the decision is sent, the app drops the
+	// challenge, or the challenge's life ends.
 	decideRoom = 16
 	// publicRoom is seat.pair, seat.login-challenge and seat.login, which the
 	// seat relays for anyone who reaches its pages: 6 logins.
@@ -80,25 +81,33 @@ func (k kind) room() int {
 	return decideRoom
 }
 
-// hold is the room kept for the seat.decide of a credential's last
-// challenge: the challenge's id (empty while it is being asked) and when the
-// room is let go if no decision came.
+// hold is the room kept for the answer to one challenge the link drew
+// (the seat.decide of a decision's challenge): its kind, the challenge's id
+// (empty while it is being asked) and when the room is let go if no answer
+// came.
 type hold struct {
+	kind  kind
 	id    string
 	until time.Time
 }
 
 // budget counts the calls the link sent, by kind, over BudgetWindow, and
-// keeps the room for decisions. It is safe for concurrent use.
+// keeps the room for the answers to the challenges it drew. It is safe for
+// concurrent use.
 type budget struct {
 	now func() time.Time
 
 	mu   sync.Mutex
 	sent [numKinds][]time.Time
-	// holds are the room kept for a decision, one for each credential's
-	// last challenge: the app keeps one decision for each session, and a
-	// new tap replaces the last.
-	holds map[string]hold
+	// holds are the room kept for answers, one for each challenge drawn
+	// and not answered, by the token reserve gave it before the challenge
+	// was asked. A challenge's room is its own: another challenge, of the
+	// same session, of another session of the same credential (a synced
+	// passkey in two browsers), or one asked at the same moment, never
+	// takes it or lets it go.
+	holds map[uint64]hold
+	// last is the last token reserve gave.
+	last uint64
 }
 
 // prune drops the calls older than BudgetWindow and the holds past their
@@ -113,89 +122,122 @@ func (b *budget) prune(now time.Time) {
 		}
 		b.sent[k] = ts[i:]
 	}
-	for c, h := range b.holds {
+	for t, h := range b.holds {
 		if !now.Before(h.until) {
-			delete(b.holds, c)
+			delete(b.holds, t)
 		}
 	}
 }
 
-// take counts a call of a kind that is not a decision's, and reports
-// whether it has room. A call without room is not counted, and not sent.
+// used is the room of a kind the calls sent and the holds kept take. It
+// runs under mu.
+func (b *budget) used(k kind) int {
+	n := len(b.sent[k])
+	for _, h := range b.holds {
+		if h.kind == k {
+			n++
+		}
+	}
+	return n
+}
+
+// take counts a call that is not a challenge's answer, and reports whether
+// it has room. A call without room is not counted, and not sent.
 func (b *budget) take(k kind) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	now := b.now()
 	b.prune(now)
-	if len(b.sent[k]) >= k.room() {
+	return b.takeLocked(k, now)
+}
+
+// takeLocked is take under mu.
+func (b *budget) takeLocked(k kind, now time.Time) bool {
+	if b.used(k) >= k.room() {
 		return false
 	}
 	b.sent[k] = append(b.sent[k], now)
 	return true
 }
 
-// reserve counts a credential's seat.challenge and keeps the room of its
-// seat.decide, replacing the credential's last hold, and reports whether
-// there was room for both. Without it nothing is counted or kept, and the
-// challenge is not asked: so every decision sent has its room, whatever
-// else is sent meanwhile.
-func (b *budget) reserve(credential string) bool {
+// reserve counts a challenge of a kind and keeps the room of its answer,
+// and returns the hold's token, which bind, release and nothing else name.
+// It reports whether there was room for both; without it nothing is
+// counted or kept, and the challenge is not asked. So every answer to a
+// challenge the link drew has its room, whatever else is sent meanwhile.
+// The token is given here, before anything is sent, so calls asked at the
+// same moment each have a hold of their own.
+func (b *budget) reserve(k kind) (uint64, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	now := b.now()
 	b.prune(now)
-	used := len(b.sent[kindDecide]) + len(b.holds)
-	if _, ok := b.holds[credential]; ok {
-		used--
-	}
-	if used+2 > decideRoom {
-		return false
+	if b.used(k)+2 > k.room() {
+		return 0, false
 	}
 	if b.holds == nil {
-		b.holds = map[string]hold{}
+		b.holds = map[uint64]hold{}
 	}
-	b.sent[kindDecide] = append(b.sent[kindDecide], now)
-	b.holds[credential] = hold{until: now.Add(HoldLife)}
-	return true
+	b.last++
+	b.sent[k] = append(b.sent[k], now)
+	b.holds[b.last] = hold{kind: k, until: now.Add(HoldLife)}
+	return b.last, true
 }
 
-// bind names the challenge a credential's hold is for, and lets the room go
-// at its expiry when that is sooner than HoldLife.
-func (b *budget) bind(credential, id string, expires time.Time) {
+// bind names the challenge a hold is for, and lets the room go at the
+// challenge's expiry when that is sooner than HoldLife.
+func (b *budget) bind(token uint64, id string, expires time.Time) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	h, ok := b.holds[credential]
-	if !ok || h.id != "" {
+	h, ok := b.holds[token]
+	if !ok || h.id != "" || id == "" {
 		return
 	}
 	h.id = id
 	if expires.Before(h.until) {
 		h.until = expires
 	}
-	b.holds[credential] = h
+	b.holds[token] = h
 }
 
-// release lets a credential's hold go when its challenge was not drawn.
-func (b *budget) release(credential string) {
+// release lets a hold go when its challenge was not drawn.
+func (b *budget) release(token uint64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if h, ok := b.holds[credential]; ok && h.id == "" {
-		delete(b.holds, credential)
+	if h, ok := b.holds[token]; ok && h.id == "" {
+		delete(b.holds, token)
 	}
 }
 
-// spend counts the seat.decide of a challenge, in the room its hold kept.
-// A decision is never refused for room: the phone has answered.
-func (b *budget) spend(challengeID string) {
+// drop lets the room of a challenge's answer go when the answer will never
+// be sent: the app dropped the challenge.
+func (b *budget) drop(k kind, id string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for t, h := range b.holds {
+		if h.kind == k && h.id != "" && h.id == id {
+			delete(b.holds, t)
+			return
+		}
+	}
+}
+
+// answer counts the answer to a challenge of a kind, and reports whether it
+// may be sent. An answer whose challenge's room is kept is counted in it and
+// is never refused for room: the phone has answered. An answer with no room
+// kept (its challenge's life ended, or the link did not draw it) is counted
+// as take counts a call.
+func (b *budget) answer(k kind, id string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	now := b.now()
 	b.prune(now)
-	for c, h := range b.holds {
-		if h.id != "" && h.id == challengeID {
-			delete(b.holds, c)
-			break
+	for t, h := range b.holds {
+		if h.kind == k && h.id != "" && h.id == id {
+			delete(b.holds, t)
+			b.sent[k] = append(b.sent[k], now)
+			return true
 		}
 	}
-	b.sent[kindDecide] = append(b.sent[kindDecide], now)
+	return b.takeLocked(k, now)
 }

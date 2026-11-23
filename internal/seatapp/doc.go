@@ -171,7 +171,10 @@
 // twice), so the port counts every call it sends and keeps each kind to its
 // own room at the gate (package seatlink): anyone's pairings and logins,
 // reads, and decisions, which the others cannot take, and a decision's
-// challenge only with room for the decision too. A call without room is
+// challenge only with room for the decision too, kept for that challenge
+// until its decision is sent; the app tells a port that keeps such room
+// ([ChallengeDropper]) of each challenge whose decision it will not send. A
+// call without room is
 // [ErrBusy], and nothing is sent. When the port or the gate says the rate is
 // spent, the phone says the desk is busy and to try again in a minute;
 // nothing is retried by itself.

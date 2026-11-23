@@ -121,6 +121,17 @@ type Daemon interface {
 	Decide(ctx context.Context, r DecideRequest) (DecideResult, error)
 }
 
+// ChallengeDropper is the part of a [Daemon] that keeps room for the answer
+// to each decision's challenge it drew (package seatlink keeps the room of
+// its seat.decide at the gate). The app tells it, by the challenge's id,
+// when it drops a challenge whose decision it will then never send: a new
+// tap of the session took its place, or the tap was burnt or refused before
+// its decision was sent. The room is let go then rather than at the end of
+// the challenge's life. A port without it is not told.
+type ChallengeDropper interface {
+	DropChallenge(id string)
+}
+
 // The errors a Daemon returns that the app tells apart.
 var (
 	ErrCodeRefused       = errors.New("seatapp: the pairing code was not accepted")
