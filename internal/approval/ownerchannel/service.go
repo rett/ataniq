@@ -73,6 +73,16 @@ type Service struct {
 	seat *challengeStore
 	// slot holds the one verification that may run at a time.
 	slot chan struct{}
+	// cmu makes the compare and the raise of a sign counter one step, so
+	// that verifications at once are compared in turn (see
+	// [Service.verified]). It guards counters and roomTold: by display id,
+	// the highest counter a verified assertion reported while the service
+	// ran, and the keys whose counter the list had no room left to keep,
+	// which the desk was told of. Both are in memory only. No code that
+	// holds cmu takes another lock of the service.
+	cmu      sync.Mutex
+	counters map[string]uint32
+	roomTold map[string]bool
 
 	wg   sync.WaitGroup
 	dead atomic.Bool

@@ -855,6 +855,110 @@ func TestTheSignCounter(t *testing.T) {
 	}
 }
 
+// login has the phone a log in through the seat with a fresh login
+// challenge.
+func (w *seatWorld) login(a *webauthntest.Authenticator) error {
+	w.t.Helper()
+	lc, err := w.svc.SeatLoginChallenge(context.Background(), gateSrc, testGate)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	_, err = w.svc.SeatLogin(context.Background(), gateSrc, testGate, ownerwire.SeatLoginParams{ChallengeID: lc.ChallengeID, Assertion: sign(w.t, a, lc.Challenge)})
+	return err
+}
+
+// Two verifications that read the key before either raised its counter, as
+// two at once do, are compared in turn against the highest counter: the
+// second, a copy that reports the same counter, is told as a possible clone
+// though its snapshot of the key held the lower one. The Result is what
+// credkind.Verify gives for a counter of 6 against a stored 5.
+func TestVerificationsOfOneSnapshotCompareTheirCountersInTurn(t *testing.T) {
+	w := newSeatWorld(t)
+	if err := w.keys.RaiseCounter(w.key.ID, 5, start); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := w.svc.seatKey(w.key.ID)
+	if err != nil || snapshot.Counter != 5 {
+		t.Fatalf("%+v %v", snapshot, err)
+	}
+	w.svc.verified(snapshot, credkind.Result{Counter: 6}, gateSrc.Session)
+	if notes := w.noticed(); len(notes) != 0 {
+		t.Fatalf("the first: %q", notes)
+	}
+	w.svc.verified(snapshot, credkind.Result{Counter: 6}, otherSrc.Session)
+	notes := w.noticed()
+	if len(notes) != 1 || !strings.Contains(notes[0], "may have been copied") || !strings.Contains(notes[0], otherSrc.Session) {
+		t.Fatalf("the second: %q", notes)
+	}
+	if k, _ := w.svc.seatKey(w.key.ID); k.Counter != 6 || w.keys.raises != 2 {
+		t.Fatalf("the counter is %d after %d raises", k.Counter, w.keys.raises)
+	}
+
+	// At once: of eight verifications of one counter from one snapshot, one
+	// raises it and seven are told.
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w.svc.verified(snapshot, credkind.Result{Counter: 9}, gateSrc.Session)
+		}()
+	}
+	wg.Wait()
+	if n := len(w.noticed()); n != 1+7 {
+		t.Fatalf("%d notices: %q", n, w.noticed())
+	}
+	if k, _ := w.svc.seatKey(w.key.ID); k.Counter != 9 || w.keys.raises != 3 {
+		t.Fatalf("the counter is %d after %d raises", k.Counter, w.keys.raises)
+	}
+}
+
+// When the list has no room left for counter records, the desk is told once,
+// for that key, and the highest counter is kept in memory, so a copy that
+// reports less than the highest verified, though more than the stored one, is
+// still told while the daemon runs. The login stands each time.
+func TestACounterTheListHasNoRoomForIsToldAndKeptInMemory(t *testing.T) {
+	w := newSeatWorld(t)
+	w.keys.failRaise = ownerjournal.ErrKeysFull
+	w.phone.SignCount, w.phone.CounterStep = 10, 0
+	if err := w.login(w.phone); err != nil {
+		t.Fatal(err)
+	}
+	notes := w.noticed()
+	if len(notes) != 1 || !strings.Contains(notes[0], "no room left") || !strings.Contains(notes[0], w.key.ID) {
+		t.Fatalf("notices %q", notes)
+	}
+	w.phone.CounterStep = 1
+	if err := w.login(w.phone); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(w.noticed()); n != 1 {
+		t.Fatalf("the room was told again: %q", w.noticed())
+	}
+	// A copy that counted less: above the stored 0, below the 11 verified.
+	w.phone.SignCount, w.phone.CounterStep = 5, 0
+	if err := w.login(w.phone); err != nil {
+		t.Fatal(err)
+	}
+	notes = w.noticed()
+	if len(notes) != 2 || !strings.Contains(notes[1], "may have been copied") {
+		t.Fatalf("notices %q", notes)
+	}
+	if k, _ := w.svc.seatKey(w.key.ID); k.Counter != 0 || w.keys.raises != 0 {
+		t.Fatalf("the counter is %d after %d raises", k.Counter, w.keys.raises)
+	}
+	// Another failure of the list is told each time, as before.
+	w.keys.failRaise = errStoreDown
+	w.phone.SignCount, w.phone.CounterStep = 20, 0
+	if err := w.login(w.phone); err != nil {
+		t.Fatal(err)
+	}
+	notes = w.noticed()
+	if len(notes) != 3 || !strings.Contains(notes[2], "could not be kept") {
+		t.Fatalf("notices %q", notes)
+	}
+}
+
 // The challenge is drawn only for what would be taken: a card that is not
 // pending, one with a decision on its way, a binding that is not the
 // record's, sign-offs that are not its flagged list, and the 33rd challenge

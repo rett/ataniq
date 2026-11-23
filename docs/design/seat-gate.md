@@ -673,9 +673,21 @@ The counter: a credential that reports 0 at pairing and at every use, as a
 synced passkey does, has no counter, and nothing is checked or logged for it.
 A counter that is not zero on either side and does not grow is logged as a
 possible clone. It is not refused, since a counter is a claim like the rest,
-and the stored highest counter is not lowered. A backup eligibility flag that
-differs from the paired one is refused by the verifier (`assertion-invalid`),
-as section 7.2 of WebAuthn Level 3 says.
+and the stored highest counter is not lowered. The service compares and raises
+in one step, under a lock of its own, against the highest counter known at
+that moment (the list's, read again, or the one it keeps in memory), not
+against the row it read before verifying: two verifications at once are
+compared in turn, so a copy that reports the counter the other just raised is
+told. The counter records share the key list's spare room with rejected
+pairings (`MaxKeyRecords` less two records per key, 3,968), so a key that
+counts uses it up after some four thousand uses. Then the list's counter stays
+where it was, and the daemon says so once per key and run, through the notice
+to the operator (the daemon's log; a phone's synced passkey, which reports 0,
+never needs a record), and keeps the highest counter in memory, so a copy is
+still told until the daemon restarts. It does not refuse new pairings for it:
+a pairing takes no counter room, and a refusal would not keep the counter. A
+backup eligibility flag that differs from the paired one is refused by the
+verifier (`assertion-invalid`), as section 7.2 of WebAuthn Level 3 says.
 
 ### The seat origin
 
