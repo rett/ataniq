@@ -105,26 +105,9 @@ func related(p, q string) bool { return under(p, q) || under(q, p) }
 // is refused. It looks at the file system once; it cannot stop a folder from
 // being replaced afterwards, and a bind mount is not caught.
 func checkScratchRoots(stateDir string, sc hostadapter.Scratch, getenv func(string) string) error {
-	defaults, err := defaultFolders(getenv)
+	defaults, cands, state, err := checkScratchState(stateDir, getenv)
 	if err != nil {
 		return err
-	}
-	var cands []string
-	for _, d := range defaults {
-		c, err := resolvePath(d)
-		if err != nil {
-			return fmt.Errorf("cannot resolve the default folder %q: %v", d, err)
-		}
-		cands = append(cands, c)
-	}
-	state, err := resolvePath(stateDir)
-	if err != nil {
-		return fmt.Errorf("the scratch owner channel cannot resolve the state folder: %v", err)
-	}
-	for i, c := range cands {
-		if related(state, c) {
-			return fmt.Errorf("the scratch owner channel refuses the state folder %q: it is, lies inside or contains the default folder %q", stateDir, defaults[i])
-		}
 	}
 	var roots []string
 	for _, r := range sc.Roots {
@@ -215,13 +198,46 @@ func checkScratchRoots(stateDir string, sc hostadapter.Scratch, getenv func(stri
 	return nil
 }
 
+// checkScratchState is the first guard of the scratch owner channel and of
+// the phone trial: the state folder must not be, lie inside or contain a
+// default folder of the account. It returns the default folders, the same
+// resolved, and the state folder resolved. A path that cannot be resolved is
+// refused.
+func checkScratchState(stateDir string, getenv func(string) string) (defaults, cands []string, state string, err error) {
+	defaults, err = defaultFolders(getenv)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	for _, d := range defaults {
+		c, err := resolvePath(d)
+		if err != nil {
+			return nil, nil, "", fmt.Errorf("cannot resolve the default folder %q: %v", d, err)
+		}
+		cands = append(cands, c)
+	}
+	state, err = resolvePath(stateDir)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("the scratch owner channel cannot resolve the state folder: %v", err)
+	}
+	for i, c := range cands {
+		if related(state, c) {
+			return nil, nil, "", fmt.Errorf("the scratch owner channel refuses the state folder %q: it is, lies inside or contains the default folder %q", stateDir, defaults[i])
+		}
+	}
+	return defaults, cands, state, nil
+}
+
 // checkOwnerScratch reads the settings of the state folder and applies the
 // guards of the scratch owner channel: the settings select the stand-in door
-// (LoadScratch), and the roots are the scratch ones.
+// (LoadScratch) and are not a phone trial's, and the roots are the scratch
+// ones.
 func checkOwnerScratch(stateDir string, getenv func(string) string) (hostadapter.Scratch, error) {
 	sc, err := hostadapter.LoadScratch(filepath.Join(stateDir, hostadapter.OwnerDirName, hostadapter.ScratchName))
 	if err != nil {
 		return hostadapter.Scratch{}, err
+	}
+	if sc.Trial {
+		return hostadapter.Scratch{}, errors.New(`the scratch settings are a phone trial's ("trial": true), which serves sample cards only: run it with --trial`)
 	}
 	if err := checkScratchRoots(stateDir, sc, getenv); err != nil {
 		return hostadapter.Scratch{}, err

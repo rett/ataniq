@@ -43,6 +43,11 @@
 // pinned-key TCP link of the seat app, on ADDR once the service is built, and
 // stops it before the service is closed; "ataniqd seat-gate init" makes the
 // gate's key and "ataniqd seat-gate pins" lists the seat keys it lets in.
+// With --trial as well (owner_trial_linux.go; owner_off_trial_linux.go has the
+// same names for every other build) the daemon serves the phone trial, a
+// STAND-IN rig whose settings "ataniqd trial init" writes: sample cards only,
+// made on demand by "ataniqd trial submit" through the operation trial.submit,
+// decided through the real decision path and applied to nothing.
 //
 // A build without the tag is read-only. It starts, stops and manages no unit
 // and defines no lead; no flag does. Reconcile runs at start only, not on a timer. Leads,

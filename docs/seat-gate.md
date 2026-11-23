@@ -59,6 +59,9 @@ Not yet: a production mode of the daemon (the gate is for the scratch
 7. Optional, on the authority host: set up the notifier and turn notices on at
    the phone ([Notices](#notices)).
 
+To try the phone with sample cards first, without a lead, see
+[Phone trial](#phone-trial).
+
 ## Keys
 
 Each end makes its own key once. A key is never overwritten by either command.
@@ -630,6 +633,93 @@ STAND-IN banner at start. It means:
   user is qualified and the key list is protected: a process of the daemon's user
   outside a sandbox can read the gate key, add a pin, rewrite the origin file and
   edit the key list and the journal.
+
+## Phone trial
+
+The phone trial lets the owner try the phone end to end against a real daemon
+on the lead host before any lead asks for anything: sample cards made on demand,
+decided on the phone through the real decision path, and applied to nothing. It
+is a STAND-IN rig for scratch state only, in the tagged build only
+(`make ownerchannel-build`).
+
+What is real: the daemon, the gate, the seat, the owner channel's service and
+its journal, the key list and the pairing, and everything a decision goes
+through: the challenge, the passkey assertion and its verification, the
+decision record, the stand-in door's checks of the binding and the journal's
+evidence. Nothing of that is skipped or loosened. What is a sample: the request
+(no lead wrote it; its note says so) and what the host would find for it (the
+merge, the suite record, named `trial-no-suite-ran-...`, the review and the
+branches), made up and kept in memory. No git runs, no sandbox starts, and the
+trial's settings name no mirror, drop folder, sandbox or work folder, so there is
+nothing a trial card could be applied to.
+
+On the lead host, in order (the folders are scratch folders of your own, never
+the account's default state or runtime folder):
+
+```sh
+make ownerchannel-build
+./build/owner/ataniqd trial init --state-dir /scratch/trial/state
+./build/owner/ataniqd seat-gate init --state-dir /scratch/trial/state
+# put the seat's key fingerprint in /scratch/trial/state/owner/gate/seat-pins
+# (one line, mode 0600) and write the origin file (see The origin file)
+./build/owner/ataniqd run --owner-channel --trial \
+  --state-dir /scratch/trial/state --runtime-dir /scratch/trial/run \
+  --seat-gate 192.0.2.10:7443
+```
+
+`trial init` writes `owner/scratch.json` of the state folder with `"trial": true`,
+a sample project (`trial-project`), role (`trial-lead`) and target
+(`refs/heads/develop`), the stand-in door and the three kinds of passkey
+(`platform-passkey`, `vault-passkey`, `passkey`), so no settings are written by
+hand. It refuses a state folder that is, lies inside or contains the account's
+default state or runtime folder, and never overwrites settings that are there.
+The daemon prints the STAND-IN banner and then
+
+```text
+ataniqd: owner channel: TRIAL: sample cards only, made by ataniqd trial submit; an approval applies nothing
+```
+
+On the authority host start the seat pinned to the printed gate fingerprint, as
+in [Starting](#starting). Pair the phone at the desk
+(`ataniq-console --daemon /scratch/trial/run`, see [Pairing](#pairing)) and log
+in on the phone. Then, on the lead host, as the daemon's user:
+
+```sh
+./build/owner/ataniqd trial submit --socket /scratch/trial/run/daemon.sock --kind finish
+./build/owner/ataniqd trial submit --socket /scratch/trial/run/daemon.sock --kind prune
+./build/owner/ataniqd trial submit --socket /scratch/trial/run/daemon.sock --kind finish --count 3
+```
+
+Each prints one line per card (`card ap-...: finish trial-login-retry-1 (request
+rq-trial-...)`) or per refusal (`no card: ...`, with the door's code, such as
+`request-duplicate` for a second prune while one is open). With the card list
+open on the phone a new card arrives by itself ([Live refresh](#live-refresh));
+with the list closed and notices on, a notice says that cards wait
+([Notices](#notices)).
+
+- A finish card shows a sample feature, its plan (`qargi feature finish ...`,
+  with the stand-in's plan token), three or four changed paths with their
+  patch, and, on every other card, the `Makefile`, a flagged path that needs its
+  own sign-off before Approve.
+- A prune card deletes two or three sample branches. The daemon takes no prune
+  request from a lead yet, so the trial asks the stand-in door to plan it
+  directly; it is decided like any card. One prune is open at a time.
+- Approve or Deny with the passkey as for a real card. An approved trial card
+  ends **not-applied**, with the line `applied: nothing (trial)`: the door took
+  the approval, the use passed its checks, and nothing moved. The project's
+  daily limit counts trial approvals as any.
+- The journal, `owner/journal.db` of the state folder, keeps each decision with
+  the evidence of its assertion, and each outcome with the trial's line.
+
+`--trial` needs `--owner-channel` (exit 2 without it). The daemon refuses the
+trial's settings without `--trial`, and other settings with it (exit 10), before
+it takes a lock. `trial submit` makes 1 to 10 cards (`--count`, default 1) and
+exits 0 when every card was made, 1 after a refusal or a failure, 2 for usage,
+20 when no daemon answers, 21 unauthorized and 22 for a protocol error, which is
+also the answer of a daemon not started with `--trial`. The stand-in door keeps
+nothing across a restart: the sample cards are gone after one, and the journal
+keeps what was decided. The card numbers start from the time of day, so that a
+restart makes no card whose id the journal holds a decision for.
 
 ## Limits
 
