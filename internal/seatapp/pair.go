@@ -35,15 +35,16 @@ const (
 	maxRegistrationData = 4096
 	// pairAllAttempts and pairAllWindow bound the pairings of all sources
 	// together that the app hands the daemon. Anyone who reaches /pair/ can
-	// make a registration that passes the app's checks, and the gate counts
-	// each pairing the daemon refuses against the seat's refusal bound (16 in
-	// 10 minutes, gatehost.RefusalBound), past which it answers every request
-	// of the seat's one connection too-many-refusals: the owner's logins,
-	// reads and decisions too. 6 in 11 minutes keeps strangers far below the
-	// bound; the window is a minute longer than the gate's, so that pairings
-	// the seat sent a little more than 10 minutes apart are not counted
-	// closer together at the gate. The daemon's own limit on a pairing code
-	// (5 wrong codes burn it) stays.
+	// make a registration that passes the app's checks. The gate does not
+	// count a refused pairing against the seat's refusal bound, so they
+	// cannot shut the seat out; this bound is for what strangers can make
+	// the seat send: the daemon's log lines of refused pairings, the tries
+	// at an open pairing code, and the pairings' share of the room at the
+	// gate the link keeps for anyone's calls (package seatlink). Its cost:
+	// two sources posting well-formed registrations keep the owner's own
+	// pairing answered rate_limited while they keep it up; the desk is not
+	// touched. The daemon's own limit on a pairing code (5 wrong codes burn
+	// it) stays.
 	pairAllAttempts = 6
 	pairAllWindow   = 11 * time.Minute
 )

@@ -108,8 +108,12 @@
 // to 5 per source address per 15 minutes, in memory; the source is the
 // address in [Config].ClientAddrHeader when that is set, else the peer. The
 // pairings handed to the daemon are limited to 6 in 11 minutes from all
-// sources together: the gate counts each one the daemon refuses against the
-// seat's refusal bound, past which it refuses every request of the seat.
+// sources together. The gate does not count a refused pairing against the
+// seat's refusal bound, so strangers cannot shut the seat out with them; the
+// bound is for the daemon's log, the tries at an open pairing code and the
+// room at the gate for anyone's calls. Its cost: strangers who spend it keep
+// the owner's own pairing waiting (rate_limited) while they keep it up, never
+// the desk.
 //
 // # Login
 //

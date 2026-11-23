@@ -675,15 +675,21 @@ owner's: 8 a minute from all sources, and anyone's room, which 6 challenges
 fill for as long as they are not answered (5 minutes at most), and which
 pairings share. That keeps the owner from logging in on the phone, or
 pairing one, while it lasts; it never touches the desk.
-The seat relays pairings for anyone who reaches its pairing page, and the
-gate counts each pairing the daemon refuses against the seat's refusal bound
-(16 in 10 minutes; see [the refusal bound](#the-refusal-bound)), past which
-it refuses every request of the seat, the owner's too. So besides 5 tries per
-source in 15 minutes, the seat hands the daemon at most 6 pairings in 11
-minutes from all sources together (a body the seat refuses itself is not
-counted); the window is a minute longer than the gate's so that pairings
-sent a little more than 10 minutes apart are not counted closer at the gate.
-The pairing code's own limit, 5 wrong codes, stays.
+The seat relays pairings for anyone who reaches its pairing page. The gate
+does not count a refused pairing against the seat's refusal bound (see
+[the refusal bound](#the-refusal-bound)), so strangers cannot shut the
+owner's seat out with them. Besides 5 tries per source in 15 minutes, the
+seat still hands the daemon at most 6 pairings in 11 minutes from all
+sources together (a body the seat refuses itself is not counted): that
+bounds what anyone who reaches the page can make the seat send, which is
+the daemon's log lines of refused pairings, the tries at an open pairing
+code, and the pairings' share of anyone's room above. Its cost: two sources
+that post well-formed registrations keep the owner's own pairing answered
+`rate_limited` for as long as they keep it up, and pairings and logins
+share anyone's room, so strangers at either page delay the other. They can
+deny pairing and logging in on the phone, never the desk (see
+[limits that stay](#limits-that-stay)). The pairing code's own limit, 5
+wrong codes, stays.
 Only a session reads cards, and the reads of one credential's sessions are
 limited to 20 a minute (a card page asks the gate once; the first page of a
 card's path list may ask twice, to learn the card's review), within the
@@ -1235,6 +1241,29 @@ The owner carries every fingerprint by hand, both ways, at the first exchange.
   challenge for another; the assertion binds the binding digest, not what the
   phone showed. Showing a short tag of the binding at the desk and on the phone
   is a later change.
+- A taken-over seat can turn a login into a decision. The seat chooses the
+  challenge the browser signs, and the phone's passkey sheet shows only the
+  site. A taken-over seat host, or whatever terminates TLS in front of it,
+  can hand a decision's challenge to the login page, so each Face ID the
+  owner gives that origin, a login's included, is worth one decision of any
+  pending card, with any sign-offs. The separate login and decision domains
+  keep a confused honest seat from taking one for the other; they do not
+  hold against a hostile one. One gesture is still one decision: it cannot
+  mint more, and the desk's own decisions are untouched.
+- Strangers can deny the phone. Whoever reaches the seat's pages can spend
+  the limits the seat keeps for everyone: 6 pairings in 11 minutes, 8 login
+  challenges a minute, and anyone's room at the gate, which 6 unanswered
+  login challenges hold for up to 5 minutes. While they keep it up the owner
+  cannot pair a phone, or log in on one; a login the phone already answered
+  is never refused for room, and the desk is never touched.
+- A taken-over seat host can send refused pairings without bound. The gate
+  counts no refused pairing, so that strangers cannot shut the seat out
+  through the honest seat app; a seat host that is taken over talks to the
+  gate itself, at its 60 requests a minute, and fills the daemon's log with
+  refused pairings (`credential-invalid` is answered before the code is
+  looked at, so it costs the sender nothing). Guessing stays bounded: the
+  daemon burns a pairing code after 5 wrong codes, and such a seat can
+  burn the owner's open code, as before.
 - The lead's sandbox must not reach the gate's port. A qualification case that a
   connection from inside the sandbox fails is needed before any real use.
 - Nothing is queued while the phone or the gate is offline.

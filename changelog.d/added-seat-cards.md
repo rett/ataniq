@@ -1,6 +1,6 @@
 - `ataniq-seat` shows the cards on the phone behind a session, read-only as
   the first step (the decide control of the Card page is described in the
-  other seat fragment, `added-seat-approve-deny.md`): the card list
+  entry on approving and denying on the phone): the card list
   (`/cards/`), a card (`/cards/{id}`) and the pages of a card's whole path
   list (`/cards/{id}/paths/{n}`), each a GET (a `HEAD` is refused 405 and asks
   the daemon nothing). A page without a session goes to the login page and

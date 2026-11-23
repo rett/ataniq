@@ -9,7 +9,10 @@
   `code_refused`, and any other refusal is `daemon_error`. The pairing code is
   never printed. Without the three flags pairing answers `daemon_unavailable`,
   as before. The seat hands the daemon at most 6 pairings in 11 minutes from
-  all clients together, besides 5 tries per client in 15 minutes, so that
-  strangers cannot spend the seat's refusal bound at the gate and shut out the
-  owner's logins, reads and decisions; a pairing past it is answered
-  `rate_limited`.
+  all clients together, besides 5 tries per client in 15 minutes; a pairing
+  past it is answered `rate_limited`. The gate does not count refused
+  pairings against the seat, so strangers cannot shut out the owner's logins,
+  reads and decisions with them; the bound keeps what strangers can make the
+  seat send (the daemon's log lines, tries at an open code) small. Its cost:
+  strangers who spend it keep the owner's own pairing on the phone waiting
+  while they keep it up, never the desk.
