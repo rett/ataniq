@@ -1111,6 +1111,7 @@ func TestSeatDecideWords(t *testing.T) {
 		{ErrBusy, 503, "desk_busy", "The desk is busy. Try again in a few minutes."},
 		{ErrNotOffered, 503, "decide_unavailable", "The desk does not take decisions from the phone now."},
 		{ErrDaemonUnavailable, 503, "daemon_unavailable", "The desk cannot be reached. Nothing was sent."},
+		{ErrDecisionsInhibited, 503, "decisions-inhibited", "Decisions are paused on this host. Nothing was sent."},
 		{ErrChallengeDiffers, 502, "challenge_differs", sayDiffers},
 		{&NotAllowedError{Reason: "1 flagged path is not signed off"}, 409, "not_allowed", "This cannot be sent: 1 flagged path is not signed off."},
 		{errors.New("a text <i>of the daemon</i>"), 502, "failed", "Something went wrong. Look at the card again."},
@@ -1355,5 +1356,29 @@ func TestSeatReadingsKeepTheSentMark(t *testing.T) {
 	})
 	if n != maxReadings+3 {
 		t.Errorf("%d readings, want %d marked ones all kept", n, maxReadings+3)
+	}
+}
+
+// TestSeatDecideInhibitedSettles: a port that answers ErrDecisionsInhibited
+// sent nothing, so the phone shows the paused words and the card is as it
+// was: once decisions are taken again, a tap gets a challenge, without a
+// read of the card in between, and the decide script lets the owner tap
+// again after that answer.
+func TestSeatDecideInhibitedSettles(t *testing.T) {
+	r := newRig(t)
+	s := r.login(t)
+	r.openCard(t, s)
+	r.daemon.decideChErr = ErrDecisionsInhibited
+	wantFailure(t, "a paused challenge", r.tap(approveBody, s), 503, "decisions-inhibited", sayInhibited)
+	r.daemon.decideChErr = nil
+	id := r.challengeOf(t, s, approveBody)
+	r.daemon.decideErr = ErrDecisionsInhibited
+	wantFailure(t, "a paused decision", r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s), 503, "decisions-inhibited", sayInhibited)
+	r.daemon.decideErr = nil
+	r.challengeOf(t, s, approveBody)
+
+	js := r.do("GET", "/static/decide.js", nil, nil).Body.String()
+	if !strings.Contains(js, `"decisions-inhibited": true`) {
+		t.Error("the script does not let the owner tap again after decisions-inhibited")
 	}
 }

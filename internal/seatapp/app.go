@@ -104,7 +104,9 @@ type PairResult struct {
 // [ErrNotOffered] when the gate does not offer decisions, [ErrBusy] for its
 // load, the errors of the daemon's refusals ([ErrChallengeStale],
 // [ErrCardExpired], [ErrCannotDecide], [ErrAssertionRefused], [ErrKeyRevoked],
-// [ErrKindRefused]), and [ErrDaemonUnavailable] when nothing was sent. Once
+// [ErrKindRefused]), [ErrDecisionsInhibited] when the host the seat runs on
+// takes no decision now (nothing is sent), and [ErrDaemonUnavailable] when
+// nothing was sent. Once
 // Decide has sent the decision, a lost answer is [ErrOutcomeUnknown], never
 // ErrDaemonUnavailable.
 //

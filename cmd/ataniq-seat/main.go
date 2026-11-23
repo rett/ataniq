@@ -5,6 +5,7 @@
 //	ataniq-seat (--origin https://HOST | --origin-file PATH) (--socket PATH | --listen 127.0.0.1:PORT)
 //	            [--rpid HOST] [--socket-mode 0660] [--client-addr-header NAME]
 //	            [--gate HOST:PORT --gate-pin-file PATH --identity DIR]
+//	            [--decision-guard DIR]
 //	ataniq-seat gate-init --identity DIR
 //
 // The origin is the address the reverse proxy serves the app on, https on
@@ -41,6 +42,17 @@
 // three flags the daemon port is not wired: pairing and login answer with
 // the fixed code daemon_unavailable, and no card offers a decision.
 //
+// --decision-guard names the authority host's state folder, the one the
+// release switch keeps decisions.inhibit in: /var/lib/authority-host when it
+// is not given, and an absolute path when it is. Before the app relays a
+// decision's challenge or a decision to the gate, every time, the command
+// asks decisionguard.Check of that folder; while the inhibit is there, or the
+// folder or the file cannot be looked up, nothing is relayed and the phone is
+// told "Decisions are paused on this host. Nothing was sent." under the code
+// decisions-inhibited (fail closed: on a host without the folder no decision
+// is ever relayed). Pairing, login and the reading of cards decide nothing
+// and are not guarded. Each refusal is logged with the guard's fixed code.
+//
 // Nothing secret is printed or read from the command line. The pairing code
 // is never printed.
 package main
@@ -57,8 +69,10 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -67,8 +81,8 @@ import (
 	"ataniq/internal/seatlink"
 )
 
-const usageLine = "Usage: ataniq-seat (--origin https://HOST | --origin-file PATH) (--socket PATH | --listen LOOPBACK:PORT) [--rpid HOST] [--socket-mode MODE] [--client-addr-header NAME] [--gate HOST:PORT --gate-pin-file PATH --identity DIR]\n" +
-	"--origin and --origin-file exclude each other; --socket and --listen exclude each other; --socket needs --client-addr-header; --listen takes an IP literal of the loopback range; --gate, --gate-pin-file and --identity go together."
+const usageLine = "Usage: ataniq-seat (--origin https://HOST | --origin-file PATH) (--socket PATH | --listen LOOPBACK:PORT) [--rpid HOST] [--socket-mode MODE] [--client-addr-header NAME] [--gate HOST:PORT --gate-pin-file PATH --identity DIR] [--decision-guard DIR]\n" +
+	"--origin and --origin-file exclude each other; --socket and --listen exclude each other; --socket needs --client-addr-header; --listen takes an IP literal of the loopback range; --gate, --gate-pin-file and --identity go together; --decision-guard is an absolute folder (default " + defaultGuardDir + ")."
 
 const gateInitUsage = "Usage: ataniq-seat gate-init --identity DIR\n" +
 	"Makes the seat's key for the seat gate in DIR and prints its fingerprint; it never overwrites."
@@ -88,6 +102,10 @@ const shutdownGrace = 10 * time.Second
 // gateLinkHook, when not nil, is called with the gate client once it is made.
 // It is for tests, which watch the link come up; the command never sets it.
 var gateLinkHook func(*seatgate.Client)
+
+// daemonHook, when not nil, is called with the daemon port the app is given.
+// It is for tests; the command never sets it.
+var daemonHook func(seatapp.Daemon)
 
 // unwiredDaemon is the daemon port without a gate link: every call is
 // ErrDaemonUnavailable, and a card is offered no decision.
@@ -182,6 +200,9 @@ type options struct {
 	// gate, gatePinFile and identity are the gate link's flags; gatePin is
 	// the fingerprint read from gatePinFile. All are empty without a link.
 	gate, gatePinFile, identity, gatePin string
+	// guardDir is the state folder decisionguard.Check is asked of before
+	// each decision is relayed.
+	guardDir string
 }
 
 // parse reads the flags. On failure it has printed the diagnostic and the
@@ -199,6 +220,7 @@ func parse(args []string, errout io.Writer) (o options, code int, ok bool) {
 	fs.StringVar(&o.gate, "gate", "", "the seat gate's address, host:port")
 	fs.StringVar(&o.gatePinFile, "gate-pin-file", "", "file holding the gate key's fingerprint")
 	fs.StringVar(&o.identity, "identity", "", "folder of the seat's gate key, made by gate-init")
+	fs.StringVar(&o.guardDir, "decision-guard", defaultGuardDir, "the authority host's state folder, which holds decisions.inhibit")
 	fail := func(msg string) (options, int, bool) {
 		fmt.Fprintf(errout, "ataniq-seat: %s\n%s\n", msg, usageLine)
 		return options{}, 2, false
@@ -243,6 +265,9 @@ func parse(args []string, errout io.Writer) (o options, code int, ok bool) {
 		if err := checkLoopback(o.listen); err != nil {
 			return fail(err.Error())
 		}
+	}
+	if !filepath.IsAbs(o.guardDir) {
+		return fail("--decision-guard must be an absolute folder")
 	}
 	if n := countSet(o.gate, o.gatePinFile, o.identity); n != 0 && n != 3 {
 		return fail("give --gate, --gate-pin-file and --identity together, or none of them")
@@ -421,6 +446,21 @@ func run(ctx context.Context, args []string, errout io.Writer, ready func(net.Ad
 			gateLinkHook(client)
 		}
 	}
+	// Every decision's challenge and every decision asks the guard first.
+	// The refusals are logged from the handlers' goroutines, so from here on
+	// every write to errout goes through logf, one at a time.
+	var logMu sync.Mutex
+	logf := func(format string, args ...any) {
+		logMu.Lock()
+		defer logMu.Unlock()
+		fmt.Fprintf(errout, format, args...)
+	}
+	daemon = newGuardedDaemon(daemon, o.guardDir, func(code string) {
+		logf("ataniq-seat: a decision was refused, decisions are paused on this host: %s\n", code)
+	})
+	if daemonHook != nil {
+		daemonHook(daemon)
+	}
 	h, err := seatapp.New(seatapp.Config{
 		Origin:           o.origin,
 		RPID:             o.rpid,
@@ -452,9 +492,10 @@ func run(ctx context.Context, args []string, errout io.Writer, ready func(net.Ad
 			cancel()
 			<-linked
 		}()
-		fmt.Fprintf(errout, "ataniq-seat: linking to the seat gate at %s\n", o.gate)
+		logf("ataniq-seat: linking to the seat gate at %s\n", o.gate)
 	}
-	fmt.Fprintf(errout, "ataniq-seat: serving on %s\n", l.Addr())
+	logf("ataniq-seat: decisions follow the guard in %s\n", o.guardDir)
+	logf("ataniq-seat: serving on %s\n", l.Addr())
 	if ready != nil {
 		ready(l.Addr())
 	}
@@ -462,14 +503,14 @@ func run(ctx context.Context, args []string, errout io.Writer, ready func(net.Ad
 	go func() { done <- srv.Serve(l) }()
 	select {
 	case err := <-done:
-		fmt.Fprintf(errout, "ataniq-seat: %v\n", err)
+		logf("ataniq-seat: %v\n", err)
 		return 1
 	case <-ctx.Done():
 	}
 	sctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
 	if err := srv.Shutdown(sctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		fmt.Fprintf(errout, "ataniq-seat: shutdown: %v\n", err)
+		logf("ataniq-seat: shutdown: %v\n", err)
 		return 1
 	}
 	return 0

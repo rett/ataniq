@@ -260,8 +260,11 @@
 // so a lost answer is never followed by a second decision unseen and
 // nothing is queued. A held approve shows the host's line and the held
 // words. Every failure is a fixed code with the app's fixed words ("say");
-// a passkey that is no longer paired ends the session. Decision challenges
-// are limited to 10 a minute per credential. Both bodies fit [MaxBody]
+// a passkey that is no longer paired ends the session. A port that answers
+// [ErrDecisionsInhibited] (on the authority host, while its decision inhibit
+// is there) sent nothing: the phone shows "Decisions are paused on this
+// host. Nothing was sent." under the code decisions-inhibited, and the card
+// stays as it was. Decision challenges are limited to 10 a minute per credential. Both bodies fit [MaxBody]
 // (8192 bytes): the largest the page sends is 1230 bytes for a challenge
 // (the form's id, 300 sign-off indexes and a card id of 51 characters; a
 // deny's reason of 500 bytes, every one escaped, is 1138) and 5672 bytes for
