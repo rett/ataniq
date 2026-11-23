@@ -72,6 +72,8 @@ type unit struct {
 //     file, or "systemctl restart nftables").
 //   - Every {release}/PROGRAM named in a list is a file of the release with
 //     an execute bit.
+//   - No file under etc/systemd still holds ReleasePlaceholder, which Build
+//     replaces with the release's folder.
 //   - A static release has no unit that starts a program; any other release
 //     has at least one, which runs a binary of the release
 //     (/opt/authority-host/current/bin/NAME or its own releases/<id>/bin/NAME,
@@ -138,6 +140,11 @@ func (c *checker) units(root *os.Root, files map[string]entry) []unit {
 		if err != nil {
 			c.add(CodeUnitUnreadable, p)
 			continue
+		}
+		if strings.Contains(string(data), ReleasePlaceholder) {
+			// Not built by Build, which replaces it: systemd would run
+			// the words as they are.
+			c.add(CodeUnitPlacehold, p)
 		}
 		execs, gated := parseUnit(string(data))
 		if gated {

@@ -1911,7 +1911,20 @@ ah-release build --out DIR --counter N --commit SHA --go-version V --built-on CL
 - `--src` is the deployment source folder: its `etc/` is copied to
   `etc/` and its `share/` to `share/`, which must hold the four command
   lists and the lists of the no-AI check. Nothing else of it is copied (not
-  `bootstrap/`, a deploy script or this file). In those two folders every
+  `bootstrap/`, a deploy script or this file). The files are copied as they
+  are, but for one change: in every file under `etc/systemd` (units and
+  drop-ins), each `{release}` becomes the release's own folder on the host,
+  `/opt/authority-host/releases/<id>`, as `{release}` in the command lists
+  becomes it when the switch runs them. A unit so runs the binary of its own
+  release (`ExecStart={release}/bin/NAME`). It must: the switch runs the
+  validators, `systemd-analyze verify` of each unit included, before it
+  moves `current`, and `systemd-analyze verify` refuses a unit whose
+  `ExecStart=` program is not there, which
+  `/opt/authority-host/current/bin/NAME` is not on the first switch to a
+  release that ships `NAME` (`current` is still the release before it).
+  Such a file is read whole; one over 4 MiB is refused (`too-large`). The
+  id is in the file, so the bytes are still the same for the same input. In
+  those two folders every
   entry must be a folder or a regular file with a plain name (letters,
   digits and `._@+-`): a symbolic link, device, fifo or socket, or a name
   with a space, newline or backslash, refuses the build before anything is
@@ -1995,12 +2008,16 @@ It checks, in this order, all of them (a pass is no finding):
      file or `systemctl restart nftables`.
    - Every `{release}/PROGRAM` a list names is a file of the release with
      an execute bit.
+   - No file under `etc/systemd` still holds `{release}` (`unit-placeholder`):
+     the builder replaces it, so one left is a folder made or changed by
+     hand, whose unit systemd would run with the words as they are.
    - A static release has no unit that starts a program: no file under
      `etc/systemd`, a drop-in included, with a `[Service]` section and an
      `ExecStart=` line. Any other release has at least one (a *decision
      service*), and for each: every `ExecStart=` runs a binary of the
-     release, `/opt/authority-host/current/bin/NAME` (or the release's own
-     `/opt/authority-host/releases/<id>/bin/NAME`) with `bin/NAME` shipped
+     release, the release's own `/opt/authority-host/releases/<id>/bin/NAME`
+     (what `{release}/bin/NAME` in the source becomes; see `--src` above for
+     why) or `/opt/authority-host/current/bin/NAME`, with `bin/NAME` shipped
      and executable; `stop.list` has a `systemctl stop` of it; `reload.list`
      has a `systemctl restart` of it (a template unit `x@.service` is
      matched by any instance, `x@1`). No unit gates its start on

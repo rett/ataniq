@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"syscall"
 
 	"ataniq/internal/authorityhost/switcher"
@@ -56,6 +57,16 @@ echo "ah-pkgstep: static release, no package change"
 exit 0
 `
 
+// ReleasePlaceholder, in a file of the source's etc/systemd, is replaced by
+// Build with the release's own folder on the host,
+// /opt/authority-host/releases/<id>, as {release} in the command lists is by
+// the switch. A unit can so run the binary of its own release
+// (ExecStart={release}/bin/NAME): the switch verifies a unit with
+// systemd-analyze before current is moved, and that refuses an ExecStart
+// whose program is not there, which /opt/authority-host/current/bin/NAME is
+// not while current is the release before the one that first ships NAME.
+const ReleasePlaceholder = "{release}"
+
 // Options is what Build makes a release from.
 type Options struct {
 	// Out is the folder the release folder <id> is made in.
@@ -75,7 +86,8 @@ type Options struct {
 	// that must move the package snapshot is not static).
 	Bins []string
 	// Src is the deployment source folder (deploy/authority-host): its etc/
-	// and share/ are copied.
+	// and share/ are copied, with ReleasePlaceholder replaced in the files of
+	// its etc/systemd.
 	Src string
 	// Components is "static" for a release with no decision service, or "".
 	Components string
@@ -165,7 +177,9 @@ type item struct {
 //
 // Folders are 0755 and files 0644 (0755 for bin/*); no link, owner or time
 // of the source is carried, and the content holds no time, so the same
-// input makes the same bytes.
+// input makes the same bytes. In the files of etc/systemd every
+// ReleasePlaceholder becomes /opt/authority-host/releases/<id>; such a file
+// is read whole, and one over 4 MiB is refused (too-large).
 func Build(o Options) (string, int, error) {
 	if r := o.validate(); r != nil {
 		return "", 0, r
@@ -272,6 +286,13 @@ func plan(o Options) ([]item, []io.Closer, error) {
 	if err != nil {
 		return nil, closers, err
 	}
+	for i := range items {
+		extra, err := expandUnit(&items[i], hostRelDir+o.ID())
+		if err != nil {
+			return nil, closers, err
+		}
+		total += extra
+	}
 
 	for _, b := range o.Bins {
 		dir, name := filepath.Split(b)
@@ -308,6 +329,26 @@ func plan(o Options) ([]item, []io.Closer, error) {
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].dest < items[j].dest })
 	return items, closers, nil
+}
+
+// expandUnit reads a file of etc/systemd whole and replaces every
+// ReleasePlaceholder in it with relDir, the release's folder on the host;
+// the item then writes those bytes. It returns how many bytes the file
+// grew by. Any other item is left as it is.
+func expandUnit(it *item, relDir string) (int64, error) {
+	if it.dir || it.root == nil || !strings.HasPrefix(it.dest, systemdDir) {
+		return 0, nil
+	}
+	data, err := readSmall(it.root, it.src)
+	switch {
+	case errors.Is(err, errSmallTooLarge):
+		return 0, refuse(false, CodeTooLarge, it.dest)
+	case err != nil:
+		return 0, ioRefusal(err)
+	}
+	expanded := bytes.ReplaceAll(data, []byte(ReleasePlaceholder), []byte(relDir))
+	it.root, it.src, it.data = nil, "", expanded
+	return int64(len(expanded) - len(data)), nil
 }
 
 // hasBin reports whether one of the binaries is named name.

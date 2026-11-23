@@ -495,3 +495,76 @@ func TestBuildKeepsAGivenPackageStep(t *testing.T) {
 		t.Errorf("a release that is not static got a package step: %v", err)
 	}
 }
+
+// TestBuildPutsTheReleaseInItsUnits: in the files of etc/systemd, units and
+// drop-ins, every {release} becomes the release's own folder on the host,
+// so a unit runs its own release's binary; no other file is changed (the
+// lists keep theirs for the switch). The sums are of the bytes written, the
+// check passes, two builds are equal, and the switch accepts the folder.
+func TestBuildPutsTheReleaseInItsUnits(t *testing.T) {
+	src := dynamicSrc(t)
+	unit := "[Unit]\nDescription=the seat\n\n[Service]\nExecStart={release}/bin/ataniq-seat --socket /run/seat/http.sock\n# {release} twice\n"
+	set(t, src, "etc/systemd/system/ataniq-seat.service", unit)
+	set(t, src, "etc/systemd/system/ataniq-seat.service.d/10-env.conf", "[Service]\nEnvironment=RELEASE={release}\n")
+	set(t, src, "etc/caddy/Caddyfile", "# {release} stays here\n"+testCaddyfile)
+	o := dynamicOptions(t, src)
+	// A package step of its own, for the first switch the dry run below
+	// is of.
+	o.Bins = testBins(t, "ah-noaicheck", "ah-switch", "ataniq-seat", "ah-pkgstep")
+	dir := built(t, o)
+	const rel = "/opt/authority-host/releases/0007-0123456"
+	read := func(p string) string {
+		data, err := os.ReadFile(filepath.Join(dir, p))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	if got, want := read("etc/systemd/system/ataniq-seat.service"), strings.ReplaceAll(unit, "{release}", rel); got != want {
+		t.Errorf("the unit:\n%s\nwant:\n%s", got, want)
+	}
+	if got := read("etc/systemd/system/ataniq-seat.service.d/10-env.conf"); got != "[Service]\nEnvironment=RELEASE="+rel+"\n" {
+		t.Errorf("the drop-in: %q", got)
+	}
+	if got := read("etc/caddy/Caddyfile"); !strings.HasPrefix(got, "# {release} stays here\n") {
+		t.Errorf("the Caddyfile changed: %q", got)
+	}
+	if got := read("share/validators.list"); got != dynValidators {
+		t.Errorf("validators.list changed: %q", got)
+	}
+	if f := Check(dir, noRun); len(f) != 0 {
+		t.Errorf("check: %s", lines(f))
+	}
+
+	o2 := dynamicOptions(t, src)
+	o2.Bins = o.Bins
+	dir2 := built(t, o2)
+	if !reflect.DeepEqual(listing(t, dir), listing(t, dir2)) {
+		t.Error("two builds of the same input differ")
+	}
+
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, switcher.BaseDir, "releases"), 0o755)
+	writeTestFile(t, filepath.Join(root, switcher.PolicyDir, switcher.HostStopList), "systemctl stop ataniq-seat\n", 0o644)
+	var log bytes.Buffer
+	s := switcher.New(switcher.Config{Root: root, Dry: true, From: dir, Out: &log})
+	if code := s.Switch(t.Context(), "0007-0123456"); code != switcher.ExitOK {
+		t.Fatalf("the switch refuses it: exit %d\n%s", code, log.String())
+	}
+}
+
+// TestBuildRefusesAUnitTooLargeToRead: a file of etc/systemd is read whole,
+// so one over 4 MiB is refused by name and nothing is made.
+func TestBuildRefusesAUnitTooLargeToRead(t *testing.T) {
+	src := dynamicSrc(t)
+	set(t, src, "etc/systemd/system/big.conf", strings.Repeat("#\n", maxSmallFile/2+1))
+	o := dynamicOptions(t, src)
+	_, _, err := Build(o)
+	var r *Refusal
+	if !errors.As(err, &r) || r.Code != CodeTooLarge || r.Name != "etc/systemd/system/big.conf" || r.Usage {
+		t.Fatalf("got %v", err)
+	}
+	if entries, _ := os.ReadDir(o.Out); len(entries) != 0 {
+		t.Errorf("a refused build left %v", entries)
+	}
+}

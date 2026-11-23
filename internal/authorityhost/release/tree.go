@@ -126,6 +126,9 @@ func openRegular(root *os.Root, p string) (*os.File, fs.FileInfo, error) {
 	return f, after, nil
 }
 
+// errSmallTooLarge is readSmall's error for a file over maxSmallFile bytes.
+var errSmallTooLarge = errors.New("file too large")
+
 // readSmall reads the regular file p of root whole, up to maxSmallFile bytes.
 func readSmall(root *os.Root, p string) ([]byte, error) {
 	f, info, err := openRegular(root, p)
@@ -134,7 +137,7 @@ func readSmall(root *os.Root, p string) ([]byte, error) {
 	}
 	defer f.Close()
 	if info.Size() > maxSmallFile {
-		return nil, errors.New("file too large")
+		return nil, errSmallTooLarge
 	}
 	data, err := io.ReadAll(io.LimitReader(f, info.Size()+1))
 	if err != nil {
