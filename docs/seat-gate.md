@@ -341,6 +341,8 @@ up without a reload, and a card that was decided, withdrawn or replaced
   changed or was decided elsewhere. Look again." with the links "Back to the
   cards" and "Reload", and the sign-off boxes, the reason field, Approve, Deny
   and the confirm button are disabled. Reload to read the card as it is now.
+  A page of a card that was already decided or ended says nothing of the kind,
+  and a page that sent your decision says what became of it, not "elsewhere".
 - **The status line**, under the page's text, is empty while the page is live.
   It says "Not live" when the page was made while the seat watched nothing (the
   gate does not list `watch`, or the link was not up; the page polls no more,
@@ -534,5 +536,5 @@ What the phone shows, by the code the seat's API answers:
 | Status line "Not live: the desk is out of reach" | `offline` (answer of `POST /api/watch`) | The seat's link to the gate is down or its last wait failed; the watcher retries after 1 second, doubling to 30. The page asks again every 30 seconds. | Check the daemon, the firewall and both pins as for `daemon_unavailable`. It clears by itself once the link is back. |
 | Status line "Session ended. Log in again." | `ended` (answer of `POST /api/watch`) | Idle 30 minutes without a page load or tap (a poll does not count), 12 hours, a seat restart, a logout, or a revoked key. | Log in. |
 | Nothing visible, but `POST /api/watch` answers 429 in the proxy's log or the browser's tools | `rate_limited` | More than 12 polls a minute from one passkey's sessions, as more than four tabs open at once make. The page waits 60 seconds and asks again. | Close the extra tabs. |
-| "This card changed or was decided elsewhere. Look again." | `changed` or `gone` (the card's state in the poll's answer) | The card was decided, replaced, expired or withdrawn since the page was read. | Reload, or go back to the cards. |
+| "This card changed or was decided elsewhere. Look again." | `changed` or `gone` (the card's state in the poll's answer) | The card, which was waiting when the page was read, was decided on another page or phone or at the desk, replaced, expired or withdrawn since. Not shown for a card that was already decided, ended or expired when the page was read, nor on the page whose own confirm sent the decision. | Reload, or go back to the cards. |
 | A line `seat.wait refused wait-full (peer ...)` in the daemon's log | `wait-full` | The gate already holds two waits for that seat key (or the daemon's eight). Normal for a moment when the seat reconnects. Not counted against the seat. | Nothing if it stops. If it repeats every minute, look for a second `ataniq-seat` with the same identity. |

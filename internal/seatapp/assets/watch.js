@@ -7,7 +7,10 @@
 // seconds, never over a form field with typed text). A Card page never
 // reloads by itself, since the owner may be ticking sign-offs: it shows a
 // banner, and turns off the controls the page marks with data-offer. The
-// page's own script honours the stale mark this script puts on the document.
+// page's own script honours the stale mark this script puts on the document,
+// and this script honours the sent mark the page's script puts there when it
+// sends its form, so that a card this very page moved is not said to have
+// been moved elsewhere.
 //
 // Every text put on the page is one of the constants below, set with
 // textContent, never as markup, and never taken from the seat's answer.
@@ -45,6 +48,9 @@
   var binding = root.dataset.binding || "";
   var version = root.dataset.version || "";
   var onCard = card !== "";
+  // A Card page of a card that is not pending names no card; it is no list,
+  // so it never reloads.
+  var still = root.dataset.still === "yes";
 
   var loadedAt = Date.now();
   var stopped = false;     // nothing more is asked: the session ended, or the card is gone for good
@@ -215,7 +221,9 @@
         stopped = true;
         cancel();
         withdraw();
-        showBanner();
+        // The page sent its form, which moved the card: the page says what
+        // became of it, and "elsewhere" would be wrong.
+        if (document.documentElement.dataset.sent !== "yes") { showBanner(); }
         return;
       }
       switch (cs) {
@@ -233,7 +241,7 @@
       }
     } else {
       quiet();
-      if (data.state === "changed") { wantReload(); }
+      if (data.state === "changed" && !still) { wantReload(); }
     }
     schedule(next);
   }

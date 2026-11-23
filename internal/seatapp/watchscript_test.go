@@ -228,11 +228,11 @@ func TestSeatWatchScriptLiveAndKeepsQuiet(t *testing.T) {
 		t.Errorf("location.reload() appears %d times", n)
 	}
 	// The list reloads only through wantReload, which is called for a list
-	// page's changed answer alone.
+	// page's changed answer alone (a page marked still is no list).
 	if n := strings.Count(js, "wantReload()"); n != 2 { // its definition and its one call
 		t.Errorf("wantReload appears %d times", n)
 	}
-	if !regexp.MustCompile(`(?s)\} else \{\s*quiet\(\);\s*if \(data\.state === "changed"\) \{ wantReload\(\); \}`).MatchString(js) {
+	if !regexp.MustCompile(`(?s)\} else \{\s*quiet\(\);\s*if \(data\.state === "changed" && !still\) \{ wantReload\(\); \}`).MatchString(js) {
 		t.Error("watch.js reloads other than from the list page's changed answer")
 	}
 	// The reload waits for the page's age, and for a field without typed text.

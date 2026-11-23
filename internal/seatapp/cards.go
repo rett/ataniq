@@ -402,7 +402,14 @@ func (a *app) cardPage(w http.ResponseWriter, r *http.Request, s Session) {
 		return
 	}
 	now := a.cfg.Now()
-	d := cardData{Title: pageTitles["card"], Now: now, Card: c, RPID: a.cfg.RPID, Watch: wp.withCard(c.ID, c.BindingSHA256)}
+	d := cardData{Title: pageTitles["card"], Now: now, Card: c, RPID: a.cfg.RPID, Watch: wp.still()}
+	if !c.Ended && (c.State == "" || c.State == "pending") {
+		// Only a pending card can change under its page: a decided, ended
+		// or expired one is not in the pending set, so a page that named
+		// it would be told "gone" for a card that moved long ago, or by
+		// this session's own decision.
+		d.Watch = wp.withCard(c.ID, c.BindingSHA256)
+	}
 	// The page is the session's reading of the card: a lost answer is
 	// settled by it, once the page was written. The decide form is the
 	// page's only when the card is pending and the card model offers

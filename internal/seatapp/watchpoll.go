@@ -60,6 +60,9 @@ type watchPage struct {
 	Version string
 	Card    string
 	Binding string
+	// Still marks a Card page that names no card, because the card is not
+	// pending: the page polls for the status line, and never reloads.
+	Still bool
 }
 
 // watchVersion takes the watcher's state for a page. It must run before the
@@ -84,6 +87,14 @@ func (p watchPage) withCard(id, binding string) watchPage {
 	if validCardID(id) && validHex(binding, 64) {
 		p.Card, p.Binding = id, binding
 	}
+	return p
+}
+
+// still marks the page a Card page of a card that is not pending: it carries
+// no card, so a poll never says the card is gone, and the script does not
+// treat it as a list that reloads.
+func (p watchPage) still() watchPage {
+	p.Still = true
 	return p
 }
 

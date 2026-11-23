@@ -7,5 +7,5 @@
 <script src="/static/session.js"></script>{{end}}
 
 {{define "watch"}}<p id="watch-status" role="status" aria-live="polite"></p>
-<div id="watch" data-live="{{if .Live}}yes{{else}}no{{end}}" data-version="{{.Version}}"{{if .Card}} data-card="{{.Card}}" data-binding="{{.Binding}}"{{end}}></div>
+<div id="watch" data-live="{{if .Live}}yes{{else}}no{{end}}" data-version="{{.Version}}"{{if .Card}} data-card="{{.Card}}" data-binding="{{.Binding}}"{{else if .Still}} data-still="yes"{{end}}></div>
 <script src="/static/watch.js"></script>{{end}}

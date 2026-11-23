@@ -79,6 +79,7 @@
   function back(text) {
     pending = null;
     busy = false;
+    delete document.documentElement.dataset.sent;
     confirmEl.hidden = true;
     goBtn.disabled = false;
     cancelBtn.disabled = false;
@@ -239,6 +240,9 @@
     var p = pending;
     pending = null;
     busy = true;
+    // From here the card may be decided by this page: the live refresh
+    // script, which finds it gone, does not say it was decided elsewhere.
+    document.documentElement.dataset.sent = "yes";
     goBtn.disabled = true;
     cancelBtn.disabled = true;
     confirm(p).catch(function () { onlyLook(SAY.unknown); });

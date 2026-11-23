@@ -1339,7 +1339,16 @@ can be told of a change it already shows, and never misses one it does not.
 
 `/static/watch.js` serves the card list and the Card page, with the element
 `#watch`, whose `data-live`, `data-version`, `data-card` and `data-binding`
-carry what the page was made from. It polls once at a time, at least 2 seconds
+carry what the page was made from. The Card page names its card and binding
+only when the card is pending: a decided, ended, expired or refused card is not
+in the pending set, so a page that named it would be told `gone` for a card
+that moved long ago, or that this session decided on the page before. Such a
+page carries `data-still` instead, polls for the status line only and never
+reloads. A page that sent its decision marks the document (`data-sent`) when
+its confirm button is tapped, and clears the mark when the card is known to be
+as it was; the script then withdraws the offer when the card is `gone` and
+does not show the line "decided elsewhere", since the page itself says what
+became of the decision. It polls once at a time, at least 2 seconds
 apart, and not while the page is hidden; it polls at once when the page is shown
 again. It puts on the page only texts that are its own constants, set as text
 and never as markup, so that the page's content security policy

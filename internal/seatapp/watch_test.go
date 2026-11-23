@@ -945,6 +945,78 @@ func TestSeatWatchVersionIsTakenBeforeThePageRead(t *testing.T) {
 	}
 }
 
+// TestSeatWatchCardPageOfACardThatIsNotPending: only a pending card is named
+// on its page. A decided, ended, expired or refused card is not in the
+// pending set by design, so naming it would make the first answer past a hold
+// "gone", and a banner "decided elsewhere" on a card that moved long ago, or
+// by this session's own decision (the page it reads afterwards is of the
+// decided card). Such a page carries data-still, which keeps it from
+// reloading, and its poll can say nothing of a card.
+func TestSeatWatchCardPageOfACardThatIsNotPending(t *testing.T) {
+	r, _ := newWatchRig(t, "aa", 40*time.Millisecond)
+	s := r.login(t)
+	pending := func() string { return r.getWith("/cards/"+testCardID, s).Body.String() }
+	body := pending()
+	for _, want := range []string{`data-card="` + testCardID + `"`, `data-binding="`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("a pending card's page lacks %s", want)
+		}
+	}
+	if strings.Contains(body, "data-still") {
+		t.Error("a pending card's page is marked still")
+	}
+	for name, mod := range map[string]func(c *Card){
+		"decided":      func(c *Card) { c.State = "approved"; c.Ended = true },
+		"decided open": func(c *Card) { c.State = "approved" },
+		"ended":        func(c *Card) { c.Ended = true },
+		"expired":      func(c *Card) { c.State = "expired"; c.Ended = true },
+		"refused":      func(c *Card) { c.State = "refused"; c.Refused = true; c.Ended = true },
+		"denied":       func(c *Card) { c.State = "denied"; c.Ended = true },
+	} {
+		c := sampleCard()
+		mod(&c)
+		r.daemon.card = c
+		body := pending()
+		for _, bad := range []string{"data-card", "data-binding"} {
+			if strings.Contains(body, bad) {
+				t.Errorf("%s: the page of a card that is not pending carries %s", name, bad)
+			}
+		}
+		if !strings.Contains(body, `data-still="yes"`) || !strings.Contains(body, `data-live="yes"`) {
+			t.Errorf("%s: the page is not live and still", name)
+		}
+		// Its poll names no card, and so is never told "gone".
+		a := pollAnswer(t, r.poll(`{"version":"aa","card":"","binding":""}`, s))
+		if a.Card != "unknown" {
+			t.Errorf("%s: a poll without a card is told %q", name, a.Card)
+		}
+	}
+	// The list is no still page, and no page but a Card page of a card that
+	// is not pending is marked still.
+	if strings.Contains(r.getWith("/cards/", s).Body.String(), "data-still") {
+		t.Error("the list is marked still")
+	}
+	// The script does not reload a still page, and does not say "elsewhere"
+	// of a card this page's own decision moved.
+	js := watchScript(t)
+	for _, want := range []string{`root.dataset.still === "yes"`, `data.state === "changed" && !still`,
+		`document.documentElement.dataset.sent !== "yes"`} {
+		if !strings.Contains(js, want) {
+			t.Errorf("watch.js lacks %q", want)
+		}
+	}
+	dec := r.do("GET", "/static/decide.js", nil, nil).Body.String()
+	if !strings.Contains(dec, `document.documentElement.dataset.sent = "yes"`) ||
+		!strings.Contains(dec, "delete document.documentElement.dataset.sent") {
+		t.Error("decide.js does not set the sent mark when it sends, and clear it when the card is as it was")
+	}
+	// The mark is set where the decision is sent (the confirm tap), before
+	// any network call, and cleared only in back().
+	if strings.Index(dec, `dataset.sent = "yes"`) > strings.Index(dec, "confirm(p).catch") {
+		t.Error("decide.js sets the sent mark after it sends")
+	}
+}
+
 // TestSeatWatchPagesWithoutALiveWatcher: a port without a watcher, or one
 // that does not watch, gives pages that say so and carry no version.
 func TestSeatWatchPagesWithoutALiveWatcher(t *testing.T) {
