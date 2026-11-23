@@ -145,29 +145,8 @@ func (s *Service) decideAuthed(ctx context.Context, r *refusal, f ownerwire.Deci
 		}
 	}
 
-	rec := record.Decision{
-		Schema:        record.SchemaDecision,
-		ID:            pending.ID,
-		Planner:       pending.Planner,
-		Decision:      f.Decision,
-		BindingSHA256: pending.BindingSHA256,
-		Project:       pending.Binding.Project,
-		Subject: record.Subject{
-			Kind:     pending.Binding.Subject.Kind,
-			RoleName: pending.Binding.Subject.RoleName,
-			Epoch:    pending.Binding.Subject.Epoch,
-			SeatRev:  pending.Binding.Subject.SeatRev,
-		},
-		PlanToken: pending.Binding.PlanToken,
-		SignedOff: append([]record.SignOff{}, f.SignedOff...),
-		DecidedAt: record.FormatTime(now),
-		ExpiresAt: record.FormatTime(now.Add(s.life)),
-		Reason:    f.Reason,
-	}
+	rec := s.decisionRecord(pending, f, now)
 	conf.fill(&rec)
-	if approve {
-		rec.Uses = 1
-	}
 	b, err := record.EncodeDecision(rec)
 	if err != nil {
 		// A frame that cannot become a record (the flagged list is too
@@ -217,6 +196,34 @@ func (s *Service) decideAuthed(ctx context.Context, r *refusal, f ownerwire.Deci
 		return ownerwire.DecideResult{}, err
 	}
 	return s.deliver(ctx, d, pending)
+}
+
+// decisionRecord is the decision record of the frame f for the pending
+// record, decided at now, before its confirmation is filled in.
+func (s *Service) decisionRecord(pending record.Pending, f ownerwire.DecisionFrame, now time.Time) record.Decision {
+	rec := record.Decision{
+		Schema:        record.SchemaDecision,
+		ID:            pending.ID,
+		Planner:       pending.Planner,
+		Decision:      f.Decision,
+		BindingSHA256: pending.BindingSHA256,
+		Project:       pending.Binding.Project,
+		Subject: record.Subject{
+			Kind:     pending.Binding.Subject.Kind,
+			RoleName: pending.Binding.Subject.RoleName,
+			Epoch:    pending.Binding.Subject.Epoch,
+			SeatRev:  pending.Binding.Subject.SeatRev,
+		},
+		PlanToken: pending.Binding.PlanToken,
+		SignedOff: append([]record.SignOff{}, f.SignedOff...),
+		DecidedAt: record.FormatTime(now),
+		ExpiresAt: record.FormatTime(now.Add(s.life)),
+		Reason:    f.Reason,
+	}
+	if f.Decision == record.DecisionApprove {
+		rec.Uses = 1
+	}
+	return rec
 }
 
 // underKey runs write, the append of a decision or a held decision, under

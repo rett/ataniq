@@ -1091,6 +1091,47 @@ func TestASeatChallengeIsDrawnOnlyForWhatWouldBeTaken(t *testing.T) {
 	wantCode(t, err, record.CodeDecisionInvalid)
 }
 
+// An approve whose decision record would not fit the record's cap (a
+// pending record may flag more paths than a decision record can sign off)
+// gets no challenge: it is refused record-too-large before the phone is
+// asked, nothing is journaled, and nothing is kept to sign. A deny of the
+// same card, which signs off nothing, gets one. On the base the challenge
+// was drawn, and the decision was refused only after the passkey.
+func TestASeatChallengeIsDrawnOnlyForARecordThatFits(t *testing.T) {
+	w := newSeatWorld(t)
+	var flagged []record.Flag
+	var signs []record.SignOff
+	for i := 0; ; i++ {
+		path := record.Text("scripts/" + string(rune('a'+i%26)) + string(rune('a'+(i/26)%26)) + "/a-rather-long-name-for-a-flagged-path/file.sh")
+		flagged = append(flagged, record.Flag{Kind: record.FlagExecConfig, Path: path, Pattern: "scripts"})
+		signs = append(signs, record.SignOff{Kind: record.FlagExecConfig, Path: path})
+		b, err := ownerwire.EncodeDecisionFrame(ownerwire.DecisionFrame{
+			ID: "ap-20261120-0007", BindingSHA256: record.Digest(nil), Decision: record.DecisionApprove, SignedOff: signs,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(b) > record.MaxDecisionBytes-200 {
+			break
+		}
+	}
+	w.intake.summary.Flagged = flagged
+	p := w.card("feature-a")
+	f := frame(p, true)
+	if _, err := ownerwire.EncodeSeatChallengeParams(ownerwire.SeatChallengeParams{Frame: f, Credential: w.key.ID}); err != nil {
+		t.Fatalf("the params do not fit the wire: the test does not show what it means to: %v", err)
+	}
+	_, err := w.issue(gateSrc, f)
+	wantCode(t, err, record.CodeRecordTooLarge)
+	if n := w.svc.seat.size(challengeDecision); n != 0 {
+		t.Errorf("%d challenges kept", n)
+	}
+	w.noDecisionWasMade(t)
+	if _, err := w.issue(gateSrc, denyFrame(p, "")); err != nil {
+		t.Errorf("a deny of the card: %v", err)
+	}
+}
+
 // A card decided at the desk after the phone's challenge was drawn is not
 // decided again from the phone; the refusal is the desk's, after the
 // assertion verified.

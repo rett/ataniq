@@ -118,6 +118,8 @@
 //	approval-expired                            seatapp.ErrCardExpired
 //	approval-consumed, approval-void,
 //	previous-epoch, decision-invalid            seatapp.ErrCannotDecide
+//	record-too-large (a decision record the
+//	journal could not hold)                     seatapp.ErrTooLarge
 //	assertion-invalid                           seatapp.ErrAssertionRefused
 //	key-revoked, key-unknown                    seatapp.ErrKeyRevoked
 //	kind-refused                                seatapp.ErrKindRefused

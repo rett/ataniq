@@ -40,6 +40,11 @@ const (
 	codeUnavailable      = "unavailable"
 	codeDoorUnavailable  = "door-unavailable"
 	codeJournalReopened  = "journal-reopened"
+	// codeRecordTooLarge is the daemon's refusal of a decision whose record
+	// would be over the record's cap: on seat.challenge, before any
+	// challenge is drawn, and on seat.decide, before anything is journaled.
+	// Either way nothing was decided.
+	codeRecordTooLarge = string(record.CodeRecordTooLarge)
 )
 
 // refusalCodes are the codes of the gate that refuse a decision for certain,
@@ -54,6 +59,7 @@ var refusalCodes = map[string]error{
 	codeApprovalVoid:               seatapp.ErrCannotDecide,
 	codePreviousEpoch:              seatapp.ErrCannotDecide,
 	codeDecisionInvalid:            seatapp.ErrCannotDecide,
+	codeRecordTooLarge:             seatapp.ErrTooLarge,
 	ownerwire.CodeAssertionInvalid: seatapp.ErrAssertionRefused,
 	ownerwire.CodeKeyRevoked:       seatapp.ErrKeyRevoked,
 	codeKeyUnknown:                 seatapp.ErrKeyRevoked,

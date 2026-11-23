@@ -31,6 +31,8 @@
   flagged path full of `&`, `<` or `>` is no longer escaped on the way, so it
   does not grow past the cap); a decision whose words are over the cap is not
   sent and the phone says "This is too large to send."; it is decided at the
-  desk. A request body over 8 KiB sent without a declared length is now
+  desk. So is one whose decision record the daemon could not journal (its
+  sign-offs past the record's 8 KiB): the daemon refuses its challenge
+  before the phone is asked, and nothing was decided. A request body over 8 KiB sent without a declared length is now
   refused 413, as one with it is.
   Scratch state and the STAND-IN door only; unqualified.

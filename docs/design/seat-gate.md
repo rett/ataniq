@@ -369,9 +369,16 @@ door (`decision-invalid`, as `Service.Decide` says it); the credential named is
 on the list (`key-unknown`), not revoked (`key-revoked`), and of a kind the
 verifier knows and the record's project accepts (`kind-refused`);
 `frame.binding_sha256` equals the binding digest of the daemon's own pending
-record (`binding-mismatch`); and the sign-offs equal the record's flagged list
-for an approve and are none for a deny (`decision-invalid`). So the phone is
-never asked to sign what would be refused. None of these refusals is an entry
+record (`binding-mismatch`); the sign-offs equal the record's flagged list
+for an approve and are none for a deny (`decision-invalid`); and the
+decision's record, as `seat.decide` would write it (the frame's fields with
+the daemon's own, confirmed by passkey, with a seat block of the lengths it
+will have), fits the record's cap of 8 KiB (`record-too-large`, the code
+`record.EncodeDecision` gives). A pending record may flag more than a
+decision record can sign off, and the params of `seat.challenge` may be
+larger than a decision record, so a challenge within its cap may still be
+for a decision the journal cannot hold. So the phone is never asked to sign
+what would be refused. None of these refusals is an entry
 of the owner journal: no decision was made (see
 [what is journaled](#what-is-journaled-and-what-is-logged)).
 
@@ -996,6 +1003,10 @@ How it is built (G9), where the points above left a choice:
   cap before it sends them, and the gate still reads them strictly. Params
   over the cap are not sent: the phone says "This is too large to send."
   (`too_large`), nothing was decided, and the decision is made at the desk.
+  A decision whose record the daemon finds over the record's cap is refused
+  `record-too-large` before its challenge is drawn (or, on `seat.decide`,
+  before anything is journaled); the seat link takes that code as a certain
+  refusal, and the phone says the same, "This is too large to send.".
 - Decision challenges are limited to 10 a minute per credential, and the
   seat link asks one only when the room of decisions at the gate (16 calls
   in 80 seconds, see [login](#login-seatlogin-challenge-and-seatlogin)) holds
