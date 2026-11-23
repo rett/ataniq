@@ -31,10 +31,11 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
 
 - The transport, `internal/seatgate` (standard library only): pinned-key TLS
   1.3 with ALPN `ataniq-gate/1`, length-prefixed strict JSON frames of at most
-  64 KiB, a `seat.hello` with a capability list, `seat.ping`, coded errors of
-  the grammar `[a-z0-9-]{1,40}` and no text on the wire, and the server limits
-  in its package comment (among them 60 requests a minute per connection and a
-  30-second deadline per request). `ServerTLS` takes a list of pinned client keys;
+  257 KiB (see [frame size](#frame-size)), a `seat.hello` with a capability
+  list, `seat.ping`, coded errors of the grammar `[a-z0-9-]{1,40}` and no text
+  on the wire, and the server limits in its package comment (among them 60
+  requests a minute per connection and a 30-second deadline per request).
+  `ServerTLS` takes a list of pinned client keys;
   `ClientTLS` takes one pinned server key. `WriteIdentityFiles` and
   `LoadIdentity` keep an identity in a folder (`cert.pem`, `key.pem`, key mode
   0600, folder 0700, never overwritten). `ataniqd` (the gate's listener) and `ataniq-seat` (its
@@ -236,26 +237,31 @@ The params of `seat.challenge` burn nothing and are read whole by the handler.
 
 ### Frame size
 
-`ownerwire.MaxPageBytes` (256 KiB) caps the listing, a show and a page, while a
-`seatgate` frame is at most 64 KiB (`seatgate.MaxFrame`). A result larger than
-a frame is answered `too-large` by the transport. Version 1 needs all of these:
+`ownerwire.MaxPageBytes` (256 KiB) caps the listing, a show and a page, and a
+result embeds the encoded page as it is. A `seatgate` frame is at most
+`MaxPageBytes` plus 1 KiB, 257 KiB (`seatgate.MaxFrame`): 1 KiB is room enough
+for the envelope, and no read of a card is refused for its size. The same cap
+holds on both ends and in both directions: what the server reads and writes,
+and what the client reads and writes. There is no negotiation and no
+capability for it: the server does not look at the capabilities in the
+client's hello, and it holds no client to a smaller cap. A request frame over
+the cap breaks the link as a violation of the wire. A result larger than a
+frame is answered `too-large` by the transport.
 
-- The frame cap rises to `MaxPageBytes` plus 1 KiB on both ends:
-  `seatgate.MaxFrame` bounds what the server and the client read and write, and
-  a result embeds the encoded page as it is, so 1 KiB is room enough for the
-  envelope. This is a change of `internal/seatgate` and belongs to the task
-  that owns that package; the lead places it.
-- A peer built before the raise cannot read a larger frame. So the client
-  lists the capability `frame-large` (planned) in its hello, and the server
-  writes a frame over 64 KiB only to a client that listed it; any other gets
-  `too-large`, as today. A gate and a seat of different builds still work for
-  every card that fits.
-- `too-large` from a read then remains a defence only. The seat says, for the
-  listing, that the list is too large for this phone and is read at the desk;
-  for a show or a page, that this card is too large for the phone and is
-  decided at the desk. It offers no decision for a card it could not read
-  whole: the decide form needs `Card.MayApprove`, which asks that every list
-  of the card was read to its end.
+Before the raise a frame was at most 64 KiB. A peer built before the raise
+would drop the link on a frame over 64 KiB instead of seeing `too-large`. The
+contract accepts that, because no such peer exists: nothing is deployed, so
+the seat and the gate are always of builds with the same cap. An earlier draft
+had the client list a capability `frame-large`, and had the server write a
+frame over 64 KiB only to a client that listed it. That capability is dropped
+from the contract and is in no code.
+
+`too-large` from a read then remains a defence only. The seat says, for the
+listing, that the list is too large for this phone and is read at the desk;
+for a show or a page, that this card is too large for the phone and is
+decided at the desk. It offers no decision for a card it could not read
+whole: the decide form needs `Card.MayApprove`, which asks that every list
+of the card was read to its end.
 
 ## Errors
 
@@ -1071,8 +1077,8 @@ accept while a record with both blocks, or neither, is refused.
 Others: G1 places the function that makes an origin canonical; G6 adds the key
 list's kind, backup flag and counter; G7 builds the seat's side of the login
 and allows `publickey-credentials-get`; G8 also adds the mark of a decision on
-its way to `ownerwire.ShowResult`; and the task that owns `internal/seatgate`
-raises the frame cap with `frame-large`.
+its way to `ownerwire.ShowResult`; and the frame cap of `internal/seatgate`
+was raised to 257 KiB without a capability (see [frame size](#frame-size)).
 
 G9, the seat app's approve and deny, implements (built)
 [the phone's side](#the-phones-side): the decide form on the Card page only,
