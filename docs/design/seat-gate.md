@@ -11,14 +11,16 @@ passkey record by the service. Phone decisions are scratch-only, shown with
 the STAND-IN banner, and approve nothing real. Not built yet: the release of
 `ataniq-seat` on the authority host (G12); the call of `decisionguard.Check`
 in `ataniq-seat` before any challenge or decision is relayed; the phone trial
-(G13); and `owner.wait` (live refresh) and notices (G14). This document is the
-contract that the code follows. A paragraph that begins "Owner decision"
-records a decision the owner has made. Everything else is proposed, for the
-lead to sign off before the build starts; the change to the
+(G13); `owner.wait` (live refresh) and notices (G14); and the one function
+that makes an origin canonical (G1; [the seat origin](#the-seat-origin) lists
+where the three checks in use disagree). This document is the contract that
+the code follows. A paragraph that begins "Owner decision" records a decision
+the owner has made. Everything else is proposed, for the lead to sign off, and
+where a paragraph says built the code does what it says; the change to the
 decision record is also part of the joint contract with the planner's project
 and needs the planner's agreement. Names of packages, files and functions that
-exist today are given as they are in the repository; a name marked "planned"
-does not exist yet.
+exist today are given as they are in the repository; a name marked "not built"
+does not exist.
 
 The seat gate is the link between the seat app, which serves the owner's phone
 from the authority host, and the daemon on an AI host. It carries the pairing of
@@ -133,8 +135,9 @@ The identity of the gate is kept in the state folder (built, G4:
 file beside it (built, G4: `STATE/owner/gate/seat-pins`, a regular file and
 not a link, mode 0600, one fingerprint per line, at most 4). The pins are read
 when the gate starts, so a change of the file applies at the next start. On
-start the daemon writes one log line with the gate's fingerprint and address and
-no pin.
+start the daemon writes one log line with the gate's address and fingerprint,
+the seat origin and what the gate serves (`pair, read, login and decide`), or
+why it serves `pair and read only`, and no pin.
 
 Why not the alternatives:
 
@@ -175,9 +178,11 @@ them and never hands them to the handler.
 A handler made with `gatehost.New` answers `["pair", "read"]` (`gatehost.Caps`);
 one made with `gatehost.NewDeciding`, `["pair", "read", "login", "decide"]`
 (`gatehost.DecidingCaps`), and the daemon makes that one only when the seat
-origin is configured (see [the seat origin](#the-seat-origin)). The seat reads the list
+origin is configured and its service can decide from the phone (see
+[the seat origin](#the-seat-origin)). The seat reads the list
 (`seatgate.Client.Caps`) and offers login and decisions only when the gate lists
-them; otherwise it says that the desk does not take phone decisions.
+them; otherwise it says that the desk does not take phone logins, or does not
+take decisions from the phone.
 
 The gate never serves `owner.decide`, `owner.decider`, `owner.beat`,
 `owner.looked`, `owner.limit`, `owner.limit-set`, the desk's pairing operations
@@ -492,9 +497,9 @@ The daemon checks, in this order:
    (`key-revoked`, nothing is appended), and a decision appended first stands
    and goes to the door as any other. The lock order is the decision lock, then
    the revocation lock; no code that holds the revocation lock takes the
-   decision lock. Then the door and the outcome, as at the desk. G8 refactors
-   `Service.Decide` so that the desk and the seat share everything after
-   authentication.
+   decision lock. Then the door and the outcome, as at the desk. The desk and
+   the seat share everything after authentication (built, G8b:
+   `Service.Decide` and `Service.SeatDecide` both call `decideAuthed`).
 
 #### What is journaled and what is logged
 
@@ -681,25 +686,51 @@ as section 7.2 of WebAuthn Level 3 says.
 The origin and the relying party id are the seat's, and the two ends must agree
 on them byte for byte.
 
-- One function makes an origin canonical, and both the seat app and the daemon
-  call it (planned, G1, beside the reader of the origin file in
-  `internal/ownerlocal`, standard library only; the check that `seatapp.New`
-  makes today moves there). It takes `https://HOST` or `https://HOST:443`,
-  with a lower-case domain name and no address literal, other port, path,
-  query, fragment or user information, and gives `https://HOST`. The relying
-  party id is HOST, without a port.
+- One function makes an origin canonical, and the seat app, the daemon and
+  the desk's pairing view all call it (not built, G1: the reader of the origin
+  file is built, `ownerlocal.SeatOrigin` in `internal/ownerlocal`, standard
+  library only, and it checks nothing of the value; the function was to sit
+  beside it). It takes `https://HOST` or `https://HOST:443`, with a lower-case
+  domain name and no address literal, other port, path, query, fragment or
+  user information, and gives `https://HOST`. The relying party id is HOST,
+  without a port.
+- Three checks stand in for it today, each with rules of its own:
+  `leaddaemon.CanonicalSeatOrigin` (the gate's), the check that `seatapp.New`
+  makes of `Config.Origin` (built on `net/url`), and `pairview.ValidOrigin`
+  (the desk's, for the QR). They disagree, and the list of known
+  disagreements is:
+  - `pairview.ValidOrigin` accepts an upper-case host and lower-cases it, and
+    requires a dotted host. The daemon's `CanonicalSeatOrigin` refuses an
+    upper-case host and accepts a single label such as `https://localhost`;
+    `seatapp` accepts a single label and refuses an upper-case host too.
+  - `seatapp` accepts an underscore in the host, a trailing dot and an
+    all-digit last label (`https://seat.123`), which the daemon refuses.
+  - A last label that reads as an address in hexadecimal (`https://seat.0x7f`)
+    is refused by `pairview` and accepted by the daemon and by `seatapp`,
+    which refuse only a last label of digits alone.
+
+  None of these lets a wrong origin be accepted: the verifier compares the
+  client data's origin and the relying party hash with the daemon's own
+  canonical value, and a browser binds a passkey to its relying party id. A
+  disagreement only makes the QR or the logins fail. Until the function is
+  built, write the origin in a form all three accept: `https://` and a
+  lower-case domain name of letters, digits, dots and dashes with at least one
+  dot and a last label that is not a number, and no port but 443.
 - The gate reads the origin once, when it starts, from the owner-local origin
-  file (G1), makes it canonical and logs it. A change of the file applies at
-  the next start, so the origin never changes under a running gate. Built
-  (G8b): `ataniqd run --seat-gate` reads it with `ownerlocal.SeatOrigin`
-  before the daemon takes its lock, makes it canonical with
-  `leaddaemon.CanonicalSeatOrigin` (the canonical function is not in
-  `internal/ownerlocal`, which only reads the file), and names it in the gate's
-  start line.
+  file, makes it canonical and logs it. A change of the file applies at the
+  next start, so the origin never changes under a running gate. Built (G8b):
+  `ataniqd run --seat-gate` reads it with `ownerlocal.SeatOrigin` before the
+  daemon takes its lock, makes it canonical with
+  `leaddaemon.CanonicalSeatOrigin`, and names it in the gate's start line. The
+  seat app is given its origin at its start, by `--origin` or from the first
+  line of the file named by `--origin-file`, and its relying party id is that
+  origin's host (`--rpid`, when given, must be that host); the desk's console
+  reads the same owner-local file for the pairing QR.
 - Without the file, or with one that is not an origin, the gate starts with the
   capabilities `["pair", "read"]` only, and logs why. So does a gate whose
   service cannot decide from the phone. The seat then says that
-  the desk does not take phone decisions. So no call meets a missing origin.
+  the desk does not take phone logins, or decisions from the phone. So no call
+  meets a missing origin.
 - The verifier compares the client data's origin with the canonical origin
   exactly, and the authenticator data's relying party hash with the SHA-256 of
   the relying party id.
@@ -1074,11 +1105,14 @@ checks the signature again; the desk's console vectors unchanged byte for byte;
 and a passkey record that `record.DecodeDecision` and `record.EncodeDecision`
 accept while a record with both blocks, or neither, is refused.
 
-Others: G1 places the function that makes an origin canonical; G6 adds the key
-list's kind, backup flag and counter; G7 builds the seat's side of the login
-and allows `publickey-credentials-get`; G8 also adds the mark of a decision on
-its way to `ownerwire.ShowResult`; and the frame cap of `internal/seatgate`
-was raised to 257 KiB without a capability (see [frame size](#frame-size)).
+Others: G1 places the reader of the owner-local origin file, which is built; the
+function that makes an origin canonical is not built (see
+[the seat origin](#the-seat-origin)). G6 adds the key list's kind, backup flag
+and counter (built); G7 builds the seat's side of the login and allows
+`publickey-credentials-get` (built); G8 also adds the mark of a decision on its
+way to `ownerwire.ShowResult` (built, G8b); and the frame cap of
+`internal/seatgate` was raised to 257 KiB without a capability (see
+[frame size](#frame-size)).
 
 G9, the seat app's approve and deny, implements (built)
 [the phone's side](#the-phones-side): the decide form on the Card page only,
