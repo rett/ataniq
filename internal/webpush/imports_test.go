@@ -128,12 +128,12 @@ func TestSeatNeverImports(t *testing.T) {
 			}
 		}
 	}
-	for _, must := range []string{"ataniq/internal/seatapp", "ataniq/internal/seatlink", "ataniq/internal/seatgate"} {
+	for _, must := range []string{"ataniq/internal/seatapp", "ataniq/internal/seatlink", "ataniq/internal/seatgate", "ataniq/internal/seatnotice"} {
 		if !seen[must] {
 			t.Fatalf("the walk did not reach %s: it reads the wrong folders", must)
 		}
 	}
-	for _, pkg := range []string{"ataniq/cmd/ataniq-seat", "ataniq/internal/seatapp", "ataniq/internal/seatlink"} {
+	for _, pkg := range []string{"ataniq/cmd/ataniq-seat", "ataniq/internal/seatapp", "ataniq/internal/seatlink", "ataniq/internal/seatnotice"} {
 		for _, name := range goFiles(t, pkgDir(pkg), true) {
 			for _, p := range fileImports(t, filepath.Join(pkgDir(pkg), name)) {
 				if p == thisPackage {
