@@ -1,9 +1,9 @@
 # Seat gate protocol, version 1
 
 Status: design only for phone decisions, and none of it is qualified. Since the
-first draft the gate's handler for pairing and reads (G3) and the assertion
-verifier with its credential kinds (G5) are built, and the fingerprint is
-eight words; no command uses the handler or the verifier yet. It is the
+first draft the gate's handler for pairing and reads (G3), the assertion
+verifier with its credential kinds (G5) and the seat's login and sessions (G7)
+are built, and the fingerprint is eight words; no command uses the handler or the verifier yet. It is the
 contract from which the daemon's side of phone decisions and the seat app's
 approve and deny are to be built. A paragraph that begins "Owner decision"
 records a decision the owner has made. Everything else is proposed, for the
@@ -32,9 +32,16 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   `LoadIdentity` keep an identity in a folder (`cert.pem`, `key.pem`, key mode
   0600, folder 0700, never overwritten). No command calls any of it.
 - The seat app, `internal/seatapp` (standard library only), and the command
-  `ataniq-seat`. They serve the pairing page and its API. `seatapp.Daemon` has
-  one method, `Pair`; `ataniq-seat` wires it to a stand-in that always answers
-  `ErrDaemonUnavailable`.
+  `ataniq-seat`. They serve the pairing page and its API, the login page and
+  its API with the seat's sessions, and the card pages, read-only, behind a
+  session (G7; see [login](#login-seatlogin-challenge-and-seatlogin) and
+  [the phone's side](#the-phones-side)). `seatapp.Daemon` has
+  `Pair`, `LoginChallenge`, `Login`, `List`, `Show` and `Pages`;
+  `internal/seatlink` implements it over
+  the gate, and `ataniq-seat` wires that in when it is given a gate (without
+  one, every call answers `ErrDaemonUnavailable`). The daemon's side of the
+  login operations is G8's and is not built, so a gate today does not list
+  `login`, and the phone says that the desk does not take phone logins.
 - The owner channel's service, `internal/approval/ownerchannel`, and the words
   of its connection, `internal/approval/ownerwire`. `Service.PairPresent` takes
   a source whose surface is `ownerchannel.SurfaceSeat` (`"seat"`). The daemon
@@ -505,17 +512,37 @@ belongs to no project, so no project's policy is asked here; it is asked at
 each challenge and decision. It answers the display id, the raw credential id
 and the kind. The daemon keeps no session.
 
-The seat's side (G7): the seat recomputes the login challenge from the gate's
-pin and the nonce before it hands it to the browser, and stops on a mismatch as
-for a decision. It keeps each login challenge id with the browser that asked for
-it, server-side, and takes the browser's assertion for it only from that
-browser. It makes the session from the answer with a fresh value it draws
-itself, never one the browser brought, and every later decision of the session
-uses exactly the session's credential (`allowCredentials` holds only its raw
-id). Anyone who reaches the seat can ask for a login challenge, and the gate
-takes 60 requests a minute on the seat's one connection, so the seat limits
-login challenges per browser and in all, to well under that rate, and leaves
-the room to the owner's reads and decisions.
+The seat's side (G7, built): the seat link recomputes the login challenge
+from the gate's pin and the nonce before it hands it to the browser, and stops
+on a mismatch as for a decision (`seatlink.LoginChallengeOf`, held to the
+login vector above). This document places that function in `ownerwire`, for
+the daemon and the seat to share; `ownerwire` has no login type yet, so the
+seat link has its own, and G8 is to move it there. The seat keeps each login
+challenge id with the browser that asked for it, server-side, under a login
+cookie of that browser (`__Host-seat-login`, 5 minutes), and takes the
+browser's assertion for it only with that cookie, burning the entry first. It
+makes the session from the answer with a fresh 256-bit value it draws itself,
+never one the browser brought (a session cookie that comes with a login is
+ended), and keeps the value server-side as its digest. The session's cookie
+is `__Host-seat`, Secure, HttpOnly and SameSite=Strict; a session ends 30
+minutes after its last request and 12 hours after the login. Every later
+decision of the session is to use exactly the session's credential
+(`allowCredentials` holding only its raw id; G9). The seat link checks that a
+login's answer names the credential the assertion named, by its raw id and its
+display id.
+
+Anyone who reaches the seat can ask for a login challenge, and the gate takes
+60 requests a minute on the seat's one connection, which every browser shares.
+So the seat limits login challenges to 10 per source in 15 minutes and to 8 a
+minute from all sources together: each login asks the gate twice, so logins
+take at most 16 of the 60 a minute, and the room left is the owner's reads and
+decisions. A source is the client address the proxy sets, as for the pairing.
+Only a session reads cards, and the reads of one credential's sessions are
+limited to 20 a minute (a card page asks the gate once; the first page of a
+card's path list may ask twice, to learn the card's review), so one phone's
+reads and every login together stay within the 60. When the gate answers
+`rate-limited`, `busy` or `too-many-refusals`, the phone says that the desk is
+busy and to try again in a minute, and nothing is retried by itself.
 
 Reads after a revoke: the reads are the pin's, not a credential's, since the
 daemon keeps no session. A seat session whose key was revoked still reads cards
@@ -661,6 +688,17 @@ Leaving a card undecided sends nothing.
 
 ## The phone's side
 
+What the seat app shows (G7, built): the card list (`GET /cards/`), the card
+page (`GET /cards/{id}`) and the pages of a card's whole path list (`GET
+/cards/{id}/paths/{n}`), each behind a session and read-only. The seat link
+builds the card from the record's bytes with `internal/approval/card`, after
+the bytes' digest is checked and the record decodes as the card asked for, so
+the seat never shows a card rendered elsewhere. A lead's text is shown as the
+desk console shows it, through the lead-text escaping, and then through
+`seatapp.Text`. Each page says that the desk runs a STAND-IN door on scratch
+state and that nothing on it is a real approval, and that approve and deny are
+at the desk. No page has a decide control.
+
 What the seat app does with a decision (G9), proposed:
 
 - The Card page is the only page with a decide form. Approve is offered when
@@ -678,9 +716,9 @@ What the seat app does with a decision (G9), proposed:
   /api/decide` carries the challenge id and the assertion. Both bodies fit the
   app's cap on every request (`seatapp.MaxBody`, 8 KiB): an assertion within
   the caps of `Assertion` is under 6 KiB in base64.
-- The app's `Permissions-Policy` header forbids `publickey-credentials-get`
-  today; G7 allows it to the app's own origin, for the login and the Card
-  page.
+- The app's `Permissions-Policy` header allows `publickey-credentials-get` to
+  the app's own origin on the login page (G7) and forbids it on every other
+  response; G9 allows it on the Card page as well.
 - A cancelled or failed user verification sends nothing and leaves the card as
   it was; the next tap asks a new challenge, which replaces the old one.
 

@@ -33,6 +33,51 @@
 // The pairing code is a secret. No error of this package holds it, nor any
 // byte of the request or of the answer; an error holds at most the gate's
 // code, which is of the grammar [a-z0-9-]{1,40}.
+//
+// # Login
+//
+// [Daemon.LoginChallenge] sends seat.login-challenge and [Daemon.Login]
+// seat.login, in the form docs/design/seat-gate.md gives them ("Login"). The
+// link asks neither unless the gate's hello listed the capability "login"
+// ([seatapp.ErrNotOffered] otherwise). Before a login challenge reaches the
+// phone, the link recomputes it from the gate key's fingerprint, which [New]
+// is given with [WithGatePin], and the daemon's nonce ([LoginChallengeOf]); a
+// challenge that differs is an error and nothing is asked of the phone. A
+// login's answer must name the credential the assertion named, by its raw id
+// and by its display id ([DisplayID]). The codes:
+//
+//	challenge-stale                             seatapp.ErrChallengeStale
+//	assertion-invalid, key-unknown,
+//	key-revoked, kind-refused                   seatapp.ErrLoginRefused
+//	unknown-op (a gate without the operations)  seatapp.ErrNotOffered
+//	rate-limited, busy, too-many-refusals       seatapp.ErrBusy
+//
+// and the rest as for the pairing.
+//
+// # Cards
+//
+// [Daemon.List], [Daemon.Show] and [Daemon.Pages] read the cards with
+// owner.list, owner.show and owner.paths, and only when the gate's hello
+// listed "read". Show builds the card the phone shows from the record's
+// bytes, never from anything the gate rendered: the result is read with
+// [ownerwire.DecodeShowResult], which takes nothing beside the record and its
+// marks, the bytes must be their digest's, they must decode as the pending
+// record of the card asked for, and the card model ([card.New]) checks them
+// again, the binding's digest among it. A lead's text leaves the card model
+// only through the lead-text escaping, so the phone shows it as the desk
+// console does, and the app then shows it through its Text. Pages asks for
+// the review the card was shown with (the link remembers it, and shows the
+// card first when it does not know it) and takes only the page asked for. An
+// id that is not a card's is not sent. The codes:
+//
+//	approval-void                               seatapp.ErrNoCard
+//	review-changed                              seatapp.ErrCardChanged
+//	too-large                                   seatapp.ErrTooLarge
+//	unknown-op                                  seatapp.ErrNotOffered
+//	rate-limited, busy, too-many-refusals       seatapp.ErrBusy
+//
+// and the rest as for the pairing. A record the card model refuses is no
+// card; the phone says it could not be read.
 package seatlink
 
 import (
@@ -49,6 +94,9 @@ import (
 // CapPair is the capability of the seat.pair operation in a hello.
 const CapPair = "pair"
 
+// CapRead is the capability of the reads of the cards in a hello.
+const CapRead = "read"
+
 // codePairingRefused is the code the gate answers a pairing the daemon did
 // not accept with: the code unknown, expired, used or out of tries.
 const codePairingRefused = "pairing-refused"
@@ -63,7 +111,7 @@ const (
 
 // Caps is the capability list the seat says in its hello
 // ([seatgate.ClientConfig].Caps), in a new slice.
-func Caps() []string { return []string{CapPair} }
+func Caps() []string { return []string{CapPair, CapRead, CapLogin} }
 
 // errBadAnswer is the error of an answer that is not a pairing result of its
 // form. It holds nothing of the answer.
@@ -77,29 +125,64 @@ var errRegistration = errors.New("seatlink: the registration is not of the wire'
 // errFailed is the error of a call that failed for a reason the app does not
 // tell apart. It holds nothing of the request; it wraps the transport's error,
 // whose texts are fixed.
-var errFailed = errors.New("seatlink: the pairing call failed")
+var errFailed = errors.New("seatlink: the call to the gate failed")
 
 // RefusedError is a refusal of the gate with a code the app does not tell
-// apart. Code is of the grammar of [seatgate.ValidCode].
+// apart. Code is of the grammar of [seatgate.ValidCode]; Op is the operation
+// refused, empty for the pairing.
 type RefusedError struct {
+	Op   string
 	Code string
 }
 
-func (e *RefusedError) Error() string { return "seatlink: the gate refused the pairing: " + e.Code }
+func (e *RefusedError) Error() string {
+	what := "the pairing"
+	if e.Op != "" && e.Op != ownerwire.OpSeatPair {
+		what = e.Op
+	}
+	return "seatlink: the gate refused " + what + ": " + e.Code
+}
 
 // Daemon is the seat app's daemon port over the gate. It is safe for
 // concurrent use, as its client is.
 type Daemon struct {
 	c *seatgate.Client
+	// pin is the gate key's fingerprint, from which the link recomputes a
+	// login challenge; empty when the link was made without it.
+	pin string
+	// reviews are the review digests of the cards the link showed.
+	reviews reviews
+}
+
+// Option sets an option of [New].
+type Option func(*Daemon) error
+
+// WithGatePin gives the link the gate key's fingerprint, the pin the seat's
+// client holds (64 lower-case hex digits). The link recomputes each login
+// challenge from it and the daemon's nonce; without it, no login is asked.
+func WithGatePin(pin string) Option {
+	return func(d *Daemon) error {
+		if !seatgate.ValidFingerprint(pin) {
+			return errors.New("seatlink: the gate pin is not a fingerprint")
+		}
+		d.pin = pin
+		return nil
+	}
 }
 
 // New returns the port over c. The caller runs c ([seatgate.Client.Run]) and
 // closes it; until c is connected, every call is [seatapp.ErrDaemonUnavailable].
-func New(c *seatgate.Client) (*Daemon, error) {
+func New(c *seatgate.Client, opts ...Option) (*Daemon, error) {
 	if c == nil {
 		return nil, errors.New("seatlink: a client is required")
 	}
-	return &Daemon{c: c}, nil
+	d := &Daemon{c: c}
+	for _, o := range opts {
+		if err := o(d); err != nil {
+			return nil, err
+		}
+	}
+	return d, nil
 }
 
 // Pair relays a pairing to the daemon. See the package comment for the
@@ -132,7 +215,7 @@ func (d *Daemon) Pair(ctx context.Context, r seatapp.PairRequest) (seatapp.PairR
 	}
 	var raw json.RawMessage
 	if err := d.c.Call(ctx, ownerwire.OpSeatPair, json.RawMessage(params), &raw); err != nil {
-		return seatapp.PairResult{}, mapError(ctx, err)
+		return seatapp.PairResult{}, mapCall(ctx, ownerwire.OpSeatPair, err, pairCodes)
 	}
 	res, err := ownerwire.DecodeSeatPairResult(raw)
 	if err != nil || len(res.Words) != ownerwire.PairWords {
@@ -143,18 +226,24 @@ func (d *Daemon) Pair(ctx context.Context, r seatapp.PairRequest) (seatapp.PairR
 	return out, nil
 }
 
-// mapError maps the error of a call to the errors the app tells apart.
-func mapError(ctx context.Context, err error) error {
+// pairCodes are the codes of the gate the pairing maps to the app's errors.
+var pairCodes = map[string]error{codePairingRefused: seatapp.ErrCodeRefused}
+
+// mapCall maps the error of a call of op to the errors the app tells apart:
+// a code of the gate that codes names to its error, any other code to a
+// [*RefusedError], and a lost link or an ended context to
+// [seatapp.ErrDaemonUnavailable].
+func mapCall(ctx context.Context, op string, err error, codes map[string]error) error {
 	var re *seatgate.RemoteError
 	switch {
 	case errors.As(err, &re):
-		if re.Code == codePairingRefused {
-			return seatapp.ErrCodeRefused
+		if mapped, ok := codes[re.Code]; ok {
+			return mapped
 		}
 		if !seatgate.ValidCode(re.Code) {
 			return errFailed
 		}
-		return &RefusedError{Code: re.Code}
+		return &RefusedError{Op: op, Code: re.Code}
 	case errors.Is(err, seatgate.ErrDisconnected),
 		errors.Is(err, context.Canceled),
 		errors.Is(err, context.DeadlineExceeded),

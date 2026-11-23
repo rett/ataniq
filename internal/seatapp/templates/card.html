@@ -1,0 +1,83 @@
+{{define "content"}}
+{{with .Card}}
+<h1>{{text .Project maxName}} · {{text .Verb maxName}}{{if .Feature}} {{text .Feature maxName}}{{end}}</h1>
+{{template "standin"}}
+<dl class="facts">
+<dt>Card</dt><dd>{{text .ID maxID}}</dd>
+{{if .Target}}<dt>Into</dt><dd>{{text .Target maxName}}</dd>
+{{end}}<dt>Asked by</dt><dd>{{text .Role maxName}}</dd>
+<dt>Asked</dt><dd>{{when .Asked}}</dd>
+<dt>Ends</dt><dd>{{if .Ended}}ended{{else}}{{until $.Now .Expires}}, {{when .Expires}}{{end}}</dd>
+<dt>Class</dt><dd>{{text .Class maxName}}</dd>
+<dt>Binding</dt><dd class="mono">{{short .BindingSHA256}}</dd>
+</dl>
+{{if .Refused}}<p class="flag">A run refused: this card is here because of it.</p>
+{{end}}{{if .Held}}<p class="held">Held: decided past the limit. Nothing was applied.</p>
+{{end}}{{if or .State .Line}}<section aria-labelledby="after">
+<h2 id="after">After the decision</h2>
+<p>{{if .State}}{{text .State maxID}}{{else}}pending{{end}}{{if .Line}}: {{text .Line maxLine}}{{end}}</p>
+</section>
+{{end}}<section aria-labelledby="plan">
+<h2 id="plan">Plan</h2>
+{{if .Plan}}<pre class="lead">{{range .Plan}}{{lead . maxText}}
+{{end}}</pre>{{else}}<p>No plan text.</p>{{end}}
+</section>
+{{with .Refs}}<section aria-labelledby="refs">
+<h2 id="refs">Refs it moves</h2>
+<ul class="rows">
+{{range .}}<li><span class="lead mono">{{lead .Ref maxPath}}</span> <span class="meta">{{text .Kind maxName}}: {{short .Old}} to {{if .Deletes}}deleted{{else}}{{short .New}}{{end}}</span></li>
+{{end}}</ul>
+</section>
+{{end}}{{with .Diff}}<section aria-labelledby="diff">
+<h2 id="diff">Changes</h2>
+<p>{{num .Files}} files, {{num .Added}} lines added, {{num .Removed}} removed.</p>
+{{with .Rows}}<ul class="rows">
+{{range .}}<li><span class="lead mono">{{lead .Path maxPath}}</span> <span class="meta">{{text .Status maxID}}, +{{num .Added}} −{{num .Removed}}</span></li>
+{{end}}</ul>
+{{end}}{{if .Truncated}}<p>Only the first paths are on the card. <a id="paths" href="{{pathsHref $.Card.ID 0}}">Read the whole path list</a></p>
+{{end}}</section>
+{{end}}{{range .Lists}}{{if .Paths}}<section>
+<h2>{{text .Label maxName}}</h2>
+<ul class="rows">
+{{range .Paths}}<li><span class="lead mono">{{lead . maxPath}}</span></li>
+{{end}}</ul>
+</section>
+{{end}}{{end}}{{with .Flagged}}<section aria-labelledby="flagged">
+<h2 id="flagged">Flagged paths</h2>
+<p>Each needs its own sign-off at the desk.</p>
+<ul class="rows flags">
+{{range .}}<li><span class="lead mono">{{lead .Path maxPath}}</span> <span class="meta">{{text .Kind maxName}}: {{text .Reason maxLine}}{{if not .Pattern.Empty}}. Rule: {{lead .Pattern maxPath}}{{end}}</span></li>
+{{end}}</ul>
+</section>
+{{end}}{{with .Evidence}}<section aria-labelledby="evidence">
+<h2 id="evidence">Evidence</h2>
+<ul class="rows">
+{{range .}}<li>{{text .Kind maxName}}: {{text .RecordID maxID}}</li>
+{{end}}</ul>
+</section>
+{{end}}{{with .Note}}<section aria-labelledby="note" class="voice">
+<h2 id="note">The lead's note</h2>
+<p class="label">Lead-stated, not checked.</p>
+<pre class="lead">{{range .}}{{lead . maxText}}
+{{end}}</pre>
+</section>
+{{end}}{{with .Differs}}<section aria-labelledby="differs">
+<h2 id="differs">How it differs from an earlier card</h2>
+<p>From {{text .EarlierID maxID}}, read {{when .ReadAt}}.</p>
+{{range .Lines}}<p>{{text . maxLine}}</p>
+{{end}}{{with .PathsAdded}}<p>Paths it adds:</p>
+<ul class="rows">{{range .}}<li><span class="lead mono">{{lead . maxPath}}</span></li>{{end}}</ul>
+{{end}}{{with .PathsRemoved}}<p>Paths it no longer has:</p>
+<ul class="rows">{{range .}}<li><span class="lead mono">{{lead . maxPath}}</span></li>{{end}}</ul>
+{{end}}{{with .RefsAdded}}<p>Refs it adds:</p>
+<ul class="rows">{{range .}}<li><span class="lead mono">{{lead . maxPath}}</span></li>{{end}}</ul>
+{{end}}{{with .RefsRemoved}}<p>Refs it no longer moves:</p>
+<ul class="rows">{{range .}}<li><span class="lead mono">{{lead . maxPath}}</span></li>{{end}}</ul>
+{{end}}{{if .Partial}}<p>One of the two path lists is cut, so these lists may miss paths.</p>
+{{end}}</section>
+{{end}}{{if .DiffersRefused}}<p>{{text .DiffersRefused maxLine}}</p>
+{{end}}{{end}}
+{{template "readonly"}}
+<p><a id="back" href="/cards/">Back to the cards</a></p>
+{{template "leave"}}
+{{end}}
