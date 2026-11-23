@@ -10,7 +10,9 @@
   the gate, when it is a link, not the daemon user's or writable by group or
   others. At most two threads are open (a third start is `genesis-busy`), eight
   files are kept, a thread untouched for 14 days is discarded, text that looks
-  like a key or a password is refused `genesis-secret-shaped`, and a thread
+  like a key or a password is refused `genesis-secret-shaped` (a pasted key
+  or an obvious assignment such as `password=...`; names, web addresses and
+  paths pass, and a bare git commit id is refused), and a thread
   that is finished is frozen with the digest of its brief. A file that is not as
   the daemon wrote it is not served and is logged once, in fixed text, and
   never repaired; no log line holds an answer. A restart serves the same
