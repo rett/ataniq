@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -232,6 +233,12 @@ type app struct {
 	// lastPoll is the time, in Unix nanoseconds, of the last accepted poll,
 	// 0 before the first; the notices stay quiet while it is recent.
 	lastPoll atomic.Int64
+	// pollSaw is what the owner has seen on a page: the count of cards
+	// waiting when the last live poll was accepted, with the number of such
+	// polls, which the notices' goroutine takes once each (see sawWaiting).
+	pollMu      sync.Mutex
+	pollSeq     uint64
+	pollWaiting int
 	// push is the notifier's PushPort, nil when Config.Notifier is not one:
 	// the pages then show nothing of notices and the routes of push.go
 	// answer 404. pushes bounds the push API per credential.

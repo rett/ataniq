@@ -1563,6 +1563,10 @@ one of the holds below applies. The rules:
 3. No notice while a browser polled in the last 60 seconds: a page that polls is
    open and the owner is looking at it. Only the time of the last accepted poll
    is kept, with no part of it or of its session.
+   The count of cards waiting that a live poll found is also kept (a number,
+   no more), and counts as seen: the floor of rule 2 is at least that count,
+   so a card the owner looked at on the page does not bring a notice a minute
+   after the page is closed. A card that comes after the last poll does.
 4. After a call to the notifier that failed, nothing is sent for 1 minute; each
    failure after it doubles the wait, to a longest of 30 minutes, and a call
    the notifier took ends the run. A failure is logged at most once a minute,

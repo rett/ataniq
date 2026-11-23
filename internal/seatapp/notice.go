@@ -166,6 +166,15 @@ func (c *noticeCore) tried(now time.Time) {
 	c.tries++
 }
 
+// seen records that the owner has been shown waiting cards, as a page's
+// accepted poll found them: the floor is at least that count, so closing the
+// page does not tell the phone of cards the owner has seen. The count is the
+// new baseline of the dip the core tracks too.
+func (c *noticeCore) seen(waiting int) {
+	c.floor = max(c.floor, waiting)
+	c.low = max(c.low, waiting)
+}
+
 // attempt records a call the notifier answered at now (a count taken, or a
 // refusal with a code, rate_limited too), for the day's tally of
 // noticeDailyMax. A call that got no answer is not recorded here: the cap is
@@ -243,6 +252,24 @@ func (x *App) Close() error {
 // kept, with no part of the poll or its session.
 func (a *app) polled() { a.lastPoll.Store(a.cfg.Now().UnixNano()) }
 
+// sawWaiting records the count of cards waiting that a live poll, just
+// accepted, found: what a page in front of the owner shows. The goroutine
+// takes each such count once, in pollSeen.
+func (a *app) sawWaiting(waiting int) {
+	a.pollMu.Lock()
+	a.pollSeq++
+	a.pollWaiting = max(waiting, 0)
+	a.pollMu.Unlock()
+}
+
+// pollSeen returns the count of the last live poll and the number of such
+// polls so far.
+func (a *app) pollSeen() (seq uint64, waiting int) {
+	a.pollMu.Lock()
+	defer a.pollMu.Unlock()
+	return a.pollSeq, a.pollWaiting
+}
+
 // lastPollTime is when the last accepted poll was, zero when none was.
 func (a *app) lastPollTime() time.Time {
 	n := a.lastPoll.Load()
@@ -288,10 +315,17 @@ func (a *app) startNotices() (stop func(), err error) {
 // no change between the two is missed.
 func (a *app) noticeLoop(ctx context.Context, w Watcher, n Notifier, timer noticeTimer) {
 	var core noticeCore
+	var seenSeq uint64
 	for ctx.Err() == nil {
 		ch := w.WatchChanged()
 		st := w.Watch()
 		now := a.cfg.Now()
+		// Cards a page showed the owner are told of no more: a poll
+		// accepted since the last look sets the floor to its count.
+		if seq, waiting := a.pollSeen(); seq != seenSeq {
+			seenSeq = seq
+			core.seen(waiting)
+		}
 		d := core.decide(now, st, a.lastPollTime())
 		if d.Send {
 			core.tried(now)

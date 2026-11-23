@@ -131,6 +131,37 @@ func TestNoticeCorePollSuppresses(t *testing.T) {
 	}
 }
 
+func TestNoticeCoreSeenCardsRaiseTheFloor(t *testing.T) {
+	// A page showed the owner 2 cards: a notice for 2 does not come when the
+	// page is closed, one for a third does.
+	var c noticeCore
+	c.seen(2)
+	if d := c.decide(t0, live(2), time.Time{}); d.Send {
+		t.Errorf("the 2 cards the owner saw: %+v", d)
+	}
+	if d := c.decide(t0, live(3), time.Time{}); !d.Send || d.N != 3 {
+		t.Errorf("a third card: %+v", d)
+	}
+	// Seen never lowers: after an announcement of 5, a page that showed 3
+	// leaves the floor at 5, and the dip it tracks is not raised past what
+	// is waiting.
+	var c2 noticeCore
+	c2.sent(t0, 5)
+	c2.seen(3)
+	if c2.floor != 5 || c2.low > c2.floor {
+		t.Errorf("floor %d low %d", c2.floor, c2.low)
+	}
+	// A dip that the owner then saw back at 1 is not a new notice after the
+	// spacing.
+	var c3 noticeCore
+	c3.sent(t0, 1)
+	c3.decide(t0.Add(time.Second), live(0), time.Time{}) // a card decided
+	c3.seen(1)                                           // another asked, and seen
+	if d := c3.decide(t0.Add(noticeSpacing+time.Second), live(1), time.Time{}); d.Send {
+		t.Errorf("a card the owner saw, after the spacing: %+v", d)
+	}
+}
+
 func TestNoticeCoreNotLiveSuppresses(t *testing.T) {
 	var c noticeCore
 	for name, st := range map[string]WatchState{
@@ -926,4 +957,47 @@ func TestNoticeCallBoundOutlastsTheNotifyDeadline(t *testing.T) {
 	if noticeCall < 15*time.Second+5*time.Second {
 		t.Errorf("noticeCall is %v, less than the notify deadline of 15s and a margin of 5s", noticeCall)
 	}
+}
+
+// A card that comes while the Cards page is open, and is looked at there, is
+// not told to the phone when the page is closed: the poll that found it
+// counted it as seen.
+func TestNoticeCardsSeenOnAPageAreNotToldAfterItCloses(t *testing.T) {
+	nr := newNoticeRig(t)
+	nr.app.watchHold = 10 * time.Millisecond
+	s := nr.login(t)
+	// The page polls: no cards yet.
+	if got := nr.poll(pollOK, s); got.Code != 200 {
+		t.Fatalf("poll: %d", got.Code)
+	}
+	nr.change(t, 1)
+	nr.expect(t) // held: a page is polling
+	nr.pass(t, 30*time.Second)
+	// The page polls again, now with the card in front of the owner.
+	if got := nr.poll(pollOK, s); got.Code != 200 {
+		t.Fatalf("poll: %d", got.Code)
+	}
+	// The page is closed: no poll follows. Well past the quiet minute, the
+	// phone has heard nothing.
+	nr.pass(t, 31*time.Second)
+	nr.pass(t, noticeQuiet)
+	nr.pass(t, noticeQuiet)
+	nr.expect(t)
+	// A second card, not seen, is told at once.
+	nr.change(t, 2)
+	nr.expect(t, 2)
+}
+
+// Cards that arrive while no page polls are told, and a poll that finds
+// none sets no floor above what is waiting.
+func TestNoticeAPollThatSawNothingDoesNotHideACard(t *testing.T) {
+	nr := newNoticeRig(t)
+	nr.app.watchHold = 10 * time.Millisecond
+	s := nr.login(t)
+	if got := nr.poll(pollOK, s); got.Code != 200 {
+		t.Fatalf("poll: %d", got.Code)
+	}
+	nr.change(t, 1) // held, a poll within the minute
+	nr.pass(t, noticeQuiet)
+	nr.expect(t, 1) // the page was left: the card is told
 }
