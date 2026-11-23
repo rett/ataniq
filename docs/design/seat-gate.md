@@ -60,10 +60,16 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   code with the verifier. Only tests use either.
 - The fingerprint of a paired credential is 8 words (see
   [the pairing fingerprint](#the-pairing-fingerprint)).
-- A decision can be made only at the desk. `Service.Decide` refuses a source
-  that is not the decider (`not-decider`) or whose surface has no owner activity
-  inside the presence window (`owner-away`). No command verifies a WebAuthn
-  assertion: only the tests of `credkind` call the verifier.
+- `Service.Decide` still refuses a source that is not the decider
+  (`not-decider`) or whose surface has no owner activity inside the presence
+  window (`owner-away`), a seat's included. The service's side of phone logins
+  and decisions is built (G8b): `Service.SeatLoginChallenge`,
+  `Service.SeatLogin`, `Service.SeatChallenge` and `Service.SeatDecide`, the
+  store of challenges, and the decision path the desk and the seat share
+  after authentication (`decideAuthed`), with the key checked again under the
+  revocation lock. They take the gate's own values as an `ownerchannel.Gate`
+  (its key fingerprint, the seat origin and its relying party id) and the
+  project's kind policy from `Config.KindPolicy`.
 - The decision record can say that a decision was confirmed by passkey (G8a,
   [the record change](#the-record-change)): the record package's decision
   check (`checkDecision`, run by `record.DecodeDecision` and
@@ -81,8 +87,8 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   [the journal entry](#the-journal-entry-of-a-phone-decision)): its activity
   from the seat block and its evidence beside it, read back with
   `ownerjournal.Store.EvidenceOf`. The list of deciding keys keeps the highest
-  sign counter (`ownerjournal.KeyFile.RaiseCounter`). The owner channel's
-  service does not call either for a phone decision yet.
+  sign counter (`ownerjournal.KeyFile.RaiseCounter`, through the service's
+  `KeyStore` port). The service writes both for a phone decision (G8b).
 
 ## The listener: inside the daemon
 

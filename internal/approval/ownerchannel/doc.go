@@ -163,10 +163,36 @@
 // desk is told of a burnt code by a notice ([Config].Notice) that holds nothing
 // of the code or of the tries.
 //
+// # A login and a decision from the phone
+//
+// [Service.SeatLoginChallenge], [Service.SeatLogin], [Service.SeatChallenge]
+// and [Service.SeatDecide] are the seat gate's four operations, which only the
+// gate's handler calls, with a seat source and the gate's own values
+// ([Gate]: its key fingerprint, the seat origin and the relying party id).
+// Each is a WebAuthn assertion over a challenge the service draws and binds,
+// for a decision, to its own pending record (docs/design/seat-gate.md). The
+// outstanding challenges are kept in memory, at most 32 for decisions and 16
+// for logins, for 5 minutes and one use by the gate session that asked; a
+// restart drops them. A decide takes its challenge out of the store in one
+// step and burns it before it judges anything of the content; recomputes the
+// challenge from the frame and compares it; checks the key and its kind
+// against the list and the project's policy ([Config].KindPolicy); verifies
+// the assertion with package credkind; and then shares the rest of the
+// desk's path ([Service.Decide]): the verified assertion with user
+// verification stands in for the presence window and the decider's place,
+// for that one decision only. The key is checked again under the lock that
+// revocation takes, right before the append. The record is confirmed by
+// passkey with a seat block, and the journal keeps the assertion's evidence
+// beside it. A deny needs an assertion too; it is never held and uses
+// nothing. The verified sign counter is kept on the list ([KeyStore]), and
+// one that does not grow is told as a possible clone, not refused.
+//
 // # Concurrency
 //
 // A [Service] is safe for use by several goroutines and starts none of its
 // own. Decisions, uses and restarts run one at a time; one verification runs
-// at a time. [Service.Close] cancels the calls under way, waits for them and
+// at a time. The lock order is the decisions' lock, then the lock of the
+// pairing and the keys: no code that holds the second takes the first.
+// [Service.Close] cancels the calls under way, waits for them and
 // closes the journal.
 package ownerchannel
