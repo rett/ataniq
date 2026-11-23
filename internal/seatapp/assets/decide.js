@@ -62,9 +62,13 @@
     return boxes.every(function (b) { return b.checked; });
   }
 
+  // stale says the live refresh script found this page's card changed or
+  // gone: the controls stay disabled, whatever else happens here.
+  function stale() { return document.documentElement.dataset.stale === "yes"; }
+
   function refresh() {
-    if (approveBtn) { approveBtn.disabled = busy || !allSigned(); }
-    if (denyBtn) { denyBtn.disabled = busy; }
+    if (approveBtn) { approveBtn.disabled = stale() || busy || !allSigned(); }
+    if (denyBtn) { denyBtn.disabled = stale() || busy; }
   }
 
   function showForm(on) {
@@ -162,7 +166,7 @@
   }
 
   function start(action) {
-    if (busy) { return; }
+    if (busy || stale()) { return; }
     busy = true;
     refresh();
     say(SAY.asking);
@@ -231,7 +235,7 @@
     back(SAY.cancelled);
   });
   goBtn.addEventListener("click", function () {
-    if (busy || !pending) { return; }
+    if (busy || stale() || !pending) { return; }
     var p = pending;
     pending = null;
     busy = true;
