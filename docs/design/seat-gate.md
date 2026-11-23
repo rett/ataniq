@@ -1,12 +1,18 @@
 # Seat gate protocol, version 1
 
-Status: design only for phone decisions, and none of it is qualified. Since the
-first draft the gate's handler for pairing and reads (G3), the assertion
-verifier with its credential kinds (G5), the seat's login and sessions (G7)
-and the seat app's approve and deny (G9) are built, and the fingerprint is
-eight words; no command uses the handler or the verifier yet. It is the
-contract from which the daemon's side of phone decisions and the seat app's
-approve and deny are to be built. A paragraph that begins "Owner decision"
+Status: built and tested on loopback and on scratch state, and none of it is
+qualified. In a build with the tag `ataniq_ownerchannel` the daemon serves the
+gate (`ataniqd run --seat-gate ADDR`; the pairing and reads are served from
+G3 on, and the login and decision operations when the daemon has the seat
+origin, G8b), and `ataniq-seat`, given a gate, serves the pairing page, the
+login page, the card pages and the Card page's approve and deny control
+(G7 and G9). A phone decision is verified, journaled and written as a
+passkey record by the service. Phone decisions are scratch-only, shown with
+the STAND-IN banner, and approve nothing real. Not built yet: the release of
+`ataniq-seat` on the authority host (G12); the call of `decisionguard.Check`
+in `ataniq-seat` before any challenge or decision is relayed; the phone trial
+(G13); and `owner.wait` (live refresh) and notices (G14). This document is the
+contract that the code follows. A paragraph that begins "Owner decision"
 records a decision the owner has made. Everything else is proposed, for the
 lead to sign off before the build starts; the change to the
 decision record is also part of the joint contract with the planner's project
@@ -31,7 +37,8 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   30-second deadline per request). `ServerTLS` takes a list of pinned client keys;
   `ClientTLS` takes one pinned server key. `WriteIdentityFiles` and
   `LoadIdentity` keep an identity in a folder (`cert.pem`, `key.pem`, key mode
-  0600, folder 0700, never overwritten). No command calls any of it.
+  0600, folder 0700, never overwritten). `ataniqd` (the gate's listener) and `ataniq-seat` (its
+  link) use it.
 - The seat app, `internal/seatapp` (standard library only), and the command
   `ataniq-seat`. They serve the pairing page and its API, the login page and
   its API with the seat's sessions, the card pages behind a session (G7),
@@ -64,7 +71,8 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
 - The credential kinds and the assertion verifier,
   `internal/approval/credkind` (standard library only), and a software
   authenticator for tests, `internal/approval/webauthntest`, which shares no
-  code with the verifier. Only tests use either.
+  code with the verifier. The owner channel's service uses the verifier; only
+  tests use the software authenticator.
 - The fingerprint of a paired credential is 8 words (see
   [the pairing fingerprint](#the-pairing-fingerprint)).
 - `Service.Decide` still refuses a source that is not the decider
@@ -83,13 +91,14 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   `record.EncodeDecision`) holds a record with `confirmed: "code"` to a
   console block and no seat block, as before, and one with
   `confirmed: "passkey"` to a seat block and no console block;
-  `record.AssertionDigest` computes the block's `assertion_sha256`. Nothing
-  writes a passkey record yet.
+  `record.AssertionDigest` computes the block's `assertion_sha256`. The
+  service writes a passkey record for a phone decision (G8b).
 - The words of the four gate operations are in `ownerwire` (G8a, see
   [the new types](#the-new-types)): their names, apart from the list the
   socket serves (`ownerwire.GateOperations`, not `ownerwire.Operations`), their
   params and results with strict decoders and caps, the gate's new codes, and
-  the challenge function with the vectors below. No handler serves them yet.
+  the challenge function with the vectors below. The gate's handler serves
+  them when it is made with `gatehost.NewDeciding` (G8b).
 - The owner journal takes a decision confirmed by passkey (G8a, see
   [the journal entry](#the-journal-entry-of-a-phone-decision)): its activity
   from the seat block and its evidence beside it, read back with
@@ -101,7 +110,7 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
 
 The gate is a TCP listener inside `ataniqd`, compiled only under the existing
 tag `ataniq_ownerchannel` and opened only when the owner asks for it with a
-flag of `run` (planned, G4: `--seat-gate ADDR`, beside `--owner-channel`).
+flag of `run` (built, G4: `--seat-gate ADDR`, beside `--owner-channel`).
 ADDR is one explicit IP address and port; a wildcard address and a host name
 are refused. Without the flag nothing listens. The owner's firewall lets only
 the authority host's address reach the port.
@@ -118,9 +127,9 @@ Surface: "seat"   Session: the first 16 hex digits of the peer's pinned fingerpr
 directly. The seat source of the Unix socket stays nil: no connection on the
 daemon's socket is ever a seat.
 
-The identity of the gate is kept in the state folder (planned, G4:
+The identity of the gate is kept in the state folder (built, G4:
 `STATE/owner/gate/`, loaded with `LoadIdentity`) and the pinned seat keys in a
-file beside it (planned, G4: `STATE/owner/gate/seat-pins`, a regular file and
+file beside it (built, G4: `STATE/owner/gate/seat-pins`, a regular file and
 not a link, mode 0600, one fingerprint per line, at most 4). The pins are read
 when the gate starts, so a change of the file applies at the next start. On
 start the daemon writes one log line with the gate's fingerprint and address and
