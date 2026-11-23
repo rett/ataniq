@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/approval/webauthntest"
 	"ataniq/internal/seatapp"
 	"ataniq/internal/seatgate"
@@ -325,6 +326,63 @@ func TestSeatLinkDecideRoom(t *testing.T) {
 	clock.advance(BudgetWindow)
 	if _, err := r.link.DecideChallenge(context.Background(), r.approve()); err != nil {
 		t.Errorf("a challenge after the window: %v", err)
+	}
+}
+
+// TestSeatLinkDecideRefusedBeforeSentLetsTheRoomGo: a decision that returns
+// before it is sent (a gate that is not connected, an assertion or a frame
+// not of the wire's form) lets the room kept for its challenge go, so
+// the full allowance of decision challenges is drawn and answered after it.
+// Without that, the three keep their rooms until their challenges' life
+// ends, and the challenges past them are refused for room.
+func TestSeatLinkDecideRefusedBeforeSentLetsTheRoomGo(t *testing.T) {
+	r := newDecideRig(t)
+	clock := &testClock{t: decideNow}
+	r.link.budget.now = clock.now
+	r.show(t)
+	var drawn []seatapp.DecideChallenge
+	for i := 0; i < decideRoom/2; i++ {
+		ch, err := r.link.DecideChallenge(context.Background(), r.approve())
+		if err != nil {
+			t.Fatalf("challenge %d: %v", i+1, err)
+		}
+		drawn = append(drawn, ch)
+	}
+	if _, err := r.link.DecideChallenge(context.Background(), r.approve()); err != seatapp.ErrBusy {
+		t.Fatalf("a challenge past the room: %v, want %v", err, seatapp.ErrBusy)
+	}
+	// Not connected: the context is over before anything is sent.
+	gone, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := r.link.Decide(gone, r.sign(t, drawn[0])); !errors.Is(err, seatapp.ErrDaemonUnavailable) {
+		t.Errorf("a gate not connected: %v, want %v", err, seatapp.ErrDaemonUnavailable)
+	}
+	// Params the wire's encoder refuses: client data over its cap.
+	big := r.sign(t, drawn[1])
+	big.ClientDataJSON = bytes.Repeat([]byte("a"), ownerwire.MaxClientDataBytes+1)
+	if _, err := r.link.Decide(context.Background(), big); !errors.Is(err, errFrame) {
+		t.Errorf("client data over its cap: %v, want %v", err, errFrame)
+	}
+	// A frame not of the wire's form.
+	bad := r.sign(t, drawn[2])
+	bad.Frame.ID = ""
+	if _, err := r.link.Decide(context.Background(), bad); !errors.Is(err, errFrame) {
+		t.Errorf("a frame not of the wire's form: %v, want %v", err, errFrame)
+	}
+	if _, decides := r.desk.counts(); decides != 0 {
+		t.Errorf("%d decisions reached the desk", decides)
+	}
+	// The rooms of the three are free again, which a challenge takes (two
+	// calls of the room), and the decisions of every one the link still
+	// keeps are answered.
+	ch, err := r.link.DecideChallenge(context.Background(), r.approve())
+	if err != nil {
+		t.Fatalf("a challenge after the refused decisions: %v", err)
+	}
+	for i, ch := range append(drawn[3:], ch) {
+		if _, err := r.link.Decide(context.Background(), r.sign(t, ch)); err != nil && errors.Is(err, seatapp.ErrBusy) {
+			t.Errorf("the decision of challenge %d: %v", i+4, err)
+		}
 	}
 }
 
