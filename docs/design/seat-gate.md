@@ -1976,9 +1976,15 @@ only writer of them. It never executes anything and reads nothing outside its
 folder, `STATE/owner/genesis/`, which the gate makes with mode 0700 when it
 starts and opens as an `os.Root`, so no link is followed and nothing outside
 the folder is reached. The store refuses a folder that is a link, is not the
-daemon user's, is writable by group or other or holds more than 64 files; the
-daemon then does not start the gate (exit 18), since it does not run with the
-folder in doubt.
+daemon user's, is writable by group or other or holds more than 64 files, with
+an error of fixed text and a reason word (`thread.OpenError`: `folder-link`,
+`folder-owner`, `folder-mode`, `too-many-files` and the others). The daemon
+then logs one line of fixed words with that reason word (`seat gate: the
+guided interview is not served: its thread store did not open (REASON); ...`),
+never the folder's path, and starts the gate without the store: no `genesis`
+in its hello, so the phone shows no "New project", and nothing in the folder is
+read or written. A folder in doubt does not stop the daemon or the rest of the
+gate; it is fixed by hand and the daemon restarted.
 
 - **A thread** is `{id, state, brief, created, updated, catalog digest}`: the id
   is 16 lower-case hexadecimal digits from `crypto/rand`, the state `open`,

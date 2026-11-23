@@ -6,9 +6,11 @@
   message from the owner and never an approval. The threads are kept by a new
   store (`internal/genesis/thread`), one file each (mode 0600, written whole
   and synced) in `owner/genesis/` of the state folder, a folder the daemon
-  makes with mode 0700 when the gate starts and refuses, and so does not start
-  the gate, when it is a link, not the daemon user's or writable by group or
-  others. At most two threads are open (a third start is `genesis-busy`), eight
+  makes with mode 0700 when the gate starts and refuses when it is a link, not
+  the daemon user's or writable by group or others. A refused folder does not
+  stop the daemon: it logs one line with a fixed reason word (such as
+  `folder-link`) and starts the gate without `genesis`, so the phone offers no
+  "New project" until the folder is fixed and the daemon restarted. At most two threads are open (a third start is `genesis-busy`), eight
   files are kept, a thread untouched for 14 days is discarded, text that looks
   like a key or a password is refused `genesis-secret-shaped` (a pasted key
   or an obvious assignment such as `password=...`; names, web addresses and

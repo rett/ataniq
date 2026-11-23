@@ -192,32 +192,69 @@ func TestDoubleTapsThroughTheGateNeverShutTheSeatOut(t *testing.T) {
 	}
 }
 
-// A thread store folder the store refuses ends the start before anything
-// listens.
-func TestTheGateDoesNotStartWithAThreadStoreItRefuses(t *testing.T) {
-	base := t.TempDir()
-	target := filepath.Join(base, "elsewhere")
-	if err := os.Mkdir(target, 0o700); err != nil {
-		t.Fatal(err)
+// A thread store folder the store refuses does not stop the gate: it logs one
+// line of fixed words with the store's reason word, never the path, and
+// serves everything but genesis; nothing is written through the folder.
+func TestTheGateStartsWithoutGenesisWhenItsThreadStoreDoesNotOpen(t *testing.T) {
+	for name, c := range map[string]struct {
+		prepare func(t *testing.T, base string) (dir, target string)
+		reason  string
+	}{
+		"a link": {func(t *testing.T, base string) (string, string) {
+			target := filepath.Join(base, "elsewhere")
+			if err := os.Mkdir(target, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(base, "genesis")
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatal(err)
+			}
+			return link, target
+		}, "folder-link"},
+		"a folder others may write": {func(t *testing.T, base string) (string, string) {
+			dir := filepath.Join(base, "genesis")
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(dir, 0o777); err != nil {
+				t.Fatal(err)
+			}
+			return dir, dir
+		}, "folder-mode"},
+	} {
+		base := t.TempDir()
+		dir, target := c.prepare(t, base)
+		lg := &gateLog{}
+		seat, _ := startGate(t, dir, lg)
+		if got := strings.Join(seat.Caps(), " "); got != "pair read" {
+			t.Fatalf("%s: capabilities %q", name, got)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := seat.Call(ctx, ownerwire.OpSeatGenesis, json.RawMessage(`{"verb":"start"}`), nil)
+		cancel()
+		var re *seatgate.RemoteError
+		if !errors.As(err, &re) || re.Code != gatehost.CodeUnknownOp {
+			t.Fatalf("%s: seat.genesis: %v", name, err)
+		}
+		want := "seat gate: the guided interview is not served: its thread store did not open (" + c.reason + "); the phone offers no New project until the folder is fixed and the daemon restarted"
+		var found, listening bool
+		for _, l := range lg.all() {
+			if strings.Contains(l, base) {
+				t.Errorf("%s: a line holds the path: %q", name, l)
+			}
+			found = found || l == want
+			listening = listening || (strings.Contains(l, "seat gate: listening on") && strings.HasSuffix(l, "; it serves pair and read only: no seat origin is configured"))
+		}
+		if !found || !listening {
+			t.Fatalf("%s: the log %q", name, lg.all())
+		}
+		if entries, _ := os.ReadDir(target); len(entries) != 0 {
+			t.Fatalf("%s: something was written in the folder: %v", name, entries)
+		}
 	}
-	link := filepath.Join(base, "genesis")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
-	gateID, seatID := newGateIdentity(t, "gate"), newGateIdentity(t, "seat")
-	g := &SeatGate{
-		Addr: netip.MustParseAddrPort("127.0.0.1:7443"), Identity: gateID, Pins: []string{seatID.Fingerprint()}, GenesisDir: link,
-		Listen: func(string, string) (net.Listener, error) {
-			t.Fatal("the gate listened")
-			return nil, nil
-		},
-	}
-	stop, err := g.Start(bareService{})
-	if err == nil || stop != nil || !strings.Contains(err.Error(), "the guided interview's thread store cannot be opened") || strings.Contains(err.Error(), base) {
-		t.Fatalf("Start: %v", err)
-	}
-	if entries, _ := os.ReadDir(target); len(entries) != 0 {
-		t.Fatalf("something was written through the link: %v", entries)
+	// A reason word that is not one of the store's is not logged as it is.
+	if got := storeReason(errors.New("x")); got != "unknown" {
+		t.Fatalf("storeReason of another error: %q", got)
 	}
 }
 

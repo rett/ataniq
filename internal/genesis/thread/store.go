@@ -56,7 +56,8 @@ type Store struct {
 // user's or writable by group or other, reads every thread file strictly (a
 // file that does not pass is logged and not served), expires the threads that
 // were untouched for [Expiry] and keeps at most [MaxFiles] files. The error
-// is fixed text and never holds the folder's path.
+// is an [*OpenError]: fixed text that never holds the folder's path, and a
+// reason word.
 func Open(dir string, o Options) (*Store, error) {
 	s := &Store{clock: o.Clock, rand: o.Rand, log: o.Log, threads: map[string]record{}, bad: map[string]bool{}}
 	if s.clock == nil {
@@ -73,15 +74,15 @@ func Open(dir string, o Options) (*Store, error) {
 	} else {
 		c, err := catalog.V1()
 		if err != nil {
-			return nil, errors.New("genesis: the question catalog does not load")
+			return nil, openErr("catalog", "genesis: the question catalog does not load")
 		}
 		s.cat = c
 	}
 	if s.cat.Digest() == "" {
-		return nil, errors.New("genesis: the question catalog was not loaded")
+		return nil, openErr("catalog", "genesis: the question catalog was not loaded")
 	}
 	if dir == "" {
-		return nil, errors.New("genesis: no folder for the threads")
+		return nil, openErr("no-folder", "genesis: no folder for the threads")
 	}
 	root, err := openFolder(dir)
 	if err != nil {
@@ -91,11 +92,42 @@ func Open(dir string, o Options) (*Store, error) {
 	t := &tx{s: s, now: stamp(s.clock())}
 	if err := s.load(t); err != nil {
 		_ = root.Close()
+		var oe *OpenError
+		if !errors.As(err, &oe) {
+			// The write of a thread that expired as the store opened.
+			err = openErr("file-write", "genesis: a thread that expired cannot be written")
+		}
 		return nil, err
 	}
 	t.flush()
 	return s, nil
 }
+
+// OpenError is the error of [Open]: a fixed text, which never holds the
+// folder's path, and Reason, a short word that names what failed, for a log
+// line of fixed words:
+//
+//	catalog            the question catalog does not load
+//	no-folder          no folder was given
+//	folder-make        the folder cannot be made
+//	folder-read        the folder cannot be read
+//	folder-open        the folder cannot be opened
+//	folder-replaced    the folder was replaced while it was opened
+//	folder-link        the folder is a link
+//	folder-not-folder  the path is not a folder
+//	folder-owner       the folder is not the daemon user's
+//	folder-mode        the folder is writable by group or other
+//	too-many-files     the folder holds more than 64 entries
+//	file-remove        an old thread file cannot be removed
+//	file-write         a thread that expired cannot be written
+type OpenError struct {
+	Reason string
+	text   string
+}
+
+func (e *OpenError) Error() string { return e.text }
+
+func openErr(reason, text string) error { return &OpenError{Reason: reason, text: text} }
 
 func stamp(t time.Time) time.Time { return t.UTC().Truncate(time.Second) }
 
@@ -105,26 +137,26 @@ func openFolder(dir string) (*os.Root, error) {
 	fi, err := os.Lstat(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
-			return nil, errors.New("genesis: the folder of the threads cannot be made")
+			return nil, openErr("folder-make", "genesis: the folder of the threads cannot be made")
 		}
 		fi, err = os.Lstat(dir)
 	}
 	if err != nil {
-		return nil, errors.New("genesis: the folder of the threads cannot be read")
+		return nil, openErr("folder-read", "genesis: the folder of the threads cannot be read")
 	}
 	if err := checkFolder(fi); err != nil {
 		return nil, err
 	}
 	root, err := os.OpenRoot(dir)
 	if err != nil {
-		return nil, errors.New("genesis: the folder of the threads cannot be opened")
+		return nil, openErr("folder-open", "genesis: the folder of the threads cannot be opened")
 	}
 	// What was opened is the folder looked at, and not what was put at its
 	// path between the two.
 	held, err := root.Stat(".")
 	if err != nil || !os.SameFile(fi, held) || checkFolder(held) != nil {
 		_ = root.Close()
-		return nil, errors.New("genesis: the folder of the threads was replaced while it was opened")
+		return nil, openErr("folder-replaced", "genesis: the folder of the threads was replaced while it was opened")
 	}
 	return root, nil
 }
@@ -132,13 +164,13 @@ func openFolder(dir string) (*os.Root, error) {
 func checkFolder(fi os.FileInfo) error {
 	switch {
 	case fi.Mode()&os.ModeSymlink != 0:
-		return errors.New("genesis: the folder of the threads is a link")
+		return openErr("folder-link", "genesis: the folder of the threads is a link")
 	case !fi.IsDir():
-		return errors.New("genesis: the folder of the threads is not a folder")
+		return openErr("folder-not-folder", "genesis: the folder of the threads is not a folder")
 	case !ownedByUs(fi):
-		return errors.New("genesis: the folder of the threads is not the daemon user's")
+		return openErr("folder-owner", "genesis: the folder of the threads is not the daemon user's")
 	case fi.Mode().Perm()&0o022 != 0:
-		return errors.New("genesis: the folder of the threads is writable by group or other")
+		return openErr("folder-mode", "genesis: the folder of the threads is writable by group or other")
 	}
 	return nil
 }
@@ -148,15 +180,15 @@ func checkFolder(fi os.FileInfo) error {
 func (s *Store) load(t *tx) error {
 	d, err := s.root.Open(".")
 	if err != nil {
-		return errors.New("genesis: the folder of the threads cannot be read")
+		return openErr("folder-read", "genesis: the folder of the threads cannot be read")
 	}
 	entries, err := d.ReadDir(maxEntries + 1)
 	_ = d.Close()
 	if err != nil && !errors.Is(err, io.EOF) {
-		return errors.New("genesis: the folder of the threads cannot be read")
+		return openErr("folder-read", "genesis: the folder of the threads cannot be read")
 	}
 	if len(entries) > maxEntries {
-		return errors.New("genesis: the folder of the threads holds too many files")
+		return openErr("too-many-files", "genesis: the folder of the threads holds too many files")
 	}
 	for _, e := range entries {
 		name := e.Name()
@@ -236,7 +268,7 @@ func (t *tx) flush() {
 func (t *tx) removeFiles() error {
 	for _, name := range t.remove {
 		if err := t.s.root.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return errors.New("genesis: an old thread file cannot be removed")
+			return openErr("file-remove", "genesis: an old thread file cannot be removed")
 		}
 	}
 	t.remove = nil

@@ -584,6 +584,23 @@ func TestTheFolderIsChecked(t *testing.T) {
 	if strings.Contains(err.Error(), base) {
 		t.Fatalf("the error holds the path: %v", err)
 	}
+	// Each error is an OpenError with the reason word of what failed, for
+	// the daemon's log line.
+	wide := filepath.Join(base, "wide")
+	if err := os.Mkdir(wide, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(wide, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]string{link: "folder-link", wide: "folder-mode", file: "folder-not-folder", "": "no-folder",
+		filepath.Join(base, "no", "such", "parent"): "folder-make"} {
+		_, err := Open(path, Options{})
+		var oe *OpenError
+		if !errors.As(err, &oe) || oe.Reason != want {
+			t.Errorf("%q: %v, want the reason %s", path, err, want)
+		}
+	}
 }
 
 // A store does not follow a link in its folder: a file that is a link is not
