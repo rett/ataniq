@@ -19,4 +19,4 @@
   carries `Referrer-Policy: same-origin` (it was `no-referrer`), under which a
   browser keeps the `Origin` header of a form's post to the seat and still
   sends no address to another site; a proxy in front must not set a policy of
-  its own on the seat's site, or the project pages' forms are refused.
+  its own on the seat's site, or the project pages' forms are refused. When the seat refuses a call because its own room is spent, or the project pages' limit of one credential is reached, it writes a fixed-text line to its log naming which, at most one in 30 seconds for each, so that "The desk is busy" can be traced.

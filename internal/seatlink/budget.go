@@ -145,6 +145,12 @@ type hold struct {
 // concurrent use.
 type budget struct {
 	now func() time.Time
+	// logf, when set, receives a fixed-text line when a call is refused
+	// for room (see refusal.go); logged and held are, for each kind, the
+	// time of the last line and the refusals since that were not told.
+	logf   func(format string, args ...any)
+	logged [numKinds]time.Time
+	held   [numKinds]int
 
 	mu   sync.Mutex
 	sent [numKinds][]time.Time
@@ -194,10 +200,16 @@ func (b *budget) used(k kind) int {
 // it has room. A call without room is not counted, and not sent.
 func (b *budget) take(k kind) bool {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	now := b.now()
 	b.prune(now)
-	return b.takeLocked(k, now)
+	ok := b.takeLocked(k, now)
+	var r *refusal
+	if !ok {
+		r = b.refusedLocked(k, now)
+	}
+	b.mu.Unlock()
+	b.tell(r)
+	return ok
 }
 
 // takeLocked is take under mu.
@@ -244,12 +256,15 @@ func (b *budget) takeOrWait(k kind) (bool, time.Duration) {
 // same moment each have a hold of their own.
 func (b *budget) reserve(k kind) (uint64, bool) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	now := b.now()
 	b.prune(now)
 	if b.used(k)+2 > k.room() {
+		r := b.refusedLocked(k, now)
+		b.mu.Unlock()
+		b.tell(r)
 		return 0, false
 	}
+	defer b.mu.Unlock()
 	if b.holds == nil {
 		b.holds = map[uint64]hold{}
 	}
@@ -304,15 +319,22 @@ func (b *budget) drop(k kind, id string) {
 // as take counts a call.
 func (b *budget) answer(k kind, id string) bool {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	now := b.now()
 	b.prune(now)
 	for t, h := range b.holds {
 		if h.kind == k && h.id != "" && h.id == id {
 			delete(b.holds, t)
 			b.sent[k] = append(b.sent[k], now)
+			b.mu.Unlock()
 			return true
 		}
 	}
-	return b.takeLocked(k, now)
+	ok := b.takeLocked(k, now)
+	var r *refusal
+	if !ok {
+		r = b.refusedLocked(k, now)
+	}
+	b.mu.Unlock()
+	b.tell(r)
+	return ok
 }
