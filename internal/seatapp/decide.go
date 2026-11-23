@@ -437,9 +437,10 @@ var (
 	errDecideBad        = decideError{http.StatusBadRequest, "bad_request", sayFailed}
 	errDecideTooLarge   = decideError{http.StatusRequestEntityTooLarge, "too_large", sayTooLarge}
 	// errDecideInhibited is the authority host's own refusal (package
-	// decisionguard), not the desk's; its code is the one the host's
-	// decision contract names.
-	errDecideInhibited = decideError{http.StatusServiceUnavailable, "decisions-inhibited", sayInhibited}
+	// decisionguard), not the desk's. Its code is the app's own, in the
+	// snake_case of the others; the guard's codes (decision-guard-*) go
+	// to the log and never to the phone.
+	errDecideInhibited = decideError{http.StatusServiceUnavailable, "decisions_inhibited", sayInhibited}
 )
 
 func writeDecideError(w http.ResponseWriter, e decideError) {

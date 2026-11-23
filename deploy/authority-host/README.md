@@ -2330,7 +2330,7 @@ a decision's challenge or a decision to the gate, every time, it asks
 `decisions.inhibit` is there in any form, or the folder or the file
 cannot be looked up (the folder missing, a link, not open to `seat`),
 nothing is relayed and the phone shows "Decisions are paused on this
-host. Nothing was sent." under the code `decisions-inhibited`; the card
+host. Nothing was sent." under the code `decisions_inhibited`; the card
 stays as it was, and the owner taps again once decisions are taken again.
 Each refusal is logged with the guard's code (`ataniq-seat: a decision was
 refused, decisions are paused on this host: decision-guard-inhibited`).

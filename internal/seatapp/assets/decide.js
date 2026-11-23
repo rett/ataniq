@@ -49,7 +49,7 @@
   };
   // The answers to a decision after which the owner may tap again: nothing
   // was decided and the card is as it was.
-  var AGAIN = { challenge_expired: true, challenge_stale: true, assertion_refused: true, desk_busy: true, daemon_unavailable: true, rate_limited: true, "decisions-inhibited": true };
+  var AGAIN = { challenge_expired: true, challenge_stale: true, assertion_refused: true, desk_busy: true, daemon_unavailable: true, rate_limited: true, decisions_inhibited: true };
 
   var busy = false;
   // pending is the one challenge the next confirm tap may use; a tap takes

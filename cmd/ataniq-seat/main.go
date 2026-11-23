@@ -49,7 +49,7 @@
 // asks decisionguard.Check of that folder; while the inhibit is there, or the
 // folder or the file cannot be looked up, nothing is relayed and the phone is
 // told "Decisions are paused on this host. Nothing was sent." under the code
-// decisions-inhibited (fail closed: on a host without the folder no decision
+// decisions_inhibited (fail closed: on a host without the folder no decision
 // is ever relayed). Pairing, login and the reading of cards decide nothing
 // and are not guarded. Each refusal is logged with the guard's fixed code.
 //
