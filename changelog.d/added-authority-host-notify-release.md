@@ -9,8 +9,9 @@
   seat's). The seat's unit takes an optional word, `$SEAT_NOTIFY_ARGS`, from
   its environment file (empty by default), so `--notify-socket` is the
   owner's to set. `ah-release check` excuses this one unit, by name, from the
-  stop list (it decides nothing) and does not count it as the decision service
-  a release that is not static must have. The README ("The notifier") and
+  stop list (it decides nothing), only while its `ExecStart` runs the release's
+  `ataniq-seat-notify` and no other binary, and does not count it as the
+  decision service a release that is not static must have. The README ("The notifier") and
   DEPLOY.md ("Deploying the notifier") say what it installs, the owner's
   one-time steps in order, how to test it with `send-test`, what breaks when
   it is down (nothing but notices) and how to roll back; the README's seat

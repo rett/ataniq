@@ -150,6 +150,15 @@ func TestNotifyCoverage(t *testing.T) {
 			replace(t, s, "share/validators.list", "caddy validate", "systemd-analyze verify {release}/etc/systemd/system/ataniq-seat-notify-two.service\ncaddy validate")
 			replace(t, s, "share/reload.list", "systemctl restart caddy", "systemctl restart ataniq-seat-notify-two.service\nsystemctl restart caddy")
 		}, want: []string{"stop-missing: ataniq-seat-notify-two"}},
+		{name: "a unit of the notifier's name that runs the seat's binary is stopped", mutate: func(t *testing.T, s string) {
+			replace(t, s, "etc/systemd/system/ataniq-seat-notify.service", "{release}/bin/ataniq-seat-notify", "{release}/bin/ataniq-seat")
+		}, want: []string{"stop-missing: ataniq-seat-notify"}},
+		{name: "a drop-in of the notifier's name that runs another binary is stopped", mutate: func(t *testing.T, s string) {
+			set(t, s, "etc/systemd/system/ataniq-seat-notify.service.d/10-x.conf", "[Service]\nExecStart=\nExecStart={release}/bin/ataniq-seat run\n")
+		}, want: []string{"stop-missing: ataniq-seat-notify"}},
+		{name: "a second ExecStart of the notifier's unit that runs another binary is stopped", mutate: func(t *testing.T, s string) {
+			replace(t, s, "etc/systemd/system/ataniq-seat-notify.service", "\nRestart=on-failure", "\nExecStart={release}/bin/ataniq-seat\nRestart=on-failure")
+		}, want: []string{"stop-missing: ataniq-seat-notify"}},
 		{name: "the notifier alone is no decision service", mutate: func(t *testing.T, s string) {
 			os.Remove(filepath.Join(s, "etc/systemd/system/ataniq-seat.service"))
 			replace(t, s, "share/validators.list", "systemd-analyze verify {release}/etc/systemd/system/ataniq-seat.service\n", "")

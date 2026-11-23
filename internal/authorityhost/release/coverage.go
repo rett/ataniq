@@ -133,9 +133,36 @@ func (c *checker) coverage(root *os.Root, m switcher.Manifest, id string, files 
 // stop.list. stop.list stops the decision services (see the README, "Layout");
 // the notifier of the seat's notices decides nothing: it is told how many
 // cards wait and tells the phone, and the decision stays with the seat's
-// own refusals. It is restarted by the reload list like any unit. The name is
-// the unit's, without ".service"; no other unit is excused.
-var notStopped = map[string]bool{"ataniq-seat-notify": true}
+// own refusals. It is restarted by the reload list like any unit. The key is
+// the unit's name, without ".service"; no other unit is excused. The value is
+// the one binary of the release the unit may run: "decides nothing" is a
+// property of that binary, not of a name, so a unit of this name whose
+// ExecStart runs another program is not excused, and is stopped like any.
+var notStopped = map[string]string{"ataniq-seat-notify": "ataniq-seat-notify"}
+
+// excused reports whether the units of this name, the file and its drop-ins,
+// need no stop line: the name is in notStopped, and every ExecStart of every
+// one of them runs the release's binary that name is excused for, and no
+// other. An ExecStart that runs no binary of the release at all is refused on
+// its own (decision-exec), so it does not need the stop line to be refused
+// again.
+func excused(name string, units []unit, id string, files map[string]entry) bool {
+	bin, ok := notStopped[name]
+	if !ok {
+		return false
+	}
+	for _, u := range units {
+		if u.name != name {
+			continue
+		}
+		for _, exec := range u.execs {
+			if n := shippedName(exec, id, files); n != "" && n != bin {
+				return false
+			}
+		}
+	}
+	return true
+}
 
 // units reads every file under etc/systemd and returns those that start a
 // program. It also reports a unit that gates its start on the inhibit.
@@ -466,7 +493,7 @@ func (c *checker) reloadsAndStops(static bool, relDir, id string, files map[stri
 	// decision service, which the notifier is not.
 	service := false
 	for _, u := range units {
-		service = service || !notStopped[u.name]
+		service = service || !excused(u.name, units, id, files)
 	}
 	if !service {
 		c.add(CodeNoService, "")
@@ -482,7 +509,7 @@ func (c *checker) reloadsAndStops(static bool, relDir, id string, files map[stri
 			continue
 		}
 		seen[u.name] = true
-		if !notStopped[u.name] && !does(l.stops, u.name, "stop") {
+		if !excused(u.name, units, id, files) && !does(l.stops, u.name, "stop") {
 			c.add(CodeStopNone, u.name)
 		}
 		if !does(l.reloads, u.name, "restart") {
@@ -497,9 +524,15 @@ func (c *checker) reloadsAndStops(static bool, relDir, id string, files map[stri
 // execute bit. systemd's prefixes (@ - : + !) before the program are
 // skipped.
 func shippedBinary(exec, id string, files map[string]entry) bool {
+	return shippedName(exec, id, files) != ""
+}
+
+// shippedName is the name of the binary of this release that the ExecStart
+// value runs, as shippedBinary reads it, or "" when it runs none.
+func shippedName(exec, id string, files map[string]entry) string {
 	fields := strings.Fields(exec)
 	if len(fields) == 0 {
-		return false
+		return ""
 	}
 	prog := strings.TrimLeft(fields[0], "@-:+!")
 	var name string
@@ -509,8 +542,10 @@ func shippedBinary(exec, id string, files map[string]entry) bool {
 		}
 	}
 	if !validName(name) {
-		return false
+		return ""
 	}
-	e, ok := files["bin/"+name]
-	return ok && e.mode&0o111 != 0
+	if e, ok := files["bin/"+name]; ok && e.mode&0o111 != 0 {
+		return name
+	}
+	return ""
 }

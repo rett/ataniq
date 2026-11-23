@@ -2644,7 +2644,11 @@ and this folder's.
 the notifier decides nothing. `ah-release check` asks every unit that starts
 a program to be stopped in `stop.list`, and excuses this one unit, by its
 name, from that (and from counting as the decision service a release that is
-not static must have); it asks it a validator and a restart like any other.
+not static must have), but only while every `ExecStart` of the unit and of
+its drop-ins runs the release's `bin/ataniq-seat-notify` and no other binary
+of the release: a unit of that name that runs another binary (the seat's, say)
+is stopped like any other, so the name cannot hide a decision service. It
+asks it a validator and a restart like any other.
 `units.allow` and `ports.allow` are not changed either: the unit is never
 enabled, and it listens on no TCP port. The seat's unit gets one optional
 word, `$SEAT_NOTIFY_ARGS`, which is nothing unless the owner's `seat.env`
