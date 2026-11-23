@@ -8,13 +8,19 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
+	"ataniq/internal/approval/ownerjournal"
+	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/approval/seatpair"
+	"ataniq/internal/seatapp"
+	"ataniq/internal/terminalconsole"
+	"ataniq/internal/terminalconsole/pairview"
 )
 
-// The seat app's pairing script computes the six words of a new passkey itself
+// The seat app's pairing script computes the words of a new passkey itself
 // and compares them with the daemon's, so its word list and its formula must
 // be those of the seatpair package. The seatapp package's import guard keeps
 // it from importing the repository, so the check is here, where both may be
@@ -26,7 +32,7 @@ const seatappWordsJS = "internal/seatapp/assets/words.js"
 // second implementation, not with the package.
 const (
 	vectorSPKI  = "3059301306072a8648ce3d020106082a8648ce3d030107034200046ff03b949241ce1dadd43519e6960e0a85b41a69a05c328103aa2bce1594ca163c4f753a55bf01dc53f6c0b0c7eee78b40c6ff7d25a96e2282b989cef71c144a"
-	vectorWords = "poppy ribbon brick goblet nickel ruby"
+	vectorWords = "poppy ribbon brick goblet nickel ruby rudder camel"
 )
 
 func readWordsJS(t *testing.T) string {
@@ -75,12 +81,47 @@ func TestSeatappWordsListEqualsSeatpair(t *testing.T) {
 	}
 }
 
+// TestWordCountsAreSeatpairs holds every copy of the number of words of a
+// fingerprint equal to seatpair.FingerprintWords: the seat app's (which may
+// not import the repository), the script's, the owner journal's (which
+// imports only record), the wire's and the console's pair view's (which may
+// import only the QR encoder).
+func TestWordCountsAreSeatpairs(t *testing.T) {
+	want := seatpair.FingerprintWords
+	if want*8 != 64 {
+		t.Errorf("a fingerprint of %d words is %d bits, want 64", want, want*8)
+	}
+	for _, c := range []struct {
+		name string
+		got  int
+	}{
+		{"seatapp.WordCount", seatapp.WordCount},
+		{"ownerjournal.FingerprintWords", ownerjournal.FingerprintWords},
+		{"ownerwire.PairWords", ownerwire.PairWords},
+		{"pairview.WordCount", pairview.WordCount},
+		{"terminalconsole.PairWordCount", terminalconsole.PairWordCount},
+		{"the length of pairview.State.Words", len(pairview.State{}.Words)},
+		{"the length of seatapp.PairResult.Words", len(seatapp.PairResult{}.Words)},
+	} {
+		if c.got != want {
+			t.Errorf("%s = %d, seatpair.FingerprintWords = %d", c.name, c.got, want)
+		}
+	}
+	m := regexp.MustCompile(`(?m)^\s*var COUNT = (\d+);`).FindStringSubmatch(readWordsJS(t))
+	if m == nil {
+		t.Fatal("the script has no `var COUNT = N;`")
+	}
+	if m[1] != strconv.Itoa(want) {
+		t.Errorf("the script's COUNT = %s, seatpair.FingerprintWords = %d", m[1], want)
+	}
+}
+
 // TestSeatappWordsFormulaInTheSource checks the formula without running the
-// script: SHA-256, the 4-byte big-endian length prefixes and the first six
+// script: SHA-256, the 4-byte big-endian length prefixes and the first COUNT
 // bytes, and the vector's expected words through seatpair.
 func TestSeatappWordsFormulaInTheSource(t *testing.T) {
 	js := readWordsJS(t)
-	for _, want := range []string{`"SHA-256"`, "crypto.subtle.digest", "setUint32(", "false", "slice(0, 6)"} {
+	for _, want := range []string{`"SHA-256"`, "crypto.subtle.digest", "setUint32(", "false", "slice(0, COUNT)"} {
 		if !strings.Contains(js, want) {
 			t.Errorf("the script lacks %q", want)
 		}

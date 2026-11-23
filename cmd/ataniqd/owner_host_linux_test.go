@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"ataniq/internal/approval/gatehost"
 	"ataniq/internal/approval/hostadapter"
 	"ataniq/internal/approval/ownerjournal"
 	"ataniq/internal/approval/ownerwire"
@@ -384,5 +385,35 @@ func TestOwnerRunWithSettingsThatNameNoSuiteStopsTheDaemon(t *testing.T) {
 	}
 	if _, err := os.Lstat(runtime + "/daemon.sock"); err == nil {
 		t.Errorf("a socket was made")
+	}
+}
+
+// The service the builder makes can take a decision from the phone, so a gate
+// with an origin serves login and decide on it; its kind policy is the
+// settings' for their project and accepts nothing for another.
+func TestTheBuiltServiceCanDecideWithTheSettingsKindPolicy(t *testing.T) {
+	useSuite(t, cmdSuite{})
+	state, _ := scratchSettings(t, func(sc *hostadapter.Scratch) { sc.Kinds = []string{"vault-passkey"} })
+	svc, closer, err := buildOwnerService(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closer()
+	if _, ok := svc.(gatehost.SeatPort); !ok {
+		t.Fatal("the built service cannot decide from the phone")
+	}
+	sc, err := hostadapter.LoadScratch(filepath.Join(state, "owner", hostadapter.ScratchName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := scratchKindPolicy(sc)
+	if p, ok := policy("project-a"); !ok || !p.Accepts("vault-passkey") || p.Accepts("passkey") || p.Accepts("unverified") {
+		t.Fatalf("the project's policy %+v %v", p, ok)
+	}
+	if _, ok := policy("project-b"); ok {
+		t.Fatal("a project the daemon does not serve has a policy")
+	}
+	if p, ok := scratchKindPolicy(hostadapter.Scratch{Project: "project-a"})("project-a"); !ok || !p.Accepts("passkey") || !p.Accepts("platform-passkey") {
+		t.Fatal("settings that name no kind accept every kind")
 	}
 }

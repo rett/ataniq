@@ -22,7 +22,8 @@ var (
 	// ErrReserved is returned by Call for an operation the transport owns.
 	ErrReserved = errors.New("seatgate: seat.hello and seat.ping belong to the transport")
 	// ErrBadCall is returned by Call for an operation name outside its
-	// grammar, or params that do not encode as one JSON object.
+	// grammar, params that are not one JSON object of the wire's strict form,
+	// or a request that would not fit a frame.
 	ErrBadCall = errors.New("seatgate: the operation or its params are not valid")
 )
 
@@ -186,8 +187,10 @@ func Dial(ctx context.Context, addr string, cfg ClientConfig) (*Client, error) {
 
 // Run connects and reconnects until ctx is done or the client is closed, and
 // returns then, with every connection closed. Between attempts it waits with
-// exponential backoff from BackoffMin to BackoffMax, jittered; a lost
-// connection is retried after the first wait. Run is for a client made by
+// exponential backoff from BackoffMin to BackoffMax, jittered. The waits start
+// over, at the first, after a connection that stood for DeadAfter or longer
+// is lost; a link that drops sooner, even one that gets its hello answered
+// every time, does not start them over. Run is for a client made by
 // [NewClient]; call it once.
 func (c *Client) Run(ctx context.Context) error {
 	c.mu.Lock()
@@ -274,6 +277,9 @@ func (c *Client) run(ctx context.Context, first *session) {
 		case <-ctx.Done():
 		}
 	}()
+	// attempt is how many waits in a row have found no connection that
+	// stood: it grows with every failed attempt and every connection lost
+	// before DeadAfter, and starts over after one that stood that long.
 	attempt := 0
 	for ctx.Err() == nil {
 		s := first
@@ -289,7 +295,6 @@ func (c *Client) run(ctx context.Context, first *session) {
 				continue
 			}
 		}
-		attempt = 0
 		c.mu.Lock()
 		if c.sess != s {
 			if c.closed {
@@ -307,6 +312,7 @@ func (c *Client) run(ctx context.Context, first *session) {
 			s.fail(ErrClosed)
 		}
 		c.mu.Lock()
+		stood := c.cfg.Now().Sub(c.since)
 		c.sess = nil
 		if err := s.cause(); err != nil && !errors.Is(err, ErrClosed) {
 			c.lastErr = err
@@ -316,15 +322,30 @@ func (c *Client) run(ctx context.Context, first *session) {
 		if ctx.Err() != nil {
 			return
 		}
-		if c.cfg.Sleep(ctx, backoff(c.cfg.BackoffMin, c.cfg.BackoffMax, 0, c.cfg.Rand())) != nil {
+		// A gate that answers the hello and drops the link at once is no
+		// better than one that cannot be reached, so only a connection that
+		// stood for DeadAfter (the time the client itself needs to find a
+		// silent one dead) gives the first wait again.
+		if stood >= c.cfg.DeadAfter {
+			attempt = 0
+		}
+		if c.cfg.Sleep(ctx, backoff(c.cfg.BackoffMin, c.cfg.BackoffMax, attempt, c.cfg.Rand())) != nil {
 			return
+		}
+		if stood < c.cfg.DeadAfter {
+			attempt++
 		}
 	}
 }
 
 // Call makes one request over the current connection and waits for its answer.
-// params is encoded as a JSON object (nil for none); result, if not nil, is
-// decoded from the answer with [DecodeStrict].
+// params is a JSON object (nil for none): a [json.RawMessage] is sent byte for
+// byte as given, never encoded again, and any other value is encoded with
+// encoding/json. Either way the bytes must be one object of the wire's strict
+// form (as [DecodeStrict] reads it: no byte before or after it, no key twice,
+// not nested too deeply) and the request must fit a frame, or Call returns
+// [ErrBadCall] and sends nothing. result, if not nil, is decoded from the
+// answer with [DecodeStrict].
 //
 // It returns [ErrDisconnected] at once if there is no connection, or when the
 // connection is lost while it waits; a [*RemoteError] if the gate refused with
@@ -341,13 +362,9 @@ func (c *Client) call(ctx context.Context, op string, params any, result any) er
 	if !ValidOp(op) {
 		return ErrBadCall
 	}
-	var raw json.RawMessage
-	if params != nil {
-		b, err := json.Marshal(params)
-		if err != nil || !isObject(b) {
-			return ErrBadCall
-		}
-		raw = b
+	raw, err := encodeParams(params)
+	if err != nil {
+		return err
 	}
 	c.mu.Lock()
 	s, closed := c.sess, c.closed
@@ -369,6 +386,32 @@ func (c *Client) call(ctx context.Context, op string, params any, result any) er
 		return DecodeStrict(r.Result, result)
 	}
 	return nil
+}
+
+// encodeParams gives the bytes of a call's params: nil for none, a
+// [json.RawMessage] as it is, anything else as encoding/json writes it. A
+// RawMessage is not marshalled again, since encoding/json would rewrite it (it
+// escapes <, > and & for HTML, each in six bytes): params their
+// caller checked against a cap reach the gate as they were checked. The bytes
+// are held to the strict form the gate reads a frame in, the frame's own
+// object being one level of the nesting, so that params the gate would take
+// as a violation of the wire, and drop the link for, are refused here and
+// never sent.
+func encodeParams(params any) (json.RawMessage, error) {
+	if params == nil {
+		return nil, nil
+	}
+	b, ok := params.(json.RawMessage)
+	if !ok {
+		var err error
+		if b, err = json.Marshal(params); err != nil {
+			return nil, ErrBadCall
+		}
+	}
+	if checkObject(b, MaxDepth-1) != nil {
+		return nil, ErrBadCall
+	}
+	return b, nil
 }
 
 // session is one connection, from after its hello.

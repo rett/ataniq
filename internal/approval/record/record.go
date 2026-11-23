@@ -2,6 +2,7 @@ package record
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"reflect"
 	"strconv"
@@ -52,8 +53,13 @@ func DecodePending(data []byte) (Pending, error) {
 // DecodeDecision reads a decision from its bytes and checks it against the
 // record rules and its form. A decision over [MaxDecisionBytes] is refused
 // record-too-large; anything else, a reason over [MaxReasonBytes] included,
-// decision-invalid. Whether the decision fits a pending record (its digest,
-// its sign-offs) is for the caller that holds both; see [SignOffsEqual].
+// decision-invalid. A decision carries exactly one of two blocks, as its
+// confirmed says: the console block for [ConfirmedCode] and the seat block
+// for [ConfirmedPasskey]; one with both, with neither, or with the other
+// block is decision-invalid, and so is a deny confirmed by passkey that
+// carries a sign-off. Whether the decision fits a pending record (its
+// digest, its sign-offs) is for the caller that holds both; see
+// [SignOffsEqual].
 func DecodeDecision(data []byte) (Decision, error) {
 	var d Decision
 	if err := decode(data, MaxDecisionBytes, CodeDecisionInvalid, "decision", &d); err != nil {
@@ -151,6 +157,25 @@ func PlanDigest(planText string) string {
 func Digest(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+// AssertionDigest returns the assertion_sha256 of a seat block: the SHA-256,
+// in lower-case hexadecimal, of the four fields of a WebAuthn assertion, each
+// with its length in front as four bytes, big-endian:
+//
+//	F(credential_id) || F(authenticator_data) || F(client_data_json) || F(signature)
+//	F(x) = BE32(len(x)) || x
+//
+// So no two assertions give the same bytes. It checks nothing of the fields.
+func AssertionDigest(credentialID, authenticatorData, clientDataJSON, signature []byte) string {
+	h := sha256.New()
+	var n [4]byte
+	for _, part := range [][]byte{credentialID, authenticatorData, clientDataJSON, signature} {
+		binary.BigEndian.PutUint32(n[:], uint32(len(part)))
+		h.Write(n[:])
+		h.Write(part)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // ValidFeatureName reports whether s can be a feature name: 1 to 48 bytes

@@ -58,7 +58,7 @@ var (
 	pairStartResultForm   = payload[PairStartResult]{"pair started", MaxResultBytes, record.CodeRecordInvalid, checkPairStartResult}
 	pairStatusForm        = payload[PairStatus]{"pair status", MaxResultBytes, record.CodeRecordInvalid, checkPairStatus}
 	pairPendingParamsForm = payload[PairPendingParams]{"pair pending", MaxParamsBytes, record.CodeRecordInvalid, checkPairPendingParams}
-	seatPairParamsForm    = payload[SeatPairParams]{"seat pair", MaxParamsBytes, record.CodeRecordInvalid, checkSeatPairParams}
+	seatPairParamsForm    = payload[SeatPairParams]{"seat pair", MaxSeatPairParamsBytes, record.CodeRecordInvalid, checkSeatPairParams}
 	seatPairResultForm    = payload[SeatPairResult]{"seat paired", MaxResultBytes, record.CodeRecordInvalid, checkSeatPairResult}
 	keyItemForm           = payload[KeyItem]{"key", MaxResultBytes, record.CodeRecordInvalid, checkKeyItem}
 	keysViewForm          = payload[KeysView]{"keys", MaxResultBytes, record.CodeRecordInvalid, checkKeysView}

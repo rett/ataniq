@@ -23,9 +23,13 @@
 // # Frames
 //
 // After the TLS handshake the two ends exchange frames: a 4-byte big-endian
-// length, then that many bytes of one JSON object. A frame is 1 to 65536
-// (64 KiB) bytes; a length of zero or above that is refused before any payload
-// is read. A frame is a request or a response:
+// length, then that many bytes of one JSON object. A frame is 1 to 263168
+// (257 KiB, [MaxFrame]) bytes, in both directions: the largest result of the
+// owner channel's service (256 KiB) and 1 KiB for the response around it. A
+// length of zero or above that is refused before any payload is read, and
+// neither end writes a larger frame (a result that would not fit is answered
+// too-large; a request that would not fit is not sent). A frame is a request
+// or a response:
 //
 //	{"id": 7, "op": "owner.list", "params": {...}}     params may be absent
 //	{"id": 7, "result": {...}}
@@ -88,11 +92,18 @@
 // answer is being written waits for the write, since a client may have the
 // answer before the server's write returns: if the write succeeds the id is
 // free and the request is served; if it fails the connection is closed and the
-// request is not served. So one id never has two operations in flight.
+// request is not served. So one id never has two answers pending. That is
+// about answers, not about handlers: a request that is answered
+// deadline-exceeded has its answer written, which frees its id, though its
+// handler may still be running, so a handler that ignores its context can
+// still be running when a request with the same id is served.
 // Responses may come in any order; the id says which request each answers. On
 // shutdown (the context of Serve is done) the server stops accepting, lets
 // requests in flight be answered for up to the grace period and closes
-// everything.
+// everything. A request that the server takes only after the shutdown has
+// begun is answered shutting-down and not started, so its sender knows that
+// nothing of it ran; a request already taken is served, and one still unread
+// when the connection is closed gets no answer, as after any cut connection.
 //
 // A handler that ignores its context keeps its places, on its connection and
 // among the 128, until it returns, even when its connection has gone; so a
@@ -110,6 +121,12 @@
 // makes one request over the connection and waits for its answer, many at
 // once if the caller likes, each by its own id.
 //
+// Params given as a json.RawMessage are sent byte for byte, never encoded
+// again, so params a caller checked against a cap are the params the gate
+// reads; other params are encoded with encoding/json. Params that are not one
+// object of the strict form above, or a request over the frame cap, are
+// refused with [ErrBadCall] and not sent, and the connection stays.
+//
 // Call never waits longer than its context. With no connection it returns
 // [ErrDisconnected] at once, and so it does when the connection is lost while
 // it waits (the request may or may not have run: the caller decides, nothing is
@@ -119,8 +136,9 @@
 //
 // The client sends seat.ping every 15 s and gives up a connection from which
 // no frame has come for 45 s. It redials with exponential backoff: 1 s doubled
-// to 30 s, jittered into the upper half of each step, starting over after a
-// connection is made. [ClientConfig] can replace the clock (Sleep), the
+// to 30 s, jittered into the upper half of each step, starting over only after
+// a connection that stood for 45 s (a link that drops sooner, hello or no
+// hello, goes on up the steps). [ClientConfig] can replace the clock (Sleep), the
 // random source (Rand) and the dialler, so a test runs the schedule with no
 // waiting. [Client.Connected] says since when the connection has stood.
 // [Client.LastError] says why there is none.

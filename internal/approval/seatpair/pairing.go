@@ -239,7 +239,7 @@ func (p *Pairing) Pending(now time.Time) (Fingerprint, bool) {
 // now, and true; or false when none waits. The id is 8 random bytes, drawn when
 // the credential became pending, as 16 lower-case hexadecimal digits: another
 // credential, even the same one presented again, has another. The desk shows it
-// with the six words, and Confirm and Reject take it back, so that the owner's
+// with the eight words, and Confirm and Reject take it back, so that the owner's
 // word is about the credential he compared.
 func (p *Pairing) PendingID(now time.Time) (string, bool) {
 	p.mu.Lock()
@@ -257,7 +257,7 @@ func sameID(a, b string) bool {
 	return subtle.ConstantTimeCompare(da[:], db[:]) == 1
 }
 
-// Confirm is the owner at the desk saying that the six words are the same on
+// Confirm is the owner at the desk saying that the eight words are the same on
 // the phone, for the credential with the pending id given. It is the only thing
 // that makes a Credential. It refuses with ErrNotPending when no credential
 // was presented or the pairing ended, with ErrPendingID when the id is not the

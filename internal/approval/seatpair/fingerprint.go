@@ -6,11 +6,13 @@ import (
 	"strings"
 )
 
-// FingerprintWords is the number of words of a fingerprint: 6 bytes of the
-// digest, 48 bits.
-const FingerprintWords = 6
+// FingerprintWords is the number of words of a fingerprint: 8 bytes of the
+// digest, 64 bits. It is the one place the count is written; the packages that
+// may not import this one (seatapp, ownerjournal) keep a mirrored constant,
+// and a test in tests/ holds each equal to it.
+const FingerprintWords = 8
 
-// Fingerprint is the six short words that the desk console and the phone both
+// Fingerprint is the eight short words that the desk console and the phone both
 // show for one credential, so the owner can see that the key the daemon
 // received is the key the phone made.
 type Fingerprint [FingerprintWords]string
@@ -41,7 +43,7 @@ func FingerprintOf(credentialID, spki []byte) Fingerprint {
 	return f
 }
 
-// String is the six words, lower case, one space between them.
+// String is the eight words, lower case, one space between them.
 func (f Fingerprint) String() string { return strings.Join(f[:], " ") }
 
 // WordList returns the 256 words, in the order of their byte values: the word

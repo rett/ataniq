@@ -23,8 +23,9 @@
  *                 else: the seat colour is never a state.
  *   agent's voice --bubble #e9e4da, #2b2824; --bubble-ink #4f4a42, #cdc5b8;
  *                 --bubble-line #8a8478, #857d70. Low chroma, never the seat's
- *                 hue, never filled with a state colour. Not used by the
- *                 pairing pages yet.
+ *                 hue, never filled with a state colour. Text a lead wrote
+ *                 on a card (paths, refs, the plan, the note) is in it, with
+ *                 round corners.
  *   danger        --stop #b3261e, #ff6b5e, with --stop-on #ffffff, #2b0504 on
  *                 a fill of it. Reserved: refusals, expiry, flagged things.
  *   hold, warn    --warn #6b4d0a, #e6c378. Quiet, with an icon and a word.
@@ -152,7 +153,8 @@ p {
 }
 
 /* What the page says about the step it is on. */
-#status {
+#status,
+#decide-status {
   padding: 8px 12px;
   border-left: 4px solid var(--line);
 }
@@ -196,7 +198,7 @@ a {
   color: var(--sel-ink);
 }
 
-/* The six words, to be compared with the desk console. */
+/* The words, to be compared with the desk console. */
 #result {
   margin-top: 24px;
   padding: 16px;
@@ -215,6 +217,239 @@ a {
 
 #words li {
   padding-left: 4px;
+}
+
+/* The cards. One column; every row is a link of at least 44 px. */
+.banner {
+  padding: 8px 12px;
+  border-left: 4px solid var(--warn);
+  background: var(--field);
+}
+
+.banner strong {
+  color: var(--warn);
+  letter-spacing: 0.04em;
+}
+
+.cards,
+.rows {
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+}
+
+.cards li {
+  border-bottom: 1px solid var(--line);
+}
+
+.cards a {
+  display: block;
+  min-height: 44px;
+  padding: 10px 0;
+  text-decoration: none;
+  color: var(--fg);
+}
+
+.cards a:hover .what,
+.cards a:focus-visible .what {
+  text-decoration: underline;
+}
+
+.what {
+  display: block;
+  font-weight: 700;
+  color: var(--seat);
+}
+
+.meta,
+.line {
+  display: block;
+  color: var(--muted);
+}
+
+.held {
+  display: block;
+  color: var(--warn);
+  font-weight: 700;
+}
+
+.flag {
+  color: var(--stop);
+  font-weight: 700;
+}
+
+.flags .lead {
+  border-color: var(--stop);
+}
+
+.rows li {
+  margin: 0 0 8px;
+}
+
+/* Lead text: the agent's voice, never the seat's. */
+.lead {
+  display: block;
+  margin: 0 0 4px;
+  padding: 8px 12px;
+  border: 1px solid var(--bubble-line);
+  border-radius: 12px;
+  background: var(--bubble);
+  color: var(--bubble-ink);
+  white-space: pre-wrap;
+}
+
+.mono,
+pre {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 1rem;
+}
+
+pre {
+  margin: 0 0 16px;
+  overflow-wrap: anywhere;
+}
+
+.label {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.facts {
+  margin: 0 0 16px;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0 0 8px;
+}
+
+.readonly {
+  margin-top: 24px;
+  padding: 8px 12px;
+  border-left: 4px solid var(--line);
+}
+
+/* The links that move between pages: as tall as a touch target. */
+#back,
+#paths,
+#prev,
+#next {
+  display: inline-block;
+  min-height: 44px;
+  padding: 10px 0;
+}
+
+/*
+ * The decide form, on the Card page only. One column; every control and
+ * every sign-off row is at least 44 px tall. Approve is the seat's slab;
+ * Deny is outlined in the danger colour, never filled, so the two cannot be
+ * taken for each other.
+ */
+#decide {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 2px solid var(--line);
+}
+
+#decide button {
+  margin: 0 0 16px;
+}
+
+fieldset {
+  margin: 0 0 16px;
+  padding: 0;
+  border: 0;
+}
+
+legend {
+  margin: 0 0 8px;
+  padding: 0;
+  font-weight: 700;
+}
+
+.check {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  min-height: 44px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+
+.check input {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin: 0;
+  accent-color: var(--seat);
+}
+
+.check .lead {
+  flex: 1;
+}
+
+.field {
+  display: block;
+  margin: 0 0 8px;
+  font-weight: 700;
+}
+
+textarea {
+  display: block;
+  width: 100%;
+  min-height: 88px;
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 2px solid var(--line);
+  border-radius: 0;
+  background: var(--field);
+  color: var(--fg);
+  font: inherit;
+}
+
+button.deny {
+  background: transparent;
+  color: var(--stop);
+  border-color: var(--stop);
+}
+
+.confirm-action {
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.note {
+  color: var(--muted);
+}
+
+#decide-status {
+  white-space: pre-line;
+}
+
+#decide-status:empty,
+#logout-status:empty {
+  display: none;
+}
+
+#look {
+  display: inline-block;
+  min-height: 44px;
+  padding: 10px 0;
+}
+
+/* A quiet control: not the seat's slab. */
+button.quiet {
+  background: transparent;
+  color: var(--fg);
+  border-color: var(--line);
+}
+
+.leave {
+  margin-top: 32px;
 }
 
 @media (min-width: 30rem) {

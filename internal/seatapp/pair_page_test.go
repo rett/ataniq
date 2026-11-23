@@ -22,7 +22,7 @@ func TestPairPageAndScript(t *testing.T) {
 	checkHeaders(t, "GET /pair", rd)
 	for _, want := range []string{
 		`data-rp-id="seat.example"`, "<script src=\"/static/words.js\"></script>\n<script src=\"/static/pair.js\"></script>", `id="compare"`, `id="mismatch"`, `id="start"`,
-		"Compare these six words with the desk console, then confirm there. Nothing is trusted until you confirm at the desk.",
+		"Compare every word, in order, with the desk console, then confirm there. Nothing is trusted until you confirm at the desk.",
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the page lacks %q", want)
@@ -37,7 +37,7 @@ func TestPairPageAndScript(t *testing.T) {
 	for _, want := range []string{
 		"location.hash", "history.replaceState", `userVerification: "required"`, `residentKey: "preferred"`,
 		`attestation: "none"`, "alg: -7", "timeout: 120000", "getPublicKey()", "getAuthenticatorData()",
-		`name: "owner"`, "SeatWords.fingerprint(cred.rawId, key)", "mismatch", "/api/pair-challenge", "/api/pair", "client_data_json", "credential_id",
+		`name: "owner"`, "SeatWords.fingerprint(cred.rawId, key)", "SeatWords.count", "mismatch", "/api/pair-challenge", "/api/pair", "client_data_json", "credential_id",
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("the script lacks %q", want)

@@ -18,13 +18,13 @@
 // The credential's key is read in the form the browser's getPublicKey()
 // gives, a DER SubjectPublicKeyInfo, and only an ES256 key is accepted: ECDSA
 // on P-256, a point on the curve, the canonical encoding and no byte after it
-// (ParseKey). A credential id is 16 to 1024 bytes (CheckCredentialID). A bad
+// (ParseKey). A credential id is 16 to 1023 bytes (CheckCredentialID). A bad
 // credential is refused only after a right code, and leaves the code unused.
 //
-// The fingerprint of a credential is six words, which the desk console and the
-// phone both show so the owner can see they hold one key: the first six bytes
+// The fingerprint of a credential is eight words, which the desk console and the
+// phone both show so the owner can see they hold one key: the first eight bytes
 // of the SHA-256 of the length-prefixed credential id and key, each byte the
-// index of a word in a fixed list of 256 (FingerprintOf, WordList). That is 48
+// index of a word in a fixed list of 256 (FingerprintOf, WordList). That is 64
 // bits: it shows that the two sides agree on a key the owner has just seen
 // made, within the minutes of a pairing; it is not a long-term name for a key.
 //
@@ -42,7 +42,7 @@
 // back and compare it, in constant time, to that of the credential pending at
 // that moment; one that differs (the pairing was replaced, or ran out and
 // another began) is refused with ErrPendingID and changes nothing. So the
-// owner's word is about the credential whose six words he compared, never about
+// owner's word is about the credential whose eight words he compared, never about
 // one that took its place while he looked.
 //
 // Time. The package judges the readings it is handed with Time.Before and

@@ -6,6 +6,7 @@ import (
 	"io"
 	"time"
 
+	"ataniq/internal/approval/credkind"
 	"ataniq/internal/approval/door"
 	"ataniq/internal/approval/ownerjournal"
 	"ataniq/internal/approval/record"
@@ -361,9 +362,27 @@ type Config struct {
 	// damaged list refuses the operations and is never taken for an empty
 	// one.
 	Keys KeyStore
+	// KindPolicy, when set, gives the policy of a project on the kinds of
+	// credential (package credkind) that may decide its cards from the
+	// phone; ok false names a project the daemon does not know, which
+	// accepts no kind. Without it every kind the verifier knows is accepted.
+	// A kind is a claim of the phone's authenticator, so the policy is
+	// advisory (docs/design/seat-gate.md, "Credential kinds are claims").
+	KindPolicy func(project string) (p credkind.Policy, ok bool)
 	// PairRand is the random source of the pairing codes; the default is
 	// the system's. A test gives its own.
 	PairRand io.Reader
+	// ChallengeRand is the random source of the seat gate's challenge ids
+	// and nonces; the default is the system's (crypto/rand). A test gives
+	// its own.
+	ChallengeRand io.Reader
+	// SeatLog, when set, is called with one host-written line for each
+	// outstanding challenge of the seat gate that expires or is dropped,
+	// and for each refusal of the seat's calls the gate cannot see the
+	// cause of (which check of an assertion failed). A line names the gate
+	// session and never holds anything the seat sent. It is telemetry, not
+	// the journal: nothing of it is kept.
+	SeatLog func(line string)
 
 	// Notice, when set, is called with a host-written line for each thing
 	// the operator should see: an alert, a failed reply.

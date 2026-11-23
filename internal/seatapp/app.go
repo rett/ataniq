@@ -22,29 +22,116 @@ const maxHeaderBytes = 16 << 10
 
 // PairRequest is what the app hands the daemon to pair a phone: the
 // one-time code from the desk, the new credential's id and its public key as
-// DER SPKI. The app has checked the form of all three and nothing else.
+// DER SPKI, and the registration they came in. The app has checked the form
+// of the code and that the registration is one for its relying party, with
+// user presence and user verification, whose credential and key are these;
+// whether the code is the code is the daemon's to say.
 type PairRequest struct {
 	Code         string
 	CredentialID []byte
 	SPKI         []byte
+	// AuthenticatorData is the registration's authenticator data, as the
+	// browser gave it and the app checked it, and RPID the relying party id
+	// it was checked against ([Config].RPID). The daemon registers the
+	// credential from them with its own parser and reads the claims below
+	// again, so a port relays these two and not the fields after them.
+	AuthenticatorData []byte
+	RPID              string
+	// AAGUID, BackupEligible, BackupState, UserVerified and SignCount are
+	// what the app read in AuthenticatorData: the authenticator's claimed
+	// model, its BE, BS and UV flags and its sign counter. With attestation
+	// "none" each is a claim of the authenticator, not a fact, and is shown
+	// as one wherever it is shown.
+	AAGUID         [16]byte
+	BackupEligible bool
+	BackupState    bool
+	UserVerified   bool
+	SignCount      uint32
 }
 
-// PairResult is the daemon's answer to a pairing: the six words of the key's
-// fingerprint, which the phone shows to be compared with the desk console.
-// The words are text the app did not write: it renders them with [Text].
+// WordCount is the number of words of a key's fingerprint. It is this
+// package's own copy of seatpair.FingerprintWords (this package may import
+// nothing of the repository), and the words script's COUNT is the same
+// number; a test in tests/ holds the three equal.
+const WordCount = 8
+
+// PairResult is the daemon's answer to a pairing: the [WordCount] words of the
+// key's fingerprint, which the phone shows to be compared with the desk
+// console. The words are text the app did not write: it renders them with
+// [Text].
 type PairResult struct {
-	Words [6]string
+	Words [WordCount]string
 }
 
-// Daemon is the app's port to the daemon. Production wiring comes later; a
-// test uses an in-memory fake.
+// Daemon is the app's port to the daemon. Package seatlink implements it over
+// the seat gate, and the command ataniq-seat wires that in when it is given a
+// gate (without one it answers every call [ErrDaemonUnavailable]); a test of
+// this package uses an in-memory fake.
 //
 // Pair returns [ErrCodeRefused] when the daemon does not accept the code
 // (unknown, expired, used or out of tries) and [ErrDaemonUnavailable] when it
-// cannot be reached. The app maps any other error to a fixed code and never
-// shows its text.
+// cannot be reached.
+//
+// LoginChallenge asks the daemon for a login challenge (seat.login-challenge)
+// and returns it only after the port recomputed the challenge from the gate's
+// key and the daemon's nonce. Login hands the daemon a browser's assertion
+// over it (seat.login). They return [ErrNotOffered] when the gate does not
+// offer logins, [ErrChallengeStale] for a challenge the daemon no longer
+// holds, [ErrLoginRefused] for a login it did not accept, and
+// [ErrDaemonUnavailable] when it cannot be reached.
+//
+// List, Show and Pages are the reads of the cards (owner.list, owner.show and
+// owner.paths): the list, one card built from its record's bytes, and page n
+// of a card's whole path list. They return [ErrNoCard] for a card the daemon
+// does not have, [ErrCardChanged] for a page of a review that is no longer
+// the card's, [ErrTooLarge] for an answer that does not fit the gate's frame,
+// [ErrNotOffered] when the gate does not offer reads, [ErrBusy] when it does
+// not take the call for its load, and [ErrDaemonUnavailable] when it cannot
+// be reached. No read decides anything.
+//
+// Offer, DecideChallenge and Decide are a decision from the phone. Offer
+// asks the gate nothing: it says what the Card page may offer for a card the
+// port showed, as a session read it, by the card model's rules for approve
+// and deny. DecideChallenge freezes the decision the owner tapped from the
+// card the port showed (never from anything a browser sent but the action,
+// the indexes of the sign-offs and the reason), asks the daemon for its
+// challenge (seat.challenge), and returns it only after the port recomputed
+// it from the gate's key, the frozen frame and the daemon's nonce
+// ([ErrChallengeDiffers] otherwise, and nothing is asked of the phone).
+// Decide hands the daemon the phone's assertion over it (seat.decide). They
+// return [*NotAllowedError] for a decision the card model does not allow,
+// [ErrCardChanged] for a card the port did not show at that binding,
+// [ErrNotOffered] when the gate does not offer decisions, [ErrBusy] for its
+// load, the errors of the daemon's refusals ([ErrChallengeStale],
+// [ErrCardExpired], [ErrCannotDecide], [ErrAssertionRefused], [ErrKeyRevoked],
+// [ErrKindRefused]), and [ErrDaemonUnavailable] when nothing was sent. Once
+// Decide has sent the decision, a lost answer is [ErrOutcomeUnknown], never
+// ErrDaemonUnavailable.
+//
+// The app maps any other error to a fixed code and never shows its text.
 type Daemon interface {
 	Pair(ctx context.Context, r PairRequest) (PairResult, error)
+	LoginChallenge(ctx context.Context) (LoginChallenge, error)
+	Login(ctx context.Context, r LoginRequest) (LoginResult, error)
+	List(ctx context.Context) (Listing, error)
+	Show(ctx context.Context, id string) (Card, error)
+	Pages(ctx context.Context, id string, n int) (PathsPage, error)
+	Offer(id, bindingSHA256 string, r Reading, now time.Time) Offer
+	DecideChallenge(ctx context.Context, r DecideChallengeRequest) (DecideChallenge, error)
+	Decide(ctx context.Context, r DecideRequest) (DecideResult, error)
+}
+
+// ChallengeDropper is the part of a [Daemon] that keeps room for the answer
+// to each decision's challenge it drew (package seatlink keeps the room of
+// its seat.decide at the gate). The app tells it, by the challenge's id,
+// when it drops a challenge whose decision it will then never send: a new
+// tap of the session took its place, or the tap was burnt or refused before
+// its decision was sent. The room is let go then rather than at the end of
+// the challenge's life. A session's end (logout, idle time, eviction) does
+// not tell it: the room of a decision pending then is left to the
+// challenge's life. A port without it is not told.
+type ChallengeDropper interface {
+	DropChallenge(id string)
 }
 
 // The errors a Daemon returns that the app tells apart.
@@ -84,11 +171,6 @@ type Config struct {
 	// port, when its host is a loopback IP address or "localhost". It is for
 	// tests of this package and no command sets it.
 	AllowInsecureLoopbackForTests bool
-	// AllowNoFetchMetadataForTests lets a POST come without a Sec-Fetch-Site
-	// header. Every browser that makes a passkey sends it, so a POST without
-	// it is refused; this option is for tests of this package, whose requests
-	// are not a browser's, and no command sets it.
-	AllowNoFetchMetadataForTests bool
 }
 
 // canonicalOrigin checks an origin and returns it in the form a browser's
@@ -119,8 +201,14 @@ func canonicalOrigin(o string, insecureLoopback bool) (origin, host string, err 
 
 // app is the handler's state.
 type app struct {
-	cfg  Config
-	pair *pairing
+	cfg   Config
+	pair  *pairing
+	login *logins
+	sess  *sessions
+	// reads bounds the reads of each credential's sessions, and decides
+	// their decision challenges.
+	reads   *limiter
+	decides *limiter
 	// host is what the Host header of a request must be: the origin without
 	// its scheme.
 	host string
@@ -130,16 +218,22 @@ type app struct {
 // that is not https on the default port (see [Config].Origin), a relying party
 // id that is not the origin's host, or no daemon.
 func New(cfg Config) (http.Handler, error) {
+	_, h, err := newApp(cfg)
+	return h, err
+}
+
+// newApp is New, and also returns the app's state, for the tests.
+func newApp(cfg Config) (*app, http.Handler, error) {
 	origin, host, err := canonicalOrigin(cfg.Origin, cfg.AllowInsecureLoopbackForTests)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	cfg.Origin = origin
 	if cfg.RPID == "" || cfg.RPID != host {
-		return nil, errors.New("seatapp: Config.RPID must be the origin's host")
+		return nil, nil, errors.New("seatapp: Config.RPID must be the origin's host")
 	}
 	if cfg.Daemon == nil {
-		return nil, errors.New("seatapp: Config.Daemon is required")
+		return nil, nil, errors.New("seatapp: Config.Daemon is required")
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -148,13 +242,14 @@ func New(cfg Config) (http.Handler, error) {
 		cfg.Random = rand.Reader
 	}
 	_, hostHeader, _ := strings.Cut(origin, "://")
-	a := &app{cfg: cfg, pair: newPairing(cfg), host: hostHeader}
+	a := &app{cfg: cfg, pair: newPairing(cfg), login: newLogins(cfg), sess: newSessions(cfg.Now),
+		reads: newLimiter(readRequests, readWindow), decides: newLimiter(decideRequests, decideWindow), host: hostHeader}
 
 	mux := http.NewServeMux()
 	for _, rt := range a.routes() {
 		mux.HandleFunc(rt.pattern, rt.handler)
 	}
-	return a.guard(mux), nil
+	return a, a.guard(mux), nil
 }
 
 // route is one entry of the app's route table.
@@ -179,8 +274,25 @@ func (a *app) routes() []route {
 		{"GET /static/app.css", a.asset("assets/app.css", "text/css; charset=utf-8")},
 		{"POST /api/pair-challenge", a.post(a.pair.challenge)},
 		{"POST /api/pair", a.post(a.pair.pair)},
+		{"GET /login/{$}", a.passkeyPage("login")},
+		{"GET /login", a.redirect(loginPath)},
+		{"GET /static/login.js", a.asset("assets/login.js", "text/javascript; charset=utf-8")},
+		{"POST /api/login-challenge", a.post(a.loginChallenge)},
+		{"POST /api/login", a.post(a.loginPost)},
+		{"POST /api/logout", a.post(a.logout)},
+		{"GET /cards/{$}", a.authed(a.cardList)},
+		{"GET /cards", a.redirect(cardsPath)},
+		{"GET /cards/{id}", a.authed(a.cardPage)},
+		{"GET /cards/{id}/paths/{n}", a.authed(a.pathsPage)},
+		{"GET /static/session.js", a.asset("assets/session.js", "text/javascript; charset=utf-8")},
+		{"GET /static/decide.js", a.asset("assets/decide.js", "text/javascript; charset=utf-8")},
+		{"POST /api/decide-challenge", a.post(a.decideChallenge)},
+		{"POST /api/decide", a.post(a.decidePost)},
 	}
 }
+
+// afterLogin is where the login page goes once a session is made.
+const afterLogin = cardsPath
 
 // pairPath is the canonical path of the pairing page, the one the desk's QR
 // holds and the only one served as a page.
@@ -219,7 +331,16 @@ var securityHeaders = [][2]string{
 	{"Cache-Control", "no-store"},
 	{"Cross-Origin-Opener-Policy", "same-origin"},
 	{"Cross-Origin-Resource-Policy", "same-origin"},
-	{"Permissions-Policy", "publickey-credentials-create=(self), publickey-credentials-get=(), camera=(), microphone=(), geolocation=(), payment=(), usb=(), bluetooth=(), serial=(), hid=(), clipboard-read=(), clipboard-write=()"},
+	{"Permissions-Policy", permissionsPolicy("()")},
+}
+
+// permissionsPolicy is the Permissions-Policy header, with get the allow-list
+// of publickey-credentials-get: "()" on every response but a page that asks
+// the phone for an assertion, which has "(self)", the app's own origin and no
+// other.
+func permissionsPolicy(get string) string {
+	return "publickey-credentials-create=(self), publickey-credentials-get=" + get +
+		", camera=(), microphone=(), geolocation=(), payment=(), usb=(), bluetooth=(), serial=(), hid=(), clipboard-read=(), clipboard-write=()"
 }
 
 // guard sets the headers and cuts every request body at MaxBody.
@@ -254,7 +375,7 @@ func (a *app) post(h http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		site := r.Header.Get("Sec-Fetch-Site")
-		if site != "same-origin" && !(site == "" && a.cfg.AllowNoFetchMetadataForTests) {
+		if site != "same-origin" {
 			writeText(w, http.StatusForbidden, "forbidden\n")
 			return
 		}

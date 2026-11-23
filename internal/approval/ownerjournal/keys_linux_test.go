@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const keyWords = "acorn bridge cedar delta ember falcon"
+const keyWords = "acorn bridge cedar delta ember falcon garden harbor"
 
 // newKeyPath returns the path of a list that does not exist yet, in a new
 // folder that is the user's own.
@@ -140,15 +140,18 @@ func TestAKeyThatCannotBeAddedWritesNothing(t *testing.T) {
 	before := fileBytes(t, path)
 	bad := map[string]func(*NewKey){
 		"a short id":        func(n *NewKey) { n.CredentialID = n.CredentialID[:15] },
-		"a long id":         func(n *NewKey) { n.CredentialID = make([]byte, 1025) },
+		"a long id":         func(n *NewKey) { n.CredentialID = make([]byte, 1024) },
 		"no key":            func(n *NewKey) { n.PublicKey = nil },
 		"a long key":        func(n *NewKey) { n.PublicKey = make([]byte, 513) },
 		"no kind":           func(n *NewKey) { n.Kind = "" },
 		"a kind in capital": func(n *NewKey) { n.Kind = "Unverified" },
 		"a kind with space": func(n *NewKey) { n.Kind = "hardware token" },
 		"five words":        func(n *NewKey) { n.Words = "acorn bridge cedar delta ember" },
-		"a capital word":    func(n *NewKey) { n.Words = "Acorn bridge cedar delta ember falcon" },
-		"two spaces":        func(n *NewKey) { n.Words = "acorn  bridge cedar delta ember falcon" },
+		"the old six words": func(n *NewKey) { n.Words = "acorn bridge cedar delta ember falcon" },
+		"seven words":       func(n *NewKey) { n.Words = "acorn bridge cedar delta ember falcon garden" },
+		"nine words":        func(n *NewKey) { n.Words = keyWords + " heron" },
+		"a capital word":    func(n *NewKey) { n.Words = "Acorn bridge cedar delta ember falcon garden harbor" },
+		"two spaces":        func(n *NewKey) { n.Words = "acorn  bridge cedar delta ember falcon garden harbor" },
 		"no time":           func(n *NewKey) { n.PairedAt = time.Time{} },
 	}
 	for name, edit := range bad {
@@ -293,11 +296,12 @@ func TestARejectedPairingHoldsNoKey(t *testing.T) {
 		t.Fatal("a rejected pairing is on the list after a restart")
 	}
 	for name, r := range map[string]RejectedPairing{
-		"no id":      {Words: keyWords, At: base},
-		"a bad id":   {ID: "xyz", Words: keyWords, At: base},
-		"no words":   {ID: id, At: base},
-		"no time":    {ID: id, Words: keyWords},
-		"five words": {ID: id, Words: "acorn bridge cedar delta ember", At: base},
+		"no id":             {Words: keyWords, At: base},
+		"a bad id":          {ID: "xyz", Words: keyWords, At: base},
+		"no words":          {ID: id, At: base},
+		"no time":           {ID: id, Words: keyWords},
+		"five words":        {ID: id, Words: "acorn bridge cedar delta ember", At: base},
+		"the old six words": {ID: id, Words: "acorn bridge cedar delta ember falcon", At: base},
 	} {
 		if err := k.AppendRejected(r); err == nil {
 			t.Errorf("%s: journaled", name)
@@ -314,8 +318,8 @@ func TestTheRoomForRejectedPairingsEndsBeforeTheRoomForKeys(t *testing.T) {
 	for ; i < MaxKeyRecords && err == nil; i++ {
 		err = k.AppendRejected(RejectedPairing{ID: id, Words: keyWords, At: base})
 	}
-	if !errors.Is(err, ErrKeysFull) || i != maxRejected+1 {
-		t.Fatalf("the %dth rejected pairing: %v, want %v at %d", i, err, ErrKeysFull, maxRejected+1)
+	if !errors.Is(err, ErrKeysFull) || i != maxSpare+1 {
+		t.Fatalf("the %dth rejected pairing: %v, want %v at %d", i, err, ErrKeysFull, maxSpare+1)
 	}
 	// Every credential still fits, and so does its revocation.
 	for n := 0; n < MaxKeys; n++ {
@@ -478,11 +482,12 @@ func TestARecordAgainstTheRulesOfTheListIsDamage(t *testing.T) {
 			r.CredentialID = r.CredentialID[:15]
 			r.ID = KeyDisplayID(r.CredentialID)
 		})},
-		"an add with a bad kind":    {with(add, func(r *keyRecord) { r.Kind = "Hardware" })},
-		"an add with no words":      {with(add, func(r *keyRecord) { r.Words = "" })},
-		"a rejection with a key":    {{Seq: 1, Type: keyRejected, At: "2026-11-20T14:00:00Z", ID: id, Words: keyWords, PublicKey: n.PublicKey}},
-		"a rejection with a kind":   {{Seq: 1, Type: keyRejected, At: "2026-11-20T14:00:00Z", ID: id, Words: keyWords, Kind: "unverified"}},
-		"a rejection with no words": {{Seq: 1, Type: keyRejected, At: "2026-11-20T14:00:00Z", ID: id}},
+		"an add with a bad kind":        {with(add, func(r *keyRecord) { r.Kind = "Hardware" })},
+		"an add with no words":          {with(add, func(r *keyRecord) { r.Words = "" })},
+		"an add with the old six words": {with(add, func(r *keyRecord) { r.Words = "acorn bridge cedar delta ember falcon" })},
+		"a rejection with a key":        {{Seq: 1, Type: keyRejected, At: "2026-11-20T14:00:00Z", ID: id, Words: keyWords, PublicKey: n.PublicKey}},
+		"a rejection with a kind":       {{Seq: 1, Type: keyRejected, At: "2026-11-20T14:00:00Z", ID: id, Words: keyWords, Kind: "unverified"}},
+		"a rejection with no words":     {{Seq: 1, Type: keyRejected, At: "2026-11-20T14:00:00Z", ID: id}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			path, data := write(t, recs...)

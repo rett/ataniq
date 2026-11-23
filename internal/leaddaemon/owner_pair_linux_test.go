@@ -21,6 +21,7 @@ import (
 	"ataniq/internal/approval/ownerjournal"
 	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/approval/record"
+	"ataniq/internal/approval/webauthntest"
 	"ataniq/internal/clientapi"
 )
 
@@ -38,7 +39,9 @@ func pairKey() ownerwire.KeyItem {
 	return ownerwire.KeyItem{ID: "0123456789abcdef", Kind: "unverified", PairedAt: "2026-11-20T14:06:40Z"}
 }
 
-func pairWords() []string { return []string{"acorn", "bridge", "cedar", "delta", "ember", "falcon"} }
+func pairWords() []string {
+	return []string{"acorn", "bridge", "cedar", "delta", "ember", "falcon", "garden", "harbor"}
+}
 
 // The pairing writes, as the table of a test calls them over a connection.
 var pairWrites = []struct {
@@ -96,7 +99,7 @@ func TestOwnerThePairingOperationsReachTheService(t *testing.T) {
 		t.Fatalf("pair-start: %v, %v", start, err)
 	}
 	var status ownerwire.PairStatus
-	if err := c.Call(ownerCtx(t), ownerwire.OpPairStatus, nil, &status); err != nil || status.Phase != ownerwire.PairPending || len(status.Words) != 6 || status.PendingID != pairTestID {
+	if err := c.Call(ownerCtx(t), ownerwire.OpPairStatus, nil, &status); err != nil || status.Phase != ownerwire.PairPending || len(status.Words) != ownerwire.PairWords || status.PendingID != pairTestID {
 		t.Fatalf("pair-status: %+v, %v", status, err)
 	}
 	var key ownerwire.KeyItem
@@ -548,9 +551,11 @@ func privateState(t *testing.T) string {
 // TestOwnerAPhoneIsPairedEndToEnd: through the daemon, the real service and a
 // real list of keys in a file: the console starts a pairing and gets the code,
 // seat.pair is refused (no seat source), the credential is presented to the
-// service as the seat's call would, the console reads the six words, confirms,
-// reads the list, revokes by a prefix, and switches the phone off. The list is
-// still there after the daemon is started again on the same file.
+// service as the seat's call would, with its registration, the console reads
+// the eight words and the claimed kind, confirms, reads the list, revokes by a
+// prefix, and switches the phone off. The list, with the kind and the claims,
+// is still there after the daemon is started again on the same file. A second
+// pairing, without a registration, is of the kind unverified, and is rejected.
 func TestOwnerAPhoneIsPairedEndToEnd(t *testing.T) {
 	state := privateState(t)
 	keysPath := filepath.Join(state, ownerjournal.KeysFileName)
@@ -583,8 +588,17 @@ func TestOwnerAPhoneIsPairedEndToEnd(t *testing.T) {
 		t.Fatalf("the status holds the code: %s", b)
 	}
 
-	id, spki := newPhoneKey(t)
-	over := ownerwire.SeatPairParams{Code: start.Code, CredentialID: id, PublicKey: spki}
+	phone, err := webauthntest.New("seat.example.test", "https://seat.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A synced passkey of a vault, by the AAGUID it claims.
+	phone.AAGUID = [16]byte{0xd5, 0x48, 0x82, 0x6e, 0x79, 0xb4, 0xdb, 0x40, 0xa3, 0xd8, 0x11, 0x11, 0x6f, 0x7e, 0x83, 0x49}
+	phone.Flags |= webauthntest.FlagBE | webauthntest.FlagBS
+	over := ownerwire.SeatPairParams{
+		Code: start.Code, CredentialID: phone.CredentialID, PublicKey: phone.SPKI(),
+		AuthenticatorData: phone.RegistrationAuthData(), RPID: "seat.example.test",
+	}
 	wantOwnerCode(t, c.Call(ownerCtx(t), ownerwire.OpSeatPair, over, nil), "unavailable")
 	if err := c.Call(ownerCtx(t), ownerwire.OpPairConfirm, pairPending(), nil); err == nil {
 		t.Fatal("a confirm with nothing pending")
@@ -598,6 +612,9 @@ func TestOwnerAPhoneIsPairedEndToEnd(t *testing.T) {
 	if err := c.Call(ownerCtx(t), ownerwire.OpPairStatus, nil, &st); err != nil || st.Phase != ownerwire.PairPending ||
 		strings.Join(st.Words, " ") != strings.Join(presented.Words, " ") {
 		t.Fatalf("%+v %v", st, err)
+	}
+	if st.Kind != "vault-passkey" || st.AAGUID != "d548826e-79b4-db40-a3d8-11116f7e8349" || !st.BackupEligible || !st.BackupState {
+		t.Fatalf("the status shows no claim: %+v", st)
 	}
 	beat()
 	if len(st.PendingID) != ownerwire.PendingIDLength {
@@ -615,7 +632,8 @@ func TestOwnerAPhoneIsPairedEndToEnd(t *testing.T) {
 	if err := c.Call(ownerCtx(t), ownerwire.OpPairConfirm, ownerwire.PairPendingParams{PendingID: st.PendingID}, &key); err != nil {
 		t.Fatalf("pair-confirm: %v", err)
 	}
-	if key.Kind != "unverified" || key.Revoked || len(key.ID) != ownerwire.KeyIDLength {
+	if key.Kind != "vault-passkey" || key.AAGUID != st.AAGUID || !key.BackupEligible || !key.BackupState ||
+		key.Revoked || len(key.ID) != ownerwire.KeyIDLength {
 		t.Fatalf("%+v", key)
 	}
 	var keys ownerwire.KeysView
@@ -634,7 +652,9 @@ func TestOwnerAPhoneIsPairedEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	beat()
-	if err := c.Call(ownerCtx(t), ownerwire.OpPairStatus, nil, &st); err != nil || st.Phase != ownerwire.PairPending {
+	// A fresh value: a decoder leaves a member the answer omits as it was.
+	st = ownerwire.PairStatus{}
+	if err := c.Call(ownerCtx(t), ownerwire.OpPairStatus, nil, &st); err != nil || st.Phase != ownerwire.PairPending || st.Kind != "" {
 		t.Fatalf("%+v %v", st, err)
 	}
 	if err := c.Call(ownerCtx(t), ownerwire.OpPairReject, ownerwire.PairPendingParams{PendingID: st.PendingID}, nil); err != nil {

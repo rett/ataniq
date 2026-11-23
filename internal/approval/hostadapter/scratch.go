@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"ataniq/internal/approval/credkind"
 	"ataniq/internal/approval/mergebuild"
 	"ataniq/internal/intake/execconfig"
 	"ataniq/internal/intake/verify"
@@ -70,6 +71,22 @@ type Scratch struct {
 	// under one of them. The command checks both against the account; this
 	// package checks only their form.
 	Roots []string `json:"roots"`
+	// Kinds are the kinds of credential the project accepts for a decision
+	// from the phone, by the names of package credkind ("platform-passkey",
+	// "vault-passkey", "passkey"), each at most once. The policy is applied
+	// when the decision's challenge is drawn (seat.challenge) and again when
+	// the decision is verified (seat.decide); a login belongs to no project,
+	// so it is not asked, and a login only needs a kind the verifier knows.
+	// Absent or empty, every kind is accepted. A kind is a claim of the
+	// phone's authenticator, relayed by the seat and not attested, so the
+	// policy is advisory: it does not hold against a taken-over seat.
+	Kinds []string `json:"kinds,omitempty"`
+}
+
+// KindPolicy is the project's policy on the kinds of credential, as package
+// credkind applies it: the settings' Kinds, every kind when they name none.
+func (s Scratch) KindPolicy() credkind.Policy {
+	return credkind.Policy{Accepted: append([]string(nil), s.Kinds...)}
 }
 
 // ScratchIdentity is the identity of the merge commit.
@@ -135,6 +152,9 @@ func LoadScratch(path string) (Scratch, error) {
 		if !filepath.IsAbs(r) || filepath.Clean(r) != r {
 			return Scratch{}, errors.New("hostadapter: a scratch root is not a clean absolute path")
 		}
+	}
+	if err := s.KindPolicy().Check(); err != nil {
+		return Scratch{}, errors.New("hostadapter: the scratch settings name a kind of credential that is not one (platform-passkey, vault-passkey, passkey), or one twice")
 	}
 	if err := s.ProjectOf().check(); err != nil {
 		return Scratch{}, err

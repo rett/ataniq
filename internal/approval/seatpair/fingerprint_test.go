@@ -17,14 +17,14 @@ func seqBytes(n int) []byte {
 	return b
 }
 
-// The vector is fixed: the phone's script must give the same six words for
+// The vector is fixed: the phone's script must give the same eight words for
 // the same id and key. It was made with a second implementation (Python's
 // hashlib and struct), not with this package.
 const (
 	vectorSPKI  = "3059301306072a8648ce3d020106082a8648ce3d030107034200046ff03b949241ce1dadd43519e6960e0a85b41a69a05c328103aa2bce1594ca163c4f753a55bf01dc53f6c0b0c7eee78b40c6ff7d25a96e2282b989cef71c144a"
-	vectorWords = "poppy ribbon brick goblet nickel ruby"
-	// vectorDigest is the first six bytes of the SHA-256 of the input.
-	vectorDigest = "bbc91d659cce"
+	vectorWords = "poppy ribbon brick goblet nickel ruby rudder camel"
+	// vectorDigest is the first eight bytes of the SHA-256 of the input.
+	vectorDigest = "bbc91d659ccecf25"
 	// listDigest is the SHA-256 of the words, each followed by a newline.
 	listDigest = "e7fe4d738b88c5acfd80fde2efc2188aa694e79d0b32e3837e5173963a7c676c"
 )
@@ -50,8 +50,8 @@ func TestFingerprintVector(t *testing.T) {
 	in = append(in, 0, 0, 0, byte(len(spki)))
 	in = append(in, spki...)
 	sum := sha256.Sum256(in)
-	if hex.EncodeToString(sum[:6]) != vectorDigest {
-		t.Errorf("digest prefix = %x, want %s", sum[:6], vectorDigest)
+	if hex.EncodeToString(sum[:FingerprintWords]) != vectorDigest {
+		t.Errorf("digest prefix = %x, want %s", sum[:FingerprintWords], vectorDigest)
 	}
 	for i, w := range f {
 		if w != wordList[sum[i]] {
@@ -95,7 +95,7 @@ func TestFingerprintLengthPrefix(t *testing.T) {
 func TestFingerprintString(t *testing.T) {
 	f := FingerprintOf(seqBytes(16), spkiOfScalar(scalarOf(3)))
 	s := f.String()
-	if got := strings.Fields(s); len(got) != FingerprintWords || FingerprintWords != 6 {
+	if got := strings.Fields(s); len(got) != FingerprintWords || FingerprintWords != 8 {
 		t.Errorf("fingerprint %q has %d words", s, len(got))
 	}
 	if fmt.Sprint(f) != s || fmt.Sprintf("%s", f) != s {
@@ -105,7 +105,7 @@ func TestFingerprintString(t *testing.T) {
 
 func TestFingerprintSpread(t *testing.T) {
 	// Every word of the list is reachable and the words of a run of keys are
-	// not skewed to a part of it: 256 keys of 6 words give 1536 draws.
+	// not skewed to a part of it: 120 keys of 8 words give 960 draws.
 	hits := map[string]int{}
 	for i := 1; i <= 120; i++ {
 		f := FingerprintOf(seqBytes(16), spkiOfScalar(scalarOf(byte(i))))
@@ -114,7 +114,7 @@ func TestFingerprintSpread(t *testing.T) {
 		}
 	}
 	if len(hits) < 100 {
-		t.Errorf("only %d different words in 720 draws", len(hits))
+		t.Errorf("only %d different words in 960 draws", len(hits))
 	}
 }
 
@@ -125,5 +125,17 @@ func TestWordListIsPinned(t *testing.T) {
 	}
 	if WordList() != wordList {
 		t.Error("WordList differs from the list")
+	}
+}
+
+// TestFingerprintHoldsSixtyFourBits holds the design number: the list has 256
+// words, 8 bits each, and a fingerprint is 8 of them, 64 bits. A shorter
+// fingerprint, or a shorter list, is a weaker one and fails here.
+func TestFingerprintHoldsSixtyFourBits(t *testing.T) {
+	if len(wordList) != 256 {
+		t.Fatalf("the list has %d words, the fingerprint counts 8 bits for each", len(wordList))
+	}
+	if bits := FingerprintWords * 8; bits != 64 {
+		t.Errorf("a fingerprint of %d words is %d bits, want 64", FingerprintWords, bits)
 	}
 }

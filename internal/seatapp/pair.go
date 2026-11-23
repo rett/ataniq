@@ -29,6 +29,24 @@ const (
 	maxWordLen        = 32
 	minCredentialID   = 16
 	maxCredentialID   = 1023 // WebAuthn level 3, section 4: at most 1023 bytes
+	// maxRegistrationData is the most authenticator data of a registration
+	// the app takes: what the daemon's parser reads, so that the app never
+	// checks a registration the daemon cannot take.
+	maxRegistrationData = 4096
+	// pairAllAttempts and pairAllWindow bound the pairings of all sources
+	// together that the app hands the daemon. Anyone who reaches /pair/ can
+	// make a registration that passes the app's checks. The gate does not
+	// count a refused pairing against the seat's refusal bound, so they
+	// cannot shut the seat out; this bound is for what strangers can make
+	// the seat send: the daemon's log lines of refused pairings, the tries
+	// at an open pairing code, and the pairings' share of the room at the
+	// gate the link keeps for anyone's calls (package seatlink). Its cost:
+	// two sources posting well-formed registrations keep the owner's own
+	// pairing answered rate_limited while they keep it up; the desk is not
+	// touched. The daemon's own limit on a pairing code (5 wrong codes burn
+	// it) stays.
+	pairAllAttempts = 6
+	pairAllWindow   = 11 * time.Minute
 )
 
 // apiError is a failure of the API: a status and a fixed code. A response
@@ -83,6 +101,8 @@ type pairing struct {
 
 	pairLimit      *limiter
 	challengeLimit *limiter
+	// pairAll bounds the pairings of all sources that reach the daemon.
+	pairAll *limiter
 }
 
 func newPairing(cfg Config) *pairing {
@@ -92,6 +112,7 @@ func newPairing(cfg Config) *pairing {
 		challenges:     map[string]time.Time{},
 		pairLimit:      newLimiter(pairAttempts, pairWindow),
 		challengeLimit: newLimiter(challengeRequests, pairWindow),
+		pairAll:        newLimiter(pairAllAttempts, pairAllWindow),
 	}
 }
 
@@ -181,6 +202,12 @@ func decodeBody(body io.Reader, v any) error {
 		return err
 	}
 	if _, err := dec.Token(); err != io.EOF {
+		// A body cut at MaxBody says so, whether its length was declared
+		// or not.
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			return err
+		}
 		return errors.New("data after the object")
 	}
 	return nil
@@ -212,6 +239,12 @@ func (p *pairing) pair(w http.ResponseWriter, r *http.Request) {
 		writeError(w, *e)
 		return
 	}
+	// Only a pairing the daemon is asked counts against all sources: a body
+	// the app refuses itself costs the gate nothing.
+	if !p.pairAll.allow("all", p.cfg.Now()) {
+		writeError(w, errRateLimited)
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), daemonTimeout)
 	defer cancel()
 	res, err := p.cfg.Daemon.Pair(ctx, req)
@@ -220,11 +253,14 @@ func (p *pairing) pair(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errCodeRefused)
 	case errors.Is(err, ErrDaemonUnavailable):
 		writeError(w, errDaemonUnavailable)
+	case errors.Is(err, ErrBusy):
+		// The port's room for the gate's calls is spent: nothing was sent.
+		writeError(w, errRateLimited)
 	case err != nil:
 		writeError(w, errDaemon)
 	default:
 		// The words come from the daemon, which is not the app's own text.
-		var words [6]string
+		var words [WordCount]string
 		for i, word := range res.Words {
 			words[i] = oneLine(word, maxWordLen)
 		}
@@ -252,7 +288,7 @@ func (p *pairing) verify(in pairBody) (PairRequest, *apiError) {
 	if !p.clientDataOK(clientData, in.Challenge) {
 		return fail(errClientData)
 	}
-	keySPKI, e := p.authDataCheck(authData, credID)
+	reg, e := p.authDataCheck(authData, credID)
 	if e != nil {
 		return fail(*e)
 	}
@@ -260,10 +296,25 @@ func (p *pairing) verify(in pairBody) (PairRequest, *apiError) {
 	// data. The browser's own SPKI accessor must give that key, byte for byte:
 	// with attestation "none" nothing is signed, so this is what binds the
 	// credential id to the key.
-	if !bytes.Equal(keySPKI, spki) {
+	if !bytes.Equal(reg.spki, spki) {
 		return fail(errKey)
 	}
-	return PairRequest{Code: in.Code, CredentialID: credID, SPKI: spki}, nil
+	return PairRequest{
+		Code: in.Code, CredentialID: credID, SPKI: spki,
+		AuthenticatorData: authData, RPID: p.cfg.RPID,
+		AAGUID: reg.aaguid, BackupEligible: reg.flags&flagBE != 0, BackupState: reg.flags&flagBS != 0,
+		UserVerified: reg.flags&flagUV != 0, SignCount: reg.count,
+	}, nil
+}
+
+// registered is what authDataCheck reads of a registration's authenticator
+// data: the key, the authenticator's claimed model, the flags and the sign
+// counter.
+type registered struct {
+	spki   []byte
+	aaguid [16]byte
+	flags  byte
+	count  uint32
 }
 
 // validCode accepts what a one-time code can look like: 1 to maxCodeLen
@@ -340,44 +391,51 @@ const (
 // attested credential data: aaguid (16), id length (2), id, and the COSE_Key
 // of the credential's public key; after it, only the extensions map the ED
 // flag announces. It returns the canonical DER SubjectPublicKeyInfo of the
-// COSE_Key.
-func (p *pairing) authDataCheck(ad, credID []byte) ([]byte, *apiError) {
+// COSE_Key, and the AAGUID, the flags and the sign counter, which are claims of
+// the authenticator.
+func (p *pairing) authDataCheck(ad, credID []byte) (registered, *apiError) {
 	const head = 32 + 1 + 4 + 16 + 2
+	none := registered{}
+	if len(ad) > maxRegistrationData {
+		return none, &errAuthData
+	}
 	if len(ad) < head {
-		return nil, &errAuthData
+		return none, &errAuthData
 	}
 	if subtle.ConstantTimeCompare(ad[:32], p.rpIDSum[:]) != 1 {
-		return nil, &errAuthData
+		return none, &errAuthData
 	}
 	flags := ad[32]
 	if flags&flagUP == 0 || flags&flagAT == 0 {
-		return nil, &errAuthData
+		return none, &errAuthData
 	}
 	// WebAuthn level 3, section 7.1: a credential that is backed up is backup
 	// eligible.
 	if flags&flagBS != 0 && flags&flagBE == 0 {
-		return nil, &errAuthData
+		return none, &errAuthData
 	}
 	if flags&flagUV == 0 {
-		return nil, &errUserVerification
+		return none, &errUserVerification
 	}
 	n := int(binary.BigEndian.Uint16(ad[head-2 : head]))
 	if n < minCredentialID || n > maxCredentialID || len(ad) < head+n+1 {
-		return nil, &errAuthData
+		return none, &errAuthData
 	}
 	if subtle.ConstantTimeCompare(ad[head:head+n], credID) != 1 {
-		return nil, &errCredential
+		return none, &errCredential
 	}
 	spki, used, e := coseES256(ad[head+n:])
 	if e != nil {
-		return nil, e
+		return none, e
 	}
 	rest := ad[head+n+used:]
 	switch {
 	case flags&flagED != 0 && !extensionsOK(rest):
-		return nil, &errAuthData
+		return none, &errAuthData
 	case flags&flagED == 0 && len(rest) != 0:
-		return nil, &errAuthData
+		return none, &errAuthData
 	}
-	return spki, nil
+	r := registered{spki: spki, flags: flags, count: binary.BigEndian.Uint32(ad[33:37])}
+	copy(r.aaguid[:], ad[37:53])
+	return r, nil
 }

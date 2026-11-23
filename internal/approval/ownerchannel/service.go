@@ -68,8 +68,21 @@ type Service struct {
 	// list of keys; pr is the one pairing, in memory, which pmu guards.
 	pmu sync.Mutex
 	pr  pairing
+	// seat holds the outstanding challenges of the seat gate, in memory: a
+	// restart drops them.
+	seat *challengeStore
 	// slot holds the one verification that may run at a time.
 	slot chan struct{}
+	// cmu makes the compare and the raise of a sign counter one step, so
+	// that verifications at once are compared in turn (see
+	// [Service.verified]). It guards counters and roomTold: by display id,
+	// the highest counter a verified assertion reported while the service
+	// ran, and the keys whose counter the list had no room left to keep,
+	// which the desk was told of. Both are in memory only. No code that
+	// holds cmu takes another lock of the service.
+	cmu      sync.Mutex
+	counters map[string]uint32
+	roomTold map[string]bool
 
 	wg   sync.WaitGroup
 	dead atomic.Bool
@@ -157,6 +170,7 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.initPairing()
+	s.seat = newChallengeStore(cfg.ChallengeRand, cfg.SeatLog)
 	// A door that cannot be reached now does not stop the service: the next
 	// tick takes up what it could not.
 	if err := s.Tick(ctx); err != nil && !errors.Is(err, ErrDoorUnavailable) {

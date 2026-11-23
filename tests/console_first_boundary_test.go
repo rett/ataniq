@@ -76,6 +76,9 @@ const (
 	pkgSeatPair     = "internal/approval/seatpair"
 	pkgLeadWire     = "internal/leadwire"
 	pkgConsoleCmd   = "cmd/ataniq-console"
+	pkgOwnerLocal   = "internal/ownerlocal"
+	pkgCredKind     = "internal/approval/credkind"
+	pkgWebAuthnTest = "internal/approval/webauthntest"
 )
 
 // boundaryTable says, for each package of the build, which packages of this
@@ -93,7 +96,7 @@ var boundaryTable = map[string][]string{
 	pkgDoor:         {pkgRecord},
 	pkgDoorTest:     {pkgRecord, pkgDoor},
 	pkgOwnerJournal: {pkgRecord},
-	pkgOwnerChannel: {pkgRecord, pkgCard, pkgLimits, pkgPresence, pkgDoor, pkgOwnerJournal, pkgOwnerWire, pkgSeatPair},
+	pkgOwnerChannel: {pkgRecord, pkgCard, pkgLimits, pkgPresence, pkgDoor, pkgOwnerJournal, pkgOwnerWire, pkgSeatPair, pkgCredKind},
 	pkgDemo:         {pkgRecord, pkgCard, pkgLimits, pkgPresence, pkgLeadText},
 	pkgConsoleView:  {pkgClientAPI, pkgOwnerWire, pkgRecord, pkgCard, pkgLimits, pkgLeadWire},
 	pkgPager:        {pkgLeadText},
@@ -104,16 +107,18 @@ var boundaryTable = map[string][]string{
 	pkgQR:           {},
 	pkgPairView:     {pkgQR},
 	pkgLeadWire:     {},
+	pkgCredKind:     {},
+	pkgWebAuthnTest: {},
 	pkgConsole: {
 		pkgSessionPane, pkgSessionPlay,
 		pkgPager, pkgArrival, pkgApprovals, pkgLimitView, pkgLeadCtl, pkgPairView, pkgCard, pkgRecord, pkgLimits, pkgPresence, pkgLeadText,
 	},
-	pkgConsoleCmd: {pkgConsole, pkgLeadAttach, pkgConsoleView, pkgDemo, pkgApprovals, pkgLeadCtl},
+	pkgConsoleCmd: {pkgConsole, pkgLeadAttach, pkgConsoleView, pkgDemo, pkgApprovals, pkgLeadCtl, pkgOwnerLocal},
 }
 
 // boundaryPure lists the packages that, beyond their row of the table, import
 // only the standard library.
-var boundaryPure = []string{pkgRecord, pkgCard, pkgLimits, pkgPresence, pkgOwnerWire}
+var boundaryPure = []string{pkgRecord, pkgCard, pkgLimits, pkgPresence, pkgOwnerWire, pkgCredKind, pkgWebAuthnTest}
 
 // boundaryActing lists the packages that act for the owner channel or stand in
 // for the part that does: the door, its stand-in, the service, the journal and

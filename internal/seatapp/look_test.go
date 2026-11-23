@@ -140,7 +140,7 @@ func TestStyleSheet(t *testing.T) {
 		}
 		for _, k := range []string{
 			"bg", "fg", "muted", "line", "focus", "seat", "approve", "approve-ink", "approve-edge",
-			"stop", "stop-on", "warn", "ok", "field",
+			"stop", "stop-on", "warn", "ok", "field", "bubble", "bubble-ink", "bubble-line",
 		} {
 			if v[k] == "" {
 				t.Fatalf("%s scheme: no --%s", name, k)
@@ -161,6 +161,11 @@ func TestStyleSheet(t *testing.T) {
 			{edge, "bg", 3}, {"seat", "bg", 4.5}, {"line", "bg", 3}, {"focus", "bg", 3},
 			{"stop", "bg", 4.5}, {"stop", "field", 4.5}, {"stop-on", "stop", 4.5},
 			{"warn", "bg", 4.5}, {"ok", "bg", 4.5},
+			// The cards: lead text on its bubble, the bubble's edge on the
+			// ground it stands on, the STAND-IN banner's word and text on
+			// the raised surface, and a flagged path's edge.
+			{"bubble-ink", "bubble", 4.5}, {"bubble-line", "bg", 3}, {"warn", "field", 4.5}, {"fg", "field", 7},
+			{"stop", "bubble", 3},
 		} {
 			if got := contrast(v[c.a], v[c.b]); got < c.min {
 				t.Errorf("%s scheme: --%s on --%s is %.2f:1, under %.1f:1", name, c.a, c.b, got, c.min)

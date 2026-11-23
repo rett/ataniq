@@ -8,6 +8,9 @@ const (
 	// MaxParamsBytes caps the params of every operation but the decision
 	// frame. The request line of the client protocol is 64 KiB.
 	MaxParamsBytes = 4 << 10
+	// MaxSeatPairParamsBytes caps the params of seat.pair, which carry the
+	// registration's authenticator data beside the credential id and key.
+	MaxSeatPairParamsBytes = 12 << 10
 	// MaxFrameBytes caps a decision frame. It is the cap of the decision
 	// record the daemon makes from it, which holds the same sign-offs.
 	MaxFrameBytes = record.MaxDecisionBytes
@@ -157,6 +160,14 @@ type ShowResult struct {
 	Record Record `json:"record"`
 	// Held is the mark "decided past the limit".
 	Held bool `json:"held"`
+	// OnItsWay is the mark of a card whose decision the journal holds and
+	// the door has not taken yet: the record is still pending at the door,
+	// and a decision for it was made (at the desk or on the phone) and is on
+	// its way. A restart or the next tick hands it over; no other decision
+	// of the card is taken meanwhile. A seat whose answer to seat.decide was
+	// lost reads the card to tell a decision on its way from none. The field
+	// is left out when it is false.
+	OnItsWay bool `json:"on_its_way,omitempty"`
 	// Outcome is what came after the decision. A record not yet decided
 	// has none, except a pending one whose last decision the door refused:
 	// its outcome is the state pending with a host-written line saying so.
@@ -341,15 +352,28 @@ const (
 	// equal). The alphabet is that of Crockford's base32 without I, L, O
 	// and U, in either case.
 	PairCodeLength = 20
-	// PairWords is the number of words of a credential's fingerprint.
-	PairWords = 6
-	// MinCredentialIDBytes and MaxCredentialIDBytes bound a credential id.
+	// PairWords is the number of words of a credential's fingerprint, the
+	// count package seatpair makes (a test of the service holds the two
+	// equal).
+	PairWords = 8
+	// MinCredentialIDBytes and MaxCredentialIDBytes bound a credential id:
+	// at most 1023 bytes, as WebAuthn level 3, section 4, says and as
+	// package credkind's verifier takes (a test of the service holds the
+	// two equal), so that no credential is paired that cannot be verified.
 	MinCredentialIDBytes = 16
-	MaxCredentialIDBytes = 1024
+	MaxCredentialIDBytes = 1023
 	// MaxPublicKeyBytes caps a credential's public key as the seat sends
 	// it, a DER SubjectPublicKeyInfo. An ES256 key is 91 bytes; whether
 	// the bytes are one is for the daemon.
 	MaxPublicKeyBytes = 512
+	// MinRegistrationDataBytes and MaxRegistrationDataBytes bound the
+	// authenticator data of a registration as the seat relays it: the head
+	// and the attested credential data's own head at least, and at most what
+	// package credkind reads.
+	MinRegistrationDataBytes = 37 + 18
+	MaxRegistrationDataBytes = 4096
+	// MaxRPIDBytes caps a relying party id, a host name.
+	MaxRPIDBytes = 253
 	// MaxKeys is the most credentials the list of deciding keys holds,
 	// revoked ones included, which stay listed.
 	MaxKeys = 64
@@ -424,6 +448,22 @@ type PairStatus struct {
 	// time of the try that burnt it, in the past. It is left out for the
 	// phase none.
 	ExpiresAt string `json:"expires_at,omitempty"`
+	// Kind, AAGUID, BackupEligible and BackupState are what the pending
+	// credential's authenticator claimed at its registration, when the seat
+	// relayed it: only for the phase pending, and then optional, with Kind
+	// there when any other is. None of it is proven (the pairing uses
+	// attestation "none"), and the desk shows it as claimed.
+	//
+	// Kind is the kind the AAGUID claims, a word of package credkind
+	// ("platform-passkey", "vault-passkey" or "passkey"). AAGUID is the
+	// authenticator's claimed model in the lower-case 8-4-4-4-12 form, left
+	// out when it is all zero. BackupEligible is the BE flag (the credential
+	// can be backed up: a synced passkey) and BackupState the BS flag (it is
+	// backed up now), never set without BackupEligible.
+	Kind           string `json:"kind,omitempty"`
+	AAGUID         string `json:"aaguid,omitempty"`
+	BackupEligible bool   `json:"backup_eligible,omitempty"`
+	BackupState    bool   `json:"backup_state,omitempty"`
 }
 
 // PairPendingParams is the params of owner.pair-confirm and of
@@ -444,6 +484,16 @@ type SeatPairParams struct {
 	CredentialID []byte `json:"credential_id"`
 	// PublicKey is the credential's public key, a DER SubjectPublicKeyInfo.
 	PublicKey []byte `json:"public_key"`
+	// AuthenticatorData is the registration's authenticator data as the
+	// phone's browser gave it, which the seat checked against its relying
+	// party, and RPID that relying party's id. They are given together or
+	// not at all: the daemon registers the credential from them with
+	// package credkind, reads the kind its AAGUID claims, its backup flags
+	// and its sign counter, and checks that the credential id and the key in
+	// them are the ones above. A pairing without them is of the kind
+	// "unverified".
+	AuthenticatorData []byte `json:"authenticator_data,omitempty"`
+	RPID              string `json:"rp_id,omitempty"`
 }
 
 // String says what the value is, without the code or the key.
@@ -465,9 +515,16 @@ type KeyItem struct {
 	// the first 8 bytes of the SHA-256 of the credential id. It names the
 	// credential for the owner and holds nothing of the key.
 	ID string `json:"id"`
-	// Kind is what kind of authenticator the key is known to be, a word
-	// ("unverified" for every pairing so far).
+	// Kind is the kind of the key, a word and a claim: the kind its
+	// authenticator's AAGUID claimed at the pairing ("platform-passkey",
+	// "vault-passkey" or "passkey"), or "unverified" for a key paired
+	// without what its authenticator claimed.
 	Kind string `json:"kind"`
+	// AAGUID, BackupEligible and BackupState are what the authenticator
+	// claimed at the pairing, each optional, in the forms of [PairStatus].
+	AAGUID         string `json:"aaguid,omitempty"`
+	BackupEligible bool   `json:"backup_eligible,omitempty"`
+	BackupState    bool   `json:"backup_state,omitempty"`
 	// PairedAt is when the owner confirmed the pairing, a record's time.
 	PairedAt string `json:"paired_at"`
 	// Revoked says that the credential was revoked. A revoked credential

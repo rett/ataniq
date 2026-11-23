@@ -37,7 +37,12 @@
 // side of a card is built in the daemon's state folder through
 // ownerServiceBuilder, which the host adapter sets; until it does the flag is
 // refused with the config exit code before anything is made. It combines with
-// --canary. Package leaddaemon says what the daemon then does.
+// --canary. Package leaddaemon says what the daemon then does. With
+// --seat-gate ADDR as well (seatgate_linux.go; seatgate_off_linux.go has the
+// same names for every other build) the daemon also serves the seat gate, the
+// pinned-key TCP link of the seat app, on ADDR once the service is built, and
+// stops it before the service is closed; "ataniqd seat-gate init" makes the
+// gate's key and "ataniqd seat-gate pins" lists the seat keys it lets in.
 //
 // A build without the tag is read-only. It starts, stops and manages no unit
 // and defines no lead; no flag does. Reconcile runs at start only, not on a timer. Leads,

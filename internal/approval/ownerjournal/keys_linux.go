@@ -30,11 +30,20 @@ import (
 // The file is lines of text. The first is a header naming the file's kind and
 // version. Each later line is the hexadecimal SHA-256 digest of the line
 // before it chained with this record (see keySum), a space, and one record in
-// the canonical JSON form of package record: a number, a type (added, revoked
-// or rejected), a time and the credential's display id, and for an added
-// credential its id, its public key, its kind and the six words of its
-// fingerprint. A rejected pairing is written with its display id and words
-// only.
+// the canonical JSON form of package record: a number, a type (added, revoked,
+// rejected or counter), a time and the credential's display id, and for an
+// added credential its id, its public key, its kind and the eight words of its
+// fingerprint, and what its authenticator claimed at the pairing: its AAGUID,
+// its backup eligibility and backup state, and its sign counter. A rejected
+// pairing is written with its display id and words only, and a counter record
+// with the display id and the new highest sign counter only.
+//
+// The claims of an added credential are optional: a record written before
+// they were kept has none, and reads as a credential with no AAGUID, neither
+// backup flag and a counter of 0, of the kind it was written with
+// ("unverified" for every pairing before the kinds), with its revocations.
+// Nothing is migrated: such a credential cannot log in or decide, and is paired
+// again.
 //
 // The digests find damage: a changed, missing, reordered or half-written
 // record. They are not a signature: whoever can write the file can write
@@ -77,15 +86,24 @@ const (
 	// MaxKeys is the most credentials the list holds, revoked ones
 	// included (they stay listed). ownerwire.MaxKeys is the same number.
 	MaxKeys = 64
+	// FingerprintWords is the number of words of a credential's fingerprint
+	// that a record holds. It is this package's own copy of
+	// seatpair.FingerprintWords (this package imports only record), and a
+	// test of the service holds the two equal. A list written when a
+	// fingerprint was shorter is not read: nothing was paired in production
+	// before the change, so there is no migration.
+	FingerprintWords = 8
 	// MaxKeyRecords is the most records the file holds.
 	MaxKeyRecords = 4096
 	// maxKeysFileBytes is the most the file holds: far over what the
 	// records' own bounds make, so a larger file is not one of ours.
 	maxKeysFileBytes = 4 << 20
 
-	// The bounds of what a record holds.
+	// The bounds of what a record holds. A credential id is at most 1023
+	// bytes, as WebAuthn level 3, section 4, says (the wire's
+	// MaxCredentialIDBytes; a test of the service holds the two equal).
 	minCredentialIDLen = 16
-	maxCredentialIDLen = 1024
+	maxCredentialIDLen = 1023
 	maxPublicKeyLen    = 512
 
 	keysHeader = "ataniq-ownerkeys 1"
@@ -107,7 +125,11 @@ const (
 	keyAdded    = "added"
 	keyRevoked  = "revoked"
 	keyRejected = "rejected"
+	keyCounter  = "counter"
 )
+
+// maxCounter is the largest sign counter: WebAuthn's counter is 32 bits.
+const maxCounter = 1<<32 - 1
 
 // keyRecord is one line of the file after its digest. Every field has its
 // own use for the types that use it, and the others are absent.
@@ -120,6 +142,15 @@ type keyRecord struct {
 	CredentialID []byte `json:"credential_id,omitempty"`
 	PublicKey    []byte `json:"public_key,omitempty"`
 	Words        string `json:"words,omitempty"`
+	// AAGUID, BackupEligible and BackupState are an added credential's
+	// claims at the pairing, the AAGUID as 32 lower-case hexadecimal digits
+	// and left out when it is all zero. Counter is its sign counter at the
+	// pairing, for an added credential, and the new highest sign counter, for
+	// a counter record.
+	AAGUID         string `json:"aaguid,omitempty"`
+	BackupEligible bool   `json:"backup_eligible,omitempty"`
+	BackupState    bool   `json:"backup_state,omitempty"`
+	Counter        int64  `json:"counter,omitempty"`
 }
 
 // StoredKey is one credential of the list.
@@ -129,11 +160,24 @@ type StoredKey struct {
 	// CredentialID and PublicKey are as the phone made them.
 	CredentialID []byte
 	PublicKey    []byte
-	// Kind is what kind of authenticator the key is known to be.
+	// Kind is the kind of the credential, a claim: the kind its
+	// authenticator's AAGUID claims (package credkind's name), or
+	// "unverified" for a credential paired before kinds were recorded.
 	Kind string
+	// AAGUID is the authenticator's claimed model, all zero when it claimed
+	// none or the record holds none.
+	AAGUID [16]byte
+	// BackupEligible and BackupState are the BE and BS flags the
+	// authenticator claimed at the pairing. BackupState is never set without
+	// BackupEligible.
+	BackupEligible bool
+	BackupState    bool
+	// Counter is the highest sign counter seen: the pairing's, raised by
+	// [KeyFile.RaiseCounter] and never lowered.
+	Counter uint32
 	// PairedAt is when the owner confirmed it.
 	PairedAt time.Time
-	// Words are the six words of its fingerprint, as the desk showed them,
+	// Words are the eight words of its fingerprint, as the desk showed them,
 	// one space between.
 	Words string
 	// Revoked says the credential was revoked, and RevokedAt when. A
@@ -148,9 +192,16 @@ type NewKey struct {
 	PublicKey    []byte
 	// Kind is 1 to 32 lower-case letters, digits and dashes, starting with
 	// a letter.
-	Kind     string
-	PairedAt time.Time
-	// Words are the credential's fingerprint words, six, one space between.
+	Kind string
+	// AAGUID, BackupEligible, BackupState and Counter are what the
+	// authenticator claimed at the pairing (see [StoredKey]). BackupState
+	// without BackupEligible is refused.
+	AAGUID         [16]byte
+	BackupEligible bool
+	BackupState    bool
+	Counter        uint32
+	PairedAt       time.Time
+	// Words are the credential's fingerprint words, eight, one space between.
 	Words string
 }
 
@@ -215,13 +266,14 @@ func stampOf(info os.FileInfo) fileStamp {
 	return fileStamp{size: info.Size(), mtime: st.Mtim.Nano(), ctm: st.Ctim.Nano(), dev: uint64(st.Dev), ino: st.Ino}
 }
 
-// keyList is what the records make: the credentials, and how many records and
-// rejected pairings there are. It is a value that can be copied to try a
-// record on before it is written.
+// keyList is what the records make: the credentials, and how many records,
+// rejected pairings and counter records there are. It is a value that can be
+// copied to try a record on before it is written.
 type keyList struct {
-	records int
-	keys    []StoredKey
-	rejects int
+	records  int
+	keys     []StoredKey
+	rejects  int
+	counters int
 }
 
 // clone returns a copy that can be changed without changing the list.
@@ -536,6 +588,37 @@ func (k *KeyFile) replay() error {
 	return nil
 }
 
+// hasClaims reports whether a record holds any of an added credential's
+// claims.
+func (r *keyRecord) hasClaims() bool {
+	return r.AAGUID != "" || r.BackupEligible || r.BackupState || r.Counter != 0
+}
+
+// parseAAGUID reads the AAGUID of a record: absent, which is all zero, or 32
+// lower-case hexadecimal digits that are not all zero (an all-zero AAGUID is
+// written by being left out, so that each AAGUID has one form).
+func parseAAGUID(s string) ([16]byte, bool) {
+	var id [16]byte
+	if s == "" {
+		return id, true
+	}
+	if !record.IsLowerHex(s, 32) {
+		return id, false
+	}
+	if _, err := hex.Decode(id[:], []byte(s)); err != nil || id == ([16]byte{}) {
+		return id, false
+	}
+	return id, true
+}
+
+// formatAAGUID is the form of an AAGUID in a record: "" when it is all zero.
+func formatAAGUID(id [16]byte) string {
+	if id == ([16]byte{}) {
+		return ""
+	}
+	return hex.EncodeToString(id[:])
+}
+
 func validKind(s string) bool {
 	if len(s) < 1 || len(s) > 32 {
 		return false
@@ -551,11 +634,11 @@ func validKind(s string) bool {
 	return true
 }
 
-// validWords reports whether s is six words of 3 to 6 lower-case letters with
-// one space between.
+// validWords reports whether s is [FingerprintWords] words of 3 to 6
+// lower-case letters with one space between.
 func validWords(s string) bool {
 	words := strings.Split(s, " ")
-	if len(words) != 6 {
+	if len(words) != FingerprintWords {
 		return false
 	}
 	for _, w := range words {
@@ -598,9 +681,11 @@ func (l *keyList) apply(r *keyRecord, seq int64) error {
 	}
 	switch r.Type {
 	case keyAdded:
+		aaguid, aaguidOK := parseAAGUID(r.AAGUID)
 		if len(r.CredentialID) < minCredentialIDLen || len(r.CredentialID) > maxCredentialIDLen ||
 			len(r.PublicKey) < 1 || len(r.PublicKey) > maxPublicKeyLen ||
-			!validKind(r.Kind) || !validWords(r.Words) {
+			!validKind(r.Kind) || !validWords(r.Words) || !aaguidOK ||
+			(r.BackupState && !r.BackupEligible) || r.Counter < 0 || r.Counter > maxCounter {
 			return keysDamaged("record %d is not a credential", seq)
 		}
 		if KeyDisplayID(r.CredentialID) != r.ID {
@@ -614,10 +699,11 @@ func (l *keyList) apply(r *keyRecord, seq int64) error {
 		}
 		l.keys = append(l.keys, StoredKey{
 			ID: r.ID, CredentialID: r.CredentialID, PublicKey: r.PublicKey,
-			Kind: r.Kind, PairedAt: at, Words: r.Words,
+			Kind: r.Kind, AAGUID: aaguid, BackupEligible: r.BackupEligible, BackupState: r.BackupState,
+			Counter: uint32(r.Counter), PairedAt: at, Words: r.Words,
 		})
 	case keyRevoked:
-		if r.Kind != "" || len(r.CredentialID) != 0 || len(r.PublicKey) != 0 || r.Words != "" {
+		if r.Kind != "" || len(r.CredentialID) != 0 || len(r.PublicKey) != 0 || r.Words != "" || r.hasClaims() {
 			return keysDamaged("record %d revokes with more than an id", seq)
 		}
 		i := l.find(r.ID)
@@ -626,10 +712,27 @@ func (l *keyList) apply(r *keyRecord, seq int64) error {
 		}
 		l.keys[i].Revoked, l.keys[i].RevokedAt = true, at
 	case keyRejected:
-		if r.Kind != "" || len(r.CredentialID) != 0 || len(r.PublicKey) != 0 || !validWords(r.Words) {
+		if r.Kind != "" || len(r.CredentialID) != 0 || len(r.PublicKey) != 0 || !validWords(r.Words) || r.hasClaims() {
 			return keysDamaged("record %d is not a rejected pairing", seq)
 		}
+		if l.rejects+l.counters >= maxSpare {
+			return keysDamaged("the file has more than %d rejected pairings and counter records", maxSpare)
+		}
 		l.rejects++
+	case keyCounter:
+		if r.Kind != "" || len(r.CredentialID) != 0 || len(r.PublicKey) != 0 || r.Words != "" ||
+			r.AAGUID != "" || r.BackupEligible || r.BackupState || r.Counter < 1 || r.Counter > maxCounter {
+			return keysDamaged("record %d is not a counter record", seq)
+		}
+		i := l.find(r.ID)
+		if i < 0 || l.keys[i].Revoked || r.Counter <= int64(l.keys[i].Counter) {
+			return keysDamaged("record %d raises no counter of a credential on the list", seq)
+		}
+		if l.rejects+l.counters >= maxSpare {
+			return keysDamaged("the file has more than %d rejected pairings and counter records", maxSpare)
+		}
+		l.keys[i].Counter = uint32(r.Counter)
+		l.counters++
 	default:
 		return keysDamaged("record %d is of a type this version does not know", seq)
 	}
@@ -1034,7 +1137,8 @@ func (k *KeyFile) commit(rs []keyRecord) error {
 func (k *KeyFile) AddKey(n NewKey) (StoredKey, error) {
 	if len(n.CredentialID) < minCredentialIDLen || len(n.CredentialID) > maxCredentialIDLen ||
 		len(n.PublicKey) < 1 || len(n.PublicKey) > maxPublicKeyLen ||
-		!validKind(n.Kind) || !validWords(n.Words) || !validTime(n.PairedAt) {
+		!validKind(n.Kind) || !validWords(n.Words) || !validTime(n.PairedAt) ||
+		(n.BackupState && !n.BackupEligible) {
 		return StoredKey{}, errors.New("ownerjournal: the credential is not one a record can hold")
 	}
 	k.mu.Lock()
@@ -1051,6 +1155,7 @@ func (k *KeyFile) AddKey(n NewKey) (StoredKey, error) {
 	}
 	r := k.stamp(keyAdded, n.PairedAt, id, 0)
 	r.Kind, r.Words = n.Kind, n.Words
+	r.AAGUID, r.BackupEligible, r.BackupState, r.Counter = formatAAGUID(n.AAGUID), n.BackupEligible, n.BackupState, int64(n.Counter)
 	r.CredentialID = append([]byte(nil), n.CredentialID...)
 	r.PublicKey = append([]byte(nil), n.PublicKey...)
 	if err := k.commit([]keyRecord{r}); err != nil {
@@ -1099,13 +1204,15 @@ func (k *KeyFile) RevokeKeys(ids []string, at time.Time) error {
 	return k.commit(rs)
 }
 
-// maxRejected is how many rejected pairings the file keeps room for; the rest
-// of the record cap is for credentials and their revocations.
-const maxRejected = MaxKeyRecords - 2*MaxKeys
+// maxSpare is how many rejected pairings and counter records, together, the
+// file keeps room for; the rest of the record cap is for credentials and their
+// revocations, so that a revocation always has room.
+const maxSpare = MaxKeyRecords - 2*MaxKeys
 
 // AppendRejected journals a pairing the owner rejected, with the credential's
 // display id and fingerprint words and no key. It refuses with [ErrKeysFull]
-// once the file holds as many rejected pairings as it keeps room for.
+// once the file holds as many rejected pairings and counter records as it
+// keeps room for.
 func (k *KeyFile) AppendRejected(r RejectedPairing) error {
 	if !record.IsLowerHex(r.ID, DisplayIDLength) || !validWords(r.Words) || !validTime(r.At) {
 		return errors.New("ownerjournal: the rejected pairing is not one a record can hold")
@@ -1115,11 +1222,45 @@ func (k *KeyFile) AppendRejected(r RejectedPairing) error {
 	if err := k.usable(); err != nil {
 		return err
 	}
-	if k.list.rejects >= maxRejected {
+	if k.list.rejects+k.list.counters >= maxSpare {
 		return ErrKeysFull
 	}
 	rec := k.stamp(keyRejected, r.At, r.ID, 0)
 	rec.Words = r.Words
+	return k.commit([]keyRecord{rec})
+}
+
+// RaiseCounter records a sign counter of the credential with this display id
+// that a verified login or decision reported: when it is higher than the
+// highest the list holds, a counter record is written and is on the disk when
+// it returns. A counter that is not higher writes nothing and returns nil, so
+// the counter is never lowered; so does any counter of a revoked credential,
+// whose counter is not kept up. A credential that reports 0, as a synced
+// passkey does on every use, never needs a record. An id that no credential
+// has is [ErrKeyUnknown]. The records share the room kept for rejected
+// pairings: once it is used up the raise is refused with [ErrKeysFull], and
+// the highest counter stays the last one written (the owner channel's service
+// then tells the operator once and keeps the counter in memory).
+func (k *KeyFile) RaiseCounter(id string, counter uint32, at time.Time) error {
+	if !record.IsLowerHex(id, DisplayIDLength) || !validTime(at) {
+		return errors.New("ownerjournal: the counter is not one a record can hold")
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if err := k.usable(); err != nil {
+		return err
+	}
+	i := k.list.find(id)
+	switch {
+	case i < 0:
+		return ErrKeyUnknown
+	case k.list.keys[i].Revoked || counter <= k.list.keys[i].Counter:
+		return nil
+	case k.list.rejects+k.list.counters >= maxSpare || k.list.records >= MaxKeyRecords:
+		return ErrKeysFull
+	}
+	rec := k.stamp(keyCounter, at, id, 0)
+	rec.Counter = int64(counter)
 	return k.commit([]keyRecord{rec})
 }
 

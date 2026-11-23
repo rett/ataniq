@@ -41,6 +41,15 @@ func validDecision(t testing.TB) Decision {
 	return d
 }
 
+func validPasskeyDecision(t testing.TB) Decision {
+	t.Helper()
+	d, err := DecodeDecision(readVector(t, "decision-valid-passkey.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
 // sealed returns p with its two digests computed, as a host does before it
 // writes a pending record.
 func sealed(t testing.TB, p Pending) Pending {
@@ -469,6 +478,30 @@ func TestEmptyOptionalFieldIsRefused(t *testing.T) {
 	_, err = DecodeDecision(bytes.Replace(data, []byte(project), []byte(`"reason":"",`+project), 1))
 	wantCode(t, "a deny with an empty reason", err, CodeDecisionInvalid)
 
+	// An optional block is left out when all of it is empty, and refused
+	// when it is written so: a seat block of four empty strings, and a
+	// console block of empty fields beside a seat block.
+	code := readVector(t, "decision-valid.json")
+	const schema = `"schema":"ataniq.owner-decision/1",`
+	_, err = DecodeDecision(bytes.Replace(code, []byte(schema), []byte(schema+`"seat":{"assertion_sha256":"","challenge_id":"","credential":"","session":""},`), 1))
+	wantCode(t, "a seat block of empty fields", err, CodeDecisionInvalid)
+	passkey := readVector(t, "decision-valid-passkey.json")
+	const confirmed = `"confirmed":"passkey",`
+	_, err = DecodeDecision(bytes.Replace(passkey, []byte(confirmed), []byte(confirmed+`"console":{"client":"","decider":false,"pid":0,"session":"","surface":"","tty":""},`), 1))
+	wantCode(t, "a console block of empty fields beside a seat block", err, CodeDecisionInvalid)
+	d := validPasskeyDecision(t)
+	if data, err := EncodeDecision(d); err != nil {
+		t.Fatal(err)
+	} else if bytes.Contains(data, []byte(`"console"`)) {
+		t.Errorf("a passkey decision was written with a console block: %s", data)
+	}
+	d = validDecision(t)
+	if data, err := EncodeDecision(d); err != nil {
+		t.Fatal(err)
+	} else if bytes.Contains(data, []byte(`"seat":`)) {
+		t.Errorf("a decision confirmed by code was written with a seat block: %s", data)
+	}
+
 	for _, name := range []string{"request-invalid-empty-feature-sha.json", "decision-invalid-empty-reason.json"} {
 		if !bytes.Contains(readVector(t, name), []byte(`":""`)) {
 			t.Errorf("%s holds no empty field", name)
@@ -567,6 +600,30 @@ func TestCapsHoldOnEncode(t *testing.T) {
 	}
 	_, err = EncodeDecision(d)
 	wantCode(t, "a decision over the cap", err, CodeRecordTooLarge)
+
+	// The cap holds for a decision confirmed by passkey as for one
+	// confirmed by code: the seat block takes room of its own, and a
+	// record that it pushes over the cap is refused, never cut.
+	for _, base := range []Decision{validDecision(t), validPasskeyDecision(t)} {
+		d := base
+		d.SignedOff = nil
+		var largest []byte
+		for i := 0; ; i++ {
+			d.SignedOff = append(d.SignedOff, SignOff{Kind: FlagExecConfig, Path: Text("p/" + strconv.Itoa(i) + strings.Repeat("q", 60))})
+			data, err := EncodeDecision(d)
+			if err != nil {
+				wantCode(t, base.Confirmed+": one sign-off too many", err, CodeRecordTooLarge)
+				break
+			}
+			largest = data
+		}
+		if len(largest) > MaxDecisionBytes || len(largest) < MaxDecisionBytes-100 {
+			t.Errorf("%s: the largest decision that encodes is %d bytes, want just under %d", base.Confirmed, len(largest), MaxDecisionBytes)
+		}
+		if _, err := DecodeDecision(largest); err != nil {
+			t.Errorf("%s: the largest decision that encodes does not decode: %v", base.Confirmed, err)
+		}
+	}
 
 	deny, err := DecodeDecision(readVector(t, "decision-valid-deny.json"))
 	if err != nil {
@@ -966,6 +1023,118 @@ func TestDecisionContentRules(t *testing.T) {
 		without := strings.Replace(string(data), `"`+key+`":`, `"x`+key+`":`, 1)
 		_, err := DecodeDecision([]byte(without))
 		wantCode(t, "a console block without "+key, err, CodeDecisionInvalid)
+	}
+}
+
+// A decision confirmed by passkey carries the seat block and no console
+// block, and each field of the block is held to its form. The console
+// block's rules hold for a decision confirmed by code as before.
+func TestPasskeyDecisionContentRules(t *testing.T) {
+	console := validDecision(t).Console
+	tests := []struct {
+		name   string
+		change func(*Decision)
+		want   Code
+	}{
+		{"unchanged", func(d *Decision) {}, ""},
+		{"a deny", func(d *Decision) { d.Decision, d.Uses, d.SignedOff, d.Reason = DecisionDeny, 0, nil, "not this one" }, ""},
+		{"a console block beside the seat block", func(d *Decision) { d.Console = console }, CodeDecisionInvalid},
+		{"a console block with a process id alone", func(d *Decision) { d.Console = Console{PID: 1} }, CodeDecisionInvalid},
+		{"a console block in place of the seat block", func(d *Decision) { d.Console, d.Seat = console, SeatBlock{} }, CodeDecisionInvalid},
+		{"no block", func(d *Decision) { d.Seat = SeatBlock{} }, CodeDecisionInvalid},
+		{"confirmed by code with a seat block", func(d *Decision) { d.Confirmed = ConfirmedCode }, CodeDecisionInvalid},
+		{"confirmed by code with both blocks", func(d *Decision) { d.Confirmed, d.Console = ConfirmedCode, console }, CodeDecisionInvalid},
+		{"confirmed another way", func(d *Decision) { d.Confirmed = "phone" }, CodeDecisionInvalid},
+		{"confirmed in upper case", func(d *Decision) { d.Confirmed = "Passkey" }, CodeDecisionInvalid},
+		{"no assertion digest", func(d *Decision) { d.Seat.AssertionSHA256 = "" }, CodeDecisionInvalid},
+		{"a short assertion digest", func(d *Decision) { d.Seat.AssertionSHA256 = d.Seat.AssertionSHA256[:63] }, CodeDecisionInvalid},
+		{"an assertion digest in upper case", func(d *Decision) { d.Seat.AssertionSHA256 = strings.ToUpper(d.Seat.AssertionSHA256) }, CodeDecisionInvalid},
+		{"no challenge id", func(d *Decision) { d.Seat.ChallengeID = "" }, CodeDecisionInvalid},
+		{"a long challenge id", func(d *Decision) { d.Seat.ChallengeID += "0" }, CodeDecisionInvalid},
+		{"a challenge id that is not hexadecimal", func(d *Decision) { d.Seat.ChallengeID = "001122334455667g" }, CodeDecisionInvalid},
+		{"no credential", func(d *Decision) { d.Seat.Credential = "" }, CodeDecisionInvalid},
+		{"a short credential", func(d *Decision) { d.Seat.Credential = d.Seat.Credential[:15] }, CodeDecisionInvalid},
+		{"a credential in upper case", func(d *Decision) { d.Seat.Credential = strings.ToUpper(d.Seat.Credential) }, CodeDecisionInvalid},
+		{"no session", func(d *Decision) { d.Seat.Session = "" }, CodeDecisionInvalid},
+		{"a short session", func(d *Decision) { d.Seat.Session = d.Seat.Session[:15] }, CodeDecisionInvalid},
+		{"a session in upper case", func(d *Decision) { d.Seat.Session = "000102030405060A" }, CodeDecisionInvalid},
+	}
+	for _, tt := range tests {
+		d := validPasskeyDecision(t)
+		tt.change(&d)
+		data, err := EncodeDecision(d)
+		wantCode(t, tt.name, err, tt.want)
+		if err == nil {
+			if _, err := DecodeDecision(data); err != nil {
+				t.Errorf("%s: encoded, and then refused: %v", tt.name, err)
+			}
+		}
+	}
+
+	// Each key of the seat block is required.
+	data := readVector(t, "decision-valid-passkey.json")
+	for _, key := range []string{"assertion_sha256", "challenge_id", "credential", "session"} {
+		without := strings.Replace(string(data), `"`+key+`":`, `"x`+key+`":`, 1)
+		_, err := DecodeDecision([]byte(without))
+		wantCode(t, "a seat block without "+key, err, CodeDecisionInvalid)
+	}
+
+	// A decision without the block its confirmation names is refused, and the
+	// refusal says so before any field of the missing block.
+	code := validDecision(t)
+	code.Console = Console{}
+	_, err := EncodeDecision(code)
+	wantCode(t, "confirmed by code with no block", err, CodeDecisionInvalid)
+	if err == nil || !strings.Contains(err.Error(), "decision.console is missing") {
+		t.Errorf("confirmed by code with no block: refused %v, want it to say the console block is missing", err)
+	}
+	passkey := validPasskeyDecision(t)
+	passkey.Seat = SeatBlock{}
+	_, err = EncodeDecision(passkey)
+	wantCode(t, "confirmed by passkey with no block", err, CodeDecisionInvalid)
+	if err == nil || !strings.Contains(err.Error(), "decision.seat is missing") {
+		t.Errorf("confirmed by passkey with no block: refused %v, want it to say the seat block is missing", err)
+	}
+
+	// A decision confirmed by code keeps the bytes it had before the seat
+	// block was added.
+	for _, name := range []string{"decision-valid.json", "decision-valid-deny.json"} {
+		vector := readVector(t, name)
+		d, err := DecodeDecision(vector)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if d.Seat != (SeatBlock{}) {
+			t.Errorf("%s: decoded with a seat block", name)
+		}
+		if again, err := EncodeDecision(d); err != nil || !bytes.Equal(again, vector) {
+			t.Errorf("%s: encodes to other bytes (%v)", name, err)
+		}
+	}
+}
+
+// The digest of an assertion is taken over its four fields in their order,
+// each with its length in front, so that no two assertions share it.
+func TestAssertionDigest(t *testing.T) {
+	a, b, c, d := []byte("credential-id-16"), []byte("authenticator-data"), []byte(`{"type":"webauthn.get"}`), []byte{0x30, 0x06}
+	base := AssertionDigest(a, b, c, d)
+	if !IsLowerHex(base, 64) {
+		t.Fatalf("the digest %q is not 64 lower-case hexadecimal digits", base)
+	}
+	if AssertionDigest(a, b, c, d) != base {
+		t.Error("one assertion has two digests")
+	}
+	for name, other := range map[string]string{
+		"two fields swapped":            AssertionDigest(b, a, c, d),
+		"a byte moved across a border":  AssertionDigest(a[:15], append([]byte{a[15]}, b...), c, d),
+		"a changed signature":           AssertionDigest(a, b, c, []byte{0x30, 0x07}),
+		"the client data of another":    AssertionDigest(a, b, []byte(`{"type":"webauthn.create"}`), d),
+		"a field empty":                 AssertionDigest(a, b, c, nil),
+		"the bytes joined with no size": Digest(bytes.Join([][]byte{a, b, c, d}, nil)),
+	} {
+		if other == base {
+			t.Errorf("%s: the same digest", name)
+		}
 	}
 }
 

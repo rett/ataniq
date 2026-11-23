@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 )
@@ -212,7 +213,7 @@ func exactKeys(raw json.RawMessage, t reflect.Type, v reflect.Value) bool {
 		if json.Unmarshal(raw, &m) != nil {
 			return true
 		}
-		fields, ok := jsonFields(t)
+		fields, ok := cachedFields(t)
 		if !ok {
 			return false
 		}
@@ -266,6 +267,33 @@ func exactKeys(raw json.RawMessage, t reflect.Type, v reflect.Value) bool {
 type jsonField struct {
 	t     reflect.Type
 	index []int
+}
+
+// fieldsEntry is what [jsonFields] returned for one type.
+type fieldsEntry struct {
+	fields map[string]jsonField
+	ok     bool
+}
+
+// fieldsCache holds a [fieldsEntry] for each struct type [DecodeStrict] has
+// met, by its reflect.Type. What is in it is read and never written to once
+// stored, so any number of decodes share it.
+var fieldsCache sync.Map
+
+// cachedFields is [jsonFields] of t, worked out once for each type. The
+// selection of a struct's fields depends on the type alone, and a frame holds
+// one object per element of a list of them, so without the cache a frame of
+// the largest size ([MaxFrame], 257 KiB) made of small objects ran the
+// selection tens of thousands of times. A type that is refused is cached as refused. Two decodes that meet a type at once may
+// both work it out; the results are equal and either is kept.
+func cachedFields(t reflect.Type) (map[string]jsonField, bool) {
+	if e, ok := fieldsCache.Load(t); ok {
+		e := e.(fieldsEntry)
+		return e.fields, e.ok
+	}
+	fields, ok := jsonFields(t)
+	fieldsCache.Store(t, fieldsEntry{fields, ok})
+	return fields, ok
 }
 
 // jsonFields is each field the standard decoder fills in struct type t, by

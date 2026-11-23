@@ -244,7 +244,8 @@ const earlierWindow = 24 * time.Hour
 // maxOpened is how many opened cards are kept for each verb and target.
 const maxOpened = 8
 
-// Show returns one pending record as its bytes, with the held mark, the
+// Show returns one pending record as its bytes, with the held mark, the mark
+// of a decision on its way to the door (journaled, not yet handed over), the
 // outcome when it is decided, and the earlier card for the same verb and
 // target that the owner opened in the last 24 hours (owner.show). Opening a
 // card is remembered for that purpose, in memory: after a restart there is
@@ -278,8 +279,14 @@ func (s *Service) Show(ctx context.Context, id string) (ownerwire.ShowResult, er
 		}
 		// The door refused the last decision and the card is pending again:
 		// say so, with the door's code.
-		if r, ok := s.indexed(id); ok && r.refusedByDoor != "" && !out.Held {
+		r, ok := s.indexed(id)
+		if ok && r.refusedByDoor != "" && !out.Held {
 			out.Outcome = &ownerwire.Outcome{State: record.StatePending, Line: lineRefusedByDoor(r.refusedByDoor)}
+		}
+		// A decision is journaled and has no delivered entry: it is on its
+		// way to the door, which still shows the record pending.
+		if ok && r.decided && !r.delivered {
+			out.OnItsWay = true
 		}
 	} else {
 		_, text := s.recentOf(p, shown.Entry)

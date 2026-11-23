@@ -13,7 +13,7 @@ import (
 const sampleCode = "7ZB0KX4M9TQ2VH6NRC3E"
 
 func sampleWords() []string {
-	return []string{"acorn", "bridge", "cedar", "delta", "ember", "falcon"}
+	return []string{"acorn", "bridge", "cedar", "delta", "ember", "falcon", "garden", "harbor"}
 }
 
 func samplePairStartResult() PairStartResult {
@@ -124,30 +124,32 @@ func TestPairStatusPhases(t *testing.T) {
 		}
 	}
 	bad := map[string]PairStatus{
-		"no phase":                {},
-		"another phase":           {Phase: "open", ExpiresAt: sampleDay},
-		"none with a time":        {Phase: PairNone, ExpiresAt: sampleDay},
-		"none with words":         {Phase: PairNone, Words: sampleWords()},
-		"waiting with words":      {Phase: PairWaiting, Words: sampleWords(), ExpiresAt: sampleDay},
-		"waiting with no time":    {Phase: PairWaiting},
-		"expired with words":      {Phase: PairExpired, Words: sampleWords(), ExpiresAt: sampleDay},
-		"pending with no words":   {Phase: PairPending, ExpiresAt: sampleDay},
-		"pending with five words": {Phase: PairPending, Words: sampleWords()[:5], ExpiresAt: sampleDay},
-		"pending with seven":      {Phase: PairPending, Words: append(sampleWords(), "garden"), ExpiresAt: sampleDay},
-		"pending with no time":    {Phase: PairPending, Words: sampleWords()},
-		"an empty list of words":  {Phase: PairWaiting, Words: []string{}, ExpiresAt: sampleDay},
-		"a capital in a word":     {Phase: PairPending, Words: []string{"Acorn", "bridge", "cedar", "delta", "ember", "falcon"}, ExpiresAt: sampleDay},
-		"a short word":            {Phase: PairPending, Words: []string{"ab", "bridge", "cedar", "delta", "ember", "falcon"}, ExpiresAt: sampleDay},
-		"a long word":             {Phase: PairPending, Words: []string{"acornss", "bridge", "cedar", "delta", "ember", "falcon"}, ExpiresAt: sampleDay},
-		"a digit in a word":       {Phase: PairPending, Words: []string{"acor1", "bridge", "cedar", "delta", "ember", "falcon"}, ExpiresAt: sampleDay},
-		"pending with no id":      {Phase: PairPending, Words: sampleWords(), ExpiresAt: sampleDay},
-		"pending, a short id":     {Phase: PairPending, Words: sampleWords(), PendingID: samplePendingID[:15], ExpiresAt: sampleDay},
-		"pending, a long id":      {Phase: PairPending, Words: sampleWords(), PendingID: samplePendingID + "0", ExpiresAt: sampleDay},
-		"pending, a capital id":   {Phase: PairPending, Words: sampleWords(), PendingID: "0F1E2D3C4B5A6978", ExpiresAt: sampleDay},
-		"pending, a non-hex id":   {Phase: PairPending, Words: sampleWords(), PendingID: "0f1e2d3c4b5a697g", ExpiresAt: sampleDay},
-		"waiting with an id":      {Phase: PairWaiting, PendingID: samplePendingID, ExpiresAt: sampleDay},
-		"expired with an id":      {Phase: PairExpired, PendingID: samplePendingID, ExpiresAt: sampleDay},
-		"none with an id":         {Phase: PairNone, PendingID: samplePendingID},
+		"no phase":                 {},
+		"another phase":            {Phase: "open", ExpiresAt: sampleDay},
+		"none with a time":         {Phase: PairNone, ExpiresAt: sampleDay},
+		"none with words":          {Phase: PairNone, Words: sampleWords()},
+		"waiting with words":       {Phase: PairWaiting, Words: sampleWords(), ExpiresAt: sampleDay},
+		"waiting with no time":     {Phase: PairWaiting},
+		"expired with words":       {Phase: PairExpired, Words: sampleWords(), ExpiresAt: sampleDay},
+		"pending with no words":    {Phase: PairPending, ExpiresAt: sampleDay},
+		"pending with five words":  {Phase: PairPending, Words: sampleWords()[:5], ExpiresAt: sampleDay},
+		"pending with the old six": {Phase: PairPending, Words: sampleWords()[:6], ExpiresAt: sampleDay},
+		"pending with seven":       {Phase: PairPending, Words: sampleWords()[:7], ExpiresAt: sampleDay},
+		"pending with nine":        {Phase: PairPending, Words: append(sampleWords(), "heron"), ExpiresAt: sampleDay},
+		"pending with no time":     {Phase: PairPending, Words: sampleWords()},
+		"an empty list of words":   {Phase: PairWaiting, Words: []string{}, ExpiresAt: sampleDay},
+		"a capital in a word":      {Phase: PairPending, Words: append([]string{"Acorn"}, sampleWords()[1:]...), ExpiresAt: sampleDay},
+		"a short word":             {Phase: PairPending, Words: append([]string{"ab"}, sampleWords()[1:]...), ExpiresAt: sampleDay},
+		"a long word":              {Phase: PairPending, Words: append([]string{"acornss"}, sampleWords()[1:]...), ExpiresAt: sampleDay},
+		"a digit in a word":        {Phase: PairPending, Words: append([]string{"acor1"}, sampleWords()[1:]...), ExpiresAt: sampleDay},
+		"pending with no id":       {Phase: PairPending, Words: sampleWords(), ExpiresAt: sampleDay},
+		"pending, a short id":      {Phase: PairPending, Words: sampleWords(), PendingID: samplePendingID[:15], ExpiresAt: sampleDay},
+		"pending, a long id":       {Phase: PairPending, Words: sampleWords(), PendingID: samplePendingID + "0", ExpiresAt: sampleDay},
+		"pending, a capital id":    {Phase: PairPending, Words: sampleWords(), PendingID: "0F1E2D3C4B5A6978", ExpiresAt: sampleDay},
+		"pending, a non-hex id":    {Phase: PairPending, Words: sampleWords(), PendingID: "0f1e2d3c4b5a697g", ExpiresAt: sampleDay},
+		"waiting with an id":       {Phase: PairWaiting, PendingID: samplePendingID, ExpiresAt: sampleDay},
+		"expired with an id":       {Phase: PairExpired, PendingID: samplePendingID, ExpiresAt: sampleDay},
+		"none with an id":          {Phase: PairNone, PendingID: samplePendingID},
 	}
 	for name, s := range bad {
 		_, err := EncodePairStatus(s)
@@ -178,6 +180,7 @@ func TestSeatPairParamsContent(t *testing.T) {
 		"a credential id of 0": change(func(p *SeatPairParams) { p.CredentialID = nil }),
 		"a short id":           change(func(p *SeatPairParams) { p.CredentialID = p.CredentialID[:15] }),
 		"a long id":            change(func(p *SeatPairParams) { p.CredentialID = make([]byte, MaxCredentialIDBytes+1) }),
+		"an id of 1024 bytes":  change(func(p *SeatPairParams) { p.CredentialID = make([]byte, 1024) }),
 		"no key":               change(func(p *SeatPairParams) { p.PublicKey = nil }),
 		"a long key":           change(func(p *SeatPairParams) { p.PublicKey = make([]byte, MaxPublicKeyBytes+1) }),
 	} {
@@ -205,10 +208,11 @@ func TestSeatPairParamsContent(t *testing.T) {
 	}
 }
 
-func TestSeatPairResultIsSixWords(t *testing.T) {
+func TestSeatPairResultIsEightWords(t *testing.T) {
 	for name, w := range map[string][]string{
-		"none": nil, "five": sampleWords()[:5], "seven": append(sampleWords(), "garden"),
-		"a word with a capital": {"acorn", "bridge", "cedar", "delta", "ember", "Falcon"},
+		"none": nil, "five": sampleWords()[:5], "the old six": sampleWords()[:6], "seven": sampleWords()[:7],
+		"nine":                  append(sampleWords(), "heron"),
+		"a word with a capital": append(sampleWords()[:7:7], "Harbor"),
 	} {
 		_, err := EncodeSeatPairResult(SeatPairResult{Words: w})
 		refused(t, err, record.CodeRecordInvalid, name)

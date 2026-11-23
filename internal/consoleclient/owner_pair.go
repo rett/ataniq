@@ -86,7 +86,7 @@ func (o *Owner) PairStart(replace bool) (ownerwire.PairStartResult, error) {
 }
 
 // PairStatus reads where the pairing stands: none, waiting for the phone, a
-// credential pending at the desk with the six words of its fingerprint and its
+// credential pending at the desk with the eight words of its fingerprint and its
 // pending id (the id to give back to [Owner.PairConfirm] and [Owner.PairReject]),
 // or expired. It never holds the code.
 func (o *Owner) PairStatus() (ownerwire.PairStatus, error) {
@@ -103,7 +103,7 @@ func (o *Owner) PairStatus() (ownerwire.PairStatus, error) {
 	return st, nil
 }
 
-// PairConfirm is the owner saying the six words are the same on the phone: the
+// PairConfirm is the owner saying the eight words are the same on the phone: the
 // pending credential goes on the list of deciding keys, and the answer is its
 // row. The id is the pending id the status showed with the words he compared;
 // when it is not the credential pending now (the pairing was replaced, or ran

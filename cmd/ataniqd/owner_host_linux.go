@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"ataniq/internal/approval/credkind"
 	"ataniq/internal/approval/door/doortest"
 	"ataniq/internal/approval/hostadapter"
 	"ataniq/internal/approval/ownerchannel"
@@ -73,6 +74,20 @@ func openOwnerKeys(stateDir string) ownerchannel.KeyStore {
 	return k
 }
 
+// scratchKindPolicy is the kind policy of the service built on the scratch
+// settings: the settings' "kinds" for their one project (every kind the
+// verifier knows when they name none), and no kind for any other project,
+// which this daemon does not serve.
+func scratchKindPolicy(sc hostadapter.Scratch) func(project string) (credkind.Policy, bool) {
+	p := sc.KindPolicy()
+	return func(project string) (credkind.Policy, bool) {
+		if project != sc.Project {
+			return credkind.Policy{}, false
+		}
+		return p, true
+	}
+}
+
 // standInEnder ends a request at the stand-in door, which has a withdraw of
 // its own for it.
 type standInEnder struct{ d *doortest.Door }
@@ -125,7 +140,10 @@ func buildOwnerService(stateDir string) (leaddaemon.OwnerService, func() error, 
 		},
 		StateDir: stateDir, Door: standIn, Ender: standInEnder{standIn},
 		DropDir: sc.Drop, CollectProject: sc.Project,
-		Service: ownerchannel.Config{Keys: keys},
+		Service: ownerchannel.Config{
+			Keys: keys, KindPolicy: scratchKindPolicy(sc),
+			SeatLog: func(line string) { ownerNotice("seat gate: " + line) },
+		},
 	})
 	if err != nil {
 		if keys != nil {

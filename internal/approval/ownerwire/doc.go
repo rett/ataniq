@@ -36,6 +36,16 @@
 // function named after it; "none" and "nothing" are an empty object, read
 // by [DecodeNothing].
 //
+// Four more operations are the seat gate's alone, a login and a decision
+// from the owner's phone; the daemon's Unix socket neither serves nor
+// announces them, and [GateOperations] lists them apart:
+//
+//	operation             params               result
+//	seat.login-challenge  none                 SeatLoginChallengeResult
+//	seat.login            SeatLoginParams      SeatLoginResult
+//	seat.challenge        SeatChallengeParams  SeatChallengeResult
+//	seat.decide           SeatDecideParams     DecideResult
+//
 // # Strict decoding
 //
 // A payload is read under the rules of the approval records (package
@@ -59,6 +69,21 @@
 // with the process, the terminal and the session. A frame has no place for
 // any of that, so a console cannot state it, and a frame that tries is
 // refused decision-invalid.
+//
+// # The challenge of a phone decision
+//
+// A decision from the phone is a WebAuthn assertion over a challenge the
+// daemon draws and binds to its own record of the card: [DecisionChallenge]
+// hashes a domain string, the gate's key fingerprint, the frame's id, binding
+// digest and decision, the digests of its sign-offs and its reason
+// ([SignedOffDigest], [ReasonDigest]), and the daemon's nonce. A login is an
+// assertion over [LoginChallenge], whose domain string differs. Both ends call
+// these functions, so they cannot disagree on a byte. The params of
+// seat.decide are read in two parts: [DecodeSeatDecideParams] reads the
+// envelope, and the daemon checks the frame's content with
+// [CheckDecisionFrame] only after it took the challenge, so that a malformed
+// frame still burns it. [Assertion.Digest] is the digest a passkey decision
+// record keeps of the assertion.
 //
 // # Records travel as bytes
 //
@@ -87,7 +112,7 @@
 // one-time pairing code and answers it, once, in [PairStartResult]; the
 // phone's side presents the code with the credential it made (seat.pair, the
 // one name that does not begin with "owner.", which is the seat app's call and
-// not the console's); the desk reads the six words of the credential's
+// not the console's); the desk reads the eight words of the credential's
 // fingerprint with owner.pair-status and confirms (owner.pair-confirm) or
 // rejects (owner.pair-reject). owner.pair-status also gives the pending
 // credential a pending id, 8 random bytes in 16 lower-case hexadecimal digits
@@ -108,10 +133,19 @@
 // the first 8 bytes of the SHA-256 of the credential id. It names the
 // credential and holds nothing of the key.
 //
+// The seat relays the registration's authenticator data and its relying party
+// id with the credential (both optional, for a seat that relays none), and the
+// daemon reads from them what the authenticator claimed: the kind its AAGUID
+// claims, the AAGUID and the backup flags. A pending [PairStatus] and a
+// [KeyItem] carry them as optional members. With attestation "none" they are
+// claims and not facts, and the desk says so where it shows them.
+//
 // # Refusals
 //
 // Every refusal is a [*record.Error] with one of the record package's
-// codes; this package declares none. A decision frame that is wrong is
+// codes; this package declares no refusal of its own. It names the words the
+// seat gate answers its four operations with when the daemon refuses one
+// ([CodeChallengeStale] and the others), which no decoder here answers with. A decision frame that is wrong is
 // decision-invalid, any other payload record-invalid, a payload over its
 // cap record-too-large, and a record whose digest is not its bytes' own
 // binding-mismatch. The detail of an error is written here and never holds

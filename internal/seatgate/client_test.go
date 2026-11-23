@@ -676,13 +676,17 @@ func TestClientRunBacksOffWithAnInjectedClock(t *testing.T) {
 	}
 }
 
+// A connection that has stood for DeadAfter or longer is a good one: the waits
+// start over after it.
 func TestClientBackoffStartsOverAfterAConnection(t *testing.T) {
 	leakCheck(t)
 	e := startServer(t, bigRate, echo())
 	var mu sync.Mutex
 	var waits []time.Duration
+	var skew atomic.Int64 // the injected clock runs ahead of the real one by this
 	cfg := fastClient(e, func(c *ClientConfig) {
 		c.Rand = func() float64 { return 0 }
+		c.Now = func() time.Time { return time.Now().Add(time.Duration(skew.Load())) }
 		c.BackoffMin, c.BackoffMax = 100*time.Millisecond, 10*time.Second
 		c.Sleep = func(ctx context.Context, d time.Duration) error {
 			mu.Lock()
@@ -700,6 +704,7 @@ func TestClientBackoffStartsOverAfterAConnection(t *testing.T) {
 	go func() { c.Run(ctx); close(done) }()
 	defer func() { cancel(); within(t, "Run to return", done, 5*time.Second) }()
 	untilTrue(t, "connection", func() bool { _, ok := c.Connected(); return ok })
+	skew.Store(int64(2 * cfg.DeadAfter)) // the connection has stood for DeadAfter by now
 	e.stop()
 	untilTrue(t, "failed attempts", func() bool { mu.Lock(); defer mu.Unlock(); return len(waits) >= 4 })
 	startServerAt(t, e.addr, e.srv, e.seat, bigRate, echo())
@@ -709,6 +714,67 @@ func TestClientBackoffStartsOverAfterAConnection(t *testing.T) {
 	// The first wait after the loss is the first step; later ones double.
 	if waits[0] != 50*time.Millisecond || waits[1] != 50*time.Millisecond || waits[2] != 100*time.Millisecond {
 		t.Fatalf("waits %v", waits)
+	}
+}
+
+// A gate that answers the hello and drops the link at once, over and over,
+// does not get the first wait each time: the waits grow as they do for a gate
+// that cannot be reached, and start over only after a connection that has stood
+// for DeadAfter.
+func TestClientBackoffGrowsWhileTheLinkDropsRightAfterTheHello(t *testing.T) {
+	leakCheck(t)
+	srv, seat := fakeEnv(t)
+	var mu sync.Mutex
+	var waits []time.Duration
+	var skew atomic.Int64 // the injected clock runs ahead of the real one by this
+	var conns atomic.Int32
+	var cl atomic.Pointer[Client]
+	addr := fakeGate(t, srv, seat, func(c *tls.Conn) {
+		id := readHello(t, c)
+		helloOK(c, id)
+		if conns.Add(1) == 5 { // this one stays up for DeadAfter, by the clock
+			untilTrue(t, "the client to count the connection", func() bool { _, ok := cl.Load().Connected(); return ok })
+			skew.Store(int64(time.Hour))
+		}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cfg := clientFor(srv, seat, func(c *ClientConfig) {
+		c.BackoffMin, c.BackoffMax = time.Second, 30*time.Second
+		c.Rand = func() float64 { return 0 }
+		c.Now = func() time.Time { return time.Now().Add(time.Duration(skew.Load())) }
+		c.Sleep = func(ctx context.Context, d time.Duration) error {
+			mu.Lock()
+			defer mu.Unlock()
+			waits = append(waits, d)
+			if len(waits) >= 7 {
+				cancel()
+			}
+			return ctx.Err()
+		}
+	})
+	c, err := NewClient(addr, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cl.Store(c)
+	if err := c.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("%v", err)
+	}
+	// Four short connections: the waits double. The fifth stood for DeadAfter:
+	// the wait after it is the first step, and so is the one after the next
+	// connection (a long connection is not counted as a failure), which was
+	// short; then it grows again.
+	want := []time.Duration{500, 1000, 2000, 4000, 500, 500, 1000}
+	for i := range want {
+		want[i] *= time.Millisecond
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for i, w := range want {
+		if i >= len(waits) || waits[i] != w {
+			t.Fatalf("waits %v, want %v", waits, want)
+		}
 	}
 }
 

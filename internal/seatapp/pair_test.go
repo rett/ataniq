@@ -111,7 +111,7 @@ func TestPairHappyPath(t *testing.T) {
 	var out struct {
 		Words []string `json:"words"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || strings.Join(out.Words, " ") != "amber birch cedar delta ember fjord" {
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || strings.Join(out.Words, " ") != "amber birch cedar delta ember fjord garnet heron" {
 		t.Errorf("words %q (%v)", w.Body, err)
 	}
 	checkHeaders(t, "pair", w)
@@ -313,6 +313,7 @@ func TestPairDaemonErrors(t *testing.T) {
 		{"code refused, wrapped", fmt.Errorf("daemon said no: %w", ErrCodeRefused), 403, "code_refused"},
 		{"unavailable", ErrDaemonUnavailable, 503, "daemon_unavailable"},
 		{"unavailable, wrapped", fmt.Errorf("dial /run/private/path: %w", ErrDaemonUnavailable), 503, "daemon_unavailable"},
+		{"the port's room spent", ErrBusy, 429, "rate_limited"},
 		{"anything else", errors.New("secret internal detail K7M2-Q9XA /home/someone"), 502, "daemon_error"},
 	} {
 		r := newRig(t)
@@ -422,6 +423,74 @@ func TestPairWrongOriginHeader(t *testing.T) {
 	// The refused tries did not burn the challenge.
 	if w := r.postJSON("/api/pair", string(body)); w.Code != 200 {
 		t.Errorf("after the refusals: %d %s", w.Code, w.Body)
+	}
+}
+
+// pairFrom posts a pairing of a registration over a fresh challenge, both
+// from the source given.
+func (r *rig) pairFrom(t *testing.T, a *authenticator, src string) *httptest.ResponseRecorder {
+	t.Helper()
+	h := map[string]string{"Origin": testOrigin, "Content-Type": "application/json", testClientHeader: src}
+	w := r.do("POST", "/api/pair-challenge", strings.NewReader("{}"), h)
+	var out struct {
+		Challenge string `json:"challenge"`
+	}
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &out) != nil {
+		t.Fatalf("challenge from %s: %d %s", src, w.Code, w.Body)
+	}
+	b, _ := json.Marshal(a.register(t, out.Challenge))
+	return r.do("POST", "/api/pair", strings.NewReader(string(b)), h)
+}
+
+// TestPairAllSourcesLimit: the pairings of all sources together that reach
+// the daemon are bounded, 6 in 11 minutes, so that strangers who reach the
+// pairing page cannot spend the seat's refusal bound at the gate (16 in 10
+// minutes), past which the gate refuses the owner's logins, reads and
+// decisions too. Four sources, each within its own limit, reached the daemon
+// 20 times on the base. A body the app refuses itself does not count.
+func TestPairAllSourcesLimit(t *testing.T) {
+	r := newRig(t)
+	r.daemon.err = ErrCodeRefused
+	a := newAuthenticator(t)
+	refused, limited := 0, 0
+	for src := 0; src < 4; src++ {
+		for i := 0; i < pairAttempts; i++ {
+			switch w := r.pairFrom(t, a, fmt.Sprintf("203.0.113.%d", src+1)); w.Code {
+			case 403:
+				refused++
+			case 429:
+				limited++
+			default:
+				t.Fatalf("a pairing: %d %s", w.Code, w.Body)
+			}
+		}
+	}
+	if n := len(r.daemon.requests()); n != pairAllAttempts || refused != pairAllAttempts || limited != 4*pairAttempts-pairAllAttempts {
+		t.Errorf("%d pairings reached the daemon (%d refused, %d limited), want %d", n, refused, limited, pairAllAttempts)
+	}
+	if pairAllAttempts >= 16/2 || pairAllWindow <= 10*time.Minute {
+		t.Errorf("%d pairings in %v do not stay well below the gate's bound of 16 in 10 minutes", pairAllAttempts, pairAllWindow)
+	}
+	// Bodies the app refuses itself cost nothing of it.
+	r = newRig(t)
+	for i := 0; i < 2*pairAllAttempts; i++ {
+		h := map[string]string{"Origin": testOrigin, "Content-Type": "application/json", testClientHeader: fmt.Sprintf("198.51.100.%d", i+1)}
+		r.do("POST", "/api/pair", strings.NewReader("{"), h)
+	}
+	if w := r.pairFrom(t, a, "203.0.113.9"); w.Code != 200 {
+		t.Errorf("a pairing after bodies the app refused: %d %s", w.Code, w.Body)
+	}
+	// The window passes.
+	r = newRig(t)
+	for i := 0; i < pairAllAttempts; i++ {
+		r.pairFrom(t, a, fmt.Sprintf("203.0.113.%d", i+1))
+	}
+	if w := r.pairFrom(t, a, "203.0.113.50"); w.Code != 429 {
+		t.Errorf("over the limit: %d", w.Code)
+	}
+	r.clock.Advance(pairAllWindow)
+	if w := r.pairFrom(t, a, "203.0.113.51"); w.Code != 200 {
+		t.Errorf("after the window: %d %s", w.Code, w.Body)
 	}
 }
 

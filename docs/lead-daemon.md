@@ -94,16 +94,21 @@ The command is Linux only. On another platform it prints that and exits 1.
 ### Commands and flags
 
 ```text
-ataniqd run [--state-dir DIR] [--runtime-dir DIR] [--owner-channel]
+ataniqd run [--state-dir DIR] [--runtime-dir DIR] [--owner-channel [--seat-gate ADDR]]
 ataniqd status [--socket PATH] [--json]
 ataniqd version
+ataniqd seat-gate init|pins [--state-dir DIR]
 ```
+
+`--owner-channel`, `--seat-gate` and `seat-gate` are in the tagged build only
+(see [the owner channel](#the-owner-channel-tagged-build-only)).
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `run --state-dir DIR` | `$XDG_STATE_HOME/ataniq`, else `$HOME/.local/state/ataniq` | The state folder. |
 | `run --runtime-dir DIR` | `$XDG_RUNTIME_DIR/ataniq` | The folder that holds `daemon.sock`. |
 | `run --owner-channel` | off | Tagged build only (tag `ataniq_ownerchannel`): serve the owner connection. See [the owner channel](#the-owner-channel-tagged-build-only). |
+| `run --seat-gate ADDR` | off | Tagged build only, with `--owner-channel`: also serve the seat gate on ADDR. See [the seat gate](#the-seat-gate). |
 | `status --socket PATH` | `$XDG_RUNTIME_DIR/ataniq/daemon.sock` | The socket to ask. |
 | `status --json` | off | Print the status result as JSON. |
 
@@ -248,6 +253,13 @@ tests of that code run with `make test-ownerchannel` (the tagged packages with
 the tag, and again with the tags `ataniq_ownerchannel` and `ataniq_canary` for the
 packages that hold both); `make test` stays untagged and skips them.
 
+`make ownerchannel-build` builds the daemon with the tag, and nothing else, into
+`build/owner/ataniqd` (the folder is ignored by git). It runs `make doctor`
+first and starts nothing. It is the one target that builds a binary with the
+tag: no release, no CI job and no other target uses it or depends on it, and the
+tests in `tests/ownerchannel_tag_test.go` refuse any other recipe that names
+the tag. The binary is for the owner's own trial of the unqualified channel.
+
 ### Starting it
 
 ```text
@@ -267,6 +279,95 @@ standard error, the STAND-IN banner:
 ```text
 ataniqd: owner channel: STAND-IN door, scratch state: no real approval
 ```
+
+### The seat gate
+
+```text
+ataniqd seat-gate init [--state-dir DIR]
+ataniqd seat-gate pins [--state-dir DIR]
+ataniqd run --owner-channel --seat-gate ADDR [--state-dir DIR] [--runtime-dir DIR]
+```
+
+The seat gate is the link of the seat app, which serves the owner's phone from
+the authority host, to this daemon (see
+[the seat gate's design](design/seat-gate.md)). It is a TCP listener inside the
+daemon, in the tagged build only, and opened only with `--seat-gate`, which
+needs `--owner-channel`. Without the flag nothing listens on the network. It is
+provisional and **not qualified**, and it serves the same scratch service as
+the owner connection, behind the STAND-IN banner.
+
+- ADDR is one IP address of this host and a port, such as `192.0.2.10:7443` or
+  `[2001:db8::10]:7443`. A host name, a wildcard address (`0.0.0.0`, `[::]`), a
+  multicast or broadcast address, an address with a zone and a zero port are
+  refused with exit code 10 before the daemon takes a lock. The owner's
+  firewall must let only the authority host reach the port.
+- The gate's key is in `owner/gate/` of the state folder (`cert.pem` and
+  `key.pem`, the key 0600, the folder 0700). `ataniqd seat-gate init` makes it
+  and prints its fingerprint, the pin the seat is given; a key already there is
+  never overwritten, so a new key is made only after the old one is moved away
+  by hand.
+- The seat keys the gate lets in are pinned in `owner/gate/seat-pins`: a regular
+  file (not a link) of the daemon's user, mode 0600, at most 4 KiB, one key
+  fingerprint (64 lower-case hexadecimal digits) per line, at most 4. A blank
+  line and a line that starts with `#` are skipped. `ataniqd seat-gate pins`
+  prints the pins as the daemon reads them. The owner edits the file by hand;
+  the daemon reads it at start, so a change takes effect at the next start.
+- The daemon refuses to start, with exit code 10, without the key, without the
+  pin file, with a file that is not as above, or with no pin; the message names
+  the line at fault by its number and never prints a pin.
+- The seat origin, the address of the seat app such as
+  `https://seat.example`, is read once at start from the owner-local file
+  `ataniq/owner-local/seat-origin` in the configuration folder
+  (`$XDG_CONFIG_HOME`, else `~/.config`), with the rules of
+  `internal/ownerlocal` (a regular file, not a link, at most 1 KiB, not
+  writable by group or others; its first line). It must be `https://` and a
+  lower-case domain name, `:443` at most, with no address literal, other port,
+  path, query, fragment or user information. A change of the file takes effect
+  at the next start. Without the file, or with one that is refused or holds no
+  such origin, the daemon starts as before and the gate serves pairing and the
+  reads only.
+- The gate starts once the service is built and stops, before the service is
+  closed, when the daemon shuts down; a gate that cannot listen (the port is
+  taken) stops the daemon with exit code 18. At start the daemon prints one
+  line with the address, the gate's key fingerprint and what it serves, and no
+  pin. With an origin:
+
+```text
+ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>, seat origin https://seat.example; it serves pair, read, login and decide
+```
+
+  Without one, the line says why:
+
+```text
+ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>; it serves pair and read only: no seat origin is configured (the owner-local seat-origin file is missing or empty)
+```
+
+The gate speaks TLS 1.3 with pinned keys, strict frames of at most 257 KiB
+(the largest listing, card or page and the response around it) and the limits
+of `internal/seatgate`. It serves the capabilities `pair` and `read`: the
+seat's pairing call, `seat.pair`, and the reads `owner.list`, `owner.show`,
+`owner.paths` and `owner.patch`, through `internal/approval/gatehost`, with a
+seat source that is never the decider. With a seat origin it also serves
+`login` (`seat.login-challenge`, `seat.login`) and `decide`
+(`seat.challenge`, `seat.decide`): a login and a decision from the phone,
+each a passkey assertion with user verification over a challenge the daemon
+draws from its own record of the card, verified against a key on
+`owner/keys.log` that is not revoked and the seat origin (see
+[the seat gate's design](design/seat-gate.md#the-challenge)). A challenge is
+kept in memory for 5 minutes and one use; a restart drops every one. A
+decision from the phone is journaled as confirmed by passkey, with the
+evidence of the assertion, and needs no activity at the desk; it is not
+activity at the desk either. Every other operation is refused `unknown-op`.
+A seat whose key is not pinned is refused in the handshake and never reaches
+the service. On the daemon's socket `seat.pair` stays refused and the four
+seat operations are not served: no connection there is a seat. `owner.show`
+marks a card whose decision is journaled and not yet taken by the door
+(`"on_its_way": true`), on the socket and the gate alike.
+
+Same-user limit: a process of the daemon's user that is not in a sandbox can
+read the gate's key, add a pin, rewrite the seat origin file and edit the key
+list. Until the sandbox is qualified, the gate and every decision from the
+phone are for scratch state only, behind the STAND-IN banner.
 
 ### The scratch settings
 
@@ -289,6 +390,17 @@ door, which keeps nothing across a restart. Its keys:
   scratch root, outside the state folder and apart from the mirror and the drop
   folder. The daemon
   makes it with mode 0700 when it is not there (its parent must exist).
+- `"kinds"` (optional): the kinds of credential the project accepts for a
+  phone's login and decision, by the names `"platform-passkey"`,
+  `"vault-passkey"` and `"passkey"`, each at most once. Absent or empty, every
+  kind is accepted (`"unverified"`, the stored word of a key paired without a
+  claim, is not a kind). A name that is not one of the three, or a name twice,
+  refuses the settings. A kind is what the phone's authenticator claimed, relayed
+  by the seat and not attested, so the list is advisory: it does not hold
+  against a taken-over seat. The settings carry the list as the credential
+  policy of `internal/approval/credkind` (`Scratch.KindPolicy` in
+  `internal/approval/hostadapter`); this build reads and checks it, and nothing
+  in the daemon applies it yet.
 
 The settings also name the project, its mirror, the role, the target, the
 commit identity, the gates and the folder requests are dropped in. `sandbox`

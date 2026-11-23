@@ -24,7 +24,9 @@ import (
 // string, [Text], int, int64, bool, []byte (standard base64 in a string),
 // pointers, slices and structs of these. A field whose tag has ",omitempty"
 // is optional: it may be absent, and it is left out on writing. Any other
-// field must be present. A type it cannot read makes it panic, which is a
+// field must be present. An optional string that is empty, and an optional
+// struct whose fields all have their zero values, are refused when they are
+// present, since writing leaves them out. A type it cannot read makes it panic, which is a
 // mistake of the program and not of the data.
 type Reader struct {
 	// MaxDepth is how deep arrays and objects may nest. The records use 12.

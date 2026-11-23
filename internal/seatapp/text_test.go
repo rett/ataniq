@@ -123,7 +123,7 @@ func TestTextInATemplate(t *testing.T) {
 
 func TestPairShowsTheWordsThroughText(t *testing.T) {
 	r := newRig(t)
-	r.daemon.words = [6]string{"amber", "bi\u202erch", "ce\x00dar", "a very " + strings.Repeat("long", 40) + " word", "line\nbreak", "<b>x</b>"}
+	r.daemon.words = [WordCount]string{"amber", "bi\u202erch", "ce\x00dar", "a very " + strings.Repeat("long", 40) + " word", "line\nbreak", "<b>x</b>", "garnet", "heron"}
 	a := newAuthenticator(t)
 	w := r.postPair(a.register(t, r.getChallenge(t)))
 	if w.Code != 200 {
@@ -132,7 +132,7 @@ func TestPairShowsTheWordsThroughText(t *testing.T) {
 	var out struct {
 		Words []string `json:"words"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || len(out.Words) != 6 {
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || len(out.Words) != WordCount {
 		t.Fatalf("%q: %v", w.Body, err)
 	}
 	if out.Words[1] != `bi\u202erch` || out.Words[2] != `ce\u0000dar` || out.Words[4] != `line\u000abreak` || out.Words[5] != "<b>x</b>" {

@@ -125,7 +125,7 @@
       authenticator_data: b64e(r.getAuthenticatorData()),
       public_key: b64e(key)
     });
-    if (!out || !Array.isArray(out.words) || out.words.length !== 6) { throw "failed"; }
+    if (!out || !Array.isArray(out.words) || out.words.length !== SeatWords.count) { throw "failed"; }
     // The words this phone works out from its own credential are the ones it
     // shows. The seat's words are only compared with them.
     var local = await SeatWords.fingerprint(cred.rawId, key);

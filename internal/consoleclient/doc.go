@@ -62,7 +62,7 @@
 // decide nothing: the daemon's rules are the daemon's. A refusal with a code of
 // the pairing and key operations is a [*PairError] with a fixed text of this
 // package; PairConfirm and PairReject take the pending id that PairStatus
-// showed with the six words, so that the owner's word is about the credential
+// showed with the eight words, so that the owner's word is about the credential
 // he compared (the daemon refuses another with pairing-changed, changing
 // nothing); the pairing code is in the result of PairStart, which prints
 // without it, and in no error. The seat's call, seat.pair, is not the

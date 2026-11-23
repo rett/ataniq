@@ -51,6 +51,8 @@ type registration struct {
 	AuthData     []byte
 	RPID         string
 	Flags        byte
+	AAGUID       [16]byte
+	SignCount    uint32
 	AuthCredID   []byte
 	COSE         []byte
 	SPKI         []byte
@@ -106,8 +108,8 @@ func (a *authenticator) register(t *testing.T, challenge string, mod ...func(*re
 		sum := sha256.Sum256([]byte(r.RPID))
 		ad = append(ad, sum[:]...)
 		ad = append(ad, r.Flags)
-		ad = binary.BigEndian.AppendUint32(ad, 0)
-		ad = append(ad, make([]byte, 16)...) // the aaguid
+		ad = binary.BigEndian.AppendUint32(ad, r.SignCount)
+		ad = append(ad, r.AAGUID[:]...)
 		ad = binary.BigEndian.AppendUint16(ad, uint16(len(r.AuthCredID)))
 		ad = append(ad, r.AuthCredID...)
 		ad = append(ad, r.COSE...)

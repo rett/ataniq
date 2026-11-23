@@ -58,7 +58,7 @@ func TestOriginValidation(t *testing.T) {
 		{"test option: user information is still refused", "http://u@127.0.0.1:8080", "127.0.0.1", true, ""},
 		{"test option: a wildcard is not loopback", "http://0.0.0.0:8080", "0.0.0.0", true, ""},
 	} {
-		h, err := New(Config{Origin: tc.origin, RPID: tc.rpid, Daemon: d, AllowInsecureLoopbackForTests: tc.insecure, AllowNoFetchMetadataForTests: true})
+		h, err := New(Config{Origin: tc.origin, RPID: tc.rpid, Daemon: d, AllowInsecureLoopbackForTests: tc.insecure})
 		if tc.want == "" {
 			if err == nil {
 				t.Errorf("%s: New accepted %q", tc.name, tc.origin)
@@ -201,7 +201,7 @@ func TestServerLimits(t *testing.T) {
 // same-origin; every browser that can make a passkey sends it, so its absence
 // is a client that is not one.
 func TestPostNeedsTheHostAndFetchMetadata(t *testing.T) {
-	r := newRig(t, func(c *Config) { c.AllowNoFetchMetadataForTests = false })
+	r := newRig(t)
 	post := func(path, host, site string) int {
 		req := httptest.NewRequest("POST", path, strings.NewReader("{}"))
 		req.Host = host
@@ -239,14 +239,15 @@ func TestPostNeedsTheHostAndFetchMetadata(t *testing.T) {
 	}
 }
 
-// TestNoFetchMetadataOptionIsOnlyForTests: the option exists in Config for
-// tests, and the default (a zero Config value) requires the header.
-func TestNoFetchMetadataOptionIsOnlyForTests(t *testing.T) {
+// TestFetchMetadataHasNoExemption: Config has no way to let a POST come
+// without Sec-Fetch-Site, so a POST without it is refused whatever the
+// app was made with; the test requests send it, as a browser does.
+func TestFetchMetadataHasNoExemption(t *testing.T) {
 	h, err := New(Config{Origin: testOrigin, RPID: testRPID, Daemon: &fakeDaemon{}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := doTo(h, "POST", "/api/pair-challenge", "{}", map[string]string{"Origin": testOrigin, "Content-Type": "application/json"})
+	w := doTo(h, "POST", "/api/pair-challenge", "{}", map[string]string{"Origin": testOrigin, "Content-Type": "application/json", "Sec-Fetch-Site": ""})
 	if w.Code != 403 {
 		t.Errorf("a POST with no Sec-Fetch-Site: %d", w.Code)
 	}

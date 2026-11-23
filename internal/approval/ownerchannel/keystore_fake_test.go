@@ -20,7 +20,9 @@ type fakeKeys struct {
 	closed   int
 	// failRead and failAdd, failRevoke and failReject are the errors the
 	// calls answer with while set.
-	failRead, failAdd, failRevoke, failReject error
+	failRead, failAdd, failRevoke, failReject, failRaise error
+	// raises counts the counters raised.
+	raises int
 	// writes counts the calls that changed the list.
 	writes int
 }
@@ -59,7 +61,8 @@ func (f *fakeKeys) AddKey(n ownerjournal.NewKey) (ownerjournal.StoredKey, error)
 	}
 	k := ownerjournal.StoredKey{
 		ID: id, CredentialID: bytes.Clone(n.CredentialID), PublicKey: bytes.Clone(n.PublicKey),
-		Kind: n.Kind, PairedAt: n.PairedAt.Truncate(time.Second), Words: n.Words,
+		Kind: n.Kind, AAGUID: n.AAGUID, BackupEligible: n.BackupEligible, BackupState: n.BackupState, Counter: n.Counter,
+		PairedAt: n.PairedAt.Truncate(time.Second), Words: n.Words,
 	}
 	f.keys = append(f.keys, k)
 	f.writes++
@@ -105,6 +108,27 @@ func (f *fakeKeys) AppendRejected(r ownerjournal.RejectedPairing) error {
 	return nil
 }
 
+func (f *fakeKeys) RaiseCounter(id string, counter uint32, at time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failRaise != nil {
+		return f.failRaise
+	}
+	for i := range f.keys {
+		if f.keys[i].ID != id {
+			continue
+		}
+		if f.keys[i].Revoked || counter <= f.keys[i].Counter {
+			return nil
+		}
+		f.keys[i].Counter = counter
+		f.raises++
+		f.writes++
+		return nil
+	}
+	return ownerjournal.ErrKeyUnknown
+}
+
 func (f *fakeKeys) Close() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -118,7 +142,7 @@ func (f *fakeKeys) seed(id string, revoked bool) {
 	defer f.mu.Unlock()
 	f.keys = append(f.keys, ownerjournal.StoredKey{
 		ID: id, CredentialID: []byte(strings.Repeat("c", 16)), PublicKey: []byte("k"), Kind: "unverified",
-		PairedAt: time.Date(2026, 11, 19, 8, 0, 0, 0, time.UTC), Words: "acorn bridge cedar delta ember falcon", Revoked: revoked,
+		PairedAt: time.Date(2026, 11, 19, 8, 0, 0, 0, time.UTC), Words: "acorn bridge cedar delta ember falcon garden harbor", Revoked: revoked,
 	})
 }
 

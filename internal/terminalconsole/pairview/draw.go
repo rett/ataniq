@@ -245,7 +245,7 @@ func (m *Model) textLines(w int) []dline {
 	blank()
 	switch m.screen {
 	case scIdle:
-		add(lText, "Pair a phone so that it can approve cards. The console draws a QR code; the phone scans it, then the phone and this screen show the same six words. You compare them and confirm here. Nothing is trusted until you do.")
+		add(lText, "Pair a phone so that it can approve cards. The console draws a QR code; the phone scans it, then the phone and this screen show the same eight words. You compare them and confirm here. Nothing is trusted until you do.")
 		blank()
 		if m.opening {
 			add(lDim, checkingLine)
@@ -284,7 +284,9 @@ func (m *Model) textLines(w int) []dline {
 		}
 	case scPaired:
 		kind := kindUnverif
-		if m.kind != "" && m.kind != "unverified" {
+		if label := kindLabel(m.kind); label != "" {
+			kind = "Kind, claimed: " + label + "."
+		} else if m.kind != "" && m.kind != "unverified" {
 			kind = "Kind: " + m.kind + "."
 		}
 		add(lText, msgPaired+" "+kind)
@@ -326,25 +328,26 @@ func (m *Model) noteLine(ls *[]dline, w int) {
 	}
 }
 
-// wordLines lays the six numbered words out in three columns, or two, or one
-// when the width does not hold more, spaced apart, in rows of their own.
+// wordLines lays the numbered words out in four columns, or two, or one when
+// the width does not hold more (the count divides by each), spaced apart, in
+// rows of their own.
 func (m *Model) wordLines(w int) []dline {
 	const gap = 4
-	cells := make([]string, 6)
+	cells := make([]string, WordCount)
 	cw := 0
 	for i, s := range m.words {
 		cells[i] = strconv.Itoa(i+1) + " " + s
 		cw = max(cw, ansi.StringWidth(cells[i]))
 	}
 	cols := 1
-	for _, c := range []int{3, 2} {
+	for _, c := range []int{4, 2} {
 		if c*cw+(c-1)*gap <= w {
 			cols = c
 			break
 		}
 	}
 	var out []dline
-	for r := 0; r < 6/cols; r++ {
+	for r := 0; r < WordCount/cols; r++ {
 		var b strings.Builder
 		for c := 0; c < cols; c++ {
 			cell := cells[r*cols+c]
@@ -354,14 +357,14 @@ func (m *Model) wordLines(w int) []dline {
 			}
 		}
 		out = append(out, dline{b.String(), lWords})
-		if cols > 1 && r < 6/cols-1 {
+		if cols > 1 && r < WordCount/cols-1 {
 			out = append(out, dline{"", lText})
 		}
 	}
 	return out
 }
 
-// wordsScreen is the whole words screen: the title, the six words and the
+// wordsScreen is the whole words screen: the title, the words and the
 // owner's prompt, which is the second question when confirm is set. With keys
 // unset the prompt is left out (the screens of a call in flight add their
 // own line).
@@ -375,10 +378,14 @@ func (m *Model) wordsScreen(w int, confirm, keys bool) []dline {
 	blank := func() { add(lText, "") }
 	add(lHead, title)
 	blank()
-	add(lText, "The phone and this screen show six words.")
+	add(lText, "The phone and this screen show eight words.")
 	blank()
 	ls = append(ls, m.wordLines(w)...)
 	blank()
+	if m.claim != "" {
+		add(lText, m.claim)
+		blank()
+	}
 	if !keys {
 		return ls
 	}
@@ -404,7 +411,7 @@ func (m *Model) wordsScreen(w int, confirm, keys bool) []dline {
 }
 
 // wordsFit reports whether the whole words screen, with the prompt, fits the
-// stored size with no line cut or wrapped off the bottom: the six words in
+// stored size with no line cut or wrapped off the bottom: the words in
 // full, and both the pending screen and the second question. The owner may
 // confirm only while it is true.
 func (m *Model) wordsFit() bool {
