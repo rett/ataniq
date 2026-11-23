@@ -91,7 +91,25 @@
 // body, because the door is handed the same bytes. With each decision, in
 // the same write, goes an activity entry: the surface and the session it
 // came from, the owner's last activity before it and, when the caller has
-// it, the digest of what the card showed.
+// it, the digest of what the card showed. Where it came from is the record's
+// confirmation: for a decision confirmed by code, the console block's surface
+// and session; for one confirmed by passkey, made on the owner's phone, the
+// surface [SurfaceSeat], the seat block's gate session and no last activity
+// at the desk.
+//
+// A decision confirmed by passkey, held or not, also keeps the evidence of
+// the assertion that confirmed it ([SeatEvidence]): the decision or held
+// entry's body holds the client data, the signature and the nonce of the
+// challenge, and its activity entry's body the credential id, the
+// authenticator data, the instance (the gate's key fingerprint) and the seat
+// origin. The record keeps only the assertion's digest, because of its size
+// cap. The journal refuses such a decision without its evidence, or with
+// evidence of another assertion or credential than the record names, and
+// [Store.EvidenceOf] reads the evidence back and checks it against the
+// record again. With the credential's public key from the list of deciding
+// keys, an auditor recomputes the challenge from the record and the
+// evidence and checks the signature. A build from before this evidence reads
+// such a body as damaged (its reader refuses a member it does not know).
 //
 // An approve past the day's limit is a held entry ([Store.AppendHeld]). It
 // is never handed to the door, and the pending record stays pending there.

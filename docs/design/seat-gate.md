@@ -70,6 +70,12 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   socket serves (`ownerwire.GateOperations`, not `ownerwire.Operations`), their
   params and results with strict decoders and caps, the gate's new codes, and
   the challenge function with the vectors below. No handler serves them yet.
+- The owner journal takes a decision confirmed by passkey (G8a, see
+  [the journal entry](#the-journal-entry-of-a-phone-decision)): its activity
+  from the seat block and its evidence beside it, read back with
+  `ownerjournal.Store.EvidenceOf`. The list of deciding keys keeps the highest
+  sign counter (`ownerjournal.KeyFile.RaiseCounter`). The owner channel's
+  service does not call either for a phone decision yet.
 
 ## The listener: inside the daemon
 
@@ -472,16 +478,28 @@ the seat renders it with `seatapp.Text`.
 
 #### The journal entry of a phone decision
 
-`ownerjournal` is in G8's scope. `AppendDecision` and `AppendHeld` take the
+`ownerjournal` is in G8's scope, and this part is built (G8a).
+`AppendDecision` and `AppendHeld` take the
 activity of a decision from the record's confirmation: for `confirmed: "code"`
-from the `console` block, as today, byte for byte; for `confirmed: "passkey"`
-the surface `seat`, the seat block's session and no last desk activity, in the
-same write. A passkey record has no console block, so the code as it stands
-would write an empty surface.
+from the `console` block, as before, byte for byte; for `confirmed: "passkey"`
+the surface `seat` (`ownerjournal.SurfaceSeat`), the seat block's session and
+no last desk activity, in the same write. They refuse a passkey decision that
+comes with a last desk activity.
 
 The decision's entry, held or not, also keeps the evidence of the assertion
-beside the record: the four fields of the assertion, the nonce, the instance
-and the seat origin the daemon checked against. The record keeps only a digest
+beside the record (`ownerjournal.SeatEvidence`, given in `Seen.Evidence`): the
+four fields of the assertion, the nonce, the instance
+and the seat origin the daemon checked against. A body of the journal holds at
+most 4096 bytes, and the largest evidence the bounds of `Assertion` take is
+more than that, so it is kept in two parts, each body within its bound: the
+decision or held entry keeps what was signed (the client data, the signature
+and the nonce), and its activity entry who signed it and where from (the
+credential id, the authenticator data, the instance and the origin). The
+journal refuses a passkey decision without the evidence, or with evidence
+whose assertion digest or credential is not the record's, and
+`Store.EvidenceOf` reads the two parts back and checks them against the record
+again (`ErrDamaged` when they do not hold). A build from before the evidence
+reads such a body as damaged. The record keeps only a digest
 of the assertion, because of its 8 KiB cap (`record.MaxDecisionBytes`). With
 the credential's public key from the key list (a revoked key stays on it), an
 auditor can recompute the challenge from the record and the evidence, check the
