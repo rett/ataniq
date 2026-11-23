@@ -208,9 +208,12 @@ type watcher struct {
 // version of its last answer as since, spends the room of kindWait on each,
 // waits at least 2 seconds after a change so that a burst is one wake after
 // another, and with no room sleeps until room frees. On a gate error or a
-// lost link it publishes offline and tries again after 1 second, doubled at
-// each failure in a row to 30 seconds, keeping its version, and after
-// wait-full it waits 5 seconds. It runs with no browser open.
+// lost link, or a call that fails without an answer of the gate's (a timeout, a
+// bad answer), it publishes offline; after a refusal the gate answers with a
+// code (the link is up) it publishes no offline and lifts one published
+// before. It tries again after 1 second, doubled at each failure in a row to
+// 30 seconds, keeping its version, and after wait-full it waits 5 seconds. It
+// runs with no browser open.
 func (d *Daemon) StartWatch() {
 	d.wmu.Lock()
 	defer d.wmu.Unlock()
@@ -282,10 +285,25 @@ func (w *watcher) run(ctx context.Context) {
 		}
 		if err != nil {
 			var re *seatgate.RemoteError
-			if errors.As(err, &re) && re.Code == ownerwire.CodeWaitFull {
-				// The gate is up, and holds the waits it allows for the
-				// seat: nothing to publish, and a longer pause than a fault.
-				if w.t.sleep(ctx, w.t.full) != nil {
+			if errors.As(err, &re) {
+				// The gate answered, with a code: the link is up, so
+				// whatever offline was published for an earlier failure of
+				// the link is lifted now, not when a wait is next held and
+				// answered. A coded error says nothing of the link.
+				w.linkLost = false
+				w.publish(func(s *WatchState) {
+					s.Watching = true
+					s.Offline = false
+				})
+				pause := w.t.full
+				if re.Code != ownerwire.CodeWaitFull {
+					// Another refusal is a fault: the pause doubles.
+					pause = back
+					if back *= 2; back > w.t.backMax {
+						back = w.t.backMax
+					}
+				}
+				if w.t.sleep(ctx, pause) != nil {
 					return
 				}
 				continue

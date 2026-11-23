@@ -347,7 +347,8 @@ up without a reload, and a card that was decided, withdrawn or replaced
   It says "Not live" when the page was made while the seat watched nothing (the
   gate does not list `watch`, or the link was not up; the page polls no more,
   so reload it), "Not live: the desk is out of reach" while the link to the
-  gate or the daemon fails (the page asks again every 30 seconds), and "Session
+  gate is down or the gate does not answer (the page asks again every 30
+  seconds), and "Session
   ended. Log in again." when the session is gone.
 - A tab that is hidden asks nothing, and asks at once when it is shown again.
 - Up to three tabs of one session are kept live at once. A fourth takes the
@@ -533,7 +534,7 @@ What the phone shows, by the code the seat's API answers:
 | "The session ended. Log in again." | `session_ended` | Idle 30 minutes, 12 hours, a seat restart, or a logout. | Log in. |
 | "This is too large to send." | `too_large` | The card or decision does not fit the gate's frame. | Decide at the desk. |
 | Status line "Not live" | (none: the page's own) | The page was made while the seat watched nothing: the gate does not list `watch` (the daemon's start line has no `watch`), or the link was down. | Reload. Check the daemon's start line and the link. |
-| Status line "Not live: the desk is out of reach" | `offline` (answer of `POST /api/watch`) | The seat's link to the gate is down or its last wait failed; the watcher retries after 1 second, doubling to 30. The page asks again every 30 seconds. | Check the daemon, the firewall and both pins as for `daemon_unavailable`. It clears by itself once the link is back. |
+| Status line "Not live: the desk is out of reach" | `offline` (answer of `POST /api/watch`) | The seat's link to the gate is down, or a wait got no answer from the gate (it timed out). The watcher retries after 1 second, doubling to 30, and any answer of the gate, even a refusal, lifts it at once. The page asks again every 30 seconds. | Check the daemon, the firewall and both pins as for `daemon_unavailable`. It clears by itself once the link is back. |
 | Status line "Session ended. Log in again." | `ended` (answer of `POST /api/watch`) | Idle 30 minutes without a page load or tap (a poll does not count), 12 hours, a seat restart, a logout, or a revoked key. | Log in. |
 | Nothing visible, but `POST /api/watch` answers 429 in the proxy's log or the browser's tools | `rate_limited` | More than 12 polls a minute from one passkey's sessions, as more than four tabs open at once make. The page waits 60 seconds and asks again. | Close the extra tabs. |
 | "This card changed or was decided elsewhere. Look again." | `changed` or `gone` (the card's state in the poll's answer) | The card, which was waiting when the page was read, was decided on another page or phone or at the desk, replaced, expired or withdrawn since. Not shown for a card that was already decided, ended or expired when the page was read, nor on the page whose own confirm sent the decision. | Reload, or go back to the cards. |

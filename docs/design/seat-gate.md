@@ -1280,10 +1280,15 @@ hello lists `watch`.
   idle seat sends one wait about every 25 seconds, 4 in 80 seconds, which
   leaves 2 for the waits that a change cut short. With no room the watcher
   sleeps until some frees; nothing is refused, the pages lag.
-- On a gate error or a lost link it publishes "offline" and tries again after
-  1 second, doubled at each failure in a row to 30 seconds, keeping its
-  `since`; a link that is back lifts "offline" at once. After `wait-full` it
-  pauses 5 seconds and publishes nothing.
+- On a lost link, or a call that fails with no answer of the gate's (its own
+  29-second timeout, an answer not of the wire's form), it publishes "offline"
+  and tries again after 1 second, doubled at each failure in a row to 30
+  seconds, keeping its `since`; a link that is back lifts "offline" at once.
+  Any answer of the gate lifts "offline" as it arrives, a coded refusal (such
+  as `bad-params` or `unavailable`) too, since a code proves the link is up:
+  it does not wait for a wait that the gate then holds for 25 seconds. A coded
+  refusal is retried with the same doubling and publishes no "offline" of its
+  own. After `wait-full` it pauses 5 seconds.
 - It publishes its state (`seatapp.WatchState`: whether it watches, the
   version, the count, the cards, `more`, offline, and when) and a broadcast
   that is closed at each change. A subscriber takes the channel first and the
