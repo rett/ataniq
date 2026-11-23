@@ -161,10 +161,9 @@ type Config struct {
 	// AllowNoFetchMetadataForTests lets a POST come without a Sec-Fetch-Site
 	// header. Every browser that makes a passkey sends it, so a POST without
 	// it is refused; this option is for tests of this package, whose requests
-	// are not a browser's, and no command sets it. Such a request is no
-	// page's, so a decision's tap of it may also leave out the id of the
-	// Card page's form, which every page's tap names; the tap is then taken
-	// for the binding the session read last.
+	// are not a browser's, and no command sets it. It lets nothing else
+	// through: a decision's tap names the id of its Card page's form, with
+	// the header or without it.
 	AllowNoFetchMetadataForTests bool
 }
 

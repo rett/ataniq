@@ -946,11 +946,11 @@ How it is built (G9), where the points above left a choice:
   Look at it again." (`card_changed`), and a form the session was never
   served "Look at the card again first." (`look_again`), before any
   challenge is drawn or the passkey asked. A tap without a form id is
-  refused (`bad_request`); only a request with no `Sec-Fetch-Site`, which
-  the test option alone lets through and no browser sends, may leave it
-  out. The link freezes the frame from the card it showed at that binding,
-  asks `seat.challenge`, and recomputes the challenge before the browser
-  sees it.
+  refused (`bad_request`), with `Sec-Fetch-Site` or without it (the test
+  option that lets a request without that header through lets no tap leave
+  the form out). The link freezes the frame from the card it showed at that
+  binding, asks `seat.challenge`, and recomputes the challenge before the
+  browser sees it.
   The seat keeps one decision per session; a new tap replaces it. The page
   then names the action, the card, its project, what it does, its target and
   its revision (the binding's first 12 digits), and a second tap, on the

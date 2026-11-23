@@ -46,10 +46,40 @@ func denyBody(reason string) string {
 	return string(b)
 }
 
+// neverServed is a form id of the right form that no page was served with.
+var neverServed = strings.Repeat("A", formLen)
+
+// withForm is body with the id of the form of the last Card page the
+// session was served, as the page's script sends it, or one never served
+// when the session was served none. A body that is not one JSON object, or
+// that names a form already, is left as it is.
+func (r *rig) withForm(body string, s *http.Cookie) string {
+	var m map[string]json.RawMessage
+	if json.Unmarshal([]byte(body), &m) != nil || m == nil {
+		return body
+	}
+	if _, ok := m["form"]; ok {
+		return body
+	}
+	form, ok := r.forms[s.Value]
+	if !ok {
+		form = neverServed
+	}
+	m["form"], _ = json.Marshal(form)
+	b, _ := json.Marshal(m)
+	return string(b)
+}
+
+// tap posts a decision's tap of the session's last Card page: POST
+// /api/decide-challenge with body and that page's form (see withForm).
+func (r *rig) tap(body string, s *http.Cookie) *httptest.ResponseRecorder {
+	return r.postWith("/api/decide-challenge", r.withForm(body, s), s)
+}
+
 // challengeOf asks for a decision's challenge and returns its id.
 func (r *rig) challengeOf(t *testing.T, s *http.Cookie, body string) string {
 	t.Helper()
-	w := r.postWith("/api/decide-challenge", body, s)
+	w := r.tap(body, s)
 	if w.Code != 200 {
 		t.Fatalf("decide-challenge: %d %s", w.Code, w.Body)
 	}
@@ -174,7 +204,7 @@ func TestSeatDecideChallengeTakesTheCardAsShown(t *testing.T) {
 	w := r.postJSON("/api/decide-challenge", approveBody)
 	wantFailure(t, "no session", w, 401, "session_ended", sayNoSession)
 	s := r.login(t)
-	wantFailure(t, "a card not read", r.postWith("/api/decide-challenge", approveBody, s), 409, "look_again", sayLookFirst)
+	wantFailure(t, "a card not read", r.tap(approveBody, s), 409, "look_again", sayLookFirst)
 	if n, _ := r.daemon.decideCounts(); n != 0 {
 		t.Fatalf("the port was asked %d challenges", n)
 	}
@@ -185,7 +215,7 @@ func TestSeatDecideChallengeTakesTheCardAsShown(t *testing.T) {
 			t.Fatalf("page %s: %d", n, w.Code)
 		}
 	}
-	w = r.postWith("/api/decide-challenge", approveBody, s)
+	w = r.tap(approveBody, s)
 	if w.Code != 200 {
 		t.Fatalf("challenge: %d %s", w.Code, w.Body)
 	}
@@ -213,7 +243,7 @@ func TestSeatDecideChallengeTakesTheCardAsShown(t *testing.T) {
 	}
 	// Another session of the same credential has not read the card.
 	other := r.login(t)
-	wantFailure(t, "another session", r.postWith("/api/decide-challenge", approveBody, other), 409, "look_again", sayLookFirst)
+	wantFailure(t, "another session", r.tap(approveBody, other), 409, "look_again", sayLookFirst)
 }
 
 // formOf returns the id of the decide form of a Card page's body.
@@ -250,7 +280,10 @@ func (r *rig) postFromPage(path, body string, s *http.Cookie) *httptest.Response
 // refused before the port is asked (so no challenge is drawn and the
 // passkey is not asked), and the tap of the second is taken. A page's tap
 // must name its form: one with none, or with a form the session was never
-// served, is refused too. Two pages of the same binding are both good.
+// served, is refused too. A tap without the form is refused when it comes
+// without Sec-Fetch-Site as well, which the rig's test option lets through
+// and which once let a tap leave the form out. Two pages of the same
+// binding are both good.
 func TestSeatDecideTapOfAStalePage(t *testing.T) {
 	r := newRig(t)
 	s := r.login(t)
@@ -262,6 +295,12 @@ func TestSeatDecideTapOfAStalePage(t *testing.T) {
 	}
 	wantFailure(t, "the first tab's tap", r.postFromPage("/api/decide-challenge", tapOf(first), s), 409, "card_changed", sayChanged)
 	wantFailure(t, "a tap of no form", r.postFromPage("/api/decide-challenge", tapOf(""), s), 400, "bad_request", sayFailed)
+	if !r.app.cfg.AllowNoFetchMetadataForTests {
+		t.Fatal("the rig does not let a request without Sec-Fetch-Site through: the test does not show what it means to")
+	}
+	noForm, _ := json.Marshal(map[string]any{"card": testCardID, "action": "approve", "signed_off": []int{0}, "reason": ""})
+	wantFailure(t, "a tap of no form without Sec-Fetch-Site", r.postWith("/api/decide-challenge", string(noForm), s), 400, "bad_request", sayFailed)
+	wantFailure(t, "a deny of no form without Sec-Fetch-Site", r.postWith("/api/decide-challenge", denyBody("no"), s), 400, "bad_request", sayFailed)
 	other := b64.EncodeToString(bytes.Repeat([]byte{0x42}, formBytes))
 	wantFailure(t, "a form never served", r.postFromPage("/api/decide-challenge", tapOf(other), s), 409, "look_again", sayLookFirst)
 	wantFailure(t, "a form of another shape", r.postFromPage("/api/decide-challenge", tapOf("x"), s), 400, "bad_request", sayFailed)
@@ -400,10 +439,10 @@ func TestSeatHeadIsNoRead(t *testing.T) {
 	id := r.challengeOf(t, s, approveBody)
 	r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s)
 	head("/cards/" + testCardID)
-	wantFailure(t, "a tap after a HEAD", r.postWith("/api/decide-challenge", approveBody, s), 409, "sent_unknown", saySentUnknown)
+	wantFailure(t, "a tap after a HEAD", r.tap(approveBody, s), 409, "sent_unknown", saySentUnknown)
 	r.daemon.decideErr = nil
 	r.openCard(t, s)
-	if w := r.postWith("/api/decide-challenge", approveBody, s); w.Code != 200 {
+	if w := r.tap(approveBody, s); w.Code != 200 {
 		t.Errorf("a tap after a GET: %d %s", w.Code, w.Body)
 	}
 }
@@ -436,10 +475,10 @@ func TestSeatDecideStaleReadKeepsTheMark(t *testing.T) {
 		t.Errorf("the page of a read that began before the send: %d", w.Code)
 	}
 	r.clock.Advance(time.Second)
-	wantFailure(t, "a tap after the stale read", r.postWith("/api/decide-challenge", approveBody, s), 409, "sent_unknown", saySentUnknown)
+	wantFailure(t, "a tap after the stale read", r.tap(approveBody, s), 409, "sent_unknown", saySentUnknown)
 	r.daemon.decideErr = nil
 	r.openCard(t, s)
-	if w := r.postWith("/api/decide-challenge", approveBody, s); w.Code != 200 {
+	if w := r.tap(approveBody, s); w.Code != 200 {
 		t.Errorf("a tap after a read that began after the send: %d %s", w.Code, w.Body)
 	}
 }
@@ -476,13 +515,13 @@ func TestSeatDecideTooLargeIsCertain(t *testing.T) {
 	s := r.login(t)
 	r.openCard(t, s)
 	r.daemon.decideChErr = ErrTooLarge
-	wantFailure(t, "a challenge too large", r.postWith("/api/decide-challenge", approveBody, s), 413, "too_large", sayTooLarge)
+	wantFailure(t, "a challenge too large", r.tap(approveBody, s), 413, "too_large", sayTooLarge)
 	r.daemon.decideChErr = nil
 	id := r.challengeOf(t, s, approveBody)
 	r.daemon.decideErr = ErrTooLarge
 	wantFailure(t, "a decision too large", r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s), 413, "too_large", sayTooLarge)
 	r.daemon.decideErr = nil
-	if w := r.postWith("/api/decide-challenge", approveBody, s); w.Code != 200 {
+	if w := r.tap(approveBody, s); w.Code != 200 {
 		t.Errorf("a tap after a decision too large: %d %s", w.Code, w.Body)
 	}
 }
@@ -511,7 +550,7 @@ func TestSeatDecideBodies(t *testing.T) {
 		"not JSON":               `card=` + testCardID,
 		"two objects":            approveBody + approveBody,
 	} {
-		wantFailure(t, name, r.postWith("/api/decide-challenge", body, s), 400, "bad_request", sayFailed)
+		wantFailure(t, name, r.tap(body, s), 400, "bad_request", sayFailed)
 	}
 	if n, _ := r.daemon.decideCounts(); n != 0 {
 		t.Errorf("the port was asked %d challenges", n)
@@ -569,13 +608,13 @@ func TestSeatDecideBodySizes(t *testing.T) {
 			return r.recorder(req)
 		}
 		before, _ := r.daemon.decideCounts()
-		if w := send("/api/decide-challenge", pad(approveBody, MaxBody)); w.Code != 200 {
+		if w := send("/api/decide-challenge", pad(r.withForm(approveBody, s), MaxBody)); w.Code != 200 {
 			t.Errorf("chunked %v: a challenge body of MaxBody bytes: %d %s", chunked, w.Code, w.Body)
 		}
 		if n, _ := r.daemon.decideCounts(); n != before+1 {
 			t.Errorf("chunked %v: the port was not asked", chunked)
 		}
-		w := send("/api/decide-challenge", pad(approveBody, MaxBody+1))
+		w := send("/api/decide-challenge", pad(r.withForm(approveBody, s), MaxBody+1))
 		if w.Code != 413 {
 			t.Errorf("chunked %v: a challenge body of MaxBody+1 bytes: %d", chunked, w.Code)
 		}
@@ -624,7 +663,7 @@ func TestSeatDecideSendsTheKeptFrame(t *testing.T) {
 		t.Errorf("the port got %+v", got)
 	}
 	// The card was decided: it is not decided again until it is read again.
-	wantFailure(t, "after the decision", r.postWith("/api/decide-challenge", approveBody, s), 409, "cannot_decide", sayCannot)
+	wantFailure(t, "after the decision", r.tap(approveBody, s), 409, "cannot_decide", sayCannot)
 }
 
 // TestSeatDecideOnce: one challenge is sent at most once. A second tap with
@@ -713,7 +752,7 @@ func TestSeatDecideLostAnswer(t *testing.T) {
 			r.openCard(t, s)
 			id := r.challengeOf(t, s, approveBody)
 			var during *httptest.ResponseRecorder
-			r.daemon.decideHook = func() { during = r.postWith("/api/decide-challenge", approveBody, s) }
+			r.daemon.decideHook = func() { during = r.tap(approveBody, s) }
 			r.daemon.decideErr = tc.err
 			w := r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s)
 			wantFailure(t, "the lost answer", w, 502, tc.e.code, tc.e.say)
@@ -722,20 +761,20 @@ func TestSeatDecideLostAnswer(t *testing.T) {
 			}
 			wantFailure(t, "a tap while it was in flight", during, 409, "sent_unknown", saySentUnknown)
 			r.daemon.decideHook = nil
-			wantFailure(t, "a tap after", r.postWith("/api/decide-challenge", approveBody, s), 409, "sent_unknown", saySentUnknown)
+			wantFailure(t, "a tap after", r.tap(approveBody, s), 409, "sent_unknown", saySentUnknown)
 
 			r.daemon.readErr = ErrDaemonUnavailable
 			if w := r.getWith("/cards/"+testCardID, s); w.Code != 503 {
 				t.Errorf("look again, the desk down: %d", w.Code)
 			}
-			wantFailure(t, "still unknown", r.postWith("/api/decide-challenge", approveBody, s), 409, "sent_unknown", saySentUnknown)
+			wantFailure(t, "still unknown", r.tap(approveBody, s), 409, "sent_unknown", saySentUnknown)
 
 			r.daemon.readErr = nil
 			r.daemon.card.OnItsWay = true
 			if body := r.openCard(t, s); strings.Contains(body, `id="decide"`) || !strings.Contains(body, "on its way to the door") {
 				t.Error("on its way: the form is offered")
 			}
-			wantFailure(t, "on its way", r.postWith("/api/decide-challenge", approveBody, s), 409, "cannot_decide", sayCannot)
+			wantFailure(t, "on its way", r.tap(approveBody, s), 409, "cannot_decide", sayCannot)
 
 			r.daemon.card.OnItsWay = false
 			if body := r.openCard(t, s); !strings.Contains(body, `id="decide"`) {
@@ -817,7 +856,7 @@ func TestSeatDecideWords(t *testing.T) {
 			var w *httptest.ResponseRecorder
 			if route == "/api/decide-challenge" {
 				r.daemon.decideChErr = tc.err
-				w = r.postWith(route, approveBody, s)
+				w = r.tap(approveBody, s)
 			} else {
 				id := r.challengeOf(t, s, approveBody)
 				r.daemon.decideErr = tc.err
@@ -848,8 +887,8 @@ func TestSeatDecideExpiredCard(t *testing.T) {
 	s := r.login(t)
 	r.openCard(t, s)
 	r.clock.Advance(10 * time.Minute)
-	wantFailure(t, "expired", r.postWith("/api/decide-challenge", approveBody, s), 409, "card_expired", sayExpired)
-	wantFailure(t, "an expired deny", r.postWith("/api/decide-challenge", denyBody(""), s), 409, "card_expired", sayExpired)
+	wantFailure(t, "expired", r.tap(approveBody, s), 409, "card_expired", sayExpired)
+	wantFailure(t, "an expired deny", r.tap(denyBody(""), s), 409, "card_expired", sayExpired)
 	if n, _ := r.daemon.decideCounts(); n != 0 {
 		t.Errorf("the port was asked %d challenges", n)
 	}
@@ -864,7 +903,7 @@ func TestSeatDecideRate(t *testing.T) {
 	for i := 0; i < decideRequests; i++ {
 		r.challengeOf(t, s, approveBody)
 	}
-	wantFailure(t, "past the bound", r.postWith("/api/decide-challenge", approveBody, s), 429, "rate_limited", sayRate)
+	wantFailure(t, "past the bound", r.tap(approveBody, s), 429, "rate_limited", sayRate)
 	if n, _ := r.daemon.decideCounts(); n != decideRequests {
 		t.Errorf("the port was asked %d challenges", n)
 	}
@@ -924,7 +963,7 @@ func TestSeatDecideChecksThePortsAnswer(t *testing.T) {
 		r.daemon.decideCh = change
 		s := r.login(t)
 		r.openCard(t, s)
-		w := r.postWith("/api/decide-challenge", approveBody, s)
+		w := r.tap(approveBody, s)
 		if w.Code == 200 || strings.Contains(w.Body.String(), "challenge\"") {
 			t.Errorf("%s: %d %s", name, w.Code, w.Body)
 		}
@@ -933,7 +972,7 @@ func TestSeatDecideChecksThePortsAnswer(t *testing.T) {
 	r.daemon.decideCh = func(c *DecideChallenge) { c.Frame.Reason = "another" }
 	s := r.login(t)
 	r.openCard(t, s)
-	if w := r.postWith("/api/decide-challenge", denyBody("mine"), s); w.Code == 200 {
+	if w := r.tap(denyBody("mine"), s); w.Code == 200 {
 		t.Errorf("another reason: %d %s", w.Code, w.Body)
 	}
 }

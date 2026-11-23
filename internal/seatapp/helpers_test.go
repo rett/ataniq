@@ -280,8 +280,11 @@ type rig struct {
 	h       http.Handler
 	app     *app
 	sources int // the source addresses postWith used
-	daemon  *fakeDaemon
-	clock   *clock
+	// forms holds, for each session cookie's value, the id of the form of
+	// the last Card page getWith was answered with, as a tab holds it.
+	forms  map[string]string
+	daemon *fakeDaemon
+	clock  *clock
 }
 
 func newRig(t *testing.T, mod ...func(*Config)) *rig {

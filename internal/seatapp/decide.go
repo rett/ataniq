@@ -458,7 +458,7 @@ func (a *app) decideChallenge(w http.ResponseWriter, r *http.Request) {
 	approve := in.Action == "approve"
 	if !validCardID(in.Card) || (!approve && in.Action != "deny") || len(in.SignedOff) > maxSignOffs ||
 		(approve && in.Reason != "") || (!approve && len(in.SignedOff) != 0) ||
-		(in.Form != "" && !validFormID(in.Form)) || (in.Form == "" && !a.noPage(r)) {
+		!validFormID(in.Form) {
 		writeDecideError(w, errDecideBad)
 		return
 	}
@@ -479,16 +479,14 @@ func (a *app) decideChallenge(w http.ResponseWriter, r *http.Request) {
 	// The tap is of one Card page: the binding that page showed must be the
 	// one the session read last, or the page is of a card that was replaced
 	// since (in another tab, say), and the tap is not taken for the new one.
-	if in.Form != "" {
-		shown, known := rd.form(in.Form)
-		switch {
-		case !known:
-			writeDecideError(w, errDecideLookFirst)
-			return
-		case shown != rd.binding:
-			writeDecideError(w, errDecideChanged)
-			return
-		}
+	shown, known := rd.form(in.Form)
+	switch {
+	case !known:
+		writeDecideError(w, errDecideLookFirst)
+		return
+	case shown != rd.binding:
+		writeDecideError(w, errDecideChanged)
+		return
 	}
 	switch {
 	case rd.sent:
@@ -559,15 +557,6 @@ type decideBody struct {
 	ClientDataJSON    string `json:"client_data_json"`
 	AuthenticatorData string `json:"authenticator_data"`
 	Signature         string `json:"signature"`
-}
-
-// noPage reports whether a request is not a page's: one without
-// Sec-Fetch-Site, which only the test option lets through (see
-// [Config].AllowNoFetchMetadataForTests). Every browser sends the header, and
-// a page's tap names its form; a request that is no page's has no form to
-// name, and its tap is taken for the binding the session read last.
-func (a *app) noPage(r *http.Request) bool {
-	return a.cfg.AllowNoFetchMetadataForTests && r.Header.Get("Sec-Fetch-Site") == ""
 }
 
 // decidePost answers POST /api/decide: it burns the session's decision
