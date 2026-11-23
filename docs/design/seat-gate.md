@@ -976,8 +976,11 @@ How it is built (G9), where the points above left a choice:
   characters is approved at the desk. The plan's lines and the note's
   lines are cut at 4000 characters: the plan is the host's text under the
   binding, which a lead's request shapes, and the note is the lead's, at
-  most 2 KiB, so a note line is never cut while that cap stands. A prune's ref line shows the branch its deleted ref was merged
-  into and that branch's tip (the first 12 digits), as the desk does. The
+  most 2 KiB of raw bytes; its escaped text (a control or an invalid byte
+  becomes `\xNN`) can be several times longer, so a note line can be cut,
+  and is covered like the plan. A prune's ref line shows the branch its
+  deleted ref was merged into and that branch's tip (the first 12 digits),
+  as the desk does. The
   Card page of a card that ended, or whose decision is on its way, has no
   form.
 - One tap on Approve or Deny asks `POST /api/decide-challenge` with the card,
