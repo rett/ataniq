@@ -1,9 +1,11 @@
 package seatapp
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,12 +20,62 @@ const (
 	testRPID   = "seat.example"
 )
 
+// testClientHeader is the header the rig's app reads a client's address
+// from. A request without it is counted by its peer, as before.
+const testClientHeader = "X-Test-Client"
+
+// testCredentialID is the raw id of the paired credential of the fakes.
+var testCredentialID = bytes.Repeat([]byte{0x11}, 32)
+
 // fakeDaemon is the in-memory daemon port.
 type fakeDaemon struct {
 	mu    sync.Mutex
 	calls []PairRequest
 	words [WordCount]string
 	err   error
+
+	// The login calls: what LoginChallenge and Login answer, and what
+	// Login was asked.
+	loginCh     LoginChallenge
+	loginChErr  error
+	loginRes    LoginResult
+	loginErr    error
+	logins      []LoginRequest
+	loginChs    int
+	challengeNo int
+}
+
+func (d *fakeDaemon) LoginChallenge(context.Context) (LoginChallenge, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.loginChs++
+	if d.loginChErr != nil {
+		return LoginChallenge{}, d.loginChErr
+	}
+	ch := d.loginCh
+	if ch.ID == "" {
+		// A new id each time, as the daemon draws one.
+		d.challengeNo++
+		ch.ID = fmt.Sprintf("%016x", d.challengeNo)
+	}
+	return ch, nil
+}
+
+func (d *fakeDaemon) Login(_ context.Context, r LoginRequest) (LoginResult, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.logins = append(d.logins, r)
+	if d.loginErr != nil {
+		return LoginResult{}, d.loginErr
+	}
+	return d.loginRes, nil
+}
+
+// calls counts the calls of the daemon port of every kind.
+func (d *fakeDaemon) count() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.calls) + d.loginChs + len(d.logins)
 }
 
 func (d *fakeDaemon) Pair(_ context.Context, r PairRequest) (PairResult, error) {
@@ -80,29 +132,35 @@ func (r *counterReader) Read(p []byte) (int, error) {
 
 // rig is an app under test with its fakes.
 type rig struct {
-	h      http.Handler
-	daemon *fakeDaemon
-	clock  *clock
+	h       http.Handler
+	app     *app
+	sources int // the source addresses postWith used
+	daemon  *fakeDaemon
+	clock   *clock
 }
 
 func newRig(t *testing.T, mod ...func(*Config)) *rig {
 	t.Helper()
 	r := &rig{
-		daemon: &fakeDaemon{words: [WordCount]string{"amber", "birch", "cedar", "delta", "ember", "fjord", "garnet", "heron"}},
-		clock:  &clock{t: time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)},
+		daemon: &fakeDaemon{
+			words:    [WordCount]string{"amber", "birch", "cedar", "delta", "ember", "fjord", "garnet", "heron"},
+			loginCh:  LoginChallenge{Challenge: bytes.Repeat([]byte{0x5a}, 32), Allow: [][]byte{testCredentialID}},
+			loginRes: LoginResult{Credential: "0123456789abcdef", CredentialID: testCredentialID, Kind: "platform-passkey"},
+		},
+		clock: &clock{t: time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)},
 	}
 	// The test requests carry no Sec-Fetch-Site, as a browser's always do; the
 	// tests of that rule turn the option off.
 	cfg := Config{Origin: testOrigin, RPID: testRPID, Daemon: r.daemon, Now: r.clock.Now, Random: &counterReader{},
-		AllowNoFetchMetadataForTests: true}
+		AllowNoFetchMetadataForTests: true, ClientAddrHeader: testClientHeader}
 	for _, m := range mod {
 		m(&cfg)
 	}
-	h, err := New(cfg)
+	a, h, err := newApp(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.h = h
+	r.h, r.app = h, a
 	return r
 }
 
@@ -166,8 +224,16 @@ var wantHeaders = map[string]string{
 	"Cross-Origin-Resource-Policy": "same-origin",
 }
 
-// checkHeaders fails the test when a response lacks a header or sets a cookie.
+// checkHeaders fails the test when a response lacks a header, allows a
+// passkey assertion or sets a cookie.
 func checkHeaders(t *testing.T, what string, w *httptest.ResponseRecorder) {
+	t.Helper()
+	checkHeadersGet(t, what, w, "()")
+}
+
+// checkHeadersGet is checkHeaders for a response whose allow-list of
+// publickey-credentials-get is get.
+func checkHeadersGet(t *testing.T, what string, w *httptest.ResponseRecorder, get string) {
 	t.Helper()
 	for k, v := range wantHeaders {
 		if got := w.Header().Get(k); got != v {
@@ -179,6 +245,11 @@ func checkHeaders(t *testing.T, what string, w *httptest.ResponseRecorder) {
 		if !strings.Contains(pp, want) {
 			t.Errorf("%s: Permissions-Policy %q lacks %s", what, pp, want)
 		}
+	}
+	// A passkey assertion is allowed to the app's own origin on the pages
+	// that ask for one, and to nobody anywhere else.
+	if strings.Count(pp, "publickey-credentials-get=") != 1 || !strings.Contains(pp, "publickey-credentials-get="+get+",") {
+		t.Errorf("%s: Permissions-Policy %q, want publickey-credentials-get=%s", what, pp, get)
 	}
 	if c := w.Header().Values("Set-Cookie"); len(c) != 0 {
 		t.Errorf("%s: sets a cookie: %v", what, c)

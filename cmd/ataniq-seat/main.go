@@ -33,8 +33,10 @@
 // wrote the seat's key to. The link is kept up in the background, with
 // pinned-key TLS at both ends, and redialled when it drops; while it is down
 // pairing answers daemon_unavailable, and a code the daemon refused answers
-// code_refused. Without the three flags the daemon port is not wired: pairing
-// answers with the fixed code daemon_unavailable.
+// code_refused. The login (/login/) asks the daemon through the same link,
+// and the link recomputes each login challenge from the pin before the phone
+// is asked. Without the three flags the daemon port is not wired: pairing
+// and login answer with the fixed code daemon_unavailable.
 //
 // Nothing secret is printed or read from the command line. The pairing code
 // is never printed.
@@ -84,12 +86,20 @@ const shutdownGrace = 10 * time.Second
 // It is for tests, which watch the link come up; the command never sets it.
 var gateLinkHook func(*seatgate.Client)
 
-// unwiredDaemon is the daemon port without a gate link: every pairing is
+// unwiredDaemon is the daemon port without a gate link: every call is
 // ErrDaemonUnavailable.
 type unwiredDaemon struct{}
 
 func (unwiredDaemon) Pair(context.Context, seatapp.PairRequest) (seatapp.PairResult, error) {
 	return seatapp.PairResult{}, seatapp.ErrDaemonUnavailable
+}
+
+func (unwiredDaemon) LoginChallenge(context.Context) (seatapp.LoginChallenge, error) {
+	return seatapp.LoginChallenge{}, seatapp.ErrDaemonUnavailable
+}
+
+func (unwiredDaemon) Login(context.Context, seatapp.LoginRequest) (seatapp.LoginResult, error) {
+	return seatapp.LoginResult{}, seatapp.ErrDaemonUnavailable
 }
 
 func main() {
@@ -372,7 +382,7 @@ func run(ctx context.Context, args []string, errout io.Writer, ready func(net.Ad
 			fmt.Fprintf(errout, "ataniq-seat: %v\n", err)
 			return 2
 		}
-		link, err := seatlink.New(client)
+		link, err := seatlink.New(client, seatlink.WithGatePin(o.gatePin))
 		if err != nil {
 			fmt.Fprintf(errout, "ataniq-seat: %v\n", err)
 			return 2

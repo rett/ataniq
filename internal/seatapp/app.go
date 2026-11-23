@@ -65,15 +65,26 @@ type PairResult struct {
 
 // Daemon is the app's port to the daemon. Package seatlink implements it over
 // the seat gate, and the command ataniq-seat wires that in when it is given a
-// gate (without one it answers every pairing [ErrDaemonUnavailable]); a test of
+// gate (without one it answers every call [ErrDaemonUnavailable]); a test of
 // this package uses an in-memory fake.
 //
 // Pair returns [ErrCodeRefused] when the daemon does not accept the code
 // (unknown, expired, used or out of tries) and [ErrDaemonUnavailable] when it
-// cannot be reached. The app maps any other error to a fixed code and never
-// shows its text.
+// cannot be reached.
+//
+// LoginChallenge asks the daemon for a login challenge (seat.login-challenge)
+// and returns it only after the port recomputed the challenge from the gate's
+// key and the daemon's nonce. Login hands the daemon a browser's assertion
+// over it (seat.login). They return [ErrNotOffered] when the gate does not
+// offer logins, [ErrChallengeStale] for a challenge the daemon no longer
+// holds, [ErrLoginRefused] for a login it did not accept, and
+// [ErrDaemonUnavailable] when it cannot be reached.
+//
+// The app maps any other error to a fixed code and never shows its text.
 type Daemon interface {
 	Pair(ctx context.Context, r PairRequest) (PairResult, error)
+	LoginChallenge(ctx context.Context) (LoginChallenge, error)
+	Login(ctx context.Context, r LoginRequest) (LoginResult, error)
 }
 
 // The errors a Daemon returns that the app tells apart.
@@ -148,8 +159,10 @@ func canonicalOrigin(o string, insecureLoopback bool) (origin, host string, err 
 
 // app is the handler's state.
 type app struct {
-	cfg  Config
-	pair *pairing
+	cfg   Config
+	pair  *pairing
+	login *logins
+	sess  *sessions
 	// host is what the Host header of a request must be: the origin without
 	// its scheme.
 	host string
@@ -159,16 +172,22 @@ type app struct {
 // that is not https on the default port (see [Config].Origin), a relying party
 // id that is not the origin's host, or no daemon.
 func New(cfg Config) (http.Handler, error) {
+	_, h, err := newApp(cfg)
+	return h, err
+}
+
+// newApp is New, and also returns the app's state, for the tests.
+func newApp(cfg Config) (*app, http.Handler, error) {
 	origin, host, err := canonicalOrigin(cfg.Origin, cfg.AllowInsecureLoopbackForTests)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	cfg.Origin = origin
 	if cfg.RPID == "" || cfg.RPID != host {
-		return nil, errors.New("seatapp: Config.RPID must be the origin's host")
+		return nil, nil, errors.New("seatapp: Config.RPID must be the origin's host")
 	}
 	if cfg.Daemon == nil {
-		return nil, errors.New("seatapp: Config.Daemon is required")
+		return nil, nil, errors.New("seatapp: Config.Daemon is required")
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -177,13 +196,13 @@ func New(cfg Config) (http.Handler, error) {
 		cfg.Random = rand.Reader
 	}
 	_, hostHeader, _ := strings.Cut(origin, "://")
-	a := &app{cfg: cfg, pair: newPairing(cfg), host: hostHeader}
+	a := &app{cfg: cfg, pair: newPairing(cfg), login: newLogins(cfg), sess: newSessions(cfg.Now), host: hostHeader}
 
 	mux := http.NewServeMux()
 	for _, rt := range a.routes() {
 		mux.HandleFunc(rt.pattern, rt.handler)
 	}
-	return a.guard(mux), nil
+	return a, a.guard(mux), nil
 }
 
 // route is one entry of the app's route table.
@@ -208,8 +227,17 @@ func (a *app) routes() []route {
 		{"GET /static/app.css", a.asset("assets/app.css", "text/css; charset=utf-8")},
 		{"POST /api/pair-challenge", a.post(a.pair.challenge)},
 		{"POST /api/pair", a.post(a.pair.pair)},
+		{"GET /login/{$}", a.passkeyPage("login")},
+		{"GET /login", a.redirect(loginPath)},
+		{"GET /static/login.js", a.asset("assets/login.js", "text/javascript; charset=utf-8")},
+		{"POST /api/login-challenge", a.post(a.loginChallenge)},
+		{"POST /api/login", a.post(a.loginPost)},
+		{"POST /api/logout", a.post(a.logout)},
 	}
 }
+
+// afterLogin is where the login page goes once a session is made.
+const afterLogin = "/"
 
 // pairPath is the canonical path of the pairing page, the one the desk's QR
 // holds and the only one served as a page.
@@ -248,7 +276,16 @@ var securityHeaders = [][2]string{
 	{"Cache-Control", "no-store"},
 	{"Cross-Origin-Opener-Policy", "same-origin"},
 	{"Cross-Origin-Resource-Policy", "same-origin"},
-	{"Permissions-Policy", "publickey-credentials-create=(self), publickey-credentials-get=(), camera=(), microphone=(), geolocation=(), payment=(), usb=(), bluetooth=(), serial=(), hid=(), clipboard-read=(), clipboard-write=()"},
+	{"Permissions-Policy", permissionsPolicy("()")},
+}
+
+// permissionsPolicy is the Permissions-Policy header, with get the allow-list
+// of publickey-credentials-get: "()" on every response but a page that asks
+// the phone for an assertion, which has "(self)", the app's own origin and no
+// other.
+func permissionsPolicy(get string) string {
+	return "publickey-credentials-create=(self), publickey-credentials-get=" + get +
+		", camera=(), microphone=(), geolocation=(), payment=(), usb=(), bluetooth=(), serial=(), hid=(), clipboard-read=(), clipboard-write=()"
 }
 
 // guard sets the headers and cuts every request body at MaxBody.

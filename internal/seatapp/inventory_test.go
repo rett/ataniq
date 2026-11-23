@@ -21,7 +21,7 @@ var inventory = []struct {
 	controls []string
 }{
 	{"GET /healthz", "text", nil},
-	{"GET /{$}", "page", nil},
+	{"GET /{$}", "page", []string{"a#login"}},
 	{"GET /pair/{$}", "page", []string{"button#start"}},
 	{"GET /pair", "redirect", nil},
 	{"GET /static/words.js", "asset", nil},
@@ -29,6 +29,25 @@ var inventory = []struct {
 	{"GET /static/app.css", "asset", nil},
 	{"POST /api/pair-challenge", "api", nil},
 	{"POST /api/pair", "api", nil},
+	{"GET /login/{$}", "page", []string{"button#start"}},
+	{"GET /login", "redirect", nil},
+	{"GET /static/login.js", "asset", nil},
+	{"POST /api/login-challenge", "api", nil},
+	{"POST /api/login", "api", nil},
+	{"POST /api/logout", "api", nil},
+}
+
+// passkeyRoutes are the pages whose Permissions-Policy allows
+// publickey-credentials-get to the app's own origin. Every other response
+// forbids it.
+var passkeyRoutes = map[string]bool{"GET /login/{$}": true}
+
+// cookieRoutes are the routes that may set a cookie, with the cookies each
+// may set. No page sets one.
+var cookieRoutes = map[string][]string{
+	"POST /api/login-challenge": {LoginCookie},
+	"POST /api/login":           {LoginCookie, SessionCookie},
+	"POST /api/logout":          {SessionCookie},
 }
 
 // deciders are the routes allowed to hold a decide control. None yet.
@@ -152,7 +171,11 @@ func TestPageInventory(t *testing.T) {
 			t.Errorf("%s: status %d", e.pattern, w.Code)
 			continue
 		}
-		checkHeaders(t, e.pattern, w)
+		if passkeyRoutes[e.pattern] {
+			checkHeadersGet(t, e.pattern, w, "(self)")
+		} else {
+			checkHeaders(t, e.pattern, w)
+		}
 		body := w.Body.String()
 		switch e.kind {
 		case "page":
@@ -218,9 +241,10 @@ func TestInspectPageSeesWhatItLooksFor(t *testing.T) {
 	}
 }
 
-// TestNoCookiesAnywhere checks that no route sets a cookie, whatever it is
-// sent: the app has no session yet.
-func TestNoCookiesAnywhere(t *testing.T) {
+// TestSeatCookiesOnlyFromTheLoginAPI checks that no route sets a cookie,
+// whatever it is sent, but the three of the login, and those only the
+// cookies listed for them, each with the flags of the app's cookies.
+func TestSeatCookiesOnlyFromTheLoginAPI(t *testing.T) {
 	r := newRig(t)
 	for _, e := range inventory {
 		method, path, _ := strings.Cut(e.pattern, " ")
@@ -231,8 +255,25 @@ func TestNoCookiesAnywhere(t *testing.T) {
 		req.Header.Set("Cookie", "a=b")
 		w := httptest.NewRecorder()
 		r.h.ServeHTTP(w, req)
-		if c := w.Header().Values("Set-Cookie"); len(c) != 0 {
-			t.Errorf("%s sets a cookie: %v", e.pattern, c)
+		allowed := cookieRoutes[e.pattern]
+		for _, c := range w.Result().Cookies() {
+			ok := false
+			for _, name := range allowed {
+				ok = ok || c.Name == name
+			}
+			if !ok {
+				t.Errorf("%s sets the cookie %q", e.pattern, c.Name)
+			}
+			checkCookieFlags(t, e.pattern, c)
+		}
+	}
+	for p := range cookieRoutes {
+		found := false
+		for _, e := range inventory {
+			found = found || e.pattern == p
+		}
+		if !found {
+			t.Errorf("cookie route %q is not a route", p)
 		}
 	}
 }

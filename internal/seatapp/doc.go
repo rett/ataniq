@@ -1,25 +1,32 @@
 // Package seatapp is the seat web app: the pages and the small JSON API a
-// phone uses to pair with the desk, and the seams the cards, decisions,
-// sessions and journal pages will use later.
+// phone uses to pair with the desk and to log in, and the seams the cards,
+// decisions and journal pages will use later.
 //
 // The app is the standard library only. Pages are made on the server with
-// html/template, each act a plain form where an act is a form; the two scripts
-// of the pairing page and the one style sheet are compiled into the binary
-// with go:embed and served from the app's own origin. Nothing is fetched from
-// another site, there is no inline script and no inline style, and no cookie
-// is set.
+// html/template, each act a plain form where an act is a form; the scripts
+// of the pairing and login pages and the one style sheet are compiled into
+// the binary with go:embed and served from the app's own origin. Nothing is
+// fetched from another site, and there is no inline script and no inline
+// style. The only cookies are the session's and the login's (see Sessions),
+// set by the login's API and by no page.
 //
 // # Routes
 //
-//	GET  /healthz             "ok"
-//	GET  /                    a plain status page
-//	GET  /pair/               the pairing page (the code is never in the path or query)
-//	GET  /pair                a 308 to /pair/
-//	GET  /static/words.js     the words' list and formula
-//	GET  /static/pair.js      the pairing script
-//	GET  /static/app.css      the style sheet
-//	POST /api/pair-challenge  a one-time challenge for a new passkey
-//	POST /api/pair            the passkey's data and the one-time code
+//	GET  /healthz              "ok"
+//	GET  /                     a plain status page
+//	GET  /pair/                the pairing page (the code is never in the path or query)
+//	GET  /pair                 a 308 to /pair/
+//	GET  /static/words.js      the words' list and formula
+//	GET  /static/pair.js       the pairing script
+//	GET  /static/app.css       the style sheet
+//	POST /api/pair-challenge   a one-time challenge for a new passkey
+//	POST /api/pair             the passkey's data and the one-time code
+//	GET  /login/               the login page
+//	GET  /login                a 308 to /login/
+//	GET  /static/login.js      the login script
+//	POST /api/login-challenge  the daemon's login challenge and its allow-list
+//	POST /api/login            the passkey's assertion over it; starts a session
+//	POST /api/logout           ends the session
 //
 // The origin is the reverse proxy's, https on port 443: [New] refuses any
 // other (an http origin, a port, a path, user information, an address
@@ -36,7 +43,10 @@
 // origin's host. The content security policy includes
 // require-trusted-types-for 'script', which the scripts meet by setting text
 // only with textContent, and every response carries
-// Strict-Transport-Security.
+// Strict-Transport-Security. The Permissions-Policy allows
+// publickey-credentials-create to the app's own origin, and
+// publickey-credentials-get to the app's own origin on the login page only;
+// every other response forbids it.
 //
 // # Pairing
 //
@@ -87,6 +97,61 @@
 // response never holds anything the request sent. Pairing tries are limited
 // to 5 per source address per 15 minutes, in memory; the source is the
 // address in [Config].ClientAddrHeader when that is set, else the peer.
+//
+// # Login
+//
+// A login proves that the phone holds a credential the owner confirmed at the
+// desk; it decides nothing. The login page asks POST /api/login-challenge,
+// which asks the [Daemon] for a login challenge. The port recomputes the
+// challenge from the gate's key and the daemon's nonce before the app sees it
+// (package seatlink), so the phone signs only a challenge the daemon drew for
+// this gate. The app keeps the challenge's id server-side, under a new login
+// cookie of the browser that asked, and sends the browser only the challenge
+// and the allow-list: the raw ids of the paired credentials, which the page
+// hands to navigator.credentials.get as allowCredentials, with user
+// verification "required". No account chooser is shown, and a credential
+// that is not on the list is not offered. POST /api/login takes the
+// assertion only with that browser's login cookie: the challenge kept with it
+// is burnt first, whatever comes next, and only then is the assertion read
+// and handed to the daemon with the kept id, never one the browser sent. The
+// daemon verifies it; the app checks only its form and bounds.
+//
+// When there is no paired credential, the phone is told so (not_paired) and
+// nothing is kept. A login challenge lives at most 5 minutes, or less when
+// the daemon says so; at most 16 are kept, and a new one drops the oldest, as
+// the daemon's store does, so a login challenge is never refused for room.
+//
+// # Sessions
+//
+// A login the daemon accepts starts a session. Its cookie, [SessionCookie],
+// holds a 256-bit random value the app draws at the login, never one the
+// browser brought: a session cookie that came with the login request is ended
+// first, so a value planted before the login is never a session (session
+// fixation). The value is kept only server-side, as its SHA-256, in memory;
+// a restart of the seat ends every session. A cookie whose value is not of
+// the form the app makes is not looked up. A session ends 30 minutes after
+// its last request ([SessionIdle]) and 12 hours after the login whatever its
+// use ([SessionMax]), and at POST /api/logout. At most 16 are kept; a new one
+// drops the one used least recently.
+//
+// Both cookies are __Host- cookies, Secure, HttpOnly and SameSite=Strict,
+// with the path / and no domain: only this host can set them, they travel
+// only over TLS, no script reads them, and a request another site starts
+// does not carry them. The session's cookie has no Max-Age and ends with the
+// browser's session; the login's lives 5 minutes. A request with two cookies
+// of one name has none.
+//
+// # The gate's rate
+//
+// The gate takes 60 requests a minute on its connection, and the seat has one
+// connection, which every browser's requests share. So the seat spends that
+// rate on the owner. Every login asks the gate twice (the challenge and the
+// login), and the login challenges are limited to 10 per source in 15
+// minutes and to 8 a minute from all sources together, so logins, which
+// anyone who reaches the login page can start, take at most 16 of the 60 a
+// minute. A source is the address in [Config].ClientAddrHeader, as for the
+// pairing. When the gate answers that its rate is spent, the phone says the
+// desk is busy and to try again in a minute; nothing is retried by itself.
 //
 // # Text nobody on the owner's side wrote
 //

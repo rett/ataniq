@@ -22,11 +22,12 @@ type pageData struct {
 
 // pageNames are the pages, one template file each; each defines "content"
 // inside the shared layout.
-var pageNames = []string{"home", "pair"}
+var pageNames = []string{"home", "pair", "login"}
 
 var pageTitles = map[string]string{
-	"home": "Authority seat",
-	"pair": "Pair this phone",
+	"home":  "Authority seat",
+	"pair":  "Pair this phone",
+	"login": "Log in",
 }
 
 // rpName is the relying party name shown by the phone's passkey dialog.
@@ -56,6 +57,17 @@ func (a *app) page(name string) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(buf.Bytes())
+	}
+}
+
+// passkeyPage is page for a page that asks the phone for a passkey assertion:
+// its Permissions-Policy allows publickey-credentials-get to the app's own
+// origin. Every other response forbids it.
+func (a *app) passkeyPage(name string) http.HandlerFunc {
+	h := a.page(name)
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Permissions-Policy", permissionsPolicy("(self)"))
+		h(w, r)
 	}
 }
 
