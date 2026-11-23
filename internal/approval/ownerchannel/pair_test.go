@@ -169,6 +169,7 @@ func TestTheCodesAndTheLimitsAreTheSeatpairs(t *testing.T) {
 		{"the words of a fingerprint", ownerwire.PairWords, seatpair.FingerprintWords},
 		{"the words of a journaled fingerprint", ownerjournal.FingerprintWords, seatpair.FingerprintWords},
 		{"the shortest credential id", ownerwire.MinCredentialIDBytes, seatpair.MinCredentialIDLen},
+		{"the longest credential id", ownerwire.MaxCredentialIDBytes, seatpair.MaxCredentialIDLen},
 		{"the longest credential id the verifier takes", ownerwire.MaxCredentialIDBytes, credkind.MaxCredentialIDBytes},
 		{"the shortest credential id the verifier takes", ownerwire.MinCredentialIDBytes, credkind.MinCredentialIDBytes},
 		{"the keys on the list", ownerwire.MaxKeys, ownerjournal.MaxKeys},
@@ -177,10 +178,6 @@ func TestTheCodesAndTheLimitsAreTheSeatpairs(t *testing.T) {
 		if c.wire != c.pkg {
 			t.Errorf("%s: the wire says %d, the package %d", c.name, c.wire, c.pkg)
 		}
-	}
-	// Every id the wire passes, seatpair takes.
-	if ownerwire.MaxCredentialIDBytes > seatpair.MaxCredentialIDLen {
-		t.Errorf("the wire passes ids of %d bytes, seatpair takes %d", ownerwire.MaxCredentialIDBytes, seatpair.MaxCredentialIDLen)
 	}
 	// A code seatpair makes passes the wire's form.
 	code, _ := seatpair.NewCode(&countingRand{}, start)
