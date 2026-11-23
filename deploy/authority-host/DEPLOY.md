@@ -343,6 +343,16 @@ repository: the placeholders below are `seat.example` for the seat's name and
    `ln -s /opt/authority-host/current/etc/systemd/system/ataniq-seat.service /etc/systemd/system/ataniq-seat.service`.
    The proxy in front of the host must pass `Host`, `Origin` and
    `Sec-Fetch-Site` unchanged and name the client in `X-Forwarded-For`.
+   Your firewall must admit TCP port 80 of the authority host from the
+   front proxy's address only. The Caddyfile trusts every private address
+   as a proxy (`trusted_proxies static private_ranges`), so any client that
+   reaches port 80 directly from a private range sends its own
+   `X-Forwarded-For` and chooses the address the seat counts its
+   per-source limits by (5 pairing tries and 10 login challenges in 15
+   minutes). The limits for all sources together still hold, but the
+   per-source ones do not without that rule. Check it from a host other
+   than the front proxy: `curl --max-time 5 http://AUTHORITY_HOST/healthz`
+   must fail.
 
 4. **Deploy: dry, then go**, as in step 4. The switch runs the release's
    no-AI check (it reads `seat.env`, and `site.caddy`, which the

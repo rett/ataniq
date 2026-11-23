@@ -186,6 +186,17 @@ together:
   must reach the app as the desk drew it. (The app itself answers `/pair`,
   `/login` and `/cards` with a 308 to the path with a slash.)
 
+Port 80 of the authority host must be reachable from the front proxy only: put
+a firewall rule on the authority host that admits TCP port 80 from the front
+proxy's address and from no other. The shipped Caddyfile trusts every private
+address as a proxy (`trusted_proxies static private_ranges`) and takes the
+client's address from `X-Forwarded-For`, so a client in a private range that
+reaches port 80 itself chooses the address the seat's per-source limits count
+and escapes them (the limits for all sources together still hold). The rule is
+the owner's own (see
+[the README](../deploy/authority-host/README.md#setting-the-host-up-for-it-once-by-hand),
+step 6, and [DEPLOY.md](../deploy/authority-host/DEPLOY.md#deploying-the-seat-app)).
+
 The front proxy terminates the TLS, so it sees every request, and the hop from
 it to port 80 is plain HTTP on the owner's network. A taken-over proxy or seat
 host is a limit of this design (see [Limits](#limits)).

@@ -2328,7 +2328,9 @@ folder's alone.
     removes them, and the app checks both on every POST;
   - `header_up X-Seat-Client-Addr {client_ip}`: the client's address, set
     on every request, so a value the client sent is never passed on
-    (`--client-addr-header` names it for the app's per-source limits). The
+    (`--client-addr-header` names it for the app's per-source limits; this
+    holds only while port 80 is reachable from the front proxy alone, see
+    setup step 6). The
     global options trust the proxies of the private ranges
     (`trusted_proxies static private_ranges`) and take the rightmost
     address of `X-Forwarded-For` that is not one of them
@@ -2457,6 +2459,22 @@ release or in this repository.
    `ln -s /opt/authority-host/current/etc/systemd/system/ataniq-seat.service /etc/systemd/system/ataniq-seat.service`.
    It dangles until `current` is the seat's release, and systemd passes
    over it meanwhile.
+6. The host firewall admits TCP port 80 from the front proxy's address
+   and from nothing else (the owner's own rule, for example an input rule
+   on `ip saddr` and `tcp dport 80`; the firewall is the owner's, and
+   the baseline pins what it is). The Caddyfile trusts every private
+   address as a proxy (`trusted_proxies static private_ranges`), so a
+   client in a private range that reaches port 80 itself sends its own
+   `X-Forwarded-For`, and Caddy takes it as the client's address: the
+   client picks the address the seat's per-source limits count (5 pairing
+   tries and 10 login challenges in 15 minutes) and escapes them. The
+   limits for all sources together (6 pairings in 11 minutes, 8 login
+   challenges a minute) still hold. "A value the client sent is never
+   passed on" above is true only while port 80 is reachable from the front
+   proxy alone. The shipped Caddyfile cannot be told that address from the
+   owner's `site.caddy`: the trusted proxies are a global option, which
+   must be in the options block at the top of the Caddyfile, before the
+   import.
 
 Without `seat.env` the no-AI check reports `HIT incomplete env-file
 /etc/authority-host/seat/seat.env` and the switch stops at step 4 before
