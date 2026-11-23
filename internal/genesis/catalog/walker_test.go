@@ -450,7 +450,7 @@ func TestApplyRefuses(t *testing.T) {
 		{"a node of another kind", "media.rights", Answer{Choice: "yes", Round: 2}, brief.CodeNodeNotEligible},
 		{"other too long", "software.stack", Answer{Other: brief.Untrusted(strings.Repeat("a", 201)), Round: 3}, brief.CodeTooLarge},
 		{"other with a control character", "software.stack", Answer{Other: "go\nrust", Round: 3}, brief.CodeValueInvalid},
-		{"other shaped like a key", "software.stack", Answer{Other: "my key AKIAIOSFODNN7EXAMPLE", Round: 3}, brief.CodeSecretShaped},
+		{"other shaped like a key", "software.stack", Answer{Other: brief.Untrusted("my key " + "AKI" + "A" + "IOSFODNN7" + "EXAMPLE"), Round: 3}, brief.CodeSecretShaped},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

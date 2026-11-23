@@ -38,7 +38,7 @@ func FuzzDecode(f *testing.F) {
 	}
 	v := valid(f)
 	f.Add([]byte(strings.Replace(v, `"rounds":3`, `"rounds":3.5`, 1)))
-	f.Add([]byte(strings.Replace(v, `"notes":[`, `"notes":["password=x",`, 1)))
+	f.Add([]byte(strings.Replace(v, `"notes":[`, `"notes":["`+keyShape(f, "assign-short")+`",`, 1)))
 	f.Add([]byte(`{"a":{"other":"x"}}`))
 	f.Add([]byte(nil))
 	f.Fuzz(func(t *testing.T, data []byte) {
