@@ -387,8 +387,8 @@ The handler (`gatehost`, built for pairing and reads) answers:
 | `key-revoked` | The credential is on the list and revoked. |
 | `kind-refused` | The credential's stored kind is not a kind the verifier knows (`unverified` included), or not one the project accepts. |
 | `wait-full` | G14. A `seat.wait` came while the gate already holds two waits for the peer, or the daemon's service already holds its eight. It is a load answer, not a misuse: it is not counted by the refusal bound (see [live refresh](#live-refresh-seatwait)). |
-| `genesis-busy` | Genesis. A `start` of `seat.genesis` came while the seat already holds two open threads. A state of the host, not a misuse. |
-| `genesis-unknown-thread` | Genesis. The thread of the call is none the host holds: never started, discarded, expired, or of another seat. |
+| `genesis-busy` | Genesis. A `start` of `seat.genesis` came while the host already holds two open threads (the daemon's, shared by every pinned seat of the owner). A state of the host, not a misuse. |
+| `genesis-unknown-thread` | Genesis. The thread of the call is none the host holds: never started, discarded, expired, pruned, or kept by another daemon. The threads are the daemon's, not a seat's: every pinned seat reaches the same ones. |
 | `genesis-bad-answer` | Genesis. An answer or a change the question does not allow: an unknown node, a node whose condition does not hold, an option the question does not hold, a round the thread has not reached, a form of answer the question does not take, or other text that is empty or holds a control character. The brief's `node_unknown`, `node_not_eligible`, `answer_invalid`, `round_invalid`, `value_invalid` and `field_name`. |
 | `genesis-over-cap` | Genesis. An answer that would take a field, a note or the brief past its cap. The brief's `too_large`. |
 | `genesis-secret-shaped` | Genesis. Text that looks like a key, a token or a password (the start of a private key block, `-----BEGIN`; a well-known key prefix; an assignment with a value, `password=...`, or `password: ...` with a value that is not a plain word; a run of 32 or more hexadecimal digits, or of random-looking letters, digits, `_`, `+` and `=`, where a dash or a slash ends the run). It catches pasted keys and obvious assignments, not every typed password; names, web addresses, paths and the phrase "private key" pass, and a bare git commit id (40 hexadecimal digits) is refused. Credentials are never typed on the phone. The brief's `secret_shaped`. |
@@ -1877,8 +1877,8 @@ the members below, and a member of another verb is refused `bad-params`:
 
 | Verb | Members | What the host does |
 | --- | --- | --- |
-| `start` | none | Opens a thread, chooses its id (16 lower-case hexadecimal digits) and answers its first round. At most 2 threads are open for a seat; a third is `genesis-busy`. Starting is free. |
-| `list` | none | Answers the seat's open threads (state `threads`), oldest first, each where it stands and none of its answers. A finished or discarded thread is not listed. It is how a seat that lost its own memory of the threads it started (a restart) finds them, so that `genesis-busy` never locks the owner out until a thread expires. A read, free like `round`. |
+| `start` | none | Opens a thread, chooses its id (16 lower-case hexadecimal digits) and answers its first round. At most 2 threads are open on the host, for every pinned seat together (the threads are the daemon's, not a seat's); a third is `genesis-busy`. Starting is free. |
+| `list` | none | Answers the host's open threads (state `threads`), the same for every pinned seat, oldest first, each where it stands and none of its answers. A finished or discarded thread is not listed. It is how a seat that lost its own memory of the threads it started (a restart) finds them, so that `genesis-busy` never locks the owner out until a thread expires. A read, free like `round`. |
 | `round` | `thread` | Answers where the thread stands. |
 | `answer` | `thread`, `round`, `answers` | Applies 1 to 3 answers, each to another node, to the round named, and answers the next round or the summary. |
 | `change` | `thread`, `node`, `answer` | Replaces an earlier answer. It clears the answers that depended on it (the catalog's invalidation closure), keeps them in the brief's history, and says how many in `reset`. |
@@ -1942,7 +1942,7 @@ as an instruction.
 | --- | --- |
 | Params | 4 KiB (`MaxSeatGenesisParamsBytes`) |
 | Result | 16 KiB (`MaxSeatGenesisResultBytes`); one over is `record-too-large` |
-| Open threads for a seat | 2 (`MaxGenesisThreads`, the host's) |
+| Open threads on the host, for every pinned seat together | 2 (`MaxGenesisThreads`, the host's) |
 | Rounds | 6 (`MaxGenesisRounds`); questions in a round 3; answers in a call 3 |
 | Options of a question, choices of an answer | 8 |
 | Prompt, option label, option example | 160, 60 and 100 bytes (the catalog's) |

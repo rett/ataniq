@@ -1,6 +1,8 @@
 // Package thread is the thread store of the guided new-project interview: the
 // daemon's own record of the interviews the owner has begun on the phone, and
-// the one writer of them.
+// the one writer of them. The threads are the daemon's, not a seat's: every
+// pinned seat of the owner reaches the same ones, and the cap on open threads
+// is for all of them together.
 //
 // A thread is a project brief (package brief) being filled under one version
 // of the question catalog (package catalog), with an id, a state, and the

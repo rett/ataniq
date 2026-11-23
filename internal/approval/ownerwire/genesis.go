@@ -29,9 +29,10 @@ const (
 	// GenesisThreadLength is the length of a thread id: 16 lower-case
 	// hexadecimal digits the host chooses.
 	GenesisThreadLength = 16
-	// MaxGenesisThreads is the most threads a seat may hold open at once;
-	// a start past it is refused [CodeGenesisBusy]. The wire does not
-	// count threads: the host does.
+	// MaxGenesisThreads is the most threads the host holds open at once:
+	// the threads are the daemon's, one set shared by every pinned seat of
+	// the owner, not a set for each seat. A start past it is refused
+	// [CodeGenesisBusy]. The wire does not count threads: the host does.
 	MaxGenesisThreads = 2
 	// MaxGenesisRounds is the most rounds an interview has, and so the
 	// highest round number in a form.
@@ -87,9 +88,10 @@ const (
 	GenesisVerbFinish = "finish"
 	// GenesisVerbDiscard drops the thread: the thread.
 	GenesisVerbDiscard = "discard"
-	// GenesisVerbList reads the seat's open threads: no other member. It
-	// is how a seat that lost its own memory of them (a restart) finds the
-	// threads it started; it answers the state threads.
+	// GenesisVerbList reads the host's open threads, the daemon's for every
+	// pinned seat: no other member. It is how a seat that lost its own
+	// memory of them (a restart) finds the threads; it answers the state
+	// threads.
 	GenesisVerbList = "list"
 )
 
@@ -119,7 +121,7 @@ const (
 	GenesisStateFinished = "finished"
 	// GenesisStateDiscarded is the thread dropped.
 	GenesisStateDiscarded = "discarded"
-	// GenesisStateThreads is the answer to a list: the seat's open
+	// GenesisStateThreads is the answer to a list: the host's open
 	// threads, and no thread of its own.
 	GenesisStateThreads = "threads"
 )
@@ -139,11 +141,14 @@ const (
 // (bad-answer, over-cap and secret-shaped): a test of package genesis holds
 // the mapping.
 const (
-	// CodeGenesisBusy answers a start while the seat already holds
-	// [MaxGenesisThreads] open threads.
+	// CodeGenesisBusy answers a start while the host already holds
+	// [MaxGenesisThreads] open threads (of every pinned seat together).
 	CodeGenesisBusy = "genesis-busy"
 	// CodeGenesisUnknownThread answers a call that names a thread the host
-	// holds none of: never started, discarded, expired, or of another seat.
+	// holds none of: never started, discarded, expired, pruned, or kept
+	// by another daemon (another state folder). Every pinned seat of the
+	// owner reaches the same threads, so a thread started from one is not
+	// unknown to another.
 	CodeGenesisUnknownThread = "genesis-unknown-thread"
 	// CodeGenesisBadAnswer answers an answer or a change the question does
 	// not allow: an unknown or ineligible node, an option the question does
@@ -339,7 +344,7 @@ type SeatGenesisResult struct {
 	// CatalogDigest is the digest of the question catalog the thread is
 	// walked under, 64 lower-case hexadecimal digits; left out for threads.
 	CatalogDigest string `json:"catalog_digest,omitempty"`
-	// Threads are the seat's open threads, oldest first, at most
+	// Threads are the host's open threads, oldest first, at most
 	// [MaxGenesisThreads]; given, and possibly empty, for threads only.
 	Threads []GenesisThread `json:"threads,omitempty"`
 }
