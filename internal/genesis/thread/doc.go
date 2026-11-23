@@ -4,12 +4,12 @@
 //
 // A thread is a project brief (package brief) being filled under one version
 // of the question catalog (package catalog), with an id, a state, and the
-// times it was made and last touched. The store implements the seven verbs of
+// times it was made and last touched. The store implements the eight verbs of
 // the wire's union (package ownerwire, SeatGenesisParams): [Store.Start],
-// [Store.Round], [Store.Answer], [Store.Change], [Store.Summary],
-// [Store.Finish] and [Store.Discard], and [Store.Genesis], which takes the
-// params as the gate decoded them and hands them to the verb. Every verb
-// answers the wire's result. An answer is a message from the owner: it fills a
+// [Store.List], [Store.Round], [Store.Answer], [Store.Change],
+// [Store.Summary], [Store.Finish] and [Store.Discard], and [Store.Genesis],
+// which takes the params as the gate decoded them and hands them to the verb.
+// Every verb answers the wire's result. An answer is a message from the owner: it fills a
 // brief field and nothing else, and nothing here reaches a decision, a
 // contract or a plan.
 //
@@ -51,6 +51,10 @@
 //     round. A change must name a node that has an answer. One answer failing
 //     fails the whole call and changes nothing. Text that looks like a secret
 //     is refused genesis-secret-shaped.
+//   - List answers the open threads, oldest first, each with its state
+//     (question or summary), round and progress, and nothing of its answers;
+//     a finished or discarded thread is not listed. It is a read, as Round
+//     and Summary are: it touches no thread.
 //   - A finished thread is frozen: an answer or a change is refused
 //     genesis-done, and its brief digest is the one finish returned. Finish
 //     may be called at any time on an open thread (the owner's "enough"), and

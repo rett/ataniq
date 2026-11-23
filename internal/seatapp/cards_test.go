@@ -12,12 +12,12 @@ import (
 	"time"
 )
 
-// authedRoutes are the inventory's routes that need a session, with the path
-// each is fetched at.
-func authedRoutes() map[string]string {
+// authedRoutes are the inventory's routes that need a session and whose
+// pattern starts with prefix, with the path each is fetched at.
+func authedRoutes(prefix string) map[string]string {
 	out := map[string]string{}
 	for _, e := range inventory {
-		if e.authed {
+		if e.authed && strings.HasPrefix(e.pattern, prefix) {
 			p := strings.TrimSuffix(strings.TrimPrefix(e.pattern, "GET "), "{$}")
 			if e.path != "" {
 				p = e.path
@@ -32,9 +32,14 @@ func authedRoutes() map[string]string {
 // live session with a redirect to the login page, and asks the daemon
 // nothing; with one, it answers the page, never stored by the browser.
 func TestSeatCardPagesNeedASession(t *testing.T) {
-	routes := authedRoutes()
+	routes := authedRoutes("GET /cards/")
 	if len(routes) != 3 {
 		t.Fatalf("%d card routes in the inventory", len(routes))
+	}
+	// The project pages need a session too (TestGenesisNeedsASession): every
+	// page of the inventory that needs one is a card page or a project page.
+	if n := len(authedRoutes("GET /")) - len(routes) - len(authedRoutes("GET /projects/")); n != 0 {
+		t.Fatalf("%d pages that need a session are neither card nor project pages", n)
 	}
 	r := newRig(t)
 	planted := &http.Cookie{Name: SessionCookie, Value: b64.EncodeToString(make([]byte, 32))}
@@ -187,15 +192,21 @@ func TestSeatCardWithHostileLeadText(t *testing.T) {
 // other way.
 func TestSeatTemplatesShowOnlyThroughText(t *testing.T) {
 	control := map[string]bool{"if": true, "else": true, "end": true, "range": true, "with": true, "define": true, "template": true, "block": true}
-	formatters := map[string]bool{"text": true, "lead": true, "when": true, "until": true, "num": true, "short": true, "cardHref": true, "pathsHref": true}
+	formatters := map[string]bool{"text": true, "lead": true, "when": true, "until": true, "num": true, "short": true, "cardHref": true, "pathsHref": true,
+		// The project pages' addresses (of ids the app checked) and the
+		// names, ids and types of a question's controls (of the app's own
+		// words and numbers).
+		"projectHref": true, "changeHref": true, "field": true, "oid": true, "qid": true, "pickName": true, "inputType": true}
 	// The fields the app fills itself: the page title and the problem's
 	// words (fixed words of this package), the relying party (the config),
 	// addresses made by cardHref and pathsHref, and the id of a page's
 	// decide form, which the app draws; and the watch part's version, card
 	// and binding, which the app checks against the forms a poll takes
-	// (watchPage: hex, and a card id) and leaves empty otherwise.
+	// (watchPage: hex, and a card id) and leaves empty otherwise; and the
+	// project pages' note (a fixed text of genesisNotes) and the headings
+	// of a summary's groups (fixed words of groupsOf).
 	appFields := map[string]bool{".Title": true, ".Message": true, ".RPID": true, ".RPName": true, ".Prev": true, ".Next": true, ".Back": true, ".Form": true,
-		".Version": true, ".Card": true, ".Binding": true}
+		".Version": true, ".Card": true, ".Binding": true, ".Note": true, ".Heading": true, ".Empty": true}
 	action := regexp.MustCompile(`\{\{-?\s*(.*?)\s*-?\}\}`)
 	files, err := fs.Glob(templateFS, "templates/*.html")
 	if err != nil || len(files) < 7 {

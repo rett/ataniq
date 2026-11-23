@@ -862,3 +862,77 @@ func TestRefusalsAreGateWords(t *testing.T) {
 		t.Fatal("a plain error is a refusal")
 	}
 }
+
+// List answers the open threads, oldest first, each where it stands and with
+// nothing of its answers; a finished, discarded or expired thread is not
+// listed; it touches no thread; and a restart lists the same.
+func TestListAnswersTheOpenThreads(t *testing.T) {
+	w := newWorld(t)
+	empty := w.ok(w.s.List(ctx))
+	if empty.State != ownerwire.GenesisStateThreads || empty.Threads == nil || len(empty.Threads) != 0 || empty.Thread != "" || empty.CatalogDigest != "" {
+		t.Fatalf("an empty store lists %+v", empty)
+	}
+	a := w.ok(w.s.Start(ctx)).Thread
+	w.clock.advance(time.Minute)
+	b := w.ok(w.s.Start(ctx)).Thread
+	// b is the newer, though its id would sort first were it the older.
+	w.ok(w.s.Answer(ctx, b, 1, webApp[0]))
+	want := []ownerwire.GenesisThread{
+		{Thread: a, State: ownerwire.GenesisStateQuestion, Round: 1, Of: 6, Filled: 0, Total: 1},
+		{Thread: b, State: ownerwire.GenesisStateQuestion, Round: 2, Of: 6, Filled: 1, Total: 14},
+	}
+	got := w.ok(w.s.List(ctx))
+	if !reflect.DeepEqual(got.Threads, want) {
+		t.Fatalf("the list %+v, want %+v", got.Threads, want)
+	}
+	// Each entry is where its thread stands, as round says.
+	for _, e := range got.Threads {
+		r := w.ok(w.s.Round(ctx, e.Thread))
+		if r.State != e.State || r.Round != e.Round || r.Of != e.Of || r.Progress.Filled != e.Filled || r.Progress.Total != e.Total {
+			t.Fatalf("%s: listed %+v, round answers %+v", e.Thread, e, r)
+		}
+	}
+	// Nothing of an answer is in it.
+	if s := js(got); strings.Contains(s, "software") || strings.Contains(s, "kind") {
+		t.Fatalf("the list holds an answer: %s", s)
+	}
+	// A thread whose walk is done is listed as a summary; a restart lists
+	// the same.
+	sum := w.interview(b, 1)
+	got = w.ok(w.s.List(ctx))
+	if len(got.Threads) != 2 || got.Threads[1] != (ownerwire.GenesisThread{Thread: b, State: ownerwire.GenesisStateSummary, Round: 6, Of: 6,
+		Filled: sum.Progress.Filled, Total: sum.Progress.Total}) {
+		t.Fatalf("the list with a summary: %+v", got.Threads)
+	}
+	w.open()
+	if again := w.ok(w.s.List(ctx)); !reflect.DeepEqual(again, got) {
+		t.Fatalf("after a restart: %+v, want %+v", again, got)
+	}
+	// A list touches nothing: a's clock still runs from its start.
+	files := w.files()
+	w.clock.advance(Expiry - time.Minute - time.Second)
+	w.ok(w.s.List(ctx))
+	if !reflect.DeepEqual(w.files(), files) {
+		t.Fatalf("a list wrote a file: %v", w.files())
+	}
+	// Finished, discarded and expired threads are not listed.
+	w.ok(w.s.Finish(ctx, b))
+	if got := w.ok(w.s.List(ctx)); len(got.Threads) != 1 || got.Threads[0].Thread != a {
+		t.Fatalf("after a finish: %+v", got.Threads)
+	}
+	w.clock.advance(time.Second)
+	if got := w.ok(w.s.List(ctx)); len(got.Threads) != 0 || w.log.count("a thread expired") != 1 {
+		t.Fatalf("after the expiry: %+v, log %q", got.Threads, w.log.all())
+	}
+	c := w.ok(w.s.Start(ctx)).Thread
+	w.ok(w.s.Discard(ctx, c))
+	if got := w.ok(w.s.List(ctx)); len(got.Threads) != 0 {
+		t.Fatalf("after a discard: %+v", got.Threads)
+	}
+	// Through the wire's verb, which takes no member.
+	if r := w.ok(w.s.Genesis(ctx, ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbList})); r.State != ownerwire.GenesisStateThreads {
+		t.Fatalf("the list verb: %+v", r)
+	}
+	_, err := w.s.Genesis(ctx, ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbList, Thread: c})
+	refused(t, err, CodeBadParams)
+}

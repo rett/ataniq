@@ -19,8 +19,9 @@ const defaultGuardDir = "/var/lib/authority-host"
 // guardedDaemon is the daemon port behind the authority host's decision
 // contract: before it relays a decision's challenge or a decision, it asks
 // decisionguard.Check of the state folder, every time, and on any error
-// relays nothing and answers seatapp.ErrDecisionsInhibited. Pairing, login
-// and the reading of cards decide nothing and go through unchanged.
+// relays nothing and answers seatapp.ErrDecisionsInhibited. Pairing, login,
+// the reading of cards and the new-project interview decide nothing and go
+// through unchanged.
 type guardedDaemon struct {
 	seatapp.Daemon
 	dir string
@@ -113,7 +114,21 @@ func (g guardedDaemon) WatchChanged() <-chan struct{} {
 	return nil
 }
 
+// Genesis passes a call of the guided new-project interview on to a daemon
+// port that runs it (seatapp.Genesis, which the gate link is), and answers
+// seatapp.ErrNotOffered for one that does not, so the phone then shows no
+// "New project". An answer fills a field of a project's brief and decides
+// nothing, so the guard does not ask: the interview goes on while decisions
+// are paused.
+func (g guardedDaemon) Genesis(ctx context.Context, c seatapp.GenesisCall) (seatapp.GenesisView, error) {
+	if d, ok := g.Daemon.(seatapp.Genesis); ok {
+		return d.Genesis(ctx, c)
+	}
+	return seatapp.GenesisView{}, seatapp.ErrNotOffered
+}
+
 var (
 	_ seatlink.WatchPort = guardedDaemon{}
 	_ seatapp.Watcher    = guardedDaemon{}
+	_ seatapp.Genesis    = guardedDaemon{}
 )

@@ -216,7 +216,7 @@ const (
 	// card's path list asks twice when the card was not shown), so they do
 	// not bound the gate's calls: the port counts every call it sends, and
 	// keeps the reads of all sessions to their own room there (package
-	// seatlink: 26 calls in 80 seconds); a read past it is the problem "The
+	// seatlink: 14 calls in 80 seconds); a read past it is the problem "The
 	// desk is busy".
 	readRequests = 20
 	readWindow   = time.Minute
@@ -312,6 +312,10 @@ type (
 		// Push says the app has a PushPort: the page then offers the
 		// notices' controls and links the web app manifest.
 		Push bool
+		// Projects is the part of the new projects, and Genesis says the
+		// page shows it: the daemon runs the interview.
+		Projects projectsPart
+		Genesis  bool
 	}
 	cardData struct {
 		Title string
@@ -378,7 +382,11 @@ func (a *app) cardList(w http.ResponseWriter, r *http.Request, s Session) {
 		a.problem(w, readProblem(err))
 		return
 	}
-	a.render(w, "cards", http.StatusOK, cardsData{Title: pageTitles["cards"], Now: a.cfg.Now(), Listing: l, Watch: wp, Push: a.push != nil})
+	d := cardsData{Title: pageTitles["cards"], Now: a.cfg.Now(), Listing: l, Watch: wp, Push: a.push != nil}
+	// The new projects, when the daemon runs the interview: a list that
+	// cannot be read leaves the start offered and says so.
+	d.Projects, d.Genesis = a.listProjects(ctx)
+	a.render(w, "cards", http.StatusOK, d)
 }
 
 // cardPage answers GET /cards/{id}: one card, read-only.

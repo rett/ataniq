@@ -1,0 +1,11 @@
+{{define "content"}}
+<h1>Discard this project?</h1>
+<p>Project <span class="mono">{{short .Thread}}</span> and all its answers are dropped. They cannot be brought back.</p>
+<form id="discard" action="{{projectHref .Thread "discard"}}" method="post">
+<button id="discard-go" type="submit" class="stop">Discard it</button>
+</form>
+<nav aria-label="Project">
+<p><a id="keep" href="{{projectHref .Thread ""}}">Keep the project</a></p>
+</nav>
+{{template "leave"}}
+{{end}}

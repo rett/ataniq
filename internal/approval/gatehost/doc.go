@@ -73,8 +73,8 @@
 //
 // # The interview
 //
-// seat.genesis is the guided new-project interview: one operation of seven
-// verbs (start, round, answer, change, summary, finish, discard), each with
+// seat.genesis is the guided new-project interview: one operation of eight
+// verbs (start, list, round, answer, change, summary, finish, discard), each with
 // the members its verb takes, which the wire's decoder holds. The handler gives
 // the decoded params to the daemon's thread store ([GenesisPort], given with
 // [WithGenesis]) and encodes its result with the wire's encoder. The handler

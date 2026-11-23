@@ -141,8 +141,8 @@
 // pings included, and every browser's traffic shares it. The link counts
 // every call it sends, by kind, over [BudgetWindow], and sends none past
 // the room of its kind (see budget.go): anyone's (pairings and logins),
-// reads, decisions and the watcher's waits, beside the pings of the
-// transport every [PingInterval]. A call without room is seatapp.ErrBusy and
+// reads, decisions, the watcher's waits and the interview's calls, beside
+// the pings of the transport every [PingInterval]. A call without room is seatapp.ErrBusy and
 // is not sent; the watcher alone sleeps for room instead.
 // The rooms and the pings add up to GateRate, so the gate's rate never
 // refuses a call the link sent. A decision's challenge is asked only with
@@ -166,6 +166,42 @@
 // closes when it changes, for the app to select on; neither touches the gate.
 // The waits have a room of their own (waitRoom). See watch.go for the
 // timings. [Daemon.Close] stops the goroutine.
+//
+// # The interview
+//
+// [Daemon.Genesis] implements [seatapp.Genesis], the guided new-project
+// interview (seat.genesis), and only when the gate's hello lists "genesis"
+// ([CapGenesis]); otherwise every call is [seatapp.ErrNotOffered] and nothing
+// is sent, so the seat shows no "New project". The app's call is turned into
+// [ownerwire.SeatGenesisParams] and held to the wire's form by its encoder
+// before anything is sent: a thread id of another form is
+// seatapp.ErrGenesisUnknownThread and an answer the wire does not take
+// seatapp.ErrGenesisBadAnswer. Every call sent has the room of its kind
+// (kindGenesis, 10 in [BudgetWindow]). The answer is read with
+// [ownerwire.DecodeSeatGenesisResult], must be one the verb answers and of the
+// thread called, and is turned into the app's values with every count and
+// length checked again; an answer that does not pass is an error that holds
+// nothing of it. A summary's rows are given their questions, for a change of
+// the answer, from the question catalog this build holds
+// (internal/genesis/catalog, v1), and only when the thread is walked under
+// it: the digests are equal. The codes:
+//
+//	genesis-busy                                seatapp.ErrGenesisBusy
+//	genesis-unknown-thread                      seatapp.ErrGenesisUnknownThread
+//	genesis-bad-answer                          seatapp.ErrGenesisBadAnswer
+//	genesis-over-cap                            seatapp.ErrGenesisOverCap
+//	genesis-secret-shaped                       seatapp.ErrGenesisSecretShaped
+//	genesis-done                                seatapp.ErrGenesisDone
+//	rate-limited, busy, too-many-refusals       seatapp.ErrBusy
+//	unknown-op                                  seatapp.ErrNotOffered
+//
+// and the rest as for the pairing. Nothing is retried. The link keeps a short
+// memory of the answers (genesis.go): a list is answered from the last one for
+// 20 seconds, and a round from the last answer of its thread for 10 seconds,
+// so the card lists that reload and the page a post redirects to do not spend
+// the room of the owner's taps; a call that changes threads forgets both
+// before it is sent. The memory holds nothing past its time but until the
+// next call, and no log line of this package holds an answer.
 package seatlink
 
 import (
@@ -201,7 +237,7 @@ const (
 
 // Caps is the capability list the seat says in its hello
 // ([seatgate.ClientConfig].Caps), in a new slice.
-func Caps() []string { return []string{CapPair, CapRead, CapLogin, CapDecide, CapWatch} }
+func Caps() []string { return []string{CapPair, CapRead, CapLogin, CapDecide, CapWatch, CapGenesis} }
 
 // errBadAnswer is the error of an answer that is not a pairing result of its
 // form. It holds nothing of the answer.
@@ -248,6 +284,10 @@ type Daemon struct {
 	budget budget
 	// hub is the watcher's published state (see watch.go).
 	hub watchHub
+	// gmem is the link's short memory of the interview's answers, and
+	// gnow its clock (see genesis.go).
+	gmem genesisMemory
+	gnow func() time.Time
 	// wmu guards w and wclosed; wt are the watcher's timings, which tests
 	// set before StartWatch.
 	wmu     sync.Mutex
@@ -282,7 +322,7 @@ func New(c *seatgate.Client, opts ...Option) (*Daemon, error) {
 	if c == nil {
 		return nil, errors.New("seatlink: a client is required")
 	}
-	d := &Daemon{c: c, budget: budget{now: time.Now}}
+	d := &Daemon{c: c, budget: budget{now: time.Now}, gnow: time.Now}
 	for _, o := range opts {
 		if err := o(d); err != nil {
 			return nil, err

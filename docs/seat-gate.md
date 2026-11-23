@@ -293,8 +293,11 @@ closed there, so no decision is ever relayed.
 The seat prints `ataniq-seat: linking to the seat gate at ADDR`,
 `ataniq-seat: decisions follow the guard in DIR` and
 `ataniq-seat: serving on ADDR` to standard error. It keeps the link up in the
-background and redials when it drops. Restarting the seat ends every session of
-the phone.
+background and redials when it drops. Each time the link comes up it prints
+what the gate's hello listed, and whether the phone then offers "New project":
+`ataniq-seat: the seat gate offers pair, read, login, decide, watch and
+genesis; the phone offers New project` (without `genesis`, `the phone offers no
+New project`). Restarting the seat ends every session of the phone.
 
 On the authority host the seat is not started by hand: its unit is started by
 the switch's reload list (see [the README](../deploy/authority-host/README.md#enabling-it)).
@@ -369,9 +372,9 @@ up without a reload, and a card that was decided, withdrawn or replaced
   seconds, the interval at which the daemon looks at the door; a decision made
   at the desk or on the phone is seen within a few seconds, and a page that
   just reloaded waits until it is 20 seconds old before it reloads again.
-  Every reload is a read of the desk, and the seat's reads share 20 calls in 80
+  Every reload is a read of the desk, and the seat's reads share 14 calls in 80
   seconds (see below). With several card lists open at once, in a busy period,
-  the reloads can use most of those 20, and a tap of yours on a card may then be
+  the reloads can use most of those 14, and a tap of yours on a card may then be
   answered "The desk is busy" for a moment: close the lists you are not looking at.
 - **A Card page** never reloads by itself, since you may be ticking boxes.
   When its card was decided elsewhere or changed, the page says "This card
@@ -398,8 +401,8 @@ whatever the number of pages and phones open: a held request that the gate
 answers when the set of cards changes or after 25 seconds. The pages ask the
 seat, not the gate. The gate takes 60 requests a minute on the seat's one link,
 and the seat keeps a room for each kind of call within every 80 seconds: pings
-6, decisions 16, pairing and login (anyone's) 12, reads 20 and waits 6, 60 in
-all. An idle seat sends one wait about every 25 seconds. A page's poll is not
+6, decisions 12, pairing and login (anyone's) 12, reads 14, waits 6 and the
+new-project pages 10, 60 in all. An idle seat sends one wait about every 25 seconds. A page's poll is not
 a request that keeps the session alive: a session still ends 30 minutes after
 the last page you loaded or tap you made, however long a page stays open.
 
@@ -431,6 +434,42 @@ Behind a proxy. A held request lasts up to 25 seconds, so the front proxy's
 read timeout for the seat must be above 30 seconds and its buffering of
 `/api/watch` must be off, so that the answer reaches the phone when the seat
 writes it (see [The reverse proxy](#the-reverse-proxy)).
+
+## New projects
+
+When the daemon's gate lists `genesis` (its start line ends in `... watch and
+genesis`), the card list on the phone has a "New project" button and lists the
+projects in progress. Nothing is configured for it on either host.
+
+What "New project" does. It starts a short interview: a few rounds of one to
+three multiple-choice questions about a project you want to make (what kind,
+what it is for, who it is for, how it is built or published, by when). The
+questions are the desk's own, from its fixed catalog, and so is the order they
+come in. Each question offers its options, each with a one-line example, and,
+where the question allows them, "Other" (your own words, up to 200
+characters), "You decide for me" and "Skip". After the last round you read the
+summary: what you chose, what was decided for you and what was left to its
+default; "Change" on a row asks that question again (a change clears the later
+answers that depended on it, and the page says how many), "Looks right:
+finish" keeps the answers as the project's brief, and "Discard this project"
+(after a second page) drops it with all its answers. At most two projects are
+open at once; a third "New project" says so. An open project you leave for 14
+days is discarded. The card list and `/projects/` list the open ones, so after
+a restart of the seat you find them again.
+
+What it does not do. Nothing starts: no agent is run and no agent is given the
+answers or the brief, and nothing is planned, built or published. An answer
+only describes the project; it never approves anything, and the project pages
+hold no approve or deny control. The answers are kept on the desk, by the
+daemon, in `owner/genesis/` of its state folder (one file per project, mode
+0600), and are sent nowhere else. Never type a password, a key or a token: say
+that a credential is needed instead. Text that looks like one is refused ("That
+looks like a password or key. ..."), and the page never shows it back.
+
+What it costs. The pages are plain pages with forms, and each answer is one call
+of the gate. The seat keeps 10 calls in 80 seconds of the gate's rate for them;
+answering a round about every 8 seconds stays inside it. Past it the page says
+"The desk is busy. Try again in a minute." and nothing is sent.
 
 ## Notices
 
@@ -794,6 +833,8 @@ What the phone shows, by the code the seat's API answers:
 | "Too many tries. Wait a while..." | `rate_limited` | The pairing or login limits of the seat. | Wait; the limits age out. |
 | "Decisions are paused on this host." (on the card page, in place of the Approve and Deny buttons) or "Decisions are paused on this host. Nothing was sent." (after a tap) | `decisions_inhibited` | The authority host's decision inhibit is there (a switch under way, a boot not yet requalified, a failure), or the `--decision-guard` folder is missing, a link or not readable. The seat logs the guard's code (`decision-guard-...`). | On the authority host, `ah-switch status` says why. On another host, check `--decision-guard`. Tap again once decisions are taken. |
 | "The desk is busy. Try again in a minute." | `desk_busy` | The seat's room at the gate, or the gate's rate, is used up. | Wait a few minutes. |
+| No "New project" on the card list, or "New projects are not offered" | (a page) | The daemon's gate does not list `genesis` (the seat's log says `the phone offers no New project`), or the seat runs without `--gate`. | Check the daemon's start line; restart the daemon with its gate. |
+| "That project is not open. ..." or "No such project" | (a page) | The project was finished, discarded, or left for 14 days, or the address is not one of the seat's. | Start a new one from the card list. |
 | "The desk does not take phone logins now." | `login_unavailable` | The gate is read-only: no usable origin file at the daemon. | Fix the origin file, restart the daemon. |
 | "No passkey is paired with the desk yet." | `not_paired` | The key list holds no usable credential. | Pair the phone at the desk. |
 | "The desk did not take this passkey." | `login_refused` | Not paired, revoked, a kind the daemon does not know, or an assertion that did not verify (often a wrong origin on one host). | Pair again at the desk; check the origin on both hosts. |

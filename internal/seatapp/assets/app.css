@@ -454,6 +454,99 @@ button.quiet {
   margin-top: 32px;
 }
 
+/*
+ * The new-project pages: one question block per question, each choice a
+ * row of at least 44 px with a real radio or checkbox, its label and its
+ * one-line example. The owner's own words are quoted, in the text colour.
+ */
+.note-line {
+  padding: 8px 12px;
+  border-left: 4px solid var(--line);
+}
+
+.progress {
+  font-weight: 700;
+}
+
+.question {
+  margin: 0 0 24px;
+}
+
+.options {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.option {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: flex-start;
+  min-height: 44px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+
+.option input {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin: 0;
+  accent-color: var(--seat);
+}
+
+.choice {
+  font-weight: 700;
+}
+
+.example {
+  flex-basis: 100%;
+  padding-left: 36px;
+  color: var(--muted);
+}
+
+input[type="text"] {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 2px solid var(--line);
+  border-radius: 0;
+  background: var(--field);
+  color: var(--fg);
+  font: inherit;
+}
+
+q.owners {
+  color: var(--fg);
+  font-style: italic;
+}
+
+#keep,
+#discard-link,
+#project-list,
+.facts dd a {
+  display: inline-block;
+  min-height: 44px;
+  padding: 10px 0;
+}
+
+button.stop {
+  background: transparent;
+  color: var(--stop);
+  border-color: var(--stop);
+}
+
+#send,
+#finish-go,
+#start-project-go,
+#discard-go {
+  margin: 0 0 16px;
+}
+
 @media (min-width: 30rem) {
   button {
     display: inline-block;

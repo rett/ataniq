@@ -27,7 +27,8 @@ type pageData struct {
 
 // pageNames are the pages, one template file each; each defines "content"
 // inside the shared layout.
-var pageNames = []string{"home", "pair", "login", "cards", "card", "paths", "problem"}
+var pageNames = []string{"home", "pair", "login", "cards", "card", "paths", "problem",
+	"projects", "question", "summary", "finished", "change", "discard"}
 
 var pageTitles = map[string]string{
 	"home":  "Authority seat",
@@ -36,6 +37,13 @@ var pageTitles = map[string]string{
 	"cards": "Cards",
 	"card":  "Card",
 	"paths": "Changed paths",
+	// The pages of the guided new-project interview.
+	"projects": "New projects",
+	"question": "New project: questions",
+	"summary":  "New project: summary",
+	"finished": "New project: brief kept",
+	"change":   "New project: change an answer",
+	"discard":  "New project: discard",
 }
 
 // The most characters of each kind of text a page shows; Text says how many
@@ -121,6 +129,27 @@ var funcs = template.FuncMap{
 	"maxLine":   func() int { return maxLine },
 	"maxPath":   func() int { return maxPath },
 	"maxText":   func() int { return maxText },
+	// The project pages' own addresses and the names and ids of a
+	// question's controls, made of the app's own words and of ids the app
+	// checked.
+	"projectHref": projectHref,
+	"changeHref":  changeHref,
+	"field":       func(prefix string, i int) string { return prefix + strconv.Itoa(i) },
+	"oid":         func(i, j int) string { return "q" + strconv.Itoa(i) + "-o" + strconv.Itoa(j) },
+	"qid":         func(i int, part string) string { return "q" + strconv.Itoa(i) + "-" + part },
+	"pickName": func(multi bool, i int) string {
+		if multi {
+			return "m" + strconv.Itoa(i)
+		}
+		return "a" + strconv.Itoa(i)
+	},
+	"inputType": func(multi bool) string {
+		if multi {
+			return "checkbox"
+		}
+		return "radio"
+	},
+	"steps": func() []int { return []int{1, 2, 3, 4, 5} },
 }
 
 // when writes a time as the phone shows it, in UTC to the minute.
