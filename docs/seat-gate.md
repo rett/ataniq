@@ -192,8 +192,10 @@ together:
   with `Cache-Control: no-cache` so that the phone checks it for a change; the
   shipped Caddy sets `no-store` on it as on everything else, which does no harm.
   The content security policy includes `manifest-src 'self'` and
-  `worker-src 'self'`, which the notices need; a proxy that rewrites the policy
-  must keep them, or the Home Screen app and its worker are refused.
+  `worker-src 'self'`, which the notices need, and `trusted-types seat-sw`,
+  which names the one policy the page makes to register the worker (and no
+  other); a proxy that rewrites the policy must keep them, or the Home Screen
+  app and its worker are refused.
 - **Allow a held request on `/api/watch`.** The live refresh polls
   `POST /api/watch`, which the seat holds for up to 25 seconds before it
   answers. The front proxy's read timeout (how long it waits for the seat's
@@ -452,13 +454,20 @@ the notifier, unless:
 - a page of the seat polled in the last 60 seconds (a page that is open and
   visible is one you are looking at; a hidden tab or a phone that has put the
   page to sleep asks nothing, so close the pages and wait a minute when you
-  test);
+  test). The cards that page found waiting count as seen: closing the page does
+  not bring a notice for them, only a card that comes after its last poll does;
 - the count came back up after a dip, to no more than what was last told, and
   fewer than 2 minutes have passed since the last notice (a card decided and
   another asked is not a new notice at once): so with the count not rising,
   there is at most one notice every 2 minutes;
-- 30 notices were already attempted in the 24 hours since the first of them;
-- the last attempt failed less than a minute ago;
+- 30 calls to the notifier were already answered in the 24 hours since the first
+  of them (a call it took or refused with a code, `rate_limited` too; a call it
+  did not answer, because it was down or unreachable, does not count, so an
+  outage does not use up the day; at most 200 calls of any end are made in the
+  same time);
+- the last call failed lately: the seat waits a minute, then 2, 4, 8, 16 and at
+  most 30 minutes between tries while the notifier fails, and a call it takes
+  ends that;
 - the seat is not live: the gate does not list `watch` (see
   [Live refresh](#live-refresh)), or the link to the desk is down ("Not live: the
   desk is out of reach"). No notice is stored for later; once the seat is live
@@ -700,18 +709,19 @@ Notices (see [Notices](#notices)). The notifier's own lines are in its journal
 (`journalctl -u ataniq-seat-notify.service`): fixed text and counts, never an
 endpoint or a key. The seat logs one fixed line, at most one a minute, when a
 call to the notifier failed: `seatapp: the notifier did not take the count;
-trying again in a minute`.
+trying again later`.
 
 | What you see | Cause | What to do |
 | --- | --- | --- |
 | The card list has no Notices section, and `/sw.js` answers 404 | No notifier is configured for the seat: it was started without `--notify-socket` (on the authority host, no `SEAT_NOTIFY_ARGS` line in `seat.env`, or the release has no notifier). | Set the notifier up ([the README](../deploy/authority-host/README.md#the-notifier)), add the line to `seat.env`, and switch or restart the seat. |
 | The section is there with no button, and says "Open this page from the Home Screen app to turn on notices." | The page is open in Safari, not from the Home Screen. | Add it to the Home Screen and open it from there. |
 | "Notices need your permission. Change it in the phone's settings." | The prompt was refused or dismissed, or notifications are off for the Seat app. The phone asks once. | Allow notifications for the Seat app in the phone's settings, then tap Enable notices again. |
-| "Could not turn on notices. Try again later." | The seat could not reach the notifier (`unavailable`, 503 in the browser's tools), the notifier refused the subscription (`endpoint_refused`, 422: the phone's push service is not on the notifier's host list; `bad_subscription`, 400), the notifier answered with a code the seat does not know (`notifier_error`, 502), or the phone refused to register the service worker or to subscribe. | Check `systemctl status ataniq-seat-notify.service`, that `/run/seat-notify/notify.sock` is there (`seat-notify:seat`, 0660). Read the notifier's journal. |
+| "Could not turn on notices. Try again later." | The seat could not reach the notifier (`unavailable`, 503 in the browser's tools), the notifier refused the subscription (`endpoint_refused`, 422: the phone's push service is not on the notifier's host list; `bad_subscription`, 400), the notifier answered with a code the seat does not know (`notifier_error`, 502), or the phone refused to register the service worker or to subscribe. | Check `systemctl status ataniq-seat-notify.service`, that `/run/seat-notify/notify.sock` is there (`seat-notify:seat-notify`, 0660). Read the notifier's journal. |
 | "No room for another phone. Stop notices on another phone first." | `too_many`: the notifier holds 4 subscriptions. | Tap Stop notices on the other phone. A subscription that Apple's push service reports gone is dropped at the next push. Otherwise stop the notifier, move `subscriptions.json` aside, start it and subscribe again (see [the README's rollback](../deploy/authority-host/README.md#rollback-1)). |
 | Nothing arrives, and `send-test` fails with `seatnotice: refused: unavailable` | The notifier cannot reach Apple's push service: the owner's drop-in (`egress.conf`) or the firewall rule is missing or wrong, the resolver is not allowed, or the endpoint's host is not on the notifier's list. Its journal says `notify: 0 of N pushes accepted, N failed`. | Check the drop-in's `IPAddressAllow=` lines and the firewall rule. See [the README](../deploy/authority-host/README.md#the-notifier), setup step 4. |
 | Nothing arrives, the page says "Notices are on.", and the journal's `notify:` line has a count above 0 before `dropped as gone` | The subscription is gone (Apple's push service answered 404 or 410 for it), and the notifier dropped it. The page reads the phone's own subscription, so it still says on. | Tap Stop notices, then Enable notices again. |
 | Nothing arrives, and `send-test` fails with `seatnotice: refused: rate_limited`, or the journal says `held back by the hourly bound` | The notifier already made its 30 pushes of the hour. | Wait; the hour ages out. |
 | `send-test` fails with `seatnotice: the notifier is not reachable` or `the notifier did not answer` | The unit is not running, the socket is not there, or `send-test` was not run as the seat user (any other user is closed unread). | Run it as `seat` and check the unit. |
-| Nothing arrives, `send-test` works, and cards wait | The rules did not call for a notice: a page of the seat polled in the last minute; the count did not rise above what was last told, or came back after a dip within 2 minutes; 30 notices were attempted in the 24 hours; the last attempt failed less than a minute ago; or the seat is not live (the gate does not list `watch`, or the link is down). | See [When a notice is sent](#when-a-notice-is-sent). Close the seat's pages on the phone, wait a minute, and bring a new request to the desk. |
+| The switch to a release with the notifier ended `ok`, but `systemctl status ataniq-seat-notify.service` says `activating (auto-restart)` and `send-test` says the notifier is not reachable | The notifier exits at its start and systemd restarts it every 5 seconds. The unit is `Type=simple`, so the switch's restart succeeds and its health check, which is the seat's, does not look at the notifier. A missing or unsafe key, a subscriptions file that is not as the command writes it, an unknown `--seat-user` or a bad subject. | Read `journalctl -u ataniq-seat-notify.service`, fix what it names, `systemctl restart ataniq-seat-notify.service`. See [the README](../deploy/authority-host/README.md#a-notifier-that-cannot-start). |
+| Nothing arrives, `send-test` works, and cards wait | The rules did not call for a notice: a page of the seat polled in the last minute, or showed the cards that wait; the count did not rise above what was last told, or came back after a dip within 2 minutes; 30 calls were answered in the 24 hours; the last call failed lately (the wait grows to 30 minutes while the notifier fails); or the seat is not live (the gate does not list `watch`, or the link is down). | See [When a notice is sent](#when-a-notice-is-sent). Close the seat's pages on the phone, wait a minute, and bring a new request to the desk. |
 | The notice reads "Cards are waiting" with no count | The push was not `{"n":N}` with N from 0 to 999 as the service worker reads it, so the worker shows its plain text. The notifier and the worker the phone holds do not agree, or the push did not come from this notifier. | Make sure the seat and the notifier are of one release. The phone's browser checks the service worker for a change when it starts it. |

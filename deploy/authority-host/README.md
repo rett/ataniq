@@ -2746,8 +2746,10 @@ repository.
    from a root-owned copy of the release you verified (as the seat's step 4
    does), `sudo -u seat-notify RELEASE/bin/ataniq-seat-notify vapid-init --key /var/lib/seat-notify/vapid.pem`.
    It makes the key (mode 0600, never overwriting) and prints the public key
-   only. Without the key the notifier does not start, and the switch's
-   reload fails.
+   only. Without the key the notifier exits at its start and systemd
+   restarts it every 5 seconds without end (see "A notifier that cannot
+   start", below): the switch does not notice, so check the notifier after
+   the switch.
 3. The owner's file, in a new folder `/etc/authority-host/seat-notify`
    (root-owned, 0755): `seat-notify.env` (root-owned, mode 0600 is enough,
    systemd reads it):
@@ -2799,7 +2801,9 @@ There is nothing to enable: a switch to a release that has the notifier
 (`ah-switch --from INCOMING/ID ID`, as in [DEPLOY.md](DEPLOY.md)) verifies
 it, runs its validators, moves `current`, and its reload list restarts the
 notifier, then the seat and Caddy, while decisions are inhibited. The
-health check does not look at the notifier: it decides nothing. At every
+health check does not look at the notifier: it decides nothing, so a notifier
+that cannot start does not fail the switch (see "A notifier that cannot
+start", below): check it yourself. At every
 boot, `ah-switch boot` runs the same reload list. Check it with
 `systemctl status ataniq-seat-notify.service` and `ls -l /run/seat-notify`
 (the socket, `seat-notify:seat-notify`, mode 0660).
@@ -2826,10 +2830,48 @@ that), and logs it at most once a minute, with no endpoint or key in the
 line; calls the notifier did not answer do not use up the seat's 30 notices a
 day (at most 200 calls of any end are made a day);
 the pages, the cards, the decisions and the phone's polls do not depend on
-the notifier. One caution at a switch: the reload list restarts the notifier,
-and a restart that fails (a missing key, a subscriptions file that is not
-as the command writes it) fails the reload, like any command of the list,
-and the switch goes back. Fix the file and switch again.
+the notifier.
+
+### A notifier that cannot start
+
+The switch does not catch it. The unit is `Type=simple`, so
+`systemctl restart ataniq-seat-notify.service` in the reload list succeeds as
+soon as the process is forked, and the notifier then exits at its start when
+it cannot go on: a missing or unsafe key (`--vapid-key`), a subscriptions file
+that is not as the command writes it (`--subscriptions`), among them one that
+holds a host `--push-hosts` no longer allows, a user `--seat-user` the host
+does not know, or a subject that is not a `mailto:` or `https:` value. The
+reload list reports success, the health check is the seat's and looks at
+nothing of the notifier, and the switch ends `ok`. Meanwhile
+`Restart=on-failure` with `RestartSec=5s` starts it again every 5 seconds
+without end (two starts in 10 seconds stay under systemd's start limit, so
+it is never given up on) while the switch reports success. The seat's own
+step is different: its health check needs the seat on its socket, so a seat
+that cannot start fails the switch.
+
+How the owner sees it, after a switch that has the notifier, and at any time:
+
+- `systemctl status ataniq-seat-notify.service` says `activating
+  (auto-restart)` with the exit status of the last try, where a running
+  notifier says `active (running)`;
+- `journalctl -u ataniq-seat-notify.service` has a fixed line saying what was
+  refused (`--vapid-key: ...`, `--subscriptions: ...`, `--seat-user is not a
+  user of this host`, `--vapid-subject is not a valid contact`) repeated every
+  5 seconds, and no `serving the seat user on the socket`;
+- `ls -l /run/seat-notify` has no `notify.sock`, and `send-test` (above) fails
+  with `the notifier is not reachable`;
+- the phone shows nothing wrong at first: the Notices section reads what the
+  phone holds ("Notices are on.") and does not ask the notifier, so the first
+  sign there is that **Enable notices** ends in "Could not turn on notices. Try
+  again later.", and a card that waits brings no notice. The seat's journal
+  has its line about a notifier that did not take the count, at most one a
+  minute.
+
+Fix the file, restart the unit by hand (`systemctl restart
+ataniq-seat-notify.service`) or switch again, and check as above. Nothing
+else is affected meanwhile, and the switch is not rolled back on its account:
+the notices are an extra, and the host's decision path does not depend on
+them.
 
 ### Rollback
 

@@ -1518,8 +1518,10 @@ client's deadline is what ends a slow call. One connection carries one request a
 - Who may call: the server reads the peer's user id from the kernel
   (`SO_PEERCRED`) and serves only the one id it was given, the seat user's,
   looked up once at the notifier's start; a connection of any other user is
-  closed unread. The socket's mode (0660, group `seat`) lets the seat's group
-  connect and is not what decides. On a system that cannot read a peer's user
+  closed unread. The socket's mode (0660, group `seat-notify`, a group of the
+  notifier's own that the seat's unit joins) lets the seat connect and is not
+  what decides; the notifier is in no group of the seat's, so it cannot reach
+  the seat's socket. On a system that cannot read a peer's user
   id every connection is refused. At most 16 connections are served at once.
 
 ### What a notice shows, and never shows
@@ -1958,6 +1960,17 @@ The owner carries every fingerprint by hand, both ways, at the first exchange.
   can turn into a decision, so more logins started from notices are more
   chances for it. A taken-over seat can also fake or spam notices, up to the
   notifier's 30 pushes an hour, and can fill the notifier's subscription places.
+  Within the notifier's host policy (the one push host, https on port 443) and
+  its bounds, that is: it can subscribe endpoints of its own on the push host
+  (made with the public VAPID key, up to the 4 places, which leaves none for
+  the owner's phone: `too_many`), replace the keys of an endpoint the notifier
+  holds, which breaks that phone's delivery until it subscribes again, remove
+  the owner's subscription when it knows the hash of its endpoint (it sees the
+  endpoint once, when the phone subscribes), and cause up to 30 pushes an hour.
+  It cannot make the notifier reach any other host or send any text but the
+  count. The notifier's own unit is in a group of its own and not the seat's,
+  so a taken-over notifier cannot reach the seat's socket and speak to the seat
+  in the front proxy's place.
 - Notices have no quiet hours, no email or other fallback, no notice for a
   single card and no question cards; Apple's push service sees the timing and
   size of each push. They are not phone-tested.
