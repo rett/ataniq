@@ -73,15 +73,15 @@ func sampleSeatLoginResult() SeatLoginResult {
 	return SeatLoginResult{Credential: sampleKeyID, CredentialID: byteRun(0, 16), Kind: "vault-passkey"}
 }
 
-// The four operations are the gate's alone: the list of the Unix socket has
+// The five operations are the gate's alone: the list of the Unix socket has
 // none of them, and GateOperations lists them, in the order of the table.
 func TestGateOperationsAreApartFromTheSocket(t *testing.T) {
-	want := []string{"seat.login-challenge", "seat.login", "seat.challenge", "seat.decide"}
+	want := []string{"seat.login-challenge", "seat.login", "seat.challenge", "seat.decide", "seat.wait"}
 	got := GateOperations()
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("GateOperations() = %v, want %v", got, want)
 	}
-	if consts := []string{OpSeatLoginChallenge, OpSeatLogin, OpSeatChallenge, OpSeatDecide}; !reflect.DeepEqual(consts, want) {
+	if consts := []string{OpSeatLoginChallenge, OpSeatLogin, OpSeatChallenge, OpSeatDecide, OpSeatWait}; !reflect.DeepEqual(consts, want) {
 		t.Errorf("the constants are %v, want %v", consts, want)
 	}
 	socket := make(map[string]bool)
@@ -109,9 +109,10 @@ func TestGateCodesAreWords(t *testing.T) {
 	codes := map[string]string{
 		CodeChallengeStale: "challenge-stale", CodeChallengesFull: "challenges-full",
 		CodeAssertionInvalid: "assertion-invalid", CodeKeyRevoked: "key-revoked", CodeKindRefused: "kind-refused",
+		CodeWaitFull: "wait-full",
 	}
-	if len(codes) != 5 {
-		t.Fatalf("%d codes with different words, want 5", len(codes))
+	if len(codes) != 6 {
+		t.Fatalf("%d codes with different words, want 6", len(codes))
 	}
 	grammar := regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
 	for code, word := range codes {
@@ -532,4 +533,278 @@ func TestSeatResultsContent(t *testing.T) {
 	}
 	_, err := DecodeSeatLoginResult(bytes.Replace(sample, []byte(sampleKeyID), []byte("0123456789abcdef"), 1))
 	refused(t, err, record.CodeRecordInvalid, "decoding another credential's display id")
+}
+
+// The samples of seat.wait. The ids and bindings are those of the vectors in
+// TestPendingVersionVectors.
+const (
+	waitIDA      = "ap-20261120-0007"
+	waitIDB      = "ap-20261120-0008"
+	waitBindingB = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	// waitVersionTwo is the version of sampleWaitCards.
+	waitVersionTwo = "9ac6d04d66be695b1abd73a004de6e86"
+)
+
+func sampleWaitCards() []SeatWaitCard {
+	return []SeatWaitCard{
+		{ID: waitIDA, Kind: CardKindApproval, BindingSHA256: vectorBinding},
+		{ID: waitIDB, Kind: CardKindApproval, BindingSHA256: waitBindingB, Held: true},
+	}
+}
+
+func sampleSeatWaitParams() SeatWaitParams { return SeatWaitParams{Since: waitVersionTwo} }
+
+func sampleSeatWaitResult() SeatWaitResult {
+	return SeatWaitResult{Version: waitVersionTwo, Waiting: 2, Cards: sampleWaitCards()}
+}
+
+// The version of a pending set is fixed by vectors computed by a program
+// that shares no code with it: SHA-256 over the domain string, the count and
+// each card, every field with a 4-byte big-endian length, the held mark one
+// byte, the first 16 bytes in hexadecimal.
+func TestPendingVersionVectors(t *testing.T) {
+	card := func(kind, id, binding string, held bool) SeatWaitCard {
+		return SeatWaitCard{ID: id, Kind: kind, BindingSHA256: binding, Held: held}
+	}
+	for name, tt := range map[string]struct {
+		set  []SeatWaitCard
+		want string
+	}{
+		"the empty set":             {nil, "ad9ab6441ef51d741566db3a72c3d088"},
+		"an empty list":             {[]SeatWaitCard{}, "ad9ab6441ef51d741566db3a72c3d088"},
+		"one card":                  {[]SeatWaitCard{card("approval", waitIDA, vectorBinding, false)}, "4d40d4c0e4ff366ac1b62019f799a449"},
+		"one card, held":            {[]SeatWaitCard{card("approval", waitIDA, vectorBinding, true)}, "99b76dfd3da8c560e9be01c48bbdc8d2"},
+		"one card, another kind":    {[]SeatWaitCard{card("question", waitIDA, vectorBinding, false)}, "486c4469e73a8ee44207a485702e9e2a"},
+		"one card, another binding": {[]SeatWaitCard{card("approval", waitIDA, waitBindingB, false)}, "9fb531da0d7e401198df16648ec04c63"},
+		"two cards":                 {sampleWaitCards(), waitVersionTwo},
+	} {
+		got := PendingVersion(tt.set)
+		if got != tt.want {
+			t.Errorf("%s: %s, want %s", name, got, tt.want)
+		}
+		if !record.IsLowerHex(got, SeatWaitVersionLength) {
+			t.Errorf("%s: %q is not %d lower-case hexadecimal digits", name, got, SeatWaitVersionLength)
+		}
+	}
+}
+
+// The order the cards come in does not change the version, and the call does
+// not reorder what it was given.
+func TestPendingVersionIgnoresOrderAndKeepsItsInput(t *testing.T) {
+	var set []SeatWaitCard
+	for i := 0; i < 9; i++ {
+		set = append(set, SeatWaitCard{ID: "ap-" + strconv.Itoa(100-i), Kind: CardKindApproval,
+			BindingSHA256: record.Digest([]byte{byte(i)}), Held: i%3 == 0})
+	}
+	// Two cards of one id and binding, apart only by the held mark and the kind.
+	set = append(set, SeatWaitCard{ID: "ap-1", Kind: "approval", BindingSHA256: vectorBinding, Held: true},
+		SeatWaitCard{ID: "ap-1", Kind: "approval", BindingSHA256: vectorBinding},
+		SeatWaitCard{ID: "ap-1", Kind: "question", BindingSHA256: vectorBinding})
+	want := PendingVersion(set)
+	kept := append([]SeatWaitCard(nil), set...)
+	for shift := 1; shift < len(set); shift++ {
+		turned := append(append([]SeatWaitCard(nil), set[shift:]...), set[:shift]...)
+		if got := PendingVersion(turned); got != want {
+			t.Fatalf("turned by %d: %s, want %s", shift, got, want)
+		}
+	}
+	reversed := make([]SeatWaitCard, len(set))
+	for i := range set {
+		reversed[len(set)-1-i] = set[i]
+	}
+	if got := PendingVersion(reversed); got != want {
+		t.Errorf("reversed: %s, want %s", got, want)
+	}
+	if !reflect.DeepEqual(set, kept) {
+		t.Error("PendingVersion reordered the slice it was given")
+	}
+}
+
+// Each field of a card, the count and the cards themselves are in the
+// version: a set that differs in any of them has another one.
+func TestPendingVersionBindsEveryField(t *testing.T) {
+	base := sampleWaitCards()
+	want := PendingVersion(base)
+	changes := map[string]func([]SeatWaitCard) []SeatWaitCard{
+		"a binding":           func(s []SeatWaitCard) []SeatWaitCard { s[0].BindingSHA256 = waitBindingB; return s },
+		"a binding digit":     func(s []SeatWaitCard) []SeatWaitCard { s[1].BindingSHA256 = s[1].BindingSHA256[:63] + "f"; return s },
+		"a held mark set":     func(s []SeatWaitCard) []SeatWaitCard { s[0].Held = true; return s },
+		"a held mark cleared": func(s []SeatWaitCard) []SeatWaitCard { s[1].Held = false; return s },
+		"a kind":              func(s []SeatWaitCard) []SeatWaitCard { s[0].Kind = "question"; return s },
+		"an id":               func(s []SeatWaitCard) []SeatWaitCard { s[0].ID = "ap-20261120-0009"; return s },
+		"a card less":         func(s []SeatWaitCard) []SeatWaitCard { return s[:1] },
+		"a card more": func(s []SeatWaitCard) []SeatWaitCard {
+			return append(s, SeatWaitCard{ID: "ap-x", Kind: CardKindApproval, BindingSHA256: vectorBinding})
+		},
+		"a card twice": func(s []SeatWaitCard) []SeatWaitCard { return append(s, s[0]) },
+		"no card":      func(s []SeatWaitCard) []SeatWaitCard { return nil },
+	}
+	seen := map[string]string{want: "the base set"}
+	for name, change := range changes {
+		got := PendingVersion(change(append([]SeatWaitCard(nil), base...)))
+		if got == want {
+			t.Errorf("%s does not change the version", name)
+		}
+		if other, dup := seen[got]; dup {
+			t.Errorf("%s and %s have the same version", name, other)
+		}
+		seen[got] = name
+	}
+}
+
+// The fields are length-prefixed, so a boundary moved between two fields, or
+// between two cards, gives another version. Without the prefixes these sets
+// would write the same bytes.
+func TestPendingVersionIsNotACatenation(t *testing.T) {
+	sets := map[string][]SeatWaitCard{
+		"the kind takes the id's first byte": {{Kind: "approval", ID: "ap-1", BindingSHA256: "ab"}},
+		"the kind is a byte longer":          {{Kind: "approvala", ID: "p-1", BindingSHA256: "ab"}},
+		"the id takes the binding's first":   {{Kind: "approval", ID: "ap-1a", BindingSHA256: "b"}},
+		"the id takes all of the binding":    {{Kind: "approval", ID: "ap-1ab", BindingSHA256: ""}},
+		"two cards":                          {{Kind: "k", ID: "a", BindingSHA256: "b"}, {Kind: "c", ID: "d", BindingSHA256: "e"}},
+		"two cards, a boundary moved":        {{Kind: "k", ID: "a", BindingSHA256: "bc"}, {Kind: "", ID: "d", BindingSHA256: "e"}},
+		"one card of the same letters":       {{Kind: "k", ID: "ab", BindingSHA256: "cd"}},
+		"empty fields":                       {{}},
+		"two empty cards":                    {{}, {}},
+		"no card":                            nil,
+	}
+	seen := map[string]string{}
+	for name, set := range sets {
+		v := PendingVersion(set)
+		if other, dup := seen[v]; dup {
+			t.Errorf("%s and %s have the same version %s", name, other, v)
+		}
+		seen[v] = name
+	}
+}
+
+func TestSeatWaitParamsContent(t *testing.T) {
+	for name, since := range map[string]string{
+		"a version in capitals": strings.ToUpper(waitVersionTwo),
+		"a short version":       waitVersionTwo[:31],
+		"a long version":        waitVersionTwo + "0",
+		"a digest":              vectorBinding,
+		"not hexadecimal":       strings.Repeat("g", 32),
+		"a space":               " " + waitVersionTwo[1:],
+	} {
+		_, err := EncodeSeatWaitParams(SeatWaitParams{Since: since})
+		refused(t, err, record.CodeRecordInvalid, "since: "+name)
+		_, err = DecodeSeatWaitParams([]byte(`{"since":"` + since + `"}`))
+		refused(t, err, record.CodeRecordInvalid, "decoding since: "+name)
+	}
+	for name, since := range map[string]string{"none": "", "a version": waitVersionTwo} {
+		out, err := EncodeSeatWaitParams(SeatWaitParams{Since: since})
+		if err != nil {
+			t.Errorf("since: %s is refused: %v", name, err)
+			continue
+		}
+		if want := `{"since":"` + since + `"}`; string(out) != want {
+			t.Errorf("since: %s is written %s, want %s", name, out, want)
+		}
+		if p, err := DecodeSeatWaitParams(out); err != nil || p.Since != since {
+			t.Errorf("since: %s reads back as %+v (%v)", name, p, err)
+		}
+	}
+	// The field is always written: params without it are refused.
+	for _, in := range []string{`{}`, `{"since":null}`, `{"since":1}`, `{"since":"` + waitVersionTwo + `","also":1}`} {
+		_, err := DecodeSeatWaitParams([]byte(in))
+		refused(t, err, record.CodeRecordInvalid, in)
+	}
+}
+
+func TestSeatWaitResultContent(t *testing.T) {
+	many := func(n int) []SeatWaitCard {
+		cards := make([]SeatWaitCard, n)
+		for i := range cards {
+			cards[i] = SeatWaitCard{ID: "ap-" + strconv.Itoa(i+1), Kind: CardKindApproval, BindingSHA256: vectorBinding}
+		}
+		return cards
+	}
+	results := map[string]func(*SeatWaitResult){
+		"no version":                  func(r *SeatWaitResult) { r.Version = "" },
+		"a version in capitals":       func(r *SeatWaitResult) { r.Version = strings.ToUpper(r.Version) },
+		"a short version":             func(r *SeatWaitResult) { r.Version = r.Version[:31] },
+		"a digest as the version":     func(r *SeatWaitResult) { r.Version = vectorBinding },
+		"a negative count":            func(r *SeatWaitResult) { r.Waiting = -1 },
+		"fewer waiting than cards":    func(r *SeatWaitResult) { r.Waiting = 1 },
+		"more said, none more":        func(r *SeatWaitResult) { r.More = true },
+		"more waiting, more not said": func(r *SeatWaitResult) { r.Waiting = 3 },
+		"more than the cap of cards": func(r *SeatWaitResult) {
+			r.Cards, r.Waiting, r.More = many(MaxSeatWaitCards+1), MaxSeatWaitCards+1, false
+		},
+		"more than the cap, counted": func(r *SeatWaitResult) {
+			r.Cards, r.Waiting, r.More = many(MaxSeatWaitCards+1), MaxSeatWaitCards+5, true
+		},
+		"a card twice":                   func(r *SeatWaitResult) { r.Cards[1].ID = r.Cards[0].ID },
+		"no id":                          func(r *SeatWaitResult) { r.Cards[0].ID = "" },
+		"an id that is not a pending id": func(r *SeatWaitResult) { r.Cards[0].ID = "rq-1" },
+		"an id in capitals":              func(r *SeatWaitResult) { r.Cards[0].ID = "ap-ABC" },
+		"no kind":                        func(r *SeatWaitResult) { r.Cards[0].Kind = "" },
+		"a kind in capitals":             func(r *SeatWaitResult) { r.Cards[0].Kind = "Approval" },
+		"a kind with a space":            func(r *SeatWaitResult) { r.Cards[0].Kind = "an approval" },
+		"a kind too long":                func(r *SeatWaitResult) { r.Cards[0].Kind = strings.Repeat("k", MaxSeatWaitKindBytes+1) },
+		"no binding":                     func(r *SeatWaitResult) { r.Cards[0].BindingSHA256 = "" },
+		"a short binding":                func(r *SeatWaitResult) { r.Cards[0].BindingSHA256 = vectorBinding[:63] },
+		"a binding in capitals":          func(r *SeatWaitResult) { r.Cards[0].BindingSHA256 = strings.ToUpper(vectorBinding) },
+	}
+	for name, change := range results {
+		r := sampleSeatWaitResult()
+		change(&r)
+		_, err := EncodeSeatWaitResult(r)
+		refused(t, err, record.CodeRecordInvalid, "wait result: "+name)
+	}
+	// A kind of the longest length, no cards, and more cards than listed are fine.
+	for name, r := range map[string]SeatWaitResult{
+		"no card":            {Version: PendingVersion(nil), Cards: []SeatWaitCard{}},
+		"a nil list":         {Version: PendingVersion(nil)},
+		"the longest kind":   {Version: waitVersionTwo, Waiting: 1, Cards: []SeatWaitCard{{ID: waitIDA, Kind: strings.Repeat("k", MaxSeatWaitKindBytes), BindingSHA256: vectorBinding}}},
+		"the most cards":     {Version: waitVersionTwo, Waiting: MaxSeatWaitCards, Cards: many(MaxSeatWaitCards)},
+		"more than listed":   {Version: waitVersionTwo, Waiting: 4000, Cards: many(MaxSeatWaitCards), More: true},
+		"waiting, no listed": {Version: waitVersionTwo, Waiting: 3, More: true},
+	} {
+		out, err := EncodeSeatWaitResult(r)
+		if err != nil {
+			t.Errorf("wait result: %s is refused: %v", name, err)
+			continue
+		}
+		if _, err := DecodeSeatWaitResult(out); err != nil {
+			t.Errorf("wait result: %s does not decode: %v", name, err)
+		}
+	}
+	// The members are all required.
+	sample, _ := EncodeSeatWaitResult(sampleSeatWaitResult())
+	for _, key := range []string{`"version"`, `"waiting"`, `"cards"`, `"more"`, `"binding_sha256"`, `"held"`, `"kind"`} {
+		in := bytes.Replace(sample, []byte(key), []byte(`"x`+key[1:]), 1)
+		_, err := DecodeSeatWaitResult(in)
+		refused(t, err, record.CodeRecordInvalid, "wait result without "+key)
+	}
+}
+
+// The result's own cap, about 24 KiB, holds the longest result: the most
+// cards, each of the longest id and kind and a mark that writes longest.
+func TestSeatWaitResultCapHoldsTheLargestResult(t *testing.T) {
+	longest := SeatWaitResult{Version: waitVersionTwo, Waiting: 1 << 20, More: true}
+	for i := 0; i < MaxSeatWaitCards; i++ {
+		// 51 bytes, the longest pending id, and each one its own.
+		id := "ap-" + strings.Repeat("z", 48-len(strconv.Itoa(i))) + strconv.Itoa(i)
+		longest.Cards = append(longest.Cards, SeatWaitCard{ID: id, Kind: strings.Repeat("k", MaxSeatWaitKindBytes), BindingSHA256: vectorBinding})
+	}
+	out, err := EncodeSeatWaitResult(longest)
+	if err != nil {
+		t.Fatalf("the longest result does not fit: %v", err)
+	}
+	if _, err := DecodeSeatWaitResult(out); err != nil {
+		t.Errorf("the longest result does not decode: %v", err)
+	}
+	t.Logf("longest result: %d bytes, id %d", len(out), len(longest.Cards[0].ID))
+	if MaxSeatWaitResultBytes != 24<<10 || MaxSeatWaitCards != 128 {
+		t.Error("a cap is not the one the plan fixes")
+	}
+	if len(out) < MaxSeatWaitResultBytes-2<<10 {
+		t.Errorf("the longest result is %d bytes, far under the cap %d: the cap is looser than it says", len(out), MaxSeatWaitResultBytes)
+	}
+	// A result over the cap is refused before it is read.
+	over := append(append([]byte(nil), out...), bytes.Repeat([]byte(" "), MaxSeatWaitResultBytes)...)
+	_, err = DecodeSeatWaitResult(over)
+	refused(t, err, record.CodeRecordTooLarge, "a wait result over its cap")
 }
