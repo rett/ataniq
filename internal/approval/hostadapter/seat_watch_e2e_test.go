@@ -285,7 +285,8 @@ func TestSeatWatchE2EListGainsACard(t *testing.T) {
 }
 
 // A Card page's poll names its card and binding. While nothing changes the
-// card is live: a newer poll of the session ends the older with same. When
+// card is live: a session holds up to three polls, one per tab, and a fourth
+// replaces the oldest, which answers replaced with the card unknown. When
 // the owner decides the card at the desk, the held poll answers changed with
 // the card gone, and the Card page read again offers no decide form.
 func TestSeatWatchE2ECardDecidedAtTheDesk(t *testing.T) {
@@ -299,10 +300,14 @@ func TestSeatWatchE2ECardDecidedAtTheDesk(t *testing.T) {
 
 	first := s.startPoll(sess, v, id, binding)
 	held(t, first, "a poll on the card")
+	other := s.startPoll(sess, v, id, binding)
+	held(t, other, "a second tab's poll")
+	third := s.startPoll(sess, v, id, binding)
+	held(t, third, "a third tab's poll")
 	second := s.startPoll(sess, v, id, binding)
-	got := answer(t, first, 2*time.Second, "the older poll, replaced by a newer")
-	if got.State != "same" || got.Card != "live" || got.Version != v {
-		t.Errorf("the older poll answers %+v, want same with the card live", got)
+	got := answer(t, first, 2*time.Second, "the oldest poll, replaced by a fourth")
+	if got.State != "replaced" || got.Card != "unknown" || got.Version != v {
+		t.Errorf("the oldest poll answers %+v, want replaced", got)
 	}
 	held(t, second, "the newer poll")
 
