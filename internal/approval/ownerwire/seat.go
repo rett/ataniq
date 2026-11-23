@@ -10,10 +10,11 @@ import (
 	"ataniq/internal/approval/record"
 )
 
-// This file holds the words of the five operations only the seat gate serves:
-// a login and a decision from the owner's phone, each a WebAuthn assertion
-// over a challenge the daemon draws, and the long wait that tells the seat
-// when the pending cards changed. See docs/design/seat-gate.md, "The
+// This file holds the words of five of the operations only the seat gate
+// serves: a login and a decision from the owner's phone, each a WebAuthn
+// assertion over a challenge the daemon draws, and the long wait that tells
+// the seat when the pending cards changed. The sixth, the guided new-project
+// interview seat.genesis, is in genesis.go. See docs/design/seat-gate.md, "The
 // challenge" and "Login".
 
 // The bounds of the seat gate's forms.
