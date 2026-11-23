@@ -418,6 +418,7 @@ func run(ctx context.Context, args []string, errout io.Writer, ready func(net.Ad
 	}
 	var daemon seatapp.Daemon = unwiredDaemon{}
 	var client *seatgate.Client
+	var link *seatlink.Daemon
 	if o.gate != "" {
 		id, err := seatgate.LoadIdentity(o.identity)
 		if err != nil {
@@ -436,7 +437,7 @@ func run(ctx context.Context, args []string, errout io.Writer, ready func(net.Ad
 			fmt.Fprintf(errout, "ataniq-seat: %v\n", err)
 			return 2
 		}
-		link, err := seatlink.New(client, seatlink.WithGatePin(o.gatePin))
+		link, err = seatlink.New(client, seatlink.WithGatePin(o.gatePin))
 		if err != nil {
 			fmt.Fprintf(errout, "ataniq-seat: %v\n", err)
 			return 2
@@ -492,6 +493,11 @@ func run(ctx context.Context, args []string, errout io.Writer, ready func(net.Ad
 			cancel()
 			<-linked
 		}()
+		// The link's watcher (seat.wait, when the gate offers it) runs with
+		// the client and ends before it: Close, deferred after the stop
+		// above, runs first, so no wait is in flight when the client stops.
+		link.StartWatch()
+		defer link.Close()
 		logf("ataniq-seat: linking to the seat gate at %s\n", o.gate)
 	}
 	logf("ataniq-seat: decisions follow the guard in %s\n", o.guardDir)
