@@ -314,11 +314,45 @@ func (a *app) genesisCall(r *http.Request, s Session) (Genesis, context.Context,
 	if !ok {
 		return nil, nil, nil, ErrNotOffered
 	}
-	if !a.geneses.allow(s.Credential, a.cfg.Now()) {
+	if !a.genesisAllow(s.Credential) {
 		return nil, nil, nil, errTooMany
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), daemonTimeout)
 	return g, ctx, cancel, nil
+}
+
+// genesisLogEvery is the least time between two journal lines about the
+// project pages' limit; the refusals in between are counted in the next.
+const genesisLogEvery = 30 * time.Second
+
+// genesisAllow counts a request of a credential against the project pages'
+// limit and reports whether it is within it. A request past the limit is
+// told to cfg.Logf, in a line of fixed text with no credential and nothing
+// of the request, at most one in genesisLogEvery, and the refusals between
+// two lines are counted in the second. A nil Logf is no line.
+func (a *app) genesisAllow(credential string) bool {
+	now := a.cfg.Now()
+	if a.geneses.allow(credential, now) {
+		return true
+	}
+	if a.cfg.Logf == nil {
+		return false
+	}
+	a.glog.mu.Lock()
+	if !a.glog.last.IsZero() && now.Sub(a.glog.last) < genesisLogEvery {
+		a.glog.held++
+		a.glog.mu.Unlock()
+		return false
+	}
+	more := a.glog.held
+	a.glog.last, a.glog.held = now, 0
+	a.glog.mu.Unlock()
+	if more > 0 {
+		a.cfg.Logf("ataniq-seat: the project pages' limit of %d requests a minute was reached for one credential; %d more since the last line\n", genesisRequests, more)
+		return false
+	}
+	a.cfg.Logf("ataniq-seat: the project pages' limit of %d requests a minute was reached for one credential\n", genesisRequests)
+	return false
 }
 
 // errTooMany is the error of a request past a session's bound.
@@ -544,7 +578,7 @@ func (a *app) discardPage(w http.ResponseWriter, r *http.Request, s Session) {
 		a.problem(w, problemGenesisNotOffered)
 		return
 	}
-	if !a.geneses.allow(s.Credential, a.cfg.Now()) {
+	if !a.genesisAllow(s.Credential) {
 		a.problem(w, problemTooManyProjects)
 		return
 	}

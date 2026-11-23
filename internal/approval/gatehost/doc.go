@@ -195,7 +195,7 @@
 // discard), and genesis-secret-shaped and genesis-over-cap answer what the
 // owner typed, which the owner may get wrong a few times; a few taps must not
 // shut the owner out of approvals. They are bounded by the seat's 30 project
-// requests a minute, the seat link's room of 10 interview calls, the gate's
+// requests a minute, the seat link's room of 12 interview calls, the gate's
 // 60 requests a minute and the store's own limits.
 //
 // After [RefusalBound] (16, the owner connection's bound on refused writes)
