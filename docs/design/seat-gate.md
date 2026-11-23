@@ -758,14 +758,20 @@ sends none past the room of its kind:
 | Kind | Calls | Room in 80 s |
 | --- | --- | --- |
 | Pings | `seat.ping`, every 15 s (`seatlink.PingInterval`, which `ataniq-seat` sets) | 6 |
-| Anyone's | `seat.pair`, `seat.login-challenge`, `seat.login` | 12 (6 logins) |
-| Reads | `owner.list`, `owner.show`, `owner.paths`, of every session together | 20 |
-| Decisions | `seat.challenge`, `seat.decide` | 16 (8 decisions) |
+| Anyone's | `seat.pair`, `seat.login-challenge`, `seat.login` | 10 (5 logins) |
+| Reads | `owner.list`, `owner.show`, `owner.paths`, of every session together | 16 |
+| Decisions | `seat.challenge`, `seat.decide` | 12 (6 decisions) |
 | Waits | `seat.wait`, the watcher's one long wait (see [live refresh](#live-refresh-seatwait)) | 6 |
+| Genesis | `seat.genesis`, every verb, of every session together (see [guided new project](#guided-new-project)) | 10 |
 
-The rooms add up to the gate's 60 (6 + 16 + 12 + 20 + 6, a sum the code checks
-when it is compiled; before the watcher the reads had 26 and there was no room
-for waits), so the gate's rate never refuses a call the seat sent. A call without room is not sent: the phone says the desk is
+The rooms add up to the gate's 60 (6 + 12 + 10 + 16 + 6 + 10, a sum the code
+checks when it is compiled), so the gate's rate never refuses a call the seat
+sent. Before the watcher the reads had 26 and there was no room for waits;
+before the interview's pages the rooms were 6, 16 (8 decisions), 12 (6
+logins), 20 and 6, and the 10 of the interview were taken from the reads (20
+to 16), the decisions (16 to 12) and anyone's (12 to 10): each of the three is
+still more than a person uses in 80 seconds, and the interview's 10 let the
+owner answer a round about every 8 seconds without meeting "busy". A call without room is not sent: the phone says the desk is
 busy (`desk_busy`, the problem "The desk is busy", or `rate_limited` for a
 pairing), before anything is asked. A decision's challenge is asked only
 when the room of decisions holds it and its `seat.decide` as well: the room
@@ -784,7 +790,7 @@ and its `seat.login` as well, the room of the login kept for that one
 challenge until the login is sent or the challenge's life ends (5 minutes at
 most). So the owner's login is never refused for room once the phone has
 answered. Strangers can still use up the login challenges, and with them the
-owner's: 8 a minute from all sources, and anyone's room, which 6 challenges
+owner's: 8 a minute from all sources, and anyone's room, which 5 challenges
 fill for as long as they are not answered (5 minutes at most), and which
 pairings share. That keeps the owner from logging in on the phone, or
 pairing one, while it lasts; it never touches the desk.
@@ -1145,7 +1151,7 @@ How it is built (G9), where the points above left a choice:
   before anything is journaled); the seat link takes that code as a certain
   refusal, and the phone says the same, "This is too large to send.".
 - Decision challenges are limited to 10 a minute per credential, and the
-  seat link asks one only when the room of decisions at the gate (16 calls
+  seat link asks one only when the room of decisions at the gate (12 calls
   in 80 seconds, see [login](#login-seatlogin-challenge-and-seatlogin)) holds
   it and its decision: a decision the phone signed is never refused for the
   gate's rate.
@@ -1448,11 +1454,11 @@ an answer is written into the page. One status line (`#watch-status`) says:
   since it was loaded (a reload is put off until the page's own read, which is
   the page's load, is 20 seconds old), and not while a field holds typed text.
   The gap keeps the reloads inside the reads' room: each reload is one
-  `owner.list`, and the reads have 20 calls in 80 seconds. It is a stated
+  `owner.list`, and the reads have 16 calls in 80 seconds. It is a stated
   limit, not a bound: three card lists open in a busy period (the watcher
   publishes up to about 6 changes in 80 seconds, each list reloads at most
-  every 20 seconds, so a list takes up to 4 of the 20 reads) can still use
-  most of the 20, and the owner's own taps on a card may then be answered
+  every 20 seconds, so a list takes up to 4 of the 16 reads) can still use
+  most of the 16, and the owner's own taps on a card may then be answered
   `desk_busy` until the room frees. No second room is built for the reloads.
 - A Card page never reloads by itself, since the owner may be ticking
   sign-offs. When its card is `changed` or `gone` it shows the line above,

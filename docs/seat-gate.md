@@ -369,9 +369,9 @@ up without a reload, and a card that was decided, withdrawn or replaced
   seconds, the interval at which the daemon looks at the door; a decision made
   at the desk or on the phone is seen within a few seconds, and a page that
   just reloaded waits until it is 20 seconds old before it reloads again.
-  Every reload is a read of the desk, and the seat's reads share 20 calls in 80
+  Every reload is a read of the desk, and the seat's reads share 16 calls in 80
   seconds (see below). With several card lists open at once, in a busy period,
-  the reloads can use most of those 20, and a tap of yours on a card may then be
+  the reloads can use most of those 16, and a tap of yours on a card may then be
   answered "The desk is busy" for a moment: close the lists you are not looking at.
 - **A Card page** never reloads by itself, since you may be ticking boxes.
   When its card was decided elsewhere or changed, the page says "This card
@@ -398,8 +398,8 @@ whatever the number of pages and phones open: a held request that the gate
 answers when the set of cards changes or after 25 seconds. The pages ask the
 seat, not the gate. The gate takes 60 requests a minute on the seat's one link,
 and the seat keeps a room for each kind of call within every 80 seconds: pings
-6, decisions 16, pairing and login (anyone's) 12, reads 20 and waits 6, 60 in
-all. An idle seat sends one wait about every 25 seconds. A page's poll is not
+6, decisions 12, pairing and login (anyone's) 10, reads 16, waits 6 and the
+new-project pages 10, 60 in all. An idle seat sends one wait about every 25 seconds. A page's poll is not
 a request that keeps the session alive: a session still ends 30 minutes after
 the last page you loaded or tap you made, however long a page stays open.
 
