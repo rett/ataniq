@@ -662,16 +662,22 @@ is reported (`Result.CounterSuspect`), not refused: synced passkeys report 0 on
 every use.
 
 What the daemon hands the verifier is the key list's row as a
-`credkind.Credential`: the kind, the credential id, the public key, the backup
-eligibility flag of the pairing and the highest sign counter seen. Today's key
-list holds neither the flag nor the counter, and its kind is `unverified`,
-which is not a kind of `credkind`. G6 records the kind at pairing, adds both
-fields, and keeps the highest counter, raised after each verified login or
-decision and never lowered, across restarts. Until a key has them it cannot log
-in or decide: it is refused `kind-refused`. A key paired before G6 is paired
-again; nothing is paired in production. So the first phone decision on a real
-key list needs G6's fields, and G8's tests give the service keys with them
-through its key store.
+`credkind.Credential`: the kind, the credential id, the public key, the AAGUID,
+the backup eligibility and backup state flags of the pairing and the highest
+sign counter seen. The key list holds them (built, G6). At the pairing the
+seat relays the registration's authenticator data and relying party id with
+`seat.pair`; the daemon registers the credential from them with
+`credkind.Register`, refusing a registration that does not hold
+(`credential-invalid`), and at the desk's confirm it stores the kind the
+AAGUID claims, the AAGUID, the flags and the counter as the baseline of the
+highest one. That counter is raised after each verified login or decision (a
+counter record of `owner/keys.log`) and never lowered, across restarts. The
+wire's key list (`owner.keys`, and `owner.pair-status` for the pending
+credential) shows the kind, the AAGUID and the two flags, never the counter,
+which is kept internally. A key paired without the authenticator data, or
+before the claims were kept, is of the kind `unverified`, which is not a kind
+of `credkind`: it cannot log in or decide, and is refused `kind-refused`. A
+key paired before G6 is paired again; nothing is paired in production.
 
 The counter: a credential that reports 0 at pairing and at every use, as a
 synced passkey does, has no counter, and nothing is checked or logged for it.
@@ -826,8 +832,8 @@ What the seat app does with a decision (G9, built):
   app's cap on every request (`seatapp.MaxBody`, 8 KiB): an assertion within
   the caps of `Assertion` is under 6 KiB in base64.
 - The app's `Permissions-Policy` header allows `publickey-credentials-get` to
-  the app's own origin on the login page (G7) and forbids it on every other
-  response; G9 allows it on the Card page as well.
+  the app's own origin on the login page (G7) and on a Card page that offers a
+  decision (G9), and forbids it on every other response.
 - A cancelled or failed user verification sends nothing and leaves the card as
   it was; the next tap asks a new challenge, which replaces the old one.
 
@@ -904,8 +910,8 @@ uses nothing and is never released by itself; a later approve needs a new tap
 and a new assertion. An expired card cannot be renewed by asking a new
 challenge: issue refuses it.
 
-The words for the codes, proposed; the seat shows no text of the gate's, and a
-code it does not know gets the last line:
+The words for the codes (built, G9, in `internal/seatapp`); the seat shows no
+text of the gate's, and a code it does not know gets the last line:
 
 | Codes | The phone says |
 | --- | --- |
@@ -930,8 +936,9 @@ approve shows the host's line and, under it, the held words above.
 ## The record change
 
 Owner decision: the decision record gains `confirmed: "passkey"` and a seat
-block. The fields of the block below are proposed. This changes the joint contract with the planner's project
-(`internal/approval/record`), so the planner must agree to it before G8 merges.
+block. The fields of the block below are those of the code. This changes the
+joint contract with the planner's project (`internal/approval/record`), so the
+planner must agree to it before G8 merges.
 It is built (G8a): `record.ConfirmedPasskey`, the block `record.SeatBlock`,
 and the passkey vector `decision-valid-passkey.json` with invalid vectors for
 each way of carrying the wrong blocks, in the record package's test data.
@@ -998,11 +1005,18 @@ AAGUID, shown as "passkey (claimed: unknown)"); all three verify the same way.
 none.
 
 A stored kind is a word of the key list's grammar (1 to 32 lower-case letters,
-digits and dashes, starting with a letter). `PairConfirm` stores the word
-`unverified` today, which is not a kind of `credkind`. The project's policy has
-its place in a field of the project's settings (planned, G6, in the host
-adapter's scratch settings), and until it exists every kind is accepted. G6
-records the kind at pairing.
+digits and dashes, starting with a letter). `PairConfirm` stores the kind that
+the pairing's claim gave, with the AAGUID, the backup flags and the sign
+counter (built, G6); it stores the word `unverified`, which is not a kind of
+`credkind`, only for a pairing whose `seat.pair` came without the
+registration's authenticator data. The project's policy is a field of the
+project's settings (built, G6: `"kinds"` in the scratch settings,
+`owner/scratch.json`, `hostadapter.Scratch.Kinds`, which the daemon hands to
+the service as `Config.KindPolicy`); every kind is accepted when it is absent
+or empty, and a project the daemon does not know accepts no kind. A login
+belongs to no project and checks only that the verifier knows the kind; the
+policy is applied at each challenge and each decision (`kind-refused`), so a
+key of a kind the project does not accept can still log in.
 
 ## The pairing fingerprint
 
@@ -1020,9 +1034,10 @@ with a row of any other count, as it refuses any other malformed row.
 ## Rotation
 
 No change of `seatgate` is needed: the gate holds a list of seat pins, and the
-seat holds one gate pin. The commands named here are planned (G2:
-`ataniq-seat gate-init`; G4: `ataniqd seat-gate init` and
-`ataniqd seat-gate pins`).
+seat holds one gate pin. The commands named here are built (G2:
+`ataniq-seat gate-init --identity DIR` makes the seat's identity and prints its
+fingerprint; G4: `ataniqd seat-gate init` makes the gate's and
+`ataniqd seat-gate pins` lists the pins).
 
 - A seat key: make the new identity on the authority host in a new folder; add
   its fingerprint to the gate's pin file (at most 4 pins) and restart the
@@ -1132,8 +1147,10 @@ phone.
 ## Dogfood
 
 1. On loopback, with the stand-in door, fakes and the software authenticator:
-   the end-to-end decision test (planned, G10b) is the proof that the path
-   works. It runs as a Go test with the tag `ataniq_ownerchannel`.
+   the end-to-end decision test (built, G10b: `TestSeatDecideE2E` and its
+   siblings in `internal/approval/hostadapter/seat_decide_e2e_test.go`) is the
+   proof that the path works. It runs as a Go test with the tag
+   `ataniq_ownerchannel`, in `make test-ownerchannel`.
 2. With the owner's go-ahead for each of: a build target for a daemon with the
    tag, the firewall rule, the proxy settings, the origin file on both hosts,
    the authority host's release of the seat app, and the first pin exchange,
