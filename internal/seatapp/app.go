@@ -92,7 +92,8 @@ type PairResult struct {
 // Offer, DecideChallenge and Decide are a decision from the phone. Offer
 // asks the gate nothing: it says what the Card page may offer for a card the
 // port showed, as a session read it, by the card model's rules for approve
-// and deny. DecideChallenge freezes the decision the owner tapped from the
+// and deny; a port that takes no decision now sets Offer.Inhibited, and the
+// page shows a notice and no form. DecideChallenge freezes the decision the owner tapped from the
 // card the port showed (never from anything a browser sent but the action,
 // the indexes of the sign-offs and the reason), asks the daemon for its
 // challenge (seat.challenge), and returns it only after the port recomputed

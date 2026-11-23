@@ -402,7 +402,7 @@ func (a *app) cardPage(w http.ResponseWriter, r *http.Request, s Session) {
 	d.Unsettled = !fresh
 	if fresh && !c.Ended && !c.OnItsWay && (c.State == "" || c.State == "pending") {
 		d.Offer = a.cfg.Daemon.Offer(id, c.BindingSHA256, reading, now)
-		d.Decide = d.Offer.Approve || d.Offer.Deny
+		d.Decide = (d.Offer.Approve || d.Offer.Deny) && !d.Offer.Inhibited
 	}
 	var form pageForm
 	if d.Decide {

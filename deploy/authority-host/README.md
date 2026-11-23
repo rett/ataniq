@@ -2367,7 +2367,10 @@ cannot be looked up (the folder missing, a link, not open to `seat`),
 nothing is relayed and the phone shows "Decisions are paused on this
 host. Nothing was sent." under the code `decisions_inhibited`; the card
 stays as it was, and the owner taps again once decisions are taken again.
-Each refusal is logged with the guard's code (`ataniq-seat: a decision was
+The card page asks the guard too, read-only and without a log line: while
+decisions are refused a pending card shows "Decisions are paused on this
+host." and no Approve or Deny form, so no tap is invited; the card stays
+readable. Each refusal is logged with the guard's code (`ataniq-seat: a decision was
 refused, decisions are paused on this host: decision-guard-inhibited`).
 Pairing, login and the reading of cards decide nothing and go on. The
 unit's `ProtectSystem=strict` leaves `/var/lib/authority-host` readable,

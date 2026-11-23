@@ -242,7 +242,7 @@ decision.
 
 `--decision-guard DIR` (default `/var/lib/authority-host`) is the folder the
 seat asks, with `decisionguard.Check`, before it relays any decision's challenge
-or any decision, every time. While `decisions.inhibit` is in it, or the folder
+or any decision, and for the card page's buttons, every time. While `decisions.inhibit` is in it, or the folder
 is missing, a link or not readable, nothing is relayed and every Approve or Deny
 answers `decisions_inhibited` ("Decisions are paused on this host. Nothing was
 sent."). That is the authority host's state folder, and it exists there. By hand
@@ -427,7 +427,7 @@ What the phone shows, by the code the seat's API answers:
 | "The desk could not be reached." / "cannot be reached" | `daemon_unavailable` | The link is down: daemon not running, the firewall, a wrong address, a pin on either end that does not match, or the seat started without `--gate`. | Check the daemon's start line, the firewall and both pins. |
 | "The desk did not accept this code. It may have expired or been used." | `code_refused` | The code expired, was used or was tried wrongly five times. | Start a new pairing at the desk. |
 | "Too many tries. Wait a while..." | `rate_limited` | The pairing or login limits of the seat. | Wait; the limits age out. |
-| "Decisions are paused on this host. Nothing was sent." | `decisions_inhibited` | The authority host's decision inhibit is there (a switch under way, a boot not yet requalified, a failure), or the `--decision-guard` folder is missing, a link or not readable. The seat logs the guard's code (`decision-guard-...`). | On the authority host, `ah-switch status` says why. On another host, check `--decision-guard`. Tap again once decisions are taken. |
+| "Decisions are paused on this host." (on the card page, in place of the Approve and Deny buttons) or "Decisions are paused on this host. Nothing was sent." (after a tap) | `decisions_inhibited` | The authority host's decision inhibit is there (a switch under way, a boot not yet requalified, a failure), or the `--decision-guard` folder is missing, a link or not readable. The seat logs the guard's code (`decision-guard-...`). | On the authority host, `ah-switch status` says why. On another host, check `--decision-guard`. Tap again once decisions are taken. |
 | "The desk is busy. Try again in a minute." | `desk_busy` | The seat's room at the gate, or the gate's rate, is used up. | Wait a few minutes. |
 | "The desk does not take phone logins now." | `login_unavailable` | The gate is read-only: no usable origin file at the daemon. | Fix the origin file, restart the daemon. |
 | "No passkey is paired with the desk yet." | `not_paired` | The key list holds no usable credential. | Pair the phone at the desk. |

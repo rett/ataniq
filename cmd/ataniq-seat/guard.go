@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"ataniq/internal/authorityhost/decisionguard"
 	"ataniq/internal/seatapp"
@@ -49,6 +50,17 @@ func (g guardedDaemon) allowed() error {
 		g.refused(code)
 	}
 	return fmt.Errorf("%w (%s)", seatapp.ErrDecisionsInhibited, code)
+}
+
+// Offer asks the guard too, read-only: while decisions are refused the card
+// page is offered no decision, only the notice that they are paused. It
+// logs nothing, since no decision was refused; the card stays readable, and
+// DecideChallenge and Decide stay the enforcement.
+func (g guardedDaemon) Offer(id, bindingSHA256 string, r seatapp.Reading, now time.Time) seatapp.Offer {
+	if g.check(g.dir) != nil {
+		return seatapp.Offer{Inhibited: true}
+	}
+	return g.Daemon.Offer(id, bindingSHA256, r, now)
 }
 
 // DecideChallenge asks the guard first, and asks the daemon for no challenge

@@ -1382,3 +1382,52 @@ func TestSeatDecideInhibitedSettles(t *testing.T) {
 		t.Error("the script does not let the owner tap again after decisions_inhibited")
 	}
 }
+
+// TestSeatCardWhileDecisionsAreInhibited: a port whose Offer says Inhibited
+// gets a Card page that shows the notice and no decide form, no deciding
+// script and no passkey, while the card stays readable (its facts, its
+// paths page); a card that is not pending is not offered to the port at
+// all, and once the port offers again, the form is back.
+func TestSeatCardWhileDecisionsAreInhibited(t *testing.T) {
+	r := newRig(t)
+	s := r.login(t)
+	r.daemon.offer = Offer{Approve: true, Deny: true, Inhibited: true}
+	w := r.getWith("/cards/"+testCardID, s)
+	checkHeaders(t, "a card while decisions are paused", w)
+	body := w.Body.String()
+	if w.Code != 200 || !strings.Contains(body, "Decisions are paused on this host.") {
+		t.Fatalf("no notice: %d\n%s", w.Code, body)
+	}
+	for _, not := range []string{`id="decide"`, "decide.js", `id="approve"`, `id="deny"`, `id="signoff-0"`, "<form", "data-form="} {
+		if strings.Contains(body, not) {
+			t.Errorf("the paused page holds %q", not)
+		}
+	}
+	for _, want := range []string{"<h1>ataniq · feature finish seat-glue</h1>", "Merge the seat glue.", "refs/heads/develop", `id="back"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the card is not readable: no %q", want)
+		}
+	}
+	if pp := w.Header().Get("Permissions-Policy"); strings.Contains(pp, "publickey-credentials-get=(self)") {
+		t.Errorf("the page may ask for a passkey: %q", pp)
+	}
+	// The reads go on.
+	for _, path := range []string{"/cards/", "/cards/" + testCardID + "/paths/0"} {
+		if w := r.getWith(path, s); w.Code != 200 || strings.Contains(w.Body.String(), "Decisions are paused") {
+			t.Errorf("%s: %d", path, w.Code)
+		}
+	}
+	// A tap that a stale page makes is still refused by the port's own
+	// answer, which is the enforcement.
+	r.daemon.offer = Offer{Approve: true, Deny: true}
+	if body := r.getWith("/cards/"+testCardID, s).Body.String(); !strings.Contains(body, `id="decide"`) || strings.Contains(body, "Decisions are paused") {
+		t.Error("the form is not back once the port offers again")
+	}
+	// A card that is not pending asks the port nothing and shows no notice.
+	r.daemon.offer = Offer{Inhibited: true}
+	before := len(r.daemon.offers)
+	r.daemon.card.State, r.daemon.card.Ended = "approved", true
+	if body := r.getWith("/cards/"+testCardID, s).Body.String(); strings.Contains(body, "Decisions are paused") || len(r.daemon.offers) != before {
+		t.Error("an ended card is offered to the port or shows the notice")
+	}
+}
