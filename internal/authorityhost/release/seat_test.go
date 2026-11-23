@@ -193,7 +193,9 @@ func TestSeatUnit(t *testing.T) {
 			t.Errorf("%s %q, want %q", flag, args[flag], want)
 		}
 	}
-	if len(args) != 8 || len(exec) != 17 {
+	// The last word is the notifier's optional flag, from the owner's
+	// environment file (see TestNotifySeatUnitTakesTheOptionalFlag).
+	if len(args) != 8 || len(exec) != 18 || exec[17] != "$SEAT_NOTIFY_ARGS" {
 		t.Errorf("ExecStart has other arguments: %q", exec)
 	}
 	for key, want := range map[string]string{

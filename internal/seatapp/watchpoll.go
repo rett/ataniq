@@ -215,6 +215,7 @@ func (a *app) watchPost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errRateLimited)
 		return
 	}
+	a.polled()
 	wt, ok := a.watcher()
 	if !ok {
 		writeJSON(w, http.StatusOK, watchAnswer{State: watchOffline, Card: cardUnknown})
@@ -224,6 +225,9 @@ func (a *app) watchPost(w http.ResponseWriter, r *http.Request) {
 	// hold below, and is never missed.
 	ch := wt.WatchChanged()
 	st := wt.Watch()
+	if st.Watching && !st.Offline {
+		a.sawWaiting(st.Waiting)
+	}
 	if !st.Watching || st.Offline || st.Version != in.Version {
 		writeJSON(w, http.StatusOK, answerOf(st, in))
 		return

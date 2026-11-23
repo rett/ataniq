@@ -253,3 +253,36 @@ func TestSocketNeedsAClientAddressHeader(t *testing.T) {
 		t.Error("--socket was refused with the header")
 	}
 }
+
+func TestParseNotifySocket(t *testing.T) {
+	base := []string{"--origin", "https://seat.example", "--listen", "127.0.0.1:8080"}
+	gate := []string{"--gate", "gate.example:7443", "--gate-pin-file", pinFile(t, strings.Repeat("ab", 32)+"\n", 0o600), "--identity", "/x"}
+	with := func(parts ...[]string) []string {
+		var out []string
+		for _, p := range parts {
+			out = append(out, p...)
+		}
+		return out
+	}
+	var errout bytes.Buffer
+	o, _, ok := parse(with(base, gate, []string{"--notify-socket", "/run/seat-notify/n.sock"}), &errout)
+	if !ok || o.notifySocket != "/run/seat-notify/n.sock" {
+		t.Fatalf("a good socket refused: %q", errout.String())
+	}
+	if o, _, ok := parse(with(base, gate), io.Discard); !ok || o.notifySocket != "" {
+		t.Error("without the flag the socket is not empty")
+	}
+	for name, args := range map[string][]string{
+		"relative":     with(base, gate, []string{"--notify-socket", "n.sock"}),
+		"dot relative": with(base, gate, []string{"--notify-socket", "./n.sock"}),
+		"no gate":      with(base, []string{"--notify-socket", "/run/seat-notify/n.sock"}),
+	} {
+		var out bytes.Buffer
+		if _, code, ok := parse(args, &out); ok || code != 2 {
+			t.Errorf("%s: accepted (code %d)", name, code)
+		}
+		if !strings.Contains(out.String(), "Usage: ataniq-seat") || !strings.Contains(out.String(), "--notify-socket") {
+			t.Errorf("%s: no usage in %q", name, out.String())
+		}
+	}
+}

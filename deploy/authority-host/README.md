@@ -2277,7 +2277,12 @@ on an AI host through the seat gate. On the authority host it runs as its
 own user, `seat`, behind Caddy, on a Unix socket, and reaches nothing on
 the network but the gate. It starts no model and calls no provider: it
 talks to Caddy through its socket and to the gate's one address, and
-nothing else.
+nothing else, but for one more thing when the owner turns it on: it dials a
+local Unix socket, the notifier's (see [The notifier](#the-notifier)), to
+tell it how many cards wait. That socket is not a network address and gives
+the seat no way out: the seat's network stays denied (`IPAddressDeny=any`)
+but for the gate's one address. The push to the phone is the notifier's, a
+separate unit.
 
 ### What it ships
 
@@ -2296,7 +2301,10 @@ folder's alone.
   the owner's `EnvironmentFile=/etc/authority-host/seat/seat.env`),
   `--gate-pin-file /etc/authority-host/seat/gate.pin`,
   `--identity /var/lib/seat/identity` and
-  `--decision-guard /var/lib/authority-host`. `RuntimeDirectory=seat`
+  `--decision-guard /var/lib/authority-host`, and `$SEAT_NOTIFY_ARGS`, the
+  notifier's optional flag from the same environment file (empty or absent
+  by default, so no flag: see [The notifier](#the-notifier); the word is
+  split at spaces, so an empty value is no argument). `RuntimeDirectory=seat`
   makes `/run/seat` (`seat:seat`, 0750) for the socket, and
   `StateDirectory=seat` makes `/var/lib/seat` (0700) for the seat's gate
   key. The network: `IPAddressDeny=any` (the owner's drop-in allows the
@@ -2424,7 +2432,12 @@ release or in this repository.
    `seat:seat` 0660 in a 0750 folder, as a member of the group; the group
    gives it nothing else, as the seat's files are 0600 and its state
    folder 0700). Caddy reads its groups when it starts: the switch's
-   reload restarts it.
+   reload restarts it. Also make the notifier's group now,
+   `groupadd --system seat-notify`: the seat's unit names it as a
+   supplementary group (how the seat reaches the notifier's socket, see "The
+   notifier"), and a unit that names a group the host does not know does not
+   start, so the group must exist before the first switch to a seat release,
+   with or without the notifier.
 2. The owner's files, in a new folder `/etc/authority-host/seat`
    (root-owned, 0755), each root-owned, mode 0644 and not writable by
    group or others:
@@ -2433,7 +2446,9 @@ release or in this repository.
    - `gate.pin`: the gate key's fingerprint, carried from the AI host;
    - `seat.env` (mode 0600 is enough, systemd reads it):
      `SEAT_GATE=203.0.113.20:GATEPORT`, the gate's address as an IP
-     literal (the seat reaches no resolver);
+     literal (the seat reaches no resolver), and, only once the notifier
+     is set up, the line
+     `SEAT_NOTIFY_ARGS=--notify-socket /run/seat-notify/notify.sock`;
    - `site.caddy`: the seat's site,
      ```
      http://seat.example {
@@ -2478,6 +2493,27 @@ release or in this repository.
    owner's `site.caddy`: the trusted proxies are a global option, which
    must be in the options block at the top of the Caddyfile, before the
    import.
+
+7. The proxy in front of this host must let `/api/watch` through. The
+   phone's pages hold a request to it open for up to 25 seconds (the seat
+   answers when something changes, or when the 25 seconds are up), so the
+   front proxy's read timeout must be longer than 30 seconds, and its
+   buffering must be off for that path: a proxy that buffers the answer,
+   or that gives up on a request after 30 seconds, turns every poll into an
+   error and the page into "Not live". For example, with nginx in front,
+   in the location that serves the seat's name:
+   ```
+   location /api/watch {
+   	proxy_pass http://AUTHORITY_HOST;
+   	proxy_read_timeout 60s;
+   	proxy_buffering off;
+   }
+   ```
+   (`AUTHORITY_HOST` stands for this host's address; another proxy has its
+   own settings for the same two things, and a CDN or a cloud proxy in front
+   of that has a limit of its own, which must also be above 30 seconds.)
+   This host's Caddy needs nothing: its write timeout is 30 seconds, above
+   the hold, and so is the seat's own server's.
 
 Without `seat.env` the no-AI check reports `HIT incomplete env-file
 /etc/authority-host/seat/seat.env` and the switch stops at step 4 before
@@ -2533,3 +2569,322 @@ a seat release is `current` again, or the next stop the host's list must
 make fails and the transaction stays in `stopping`. The seat's state is
 its key, in `/var/lib/seat`, which no switch touches; sessions are in
 memory and end with the process.
+
+## The notifier
+
+`ataniq-seat-notify` (command `cmd/ataniq-seat-notify`) is the unit that
+sends the owner's phone the notice "cards are waiting". The seat app tells
+it one integer over a local Unix socket, how many cards wait, and it sends
+a Web Push message to the phone's subscription, through Apple's push
+service. It holds the push key and the subscriptions and is the only unit
+of the host that talks to a push service. It is a separate unit so that the
+seat, which holds the session of the phone and relays the decisions, keeps
+no way out to the network but the gate: a notice never decides, and what
+the notifier reaches does not widen what the seat reaches.
+
+The owner approved outbound access to Apple's push service for this unit,
+and for nothing else. It is the host's one outbound path besides the
+gate's: the unit's `IPAddressDeny=any` stays, and the owner's drop-in
+(setup step 4) allows the resolver and the push service's range and no
+other address. The host's firewall keeps it to TCP port 443 there (the
+owner's rule, below).
+
+It runs on the authority host, never on an AI host, and it is not an AI
+tool or a credential of a provider: it is a Go program of the standard
+library that posts an encrypted `{"n":N}` to a URL. Its key is a signing
+key for the push service; it is no key of any model's provider.
+
+### What it ships
+
+The notifier's part of the release source is `notify/`, laid over this
+folder and then over the seat's part (`seat/`): it holds only `etc/` and
+`share/`, and adds the unit and replaces two of the seat's lists. It is
+not usable without the seat's part, since its lists are the seat's with
+the notifier's lines added (a test holds them to that). The Caddyfile, the
+stop list, the health commands and the no-AI check's lists are the seat's
+and this folder's.
+
+- `etc/systemd/system/ataniq-seat-notify.service`: the service. It runs
+  `{release}/bin/ataniq-seat-notify run` (the release's own binary) as user
+  `seat-notify` and group `seat-notify` (a group of its own: the notifier is
+  in no group of the seat's, so it cannot reach the seat's socket in
+  `/run/seat`), with
+  `--socket /run/seat-notify/notify.sock`, `--seat-user seat`,
+  `--vapid-key /var/lib/seat-notify/vapid.pem`,
+  `--subscriptions /var/lib/seat-notify/subscriptions.json` and
+  `--vapid-subject ${NOTIFY_SUBJECT}`, the last from the owner's
+  `EnvironmentFile=/etc/authority-host/seat-notify/seat-notify.env`. The
+  push host is the command's default, exactly `web.push.apple.com`, and the
+  TTL its default, one hour. `RuntimeDirectory=seat-notify` makes
+  `/run/seat-notify` (`seat-notify:seat-notify`, 0750), where the unit makes
+  its socket with mode 0660 and group `seat-notify` (the unit's group), so
+  that the seat's user reaches it as a member of that group: the seat's unit
+  names `SupplementaryGroups=seat-notify`; `StateDirectory=seat-notify` makes
+  `/var/lib/seat-notify` (0700) for the key and the subscriptions. The
+  network: `IPAddressDeny=any` and no `IPAddressAllow=` in the file (the
+  owner's drop-in allows the resolver and the push range, below),
+  `SocketBindDeny=any` (no listener on any address) and
+  `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`. The hardening and the
+  `SystemCallFilter=@system-service ~@privileged @resources` are the seat's
+  (a test holds every key the two units share to the same value, but the
+  user, the groups, the folders, the sizes and the network, which differ on
+  purpose; another holds that the notifier names no group `seat` and the
+  seat's unit names `seat-notify` as its one supplementary group), with
+  `MemoryMax=128M` and `TasksMax=32`. It has no `[Install]` section and is
+  never enabled: only the release's `reload.list` starts it.
+- `share/validators.list`: the seat's list with
+  `systemd-analyze verify {release}/etc/systemd/system/ataniq-seat-notify.service`
+  and `test -L /etc/systemd/system/ataniq-seat-notify.service` added (the
+  owner's link of the unit, setup step 5, as for the seat's).
+- `share/reload.list`: the seat's list with
+  `systemctl restart ataniq-seat-notify.service` added before the seat's own
+  restart, so the notifier's socket is there when the seat starts.
+
+`stop.list` is not changed: the stop lists stop the decision services, and
+the notifier decides nothing. `ah-release check` asks every unit that starts
+a program to be stopped in `stop.list`, and excuses this one unit, by its
+name, from that (and from counting as the decision service a release that is
+not static must have), but only while every `ExecStart` of the unit and of
+its drop-ins runs the release's `bin/ataniq-seat-notify` and no other binary
+of the release: a unit of that name that runs another binary (the seat's, say)
+is stopped like any other, so the name cannot hide a decision service. It
+asks it a validator and a restart like any other.
+`units.allow` and `ports.allow` are not changed either: the unit is never
+enabled, and it listens on no TCP port. The seat's unit gets one optional
+word, `$SEAT_NOTIFY_ARGS`, which is nothing unless the owner's `seat.env`
+sets it to `--notify-socket /run/seat-notify/notify.sock` (setup step 6);
+`ataniq-seat` then tells the notifier how many cards wait, and nothing else.
+
+The no-AI check reads the notifier's unit and its environment file as it
+reads the seat's, and the binary's name is looked up with the others: a
+variable like a provider key in `seat-notify.env` is a hit, a missing file is
+`HIT incomplete env-file /etc/authority-host/seat-notify/seat-notify.env`.
+The VAPID subject and the key are the owner's, on the host: no release holds
+either.
+
+### What it does
+
+- Only the user `--seat-user` (the seat's) is served on the socket: the
+  command looks the name up once at its start (it refuses to start when the
+  host does not know it) and the kernel's peer credentials decide for each
+  connection, not the socket's mode. A connection of any other user is
+  closed unread. One request and one answer per connection, 2 seconds at
+  most, except `notify`, which sends its pushes before it answers and has 15
+  seconds (the request is still read within the 2).
+- `info` answers the VAPID public key (what the phone subscribes with) and
+  how many subscriptions it holds. `subscribe` keeps a subscription (at
+  most 4; the same endpoint again replaces its keys; an endpoint that is not
+  https on port 443 of a host `--push-hosts` allows is refused, and so is a
+  fifth subscription). `unsubscribe` drops one by the hash of its endpoint.
+  They are kept in `/var/lib/seat-notify/subscriptions.json`, mode 0600,
+  read strictly (a file that is not exactly what the command writes stops
+  its start; nothing is repaired) and written atomically (a new file, synced
+  and renamed, then the folder synced).
+- `notify N` sends, to each subscription in turn, the message `{"n":N}` and
+  nothing else, encrypted for that subscription, with the topic `waiting`
+  (a notice not yet delivered is replaced by the next), urgency `normal` and
+  a TTL of one hour. A subscription the push service says is gone (404 or
+  410) is dropped; one that failed otherwise is kept. One push is
+  given 5 seconds and the whole notify 12, inside the connection's 15 (the
+  seat's own bound on the call is 20), so up to four subscriptions fit when the
+  push service answers in the usual time; a slow push service may leave later
+  subscriptions for the seat's next try. At most 30 pushes are made in any
+  hour, all subscriptions together, whatever the seat asks: past that the
+  answer is `rate_limited` and nothing is sent.
+- The only host it posts to is `web.push.apple.com`: no other name, no
+  wildcard, no subdomain, no IP address, no redirect followed, no proxy from
+  the environment. The command takes another list in `--push-hosts`; the
+  unit does not pass it.
+- It logs fixed lines with counts (`notify: 2 of 2 pushes accepted, ...`)
+  to the journal, and never an endpoint, a key or the subject.
+
+### Making the release with it
+
+From the repository root on the development host:
+
+```
+mkdir SRC
+cp -R deploy/authority-host/etc deploy/authority-host/share SRC/
+cp -R deploy/authority-host/seat/. SRC/
+cp -R deploy/authority-host/notify/. SRC/
+CGO_ENABLED=0 sh scripts/go-tool.sh build -trimpath -o build/authority-host/ataniq-seat ./cmd/ataniq-seat
+CGO_ENABLED=0 sh scripts/go-tool.sh build -trimpath -o build/authority-host/ataniq-seat-notify ./cmd/ataniq-seat-notify
+ldd build/authority-host/ataniq-seat-notify      # "not a dynamic executable"
+```
+
+Then fill the allowlists and build as for the seat's release ("Making the
+seat's release"), with `--bin build/authority-host/ataniq-seat-notify`
+added to the other `--bin` arguments, and check it. A test builds this
+release from the three trees with stand-in binaries, checks it, and has the
+switch's dry run accept it; another reads the unit and its environment file
+as the no-AI check reads a release.
+
+### Setting the host up for it, once, by hand
+
+The owner does these on the host, as root, before the first switch to a
+release that has the notifier, with the real values in place of the
+placeholders (`seat.example`, `203.0.113.53`, `198.51.100.0/24`,
+`owner@example.org`). The seat's own setup ("Setting the host up for it,
+once, by hand") is done first. None of this is in the release or in this
+repository.
+
+1. The group and the user: `groupadd --system seat-notify` (already made by
+   the seat's step 1, which the seat's unit needs), then
+   `useradd --system --no-create-home --shell /usr/bin/nologin --gid seat-notify seat-notify`,
+   and the seat's user into the group, `usermod -aG seat-notify seat` (the
+   unit's `SupplementaryGroups=seat-notify` gives the running seat the
+   group; the membership makes it true for a shell too, for `send-test`
+   below). The notifier is in the group `seat-notify` and no other: it must
+   not be in the group `seat` (nor `usermod -aG seat seat-notify`), because
+   the seat's socket, `/run/seat/http.sock`, is open to that group and the
+   notifier, the one unit with egress, would then speak to the seat in
+   Caddy's place. Caddy is not a member of `seat-notify`: only the seat's
+   user and the notifier reach the notifier's socket, and the kernel's peer
+   check lets only the seat user's id in.
+2. The key, before the first switch: as root,
+   `install -d -o seat-notify -g seat-notify -m 0700 /var/lib/seat-notify`, then,
+   from a root-owned copy of the release you verified (as the seat's step 4
+   does), `sudo -u seat-notify RELEASE/bin/ataniq-seat-notify vapid-init --key /var/lib/seat-notify/vapid.pem`.
+   It makes the key (mode 0600, never overwriting) and prints the public key
+   only. Without the key the notifier exits at its start and systemd
+   restarts it every 5 seconds without end (see "A notifier that cannot
+   start", below): the switch does not notice, so check the notifier after
+   the switch.
+3. The owner's file, in a new folder `/etc/authority-host/seat-notify`
+   (root-owned, 0755): `seat-notify.env` (root-owned, mode 0600 is enough,
+   systemd reads it):
+   ```
+   NOTIFY_SUBJECT=mailto:owner@example.org
+   ```
+   The subject is the contact by which a push service may reach the
+   operator, a `mailto:` or `https:` value of the owner's own; the example
+   address is a placeholder. Without the file the no-AI check reports
+   `HIT incomplete env-file` and the switch stops at step 4 before anything
+   changes.
+4. The notifier's egress, in a drop-in of its own,
+   `/etc/systemd/system/ataniq-seat-notify.service.d/egress.conf`:
+   ```
+   [Service]
+   # The owner fills the real values. The first is the resolver this host
+   # uses (the address in /etc/resolv.conf; a resolver on this host's own
+   # loopback needs its 127.x address here too, since IPAddressDeny=any
+   # covers loopback), the second the push service's address range.
+   IPAddressAllow=203.0.113.53
+   IPAddressAllow=198.51.100.0/24
+   ```
+   `IPAddressAllow=` allows addresses, not ports: the host firewall keeps the
+   user `seat-notify` to the resolver and to TCP port 443 of the push range.
+   Without the drop-in the notifier reaches no address at all and sends
+   nothing (the seat's notices fail, and the pages and decisions go on).
+5. The unit's link, which `daemon-reload` follows into `current`:
+   `ln -s /opt/authority-host/current/etc/systemd/system/ataniq-seat-notify.service /etc/systemd/system/ataniq-seat-notify.service`.
+   It dangles until `current` is a release that has the notifier, and
+   systemd passes over it meanwhile. Without it the validator
+   `test -L /etc/systemd/system/ataniq-seat-notify.service` stops the
+   switch before anything changes.
+6. Tell the seat where the socket is: add
+   `SEAT_NOTIFY_ARGS=--notify-socket /run/seat-notify/notify.sock` to
+   `/etc/authority-host/seat/seat.env`. The seat reads it when it starts, at
+   the switch. Leave it out, or empty, and the seat tells no one anything.
+7. The host firewall (the owner's own rule, like the seat's): the user
+   `seat-notify` may open outbound TCP connections to port 443 of the push
+   range and to the resolver, and nothing else; the seat's rule is not
+   changed (the seat now also dials a local Unix socket, which the firewall
+   never sees). For example, an output rule on `meta skuid` for
+   `seat-notify`, `ip daddr 198.51.100.0/24`, `tcp dport 443`, and one for
+   the resolver, then a drop for the rest of that user's output. The
+   baseline pins what the firewall is (`nft.digest`).
+
+### Enabling it
+
+There is nothing to enable: a switch to a release that has the notifier
+(`ah-switch --from INCOMING/ID ID`, as in [DEPLOY.md](DEPLOY.md)) verifies
+it, runs its validators, moves `current`, and its reload list restarts the
+notifier, then the seat and Caddy, while decisions are inhibited. The
+health check does not look at the notifier: it decides nothing, so a notifier
+that cannot start does not fail the switch (see "A notifier that cannot
+start", below): check it yourself. At every
+boot, `ah-switch boot` runs the same reload list. Check it with
+`systemctl status ataniq-seat-notify.service` and `ls -l /run/seat-notify`
+(the socket, `seat-notify:seat-notify`, mode 0660).
+
+To test it, once the switch is done, tell the notifier a count by hand, as
+the seat user, the only user it serves:
+
+```
+sudo -u seat RELEASE/bin/ataniq-seat-notify send-test --socket /run/seat-notify/notify.sock 3
+```
+
+It prints `sent K`, the number of pushes the push service accepted, which is
+0 until a phone has subscribed (the phone's side of the notices, the
+subscribe page, is the seat app's own and comes after this unit): the test
+then shows only that the socket, the user check and the answer work. With a
+subscription the phone shows a notice that 3 cards wait. The line in the
+journal (`journalctl -u ataniq-seat-notify.service`) has the counts.
+
+### What breaks if the notifier is down
+
+Nothing but notices. After a failed call the seat tries again a minute
+later, then 2, 4, 8, 16 and 30 minutes apart (a call the notifier took ends
+that), and logs it at most once a minute, with no endpoint or key in the
+line; calls the notifier did not answer do not use up the seat's 30 notices a
+day (at most 200 calls of any end are made a day);
+the pages, the cards, the decisions and the phone's polls do not depend on
+the notifier.
+
+### A notifier that cannot start
+
+The switch does not catch it. The unit is `Type=simple`, so
+`systemctl restart ataniq-seat-notify.service` in the reload list succeeds as
+soon as the process is forked, and the notifier then exits at its start when
+it cannot go on: a missing or unsafe key (`--vapid-key`), a subscriptions file
+that is not as the command writes it (`--subscriptions`), among them one that
+holds a host `--push-hosts` no longer allows, a user `--seat-user` the host
+does not know, or a subject that is not a `mailto:` or `https:` value. The
+reload list reports success, the health check is the seat's and looks at
+nothing of the notifier, and the switch ends `ok`. Meanwhile
+`Restart=on-failure` with `RestartSec=5s` starts it again every 5 seconds
+without end (two starts in 10 seconds stay under systemd's start limit, so
+it is never given up on) while the switch reports success. The seat's own
+step is different: its health check needs the seat on its socket, so a seat
+that cannot start fails the switch.
+
+How the owner sees it, after a switch that has the notifier, and at any time:
+
+- `systemctl status ataniq-seat-notify.service` says `activating
+  (auto-restart)` with the exit status of the last try, where a running
+  notifier says `active (running)`;
+- `journalctl -u ataniq-seat-notify.service` has a fixed line saying what was
+  refused (`--vapid-key: ...`, `--subscriptions: ...`, `--seat-user is not a
+  user of this host`, `--vapid-subject is not a valid contact`) repeated every
+  5 seconds, and no `serving the seat user on the socket`;
+- `ls -l /run/seat-notify` has no `notify.sock`, and `send-test` (above) fails
+  with `the notifier is not reachable`;
+- the phone shows nothing wrong at first: the Notices section reads what the
+  phone holds ("Notices are on.") and does not ask the notifier, so the first
+  sign there is that **Enable notices** ends in "Could not turn on notices. Try
+  again later.", and a card that waits brings no notice. The seat's journal
+  has its line about a notifier that did not take the count, at most one a
+  minute.
+
+Fix the file, restart the unit by hand (`systemctl restart
+ataniq-seat-notify.service`) or switch again, and check as above. Nothing
+else is affected meanwhile, and the switch is not rolled back on its account:
+the notices are an extra, and the host's decision path does not depend on
+them.
+
+### Rollback
+
+`ah-switch --rollback-to previous` goes back as for any release. Back to a
+seat release without the notifier, the notifier keeps running from the
+earlier release's binary, which stays in `releases/`, until it is stopped by
+hand (`systemctl stop ataniq-seat-notify.service`); the earlier seat unit
+has no `$SEAT_NOTIFY_ARGS`, so that seat tells it nothing. To stop notices
+without a rollback, stop the notifier, or remove the `SEAT_NOTIFY_ARGS` line
+from `seat.env` and restart the seat. The notifier's state, the key and the
+subscriptions in `/var/lib/seat-notify`, is not touched by any switch. A new
+key makes every subscription useless, since a push service accepts messages
+to a subscription only from the key it was made for: to replace the key,
+stop the notifier, move `vapid.pem` and `subscriptions.json` aside, run
+`vapid-init` again on the same path, start the notifier and subscribe
+again.

@@ -77,8 +77,9 @@ type unit struct {
 //   - A static release has no unit that starts a program; any other release
 //     has at least one, which runs a binary of the release
 //     (/opt/authority-host/current/bin/NAME or its own releases/<id>/bin/NAME,
-//     shipped with an execute bit), is stopped in stop.list ("systemctl stop")
-//     and restarted in reload.list, and no unit gates its start on
+//     shipped with an execute bit), is stopped in stop.list ("systemctl stop",
+//     but for the units of notStopped, which decide nothing) and restarted in
+//     reload.list, and no unit gates its start on
 //     decisions.inhibit (the decision inhibit contract in the README: the
 //     inhibit is the one guard file, the journal txn.json never being there
 //     without it; a service starts while the inhibit is there and refuses
@@ -126,6 +127,41 @@ func (c *checker) coverage(root *os.Root, m switcher.Manifest, id string, files 
 	}
 	c.validators(relDir, files, l.validators)
 	c.reloadsAndStops(static, relDir, id, files, l, units)
+}
+
+// notStopped names the units that start a program and need no line in
+// stop.list. stop.list stops the decision services (see the README, "Layout");
+// the notifier of the seat's notices decides nothing: it is told how many
+// cards wait and tells the phone, and the decision stays with the seat's
+// own refusals. It is restarted by the reload list like any unit. The key is
+// the unit's name, without ".service"; no other unit is excused. The value is
+// the one binary of the release the unit may run: "decides nothing" is a
+// property of that binary, not of a name, so a unit of this name whose
+// ExecStart runs another program is not excused, and is stopped like any.
+var notStopped = map[string]string{"ataniq-seat-notify": "ataniq-seat-notify"}
+
+// excused reports whether the units of this name, the file and its drop-ins,
+// need no stop line: the name is in notStopped, and every ExecStart of every
+// one of them runs the release's binary that name is excused for, and no
+// other. An ExecStart that runs no binary of the release at all is refused on
+// its own (decision-exec), so it does not need the stop line to be refused
+// again.
+func excused(name string, units []unit, id string, files map[string]entry) bool {
+	bin, ok := notStopped[name]
+	if !ok {
+		return false
+	}
+	for _, u := range units {
+		if u.name != name {
+			continue
+		}
+		for _, exec := range u.execs {
+			if n := shippedName(exec, id, files); n != "" && n != bin {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // units reads every file under etc/systemd and returns those that start a
@@ -453,7 +489,13 @@ func (c *checker) reloadsAndStops(static bool, relDir, id string, files map[stri
 		}
 		return
 	}
-	if len(units) == 0 {
+	// The notifier alone is no service: a release that is not static runs a
+	// decision service, which the notifier is not.
+	service := false
+	for _, u := range units {
+		service = service || !excused(u.name, units, id, files)
+	}
+	if !service {
 		c.add(CodeNoService, "")
 	}
 	seen := map[string]bool{}
@@ -467,7 +509,7 @@ func (c *checker) reloadsAndStops(static bool, relDir, id string, files map[stri
 			continue
 		}
 		seen[u.name] = true
-		if !does(l.stops, u.name, "stop") {
+		if !excused(u.name, units, id, files) && !does(l.stops, u.name, "stop") {
 			c.add(CodeStopNone, u.name)
 		}
 		if !does(l.reloads, u.name, "restart") {
@@ -482,9 +524,15 @@ func (c *checker) reloadsAndStops(static bool, relDir, id string, files map[stri
 // execute bit. systemd's prefixes (@ - : + !) before the program are
 // skipped.
 func shippedBinary(exec, id string, files map[string]entry) bool {
+	return shippedName(exec, id, files) != ""
+}
+
+// shippedName is the name of the binary of this release that the ExecStart
+// value runs, as shippedBinary reads it, or "" when it runs none.
+func shippedName(exec, id string, files map[string]entry) string {
 	fields := strings.Fields(exec)
 	if len(fields) == 0 {
-		return false
+		return ""
 	}
 	prog := strings.TrimLeft(fields[0], "@-:+!")
 	var name string
@@ -494,8 +542,10 @@ func shippedBinary(exec, id string, files map[string]entry) bool {
 		}
 	}
 	if !validName(name) {
-		return false
+		return ""
 	}
-	e, ok := files["bin/"+name]
-	return ok && e.mode&0o111 != 0
+	if e, ok := files["bin/"+name]; ok && e.mode&0o111 != 0 {
+		return name
+	}
+	return ""
 }

@@ -21,7 +21,11 @@
 # Owner-local values are not here. The owner writes, on the host:
 #   /etc/authority-host/seat/origin     the seat's origin, https://NAME
 #   /etc/authority-host/seat/gate.pin   the gate key's fingerprint
-#   /etc/authority-host/seat/seat.env   SEAT_GATE=ADDRESS:PORT, the gate
+#   /etc/authority-host/seat/seat.env   SEAT_GATE=ADDRESS:PORT, the gate, and,
+#                                       once the notifier is set up (see the
+#                                       README, "The notifier"), the line
+#                                       SEAT_NOTIFY_ARGS=--notify-socket /run/seat-notify/notify.sock
+#                                       (empty or absent: no notices)
 #   /etc/systemd/system/ataniq-seat.service.d/gate.conf
 #                                       IPAddressAllow=ADDRESS, the gate's
 # and makes the seat's key with ataniq-seat gate-init (see the README).
@@ -37,8 +41,13 @@ After=network.target
 Type=simple
 User=seat
 Group=seat
+# The notifier's socket (/run/seat-notify, seat-notify:seat-notify 0750, the
+# socket 0660): the seat reaches it as a member of that group. The group must
+# exist on the host before this unit starts (the README's setup makes it); the
+# notifier is in no group of the seat's, so it cannot reach /run/seat.
+SupplementaryGroups=seat-notify
 EnvironmentFile=/etc/authority-host/seat/seat.env
-ExecStart={release}/bin/ataniq-seat --origin-file /etc/authority-host/seat/origin --socket /run/seat/http.sock --socket-mode 0660 --client-addr-header X-Seat-Client-Addr --gate ${SEAT_GATE} --gate-pin-file /etc/authority-host/seat/gate.pin --identity /var/lib/seat/identity --decision-guard /var/lib/authority-host
+ExecStart={release}/bin/ataniq-seat --origin-file /etc/authority-host/seat/origin --socket /run/seat/http.sock --socket-mode 0660 --client-addr-header X-Seat-Client-Addr --gate ${SEAT_GATE} --gate-pin-file /etc/authority-host/seat/gate.pin --identity /var/lib/seat/identity --decision-guard /var/lib/authority-host $SEAT_NOTIFY_ARGS
 Restart=on-failure
 RestartSec=5s
 
@@ -52,7 +61,9 @@ UMask=0077
 
 # The network: no address but the gate's, which the owner's drop-in allows
 # (IPAddressAllow=); the host firewall limits that address to the gate port.
-# No listener on any address: the app serves its Unix socket only.
+# No listener on any address: the app serves its Unix socket only, and dials
+# one Unix socket, the notifier's, when SEAT_NOTIFY_ARGS names it (a Unix
+# socket is not an IP address: IPAddressDeny does not touch it).
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 IPAddressDeny=any
 SocketBindDeny=any

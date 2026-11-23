@@ -10,6 +10,8 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -174,6 +176,18 @@ type Config struct {
 	// port, when its host is a loopback IP address or "localhost". It is for
 	// tests of this package and no command sets it.
 	AllowInsecureLoopbackForTests bool
+	// Notifier, when set, is told how many cards wait, and nothing else,
+	// when the count rises and no browser is looking (see [Notifier] and
+	// [Open]); [New] refuses a configuration that sets it, since only Open
+	// can stop what it starts. Nil starts nothing. When it is also a
+	// [PushPort] the app serves the phone's side of the notices (the card
+	// list's controls, the service worker, the manifest and the push API);
+	// otherwise none of that exists and its routes answer 404.
+	Notifier Notifier
+	// Logf, when set, receives the app's own log lines (each ends in a
+	// newline): so far the notices' failures, at most one a minute. They
+	// hold nothing but fixed text.
+	Logf func(format string, args ...any)
 }
 
 // canonicalOrigin checks an origin and returns it in the form a browser's
@@ -216,6 +230,25 @@ type app struct {
 	// from the reads; watchHold is how long a poll is held.
 	watches   *limiter
 	watchHold time.Duration
+	// lastPoll is the time, in Unix nanoseconds, of the last accepted poll,
+	// 0 before the first; the notices stay quiet while it is recent.
+	lastPoll atomic.Int64
+	// pollSaw is what the owner has seen on a page: the count of cards
+	// waiting when the last live poll was accepted, with the number of such
+	// polls, which the notices' goroutine takes once each (see sawWaiting).
+	pollMu      sync.Mutex
+	pollSeq     uint64
+	pollWaiting int
+	// push is the notifier's PushPort, nil when Config.Notifier is not one:
+	// the pages then show nothing of notices and the routes of push.go
+	// answer 404. pushes bounds the push API per credential.
+	push   PushPort
+	pushes *limiter
+	// noticeTimer is the notices' timer; the real one when nil. For tests.
+	noticeTimer noticeTimer
+	// noticeParked, when set, is called each time the notices' goroutine is
+	// about to wait for a change or a timer. For tests.
+	noticeParked func()
 	// host is what the Host header of a request must be: the origin without
 	// its scheme.
 	host string
@@ -225,6 +258,9 @@ type app struct {
 // that is not https on the default port (see [Config].Origin), a relying party
 // id that is not the origin's host, or no daemon.
 func New(cfg Config) (http.Handler, error) {
+	if cfg.Notifier != nil {
+		return nil, errors.New("seatapp: Config.Notifier starts a goroutine: use Open, and Close it")
+	}
 	_, h, err := newApp(cfg)
 	return h, err
 }
@@ -251,7 +287,9 @@ func newApp(cfg Config) (*app, http.Handler, error) {
 	_, hostHeader, _ := strings.Cut(origin, "://")
 	a := &app{cfg: cfg, pair: newPairing(cfg), login: newLogins(cfg), sess: newSessions(cfg.Now),
 		reads: newLimiter(readRequests, readWindow), decides: newLimiter(decideRequests, decideWindow),
-		watches: newLimiter(watchRequests, watchWindow), watchHold: watchHold, host: hostHeader}
+		watches: newLimiter(watchRequests, watchWindow), watchHold: watchHold, host: hostHeader,
+		pushes: newLimiter(pushRequests, pushWindow)}
+	a.push, _ = cfg.Notifier.(PushPort)
 
 	mux := http.NewServeMux()
 	for _, rt := range a.routes() {
@@ -298,6 +336,17 @@ func (a *app) routes() []route {
 		{"POST /api/decide", a.post(a.decidePost)},
 		{"GET /static/watch.js", a.asset("assets/watch.js", "text/javascript; charset=utf-8")},
 		{"POST /api/watch", a.post(a.watchPost)},
+		// The phone's side of the notices: all of them answer 404 unless
+		// Config.Notifier is also a PushPort (see push.go).
+		{"GET /manifest.webmanifest", a.pushOnly(a.asset("assets/manifest.webmanifest", "application/manifest+json"))},
+		{"GET /sw.js", a.pushOnly(a.serviceWorker())},
+		{"GET /static/push.js", a.pushOnly(a.asset("assets/push.js", "text/javascript; charset=utf-8"))},
+		{"GET /static/icon-192.png", a.pushOnly(a.asset("assets/icon-192.png", "image/png"))},
+		{"GET /static/icon-512.png", a.pushOnly(a.asset("assets/icon-512.png", "image/png"))},
+		{"GET /static/apple-touch-icon.png", a.pushOnly(a.asset("assets/apple-touch-icon.png", "image/png"))},
+		{"POST /api/push/info", a.pushOnly(a.post(a.pushInfo))},
+		{"POST /api/push/subscribe", a.pushOnly(a.post(a.pushSubscribe))},
+		{"POST /api/push/unsubscribe", a.pushOnly(a.post(a.pushUnsubscribe))},
 	}
 }
 
@@ -332,8 +381,19 @@ func Server(h http.Handler) *http.Server {
 }
 
 // securityHeaders are on every response, an error included.
+//
+// The content security policy is closed (default-src 'none') and opens only
+// to the app's own origin: scripts, styles, connections and images, nothing
+// inline, and Trusted Types are required for every script sink. manifest-src
+// and worker-src are the two the notices need and nothing else: the web app
+// manifest, and the service worker (/sw.js) that shows a push. The page
+// registers the worker through a Trusted Types policy of its own, since the
+// register call is a script sink (see push.js); no other policy exists, and
+// the trusted-types directive names it, seat-sw, and nothing else (no
+// allow-duplicates, no default), so a script that runs on the origin cannot
+// make a policy of its own to reach a sink.
 var securityHeaders = [][2]string{
-	{"Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; require-trusted-types-for 'script'"},
+	{"Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types seat-sw"},
 	{"Strict-Transport-Security", "max-age=63072000"},
 	{"X-Content-Type-Options", "nosniff"},
 	{"Referrer-Policy", "no-referrer"},

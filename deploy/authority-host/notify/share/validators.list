@@ -1,0 +1,22 @@
+# The validators of the release, run by ah-switch before the switch (see
+# ../README.md, "Layout"). One command per line; {release} is this release's
+# folder. ah-release check requires one validator per shipped file of
+# etc/caddy, etc/nftables and etc/systemd.
+# This is the seat's list with the notifier's two lines added: the notifier's
+# part is laid over the seat's (see ../README.md, "The notifier").
+# The Caddyfile imports the owner's /etc/authority-host/seat/site.caddy, which
+# must be there for it to validate.
+caddy validate --config {release}/etc/caddy/Caddyfile --adapter caddyfile
+# The seat's unit runs {release}/bin/ataniq-seat, the notifier's
+# {release}/bin/ataniq-seat-notify, which the switch's import has put in place
+# before this runs.
+systemd-analyze verify {release}/etc/systemd/system/ataniq-seat.service
+systemd-analyze verify {release}/etc/systemd/system/ataniq-seat-notify.service
+# The owner's links of the units (README, "Setting the host up for it once by
+# hand", step 5, and "The notifier", step 5). systemd-analyze above verifies
+# the release's own path, so it passes without the links; without a link the
+# reload's restart (and, for the seat, the stop list's stop) fails (exit 5,
+# "Unit not found") after current has moved. A link that dangles passes, as it
+# must before the first switch to this release.
+test -L /etc/systemd/system/ataniq-seat.service
+test -L /etc/systemd/system/ataniq-seat-notify.service
