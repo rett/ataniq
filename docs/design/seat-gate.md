@@ -40,8 +40,10 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   `internal/seatlink` implements it over
   the gate, and `ataniq-seat` wires that in when it is given a gate (without
   one, every call answers `ErrDaemonUnavailable`). The daemon's side of the
-  login operations is G8's and is not built, so a gate today does not list
-  `login`, and the phone says that the desk does not take phone logins.
+  login and decision operations is built (G8b): a gate lists `login` and
+  `decide` when the daemon has the seat origin (see
+  [the seat origin](#the-seat-origin)); otherwise the phone says that the desk
+  does not take phone logins.
 - The owner channel's service, `internal/approval/ownerchannel`, and the words
   of its connection, `internal/approval/ownerwire`. `Service.PairPresent` takes
   a source whose surface is `ownerchannel.SurfaceSeat` (`"seat"`). The daemon
@@ -670,9 +672,15 @@ on them byte for byte.
   party id is HOST, without a port.
 - The gate reads the origin once, when it starts, from the owner-local origin
   file (G1), makes it canonical and logs it. A change of the file applies at
-  the next start, so the origin never changes under a running gate.
+  the next start, so the origin never changes under a running gate. Built
+  (G8b): `ataniqd run --seat-gate` reads it with `ownerlocal.SeatOrigin`
+  before the daemon takes its lock, makes it canonical with
+  `leaddaemon.CanonicalSeatOrigin` (the canonical function is not in
+  `internal/ownerlocal`, which only reads the file), and names it in the gate's
+  start line.
 - Without the file, or with one that is not an origin, the gate starts with the
-  capabilities `["pair", "read"]` only, and logs why. The seat then says that
+  capabilities `["pair", "read"]` only, and logs why. So does a gate whose
+  service cannot decide from the phone. The seat then says that
   the desk does not take phone decisions. So no call meets a missing origin.
 - The verifier compares the client data's origin with the canonical origin
   exactly, and the authenticator data's relying party hash with the SHA-256 of

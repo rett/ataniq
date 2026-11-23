@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"ataniq/internal/approval/gatehost"
+	"ataniq/internal/approval/ownerchannel"
 	"ataniq/internal/seatgate"
 )
 
@@ -25,8 +26,10 @@ import (
 // package seatgate (pinned-key TLS and strict frames) and the handler of
 // package gatehost. It is built with the ataniq_ownerchannel tag only, and the
 // command opens it only when the owner asks for it (run --owner-channel
-// --seat-gate ADDR). The gate serves the capabilities of gatehost.Caps, the
-// pairing call and the reads of the cards; it decides nothing.
+// --seat-gate ADDR). The gate serves the pairing call and the reads of the
+// cards (gatehost.Caps) and, when the seat origin is configured and the
+// service can decide, a login and a decision from the phone as well
+// (gatehost.DecidingCaps).
 
 const (
 	// SeatGateDirName is the name of the gate's folder in the owner folder
@@ -143,9 +146,49 @@ func ReadSeatPins(path string) ([]string, error) {
 	return pins, nil
 }
 
-// SeatGate is the gate of one daemon: where it listens, the key it shows and
-// the seat keys it lets in. The pins are read once, when the daemon starts:
-// a change of the pin file takes effect at the next start.
+// CanonicalSeatOrigin makes a seat origin canonical, by the rules the seat app
+// and the daemon share (docs/design/seat-gate.md, "The seat origin"): it takes
+// https://HOST or https://HOST:443, HOST a lower-case domain name of letters,
+// digits, dots and dashes (labels of 1 to 63 bytes that neither start nor end
+// with a dash, at most 253 bytes, the last label not all digits), and no
+// address literal, other port, path, query, fragment or user information. It
+// returns https://HOST and the relying party id, HOST. The error is fixed and
+// holds nothing of s.
+func CanonicalSeatOrigin(s string) (origin, rpID string, err error) {
+	bad := errors.New("the seat origin is not https:// and a lower-case domain name, with no port but 443, path, query, fragment or user information")
+	host, ok := strings.CutPrefix(s, "https://")
+	if !ok {
+		return "", "", bad
+	}
+	host = strings.TrimSuffix(host, ":443")
+	if host == "" || len(host) > 253 {
+		return "", "", bad
+	}
+	labels := strings.Split(host, ".")
+	for _, l := range labels {
+		if l == "" || len(l) > 63 || l[0] == '-' || l[len(l)-1] == '-' {
+			return "", "", bad
+		}
+		for i := 0; i < len(l); i++ {
+			switch c := l[i]; {
+			case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '-':
+			default:
+				return "", "", bad
+			}
+		}
+	}
+	// A name whose last label is a number is read by a browser as an
+	// address: a passkey is bound to a domain name.
+	if strings.Trim(labels[len(labels)-1], "0123456789") == "" {
+		return "", "", bad
+	}
+	return "https://" + host, host, nil
+}
+
+// SeatGate is the gate of one daemon: where it listens, the key it shows, the
+// seat keys it lets in and the seat origin. The pins and the origin are read
+// once, when the daemon starts: a change of either file takes effect at the
+// next start.
 type SeatGate struct {
 	// Addr is where the gate listens; see [ParseSeatGateAddr]. Required.
 	Addr netip.AddrPort
@@ -154,6 +197,15 @@ type SeatGate struct {
 	// Pins are the fingerprints of the seat keys the gate lets in, 1 to
 	// [MaxSeatPins] of them, each valid. Required.
 	Pins []string
+	// Origin is the seat origin in its canonical form (see
+	// [CanonicalSeatOrigin]), read once when the daemon started, or "" when
+	// none is configured. Only with an origin, and a service that can
+	// decide, does the gate serve a login and a decision from the phone.
+	Origin string
+	// NoOrigin says, for the start line, why there is no origin: the file
+	// is missing, refused, or holds no canonical origin. It holds nothing
+	// of the file.
+	NoOrigin string
 	// Log receives the gate's lines: the one start line, the handler's
 	// refusals and a stop that did not go as asked; nil discards them. No
 	// line holds a pin.
@@ -170,10 +222,17 @@ func (g *SeatGate) logf(format string, a ...any) {
 
 // Start opens the gate's listener and serves the gate on it with svc until
 // the returned stop is called. It refuses a gate without a valid identity,
-// with no pin, more than [MaxSeatPins] or one that is not a fingerprint, and
-// an address that cannot be listened on. It writes one line once the gate
-// listens, which names the address and the gate's key fingerprint and no
-// pin.
+// with no pin, more than [MaxSeatPins] or one that is not a fingerprint, an
+// origin that is not canonical, and an address that cannot be listened on.
+//
+// The gate serves the capabilities pair and read. It serves login and decide
+// as well only when it has an origin and svc can decide from the phone (it
+// is a gatehost.SeatPort, as the owner channel's service is); their calls
+// are bound to the gate's own key fingerprint and checked against the
+// origin and its host, the relying party id. It writes one line once the
+// gate listens, which names the address, the gate's key fingerprint, the
+// origin when it serves login and decide, and what it serves, with why it
+// serves pair and read only when it does; never a pin.
 //
 // Stop stops accepting, lets the requests in flight finish for the server's
 // shutdown grace, closes every connection and returns once the server has
@@ -200,7 +259,29 @@ func (g *SeatGate) Start(svc gatehost.Port) (stop func(), err error) {
 		}
 		pins[i] = []byte(p)
 	}
-	h, err := gatehost.New(svc, pinnedIn(pins), g.Log)
+	var h *gatehost.Handler
+	var serves string
+	seat, canDecide := svc.(gatehost.SeatPort)
+	switch {
+	case g.Origin == "":
+		why := g.NoOrigin
+		if why == "" {
+			why = "no seat origin is configured"
+		}
+		h, err = gatehost.New(svc, pinnedIn(pins), g.Log)
+		serves = "; it serves pair and read only: " + why
+	case !canDecide:
+		h, err = gatehost.New(svc, pinnedIn(pins), g.Log)
+		serves = "; it serves pair and read only: this service cannot take a decision from the phone"
+	default:
+		origin, rpID, cerr := CanonicalSeatOrigin(g.Origin)
+		if cerr != nil || origin != g.Origin {
+			return nil, errors.New("seat gate: the seat origin is not in its canonical form")
+		}
+		gate := ownerchannel.Gate{Instance: g.Identity.Fingerprint(), Origin: origin, RPID: rpID}
+		h, err = gatehost.NewDeciding(svc, seat, gate, pinnedIn(pins), g.Log)
+		serves = ", seat origin " + origin + "; it serves pair, read, login and decide"
+	}
 	if err != nil {
 		return nil, fmt.Errorf("seat gate: %w", err)
 	}
@@ -214,7 +295,7 @@ func (g *SeatGate) Start(svc gatehost.Port) (stop func(), err error) {
 	}
 	cfg := seatgate.ServerConfig{
 		TLS:  seatgate.ServerTLS(g.Identity, append([]string(nil), g.Pins...)),
-		Caps: gatehost.Caps(),
+		Caps: h.Caps(),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	ended := make(chan struct{})
@@ -224,7 +305,7 @@ func (g *SeatGate) Start(svc gatehost.Port) (stop func(), err error) {
 			g.logf("seat gate: stopped: %s", SafeText(err.Error()))
 		}
 	}()
-	g.logf("seat gate: listening on %s, key fingerprint %s", ln.Addr(), g.Identity.Fingerprint())
+	g.logf("seat gate: listening on %s, key fingerprint %s%s", ln.Addr(), g.Identity.Fingerprint(), SafeText(serves))
 	var once sync.Once
 	return func() {
 		once.Do(func() {

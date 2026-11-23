@@ -150,8 +150,9 @@ func dialGate(addr string, seat seatgate.Identity, gateFP string) (*seatgate.Cli
 }
 
 // The gate is served on the address given, to a pinned seat only, with the
-// capabilities pair and read; a seat whose key is not pinned never reaches
-// the service. The start line names the address and the gate's key and no
+// capabilities pair and read (no seat origin is configured); a seat whose key
+// is not pinned never reaches the service. The start line names the address
+// and the gate's key, says why it serves pair and read only, and holds no
 // pin. At shutdown the gate stops before the service is closed, and its port
 // takes no connection after.
 func TestSeatGateServesAPinnedSeatOnly(t *testing.T) {
@@ -168,7 +169,7 @@ func TestSeatGateServesAPinnedSeatOnly(t *testing.T) {
 	done := startApp(t, ta, []string{"--state-dir", state, "--runtime-dir", runtime, "--owner-channel", "--seat-gate", addr}, runtime+"/daemon.sock")
 
 	log := errs.String()
-	if want := "ataniqd: seat gate: listening on " + addr + ", key fingerprint " + gateFP + "\n"; !strings.Contains(log, want) {
+	if want := "ataniqd: seat gate: listening on " + addr + ", key fingerprint " + gateFP + "; it serves pair and read only: no configuration folder (XDG_CONFIG_HOME or HOME) to read the seat origin from\n"; !strings.Contains(log, want) {
 		t.Fatalf("no start line %q in:\n%s", want, log)
 	}
 	if strings.Count(log, "seat gate:") != 1 || strings.Contains(log, seat.Fingerprint()) {
