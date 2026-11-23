@@ -15,7 +15,8 @@
   like a key or a password is refused `genesis-secret-shaped` (a pasted key
   or an obvious assignment such as `password=...`; names, web addresses and
   paths pass, and a bare git commit id is refused), and a thread
-  that is finished is frozen with the digest of its brief. A file that is not as
+  that is finished is frozen with the digest of its brief (an answer, a
+  change or a discard of it is `genesis-done`). A file that is not as
   the daemon wrote it is not served and is logged once, in fixed text, and
   never repaired; no log line holds an answer. A restart serves the same
   threads. The gate's start line now lists every capability it serves in words,

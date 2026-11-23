@@ -723,6 +723,12 @@ func TestGenesisSummaryChangeFinishDiscard(t *testing.T) {
 	}
 	g.set(GenesisVerbDiscard, nil, ErrGenesisUnknownThread)
 	seeOtherTo(t, "a discard of an unknown project", r.postForm("/projects/"+testThread+"/discard", nil, s), "/projects/?note=unknown")
+	// A discard of a finished project goes to its page, with the done note.
+	g.set(GenesisVerbDiscard, nil, ErrGenesisDone)
+	seeOtherTo(t, "a discard of a finished project", r.postForm("/projects/"+testThread+"/discard", nil, s), "/projects/"+testThread+"?note=done")
+	if page := r.getWith("/projects/"+testThread+"?note=done", s).Body.String(); !strings.Contains(page, "This project is finished. Its answers can no longer change.") {
+		t.Errorf("the finished page after a refused discard:\n%s", page)
+	}
 }
 
 // A page of a project the daemon does not know, and the other errors of a

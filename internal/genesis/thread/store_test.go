@@ -72,11 +72,20 @@ func TestAFullInterviewOfTheWebAppPath(t *testing.T) {
 	if a, err := w.s.Finish(ctx, first.Thread); err != nil || !reflect.DeepEqual(a, fin) {
 		t.Fatalf("finishing again: %+v, %v", a, err)
 	}
-	// Frozen: no answer, no change.
+	// Frozen: no answer, no change, no discard, and the file stays as it
+	// was finished.
+	frozen := w.bytesOf(first.Thread)
 	_, err := w.s.Answer(ctx, first.Thread, 1, webApp[0])
 	refused(t, err, ownerwire.CodeGenesisDone)
 	_, err = w.s.Change(ctx, first.Thread, "goal", ownerwire.GenesisPick{Kind: ownerwire.GenesisKindChoice, IDs: []string{"share"}})
 	refused(t, err, ownerwire.CodeGenesisDone)
+	_, err = w.s.Discard(ctx, first.Thread)
+	refused(t, err, ownerwire.CodeGenesisDone)
+	_, err = w.s.Genesis(ctx, ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbDiscard, Thread: first.Thread})
+	refused(t, err, ownerwire.CodeGenesisDone)
+	if !bytes.Equal(w.bytesOf(first.Thread), frozen) {
+		t.Fatal("a refused call changed the finished thread's file")
+	}
 	if r := w.ok(w.s.Round(ctx, first.Thread)); !reflect.DeepEqual(r, fin) {
 		t.Fatalf("round of a finished thread: %+v", r)
 	}
@@ -880,11 +889,13 @@ func TestGenesisDispatchesTheWireVerbs(t *testing.T) {
 	if r := do(ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbSummary, Thread: id}); r.State != ownerwire.GenesisStateSummary || r.Groups == nil {
 		t.Fatalf("summary %+v", r)
 	}
+	// The discard of an open thread (the finished one refuses it).
+	other := do(ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbStart}).Thread
+	if r := do(ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbDiscard, Thread: other}); r.State != ownerwire.GenesisStateDiscarded {
+		t.Fatalf("discard %+v", r)
+	}
 	if r := do(ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbFinish, Thread: id}); r.State != ownerwire.GenesisStateFinished {
 		t.Fatalf("finish %+v", r)
-	}
-	if r := do(ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbDiscard, Thread: id}); r.State != ownerwire.GenesisStateDiscarded {
-		t.Fatalf("discard %+v", r)
 	}
 	for _, p := range []ownerwire.SeatGenesisParams{
 		{},

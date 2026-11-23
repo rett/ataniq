@@ -596,12 +596,17 @@ func (s *Store) Finish(ctx context.Context, id string) (ownerwire.SeatGenesisRes
 	})
 }
 
-// Discard drops the thread, and with it every answer it held.
+// Discard drops the thread, and with it every answer it held. A finished
+// thread is frozen and is refused genesis-done: its brief stays as it was
+// finished.
 func (s *Store) Discard(ctx context.Context, id string) (ownerwire.SeatGenesisResult, error) {
 	return s.run(ctx, func(t *tx) (ownerwire.SeatGenesisResult, error) {
 		r, err := t.get(id)
 		if err != nil {
 			return ownerwire.SeatGenesisResult{}, err
+		}
+		if r.state == StateFinished {
+			return ownerwire.SeatGenesisResult{}, refuse(ownerwire.CodeGenesisDone)
 		}
 		res, err := t.commit(t.discarded(r), 0)
 		if err != nil {

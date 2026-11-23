@@ -1883,8 +1883,8 @@ the members below, and a member of another verb is refused `bad-params`:
 | `answer` | `thread`, `round`, `answers` | Applies 1 to 3 answers, each to another node, to the round named, and answers the next round or the summary. |
 | `change` | `thread`, `node`, `answer` | Replaces an earlier answer. It clears the answers that depended on it (the catalog's invalidation closure), keeps them in the brief's history, and says how many in `reset`. |
 | `summary` | `thread` | Answers the summary. |
-| `finish` | `thread` | Freezes the brief and answers its digest. After it, `answer` and `change` are `genesis-done`. |
-| `discard` | `thread` | Drops the thread. |
+| `finish` | `thread` | Freezes the brief and answers its digest. After it, `answer`, `change` and `discard` are `genesis-done`. |
+| `discard` | `thread` | Drops an open thread. A finished thread is `genesis-done`: its brief stays as it was finished. |
 
 An answer is `{node, kind, ids, text}`, and a change's `answer` is
 `{kind, ids, text}`. The kind is one of `choice` (exactly one id), `choices`
@@ -2027,8 +2027,8 @@ gate; it is fixed by hand and the daemon restarted.
   `summary` reads the summary at any time. `finish` freezes the brief and
   answers its digest, at any time on an open thread (there is no separate
   "enough": the owner reads the summary and finishes), and again on a finished
-  one with the same digest; afterwards `answer` and `change` are
-  `genesis-done`. `discard` drops the thread and empties its brief. `list`
+  one with the same digest; afterwards `answer`, `change` and `discard` are
+  `genesis-done`. `discard` drops an open thread and empties its brief. `list`
   answers the open threads, oldest first (by the time each was started, then
   by id), each with the state, round and progress `round` would answer and
   nothing of its brief; it expires what is due first, as `start` does, and
