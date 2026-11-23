@@ -141,8 +141,9 @@
 // pings included, and every browser's traffic shares it. The link counts
 // every call it sends, by kind, over [BudgetWindow], and sends none past
 // the room of its kind (see budget.go): anyone's (pairings and logins),
-// reads, and decisions, beside the pings of the transport every
-// [PingInterval]. A call without room is seatapp.ErrBusy and is not sent.
+// reads, decisions and the watcher's waits, beside the pings of the
+// transport every [PingInterval]. A call without room is seatapp.ErrBusy and
+// is not sent; the watcher alone sleeps for room instead.
 // The rooms and the pings add up to GateRate, so the gate's rate never
 // refuses a call the link sent. A decision's challenge is asked only with
 // room for its seat.decide as well, kept for that one challenge until the
@@ -153,6 +154,18 @@
 // challenge is asked only with room for its seat.login as well, kept for it
 // in the same way, so a login is never refused for room once the phone has
 // answered; strangers can still use up anyone's room with login challenges.
+//
+// # The watcher
+//
+// [Daemon.StartWatch] starts the link's one goroutine, which watches the
+// pending cards with seat.wait for the whole seat, never once for each
+// browser, and only when the gate's hello lists "watch" ([CapWatch]).
+// [Daemon.Watch] is a snapshot of what it last learned (the version, the
+// count, the cards by id, kind, binding digest and held mark, whether the
+// gate is out of reach, and when), and [Daemon.WatchChanged] a channel that
+// closes when it changes, for the app to select on; neither touches the gate.
+// The waits have a room of their own (waitRoom). See watch.go for the
+// timings. [Daemon.Close] stops the goroutine.
 package seatlink
 
 import (
@@ -160,6 +173,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"ataniq/internal/approval/ownerwire"
@@ -187,7 +201,7 @@ const (
 
 // Caps is the capability list the seat says in its hello
 // ([seatgate.ClientConfig].Caps), in a new slice.
-func Caps() []string { return []string{CapPair, CapRead, CapLogin, CapDecide} }
+func Caps() []string { return []string{CapPair, CapRead, CapLogin, CapDecide, CapWatch} }
 
 // errBadAnswer is the error of an answer that is not a pairing result of its
 // form. It holds nothing of the answer.
@@ -232,6 +246,14 @@ type Daemon struct {
 	shown shownCards
 	// budget counts the calls the link sends, by kind (see budget.go).
 	budget budget
+	// hub is the watcher's published state (see watch.go).
+	hub watchHub
+	// wmu guards w and wclosed; wt are the watcher's timings, which tests
+	// set before StartWatch.
+	wmu     sync.Mutex
+	w       *watcher
+	wclosed bool
+	wt      watchTimes
 }
 
 // The link keeps room for the decision of each challenge it draws, so it

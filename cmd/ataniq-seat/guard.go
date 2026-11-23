@@ -8,6 +8,7 @@ import (
 
 	"ataniq/internal/authorityhost/decisionguard"
 	"ataniq/internal/seatapp"
+	"ataniq/internal/seatlink"
 )
 
 // defaultGuardDir is the release switch's state folder on the authority host,
@@ -92,3 +93,24 @@ func (g guardedDaemon) DropChallenge(id string) {
 		d.DropChallenge(id)
 	}
 }
+
+// Watch passes the link's watched state on (seatlink.WatchPort), and says
+// nothing is watched for a daemon port that does not watch. The guard
+// concerns decisions; the state decides nothing, so it is not guarded.
+func (g guardedDaemon) Watch() seatlink.WatchState {
+	if d, ok := g.Daemon.(seatlink.WatchPort); ok {
+		return d.Watch()
+	}
+	return seatlink.WatchState{}
+}
+
+// WatchChanged passes the link's channel on, and returns a channel that is
+// never closed (a nil one) for a daemon port that does not watch.
+func (g guardedDaemon) WatchChanged() <-chan struct{} {
+	if d, ok := g.Daemon.(seatlink.WatchPort); ok {
+		return d.WatchChanged()
+	}
+	return nil
+}
+
+var _ seatlink.WatchPort = guardedDaemon{}
