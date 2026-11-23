@@ -415,7 +415,7 @@ func TestSeatLinkWatchPublishesChange(t *testing.T) {
 	before := r.d.Watch()
 	eventually(t, "two holds ended", func() bool { return desk.waits() >= waits+3 })
 	after := r.d.Watch()
-	if !before.sameAs(after) || !before.At.Equal(after.At) {
+	if !watchSame(before, after) || !before.At.Equal(after.At) {
 		t.Errorf("a wait with no change republished: %+v then %+v", before, after)
 	}
 }

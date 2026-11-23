@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"ataniq/internal/approval/ownerwire"
+	"ataniq/internal/seatapp"
 	"ataniq/internal/seatgate"
 )
 
@@ -43,41 +44,17 @@ const (
 )
 
 // WatchCard is one pending card in the watcher's state: what tells one card
-// from another, never card text.
-type WatchCard struct {
-	ID            string
-	Kind          string
-	BindingSHA256 string
-	// Held is the daemon's mark "decided past the limit".
-	Held bool
-}
+// from another, never card text. It is the app's type, so that the link's
+// method set is the app's [seatapp.Watcher].
+type WatchCard = seatapp.WatchCard
 
 // WatchState is where the pending cards stand, as the watcher last learned
-// from the gate.
-type WatchState struct {
-	// Watching is true when the gate's hello listed "watch": the watcher
-	// runs. When it is false nothing is watched, whatever else the state
-	// says (the zero state is a link that does not watch).
-	Watching bool
-	// Version is the pending set's version the gate last answered, empty
-	// before the first answer.
-	Version string
-	// Waiting is how many cards are pending, the whole set.
-	Waiting int
-	// Cards are the pending cards, at most ownerwire.MaxSeatWaitCards.
-	Cards []WatchCard
-	// More is true when Waiting is more than the cards listed.
-	More bool
-	// Offline is true when the gate is out of reach or failed its last
-	// wait; Version, Waiting and Cards are then the last known, which may
-	// be old, and the watcher is trying again.
-	Offline bool
-	// At is when the state was last published.
-	At time.Time
-}
+// from the gate: its fields are described at [seatapp.WatchState]. The zero
+// state is a link that does not watch.
+type WatchState = seatapp.WatchState
 
-// sameAs reports whether two states say the same, At aside.
-func (s WatchState) sameAs(o WatchState) bool {
+// watchSame reports whether two states say the same, At aside.
+func watchSame(s, o WatchState) bool {
 	return s.Watching == o.Watching && s.Version == o.Version &&
 		s.Waiting == o.Waiting && s.More == o.More && s.Offline == o.Offline &&
 		slices.Equal(s.Cards, o.Cards)
@@ -100,7 +77,10 @@ type WatchPort interface {
 	WatchChanged() <-chan struct{}
 }
 
-var _ WatchPort = (*Daemon)(nil)
+var (
+	_ WatchPort       = (*Daemon)(nil)
+	_ seatapp.Watcher = (*Daemon)(nil)
+)
 
 // watchHub holds the published state and the broadcast. Its zero value is a
 // state that does not watch, with a channel that is never closed. Publishing
@@ -140,7 +120,7 @@ func (h *watchHub) update(at time.Time, f func(*WatchState)) bool {
 	defer h.mu.Unlock()
 	next := h.st
 	f(&next)
-	if next.sameAs(h.st) {
+	if watchSame(next, h.st) {
 		return false
 	}
 	next.At = at

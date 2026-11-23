@@ -113,4 +113,7 @@ func (g guardedDaemon) WatchChanged() <-chan struct{} {
 	return nil
 }
 
-var _ seatlink.WatchPort = guardedDaemon{}
+var (
+	_ seatlink.WatchPort = guardedDaemon{}
+	_ seatapp.Watcher    = guardedDaemon{}
+)
