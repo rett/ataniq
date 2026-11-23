@@ -72,11 +72,20 @@ func TestAFullInterviewOfTheWebAppPath(t *testing.T) {
 	if a, err := w.s.Finish(ctx, first.Thread); err != nil || !reflect.DeepEqual(a, fin) {
 		t.Fatalf("finishing again: %+v, %v", a, err)
 	}
-	// Frozen: no answer, no change.
+	// Frozen: no answer, no change, no discard, and the file stays as it
+	// was finished.
+	frozen := w.bytesOf(first.Thread)
 	_, err := w.s.Answer(ctx, first.Thread, 1, webApp[0])
 	refused(t, err, ownerwire.CodeGenesisDone)
 	_, err = w.s.Change(ctx, first.Thread, "goal", ownerwire.GenesisPick{Kind: ownerwire.GenesisKindChoice, IDs: []string{"share"}})
 	refused(t, err, ownerwire.CodeGenesisDone)
+	_, err = w.s.Discard(ctx, first.Thread)
+	refused(t, err, ownerwire.CodeGenesisDone)
+	_, err = w.s.Genesis(ctx, ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbDiscard, Thread: first.Thread})
+	refused(t, err, ownerwire.CodeGenesisDone)
+	if !bytes.Equal(w.bytesOf(first.Thread), frozen) {
+		t.Fatal("a refused call changed the finished thread's file")
+	}
 	if r := w.ok(w.s.Round(ctx, first.Thread)); !reflect.DeepEqual(r, fin) {
 		t.Fatalf("round of a finished thread: %+v", r)
 	}
@@ -141,9 +150,10 @@ func TestAThirdOpenThreadIsBusy(t *testing.T) {
 	refused(t, err, ownerwire.CodeGenesisBusy)
 }
 
-// An answer is refused, and nothing changes, when its round is not the
-// thread's, a node is not of the round, a form is not the question's, or one
-// answer of several fails.
+// An answer is refused, and nothing changes, when its round is one the thread
+// has not reached, a node is not of the round, a form is not the question's,
+// or one answer of several fails. A round already taken is stale (see
+// TestAnAnswerSentTwiceIsAStaleRound).
 func TestAnAnswerThatFailsChangesNothing(t *testing.T) {
 	w := newWorld(t)
 	id := w.ok(w.s.Start(ctx)).Thread
@@ -153,8 +163,8 @@ func TestAnAnswerThatFailsChangesNothing(t *testing.T) {
 		round   int
 		answers []ownerwire.GenesisAnswer
 	}{
-		"an earlier round":        {1, webApp[1]},
 		"a later round":           {3, webApp[1]},
+		"round zero":              {0, webApp[1]},
 		"a node of another round": {2, []ownerwire.GenesisAnswer{choice("software.stack", "go")}},
 		"an unknown node":         {2, []ownerwire.GenesisAnswer{choice("no.such.node", "go")}},
 		"an option not offered":   {2, []ownerwire.GenesisAnswer{choice("goal", "nothing")}},
@@ -176,16 +186,55 @@ func TestAnAnswerThatFailsChangesNothing(t *testing.T) {
 	}
 	// And the thread still takes its round.
 	w.ok(w.s.Answer(ctx, id, 2, webApp[1]))
-	// A round past the walk: the walk of this thread is not over, but a thread
-	// whose summary is ready takes no answer.
+	// A round past the most a walk has is a bad answer; a thread whose
+	// summary is ready takes no answer to any round of it: that is stale.
 	sum := w.interview(id, 2)
 	_, err := w.s.Answer(ctx, id, 7, webApp[0])
 	refused(t, err, ownerwire.CodeGenesisBadAnswer)
 	_, err = w.s.Answer(ctx, id, 6, webApp[5])
-	refused(t, err, ownerwire.CodeGenesisBadAnswer)
+	refused(t, err, ownerwire.CodeGenesisStaleRound)
 	if sum.State != ownerwire.GenesisStateSummary {
 		t.Fatalf("state %s", sum.State)
 	}
+}
+
+// An answer sent twice (a double tap, a second tab, a post the browser sent
+// again) is refused genesis-stale-round the second time, and changes nothing:
+// the round was taken. So is an answer to an earlier round, and an answer to
+// any round once the walk is done. A stale round is the thread's state, not
+// a bad answer.
+func TestAnAnswerSentTwiceIsAStaleRound(t *testing.T) {
+	w := newWorld(t)
+	id := w.ok(w.s.Start(ctx)).Thread
+	first := w.ok(w.s.Answer(ctx, id, 1, webApp[0]))
+	frozen := w.bytesOf(id)
+	_, err := w.s.Answer(ctx, id, 1, webApp[0])
+	refused(t, err, ownerwire.CodeGenesisStaleRound)
+	if !bytes.Equal(w.bytesOf(id), frozen) {
+		t.Fatal("the stale answer changed the thread's file")
+	}
+	if now := w.ok(w.s.Round(ctx, id)); now.Round != first.Round || now.Round != 2 {
+		t.Fatalf("the thread is at round %d after the stale answer, want 2", now.Round)
+	}
+	w.ok(w.s.Answer(ctx, id, 2, webApp[1]))
+	for _, r := range []int{1, 2} {
+		_, err := w.s.Answer(ctx, id, r, webApp[r-1])
+		refused(t, err, ownerwire.CodeGenesisStaleRound)
+	}
+	// Once the walk is done, the last round sent again is stale too.
+	sum := w.interview(id, 2)
+	if sum.State != ownerwire.GenesisStateSummary {
+		t.Fatalf("state %s", sum.State)
+	}
+	frozen = w.bytesOf(id)
+	_, err = w.s.Answer(ctx, id, len(webApp), webApp[len(webApp)-1])
+	refused(t, err, ownerwire.CodeGenesisStaleRound)
+	if !bytes.Equal(w.bytesOf(id), frozen) {
+		t.Fatal("a stale answer after the walk changed the thread's file")
+	}
+	// Through the wire's own verb the same.
+	_, err = w.s.Genesis(ctx, ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbAnswer, Thread: id, Round: 1, Answers: webApp[0]})
+	refused(t, err, ownerwire.CodeGenesisStaleRound)
 }
 
 // Text that looks like a secret is refused, by the word of the wire, however
@@ -544,6 +593,23 @@ func TestTheFolderIsChecked(t *testing.T) {
 	if strings.Contains(err.Error(), base) {
 		t.Fatalf("the error holds the path: %v", err)
 	}
+	// Each error is an OpenError with the reason word of what failed, for
+	// the daemon's log line.
+	wide := filepath.Join(base, "wide")
+	if err := os.Mkdir(wide, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(wide, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]string{link: "folder-link", wide: "folder-mode", file: "folder-not-folder", "": "no-folder",
+		filepath.Join(base, "no", "such", "parent"): "folder-make"} {
+		_, err := Open(path, Options{})
+		var oe *OpenError
+		if !errors.As(err, &oe) || oe.Reason != want {
+			t.Errorf("%q: %v, want the reason %s", path, err, want)
+		}
+	}
 }
 
 // A store does not follow a link in its folder: a file that is a link is not
@@ -823,11 +889,13 @@ func TestGenesisDispatchesTheWireVerbs(t *testing.T) {
 	if r := do(ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbSummary, Thread: id}); r.State != ownerwire.GenesisStateSummary || r.Groups == nil {
 		t.Fatalf("summary %+v", r)
 	}
+	// The discard of an open thread (the finished one refuses it).
+	other := do(ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbStart}).Thread
+	if r := do(ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbDiscard, Thread: other}); r.State != ownerwire.GenesisStateDiscarded {
+		t.Fatalf("discard %+v", r)
+	}
 	if r := do(ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbFinish, Thread: id}); r.State != ownerwire.GenesisStateFinished {
 		t.Fatalf("finish %+v", r)
-	}
-	if r := do(ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbDiscard, Thread: id}); r.State != ownerwire.GenesisStateDiscarded {
-		t.Fatalf("discard %+v", r)
 	}
 	for _, p := range []ownerwire.SeatGenesisParams{
 		{},
@@ -848,6 +916,7 @@ func TestRefusalsAreGateWords(t *testing.T) {
 	for code := range map[string]bool{
 		ownerwire.CodeGenesisBusy: true, ownerwire.CodeGenesisUnknownThread: true, ownerwire.CodeGenesisBadAnswer: true,
 		ownerwire.CodeGenesisOverCap: true, ownerwire.CodeGenesisSecretShaped: true, ownerwire.CodeGenesisDone: true, CodeBadParams: true,
+		ownerwire.CodeGenesisStaleRound: true,
 	} {
 		err := refuse(code)
 		if got, ok := RefusalCode(fmt.Errorf("wrapped: %w", err)); !ok || got != code {
@@ -861,6 +930,52 @@ func TestRefusalsAreGateWords(t *testing.T) {
 	if _, ok := RefusalCode(errors.New("x")); ok {
 		t.Fatal("a plain error is a refusal")
 	}
+}
+
+// A folder may hold more open threads than the store would open (files
+// restored by hand): List still answers, with the two oldest, in the wire's
+// form; the third is served by id; and Start is refused busy.
+func TestListNeverFailsOnMoreOpenThreadsThanItShows(t *testing.T) {
+	w := newWorld(t)
+	a := w.ok(w.s.Start(ctx)).Thread
+	w.clock.advance(time.Minute)
+	b := w.ok(w.s.Start(ctx)).Thread
+	// A third open thread, from another folder whose ids start elsewhere,
+	// started an hour before the two: the oldest of the three.
+	other := newWorld(t)
+	other.rand.n = 100
+	other.clock.advance(-time.Hour)
+	c := other.ok(other.s.Start(ctx)).Thread
+	other.ok(other.s.Answer(ctx, c, 1, webApp[0]))
+	other.s.Close()
+	data, err := os.ReadFile(filepath.Join(other.dir, c+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(w.dir, c+".json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w.open()
+	list := w.ok(w.s.List(ctx))
+	if len(list.Threads) != 2 || list.Threads[0].Thread != c || list.Threads[1].Thread != a || list.Threads[0].Round != 2 {
+		t.Fatalf("the list of three open: %+v", list.Threads)
+	}
+	if got := w.ok(w.s.Genesis(ctx, ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbList})); len(got.Threads) != 2 {
+		t.Fatalf("the list through the wire's verb: %+v", got.Threads)
+	}
+	if r := w.ok(w.s.Round(ctx, b)); r.Thread != b {
+		t.Fatalf("the newest is not served by id: %+v", r)
+	}
+	_, err = w.s.Start(ctx)
+	refused(t, err, ownerwire.CodeGenesisBusy)
+	// One discarded: the list shows the other two, and a start is still
+	// refused while two are open.
+	w.ok(w.s.Discard(ctx, c))
+	if l := w.ok(w.s.List(ctx)); len(l.Threads) != 2 || l.Threads[0].Thread != a || l.Threads[1].Thread != b {
+		t.Fatalf("after a discard: %+v", l.Threads)
+	}
+	_, err = w.s.Start(ctx)
+	refused(t, err, ownerwire.CodeGenesisBusy)
 }
 
 // List answers the open threads, oldest first, each where it stands and with

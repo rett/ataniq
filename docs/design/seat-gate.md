@@ -149,9 +149,9 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   plan; see [guided new project](#guided-new-project)): `seat.genesis`
   (`ownerwire.OpSeatGenesis`, in `ownerwire.GateOperations` and not in
   `ownerwire.Operations`), `SeatGenesisParams`, `SeatGenesisResult` and their
-  parts, and the six codes `genesis-busy`, `genesis-unknown-thread`,
-  `genesis-bad-answer`, `genesis-over-cap`, `genesis-secret-shaped` and
-  `genesis-done`. The daemon's side is built too (genesis G4): the thread
+  parts, and the seven codes `genesis-busy`, `genesis-unknown-thread`,
+  `genesis-bad-answer`, `genesis-over-cap`, `genesis-secret-shaped`,
+  `genesis-done` and `genesis-stale-round`. The daemon's side is built too (genesis G4): the thread
   store, `internal/genesis/thread`, which keeps the threads in
   `STATE/owner/genesis/`; the gate handler's route and the capability
   `genesis` (`gatehost.WithGenesis`); and the daemon's wiring
@@ -387,16 +387,18 @@ The handler (`gatehost`, built for pairing and reads) answers:
 | `key-revoked` | The credential is on the list and revoked. |
 | `kind-refused` | The credential's stored kind is not a kind the verifier knows (`unverified` included), or not one the project accepts. |
 | `wait-full` | G14. A `seat.wait` came while the gate already holds two waits for the peer, or the daemon's service already holds its eight. It is a load answer, not a misuse: it is not counted by the refusal bound (see [live refresh](#live-refresh-seatwait)). |
-| `genesis-busy` | Genesis. A `start` of `seat.genesis` came while the seat already holds two open threads. A state of the host, not a misuse. |
-| `genesis-unknown-thread` | Genesis. The thread of the call is none the host holds: never started, discarded, expired, or of another seat. |
-| `genesis-bad-answer` | Genesis. An answer or a change the question does not allow: an unknown node, a node whose condition does not hold, an option the question does not hold, a round that is not the thread's, a form of answer the question does not take, or other text that is empty or holds a control character. The brief's `node_unknown`, `node_not_eligible`, `answer_invalid`, `round_invalid`, `value_invalid` and `field_name`. |
+| `genesis-busy` | Genesis. A `start` of `seat.genesis` came while the host already holds two open threads (the daemon's, shared by every pinned seat of the owner). A state of the host, not a misuse. |
+| `genesis-unknown-thread` | Genesis. The thread of the call is none the host holds: never started, discarded, expired, pruned, or kept by another daemon. The threads are the daemon's, not a seat's: every pinned seat reaches the same ones. |
+| `genesis-bad-answer` | Genesis. An answer or a change the question does not allow: an unknown node, a node whose condition does not hold, an option the question does not hold, a round the thread has not reached, a form of answer the question does not take, or other text that is empty or holds a control character. The brief's `node_unknown`, `node_not_eligible`, `answer_invalid`, `round_invalid`, `value_invalid` and `field_name`. |
 | `genesis-over-cap` | Genesis. An answer that would take a field, a note or the brief past its cap. The brief's `too_large`. |
-| `genesis-secret-shaped` | Genesis. Text that looks like a key, a token or a password (a private key block, a well-known key prefix, an assignment such as a password, a long run of random-looking characters). Credentials are never typed on the phone. The brief's `secret_shaped`. |
-| `genesis-done` | Genesis. An answer or a change to a thread that is finished. |
+| `genesis-secret-shaped` | Genesis. Text that looks like a key, a token or a password (the start of a private key block, `-----BEGIN`; a well-known key prefix; an assignment with a value, `password=...`, or `password: ...` with a value that is not a plain word; a run of 32 or more hexadecimal digits, or of random-looking letters, digits, `_`, `+` and `=`, where a dash or a slash ends the run). It catches pasted keys and obvious assignments, not every typed password; names, web addresses, paths and the phrase "private key" pass, and a bare git commit id (40 hexadecimal digits) is refused. Credentials are never typed on the phone. The brief's `secret_shaped`. |
+| `genesis-done` | Genesis. An answer, a change or a discard of a thread that is finished. |
+| `genesis-stale-round` | Genesis. An answer to a round the thread has already taken, or to any round once the walk is done (the thread is at its summary): a double tap, a second tab, a post the browser sent again. A state of the thread, not a misuse; the seat goes back to the thread's page with "That round was already answered." |
 
-The six genesis words are the gate's words for the refusals of the host's
-genesis packages (`internal/genesis/brief`, `code.go`) and for three states of
-the host's thread store. The other refusals of those packages (`brief_invalid`,
+The seven genesis words are the gate's words for the refusals of the host's
+genesis packages (`internal/genesis/brief`, `code.go`) and for four states of
+the host's thread store (`genesis-busy`, `genesis-unknown-thread`,
+`genesis-done` and `genesis-stale-round`). The other refusals of those packages (`brief_invalid`,
 `domain_mismatch`, `not_inferred`, `catalog_invalid`, `catalog_mismatch`) are a
 fault of the host, not of what the owner sent, and are answered `failed`. A test
 (`internal/genesis`, `wirecodes_test.go`) holds the map complete: a refusal code
@@ -449,21 +451,27 @@ holds its old wait would meet it with no fault of its own, and counting it
 would let a reconnect loop shut a good seat out for 10 minutes. Its log line is
 limited instead, to one a minute for each peer.
 
-Of `seat.genesis`, `genesis-bad-answer`, `genesis-secret-shaped`,
-`genesis-over-cap` and `genesis-unknown-thread` count, with `bad-params`: each
-is what the peer sent (an answer the question does not allow, text that looks
-like a credential, an answer past a cap, a thread it was never given), and a
-seat that keeps sending them is the misuse the bound is for. The seat's own
-pages send none of them in good order; a thread that expired or was dropped
-answers `genesis-unknown-thread` once and the page stops asking. `genesis-busy`
-and `genesis-done` do not count: they answer the state of the thread store,
-which a seat in good order meets (a second tab, a start while two threads are
-open, an answer sent twice after the thread finished), and a double tap must
-not shut the owner out for 10 minutes. They stay bounded by the gate's 60
-requests a minute and by the store's own limits (two open threads, eight
-files). A `list` names no thread and takes no answer, so in good order it meets
-none of the counted codes: like `round`, it is a read the seat may send as
-often as its own room allows.
+Of `seat.genesis`, only `genesis-bad-answer` counts, with `bad-params`: an
+answer the question cannot take (an unknown node, an option the question does
+not hold, a form of answer it does not take, a round the thread has not
+reached) is what the peer sent, the seat's own pages never send one, and a
+seat that keeps sending them is the misuse the bound is for. None of the other
+genesis words counts. `genesis-stale-round`, `genesis-busy`, `genesis-done` and
+`genesis-unknown-thread` answer the state of the thread store, which a seat in
+good order meets: a double tap or a second tab on a round already taken, a
+start while two threads are open, an answer sent after the thread finished, a
+page left open after its thread expired or was discarded.
+`genesis-secret-shaped` and `genesis-over-cap` answer what the owner typed,
+which the owner may get wrong a few times on the way to a good answer. None of
+them says anything against the seat, and a few taps must not shut the owner
+out of approvals for 10 minutes. They stay bounded elsewhere: by the seat's 30
+project requests a minute for each credential, by the seat link's room of 10
+interview calls in 80 seconds, by the gate's 60 requests a minute, and by the
+store's own limits (two open threads, eight files). A test sends 40 double
+taps through the gate and its real store and is never shut out. A `list` names
+no thread and takes no answer, so in good order it meets none of the counted
+codes: like `round`, it is a read the seat may send as often as its own room
+allows.
 
 ## The challenge
 
@@ -1869,14 +1877,14 @@ the members below, and a member of another verb is refused `bad-params`:
 
 | Verb | Members | What the host does |
 | --- | --- | --- |
-| `start` | none | Opens a thread, chooses its id (16 lower-case hexadecimal digits) and answers its first round. At most 2 threads are open for a seat; a third is `genesis-busy`. Starting is free. |
-| `list` | none | Answers the seat's open threads (state `threads`), oldest first, each where it stands and none of its answers. A finished or discarded thread is not listed. It is how a seat that lost its own memory of the threads it started (a restart) finds them, so that `genesis-busy` never locks the owner out until a thread expires. A read, free like `round`. |
+| `start` | none | Opens a thread, chooses its id (16 lower-case hexadecimal digits) and answers its first round. At most 2 threads are open on the host, for every pinned seat together (the threads are the daemon's, not a seat's); a third is `genesis-busy`. Starting is free. |
+| `list` | none | Answers the host's open threads (state `threads`), the same for every pinned seat, oldest first, each where it stands and none of its answers. A finished or discarded thread is not listed. It is how a seat that lost its own memory of the threads it started (a restart) finds them, so that `genesis-busy` never locks the owner out until a thread expires. A read, free like `round`. |
 | `round` | `thread` | Answers where the thread stands. |
 | `answer` | `thread`, `round`, `answers` | Applies 1 to 3 answers, each to another node, to the round named, and answers the next round or the summary. |
 | `change` | `thread`, `node`, `answer` | Replaces an earlier answer. It clears the answers that depended on it (the catalog's invalidation closure), keeps them in the brief's history, and says how many in `reset`. |
 | `summary` | `thread` | Answers the summary. |
-| `finish` | `thread` | Freezes the brief and answers its digest. After it, `answer` and `change` are `genesis-done`. |
-| `discard` | `thread` | Drops the thread. |
+| `finish` | `thread` | Freezes the brief and answers its digest. After it, `answer`, `change` and `discard` are `genesis-done`. |
+| `discard` | `thread` | Drops an open thread. A finished thread is `genesis-done`: its brief stays as it was finished. |
 
 An answer is `{node, kind, ids, text}`, and a change's `answer` is
 `{kind, ids, text}`. The kind is one of `choice` (exactly one id), `choices`
@@ -1934,7 +1942,7 @@ as an instruction.
 | --- | --- |
 | Params | 4 KiB (`MaxSeatGenesisParamsBytes`) |
 | Result | 16 KiB (`MaxSeatGenesisResultBytes`); one over is `record-too-large` |
-| Open threads for a seat | 2 (`MaxGenesisThreads`, the host's) |
+| Open threads on the host, for every pinned seat together | 2 (`MaxGenesisThreads`, the host's) |
 | Rounds | 6 (`MaxGenesisRounds`); questions in a round 3; answers in a call 3 |
 | Options of a question, choices of an answer | 8 |
 | Prompt, option label, option example | 160, 60 and 100 bytes (the catalog's) |
@@ -1968,9 +1976,15 @@ only writer of them. It never executes anything and reads nothing outside its
 folder, `STATE/owner/genesis/`, which the gate makes with mode 0700 when it
 starts and opens as an `os.Root`, so no link is followed and nothing outside
 the folder is reached. The store refuses a folder that is a link, is not the
-daemon user's, is writable by group or other or holds more than 64 files; the
-daemon then does not start the gate (exit 18), since it does not run with the
-folder in doubt.
+daemon user's, is writable by group or other or holds more than 64 files, with
+an error of fixed text and a reason word (`thread.OpenError`: `folder-link`,
+`folder-owner`, `folder-mode`, `too-many-files` and the others). The daemon
+then logs one line of fixed words with that reason word (`seat gate: the
+guided interview is not served: its thread store did not open (REASON); ...`),
+never the folder's path, and starts the gate without the store: no `genesis`
+in its hello, so the phone shows no "New project", and nothing in the folder is
+read or written. A folder in doubt does not stop the daemon or the rest of the
+gate; it is fixed by hand and the daemon restarted.
 
 - **A thread** is `{id, state, brief, created, updated, catalog digest}`: the id
   is 16 lower-case hexadecimal digits from `crypto/rand`, the state `open`,
@@ -2000,7 +2014,9 @@ folder in doubt.
   `round` answers the question round the thread is at, or the summary when the
   walk is done (every required field filled, six rounds, or no question left);
   a finished thread answers its summary and digest. `answer` must name the
-  thread's current round and nodes of it (else `genesis-bad-answer`); each
+  thread's current round and nodes of it (a round already taken, or any round
+  once the walk is done, is `genesis-stale-round`; a round it has not reached,
+  or a node of another round, `genesis-bad-answer`); each
   answer goes through `catalog.Apply`, and one failing fails the whole call and
   changes nothing; text that looks like a secret is refused
   `genesis-secret-shaped`, a field or brief over its cap `genesis-over-cap`.
@@ -2011,12 +2027,15 @@ folder in doubt.
   `summary` reads the summary at any time. `finish` freezes the brief and
   answers its digest, at any time on an open thread (there is no separate
   "enough": the owner reads the summary and finishes), and again on a finished
-  one with the same digest; afterwards `answer` and `change` are
-  `genesis-done`. `discard` drops the thread and empties its brief. `list`
+  one with the same digest; afterwards `answer`, `change` and `discard` are
+  `genesis-done`. `discard` drops an open thread and empties its brief. `list`
   answers the open threads, oldest first (by the time each was started, then
   by id), each with the state, round and progress `round` would answer and
   nothing of its brief; it expires what is due first, as `start` does, and
-  touches no thread. A discarded
+  touches no thread. It lists at most 2, the oldest, and never fails for
+  more: the store never opens a third, but a folder may hold more open
+  threads (files restored by hand from a copy); the newer ones are still
+  served by id, and `start` is `genesis-busy` while two or more are open. A discarded
   or expired thread is `genesis-unknown-thread` for every call. The mapping of
   the brief's refusal codes to the gate's words is the store's own table
   (`thread.GateWord`), held equal to the wire's by a test of `internal/genesis`.
@@ -2039,7 +2058,7 @@ The seat link (`seatlink.Daemon.Genesis`, the app's `seatapp.Genesis` port)
 calls `seat.genesis` only when the hello lists `genesis`; otherwise every call
 is "not offered" and nothing is sent, and the phone shows no "New project". The
 link holds each call to the wire's form with the wire's encoder before it is
-sent, maps the six genesis codes to the app's errors (and `rate-limited`,
+sent, maps the seven genesis codes to the app's errors (and `rate-limited`,
 `busy` and `too-many-refusals` to "busy", `unknown-op` to "not offered"), and
 takes an answer only when it is one the verb answers, of the thread called,
 with every count and length checked again. Each call has the room of the
@@ -2050,8 +2069,13 @@ spend that room on reads, the link answers a `list` from the last one for 20
 seconds (the card list's reload gap: card lists open in several tabs list the
 open projects once in it between them) and a `round` from its own last answer
 for that thread for 10 seconds (the page a form's post redirects to), and
-forgets both before any call that changes threads is sent: one answer of the
-owner's is one call. A summary's rows get their questions, for a change, from
+forgets both before any call that changes threads is sent and again when it
+ends, whatever its answer: one answer of the owner's is one call. A read's
+answer is kept only when no call that changes threads began or ended while it
+was asked (a generation taken before the read is sent, which each such call
+moves on as it starts and as it ends), so a read that overlapped a change,
+even one that began after the change was sent and came back before it, is
+never kept; the change's own answer is kept when nothing else changed. A summary's rows get their questions, for a change, from
 the catalog the seat's build holds, and only when the thread's catalog digest is
 that catalog's; under another catalog the row offers no change.
 
@@ -2070,8 +2094,13 @@ A round's page shows "Round N of M" and the required answers given, and each
 question as a fieldset of real inputs: radio buttons for a single choice, a
 yes-or-no question and a scale of 1 to 5, check boxes for a multiple choice,
 each option with its label and its example as text; "Other" with a text field
-of `maxlength` 200 only when the question allows it, and "You decide for me"
-and "Skip" only when the question allows them; one submit button. The summary
+of `maxlength` 200 only when the question allows it, labelled "a short note,
+about 200 letters" (the cap is 200 bytes, and a browser counts `maxlength` in
+UTF-16 code units, so words with accents or emoji can be cut short of it and
+still be too long; the post is then refused before the port is asked, with the
+note "Your own words were too long, so nothing was sent. ..."), and "You
+decide for me" and "Skip" only when the question allows them; one submit
+button. The summary
 shows the three groups (what you chose, what was decided for you, the
 defaults), the owner's own words quoted and marked as the owner's, a "Change"
 link on each row whose question the link holds, a "Looks right: finish" button
@@ -2081,7 +2110,16 @@ short form and says that nothing has started and no agent was given the brief.
 Every act is a plain form posted to the app (`/projects/new`, and
 `/projects/{thread}/answer`, `/change`, `/finish`, `/discard`), with the checks
 of every changing request of the seat (Origin, Host, `Sec-Fetch-Site:
-same-origin`, the body's size) and the form's content type, and a session. A
+same-origin`, the body's size) and the form's content type, and a session.
+A browser posts a form with the referrer policy of the page that holds it, so
+every response of the seat carries `Referrer-Policy: same-origin`: nothing of
+an address leaves for another origin, and a same-origin post keeps its
+`Origin` header (under `no-referrer` it would be `Origin: null`, and every
+form would be refused). A form's post passes with `Origin` equal to the seat
+origin, or with no `Origin` header at all when `Sec-Fetch-Site` says
+`same-origin`; `Origin: null` and any other origin are refused. The scripts'
+JSON posts set their own policy (`strict-origin`) and always need `Origin`.
+The page inventory test holds every page with a form to the policy. A
 post calls the port once and is answered with a 303 to a page
 (post/redirect/get), never with a page: a reload sends nothing again, and a
 refusal of the gate is never retried. A form whose fields do not agree (two
@@ -2090,8 +2128,9 @@ over 200 bytes) is refused before the port is asked. Each refusal is a fixed
 note on the page the post redirects to: a bad answer ("That answer was not
 accepted. Look at the question again."), secret-shaped text ("That looks like
 a password or key. Never type those here; say that a credential is needed
-instead."), an answer over a cap, an unknown project, a finished one, two open,
-a busy or unreachable desk. No page, address or log line holds what the owner
+instead."), an answer over a cap, an unknown project, a finished one, a round
+already answered (back to the thread's page, "That round was already
+answered."), two open, a busy or unreachable desk. No page, address or log line holds what the owner
 typed, and a refused answer's text is never shown back. A thread id in an
 address must be 16 lower-case hexadecimal digits, and a node id of the
 catalog's grammar, before it is used; otherwise the page is a 404, or the post

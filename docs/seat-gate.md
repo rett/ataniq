@@ -177,8 +177,10 @@ together:
 - **Pass `Sec-Fetch-Site` and `Origin` through untouched.** Every POST needs
   `Origin` equal to the seat origin and `Sec-Fetch-Site: same-origin`, as a
   browser sends them; a POST without them is answered 403, and no option lets
-  one through. A proxy that removes or rewrites either breaks pairing, login and
-  decisions.
+  one through. The one difference is a plain form's post of the project pages,
+  which may also come with no `Origin` header at all when `Sec-Fetch-Site`
+  says `same-origin`; `Origin: null` is refused there too. A proxy that removes
+  or rewrites either breaks pairing, login, decisions and the project pages.
 - **Overwrite the client-address header on every request.** `--socket` needs
   `--client-addr-header NAME`, the header the proxy sets to the client's address,
   because a Unix peer has no address and every client would share one limit. The
@@ -189,8 +191,12 @@ together:
   With `--listen` the option is not required; give it only when the proxy
   overwrites the header on every request.
 - **No caching.** Every response carries `Cache-Control: no-store`, and the
-  security headers (content security policy, HSTS, `Permissions-Policy`) that
-  the passkey calls rely on. Do not cache and do not remove or change them. The
+  security headers (content security policy, HSTS, `Permissions-Policy`,
+  `Referrer-Policy: same-origin`) that the passkey calls and the forms rely
+  on. Do not cache and do not remove or change them. The referrer policy in
+  particular must stay `same-origin`: under `no-referrer` a browser posts the
+  project pages' forms with `Origin: null`, which the seat refuses, so a proxy
+  that sets its own `Referrer-Policy` on the seat's site breaks every form. The
   one exception is the notices' service worker, `/sw.js`, which the seat serves
   with `Cache-Control: no-cache` so that the phone checks it for a change; the
   shipped Caddy sets `no-store` on it as on everything else, which does no harm.
@@ -446,8 +452,9 @@ three multiple-choice questions about a project you want to make (what kind,
 what it is for, who it is for, how it is built or published, by when). The
 questions are the desk's own, from its fixed catalog, and so is the order they
 come in. Each question offers its options, each with a one-line example, and,
-where the question allows them, "Other" (your own words, up to 200
-characters), "You decide for me" and "Skip". After the last round you read the
+where the question allows them, "Other" (your own words, a short note of
+about 200 letters: the cap is 200 bytes, so accents and emoji take more room),
+"You decide for me" and "Skip". After the last round you read the
 summary: what you chose, what was decided for you and what was left to its
 default; "Change" on a row asks that question again (a change clears the later
 answers that depended on it, and the page says how many), "Looks right:
@@ -815,7 +822,7 @@ At the daemon's start:
 | `the gate's key in ... cannot be used` (exit 10) | No key, or the folder or files are not safe. | `ataniqd seat-gate init`; the folder must not be writable by group or other. |
 | `... pins no seat key, so no seat could connect`, or a message about the pin file naming a line (exit 10) | No pin, no file, a link, a mode wider than 0600, another owner, more than 4 pins, a repeat or a line that is not a fingerprint. | Fix `seat-pins`; `ataniqd seat-gate pins` shows what is read. |
 | `seat gate: cannot listen on ...` (exit 18) | The port is taken or the address is not the host's. | Free the port or change ADDR. |
-| `seat gate: the guided interview's thread store cannot be opened: ...` (exit 18) | The folder `owner/genesis/` of the state folder is a link, is not the daemon user's, is writable by group or other, holds too many files, or cannot be made or read. | Fix or move the folder by hand; the daemon never repairs it and does not start the gate with it in doubt. |
+| `seat gate: the guided interview is not served: its thread store did not open (REASON); ...` (the daemon runs on) | The folder `owner/genesis/` of the state folder could not be used, as REASON says: `folder-link` (a link), `folder-owner` (not the daemon user's), `folder-mode` (writable by group or other), `too-many-files` (more than 64 entries), `folder-not-folder`, `folder-make`, `folder-read`, `folder-open` or `folder-replaced` (cannot be made, read or opened, or was replaced while it was opened), `file-remove` or `file-write` (an old or expired thread file cannot be removed or written), `catalog` (the build's question catalog does not load). The gate starts without the interview: its start line has no `genesis` and the phone shows no "New project"; pairing, reads, logins and decisions are served as before. | Fix or move the folder by hand, then restart the daemon; it never repairs the folder and never reads or writes in it while it is in doubt. |
 | Start line says `it serves pair, read, watch and genesis only` (before the thread store, `pair, read and watch only`) | No usable origin file (missing, empty, refused or not canonical), or a service that cannot decide. | Fix the origin file and restart; the phone says the desk does not take phone logins until then. |
 
 At the seat's start (exit 2 with a message on standard error): `--gate-pin-file:`

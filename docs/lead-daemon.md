@@ -382,11 +382,16 @@ two waits at once for a seat. With `genesis` it serves the guided new-project
 interview, `seat.genesis` (see [the design](design/seat-gate.md#guided-new-project)):
 the owner's answers to a few multiple-choice questions fill a typed project
 brief, one thread per interview, and an answer is a message from the owner and
-never an approval. The daemon keeps the threads in `owner/genesis/` of the state
+never an approval. The threads are the daemon's, shared by every pinned seat of
+the owner, not kept for each seat. The daemon keeps the threads in `owner/genesis/` of the state
 folder, one file each (mode 0600, written whole and synced), in a folder it
-makes with mode 0700 when the gate starts and refuses, stopping the daemon at
-its serve step, when it is a link, not the daemon user's or writable by group
-or others. At most two threads are open at once (a third is `genesis-busy`),
+makes with mode 0700 when the gate starts and refuses when it is a link, not
+the daemon user's or writable by group or others. A folder it refuses does not
+stop the daemon: it logs `ataniqd: seat gate: the guided interview is not
+served: its thread store did not open (REASON); ...`, with a fixed reason word
+(such as `folder-link` or `folder-mode`) and no path, and the gate starts
+without `genesis`, so the phone offers no "New project" until the folder is
+fixed and the daemon restarted. At most two threads are open at once (a third is `genesis-busy`),
 eight files are kept, a thread untouched for 14 days is discarded, and a file
 that is not as the daemon wrote it is not served and is logged once by name, in
 fixed text that holds no answer, and never repaired. The store's log lines

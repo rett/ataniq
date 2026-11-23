@@ -71,7 +71,11 @@
 // can make a passkey sends it, so a POST without it is refused, and no
 // option of [Config] lets one through) (a fixed 403 otherwise), and the JSON
 // content type, or, for the forms of the project pages, the form's
-// (application/x-www-form-urlencoded). The relying party id is exactly the
+// (application/x-www-form-urlencoded). A form's post may also come with no
+// Origin header at all, with Sec-Fetch-Site same-origin; "Origin: null" is
+// refused. The referrer policy of every response is same-origin, under which
+// a browser keeps the Origin header of a form's post to the app (under
+// no-referrer it would send "Origin: null"). The relying party id is exactly the
 // origin's host. The content security policy includes
 // require-trusted-types-for 'script', which the scripts meet by setting text
 // only with textContent, with trusted-types naming the one policy push.js
@@ -319,8 +323,9 @@
 // refusal is never retried. A question is a fieldset of real inputs: radio
 // buttons for a single choice, a yes-or-no question and a scale of 1 to 5,
 // check boxes for a multiple choice, each option with its label and its
-// example as text; "Other" with a text field of 200 characters only where
-// the question takes the owner's own words, and "You decide for me" and
+// example as text; "Other" with a text field for a short note (200 bytes,
+// "about 200 letters" on the page, maxlength 200) only where the question
+// takes the owner's own words, and "You decide for me" and
 // "Skip" only where it allows them. A form whose fields do not agree (two
 // kinds at once, own words with an option, words that are not plain text or
 // are past 200 bytes) is refused before the port is asked. Every refusal is

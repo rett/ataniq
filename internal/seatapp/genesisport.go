@@ -28,7 +28,9 @@ import (
 // [ErrGenesisBadAnswer] for an answer or a change the question does not
 // take, [ErrGenesisOverCap] for one past a cap of the brief,
 // [ErrGenesisSecretShaped] for text that looks like a password or a key,
-// [ErrGenesisDone] for an answer or a change to a finished thread,
+// [ErrGenesisDone] for an answer, a change or a discard of a finished
+// thread, [ErrGenesisStaleRound] for an answer to a round the thread has
+// already taken (a post sent twice, a second tab),
 // [ErrBusy] when the port's room or the gate's rate is spent (nothing is
 // sent, or nothing was taken), [ErrNotOffered] when the gate does not run
 // the interview, and [ErrDaemonUnavailable] when it cannot be reached. Any
@@ -236,6 +238,9 @@ var (
 	ErrGenesisSecretShaped = errors.New("seatapp: the text looks like a secret")
 	// ErrGenesisDone says the thread is finished.
 	ErrGenesisDone = errors.New("seatapp: the project is finished")
+	// ErrGenesisStaleRound says the round was already answered: the
+	// thread has moved on, and its page shows where it stands.
+	ErrGenesisStaleRound = errors.New("seatapp: the round was already answered")
 )
 
 // ValidThreadID reports whether s is a thread id: [GenesisThreadLength]

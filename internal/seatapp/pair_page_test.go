@@ -55,12 +55,15 @@ func TestPairPageAndScript(t *testing.T) {
 // for a request that is neither GET nor HEAD and is not a CORS request, which
 // a same-origin fetch is not, the Origin header is "null" when the request's
 // referrer policy is no-referrer. The page's Referrer-Policy response header
-// is no-referrer, which makes that the default policy of every request the
-// page makes, and the app's exact Origin check (see TestPairWrongOriginHeader,
-// which refuses "null") would then refuse the phone's own POST with a 403. So
-// the shared fetch helper sets the policy itself: strict-origin keeps Origin
-// on a same-origin request, and an empty referrer sends no Referer header.
-// What a browser does with it cannot be run here: it needs a real browser.
+// is the default policy of every request the page makes, and the app's exact
+// Origin check (see TestPairWrongOriginHeader, which refuses "null") would
+// refuse the phone's own POST with a 403 under a no-referrer header. So the
+// shared fetch helper sets the policy itself and does not depend on the
+// page's: strict-origin keeps Origin on a same-origin request, and an empty
+// referrer sends no Referer header. The page's header is same-origin, which
+// keeps Origin too (the forms of the project pages need it; see
+// TestFormPagesKeepTheOriginOnTheirPosts). What a browser does with it cannot
+// be run here: it needs a real browser.
 func TestScriptFetchPolicyKeepsTheOrigin(t *testing.T) {
 	r := newRig(t)
 	js := r.do("GET", "/static/pair.js", nil, nil).Body.String()
@@ -75,8 +78,8 @@ func TestScriptFetchPolicyKeepsTheOrigin(t *testing.T) {
 	if strings.Contains(js, "no-referrer") {
 		t.Error("the script names the no-referrer policy, which makes a same-origin POST carry Origin: null")
 	}
-	// The response header stays: the page itself leaks no referrer.
-	if got := r.do("GET", "/pair/", nil, nil).Header().Get("Referrer-Policy"); got != "no-referrer" {
+	// The response header: the page leaks no referrer to another origin.
+	if got := r.do("GET", "/pair/", nil, nil).Header().Get("Referrer-Policy"); got != "same-origin" {
 		t.Errorf("Referrer-Policy %q", got)
 	}
 }

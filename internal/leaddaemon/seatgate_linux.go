@@ -36,7 +36,8 @@ import (
 // that lets the phone's pages refresh by themselves. When the gate has a
 // folder for the guided new-project interview (SeatGate.GenesisDir), it opens
 // the thread store there and serves the capability genesis (gatehost.CapGenesis),
-// the interview's one operation, seat.genesis.
+// the interview's one operation, seat.genesis. A thread store that does not
+// open is logged and leaves the interview out: the gate serves the rest.
 
 const (
 	// SeatGateDirName is the name of the gate's folder in the owner folder
@@ -230,8 +231,11 @@ type SeatGate struct {
 	// there when it starts (making the folder, mode 0700, if it is not there;
 	// package genesis/thread refuses a link, a folder that is not the daemon
 	// user's and one open to writing) and closes it when it stops, after the
-	// requests in flight ended. A store that cannot be opened ends the start:
-	// the gate does not run with its folder in doubt.
+	// requests in flight ended. A store that cannot be opened is logged, in
+	// one line of fixed words with the store's reason word, and the gate
+	// starts without it: it does not serve genesis (the phone then shows no
+	// "New project"), and nothing in the folder is read or written. The rest
+	// of the gate, and the daemon, are not stopped for it.
 	GenesisDir string
 	// Log receives the gate's lines: the one start line, the handler's
 	// refusals and a stop that did not go as asked; nil discards them. No
@@ -258,7 +262,9 @@ func (g *SeatGate) logf(format string, a ...any) {
 // svc can wait (a gatehost.WaitPort, as the owner channel's service is), with
 // or without an origin: a wait decides nothing. It serves genesis, the guided
 // new-project interview, when the gate has a GenesisDir whose thread store
-// opens, with or without an origin: an answer decides nothing either. The
+// opens, with or without an origin: an answer decides nothing either. A store
+// that does not open is not an error of the start: the gate logs it and
+// serves the rest without genesis. The
 // calls of login and decide are bound to the gate's own key fingerprint and
 // checked against the origin and its host, the relying party id. It writes one line once the
 // gate listens, which names the address, the gate's key fingerprint, the
@@ -295,11 +301,14 @@ func (g *SeatGate) Start(svc gatehost.Port) (stop func(), err error) {
 	var opts []gatehost.Option
 	var store *thread.Store
 	if g.GenesisDir != "" {
-		store, err = thread.Open(g.GenesisDir, thread.Options{Log: g.Log})
+		s, err := thread.Open(g.GenesisDir, thread.Options{Log: g.Log})
 		if err != nil {
-			return nil, fmt.Errorf("seat gate: the guided interview's thread store cannot be opened: %s", SafeText(err.Error()))
+			g.logf("seat gate: the guided interview is not served: its thread store did not open (%s); the phone offers no New project until the folder is fixed and the daemon restarted",
+				storeReason(err))
+		} else {
+			store = s
+			opts = append(opts, gatehost.WithGenesis(store))
 		}
-		opts = append(opts, gatehost.WithGenesis(store))
 	}
 	closeStore := func() {
 		if store != nil {
@@ -379,6 +388,17 @@ func (g *SeatGate) Start(svc gatehost.Port) (stop func(), err error) {
 			closeStore()
 		})
 	}, nil
+}
+
+// storeReason is the reason word of a thread store that did not open (see
+// thread.OpenError), or "unknown" for an error of another kind: one of the
+// store's fixed words, never anything of the folder's path.
+func storeReason(err error) string {
+	var oe *thread.OpenError
+	if errors.As(err, &oe) && oe.Reason != "" && strings.Trim(oe.Reason, "abcdefghijklmnopqrstuvwxyz-") == "" {
+		return oe.Reason
+	}
+	return "unknown"
 }
 
 // capWords says a capability list in words, as the start line does: "pair and

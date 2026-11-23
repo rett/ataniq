@@ -355,6 +355,15 @@ func TestPageInventory(t *testing.T) {
 			if strings.Contains(strings.ToLower(body), "<form") && !formRoutes[e.pattern] {
 				t.Errorf("%s: a form, and only the project pages and the card list's start may hold one", e.pattern)
 			}
+			// A form is posted with the page's referrer policy, and only
+			// same-origin (of the policies that leak nothing to another
+			// origin) keeps the Origin header the app checks: no-referrer
+			// would make every post "Origin: null" and a 403.
+			if strings.Contains(strings.ToLower(body), "<form") {
+				if got := w.Header().Values("Referrer-Policy"); len(got) != 1 || got[0] != "same-origin" {
+					t.Errorf("%s: a page with a form has Referrer-Policy %q, want same-origin", e.pattern, got)
+				}
+			}
 			checkForms(t, e.pattern, body)
 		case "asset":
 			if externalRe.MatchString(body) {

@@ -435,12 +435,15 @@ func TestSeatGateThatCannotListenStopsTheDaemon(t *testing.T) {
 }
 
 // The gate's thread store is opened in owner/genesis of the state folder when
-// the gate starts, in a daemon of either mode, and a folder it must refuse (a
-// link, a folder open to writing) stops the daemon at its serve step, with the
-// service it was built on closed and no thread store served.
-func TestSeatGateThatCannotOpenItsThreadStoreStopsTheDaemon(t *testing.T) {
-	for name, prepare := range map[string]func(t *testing.T, dir string){
-		"a link": func(t *testing.T, dir string) {
+// the gate starts, and a folder it must refuse (a link, a folder open to
+// writing) does not stop the daemon: it logs one line with the store's reason
+// word, and the gate listens and serves everything but genesis.
+func TestSeatGateThatCannotOpenItsThreadStoreServesWithoutGenesis(t *testing.T) {
+	for name, c := range map[string]struct {
+		prepare func(t *testing.T, dir string)
+		reason  string
+	}{
+		"a link": {func(t *testing.T, dir string) {
 			target := filepath.Join(filepath.Dir(dir), "elsewhere")
 			if err := os.Mkdir(target, 0o700); err != nil {
 				t.Fatal(err)
@@ -448,28 +451,43 @@ func TestSeatGateThatCannotOpenItsThreadStoreStopsTheDaemon(t *testing.T) {
 			if err := os.Symlink(target, dir); err != nil {
 				t.Fatal(err)
 			}
-		},
-		"a folder others may write": func(t *testing.T, dir string) {
+		}, "folder-link"},
+		"a folder others may write": {func(t *testing.T, dir string) {
 			if err := os.Mkdir(dir, 0o700); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.Chmod(dir, 0o777); err != nil {
 				t.Fatal(err)
 			}
-		},
+		}, "folder-mode"},
 	} {
+		addr := freeLoopback(t)
 		svc := gateSetup(t, "")
 		state, runtime := ownerCmdDirs(t)
-		gateInit(t, state)
-		writePins(t, state, newSeat(t, "seat").Fingerprint()+"\n", 0o600)
-		prepare(t, genesisDir(state))
+		gateFP := gateInit(t, state)
+		seat := newSeat(t, "seat")
+		writePins(t, state, seat.Fingerprint()+"\n", 0o600)
+		c.prepare(t, genesisDir(state))
 		ta := newTestApp(t, nil)
-		code := ta.run([]string{"run", "--state-dir", state, "--runtime-dir", runtime, "--owner-channel", "--seat-gate", freeLoopback(t)})
-		if code != leaddaemon.ExitServe || !strings.Contains(ta.err.String(), "seat gate: the guided interview's thread store cannot be opened: genesis: the folder of the threads ") {
-			t.Fatalf("%s: exit %d: %q", name, code, ta.err.String())
+		errs := &gateBuf{}
+		ta.stderr = errs
+		done := startApp(t, ta, []string{"--state-dir", state, "--runtime-dir", runtime, "--owner-channel", "--seat-gate", addr}, runtime+"/daemon.sock")
+		gc, err := dialGate(addr, seat, gateFP)
+		if err != nil {
+			t.Fatalf("%s: %v: %s", name, err, errs.String())
 		}
-		if strings.Contains(ta.err.String(), "seat gate: listening") {
-			t.Fatalf("%s: the gate listened: %q", name, ta.err.String())
+		if got := strings.Join(gc.Caps(), " "); got != "pair read" {
+			t.Fatalf("%s: the gate's capabilities: %q", name, got)
+		}
+		gc.Close()
+		log := errs.String()
+		if !strings.Contains(log, "ataniqd: seat gate: the guided interview is not served: its thread store did not open ("+c.reason+")") ||
+			!strings.Contains(log, "seat gate: listening on") || strings.Contains(log, state) {
+			t.Fatalf("%s: the log:\n%s", name, log)
+		}
+		ta.signals <- syscall.SIGTERM
+		if code := <-done; code != 0 {
+			t.Fatalf("%s: exit %d: %s", name, code, errs.String())
 		}
 		if n := svc.closes.Load(); n != 1 {
 			t.Fatalf("%s: the service was closed %d times", name, n)

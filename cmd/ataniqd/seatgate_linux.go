@@ -33,7 +33,8 @@ func seatGateDir(stateDir string) string {
 
 // genesisDir is the folder of the guided interview's thread store in a state
 // folder: owner/genesis. The gate opens the store there (package
-// genesis/thread) and makes the folder, mode 0700, when it is not there.
+// genesis/thread) and makes the folder, mode 0700, when it is not there; a
+// folder the store refuses is logged, and the gate serves without genesis.
 func genesisDir(stateDir string) string {
 	return filepath.Join(stateDir, hostadapter.OwnerDirName, leaddaemon.GenesisDirName)
 }

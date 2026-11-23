@@ -1,6 +1,8 @@
 // Package thread is the thread store of the guided new-project interview: the
 // daemon's own record of the interviews the owner has begun on the phone, and
-// the one writer of them.
+// the one writer of them. The threads are the daemon's, not a seat's: every
+// pinned seat of the owner reaches the same ones, and the cap on open threads
+// is for all of them together.
 //
 // A thread is a project brief (package brief) being filled under one version
 // of the question catalog (package catalog), with an id, a state, and the
@@ -48,15 +50,22 @@
 //     keeps no answer: its brief is emptied. Every call to it is
 //     genesis-unknown-thread, as one never started.
 //   - An answer must name the round the thread is at, and a node of that
-//     round. A change must name a node that has an answer. One answer failing
-//     fails the whole call and changes nothing. Text that looks like a secret
-//     is refused genesis-secret-shaped.
+//     round. An answer to a round the thread has already taken, or to any
+//     round once the walk is done, is refused genesis-stale-round (the
+//     thread's state, which a second tab or a post sent twice meets); one to
+//     a round it has not reached, genesis-bad-answer. A change must name a
+//     node that has an answer. One answer failing fails the whole call and
+//     changes nothing. Text that looks like a secret is refused
+//     genesis-secret-shaped.
 //   - List answers the open threads, oldest first, each with its state
 //     (question or summary), round and progress, and nothing of its answers;
 //     a finished or discarded thread is not listed. It is a read, as Round
-//     and Summary are: it touches no thread.
-//   - A finished thread is frozen: an answer or a change is refused
-//     genesis-done, and its brief digest is the one finish returned. Finish
+//     and Summary are: it touches no thread. It lists at most [MaxOpen], the
+//     oldest, and never fails for more: a folder may hold more open threads
+//     (files restored by hand), the newer ones are served by id, and Start is
+//     refused genesis-busy while [MaxOpen] or more are open.
+//   - A finished thread is frozen: an answer, a change or a discard is
+//     refused genesis-done, and its brief digest is the one finish returned. Finish
 //     may be called at any time on an open thread (the owner's "enough"), and
 //     again on a finished one, which answers the same digest.
 //

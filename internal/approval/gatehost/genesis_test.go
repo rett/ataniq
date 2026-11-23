@@ -368,6 +368,7 @@ func TestGenesisErrorsMapToTheirCodes(t *testing.T) {
 		{&gateErr{ownerwire.CodeGenesisOverCap}, "genesis-over-cap"},
 		{&gateErr{ownerwire.CodeGenesisSecretShaped}, "genesis-secret-shaped"},
 		{&gateErr{ownerwire.CodeGenesisDone}, "genesis-done"},
+		{&gateErr{ownerwire.CodeGenesisStaleRound}, "genesis-stale-round"},
 		{&gateErr{CodeBadParams}, "bad-params"},
 		{fmt.Errorf("wrapped: %w", &gateErr{ownerwire.CodeGenesisDone}), "genesis-done"},
 		{&gateErr{"unknown-op"}, "failed"},
@@ -422,20 +423,23 @@ func TestGenesisErrorsMapToTheirCodes(t *testing.T) {
 	}
 }
 
-// The bound counts the refusals of seat.genesis that are what the peer sent,
-// and not the two that answer the state of the store.
+// The bound counts the refusals of seat.genesis that are a misuse, a bad
+// answer and bad params, and none of the others: the store's state (a stale
+// round, busy, done, an unknown thread) and what the owner typed (secret-shaped,
+// over a cap).
 func TestTheBoundCountsGenesisRefusalsAsTheContractSays(t *testing.T) {
 	for _, c := range []struct {
 		code   string
 		counts bool
 	}{
 		{ownerwire.CodeGenesisBadAnswer, true},
-		{ownerwire.CodeGenesisSecretShaped, true},
-		{ownerwire.CodeGenesisOverCap, true},
-		{ownerwire.CodeGenesisUnknownThread, true},
 		{CodeBadParams, true},
+		{ownerwire.CodeGenesisSecretShaped, false},
+		{ownerwire.CodeGenesisOverCap, false},
+		{ownerwire.CodeGenesisUnknownThread, false},
 		{ownerwire.CodeGenesisBusy, false},
 		{ownerwire.CodeGenesisDone, false},
+		{ownerwire.CodeGenesisStaleRound, false},
 	} {
 		h, lb := newGenesisHandler(t, &fakeGenesis{err: &gateErr{c.code}})
 		now := time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC)
@@ -454,7 +458,7 @@ func TestTheBoundCountsGenesisRefusalsAsTheContractSays(t *testing.T) {
 			}
 		}
 		// A counted code is logged up to the bound and then once for the
-		// shut-out; the other two are logged on every call.
+		// shut-out; the others are logged on every call.
 		want := 3 * RefusalBound
 		if c.counts {
 			want = RefusalBound + 1
@@ -470,14 +474,22 @@ func TestTheBoundCountsGenesisRefusalsAsTheContractSays(t *testing.T) {
 	}
 }
 
-// A thread that is only unknown or busy once does not shut the seat out: the
-// store's state answers a few times in good use.
-func TestAFewGenesisStateAnswersShutNoOneOut(t *testing.T) {
-	for _, code := range []string{ownerwire.CodeGenesisUnknownThread, ownerwire.CodeGenesisBusy, ownerwire.CodeGenesisDone} {
+// The store's state and what the owner typed never shut the seat out, however
+// often they answer inside the window: 40 double taps on a round already
+// taken leave the seat's reads and decisions served.
+func TestGenesisStateAnswersShutNoOneOut(t *testing.T) {
+	for _, code := range []string{ownerwire.CodeGenesisStaleRound, ownerwire.CodeGenesisUnknownThread, ownerwire.CodeGenesisBusy,
+		ownerwire.CodeGenesisDone, ownerwire.CodeGenesisSecretShaped, ownerwire.CodeGenesisOverCap} {
 		g := &fakeGenesis{err: &gateErr{code}}
 		h, _ := newGenesisHandler(t, g)
-		for i := 0; i < RefusalBound-1; i++ {
-			h.Handle(context.Background(), seat, ownerwire.OpSeatGenesis, genesisParams(t, everyVerb()[1]))
+		now := time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC)
+		h.now = func() time.Time { return now }
+		answer := genesisParams(t, everyVerb()[2])
+		for i := 0; i < 40; i++ {
+			_, err := h.Handle(context.Background(), seat, ownerwire.OpSeatGenesis, answer)
+			if codeOfErr(err) != code {
+				t.Fatalf("%s: call %d: %v", code, i, err)
+			}
 		}
 		if _, err := h.Handle(context.Background(), seat, ownerwire.OpList, nil); err != nil {
 			t.Fatalf("%s: %v", code, err)

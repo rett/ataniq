@@ -39,9 +39,12 @@
 //
 // Credentials are never typed on the phone. [Brief.Set], [Brief.AddNote]
 // and [Decode] refuse with [CodeSecretShaped] any value or note that looks
-// like a key: a PEM block, a well-known key prefix, an assignment such as
-// password=..., or a long run of hexadecimal or base64 characters that
-// looks random. See [SecretShaped].
+// like a key: a PEM block (-----BEGIN), a well-known key prefix, an
+// assignment with a value such as password=... or password: ..., or a long
+// run of hexadecimal or key characters that looks random. A dash and a slash
+// end a run, so names, addresses and paths pass. The check catches pasted
+// keys and obvious assignments, not every typed password; a bare git commit
+// id is refused. See [SecretShaped].
 //
 // # The canonical form
 //

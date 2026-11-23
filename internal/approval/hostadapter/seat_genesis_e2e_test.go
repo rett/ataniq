@@ -333,6 +333,7 @@ func TestGenesisInterviewOverTheGate(t *testing.T) {
 	seat.refused(gAnswer(aThread, 1, webAppRounds[0]...), ownerwire.CodeGenesisDone)
 	seat.refused(ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbChange, Thread: aThread, Node: "goal",
 		Answer: &ownerwire.GenesisPick{Kind: ownerwire.GenesisKindChoice, IDs: []string{"share"}}}, ownerwire.CodeGenesisDone)
+	seat.refused(ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbDiscard, Thread: aThread}, ownerwire.CodeGenesisDone)
 	// The frozen thread makes room for a third, which can be started.
 	c := seat.ok(gStart())
 	seat.ok(ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbDiscard, Thread: c.Thread})

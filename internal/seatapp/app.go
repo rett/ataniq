@@ -409,11 +409,21 @@ func Server(h http.Handler) *http.Server {
 // the trusted-types directive names it, seat-sw, and nothing else (no
 // allow-duplicates, no default), so a script that runs on the origin cannot
 // make a policy of its own to reach a sink.
+//
+// The referrer policy is same-origin: a request to another origin carries no
+// Referer header, so no address of the app leaves it, and a request to the
+// app's own origin keeps its Origin header. That second half is what the
+// project pages' plain HTML forms need. A browser sends a form's post with
+// the policy of the page that holds the form, and under no-referrer it sends
+// "Origin: null" (Fetch Standard, "serializing a request origin"), which the
+// app refuses (formOrigin): every form would answer 403. The scripts set
+// their own policy on each fetch (strict-origin) and do not depend on this
+// one. A test of the page inventory holds every page with a form to it.
 var securityHeaders = [][2]string{
 	{"Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types seat-sw"},
 	{"Strict-Transport-Security", "max-age=63072000"},
 	{"X-Content-Type-Options", "nosniff"},
-	{"Referrer-Policy", "no-referrer"},
+	{"Referrer-Policy", "same-origin"},
 	{"X-Frame-Options", "DENY"},
 	{"Cache-Control", "no-store"},
 	{"Cross-Origin-Opener-Policy", "same-origin"},
@@ -451,8 +461,9 @@ func (a *app) guard(next http.Handler) http.Handler {
 // post wraps a POST handler with the checks every changing request passes:
 // the Origin header equals the app's origin, the Host header its host,
 // Sec-Fetch-Site says same-origin (sameOrigin), and the body is declared
-// JSON. A plain HTML form's post passes the same checks, with the form's
-// content type (form, in genesis.go).
+// JSON. A plain HTML form's post passes the same checks, but that a browser
+// may leave its Origin header out when its Sec-Fetch-Site says same-origin
+// (formOrigin), with the form's content type (form, in genesis.go).
 func (a *app) post(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !a.sameOrigin(w, r) {

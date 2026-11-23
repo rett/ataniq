@@ -29,9 +29,10 @@ const (
 	// GenesisThreadLength is the length of a thread id: 16 lower-case
 	// hexadecimal digits the host chooses.
 	GenesisThreadLength = 16
-	// MaxGenesisThreads is the most threads a seat may hold open at once;
-	// a start past it is refused [CodeGenesisBusy]. The wire does not
-	// count threads: the host does.
+	// MaxGenesisThreads is the most threads the host holds open at once:
+	// the threads are the daemon's, one set shared by every pinned seat of
+	// the owner, not a set for each seat. A start past it is refused
+	// [CodeGenesisBusy]. The wire does not count threads: the host does.
 	MaxGenesisThreads = 2
 	// MaxGenesisRounds is the most rounds an interview has, and so the
 	// highest round number in a form.
@@ -87,9 +88,10 @@ const (
 	GenesisVerbFinish = "finish"
 	// GenesisVerbDiscard drops the thread: the thread.
 	GenesisVerbDiscard = "discard"
-	// GenesisVerbList reads the seat's open threads: no other member. It
-	// is how a seat that lost its own memory of them (a restart) finds the
-	// threads it started; it answers the state threads.
+	// GenesisVerbList reads the host's open threads, the daemon's for every
+	// pinned seat: no other member. It is how a seat that lost its own
+	// memory of them (a restart) finds the threads; it answers the state
+	// threads.
 	GenesisVerbList = "list"
 )
 
@@ -119,7 +121,7 @@ const (
 	GenesisStateFinished = "finished"
 	// GenesisStateDiscarded is the thread dropped.
 	GenesisStateDiscarded = "discarded"
-	// GenesisStateThreads is the answer to a list: the seat's open
+	// GenesisStateThreads is the answer to a list: the host's open
 	// threads, and no thread of its own.
 	GenesisStateThreads = "threads"
 )
@@ -133,20 +135,24 @@ const (
 )
 
 // The gate's words for a refusal of seat.genesis. Each is of the grammar of a
-// gate code, [a-z0-9-]{1,40}. The first three are of the host's state, the
-// last three are the host's refusal codes of the genesis packages (see
-// package brief) in the seat's words: a test of package genesis holds the
-// mapping.
+// gate code, [a-z0-9-]{1,40}. Four are of the host's state (busy,
+// unknown-thread, done and stale-round), and three are the host's refusal
+// codes of the genesis packages (see package brief) in the seat's words
+// (bad-answer, over-cap and secret-shaped): a test of package genesis holds
+// the mapping.
 const (
-	// CodeGenesisBusy answers a start while the seat already holds
-	// [MaxGenesisThreads] open threads.
+	// CodeGenesisBusy answers a start while the host already holds
+	// [MaxGenesisThreads] open threads (of every pinned seat together).
 	CodeGenesisBusy = "genesis-busy"
 	// CodeGenesisUnknownThread answers a call that names a thread the host
-	// holds none of: never started, discarded, expired, or of another seat.
+	// holds none of: never started, discarded, expired, pruned, or kept
+	// by another daemon (another state folder). Every pinned seat of the
+	// owner reaches the same threads, so a thread started from one is not
+	// unknown to another.
 	CodeGenesisUnknownThread = "genesis-unknown-thread"
 	// CodeGenesisBadAnswer answers an answer or a change the question does
 	// not allow: an unknown or ineligible node, an option the question does
-	// not hold, a round that is not the thread's, a form of answer the
+	// not hold, a round the thread has not reached, a form of answer the
 	// question does not take, or other text that is empty or unreadable.
 	CodeGenesisBadAnswer = "genesis-bad-answer"
 	// CodeGenesisOverCap answers an answer that would take a field, the
@@ -155,9 +161,14 @@ const (
 	// CodeGenesisSecretShaped answers text that looks like a key, a token
 	// or a password. Credentials are never typed on the phone.
 	CodeGenesisSecretShaped = "genesis-secret-shaped"
-	// CodeGenesisDone answers an answer or a change to a thread that is
-	// finished.
+	// CodeGenesisDone answers an answer, a change or a discard of a thread
+	// that is finished.
 	CodeGenesisDone = "genesis-done"
+	// CodeGenesisStaleRound answers an answer to a round the thread has
+	// already taken, or an answer once the walk is done (the thread is at
+	// its summary): the state of the thread, which a second tab or a double
+	// tap meets, not a misuse.
+	CodeGenesisStaleRound = "genesis-stale-round"
 )
 
 // GenesisPick is the owner's choice for one question: a kind and what the
@@ -333,7 +344,7 @@ type SeatGenesisResult struct {
 	// CatalogDigest is the digest of the question catalog the thread is
 	// walked under, 64 lower-case hexadecimal digits; left out for threads.
 	CatalogDigest string `json:"catalog_digest,omitempty"`
-	// Threads are the seat's open threads, oldest first, at most
+	// Threads are the host's open threads, oldest first, at most
 	// [MaxGenesisThreads]; given, and possibly empty, for threads only.
 	Threads []GenesisThread `json:"threads,omitempty"`
 }

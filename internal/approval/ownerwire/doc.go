@@ -125,7 +125,7 @@
 // The thread ids, the questions and the brief are the host's; this package
 // holds only the words, and the gate codes [CodeGenesisBusy],
 // [CodeGenesisUnknownThread], [CodeGenesisBadAnswer], [CodeGenesisOverCap],
-// [CodeGenesisSecretShaped] and [CodeGenesisDone].
+// [CodeGenesisSecretShaped], [CodeGenesisDone] and [CodeGenesisStaleRound].
 //
 // # Records travel as bytes
 //

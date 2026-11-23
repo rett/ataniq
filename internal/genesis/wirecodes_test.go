@@ -22,10 +22,11 @@ import (
 //
 // A refusal of what the owner sent is one of three words: the text looks like
 // a secret (genesis-secret-shaped), something is over a cap (genesis-over-cap),
-// or the answer is not one the question allows (genesis-bad-answer). The three
+// or the answer is not one the question allows (genesis-bad-answer). The four
 // others of the wire are of the host's state, not of any refusal of these
-// packages: genesis-busy (a start past two open threads), genesis-unknown-thread
-// and genesis-done (a call to a thread that is finished).
+// packages: genesis-busy (a start past two open threads), genesis-unknown-thread,
+// genesis-done (a call to a thread that is finished) and genesis-stale-round
+// (an answer to a round the thread has already taken).
 var gateWord = map[brief.Code]string{
 	brief.CodeSecretShaped: ownerwire.CodeGenesisSecretShaped,
 	brief.CodeTooLarge:     ownerwire.CodeGenesisOverCap,
@@ -46,7 +47,7 @@ var gateWord = map[brief.Code]string{
 
 // hostStateWords are the gate words of seat.genesis that no refusal of the
 // brief or the walker produces: the host's own state.
-var hostStateWords = []string{ownerwire.CodeGenesisBusy, ownerwire.CodeGenesisUnknownThread, ownerwire.CodeGenesisDone}
+var hostStateWords = []string{ownerwire.CodeGenesisBusy, ownerwire.CodeGenesisUnknownThread, ownerwire.CodeGenesisDone, ownerwire.CodeGenesisStaleRound}
 
 // declaredCodes reads brief/code.go and returns every constant of type Code
 // with its value, so that a code added there is found without this test being
@@ -111,13 +112,14 @@ func TestEveryRefusalCodeHasItsGateWord(t *testing.T) {
 }
 
 // The words are the gate's: each is of the gate's grammar and is declared in
-// ownerwire, and the six words of seat.genesis are each the word of at least
+// ownerwire, and the seven words of seat.genesis are each the word of at least
 // one refusal or of the host's state, and none twice.
 func TestTheGateWordsOfGenesisAreAllUsedOnce(t *testing.T) {
 	grammar := regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
 	all := map[string]bool{
 		ownerwire.CodeGenesisBusy: false, ownerwire.CodeGenesisUnknownThread: false, ownerwire.CodeGenesisBadAnswer: false,
 		ownerwire.CodeGenesisOverCap: false, ownerwire.CodeGenesisSecretShaped: false, ownerwire.CodeGenesisDone: false,
+		ownerwire.CodeGenesisStaleRound: false,
 	}
 	for code, word := range gateWord {
 		if word == "" {
@@ -146,8 +148,8 @@ func TestTheGateWordsOfGenesisAreAllUsedOnce(t *testing.T) {
 	}
 	sort.Strings(words)
 	t.Logf("the words of seat.genesis: %v", words)
-	if len(words) != 6 {
-		t.Errorf("%d gate words, want 6", len(words))
+	if len(words) != 7 {
+		t.Errorf("%d gate words, want 7", len(words))
 	}
 }
 

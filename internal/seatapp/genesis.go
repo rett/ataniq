@@ -17,7 +17,7 @@ import (
 // question page of a round, the summary, the page that changes one answer,
 // the discard step and the finished page, all made on the server, with no
 // script. Each act is a plain HTML form posted to the app, which checks it
-// as it checks every changing request (sameOrigin), calls the [Genesis] port
+// as it checks every changing request (formOrigin), calls the [Genesis] port
 // once, and answers with a redirect to a page (post/redirect/get), never
 // with a page of its own: a reload never sends a form again. A refusal is
 // one of the fixed notes below, named in the redirect's query; nothing the
@@ -88,9 +88,11 @@ func changeHref(thread, node string) string {
 var genesisNotes = map[string]string{
 	"bad":         "That answer was not accepted. Look at the question again.",
 	"secret":      "That looks like a password or key. Never type those here; say that a credential is needed instead.",
-	"over-cap":    "That answer is too long for the project. Give a shorter one.",
+	"over-cap":    "That answer would take the project past what it can hold, so it was not taken. Give a shorter one.",
+	"long":        "Your own words were too long, so nothing was sent. Keep them to about 200 letters (accents and emoji take more room) and send again.",
 	"unknown":     "That project is not open. It may have been finished, discarded or left for 14 days.",
 	"done":        "This project is finished. Its answers can no longer change.",
+	"stale":       "That round was already answered.",
 	"open":        "Two projects are open already. Finish or discard one before you start another.",
 	"busy":        "The desk is busy. Try again in a minute.",
 	"unavailable": "The desk cannot be reached. Try again in a moment.",
@@ -113,12 +115,16 @@ func noteWord(err error) string {
 		return "bad"
 	case errors.Is(err, ErrGenesisSecretShaped):
 		return "secret"
+	case errors.Is(err, errOwnWordsTooLong):
+		return "long"
 	case errors.Is(err, ErrGenesisOverCap):
 		return "over-cap"
 	case errors.Is(err, ErrGenesisUnknownThread):
 		return "unknown"
 	case errors.Is(err, ErrGenesisDone):
 		return "done"
+	case errors.Is(err, ErrGenesisStaleRound):
+		return "stale"
 	case errors.Is(err, ErrGenesisBusy):
 		return "open"
 	case errors.Is(err, ErrBusy):
@@ -217,11 +223,37 @@ func (a *app) genesisPort() (Genesis, bool) {
 }
 
 // sameOrigin answers a request that changes something and does not come
-// from the app's own pages: its Origin header is not the app's origin, its
-// Host header not the origin's host, or its Sec-Fetch-Site not
-// same-origin. It reports whether the request passed.
+// from the app's own pages: its Host header is not the origin's host, its
+// Sec-Fetch-Site not same-origin, or its Origin header not the app's origin.
+// It reports whether the request passed. It is the check of a script's POST
+// (post), whose fetch sets its own referrer policy and so always sends the
+// Origin header; a form's post is checked by formOrigin.
 func (a *app) sameOrigin(w http.ResponseWriter, r *http.Request) bool {
-	if r.Header.Get("Origin") != a.cfg.Origin || r.Host != a.host || r.Header.Get("Sec-Fetch-Site") != "same-origin" {
+	return a.originCheck(w, r, false)
+}
+
+// formOrigin is sameOrigin for a plain HTML form's post, which a browser
+// sends with the page's own referrer policy (same-origin, see
+// securityHeaders): an Origin header equal to the app's origin, the case of
+// every browser in use, or, for a browser that leaves the header out of a
+// form's post, no Origin header at all. The browser's own Sec-Fetch-Site,
+// which no page can set, must say same-origin in both cases, and the Host
+// header must be the origin's host. "Origin: null", which a browser sends for
+// a post under the no-referrer policy, from a sandboxed frame or after a
+// cross-origin redirect, is refused, as is any other origin.
+func (a *app) formOrigin(w http.ResponseWriter, r *http.Request) bool {
+	return a.originCheck(w, r, true)
+}
+
+// originCheck is the check of sameOrigin and formOrigin: absentOK lets a
+// request with no Origin header at all pass on its Sec-Fetch-Site alone.
+func (a *app) originCheck(w http.ResponseWriter, r *http.Request, absentOK bool) bool {
+	origin, sent := r.Header["Origin"]
+	originOK := sent && len(origin) == 1 && origin[0] == a.cfg.Origin
+	if !sent && absentOK {
+		originOK = true
+	}
+	if !originOK || r.Host != a.host || r.Header.Get("Sec-Fetch-Site") != "same-origin" {
 		writeText(w, http.StatusForbidden, "forbidden\n")
 		return false
 	}
@@ -229,12 +261,12 @@ func (a *app) sameOrigin(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // form wraps the handler of a plain HTML form's post with the checks of
-// every changing request (sameOrigin), the form's content type and a
+// every changing request (formOrigin), the form's content type and a
 // session: a post without a live session goes to the login page, and the
 // handler is not run. The body is cut at MaxBody by the guard.
 func (a *app) form(h func(http.ResponseWriter, *http.Request, Session)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !a.sameOrigin(w, r) {
+		if !a.formOrigin(w, r) {
 			return
 		}
 		mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
@@ -314,8 +346,10 @@ func (a *app) pageCall(w http.ResponseWriter, r *http.Request, s Session, c Gene
 
 // postCall is genesisCall for a post. It reports false, having answered a
 // redirect, when the call was not made or failed: to the project list when
-// the interview is not offered or the thread is unknown, and otherwise to
-// back with the error's note.
+// the interview is not offered or the thread is unknown, to the thread's own
+// page when it is finished or the round was already answered (the page then
+// shows where the thread stands), and otherwise to back with the error's
+// note.
 func (a *app) postCall(w http.ResponseWriter, r *http.Request, s Session, c GenesisCall, back string) (GenesisView, bool) {
 	g, ctx, cancel, err := a.genesisCall(r, s)
 	if err != nil {
@@ -335,7 +369,7 @@ func (a *app) postCall(w http.ResponseWriter, r *http.Request, s Session, c Gene
 		seeOther(w, projectsPath, "")
 	case errors.Is(err, ErrGenesisUnknownThread), errors.Is(err, ErrGenesisBusy):
 		seeOther(w, projectsPath, noteWord(err))
-	case errors.Is(err, ErrGenesisDone):
+	case errors.Is(err, ErrGenesisDone), errors.Is(err, ErrGenesisStaleRound):
 		seeOther(w, projectHref(c.Thread, ""), noteWord(err))
 	default:
 		seeOther(w, back, noteWord(err))
@@ -528,10 +562,17 @@ const (
 // errNoPick is the error of a question of the form left unanswered.
 var errNoPick = errors.New("seatapp: no answer")
 
+// errOwnWordsTooLong is the error of own words past [MaxGenesisOther] bytes,
+// which the page tells apart from a brief past its cap: what the owner typed
+// was too long, and nothing was sent. The field's maxlength is 200 too, but a
+// browser counts it in UTF-16 code units, not in bytes, so text with accents
+// or emoji can be cut short of it and still be too long here.
+var errOwnWordsTooLong = errors.New("seatapp: own words past their cap")
+
 // pickOf reads the answer to question i of a posted form: the option ids of
 // a<i> (one choice) or m<i> (several), the owner's own words t<i>, or one of
 // the three other picks. Own words with no pick made are an "other". It
-// returns errNoPick when nothing was given, ErrGenesisOverCap for own words
+// returns errNoPick when nothing was given, errOwnWordsTooLong for own words
 // past their cap, and ErrGenesisBadAnswer for a form that does not agree with
 // itself (two kinds at once, own words with an option, words that are not
 // plain text). Nothing of the form is in an error.
@@ -544,7 +585,7 @@ func pickOf(form url.Values, i int) (GenesisPick, error) {
 	}
 	if text != "" {
 		if len(text) > MaxGenesisOther {
-			return GenesisPick{}, ErrGenesisOverCap
+			return GenesisPick{}, errOwnWordsTooLong
 		}
 		if !plainText(text) {
 			return GenesisPick{}, ErrGenesisBadAnswer
