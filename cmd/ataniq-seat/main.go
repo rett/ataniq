@@ -33,11 +33,13 @@
 // wrote the seat's key to. The link is kept up in the background, with
 // pinned-key TLS at both ends, and redialled when it drops; while it is down
 // pairing answers daemon_unavailable, and a code the daemon refused answers
-// code_refused. The login (/login/) and the card pages (/cards/, read-only,
-// behind a session) ask the daemon through the same link, and the link
-// recomputes each login challenge from the pin before the phone is asked.
-// Without the three flags the daemon port is not wired: pairing and login
-// answer with the fixed code daemon_unavailable.
+// code_refused. The login (/login/), the card pages (/cards/, behind a
+// session) and the Card page's approve and deny ask the daemon through the
+// same link, and the link recomputes each login challenge and each
+// decision's challenge from the pin before the phone is asked. Phone
+// decisions are for scratch state and the STAND-IN door only. Without the
+// three flags the daemon port is not wired: pairing and login answer with
+// the fixed code daemon_unavailable, and no card offers a decision.
 //
 // Nothing secret is printed or read from the command line. The pairing code
 // is never printed.
@@ -88,7 +90,7 @@ const shutdownGrace = 10 * time.Second
 var gateLinkHook func(*seatgate.Client)
 
 // unwiredDaemon is the daemon port without a gate link: every call is
-// ErrDaemonUnavailable.
+// ErrDaemonUnavailable, and a card is offered no decision.
 type unwiredDaemon struct{}
 
 func (unwiredDaemon) Pair(context.Context, seatapp.PairRequest) (seatapp.PairResult, error) {
@@ -113,6 +115,18 @@ func (unwiredDaemon) Show(context.Context, string) (seatapp.Card, error) {
 
 func (unwiredDaemon) Pages(context.Context, string, int) (seatapp.PathsPage, error) {
 	return seatapp.PathsPage{}, seatapp.ErrDaemonUnavailable
+}
+
+func (unwiredDaemon) Offer(string, string, seatapp.Reading, time.Time) seatapp.Offer {
+	return seatapp.Offer{}
+}
+
+func (unwiredDaemon) DecideChallenge(context.Context, seatapp.DecideChallengeRequest) (seatapp.DecideChallenge, error) {
+	return seatapp.DecideChallenge{}, seatapp.ErrDaemonUnavailable
+}
+
+func (unwiredDaemon) Decide(context.Context, seatapp.DecideRequest) (seatapp.DecideResult, error) {
+	return seatapp.DecideResult{}, seatapp.ErrDaemonUnavailable
 }
 
 func main() {

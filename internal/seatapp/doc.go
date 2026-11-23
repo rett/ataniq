@@ -1,6 +1,6 @@
 // Package seatapp is the seat web app: the pages and the small JSON API a
-// phone uses to pair with the desk, to log in and to read the cards, and the
-// seams the decisions and journal pages will use later.
+// phone uses to pair with the desk, to log in, to read the cards and to
+// approve or deny one, and the seams the journal pages will use later.
 //
 // The app is the standard library only. Pages are made on the server with
 // html/template, each act a plain form where an act is a form; the scripts
@@ -8,7 +8,8 @@
 // the binary with go:embed and served from the app's own origin. Nothing is
 // fetched from another site, and there is no inline script and no inline
 // style. The only cookies are the session's and the login's (see Sessions),
-// set by the login's API and by no page.
+// set by the login's API and by no page (a decision's API only removes the
+// session's, when the daemon says its passkey is no longer paired).
 //
 // # Routes
 //
@@ -29,9 +30,12 @@
 //	POST /api/logout           ends the session
 //	GET  /cards/               the card list (a session)
 //	GET  /cards                a 308 to /cards/
-//	GET  /cards/{id}           one card, read-only (a session)
+//	GET  /cards/{id}           one card, with its decide form when it is pending (a session)
 //	GET  /cards/{id}/paths/{n} page n of a card's whole path list (a session)
 //	GET  /static/session.js    the logout script
+//	GET  /static/decide.js     the decide script, which only the Card page loads
+//	POST /api/decide-challenge the daemon's challenge for one decision (a session)
+//	POST /api/decide           the passkey's assertion over it (a session)
 //
 // The origin is the reverse proxy's, https on port 443: [New] refuses any
 // other (an http origin, a port, a path, user information, an address
@@ -50,8 +54,9 @@
 // only with textContent, and every response carries
 // Strict-Transport-Security. The Permissions-Policy allows
 // publickey-credentials-create to the app's own origin, and
-// publickey-credentials-get to the app's own origin on the login page only;
-// every other response forbids it.
+// publickey-credentials-get to the app's own origin on the login page and on
+// a Card page that holds the decide form only; every other response forbids
+// it.
 //
 // # Pairing
 //
@@ -174,14 +179,58 @@
 // checked", and how it differs from an earlier card), and links to the pages
 // of its whole path list when its rows are cut. Each page says that the desk
 // runs a STAND-IN door on scratch state and that nothing on it is a real
-// approval, and that the seat only shows cards: approve and deny are at the
-// desk. A card id or page number that is not of its form is a 404 and is not
-// asked of the daemon.
+// approval; the list and the path pages say that approve and deny are on a
+// card's own page or at the desk. A card id or page number that is not of
+// its form is a 404 and is not asked of the daemon.
 //
 // The [Daemon] port builds a card from the record's bytes with the card model
 // and checks their digest (package seatlink); the app takes a [Card] of plain
 // values and never markup. Text a lead wrote is a [Lead], whose only way onto
 // a page is [Text].
+//
+// # Decisions
+//
+// The Card page of a pending card (no decision on its way) holds the decide
+// form, when the port's Offer says the card model allows approve or deny:
+// one sign-off box per flagged path and Approve, offered when MayApprove
+// allows it and enabled once every box is ticked; Deny, offered when the
+// card model's Deny allows it, with an optional reason, enabled whatever is
+// ticked, which sends no sign-off. The phone reads a card on one page, so
+// the session's reading of it (kept server-side, see [Reading]) counts the
+// page's rows, lists, refs and "differs from" block once the page was
+// served, and a cut path list by the pages of it the session was served.
+//
+// A tap asks POST /api/decide-challenge with the card, the action, the
+// indexes of the boxes ticked and the reason; the browser never sends a
+// path or a binding. The app takes the binding the Card page showed this
+// session from its own reading and hands the port the rest; the port freezes
+// the decision from the card it showed, asks the daemon for its challenge
+// and recomputes it before the app sees it (package seatlink). The app keeps
+// the frozen frame and the challenge's id with the session, one decision at
+// a time (a new tap replaces the old), and answers the challenge with the
+// session's one credential as the allow-list. The page then names the
+// action, the card, its project, what it does, its target and its revision
+// (the binding's first 12 digits), and only a second tap, on the confirm
+// button, asks navigator.credentials.get for one assertion, with user
+// verification "required". A cancel or a failed prompt sends nothing and
+// leaves the card as it was. POST /api/decide carries the challenge's id
+// and the assertion: the kept decision is burnt first, the assertion is
+// taken only for its id and the session's credential, and the kept frame is
+// what is sent. A card past its expiry gets no challenge.
+//
+// Once a decision is sent, only a refusal says that nothing was decided.
+// Any other answer, and no answer, is "Decision sent. Outcome unknown.":
+// the card is marked sent before the port is asked, and only a new read of
+// the card (its page; the script offers only "Look again") clears the mark,
+// so a lost answer is never followed by a second decision unseen and
+// nothing is queued. A held approve shows the host's line and the held
+// words. Every failure is a fixed code with the app's fixed words ("say");
+// a passkey that is no longer paired ends the session. Decision challenges
+// are limited to 10 a minute per credential. Both bodies fit [MaxBody]
+// (8192 bytes): the largest the page sends is 1198 bytes for a challenge
+// (300 sign-off indexes and a card id of 51 characters; a deny's reason of
+// 500 bytes, every one escaped, is 1106) and 5672 bytes for an assertion at
+// the wire's bounds.
 //
 // # Text nobody on the owner's side wrote
 //
@@ -214,9 +263,9 @@
 //
 // An approve control exists in exactly one place, the Card page reached from
 // the Cards list. No other page, notice, link or message may hold or open a
-// decide control. The Card page exists and is read-only: no page holds a
-// decide control yet, and no route takes a decision. The inventory test
-// fetches every page, the card pages with a session, and checks each for an
-// inline script or style, an event handler, an address outside the app, a
-// form or control it does not list, and anything that looks like deciding.
+// decide control, and only the Card page loads the decide script. The
+// inventory test fetches every page, the card pages with a session, and
+// checks each for an inline script or style, an event handler, an address
+// outside the app, a form or control it does not list, and, on every page
+// but the Card page, anything that looks like deciding.
 package seatapp

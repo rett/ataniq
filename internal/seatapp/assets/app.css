@@ -153,7 +153,8 @@ p {
 }
 
 /* What the page says about the step it is on. */
-#status {
+#status,
+#decide-status {
   padding: 8px 12px;
   border-left: 4px solid var(--line);
 }
@@ -336,6 +337,104 @@ pre {
 #paths,
 #prev,
 #next {
+  display: inline-block;
+  min-height: 44px;
+  padding: 10px 0;
+}
+
+/*
+ * The decide form, on the Card page only. One column; every control and
+ * every sign-off row is at least 44 px tall. Approve is the seat's slab;
+ * Deny is outlined in the danger colour, never filled, so the two cannot be
+ * taken for each other.
+ */
+#decide {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 2px solid var(--line);
+}
+
+#decide button {
+  margin: 0 0 16px;
+}
+
+fieldset {
+  margin: 0 0 16px;
+  padding: 0;
+  border: 0;
+}
+
+legend {
+  margin: 0 0 8px;
+  padding: 0;
+  font-weight: 700;
+}
+
+.check {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  min-height: 44px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+
+.check input {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin: 0;
+  accent-color: var(--seat);
+}
+
+.check .lead {
+  flex: 1;
+}
+
+.field {
+  display: block;
+  margin: 0 0 8px;
+  font-weight: 700;
+}
+
+textarea {
+  display: block;
+  width: 100%;
+  min-height: 88px;
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 2px solid var(--line);
+  border-radius: 0;
+  background: var(--field);
+  color: var(--fg);
+  font: inherit;
+}
+
+button.deny {
+  background: transparent;
+  color: var(--stop);
+  border-color: var(--stop);
+}
+
+.confirm-action {
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.note {
+  color: var(--muted);
+}
+
+#decide-status {
+  white-space: pre-line;
+}
+
+#decide-status:empty {
+  display: none;
+}
+
+#look {
   display: inline-block;
   min-height: 44px;
   padding: 10px 0;

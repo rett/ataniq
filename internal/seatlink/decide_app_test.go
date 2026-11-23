@@ -1,0 +1,344 @@
+package seatlink
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"ataniq/internal/approval/ownerwire"
+	"ataniq/internal/approval/record"
+	"ataniq/internal/approval/webauthntest"
+	"ataniq/internal/seatapp"
+	"ataniq/internal/seatgate"
+)
+
+// testClock is a settable clock for the app.
+type testClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *testClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *testClock) advance(d time.Duration) {
+	c.mu.Lock()
+	c.t = c.t.Add(d)
+	c.mu.Unlock()
+}
+
+// phoneRig is the decide rig with the seat app in front of the link, a
+// clock before the test card's expiry, and a phone's browser logged in.
+type phoneRig struct {
+	*decideRig
+	clock   *testClock
+	browser *browser
+}
+
+func newPhoneRig(t *testing.T) *phoneRig {
+	t.Helper()
+	return newPhoneRigAt(t, decideNow)
+}
+
+// newPhoneRigAt is newPhoneRig with the app's clock at start.
+func newPhoneRigAt(t *testing.T, start time.Time) *phoneRig {
+	t.Helper()
+	r := &phoneRig{decideRig: newDecideRig(t), clock: &testClock{t: start}}
+	h, err := seatapp.New(seatapp.Config{Origin: seatOrigin, RPID: seatRPID, Daemon: r.link, Now: r.clock.now, AllowNoFetchMetadataForTests: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.browser = newBrowser(h)
+	if w := r.browser.loginWith(t, r.phone); w.Code != 200 {
+		t.Fatalf("login: %d %s", w.Code, w.Body)
+	}
+	return r
+}
+
+// open shows the card on the Card page and lets a second pass.
+func (r *phoneRig) open(t *testing.T) *httptest.ResponseRecorder {
+	t.Helper()
+	w := r.browser.do("GET", "/cards/"+r.desk.reads.pending.ID, "")
+	r.clock.advance(time.Second)
+	return w
+}
+
+// tap posts a decision's tap, as the page's script does.
+func (r *phoneRig) tap(action string, signedOff []int, reason string) *httptest.ResponseRecorder {
+	if signedOff == nil {
+		signedOff = []int{}
+	}
+	body, _ := json.Marshal(map[string]any{"card": r.desk.reads.pending.ID, "action": action, "signed_off": signedOff, "reason": reason})
+	return r.browser.do("POST", "/api/decide-challenge", string(body))
+}
+
+// confirm signs the challenge of a tap's answer with the phone, as the
+// script does with navigator.credentials.get, and posts the assertion.
+func (r *phoneRig) confirm(t *testing.T, tapped *httptest.ResponseRecorder) *httptest.ResponseRecorder {
+	t.Helper()
+	var ch struct {
+		ID        string   `json:"challenge_id"`
+		Challenge string   `json:"challenge"`
+		Allow     []string `json:"allow"`
+	}
+	if tapped.Code != 200 || json.Unmarshal(tapped.Body.Bytes(), &ch) != nil {
+		t.Fatalf("tap: %d %s", tapped.Code, tapped.Body)
+	}
+	// The phone is asked for the session's one credential.
+	if len(ch.Allow) != 1 || ch.Allow[0] != b64urlEnc(r.phone.CredentialID) {
+		t.Errorf("allow %v", ch.Allow)
+	}
+	challenge, err := b64url(ch.Challenge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	as, err := r.phone.Get(challenge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r.browser.do("POST", "/api/decide", decideJSON(ch.ID, as))
+}
+
+func decideJSON(id string, as webauthntest.Assertion) string {
+	var m map[string]string
+	json.Unmarshal([]byte(loginJSON(as)), &m)
+	m["challenge_id"] = id
+	b, _ := json.Marshal(m)
+	return string(b)
+}
+
+// said decodes an answer of the decision API.
+func said(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil {
+		t.Fatalf("answer %d %q", w.Code, w.Body)
+	}
+	return m
+}
+
+// TestSeatDecideFromThePhone: the whole decision, from the Card page
+// through the app, the link and the gate to a desk that recomputes the
+// challenge and verifies with the daemon's verifier, with a software
+// authenticator in the phone's place. An approve with both flagged paths
+// signed off, and a deny of the flagged card with no box ticked. An approve
+// with a sign-off missing is not offered and not sent.
+func TestSeatDecideFromThePhone(t *testing.T) {
+	r := newPhoneRig(t)
+	w := r.open(t)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `id="signoff-1"`) || !strings.Contains(w.Body.String(), `id="approve"`) {
+		t.Fatalf("card page: %d", w.Code)
+	}
+	if pp := w.Header().Get("Permissions-Policy"); !strings.Contains(pp, "publickey-credentials-get=(self),") {
+		t.Errorf("Permissions-Policy %q", pp)
+	}
+	m := said(t, r.tap("approve", []int{0}, ""))
+	if m["error"] != "not_allowed" || m["say"] != "This cannot be sent: 1 flagged path is not signed off." {
+		t.Errorf("a sign-off missing: %v", m)
+	}
+	if c, _ := r.desk.counts(); c != 0 {
+		t.Fatalf("the desk was asked %d challenges", c)
+	}
+	w = r.confirm(t, r.tap("approve", []int{1, 0}, ""))
+	m = said(t, w)
+	if w.Code != 200 || m["state"] != "approved" || m["held"] != false || m["say"] != "Sent. The desk answered:" {
+		t.Errorf("approve: %d %v", w.Code, m)
+	}
+	p := r.desk.reads.pending
+	f := r.desk.decided[0]
+	if f.ID != p.ID || f.BindingSHA256 != p.BindingSHA256 || f.Decision != "approve" || len(f.SignedOff) != 2 ||
+		f.SignedOff[0].Path != p.Binding.Summary.Flagged[0].Path || f.SignedOff[1].Path != p.Binding.Summary.Flagged[1].Path {
+		t.Errorf("the desk got %+v", f)
+	}
+
+	r.open(t)
+	w = r.confirm(t, r.tap("deny", nil, "not this one"))
+	if m := said(t, w); w.Code != 200 || m["state"] != "denied" {
+		t.Errorf("deny: %d %v", w.Code, m)
+	}
+	if f := r.desk.decided[1]; f.Decision != "deny" || len(f.SignedOff) != 0 || f.Reason != "not this one" {
+		t.Errorf("the desk got %+v", f)
+	}
+}
+
+// TestSeatDecideTamperedChallenge: a challenge the gate answers that is not
+// the card's never reaches the browser, so the phone's passkey is never
+// asked; nothing is decided.
+func TestSeatDecideTamperedChallenge(t *testing.T) {
+	r := newPhoneRig(t)
+	r.open(t)
+	r.desk.tamper = func(f ownerwire.DecisionFrame, res *ownerwire.SeatChallengeResult) {
+		f.Decision, f.SignedOff = record.DecisionDeny, []record.SignOff{}
+		res.Challenge, _ = ownerwire.DecisionChallenge(r.gate.id.Fingerprint(), f, res.Nonce)
+	}
+	w := r.tap("approve", []int{0, 1}, "")
+	m := said(t, w)
+	if w.Code != 502 || m["error"] != "challenge_differs" || m["challenge"] != nil || m["challenge_id"] != nil || m["allow"] != nil {
+		t.Errorf("a tampered challenge: %d %v", w.Code, m)
+	}
+	// With nothing kept, a decide sends nothing.
+	if w := r.browser.do("POST", "/api/decide", decideJSON("0123456789abcdef", webauthntest.Assertion{CredentialID: r.phone.CredentialID,
+		AuthenticatorData: make([]byte, 37), ClientDataJSON: []byte("{}"), Signature: []byte{1}})); w.Code != 409 {
+		t.Errorf("decide after: %d %s", w.Code, w.Body)
+	}
+	if _, d := r.desk.counts(); d != 0 {
+		t.Errorf("%d decisions reached the desk", d)
+	}
+}
+
+// TestSeatDecideDoubleTap: the same assertion posted twice reaches the desk
+// once.
+func TestSeatDecideDoubleTap(t *testing.T) {
+	r := newPhoneRig(t)
+	r.open(t)
+	tapped := r.tap("approve", []int{0, 1}, "")
+	var ch struct {
+		ID        string `json:"challenge_id"`
+		Challenge string `json:"challenge"`
+	}
+	json.Unmarshal(tapped.Body.Bytes(), &ch)
+	c, _ := b64url(ch.Challenge)
+	as, _ := r.phone.Get(c)
+	if w := r.browser.do("POST", "/api/decide", decideJSON(ch.ID, as)); w.Code != 200 {
+		t.Fatalf("first: %d %s", w.Code, w.Body)
+	}
+	if w := r.browser.do("POST", "/api/decide", decideJSON(ch.ID, as)); w.Code != 409 || said(t, w)["error"] != "challenge_expired" {
+		t.Errorf("second: %d %s", w.Code, w.Body)
+	}
+	if _, d := r.desk.counts(); d != 1 {
+		t.Errorf("%d decisions reached the desk", d)
+	}
+}
+
+// TestSeatDecideLostAnswerOnThePhone: an answer that leaves the outcome open
+// says so and is never followed by a second decision until the card is
+// read again: on its way, then pending, and only then a new tap.
+func TestSeatDecideLostAnswerOnThePhone(t *testing.T) {
+	r := newPhoneRig(t)
+	r.open(t)
+	r.desk.outcome = func(context.Context, ownerwire.DecisionFrame) (json.RawMessage, error) {
+		return nil, seatgate.NewCodedError("door-unavailable")
+	}
+	w := r.confirm(t, r.tap("approve", []int{0, 1}, ""))
+	if m := said(t, w); w.Code != 502 || m["error"] != "outcome_unknown" || m["say"] != "Decision sent. Outcome unknown." {
+		t.Errorf("lost: %d %v", w.Code, m)
+	}
+	if m := said(t, r.tap("approve", []int{0, 1}, "")); m["error"] != "sent_unknown" {
+		t.Errorf("a tap after: %v", m)
+	}
+	r.desk.reads.show, _ = ownerwire.EncodeShowResult(ownerwire.ShowResult{Record: ownerwire.NewRecord(r.desk.reads.bytes), OnItsWay: true})
+	if body := r.open(t).Body.String(); strings.Contains(body, `id="decide"`) || !strings.Contains(body, "on its way to the door") {
+		t.Error("on its way: the form is offered")
+	}
+	r.desk.reads.show = nil
+	r.desk.outcome = nil
+	if body := r.open(t).Body.String(); !strings.Contains(body, `id="decide"`) {
+		t.Error("pending again: no form")
+	}
+	if w := r.confirm(t, r.tap("approve", []int{0, 1}, "")); w.Code != 200 {
+		t.Errorf("after looking again: %d %s", w.Code, w.Body)
+	}
+	if _, d := r.desk.counts(); d != 2 {
+		t.Errorf("%d decisions reached the desk", d)
+	}
+}
+
+// TestSeatDecideHeldOnThePhone: a held approve shows the host's line and the
+// held words.
+func TestSeatDecideHeldOnThePhone(t *testing.T) {
+	r := newPhoneRig(t)
+	r.open(t)
+	r.desk.outcome = func(context.Context, ownerwire.DecisionFrame) (json.RawMessage, error) {
+		return ownerwire.EncodeDecideResult(ownerwire.DecideResult{State: record.StatePending, Line: "held: the limit for today is reached", Held: true})
+	}
+	w := r.confirm(t, r.tap("approve", []int{0, 1}, ""))
+	m := said(t, w)
+	if w.Code != 200 || m["held"] != true || m["line"] != "held: the limit for today is reached" ||
+		m["say"] != "Held: the project's limit for today is reached. Nothing was applied. Raise the limit at the desk, then approve again here or at the desk." {
+		t.Errorf("held: %d %v", w.Code, m)
+	}
+}
+
+// TestSeatDecideWordsOnThePhone: each code the gate answers a decision with
+// is the contract's fixed words on the phone, through the app and the link;
+// a code neither knows is the generic words, with nothing of the peer's.
+func TestSeatDecideWordsOnThePhone(t *testing.T) {
+	words := map[string]string{
+		"challenge-stale":   "This took too long, or the card changed. Look at the card and tap again.",
+		"binding-mismatch":  "The card changed. Look at it again.",
+		"review-changed":    "The card changed. Look at it again.",
+		"approval-expired":  "The card's time ran out.",
+		"approval-consumed": "The card cannot be decided now. Look at it again.",
+		"approval-void":     "The card cannot be decided now. Look at it again.",
+		"previous-epoch":    "The card cannot be decided now. Look at it again.",
+		"decision-invalid":  "The card cannot be decided now. Look at it again.",
+		"assertion-invalid": "The phone's answer was not accepted. If this repeats, check the seat at the desk.",
+		"key-revoked":       "This phone's passkey is no longer paired. Pair it again at the desk.",
+		"key-unknown":       "This phone's passkey is no longer paired. Pair it again at the desk.",
+		"kind-refused":      "This project does not take decisions from this kind of passkey.",
+		"challenges-full":   "The desk is busy. Try again in a few minutes.",
+		"busy":              "The desk is busy. Try again in a few minutes.",
+		"rate-limited":      "The desk is busy. Try again in a few minutes.",
+		"too-many-refusals": "The desk is busy. Try again in a few minutes.",
+		"unavailable":       "Decision sent. Outcome unknown.",
+		"deadline-exceeded": "Decision sent. Outcome unknown.",
+		"door-unavailable":  "Decision sent. Outcome unknown.",
+		"journal-reopened":  "Decision sent. Outcome unknown.",
+		"failed":            "Decision sent. Outcome unknown.",
+		"shutting-down":     "Something went wrong. Look at the card again.",
+		"x-never-heard":     "Something went wrong. Look at the card again.",
+	}
+	for code, want := range words {
+		t.Run(code, func(t *testing.T) {
+			r := newPhoneRig(t)
+			r.open(t)
+			r.desk.outcome = func(context.Context, ownerwire.DecisionFrame) (json.RawMessage, error) {
+				return nil, seatgate.NewCodedError(code)
+			}
+			w := r.confirm(t, r.tap("approve", []int{0, 1}, ""))
+			if m := said(t, w); m["say"] != want || strings.Contains(w.Body.String(), `"`+code+`"`) {
+				t.Errorf("%d %v, want %q", w.Code, m, want)
+			}
+			ended := r.browser.cookies[seatapp.SessionCookie] == nil
+			if ended != (code == "key-revoked" || code == "key-unknown") {
+				t.Errorf("the session ended: %v", ended)
+			}
+		})
+	}
+	// The challenge's refusals have the same words.
+	r := newPhoneRig(t)
+	r.open(t)
+	r.desk.mu.Lock()
+	r.desk.expired = true
+	r.desk.mu.Unlock()
+	if m := said(t, r.tap("approve", []int{0, 1}, "")); m["say"] != "The card's time ran out." {
+		t.Errorf("an expired card at the desk: %v", m)
+	}
+}
+
+// TestSeatDecideExpiredOnThePhone: a card past its expiry is offered
+// nothing, and a tap asks the desk for no challenge.
+func TestSeatDecideExpiredOnThePhone(t *testing.T) {
+	expiry := time.Date(2026, 11, 21, 14, 2, 4, 0, time.UTC)
+	r := newPhoneRigAt(t, expiry.Add(-5*time.Minute))
+	r.open(t)
+	r.clock.advance(5 * time.Minute)
+	if m := said(t, r.tap("deny", nil, "")); m["error"] != "card_expired" {
+		t.Errorf("tap: %v", m)
+	}
+	if c, _ := r.desk.counts(); c != 0 {
+		t.Errorf("the desk was asked %d challenges", c)
+	}
+	w := r.browser.do("GET", "/cards/"+r.desk.reads.pending.ID, "")
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), `id="decide"`) || !strings.Contains(w.Body.String(), "past its expiry") {
+		t.Errorf("an expired card: %d, or it has the form", w.Code)
+	}
+}

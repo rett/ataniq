@@ -73,19 +73,31 @@ func TestSeatCardPagesNeedASession(t *testing.T) {
 	}
 }
 
-// TestSeatNoDecideRoute: no method on any address of a card, and no address
-// a decision would use, does anything but answer 404 or 405, and none asks
-// the daemon anything. The seat only shows cards; G9 adds the one decide
-// form, on the Card page.
-func TestSeatNoDecideRoute(t *testing.T) {
+// TestSeatDecideRoutesOnly: a decision takes exactly two routes, POST
+// /api/decide-challenge and POST /api/decide. No other method on them, no
+// method but GET on an address of a card, and no other address a decision
+// might use does anything but answer 404 or 405, and none asks the daemon
+// anything.
+func TestSeatDecideRoutesOnly(t *testing.T) {
 	r := newRig(t)
 	s := r.login(t)
 	before := r.daemon.count()
+	for _, path := range []string{"/api/decide", "/api/decide-challenge"} {
+		for _, method := range []string{"GET", "PUT", "PATCH", "DELETE"} {
+			req := newRequest(method, path, strings.NewReader("{}"))
+			req.Header.Set("Origin", testOrigin)
+			req.Header.Set("Content-Type", "application/json")
+			req.AddCookie(s)
+			if w := r.recorder(req); w.Code != http.StatusMethodNotAllowed {
+				t.Errorf("%s %s: %d", method, path, w.Code)
+			}
+		}
+	}
 	for _, method := range []string{"POST", "PUT", "PATCH", "DELETE"} {
 		for _, path := range []string{
 			"/cards/", "/cards/" + testCardID, "/cards/" + testCardID + "/approve", "/cards/" + testCardID + "/deny",
-			"/cards/" + testCardID + "/paths/0", "/api/decide", "/api/decide-challenge", "/api/approve", "/api/deny",
-			"/api/challenge", "/api/sign-off",
+			"/cards/" + testCardID + "/paths/0", "/api/approve", "/api/deny", "/api/decide/" + testCardID,
+			"/api/challenge", "/api/sign-off", "/cards/" + testCardID + "/decide",
 		} {
 			req := newRequest(method, path, strings.NewReader("{}"))
 			req.Header.Set("Origin", testOrigin)
@@ -99,9 +111,6 @@ func TestSeatNoDecideRoute(t *testing.T) {
 	}
 	if n := r.daemon.count(); n != before {
 		t.Errorf("the daemon was asked %d calls", n-before)
-	}
-	if len(deciders) != 0 {
-		t.Errorf("deciders %v: no page of this app may decide yet", deciders)
 	}
 }
 
@@ -340,7 +349,7 @@ func TestSeatReadsAreBounded(t *testing.T) {
 }
 
 // TestSeatCardPagesShow: the card list and the card page show what a phone
-// needs: the STAND-IN banner, that the seat only shows cards, the held mark,
+// needs: the STAND-IN banner, where approve and deny are, the held mark,
 // the lead's note under its label, and the link to the whole path list only
 // when the card's list is cut; and they are well formed for a phone.
 func TestSeatCardPagesShow(t *testing.T) {
@@ -350,7 +359,7 @@ func TestSeatCardPagesShow(t *testing.T) {
 	card := r.getWith("/cards/"+testCardID, s).Body.String()
 	for name, body := range map[string]string{"list": list, "card": card} {
 		for _, want := range []string{
-			"<strong>STAND-IN</strong>", "Nothing here is a real approval.", "Approve or deny at the desk.",
+			"<strong>STAND-IN</strong>", "Nothing here is a real approval.",
 			`<button id="logout" type="button" class="quiet" hidden>Log out</button>`, `<script src="/static/session.js"></script>`,
 			`<html lang="en">`, `<meta name="viewport" content="width=device-width, initial-scale=1">`,
 		} {
@@ -362,12 +371,14 @@ func TestSeatCardPagesShow(t *testing.T) {
 			t.Errorf("%s: not one h1 and one main", name)
 		}
 	}
-	for _, want := range []string{`<a href="/cards/` + testCardID + `">`, "Held: decided past the limit.", "Ends in 3 h.", "2 more waiting cards", "denied at the desk"} {
+	for _, want := range []string{`<a href="/cards/` + testCardID + `">`, "Held: decided past the limit.", "Ends in 3 h.", "2 more waiting cards", "denied at the desk",
+		"Approve or deny on the card's own page, or at the desk."} {
 		if !strings.Contains(list, want) {
 			t.Errorf("the list lacks %q", want)
 		}
 	}
-	for _, want := range []string{"Lead-stated, not checked.", "Two lines\nof a note.", "Read the whole path list", "Flagged paths", "Each needs its own sign-off at the desk.", "From ap-20261121-0003"} {
+	for _, want := range []string{"Lead-stated, not checked.", "Two lines\nof a note.", "Read the whole path list", "Flagged paths", "Each needs its own sign-off before an approve.", "From ap-20261121-0003",
+		"Decide on the phone", "goes to the desk's STAND-IN door on scratch state"} {
 		if !strings.Contains(card, want) {
 			t.Errorf("the card lacks %q", want)
 		}
