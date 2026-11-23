@@ -15,7 +15,8 @@
 //     speaks to ask the questions and send the answers: the one gate
 //     operation seat.genesis, with its strict forms and the gate codes
 //     genesis-busy, genesis-unknown-thread, genesis-bad-answer,
-//     genesis-over-cap, genesis-secret-shaped and genesis-done. The wire
+//     genesis-over-cap, genesis-secret-shaped, genesis-done and
+//     genesis-stale-round. The wire
 //     knows nothing of the packages above; the host maps one to the other.
 //
 // An answer writes a brief field and nothing else: nothing in the family

@@ -590,6 +590,7 @@ func TestGenesisRefusalsAreFixedNotes(t *testing.T) {
 		{ErrGenesisBadAnswer, "/projects/" + testThread + "?note=bad", "That answer was not accepted. Look at the question again."},
 		{ErrGenesisOverCap, "/projects/" + testThread + "?note=over-cap", "That answer is too long for the project. Give a shorter one."},
 		{ErrGenesisDone, "/projects/" + testThread + "?note=done", "This project is finished. Its answers can no longer change."},
+		{ErrGenesisStaleRound, "/projects/" + testThread + "?note=stale", "That round was already answered."},
 		{ErrGenesisUnknownThread, "/projects/?note=unknown", "That project is not open. It may have been finished, discarded or left for 14 days."},
 		{ErrBusy, "/projects/" + testThread + "?note=busy", "The desk is busy. Try again in a minute."},
 		{ErrDaemonUnavailable, "/projects/" + testThread + "?note=unavailable", "The desk cannot be reached. Try again in a moment."},

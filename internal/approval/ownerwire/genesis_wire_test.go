@@ -79,15 +79,16 @@ func TestSeatGenesisIsAGateOperation(t *testing.T) {
 	}
 }
 
-// The six words are of the gate's grammar, each its own.
+// The seven words are of the gate's grammar, each its own.
 func TestGenesisCodesAreWords(t *testing.T) {
 	codes := map[string]string{
 		CodeGenesisBusy: "genesis-busy", CodeGenesisUnknownThread: "genesis-unknown-thread",
 		CodeGenesisBadAnswer: "genesis-bad-answer", CodeGenesisOverCap: "genesis-over-cap",
 		CodeGenesisSecretShaped: "genesis-secret-shaped", CodeGenesisDone: "genesis-done",
+		CodeGenesisStaleRound: "genesis-stale-round",
 	}
-	if len(codes) != 6 {
-		t.Fatalf("%d codes with different words, want 6", len(codes))
+	if len(codes) != 7 {
+		t.Fatalf("%d codes with different words, want 7", len(codes))
 	}
 	grammar := regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
 	for code, word := range codes {

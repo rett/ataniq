@@ -48,9 +48,13 @@
 //     keeps no answer: its brief is emptied. Every call to it is
 //     genesis-unknown-thread, as one never started.
 //   - An answer must name the round the thread is at, and a node of that
-//     round. A change must name a node that has an answer. One answer failing
-//     fails the whole call and changes nothing. Text that looks like a secret
-//     is refused genesis-secret-shaped.
+//     round. An answer to a round the thread has already taken, or to any
+//     round once the walk is done, is refused genesis-stale-round (the
+//     thread's state, which a second tab or a post sent twice meets); one to
+//     a round it has not reached, genesis-bad-answer. A change must name a
+//     node that has an answer. One answer failing fails the whole call and
+//     changes nothing. Text that looks like a secret is refused
+//     genesis-secret-shaped.
 //   - List answers the open threads, oldest first, each with its state
 //     (question or summary), round and progress, and nothing of its answers;
 //     a finished or discarded thread is not listed. It is a read, as Round

@@ -72,6 +72,7 @@ var genesisCodes = map[string]error{
 	ownerwire.CodeGenesisOverCap:       seatapp.ErrGenesisOverCap,
 	ownerwire.CodeGenesisSecretShaped:  seatapp.ErrGenesisSecretShaped,
 	ownerwire.CodeGenesisDone:          seatapp.ErrGenesisDone,
+	ownerwire.CodeGenesisStaleRound:    seatapp.ErrGenesisStaleRound,
 	seatgate.CodeRateLimited:           seatapp.ErrBusy,
 	seatgate.CodeBusy:                  seatapp.ErrBusy,
 	codeTooManyRefusals:                seatapp.ErrBusy,

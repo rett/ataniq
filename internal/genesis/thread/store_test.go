@@ -141,9 +141,10 @@ func TestAThirdOpenThreadIsBusy(t *testing.T) {
 	refused(t, err, ownerwire.CodeGenesisBusy)
 }
 
-// An answer is refused, and nothing changes, when its round is not the
-// thread's, a node is not of the round, a form is not the question's, or one
-// answer of several fails.
+// An answer is refused, and nothing changes, when its round is one the thread
+// has not reached, a node is not of the round, a form is not the question's,
+// or one answer of several fails. A round already taken is stale (see
+// TestAnAnswerSentTwiceIsAStaleRound).
 func TestAnAnswerThatFailsChangesNothing(t *testing.T) {
 	w := newWorld(t)
 	id := w.ok(w.s.Start(ctx)).Thread
@@ -153,8 +154,8 @@ func TestAnAnswerThatFailsChangesNothing(t *testing.T) {
 		round   int
 		answers []ownerwire.GenesisAnswer
 	}{
-		"an earlier round":        {1, webApp[1]},
 		"a later round":           {3, webApp[1]},
+		"round zero":              {0, webApp[1]},
 		"a node of another round": {2, []ownerwire.GenesisAnswer{choice("software.stack", "go")}},
 		"an unknown node":         {2, []ownerwire.GenesisAnswer{choice("no.such.node", "go")}},
 		"an option not offered":   {2, []ownerwire.GenesisAnswer{choice("goal", "nothing")}},
@@ -176,16 +177,55 @@ func TestAnAnswerThatFailsChangesNothing(t *testing.T) {
 	}
 	// And the thread still takes its round.
 	w.ok(w.s.Answer(ctx, id, 2, webApp[1]))
-	// A round past the walk: the walk of this thread is not over, but a thread
-	// whose summary is ready takes no answer.
+	// A round past the most a walk has is a bad answer; a thread whose
+	// summary is ready takes no answer to any round of it: that is stale.
 	sum := w.interview(id, 2)
 	_, err := w.s.Answer(ctx, id, 7, webApp[0])
 	refused(t, err, ownerwire.CodeGenesisBadAnswer)
 	_, err = w.s.Answer(ctx, id, 6, webApp[5])
-	refused(t, err, ownerwire.CodeGenesisBadAnswer)
+	refused(t, err, ownerwire.CodeGenesisStaleRound)
 	if sum.State != ownerwire.GenesisStateSummary {
 		t.Fatalf("state %s", sum.State)
 	}
+}
+
+// An answer sent twice (a double tap, a second tab, a post the browser sent
+// again) is refused genesis-stale-round the second time, and changes nothing:
+// the round was taken. So is an answer to an earlier round, and an answer to
+// any round once the walk is done. A stale round is the thread's state, not
+// a bad answer.
+func TestAnAnswerSentTwiceIsAStaleRound(t *testing.T) {
+	w := newWorld(t)
+	id := w.ok(w.s.Start(ctx)).Thread
+	first := w.ok(w.s.Answer(ctx, id, 1, webApp[0]))
+	frozen := w.bytesOf(id)
+	_, err := w.s.Answer(ctx, id, 1, webApp[0])
+	refused(t, err, ownerwire.CodeGenesisStaleRound)
+	if !bytes.Equal(w.bytesOf(id), frozen) {
+		t.Fatal("the stale answer changed the thread's file")
+	}
+	if now := w.ok(w.s.Round(ctx, id)); now.Round != first.Round || now.Round != 2 {
+		t.Fatalf("the thread is at round %d after the stale answer, want 2", now.Round)
+	}
+	w.ok(w.s.Answer(ctx, id, 2, webApp[1]))
+	for _, r := range []int{1, 2} {
+		_, err := w.s.Answer(ctx, id, r, webApp[r-1])
+		refused(t, err, ownerwire.CodeGenesisStaleRound)
+	}
+	// Once the walk is done, the last round sent again is stale too.
+	sum := w.interview(id, 2)
+	if sum.State != ownerwire.GenesisStateSummary {
+		t.Fatalf("state %s", sum.State)
+	}
+	frozen = w.bytesOf(id)
+	_, err = w.s.Answer(ctx, id, len(webApp), webApp[len(webApp)-1])
+	refused(t, err, ownerwire.CodeGenesisStaleRound)
+	if !bytes.Equal(w.bytesOf(id), frozen) {
+		t.Fatal("a stale answer after the walk changed the thread's file")
+	}
+	// Through the wire's own verb the same.
+	_, err = w.s.Genesis(ctx, ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbAnswer, Thread: id, Round: 1, Answers: webApp[0]})
+	refused(t, err, ownerwire.CodeGenesisStaleRound)
 }
 
 // Text that looks like a secret is refused, by the word of the wire, however
@@ -848,6 +888,7 @@ func TestRefusalsAreGateWords(t *testing.T) {
 	for code := range map[string]bool{
 		ownerwire.CodeGenesisBusy: true, ownerwire.CodeGenesisUnknownThread: true, ownerwire.CodeGenesisBadAnswer: true,
 		ownerwire.CodeGenesisOverCap: true, ownerwire.CodeGenesisSecretShaped: true, ownerwire.CodeGenesisDone: true, CodeBadParams: true,
+		ownerwire.CodeGenesisStaleRound: true,
 	} {
 		err := refuse(code)
 		if got, ok := RefusalCode(fmt.Errorf("wrapped: %w", err)); !ok || got != code {

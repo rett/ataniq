@@ -91,6 +91,7 @@ var genesisNotes = map[string]string{
 	"over-cap":    "That answer is too long for the project. Give a shorter one.",
 	"unknown":     "That project is not open. It may have been finished, discarded or left for 14 days.",
 	"done":        "This project is finished. Its answers can no longer change.",
+	"stale":       "That round was already answered.",
 	"open":        "Two projects are open already. Finish or discard one before you start another.",
 	"busy":        "The desk is busy. Try again in a minute.",
 	"unavailable": "The desk cannot be reached. Try again in a moment.",
@@ -119,6 +120,8 @@ func noteWord(err error) string {
 		return "unknown"
 	case errors.Is(err, ErrGenesisDone):
 		return "done"
+	case errors.Is(err, ErrGenesisStaleRound):
+		return "stale"
 	case errors.Is(err, ErrGenesisBusy):
 		return "open"
 	case errors.Is(err, ErrBusy):
@@ -340,8 +343,10 @@ func (a *app) pageCall(w http.ResponseWriter, r *http.Request, s Session, c Gene
 
 // postCall is genesisCall for a post. It reports false, having answered a
 // redirect, when the call was not made or failed: to the project list when
-// the interview is not offered or the thread is unknown, and otherwise to
-// back with the error's note.
+// the interview is not offered or the thread is unknown, to the thread's own
+// page when it is finished or the round was already answered (the page then
+// shows where the thread stands), and otherwise to back with the error's
+// note.
 func (a *app) postCall(w http.ResponseWriter, r *http.Request, s Session, c GenesisCall, back string) (GenesisView, bool) {
 	g, ctx, cancel, err := a.genesisCall(r, s)
 	if err != nil {
@@ -361,7 +366,7 @@ func (a *app) postCall(w http.ResponseWriter, r *http.Request, s Session, c Gene
 		seeOther(w, projectsPath, "")
 	case errors.Is(err, ErrGenesisUnknownThread), errors.Is(err, ErrGenesisBusy):
 		seeOther(w, projectsPath, noteWord(err))
-	case errors.Is(err, ErrGenesisDone):
+	case errors.Is(err, ErrGenesisDone), errors.Is(err, ErrGenesisStaleRound):
 		seeOther(w, projectHref(c.Thread, ""), noteWord(err))
 	default:
 		seeOther(w, back, noteWord(err))

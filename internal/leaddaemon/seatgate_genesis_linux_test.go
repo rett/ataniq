@@ -148,6 +148,50 @@ func TestTheGateServesGenesisFromItsThreadStore(t *testing.T) {
 	}
 }
 
+// A double tap on a round's answer, through the gate and its real thread
+// store, is answered genesis-stale-round each time after the first, and 40 of
+// them in a minute never shut the seat out: the refusal bound does not count
+// the thread's state, and the seat's reads go on being served.
+func TestDoubleTapsThroughTheGateNeverShutTheSeatOut(t *testing.T) {
+	c, _ := startGate(t, filepath.Join(t.TempDir(), "genesis"), &gateLog{})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var res ownerwire.SeatGenesisResult
+	if err := c.Call(ctx, ownerwire.OpSeatGenesis, json.RawMessage(`{"verb":"start"}`), &res); err != nil || res.State != ownerwire.GenesisStateQuestion {
+		t.Fatalf("start: %+v %v", res, err)
+	}
+	answer := json.RawMessage(`{"verb":"answer","thread":"` + res.Thread + `","round":1,"answers":[{"node":"kind","kind":"choice","ids":["software"]}]}`)
+	if err := c.Call(ctx, ownerwire.OpSeatGenesis, answer, &res); err != nil || res.Round != 2 {
+		t.Fatalf("the first answer: %+v %v", res, err)
+	}
+	for i := 0; i < 40; i++ {
+		err := c.Call(ctx, ownerwire.OpSeatGenesis, answer, &res)
+		var re *seatgate.RemoteError
+		if !errors.As(err, &re) || re.Code != ownerwire.CodeGenesisStaleRound {
+			t.Fatalf("double tap %d: %v", i, err)
+		}
+	}
+	// Still served: a seat past the bound would have every request, a read
+	// too, refused too-many-refusals.
+	if err := c.Call(ctx, ownerwire.OpSeatGenesis, json.RawMessage(`{"verb":"round","thread":"`+res.Thread+`"}`), &res); err != nil || res.Round != 2 {
+		t.Fatalf("the round after the double taps: %+v %v", res, err)
+	}
+	// A real bad answer still counts: past the bound the seat is shut out.
+	bad := json.RawMessage(`{"verb":"answer","thread":"` + res.Thread + `","round":3,"answers":[{"node":"kind","kind":"choice","ids":["software"]}]}`)
+	shut := false
+	for i := 0; i <= gatehost.RefusalBound && !shut; i++ {
+		var re *seatgate.RemoteError
+		err := c.Call(ctx, ownerwire.OpSeatGenesis, bad, &res)
+		if !errors.As(err, &re) {
+			t.Fatalf("bad answer %d: %v", i, err)
+		}
+		shut = re.Code == gatehost.CodeTooManyRefusals
+	}
+	if !shut {
+		t.Fatal("bad answers past the bound did not shut the seat out")
+	}
+}
+
 // A thread store folder the store refuses ends the start before anything
 // listens.
 func TestTheGateDoesNotStartWithAThreadStoreItRefuses(t *testing.T) {

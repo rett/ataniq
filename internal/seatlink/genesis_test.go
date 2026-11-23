@@ -314,8 +314,8 @@ func TestSeatLinkGenesisCodes(t *testing.T) {
 		"genesis-busy": seatapp.ErrGenesisBusy, "genesis-unknown-thread": seatapp.ErrGenesisUnknownThread,
 		"genesis-bad-answer": seatapp.ErrGenesisBadAnswer, "genesis-over-cap": seatapp.ErrGenesisOverCap,
 		"genesis-secret-shaped": seatapp.ErrGenesisSecretShaped, "genesis-done": seatapp.ErrGenesisDone,
+		"genesis-stale-round": seatapp.ErrGenesisStaleRound, "unknown-op": seatapp.ErrNotOffered,
 		"rate-limited": seatapp.ErrBusy, "busy": seatapp.ErrBusy, "too-many-refusals": seatapp.ErrBusy,
-		"unknown-op": seatapp.ErrNotOffered,
 	} {
 		f.set(nil, code)
 		if _, err := d.Genesis(bg, seatapp.GenesisCall{Verb: seatapp.GenesisVerbStart}); !errors.Is(err, want) {
@@ -442,10 +442,11 @@ func TestSeatLinkGenesisMemory(t *testing.T) {
 	if r := call(t, d, seatapp.GenesisCall{Verb: seatapp.GenesisVerbRound, Thread: st.Thread}); r.Round != 2 || !reflect.DeepEqual(r, ans) || calls() != n {
 		t.Fatalf("the round after the answer: %+v (%d calls)", r, calls()-n)
 	}
-	// A refused answer forgets the thread: the next round asks the gate.
+	// A refused answer (here a round already taken, which is stale) forgets
+	// the thread: the next round asks the gate.
 	_, err := d.Genesis(bg, seatapp.GenesisCall{Verb: seatapp.GenesisVerbAnswer, Thread: st.Thread, Round: 1,
 		Answers: []seatapp.GenesisAnswer{{Node: "kind", Pick: seatapp.GenesisPick{Kind: seatapp.GenesisKindChoice, IDs: []string{"software"}}}}})
-	if !errors.Is(err, seatapp.ErrGenesisBadAnswer) {
+	if !errors.Is(err, seatapp.ErrGenesisStaleRound) {
 		t.Fatalf("an answer to an old round: %v", err)
 	}
 	n = calls()

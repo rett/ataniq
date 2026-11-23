@@ -74,7 +74,7 @@ type Refusal struct {
 func (r *Refusal) Error() string { return "genesis: " + r.code }
 
 // GateCode returns the word the seat gate answers the refusal with: one of the
-// six words of seat.genesis, or [CodeBadParams].
+// seven words of seat.genesis, or [CodeBadParams].
 func (r *Refusal) GateCode() string { return r.code }
 
 func refuse(code string) error { return &Refusal{code: code} }

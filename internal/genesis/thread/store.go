@@ -426,9 +426,11 @@ func (s *Store) Summary(ctx context.Context, id string) (ownerwire.SeatGenesisRe
 }
 
 // Answer gives the answers of a round, which must be the round the thread is
-// at, each to a question of it. Every answer goes through the walker; one that
-// fails fails the call and changes nothing. It answers the next round or the
-// summary.
+// at, each to a question of it. A round the thread has already taken, or any
+// round once the walk is done, is refused genesis-stale-round; a round it has
+// not reached genesis-bad-answer. Every answer goes through the walker; one
+// that fails fails the call and changes nothing. It answers the next round or
+// the summary.
 func (s *Store) Answer(ctx context.Context, id string, round int, answers []ownerwire.GenesisAnswer) (ownerwire.SeatGenesisResult, error) {
 	return s.run(ctx, func(t *tx) (ownerwire.SeatGenesisResult, error) {
 		r, err := t.get(id)
@@ -442,7 +444,16 @@ func (s *Store) Answer(ctx context.Context, id string, round int, answers []owne
 		if err != nil {
 			return ownerwire.SeatGenesisResult{}, err
 		}
-		if done || round != cur.Number || len(answers) == 0 || len(answers) > ownerwire.MaxGenesisAnswers {
+		if len(answers) == 0 || len(answers) > ownerwire.MaxGenesisAnswers || round < 1 || round > ownerwire.MaxGenesisRounds {
+			return ownerwire.SeatGenesisResult{}, refuse(ownerwire.CodeGenesisBadAnswer)
+		}
+		// A round already taken, or any round once the walk is done, is
+		// the thread's state (a second tab, a post sent twice), not
+		// misuse; a round the thread has not reached is.
+		if done || round < cur.Number {
+			return ownerwire.SeatGenesisResult{}, refuse(ownerwire.CodeGenesisStaleRound)
+		}
+		if round != cur.Number {
 			return ownerwire.SeatGenesisResult{}, refuse(ownerwire.CodeGenesisBadAnswer)
 		}
 		b, reset := r.brief, 0

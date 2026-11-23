@@ -192,6 +192,7 @@
 //	genesis-over-cap                            seatapp.ErrGenesisOverCap
 //	genesis-secret-shaped                       seatapp.ErrGenesisSecretShaped
 //	genesis-done                                seatapp.ErrGenesisDone
+//	genesis-stale-round                         seatapp.ErrGenesisStaleRound
 //	rate-limited, busy, too-many-refusals       seatapp.ErrBusy
 //	unknown-op                                  seatapp.ErrNotOffered
 //

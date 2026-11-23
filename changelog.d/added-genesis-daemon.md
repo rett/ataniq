@@ -16,7 +16,10 @@
   never repaired; no log line holds an answer. A restart serves the same
   threads. The gate's start line now lists every capability it serves in words,
   `genesis` last (for example `pair, read, login, decide, watch and genesis`).
-  The refusal bound counts `genesis-bad-answer`, `genesis-secret-shaped`,
-  `genesis-over-cap` and `genesis-unknown-thread`, and not `genesis-busy` or
-  `genesis-done`, which answer the state of the store. The seat has no page for
-  the interview yet.
+  An answer to a round the thread has already taken (a double tap, a second
+  tab) is `genesis-stale-round`, the thread's state and not a bad answer. The
+  refusal bound counts only `genesis-bad-answer` and `bad-params` of the
+  interview, and not `genesis-stale-round`, `genesis-busy`, `genesis-done`,
+  `genesis-unknown-thread`, `genesis-secret-shaped` or `genesis-over-cap`, so
+  that a few taps never shut the seat out of approvals. The seat has no page
+  for the interview yet.
