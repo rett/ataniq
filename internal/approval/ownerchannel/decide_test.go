@@ -71,6 +71,9 @@ func TestAnApproveRunsToApplied(t *testing.T) {
 	if dec.Console != (record.Console{PID: 41822, TTY: "/dev/pts/4", Client: "console-a 0.0.1", Decider: true, Surface: "console", Session: "0123456789abcdef"}) {
 		t.Errorf("the console block is %+v", dec.Console)
 	}
+	if dec.Seat != (record.SeatBlock{}) || strings.Contains(string(d.Record), `"seat":`) {
+		t.Errorf("a desk decision carries a seat block: %s", d.Record)
+	}
 	if !record.SignOffsEqual(p.Binding.Summary.Flagged, dec.SignedOff) || len(dec.SignedOff) == 0 {
 		t.Errorf("the sign-offs are %+v, want the flagged list", dec.SignedOff)
 	}

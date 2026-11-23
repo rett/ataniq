@@ -40,8 +40,10 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   `internal/seatlink` implements it over
   the gate, and `ataniq-seat` wires that in when it is given a gate (without
   one, every call answers `ErrDaemonUnavailable`). The daemon's side of the
-  login operations is G8's and is not built, so a gate today does not list
-  `login`, and the phone says that the desk does not take phone logins.
+  login and decision operations is built (G8b): a gate lists `login` and
+  `decide` when the daemon has the seat origin (see
+  [the seat origin](#the-seat-origin)); otherwise the phone says that the desk
+  does not take phone logins.
 - The owner channel's service, `internal/approval/ownerchannel`, and the words
   of its connection, `internal/approval/ownerwire`. `Service.PairPresent` takes
   a source whose surface is `ownerchannel.SurfaceSeat` (`"seat"`). The daemon
@@ -51,19 +53,27 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   There the seat source is nil, so `seat.pair` is refused `unavailable` to every
   connection.
 - The gate's handler, `internal/approval/gatehost` (untagged; only tagged code
-  may import it, and none does yet). It serves `seat.pair` and the four reads
-  to the service with a seat source, answers every refusal with a code, and
-  bounds the refusals of each peer (see [errors](#errors)).
+  imports it, the daemon's gate listener). It serves `seat.pair` and the four
+  reads to the service with a seat source, answers every refusal with a code,
+  and bounds the refusals of each peer (see [errors](#errors)). A handler made
+  with `gatehost.NewDeciding` also serves the login and decision operations
+  (G8b), with the gate's own values; `gatehost.New` makes one that does not.
 - The credential kinds and the assertion verifier,
   `internal/approval/credkind` (standard library only), and a software
   authenticator for tests, `internal/approval/webauthntest`, which shares no
   code with the verifier. Only tests use either.
 - The fingerprint of a paired credential is 8 words (see
   [the pairing fingerprint](#the-pairing-fingerprint)).
-- A decision can be made only at the desk. `Service.Decide` refuses a source
-  that is not the decider (`not-decider`) or whose surface has no owner activity
-  inside the presence window (`owner-away`). No command verifies a WebAuthn
-  assertion: only the tests of `credkind` call the verifier.
+- `Service.Decide` still refuses a source that is not the decider
+  (`not-decider`) or whose surface has no owner activity inside the presence
+  window (`owner-away`), a seat's included. The service's side of phone logins
+  and decisions is built (G8b): `Service.SeatLoginChallenge`,
+  `Service.SeatLogin`, `Service.SeatChallenge` and `Service.SeatDecide`, the
+  store of challenges, and the decision path the desk and the seat share
+  after authentication (`decideAuthed`), with the key checked again under the
+  revocation lock. They take the gate's own values as an `ownerchannel.Gate`
+  (its key fingerprint, the seat origin and its relying party id) and the
+  project's kind policy from `Config.KindPolicy`.
 - The decision record can say that a decision was confirmed by passkey (G8a,
   [the record change](#the-record-change)): the record package's decision
   check (`checkDecision`, run by `record.DecodeDecision` and
@@ -81,8 +91,8 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   [the journal entry](#the-journal-entry-of-a-phone-decision)): its activity
   from the seat block and its evidence beside it, read back with
   `ownerjournal.Store.EvidenceOf`. The list of deciding keys keeps the highest
-  sign counter (`ownerjournal.KeyFile.RaiseCounter`). The owner channel's
-  service does not call either for a phone decision yet.
+  sign counter (`ownerjournal.KeyFile.RaiseCounter`, through the service's
+  `KeyStore` port). The service writes both for a phone decision (G8b).
 
 ## The listener: inside the daemon
 
@@ -144,13 +154,15 @@ them and never hands them to the handler.
 | `read` | `owner.show` | `ownerwire.ShowParams` | `ownerwire.ShowResult` | G3 (built) |
 | `read` | `owner.paths` | `ownerwire.PageParams` | `ownerwire.PathsPage` | G3 (built) |
 | `read` | `owner.patch` | `ownerwire.PageParams` | `ownerwire.PatchPage` | G3 (built) |
-| `login` | `seat.login-challenge` | none | `SeatLoginChallengeResult` | G8 |
-| `login` | `seat.login` | `SeatLoginParams` | `SeatLoginResult` | G8 |
-| `decide` | `seat.challenge` | `SeatChallengeParams` | `SeatChallengeResult` | G8 |
-| `decide` | `seat.decide` | `SeatDecideParams` | `ownerwire.DecideResult` | G8 |
+| `login` | `seat.login-challenge` | none | `SeatLoginChallengeResult` | G8b (built) |
+| `login` | `seat.login` | `SeatLoginParams` | `SeatLoginResult` | G8b (built) |
+| `decide` | `seat.challenge` | `SeatChallengeParams` | `SeatChallengeResult` | G8b (built) |
+| `decide` | `seat.decide` | `SeatDecideParams` | `ownerwire.DecideResult` | G8b (built) |
 
-The handler built in G3 answers `["pair", "read"]` (`gatehost.Caps`); after G8,
-`["pair", "read", "login", "decide"]`. The seat reads the list
+A handler made with `gatehost.New` answers `["pair", "read"]` (`gatehost.Caps`);
+one made with `gatehost.NewDeciding`, `["pair", "read", "login", "decide"]`
+(`gatehost.DecidingCaps`), and the daemon makes that one only when the seat
+origin is configured (see [the seat origin](#the-seat-origin)). The seat reads the list
 (`seatgate.Client.Caps`) and offers login and decisions only when the gate lists
 them; otherwise it says that the desk does not take phone decisions.
 
@@ -255,8 +267,9 @@ The handler (`gatehost`, built for pairing and reads) answers:
   served can meet (`approval-void`, `approval-expired`, `approval-consumed`,
   `decision-invalid`, `previous-epoch`, `review-changed`, `record-invalid`,
   `record-too-large`); a refusal with any other code is answered `failed` and
-  logged, so that only listed words reach a seat. G8 adds the codes the
-  decision path meets (`binding-mismatch` among them) to that list.
+  logged, so that only listed words reach a seat. G8b adds
+  `binding-mismatch`, the one code of the decision path not already on that
+  list.
 - The pairing and key errors of `ownerchannel` with the codes the daemon already
   gives them, which are also the console's (`consoleclient.PairError`):
   `pairing-refused`, `credential-invalid`, `keys-unavailable`, `keys-full`,
@@ -302,7 +315,10 @@ apply to the gate.
 For the operations of G8: no refusal of `seat.login-challenge` or `seat.login`
 counts, since the seat relays them for anyone who reaches its login page, and a
 stranger must not shut the owner out; the seat limits them (see
-[login](#login-seatlogin-challenge-and-seatlogin)). Of `seat.challenge` and
+[login](#login-seatlogin-challenge-and-seatlogin)). The two exceptions are of
+the peer, not of a browser, and count as for any operation: `unknown-op` (a
+gate that does not serve `login`, which the seat does not call) and
+`not-pinned`. Of `seat.challenge` and
 `seat.decide`, `challenge-stale`, `challenges-full`, `key-revoked` and
 `kind-refused` do not count either: they come of normal use (a double tap, a
 slow owner, a card that changed, "phone off" at the desk). `bad-params`,
@@ -550,10 +566,10 @@ and the kind. The daemon keeps no session.
 
 The seat's side (G7, built): the seat link recomputes the login challenge
 from the gate's pin and the nonce before it hands it to the browser, and stops
-on a mismatch as for a decision (`seatlink.LoginChallengeOf`, held to the
-login vector above). This document places that function in `ownerwire`, for
-the daemon and the seat to share; `ownerwire` has no login type yet, so the
-seat link has its own, and G8 is to move it there. The seat keeps each login
+on a mismatch as for a decision. It calls `ownerwire.LoginChallenge`, the
+function the daemon calls too (held to the login vector above), and reads and
+writes the login's words with the decoders and encoders of `ownerwire` (G8b);
+`seatlink.LoginChallengeOf` is that function as an array. The seat keeps each login
 challenge id with the browser that asked for it, server-side, under a login
 cookie of that browser (`__Host-seat-login`, 5 minutes), and takes the
 browser's assertion for it only with that cookie, burning the entry first. It
@@ -656,9 +672,15 @@ on them byte for byte.
   party id is HOST, without a port.
 - The gate reads the origin once, when it starts, from the owner-local origin
   file (G1), makes it canonical and logs it. A change of the file applies at
-  the next start, so the origin never changes under a running gate.
+  the next start, so the origin never changes under a running gate. Built
+  (G8b): `ataniqd run --seat-gate` reads it with `ownerlocal.SeatOrigin`
+  before the daemon takes its lock, makes it canonical with
+  `leaddaemon.CanonicalSeatOrigin` (the canonical function is not in
+  `internal/ownerlocal`, which only reads the file), and names it in the gate's
+  start line.
 - Without the file, or with one that is not an origin, the gate starts with the
-  capabilities `["pair", "read"]` only, and logs why. The seat then says that
+  capabilities `["pair", "read"]` only, and logs why. So does a gate whose
+  service cannot decide from the phone. The seat then says that
   the desk does not take phone decisions. So no call meets a missing origin.
 - The verifier compares the client data's origin with the canonical origin
   exactly, and the authenticator data's relying party hash with the SHA-256 of
@@ -777,10 +799,10 @@ or not. Then the seat:
   settled at the desk; or pending, and only then may the owner decide again,
   with a new challenge.
 
-So that reading the card can tell a decision on its way from none, G8 gives
-`ownerwire.ShowResult` a mark for a card whose decision the journal holds and
-the door has not yet taken (planned), on the socket and the gate alike. G9
-tests the lost answer.
+So that reading the card can tell a decision on its way from none,
+`ownerwire.ShowResult` has a mark for a card whose decision the journal holds
+and the door has not yet taken (built, G8b: `on_its_way`, left out when false),
+on the socket and the gate alike. G9 tests the lost answer.
 
 A held approve (past the project's limit for the day) comes back pending with
 the held mark and the host's line. The page shows, under the host's line:

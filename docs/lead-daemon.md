@@ -315,13 +315,31 @@ the owner connection, behind the STAND-IN banner.
 - The daemon refuses to start, with exit code 10, without the key, without the
   pin file, with a file that is not as above, or with no pin; the message names
   the line at fault by its number and never prints a pin.
+- The seat origin, the address of the seat app such as
+  `https://seat.example`, is read once at start from the owner-local file
+  `ataniq/owner-local/seat-origin` in the configuration folder
+  (`$XDG_CONFIG_HOME`, else `~/.config`), with the rules of
+  `internal/ownerlocal` (a regular file, not a link, at most 1 KiB, not
+  writable by group or others; its first line). It must be `https://` and a
+  lower-case domain name, `:443` at most, with no address literal, other port,
+  path, query, fragment or user information. A change of the file takes effect
+  at the next start. Without the file, or with one that is refused or holds no
+  such origin, the daemon starts as before and the gate serves pairing and the
+  reads only.
 - The gate starts once the service is built and stops, before the service is
   closed, when the daemon shuts down; a gate that cannot listen (the port is
   taken) stops the daemon with exit code 18. At start the daemon prints one
-  line with the address and the gate's key fingerprint, and no pin:
+  line with the address, the gate's key fingerprint and what it serves, and no
+  pin. With an origin:
 
 ```text
-ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>
+ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>, seat origin https://seat.example; it serves pair, read, login and decide
+```
+
+  Without one, the line says why:
+
+```text
+ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>; it serves pair and read only: no seat origin is configured (the owner-local seat-origin file is missing or empty)
 ```
 
 The gate speaks TLS 1.3 with pinned keys, strict frames of at most 257 KiB
@@ -329,14 +347,27 @@ The gate speaks TLS 1.3 with pinned keys, strict frames of at most 257 KiB
 of `internal/seatgate`. It serves the capabilities `pair` and `read`: the
 seat's pairing call, `seat.pair`, and the reads `owner.list`, `owner.show`,
 `owner.paths` and `owner.patch`, through `internal/approval/gatehost`, with a
-seat source that is never the decider. Every other operation is refused
-`unknown-op`; no decision can be made over the gate. A seat whose key is not
-pinned is refused in the handshake and never reaches the service. On the
-daemon's socket `seat.pair` stays refused: no connection there is a seat.
+seat source that is never the decider. With a seat origin it also serves
+`login` (`seat.login-challenge`, `seat.login`) and `decide`
+(`seat.challenge`, `seat.decide`): a login and a decision from the phone,
+each a passkey assertion with user verification over a challenge the daemon
+draws from its own record of the card, verified against a key on
+`owner/keys.log` that is not revoked and the seat origin (see
+[the seat gate's design](design/seat-gate.md#the-challenge)). A challenge is
+kept in memory for 5 minutes and one use; a restart drops every one. A
+decision from the phone is journaled as confirmed by passkey, with the
+evidence of the assertion, and needs no activity at the desk; it is not
+activity at the desk either. Every other operation is refused `unknown-op`.
+A seat whose key is not pinned is refused in the handshake and never reaches
+the service. On the daemon's socket `seat.pair` stays refused and the four
+seat operations are not served: no connection there is a seat. `owner.show`
+marks a card whose decision is journaled and not yet taken by the door
+(`"on_its_way": true`), on the socket and the gate alike.
 
 Same-user limit: a process of the daemon's user that is not in a sandbox can
-read the gate's key and add a pin. Until the sandbox is qualified, the gate is
-for scratch state only.
+read the gate's key, add a pin, rewrite the seat origin file and edit the key
+list. Until the sandbox is qualified, the gate and every decision from the
+phone are for scratch state only, behind the STAND-IN banner.
 
 ### The scratch settings
 

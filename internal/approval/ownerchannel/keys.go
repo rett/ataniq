@@ -28,6 +28,12 @@ type KeyStore interface {
 	RevokeKeys(ids []string, at time.Time) error
 	// AppendRejected journals a pairing the owner rejected.
 	AppendRejected(r ownerjournal.RejectedPairing) error
+	// RaiseCounter records the sign counter a verified login or decision
+	// of the credential with this display id reported: the list keeps the
+	// highest seen and never lowers it, and a counter that is not higher
+	// writes nothing. An id no credential has is
+	// [ownerjournal.ErrKeyUnknown].
+	RaiseCounter(id string, counter uint32, at time.Time) error
 	Close() error
 }
 

@@ -11,14 +11,16 @@ import (
 
 	"ataniq/internal/approval/hostadapter"
 	"ataniq/internal/leaddaemon"
+	"ataniq/internal/ownerlocal"
 	"ataniq/internal/seatgate"
 )
 
 // This file is the seat gate of the command, in a build with the
 // ataniq_ownerchannel tag: the flag --seat-gate of run (registered with
-// --owner-channel in owner_linux.go) and the command "ataniqd seat-gate", which
-// makes the gate's key and lists the pinned seat keys. seatgate_off_linux.go
-// has the same names for every other build.
+// --owner-channel in owner_linux.go), the seat origin the gate reads once at
+// start, and the command "ataniqd seat-gate", which makes the gate's key and
+// lists the pinned seat keys. seatgate_off_linux.go has the same names for
+// every other build.
 
 // seatGateListen opens the gate's listener. A test replaces it to see whether
 // the daemon listens at all.
@@ -56,11 +58,37 @@ func (a *app) seatGatePrepare(addr, stateDir string) (*leaddaemon.SeatGate, int)
 	if len(pins) == 0 {
 		return refuse("%s pins no seat key, so no seat could connect", leaddaemon.SafeText(pinFile))
 	}
+	origin, why := seatGateOrigin(a.getenv)
 	return &leaddaemon.SeatGate{
-		Addr: ap, Identity: id, Pins: pins,
+		Addr: ap, Identity: id, Pins: pins, Origin: origin, NoOrigin: why,
 		Log:    func(format string, args ...any) { fmt.Fprintf(a.stderr, "ataniqd: "+format+"\n", args...) },
 		Listen: seatGateListen,
 	}, -1
+}
+
+// seatGateOrigin reads the seat origin, once, as the daemon starts: the
+// owner-local file seat-origin (package ownerlocal), made canonical by
+// leaddaemon.CanonicalSeatOrigin. Without one (no configuration folder, no
+// file or an empty one, a file ownerlocal refuses, or one that holds no
+// canonical origin) it returns "" and why, for the gate's start line: the gate
+// then serves pair and read only, and the daemon starts as before. why holds
+// nothing of the file's content.
+func seatGateOrigin(getenv func(string) string) (origin, why string) {
+	if ownerlocal.SeatOriginPath(getenv) == "" {
+		return "", "no configuration folder (XDG_CONFIG_HOME or HOME) to read the seat origin from"
+	}
+	v, err := ownerlocal.SeatOrigin(getenv)
+	switch {
+	case err != nil:
+		return "", "the owner-local seat-origin file is refused (" + err.Error() + ")"
+	case v == "":
+		return "", "no seat origin is configured (the owner-local seat-origin file is missing or empty)"
+	}
+	o, _, err := leaddaemon.CanonicalSeatOrigin(v)
+	if err != nil {
+		return "", "the owner-local seat-origin file holds no canonical origin (https:// and a lower-case domain name)"
+	}
+	return o, ""
 }
 
 // withSeatGate wraps the builder of the owner channel's service so that the

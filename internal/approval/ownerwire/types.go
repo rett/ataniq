@@ -160,6 +160,14 @@ type ShowResult struct {
 	Record Record `json:"record"`
 	// Held is the mark "decided past the limit".
 	Held bool `json:"held"`
+	// OnItsWay is the mark of a card whose decision the journal holds and
+	// the door has not taken yet: the record is still pending at the door,
+	// and a decision for it was made (at the desk or on the phone) and is on
+	// its way. A restart or the next tick hands it over; no other decision
+	// of the card is taken meanwhile. A seat whose answer to seat.decide was
+	// lost reads the card to tell a decision on its way from none. The field
+	// is left out when it is false.
+	OnItsWay bool `json:"on_its_way,omitempty"`
 	// Outcome is what came after the decision. A record not yet decided
 	// has none, except a pending one whose last decision the door refused:
 	// its outcome is the state pending with a host-written line saying so.

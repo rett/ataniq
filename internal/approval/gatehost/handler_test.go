@@ -46,6 +46,9 @@ func TestCapsAndOperations(t *testing.T) {
 	if Caps()[0] != "pair" {
 		t.Error("Caps returns a shared slice")
 	}
+	if got := DecidingCaps(); !slices.Equal(got, []string{"pair", "read", "login", "decide"}) {
+		t.Fatalf("DecidingCaps() = %q", got)
+	}
 	want := map[string]string{
 		"seat.pair":   "pair",
 		"owner.list":  "read",
@@ -54,13 +57,33 @@ func TestCapsAndOperations(t *testing.T) {
 		"owner.patch": "read",
 	}
 	ops := Operations()
-	if len(ops) != len(want) || len(opCaps) != len(want) {
+	if len(ops) != len(want) {
 		t.Fatalf("Operations() = %q", ops)
 	}
 	for _, op := range ops {
 		if !seatgate.ValidOp(op) || opCaps[op] != want[op] {
 			t.Errorf("%s has the capability %q", op, opCaps[op])
 		}
+	}
+	// The gate's own four, in the deciding capabilities only, and none of
+	// them an operation of the socket.
+	gate := map[string]string{
+		"seat.login-challenge": "login",
+		"seat.login":           "login",
+		"seat.challenge":       "decide",
+		"seat.decide":          "decide",
+	}
+	if len(opCaps) != len(want)+len(gate) || !slices.Equal(ownerwire.GateOperations(), []string{"seat.login-challenge", "seat.login", "seat.challenge", "seat.decide"}) {
+		t.Fatalf("opCaps %v", opCaps)
+	}
+	for op, c := range gate {
+		if !seatgate.ValidOp(op) || opCaps[op] != c || slices.Contains(ownerwire.Operations(), op) {
+			t.Errorf("%s has the capability %q", op, opCaps[op])
+		}
+	}
+	h, _ := newHandler(t, &fakePort{})
+	if !slices.Equal(h.Caps(), Caps()) {
+		t.Errorf("a handler made with New lists %q", h.Caps())
 	}
 }
 

@@ -20,7 +20,9 @@ type fakeKeys struct {
 	closed   int
 	// failRead and failAdd, failRevoke and failReject are the errors the
 	// calls answer with while set.
-	failRead, failAdd, failRevoke, failReject error
+	failRead, failAdd, failRevoke, failReject, failRaise error
+	// raises counts the counters raised.
+	raises int
 	// writes counts the calls that changed the list.
 	writes int
 }
@@ -104,6 +106,27 @@ func (f *fakeKeys) AppendRejected(r ownerjournal.RejectedPairing) error {
 	f.rejected = append(f.rejected, r)
 	f.writes++
 	return nil
+}
+
+func (f *fakeKeys) RaiseCounter(id string, counter uint32, at time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failRaise != nil {
+		return f.failRaise
+	}
+	for i := range f.keys {
+		if f.keys[i].ID != id {
+			continue
+		}
+		if f.keys[i].Revoked || counter <= f.keys[i].Counter {
+			return nil
+		}
+		f.keys[i].Counter = counter
+		f.raises++
+		f.writes++
+		return nil
+	}
+	return ownerjournal.ErrKeyUnknown
 }
 
 func (f *fakeKeys) Close() error {

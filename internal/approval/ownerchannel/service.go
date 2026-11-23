@@ -68,6 +68,9 @@ type Service struct {
 	// list of keys; pr is the one pairing, in memory, which pmu guards.
 	pmu sync.Mutex
 	pr  pairing
+	// seat holds the outstanding challenges of the seat gate, in memory: a
+	// restart drops them.
+	seat *challengeStore
 	// slot holds the one verification that may run at a time.
 	slot chan struct{}
 
@@ -157,6 +160,7 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.initPairing()
+	s.seat = newChallengeStore(cfg.ChallengeRand, cfg.SeatLog)
 	// A door that cannot be reached now does not stop the service: the next
 	// tick takes up what it could not.
 	if err := s.Tick(ctx); err != nil && !errors.Is(err, ErrDoorUnavailable) {

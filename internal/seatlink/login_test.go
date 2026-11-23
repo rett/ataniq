@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"ataniq/internal/approval/credkind"
+	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/approval/record"
 	"ataniq/internal/approval/webauthntest"
 	"ataniq/internal/seatapp"
@@ -39,9 +40,19 @@ func TestSeatLinkLoginChallengeVector(t *testing.T) {
 	for i := range nonce {
 		nonce[i] = byte(0x40 + i)
 	}
+	want := "586b941d8d6d60ec7626a362dac9e97c777664ee647ecf1688121b7b1237fa8f"
 	got := LoginChallengeOf(instance, nonce)
-	if want := "586b941d8d6d60ec7626a362dac9e97c777664ee647ecf1688121b7b1237fa8f"; hex.EncodeToString(got[:]) != want {
+	if hex.EncodeToString(got[:]) != want {
 		t.Errorf("login challenge %x, want %s", got, want)
+	}
+	// It is the wire's one function, which the daemon calls too.
+	if w, err := ownerwire.LoginChallenge(instance, nonce); err != nil || hex.EncodeToString(w) != want {
+		t.Errorf("ownerwire.LoginChallenge %x %v", w, err)
+	}
+	// A pin or a nonce of another form gives no challenge the daemon could
+	// have drawn.
+	if LoginChallengeOf("ABC", nonce) != ([32]byte{}) || LoginChallengeOf(instance, nonce[:31]) != ([32]byte{}) {
+		t.Error("a challenge of a malformed pin or nonce")
 	}
 }
 
@@ -154,20 +165,22 @@ func (f *fakeDesk) handle(_ context.Context, _ seatgate.Peer, op string, params 
 				allow = append(allow, f.keys[i].CredentialID)
 			}
 		}
-		return json.Marshal(loginChallengeResult{
+		// The daemon writes its answers with the wire's encoders, as the
+		// gate's handler does.
+		return ownerwire.EncodeSeatLoginChallengeResult(ownerwire.SeatLoginChallengeResult{
 			ChallengeID: id, Challenge: ch[:], Nonce: nonce,
 			ExpiresAt: record.FormatTime(time.Now().Add(5 * time.Minute)), Allow: allow,
 		})
 	case OpLogin:
 		f.logins++
-		var p loginParams
+		var p ownerwire.SeatLoginParams
 		if seatgate.DecodeStrict(params, &p) != nil {
 			return nil, seatgate.NewCodedError("bad-params")
 		}
 		entry, ok := f.challenges[p.ChallengeID]
 		delete(f.challenges, p.ChallengeID)
 		if !ok || time.Now().After(entry.expires) {
-			return nil, seatgate.NewCodedError(codeChallengeStale)
+			return nil, seatgate.NewCodedError(ownerwire.CodeChallengeStale)
 		}
 		var key *credkind.Credential
 		for i := range f.keys {
@@ -179,16 +192,16 @@ func (f *fakeDesk) handle(_ context.Context, _ seatgate.Peer, op string, params 
 			return nil, seatgate.NewCodedError(codeKeyUnknown)
 		}
 		if f.revoked[string(key.CredentialID)] {
-			return nil, seatgate.NewCodedError(codeKeyRevoked)
+			return nil, seatgate.NewCodedError(ownerwire.CodeKeyRevoked)
 		}
 		_, err := credkind.Verify(*key, credkind.AssertionInput{
 			CredentialID: p.Assertion.CredentialID, ClientDataJSON: p.Assertion.ClientDataJSON,
 			AuthenticatorData: p.Assertion.AuthenticatorData, Signature: p.Assertion.Signature,
 		}, credkind.Expect{Challenge: entry.challenge[:], Origin: seatOrigin, RPID: seatRPID})
 		if err != nil {
-			return nil, seatgate.NewCodedError(codeAssertionInvalid)
+			return nil, seatgate.NewCodedError(ownerwire.CodeAssertionInvalid)
 		}
-		return json.Marshal(loginResult{Credential: DisplayID(key.CredentialID), CredentialID: key.CredentialID, Kind: key.Kind})
+		return ownerwire.EncodeSeatLoginResult(ownerwire.SeatLoginResult{Credential: DisplayID(key.CredentialID), CredentialID: key.CredentialID, Kind: key.Kind})
 	}
 	return nil, seatgate.NewCodedError(codeUnknownOp)
 }
@@ -464,7 +477,7 @@ func TestSeatLinkLoginCodes(t *testing.T) {
 			t.Errorf("%s: %v", code, err)
 		}
 	}
-	for name, res := range map[string]loginResult{
+	for name, res := range map[string]ownerwire.SeatLoginResult{
 		"another credential": {Credential: DisplayID(bytes.Repeat([]byte{8}, 32)), CredentialID: bytes.Repeat([]byte{8}, 32), Kind: "passkey"},
 		"another display id": {Credential: "0123456789abcdef", CredentialID: req.CredentialID, Kind: "passkey"},
 		"a bad kind":         {Credential: DisplayID(req.CredentialID), CredentialID: req.CredentialID, Kind: "Pass key"},
@@ -476,7 +489,7 @@ func TestSeatLinkLoginCodes(t *testing.T) {
 		}
 	}
 	// An answer that names the assertion's credential is taken.
-	good := loginResult{Credential: DisplayID(req.CredentialID), CredentialID: req.CredentialID, Kind: "vault-passkey"}
+	good := ownerwire.SeatLoginResult{Credential: DisplayID(req.CredentialID), CredentialID: req.CredentialID, Kind: "vault-passkey"}
 	g := serveGateCaps(t, []string{seat.Fingerprint()}, []string{"login"}, answer(good))
 	if res, err := dialPinned(t, g, seat).Login(context.Background(), req); err != nil || res.Credential != good.Credential || res.Kind != "vault-passkey" {
 		t.Errorf("good: %+v %v", res, err)
@@ -495,17 +508,21 @@ func TestSeatLinkLoginCodes(t *testing.T) {
 func TestSeatLinkLoginChallengeAnswer(t *testing.T) {
 	seat := newIdentity(t, "seat")
 	nonce := bytes.Repeat([]byte{4}, 32)
-	for name, mod := range map[string]func(*loginChallengeResult){
-		"short nonce":    func(r *loginChallengeResult) { r.Nonce = r.Nonce[:31] },
-		"bad id":         func(r *loginChallengeResult) { r.ChallengeID = "0123456789ABCDEF" },
-		"bad time":       func(r *loginChallengeResult) { r.ExpiresAt = "tomorrow" },
-		"too many keys":  func(r *loginChallengeResult) { r.Allow = make([][]byte, 17) },
-		"short allow id": func(r *loginChallengeResult) { r.Allow = [][]byte{{1}} },
+	for name, mod := range map[string]func(*ownerwire.SeatLoginChallengeResult){
+		"short nonce":    func(r *ownerwire.SeatLoginChallengeResult) { r.Nonce = r.Nonce[:31] },
+		"bad id":         func(r *ownerwire.SeatLoginChallengeResult) { r.ChallengeID = "0123456789ABCDEF" },
+		"bad time":       func(r *ownerwire.SeatLoginChallengeResult) { r.ExpiresAt = "tomorrow" },
+		"too many keys":  func(r *ownerwire.SeatLoginChallengeResult) { r.Allow = make([][]byte, 17) },
+		"short allow id": func(r *ownerwire.SeatLoginChallengeResult) { r.Allow = [][]byte{{1}} },
+		"an id twice": func(r *ownerwire.SeatLoginChallengeResult) {
+			r.Allow = [][]byte{bytes.Repeat([]byte{7}, 16), bytes.Repeat([]byte{7}, 16)}
+		},
+		"no allow list": func(r *ownerwire.SeatLoginChallengeResult) { r.Allow = nil },
 	} {
 		var g *gate
 		g = serveGateCaps(t, []string{seat.Fingerprint()}, []string{"login"}, func(context.Context, seatgate.Peer, string, json.RawMessage) (json.RawMessage, error) {
 			ch := LoginChallengeOf(g.id.Fingerprint(), nonce)
-			r := loginChallengeResult{ChallengeID: "0123456789abcdef", Challenge: ch[:], Nonce: nonce,
+			r := ownerwire.SeatLoginChallengeResult{ChallengeID: "0123456789abcdef", Challenge: ch[:], Nonce: nonce,
 				ExpiresAt: record.FormatTime(time.Now()), Allow: [][]byte{bytes.Repeat([]byte{7}, 16)}}
 			for i := range r.Allow {
 				r.Allow[i] = bytes.Repeat([]byte{7}, 16)
