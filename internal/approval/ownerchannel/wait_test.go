@@ -504,7 +504,80 @@ func TestWaitVersionSurvivesARestart(t *testing.T) {
 	}
 }
 
-// Pokes within a second cause one look at the end of it.
+// waiterStates counts the goroutines that are in a wait, by where each is
+// blocked: parked is blocked in the hold's select in waitPending (nothing
+// woke it and nothing is pending for it), looking is blocked in a select in
+// lookNow (for the look's token, or for the floor's timer), and other is any
+// other state of a goroutine in a wait (running, runnable, or blocked
+// elsewhere). A goroutine that a poke or a timer has woken is runnable at
+// once, so a wait that has not yet finished with its wake is counted in other:
+// a test that waits for the counts it wants waits for the waits to be done
+// with what they were woken for, whatever the machine's load, and not for a
+// time that a loaded machine can overrun.
+func waiterStates() (parked, looking, other int) {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		if !strings.Contains(g, "(*Service).waitPending(") {
+			continue
+		}
+		head, _, _ := strings.Cut(g, "\n")
+		selecting := strings.Contains(head, "[select")
+		switch {
+		case selecting && strings.Contains(g, "(*Service).lookNow("):
+			looking++
+		case selecting:
+			parked++
+		default:
+			other++
+		}
+	}
+	return parked, looking, other
+}
+
+// waitersAre waits until exactly parked waits are parked in their hold and
+// looking are in a look, with none in another state.
+func waitersAre(t *testing.T, what string, parked, looking int) {
+	t.Helper()
+	until(t, what, func() bool {
+		p, l, o := waiterStates()
+		return p == parked && l == looking && o == 0
+	})
+}
+
+// waitersSettle waits until each of n waits is blocked, in its hold or in a
+// look: none is running or woken and not yet scheduled. It returns how many
+// are in a look.
+func waitersSettle(t *testing.T, n int) (looking int) {
+	t.Helper()
+	until(t, "every wait to be blocked", func() bool {
+		p, l, o := waiterStates()
+		looking = l
+		return o == 0 && p+l == n
+	})
+	return looking
+}
+
+// Pokes within a second cause one look at the end of it. The test moves no
+// time but the fake clock's, and waits on what the waits are blocked in, never
+// on real time, so it cannot fail for a slow machine: a look that pokes ask
+// for is made when the clock passes the floor, and the waits that took its
+// cached look are blocked again before the next step.
+//
+// A wait that came to the look's token just after the look gave it back, and
+// before the look's result was stored (the token is given back first), takes
+// no cached look; it waits out the floor from that look, and looks again one
+// floor later. That look is correct and never within a second of the last, so
+// the test lets it be made, with the clock moved for it, where it can come
+// (the second look of a stage is the one that serves its pokes), and checks
+// the counts only where the clock cannot have moved.
 func TestWaitLooksAtTheDoorAtMostOnceASecond(t *testing.T) {
 	w := newWaitEnv(t)
 	w.card("feature-a")
@@ -519,37 +592,44 @@ func TestWaitLooksAtTheDoorAtMostOnceASecond(t *testing.T) {
 		defer w.door.mu.Unlock()
 		return w.door.lists
 	}
-	quiet := func() {
-		time.Sleep(60 * time.Millisecond)
+	// looks waits until the door was listed at least once since base, and
+	// the waits are blocked again, and says how many times it was listed.
+	// The clock has not moved since the look: a count above 1 is a look
+	// within the second of another.
+	looks := func(base int) int {
+		until(t, "a look at the door", func() bool { return lists()-base >= 1 })
+		waitersSettle(t, 3)
+		return lists() - base
 	}
-	quiet()
-	base := lists()
-	for round := 1; round <= 3; round++ {
+	// pokes pokes at once, and waits until every wait has been woken for it
+	// and is held up in its look: the floor has not passed, and the clock
+	// does not move.
+	pokes := func() {
 		for i := 0; i < 50; i++ {
 			w.svc.poke()
 		}
-		quiet()
+		waitersAre(t, "every wait to ask for a look", 0, 3)
+	}
+	waitersAre(t, "the waits to be parked", 3, 0)
+	base := lists()
+	for round := 1; round <= 3; round++ {
+		pokes()
 		if n := lists() - base; n != 0 {
 			t.Fatalf("round %d: %d looks within the second of the last", round, n)
 		}
 		w.wc.Advance(time.Second)
-		quiet()
-		if n := lists() - base; n != 1 {
+		if n := looks(base); n != 1 {
 			t.Fatalf("round %d: %d looks in the second, want 1", round, n)
 		}
 		base = lists()
 		w.wc.Advance(100 * time.Millisecond)
-		for i := 0; i < 50; i++ {
-			w.svc.poke()
-		}
 		// Within the second of that look again.
-		quiet()
+		pokes()
 		if n := lists() - base; n != 0 {
 			t.Fatalf("round %d: %d looks inside the next second", round, n)
 		}
 		w.wc.Advance(time.Second)
-		quiet()
-		if n := lists() - base; n != 1 {
+		if n := looks(base); n != 1 {
 			t.Fatalf("round %d: %d looks after the next second, want 1", round, n)
 		}
 		base = lists()
@@ -559,9 +639,18 @@ func TestWaitLooksAtTheDoorAtMostOnceASecond(t *testing.T) {
 		t.Fatalf("answered with nothing changed: %+v", r)
 	default:
 	}
-	// A look that found nothing pokes nothing: the waits are quiet.
+	// A wait may still be on the floor of the last look (see above): let its
+	// look be made, a second on, before the check that nothing more is.
+	for i := 0; i < 3 && waitersSettle(t, 3) > 0; i++ {
+		w.wc.Advance(time.Second)
+		waitersSettle(t, 3)
+	}
+	waitersAre(t, "the waits to be parked", 3, 0)
+	base = lists()
+	// A look that found nothing pokes nothing: the waits are parked, with
+	// nothing to wake them, and the clock moving on makes no look.
 	w.wc.Advance(5 * time.Second)
-	quiet()
+	waitersAre(t, "the waits to stay parked", 3, 0)
 	if n := lists() - base; n != 0 {
 		t.Fatalf("%d looks with no poke", n)
 	}
