@@ -301,7 +301,7 @@ func newRig(t *testing.T, mod ...func(*Config)) *rig {
 			card:      sampleCard(),
 			offer:     Offer{Approve: true, Deny: true},
 			decideRes: DecideResult{State: "approved", Line: "approved on the phone"},
-			page:      PathsPage{Pages: 3, Rows: []PathRow{{Path: NewLead("a/b.go"), Status: "M", Added: 1}}},
+			page:      PathsPage{Pages: 3, Review: strings.Repeat("ef", 32), Rows: []PathRow{{Path: NewLead("a/b.go"), Status: "M", Added: 1}}},
 		},
 		clock: &clock{t: time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)},
 	}

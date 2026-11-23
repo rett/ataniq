@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+	"unicode/utf8"
 )
 
 //go:embed assets
@@ -45,6 +46,53 @@ const (
 	maxPath = 1024 // a path or a ref's name
 	maxText = 4000 // a line of the plan or of the note
 )
+
+// fits reports whether the Card page shows a lead's text whole: Text cuts
+// none of it at max.
+func fits(l Lead, max int) bool { return utf8.RuneCountInString(l.str()) <= max }
+
+// allFit reports whether every one of ls fits at max.
+func allFit(ls []Lead, max int) bool {
+	for _, l := range ls {
+		if !fits(l, max) {
+			return false
+		}
+	}
+	return true
+}
+
+// rowsWhole reports whether every path of rows is shown whole.
+func rowsWhole(rows []PathRow) bool {
+	for _, r := range rows {
+		if !fits(r.Path, maxPath) {
+			return false
+		}
+	}
+	return true
+}
+
+// wholeOf says which parts of c the Card page shows whole, with the caps
+// the template cuts them at.
+func wholeOf(c Card) Whole {
+	w := Whole{Rows: true, Lists: true, Refs: true, Flagged: true, Differs: true}
+	if c.Diff != nil {
+		w.Rows = rowsWhole(c.Diff.Rows)
+	}
+	for _, l := range c.Lists {
+		w.Lists = w.Lists && allFit(l.Paths, maxPath)
+	}
+	for _, r := range c.Refs {
+		w.Refs = w.Refs && fits(r.Ref, maxPath) && (r.MergedInto == nil || fits(r.MergedInto.Ref, maxPath))
+	}
+	for _, f := range c.Flagged {
+		w.Flagged = w.Flagged && fits(f.Path, maxPath) && fits(f.Pattern, maxPath)
+	}
+	if d := c.Differs; d != nil {
+		w.Differs = allFit(d.PathsAdded, maxPath) && allFit(d.PathsRemoved, maxPath) &&
+			allFit(d.RefsAdded, maxPath) && allFit(d.RefsRemoved, maxPath)
+	}
+	return w
+}
 
 // funcs are the template functions. The pages show text that the app did not
 // write only through text (a string) and lead (a [Lead]), both of which are

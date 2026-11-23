@@ -404,6 +404,8 @@ func run(ctx context.Context, args []string, errout io.Writer, ready func(net.Ad
 		client, err = seatgate.NewClient(o.gate, seatgate.ClientConfig{
 			TLS:  seatgate.ClientTLS(id, o.gatePin, serverName(o.gate)),
 			Caps: seatlink.Caps(),
+			// The link's budget keeps room at the gate for this many pings.
+			PingInterval: seatlink.PingInterval,
 		})
 		if err != nil {
 			fmt.Fprintf(errout, "ataniq-seat: %v\n", err)

@@ -607,24 +607,67 @@ makes the session from the answer with a fresh 256-bit value it draws itself,
 never one the browser brought (a session cookie that comes with a login is
 ended), and keeps the value server-side as its digest. The session's cookie
 is `__Host-seat`, Secure, HttpOnly and SameSite=Strict; a session ends 30
-minutes after its last request and 12 hours after the login. Every later
+minutes after its last request and 12 hours after the login, or at a
+logout (`POST /api/logout`). The page goes to the login page only once the
+seat answered the logout; when the answer is lost, or is not a success, the
+session may still be live, so the page says "Logout not confirmed" and the
+button stays. Every later
 decision of the session is to use exactly the session's credential
 (`allowCredentials` holding only its raw id; G9). The seat link checks that a
 login's answer names the credential the assertion named, by its raw id and its
 display id.
 
 Anyone who reaches the seat can ask for a login challenge, and the gate takes
-60 requests a minute on the seat's one connection, which every browser shares.
-So the seat limits login challenges to 10 per source in 15 minutes and to 8 a
-minute from all sources together: each login asks the gate twice, so logins
-take at most 16 of the 60 a minute, and the room left is the owner's reads and
-decisions. A source is the client address the proxy sets, as for the pairing.
+60 requests a minute on the seat's one connection, which every browser shares,
+pings included; it answers any more `rate-limited`. So the seat limits login
+challenges to 10 per source in 15 minutes and to 8 a minute from all sources
+together, which keeps strangers from filling its store of them. A source is
+the client address the proxy sets, as for the pairing.
+
+Those limits do not bound the seat's calls of the gate by themselves: a login
+challenge may be answered at any time in its 5 minutes, so more logins than
+challenges may come in one minute; the first page of a card's path list asks
+the gate twice when the seat does not know the card's review; and the seat
+pings the gate every 15 seconds. So the seat link counts every call it
+sends (`seatlink`'s budget), by kind, over 80 seconds (the gate's minute and
+the 20 seconds a call is taken to wait at most between the seat's count and
+the gate's: the 15 seconds the app gives a call and 5 of the network, so
+calls counted 80 seconds apart never meet in one of the gate's minutes), and
+sends none past the room of its kind:
+
+| Kind | Calls | Room in 80 s |
+| --- | --- | --- |
+| Pings | `seat.ping`, every 15 s (`seatlink.PingInterval`, which `ataniq-seat` sets) | 6 |
+| Anyone's | `seat.pair`, `seat.login-challenge`, `seat.login` | 12 (6 logins) |
+| Reads | `owner.list`, `owner.show`, `owner.paths`, of every session together | 26 |
+| Decisions | `seat.challenge`, `seat.decide` | 16 (8 decisions) |
+
+The rooms add up to the gate's 60, so the gate's rate never refuses a call
+the seat sent. A call without room is not sent: the phone says the desk is
+busy (`desk_busy`, the problem "The desk is busy", or `rate_limited` for a
+pairing), before anything is asked. A decision's challenge is asked only
+when the room of decisions holds it and its `seat.decide` as well: the room
+of the decision is kept for the credential's last challenge (a new tap of the
+same credential takes its place) until the decision is sent, or the
+challenge's life ends (5 minutes at most). So a decision the phone signed
+is never refused for the gate's rate: strangers' logins and pairings, and
+reads, cannot take its room, and a tap past it is told the desk is busy
+before any challenge is drawn or the passkey asked.
+The seat relays pairings for anyone who reaches its pairing page, and the
+gate counts each pairing the daemon refuses against the seat's refusal bound
+(16 in 10 minutes; see [the refusal bound](#the-refusal-bound)), past which
+it refuses every request of the seat, the owner's too. So besides 5 tries per
+source in 15 minutes, the seat hands the daemon at most 6 pairings in 11
+minutes from all sources together (a body the seat refuses itself is not
+counted); the window is a minute longer than the gate's so that pairings
+sent a little more than 10 minutes apart are not counted closer at the gate.
+The pairing code's own limit, 5 wrong codes, stays.
 Only a session reads cards, and the reads of one credential's sessions are
 limited to 20 a minute (a card page asks the gate once; the first page of a
-card's path list may ask twice, to learn the card's review), so one phone's
-reads and every login together stay within the 60. When the gate answers
-`rate-limited`, `busy` or `too-many-refusals`, the phone says that the desk is
-busy and to try again in a minute, and nothing is retried by itself.
+card's path list may ask twice, to learn the card's review), within the
+room of all reads above. When the gate answers `rate-limited`, `busy` or
+`too-many-refusals`, the phone says that the desk is busy and to try again in
+a minute, and nothing is retried by itself.
 
 Reads after a revoke: the reads are the pin's, not a credential's, since the
 daemon keeps no session. A seat session whose key was revoked still reads cards
@@ -843,8 +886,8 @@ What the seat app does with a decision (G9, built):
   do, as the card shows them). One tap asks one fresh assertion for that one
   action; nothing is submitted by itself.
 - The browser never sends a path or a binding. `POST /api/decide-challenge`
-  carries the action, the reason and the sign-offs as the indexes of the
-  flagged paths. The seat builds the frame from its own copy of the card (read
+  carries the id of the Card page's form, the action, the reason and the
+  sign-offs as the indexes of the flagged paths. The seat builds the frame from its own copy of the card (read
   through the seat link, its digest checked), keeps the frame with the session
   and the challenge id, server-side, and answers the challenge. `POST
   /api/decide` carries the challenge id and the assertion. Both bodies fit the
@@ -861,20 +904,53 @@ How it is built (G9), where the points above left a choice:
 - The phone reads a card on one page. So the session's reading of a card,
   which the seat keeps server-side (`seatapp.Reading`), counts the Card
   page's rows, its four lists, its refs and its "differs from" block as read
-  to their end once the page was served to the session, and a cut path list
-  only by the pages of the whole list the session was served, for the card's
-  review. `seatlink` builds the card model's `Reading` from it, and asks
-  `Card.MayApprove` with every flagged path signed off to offer Approve (a
-  card that opened under 400 ms ago is offered, since the tap is judged
-  again), `Card.Deny` to offer Deny, and `Card.Approve` (MayApprove with the
-  boxes ticked) or `Card.Deny` to build the frame; a decision they refuse is
-  not sent. The Card page of a card that ended, or whose decision is on its
-  way, has no form.
+  to their end once the page was served to the session, each only when the
+  page showed it whole (`seatapp.Whole`), and a cut path list only by the
+  pages of the whole list the session was served that showed every path
+  whole, for the card's review: the seat keeps with the pages the review
+  digest each was read for (the page's own, which the link checked), a page
+  of another review or page count starts the count again, and the link
+  counts the pages only for the review they were read for, so pages read
+  before a card was replaced (the same id and page count, another review)
+  count for nothing on the replacement. Only a GET that the seat answered
+  with the page is a read: a `HEAD` of a card page is refused 405 and asks
+  the daemon nothing. The page shows a path or a ref (a ref
+  line's ref, the branch a prune's deleted ref was merged into, a flagged
+  path and its rule, a path or ref of the "differs from" block) up to 1024
+  characters of its escaped text, and cuts a longer one with a count of
+  what it left out; a part with a cut item is not read, and a page of the
+  path list with one says that it does not count. `seatlink` builds the card
+  model's `Reading` from it, and asks `Card.MayApprove` with every flagged
+  path signed off to offer Approve (a card that opened under 400 ms ago is
+  offered, since the tap is judged again), `Card.Deny` to offer Deny, and
+  `Card.Approve` (MayApprove with the boxes ticked) or `Card.Deny` to build
+  the frame; a decision they refuse is not sent. Approve is withheld, and
+  not sent, for a card the page did not show whole: the page says which
+  part ("a ref", "a changed path", "a path in a list", "a flagged path",
+  "a path or a ref of how the card differs" is too long to show whole on the
+  phone; approve at the desk). So two flagged paths that read the same on
+  the page because both were cut are never signed off by their index. Deny
+  stays. A prune's ref line shows the branch its deleted ref was merged
+  into and that branch's tip (the first 12 digits), as the desk does. The
+  Card page of a card that ended, or whose decision is on its way, has no
+  form.
 - One tap on Approve or Deny asks `POST /api/decide-challenge` with the card,
-  the action, the indexes of the boxes ticked and the reason. The seat takes
-  the binding the Card page showed this session from its own reading; the
-  link freezes the frame from the card it showed at that binding, asks
-  `seat.challenge`, and recomputes the challenge before the browser sees it.
+  the id of the page's form, the action, the indexes of the boxes ticked and
+  the reason. Each Card page that holds the form has a form id of its own
+  (16 random bytes), which the seat keeps with the session's reading of the
+  card beside the binding that page showed (the last 8 pages of a card). The
+  seat takes the binding the session read last from its own reading, and
+  takes the tap only when the page of its form showed that binding: a tab
+  left open on a card that was replaced since (the same id, another binding,
+  read in another tab of the same session) is answered "The card changed.
+  Look at it again." (`card_changed`), and a form the session was never
+  served "Look at the card again first." (`look_again`), before any
+  challenge is drawn or the passkey asked. A tap without a form id is
+  refused (`bad_request`); only a request with no `Sec-Fetch-Site`, which
+  the test option alone lets through and no browser sends, may leave it
+  out. The link freezes the frame from the card it showed at that binding,
+  asks `seat.challenge`, and recomputes the challenge before the browser
+  sees it.
   The seat keeps one decision per session; a new tap replaces it. The page
   then names the action, the card, its project, what it does, its target and
   its revision (the binding's first 12 digits), and a second tap, on the
@@ -882,16 +958,39 @@ How it is built (G9), where the points above left a choice:
   session's credential. `POST /api/decide` burns the kept decision first,
   takes the assertion only for its id and the session's credential, and
   sends the kept frame.
-- The largest bodies the page sends are 1198 bytes for a challenge (300
-  sign-off indexes; a deny's reason of 500 bytes all escaped is 1106) and
+- The largest bodies the page sends are 1230 bytes for a challenge (the
+  form's id and 300 sign-off indexes; a deny's reason of 500 bytes all
+  escaped is 1138) and
   5672 bytes for an assertion at the bounds of `Assertion`, under
   `seatapp.MaxBody`; a body of MaxBody bytes is read and one byte more is
   refused (413), whether its length was declared or not.
-- Decision challenges are limited to 10 a minute per credential, so that
-  logins (16), reads (20) and decisions stay within the gate's 60.
+- The link checks the params of `seat.challenge` and `seat.decide` as the
+  gate will read them. The seat's transport (`seatgate.Client.Call`)
+  marshals the params it is handed again with `encoding/json`, which escapes
+  `<`, `>`, `&`, U+2028 and U+2029 for HTML (`\u0026` is six bytes for one),
+  so a frame within its cap can grow past the gate's cap in transit: four
+  flagged paths of 900 `&` each make params of 3931 bytes that are over
+  9 KiB on the wire, which the gate refuses `bad-params` (a refusal it
+  counts). The link escapes the params first, as the transport does, checks
+  those bytes with the daemon's decoder (`ownerwire.DecodeSeatChallengeParams`
+  and `DecodeSeatDecideParams`, size cap included), and hands the transport
+  exactly them, which its marshal leaves as they are. Params over the cap
+  on the wire are not sent: the phone says "This is too large to send."
+  (`too_large`), and nothing was decided. Such a decision is made at the
+  desk until the transport sends the params as given.
+- Decision challenges are limited to 10 a minute per credential, and the
+  seat link asks one only when the room of decisions at the gate (16 calls
+  in 80 seconds, see [login](#login-seatlogin-challenge-and-seatlogin)) holds
+  it and its decision: a decision the phone signed is never refused for the
+  gate's rate.
 - `Permissions-Policy` allows `publickey-credentials-get` on a Card page that
   holds the form; the page without it forbids it as every other response
-  does.
+  does. A link that cannot decide (a gate whose hello did not list
+  `decide`, as after a session's seat reconnected to a read-only gate, or a
+  link without the gate's pin) offers neither approve nor deny, so its Card
+  page holds no form, loads no deciding script, forbids the passkey, and
+  says "This card cannot be decided now: the desk does not take decisions
+  from the phone now."
 
 Before the owner submits, the page tells apart: a cancel ("Cancelled. Nothing
 was sent."), a challenge that ran out ("This took too long. Tap again."), and a
@@ -907,7 +1006,12 @@ or not. Then the seat:
 - never sends the decision again, by itself or on a tap, and queues nothing
   (built: the card is marked sent before the decision is sent, a refusal
   clears the mark, and any other answer leaves it until a new read of the
-  card; while it stands, a tap is refused without asking the daemon);
+  card: a GET of its Card page whose read of the daemon began after the
+  mark was set. A `HEAD` is no read, and a GET whose read began before the
+  mark may show the card as it was before the decision, so its page holds
+  no form, says "A decision of this card was sent and its outcome is not
+  known. Look at it again." and leaves the mark. While it stands, a tap is
+  refused without asking the daemon);
 - shows "Decision sent. Outcome unknown." and offers only "Look again", the
   Card page read afresh;
 - on "Look again", once the gate is back, reads the same card with

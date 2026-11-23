@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -95,7 +96,22 @@ func dial(t *testing.T, g *gate, seat seatgate.Identity) (*Daemon, *seatgate.Cli
 	if err != nil {
 		t.Fatal(err)
 	}
+	d.budget.now = roomy()
 	return d, c
+}
+
+// roomy is a clock for a link's budget that moves on by BudgetWindow at
+// each reading, so that the budget never fills: for the tests of anything
+// but the budget, which have a clock of their own.
+func roomy() func() time.Time {
+	var mu sync.Mutex
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	return func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		at = at.Add(BudgetWindow)
+		return at
+	}
 }
 
 // words are a fingerprint of the wire's form.

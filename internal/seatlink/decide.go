@@ -120,18 +120,21 @@ func (s *shownCards) put(id string, c card.Card) {
 }
 
 // readingOf is the card model's reading of a card as one session read it on
-// the phone. The Card page holds the card whole, so it counts as the rows,
-// the four lists, the refs and the "differs from" block read to their end;
-// a cut path list counts only by the pages of the whole list the session
-// read, for the card's own review.
+// the phone. The Card page holds the card on one page, so it counts the
+// rows, the four lists, the refs and the "differs from" block as read to
+// their end when the page showed each of them whole (seatapp.Whole), and
+// not when a path or a ref of it was too long to be shown whole; a cut path
+// list counts only by the pages of the whole list the session read, for the
+// card's own review: a page counts with the review it was read for, so a
+// page of another review counts for nothing.
 func readingOf(c card.Card, r seatapp.Reading) card.Reading {
-	rd := card.Reading{Opened: r.Opened, Paths: true, Refs: true, Differs: true}
+	rd := card.Reading{Opened: r.Opened, Paths: r.Whole.Rows, Refs: r.Whole.Refs, Differs: r.Whole.Differs}
 	for k := range rd.Lists {
-		rd.Lists[k] = true
+		rd.Lists[k] = r.Whole.Lists
 	}
 	if c.Diff != nil {
 		for _, n := range r.PagesRead {
-			rd.ReadPage(card.Page{Kind: card.PagePaths, N: n, Pages: r.Pages, ReviewDigest: c.Diff.ReviewDigest})
+			rd.ReadPage(card.Page{Kind: card.PagePaths, N: n, Pages: r.Pages, ReviewDigest: r.Review})
 		}
 	}
 	return rd
@@ -141,28 +144,86 @@ func readingOf(c card.Card, r seatapp.Reading) card.Reading {
 // binding asked.
 const reasonNotShown = "the card changed; look at it again"
 
+// reasonNotOffered is the host's line for a card on a link that cannot
+// decide: a gate whose hello did not list "decide", or a link without the
+// gate's pin.
+const reasonNotOffered = "the desk does not take decisions from the phone now"
+
+// The host's lines for a card the phone did not show whole: a path or a ref
+// longer than the page shows. Approve is not offered for it on the phone,
+// and is not sent; the owner reads it, and approves, at the desk.
+const (
+	reasonCutRefs    = "a ref is too long to show whole on the phone; approve at the desk"
+	reasonCutRows    = "a changed path is too long to show whole on the phone; approve at the desk"
+	reasonCutLists   = "a path in a list is too long to show whole on the phone; approve at the desk"
+	reasonCutFlagged = "a flagged path is too long to show whole on the phone; approve at the desk"
+	reasonCutDiffers = "a path or a ref of how the card differs is too long to show whole on the phone; approve at the desk"
+)
+
+// cutWhy says which part of c, in the order the Card page shows them, the
+// page did not show whole, or "" when it showed every part c has whole. A
+// flagged path cut is never signed off by its index: two such paths may
+// read the same on the page.
+func cutWhy(c card.Card, w seatapp.Whole) string {
+	switch {
+	case len(c.Refs) != 0 && !w.Refs:
+		return reasonCutRefs
+	case c.Diff != nil && !c.Diff.Truncated && !w.Rows:
+		return reasonCutRows
+	case c.Diff != nil && !w.Lists:
+		return reasonCutLists
+	case len(c.Flagged) != 0 && !w.Flagged:
+		return reasonCutFlagged
+	case c.Differs != nil && !w.Differs:
+		return reasonCutDiffers
+	}
+	return ""
+}
+
 // Offer says what the Card page may offer for a card the link showed at the
-// binding given, as a session read it: an approve when the card model's
-// MayApprove allows it with every flagged path signed off (the sign-offs are
-// the owner's to tick on the page; a card that opened under 400 ms ago is
-// offered, since the tap comes later and is judged then), and a deny when
-// its Deny allows one with no reason. It asks the gate nothing.
+// binding given, as a session read it: an approve when the page showed every
+// part of the card whole and the card model's MayApprove allows it with
+// every flagged path signed off (the sign-offs are the owner's to tick on
+// the page; a card that opened under 400 ms ago is offered, since the tap
+// comes later and is judged then), and a deny when its Deny allows one with
+// no reason. A link that cannot decide (no gate pin, or a gate that does
+// not list "decide") offers neither, so the page holds no form and no
+// passkey is asked for. It asks the gate nothing.
 func (d *Daemon) Offer(id, binding string, r seatapp.Reading, now time.Time) seatapp.Offer {
+	if d.pin == "" || !d.offers(CapDecide) {
+		return seatapp.Offer{ApproveWhy: reasonNotOffered, DenyWhy: reasonNotOffered}
+	}
 	c, ok := d.shown.get(id)
 	if !ok || c.BindingSHA256 != binding || binding == "" {
 		return seatapp.Offer{ApproveWhy: reasonNotShown, DenyWhy: reasonNotShown}
 	}
 	var out seatapp.Offer
+	out.Approve, out.ApproveWhy = mayOffer(c, r, now)
+	// A part the page cut is the line given when nothing else is in the
+	// way: the owner learns why the phone cannot approve this card.
+	if why := cutWhy(c, r.Whole); why != "" {
+		whole := r
+		whole.Whole = seatapp.Whole{Rows: true, Lists: true, Refs: true, Flagged: true, Differs: true}
+		if ok, _ := mayOffer(c, whole, now); ok {
+			out.Approve, out.ApproveWhy = false, why
+		}
+	}
+	_, out.Deny, out.DenyWhy = c.Deny("", now)
+	return out
+}
+
+// mayOffer is MayApprove of the session's reading with every flagged path
+// signed off; a card that opened under 400 ms ago is offered.
+func mayOffer(c card.Card, r seatapp.Reading, now time.Time) (bool, string) {
 	rd := readingOf(c, r)
 	for _, f := range c.Flagged {
 		rd.SignedOff = append(rd.SignedOff, f.SignOff())
 	}
-	out.Approve, out.ApproveWhy = c.MayApprove(rd, now)
-	if !out.Approve && out.ApproveWhy == card.ReasonJustOpened {
-		out.Approve, out.ApproveWhy = true, ""
+	ok, why := c.MayApprove(rd, now)
+	if !ok && why == card.ReasonJustOpened {
+		return true, ""
 	}
-	_, out.Deny, out.DenyWhy = c.Deny("", now)
-	return out
+	return ok, why
 }
 
 // decidable checks what both decision calls need before anything is sent: a
@@ -203,6 +264,9 @@ func frameOf(c card.Card, r seatapp.DecideChallengeRequest) (ownerwire.DecisionF
 	if r.Reason != "" {
 		return ownerwire.DecisionFrame{}, errFrame
 	}
+	if why := cutWhy(c, r.Reading.Whole); why != "" {
+		return ownerwire.DecisionFrame{}, &seatapp.NotAllowedError{Reason: why}
+	}
 	seen := make(map[int]bool, len(r.SignedOff))
 	for _, i := range r.SignedOff {
 		if i < 0 || i >= len(c.Flagged) || seen[i] {
@@ -217,6 +281,30 @@ func frameOf(c card.Card, r seatapp.DecideChallengeRequest) (ownerwire.DecisionF
 	}
 	signed := append([]record.SignOff{}, dec.SignedOff...)
 	return ownerwire.DecisionFrame{ID: dec.ID, BindingSHA256: dec.BindingSHA256, Decision: record.DecisionApprove, SignedOff: signed}, nil
+}
+
+// onWire returns params as the gate reads them, after the decoder given
+// (the daemon's own, of ownerwire) took exactly those bytes. Client.Call
+// marshals the params it is handed again with encoding/json, which escapes
+// <, >, & and U+2028 and U+2029 for HTML (as \u003c and so on), so the bytes
+// on the wire may be longer than those the wire's encoder checked: a frame
+// with flagged paths full of & can pass its cap here and be refused
+// bad-params by the gate. The link escapes them first, in the same way,
+// checks the escaped bytes, and hands the transport exactly them, which its
+// marshal leaves as they are. Params whose bytes on the wire are over the
+// cap are [seatapp.ErrTooLarge], and nothing is sent.
+func onWire(params []byte, decode func([]byte) error) (json.RawMessage, error) {
+	wire, err := json.Marshal(json.RawMessage(params))
+	if err != nil {
+		return nil, errFrame
+	}
+	if err := decode(wire); err != nil {
+		if code, ok := record.CodeOf(err); ok && code == record.CodeRecordTooLarge {
+			return nil, seatapp.ErrTooLarge
+		}
+		return nil, errFrame
+	}
+	return wire, nil
 }
 
 // frameView is the frame as the app keeps it.
@@ -250,7 +338,8 @@ func wireFrame(f seatapp.DecisionFrame) ownerwire.DecisionFrame {
 // asked nothing. A card the link did not show at that binding is
 // [seatapp.ErrCardChanged]; a decision the card model does not allow (an
 // approve with a flagged path not signed off, a card past its expiry) is a
-// [*seatapp.NotAllowedError]. Neither is sent.
+// [*seatapp.NotAllowedError]; params over the gate's cap once on the wire
+// are [seatapp.ErrTooLarge]. None is sent.
 func (d *Daemon) DecideChallenge(ctx context.Context, r seatapp.DecideChallengeRequest) (seatapp.DecideChallenge, error) {
 	if err := d.decidable(ctx); err != nil {
 		return seatapp.DecideChallenge{}, err
@@ -270,8 +359,30 @@ func (d *Daemon) DecideChallenge(ctx context.Context, r seatapp.DecideChallengeR
 	if err != nil {
 		return seatapp.DecideChallenge{}, errFrame
 	}
+	wire, err := onWire(params, func(b []byte) error { _, err := ownerwire.DecodeSeatChallengeParams(b); return err })
+	if err != nil {
+		return seatapp.DecideChallenge{}, err
+	}
+	// The room of the decision is kept with the challenge's: a challenge is
+	// asked only when its seat.decide will have room too.
+	if !d.budget.reserve(r.Credential) {
+		return seatapp.DecideChallenge{}, seatapp.ErrBusy
+	}
+	ch, err := d.challenge(ctx, frame, wire)
+	if err != nil {
+		d.budget.release(r.Credential)
+		return seatapp.DecideChallenge{}, err
+	}
+	d.budget.bind(r.Credential, ch.ID, ch.Expires)
+	return ch, nil
+}
+
+// challenge sends seat.challenge with the params on the wire and checks the
+// answer: its form, and that its challenge is the one the gate's pin, the
+// frame and the daemon's nonce give.
+func (d *Daemon) challenge(ctx context.Context, frame ownerwire.DecisionFrame, wire json.RawMessage) (seatapp.DecideChallenge, error) {
 	var raw json.RawMessage
-	if err := d.c.Call(ctx, OpDecideChallenge, json.RawMessage(params), &raw); err != nil {
+	if err := d.c.Call(ctx, OpDecideChallenge, wire, &raw); err != nil {
 		return seatapp.DecideChallenge{}, mapCall(ctx, OpDecideChallenge, err, refusalCodes)
 	}
 	var probe ownerwire.SeatChallengeResult
@@ -296,7 +407,8 @@ func (d *Daemon) DecideChallenge(ctx context.Context, r seatapp.DecideChallengeR
 // Decide hands the daemon the frame the app kept for a challenge and the
 // phone's assertion over it (seat.decide), and returns the daemon's outcome.
 // Before anything is sent, a gate that is not connected is
-// [seatapp.ErrDaemonUnavailable]. Once it is sent, only a refusal says for
+// [seatapp.ErrDaemonUnavailable], and params over the gate's cap once on the
+// wire are [seatapp.ErrTooLarge]. Once it is sent, only a refusal says for
 // certain that nothing was decided: a refusal code maps as for the
 // challenge; the codes unavailable, deadline-exceeded, door-unavailable,
 // journal-reopened and failed, a lost link, the seat's own deadline, and an
@@ -318,8 +430,15 @@ func (d *Daemon) Decide(ctx context.Context, r seatapp.DecideRequest) (seatapp.D
 	if err != nil || ownerwire.CheckDecisionFrame(wireFrame(r.Frame)) != nil {
 		return seatapp.DecideResult{}, errFrame
 	}
+	wire, err := onWire(params, func(b []byte) error { _, err := ownerwire.DecodeSeatDecideParams(b); return err })
+	if err != nil {
+		return seatapp.DecideResult{}, err
+	}
+	// A decision is counted in the room its challenge kept, and is never
+	// refused for room: the phone has answered.
+	d.budget.spend(r.ChallengeID)
 	var raw json.RawMessage
-	if err := d.c.Call(ctx, OpDecide, json.RawMessage(params), &raw); err != nil {
+	if err := d.c.Call(ctx, OpDecide, wire, &raw); err != nil {
 		return seatapp.DecideResult{}, mapDecide(err)
 	}
 	var probe ownerwire.DecideResult

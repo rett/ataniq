@@ -127,6 +127,16 @@ type Ref struct {
 	Ref      Lead
 	Old, New string
 	Deletes  bool
+	// MergedInto says where the commits of a branch a prune deletes stay
+	// reachable: the branch and its tip. Only a delete has it.
+	MergedInto *MergedInto
+}
+
+// MergedInto names the branch, and its tip, that holds the commits of a
+// branch a prune deletes.
+type MergedInto struct {
+	Ref Lead
+	Tip string
 }
 
 // Diff is a card's diff summary and its rows.
@@ -181,7 +191,10 @@ type Differs struct {
 type PathsPage struct {
 	// N is the page's number, from 0, and Pages how many there are.
 	N, Pages int
-	Rows     []PathRow
+	// Review is the review digest the page is of, the card's when it was
+	// read; the session's reading keeps it with the page.
+	Review string
+	Rows   []PathRow
 }
 
 // The errors of the reads of a Daemon that the app tells apart.
@@ -190,15 +203,21 @@ var (
 	ErrNoCard = errors.New("seatapp: no card of this id")
 	// ErrCardChanged says that the card's review changed while it was read.
 	ErrCardChanged = errors.New("seatapp: the card changed")
-	// ErrTooLarge says that the answer does not fit the gate's frame.
+	// ErrTooLarge says that the answer does not fit the gate's frame, or,
+	// for a decision, that its words do not fit the gate's cap on them
+	// once on the wire; a decision too large is not sent.
 	ErrTooLarge = errors.New("seatapp: too large for the phone")
 )
 
 // The limits of the reads.
 const (
 	// readRequests and readWindow bound the reads of one credential's
-	// sessions, so that with logins (at most 16 a minute) the reads of a
-	// phone stay within the gate's 60 a minute.
+	// sessions. A read may ask the gate more than once (the first page of a
+	// card's path list asks twice when the card was not shown), so they do
+	// not bound the gate's calls: the port counts every call it sends, and
+	// keeps the reads of all sessions to their own room there (package
+	// seatlink: 26 calls in 80 seconds); a read past it is the problem "The
+	// desk is busy".
 	readRequests = 20
 	readWindow   = time.Minute
 	// maxPage is the highest page number asked for.
@@ -297,14 +316,22 @@ type (
 		RPID string
 		// Offer is what the decide form offers, and Decide says the page
 		// holds the form: the card is pending and approve or deny is
-		// offered.
-		Offer  Offer
-		Decide bool
+		// offered. Form is the id of this page's form, which a tap names.
+		// Unsettled says the page's read began before a decision of the
+		// card, still unsettled, was sent: it may show the card as it was
+		// before, so it holds no form and asks to look again.
+		Offer     Offer
+		Decide    bool
+		Form      string
+		Unsettled bool
 	}
 	pathsData struct {
 		Title string
 		ID    string
 		Page  PathsPage
+		// Cut says that a path of the page is too long to be shown whole,
+		// so the page does not count as read.
+		Cut bool
 		// Number is the page's number from 1; Prev, Next and Back are the
 		// app's own addresses, empty when there is none.
 		Number           int
@@ -354,6 +381,7 @@ func (a *app) cardPage(w http.ResponseWriter, r *http.Request, s Session) {
 		return
 	}
 	defer cancel()
+	since := a.sess.begin()
 	c, err := a.cfg.Daemon.Show(ctx, id)
 	if err != nil {
 		a.problem(w, readProblem(err))
@@ -368,10 +396,23 @@ func (a *app) cardPage(w http.ResponseWriter, r *http.Request, s Session) {
 	// The page is the session's reading of the card: a lost answer is
 	// settled by it. The decide form is the page's only when the card is
 	// pending and the card model offers approve or deny.
-	reading := a.sess.opened(s.key, c, now)
-	if !c.Ended && !c.OnItsWay && (c.State == "" || c.State == "pending") {
+	reading, fresh := a.sess.opened(s.key, c, now, since)
+	d.Unsettled = !fresh
+	if fresh && !c.Ended && !c.OnItsWay && (c.State == "" || c.State == "pending") {
 		d.Offer = a.cfg.Daemon.Offer(id, c.BindingSHA256, reading, now)
 		d.Decide = d.Offer.Approve || d.Offer.Deny
+	}
+	if d.Decide {
+		// Each page's form has an id of its own, kept with the binding the
+		// page shows, so that a tap is taken only for the card its page
+		// showed. Without one the page has no form.
+		form, err := newFormID(a.cfg.Random)
+		if err != nil {
+			d.Decide = false
+		} else {
+			a.sess.addForm(s.key, id, pageForm{id: form, binding: c.BindingSHA256})
+			d.Form = form
+		}
 	}
 	if d.Decide {
 		// The one page that asks the phone for a decision's assertion.
@@ -399,12 +440,15 @@ func (a *app) pathsPage(w http.ResponseWriter, r *http.Request, s Session) {
 		a.problem(w, readProblem(err))
 		return
 	}
-	if p.N != n || p.Pages < 1 || p.N >= p.Pages {
+	if p.N != n || p.Pages < 1 || p.N >= p.Pages || p.Review == "" {
 		a.problem(w, problemFailed)
 		return
 	}
-	a.sess.readPage(s.key, id, n, p.Pages)
-	d := pathsData{Title: pageTitles["paths"], ID: id, Page: p, Number: n + 1, Back: cardHref(id)}
+	// A page counts as read only when it showed every path whole.
+	d := pathsData{Title: pageTitles["paths"], ID: id, Page: p, Number: n + 1, Back: cardHref(id), Cut: !rowsWhole(p.Rows)}
+	if !d.Cut {
+		a.sess.readPage(s.key, id, n, p.Pages, p.Review)
+	}
 	if n > 0 {
 		d.Prev = pathsHref(id, n-1)
 	}

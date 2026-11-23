@@ -25,7 +25,7 @@
 {{with .Refs}}<section aria-labelledby="refs">
 <h2 id="refs">Refs it moves</h2>
 <ul class="rows">
-{{range .}}<li><span class="lead mono">{{lead .Ref maxPath}}</span> <span class="meta">{{text .Kind maxName}}: {{short .Old}} to {{if .Deletes}}deleted{{else}}{{short .New}}{{end}}</span></li>
+{{range .}}<li><span class="lead mono">{{lead .Ref maxPath}}</span> <span class="meta">{{text .Kind maxName}}: {{short .Old}} to {{if .Deletes}}deleted{{else}}{{short .New}}{{end}}</span>{{with .MergedInto}}<br><span class="meta">merged into</span> <span class="lead mono">{{lead .Ref maxPath}}</span> <span class="meta">({{short .Tip}})</span>{{end}}</li>
 {{end}}</ul>
 </section>
 {{end}}{{with .Diff}}<section aria-labelledby="diff">
@@ -77,7 +77,7 @@
 {{end}}</section>
 {{end}}{{if .DiffersRefused}}<p>{{text .DiffersRefused maxLine}}</p>
 {{end}}{{end}}
-{{if .Decide}}<section id="decide" aria-labelledby="decide-title" data-rp-id="{{.RPID}}" data-card="{{text .Card.ID maxID}}">
+{{if .Decide}}<section id="decide" aria-labelledby="decide-title" data-rp-id="{{.RPID}}" data-card="{{text .Card.ID maxID}}" data-form="{{.Form}}">
 <h2 id="decide-title">Decide on the phone</h2>
 <p>A decision here goes to the desk's STAND-IN door on scratch state. Your phone asks for your face, finger or passcode once for each decision.</p>
 {{if .Offer.Approve}}{{if .Card.Flagged}}<fieldset id="signoffs">
@@ -106,6 +106,7 @@
 <noscript><p>Deciding on the phone needs script. Turn script on for this site, or decide at the desk.</p></noscript>
 </section>
 <script src="/static/decide.js"></script>
+{{else if .Unsettled}}<p class="held">A decision of this card was sent and its outcome is not known. Look at it again.</p>
 {{else if .Card.OnItsWay}}<p class="held">A decision of this card is on its way to the door. Look at it again in a moment.</p>
 {{else if not .Card.Ended}}<p class="readonly">This card cannot be decided now{{if .Offer.DenyWhy}}: {{text .Offer.DenyWhy maxLine}}{{end}}. Look at it at the desk.</p>
 {{end}}<p><a id="back" href="/cards/">Back to the cards</a></p>

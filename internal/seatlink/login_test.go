@@ -98,6 +98,7 @@ func dialPinned(t *testing.T, g *gate, seat seatgate.Identity) *Daemon {
 	if err != nil {
 		t.Fatal(err)
 	}
+	d.budget.now = roomy()
 	return d
 }
 
@@ -218,10 +219,14 @@ func seatApp(t *testing.T, d seatapp.Daemon) http.Handler {
 }
 
 // browser is a phone's browser in front of the app: it keeps the app's
-// cookies.
+// cookies. With fetchSite set, its POSTs carry Sec-Fetch-Site: same-origin,
+// as a page's script's do; with source set, its requests carry it as the
+// client's address, in the header the clock rig's app reads.
 type browser struct {
-	h       http.Handler
-	cookies map[string]*http.Cookie
+	h         http.Handler
+	cookies   map[string]*http.Cookie
+	fetchSite bool
+	source    string
 }
 
 func newBrowser(h http.Handler) *browser { return &browser{h: h, cookies: map[string]*http.Cookie{}} }
@@ -236,6 +241,12 @@ func (b *browser) do(method, path, body string) *httptest.ResponseRecorder {
 	if method == "POST" {
 		req.Header.Set("Origin", seatOrigin)
 		req.Header.Set("Content-Type", "application/json")
+		if b.fetchSite {
+			req.Header.Set("Sec-Fetch-Site", "same-origin")
+		}
+	}
+	if b.source != "" {
+		req.Header.Set(clientHeader, b.source)
 	}
 	for _, c := range b.cookies {
 		req.AddCookie(c)

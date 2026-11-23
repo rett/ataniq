@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"io"
 	"net/http"
 	"sort"
 	"time"
@@ -18,45 +19,75 @@ const (
 	// carry, each below it: a decision record of 8 KiB holds fewer.
 	maxSignOffs = 300
 	// decideRequests and decideWindow bound the decision challenges one
-	// credential's sessions may ask for. With logins (16 a minute), reads
-	// (20) and one decision per challenge, a phone stays within the gate's
-	// 60 requests a minute.
+	// credential's sessions may ask for. The port keeps the decisions to a
+	// room of their own at the gate (package seatlink: 16 calls in 80
+	// seconds, 8 decisions), which logins, pairings and reads cannot take,
+	// and asks a challenge only with room for its decision as well: a tap
+	// past it is answered desk_busy before any challenge, and a decision the
+	// phone signed is never refused for the gate's rate.
 	decideRequests = 10
 	decideWindow   = time.Minute
 	// decideTTL is the longest a decision's challenge is kept; the daemon's
 	// own expiry is used when it is sooner.
 	decideTTL = 5 * time.Minute
+	// maxForms is the most decide forms a session's reading of a card keeps:
+	// the forms of the Card pages served last, one per page. formBytes is
+	// the size of a form's id, drawn at random for each page.
+	maxForms  = 8
+	formBytes = 16
 )
+
+// formLen is the length of a form's id: formBytes in unpadded base64url.
+var formLen = b64.EncodedLen(formBytes)
+
+// pageForm is the decide form of one Card page: its id, which the page's
+// script sends with a tap, and the binding that page showed.
+type pageForm struct {
+	id      string
+	binding string
+}
 
 // cardReading is one session's reading of one card, kept server-side with
 // the session.
 type cardReading struct {
-	// binding, expires and flagged are of the card the Card page last
-	// showed: its binding digest, its expiry and how many flagged paths it
-	// has. binding is empty while only pages of its path list were read.
+	// binding, expires, flagged and whole are of the card the Card page
+	// last showed: its binding digest, its expiry, how many flagged paths
+	// it has, and the parts of it the page showed whole. binding is empty
+	// while only pages of its path list were read.
 	binding string
 	expires time.Time
 	flagged int
+	whole   Whole
 	// opened is when the Card page last showed it.
 	opened time.Time
-	// pages is the page count of the whole path list, and read the pages of
-	// it the session read.
-	pages int
-	read  map[int]bool
+	// pages is the page count of the whole path list, review the review
+	// digest those pages were of, and read the pages of it the session
+	// read. A page of another review or count starts the count again.
+	pages  int
+	review string
+	read   map[int]bool
 	// live says the card was pending when last shown: not ended and no
 	// decision on its way.
 	live bool
 	// sent says a decision of the card was sent and no answer settled it.
 	// Only a new read of the card (the Card page, "Look again") clears it,
-	// so a lost answer is never followed by a second decision unseen.
-	sent bool
+	// so a lost answer is never followed by a second decision unseen; a read
+	// that began before the decision was marked sent (sentAt) does not.
+	sent   bool
+	sentAt uint64
+	// forms are the decide forms of the Card pages of the card served to
+	// the session, oldest first, each with the binding its page showed. A
+	// tap names its page's form, and is taken only when that page showed
+	// the binding the session read last: a page left open in another tab,
+	// on a card that was replaced since, is not taken for the new one.
+	forms []pageForm
 	// touched orders the readings by use.
 	touched uint64
 }
 
 // public is the reading as the port takes it.
 func (r *cardReading) public() Reading {
-	out := Reading{Opened: r.opened, Pages: r.pages}
+	out := Reading{Opened: r.opened, Whole: r.whole, Pages: r.pages, Review: r.review}
 	for n := range r.read {
 		out.PagesRead = append(out.PagesRead, n)
 	}
@@ -116,34 +147,94 @@ func (s *session) reading(id string, create bool) *cardReading {
 	return r
 }
 
-// opened notes that the Card page showed c to the session at now, and
-// returns the session's reading of it. A read of the card settles a lost
-// answer: what the page shows is the card's state now.
-func (ss *sessions) opened(k tokenKey, c Card, now time.Time) Reading {
+// begin returns the mark of a read that begins now: a decision marked sent
+// later has a higher one.
+func (ss *sessions) begin() uint64 {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	return ss.seq
+}
+
+// opened notes that the Card page showed c to the session at now, from a
+// read that began at the mark since, and returns the session's reading of
+// it, and fresh. A read of the card settles a lost answer: what the page
+// shows is the card's state now. A read that began before a decision of the
+// card that is still unsettled was marked sent may show the card as it was
+// before it, so it changes nothing and is not fresh.
+func (ss *sessions) opened(k tokenKey, c Card, now time.Time, since uint64) (Reading, bool) {
 	var out Reading
+	fresh := true
 	ss.with(k, func(s *session) {
 		r := s.reading(c.ID, true)
-		if r.binding != "" && r.binding != c.BindingSHA256 {
-			r.pages, r.read = 0, nil
+		if r.sent && r.sentAt > since {
+			fresh = false
+			out = r.public()
+			return
 		}
-		r.binding, r.expires, r.flagged, r.opened = c.BindingSHA256, c.Expires, len(c.Flagged), now
+		if r.binding != "" && r.binding != c.BindingSHA256 {
+			r.pages, r.review, r.read = 0, "", nil
+		}
+		r.binding, r.expires, r.flagged, r.opened, r.whole = c.BindingSHA256, c.Expires, len(c.Flagged), now, wholeOf(c)
 		r.live = !c.Ended && !c.OnItsWay && (c.State == "" || c.State == "pending")
 		r.sent = false
 		out = r.public()
 	})
-	return out
+	return out, fresh
 }
 
 // readPage notes that the session read page n of pages of a card's whole
-// path list. A page count other than the one kept starts the count again.
-func (ss *sessions) readPage(k tokenKey, id string, n, pages int) {
+// path list, of the review given. A page count or a review other than the
+// one kept starts the count again.
+func (ss *sessions) readPage(k tokenKey, id string, n, pages int, review string) {
 	ss.with(k, func(s *session) {
 		r := s.reading(id, true)
-		if r.pages != pages || r.read == nil {
-			r.pages, r.read = pages, map[int]bool{}
+		if r.pages != pages || r.review != review || r.read == nil {
+			r.pages, r.review, r.read = pages, review, map[int]bool{}
 		}
 		r.read[n] = true
 	})
+}
+
+// addForm notes the decide form of a Card page that showed a card at the
+// binding given to the session. The oldest form goes when there are
+// maxForms.
+func (ss *sessions) addForm(k tokenKey, id string, f pageForm) {
+	ss.with(k, func(s *session) {
+		r := s.reading(id, true)
+		if len(r.forms) >= maxForms {
+			r.forms = append(r.forms[:0:0], r.forms[len(r.forms)-maxForms+1:]...)
+		}
+		r.forms = append(r.forms, f)
+	})
+}
+
+// form returns the binding the page of a form showed, and whether the
+// reading has that form.
+func (r *cardReading) form(id string) (string, bool) {
+	for _, f := range r.forms {
+		if subtle.ConstantTimeCompare([]byte(f.id), []byte(id)) == 1 {
+			return f.binding, true
+		}
+	}
+	return "", false
+}
+
+// newFormID draws a form's id from r.
+func newFormID(r io.Reader) (string, error) {
+	raw := make([]byte, formBytes)
+	if _, err := io.ReadFull(r, raw); err != nil {
+		return "", err
+	}
+	return b64.EncodeToString(raw), nil
+}
+
+// validFormID reports whether s is of the form of a form's id.
+func validFormID(s string) bool {
+	if len(s) != formLen {
+		return false
+	}
+	b, ok := decodeB64(s)
+	return ok && len(b) == formBytes
 }
 
 // readingOf returns a copy of the session's reading of a card.
@@ -157,6 +248,7 @@ func (ss *sessions) readingOf(k tokenKey, id string) (cardReading, bool) {
 			for n := range r.read {
 				out.read[n] = true
 			}
+			out.forms = append([]pageForm(nil), r.forms...)
 		}
 	})
 	return out, found
@@ -187,7 +279,8 @@ func (ss *sessions) markSent(k tokenKey, id string) bool {
 	ok := false
 	ss.with(k, func(s *session) {
 		if r := s.reading(id, false); r != nil && r.live && !r.sent {
-			r.sent, ok = true, true
+			ss.seq++
+			r.sent, r.sentAt, ok = true, ss.seq, true
 		}
 	})
 	return ok
@@ -306,6 +399,8 @@ func decideFailure(err error) (decideError, bool) {
 		return errDecideDiffers, true
 	case errors.Is(err, ErrDaemonUnavailable):
 		return errDecideUnreached, true
+	case errors.Is(err, ErrTooLarge):
+		return errDecideTooLarge, true
 	case errors.Is(err, ErrOutcomeUnknown):
 		return errDecideUnknown, false
 	}
@@ -333,20 +428,23 @@ func (a *app) failDecide(w http.ResponseWriter, r *http.Request, e decideError) 
 }
 
 // decideChallengeBody is the body of POST /api/decide-challenge: the card,
-// the action, the flagged paths signed off by their index on the card, and
-// the reason of a deny. Nothing else of the decision comes from the browser.
+// the form of the Card page tapped, the action, the flagged paths signed off
+// by their index on the card, and the reason of a deny. Nothing else of the
+// decision comes from the browser.
 type decideChallengeBody struct {
 	Card      string `json:"card"`
+	Form      string `json:"form"`
 	Action    string `json:"action"`
 	SignedOff []int  `json:"signed_off"`
 	Reason    string `json:"reason"`
 }
 
 // decideChallenge answers POST /api/decide-challenge: it checks the
-// session's reading of the card, has the port freeze the decision from the
-// card it showed and ask the daemon for its challenge, keeps the frozen
-// frame with the session, and answers the challenge with the session's one
-// credential as the allow-list.
+// session's reading of the card and that the tap came from a page that
+// showed the binding the session read last, has the port freeze the
+// decision from the card it showed and ask the daemon for its challenge,
+// keeps the frozen frame with the session, and answers the challenge with
+// the session's one credential as the allow-list.
 func (a *app) decideChallenge(w http.ResponseWriter, r *http.Request) {
 	s, ok := a.decideSession(w, r)
 	if !ok {
@@ -359,7 +457,8 @@ func (a *app) decideChallenge(w http.ResponseWriter, r *http.Request) {
 	}
 	approve := in.Action == "approve"
 	if !validCardID(in.Card) || (!approve && in.Action != "deny") || len(in.SignedOff) > maxSignOffs ||
-		(approve && in.Reason != "") || (!approve && len(in.SignedOff) != 0) {
+		(approve && in.Reason != "") || (!approve && len(in.SignedOff) != 0) ||
+		(in.Form != "" && !validFormID(in.Form)) || (in.Form == "" && !a.noPage(r)) {
 		writeDecideError(w, errDecideBad)
 		return
 	}
@@ -373,10 +472,25 @@ func (a *app) decideChallenge(w http.ResponseWriter, r *http.Request) {
 	}
 	now := a.cfg.Now()
 	rd, ok := a.sess.readingOf(s.key, in.Card)
-	switch {
-	case !ok || rd.binding == "":
+	if !ok || rd.binding == "" {
 		writeDecideError(w, errDecideLookFirst)
 		return
+	}
+	// The tap is of one Card page: the binding that page showed must be the
+	// one the session read last, or the page is of a card that was replaced
+	// since (in another tab, say), and the tap is not taken for the new one.
+	if in.Form != "" {
+		shown, known := rd.form(in.Form)
+		switch {
+		case !known:
+			writeDecideError(w, errDecideLookFirst)
+			return
+		case shown != rd.binding:
+			writeDecideError(w, errDecideChanged)
+			return
+		}
+	}
+	switch {
 	case rd.sent:
 		writeDecideError(w, errDecideSent)
 		return
@@ -445,6 +559,15 @@ type decideBody struct {
 	ClientDataJSON    string `json:"client_data_json"`
 	AuthenticatorData string `json:"authenticator_data"`
 	Signature         string `json:"signature"`
+}
+
+// noPage reports whether a request is not a page's: one without
+// Sec-Fetch-Site, which only the test option lets through (see
+// [Config].AllowNoFetchMetadataForTests). Every browser sends the header, and
+// a page's tap names its form; a request that is no page's has no form to
+// name, and its tap is taken for the binding the session read last.
+func (a *app) noPage(r *http.Request) bool {
+	return a.cfg.AllowNoFetchMetadataForTests && r.Header.Get("Sec-Fetch-Site") == ""
 }
 
 // decidePost answers POST /api/decide: it burns the session's decision

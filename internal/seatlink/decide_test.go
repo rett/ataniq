@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -241,13 +242,16 @@ func (r *decideRig) show(t *testing.T) seatapp.Card {
 	return c
 }
 
+// shownWhole says that the Card page showed every part of the card whole.
+var shownWhole = seatapp.Whole{Rows: true, Lists: true, Refs: true, Flagged: true, Differs: true}
+
 // approve is the request of an approve of the shown card with every flagged
-// path signed off, read a second ago.
+// path signed off, read whole a second ago.
 func (r *decideRig) approve() seatapp.DecideChallengeRequest {
 	p := r.desk.reads.pending
 	return seatapp.DecideChallengeRequest{
 		ID: p.ID, BindingSHA256: p.BindingSHA256, Approve: true, SignedOff: []int{0, 1},
-		Credential: r.credential, Reading: seatapp.Reading{Opened: decideNow.Add(-time.Second)}, Now: decideNow,
+		Credential: r.credential, Reading: seatapp.Reading{Opened: decideNow.Add(-time.Second), Whole: shownWhole}, Now: decideNow,
 	}
 }
 
@@ -530,7 +534,7 @@ func truncated(t *testing.T, r *decideRig) {
 func TestSeatLinkOffer(t *testing.T) {
 	r := newDecideRig(t)
 	p := r.desk.reads.pending
-	read := seatapp.Reading{Opened: decideNow}
+	read := seatapp.Reading{Opened: decideNow, Whole: shownWhole}
 	if o := r.link.Offer(p.ID, p.BindingSHA256, read, decideNow); o.Approve || o.Deny {
 		t.Errorf("a card not shown: %+v", o)
 	}
@@ -559,7 +563,7 @@ func TestSeatLinkOffer(t *testing.T) {
 	if o := r.link.Offer(p.ID, p.BindingSHA256, read, decideNow); o.Approve || o.ApproveWhy != card.ReasonPathPages || !o.Deny {
 		t.Errorf("a cut list, no page read: %+v", o)
 	}
-	read.Pages, read.PagesRead = 2, []int{1}
+	read.Pages, read.PagesRead, read.Review = 2, []int{1}, p.Binding.Summary.ReviewDigest
 	if o := r.link.Offer(p.ID, p.BindingSHA256, read, decideNow); o.Approve {
 		t.Errorf("a cut list, one page of two read: %+v", o)
 	}
@@ -573,9 +577,189 @@ func TestSeatLinkOffer(t *testing.T) {
 	if _, err := r.link.DecideChallenge(context.Background(), q); err == nil {
 		t.Error("a challenge for a cut list with no page read")
 	}
-	q.Reading.Pages, q.Reading.PagesRead = 2, []int{0, 1}
+	q.Reading.Pages, q.Reading.PagesRead, q.Reading.Review = 2, []int{0, 1}, strings.Repeat("e", 64)
+	if _, err := r.link.DecideChallenge(context.Background(), q); err == nil {
+		t.Error("a challenge for a cut list whose pages were read for another review")
+	}
+	if o := r.link.Offer(p.ID, p.BindingSHA256, q.Reading, decideNow); o.Approve {
+		t.Errorf("a cut list whose pages were read for another review: %+v", o)
+	}
+	q.Reading.Review = p.Binding.Summary.ReviewDigest
 	if _, err := r.link.DecideChallenge(context.Background(), q); err != nil {
 		t.Errorf("a challenge for a cut list read whole: %v", err)
+	}
+}
+
+// longFlagged makes the rig's record a card whose two flagged paths are
+// longer than the Card page shows and differ only past the cut, so that
+// their labels on the page are the same.
+func longFlagged(t *testing.T, r *decideRig) {
+	t.Helper()
+	p := r.desk.reads.pending
+	long := strings.Repeat("a", 1024)
+	s := p.Binding.Summary
+	s.Paths[0].Path, s.Paths[1].Path = record.Text(long+"/one"), record.Text(long+"/two")
+	s.Flagged[0] = record.Flag{Kind: record.FlagExecConfig, Path: record.Text(long + "/one")}
+	s.Flagged[1] = record.Flag{Kind: record.FlagExecConfig, Path: record.Text(long + "/two")}
+	digest, err := record.BindingDigest(p.Binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.BindingSHA256 = digest
+	b, err := record.EncodePending(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.desk.reads.pending, r.desk.reads.bytes = p, b
+}
+
+// TestSeatLinkCutPartsAreNotRead: a part of the card the Card page did not
+// show whole counts as not read, and Approve is neither offered nor sent for
+// it, with the host's line that says which part. Two flagged paths whose
+// labels on the page are the same (they differ only past the cut) are not
+// signed off by their index: the desk is asked no challenge. Deny is still
+// offered. Each part, cut alone, withholds Approve.
+func TestSeatLinkCutPartsAreNotRead(t *testing.T) {
+	r := newDecideRig(t)
+	longFlagged(t, r)
+	c := r.show(t)
+	if a, b := fmtLead(c.Flagged[0].Path), fmtLead(c.Flagged[1].Path); a != b {
+		t.Fatalf("the labels differ: the test does not show what it means to")
+	}
+	p := r.desk.reads.pending
+	cut := shownWhole
+	cut.Flagged = false
+	read := seatapp.Reading{Opened: decideNow.Add(-time.Second), Whole: cut}
+	if o := r.link.Offer(p.ID, p.BindingSHA256, read, decideNow); o.Approve || o.ApproveWhy != reasonCutFlagged || !o.Deny {
+		t.Errorf("a cut flagged path: %+v", o)
+	}
+	q := r.approve()
+	q.BindingSHA256, q.Reading = p.BindingSHA256, read
+	var na *seatapp.NotAllowedError
+	if _, err := r.link.DecideChallenge(context.Background(), q); !errors.As(err, &na) || na.Reason != reasonCutFlagged {
+		t.Errorf("an approve of cut flagged paths: %v", err)
+	}
+	if n, _ := r.desk.counts(); n != 0 {
+		t.Errorf("the desk was asked %d challenges", n)
+	}
+	q.Approve, q.SignedOff = false, nil
+	if _, err := r.link.DecideChallenge(context.Background(), q); err != nil {
+		t.Errorf("a deny of a card with cut flagged paths: %v", err)
+	}
+
+	// Each part alone, on the test card (which has refs, rows, lists and
+	// flagged paths, and here a "differs from" block).
+	r = newDecideRig(t)
+	r.show(t)
+	p = r.desk.reads.pending
+	c2, _ := r.link.shown.get(p.ID)
+	c2.Differs = &card.Differs{EarlierID: "ap-20261119-0001"}
+	r.link.shown.put(p.ID, c2)
+	for _, tc := range []struct {
+		off  func(*seatapp.Whole)
+		want string
+	}{
+		{func(w *seatapp.Whole) { w.Refs = false }, reasonCutRefs},
+		{func(w *seatapp.Whole) { w.Rows = false }, reasonCutRows},
+		{func(w *seatapp.Whole) { w.Lists = false }, reasonCutLists},
+		{func(w *seatapp.Whole) { w.Flagged = false }, reasonCutFlagged},
+		{func(w *seatapp.Whole) { w.Differs = false }, reasonCutDiffers},
+	} {
+		w := shownWhole
+		tc.off(&w)
+		if o := r.link.Offer(p.ID, p.BindingSHA256, seatapp.Reading{Opened: decideNow.Add(-time.Second), Whole: w}, decideNow); o.Approve || o.ApproveWhy != tc.want {
+			t.Errorf("%s: %+v", tc.want, o)
+		}
+	}
+	if o := r.link.Offer(p.ID, p.BindingSHA256, seatapp.Reading{Opened: decideNow.Add(-time.Second), Whole: shownWhole}, decideNow); !o.Approve {
+		t.Errorf("every part whole: %+v", o)
+	}
+	// The card model's reading has the parts not shown whole as not read,
+	// whatever else holds Approve back.
+	if rd := readingOf(c2, seatapp.Reading{Opened: decideNow}); rd.Paths || rd.Refs || rd.Differs || rd.Lists != [card.NumLists]bool{} {
+		t.Errorf("a reading with nothing whole counts as read: %+v", rd)
+	}
+	if rd := readingOf(c2, seatapp.Reading{Opened: decideNow, Whole: shownWhole}); !rd.Paths || !rd.Refs || !rd.Differs || !rd.Lists[card.NumLists-1] {
+		t.Errorf("a reading with everything whole: %+v", rd)
+	}
+}
+
+// ampFlagged makes the rig's record a card whose four flagged paths are
+// mostly '&', n of them each: each well under the page's cut, the decision
+// frame under its cap, and each '&' five bytes longer once escaped for HTML.
+func ampFlagged(t *testing.T, r *decideRig, n int) {
+	t.Helper()
+	p := r.desk.reads.pending
+	s := p.Binding.Summary
+	s.Flagged = nil
+	for i := 0; i < 4; i++ {
+		path := record.Text("d" + strconv.Itoa(i) + "/" + strings.Repeat("&", n))
+		s.Paths[i].Path = path
+		s.Flagged = append(s.Flagged, record.Flag{Kind: record.FlagExecConfig, Path: path})
+	}
+	digest, err := record.BindingDigest(p.Binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.BindingSHA256 = digest
+	b, err := record.EncodePending(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.desk.reads.pending, r.desk.reads.bytes = p, b
+}
+
+// TestSeatLinkDecisionOnTheWire: the transport marshals the params again,
+// escaping & as \u0026, so the link checks the bytes the gate will read. A
+// frame of flagged paths full of & that the wire's encoder takes (3931
+// bytes against the cap of 9216) but that is over the cap once escaped is
+// ErrTooLarge, and nothing reaches the gate; on the base it reached the gate
+// and was refused bad-params, a refusal the gate counts. One that fits once
+// escaped is decided, with the paths as they are. The bytes the link hands
+// the transport are a fixed point of its marshal.
+func TestSeatLinkDecisionOnTheWire(t *testing.T) {
+	r := newDecideRig(t)
+	ampFlagged(t, r, 900)
+	r.show(t)
+	q := r.approve()
+	q.BindingSHA256, q.SignedOff = r.desk.reads.pending.BindingSHA256, []int{0, 1, 2, 3}
+	c, _ := r.link.shown.get(q.ID)
+	f, err := frameOf(c, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params, err := ownerwire.EncodeSeatChallengeParams(ownerwire.SeatChallengeParams{Frame: f, Credential: r.credential})
+	if err != nil || len(params) > ownerwire.MaxSeatChallengeParamsBytes {
+		t.Fatalf("the params are %d bytes (%v): the test does not show what it means to", len(params), err)
+	}
+	before := r.gate.calls.Load()
+	if _, err := r.link.DecideChallenge(context.Background(), q); !errors.Is(err, seatapp.ErrTooLarge) {
+		t.Errorf("params over the cap on the wire: %v, want %v", err, seatapp.ErrTooLarge)
+	}
+	if n := r.gate.calls.Load() - before; n != 0 {
+		t.Errorf("%d calls reached the gate", n)
+	}
+
+	r = newDecideRig(t)
+	ampFlagged(t, r, 200)
+	r.show(t)
+	q = r.approve()
+	q.BindingSHA256, q.SignedOff = r.desk.reads.pending.BindingSHA256, []int{0, 1, 2, 3}
+	ch, err := r.link.DecideChallenge(context.Background(), q)
+	if err != nil {
+		t.Fatalf("params that fit on the wire: %v", err)
+	}
+	if _, err := r.link.Decide(context.Background(), r.sign(t, ch)); err != nil {
+		t.Fatalf("decide: %v", err)
+	}
+	if got := r.desk.decided[0].SignedOff; len(got) != 4 || string(got[0].Path) != "d0/"+strings.Repeat("&", 200) {
+		t.Errorf("the desk got the sign-offs %d", len(got))
+	}
+
+	wire, err := onWire([]byte(`{"a":"<&>\u2028"}`), func([]byte) error { return nil })
+	again, _ := json.Marshal(wire)
+	if err != nil || !bytes.Equal(again, wire) || string(wire) != `{"a":"\u003c\u0026\u003e\u2028"}` {
+		t.Errorf("onWire gives %s (%v), marshalled again %s", wire, err, again)
 	}
 }
 

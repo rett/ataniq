@@ -33,6 +33,19 @@ const (
 	// the app takes: what the daemon's parser reads, so that the app never
 	// checks a registration the daemon cannot take.
 	maxRegistrationData = 4096
+	// pairAllAttempts and pairAllWindow bound the pairings of all sources
+	// together that the app hands the daemon. Anyone who reaches /pair/ can
+	// make a registration that passes the app's checks, and the gate counts
+	// each pairing the daemon refuses against the seat's refusal bound (16 in
+	// 10 minutes, gatehost.RefusalBound), past which it answers every request
+	// of the seat's one connection too-many-refusals: the owner's logins,
+	// reads and decisions too. 6 in 11 minutes keeps strangers far below the
+	// bound; the window is a minute longer than the gate's, so that pairings
+	// the seat sent a little more than 10 minutes apart are not counted
+	// closer together at the gate. The daemon's own limit on a pairing code
+	// (5 wrong codes burn it) stays.
+	pairAllAttempts = 6
+	pairAllWindow   = 11 * time.Minute
 )
 
 // apiError is a failure of the API: a status and a fixed code. A response
@@ -87,6 +100,8 @@ type pairing struct {
 
 	pairLimit      *limiter
 	challengeLimit *limiter
+	// pairAll bounds the pairings of all sources that reach the daemon.
+	pairAll *limiter
 }
 
 func newPairing(cfg Config) *pairing {
@@ -96,6 +111,7 @@ func newPairing(cfg Config) *pairing {
 		challenges:     map[string]time.Time{},
 		pairLimit:      newLimiter(pairAttempts, pairWindow),
 		challengeLimit: newLimiter(challengeRequests, pairWindow),
+		pairAll:        newLimiter(pairAllAttempts, pairAllWindow),
 	}
 }
 
@@ -222,6 +238,12 @@ func (p *pairing) pair(w http.ResponseWriter, r *http.Request) {
 		writeError(w, *e)
 		return
 	}
+	// Only a pairing the daemon is asked counts against all sources: a body
+	// the app refuses itself costs the gate nothing.
+	if !p.pairAll.allow("all", p.cfg.Now()) {
+		writeError(w, errRateLimited)
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), daemonTimeout)
 	defer cancel()
 	res, err := p.cfg.Daemon.Pair(ctx, req)
@@ -230,6 +252,9 @@ func (p *pairing) pair(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errCodeRefused)
 	case errors.Is(err, ErrDaemonUnavailable):
 		writeError(w, errDaemonUnavailable)
+	case errors.Is(err, ErrBusy):
+		// The port's room for the gate's calls is spent: nothing was sent.
+		writeError(w, errRateLimited)
 	case err != nil:
 		writeError(w, errDaemon)
 	default:

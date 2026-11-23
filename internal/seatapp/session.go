@@ -96,6 +96,9 @@ type sessions struct {
 
 	mu sync.Mutex
 	m  map[tokenKey]*session
+	// seq counts the decisions marked sent, so that a read can tell one
+	// marked after it began (see decide.go).
+	seq uint64
 }
 
 func newSessions(now func() time.Time) *sessions {
@@ -218,9 +221,17 @@ const loginPath = "/login/"
 
 // authed wraps the handler of a page that needs a session. A request without
 // one is sent to the login page, and nothing of the page, and no call to the
-// daemon, is made for it.
+// daemon, is made for it. A HEAD is refused 405 before anything else: a page
+// a session reads is a GET whose body the browser shows, and a HEAD, which
+// shows nothing, must not count as a read of a card or of a page of its
+// paths, nor settle a lost answer.
 func (a *app) authed(h func(http.ResponseWriter, *http.Request, Session)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeText(w, http.StatusMethodNotAllowed, "method not allowed\n")
+			return
+		}
 		s, ok := a.session(r)
 		if !ok {
 			w.Header().Set("Location", loginPath)

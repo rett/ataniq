@@ -2,6 +2,7 @@ package seatapp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -94,7 +95,7 @@ func TestSeatDecideFormOnTheCardPage(t *testing.T) {
 	checkHeadersGet(t, "the Card page", w, "(self)")
 	body := w.Body.String()
 	for _, want := range []string{
-		`<section id="decide" aria-labelledby="decide-title" data-rp-id="seat.example" data-card="` + testCardID + `">`,
+		`<section id="decide" aria-labelledby="decide-title" data-rp-id="seat.example" data-card="` + testCardID + `" data-form="`,
 		`<input type="checkbox" id="signoff-0" class="signoff" value="0">`,
 		`<input type="checkbox" id="signoff-1" class="signoff" value="1">`,
 		`<button id="approve" type="button" hidden disabled>Approve</button>`,
@@ -116,6 +117,9 @@ func TestSeatDecideFormOnTheCardPage(t *testing.T) {
 	}
 	if strings.Count(body, "<form") != 0 || strings.Count(body, `id="decide"`) != 1 {
 		t.Error("not one decide section, without a form element")
+	}
+	if f := formOf(body); !validFormID(f) || f == formOf(r.getWith("/cards/"+testCardID, s).Body.String()) {
+		t.Errorf("the page's form id %q is not one of its own", f)
 	}
 
 	// Approve not offered: the host's line says why, and deny stays.
@@ -193,7 +197,8 @@ func TestSeatDecideChallengeTakesTheCardAsShown(t *testing.T) {
 	}
 	q := r.daemon.decideChs[0]
 	want := DecideChallengeRequest{ID: testCardID, BindingSHA256: strings.Repeat("ab", 32), Approve: true, SignedOff: []int{0},
-		Credential: "0123456789abcdef", Reading: Reading{Opened: opened, PagesRead: []int{0, 1, 2}, Pages: 3}, Now: r.clock.Now()}
+		Credential: "0123456789abcdef", Reading: Reading{Opened: opened, PagesRead: []int{0, 1, 2}, Pages: 3, Review: strings.Repeat("ef", 32),
+			Whole: Whole{Rows: true, Lists: true, Refs: true, Flagged: true, Differs: true}}, Now: r.clock.Now()}
 	if !reflect.DeepEqual(q, want) {
 		t.Errorf("the port got %+v\nwant %+v", q, want)
 	}
@@ -209,6 +214,277 @@ func TestSeatDecideChallengeTakesTheCardAsShown(t *testing.T) {
 	// Another session of the same credential has not read the card.
 	other := r.login(t)
 	wantFailure(t, "another session", r.postWith("/api/decide-challenge", approveBody, other), 409, "look_again", sayLookFirst)
+}
+
+// formOf returns the id of the decide form of a Card page's body.
+func formOf(body string) string {
+	_, after, ok := strings.Cut(body, ` data-form="`)
+	if !ok {
+		return ""
+	}
+	form, _, _ := strings.Cut(after, `"`)
+	return form
+}
+
+// tapOf is the body of a tap of the page whose form is given: an approve
+// with the one flagged path signed off.
+func tapOf(form string) string {
+	b, _ := json.Marshal(map[string]any{"card": testCardID, "form": form, "action": "approve", "signed_off": []int{0}, "reason": ""})
+	return string(b)
+}
+
+// postFromPage sends a POST as a page's script does: with the Sec-Fetch-Site
+// header that every browser sends.
+func (r *rig) postFromPage(path, body string, s *http.Cookie) *httptest.ResponseRecorder {
+	req := newRequest("POST", path, strings.NewReader(body))
+	req.Header.Set("Origin", testOrigin)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.AddCookie(s)
+	return r.recorder(req)
+}
+
+// TestSeatDecideTapOfAStalePage: two tabs of one session. The first shows
+// the card; the card is replaced by one of the same id and another binding,
+// and the second tab shows the replacement. A tap of the first tab is
+// refused before the port is asked (so no challenge is drawn and the
+// passkey is not asked), and the tap of the second is taken. A page's tap
+// must name its form: one with none, or with a form the session was never
+// served, is refused too. Two pages of the same binding are both good.
+func TestSeatDecideTapOfAStalePage(t *testing.T) {
+	r := newRig(t)
+	s := r.login(t)
+	first := formOf(r.openCard(t, s))
+	r.daemon.card.BindingSHA256 = strings.Repeat("cd", 32)
+	second := formOf(r.openCard(t, s))
+	if first == "" || second == "" || first == second {
+		t.Fatalf("the forms %q and %q", first, second)
+	}
+	wantFailure(t, "the first tab's tap", r.postFromPage("/api/decide-challenge", tapOf(first), s), 409, "card_changed", sayChanged)
+	wantFailure(t, "a tap of no form", r.postFromPage("/api/decide-challenge", tapOf(""), s), 400, "bad_request", sayFailed)
+	other := b64.EncodeToString(bytes.Repeat([]byte{0x42}, formBytes))
+	wantFailure(t, "a form never served", r.postFromPage("/api/decide-challenge", tapOf(other), s), 409, "look_again", sayLookFirst)
+	wantFailure(t, "a form of another shape", r.postFromPage("/api/decide-challenge", tapOf("x"), s), 400, "bad_request", sayFailed)
+	if n, _ := r.daemon.decideCounts(); n != 0 {
+		t.Fatalf("the port was asked %d challenges", n)
+	}
+	// Another session's form is not this session's.
+	s2 := r.login(t)
+	elsewhere := formOf(r.openCard(t, s2))
+	wantFailure(t, "another session's form", r.postFromPage("/api/decide-challenge", tapOf(elsewhere), s), 409, "look_again", sayLookFirst)
+
+	w := r.postFromPage("/api/decide-challenge", tapOf(second), s)
+	if w.Code != 200 || answer(t, w)["binding"] != "cdcdcdcdcdcd" {
+		t.Fatalf("the second tab's tap: %d %s", w.Code, w.Body)
+	}
+	if q := r.daemon.decideChs[0]; q.BindingSHA256 != strings.Repeat("cd", 32) {
+		t.Errorf("the port was asked for the binding %s", q.BindingSHA256)
+	}
+	// A third tab of the same binding: the second tab's form still holds.
+	third := formOf(r.openCard(t, s))
+	for _, f := range []string{second, third} {
+		if w := r.postFromPage("/api/decide-challenge", tapOf(f), s); w.Code != 200 {
+			t.Errorf("a tab of the binding read last: %d %s", w.Code, w.Body)
+		}
+	}
+}
+
+// TestSeatCardPartsShownWhole: the session's reading says which parts of
+// the card the Card page showed whole. A path or a ref longer than the page
+// shows (maxPath characters of its escaped text) makes its part not whole,
+// and the port's offer is asked with that reading; one of exactly maxPath
+// characters is whole. A page of the whole path list that cuts a path does
+// not count as read, and says so.
+func TestSeatCardPartsShownWhole(t *testing.T) {
+	long := NewLead(strings.Repeat("x", maxPath+1))
+	edge := NewLead(strings.Repeat("x", maxPath))
+	all := Whole{Rows: true, Lists: true, Refs: true, Flagged: true, Differs: true}
+	for name, tc := range map[string]struct {
+		change func(*Card)
+		want   Whole
+	}{
+		"nothing long":        {func(*Card) {}, all},
+		"a path at the cap":   {func(c *Card) { c.Diff.Rows[0].Path = edge; c.Flagged[0].Path = edge }, all},
+		"a row":               {func(c *Card) { c.Diff.Rows[1].Path = long }, Whole{Lists: true, Refs: true, Flagged: true, Differs: true}},
+		"a list's path":       {func(c *Card) { c.Lists[0].Paths[0] = long }, Whole{Rows: true, Refs: true, Flagged: true, Differs: true}},
+		"a ref":               {func(c *Card) { c.Refs[0].Ref = long }, Whole{Rows: true, Lists: true, Flagged: true, Differs: true}},
+		"a merged-into ref":   {func(c *Card) { c.Refs[0].MergedInto = &MergedInto{Ref: long, Tip: strings.Repeat("3", 40)} }, Whole{Rows: true, Lists: true, Flagged: true, Differs: true}},
+		"a flagged path":      {func(c *Card) { c.Flagged[0].Path = long }, Whole{Rows: true, Lists: true, Refs: true, Differs: true}},
+		"a flagged path rule": {func(c *Card) { c.Flagged[0].Pattern = long }, Whole{Rows: true, Lists: true, Refs: true, Differs: true}},
+		"a differs path":      {func(c *Card) { c.Differs.PathsAdded = []Lead{long} }, Whole{Rows: true, Lists: true, Refs: true, Flagged: true}},
+		"a differs ref":       {func(c *Card) { c.Differs.RefsRemoved = []Lead{long} }, Whole{Rows: true, Lists: true, Refs: true, Flagged: true}},
+	} {
+		r := newRig(t)
+		c := sampleCard()
+		tc.change(&c)
+		r.daemon.card = c
+		s := r.login(t)
+		r.openCard(t, s)
+		if got := r.daemon.offers[len(r.daemon.offers)-1].Whole; got != tc.want {
+			t.Errorf("%s: the offer was asked with %+v, want %+v", name, got, tc.want)
+		}
+	}
+
+	// The branch a prune's deleted ref was merged into is on the page.
+	r := newRig(t)
+	r.daemon.card.Refs[0].Deletes = true
+	r.daemon.card.Refs[0].MergedInto = &MergedInto{Ref: NewLead("refs/heads/main"), Tip: strings.Repeat("4", 40)}
+	s := r.login(t)
+	if body := r.openCard(t, s); !strings.Contains(body, `<span class="meta">merged into</span> <span class="lead mono">refs/heads/main</span> <span class="meta">(444444444444)</span>`) {
+		t.Error("the Card page does not say where the deleted branch was merged")
+	}
+
+	// A page of the whole path list with a path cut is not read.
+	r.daemon.page = PathsPage{Pages: 2, Review: strings.Repeat("ef", 32), Rows: []PathRow{{Path: long, Status: "M"}}}
+	w := r.getWith("/cards/"+testCardID+"/paths/0", s)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "A path on this page is too long to show whole on the phone, so this page does not count as read.") {
+		t.Errorf("a page with a cut path: %d", w.Code)
+	}
+	r.daemon.page = PathsPage{Pages: 2, Review: strings.Repeat("ef", 32), Rows: []PathRow{{Path: edge, Status: "M"}}}
+	if w := r.getWith("/cards/"+testCardID+"/paths/1", s); strings.Contains(w.Body.String(), "too long to show whole") {
+		t.Error("a page with no path cut says one is")
+	}
+	r.challengeOf(t, s, approveBody)
+	if rd := r.daemon.decideChs[0].Reading; len(rd.PagesRead) != 1 || rd.PagesRead[0] != 1 {
+		t.Errorf("the pages read are %v, want [1]", rd.PagesRead)
+	}
+}
+
+// showHooked is the fake port with a hook run once inside Show, after the
+// card was read and before it is returned: what happens while a read is on
+// its way back.
+type showHooked struct {
+	*fakeDaemon
+	hook func()
+}
+
+func (d *showHooked) Show(ctx context.Context, id string) (Card, error) {
+	c, err := d.fakeDaemon.Show(ctx, id)
+	d.mu.Lock()
+	h := d.hook
+	d.hook = nil
+	d.mu.Unlock()
+	if h != nil {
+		h()
+	}
+	return c, err
+}
+
+// TestSeatHeadIsNoRead: a HEAD of a card page is refused 405 and asks the
+// port nothing, so it counts as no read of a page of the path list and does
+// not settle a lost answer; a GET does both.
+func TestSeatHeadIsNoRead(t *testing.T) {
+	r := newRig(t)
+	s := r.login(t)
+	r.openCard(t, s)
+	head := func(path string) *httptest.ResponseRecorder {
+		req := newRequest("HEAD", path, nil)
+		req.AddCookie(s)
+		return r.recorder(req)
+	}
+	before := r.daemon.readCount()
+	for _, path := range []string{"/cards/", "/cards/" + testCardID, "/cards/" + testCardID + "/paths/0", "/cards/" + testCardID + "/paths/1"} {
+		if w := head(path); w.Code != 405 || w.Header().Get("Allow") != "GET" {
+			t.Errorf("HEAD %s: %d, Allow %q", path, w.Code, w.Header().Get("Allow"))
+		}
+	}
+	if n := r.daemon.readCount(); n != before {
+		t.Errorf("the port was asked %d reads for HEADs", n-before)
+	}
+	r.challengeOf(t, s, approveBody)
+	if rd := r.daemon.decideChs[0].Reading; len(rd.PagesRead) != 0 {
+		t.Errorf("HEADs counted as reads of the pages %v", rd.PagesRead)
+	}
+	// A lost answer stands after a HEAD of the Card page.
+	r.daemon.decideErr = ErrOutcomeUnknown
+	id := r.challengeOf(t, s, approveBody)
+	r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s)
+	head("/cards/" + testCardID)
+	wantFailure(t, "a tap after a HEAD", r.postWith("/api/decide-challenge", approveBody, s), 409, "sent_unknown", saySentUnknown)
+	r.daemon.decideErr = nil
+	r.openCard(t, s)
+	if w := r.postWith("/api/decide-challenge", approveBody, s); w.Code != 200 {
+		t.Errorf("a tap after a GET: %d %s", w.Code, w.Body)
+	}
+}
+
+// TestSeatDecideStaleReadKeepsTheMark: a GET of the Card page whose read
+// began before a decision of the card was sent, and whose answer was lost,
+// shows the card as it was read, so it does not settle the lost answer: the
+// page holds no form and says to look again, and a tap is still refused. A
+// GET that begins after the send settles it.
+func TestSeatDecideStaleReadKeepsTheMark(t *testing.T) {
+	var hd *showHooked
+	r := newRig(t, func(c *Config) {
+		hd = &showHooked{fakeDaemon: c.Daemon.(*fakeDaemon)}
+		c.Daemon = hd
+	})
+	s := r.login(t)
+	r.openCard(t, s)
+	id := r.challengeOf(t, s, approveBody)
+	r.daemon.decideErr = ErrOutcomeUnknown
+	hd.hook = func() {
+		// The decision is sent and its answer lost while the GET's read is
+		// on its way back.
+		if w := r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s); w.Code != 502 {
+			t.Errorf("the decision: %d %s", w.Code, w.Body)
+		}
+	}
+	w := r.getWith("/cards/"+testCardID, s)
+	body := w.Body.String()
+	if w.Code != 200 || strings.Contains(body, `id="decide"`) || !strings.Contains(body, "A decision of this card was sent and its outcome is not known. Look at it again.") {
+		t.Errorf("the page of a read that began before the send: %d", w.Code)
+	}
+	r.clock.Advance(time.Second)
+	wantFailure(t, "a tap after the stale read", r.postWith("/api/decide-challenge", approveBody, s), 409, "sent_unknown", saySentUnknown)
+	r.daemon.decideErr = nil
+	r.openCard(t, s)
+	if w := r.postWith("/api/decide-challenge", approveBody, s); w.Code != 200 {
+		t.Errorf("a tap after a read that began after the send: %d %s", w.Code, w.Body)
+	}
+}
+
+// TestSeatPathPagesKeepTheirReview: the pages of a path list count with the
+// review each was read for; a page of another review starts the count
+// again, so pages read before the card was replaced do not count for the
+// replacement.
+func TestSeatPathPagesKeepTheirReview(t *testing.T) {
+	r := newRig(t)
+	s := r.login(t)
+	for _, n := range []string{"0", "1"} {
+		r.getWith("/cards/"+testCardID+"/paths/"+n, s)
+	}
+	r.daemon.page.Review = strings.Repeat("aa", 32)
+	r.getWith("/cards/"+testCardID+"/paths/2", s)
+	r.openCard(t, s)
+	r.challengeOf(t, s, approveBody)
+	if rd := r.daemon.decideChs[0].Reading; rd.Review != strings.Repeat("aa", 32) || len(rd.PagesRead) != 1 || rd.PagesRead[0] != 2 {
+		t.Errorf("the reading is of the review %s, pages %v", rd.Review, rd.PagesRead)
+	}
+	// A page without a review is no page.
+	r.daemon.page.Review = ""
+	if w := r.getWith("/cards/"+testCardID+"/paths/0", s); w.Code != 502 {
+		t.Errorf("a page without its review: %d", w.Code)
+	}
+}
+
+// TestSeatDecideTooLargeIsCertain: a decision whose words the port finds
+// too large for the gate is not sent: the phone says so, and the card is
+// not left marked sent.
+func TestSeatDecideTooLargeIsCertain(t *testing.T) {
+	r := newRig(t)
+	s := r.login(t)
+	r.openCard(t, s)
+	r.daemon.decideChErr = ErrTooLarge
+	wantFailure(t, "a challenge too large", r.postWith("/api/decide-challenge", approveBody, s), 413, "too_large", sayTooLarge)
+	r.daemon.decideChErr = nil
+	id := r.challengeOf(t, s, approveBody)
+	r.daemon.decideErr = ErrTooLarge
+	wantFailure(t, "a decision too large", r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s), 413, "too_large", sayTooLarge)
+	r.daemon.decideErr = nil
+	if w := r.postWith("/api/decide-challenge", approveBody, s); w.Code != 200 {
+		t.Errorf("a tap after a decision too large: %d %s", w.Code, w.Body)
+	}
 }
 
 // TestSeatDecideBodies: a body that is not a decision of the form the page
@@ -250,8 +526,8 @@ func TestSeatDecideBodies(t *testing.T) {
 
 // TestSeatDecideBodySizes: both bodies of a decision fit the app's cap on a
 // request, MaxBody (8192 bytes): the largest decide-challenge the page sends
-// (300 sign-off indexes, or a deny's reason of 500 bytes that are all
-// escaped) and the largest decide (an assertion at the wire's bounds:
+// (its form's id and 300 sign-off indexes, or a deny's reason of 500 bytes
+// that are all escaped) and the largest decide (an assertion at the wire's bounds:
 // credential id 1023 bytes, authenticator data 1024, client data 2048,
 // signature 72, all base64url). A body of exactly MaxBody bytes is read; one
 // byte more is refused 413 and the port is not asked.
@@ -260,8 +536,9 @@ func TestSeatDecideBodySizes(t *testing.T) {
 	for i := range idx {
 		idx[i] = i
 	}
-	big, _ := json.Marshal(map[string]any{"card": "ap-" + strings.Repeat("a", 48), "action": "approve", "signed_off": idx, "reason": ""})
-	longDeny, _ := json.Marshal(map[string]any{"card": "ap-" + strings.Repeat("a", 48), "action": "deny", "signed_off": []int{}, "reason": strings.Repeat(`"`, 500)})
+	form := strings.Repeat("A", formLen)
+	big, _ := json.Marshal(map[string]any{"card": "ap-" + strings.Repeat("a", 48), "form": form, "action": "approve", "signed_off": idx, "reason": ""})
+	longDeny, _ := json.Marshal(map[string]any{"card": "ap-" + strings.Repeat("a", 48), "form": form, "action": "deny", "signed_off": []int{}, "reason": strings.Repeat(`"`, 500)})
 	assertion, _ := json.Marshal(map[string]string{
 		"challenge_id":       strings.Repeat("a", 16),
 		"credential_id":      b64.EncodeToString(make([]byte, maxCredentialID)),

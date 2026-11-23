@@ -106,7 +106,10 @@
 // A failure is one of a small fixed set of codes, each with its status, and a
 // response never holds anything the request sent. Pairing tries are limited
 // to 5 per source address per 15 minutes, in memory; the source is the
-// address in [Config].ClientAddrHeader when that is set, else the peer.
+// address in [Config].ClientAddrHeader when that is set, else the peer. The
+// pairings handed to the daemon are limited to 6 in 11 minutes from all
+// sources together: the gate counts each one the daemon refuses against the
+// seat's refusal bound, past which it refuses every request of the seat.
 //
 // # Login
 //
@@ -141,8 +144,11 @@
 // a restart of the seat ends every session. A cookie whose value is not of
 // the form the app makes is not looked up. A session ends 30 minutes after
 // its last request ([SessionIdle]) and 12 hours after the login whatever its
-// use ([SessionMax]), and at POST /api/logout. At most 16 are kept; a new one
-// drops the one used least recently.
+// use ([SessionMax]), and at POST /api/logout. The logout script goes to
+// the login page only when the seat answered the logout; with no answer, or
+// another, the session may still be live, and the page says "Logout not
+// confirmed" and leaves the button to tap again. At most 16 are kept; a new
+// one drops the one used least recently.
 //
 // Both cookies are __Host- cookies, Secure, HttpOnly and SameSite=Strict,
 // with the path / and no domain: only this host can set them, they travel
@@ -153,19 +159,22 @@
 //
 // # The gate's rate
 //
-// The gate takes 60 requests a minute on its connection, and the seat has one
-// connection, which every browser's requests share. So the seat spends that
-// rate on the owner. Every login asks the gate twice (the challenge and the
-// login), and the login challenges are limited to 10 per source in 15
-// minutes and to 8 a minute from all sources together, so logins, which
-// anyone who reaches the login page can start, take at most 16 of the 60 a
-// minute. A source is the address in [Config].ClientAddrHeader, as for the
-// pairing. Only a session can read cards, and the reads of one credential's
-// sessions are limited to 20 a minute (a page asks the gate once, and the
-// first page of a card's path list may ask twice), so that logins and one
-// phone's reads stay within the 60, with room left for decisions. When the
-// gate answers that its rate is spent, the phone says the desk is busy and to
-// try again in a minute; nothing is retried by itself.
+// The gate takes 60 requests a minute on its connection, pings included,
+// and the seat has one connection, which every browser's requests share. The
+// login challenges are limited to 10 per source in 15 minutes and to 8 a
+// minute from all sources together; a source is the address in
+// [Config].ClientAddrHeader, as for the pairing. Only a session can read
+// cards, and the reads of one credential's sessions are limited to 20 a
+// minute; decision challenges to 10 a minute per credential. These limits do
+// not bound the gate's calls by themselves (a login challenge may be answered
+// minutes later, and the first page of a card's path list may ask the gate
+// twice), so the port counts every call it sends and keeps each kind to its
+// own room at the gate (package seatlink): anyone's pairings and logins,
+// reads, and decisions, which the others cannot take, and a decision's
+// challenge only with room for the decision too. A call without room is
+// [ErrBusy], and nothing is sent. When the port or the gate says the rate is
+// spent, the phone says the desk is busy and to try again in a minute;
+// nothing is retried by itself.
 //
 // # The cards
 //
@@ -198,12 +207,20 @@
 // ticked, which sends no sign-off. The phone reads a card on one page, so
 // the session's reading of it (kept server-side, see [Reading]) counts the
 // page's rows, lists, refs and "differs from" block once the page was
-// served, and a cut path list by the pages of it the session was served.
+// served, each only when the page showed every path and ref of it whole
+// ([Whole]), and a cut path list by the pages of it the session was served
+// that cut no path, each with the review digest it was read for. The port
+// withholds Approve for a part not shown whole. A HEAD of a card page is
+// refused 405: only a GET answered with its page is a read.
 //
-// A tap asks POST /api/decide-challenge with the card, the action, the
-// indexes of the boxes ticked and the reason; the browser never sends a
-// path or a binding. The app takes the binding the Card page showed this
-// session from its own reading and hands the port the rest; the port freezes
+// A tap asks POST /api/decide-challenge with the card, the id of the page's
+// form, the action, the indexes of the boxes ticked and the reason; the
+// browser never sends a path or a binding. Each Card page with the form has
+// a form id of its own, which the app keeps with the binding that page
+// showed; the app takes the binding the session read last from its own
+// reading, and takes the tap only when its form's page showed that binding,
+// so a tab left open on a card that was replaced since is told to look
+// again before any challenge is asked. It hands the port the rest; the port freezes
 // the decision from the card it showed, asks the daemon for its challenge
 // and recomputes it before the app sees it (package seatlink). The app keeps
 // the frozen frame and the challenge's id with the session, one decision at
@@ -221,16 +238,17 @@
 // Once a decision is sent, only a refusal says that nothing was decided.
 // Any other answer, and no answer, is "Decision sent. Outcome unknown.":
 // the card is marked sent before the port is asked, and only a new read of
-// the card (its page; the script offers only "Look again") clears the mark,
+// the card (its page, from a read of the port that began after the mark;
+// the script offers only "Look again") clears the mark,
 // so a lost answer is never followed by a second decision unseen and
 // nothing is queued. A held approve shows the host's line and the held
 // words. Every failure is a fixed code with the app's fixed words ("say");
 // a passkey that is no longer paired ends the session. Decision challenges
 // are limited to 10 a minute per credential. Both bodies fit [MaxBody]
-// (8192 bytes): the largest the page sends is 1198 bytes for a challenge
-// (300 sign-off indexes and a card id of 51 characters; a deny's reason of
-// 500 bytes, every one escaped, is 1106) and 5672 bytes for an assertion at
-// the wire's bounds.
+// (8192 bytes): the largest the page sends is 1230 bytes for a challenge
+// (the form's id, 300 sign-off indexes and a card id of 51 characters; a
+// deny's reason of 500 bytes, every one escaped, is 1138) and 5672 bytes for
+// an assertion at the wire's bounds.
 //
 // # Text nobody on the owner's side wrote
 //
@@ -242,7 +260,7 @@
 // a page shows no such text any other way: a test reads every template and
 // fails for an action that writes a value by any other function, but for the
 // few the app fills itself (a page's title, a problem's fixed words, the
-// relying party and the app's own addresses).
+// relying party, the app's own addresses and the id of a page's form).
 //
 // # The look
 //
