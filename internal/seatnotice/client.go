@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"path/filepath"
 	"time"
 )
@@ -82,10 +83,16 @@ func (c *Client) call(ctx context.Context, req request) (response, error) {
 }
 
 // callError says what ended a call, in a fixed text: the context's error
-// when it ended, a violation as it is, and otherwise a lost connection.
+// when it ended (or the deadline it set on the connection), a violation as
+// it is, and otherwise a lost connection.
 func callError(ctx context.Context, err error) error {
 	if e := ctx.Err(); e != nil {
 		return e
+	}
+	// The connection's deadline is the context's, and the read can see it
+	// pass a moment before the context does.
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return context.DeadlineExceeded
 	}
 	if errors.Is(err, ErrProtocol) {
 		return err
