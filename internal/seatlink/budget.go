@@ -35,28 +35,32 @@ const (
 
 // The room of each kind of call in BudgetWindow. The six add up to GateRate:
 //
-//	pings 6 + decisions 12 + anyone's 12 + reads 14 + waits 6 + genesis 10 = 60
+//	pings 6 + decisions 10 + anyone's 12 + reads 14 + waits 6 + genesis 12 = 60
 //
-// The room of seat.genesis (10) was made when the interview's pages came:
-// before it the rooms were pings 6, decisions 16, anyone's 12, reads 20 and
-// waits 6. A room of 10 lets the owner answer a round about every 8 seconds
-// without meeting "busy" (each answer is one call; the page it redirects to
-// is answered from the link's memory, see genesis.go), and holds the list of
-// open projects the card list shows, which the link asks at most once in 20
-// seconds. The 10 were taken from reads (20 to 14: three card lists that
-// reload every 20 seconds take 12 of the 14) and decisions (16 to 12: 6
-// decisions, each a passkey tap, in 80 seconds). Anyone's room stays 12:
-// strangers can hold it with login challenges they never answer, and a
-// smaller one would let fewer of them keep the owner from logging in.
+// The room of seat.genesis was made when the interview's pages came: before
+// it the rooms were pings 6, decisions 16, anyone's 12, reads 20 and waits 6.
+// It was first 10 (decisions 12, reads 14), and an interview walked on a
+// phone ran out of it at the fifth round: the owner answers a round every 10
+// to 15 seconds, so 80 seconds hold 6 to 8 taps, each an answer and the page
+// it redirects to (one call together, see genesis.go), plus the reads the
+// pages make now and then (the list of open projects, a summary, a thread
+// the link does not hold). The interview has 12 because it is one call per
+// tap plus an occasional read, with a few to spare for an answer that is
+// refused and asked again. The 2 were taken from decisions (12 to 10: 5
+// decisions, each a challenge and a decision call, in 80 seconds), where
+// they were the least used. Reads stay 14: three card lists that reload every
+// 20 seconds take 12 of them. Anyone's room stays 12: strangers can hold it
+// with login challenges they never answer, and a smaller one would let fewer
+// of them keep the owner from logging in.
 const (
 	// pingRoom is the pings: one every PingInterval is 6 at most in
 	// BudgetWindow, and 5 in a minute of the gate's.
 	pingRoom = 6
-	// decideRoom is seat.challenge and seat.decide: 6 decisions. A challenge
+	// decideRoom is seat.challenge and seat.decide: 5 decisions. A challenge
 	// is drawn only with room for its seat.decide as well, kept for that
 	// challenge alone until the decision is sent, the app drops the
 	// challenge, or the challenge's life ends.
-	decideRoom = 12
+	decideRoom = 10
 	// publicRoom is seat.pair, seat.login-challenge and seat.login, which the
 	// seat relays for anyone who reaches its pages: 6 logins. A login
 	// challenge is drawn only with room for its seat.login as well, kept
@@ -80,7 +84,7 @@ const (
 	// genesisRoom is seat.genesis, every verb of the interview: the pages'
 	// starts, lists, rounds, answers, changes, summaries, finishes and
 	// discards, of every session together.
-	genesisRoom = 10
+	genesisRoom = 12
 )
 
 // The rooms and the pings are the gate's rate: either difference below is
