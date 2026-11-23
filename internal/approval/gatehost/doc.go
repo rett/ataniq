@@ -42,6 +42,7 @@
 //	seat.login            login       ownerwire.SeatLoginParams       ownerwire.SeatLoginResult
 //	seat.challenge        decide      ownerwire.SeatChallengeParams   ownerwire.SeatChallengeResult
 //	seat.decide           decide      ownerwire.SeatDecideParams      ownerwire.DecideResult
+//	seat.wait             watch       ownerwire.SeatWaitParams        ownerwire.SeatWaitResult
 //
 // An operation whose capability the handler does not serve is refused
 // unknown-op before its params are read and without the service, and so is
@@ -52,6 +53,22 @@
 // handed to the service ([SeatPort]) with the gate's own values
 // ([ownerchannel.Gate]: its key fingerprint, the seat origin and its relying
 // party id), never with anything of the params.
+//
+// # The wait
+//
+// seat.wait asks the service ([WaitPort]) whether the set of pending cards
+// differs from the version the seat last saw, and the call is held until it
+// does or the service's hold ends. The handler gives the service the
+// request's own context, which carries the gate's deadline for the request
+// (30 seconds): the service ends its hold a margin before it and returns when
+// the context is done, so a wait whose peer's connection was lost or closed
+// ends with it. The handler holds at most [MaxWaitsPerPeer] (2) waits at once
+// for each peer, across its connections: the seat holds one, and the second
+// is room for a reconnect while its predecessor unwinds. A third, or a call
+// the service itself refuses with [ownerchannel.ErrWaitFull], is answered
+// wait-full before anything is looked at. A slot is held for exactly the life
+// of the call, and the handler starts no goroutine of its own. A wait takes
+// one of the gate's handler places while it is held, as any request does.
 //
 // # Params
 //
@@ -99,6 +116,7 @@
 //	ErrAssertionInvalid                         assertion-invalid
 //	ErrKeyRevoked                               key-revoked
 //	ErrKindRefused                              kind-refused
+//	ErrWaitFull                                 wait-full
 //	ErrClosed, ErrStopped, a cancelled context  unavailable
 //	an expired context                          deadline-exceeded
 //	a refusal (*record.Error) of a code below   that code
@@ -112,8 +130,8 @@
 // previous-epoch, review-changed, record-invalid and record-too-large. A refusal with any other code is
 // answered failed and logged, so that only words from this list reach a seat.
 //
-// The handler adds codes of its own: unknown-op, bad-params, not-pinned and
-// too-many-refusals (below). A result the service returned that its encoder
+// The handler adds codes of its own: unknown-op, bad-params, not-pinned,
+// wait-full and too-many-refusals (below). A result the service returned that its encoder
 // refuses is answered failed.
 //
 // # The refusal bound
@@ -137,7 +155,10 @@
 // service's burn after five, and the seat limits both. Nor do challenge-stale,
 // challenges-full, key-revoked and kind-refused, which come of normal use of
 // a decision (a double tap, a slow owner, a card that changed, "phone off" at
-// the desk).
+// the desk. Nor does wait-full: it is a load answer, not a misuse, and a seat
+// that reconnects while its old wait unwinds meets it with no fault of its
+// own; counting it would let a reconnect loop shut a good seat out for ten
+// minutes. Its log line is limited instead, to one a minute for each peer.
 //
 // After [RefusalBound] (16, the owner connection's bound on refused writes)
 // counted refusals within [RefusalWindow] (10 minutes), every request of the

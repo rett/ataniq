@@ -2,15 +2,18 @@ package ownerwire
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
+	"sort"
 	"strconv"
 
 	"ataniq/internal/approval/record"
 )
 
-// This file holds the words of the four operations only the seat gate serves:
+// This file holds the words of the five operations only the seat gate serves:
 // a login and a decision from the owner's phone, each a WebAuthn assertion
-// over a challenge the daemon draws. See docs/design/seat-gate.md, "The
+// over a challenge the daemon draws, and the long wait that tells the seat
+// when the pending cards changed. See docs/design/seat-gate.md, "The
 // challenge" and "Login".
 
 // The bounds of the seat gate's forms.
@@ -53,9 +56,27 @@ const (
 	MaxSignatureBytes = 72
 	// MaxLoginAllow is the most credentials a login challenge allows.
 	MaxLoginAllow = 16
+
+	// MaxSeatWaitResultBytes caps the result of seat.wait. The longest
+	// result, [MaxSeatWaitCards] cards of the longest id and kind, fits
+	// with room to spare.
+	MaxSeatWaitResultBytes = 24 << 10
+	// MaxSeatWaitCards is the most cards one seat.wait result lists. The
+	// version and the count cover the whole pending set, and "more" says
+	// that the list is not all of it.
+	MaxSeatWaitCards = 128
+	// MaxSeatWaitKindBytes is the longest kind of a card in a seat.wait
+	// result.
+	MaxSeatWaitKindBytes = 16
+	// SeatWaitVersionLength is the length of a pending-set version: 32
+	// lower-case hexadecimal digits, 16 bytes.
+	SeatWaitVersionLength = 32
+	// CardKindApproval is the kind of a card that asks for the owner's
+	// decision on an approval record. Every pending card is of it today.
+	CardKindApproval = "approval"
 )
 
-// The words the seat gate answers the four operations with when it refuses
+// The words the seat gate answers its operations with when it refuses
 // one, beside the codes of the transport, of the gate's handler and of the
 // service. Each is of the grammar of a gate code, [a-z0-9-]{1,40}, and is
 // never a text for a person. They are the gate's words, not refusals of a
@@ -78,6 +99,10 @@ const (
 	// CodeKindRefused answers a credential whose stored kind the verifier
 	// does not know, or that the project does not accept.
 	CodeKindRefused = "kind-refused"
+	// CodeWaitFull answers a seat.wait while the gate already holds as many
+	// waits for that seat as it allows. It is a word of the gate's own
+	// bound, not a refusal of what the seat sent.
+	CodeWaitFull = "wait-full"
 )
 
 // Assertion is a WebAuthn assertion as the phone's browser gave it and the
@@ -187,6 +212,45 @@ type SeatLoginResult struct {
 	Kind string `json:"kind"`
 }
 
+// SeatWaitParams is the params of seat.wait: the version of the pending set
+// the seat last saw.
+type SeatWaitParams struct {
+	// Since is a version that [PendingVersion] gave, [SeatWaitVersionLength]
+	// lower-case hexadecimal digits, or empty when the seat has none. The
+	// gate answers at once when the pending set's version is not Since, and
+	// otherwise holds the answer until it changes or the hold ends. The
+	// field is always written.
+	Since string `json:"since"`
+}
+
+// SeatWaitCard is one pending card in a seat.wait result: what the seat
+// needs to tell one card from another, and nothing of its text.
+type SeatWaitCard struct {
+	// ID is the pending record's id.
+	ID string `json:"id"`
+	// Kind is the card's kind, a word of at most [MaxSeatWaitKindBytes]
+	// bytes; today only [CardKindApproval].
+	Kind string `json:"kind"`
+	// BindingSHA256 is the binding digest a decision on the card names.
+	BindingSHA256 string `json:"binding_sha256"`
+	// Held is the mark "decided past the limit", as in [PendingItem].
+	Held bool `json:"held"`
+}
+
+// SeatWaitResult is the result of seat.wait: where the pending set stands.
+type SeatWaitResult struct {
+	// Version is [PendingVersion] of the whole pending set,
+	// [SeatWaitVersionLength] lower-case hexadecimal digits.
+	Version string `json:"version"`
+	// Waiting is how many cards are pending, the whole set.
+	Waiting int `json:"waiting"`
+	// Cards lists the pending cards, at most [MaxSeatWaitCards], none twice.
+	Cards []SeatWaitCard `json:"cards"`
+	// More is true when Waiting is more than the cards listed, and false
+	// when it is exactly their number.
+	More bool `json:"more"`
+}
+
 var (
 	seatChallengeParamsForm = payload[SeatChallengeParams]{"seat challenge", MaxSeatChallengeParamsBytes, record.CodeRecordInvalid, checkSeatChallengeParams}
 	seatChallengeResultForm = payload[SeatChallengeResult]{"seat challenged", MaxResultBytes, record.CodeRecordInvalid, checkSeatChallengeResult}
@@ -194,6 +258,8 @@ var (
 	seatDecideParamsForm    = payload[SeatDecideParams]{"seat decide", MaxSeatDecideParamsBytes, record.CodeRecordInvalid, checkSeatDecideEnvelope}
 	seatLoginParamsForm     = payload[SeatLoginParams]{"seat login", MaxSeatLoginParamsBytes, record.CodeRecordInvalid, checkSeatLoginParams}
 	seatLoginResultForm     = payload[SeatLoginResult]{"seat logged in", MaxResultBytes, record.CodeRecordInvalid, checkSeatLoginResult}
+	seatWaitParamsForm      = payload[SeatWaitParams]{"seat wait", MaxParamsBytes, record.CodeRecordInvalid, checkSeatWaitParams}
+	seatWaitResultForm      = payload[SeatWaitResult]{"seat waited", MaxSeatWaitResultBytes, record.CodeRecordInvalid, checkSeatWaitResult}
 )
 
 // DecodeSeatChallengeParams reads the params of seat.challenge, whole: they
@@ -280,6 +346,89 @@ func DecodeSeatLoginResult(data []byte) (SeatLoginResult, error) {
 // EncodeSeatLoginResult writes the result of seat.login.
 func EncodeSeatLoginResult(r SeatLoginResult) ([]byte, error) {
 	return seatLoginResultForm.encode(r)
+}
+
+// DecodeSeatWaitParams reads the params of seat.wait: a version that is empty
+// or [SeatWaitVersionLength] lower-case hexadecimal digits. Params over
+// [MaxParamsBytes] are refused record-too-large; anything else that is wrong
+// record-invalid.
+func DecodeSeatWaitParams(data []byte) (SeatWaitParams, error) {
+	return seatWaitParamsForm.decode(data)
+}
+
+// EncodeSeatWaitParams writes the params of seat.wait.
+func EncodeSeatWaitParams(p SeatWaitParams) ([]byte, error) {
+	return seatWaitParamsForm.encode(p)
+}
+
+// DecodeSeatWaitResult reads the result of seat.wait. A result over
+// [MaxSeatWaitResultBytes] is refused record-too-large; anything else that is
+// wrong, such as more than [MaxSeatWaitCards] cards, a card twice, or a count
+// that does not fit the cards and "more", record-invalid.
+func DecodeSeatWaitResult(data []byte) (SeatWaitResult, error) {
+	return seatWaitResultForm.decode(data)
+}
+
+// EncodeSeatWaitResult writes the result of seat.wait.
+func EncodeSeatWaitResult(r SeatWaitResult) ([]byte, error) {
+	return seatWaitResultForm.encode(r)
+}
+
+// pendingVersionDomain starts the bytes [PendingVersion] hashes, so that no
+// other digest of this package can be taken for a version.
+const pendingVersionDomain = "ataniq.seat-wait.pending/1"
+
+// PendingVersion returns the version of a pending set: the first 16 bytes, in
+// lower-case hexadecimal, of the SHA-256 of a canonical encoding of the set.
+// It is a digest, not a counter, so a daemon that restarts with the same
+// pending set answers the same version, and a seat that held it is not woken
+// for nothing.
+//
+// The encoding is the domain string, then the number of cards, then each card
+// in the order of its kind, id, binding digest and held mark, and every field
+// is a 4-byte big-endian length and its bytes (the held mark is one byte, 0 or
+// 1), so that no two sets can write the same bytes. The order of items does
+// not matter and the argument is not changed. An empty set has a version too.
+//
+// The daemon gives it the whole pending set, not the at most [MaxSeatWaitCards]
+// cards of a result, so that a change past the list still changes the version.
+// It checks nothing: what it is given is hashed as it is.
+func PendingVersion(items []SeatWaitCard) string {
+	sorted := append([]SeatWaitCard(nil), items...)
+	sort.Slice(sorted, func(i, j int) bool {
+		a, b := sorted[i], sorted[j]
+		switch {
+		case a.Kind != b.Kind:
+			return a.Kind < b.Kind
+		case a.ID != b.ID:
+			return a.ID < b.ID
+		case a.BindingSHA256 != b.BindingSHA256:
+			return a.BindingSHA256 < b.BindingSHA256
+		}
+		return !a.Held && b.Held
+	})
+	h := sha256.New()
+	field := func(s string) {
+		var n [4]byte
+		binary.BigEndian.PutUint32(n[:], uint32(len(s)))
+		h.Write(n[:])
+		h.Write([]byte(s))
+	}
+	field(pendingVersionDomain)
+	var count [4]byte
+	binary.BigEndian.PutUint32(count[:], uint32(len(sorted)))
+	h.Write(count[:])
+	for _, card := range sorted {
+		field(card.Kind)
+		field(card.ID)
+		field(card.BindingSHA256)
+		held := byte(0)
+		if card.Held {
+			held = 1
+		}
+		h.Write([]byte{held})
+	}
+	return hex.EncodeToString(h.Sum(nil)[:SeatWaitVersionLength/2])
 }
 
 // CheckDecisionFrame checks the content of a decision frame, as
@@ -374,6 +523,32 @@ func checkSeatLoginResult(r *SeatLoginResult) error {
 	c.credentialID(r.CredentialID, "seat.credential_id")
 	c.need(r.Credential == displayID(r.CredentialID), "seat.credential is not the display id of seat.credential_id")
 	c.word(r.Kind, "seat.kind")
+	return c.result()
+}
+
+func checkSeatWaitParams(p *SeatWaitParams) error {
+	c := &checker{invalid: record.CodeRecordInvalid}
+	c.need(p.Since == "" || record.IsLowerHex(p.Since, SeatWaitVersionLength), "seat.since is neither empty nor "+strconv.Itoa(SeatWaitVersionLength)+" lower-case hexadecimal digits")
+	return c.result()
+}
+
+func checkSeatWaitResult(r *SeatWaitResult) error {
+	c := &checker{invalid: record.CodeRecordInvalid}
+	c.need(record.IsLowerHex(r.Version, SeatWaitVersionLength), "seat.version is not "+strconv.Itoa(SeatWaitVersionLength)+" lower-case hexadecimal digits")
+	c.need(len(r.Cards) <= MaxSeatWaitCards, "seat.cards has more than "+strconv.Itoa(MaxSeatWaitCards)+" cards")
+	c.need(r.Waiting >= len(r.Cards), "seat.waiting is less than the cards listed")
+	c.need(r.More == (r.Waiting > len(r.Cards)), "seat.more does not say whether seat.waiting is more than the cards listed")
+	seen := make(map[string]struct{}, len(r.Cards))
+	for i := range r.Cards {
+		card, at := &r.Cards[i], "seat.cards["+strconv.Itoa(i)+"]"
+		c.pendingID(card.ID, at+".id")
+		_, dup := seen[card.ID]
+		c.need(!dup, at+" repeats an earlier id")
+		seen[card.ID] = struct{}{}
+		c.word(card.Kind, at+".kind")
+		c.need(len(card.Kind) <= MaxSeatWaitKindBytes, at+".kind is longer than "+strconv.Itoa(MaxSeatWaitKindBytes)+" bytes")
+		c.sha256(card.BindingSHA256, at+".binding_sha256")
+	}
 	return c.result()
 }
 

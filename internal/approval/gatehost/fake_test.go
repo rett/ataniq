@@ -172,8 +172,8 @@ func (l *logBook) all() []string {
 // pinnedOnly is a pin check that knows the one seat key.
 func pinnedOnly(fp string) bool { return fp == seatFP }
 
-// newHandler makes a handler over f with the seat's key pinned.
-func newHandler(t *testing.T, f *fakePort) (*Handler, *logBook) {
+// newHandler makes a handler over f (a fakePort, or a waitingPort that can wait) with the seat's key pinned.
+func newHandler(t *testing.T, f Port) (*Handler, *logBook) {
 	t.Helper()
 	lb := &logBook{}
 	h, err := New(f, pinnedOnly, lb.logf)

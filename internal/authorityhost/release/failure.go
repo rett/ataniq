@@ -65,6 +65,7 @@ const (
 	CodeProgram        = "program-missing"
 	CodeProgramExec    = "program-not-executable"
 	CodeUnitUnreadable = "unit-unreadable"
+	CodeUnitPlacehold  = "unit-placeholder"
 	CodeStaticService  = "static-has-service"
 	CodeNoService      = "no-decision-service"
 	CodeInhibitCond    = "inhibit-start-condition"
@@ -134,6 +135,7 @@ var reasons = map[string]string{
 	CodeProgram:        "a program named in a list is not in the release",
 	CodeProgramExec:    "a program named in a list has no execute bit",
 	CodeUnitUnreadable: "a unit file could not be read",
+	CodeUnitPlacehold:  "a unit file still holds {release}, which ah-release build replaces with the release's folder",
 	CodeStaticService:  "a static release carries a service unit",
 	CodeNoService:      "no decision service, but the release is not static",
 	CodeInhibitCond:    "a unit gates its start on the decision inhibit",

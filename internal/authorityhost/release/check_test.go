@@ -98,6 +98,12 @@ func TestCheckCoverage(t *testing.T) {
 		{name: "a second unit without a validator", mutate: func(t *testing.T, s string) {
 			set(t, s, "etc/systemd/system/b.timer", "[Timer]\nOnBootSec=1min\n")
 		}, want: []string{"validator-missing: etc/systemd/system/b.timer"}},
+		{name: "a unit runs its own release's binary", mutate: func(t *testing.T, s string) {
+			replace(t, s, "etc/systemd/system/ataniq-seat.service", "/opt/authority-host/current/bin/", "{release}/bin/")
+		}},
+		{name: "a drop-in names its release", mutate: func(t *testing.T, s string) {
+			set(t, s, "etc/systemd/system/ataniq-seat.service.d/10-env.conf", "[Service]\nEnvironment=RELEASE={release}\n")
+		}},
 		{name: "a drop-in needs no validator of its own", mutate: func(t *testing.T, s string) {
 			set(t, s, "etc/systemd/system/ataniq-seat.service.d/10-hardening.conf", "[Service]\nNoNewPrivileges=yes\n")
 		}},
@@ -478,5 +484,17 @@ func TestCheckOrderIsStable(t *testing.T) {
 		if again := lines(Check(dir, noRun)); again != first {
 			t.Fatalf("order changed:\n%s\n%s", first, again)
 		}
+	}
+}
+
+// TestCheckFindsAPlaceholderLeftInAUnit: a folder not made by the builder
+// (or changed after it) that still holds {release} in a unit is a finding:
+// systemd would take the words as they are.
+func TestCheckFindsAPlaceholderLeftInAUnit(t *testing.T) {
+	dir := built(t, dynamicOptions(t, dynamicSrc(t)))
+	writeTestFile(t, filepath.Join(dir, "etc/systemd/system/ataniq-seat.service"), testUnit+"Environment=HOME={release}\n", 0o644)
+	resum(t, dir)
+	if got, want := codes(Check(dir, noRun)), []string{"unit-placeholder: etc/systemd/system/ataniq-seat.service"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }

@@ -92,7 +92,8 @@ type PairResult struct {
 // Offer, DecideChallenge and Decide are a decision from the phone. Offer
 // asks the gate nothing: it says what the Card page may offer for a card the
 // port showed, as a session read it, by the card model's rules for approve
-// and deny. DecideChallenge freezes the decision the owner tapped from the
+// and deny; a port that takes no decision now sets Offer.Inhibited, and the
+// page shows a notice and no form. DecideChallenge freezes the decision the owner tapped from the
 // card the port showed (never from anything a browser sent but the action,
 // the indexes of the sign-offs and the reason), asks the daemon for its
 // challenge (seat.challenge), and returns it only after the port recomputed
@@ -104,7 +105,9 @@ type PairResult struct {
 // [ErrNotOffered] when the gate does not offer decisions, [ErrBusy] for its
 // load, the errors of the daemon's refusals ([ErrChallengeStale],
 // [ErrCardExpired], [ErrCannotDecide], [ErrAssertionRefused], [ErrKeyRevoked],
-// [ErrKindRefused]), and [ErrDaemonUnavailable] when nothing was sent. Once
+// [ErrKindRefused]), [ErrDecisionsInhibited] when the host the seat runs on
+// takes no decision now (nothing is sent), and [ErrDaemonUnavailable] when
+// nothing was sent. Once
 // Decide has sent the decision, a lost answer is [ErrOutcomeUnknown], never
 // ErrDaemonUnavailable.
 //
@@ -209,6 +212,10 @@ type app struct {
 	// their decision challenges.
 	reads   *limiter
 	decides *limiter
+	// watches bounds the watch polls of each credential's sessions, apart
+	// from the reads; watchHold is how long a poll is held.
+	watches   *limiter
+	watchHold time.Duration
 	// host is what the Host header of a request must be: the origin without
 	// its scheme.
 	host string
@@ -243,7 +250,8 @@ func newApp(cfg Config) (*app, http.Handler, error) {
 	}
 	_, hostHeader, _ := strings.Cut(origin, "://")
 	a := &app{cfg: cfg, pair: newPairing(cfg), login: newLogins(cfg), sess: newSessions(cfg.Now),
-		reads: newLimiter(readRequests, readWindow), decides: newLimiter(decideRequests, decideWindow), host: hostHeader}
+		reads: newLimiter(readRequests, readWindow), decides: newLimiter(decideRequests, decideWindow),
+		watches: newLimiter(watchRequests, watchWindow), watchHold: watchHold, host: hostHeader}
 
 	mux := http.NewServeMux()
 	for _, rt := range a.routes() {
@@ -288,6 +296,8 @@ func (a *app) routes() []route {
 		{"GET /static/decide.js", a.asset("assets/decide.js", "text/javascript; charset=utf-8")},
 		{"POST /api/decide-challenge", a.post(a.decideChallenge)},
 		{"POST /api/decide", a.post(a.decidePost)},
+		{"GET /static/watch.js", a.asset("assets/watch.js", "text/javascript; charset=utf-8")},
+		{"POST /api/watch", a.post(a.watchPost)},
 	}
 }
 

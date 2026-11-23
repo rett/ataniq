@@ -87,6 +87,12 @@ type session struct {
 	decision *pendingDecision
 	// tick counts the uses of the readings, to drop the least used.
 	tick uint64
+	// gone is closed when the session is removed (logout, idle time, age,
+	// eviction), so that a held watch poll ends with it (see watch.go).
+	gone chan struct{}
+	// kicks are the held watch polls' channels, the oldest first, at most
+	// maxHeldPolls: a poll past the most closes the oldest one's to end it.
+	kicks []chan struct{}
 }
 
 // sessions holds the sessions, server-side, in memory: a restart ends them
@@ -125,13 +131,81 @@ func (ss *sessions) get(value string) (Session, bool) {
 	}
 	now := ss.now()
 	if !s.live(now) {
-		delete(ss.m, k)
+		ss.drop(k)
 		return Session{}, false
 	}
 	s.used = now
 	out := s.Session
 	out.key = k
 	return out, true
+}
+
+// look returns the session of a cookie value like get, and does not mark it
+// used: a request that only looks never extends the session's idle time. A
+// session past its idle time or its age is removed and is not returned. The
+// watch poll is its only caller. gone is closed when the session ends.
+func (ss *sessions) look(value string) (s Session, gone <-chan struct{}, ok bool) {
+	k, ok := keyOf(value)
+	if !ok {
+		return Session{}, nil, false
+	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	cur, ok := ss.m[k]
+	if !ok {
+		return Session{}, nil, false
+	}
+	if !cur.live(ss.now()) {
+		ss.drop(k)
+		return Session{}, nil, false
+	}
+	out := cur.Session
+	out.key = k
+	return out, cur.gone, true
+}
+
+// holdWatch makes the caller one of the session's held watch polls, at most
+// maxHeldPolls of them (one for each tab of the owner's). With that many held
+// already, the oldest is ended: its kick channel is closed. It returns the
+// caller's own kick channel, closed when a newer poll takes its place, and
+// release, which the caller runs when its poll ends. It reports false when
+// the session is gone.
+func (ss *sessions) holdWatch(k tokenKey) (kick <-chan struct{}, release func(), ok bool) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	s, ok := ss.m[k]
+	if !ok {
+		return nil, nil, false
+	}
+	for len(s.kicks) >= maxHeldPolls {
+		close(s.kicks[0])
+		s.kicks = s.kicks[1:]
+	}
+	mine := make(chan struct{})
+	s.kicks = append(s.kicks, mine)
+	return mine, func() {
+		ss.mu.Lock()
+		defer ss.mu.Unlock()
+		cur, ok := ss.m[k]
+		if !ok {
+			return
+		}
+		for i, c := range cur.kicks {
+			if c == mine {
+				cur.kicks = append(cur.kicks[:i:i], cur.kicks[i+1:]...)
+				return
+			}
+		}
+	}, true
+}
+
+// drop removes the session of k and tells its held poll. The caller holds
+// the lock.
+func (ss *sessions) drop(k tokenKey) {
+	if s, ok := ss.m[k]; ok {
+		close(s.gone)
+		delete(ss.m, k)
+	}
 }
 
 // add keeps a new session under k. Sessions no longer live are dropped first;
@@ -142,7 +216,7 @@ func (ss *sessions) add(k tokenKey, s Session) {
 	now := ss.now()
 	for key, old := range ss.m {
 		if !old.live(now) {
-			delete(ss.m, key)
+			ss.drop(key)
 		}
 	}
 	for len(ss.m) >= maxSessions {
@@ -154,10 +228,10 @@ func (ss *sessions) add(k tokenKey, s Session) {
 				oldest, at, first = key, old.used, false
 			}
 		}
-		delete(ss.m, oldest)
+		ss.drop(oldest)
 	}
 	s.CredentialID = append([]byte(nil), s.CredentialID...)
-	ss.m[k] = &session{Session: s, created: now, used: now}
+	ss.m[k] = &session{Session: s, created: now, used: now, gone: make(chan struct{})}
 }
 
 // end removes the session of a cookie value, if there is one.
@@ -167,7 +241,7 @@ func (ss *sessions) end(value string) {
 		return
 	}
 	ss.mu.Lock()
-	delete(ss.m, k)
+	ss.drop(k)
 	ss.mu.Unlock()
 }
 

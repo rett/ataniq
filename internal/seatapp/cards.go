@@ -307,6 +307,8 @@ type (
 		Title   string
 		Now     time.Time
 		Listing Listing
+		// Watch is the watcher's version taken before the page's read.
+		Watch watchPage
 	}
 	cardData struct {
 		Title string
@@ -325,6 +327,9 @@ type (
 		Decide    bool
 		Form      string
 		Unsettled bool
+		// Watch is the watcher's version taken before the page's read, with
+		// the card and binding the page shows.
+		Watch watchPage
 	}
 	pathsData struct {
 		Title string
@@ -362,12 +367,15 @@ func (a *app) cardList(w http.ResponseWriter, r *http.Request, s Session) {
 		return
 	}
 	defer cancel()
+	// The watcher's version first: a change after it, before the read, is
+	// then a page whose first poll says "changed".
+	wp := a.watchVersion()
 	l, err := a.cfg.Daemon.List(ctx)
 	if err != nil {
 		a.problem(w, readProblem(err))
 		return
 	}
-	a.render(w, "cards", http.StatusOK, cardsData{Title: pageTitles["cards"], Now: a.cfg.Now(), Listing: l})
+	a.render(w, "cards", http.StatusOK, cardsData{Title: pageTitles["cards"], Now: a.cfg.Now(), Listing: l, Watch: wp})
 }
 
 // cardPage answers GET /cards/{id}: one card, read-only.
@@ -383,6 +391,7 @@ func (a *app) cardPage(w http.ResponseWriter, r *http.Request, s Session) {
 	}
 	defer cancel()
 	since := a.sess.begin()
+	wp := a.watchVersion()
 	c, err := a.cfg.Daemon.Show(ctx, id)
 	if err != nil {
 		a.problem(w, readProblem(err))
@@ -393,7 +402,14 @@ func (a *app) cardPage(w http.ResponseWriter, r *http.Request, s Session) {
 		return
 	}
 	now := a.cfg.Now()
-	d := cardData{Title: pageTitles["card"], Now: now, Card: c, RPID: a.cfg.RPID}
+	d := cardData{Title: pageTitles["card"], Now: now, Card: c, RPID: a.cfg.RPID, Watch: wp.still()}
+	if !c.Ended && (c.State == "" || c.State == "pending") {
+		// Only a pending card can change under its page: a decided, ended
+		// or expired one is not in the pending set, so a page that named
+		// it would be told "gone" for a card that moved long ago, or by
+		// this session's own decision.
+		d.Watch = wp.withCard(c.ID, c.BindingSHA256)
+	}
 	// The page is the session's reading of the card: a lost answer is
 	// settled by it, once the page was written. The decide form is the
 	// page's only when the card is pending and the card model offers
@@ -402,7 +418,7 @@ func (a *app) cardPage(w http.ResponseWriter, r *http.Request, s Session) {
 	d.Unsettled = !fresh
 	if fresh && !c.Ended && !c.OnItsWay && (c.State == "" || c.State == "pending") {
 		d.Offer = a.cfg.Daemon.Offer(id, c.BindingSHA256, reading, now)
-		d.Decide = d.Offer.Approve || d.Offer.Deny
+		d.Decide = (d.Offer.Approve || d.Offer.Deny) && !d.Offer.Inhibited
 	}
 	var form pageForm
 	if d.Decide {

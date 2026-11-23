@@ -1,0 +1,12 @@
+# The reload commands of the release, run by ah-switch after current is
+# moved (see ../README.md, "Layout"). One command per line, no {release} in
+# the arguments.
+# systemd reads the seat's unit again through the link
+# /etc/systemd/system/ataniq-seat.service, which points into current, and
+# the seat is (re)started from this release: the decision inhibit is there
+# meanwhile, and the seat refuses every decision while it is.
+systemctl daemon-reload
+systemctl restart ataniq-seat.service
+# The Caddyfile sets "admin off", so Caddy has no admin endpoint to reload
+# through: "systemctl reload caddy" cannot be used, and Caddy is restarted.
+systemctl restart caddy

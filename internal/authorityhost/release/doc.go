@@ -5,6 +5,9 @@
 // Build copies the binaries and the source tree's etc/ and share/ into a new
 // folder <counter>-<short commit>, writes its MANIFEST and its SHA256SUMS and
 // sets every mode, so that two builds of the same input are byte-identical.
+// In the files of etc/systemd it replaces ReleasePlaceholder, {release},
+// with the release's own folder on the host, so that a unit can run the
+// binary of its own release.
 // A static release given no package step gets StaticPackageStep, which
 // refuses a change of package snapshot; a refused step leaves the host's
 // package state unknown until ah-switch recover --package-state.

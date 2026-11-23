@@ -31,6 +31,15 @@ const CodeTooManyRefusals = "too-many-refusals"
 // the daemon's own state (unavailable, deadline-exceeded, failed,
 // door-unavailable, journal-reopened, keys-unavailable, keys-full) does not
 // count: a seat that polls while the door is down is not shut out for it.
+//
+// wait-full, the answer to a seat.wait past the peer's two held waits or the
+// service's own limit, does not count either, and must not: it is a load
+// answer, not a misuse. A seat that reconnects while its old wait is still
+// unwinding meets it with no fault of its own, and counting it would let a
+// reconnect loop, or a few seats' waits held by the service, shut a good seat
+// out for ten minutes with too-many-refusals. It is kept out of this table by
+// being absent, and its log line is limited by its own clock instead (see
+// waitSlots.mayLogFull).
 var counted = func() map[string]bool {
 	m := map[string]bool{
 		CodeUnknownOp:         true,

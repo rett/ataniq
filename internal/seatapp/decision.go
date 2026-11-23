@@ -57,6 +57,12 @@ type Offer struct {
 	// it may not.
 	Deny    bool
 	DenyWhy string
+	// Inhibited says that the host the seat runs on takes no decision now
+	// (the port would answer [ErrDecisionsInhibited] to a challenge): the
+	// page then shows a notice and no decide form, and the card stays
+	// readable. It is the port's answer for the page alone; the refusal of
+	// DecideChallenge and Decide stays the enforcement.
+	Inhibited bool
 }
 
 // SignOff is one sign-off of a decision: the flag's kind and the flagged
@@ -157,6 +163,12 @@ var (
 	// ErrKindRefused says that the card's project does not take decisions
 	// from the credential's kind.
 	ErrKindRefused = errors.New("seatapp: the project does not take this kind of passkey")
+	// ErrDecisionsInhibited says that the host the seat runs on takes no
+	// decision now, and that nothing was sent to the daemon: on the
+	// authority host, the release switch's decision inhibit is there, or
+	// cannot be looked up (package decisionguard). The port returns it
+	// before it relays a challenge or a decision.
+	ErrDecisionsInhibited = errors.New("seatapp: decisions are paused on this host")
 )
 
 // NotAllowedError says that the port's card model does not allow the

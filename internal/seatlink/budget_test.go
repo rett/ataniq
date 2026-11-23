@@ -34,7 +34,7 @@ const clientHeader = "X-Test-Client"
 func TestSeatLinkBudgetRooms(t *testing.T) {
 	clock := &testClock{t: decideNow}
 	b := &budget{now: clock.now}
-	for _, k := range []kind{kindPublic, kindRead} {
+	for _, k := range []kind{kindPublic, kindRead, kindWait} {
 		for i := 0; i < k.room(); i++ {
 			if !b.take(k) {
 				t.Fatalf("kind %d: call %d refused", k, i+1)
@@ -84,7 +84,7 @@ func TestSeatLinkBudgetRooms(t *testing.T) {
 	}
 	// The window moves on; id0's hold stays for its challenge's life.
 	clock.advance(BudgetWindow)
-	for _, k := range []kind{kindPublic, kindRead} {
+	for _, k := range []kind{kindPublic, kindRead, kindWait} {
 		if !b.take(k) {
 			t.Errorf("kind %d: a call after the window", k)
 		}
@@ -233,7 +233,7 @@ func TestSeatLinkBudgetNeverOverTheGate(t *testing.T) {
 			}
 		}
 		switch k := kind(rnd.IntN(int(numKinds))); k {
-		case kindPublic, kindRead:
+		case kindPublic, kindRead, kindWait:
 			if b.take(k) {
 				sent[k] = append(sent[k], now)
 			}

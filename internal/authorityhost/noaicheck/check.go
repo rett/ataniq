@@ -46,7 +46,7 @@ const (
 // found. Every other kind (policy, incomplete, unreadable, unit-link, and any
 // later one) says the check could not cover a place, and makes the run
 // incomplete.
-var findingKinds = []string{KindBinary, KindTool, KindCredential, KindEnv, KindProcess, KindUnit, KindPort, KindPackage, KindNFT}
+var findingKinds = []string{KindBinary, KindTool, KindCredential, KindEnv, KindProcess, KindUnit, KindPort, KindPackage, KindNFT, KindProxy}
 
 // DetailEmpty is the detail of a policy hit for an empty allowlist; a
 // release without share/nft.digest has the detail "missing" (DetailMissing).

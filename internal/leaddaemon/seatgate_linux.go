@@ -29,7 +29,10 @@ import (
 // --seat-gate ADDR). The gate serves the pairing call and the reads of the
 // cards (gatehost.Caps) and, when the seat origin is configured and the
 // service can decide, a login and a decision from the phone as well
-// (gatehost.DecidingCaps).
+// (gatehost.DecidingCaps). When the service can wait for a change of the
+// pending cards (gatehost.WaitPort, as the owner channel's service does), it
+// serves the capability watch too (gatehost.CapWatch), the seat's long wait
+// that lets the phone's pages refresh by themselves.
 
 const (
 	// SeatGateDirName is the name of the gate's folder in the owner folder
@@ -235,12 +238,15 @@ func (g *SeatGate) logf(format string, a ...any) {
 //
 // The gate serves the capabilities pair and read. It serves login and decide
 // as well only when it has an origin and svc can decide from the phone (it
-// is a gatehost.SeatPort, as the owner channel's service is); their calls
-// are bound to the gate's own key fingerprint and checked against the
+// is a gatehost.SeatPort, as the owner channel's service is), and watch when
+// svc can wait (a gatehost.WaitPort, as the owner channel's service is), with
+// or without an origin: a wait decides nothing. The calls of login and
+// decide are bound to the gate's own key fingerprint and checked against the
 // origin and its host, the relying party id. It writes one line once the
 // gate listens, which names the address, the gate's key fingerprint, the
-// origin when it serves login and decide, and what it serves, with why it
-// serves pair and read only when it does; never a pin.
+// origin when it serves login and decide, and what it serves (watch among
+// it, when it does), with why it serves pair and read only when it does;
+// never a pin.
 //
 // Stop stops accepting, lets the requests in flight finish for the server's
 // shutdown grace, closes every connection and returns once the server has
@@ -270,6 +276,12 @@ func (g *SeatGate) Start(svc gatehost.Port) (stop func(), err error) {
 	var h *gatehost.Handler
 	var serves string
 	seat, canDecide := svc.(gatehost.SeatPort)
+	// The handler lists watch when its service can wait (gatehost.New).
+	_, canWait := svc.(gatehost.WaitPort)
+	onlyWord, allWord := "pair and read only", "pair, read, login and decide"
+	if canWait {
+		onlyWord, allWord = "pair, read and watch only", "pair, read, login, decide and watch"
+	}
 	switch {
 	case g.Origin == "":
 		why := g.NoOrigin
@@ -277,10 +289,10 @@ func (g *SeatGate) Start(svc gatehost.Port) (stop func(), err error) {
 			why = "no seat origin is configured"
 		}
 		h, err = gatehost.New(svc, pinnedIn(pins), g.Log)
-		serves = "; it serves pair and read only: " + why
+		serves = "; it serves " + onlyWord + ": " + why
 	case !canDecide:
 		h, err = gatehost.New(svc, pinnedIn(pins), g.Log)
-		serves = "; it serves pair and read only: this service cannot take a decision from the phone"
+		serves = "; it serves " + onlyWord + ": this service cannot take a decision from the phone"
 	default:
 		origin, rpID, cerr := CanonicalSeatOrigin(g.Origin)
 		if cerr != nil || origin != g.Origin {
@@ -288,7 +300,7 @@ func (g *SeatGate) Start(svc gatehost.Port) (stop func(), err error) {
 		}
 		gate := ownerchannel.Gate{Instance: g.Identity.Fingerprint(), Origin: origin, RPID: rpID}
 		h, err = gatehost.NewDeciding(svc, seat, gate, pinnedIn(pins), g.Log)
-		serves = ", seat origin " + origin + "; it serves pair, read, login and decide"
+		serves = ", seat origin " + origin + "; it serves " + allWord
 	}
 	if err != nil {
 		return nil, fmt.Errorf("seat gate: %w", err)

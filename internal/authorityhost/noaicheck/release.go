@@ -105,7 +105,12 @@ func (c *Checker) RunPhase(phase, release string, listing []byte) (Report, error
 // read, by its format, for the variables it refers to through Caddy's own
 // placeholders (see releaseRefs): each one named like a provider key (see
 // ProviderKeyName) is a hit of kind "env", and a reference the check
-// cannot read is "incomplete release-syntax <file>".
+// cannot read is "incomplete release-syntax <file>". A Caddyfile's
+// "import" of a file of the host (an absolute path) is followed, and the
+// file read where the host holds it, as an owner-local file is: see
+// importScan.followImports; it is scanned as the release's own files are
+// and for outbound reverse_proxy targets, and one that is not there is
+// "incomplete caddy-import <path>".
 // A hit names the file by its path within the root when the release is
 // beneath it, by its own path otherwise. A release folder that cannot be
 // opened is an error.
@@ -228,6 +233,7 @@ func (c *Checker) CheckRelease(dir string) error {
 		c.t.b.release(ru.held)
 		ru.held, ru.main, ru.dropins = 0, nil, nil
 	}
+	imports := &importScan{c: c, done: map[string]bool{}}
 	for _, d := range strings.Fields(releaseNameDirs) {
 		walk(d, func(e *wentry) {
 			p, data, ok := read(e)
@@ -240,6 +246,9 @@ func (c *Checker) CheckRelease(dir string) error {
 			}
 			if bad {
 				c.hit(KindIncomplete, PathReleaseSyntax, at(p))
+			}
+			if !strings.HasSuffix(p, ".json") {
+				imports.followImports(at(p), string(data), "", 0)
 			}
 		})
 	}

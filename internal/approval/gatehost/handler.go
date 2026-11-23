@@ -38,6 +38,17 @@ type SeatPort interface {
 
 var _ SeatPort = (*ownerchannel.Service)(nil)
 
+// WaitPort is what the handler needs of the service for seat.wait, the long
+// wait for a change of the pending cards. [*ownerchannel.Service] is the real
+// one. A handler serves the operation, and lists [CapWatch] in its hello,
+// only when the service it was made with is a WaitPort: it is looked for
+// once, in [New], so that a service that cannot wait is simply not asked.
+type WaitPort interface {
+	WaitPending(ctx context.Context, since string) (ownerwire.SeatWaitResult, error)
+}
+
+var _ WaitPort = (*ownerchannel.Service)(nil)
+
 // The capabilities the handler serves, the names the gate's hello lists.
 const (
 	// CapPair is the seat's pairing call, seat.pair.
@@ -51,14 +62,31 @@ const (
 	// CapDecide is a decision from the phone: seat.challenge and
 	// seat.decide. Only a handler made with [NewDeciding] serves it.
 	CapDecide = "decide"
+	// CapWatch is the long wait for a change of the pending cards, seat.wait.
+	// A handler serves it, with either constructor, when its service is a
+	// [WaitPort]; it needs no seat origin, since it only learns that the
+	// cards changed and decides nothing.
+	CapWatch = "watch"
 )
 
-// Caps returns the capability list of a handler made with [New], pairing and
-// the reads, in a new slice. [Handler.Caps] is the list of a given handler.
+// MaxWaitsPerPeer is how many seat.wait calls the handler holds at once for
+// one peer. The seat holds one; the second is room for a reconnect, whose
+// predecessor may still be unwinding on its connection's context. A third is
+// answered [ownerwire.CodeWaitFull].
+const MaxWaitsPerPeer = 2
+
+// waitFullLogEvery is the least time between two log lines about wait-full
+// for one peer: the answer is not counted by the refusal bound (see
+// countedFor), so the log, which the bound keeps short, is bounded here.
+const waitFullLogEvery = time.Minute
+
+// Caps returns the capability list of a handler made with [New] over a service
+// that cannot wait, pairing and the reads, in a new slice. [Handler.Caps] is
+// the list of a given handler, which adds [CapWatch] when its service can wait.
 func Caps() []string { return []string{CapPair, CapRead} }
 
 // DecidingCaps returns the capability list of a handler made with
-// [NewDeciding], in a new slice.
+// [NewDeciding] over a service that cannot wait, in a new slice.
 func DecidingCaps() []string { return []string{CapPair, CapRead, CapLogin, CapDecide} }
 
 // opCaps maps each operation the handler may serve to its capability.
@@ -72,6 +100,7 @@ var opCaps = map[string]string{
 	ownerwire.OpSeatLogin:          CapLogin,
 	ownerwire.OpSeatChallenge:      CapDecide,
 	ownerwire.OpSeatDecide:         CapDecide,
+	ownerwire.OpSeatWait:           CapWatch,
 }
 
 // Operations returns the operations a handler made with [New] serves, in a
@@ -94,7 +123,11 @@ type Handler struct {
 	// handler made with New.
 	seat SeatPort
 	gate ownerchannel.Gate
-	caps map[string]bool
+	// wait is the service's wait, or nil when it cannot wait (CapWatch is
+	// then not served).
+	wait  WaitPort
+	waits waitSlots
+	caps  map[string]bool
 	// counts holds how often each code was answered, in memory.
 	cmu    sync.Mutex
 	counts map[string]int64
@@ -114,8 +147,13 @@ func New(svc Port, pinned func(fingerprint string) bool, log func(format string,
 	if log == nil {
 		log = func(string, ...any) {}
 	}
-	return &Handler{svc: svc, pinned: pinned, log: log, now: time.Now,
-		caps: map[string]bool{CapPair: true, CapRead: true}, counts: map[string]int64{}}, nil
+	h := &Handler{svc: svc, pinned: pinned, log: log, now: time.Now,
+		caps: map[string]bool{CapPair: true, CapRead: true}, counts: map[string]int64{}}
+	if w, ok := svc.(WaitPort); ok {
+		h.wait = w
+		h.caps[CapWatch] = true
+	}
+	return h, nil
 }
 
 // NewDeciding returns the handler that also serves a login and a decision
@@ -138,12 +176,17 @@ func NewDeciding(svc Port, seat SeatPort, g ownerchannel.Gate, pinned func(finge
 }
 
 // Caps returns the capability list of the handler, for the gate's hello
-// ([seatgate.ServerConfig].Caps), in a new slice: [Caps] or [DecidingCaps].
+// ([seatgate.ServerConfig].Caps), in a new slice: [Caps] or [DecidingCaps],
+// and [CapWatch] after them when the handler's service can wait.
 func (h *Handler) Caps() []string {
+	caps := Caps()
 	if h.seat != nil {
-		return DecidingCaps()
+		caps = DecidingCaps()
 	}
-	return Caps()
+	if h.wait != nil {
+		caps = append(caps, CapWatch)
+	}
+	return caps
 }
 
 // Counts returns how often the handler answered each refusal code since it
@@ -194,6 +237,9 @@ func (h *Handler) Handle(ctx context.Context, peer seatgate.Peer, op string, par
 	if countedFor(op, o.code) && !h.bound.count(key, h.now()) {
 		// Past the bound, by requests admitted before it was reached: the
 		// peer is shut out from here, and the line was or will be written.
+		return nil, seatgate.NewCodedError(o.code)
+	}
+	if o.code == ownerwire.CodeWaitFull && !h.waits.mayLogFull(key, h.now()) {
 		return nil, seatgate.NewCodedError(o.code)
 	}
 	return nil, h.refused(peer, op, o)
@@ -293,6 +339,23 @@ func (h *Handler) serve(ctx context.Context, peer seatgate.Peer, op string, para
 		}
 		r, err := h.seat.SeatDecide(ctx, seatSource(peer), h.gate, p)
 		return answer(r, err, ownerwire.EncodeDecideResult)
+	case ownerwire.OpSeatWait:
+		p, ok := decodeParams(params, ownerwire.DecodeSeatWaitParams)
+		if !ok {
+			return outcome{code: CodeBadParams}
+		}
+		// One slot for the call's whole life. The service holds the call
+		// for the request's own deadline less a margin (ctx is the gate's,
+		// which carries it) and returns when ctx is done, which is when the
+		// request ends or the peer's connection does: the slot is then
+		// given back and nothing is left running.
+		key := boundKey(peer)
+		if !h.waits.take(key) {
+			return outcome{code: ownerwire.CodeWaitFull}
+		}
+		defer h.waits.give(key)
+		r, err := h.wait.WaitPending(ctx, p.Since)
+		return answer(r, err, ownerwire.EncodeSeatWaitResult)
 	}
 	return outcome{code: CodeUnknownOp}
 }

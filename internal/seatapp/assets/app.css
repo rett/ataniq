@@ -154,7 +154,8 @@ p {
 
 /* What the page says about the step it is on. */
 #status,
-#decide-status {
+#decide-status,
+#watch-status {
   padding: 8px 12px;
   border-left: 4px solid var(--line);
 }
@@ -431,7 +432,8 @@ button.deny {
 }
 
 #decide-status:empty,
-#logout-status:empty {
+#logout-status:empty,
+#watch-status:empty {
   display: none;
 }
 

@@ -238,7 +238,7 @@ func TestASeatApproveRunsToAppliedWithItsEvidence(t *testing.T) {
 
 	// After a restart, the evidence is read back and checks again.
 	w.restart()
-	ev, err := w.svc.journal().(*ownerjournal.Store).EvidenceOf(d.Seq)
+	ev, err := unwrapJournal(w.svc.journal()).(*ownerjournal.Store).EvidenceOf(d.Seq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,7 +473,7 @@ func TestASeatApprovePastTheLimitIsHeld(t *testing.T) {
 	if len(held) != 1 {
 		t.Fatalf("%d held entries", len(held))
 	}
-	ev, err := w.svc.journal().(*ownerjournal.Store).EvidenceOf(held[0].Seq)
+	ev, err := unwrapJournal(w.svc.journal()).(*ownerjournal.Store).EvidenceOf(held[0].Seq)
 	if err != nil || record.AssertionDigest(ev.CredentialID, ev.AuthenticatorData, ev.ClientDataJSON, ev.Signature) != params.Assertion.Digest() {
 		t.Fatalf("the held entry's evidence: %v", err)
 	}

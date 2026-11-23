@@ -191,8 +191,11 @@ func TestSeatTemplatesShowOnlyThroughText(t *testing.T) {
 	// The fields the app fills itself: the page title and the problem's
 	// words (fixed words of this package), the relying party (the config),
 	// addresses made by cardHref and pathsHref, and the id of a page's
-	// decide form, which the app draws.
-	appFields := map[string]bool{".Title": true, ".Message": true, ".RPID": true, ".RPName": true, ".Prev": true, ".Next": true, ".Back": true, ".Form": true}
+	// decide form, which the app draws; and the watch part's version, card
+	// and binding, which the app checks against the forms a poll takes
+	// (watchPage: hex, and a card id) and leaves empty otherwise.
+	appFields := map[string]bool{".Title": true, ".Message": true, ".RPID": true, ".RPName": true, ".Prev": true, ".Next": true, ".Back": true, ".Form": true,
+		".Version": true, ".Card": true, ".Binding": true}
 	action := regexp.MustCompile(`\{\{-?\s*(.*?)\s*-?\}\}`)
 	files, err := fs.Glob(templateFS, "templates/*.html")
 	if err != nil || len(files) < 7 {

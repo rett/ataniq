@@ -49,7 +49,7 @@
   };
   // The answers to a decision after which the owner may tap again: nothing
   // was decided and the card is as it was.
-  var AGAIN = { challenge_expired: true, challenge_stale: true, assertion_refused: true, desk_busy: true, daemon_unavailable: true, rate_limited: true };
+  var AGAIN = { challenge_expired: true, challenge_stale: true, assertion_refused: true, desk_busy: true, daemon_unavailable: true, rate_limited: true, decisions_inhibited: true };
 
   var busy = false;
   // pending is the one challenge the next confirm tap may use; a tap takes
@@ -62,9 +62,15 @@
     return boxes.every(function (b) { return b.checked; });
   }
 
+  // stale says the live refresh script found this page's card changed or
+  // gone: the controls stay disabled, whatever else happens here.
+  function stale() { return document.documentElement.dataset.stale === "yes"; }
+
   function refresh() {
-    if (approveBtn) { approveBtn.disabled = busy || !allSigned(); }
-    if (denyBtn) { denyBtn.disabled = busy; }
+    if (approveBtn) { approveBtn.disabled = stale() || busy || !allSigned(); }
+    if (denyBtn) { denyBtn.disabled = stale() || busy; }
+    // The confirm button is an offer as well: a stale page keeps it off.
+    if (stale()) { goBtn.disabled = true; }
   }
 
   function showForm(on) {
@@ -75,8 +81,9 @@
   function back(text) {
     pending = null;
     busy = false;
+    delete document.documentElement.dataset.sent;
     confirmEl.hidden = true;
-    goBtn.disabled = false;
+    goBtn.disabled = stale();
     cancelBtn.disabled = false;
     showForm(true);
     refresh();
@@ -162,7 +169,7 @@
   }
 
   function start(action) {
-    if (busy) { return; }
+    if (busy || stale()) { return; }
     busy = true;
     refresh();
     say(SAY.asking);
@@ -231,10 +238,13 @@
     back(SAY.cancelled);
   });
   goBtn.addEventListener("click", function () {
-    if (busy || !pending) { return; }
+    if (busy || stale() || !pending) { return; }
     var p = pending;
     pending = null;
     busy = true;
+    // From here the card may be decided by this page: the live refresh
+    // script, which finds it gone, does not say it was decided elsewhere.
+    document.documentElement.dataset.sent = "yes";
     goBtn.disabled = true;
     cancelBtn.disabled = true;
     confirm(p).catch(function () { onlyLook(SAY.unknown); });

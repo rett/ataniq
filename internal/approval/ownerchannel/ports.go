@@ -384,6 +384,14 @@ type Config struct {
 	// the journal: nothing of it is kept.
 	SeatLog func(line string)
 
+	// WaitHold is the longest [Service.WaitPending] holds a call; the zero
+	// value is 25 seconds. A hold never runs past the caller's deadline
+	// less a small margin.
+	WaitHold time.Duration
+	// WaitMax is how many waits the service holds at once; the zero value
+	// is 8. One more is refused with [ErrWaitFull].
+	WaitMax int
+
 	// Notice, when set, is called with a host-written line for each thing
 	// the operator should see: an alert, a failed reply.
 	Notice func(line string)

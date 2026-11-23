@@ -51,6 +51,8 @@ var inventory = []struct {
 	{pattern: "GET /static/decide.js", kind: "asset"},
 	{pattern: "POST /api/decide-challenge", kind: "api"},
 	{pattern: "POST /api/decide", kind: "api"},
+	{pattern: "GET /static/watch.js", kind: "asset"},
+	{pattern: "POST /api/watch", kind: "api"},
 }
 
 // passkeyRoutes are the pages whose Permissions-Policy allows
@@ -146,6 +148,9 @@ func inspectPage(html string, allowed []string, mayDecide bool) []string {
 				!(strings.HasPrefix(v, "/") && !strings.HasPrefix(v, "//")) && !strings.HasPrefix(v, "#") {
 				add("address that is not of this app", key, v)
 			}
+			if !mayDecide && key == "data-offer" {
+				add("an offer control on a page that may not decide", v)
+			}
 			if !mayDecide && (key == "id" || key == "name" || key == "class" || key == "action" || key == "formaction" ||
 				key == "href" || key == "value" || key == "for" || strings.HasPrefix(key, "data-") || strings.HasPrefix(key, "aria-")) &&
 				key != "data-rp-name" && decideWords.MatchString(v) {
@@ -177,6 +182,24 @@ func inspectPage(html string, allowed []string, mayDecide bool) []string {
 		}
 	}
 	return found
+}
+
+// decidingRe finds the words of deciding in the text of a script.
+var decidingRe = regexp.MustCompile(`(?i)approv|decid|decision|den(y|ied)`)
+
+// watchBanner is the one sentence of a script that is not a decide script
+// which may hold such a word: the banner the live refresh script shows when
+// the card of a page changed or was settled elsewhere. It is a constant of
+// the script, and the rule below takes out that exact sentence and nothing
+// else, so the script holds no other word of the kind. The script reaches the
+// decision form's controls only by the neutral attribute data-offer that the
+// Card page puts on them, never by the name of one.
+const watchBanner = "This card changed or was decided elsewhere. Look again."
+
+// mentionsDeciding reports whether the text of a script that is not a decide
+// script holds a word of deciding, but for the one banner sentence.
+func mentionsDeciding(js string) bool {
+	return decidingRe.MatchString(strings.ReplaceAll(js, watchBanner, ""))
 }
 
 func TestPageInventory(t *testing.T) {
@@ -233,7 +256,7 @@ func TestPageInventory(t *testing.T) {
 			if externalRe.MatchString(body) {
 				t.Errorf("%s: an external address", e.pattern)
 			}
-			if strings.HasSuffix(path, ".js") && !decideAssets[path] && regexp.MustCompile(`(?i)approv|decid|decision|den(y|ied)`).MatchString(body) {
+			if strings.HasSuffix(path, ".js") && !decideAssets[path] && mentionsDeciding(body) {
 				t.Errorf("%s: the script mentions deciding", e.pattern)
 			}
 		case "text":
@@ -273,6 +296,7 @@ func TestInspectPageSeesWhatItLooksFor(t *testing.T) {
 		"hidden approve btn":  `<button id="start" name="approve" type="button">x</button>`,
 		"the deciding script": `<script src="/static/decide.js"></script>`,
 		"a sign-off box":      `<input type="checkbox" id="signoff-0">`,
+		"an offer control":    `<p data-offer="open">x</p>`,
 	} {
 		if f := inspectPage(page, []string{"button#start"}, false); len(f) == 0 {
 			t.Errorf("%s: no finding", name)

@@ -187,6 +187,16 @@
 // nothing. The verified sign counter is kept on the list ([KeyStore]), and
 // one that does not grow is told as a possible clone, not refused.
 //
+// # Waiting for a change
+//
+// [Service.WaitPending] is seat.wait: it holds a call until the version of
+// the pending set ([ownerwire.PendingVersion]) is not the one the caller
+// has, or a hold of [Config].WaitHold ends. The service pokes the waits after
+// each write of its journal and its handles and after each tick, looks at the
+// door at most once a second however many waits are held, and holds at most
+// [Config].WaitMax of them (one more is [ErrWaitFull]). A wait takes no lock
+// while it waits; wait.go says which it takes and when.
+//
 // # Concurrency
 //
 // A [Service] is safe for use by several goroutines and starts none of its

@@ -161,6 +161,8 @@ func seatParams(t testing.TB, op string) json.RawMessage {
 		b, err = ownerwire.EncodeSeatChallengeParams(ownerwire.SeatChallengeParams{Frame: aFrame(), Credential: "fedcba9876543210"})
 	case ownerwire.OpSeatDecide:
 		b, err = ownerwire.EncodeSeatDecideParams(ownerwire.SeatDecideParams{ChallengeID: anID, Frame: aFrame(), Assertion: anAssertion()})
+	case ownerwire.OpSeatWait:
+		b, err = ownerwire.EncodeSeatWaitParams(ownerwire.SeatWaitParams{})
 	default:
 		t.Fatalf("no params for %s", op)
 	}
@@ -168,6 +170,16 @@ func seatParams(t testing.TB, op string) json.RawMessage {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// decidingOps are the gate's operations that a deciding handler over the
+// fakes of this file serves: login and decide. seat.wait is left out because
+// its capability, watch, comes of the service being a [WaitPort], which
+// fakePort is not, so these handlers answer it unknown-op (the loop of
+// TestWithoutTheCapabilitiesTheSeatOperationsAreUnknown checks that); its own
+// served and refused cases are in wait_test.go.
+func decidingOps() []string {
+	return slices.DeleteFunc(ownerwire.GateOperations(), func(op string) bool { return op == ownerwire.OpSeatWait })
 }
 
 func TestNewDecidingNeedsTheSeatOperations(t *testing.T) {
@@ -191,7 +203,7 @@ func TestADecidingHandlerServesLoginAndDecide(t *testing.T) {
 	s := &fakeSeat{}
 	h, lb, _ := newDeciding(t, &fakePort{}, s)
 	want := ownerchannel.Source{Surface: ownerchannel.SurfaceSeat, Session: seatFP[:16]}
-	for _, op := range ownerwire.GateOperations() {
+	for _, op := range decidingOps() {
 		out, err := h.Handle(context.Background(), seat, op, seatParams(t, op))
 		if err != nil {
 			t.Fatalf("%s: %v", op, err)
@@ -360,7 +372,7 @@ func TestTheSeatErrorsMapToTheirCodes(t *testing.T) {
 		{errors.New("something else"), "failed"},
 	}
 	for _, c := range cases {
-		for _, op := range ownerwire.GateOperations() {
+		for _, op := range decidingOps() {
 			s := &fakeSeat{err: c.err}
 			h, lb, _ := newDeciding(t, &fakePort{}, s)
 			_, err := h.Handle(context.Background(), seat, op, seatParams(t, op))

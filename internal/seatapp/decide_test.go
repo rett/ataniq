@@ -127,12 +127,12 @@ func TestSeatDecideFormOnTheCardPage(t *testing.T) {
 	body := w.Body.String()
 	for _, want := range []string{
 		`<section id="decide" aria-labelledby="decide-title" data-rp-id="seat.example" data-card="` + testCardID + `" data-form="`,
-		`<input type="checkbox" id="signoff-0" class="signoff" value="0">`,
-		`<input type="checkbox" id="signoff-1" class="signoff" value="1">`,
-		`<button id="approve" type="button" hidden disabled>Approve</button>`,
-		`<textarea id="reason" rows="3" maxlength="500" hidden></textarea>`,
-		`<button id="deny" type="button" class="deny" hidden>Deny</button>`,
-		`<div id="confirm" hidden>`, `<button id="confirm-go" type="button"></button>`,
+		`<input type="checkbox" id="signoff-0" class="signoff" value="0" data-offer="open">`,
+		`<input type="checkbox" id="signoff-1" class="signoff" value="1" data-offer="open">`,
+		`<button id="approve" type="button" data-offer="open" hidden disabled>Approve</button>`,
+		`<textarea id="reason" rows="3" maxlength="500" data-offer="open" hidden></textarea>`,
+		`<button id="deny" type="button" class="deny" data-offer="open" hidden>Deny</button>`,
+		`<div id="confirm" hidden>`, `<button id="confirm-go" type="button" data-offer="open"></button>`,
 		"<dt>Project</dt><dd>ataniq</dd>", "<dt>What</dt><dd>feature finish seat-glue</dd>", "<dt>Into</dt><dd>develop</dd>",
 		"<dt>Revision</dt><dd class=\"mono\">binding abababababab</dd>", "<dt>Card</dt><dd>" + testCardID + "</dd>",
 		`<a id="look" href="/cards/` + testCardID + `" hidden>Look again</a>`,
@@ -1111,6 +1111,7 @@ func TestSeatDecideWords(t *testing.T) {
 		{ErrBusy, 503, "desk_busy", "The desk is busy. Try again in a few minutes."},
 		{ErrNotOffered, 503, "decide_unavailable", "The desk does not take decisions from the phone now."},
 		{ErrDaemonUnavailable, 503, "daemon_unavailable", "The desk cannot be reached. Nothing was sent."},
+		{ErrDecisionsInhibited, 503, "decisions_inhibited", "Decisions are paused on this host. Nothing was sent."},
 		{ErrChallengeDiffers, 502, "challenge_differs", sayDiffers},
 		{&NotAllowedError{Reason: "1 flagged path is not signed off"}, 409, "not_allowed", "This cannot be sent: 1 flagged path is not signed off."},
 		{errors.New("a text <i>of the daemon</i>"), 502, "failed", "Something went wrong. Look at the card again."},
@@ -1355,5 +1356,78 @@ func TestSeatReadingsKeepTheSentMark(t *testing.T) {
 	})
 	if n != maxReadings+3 {
 		t.Errorf("%d readings, want %d marked ones all kept", n, maxReadings+3)
+	}
+}
+
+// TestSeatDecideInhibitedSettles: a port that answers ErrDecisionsInhibited
+// sent nothing, so the phone shows the paused words and the card is as it
+// was: once decisions are taken again, a tap gets a challenge, without a
+// read of the card in between, and the decide script lets the owner tap
+// again after that answer.
+func TestSeatDecideInhibitedSettles(t *testing.T) {
+	r := newRig(t)
+	s := r.login(t)
+	r.openCard(t, s)
+	r.daemon.decideChErr = ErrDecisionsInhibited
+	wantFailure(t, "a paused challenge", r.tap(approveBody, s), 503, "decisions_inhibited", sayInhibited)
+	r.daemon.decideChErr = nil
+	id := r.challengeOf(t, s, approveBody)
+	r.daemon.decideErr = ErrDecisionsInhibited
+	wantFailure(t, "a paused decision", r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s), 503, "decisions_inhibited", sayInhibited)
+	r.daemon.decideErr = nil
+	r.challengeOf(t, s, approveBody)
+
+	js := r.do("GET", "/static/decide.js", nil, nil).Body.String()
+	if !strings.Contains(js, `decisions_inhibited: true`) {
+		t.Error("the script does not let the owner tap again after decisions_inhibited")
+	}
+}
+
+// TestSeatCardWhileDecisionsAreInhibited: a port whose Offer says Inhibited
+// gets a Card page that shows the notice and no decide form, no deciding
+// script and no passkey, while the card stays readable (its facts, its
+// paths page); a card that is not pending is not offered to the port at
+// all, and once the port offers again, the form is back.
+func TestSeatCardWhileDecisionsAreInhibited(t *testing.T) {
+	r := newRig(t)
+	s := r.login(t)
+	r.daemon.offer = Offer{Approve: true, Deny: true, Inhibited: true}
+	w := r.getWith("/cards/"+testCardID, s)
+	checkHeaders(t, "a card while decisions are paused", w)
+	body := w.Body.String()
+	if w.Code != 200 || !strings.Contains(body, "Decisions are paused on this host.") {
+		t.Fatalf("no notice: %d\n%s", w.Code, body)
+	}
+	for _, not := range []string{`id="decide"`, "decide.js", `id="approve"`, `id="deny"`, `id="signoff-0"`, "<form", "data-form="} {
+		if strings.Contains(body, not) {
+			t.Errorf("the paused page holds %q", not)
+		}
+	}
+	for _, want := range []string{"<h1>ataniq · feature finish seat-glue</h1>", "Merge the seat glue.", "refs/heads/develop", `id="back"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the card is not readable: no %q", want)
+		}
+	}
+	if pp := w.Header().Get("Permissions-Policy"); strings.Contains(pp, "publickey-credentials-get=(self)") {
+		t.Errorf("the page may ask for a passkey: %q", pp)
+	}
+	// The reads go on.
+	for _, path := range []string{"/cards/", "/cards/" + testCardID + "/paths/0"} {
+		if w := r.getWith(path, s); w.Code != 200 || strings.Contains(w.Body.String(), "Decisions are paused") {
+			t.Errorf("%s: %d", path, w.Code)
+		}
+	}
+	// A tap that a stale page makes is still refused by the port's own
+	// answer, which is the enforcement.
+	r.daemon.offer = Offer{Approve: true, Deny: true}
+	if body := r.getWith("/cards/"+testCardID, s).Body.String(); !strings.Contains(body, `id="decide"`) || strings.Contains(body, "Decisions are paused") {
+		t.Error("the form is not back once the port offers again")
+	}
+	// A card that is not pending asks the port nothing and shows no notice.
+	r.daemon.offer = Offer{Inhibited: true}
+	before := len(r.daemon.offers)
+	r.daemon.card.State, r.daemon.card.Ended = "approved", true
+	if body := r.getWith("/cards/"+testCardID, s).Body.String(); strings.Contains(body, "Decisions are paused") || len(r.daemon.offers) != before {
+		t.Error("an ended card is offered to the port or shows the notice")
 	}
 }
