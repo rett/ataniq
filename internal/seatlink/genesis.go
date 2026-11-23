@@ -129,6 +129,11 @@ func (d *Daemon) Genesis(ctx context.Context, c seatapp.GenesisCall) (seatapp.Ge
 	if ok {
 		return genesisView(c, kept)
 	}
+	// Every way out from here ends the call in the memory: an answer that
+	// is kept, or none, and for a call that changes threads the end of the
+	// change, whatever came back.
+	var keep *ownerwire.SeatGenesisResult
+	defer func() { d.gmem.after(c, keep, gen, d.gnow()) }()
 	if !d.budget.take(kindGenesis) {
 		return seatapp.GenesisView{}, seatapp.ErrBusy
 	}
@@ -148,7 +153,7 @@ func (d *Daemon) Genesis(ctx context.Context, c seatapp.GenesisCall) (seatapp.Ge
 	if err != nil {
 		return seatapp.GenesisView{}, err
 	}
-	d.gmem.after(c, res, gen, d.gnow())
+	keep = &res
 	return v, nil
 }
 
@@ -355,9 +360,12 @@ func wireNode(n catalog.Node) ownerwire.GenesisNode {
 // so what it remembers is what the gate would answer, but for a thread that
 // expired meanwhile (a page then meets genesis-unknown-thread at its next
 // post). A call that changes threads (start, answer, change, finish,
-// discard) forgets the list and its thread before it is sent, whatever its
-// answer, and an answer is kept only when no such call began while it was
-// asked (gen), so an answer that crossed a change is never kept. Nothing is
+// discard) forgets the list and its thread before it is sent, and again when
+// it ends, whatever its answer (a refusal, a lost answer, a failure): each
+// moves the generation (gen) on. An answer is kept only when the generation
+// is still the one taken before it was sent, so no change began or ended
+// while it was asked: a read that crossed a change, even one that began after
+// the change was sent and came back before it, is never kept. Nothing is
 // kept past maxViews threads, and what is stale is dropped at each call.
 type genesisMemory struct {
 	mu    sync.Mutex
@@ -404,25 +412,38 @@ func (m *genesisMemory) before(c seatapp.GenesisCall, now time.Time) (gen uint64
 	return m.gen, ownerwire.SeatGenesisResult{}, false
 }
 
-// after keeps the answer to a call, when no call that changes threads began
-// since gen: a list as the list, and any other answer that is where its
-// thread stands now (a round, or the answer to a call that changed it) as
-// that thread's round, with no reset. A discard is kept as nothing.
-func (m *genesisMemory) after(c seatapp.GenesisCall, res ownerwire.SeatGenesisResult, gen uint64, now time.Time) {
+// after ends a call in the memory; res is its answer, or nil when it has
+// none to keep (it was refused, failed, or not sent). A call that changes
+// threads moves the generation on once more and forgets the list and its
+// thread: a read that began while it was out, and was kept, may hold the
+// state before it. Then the answer is kept, when the generation was still
+// gen as the call ended (no call that changes threads began or ended since it
+// was sent, but the call itself): a list as the list, and any other answer
+// that is where its thread stands now (a round, or the answer to a call that
+// changed it) as that thread's round, with no reset. A discard is kept as
+// nothing.
+func (m *genesisMemory) after(c seatapp.GenesisCall, res *ownerwire.SeatGenesisResult, gen uint64, now time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if gen != m.gen {
+	fresh := res != nil && gen == m.gen
+	if changes(c.Verb) {
+		m.gen++
+		m.list = nil
+		delete(m.views, c.Thread)
+	}
+	if !fresh {
 		return
 	}
 	switch c.Verb {
 	case seatapp.GenesisVerbList:
-		m.list = &kept{res: res, at: now}
+		m.list = &kept{res: *res, at: now}
 	case seatapp.GenesisVerbRound, seatapp.GenesisVerbStart, seatapp.GenesisVerbAnswer, seatapp.GenesisVerbChange, seatapp.GenesisVerbFinish:
 		if m.views == nil || len(m.views) >= maxViews {
 			m.views = map[string]kept{}
 		}
-		res.Reset = 0
-		m.views[res.Thread] = kept{res: res, at: now}
+		r := *res
+		r.Reset = 0
+		m.views[r.Thread] = kept{res: r, at: now}
 	}
 }
 

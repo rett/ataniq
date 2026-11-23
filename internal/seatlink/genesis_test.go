@@ -483,6 +483,11 @@ func TestSeatLinkGenesisMemory(t *testing.T) {
 	}
 }
 
+// res is a result of the memory's tests: a round of the thread.
+func res(thread string, round int) *ownerwire.SeatGenesisResult {
+	return &ownerwire.SeatGenesisResult{State: ownerwire.GenesisStateQuestion, Thread: thread, Round: round}
+}
+
 // An answer that crossed a call changing its thread is not kept.
 func TestSeatLinkGenesisMemoryKeepsNothingThatCrossedAChange(t *testing.T) {
 	var m genesisMemory
@@ -493,28 +498,92 @@ func TestSeatLinkGenesisMemoryKeepsNothingThatCrossedAChange(t *testing.T) {
 		t.Fatal("an empty memory answered")
 	}
 	// An answer to the thread begins and ends while the round is asked.
-	agen, _, _ := m.before(seatapp.GenesisCall{Verb: seatapp.GenesisVerbAnswer, Thread: round.Thread}, now)
-	m.after(seatapp.GenesisCall{Verb: seatapp.GenesisVerbAnswer, Thread: round.Thread},
-		ownerwire.SeatGenesisResult{State: ownerwire.GenesisStateQuestion, Thread: round.Thread, Round: 2}, agen, now)
-	m.after(round, ownerwire.SeatGenesisResult{State: ownerwire.GenesisStateQuestion, Thread: round.Thread, Round: 1}, gen, now)
-	if _, res, ok := m.before(round, now); !ok || res.Round != 2 {
-		t.Fatalf("the memory holds round %d (%v), want the answer's 2", res.Round, ok)
+	answer := seatapp.GenesisCall{Verb: seatapp.GenesisVerbAnswer, Thread: round.Thread}
+	agen, _, _ := m.before(answer, now)
+	m.after(answer, res(round.Thread, 2), agen, now)
+	m.after(round, res(round.Thread, 1), gen, now)
+	if _, got, ok := m.before(round, now); !ok || got.Round != 2 {
+		t.Fatalf("the memory holds round %d (%v), want the answer's 2", got.Round, ok)
 	}
 	// A list that crossed a start is not kept either.
 	list := seatapp.GenesisCall{Verb: seatapp.GenesisVerbList}
 	lgen, _, _ := m.before(list, now)
-	m.before(seatapp.GenesisCall{Verb: seatapp.GenesisVerbStart}, now)
-	m.after(list, ownerwire.SeatGenesisResult{State: ownerwire.GenesisStateThreads}, lgen, now)
+	start := seatapp.GenesisCall{Verb: seatapp.GenesisVerbStart}
+	sgen, _, _ := m.before(start, now)
+	m.after(list, &ownerwire.SeatGenesisResult{State: ownerwire.GenesisStateThreads}, lgen, now)
 	if _, _, ok := m.before(list, now); ok {
 		t.Fatal("a list that crossed a start was kept")
 	}
+	m.after(start, nil, sgen, now)
 	// The memory holds at most maxViews threads.
 	for i := 0; i < 3*maxViews; i++ {
 		c := seatapp.GenesisCall{Verb: seatapp.GenesisVerbRound, Thread: fmt.Sprintf("%016x", i)}
 		g, _, _ := m.before(c, now)
-		m.after(c, ownerwire.SeatGenesisResult{State: ownerwire.GenesisStateQuestion, Thread: c.Thread, Round: 1}, g, now)
+		m.after(c, res(c.Thread, 1), g, now)
 		if len(m.views) > maxViews {
 			t.Fatalf("%d threads kept", len(m.views))
+		}
+	}
+}
+
+// A read that began after a change was sent and came back before it (so no
+// change began while it was asked) is not kept past the change's end: the
+// change moves the generation on again when it ends, whatever its answer, and
+// forgets what was kept meanwhile. Its own answer is kept when nothing else
+// changed.
+func TestSeatLinkGenesisMemoryForgetsReadsThatOverlappedAChange(t *testing.T) {
+	const th = "0123456789abcdef"
+	now := decideNow
+	round := seatapp.GenesisCall{Verb: seatapp.GenesisVerbRound, Thread: th}
+	list := seatapp.GenesisCall{Verb: seatapp.GenesisVerbList}
+	for name, c := range map[string]struct {
+		change seatapp.GenesisCall
+		// answer is the change's own answer, or nil for one that was
+		// refused, lost or failed.
+		answer *ownerwire.SeatGenesisResult
+	}{
+		"an answer that came back":  {seatapp.GenesisCall{Verb: seatapp.GenesisVerbAnswer, Thread: th}, res(th, 2)},
+		"an answer that was lost":   {seatapp.GenesisCall{Verb: seatapp.GenesisVerbAnswer, Thread: th}, nil},
+		"a change that was refused": {seatapp.GenesisCall{Verb: seatapp.GenesisVerbChange, Thread: th}, nil},
+		"a finish that came back":   {seatapp.GenesisCall{Verb: seatapp.GenesisVerbFinish, Thread: th}, &ownerwire.SeatGenesisResult{State: ownerwire.GenesisStateFinished, Thread: th}},
+		"a discard that came back":  {seatapp.GenesisCall{Verb: seatapp.GenesisVerbDiscard, Thread: th}, &ownerwire.SeatGenesisResult{State: ownerwire.GenesisStateDiscarded, Thread: th}},
+	} {
+		var m genesisMemory
+		// The change is sent.
+		cgen, _, _ := m.before(c.change, now)
+		// A round and a list begin after it, and come back before it with
+		// the state before it.
+		rgen, _, ok := m.before(round, now)
+		if ok {
+			t.Fatalf("%s: the memory answered a round while the change was out", name)
+		}
+		lgen, _, _ := m.before(list, now)
+		m.after(round, res(th, 1), rgen, now)
+		m.after(list, &ownerwire.SeatGenesisResult{State: ownerwire.GenesisStateThreads,
+			Threads: []ownerwire.GenesisThread{{Thread: th, State: ownerwire.GenesisStateQuestion, Round: 1, Of: 6}}}, lgen, now)
+		// The change ends.
+		m.after(c.change, c.answer, cgen, now)
+		if _, _, ok := m.before(list, now); ok {
+			t.Errorf("%s: the list from before the change is kept", name)
+		}
+		got, kept := m.views[th]
+		switch {
+		case c.answer != nil && c.change.Verb != seatapp.GenesisVerbDiscard:
+			if !kept || !reflect.DeepEqual(got.res, *c.answer) {
+				t.Errorf("%s: the thread's view is %+v (%v), want the change's own answer", name, got.res, kept)
+			}
+		case kept:
+			t.Errorf("%s: the round from before the change is kept: %+v", name, got.res)
+		}
+		// A read that ends after the change ended, having begun before
+		// it ended, is not kept either.
+		m = genesisMemory{}
+		cgen, _, _ = m.before(c.change, now)
+		rgen, _, _ = m.before(round, now)
+		m.after(c.change, c.answer, cgen, now)
+		m.after(round, res(th, 1), rgen, now)
+		if got, kept := m.views[th]; kept && got.res.Round == 1 {
+			t.Errorf("%s: a round that crossed the change's end is kept", name)
 		}
 	}
 }

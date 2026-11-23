@@ -201,7 +201,8 @@
 // 20 seconds, and a round from the last answer of its thread for 10 seconds,
 // so the card lists that reload and the page a post redirects to do not spend
 // the room of the owner's taps; a call that changes threads forgets both
-// before it is sent. The memory holds nothing past its time but until the
+// before it is sent and again when it ends, and a read is kept only when no
+// such call began or ended while it was asked. The memory holds nothing past its time but until the
 // next call, and no log line of this package holds an answer.
 package seatlink
 

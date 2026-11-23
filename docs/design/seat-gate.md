@@ -2069,8 +2069,13 @@ spend that room on reads, the link answers a `list` from the last one for 20
 seconds (the card list's reload gap: card lists open in several tabs list the
 open projects once in it between them) and a `round` from its own last answer
 for that thread for 10 seconds (the page a form's post redirects to), and
-forgets both before any call that changes threads is sent: one answer of the
-owner's is one call. A summary's rows get their questions, for a change, from
+forgets both before any call that changes threads is sent and again when it
+ends, whatever its answer: one answer of the owner's is one call. A read's
+answer is kept only when no call that changes threads began or ended while it
+was asked (a generation taken before the read is sent, which each such call
+moves on as it starts and as it ends), so a read that overlapped a change,
+even one that began after the change was sent and came back before it, is
+never kept; the change's own answer is kept when nothing else changed. A summary's rows get their questions, for a change, from
 the catalog the seat's build holds, and only when the thread's catalog digest is
 that catalog's; under another catalog the row offers no change.
 
