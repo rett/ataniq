@@ -212,6 +212,10 @@ type app struct {
 	// their decision challenges.
 	reads   *limiter
 	decides *limiter
+	// watches bounds the watch polls of each credential's sessions, apart
+	// from the reads; watchHold is how long a poll is held.
+	watches   *limiter
+	watchHold time.Duration
 	// host is what the Host header of a request must be: the origin without
 	// its scheme.
 	host string
@@ -246,7 +250,8 @@ func newApp(cfg Config) (*app, http.Handler, error) {
 	}
 	_, hostHeader, _ := strings.Cut(origin, "://")
 	a := &app{cfg: cfg, pair: newPairing(cfg), login: newLogins(cfg), sess: newSessions(cfg.Now),
-		reads: newLimiter(readRequests, readWindow), decides: newLimiter(decideRequests, decideWindow), host: hostHeader}
+		reads: newLimiter(readRequests, readWindow), decides: newLimiter(decideRequests, decideWindow),
+		watches: newLimiter(watchRequests, watchWindow), watchHold: watchHold, host: hostHeader}
 
 	mux := http.NewServeMux()
 	for _, rt := range a.routes() {
@@ -291,6 +296,8 @@ func (a *app) routes() []route {
 		{"GET /static/decide.js", a.asset("assets/decide.js", "text/javascript; charset=utf-8")},
 		{"POST /api/decide-challenge", a.post(a.decideChallenge)},
 		{"POST /api/decide", a.post(a.decidePost)},
+		{"GET /static/watch.js", a.asset("assets/watch.js", "text/javascript; charset=utf-8")},
+		{"POST /api/watch", a.post(a.watchPost)},
 	}
 }
 

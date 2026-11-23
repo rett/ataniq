@@ -111,5 +111,6 @@
 {{else if .Card.OnItsWay}}<p class="held">A decision of this card is on its way to the door. Look at it again in a moment.</p>
 {{else if not .Card.Ended}}<p class="readonly">This card cannot be decided now{{if .Offer.DenyWhy}}: {{text .Offer.DenyWhy maxLine}}{{end}}. Look at it at the desk.</p>
 {{end}}<p><a id="back" href="/cards/">Back to the cards</a></p>
+{{template "watch" .Watch}}
 {{template "leave"}}
 {{end}}
