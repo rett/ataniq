@@ -124,6 +124,10 @@ type Service struct {
 	idx       index
 	// pages holds the last pages that were split.
 	pages []cachedPages
+
+	// wait is the bookkeeping of [Service.WaitPending]. Its own mutex is a
+	// leaf: see wait.go for where a wait takes what.
+	wait waitState
 }
 
 // pendingCache is a decoded pending record with the digest of its bytes.
@@ -154,11 +158,20 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	if cfg.ApprovalLife < time.Minute || cfg.ApprovalLife > 24*time.Hour {
 		return nil, errors.New("ownerchannel: the approval's life is under a minute or over a day")
 	}
+	if cfg.WaitHold == 0 {
+		cfg.WaitHold = defaultWaitHold
+	}
+	if cfg.WaitHold < 0 || cfg.WaitMax < 0 {
+		return nil, errors.New("ownerchannel: the wait's hold and its limit are not negative")
+	}
+	if cfg.WaitMax == 0 {
+		cfg.WaitMax = defaultWaitMax
+	}
 	s := &Service{
 		cfg:       cfg,
 		life:      cfg.ApprovalLife,
 		slot:      make(chan struct{}, 1),
-		store:     cfg.Journal,
+		wait:      newWaitState(),
 		pending:   make(map[string]pendingCache),
 		trackers:  make(map[string]*presence.Tracker),
 		status:    make(map[string]RequestStatus),
@@ -168,6 +181,7 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 		closedOut: make(map[string]bool),
 		idx:       newIndex(),
 	}
+	s.store = &pokeJournal{Journal: cfg.Journal, poke: s.poke}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.initPairing()
 	s.seat = newChallengeStore(cfg.ChallengeRand, cfg.SeatLog)
@@ -331,10 +345,11 @@ type callStore struct{ gen atomic.Int64 }
 
 // handles returns what the writes through the handles go to.
 func (s *Service) handles() HandleWrites {
+	var h HandleWrites = directHandles{}
 	if s.cfg.Handles != nil {
-		return s.cfg.Handles
+		h = s.cfg.Handles
 	}
-	return directHandles{}
+	return pokeHandles{HandleWrites: h, poke: s.poke}
 }
 
 // recoverJournal runs after the store answered ErrUncertain: it closes the
@@ -359,7 +374,7 @@ func (s *Service) recoverJournal(ctx context.Context) error {
 		return fmt.Errorf("%w: the journal could not be reopened: %w", ErrStopped, err)
 	}
 	s.mu.Lock()
-	s.store = fresh
+	s.store = &pokeJournal{Journal: fresh, poke: s.poke}
 	s.gen++
 	s.mu.Unlock()
 	s.recovering = true
