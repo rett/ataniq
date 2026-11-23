@@ -1020,8 +1020,11 @@ func TestSeatLinkDecideLostAnswer(t *testing.T) {
 	r := newDecideRig(t)
 	r.show(t)
 	ch, _ := r.link.DecideChallenge(context.Background(), r.approve())
+	// The handler runs on the gate's goroutine, which may still read the
+	// rig after the test has moved on to a new one: it holds its own gate.
+	first := r.gate
 	r.desk.outcome = func(ctx context.Context, f ownerwire.DecisionFrame) (json.RawMessage, error) {
-		go r.gate.stop()
+		go first.stop()
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}

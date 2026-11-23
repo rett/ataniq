@@ -32,6 +32,26 @@ const CodeTooManyRefusals = "too-many-refusals"
 // door-unavailable, journal-reopened, keys-unavailable, keys-full) does not
 // count: a seat that polls while the door is down is not shut out for it.
 //
+// Of the words of seat.genesis only genesis-bad-answer counts, with
+// bad-params as everywhere: an answer the question cannot take (an unknown
+// node, an option the question does not hold, a form of answer it does not
+// take, a round the thread has not reached) is what the peer sent, the seat's
+// own pages never send one, and a seat that keeps sending them is the misuse
+// the bound is for. None of the others counts. genesis-stale-round (a round
+// already taken), genesis-busy (a third open thread), genesis-done (a call to
+// a finished thread) and genesis-unknown-thread (a thread that expired, was
+// discarded, or is not the store's) answer the state of the daemon's store,
+// which a seat in good order meets: a double tap, a second tab, a post the
+// browser sent again, a start after two threads were left open, a page left
+// open past a discard. genesis-secret-shaped and genesis-over-cap answer what
+// the owner typed, which the owner may get wrong a few times on the way to a
+// good answer. None of them says anything against the peer, and a few taps
+// must not shut the owner out of approvals for ten minutes. They stay bounded
+// elsewhere: by the seat's own 30 project requests a minute for each
+// credential, by the seat link's room of 10 interview calls, by the gate's 60
+// requests a minute, and by the store's own limits (two open threads, eight
+// files). They are kept out of this table by being absent.
+//
 // wait-full, the answer to a seat.wait past the peer's two held waits or the
 // service's own limit, does not count either, and must not: it is a load
 // answer, not a misuse. A seat that reconnects while its old wait is still
@@ -55,6 +75,9 @@ var counted = func() map[string]bool {
 		CodeKeyAmbiguous:      true,
 		// An assertion that does not verify is what the peer sent.
 		ownerwire.CodeAssertionInvalid: true,
+		// The one refusal of seat.genesis that counts: an answer the
+		// question cannot take. None of the others: see above.
+		ownerwire.CodeGenesisBadAnswer: true,
 	}
 	for c := range passedRefusals {
 		m[string(c)] = true

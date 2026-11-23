@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"net"
 	"os"
@@ -150,10 +151,10 @@ func dialGate(addr string, seat seatgate.Identity, gateFP string) (*seatgate.Cli
 }
 
 // The gate is served on the address given, to a pinned seat only, with the
-// capabilities pair and read (no seat origin is configured); a seat whose key
-// is not pinned never reaches the service. The start line names the address
-// and the gate's key, says why it serves pair and read only, and holds no
-// pin. At shutdown the gate stops before the service is closed, and its port
+// capabilities pair, read and genesis (no seat origin is configured); a seat
+// whose key is not pinned never reaches the service. The start line names the
+// address and the gate's key, says why it serves no login and decision, and
+// holds no pin. At shutdown the gate stops before the service is closed, and its port
 // takes no connection after.
 func TestSeatGateServesAPinnedSeatOnly(t *testing.T) {
 	addr := freeLoopback(t)
@@ -169,7 +170,7 @@ func TestSeatGateServesAPinnedSeatOnly(t *testing.T) {
 	done := startApp(t, ta, []string{"--state-dir", state, "--runtime-dir", runtime, "--owner-channel", "--seat-gate", addr}, runtime+"/daemon.sock")
 
 	log := errs.String()
-	if want := "ataniqd: seat gate: listening on " + addr + ", key fingerprint " + gateFP + "; it serves pair and read only: no configuration folder (XDG_CONFIG_HOME or HOME) to read the seat origin from\n"; !strings.Contains(log, want) {
+	if want := "ataniqd: seat gate: listening on " + addr + ", key fingerprint " + gateFP + "; it serves pair, read and genesis only: no configuration folder (XDG_CONFIG_HOME or HOME) to read the seat origin from\n"; !strings.Contains(log, want) {
 		t.Fatalf("no start line %q in:\n%s", want, log)
 	}
 	if strings.Count(log, "seat gate:") != 1 || strings.Contains(log, seat.Fingerprint()) {
@@ -180,7 +181,7 @@ func TestSeatGateServesAPinnedSeatOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the pinned seat: %v", err)
 	}
-	if got := strings.Join(c.Caps(), " "); got != strings.Join(gatehost.Caps(), " ") || got != "pair read" {
+	if got := strings.Join(c.Caps(), " "); got != strings.Join(gatehost.Caps(), " ")+" genesis" || got != "pair read genesis" {
 		t.Fatalf("the gate's capabilities: %q", got)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -192,6 +193,22 @@ func TestSeatGateServesAPinnedSeatOnly(t *testing.T) {
 	var re *seatgate.RemoteError
 	if err := c.Call(ctx, ownerwire.OpDecide, map[string]string{}, nil); !errors.As(err, &re) || re.Code != gatehost.CodeUnknownOp {
 		t.Fatalf("owner.decide over the gate: %v", err)
+	}
+	// The guided interview is served, from a thread store that the daemon made
+	// in owner/genesis of the state folder, private to its user.
+	var started ownerwire.SeatGenesisResult
+	if err := c.Call(ctx, ownerwire.OpSeatGenesis, json.RawMessage(`{"verb":"start"}`), &started); err != nil || started.State != ownerwire.GenesisStateQuestion || started.Round != 1 {
+		t.Fatalf("seat.genesis start: %+v %v", started, err)
+	}
+	gdir := genesisDir(state)
+	if fi, err := os.Stat(gdir); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("the thread store's folder: %v %v", fi, err)
+	}
+	if fi, err := os.Stat(filepath.Join(gdir, started.Thread+".json")); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("the thread's file: %v %v", fi, err)
+	}
+	if !strings.Contains(errs.String(), "ataniqd: genesis: a thread was started\n") {
+		t.Fatalf("the thread store's line is not in the log:\n%s", errs.String())
 	}
 	c.Close()
 	if n := svc.lists.Load(); n != 1 {
@@ -414,6 +431,109 @@ func TestSeatGateThatCannotListenStopsTheDaemon(t *testing.T) {
 	}
 	if n := svc.closes.Load(); n != 1 {
 		t.Fatalf("the service was closed %d times", n)
+	}
+}
+
+// The gate's thread store is opened in owner/genesis of the state folder when
+// the gate starts, and a folder it must refuse (a link, a folder open to
+// writing) does not stop the daemon: it logs one line with the store's reason
+// word, and the gate listens and serves everything but genesis.
+func TestSeatGateThatCannotOpenItsThreadStoreServesWithoutGenesis(t *testing.T) {
+	for name, c := range map[string]struct {
+		prepare func(t *testing.T, dir string)
+		reason  string
+	}{
+		"a link": {func(t *testing.T, dir string) {
+			target := filepath.Join(filepath.Dir(dir), "elsewhere")
+			if err := os.Mkdir(target, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, dir); err != nil {
+				t.Fatal(err)
+			}
+		}, "folder-link"},
+		"a folder others may write": {func(t *testing.T, dir string) {
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(dir, 0o777); err != nil {
+				t.Fatal(err)
+			}
+		}, "folder-mode"},
+	} {
+		addr := freeLoopback(t)
+		svc := gateSetup(t, "")
+		state, runtime := ownerCmdDirs(t)
+		gateFP := gateInit(t, state)
+		seat := newSeat(t, "seat")
+		writePins(t, state, seat.Fingerprint()+"\n", 0o600)
+		c.prepare(t, genesisDir(state))
+		ta := newTestApp(t, nil)
+		errs := &gateBuf{}
+		ta.stderr = errs
+		done := startApp(t, ta, []string{"--state-dir", state, "--runtime-dir", runtime, "--owner-channel", "--seat-gate", addr}, runtime+"/daemon.sock")
+		gc, err := dialGate(addr, seat, gateFP)
+		if err != nil {
+			t.Fatalf("%s: %v: %s", name, err, errs.String())
+		}
+		if got := strings.Join(gc.Caps(), " "); got != "pair read" {
+			t.Fatalf("%s: the gate's capabilities: %q", name, got)
+		}
+		gc.Close()
+		log := errs.String()
+		if !strings.Contains(log, "ataniqd: seat gate: the guided interview is not served: its thread store did not open ("+c.reason+")") ||
+			!strings.Contains(log, "seat gate: listening on") || strings.Contains(log, state) {
+			t.Fatalf("%s: the log:\n%s", name, log)
+		}
+		ta.signals <- syscall.SIGTERM
+		if code := <-done; code != 0 {
+			t.Fatalf("%s: exit %d: %s", name, code, errs.String())
+		}
+		if n := svc.closes.Load(); n != 1 {
+			t.Fatalf("%s: the service was closed %d times", name, n)
+		}
+	}
+}
+
+// A restart of the daemon serves the threads of the one before it, and its
+// stop closes the store after the gate: nothing is served from it after.
+func TestSeatGateKeepsItsThreadsOverARestart(t *testing.T) {
+	addr := freeLoopback(t)
+	gateSetup(t, "")
+	state, runtime := ownerCmdDirs(t)
+	gateFP := gateInit(t, state)
+	seat := newSeat(t, "seat")
+	writePins(t, state, seat.Fingerprint()+"\n", 0o600)
+	var thread string
+	for i := 0; i < 2; i++ {
+		ta := newTestApp(t, nil)
+		errs := &gateBuf{}
+		ta.stderr = errs
+		done := startApp(t, ta, []string{"--state-dir", state, "--runtime-dir", runtime, "--owner-channel", "--seat-gate", addr}, runtime+"/daemon.sock")
+		c, err := dialGate(addr, seat, gateFP)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		var res ownerwire.SeatGenesisResult
+		if i == 0 {
+			err = c.Call(ctx, ownerwire.OpSeatGenesis, json.RawMessage(`{"verb":"start"}`), &res)
+			thread = res.Thread
+		} else {
+			err = c.Call(ctx, ownerwire.OpSeatGenesis, json.RawMessage(`{"verb":"round","thread":"`+thread+`"}`), &res)
+			if res.Thread != thread || res.State != ownerwire.GenesisStateQuestion || res.Round != 1 {
+				t.Fatalf("after the restart: %+v", res)
+			}
+		}
+		cancel()
+		if err != nil || thread == "" {
+			t.Fatalf("run %d: %+v %v", i, res, err)
+		}
+		c.Close()
+		ta.signals <- syscall.SIGTERM
+		if code := <-done; code != 0 {
+			t.Fatalf("exit %d: %s", code, errs.String())
+		}
 	}
 }
 

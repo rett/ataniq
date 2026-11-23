@@ -73,7 +73,12 @@ of the socket is a seat.
                     comment, at most 4). Both are read at start, so a change of
                     the pins takes effect at the next start; the daemon refuses
                     to start without a key or a pin. It serves the pairing call
-                    and the reads of the cards. With the seat origin in the
+                    and the reads of the cards, and the guided new-project
+                    interview, whose threads it keeps one file each in
+                    owner/genesis/ of the state folder (a folder it makes,
+                    mode 0700; it refuses a link, a folder that is not the
+                    daemon user's and one open to writing). With the seat
+                    origin in the
                     owner-local file ataniq/owner-local/seat-origin of the
                     configuration folder (https:// and a lower-case domain
                     name, read once at start) it also serves a login and a
@@ -81,8 +86,8 @@ of the socket is a seat.
                     user verification, on scratch state only; without one it
                     decides nothing. At start it prints one line with the
                     address, the gate's key fingerprint, the origin and what
-                    it serves (or why it serves pair and read only), and no
-                    pin; it stops the gate before it closes the service.
+                    it serves (or why it serves no login and decision), and
+                    no pin; it stops the gate before it closes the service.
   seat-gate init    make the gate's key in owner/gate/ of the state folder and
                     print its fingerprint, the pin the seat is given. A key
                     already there is never overwritten.

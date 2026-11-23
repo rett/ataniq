@@ -18,6 +18,7 @@ import (
 
 	"ataniq/internal/approval/gatehost"
 	"ataniq/internal/approval/ownerchannel"
+	"ataniq/internal/genesis/thread"
 	"ataniq/internal/seatgate"
 )
 
@@ -32,7 +33,11 @@ import (
 // (gatehost.DecidingCaps). When the service can wait for a change of the
 // pending cards (gatehost.WaitPort, as the owner channel's service does), it
 // serves the capability watch too (gatehost.CapWatch), the seat's long wait
-// that lets the phone's pages refresh by themselves.
+// that lets the phone's pages refresh by themselves. When the gate has a
+// folder for the guided new-project interview (SeatGate.GenesisDir), it opens
+// the thread store there and serves the capability genesis (gatehost.CapGenesis),
+// the interview's one operation, seat.genesis. A thread store that does not
+// open is logged and leaves the interview out: the gate serves the rest.
 
 const (
 	// SeatGateDirName is the name of the gate's folder in the owner folder
@@ -40,6 +45,10 @@ const (
 	// and seatgate.KeyFile, made by seatgate.WriteIdentityFiles) and the pin
 	// file.
 	SeatGateDirName = "gate"
+	// GenesisDirName is the name of the thread store's folder in the owner
+	// folder of the state folder: the guided new-project interview's threads,
+	// one file each (package genesis/thread).
+	GenesisDirName = thread.DirName
 	// SeatPinsFileName is the name of the pin file in the gate's folder:
 	// the fingerprints of the seat keys the gate lets in, one per line.
 	SeatPinsFileName = "seat-pins"
@@ -217,6 +226,17 @@ type SeatGate struct {
 	// is missing, refused, or holds no canonical origin. It holds nothing
 	// of the file.
 	NoOrigin string
+	// GenesisDir is the folder of the thread store of the guided new-project
+	// interview, or "" for a gate that serves none. The gate opens the store
+	// there when it starts (making the folder, mode 0700, if it is not there;
+	// package genesis/thread refuses a link, a folder that is not the daemon
+	// user's and one open to writing) and closes it when it stops, after the
+	// requests in flight ended. A store that cannot be opened is logged, in
+	// one line of fixed words with the store's reason word, and the gate
+	// starts without it: it does not serve genesis (the phone then shows no
+	// "New project"), and nothing in the folder is read or written. The rest
+	// of the gate, and the daemon, are not stopped for it.
+	GenesisDir string
 	// Log receives the gate's lines: the one start line, the handler's
 	// refusals and a stop that did not go as asked; nil discards them. No
 	// line holds a pin.
@@ -240,13 +260,18 @@ func (g *SeatGate) logf(format string, a ...any) {
 // as well only when it has an origin and svc can decide from the phone (it
 // is a gatehost.SeatPort, as the owner channel's service is), and watch when
 // svc can wait (a gatehost.WaitPort, as the owner channel's service is), with
-// or without an origin: a wait decides nothing. The calls of login and
-// decide are bound to the gate's own key fingerprint and checked against the
-// origin and its host, the relying party id. It writes one line once the
+// or without an origin: a wait decides nothing. It serves genesis, the guided
+// new-project interview, when the gate has a GenesisDir whose thread store
+// opens, with or without an origin: an answer decides nothing either. A store
+// that does not open is not an error of the start: the gate logs it and
+// serves the rest without genesis. The
+// calls of login and decide are bound to the gate's own key fingerprint and
+// checked against the origin and its host, the relying party id. It writes one line once the
 // gate listens, which names the address, the gate's key fingerprint, the
-// origin when it serves login and decide, and what it serves (watch among
-// it, when it does), with why it serves pair and read only when it does;
-// never a pin.
+// origin when it serves login and decide, and what it serves (the
+// capabilities of the handler's hello, in its order: watch and genesis among
+// them when it serves them), with why it serves no login and decide only when
+// it does not; never a pin.
 //
 // Stop stops accepting, lets the requests in flight finish for the server's
 // shutdown grace, closes every connection and returns once the server has
@@ -273,36 +298,58 @@ func (g *SeatGate) Start(svc gatehost.Port) (stop func(), err error) {
 		}
 		pins[i] = []byte(p)
 	}
+	var opts []gatehost.Option
+	var store *thread.Store
+	if g.GenesisDir != "" {
+		s, err := thread.Open(g.GenesisDir, thread.Options{Log: g.Log})
+		if err != nil {
+			g.logf("seat gate: the guided interview is not served: its thread store did not open (%s); the phone offers no New project until the folder is fixed and the daemon restarted",
+				storeReason(err))
+		} else {
+			store = s
+			opts = append(opts, gatehost.WithGenesis(store))
+		}
+	}
+	closeStore := func() {
+		if store != nil {
+			_ = store.Close()
+		}
+	}
 	var h *gatehost.Handler
 	var serves string
 	seat, canDecide := svc.(gatehost.SeatPort)
-	// The handler lists watch when its service can wait (gatehost.New).
-	_, canWait := svc.(gatehost.WaitPort)
-	onlyWord, allWord := "pair and read only", "pair, read, login and decide"
-	if canWait {
-		onlyWord, allWord = "pair, read and watch only", "pair, read, login, decide and watch"
-	}
+	// The handler lists watch when its service can wait (gatehost.New) and
+	// genesis when it was given the thread store; the start line says what it
+	// lists.
 	switch {
 	case g.Origin == "":
 		why := g.NoOrigin
 		if why == "" {
 			why = "no seat origin is configured"
 		}
-		h, err = gatehost.New(svc, pinnedIn(pins), g.Log)
-		serves = "; it serves " + onlyWord + ": " + why
+		h, err = gatehost.New(svc, pinnedIn(pins), g.Log, opts...)
+		if err == nil {
+			serves = "; it serves " + capWords(h.Caps()) + " only: " + why
+		}
 	case !canDecide:
-		h, err = gatehost.New(svc, pinnedIn(pins), g.Log)
-		serves = "; it serves " + onlyWord + ": this service cannot take a decision from the phone"
+		h, err = gatehost.New(svc, pinnedIn(pins), g.Log, opts...)
+		if err == nil {
+			serves = "; it serves " + capWords(h.Caps()) + " only: this service cannot take a decision from the phone"
+		}
 	default:
 		origin, rpID, cerr := CanonicalSeatOrigin(g.Origin)
 		if cerr != nil || origin != g.Origin {
+			closeStore()
 			return nil, errors.New("seat gate: the seat origin is not in its canonical form")
 		}
 		gate := ownerchannel.Gate{Instance: g.Identity.Fingerprint(), Origin: origin, RPID: rpID}
-		h, err = gatehost.NewDeciding(svc, seat, gate, pinnedIn(pins), g.Log)
-		serves = ", seat origin " + origin + "; it serves " + allWord
+		h, err = gatehost.NewDeciding(svc, seat, gate, pinnedIn(pins), g.Log, opts...)
+		if err == nil {
+			serves = ", seat origin " + origin + "; it serves " + capWords(h.Caps())
+		}
 	}
 	if err != nil {
+		closeStore()
 		return nil, fmt.Errorf("seat gate: %w", err)
 	}
 	listen := g.Listen
@@ -311,6 +358,7 @@ func (g *SeatGate) Start(svc gatehost.Port) (stop func(), err error) {
 	}
 	ln, err := listen("tcp", g.Addr.String())
 	if err != nil {
+		closeStore()
 		return nil, fmt.Errorf("seat gate: cannot listen on %s: %s", g.Addr, SafeText(err.Error()))
 	}
 	cfg := seatgate.ServerConfig{
@@ -337,8 +385,32 @@ func (g *SeatGate) Start(svc gatehost.Port) (stop func(), err error) {
 			case <-t.C:
 				g.logf("seat gate: the server did not stop within %s; its connections end with this process", seatGateStopWait)
 			}
+			closeStore()
 		})
 	}, nil
+}
+
+// storeReason is the reason word of a thread store that did not open (see
+// thread.OpenError), or "unknown" for an error of another kind: one of the
+// store's fixed words, never anything of the folder's path.
+func storeReason(err error) string {
+	var oe *thread.OpenError
+	if errors.As(err, &oe) && oe.Reason != "" && strings.Trim(oe.Reason, "abcdefghijklmnopqrstuvwxyz-") == "" {
+		return oe.Reason
+	}
+	return "unknown"
+}
+
+// capWords says a capability list in words, as the start line does: "pair and
+// read", "pair, read and watch", "pair, read, login, decide, watch and genesis".
+func capWords(caps []string) string {
+	switch len(caps) {
+	case 0:
+		return "nothing"
+	case 1:
+		return caps[0]
+	}
+	return strings.Join(caps[:len(caps)-1], ", ") + " and " + caps[len(caps)-1]
 }
 
 // pinnedIn is the pin check the handler asks on every call: whether fp is one

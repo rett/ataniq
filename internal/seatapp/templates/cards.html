@@ -27,7 +27,8 @@
 {{end}}</ul>
 {{else}}<p>Nothing recent.</p>
 {{end}}</section>
-{{template "readonly"}}
+{{if .Genesis}}{{template "projects" .Projects}}
+{{end}}{{template "readonly"}}
 {{template "watch" .Watch}}
 {{if .Push}}{{template "push"}}
 {{end}}{{template "leave"}}

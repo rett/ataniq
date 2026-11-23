@@ -268,3 +268,55 @@ func FuzzDecodeSeatWaitResult(f *testing.F) {
 		`{"cards":null,"more":false,`+v+`,"waiting":0}`,
 		`{"cards":[],"more":false,"version":"","waiting":0}`)
 }
+
+func FuzzDecodeSeatGenesisParams(f *testing.F) {
+	const t = `"thread":"0123456789abcdef"`
+	fuzzForm(f, "seat genesis params",
+		`{"verb":"start"}`, `{"verb":"start",`+t+`}`, `{`+t+`,"verb":"round"}`, `{`+t+`,"verb":"summary"}`,
+		`{`+t+`,"verb":"finish"}`, `{`+t+`,"verb":"discard"}`, `{"verb":"round"}`, `{`+t+`,"verb":"round","round":1}`,
+		`{"answers":[{"ids":["a"],"kind":"choice","node":"goal"}],"round":1,`+t+`,"verb":"answer"}`,
+		`{"answers":[{"ids":["a","b"],"kind":"choices","node":"formats"},{"kind":"skip","node":"hosts"},{"kind":"you_decide","node":"schedule"}],"round":6,`+t+`,"verb":"answer"}`,
+		`{"answers":[{"kind":"other","node":"goal","text":"a family cookbook"}],"round":2,`+t+`,"verb":"answer"}`,
+		`{"answers":[],"round":1,`+t+`,"verb":"answer"}`,
+		`{"answers":[{"kind":"skip","node":"goal"},{"kind":"skip","node":"goal"}],"round":1,`+t+`,"verb":"answer"}`,
+		`{"answers":[{"ids":["a","a"],"kind":"choices","node":"goal"}],"round":1,`+t+`,"verb":"answer"}`,
+		`{"answers":[{"ids":["A"],"kind":"choice","node":"goal"}],"round":1,`+t+`,"verb":"answer"}`,
+		`{"answers":[{"kind":"other","node":"goal","text":" "}],"round":1,`+t+`,"verb":"answer"}`,
+		`{"answers":[{"kind":"other","node":"goal","text":"a\u0007b"}],"round":1,`+t+`,"verb":"answer"}`,
+		`{"answers":[{"ids":[],"kind":"skip","node":"goal"}],"round":1,`+t+`,"verb":"answer"}`,
+		`{"answers":[{"kind":"skip","node":"goal"}],"round":7,`+t+`,"verb":"answer"}`,
+		`{"answer":{"ids":["try"],"kind":"choice"},"node":"goal",`+t+`,"verb":"change"}`,
+		`{"answer":{"kind":"other","text":"x"},"node":"goal",`+t+`,"verb":"change"}`,
+		`{"answer":{"kind":"skip","node":"goal"},"node":"goal",`+t+`,"verb":"change"}`,
+		`{"node":"goal",`+t+`,"verb":"change"}`, `{"answer":null,"node":"goal",`+t+`,"verb":"change"}`,
+		`{"verb":"approve"}`, `{"verb":"Start"}`, `{"verb":1}`, `{"verb":"start","verb":"start"}`,
+		`{"verb":"list"}`, `{"verb":"list",`+t+`}`, `{"round":1,"verb":"list"}`)
+}
+
+func FuzzDecodeSeatGenesisResult(f *testing.F) {
+	const head = `"catalog_digest":"5d41402abc4b2a76b9719d911017c5925d41402abc4b2a76b9719d911017c592","thread":"0123456789abcdef"`
+	const node = `{"allow_other":true,"allow_you_decide":false,"can_skip":true,"id":"goal","options":[{"example":"e","id":"a","label":"l"},{"example":"e","id":"b","label":"l"}],"prompt":"p","topic":"t","type":"single"}`
+	const row = `{"field":"goal","label":"p","node":"goal","untrusted":false,"value":"v"}`
+	const dig = `"digest":"7d793037a0760186574b0282f2f435e77d793037a0760186574b0282f2f435e7"`
+	const lt = `{"filled":1,"of":6,"round":2,"state":"question","thread":"0123456789abcdef","total":7}`
+	fuzzForm(f, "seat genesis result",
+		`{`+head+`,"nodes":[`+node+`],"of":6,"progress":{"filled":1,"total":7},"reset":0,"round":2,"state":"question"}`,
+		`{`+head+`,"nodes":[],"of":6,"progress":{"filled":1,"total":7},"reset":0,"round":2,"state":"question"}`,
+		`{`+head+`,"nodes":[`+node+`,`+node+`],"of":6,"progress":{"filled":1,"total":7},"reset":0,"round":2,"state":"question"}`,
+		`{`+head+`,"nodes":[`+node+`],"of":6,"progress":{"filled":1,"total":7},"reset":0,"round":0,"state":"question"}`,
+		`{`+head+`,"groups":{"decided_for_you":[],"defaults":[],"you_chose":[`+row+`]},"nodes":[],"of":6,"progress":{"filled":1,"total":1},"reset":2,"round":3,"state":"summary"}`,
+		`{`+head+`,"groups":{"decided_for_you":[],"defaults":[`+row+`],"you_chose":[`+row+`]},"nodes":[],"of":6,"progress":{"filled":1,"total":1},"reset":0,"round":3,"state":"summary"}`,
+		`{`+head+`,"nodes":[],"of":6,"progress":{"filled":1,"total":1},"reset":0,"round":3,"state":"summary"}`,
+		`{`+head+`,`+dig+`,"groups":{"decided_for_you":[],"defaults":[],"you_chose":[`+row+`]},"nodes":[],"of":6,"progress":{"filled":1,"total":1},"reset":0,"round":3,"state":"finished"}`,
+		`{`+head+`,"groups":{"decided_for_you":[],"defaults":[],"you_chose":[`+row+`]},"nodes":[],"of":6,"progress":{"filled":1,"total":1},"reset":0,"round":3,"state":"finished"}`,
+		`{`+head+`,"nodes":[],"of":6,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"discarded"}`,
+		`{`+head+`,`+dig+`,"nodes":[],"of":6,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"discarded"}`,
+		`{`+head+`,"nodes":[],"of":6,"progress":{"filled":2,"total":1},"reset":0,"round":0,"state":"discarded"}`,
+		`{`+head+`,"nodes":null,"of":6,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"discarded"}`,
+		`{`+head+`,"nodes":[],"of":6,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"approved"}`,
+		`{"nodes":[],"of":0,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"threads","threads":[]}`,
+		`{"nodes":[],"of":0,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"threads","threads":[`+lt+`]}`,
+		`{"nodes":[],"of":0,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"threads","threads":[`+lt+`,`+lt+`]}`,
+		`{"nodes":[],"of":0,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"threads"}`,
+		`{`+head+`,"nodes":[],"of":0,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"threads","threads":[]}`)
+}

@@ -49,6 +49,25 @@ type WaitPort interface {
 
 var _ WaitPort = (*ownerchannel.Service)(nil)
 
+// GenesisPort is what the handler needs of the daemon for seat.genesis, the
+// guided new-project interview: one call that takes the params as the wire's
+// decoder read them and answers the wire's result. The daemon's thread store
+// ([ataniq/internal/genesis/thread].Store) is the real one; a test gives a
+// fake. A refusal is an error that carries the gate's word, which is found by
+// its method
+//
+//	GateCode() string
+//
+// through [errors.As]: one of the seven words of seat.genesis
+// ([ownerwire.CodeGenesisBusy] and the rest) or [CodeBadParams]. A refusal
+// that carries any other word, and every other error, is answered failed and
+// logged, as are a cancelled call (unavailable) and an expired one
+// (deadline-exceeded). A handler serves the operation, and lists [CapGenesis]
+// in its hello, only when it was given a port with [WithGenesis].
+type GenesisPort interface {
+	Genesis(ctx context.Context, p ownerwire.SeatGenesisParams) (ownerwire.SeatGenesisResult, error)
+}
+
 // The capabilities the handler serves, the names the gate's hello lists.
 const (
 	// CapPair is the seat's pairing call, seat.pair.
@@ -67,6 +86,11 @@ const (
 	// [WaitPort]; it needs no seat origin, since it only learns that the
 	// cards changed and decides nothing.
 	CapWatch = "watch"
+	// CapGenesis is the guided new-project interview, seat.genesis. A
+	// handler serves it, with either constructor, only when it was made with
+	// [WithGenesis]; like seat.wait it needs no seat origin, since an answer
+	// is a message from the owner and decides nothing.
+	CapGenesis = "genesis"
 )
 
 // MaxWaitsPerPeer is how many seat.wait calls the handler holds at once for
@@ -101,6 +125,7 @@ var opCaps = map[string]string{
 	ownerwire.OpSeatChallenge:      CapDecide,
 	ownerwire.OpSeatDecide:         CapDecide,
 	ownerwire.OpSeatWait:           CapWatch,
+	ownerwire.OpSeatGenesis:        CapGenesis,
 }
 
 // Operations returns the operations a handler made with [New] serves, in a
@@ -127,7 +152,10 @@ type Handler struct {
 	// then not served).
 	wait  WaitPort
 	waits waitSlots
-	caps  map[string]bool
+	// genesis is the daemon's thread store, or nil (CapGenesis is then not
+	// served).
+	genesis GenesisPort
+	caps    map[string]bool
 	// counts holds how often each code was answered, in memory.
 	cmu    sync.Mutex
 	counts map[string]int64
@@ -135,12 +163,27 @@ type Handler struct {
 
 var _ seatgate.Handler = (*Handler)(nil)
 
+// Option changes what a handler serves beyond what its service gives.
+type Option func(*Handler)
+
+// WithGenesis gives the handler the daemon's thread store, so that it serves
+// seat.genesis and lists [CapGenesis]. A nil port serves nothing.
+func WithGenesis(p GenesisPort) Option {
+	return func(h *Handler) {
+		if p != nil {
+			h.genesis = p
+			h.caps[CapGenesis] = true
+		}
+	}
+}
+
 // New returns the handler that serves pairing and the reads with svc. pinned
 // says whether a key fingerprint is pinned now; it is asked on every call, and
 // a peer it says no to is refused not-pinned. log receives one line for each
 // refusal, within the refusal bound (see the package documentation); nil
-// discards them. svc and pinned are required.
-func New(svc Port, pinned func(fingerprint string) bool, log func(format string, a ...any)) (*Handler, error) {
+// discards them. svc and pinned are required. The options add what the daemon
+// supplies beyond the service.
+func New(svc Port, pinned func(fingerprint string) bool, log func(format string, a ...any), opts ...Option) (*Handler, error) {
 	if svc == nil || pinned == nil {
 		return nil, errors.New("gatehost: the service and the pin check are required")
 	}
@@ -153,6 +196,9 @@ func New(svc Port, pinned func(fingerprint string) bool, log func(format string,
 		h.wait = w
 		h.caps[CapWatch] = true
 	}
+	for _, o := range opts {
+		o(h)
+	}
 	return h, nil
 }
 
@@ -162,11 +208,11 @@ func New(svc Port, pinned func(fingerprint string) bool, log func(format string,
 // read once when the gate started. The daemon makes one only when the origin
 // is configured and its service can decide; the service checks g on every
 // call. The rest is as for [New]; seat is required.
-func NewDeciding(svc Port, seat SeatPort, g ownerchannel.Gate, pinned func(fingerprint string) bool, log func(format string, a ...any)) (*Handler, error) {
+func NewDeciding(svc Port, seat SeatPort, g ownerchannel.Gate, pinned func(fingerprint string) bool, log func(format string, a ...any), opts ...Option) (*Handler, error) {
 	if seat == nil {
 		return nil, errors.New("gatehost: a deciding handler needs the service's seat operations")
 	}
-	h, err := New(svc, pinned, log)
+	h, err := New(svc, pinned, log, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -177,7 +223,8 @@ func NewDeciding(svc Port, seat SeatPort, g ownerchannel.Gate, pinned func(finge
 
 // Caps returns the capability list of the handler, for the gate's hello
 // ([seatgate.ServerConfig].Caps), in a new slice: [Caps] or [DecidingCaps],
-// and [CapWatch] after them when the handler's service can wait.
+// [CapWatch] after them when the handler's service can wait, and [CapGenesis]
+// last when the handler was given the thread store.
 func (h *Handler) Caps() []string {
 	caps := Caps()
 	if h.seat != nil {
@@ -185,6 +232,9 @@ func (h *Handler) Caps() []string {
 	}
 	if h.wait != nil {
 		caps = append(caps, CapWatch)
+	}
+	if h.genesis != nil {
+		caps = append(caps, CapGenesis)
 	}
 	return caps
 }
@@ -356,6 +406,17 @@ func (h *Handler) serve(ctx context.Context, peer seatgate.Peer, op string, para
 		defer h.waits.give(key)
 		r, err := h.wait.WaitPending(ctx, p.Since)
 		return answer(r, err, ownerwire.EncodeSeatWaitResult)
+	case ownerwire.OpSeatGenesis:
+		// The wire's strict decoder holds the verb and exactly the members
+		// the verb takes, each within its grammar and caps. Whether the thread
+		// exists, the node is a question of the round and the text looks like
+		// a secret are the store's, and each has its word.
+		p, ok := decodeParams(params, ownerwire.DecodeSeatGenesisParams)
+		if !ok {
+			return outcome{code: CodeBadParams}
+		}
+		r, err := h.genesis.Genesis(ctx, p)
+		return genesisAnswer(r, err)
 	}
 	return outcome{code: CodeUnknownOp}
 }

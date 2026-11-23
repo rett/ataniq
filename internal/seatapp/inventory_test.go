@@ -4,6 +4,7 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -41,7 +42,8 @@ var inventory = []struct {
 	{"POST /api/login-challenge", "api", nil, "", false},
 	{"POST /api/login", "api", nil, "", false},
 	{"POST /api/logout", "api", nil, "", false},
-	{pattern: "GET /cards/{$}", kind: "page", controls: []string{"a", "button#logout", "button#enable-notices", "button#stop-notices"}, authed: true},
+	{pattern: "GET /cards/{$}", kind: "page", controls: []string{"a", "button#logout", "button#enable-notices", "button#stop-notices",
+		"form#start-project", "button#start-project-go"}, authed: true},
 	{pattern: "GET /cards", kind: "redirect"},
 	{pattern: "GET /cards/{id}", kind: "page", controls: []string{"a#paths", "a#back", "button#logout",
 		"input#signoff-0", "button#approve", "textarea#reason", "button#deny", "button#confirm-go", "button#confirm-cancel", "a#look"},
@@ -62,6 +64,70 @@ var inventory = []struct {
 	{pattern: "POST /api/push/info", kind: "api"},
 	{pattern: "POST /api/push/subscribe", kind: "api"},
 	{pattern: "POST /api/push/unsubscribe", kind: "api"},
+	// The new-project pages: plain forms that post to the app, and no
+	// decide control.
+	{pattern: "GET /projects/{$}", kind: "page", controls: []string{"a", "a#back", "button#logout", "form#start-project", "button#start-project-go"}, authed: true},
+	{pattern: "GET /projects", kind: "redirect"},
+	{pattern: "POST /projects/new", kind: "api"},
+	{pattern: "GET /projects/{thread}", kind: "page", controls: questionControls("form#answer", "input#round", "a#project-list", "a#discard-link"),
+		path: "/projects/" + testThread, authed: true},
+	{pattern: "GET /projects/{thread}/change/{node}", kind: "page", controls: questionControls("form#change", "input#node", "a#keep"),
+		path: "/projects/" + testThread + "/change/kind", authed: true},
+	{pattern: "GET /projects/{thread}/discard", kind: "page", controls: []string{"form#discard", "button#discard-go", "a#keep", "button#logout"},
+		path: "/projects/" + testThread + "/discard", authed: true},
+	{pattern: "POST /projects/{thread}/answer", kind: "api"},
+	{pattern: "POST /projects/{thread}/change", kind: "api"},
+	{pattern: "POST /projects/{thread}/finish", kind: "api"},
+	{pattern: "POST /projects/{thread}/discard", kind: "api"},
+}
+
+// questionControls are the controls of a page with the form of a round, or
+// of one question, beside the ones given: for each of up to three questions
+// its node, its options (or a scale's five steps), "Other" with its text,
+// "You decide for me" and "Skip", and the one submit button.
+func questionControls(more ...string) []string {
+	out := append([]string{"button#send", "button#logout"}, more...)
+	for i := 0; i < MaxGenesisQuestions; i++ {
+		q := "q" + strconv.Itoa(i) + "-"
+		out = append(out, "input#n"+strconv.Itoa(i), "input#"+q+"other", "input#"+q+"text", "input#"+q+"host", "input#"+q+"skip")
+		for j := 0; j <= MaxGenesisOptions; j++ {
+			out = append(out, "input#"+q+"o"+strconv.Itoa(j))
+		}
+	}
+	return out
+}
+
+// formRoutes are the pages that may hold a form, each a plain post to one of
+// the app's project routes, and no other page holds one. The forms post an
+// answer, a change, a finish, a discard or a start: never a decision.
+var formRoutes = map[string]bool{
+	"GET /cards/{$}": true, "GET /projects/{$}": true, "GET /projects/{thread}": true,
+	"GET /projects/{thread}/change/{node}": true, "GET /projects/{thread}/discard": true,
+}
+
+// formRe finds a form's start tag, and projectAction the address of a
+// project's post.
+var (
+	formRe        = regexp.MustCompile(`(?is)<form\b([^>]*)>`)
+	projectAction = regexp.MustCompile(`^/projects/[0-9a-f]{16}/(answer|change|finish|discard)$`)
+)
+
+// checkForms fails for a form that is not a plain post to a project route of
+// the app.
+func checkForms(t testing.TB, pattern, html string) {
+	t.Helper()
+	for _, m := range formRe.FindAllStringSubmatch(html, -1) {
+		attrs := map[string]string{}
+		for _, a := range attrRe.FindAllStringSubmatch(m[1], -1) {
+			attrs[strings.ToLower(a[1])] = a[2] + a[3] + a[4]
+		}
+		action := attrs["action"]
+		ok := attrs["method"] == "post" && attrs["enctype"] == "" && attrs["target"] == "" &&
+			(action == "/projects/new" || projectAction.MatchString(action))
+		if !ok {
+			t.Errorf("%s: a form that is not a plain post to a project route: %s", pattern, m[0])
+		}
+	}
 }
 
 // passkeyRoutes are the pages whose Permissions-Policy allows
@@ -221,8 +287,9 @@ func mentionsDeciding(js string) bool {
 }
 
 func TestPageInventory(t *testing.T) {
-	// The notifier is a PushPort, so the notices' routes and controls exist.
-	r := newRig(t, withPush(&fakePush{}))
+	// The notifier is a PushPort, so the notices' routes and controls exist;
+	// the daemon runs the interview, so the project pages exist.
+	r := newRig(t, withPush(&fakePush{}), withGenesis(&fakeGenesis{}))
 	session := r.login(t)
 	for _, e := range inventory {
 		if !strings.HasPrefix(e.pattern, "GET ") {
@@ -285,9 +352,19 @@ func TestPageInventory(t *testing.T) {
 					}
 				}
 			}
-			if strings.Contains(strings.ToLower(body), "<form") {
-				t.Errorf("%s: a form, and none exists yet", e.pattern)
+			if strings.Contains(strings.ToLower(body), "<form") && !formRoutes[e.pattern] {
+				t.Errorf("%s: a form, and only the project pages and the card list's start may hold one", e.pattern)
 			}
+			// A form is posted with the page's referrer policy, and only
+			// same-origin (of the policies that leak nothing to another
+			// origin) keeps the Origin header the app checks: no-referrer
+			// would make every post "Origin: null" and a 403.
+			if strings.Contains(strings.ToLower(body), "<form") {
+				if got := w.Header().Values("Referrer-Policy"); len(got) != 1 || got[0] != "same-origin" {
+					t.Errorf("%s: a page with a form has Referrer-Policy %q, want same-origin", e.pattern, got)
+				}
+			}
+			checkForms(t, e.pattern, body)
 		case "asset":
 			if externalRe.MatchString(body) {
 				t.Errorf("%s: an external address", e.pattern)
@@ -404,6 +481,53 @@ func TestSeatCookiesOnlyFromTheLoginAPI(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("cookie route %q is not a route", p)
+		}
+	}
+}
+
+// formSpy is a testing.TB that notes whether a check failed.
+type formSpy struct {
+	testing.TB
+	failed bool
+}
+
+func (f *formSpy) Helper()               {}
+func (f *formSpy) Errorf(string, ...any) { f.failed = true }
+
+// The project pages in every state the inventory does not fetch (the summary,
+// the finished brief, the project list with a note) hold only their listed
+// controls, no decide control, and only plain posts to the project routes;
+// and the forms rule sees what it looks for.
+func TestProjectPagesInEveryState(t *testing.T) {
+	g := &fakeGenesis{}
+	r := newRig(t, withGenesis(g))
+	s := r.login(t)
+	sum := sampleSummary()
+	g.set(GenesisVerbRound, &sum, nil)
+	body := r.getWith("/projects/"+testThread+"?reset=3&note=changed", s).Body.String()
+	for _, f := range inspectPage(body, []string{"a", "form#finish", "button#finish-go", "a#project-list", "a#discard-link", "button#logout"}, false) {
+		t.Errorf("the summary: %s", f)
+	}
+	checkForms(t, "the summary", body)
+	fin := sampleSummary()
+	fin.State, fin.Digest = GenesisStateFinished, strings.Repeat("ab", 32)
+	g.set(GenesisVerbRound, &fin, nil)
+	body = r.getWith("/projects/"+testThread+"?note=done", s).Body.String()
+	for _, f := range inspectPage(body, []string{"a#project-list", "button#logout"}, false) {
+		t.Errorf("the finished page: %s", f)
+	}
+	body = r.getWith("/projects/?note=open", s).Body.String()
+	for _, f := range inspectPage(body, []string{"a", "a#back", "button#logout", "form#start-project", "button#start-project-go"}, false) {
+		t.Errorf("the project list: %s", f)
+	}
+	// The rule sees a form that is not a plain post to a project route.
+	for _, bad := range []string{`<form action="/api/decide" method="post">`, `<form action="/projects/new">`,
+		`<form action="/projects/` + testThread + `/approve" method="post">`, `<form action="/projects/new" method="post" target="x">`,
+		`<form action="/projects/new" method="post" enctype="multipart/form-data">`} {
+		spy := &formSpy{TB: t}
+		checkForms(spy, "x", bad)
+		if !spy.failed {
+			t.Errorf("no finding for %s", bad)
 		}
 	}
 }

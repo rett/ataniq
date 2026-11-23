@@ -267,13 +267,15 @@ func goroutinesIn(name string) int {
 }
 
 // TestSeatLinkWaitRoomArithmetic: the waits' room is taken from the reads',
-// and the rooms and the pings are the gate's rate. (The compile-time checks
-// in budget.go say the same; this keeps the numbers of the plan in view.)
+// the interview's from the reads', the decisions' and anyone's, and the
+// rooms and the pings are the gate's rate. (The compile-time checks in
+// budget.go say the same; this keeps the numbers of the plan in view.)
 func TestSeatLinkWaitRoomArithmetic(t *testing.T) {
-	if waitRoom != 6 || readRoom != 20 {
-		t.Errorf("wait room %d, read room %d, want 6 and 20", waitRoom, readRoom)
+	got := []int{pingRoom, decideRoom, publicRoom, readRoom, waitRoom, genesisRoom}
+	if want := []int{6, 12, 12, 14, 6, 10}; !slices.Equal(got, want) {
+		t.Errorf("the rooms (pings, decisions, anyone's, reads, waits, genesis) are %v, want %v", got, want)
 	}
-	if sum := pingRoom + decideRoom + publicRoom + readRoom + waitRoom; sum != GateRate {
+	if sum := pingRoom + decideRoom + publicRoom + readRoom + waitRoom + genesisRoom; sum != GateRate {
 		t.Errorf("the rooms add up to %d, the gate's rate is %d", sum, GateRate)
 	}
 	// An idle watcher: one wait each WatchHold, the most in any window.

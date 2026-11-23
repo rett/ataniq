@@ -533,9 +533,17 @@ func run(ctx context.Context, args []string, errout io.Writer, ready func(net.Ad
 			defer close(linked)
 			client.Run(lctx)
 		}()
+		// Each connection's hello is logged: the capabilities the gate
+		// lists, and so whether the phone offers New project.
+		helloed := make(chan struct{})
+		go func() {
+			defer close(helloed)
+			logHellos(lctx, client, helloEvery, logf)
+		}()
 		defer func() {
 			cancel()
 			<-linked
+			<-helloed
 		}()
 		// The link's watcher (seat.wait, when the gate offers it) runs with
 		// the client and ends before it: Close, deferred after the stop

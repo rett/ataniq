@@ -141,10 +141,10 @@ func TestSeatGateWithAnOriginServesLoginAndDecide(t *testing.T) {
 	env, path := writeOrigin(t, "https://seat.example:443\n", 0o600)
 	line, gateFP, c, stop := runGate(t, env)
 	defer stop()
-	if want := ", seat origin https://seat.example; it serves pair, read, login and decide"; !strings.HasSuffix(line, want) {
+	if want := ", seat origin https://seat.example; it serves pair, read, login, decide and genesis"; !strings.HasSuffix(line, want) {
 		t.Fatalf("the start line %q", line)
 	}
-	if got := strings.Join(c.Caps(), " "); got != "pair read login decide" {
+	if got := strings.Join(c.Caps(), " "); got != "pair read login decide genesis" {
 		t.Fatalf("the gate's capabilities: %q", got)
 	}
 	if err := os.WriteFile(path, []byte("https://other.example\n"), 0o600); err != nil {
@@ -190,8 +190,8 @@ func TestSeatGateServesWatchWhenTheServiceCanWait(t *testing.T) {
 		origin string
 		caps   string
 	}{
-		{"with an origin", "https://seat.example\n", "pair read login decide watch"},
-		{"without an origin", "", "pair read watch"},
+		{"with an origin", "https://seat.example\n", "pair read login decide watch genesis"},
+		{"without an origin", "", "pair read watch genesis"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := &watchingGateService{decidingGateService: &decidingGateService{gateService: gateSetup(t, "")}}
@@ -222,8 +222,9 @@ func TestSeatGateServesWatchWhenTheServiceCanWait(t *testing.T) {
 }
 
 // Without a usable origin, or with a service that cannot decide, the gate
-// serves pair and read only, says why in its start line, and refuses the
-// seat's login and decision unknown-op; the daemon starts as before.
+// serves pair, read and genesis (it decides nothing), says why in its start
+// line, and refuses the seat's login and decision unknown-op; the daemon
+// starts as before.
 func TestSeatGateWithoutAnOriginServesPairAndReadOnly(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -253,19 +254,27 @@ func TestSeatGateWithoutAnOriginServesPairAndReadOnly(t *testing.T) {
 			env, _ := writeOrigin(t, tc.text, tc.mode)
 			line, _, c, stop := runGate(t, env)
 			defer stop()
-			if !strings.Contains(line, "; it serves pair and read only: ") || !strings.Contains(line, tc.why) {
+			if !strings.Contains(line, "; it serves pair, read and genesis only: ") || !strings.Contains(line, tc.why) {
 				t.Fatalf("the start line %q, want the reason %q", line, tc.why)
 			}
 			if strings.Contains(line, "Seat.example") || strings.Contains(line, "192.0.2.10") {
 				t.Fatalf("the start line holds the file's content: %q", line)
 			}
-			if got := strings.Join(c.Caps(), " "); got != "pair read" {
+			if got := strings.Join(c.Caps(), " "); got != "pair read genesis" {
 				t.Fatalf("the gate's capabilities: %q", got)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			var re *seatgate.RemoteError
 			for _, op := range ownerwire.GateOperations() {
+				if op == ownerwire.OpSeatGenesis {
+					// Served: it decides nothing.
+					var res ownerwire.SeatGenesisResult
+					if err := c.Call(ctx, op, json.RawMessage(`{"verb":"start"}`), &res); err != nil || res.Round != 1 {
+						t.Fatalf("%s: %+v %v", op, res, err)
+					}
+					continue
+				}
 				if err := c.Call(ctx, op, nil, nil); !errors.As(err, &re) || re.Code != gatehost.CodeUnknownOp {
 					t.Fatalf("%s: %v", op, err)
 				}

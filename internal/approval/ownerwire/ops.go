@@ -5,7 +5,7 @@ package ownerwire
 // client protocol's seam for added operations refuses a name with a second
 // dot. The prefix is "owner." for what the owner's console asks, and "seat."
 // for the calls of the seat app (the phone's side): [OpSeatPair], which the
-// socket serves too, and the five of [GateOperations].
+// socket serves too, and the six of [GateOperations].
 const (
 	// OpList reads the listing: what is pending, what was decided lately,
 	// the standing rules and the count. Params: none. Result: [Listing].
@@ -72,8 +72,10 @@ const (
 )
 
 // The operations only the seat gate serves: a login and a decision from the
-// owner's phone, and the long wait that tells the seat when the cards changed. The daemon's Unix socket neither serves nor announces them,
-// so they are not in [Operations]; [GateOperations] lists them.
+// owner's phone, the long wait that tells the seat when the cards changed, and
+// the guided new-project interview. The daemon's Unix socket neither serves nor
+// announces them, so they are not in [Operations]; [GateOperations] lists
+// them.
 const (
 	// OpSeatLoginChallenge draws a login challenge. Params: none. Result:
 	// [SeatLoginChallengeResult].
@@ -95,6 +97,13 @@ const (
 	// no card text. Its capability is "watch". Params:
 	// [SeatWaitParams]. Result: [SeatWaitResult].
 	OpSeatWait = "seat.wait"
+	// OpSeatGenesis is the guided new-project interview: one operation, a
+	// union of eight verbs (start, list, round, answer, change, summary,
+	// finish and discard) tagged by the "verb" of its params. It answers questions of the
+	// host's own catalog and fills a project brief; an answer is never an
+	// approval and decides nothing. Its capability is "genesis". Params:
+	// [SeatGenesisParams]. Result: [SeatGenesisResult].
+	OpSeatGenesis = "seat.genesis"
 )
 
 // Operations returns the names of every operation of the owner connection
@@ -115,5 +124,5 @@ func Operations() []string {
 // serves, in the order of their table in the package comment: none of them
 // is in [Operations]. The list is a new one on each call.
 func GateOperations() []string {
-	return []string{OpSeatLoginChallenge, OpSeatLogin, OpSeatChallenge, OpSeatDecide, OpSeatWait}
+	return []string{OpSeatLoginChallenge, OpSeatLogin, OpSeatChallenge, OpSeatDecide, OpSeatWait, OpSeatGenesis}
 }

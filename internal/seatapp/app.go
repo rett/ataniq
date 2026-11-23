@@ -226,6 +226,9 @@ type app struct {
 	// their decision challenges.
 	reads   *limiter
 	decides *limiter
+	// geneses bounds the project pages and posts of each credential's
+	// sessions (see genesis.go).
+	geneses *limiter
 	// watches bounds the watch polls of each credential's sessions, apart
 	// from the reads; watchHold is how long a poll is held.
 	watches   *limiter
@@ -288,7 +291,7 @@ func newApp(cfg Config) (*app, http.Handler, error) {
 	a := &app{cfg: cfg, pair: newPairing(cfg), login: newLogins(cfg), sess: newSessions(cfg.Now),
 		reads: newLimiter(readRequests, readWindow), decides: newLimiter(decideRequests, decideWindow),
 		watches: newLimiter(watchRequests, watchWindow), watchHold: watchHold, host: hostHeader,
-		pushes: newLimiter(pushRequests, pushWindow)}
+		pushes: newLimiter(pushRequests, pushWindow), geneses: newLimiter(genesisRequests, genesisWindow)}
 	a.push, _ = cfg.Notifier.(PushPort)
 
 	mux := http.NewServeMux()
@@ -347,6 +350,20 @@ func (a *app) routes() []route {
 		{"POST /api/push/info", a.pushOnly(a.post(a.pushInfo))},
 		{"POST /api/push/subscribe", a.pushOnly(a.post(a.pushSubscribe))},
 		{"POST /api/push/unsubscribe", a.pushOnly(a.post(a.pushUnsubscribe))},
+		// The guided new-project interview (see genesis.go): pages made on
+		// the server and plain forms, each post answered with a redirect.
+		// Without a Genesis port, or with one that is not offered, the pages
+		// answer "not offered" and the posts go to the project list.
+		{"GET /projects/{$}", a.authed(a.projectList)},
+		{"GET /projects", a.redirect(projectsPath)},
+		{"POST /projects/new", a.form(a.projectStart)},
+		{"GET /projects/{thread}", a.authed(a.projectPage)},
+		{"GET /projects/{thread}/change/{node}", a.authed(a.changePage)},
+		{"GET /projects/{thread}/discard", a.authed(a.discardPage)},
+		{"POST /projects/{thread}/answer", a.form(a.projectAnswer)},
+		{"POST /projects/{thread}/change", a.form(a.projectChange)},
+		{"POST /projects/{thread}/finish", a.form(a.projectFinish)},
+		{"POST /projects/{thread}/discard", a.form(a.projectDiscard)},
 	}
 }
 
@@ -392,11 +409,21 @@ func Server(h http.Handler) *http.Server {
 // the trusted-types directive names it, seat-sw, and nothing else (no
 // allow-duplicates, no default), so a script that runs on the origin cannot
 // make a policy of its own to reach a sink.
+//
+// The referrer policy is same-origin: a request to another origin carries no
+// Referer header, so no address of the app leaves it, and a request to the
+// app's own origin keeps its Origin header. That second half is what the
+// project pages' plain HTML forms need. A browser sends a form's post with
+// the policy of the page that holds the form, and under no-referrer it sends
+// "Origin: null" (Fetch Standard, "serializing a request origin"), which the
+// app refuses (formOrigin): every form would answer 403. The scripts set
+// their own policy on each fetch (strict-origin) and do not depend on this
+// one. A test of the page inventory holds every page with a form to it.
 var securityHeaders = [][2]string{
 	{"Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types seat-sw"},
 	{"Strict-Transport-Security", "max-age=63072000"},
 	{"X-Content-Type-Options", "nosniff"},
-	{"Referrer-Policy", "no-referrer"},
+	{"Referrer-Policy", "same-origin"},
 	{"X-Frame-Options", "DENY"},
 	{"Cache-Control", "no-store"},
 	{"Cross-Origin-Opener-Policy", "same-origin"},
@@ -432,21 +459,14 @@ func (a *app) guard(next http.Handler) http.Handler {
 }
 
 // post wraps a POST handler with the checks every changing request passes:
-// the Origin header equals the app's origin, Sec-Fetch-Site (when the browser
-// sends it) says same-origin, and the body is declared JSON.
+// the Origin header equals the app's origin, the Host header its host,
+// Sec-Fetch-Site says same-origin (sameOrigin), and the body is declared
+// JSON. A plain HTML form's post passes the same checks, but that a browser
+// may leave its Origin header out when its Sec-Fetch-Site says same-origin
+// (formOrigin), with the form's content type (form, in genesis.go).
 func (a *app) post(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Origin") != a.cfg.Origin {
-			writeText(w, http.StatusForbidden, "forbidden\n")
-			return
-		}
-		if r.Host != a.host {
-			writeText(w, http.StatusForbidden, "forbidden\n")
-			return
-		}
-		site := r.Header.Get("Sec-Fetch-Site")
-		if site != "same-origin" {
-			writeText(w, http.StatusForbidden, "forbidden\n")
+		if !a.sameOrigin(w, r) {
 			return
 		}
 		mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
