@@ -6,6 +6,1046 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.13] - 2026-11-23
+
+### Added
+
+- Add `deploy/authority-host/bootstrap/host-bootstrap.sh`, the one-time
+  setup of the authority host, run on the host as root. `--dry` (the
+  default) prints every step and changes nothing; `--apply` creates
+  `/opt/authority-host/releases`, `/etc/authority-host` and
+  `/var/lib/authority-host` (0755, root:root), installs the host's
+  `stop.list` (the single line `/usr/bin/true`, an existing list is kept)
+  and installs the switch binary given with `--switch-bin` as
+  `/usr/local/sbin/ah-switch` only when its SHA-256 is the one given with
+  `--switch-sha256`. It writes no switch policy (the first scratch deploys
+  run in manual mode), links the Caddyfile to the current release only with
+  `--link-caddy` (keeping the old file once as
+  `Caddyfile.pre-authority-host`), refuses any folder above what it touches
+  that is not a real folder owned by root and closed to group and others,
+  and never starts, restarts or enables a service.
+  Add `deploy/authority-host/deploy.sh`, the deploy driver run on the
+  development host: with `AUTHORITY_HOST_SSH` (never printed; the output says
+  `the authority host`) it runs `ah-release check --no-noaicheck` on a built
+  release folder (never the release's no-AI check, which would report this
+  machine's own agent tools),
+  copies it to the host's incoming folder with `rsync -a --delete`, and runs
+  `sudo /usr/local/sbin/ah-switch --from INCOMING/ID ID` over `ssh -o
+  BatchMode=yes`. `--dry` (the default) only lists what rsync would copy and
+  prints the ssh command (it contacts the host read-only, through ssh and
+  `rsync -n`; the remote rsync reads the destination, no files are copied and
+  the switch is not run), `--go` does it and is refused unless
+  `--confirm ID` equals the release id, and `--self-test` computes the
+  commands and starts nothing (no ah-release, rsync or ssh).
+  The driver never runs a file of the incoming folder: the no-AI check is
+  the switch's own, on the verified copy it imports, before anything
+  changes. The switch prints no `HIT` line of that check, only that it failed;
+  `DEPLOY.md` has the owner run the checker by hand to read them, and says what
+  a repeated `--go` of an imported release (`release-exists`) and a `rolled-back`
+  result against a `failed-recovery` one mean.
+  `DEPLOY.md` links the Caddyfile before the first switch (the shipped
+  release restarts caddy in the switch and requires `/healthz` from it) and
+  has the owner acknowledge the outcome (`ah-switch ack --txn ID[,ID...]
+  --asked WORDS`, the ids copied from `ah-switch status`) before a later
+  switch or a rollback, which the switch refuses while an outcome is owed.
+  `DEPLOY.md` ("Who may switch") gives the sudo rule for the deploying
+  user, limited to the switch form (`--from INCOMING/ID ID`, an argument
+  regex for sudo 1.9.10 or newer) and checked with `sudo -l -U`:
+  `inhibit-clear`, `ack` and `recover` run only from the owner's own root
+  session, and a broader rule for the same account defeats that.
+  `DEPLOY.md` has root copy the bootstrap script and the switch binary
+  into a new root-only folder, compare their hashes with those typed from the
+  build host, and run only those copies (even for `--dry`); the README's
+  baseline collection does the same for the release whose checker it runs
+  before any switch has verified a release.
+  `DEPLOY.md` adds the front end's port 80 to the collected listeners before
+  the baseline (caddy is stopped while it is taken, and the switch's check
+  after the reload refuses a listener `ports.allow` does not name), carries
+  `--link-caddy` in both bootstrap commands, and says that a failed check
+  after the reload happens after the activation: inspect `status` and the
+  installed release, run the check by hand, acknowledge, deploy a higher
+  counter.
+  `deploy/authority-host/DEPLOY.md` gives the first-deploy sequence, the
+  rollback and what to do when a step fails.
+- The authority host's no-AI check follows the `import` lines of a release's
+  Caddyfile that name an absolute path (a glob in the last component too) and
+  reads each file on the host, as it reads an owner-local `EnvironmentFile=`:
+  the shipped Caddyfile's `/etc/authority-host/seat/site.caddy` is no longer
+  outside the check. An imported file gets the placeholder scan of the
+  release's own files (a name like a provider key is a `HIT env`) and a new
+  one, `HIT proxy <file> outbound-target`, for a `reverse_proxy` upstream that
+  is not a Unix socket, `localhost`, a loopback address or a bare port. A file
+  that is not there is `HIT incomplete caddy-import <path>`; the import is a
+  pass only when the file was read.
+- Add `ah-noaicheck`, the authority host's no-AI check: a small static
+  program that reads a host tree (`--root`, default `/`) and prints one
+  `HIT <kind> <path-or-name>` line per sign of an AI agent tool, then
+  `RUN complete` or `RUN incomplete` and `ok` or `FAILED n hit(s)`
+  (`--json` for one JSON object): an agent binary or an installer such as
+  `npm` or `mise` in the folders of an explicit PATH inventory (the
+  system bin folders, their immediate subfolders and every folder the
+  system and home startup files, and the files they source, put on PATH),
+  anywhere in `/usr/local` and
+  `/opt`, in any `node_modules/.bin`, in a home's bin and install folders
+  or as an executable file anywhere in a home, an agent credential folder
+  in a home, a provider-key variable in an environment file, profile or
+  unit (each read in its own syntax, by name only: a function's plain
+  local declarations passed over but its global or exported ones
+  (`declare -gx`, `typeset -x`) kept, home-relative sources resolved per
+  home, a configured `XDG_CONFIG_HOME` followed, a source in a function
+  body that it cannot resolve only a `NOTE deferred-source` line, and
+  the units read through each systemd manager's effective unit view, with
+  the attached user folders, lookup precedence, masks by link or empty
+  file, dependency entries resolved by name, linked dependency folders,
+  `EnvironmentFile=` resets and each manager's own specifiers), an agent
+  process, an enabled unit not in
+  `units.allow`, a listening TCP port not in `ports.allow`, a package
+  forbidden or not in `packages.allow` and, when the release pins one, a
+  firewall rule set whose digest differs. `--phase pre`, before a switch,
+  also reads the candidate release's own units and the variables its
+  front-end configuration refers to, by format (in a Caddyfile Caddy's
+  `{env.NAME}` and `{$NAME}`, in Caddy's JSON, read as JSON, only
+  `{env.NAME}`; shell-style `$NAME` and `${NAME}` are literal text, never
+  matched, and so is every comment and literal, a `$` in a JSON value
+  included; a reference it cannot read (a `{$NAME:default}` without its
+  closing brace included, which names nothing), or JSON that does not
+  parse, as
+  `HIT incomplete release-syntax <file>`, never its text), merges each
+  candidate unit with its drop-ins (an empty `EnvironmentFile=` dropping
+  the ones before it) before opening the files they name, one unit at a
+  time, charging what it keeps to the run's memory budget and stopping,
+  incomplete, when that is spent, and leaves out
+  the ports, the digest and the installed packages' `packages.allow`
+  check (the old host's packages; forbidden packages are still checked);
+  `--phase post`, after it, runs everything; `full`, the default, checks
+  the host as it is. `--require-policy`, which the switch passes, makes an
+  empty `units.allow`, `packages.allow` or `ports.allow` and a release
+  without `share/nft.digest` a hit (`HIT policy`); without it the
+  unenforced policies are `NOTE` lines and the run is incomplete.
+  Whatever the check cannot cover (a walk at its depth limit, an entry of
+  unknown type, its budget of entries, bytes, time, memory and nesting
+  spent (charged before the work, a profile's nested expansions and loop
+  fan-out included, and each path a source or PATH element stands for in
+  each home and configured `XDG_CONFIG_HOME` folder, streamed one at a
+  time and no longer built once a budget is spent), an
+  unusable `/proc`, a process whose `/proc` folder stays without a name,
+  a socket table without its own protocol's header, a missing or empty
+  pacman database or a package entry without a name, a pinned firewall
+  digest without a listing, a file it cannot parse, a source or PATH
+  folder it cannot resolve, a missing required `EnvironmentFile=`, a
+  list, listing or `nft-digest` FILE that is not a regular file, never
+  read or waited on: `HIT incomplete input <name>`)
+  is a `HIT incomplete` line, and every hit that is not a finding makes
+  the run incomplete, never a pass. `ah-noaicheck ports` checks only the
+  listening ports. It exits 0 clean, 1 on a hit and 2 on an error, never
+  prints a file's content or a value, escapes every path in its errors,
+  and reads its lists from the release's `share/`
+  (`deploy/authority-host/share`), whose forbidden-package list names, by
+  exact name, `nodejs` and each of its LTS series, the package managers
+  that install agent tools, and `ollama` with its accelerator variants. A
+  renamed binary is not caught by
+  name: the package allowlist and the egress filter cover that. Two
+  stated limits are accepted: bash-completion's array-driven startup
+  loop stays `HIT incomplete env-source` (the library is outside the
+  host's package baseline), and an enabled unit whose dependency link
+  leads to a mask is a `NOTE unit masked` line even when a higher folder
+  holds a unit of that name.
+- The authority host's release source has the notifier's part in
+  `deploy/authority-host/notify/`, laid over the base tree and the seat's part:
+  `ataniq-seat-notify.service` (user and group `seat-notify`, a group of its own that the seat's unit joins as a supplementary group, socket
+  `/run/seat-notify/notify.sock` with mode 0660 in `RuntimeDirectory=`, key and
+  subscriptions in `/var/lib/seat-notify`, `IPAddressDeny=any` and no allow in
+  the file: the owner's drop-in allows the resolver and the push service's
+  range, the seat's hardening, never enabled) and the validators and reload
+  lists with its lines added (`test -L` of its link, a restart before the
+  seat's). The seat's unit takes an optional word, `$SEAT_NOTIFY_ARGS`, from
+  its environment file (empty by default), so `--notify-socket` is the
+  owner's to set. `ah-release check` excuses this one unit, by name, from the
+  stop list (it decides nothing), only while its `ExecStart` runs the release's
+  `ataniq-seat-notify` and no other binary, and does not count it as the
+  decision service a release that is not static must have. The README ("The notifier") and
+  DEPLOY.md ("Deploying the notifier") say what it installs, the owner's
+  one-time steps in order, how to test it with `send-test`, what breaks when
+  it is down (nothing but notices) and how to roll back; the README's seat
+  section now says the seat dials the notifier's local socket, and both
+  documents say that the front proxy's read timeout must exceed 30 seconds
+  and its buffering be off for `/api/watch`, which the phone's pages hold up
+  to 25 seconds.
+- `ah-release build` replaces `{release}` in every file under the source's
+  `etc/systemd` (units and drop-ins) with the release's own folder on the
+  host, `/opt/authority-host/releases/<id>`, so a decision service's unit can
+  run the binary of its own release (`ExecStart={release}/bin/NAME`). A unit
+  that ran `/opt/authority-host/current/bin/NAME` failed the switch's
+  `systemd-analyze verify` on the first switch to a release shipping `NAME`,
+  since `current` was still the release before it. Such a file over 4 MiB is
+  refused (`too-large`), and `ah-release check` reports a unit that still
+  holds `{release}` (`unit-placeholder`).
+- Add `ah-release`, the release builder of the authority host.
+  `ah-release build` makes the release folder `ah-switch` imports,
+  `DIR/<counter>-<short commit>`, from the given binaries (`ah-noaicheck` and
+  `ah-switch` are required) and the `etc/` and `share/` of
+  `deploy/authority-host`: folders 0755, files 0644 (0755 for `bin/*`), no
+  link, a `MANIFEST` and a `SHA256SUMS` in the format the switch reads, and no
+  time in any content, so two builds of one input are byte-identical. It
+  refuses an existing release, a counter below 1, a commit or value with
+  characters the switch would not read, and a link, fifo, device, socket or
+  odd name in the source. A `--components static` build writes a no-op
+  `bin/ah-pkgstep` of its own (a POSIX `sh`
+  script that checks its arguments and exits 0 on a first switch or an
+  unchanged snapshot, and refuses with exit 1 a snapshot change it cannot
+  make, which the switch refuses before the step ever runs), so a first
+  switch of a static release needs no hand-made package step; the build
+  refuses a `--bin ah-pkgstep` with a static release (`static-package-step`,
+  exit 2), because a release that must move the package snapshot is not
+  static. `ah-release check DIR/<id>` reads a built folder
+  back: its sums, manifest and shape, the coverage of its command lists that
+  the switch leaves to the builder (a validator for every shipped Caddy,
+  nftables and systemd file, a restart or reload of each shipped family, a
+  stop and a restart of every decision service, no decision service in a
+  static release), and the release's own no-AI check, which must exit 0 and
+  print no hit and is run only when nothing else was found (a checker whose
+  hash does not match `SHA256SUMS` is never run; what runs is a private
+  copy of the bytes it verified, started as the open file that was hashed
+  and not as a path, so a renamed temporary folder cannot swap it; a checker
+  changed since is not run, `noaicheck-changed`; a relative `DIR/<id>`, a
+  relative `--root` and a relative `TMPDIR` are made absolute, since the
+  checker runs from the folder `/`). Both print only fixed reasons and plain names, never a
+  file's content. `ah-release baseline --src DIR --units FILE --ports FILE
+  --packages FILE --nft FILE [--out DIR] [--stamp TEXT]
+  [--require-default-deny]` makes a scratch copy
+  of the source tree whose allowlists are filled from files the owner
+  collected on the host (the unit names of the no-AI check's `HIT unit`
+  lines, `ss -H -ltn` ports, `pacman -Qq`, `nft list ruleset`): it refuses
+  anything but a regular file of at most 2 MiB, an invalid line, an empty
+  result and an output folder that exists or lies in the source, drops
+  duplicates, sorts, takes `nft.digest` with the function of `ah-noaicheck
+  nft-digest`, and never writes into the source. It enrolls any firewall
+  listing, but for each of the hooks input, output and forward without a
+  base chain of type `filter` with `policy drop` for IPv4 and IPv6 (a `nat`
+  or `route` chain does not count, nor one whose first rule accepts every
+  packet, with a plain or a named counter; no other rule is read; a listing
+  that ends inside a block counts none) it prints a `WARNING:
+  no-default-deny HOOK` line and writes the same words into the header of
+  `nft.digest`; `--require-default-deny` refuses such a listing instead. See the README, "Filling the
+  allowlists". `deploy/authority-host` now holds the source tree of the
+  first, static release: a hardened Caddyfile (admin endpoint off, server
+  timeouts, security headers, `/healthz`, a static site) and its validator,
+  reload, health and stop lists. See `deploy/authority-host/README.md`, "The
+  release builder".
+- The seat release's `share/validators.list` has `test -L
+  /etc/systemd/system/ataniq-seat.service`: the switch refuses the release
+  before anything changes when the owner's link of the seat's unit (setup
+  step 5) is missing, instead of failing the reload's restart and the stop
+  list's stop (exit 5) after `current` moved. DEPLOY.md has the
+  troubleshooting row.
+- The authority host's release source has the seat app's part in
+  `deploy/authority-host/seat/`, laid over the base tree to make a release
+  that is not static: `ataniq-seat.service` (user `seat`, socket
+  `/run/seat/http.sock` in `RuntimeDirectory=seat`, its key in
+  `/var/lib/seat`, no network but the gate's address from the owner's
+  drop-in, no listener, the design's hardening, never enabled: the reload
+  list starts it), a Caddyfile with the snippet `(seat)`
+  (`reverse_proxy unix//run/seat/http.sock`, the Host passed as it came,
+  `Origin` and `Sec-Fetch-Site` untouched, `X-Seat-Client-Addr` set on every
+  request, nothing cached) and the import of the owner's site file
+  `/etc/authority-host/seat/site.caddy`, and lists that validate the unit,
+  restart the seat, check it on its socket and stop it
+  (`systemctl stop ataniq-seat.service`). The README ("The seat app") and
+  DEPLOY.md ("Deploying the seat app") say how to make the release, the
+  owner's one-time setup of the host, how the switch starts and stops the
+  seat, and how to roll back.
+- Add `ah-switch`, the release switch of the authority host.
+  `ah-switch --from INCOMING_DIR ID` imports a release folder into
+  `/opt/authority-host/releases/ID` as new, read-only, root-owned files
+  (folders and regular files only, within limits of entries, size and
+  time; staged in a new folder of its own, the only one it ever removes,
+  and refused before anything is created or removed when the incoming
+  folder is, contains or lies beneath `releases/` or anything in it; the
+  incoming folder is opened once, without blocking or following a link,
+  so a FIFO swapped in never holds the lock),
+  recording the digest of the tree it made (paths, inodes, sizes,
+  hashes), and `ah-switch ID` activates an imported release, refusing a
+  folder without that record or that no longer matches it: it checks its
+  `SHA256SUMS` over every file and, when the root-owned switch policy
+  `/etc/authority-host/switch-policy.json` asks for it, its SSH signature by
+  the policy's principal; refuses a counter not above the highest ever
+  attempted or any counter the host shows (its links, its last recorded
+  switch, its release folders, the append-only
+  `/var/lib/authority-host/counters.log` of every counter attempted), and
+  a `highest-counter` below the counters used, before recording anything;
+  runs its no-AI check before activation (`--phase pre`: the release's
+  units and the host, without ports and firewall) before and after the
+  release's package step (a static release whose snapshot is not the
+  host's is refused before anything begins, and so is one while the
+  package state is unknown or on a host with a `current` and no recorded
+  snapshot, which its no-op step could only certify; a step that fails or
+  is interrupted leaves the package state unknown, refusing further
+  switches until the owner states the snapshot or a release with its own
+  step runs it again to the end; the step holds the
+  owner-only switch lock and dies with it, and one that outlives its
+  switch is named by its process id), then its validators;
+  renames a new `current` link over the old one, reloads and checks every
+  health command within one 60-second deadline, runs the no-AI check
+  again (`--phase post`, with the live listeners and a listing of the
+  loaded firewall) before recording success, going back to the old
+  release (after stopping the failed release's services) with that
+  release's own reload and health lists and its no-AI check, or stopping
+  the decision services, with the host's own
+  `/etc/authority-host/stop.list` first (its programs are bare names or
+  protected host programs like a release's; any other absolute path
+  refuses the list, loudly, without blocking a journal's recovery), when it cannot (that list runs
+  before the stopping phase is saved, and, while a journal is stopping,
+  first in every command, under the lock, even when `releases/`, the
+  counter or the record cannot be used). Every transaction
+  first writes `/var/lib/authority-host/decisions.inhibit`, the one file
+  a decision-capable service looks up: it may start while the file is
+  there (and answer its readiness probe) but refuses every decision unless
+  one lookup before the decision finds no such file (the package
+  `internal/authorityhost/decisionguard` is that lookup as code, `Check`,
+  which refuses on the file in any form, on a missing or linked state
+  folder or one it may not open, and on one removed or replaced between
+  its lookups, and looks the file up in the folder it pinned, so that a
+  folder moved away and put back meanwhile still answers with its guard; the journal `txn.json` is never there without it: a healthy end renames the journal
+  over the inhibit, then removes the inhibit, the one step that lets
+  decisions through; a power loss between the two leaves the journal in
+  the inhibit, which the next command writes back and settles and which
+  `inhibit-clear` and `ack` refuse); the switch removes it only
+  when the transaction ends healthy, after running the reload list,
+  health check and post-activation no-AI check (`--phase post`, the
+  firewall and listeners as they are now) of `current` again when it
+  finds a healthy transaction not yet settled (a reboot may have come;
+  when any of it fails, the release not verifying again included, the
+  host's stop list runs, the failure is journaled so that an interrupted
+  settling never qualifies it away, a failed no-AI check is
+  recorded as the check's verdict, the command and every retry of the
+  same request exit 1 and the outcome stays owed with the failure until
+  acknowledged); a
+  failure keeps it across a reboot until a healthy switch or
+  `ah-switch inhibit-clear --asked WORDS` (recorded with the time). All
+  of it is one transaction journaled in `txn.json`, phase by phase
+  (packages, links, activating, restoring, stopping, done), with the trust
+  it began with;
+  the next command resumes an interrupted one from its phase, a link
+  counts as moved only once its folder is synced, a failed stop keeps the
+  transaction open (so does a journal that cannot be saved as restoring,
+  after the stops of the failed release and of the host ran), and every settled outcome is owed in its own file,
+  `/var/lib/authority-host/owed.json` (written before the journal is
+  removed, never in `deploy.json`, and not taken back by a printed result
+  line): the same request run again reports it instead of doing it again
+  and leaves it owed (a report that cannot be written exits 1),
+  a rollback bound to its request id so that a retry never resolves
+  `previous` anew, any other switch or rollback reports it and is refused,
+  and only the owner's `ah-switch ack --txn ID[,ID...] --asked WORDS` takes
+  it back (naming the transactions of every outcome owed, as `status` and
+  the switch print them, `status` and `boot` only once no transaction is still open,
+  since settling one may change its outcome, so that an ack repeated
+  after a newer outcome became owed is never taken for that one: a
+  mismatch is refused and changes nothing, a repeat keeps the first
+  receipt; recorded with the time; when the outcomes it prints cannot be written or flushed it
+  records nothing, keeps them owed and exits 1, as a retry does; an ack
+  interrupted after its record is finished by the next ack, which keeps
+  the recorded words and time); `--dry` only shows it.
+  `ah-switch --rollback-to previous` goes back under the same policy,
+  `ah-switch recover --counter N` restores a missing counter,
+  `ah-switch recover --package-state SNAPSHOT` settles an unknown package
+  state, a journal that does not match the host (its links, or a counter
+  below those attempted since) is never resumed until
+  `ah-switch recover --discard-journal TXN` sets it aside (only a journal
+  proven stale: one whose evidence cannot be read is neither resumed nor
+  discarded; decisions stay inhibited under a plain record of the
+  discard, and every command that finds a journal writes a missing
+  inhibit back first, before it runs a stop or refuses anything: the
+  transaction's, or beside a journal that cannot be read a plain record
+  no boot takes over, which also replaces boot's own record found there;
+  an inhibit that is there, even one that cannot be read, is kept as
+  evidence by every command that refuses),
+  `ah-switch recover --services-stopped` settles a transaction whose stop
+  commands failed on the owner's word,
+  `ah-switch status` shows the state under a shared lock, `--dry` prints
+  every step and changes nothing, `--root DIR` works on another folder
+  (running programs there only with `--allow-exec`), and
+  `--noaicheck PATH` runs another no-AI check only when it is protected
+  root-owned code and the switch is not run through sudo (any protected
+  host program, `/usr/bin/true` included, would pass, so a sudo rule for
+  the switch never chooses it), bound to the transaction by its SHA-256
+  and checked again before every run, from a private copy made from the checked
+  descriptor and hashed again. A program of a release's lists is a file
+  of the release (`{release}/bin/...`, in any list), a protected
+  root-owned host program such as `/usr/bin/systemctl`, or a bare name in
+  the fixed search path; any other absolute path is refused when the
+  release is verified. The outcome is written to
+  `/var/lib/authority-host/deploy.json` as stable failure codes, never a
+  program's output. `ah-switch boot`, run as root at every boot by the
+  shipped unit `deploy/authority-host/bootstrap/ah-switch-boot.service`
+  (a oneshot that fails closed, which only the owner installs and
+  enables, by hand), keeps decisions refused after a reboot until the
+  host is qualified since that boot: under the lock, before it runs anything, it writes the
+  decision inhibit as its own record when none is there and no journal is
+  pending (or takes over the record of a boot that did not finish; beside
+  a pending journal it never writes its own record, only the
+  transaction's or a plain one no boot takes over), qualifies `current` again as a
+  settling transaction does (verified with the switch policy's trust, its
+  reload list, health check and post-activation no-AI check) and removes
+  only that record, only when all of it passed; a failure is first
+  written into that record (which no later boot takes over, also once its
+  outcome is acknowledged; when that write fails, the `ack` of the outcome
+  writes it first, and refuses, the outcome still owed, when it cannot), then runs the host's stop list, is owed
+  (`direction: boot`, `requalify_failed`, shown by `status` with its
+  `ack`) and keeps decisions inhibited; any other
+  inhibit it finds (a transaction's, a held journal, a failure, one left
+  for `inhibit-clear`, one it cannot read strictly) stays as found while
+  it settles an open journal as any command does, and it never
+  acknowledges anything, and its own qualification writes nothing to
+  `deploy.json` (settling an open transaction records that transaction
+  there, as any command does); a crash or a kill at its time limit during
+  the stop list leaves that list unfinished, not resumed, for the owner
+  to finish by hand while decisions stay refused; exits 2, 3 and 4, and a
+  kill before its first write, leave no inhibit of its own (it ran
+  nothing then); a host with nothing
+  deployed (no `current`, release folder, `deploy.json`, journal or
+  inhibit it cannot read, which may hold one) is refused with exit 4 and
+  nothing changed, an outcome owed beside such an inhibit is printed
+  without its `ack` command, while a deployed host whose
+  `current` is missing, or cannot be read, fails closed with exit 1
+  (saying that nothing was qualified). Exit codes are 0
+  ok, 1 failed, 2 usage, 3 locked and 4 nothing deployed (`boot`).
+  Known limits (an old journal restored by root can replay a settled
+  transaction; a package step's descendant that keeps the lock open
+  keeps every command out until it is stopped) are in
+  `deploy/authority-host/README.md`.
+- `ataniq-console --daemon DIR` now opens the pair-a-phone view with `P`. It
+  pairs over the same owner connection as the approvals view, so the daemon
+  still sees one console as the decider, and it reads the approval app's
+  address from the first line of `ataniq/owner-local/seat-origin` in
+  `$XDG_CONFIG_HOME` (or `~/.config`) once, when the console starts. The file
+  must be a regular file, not a link, at most 1 KiB and not writable by its
+  group or by others; otherwise the view says "pairing origin not configured"
+  and asks the daemon for nothing, and the address is never in a message or a
+  log. A pending pairing whose fingerprint is not exactly eight words is
+  refused as a bad answer, and a call whose context is already over is not
+  made. See `docs/terminal-console.md`.
+- The console's pair-a-phone view shows, under the eight words and before the
+  owner confirms, what the phone's authenticator claimed when its backend gives
+  it: "Claimed, not proven: vault passkey, synced." The line uses the view's own
+  words for the known kinds and backup states, and a change of the claim drops
+  the confirm question. A confirmed key of a known kind reads "Paired. Kind,
+  claimed: vault passkey." A key paired without a claim reads "Paired. Kind:
+  unverified (no claim made)."
+- The console has a pair-a-phone view, opened with `P`, for adding a phone as an
+  approving device from the desk. It appears only when the console is given a
+  pairing backend and the approval app's address (`Options.WithPairing`):
+  without one, `P` shows
+  "pairing is not configured" and does nothing, and the help page does not list
+  it. Enter asks the daemon for a one-time code and the view draws a QR code
+  that holds the app's address and the code in its fragment, black on white
+  with a white margin in either theme, with the seconds left; a terminal too
+  small for it (even with the smallest margin that scanners read) gets
+  "terminal too small: need W x H" and never a clipped code.
+  The code appears only inside the QR, never as text. The view reads the
+  daemon's state every two seconds; when the phone's key arrives it shows the
+  eight words (64 bits of the key's fingerprint), which the phone shows too, and
+  `c` then `y` confirms (a `y` typed with the `c` is not taken; it is refused
+  while any of the eight words is off screen or cut, and the view says the
+  terminal is too small) or `x` rejects; both name the pending key's id, and
+  the question is dropped when the words,
+  the id or the terminal size change; Esc closes the view at any time
+  and confirms nothing, and a code left waiting ends by itself when it
+  expires. Nothing is trusted until the owner confirms at the desk. The
+  address must be `https` with a host name, no port but 443, no path and no
+  userinfo; with any other value the view says "pairing origin not configured"
+  and draws no QR. What the daemon sends (words, id, kind) is cleaned before it
+  is drawn, and its error text is never drawn. The fingerprint is eight words
+  (64 bits) from its first release, not six: nothing is paired in production
+  yet, so the owner's key list accepts exactly eight words and there is no
+  migration. See `docs/terminal-console.md`.
+- `make ownerchannel-build` builds the daemon with the owner channel's build tag
+  into the ignored folder `build/owner/`, for the owner's own trial of the
+  unqualified channel. It runs doctor first and starts nothing. No release, no
+  CI job and no other target uses it, and the guard tests refuse any other
+  recipe that names the tag.
+- Pairing a phone records the kind of its passkey as a claim. The seat relays
+  the registration's authenticator data and relying party id with `seat.pair`;
+  the daemon registers the credential from them, refusing one whose data does
+  not name the same credential and key or lacks user verification, and, on a
+  seat gate with a seat origin, one for another relying party than the
+  origin's host (`credential-invalid`, the code left unused), and keeps
+  the kind its AAGUID claims (`platform-passkey`, `vault-passkey` or
+  `passkey`), the AAGUID, the backup flags and the sign counter. The pending
+  `owner.pair-status` and the key list show the kind, the AAGUID and the
+  backup flags as optional members, and not the sign counter, which is kept
+  internally: `keys.log` keeps all of them, with a counter record that only
+  raises the highest sign counter. A key paired without them stays of the kind
+  `unverified`, which can neither log in nor decide.
+- The phone trial, a STAND-IN rig for scratch state in the tagged build
+  (`make ownerchannel-build`): `ataniqd trial init --state-dir DIR` writes the
+  trial's settings, `ataniqd run --owner-channel --trial` serves sample cards,
+  and `ataniqd trial submit --kind finish|branch-prune [--count N]` makes them on
+  demand, so the owner can try the phone end to end against a real daemon. A
+  decision goes through the real path (challenge, passkey assertion,
+  verification, record, journal evidence) and applies nothing: an approved
+  card ends not-applied, "applied: nothing (trial)". See the "Phone trial"
+  section of `docs/seat-gate.md`.
+- The scratch settings (`owner/scratch.json`) take an optional `"kinds"`: the
+  kinds of credential the project accepts for a phone's decision
+  (`platform-passkey`, `vault-passkey`, `passkey`), every kind when absent or
+  empty. The policy applies when a decision's challenge is asked and when the
+  decision is made; a login belongs to no project, so it checks only that the
+  daemon knows the key's kind. A name that is not a kind, or a kind named
+  twice, refuses the settings. Kinds are claims of the phone, so the policy is
+  advisory.
+- Add the lead control plane for scratch leads, in a build with the
+  `ataniq_canary` tag only: `ataniqd run --scratch CONFIG` serves six
+  operations (`lead.list`, `lead.define`, `lead.start`, `lead.stop`,
+  `lead.ticket` and `lead.inject`) through the client protocol's extension
+  seam, for up to eight leads of throwaway `scratch-` projects named in an
+  owner-only config, with a `max_running` cap. Each command is bound to a client
+  string and a command id in a durable table (`lead-commands.jsonl`) and answered
+  with a receipt (`in-progress`, `done`, `refused`, `unavailable` or
+  `uncertain`); a replay returns the stored receipt and never runs the command
+  again, and a daemon restart ends an unfinished command as `uncertain` (a
+  ticket as `unavailable`). The
+  place gate for a scratch root is the marker `scratch-root.json`, written only
+  by the new `ataniq-canary scratch-init`; `ataniq-canary scratch-clean` removes
+  what a define left when it was cut short, by the owner's hand. The daemon
+  computes each lead's sandbox profile digest with the holder's own code unless
+  the owner pins one, which weakens the canary's independent pin; the client
+  string is a namespace, not an identity. `ataniq-console --daemon` offers a
+  leads view on `L` when the daemon lists the six operations (define, start,
+  stop, message and attach, with the receipt of each command, then back to the
+  list) and says "no lead control in this daemon" otherwise. A release daemon
+  contains none of it and registers no operation; the release console carries
+  the inert leads view. See `docs/scratch-leads.md`.
+- A scratch lead is shown `ready` once its holder reports up, in a build with
+  the `ataniq_canary` tag under `ataniqd run --scratch`: after `lead.start`,
+  and at daemon start for a lead shown `starting` that the daemon adopted, a
+  background observer asks the holder's control socket for its status (for up
+  to 60 s, retrying with a growing wait) and, when the holder answers for the
+  same epoch and role, sets the shown state `ready` with the reason
+  `holder-ready` and `ataniq-observation` evidence. `ready` means the holder
+  is up and the agent was started; the agent's login is not observed, and it
+  is not a claim that the agent works. `lead.start` answers `starting` at
+  once. A proven stop or a newer epoch wins over the observer, a stop that is
+  refused or fails leaves it, a slow or silent holder leaves the lead
+  `starting`, and the daemon joins the observer at shutdown. The canary has no
+  observer. See `docs/scratch-leads.md`.
+- A scratch lead's `lead.list` rows carry two members, always present:
+  `state_reason`, the reason code the registry shows with the shown state (a
+  promoted lead reads `ready` with `holder-ready`), and `message_result`, the
+  holder's three words (`outcome`, `reason`, `written`) about the current
+  epoch's last message, empty when no message was sent or the answer is not
+  known (the daemon keeps it while it runs and reads it from the command table
+  after a restart while the message's receipt is the lead's last). The summary
+  receipt of a row leaves out its `message` as well as its `result`, which
+  keeps the largest list under 8 KiB. A row without the members is read by the
+  console as one with both empty. See `docs/scratch-leads.md`.
+- The epoch of a scratch lead takes one message, and a message that was not
+  delivered does not spend it. When the holder answers `not-now` or `refused`
+  with nothing written, or refuses the request itself (`disabled`,
+  `wrong-epoch` or `bad-request`), the epoch's message stays free,
+  `lead.list` shows `message_spent` as `false`, and the lead may send another
+  message in the same epoch (the same message id is not refused). Everything
+  that may have reached the lead stays spent: a submitted or uncertain result,
+  no answer, a closed connection, an answer that does not decode, a refusal
+  code the daemon does not know, a result or refusal that could not be written
+  to the evidence, and a holder's `busy` (a holder that says a delivery is
+  running is delivering something the daemon has no record of; the console
+  shows the message as `sent-unsure`). A restarted daemon reads the evidence
+  back and keeps the epoch free only when the message has its `inject-result`
+  line with `not-now` or `refused` and nothing written, or its `inject-refused`
+  line with `holder-disabled`, `holder-wrong-epoch` or `holder-bad-request`; a
+  daemon killed after the `inject-sent`
+  line and before the closing line leaves the epoch spent, as does any closing
+  line without a matching `inject-sent` line or one that comes twice. The
+  canary's rule that every sent message spends the epoch is unchanged. See
+  `docs/scratch-leads.md`.
+- The console's leads view says plainly what became of a message. A done
+  message is drawn from the holder's three words (outcome, reason, written):
+  "NOT delivered: nothing was written" with the reason (the lead's screen is
+  not idle or is blocked, the program version is untested, the text was
+  refused), "the message was submitted", or "result unknown" with what is
+  known of what was written, and the line says whether the epoch's message is
+  free (a message that was not delivered, as far as the list's row says) or
+  spent; the line of a message that was not delivered is not drawn "free" while
+  the daemon holds the epoch spent, and says so until the list is read. The MSG
+  column agrees:
+  `free`, `free (not delivered)`, `sent` (only when the words say the message
+  was submitted), `sent-unsure` (something may have reached the lead, the
+  words are not known, or the daemon holds the epoch spent with none) or
+  `spent, not delivered` (the daemon holds the epoch spent after a message that
+  was not delivered because it could not write the evidence line), and `m`
+  sends another message while the epoch's message is free. A lead whose state
+  is `ready` with the reason `holder-ready` gets a line that says the holder is
+  up and the agent started and that its login is not observed. See
+  `docs/terminal-console.md`.
+- The console's leads view keeps what became of a message on its status line
+  when the list is read again. The daemon's list holds each lead's last command
+  as a summary without its result, and the view keeps the answer's three words
+  (outcome, reason, written) of the message just sent, and a ticket's folder and
+  ticket file, while the list shows the same command; a list receipt that has
+  words of its own is shown as it is. The list's summary has no epoch, so the
+  line also keeps the epoch the answer was for: when the lead has moved to
+  another epoch since, the line of a message that was not delivered says that
+  the lead is at another epoch now and that epoch's message is not known, and
+  does not call the new epoch's message free or spent. See
+  `docs/terminal-console.md`.
+- The console's leads view reads the list again every two seconds while a lead
+  is `starting` or `stopping`, as it already did while a receipt is in
+  progress, so a started lead turns `ready` without `r` and the reading stops
+  when none is. A lead that is `unknown` is not read by a timer. See
+  `docs/terminal-console.md`.
+- The console's leads view draws `-` in the MSG column of a lead that is not
+  running (state stopped, ended or desired, or unknown with the reason
+  `launch-unsettled` or `launch-reply-lost`, or no epoch), where it drew the
+  words of the lead's last epoch's message; `off` stays for a lead whose
+  messages are off. A lead that is unknown for another reason (for example
+  `control-group-not-proven-empty` or `competing-unit`) may have a unit that
+  runs with a message sent, so its column shows `free`, `sent`, `sent-unsure`
+  or `spent, not delivered` as for any other lead. See
+  `docs/terminal-console.md`.
+- The console's leads view says what settles a lead whose launch is not
+  settled. A lead that is `unknown` with the reason `launch-unsettled` or
+  `launch-reply-lost` gets the line "launch settles by itself 40 s after the
+  start; if not, stop the lead or restart", the same words answer a stop or a start
+  refused with `intent-pending` (which does not tell the owner to read the
+  list, because reading it does not settle the launch), and a start refused for
+  the limit of running leads while such a lead is listed says that the
+  unknown lead holds a slot until its launch settles by itself, 40 s after the
+  start, and that stopping the lead or a restart of the daemon is what is left
+  if it is still unknown after that (a lead that is unknown for another reason,
+  which the daemon has no timer for, is said to hold a slot until it is
+  settled, with no promise of a self-settle) (a launch's own unit that was adopted
+  leaves the lead `unknown`, and a stop ends it). `docs/scratch-leads.md` has the recovery after a killed
+  daemon. See `docs/terminal-console.md`.
+- The console's leads view words a refused attach ticket "the holder refused
+  the ticket; a writer may already be attached", because the receipt carries no
+  reason beyond `ticket-refused` and the holder grants one writer at a time. See
+  `docs/terminal-console.md`.
+- The daemon in scratch mode settles a launch that is not settled itself when
+  the late-start window ends, so a lead left `unknown` by a daemon killed in
+  the middle of a start (reason `launch-unsettled`) or by a start whose reply
+  was lost (`launch-reply-lost`) needs no daemon restart. A timer per such
+  lead waits until the intent's deadline (the late-start window of 30 s and its
+  margin of 10 s, on the registry's clock) and asks the lifecycle to settle
+  that one role by the rules of the reconcile: with no unit loaded and its
+  control group empty, the intent is closed as abandoned and the lead reads
+  `stopped`, with a proof, and leaves the `max_running` count. A unit that is
+  loaded at the deadline does not settle the lead and is never signalled (the
+  launch's own unit is adopted, another is reported and the intent abandoned,
+  and the lead stays `unknown`), a manager that does not answer, or a control
+  group that is not proven empty, is tried again at growing waits (the lead
+  stays `unknown`, with the reason `control-group-not-proven-empty` in the
+  second case), and a lead shown `unknown` for `registry-recovered` has no
+  timer. The timer starts nothing, never waits for the role's lock, ends on a
+  stop, a new start and at shutdown, and ends with one log line that names the
+  restart when the daemon's reconcile at start did not act on a cut of the
+  registry's journal. See `docs/lead-daemon.md` and
+  `docs/scratch-leads.md`.
+- Add a screen recorder for scratch leads, in a build with the `ataniq_canary`
+  tag only, for the owner who makes the fixtures of a new agent version by
+  hand: a lead whose scratch config says `"record_screens": true` (optional,
+  `false` when absent) is started with `ataniq-holder --record-dir`, and its
+  holder writes, raw, into the folder `record` of the lead's runtime folder one
+  fixture pair (`NNNN.txt`, `NNNN.json`) per distinct screen that stood still
+  for about 300 ms, at most every 500 ms, the screen shown at the end, and one
+  every 3 seconds of a screen that never stands still, such as the working
+  screen (marked `"sampled": true`), each window title (`titles.jsonl`) and
+  each OSC 7501 payload (`osc7501.jsonl`).
+  The folder is 0700 and its files 0600, with a `README.txt` that says the
+  files are raw (scrub before use; do not commit); a start whose folder exists
+  is refused, with the code `record-folder-left`, which the leads view of
+  `ataniq-console` shows as "an earlier record folder is there: move or delete
+  it, or turn record_screens off"; the screens stop at 400 pairs and the recording at 8 MiB, each
+  with a line in `LIMIT.txt`, and it never blocks the agent. A recording of
+  the login screen holds a login URL and code: delete the folder once the
+  fixtures are made. Without the field nothing changes.
+- `ataniq-seat` approves and denies on the phone, from the Card page only
+  (`/cards/{id}`), when the seat gate offers decisions (on a gate that does
+  not, the Card page holds no form and allows no passkey): one sign-off box
+  per flagged path and Approve, offered when the card model allows it and the
+  page showed every part of the card whole (a part with a path or a ref of
+  more than 1024 characters, a name in the header of more than 64, or a line
+  of the plan or of the lead's note of more than 4000, cut on the page, is
+  not read; Approve is then withheld and the page says which part, approve
+  at the desk, and a page of the whole path list that cuts a path does not
+  count) and enabled once every box is ticked; Deny,
+  with an optional reason, available with no box ticked. A tap asks `POST
+  /api/decide-challenge`; the seat builds the decision from the card it showed
+  (the browser sends only the id of the page's form, the action, the indexes
+  of the boxes and the reason), takes the tap only when that page showed the
+  binding the session read last (a tab left open on a card replaced since is
+  told the card changed, before any challenge or passkey), recomputes the
+  daemon's challenge before the phone is asked, and shows the action, the
+  card, its project, target and revision; a second tap asks one passkey
+  assertion with user verification for the session's own credential, sent once
+  by `POST /api/decide`. A cancel sends nothing. A lost answer shows "Decision
+  sent. Outcome unknown." and only "Look again", and the card is not decided
+  again until its Card page is read again by a GET whose read began after the
+  answer was lost (a read made while the decision was on its way, or begun
+  before, may show the card as it was, and then says to look again); nothing
+  is queued. A page counts as read, and a Card page settles a lost answer,
+  only once it was written and flushed to the connection (a proxy in front may
+  still lose it). The pages of a card's whole path list count for the review they were read for, so pages read before a card
+  was replaced do not count for the replacement. A held approve shows the
+  host's line and the held words. Each refusal is fixed words; a passkey no
+  longer paired ends the session. Decision challenges are limited to 10 a
+  minute per credential, and an expired card gets none. A decision's words go
+  to the seat gate exactly as the seat checked them against the gate's cap (a
+  flagged path full of `&`, `<` or `>` is no longer escaped on the way, so it
+  does not grow past the cap); a decision whose words are over the cap is not
+  sent and the phone says "This is too large to send."; it is decided at the
+  desk. So is one whose decision record the daemon could not journal (its
+  sign-offs past the record's 8 KiB): the daemon refuses its challenge
+  before the phone is asked, and nothing was decided. A request body over 8 KiB sent without a declared length is now
+  refused 413, as one with it is.
+  Scratch state and the STAND-IN door only; unqualified.
+- `ataniq-seat` shows the cards on the phone behind a session, read-only as
+  the first step (the decide control of the Card page is described in the
+  entry on approving and denying on the phone): the card list
+  (`/cards/`), a card (`/cards/{id}`) and the pages of a card's whole path
+  list (`/cards/{id}/paths/{n}`), each a GET (a `HEAD` is refused 405 and asks
+  the daemon nothing). A page without a session goes to the login page and
+  asks the daemon nothing. The seat builds each card from the record's bytes
+  with the card model after checking their digest, shows a lead's text only as
+  escaped plain text, shows a prune's ref line with the branch its deleted ref
+  was merged into and that branch's tip, as the desk does, and says on every
+  page that the desk runs a STAND-IN door on scratch state. The list and the
+  pages of a card's path list have no decide control. Reads are limited to 20
+  a minute per paired credential, and the reads of every session together to
+  20 calls of the seat gate in 80 seconds (the first page of a card's path
+  list may call it twice); a read past them says the desk is busy and asks
+  nothing.
+- `ataniq-seat` follows the authority host's decision contract: before it
+  relays a decision's challenge or a decision to the gate, every time, it
+  asks `decisionguard.Check` of the release switch's state folder,
+  `--decision-guard DIR` (an absolute folder, `/var/lib/authority-host` when
+  not given). While `decisions.inhibit` is there, or the folder or the file
+  cannot be looked up, nothing is relayed and the phone shows "Decisions are
+  paused on this host. Nothing was sent." under the code
+  `decisions_inhibited`, and may tap again once decisions are taken again; a
+  refused decision's room at the gate is given back. It fails closed: on a
+  host without that folder no decision is relayed. Pairing, login and the
+  reading of cards decide nothing and go on. Each refusal is logged with the
+  guard's fixed code.
+- The seat gate of `ataniqd run --owner-channel --seat-gate ADDR` serves a
+  login and a decision from the owner's phone (the capabilities `login` and
+  `decide`: `seat.login-challenge`, `seat.login`, `seat.challenge`,
+  `seat.decide`) when the seat origin is configured: the owner-local file
+  `ataniq/owner-local/seat-origin` in the configuration folder, holding
+  `https://` and a lower-case domain name, read once at start. Each login and
+  each decision, a deny included, is a passkey assertion with user
+  verification over a challenge the daemon draws from its own record of the
+  card (and only for a decision whose record fits the journal's 8 KiB; one
+  that would not is refused `record-too-large` before the phone is asked), kept in memory for 5 minutes and one use by the seat that asked (at
+  most 32 decision and 16 login challenges; a restart drops them), verified
+  against a key on `owner/keys.log` that is not revoked and of a kind the
+  verifier knows, and the seat origin. A login belongs to no project, so the
+  scratch settings' `"kinds"` apply when a decision's challenge is asked and
+  when the decision is made, not at a login. The key is checked
+  again right before the decision is journaled, so a revoke at the desk that
+  returned first wins. A phone decision is journaled as confirmed by passkey
+  with the assertion's evidence (a decision record confirmed by passkey that
+  denies and carries sign-offs is refused `decision-invalid`), needs no
+  activity at the desk, and goes through the day's limit as at the desk (an
+  approve past it is held, a deny never). The highest sign counter is kept,
+  and one that does not grow is reported as a possible copy, not refused; two
+  verifications at once are compared in turn. When `owner/keys.log` has no
+  room left for counter records (some four thousand raises, shared with
+  rejected pairings), the daemon's log says so once per key and the counter
+  is kept in memory until a restart; a phone's synced passkey, which reports
+  0, needs none. Without an origin, or with a file
+  that is refused or holds no canonical origin, the gate serves pairing and
+  the reads only, as before. The start line names the origin and what the gate
+  serves, or why it serves pairing and the reads only. Scratch state and the
+  STAND-IN door only; unqualified. See `docs/lead-daemon.md`.
+- `ataniq-seat gate-init --identity DIR` makes the seat's own key for the seat
+  gate: `cert.pem` and `key.pem` in DIR, the key with mode 0600, DIR made with
+  mode 0700 when it is missing. It prints one line, the key's fingerprint (64
+  lower-case hex digits) for the gate's pin list, and nothing else. It never
+  overwrites: an existing key file, or a folder that others can write, is
+  refused and nothing is written.
+- `ataniq-seat` can relay pairing to the daemon through the seat gate, with
+  `--gate HOST:PORT`, `--gate-pin-file PATH` and `--identity DIR`, given all
+  three or none. The pin file holds the gate key's fingerprint, exactly one,
+  64 lower-case hex digits; it must be a regular file, not a link, of at most
+  1 KiB, that group and other cannot write. `--identity` is the folder
+  `ataniq-seat gate-init` wrote. The link uses pinned-key TLS at both ends and
+  redials when it drops; a wrong pin never connects. While the link is down
+  the phone is told `daemon_unavailable`; a code the daemon refused is
+  `code_refused`, and any other refusal is `daemon_error`. The pairing code is
+  never printed. Without the three flags pairing answers `daemon_unavailable`,
+  as before. The seat hands the daemon at most 6 pairings in 11 minutes from
+  all clients together, besides 5 tries per client in 15 minutes; a pairing
+  past it is answered `rate_limited`. The gate does not count refused
+  pairings against the seat, so strangers cannot shut out the owner's logins,
+  reads and decisions with them; the bound keeps what strangers can make the
+  seat send (the daemon's log lines, tries at an open code) small. Its cost:
+  strangers who spend it keep the owner's own pairing on the phone waiting
+  while they keep it up, never the desk.
+- The daemon built with the owner channel's tag can serve the seat gate, the
+  link of the phone's seat app, with `ataniqd run --owner-channel --seat-gate
+  ADDR`. ADDR is one IP address of the host and a port; a host name, a wildcard,
+  multicast or broadcast address and a zero port are refused. The gate is TLS
+  1.3 with pinned keys: `ataniqd seat-gate init` makes the gate's key in
+  `owner/gate/` of the state folder and prints its fingerprint, and the seat
+  keys it lets in are pinned in `owner/gate/seat-pins` (mode 0600, one
+  fingerprint per line, at most 4), which `ataniqd seat-gate pins` lists and the
+  daemon reads at start. It serves the pairing call and the reads of the cards
+  in frames of up to 257 KiB, so the largest card fits. With the seat origin
+  configured it also serves a login and a decision from the phone, and without
+  one it serves only the pairing call and the reads and decides nothing (see
+  the entry on the login and the decision). A seat whose key is not pinned
+  never reaches the service. A seat refused 16 times within 10 minutes for what
+  it sent is answered `too-many-refusals` until those refusals age out; a
+  refused pairing, which the seat relays for anyone who reaches its pairing
+  page, is not counted, so a stranger cannot shut the owner's seat out with
+  wrong codes. At start one line
+  gives the address and the gate's key fingerprint, never a pin. Without the
+  flag nothing listens on the network. Provisional and unqualified, for scratch
+  state only. See `docs/lead-daemon.md`.
+- The phone's pages of `ataniq-seat` update by themselves. The card list
+  reloads when the set of waiting cards changes (at most once every 20 seconds,
+  never over typed text), and a Card page, which never reloads by itself, says
+  "This card changed or was decided elsewhere. Look again." and disables
+  Approve, Deny and their controls when its card was decided elsewhere or
+  changed. A status line says "Not live" when the page cannot be kept current,
+  "Not live: the desk is out of reach" while the link to the desk fails, and
+  "Session ended. Log in again." when the session is gone. The seat keeps one
+  long call, `seat.wait` (capability `watch`), at the gate for the whole seat,
+  and each page asks the seat, never the gate: more tabs add no call of the
+  gate. A poll does not extend a session's idle time, and a stale Approve is
+  still refused by the seat and the daemon; the page only withdraws the offer
+  sooner. The seat's reads now share 20 calls of the gate in 80 seconds (the
+  long call has 6), and a front proxy for the seat must allow a held request of
+  up to 25 seconds on `/api/watch` (read timeout above 30 seconds, buffering
+  off). A new card that comes in through the daemon's door shows up within
+  about 30 seconds. See "Live refresh" in docs/seat-gate.md.
+- `ataniq-seat` has a login page, `/login/`, for a phone with a passkey paired
+  at the desk. The seat asks the daemon through the seat gate for a login
+  challenge and its allow-list, recomputes the challenge from the gate's pin
+  before the phone is asked, and keeps it with the browser that asked; the
+  phone signs it with user verification, and the daemon verifies the
+  assertion. A login starts a session: a `__Host-seat` cookie (Secure,
+  HttpOnly, SameSite=Strict) holding a fresh 256-bit value kept server-side,
+  ended after 30 minutes idle, 12 hours at most, or by `POST /api/logout`; the
+  Log out button goes to the login page only when the seat answered the
+  logout with its own acknowledgement (no redirect is followed), and
+  otherwise says "Logout not confirmed" and stays. Login
+  challenges are limited to 10 per client in 15 minutes and 8 a minute in all.
+  The seat counts every call it sends the gate, by kind, over 80 seconds, and
+  keeps each kind to its room there: pings 6, pairings and logins 12 (6
+  logins), reads 26, decisions 16 (8 decisions), which make the gate's 60 a
+  minute; a call without room is not sent and the phone says the desk is busy.
+  A decision's challenge is asked only with room for the decision too, kept
+  for that one challenge, so a decision the phone signed is never refused for
+  the gate's rate, from any session of the passkey. A login challenge is
+  likewise asked only with room for its login, so the owner's login is never
+  refused as busy after the passkey; strangers who draw login challenges
+  can still use up the room for challenges, the owner's too, for up to 5
+  minutes at a time, and with it the room for pairings.
+  A login belongs to no project and to no card: it proves that the phone holds
+  a paired key of a kind the daemon knows, and decides nothing. The login
+  page, and the Card page when it offers a decision, alone allow
+  `publickey-credentials-get`, to the seat's own origin. A gate that has the
+  seat origin serves the login; a gate without one answers that the desk does
+  not take phone logins.
+- The seat gate guide and design now describe the phone's notices. A notice is
+  a push to the Home Screen app that says "N waiting", sent by the notifier
+  (`ataniq-seat-notify`) when the count of waiting cards rises above what was
+  last told, with no page of the seat polling in the last 60 seconds, at most
+  once in 2 minutes when the count does not rise, at most 30 a day, and never
+  while the seat is not live; it shows nothing of a card, has no action and a
+  tap opens the card list. The guide ("Notices" in docs/seat-gate.md) gives the
+  steps to turn notices on at the phone (Add to Home Screen, open it from there,
+  Enable notices, allow), to stop them and to test with `send-test`, the status
+  texts, and troubleshooting rows; the design ("Notices" in
+  docs/design/seat-gate.md) gives the protocol bounds, the service worker's
+  rules, the content security policy's `manifest-src` and `worker-src`, the
+  Trusted Types policy `seat-sw` for the service worker's registration, the
+  notifier's egress and limits, the privacy cost (Apple's push service sees
+  the timing and size of each push) and what a taken-over seat or notifier can
+  do. Both say that the seat reaches no network address but the gate's, and, for
+  notices, the notifier's local socket. Notices are built, not deployed and not
+  tried on a phone.
+- The seat can now turn notices on from the phone. When `ataniq-seat` runs
+  with `--notify-socket` (a notifier that also takes subscriptions), the card
+  list shows a Notices section with Enable notices and Stop notices buttons and
+  a status line: notices work only from the Home Screen app on iPhone, so the
+  page says to add it to the Home Screen, open it from there and tap Enable.
+  The tap asks the phone's permission, registers a service worker (`/sw.js`)
+  and hands the notifier the phone's push subscription through
+  `POST /api/push/subscribe`; Stop notices drops it through
+  `POST /api/push/unsubscribe` (the subscription is named by the SHA-256 of its
+  address), and `POST /api/push/info` gives the push key. These calls need a
+  session and are limited to 6 a minute for a credential. The seat serves a web
+  app manifest (`/manifest.webmanifest`, the Home Screen app opens on
+  `/cards/`) and its icons. A notice shows only "N waiting", or "Cards are
+  waiting" for anything else, has no buttons and carries nothing of a card, and
+  a tap on it opens the card list. The content security policy gains
+  `manifest-src 'self'` and `worker-src 'self'`. Without `--notify-socket`
+  these routes answer 404 and the pages show nothing about notices.
+- `ataniq-seat-notify` (command `cmd/ataniq-seat-notify`, static, the standard
+  library and packages `webpush` and `seatnotice` only) is the notifier of the
+  seat's notices: the one unit that holds the VAPID key and the push
+  subscriptions and talks to a push service. `vapid-init --key PATH` makes a
+  new key file of mode 0600, never overwriting, and prints the public key
+  only. `run` serves the seatnotice protocol on a Unix socket (mode 0660) to
+  one user, the seat's, looked up once at the start and checked by the
+  kernel's peer credentials; it keeps at most 4 subscriptions in a strict,
+  atomically written file of mode 0600, accepts only endpoints on the hosts
+  of `--push-hosts` (exactly `web.push.apple.com` by default, https and port
+  443), sends `{"n":N}` with the topic `waiting` to each in turn, drops a
+  subscription the push service says is gone, and sends at most 30 pushes in
+  any hour. It logs fixed text and counts, never an endpoint or a key.
+  `send-test --socket PATH N` is the owner's one test push, run as the seat
+  user.
+- Add `docs/seat-gate.md`, the operator guide of the phone approval path, for
+  the scratch build with the owner channel's tag: what runs on the lead host and
+  on the authority host, the keys of both ends (`ataniqd seat-gate init|pins`,
+  `ataniq-seat gate-init`) and the pin file on each side, the owner-local origin
+  file on both hosts, the firewall rule (one gate port, from the seat host only)
+  and the reverse proxy rules (original Host kept, `Origin` and
+  `Sec-Fetch-Site` untouched, the client-address header overwritten on every
+  request, no caching, no redirects), rotation of a seat key, the gate key, the
+  origin and a passkey, with what breaks when the order is wrong, pairing,
+  login and the approve or deny of a card with a fresh passkey, the credential
+  kinds and the accepted-kinds policy, what the STAND-IN banner and "scratch
+  only" mean, the known limits and a troubleshooting table of the refusals the
+  app shows. `docs/lead-daemon.md` no longer says the daemon has no network
+  listener: the seat gate is its one, only with `--owner-channel --seat-gate`,
+  and the accepted-kinds policy is applied, as the guide now says. Provisional
+  and unqualified, for scratch state only.
+- The seat's pairing page, once it shows the eight words and they match,
+  also shows a fixed line, "When the desk has confirmed these words, log in:",
+  with a "Log in" link to the login page. The phone is not told when the desk
+  confirms, so the page does not redirect by itself. The line and link are not
+  shown before the words, on a failure or when the words do not match.
+- `owner.show`, on the owner connection and over the seat gate, marks a card
+  whose decision is journaled and not yet taken by the door with
+  `"on_its_way": true` (left out when false), so that a phone whose answer to
+  a decision was lost can tell a decision on its way from none by reading the
+  card again.
+
+### Changed
+
+- The intake no longer lets a lead choose a converter or a path in the owner's
+  process. `ataniq-intake review` reads each commit as the raw object the lead
+  wrote (`git rev-list` and `git cat-file`, not `git log`) and parses the
+  headers itself, so git never converts a message from the charset that the
+  commit's own `encoding` header names. A commit with an `encoding` header other
+  than UTF-8 (`utf8` and any case of `UTF-8` pass) is refused, with its id and
+  the value escaped, and so is a commit object whose headers are not in the form
+  git writes (exit status 1; the lead commits the branch again). Commit text
+  that is not valid UTF-8 is still shown escaped. A header or subject over
+  32 KiB, a commit over 64 KiB, or commits over 8 KiB each on average are a
+  limit error. A header of many continuation lines is parsed in time linear in
+  its size, and the call's time limit and context are checked between the
+  commits that are parsed. The `gitenv` package no longer allows the `git log`
+  subcommand at all, so no owner-side command can convert a message.
+  `ataniq-intake fetch` names the source of the fetch to the owner's git as a
+  `file://` URL (a `%` in the path is written `%25`; a path with `@[` in it
+  cannot be passed so, as git changes it, and a template whose `serve.repository`
+  holds one is refused when it is loaded), so git never reads a
+  bundle file at the template's `serve.repository` path itself and always starts
+  the sandboxed upload-pack, also for a bundle that appears at the path after
+  the checks. As a second layer it refuses a template whose `serve.repository`
+  path exists on the host (a regular file, a symlink, any folder, or a path that
+  cannot be checked), before the measure runs and again before git starts; a
+  path that does not exist passes, as does the clone's own path while it is a
+  real folder (a clone that was replaced by a symlink or a file in between is a
+  hostile tree, exit status 1). The refusal's hint says that the path exists or
+  cannot be checked and that the mirror was not changed, which holds for both
+  checks. The `qualify-mirror` report gets the fact `repository_on_host` in
+  `s16-fetch.clone`. See `docs/lead-intake.md` and
+  `docs/qualification-lead-mirror.md`.
+- The owner channel (tagged build only) now says why it refuses a merge whose
+  feature has a commit with an `encoding` header other than UTF-8: the request
+  is still refused `request-invalid` with no card, but the reply the lead reads
+  and the request's status carry the line "a commit declares an encoding other
+  than UTF-8" instead of "the host could not review the merge". The line is
+  fixed and repeats neither the commit's id nor the header's value; the lead
+  commits the branch again in UTF-8. See `docs/lead-daemon.md`.
+- The seat's card page asks the decision guard too (read-only, nothing is
+  logged): while decisions are paused on the authority host a pending card
+  shows "Decisions are paused on this host." and no Approve or Deny form
+  instead of buttons that every tap would refuse. The card stays readable;
+  the refusal of a challenge and of a decision, pairing, login and the reads
+  are unchanged.
+- Tighten the supervisor, approval and security design pages. A nomination from
+  a remote supervisory agent names a request that already exists in an instance
+  and supplies no part of the card or of what is approved, and no agent text
+  appears on a card in the first version; a card that is not decided expires
+  and the request stays as it was. Each instance assigns and fences a remote
+  supervisory agent alone, by a port credential and a client class the instance
+  binds. The session that reads lead transcripts is never the session that
+  acts, enforced by client identity in the instance, and the instance records
+  what was sent to a provider. The idea that no grantee holds a signing key is marked as a
+  proposal, and the joint request to Qargi as a request. Specification only;
+  nothing is implemented.
+
+### Fixed
+
+- Pairing a phone refuses a credential id of 1024 bytes, which WebAuthn does
+  not allow and the assertion verifier refuses: the owner wire and the list of
+  deciding keys now take at most 1023 bytes, as the verifier does, so no
+  credential is paired that could never approve.
+- The scratch pass of the tagged build (`make ownerchannel-build`) numbers the
+  cards of its stand-in door from the time of day and past the highest number
+  its journal holds for the day, not from 1 on every start, so that a restart
+  on the same state folder no longer makes a card with the id of one that was
+  decided, which could not be decided itself.
+- The seat's notices back off exponentially after a failed call to the notifier
+  (a minute, then 2, 4, 8, 16 and 30 minutes, ended by a call the notifier
+  took) and count only the calls the notifier answered, a count taken or a
+  refusal with a code such as `rate_limited`, toward the 30 a day. A notifier
+  that is down for half an hour no longer uses up the day's notices; calls that
+  got no answer are held to 200 a day. Before, every call counted and a fixed
+  minute's wait spent the 30 in half an hour.
+- The seat does not send the phone a notice, a minute after the Cards page is
+  closed, for cards the owner already saw on it: the count a live poll found is
+  taken as seen and raises the count last announced to at least it. A card that
+  arrives after the last poll still brings its notice.
+- The notifier's `notify` call has its own deadline of 15 seconds on both sides
+  (`seatnotice` `NotifyDeadline`), where `info`, `subscribe` and `unsubscribe`
+  keep 2: a push to the phone may take up to 5 seconds, with up to four
+  subscriptions, and a call cut at 2 seconds was counted as failed after the
+  push service had accepted the message, so the seat sent it again a minute
+  later. The notifier bounds all the pushes of one notify to 12 seconds, and the
+  seat's own bound on the call is 20 seconds, so the client's deadline ends a
+  slow call.
+- The authority host's README and DEPLOY.md no longer say that a notifier that
+  cannot start fails the switch's reload: the unit is `Type=simple`, so the
+  restart succeeds once the process is forked, the health check is the seat's,
+  and the switch ends `ok` while systemd restarts the notifier every 5
+  seconds. They say how the owner sees it (`systemctl status`, the journal, the
+  missing socket, `send-test`, the page's Enable notices failing) and what to
+  do. The design document's limits also say what a taken-over seat can do to
+  the notifier within its host policy: subscribe its own push-host endpoints up
+  to the four places, replace or remove the owner's subscription, and cause up
+  to 30 pushes an hour.
+- Tapping a notice from the seat opens the Cards list also before the service
+  worker controls any page: the worker looks at uncontrolled windows too,
+  navigates one before it focuses it (a worker cannot navigate a page it does
+  not control, and focusing first could use up the tap's permission to open a
+  window) and otherwise opens the list in a window of its own. It still takes
+  no control of pages and handles no requests.
+
+### Security
+
+- The notifier's unit runs in a group of its own, `seat-notify`, not in the
+  seat's group, so the notifier, the one unit with egress, cannot reach the
+  seat's socket in `/run/seat` (and so cannot send the seat a client address
+  of its choosing). Its socket folder and socket belong to
+  `seat-notify:seat-notify` (0750 and 0660), and the seat's unit joins that
+  group with `SupplementaryGroups=seat-notify`, so the group must exist on the
+  host before the seat's release is switched to (the README's setup makes it,
+  with the seat's user as a member and Caddy not). Tests hold that the
+  notifier's unit names no group `seat` and the seat's names `seat-notify`.
+- The seat's content security policy pins the Trusted Types policy names with
+  `trusted-types seat-sw`, the one policy `push.js` makes to register the
+  service worker, with no `default` and no `allow-duplicates`, so a script that
+  runs on the origin cannot make a policy of its own. A test holds that every
+  policy any script creates is named, and no other.
+
 ## [0.0.12] - 2026-11-20
 
 ### Added
