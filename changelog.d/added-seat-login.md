@@ -7,7 +7,8 @@
   HttpOnly, SameSite=Strict) holding a fresh 256-bit value kept server-side,
   ended after 30 minutes idle, 12 hours at most, or by `POST /api/logout`; the
   Log out button goes to the login page only when the seat answered the
-  logout, and otherwise says "Logout not confirmed" and stays. Login
+  logout with its own acknowledgement (no redirect is followed), and
+  otherwise says "Logout not confirmed" and stays. Login
   challenges are limited to 10 per client in 15 minutes and 8 a minute in all.
   The seat counts every call it sends the gate, by kind, over 80 seconds, and
   keeps each kind to its room there: pings 6, pairings and logins 12 (6

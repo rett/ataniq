@@ -145,9 +145,10 @@
 // the form the app makes is not looked up. A session ends 30 minutes after
 // its last request ([SessionIdle]) and 12 hours after the login whatever its
 // use ([SessionMax]), and at POST /api/logout. The logout script goes to
-// the login page only when the seat answered the logout; with no answer, or
-// another, the session may still be live, and the page says "Logout not
-// confirmed" and leaves the button to tap again. At most 16 are kept; a new
+// the login page only when the seat answered the logout with its JSON
+// acknowledgement, not redirected (its fetch refuses a redirect); with no
+// answer, or another, the session may still be live, and the page says
+// "Logout not confirmed" and leaves the button to tap again. At most 16 are kept; a new
 // one drops the one used least recently.
 //
 // Both cookies are __Host- cookies, Secure, HttpOnly and SameSite=Strict,

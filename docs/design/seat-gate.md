@@ -616,9 +616,11 @@ ended), and keeps the value server-side as its digest. The session's cookie
 is `__Host-seat`, Secure, HttpOnly and SameSite=Strict; a session ends 30
 minutes after its last request and 12 hours after the login, or at a
 logout (`POST /api/logout`). The page goes to the login page only once the
-seat answered the logout; when the answer is lost, or is not a success, the
-session may still be live, so the page says "Logout not confirmed" and the
-button stays. Every later
+seat answered the logout: a 200, not redirected (the script's fetch refuses
+a redirect), whose body is the seat's JSON acknowledgement
+`{"next":"/login/"}`; when the answer is lost, or is anything else (a
+proxy's page, say), the session may still be live, so the page says
+"Logout not confirmed" and the button stays. Every later
 decision of the session is to use exactly the session's credential
 (`allowCredentials` holding only its raw id; G9). The seat link checks that a
 login's answer names the credential the assertion named, by its raw id and its
