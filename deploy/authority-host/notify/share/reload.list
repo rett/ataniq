@@ -1,0 +1,19 @@
+# The reload commands of the release, run by ah-switch after current is
+# moved (see ../README.md, "Layout"). One command per line, no {release} in
+# the arguments.
+# This is the seat's list with the notifier's restart added: the notifier's
+# part is laid over the seat's (see ../README.md, "The notifier").
+# systemd reads the seat's and the notifier's units again through the links
+# /etc/systemd/system/ataniq-seat.service and
+# /etc/systemd/system/ataniq-seat-notify.service, which point into current.
+# The notifier is (re)started first, so the seat's socket is there when the
+# seat starts; the seat does not need it to start, and a notifier that is down
+# costs notices and nothing else. Both are (re)started from this release: the
+# decision inhibit is there meanwhile, and the seat refuses every decision
+# while it is.
+systemctl daemon-reload
+systemctl restart ataniq-seat-notify.service
+systemctl restart ataniq-seat.service
+# The Caddyfile sets "admin off", so Caddy has no admin endpoint to reload
+# through: "systemctl reload caddy" cannot be used, and Caddy is restarted.
+systemctl restart caddy

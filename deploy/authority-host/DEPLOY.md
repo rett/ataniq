@@ -353,6 +353,14 @@ repository: the placeholders below are `seat.example` for the seat's name and
    per-source ones do not without that rule. Check it from a host other
    than the front proxy: `curl --max-time 5 http://AUTHORITY_HOST/healthz`
    must fail.
+   The phone's pages hold a request to `/api/watch` open for up to 25
+   seconds, so the front proxy's read timeout must be longer than 30 seconds
+   and its buffering must be off for that path (for nginx, `proxy_read_timeout
+   60s;` and `proxy_buffering off;` in the location of `/api/watch`; a CDN or
+   cloud proxy in front has a limit of its own, which must also be above 30
+   seconds). Otherwise every poll fails and the pages say "Not live". This
+   host's Caddy needs nothing (see [the README](README.md#setting-the-host-up-for-it-once-by-hand),
+   step 7).
 
 4. **Deploy: dry, then go**, as in step 4. The switch runs the release's
    no-AI check (it reads `seat.env`, and `site.caddy`, which the
@@ -384,6 +392,86 @@ back to the first, static, release leaves the seat stopped and its unit's
 link dangling: put `/usr/bin/true` back in the host's stop list until a seat
 release is live again (see [the README](README.md#rollback)).
 
+## Deploying the notifier
+
+The notifier, `ataniq-seat-notify`, which sends the phone the notice that
+cards wait, is part of the seat's release when the owner wants notices: this
+folder with `seat/` and then `notify/` laid over it. What it installs and why
+is in [the README](README.md#the-notifier); this is the order. It follows
+"Deploying the seat app" (the seat is set up and deployed first), and nothing
+of it is automatic. The placeholders are `203.0.113.53` for the resolver,
+`198.51.100.0/24` for the push service's range and `owner@example.org` for
+the contact. It needs the owner's words on one thing: outbound access to
+Apple's push service for this unit, and nothing else.
+
+1. **Build both binaries, static**, and keep their hashes:
+
+   ```
+   CGO_ENABLED=0 sh scripts/go-tool.sh build -trimpath -o build/authority-host/ataniq-seat ./cmd/ataniq-seat
+   CGO_ENABLED=0 sh scripts/go-tool.sh build -trimpath -o build/authority-host/ataniq-seat-notify ./cmd/ataniq-seat-notify
+   ldd build/authority-host/ataniq-seat-notify      # "not a dynamic executable"
+   sha256sum build/authority-host/ataniq-seat build/authority-host/ataniq-seat-notify
+   ```
+
+2. **Make the release.** Lay both parts over a copy of this folder, in this
+   order, fill the allowlists and build as in step 2 of the seat's, with the
+   notifier's binary added:
+
+   ```
+   mkdir SRC
+   cp -R deploy/authority-host/etc deploy/authority-host/share SRC/
+   cp -R deploy/authority-host/seat/. SRC/
+   cp -R deploy/authority-host/notify/. SRC/
+   ah-release build --out DIR --counter N --commit SHA --go-version V --built-on CLASS --package-snapshot S \
+     --bin build/authority-host/ah-switch --bin build/authority-host/ah-noaicheck \
+     --bin build/authority-host/ataniq-seat --bin build/authority-host/ataniq-seat-notify \
+     --src FILLED
+   ah-release check --no-noaicheck DIR/ID
+   ```
+
+3. **Set the host up for the notifier, once, by hand**, from your own root
+   session, as [the README](README.md#setting-the-host-up-for-it-once-by-hand-1)
+   says, in this order: the user `seat-notify`; the folder
+   `/var/lib/seat-notify` and the VAPID key, made with `vapid-init` from a
+   root-owned copy of the release you verified (it prints the public key
+   only); the folder `/etc/authority-host/seat-notify` with
+   `seat-notify.env` (`NOTIFY_SUBJECT=mailto:owner@example.org`, the
+   contact of your own); the drop-in
+   `/etc/systemd/system/ataniq-seat-notify.service.d/egress.conf` with the
+   resolver and the push range (`IPAddressAllow=203.0.113.53` and
+   `IPAddressAllow=198.51.100.0/24` in place of the real values); the unit's
+   link, `ln -s /opt/authority-host/current/etc/systemd/system/ataniq-seat-notify.service /etc/systemd/system/ataniq-seat-notify.service`;
+   the line `SEAT_NOTIFY_ARGS=--notify-socket /run/seat-notify/notify.sock` in
+   `/etc/authority-host/seat/seat.env`; and your firewall's rule that keeps
+   the user `seat-notify` to the resolver and to TCP port 443 of the push
+   range, outbound, and to nothing else.
+
+4. **Deploy: dry, then go**, as in step 4. The switch runs the release's
+   no-AI check (it reads `seat.env` and `seat-notify.env`), its validators
+   (`systemd-analyze verify` and `test -L` of both units), moves `current`,
+   and its reload list restarts the notifier, then the seat and Caddy while
+   decisions are inhibited. The health check is the seat's: the notifier
+   decides nothing, and is not part of it.
+
+5. **Verify**, as in step 5, and also:
+
+   ```
+   systemctl status ataniq-seat-notify.service
+   ls -l /run/seat-notify
+   sudo -u seat RELEASE/bin/ataniq-seat-notify send-test --socket /run/seat-notify/notify.sock 3
+   ```
+
+   The socket is `seat-notify:seat`, mode 0660; the test prints `sent K`
+   (0 until a phone has subscribed). Then acknowledge the outcome as in
+   step 5. The host's own stop list is not changed: the notifier decides
+   nothing.
+
+To roll back, take step 6 of the first deploy (`ack`, then `--rollback-to
+previous`). A release without the notifier leaves it running from the earlier
+release's binary until `systemctl stop ataniq-seat-notify.service`; see
+[the README](README.md#rollback-1). If the notifier is down, nothing breaks but
+the notices.
+
 ## Owner-only items
 
 These are written by the owner, on the host, never by a script of this folder
@@ -407,6 +495,14 @@ and never in this repository:
   `seat.env`, `site.caddy`), the drop-in that allows the gate's address, the
   user `seat`, the seat's key in `/var/lib/seat/identity` and the unit's link
   are the owner's, made by hand (see [the README](README.md#setting-the-host-up-for-it-once-by-hand)).
+- **The notifier's files.** `/etc/authority-host/seat-notify/seat-notify.env`
+  (the contact the push service may reach you by), the drop-in that allows the
+  resolver and the push service's range, the user `seat-notify`, the VAPID key
+  and the subscriptions in `/var/lib/seat-notify`, the unit's link, the
+  `SEAT_NOTIFY_ARGS` line of `seat.env` and the firewall's rule for the
+  user's outbound port 443 are the owner's, made by hand (see [the
+  README](README.md#setting-the-host-up-for-it-once-by-hand-1)). No release
+  holds the contact or a key.
 - **The word for the switch's owner commands.** `ah-switch inhibit-clear --asked WORDS`
   and `ah-switch ack --txn ID[,ID...] --asked WORDS` act on the owner's word;
   nobody types it for the owner, and the owner copies the `--txn` value from
@@ -473,6 +569,9 @@ state; read the message, fix the cause, run the step again.
 | Switch (seat release) | `step 5/9 validate: FAILED: validator-failed: validator 1 of 3, ...` (`caddy validate`) | Nothing was changed. Usually `/etc/authority-host/seat/site.caddy` is wrong (the no-AI check reads it first and says when it is missing); fix it and switch to the imported release again without `--from` |
 | Switch (seat release) | `step 5/9 validate: FAILED: validator-failed: validator 3 of 3, ...` (`test -L /etc/systemd/system/ataniq-seat.service`) | Nothing was changed. The unit's link (step 3 of "Deploying the seat app") is missing or is not a link: make it with `ln -s /opt/authority-host/current/etc/systemd/system/ataniq-seat.service /etc/systemd/system/ataniq-seat.service` and switch to the imported release again without `--from`. Without the check, the reload's `systemctl restart ataniq-seat.service` would fail with `Unit not found` after `current` moved, and the stop list's `systemctl stop` would fail with exit 5 and leave the transaction in `stopping` |
 | Switch (seat release) | the health check fails on the seat's socket (`curl ... --unix-socket /run/seat/http.sock ...`) | The release was activated: the result is `rolled-back` or `failed`, as in the rows above. Read `journalctl -u ataniq-seat.service`: a missing key (`--identity`), origin or pin file, or a gate address the drop-in does not allow, stops the seat at its start. Fix it, acknowledge, and deploy a release with a higher counter |
+| Switch (release with the notifier) | `step 4/9 noaicheck: FAILED` and, run by hand, `HIT incomplete env-file /etc/authority-host/seat-notify/seat-notify.env` | Nothing was changed. The notifier's environment file is missing: write it (see "Deploying the notifier", step 3) and switch to the imported release again from your root session, without `--from` |
+| Switch (release with the notifier) | `step 5/9 validate: FAILED: validator-failed: validator 5 of 5, ...` (`test -L /etc/systemd/system/ataniq-seat-notify.service`) | Nothing was changed. The notifier's unit link is missing or is not a link: make it with `ln -s /opt/authority-host/current/etc/systemd/system/ataniq-seat-notify.service /etc/systemd/system/ataniq-seat-notify.service` and switch to the imported release again without `--from`. The seat's own link is validator 4 of 5 |
+| Switch (release with the notifier) | a reload command fails at `systemctl restart ataniq-seat-notify.service`: the result is `rolled-back` or `failed`, as in the rows above | The release was activated. Read `journalctl -u ataniq-seat-notify.service`: a missing or unsafe key (`--vapid-key`), a subscriptions file that is not as the command writes it (`--subscriptions`), or a subject that is not a `mailto:` or `https:` value stops it at its start. Fix it, acknowledge, and deploy a release with a higher counter |
 | Switch | exit 3 | Another switch holds the lock; wait for it, then run again. Nothing was done |
 | Switch | exit 2 | Bad arguments or a root other than `/` without `--allow-exec`; nothing was done |
 | Any | You are not sure what the host holds | `sudo /usr/local/sbin/ah-switch status` changes nothing and says what is live, what is owed and what is to resume |
