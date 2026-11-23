@@ -292,3 +292,38 @@ func TestNotifyOneAtATime(t *testing.T) {
 		t.Errorf("%d pushes, want 8", got)
 	}
 }
+
+// TestNotifyBoundsAllItsPushes: the notify's pushes together end at its own
+// total, whatever the call's context allows, and the bounds are in order: one
+// push, then all of them, then the connection's turn for a notify.
+func TestNotifyBoundsAllItsPushes(t *testing.T) {
+	if !(pushTimeout < notifyTimeout && notifyTimeout < seatnotice.DefaultNotifyDeadline) {
+		t.Fatalf("push %v, notify %v, turn %v: not in order", pushTimeout, notifyTimeout, seatnotice.DefaultNotifyDeadline)
+	}
+	if notifyTimeout != 12*time.Second {
+		t.Errorf("notifyTimeout %v, want 12s", notifyTimeout)
+	}
+	p := newPush(t)
+	n, _, _, _ := testNotifier(t, p)
+	if n.total != notifyTimeout || n.pushWait != pushTimeout {
+		t.Fatalf("the notifier's bounds are %v and %v", n.total, n.pushWait)
+	}
+	n.total = 400 * time.Millisecond
+	hold := make(chan struct{})
+	defer close(hold)
+	for _, path := range []string{"/p/a", "/p/b", "/p/c"} {
+		p.mu.Lock()
+		p.hold[path] = hold
+		p.mu.Unlock()
+		if err := n.Subscribe(context.Background(), p.subscription(t, path)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	start := time.Now()
+	sent, err := n.Notify(ctx, 1)
+	if sent != 0 || code(t, err) != seatnotice.CodeUnavailable || time.Since(start) > 3*time.Second {
+		t.Fatalf("sent %d after %v: %v", sent, time.Since(start), err)
+	}
+}

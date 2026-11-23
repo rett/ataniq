@@ -40,7 +40,10 @@
 // # Deadlines and the peer
 //
 // The client's call, and the server's turn with a connection, end 2 seconds
-// after they begin (see [DefaultDeadline]). The server reads the peer's user
+// after they begin (see [DefaultDeadline]), except notify, which sends the
+// pushes before it answers and has 15 seconds (see [DefaultNotifyDeadline]);
+// the server still reads a notify's request within the 2 seconds. The server
+// reads the peer's user
 // id from the kernel (SO_PEERCRED) and serves only the one id its caller
 // allows; on a system without that the server refuses every connection.
 package seatnotice

@@ -59,8 +59,12 @@ const (
 	noticeBackoff    = time.Minute
 	noticeBackoffMax = 30 * time.Minute
 	noticeLogGap     = time.Minute
-	// noticeCall bounds one call to the notifier.
-	noticeCall = 10 * time.Second
+	// noticeCall bounds one call to the notifier. A notify may take 15
+	// seconds (package seatnotice's DefaultNotifyDeadline, which the client
+	// enforces; the notifier itself stops at 12), so this is that and a
+	// margin of 5: the client's deadline is what ends a slow call, and this
+	// only a call that is stuck for another reason.
+	noticeCall = 20 * time.Second
 	// noticeMaxN is the largest count told to the notifier.
 	noticeMaxN = 999
 )

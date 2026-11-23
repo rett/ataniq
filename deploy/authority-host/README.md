@@ -2669,7 +2669,8 @@ either.
   host does not know it) and the kernel's peer credentials decide for each
   connection, not the socket's mode. A connection of any other user is
   closed unread. One request and one answer per connection, 2 seconds at
-  most.
+  most, except `notify`, which sends its pushes before it answers and has 15
+  seconds (the request is still read within the 2).
 - `info` answers the VAPID public key (what the phone subscribes with) and
   how many subscriptions it holds. `subscribe` keeps a subscription (at
   most 4; the same endpoint again replaces its keys; an endpoint that is not
@@ -2683,9 +2684,11 @@ either.
   nothing else, encrypted for that subscription, with the topic `waiting`
   (a notice not yet delivered is replaced by the next), urgency `normal` and
   a TTL of one hour. A subscription the push service says is gone (404 or
-  410) is dropped; one that failed otherwise is kept. The sends all fit the
-  connection's 2 seconds; a slow push service may leave later subscriptions
-  for the seat's next try, a minute on. At most 30 pushes are made in any
+  410) is dropped; one that failed otherwise is kept. One push is
+  given 5 seconds and the whole notify 12, inside the connection's 15 (the
+  seat's own bound on the call is 20), so up to four subscriptions fit when the
+  push service answers in the usual time; a slow push service may leave later
+  subscriptions for the seat's next try. At most 30 pushes are made in any
   hour, all subscriptions together, whatever the seat asks: past that the
   answer is `rate_limited` and nothing is sent.
 - The only host it posts to is `web.push.apple.com`: no other name, no

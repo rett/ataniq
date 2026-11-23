@@ -1489,7 +1489,11 @@ The unit's release is `deploy/authority-host/notify`, laid over the seat's (see
 
 `internal/seatnotice` holds the codec, the client and the server. The client's
 call and the server's turn with a connection each end 2 seconds after they
-begin. One connection carries one request and one answer.
+begin, except a notify, which sends its pushes before it answers and has 15
+seconds (the request is still read within the 2). The notifier holds one push
+to 5 seconds and all the pushes of a notify to 12, so that its answer is in
+before the 15 end, and the seat's own bound on the call is 20 seconds: the
+client's deadline is what ends a slow call. One connection carries one request and one answer.
 
 - A frame is a 4-byte big-endian length and then that many bytes of one JSON
   object; the length is 1 to 4096. The object is strict: valid UTF-8, no byte
@@ -1688,8 +1692,8 @@ seat asks:
   (`endpoint_refused`).
 - A notify sends `{"n":N}` to each subscription in turn, with the topic
   `waiting`, urgency normal and a time to live of 1 hour (what a push service
-  keeps a notice for when the phone cannot be reached), within the connection's
-  2 seconds. A subscription the push service reports gone (404 or 410) is
+  keeps a notice for when the phone cannot be reached), each push within 5
+  seconds and all of them within 12. A subscription the push service reports gone (404 or 410) is
   dropped; one that failed otherwise is kept.
 - At most 30 pushes in any hour, every subscription together, whatever the
   seat asks, and each attempt counts. When none could be sent for that reason

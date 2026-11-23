@@ -916,3 +916,14 @@ func TestNoticeACodedRefusalCountsTowardTheDay(t *testing.T) {
 		t.Fatalf("a call after %d answered calls in a day: %d", noticeDailyMax, n)
 	}
 }
+
+// The seat's bound on one call to the notifier must leave the client's own
+// deadline for a notify (package seatnotice's DefaultNotifyDeadline, 15
+// seconds, which this package may not import) the one that ends a slow call:
+// at least that and a margin of 5 seconds. Package seatnotice's own test
+// holds that constant at 15 seconds.
+func TestNoticeCallBoundOutlastsTheNotifyDeadline(t *testing.T) {
+	if noticeCall < 15*time.Second+5*time.Second {
+		t.Errorf("noticeCall is %v, less than the notify deadline of 15s and a margin of 5s", noticeCall)
+	}
+}

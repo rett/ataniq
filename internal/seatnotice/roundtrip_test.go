@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -326,21 +327,33 @@ func TestClientDeadline(t *testing.T) {
 	c, _ := NewClient(path)
 	c.Deadline = 150 * time.Millisecond
 	start := time.Now()
-	err := c.Notify(context.Background(), 2)
-	if err == nil {
+	if _, err := c.Info(context.Background()); err == nil {
 		t.Fatal("a silent notifier answered")
 	}
 	if d := time.Since(start); d < 100*time.Millisecond || d > 2*time.Second {
 		t.Errorf("the call took %v, want about the 150ms deadline", d)
 	}
+	// A notify has a deadline of its own, which Deadline does not set.
+	c.NotifyDeadline = 250 * time.Millisecond
+	start = time.Now()
+	err := c.Notify(context.Background(), 2)
+	if err == nil {
+		t.Fatal("a silent notifier answered a notify")
+	}
+	if d := time.Since(start); d < 200*time.Millisecond || d > 2*time.Second {
+		t.Errorf("the notify took %v, want about the 250ms deadline", d)
+	}
 
-	// The default is two seconds.
+	// The defaults: two seconds, and fifteen for a notify.
 	if DefaultDeadline != 2*time.Second {
 		t.Errorf("DefaultDeadline is %v", DefaultDeadline)
 	}
+	if DefaultNotifyDeadline != 15*time.Second {
+		t.Errorf("DefaultNotifyDeadline is %v", DefaultNotifyDeadline)
+	}
 
 	// A context that ends sooner ends the call sooner, and says so.
-	c.Deadline = 0
+	c.Deadline, c.NotifyDeadline = 0, 0
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	start = time.Now()
@@ -365,7 +378,7 @@ func TestServerDeadlines(t *testing.T) {
 	block := make(chan struct{})
 	defer close(block)
 	h := &FakeHandler{Block: block}
-	s := startServer(t, ServeConfig{AllowedUID: uid(), Deadline: 200 * time.Millisecond}, h)
+	s := startServer(t, ServeConfig{AllowedUID: uid(), Deadline: 200 * time.Millisecond, NotifyDeadline: 200 * time.Millisecond}, h)
 	c := s.client(t)
 	start := time.Now()
 	if err := c.Notify(context.Background(), 1); err == nil {
@@ -452,5 +465,102 @@ func TestServeStopsAndLeaksNothing(t *testing.T) {
 	}
 	if n := runtime.NumGoroutine(); n > before {
 		t.Errorf("goroutines: %d before, %d after", before, n)
+	}
+}
+
+// slowHandler waits d in every call before it answers, or until its context
+// ends, and records whether it was cut.
+type slowHandler struct {
+	FakeHandler
+	d atomic.Int64 // nanoseconds
+}
+
+func (h *slowHandler) set(d time.Duration) { h.d.Store(int64(d)) }
+
+func (h *slowHandler) wait(ctx context.Context) error {
+	select {
+	case <-time.After(time.Duration(h.d.Load())):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (h *slowHandler) Info(ctx context.Context) (Info, error) {
+	if err := h.wait(ctx); err != nil {
+		return Info{}, err
+	}
+	return h.FakeHandler.Info(ctx)
+}
+
+func (h *slowHandler) Notify(ctx context.Context, n int) (int, error) {
+	if err := h.wait(ctx); err != nil {
+		return 0, err
+	}
+	return h.FakeHandler.Notify(ctx, n)
+}
+
+// TestNotifyHasItsOwnDeadline: a notify that takes longer than the turn of
+// the other calls still gets its answer, on both sides, while info, with the
+// same slow handler, is cut at the short deadline; and a notify is cut at its
+// own deadline.
+func TestNotifyHasItsOwnDeadline(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("peer credentials are Linux only")
+	}
+	h := &slowHandler{}
+	h.set(600 * time.Millisecond)
+	path := sockPath(t)
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Skipf("no Unix sockets: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(ctx, ln, h, ServeConfig{AllowedUID: uid(), Deadline: 200 * time.Millisecond, NotifyDeadline: 2 * time.Second})
+	}()
+	var once sync.Once
+	stop1 := func() { once.Do(func() { cancel(); <-done }) }
+	t.Cleanup(stop1)
+	c, _ := NewClient(path)
+	c.Deadline, c.NotifyDeadline = 200*time.Millisecond, 2*time.Second
+
+	if _, err := c.Info(context.Background()); err == nil {
+		t.Error("an info that took 600ms answered within a 200ms deadline")
+	}
+	if err := c.Notify(context.Background(), 4); err != nil {
+		t.Errorf("a notify that took 600ms, with 2s for a notify: %v", err)
+	}
+	if got := h.FakeHandler.Notified(); len(got) != 1 || got[0] != 4 {
+		t.Errorf("the handler was told %v", got)
+	}
+	// Cut at its own deadline, on the client's side and the server's.
+	h.set(5 * time.Second)
+	c.NotifyDeadline = 300 * time.Millisecond
+	start := time.Now()
+	if err := c.Notify(context.Background(), 4); err == nil || time.Since(start) > time.Second {
+		t.Errorf("a notify held %v: %v", time.Since(start), err)
+	}
+	// The server cuts a notify at its own deadline too: a client that would
+	// wait 10 seconds is let go well before.
+	h.set(5 * time.Second)
+	stop1()
+	path2 := sockPath(t)
+	ln2, err := net.Listen("unix", path2)
+	if err != nil {
+		t.Skipf("no Unix sockets: %v", err)
+	}
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	done2 := make(chan error, 1)
+	go func() {
+		done2 <- Serve(ctx2, ln2, h, ServeConfig{AllowedUID: uid(), Deadline: 200 * time.Millisecond, NotifyDeadline: 300 * time.Millisecond})
+	}()
+	t.Cleanup(func() { cancel2(); <-done2 })
+	c2, _ := NewClient(path2)
+	c2.NotifyDeadline = 10 * time.Second
+	start = time.Now()
+	if err := c2.Notify(context.Background(), 4); err == nil || time.Since(start) > 2*time.Second {
+		t.Errorf("a notify held by the server %v: %v", time.Since(start), err)
 	}
 }

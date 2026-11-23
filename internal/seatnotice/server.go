@@ -10,8 +10,17 @@ import (
 
 // DefaultDeadline is how long a call of the client, and a turn of the server
 // with a connection, may last: from the dial (or the accept) to the end of
-// the response.
+// the response. It is the deadline of info, subscribe and unsubscribe, and
+// bounds the reading of every request, notify's included.
 const DefaultDeadline = 2 * time.Second
+
+// DefaultNotifyDeadline is the deadline of the notify operation alone, on
+// both sides: a notify sends one push to each of up to four subscriptions,
+// and one push may take 5 seconds (the notifier's own bound is 12 seconds in
+// all, so that its answer is in before this ends). The seat's own bound on
+// the call must be longer than this, to leave the client's deadline the one
+// that ends it.
+const DefaultNotifyDeadline = 15 * time.Second
 
 // maxServing bounds the connections the server holds at once; a connection
 // past it is closed unread.
@@ -37,6 +46,10 @@ type ServeConfig struct {
 	// Deadline is the server's turn with a connection, [DefaultDeadline]
 	// when zero.
 	Deadline time.Duration
+	// NotifyDeadline is the server's turn with a notify, measured from the
+	// accept, [DefaultNotifyDeadline] when zero. The request is still read
+	// within Deadline.
+	NotifyDeadline time.Duration
 	// peerUID reads the peer's user id; the system's when nil. For tests of
 	// the refusal of a wrong id.
 	peerUID func(net.Conn) (uint32, error)
@@ -52,6 +65,9 @@ type ServeConfig struct {
 func Serve(ctx context.Context, ln net.Listener, h Handler, cfg ServeConfig) error {
 	if cfg.Deadline <= 0 {
 		cfg.Deadline = DefaultDeadline
+	}
+	if cfg.NotifyDeadline <= 0 {
+		cfg.NotifyDeadline = DefaultNotifyDeadline
 	}
 	peer := cfg.peerUID
 	if peer == nil {
@@ -95,12 +111,10 @@ func serveConn(ctx context.Context, c net.Conn, h Handler, cfg ServeConfig, peer
 	if err != nil || uid != cfg.AllowedUID {
 		return
 	}
-	dl := time.Now().Add(cfg.Deadline)
-	if c.SetDeadline(dl) != nil {
+	start := time.Now()
+	if c.SetDeadline(start.Add(cfg.Deadline)) != nil {
 		return
 	}
-	cctx, cancel := context.WithDeadline(ctx, dl)
-	defer cancel()
 	payload, err := readFrame(c)
 	if err != nil {
 		return
@@ -109,6 +123,18 @@ func serveConn(ctx context.Context, c net.Conn, h Handler, cfg ServeConfig, peer
 	if err != nil {
 		return
 	}
+	// The turn of the operation: the request was read within Deadline, and
+	// a notify then has NotifyDeadline from the accept in all, for its
+	// pushes and for writing the answer.
+	dl := start.Add(cfg.Deadline)
+	if req.Op == OpNotify {
+		dl = start.Add(max(cfg.Deadline, cfg.NotifyDeadline))
+		if c.SetDeadline(dl) != nil {
+			return
+		}
+	}
+	cctx, cancel := context.WithDeadline(ctx, dl)
+	defer cancel()
 	var (
 		info Info
 		sent int
