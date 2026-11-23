@@ -51,9 +51,11 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   There the seat source is nil, so `seat.pair` is refused `unavailable` to every
   connection.
 - The gate's handler, `internal/approval/gatehost` (untagged; only tagged code
-  may import it, and none does yet). It serves `seat.pair` and the four reads
-  to the service with a seat source, answers every refusal with a code, and
-  bounds the refusals of each peer (see [errors](#errors)).
+  imports it, the daemon's gate listener). It serves `seat.pair` and the four
+  reads to the service with a seat source, answers every refusal with a code,
+  and bounds the refusals of each peer (see [errors](#errors)). A handler made
+  with `gatehost.NewDeciding` also serves the login and decision operations
+  (G8b), with the gate's own values; `gatehost.New` makes one that does not.
 - The credential kinds and the assertion verifier,
   `internal/approval/credkind` (standard library only), and a software
   authenticator for tests, `internal/approval/webauthntest`, which shares no
@@ -150,13 +152,15 @@ them and never hands them to the handler.
 | `read` | `owner.show` | `ownerwire.ShowParams` | `ownerwire.ShowResult` | G3 (built) |
 | `read` | `owner.paths` | `ownerwire.PageParams` | `ownerwire.PathsPage` | G3 (built) |
 | `read` | `owner.patch` | `ownerwire.PageParams` | `ownerwire.PatchPage` | G3 (built) |
-| `login` | `seat.login-challenge` | none | `SeatLoginChallengeResult` | G8 |
-| `login` | `seat.login` | `SeatLoginParams` | `SeatLoginResult` | G8 |
-| `decide` | `seat.challenge` | `SeatChallengeParams` | `SeatChallengeResult` | G8 |
-| `decide` | `seat.decide` | `SeatDecideParams` | `ownerwire.DecideResult` | G8 |
+| `login` | `seat.login-challenge` | none | `SeatLoginChallengeResult` | G8b (built) |
+| `login` | `seat.login` | `SeatLoginParams` | `SeatLoginResult` | G8b (built) |
+| `decide` | `seat.challenge` | `SeatChallengeParams` | `SeatChallengeResult` | G8b (built) |
+| `decide` | `seat.decide` | `SeatDecideParams` | `ownerwire.DecideResult` | G8b (built) |
 
-The handler built in G3 answers `["pair", "read"]` (`gatehost.Caps`); after G8,
-`["pair", "read", "login", "decide"]`. The seat reads the list
+A handler made with `gatehost.New` answers `["pair", "read"]` (`gatehost.Caps`);
+one made with `gatehost.NewDeciding`, `["pair", "read", "login", "decide"]`
+(`gatehost.DecidingCaps`), and the daemon makes that one only when the seat
+origin is configured (see [the seat origin](#the-seat-origin)). The seat reads the list
 (`seatgate.Client.Caps`) and offers login and decisions only when the gate lists
 them; otherwise it says that the desk does not take phone decisions.
 
@@ -261,8 +265,9 @@ The handler (`gatehost`, built for pairing and reads) answers:
   served can meet (`approval-void`, `approval-expired`, `approval-consumed`,
   `decision-invalid`, `previous-epoch`, `review-changed`, `record-invalid`,
   `record-too-large`); a refusal with any other code is answered `failed` and
-  logged, so that only listed words reach a seat. G8 adds the codes the
-  decision path meets (`binding-mismatch` among them) to that list.
+  logged, so that only listed words reach a seat. G8b adds
+  `binding-mismatch`, the one code of the decision path not already on that
+  list.
 - The pairing and key errors of `ownerchannel` with the codes the daemon already
   gives them, which are also the console's (`consoleclient.PairError`):
   `pairing-refused`, `credential-invalid`, `keys-unavailable`, `keys-full`,
@@ -308,7 +313,10 @@ apply to the gate.
 For the operations of G8: no refusal of `seat.login-challenge` or `seat.login`
 counts, since the seat relays them for anyone who reaches its login page, and a
 stranger must not shut the owner out; the seat limits them (see
-[login](#login-seatlogin-challenge-and-seatlogin)). Of `seat.challenge` and
+[login](#login-seatlogin-challenge-and-seatlogin)). The two exceptions are of
+the peer, not of a browser, and count as for any operation: `unknown-op` (a
+gate that does not serve `login`, which the seat does not call) and
+`not-pinned`. Of `seat.challenge` and
 `seat.decide`, `challenge-stale`, `challenges-full`, `key-revoked` and
 `kind-refused` do not count either: they come of normal use (a double tap, a
 slow owner, a card that changed, "phone off" at the desk). `bad-params`,

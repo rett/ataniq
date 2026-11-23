@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"ataniq/internal/approval/ownerchannel"
+	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/approval/record"
 	"ataniq/internal/seatgate"
 )
@@ -68,12 +69,19 @@ var sentinels = []struct {
 	{ownerchannel.ErrCredentialInvalid, CodeCredentialInvalid},
 	{ownerchannel.ErrDoorUnavailable, CodeDoorUnavailable},
 	{ownerchannel.ErrJournalReopened, CodeJournalReopened},
+	{ownerchannel.ErrSeatParams, CodeBadParams},
+	{ownerchannel.ErrChallengeStale, ownerwire.CodeChallengeStale},
+	{ownerchannel.ErrChallengesFull, ownerwire.CodeChallengesFull},
+	{ownerchannel.ErrAssertionInvalid, ownerwire.CodeAssertionInvalid},
+	{ownerchannel.ErrKeyRevoked, ownerwire.CodeKeyRevoked},
+	{ownerchannel.ErrKindRefused, ownerwire.CodeKindRefused},
 }
 
 // passedRefusals are the refusal codes of the service that a seat is told as
-// they are: the ones the pairing call and the reads can meet. Any other
-// refusal is answered failed.
+// they are: the ones the pairing call, the reads, the login and the decision
+// can meet. Any other refusal is answered failed.
 var passedRefusals = map[record.Code]bool{
+	record.CodeBindingMismatch:  true,
 	record.CodeApprovalVoid:     true,
 	record.CodeApprovalExpired:  true,
 	record.CodeApprovalConsumed: true,

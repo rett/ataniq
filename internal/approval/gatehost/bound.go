@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/seatgate"
 )
 
@@ -41,12 +42,33 @@ var counted = func() map[string]bool {
 		CodePairingChanged:    true,
 		CodeKeyUnknown:        true,
 		CodeKeyAmbiguous:      true,
+		// An assertion that does not verify is what the peer sent.
+		ownerwire.CodeAssertionInvalid: true,
 	}
 	for c := range passedRefusals {
 		m[string(c)] = true
 	}
 	return m
 }()
+
+// countedFor reports whether a refusal of op with code counts against the
+// bound. No refusal of a login counts, but that of an operation the handler
+// does not serve (unknown-op) or of a key that is not pinned: the seat relays
+// a login for anyone who reaches its login page, and a stranger must not shut
+// the owner out. Of a decision's challenge and decide, challenge-stale,
+// challenges-full, key-revoked and kind-refused come of normal use (a double
+// tap, a slow owner, a card that changed, "phone off" at the desk) and are
+// not codes that count; bad-params, key-unknown, assertion-invalid and the
+// record codes passed on count, as everywhere.
+func countedFor(op, code string) bool {
+	switch op {
+	case ownerwire.OpSeatLoginChallenge, ownerwire.OpSeatLogin:
+		if code != CodeUnknownOp && code != CodeNotPinned {
+			return false
+		}
+	}
+	return counted[code]
+}
 
 // maxPeers is how many peers the bound keeps before it drops those with no
 // refusal inside the window. Only keys that passed the gate's pin reach the
