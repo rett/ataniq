@@ -1844,9 +1844,12 @@ store (`internal/genesis/thread`), the gate handler's route and the capability
 `genesis` (`internal/approval/gatehost`), and the daemon's wiring
 (`internal/leaddaemon`, `cmd/ataniqd`); an end-to-end test runs a whole
 interview over the real gate with the seat's link replaced by a raw frame
-sender. Not built: the seat link's call and the seat's pages, so the seat has no
-"New project" entry and no question page. It is a plan of the owner's, not yet
-a feature the owner can use (the seat's link and pages follow, in that order).
+sender. The seat's side is built (genesis G5): the verb `list`, the seat link's
+call with a room of its own (`internal/seatlink`, `genesis.go`), the seat's
+pages (`internal/seatapp`, see [the seat's pages](#the-seats-pages)) and the
+command's wiring (`cmd/ataniq-seat`, which needs nothing configured). It is not
+deployed and not phone-tested; what the brief is for (the plan, the charter)
+is a later stage, and nothing reads a finished brief yet.
 
 The owner starts a new project on the phone by answering a few multiple-choice
 questions. The questions are the host's own, from a versioned catalog
@@ -2026,10 +2029,81 @@ folder in doubt.
   count only), and the line about a file that is not served. A thread's id is
   not in them.
 
-Not built: the room of `seat.genesis` in the seat's 60 calls a minute (the rooms
-above add up to all 60, so the seat link needs one made for it), which is the
-seat link's task and not the gate's, and the view of the threads for the desk,
-which the console will need.
+Not built: the view of the threads for the desk, which the console will need.
+
+### The seat's pages
+
+The seat link (`seatlink.Daemon.Genesis`, the app's `seatapp.Genesis` port)
+calls `seat.genesis` only when the hello lists `genesis`; otherwise every call
+is "not offered" and nothing is sent, and the phone shows no "New project". The
+link holds each call to the wire's form with the wire's encoder before it is
+sent, maps the six genesis codes to the app's errors (and `rate-limited`,
+`busy` and `too-many-refusals` to "busy", `unknown-op` to "not offered"), and
+takes an answer only when it is one the verb answers, of the thread called,
+with every count and length checked again. Each call has the room of the
+interview at the gate: 10 calls in 80 seconds, of every session together, taken
+from the reads, the decisions and anyone's (see the budget table under
+[login](#login-seatlogin-challenge-and-seatlogin)). So that the pages do not
+spend that room on reads, the link answers a `list` from the last one for 20
+seconds (the card list's reload gap: card lists open in several tabs list the
+open projects once in it between them) and a `round` from its own last answer
+for that thread for 10 seconds (the page a form's post redirects to), and
+forgets both before any call that changes threads is sent: one answer of the
+owner's is one call. A summary's rows get their questions, for a change, from
+the catalog the seat's build holds, and only when the thread's catalog digest is
+that catalog's; under another catalog the row offers no change.
+
+The seat app's pages, behind a session like the card pages, server-made with no
+script but the logout's:
+
+| Page | What it holds |
+| --- | --- |
+| The card list | When genesis is offered: the projects in progress (from `list`), each a link, and a "New project" button (a form posting `POST /projects/new`); with two open, a line instead of the button. |
+| `GET /projects/` | The same, on a page of its own, with the note of a post that came back to it (two open, an unknown project, a discard). |
+| `GET /projects/{thread}` | The round the thread is at, its summary, or the finished brief, by the answer to `round`. |
+| `GET /projects/{thread}/change/{node}` | One answer's question, from the summary's row, to answer again. |
+| `GET /projects/{thread}/discard` | The step before a discard: a form posting the discard, and the way back. |
+
+A round's page shows "Round N of M" and the required answers given, and each
+question as a fieldset of real inputs: radio buttons for a single choice, a
+yes-or-no question and a scale of 1 to 5, check boxes for a multiple choice,
+each option with its label and its example as text; "Other" with a text field
+of `maxlength` 200 only when the question allows it, and "You decide for me"
+and "Skip" only when the question allows them; one submit button. The summary
+shows the three groups (what you chose, what was decided for you, the
+defaults), the owner's own words quoted and marked as the owner's, a "Change"
+link on each row whose question the link holds, a "Looks right: finish" button
+and a link to the discard step. The finished page shows the brief's digest in
+short form and says that nothing has started and no agent was given the brief.
+
+Every act is a plain form posted to the app (`/projects/new`, and
+`/projects/{thread}/answer`, `/change`, `/finish`, `/discard`), with the checks
+of every changing request of the seat (Origin, Host, `Sec-Fetch-Site:
+same-origin`, the body's size) and the form's content type, and a session. A
+post calls the port once and is answered with a 303 to a page
+(post/redirect/get), never with a page: a reload sends nothing again, and a
+refusal of the gate is never retried. A form whose fields do not agree (two
+kinds at once, own words with an option, words that are not plain text, words
+over 200 bytes) is refused before the port is asked. Each refusal is a fixed
+note on the page the post redirects to: a bad answer ("That answer was not
+accepted. Look at the question again."), secret-shaped text ("That looks like
+a password or key. Never type those here; say that a credential is needed
+instead."), an answer over a cap, an unknown project, a finished one, two open,
+a busy or unreachable desk. No page, address or log line holds what the owner
+typed, and a refused answer's text is never shown back. A thread id in an
+address must be 16 lower-case hexadecimal digits, and a node id of the
+catalog's grammar, before it is used; otherwise the page is a 404, or the post
+goes to the project list, and nothing is asked. The project pages and posts of
+one credential are limited to 30 a minute, and keep the session alive as the
+card pages do. No project page holds an approve or decide control or loads the
+decide script; the page inventory lists the routes and their controls, and
+holds every form to a plain post to a project route.
+
+The seat's command needs nothing configured: the link behind the decision guard
+is the app's port (an answer decides nothing, so the guard passes it on while
+decisions are paused), and the command logs each hello's capabilities, with
+whether the phone offers "New project" (`ataniq-seat: the seat gate offers
+pair, read, login, decide, watch and genesis; the phone offers New project`).
 
 ## The record change
 
