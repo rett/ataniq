@@ -106,6 +106,7 @@
 <noscript><p>Deciding on the phone needs script. Turn script on for this site, or decide at the desk.</p></noscript>
 </section>
 <script src="/static/decide.js"></script>
+{{else if .Offer.Inhibited}}<p class="readonly" id="decisions-paused">Decisions are paused on this host.</p>
 {{else if .Unsettled}}<p class="held">A decision of this card was sent and its outcome is not known. Look at it again.</p>
 {{else if .Card.OnItsWay}}<p class="held">A decision of this card is on its way to the door. Look at it again in a moment.</p>
 {{else if not .Card.Ended}}<p class="readonly">This card cannot be decided now{{if .Offer.DenyWhy}}: {{text .Offer.DenyWhy maxLine}}{{end}}. Look at it at the desk.</p>

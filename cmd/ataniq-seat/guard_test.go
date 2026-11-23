@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"ataniq/internal/authorityhost/decisionguard"
 	"ataniq/internal/seatapp"
@@ -38,6 +39,10 @@ func (d *countingDaemon) Decide(context.Context, seatapp.DecideRequest) (seatapp
 	defer d.mu.Unlock()
 	d.decisions++
 	return seatapp.DecideResult{State: "approved"}, nil
+}
+
+func (d *countingDaemon) Offer(string, string, seatapp.Reading, time.Time) seatapp.Offer {
+	return seatapp.Offer{Approve: true, Deny: true}
 }
 
 func (d *countingDaemon) DropChallenge(id string) {
@@ -328,5 +333,43 @@ func TestParseDecisionGuard(t *testing.T) {
 		if _, code, ok := parse(append(base, "--decision-guard", bad), &out); ok || code != 2 || !strings.Contains(out.String(), "--decision-guard must be an absolute folder") {
 			t.Errorf("%q: accepted or wrong refusal (%d): %q", bad, code, out.String())
 		}
+	}
+}
+
+// TestGuardOfferFollowsTheGuard: the card page's offer asks the guard too,
+// read-only, every time: with the state folder there and no inhibit the
+// port's offer is passed on unchanged; with the guard file there in any
+// form, or the folder missing, the offer is Inhibited and nothing else, so
+// the page shows the notice and no form. It logs nothing and decides
+// nothing.
+func TestGuardOfferFollowsTheGuard(t *testing.T) {
+	dir := stateDir(t)
+	g, inner, codes := guarded(dir)
+	offer := func() seatapp.Offer { return g.Offer("ap-1", "b", seatapp.Reading{}, time.Time{}) }
+	if got := offer(); got != (seatapp.Offer{Approve: true, Deny: true}) {
+		t.Errorf("offer without the inhibit: %+v", got)
+	}
+	guard := filepath.Join(dir, decisionguard.GuardFile)
+	if err := os.WriteFile(guard, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := offer(); got != (seatapp.Offer{Inhibited: true}) {
+		t.Errorf("offer with the inhibit: %+v", got)
+	}
+	if err := os.Remove(guard); err != nil {
+		t.Fatal(err)
+	}
+	if got := offer(); !got.Approve || got.Inhibited {
+		t.Errorf("offer after the inhibit went: %+v", got)
+	}
+	g.dir = filepath.Join(dir, "missing")
+	if got := offer(); got != (seatapp.Offer{Inhibited: true}) {
+		t.Errorf("offer with no state folder: %+v", got)
+	}
+	if len(*codes) != 0 {
+		t.Errorf("an offer logged refusals: %v", *codes)
+	}
+	if c, d, dropped := inner.counts(); c != 0 || d != 0 || len(dropped) != 0 {
+		t.Errorf("an offer relayed %d challenges, %d decisions, dropped %v", c, d, dropped)
 	}
 }

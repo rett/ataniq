@@ -1099,8 +1099,14 @@ text of the gate's, and a code it does not know gets the last line:
 | `assertion-invalid` | The phone's answer was not accepted. If this repeats, check the seat at the desk. |
 | `key-revoked`, `key-unknown` | This phone's passkey is no longer paired. Pair it again at the desk. (The session ends.) |
 | `kind-refused` | This project does not take decisions from this kind of passkey. |
+| `decisions_inhibited` (the seat's own, not a gate code) | Decisions are paused on this host. Nothing was sent. |
 | `challenges-full`, `busy`, `rate-limited`, `too-many-refusals` | The desk is busy. Try again in a few minutes. |
 | any other | Something went wrong. Look at the card again. |
+
+`decisions_inhibited` is not an answer of the gate: the seat itself refuses
+(503, nothing sent, the challenge's room given back) while the authority
+host's decision inhibit is there or its guard folder cannot be read; the
+card stays as it was and the owner may tap again once decisions are taken.
 
 Built so (G9). An answer to `seat.decide` with one of the five codes that
 leave the outcome unknown, the seat's own timeout and no answer say

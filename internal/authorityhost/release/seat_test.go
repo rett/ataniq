@@ -301,6 +301,7 @@ func TestSeatLists(t *testing.T) {
 		"validators.list": {
 			"caddy validate --config {release}/etc/caddy/Caddyfile --adapter caddyfile",
 			"systemd-analyze verify {release}/etc/systemd/system/ataniq-seat.service",
+			"test -L /etc/systemd/system/ataniq-seat.service",
 		},
 		"reload.list": {"systemctl daemon-reload", "systemctl restart ataniq-seat.service", "systemctl restart caddy"},
 		"health.cmd": {

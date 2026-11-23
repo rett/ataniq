@@ -64,6 +64,9 @@
 #		import seat
 #	}
 #
-# The file must be there: caddy validate (the release's validator) and caddy
-# refuse this configuration without it.
+# The file must be there: the no-AI check (it follows this import and reads
+# the file as it reads the release's own, and refuses a provider-key
+# placeholder or a reverse_proxy to anything but this host in it), caddy
+# validate (the release's validator) and caddy refuse this configuration
+# without it. Keep it to the site address and "import seat".
 import /etc/authority-host/seat/site.caddy

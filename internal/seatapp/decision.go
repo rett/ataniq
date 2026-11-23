@@ -57,6 +57,12 @@ type Offer struct {
 	// it may not.
 	Deny    bool
 	DenyWhy string
+	// Inhibited says that the host the seat runs on takes no decision now
+	// (the port would answer [ErrDecisionsInhibited] to a challenge): the
+	// page then shows a notice and no decide form, and the card stays
+	// readable. It is the port's answer for the page alone; the refusal of
+	// DecideChallenge and Decide stays the enforcement.
+	Inhibited bool
 }
 
 // SignOff is one sign-off of a decision: the flag's kind and the flagged

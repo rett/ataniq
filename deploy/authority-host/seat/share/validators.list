@@ -8,3 +8,9 @@ caddy validate --config {release}/etc/caddy/Caddyfile --adapter caddyfile
 # The seat's unit runs {release}/bin/ataniq-seat, which the switch's import
 # has put in place before this runs.
 systemd-analyze verify {release}/etc/systemd/system/ataniq-seat.service
+# The owner's link of the unit (README, "Setting the host up for it once by
+# hand", step 5). systemd-analyze above verifies the release's own path, so it
+# passes without the link; without the link the reload's restart and the stop
+# list's stop fail (exit 5, "Unit not found") after current has moved. A link
+# that dangles passes, as it must before the first switch to this release.
+test -L /etc/systemd/system/ataniq-seat.service
