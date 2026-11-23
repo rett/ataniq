@@ -148,6 +148,12 @@ func forms(t testing.TB) []form {
 		formOf(t, "key item", MaxResultBytes, inv, sampleKeyItem(), DecodeKeyItem, EncodeKeyItem),
 		formOf(t, "keys view", MaxResultBytes, inv, sampleKeysView(), DecodeKeysView, EncodeKeysView),
 		formOf(t, "key revoke params", MaxParamsBytes, inv, KeyRevokeParams{ID: "0123456789abcdef"}, DecodeKeyRevokeParams, EncodeKeyRevokeParams),
+		formOf(t, "seat challenge params", MaxSeatChallengeParamsBytes, inv, sampleSeatChallengeParams(), DecodeSeatChallengeParams, EncodeSeatChallengeParams),
+		formOf(t, "seat challenge result", MaxResultBytes, inv, sampleSeatChallengeResult(), DecodeSeatChallengeResult, EncodeSeatChallengeResult),
+		formOf(t, "seat login challenge result", MaxSeatLoginChallengeBytes, inv, sampleSeatLoginChallengeResult(), DecodeSeatLoginChallengeResult, EncodeSeatLoginChallengeResult),
+		formOf(t, "seat decide params", MaxSeatDecideParamsBytes, inv, sampleSeatDecideParams(), DecodeSeatDecideParams, EncodeSeatDecideParams),
+		formOf(t, "seat login params", MaxSeatLoginParamsBytes, inv, sampleSeatLoginParams(), DecodeSeatLoginParams, EncodeSeatLoginParams),
+		formOf(t, "seat login result", MaxResultBytes, inv, sampleSeatLoginResult(), DecodeSeatLoginResult, EncodeSeatLoginResult),
 	}
 }
 

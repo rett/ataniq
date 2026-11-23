@@ -36,6 +36,16 @@
 // function named after it; "none" and "nothing" are an empty object, read
 // by [DecodeNothing].
 //
+// Four more operations are the seat gate's alone, a login and a decision
+// from the owner's phone; the daemon's Unix socket neither serves nor
+// announces them, and [GateOperations] lists them apart:
+//
+//	operation             params               result
+//	seat.login-challenge  none                 SeatLoginChallengeResult
+//	seat.login            SeatLoginParams      SeatLoginResult
+//	seat.challenge        SeatChallengeParams  SeatChallengeResult
+//	seat.decide           SeatDecideParams     DecideResult
+//
 // # Strict decoding
 //
 // A payload is read under the rules of the approval records (package
@@ -59,6 +69,21 @@
 // with the process, the terminal and the session. A frame has no place for
 // any of that, so a console cannot state it, and a frame that tries is
 // refused decision-invalid.
+//
+// # The challenge of a phone decision
+//
+// A decision from the phone is a WebAuthn assertion over a challenge the
+// daemon draws and binds to its own record of the card: [DecisionChallenge]
+// hashes a domain string, the gate's key fingerprint, the frame's id, binding
+// digest and decision, the digests of its sign-offs and its reason
+// ([SignedOffDigest], [ReasonDigest]), and the daemon's nonce. A login is an
+// assertion over [LoginChallenge], whose domain string differs. Both ends call
+// these functions, so they cannot disagree on a byte. The params of
+// seat.decide are read in two parts: [DecodeSeatDecideParams] reads the
+// envelope, and the daemon checks the frame's content with
+// [CheckDecisionFrame] only after it took the challenge, so that a malformed
+// frame still burns it. [Assertion.Digest] is the digest a passkey decision
+// record keeps of the assertion.
 //
 // # Records travel as bytes
 //
@@ -118,7 +143,9 @@
 // # Refusals
 //
 // Every refusal is a [*record.Error] with one of the record package's
-// codes; this package declares none. A decision frame that is wrong is
+// codes; this package declares no refusal of its own. It names the words the
+// seat gate answers its four operations with when the daemon refuses one
+// ([CodeChallengeStale] and the others), which no decoder here answers with. A decision frame that is wrong is
 // decision-invalid, any other payload record-invalid, a payload over its
 // cap record-too-large, and a record whose digest is not its bytes' own
 // binding-mismatch. The detail of an error is written here and never holds
