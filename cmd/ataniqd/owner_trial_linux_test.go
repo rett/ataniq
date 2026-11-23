@@ -116,8 +116,11 @@ func TestTrialRunIsRefusedWithoutItsFlagsAndSettings(t *testing.T) {
 // seat origin, prints the STAND-IN banner and the TRIAL line, and lists
 // trial.submit; "ataniqd trial submit" makes sample cards on its socket and
 // prints one line for each card and each refusal; the cards are on the owner
-// list of the socket and on the seat's side of the gate, which serves login
-// and decide for them. A daemon that is not a trial's refuses trial.submit.
+// list of the socket and on the seat's side of the gate (a pinned seat lists
+// and shows them over it; the gate's start line names login and decide, which
+// the decision tests of package hostadapter run through the trial's service,
+// not this one). A daemon that serves other settings, without --trial, serves
+// no trial.submit.
 func TestTrialRunSubmitsSampleCardsThatTheSeatSees(t *testing.T) {
 	addr := freeLoopback(t)
 	state, runtime := ownerCmdDirs(t)
@@ -223,8 +226,9 @@ func TestTrialRunSubmitsSampleCardsThatTheSeatSees(t *testing.T) {
 	g.Close()
 	stop()
 
-	// A daemon of the same state folder without --trial refuses to start; one
-	// of other settings serves no trial.submit.
+	// A daemon on other settings, started without --trial, serves no
+	// trial.submit (the trial's own settings without --trial are refused,
+	// which TestTrialRunIsRefusedWithoutItsFlagsAndSettings shows).
 	useSuite(t, cmdSuite{})
 	realState, _ := scratchSettings(t, nil)
 	tr := newTestApp(t, nil)

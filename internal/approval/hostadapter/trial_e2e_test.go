@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -156,6 +157,14 @@ func TestTrialE2EAPhoneDecidesSampleCardsAndNothingIsApplied(t *testing.T) {
 		}
 	}
 
+	// What the host holds of the samples before a decision: no decision and no
+	// use may change it.
+	h := tr.host
+	before := h.snapshot()
+	if want := trialID("trial target", "trial-project", "refs/heads/develop"); h.tip != want || p.Binding.Effects[0].Old != want {
+		t.Fatalf("the trial's target is at %s and the card binds %s, want %s", h.tip, p.Binding.Effects[0].Old, want)
+	}
+
 	_, as, res := s.decide(sess, phone, card, "approve", []int{0}, "")
 	wantDone(t, res, record.StateNotApplied)
 	if got := res.str(t, "line"); got != TrialLine {
@@ -166,6 +175,9 @@ func TestTrialE2EAPhoneDecidesSampleCardsAndNothingIsApplied(t *testing.T) {
 		d.Seat.Credential != item.ID || d.Seat.AssertionSHA256 != record.AssertionDigest(as.CredentialID, as.AuthenticatorData, as.ClientDataJSON, as.Signature) ||
 		len(d.SignedOff) != 1 || d.SignedOff[0].Path != "Makefile" {
 		t.Fatalf("the door holds %+v in the state %s, want the approve by passkey, not applied", d, st)
+	}
+	if after := h.snapshot(); after != before {
+		t.Errorf("deciding the finish changed the trial host:\nbefore %s\nafter  %s", before, after)
 	}
 	again := s.get("/cards/"+card, sess)
 	if again.status != 200 || !strings.Contains(string(again.body), TrialLine) || strings.Contains(string(again.body), decideFormMark) {
@@ -183,20 +195,25 @@ func TestTrialE2EAPhoneDecidesSampleCardsAndNothingIsApplied(t *testing.T) {
 	if pp.Binding.Verb != record.VerbBranchPrune || len(pp.Binding.Effects) < 2 || pp.Binding.Summary != nil {
 		t.Fatalf("the sample prune is %+v", pp.Binding)
 	}
+	before = h.snapshot()
 	_, _, res = s.decide(sess, phone, pr.PendingID, "approve", nil, "")
 	wantDone(t, res, record.StateNotApplied)
 	if got := res.str(t, "line"); got != TrialLine {
 		t.Errorf("the phone is told %q for the prune", got)
 	}
 
-	// Nothing was applied: the trial host's Apply ran once per card and
-	// moved nothing, and no pin is left.
-	h := tr.host
+	// Nothing was applied: the trial host's Apply ran once per card, no pin
+	// is left, and the prune's decision changed nothing the host holds (its
+	// sample branches are all still there, at their tips, and the target's tip
+	// is the one it started with).
 	h.mu.Lock()
-	applies, pins, tip := h.applies, len(h.pins), h.tip
+	applies, pins := h.applies, len(h.pins)
 	h.mu.Unlock()
-	if applies != 2 || pins != 0 || tip != p.Binding.Effects[0].Old {
-		t.Errorf("the trial host applied %d times, holds %d pins, its target is at %s (was %s)", applies, pins, tip, p.Binding.Effects[0].Old)
+	if applies != 2 || pins != 0 {
+		t.Errorf("the trial host applied %d times, holds %d pins, want 2 and 0", applies, pins)
+	}
+	if after := h.snapshot(); after != before || !strings.Contains(after, "refs/heads/feature/trial-done-") {
+		t.Errorf("deciding the prune changed the trial host:\nbefore %s\nafter  %s", before, after)
 	}
 
 	// The audit.
@@ -269,13 +286,17 @@ func TestTrialCardsCannotBeAppliedToAnything(t *testing.T) {
 
 	h := newTrialHost("trial-project", "refs/heads/develop")
 	effects := []record.Effect{{Kind: record.EffectRef, Ref: "refs/heads/develop", Old: h.tip, New: trialID("x")}}
+	before := h.snapshot()
+	if want := trialID("trial target", "trial-project", "refs/heads/develop"); h.tip != want {
+		t.Fatalf("the trial's target is at %s, want %s", h.tip, want)
+	}
 	for _, f := range []func(context.Context, ownerchannel.ApplyInput) (door.Outcome, error){h.Apply, h.Mirror} {
 		if out, err := f(context.Background(), ownerchannel.ApplyInput{Project: "trial-project", Effects: effects}); err != nil || out != door.OutcomeNotApplied {
 			t.Errorf("the trial host says %q, %v", out, err)
 		}
 	}
-	if got := h.tip; got != effects[0].Old {
-		t.Errorf("the trial's target moved to %s", got)
+	if applies, snap := h.applies, h.snapshot(); applies != 1 || snap != before {
+		t.Errorf("Apply ran %d times (want 1) and the host changed:\nbefore %s\nafter  %s", applies, before, snap)
 	}
 	if h.OutcomeLine(door.OutcomeApplied) != TrialLine {
 		t.Error("the trial host's outcome line is not the trial's")
@@ -316,6 +337,39 @@ func TestTrialKindsAreFinishAndBranchPrune(t *testing.T) {
 			t.Errorf("the kind %q makes %+v", kind, c)
 		}
 	}
+}
+
+// snapshot is what the trial host holds of its samples, as one line: the
+// target's tip, and the sample features, merges, branches and suite records,
+// each in order. It leaves out the pins, which the service takes away when a
+// card ends, and the counters.
+func (h *trialHost) snapshot() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var parts []string
+	add := func(kind string, keys []string) {
+		sort.Strings(keys)
+		parts = append(parts, kind+"="+strings.Join(keys, ","))
+	}
+	var features, merges, branches, evidence []string
+	for k, f := range h.features {
+		features = append(features, k+"@"+f.tip)
+	}
+	for k, r := range h.merges {
+		merges = append(merges, k+"/"+r.base+"/"+r.digest)
+	}
+	for k, v := range h.branches {
+		branches = append(branches, k+"@"+v)
+	}
+	for k, e := range h.evidence {
+		evidence = append(evidence, k+"/"+e.RecordSHA256)
+	}
+	parts = append(parts, "tip="+h.tip)
+	add("features", features)
+	add("merges", merges)
+	add("branches", branches)
+	add("evidence", evidence)
+	return strings.Join(parts, " ")
 }
 
 // sizes returns how much the trial host keeps in memory.

@@ -43,7 +43,8 @@ import (
 // What is a sample: the request (no lead wrote it), and the host's findings
 // for it. The trial host below stands for the merge, the suite, the review and
 // the mirror with values it makes up and keeps in memory: no git runs, no
-// sandbox starts, and no file but the journal and the key list is written. Its
+// sandbox starts, and the host reads and writes no file (the service writes its
+// journal and the key list, and "trial init" the settings). Its
 // Apply moves nothing and says so: an approved trial card ends not-applied,
 // with the line [TrialLine]. Trial settings name no mirror, no drop folder and
 // no sandbox, so there is nothing a trial card could be applied to.
