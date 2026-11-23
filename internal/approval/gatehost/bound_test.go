@@ -265,8 +265,8 @@ func TestOnlyRefusalsOfWhatThePeerSentCount(t *testing.T) {
 }
 
 // Every code the handler answers with is classed: counted against the bound,
-// the daemon's own, or one of normal use of a decision from the phone. A new
-// code must be put in one of the three.
+// the daemon's own, one of normal use of a decision from the phone, or a load
+// answer (wait-full). A new code must be put in one of the four.
 func TestEveryCodeIsClassed(t *testing.T) {
 	own := map[string]bool{
 		CodeUnavailable: true, CodeDeadline: true, CodeFailed: true, CodeDoorUnavailable: true,
@@ -276,6 +276,7 @@ func TestEveryCodeIsClassed(t *testing.T) {
 		ownerwire.CodeChallengeStale: true, ownerwire.CodeChallengesFull: true,
 		ownerwire.CodeKeyRevoked: true, ownerwire.CodeKindRefused: true,
 	}
+	load := map[string]bool{ownerwire.CodeWaitFull: true}
 	all := []string{CodeUnknownOp, CodeBadParams, CodeNotPinned}
 	for _, s := range sentinels {
 		all = append(all, s.code)
@@ -286,17 +287,17 @@ func TestEveryCodeIsClassed(t *testing.T) {
 	all = append(all, CodeDeadline, CodeFailed)
 	for _, c := range all {
 		n := 0
-		for _, class := range []map[string]bool{counted, own, normal} {
+		for _, class := range []map[string]bool{counted, own, normal, load} {
 			if class[c] {
 				n++
 			}
 		}
 		if n != 1 {
-			t.Errorf("%q is counted %v, the daemon's own %v and of normal use %v", c, counted[c], own[c], normal[c])
+			t.Errorf("%q is counted %v, the daemon's own %v, of normal use %v and a load answer %v", c, counted[c], own[c], normal[c], load[c])
 		}
 	}
 	for c := range counted {
-		if own[c] || normal[c] {
+		if own[c] || normal[c] || load[c] {
 			t.Errorf("%q", c)
 		}
 	}

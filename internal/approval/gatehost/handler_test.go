@@ -65,15 +65,17 @@ func TestCapsAndOperations(t *testing.T) {
 			t.Errorf("%s has the capability %q", op, opCaps[op])
 		}
 	}
-	// The gate's own four, in the deciding capabilities only, and none of
+	// The gate's own five, four in the deciding capabilities and seat.wait in
+	// watch, which only a service that can wait gives; none of
 	// them an operation of the socket.
 	gate := map[string]string{
 		"seat.login-challenge": "login",
 		"seat.login":           "login",
 		"seat.challenge":       "decide",
 		"seat.decide":          "decide",
+		"seat.wait":            "watch",
 	}
-	if len(opCaps) != len(want)+len(gate) || !slices.Equal(ownerwire.GateOperations(), []string{"seat.login-challenge", "seat.login", "seat.challenge", "seat.decide"}) {
+	if len(opCaps) != len(want)+len(gate) || !slices.Equal(ownerwire.GateOperations(), []string{"seat.login-challenge", "seat.login", "seat.challenge", "seat.decide", "seat.wait"}) {
 		t.Fatalf("opCaps %v", opCaps)
 	}
 	for op, c := range gate {
@@ -84,6 +86,11 @@ func TestCapsAndOperations(t *testing.T) {
 	h, _ := newHandler(t, &fakePort{})
 	if !slices.Equal(h.Caps(), Caps()) {
 		t.Errorf("a handler made with New lists %q", h.Caps())
+	}
+	// A service that can wait adds watch, after the others, to either list.
+	w, _ := newHandler(t, &waitingPort{})
+	if !slices.Equal(w.Caps(), []string{"pair", "read", "watch"}) {
+		t.Errorf("a handler made with New over a service that waits lists %q", w.Caps())
 	}
 }
 
