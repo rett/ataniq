@@ -332,7 +332,9 @@ func TestASeatLoginAnswersTheCredential(t *testing.T) {
 	wantErr(t, login(unv), ErrKindRefused)
 
 	// A login's assertion offered as a decision is refused, and so is a
-	// decision's offered as a login: the two domains differ.
+	// decision's offered as a login. Here the two challenges also have
+	// different nonces; TestLoginAndDecisionChallengesAreSeparateDomains
+	// shows that they differ with the same instance and nonce.
 	p := w.card("feature-a")
 	lc, err = w.svc.SeatLoginChallenge(ctx, gateSrc, testGate)
 	if err != nil {
@@ -354,6 +356,49 @@ func TestASeatLoginAnswersTheCredential(t *testing.T) {
 	_, err = w.svc.SeatLogin(ctx, gateSrc, testGate, ownerwire.SeatLoginParams{ChallengeID: ch.ChallengeID, Assertion: sign(t, w.phone, ch.Challenge)})
 	wantErr(t, err, ErrChallengeStale)
 	w.noDecisionWasMade(t)
+}
+
+// The login and the decision challenges are of separate domains: their
+// domain strings differ and neither starts the other, and with the same
+// instance and the same nonce a login's challenge is no decision's, an
+// approve's or a deny's, so an assertion over one never verifies as the
+// other. The service draws both with ownerwire's functions; a login
+// challenge of the service is the login domain's.
+func TestLoginAndDecisionChallengesAreSeparateDomains(t *testing.T) {
+	if ownerwire.LoginDomain == ownerwire.DecisionDomain ||
+		strings.HasPrefix(ownerwire.LoginDomain, ownerwire.DecisionDomain) ||
+		strings.HasPrefix(ownerwire.DecisionDomain, ownerwire.LoginDomain) {
+		t.Fatalf("the domains %q and %q are not separate", ownerwire.LoginDomain, ownerwire.DecisionDomain)
+	}
+	w := newSeatWorld(t)
+	p := w.card("feature-a")
+	lc, err := w.svc.SeatLoginChallenge(context.Background(), gateSrc, testGate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	login, err := ownerwire.LoginChallenge(testGate.Instance, lc.Nonce)
+	if err != nil || !bytes.Equal(login, lc.Challenge) {
+		t.Fatalf("the service's login challenge is not the login domain's: %v", err)
+	}
+	for _, f := range []ownerwire.DecisionFrame{frame(p, true), denyFrame(p, ""), denyFrame(p, "no")} {
+		decision, err := ownerwire.DecisionChallenge(testGate.Instance, f, lc.Nonce)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Equal(decision, login) {
+			t.Fatalf("the %s challenge is the login's for the same instance and nonce", f.Decision)
+		}
+		// The phone's assertion over the decision's challenge, with the
+		// login's own nonce, is no login.
+		_, err = w.svc.SeatLogin(context.Background(), gateSrc, testGate, ownerwire.SeatLoginParams{ChallengeID: lc.ChallengeID, Assertion: sign(t, w.phone, decision)})
+		wantErr(t, err, credkind.ErrChallenge)
+		if lc, err = w.svc.SeatLoginChallenge(context.Background(), gateSrc, testGate); err != nil {
+			t.Fatal(err)
+		}
+		if login, err = ownerwire.LoginChallenge(testGate.Instance, lc.Nonce); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 // A deny from the phone needs a fresh assertion as an approve does: one that
