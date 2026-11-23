@@ -1316,9 +1316,16 @@ Host, `Origin` and `Sec-Fetch-Site: same-origin` rules, a JSON body of at most
   another version than the poll's. Otherwise it is held until the state
   changes, 25 seconds pass (`watchHold`, under the 30-second write timeouts of
   the seat and of the shipped Caddyfile), a newer poll of the same session takes
-  its place, the browser goes away, or the session ends. At most one poll of a
-  session is held, which bounds the held requests by the number of sessions.
-- Answer: `state`, one of `same`, `changed`, `offline` and `ended`, the
+  its place (`replaced`), the browser goes away, or the session ends. At most 3
+  polls of a session are held, one for each tab, and a fourth takes the place
+  of the oldest, which bounds the held requests by three times the number of
+  sessions. A replaced poll is answered with its own state, which the script
+  waits out for 25 seconds before it asks again: an answer `same` would be
+  asked again at once, and two tabs of one session would take each other's
+  place in turn and use up the credential's 12 polls a minute. With the tabs
+  held and the replaced one waiting, each tab polls about every 25 seconds,
+  so up to four tabs stay within the limit.
+- Answer: `state`, one of `same`, `changed`, `replaced`, `offline` and `ended`, the
   `version` and `waiting` (the count), and `card`, one of `live`, `changed`,
   `gone` and `unknown`. The answer holds no text of a card. `card` is `gone`
   when the card is not in the list and the list is the whole set, `changed`

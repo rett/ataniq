@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -144,20 +146,18 @@ func pollAnswer(t *testing.T, w *httptest.ResponseRecorder) watchAnswer {
 	return a
 }
 
-// held is how many sessions have a held poll.
+// held is how many polls are held, of all sessions.
 func (r *rig) held() int {
 	r.app.sess.mu.Lock()
 	defer r.app.sess.mu.Unlock()
 	n := 0
 	for _, s := range r.app.sess.m {
-		if s.kick != nil {
-			n++
-		}
+		n += len(s.kicks)
 	}
 	return n
 }
 
-// waitHeld waits until n sessions hold a poll.
+// waitHeld waits until n polls are held.
 func (r *rig) waitHeld(t *testing.T, n int) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -416,35 +416,181 @@ func TestSeatWatchOffline(t *testing.T) {
 	}
 }
 
-// TestSeatWatchOneHeldPollPerSession: a newer poll of a session ends the
-// older one at once with "same", and is the one held; another session holds
-// its own.
-func TestSeatWatchOneHeldPollPerSession(t *testing.T) {
+// TestSeatWatchHeldPollsPerSession: a session holds a poll for each of three
+// tabs; the fourth takes the place of the oldest, which is answered
+// "replaced" at once and is no longer held; another session holds its own.
+func TestSeatWatchHeldPollsPerSession(t *testing.T) {
 	r, wd := newWatchRig(t, "aa", 30*time.Second)
 	s := r.login(t)
 	other := r.login(t)
-	first := r.pollAsync(context.Background(), pollOK, s)
-	r.waitHeld(t, 1)
-	second := r.pollAsync(context.Background(), pollOK, s)
-	a := pollAnswer(t, within(t, first, 3*time.Second))
-	if a.State != "same" || a.Version != "aa" {
-		t.Errorf("the older poll: %+v", a)
+	var tabs []<-chan *httptest.ResponseRecorder
+	for i := 1; i <= maxHeldPolls; i++ {
+		tabs = append(tabs, r.pollAsync(context.Background(), pollOK, s))
+		r.waitHeld(t, i)
 	}
-	r.waitHeld(t, 1)
+	// Up to the most, no poll takes another's place.
 	select {
-	case <-second:
-		t.Fatal("the newer poll was answered")
+	case <-tabs[0]:
+		t.Fatal("a poll was answered with the most of held polls not passed")
 	case <-time.After(30 * time.Millisecond):
 	}
+	fourth := r.pollAsync(context.Background(), pollOK, s)
+	a := pollAnswer(t, within(t, tabs[0], 3*time.Second))
+	if a.State != "replaced" || a.Version != "aa" || a.Card != "unknown" {
+		t.Errorf("the oldest poll: %+v", a)
+	}
+	r.waitHeld(t, maxHeldPolls)
+	for i, ch := range append(tabs[1:], fourth) {
+		select {
+		case <-ch:
+			t.Fatalf("held poll %d was answered", i)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	fifth := r.pollAsync(context.Background(), pollOK, s)
+	if a := pollAnswer(t, within(t, tabs[1], 3*time.Second)); a.State != "replaced" {
+		t.Errorf("the next oldest poll: %+v", a)
+	}
+	r.waitHeld(t, maxHeldPolls)
 	third := r.pollAsync(context.Background(), pollOK, other)
-	r.waitHeld(t, 2)
+	r.waitHeld(t, maxHeldPolls+1)
 	wd.set(func(st *WatchState) { st.Version = "bb" })
-	for name, ch := range map[string]<-chan *httptest.ResponseRecorder{"second": second, "third": third} {
+	held := map[string]<-chan *httptest.ResponseRecorder{"tab 3": tabs[2], "fourth": fourth, "fifth": fifth, "other": third}
+	for name, ch := range held {
 		if a := pollAnswer(t, within(t, ch, 3*time.Second)); a.State != "changed" || a.Version != "bb" {
 			t.Errorf("%s: %+v", name, a)
 		}
 	}
 	r.waitHeld(t, 0)
+}
+
+// TestSeatWatchTwoTabsDoNotKickEachOther: two tabs of one session that poll as
+// watch.js does keep both polls held, and a replaced poll is not asked again
+// before a hold's length has passed. Traced over a simulated ten minutes with
+// the seat's cap of held polls and the script's own waits, for two to five
+// tabs: up to four tabs (the three held and one that replaces) make three
+// polls each in a minute at most, within the credential's limit; five tabs
+// are the case "close the extra tabs" names and are only logged.
+func TestSeatWatchTwoTabsDoNotKickEachOther(t *testing.T) {
+	js := watchScript(t)
+	m := regexp.MustCompile(`REPLACED_WAIT = (\d+);`).FindStringSubmatch(js)
+	if m == nil {
+		t.Fatal("watch.js has no REPLACED_WAIT")
+	}
+	replacedWait, _ := strconv.Atoi(m[1])
+	const minGap = 2000
+	hold := int(watchHold / time.Millisecond)
+	if replacedWait < hold {
+		t.Fatalf("a replaced poll waits %d ms, under a hold of %d", replacedWait, hold)
+	}
+	// Each tab is {when it polls next}; a held poll is {tab, began}. Time
+	// advances to the next event: a tab's poll, or the end of a hold.
+	for tabs := 2; tabs <= 5; tabs++ {
+		type held struct {
+			tab, began int
+		}
+		next := make([]int, tabs)
+		for i := range next {
+			next[i] = i * 100 // the tabs do not start together
+		}
+		var holds []held
+		var starts []int
+		const horizon = 10 * 60 * 1000
+		for now := 0; now < horizon; {
+			// The next event.
+			at := horizon
+			for _, n := range next {
+				if n >= 0 && n < at {
+					at = n
+				}
+			}
+			for _, h := range holds {
+				if h.began+hold < at {
+					at = h.began + hold
+				}
+			}
+			now = at
+			// Holds that end now answer "same": the tab asks again after
+			// the gap the script leaves, none when the poll was long.
+			var keep []held
+			for _, h := range holds {
+				if h.began+hold <= now {
+					next[h.tab] = h.began + hold + max(0, minGap-hold)
+				} else {
+					keep = append(keep, h)
+				}
+			}
+			holds = keep
+			for tab := range next {
+				if next[tab] < 0 || next[tab] > now {
+					continue
+				}
+				starts = append(starts, now)
+				if len(holds) >= maxHeldPolls {
+					old := holds[0]
+					holds = holds[1:]
+					next[old.tab] = now + replacedWait
+				}
+				holds = append(holds, held{tab, now})
+				next[tab] = -1 // held
+			}
+		}
+		perMinute := 0
+		for i := range starts {
+			n := 0
+			for _, s := range starts[i:] {
+				if s < starts[i]+60000 {
+					n++
+				}
+			}
+			if n > perMinute {
+				perMinute = n
+			}
+		}
+		t.Logf("%d tabs: at most %d polls in a minute", tabs, perMinute)
+		// A tab polls once a hold, three times in a minute at most, whether
+		// its poll was held or replaced.
+		if tabs <= maxHeldPolls+1 && perMinute > 3*tabs {
+			t.Errorf("%d tabs make %d polls in a minute, more than three each", tabs, perMinute)
+		}
+		if tabs <= maxHeldPolls+1 && perMinute > watchRequests {
+			t.Errorf("%d tabs make %d polls in a minute: the limit of %d would be used up", tabs, perMinute, watchRequests)
+		}
+	}
+}
+
+// TestSeatWatchTwoTabsKeepBothHeld: through the handler, two tabs of one
+// session are both held, answer nobody "same" or "replaced", and the limiter
+// has counted exactly the two polls that started.
+func TestSeatWatchTwoTabsKeepBothHeld(t *testing.T) {
+	r, wd := newWatchRig(t, "aa", 30*time.Second)
+	s := r.login(t)
+	a := r.pollAsync(context.Background(), pollOK, s)
+	r.waitHeld(t, 1)
+	b := r.pollAsync(context.Background(), pollOK, s)
+	r.waitHeld(t, 2)
+	for _, ch := range []<-chan *httptest.ResponseRecorder{a, b} {
+		select {
+		case w := <-ch:
+			t.Fatalf("a tab's poll was answered: %s", w.Body)
+		case <-time.After(30 * time.Millisecond):
+		}
+	}
+	wd.set(func(st *WatchState) { st.Version = "bb" })
+	for _, ch := range []<-chan *httptest.ResponseRecorder{a, b} {
+		if got := pollAnswer(t, within(t, ch, 3*time.Second)); got.State != "changed" {
+			t.Errorf("%+v", got)
+		}
+	}
+	// Two polls started, two of the credential's twelve are used.
+	// (The version is now "bb", so a poll with "aa" is answered at once.)
+	used := 0
+	for r.poll(pollOK, s).Code == 200 {
+		used++
+	}
+	if used != watchRequests-2 {
+		t.Errorf("%d polls were left of %d after two", used, watchRequests)
+	}
 }
 
 // TestSeatWatchLimiter: a credential's polls are bounded at 12 a minute,
@@ -628,25 +774,32 @@ func TestSeatWatchLeavesNoGoroutine(t *testing.T) {
 		r.app.watchHold = time.Minute
 		ctx, cancel := context.WithCancel(context.Background())
 		var outs []<-chan *httptest.ResponseRecorder
-		for i := 0; i < 8; i++ {
+		for i := 0; i < 7; i++ { // four of s, of which one is replaced, and three of s2
 			c := s
 			if i%2 == 1 {
 				c = s2
 			}
 			outs = append(outs, r.pollAsync(ctx, pollOK, c))
 		}
-		r.waitHeld(t, 2)
+		r.waitHeld(t, 2*maxHeldPolls)
 		cancel()
 		for _, o := range outs {
 			within(t, o, 3*time.Second)
 		}
-		// Ended by a newer poll and by a change.
+		// Ended by a newer poll (past the most held) and by a change.
 		a := r.pollAsync(context.Background(), pollOK, s)
 		r.waitHeld(t, 1)
-		b := r.pollAsync(context.Background(), pollOK, s)
+		var rest []<-chan *httptest.ResponseRecorder
+		for i := 1; i < maxHeldPolls; i++ {
+			rest = append(rest, r.pollAsync(context.Background(), pollOK, s))
+			r.waitHeld(t, i+1)
+		}
+		rest = append(rest, r.pollAsync(context.Background(), pollOK, s))
 		within(t, a, 3*time.Second)
 		wd.set(func(st *WatchState) { st.Version += "1" })
-		within(t, b, 3*time.Second)
+		for _, b := range rest {
+			within(t, b, 3*time.Second)
+		}
 		wd.set(func(st *WatchState) { st.Version = "aa" })
 		// Ended by the hold.
 		r.app.watchHold = 20 * time.Millisecond

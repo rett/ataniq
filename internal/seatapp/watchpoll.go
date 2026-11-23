@@ -18,6 +18,10 @@ const (
 	// watchHold is the longest a poll is held. It is under the seat's
 	// 30-second write timeout and the proxy's.
 	watchHold = 25 * time.Second
+	// maxHeldPolls is the most polls of one session held at once, one for
+	// each tab the owner has open; a poll past it takes the place of the
+	// oldest, which is answered "replaced".
+	maxHeldPolls = 3
 	// maxWatchVersion is the most characters of the version a poll carries.
 	maxWatchVersion = 64
 )
@@ -36,6 +40,9 @@ const (
 	watchChanged = "changed"
 	watchOffline = "offline"
 	watchEnded   = "ended"
+	// watchReplaced answers a held poll that a newer one of its session
+	// took the place of; the script waits out a hold before it asks again.
+	watchReplaced = "replaced"
 )
 
 // watcher returns the daemon's watcher, if the port has one.
@@ -165,8 +172,9 @@ func answerOf(s WatchState, in watchBody) watchAnswer {
 // used (a poll does not extend its idle time). The answer is immediate when
 // the port does not watch, is offline, or has a version other than the
 // poll's; otherwise the poll is held until the state changes, the hold ends
-// (same), a newer poll of the session takes its place (same), the request
-// ends, or the session does (ended). At most one poll of a session is held.
+// (same), a newer poll of the session takes its place (replaced), the
+// request ends, or the session does (ended). At most maxHeldPolls polls of a
+// session are held, one for each tab, and the oldest is replaced past that.
 func (a *app) watchPost(w http.ResponseWriter, r *http.Request) {
 	s, gone, ok := a.sess.look(cookieValue(r, SessionCookie))
 	if !ok {
@@ -221,6 +229,11 @@ func (a *app) watchPost(w http.ResponseWriter, r *http.Request) {
 	case <-ch:
 	case <-hold.C:
 	case <-kick:
+		// A fourth tab took this poll's place: say so, so that this page
+		// waits out a hold's length rather than taking the place back at
+		// once, which would end a poll of another tab without end.
+		writeJSON(w, http.StatusOK, watchAnswer{State: watchReplaced, Version: in.Version, Card: cardUnknown})
+		return
 	case <-gone:
 		writeJSON(w, http.StatusOK, watchAnswer{State: watchEnded, Card: cardUnknown})
 		return

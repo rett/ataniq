@@ -348,6 +348,10 @@ up without a reload, and a card that was decided, withdrawn or replaced
   gate or the daemon fails (the page asks again every 30 seconds), and "Session
   ended. Log in again." when the session is gone.
 - A tab that is hidden asks nothing, and asks at once when it is shown again.
+- Up to three tabs of one session are kept live at once. A fourth takes the
+  place of the oldest, whose page then waits 25 seconds before it asks again;
+  with more than four tabs open the pages cannot all stay live (see
+  "Troubleshooting").
 
 What it costs. The seat keeps one long call at the gate for the whole seat,
 whatever the number of pages and phones open: a held request that the gate
@@ -529,6 +533,6 @@ What the phone shows, by the code the seat's API answers:
 | Status line "Not live" | (none: the page's own) | The page was made while the seat watched nothing: the gate does not list `watch` (the daemon's start line has no `watch`), or the link was down. | Reload. Check the daemon's start line and the link. |
 | Status line "Not live: the desk is out of reach" | `offline` (answer of `POST /api/watch`) | The seat's link to the gate is down or its last wait failed; the watcher retries after 1 second, doubling to 30. The page asks again every 30 seconds. | Check the daemon, the firewall and both pins as for `daemon_unavailable`. It clears by itself once the link is back. |
 | Status line "Session ended. Log in again." | `ended` (answer of `POST /api/watch`) | Idle 30 minutes without a page load or tap (a poll does not count), 12 hours, a seat restart, a logout, or a revoked key. | Log in. |
-| Nothing visible, but `POST /api/watch` answers 429 in the proxy's log or the browser's tools | `rate_limited` | More than 12 polls a minute from one passkey's sessions, as many tabs open at once make. The page waits 60 seconds and asks again. | Close the extra tabs. |
+| Nothing visible, but `POST /api/watch` answers 429 in the proxy's log or the browser's tools | `rate_limited` | More than 12 polls a minute from one passkey's sessions, as more than four tabs open at once make. The page waits 60 seconds and asks again. | Close the extra tabs. |
 | "This card changed or was decided elsewhere. Look again." | `changed` or `gone` (the card's state in the poll's answer) | The card was decided, replaced, expired or withdrawn since the page was read. | Reload, or go back to the cards. |
 | A line `seat.wait refused wait-full (peer ...)` in the daemon's log | `wait-full` | The gate already holds two waits for that seat key (or the daemon's eight). Normal for a moment when the seat reconnects. Not counted against the seat. | Nothing if it stops. If it repeats every minute, look for a second `ataniq-seat` with the same identity. |

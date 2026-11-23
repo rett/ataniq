@@ -33,6 +33,7 @@
   var REQUEST_TIMEOUT = 30000; // the seat holds a poll for 25 seconds at most
   var MIN_GAP = 2000;          // the least time between the starts of two polls
   var OFFLINE_WAIT = 30000;
+  var REPLACED_WAIT = 25000;   // after a poll was replaced by another tab's: a hold's length
   var LIMITED_WAIT = 60000;
   var BACKOFF_FIRST = 5000;
   var BACKOFF_LAST = 60000;
@@ -175,8 +176,8 @@
     handle(data, began);
   }
 
-  // handle acts on an answer: its state is one of same, changed, offline and
-  // ended, and, for a Card page, its card is one of live, changed, gone and
+  // handle acts on an answer: its state is one of same, changed, replaced,
+  // offline and ended, and, for a Card page, its card is one of live, changed, gone and
   // unknown.
   function handle(data, began) {
     var next = Math.max(0, MIN_GAP - (Date.now() - began));
@@ -189,6 +190,13 @@
     case "offline":
       say(TEXT.offline);
       schedule(OFFLINE_WAIT);
+      return;
+    case "replaced":
+      // Another tab of this session took this poll's place. Asking again at
+      // once would take that tab's place in turn, and the tabs would end
+      // each other's polls without end: wait out a hold instead.
+      quiet();
+      schedule(REPLACED_WAIT);
       return;
     case "changed":
       if (validVersion(data.version)) { version = data.version; }

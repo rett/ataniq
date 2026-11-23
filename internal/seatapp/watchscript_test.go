@@ -147,8 +147,8 @@ func TestSeatWatchScriptHandlesEveryAnswer(t *testing.T) {
 	js := watchScript(t)
 	states, cards := constsOf(t, "watch"), constsOf(t, "card")
 	// The constants of the limits are numbers or durations, not strings, so
-	// they are not in the maps; the states are four and the card states four.
-	if len(states) != 4 || len(cards) != 4 {
+	// they are not in the maps; the states are five and the card states four.
+	if len(states) != 5 || len(cards) != 4 {
 		t.Fatalf("watchpoll.go: states %v, card states %v", states, cards)
 	}
 	var names []string
@@ -156,7 +156,7 @@ func TestSeatWatchScriptHandlesEveryAnswer(t *testing.T) {
 		names = append(names, v)
 	}
 	sort.Strings(names)
-	if strings.Join(names, ",") != "changed,ended,offline,same" {
+	if strings.Join(names, ",") != "changed,ended,offline,replaced,same" {
 		t.Errorf("the answer states are %v: this test and watch.js need to follow", names)
 	}
 	for _, v := range states {
@@ -168,6 +168,12 @@ func TestSeatWatchScriptHandlesEveryAnswer(t *testing.T) {
 		if !strings.Contains(js, `case "`+v+`":`) && !strings.Contains(js, `cs === "`+v+`"`) {
 			t.Errorf("watch.js does not handle the card state %q", v)
 		}
+	}
+	// A replaced poll is waited out for a hold's length and does not fall
+	// through to the next poll's gap, so that two tabs never end each
+	// other's polls in turn.
+	if !regexp.MustCompile(`case "replaced":[^}]*?schedule\(REPLACED_WAIT\);\s*return;`).MatchString(js) {
+		t.Error(`watch.js does not wait out REPLACED_WAIT and return in its case "replaced"`)
 	}
 	// The keys of the request and the answer, from the structs' tags.
 	src, err := os.ReadFile("watchpoll.go")
@@ -190,10 +196,11 @@ func TestSeatWatchScriptHandlesEveryAnswer(t *testing.T) {
 	}
 	// The statuses of the transport, and the waits: 429 backs off a minute,
 	// an error five seconds doubling to a minute, offline thirty seconds,
+	// a replaced poll a hold's length,
 	// a request is cut at thirty seconds, and a reload waits ten.
 	for _, want := range []string{
 		"resp.status === 429", "LIMITED_WAIT = 60000", "BACKOFF_FIRST = 5000", "BACKOFF_LAST = 60000", "backoff * 2",
-		"OFFLINE_WAIT = 30000", "REQUEST_TIMEOUT = 30000", "RELOAD_GAP = 10000",
+		"OFFLINE_WAIT = 30000", "REPLACED_WAIT = 25000", "REQUEST_TIMEOUT = 30000", "RELOAD_GAP = 10000",
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("watch.js lacks %q", want)

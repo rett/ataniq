@@ -90,9 +90,9 @@ type session struct {
 	// gone is closed when the session is removed (logout, idle time, age,
 	// eviction), so that a held watch poll ends with it (see watch.go).
 	gone chan struct{}
-	// kick is the held watch poll's channel, nil when none is held: a newer
-	// poll closes it to end the older one.
-	kick chan struct{}
+	// kicks are the held watch polls' channels, the oldest first, at most
+	// maxHeldPolls: a poll past the most closes the oldest one's to end it.
+	kicks []chan struct{}
 }
 
 // sessions holds the sessions, server-side, in memory: a restart ends them
@@ -164,11 +164,12 @@ func (ss *sessions) look(value string) (s Session, gone <-chan struct{}, ok bool
 	return out, cur.gone, true
 }
 
-// holdWatch makes the caller the session's one held watch poll. A poll held
-// before is ended: its kick channel is closed. It returns the caller's own
-// kick channel, closed when a newer poll takes its place, and release, which
-// the caller runs when its poll ends. It reports false when the session is
-// gone.
+// holdWatch makes the caller one of the session's held watch polls, at most
+// maxHeldPolls of them (one for each tab of the owner's). With that many held
+// already, the oldest is ended: its kick channel is closed. It returns the
+// caller's own kick channel, closed when a newer poll takes its place, and
+// release, which the caller runs when its poll ends. It reports false when
+// the session is gone.
 func (ss *sessions) holdWatch(k tokenKey) (kick <-chan struct{}, release func(), ok bool) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
@@ -176,16 +177,24 @@ func (ss *sessions) holdWatch(k tokenKey) (kick <-chan struct{}, release func(),
 	if !ok {
 		return nil, nil, false
 	}
-	if s.kick != nil {
-		close(s.kick)
+	for len(s.kicks) >= maxHeldPolls {
+		close(s.kicks[0])
+		s.kicks = s.kicks[1:]
 	}
 	mine := make(chan struct{})
-	s.kick = mine
+	s.kicks = append(s.kicks, mine)
 	return mine, func() {
 		ss.mu.Lock()
 		defer ss.mu.Unlock()
-		if cur, ok := ss.m[k]; ok && cur.kick == mine {
-			cur.kick = nil
+		cur, ok := ss.m[k]
+		if !ok {
+			return
+		}
+		for i, c := range cur.kicks {
+			if c == mine {
+				cur.kicks = append(cur.kicks[:i:i], cur.kicks[i+1:]...)
+				return
+			}
 		}
 	}, true
 }
