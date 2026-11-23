@@ -93,7 +93,7 @@ tries the phone end to end without a lead, a mirror or a sandbox:
 
        ataniqd trial init --state-dir DIR
        ataniqd run --owner-channel --trial --state-dir DIR [--seat-gate ADDR]
-       ataniqd trial submit --kind finish|prune [--count N] [--socket PATH]
+       ataniqd trial submit --kind finish|branch-prune [--count N] [--socket PATH]
 
   trial init        write the trial's settings, owner/scratch.json of DIR
                     ("trial": true: a sample project, role and target, the
@@ -112,8 +112,8 @@ tries the phone end to end without a lead, a mirror or a sandbox:
                     TRIAL line after the STAND-IN banner at start.
   trial submit      ask the trial daemon on the socket (default the runtime
                     folder's daemon.sock) for N sample cards (1 to 10, default
-                    1) of a kind: finish, a sample feature finish, or prune, a
-                    sample branch prune, one at a time. It prints one line per
+                    1) of a kind: finish, a sample feature finish, or branch-prune,
+                    a sample branch prune, one at a time. It prints one line per
                     card, or per refusal. Exit codes: 0 every card was made, 1
                     a refusal or a failure, 2 usage, 20 no daemon, 21
                     unauthorized, 22 a protocol error (a daemon that is not a

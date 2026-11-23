@@ -686,13 +686,14 @@ in on the phone. Then, on the lead host, as the daemon's user:
 
 ```sh
 ./build/owner/ataniqd trial submit --socket /scratch/trial/run/daemon.sock --kind finish
-./build/owner/ataniqd trial submit --socket /scratch/trial/run/daemon.sock --kind prune
+./build/owner/ataniqd trial submit --socket /scratch/trial/run/daemon.sock --kind branch-prune
 ./build/owner/ataniqd trial submit --socket /scratch/trial/run/daemon.sock --kind finish --count 3
 ```
 
-Each prints one line per card (`card ap-...: finish trial-login-retry-1 (request
+The kind is `finish` or `branch-prune` (nothing else, `prune` included). Each
+prints one line per card (`card ap-...: finish trial-login-retry-1 (request
 rq-trial-...)`) or per refusal (`no card: ...`, with the door's code, such as
-`request-duplicate` for a second prune while one is open). With the card list
+`request-duplicate` for a second branch prune while one is open). With the card list
 open on the phone a new card arrives by itself ([Live refresh](#live-refresh));
 with the list closed and notices on, a notice says that cards wait
 ([Notices](#notices)).
@@ -701,9 +702,9 @@ with the list closed and notices on, a notice says that cards wait
   with the stand-in's plan token), three or four changed paths with their
   patch, and, on every other card, the `Makefile`, a flagged path that needs its
   own sign-off before Approve.
-- A prune card deletes two or three sample branches. The daemon takes no prune
+- A branch-prune card deletes two or three sample branches. The daemon takes no prune
   request from a lead yet, so the trial asks the stand-in door to plan it
-  directly; it is decided like any card. One prune is open at a time.
+  directly; it is decided like any card. One branch prune is open at a time.
 - Approve or Deny with the passkey as for a real card. An approved trial card
   ends **not-applied**, with the line `applied: nothing (trial)`: the door took
   the approval, the use passed its checks, and nothing moved. The project's

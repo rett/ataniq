@@ -167,11 +167,11 @@ func TestTrialRunSubmitsSampleCardsThatTheSeatSees(t *testing.T) {
 	if code != 0 || strings.Count(out, "card ap-") != 2 || !strings.Contains(out, "finish trial-login-retry-1") || !strings.Contains(out, "finish trial-cache-trim-2") {
 		t.Fatalf("submit 2 finish: exit %d, %q, %q", code, out, serr)
 	}
-	code, out, serr = submit("--kind", "prune", "--count", "2")
-	if code != leaddaemon.ExitFailure || strings.Count(out, "card ap-") != 1 || !strings.Contains(out, "no card: prune") || !strings.Contains(out, "request-duplicate") {
-		t.Fatalf("submit 2 prune: exit %d, %q, %q", code, out, serr)
+	code, out, serr = submit("--kind", "branch-prune", "--count", "2")
+	if code != leaddaemon.ExitFailure || strings.Count(out, "card ap-") != 1 || !strings.Contains(out, "no card: branch-prune") || !strings.Contains(out, "request-duplicate") {
+		t.Fatalf("submit 2 branch-prune: exit %d, %q, %q", code, out, serr)
 	}
-	for _, args := range [][]string{{"--kind", "merge"}, {"--kind", "finish", "--count", "11"}, {"--kind", "finish", "--count", "0"}, {"--count", "1"}} {
+	for _, args := range [][]string{{"--kind", "merge"}, {"--kind", "prune"}, {"--kind", "Branch-Prune"}, {"--kind", "finish", "--count", "11"}, {"--kind", "finish", "--count", "0"}, {"--count", "1"}} {
 		if code, _, _ := submit(args...); code != leaddaemon.ExitUsage {
 			t.Errorf("submit %q: exit %d", args, code)
 		}

@@ -53,26 +53,23 @@ import (
 const TrialLine = "applied: nothing (trial)"
 
 // The kinds of sample card [Trial.Submit] makes.
-var (
+const (
 	// TrialFinish is a feature finish: a sample feature, its merge, a suite
 	// record, a review with three or four changed paths and, every other
 	// card, a flagged path that needs its own sign-off.
 	TrialFinish = "finish"
-	// TrialPrune is a branch prune of two or three sample branches. The
+	// TrialBranchPrune is a branch prune of two or three sample branches. The
 	// service takes no prune request from a lead yet, so the trial asks the
 	// stand-in door to plan it directly; deciding it goes through the
-	// service as any card does.
-	//
-	// Its word is the last of the record's verb "branch prune", made from the
-	// verb rather than written as a literal of its own: the package's test
-	// that no maintenance entry point exists refuses every non-test string
-	// literal that is a git maintenance subcommand, and this word is the
-	// record's verb, never a git command (nothing of the trial runs git).
-	TrialPrune = record.VerbBranchPrune[len("branch "):]
+	// service as any card does. Its word has the verb's two words joined,
+	// "branch-prune", so that it is no git maintenance subcommand (the
+	// package's test that no maintenance entry point exists refuses every
+	// non-test string literal that is one); nothing of the trial runs git.
+	TrialBranchPrune = "branch-prune"
 )
 
 // TrialKinds are the kinds of sample card, in the order they are named.
-var TrialKinds = []string{TrialFinish, TrialPrune}
+var TrialKinds = []string{TrialFinish, TrialBranchPrune}
 
 // TrialScratch returns the settings "ataniqd trial init" writes: a sample
 // project, role and target, a seat at epoch 1 and revision 1, the stand-in
@@ -319,7 +316,7 @@ func (e trialEnder) EndRequest(_ context.Context, id string) error { return e.d.
 type TrialCard struct {
 	Kind      string `json:"kind"`
 	RequestID string `json:"request_id"`
-	// Feature is the sample feature of a finish, empty for a prune.
+	// Feature is the sample feature of a finish, empty for a branch prune.
 	Feature   string `json:"feature,omitempty"`
 	State     string `json:"state"`
 	PendingID string `json:"pending_id,omitempty"`
@@ -345,20 +342,20 @@ func trialNote(n int) record.Text {
 }
 
 // Submit makes one sample card of the kind given ([TrialFinish] or
-// [TrialPrune]) and returns what became of it. A finish goes through the
+// [TrialBranchPrune]) and returns what became of it. A finish goes through the
 // service's Submit, as a lead's request does: the stand-in door admits it, the
 // trial host stands for the merge, the suite and the review, and the door
-// plans it. A prune is admitted and planned at the stand-in door directly. A
-// refusal (the door's caps, a duplicate prune) is a card in the state refused,
+// plans it. A branch prune is admitted and planned at the stand-in door directly. A
+// refusal (the door's caps, a duplicate branch prune) is a card in the state refused,
 // not an error.
 func (t *Trial) Submit(ctx context.Context, kind string) (TrialCard, error) {
 	switch kind {
 	case TrialFinish:
 		return t.submitFinish(ctx)
-	case TrialPrune:
+	case TrialBranchPrune:
 		return t.submitPrune(ctx)
 	}
-	return TrialCard{}, errors.New("hostadapter: the kind of a trial card is finish or prune")
+	return TrialCard{}, errors.New("hostadapter: the kind of a trial card is finish or branch-prune")
 }
 
 // request makes the bytes of a sample request.
@@ -402,7 +399,7 @@ func (t *Trial) submitPrune(ctx context.Context) (TrialCard, error) {
 	if err != nil {
 		return TrialCard{}, err
 	}
-	out := TrialCard{Kind: TrialPrune, RequestID: req.RequestID}
+	out := TrialCard{Kind: TrialBranchPrune, RequestID: req.RequestID}
 	refused := func(err error) (TrialCard, error) {
 		var e *record.Error
 		if !errors.As(err, &e) {

@@ -146,7 +146,7 @@ type trialSubmitResult struct {
 
 // The fixed messages of trial.submit's errors.
 const (
-	msgTrialBadParams = "trial.submit takes {\"kind\": \"finish\" or \"prune\", \"count\": 1 to 10}"
+	msgTrialBadParams = "trial.submit takes {\"kind\": \"finish\" or \"branch-prune\", \"count\": 1 to 10}"
 	msgTrialFailed    = "the trial could not make a sample card"
 )
 
@@ -175,7 +175,7 @@ func (x *trialExt) Handle(ctx context.Context, op string, params json.RawMessage
 	if p.Count == 0 {
 		p.Count = 1
 	}
-	if (p.Kind != hostadapter.TrialFinish && p.Kind != hostadapter.TrialPrune) || p.Count < 1 || p.Count > trialMaxCount {
+	if (p.Kind != hostadapter.TrialFinish && p.Kind != hostadapter.TrialBranchPrune) || p.Count < 1 || p.Count > trialMaxCount {
 		return nil, bad
 	}
 	out := trialSubmitResult{Cards: []hostadapter.TrialCard{}}
@@ -250,14 +250,14 @@ func (a *app) trialSubmit(args []string) int {
 	var kind, socket string
 	var count int
 	if code := a.flags("trial submit", args, func(fs *flag.FlagSet) {
-		fs.StringVar(&kind, "kind", "", "finish or prune")
+		fs.StringVar(&kind, "kind", "", "finish or branch-prune")
 		fs.IntVar(&count, "count", 1, "how many sample cards, 1 to 10")
 		fs.StringVar(&socket, "socket", "", "socket path")
 	}); code >= 0 {
 		return code
 	}
-	if (kind != hostadapter.TrialFinish && kind != hostadapter.TrialPrune) || count < 1 || count > trialMaxCount {
-		fmt.Fprintf(a.stderr, "ataniqd trial submit: --kind is finish or prune, and --count 1 to %d\n", trialMaxCount)
+	if (kind != hostadapter.TrialFinish && kind != hostadapter.TrialBranchPrune) || count < 1 || count > trialMaxCount {
+		fmt.Fprintf(a.stderr, "ataniqd trial submit: --kind is finish or branch-prune, and --count 1 to %d\n", trialMaxCount)
 		return leaddaemon.ExitUsage
 	}
 	if socket == "" {

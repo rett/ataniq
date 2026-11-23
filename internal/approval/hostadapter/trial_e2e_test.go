@@ -173,8 +173,8 @@ func TestTrialE2EAPhoneDecidesSampleCardsAndNothingIsApplied(t *testing.T) {
 
 	// A sample prune; a second one while it is open is the stand-in's
 	// duplicate, a refusal and no card.
-	pr := submitTrial(t, tr, TrialPrune)
-	dup, err := tr.Submit(pairCtx(t), TrialPrune)
+	pr := submitTrial(t, tr, TrialBranchPrune)
+	dup, err := tr.Submit(pairCtx(t), TrialBranchPrune)
 	if err != nil || dup.State != string(ownerchannel.RequestRefused) || dup.Code != string(record.CodeRequestDuplicate) {
 		t.Errorf("a second prune while one is open: %+v, %v", dup, err)
 	}
@@ -278,5 +278,41 @@ func TestTrialCardsCannotBeAppliedToAnything(t *testing.T) {
 	}
 	if h.OutcomeLine(door.OutcomeApplied) != TrialLine {
 		t.Error("the trial host's outcome line is not the trial's")
+	}
+}
+
+// The kinds of sample card are named as the operator types them: finish and
+// branch-prune, the verb's words joined. "prune" alone is no kind, and no kind
+// is a git maintenance subcommand, which the package's scan for maintenance
+// literals relies on.
+func TestTrialKindsAreFinishAndBranchPrune(t *testing.T) {
+	if strings.Join(TrialKinds, ",") != "finish,branch-prune" || TrialBranchPrune != "branch-prune" {
+		t.Fatalf("the kinds are %v", TrialKinds)
+	}
+	for _, k := range TrialKinds {
+		for _, w := range maintenanceWords {
+			if k == w {
+				t.Errorf("the kind %q is a git maintenance subcommand", k)
+			}
+		}
+	}
+	clock := doortest.NewClock(start)
+	state := filepath.Join(privateDir(t), "state")
+	sc, err := WriteTrialScratch(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr, err := OpenTrial(context.Background(), TrialConfig{StateDir: state, Scratch: sc, Now: clock.Now, Manual: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tr.Close() })
+	if c := submitTrial(t, tr, "branch-prune"); c.Kind != "branch-prune" {
+		t.Errorf("the card is %+v", c)
+	}
+	for _, kind := range []string{"prune", "branch prune", "Finish", ""} {
+		if c, err := tr.Submit(context.Background(), kind); err == nil {
+			t.Errorf("the kind %q makes %+v", kind, c)
+		}
 	}
 }
