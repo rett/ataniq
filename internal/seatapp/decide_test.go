@@ -1205,6 +1205,26 @@ func TestSeatDecideScript(t *testing.T) {
 	if n := strings.Count(js, `post("/api/decide",`); n != 1 {
 		t.Errorf("%d places send a decision", n)
 	}
+	// A cancel sends nothing: the cancel button only goes back, and in
+	// confirm every way the passkey sheet ends without an assertion goes
+	// back and returns before the one place that sends the decision.
+	_, onCancel, _ := strings.Cut(js, `cancelBtn.addEventListener("click", function () {`)
+	onCancel, _, _ = strings.Cut(onCancel, "});")
+	if !strings.Contains(onCancel, "back(SAY.cancelled);") || strings.Contains(onCancel, "post(") || strings.Contains(onCancel, "credentials") {
+		t.Errorf("the cancel button does more than go back: %q", onCancel)
+	}
+	_, sheet, _ := strings.Cut(js, "cred = await navigator.credentials.get(")
+	sheet, _, _ = strings.Cut(sheet, `post("/api/decide",`)
+	for _, want := range []string{
+		`if (e && e.name === "NotSupportedError") { back(SAY.unsupported); return; }`,
+		`if (e && e.name === "SecurityError") { back(SAY.site_refused); return; }`,
+		"back(SAY.cancelled); // NotAllowedError: cancelled, timed out, or no consent\n      return;",
+		"if (!cred || !cred.response) { back(SAY.cancelled); return; }",
+	} {
+		if !strings.Contains(sheet, want) {
+			t.Errorf("the passkey sheet's end before the decision is sent lacks %q", want)
+		}
+	}
 	for _, bad := range []string{
 		"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "Function(", "http://", "https://",
 		"document.cookie", "setTimeout", "setInterval", "localStorage", "sessionStorage", "indexedDB", "serviceWorker", "sendBeacon",

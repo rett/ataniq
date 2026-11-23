@@ -909,10 +909,25 @@ func TestSeatLinkDecisionOnTheWire(t *testing.T) {
 		t.Errorf("the desk got the sign-offs of %d paths, not the paths shown", len(got))
 	}
 
-	// onWire hands on the very bytes it checked.
+	// onWire hands on the very bytes it checked, and only when the decoder
+	// it was given takes them: a refusal of the decoder gives no bytes, and
+	// the error the phone is told (ErrTooLarge for params over their cap).
 	in := []byte(`{"a":"<&>` + "\u2028" + `"}`)
-	if wire, err := onWire(in, func([]byte) error { return nil }); err != nil || !bytes.Equal(wire, in) {
-		t.Errorf("onWire gives %s (%v), want %s", wire, err, in)
+	var asked []byte
+	if wire, err := onWire(in, func(b []byte) error { asked = b; return nil }); err != nil || !bytes.Equal(wire, in) || !bytes.Equal(asked, in) {
+		t.Errorf("onWire gives %s (%v), want %s, having asked the decoder of %s", wire, err, in, asked)
+	}
+	for _, tc := range []struct {
+		refusal error
+		want    error
+	}{
+		{&record.Error{Code: record.CodeRecordTooLarge}, seatapp.ErrTooLarge},
+		{&record.Error{Code: record.CodeDecisionInvalid}, errFrame},
+		{errors.New("not of the form"), errFrame},
+	} {
+		if wire, err := onWire(in, func([]byte) error { return tc.refusal }); wire != nil || !errors.Is(err, tc.want) {
+			t.Errorf("onWire with a decoder that refuses %v: %s (%v), want %v", tc.refusal, wire, err, tc.want)
+		}
 	}
 }
 
