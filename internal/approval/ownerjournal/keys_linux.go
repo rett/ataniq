@@ -1239,7 +1239,8 @@ func (k *KeyFile) AppendRejected(r RejectedPairing) error {
 // passkey does on every use, never needs a record. An id that no credential
 // has is [ErrKeyUnknown]. The records share the room kept for rejected
 // pairings: once it is used up the raise is refused with [ErrKeysFull], and
-// the highest counter stays the last one written.
+// the highest counter stays the last one written (the owner channel's service
+// then tells the operator once and keeps the counter in memory).
 func (k *KeyFile) RaiseCounter(id string, counter uint32, at time.Time) error {
 	if !record.IsLowerHex(id, DisplayIDLength) || !validTime(at) {
 		return errors.New("ownerjournal: the counter is not one a record can hold")

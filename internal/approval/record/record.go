@@ -56,7 +56,8 @@ func DecodePending(data []byte) (Pending, error) {
 // decision-invalid. A decision carries exactly one of two blocks, as its
 // confirmed says: the console block for [ConfirmedCode] and the seat block
 // for [ConfirmedPasskey]; one with both, with neither, or with the other
-// block is decision-invalid. Whether the decision fits a pending record (its
+// block is decision-invalid, and so is a deny confirmed by passkey that
+// carries a sign-off. Whether the decision fits a pending record (its
 // digest, its sign-offs) is for the caller that holds both; see
 // [SignOffsEqual].
 func DecodeDecision(data []byte) (Decision, error) {

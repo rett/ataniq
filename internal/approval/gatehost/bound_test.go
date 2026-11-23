@@ -2,6 +2,7 @@ package gatehost
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -56,17 +57,29 @@ func pair(t *testing.T, h *Handler, peer seatgate.Peer) error {
 	return err
 }
 
-// A pinned peer that floods seat.pair with wrong codes gets RefusalBound of
-// them to the service, each logged; then every request of it, a read too, is
-// refused too-many-refusals without the service, logged once.
-func TestAFloodOfRefusedPairingsIsBounded(t *testing.T) {
+// voidCard is the refusal of an owner.show for a card that is not there: a
+// refusal of what the peer named, which counts.
+var voidCard = &record.Error{Code: record.CodeApprovalVoid, Detail: "no pending record has this id"}
+
+// refusedShow makes one owner.show call, which f answers with its showErr.
+func refusedShow(t *testing.T, h *Handler, peer seatgate.Peer) error {
+	t.Helper()
+	_, err := h.Handle(context.Background(), peer, ownerwire.OpShow, validParams(t, ownerwire.OpShow))
+	return err
+}
+
+// A pinned peer that floods a request the handler refuses for what it sent
+// gets RefusalBound of them to the service, each logged; then every request
+// of it, a read and a pairing too, is refused too-many-refusals without the
+// service, logged once.
+func TestAFloodOfRefusalsIsBounded(t *testing.T) {
 	if RefusalBound != 16 || RefusalWindow != 10*time.Minute {
 		t.Fatalf("bound %d per %v", RefusalBound, RefusalWindow)
 	}
-	f := &fakePort{code: pairCode} // no pairing open: every try is refused
+	f := &fakePort{showErr: voidCard}
 	h, lb, clk := boundHandler(t, f)
 	for i := 0; i < RefusalBound; i++ {
-		if err := pair(t, h, seat); codeOfErr(err) != CodePairingRefused {
+		if err := refusedShow(t, h, seat); codeOfErr(err) != string(record.CodeApprovalVoid) {
 			t.Fatalf("try %d: %v", i, err)
 		}
 		clk.add(time.Second)
@@ -75,11 +88,11 @@ func TestAFloodOfRefusedPairingsIsBounded(t *testing.T) {
 		t.Fatalf("the service had %d calls", n)
 	}
 	for i := 0; i < 50; i++ {
-		if err := pair(t, h, seat); codeOfErr(err) != CodeTooManyRefusals {
+		if err := refusedShow(t, h, seat); codeOfErr(err) != CodeTooManyRefusals {
 			t.Fatalf("past the bound, try %d: %v", i, err)
 		}
 	}
-	// The peer is shut out from everything, not from pairing alone.
+	// The peer is shut out from everything, not from that read alone.
 	for _, op := range Operations() {
 		if _, err := h.Handle(context.Background(), seat, op, validParams(t, op)); codeOfErr(err) != CodeTooManyRefusals {
 			t.Errorf("%s past the bound: %v", op, err)
@@ -93,7 +106,7 @@ func TestAFloodOfRefusedPairingsIsBounded(t *testing.T) {
 		t.Fatalf("%d log lines: %q", len(lines), lines)
 	}
 	for _, l := range lines[:RefusalBound] {
-		if !strings.Contains(l, "seat.pair refused pairing-refused") {
+		if !strings.Contains(l, "owner.show refused approval-void") {
 			t.Errorf("log %q", l)
 		}
 	}
@@ -102,26 +115,85 @@ func TestAFloodOfRefusedPairingsIsBounded(t *testing.T) {
 	}
 }
 
+// The seat relays seat.pair for anyone who reaches its pairing page, so no
+// refusal of a pairing counts against the seat's one key: a stranger who
+// floods wrong codes, or registrations the daemon refuses, never shuts the
+// owner's logins, reads and decisions out. Each try still reaches the
+// service, which burns the code after five wrong ones. Only unknown-op and
+// not-pinned, which are of the peer and not of a browser, count.
+func TestRefusedPairingsDoNotShutTheSeatOut(t *testing.T) {
+	for _, e := range []error{
+		ownerchannel.ErrPairRefused, ownerchannel.ErrCredentialInvalid, ownerchannel.ErrNoPairing,
+		ownerchannel.ErrPairingExpired, ownerchannel.ErrPairingOpen, ownerchannel.ErrPairingChanged,
+		ownerchannel.ErrKeyUnknown, ownerchannel.ErrKeyAmbiguous,
+		&record.Error{Code: record.CodeRecordInvalid, Detail: "the parameters are not valid for this operation"},
+	} {
+		f := &fakePort{err: e}
+		h, lb, clk := boundHandler(t, f)
+		want := codeOf(e)
+		for i := 0; i < 4*RefusalBound; i++ {
+			if err := pair(t, h, seat); codeOfErr(err) != want {
+				t.Fatalf("%v, try %d: %v", e, i, err)
+			}
+			clk.add(time.Second)
+		}
+		if n := len(f.seen()); n != 4*RefusalBound {
+			t.Fatalf("%v: the service had %d calls", e, n)
+		}
+		f.mu.Lock()
+		f.err = nil
+		f.mu.Unlock()
+		if _, err := h.Handle(context.Background(), seat, ownerwire.OpList, nil); err != nil {
+			t.Fatalf("%v: a read after the refused pairings: %v", e, err)
+		}
+		if n := len(lb.all()); n != 4*RefusalBound {
+			t.Errorf("%v: %d log lines", e, n)
+		}
+	}
+	// Params the handler refuses bad-params do not count either: the seat
+	// passes on what a browser posted.
+	f := &fakePort{}
+	h, _, _ := boundHandler(t, f)
+	for i := 0; i < 4*RefusalBound; i++ {
+		if _, err := h.Handle(context.Background(), seat, ownerwire.OpSeatPair, json.RawMessage(`{"code":"x"}`)); codeOfErr(err) != CodeBadParams {
+			t.Fatalf("try %d: %v", i, err)
+		}
+	}
+	if _, err := h.Handle(context.Background(), seat, ownerwire.OpList, nil); err != nil {
+		t.Fatalf("a read after the bad params: %v", err)
+	}
+	// A pairing of a key that is not pinned counts, as any request of it.
+	stranger := seatgate.Peer{Fingerprint: otherFP}
+	for i := 0; i < RefusalBound; i++ {
+		if err := pair(t, h, stranger); codeOfErr(err) != CodeNotPinned {
+			t.Fatalf("the stranger's try %d: %v", i, err)
+		}
+	}
+	if err := pair(t, h, stranger); codeOfErr(err) != CodeTooManyRefusals {
+		t.Fatalf("the stranger past the bound: %v", err)
+	}
+}
+
 // The window slides: once the oldest counted refusal is RefusalWindow old,
 // one request reaches the service again, and a refusal of it shuts the peer
 // out again with one more line.
 func TestTheBoundSlidesWithTheWindow(t *testing.T) {
-	f := &fakePort{code: pairCode}
+	f := &fakePort{showErr: voidCard}
 	h, lb, clk := boundHandler(t, f)
 	for i := 0; i < RefusalBound; i++ {
-		_ = pair(t, h, seat)
+		_ = refusedShow(t, h, seat)
 		clk.add(time.Minute / 2)
 	}
 	// The first refusal was 8 minutes ago.
 	clk.add(2*time.Minute - time.Second)
-	if err := pair(t, h, seat); codeOfErr(err) != CodeTooManyRefusals {
+	if err := refusedShow(t, h, seat); codeOfErr(err) != CodeTooManyRefusals {
 		t.Fatalf("a second before the window: %v", err)
 	}
 	clk.add(time.Second)
-	if err := pair(t, h, seat); codeOfErr(err) != CodePairingRefused {
+	if err := refusedShow(t, h, seat); codeOfErr(err) != string(record.CodeApprovalVoid) {
 		t.Fatalf("at the window: %v", err)
 	}
-	if err := pair(t, h, seat); codeOfErr(err) != CodeTooManyRefusals {
+	if err := refusedShow(t, h, seat); codeOfErr(err) != CodeTooManyRefusals {
 		t.Fatalf("after one more refusal: %v", err)
 	}
 	if n := len(f.seen()); n != RefusalBound+1 {
@@ -130,28 +202,28 @@ func TestTheBoundSlidesWithTheWindow(t *testing.T) {
 	if n := len(lb.all()); n != RefusalBound+3 {
 		t.Errorf("%d log lines", n)
 	}
-	// Long after, the peer is as new: an open pairing is served.
+	// Long after, the peer is as new: a read is served.
 	clk.add(RefusalWindow)
 	f.mu.Lock()
-	f.open = true
+	f.showErr = nil
 	f.mu.Unlock()
-	if err := pair(t, h, seat); err != nil {
+	if err := refusedShow(t, h, seat); err != nil {
 		t.Errorf("after the window: %v", err)
 	}
 }
 
 // The bound is per peer: one key shut out leaves another served.
 func TestTheBoundIsPerPeer(t *testing.T) {
-	f := &fakePort{code: pairCode}
+	f := &fakePort{showErr: voidCard}
 	h, _, _ := boundHandler(t, f)
 	for i := 0; i <= RefusalBound; i++ {
-		_ = pair(t, h, seat)
+		_ = refusedShow(t, h, seat)
 	}
-	if err := pair(t, h, seat); codeOfErr(err) != CodeTooManyRefusals {
+	if err := refusedShow(t, h, seat); codeOfErr(err) != CodeTooManyRefusals {
 		t.Fatalf("the first peer: %v", err)
 	}
 	second := seatgate.Peer{Fingerprint: secondFP}
-	if err := pair(t, h, second); codeOfErr(err) != CodePairingRefused {
+	if err := refusedShow(t, h, second); codeOfErr(err) != string(record.CodeApprovalVoid) {
 		t.Errorf("the second peer: %v", err)
 	}
 	if _, err := h.Handle(context.Background(), second, ownerwire.OpList, nil); err != nil {
@@ -266,7 +338,7 @@ func TestNotPinnedRefusalsAreBounded(t *testing.T) {
 // after them however many there were, and the lines past the bound are not
 // written.
 func TestConcurrentRefusalsAreCounted(t *testing.T) {
-	f := &fakePort{code: pairCode}
+	f := &fakePort{showErr: voidCard}
 	h, lb, _ := boundHandler(t, f)
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
@@ -274,12 +346,12 @@ func TestConcurrentRefusalsAreCounted(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 16; j++ {
-				_, _ = h.Handle(context.Background(), seat, ownerwire.OpSeatPair, validParams(t, ownerwire.OpSeatPair))
+				_, _ = h.Handle(context.Background(), seat, ownerwire.OpShow, validParams(t, ownerwire.OpShow))
 			}
 		}()
 	}
 	wg.Wait()
-	if err := pair(t, h, seat); codeOfErr(err) != CodeTooManyRefusals {
+	if err := refusedShow(t, h, seat); codeOfErr(err) != CodeTooManyRefusals {
 		t.Errorf("after the flood: %v", err)
 	}
 	if n := len(lb.all()); n > RefusalBound+1 {

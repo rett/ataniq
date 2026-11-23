@@ -170,14 +170,57 @@ func (s *Service) kindAccepted(kind, project string) bool {
 // raised on the list, and a counter that did not grow while one of the two is
 // not zero is told as a possible clone. Neither refuses the assertion: a
 // counter is a claim, and the highest one stays.
+//
+// The compare and the raise are one step under cmu, against the highest
+// counter known now, not the one in k, the row read before the assertion was
+// verified: two verifications at once read the same row, and the second of
+// them, a copy that reports the counter the first raised, is told. The
+// highest is the larger of the list's, read again under cmu, and the one kept
+// in memory for the key. The memory keeps what the list cannot: the records
+// of the counters share the list's spare room with rejected pairings, and
+// once it is used up (ownerjournal.ErrKeysFull) the list's counter stays
+// where it was. Then the desk is told once for the key, by the notice, and
+// the counter is checked against the memory until the daemon restarts. A
+// passkey that reports 0 every time, as a synced one does, needs no record
+// and is never told.
 func (s *Service) verified(k ownerjournal.StoredKey, res credkind.Result, session string) {
-	if res.CounterSuspect {
+	s.cmu.Lock()
+	defer s.cmu.Unlock()
+	stored := k.Counter
+	if keys, err := s.cfg.Keys.Keys(); err == nil {
+		for _, fresh := range keys {
+			if fresh.ID == k.ID && fresh.Counter > stored {
+				stored = fresh.Counter
+			}
+		}
+	}
+	highest := max(stored, s.counters[k.ID])
+	if (res.Counter != 0 || highest != 0) && res.Counter <= highest {
 		s.notice("the passkey " + k.ID + " reported a sign counter that did not grow, through gate session " + session + ": it may have been copied; it was not refused")
 	}
-	if res.Counter > k.Counter {
-		if err := s.cfg.Keys.RaiseCounter(k.ID, res.Counter, s.now()); err != nil {
-			s.notice("the sign counter of the passkey " + k.ID + " could not be kept: " + keysErr(err).Error())
+	if res.Counter > s.counters[k.ID] {
+		if s.counters == nil {
+			s.counters = map[string]uint32{}
 		}
+		s.counters[k.ID] = res.Counter
+	}
+	if res.Counter <= stored {
+		return
+	}
+	err := s.cfg.Keys.RaiseCounter(k.ID, res.Counter, s.now())
+	switch {
+	case err == nil:
+	case errors.Is(err, ownerjournal.ErrKeysFull):
+		if !s.roomTold[k.ID] {
+			if s.roomTold == nil {
+				s.roomTold = map[string]bool{}
+			}
+			s.roomTold[k.ID] = true
+			s.notice("the list of deciding keys has no room left for the sign counter of the passkey " + k.ID +
+				": its highest counter is kept in memory only, until the daemon restarts, so after a restart a copy of it may go untold; a passkey that reports no counter, as a phone's synced passkey does, is not affected")
+		}
+	default:
+		s.notice("the sign counter of the passkey " + k.ID + " could not be kept: " + keysErr(err).Error())
 	}
 }
 

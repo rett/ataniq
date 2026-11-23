@@ -362,6 +362,9 @@ func checkDecision(d *Decision) error {
 		c.need(IsLowerHex(d.Seat.ChallengeID, 16), "decision.seat.challenge_id is not 16 lower-case hexadecimal digits")
 		c.need(IsLowerHex(d.Seat.Credential, 16), "decision.seat.credential is not 16 lower-case hexadecimal digits")
 		c.need(IsLowerHex(d.Seat.Session, 16), "decision.seat.session is not 16 lower-case hexadecimal digits")
+		// The phone's deny signs off nothing: the challenge it signed
+		// held no sign-off, as the seat gate's frame of a deny holds none.
+		c.need(d.Decision != DecisionDeny || len(d.SignedOff) == 0, "decision.signed_off is not empty for a deny confirmed by "+ConfirmedPasskey)
 	default:
 		c.need(false, "decision.confirmed is not "+ConfirmedCode+" or "+ConfirmedPasskey)
 	}

@@ -222,6 +222,12 @@ func (h *Handler) serve(ctx context.Context, peer seatgate.Peer, op string, para
 		if !ok {
 			return outcome{code: CodeBadParams}
 		}
+		// A gate with a seat origin registers a credential only for its own
+		// relying party, the one every login and decision is checked
+		// against: the service registers with the id the seat relayed.
+		if h.seat != nil && p.RPID != "" && p.RPID != h.gate.RPID {
+			return outcome{code: CodeCredentialInvalid}
+		}
 		r, err := h.svc.PairPresent(ctx, seatSource(peer), p)
 		return answer(r, err, ownerwire.EncodeSeatPairResult)
 	case ownerwire.OpList:

@@ -14,10 +14,16 @@
   when the decision is made, not at a login. The key is checked
   again right before the decision is journaled, so a revoke at the desk that
   returned first wins. A phone decision is journaled as confirmed by passkey
-  with the assertion's evidence, needs no activity at the desk, and goes
-  through the day's limit as at the desk (an approve past it is held, a deny
-  never). The highest sign counter is kept, and one that does not grow is
-  reported as a possible copy, not refused. Without an origin, or with a file
+  with the assertion's evidence (a decision record confirmed by passkey that
+  denies and carries sign-offs is refused `decision-invalid`), needs no
+  activity at the desk, and goes through the day's limit as at the desk (an
+  approve past it is held, a deny never). The highest sign counter is kept,
+  and one that does not grow is reported as a possible copy, not refused; two
+  verifications at once are compared in turn. When `owner/keys.log` has no
+  room left for counter records (some four thousand raises, shared with
+  rejected pairings), the daemon's log says so once per key and the counter
+  is kept in memory until a restart; a phone's synced passkey, which reports
+  0, needs none. Without an origin, or with a file
   that is refused or holds no canonical origin, the gate serves pairing and
   the reads only, as before. The start line names the origin and what the gate
   serves, or why it serves pairing and the reads only. Scratch state and the

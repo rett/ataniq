@@ -11,7 +11,11 @@
   configured it also serves a login and a decision from the phone, and without
   one it serves only the pairing call and the reads and decides nothing (see
   the entry on the login and the decision). A seat whose key is not pinned
-  never reaches the service. At start one line
+  never reaches the service. A seat refused 16 times within 10 minutes for what
+  it sent is answered `too-many-refusals` until those refusals age out; a
+  refused pairing, which the seat relays for anyone who reaches its pairing
+  page, is not counted, so a stranger cannot shut the owner's seat out with
+  wrong codes. At start one line
   gives the address and the gate's key fingerprint, never a pin. Without the
   flag nothing listens on the network. Provisional and unqualified, for scratch
   state only. See `docs/lead-daemon.md`.

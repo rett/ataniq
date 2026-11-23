@@ -332,7 +332,9 @@ func TestASeatLoginAnswersTheCredential(t *testing.T) {
 	wantErr(t, login(unv), ErrKindRefused)
 
 	// A login's assertion offered as a decision is refused, and so is a
-	// decision's offered as a login: the two domains differ.
+	// decision's offered as a login. Here the two challenges also have
+	// different nonces; TestLoginAndDecisionChallengesAreSeparateDomains
+	// shows that they differ with the same instance and nonce.
 	p := w.card("feature-a")
 	lc, err = w.svc.SeatLoginChallenge(ctx, gateSrc, testGate)
 	if err != nil {
@@ -354,6 +356,49 @@ func TestASeatLoginAnswersTheCredential(t *testing.T) {
 	_, err = w.svc.SeatLogin(ctx, gateSrc, testGate, ownerwire.SeatLoginParams{ChallengeID: ch.ChallengeID, Assertion: sign(t, w.phone, ch.Challenge)})
 	wantErr(t, err, ErrChallengeStale)
 	w.noDecisionWasMade(t)
+}
+
+// The login and the decision challenges are of separate domains: their
+// domain strings differ and neither starts the other, and with the same
+// instance and the same nonce a login's challenge is no decision's, an
+// approve's or a deny's, so an assertion over one never verifies as the
+// other. The service draws both with ownerwire's functions; a login
+// challenge of the service is the login domain's.
+func TestLoginAndDecisionChallengesAreSeparateDomains(t *testing.T) {
+	if ownerwire.LoginDomain == ownerwire.DecisionDomain ||
+		strings.HasPrefix(ownerwire.LoginDomain, ownerwire.DecisionDomain) ||
+		strings.HasPrefix(ownerwire.DecisionDomain, ownerwire.LoginDomain) {
+		t.Fatalf("the domains %q and %q are not separate", ownerwire.LoginDomain, ownerwire.DecisionDomain)
+	}
+	w := newSeatWorld(t)
+	p := w.card("feature-a")
+	lc, err := w.svc.SeatLoginChallenge(context.Background(), gateSrc, testGate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	login, err := ownerwire.LoginChallenge(testGate.Instance, lc.Nonce)
+	if err != nil || !bytes.Equal(login, lc.Challenge) {
+		t.Fatalf("the service's login challenge is not the login domain's: %v", err)
+	}
+	for _, f := range []ownerwire.DecisionFrame{frame(p, true), denyFrame(p, ""), denyFrame(p, "no")} {
+		decision, err := ownerwire.DecisionChallenge(testGate.Instance, f, lc.Nonce)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Equal(decision, login) {
+			t.Fatalf("the %s challenge is the login's for the same instance and nonce", f.Decision)
+		}
+		// The phone's assertion over the decision's challenge, with the
+		// login's own nonce, is no login.
+		_, err = w.svc.SeatLogin(context.Background(), gateSrc, testGate, ownerwire.SeatLoginParams{ChallengeID: lc.ChallengeID, Assertion: sign(t, w.phone, decision)})
+		wantErr(t, err, credkind.ErrChallenge)
+		if lc, err = w.svc.SeatLoginChallenge(context.Background(), gateSrc, testGate); err != nil {
+			t.Fatal(err)
+		}
+		if login, err = ownerwire.LoginChallenge(testGate.Instance, lc.Nonce); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 // A deny from the phone needs a fresh assertion as an approve does: one that
@@ -686,34 +731,50 @@ func TestARevokeAgainstTheAppendInBothOrders(t *testing.T) {
 		p := w.card("feature-a")
 		params := w.signed(frame(p, true))
 		revoked := make(chan error, 1)
-		var doneBeforeAppend bool
+		atLock := make(chan struct{})
+		var decidedFirst, lockHeld, doneBeforeAppend bool
+		// The revoke passes "revoke-locking" right before it takes the
+		// revocation lock and "revoke-locked" once it has it.
+		w.at["revoke-locking"] = func() { close(atLock) }
+		w.at["revoke-locked"] = func() {
+			decidedFirst = w.countEntries()[ownerjournal.KindDecision] == 1
+		}
 		// The point is passed under the revocation lock, right before the
-		// append: a revoke started there waits for the append, so it cannot
-		// return while the hook waits for it.
+		// append: a revoke started there reaches the lock and waits for the
+		// append, so it cannot return while the hook runs.
 		w.at["key-rechecked"] = func() {
-			started := make(chan struct{})
 			go func() {
-				close(started)
 				_, err := w.svc.KeyRevoke(context.Background(), src, ownerwire.KeyRevokeParams{ID: w.key.ID})
 				revoked <- err
 			}()
-			<-started
+			<-atLock
+			if w.svc.pmu.TryLock() {
+				w.svc.pmu.Unlock()
+			} else {
+				lockHeld = true
+			}
 			select {
 			case err := <-revoked:
 				doneBeforeAppend = true
 				revoked <- err
-			case <-time.After(100 * time.Millisecond):
+			default:
 			}
 		}
 		res, err := w.decide(gateSrc, params)
 		if err != nil || res.State != record.StateApplied {
 			t.Fatalf("the decision appended first: %+v %v", res, err)
 		}
+		if !lockHeld {
+			t.Fatal("the append does not hold the revocation lock")
+		}
 		if doneBeforeAppend {
 			t.Fatal("the revoke returned while the append held the revocation lock")
 		}
 		if err := <-revoked; err != nil {
 			t.Fatal(err)
+		}
+		if !decidedFirst {
+			t.Fatal("the revoke took the lock before the decision was appended")
 		}
 		if k, err := w.svc.seatKey(w.key.ID); !errors.Is(err, ErrKeyRevoked) {
 			t.Fatalf("the key after the revoke: %+v %v", k, err)
@@ -852,6 +913,110 @@ func TestTheSignCounter(t *testing.T) {
 	s := w.card("feature-d")
 	if res, err := w.decide(gateSrc, w.signed(denyFrame(s, ""))); err != nil || res.State != record.StateDenied {
 		t.Fatalf("%+v %v", res, err)
+	}
+}
+
+// login has the phone a log in through the seat with a fresh login
+// challenge.
+func (w *seatWorld) login(a *webauthntest.Authenticator) error {
+	w.t.Helper()
+	lc, err := w.svc.SeatLoginChallenge(context.Background(), gateSrc, testGate)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	_, err = w.svc.SeatLogin(context.Background(), gateSrc, testGate, ownerwire.SeatLoginParams{ChallengeID: lc.ChallengeID, Assertion: sign(w.t, a, lc.Challenge)})
+	return err
+}
+
+// Two verifications that read the key before either raised its counter, as
+// two at once do, are compared in turn against the highest counter: the
+// second, a copy that reports the same counter, is told as a possible clone
+// though its snapshot of the key held the lower one. The Result is what
+// credkind.Verify gives for a counter of 6 against a stored 5.
+func TestVerificationsOfOneSnapshotCompareTheirCountersInTurn(t *testing.T) {
+	w := newSeatWorld(t)
+	if err := w.keys.RaiseCounter(w.key.ID, 5, start); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := w.svc.seatKey(w.key.ID)
+	if err != nil || snapshot.Counter != 5 {
+		t.Fatalf("%+v %v", snapshot, err)
+	}
+	w.svc.verified(snapshot, credkind.Result{Counter: 6}, gateSrc.Session)
+	if notes := w.noticed(); len(notes) != 0 {
+		t.Fatalf("the first: %q", notes)
+	}
+	w.svc.verified(snapshot, credkind.Result{Counter: 6}, otherSrc.Session)
+	notes := w.noticed()
+	if len(notes) != 1 || !strings.Contains(notes[0], "may have been copied") || !strings.Contains(notes[0], otherSrc.Session) {
+		t.Fatalf("the second: %q", notes)
+	}
+	if k, _ := w.svc.seatKey(w.key.ID); k.Counter != 6 || w.keys.raises != 2 {
+		t.Fatalf("the counter is %d after %d raises", k.Counter, w.keys.raises)
+	}
+
+	// At once: of eight verifications of one counter from one snapshot, one
+	// raises it and seven are told.
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w.svc.verified(snapshot, credkind.Result{Counter: 9}, gateSrc.Session)
+		}()
+	}
+	wg.Wait()
+	if n := len(w.noticed()); n != 1+7 {
+		t.Fatalf("%d notices: %q", n, w.noticed())
+	}
+	if k, _ := w.svc.seatKey(w.key.ID); k.Counter != 9 || w.keys.raises != 3 {
+		t.Fatalf("the counter is %d after %d raises", k.Counter, w.keys.raises)
+	}
+}
+
+// When the list has no room left for counter records, the desk is told once,
+// for that key, and the highest counter is kept in memory, so a copy that
+// reports less than the highest verified, though more than the stored one, is
+// still told while the daemon runs. The login stands each time.
+func TestACounterTheListHasNoRoomForIsToldAndKeptInMemory(t *testing.T) {
+	w := newSeatWorld(t)
+	w.keys.failRaise = ownerjournal.ErrKeysFull
+	w.phone.SignCount, w.phone.CounterStep = 10, 0
+	if err := w.login(w.phone); err != nil {
+		t.Fatal(err)
+	}
+	notes := w.noticed()
+	if len(notes) != 1 || !strings.Contains(notes[0], "no room left") || !strings.Contains(notes[0], w.key.ID) {
+		t.Fatalf("notices %q", notes)
+	}
+	w.phone.CounterStep = 1
+	if err := w.login(w.phone); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(w.noticed()); n != 1 {
+		t.Fatalf("the room was told again: %q", w.noticed())
+	}
+	// A copy that counted less: above the stored 0, below the 11 verified.
+	w.phone.SignCount, w.phone.CounterStep = 5, 0
+	if err := w.login(w.phone); err != nil {
+		t.Fatal(err)
+	}
+	notes = w.noticed()
+	if len(notes) != 2 || !strings.Contains(notes[1], "may have been copied") {
+		t.Fatalf("notices %q", notes)
+	}
+	if k, _ := w.svc.seatKey(w.key.ID); k.Counter != 0 || w.keys.raises != 0 {
+		t.Fatalf("the counter is %d after %d raises", k.Counter, w.keys.raises)
+	}
+	// Another failure of the list is told each time, as before.
+	w.keys.failRaise = errStoreDown
+	w.phone.SignCount, w.phone.CounterStep = 20, 0
+	if err := w.login(w.phone); err != nil {
+		t.Fatal(err)
+	}
+	notes = w.noticed()
+	if len(notes) != 3 || !strings.Contains(notes[2], "could not be kept") {
+		t.Fatalf("notices %q", notes)
 	}
 }
 

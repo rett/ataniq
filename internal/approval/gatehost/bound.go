@@ -24,11 +24,13 @@ const (
 const CodeTooManyRefusals = "too-many-refusals"
 
 // counted are the codes that count against the bound: the refusals of what
-// the peer sent (an operation, params, a pairing code or credential, a card
-// it named) or of the key it holds. A refusal for the daemon's own state
-// (unavailable, deadline-exceeded, failed, door-unavailable, journal-reopened,
-// keys-unavailable, keys-full) does not count: a seat that polls while the
-// door is down is not shut out for it.
+// the peer sent (an operation, params, a credential, a card it named) or of
+// the key it holds. The pairing codes are counted codes, but a refusal of
+// seat.pair itself, the call that meets most of them, does not count (see
+// countedFor); key-unknown counts where a decision meets it. A refusal for
+// the daemon's own state (unavailable, deadline-exceeded, failed,
+// door-unavailable, journal-reopened, keys-unavailable, keys-full) does not
+// count: a seat that polls while the door is down is not shut out for it.
 var counted = func() map[string]bool {
 	m := map[string]bool{
 		CodeUnknownOp:         true,
@@ -52,17 +54,19 @@ var counted = func() map[string]bool {
 }()
 
 // countedFor reports whether a refusal of op with code counts against the
-// bound. No refusal of a login counts, but that of an operation the handler
-// does not serve (unknown-op) or of a key that is not pinned: the seat relays
-// a login for anyone who reaches its login page, and a stranger must not shut
-// the owner out. Of a decision's challenge and decide, challenge-stale,
-// challenges-full, key-revoked and kind-refused come of normal use (a double
-// tap, a slow owner, a card that changed, "phone off" at the desk) and are
-// not codes that count; bad-params, key-unknown, assertion-invalid and the
-// record codes passed on count, as everywhere.
+// bound. No refusal of a pairing or a login counts, but that of an operation
+// the handler does not serve (unknown-op) or of a key that is not pinned: the
+// seat relays seat.pair for anyone who reaches its pairing page and a login
+// for anyone who reaches its login page, and a stranger must not shut the
+// owner out. Wrong pairing codes stay bounded by the service, which burns the
+// code after five wrong tries. Of a decision's challenge and decide,
+// challenge-stale, challenges-full, key-revoked and kind-refused come of
+// normal use (a double tap, a slow owner, a card that changed, "phone off" at
+// the desk) and are not codes that count; bad-params, key-unknown,
+// assertion-invalid and the record codes passed on count, as everywhere.
 func countedFor(op, code string) bool {
 	switch op {
-	case ownerwire.OpSeatLoginChallenge, ownerwire.OpSeatLogin:
+	case ownerwire.OpSeatPair, ownerwire.OpSeatLoginChallenge, ownerwire.OpSeatLogin:
 		if code != CodeUnknownOp && code != CodeNotPinned {
 			return false
 		}

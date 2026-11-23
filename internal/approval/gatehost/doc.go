@@ -67,6 +67,14 @@
 // Params are never logged and never put in an error, whatever happened to
 // them.
 //
+// A deciding handler checks one more thing of seat.pair: a registration the
+// seat relays (its rp_id given) must be for the gate's own relying party id,
+// the one every login and decision is checked against, or it is refused
+// credential-invalid without the service, so the pairing code is not spent
+// on it. A key registered for another relying party could never log in. A
+// pairing with no registration is passed on (its key stays unverified), and
+// a handler made with [New], which has no seat origin, passes every one on.
+//
 // # Codes
 //
 // A refusal is told to the seat as a code and nothing else (package seatgate
@@ -111,22 +119,22 @@
 // # The refusal bound
 //
 // The gate pins keys, but a pinned peer can still be hostile: a seat host that
-// was taken over could send seat.pair with guess after guess, or anything else
-// the handler refuses, to burn pairing codes or fill the log. The service
-// burns a code after five wrong tries; the handler bounds each peer as well,
-// by its key fingerprint, across all its connections, so that reconnecting
-// does not start the count again.
+// was taken over could send anything the handler refuses, to fill the log or
+// to probe. The service burns a pairing code after five wrong tries; the
+// handler bounds each peer as well, by its key fingerprint, across all its
+// connections, so that reconnecting does not start the count again.
 //
 // A refusal of what the peer sent counts: unknown-op, bad-params, not-pinned,
-// the pairing codes (pairing-refused, credential-invalid and the rest),
-// assertion-invalid and the refusals passed on from the service
+// key-unknown, assertion-invalid and the refusals passed on from the service
 // (approval-void and the rest). A refusal for the daemon's own state does not:
 // unavailable, deadline-exceeded, failed, door-unavailable, journal-reopened,
 // keys-unavailable and keys-full, so a seat that polls while the door is down
 // is not shut out for it. A call that is served never counts. Nor does a
-// refusal of seat.login-challenge or seat.login, but unknown-op and
-// not-pinned: the seat relays a login for anyone who reaches its login page,
-// and a stranger must not shut the owner out. Nor do challenge-stale,
+// refusal of seat.pair, seat.login-challenge or seat.login, but unknown-op and
+// not-pinned: the seat relays a pairing for anyone who reaches its pairing
+// page and a login for anyone who reaches its login page, and a stranger must
+// not shut the owner out by them; wrong pairing codes stay bounded by the
+// service's burn after five, and the seat limits both. Nor do challenge-stale,
 // challenges-full, key-revoked and kind-refused, which come of normal use of
 // a decision (a double tap, a slow owner, a card that changed, "phone off" at
 // the desk).
