@@ -524,8 +524,16 @@ func (s *Service) KeyRevoke(ctx context.Context, src Source, p ownerwire.KeyRevo
 		return ownerwire.KeysView{}, err
 	}
 	defer done()
+	// The points around the lock let a test see, without a wait, that a
+	// revocation reached the lock and when it got it.
+	if err := s.fault("revoke-locking"); err != nil {
+		return ownerwire.KeysView{}, err
+	}
 	s.pmu.Lock()
 	defer s.pmu.Unlock()
+	if err := s.fault("revoke-locked"); err != nil {
+		return ownerwire.KeysView{}, err
+	}
 	now := s.now()
 	if err := s.pairGate(src, now, false); err != nil {
 		return ownerwire.KeysView{}, err

@@ -731,34 +731,50 @@ func TestARevokeAgainstTheAppendInBothOrders(t *testing.T) {
 		p := w.card("feature-a")
 		params := w.signed(frame(p, true))
 		revoked := make(chan error, 1)
-		var doneBeforeAppend bool
+		atLock := make(chan struct{})
+		var decidedFirst, lockHeld, doneBeforeAppend bool
+		// The revoke passes "revoke-locking" right before it takes the
+		// revocation lock and "revoke-locked" once it has it.
+		w.at["revoke-locking"] = func() { close(atLock) }
+		w.at["revoke-locked"] = func() {
+			decidedFirst = w.countEntries()[ownerjournal.KindDecision] == 1
+		}
 		// The point is passed under the revocation lock, right before the
-		// append: a revoke started there waits for the append, so it cannot
-		// return while the hook waits for it.
+		// append: a revoke started there reaches the lock and waits for the
+		// append, so it cannot return while the hook runs.
 		w.at["key-rechecked"] = func() {
-			started := make(chan struct{})
 			go func() {
-				close(started)
 				_, err := w.svc.KeyRevoke(context.Background(), src, ownerwire.KeyRevokeParams{ID: w.key.ID})
 				revoked <- err
 			}()
-			<-started
+			<-atLock
+			if w.svc.pmu.TryLock() {
+				w.svc.pmu.Unlock()
+			} else {
+				lockHeld = true
+			}
 			select {
 			case err := <-revoked:
 				doneBeforeAppend = true
 				revoked <- err
-			case <-time.After(100 * time.Millisecond):
+			default:
 			}
 		}
 		res, err := w.decide(gateSrc, params)
 		if err != nil || res.State != record.StateApplied {
 			t.Fatalf("the decision appended first: %+v %v", res, err)
 		}
+		if !lockHeld {
+			t.Fatal("the append does not hold the revocation lock")
+		}
 		if doneBeforeAppend {
 			t.Fatal("the revoke returned while the append held the revocation lock")
 		}
 		if err := <-revoked; err != nil {
 			t.Fatal(err)
+		}
+		if !decidedFirst {
+			t.Fatal("the revoke took the lock before the decision was appended")
 		}
 		if k, err := w.svc.seatKey(w.key.ID); !errors.Is(err, ErrKeyRevoked) {
 			t.Fatalf("the key after the revoke: %+v %v", k, err)
