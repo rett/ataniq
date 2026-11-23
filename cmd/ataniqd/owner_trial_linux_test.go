@@ -334,3 +334,54 @@ func TestTrialSubmitReportsTheCardsMadeBeforeItStopped(t *testing.T) {
 		t.Errorf("a call whose first card failed: exit %d, %q, %q", code, out, serr)
 	}
 }
+
+// The trial refuses a runtime folder that is the account's default, lies
+// inside it, holds it, or is a default state folder, as it refuses such a state
+// folder: exit 10 (the configuration's), before the daemon takes a lock or
+// makes a socket. A run with --trial and no --runtime-dir is one: it would use
+// the default runtime folder.
+func TestTrialRunRefusesTheAccountsDefaultRuntimeFolder(t *testing.T) {
+	home := fakeAccount(t)
+	xdg := filepath.Join(shortDir(t), "run")
+	defRun := filepath.Join(xdg, "ataniq")
+	env := map[string]string{"HOME": home, "XDG_RUNTIME_DIR": xdg}
+	state, _ := ownerCmdDirs(t)
+	if code, _, errs := trialInit(t, nil, state); code != 0 {
+		t.Fatal(errs)
+	}
+	useSuite(t, cmdSuite{})
+	for name, runtime := range map[string]string{
+		"the default":              defRun,
+		"inside the default":       filepath.Join(defRun, "sub"),
+		"holding the default":      xdg,
+		"a default state folder":   filepath.Join(home, ".local", "state", "ataniq"),
+		"none given (the default)": "",
+	} {
+		ta := newTestApp(t, env)
+		args := []string{"run", "--state-dir", state, "--owner-channel", "--trial"}
+		if runtime != "" {
+			args = append(args, "--runtime-dir", runtime)
+		}
+		code := runBounded(t, ta, args)
+		if code != leaddaemon.ExitConfig || !strings.Contains(ta.err.String(), "refuses the runtime folder") {
+			t.Errorf("%s: exit %d, %q", name, code, ta.err.String())
+		}
+		for _, f := range []string{filepath.Join(state, "daemon.lock"), filepath.Join(runtime, "daemon.sock")} {
+			if runtime == "" {
+				continue
+			}
+			if _, err := os.Lstat(f); err == nil {
+				t.Errorf("%s: %s was made for a refused configuration", name, f)
+			}
+		}
+	}
+
+	// A scratch runtime folder is not refused by this rule: the daemon serves.
+	_, scratch := ownerCmdDirs(t)
+	ta := newTestApp(t, env)
+	done := startApp(t, ta, []string{"--state-dir", state, "--runtime-dir", scratch, "--owner-channel", "--trial"}, scratch+"/daemon.sock")
+	ta.signals <- syscall.SIGTERM
+	if code := <-done; code != 0 {
+		t.Errorf("a trial on scratch folders: exit %d", code)
+	}
+}

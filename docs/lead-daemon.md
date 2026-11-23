@@ -432,7 +432,8 @@ not give a new card the id of one the journal holds a decision for). Its keys:
   target, the seat, the door and the kinds, and no mirror, identity, gate,
   drop folder, root, sandbox or work folder. The daemon refuses trial settings
   without `--trial` and other settings with it, and checks a trial's state
-  folder against the account's default folders as above.
+  folder and its runtime folder (`--runtime-dir`, which a trial therefore
+  always needs) against the account's default folders as above.
 
 The settings also name the project, its mirror, the role, the target, the
 commit identity, the gates and the folder requests are dropped in. `sandbox`

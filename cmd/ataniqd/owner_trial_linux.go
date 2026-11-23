@@ -54,8 +54,9 @@ var trialGuard = &ownerGuardSet{
 		_, err := checkTrialScratch(stateDir, getenv)
 		return err
 	},
-	banner: ownerBanner,
-	note:   trialNote,
+	checkRuntime: checkTrialRuntime,
+	banner:       ownerBanner,
+	note:         trialNote,
 }
 
 // checkTrialScratch reads the settings of the state folder and applies the
@@ -74,6 +75,32 @@ func checkTrialScratch(stateDir string, getenv func(string) string) (hostadapter
 		return hostadapter.Scratch{}, err
 	}
 	return sc, nil
+}
+
+// checkTrialRuntime refuses a runtime folder that is, lies inside or contains a
+// default state or runtime folder of the account, as the state folder is
+// refused: the trial serves its socket in the runtime folder and must not take
+// the place of the account's own daemon there (that includes the default
+// runtime folder a run without --runtime-dir uses).
+func checkTrialRuntime(runtimeDir string, getenv func(string) string) error {
+	defaults, err := defaultFolders(getenv)
+	if err != nil {
+		return err
+	}
+	run, err := resolvePath(runtimeDir)
+	if err != nil {
+		return fmt.Errorf("the phone trial cannot resolve the runtime folder: %v", err)
+	}
+	for _, d := range defaults {
+		c, err := resolvePath(d)
+		if err != nil {
+			return fmt.Errorf("cannot resolve the default folder %q: %v", d, err)
+		}
+		if related(run, c) {
+			return fmt.Errorf("the phone trial refuses the runtime folder %q: it is, lies inside or contains the default folder %q; give --runtime-dir a scratch folder", runtimeDir, d)
+		}
+	}
+	return nil
 }
 
 // trialRig is the trial of one run: its builder keeps the trial it built, so

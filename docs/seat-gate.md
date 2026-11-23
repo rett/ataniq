@@ -714,8 +714,10 @@ with the list closed and notices on, a notice says that cards wait
   the evidence of its assertion, and each outcome with the trial's line.
 
 `--trial` needs `--owner-channel` (exit 2 without it). The daemon refuses the
-trial's settings without `--trial`, and other settings with it (exit 10), before
-it takes a lock. `trial submit` makes 1 to 10 cards (`--count`, default 1) and
+trial's settings without `--trial`, and other settings with it (exit 10), and a
+state folder or a runtime folder that is, lies inside or contains the account's
+default state or runtime folder (exit 10; so `--runtime-dir` is required in
+practice, as the default runtime folder is one), before it takes a lock. `trial submit` makes 1 to 10 cards (`--count`, default 1) and
 exits 0 when every card was made, 1 after a refusal or a failure, 2 for usage,
 20 when no daemon answers, 21 unauthorized and 22 for a protocol error, which is
 also the answer of a daemon not started with `--trial`. A call that stops after
