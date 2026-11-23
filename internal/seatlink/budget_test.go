@@ -199,14 +199,13 @@ func TestSeatLinkBudgetConcurrentChallenges(t *testing.T) {
 }
 
 // TestSeatLinkBudgetNeverOverTheGate: a long run of every kind of call, at
-// random, as the link's callers make them. Sessions draw challenges, in
-// several sessions of each credential: of each challenge drawn, a third
-// are answered at once, a third later (unless a new tap of the same
-// session replaces it first, as the app keeps one decision a session and
-// drops the one replaced), and a third never. In every BudgetWindow, which
-// holds every minute of the gate's, the calls of each kind stay within its
-// room, and a decision whose challenge is in its life is never refused; the
-// rooms and the pings are the gate's rate.
+// random, as the link's callers make them. Sessions draw challenges: of each
+// challenge drawn, a third are answered at once, a third later (unless a
+// new tap of the same session replaces it first, as the app keeps one
+// decision a session and drops the one replaced), and a third never. In
+// every BudgetWindow, which holds every minute of the gate's, the calls of
+// each kind stay within its room, and a decision whose challenge is in its
+// life is never refused; the rooms and the pings are the gate's rate.
 func TestSeatLinkBudgetNeverOverTheGate(t *testing.T) {
 	clock := &testClock{t: decideNow}
 	b := &budget{now: clock.now}
@@ -216,9 +215,10 @@ func TestSeatLinkBudgetNeverOverTheGate(t *testing.T) {
 		id string
 		at time.Time
 	}
-	// pending is each session's one decision to come: sessions 0 to 7,
-	// two of each of 4 credentials (the credential does not matter to the
-	// room, which is each challenge's own).
+	// pending is each session's one decision to come: sessions 0 to 7, one
+	// decision each. The budget sees neither sessions nor credentials; the
+	// model shows one hold for each challenge drawn and not answered,
+	// whoever drew it.
 	pending := map[int]later{}
 	for step := 0; step < 20000; step++ {
 		clock.advance(time.Duration(rnd.IntN(2000)) * time.Millisecond)
@@ -318,8 +318,9 @@ func TestSeatLinkDecideRoom(t *testing.T) {
 	}
 	drawn = append(drawn[2:], ch)
 	for i, ch := range drawn {
-		if _, err := r.link.Decide(context.Background(), r.sign(t, ch)); err != nil && errors.Is(err, seatapp.ErrBusy) {
-			t.Errorf("the decision of challenge %d: %v", i+1, err)
+		// Each is answered, or refused by the desk: never for room.
+		if _, err := r.link.Decide(context.Background(), r.sign(t, ch)); err != nil && !errors.Is(err, seatapp.ErrCannotDecide) {
+			t.Errorf("the decision of challenge %d: %v, want an answer or a refusal of the desk", i+1, err)
 		}
 	}
 	// The room comes back with the window.
