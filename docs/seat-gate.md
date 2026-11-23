@@ -407,8 +407,8 @@ whatever the number of pages and phones open: a held request that the gate
 answers when the set of cards changes or after 25 seconds. The pages ask the
 seat, not the gate. The gate takes 60 requests a minute on the seat's one link,
 and the seat keeps a room for each kind of call within every 80 seconds: pings
-6, decisions 12, pairing and login (anyone's) 12, reads 14, waits 6 and the
-new-project pages 10, 60 in all. An idle seat sends one wait about every 25 seconds. A page's poll is not
+6, decisions 10, pairing and login (anyone's) 12, reads 14, waits 6 and the
+new-project pages 12, 60 in all. An idle seat sends one wait about every 25 seconds. A page's poll is not
 a request that keeps the session alive: a session still ends 30 minutes after
 the last page you loaded or tap you made, however long a page stays open.
 
@@ -474,8 +474,9 @@ that a credential is needed instead. Text that looks like one is refused ("That
 looks like a password or key. ..."), and the page never shows it back.
 
 What it costs. The pages are plain pages with forms, and each answer is one call
-of the gate. The seat keeps 10 calls in 80 seconds of the gate's rate for them;
-answering a round about every 8 seconds stays inside it. Past it the page says
+of the gate. The seat keeps 12 calls in 80 seconds of the gate's rate for them;
+answering a round every 5 seconds stays inside it, because an answer and the
+page after it are one call. Past it the page says
 "The desk is busy. Try again in a minute." and nothing is sent.
 
 ## Notices

@@ -465,7 +465,7 @@ page left open after its thread expired or was discarded.
 which the owner may get wrong a few times on the way to a good answer. None of
 them says anything against the seat, and a few taps must not shut the owner
 out of approvals for 10 minutes. They stay bounded elsewhere: by the seat's 30
-project requests a minute for each credential, by the seat link's room of 10
+project requests a minute for each credential, by the seat link's room of 12
 interview calls in 80 seconds, by the gate's 60 requests a minute, and by the
 store's own limits (two open threads, eight files). A test sends 40 double
 taps through the gate and its real store and is never shut out. A `list` names
@@ -768,18 +768,22 @@ sends none past the room of its kind:
 | Pings | `seat.ping`, every 15 s (`seatlink.PingInterval`, which `ataniq-seat` sets) | 6 |
 | Anyone's | `seat.pair`, `seat.login-challenge`, `seat.login` | 12 (6 logins) |
 | Reads | `owner.list`, `owner.show`, `owner.paths`, of every session together | 14 |
-| Decisions | `seat.challenge`, `seat.decide` | 12 (6 decisions) |
+| Decisions | `seat.challenge`, `seat.decide` | 10 (5 decisions) |
 | Waits | `seat.wait`, the watcher's one long wait (see [live refresh](#live-refresh-seatwait)) | 6 |
-| Genesis | `seat.genesis`, every verb, of every session together (see [guided new project](#guided-new-project)) | 10 |
+| Genesis | `seat.genesis`, every verb, of every session together (see [guided new project](#guided-new-project)) | 12 |
 
-The rooms add up to the gate's 60 (6 + 12 + 12 + 14 + 6 + 10, a sum the code
+The rooms add up to the gate's 60 (6 + 10 + 12 + 14 + 6 + 12, a sum the code
 checks when it is compiled), so the gate's rate never refuses a call the seat
 sent. Before the watcher the reads had 26 and there was no room for waits;
 before the interview's pages the rooms were 6, 16 (8 decisions), 12 (6
-logins), 20 and 6, and the 10 of the interview were taken from the reads (20
-to 14) and the decisions (16 to 12): each is still more than a person uses in
-80 seconds, and the interview's 10 let the owner answer a round about every 8
-seconds without meeting "busy". Anyone's room stays 12: strangers can hold it
+logins), 20 and 6, and the interview first had 10, taken from the reads (20
+to 14) and the decisions (16 to 12). A phone trial ran out of those 10 at the
+fifth round: an owner answers a round every 10 to 15 seconds, so 80 seconds
+hold 6 to 8 taps, and the taps and the reads the pages make now and then (the
+list of open projects, a summary) came to more than 10. The interview has 12
+now, one call for each tap and a few reads over, taken from the decisions (12
+to 10: 5 decisions, each a challenge and a decision call, in 80 seconds).
+Anyone's room stays 12: strangers can hold it
 with login challenges they never answer, and a smaller one would let fewer of
 them keep the owner from logging in. A call without room is not sent: the phone says the desk is
 busy (`desk_busy`, the problem "The desk is busy", or `rate_limited` for a
@@ -1161,7 +1165,7 @@ How it is built (G9), where the points above left a choice:
   before anything is journaled); the seat link takes that code as a certain
   refusal, and the phone says the same, "This is too large to send.".
 - Decision challenges are limited to 10 a minute per credential, and the
-  seat link asks one only when the room of decisions at the gate (12 calls
+  seat link asks one only when the room of decisions at the gate (10 calls
   in 80 seconds, see [login](#login-seatlogin-challenge-and-seatlogin)) holds
   it and its decision: a decision the phone signed is never refused for the
   gate's rate.
@@ -2062,13 +2066,14 @@ sent, maps the seven genesis codes to the app's errors (and `rate-limited`,
 `busy` and `too-many-refusals` to "busy", `unknown-op` to "not offered"), and
 takes an answer only when it is one the verb answers, of the thread called,
 with every count and length checked again. Each call has the room of the
-interview at the gate: 10 calls in 80 seconds, of every session together, taken
+interview at the gate: 12 calls in 80 seconds, of every session together, taken
 from the reads and the decisions (see the budget table under
 [login](#login-seatlogin-challenge-and-seatlogin)). So that the pages do not
 spend that room on reads, the link answers a `list` from the last one for 20
 seconds (the card list's reload gap: card lists open in several tabs list the
 open projects once in it between them) and a `round` from its own last answer
-for that thread for 10 seconds (the page a form's post redirects to), and
+for that thread for 10 seconds (the page a form's post redirects to; after a call
+that changed the thread, its own answer is that last answer), and
 forgets both before any call that changes threads is sent and again when it
 ends, whatever its answer: one answer of the owner's is one call. A read's
 answer is kept only when no call that changes threads began or ended while it

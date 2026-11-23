@@ -203,7 +203,9 @@
 // minutes later, and the first page of a card's path list may ask the gate
 // twice), so the port counts every call it sends and keeps each kind to its
 // own room at the gate (package seatlink): anyone's pairings and logins,
-// reads, and decisions, which the others cannot take, and a decision's
+// reads, decisions and the new-project interview (12 calls in 80 seconds:
+// one for each tap of the owner's, and a few reads), which the others cannot
+// take, and a decision's
 // challenge only with room for the decision too, kept for that challenge
 // until its decision is sent, and a login challenge only with room for its
 // login, so a login is not refused for room after the passkey. The app
