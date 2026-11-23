@@ -907,6 +907,25 @@ func TestSeatServiceWorkerTapOpensOnlyTheCardList(t *testing.T) {
 			t.Errorf("sw.js lacks %q", want)
 		}
 	}
+	// A tap works before the worker controls any page: the windows asked for
+	// include the uncontrolled ones, the worker does not claim the page or
+	// handle requests to control it, and a window is navigated before it is
+	// focused (a worker cannot navigate an uncontrolled window, and the
+	// refusal opens the list in a window of its own, which focus() must not
+	// have used the tap's permission for first).
+	if n := strings.Count(js, "matchAll("); n != 1 {
+		t.Errorf("sw.js asks for windows in %d places", n)
+	}
+	if strings.Contains(js, "clients.claim") || strings.Contains(js, `"fetch"`) {
+		t.Error("sw.js claims clients or handles fetches")
+	}
+	nav, foc := strings.Index(js, ".navigate(CARDS_PATH)"), strings.Index(js, ".focus()")
+	if nav < 0 || foc < 0 || nav > foc {
+		t.Errorf("sw.js focuses before it navigates (navigate at %d, focus at %d)", nav, foc)
+	}
+	if !strings.Contains(js, "}).catch(function () {\n    return self.clients.openWindow(CARDS_PATH);") {
+		t.Error("a window that cannot be navigated does not fall back to opening the list")
+	}
 	if strings.Contains(click, "event.data") {
 		t.Error("the click handler reads event data")
 	}

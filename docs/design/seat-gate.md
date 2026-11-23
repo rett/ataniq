@@ -1599,7 +1599,13 @@ other script loaded.
   body, a body that is not JSON). The text is the worker's own.
 - `notificationclick`: it closes the notification, then takes a window of the
   seat's origin that is open (if any) to `/cards/` and focuses it, or opens a
-  window on `/cards/`.
+  window on `/cards/`. The windows it looks at include those the worker does
+  not control (`includeUncontrolled`): the page that registered it stays
+  uncontrolled, since the worker does not take control of pages, so at the
+  first notice that page may be the only one open. A worker cannot navigate
+  such a window, so it navigates first, before anything that uses up the tap's
+  permission to show a window, and when the navigation is refused it opens
+  `/cards/` in a window of its own; a window is focused only once navigated.
 
 `/sw.js` is served with `Cache-Control: no-cache`, the one response of the app
 that is not `no-store`, so that the browser checks the script for a change with
