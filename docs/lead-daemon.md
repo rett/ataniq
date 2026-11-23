@@ -21,7 +21,13 @@ Today the daemon starts, stops and manages no lead. It starts, signals and
 stops no unit, at start-up, while it serves and at shutdown. No flag and no
 protocol operation can make it. Against a fresh state folder it knows no role
 at all, because no command of this build defines one. It answers two read-only
-questions on a local socket, `hello` and `status`.
+questions on a local socket, `hello` and `status`, and by default it opens no
+network listener. **The one network listener is the seat gate**, in a build with
+the `ataniq_ownerchannel` tag and only under `ataniqd run --owner-channel
+--seat-gate ADDR`: a TCP listener on one address of the host, for the seat app of
+the owner's phone (see [the seat gate](#the-seat-gate) and
+[the seat gate operator guide](seat-gate.md)). Without that flag nothing listens
+on the network.
 
 **The exception is canary mode.** In a build with the `ataniq_canary` tag, and
 only under `ataniqd run --canary CONFIG`, the daemon serves five more
@@ -56,7 +62,7 @@ imports the injection library's message rules.
 
 | Package or command | What it is | What the daemon does with it today |
 | --- | --- | --- |
-| [`cmd/ataniqd`](../cmd/ataniqd/doc.go) | The command: `run`, `status`, `version`; in a build with the `ataniq_canary` tag also `run --canary`, `run --scratch`, `canary` and `--version`. | It is the daemon. |
+| [`cmd/ataniqd`](../cmd/ataniqd/doc.go) | The command: `run`, `status`, `version`; in a build with the `ataniq_canary` tag also `run --canary`, `run --scratch`, `canary` and `--version`; in a build with the `ataniq_ownerchannel` tag also `run --owner-channel`, `run --seat-gate` and `seat-gate`. | It is the daemon. |
 | [`internal/leaddaemon`](../internal/leaddaemon/doc.go) | Start-up order, shutdown, exit codes, the status handler and the status client. | All of it. |
 | [`internal/clientapi`](../internal/clientapi/doc.go) | The client protocol `ataniq.client/1`: socket, server, client. | Serves `hello` and `status`. |
 | [`internal/leadregistry`](../internal/leadregistry/doc.go) | The durable journal of lead roles. | Opens it and reads it. The reconcile at start writes what it finds about a role; nothing defines a role or launches one. |
@@ -290,10 +296,13 @@ ataniqd run --owner-channel --seat-gate ADDR [--state-dir DIR] [--runtime-dir DI
 
 The seat gate is the link of the seat app, which serves the owner's phone from
 the authority host, to this daemon (see
-[the seat gate's design](design/seat-gate.md)). It is a TCP listener inside the
+[the seat gate's design](design/seat-gate.md); the operator's steps, the firewall
+and proxy rules and the troubleshooting are in
+[the seat gate operator guide](seat-gate.md)). It is a TCP listener inside the
 daemon, in the tagged build only, and opened only with `--seat-gate`, which
-needs `--owner-channel`. Without the flag nothing listens on the network. It is
-provisional and **not qualified**, and it serves the same scratch service as
+needs `--owner-channel`. Without the flag nothing listens on the network: this
+is the daemon's only network listener, and a build without the tag has none. It
+is provisional and **not qualified**, and it serves the same scratch service as
 the owner connection, behind the STAND-IN banner.
 
 - ADDR is one IP address of this host and a port, such as `192.0.2.10:7443` or
@@ -399,8 +408,9 @@ door, which keeps nothing across a restart. Its keys:
   by the seat and not attested, so the list is advisory: it does not hold
   against a taken-over seat. The settings carry the list as the credential
   policy of `internal/approval/credkind` (`Scratch.KindPolicy` in
-  `internal/approval/hostadapter`); this build reads and checks it, and nothing
-  in the daemon applies it yet.
+  `internal/approval/hostadapter`), which the owner channel's service applies
+  when a phone's decision challenge is asked and when the decision is made; a
+  login checks only that the daemon knows the key's kind.
 
 The settings also name the project, its mirror, the role, the target, the
 commit identity, the gates and the folder requests are dropped in. `sandbox`
