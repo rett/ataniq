@@ -1,0 +1,7 @@
+# The package allowlist of the authority host, read by ah-noaicheck (see
+# ../README.md). One package name per line, as pacman names it; blank lines
+# and lines starting with '#' are ignored.
+#
+# Empty on purpose: the lead fills it from the host's baseline at deploy
+# time. While it is empty, packages are not enforced and the check prints
+# "NOTE packages not enforced"; forbidden-packages.list still applies.

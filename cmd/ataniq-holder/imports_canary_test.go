@@ -6,12 +6,13 @@ package main
 var guardListFlags = []string{"-tags", canaryTag}
 
 // canaryRepoDeps are the packages of this repository that canary mode adds to
-// the six, each named: the start sequence, the bridge, the root check, the
-// role names, the packages of the lead sandbox the start sequence drives, and
-// the packages of the injection library the bridge needs.
+// the six, each named: the start sequence, the bridge, the screen recorder,
+// the root check, the role names, the packages of the lead sandbox the start
+// sequence drives, and the packages of the injection library the bridge needs.
 var canaryRepoDeps = []string{
 	"ataniq/internal/leadholder/sandboxstart",
 	"ataniq/internal/leadholder/injectbridge",
+	"ataniq/internal/leadholder/screenrec",
 	"ataniq/internal/leadholder/canaryroot",
 	"ataniq/internal/leadrole",
 	"ataniq/internal/leadsandbox/profile",
@@ -27,6 +28,7 @@ var canaryRepoDeps = []string{
 	"ataniq/internal/inject/osc7501",
 	"ataniq/internal/inject/screen",
 	"ataniq/internal/inject/title",
+	"ataniq/internal/inject/versions",
 }
 
 // guardRepoDeps is the list of this build: the six and the written-out list of

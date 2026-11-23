@@ -66,9 +66,16 @@ type Admission struct {
 
 // NewAdmission returns the admission for the role, which must be the lead of a
 // throwaway project ([Names] refuses any other). The target of the message is
-// that lead.
+// that lead. It is [NewAdmissionFor] for leadrole.ReservedThrowaway.
 func NewAdmission(role leadrole.Role) (*Admission, error) {
-	if _, _, err := Names(role); err != nil {
+	return NewAdmissionFor(leadrole.ReservedThrowaway, role)
+}
+
+// NewAdmissionFor is [NewAdmission] for the lead of a project that carries the
+// reserved prefix of kind k ([NamesFor] refuses any other). The text of the
+// message is the same for both kinds.
+func NewAdmissionFor(k leadrole.Reserved, role leadrole.Role) (*Admission, error) {
+	if _, _, err := NamesFor(k, role); err != nil {
 		return nil, err
 	}
 	target := command.LeadTarget(role.Project())

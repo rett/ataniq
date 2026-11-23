@@ -36,6 +36,17 @@ type ownerFake struct {
 	limit    func(project string) (ownerwire.LimitView, error)
 	limitSet func(src ownerchannel.Source, p ownerwire.LimitSetParams) (ownerwire.LimitView, error)
 	looked   func() error
+
+	pairStart   func(src ownerchannel.Source, p ownerwire.PairStartParams) (ownerwire.PairStartResult, error)
+	pairStatus  func() (ownerwire.PairStatus, error)
+	pairConfirm func(src ownerchannel.Source, p ownerwire.PairPendingParams) (ownerwire.KeyItem, error)
+	pairReject  func(src ownerchannel.Source, p ownerwire.PairPendingParams) error
+	pairPresent func(src ownerchannel.Source, p ownerwire.SeatPairParams) (ownerwire.SeatPairResult, error)
+	keys        func() (ownerwire.KeysView, error)
+	keyRevoke   func(src ownerchannel.Source, p ownerwire.KeyRevokeParams) (ownerwire.KeysView, error)
+	keysOff     func(src ownerchannel.Source) (ownerwire.KeysView, error)
+	// sources are the sources the pairing writes were handed, in order.
+	sources []ownerchannel.Source
 }
 
 type ownerDecideCall struct {
@@ -245,6 +256,7 @@ func (r *ownerRig) counts() map[string]uint64 {
 		"session-changed": c.SessionChanged.Load(), "decision-not-decider": c.DecisionNotDecider.Load(),
 		"decision-invalid": c.DecisionInvalid.Load(), "no-connection": c.NoConnection.Load(),
 		"decision-flooded": c.DecisionFlooded.Load(),
+		"pair-not-decider": c.PairNotDecider.Load(), "seat-refused": c.SeatRefused.Load(),
 	}
 }
 
@@ -347,4 +359,80 @@ func ownerHello(t *testing.T, socket string) clientapi.HelloResult {
 		t.Fatal(err)
 	}
 	return h
+}
+
+// The pairing and key operations: each notes its call and the source it was
+// handed, and answers from its function, or with errOwnerNotSet.
+
+func (f *ownerFake) enter(name string, src *ownerchannel.Source) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, name)
+	if src != nil {
+		f.sources = append(f.sources, *src)
+	}
+}
+
+func (f *ownerFake) PairStart(_ context.Context, src ownerchannel.Source, p ownerwire.PairStartParams) (ownerwire.PairStartResult, error) {
+	f.enter(fmt.Sprintf("pair-start replace=%v", p.Replace), &src)
+	if f.pairStart == nil {
+		return ownerwire.PairStartResult{}, errOwnerNotSet
+	}
+	return f.pairStart(src, p)
+}
+
+func (f *ownerFake) PairStatus(context.Context) (ownerwire.PairStatus, error) {
+	f.enter("pair-status", nil)
+	if f.pairStatus == nil {
+		return ownerwire.PairStatus{Phase: ownerwire.PairNone}, nil
+	}
+	return f.pairStatus()
+}
+
+func (f *ownerFake) PairConfirm(_ context.Context, src ownerchannel.Source, p ownerwire.PairPendingParams) (ownerwire.KeyItem, error) {
+	f.enter("pair-confirm "+p.PendingID, &src)
+	if f.pairConfirm == nil {
+		return ownerwire.KeyItem{}, errOwnerNotSet
+	}
+	return f.pairConfirm(src, p)
+}
+
+func (f *ownerFake) PairReject(_ context.Context, src ownerchannel.Source, p ownerwire.PairPendingParams) error {
+	f.enter("pair-reject "+p.PendingID, &src)
+	if f.pairReject == nil {
+		return nil
+	}
+	return f.pairReject(src, p)
+}
+
+func (f *ownerFake) PairPresent(_ context.Context, src ownerchannel.Source, p ownerwire.SeatPairParams) (ownerwire.SeatPairResult, error) {
+	f.enter("seat.pair", &src)
+	if f.pairPresent == nil {
+		return ownerwire.SeatPairResult{}, errOwnerNotSet
+	}
+	return f.pairPresent(src, p)
+}
+
+func (f *ownerFake) Keys(context.Context) (ownerwire.KeysView, error) {
+	f.enter("keys", nil)
+	if f.keys == nil {
+		return ownerwire.KeysView{Keys: []ownerwire.KeyItem{}}, nil
+	}
+	return f.keys()
+}
+
+func (f *ownerFake) KeyRevoke(_ context.Context, src ownerchannel.Source, p ownerwire.KeyRevokeParams) (ownerwire.KeysView, error) {
+	f.enter("key-revoke "+p.ID, &src)
+	if f.keyRevoke == nil {
+		return ownerwire.KeysView{}, errOwnerNotSet
+	}
+	return f.keyRevoke(src, p)
+}
+
+func (f *ownerFake) KeysOff(_ context.Context, src ownerchannel.Source) (ownerwire.KeysView, error) {
+	f.enter("keys-off", &src)
+	if f.keysOff == nil {
+		return ownerwire.KeysView{}, errOwnerNotSet
+	}
+	return f.keysOff(src)
 }

@@ -67,8 +67,7 @@ func (p Project) check() error {
 		return errors.New("hostadapter: the project's role is not a valid name")
 	case p.Mirror == "" || !filepath.IsAbs(p.Mirror) || filepath.Clean(p.Mirror) != p.Mirror || strings.ContainsAny(p.Mirror, "\x00\n"):
 		return errors.New("hostadapter: the mirror is not a clean absolute path")
-	case !strings.HasPrefix(p.Target, "refs/heads/") || len(p.Target) == len("refs/heads/") || len(p.Target) > 200 ||
-		strings.ContainsAny(p.Target, " ~^:?*[\\\x00\n\t") || strings.Contains(p.Target, ".."):
+	case !validTarget(p.Target):
 		return errors.New("hostadapter: the target is not a branch under refs/heads/")
 	case len(p.Gates) == 0:
 		return errors.New("hostadapter: the project has no gate")
@@ -82,6 +81,14 @@ func (p Project) check() error {
 		return errors.New("hostadapter: the project has no identity for the merge commit")
 	}
 	return nil
+}
+
+// validTarget reports whether t names a branch as a project's target must:
+// refs/heads/ and at least one more byte, at most 200 bytes, with no space,
+// no character git refuses in a ref name and no "..".
+func validTarget(t string) bool {
+	return strings.HasPrefix(t, "refs/heads/") && len(t) > len("refs/heads/") && len(t) <= 200 &&
+		!strings.ContainsAny(t, " ~^:?*[\\\x00\n\t") && !strings.Contains(t, "..")
 }
 
 // featureRef is the lead's branch for a feature, in the mirror.

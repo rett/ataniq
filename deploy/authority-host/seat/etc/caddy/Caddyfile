@@ -1,0 +1,72 @@
+{
+	admin off
+	auto_https off
+	servers {
+		timeouts {
+			read_header 10s
+			read_body 10s
+			write 30s
+			idle 60s
+		}
+		# The proxy in front, on the owner's network, names the client in
+		# X-Forwarded-For. {client_ip} is the rightmost address of it that is
+		# not a private one, or the peer's address.
+		trusted_proxies static private_ranges
+		trusted_proxies_strict
+	}
+}
+
+# The seat app (ataniq-seat), on its Unix socket: see the README, "The seat
+# app". The owner's site file imported at the end of this file uses it.
+(seat) {
+	request_body {
+		max_size 64KB
+	}
+	reverse_proxy unix//run/seat/http.sock {
+		# The Host the phone asked for, which the app checks against its
+		# origin. Origin and Sec-Fetch-Site go on as they came: nothing here
+		# sets or removes them.
+		header_up Host {hostport}
+		# The client's address, for the app's per-source limits
+		# (--client-addr-header): set here on every request, so a value the
+		# client sent is never passed on.
+		header_up X-Seat-Client-Addr {client_ip}
+		# Nothing on the way keeps a copy.
+		header_down Cache-Control no-store
+		header_down -Server
+	}
+}
+
+:80 {
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		X-Frame-Options DENY
+		Content-Security-Policy "default-src 'none'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+		Cache-Control no-store
+		-Server
+	}
+
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	handle {
+		root * /srv/authority/public
+		file_server
+	}
+}
+
+# The seat's site, owner-local because it holds the seat's name: a site
+# block for that name on port 80 that imports the snippet above, for example
+#
+#	http://seat.example {
+#		import seat
+#	}
+#
+# The file must be there: the no-AI check (it follows this import and reads
+# the file as it reads the release's own, and refuses a provider-key
+# placeholder or a reverse_proxy to anything but this host in it), caddy
+# validate (the release's validator) and caddy refuse this configuration
+# without it. Keep it to the site address and "import seat".
+import /etc/authority-host/seat/site.caddy

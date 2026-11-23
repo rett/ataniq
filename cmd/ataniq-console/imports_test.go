@@ -13,13 +13,18 @@ import (
 // import: the console, the attach client that is its live source, the
 // read-only client of the daemon's view, the sample backend of --demo, and
 // the approvals view's package, for the compile-time assertion that the
-// sample backend satisfies the console's backend interface.
+// sample backend satisfies the console's backend interface, and the leads
+// view's package, for the adapter that gives it the daemon's lead client, and
+// the owner-local settings reader (standard library only), for the origin of
+// the pair-a-phone view.
 var allowedOwn = map[string]bool{
 	"ataniq/internal/terminalconsole":           true,
 	"ataniq/internal/leadattach":                true,
 	"ataniq/internal/consoleclient":             true,
 	"ataniq/internal/approval/demo":             true,
 	"ataniq/internal/terminalconsole/approvals": true,
+	"ataniq/internal/terminalconsole/leadctl":   true,
+	"ataniq/internal/ownerlocal":                true,
 }
 
 // importDenied reports whether a non-test file of the command may not import
@@ -40,7 +45,8 @@ func TestImportGuardRules(t *testing.T) {
 	}{
 		{"ataniq/internal/terminalconsole", false}, {"ataniq/internal/leadattach", false},
 		{"ataniq/internal/consoleclient", false}, {"ataniq/internal/approval/demo", false},
-		{"ataniq/internal/terminalconsole/approvals", false},
+		{"ataniq/internal/terminalconsole/approvals", false}, {"ataniq/internal/terminalconsole/leadctl", false},
+		{"ataniq/internal/ownerlocal", false},
 		// What the sample backend does not make available: the service and
 		// what it uses, and the rest of the console's own packages.
 		{"ataniq/internal/approval/door", true}, {"ataniq/internal/approval/door/doortest", true},

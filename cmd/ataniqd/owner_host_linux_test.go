@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"ataniq/internal/approval/gatehost"
 	"ataniq/internal/approval/hostadapter"
 	"ataniq/internal/approval/ownerjournal"
 	"ataniq/internal/approval/ownerwire"
@@ -384,5 +385,53 @@ func TestOwnerRunWithSettingsThatNameNoSuiteStopsTheDaemon(t *testing.T) {
 	}
 	if _, err := os.Lstat(runtime + "/daemon.sock"); err == nil {
 		t.Errorf("a socket was made")
+	}
+}
+
+// The service the builder makes can take a decision from the phone, so a gate
+// with an origin serves login and decide on it; its kind policy is the
+// settings' for their project and accepts nothing for another.
+func TestTheBuiltServiceCanDecideWithTheSettingsKindPolicy(t *testing.T) {
+	useSuite(t, cmdSuite{})
+	state, _ := scratchSettings(t, func(sc *hostadapter.Scratch) { sc.Kinds = []string{"vault-passkey"} })
+	svc, closer, err := buildOwnerService(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closer()
+	if _, ok := svc.(gatehost.SeatPort); !ok {
+		t.Fatal("the built service cannot decide from the phone")
+	}
+	sc, err := hostadapter.LoadScratch(filepath.Join(state, "owner", hostadapter.ScratchName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := scratchKindPolicy(sc)
+	if p, ok := policy("project-a"); !ok || !p.Accepts("vault-passkey") || p.Accepts("passkey") || p.Accepts("unverified") {
+		t.Fatalf("the project's policy %+v %v", p, ok)
+	}
+	if _, ok := policy("project-b"); ok {
+		t.Fatal("a project the daemon does not serve has a policy")
+	}
+	if p, ok := scratchKindPolicy(hostadapter.Scratch{Project: "project-a"})("project-a"); !ok || !p.Accepts("passkey") || !p.Accepts("platform-passkey") {
+		t.Fatal("settings that name no kind accept every kind")
+	}
+}
+
+// The stand-in door of the plain scratch pass counts its card numbers from the
+// time of day, not from 1: it keeps nothing across a restart and the journal
+// keeps every decision, so a card numbered from 1 again after a restart on the
+// same day could have the id of a card that was decided, and could not be
+// decided itself. The adapter raises the numbers past the journal's, which its
+// own test shows; this one shows where they start.
+func TestTheScratchPassNumbersItsStandInCardsFromTheTimeOfDay(t *testing.T) {
+	at := time.Date(2026, 11, 20, 14, 2, 4, 0, time.UTC)
+	sc := hostadapter.Scratch{Project: "project-a", Role: "role-a", Seat: hostadapter.ScratchSeat{Epoch: 7, SeatRev: 12}}
+	cfg := scratchDoorConfig(sc, func() time.Time { return at })
+	if want := hostadapter.StandInFirstNumber(at); cfg.FirstNumber != want || want != 50_524_001 {
+		t.Errorf("the first card number is %d, want %d (the time of day)", cfg.FirstNumber, want)
+	}
+	if cfg.Seat.Project != "project-a" || cfg.Seat.RoleName != "role-a" || cfg.Seat.Epoch != 7 || cfg.Seat.SeatRev != 12 {
+		t.Errorf("the seat is %+v", cfg.Seat)
 	}
 }

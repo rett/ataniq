@@ -147,10 +147,13 @@ type stepDef struct {
 // Run runs the start sequence. It returns what the holder needs to serve, or an
 // error: a *StepError that names the step that refused the start, or, in canary
 // mode, the *canaryroot.RefusedError of the root check, which is made before
-// any step (a project without the reserved prefix, a default root, a missing
-// marker or a root that is not the marker's), or a plain refusal, also before
-// any step, of a layout role that is not "<project>-lead". With canary false
-// there is no root check here and no waiver.
+// any step (a project with neither reserved prefix, a default root, a missing
+// marker, a root that is not the marker's or a root of the other kind), or a
+// plain refusal, also before any step, of a layout role that is not
+// "<project>-lead". The root check takes its rule from the project's prefix: a
+// throwaway- project needs the canary marker, a scratch- project the scratch
+// root marker (canaryroot.Check). With canary false there is no root check here
+// and no waiver.
 //
 // The holder owns the child of the result. After an error nothing of the start
 // is left: the child, if one was launched, has been stopped and reaped, and the

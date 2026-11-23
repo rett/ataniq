@@ -7,6 +7,18 @@
     "code": "decision-invalid",
     "why": "b64 that holds valid UTF-8 without a control character"
   },
+  "decision-invalid-both-blocks.json": {
+    "code": "decision-invalid",
+    "why": "a decision confirmed by passkey with a console block beside its seat block"
+  },
+  "decision-invalid-code-seat.json": {
+    "code": "decision-invalid",
+    "why": "a decision confirmed by code with a seat block and no console block"
+  },
+  "decision-invalid-confirmed.json": {
+    "code": "decision-invalid",
+    "why": "confirmed is a word that is neither code nor passkey"
+  },
   "decision-invalid-control-character.json": {
     "code": "decision-invalid",
     "why": "an escaped U+007F in a plain string"
@@ -18,6 +30,10 @@
   "decision-invalid-empty-reason.json": {
     "code": "decision-invalid",
     "why": "a deny with reason written as an empty string; an optional field that is empty is left out"
+  },
+  "decision-invalid-empty-seat.json": {
+    "code": "decision-invalid",
+    "why": "a seat block written with every field empty; an empty optional block is left out"
   },
   "decision-invalid-float.json": {
     "code": "decision-invalid",
@@ -35,6 +51,18 @@
     "code": "decision-invalid",
     "why": "the key signed_off in another case"
   },
+  "decision-invalid-no-block.json": {
+    "code": "decision-invalid",
+    "why": "a decision confirmed by code with no console block"
+  },
+  "decision-invalid-passkey-console.json": {
+    "code": "decision-invalid",
+    "why": "a decision confirmed by passkey with a console block and no seat block"
+  },
+  "decision-invalid-passkey-deny-sign-off.json": {
+    "code": "decision-invalid",
+    "why": "a deny confirmed by passkey that carries sign-offs; a deny signs off nothing"
+  },
   "decision-invalid-reason-too-long.json": {
     "code": "decision-invalid",
     "why": "a deny whose reason is more than 500 bytes"
@@ -46,6 +74,10 @@
   "decision-invalid-schema.json": {
     "code": "decision-invalid",
     "why": "the schema of another kind"
+  },
+  "decision-invalid-seat-challenge-id.json": {
+    "code": "decision-invalid",
+    "why": "a seat block whose challenge_id is 14 hexadecimal digits"
   },
   "decision-invalid-session.json": {
     "code": "decision-invalid",

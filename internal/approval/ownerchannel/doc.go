@@ -92,14 +92,117 @@
 //
 // [Service.List], [Service.Show], [Service.Paths], [Service.Patch],
 // [Service.Limit], [Service.LimitSet], [Service.Beat] and [Service.Looked]
-// return the result types of package ownerwire, so that the daemon only has
+// (and the pairing operations below) return the result types of package ownerwire, so that the daemon only has
 // to register them. [Service.Decide] takes the frame type of the same
 // package.
+//
+// # Pairing a phone and the list of deciding keys
+//
+// [Service.PairStart], [Service.PairStatus], [Service.PairPresent],
+// [Service.PairConfirm], [Service.PairReject], [Service.Keys],
+// [Service.KeyRevoke] and [Service.KeysOff] are the pairing operations of the
+// owner connection (see package seatpair for the pairing's own steps, which
+// the service drives). The one pairing the service holds is in memory: a
+// restart abandons it, with its code and its pending credential, and nothing
+// of it is journaled but how it ended. The pairing code is in the result of
+// [Service.PairStart] and nowhere else: not in the journal, a notice, an error
+// or any other answer.
+//
+// The writes that start, confirm or reject a pairing ask what a decision asks
+// of its source: the decider's place and the owner's presence. A revocation
+// asks the decider's place only: it only lowers. [Service.PairPresent] is the
+// seat app's call and takes a source whose surface is [SurfaceSeat]; the
+// daemon decides which connection that is.
+//
+// A credential that becomes pending has a pending id, 8 random bytes in 16
+// lower-case hexadecimal digits that [Service.PairStatus] shows with the eight
+// words. [Service.PairConfirm] and [Service.PairReject] take it back
+// (ownerwire.PairPendingParams, required) and compare it, under the pairing's
+// lock and in constant time, to the credential pending at that moment. The
+// owner's word is therefore about the credential whose words he compared: if
+// the pairing was replaced, or ran out and another began, the call is refused
+// with [ErrPairingChanged] and nothing changes (the daemon's code is
+// pairing-changed). A replacement or an expired pairing has a new id.
+//
+// The ten minutes of a code and of a pending credential are measured with the
+// clock's reading as [Config].Now gives it, monotonic part included (a reading
+// from time.Now has one), so a wall clock set back does not lengthen them; what
+// the service shows and journals is the wall reading. A code or a pending
+// credential that has been seen expired stays expired, whatever the clock reads
+// afterwards (package seatpair states the exact rule, for clocks without a
+// monotonic reading too).
+//
+// A confirmed credential goes on the list of deciding keys, [KeyStore], in
+// [Config].Keys, with its kind: the one package credkind registered it with
+// from the registration the seat relayed (the kind its AAGUID claims), with
+// the AAGUID, the backup flags and the sign counter, or "unverified" when the
+// seat relayed none. A kind is a claim, never a fact, and is shown as one. The
+// service owns the store and closes it. The list only grows: a revoked
+// credential stays on it, marked, and is never made good again. Without a store, or with one that cannot be
+// used, every operation on it is refused with [ErrKeysUnavailable], and a
+// list that cannot be read is never taken for an empty one. A confirm and a
+// reject write only after they found the list usable, so a credential stays
+// pending when the list is down. A reject then drops the credential before it
+// writes the journal, because a drop only lowers what anyone may do: if the
+// journal write fails, or the file has as many rejected pairings as it keeps
+// room for, the call answers that error although the pairing ended, and the
+// status says none. A credential that is on the list already, revoked or not,
+// is refused when it is presented ([ErrCredentialInvalid], after the code was
+// checked) and ends the pairing. The errors of these operations are a
+// refusal of the connection ([*record.Error]), one of the package's sentinels
+// with a fixed text, or, for the few steps that fail for a reason of their own
+// (the random source, an error of seatpair that has no sentinel here), an
+// error that wraps the cause: [Service.PairStart], [Service.PairPresent] and
+// [Service.PairConfirm] wrap what seatpair returned in such a case, and the
+// daemon answers it "failed" with a fixed text and writes the cause to its
+// log. A pairing that expired, was burnt by wrong tries, or was replaced leaves
+// no record anywhere (the journal and the list hold nothing of it; only a
+// rejection is journaled), and it reads as the phase "expired" until the next
+// start, with the time it ended: the code's or the credential's deadline, or,
+// for a burnt code, the time of the try that burnt it, which is in the past. The
+// desk is told of a burnt code by a notice ([Config].Notice) that holds nothing
+// of the code or of the tries.
+//
+// # A login and a decision from the phone
+//
+// [Service.SeatLoginChallenge], [Service.SeatLogin], [Service.SeatChallenge]
+// and [Service.SeatDecide] are the seat gate's four operations, which only the
+// gate's handler calls, with a seat source and the gate's own values
+// ([Gate]: its key fingerprint, the seat origin and the relying party id).
+// Each is a WebAuthn assertion over a challenge the service draws and binds,
+// for a decision, to its own pending record (docs/design/seat-gate.md). The
+// outstanding challenges are kept in memory, at most 32 for decisions and 16
+// for logins, for 5 minutes and one use by the gate session that asked; a
+// restart drops them. A decide takes its challenge out of the store in one
+// step and burns it before it judges anything of the content; recomputes the
+// challenge from the frame and compares it; checks the key and its kind
+// against the list and the project's policy ([Config].KindPolicy); verifies
+// the assertion with package credkind; and then shares the rest of the
+// desk's path ([Service.Decide]): the verified assertion with user
+// verification stands in for the presence window and the decider's place,
+// for that one decision only. The key is checked again under the lock that
+// revocation takes, right before the append. The record is confirmed by
+// passkey with a seat block, and the journal keeps the assertion's evidence
+// beside it. A deny needs an assertion too; it is never held and uses
+// nothing. The verified sign counter is kept on the list ([KeyStore]), and
+// one that does not grow is told as a possible clone, not refused.
+//
+// # Waiting for a change
+//
+// [Service.WaitPending] is seat.wait: it holds a call until the version of
+// the pending set ([ownerwire.PendingVersion]) is not the one the caller
+// has, or a hold of [Config].WaitHold ends. The service pokes the waits after
+// each write of its journal and its handles and after each tick, looks at the
+// door at most once a second however many waits are held, and holds at most
+// [Config].WaitMax of them (one more is [ErrWaitFull]). A wait takes no lock
+// while it waits; wait.go says which it takes and when.
 //
 // # Concurrency
 //
 // A [Service] is safe for use by several goroutines and starts none of its
 // own. Decisions, uses and restarts run one at a time; one verification runs
-// at a time. [Service.Close] cancels the calls under way, waits for them and
+// at a time. The lock order is the decisions' lock, then the lock of the
+// pairing and the keys: no code that holds the second takes the first.
+// [Service.Close] cancels the calls under way, waits for them and
 // closes the journal.
 package ownerchannel

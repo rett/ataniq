@@ -153,7 +153,9 @@ func TestCallHolderThenCallsWrittenAfterTheFrame(t *testing.T) {
 
 // TestCanarySentLineThatCannotBeWritten: when the evidence takes no line the
 // message is still a sent one. The line is tried again, and when that fails
-// too the log says that the epoch is spent in this daemon only.
+// too the log says that the epoch is spent in this daemon unless the holder
+// answers that nothing was written (a lead of scratch mode frees it then), and
+// does not say "only", which a later answer of the holder would make untrue.
 func TestCanarySentLineThatCannotBeWritten(t *testing.T) {
 	c := newCanaryEnv(t)
 	open := func() *leadcanary.Evidence {
@@ -184,7 +186,9 @@ func TestCanarySentLineThatCannotBeWritten(t *testing.T) {
 		t.Fatalf("log after the first try:\n%s", log.String())
 	}
 	x.sentUnrecorded("msg-one", 3)
-	if !strings.Contains(log.String(), lost) || !strings.Contains(log.String(), "stop the role before the daemon is restarted") {
+	if !strings.Contains(log.String(), lost) || !strings.Contains(log.String(), "stop the role before the daemon is restarted") ||
+		!strings.Contains(log.String(), "spent in this daemon unless the holder answers that nothing was written") ||
+		strings.Contains(log.String(), "this daemon only") {
 		t.Fatalf("the log does not say what is lost:\n%s", log.String())
 	}
 	if spent, err := spentEpochs(c.cfg.EvidencePath(), canaryRoleText); err != nil || len(spent) != 0 {

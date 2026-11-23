@@ -55,8 +55,61 @@
 //     [*record.Error] with that code, any other failure an [*Unavailable]
 //     with the fixed text of one of the states above.
 //
+// The methods of owner_pair.go pair a phone and keep the list of deciding keys
+// (PairStart, PairStatus, PairConfirm, PairReject, Keys, KeyRevoke, KeysOff).
+// They return the types of the wire package, send each call once and never
+// again after a failure, refuse locally what the wire package refuses, and
+// decide nothing: the daemon's rules are the daemon's. A refusal with a code of
+// the pairing and key operations is a [*PairError] with a fixed text of this
+// package; PairConfirm and PairReject take the pending id that PairStatus
+// showed with the eight words, so that the owner's word is about the credential
+// he compared (the daemon refuses another with pairing-changed, changing
+// nothing); the pairing code is in the result of PairStart, which prints
+// without it, and in no error. The seat's call, seat.pair, is not the
+// console's and has no method here.
+//
 // This part is provisional and unqualified. It was proved against a fake
 // daemon on a private socket, not against the daemon's own owner channel.
+//
+// # The lead control client
+//
+// The files named leads*.go hold [Leads], the console's client of the
+// daemon's lead control plane: the operations lead.list, lead.define,
+// lead.start, lead.stop, lead.ticket and lead.inject of package leadwire,
+// through the client protocol's call for registered operations. Like the
+// owner channel's client it is in every build, behind no build tag, and
+// whether a daemon has lead control is found at run time from the operations
+// its hello lists: all six, none ([ErrNoLeadControl]) or some
+// ([ErrLeadsVersion]). The client is for any front end, so it knows nothing
+// of terminals, units or sandboxes beyond the values package leadwire
+// defines, and a test holds that.
+//
+// What it keeps to:
+//
+//   - A command is sent with a command id of 128 random bits and a client
+//     string that names the run. The client keeps the id and the arguments
+//     of every command that has no final receipt, and a call with the same
+//     operation and arguments repeats the kept id, so the daemon runs the
+//     command at most once. A final receipt, or a list that shows the id as
+//     a lead's last command with a final status, forgets it.
+//   - A lost answer is asked for before anything else: the same id and
+//     arguments are sent once on a new connection, and what the daemon holds
+//     for the id comes back. When that fails too the call returns
+//     [ErrAnswerLost] and the id is kept. A new id is never made for a
+//     command that has no final receipt; the one id the client lets go
+//     without a final receipt is one the daemon answers "conflict" for,
+//     which it will not run again.
+//   - Every call returns a receipt, or an error only when no receipt came
+//     back. A receipt holds no text the daemon wrote: its message is left
+//     out, its words (a reason code, an inject outcome) must be of a closed
+//     grammar or are "unrecognised", and a listing's strings are cleaned and
+//     bounded. An answer that is not exactly the shape of package leadwire,
+//     or that is for another command, role or epoch than the one asked for,
+//     is a bad answer and the connection is dropped.
+//   - A role, a message id and a body are checked before anything is sent.
+//
+// This part is provisional and unqualified. It was proved against a fake
+// daemon on a private socket, not against the daemon's own lead control.
 //
 // # Boundary
 //
@@ -65,6 +118,8 @@
 // channel's client import also the wire package of the owner connection and
 // the values of the console's backend (record, card and limits), and nothing
 // that acts: not the door, the service, the journal or the sample backend.
+// The files of the lead control client import also package leadwire, and
+// nothing else.
 // The package does not import the console: the command that owns the console
 // maps these values onto the console's projection, and hands the client to
 // the console as its backend. A test holds the imports.

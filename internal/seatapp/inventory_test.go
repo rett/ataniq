@@ -1,0 +1,409 @@
+package seatapp
+
+import (
+	"net/http/httptest"
+	"regexp"
+	"sort"
+	"strings"
+	"testing"
+)
+
+// The page inventory. Every route of the app is listed here with what it
+// serves, and the test fetches each one. An approve control exists in exactly
+// one place, the Card page reached from the Cards list; no other page, notice,
+// link or message may hold or open a decide control. So deciders holds the
+// Card page alone, and decideAssets the one script that decides, which only
+// a decider may load.
+var inventory = []struct {
+	pattern string
+	kind    string // "page", "asset", "text", "redirect" or "api"
+	// controls are the form controls the page may hold, by element and id;
+	// "a" is a link without an id.
+	controls []string
+	// path is the path fetched for a pattern with wildcards; the pattern's
+	// own when empty.
+	path string
+	// authed says the route needs a session: the test fetches it logged in.
+	authed bool
+}{
+	{"GET /healthz", "text", nil, "", false},
+	{"GET /{$}", "page", []string{"a#login"}, "", false},
+	{"GET /pair/{$}", "page", []string{"button#start", "a#login-link"}, "", false},
+	{"GET /pair", "redirect", nil, "", false},
+	{"GET /static/words.js", "asset", nil, "", false},
+	{"GET /static/pair.js", "asset", nil, "", false},
+	{"GET /static/app.css", "asset", nil, "", false},
+	{"POST /api/pair-challenge", "api", nil, "", false},
+	{"POST /api/pair", "api", nil, "", false},
+	{"GET /login/{$}", "page", []string{"button#start"}, "", false},
+	{"GET /login", "redirect", nil, "", false},
+	{"GET /static/login.js", "asset", nil, "", false},
+	{"POST /api/login-challenge", "api", nil, "", false},
+	{"POST /api/login", "api", nil, "", false},
+	{"POST /api/logout", "api", nil, "", false},
+	{pattern: "GET /cards/{$}", kind: "page", controls: []string{"a", "button#logout", "button#enable-notices", "button#stop-notices"}, authed: true},
+	{pattern: "GET /cards", kind: "redirect"},
+	{pattern: "GET /cards/{id}", kind: "page", controls: []string{"a#paths", "a#back", "button#logout",
+		"input#signoff-0", "button#approve", "textarea#reason", "button#deny", "button#confirm-go", "button#confirm-cancel", "a#look"},
+		path: "/cards/" + testCardID, authed: true},
+	{pattern: "GET /cards/{id}/paths/{n}", kind: "page", controls: []string{"a#prev", "a#next", "a#back", "button#logout"}, path: "/cards/" + testCardID + "/paths/1", authed: true},
+	{pattern: "GET /static/session.js", kind: "asset"},
+	{pattern: "GET /static/decide.js", kind: "asset"},
+	{pattern: "POST /api/decide-challenge", kind: "api"},
+	{pattern: "POST /api/decide", kind: "api"},
+	{pattern: "GET /static/watch.js", kind: "asset"},
+	{pattern: "POST /api/watch", kind: "api"},
+	{pattern: "GET /manifest.webmanifest", kind: "asset"},
+	{pattern: "GET /sw.js", kind: "asset"},
+	{pattern: "GET /static/push.js", kind: "asset"},
+	{pattern: "GET /static/icon-192.png", kind: "asset"},
+	{pattern: "GET /static/icon-512.png", kind: "asset"},
+	{pattern: "GET /static/apple-touch-icon.png", kind: "asset"},
+	{pattern: "POST /api/push/info", kind: "api"},
+	{pattern: "POST /api/push/subscribe", kind: "api"},
+	{pattern: "POST /api/push/unsubscribe", kind: "api"},
+}
+
+// passkeyRoutes are the pages whose Permissions-Policy allows
+// publickey-credentials-get to the app's own origin. Every other response
+// forbids it.
+var passkeyRoutes = map[string]bool{"GET /login/{$}": true, "GET /cards/{id}": true}
+
+// cookieRoutes are the routes that may set a cookie, with the cookies each
+// may set. No page sets one. The decision's routes only remove the session's
+// cookie, when the daemon says its passkey is no longer paired.
+var cookieRoutes = map[string][]string{
+	"POST /api/login-challenge":  {LoginCookie},
+	"POST /api/login":            {LoginCookie, SessionCookie},
+	"POST /api/logout":           {SessionCookie},
+	"POST /api/decide-challenge": {SessionCookie},
+	"POST /api/decide":           {SessionCookie},
+}
+
+// pushPages are the pages that may load the notices' script and link the web
+// app manifest: the card list, and no other. The service worker, the
+// manifest and the icons are listed routes of their own.
+var pushPages = map[string]bool{"GET /cards/{$}": true}
+
+// cacheOverride are the responses whose Cache-Control is not "no-store": a
+// browser checks the service worker's script for a change with each start.
+var cacheOverride = map[string]map[string]string{"GET /sw.js": {"Cache-Control": "no-cache"}}
+
+// deciders are the routes allowed to hold a decide control: the Card page,
+// and no other.
+var deciders = map[string]bool{"GET /cards/{id}": true}
+
+// decideAssets are the scripts that decide; a page that is not a decider
+// may not load one.
+var decideAssets = map[string]bool{"/static/decide.js": true}
+
+func TestInventoryListsEveryRoute(t *testing.T) {
+	var have, want []string
+	for _, rt := range (&app{pair: &pairing{}}).routes() {
+		have = append(have, rt.pattern)
+	}
+	for _, e := range inventory {
+		want = append(want, e.pattern)
+	}
+	sort.Strings(have)
+	sort.Strings(want)
+	if strings.Join(have, "\n") != strings.Join(want, "\n") {
+		t.Errorf("the routes and the inventory differ:\nroutes:    %q\ninventory: %q", have, want)
+	}
+	for p := range deciders {
+		found := false
+		for _, e := range inventory {
+			found = found || e.pattern == p
+		}
+		if !found {
+			t.Errorf("decider %q is not a route", p)
+		}
+	}
+}
+
+// decideWords are the words that make a control, an id, a name, a class, an
+// address or a data attribute look like deciding something.
+var decideWords = regexp.MustCompile(`(?i)approv|den(y|ies|ied)|decid|decision|reject|accept|allow|grant|authori[sz]|sign-?off|confirm|later|put-?off|passkey-?assert|assertion`)
+
+// externalRe finds an address with a scheme or without one that names a host.
+var externalRe = regexp.MustCompile(`(?i)https?:|[("'=\s]//[a-z0-9]`)
+
+var (
+	tagRe  = regexp.MustCompile(`(?is)<(/?)([a-z][a-z0-9-]*)([^>]*)>`)
+	attrRe = regexp.MustCompile(`(?is)([a-z_:][-a-z0-9_:.]*)\s*(?:=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?`)
+)
+
+// inspectPage returns what is wrong with an HTML page: an inline script or
+// style, an event handler, an external address, a form or a control that the
+// inventory does not list for it, and a control that looks like deciding when
+// the page may not hold one.
+func inspectPage(html string, allowed []string, mayDecide bool) []string {
+	var found []string
+	add := func(parts ...string) { found = append(found, strings.Join(parts, " ")) }
+	if strings.Contains(strings.ToLower(html), "javascript:") {
+		add("javascript address")
+	}
+	if externalRe.MatchString(html) {
+		add("external address")
+	}
+	for _, m := range tagRe.FindAllStringSubmatch(html, -1) {
+		closing, name, rest := m[1], strings.ToLower(m[2]), m[3]
+		if closing != "" {
+			continue
+		}
+		attrs := map[string]string{}
+		for _, a := range attrRe.FindAllStringSubmatch(rest, -1) {
+			v := a[2] + a[3] + a[4]
+			attrs[strings.ToLower(a[1])] = v
+			key := strings.ToLower(a[1])
+			if strings.HasPrefix(key, "on") {
+				add("event handler", key)
+			}
+			if key == "style" {
+				add("style attribute")
+			}
+			if (key == "href" || key == "src" || key == "action" || key == "formaction") && v != "" &&
+				!(strings.HasPrefix(v, "/") && !strings.HasPrefix(v, "//")) && !strings.HasPrefix(v, "#") {
+				add("address that is not of this app", key, v)
+			}
+			if !mayDecide && key == "data-offer" {
+				add("an offer control on a page that may not decide", v)
+			}
+			if !mayDecide && (key == "id" || key == "name" || key == "class" || key == "action" || key == "formaction" ||
+				key == "href" || key == "value" || key == "for" || strings.HasPrefix(key, "data-") || strings.HasPrefix(key, "aria-")) &&
+				key != "data-rp-name" && decideWords.MatchString(v) {
+				add("attribute that looks like deciding", key, v)
+			}
+		}
+		switch name {
+		case "style":
+			add("style element")
+		case "script":
+			if !strings.HasPrefix(attrs["src"], "/static/") {
+				add("inline script")
+			}
+			if decideAssets[attrs["src"]] && !mayDecide {
+				add("a deciding script on a page that may not decide", attrs["src"])
+			}
+		case "form", "input", "button", "select", "textarea", "a", "iframe", "object", "embed", "img":
+			id := name
+			if attrs["id"] != "" {
+				id += "#" + attrs["id"]
+			}
+			ok := false
+			for _, a := range allowed {
+				ok = ok || a == id
+			}
+			if !ok {
+				add("element the inventory does not list", id)
+			}
+		}
+	}
+	return found
+}
+
+// decidingRe finds the words of deciding in the text of a script.
+var decidingRe = regexp.MustCompile(`(?i)approv|decid|decision|den(y|ied)`)
+
+// watchBanner is the one sentence of a script that is not a decide script
+// which may hold such a word: the banner the live refresh script shows when
+// the card of a page changed or was settled elsewhere. It is a constant of
+// the script, and the rule below takes out that exact sentence and nothing
+// else, so the script holds no other word of the kind. The script reaches the
+// decision form's controls only by the neutral attribute data-offer that the
+// Card page puts on them, never by the name of one.
+const watchBanner = "This card changed or was decided elsewhere. Look again."
+
+// mentionsDeciding reports whether the text of a script that is not a decide
+// script holds a word of deciding, but for the one banner sentence.
+func mentionsDeciding(js string) bool {
+	return decidingRe.MatchString(strings.ReplaceAll(js, watchBanner, ""))
+}
+
+func TestPageInventory(t *testing.T) {
+	// The notifier is a PushPort, so the notices' routes and controls exist.
+	r := newRig(t, withPush(&fakePush{}))
+	session := r.login(t)
+	for _, e := range inventory {
+		if !strings.HasPrefix(e.pattern, "GET ") {
+			continue
+		}
+		path := strings.TrimSuffix(strings.TrimPrefix(e.pattern, "GET "), "{$}")
+		if e.path != "" {
+			path = e.path
+		}
+		var w *httptest.ResponseRecorder
+		if e.authed {
+			w = r.getWith(path, session)
+		} else {
+			w = r.do("GET", path, nil, nil)
+		}
+		if e.kind == "redirect" {
+			if w.Code != 308 || w.Header().Get("Location") != path+"/" {
+				t.Errorf("%s: %d, Location %q", e.pattern, w.Code, w.Header().Get("Location"))
+			}
+			checkHeaders(t, e.pattern, w)
+			continue
+		}
+		if w.Code != 200 {
+			t.Errorf("%s: status %d", e.pattern, w.Code)
+			continue
+		}
+		switch {
+		case passkeyRoutes[e.pattern]:
+			checkHeadersGet(t, e.pattern, w, "(self)")
+		case cacheOverride[e.pattern] != nil:
+			checkHeadersWith(t, e.pattern, w, "()", cacheOverride[e.pattern])
+		default:
+			checkHeaders(t, e.pattern, w)
+		}
+		body := w.Body.String()
+		switch e.kind {
+		case "page":
+			if ct := w.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+				t.Errorf("%s: content type %q", e.pattern, ct)
+			}
+			for _, f := range inspectPage(body, e.controls, deciders[e.pattern]) {
+				t.Errorf("%s: %s", e.pattern, f)
+			}
+			// A decider is listed because it holds the form: the
+			// inventory's page shows it.
+			if deciders[e.pattern] && !strings.Contains(body, `<script src="/static/decide.js"></script>`) {
+				t.Errorf("%s: a decider without its form", e.pattern)
+			}
+			// The notices' script and the manifest are the card list's alone.
+			if pushPages[e.pattern] {
+				for _, p := range []string{"<script src=\"/static/push.js\"></script>", "<link rel=\"manifest\" href=\"/manifest.webmanifest\">", "<link rel=\"apple-touch-icon\""} {
+					if !strings.Contains(body, p) {
+						t.Errorf("%s: lacks %q", e.pattern, p)
+					}
+				}
+			} else {
+				for _, p := range []string{"/static/push.js", "/manifest.webmanifest", "apple-touch-icon", "notices"} {
+					if strings.Contains(body, p) {
+						t.Errorf("%s: holds %q, which only the card list may", e.pattern, p)
+					}
+				}
+			}
+			if strings.Contains(strings.ToLower(body), "<form") {
+				t.Errorf("%s: a form, and none exists yet", e.pattern)
+			}
+		case "asset":
+			if externalRe.MatchString(body) {
+				t.Errorf("%s: an external address", e.pattern)
+			}
+			if strings.HasSuffix(path, ".js") && !decideAssets[path] && mentionsDeciding(body) {
+				t.Errorf("%s: the script mentions deciding", e.pattern)
+			}
+		case "text":
+			if body != "ok\n" {
+				t.Errorf("%s: %q", e.pattern, body)
+			}
+		}
+	}
+}
+
+// TestInspectPageSeesWhatItLooksFor shows the inventory check on pages that
+// break each rule, and on one that breaks none.
+func TestInspectPageSeesWhatItLooksFor(t *testing.T) {
+	clean := `<!doctype html><html lang="en"><head><link rel="stylesheet" href="/static/app.css"></head><body><main><button id="start" type="button">Go</button><script src="/static/pair.js"></script></main></body></html>`
+	if f := inspectPage(clean, []string{"button#start"}, false); len(f) != 0 {
+		t.Errorf("a clean page: %v", f)
+	}
+	for name, page := range map[string]string{
+		"inline script":       `<script>x()</script>`,
+		"inline script src":   `<script src="https://cdn.example/x.js"></script>`,
+		"style attribute":     `<p style="color:red">x</p>`,
+		"style element":       `<style>p{}</style>`,
+		"event handler":       `<p onclick="x()">x</p>`,
+		"javascript link":     `<a href="javascript:x()">x</a>`,
+		"external image":      `<img src="https://evil.example/p.png">`,
+		"protocol-relative":   `<link rel="stylesheet" href="//evil.example/a.css">`,
+		"a form":              `<form action="/x" method="post"></form>`,
+		"unlisted button":     `<button id="other" type="button">x</button>`,
+		"approve form":        `<form action="/cards/1/approve" method="post"></form>`,
+		"decide id":           `<div id="decide"></div>`,
+		"deny class":          `<p class="deny-now">x</p>`,
+		"data attribute":      `<p data-action="approve">x</p>`,
+		"aria label":          `<p aria-label="Approve this card">x</p>`,
+		"later link":          `<a href="/cards/1/later">x</a>`,
+		"relative address":    `<a href="cards">x</a>`,
+		"an iframe":           `<iframe src="/x"></iframe>`,
+		"hidden approve btn":  `<button id="start" name="approve" type="button">x</button>`,
+		"the deciding script": `<script src="/static/decide.js"></script>`,
+		"a sign-off box":      `<input type="checkbox" id="signoff-0">`,
+		"an offer control":    `<p data-offer="open">x</p>`,
+	} {
+		if f := inspectPage(page, []string{"button#start"}, false); len(f) == 0 {
+			t.Errorf("%s: no finding", name)
+		}
+	}
+	// A page that may decide is not held to the words, only to the rest.
+	if f := inspectPage(`<button id="start" name="approve" type="button">x</button><script src="/static/decide.js"></script>`, []string{"button#start"}, true); len(f) != 0 {
+		t.Errorf("a decider: %v", f)
+	}
+}
+
+// TestDecideControlOnlyOnTheCardPage: the Card page is the one decider, and
+// its form fails the rule a page that may not decide is held to, so a decide
+// control on any other route would fail the inventory.
+func TestDecideControlOnlyOnTheCardPage(t *testing.T) {
+	if len(deciders) != 1 || !deciders["GET /cards/{id}"] {
+		t.Fatalf("deciders %v: the Card page and no other", deciders)
+	}
+	r := newRig(t)
+	s := r.login(t)
+	card := r.getWith("/cards/"+testCardID, s).Body.String()
+	var controls []string
+	for _, e := range inventory {
+		if e.pattern == "GET /cards/{id}" {
+			controls = e.controls
+		}
+	}
+	if f := inspectPage(card, controls, true); len(f) != 0 {
+		t.Errorf("the Card page as a decider: %v", f)
+	}
+	joined := strings.Join(inspectPage(card, controls, false), "; ")
+	for _, want := range []string{"a deciding script", "attribute that looks like deciding id approve", "attribute that looks like deciding id signoff-0"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("the Card page held as a page that may not decide: no %q in %s", want, joined)
+		}
+	}
+}
+
+// TestSeatCookiesOnlyFromTheLoginAPI checks that no route sets a cookie,
+// whatever it is sent, but the three of the login, and those only the
+// cookies listed for them, each with the flags of the app's cookies.
+func TestSeatCookiesOnlyFromTheLoginAPI(t *testing.T) {
+	r := newRig(t)
+	for _, e := range inventory {
+		method, path, _ := strings.Cut(e.pattern, " ")
+		path = strings.TrimSuffix(path, "{$}")
+		req := newRequest(method, path, strings.NewReader("{}"))
+		req.Header.Set("Origin", testOrigin)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Cookie", "a=b")
+		w := httptest.NewRecorder()
+		r.h.ServeHTTP(w, req)
+		allowed := cookieRoutes[e.pattern]
+		for _, c := range w.Result().Cookies() {
+			ok := false
+			for _, name := range allowed {
+				ok = ok || c.Name == name
+			}
+			if !ok {
+				t.Errorf("%s sets the cookie %q", e.pattern, c.Name)
+			}
+			checkCookieFlags(t, e.pattern, c)
+		}
+	}
+	for p := range cookieRoutes {
+		found := false
+		for _, e := range inventory {
+			found = found || e.pattern == p
+		}
+		if !found {
+			t.Errorf("cookie route %q is not a route", p)
+		}
+	}
+}

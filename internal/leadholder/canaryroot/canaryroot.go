@@ -8,6 +8,19 @@
 // state root must carry a marker that provisioning wrote for this project and
 // nothing else wrote (CheckMarker). [Check] does both, after the project.
 //
+// # Two reserved prefixes, two kinds of root
+//
+// The rule is chosen by the project's prefix (leadrole.ReservedOf). A
+// throwaway- project is the canary's: its state root carries the marker
+// canary-root.json, which names the one project (MarkerName, WriteMarker). A
+// scratch- project is one of the leads of a scratch place, and one state root
+// holds several of them, so its root marker names no project: scratch-root.json
+// (ScratchMarkerName). Only the owner's command writes it (WriteScratchMarker);
+// the daemon and the holder only check it, so a daemon cannot make the place
+// gate for itself. One root is a canary root or a scratch root, never both: a
+// root that carries the marker of the other kind is refused, whichever marker
+// it also carries. A project with neither prefix is refused.
+//
 // # The default folders
 //
 // The defaults are worked out twice and every result is a candidate:
@@ -75,8 +88,14 @@ import (
 	"ataniq/internal/leadrole"
 )
 
-// MarkerName is the file name of the marker, in the state root.
+// MarkerName is the file name of the marker of a throwaway project, in the
+// state root.
 const MarkerName = "canary-root.json"
+
+// ScratchMarkerName is the file name of the root marker of a scratch place, in
+// the state root. It holds no project name: one scratch root holds several
+// leads.
+const ScratchMarkerName = "scratch-root.json"
 
 // WaiverText is the line that says the canary slice runs without a
 // qualification record for the sandbox, which assertion 10 would otherwise
@@ -105,10 +124,20 @@ const (
 	// CodeNoMarker: the state root has no marker.
 	CodeNoMarker Code = "no-marker"
 	// CodeBadMarker: the marker is not a regular file of the caller with
-	// mode 0600, at most 256 bytes and the exact content for the project.
+	// mode 0600, at most 256 bytes and the exact content for the project
+	// (for a scratch project, the exact content of the scratch root marker).
 	CodeBadMarker Code = "bad-marker"
-	// CodeNotThrowaway: the project does not carry the throwaway prefix.
-	CodeNotThrowaway Code = "not-throwaway"
+	// CodeNotReserved: the project carries neither reserved prefix
+	// (throwaway- or scratch-). The string is "not-throwaway", the value it
+	// always had, so a caller that matches on it keeps working.
+	CodeNotReserved Code = "not-throwaway"
+	// CodeNotThrowaway is the former name of CodeNotReserved.
+	CodeNotThrowaway = CodeNotReserved
+	// CodeWrongKind: the state root carries the marker of the other kind of
+	// root (a scratch root marker for a throwaway project, or a canary
+	// marker for a scratch project). One root is a canary root or a scratch
+	// root, never both.
+	CodeWrongKind Code = "wrong-kind"
 )
 
 // RefusedError is the error of every refusal of this package. A caller tells
@@ -355,10 +384,15 @@ func (e env) checkRoots(stateRoot, runtimeRoot string, getenv func(string) strin
 	return nil
 }
 
-// markerContent returns the exact content of the marker for a project.
+// markerContent returns the exact content of the marker for a throwaway
+// project.
 func markerContent(project string) string {
 	return `{"marker":"ataniq-canary-root","version":1,"project":"` + project + `"}` + "\n"
 }
+
+// scratchMarkerContent is the exact content of the scratch root marker. It
+// names no project.
+const scratchMarkerContent = `{"marker":"ataniq-scratch-root","version":1}` + "\n"
 
 // maxMarkerSize is the largest accepted marker, in bytes.
 const maxMarkerSize = 256
@@ -370,20 +404,71 @@ func requireThrowaway(project string) error {
 	return nil
 }
 
-// CheckMarker requires the marker of stateRoot for project: a regular file, not
+// requireReserved returns the kind of the project's prefix, or a refusal when
+// the project carries neither prefix.
+func requireReserved(project string) (leadrole.Reserved, error) {
+	kind, ok := leadrole.ReservedOf(project)
+	if !ok {
+		return 0, refuse(CodeNotReserved, "the project %q carries neither the throwaway nor the scratch prefix", project)
+	}
+	return kind, nil
+}
+
+// CheckMarker requires the marker of stateRoot for project, by the kind of the
+// project's prefix, and refuses a project with neither prefix.
+//
+// For a throwaway project the marker is canary-root.json: a regular file, not
 // a symbolic link, owned by the caller, mode 0600, at most 256 bytes, with
-// exactly the content WriteMarker writes for the project. The project must
-// carry the throwaway prefix. It does not look at where stateRoot is; use
-// Check for that.
+// exactly the content WriteMarker writes for the project. For a scratch
+// project it is scratch-root.json with exactly the content WriteScratchMarker
+// writes, the same file rules, and it names no project. A state root that
+// carries the other kind's marker, whatever it holds, is refused with
+// CodeWrongKind. It does not look at where stateRoot is; use Check for that.
 func CheckMarker(stateRoot, project string) error {
 	return systemEnv().checkMarker(stateRoot, project)
 }
 
 func (e env) checkMarker(stateRoot, project string) error {
-	if err := requireThrowaway(project); err != nil {
+	kind, err := requireReserved(project)
+	if err != nil {
 		return err
 	}
-	path := filepath.Join(stateRoot, MarkerName)
+	return e.checkMarkerOf(stateRoot, project, kind)
+}
+
+// checkMarkerOf is checkMarker for a project whose kind is known.
+func (e env) checkMarkerOf(stateRoot, project string, kind leadrole.Reserved) error {
+	if kind == leadrole.ReservedScratch {
+		if err := e.refuseMarkerOf(stateRoot, MarkerName, kind); err != nil {
+			return err
+		}
+		return e.checkFile(filepath.Join(stateRoot, ScratchMarkerName), scratchMarkerContent, "the scratch root marker")
+	}
+	if err := e.refuseMarkerOf(stateRoot, ScratchMarkerName, kind); err != nil {
+		return err
+	}
+	return e.checkFile(filepath.Join(stateRoot, MarkerName), markerContent(project), fmt.Sprintf("the marker of project %q", project))
+}
+
+// refuseMarkerOf refuses a state root that has anything at name, the marker of
+// the other kind than kind. An entry of any type counts, a link or a named
+// pipe included, and so does one that cannot be examined: the check fails
+// closed.
+func (e env) refuseMarkerOf(stateRoot, name string, kind leadrole.Reserved) error {
+	path := filepath.Join(stateRoot, name)
+	_, err := os.Lstat(path)
+	switch {
+	case err == nil:
+		return refuse(CodeWrongKind, "the state root carries %s, the marker of the other kind of root, and this is a %s project", name, kind)
+	case errors.Is(err, fs.ErrNotExist) || errors.Is(err, unix.ENOTDIR):
+		return nil
+	}
+	return refuse(CodeWrongKind, "cannot examine %s, the marker of the other kind of root: %v", path, err)
+}
+
+// checkFile judges the marker file at path by its handle and wants content,
+// which is what; the refusal for another content says so.
+func (e env) checkFile(path, content, what string) error {
 	// O_NONBLOCK so that a named pipe cannot hold the open; the file is
 	// judged by its handle, not by a path that could change.
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
@@ -414,40 +499,65 @@ func (e env) checkMarker(stateRoot, project string) error {
 	if err != nil && n == 0 {
 		return refuse(CodeBadMarker, "cannot read the marker %s: %v", path, err)
 	}
-	if string(buf[:n]) != markerContent(project) {
-		return refuse(CodeBadMarker, "the marker %s does not hold the marker of project %q", path, project)
+	if string(buf[:n]) != content {
+		return refuse(CodeBadMarker, "the marker %s does not hold %s", path, what)
 	}
 	return nil
 }
 
-// Check requires, in this order, that the project carries the throwaway prefix,
-// that CheckRoots accepts the two roots, and that CheckMarker accepts the
-// state root. Each refusal is a *RefusedError.
+// Check requires, in this order, that the project carries a reserved prefix
+// (throwaway- or scratch-), that CheckRoots accepts the two roots, and that the
+// state root carries the marker of the project's kind (see CheckMarker): the
+// per-project canary-root.json for a throwaway project, the root marker
+// scratch-root.json for a scratch project. Each refusal is a *RefusedError.
 func Check(stateRoot, runtimeRoot, project string, getenv func(string) string) error {
 	return systemEnv().check(stateRoot, runtimeRoot, project, getenv)
 }
 
 func (e env) check(stateRoot, runtimeRoot, project string, getenv func(string) string) error {
-	if err := requireThrowaway(project); err != nil {
+	kind, err := requireReserved(project)
+	if err != nil {
 		return err
 	}
 	if err := e.checkRoots(stateRoot, runtimeRoot, getenv); err != nil {
 		return err
 	}
-	return e.checkMarker(stateRoot, project)
+	return e.checkMarkerOf(stateRoot, project, kind)
 }
 
 // WriteMarker creates the marker of stateRoot for project: mode 0600, the
 // exact content CheckMarker requires. The file is created exclusively and
 // without following a link, and written by its handle, so WriteMarker fails
 // when anything is already at the marker's path. The state root must exist.
-// The project must carry the throwaway prefix. Provisioning calls it as its
-// last act.
+// The project must carry the throwaway prefix, and the state root must not
+// carry the scratch root marker. Provisioning calls it as its last act.
 func WriteMarker(stateRoot, project string) error {
 	if err := requireThrowaway(project); err != nil {
 		return err
 	}
-	path := filepath.Join(stateRoot, MarkerName)
+	if err := systemEnv().refuseMarkerOf(stateRoot, ScratchMarkerName, leadrole.ReservedThrowaway); err != nil {
+		return err
+	}
+	return writeExclusive(filepath.Join(stateRoot, MarkerName), markerContent(project))
+}
+
+// WriteScratchMarker creates the root marker of a scratch place in stateRoot:
+// mode 0600, the exact content CheckMarker requires of a scratch project,
+// naming no project. Only the owner's command calls it; no daemon and no
+// holder does. It creates the file the way WriteMarker does (exclusively,
+// without following a link, by its handle), so it fails when anything is
+// already at the marker's path, and it fails with CodeWrongKind when the state
+// root carries the canary marker. The state root must exist.
+func WriteScratchMarker(stateRoot string) error {
+	if err := systemEnv().refuseMarkerOf(stateRoot, MarkerName, leadrole.ReservedScratch); err != nil {
+		return err
+	}
+	return writeExclusive(filepath.Join(stateRoot, ScratchMarkerName), scratchMarkerContent)
+}
+
+// writeExclusive creates path with mode 0600 and content, exclusively and
+// without following a link, and removes it again when the write fails.
+func writeExclusive(path, content string) error {
 	fd, err := unix.Open(path, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
 	if err != nil {
 		return fmt.Errorf("create the marker %s: %w", path, err)
@@ -456,7 +566,7 @@ func WriteMarker(stateRoot, project string) error {
 	// The umask may have cleared bits of the mode; the marker is 0600 exactly.
 	werr := unix.Fchmod(fd, 0o600)
 	if werr == nil {
-		_, werr = f.WriteString(markerContent(project))
+		_, werr = f.WriteString(content)
 	}
 	if werr == nil {
 		werr = f.Sync()

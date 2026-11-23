@@ -20,8 +20,21 @@
 //     there for the rules. [Config.CheckRoots] runs the shared root check of
 //     internal/leadholder/canaryroot, marker included, and the daemon calls it
 //     before it listens.
+//   - [ReadScratchConfig] reads the scratch config, the owner-only file of
+//     scratch mode that lists up to [MaxScratchLeads] leads, with the same
+//     file rules as [ReadConfig]. [ScratchConfig.Leads] derives from it the
+//     validated [Config] of each lead, of the scratch kind, so that every rule
+//     of the canary config applies to each lead without a copy.
 //   - [Names] and [RoleOf] map the role "<project>/lead" to the layout and
-//     intake role "<project>-lead" and the unit name, and back.
+//     intake role "<project>-lead" and the unit name, and back. [NamesFor] and
+//     [RoleOfFor] do the same for the other reserved kind, the scratch lead
+//     (leadrole.ScratchPrefix), which [Config.Reserved] selects; the zero value
+//     is the throwaway kind, so the canary is unchanged. Everything of the
+//     package that takes a role follows the kind: the config's checks, its
+//     layout, the holder's runtime folder, the preflight ([NewPreflightFor]),
+//     the admission ([NewAdmissionFor]) and the evidence path, which is
+//     <state root>/evidence/<layout role>.jsonl for a scratch lead so that
+//     leads that share a state root never share a file.
 //   - [Preflight] satisfies leadlifecycle.Preflight and passes for the config's
 //     role only.
 //   - [HolderCommand] satisfies leadlifecycle.HolderCommand. It builds the

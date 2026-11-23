@@ -87,11 +87,13 @@ These are the nine rules, with the place that enforces each.
    cannot be read give `unknown` in `idle`; a screen no recogniser knows gives
    `Known` false in `screen`; `Deliver` treats every state but `idle` as a
    reason to stop.
-9. **Tested versions only.** `idle.Lookup` is the one table. `Deliver` looks
-   the session's runtime and version up before it takes the input lock, and a
+9. **Tested versions only.** `versions.Lookup` is the one table (see
+   [The tested table](#the-tested-table)). `Deliver` looks the session's runtime
+   and version up with `idle.Lookup` before it takes the input lock, and a
    pair that is not in the table gives `untested version` with the session
-   untouched. `screen.For` and `title.For` know the same two pairs and no
-   other. `command` records the refusal as `untested-version`.
+   untouched. `screen.For` and `title.For` read the same table and know the same
+   two pairs and no other. `command` records the refusal as
+   `untested-version`.
 
 ## The tested table
 
@@ -100,9 +102,15 @@ These are the nine rules, with the place that enforces each.
 | claude | 2.1.325 | | `claude-code` |
 | codex | 0.169 | 0.169.0 | `codex` |
 
-`idle.Tested` returns this table. Any other runtime or version is refused. A
-neighbouring version is not guessed from: claude 2.1.326 and codex 0.170 are
-refused.
+The table is one variable in `internal/inject/versions`, and `versions.Tested`
+returns it; `idle.Tested` returns the same rows. `title.For`, `screen.For` and
+`idle.Lookup` all look a runtime and version up there and keep only the rules
+of each runtime, so the packages cannot disagree about which versions are
+tested (a test checks it). Each entry also names its fixture set, the folder of
+recorded screens under `internal/inject/screen/testdata`, and the recording
+files of the titles and OSC 7501 reports, and a test checks that they exist.
+Any other runtime or version is refused. A neighbouring version is not guessed
+from: claude 2.1.326 and codex 0.170 are refused.
 
 "Tested" here means two things, and no more:
 
@@ -122,6 +130,43 @@ except in a build with the `ataniq_canary` tag, under `--canary`, whose bridge
 is new code that has not run against a real agent either.
 This library has never been run against a real agent. See
 [Limits](#limits-and-what-is-not-established).
+
+### Adding a version
+
+A new version of a runtime is a table entry, recorded fixtures and a review. It
+is not an edit of the packages that read the agent.
+
+1. Record the screens, window titles and OSC 7501 reports of the new version
+   from attended runs, with the screen recorder: a scratch lead whose config
+   says `"record_screens": true` writes them, raw, into the `record` folder of
+   its runtime folder, one pair in the fixture format for each distinct screen,
+   and a sample every 3 seconds of a working screen that never stands still
+   (see [Recording screens](scratch-leads.md#recording-screens)). Scrub them by
+   hand as [The fixtures](#the-fixtures) says, and delete the folder once the
+   fixtures are made: a recording of the login screen holds a login URL and
+   code. Put the screens in
+   `internal/inject/screen/testdata/<runtime>-<version>/` and the titles and
+   reports in the files of `internal/inject/title/testdata` and
+   `internal/inject/osc7501/testdata`, with the same kinds of screen the
+   coverage test asks of the set.
+2. Replay them against the existing rules. Where the new version draws
+   something the rules misread, that is a finding to review, with the fixture
+   that shows it, before any rule changes. Never edit the rules of a runtime
+   for a version that has no fixtures.
+3. Add the entry to `internal/inject/versions/versions.go`: runtime, version,
+   any other spelling the runtime reports itself with, the app name of its
+   reports, its fixture set and its recording files. Add its row to the table
+   above. The tests of `versions` check that the fixture folder and the
+   recordings exist, and the tests of `title`, `screen` and `idle` that all
+   three know the entry.
+4. Review the change together with the fixtures. Where the run kit should use
+   the version, set `RUNTIME_VERSION` in
+   `qualification/canary/run/canary-prepare.sh` to it; a test in `tests/` checks
+   that it is a listed version and names that entry's fixture folder.
+
+An entry is never added without its fixtures. Until it is, the version is
+untested and stays refused with `untested version`, as every unknown version
+does.
 
 ## Idle classification
 

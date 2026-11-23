@@ -21,36 +21,48 @@ Today the daemon starts, stops and manages no lead. It starts, signals and
 stops no unit, at start-up, while it serves and at shutdown. No flag and no
 protocol operation can make it. Against a fresh state folder it knows no role
 at all, because no command of this build defines one. It answers two read-only
-questions on a local socket, `hello` and `status`.
+questions on a local socket, `hello` and `status`, and by default it opens no
+network listener. **The one network listener is the seat gate**, in a build with
+the `ataniq_ownerchannel` tag and only under `ataniqd run --owner-channel
+--seat-gate ADDR`: a TCP listener on one address of the host, for the seat app of
+the owner's phone (see [the seat gate](#the-seat-gate) and
+[the seat gate operator guide](seat-gate.md)). Without that flag nothing listens
+on the network.
 
 **The exception is canary mode.** In a build with the `ataniq_canary` tag, and
 only under `ataniqd run --canary CONFIG`, the daemon serves five more
 operations (`define`, `start`, `ticket`, `inject` and `stop`) for the one
 throwaway role that the config names, and then starts and stops that lead's
-unit. [The canary slice guide](canary-slice.md) describes it. Release builds
-do not contain canary mode, and a tagged build without `--canary` is the
-read-only skeleton this guide describes. Everything below is about that
-skeleton unless it says otherwise.
+unit. [The canary slice guide](canary-slice.md) describes it. **Scratch mode is
+the second exception**, in the same tagged build and under `ataniqd run
+--scratch CONFIG` alone (it excludes `--canary`): the daemon serves six more
+operations, `lead.list`, `lead.define`, `lead.start`, `lead.stop`, `lead.ticket`
+and `lead.inject`, for up to eight scratch leads, with a durable receipt for each
+command. [The scratch leads guide](scratch-leads.md) describes it. Release
+builds contain neither mode, and a tagged build without `--canary` and
+`--scratch` is the read-only skeleton this guide describes. Everything below is
+about that skeleton unless it says otherwise.
 
 These are not part of it: a real lead, the holder, a sandbox, injection of
 instructions into a session, any console integration and any Qargi
 integration. The list of what is not built is at the [end](#not-built).
 
 The tree has provisional code for some of these, and the daemon uses none of
-it, except in a build with the `ataniq_canary` tag, under `--canary` (see
-[the canary slice guide](canary-slice.md)): the scratch-only holder and the
+it, except in a build with the `ataniq_canary` tag, under `--canary` or
+`--scratch` (see [the canary slice guide](canary-slice.md) and [the scratch
+leads guide](scratch-leads.md)): the scratch-only holder and the
 console's attach client ([the lead holder guide](lead-holder.md)), the sandbox
 proposal ([the lead sandbox guide](lead-sandbox.md)), the injection library
 ([the lead injection guide](lead-injection.md)), and the exchange mirror with
 its intake command ([the lead intake guide](lead-intake.md)). Without that tag
-and flag, none of that code imports a package of this guide, and no package of
+and a flag, none of that code imports a package of this guide, and no package of
 this guide imports it. In a tagged build the daemon's canary files import the
 holder's control wire, and the canary package they use for the admission
 imports the injection library's message rules.
 
 | Package or command | What it is | What the daemon does with it today |
 | --- | --- | --- |
-| [`cmd/ataniqd`](../cmd/ataniqd/doc.go) | The command: `run`, `status`, `version`; in a build with the `ataniq_canary` tag also `run --canary`, `canary` and `--version`. | It is the daemon. |
+| [`cmd/ataniqd`](../cmd/ataniqd/doc.go) | The command: `run`, `status`, `version`; in a build with the `ataniq_canary` tag also `run --canary`, `run --scratch`, `canary` and `--version`; in a build with the `ataniq_ownerchannel` tag also `run --owner-channel`, `run --seat-gate` and `seat-gate`. | It is the daemon. |
 | [`internal/leaddaemon`](../internal/leaddaemon/doc.go) | Start-up order, shutdown, exit codes, the status handler and the status client. | All of it. |
 | [`internal/clientapi`](../internal/clientapi/doc.go) | The client protocol `ataniq.client/1`: socket, server, client. | Serves `hello` and `status`. |
 | [`internal/leadregistry`](../internal/leadregistry/doc.go) | The durable journal of lead roles. | Opens it and reads it. The reconcile at start writes what it finds about a role; nothing defines a role or launches one. |
@@ -58,7 +70,7 @@ imports the injection library's message rules.
 | [`internal/leadlock`](../internal/leadlock/doc.go) | The two kinds of file lock. | Takes the daemon lock and the runtime folder lock. Takes no role lock. |
 | [`internal/leadunit`](../internal/leadunit/doc.go) | The unit manager interface, the unit specification and an in-memory fake. | The interface only. |
 | [`internal/leadunit/systemdmgr`](../internal/leadunit/systemdmgr/doc.go) | The unit manager for the systemd user manager. | Reads units for the one reconcile at start. |
-| [`internal/leadlifecycle`](../internal/leadlifecycle/doc.go) | Start, stop and reconcile of roles, coordinators included (see [below](#coordinators-in-the-lifecycle)). | Calls reconcile once. Never start, stop, mark or clear a stall. |
+| [`internal/leadlifecycle`](../internal/leadlifecycle/doc.go) | Start, stop and reconcile of roles, coordinators included (see [below](#coordinators-in-the-lifecycle)). | Calls reconcile once, at start. Never start, stop, mark or clear a stall. In scratch mode (tagged build) a timer also settles one role's pending launch when its window ends ([below](#the-late-start-window)). |
 | [`internal/pidfd`](../internal/pidfd/doc.go) | Process identity and boot identity primitives. | Reads the boot identity. |
 | [`internal/systemd`](../internal/systemd/doc.go) | Control group, `systemctl show` and bounded command helpers. | Used by the unit manager. |
 | [`qualification/leadunit/cmd/leadunit-qualify`](../qualification/leadunit/cmd/leadunit-qualify/doc.go) | An opt-in harness for the unit manager. | None. It is run by hand. |
@@ -88,16 +100,21 @@ The command is Linux only. On another platform it prints that and exits 1.
 ### Commands and flags
 
 ```text
-ataniqd run [--state-dir DIR] [--runtime-dir DIR] [--owner-channel]
+ataniqd run [--state-dir DIR] [--runtime-dir DIR] [--owner-channel [--seat-gate ADDR]]
 ataniqd status [--socket PATH] [--json]
 ataniqd version
+ataniqd seat-gate init|pins [--state-dir DIR]
 ```
+
+`--owner-channel`, `--seat-gate` and `seat-gate` are in the tagged build only
+(see [the owner channel](#the-owner-channel-tagged-build-only)).
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `run --state-dir DIR` | `$XDG_STATE_HOME/ataniq`, else `$HOME/.local/state/ataniq` | The state folder. |
 | `run --runtime-dir DIR` | `$XDG_RUNTIME_DIR/ataniq` | The folder that holds `daemon.sock`. |
 | `run --owner-channel` | off | Tagged build only (tag `ataniq_ownerchannel`): serve the owner connection. See [the owner channel](#the-owner-channel-tagged-build-only). |
+| `run --seat-gate ADDR` | off | Tagged build only, with `--owner-channel`: also serve the seat gate on ADDR. See [the seat gate](#the-seat-gate). |
 | `status --socket PATH` | `$XDG_RUNTIME_DIR/ataniq/daemon.sock` | The socket to ask. |
 | `status --json` | off | Print the status result as JSON. |
 
@@ -159,7 +176,9 @@ fails, with one line on standard error:
    the manager did not answer for a role, when it ran out of time, and while a
    cut of the registry is unacknowledged. None of these is fatal; a failure of
    the registry is (see [Reconcile](#reconcile-and-what-starts-by-itself)).
-   Reconcile does not run again on a timer.
+   Reconcile does not run again on a timer; in scratch mode (a build with the
+   `ataniq_canary` tag) a timer settles a launch that is still pending at its
+   deadline (see [the late-start window](#the-late-start-window)).
 8. **stale socket**: with both locks held, remove a socket file an earlier
    daemon left. It removes a socket owned by the caller and refuses anything
    else at that name.
@@ -240,6 +259,13 @@ tests of that code run with `make test-ownerchannel` (the tagged packages with
 the tag, and again with the tags `ataniq_ownerchannel` and `ataniq_canary` for the
 packages that hold both); `make test` stays untagged and skips them.
 
+`make ownerchannel-build` builds the daemon with the tag, and nothing else, into
+`build/owner/ataniqd` (the folder is ignored by git). It runs `make doctor`
+first and starts nothing. It is the one target that builds a binary with the
+tag: no release, no CI job and no other target uses it or depends on it, and the
+tests in `tests/ownerchannel_tag_test.go` refuse any other recipe that names
+the tag. The binary is for the owner's own trial of the unqualified channel.
+
 ### Starting it
 
 ```text
@@ -260,11 +286,115 @@ standard error, the STAND-IN banner:
 ataniqd: owner channel: STAND-IN door, scratch state: no real approval
 ```
 
+### The seat gate
+
+```text
+ataniqd seat-gate init [--state-dir DIR]
+ataniqd seat-gate pins [--state-dir DIR]
+ataniqd run --owner-channel --seat-gate ADDR [--state-dir DIR] [--runtime-dir DIR]
+```
+
+The seat gate is the link of the seat app, which serves the owner's phone from
+the authority host, to this daemon (see
+[the seat gate's design](design/seat-gate.md); the operator's steps, the firewall
+and proxy rules and the troubleshooting are in
+[the seat gate operator guide](seat-gate.md)). It is a TCP listener inside the
+daemon, in the tagged build only, and opened only with `--seat-gate`, which
+needs `--owner-channel`. Without the flag nothing listens on the network: this
+is the daemon's only network listener, and a build without the tag has none. It
+is provisional and **not qualified**, and it serves the same scratch service as
+the owner connection, behind the STAND-IN banner.
+
+- ADDR is one IP address of this host and a port, such as `192.0.2.10:7443` or
+  `[2001:db8::10]:7443`. A host name, a wildcard address (`0.0.0.0`, `[::]`), a
+  multicast or broadcast address, an address with a zone and a zero port are
+  refused with exit code 10 before the daemon takes a lock. The owner's
+  firewall must let only the authority host reach the port.
+- The gate's key is in `owner/gate/` of the state folder (`cert.pem` and
+  `key.pem`, the key 0600, the folder 0700). `ataniqd seat-gate init` makes it
+  and prints its fingerprint, the pin the seat is given; a key already there is
+  never overwritten, so a new key is made only after the old one is moved away
+  by hand.
+- The seat keys the gate lets in are pinned in `owner/gate/seat-pins`: a regular
+  file (not a link) of the daemon's user, mode 0600, at most 4 KiB, one key
+  fingerprint (64 lower-case hexadecimal digits) per line, at most 4. A blank
+  line and a line that starts with `#` are skipped. `ataniqd seat-gate pins`
+  prints the pins as the daemon reads them. The owner edits the file by hand;
+  the daemon reads it at start, so a change takes effect at the next start.
+- The daemon refuses to start, with exit code 10, without the key, without the
+  pin file, with a file that is not as above, or with no pin; the message names
+  the line at fault by its number and never prints a pin.
+- The seat origin, the address of the seat app such as
+  `https://seat.example`, is read once at start from the owner-local file
+  `ataniq/owner-local/seat-origin` in the configuration folder
+  (`$XDG_CONFIG_HOME`, else `~/.config`), with the rules of
+  `internal/ownerlocal` (a regular file, not a link, at most 1 KiB, not
+  writable by group or others; its first line). It must be `https://` and a
+  lower-case domain name, `:443` at most, with no address literal, other port,
+  path, query, fragment or user information. A change of the file takes effect
+  at the next start. Without the file, or with one that is refused or holds no
+  such origin, the daemon starts as before and the gate serves pairing and the
+  reads only.
+- The gate starts once the service is built and stops, before the service is
+  closed, when the daemon shuts down; a gate that cannot listen (the port is
+  taken) stops the daemon with exit code 18. At start the daemon prints one
+  line with the address, the gate's key fingerprint and what it serves, and no
+  pin. With an origin:
+
+```text
+ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>, seat origin https://seat.example; it serves pair, read, login, decide and watch
+```
+
+  Without one, the line says why:
+
+```text
+ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>; it serves pair, read and watch only: no seat origin is configured (the owner-local seat-origin file is missing or empty)
+```
+
+  `watch` is in the line because the daemon's service can wait for a change of
+  the pending cards, which every real start does; a service that cannot would
+  leave it out, and the line would end in "login and decide" or "pair and read
+  only".
+
+The gate speaks TLS 1.3 with pinned keys, strict frames of at most 257 KiB
+(the largest listing, card or page and the response around it) and the limits
+of `internal/seatgate`. It serves the capabilities `pair`, `read` and
+`watch`: the seat's pairing call, `seat.pair`, and the reads `owner.list`, `owner.show`,
+`owner.paths` and `owner.patch`, through `internal/approval/gatehost`, with a
+seat source that is never the decider. With a seat origin it also serves
+`login` (`seat.login-challenge`, `seat.login`) and `decide`
+(`seat.challenge`, `seat.decide`): a login and a decision from the phone,
+each a passkey assertion with user verification over a challenge the daemon
+draws from its own record of the card, verified against a key on
+`owner/keys.log` that is not revoked and the seat origin (see
+[the seat gate's design](design/seat-gate.md#the-challenge)). A challenge is
+kept in memory for 5 minutes and one use; a restart drops every one. A
+decision from the phone is journaled as confirmed by passkey, with the
+evidence of the assertion, and needs no activity at the desk; it is not
+activity at the desk either. With `watch` it serves the seat's long wait,
+`seat.wait`, which answers when the set of pending cards changes (see
+[live refresh](design/seat-gate.md#live-refresh-seatwait)): it decides nothing,
+it carries only each card's id, kind, binding digest and held mark, never card
+text, and it is served with or without a seat origin. The gate holds at most
+two waits at once for a seat. Every other operation is refused `unknown-op`.
+A seat whose key is not pinned is refused in the handshake and never reaches
+the service. On the daemon's socket `seat.pair` stays refused and the five
+seat operations (the four of login and decision, and `seat.wait`) are not served: no connection there is a seat. `owner.show`
+marks a card whose decision is journaled and not yet taken by the door
+(`"on_its_way": true`), on the socket and the gate alike.
+
+Same-user limit: a process of the daemon's user that is not in a sandbox can
+read the gate's key, add a pin, rewrite the seat origin file and edit the key
+list. Until the sandbox is qualified, the gate and every decision from the
+phone are for scratch state only, behind the STAND-IN banner.
+
 ### The scratch settings
 
 The host's side of a card is built from `owner/scratch.json` in the state
 folder, over the real journal in `owner/` and the stand-in for the planner's
-door, which keeps nothing across a restart. Its keys:
+door, which keeps nothing across a restart (its card numbers start from the
+time of day and past the journal's highest of the day, so that a restart does
+not give a new card the id of one the journal holds a decision for). Its keys:
 
 - `"door"`: must be `"stand-in"`. Any other value, or none, is refused.
 - `"roots"`: the scratch folders, one of which holds the mirror. The daemon
@@ -281,6 +411,29 @@ door, which keeps nothing across a restart. Its keys:
   scratch root, outside the state folder and apart from the mirror and the drop
   folder. The daemon
   makes it with mode 0700 when it is not there (its parent must exist).
+- `"kinds"` (optional): the kinds of credential the project accepts for a
+  phone's login and decision, by the names `"platform-passkey"`,
+  `"vault-passkey"` and `"passkey"`, each at most once. Absent or empty, every
+  kind is accepted (`"unverified"`, the stored word of a key paired without a
+  claim, is not a kind). A name that is not one of the three, or a name twice,
+  refuses the settings. A kind is what the phone's authenticator claimed, relayed
+  by the seat and not attested, so the list is advisory: it does not hold
+  against a taken-over seat. The settings carry the list as the credential
+  policy of `internal/approval/credkind` (`Scratch.KindPolicy` in
+  `internal/approval/hostadapter`), which the owner channel's service applies
+  when a phone's decision challenge is asked and when the decision is made; a
+  login checks only that the daemon knows the key's kind.
+
+- `"trial"` (optional): `true` marks the settings of the phone trial, which
+  `ataniqd trial init --state-dir DIR` writes and `ataniqd run --owner-channel
+  --trial` serves (see [the phone trial](seat-gate.md#phone-trial)): sample
+  cards only, made by `ataniqd trial submit`, decided through the real decision
+  path and applied to nothing. Trial settings name the project, the role, the
+  target, the seat, the door and the kinds, and no mirror, identity, gate,
+  drop folder, root, sandbox or work folder. The daemon refuses trial settings
+  without `--trial` and other settings with it, and checks a trial's state
+  folder and its runtime folder (`--runtime-dir`, which a trial therefore
+  always needs) against the account's default folders as above.
 
 The settings also name the project, its mirror, the role, the target, the
 commit identity, the gates and the folder requests are dropped in. `sandbox`
@@ -346,7 +499,17 @@ Covered by the end-to-end test on the stand-in:
   of an approval by a later failed run (`TestOwnerChannelOC31VerificationOutcomes`).
   Not covered: the sandbox's reach (a suite that reads the lead's home, reaches
   the network or writes outside its checkout), because the suite is a fake.
-- OC33, hostile commit headers (`TestOwnerChannelOC33HostileCommitHeaders`).
+- OC33, hostile commit headers (`TestOwnerChannelOC33HostileCommitHeaders`),
+  and a commit in another encoding
+  (`TestOwnerChannelOC33ACommitInAnotherEncodingIsRefused`). A feature commit
+  whose `encoding` header names a charset other than UTF-8 is refused
+  `request-invalid` with the line "a commit declares an encoding other than
+  UTF-8", and no card: git would convert the author's bytes from the charset
+  that header names when it prints the commit, so the owner would not be shown
+  the bytes the lead stored, and the intake refuses such a commit (see
+  [lead-intake.md](lead-intake.md)). The line is fixed and does not repeat the
+  commit's id or the header's value. The lead commits the branch again in
+  UTF-8 and asks again.
 
 Covered only on the daemon side: OC13, who may send a decision frame, in
 `ownerchannel_contract_test.go` and `owner_decider_linux_test.go` (a second
@@ -422,8 +585,9 @@ every process of the user that can reach the socket what is in the registry
 summary. A managed lead that runs in a sandbox must never see this socket.
 Keeping it away is the sandbox's job; nothing here asserts or tests it, and the
 daemon launches no sandbox, except that in a build with the `ataniq_canary`
-tag, under `--canary`, the holder it starts launches one (see
-[the canary slice guide](canary-slice.md)). The profile in
+tag, under `--canary` or `--scratch`, the holder it starts launches one (see
+[the canary slice guide](canary-slice.md) and
+[the scratch leads guide](scratch-leads.md)). The profile in
 [the lead sandbox guide](lead-sandbox.md) is an unqualified proposal that no
 lead runs in, except there.
 
@@ -546,7 +710,12 @@ registers (`Options.Extra`), each named with lower-case letters, digits and
 dashes around one dot. No release build registers one; a build with the
 `ataniq_canary` tag, under `--canary`, registers the five canary operations and
 adds the error codes `refused` and `unavailable` (see
-[the canary slice guide](canary-slice.md#the-commands)). When one is registered,
+[the canary slice guide](canary-slice.md#the-commands)), and, under
+`--scratch`, registers six more tagged operations, `lead.list`, `lead.define`,
+`lead.start`, `lead.stop`, `lead.ticket` and `lead.inject`, and adds the error
+code `conflict` (see [the scratch leads guide](scratch-leads.md#the-operations)).
+The two modes exclude each other, and release builds still register none.
+When one is registered,
 `hello` lists the two base operations and then the extensions', and says
 `"mutations":true` only when a registered extension declares that it changes
 something. A request for such an operation may carry `params`, one JSON object
@@ -898,7 +1067,9 @@ group of the previous epoch must be proven empty (a changed boot identity is
 proof in itself). Without that proof nothing starts: the start is refused and
 the role is left as it is. Only then does the lifecycle journal the launch
 intent, with the boot identity when the manager reported one, and call `Start`
-once. It never waits for readiness, and it never sets `ready`.
+once. It never waits for readiness, and it never sets `ready`. (In scratch
+mode a background observer sets `ready` afterwards, on the holder's word: see
+[the scratch leads guide](scratch-leads.md#ready).)
 
 A reply that is lost is its own error. The caller inspects and does not start
 again. A unit with exactly this epoch and intent is adopted. Otherwise the
@@ -1026,12 +1197,61 @@ decision to the window alone. For a role shown `unknown` for a cut of the
 registry, a changed boot closes the intent in the same way, and the role stays
 `unknown`.
 
-The daemon reconciles once. An intent that is still inside its window at that
-moment leaves the role `unknown` with the reason `launch-unsettled`, the
-reconcile is shown as completed, and nothing settles the intent until the daemon
-is started again. A role keeps the reason it already had when it was shown
+The daemon reconciles at start, and in scratch mode settles pending launches at
+their deadline. An intent that is still inside its window at the reconcile
+leaves the role `unknown` with the reason `launch-unsettled`, and the reconcile
+is shown as completed. A role keeps the reason it already had when it was shown
 `unknown` with `launch-reply-lost`, or for a cut of the registry with
 `registry-recovered`; only another role is given `launch-unsettled`.
+
+In scratch mode (`ataniqd run --scratch`, a build with the `ataniq_canary` tag)
+the daemon settles that intent itself, with no restart. For each role shown
+`unknown` with the reason `launch-unsettled` or `launch-reply-lost` and its
+intent pending, found when it starts serving or left by a start of its own that
+lost its reply, a timer waits until the intent's deadline (the intent's time,
+the window and the margin: 40 s) on the clock the registry uses. It then asks the
+lifecycle to settle that one role (`SettleLaunch`), which runs the code of the
+reconcile for it and no other rule: the same checks (no unit loaded, its
+control group proven empty, the window and margin passed; a changed boot
+identity settles at once) decide, and with them the intent is abandoned and the
+role recorded `stopped`, with the proof, so that it leaves the `max_running`
+count and may be started again, with the next epoch. A role shown `unknown` for
+`registry-recovered` has no timer and is left to the owner.
+
+What the timer does when it cannot settle:
+
+- **A unit is loaded at the deadline.** The role is not settled to `stopped`.
+  A unit with this epoch and intent is adopted (the intent is closed as
+  `adopted`), another unit is reported (`stale-unit`, `foreign-unit`) and the
+  intent is closed as `abandoned`; in both cases the role stays `unknown`,
+  nothing is signalled, and an explicit stop is the way out, as before. A
+  request that lands after the window is the stale-unit path above and is never
+  signalled by the timer.
+- **The manager does not answer, or the control group is not proven empty.**
+  The role is not settled: when the manager does not answer nothing changes;
+  when the control group is not proven empty the role stays `unknown` and its
+  reason becomes `control-group-not-proven-empty`, which keeps the timer armed
+  (it is one of the reasons that arm it, while the intent is pending). The timer
+  tries again after 2 s, then at doubling waits up to a minute, until the intent
+  is settled or the role no longer shows it. A repeated try with the same reason
+  writes nothing to the registry, so the retries do not grow its journal; each
+  try is a line in the daemon's log.
+- **The role's operation lock is held** (a start or a stop of the role is
+  running) or the role changed (another epoch, a proven stop): the timer waits
+  and tries again, or ends. It never waits for the lock, and holds it only for
+  one read of the registry, never across a call to the manager; the
+  lifecycle's own lock for the role keeps its settle from overlapping a start or
+  a stop, and a start is admitted only from `stopped`, `ended` or `desired`, so a
+  new unit can follow only a settle that recorded the role `stopped`.
+
+A timer ends when the intent is no longer pending, on a proven stop, on a new
+start of the role, and at shutdown, where the daemon joins it. It also ends when
+the lifecycle answers that the reconcile at start did not act on the registry's
+cut journal (a reconcile that ran out of time or failed for a role during a
+cut): nothing in a running daemon reconciles again, so no later try would be
+answered otherwise. The daemon logs one line, naming the restart that settles
+the role, and the role stays as it is shown. The daemon that is not in scratch
+mode has no timer, and the settle still needs a restart.
 
 **The window is a heuristic and not a bound.** The manager's call timeout limits
 how long the caller waits for a reply, not when systemd executes a request that
@@ -1046,6 +1266,15 @@ An explicit stop ends a unit of ours that has the record's epoch and intent or
 an older epoch, since epochs only grow and an older one cannot be newer work.
 A unit of a newer epoch, of the same epoch with another intent, or that is not
 ours is never signalled.
+
+A request of an abandoned launch can also land after the timer has settled the
+role to `stopped`. Until then the role is not told of it: the list shows the
+role `stopped` (`launch-abandoned`) and does not count it under `max_running`
+while a unit of the old epoch runs. A start of the role is refused
+(`unit-loaded`, nothing is started or signalled) because the unit's name is
+loaded, and it changes nothing the list shows. The role is shown `unknown`
+(`stale-unit`) when the daemon is restarted and the reconcile finds the unit,
+and an explicit stop ends the unit and records the role `stopped`.
 
 ### Coordinators in the lifecycle
 
@@ -1270,7 +1499,8 @@ without the tag and the flag.
 - a sandbox for a lead: the daemon launches none. The profile of
   [the lead sandbox guide](lead-sandbox.md) is an unqualified proposal; in
   canary mode the holder launches it, with assertion 10 waived;
-- readiness: nothing sets `ready`;
+- readiness: nothing sets `ready` in this skeleton; for scratch mode see
+  [the scratch leads guide](scratch-leads.md#ready);
 - delivery of instructions and the wait for an idle turn, and the quiesce of
   delivery before a stop (the interface exists, nothing implements it). The
   library of [the lead injection guide](lead-injection.md) is not joined to

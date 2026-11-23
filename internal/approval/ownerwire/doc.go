@@ -12,21 +12,41 @@
 //
 // # The operations
 //
-//	operation        params            result
-//	owner.list       none              Listing
-//	owner.show       ShowParams        ShowResult
-//	owner.paths      PageParams        PathsPage
-//	owner.patch      PageParams        PatchPage
-//	owner.decider    DeciderParams     DeciderResult
-//	owner.decide     DecisionFrame     DecideResult
-//	owner.beat       none              nothing
-//	owner.limit      LimitParams       LimitView
-//	owner.limit-set  LimitSetParams    LimitView
-//	owner.looked     none              nothing
+//	operation           params             result
+//	owner.list          none               Listing
+//	owner.show          ShowParams         ShowResult
+//	owner.paths         PageParams         PathsPage
+//	owner.patch         PageParams         PatchPage
+//	owner.decider       DeciderParams      DeciderResult
+//	owner.decide        DecisionFrame      DecideResult
+//	owner.beat          none               nothing
+//	owner.limit         LimitParams        LimitView
+//	owner.limit-set     LimitSetParams     LimitView
+//	owner.looked        none               nothing
+//	owner.pair-start    PairStartParams    PairStartResult
+//	owner.pair-status   none               PairStatus
+//	owner.pair-confirm  PairPendingParams  KeyItem
+//	owner.pair-reject   PairPendingParams  nothing
+//	owner.keys          none               KeysView
+//	owner.key-revoke    KeyRevokeParams    KeysView
+//	owner.keys-off      none               KeysView
+//	seat.pair           SeatPairParams     SeatPairResult
 //
 // [Operations] lists the names. Every type has a Decode and an Encode
 // function named after it; "none" and "nothing" are an empty object, read
 // by [DecodeNothing].
+//
+// Five more operations are the seat gate's alone, a login and a decision
+// from the owner's phone and the long wait that tells the seat when the
+// pending cards changed; the daemon's Unix socket neither serves nor
+// announces them, and [GateOperations] lists them apart:
+//
+//	operation             params               result
+//	seat.login-challenge  none                 SeatLoginChallengeResult
+//	seat.login            SeatLoginParams      SeatLoginResult
+//	seat.challenge        SeatChallengeParams  SeatChallengeResult
+//	seat.decide           SeatDecideParams     DecideResult
+//	seat.wait             SeatWaitParams       SeatWaitResult
 //
 // # Strict decoding
 //
@@ -52,6 +72,33 @@
 // any of that, so a console cannot state it, and a frame that tries is
 // refused decision-invalid.
 //
+// # The challenge of a phone decision
+//
+// A decision from the phone is a WebAuthn assertion over a challenge the
+// daemon draws and binds to its own record of the card: [DecisionChallenge]
+// hashes a domain string, the gate's key fingerprint, the frame's id, binding
+// digest and decision, the digests of its sign-offs and its reason
+// ([SignedOffDigest], [ReasonDigest]), and the daemon's nonce. A login is an
+// assertion over [LoginChallenge], whose domain string differs. Both ends call
+// these functions, so they cannot disagree on a byte. The params of
+// seat.decide are read in two parts: [DecodeSeatDecideParams] reads the
+// envelope, and the daemon checks the frame's content with
+// [CheckDecisionFrame] only after it took the challenge, so that a malformed
+// frame still burns it. [Assertion.Digest] is the digest a passkey decision
+// record keeps of the assertion.
+//
+// # The wait for a change
+//
+// seat.wait (the capability "watch") lets the seat learn that the pending set
+// changed without asking again and again. Its params carry the version the
+// seat last saw, or none; its result carries the version of the pending set
+// now, the count, and at most [MaxSeatWaitCards] cards, each only an id, a
+// kind, the binding digest and the held mark, never card text. [PendingVersion]
+// is the one function that makes a version: a digest of a canonical encoding of
+// the whole set, independent of its order, so the same set has the same version
+// after a restart. The gate answers [CodeWaitFull] when it already holds as many
+// waits for a seat as it allows.
+//
 // # Records travel as bytes
 //
 // A pending record is under digests, so it is never decoded and written
@@ -73,10 +120,46 @@
 // The lines of a patch are lead-written. Nothing here escapes them: a
 // surface shows them only through the lead-text escaping.
 //
+// # Pairing a phone and the list of deciding keys
+//
+// The owner at the desk pairs a phone in steps: owner.pair-start makes a
+// one-time pairing code and answers it, once, in [PairStartResult]; the
+// phone's side presents the code with the credential it made (seat.pair, the
+// one name that does not begin with "owner.", which is the seat app's call and
+// not the console's); the desk reads the eight words of the credential's
+// fingerprint with owner.pair-status and confirms (owner.pair-confirm) or
+// rejects (owner.pair-reject). owner.pair-status also gives the pending
+// credential a pending id, 8 random bytes in 16 lower-case hexadecimal digits
+// the daemon draws when the credential becomes pending, and confirm and reject
+// must give that id back ([PairPendingParams], required): the daemon compares
+// it to the credential pending at that moment and, when it is not that one
+// (the pairing was replaced or ran out and another took its place), changes
+// nothing and answers pairing-changed. A confirmed credential is on the list of
+// deciding keys, which owner.keys reads. owner.key-revoke and owner.keys-off
+// ("phone off") revoke one credential or all of them; a revoked credential
+// stays on the list, marked, and is never made good again.
+//
+// The pairing code is a secret. It is in the result of owner.pair-start and in
+// the params of seat.pair and nowhere else: no other result carries it, a
+// value of either type prints without it, and a refusal never holds it.
+//
+// A credential is shown by its display id, 16 lower-case hexadecimal digits:
+// the first 8 bytes of the SHA-256 of the credential id. It names the
+// credential and holds nothing of the key.
+//
+// The seat relays the registration's authenticator data and its relying party
+// id with the credential (both optional, for a seat that relays none), and the
+// daemon reads from them what the authenticator claimed: the kind its AAGUID
+// claims, the AAGUID and the backup flags. A pending [PairStatus] and a
+// [KeyItem] carry them as optional members. With attestation "none" they are
+// claims and not facts, and the desk says so where it shows them.
+//
 // # Refusals
 //
 // Every refusal is a [*record.Error] with one of the record package's
-// codes; this package declares none. A decision frame that is wrong is
+// codes; this package declares no refusal of its own. It names the words the
+// seat gate answers its operations with when the daemon refuses one
+// ([CodeChallengeStale] and the others), which no decoder here answers with. A decision frame that is wrong is
 // decision-invalid, any other payload record-invalid, a payload over its
 // cap record-too-large, and a record whose digest is not its bytes' own
 // binding-mismatch. The detail of an error is written here and never holds

@@ -53,6 +53,10 @@ func (s *Service) Tick(ctx context.Context) error {
 		return err
 	}
 	defer done()
+	// A held wait looks at the door again after a tick, which is how it
+	// notices a change made at the door that the daemon did not write (see
+	// wait.go). The poke follows the tick's work and its unlock of dmu.
+	defer s.poke()
 	s.dmu.Lock()
 	defer s.dmu.Unlock()
 	return s.reconcile(ctx)
@@ -239,7 +243,7 @@ func (s *Service) checkDoor(ctx context.Context) error {
 		case record.StateDenied, record.StateExpired, record.StateVoid, record.StateWithdrawn,
 			record.StateApplied, record.StateNotApplied:
 			s.noteEnded(e)
-			s.closeOut(ctx, p, e.State, endLine(e.State))
+			s.closeOut(ctx, p, e.State, s.endLine(e.State))
 		}
 	}
 	return nil

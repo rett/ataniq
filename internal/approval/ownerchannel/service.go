@@ -64,8 +64,25 @@ type Service struct {
 	// tmu guards the presence trackers, which are not safe for
 	// concurrent use.
 	tmu sync.Mutex
+	// pmu serialises the pairing operations and everything that changes the
+	// list of keys; pr is the one pairing, in memory, which pmu guards.
+	pmu sync.Mutex
+	pr  pairing
+	// seat holds the outstanding challenges of the seat gate, in memory: a
+	// restart drops them.
+	seat *challengeStore
 	// slot holds the one verification that may run at a time.
 	slot chan struct{}
+	// cmu makes the compare and the raise of a sign counter one step, so
+	// that verifications at once are compared in turn (see
+	// [Service.verified]). It guards counters and roomTold: by display id,
+	// the highest counter a verified assertion reported while the service
+	// ran, and the keys whose counter the list had no room left to keep,
+	// which the desk was told of. Both are in memory only. No code that
+	// holds cmu takes another lock of the service.
+	cmu      sync.Mutex
+	counters map[string]uint32
+	roomTold map[string]bool
 
 	wg   sync.WaitGroup
 	dead atomic.Bool
@@ -107,6 +124,10 @@ type Service struct {
 	idx       index
 	// pages holds the last pages that were split.
 	pages []cachedPages
+
+	// wait is the bookkeeping of [Service.WaitPending]. Its own mutex is a
+	// leaf: see wait.go for where a wait takes what.
+	wait waitState
 }
 
 // pendingCache is a decoded pending record with the digest of its bytes.
@@ -137,11 +158,20 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	if cfg.ApprovalLife < time.Minute || cfg.ApprovalLife > 24*time.Hour {
 		return nil, errors.New("ownerchannel: the approval's life is under a minute or over a day")
 	}
+	if cfg.WaitHold == 0 {
+		cfg.WaitHold = defaultWaitHold
+	}
+	if cfg.WaitHold < 0 || cfg.WaitMax < 0 {
+		return nil, errors.New("ownerchannel: the wait's hold and its limit are not negative")
+	}
+	if cfg.WaitMax == 0 {
+		cfg.WaitMax = defaultWaitMax
+	}
 	s := &Service{
 		cfg:       cfg,
 		life:      cfg.ApprovalLife,
 		slot:      make(chan struct{}, 1),
-		store:     cfg.Journal,
+		wait:      newWaitState(),
 		pending:   make(map[string]pendingCache),
 		trackers:  make(map[string]*presence.Tracker),
 		status:    make(map[string]RequestStatus),
@@ -151,7 +181,10 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 		closedOut: make(map[string]bool),
 		idx:       newIndex(),
 	}
+	s.store = &pokeJournal{Journal: cfg.Journal, poke: s.poke}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
+	s.initPairing()
+	s.seat = newChallengeStore(cfg.ChallengeRand, cfg.SeatLog)
 	// A door that cannot be reached now does not stop the service: the next
 	// tick takes up what it could not.
 	if err := s.Tick(ctx); err != nil && !errors.Is(err, ErrDoorUnavailable) {
@@ -181,7 +214,11 @@ func (s *Service) Close() error {
 	s.mu.Lock()
 	st := s.store
 	s.mu.Unlock()
-	return st.Close()
+	err := st.Close()
+	if s.cfg.Keys != nil {
+		err = errors.Join(err, s.cfg.Keys.Close())
+	}
+	return err
 }
 
 // begin admits a call: it refuses one on a closed or stopped service, and
@@ -223,18 +260,32 @@ func (s *Service) begin(ctx context.Context) (context.Context, func(), error) {
 // restart. It is the one place the service reads the clock. The reading's
 // monotonic part is dropped (Round(0)): the guard is about the wall clock,
 // and a reading from time.Now carries a monotonic one with which After and
-// Sub would ignore a wall clock that was set back.
+// Sub would ignore a wall clock that was set back. What the service shows and
+// journals is this wall reading. The pairing's lifetimes are the exception,
+// see [Service.nowBoth].
 func (s *Service) now() time.Time {
-	t := s.cfg.Now().Round(0)
+	_, wall := s.nowBoth()
+	return wall
+}
+
+// nowBoth is now with the reading as the clock gave it as well: the wall
+// reading, which is what now returns and what the service shows and journals,
+// and the raw one, whose monotonic part (when the clock has one, as time.Now
+// does) the pairing needs to measure the ten minutes of a code and of a
+// pending credential, so that a wall clock set back does not lengthen them.
+// The clock is read once and watched as in now.
+func (s *Service) nowBoth() (raw, wall time.Time) {
+	raw = s.cfg.Now()
+	wall = raw.Round(0)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch {
-	case s.high.IsZero() || t.After(s.high):
-		s.high = t
-	case s.high.Sub(t) > clockBackLimit:
+	case s.high.IsZero() || wall.After(s.high):
+		s.high = wall
+	case s.high.Sub(wall) > clockBackLimit:
 		s.back = true
 	}
-	return t
+	return raw, wall
 }
 
 // clockMovedBack reports whether the clock moved back by more than a minute
@@ -294,10 +345,11 @@ type callStore struct{ gen atomic.Int64 }
 
 // handles returns what the writes through the handles go to.
 func (s *Service) handles() HandleWrites {
+	var h HandleWrites = directHandles{}
 	if s.cfg.Handles != nil {
-		return s.cfg.Handles
+		h = s.cfg.Handles
 	}
-	return directHandles{}
+	return pokeHandles{HandleWrites: h, poke: s.poke}
 }
 
 // recoverJournal runs after the store answered ErrUncertain: it closes the
@@ -322,7 +374,7 @@ func (s *Service) recoverJournal(ctx context.Context) error {
 		return fmt.Errorf("%w: the journal could not be reopened: %w", ErrStopped, err)
 	}
 	s.mu.Lock()
-	s.store = fresh
+	s.store = &pokeJournal{Journal: fresh, poke: s.poke}
 	s.gen++
 	s.mu.Unlock()
 	s.recovering = true

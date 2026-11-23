@@ -1,0 +1,10 @@
+{{define "content"}}
+<h1>Log in</h1>
+<div id="login" data-rp-id="{{.RPID}}">
+<p id="status" role="status">Loading.</p>
+<noscript><p>This page needs script to use your passkey. Turn script on for this site, then open this page again.</p></noscript>
+<button id="start" type="button" hidden>Log in with your passkey</button>
+<p>Only a passkey paired at the desk can log in. Your phone asks for your face, finger or passcode each time.</p>
+</div>
+<script src="/static/login.js"></script>
+{{end}}

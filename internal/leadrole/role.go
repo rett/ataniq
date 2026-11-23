@@ -252,7 +252,7 @@ func (r *Role) UnmarshalJSON(data []byte) error {
 // name is not changed. The prefix is reserved by the callers, not by the
 // grammar: a daemon that defines real leads must refuse a project with this
 // prefix, and only canary mode (a build with the ataniq_canary tag) accepts
-// it, and accepts nothing else.
+// it, and accepts nothing else. ScratchPrefix is reserved in the same way.
 const ThrowawayPrefix = "throwaway-"
 
 // IsThrowaway reports whether project is a valid project name that starts with
@@ -262,4 +262,71 @@ const ThrowawayPrefix = "throwaway-"
 func IsThrowaway(project string) bool {
 	rest, ok := strings.CutPrefix(project, ThrowawayPrefix)
 	return ok && rest != "" && ValidProject(project)
+}
+
+// ScratchPrefix begins the name of a project that is a scratch lead: a lead
+// that runs in a scratch place (one state root and one runtime root that only
+// the owner's tool makes) next to others of its kind. Like ThrowawayPrefix, it
+// is reserved by the callers, not by the grammar: ValidProject still accepts
+// such a name, a daemon that defines real leads must refuse a project with
+// this prefix, and only a build with the ataniq_canary tag accepts it.
+const ScratchPrefix = "scratch-"
+
+// IsScratch reports whether project is a valid project name that starts with
+// ScratchPrefix and has at least one character after it. The prefix alone, a
+// name that is not valid and a name with the prefix in the middle are not
+// scratch.
+func IsScratch(project string) bool {
+	rest, ok := strings.CutPrefix(project, ScratchPrefix)
+	return ok && rest != "" && ValidProject(project)
+}
+
+// Reserved is a kind of reserved project prefix. The zero value is
+// ReservedThrowaway, the first kind, so a value that was never set means the
+// canary's.
+type Reserved int
+
+// The kinds of reserved prefix.
+const (
+	// ReservedThrowaway is the kind of ThrowawayPrefix.
+	ReservedThrowaway Reserved = iota
+	// ReservedScratch is the kind of ScratchPrefix.
+	ReservedScratch
+)
+
+// String returns "throwaway" or "scratch", and "reserved(N)" for a value that
+// is not a kind.
+func (k Reserved) String() string {
+	switch k {
+	case ReservedThrowaway:
+		return "throwaway"
+	case ReservedScratch:
+		return "scratch"
+	}
+	return fmt.Sprintf("reserved(%d)", int(k))
+}
+
+// IsReserved reports whether project carries the reserved prefix of kind k
+// (IsThrowaway or IsScratch). A value that is not a kind never matches.
+func IsReserved(project string, k Reserved) bool {
+	switch k {
+	case ReservedThrowaway:
+		return IsThrowaway(project)
+	case ReservedScratch:
+		return IsScratch(project)
+	}
+	return false
+}
+
+// ReservedOf returns the kind of reserved prefix project carries, and false
+// when it carries neither. The two prefixes do not overlap, so there is at most
+// one kind.
+func ReservedOf(project string) (Reserved, bool) {
+	switch {
+	case IsThrowaway(project):
+		return ReservedThrowaway, true
+	case IsScratch(project):
+		return ReservedScratch, true
+	}
+	return 0, false
 }

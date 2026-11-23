@@ -14,6 +14,11 @@ import (
 	"ataniq/internal/leadsandbox/profile"
 )
 
+// RecordDirName is the folder of the lead's runtime folder that a recording
+// holder is given as --record-dir. It is the holder's own name for it
+// (screenrec.DirName); the holder refuses any other folder.
+const RecordDirName = "record"
+
 // ErrHolderCommand is wrapped by every refusal of [HolderCommand.Build] and of
 // [NewHolderCommand].
 var ErrHolderCommand = errors.New("leadcanary: cannot build the holder command")
@@ -62,7 +67,7 @@ func NewHolderCommand(cfg Config, daemonLock string) (*HolderCommand, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrHolderCommand, err)
 	}
-	_, unit, err := Names(cfg.Role)
+	_, unit, err := NamesFor(cfg.Reserved, cfg.Role)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrHolderCommand, err)
 	}
@@ -105,6 +110,8 @@ func NewHolderCommand(cfg Config, daemonLock string) (*HolderCommand, error) {
 //	--canary  [--inject, only when the config says inject: true]
 //	--sandbox-inputs <holder.sandbox_inputs>
 //	--expected-mode <agent.footer_mode>
+//	[--record-dir <runtime root>/leads/<layout role>/record, only for a
+//	 scratch lead whose config says record_screens: true]
 //	--env <KEY=VALUE>  (one per agent.env entry, in order)
 //	--  <agent.argv...>
 //
@@ -151,6 +158,9 @@ func (h *HolderCommand) Build(role leadrole.Role, entry leadregistry.Entry, inte
 		"--sandbox-inputs", c.Holder.SandboxInputs,
 		"--expected-mode", c.Agent.FooterMode,
 	)
+	if c.RecordScreens {
+		argv = append(argv, "--record-dir", path.Join(h.runtimeDir, RecordDirName))
+	}
 	for _, kv := range c.Agent.Env {
 		argv = append(argv, "--env", kv)
 	}

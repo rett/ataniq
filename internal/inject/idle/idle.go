@@ -6,6 +6,7 @@ import (
 	"ataniq/internal/inject/osc7501"
 	"ataniq/internal/inject/screen"
 	"ataniq/internal/inject/title"
+	"ataniq/internal/inject/versions"
 )
 
 // State is what a session is doing.
@@ -98,20 +99,13 @@ type Entry struct {
 	App string
 }
 
-// table is the one table of tested runtimes and versions. A version enters it
-// only with its recogniser fixtures and its title rules.
-var table = []Entry{
-	{Runtime: "claude", Version: "2.1.325", App: "claude-code"},
-	{Runtime: "codex", Version: "0.169", Aliases: []string{"0.169.0"}, App: "codex"},
-}
-
-// Tested returns the table: every runtime and version that has a classifier.
-// The result is a copy.
+// Tested returns the table of package versions: every runtime and version
+// that has a classifier. The result is a copy.
 func Tested() []Entry {
-	out := make([]Entry, len(table))
-	for i, e := range table {
-		e.Aliases = append([]string(nil), e.Aliases...)
-		out[i] = e
+	tested := versions.Tested()
+	out := make([]Entry, len(tested))
+	for i, e := range tested {
+		out[i] = Entry{Runtime: e.Runtime, Version: e.Version, Aliases: e.Aliases, App: e.App}
 	}
 	return out
 }
@@ -126,39 +120,24 @@ type Classifier struct {
 	rules   title.Rules
 }
 
-// Lookup returns the classifier for a runtime and version from the table.
-// Anything not in the table, and any empty value, is not found.
+// Lookup returns the classifier for a runtime and version from the table of
+// package versions. Anything not in the table, and any empty value, is not
+// found, and so is a table entry that the recogniser or the title rules do not
+// know.
 func Lookup(runtime, version string) (Classifier, bool) {
-	for _, e := range table {
-		if e.Runtime != runtime || !e.has(version) {
-			continue
-		}
-		rec, ok := screen.For(runtime, version)
-		if !ok {
-			return Classifier{}, false
-		}
-		rules, ok := title.For(runtime, version)
-		if !ok {
-			return Classifier{}, false
-		}
-		return Classifier{runtime: runtime, app: e.App, rec: rec, rules: rules}, true
+	e, ok := versions.Lookup(runtime, version)
+	if !ok {
+		return Classifier{}, false
 	}
-	return Classifier{}, false
-}
-
-func (e Entry) has(version string) bool {
-	if version == "" {
-		return false
+	rec, ok := screen.For(runtime, version)
+	if !ok {
+		return Classifier{}, false
 	}
-	if version == e.Version {
-		return true
+	rules, ok := title.For(runtime, version)
+	if !ok {
+		return Classifier{}, false
 	}
-	for _, a := range e.Aliases {
-		if version == a {
-			return true
-		}
-	}
-	return false
+	return Classifier{runtime: runtime, app: e.App, rec: rec, rules: rules}, true
 }
 
 // Runtime returns the runtime of the classifier, or an empty string for the

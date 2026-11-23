@@ -8,10 +8,14 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"time"
 
+	"ataniq/internal/approval/credkind"
 	"ataniq/internal/approval/door/doortest"
 	"ataniq/internal/approval/hostadapter"
+	"ataniq/internal/approval/ownerchannel"
+	"ataniq/internal/approval/ownerjournal"
 	"ataniq/internal/exchange/gitenv"
 	"ataniq/internal/leaddaemon"
 )
@@ -53,11 +57,55 @@ func init() {
 	}
 }
 
+// openOwnerKeys opens the list of the owner's deciding keys, the file
+// keys.log in the owner folder, and returns it for the service, which closes it.
+// A list that cannot be opened (damaged, not private, held by another process)
+// is no list: the daemon still serves the approvals, its pairing and key
+// operations answer keys-unavailable, and the notice says why once. The file is
+// never repaired or started over, so a damaged list is never taken for an empty
+// one.
+func openOwnerKeys(stateDir string) ownerchannel.KeyStore {
+	path := filepath.Join(stateDir, hostadapter.OwnerDirName, ownerjournal.KeysFileName)
+	k, err := ownerjournal.OpenKeys(path)
+	if err != nil {
+		ownerNotice("the list of deciding keys cannot be opened, so pairing a phone and the keys are refused: " + leaddaemon.SafeText(err.Error()))
+		return nil
+	}
+	return k
+}
+
+// scratchKindPolicy is the kind policy of the service built on the scratch
+// settings: the settings' "kinds" for their one project (every kind the
+// verifier knows when they name none), and no kind for any other project,
+// which this daemon does not serve.
+func scratchKindPolicy(sc hostadapter.Scratch) func(project string) (credkind.Policy, bool) {
+	p := sc.KindPolicy()
+	return func(project string) (credkind.Policy, bool) {
+		if project != sc.Project {
+			return credkind.Policy{}, false
+		}
+		return p, true
+	}
+}
+
 // standInEnder ends a request at the stand-in door, which has a withdraw of
 // its own for it.
 type standInEnder struct{ d *doortest.Door }
 
 func (e standInEnder) EndRequest(_ context.Context, id string) error { return e.d.Withdraw(id) }
+
+// scratchDoorConfig is the configuration of the stand-in door of the scratch
+// settings, on the clock given. The stand-in keeps nothing across a restart
+// and the journal keeps everything: its card numbers start from the time of
+// day (and the adapter raises them past the journal's), not from 1, so that a
+// restart does not make a card whose id the journal holds a decision for.
+func scratchDoorConfig(sc hostadapter.Scratch, now func() time.Time) doortest.Config {
+	cfg := doortest.Sample(now)
+	cfg.FirstNumber = hostadapter.StandInFirstNumber(now())
+	cfg.Seat.Project, cfg.Seat.RoleName = sc.Project, sc.Role
+	cfg.Seat.Epoch, cfg.Seat.SeatRev = sc.Seat.Epoch, sc.Seat.SeatRev
+	return cfg
+}
 
 // buildOwnerService is the [ownerServiceBuilder] of this build. It reads the
 // scratch settings in the owner folder of the state folder, opens the host
@@ -93,10 +141,9 @@ func buildOwnerService(stateDir string) (leaddaemon.OwnerService, func() error, 
 	if err != nil {
 		return nil, nil, err
 	}
-	cfg := doortest.Sample(time.Now)
-	cfg.Seat.Project, cfg.Seat.RoleName = sc.Project, sc.Role
-	cfg.Seat.Epoch, cfg.Seat.SeatRev = sc.Seat.Epoch, sc.Seat.SeatRev
+	cfg := scratchDoorConfig(sc, time.Now)
 	standIn := doortest.New(cfg)
+	keys := openOwnerKeys(stateDir)
 	o, err := hostadapter.Open(context.Background(), hostadapter.OpenConfig{
 		Config: hostadapter.Config{
 			Git: git, Projects: []hostadapter.Project{sc.ProjectOf()}, Suite: suite, Now: time.Now,
@@ -104,8 +151,15 @@ func buildOwnerService(stateDir string) (leaddaemon.OwnerService, func() error, 
 		},
 		StateDir: stateDir, Door: standIn, Ender: standInEnder{standIn},
 		DropDir: sc.Drop, CollectProject: sc.Project,
+		Service: ownerchannel.Config{
+			Keys: keys, KindPolicy: scratchKindPolicy(sc),
+			SeatLog: func(line string) { ownerNotice("seat gate: " + line) },
+		},
 	})
 	if err != nil {
+		if keys != nil {
+			_ = keys.Close()
+		}
 		return nil, nil, err
 	}
 	return o.Service, o.Close, nil

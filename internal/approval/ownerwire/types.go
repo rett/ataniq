@@ -8,6 +8,9 @@ const (
 	// MaxParamsBytes caps the params of every operation but the decision
 	// frame. The request line of the client protocol is 64 KiB.
 	MaxParamsBytes = 4 << 10
+	// MaxSeatPairParamsBytes caps the params of seat.pair, which carry the
+	// registration's authenticator data beside the credential id and key.
+	MaxSeatPairParamsBytes = 12 << 10
 	// MaxFrameBytes caps a decision frame. It is the cap of the decision
 	// record the daemon makes from it, which holds the same sign-offs.
 	MaxFrameBytes = record.MaxDecisionBytes
@@ -157,6 +160,14 @@ type ShowResult struct {
 	Record Record `json:"record"`
 	// Held is the mark "decided past the limit".
 	Held bool `json:"held"`
+	// OnItsWay is the mark of a card whose decision the journal holds and
+	// the door has not taken yet: the record is still pending at the door,
+	// and a decision for it was made (at the desk or on the phone) and is on
+	// its way. A restart or the next tick hands it over; no other decision
+	// of the card is taken meanwhile. A seat whose answer to seat.decide was
+	// lost reads the card to tell a decision on its way from none. The field
+	// is left out when it is false.
+	OnItsWay bool `json:"on_its_way,omitempty"`
 	// Outcome is what came after the decision. A record not yet decided
 	// has none, except a pending one whose last decision the door refused:
 	// its outcome is the state pending with a host-written line saying so.
@@ -332,4 +343,205 @@ type LimitDay struct {
 	// whether it had an alert.
 	ReachedLimit bool `json:"reached_limit"`
 	Alert        bool `json:"alert"`
+}
+
+// The bounds of the pairing and key forms.
+const (
+	// PairCodeLength is the number of characters of a pairing code, the
+	// length package seatpair makes (a test of the service holds the two
+	// equal). The alphabet is that of Crockford's base32 without I, L, O
+	// and U, in either case.
+	PairCodeLength = 20
+	// PairWords is the number of words of a credential's fingerprint, the
+	// count package seatpair makes (a test of the service holds the two
+	// equal).
+	PairWords = 8
+	// MinCredentialIDBytes and MaxCredentialIDBytes bound a credential id:
+	// at most 1023 bytes, as WebAuthn level 3, section 4, says and as
+	// package credkind's verifier takes (a test of the service holds the
+	// two equal), so that no credential is paired that cannot be verified.
+	MinCredentialIDBytes = 16
+	MaxCredentialIDBytes = 1023
+	// MaxPublicKeyBytes caps a credential's public key as the seat sends
+	// it, a DER SubjectPublicKeyInfo. An ES256 key is 91 bytes; whether
+	// the bytes are one is for the daemon.
+	MaxPublicKeyBytes = 512
+	// MinRegistrationDataBytes and MaxRegistrationDataBytes bound the
+	// authenticator data of a registration as the seat relays it: the head
+	// and the attested credential data's own head at least, and at most what
+	// package credkind reads.
+	MinRegistrationDataBytes = 37 + 18
+	MaxRegistrationDataBytes = 4096
+	// MaxRPIDBytes caps a relying party id, a host name.
+	MaxRPIDBytes = 253
+	// MaxKeys is the most credentials the list of deciding keys holds,
+	// revoked ones included, which stay listed.
+	MaxKeys = 64
+	// KeyIDLength is the length of a credential's display id: 16
+	// lower-case hexadecimal digits, the first 8 bytes of the SHA-256 of
+	// the credential id.
+	KeyIDLength = 16
+	// MinKeyIDPrefix is the shortest prefix of a display id that
+	// owner.key-revoke takes.
+	MinKeyIDPrefix = 4
+	// PendingIDLength is the length of a pending credential's pending id:
+	// 16 lower-case hexadecimal digits, 8 random bytes the daemon makes when
+	// the credential becomes pending.
+	PendingIDLength = 16
+)
+
+// The phases of a pairing, the words of [PairStatus].Phase.
+const (
+	// PairNone: no pairing is open, and none ended unseen.
+	PairNone = "none"
+	// PairWaiting: a code was made and the phone has not presented it.
+	PairWaiting = "waiting"
+	// PairPending: the phone presented a good credential, and it waits at
+	// the desk for the owner's word.
+	PairPending = "pending"
+	// PairExpired: the pairing ran out, or its code was burnt by wrong
+	// tries, before it was confirmed or rejected.
+	PairExpired = "expired"
+)
+
+// PairStartParams is the params of owner.pair-start.
+type PairStartParams struct {
+	// Replace says that a pairing that is open may be ended and replaced.
+	// Without it, a start while one is open is refused.
+	Replace bool `json:"replace"`
+}
+
+// PairStartResult is the result of owner.pair-start. It holds the pairing
+// code, a secret that this answer alone carries: it is never in a journal, a
+// log, an error or any other answer. A value of the type prints without it.
+type PairStartResult struct {
+	// Code is the one-time pairing code, [PairCodeLength] characters.
+	Code string `json:"code"`
+	// ExpiresAt is when the code ends, a record's time.
+	ExpiresAt string `json:"expires_at"`
+}
+
+// String says what the value is, without the code.
+func (r PairStartResult) String() string { return "ownerwire.PairStartResult{" + r.ExpiresAt + "}" }
+
+// GoString is the same text for the %#v verb.
+func (r PairStartResult) GoString() string { return r.String() }
+
+// PairStatus is the result of owner.pair-status. It never holds the code.
+type PairStatus struct {
+	// Phase is one of [PairNone], [PairWaiting], [PairPending] and
+	// [PairExpired].
+	Phase string `json:"phase"`
+	// Words are the [PairWords] words of the pending credential's
+	// fingerprint, which the phone shows too. They are there exactly when
+	// the phase is pending.
+	Words []string `json:"words,omitempty"`
+	// PendingID names the pending credential: [PendingIDLength] lower-case
+	// hexadecimal digits the daemon drew at random when the credential
+	// became pending. It is there exactly when the phase is pending, and a
+	// confirm or a reject has to give it back, so that the owner's word is
+	// about the credential whose words he compared and not about one that
+	// replaced it.
+	PendingID string `json:"pending_id,omitempty"`
+	// ExpiresAt is when the waiting code or the pending credential ends,
+	// or ended, a record's time; for a code burnt by wrong tries it is the
+	// time of the try that burnt it, in the past. It is left out for the
+	// phase none.
+	ExpiresAt string `json:"expires_at,omitempty"`
+	// Kind, AAGUID, BackupEligible and BackupState are what the pending
+	// credential's authenticator claimed at its registration, when the seat
+	// relayed it: only for the phase pending, and then optional, with Kind
+	// there when any other is. None of it is proven (the pairing uses
+	// attestation "none"), and the desk shows it as claimed.
+	//
+	// Kind is the kind the AAGUID claims, a word of package credkind
+	// ("platform-passkey", "vault-passkey" or "passkey"). AAGUID is the
+	// authenticator's claimed model in the lower-case 8-4-4-4-12 form, left
+	// out when it is all zero. BackupEligible is the BE flag (the credential
+	// can be backed up: a synced passkey) and BackupState the BS flag (it is
+	// backed up now), never set without BackupEligible.
+	Kind           string `json:"kind,omitempty"`
+	AAGUID         string `json:"aaguid,omitempty"`
+	BackupEligible bool   `json:"backup_eligible,omitempty"`
+	BackupState    bool   `json:"backup_state,omitempty"`
+}
+
+// PairPendingParams is the params of owner.pair-confirm and of
+// owner.pair-reject: the pending id the owner saw in [PairStatus] with the
+// words he compared. It is required, and the daemon refuses a call whose id is
+// not that of the credential pending now (pairing-changed), changing nothing.
+type PairPendingParams struct {
+	PendingID string `json:"pending_id"`
+}
+
+// SeatPairParams is the params of seat.pair, the seat app's relay of what
+// the phone said. The code is a secret: nothing here, no refusal, no log,
+// holds it. A value of the type prints without it.
+type SeatPairParams struct {
+	// Code is the pairing code the phone read from the desk's QR.
+	Code string `json:"code"`
+	// CredentialID is the id of the credential the phone made.
+	CredentialID []byte `json:"credential_id"`
+	// PublicKey is the credential's public key, a DER SubjectPublicKeyInfo.
+	PublicKey []byte `json:"public_key"`
+	// AuthenticatorData is the registration's authenticator data as the
+	// phone's browser gave it, which the seat checked against its relying
+	// party, and RPID that relying party's id. They are given together or
+	// not at all: the daemon registers the credential from them with
+	// package credkind, reads the kind its AAGUID claims, its backup flags
+	// and its sign counter, and checks that the credential id and the key in
+	// them are the ones above. A pairing without them is of the kind
+	// "unverified".
+	AuthenticatorData []byte `json:"authenticator_data,omitempty"`
+	RPID              string `json:"rp_id,omitempty"`
+}
+
+// String says what the value is, without the code or the key.
+func (p SeatPairParams) String() string { return "ownerwire.SeatPairParams{}" }
+
+// GoString is the same text for the %#v verb.
+func (p SeatPairParams) GoString() string { return p.String() }
+
+// SeatPairResult is the result of seat.pair: the fingerprint of the
+// credential, which the desk shows and the owner compares.
+type SeatPairResult struct {
+	// Words are the [PairWords] words of the fingerprint.
+	Words []string `json:"words"`
+}
+
+// KeyItem is one credential on the list of deciding keys.
+type KeyItem struct {
+	// ID is the display id: [KeyIDLength] lower-case hexadecimal digits,
+	// the first 8 bytes of the SHA-256 of the credential id. It names the
+	// credential for the owner and holds nothing of the key.
+	ID string `json:"id"`
+	// Kind is the kind of the key, a word and a claim: the kind its
+	// authenticator's AAGUID claimed at the pairing ("platform-passkey",
+	// "vault-passkey" or "passkey"), or "unverified" for a key paired
+	// without what its authenticator claimed.
+	Kind string `json:"kind"`
+	// AAGUID, BackupEligible and BackupState are what the authenticator
+	// claimed at the pairing, each optional, in the forms of [PairStatus].
+	AAGUID         string `json:"aaguid,omitempty"`
+	BackupEligible bool   `json:"backup_eligible,omitempty"`
+	BackupState    bool   `json:"backup_state,omitempty"`
+	// PairedAt is when the owner confirmed the pairing, a record's time.
+	PairedAt string `json:"paired_at"`
+	// Revoked says that the credential was revoked. A revoked credential
+	// stays on the list and is never made good again.
+	Revoked bool `json:"revoked"`
+}
+
+// KeysView is the result of owner.keys, of owner.key-revoke and of
+// owner.keys-off: the list of deciding keys, in the order they were paired,
+// at most [MaxKeys].
+type KeysView struct {
+	Keys []KeyItem `json:"keys"`
+}
+
+// KeyRevokeParams is the params of owner.key-revoke.
+type KeyRevokeParams struct {
+	// ID is a display id, or a prefix of one of at least [MinKeyIDPrefix]
+	// digits, that names exactly one credential.
+	ID string `json:"id"`
 }

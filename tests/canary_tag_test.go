@@ -34,9 +34,12 @@ var canaryAllowedPaths = []string{
 	"internal/leadcanary/",
 	"internal/leadholder/sandboxstart/",
 	"internal/leadholder/injectbridge/",
+	"internal/leadholder/screenrec/",
 	"internal/leadholder/canaryroot/",
 	"internal/leadholder/serve/",
+	"internal/leadcontrol/",
 	"internal/leaddaemon/",
+	"internal/mirror/",
 	"cmd/ataniqd/",
 	"cmd/ataniq-holder/",
 	"cmd/ataniq-canary/",
@@ -50,9 +53,23 @@ var canaryWholePaths = []string{
 	"internal/leadcanary/",
 	"internal/leadholder/sandboxstart/",
 	"internal/leadholder/injectbridge/",
+	"internal/leadholder/screenrec/",
 	"internal/leadholder/canaryroot/",
+	"internal/leadcontrol/",
 	"cmd/ataniq-canary/",
 	"cmd/ataniq-canary-standin/",
+}
+
+// canaryRequiredFiles are single files outside the wholly tagged packages that
+// must need the tag: their package also builds without it, and removing the
+// constraint would still compile there, so that the code would ship in the
+// release binaries that import the package with no check failing. Each is a
+// path from the repository root. A file that is not in the tree is no problem
+// here (an empty tree passes); the repository check below holds that each one
+// exists, so that a rename cannot leave the list behind.
+var canaryRequiredFiles = []string{
+	"internal/mirror/import.go",
+	"internal/mirror/import_test.go",
 }
 
 // canaryForbiddenDeps are the packages that no command may depend on without
@@ -61,7 +78,9 @@ var canaryForbiddenDeps = []string{
 	"internal/leadcanary",
 	"internal/leadholder/sandboxstart",
 	"internal/leadholder/injectbridge",
+	"internal/leadholder/screenrec",
 	"internal/leadholder/canaryroot",
+	"internal/leadcontrol",
 }
 
 // canaryMakeTargets are the Makefile targets whose recipes may name the tag.
@@ -221,9 +240,10 @@ func inGoSkippedDir(p string) bool {
 
 // checkCanaryPlacement is check (1): a Go file whose constraint names the tag
 // lies under canaryAllowedPaths and in no folder that ./... skips, and every
-// Go file of a wholly tagged package carries a go:build line that needs the
-// tag, that is, is not built without it. A plus build line alone does not
-// satisfy the second rule.
+// Go file of a wholly tagged package, and each file of canaryRequiredFiles
+// that is in the tree, carries a go:build line that needs the tag, that is, is
+// not built without it. A plus build line alone does not satisfy the second
+// rule.
 func checkCanaryPlacement(fsys fs.FS) []string {
 	var problems []string
 	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
@@ -263,6 +283,8 @@ func checkCanaryPlacement(fsys fs.FS) []string {
 			problems = append(problems, fmt.Sprintf("%s: %s is named, but not in a go:build line that the go command applies", p, canaryTag))
 		case underAnyPath(p, canaryWholePaths) && (!hasGoBuild || !named || buildsWithoutTag(applied)):
 			problems = append(problems, fmt.Sprintf("%s: a file of a wholly tagged package does not require %s", p, canaryTag))
+		case slices.Contains(canaryRequiredFiles, p) && (!hasGoBuild || !named || buildsWithoutTag(applied)):
+			problems = append(problems, fmt.Sprintf("%s: a file that must need %s does not require it in a go:build line", p, canaryTag))
 		}
 		return nil
 	})
@@ -1060,6 +1082,13 @@ func TestCanaryTag(t *testing.T) {
 	t.Run("1_placement", func(t *testing.T) {
 		reportCanaryProblems(t, checkCanaryPlacement(repo))
 		reportCanaryProblems(t, checkCanaryNamedFiles(repo))
+		// Every file of canaryRequiredFiles is there, so that a rename or a
+		// removal cannot leave the list checking nothing.
+		for _, p := range canaryRequiredFiles {
+			if _, err := fs.Stat(repo, p); err != nil {
+				t.Errorf("%s is in canaryRequiredFiles and is not in the tree: %v", p, err)
+			}
+		}
 	})
 
 	t.Run("2_makefile_and_scripts", func(t *testing.T) {
@@ -1287,6 +1316,26 @@ func TestCanaryTagPlacementCheck(t *testing.T) {
 		{"an unreadable constraint that names the tag", fstest.MapFS{
 			"internal/other/x.go": goSource("//go:build ataniq_canary &&"),
 		}, []string{"internal/other/x.go"}},
+		{"the required files carry the tag", fstest.MapFS{
+			"internal/mirror/import.go":      goSource(hdrTagged),
+			"internal/mirror/import_test.go": goSource(hdrTagged),
+			"internal/mirror/mirror.go":      goSource(hdrPlain),
+		}, nil},
+		{"a required file without its constraint", fstest.MapFS{
+			"internal/mirror/import.go":      goSource(""),
+			"internal/mirror/import_test.go": goSource(hdrPlain),
+			"internal/mirror/mirror.go":      goSource(hdrPlain),
+		}, []string{"internal/mirror/import.go", "internal/mirror/import_test.go"}},
+		{"a required file with a plus build line, or an or, or a negation", fstest.MapFS{
+			"internal/mirror/import.go":      goSource(hdrPlusTagged),
+			"internal/mirror/import_test.go": goSource("//go:build linux && ataniq_canary || darwin"),
+		}, []string{"internal/mirror/import.go", "internal/mirror/import_test.go"}},
+		{"a required file negated", fstest.MapFS{
+			"internal/mirror/import.go": goSource(hdrNegated),
+		}, []string{"internal/mirror/import.go"}},
+		{"a file of the same name elsewhere is not required", fstest.MapFS{
+			"internal/other/import.go": goSource(hdrPlain),
+		}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			problems := checkCanaryPlacement(tc.files)
@@ -1875,6 +1924,7 @@ func TestCanaryTagListRefusesTaggedPackages(t *testing.T) {
 		{"example.test/m/internal/leadcanary/preflight", true},
 		{"./internal/leadholder/sandboxstart", true},
 		{"./internal/leadholder/injectbridge/...", true},
+		{"./internal/leadholder/screenrec", true},
 		{"./internal/leadholder/canaryroot", true},
 		{"./cmd/ataniq-canary", true},
 		{"./cmd/ataniq-canary-standin", true},

@@ -16,6 +16,7 @@ import (
 
 	"ataniq/internal/leadholder/canaryroot"
 	"ataniq/internal/leadholder/wire"
+	"ataniq/internal/leadrole"
 )
 
 // EvidenceName is the file name of the evidence, in the state root.
@@ -26,8 +27,24 @@ const EvidenceName = "canary-evidence.jsonl"
 // a valid entry; it is a backstop.
 const maxEvidenceLine = 4096
 
-// EvidencePath returns the path of the evidence file under the state root.
-func (c Config) EvidencePath() string { return path.Join(c.StateRoot, EvidenceName) }
+// EvidenceDirName is the folder of the state root that holds the evidence files
+// of scratch leads, one file each ([Config.EvidencePath]).
+const EvidenceDirName = "evidence"
+
+// EvidencePath returns the path of the evidence file under the state root:
+// <state root>/canary-evidence.jsonl for a throwaway lead, the canary's, and
+// <state root>/evidence/<layout role>.jsonl for a scratch lead, so that leads
+// that share a state root never share an evidence file. A config whose role
+// does not pass [NamesFor] has the canary's path; [OpenEvidence] refuses such a
+// config before it uses the path.
+func (c Config) EvidencePath() string {
+	if c.Reserved == leadrole.ReservedScratch {
+		if layoutRole, _, err := NamesFor(c.Reserved, c.Role); err == nil {
+			return path.Join(c.StateRoot, EvidenceDirName, layoutRole+".jsonl")
+		}
+	}
+	return path.Join(c.StateRoot, EvidenceName)
+}
 
 // Event names one kind of line of the evidence.
 type Event string
@@ -120,8 +137,10 @@ type Evidence struct {
 	sync  func() error
 }
 
-// OpenEvidence opens the evidence file under the state root of the config,
-// creating it with mode 0600 when it is not there. The file is opened without
+// OpenEvidence opens the evidence file of the config ([Config.EvidencePath]),
+// creating it with mode 0600 when it is not there. For a scratch lead its
+// folder, <state root>/evidence, is made with mode 0700 when it is not there
+// and must be a real folder of the caller with no access for group or others. The file is opened without
 // following a symbolic link at its last element and judged by its handle: it
 // must be a regular file of the caller with mode 0600. The state root must
 // exist. A nil now means time.Now. The role and the agent kind of the config go
@@ -133,7 +152,12 @@ func OpenEvidence(cfg Config, now func() time.Time) (*Evidence, error) {
 	if now == nil {
 		now = time.Now
 	}
-	p := path.Join(cfg.StateRoot, EvidenceName)
+	p := cfg.EvidencePath()
+	if cfg.Reserved == leadrole.ReservedScratch {
+		if err := ensureEvidenceDir(path.Dir(p)); err != nil {
+			return nil, err
+		}
+	}
 	const flags = unix.O_WRONLY | unix.O_APPEND | unix.O_NOFOLLOW | unix.O_NONBLOCK | unix.O_CLOEXEC
 	created := true
 	fd, err := unix.Open(p, flags|unix.O_CREAT|unix.O_EXCL, 0o600)
@@ -175,6 +199,28 @@ func OpenEvidence(cfg Config, now func() time.Time) (*Evidence, error) {
 		f: f, role: cfg.Role.String(), kind: string(cfg.Agent.Kind), now: now,
 		write: f.Write, sync: f.Sync,
 	}, nil
+}
+
+// ensureEvidenceDir makes the folder of the scratch evidence files, mode 0700,
+// when it is not there, and checks that what is there is a real folder of the
+// caller with no access for group or others. The state root must exist.
+func ensureEvidenceDir(dir string) error {
+	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		return fmt.Errorf("leadcanary: cannot make the evidence folder: %w", err)
+	}
+	var st unix.Stat_t
+	if err := unix.Lstat(dir, &st); err != nil {
+		return fmt.Errorf("leadcanary: cannot examine the evidence folder: %w", err)
+	}
+	switch {
+	case st.Mode&unix.S_IFMT != unix.S_IFDIR:
+		return errors.New("leadcanary: the evidence folder is not a real folder")
+	case int(st.Uid) != unix.Geteuid():
+		return errors.New("leadcanary: the evidence folder is not owned by the caller")
+	case st.Mode&0o077 != 0:
+		return fmt.Errorf("leadcanary: the evidence folder has mode %04o, want no access for group or others", st.Mode&0o7777)
+	}
+	return nil
 }
 
 // Close closes the file. Appending after it is an error.

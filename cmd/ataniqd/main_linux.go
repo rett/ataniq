@@ -121,6 +121,15 @@ func (a *app) run(args []string) int {
 		fmt.Fprint(a.stdout, usage)
 		return leaddaemon.ExitOK
 	}
+	// The command that only a build with the ataniq_ownerchannel tag has.
+	if code, ok := a.seatGateCommand(args); ok {
+		return code
+	}
+	// The phone trial's command, which only a build with the
+	// ataniq_ownerchannel tag has too.
+	if code, ok := a.trialCommand(args); ok {
+		return code
+	}
 	// Commands and options that only a build with the ataniq_canary tag has.
 	if code, ok := a.canaryCommand(args); ok {
 		return code

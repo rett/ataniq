@@ -205,6 +205,27 @@ func TestVectorDigests(t *testing.T) {
 		t.Error("the valid decision's sign-offs are not the pending record's flagged list")
 	}
 
+	// The passkey decision is the same approve, confirmed on the phone: it
+	// differs from the code vector in its confirmation and its block alone,
+	// and its seat block names the sample assertion of the README.
+	passkey, err := DecodeDecision(readVector(t, "decision-valid-passkey.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	same := passkey
+	same.Confirmed, same.Seat, same.Console = decision.Confirmed, SeatBlock{}, decision.Console
+	if !reflect.DeepEqual(same, decision) {
+		t.Error("decision-valid-passkey.json differs from decision-valid.json in more than its confirmation")
+	}
+	sampleID := []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+	sampleSig := []byte{0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01}
+	if got := AssertionDigest(sampleID, bytes.Repeat([]byte{0xaa}, 37), []byte(`{"type":"webauthn.get"}`), sampleSig); got != passkey.Seat.AssertionSHA256 {
+		t.Errorf("the digest of the sample assertion is %s, the passkey vector names %s", got, passkey.Seat.AssertionSHA256)
+	}
+	if got := Digest(sampleID)[:16]; got != passkey.Seat.Credential {
+		t.Errorf("the display id of the sample credential is %s, the passkey vector names %s", got, passkey.Seat.Credential)
+	}
+
 	// Every valid pending record answers the valid request of its verb: it
 	// names that request's id and the digest of that request's bytes.
 	requests := map[string]string{VerbFeatureFinish: "request-valid.json", VerbBranchPrune: "request-valid-prune.json"}
@@ -397,13 +418,13 @@ func TestReadmeStatesTheRules(t *testing.T) {
 	if fields < 90 {
 		t.Fatalf("walked %d fields, want those of all three forms", fields)
 	}
-	if got, want := strings.Count(rules, "*Optional.*"), 6; got != want {
+	if got, want := strings.Count(rules, "*Optional.*"), 8; got != want {
 		t.Errorf("the rules mark %d fields as optional, want %d", got, want)
 	}
 
 	for _, word := range []string{SchemaRequest, SchemaPending, SchemaDecision, VerbFeatureFinish, VerbBranchPrune,
 		ClassRefMove, SubjectSeat, EffectRef, BuiltByHost, EvidenceSuite, DecisionApprove, DecisionDeny,
-		ConfirmedCode, FlagExecConfig, FlagSymlink, FlagSubmodule, FlagAliased, FlagHistoryOnly, FlagOddPath, "A", "M", "D", "T",
+		ConfirmedCode, ConfirmedPasskey, FlagExecConfig, FlagSymlink, FlagSubmodule, FlagAliased, FlagHistoryOnly, FlagOddPath, "A", "M", "D", "T",
 		"rq-", "ap-", "b64", PlanDigest(""), branchPrefix} {
 		need("the word", word)
 	}

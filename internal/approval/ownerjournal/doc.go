@@ -91,7 +91,25 @@
 // body, because the door is handed the same bytes. With each decision, in
 // the same write, goes an activity entry: the surface and the session it
 // came from, the owner's last activity before it and, when the caller has
-// it, the digest of what the card showed.
+// it, the digest of what the card showed. Where it came from is the record's
+// confirmation: for a decision confirmed by code, the console block's surface
+// and session; for one confirmed by passkey, made on the owner's phone, the
+// surface [SurfaceSeat], the seat block's gate session and no last activity
+// at the desk.
+//
+// A decision confirmed by passkey, held or not, also keeps the evidence of
+// the assertion that confirmed it ([SeatEvidence]): the decision or held
+// entry's body holds the client data, the signature and the nonce of the
+// challenge, and its activity entry's body the credential id, the
+// authenticator data, the instance (the gate's key fingerprint) and the seat
+// origin. The record keeps only the assertion's digest, because of its size
+// cap. The journal refuses such a decision without its evidence, or with
+// evidence of another assertion or credential than the record names, and
+// [Store.EvidenceOf] reads the evidence back and checks it against the
+// record again. With the credential's public key from the list of deciding
+// keys, an auditor recomputes the challenge from the record and the
+// evidence and checks the signature. A build from before this evidence reads
+// such a body as damaged (its reader refuses a member it does not know).
 //
 // An approve past the day's limit is a held entry ([Store.AppendHeld]). It
 // is never handed to the door, and the pending record stays pending there.
@@ -161,6 +179,68 @@
 // The looked entries hold one mark for every surface: the time up to which
 // the owner has seen what happened. [Store.AppendLooked] moves it forward
 // and [Store.LookedAt] returns it. The mark never moves back.
+//
+// # The list of deciding keys
+//
+// The credentials of the phones the owner paired are a file of their own
+// beside the journal, [OpenKeys] and [KeyFile], not entries of it: the journal's
+// layout is a checked statement of its schema, and this list has a different
+// owner, whose file the design means to put out of the daemon's user's reach one
+// day. It is the same in style. It only grows: a credential is added
+// ([KeyFile.AddKey]), revoked ([KeyFile.RevokeKeys]; a revoked credential stays
+// listed and is never made good again), and a rejected pairing is noted
+// ([KeyFile.AppendRejected]) with its display id and words and no key. A
+// credential carries its kind and what its authenticator claimed at the
+// pairing (the AAGUID, the backup flags and the sign counter), optional on
+// disk: a credential written without them reads as one with none. Its highest
+// sign counter is raised by [KeyFile.RaiseCounter] and never lowered. Every
+// append is on the disk when it returns, the file is read and checked from its
+// first record when it is opened (a chain of digests, the numbers, and the
+// rules of the list), and the same trust checks hold: the folder and the file
+// are the user's own with modes 0700 and 0600, the file has one name and is not
+// a link, and one open at a time holds it. A file that does not hold is refused
+// with [ErrDamaged] and never repaired, started again or taken for an empty
+// list. The display id of a credential, [KeyDisplayID], is the first 8 bytes
+// of the SHA-256 of its id, in hexadecimal. At most [MaxKeys] credentials are
+// held, revoked ones included.
+//
+// Two checks keep the chain honest beyond the open. While the list is open the
+// file is read again and its whole chain checked before every append, and by
+// [KeyFile.Keys] when the file's size, times or inode (or the head's) are not
+// what they were when last checked; a list that fails is marked damaged and
+// refuses every call with [ErrDamaged], so damage in place of the same length
+// is found and a record is never appended to a damaged chain. And a second
+// small file beside the list, keys.head ([KeysHeadFileName]), keeps the head of
+// the chain, the number of records and the digest of the last, written after
+// each record is on the disk (a temporary name, synced, renamed over, the folder
+// synced) and held to the list's own trust checks. At open a file with fewer
+// records than the head, or whose digest at the head's count differs, is
+// damaged ("suffix lost"): records lost from the end, a revocation among them,
+// are found and no key is made good again by it. A file ahead of the head by
+// records that chain from it is a crash between the two writes (one record, or
+// the several of one revocation of many credentials): it is accepted and the
+// head is made right. A head missing for a list that has records is damage; for
+// a list with none it is made.
+//
+// What remains, for the owner to know: whoever can write both files, the user
+// or root, can rewrite them consistently (the digests are not a signature, and
+// the head is a file in the same folder); the checks find damage and loss, not
+// a forger who holds the folder. The fix in design is the one the list's folder
+// mode already points to, to make both files root's and read-only to the daemon.
+//
+// A list that fails a check is left as it is. A torn last line (a crash in the
+// middle of an append, or a disk that lost its tail) makes the file damaged for
+// good until the owner repairs it by hand, as follows: stop the daemon; keep a
+// copy of keys.log and keys.head; read keys.head, whose second-to-last field
+// is the number of records the list had when it last wrote the head, and count
+// the whole lines of keys.log after its header; if the torn line is a partial
+// line after as many whole records as the head says (or one more, which a crash
+// between the append and the head would make), remove that partial line only,
+// and start the daemon, which then repairs the head if it is one behind; if the
+// file has fewer whole records than the head says, records were lost and the
+// list must not be trusted: look at the copy, and put back the last good copy
+// of both files, or start a new list and pair the phones again. Never edit
+// keys.head to make a list open.
 //
 // The package is built for Linux only, like the dispatch journal: both rely
 // on the same file locks, and one process may hold both stores.

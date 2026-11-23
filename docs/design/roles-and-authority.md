@@ -1,9 +1,9 @@
 # Roles and authority split
 
-Status: proposed, owner-approved direction; none of it is implemented or
-qualified. Role assignment, handoff, the supervisor, the feature coordinator
-and the lead registry exist only as this specification. Their contracts are
-still to be designed and reviewed before any runtime work.
+Status: owner-approved direction, specification only; none of it is
+implemented or qualified. Role assignment, handoff, the supervisor, the feature
+coordinator and the lead registry exist only as this specification. Their
+contracts are still to be designed and reviewed before any runtime work.
 
 ## Lead and supervisor roles
 
@@ -20,10 +20,40 @@ in addition to a project lead role. That interim arrangement is not a
 qualified separation. It carries no approval authority: no grant is honoured
 yet, so every approval is the owner's direct words.
 
-The supervisor acts only within gates the owner has delegated, and never on
-its own project's gates. It does not run another project's lead-only commands;
-it can send that project's lead a grant-backed approval, which the gate
-verifies (see [approvals](approvals.md)).
+No gate is delegated to a supervisor today. It will act only within gates the
+owner delegates, and never on its own project's gates. It does not run another
+project's lead-only commands.
+It relays no approval: an approval reaches a lead only as the owner's direct
+words or as a grant the gate verifies (see [approvals](approvals.md)). Whether a
+locally held supervisor is a grantee of such a grant at all is open, and it is
+the owner's decision; until then the supervisor holds no grant.
+
+The agent that holds the supervisor role may run on any provider, local or
+cloud. A holder that runs on a provider's cloud, or anywhere else outside an
+execution boundary Ataniq qualifies on the owner's hosts, holds, sees and passes
+no approval token and no grant, and no grant is issued to or held under its
+role. Reading and nominating are described here for a cloud holder only; any
+other holder outside a qualified boundary is unsupported as a remote
+supervisory agent.
+
+A cloud holder is an owner-side facilitator. Each instance assigns it as its own
+remote supervisory client, an instance-owned role record, and fences it alone;
+no instance depends on another's record of it. Through the scoped port of each
+instance it is assigned, it reads status and requests from that instance's
+leads, and from a local supervisor of that instance where one is assigned. It
+summarises across instances for the owner only: the summary is made outside
+every instance and is served to no instance, and a nomination or proposal to an
+instance names only that instance's records. It nominates requests that become
+owner cards; a nomination names a request that already exists in the instance
+and carries no field of what is approved. It makes proposals only and never
+edits a plan, a backlog or a dependency manifest; the record's own system
+accepts or refuses a proposal. Which of its sessions reads lead transcripts and
+which acts is enforced by the instance, by client identity; see
+[security](security.md).
+See [approvals](approvals.md) for the card and [security](security.md) for the
+data that may reach a provider. The supervisor port, its port credential, the
+client class and the gateway are not built, so no remote holder is supported
+yet.
 
 ## Feature coordinator
 
@@ -73,7 +103,14 @@ be resolved goes to the owner. Who verifies each step, and how a failure after
 exclusive ownership has passed is undone, are settled in the handoff contract,
 which is designed before any managed lead and is not decided here. A handoff
 grants no authority: the successor receives the role, not the predecessor's
-approvals, grants or plan tokens, and each gate is decided on its own evidence.
+approval tokens, grants or plan tokens, and each gate is decided on its own evidence.
+A handoff to a holder outside a qualified boundary, a cloud agent for example,
+first revokes every grant held under the role, because no such holder may hold
+one. This is a second safeguard: a grant never passes to a successor in any
+handoff. The revocation is not undone if the handoff fails. Ataniq owns role
+assignment, so it asks for the revocation; the revocation itself lives in
+qargi's store. Fencing a remote holder is done by each instance alone, which
+stops honouring that holder's epoch; this is not built.
 Fencing follows the execution-boundary rule in [runtime](runtime.md): without
 confirmation that the old holder is fenced, no replacement acts.
 
@@ -96,3 +133,20 @@ Ataniq displays qargi's records read-only and routes escalations; it does not
 decide a qargi gate. Until Ataniq manages leads, an earlier session manager
 remains authoritative for process records, and role assignment is recorded by
 the owner.
+
+## Joint request to Qargi
+
+Qargi is not changed by this document, and this section is a request, not a
+decision for Qargi. As understood at the time of writing, and not verified here
+against Qargi's current records, a remote supervisory holder needs two things on
+Qargi's side, which are the Qargi lead's to agree or decline:
+
+- A supervisor role record with no repository mounted, no repository token and
+  no permission to push. It must not reuse the lead record, which carries them.
+  Its class is neither write nor read-only, both of which are about a clone, but
+  a third class with no clone at all.
+- A long-lived session kind. Qargi's cloud sessions are task-scoped, one task
+  then collect then close; a supervisor's session lives for days and is not a
+  stuck run.
+
+Until Qargi has both, no supervisor is provisioned on a provider's cloud.

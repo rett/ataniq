@@ -139,6 +139,23 @@ func forms(t testing.TB) []form {
 		formOf(t, "limit-set params", MaxParamsBytes, inv, LimitSetParams{Project: "project-a", To: 18, Typed: true},
 			DecodeLimitSetParams, EncodeLimitSetParams),
 		formOf(t, "limit view", MaxResultBytes, inv, sampleLimitView(), DecodeLimitView, EncodeLimitView),
+		formOf(t, "pair start params", MaxParamsBytes, inv, PairStartParams{Replace: true}, DecodePairStartParams, EncodePairStartParams),
+		formOf(t, "pair start result", MaxResultBytes, inv, samplePairStartResult(), DecodePairStartResult, EncodePairStartResult),
+		formOf(t, "pair status", MaxResultBytes, inv, samplePairStatus(), DecodePairStatus, EncodePairStatus),
+		formOf(t, "pair pending params", MaxParamsBytes, inv, PairPendingParams{PendingID: samplePendingID}, DecodePairPendingParams, EncodePairPendingParams),
+		formOf(t, "seat pair params", MaxSeatPairParamsBytes, inv, sampleSeatPairParams(), DecodeSeatPairParams, EncodeSeatPairParams),
+		formOf(t, "seat pair result", MaxResultBytes, inv, SeatPairResult{Words: sampleWords()}, DecodeSeatPairResult, EncodeSeatPairResult),
+		formOf(t, "key item", MaxResultBytes, inv, sampleKeyItem(), DecodeKeyItem, EncodeKeyItem),
+		formOf(t, "keys view", MaxResultBytes, inv, sampleKeysView(), DecodeKeysView, EncodeKeysView),
+		formOf(t, "key revoke params", MaxParamsBytes, inv, KeyRevokeParams{ID: "0123456789abcdef"}, DecodeKeyRevokeParams, EncodeKeyRevokeParams),
+		formOf(t, "seat challenge params", MaxSeatChallengeParamsBytes, inv, sampleSeatChallengeParams(), DecodeSeatChallengeParams, EncodeSeatChallengeParams),
+		formOf(t, "seat challenge result", MaxResultBytes, inv, sampleSeatChallengeResult(), DecodeSeatChallengeResult, EncodeSeatChallengeResult),
+		formOf(t, "seat login challenge result", MaxSeatLoginChallengeBytes, inv, sampleSeatLoginChallengeResult(), DecodeSeatLoginChallengeResult, EncodeSeatLoginChallengeResult),
+		formOf(t, "seat decide params", MaxSeatDecideParamsBytes, inv, sampleSeatDecideParams(), DecodeSeatDecideParams, EncodeSeatDecideParams),
+		formOf(t, "seat login params", MaxSeatLoginParamsBytes, inv, sampleSeatLoginParams(), DecodeSeatLoginParams, EncodeSeatLoginParams),
+		formOf(t, "seat login result", MaxResultBytes, inv, sampleSeatLoginResult(), DecodeSeatLoginResult, EncodeSeatLoginResult),
+		formOf(t, "seat wait params", MaxParamsBytes, inv, sampleSeatWaitParams(), DecodeSeatWaitParams, EncodeSeatWaitParams),
+		formOf(t, "seat wait result", MaxSeatWaitResultBytes, inv, sampleSeatWaitResult(), DecodeSeatWaitResult, EncodeSeatWaitResult),
 	}
 }
 

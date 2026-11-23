@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"ataniq/internal/leadregistry"
+	"ataniq/internal/leadrole"
 	"ataniq/internal/leadunit"
 )
 
@@ -62,6 +63,48 @@ const (
 	codeParentEpochEnded  = "parent-epoch-ended"
 	codeParentUnreadable  = "parent-unreadable"
 )
+
+// reasonNoPendingIntent is the reason of a role that SettleLaunch left alone.
+const reasonNoPendingIntent = "no-pending-intent"
+
+// SettleLaunch settles the pending launch intent of one role, by the rules
+// Reconcile applies to a role with a pending intent and no other: the same
+// code runs, under the role's lock, so it never overlaps a Start, a Stop or a
+// Reconcile of the role. A unit with this epoch and intent is adopted; with no
+// unit loaded and its control group proven empty the intent is abandoned and
+// the role stopped once the late-start window and its margin have passed on
+// the controller's clock (at once when the boot identity changed), and the
+// role is left unknown, the intent pending, before; a loaded unit that is not
+// this launch's is reported and, once the window has passed, the intent is
+// abandoned, the role staying unknown. A role shown unknown with the reason
+// registry-recovered keeps its state, as in Reconcile. A role with no pending
+// intent, or run by the tmux-manager, is left as it is and reported so
+// (reason no-pending-intent, action unchanged, or not-managed). The returned
+// report says what was found, and Action is [ActionPending] while the window
+// is open and [ActionUnavailable] when the manager did not answer. It starts
+// nothing and sends no signal, ever.
+//
+// It returns [ErrNotReconciled] while the registry's cut journal has not been
+// acted on by Reconcile, and an error only for a failure of the registry or of
+// the context.
+func (c *Controller) SettleLaunch(ctx context.Context, role leadrole.Role) (RoleReport, error) {
+	rec := c.reg.Recovery()
+	c.mu.Lock()
+	cut := rec.Cut() && !c.recovered
+	c.mu.Unlock()
+	if cut {
+		return RoleReport{Role: role, Kind: role.Kind(), Action: ActionUnchanged}, ErrNotReconciled
+	}
+	rr, _, err := c.reconcileRole(ctx, role, false, true)
+	return rr, err
+}
+
+// LaunchDeadline is the time at which the late-start window and its margin
+// since the launch intent have passed: the earliest time SettleLaunch can
+// close an intent whose unit is not loaded (unless the boot changed).
+func (c *Controller) LaunchDeadline(in leadregistry.Intent) time.Time {
+	return c.windowClosesAt(in)
+}
 
 // settlePending settles the pending launch intent of e as far as the unit
 // manager lets it: a unit with this epoch and intent is adopted; with the unit

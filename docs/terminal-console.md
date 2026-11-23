@@ -9,13 +9,15 @@ recording, it is not a live session, and nothing you type reaches a process.
 With `--attach` it shows a live scratch session that a holder keeps, for a
 scratch agent only (see
 [Attaching to a holder](#attaching-to-a-holder)). With `--daemon` it shows the
-daemon's leads, read-only (see [The daemon view](#the-daemon-view)). No mode is
-a production backend. The console does not send instructions, steer or
-interrupt leads. It has an approvals view, but in this release a decision there
-changes nothing (see [Approvals](#approvals) and
+daemon's leads, read-only (see [The daemon view](#the-daemon-view)), and, only
+when the daemon is a tagged one that serves lead control, a leads view that
+drives scratch leads (see [Lead control](#lead-control-scratch-daemon-only)).
+No mode is a production backend. Apart from that leads view, the console does
+not send instructions, steer or interrupt leads. It has an approvals view, but
+in this release a decision there changes nothing (see [Approvals](#approvals) and
 [What is a sample](#what-is-a-sample-and-what-is-not-qualified)). It
-integrates no provider and no durable command and receipt path, and it opens
-no network listener. Without `--demo`, `--attach` and `--daemon` the
+integrates no provider, and the only durable command and receipt path it has is
+that of a scratch daemon's lead control; it opens no network listener. Without `--demo`, `--attach` and `--daemon` the
 command reports that the backend is unavailable and exits with status 1.
 
 In a local terminal, run `make doctor`, then build with the selected offline
@@ -97,6 +99,8 @@ bar and the key bar show which one is active.
 | r | Replay the recording from its start, in a new pane. |
 | F12 | Zoom the session terminal to the whole window, or leave zoom. |
 | g | Open the approvals view (see [Approvals](#approvals)). |
+| L | Open the leads view, `--daemon` only (see [Lead control](#lead-control-scratch-daemon-only)). |
+| P | Open the pair-a-phone view, `--daemon` only (see [Pair a phone](#pair-a-phone-when-pairing-is-configured)); without a pairing backend it shows "pairing is not configured" and does nothing. |
 | Esc | Close help or the action list. |
 | q, Ctrl+C | Quit. |
 
@@ -321,8 +325,10 @@ imitate activity: presence is a convenience and a record, not a fence.
 socket, shows the projects with their lead and coordinators and each one's
 state, and asks the daemon again every few seconds. The view is read-only:
 every control is unavailable with its reason, and it has no session terminal.
-With no daemon, a slow one or one that speaks another protocol, it says so with
-the next step and keeps asking. See [the lead daemon guide](lead-daemon.md).
+The leads view of a daemon with lead control (`L`) and the approvals of a daemon
+with the owner channel are the two places that act, each on its own screen. With
+no daemon, a slow one or one that speaks another protocol, it says so with the
+next step and keeps asking. See [the lead daemon guide](lead-daemon.md).
 
 ## The owner channel (tagged daemon only)
 
@@ -360,6 +366,300 @@ confirm code appears in no place: the console draws it and keeps it in its
 model. If a request is interrupted, the daemon answers it request-invalid and the
 lead must ask again.
 
+## Lead control (scratch daemon only)
+
+With `--daemon DIR` the console asks the daemon for `hello` when it starts and
+offers the leads view only when the answer lists all
+six operations of the lead control plane (`lead.list`, `lead.define`,
+`lead.start`, `lead.stop`, `lead.ticket` and `lead.inject`). Only a daemon built
+with the canary tag and started with `ataniqd run --scratch CONFIG` lists them
+(see [the scratch leads guide](scratch-leads.md)); the console client is in every
+build and behind no tag. **When the daemon lists none, the console has no lead
+control.** `L` then opens a screen that says "no lead control in this daemon",
+and Esc closes it. A daemon that lists only some of the six is treated the same
+way. The console asks once, when it starts, so start it again after the daemon
+was started with `--scratch`.
+
+### Opening the view and what it shows
+
+`L` (capital L) opens the leads view from console focus. It does nothing in
+session focus, where every key goes to the session, and in the approvals list
+`L` is still that view's own key (the limit's screen). Below the cockpit's size
+the single-column pages take it too, but not over a live session.
+
+The view lists the daemon's leads, one row each, with the daemon's `max_running`
+and how many leads count against it:
+
+| Column | Meaning |
+| --- | --- |
+| KEY | The lead's key in the daemon's config. |
+| STATE | The registry's state of the lead, with `*` after it while a command for the lead has no answer yet. |
+| EPOCH | The current epoch, `-` with none. |
+| MSG | `off` when the lead's config turns messages off, `-` for a lead that is not running (its state is stopped, ended or desired, or it is `unknown` with the reason `launch-unsettled` or `launch-reply-lost`, or it has no epoch: the words of its last epoch's message are not drawn; a lead that is `unknown` for another reason, such as `control-group-not-proven-empty` or `competing-unit`, may have a unit that runs with the epoch's message sent, so its column follows the rule below), `free` while the epoch's message is not spent, and `free (not delivered)` while it is free after a message that was not delivered (the holder answered not-now or refused with nothing written, or refused the request itself as disabled, wrong-epoch or bad-request; the receipt line says why): another can be sent with `m`. Once the message is spent, what became of it: `sent` only when its words say it was submitted; `sent-unsure` when something may have reached the lead (look at its screen), when the words are not ones the console knows, and when the daemon holds the epoch spent and has no words for it (the holder answered busy, which says it is delivering something the daemon has no record of; the answer was lost, the message was sent before the console started or by another client, or the daemon was restarted since and a later command hides the receipt): the request was written and nothing says what became of the message; and `spent, not delivered` for a message that was not delivered but that the daemon holds as spent anyway, because it could not write the result, or the holder's refusal, down (then `m` says a message was already sent in this epoch). |
+| LAST RECEIPT | The lead's last command and where it stands. |
+| UNIT | The lead's unit name. |
+
+Below the table the view draws one line about the row under the cursor when its
+state needs words. For state `ready` with the reason `holder-ready` it reads
+"KEY: ready (holder-ready): the holder is up and the agent started; its login is
+not observed", which says what the daemon observed and no more: the agent's login
+is not looked at. The line gives way to the message editor, the stop question and
+a note, and a state or reason the console has no words for adds no line. A lead
+that is `unknown` with the reason `launch-unsettled` or `launch-reply-lost` (a
+start whose launch the daemon cannot yet say anything about, as after the daemon
+was killed in the middle of a start) gets "launch settles by itself 40 s after
+the start; if not, stop the lead or restart": the daemon in scratch mode settles
+the launch itself when the 40 s window ends, and if the lead is still `unknown`
+after that, stopping the lead (the way out when the launch's own unit was
+adopted, which leaves the lead `unknown`) or a restart of the daemon is what is
+left. The same words answer a `lead.stop` that is refused with `intent-pending`
+(and a `lead.start` with that code): reading the list does not settle a launch,
+so the line does not tell the owner to read it. While such a lead is listed (or one
+that is `unknown` with the reason `control-group-not-proven-empty`, which the
+daemon's timer tries again), a start refused because the limit of running leads
+is reached adds that the unknown lead holds a slot until its launch settles by
+itself, 40 s after the start, and that if it is still unknown after that the
+lead is stopped or the daemon restarted. When a listed lead is `unknown` for any
+other reason (a unit that is not the lead's own, a registry that was recovered,
+a reboot, or none given), the daemon has no timer for it and the refusal adds
+only that the unknown lead holds a slot until it is settled and that the lead is
+stopped or the daemon restarted. The view does not read the list by a timer for an `unknown`
+lead, so the settled lead shows at the next reading (`r`).
+See [a lead left unknown after a killed
+daemon](scratch-leads.md#a-lead-left-unknown-after-a-killed-daemon).
+
+Everything in the view that comes from the daemon (names, states, units) is cut
+to a short ASCII subset and drawn one character at a time, and the text of an
+error is never drawn.
+
+### Keys
+
+| Key | Action |
+| --- | --- |
+| j, k, Up, Down | Move over the rows. |
+| d | Define the lead under the cursor: the daemon provisions it and registers it. |
+| s | Start it. |
+| x | Ask "Stop KEY (epoch N)?"; only y stops it, any other key keeps it running. |
+| m | Open a one-line editor for a message to the lead, for the epoch the row shows. Enter sends it once, Esc drops it, Ctrl+U clears it, and every printable key, q and j included, is text. It holds at most 2048 bytes, the daemon's limit, and stops taking text there. |
+| w, v | Ask for an attach ticket as a writer or as a viewer (below). |
+| r | Read the list again now. The view also reads it every two seconds by itself while a receipt is in progress and while a lead is `starting` or `stopping`, so a started lead turns `ready` without this key, and stops reading when none is. A lead that is `unknown` is not read by a timer: press this key to see a launch that the daemon has settled since. |
+| Esc | Close the view. |
+| Ctrl+C | Quit, dropping an open field first. |
+
+While a command for a lead has no answer yet, the keys that would send another
+for that lead do nothing and say so. `m` says why it does nothing when the lead
+has no epoch, when messages are off, when the epoch's message was sent, and when
+an earlier message of the epoch has no final answer.
+
+### Receipts
+
+Every command is shown with the daemon's receipt for it. The words are the
+view's own, chosen by the receipt's status, and are not the daemon's text:
+
+| Shown | Status | Meaning |
+| --- | --- | --- |
+| accepted (running) | in-progress | The daemon admitted the command and it has not ended. The list is read again every two seconds until it is final. |
+| accepted (done) | done | The command was carried out. For a message the line says what became of it, from the holder's own three words (outcome, reason, written), and whether the epoch's message is spent (next table). |
+| refused | refused | The daemon changed nothing that matters; the line gives the reason in the view's words. |
+| unavailable | unavailable | The command could not be carried out; the line gives the reason. |
+| uncertain | uncertain | The daemon does not know what happened, as after a restart while the command ran. Read the lead's state, then decide; nothing is sent again for you. |
+
+The line of a done message, for every answer the lead's holder can give (each
+of the NOT delivered ones ends "The epoch's message is free" when the list's row
+for the lead and epoch, read after the answer, says the message is not spent,
+and each other one ends "This epoch's one message is spent"). The receipt does
+not carry that flag, so the NOT delivered ones are drawn from the row: until the
+list has been read again they end "The epoch's message is free unless the list
+says it is spent", and when the row says spent (the daemon could not write the
+result down and holds the epoch spent all the same) they end "The daemon holds
+this epoch's message spent all the same", as the MSG column says `spent, not
+delivered`. When the row is at another epoch than the answer's (the lead was
+stopped and started since, perhaps by another client), the row's flag is not that
+message's, and they end "The lead is at another epoch now; that epoch's message
+is not known" and say nothing of free or spent. The daemon's list summary carries
+no epoch, so the status line keeps the epoch the answer was for when it keeps the
+answer's words:
+
+| Holder says (outcome, reason, written) | The line says |
+| --- | --- |
+| submitted, none, whole | the message was submitted: the whole of it was written and sent |
+| not-now, not-ready, nothing | NOT delivered: nothing was written, the lead's screen is not idle |
+| not-now, blocked, nothing | NOT delivered: nothing was written, the lead's screen is blocked |
+| refused, untested, nothing | NOT delivered: nothing was written, the lead's program version is not one the holder is tested with |
+| refused, text, nothing | NOT delivered: nothing was written, the holder refused the text |
+| uncertain, not-submitted, partial | written but not submitted: the text reached the lead's input and Enter was not sent. Look at the lead's screen |
+| uncertain, died, nothing / partial / whole | result unknown: the lead ended during the send, with what the holder says was written (nothing, part, or the whole). Look at the lead's screen |
+| uncertain, died, unknown | result unknown: the lead ended or no answer came back; how much was written is not known. Look at the lead's screen |
+
+The last sentence of a line is what the daemon does: it marks the epoch's message spent
+once it has written the request to the holder, and frees it again when nothing
+was written to the lead: the holder answered not-now or refused with nothing
+written, or refused the request itself (`holder-disabled`, `holder-wrong-epoch`
+or `holder-bad-request`). A `holder-busy` refusal does not free it: the daemon
+sends one message at a time, so a busy holder is delivering something the
+daemon has no record of, which may have reached the lead. So after a message
+that was NOT delivered the lead may be sent another in the same epoch, and after
+any other answer the epoch's message is spent until a new epoch. The list that the view
+reads after the answer settles it: the MSG column follows the daemon's
+`message_spent`, and `m` is refused with "a message was already sent in this
+epoch" only while that is true. A refusal by the holder itself is a different
+receipt: it says "unavailable" (or "refused" for `holder-wrong-epoch`, which the
+daemon answers as a stale epoch), not "accepted", and the row then shows the
+message as free and not delivered; after `holder-busy` the receipt says the
+holder is busy with a delivery the daemon has no record of and the epoch's
+message is spent, and the row shows it as `sent-unsure` (the message that was
+refused was not written, and what the holder was delivering is not known to have
+reached the lead nor known not to have: look at the lead's screen). A done message from a console adapter that does not pass the
+holder's reason and written is drawn from its outcome alone, with the same first
+words. The line stays the same when the list is read again: the daemon's list
+holds the last command of each lead as a summary without its result, so the
+view keeps the words of the answer to the press (the holder's three words of a
+message) while the list shows the same command, and takes a list receipt's own
+words when it has any.
+
+"Accepted" means that the daemon took the command into its durable table, not
+that it is done. The view has words for every reason code the daemon sends.
+Only a code from a newer daemon, one that is not in that set, is drawn as "the
+reason is not known to this console"; a message result it does not know, or a
+reason and written that the holder does not send together, is drawn as "the
+result is not known to this console", with no sentence about the epoch's
+message.
+
+**Earlier receipts.** After a lost answer the console's client asks once more,
+on a new connection, with the same command id and the same arguments, and the
+daemon answers with the receipt it holds: it never runs the command again. A
+receipt that comes back for a command of an earlier press (the answer was lost,
+or it had none that was final) is not shown as the answer to the press that
+returned it, because "done" would then read as something just done, and an old
+ticket may be spent. The view says instead "no answer came back: the command may
+or may not have run. The list was read again; nothing was sent a second time"
+(for a message: "no answer came back: the message may or may not have reached the
+lead. Read the list; it shows whether the epoch's message was sent"), and reads
+the list, which shows the lead's last command. The client forgets the id with the
+final receipt, so the next press is a new command. A message whose answer was
+lost is not made again for the epoch.
+
+### Attach: list, attach, back
+
+`w` and `v` send a ticket command. When its receipt is done, the leads view asks
+the console to attach to that lead, and the command line does what `--attach`
+does for the lead's folder and ticket file, as a writer or as a viewer: the
+cockpit ends, the attach screen of [Attaching to a holder](#attaching-to-a-holder)
+runs, and when it ends the cockpit opens again with the leads view open and the
+list read afresh. So the owner goes list, attach, back. `--daemon` still cannot
+be combined with `--attach`: the loop is internal. A ticket is single use and the
+lead has one ticket file, so ask for a ticket and attach before asking for
+another for the same lead. A refused ticket reads "the holder refused the ticket;
+a writer may already be attached": the holder grants one writer at a time, and
+the receipt carries no reason beyond the refusal, so the line says what is likely
+and no more. An attach that cannot be made (for example, the
+attach socket's path is too long for a unix socket address) is told in one line
+and the cockpit comes back.
+
+## Pair a phone (when pairing is configured)
+
+The pair-a-phone view adds a phone as a device that can approve cards, from the
+desk. It exists only when the console is given a pairing backend and the
+approval app's address (`terminalconsole.Options.WithPairing`). `ataniq-console
+--daemon DIR` gives both: the backend is the daemon's owner channel, over the
+same owner connection as the approvals view (the daemon counts one connection as
+the decider, so the pairing must not open a second one), and the address is the
+owner-local file described [below](#the-approval-apps-address). The other modes
+(`--demo`, `--attach`) give neither: `P` shows "pairing is not configured" and
+does nothing, and the help page does not list it. Against a daemon with no owner
+channel the view opens and its calls fail with the fixed lines below.
+
+`P` (capital P) opens the view from console focus, like `L`: it does nothing in
+session focus, in zoom, over an overlay or over another screen, and the
+single-column pages take it too, but not over a live session. Every key goes to
+the view until Esc closes it, Ctrl+C aside, which quits.
+
+1. The view first reads the daemon's state. With nothing open it explains
+   pairing in a few lines and offers Enter to start. A pairing that is already
+   waiting for its phone cannot show its code a second time, so the view says so
+   and offers Enter for a new code, which ends the open one. A pairing whose
+   eight words are waiting for you is shown at once.
+2. Enter asks the daemon for a one-time code and draws a QR code that holds the
+   app's address with `/pair/#` and the code (the code is in the fragment, so
+   it is never in a proxy log), with the seconds the code has left. The code is
+   drawn black on white, with a white margin, whatever the theme is, because a
+   light code on a dark ground is the inverse code that many scanners do not
+   read. It needs the code's columns and its rows plus two lines of text, with
+   a margin of 4 modules; when that does not fit, the view uses the smallest
+   margin that scanners read (2 modules), and only a terminal too small even
+   for that gets the line "terminal too small: need W x H" and never a clipped
+   code. The code stays valid meanwhile. An address so long that its code
+   would not fit the largest QR the console draws also gives the line "pairing
+   origin not configured", not an error of the daemon's. The code appears only in the
+   QR: never as text, in a status line, an error or the title.
+3. The phone scans the code and makes its passkey. The view asks the daemon
+   every two seconds; when the phone's key arrives the view shows eight numbered
+   words, large and spaced (four to a row, or two when the width does not hold
+   four, or one), and the line "Compare with your phone. Confirm only
+   if they match." The phone shows the same eight words (64 bits of the key's
+   fingerprint). The daemon names the
+   pending key with an id (16 lowercase hex characters) that the view keeps but
+   does not show. When the daemon has what the phone's authenticator said of
+   itself when it made the key, the view shows it under the words, as a claim:
+   "Claimed, not proven: vault passkey, synced." The kind is "platform
+   passkey", "vault passkey" or "passkey of an unknown kind" (any other word
+   from the daemon reads "a kind this console does not know"), and the backup
+   is "synced", "can sync, not synced yet" or "kept on one device". Nothing
+   about the authenticator is attested, so this is what the phone says, not a
+   fact: the words are what you compare.
+4. `c` asks "press y to confirm, any other key cancels", because a confirmation
+   adds a deciding key; only `y`, a moment after the `c`, confirms. The
+   confirmation and a rejection carry the id the words were shown for, so the
+   daemon acts on that key and on no other. The question is dropped if the
+   words, the id or the claim change meanwhile, or if the terminal is resized. You can
+   confirm only while the whole words screen, the eight words and the prompt,
+   fits the terminal with no line cut: on a smaller one `c` does nothing and
+   the view says "terminal too small to show the eight words" with "x: reject
+   Esc: close", and `y` checks again. An 80 x 24 terminal holds it for
+   words of ordinary length, and so does one as small as 30 x 19 (the words
+   two to a row); a smaller one may not, and long words need more
+   columns. `x` rejects, and nothing is added.
+   After a confirm the view shows the key's kind, "Paired. Kind, claimed: vault
+   passkey." (or "Paired. Kind: unverified (no claim made)." for a key
+   paired without a claim), and the key's short id. Nothing is trusted until you confirm here.
+5. Esc closes the view at any time and confirms nothing. Closing while the code
+   waits does not cancel the pairing on the daemon: the code ends by itself when
+   it expires. A code that expired, or a pairing the daemon no longer holds, says
+   so and offers Enter for a new code.
+
+### The approval app's address
+
+With `--daemon` the address is the first line of the owner-local file
+`ataniq/owner-local/seat-origin` in the folder named by `XDG_CONFIG_HOME` (when
+it is an absolute path), or else in `~/.config`, trimmed of space around it. The
+console reads it once, when it starts; change it and start the console again.
+The file is read only if it is a regular file (not a link), at most 1 KiB, and
+not writable by its group or by others (`chmod 600` it). A file that is missing,
+empty, a link, too big or writable by others is the same as no address: the view
+says "pairing origin not configured" and asks the daemon for nothing. The
+console does not say which of these it was, and the value is never in a message
+or a log. It is a file of your account: a program that runs as you can write it,
+so it names the address the QR holds and nothing more: the passkey is bound to
+the address it was made for, and the words you compare at the desk are the
+fingerprint of the phone's key.
+
+The address is configuration and is checked before anything is
+drawn: it must be `https` with a host name (an IP address, `localhost` and a name
+with no dot are refused), no port but 443, no path, no user name, no query and
+no fragment. Otherwise the view says only "pairing origin not configured", draws
+no QR and asks the daemon for nothing.
+
+### What the daemon's answers can show
+
+Everything the daemon sends that the view draws (the eight words, the id, the
+kind) is cleaned first, and eight words that are not each one short printable
+word can be rejected but not confirmed. A status that says a key is pending
+with any other number of words, or with no id, is refused before it reaches the
+view, as a bad answer. The text of a daemon's error is never drawn: a
+fixed line says that the code was not made, that the state could not be read
+(the view tries again), or that a confirmation or rejection did not complete.
+See `internal/terminalconsole/pairview`.
+
 ## What is a sample and what is not qualified
 
 - No approval is possible with a release daemon: a release daemon contains no
@@ -369,7 +669,11 @@ lead must ask again.
 - The sample cards of `--demo` change nothing: the header says "sample cards: a
   decision changes nothing".
 - The daemon view is read-only, except for the approvals of a daemon that
-  serves the owner channel (see [The owner channel](#the-owner-channel-tagged-daemon-only)).
+  serves the owner channel (see [The owner channel](#the-owner-channel-tagged-daemon-only))
+  and the leads view of a daemon that serves lead control, which is a scratch
+  daemon of a tagged build: it drives scratch leads on throwaway repositories
+  and nothing else (see [Lead control](#lead-control-scratch-daemon-only)).
+  With any other daemon `L` says "no lead control in this daemon".
 - Nothing here has been qualified on a real lead.
 
 ## Flags
@@ -398,8 +702,9 @@ ataniq-console --daemon DIR [--theme dark|light] [--no-bell]
   is yours: `lf` sends a line feed (Ctrl+J), `csi-u` sends the enhanced form
   `CSI 13;2u`, which only an agent that reads it understands, and
   `backslash-cr` sends a backslash and Enter, the line continuation.
-- `--daemon DIR` shows the daemon's leads, read-only, and its approvals when
-  the daemon serves the owner channel. DIR is the folder that
+- `--daemon DIR` shows the daemon's leads, read-only, its approvals when
+  the daemon serves the owner channel, and the leads view (`L`) when the daemon
+  serves lead control. DIR is the folder that
   holds the daemon's socket. It cannot be combined with `--demo`, `--attach`,
   `--recording`, `--linger`, `--return-key`, `--ticket-file`, `--viewer` or
   `--shift-enter`. See [The daemon view](#the-daemon-view).

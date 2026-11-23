@@ -53,11 +53,21 @@ var (
 	limitParamsForm    = payload[LimitParams]{"limit", MaxParamsBytes, record.CodeRecordInvalid, checkLimitParams}
 	limitSetParamsForm = payload[LimitSetParams]{"limit", MaxParamsBytes, record.CodeRecordInvalid, checkLimitSetParams}
 	limitViewForm      = payload[LimitView]{"limit", MaxResultBytes, record.CodeRecordInvalid, checkLimitView}
+
+	pairStartParamsForm   = payload[PairStartParams]{"pair start", MaxParamsBytes, record.CodeRecordInvalid, checkPairStartParams}
+	pairStartResultForm   = payload[PairStartResult]{"pair started", MaxResultBytes, record.CodeRecordInvalid, checkPairStartResult}
+	pairStatusForm        = payload[PairStatus]{"pair status", MaxResultBytes, record.CodeRecordInvalid, checkPairStatus}
+	pairPendingParamsForm = payload[PairPendingParams]{"pair pending", MaxParamsBytes, record.CodeRecordInvalid, checkPairPendingParams}
+	seatPairParamsForm    = payload[SeatPairParams]{"seat pair", MaxSeatPairParamsBytes, record.CodeRecordInvalid, checkSeatPairParams}
+	seatPairResultForm    = payload[SeatPairResult]{"seat paired", MaxResultBytes, record.CodeRecordInvalid, checkSeatPairResult}
+	keyItemForm           = payload[KeyItem]{"key", MaxResultBytes, record.CodeRecordInvalid, checkKeyItem}
+	keysViewForm          = payload[KeysView]{"keys", MaxResultBytes, record.CodeRecordInvalid, checkKeysView}
+	keyRevokeParamsForm   = payload[KeyRevokeParams]{"key revoke", MaxParamsBytes, record.CodeRecordInvalid, checkKeyRevokeParams}
 )
 
 // DecodeNothing reads the params of an operation that takes none (owner.list,
-// owner.beat, owner.looked) or the result of one that answers nothing
-// (owner.beat, owner.looked). It accepts an empty JSON object and refuses
+// owner.beat, owner.looked, owner.pair-status, owner.keys, owner.keys-off) or the result of one that
+// answers nothing (owner.beat, owner.looked, owner.pair-reject). It accepts an empty JSON object and refuses
 // everything else record-invalid, or record-too-large over [MaxParamsBytes].
 func DecodeNothing(data []byte) error {
 	_, err := nothingForm.decode(data)
@@ -195,3 +205,99 @@ func DecodeLimitView(data []byte) (LimitView, error) { return limitViewForm.deco
 
 // EncodeLimitView writes the result of owner.limit and of owner.limit-set.
 func EncodeLimitView(v LimitView) ([]byte, error) { return limitViewForm.encode(v) }
+
+// DecodePairStartParams reads the params of owner.pair-start. Params over
+// [MaxParamsBytes] are refused record-too-large; anything else that is wrong
+// record-invalid.
+func DecodePairStartParams(data []byte) (PairStartParams, error) {
+	return pairStartParamsForm.decode(data)
+}
+
+// EncodePairStartParams writes the params of owner.pair-start.
+func EncodePairStartParams(p PairStartParams) ([]byte, error) { return pairStartParamsForm.encode(p) }
+
+// DecodePairStartResult reads the result of owner.pair-start, which holds the
+// pairing code. A result over [MaxResultBytes] is refused record-too-large;
+// anything else that is wrong, such as a code of another form, record-invalid.
+func DecodePairStartResult(data []byte) (PairStartResult, error) {
+	return pairStartResultForm.decode(data)
+}
+
+// EncodePairStartResult writes the result of owner.pair-start.
+func EncodePairStartResult(r PairStartResult) ([]byte, error) {
+	return pairStartResultForm.encode(r)
+}
+
+// DecodePairStatus reads the result of owner.pair-status. A result over
+// [MaxResultBytes] is refused record-too-large; anything else that is wrong,
+// such as words for a pairing that is not pending, or none for one that is,
+// record-invalid.
+func DecodePairStatus(data []byte) (PairStatus, error) { return pairStatusForm.decode(data) }
+
+// EncodePairStatus writes the result of owner.pair-status.
+func EncodePairStatus(s PairStatus) ([]byte, error) { return pairStatusForm.encode(s) }
+
+// DecodePairPendingParams reads the params of owner.pair-confirm and of
+// owner.pair-reject. The pending id is required: a call without it, with
+// another field, or with an id that is not 16 lower-case hexadecimal digits
+// is refused record-invalid, and params over [MaxParamsBytes]
+// record-too-large.
+func DecodePairPendingParams(data []byte) (PairPendingParams, error) {
+	return pairPendingParamsForm.decode(data)
+}
+
+// EncodePairPendingParams writes the params of owner.pair-confirm and of
+// owner.pair-reject.
+func EncodePairPendingParams(p PairPendingParams) ([]byte, error) {
+	return pairPendingParamsForm.encode(p)
+}
+
+// DecodeSeatPairParams reads the params of seat.pair. Params over
+// [MaxParamsBytes] are refused record-too-large; anything else that is wrong,
+// such as a code of another form or a credential id of another length,
+// record-invalid. Whether the key is a key is for the daemon.
+func DecodeSeatPairParams(data []byte) (SeatPairParams, error) {
+	return seatPairParamsForm.decode(data)
+}
+
+// EncodeSeatPairParams writes the params of seat.pair.
+func EncodeSeatPairParams(p SeatPairParams) ([]byte, error) { return seatPairParamsForm.encode(p) }
+
+// DecodeSeatPairResult reads the result of seat.pair. A result over
+// [MaxResultBytes] is refused record-too-large; anything else that is wrong
+// record-invalid.
+func DecodeSeatPairResult(data []byte) (SeatPairResult, error) {
+	return seatPairResultForm.decode(data)
+}
+
+// EncodeSeatPairResult writes the result of seat.pair.
+func EncodeSeatPairResult(r SeatPairResult) ([]byte, error) { return seatPairResultForm.encode(r) }
+
+// DecodeKeyItem reads the result of owner.pair-confirm. A result over
+// [MaxResultBytes] is refused record-too-large; anything else that is wrong
+// record-invalid.
+func DecodeKeyItem(data []byte) (KeyItem, error) { return keyItemForm.decode(data) }
+
+// EncodeKeyItem writes the result of owner.pair-confirm.
+func EncodeKeyItem(k KeyItem) ([]byte, error) { return keyItemForm.encode(k) }
+
+// DecodeKeysView reads the result of owner.keys, owner.key-revoke and
+// owner.keys-off. A result over [MaxResultBytes] is refused record-too-large;
+// anything else that is wrong, such as more than [MaxKeys] keys or an id
+// twice, record-invalid.
+func DecodeKeysView(data []byte) (KeysView, error) { return keysViewForm.decode(data) }
+
+// EncodeKeysView writes the result of owner.keys, owner.key-revoke and
+// owner.keys-off.
+func EncodeKeysView(v KeysView) ([]byte, error) { return keysViewForm.encode(v) }
+
+// DecodeKeyRevokeParams reads the params of owner.key-revoke. Params over
+// [MaxParamsBytes] are refused record-too-large; anything else that is wrong
+// record-invalid. Whether the id names exactly one credential is for the
+// daemon.
+func DecodeKeyRevokeParams(data []byte) (KeyRevokeParams, error) {
+	return keyRevokeParamsForm.decode(data)
+}
+
+// EncodeKeyRevokeParams writes the params of owner.key-revoke.
+func EncodeKeyRevokeParams(p KeyRevokeParams) ([]byte, error) { return keyRevokeParamsForm.encode(p) }

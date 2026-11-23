@@ -104,8 +104,9 @@
 // calls Start. Reconcile runs once at start and is not repeated on a timer:
 // a periodic reconcile is not part of this feature. A launch intent that is
 // still pending inside its late-start window at that moment leaves the role
-// unknown (launch-unsettled) with the reconcile shown as completed, and
-// nothing settles the intent until the daemon is restarted. Leads,
+// unknown (launch-unsettled) with the reconcile shown as completed. Without
+// scratch mode (below) nothing settles the intent until the daemon is
+// restarted; in scratch mode a timer settles it when the window ends. Leads,
 // coordinators, the holder, the sandbox and the console are not part of it
 // either, and no operation of the protocol or flag of the binary starts,
 // stops or defines a lead (canary mode, in a build with the tag, aside).
@@ -169,6 +170,34 @@
 // and is in no answer and no evidence line. No file of the package imports the
 // injection tree.
 //
+// # Scratch mode and a launch that is not settled
+//
+// In scratch mode ([Config].Scratch, ataniqd run --scratch) the
+// daemon also settles a launch intent itself when its late-start window ends
+// (lead_settle_linux.go). A lead that the registry shows unknown with the
+// reason launch-unsettled or launch-reply-lost and its intent pending (a
+// daemon killed in the middle of a start, or a start whose reply was lost) has
+// a timer, armed when the daemon starts serving and after a start that ended
+// with its reply lost. At the intent's deadline on the daemon's clock, the
+// timer asks [leadlifecycle.Controller.SettleLaunch] to settle the one role,
+// which applies the rules of Reconcile and no other: with no unit loaded, the
+// control group empty and the window and its margin passed, the intent is
+// abandoned and the lead is stopped with the proof (and leaves the
+// max_running count); a unit that is loaded at the deadline leaves the lead
+// unknown (the launch's own unit is adopted, another is reported and the
+// intent abandoned) and is never signalled; a manager that does not answer or
+// a control group that is not proven empty is tried again later, at growing
+// waits (the lead's reason then reads control-group-not-proven-empty, which
+// keeps the timer armed while the intent is pending). The timer never starts a unit. It takes the role's operation lock as
+// a try-lock for one read of the registry, never across a call to the manager
+// or the lifecycle, and the lifecycle's own lock for the role keeps its settle
+// from overlapping a start or a stop. A lead shown unknown for a cut of the
+// registry (registry-recovered) has no timer. A timer ends when the intent is
+// no longer pending, on a proven stop, on a new start, at shutdown, where the
+// daemon joins it like the ready observers, and when the lifecycle answers
+// that the reconcile at start did not act on the registry's cut journal (one
+// log line names the restart that settles the lead).
+//
 // # The owner connection
 //
 // A build with the ataniq_ownerchannel tag has one more thing, and no other
@@ -179,9 +208,11 @@
 // sets it. With it set, the daemon builds the host's side of an approval card
 // ([OwnerService], package ownerchannel's service in a real build), registers
 // the operations owner.list, owner.show, owner.paths, owner.patch,
-// owner.decider, owner.decide, owner.beat, owner.limit, owner.limit-set and
-// owner.looked ([OwnerOperations]) through the client protocol's extension
-// seam, on the same socket and the same protocol, "ataniq.client/1", and
+// owner.decider, owner.decide, owner.beat, owner.limit, owner.limit-set,
+// owner.looked, the pairing and key operations (owner.pair-start,
+// owner.pair-status, owner.pair-confirm, owner.pair-reject, owner.keys,
+// owner.key-revoke and owner.keys-off) and the seat's seat.pair
+// ([OwnerOperations]) through the client protocol's extension seam, on the same socket and the same protocol, "ataniq.client/1", and
 // closes the service after the server has ended. A daemon without the hook
 // registers none of them, whatever the tag.
 //
@@ -210,6 +241,31 @@
 // service is told too, so that its journal keeps the refusal. The beats of the
 // decider reach the service. [UnescapingIntake] turns the lines of the intake's
 // patch back to raw bytes before the service pages them.
+//
+// The pairing writes (start, confirm, reject, key-revoke, keys-off) are for the
+// decider's connection only: from another they are refused not-decider before
+// their params are read, and count against the same per-connection bound as a
+// decision frame, past which the connection is closed (OwnerCounts). The
+// service decides presence. Confirm and reject take the pending id of the
+// credential the owner compared ([ownerwire.PairPendingParams], required), and
+// the service refuses one that is not the credential pending now with
+// pairing-changed, changing nothing. Each error of the service has a code of its own and
+// a fixed text (keys-unavailable, keys-full, key-unknown, key-ambiguous,
+// pairing-open, pairing-none, pairing-expired, pairing-changed,
+// pairing-refused, credential-invalid); a cause that names a path is in the log and not in the
+// answer, and the pairing code, which is in the result of owner.pair-start
+// and nowhere else, is never logged. seat.pair is the seat app's call: it is
+// answered only to a connection a seat source says is a seat, and no build has
+// one, so it is refused "unavailable" to every connection before its params are
+// read. The refused calls of a connection count against the same bound as its
+// refused writes: the first [DecisionRefusalBound] are logged, the next closes
+// the connection and is logged once, and no line is written for any after.
+//
+// The seat gate (seatgate_linux.go, in the same tagged build) is a second
+// listener of the daemon: a TCP listener with pinned-key TLS for the seat app,
+// opened only by run --owner-channel --seat-gate ADDR. It serves the pairing
+// call and the reads of the cards through package gatehost and decides
+// nothing; docs/lead-daemon.md describes it.
 //
 // The same-user limit of the socket holds here as everywhere: any process of
 // the owner's user can say it is the console, and one with a terminal of its

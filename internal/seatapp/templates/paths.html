@@ -1,0 +1,17 @@
+{{define "content"}}
+<h1>Changed paths</h1>
+{{template "standin"}}
+<p>Card {{text .ID maxID}}, page {{num .Number}} of {{num .Page.Pages}}.</p>
+{{with .Page.Rows}}<ul class="rows">
+{{range .}}<li><span class="lead mono">{{lead .Path maxPath}}</span> <span class="meta">{{text .Status maxID}}, +{{num .Added}} −{{num .Removed}}</span></li>
+{{end}}</ul>
+{{else}}<p>No path on this page.</p>
+{{end}}{{if .Cut}}<p class="flag">A path on this page is too long to show whole on the phone, so this page does not count as read. Approve at the desk.</p>
+{{end}}<nav aria-label="Pages">
+{{if .Prev}}<p><a id="prev" href="{{.Prev}}">Previous page</a></p>
+{{end}}{{if .Next}}<p><a id="next" href="{{.Next}}">Next page</a></p>
+{{end}}<p><a id="back" href="{{.Back}}">Back to the card</a></p>
+</nav>
+{{template "readonly"}}
+{{template "leave"}}
+{{end}}

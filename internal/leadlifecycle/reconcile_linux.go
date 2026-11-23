@@ -169,7 +169,7 @@ func (c *Controller) Reconcile(ctx context.Context) (Report, error) {
 	done := make([]*RoleReport, len(entries))
 	var failed error
 	for _, i := range order {
-		rr, left, err := c.reconcileRole(ctx, entries[i].Role, cut)
+		rr, left, err := c.reconcileRole(ctx, entries[i].Role, cut, false)
 		done[i] = &rr
 		if err != nil {
 			failed = err
@@ -233,8 +233,10 @@ func cutNote(rep Report) string {
 }
 
 // reconcileRole settles one role. left is true when the role could not be
-// acted on because the manager did not answer.
-func (c *Controller) reconcileRole(ctx context.Context, role leadrole.Role, cut bool) (rr RoleReport, left bool, err error) {
+// acted on because the manager did not answer. With pendingOnly set a role
+// that holds no pending launch intent is left as it is and reported so,
+// before the manager is asked anything.
+func (c *Controller) reconcileRole(ctx context.Context, role leadrole.Role, cut, pendingOnly bool) (rr RoleReport, left bool, err error) {
 	rr = RoleReport{Role: role, Kind: role.Kind(), Feature: role.Feature(), Parent: role.Parent(), Action: ActionUnchanged}
 	unlock, err := c.lock(ctx, role)
 	if err != nil {
@@ -248,6 +250,10 @@ func (c *Controller) reconcileRole(ctx context.Context, role leadrole.Role, cut 
 	rr.Manager, rr.Epoch, rr.Before, rr.After = e.Manager, e.Epoch, e.Shown.State, e.Shown.State
 	if e.Manager != leadregistry.ManagerAtaniq {
 		rr.Action, rr.Reason, rr.Detail = ActionNotManaged, "not-managed", "the role is run by "+string(e.Manager)+" and was not touched"
+		return rr, false, nil
+	}
+	if pendingOnly && (e.Intent == nil || e.Intent.Outcome != leadregistry.OutcomePending) {
+		rr.Reason, rr.Detail = reasonNoPendingIntent, "the role holds no pending launch intent and was not touched"
 		return rr, false, nil
 	}
 	var n note

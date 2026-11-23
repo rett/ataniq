@@ -60,13 +60,13 @@ const TemplateVersion = 1
 // {role}, {project} and fixed text.
 //
 // "repository" is read on the host too. The owner's git is given that path
-// as the source of the fetch, and it looks at the path on the host before it
-// starts the serving half: when a regular file is there and it is a git
-// bundle, git reads that file itself and never starts "upload_pack". The
-// owner must therefore choose a path that does not exist on the host, such
-// as the example's /work/{project} on a host with no /work, and never one
-// where a sandbox could put a file. Nothing in this package checks it: it
-// reads no file.
+// as the source of the fetch, as a "file://" URL, which git never reads as a
+// git bundle, so "upload_pack" is started whatever is at the path. The fetch
+// also refuses a path that exists on the host, as a second layer. The owner
+// should therefore choose a path that does not exist on the host, such as the
+// example's /work/{project} on a host with no /work, and never one where a
+// sandbox could put a file. Nothing in this package checks it: it reads no
+// file.
 //
 // The first element of each argv is the launcher, which runs as the owner:
 // it is an absolute, clean path written out in full, with no placeholder and

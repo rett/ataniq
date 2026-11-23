@@ -1,0 +1,463 @@
+/*
+ * The seat app's one style sheet. Operate mode: calm, plain, high contrast.
+ * Mobile first, one column, no framework, system fonts only. The phone's text
+ * size and its light or dark setting are followed. Nothing here is fetched
+ * from another site.
+ *
+ * Colour system: two voices, Dusk with red alerts. Light value, then dark.
+ * The seat is cool (cyan-blue on blue-slate); the agent, when it appears, is
+ * warm grey. Square corners are the seat's; round corners are the agent's.
+ *
+ * COLOUR ROLES
+ *   ground        --bg #eef1f6, #11131b. Raised surface (the words box, inputs)
+ *                 --field #fbfcfe, #0a0c12.
+ *   text          --fg #161a24, #e7e9f0. Secondary text --muted #4d5466, #a6abb9.
+ *   line          --line #858a96, #5e6270: the functional line (header rule,
+ *                 status bar, box edges), at least 3:1 on --bg. Dusk's own
+ *                 decorative hairline (#c6ccd9, #333747) is only 1.4:1 and 1.6:1,
+ *                 so the nearest value that passes was taken: Dusk's hairline
+ *                 moved toward the text colour until it reached 3:1.
+ *   seat's voice  --seat #09558a, #74c7f7: the spine marker, the seat tag and
+ *                 Approve (--approve #09558a, #0e4a73; --approve-ink #ffffff;
+ *                 --approve-edge #09558a, #74c7f7). Links take it too. Nowhere
+ *                 else: the seat colour is never a state.
+ *   agent's voice --bubble #e9e4da, #2b2824; --bubble-ink #4f4a42, #cdc5b8;
+ *                 --bubble-line #8a8478, #857d70. Low chroma, never the seat's
+ *                 hue, never filled with a state colour. Text a lead wrote
+ *                 on a card (paths, refs, the plan, the note) is in it, with
+ *                 round corners.
+ *   danger        --stop #b3261e, #ff6b5e, with --stop-on #ffffff, #2b0504 on
+ *                 a fill of it. Reserved: refusals, expiry, flagged things.
+ *   hold, warn    --warn #6b4d0a, #e6c378. Quiet, with an icon and a word.
+ *   ok, applied   --ok #2f5743, #b3cfa6. Quiet, so it never competes with the
+ *                 seat or with danger.
+ *   focus ring    --focus: the text colour, 3px with a gap. Never a hue, so it
+ *                 cannot be taken for a state.
+ *   selection     --sel #c9d2e2, #3b4560 with --sel-ink #161a24, #ffffff:
+ *                 neutral, so selected text never takes the seat's colour.
+ * The contrast of every pair in use is checked by look_test.go.
+ */
+
+:root {
+  color-scheme: light dark;
+  --bg: #eef1f6;
+  --field: #fbfcfe;
+  --fg: #161a24;
+  --muted: #4d5466;
+  --line: #858a96;
+  --seat: #09558a;
+  --approve: #09558a;
+  --approve-ink: #ffffff;
+  --approve-edge: #09558a;
+  --bubble: #e9e4da;
+  --bubble-ink: #4f4a42;
+  --bubble-line: #8a8478;
+  --stop: #b3261e;
+  --stop-on: #ffffff;
+  --warn: #6b4d0a;
+  --ok: #2f5743;
+  --focus: #161a24;
+  --sel: #c9d2e2;
+  --sel-ink: #161a24;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #11131b;
+    --field: #0a0c12;
+    --fg: #e7e9f0;
+    --muted: #a6abb9;
+    --line: #5e6270;
+    --seat: #74c7f7;
+    --approve: #0e4a73;
+    --approve-ink: #ffffff;
+    --approve-edge: #74c7f7;
+    --bubble: #2b2824;
+    --bubble-ink: #cdc5b8;
+    --bubble-line: #857d70;
+    --stop: #ff6b5e;
+    --stop-on: #2b0504;
+    --warn: #e6c378;
+    --ok: #b3cfa6;
+    --focus: #e7e9f0;
+    --sel: #3b4560;
+    --sel-ink: #ffffff;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 1rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+header,
+main {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+header {
+  padding-top: 12px;
+  padding-bottom: 12px;
+  border-bottom: 2px solid var(--line);
+}
+
+main {
+  padding-top: 16px;
+  padding-bottom: 32px;
+}
+
+.brand {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+h1 {
+  margin: 8px 0 16px;
+  font-size: 1.5rem;
+  line-height: 1.25;
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 1.25rem;
+  line-height: 1.25;
+}
+
+p {
+  margin: 0 0 16px;
+}
+
+/* What the page says about the step it is on. */
+#status,
+#decide-status,
+#watch-status {
+  padding: 8px 12px;
+  border-left: 4px solid var(--line);
+}
+
+/* One action, a word on it, at the bottom of the block. */
+button {
+  display: block;
+  width: 100%;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 10px 20px;
+  border: 2px solid var(--approve-edge);
+  border-radius: 0;
+  background: var(--approve);
+  color: var(--approve-ink);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button:disabled {
+  background: transparent;
+  color: var(--muted);
+  border-color: var(--line);
+  cursor: default;
+}
+
+/* Visible focus for every control and link. */
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+
+a {
+  color: var(--seat);
+  text-decoration: underline;
+}
+
+::selection {
+  background: var(--sel);
+  color: var(--sel-ink);
+}
+
+/* The words, to be compared with the desk console. */
+#result {
+  margin-top: 24px;
+  padding: 16px;
+  border: 2px solid var(--line);
+  border-radius: 0;
+  background: var(--field);
+}
+
+#words {
+  margin: 0 0 16px;
+  padding-left: 2rem;
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+#words li {
+  padding-left: 4px;
+}
+
+/* The cards. One column; every row is a link of at least 44 px. */
+.banner {
+  padding: 8px 12px;
+  border-left: 4px solid var(--warn);
+  background: var(--field);
+}
+
+.banner strong {
+  color: var(--warn);
+  letter-spacing: 0.04em;
+}
+
+.cards,
+.rows {
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+}
+
+.cards li {
+  border-bottom: 1px solid var(--line);
+}
+
+.cards a {
+  display: block;
+  min-height: 44px;
+  padding: 10px 0;
+  text-decoration: none;
+  color: var(--fg);
+}
+
+.cards a:hover .what,
+.cards a:focus-visible .what {
+  text-decoration: underline;
+}
+
+.what {
+  display: block;
+  font-weight: 700;
+  color: var(--seat);
+}
+
+.meta,
+.line {
+  display: block;
+  color: var(--muted);
+}
+
+.held {
+  display: block;
+  color: var(--warn);
+  font-weight: 700;
+}
+
+.flag {
+  color: var(--stop);
+  font-weight: 700;
+}
+
+.flags .lead {
+  border-color: var(--stop);
+}
+
+.rows li {
+  margin: 0 0 8px;
+}
+
+/* Lead text: the agent's voice, never the seat's. */
+.lead {
+  display: block;
+  margin: 0 0 4px;
+  padding: 8px 12px;
+  border: 1px solid var(--bubble-line);
+  border-radius: 12px;
+  background: var(--bubble);
+  color: var(--bubble-ink);
+  white-space: pre-wrap;
+}
+
+.mono,
+pre {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 1rem;
+}
+
+pre {
+  margin: 0 0 16px;
+  overflow-wrap: anywhere;
+}
+
+.label {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.facts {
+  margin: 0 0 16px;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0 0 8px;
+}
+
+.readonly {
+  margin-top: 24px;
+  padding: 8px 12px;
+  border-left: 4px solid var(--line);
+}
+
+/* The links that move between pages: as tall as a touch target. */
+#back,
+#paths,
+#prev,
+#next {
+  display: inline-block;
+  min-height: 44px;
+  padding: 10px 0;
+}
+
+/*
+ * The decide form, on the Card page only. One column; every control and
+ * every sign-off row is at least 44 px tall. Approve is the seat's slab;
+ * Deny is outlined in the danger colour, never filled, so the two cannot be
+ * taken for each other.
+ */
+#decide {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 2px solid var(--line);
+}
+
+#decide button {
+  margin: 0 0 16px;
+}
+
+fieldset {
+  margin: 0 0 16px;
+  padding: 0;
+  border: 0;
+}
+
+legend {
+  margin: 0 0 8px;
+  padding: 0;
+  font-weight: 700;
+}
+
+.check {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  min-height: 44px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+
+.check input {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin: 0;
+  accent-color: var(--seat);
+}
+
+.check .lead {
+  flex: 1;
+}
+
+.field {
+  display: block;
+  margin: 0 0 8px;
+  font-weight: 700;
+}
+
+textarea {
+  display: block;
+  width: 100%;
+  min-height: 88px;
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 2px solid var(--line);
+  border-radius: 0;
+  background: var(--field);
+  color: var(--fg);
+  font: inherit;
+}
+
+button.deny {
+  background: transparent;
+  color: var(--stop);
+  border-color: var(--stop);
+}
+
+.confirm-action {
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.note {
+  color: var(--muted);
+}
+
+#decide-status {
+  white-space: pre-line;
+}
+
+#decide-status:empty,
+#logout-status:empty,
+#watch-status:empty {
+  display: none;
+}
+
+#look {
+  display: inline-block;
+  min-height: 44px;
+  padding: 10px 0;
+}
+
+/* A quiet control: not the seat's slab. */
+button.quiet {
+  background: transparent;
+  color: var(--fg);
+  border-color: var(--line);
+}
+
+.leave {
+  margin-top: 32px;
+}
+
+@media (min-width: 30rem) {
+  button {
+    display: inline-block;
+    width: auto;
+    min-width: 12rem;
+  }
+}

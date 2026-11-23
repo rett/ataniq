@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -341,6 +342,8 @@ type countingDoor struct {
 	// does the same for List.
 	failDecide error
 	failList   error
+	// lists counts the calls of List.
+	lists int
 	// failShow makes Show fail as a call, and refuseSettle makes the next
 	// Settle answer with a refusal, once.
 	failShow     error
@@ -362,6 +365,7 @@ func (c *countingDoor) Show(ctx context.Context, id string) (door.Shown, error) 
 
 func (c *countingDoor) List(ctx context.Context) ([]door.Entry, error) {
 	c.mu.Lock()
+	c.lists++
 	fail := c.failList
 	c.mu.Unlock()
 	if fail != nil {
@@ -438,6 +442,12 @@ type env struct {
 	// journalWrap, when set, wraps each store the service is given.
 	journalWrap func(*ownerjournal.Store) Journal
 	n           int
+	// keys is the list of deciding keys each service is given, and
+	// pairRand the random source of its pairing codes; both may be nil.
+	keys     KeyStore
+	pairRand io.Reader
+	// lastCode is the code of the last pairing a test started by hand.
+	lastCode string
 }
 
 // src is the connection of the owner's console, which may decide.
@@ -480,6 +490,7 @@ func (e *env) config(st *ownerjournal.Store) Config {
 		},
 		Door: e.door, Merger: e.merger, Intake: e.intake, Verifier: e.verif, Mailbox: e.mail,
 		Ender: ender{e.stand}, Now: e.clock.Now,
+		Keys: e.keys, PairRand: e.pairRand,
 		Notice: func(l string) {
 			e.noticeMu.Lock()
 			e.notices = append(e.notices, l)

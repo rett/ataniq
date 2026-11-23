@@ -1,0 +1,97 @@
+# ataniq-seat-notify.service: the notifier of the seat's notices
+# (cmd/ataniq-seat-notify). It holds the VAPID key and the push subscriptions
+# and is the only part of the host that talks to a push service; the seat
+# tells it one integer, how many cards wait, over its Unix socket (see
+# deploy/authority-host/README.md, "The notifier").
+#
+# The release ships it as etc/systemd/system/ataniq-seat-notify.service;
+# ah-release build replaces the placeholder of ExecStart with the release's own
+# folder, so it runs the binary of its own release. The owner links it once, by
+# hand, as /etc/systemd/system/ataniq-seat-notify.service -> the same file
+# under /opt/authority-host/current. It has no [Install] section and is never
+# enabled: only the release's reload list starts it (systemctl restart). It
+# decides nothing, so the release's stop list does not stop it.
+#
+# The unit's user is seat-notify and its group is seat-notify, a group of its
+# own and not the seat's: the socket's folder, /run/seat-notify, is made
+# seat-notify:seat-notify 0750 and the socket seat-notify:seat-notify 0660, so
+# the seat's unit reaches it by naming seat-notify in its SupplementaryGroups=,
+# and the notifier, the one unit with egress, is in no group that reaches the
+# seat's own socket, /run/seat (group seat). The kernel's peer credentials
+# let only the seat user's id in (--seat-user).
+#
+# Owner-local values are not here. The owner writes, on the host:
+#   /etc/authority-host/seat-notify/seat-notify.env
+#                                       NOTIFY_SUBJECT=mailto:... or https:...,
+#                                       the contact the push service may reach
+#                                       the operator by (the VAPID subject)
+#   /etc/systemd/system/ataniq-seat-notify.service.d/egress.conf
+#                                       IPAddressAllow=, the resolver's address
+#                                       and the push service's range
+# and makes the VAPID key with ataniq-seat-notify vapid-init (see the README).
+# Without the environment file the unit does not start, and the no-AI check
+# reports it (HIT incomplete env-file); without the drop-in the unit reaches no
+# address at all, and no notice is sent.
+
+[Unit]
+Description=Authority host: the notifier of the seat's notices (ataniq-seat-notify)
+After=network.target
+
+[Service]
+Type=simple
+User=seat-notify
+Group=seat-notify
+EnvironmentFile=/etc/authority-host/seat-notify/seat-notify.env
+ExecStart={release}/bin/ataniq-seat-notify run --socket /run/seat-notify/notify.sock --seat-user seat --vapid-key /var/lib/seat-notify/vapid.pem --subscriptions /var/lib/seat-notify/subscriptions.json --vapid-subject ${NOTIFY_SUBJECT}
+Restart=on-failure
+RestartSec=5s
+
+# The socket's folder, /run/seat-notify (seat-notify:seat-notify, 0750): the
+# seat reaches the socket as a member of the group seat-notify (its unit's
+# SupplementaryGroups=). The key and the subscriptions are in
+# /var/lib/seat-notify (0700).
+RuntimeDirectory=seat-notify
+RuntimeDirectoryMode=0750
+StateDirectory=seat-notify
+StateDirectoryMode=0700
+UMask=0077
+
+# The network: no address at all in this file. The owner's drop-in allows the
+# resolver and the push service's range (IPAddressAllow=); the host firewall
+# limits the user seat-notify to TCP port 443 of that range and the resolver.
+# No listener on any address: the unit serves its Unix socket only.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+SocketBindDeny=any
+
+# Hardening, the seat's.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+SystemCallArchitectures=native
+# The seat's filter is enough for Go's resolver and TLS client: socket,
+# connect, sendto and recvfrom are in @system-service.
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+MemoryMax=128M
+TasksMax=32

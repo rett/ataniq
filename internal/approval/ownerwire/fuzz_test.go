@@ -178,3 +178,93 @@ func FuzzDecodeLimitView(f *testing.F) {
 		`{"days":[],"limit":0,"project":"a","raised_today":false,"suggestion":0}`,
 		`{"days":[{"alert":false,"date":"2026-02-30","reached_limit":false,"uses":0}],"limit":1,"project":"a","raised_today":false,"suggestion":6}`)
 }
+
+func FuzzDecodePairStartParams(f *testing.F) {
+	fuzzForm(f, "pair start params", `{"replace":1}`, `{"replace":"true"}`, `{"replace":true,"code":"x"}`)
+}
+
+func FuzzDecodePairStartResult(f *testing.F) {
+	fuzzForm(f, "pair start result",
+		`{"code":"7ZB0KX4M9TQ2VH6NRC3E","expires_at":"2026-11-20T14:06:40Z"}`,
+		`{"code":"7ZB0KX4M9TQ2VH6NRC3I","expires_at":"2026-11-20T14:06:40Z"}`,
+		`{"code":"7zb0kx4m9tq2vh6nrc3e","expires_at":"2026-11-20T14:06:40Z"}`,
+		`{"code":"7ZB0KX4M9TQ2VH6NRC3E","expires_at":"2026-11-20T14:06:40+00:00"}`)
+}
+
+func FuzzDecodePairStatus(f *testing.F) {
+	const day = `"expires_at":"2026-11-20T14:06:40Z"`
+	const words = `"words":["acorn","bridge","cedar","delta","ember","falcon","garden","harbor"]`
+	fuzzForm(f, "pair status",
+		`{"phase":"none"}`, `{"phase":"none",`+day+`}`, `{"phase":"waiting",`+day+`}`,
+		`{"phase":"pending",`+day+`,`+words+`}`, `{"phase":"pending",`+day+`}`,
+		`{"phase":"waiting",`+day+`,`+words+`}`, `{"phase":"waiting",`+day+`,"words":[]}`,
+		`{"phase":"pending",`+day+`,"words":["acorn"]}`, `{"phase":"expired",`+day+`}`,
+		`{"phase":"open",`+day+`}`, `{"phase":"waiting",`+day+`,"code":"7ZB0KX4M9TQ2VH6NRC3E"}`)
+}
+
+func FuzzDecodeSeatPairParams(f *testing.F) {
+	const id = `"credential_id":"QUFBQUFBQUFBQUFBQUFBQQ=="`
+	fuzzForm(f, "seat pair params",
+		`{"code":"7ZB0KX4M9TQ2VH6NRC3E",`+id+`,"public_key":"MAA="}`,
+		`{"code":"7ZB0KX4M9TQ2VH6NRC3E","credential_id":"QUFB","public_key":"MAA="}`,
+		`{"code":"7ZB0KX4M9TQ2VH6NRC3E",`+id+`,"public_key":""}`,
+		`{"code":"short",`+id+`,"public_key":"MAA="}`,
+		`{"code":"7ZB0KX4M9TQ2VH6NRC3E",`+id+`,"public_key":"MAA=","kind":"unverified"}`,
+		`{"code":"7ZB0KX4M9TQ2VH6NRC3E",`+id+`,"public_key":"MAA"}`)
+}
+
+func FuzzDecodeSeatPairResult(f *testing.F) {
+	fuzzForm(f, "seat pair result",
+		`{"words":["acorn","bridge","cedar","delta","ember","falcon","garden","harbor"]}`, `{"words":[]}`,
+		`{"words":["acorn","bridge","cedar","delta","ember","falcon"]}`,
+		`{"words":["acorn","bridge","cedar","delta","ember","falcon","garden","Harbor"]}`, `{"words":null}`)
+}
+
+func FuzzDecodeKeyItem(f *testing.F) {
+	fuzzForm(f, "key item",
+		`{"id":"0123456789abcdef","kind":"unverified","paired_at":"2026-11-20T14:06:40Z","revoked":false}`,
+		`{"id":"0123456789ABCDEF","kind":"unverified","paired_at":"2026-11-20T14:06:40Z","revoked":false}`,
+		`{"id":"0123456789abcdef","kind":"","paired_at":"2026-11-20T14:06:40Z","revoked":true}`,
+		`{"id":"0123456789abcdef","kind":"unverified","paired_at":"2026-11-20T14:06:40Z"}`)
+}
+
+func FuzzDecodeKeysView(f *testing.F) {
+	const k = `{"id":"0123456789abcdef","kind":"unverified","paired_at":"2026-11-20T14:06:40Z","revoked":false}`
+	fuzzForm(f, "keys view",
+		`{"keys":[]}`, `{"keys":[`+k+`]}`, `{"keys":[`+k+`,`+k+`]}`, `{"keys":null}`,
+		`{"keys":[`+k+`],"extra":1}`, `{"keys":[{"id":"x"}]}`)
+}
+
+func FuzzDecodeKeyRevokeParams(f *testing.F) {
+	fuzzForm(f, "key revoke params", `{"id":"0123"}`, `{"id":"012"}`, `{"id":"0123456789abcdef0"}`,
+		`{"id":"0123456789ABCDEF"}`, `{"id":"0123","all":true}`)
+}
+
+func FuzzDecodePairPendingParams(f *testing.F) {
+	fuzzForm(f, "pair pending params", `{"pending_id":"0f1e2d3c4b5a6978"}`, `{"pending_id":""}`,
+		`{"pending_id":"0F1E2D3C4B5A6978"}`, `{"pending_id":"0f1e2d3c4b5a6978","x":1}`, `{}`)
+}
+
+func FuzzDecodeSeatWaitParams(f *testing.F) {
+	const v = "9ac6d04d66be695b1abd73a004de6e86"
+	fuzzForm(f, "seat wait params", `{"since":""}`, `{"since":"`+v[:31]+`"}`, `{"since":"`+v+`0"}`,
+		`{"since":"9AC6D04D66BE695B1ABD73A004DE6E86"}`, `{"since":null}`, `{"since":1}`, `{}`, `{"since":"`+v+`","x":1}`)
+}
+
+func FuzzDecodeSeatWaitResult(f *testing.F) {
+	const v = `"version":"9ac6d04d66be695b1abd73a004de6e86"`
+	const b = `"binding_sha256":"12969c837bce0f6598da9ece4c5e885ec6a669e731f542dbb4a05d3313aabf6c"`
+	const card = `{` + b + `,"held":false,"id":"ap-1","kind":"approval"}`
+	fuzzForm(f, "seat wait result",
+		`{"cards":[],"more":false,`+v+`,"waiting":0}`,
+		`{"cards":[`+card+`],"more":false,`+v+`,"waiting":1}`,
+		`{"cards":[`+card+`],"more":true,`+v+`,"waiting":2}`,
+		`{"cards":[`+card+`],"more":true,`+v+`,"waiting":1}`,
+		`{"cards":[`+card+`],"more":false,`+v+`,"waiting":2}`,
+		`{"cards":[`+card+`,`+card+`],"more":false,`+v+`,"waiting":2}`,
+		`{"cards":[],"more":false,`+v+`,"waiting":-1}`,
+		`{"cards":[{`+b+`,"held":false,"id":"ap-1","kind":"Approval"}],"more":false,`+v+`,"waiting":1}`,
+		`{"cards":[{`+b+`,"held":false,"id":"ap-1","kind":"approval","text":"x"}],"more":false,`+v+`,"waiting":1}`,
+		`{"cards":null,"more":false,`+v+`,"waiting":0}`,
+		`{"cards":[],"more":false,"version":"","waiting":0}`)
+}

@@ -1,0 +1,4 @@
+# The commands that stop the decision services, run by ah-switch when no
+# healthy release is left and for the release a switch goes back from (see
+# ../README.md, "Layout"). The static status page stays.
+systemctl stop ataniq-seat.service

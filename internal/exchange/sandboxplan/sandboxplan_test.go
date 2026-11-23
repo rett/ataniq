@@ -106,6 +106,8 @@ func TestPlanValidate(t *testing.T) {
 		"upload pack nul":   func(p *ServePlan) { p.UploadPack = []string{"/sb", "a\x00"} },
 		"upload not abs":    func(p *ServePlan) { p.UploadPack = []string{"sb"} },
 		"repo brace":        func(p *ServePlan) { p.Repository = "/work/{x}" },
+		"repo at-bracket":   func(p *ServePlan) { p.Repository = "/work/at@[v]x" },
+		"repo at-bracket 2": func(p *ServePlan) { p.Repository = "/work/a@[b]c" },
 		"repo trailing dot": func(p *ServePlan) { p.Repository = "/work/./p" },
 	} {
 		p := good

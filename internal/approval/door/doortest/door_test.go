@@ -632,3 +632,17 @@ func TestARefusedNoteEndsTheRequest(t *testing.T) {
 	_, err = f.d.Plan(f.ctx, in)
 	wantCode(t, err, record.CodeRequestInvalid)
 }
+
+// RaiseNumber moves the next pending id's number up and never down: a host
+// that restarts the stand-in on a journal that holds ids raises it past them.
+func TestRaiseNumberOnlyRaises(t *testing.T) {
+	f := newFixture(t)
+	f.d.RaiseNumber(3)
+	if p := f.pending("sample-feature"); p.ID != "ap-20261120-0007" {
+		t.Errorf("a lower number changed the next id to %s", p.ID)
+	}
+	f.d.RaiseNumber(120)
+	if p := f.pending("other-feature"); p.ID != "ap-20261120-0120" {
+		t.Errorf("the next id is %s, want number 120", p.ID)
+	}
+}
