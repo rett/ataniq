@@ -85,7 +85,46 @@ func (s *Service) Decide(ctx context.Context, src Source, f ownerwire.DecisionFr
 		return ownerwire.DecideResult{}, r.journal(ctx, record.CodeOwnerAway, "no activity of the owner inside the presence window")
 	}
 	r.last = stamp.LastActivity
+	return s.decideAuthed(ctx, r, f, shown, pending, perr, confirmation{
+		fill: func(rec *record.Decision) {
+			rec.Confirmed = record.ConfirmedCode
+			rec.Console = record.Console{
+				PID: src.PID, TTY: src.TTY, Client: src.Client, Decider: true,
+				Surface: src.Surface, Session: src.Session,
+			}
+		},
+		seen: ownerjournal.Seen{LastActivity: stamp.LastActivity},
+	})
+}
 
+// confirmation is how a decision was confirmed, which is all the desk's path
+// and the seat's differ in once the owner is known to have made it: the
+// record's confirmation (its confirmed word and its block), what the journal
+// keeps beside it, and a check asked again at the last moment.
+type confirmation struct {
+	// fill sets the record's Confirmed and the block that goes with it.
+	fill func(rec *record.Decision)
+	// seen is what the journal keeps beside the decision.
+	seen ownerjournal.Seen
+	// recheck, when set, is asked under the lock that revocation takes
+	// (pmu), right before the decision or the held decision is appended; an
+	// error refuses the decision and nothing is appended. The seat's path
+	// asks there that its key is still on the list and not revoked.
+	recheck func() error
+}
+
+// decideAuthed is the part of a decision that the desk and the seat share,
+// after the owner was found to have made it (the decider's place and
+// presence at the desk, a verified assertion on the phone). The caller holds
+// dmu and gives the pending record it looked up, or the void refusal of the
+// lookup in perr. It checks the record's state, the binding digest against
+// the daemon's own record and, for an approve, that the sign-offs are the
+// flagged list, journaling a refusal the journal has a kind for; builds the
+// record; judges an approve against the day's limit and holds it past it;
+// and appends the decision, under pmu after conf.recheck, and hands it to the
+// door.
+func (s *Service) decideAuthed(ctx context.Context, r *refusal, f ownerwire.DecisionFrame, shown door.Shown, pending record.Pending, perr error, conf confirmation) (ownerwire.DecideResult, error) {
+	now := r.now
 	if perr != nil {
 		return ownerwire.DecideResult{}, r.journal(ctx, record.CodeDecisionInvalid, "no pending record has this id")
 	}
@@ -123,13 +162,9 @@ func (s *Service) Decide(ctx context.Context, src Source, f ownerwire.DecisionFr
 		SignedOff: append([]record.SignOff{}, f.SignedOff...),
 		DecidedAt: record.FormatTime(now),
 		ExpiresAt: record.FormatTime(now.Add(s.life)),
-		Confirmed: record.ConfirmedCode,
 		Reason:    f.Reason,
-		Console: record.Console{
-			PID: src.PID, TTY: src.TTY, Client: src.Client, Decider: true,
-			Surface: src.Surface, Session: src.Session,
-		},
 	}
+	conf.fill(&rec)
 	if approve {
 		rec.Uses = 1
 	}
@@ -144,7 +179,6 @@ func (s *Service) Decide(ctx context.Context, src Source, f ownerwire.DecisionFr
 		}
 		return ownerwire.DecideResult{}, refuse(c, detailOf(err))
 	}
-	seen := ownerjournal.Seen{LastActivity: stamp.LastActivity}
 
 	if approve {
 		held, uses, limit, err := s.judge(pending.Binding.Project, now)
@@ -152,11 +186,14 @@ func (s *Service) Decide(ctx context.Context, src Source, f ownerwire.DecisionFr
 			return ownerwire.DecideResult{}, s.jerr(ctx, err)
 		}
 		if held {
-			return s.hold(ctx, b, shown.Pending.Bytes, pending, seen, uses, limit, now)
+			return s.hold(ctx, b, shown.Pending.Bytes, pending, conf, uses, limit, now)
 		}
 	}
 
-	d, err := s.journal().AppendDecision(b, seen)
+	var d *ownerjournal.Decision
+	if rerr := s.underKey(conf, func() { d, err = s.journal().AppendDecision(b, conf.seen) }); rerr != nil {
+		return ownerwire.DecideResult{}, rerr
+	}
 	switch {
 	case errors.Is(err, ownerjournal.ErrDecided):
 		// The card has a decision that stands: one the door took, or one
@@ -180,6 +217,29 @@ func (s *Service) Decide(ctx context.Context, src Source, f ownerwire.DecisionFr
 		return ownerwire.DecideResult{}, err
 	}
 	return s.deliver(ctx, d, pending)
+}
+
+// underKey runs write, the append of a decision or a held decision, under
+// pmu after conf.recheck, when the confirmation has one; the error is the
+// recheck's, and write keeps its own. The lock order is dmu, then pmu: no
+// code that holds pmu takes dmu. So a revocation (which writes under pmu)
+// and the append have one order: a revocation that returned before wins,
+// and a decision appended first stands.
+func (s *Service) underKey(conf confirmation, write func()) error {
+	if conf.recheck == nil {
+		write()
+		return nil
+	}
+	s.pmu.Lock()
+	defer s.pmu.Unlock()
+	if err := conf.recheck(); err != nil {
+		return err
+	}
+	if err := s.fault("key-rechecked"); err != nil {
+		return err
+	}
+	write()
+	return nil
 }
 
 // decidedRefusal is the refusal of a decision for a card that has a decision
@@ -321,10 +381,14 @@ func startOfDay(now time.Time) time.Time {
 	return time.Date(y, m, d, 0, 0, 0, 0, now.Location())
 }
 
-// hold journals an approve past the limit and answers that the card is
-// pending again.
-func (s *Service) hold(ctx context.Context, decision, pendingBytes []byte, p record.Pending, seen ownerjournal.Seen, uses, limit int, now time.Time) (ownerwire.DecideResult, error) {
-	if _, err := s.journal().AppendHeld(decision, pendingBytes, seen); err != nil {
+// hold journals an approve past the limit, under pmu after conf.recheck as a
+// decision is, and answers that the card is pending again. It uses nothing.
+func (s *Service) hold(ctx context.Context, decision, pendingBytes []byte, p record.Pending, conf confirmation, uses, limit int, now time.Time) (ownerwire.DecideResult, error) {
+	var err error
+	if rerr := s.underKey(conf, func() { _, err = s.journal().AppendHeld(decision, pendingBytes, conf.seen) }); rerr != nil {
+		return ownerwire.DecideResult{}, rerr
+	}
+	if err != nil {
 		switch {
 		case errors.Is(err, ownerjournal.ErrExpired):
 			return ownerwire.DecideResult{}, refuse(record.CodeApprovalExpired, "the card expired while it was held")
