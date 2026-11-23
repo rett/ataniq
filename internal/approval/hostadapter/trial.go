@@ -240,10 +240,10 @@ func OpenTrial(ctx context.Context, cfg TrialConfig) (*Trial, error) {
 	dcfg.Seat.Holder = record.Holder{Kind: "lead", DisplayID: sc.Role + "@e" + strconv.FormatInt(sc.Seat.Epoch, 10), Runtime: "trial"}
 	dcfg.Command = "qargi"
 	// The stand-in keeps nothing across a restart and the journal keeps
-	// everything, so the card numbers start from the time of day: a restart
-	// does not make a card whose id the journal holds a decision for.
-	secs := started.UTC().Hour()*3600 + started.UTC().Minute()*60 + started.UTC().Second()
-	dcfg.FirstNumber = secs*1000 + 1
+	// everything, so the card numbers start from the time of day, and past
+	// the journal's own once it is open: a restart does not make a card
+	// whose id the journal holds a decision for.
+	dcfg.FirstNumber = StandInFirstNumber(started)
 	standIn := doortest.New(dcfg)
 	host := newTrialHost(sc.Project, sc.Target)
 
@@ -251,6 +251,10 @@ func OpenTrial(ctx context.Context, cfg TrialConfig) (*Trial, error) {
 	journal, err := ownerjournal.Open(jpath)
 	if err != nil {
 		return nil, fmt.Errorf("hostadapter: the journal: %w", err)
+	}
+	if err := seedNumbers(standIn, journal, started); err != nil {
+		_ = journal.Close()
+		return nil, err
 	}
 	svcCfg := cfg.Service
 	svcCfg.Journal = journal

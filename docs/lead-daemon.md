@@ -392,7 +392,9 @@ phone are for scratch state only, behind the STAND-IN banner.
 
 The host's side of a card is built from `owner/scratch.json` in the state
 folder, over the real journal in `owner/` and the stand-in for the planner's
-door, which keeps nothing across a restart. Its keys:
+door, which keeps nothing across a restart (its card numbers start from the
+time of day and past the journal's highest of the day, so that a restart does
+not give a new card the id of one the journal holds a decision for). Its keys:
 
 - `"door"`: must be `"stand-in"`. Any other value, or none, is refused.
 - `"roots"`: the scratch folders, one of which holds the mirror. The daemon

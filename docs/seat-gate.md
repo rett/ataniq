@@ -718,8 +718,11 @@ exits 0 when every card was made, 1 after a refusal or a failure, 2 for usage,
 20 when no daemon answers, 21 unauthorized and 22 for a protocol error, which is
 also the answer of a daemon not started with `--trial`. The stand-in door keeps
 nothing across a restart: the sample cards are gone after one, and the journal
-keeps what was decided. The card numbers start from the time of day, so that a
-restart makes no card whose id the journal holds a decision for.
+keeps what was decided. The card numbers start from the time of day (the UTC
+seconds of the day times 1000, plus 1) and, when the journal holds ids of the
+day, past the highest number it names, so that a restart, in the same second or
+after the clock was set back, makes no card whose id the journal holds an entry
+for. The plain scratch pass numbers its stand-in's cards the same way.
 
 ## Limits
 
