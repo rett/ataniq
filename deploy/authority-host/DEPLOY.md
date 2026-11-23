@@ -346,7 +346,8 @@ repository: the placeholders below are `seat.example` for the seat's name and
 
 4. **Deploy: dry, then go**, as in step 4. The switch runs the release's
    no-AI check (it reads `seat.env`), its validators (`caddy validate`, which
-   reads `site.caddy`, and `systemd-analyze verify` of the unit), moves
+   reads `site.caddy`, `systemd-analyze verify` of the unit and `test -L` of
+   the unit's link), moves
    `current`, and its reload list restarts systemd's view of the unit, the
    seat and Caddy while decisions are inhibited. Its health check needs both
    the front end and the seat on its socket.
@@ -457,7 +458,8 @@ state; read the message, fix the cause, run the step again.
 | Switch | `result: failed at STEP; current -> ID; the decision services are stopped`, with no `health after going back` part: a first switch (no old release to go back to), or a failure after the package step changed the host | As `failed-recovery`: the decision services are stopped and decisions stay inhibited, and on a first switch `current` stays the new release. Repair the host, acknowledge the owed outcome first (`ack`, as in step 5: a switch to another release is refused while it is owed), then a healthy switch of a higher counter, or `inhibit-clear`; `status` shows `failed` and `decision services: stopped` |
 | Switch | `refused: an outcome is owed` | Nothing was done. Read the outcomes it printed and `status`, then run the `ah-switch ack --txn ID[,ID...] --asked WORDS` that `status` prints (the `--txn` copied from it, exactly the ids owed) from your own root session, and run the request again |
 | Switch (seat release) | `step 4/9 noaicheck: FAILED` and, run by hand, `HIT incomplete env-file /etc/authority-host/seat/seat.env` | Nothing was changed. The seat's environment file is missing: write it (see "Deploying the seat app", step 3) and switch to the imported release again from your root session, without `--from` |
-| Switch (seat release) | `step 5/9 validate: FAILED: validator-failed: validator 1 of 2, ...` (`caddy validate`) | Nothing was changed. Usually `/etc/authority-host/seat/site.caddy` is missing or wrong; fix it and switch to the imported release again without `--from` |
+| Switch (seat release) | `step 5/9 validate: FAILED: validator-failed: validator 1 of 3, ...` (`caddy validate`) | Nothing was changed. Usually `/etc/authority-host/seat/site.caddy` is missing or wrong; fix it and switch to the imported release again without `--from` |
+| Switch (seat release) | `step 5/9 validate: FAILED: validator-failed: validator 3 of 3, ...` (`test -L /etc/systemd/system/ataniq-seat.service`) | Nothing was changed. The unit's link (step 3 of "Deploying the seat app") is missing or is not a link: make it with `ln -s /opt/authority-host/current/etc/systemd/system/ataniq-seat.service /etc/systemd/system/ataniq-seat.service` and switch to the imported release again without `--from`. Without the check, the reload's `systemctl restart ataniq-seat.service` would fail with `Unit not found` after `current` moved, and the stop list's `systemctl stop` would fail with exit 5 and leave the transaction in `stopping` |
 | Switch (seat release) | the health check fails on the seat's socket (`curl ... --unix-socket /run/seat/http.sock ...`) | The release was activated: the result is `rolled-back` or `failed`, as in the rows above. Read `journalctl -u ataniq-seat.service`: a missing key (`--identity`), origin or pin file, or a gate address the drop-in does not allow, stops the seat at its start. Fix it, acknowledge, and deploy a release with a higher counter |
 | Switch | exit 3 | Another switch holds the lock; wait for it, then run again. Nothing was done |
 | Switch | exit 2 | Bad arguments or a root other than `/` without `--allow-exec`; nothing was done |

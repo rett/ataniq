@@ -2310,8 +2310,14 @@ folder's alone.
     snippet sets it again on the way out (`header_down`) and drops
     `Server`, and Caddy has no cache;
   - `request_body` at most 64 KB (the app's own bound is 8 KiB).
-- `share/validators.list`: `caddy validate` of the Caddyfile and
-  `systemd-analyze verify {release}/etc/systemd/system/ataniq-seat.service`.
+- `share/validators.list`: `caddy validate` of the Caddyfile,
+  `systemd-analyze verify {release}/etc/systemd/system/ataniq-seat.service`
+  and `test -L /etc/systemd/system/ataniq-seat.service`, which refuses the
+  switch before anything changes when the owner's link of the unit (setup
+  step 5, below) is missing; a link that dangles passes, as it must before
+  the first switch. (`systemd-analyze verify` reads the release's own path,
+  so it passes without the link, and the reload's restart and the stop list's
+  stop would fail with exit 5 after `current` moved.)
 - `share/reload.list`: `systemctl daemon-reload`,
   `systemctl restart ataniq-seat.service`, `systemctl restart caddy`.
 - `share/health.cmd`: the front end's `/healthz`, and the seat's own over
@@ -2428,7 +2434,8 @@ release or in this repository.
 Without `seat.env` the no-AI check reports `HIT incomplete env-file
 /etc/authority-host/seat/seat.env` and the switch stops at step 4 before
 anything changes; without `site.caddy` the validator `caddy validate`
-fails at step 5, before anything changes. The no-AI check reads
+fails at step 5, before anything changes, and so does `test -L` without the
+unit's link of step 5. The no-AI check reads
 `seat.env` as any environment file of a unit: a variable named like a
 provider key in it is a hit.
 
