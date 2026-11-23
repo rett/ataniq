@@ -94,6 +94,19 @@ type standInEnder struct{ d *doortest.Door }
 
 func (e standInEnder) EndRequest(_ context.Context, id string) error { return e.d.Withdraw(id) }
 
+// scratchDoorConfig is the configuration of the stand-in door of the scratch
+// settings, on the clock given. The stand-in keeps nothing across a restart
+// and the journal keeps everything: its card numbers start from the time of
+// day (and the adapter raises them past the journal's), not from 1, so that a
+// restart does not make a card whose id the journal holds a decision for.
+func scratchDoorConfig(sc hostadapter.Scratch, now func() time.Time) doortest.Config {
+	cfg := doortest.Sample(now)
+	cfg.FirstNumber = hostadapter.StandInFirstNumber(now())
+	cfg.Seat.Project, cfg.Seat.RoleName = sc.Project, sc.Role
+	cfg.Seat.Epoch, cfg.Seat.SeatRev = sc.Seat.Epoch, sc.Seat.SeatRev
+	return cfg
+}
+
 // buildOwnerService is the [ownerServiceBuilder] of this build. It reads the
 // scratch settings in the owner folder of the state folder, opens the host
 // adapter on them, and returns the service with the function that closes
@@ -128,9 +141,7 @@ func buildOwnerService(stateDir string) (leaddaemon.OwnerService, func() error, 
 	if err != nil {
 		return nil, nil, err
 	}
-	cfg := doortest.Sample(time.Now)
-	cfg.Seat.Project, cfg.Seat.RoleName = sc.Project, sc.Role
-	cfg.Seat.Epoch, cfg.Seat.SeatRev = sc.Seat.Epoch, sc.Seat.SeatRev
+	cfg := scratchDoorConfig(sc, time.Now)
 	standIn := doortest.New(cfg)
 	keys := openOwnerKeys(stateDir)
 	o, err := hostadapter.Open(context.Background(), hostadapter.OpenConfig{

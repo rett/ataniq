@@ -213,7 +213,7 @@ func (s *Service) journalOutcome(ctx context.Context, dl *ownerjournal.Delivery,
 	if err := s.fault("settled"); err != nil {
 		return ownerwire.DecideResult{}, err
 	}
-	lineOf := outcomeLine(state)
+	lineOf := s.outcomeLine(state)
 	if err := s.handles().AppendOutcome(dl, s.now(), state.State(), lineOf); err != nil && !errors.Is(err, ownerjournal.ErrSettled) {
 		return ownerwire.DecideResult{}, s.jerr(ctx, err)
 	}
@@ -224,6 +224,43 @@ func (s *Service) journalOutcome(ctx context.Context, dl *ownerjournal.Delivery,
 		s.closeOut(ctx, p, state.State(), lineOf)
 	}
 	return ownerwire.DecideResult{State: state.State(), Line: lineOf}, nil
+}
+
+// OutcomeLiner is an optional interface of an [Intake] whose Apply moves no
+// ref by design, so that the host's lines, which speak of a ref, would not be
+// true of it. When the service's intake is one, the line of every outcome the
+// service journals, shows and replies with is the intake's own (made one line
+// of at most 500 bytes); an empty answer keeps the host's line, and so does an
+// unknown outcome, which is never given the line of an intake. The state of
+// the outcome is the one Apply returned either way. The one such intake is
+// the phone trial's (package hostadapter, in a build with the tag
+// ataniq_ownerchannel), which applies nothing.
+type OutcomeLiner interface {
+	OutcomeLine(o door.Outcome) string
+}
+
+// outcomeLine is the line of an outcome: the intake's when it is an
+// [OutcomeLiner] that gives one, the host's otherwise.
+func (s *Service) outcomeLine(o door.Outcome) string {
+	// An unknown outcome keeps the host's line: the liner speaks for an
+	// intake that moved nothing, and nothing is known of this outcome, not
+	// even that.
+	if l, ok := s.cfg.Intake.(OutcomeLiner); ok && o != door.OutcomeUnknown {
+		if text := line(l.OutcomeLine(o)); text != "" {
+			return text
+		}
+	}
+	return outcomeLine(o)
+}
+
+// endLine is the package's endLine, with the line of an outcome as
+// [Service.outcomeLine] gives it.
+func (s *Service) endLine(st record.State) string {
+	switch st {
+	case record.StateApplied, record.StateNotApplied, record.StateUnknown:
+		return s.outcomeLine(door.Outcome(st))
+	}
+	return endLine(st)
 }
 
 // outcomeLine is the host's line for an outcome.

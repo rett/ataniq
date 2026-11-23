@@ -392,7 +392,9 @@ phone are for scratch state only, behind the STAND-IN banner.
 
 The host's side of a card is built from `owner/scratch.json` in the state
 folder, over the real journal in `owner/` and the stand-in for the planner's
-door, which keeps nothing across a restart. Its keys:
+door, which keeps nothing across a restart (its card numbers start from the
+time of day and past the journal's highest of the day, so that a restart does
+not give a new card the id of one the journal holds a decision for). Its keys:
 
 - `"door"`: must be `"stand-in"`. Any other value, or none, is refused.
 - `"roots"`: the scratch folders, one of which holds the mirror. The daemon
@@ -421,6 +423,17 @@ door, which keeps nothing across a restart. Its keys:
   `internal/approval/hostadapter`), which the owner channel's service applies
   when a phone's decision challenge is asked and when the decision is made; a
   login checks only that the daemon knows the key's kind.
+
+- `"trial"` (optional): `true` marks the settings of the phone trial, which
+  `ataniqd trial init --state-dir DIR` writes and `ataniqd run --owner-channel
+  --trial` serves (see [the phone trial](seat-gate.md#phone-trial)): sample
+  cards only, made by `ataniqd trial submit`, decided through the real decision
+  path and applied to nothing. Trial settings name the project, the role, the
+  target, the seat, the door and the kinds, and no mirror, identity, gate,
+  drop folder, root, sandbox or work folder. The daemon refuses trial settings
+  without `--trial` and other settings with it, and checks a trial's state
+  folder and its runtime folder (`--runtime-dir`, which a trial therefore
+  always needs) against the account's default folders as above.
 
 The settings also name the project, its mirror, the role, the target, the
 commit identity, the gates and the folder requests are dropped in. `sandbox`

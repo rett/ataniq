@@ -417,3 +417,21 @@ func TestTheBuiltServiceCanDecideWithTheSettingsKindPolicy(t *testing.T) {
 		t.Fatal("settings that name no kind accept every kind")
 	}
 }
+
+// The stand-in door of the plain scratch pass counts its card numbers from the
+// time of day, not from 1: it keeps nothing across a restart and the journal
+// keeps every decision, so a card numbered from 1 again after a restart on the
+// same day could have the id of a card that was decided, and could not be
+// decided itself. The adapter raises the numbers past the journal's, which its
+// own test shows; this one shows where they start.
+func TestTheScratchPassNumbersItsStandInCardsFromTheTimeOfDay(t *testing.T) {
+	at := time.Date(2026, 11, 20, 14, 2, 4, 0, time.UTC)
+	sc := hostadapter.Scratch{Project: "project-a", Role: "role-a", Seat: hostadapter.ScratchSeat{Epoch: 7, SeatRev: 12}}
+	cfg := scratchDoorConfig(sc, func() time.Time { return at })
+	if want := hostadapter.StandInFirstNumber(at); cfg.FirstNumber != want || want != 50_524_001 {
+		t.Errorf("the first card number is %d, want %d (the time of day)", cfg.FirstNumber, want)
+	}
+	if cfg.Seat.Project != "project-a" || cfg.Seat.RoleName != "role-a" || cfg.Seat.Epoch != 7 || cfg.Seat.SeatRev != 12 {
+		t.Errorf("the seat is %+v", cfg.Seat)
+	}
+}

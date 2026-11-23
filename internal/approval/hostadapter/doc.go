@@ -43,6 +43,12 @@
 //     answered request-invalid once by the first scan after the start, never
 //     over a reply that exists and never resubmitted. The real spool is out
 //     of scope.
+//   - [OpenTrial] is the phone trial (trial.go), a STAND-IN rig: the real
+//     service, journal and stand-in door, with a host in memory in place of
+//     the merge, the suite, the review and the mirror, which makes sample
+//     cards on demand ([Trial.Submit]) and whose use applies nothing. Its
+//     settings ([TrialScratch], "trial": true) name no mirror, drop folder or
+//     sandbox.
 //
 // # What it does not do
 //
