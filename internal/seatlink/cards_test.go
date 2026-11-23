@@ -190,6 +190,20 @@ func TestSeatLinkCardIsNeverRenderedElsewhere(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A record that decodes, with its digests right, and that the card model
+	// refuses: a host string it would have to escape.
+	refused, _ := vector(t)
+	refused.Binding.Project = "project\u202ea"
+	if refused.BindingSHA256, err = record.BindingDigest(refused.Binding); err != nil {
+		t.Fatal(err)
+	}
+	refusedBytes, err := record.EncodePending(refused)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := record.DecodePending(refusedBytes); err != nil {
+		t.Fatalf("the refused record does not decode: %v", err)
+	}
 	enc := func(r ownerwire.ShowResult) json.RawMessage {
 		b, err := ownerwire.EncodeShowResult(r)
 		if err != nil {
@@ -202,11 +216,12 @@ func TestSeatLinkCardIsNeverRenderedElsewhere(t *testing.T) {
 		return out
 	}
 	for name, show := range map[string]json.RawMessage{
-		"another digest":     withDigest(good, record.Digest([]byte("other"))),
-		"another card":       enc(ownerwire.ShowResult{Record: ownerwire.NewRecord(otherBytes)}),
-		"binding not digest": withDigest(badBinding, record.Digest(badBinding)),
-		"a rendered card":    json.RawMessage(strings.Replace(string(enc(ownerwire.ShowResult{Record: ownerwire.NewRecord(good)})), `"held":false`, `"held":false,"html":"<p>approve</p>"`, 1)),
-		"no record":          json.RawMessage(`{"held":false}`),
+		"another digest":      withDigest(good, record.Digest([]byte("other"))),
+		"another card":        enc(ownerwire.ShowResult{Record: ownerwire.NewRecord(otherBytes)}),
+		"binding not digest":  withDigest(badBinding, record.Digest(badBinding)),
+		"a rendered card":     json.RawMessage(strings.Replace(string(enc(ownerwire.ShowResult{Record: ownerwire.NewRecord(good)})), `"held":false`, `"held":false,"html":"<p>approve</p>"`, 1)),
+		"no record":           json.RawMessage(`{"held":false}`),
+		"refused by the card": enc(ownerwire.ShowResult{Record: ownerwire.NewRecord(refusedBytes)}),
 	} {
 		f, d, _ := readGate(t, []string{"read"})
 		f.show = show
@@ -214,7 +229,7 @@ func TestSeatLinkCardIsNeverRenderedElsewhere(t *testing.T) {
 		if err == nil || c.ID != "" {
 			t.Errorf("%s: a card was made: %v", name, err)
 		}
-		if !errors.Is(err, errReadAnswer) && !errors.Is(err, errCard) {
+		if want := errReadAnswer; name == "refused by the card" && !errors.Is(err, errCard) || name != "refused by the card" && !errors.Is(err, want) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
