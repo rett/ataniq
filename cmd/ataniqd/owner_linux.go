@@ -87,6 +87,37 @@ of the socket is a seat.
                     print its fingerprint, the pin the seat is given. A key
                     already there is never overwritten.
   seat-gate pins    print the seat pins as the daemon reads them at start.
+
+The phone trial is a STAND-IN rig for scratch state only, in which the owner
+tries the phone end to end without a lead, a mirror or a sandbox:
+
+       ataniqd trial init --state-dir DIR
+       ataniqd run --owner-channel --trial --state-dir DIR [--seat-gate ADDR]
+       ataniqd trial submit --kind finish|prune [--count N] [--socket PATH]
+
+  trial init        write the trial's settings, owner/scratch.json of DIR
+                    ("trial": true: a sample project, role and target, the
+                    stand-in door, the three kinds of passkey, and no mirror,
+                    drop folder or sandbox). DIR must not be, lie inside or
+                    contain the account's default state or runtime folder;
+                    settings already there are never overwritten.
+  --trial           serve the trial's settings: sample cards only, made on
+                    demand by trial submit. A decision goes through the real
+                    path (the challenge, the passkey assertion and its
+                    verification, the decision record, the door's checks and
+                    the journal's evidence) and applies nothing: an approved
+                    card ends not-applied, "applied: nothing (trial)". Only
+                    with --owner-channel; the daemon refuses trial settings
+                    without --trial and other settings with it, and prints a
+                    TRIAL line after the STAND-IN banner at start.
+  trial submit      ask the trial daemon on the socket (default the runtime
+                    folder's daemon.sock) for N sample cards (1 to 10, default
+                    1) of a kind: finish, a sample feature finish, or prune, a
+                    sample branch prune, one at a time. It prints one line per
+                    card, or per refusal. Exit codes: 0 every card was made, 1
+                    a refusal or a failure, 2 usage, 20 no daemon, 21
+                    unauthorized, 22 a protocol error (a daemon that is not a
+                    trial's answers unsupported-operation).
 `
 
 func init() { usage += ownerUsage }
@@ -98,6 +129,8 @@ type ownerFlags struct {
 	// given.
 	seatGate string
 	gateSet  bool
+	// trial is --trial: the phone trial (owner_trial_linux.go).
+	trial bool
 }
 
 func (o *ownerFlags) define(fs *flag.FlagSet) {
@@ -106,6 +139,7 @@ func (o *ownerFlags) define(fs *flag.FlagSet) {
 		o.seatGate, o.gateSet = v, true
 		return nil
 	})
+	fs.BoolVar(&o.trial, "trial", false, "serve the phone trial's sample cards (with --owner-channel)")
 }
 
 // ownerServiceBuilder builds the host's side of a card in the daemon's state
@@ -121,6 +155,8 @@ var ownerServiceBuilder func(stateDir string) (leaddaemon.OwnerService, func() e
 type ownerGuardSet struct {
 	check  func(stateDir string, getenv func(string) string) error
 	banner string
+	// note, when set, is a second line printed after the banner.
+	note string
 }
 
 // ownerGuard is the host adapter's guard, set with the builder. A test that
@@ -139,9 +175,21 @@ func (a *app) ownerRun(o *ownerFlags, cfg *leaddaemon.Config) (code int) {
 			fmt.Fprint(a.stderr, "ataniqd run: --seat-gate needs --owner-channel\n")
 			return leaddaemon.ExitUsage
 		}
+		if o.trial {
+			fmt.Fprint(a.stderr, "ataniqd run: --trial needs --owner-channel\n")
+			return leaddaemon.ExitUsage
+		}
 		return -1
 	}
 	build := ownerServiceBuilder
+	guard := ownerGuard
+	// The phone trial has its own builder and guard; the extension that
+	// makes its sample cards is added once the service is built.
+	var trial *trialRig
+	if o.trial {
+		trial = &trialRig{}
+		build, guard = trial.build, trialGuard
+	}
 	if build == nil {
 		fmt.Fprint(a.stderr, "ataniqd run: --owner-channel: this build cannot build the host's side of a card yet\n")
 		return leaddaemon.ExitConfig
@@ -149,7 +197,6 @@ func (a *app) ownerRun(o *ownerFlags, cfg *leaddaemon.Config) (code int) {
 	stateDir := cfg.StateDir
 	// The guards of the builder's own door come before the daemon takes a
 	// lock or makes a socket: a refusal is a configuration the daemon refuses.
-	guard := ownerGuard
 	if guard != nil {
 		if err := guard.check(stateDir, a.getenv); err != nil {
 			fmt.Fprintf(a.stderr, "ataniqd run: --owner-channel: %s\n", leaddaemon.SafeText(err.Error()))
@@ -172,6 +219,9 @@ func (a *app) ownerRun(o *ownerFlags, cfg *leaddaemon.Config) (code int) {
 			if err == nil && guard != nil {
 				// The one line at start that says what the door is.
 				fmt.Fprintf(a.stderr, "ataniqd: %s\n", guard.banner)
+				if guard.note != "" {
+					fmt.Fprintf(a.stderr, "ataniqd: %s\n", guard.note)
+				}
 			}
 			return svc, closer, err
 		}),
@@ -179,5 +229,8 @@ func (a *app) ownerRun(o *ownerFlags, cfg *leaddaemon.Config) (code int) {
 		Log:       func(format string, args ...any) { fmt.Fprintf(a.stderr, "ataniqd: "+format+"\n", args...) },
 	}
 	cfg.ServeHook = oc.Serve
+	if trial != nil {
+		cfg.ServeHook = trial.serve(oc.Serve)
+	}
 	return -1
 }

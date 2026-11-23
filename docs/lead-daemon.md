@@ -422,6 +422,16 @@ door, which keeps nothing across a restart. Its keys:
   when a phone's decision challenge is asked and when the decision is made; a
   login checks only that the daemon knows the key's kind.
 
+- `"trial"` (optional): `true` marks the settings of the phone trial, which
+  `ataniqd trial init --state-dir DIR` writes and `ataniqd run --owner-channel
+  --trial` serves (see [the phone trial](seat-gate.md#phone-trial)): sample
+  cards only, made by `ataniqd trial submit`, decided through the real decision
+  path and applied to nothing. Trial settings name the project, the role, the
+  target, the seat, the door and the kinds, and no mirror, identity, gate,
+  drop folder, root, sandbox or work folder. The daemon refuses trial settings
+  without `--trial` and other settings with it, and checks a trial's state
+  folder against the account's default folders as above.
+
 The settings also name the project, its mirror, the role, the target, the
 commit identity, the gates and the folder requests are dropped in. `sandbox`
 and `work` are required: the daemon refuses `--owner-channel` without them or

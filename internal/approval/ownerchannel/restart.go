@@ -243,7 +243,7 @@ func (s *Service) checkDoor(ctx context.Context) error {
 		case record.StateDenied, record.StateExpired, record.StateVoid, record.StateWithdrawn,
 			record.StateApplied, record.StateNotApplied:
 			s.noteEnded(e)
-			s.closeOut(ctx, p, e.State, endLine(e.State))
+			s.closeOut(ctx, p, e.State, s.endLine(e.State))
 		}
 	}
 	return nil

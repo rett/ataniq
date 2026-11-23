@@ -1,0 +1,282 @@
+//go:build linux && ataniq_ownerchannel
+
+package hostadapter
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"ataniq/internal/approval/credkind"
+	"ataniq/internal/approval/door"
+	"ataniq/internal/approval/door/doortest"
+	"ataniq/internal/approval/ownerchannel"
+	"ataniq/internal/approval/ownerjournal"
+	"ataniq/internal/approval/record"
+)
+
+// These tests run the phone trial through the chain of the decision tests
+// (seat_decide_e2e_test.go, whose world and helpers they use), with the
+// trial's service in place of the scratch pass's:
+//
+//	the settings "ataniqd trial init" writes, read back by LoadScratch
+//	  -> OpenTrial: the real service and journal in a state folder, the
+//	     stand-in door, the trial host (no git, no mirror, no sandbox)
+//	  -> Trial.Submit, which "ataniqd trial submit" calls
+//	webauthntest authenticator (the phone)
+//	  -> seatapp -> seatlink -> seatgate over TLS 1.3 with pinned keys on
+//	     127.0.0.1 -> gatehost.NewDeciding -> the trial's service
+//
+// Nothing in the decision is a trial's: the challenge, the assertion and
+// its verification, the decision record, the door's checks and the journal's
+// evidence are the ones a real card goes through. Only the card is a sample,
+// and its use applies nothing.
+
+// trialWorld is a decision world on a trial: the settings written and read
+// back, the trial opened on them in a private state folder with a key file
+// and the pairing tests' presence window, and a deciding gate on 127.0.0.1
+// behind a relay. It starts no seat.
+func trialWorld(t *testing.T) (*decideWorld, *Trial) {
+	t.Helper()
+	clock := doortest.NewClock(start)
+	state := filepath.Join(privateDir(t), "state")
+	if _, err := WriteTrialScratch(state); err != nil {
+		t.Fatalf("WriteTrialScratch: %v", err)
+	}
+	sc, err := LoadScratch(filepath.Join(state, OwnerDirName, ScratchName))
+	if err != nil || !sc.Trial {
+		t.Fatalf("the trial's settings read back: %+v, %v", sc, err)
+	}
+	keys, err := ownerjournal.OpenKeys(filepath.Join(state, OwnerDirName, ownerjournal.KeysFileName))
+	if err != nil {
+		t.Fatalf("OpenKeys: %v", err)
+	}
+	policy := sc.KindPolicy()
+	tr, err := OpenTrial(context.Background(), TrialConfig{
+		StateDir: state, Scratch: sc, Now: clock.Now, Manual: true,
+		Service: ownerchannel.Config{
+			Keys: keys, PresenceWindow: pairPresenceWindow,
+			KindPolicy: func(project string) (credkind.Policy, bool) { return policy, project == sc.Project },
+		},
+	})
+	if err != nil {
+		_ = keys.Close()
+		t.Fatalf("OpenTrial: %v", err)
+	}
+	t.Cleanup(func() { _ = tr.Close() })
+
+	w := &decideWorld{door: &swapDoor{d: tr.door}, keyFile: keys}
+	w.pairWorld = &pairWorld{t: t, rig: &rig{t: t, clock: clock, state: state}, svc: tr.Service,
+		gateID: newPairIdentity(t, "gate"), seatID: newPairIdentity(t, "seat")}
+	w.otherID = newPairIdentity(t, "seat")
+	w.gate = ownerchannel.Gate{Instance: w.gateID.Fingerprint(), Origin: pairOrigin, RPID: pairRPID}
+	addr, calls := w.startGate(true)
+	w.calls = calls
+	w.relay = newDecRelay(t, addr)
+	w.addr = w.relay.addr()
+	return w, tr
+}
+
+// submitTrial makes a sample card of the kind given and requires a pending one.
+func submitTrial(t *testing.T, tr *Trial, kind string) TrialCard {
+	t.Helper()
+	c, err := tr.Submit(pairCtx(t), kind)
+	if err != nil {
+		t.Fatalf("Submit %s: %v", kind, err)
+	}
+	if c.State != string(ownerchannel.RequestPending) || c.PendingID == "" || c.Kind != kind {
+		t.Fatalf("the sample %s is %+v, want a pending card", kind, c)
+	}
+	return c
+}
+
+// trialJournal closes the trial and opens its journal.
+func trialJournal(t *testing.T, tr *Trial, state string) *ownerjournal.Store {
+	t.Helper()
+	if err := tr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	jr, err := ownerjournal.Open(filepath.Join(state, OwnerDirName, JournalName))
+	if err != nil {
+		t.Fatalf("the journal: %v", err)
+	}
+	t.Cleanup(func() { _ = jr.Close() })
+	return jr
+}
+
+// The trial, whole: the settings are written once and read back, the phone
+// pairs at the desk and logs in, the open list is held by a poll, a sample
+// finish arrives and wakes it, the phone opens the card (the STAND-IN banner,
+// the sample's note, its flagged Makefile), signs it off and approves it with
+// its passkey. The stand-in door takes the approve with the seat block of the
+// assertion, the use goes through the door's checks, and the outcome is
+// not-applied with the trial's line: nothing moved. A sample prune is decided
+// the same way. The journal keeps both decisions with the evidence of their
+// assertions, which an audit verifies from the journal and the key list alone,
+// and both outcomes say that nothing was applied.
+func TestTrialE2EAPhoneDecidesSampleCardsAndNothingIsApplied(t *testing.T) {
+	w, tr := trialWorld(t)
+	if _, err := WriteTrialScratch(w.rig.state); !errors.Is(err, ErrScratchExists) {
+		t.Errorf("a second trial init: %v, want ErrScratchExists", err)
+	}
+	s := w.newSeat(w.seatID)
+	s.link.StartWatch()
+	t.Cleanup(func() { _ = s.link.Close() })
+	phone := newPhone(t)
+	item := w.pair(s, phone)
+	sess := s.logIn(phone)
+
+	// The open list is held; a sample card wakes it.
+	_, v0, live := s.pageWatch("/cards/", sess)
+	if !live || v0 == "" {
+		t.Fatalf("the list names live %v, version %q", live, v0)
+	}
+	poll := s.startPoll(sess, v0, "", "")
+	held(t, poll, "a poll with the empty list's version")
+	fin := submitTrial(t, tr, TrialFinish)
+	if got := answer(t, poll, watchWithin, "after a sample card"); got.State != "changed" || got.Waiting != 1 {
+		t.Errorf("the poll answers %+v, want changed with 1 waiting", got)
+	}
+	card := fin.PendingID
+	p := w.pendingOf(card)
+	if p.Binding.Summary == nil || len(p.Binding.Summary.Flagged) != 1 || p.Binding.Summary.Flagged[0].Path != "Makefile" ||
+		p.Binding.Verb != record.VerbFeatureFinish || p.Binding.Argv[0] != fin.Feature || p.Binding.PlanToken == "" ||
+		!strings.Contains(string(p.PlanText), "feature finish "+fin.Feature) {
+		t.Fatalf("the sample card is %+v", p.Binding)
+	}
+	page := s.show(sess, card)
+	for _, want := range []string{decideFormMark, `id="signoff-0"`, "Makefile", "STAND-IN", "TRIAL sample card 1", fin.Feature} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the Card page has no %s", want)
+		}
+	}
+
+	_, as, res := s.decide(sess, phone, card, "approve", []int{0}, "")
+	wantDone(t, res, record.StateNotApplied)
+	if got := res.str(t, "line"); got != TrialLine {
+		t.Errorf("the phone is told %q, want %q", got, TrialLine)
+	}
+	d, st := w.doorDecision(card)
+	if d == nil || st != record.StateNotApplied || d.Decision != record.DecisionApprove || d.Confirmed != record.ConfirmedPasskey ||
+		d.Seat.Credential != item.ID || d.Seat.AssertionSHA256 != record.AssertionDigest(as.CredentialID, as.AuthenticatorData, as.ClientDataJSON, as.Signature) ||
+		len(d.SignedOff) != 1 || d.SignedOff[0].Path != "Makefile" {
+		t.Fatalf("the door holds %+v in the state %s, want the approve by passkey, not applied", d, st)
+	}
+	again := s.get("/cards/"+card, sess)
+	if again.status != 200 || !strings.Contains(string(again.body), TrialLine) || strings.Contains(string(again.body), decideFormMark) {
+		t.Errorf("the card read again: %d, the trial's line shown %v", again.status, strings.Contains(string(again.body), TrialLine))
+	}
+
+	// A sample prune; a second one while it is open is the stand-in's
+	// duplicate, a refusal and no card.
+	pr := submitTrial(t, tr, TrialPrune)
+	dup, err := tr.Submit(pairCtx(t), TrialPrune)
+	if err != nil || dup.State != string(ownerchannel.RequestRefused) || dup.Code != string(record.CodeRequestDuplicate) {
+		t.Errorf("a second prune while one is open: %+v, %v", dup, err)
+	}
+	pp := w.pendingOf(pr.PendingID)
+	if pp.Binding.Verb != record.VerbBranchPrune || len(pp.Binding.Effects) < 2 || pp.Binding.Summary != nil {
+		t.Fatalf("the sample prune is %+v", pp.Binding)
+	}
+	_, _, res = s.decide(sess, phone, pr.PendingID, "approve", nil, "")
+	wantDone(t, res, record.StateNotApplied)
+	if got := res.str(t, "line"); got != TrialLine {
+		t.Errorf("the phone is told %q for the prune", got)
+	}
+
+	// Nothing was applied: the trial host's Apply ran once per card and
+	// moved nothing, and no pin is left.
+	h := tr.host
+	h.mu.Lock()
+	applies, pins, tip := h.applies, len(h.pins), h.tip
+	h.mu.Unlock()
+	if applies != 2 || pins != 0 || tip != p.Binding.Effects[0].Old {
+		t.Errorf("the trial host applied %d times, holds %d pins, its target is at %s (was %s)", applies, pins, tip, p.Binding.Effects[0].Old)
+	}
+
+	// The audit.
+	stored, err := w.keyFile.Keys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	jr := trialJournal(t, tr, w.rig.state)
+	es, err := jr.Entries(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := kinds(es)
+	if k[ownerjournal.KindDecision] != 2 || k[ownerjournal.KindOutcome] != 2 || k[ownerjournal.KindUse] != 2 {
+		t.Fatalf("the journal holds %v, want two decisions, two uses and two outcomes", k)
+	}
+	for _, e := range es {
+		switch e.Kind {
+		case ownerjournal.KindDecision:
+			auditSeatDecision(t, jr, e, stored)
+		case ownerjournal.KindOutcome:
+			var body struct {
+				State string `json:"state"`
+				Line  string `json:"line"`
+			}
+			if err := json.Unmarshal(e.Body, &body); err != nil || body.State != string(record.StateNotApplied) || body.Line != TrialLine {
+				t.Errorf("an outcome of the journal is %q (%v)", e.Body, err)
+			}
+		}
+	}
+}
+
+// A trial card cannot be applied to anything: trial settings that name a
+// place to apply to, or anything of a merge, are refused, OpenTrial refuses
+// settings that are not a trial's, and the trial host's Apply and Mirror say
+// not-applied whatever they are handed and move nothing.
+func TestTrialCardsCannotBeAppliedToAnything(t *testing.T) {
+	dir := privateDir(t)
+	for name, change := range map[string]func(*Scratch){
+		"mirror":   func(s *Scratch) { s.Mirror = dir + "/mirror.git" },
+		"drop":     func(s *Scratch) { s.Drop = dir + "/drop" },
+		"sandbox":  func(s *Scratch) { s.Sandbox = dir + "/sandbox.json" },
+		"work":     func(s *Scratch) { s.Work = dir + "/work" },
+		"roots":    func(s *Scratch) { s.Roots = []string{dir} },
+		"gates":    func(s *Scratch) { s.Gates = []ScratchGate{{Name: "suite", Argv: []string{"make", "test"}}} },
+		"identity": func(s *Scratch) { s.Identity = ScratchIdentity{Name: "Host", Email: "host@example.invalid"} },
+		"door":     func(s *Scratch) { s.Door = "real" },
+		"kinds":    func(s *Scratch) { s.Kinds = []string{"passkey", "passkey"} },
+		"target":   func(s *Scratch) { s.Target = "refs/tags/v1" },
+	} {
+		sc := TrialScratch()
+		change(&sc)
+		b, err := json.Marshal(sc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, name+".json")
+		if err := os.WriteFile(path, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadScratch(path); err == nil {
+			t.Errorf("trial settings with a %s are taken", name)
+		}
+	}
+	notTrial := TrialScratch()
+	notTrial.Trial = false
+	if _, err := OpenTrial(context.Background(), TrialConfig{StateDir: dir, Scratch: notTrial}); err == nil {
+		t.Error("OpenTrial takes settings that are not a trial's")
+	}
+
+	h := newTrialHost("trial-project", "refs/heads/develop")
+	effects := []record.Effect{{Kind: record.EffectRef, Ref: "refs/heads/develop", Old: h.tip, New: trialID("x")}}
+	for _, f := range []func(context.Context, ownerchannel.ApplyInput) (door.Outcome, error){h.Apply, h.Mirror} {
+		if out, err := f(context.Background(), ownerchannel.ApplyInput{Project: "trial-project", Effects: effects}); err != nil || out != door.OutcomeNotApplied {
+			t.Errorf("the trial host says %q, %v", out, err)
+		}
+	}
+	if got := h.tip; got != effects[0].Old {
+		t.Errorf("the trial's target moved to %s", got)
+	}
+	if h.OutcomeLine(door.OutcomeApplied) != TrialLine {
+		t.Error("the trial host's outcome line is not the trial's")
+	}
+}
