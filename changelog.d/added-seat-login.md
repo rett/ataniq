@@ -5,7 +5,9 @@
   phone signs it with user verification, and the daemon verifies the
   assertion. A login starts a session: a `__Host-seat` cookie (Secure,
   HttpOnly, SameSite=Strict) holding a fresh 256-bit value kept server-side,
-  ended after 30 minutes idle, 12 hours at most, or by `POST /api/logout`.
+  ended after 30 minutes idle, 12 hours at most, or by `POST /api/logout`;
+  the Log out button goes to the login page only when the seat answered the
+  logout, and otherwise says "Logout not confirmed" and stays.
   Login challenges are limited to 10 per client in 15 minutes and 8 a minute
   in all, so that logins use at most 16 of the gate's 60 requests a minute.
   The login page alone allows `publickey-credentials-get`, to the seat's own

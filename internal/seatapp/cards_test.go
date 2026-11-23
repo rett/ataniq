@@ -406,13 +406,29 @@ func TestSeatLoginGoesToTheCards(t *testing.T) {
 }
 
 // TestSeatSessionScript: the logout script posts to the app's own address
-// with the session's cookie and sets no text but by the browser.
+// with the session's cookie and sets no text but with textContent. It goes
+// to the login page only when the seat answered the logout: the one
+// location.assign is under the answer's ok, and an answer that is not ok,
+// or none (the catch), shows "Logout not confirmed" and leaves the button.
+// The test reads the script; no script engine is among the tools.
 func TestSeatSessionScript(t *testing.T) {
 	js := newRig(t).do("GET", "/static/session.js", nil, nil).Body.String()
-	for _, want := range []string{`"/api/logout"`, `credentials: "same-origin"`, `referrerPolicy: "strict-origin"`, `location.assign("/login/")`} {
+	for _, want := range []string{`"/api/logout"`, `credentials: "same-origin"`, `referrerPolicy: "strict-origin"`, `location.assign("/login/")`,
+		"ended = resp.ok;", "} catch (e) { ended = false; }", "Logout not confirmed", "button.disabled = false;"} {
 		if !strings.Contains(js, want) {
 			t.Errorf("the script lacks %q", want)
 		}
+	}
+	if n := strings.Count(js, "location."); n != 1 {
+		t.Errorf("the script moves the page in %d places", n)
+	}
+	guard, after, ok := strings.Cut(js, "if (ended) {")
+	if !ok || strings.Contains(guard, "location.") || !strings.HasPrefix(strings.TrimSpace(after), `location.assign("/login/");`) {
+		t.Error("the move to the login page is not under the logout's answer")
+	}
+	r := newRig(t)
+	if !strings.Contains(r.getWith("/cards/", r.login(t)).Body.String(), `<p id="logout-status" role="status"></p>`) {
+		t.Error("no place for the logout's words")
 	}
 	for _, bad := range []string{"innerHTML", "document.write", "eval(", "http://", "https://", "document.cookie", "no-referrer"} {
 		if strings.Contains(js, bad) {

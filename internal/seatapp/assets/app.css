@@ -430,7 +430,8 @@ button.deny {
   white-space: pre-line;
 }
 
-#decide-status:empty {
+#decide-status:empty,
+#logout-status:empty {
   display: none;
 }
 

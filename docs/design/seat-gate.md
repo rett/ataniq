@@ -589,7 +589,11 @@ makes the session from the answer with a fresh 256-bit value it draws itself,
 never one the browser brought (a session cookie that comes with a login is
 ended), and keeps the value server-side as its digest. The session's cookie
 is `__Host-seat`, Secure, HttpOnly and SameSite=Strict; a session ends 30
-minutes after its last request and 12 hours after the login. Every later
+minutes after its last request and 12 hours after the login, or at a
+logout (`POST /api/logout`). The page goes to the login page only once the
+seat answered the logout; when the answer is lost, or is not a success, the
+session may still be live, so the page says "Logout not confirmed" and the
+button stays. Every later
 decision of the session is to use exactly the session's credential
 (`allowCredentials` holding only its raw id; G9). The seat link checks that a
 login's answer names the credential the assertion named, by its raw id and its
