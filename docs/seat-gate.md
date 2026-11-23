@@ -18,8 +18,9 @@ address or key belongs in a file of this repository.
 | --- | --- | --- |
 | Lead host (the host of the daemon) | `ataniqd run --owner-channel --seat-gate ADDR`: the daemon with the owner channel and the gate, a TCP listener on one address of this host. | Tag `ataniq_ownerchannel`: `make ownerchannel-build` builds `build/owner/ataniqd`. A build without the tag has no gate and no `seat-gate` command. |
 | Lead host | `ataniq-console --daemon DIR`: the desk. It starts a pairing and confirms it; it holds the decider's place. | Untagged. |
-| Authority host (the seat host) | `ataniq-seat`: the seat web app, which links to the gate. It listens on a Unix socket or a loopback address only. | Untagged: `sh scripts/go-tool.sh build -o build/ataniq-seat ./cmd/ataniq-seat`. No Makefile target builds it. |
-| Authority host | A reverse proxy that owns port 443 and the TLS for the seat origin. | The owner's own; none is shipped. |
+| Authority host (the seat host) | `ataniq-seat`: the seat web app, which links to the gate. It listens on a Unix socket or a loopback address only. | Untagged, and static for a release: see [Deploying the seat app](../deploy/authority-host/DEPLOY.md#deploying-the-seat-app) (`CGO_ENABLED=0 sh scripts/go-tool.sh build -trimpath -o build/authority-host/ataniq-seat ./cmd/ataniq-seat`). No Makefile target builds it. |
+| Authority host | Caddy on port 80, in front of the seat's socket: it keeps the Host, names the client's address and forwards. | Shipped in `deploy/authority-host/seat/` (see [the README](../deploy/authority-host/README.md#the-seat-app)); the owner writes its site file. |
+| The owner's network | A front proxy that owns port 443 and the TLS for the seat origin and forwards plain HTTP to port 80 of the authority host. | The owner's own; none is shipped. |
 | The owner's phone | A browser with a passkey. It talks to the seat origin only, never to the gate. | |
 
 The seat dials the gate; the gate never dials out. The link is TLS 1.3 with a
@@ -28,10 +29,17 @@ holds one gate key fingerprint. The owner carries each fingerprint by hand from
 one host to the other. A seat whose key is not pinned is refused in the
 handshake and never reaches the service.
 
+On the authority host the seat is deployed as a release: `deploy/authority-host/seat/`
+holds its unit (`ataniq-seat.service`), its Caddyfile and its lists (validators,
+reload, stop, health), laid over the base release. What it installs and how the
+switch runs it is [the README](../deploy/authority-host/README.md#the-seat-app);
+the order of the owner's steps is
+[DEPLOY.md](../deploy/authority-host/DEPLOY.md#deploying-the-seat-app). A seat
+started by hand on another host needs `--decision-guard` (see
+[Starting](#starting)).
+
 Not yet: a production mode of the daemon (the gate is for the scratch
-`--owner-channel` build only), and the release of `ataniq-seat` on the
-authority host (`deploy/authority-host` ships no seat program, unit or
-configuration), so the seat is started by hand today.
+`--owner-channel` build only).
 
 ## Order of a first setup
 
@@ -146,8 +154,13 @@ either; no test shows that yet (see [Limits](#limits)).
 
 `ataniq-seat` speaks plain HTTP and never listens on a non-loopback address:
 `--socket PATH` (mode `--socket-mode`, default 0660) or `--listen 127.0.0.1:PORT`
-(a loopback IP literal). The proxy on the authority host owns port 443 and the
-TLS for the seat origin and forwards to it. The app depends on these rules:
+(a loopback IP literal). On the authority host the release's Caddy listens on
+port 80 in plain HTTP and forwards to the seat's socket; it does not terminate
+TLS. Port 443 and the TLS for the seat origin belong to the owner's front proxy
+on the owner's network, which forwards to port 80 of the authority host. Caddy
+takes the client's address from the front proxy's `X-Forwarded-For`. The app
+depends on these rules, which the front proxy and the shipped Caddy keep
+together:
 
 - **Keep the original Host.** Every POST needs a Host equal to the origin's
   host; any other is answered 403.
@@ -173,8 +186,9 @@ TLS for the seat origin and forwards to it. The app depends on these rules:
   must reach the app as the desk drew it. (The app itself answers `/pair`,
   `/login` and `/cards` with a 308 to the path with a slash.)
 
-The proxy terminates the TLS, so it sees every request. A taken-over proxy or
-seat host is a limit of this design (see [Limits](#limits)).
+The front proxy terminates the TLS, so it sees every request, and the hop from
+it to port 80 is plain HTTP on the owner's network. A taken-over proxy or seat
+host is a limit of this design (see [Limits](#limits)).
 
 A page that fails on a Host, `Origin` or `Sec-Fetch-Site` mismatch shows the
 generic failure of its page ("Pairing failed", "Logging in failed", "Something
@@ -207,17 +221,34 @@ On the authority host:
 
 ```sh
 ataniq-seat --origin-file PATH --socket PATH --client-addr-header NAME \
-  --gate 192.0.2.10:7443 --gate-pin-file PATH --identity DIR
+  --gate 192.0.2.10:7443 --gate-pin-file PATH --identity DIR \
+  --decision-guard DIR
 ```
 
 `--gate`, `--gate-pin-file` and `--identity` go together; without them the seat
 runs unlinked, pairing and login answer `daemon_unavailable` and no card offers a
-decision. The seat prints `ataniq-seat: linking to the seat gate at ADDR` and
+decision.
+
+`--decision-guard DIR` (default `/var/lib/authority-host`) is the folder the
+seat asks, with `decisionguard.Check`, before it relays any decision's challenge
+or any decision, every time. While `decisions.inhibit` is in it, or the folder
+is missing, a link or not readable, nothing is relayed and every Approve or Deny
+answers `decisions_inhibited` ("Decisions are paused on this host. Nothing was
+sent."). That is the authority host's state folder, and it exists there. By hand
+on another host, name a folder you own that exists, is a real folder (not a
+link) and that the seat can read: while no `decisions.inhibit` is in it,
+decisions go through, and a file of that name pauses them. The default fails
+closed there, so no decision is ever relayed.
+
+The seat prints `ataniq-seat: linking to the seat gate at ADDR`,
+`ataniq-seat: decisions follow the guard in DIR` and
 `ataniq-seat: serving on ADDR` to standard error. It keeps the link up in the
 background and redials when it drops. Restarting the seat ends every session of
 the phone.
 
-Not yet: a unit file for either program; both are started by hand.
+On the authority host the seat is not started by hand: its unit is started by
+the switch's reload list (see [the README](../deploy/authority-host/README.md#enabling-it)).
+The daemon on the lead host has no unit; it is started by hand.
 
 ## Pairing
 
@@ -385,6 +416,7 @@ What the phone shows, by the code the seat's API answers:
 | "The desk could not be reached." / "cannot be reached" | `daemon_unavailable` | The link is down: daemon not running, the firewall, a wrong address, a pin on either end that does not match, or the seat started without `--gate`. | Check the daemon's start line, the firewall and both pins. |
 | "The desk did not accept this code. It may have expired or been used." | `code_refused` | The code expired, was used or was tried wrongly five times. | Start a new pairing at the desk. |
 | "Too many tries. Wait a while..." | `rate_limited` | The pairing or login limits of the seat. | Wait; the limits age out. |
+| "Decisions are paused on this host. Nothing was sent." | `decisions_inhibited` | The authority host's decision inhibit is there (a switch under way, a boot not yet requalified, a failure), or the `--decision-guard` folder is missing, a link or not readable. The seat logs the guard's code (`decision-guard-...`). | On the authority host, `ah-switch status` says why. On another host, check `--decision-guard`. Tap again once decisions are taken. |
 | "The desk is busy. Try again in a minute." | `desk_busy` | The seat's room at the gate, or the gate's rate, is used up. | Wait a few minutes. |
 | "The desk does not take phone logins now." | `login_unavailable` | The gate is read-only: no usable origin file at the daemon. | Fix the origin file, restart the daemon. |
 | "No passkey is paired with the desk yet." | `not_paired` | The key list holds no usable credential. | Pair the phone at the desk. |
