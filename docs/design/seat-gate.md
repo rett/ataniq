@@ -315,7 +315,7 @@ fingerprint, across its connections. After `gatehost.RefusalBound` (16)
 counted refusals within `gatehost.RefusalWindow` (10 minutes), every request of
 the peer, a read too, is answered `too-many-refusals`, without the service,
 until the oldest of those refusals is 10 minutes old. A refusal of what the
-peer sent counts (`unknown-op`, `bad-params`, `not-pinned`, the pairing codes,
+peer sent counts (`unknown-op`, `bad-params`, `not-pinned`, `key-unknown`,
 the record codes passed on); a refusal for the daemon's own state does not
 (`unavailable`, `deadline-exceeded`, `failed`, `door-unavailable`,
 `journal-reopened`, `keys-unavailable`, `keys-full`). The count is in memory. A
@@ -324,13 +324,20 @@ wire, a timeout, a shutdown; see `seatgate`), and
 `leaddaemon.DecisionRefusalBound`, the Unix socket's lifetime count, does not
 apply to the gate.
 
-For the operations of G8: no refusal of `seat.login-challenge` or `seat.login`
-counts, since the seat relays them for anyone who reaches its login page, and a
-stranger must not shut the owner out; the seat limits them (see
-[login](#login-seatlogin-challenge-and-seatlogin)). The two exceptions are of
-the peer, not of a browser, and count as for any operation: `unknown-op` (a
-gate that does not serve `login`, which the seat does not call) and
-`not-pinned`. Of `seat.challenge` and
+No refusal of `seat.pair` counts, the pairing codes and `bad-params`
+included: the seat relays a pairing for anyone who reaches its pairing page,
+and the seat has one key and one connection, so 16 refused pairings from
+strangers would otherwise shut the owner's logins, reads and decisions out
+for 10 minutes, again and again. Wrong codes stay bounded where they matter:
+the daemon burns a pairing code after five wrong tries, and the seat limits
+pairings per source. Likewise, for the operations of G8, no refusal of
+`seat.login-challenge` or `seat.login` counts, since the seat relays them for
+anyone who reaches its login page, and a stranger must not shut the owner out;
+the seat limits them (see
+[login](#login-seatlogin-challenge-and-seatlogin)). The two exceptions, for
+the three, are of the peer, not of a browser, and count as for any operation:
+`unknown-op` (a gate that does not serve `login`, which the seat does not
+call) and `not-pinned`. Of `seat.challenge` and
 `seat.decide`, `challenge-stale`, `challenges-full`, `key-revoked` and
 `kind-refused` do not count either: they come of normal use (a double tap, a
 slow owner, a card that changed, "phone off" at the desk). `bad-params`,

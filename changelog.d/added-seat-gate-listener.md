@@ -8,7 +8,11 @@
   fingerprint per line, at most 4), which `ataniqd seat-gate pins` lists and the
   daemon reads at start. It serves the pairing call and the reads of the cards
   in frames of up to 257 KiB, so the largest card fits, and decides nothing. A
-  seat whose key is not pinned never reaches the service. At start one line
+  seat whose key is not pinned never reaches the service. A seat refused 16
+  times within 10 minutes for what it sent is answered `too-many-refusals`
+  until those refusals age out; a refused pairing, which the seat relays for
+  anyone who reaches its pairing page, is not counted, so a stranger cannot
+  shut the owner's seat out with wrong codes. At start one line
   gives the address and the gate's key fingerprint, never a pin. Without the
   flag nothing listens on the network. Provisional and unqualified, for scratch
   state only. See `docs/lead-daemon.md`.

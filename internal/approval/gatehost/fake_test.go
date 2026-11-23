@@ -68,6 +68,10 @@ type fakePort struct {
 	open bool
 	code string
 
+	// showErr, when set, is what owner.show answers after it was
+	// recorded: a refusal of what the peer named, as the service gives.
+	showErr error
+
 	// badResult makes every result one its encoder refuses.
 	badResult bool
 }
@@ -114,6 +118,12 @@ func (f *fakePort) List(ctx context.Context) (ownerwire.Listing, error) {
 func (f *fakePort) Show(ctx context.Context, id string) (ownerwire.ShowResult, error) {
 	if err := f.record(call{op: ownerwire.OpShow, id: id}); err != nil {
 		return ownerwire.ShowResult{}, err
+	}
+	f.mu.Lock()
+	showErr := f.showErr
+	f.mu.Unlock()
+	if showErr != nil {
+		return ownerwire.ShowResult{}, showErr
 	}
 	if f.badResult {
 		return ownerwire.ShowResult{}, nil
