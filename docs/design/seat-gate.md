@@ -1932,9 +1932,14 @@ only while the port's chat hint is live and the connected gate offers chat
 fixed 503 `not live` and `Retry-After: 30` (also for a port with no hint or
 no chat port), and an open stream ends cleanly, with no event, when either
 stops: a lost link, a new connection, a gate that stops offering the
-extension or chat, a downgrade. It looks at the hint on each of its wakes
-and again before every heartbeat, since a hint whose connection went is not
-live when it is read even before its watcher says so
+extension or chat, a downgrade. A stream is bound to the connection its
+admission found the hint on: a hint of a later connection is not live for
+it, so it ends rather than say that connection's cursor, and the page opens
+another. It looks at the hint after the opening heartbeat, before it says
+any cursor (the hint may die, or its connection be replaced, while the
+heartbeat is written: `TestSeatLeadsStreamOpeningFlush`), on each of its
+wakes and again before every heartbeat, since a hint whose connection went
+is not live when it is read even before its watcher says so
 (`TestSeatLeadsStreamEndsWhenTheHintDies`). A change pending in the gap is
 not said once the hint is dead.
 

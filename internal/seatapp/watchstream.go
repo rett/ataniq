@@ -551,8 +551,7 @@ func (a *app) watchStream(w http.ResponseWriter, r *http.Request) {
 	// The channel before the state: a change between the two is not
 	// missed.
 	ch := src.changed()
-	now0, live := src.current()
-	if !live {
+	if _, live := src.current(); !live {
 		refuseStream(w, http.StatusServiceUnavailable, streamTextNotLive, streamRetryNotLive)
 		return
 	}
@@ -611,7 +610,7 @@ func (a *app) watchStream(w http.ResponseWriter, r *http.Request) {
 	// A stream the seat rotated leaves its lease to run out, which covers
 	// the page's reconnect; any other end (the page hidden, left or gone,
 	// a failed write, the session's end, the server's) ends it now.
-	if !a.runStream(r, sw, timer, life, src, ch, now0, shows, s.key, gone, until) {
+	if !a.runStream(r, sw, timer, life, src, ch, shows, s.key, gone, until) {
 		endLease()
 	}
 }
@@ -633,11 +632,11 @@ func refuseSlot(w http.ResponseWriter, refusal int) bool {
 }
 
 // runStream is the open stream's loop. sent is the token the page has (the
-// version, or the chat cursor), cur the view's token as the stream opened,
-// and ch the channel taken before it. It reports whether the stream ended
-// at its life, the seat's own rotation, rather than for any other reason.
+// version, or the chat cursor), and ch the channel taken before the
+// admission's look at the view. It reports whether the stream ended at its
+// life, the seat's own rotation, rather than for any other reason.
 func (a *app) runStream(r *http.Request, sw *streamWriter, timer noticeTimer, life <-chan time.Time, src streamSource,
-	ch <-chan struct{}, cur string, sent string, k tokenKey, gone <-chan struct{}, until time.Time) (rotated bool) {
+	ch <-chan struct{}, sent string, k tokenKey, gone <-chan struct{}, until time.Time) (rotated bool) {
 	beat, stopBeat := timer(a.streamBeat)
 	defer func() { stopBeat() }()
 	sessionLeft := func(until time.Time) time.Duration {
@@ -680,7 +679,11 @@ func (a *app) runStream(r *http.Request, sw *streamWriter, timer noticeTimer, li
 		gap, stopGap = timer(a.streamGap)
 		return true
 	}
-	if cur != sent && !say(cur) {
+	// The view is looked at again after the opening heartbeat, not taken
+	// from the admission: the hint may have died, or its connection been
+	// replaced, while the heartbeat was written, and no token is said of a
+	// view that is no longer live.
+	if cur, live := src.current(); !live || !say(cur) {
 		return false
 	}
 	for {

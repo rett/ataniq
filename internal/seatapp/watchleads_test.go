@@ -238,8 +238,8 @@ func TestSeatLeadsStreamHints(t *testing.T) {
 		t.Fatalf("event %q %v", b, ok)
 	}
 	// A wake that leaves the cursor says nothing; the next move does.
-	ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 9, Connection: time.Unix(2, 0)})
-	ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: MaxChatSeq, Connection: time.Unix(2, 0)})
+	ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 9, Connection: time.Unix(1, 0)})
+	ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: MaxChatSeq, Connection: time.Unix(1, 0)})
 	if b, ok := c.nextEvent(t, 3*time.Second); !ok || b != fmt.Sprintf("event: chat-changed\ndata: %d", int64(MaxChatSeq)) {
 		t.Fatalf("event %q %v", b, ok)
 	}
@@ -295,8 +295,8 @@ func TestSeatLeadsStreamSaysAMissedChangeAtOnce(t *testing.T) {
 }
 
 // TestSeatLeadsStreamEndsWhenTheHintDies: the stream ends, cleanly and with
-// no event, when the hint stops being live (a lost link, a new connection, a
-// downgrade), when its gate stops offering chat, also when the hint died
+// no event, when the hint stops being live (a lost link, a downgrade) or is
+// of a new connection, when its gate stops offering chat, also when the hint died
 // with no wake (its connection gone before its watcher said so: the view is
 // looked at again before each heartbeat), and at a logout. A change that is
 // pending in the gap is not said once the hint is dead.
@@ -307,9 +307,17 @@ func TestSeatLeadsStreamEndsWhenTheHintDies(t *testing.T) {
 		"no wake":      func(ld *leadsDaemon) { ld.fakeChatWatcher.setQuiet(ChatHint{}) },
 		"offer, quiet": func(ld *leadsDaemon) { ld.gone.Store(true) },
 		"in the gap": func(ld *leadsDaemon) {
-			ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 8})
-			ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 9})
+			ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 8, Connection: time.Unix(1, 0)})
+			ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 9, Connection: time.Unix(1, 0)})
 			ld.fakeChatWatcher.setQuiet(ChatHint{})
+		},
+		// A live hint of a new connection: the stream was admitted on the
+		// first, and says nothing of the second's cursor.
+		"new connection": func(ld *leadsDaemon) {
+			ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 8, Connection: time.Unix(2, 0)})
+		},
+		"new connection, quiet": func(ld *leadsDaemon) {
+			ld.fakeChatWatcher.setQuiet(ChatHint{Live: true, Cursor: 8, Connection: time.Unix(2, 0)})
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -348,6 +356,54 @@ func TestSeatLeadsStreamEndsWhenTheHintDies(t *testing.T) {
 	r.postWith("/api/logout", "{}", s)
 	within(t, got, 3*time.Second)
 	r.waitStreams(t, 0)
+}
+
+// flushHook is a recorder that runs a hook at its first flush: the opening
+// heartbeat's.
+type flushHook struct {
+	*httptest.ResponseRecorder
+	once sync.Once
+	hook func()
+}
+
+func (f *flushHook) Flush() {
+	f.ResponseRecorder.Flush()
+	f.once.Do(f.hook)
+}
+
+// TestSeatLeadsStreamOpeningFlush: the hint dies, or its connection is
+// replaced, while the opening heartbeat is written: the stream looks at the
+// view again after it, so no block that follows carries a cursor, even for
+// a page that opened with an older cursor (whose first event would say the
+// current one).
+func TestSeatLeadsStreamOpeningFlush(t *testing.T) {
+	for name, kill := range map[string]func(*leadsDaemon){
+		"not live":       func(ld *leadsDaemon) { ld.fakeChatWatcher.setQuiet(ChatHint{}) },
+		"no offer":       func(ld *leadsDaemon) { ld.gone.Store(true) },
+		"new connection": func(ld *leadsDaemon) { ld.fakeChatWatcher.setQuiet(ChatHint{Live: true, Cursor: 8, Connection: time.Unix(2, 0)}) },
+		"new connection, woken": func(ld *leadsDaemon) {
+			ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 9, Connection: time.Unix(2, 0)})
+		},
+	} {
+		for _, body := range []string{`{"leads":"0"}`, `{"leads":"3"}`, leadsOK} {
+			t.Run(name+" "+body, func(t *testing.T) {
+				r, ld := newLeadsRig(t)
+				r.app.streamBeat = 20 * time.Millisecond
+				s := r.login(t)
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				w := &flushHook{ResponseRecorder: httptest.NewRecorder(), hook: func() { kill(ld) }}
+				r.h.ServeHTTP(w, streamRequest(ctx, streamPath, body, s))
+				if ctx.Err() != nil {
+					t.Fatal("the stream did not end")
+				}
+				if w.Code != 200 || w.Body.String() != ":\n\n" {
+					t.Errorf("after the opening heartbeat: %d %q", w.Code, w.Body)
+				}
+				r.waitStreams(t, 0)
+			})
+		}
+	}
 }
 
 // TestSeatLeadsStreamSharesTheLimits: the streams of both views are counted
