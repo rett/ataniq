@@ -132,6 +132,33 @@ func TestGenesisPlanPageSections(t *testing.T) {
 	}
 }
 
+// A plan drawn from answers decided for the owner carries the warning
+// inferred-answers, and the page says so in its fixed sentence, escaped,
+// among the warnings; a plan without the warning has no such sentence.
+func TestGenesisPlanPageInferredAnswers(t *testing.T) {
+	p := samplePlan()
+	p.Warnings = []string{"inferred-answers"}
+	r, _, s := planRig(t, p)
+	w := r.getWith(planPath, s)
+	if w.Code != http.StatusOK {
+		t.Fatalf("the plan page: %d\n%s", w.Code, w.Body)
+	}
+	page := w.Body.String()
+	warnings := sectionOf(t, page, `<h2 id="warnings-h">Warnings</h2>`)
+	if strings.Count(page, html.EscapeString(planInferredLine)) != 1 || !strings.Contains(warnings, "<li>"+html.EscapeString(planInferredLine)+"</li>") {
+		t.Fatalf("the warnings do not say some answers were decided for the owner:\n%s", page)
+	}
+	if strings.Contains(page, "inferred-answers") {
+		t.Error("the page shows the warning's id")
+	}
+
+	p.Warnings = []string{"settle-at-desk"}
+	r, _, s = planRig(t, p)
+	if page := r.getWith(planPath, s).Body.String(); strings.Contains(page, html.EscapeString(planInferredLine)) || strings.Contains(page, "decided for you") {
+		t.Fatalf("a plan with no inferred answer says some were decided:\n%s", page)
+	}
+}
+
 // The stored plan: its heading names its revision, there is no draft line,
 // and the way back is the finished brief.
 func TestGenesisPlanPageStored(t *testing.T) {
@@ -391,6 +418,31 @@ func TestGenesisPlanPageIsGuarded(t *testing.T) {
 // finishNoPlanLine is the warning of the summary page above the finish
 // button when the answers are not complete.
 const finishNoPlanLine = "If you finish now, no plan is drawn for this project, and a finished brief cannot be changed."
+
+// finishAcceptsLine is the summary's sentence, in the finish paragraph, when
+// some answers were decided for the owner.
+const finishAcceptsLine = "Finishing also accepts the answers decided for you."
+
+// The summary's finish paragraph says that finishing accepts the answers
+// decided for the owner when the summary has such rows, and only then.
+func TestGenesisSummarySaysFinishingAccepts(t *testing.T) {
+	r, g, s := genesisRig(t)
+	sum := sampleSummary()
+	g.set(GenesisVerbRound, &sum, nil)
+	page := r.getWith("/projects/"+testThread, s).Body.String()
+	form := page[strings.Index(page, `<form id="finish"`):]
+	form = form[:strings.Index(form, "</form>")]
+	if !strings.Contains(form, "<p>Finishing keeps the answers as the project's brief. "+finishAcceptsLine+" Nothing starts, and no agent is given the brief.</p>") ||
+		strings.Count(page, finishAcceptsLine) != 1 || strings.Index(page, "What was decided for you") > strings.Index(page, finishAcceptsLine) {
+		t.Fatalf("the summary with answers decided for the owner:\n%s", page)
+	}
+	sum.DecidedForYou = []GenesisRow{}
+	g.set(GenesisVerbRound, &sum, nil)
+	page = r.getWith("/projects/"+testThread, s).Body.String()
+	if strings.Contains(page, finishAcceptsLine) || !strings.Contains(page, "<p>Finishing keeps the answers as the project's brief. Nothing starts, and no agent is given the brief.</p>") {
+		t.Fatalf("the summary with no answer decided for the owner:\n%s", page)
+	}
+}
 
 // The summary links the draft plan when the port says it is ready, and
 // otherwise says why there is none; the finished page links the plan kept

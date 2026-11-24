@@ -598,6 +598,13 @@ func (s *Store) Change(ctx context.Context, id, node string, pick ownerwire.Gene
 // Finish freezes the brief and answers its digest. A thread that is finished
 // answers the same again.
 //
+// Finishing is the owner's confirmation of the answers decided for him: the
+// summary shows them under "decided for you" right above the finish button,
+// and says that finishing accepts them. Every supervisor-inferred field of the
+// brief is confirmed ([brief.Brief.ConfirmInferred]) before the brief is
+// frozen, in the same write, and logged in a fixed line with nothing of the
+// answers.
+//
 // When the brief is complete and a template serves its kind, the plan of the
 // brief, revision 1, is compiled and stored with the frozen brief, in the
 // same write. A brief that is not complete, or of a kind no template serves,
@@ -613,11 +620,18 @@ func (s *Store) Finish(ctx context.Context, id string) (ownerwire.SeatGenesisRes
 		if r.state == StateFinished {
 			return view(s.cat, r, 0)
 		}
-		d, err := brief.Digest(r.brief)
+		b := r.brief.Clone()
+		confirmed, err := b.ConfirmInferred()
 		if err != nil {
 			return ownerwire.SeatGenesisResult{}, err
 		}
-		r.state, r.frozen, r.updated = StateFinished, d, t.now
+		d, err := brief.Digest(b)
+		if err != nil {
+			return ownerwire.SeatGenesisResult{}, err
+		}
+		r.brief, r.state, r.frozen, r.updated = b, StateFinished, d, t.now
+		// The plan is compiled from the brief as frozen: after the
+		// confirmation.
 		p, pd, perr := s.compile(r.brief)
 		if perr == nil {
 			r.plan, r.planDigest = &p, pd
@@ -627,6 +641,9 @@ func (s *Store) Finish(ctx context.Context, id string) (ownerwire.SeatGenesisRes
 			return ownerwire.SeatGenesisResult{}, err
 		}
 		t.logf("genesis: a thread was finished")
+		if confirmed > 0 {
+			t.logf("genesis: answers decided for the owner were confirmed by finishing")
+		}
 		if _, refused := RefusalCode(perr); perr == nil {
 			t.logf("genesis: a plan was drawn")
 		} else if !refused {

@@ -86,7 +86,7 @@ func kindCases() []kindCase {
 			title: "A one-page tool", demo: "It runs on this computer and its one job works on a sample.", template: "software",
 			tasks:    []string{"Add sign-in with passkeys"},
 			noTasks:  []string{"Sketch the pages and how one leads to the next", "Prepare a run script for your server, without deploying"},
-			services: []string{}, gates: []string{"lint", "unit-tests"}, reviewPoints: []string{"publish"}, hosts: "own_server", band: "low",
+			services: []string{}, gates: []string{"lint", "unit-tests"}, warnings: []string{WarnInferred}, reviewPoints: []string{"publish"}, hosts: "own_server", band: "low",
 		},
 		{
 			name: "software-own-words", style: defaults,
@@ -235,6 +235,9 @@ func TestCompileKinds(t *testing.T) {
 				if !contains(p.Warnings, w) {
 					t.Errorf("no warning %s in %v", w, p.Warnings)
 				}
+			}
+			if contains(p.Warnings, WarnInferred) != b.Inferred() {
+				t.Errorf("warnings %v for a brief that holds inferred answers: %v", p.Warnings, b.Inferred())
 			}
 			have := titles(p)
 			for _, title := range tc.tasks {
@@ -549,9 +552,55 @@ func checkShape(t *testing.T, p Plan) {
 	}
 }
 
-// The refusals of Compile: an incomplete brief, an inferred answer not
-// confirmed, a brief of another catalog, a catalog not loaded, a kind with
-// no template, and a value the catalog does not offer.
+// "You decide" on the language, the sign-in and where the app runs stores
+// values inferred for the owner, which he has not confirmed while the
+// interview is open. A plan is drawn from them as they are, read by the
+// template like any other value, and names them with the warning
+// inferred-answers. Confirming them, as finishing does, changes nothing of
+// the plan but the brief's digest; a brief with no inferred answer has no
+// such warning.
+func TestInferredAnswersArePlanned(t *testing.T) {
+	c := v1(t)
+	picks := map[string]catalog.Answer{"kind": pickOne("software"), "software.sub_kind": pickOne("web_app")}
+	b := walk(t, c, picks, youDecideUnconfirmed)
+	for _, name := range []string{"software.stack", "software.auth", "software.deploy_kind"} {
+		if f, ok := b.Get(name); !ok || f.Provenance != brief.SupervisorInferred || f.Confirmed {
+			t.Fatalf("%s: %+v", name, f)
+		}
+	}
+	if f, n := catalog.Readiness(c, b); f != n-3 {
+		t.Fatalf("readiness %d of %d, want the three inferred answers not counted", f, n)
+	}
+	p := compile(t, c, b)
+	if !contains(p.Warnings, WarnInferred) {
+		t.Fatalf("warnings %v", p.Warnings)
+	}
+	// The template reads the inferred sign-in (a passkey) and the inferred
+	// place it runs (this computer) like any other value.
+	have := titles(p)
+	if _, ok := have["Add sign-in with passkeys"]; !ok {
+		t.Errorf("no passkey task in %v", have)
+	}
+	if _, ok := have["Prepare the set-up for the hosting service, without deploying"]; ok {
+		t.Error("a hosting task for an app that runs on this computer")
+	}
+	confirmed := b.Clone()
+	if n, err := confirmed.ConfirmInferred(); err != nil || n != 3 {
+		t.Fatalf("confirmed %d: %v", n, err)
+	}
+	pc := compile(t, c, confirmed)
+	if !ContentEqual(p, pc) || p.BriefDigest == pc.BriefDigest || !contains(pc.Warnings, WarnInferred) {
+		t.Fatalf("the plan of the confirmed brief differs: %+v, want %+v", pc, p)
+	}
+	if plain := compile(t, c, walk(t, c, picks, defaults)); contains(plain.Warnings, WarnInferred) {
+		t.Fatalf("a brief with no inferred answer warns %v", plain.Warnings)
+	}
+}
+
+// The refusals of Compile: an incomplete brief (a required field not set),
+// a brief of another catalog, a catalog not loaded, a kind with no
+// template, and a value the catalog does not offer. An inferred answer the
+// owner has not confirmed is no refusal: see TestInferredAnswersArePlanned.
 func TestCompileRefuses(t *testing.T) {
 	c := v1(t)
 	full := walk(t, c, map[string]catalog.Answer{"kind": pickOne("software"), "software.sub_kind": pickOne("web_app")}, defaults)
@@ -569,18 +618,11 @@ func TestCompileRefuses(t *testing.T) {
 		_, err = Compile(b, c)
 		wantCode(t, err, brief.CodeBriefIncomplete)
 	})
-	t.Run("you decide, not confirmed", func(t *testing.T) {
+	t.Run("you decide, with a required field not set", func(t *testing.T) {
 		b := walk(t, c, map[string]catalog.Answer{"kind": pickOne("software"), "software.sub_kind": pickOne("web_app")}, youDecideUnconfirmed)
+		must(t, b.Clear("budget_band", t0))
 		_, err := Compile(b, c)
 		wantCode(t, err, brief.CodeBriefIncomplete)
-		for name, f := range b.Fields {
-			if f.Provenance == brief.SupervisorInferred {
-				must(t, b.Confirm(name))
-			}
-		}
-		if _, err := Compile(b, c); err != nil {
-			t.Fatalf("confirmed: %v", err)
-		}
 	})
 	t.Run("another catalog", func(t *testing.T) {
 		b := full.Clone()

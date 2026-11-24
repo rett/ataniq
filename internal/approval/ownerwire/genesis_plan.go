@@ -83,7 +83,7 @@ var (
 	// GenesisPlanBudgetBands are the monthly budget bands, by id.
 	GenesisPlanBudgetBands = []string{"low", "medium", "none"}
 	// GenesisPlanWarnings are the warnings a plan may carry.
-	GenesisPlanWarnings = []string{"estimate-may-exceed-band", "rights-not-cleared", "settle-at-desk"}
+	GenesisPlanWarnings = []string{"estimate-may-exceed-band", "inferred-answers", "rights-not-cleared", "settle-at-desk"}
 	// GenesisPlanBands are the estimate bands, each id with its label.
 	GenesisPlanBands = map[string]string{
 		"hours": "a few hours of agent work",

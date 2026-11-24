@@ -18,14 +18,20 @@ import (
 // (catalog_invalid); a brief started under another catalog
 // (catalog_mismatch); a brief that breaks its own rules, or holds a value
 // the catalog does not offer (brief_invalid and the brief's codes); a brief
-// whose required fields are not all filled, an inferred value the owner did
-// not confirm counting as not filled (brief_incomplete); a kind with no
+// whose required fields are not all filled for planning
+// ([catalog.PlanReadiness]: an inferred value counts as filled whether or
+// not the owner confirmed it) (brief_incomplete); a kind with no
 // template, such as other (no_template); and a template that does not hold
 // to the catalog, or gives a plan over its caps (template_invalid).
 //
 // The owner's own text, the text of an "other" answer or a note, is kept in
 // the plan's notes for the owner's eyes and chooses nothing: a condition
 // may hold for an "other" answer, never for what it says.
+//
+// A value inferred for the owner (a "you decide" answer) is read like any
+// other value, by the template's conditions too, and the plan carries the
+// warning [WarnInferred] whenever the brief holds one, so the page that
+// shows the plan says some answers were decided for the owner.
 func Compile(b brief.Brief, cat catalog.Catalog) (Plan, error) {
 	ts, err := Templates()
 	if err != nil {
@@ -84,7 +90,7 @@ func compileWith(b brief.Brief, cat catalog.Catalog, ts []Template) (Plan, error
 	if err != nil {
 		return Plan{}, err
 	}
-	if filled, total := catalog.Readiness(cat, b); b.Kind == "" || filled < total {
+	if filled, total := catalog.PlanReadiness(cat, b); b.Kind == "" || filled < total {
 		return Plan{}, fail(brief.CodeBriefIncomplete, "the brief's required fields are not all filled")
 	}
 	if err := checkSetOf(ts); err != nil {
@@ -129,6 +135,9 @@ func compileWith(b brief.Brief, cat catalog.Catalog, ts []Template) (Plan, error
 	p.Estimate, p.Warnings = estimate(p.Tasks()), holding(t.Warnings, b)
 	if estimateMayExceed(p.Tasks()) {
 		p.Warnings = sortedUnique(append(p.Warnings, WarnEstimate))
+	}
+	if b.Inferred() {
+		p.Warnings = sortedUnique(append(p.Warnings, WarnInferred))
 	}
 	p.Gates = holding(t.Gates, b)
 	p.ExternalServices = holding(t.Services, b)

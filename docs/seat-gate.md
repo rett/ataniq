@@ -454,7 +454,14 @@ questions are the desk's own, from its fixed catalog, and so is the order they
 come in. Each question offers its options, each with a one-line example, and,
 where the question allows them, "Other" (your own words, a short note of
 about 200 letters: the cap is 200 bytes, so accents and emoji take more room),
-"You decide for me" and "Skip". After the last round you read the
+"You decide for me" and "Skip". "You decide for me" leaves the answer to the
+desk: on most questions it takes the question's default; on the language, the
+sign-in and where a web app runs, the desk picks a value for you, shown under
+"What was decided for you" on the summary. Such an answer counts as given, so
+a draft plan can be drawn from it, and the plan says "Some answers were
+decided for you; you can change them from the summary." Finishing accepts
+them as your answers; the summary says so above the finish button. After the
+last round you read the
 summary: what you chose, what was decided for you and what was left to its
 default; "Change" on a row asks that question again (a change clears the later
 answers that depended on it, the page says how many, and their questions are
@@ -493,7 +500,9 @@ brief and its plan, revision 1, which never changes afterwards; the finished
 page then has "See the plan". A project finished before its answers were
 complete has no plan, and its plan page says so. The short digest under the
 heading ("Plan 3c3c3c3c3c3c") is the same for the draft and the kept plan of
-the same answers, so you can tell they match.
+the same answers, so you can tell they match; when some answers were decided
+for you, finishing accepts them, which changes the brief, so the kept plan
+has the draft's content under another digest.
 
 What it does not do. Nothing starts: no agent is run and no agent is given the
 answers, the brief or the plan, and nothing is built or published. An answer

@@ -397,7 +397,7 @@ The handler (`gatehost`, built for pairing and reads) answers:
 | `genesis-secret-shaped` | Genesis. Text that looks like a key, a token or a password (the start of a private key block, `-----BEGIN`; a well-known key prefix; an assignment with a value, `password=...`, or `password: ...` with a value that is not a plain word; a run of 32 or more hexadecimal digits, or of random-looking letters, digits, `_`, `+` and `=`, where a dash or a slash ends the run). It catches pasted keys and obvious assignments, not every typed password; names, web addresses, paths and the phrase "private key" pass, and a bare git commit id (40 hexadecimal digits) is refused. Credentials are never typed on the phone. The brief's `secret_shaped`. |
 | `genesis-done` | Genesis. An answer, a change or a discard of a thread that is finished. |
 | `genesis-stale-round` | Genesis. An answer to a round the thread has already taken, to a question already answered in the round named (a round asked again after a change keeps the last round's number), or to any round once the walk is done (the thread is at its summary): a double tap, a second tab, a post the browser sent again. A state of the thread, not a misuse; the seat goes back to the thread's page with "That round was already answered." |
-| `genesis-not-ready` | Genesis. A `plan` of a thread whose brief is not complete: a required field is not filled, or an answer the host inferred is not confirmed, on an open thread or on one the owner finished early. A state of the thread, not a misuse. The plan's `brief_incomplete`. |
+| `genesis-not-ready` | Genesis. A `plan` of a thread whose brief is not complete for planning: a required field is not set, on an open thread or on one the owner finished early (an answer the host inferred for the owner counts as set, confirmed or not). A state of the thread, not a misuse. The plan's `brief_incomplete`. |
 | `genesis-no-template` | Genesis. A `plan` of a thread whose kind no plan template serves: the kind in the owner's own words. It is answered before the brief is complete as well, since completing it would not help. A state of the thread, not a misuse. The plan's `no_template`. |
 
 The nine genesis words are the gate's words for the refusals of the host's
@@ -1916,6 +1916,23 @@ ends after the sixth round, whatever is left: a brief with more questions left
 unanswered than the rounds had room for stays incomplete, its summary says how
 many answers are filled in, and finishing it draws no plan.
 
+"You decide for me" on a question whose catalog entry says `you_decide:
+"supervisor-inferred"` (with catalog v1, the language, the sign-in and where
+the app runs: `software.stack`, `software.auth`, `software.deploy_kind`)
+stores a value the host inferred for the owner, provenance
+`supervisor-inferred`, not confirmed; on the other questions that allow it,
+the question's default. The brief has two notions of a filled field.
+`Brief.Readiness`, for what binds (the charter stage), counts an inferred
+value only once the owner confirms it. `Brief.PlanReadiness`, for planning
+only, counts an owner-chosen, a default and an inferred value, confirmed or
+not: a plan is a proposal and binds nothing. The walk never asks an answered
+question again, the result's progress and `plan_ready` follow the planning
+notion, and a plan drawn from an inferred value carries the warning
+`inferred-answers`, so an inferred value never silently becomes the owner's
+decision. No page or verb confirms one answer: `finish` confirms them all
+(see [the thread store](#the-thread-store)), and the summary, which shows them
+under "What was decided for you" right above the finish button, says so.
+
 So an interview that answers every question asks every required question of
 its kind within the six rounds: with catalog v1, software, publishing and
 media (14 required fields each) take 6 rounds (the kind, then three questions
@@ -1938,7 +1955,7 @@ the members below, and a member of another verb is refused `bad-params`:
 | `answer` | `thread`, `round`, `answers` | Applies 1 to 3 answers, each to another node, to the round named, and answers the next round or the summary. |
 | `change` | `thread`, `node`, `answer` | Replaces an earlier answer. It clears the answers that depended on it (the catalog's invalidation closure), keeps them in the brief's history, and says how many in `reset`. |
 | `summary` | `thread` | Answers the summary. |
-| `finish` | `thread` | Freezes the brief and answers its digest. When the brief is complete and a template serves its kind, it compiles the plan, revision 1, and stores it in the same write as the frozen brief; otherwise (the owner stops early, or the kind is in the owner's own words) it freezes the brief with no plan. After it, `answer`, `change` and `discard` are `genesis-done`. |
+| `finish` | `thread` | Confirms every answer the host inferred for the owner (finishing is his confirmation: the summary shows them right above the finish button and says so), freezes the brief and answers its digest. When the brief is complete and a template serves its kind, it compiles the plan, revision 1, and stores it in the same write as the frozen brief; otherwise (the owner stops early, or the kind is in the owner's own words) it freezes the brief with no plan. After it, `answer`, `change` and `discard` are `genesis-done`. |
 | `discard` | `thread` | Drops an open thread. A finished thread is `genesis-done`: its brief stays as it was finished. |
 | `plan` | `thread` | Answers the thread's project plan (state `plan`). On an open thread whose brief is complete, a preview: compiled for the read, `stored: false`, kept nowhere, the same plan and digest for the same brief. On a finished thread, the plan stored at finish, `stored: true`. A brief that is not complete is `genesis-not-ready`, a kind no template serves `genesis-no-template`. A read, free like `round`. |
 
@@ -1969,9 +1986,12 @@ only that a credential is needed, by reference.
 | `plan` | 0 to `of` | none | none | none | 0 (progress all filled) |
 
 Always but for `threads`: `thread`, `of` (the most rounds, 1 to 6), `progress`
-(`filled` of `total` required fields, and `plan_ready: true`, left out when
-false, when `plan` would answer a plan: one is stored, or the brief is
-complete and a template serves its kind), `catalog_digest` (the digest of the
+(`filled` of `total` required fields, filled for planning: an answer the
+host inferred for the owner counts, confirmed or not; and `plan_ready: true`,
+left out when false, when `plan` would answer a plan: one is stored, or the
+brief is complete in that same notion and a template serves its kind, so a
+page never says answers are missing while a plan can be drawn, or the
+reverse), `catalog_digest` (the digest of the
 catalog the thread is walked under, 64 lower-case hexadecimal digits: a thread
 stays on one version) and `reset`. `threads`, the answer to `list`, names no
 thread and no catalog (both are left out) and is the only state with a list,
@@ -2123,13 +2143,16 @@ gate; it is fixed by hand and the daemon restarted.
   the cleared values in the brief's history and says how many in `reset`; the
   next round asks the cleared questions again, under the next round number,
   or, after the sixth round, in a round that keeps the sixth's number.
-  `summary` reads the summary at any time. `finish` freezes the brief and
-  answers its digest, at any time on an open thread (there is no separate
+  `summary` reads the summary at any time. `finish` confirms every
+  supervisor-inferred field of the brief that is not confirmed yet, through
+  `Brief.Confirm` (`Brief.ConfirmInferred`), freezes the brief with the
+  confirmations and answers its digest, at any time on an open thread (there is no separate
   "enough": the owner reads the summary and finishes), and again on a finished
   one with the same digest; afterwards `answer`, `change` and `discard` are
   `genesis-done`. When the brief is complete and a template serves its kind,
-  `finish` compiles the plan, revision 1, and stores it in the same atomic
-  write as the frozen brief; a brief that is not complete, or of a kind no
+  `finish` compiles the plan, revision 1, from the brief as frozen (after the
+  confirmation), and stores it in the same atomic write as the frozen brief
+  and its confirmations; a brief that is not complete, or of a kind no
   template serves, is frozen without a plan, and a compiler fault of the host
   does not stop the finish (it is logged, and the plan drawn when next asked).
   `plan` answers a preview on an open thread whose brief is complete
@@ -2158,8 +2181,9 @@ gate; it is fixed by hand and the daemon restarted.
   14 days is discarded on the next access or at open, and keeps no answer. The
   store's clock and its source of ids are injectable, which the tests use.
 - **The log** holds fixed texts and no answer or brief content: `genesis: a
-  thread was started`, `... finished`, `... discarded`, `... expired`, `genesis:
-  a plan was drawn` (a plan was stored, at finish or on a late first ask),
+  thread was started`, `... finished`, `... discarded`, `... expired`,
+  `genesis: answers decided for the owner were confirmed by finishing` (once
+  for a finish that confirmed any, never which), `genesis: a plan was drawn` (a plan was stored, at finish or on a late first ask),
   `genesis: a plan could not be drawn at finish`, `genesis:
   an answer was refused as secret-shaped (N since the store was opened)` (a
   count only), and the line about a file that is not served. A thread's id and
@@ -2234,7 +2258,10 @@ button. The summary
 shows the three groups (what you chose, what was decided for you, the
 defaults), the owner's own words quoted and marked as the owner's, a "Change"
 link on each row whose question the link holds, a "Looks right: finish" button
-and a link to the discard step. The finished page shows the brief's digest in
+and a link to the discard step. The finish paragraph above the button says
+"Finishing keeps the answers as the project's brief.", then, only when the
+summary has rows decided for the owner, "Finishing also accepts the answers
+decided for you.", and "Nothing starts, and no agent is given the brief." The finished page shows the brief's digest in
 short form and says that nothing has started and no agent was given the brief.
 The summary links "See the draft plan" when the result's `plan_ready` says a
 plan would be answered, and otherwise says "N of M answers are filled in: no
@@ -2257,14 +2284,18 @@ digits of the thread id ("A full web app, 3fa2c1"), the fixed lines "A plan
 binds nothing: nothing has started, and nothing starts from this page." and,
 for a draft, "This is a draft; finishing the interview keeps it as revision
 1.", and the plan's digest in short form, the same for a draft and the stored
-plan of the same answers; then the first demo; "What waits for you": the
+plan of the same answers (but for a brief with answers decided for the
+owner: finishing confirms them, which changes the brief's digest, so the
+stored plan has the draft's content under another digest); then the first demo; "What waits for you": the
 review points in the app's words and always the fixed sentence "Publishing,
 releases, pushing code, credentials and raising any limit always wait for you,
 whatever the plan says.", whatever the review points hold; the outside
 services, or none; where the files live; the budget band, marked "advisory:
 nothing enforces it yet"; the estimate, marked "an estimate, not a promise";
-the warnings, each a fixed sentence by its id (an id the app does not know is
-"A note from the plan.", never its text); "Milestones and tasks", one native
+the warnings, each a fixed sentence by its id (`inferred-answers` is "Some
+answers were decided for you; you can change them from the summary.", shown
+only when the plan carries it; an id the app does not know is "A note from
+the plan.", never its text); "Milestones and tasks", one native
 `details` element a milestone (only the first open), each with its goal and an
 ordered list of its tasks: title, kind and size in words, and "after:" the
 titles of the tasks it waits for; "Your own notes", only when there are some,
@@ -2379,7 +2410,8 @@ service, email delivery, generator service, file or code host),
 "advisory"`), `estimate` (a band of the tasks' sizes, such as "about a day of
 agent work", with `estimate: true` and the words "an estimate, not a
 promise"), `warnings` (closed ids: `estimate-may-exceed-band`,
-`rights-not-cleared`, `settle-at-desk`), `notes` and `notes_dropped`. A plan
+`inferred-answers`, `rights-not-cleared`, `settle-at-desk`), `notes` and
+`notes_dropped`. A plan
 is at most 12 KiB, under the 16 KiB of a result on the wire. A milestone and a
 task keep their place in the template as their id (`m1`, `t4`), so an id means
 one thing in every revision, and a plan's ids may skip numbers. A plan holds
@@ -2392,16 +2424,21 @@ revision 1 of a finished thread's frozen brief, in the thread's own file,
 written once and never compiled again; a preview is compiled on each read
 and kept nowhere.
 
-`Compile` refuses a brief that is not complete (an inferred answer the owner
-did not confirm counts as missing), a brief of another catalog and a kind with
-no template (`no_template`; the kind in the owner's own words is one, for
+`Compile` refuses a brief that is not complete for planning
+(`Brief.PlanReadiness`: a required field not set; an answer the host inferred
+for the owner counts as filled whether or not he confirmed it), a brief of
+another catalog and a kind with no template (`no_template`; the kind in the owner's own words is one, for
 which the phone will say a fixed sentence), each with a refusal code of the
 brief package. `Next` compiles the revision after a plan and refuses
 `no_change` when the plan would be the one before (the brief's digest alone
 differs for the same answers given again), and `Diff` names what changed
 against the revision the owner last saw: milestones and tasks added, removed or
 changed by id, top-level fields by name, with short texts, at most 48 entries,
-never a brief digest alone and never the owner's words.
+never a brief digest alone and never the owner's words. A value inferred
+for the owner is read by the template's conditions like any other value, and
+a brief that holds one gives its plan the warning `inferred-answers` ("some
+answers were decided for you"), which no template gives (the compiler adds
+it, as it adds `estimate-may-exceed-band`).
 
 The templates are data, `ataniq.genesis-plan-template/1`, embedded in the
 canonical form, one per kind: software (a web app or a one-page tool),

@@ -90,10 +90,13 @@
 //
 // # Compile, Next and Diff
 //
-// [Compile] refuses a brief that is not complete, a brief of another
-// catalog and a kind with no template (no_template, the kind other among
-// them), each with a [*brief.Error] whose code is declared in the brief
-// package. [Next] compiles the revision after a plan, and refuses
+// [Compile] refuses a brief that is not complete for planning (a required
+// field not set), a brief of another catalog and a kind with no template
+// (no_template, the kind other among them), each with a [*brief.Error]
+// whose code is declared in the brief package. A value inferred for the
+// owner (a "you decide" answer) counts as filled whether or not he has
+// confirmed it, is read by the template like any other value, and gives the
+// plan the warning inferred-answers, which no template gives. [Next] compiles the revision after a plan, and refuses
 // no_change when the plan would be the one before ([ContentEqual]: the
 // brief's digest differs for the same answers given again). [Diff] says
 // what changed between two revisions, by id and by field name, with short

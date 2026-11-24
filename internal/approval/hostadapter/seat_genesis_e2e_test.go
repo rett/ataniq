@@ -210,6 +210,17 @@ var webAppRounds = [][]ownerwire.GenesisAnswer{
 	{gPicks("review_points", "plan", "demo", "publish")},
 }
 
+// youDecideRounds are the web app path with "You decide" on the language, the
+// sign-in and where the app runs: the answers the host infers for the owner.
+var youDecideRounds = [][]ownerwire.GenesisAnswer{
+	{gPick("kind", "software")},
+	{gPick("software.sub_kind", "web_app"), gPick("goal", "own_use"), gPick("audience", "me")},
+	{gDecide("software.stack"), gDecide("software.data"), gDecide("software.auth")},
+	{gDecide("software.deploy_kind"), gPick("hosts", "this_computer"), gPick("budget_band", "none")},
+	{gPicks("deliverables", "first_version"), gPick("quality_bar", "solid"), gSkip("schedule")},
+	{gPicks("review_points", "plan", "demo", "publish")},
+}
+
 func nodeIDs(r ownerwire.SeatGenesisResult) []string {
 	var out []string
 	for _, n := range r.Nodes {
@@ -491,6 +502,63 @@ func TestGenesisPlanOverTheGate(t *testing.T) {
 	// None of it shut the seat out.
 	if got := seat.ok(gPlan(a)); !reflect.DeepEqual(got, stored) {
 		t.Fatalf("the stored plan after the refusals: %+v", got)
+	}
+}
+
+// The owner's trial: "You decide" on the language, the sign-in and where the
+// app runs leaves three answers decided for him, which no page confirms while
+// the interview is open. Over the gate the interview still reaches a summary
+// ready for a plan, every answer counted as filled; the preview is drawn with
+// the warning inferred-answers and stored nowhere; finishing confirms the
+// three answers (the summary says it does) and stores the plan compiled after
+// that, with the warning: the preview's content, under the digest of the brief
+// as frozen.
+func TestGenesisYouDecideIsReadyOverTheGate(t *testing.T) {
+	w := newDecideWorld(t, nil)
+	dir := filepath.Join(privateDir(t), "genesis")
+	g := w.startGenesisGate(dir)
+	seat := w.dialGenesis(g)
+
+	id := seat.ok(gStart()).Thread
+	var sum ownerwire.SeatGenesisResult
+	for i, round := range youDecideRounds {
+		sum = seat.ok(gAnswer(id, i+1, round...))
+	}
+	if sum.State != ownerwire.GenesisStateSummary || !sum.Progress.PlanReady || sum.Progress.Filled != sum.Progress.Total || sum.Progress.Total != 14 {
+		t.Fatalf("the summary: %+v", sum.Progress)
+	}
+	if sum.Groups == nil || len(sum.Groups.DecidedForYou) != 3 {
+		t.Fatalf("decided for you: %+v", sum.Groups)
+	}
+	pre := seat.ok(gPlan(id))
+	if pre.State != ownerwire.GenesisStatePlan || pre.Stored || pre.Plan == nil || !slices.Contains(pre.Plan.Warnings, "inferred-answers") {
+		t.Fatalf("the preview: %+v", pre)
+	}
+	file := filepath.Join(dir, id+".json")
+	if data, err := os.ReadFile(file); err != nil || bytes.Contains(data, []byte(`"plan_digest"`)) {
+		t.Fatalf("the open thread's file: %v", err)
+	}
+
+	fin := seat.ok(ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbFinish, Thread: id})
+	if fin.State != ownerwire.GenesisStateFinished || !fin.Progress.PlanReady {
+		t.Fatalf("finish: %+v", fin)
+	}
+	stored := seat.ok(gPlan(id))
+	if !stored.Stored || stored.Plan == nil || !slices.Contains(stored.Plan.Warnings, "inferred-answers") || stored.Plan.Title != pre.Plan.Title ||
+		!reflect.DeepEqual(stored.Plan.Milestones, pre.Plan.Milestones) || stored.Plan.BriefDigest != fin.Digest || stored.PlanDigest == pre.PlanDigest {
+		t.Fatalf("the stored plan: %+v, want the preview's %+v of the frozen brief %s", stored, pre, fin.Digest)
+	}
+	data, err := os.ReadFile(file)
+	if err != nil || !bytes.Contains(data, []byte(`"plan_digest":"`+stored.PlanDigest+`"`)) {
+		t.Fatalf("the finished thread's file does not hold its plan: %v", err)
+	}
+	if bytes.Contains(data, []byte(`"confirmed":false`)) || bytes.Count(data, []byte(`"confirmed":true`)) != 3 {
+		t.Fatalf("finishing did not confirm the three answers: %s", data)
+	}
+	lines := strings.Join(g.log.all(), "\n")
+	if strings.Count(lines, "genesis: a plan was drawn") != 1 || strings.Count(lines, "genesis: answers decided for the owner were confirmed by finishing") != 1 ||
+		strings.Contains(lines, "software.") || strings.Contains(lines, id) {
+		t.Fatalf("the store's log %q", g.log.all())
 	}
 }
 
