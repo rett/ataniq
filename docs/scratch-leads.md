@@ -920,16 +920,32 @@ user with mode 0600 and one link (`chat-folder` otherwise). A file a lease
 holds (its nonblocking open answers `EAGAIN`) or a lookup that meets a rename
 four times in a row refuses the define or start at once (`chat-folder`, and the
 daemon's log says the file is busy): nothing is changed, and the command can be
-run again later. Provisioning makes it empty. The text replaces the empty file only while the lead is proven
-stopped (the registry does not know it, or shows it defined and never started,
-stopped or ended, with no launch pending): a running lead's sandbox binds the
-file it started with. The text is written to a temporary file in the lead's
-folder and synced; the empty file is checked again, by its handle and its name,
-and the temporary file is exchanged with it (`RENAME_EXCHANGE`). The file the
-exchange took out must be that empty file: when the owner saved another version
-in the moment between, the exchange is undone, the owner's version is at its
-name again, and the define or start is refused (`chat-folder`) with a fixed
-note. The text is recognised as current only by a read of one byte more than
+run again later. Provisioning makes it empty. The text replaces the empty file
+only while the lead is proven stopped (the registry does not know it, or shows
+it defined and never started, stopped or ended, with no launch pending): a
+running lead's sandbox binds the file it started with. The text is written to a
+temporary file in the lead's folder and synced; the empty file is checked again,
+by its handle and its name, and the temporary file is exchanged with it
+(`RENAME_EXCHANGE`). The file the exchange took out must be that empty file,
+still empty: when the owner saved another version in the moment between, the
+exchange is undone, the owner's version is at its name again, and the define or
+start is refused (`chat-folder`) with a fixed note.
+
+The daemon never deletes an owner's version. It deletes only the empty file it
+checked and the text it wrote, each recognised by its inode. A version that
+would otherwise be lost is kept beside the file under a recovery name,
+`instructions.md.displaced-N` (the first free N from 1 to 64, mode 0600 when it
+is a plain file with one link): a second save that came before the exchange was
+undone, a version the undo could not put back, and anything an upgrade cut
+short by a crash left at the temporary name (`.instructions.md.tmp`), which the
+next define or start finds, whatever the instruction file holds, and keeps. The
+daemon's log says when it kept a leftover and, at every define and start, how
+many recovery names hold a version. The daemon never reads, overwrites or
+deletes them: look at each, put back what you want at `instructions.md`, and
+delete the rest. With all 64 names taken, a version is left where it is and the
+define or start is refused (`chat-folder`) until you delete some.
+
+The text is recognised as current only by a read of one byte more than
 it, compared whole, with the size unchanged after. A file that holds anything
 else is the owner's and is never overwritten. The text, whose numbers are the
 reader's own constants:

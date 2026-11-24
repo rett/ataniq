@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"strconv"
 
 	"golang.org/x/sys/unix"
 
@@ -35,8 +36,24 @@ const maxInstructionsBytes = 64 << 10
 
 // instructionsTmp is the temporary name the instruction text is written under
 // in the lead's folder, and exchanged from. The lead's folder is not bound
-// into the sandbox, so only the daemon writes in it.
+// into the sandbox, so only the daemon and the owner write in it, and only
+// the daemon uses this name.
 const instructionsTmp = "." + InstructionsName + ".tmp"
+
+// KeptPrefix starts the recovery names of the lead's folder: a version of the
+// instruction file that an upgrade displaced, or that a crash left at the
+// temporary name, is kept as instructions.md.displaced-<n>, n from 1 to
+// [MaxKept], the first name that is free. The daemon never deletes, reads or
+// overwrites one; the owner looks at it and deletes it.
+const KeptPrefix = InstructionsName + ".displaced-"
+
+// MaxKept is the most recovery names (KeptPrefix 1 to MaxKept) the daemon
+// uses. When every one is taken, a version to keep stays where it is and the
+// call is refused ([ErrChat]).
+const MaxKept = 64
+
+// keptName is the n-th recovery name.
+func keptName(n int) string { return KeptPrefix + strconv.Itoa(n) }
 
 // resolveFlags is what the lookup of the instruction file below the lead's
 // folder uses: beneath the folder, no symbolic or magic link, and no mount
@@ -79,6 +96,13 @@ type ChatOptions struct {
 type ChatResult struct {
 	// Instructions is what became of the instruction file.
 	Instructions Instructions
+	// Leftover is true when the call found a file at the temporary name,
+	// which a crash of an earlier upgrade left, and kept it under a
+	// recovery name ([KeptPrefix]).
+	Leftover bool
+	// Kept is how many recovery names ([KeptPrefix]) hold a version after
+	// the call. The daemon never deletes them; the owner does.
+	Kept int
 }
 
 // EnsureChat writes the text of the instruction file of a provisioned scratch
@@ -100,9 +124,16 @@ type ChatResult struct {
 //     the name must be the empty file that was checked: when it is not (an
 //     owner's edit came in the moment between), the exchange is undone, the
 //     owner's file is back at its name, and the call is refused ([ErrChat]).
-//     Otherwise the empty file is removed and the folder is synced;
+//     Otherwise the empty file is removed and the folder is synced. Only the
+//     daemon's own files are ever removed; a version that would be lost
+//     otherwise is kept under a recovery name ([KeptPrefix]);
 //   - a file that holds anything else is the owner's and is never
 //     overwritten.
+//
+// Before it judges the file, whatever the file holds, it keeps under a
+// recovery name what an upgrade cut short by a crash left at the temporary
+// name, and reports it ([ChatResult].Leftover); the result counts the
+// recovery names that hold a version ([ChatResult].Kept), on a refusal too.
 //
 // The lead must be provisioned: its folder and its instruction file are
 // provisioning's. EnsureChat makes, opens and judges no reply folder.
@@ -119,11 +150,87 @@ func EnsureChat(cfg leadcanary.Config, opts ChatOptions) (ChatResult, error) {
 		return ChatResult{}, fmt.Errorf("state root %s: %w", p.StateRoot, err)
 	}
 	defer root.Close()
+	lead, err := dirFD(root, p.stateRel(p.LeadDir))
+	if err != nil {
+		return ChatResult{}, fmt.Errorf("the lead's folder %s: %w", p.LeadDir, err)
+	}
+	defer unix.Close(lead)
 	var res ChatResult
-	if res.Instructions, err = ensureInstructions(root, p, opts.Stopped); err != nil {
-		return ChatResult{}, err
+	if res.Leftover, err = keepLeftover(lead); err != nil {
+		return ChatResult{}, fmt.Errorf("%s: %w", p.LeadDir, err)
+	}
+	res.Instructions, err = ensureInstructions(lead, p, opts.Stopped)
+	res.Kept = countKept(lead)
+	if err != nil {
+		return res, err
 	}
 	return res, nil
+}
+
+// keepLeftover keeps under a recovery name whatever is at the temporary name:
+// only an upgrade that a crash cut short leaves something there (the text it
+// wrote, or the version it exchanged out of the name). It is never deleted.
+func keepLeftover(dir int) (bool, error) {
+	var st unix.Stat_t
+	switch err := unix.Fstatat(dir, instructionsTmp, &st, unix.AT_SYMLINK_NOFOLLOW); {
+	case err == unix.ENOENT:
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	if _, err := keep(dir, instructionsTmp); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// keep renames from, in dir, to the first free recovery name, by a rename
+// that replaces nothing, and answers its number. A regular file of the
+// caller with one link is set to mode 0600; anything else is kept as it is.
+func keep(dir int, from string) (int, error) {
+	for n := 1; n <= MaxKept; n++ {
+		err := unix.Renameat2(dir, from, dir, keptName(n), unix.RENAME_NOREPLACE)
+		switch err {
+		case unix.EEXIST, unix.ENOTEMPTY:
+			continue
+		case nil:
+			privateKept(dir, keptName(n))
+			if err := syncDirFD(dir); err != nil {
+				return n, err
+			}
+			return n, nil
+		}
+		return 0, fmt.Errorf("%w: a version cannot be kept beside the instruction file: %v", ErrChat, err)
+	}
+	return 0, fmt.Errorf("%w: every recovery name %s1 to %s%d is taken; a version is left at %s until the owner deletes some", ErrChat, KeptPrefix, KeptPrefix, MaxKept, from)
+}
+
+// privateKept sets the kept file name to mode 0600 when it is a regular file
+// of the caller with one link (a mode change of a file with a second link
+// would change it at the other name too). It never fails the keep.
+func privateKept(dir int, name string) {
+	fd, err := openBeneath(dir, name, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOCTTY)
+	if err != nil {
+		return
+	}
+	defer unix.Close(fd)
+	var st unix.Stat_t
+	if unix.Fstat(fd, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || int(st.Uid) != unix.Geteuid() || st.Nlink != 1 {
+		return
+	}
+	_ = unix.Fchmod(fd, 0o600)
+}
+
+// countKept counts the recovery names that hold something.
+func countKept(dir int) int {
+	n := 0
+	for i := 1; i <= MaxKept; i++ {
+		var st unix.Stat_t
+		if unix.Fstatat(dir, keptName(i), &st, unix.AT_SYMLINK_NOFOLLOW) == nil {
+			n++
+		}
+	}
+	return n
 }
 
 // dirFD opens the folder rel beneath the root and returns a descriptor the
@@ -200,12 +307,7 @@ func checkInstructions(st *unix.Stat_t, at string) error {
 
 // ensureInstructions judges the instruction file and writes the text when it
 // is the empty one and the lead is proven stopped.
-func ensureInstructions(root *safefile.Root, p Paths, stopped bool) (Instructions, error) {
-	lead, err := dirFD(root, p.stateRel(p.LeadDir))
-	if err != nil {
-		return "", fmt.Errorf("the lead's folder %s: %w", p.LeadDir, err)
-	}
-	defer unix.Close(lead)
+func ensureInstructions(lead int, p Paths, stopped bool) (Instructions, error) {
 	at := p.InstructionFile
 	fd, err := openBeneath(lead, InstructionsName, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOCTTY)
 	if err != nil {
@@ -279,39 +381,49 @@ func holdsExactly(fd int, text []byte, size int64) (bool, error) {
 }
 
 // errDisplaced is the fixed note of an upgrade that met another version of
-// the instruction file: it is kept at its name and the text is not written.
+// the instruction file before it exchanged anything: it is kept at its name
+// and the text is not written.
 var errDisplaced = fmt.Errorf("%w: the file changed while its empty form was being replaced; the version found is kept and the text was not written", ErrChat)
 
-// exchangeHook, a test's hook, runs in replaceEmpty after the empty file is
-// checked again and before the exchange.
-var exchangeHook func()
+// keptNote is the fixed note of an upgrade that met another version of the
+// instruction file and kept a version under the recovery name n.
+func keptNote(n int) error {
+	return fmt.Errorf("%w: the file changed while its empty form was being replaced; the text was not written, and a version is kept beside it as %s, which the daemon never deletes", ErrChat, keptName(n))
+}
+
+// exchangeHook and undoHook, a test's hooks, run in replaceEmpty: the first
+// after the empty file is checked again and before the exchange, the second
+// after the exchange found another version and before it is undone.
+var exchangeHook, undoHook func()
 
 // replaceEmpty puts data at name below dir in place of the empty file the
-// handle fd holds (seen is its stat). data is written to a temporary file of
-// dir (made exclusively, mode 0600) and synced; the empty file is checked
+// handle fd holds (seen is its stat). data is written to the temporary file
+// of dir (made exclusively, mode 0600) and synced; the empty file is checked
 // again, by its handle (still empty, one link) and by its name (the same
-// file); then the temporary file and name are exchanged. The file the
-// exchange took out must be the empty file checked: when it is not, the
-// exchange is undone and the call is refused ([errDisplaced]), and the file
-// found is at its name again. A temporary file a crash left is removed first.
+// file); then the temporary file and name are exchanged.
+//
+// Nothing but the daemon's own files is ever deleted: the empty file the
+// exchange took out, when it is the one checked and still empty, and the
+// text the daemon wrote, recognised by its inode. When the exchange took out
+// another version (an owner's save came in the moment before, or the empty
+// file was written), the exchange is undone, so that version is at its name
+// again, and what the undo took out of the name is the daemon's text, which
+// is deleted, or a later save, which is kept under a recovery name
+// ([KeptPrefix]); a version that cannot be put back is kept under a recovery
+// name too. Either way the call is refused with a fixed note. A failure that
+// leaves a version at the temporary name leaves it there, for the next call
+// to keep ([keepLeftover]).
 func replaceEmpty(dir int, name string, fd int, seen *unix.Stat_t, data []byte) error {
-	if err := unix.Unlinkat(dir, instructionsTmp, 0); err != nil && err != unix.ENOENT {
-		return fmt.Errorf("a leftover temporary file cannot be removed: %w", err)
-	}
 	tmp, err := unix.Openat(dir, instructionsTmp, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
 	if err != nil {
 		return err
 	}
-	// keepTmp is set when the temporary name holds a file that is not the
-	// daemon's text (an exchange that could not be undone).
-	keepTmp := false
-	defer func() {
-		if !keepTmp {
-			_ = unix.Unlinkat(dir, instructionsTmp, 0)
-		}
-	}()
+	var own unix.Stat_t
 	err = func() error {
 		defer unix.Close(tmp)
+		if err := unix.Fstat(tmp, &own); err != nil {
+			return err
+		}
 		if err := unix.Fchmod(tmp, 0o600); err != nil {
 			return err
 		}
@@ -328,46 +440,82 @@ func replaceEmpty(dir int, name string, fd int, seen *unix.Stat_t, data []byte) 
 		return unix.Fsync(tmp)
 	}()
 	if err != nil {
+		dropOwn(dir, &own)
 		return err
 	}
 	var now, named unix.Stat_t
 	if err := unix.Fstat(fd, &now); err != nil {
+		dropOwn(dir, &own)
 		return err
 	}
 	if err := unix.Fstatat(dir, name, &named, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		dropOwn(dir, &own)
 		return err
 	}
 	if now.Size != 0 || now.Nlink != 1 || now.Dev != seen.Dev || now.Ino != seen.Ino ||
 		named.Dev != seen.Dev || named.Ino != seen.Ino {
+		dropOwn(dir, &own)
 		return errDisplaced
 	}
 	if exchangeHook != nil {
 		exchangeHook()
 	}
 	if err := unix.Renameat2(dir, instructionsTmp, dir, name, unix.RENAME_EXCHANGE); err != nil {
+		dropOwn(dir, &own)
 		return fmt.Errorf("the text cannot be exchanged for the empty file: %w", err)
 	}
 	// The temporary name now holds what the name held at the exchange.
 	var out unix.Stat_t
 	if err := unix.Fstatat(dir, instructionsTmp, &out, unix.AT_SYMLINK_NOFOLLOW); err != nil {
-		keepTmp = true
 		return fmt.Errorf("the file exchanged out cannot be examined: %w", err)
 	}
 	if err := unix.Fstat(fd, &now); err != nil {
-		keepTmp = true
 		return err
 	}
-	if out.Dev != seen.Dev || out.Ino != seen.Ino || out.Mode&unix.S_IFMT != unix.S_IFREG || now.Size != 0 {
-		// Another version took the name in the moment before the
-		// exchange, or the empty file was written: put it back.
-		if err := unix.Renameat2(dir, instructionsTmp, dir, name, unix.RENAME_EXCHANGE); err != nil {
-			keepTmp = true
-			return fmt.Errorf("%w; the version found is kept as %s, because the exchange could not be undone: %v", ErrChat, instructionsTmp, err)
+	if out.Dev == seen.Dev && out.Ino == seen.Ino && out.Mode&unix.S_IFMT == unix.S_IFREG && now.Size == 0 {
+		// The empty file the daemon checked, still empty: nothing of the
+		// owner's is in it.
+		if err := unix.Unlinkat(dir, instructionsTmp, 0); err != nil {
+			return err
 		}
+		return syncDirFD(dir)
+	}
+	// Another version took the name in the moment before the exchange, or
+	// the empty file was written: put it back at its name.
+	if undoHook != nil {
+		undoHook()
+	}
+	if err := unix.Renameat2(dir, instructionsTmp, dir, name, unix.RENAME_EXCHANGE); err != nil {
+		n, kerr := keep(dir, instructionsTmp)
+		if kerr != nil {
+			return fmt.Errorf("%w; the version found is left at %s, because the exchange could not be undone (%v) and %v", ErrChat, instructionsTmp, err, kerr)
+		}
+		return keptNote(n)
+	}
+	// The temporary name now holds what the name held at the undo: the
+	// daemon's text, or a save that came after the exchange.
+	var back unix.Stat_t
+	if err := unix.Fstatat(dir, instructionsTmp, &back, unix.AT_SYMLINK_NOFOLLOW); err == nil &&
+		back.Dev == own.Dev && back.Ino == own.Ino {
+		dropOwn(dir, &own)
+		_ = syncDirFD(dir)
 		return errDisplaced
 	}
-	if err := unix.Unlinkat(dir, instructionsTmp, 0); err != nil {
+	n, err := keep(dir, instructionsTmp)
+	if err != nil {
 		return err
 	}
-	return syncDirFD(dir)
+	return keptNote(n)
+}
+
+// dropOwn deletes the temporary name when it holds the daemon's own text, the
+// file own (its stat; a zero stat matches nothing). Anything else there is
+// left, for the next call to keep.
+func dropOwn(dir int, own *unix.Stat_t) {
+	var st unix.Stat_t
+	if own.Ino == 0 || unix.Fstatat(dir, instructionsTmp, &st, unix.AT_SYMLINK_NOFOLLOW) != nil ||
+		st.Dev != own.Dev || st.Ino != own.Ino {
+		return
+	}
+	_ = unix.Unlinkat(dir, instructionsTmp, 0)
 }
