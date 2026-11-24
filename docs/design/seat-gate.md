@@ -2372,8 +2372,10 @@ The owner's own text (an `other` answer, a note of the brief) is kept in
 `notes` as `{field, text, untrusted: true}`, at most 8 of 200 bytes, for the
 owner's eyes only, and chooses nothing. Notes are never served to an
 implementation agent: `Plan.ForAgent` is what an agent may be given, it holds
-no note, and a test holds every string in it to a constant of a template, the
-catalog or the package. Another test compiles two briefs that differ only in
+no note, and a test holds every string in it, for a plan `Compile` made, to a
+constant of a template, the catalog or the package. A decoded plan is held to
+its grammar only, so a plan from a store must be re-checked against its
+template before it is handed to an agent. Another test compiles two briefs that differ only in
 their `other` texts and notes, one reading like instructions with markup and
 commands, and finds the plans byte for byte equal outside `notes` and
 `brief_digest`.
