@@ -210,6 +210,17 @@ var webAppRounds = [][]ownerwire.GenesisAnswer{
 	{gPicks("review_points", "plan", "demo", "publish")},
 }
 
+// youDecideRounds are the web app path with "You decide" on the language, the
+// sign-in and where the app runs: the answers the host infers for the owner.
+var youDecideRounds = [][]ownerwire.GenesisAnswer{
+	{gPick("kind", "software")},
+	{gPick("software.sub_kind", "web_app"), gPick("goal", "own_use"), gPick("audience", "me")},
+	{gDecide("software.stack"), gDecide("software.data"), gDecide("software.auth")},
+	{gDecide("software.deploy_kind"), gPick("hosts", "this_computer"), gPick("budget_band", "none")},
+	{gPicks("deliverables", "first_version"), gPick("quality_bar", "solid"), gSkip("schedule")},
+	{gPicks("review_points", "plan", "demo", "publish")},
+}
+
 func nodeIDs(r ownerwire.SeatGenesisResult) []string {
 	var out []string
 	for _, n := range r.Nodes {
@@ -491,5 +502,180 @@ func TestGenesisPlanOverTheGate(t *testing.T) {
 	// None of it shut the seat out.
 	if got := seat.ok(gPlan(a)); !reflect.DeepEqual(got, stored) {
 		t.Fatalf("the stored plan after the refusals: %+v", got)
+	}
+}
+
+// The owner's trial: "You decide" on the language, the sign-in and where the
+// app runs leaves three answers decided for him, which no page confirms while
+// the interview is open. Over the gate the interview still reaches a summary
+// ready for a plan, every answer counted as filled; the preview is drawn with
+// the warning inferred-answers and stored nowhere; finishing confirms the
+// three answers (the summary says it does) and stores the plan compiled after
+// that, with the warning: the preview's content, under the digest of the brief
+// as frozen.
+func TestGenesisYouDecideIsReadyOverTheGate(t *testing.T) {
+	w := newDecideWorld(t, nil)
+	dir := filepath.Join(privateDir(t), "genesis")
+	g := w.startGenesisGate(dir)
+	seat := w.dialGenesis(g)
+
+	id := seat.ok(gStart()).Thread
+	var sum ownerwire.SeatGenesisResult
+	for i, round := range youDecideRounds {
+		sum = seat.ok(gAnswer(id, i+1, round...))
+	}
+	if sum.State != ownerwire.GenesisStateSummary || !sum.Progress.PlanReady || sum.Progress.Filled != sum.Progress.Total || sum.Progress.Total != 14 {
+		t.Fatalf("the summary: %+v", sum.Progress)
+	}
+	if sum.Groups == nil || len(sum.Groups.DecidedForYou) != 3 {
+		t.Fatalf("decided for you: %+v", sum.Groups)
+	}
+	pre := seat.ok(gPlan(id))
+	if pre.State != ownerwire.GenesisStatePlan || pre.Stored || pre.Plan == nil || !slices.Contains(pre.Plan.Warnings, "inferred-answers") {
+		t.Fatalf("the preview: %+v", pre)
+	}
+	file := filepath.Join(dir, id+".json")
+	if data, err := os.ReadFile(file); err != nil || bytes.Contains(data, []byte(`"plan_digest"`)) {
+		t.Fatalf("the open thread's file: %v", err)
+	}
+
+	fin := seat.ok(ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbFinish, Thread: id})
+	if fin.State != ownerwire.GenesisStateFinished || !fin.Progress.PlanReady {
+		t.Fatalf("finish: %+v", fin)
+	}
+	stored := seat.ok(gPlan(id))
+	if !stored.Stored || stored.Plan == nil || !slices.Contains(stored.Plan.Warnings, "inferred-answers") || stored.Plan.Title != pre.Plan.Title ||
+		!reflect.DeepEqual(stored.Plan.Milestones, pre.Plan.Milestones) || stored.Plan.BriefDigest != fin.Digest || stored.PlanDigest == pre.PlanDigest {
+		t.Fatalf("the stored plan: %+v, want the preview's %+v of the frozen brief %s", stored, pre, fin.Digest)
+	}
+	data, err := os.ReadFile(file)
+	if err != nil || !bytes.Contains(data, []byte(`"plan_digest":"`+stored.PlanDigest+`"`)) {
+		t.Fatalf("the finished thread's file does not hold its plan: %v", err)
+	}
+	if bytes.Contains(data, []byte(`"confirmed":false`)) || bytes.Count(data, []byte(`"confirmed":true`)) != 3 {
+		t.Fatalf("finishing did not confirm the three answers: %s", data)
+	}
+	lines := strings.Join(g.log.all(), "\n")
+	if strings.Count(lines, "genesis: a plan was drawn") != 1 || strings.Count(lines, "genesis: answers decided for the owner were confirmed by finishing") != 1 ||
+		strings.Contains(lines, "software.") || strings.Contains(lines, id) {
+		t.Fatalf("the store's log %q", g.log.all())
+	}
+}
+
+// walkerPath is an interview the walker leads: the kind and the sub-kind the
+// owner picks, and a question left unanswered in a round (none when blank is
+// "").
+type walkerPath struct {
+	name, kind, subKind, template string
+	blankRound                    int
+	blank                         string
+}
+
+// walkOver answers, over the gate, each round the walker asks until the
+// summary: the path's kind and sub-kind, and for every other question its
+// first option, but the question the path leaves unanswered. Nothing is
+// scripted by round: the questions are those the result names.
+func walkOver(t *testing.T, seat *genesisSeat, p walkerPath) (string, ownerwire.SeatGenesisResult) {
+	t.Helper()
+	res := seat.ok(gStart())
+	return res.Thread, answerOver(t, seat, p, res, false)
+}
+
+// answerOver answers the rounds from res on, as walkOver does, and returns
+// the result that is not a round. Rounds count up from res's, or, again
+// after a change past the last round, keep its number.
+func answerOver(t *testing.T, seat *genesisSeat, p walkerPath, res ownerwire.SeatGenesisResult, again bool) ownerwire.SeatGenesisResult {
+	t.Helper()
+	id := res.Thread
+	for rounds := res.Round - 1; res.State == ownerwire.GenesisStateQuestion; rounds++ {
+		want := rounds + 1
+		if again {
+			want = ownerwire.MaxGenesisRounds
+		}
+		if rounds == 2*ownerwire.MaxGenesisRounds || res.Round != want || len(res.Nodes) < 1 || len(res.Nodes) > 3 {
+			t.Fatalf("%s: round %d of %d holds %v", p.name, res.Round, res.Of, nodeIDs(res))
+		}
+		var as []ownerwire.GenesisAnswer
+		for _, n := range res.Nodes {
+			switch {
+			case n.ID == p.blank && res.Round == p.blankRound:
+			case n.ID == "kind":
+				as = append(as, gPick(n.ID, p.kind))
+			case strings.HasSuffix(n.ID, ".sub_kind"):
+				as = append(as, gPick(n.ID, p.subKind))
+			case n.Type == ownerwire.GenesisTypeMulti:
+				as = append(as, gPicks(n.ID, n.Options[0].ID))
+			default:
+				as = append(as, gPick(n.ID, n.Options[0].ID))
+			}
+		}
+		res = seat.ok(gAnswer(id, res.Round, as...))
+	}
+	return res
+}
+
+// Interviews of every kind a template serves, led by the real walker over
+// the real gate: each answers what each round asks, ends at a summary whose
+// plan is ready within the six rounds, and finishing draws and stores the
+// plan. The web app interview that leaves the goal unanswered in round 2 is
+// the phone trial's: it ended at round 6 with the review points never asked,
+// 13 of 14, and no plan; now the goal is asked again beside the build.
+func TestGenesisWalkerInterviewsAreReadyOverTheGate(t *testing.T) {
+	w := newDecideWorld(t, nil)
+	g := w.startGenesisGate(filepath.Join(privateDir(t), "genesis"))
+	for _, p := range []walkerPath{
+		{name: "web app", kind: "software", subKind: "web_app", template: "software"},
+		{name: "web app, the goal left in round 2", kind: "software", subKind: "web_app", template: "software", blankRound: 2, blank: "goal"},
+		{name: "web tool", kind: "software", subKind: "web_tool", template: "software"},
+		{name: "newsletter", kind: "publishing", subKind: "newsletter", template: "publishing"},
+		{name: "article", kind: "publishing", subKind: "article", template: "publishing"},
+		{name: "podcast", kind: "media", subKind: "podcast", template: "media"},
+		{name: "book", kind: "media", subKind: "book", template: "media"},
+	} {
+		// A connection of its own for each interview: the gate's rate is
+		// for each connection.
+		seat := w.dialGenesis(g)
+		id, sum := walkOver(t, seat, p)
+		if sum.State != ownerwire.GenesisStateSummary || sum.Round > ownerwire.MaxGenesisRounds ||
+			sum.Progress.Filled != sum.Progress.Total || sum.Progress.Total != 14 || !sum.Progress.PlanReady {
+			t.Fatalf("%s: the summary: round %d, %d of %d, plan ready %v", p.name, sum.Round, sum.Progress.Filled, sum.Progress.Total, sum.Progress.PlanReady)
+		}
+		fin := seat.ok(ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbFinish, Thread: id})
+		if fin.State != ownerwire.GenesisStateFinished || !fin.Progress.PlanReady {
+			t.Fatalf("%s: finish: %+v", p.name, fin)
+		}
+		pl := seat.ok(gPlan(id))
+		if !pl.Stored || pl.Plan == nil || pl.Plan.Template.ID != p.template || len(pl.PlanDigest) != 64 {
+			t.Fatalf("%s: the plan at finish: %+v", p.name, pl)
+		}
+		_ = seat.c.Close()
+	}
+
+	// A change of the sub-kind on the summary clears the four answers of
+	// the build: they are asked again as round 6 of 6, and the brief ends
+	// ready, with its plan drawn at finish.
+	seat := w.dialGenesis(g)
+	p := walkerPath{name: "web app changed to a web tool", kind: "software", subKind: "web_tool", template: "software"}
+	id, sum := walkOver(t, seat, walkerPath{name: "web app", kind: "software", subKind: "web_app"})
+	if !sum.Progress.PlanReady || sum.Round != ownerwire.MaxGenesisRounds {
+		t.Fatalf("the summary before the change: %+v", sum)
+	}
+	ch := seat.ok(ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbChange, Thread: id, Node: "software.sub_kind",
+		Answer: &ownerwire.GenesisPick{Kind: ownerwire.GenesisKindChoice, IDs: []string{"web_tool"}}})
+	if ch.Reset != 4 || ch.State != ownerwire.GenesisStateQuestion || ch.Round != ownerwire.MaxGenesisRounds || ch.Progress.PlanReady {
+		t.Fatalf("the change: %+v", ch)
+	}
+	if sum = answerOver(t, seat, p, ch, true); sum.State != ownerwire.GenesisStateSummary ||
+		sum.Progress.Filled != sum.Progress.Total || !sum.Progress.PlanReady {
+		t.Fatalf("the summary after the change: %+v", sum)
+	}
+	if fin := seat.ok(ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbFinish, Thread: id}); !fin.Progress.PlanReady {
+		t.Fatalf("finish after the change: %+v", fin)
+	}
+	if pl := seat.ok(gPlan(id)); !pl.Stored || pl.Plan == nil || pl.Plan.Template.ID != p.template {
+		t.Fatalf("the plan after the change: %+v", pl)
+	}
+	if lines := strings.Join(g.log.all(), "\n"); strings.Count(lines, "genesis: a plan was drawn") != 8 {
+		t.Fatalf("the store's log %q", g.log.all())
 	}
 }

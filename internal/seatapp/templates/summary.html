@@ -20,7 +20,7 @@
 {{else}}<p>{{num .View.Filled}} of {{num .View.Total}} answers are filled in: no plan can be drawn yet.</p>
 {{end}}</section>
 <form id="finish" action="{{projectHref .View.Thread "finish"}}" method="post">
-<p>Finishing keeps the answers as the project's brief. Nothing starts, and no agent is given the brief.</p>
+<p>Finishing keeps the answers as the project's brief.{{if .View.DecidedForYou}} Finishing also accepts the answers decided for you.{{end}} Nothing starts, and no agent is given the brief.</p>
 {{if and (not .View.PlanReady) (ne .View.Filled .View.Total)}}<p class="note-line">If you finish now, no plan is drawn for this project, and a finished brief cannot be changed.</p>
 {{end}}<button id="finish-go" type="submit">Looks right: finish</button>
 </form>

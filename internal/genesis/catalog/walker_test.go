@@ -215,8 +215,10 @@ func checkComplete(t testing.TB, c Catalog, b brief.Brief) {
 	}
 }
 
-// The rounds of one software path: the kind alone, then three on one
-// topic at a time, in six rounds.
+// The rounds of one software path: the kind alone, then three at a time by
+// weight, in six rounds. (With v1's weights the software path's rounds
+// happen to be one topic each; TestRoundsOfEveryKind pins rounds that mix
+// topics.)
 func TestRoundsOfASoftwarePath(t *testing.T) {
 	c := mustV1(t)
 	b := brief.New(c.Digest())
@@ -390,6 +392,16 @@ func TestYouDecideAndSkip(t *testing.T) {
 	before, _ := b.Readiness([]string{"software.stack"})
 	if before != 0 {
 		t.Fatal("an inferred field counts before it is confirmed")
+	}
+	// For planning only, it counts as it is.
+	if planned, _ := b.PlanReadiness([]string{"software.stack"}); planned != 1 {
+		t.Fatal("an inferred field does not count for planning")
+	}
+	if f, tot := Readiness(c, b); f != 6 || tot != 14 {
+		t.Fatalf("readiness %d of %d", f, tot)
+	}
+	if f, tot := PlanReadiness(c, b); f != 7 || tot != 14 {
+		t.Fatalf("planning readiness %d of %d", f, tot)
 	}
 	g, err := Summary(c, b)
 	if err != nil {

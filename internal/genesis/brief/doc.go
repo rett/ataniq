@@ -23,8 +23,11 @@
 //
 // Each field carries its [Provenance]: owner-chosen, supervisor-inferred or
 // default. Readiness counts a field as filled when the owner chose it, when
-// it is a default, or when it was inferred and the owner confirmed it. A
-// decoder never upgrades a provenance or a confirmation.
+// it is a default, or when it was inferred and the owner confirmed it.
+// PlanReadiness, the notion for drawing a plan (a proposal that binds
+// nothing), also counts an inferred field the owner has not confirmed;
+// ConfirmInferred confirms every inferred field at once, which finishing an
+// interview does. A decoder never upgrades a provenance or a confirmation.
 //
 // # History
 //

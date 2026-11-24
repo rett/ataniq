@@ -463,9 +463,11 @@ func (s *Store) Summary(ctx context.Context, id string) (ownerwire.SeatGenesisRe
 }
 
 // Answer gives the answers of a round, which must be the round the thread is
-// at, each to a question of it. A round the thread has already taken, or any
-// round once the walk is done, is refused genesis-stale-round; a round it has
-// not reached genesis-bad-answer. Every answer goes through the walker; one
+// at, each to a question of it. A round the thread has already taken, any
+// round once the walk is done, or a question already answered in the round
+// named (a round asked again after a change keeps the last round's number),
+// is refused genesis-stale-round; a round it has not reached
+// genesis-bad-answer. Every answer goes through the walker; one
 // that fails fails the call and changes nothing. It answers the next round or
 // the summary.
 func (s *Store) Answer(ctx context.Context, id string, round int, answers []ownerwire.GenesisAnswer) (ownerwire.SeatGenesisResult, error) {
@@ -496,6 +498,12 @@ func (s *Store) Answer(ctx context.Context, id string, round int, answers []owne
 		b, reset := r.brief, 0
 		seen := map[string]bool{}
 		for _, a := range answers {
+			if !seen[a.Node] && !inRound(cur, a.Node) && answeredIn(s.cat, r.brief, a.Node, round) {
+				// A round asked again after the last one keeps its number:
+				// a question of it answered already is the post sent
+				// twice.
+				return ownerwire.SeatGenesisResult{}, refuse(ownerwire.CodeGenesisStaleRound)
+			}
 			if seen[a.Node] || !inRound(cur, a.Node) {
 				return ownerwire.SeatGenesisResult{}, refuse(ownerwire.CodeGenesisBadAnswer)
 			}
@@ -513,6 +521,17 @@ func (s *Store) Answer(ctx context.Context, id string, round int, answers []owne
 		r.brief, r.updated = b, t.now
 		return t.commit(r, reset)
 	})
+}
+
+// answeredIn reports whether the node's field holds an answer to the node
+// given in the round.
+func answeredIn(c catalog.Catalog, b brief.Brief, node string, round int) bool {
+	n, ok := c.Node(node)
+	if !ok {
+		return false
+	}
+	f, set := b.Get(n.Field)
+	return set && f.Node == node && f.Round == round
 }
 
 func inRound(r catalog.Round, node string) bool {
@@ -579,6 +598,13 @@ func (s *Store) Change(ctx context.Context, id, node string, pick ownerwire.Gene
 // Finish freezes the brief and answers its digest. A thread that is finished
 // answers the same again.
 //
+// Finishing is the owner's confirmation of the answers decided for him: the
+// summary shows them under "decided for you" right above the finish button,
+// and says that finishing accepts them. Every supervisor-inferred field of the
+// brief is confirmed ([brief.Brief.ConfirmInferred]) before the brief is
+// frozen, in the same write, and logged in a fixed line with nothing of the
+// answers.
+//
 // When the brief is complete and a template serves its kind, the plan of the
 // brief, revision 1, is compiled and stored with the frozen brief, in the
 // same write. A brief that is not complete, or of a kind no template serves,
@@ -594,11 +620,18 @@ func (s *Store) Finish(ctx context.Context, id string) (ownerwire.SeatGenesisRes
 		if r.state == StateFinished {
 			return view(s.cat, r, 0)
 		}
-		d, err := brief.Digest(r.brief)
+		b := r.brief.Clone()
+		confirmed, err := b.ConfirmInferred()
 		if err != nil {
 			return ownerwire.SeatGenesisResult{}, err
 		}
-		r.state, r.frozen, r.updated = StateFinished, d, t.now
+		d, err := brief.Digest(b)
+		if err != nil {
+			return ownerwire.SeatGenesisResult{}, err
+		}
+		r.brief, r.state, r.frozen, r.updated = b, StateFinished, d, t.now
+		// The plan is compiled from the brief as frozen: after the
+		// confirmation.
 		p, pd, perr := s.compile(r.brief)
 		if perr == nil {
 			r.plan, r.planDigest = &p, pd
@@ -608,6 +641,9 @@ func (s *Store) Finish(ctx context.Context, id string) (ownerwire.SeatGenesisRes
 			return ownerwire.SeatGenesisResult{}, err
 		}
 		t.logf("genesis: a thread was finished")
+		if confirmed > 0 {
+			t.logf("genesis: answers decided for the owner were confirmed by finishing")
+		}
 		if _, refused := RefusalCode(perr); perr == nil {
 			t.logf("genesis: a plan was drawn")
 		} else if !refused {

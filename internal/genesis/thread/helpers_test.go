@@ -211,6 +211,37 @@ var webApp = [][]ownerwire.GenesisAnswer{
 	{choices("review_points", "plan", "demo", "publish")},
 }
 
+// youDecideWebApp is the web app path with "You decide" on the language, the
+// sign-in and where the app runs: the three questions whose answer the host
+// infers for the owner (supervisor-inferred), which he does not confirm while
+// the interview is open.
+var youDecideWebApp = [][]ownerwire.GenesisAnswer{
+	{choice("kind", "software")},
+	{choice("software.sub_kind", "web_app"), choice("goal", "own_use"), choice("audience", "me")},
+	{decide("software.stack"), decide("software.data"), decide("software.auth")},
+	{decide("software.deploy_kind"), choice("hosts", "this_computer"), choice("budget_band", "none")},
+	{choices("deliverables", "first_version"), choice("quality_bar", "solid"), skip("schedule")},
+	{choices("review_points", "plan", "demo", "publish")},
+}
+
+// inferredFields are the fields "You decide" infers in youDecideWebApp.
+var inferredFields = []string{"software.auth", "software.deploy_kind", "software.stack"}
+
+// answerAll answers the rounds of a path of a kind a template serves in
+// order and returns the last result. Each result's progress is in the notion
+// plan_ready follows: ready exactly when every required answer is filled.
+func (w *world) answerAll(id string, path [][]ownerwire.GenesisAnswer) ownerwire.SeatGenesisResult {
+	w.t.Helper()
+	var res ownerwire.SeatGenesisResult
+	for i, round := range path {
+		res = w.ok(w.s.Answer(ctx, id, i+1, round))
+		if pr := res.Progress; pr.PlanReady != (pr.Filled == pr.Total) {
+			w.t.Fatalf("after round %d: %d of %d filled, plan ready %v", i+1, pr.Filled, pr.Total, pr.PlanReady)
+		}
+	}
+	return res
+}
+
 // interview walks the web app path to the summary, checking each round is the
 // one the table expects, and returns the summary.
 func (w *world) interview(id string, from int) ownerwire.SeatGenesisResult {

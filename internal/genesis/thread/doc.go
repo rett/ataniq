@@ -56,8 +56,10 @@
 //     keeps no answer: its brief is emptied. Every call to it is
 //     genesis-unknown-thread, as one never started.
 //   - An answer must name the round the thread is at, and a node of that
-//     round. An answer to a round the thread has already taken, or to any
-//     round once the walk is done, is refused genesis-stale-round (the
+//     round. An answer to a round the thread has already taken, to a node
+//     already answered in the round named (a round asked again after a
+//     change keeps the last round's number), or to any round once the walk
+//     is done, is refused genesis-stale-round (the
 //     thread's state, which a second tab or a post sent twice meets); one to
 //     a round it has not reached, genesis-bad-answer. A change must name a
 //     node that has an answer. One answer failing fails the whole call and
@@ -74,9 +76,20 @@
 //     refused genesis-done, and its brief digest is the one finish returned. Finish
 //     may be called at any time on an open thread (the owner's "enough"), and
 //     again on a finished one, which answers the same digest.
+//   - A brief is complete for planning when every required field of its
+//     kind is set: an answer decided for the owner (a "you decide" answer the
+//     host inferred) counts whether or not he has confirmed it, and the plan
+//     drawn from it carries the warning inferred-answers. The progress of a
+//     result (filled of total) and plan_ready follow that one notion.
+//   - Finish confirms every answer decided for the owner that is not
+//     confirmed yet ([brief.Brief.ConfirmInferred]): the summary shows them
+//     right above the finish button and says finishing accepts them, so
+//     finishing is the owner's confirmation. The confirmation is part of the
+//     frozen brief, made in the same write, and its digest is the one finish
+//     returns.
 //   - Finish of a brief that is complete, of a kind a template serves,
-//     compiles its plan, revision 1, and stores it with the frozen brief in
-//     the one write; a brief that is not, or of a kind no template serves,
+//     compiles its plan, revision 1, from the brief as frozen (after the
+//     confirmation), and stores it with the frozen brief in the one write; a brief that is not, or of a kind no template serves,
 //     is frozen without a plan. Plan answers a preview on an open thread
 //     whose brief is complete (compiled for the read, stored nowhere), and
 //     the stored plan on a finished one; a finished thread with none whose
@@ -99,8 +112,9 @@
 // # The log
 //
 // The store's log lines are fixed texts that hold no answer and no brief
-// content: a thread was started, finished, discarded or expired, a plan was
-// drawn (stored) or could not be drawn at finish, an answer was refused as
+// content: a thread was started, finished, discarded or expired, answers
+// decided for the owner were confirmed by finishing (that some were, not
+// which), a plan was drawn (stored) or could not be drawn at finish, an answer was refused as
 // secret-shaped (with how many were since the store opened), and a file is not
 // served. No line holds anything of a plan.
 package thread
