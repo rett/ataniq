@@ -29,8 +29,9 @@
 //
 // A handler made with [New] serves five operations, in two capabilities
 // ([Caps]); one made with [NewDeciding] serves four more, in two more
-// capabilities ([DecidingCaps]). [Handler.Caps] is the list for the gate's
-// hello, [seatgate.ServerConfig].Caps:
+// capabilities ([DecidingCaps]). Either serves seat.wait, seat.genesis and
+// seat.chat as well when it has what each needs (below). [Handler.Caps] is
+// the list for the gate's hello, [seatgate.ServerConfig].Caps:
 //
 //	operation             capability  params                          result
 //	seat.pair             pair        ownerwire.SeatPairParams        ownerwire.SeatPairResult
@@ -44,6 +45,7 @@
 //	seat.decide           decide      ownerwire.SeatDecideParams      ownerwire.DecideResult
 //	seat.wait             watch       ownerwire.SeatWaitParams        ownerwire.SeatWaitResult
 //	seat.genesis          genesis     ownerwire.SeatGenesisParams     ownerwire.SeatGenesisResult
+//	seat.chat             chat        ownerwire.SeatChatParams        ownerwire.SeatChatResult
 //
 // An operation whose capability the handler does not serve is refused
 // unknown-op before its params are read and without the service, and so is
@@ -90,6 +92,23 @@
 // genesis-not-ready, genesis-no-template and bad-params; any
 // other word or error is answered failed, and the cause, which the store words
 // without a byte of an answer, is logged.
+//
+// # The leads' conversations
+//
+// seat.chat is the seat's read-only view of the leads' conversations: one
+// operation of two verbs, leads (the leads, each with its chat switch) and
+// read (one page of one lead's retained conversation), which the wire's
+// decoder holds; there is no verb that sends. The handler gives the decoded
+// params to the daemon's chat port ([ChatPort], given with [WithChat]) and
+// encodes its result with the wire's encoder, which holds the 16 KiB cap and
+// every rule of the result. The handler serves it, and lists chat last in its
+// hello, only when it was given the port; without it the operation is
+// unknown-op before its params are read. The route (chat.go) holds the chat
+// port alone: it reaches neither the owner channel's service nor the seat
+// operations, the wait or the thread store, and a test of the wired handler
+// holds that a chat call makes no call on any of them. The port refuses with
+// chat-off, chat-unknown-lead, chat-busy or bad-params; any other word or
+// error is answered failed, and the cause is logged.
 //
 // # Params
 //
@@ -151,6 +170,10 @@
 // previous-epoch, review-changed, record-invalid and record-too-large. A refusal with any other code is
 // answered failed and logged, so that only words from this list reach a seat.
 //
+// The chat port's refusals are told as the three words of seat.chat:
+// chat-off (a lead whose switch is off), chat-unknown-lead (a lead the port
+// does not know) and chat-busy (a port that cannot serve the call now).
+//
 // The thread store's refusals are told as the nine words of seat.genesis
 // (genesis-busy and the rest, above): a third open thread, a thread the store
 // does not hold, an answer the question does not allow, an answer past a cap,
@@ -201,6 +224,13 @@
 // send as often as its own room allows. They are bounded by the seat's 30 project
 // requests a minute, the seat link's room of 12 interview calls, the gate's
 // 60 requests a minute and the store's own limits.
+//
+// Of seat.chat, none of its words counts: chat-off, chat-unknown-lead and
+// chat-busy answer the state of the leads and of the host (a page left open
+// while the desk turned a lead's chat off, a lead that is gone, a busy host),
+// and a read may be sent as often as the seat's room allows; forty of them
+// never shut a seat out. bad-params, which the seat's own pages never meet,
+// counts as everywhere.
 //
 // After [RefusalBound] (16, the owner connection's bound on refused writes)
 // counted refusals within [RefusalWindow] (10 minutes), every request of the

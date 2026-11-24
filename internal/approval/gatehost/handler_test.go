@@ -65,10 +65,11 @@ func TestCapsAndOperations(t *testing.T) {
 			t.Errorf("%s has the capability %q", op, opCaps[op])
 		}
 	}
-	// The gate's own six, four in the deciding capabilities, seat.wait in
-	// watch, which only a service that can wait gives, and seat.genesis in
-	// genesis, which only a handler given the thread store serves; none of
-	// them an operation of the socket.
+	// The gate's own seven: four in the deciding capabilities, seat.wait in
+	// watch, which only a service that can wait gives, seat.genesis in
+	// genesis, which only a handler given the thread store serves, and
+	// seat.chat in chat, which only a handler given the chat port serves;
+	// none of them an operation of the socket.
 	gate := map[string]string{
 		"seat.login-challenge": "login",
 		"seat.login":           "login",
@@ -76,8 +77,9 @@ func TestCapsAndOperations(t *testing.T) {
 		"seat.decide":          "decide",
 		"seat.wait":            "watch",
 		"seat.genesis":         "genesis",
+		"seat.chat":            "chat",
 	}
-	if len(opCaps) != len(want)+len(gate) || !slices.Equal(ownerwire.GateOperations(), []string{"seat.login-challenge", "seat.login", "seat.challenge", "seat.decide", "seat.wait", "seat.genesis"}) {
+	if len(opCaps) != len(want)+len(gate) || !slices.Equal(ownerwire.GateOperations(), []string{"seat.login-challenge", "seat.login", "seat.challenge", "seat.decide", "seat.wait", "seat.genesis", "seat.chat"}) {
 		t.Fatalf("opCaps %v", opCaps)
 	}
 	for op, c := range gate {

@@ -260,13 +260,15 @@ func TestTheGateStartsWithoutGenesisWhenItsThreadStoreDoesNotOpen(t *testing.T) 
 
 func TestCapWords(t *testing.T) {
 	for in, want := range map[string]string{
-		"pair read":                            "pair and read",
-		"pair read watch":                      "pair, read and watch",
-		"pair read genesis":                    "pair, read and genesis",
-		"pair read login decide":               "pair, read, login and decide",
-		"pair read login decide watch genesis": "pair, read, login, decide, watch and genesis",
-		"pair":                                 "pair",
-		"":                                     "nothing",
+		"pair read":                                 "pair and read",
+		"pair read watch":                           "pair, read and watch",
+		"pair read genesis":                         "pair, read and genesis",
+		"pair read login decide":                    "pair, read, login and decide",
+		"pair read login decide watch genesis":      "pair, read, login, decide, watch and genesis",
+		"pair read login decide watch genesis chat": "pair, read, login, decide, watch, genesis and chat",
+		"pair read chat":                            "pair, read and chat",
+		"pair":                                      "pair",
+		"":                                          "nothing",
 	} {
 		var caps []string
 		if in != "" {

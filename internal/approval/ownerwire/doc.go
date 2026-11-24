@@ -36,11 +36,11 @@
 // function named after it; "none" and "nothing" are an empty object, read
 // by [DecodeNothing].
 //
-// Six more operations are the seat gate's alone, a login and a decision
+// Seven more operations are the seat gate's alone, a login and a decision
 // from the owner's phone, the long wait that tells the seat when the
-// pending cards changed, and the guided new-project interview; the daemon's
-// Unix socket neither serves nor announces them, and [GateOperations] lists
-// them apart:
+// pending cards changed, the guided new-project interview and the read-only
+// view of the leads' conversations; the daemon's Unix socket neither serves
+// nor announces them, and [GateOperations] lists them apart:
 //
 //	operation             params               result
 //	seat.login-challenge  none                 SeatLoginChallengeResult
@@ -49,6 +49,7 @@
 //	seat.decide           SeatDecideParams     DecideResult
 //	seat.wait             SeatWaitParams       SeatWaitResult
 //	seat.genesis          SeatGenesisParams    SeatGenesisResult
+//	seat.chat             SeatChatParams       SeatChatResult
 //
 // # Strict decoding
 //
@@ -135,6 +136,26 @@
 // [CodeGenesisDone], [CodeGenesisStaleRound], [CodeGenesisNotReady] and
 // [CodeGenesisNoTemplate].
 //
+// # The leads' conversations
+//
+// seat.chat (the capability "chat") lets the seat look at the leads'
+// conversations, and only look. Its params are a union tagged by "verb"
+// ([SeatChatParams]): leads lists the leads, at most [MaxChatLeads], each with
+// its chat switch (off, read or send), and read reads one page of one lead's
+// retained conversation after a sequence number. There is no verb that sends.
+// A lead is named "kind:key" ([ValidChatLead]), and the one kind is daemon. The
+// result is a union tagged by "state" ([SeatChatResult]): leads or read. A row
+// whose switch is off carries the lead and the switch and nothing else, and the
+// decoder refuses a state, an epoch or a head on it. A page holds at most
+// [MaxChatReadLimit] entries and is paged by its encoded bytes, within
+// [MaxSeatChatResultBytes] ([FillSeatChatRead] fills one): more says the seat
+// reads on after the page's last entry, and reset says the cursor was before
+// what the host retains, so the page starts again at its start. A result of a
+// stand-in host is marked stand_in. The text of an entry is plain text of at
+// most [MaxChatText] bytes ([ValidChatText]): a lead's text is untrusted, shown
+// to the owner only and never obeyed. The gate codes are [CodeChatOff],
+// [CodeChatUnknownLead] and [CodeChatBusy].
+//
 // # Records travel as bytes
 //
 // A pending record is under digests, so it is never decoded and written
@@ -195,7 +216,8 @@
 // Every refusal is a [*record.Error] with one of the record package's
 // codes; this package declares no refusal of its own. It names the words the
 // seat gate answers its operations with when the daemon refuses one
-// ([CodeChallengeStale], [CodeWaitFull], [CodeGenesisBusy] and the others),
+// ([CodeChallengeStale], [CodeWaitFull], [CodeGenesisBusy], [CodeChatOff]
+// and the others),
 // which no decoder here answers with. A decision frame that is wrong is
 // decision-invalid, any other payload record-invalid, a payload over its
 // cap record-too-large, and a record whose digest is not its bytes' own
