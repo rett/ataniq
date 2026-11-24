@@ -100,7 +100,7 @@ func TestChatPages(t *testing.T) {
 			if match == nil || html.UnescapeString(match[1]) != Text(hostileChat, 2000) {
 				t.Error("message was not a text node with the original lines")
 			}
-			for _, want := range []string{`href="/leads/daemon/alpha?after=20#newest"`, `href="/leads/daemon/alpha?after=7"`, `href="/leads/daemon/alpha?after=0"`, `<li id="newest">`, "Shortened; the lead wrote more."} {
+			for _, want := range []string{`href="/leads/daemon/alpha?after=5#newest"`, `href="/leads/daemon/alpha?after=7"`, `href="/leads/daemon/alpha?after=0"`, `<li id="newest">`, "Shortened; the lead wrote more."} {
 				if !strings.Contains(body, want) {
 					t.Error(want)
 				}
@@ -220,6 +220,9 @@ func TestChatBounds(t *testing.T) {
 	}
 }
 
+// TestChatPagingHistory: Show earlier reads one window back (after N-16,
+// from zero at least), Show later from the page's last entry, and Jump to
+// newest, when the head lies past the page, the last window (after head-16).
 func TestChatPagingHistory(t *testing.T) {
 	f := sampleChat()
 	r := newRig(t, withChat(f))
@@ -233,18 +236,40 @@ func TestChatPagingHistory(t *testing.T) {
 		}
 		return w.Body.String()
 	}
+	has := func(page string, want ...string) {
+		t.Helper()
+		for _, w := range want {
+			if !strings.Contains(page, w) {
+				t.Errorf("missing %q", w)
+			}
+		}
+	}
 	first := get("?after=2")
-	if !strings.Contains(first, "?after=0\">Show earlier") || strings.Contains(first, "Lead restarted:") {
+	has(first, `?after=0">Show earlier`)
+	if strings.Contains(first, "Lead restarted:") {
 		t.Fatal("first epoch or bookmark")
 	}
-	f.read.Entries[0].Seq = 13
-	if !strings.Contains(get("?after=7"), "?after=2\">Show earlier") {
-		t.Error("lost predecessor of short page")
+	// The recent window of a longer conversation: after head-16.
+	*f.list.Rows[0].Head = 60
+	f.read.Head = 60
+	f.read.Entries[0].Seq = 45
+	recent := get("")
+	if got := f.calls[len(f.calls)-1].After; got != 44 {
+		t.Fatalf("the recent window read after %d", got)
 	}
+	has(recent, `?after=28">Show earlier`, `?after=45">Show later`, `?after=44#newest">Jump to newest`)
+	// Show earlier from there is one window back, and so on to zero.
+	f.read.Entries[0].Seq = 29
+	has(get("?after=28"), `?after=12">Show earlier`, `?after=29">Show later`, `?after=44#newest">Jump to newest`)
+	f.read.Entries[0].Seq = 13
+	has(get("?after=12"), `?after=0">Show earlier`)
+	// A short page (the wire pages by bytes too) goes back one window as well.
+	f.read.Entries[0].Seq = 31
+	has(get("?after=30"), `?after=14">Show earlier`, `?after=31">Show later`)
 	*f.list.Rows[0].Epoch = 2
 	f.read.Epoch = 2
-	second := get("?after=7")
-	if !strings.Contains(second, "Lead restarted: epoch 2") || !strings.Contains(second, "?after=0\">Show earlier") {
+	second := get("?after=30")
+	if !strings.Contains(second, "Lead restarted: epoch 2") || !strings.Contains(second, `?after=14">Show earlier`) {
 		t.Error("epoch change")
 	}
 	f.read.Reset = true
@@ -255,8 +280,14 @@ func TestChatPagingHistory(t *testing.T) {
 	f.read.Reset = false
 	f.read.More = false
 	f.read.Entries = []ChatEntry{}
-	if empty := get("?after=21"); !strings.Contains(empty, "No messages on this page.") || !strings.Contains(empty, "?after=20#newest") {
+	if empty := get("?after=61"); !strings.Contains(empty, "No messages on this page.") || !strings.Contains(empty, `?after=44#newest">Jump to newest`) || !strings.Contains(empty, `?after=45">Show earlier`) {
 		t.Error("empty page")
+	}
+	// A head inside the first window jumps to the whole conversation.
+	*f.list.Rows[0].Head = 5
+	f.read.Head = 5
+	if early := get("?after=1"); !strings.Contains(early, `?after=0#newest">Jump to newest`) {
+		t.Error("jump within the first window")
 	}
 	f.read.Head = 0
 	*f.list.Rows[0].Head = 0

@@ -2836,12 +2836,15 @@ The links use a validated 1–32 byte key and an integer cursor. Fixed speaker
 labels distinguish Lead and System. Pages have no form or script.
 
 The recent window starts after the directory head minus 16, floored at zero.
-An explicit `?after=N` reads after N. The next link uses the last sequence
-returned even on a short page. A session keeps up to 32 predecessor cursors
-per shared lead. A direct bookmark without a known predecessor links to zero.
-The log marks the last entry as newest. When the head lies beyond the page,
-the jump requests `after=head-1`. A restart marker above the log records an
-epoch change observed across reads. A retention reset has its own notice.
+An explicit `?after=N` reads after N. The next link (Show later) uses the last
+sequence returned even on a short page. The earlier link (Show earlier) reads
+one window back, after N minus 16, floored at zero, whichever way the page was
+reached, so it needs no memory of the pages before. The log marks the last
+entry as newest. When the head lies beyond the page, Jump to newest reads the
+last window, after the head minus 16, floored at zero. A session keeps only
+the last epoch it showed of each shared lead: a restart marker above the log
+records an epoch change observed across reads. A retention reset has its own
+notice.
 
 Chat's calls are reads. They share the seat link's read room (14 calls per
 80-second window, see the budget table under

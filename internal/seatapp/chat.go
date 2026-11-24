@@ -61,8 +61,10 @@ type conversationData struct {
 	PrevAfter, LastSeq, TailAfter                int64
 }
 
-// A login keeps only cursors and the last displayed epoch per listed lead.
-// Serialize its chat requests independently of logout, Cards and other logins.
+// A login keeps only the last displayed epoch per listed lead, to say that a
+// lead restarted between two reads; the page links are computed from the
+// page itself. Serialize its chat requests independently of logout, Cards
+// and other logins.
 type chatHistory struct {
 	mu         sync.Mutex
 	connection time.Time
@@ -71,9 +73,7 @@ type chatHistory struct {
 }
 type chatVisit struct {
 	epoch int64
-	pages []chatEdge
 }
-type chatEdge struct{ after, prev int64 }
 
 func (h *chatHistory) directory(v ChatView) {
 	if h.byLead == nil || h.connection != v.Connection || h.trial != v.StandIn {
@@ -213,18 +213,18 @@ func (a *app) chatLive(w http.ResponseWriter, r *http.Request, p Chat, ctx conte
 	return true
 }
 
+// conversation makes a page of a read after the cursor after. Show earlier
+// reads one window back (after MaxChatEntries entries less, from zero at
+// least), Show later from the page's last entry, and Jump to newest, when
+// the head lies past the page, the last window (after head less
+// MaxChatEntries, from zero at least).
 func conversation(list leadsData, row chatRow, v ChatView, after int64, visit chatVisit, seen bool) (conversationData, chatVisit) {
 	d := conversationData{leadsData: list, Selected: row, Epoch: v.Epoch, Head: v.Head, More: v.More, Reset: v.Reset, Restarted: seen && visit.epoch != v.Epoch}
 	d.Title = pageTitles["conversation"]
-	if d.Restarted || v.Reset {
-		visit.pages = nil
-	}
 	visit.epoch = v.Epoch
 	d.HavePrev = after > 0 && !v.Reset
-	for _, edge := range visit.pages {
-		if edge.after == after {
-			d.PrevAfter = edge.prev
-		}
+	if d.HavePrev {
+		d.PrevAfter = max(0, after-MaxChatEntries)
 	}
 	for i, e := range v.Entries {
 		d.Messages = append(d.Messages, chatMessage{ChatEntry: e, Stamp: e.At.UTC().Format(time.RFC3339), Last: i+1 == len(v.Entries)})
@@ -232,17 +232,7 @@ func conversation(list leadsData, row chatRow, v ChatView, after int64, visit ch
 	}
 	d.JumpRemote = v.Head > d.LastSeq
 	if d.JumpRemote {
-		d.TailAfter = v.Head - 1
-	}
-	if v.More {
-		if v.Reset {
-			after = 0
-		}
-		const maxPages = 32
-		if len(visit.pages) == maxPages {
-			visit.pages = visit.pages[1:]
-		}
-		visit.pages = append(visit.pages, chatEdge{after: d.LastSeq, prev: after})
+		d.TailAfter = max(0, v.Head-MaxChatEntries)
 	}
 	return d, visit
 }

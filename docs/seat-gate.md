@@ -475,9 +475,10 @@ and nothing here is an approval." Every sample line begins "Sample:". Open
 with chat off and offers no link for it. On a wide screen the directory stays
 beside the conversation.
 
-The conversation opens on recent messages. **Show earlier** and **Show later**
-page through retained history. **Jump to newest** goes to the latest known
-entry. **Refresh** asks for the recent window again. Each Leads page is one or
+The conversation opens on its most recent messages, up to 16. **Show earlier**
+goes back 16 messages and **Show later** goes on from the page's last message,
+through the retained history. **Jump to newest** shows the most recent
+messages again and goes to the latest one. **Refresh** asks for the recent window again. Each Leads page is one or
 two reads of the desk, and they share the reads' 14 calls in 80 seconds with
 the card lists (see [What it costs](#live-refresh)); past it the page says "The
 desk is busy. Try again in a minute." The seat can reuse the
