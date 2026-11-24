@@ -28,6 +28,7 @@ const (
 	planNoTemplate   = "There is no plan template for this kind of project yet."
 	planFinishedNone = "This project was finished before its answers were complete, so no plan was drawn."
 	planUnknownNote  = "A note from the plan."
+	planNoteHeading  = "A note"
 	planNotesMarked  = "your words, shown as you wrote them; never given to a tool"
 	backToBrief      = "Back to the project's brief"
 	backToProject    = "Back to the project"
@@ -95,6 +96,21 @@ var (
 		"store:style":      "the style notes",
 	}
 )
+
+// planNotesField is the field of a note of the brief's own, which answers no
+// question.
+const planNotesField = "notes"
+
+// Heading is the words a plan page puts before a note's quoted text, to say
+// which answer it belongs to: the catalog question's words that the link
+// gave for the note's field, or "A note" for a note of the brief's own, a
+// field the link has no question for and a plan of another catalog.
+func (n GenesisNote) Heading() string {
+	if n.Field == planNotesField || n.Label == "" {
+		return planNoteHeading
+	}
+	return n.Label
+}
 
 // wordOf is the words of an item, or the item itself when there are none.
 func wordOf(words map[string]string, item string) string {

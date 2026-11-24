@@ -2230,7 +2230,11 @@ ordered list of its tasks: title, kind and size in words, and "after:" the
 titles of the tasks it waits for; "Your own notes", only when there are some,
 each quoted with the `Text` rendering of untrusted text (bidirectional and
 hidden characters shown as escapes) and marked "your words, shown as you wrote
-them; never given to a tool", with the count of the notes left out; and
+them; never given to a tool", with the words of the catalog question it
+answers above it (the note's `field` looked up, by the link, in the catalog it
+holds, as a summary row's label is; "A note" when the field is `notes`, is
+unknown to the link or the plan is of another catalog) and the count of the
+notes left out; and
 "What a charter would cover". Every text is escaped by the page templates.
 
 The charter section is words about a later step, never a step. It opens with
@@ -2238,8 +2242,12 @@ the fixed text "Draft. Not signed. It allows nothing. Nothing starts from this
 page. Signing is a later step and is not built.", then "A signed charter would
 allow at most:" and a list drawn from the plan: the areas of work (the union of
 the tasks' scopes, in words where the app has them, else the area's name), the
-outside services, the budget band (advisory), and "stopping for you at" the
-review points. Its wording rule, which a test holds: it never says "card", it
+outside services, "stopping for you at" the review points and the fixed line
+"Always stopping for you before publishing, releases, pushing code,
+credentials and raising any limit." The budget band is not an item of that
+list, which is what the charter would allow at most: it follows the list as a
+sentence of its own, "Monthly budget band (advisory; nothing enforces it
+yet): ...". Its wording rule, which a test holds: it never says "card", it
 never says the plan "allows" anything (the one "allows" is the fixed "It
 allows nothing."), it holds no control and no link (no Approve, no Sign, no
 passkey, nothing into the card list's pending cards), and it is on the plan

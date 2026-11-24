@@ -479,9 +479,14 @@ the plan says."); the outside services the work would use; where the files
 live; the budget band (advisory: nothing enforces it yet); the estimate (an
 estimate, not a promise); the plan's warnings; the milestones, each a section
 you open, with its tasks, their kind and size and what each waits for; your
-own notes, quoted and marked as your words, never given to a tool; and "What a
-charter would cover", a draft of words only ("Draft. Not signed. It allows
-nothing. ..."). To tune the plan, go back to the summary and change an answer:
+own notes, each quoted and marked as your words, never given to a tool, with
+the question it answers above it ("Do you prefer a programming language?", or
+"A note" for a note of your own); and "What a charter would cover", a draft of
+words only ("Draft. Not signed. It allows nothing. ..."), which lists the work
+areas, the outside services, where it would stop for you and the line "Always
+stopping for you before publishing, releases, pushing code, credentials and
+raising any limit.", and then, apart from that list, the monthly budget band
+(advisory; nothing enforces it yet). To tune the plan, go back to the summary and change an answer:
 the draft is drawn again from the answers. "Looks right: finish" keeps the
 brief and its plan, revision 1, which never changes afterwards; the finished
 page then has "See the plan". A project finished before its answers were

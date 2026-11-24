@@ -487,9 +487,27 @@ func appPlan(res ownerwire.SeatGenesisResult) (*seatapp.GenesisPlanView, bool) {
 		if !n.Untrusted || !text(n.Field, ownerwire.MaxGenesisFieldBytes) || !text(n.Text, seatapp.MaxGenesisOther) {
 			return nil, false
 		}
-		v.Notes = append(v.Notes, seatapp.GenesisNote{Field: n.Field, Text: n.Text})
+		v.Notes = append(v.Notes, seatapp.GenesisNote{Field: n.Field, Label: noteLabel(p.CatalogDigest, n.Field), Text: n.Text})
 	}
 	return v, true
+}
+
+// noteLabel is the words of the question of the catalog that the field of a
+// note answers, when the catalog this build holds is the one the plan was
+// compiled under and a question that takes the owner's own words sets the
+// field; otherwise "". It is a constant of the catalog, never the owner's
+// text.
+func noteLabel(catalogDigest, field string) string {
+	cat, err := v1()
+	if err != nil || catalogDigest == "" || cat.Digest() != catalogDigest {
+		return ""
+	}
+	for _, n := range cat.Nodes {
+		if n.Field == field && n.AllowOther && text(n.Prompt, seatapp.MaxGenesisPrompt) {
+			return n.Prompt
+		}
+	}
+	return ""
 }
 
 // lowerHex64 reports whether s is a digest: 64 lower-case hexadecimal digits.

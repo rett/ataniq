@@ -29,7 +29,7 @@ func samplePlan() GenesisPlanView {
 		Gates: []string{"lint", "unit-tests"}, FirstDemo: "It runs on this computer & one flow works.",
 		ReviewPoints: []string{"demo", "plan"}, Hosts: "this_computer", ExternalServices: []string{"hosting service"},
 		BudgetBand: "low", Estimate: "days", Warnings: []string{"settle-at-desk", "something-new"},
-		Notes: []GenesisNote{{Field: "software.stack", Text: "Go <img src=x> and \u200ba small \u202edatabase"}}, NotesDropped: 0,
+		Notes: []GenesisNote{{Field: "software.stack", Label: "Do you prefer a <b>programming</b> language?", Text: "Go <img src=x> and \u200ba small \u202edatabase"}}, NotesDropped: 0,
 	}
 }
 
@@ -92,12 +92,13 @@ func TestGenesisPlanPageSections(t *testing.T) {
 		"Build the first page &lt;script&gt;alert(1)&lt;/script&gt;",
 		"building, a medium task; after: Settle the language with you; Lay out the repository\\u202eevil",
 		"testing, a large task; after: Build the first page",
-		"Your own notes", `<q class="owners">Go &lt;img src=x&gt; and \u200ba small \u202edatabase</q>`, "(" + planNotesMarked + ")",
+		"Your own notes", "Do you prefer a &lt;b&gt;programming&lt;/b&gt; language?", `<q class="owners">Go &lt;img src=x&gt; and \u200ba small \u202edatabase</q>`, "(" + planNotesMarked + ")",
 		"What a charter would cover", planCharterLine, "A signed charter would allow at most:",
 		"Work on: the documentation; the source code; the tests; repo:weird.",
 		"Outside services: hosting service.",
-		"Spending: A little: up to about 10 dollars a month (advisory).",
 		"Stopping for you at: At the first demo; Before work starts: you see the plan first.",
+		planCharterAlways,
+		"Monthly budget band (advisory; nothing enforces it yet): A little: up to about 10 dollars a month.",
 		`<a id="project-page" href="/projects/` + testThread + `">Back to the summary</a>`,
 		`<a id="project-list" href="/projects/">Back to the project list</a>`,
 	}
@@ -190,6 +191,15 @@ func TestGenesisPlanPageCharterSection(t *testing.T) {
 			t.Errorf("%s shows the charter", path)
 		}
 	}
+	// The budget is not an item of the "at most" list: it is a sentence of its
+	// own after it, and the list holds the always-stopping line.
+	list := charter[strings.Index(charter, "<ul>"):strings.Index(charter, "</ul>")]
+	if strings.Contains(list, "budget") || strings.Contains(list, "Spending") || !strings.Contains(list, planCharterAlways) {
+		t.Errorf("the charter's list:\n%s", list)
+	}
+	if rest := charter[strings.Index(charter, "</ul>"):]; !strings.Contains(rest, "Monthly budget band (advisory; nothing enforces it yet):") {
+		t.Errorf("the budget is not a sentence after the list:\n%s", rest)
+	}
 	// No services, and the services lines say none.
 	p := samplePlan()
 	p.ExternalServices = []string{}
@@ -199,6 +209,10 @@ func TestGenesisPlanPageCharterSection(t *testing.T) {
 		t.Error("a plan with no outside service does not say none")
 	}
 }
+
+// planCharterAlways is the line of the charter's list that says what always
+// waits for the owner.
+const planCharterAlways = "Always stopping for you before publishing, releases, pushing code, credentials and raising any limit."
 
 // The owner's notes: shown only when there are some, each through Text, and
 // a count of the ones left out.
@@ -219,6 +233,39 @@ func TestGenesisPlanPageNotes(t *testing.T) {
 	if strings.Count(page, `<q class="owners">`) != MaxGenesisPlanNotes || !strings.Contains(page, "3 more notes were left out.") ||
 		!strings.Contains(page, `note \u2066x`) {
 		t.Errorf("the notes:\n%s", sectionOf(t, page, "Your own notes"))
+	}
+}
+
+// Each note says which answer it belongs to: the question's words that the
+// link gave for its field, shown before the quoted text, or "A note" for a
+// note of the brief's own, a field with no words and a label on the field
+// "notes". The words are escaped like every text.
+func TestGenesisPlanPageNotesSayWhichAnswer(t *testing.T) {
+	p := samplePlan()
+	p.Notes = []GenesisNote{
+		{Field: "software.stack", Label: "Do you prefer a programming language?", Text: "one"},
+		{Field: "software.auth", Label: "How should people <i>sign</i> in\u202e?", Text: "two"},
+		{Field: "notes", Text: "three"},
+		{Field: "notes", Label: "A label that must not be used", Text: "four"},
+		{Field: "software.unheard", Text: "five"},
+	}
+	r, _, s := planRig(t, p)
+	notes := sectionOf(t, r.getWith(planPath, s).Body.String(), "Your own notes")
+	for _, want := range []string{
+		`<span class="meta">Do you prefer a programming language?</span><br><q class="owners">one</q>`,
+		`<span class="meta">How should people &lt;i&gt;sign&lt;/i&gt; in\u202e?</span><br><q class="owners">two</q>`,
+		`<span class="meta">A note</span><br><q class="owners">three</q>`,
+		`<span class="meta">A note</span><br><q class="owners">four</q>`,
+		`<span class="meta">A note</span><br><q class="owners">five</q>`,
+	} {
+		if !strings.Contains(notes, want) {
+			t.Errorf("the notes lack %q:\n%s", want, notes)
+		}
+	}
+	for _, bad := range []string{"must not be used", "<i>", "\u202e"} {
+		if strings.Contains(notes, bad) {
+			t.Errorf("the notes hold %q", bad)
+		}
 	}
 }
 

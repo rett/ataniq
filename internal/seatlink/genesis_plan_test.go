@@ -181,7 +181,8 @@ func TestSeatLinkGenesisPlanOfEachTemplate(t *testing.T) {
 				}
 			}
 			for i, n := range p.Notes {
-				if pv.Notes[i] != (seatapp.GenesisNote{Field: n.Field, Text: n.Text}) {
+				// The label is the catalog's, for the golden plans' catalog.
+				if pv.Notes[i] != (seatapp.GenesisNote{Field: n.Field, Label: noteLabel(p.CatalogDigest, n.Field), Text: n.Text}) {
 					t.Fatalf("%s: note %d: %+v", name, i, pv.Notes[i])
 				}
 			}
@@ -323,6 +324,31 @@ func TestSeatLinkGenesisPlanCodesAndAnswers(t *testing.T) {
 	}
 }
 
+// A note's label is the words of the catalog's question for its field, when
+// the plan was compiled under the catalog this build holds and the question
+// takes the owner's own words; otherwise none, and the page says "A note".
+func TestSeatLinkGenesisNoteLabels(t *testing.T) {
+	cat, err := v1()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name, digest, field, want string
+	}{
+		{"the stack", cat.Digest(), "software.stack", "Do you prefer a programming language?"},
+		{"the sign-in", cat.Digest(), "software.auth", "How should people sign in?"},
+		{"a note of the brief's own", cat.Digest(), "notes", ""},
+		{"a field that takes no own words", cat.Digest(), "software.data", ""},
+		{"a field the catalog has not", cat.Digest(), "software.unheard", ""},
+		{"another catalog", strings.Repeat("0f", 32), "software.stack", ""},
+		{"no catalog", "", "software.stack", ""},
+	} {
+		if got := noteLabel(c.digest, c.field); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
 // The plan through the link, the gate and a real store: the summary of the
 // web app path says a plan is ready; the plan is a preview, kept as a round
 // is (viewFresh) and forgotten by a change of its thread; finish stores it;
@@ -346,6 +372,10 @@ func TestSeatLinkGenesisPlanOverARealStore(t *testing.T) {
 	// The owner's words are a note of the plan, never a title or a task.
 	if len(pre.Plan.Notes) != 1 || pre.Plan.Notes[0].Text != "Go and a small database" {
 		t.Fatalf("the preview's notes: %+v", pre.Plan.Notes)
+	}
+	// Its note says which answer it is: the catalog's own question.
+	if n := pre.Plan.Notes[0]; n.Field != "software.stack" || n.Label != "Do you prefer a programming language?" {
+		t.Fatalf("the note's field and label: %+v", n)
 	}
 	// Read again within viewFresh: from the memory.
 	clock.advance(viewFresh - time.Second)

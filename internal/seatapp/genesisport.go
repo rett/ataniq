@@ -409,7 +409,11 @@ type GenesisTask struct {
 
 // GenesisNote is one text of the owner's own words in a plan: the field of
 // the brief it was given for, and the text, which a page shows quoted and
-// marked as the owner's.
+// marked as the owner's. Label is the words of the catalog's question that
+// field answers (a constant of the catalog the link holds, as a summary
+// row's label is), and "" when the link holds no such question: a note of
+// the brief's own ("notes"), a field it does not know, or a plan of another
+// catalog.
 type GenesisNote struct {
-	Field, Text string
+	Field, Label, Text string
 }
