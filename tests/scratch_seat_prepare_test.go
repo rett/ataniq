@@ -96,11 +96,12 @@ func newScratchSeatKit(t *testing.T) scratchSeatKit {
 		}
 	}
 	// systemctl --user show -p PROP --value -- UNIT answers from the units
-	// file ("UNIT PROP VALUE" lines); an unlisted ActiveState is inactive and
-	// an unlisted LoadState not-found. Every other call is refused.
+	// file ("UNIT PROP VALUE" lines, the value the rest of the line); an
+	// unlisted ActiveState is inactive and an unlisted LoadState not-found.
+	// Every other call is refused.
 	systemctl := "#!/bin/sh\necho \"systemctl $*\" >>'" + k.calls + "'\n" +
 		"[ \"$1 $2 $3\" = '--user show -p' ] && [ \"$5 $6\" = '--value --' ] || exit 97\n" +
-		"v=$(awk -v u=\"$7\" -v p=\"$4\" '$1 == u && $2 == p { print $3; exit }' '" + k.units + "' 2>/dev/null)\n" +
+		"v=$(awk -v u=\"$7\" -v p=\"$4\" '$1 == u && $2 == p { s = $0; sub(/^[^ ]+ [^ ]+ ?/, \"\", s); print s; exit }' '" + k.units + "' 2>/dev/null)\n" +
 		"if [ -z \"$v\" ]; then case $4 in ActiveState) v=inactive ;; LoadState) v=not-found ;; esac; fi\n" +
 		"printf '%s\\n' \"$v\"\n"
 	if err := os.WriteFile(filepath.Join(k.tools, "systemctl"), []byte(systemctl), 0o700); err != nil {
@@ -431,10 +432,12 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root string, live bool) {
 	for _, want := range []string{
 		"A for the daemon, B for the console, C for the desk",
 		"OWNER ONLY (starts pasta, bubblewrap and curl): sh " + root + "/netcheck.sh",
-		"-p UnitFileState -p TriggeredBy -p InvocationID -- \"$TRIAL_UNIT\" >" + root + "/evidence/trial-unit-before.txt",
+		"--record-trial" + prep + " --unit \"$TRIAL_UNIT\"",
 		"--status" + prep,
 		"OWNER ONLY: systemctl --user stop -- \"$TRIAL_UNIT\"",
-		"OWNER ONLY: systemctl --user mask --runtime -- \"$TRIAL_UNIT\"",
+		"a unit file only (step g names the kind): OWNER ONLY: systemctl --user mask --runtime -- \"$TRIAL_UNIT\"",
+		"(inactive; not-found for a transient unit, masked for a unit file)",
+		"a unit file still loaded (the mask did not take): OWNER ONLY: systemctl --user unmask --runtime -- \"$TRIAL_UNIT\"",
 		"scratch-init --config " + root + "/scratch.json",
 		"--swap-in" + prep + " --gate 192.0.2.10:7443 --sitting 3 --unit \"$TRIAL_UNIT\"",
 		"sh -c 'trap : INT; \"$@\" 2>&1; echo \"ataniqd: exit status $?\"' sh ",
@@ -447,8 +450,9 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root string, live bool) {
 		"Ctrl+\\ then q",
 		"no paste; stop and reconcile",
 		"--swap-out" + prep + " --gate 192.0.2.10:7443 --unit \"$TRIAL_UNIT\"",
-		"OWNER ONLY: systemctl --user unmask --runtime -- \"$TRIAL_UNIT\"",
-		"OWNER ONLY: systemctl --user start -- \"$TRIAL_UNIT\"",
+		"a transient unit (step 14 printed the kind): OWNER ONLY: sh " + root + "/trial-restart.sh",
+		"a unit file: OWNER ONLY: systemctl --user unmask --runtime -- \"$TRIAL_UNIT\"",
+		"a unit file: OWNER ONLY: systemctl --user start -- \"$TRIAL_UNIT\"",
 		"journalctl --user --unit \"$TRIAL_UNIT\" -I",
 	} {
 		if !strings.Contains(out, want) {
@@ -462,7 +466,8 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root string, live bool) {
 	if live && !strings.Contains(out, "chat set live-3 off") || !live && !strings.Contains(out, "chat set standin-3 off") {
 		t.Errorf("the off step, live %v:\n%s", live, out)
 	}
-	order := []string{"systemctl --user stop", "mask --runtime", "--swap-in", "run --scratch", "--swap-out", "unmask --runtime", "systemctl --user start"}
+	order := []string{"--record-trial", "systemctl --user stop", "mask --runtime", "--swap-in", "run --scratch", "--swap-out",
+		"OWNER ONLY: sh " + root + "/trial-restart.sh", "systemctl --user start"}
 	for i := 1; i < len(order); i++ {
 		if strings.Index(out, order[i-1]) > strings.Index(out, order[i]) {
 			t.Errorf("%q comes after %q:\n%s", order[i-1], order[i], out)
@@ -478,7 +483,7 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root string, live bool) {
 		if strings.Contains(line, "KEY") {
 			t.Errorf("a step names a lead KEY: %q", line)
 		}
-		for _, starts := range []string{"systemctl --user stop", "systemctl --user start", "mask --runtime", "run --scratch", "ataniq-console", "--version", "d on ", "s on "} {
+		for _, starts := range []string{"systemctl --user stop", "systemctl --user start", "mask --runtime", "run --scratch", "ataniq-console", "--version", "d on ", "s on ", "trial-restart.sh"} {
 			if strings.Contains(line, starts) && !strings.Contains(line, "OWNER ONLY") {
 				t.Errorf("a step starts a process, changes a unit or defines a lead and is not marked OWNER ONLY: %q", line)
 			}
@@ -912,10 +917,18 @@ func TestScratchSeatPrepareSwaps(t *testing.T) {
 		return n
 	}
 	ownerBefore := names()
-	status("trial in place (not swapped)", "--swap-in (step 3)")
+	status("trial in place (not swapped)", "record the trial's unit while it runs (--record-trial, step f)")
+	masked := "sample-trial.service LoadState masked"
+	// Without a record of the trial's unit, --swap-in refuses.
+	k.unitsSay(t, masked)
+	if out, code := k.run(t, nil, swapIn...); code != 1 || !strings.Contains(out, "no record of the trial's unit") {
+		t.Fatalf("--swap-in without a record: exit %d:\n%s", code, out)
+	}
+	k.recordTrial(t, r, k.fileUnit("UnitFileState enabled", "WantedBy default.target"))
+	status("trial in place (not swapped)", "mask it for this boot (step 1)")
+	enabled := []string{"sample-trial.service UnitFileState enabled", "sample-trial.service WantedBy default.target"}
 
 	// Refusals before anything moves.
-	masked := "sample-trial.service LoadState masked"
 	for _, c := range []struct {
 		name  string
 		units []string
@@ -923,7 +936,12 @@ func TestScratchSeatPrepareSwaps(t *testing.T) {
 		want  string
 	}{
 		{"a running trial", []string{"sample-trial.service ActiveState active", masked}, nil, "not inactive"},
-		{"an unmasked trial", []string{"sample-trial.service LoadState loaded"}, nil, "not masked"},
+		{"an unmasked trial", append([]string{"sample-trial.service LoadState loaded"}, enabled...), nil, "can be started: WantedBy=default.target UnitFileState=enabled"},
+		{"another unit", []string{masked}, func() func() {
+			i := slices.Index(swapIn, "sample-trial.service")
+			swapIn[i] = "other-trial.service"
+			return func() { swapIn[i] = "sample-trial.service" }
+		}, "recorded the trial's unit sample-trial.service, not other-trial.service"},
 		{"a listener on the gate's port", []string{masked}, func() func() {
 			l, err := net.Listen("tcp", "127.0.0.1:"+port)
 			if err != nil {
@@ -1005,7 +1023,7 @@ func TestScratchSeatPrepareSwaps(t *testing.T) {
 	if _, err := os.Lstat(aside); err == nil {
 		t.Fatal("owner/scratch.json.trial is still there")
 	}
-	status("trial in place (the way back is done)", "step 15")
+	status("trial in place (the way back is done)", "unmask the trial's unit if it is masked and start it again (step 15)")
 	if out, code := k.run(t, nil, swapOut...); code != 0 || !strings.Contains(out, "nothing to do") {
 		t.Errorf("a second --swap-out: exit %d:\n%s", code, out)
 	}
@@ -1017,6 +1035,9 @@ func TestScratchSeatPrepareSwaps(t *testing.T) {
 	}
 	if len(ownerAfter) != len(ownerBefore)+1 || !slices.Contains(ownerAfter, "scratch.json.leads-3") {
 		t.Errorf("owner/ after the cycle: %v, before %v", ownerAfter, ownerBefore)
+	}
+	if g := string(mustRead(t, filepath.Join(r, "evidence", "trial-unit-guard.txt"))); g != "swap-in, sitting 3, unit sample-trial.service: kind file, ActiveState=inactive, LoadState=masked: the runtime mask took: accepted\n" {
+		t.Errorf("the guard's evidence: %q", g)
 	}
 	k.onlyShows(t)
 }
@@ -1032,7 +1053,8 @@ func TestScratchSeatPrepareSwapRecovery(t *testing.T) {
 		if out, code := k.run(t, nil, k.args("--write", r, false)...); code != 0 {
 			t.Fatalf("--write: exit %d:\n%s", code, out)
 		}
-		k.unitsSay(t, "sample-trial.service LoadState masked")
+		k.recordTrial(t, r, k.transientUnit("/srv/sample/bin/ataniqd", "Sample trial"))
+		k.unitsSay(t)
 		gate := "192.0.2.10:" + freeTCPPort(t)
 		vals := []string{"--state", k.state, "--root", r}
 		in := append(append([]string{"--swap-in"}, vals...), "--gate", gate, "--sitting", "3", "--unit", "sample-trial.service")
@@ -1118,7 +1140,7 @@ func TestScratchSeatPrepareSwapRecovery(t *testing.T) {
 		before := scratchSeatFiles(t, k.state)
 		s := statusOf(t, k, r)
 		if !strings.Contains(s, "status: interrupted or ambiguous") || !strings.Contains(s, "a link (a dangling one counts as taken)") ||
-			!strings.Contains(s, "keep the trial unit masked") {
+			!strings.Contains(s, "keep the trial stopped (a unit file masked as in step 1) and both daemons stopped") {
 			t.Fatalf("--status:\n%s", s)
 		}
 		for _, args := range [][]string{in, out} {
@@ -1153,6 +1175,7 @@ func TestScratchSeatPrepareSwapRecordIsPlain(t *testing.T) {
 	if out, code := k.run(t, nil, k.args("--write", r, false)...); code != 0 {
 		t.Fatalf("--write: %d\n%s", code, out)
 	}
+	k.recordTrial(t, r, k.fileUnit())
 	k.unitsSay(t, "sample-trial.service LoadState masked")
 	if out, code := k.run(t, nil, "--swap-in", "--state", k.state, "--root", r, "--gate", "192.0.2.10:"+freeTCPPort(t), "--sitting", "3", "--unit", "sample-trial.service"); code != 0 {
 		t.Fatalf("--swap-in: %d\n%s", code, out)
@@ -1229,8 +1252,9 @@ func TestScratchSeatProofRunbookShellIsSafe(t *testing.T) {
 	}
 	flat := strings.Join(strings.Fields(text), " ")
 	for _, want := range []string{
-		"**OWNER ONLY (B): define it;", "**OWNER ONLY (B):** `d` on `live-N`", "**OWNER ONLY (C): stop and mask the trial.**",
-		"**OWNER ONLY (C): unmask and start the trial again.**", "A full quarantine ends the sitting", "never archive the state folder",
+		"**OWNER ONLY (B): define it;", "**OWNER ONLY (B):** `d` on `live-N`", "**OWNER ONLY (C): stop the trial (and mask a unit file).**",
+		"**OWNER ONLY (C): start the trial again.**", "A full quarantine ends the sitting",
+		"a start during the sitting fails closed", "A transient trial does not come back after a reboot", "never archive the state folder",
 		"`holder/final.json.previous`", "`config/claude`", "A fresh `ROOT` alone does not make a fresh Claude login",
 		"exit status N", "Approve only the one expected operation", "A project's approvals go through Cards",
 	} {

@@ -1268,8 +1268,12 @@ desktop. The daemon refuses that folder while it holds the trial's settings
 runbook swaps only that one, within `owner/`, by the owner's
 `prepare.sh --swap-in` and back by `--swap-out` (the root marker, the
 proof's settings and the leads' folders are added beside them), with the
-trial's unit stopped and masked meanwhile and the gate's port free, which the
-swaps check; the state folder's daemon lock still refuses a second daemon.
+trial's unit stopped meanwhile (a transient one is then gone; a unit file is
+masked, or has no activation source when the mask cannot take) and the
+gate's port free, which the swaps check against the unit's kind that the
+owner's `prepare.sh --record-trial` recorded; a transient trial is made
+again at the end by the `trial-restart.sh` that record wrote. The state
+folder's daemon lock still refuses a second daemon.
 `qualification/scratch-seat/prepare.sh` writes the scratch config and the
 files it names in a folder of the proof's own (`--dry` reads and writes
 nothing of the owner's; `--self-test` computes only; `--write` never writes

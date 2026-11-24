@@ -330,7 +330,8 @@ func gatePorts(t *testing.T) func() string {
 
 // proofKit is the owner's side of the proof in a private folder outside
 // /tmp: stubs of the binaries prepare copies, a systemctl stub that answers
-// "show" from a file of the test's, and a home.
+// "show" from a file of the test's ("UNIT PROP VALUE" lines, the value the
+// rest of the line), a folder that stands for /proc, and a home.
 type proofKit struct {
 	dir, bin, tools, units, home string
 }
@@ -352,7 +353,7 @@ func newProofKit(t *testing.T) proofKit {
 	}
 	systemctl := "#!/bin/sh\n" +
 		"[ \"$1 $2 $3\" = '--user show -p' ] && [ \"$5 $6\" = '--value --' ] || exit 97\n" +
-		"v=$(awk -v u=\"$7\" -v p=\"$4\" '$1 == u && $2 == p { print $3; exit }' '" + k.units + "' 2>/dev/null)\n" +
+		"v=$(awk -v u=\"$7\" -v p=\"$4\" '$1 == u && $2 == p { s = $0; sub(/^[^ ]+ [^ ]+ ?/, \"\", s); print s; exit }' '" + k.units + "' 2>/dev/null)\n" +
 		"if [ -z \"$v\" ]; then case $4 in ActiveState) v=inactive ;; LoadState) v=not-found ;; esac; fi\n" +
 		"printf '%s\\n' \"$v\"\n"
 	if err := os.WriteFile(filepath.Join(k.tools, "systemctl"), []byte(systemctl), 0o700); err != nil {
@@ -374,7 +375,7 @@ func (k proofKit) unitsSay(t *testing.T, lines ...string) {
 func (k proofKit) prepare(t *testing.T, args ...string) (string, int) {
 	t.Helper()
 	cmd := exec.Command("/bin/sh", append([]string{filepath.Join(repoRoot, "qualification", "scratch-seat", "prepare.sh")}, args...)...)
-	cmd.Env = []string{"PATH=" + k.tools + ":/usr/bin:/bin", "HOME=" + k.home}
+	cmd.Env = []string{"PATH=" + k.tools + ":/usr/bin:/bin", "HOME=" + k.home, "PREPARE_PROC=" + filepath.Join(k.dir, "proc")}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		var exit *exec.ExitError
@@ -456,8 +457,10 @@ func dialSeat(t *testing.T, addr string, seat seatgate.Identity, gateFP string) 
 //     true) are in owner/scratch.json the scratch daemon refuses to start at
 //     the config step (exit 10), before it looks at the root marker or takes
 //     a lock, and writes nothing. --status says the trial is in place;
-//     --swap-in refuses a running trial unit and, with the unit inactive and
-//     masked, a gate port the trial still listens on.
+//     --record-trial records the trial's unit, a transient one, from the
+//     systemctl stub and a fake /proc entry of its main process; --swap-in
+//     refuses the running unit and, with the unit gone, a gate port the
+//     trial still listens on.
 //  2. The daemon's own guards behind prepare's: with the settings put in
 //     place by the test while the trial runs, the daemon refuses for the
 //     missing root marker (exit 10); "ataniq-canary scratch-init" takes the
@@ -472,10 +475,12 @@ func dialSeat(t *testing.T, addr string, seat seatgate.Identity, gateFP string) 
 //     reply of the stand-in is read by the seat once the desk turns its chat
 //     on; the live lead's chat is turned on and off. Restarted with the
 //     stand-in's chat on, the daemon comes back with every chat off.
-//  4. --swap-out puts the same trial settings file back; the trial daemon
-//     starts again on the same folder with what the scratch daemon left
-//     there, with the same gate key, the same paired credential and its
-//     known STAND-IN sample rows.
+//  4. --swap-out puts the same trial settings file back and names the
+//     restart script as step 15; that script, run with a systemd-run stub,
+//     gives the unit's name, description, --collect and the trial's command
+//     line; the trial daemon starts again on the same folder with what the
+//     scratch daemon left there, with the same gate key, the same paired
+//     credential and its known STAND-IN sample rows.
 //
 // With no phone login in between, the gate's key and certificate, the pins,
 // keys.log, keys.head and the trial's settings are the same bytes at the end
@@ -584,14 +589,37 @@ func TestScratchSeatTakesThePhoneTrialsStateFolder(t *testing.T) {
 	if out, code := k.prepare(t, append([]string{"--status"}, vals...)...); code != 0 || !strings.Contains(out, "status: trial in place (not swapped)") {
 		t.Fatalf("--status before: exit %d:\n%s", code, out)
 	}
+	// f. --record-trial while the trial runs. The trial's unit is a
+	// transient one, as systemd-run makes it; its main process is a fake
+	// /proc entry with the trial daemon's command line.
+	trialProg := filepath.Join(k.bin, "ataniqd")
+	trialArgv := []string{trialProg, "run", "--state-dir", state, "--runtime-dir", trialRun, "--owner-channel", "--trial", "--seat-gate", nominal}
+	if err := os.MkdirAll(filepath.Join(k.dir, "proc", "4242"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(k.dir, "proc", "4242", "cmdline"), []byte(strings.Join(trialArgv, "\x00")+"\x00"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	u := "sample-trial.service "
+	k.unitsSay(t, u+"Id sample-trial.service", u+"Description Sample phone trial", u+"Transient yes", u+"UnitFileState transient",
+		u+"FragmentPath "+filepath.Join(k.dir, "xdg-run", "systemd", "transient", "sample-trial.service"), u+"CollectMode inactive-or-failed",
+		u+"LoadState loaded", u+"ActiveState active", u+"SubState running", u+"InvocationID 00112233445566778899aabbccddeeff", u+"MainPID 4242",
+		u+"Restart no", u+"ExecStart { path="+trialProg+" ; argv[]="+strings.Join(trialArgv, " ")+" ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=4242 ; code=(null) ; status=0/0 }")
+	if out, code := k.prepare(t, append(append([]string{"--record-trial"}, vals...), "--unit", "sample-trial.service")...); code != 0 ||
+		!strings.Contains(out, "recorded the trial's unit: transient") {
+		t.Fatalf("--record-trial: exit %d:\n%s", code, out)
+	}
+	if out, code := k.prepare(t, append([]string{"--status"}, vals...)...); code != 0 || !strings.Contains(out, "next: stop the trial's transient unit (step 1; it is not masked") {
+		t.Fatalf("--status after the record: exit %d:\n%s", code, out)
+	}
 	swapIn := func(gate string) (string, int) {
 		return k.prepare(t, append(append([]string{"--swap-in"}, vals...), "--gate", gate, "--sitting", "1", "--unit", "sample-trial.service")...)
 	}
-	k.unitsSay(t, "sample-trial.service ActiveState active")
 	if out, code := swapIn(trialAddr); code != 1 || !strings.Contains(out, "not inactive") {
 		t.Fatalf("--swap-in with the trial's unit active: exit %d:\n%s", code, out)
 	}
-	k.unitsSay(t, "sample-trial.service LoadState masked")
+	// Stopped, the transient unit is gone (inactive, not-found).
+	k.unitsSay(t)
 	if out, code := swapIn(trialAddr); code != 1 || !strings.Contains(out, "listens on the gate's port") {
 		t.Fatalf("--swap-in while the trial's gate listens: exit %d:\n%s", code, out)
 	}
@@ -649,7 +677,7 @@ func TestScratchSeatTakesThePhoneTrialsStateFolder(t *testing.T) {
 	}
 	stopApp(t, ta, errs, done)
 
-	// 3. The trial is stopped (and, for the owner, masked): --swap-in, then
+	// 3. The trial is stopped (its transient unit gone): --swap-in, then
 	// the scratch daemon with the seat gate on the trial's state folder.
 	out, code = swapIn(trialAddr)
 	if code != 0 || !strings.Contains(out, "status: swapped in") {
@@ -733,6 +761,33 @@ func TestScratchSeatTakesThePhoneTrialsStateFolder(t *testing.T) {
 	}
 	if inodeOf(t, canon) != trialID || !bytes.Equal(fileBytes(t, filepath.Join(owner, "scratch.json.leads-1")), proofSettings) {
 		t.Fatal("after --swap-out the trial's settings file is not back, or the proof's is not archived")
+	}
+	restart := filepath.Join(root, "trial-restart.sh")
+	if !strings.Contains(out, "next: re-create the trial's transient unit: OWNER ONLY: sh "+restart+" (step 15)") {
+		t.Fatalf("--swap-out does not name the restart script:\n%s", out)
+	}
+	if g := string(fileBytes(t, filepath.Join(root, "evidence", "trial-unit-guard.txt"))); !strings.Contains(g, "kind transient, ActiveState=inactive, LoadState=not-found") {
+		t.Fatalf("the guard's evidence: %q", g)
+	}
+	// Step 15, the owner's: the restart script, run here only with a
+	// systemd-run stub that records its arguments, gives the trial's unit
+	// its name, description, --collect and the command line recorded.
+	stubs := filepath.Join(k.dir, "restart-stubs")
+	gotArgs := filepath.Join(k.dir, "systemd-run-args")
+	if err := os.Mkdir(stubs, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stubs, "systemd-run"), []byte("#!/bin/sh\nfor a; do printf '%s\\n' \"$a\"; done >'"+gotArgs+"'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rs := exec.Command("/bin/sh", restart)
+	rs.Env = []string{"PATH=" + stubs + ":/usr/bin:/bin", "HOME=" + k.home}
+	if b, err := rs.CombinedOutput(); err != nil {
+		t.Fatalf("the restart script with a stub: %v\n%s", err, b)
+	}
+	wantArgs := append([]string{"--user", "--unit", "sample-trial.service", "--description", "Sample phone trial", "--collect", "--"}, trialArgv...)
+	if got := string(fileBytes(t, gotArgs)); got != strings.Join(wantArgs, "\n")+"\n" {
+		t.Fatalf("systemd-run got:\n%s\nwant:\n%s", got, strings.Join(wantArgs, "\n"))
 	}
 	ta, errs, done, trialAddr = startTrial()
 	tlog := errs.String()

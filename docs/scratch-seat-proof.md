@@ -17,10 +17,11 @@ the console, a sandbox, an agent, the claude program), changes a unit (stop,
 mask, unmask, start) or defines a lead (the daemon runs git) is marked
 **OWNER ONLY** and is run by the owner's hand, in his terminal. An agent may
 run `qualification/scratch-seat/prepare.sh` with `--dry` or `--self-test`
-only, and the tests. `--write`, `--status`, `--swap-in` and `--swap-out` are
-the owner's: `--write` starts nothing and writes only in the proof's own
-folder, and `--status` only reads, but they name his folders; the swaps
-rename his settings.
+only, and the tests. `--write`, `--record-trial`, `--status`, `--swap-in`
+and `--swap-out` are the owner's: `--write` starts nothing and writes only in
+the proof's own folder, `--record-trial` reads his trial's unit and writes
+only in that folder, and `--status` only reads, but they name his folders and
+his unit; the swaps rename his settings.
 
 **What is removed, and what is not.** No step deletes a file of the trial or
 of the proof. Two things go by design: the chat service consumes each reply
@@ -37,8 +38,8 @@ then renames to `owner/scratch.json`.
   `state_root` is the trial's state folder, so the gate's key and pins
   (`owner/gate/`) and the phones' keys (`owner/keys.log`, `owner/keys.head`)
   are the ones the seat and the phone already use. The trial's user unit is
-  stopped and masked first and never runs at the same time as the proof's
-  daemon.
+  stopped first (and a unit file masked) and never runs at the same time as
+  the proof's daemon.
 - **Stand-in first, then one real lead.** The stand-in lead in the real
   sandbox (the owner gives it a token, it commits and writes its one reply);
   then, in the same sitting if all is well, one real Claude lead with the
@@ -58,7 +59,7 @@ OWNER_STATE_DIR='/path/of/the/trial/state/folder'   # the trial daemon's --state
 ROOT='/path/of/a/new/folder/for/the/proof'          # its parent exists; outside /tmp, the checkout and the state folder
 SEAT_GATE='192.0.2.10:7443'                         # the trial daemon's --seat-gate (IPv4 only)
 SITTING='1'                                         # this sitting's number, 1 to 999; the leads are standin-1 and live-1
-TRIAL_UNIT='name-of-the-trial.service'              # the user unit that runs the trial daemon
+TRIAL_UNIT='name-of-the-trial.service'              # the user unit that runs the trial daemon (transient or a unit file)
 CLAUDE_FILE='/path/of/the/tested/claude'            # claude 2.1.325, one regular file, as for pass B
 CLAUDE_MODEL='name-of-the-cheapest-model'
 export OWNER_STATE_DIR ROOT SEAT_GATE SITTING TRIAL_UNIT CLAUDE_FILE CLAUDE_MODEL
@@ -110,8 +111,10 @@ they show:
   root marker is looked at and before any lock: nothing is written, not even
   the runtime root.
 - **`--swap-in` waits for the trial.** It refuses while the trial's unit is
-  active or not masked and while anything listens on the gate's port (the
-  test's trial daemon does).
+  active and while anything listens on the gate's port (the test's trial
+  daemon does). The test's trial unit is a transient one, recorded by
+  `--record-trial` from a stub `systemctl` and a fake `/proc` entry of its
+  main process; once stopped it is gone, and `--swap-in` takes it.
 - **Behind prepare, the daemon's own guards hold.** With the proof's settings
   put in place while the trial runs, the daemon refuses for the missing root
   marker (`no marker <state>/scratch-root.json`, exit 10, before any lock),
@@ -150,9 +153,22 @@ expected, and nothing restores them.
 `tests/scratch_seat_prepare_test.go` holds the script's refusals and swaps
 in sample folders: a swap stopped half way is named by `--status` and
 finished by `--swap-out`, and a layout of none of the three states is refused
-by every mode with nothing moved.
+by every mode with nothing moved. `TestScratchSeatPrepareSwapInGuard` holds
+`--swap-in`'s guard by the unit's kind: a transient unit is taken gone and
+refused running or still loaded; a unit file is taken masked, taken without
+an activation source when its runtime mask did not take and was taken back
+(the fallback written in the evidence), and refused with one (a socket, a
+`WantedBy`, an enabled or linked file, a binding) or with the mask still
+there. `tests/scratch_seat_record_test.go` holds
+`--record-trial` on a stub `systemctl` and a fake `/proc` entry: the restart
+script of a transient unit, run there with a `systemd-run` stub, gives it the
+unit's name, description, `--collect` and the command line byte for byte
+(spaces, quotes, `$`, backslashes, a tab, an empty argument), and a `MainPID`
+of 0, another program, a newline in an argument or a command line that
+cannot be read is refused with nothing written.
 
-What none of it shows: the real unit, its mask, holder, sandbox and stand-in,
+What none of it shows: the real unit, its stop, mask and re-creation, holder,
+sandbox and stand-in,
 the paste, claude and its login, the seat on the authority host, the phone,
 the firewall and the network. The sitting shows those.
 
@@ -278,24 +294,73 @@ with your values.
    a DNS check and not a rule, and the guard hook guards nothing. Before a
    live login, write in `$ROOT/evidence/notes.txt` that you accept this open
    network (and the listeners it named), or stop after the stand-in.
-- **f. Read and record, nothing more:** the pins the gate will use, the
-   trial's unit as it is, and the trial's fingerprint line of its current
-   run:
+
+   The connect test runs in the network shape of a scratch lead's sandbox:
+   pasta with the plan's own arguments (`sandboxnet.PastaArgs()`: no port
+   forwarding either way, the host's loopback and gateway not mapped), and
+   bubblewrap with the profile's flag set for the identity a scratch lead has
+   (`--unshare-all --share-net --unshare-user`, UID and GID 0, no
+   capabilities, no seccomp filter, as scratch provisioning names none);
+   `TestScratchSeatNetcheckMatchesTheLeadsNetwork` fails when either drifts,
+   or when the lead's unit gains a network property. What differs does not
+   decide whether the gate answers: the binds (the host's `/usr` and a few
+   `/etc` files here, the profile's table in the sandbox) and the program
+   inside (`sh` and `curl` here, the probe and the agent there); the
+   `resolv.conf` (the host's here, one the holder derives there), since the
+   gate is an address and no name is looked up; and where pasta starts (your
+   shell here, the holder in the lead's user unit there, which sets no
+   network property), both in this host's network as your user.
+- **f. Read and record, nothing more,** while the trial runs: the pins the
+   gate will use, the trial's unit as it is, and the trial's fingerprint line
+   of its current run:
 
    ```sh
    $D seat-gate pins --state-dir "$S"
-   systemctl --user show -p Id -p ExecStart -p ActiveState -p SubState -p LoadState -p UnitFileState -p TriggeredBy -p InvocationID -- "$TRIAL_UNIT" >"$ROOT/evidence/trial-unit-before.txt"
+   sh "$P" --record-trial
    journalctl --user --unit "$TRIAL_UNIT" -I | grep 'key fingerprint' | tail -n 1
    ```
 
-   `trial-unit-before.txt` is what step 15 restores: whether the unit was
-   active, its unit-file state (enabled or not) and what triggers it. Look at
-   `TriggeredBy`: a socket or timer named there can start the trial again,
-   which the mask of step 1 prevents. The seat origin file
-   (`ataniq/owner-local/seat-origin` of your configuration folder) is the
-   trial's and stays as it is.
+   `--record-trial` starts and changes nothing: it reads the unit from the
+   user manager (`systemctl --user show` only) and, for a transient unit, the
+   command line of its main process (`/proc/MAINPID/cmdline`), and writes in
+   `$ROOT` only. `$ROOT/evidence/trial-unit-before.txt` is the unit as it
+   runs: `Id`, `Description`, `Transient`, `UnitFileState`, `FragmentPath`,
+   `CollectMode`, `LoadState`, `ActiveState`, `SubState`, `TriggeredBy`,
+   `WantedBy`, `RequiredBy`, `BoundBy`, `UpheldBy`, `InvocationID`,
+   `MainPID`, `ExecStart`, `Restart`, `Environment` and `WorkingDirectory`.
+   `$ROOT/trial-unit` records its kind, which steps 1, 3 and 15 and
+   `--status` follow:
+
+   - **A transient unit** (`Transient=yes`, `UnitFileState=transient`: the
+     trial was started with `systemd-run --user --unit NAME ...`). Stopped,
+     it is unloaded (`LoadState=not-found`), and nothing starts it again but
+     the same `systemd-run`. `--record-trial` writes that command as
+     `$ROOT/trial-restart.sh` (mode 0700), which step 15 runs and prepare
+     never does: `systemd-run --user --unit "$name" --description '...'`,
+     `--collect` when `CollectMode=inactive-or-failed`, then `--` and the
+     main process's command line exactly as `/proc` holds it, every argument
+     single-quoted. It carries the unit's name, description, collect mode and
+     command line, and nothing else of it: compare `Environment`,
+     `WorkingDirectory` and `Restart` in `trial-unit-before.txt` with how you
+     made the unit, and re-create it by hand if they differ. It refuses,
+     writing nothing, a `MainPID` of 0, a command line that cannot be read,
+     that holds a newline in an argument or that was changed (its last byte
+     is not a NUL), and a main process whose program is not `ExecStart`'s.
+   - **A unit file** (`Transient=no`, its file at `FragmentPath`). No
+     restart script: step 15 starts it again with `systemctl`. Look at
+     `TriggeredBy`, `WantedBy`, `RequiredBy`, `BoundBy` and `UpheldBy`: a
+     socket, timer or other unit named there can start the trial again,
+     which the mask of step 1 prevents.
+
+   Both refuse, writing nothing, a unit that is not loaded and active (it is
+   recorded while the trial runs, before step 1), a name the user manager
+   knows by another (an alias), a root `--write` did not make, a root that
+   has swapped, and a record that is there already (one record for a root;
+   it is kept). The seat origin file (`ataniq/owner-local/seat-origin` of
+   your configuration folder) is the trial's and stays as it is.
 - **g. The settings, read:** `sh "$P" --status` prints `status: trial in
-   place (not swapped)` and the next step.
+   place (not swapped)`, the kind of the trial's unit as recorded, and the
+   next step.
 
 ## The sitting
 
@@ -306,7 +371,23 @@ more) and do not resize it while attached.
 
 ### Switch from the trial to the proof
 
-1. **OWNER ONLY (C): stop and mask the trial.**
+1. **OWNER ONLY (C): stop the trial (and mask a unit file).** Step g named
+   the kind of the trial's unit.
+
+   A transient unit (made by `systemd-run`): stop it, and nothing more.
+
+   ```sh
+   systemctl --user stop -- "$TRIAL_UNIT"
+   systemctl --user show -p ActiveState -p LoadState -- "$TRIAL_UNIT"
+   ```
+
+   The last says `ActiveState=inactive` and `LoadState=not-found`: stopped,
+   the unit is unloaded, and nothing can start it again but
+   `$ROOT/trial-restart.sh`, by your hand (step 15). It is not masked: a
+   masked name would also stop `systemd-run` from making the unit again, and
+   `unmask` and `start` cannot bring a transient unit back.
+
+   A unit file: stop it and mask it for this boot.
 
    ```sh
    systemctl --user stop -- "$TRIAL_UNIT"
@@ -316,12 +397,29 @@ more) and do not resize it while attached.
 
    The last says `ActiveState=inactive` and `LoadState=masked`. The mask is
    for this boot only (`--runtime`): no socket, timer or other unit can start
-   the trial while its settings are swapped. The phone now finds no desk. If
-   `LoadState` is not `masked`, the runtime mask did not take (a unit file in
-   your configuration folder can outrank the runtime folder): run
-   `systemctl --user unmask --runtime -- "$TRIAL_UNIT"`, start the trial
-   again (step 15) and stop the sitting here; `--swap-in` refuses without
-   the mask.
+   the trial while its settings are swapped. The runtime mask is written in
+   the runtime folder of the user manager, which comes after your
+   configuration folder (`~/.config/systemd/user`) in the search order of
+   unit files: for a unit whose file lies there, or in another folder above
+   the runtime one, the mask does not take, and `LoadState` stays `loaded`.
+   Then take the mask back:
+
+   ```sh
+   systemctl --user unmask --runtime -- "$TRIAL_UNIT"
+   ```
+
+   and go on: `--swap-in` (step 3) then takes the unit only when nothing can
+   start it (no `TriggeredBy`, `WantedBy`, `RequiredBy`, `BoundBy` or
+   `UpheldBy`, and a `UnitFileState` that is not `enabled`, `linked` or
+   `alias`), and writes that fallback in `$ROOT/evidence/trial-unit-guard.txt`;
+   otherwise it refuses with the reason, and you start the trial again
+   (step 15) and stop the sitting here.
+
+   Either way a start during the sitting fails closed (by your hand, or by
+   anything the check did not see): the trial daemon refuses
+   the proof's settings in `owner/scratch.json` (it serves trial settings
+   only) and ends, and while the proof's daemon runs the state folder's lock
+   refuses a second daemon. The phone now finds no desk.
 2. **The root marker (C):**
 
    ```sh
@@ -337,10 +435,16 @@ more) and do not resize it while attached.
    sh "$P" --swap-in
    ```
 
-   It refuses, with nothing moved, while the trial's unit is not inactive
-   and masked, while anything listens on the gate's port, while the user
-   manager knows a unit of this sitting's leads, and when the settings are
-   not the trial's alone. Then it records the trial's settings file (its
+   It refuses, with nothing moved: without the record of step f; while the
+   trial's unit is not inactive; a transient unit that is not gone
+   (`LoadState=not-found`, or `masked`; a failed one stays loaded until
+   `systemctl --user reset-failed -- "$TRIAL_UNIT"`, yours); a unit file
+   that is not masked and can be started, or whose runtime mask is there and
+   did not take; while anything listens on the gate's port; while the user
+   manager knows a unit of this sitting's leads; and when the settings are
+   not the trial's alone. It adds what it found of the trial's unit, one
+   line, to `$ROOT/evidence/trial-unit-guard.txt`. Then it records the
+   trial's settings file (its
    identity and digest) in `$ROOT/swap-record`, renames it within `owner/`
    to `scratch.json.trial`, puts a copy of `$ROOT/owner-scratch.json` at
    `owner/scratch.json`, checks each step, and prints `status: swapped in`.
@@ -525,21 +629,41 @@ open network.
     settings file back to `owner/scratch.json`, checks that it is the same
     file with the same digest, and prints `status: trial in place (the way
     back is done)`.
-15. **OWNER ONLY (C): unmask and start the trial again.**
+15. **OWNER ONLY (C): start the trial again.** Only after step 14, and by
+    the kind that step 14's status names.
+
+    A transient unit: make it again, as it was recorded at step f.
+
+    ```sh
+    sh "$ROOT/trial-restart.sh"
+    ```
+
+    If you masked its name meanwhile, take the mask back first
+    (`systemctl --user unmask --runtime -- "$TRIAL_UNIT"`): a masked name
+    stops `systemd-run` from making the unit.
+
+    A unit file: take the mask back if it is there, and start it, when
+    `trial-unit-before.txt` says `ActiveState=active`.
 
     ```sh
     systemctl --user unmask --runtime -- "$TRIAL_UNIT"
     systemctl --user start -- "$TRIAL_UNIT"
-    systemctl --user show -p ActiveState -p InvocationID -p UnitFileState -- "$TRIAL_UNIT" >"$ROOT/evidence/trial-unit-after.txt"
+    ```
+
+    Then, for both:
+
+    ```sh
+    systemctl --user show -p Id -p Transient -p UnitFileState -p LoadState -p ActiveState -p InvocationID -p MainPID -p ExecStart -- "$TRIAL_UNIT" >"$ROOT/evidence/trial-unit-after.txt"
     journalctl --user --unit "$TRIAL_UNIT" -I | grep 'key fingerprint' | tail -n 1
     ```
 
-    Start it only when `trial-unit-before.txt` says `ActiveState=active`.
     `trial-unit-after.txt` must say `active`, an `InvocationID` other than the
-    one recorded before (a new run), and the `UnitFileState` recorded before.
-    The fingerprint line (`-I`: of this new run only) names the fingerprint
-    of step f. On the phone, the Leads pages show the trial's STAND-IN samples
-    again (`daemon:alpha` first); open one, and the trial's sample card.
+    one recorded before (a new run), and the `Transient` and `UnitFileState`
+    recorded before (`transient` for a transient unit; for a transient unit
+    `ExecStart` names the same program). The fingerprint line (`-I`: of this
+    new invocation only) names the fingerprint of step f. On the phone, the
+    Leads pages show the trial's STAND-IN samples again (`daemon:alpha`
+    first); open one, and the trial's sample card.
 16. **The settings, read:** `sh "$P" --status` prints `status: trial in place
     (the way back is done)`. The trial's settings, gate key, pins and paired
     phones are the same files (the key journal may have advanced with a
@@ -548,8 +672,8 @@ open network.
 ## Recovery
 
 - **Anything cut short after step 1** (a refusal at step 3 or 4, a terminal
-  closed, a power cut): keep the trial's unit masked and both daemons
-  stopped, and run `sh "$P" --status`. It prints one of `trial in place`,
+  closed, a power cut): keep the trial stopped (a unit file masked as in
+  step 1) and both daemons stopped, and run `sh "$P" --status`. It prints one of `trial in place`,
   `swapped in` or `interrupted or ambiguous`, the identity and digest of
   `owner/scratch.json`, `owner/scratch.json.trial` and
   `$ROOT/owner-scratch.json`, the swap record, and exactly one next step.
@@ -561,12 +685,15 @@ open network.
   record) is refused by every mode with nothing moved, and `--status` names
   the step that recovers it; usually that is `--status` with the root of
   the sitting that swapped. Then step 15.
-- **A reboot mid-sitting** removes the runtime mask. If the trial's unit is
-  enabled, it starts at boot and finds the proof's settings, or none, in
-  `owner/scratch.json`: it refuses them and ends (exit 10; it fails closed and
-  serves nothing). The leads' units do not survive a reboot. Stop the trial's
-  unit again (`systemctl --user stop -- "$TRIAL_UNIT"`), mask it as in step
-  1, run `--status`, then `--swap-out`, then step 15.
+- **A reboot mid-sitting.** The leads' units do not survive it, nor does a
+  runtime mask. A transient trial does not come back after a reboot either:
+  nothing starts it, so run `--status`, then `--swap-out`, then
+  `sh "$ROOT/trial-restart.sh"` and the checks of step 15. A unit file that
+  is enabled starts at boot and finds the proof's settings, or none, in
+  `owner/scratch.json`: it refuses them and ends (exit 10; it fails closed
+  and serves nothing). Stop it again (`systemctl --user stop --
+  "$TRIAL_UNIT"`), run `--status`, then `--swap-out`, then step 15 (start
+  it, no mask to take back).
 - **A lead that is `unknown`** after a killed daemon settles by itself 40 s
   after its start, or is stopped with `x` (see
   [a lead left unknown](scratch-leads.md#a-lead-left-unknown-after-a-killed-daemon)).
@@ -593,13 +720,18 @@ these, are the sitting's evidence:
 - `$ROOT/evidence/netcheck.txt`: the network check of step e.
 - `$ROOT/evidence/trial-unit-before.txt` and `trial-unit-after.txt`: the
   trial's unit before the sitting and after it (they name your unit and its
-  command line: keep them with your own files).
+  command line: keep them with your own files). `$ROOT/trial-unit`, the
+  unit's kind, and, for a transient unit, `$ROOT/trial-restart.sh`, which
+  holds its command line: keep them as private as the unit's files.
 - `$ROOT/evidence/daemon.log`: the daemon's output, each run ending with its
   exit status line. Its chat lines hold counts and fixed words, never a
   reply's text; its provisioning lines name folders of the state folder.
 - `$ROOT/evidence/chat-list.jsonl`: `chat list` lines, which hold each lead's
   switch, its flags and counts, never a reply's text.
 - `$ROOT/swap-record`: the trial settings file's identity and digests.
+- `$ROOT/evidence/trial-unit-guard.txt`: what `--swap-in` found of the
+  trial's unit (its kind and states, and for a unit file whose runtime mask
+  did not take, the fallback: no activation source).
 - `evidence/scratch-standin-N-lead.jsonl` and `evidence/scratch-live-N-lead.jsonl`
   of the state folder: each lead's inject events (sent, result, refused),
   with the message id and never the body; and `lead-commands.jsonl` of the

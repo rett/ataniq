@@ -9,6 +9,7 @@
 #                                [--pasta FILE] [--bwrap FILE]
 #   prepare.sh --write    the same
 #   prepare.sh --status   --state DIR --root DIR
+#   prepare.sh --record-trial --state DIR --root DIR --unit NAME
 #   prepare.sh --swap-in  VALUES
 #   prepare.sh --swap-out --state DIR --root DIR --gate IP:PORT --unit NAME
 #   prepare.sh --self-test [gate IP:PORT | config STATE ROOT SITTING [MODEL]
@@ -46,13 +47,28 @@
 # agent, never runs the claude it copies, never answers a prompt and never
 # deletes anything. It never writes in the trial's state folder.
 #
-# --status, --swap-in and --swap-out are the owner's. --status reads only: it
-# names the state of owner/scratch.json, the trial's set-aside
-# owner/scratch.json.trial and ROOT/owner-scratch.json as trial in place,
-# swapped in, or interrupted or ambiguous, with their identities and
-# digests, and prints one next step. --swap-in (the trial's unit inactive and
-# masked, the gate's port free, the leads' units unknown to the user manager)
-# records the trial's settings in ROOT/swap-record, renames them within
+# --record-trial, --status, --swap-in and --swap-out are the owner's.
+# --record-trial (step f, while the trial runs, before step 1) reads the
+# trial's unit from the user manager (systemctl show only) and, for a
+# transient unit, the command line of its main process
+# (/proc/MAINPID/cmdline), and writes in ROOT only: trial-unit (the unit's
+# kind, transient or a unit file, which the later modes read),
+# evidence/trial-unit-before.txt and, for a transient unit, trial-restart.sh
+# (0700), the systemd-run command that re-creates it, every argument
+# single-quoted; prepare never runs it. It refuses, writing nothing, a unit
+# that does not run, a MainPID of 0, a command line it cannot read or that
+# holds a newline, and a program that is not ExecStart's. PREPARE_PROC, for
+# the tests only, names a folder that stands for /proc.
+# --status reads only: it names the state of owner/scratch.json, the trial's
+# set-aside owner/scratch.json.trial and ROOT/owner-scratch.json as trial in
+# place, swapped in, or interrupted or ambiguous, with their identities and
+# digests, and the recorded kind of the trial's unit, and prints one next
+# step. --swap-in (the trial's unit recorded and inactive; a transient one
+# gone, a unit file masked or, when the runtime mask cannot take, without an
+# activation source, see trial_guard; the gate's port free; the leads' units
+# unknown to the user manager) adds what it found to
+# ROOT/evidence/trial-unit-guard.txt, records the trial's settings in
+# ROOT/swap-record, renames them within
 # owner/ to scratch.json.trial and puts a copy of the proof's settings at
 # owner/scratch.json (written under a dot name in owner/, then renamed).
 # --swap-out (the unit inactive, the port free) renames the proof's settings
@@ -92,9 +108,11 @@ usage() {
   printf '%s\n' 'usage: prepare.sh --dry|--write|--swap-in --state DIR --root DIR --gate IP:PORT --sitting N --unit NAME' \
     '                  [--claude FILE --model NAME] [--bin DIR] [--daemon FILE] [--pasta FILE] [--bwrap FILE]' \
     '       prepare.sh --status --state DIR --root DIR' \
+    '       prepare.sh --record-trial --state DIR --root DIR --unit NAME' \
     '       prepare.sh --swap-out --state DIR --root DIR --gate IP:PORT --unit NAME' \
     '       --dry          print what --write makes and your steps, from the values alone; read and write nothing' \
     '       --write        check, make ROOT and write the proof'"'"'s files in it (nothing else)' \
+    '       --record-trial read the running trial'"'"'s unit and write its record in ROOT (yours; it runs nothing)' \
     '       --status       read the trial'"'"'s and the proof'"'"'s settings and print one next step (yours)' \
     '       --swap-in      put the proof'"'"'s settings in place of the trial'"'"'s, within owner/ (yours)' \
     '       --swap-out     put the trial'"'"'s settings back, within owner/ (yours)' \
@@ -235,6 +253,13 @@ check_home() {
   esac
 }
 
+# sq VALUE prints VALUE single-quoted for sh, each ' written as '\''. The
+# callers refuse a value with a newline before (a command substitution would
+# drop a trailing one).
+sq() {
+  printf "'%s'" "$(printf '%s\n' "$1" | LC_ALL=C sed "s/'/'\\\\''/g")"
+}
+
 # phys DIR prints the physical path of an existing folder, or fails.
 phys() { (cd -P -- "$1" 2>/dev/null && pwd -P); }
 
@@ -249,6 +274,9 @@ set_paths() {
   OC=$ROOT/owner-channel
   EVIDENCE=$ROOT/evidence
   RECORD=$ROOT/swap-record
+  KINDREC=$ROOT/trial-unit
+  BEFORE=$EVIDENCE/trial-unit-before.txt
+  RESTART=$ROOT/trial-restart.sh
   OWNER=$S/owner
   CANON=$OWNER/scratch.json
   ASIDE=$OWNER/scratch.json.trial
@@ -385,13 +413,14 @@ EOF
   e. OWNER ONLY (starts pasta, bubblewrap and curl): sh $ROOT/netcheck.sh | tee -a $EVIDENCE/netcheck.txt
      It must say PASS for the gate; write in $EVIDENCE/notes.txt whether you accept the open network it lists.
   f. $DAEMON seat-gate pins --state-dir $S
-     systemctl --user show -p Id -p ExecStart -p ActiveState -p SubState -p LoadState -p UnitFileState -p TriggeredBy -p InvocationID -- "\$TRIAL_UNIT" >$EVIDENCE/trial-unit-before.txt
+     sh $PREP --record-trial $_vals --unit "\$TRIAL_UNIT"   (reads the unit and its command line; writes $KINDREC, $BEFORE and, for a transient unit, its restart script)
      journalctl --user --unit "\$TRIAL_UNIT" -I | grep 'key fingerprint' | tail -n 1
-  g. sh $PREP --status $_vals   (trial in place)
+  g. sh $PREP --status $_vals   (trial in place; it names the kind of the trial's unit)
 Switch from the trial to the proof:
   1. OWNER ONLY: systemctl --user stop -- "\$TRIAL_UNIT"
-     OWNER ONLY: systemctl --user mask --runtime -- "\$TRIAL_UNIT"
-     then: systemctl --user show -p ActiveState -p LoadState -- "\$TRIAL_UNIT"   (inactive, masked)
+     a unit file only (step g names the kind): OWNER ONLY: systemctl --user mask --runtime -- "\$TRIAL_UNIT"
+     then: systemctl --user show -p ActiveState -p LoadState -- "\$TRIAL_UNIT"   (inactive; not-found for a transient unit, masked for a unit file)
+     a unit file still loaded (the mask did not take): OWNER ONLY: systemctl --user unmask --runtime -- "\$TRIAL_UNIT"   (step 3 then checks that nothing can start it)
   2. $BIN/ataniq-canary scratch-init --config $CONFIG
   3. sh $PREP --swap-in $_vals --gate $_g --sitting $SITTING --unit "\$TRIAL_UNIT"
   4. OWNER ONLY (terminal A): sh -c 'trap : INT; "\$@" 2>&1; echo "ataniqd: exit status \$?"' sh $DAEMON run --scratch $CONFIG --owner-channel --seat-gate $_g | tee -ai $EVIDENCE/daemon.log
@@ -435,10 +464,11 @@ EOF
      $_c list --config $CONFIG >>$EVIDENCE/chat-list.jsonl   ($KEY_STANDIN is off now)
      OWNER ONLY: Ctrl+C in A again (exit status 0); systemctl --user list-units --all -- $_units   (0 units)
  14. sh $PREP --swap-out $_vals --gate $_g --unit "\$TRIAL_UNIT"
- 15. OWNER ONLY: systemctl --user unmask --runtime -- "\$TRIAL_UNIT"
-     OWNER ONLY: systemctl --user start -- "\$TRIAL_UNIT"   (when trial-unit-before.txt says ActiveState=active)
-     systemctl --user show -p ActiveState -p InvocationID -p UnitFileState -- "\$TRIAL_UNIT" >$EVIDENCE/trial-unit-after.txt
-     journalctl --user --unit "\$TRIAL_UNIT" -I | grep 'key fingerprint' | tail -n 1
+ 15. a transient unit (step 14 printed the kind): OWNER ONLY: sh $RESTART   (re-creates it as recorded)
+     a unit file: OWNER ONLY: systemctl --user unmask --runtime -- "\$TRIAL_UNIT"   (when it is masked)
+     a unit file: OWNER ONLY: systemctl --user start -- "\$TRIAL_UNIT"   (when trial-unit-before.txt says ActiveState=active)
+     systemctl --user show -p Id -p Transient -p UnitFileState -p LoadState -p ActiveState -p InvocationID -p MainPID -p ExecStart -- "\$TRIAL_UNIT" >$EVIDENCE/trial-unit-after.txt
+     journalctl --user --unit "\$TRIAL_UNIT" -I | grep 'key fingerprint' | tail -n 1   (this new invocation only)
  16. sh $PREP --status $_vals   (trial in place, the way back done); the phone shows the trial's samples
 EOF
 }
@@ -468,6 +498,14 @@ self_check() {
     else
       [ "$_u" != sample.service ] || _fail "the unit $_u is refused"
     fi
+    _n=$((_n + 1))
+  done
+  # sq: what the shell reads back is the value itself.
+  _r=''
+  # shellcheck disable=SC2016,SC1003  # the samples are literal on purpose
+  for _v in 'a b' "it's" "'" "''" '$HOME' '${x}' 'a\b' '\' '`x`' '"q"' '' ' -x ' '*' '!x' '%s'; do
+    eval "_r=$(sq "$_v")"
+    [ "$_r" = "$_v" ] || _fail "sq does not quote $_v"
     _n=$((_n + 1))
   done
   HOME=/srv/sample/home
@@ -503,11 +541,12 @@ self_check() {
     MODEL=sample-model
     _o=$(commands 192.0.2.10:7443 "$_m")
     case $_o in *'--swap-in '*'--swap-out '*'--status '*) ;; *) _fail 'the steps lack the swaps in order' ;; esac
+    case $_o in *'--record-trial '*'systemctl --user stop'*) ;; *) _fail 'the steps do not record the trial before they stop it' ;; esac
     case $_o in *'TRIAL_UNIT'*) ;; *) _fail 'the steps do not name the unit' ;; esac
     case $_o in *'KEY'*) _fail 'the steps name a lead KEY' ;; esac
     case $_o in *'live-7'*) [ -n "$_m" ] || _fail 'the steps name a lead that is not configured' ;; esac
     case $_o in *'claude --version'*) [ -n "$_m" ] || _fail 'the steps run claude without a live lead' ;; esac
-    _n=$((_n + 4))
+    _n=$((_n + 5))
     _rest=$_o$_nl
     while [ -n "$_rest" ]; do
       _l=${_rest%%"$_nl"*}
@@ -519,7 +558,7 @@ self_check() {
       esac
       case $_l in
         *'systemctl --user st'* | *'systemctl --user mask'* | *'systemctl --user unmask'* | *' run --scratch '* | \
-          *'ataniq-console '* | *' --version'* | *'d on '* | *'s on '* | *'netcheck.sh'*)
+          *'ataniq-console '* | *' --version'* | *'d on '* | *'s on '* | *'netcheck.sh'* | *'trial-restart.sh'*)
           case $_l in *'OWNER ONLY'*) ;; *) _fail "a step that starts a process, changes a unit or defines a lead is not marked OWNER ONLY: $_l" ;; esac ;;
       esac
       case $_l in
@@ -602,7 +641,7 @@ PASTA=
 BWRAP=
 while [ "$#" -gt 0 ]; do
   case $1 in
-    --dry | --write | --status | --swap-in | --swap-out)
+    --dry | --write | --status | --record-trial | --swap-in | --swap-out)
       [ -z "$MODE" ] || usage
       MODE=${1#--}
       shift
@@ -636,6 +675,7 @@ case $MODE in
     check_gate "$GATE"
     check_unit "$UNIT"
     ;;
+  record-trial) check_unit "$UNIT" ;;
 esac
 case $MODE in
   dry | write | swap-in) check_sitting "$SIT" ;;
@@ -809,24 +849,120 @@ port_listens() {
   return 1
 }
 
-# unit_quiet refuses a trial unit that runs, and with "masked", one that is
-# not masked; and a gate port that something listens on.
+# unit_quiet refuses a trial unit that runs and a gate port that something
+# listens on.
 unit_quiet() {
   _a=$(unit_prop "$UNIT" ActiveState)
   [ "$_a" = inactive ] || die "the trial's unit is $_a, not inactive: stop it first (step 1): systemctl --user stop -- \"\$TRIAL_UNIT\""
-  if [ "${1:-}" = masked ]; then
-    _l=$(unit_prop "$UNIT" LoadState)
-    [ "$_l" = masked ] || die "the trial's unit is $_l, not masked, so it could start meanwhile: systemctl --user mask --runtime -- \"\$TRIAL_UNIT\" (step 1; the guide says what to do when it does not take)"
-  fi
+  port_free
+}
+port_free() {
   if port_listens "${GATE##*:}"; then die "something listens on the gate's port ${GATE##*:}: a daemon still runs (the trial's or the proof's); stop it first"; fi
+}
+
+# trial_guard is --swap-in's check that nothing can start the trial during
+# the sitting, by the kind --record-trial recorded, and that the gate's port
+# is free. It sets GUARD, the line --swap-in adds to the evidence.
+#   A transient unit: inactive, and gone (LoadState not-found; masked is
+#   taken too): only trial-restart.sh, run by hand, makes it again.
+#   A unit file: inactive and masked; or, when the runtime mask did not take
+#   (a unit file of higher priority shadows the runtime folder) and has been
+#   taken back, loaded with no activation source: TriggeredBy, WantedBy,
+#   RequiredBy, BoundBy and UpheldBy empty and UnitFileState not enabled,
+#   linked or alias (a start by hand would still fail closed: the trial
+#   refuses the proof's settings and the state folder's lock a second
+#   daemon). Anything else is refused with its reason.
+trial_guard() {
+  kind_read
+  case $K_ST in
+    none) die "this ROOT has no record of the trial's unit: run --record-trial while the trial runs (step f, before step 1)" ;;
+    bad) die "$KINDREC is a link, not a regular file, unreadable or not a record of --record-trial: look at it" ;;
+  esac
+  [ "$K_UNIT" = "$UNIT" ] || die "this ROOT recorded the trial's unit $K_UNIT, not $UNIT: give the unit of the record"
+  _a=$(unit_prop "$UNIT" ActiveState)
+  [ "$_a" = inactive ] || die "the trial's unit is $_a, not inactive: stop it first (step 1): systemctl --user stop -- \"\$TRIAL_UNIT\""
+  _l=$(unit_prop "$UNIT" LoadState)
+  if [ "$K_KIND" = transient ]; then
+    case $_l in
+      not-found | masked) GUARD="kind transient, ActiveState=$_a, LoadState=$_l: gone; only trial-restart.sh makes it again: accepted" ;;
+      *) die "the trial's transient unit is $_l, not gone (not-found), so it could be started again meanwhile: a failed one stays loaded until it is reset (OWNER ONLY: systemctl --user reset-failed -- \"\$TRIAL_UNIT\"), then --swap-in again" ;;
+    esac
+  else
+    case $_l in
+      masked) GUARD="kind file, ActiveState=$_a, LoadState=masked: the runtime mask took: accepted" ;;
+      loaded)
+        _rt=${XDG_RUNTIME_DIR:-}
+        case $_rt in
+          /*) ;;
+          *) die "the trial's unit is not masked and XDG_RUNTIME_DIR is not set, so the runtime mask of step 1 cannot be looked at" ;;
+        esac
+        if ! gone "$_rt/systemd/user/$UNIT"; then
+          die "the trial's unit is not masked though its runtime mask is there: a unit file of higher priority shadows it; take the mask back (OWNER ONLY: systemctl --user unmask --runtime -- \"\$TRIAL_UNIT\"), then --swap-in again: it checks that nothing can start the unit"
+        fi
+        _src=''
+        for _p in TriggeredBy WantedBy RequiredBy BoundBy UpheldBy; do
+          _v=$(unit_prop "$UNIT" "$_p")
+          [ -z "$_v" ] || _src="$_src $_p=$_v"
+        done
+        _ufs=$(unit_prop "$UNIT" UnitFileState)
+        case $_ufs in
+          enabled | enabled-runtime | linked | linked-runtime | alias) _src="$_src UnitFileState=$_ufs" ;;
+        esac
+        [ -z "$_src" ] || die "the trial's unit is not masked (a unit file of higher priority shadows the runtime mask) and can be started:$_src; stop the sitting here and start the trial again (step 15)"
+        GUARD="kind file, ActiveState=$_a, LoadState=loaded: the runtime mask did not take (a unit file of higher priority shadows it) and was taken back; fallback: no activation source (TriggeredBy, WantedBy, RequiredBy, BoundBy and UpheldBy empty, UnitFileState=$_ufs): accepted"
+        ;;
+      *) die "the trial's unit is $_l, neither masked nor loaded: look at it before the sitting with systemctl --user status" ;;
+    esac
+  fi
+  port_free
 }
 
 # The swap record in ROOT: one "key value" per line.
 rec_get() { awk -v k="$1" '$1 == k { print $2; exit }' "$RECORD"; }
 
+# kv_get FILE KEY prints the rest of the first line of FILE that starts with
+# KEY and a space.
+kv_get() { awk -v k="$2" '$1 == k { sub(/^[^ ]+ /, ""); print; exit }' "$1"; }
+
+# kind_read reads ROOT/trial-unit, which --record-trial writes, and sets K_ST
+# (none, rec or bad), and for a record K_KIND (transient or file), K_UNIT,
+# K_INV (the invocation recorded) and K_FRAG (the unit file).
+kind_read() {
+  K_ST=none K_KIND='' K_UNIT='' K_INV='' K_FRAG=''
+  fstate "$KINDREC"
+  case $F_K in
+    absent) return 0 ;;
+    file) ;;
+    *) K_ST=bad; return 0 ;;
+  esac
+  if [ "$(sed -n 1p -- "$KINDREC")" != 'trial-unit 1' ]; then K_ST=bad; return 0; fi
+  K_KIND=$(kv_get "$KINDREC" kind) K_UNIT=$(kv_get "$KINDREC" unit) K_INV=$(kv_get "$KINDREC" invocation) K_FRAG=$(kv_get "$KINDREC" fragment)
+  case $K_KIND in
+    transient | file) K_ST=rec ;;
+    *) K_ST=bad ;;
+  esac
+}
+
+# kind_print prints the line of --status about the trial's unit.
+kind_print() {
+  case $K_ST in
+    none) say "  $KINDREC: none (record the trial's unit while it runs: --record-trial, step f)" ;;
+    bad) say "  $KINDREC: a link, not a regular file, unreadable or not a record of --record-trial" ;;
+    *)
+      if [ "$K_KIND" = transient ]; then
+        say "  $KINDREC: unit $K_UNIT, transient (made by systemd-run; step 15 re-creates it with $RESTART)"
+      else
+        say "  $KINDREC: unit $K_UNIT, a unit file ($K_FRAG)"
+      fi
+      say "  invocation recorded: $K_INV (step 15 wants another one, a new run)"
+      ;;
+  esac
+}
+
 # classify reads the three names and the record and sets ST (trial, in,
 # ambiguous), SUB, NEXT, and the facts status_print prints.
 classify() {
+  kind_read
   ST=ambiguous SUB='' SUBK='' NEXT=''
   HAVE_REC=
   R_STATE='' R_ID='' R_SHA='' R_PSHA='' R_ARCH=''
@@ -867,18 +1003,27 @@ classify() {
     NEXT="this ROOT's swap record is of another state folder ($R_STATE): run --status with the root of the sitting that swapped this state folder"
     return 0
   fi
-  _mask='keep the trial unit masked and both daemons stopped'
+  _mask='keep the trial stopped (a unit file masked as in step 1) and both daemons stopped'
   if [ "$C_K" = trial ] && [ "$T_K" = absent ]; then
     if [ -z "$HAVE_REC" ]; then
       ST=trial SUBK=fresh SUB='not swapped'
-      NEXT='stop and mask the trial unit (step 1), scratch-init (step 2), then --swap-in (step 3)'
+      case $K_ST:$K_KIND in
+        rec:transient) NEXT='stop the trial'"'"'s transient unit (step 1; it is not masked: stopped, it is gone), scratch-init (step 2), then --swap-in (step 3)' ;;
+        rec:file) NEXT='stop the trial'"'"'s unit and mask it for this boot (step 1), scratch-init (step 2), then --swap-in (step 3)' ;;
+        bad:*) NEXT="look at $KINDREC, which is not a record of --record-trial; then stop the trial (step 1), scratch-init (step 2) and --swap-in (step 3)" ;;
+        *) NEXT='record the trial'"'"'s unit while it runs (--record-trial, step f), then stop it (step 1), scratch-init (step 2) and --swap-in (step 3)' ;;
+      esac
       return 0
     fi
     if [ "$C_ID" = "$R_ID" ] && [ "$C_SHA" = "$R_SHA" ]; then
       case $A_K in
         proof)
           ST=trial SUBK=back SUB='the way back is done'
-          NEXT='unmask the trial unit and start it again (step 15)'
+          case $K_ST:$K_KIND in
+            rec:transient) NEXT="re-create the trial's transient unit: OWNER ONLY: sh $RESTART (step 15), then check its new invocation and fingerprint" ;;
+            rec:file) NEXT='unmask the trial'"'"'s unit if it is masked and start it again (step 15), then check its new invocation and fingerprint' ;;
+            *) NEXT='start the trial again as you made it (step 15)' ;;
+          esac
           return 0
           ;;
         absent)
@@ -970,6 +1115,7 @@ status_print() {
   else
     say "  $RECORD: none"
   fi
+  kind_print
   _others=$(find "$OWNER" -mindepth 1 -maxdepth 1 \( -name 'scratch.json*' -o -name '.scratch.json*' \) -print 2>/dev/null | LC_ALL=C sort) || _others=
   for _o in $_others; do
     case $_o in
@@ -1025,6 +1171,160 @@ if [ "$MODE" = status ]; then
   exit 0
 fi
 
+# cmdline_read FILE reads a command line as /proc/PID/cmdline holds it (each
+# argument ends with a NUL) and sets ARGV0, the first argument, ARGC, and
+# QARGV, every argument single-quoted, separated by spaces. It fails, with
+# CL_WHY, for a file it cannot read, an empty one, one whose last byte is not
+# a NUL (a process that changed its command line) and one with a newline in
+# an argument, which the restart script would not keep exactly.
+cmdline_read() {
+  CL_WHY=''
+  _oct=$(od -An -v -to1 -- "$1" 2>/dev/null) || { CL_WHY='cannot be read'; return 1; }
+  ARGV0='' QARGV='' ARGC=0 _esc='' _b=''
+  for _b in $_oct; do
+    case $_b in
+      000)
+        # shellcheck disable=SC2059  # the format holds only octal escapes, one per byte
+        _a=$(printf "$_esc")
+        if [ "$ARGC" -eq 0 ]; then
+          ARGV0=$_a QARGV=$(sq "$_a")
+        else
+          QARGV="$QARGV $(sq "$_a")"
+        fi
+        ARGC=$((ARGC + 1)) _esc=''
+        ;;
+      012) CL_WHY='holds a newline in an argument, which a restart script would not keep exactly'; return 1 ;;
+      [0-3][0-7][0-7]) _esc="$_esc\\$_b" ;;
+      *) CL_WHY='cannot be read as bytes'; return 1 ;;
+    esac
+  done
+  [ -n "$_b" ] || { CL_WHY='is empty'; return 1; }
+  [ "$_b" = 000 ] || { CL_WHY='does not end with a NUL (the process changed its command line)'; return 1; }
+}
+
+# --record-trial: the trial's unit as it runs, before step 1. It reads the
+# user manager (show only) and the main process's command line, checks all
+# of it, and only then writes, in ROOT, the evidence, the restart script of a
+# transient unit and, last, the kind record the later modes read. It never
+# runs the script it writes.
+if [ "$MODE" = record-trial ]; then
+  PROC=${PREPARE_PROC:-/proc}
+  safe_path PREPARE_PROC "$PROC"
+  [ -d "$ROOT" ] && [ ! -L "$ROOT" ] || die "the root is not a folder made by --write: $ROOT"
+  [ -d "$EVIDENCE" ] && [ ! -L "$EVIDENCE" ] || die "the root has no evidence/ folder: run --write first: $EVIDENCE"
+  gone "$RECORD" || die "this ROOT has swapped already ($RECORD): the trial's unit is recorded before step 1, while the trial runs; nothing was written"
+  for _f in "$KINDREC" "$BEFORE" "$RESTART" "$KINDREC.new" "$BEFORE.new" "$RESTART.new"; do
+    gone "$_f" || die "$_f is there already: the trial's unit is recorded once for a root, and the record is kept; nothing was written"
+  done
+  _nl='
+'
+  _txt=''
+  # Every property is set by the loop, through eval.
+  U_Id='' U_Description='' U_Transient='' U_UnitFileState='' U_FragmentPath='' U_CollectMode='' U_LoadState=''
+  U_ActiveState='' U_InvocationID='' U_MainPID='' U_ExecStart=''
+  for _p in Id Description Transient UnitFileState FragmentPath CollectMode LoadState ActiveState SubState \
+    TriggeredBy WantedBy RequiredBy BoundBy UpheldBy InvocationID MainPID ExecStart Restart Environment WorkingDirectory; do
+    _v=$(unit_prop "$UNIT" "$_p")
+    case $_v in *"$_nl"*) die "the trial's unit's $_p has more than one line; nothing was written" ;; esac
+    eval "U_$_p=\$_v"
+    _txt="$_txt$_p=$_v$_nl"
+  done
+  [ "$U_Id" = "$UNIT" ] || die "the user manager names the unit $U_Id, not $UNIT (an alias?): give its own name; nothing was written"
+  [ "$U_LoadState" = loaded ] || die "the trial's unit is $U_LoadState, not loaded: record it while the trial runs, before step 1; nothing was written"
+  [ "$U_ActiveState" = active ] || die "the trial's unit is $U_ActiveState, not active: record it while the trial runs, before step 1; nothing was written"
+  case $U_InvocationID in
+    '' | *[!0-9a-f]*) die "the trial's unit has no invocation id ($U_InvocationID); nothing was written" ;;
+  esac
+  case $U_Transient in
+    yes)
+      KIND='transient'
+      [ "$U_UnitFileState" = transient ] || die "the trial's unit is transient but its UnitFileState is $U_UnitFileState; nothing was written"
+      case $U_FragmentPath in
+        /*/systemd/transient/*) ;;
+        *) die "the trial's transient unit is not in a transient folder of the user manager ($U_FragmentPath); nothing was written" ;;
+      esac
+      ;;
+    no)
+      KIND='file'
+      case $U_FragmentPath in
+        /*) ;;
+        *) die "the trial's unit is not transient and has no unit file (FragmentPath is empty); nothing was written" ;;
+      esac
+      [ "$U_UnitFileState" != transient ] || die "the trial's unit says Transient=no and UnitFileState=transient; nothing was written"
+      ;;
+    *) die "the trial's unit says Transient=$U_Transient, neither yes nor no; nothing was written" ;;
+  esac
+  if [ "$KIND" = transient ]; then
+    case $U_MainPID in
+      '' | *[!0-9]* | 0*) die "the trial's unit has no main process (MainPID=$U_MainPID), so its command line cannot be read for the restart script; nothing was written" ;;
+    esac
+    case $U_CollectMode in
+      inactive-or-failed) _collect=' --collect' ;;
+      inactive) _collect='' ;;
+      *) die "the trial's transient unit has CollectMode=$U_CollectMode, which the restart script cannot give; nothing was written" ;;
+    esac
+    case $U_ExecStart in
+      '{ path='*' ; argv[]='*) ;;
+      *) die "the trial's ExecStart is not one command with a path; nothing was written" ;;
+    esac
+    _es=${U_ExecStart#'{ path='}
+    case $_es in
+      *' ; argv[]='*' ; argv[]='*) die "the trial's ExecStart holds more than one command; nothing was written" ;;
+    esac
+    _prog=${_es%%' ; argv[]='*}
+    _cl=$PROC/$U_MainPID/cmdline
+    cmdline_read "$_cl" || die "the command line of the trial's main process ($_cl) $CL_WHY: no restart script can be written; nothing was written"
+    [ "$ARGV0" = "$_prog" ] || die "the trial's main process ($U_MainPID) runs $ARGV0, not ExecStart's program $_prog: the process is not the unit's command; nothing was written"
+    _desc=''
+    [ -z "$U_Description" ] || _desc=" --description $(sq "$U_Description")"
+  fi
+
+  # shellcheck disable=SC2329  # the trap below runs it
+  half_rec() {
+    _rc=$?
+    if [ "$_rc" -ne 0 ]; then printf '%s\n' "$NAME: --record-trial stopped part way: look at $ROOT (it keeps what was written)" >&2; fi
+    exit "$_rc"
+  }
+  trap half_rec EXIT
+  printf '%s' "$_txt" >"$BEFORE.new"
+  no_replace "$BEFORE.new" "$BEFORE"
+  _krec="trial-unit 1${_nl}unit $UNIT${_nl}kind $KIND${_nl}invocation $U_InvocationID${_nl}"
+  if [ "$KIND" = transient ]; then
+    printf '%s\n' '#!/bin/sh' \
+      '# Written by prepare.sh --record-trial from the phone trial'"'"'s transient unit as' \
+      '# it ran: its name, description and collect mode, as the user manager shows them, and the' \
+      "# command line of its main process ($_cl), every argument single-quoted." \
+      '# prepare never runs it. Run it by hand at step 15, after --swap-out' \
+      '# (docs/scratch-seat-proof.md). It re-creates the unit with those and' \
+      '# nothing else of it.' \
+      'set -eu' \
+      "name=$(sq "$UNIT")" \
+      "exec systemd-run --user --unit \"\$name\"$_desc$_collect -- $QARGV" >"$RESTART.new"
+    chmod 0700 -- "$RESTART.new"
+    sh -n "$RESTART.new" || die "the restart script written does not parse: $RESTART.new"
+    no_replace "$RESTART.new" "$RESTART"
+    _krec="${_krec}restart $RESTART${_nl}"
+  else
+    _krec="${_krec}fragment $U_FragmentPath${_nl}"
+  fi
+  printf '%s' "$_krec" >"$KINDREC.new"
+  no_replace "$KINDREC.new" "$KINDREC"
+  trap - EXIT
+  if [ "$KIND" = transient ]; then
+    say "recorded the trial's unit: transient (made by systemd-run), its program $ARGV0 and $ARGC arguments in all"
+    say "  $BEFORE: the unit as it runs"
+    say "  $RESTART (0700): re-creates it at step 15, after --swap-out; prepare never runs it"
+    say "  $KINDREC: its kind, for --swap-in, --status and step 15"
+    say "next: step 1 stops it (a transient unit is not masked: stopped, it is gone)"
+  else
+    say "recorded the trial's unit: a unit file, $U_FragmentPath"
+    say "  $BEFORE: the unit as it runs"
+    say "  $KINDREC: its kind, for --swap-in, --status and step 15"
+    say "next: step 1 stops it and masks it for this boot (--runtime)"
+  fi
+  exit 0
+fi
+
 if [ "$MODE" = swap-in ] || [ "$MODE" = swap-out ]; then
   check_state
   [ -d "$ROOT" ] && [ ! -L "$ROOT" ] || die "the root is not a folder made by --write: $ROOT"
@@ -1052,12 +1352,17 @@ if [ "$MODE" = swap-in ]; then
   elif [ "$R_ARCH" != "$ARCHIVE_NAME" ]; then
     die "this ROOT's record is of another sitting (archive owner/$R_ARCH): give its --sitting"
   fi
-  unit_quiet masked
+  trial_guard
   keys_fresh
   for _k in "$KEY_STANDIN" "$KEY_LIVE"; do
     _l=$(unit_prop "ataniq-lead-scratch-$_k.service" LoadState)
     [ "$_l" = not-found ] || die "the user manager knows the unit ataniq-lead-scratch-$_k.service ($_l): another scratch root uses the key $_k; give another --sitting"
   done
+  # What the guard found, kept as evidence (a fallback of a unit file
+  # included); one line for each --swap-in that gets this far.
+  GUARDF=$EVIDENCE/trial-unit-guard.txt
+  if [ -L "$GUARDF" ] || { [ -e "$GUARDF" ] && [ ! -f "$GUARDF" ]; }; then die "$GUARDF is a link or not a regular file: nothing was moved"; fi
+  printf '%s\n' "swap-in, sitting $SITTING, unit $UNIT: $GUARD" >>"$GUARDF"
   if [ -z "$HAVE_REC" ]; then
     _new=$RECORD.new
     gone "$_new" || die "$_new is there: look at it; nothing was moved"
