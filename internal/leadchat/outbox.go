@@ -113,8 +113,9 @@ type claimState struct {
 // an earlier segment left is removed, or set aside when it is a folder, and
 // whatever the staging folder holds is set aside; the new outbox is made in
 // the staging folder with mode 0700, opened there, judged by its descriptor
-// (a folder of the daemon's user, empty, with one link from its parent) and
-// set to mode 0700; a probe file made in it is claimed and removed, to prove
+// (a folder of the daemon's user that holds nothing; its link count is not
+// judged, since a file system may report one for a folder) and set to mode
+// 0700; a probe file made in it is claimed and removed, to prove
 // the file system renames without replacing; the earlier outbox, whatever it
 // is (an empty folder included), is set aside (renamed, never read or
 // walked); and the held folder is published at the outbox's name by a rename
@@ -178,7 +179,7 @@ func (s *Store) openGrant() (*grant, int, error) {
 		return unstage(fmt.Errorf("leadchat: cannot open the outbox: %w", err))
 	}
 	g.out = out
-	if err := checkFresh(out); err != nil {
+	if err := s.checkFresh(out); err != nil {
 		return unstage(err)
 	}
 	// The umask may have cleared bits; the outbox is 0700 exactly. The
@@ -233,15 +234,20 @@ func (s *Store) openGrant() (*grant, int, error) {
 }
 
 // checkFresh judges the folder a turn-on made in the staging folder, by its
-// descriptor: a folder of the daemon's user that holds nothing and has one
-// link from its parent. A folder put in its place before it was opened holds
-// something or was made by another, and is refused ([ErrUnavailable]).
-func checkFresh(fd int) error {
-	st, err := fstatFD(fd)
+// descriptor: a folder of the daemon's user that holds nothing (its listing).
+// The staging folder is the daemon's own (0700, bound into no sandbox), so
+// what is found there is the daemon's; a folder put in its place before it
+// was opened holds something or was made by another, and is refused
+// ([ErrUnavailable]). The folder's link count is not judged: a file system
+// may report one link for a folder (Btrfs does). Its mode is set to 0700 and
+// checked next, and its identity is held by the descriptor until the
+// segment ends.
+func (s *Store) checkFresh(fd int) error {
+	st, err := s.fstat(fd)
 	if err != nil {
 		return fmt.Errorf("leadchat: cannot examine the outbox: %w", err)
 	}
-	if st.Mode&unix.S_IFMT != unix.S_IFDIR || int(st.Uid) != unix.Geteuid() || st.Nlink != 2 {
+	if st.Mode&unix.S_IFMT != unix.S_IFDIR || int(st.Uid) != unix.Geteuid() {
 		return fmt.Errorf("%w: the outbox the daemon made was replaced before it was opened", ErrUnavailable)
 	}
 	names, more, err := readNames(fd, 0)

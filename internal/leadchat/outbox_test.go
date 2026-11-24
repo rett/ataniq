@@ -1171,6 +1171,31 @@ func TestTurnOnMakesAFreshOutbox(t *testing.T) {
 			})
 		}
 	})
+	t.Run("a folder that reports one link", func(t *testing.T) {
+		// Btrfs reports one link for every folder: the turn-on judges
+		// the folder it made by its type, owner, mode and listing, never
+		// by its link count.
+		for _, links := range []uint64{1, 2, 3} {
+			e := newEnv(t)
+			s := e.open()
+			stats := 0
+			s.fstat = func(fd int) (unix.Stat_t, error) {
+				st, err := fstatFD(fd)
+				st.Nlink = links
+				stats++
+				return st, err
+			}
+			if _, err := s.SetSwitch("read", 1); err != nil {
+				t.Fatalf("links %d: SetSwitch read: %v", links, err)
+			}
+			if stats == 0 {
+				t.Fatalf("links %d: the stat hook was not used", links)
+			}
+			e.reply("a.txt", "Through a folder of one link.")
+			ingest(t, s)
+			wantTexts(t, s, TextTurnedOn, "Through a folder of one link.")
+		}
+	})
 	t.Run("replaced right after it is published", func(t *testing.T) {
 		e := newEnv(t)
 		s := e.open()

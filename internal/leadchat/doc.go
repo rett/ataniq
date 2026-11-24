@@ -46,11 +46,12 @@
 //     an earlier turn-on made and did not publish) is set aside too;
 //  3. the new outbox is made in the staging folder (mode 0700), opened there
 //     by openat2 and judged on its descriptor: a folder of the daemon's user
-//     that holds nothing and has one link from its parent, so a name put in
-//     its place before the open is refused ([ErrUnavailable]). Its mode is
-//     set to 0700 exactly on that descriptor, which is held until the
-//     segment ends: the grant is bound to a folder the daemon made, never to
-//     one it found;
+//     that holds nothing (its listing; its link count is not judged, since a
+//     file system may report one link for a folder, as Btrfs does), so a
+//     name put in its place before the open is refused ([ErrUnavailable]).
+//     Its mode is set to 0700 exactly on that descriptor, which is held
+//     until the segment ends: the grant is bound to a folder the daemon
+//     made, never to one it found;
 //  4. a probe file made in the new outbox is claimed and removed as a reply
 //     is: a file system or a filter that cannot rename without replacing
 //     (EINVAL, ENOSYS, EOPNOTSUPP, EPERM, EACCES, or two file systems)
