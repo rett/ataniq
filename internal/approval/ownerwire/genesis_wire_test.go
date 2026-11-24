@@ -59,15 +59,15 @@ func genesisRows() *GenesisGroups {
 	}
 }
 
-// The operation is the gate's alone, the last of the six, and its name has the
-// form of the others.
+// The operation is the gate's alone, the sixth of the seven, and its name has
+// the form of the others.
 func TestSeatGenesisIsAGateOperation(t *testing.T) {
 	if OpSeatGenesis != "seat.genesis" {
 		t.Fatalf("the operation is %q", OpSeatGenesis)
 	}
 	gate := GateOperations()
-	if len(gate) != 6 || gate[5] != OpSeatGenesis {
-		t.Fatalf("the gate operations are %v, want seat.genesis last of six", gate)
+	if len(gate) != 7 || gate[5] != OpSeatGenesis {
+		t.Fatalf("the gate operations are %v, want seat.genesis sixth of seven", gate)
 	}
 	for _, op := range Operations() {
 		if op == OpSeatGenesis {

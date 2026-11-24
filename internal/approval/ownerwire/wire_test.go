@@ -158,6 +158,8 @@ func forms(t testing.TB) []form {
 		formOf(t, "seat wait result", MaxSeatWaitResultBytes, inv, sampleSeatWaitResult(), DecodeSeatWaitResult, EncodeSeatWaitResult),
 		formOf(t, "seat genesis params", MaxSeatGenesisParamsBytes, inv, sampleSeatGenesisParams(), DecodeSeatGenesisParams, EncodeSeatGenesisParams),
 		formOf(t, "seat genesis result", MaxSeatGenesisResultBytes, inv, sampleSeatGenesisResult(), DecodeSeatGenesisResult, EncodeSeatGenesisResult),
+		formOf(t, "seat chat params", MaxSeatChatParamsBytes, inv, sampleSeatChatParams(), DecodeSeatChatParams, EncodeSeatChatParams),
+		formOf(t, "seat chat result", MaxSeatChatResultBytes, inv, sampleSeatChatRead(), DecodeSeatChatResult, EncodeSeatChatResult),
 	}
 }
 

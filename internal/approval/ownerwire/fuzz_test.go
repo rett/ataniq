@@ -329,3 +329,37 @@ func FuzzDecodeSeatGenesisResult(f *testing.F) {
 		`{`+head+`,"groups":{"decided_for_you":[],"defaults":[],"you_chose":[`+row+`]},"nodes":[],"of":6,"plan":`+planJSON+`,"progress":{"filled":1,"total":1},"reset":0,"round":3,"state":"summary"}`,
 		`{`+head+`,"groups":{"decided_for_you":[],"defaults":[],"you_chose":[`+row+`]},"nodes":[],"of":6,"progress":{"filled":1,"plan_ready":true,"total":1},"reset":0,"round":3,"state":"summary"}`)
 }
+
+func FuzzDecodeSeatChatParams(f *testing.F) {
+	const l = `"lead":"daemon:alpha"`
+	fuzzForm(f, "seat chat params",
+		`{"verb":"leads"}`, `{`+l+`,"limit":1,"verb":"read"}`, `{"after":4,`+l+`,"limit":16,"verb":"read"}`,
+		`{"after":0,`+l+`,"limit":2,"verb":"read"}`, `{"after":9007199254740991,`+l+`,"limit":1,"verb":"read"}`,
+		`{"after":9007199254740992,`+l+`,"limit":1,"verb":"read"}`, `{"after":-1,`+l+`,"limit":1,"verb":"read"}`,
+		`{`+l+`,"limit":0,"verb":"read"}`, `{`+l+`,"limit":17,"verb":"read"}`, `{`+l+`,"verb":"read"}`,
+		`{"limit":1,"verb":"read"}`, `{`+l+`,"verb":"leads"}`, `{"limit":1,"verb":"leads"}`,
+		`{"body":"hi",`+l+`,"verb":"send"}`, `{"verb":"Leads"}`, `{"verb":1}`, `{"verb":"leads","verb":"leads"}`,
+		`{"lead":"tmux:alpha","limit":1,"verb":"read"}`, `{"lead":"daemon:-a","limit":1,"verb":"read"}`,
+		`{"lead":"daemon:A","limit":1,"verb":"read"}`, `{"lead":"daemon:","limit":1,"verb":"read"}`)
+}
+
+func FuzzDecodeSeatChatResult(f *testing.F) {
+	const at = `"at":"2026-11-23T10:00:00Z"`
+	const e1 = `{` + at + `,"cut":false,"seq":1,"text":"Lead started","who":"system"}`
+	const e2 = `{` + at + `,"cut":true,"seq":2,"text":{"b64":"dHdvCmxpbmVz"},"who":"lead"}`
+	const on = `{"chat":"read","epoch":3,"head":10,"lead":"daemon:alpha","state":"running"}`
+	const off = `{"chat":"off","lead":"daemon:charlie"}`
+	fuzzForm(f, "seat chat result",
+		`{"leads":[],"state":"leads"}`, `{"leads":[`+on+`,`+off+`],"stand_in":true,"state":"leads"}`,
+		`{"leads":[`+on+`,`+on+`],"state":"leads"}`, `{"leads":[{"chat":"off","epoch":0,"lead":"daemon:charlie"}],"state":"leads"}`,
+		`{"leads":[{"chat":"off","lead":"daemon:charlie","state":"stopped"}],"state":"leads"}`,
+		`{"leads":[{"chat":"read","lead":"daemon:alpha"}],"state":"leads"}`, `{"state":"leads"}`,
+		`{"entries":[`+e1+`,`+e2+`],"epoch":3,"head":2,"lead":"daemon:alpha","more":true,"stand_in":true,"state":"read"}`,
+		`{"entries":[`+e2+`,`+e1+`],"epoch":3,"head":2,"lead":"daemon:alpha","state":"read"}`,
+		`{"entries":[`+e1+`],"head":0,"lead":"daemon:alpha","state":"read"}`,
+		`{"entries":[],"lead":"daemon:alpha","more":true,"state":"read"}`,
+		`{"entries":[],"lead":"daemon:alpha","reset":true,"state":"read"}`,
+		`{"entries":[{`+at+`,"cut":false,"seq":1,"text":{"b64":"YeKArmI="},"who":"lead"}],"head":1,"lead":"daemon:alpha","state":"read"}`,
+		`{"entries":[{`+at+`,"cut":false,"seq":1,"text":"x","who":"owner"}],"head":1,"lead":"daemon:alpha","state":"read"}`,
+		`{"entries":[],"lead":"daemon:alpha","leads":[],"state":"read"}`, `{"entries":[],"leads":[],"state":"leads"}`)
+}

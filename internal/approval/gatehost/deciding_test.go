@@ -165,6 +165,8 @@ func seatParams(t testing.TB, op string) json.RawMessage {
 		b, err = ownerwire.EncodeSeatWaitParams(ownerwire.SeatWaitParams{})
 	case ownerwire.OpSeatGenesis:
 		b, err = ownerwire.EncodeSeatGenesisParams(ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbStart})
+	case ownerwire.OpSeatChat:
+		b, err = ownerwire.EncodeSeatChatParams(ownerwire.SeatChatParams{Verb: ownerwire.ChatVerbLeads})
 	default:
 		t.Fatalf("no params for %s", op)
 	}
@@ -177,14 +179,16 @@ func seatParams(t testing.TB, op string) json.RawMessage {
 // decidingOps are the gate's operations that a deciding handler over the
 // fakes of this file serves: login and decide. seat.wait is left out because
 // its capability, watch, comes of the service being a [WaitPort], which
-// fakePort is not, and seat.genesis because its capability, genesis, comes of
-// the handler being given the thread store (WithGenesis), which these are not,
-// so these handlers answer both unknown-op (the loop of
-// TestWithoutTheCapabilitiesTheSeatOperationsAreUnknown checks that); their own
-// served and refused cases are in wait_test.go and genesis_test.go.
+// fakePort is not, seat.genesis because its capability, genesis, comes of the
+// handler being given the thread store (WithGenesis), which these are not, and
+// seat.chat because no handler serves it yet, so these handlers answer all
+// three unknown-op (the loop of
+// TestWithoutTheCapabilitiesTheSeatOperationsAreUnknown checks that); the
+// served and refused cases of the first two are in wait_test.go and
+// genesis_test.go.
 func decidingOps() []string {
 	return slices.DeleteFunc(ownerwire.GateOperations(), func(op string) bool {
-		return op == ownerwire.OpSeatWait || op == ownerwire.OpSeatGenesis
+		return op == ownerwire.OpSeatWait || op == ownerwire.OpSeatGenesis || op == ownerwire.OpSeatChat
 	})
 }
 
