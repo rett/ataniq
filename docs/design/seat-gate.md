@@ -157,8 +157,8 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   `STATE/owner/genesis/`; the gate handler's route and the capability
   `genesis` (`gatehost.WithGenesis`); and the daemon's wiring
   (`SeatGate.GenesisDir`). The verb `plan` and the plan stored at finish are
-  built on the daemon's side (genesis G11a); the seat has no page for the plan
-  yet.
+  built on the daemon's side (genesis G11a), and the seat's link and its plan
+  page are built too (genesis G11b).
 - The release of the seat for the authority host, `deploy/authority-host/seat`
   (G12, built, not deployed): the unit `ataniq-seat.service`, the Caddyfile
   and the validators, reload, stop and health lists, laid over the base

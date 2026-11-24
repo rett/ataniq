@@ -14,5 +14,4 @@
   the owner's own words, which no template serves, `genesis-no-template`;
   neither counts against the refusal bound. A result's progress says
   `plan_ready` when `plan` would answer a plan. The log says
-  `genesis: a plan was drawn` and holds nothing of the plan. The seat has no
-  page for the plan yet.
+  `genesis: a plan was drawn` and holds nothing of the plan.
