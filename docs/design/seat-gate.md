@@ -1959,7 +1959,12 @@ mark, never by the page's address. The cursor is taken before the page's
 reads, as the card list's version is, so a change between them leaves the
 page an older cursor and its first stream says the change at once; a stream
 opened with an older cursor or with 0 says the current one as its first
-event. Problem pages carry no mark and no script.
+event. The seat keeps the connection the cursor was learned on (never on
+the page): when the directory read came from another connection (the link
+was replaced between the two), the page carries no cursor and is rendered
+not live, with its **Refresh** link, rather than compare a cursor of one
+connection with the chat of another
+(`TestSeatLeadsPagesCursorOfTheirConnection`). Problem pages carry no mark and no script.
 
 What the page does on `chat-changed` (`watch.js`, the same file, its one
 `fetch`):

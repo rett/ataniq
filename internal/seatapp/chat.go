@@ -197,6 +197,10 @@ func (a *app) chatPage(w http.ResponseWriter, r *http.Request, s Session) {
 		return
 	}
 	h.directory(list)
+	// A cursor learned on another connection than the directory's (the
+	// link was replaced between the two) is not this page's: the page is
+	// not live. The read below must come from the directory's connection.
+	lw = lw.boundTo(list.Connection)
 	data := leadsData{pageData: pageData{Title: pageTitles["leads"], Nav: &navView{Current: navLeads, Leads: true, Projects: a.projectsOffered.Load()}}, Watch: lw}
 	if list.StandIn {
 		data.Sample = &chatTrial

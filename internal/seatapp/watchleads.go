@@ -127,12 +127,30 @@ type leadsWatch struct {
 	// is then the cursor of the read that follows them (see followAfter).
 	Follow bool
 	After  int64
+	// connection is the connection the cursor was learned on. It stays in
+	// the app: a page whose reads came from another connection carries no
+	// cursor (see [leadsWatch.boundTo]).
+	connection time.Time
 }
 
-// leadsHint takes the chat hint for a Leads page. It must run before the
-// page's own reads, so that a change between the two makes the page's
-// cursor older than what it shows, and the page's first stream says
-// chat-changed at once, never the other way round.
+// boundTo returns lw when its cursor was learned on the connection the
+// page's reads came from, and a mark that is not live otherwise: a cursor of
+// one connection is never put on a page read through another, where it
+// would compare against the wrong chat. The page then shows "Not live" and
+// its Refresh link.
+func (lw leadsWatch) boundTo(connection time.Time) leadsWatch {
+	if lw.Live && lw.connection.Equal(connection) {
+		return lw
+	}
+	return leadsWatch{}
+}
+
+// leadsHint takes the chat hint for a Leads page, with the connection it
+// was learned on. It must run before the page's own reads, so that a change
+// between the two makes the page's cursor older than what it shows, and the
+// page's first stream says chat-changed at once, never the other way round;
+// the page keeps it only when its reads came from the same connection
+// ([leadsWatch.boundTo]).
 func (a *app) leadsHint() leadsWatch {
 	var lw leadsWatch
 	cw, p, ok := a.chatWatcher()
@@ -141,7 +159,7 @@ func (a *app) leadsHint() leadsWatch {
 	}
 	h := cw.ChatHint()
 	if chatLive(h) && p.ChatOffered() {
-		lw.Live, lw.Chat = true, chatCursor(h)
+		lw.Live, lw.Chat, lw.connection = true, chatCursor(h), h.Connection
 	}
 	return lw
 }

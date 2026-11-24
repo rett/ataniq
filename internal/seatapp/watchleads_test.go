@@ -88,9 +88,11 @@ var (
 )
 
 // leadsWrap makes a leadsDaemon of a watching port, the sample chat and a
-// hint of cursor 7.
+// hint of cursor 7, all of one connection.
 func leadsWrap(wd *watchDaemon) *leadsDaemon {
-	return &leadsDaemon{watchDaemon: wd, leadsChat: &leadsChat{fakeChat: sampleChat()}, fakeChatWatcher: newFakeChatWatcher(7)}
+	f := sampleChat()
+	f.list.Connection, f.read.Connection = time.Unix(1, 0), time.Unix(1, 0)
+	return &leadsDaemon{watchDaemon: wd, leadsChat: &leadsChat{fakeChat: f}, fakeChatWatcher: newFakeChatWatcher(7)}
 }
 
 // newLeadsRig is a watch rig whose port also has the sample chat and a live
@@ -378,9 +380,11 @@ func (f *flushHook) Flush() {
 // current one).
 func TestSeatLeadsStreamOpeningFlush(t *testing.T) {
 	for name, kill := range map[string]func(*leadsDaemon){
-		"not live":       func(ld *leadsDaemon) { ld.fakeChatWatcher.setQuiet(ChatHint{}) },
-		"no offer":       func(ld *leadsDaemon) { ld.gone.Store(true) },
-		"new connection": func(ld *leadsDaemon) { ld.fakeChatWatcher.setQuiet(ChatHint{Live: true, Cursor: 8, Connection: time.Unix(2, 0)}) },
+		"not live": func(ld *leadsDaemon) { ld.fakeChatWatcher.setQuiet(ChatHint{}) },
+		"no offer": func(ld *leadsDaemon) { ld.gone.Store(true) },
+		"new connection": func(ld *leadsDaemon) {
+			ld.fakeChatWatcher.setQuiet(ChatHint{Live: true, Cursor: 8, Connection: time.Unix(2, 0)})
+		},
 		"new connection, woken": func(ld *leadsDaemon) {
 			ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 9, Connection: time.Unix(2, 0)})
 		},
@@ -511,13 +515,13 @@ func TestSeatLeadsPagesCarryTheStream(t *testing.T) {
 	s := r.login(t)
 	// The hint moves while the directory is read: the page has the older
 	// cursor, so that its stream says the change at once.
-	ld.leadsChat.onRead = func() { ld.fakeChatWatcher.setQuiet(ChatHint{Live: true, Cursor: 8}) }
+	ld.leadsChat.onRead = func() { ld.fakeChatWatcher.setQuiet(ChatHint{Live: true, Cursor: 8, Connection: time.Unix(1, 0)}) }
 	const status = `<p id="watch-status" role="status" aria-live="polite"></p>`
 	for path, mark := range map[string]string{
 		"/leads/":             `<div id="watch" data-view="leads" data-live="yes" data-chat="7" data-page="directory"></div>`,
 		"/leads/daemon/alpha": `<div id="watch" data-view="leads" data-live="yes" data-chat="7" data-page="conversation"></div>`,
 	} {
-		ld.fakeChatWatcher.setQuiet(ChatHint{Live: true, Cursor: 7})
+		ld.fakeChatWatcher.setQuiet(ChatHint{Live: true, Cursor: 7, Connection: time.Unix(1, 0)})
 		body := r.getWith(path, s).Body.String()
 		if strings.Count(body, mark) != 1 || strings.Count(body, `data-view=`) != 1 || strings.Count(body, status) != 1 ||
 			strings.Index(body, status) > strings.Index(body, mark) || strings.Index(body, mark) > strings.Index(body, `<script src="/static/watch.js"></script>`) {
@@ -548,6 +552,33 @@ func TestSeatLeadsPagesCarryTheStream(t *testing.T) {
 	for _, path := range []string{"/cards/", "/cards/" + testCardID, "/cards/" + testCardID + "/paths/1"} {
 		if body := r.getWith(path, s).Body.String(); strings.Contains(body, "data-view") || strings.Contains(body, "data-chat") || strings.Contains(body, "data-follow") {
 			t.Errorf("%s carries a Leads mark", path)
+		}
+	}
+}
+
+// TestSeatLeadsPagesCursorOfTheirConnection: the link is replaced between
+// the hint the page takes and its directory read. The reads come from the
+// new connection and agree with each other, but the cursor is the old
+// one's: the page carries no cursor and is not live, so it shows its
+// Refresh link; a page whose hint and reads share their connection is live.
+func TestSeatLeadsPagesCursorOfTheirConnection(t *testing.T) {
+	r, ld := newLeadsRig(t)
+	s := r.login(t)
+	const notLive = `data-view="leads" data-live="no" data-chat="0"`
+	ld.leadsChat.list.Connection, ld.leadsChat.read.Connection = time.Unix(2, 0), time.Unix(2, 0)
+	for _, path := range []string{"/leads/", "/leads/daemon/alpha?after=4"} {
+		w := r.getWith(path, s)
+		body := w.Body.String()
+		if w.Code != 200 || !strings.Contains(body, notLive) || strings.Contains(body, `data-chat="7"`) || strings.Contains(body, "data-follow") {
+			t.Errorf("%s: a cursor of another connection: %d %s", path, w.Code, body)
+		}
+	}
+	// The hint moves to the new connection too: the page is live with its
+	// cursor.
+	ld.fakeChatWatcher.setQuiet(ChatHint{Live: true, Cursor: 12, Connection: time.Unix(2, 0)})
+	for _, path := range []string{"/leads/", "/leads/daemon/alpha?after=4"} {
+		if body := r.getWith(path, s).Body.String(); !strings.Contains(body, `data-view="leads" data-live="yes" data-chat="12"`) {
+			t.Errorf("%s: the cursor of the reads' connection: %s", path, body)
 		}
 	}
 }
