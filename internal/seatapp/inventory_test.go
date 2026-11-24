@@ -67,7 +67,7 @@ var inventory = []struct {
 	{pattern: "POST /api/push/unsubscribe", kind: "api"},
 	{pattern: "GET /leads", kind: "redirect"},
 	{pattern: "GET /leads/{$}", kind: "page", controls: withNav("a", "a#chat-refresh"), authed: true},
-	{pattern: "GET /leads/{kind}/{key}", kind: "page", controls: withNav("a", "a#chat-refresh", "a#chat-jump", "a#chat-prev", "a#chat-next"), path: "/leads/daemon/alpha", authed: true},
+	{pattern: "GET /leads/{kind}/{key}", kind: "page", controls: withCockpitLinks("a", "a#chat-refresh", "a#chat-jump", "a#chat-prev", "a#chat-next"), path: "/leads/daemon/alpha", authed: true},
 	// The new-project pages: plain forms that post to the app, and no
 	// decide control.
 	{pattern: "GET /projects/{$}", kind: "page", controls: withNav("a", "a#back", "button#logout", "form#start-project", "button#start-project-go"), authed: true},
@@ -97,6 +97,10 @@ var navControls = []string{"a#skip", "a#nav-cards", "a#nav-projects", "a#nav-lea
 // withNav is the controls given and the navigation's.
 func withNav(controls ...string) []string {
 	return append(append([]string{}, navControls...), controls...)
+}
+
+func withCockpitLinks(controls ...string) []string {
+	return withNav(append(controls, "a#chat-back", "a#chat-conversation", "a#chat-evidence", "a#chat-timeline", "a#chat-cards")...)
 }
 
 // questionControls are the controls of a page with the form of a round, or
