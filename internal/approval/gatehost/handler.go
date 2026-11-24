@@ -158,7 +158,12 @@ type Handler struct {
 	genesis GenesisPort
 	// chat is the daemon's chat port, or nil (CapChat is then not served).
 	chat ChatPort
-	caps map[string]bool
+	// chatWait is the service's extended wait and cursor the chat port's
+	// cursor, each nil when absent; with both, and the wait and the chat
+	// port, the handler lists CapWaitChat (see waitchat.go).
+	chatWait ChatWaitPort
+	cursor   ownerchannel.ChatCursor
+	caps     map[string]bool
 	// counts holds how often each code was answered, in memory.
 	cmu    sync.Mutex
 	counts map[string]int64
@@ -198,10 +203,14 @@ func New(svc Port, pinned func(fingerprint string) bool, log func(format string,
 	if w, ok := svc.(WaitPort); ok {
 		h.wait = w
 		h.caps[CapWatch] = true
+		if cw, ok := svc.(ChatWaitPort); ok {
+			h.chatWait = cw
+		}
 	}
 	for _, o := range opts {
 		o(h)
 	}
+	h.cursor = chatCursorOf(h.chat)
 	return h, nil
 }
 
@@ -227,8 +236,9 @@ func NewDeciding(svc Port, seat SeatPort, g ownerchannel.Gate, pinned func(finge
 // Caps returns the capability list of the handler, for the gate's hello
 // ([seatgate.ServerConfig].Caps), in a new slice: [Caps] or [DecidingCaps],
 // [CapWatch] after them when the handler's service can wait, [CapGenesis]
-// when the handler was given the thread store, and [CapChat] last when it was
-// given the chat port.
+// when the handler was given the thread store, [CapChat] when it was given
+// the chat port, and [CapWaitChat] last when it offers the extended wait
+// (waitchat.go).
 func (h *Handler) Caps() []string {
 	caps := Caps()
 	if h.seat != nil {
@@ -242,6 +252,9 @@ func (h *Handler) Caps() []string {
 	}
 	if h.chat != nil {
 		caps = append(caps, CapChat)
+	}
+	if h.waitChat() {
+		caps = append(caps, CapWaitChat)
 	}
 	return caps
 }
@@ -397,7 +410,7 @@ func (h *Handler) serve(ctx context.Context, peer seatgate.Peer, op string, para
 		r, err := h.seat.SeatDecide(ctx, seatSource(peer), h.gate, p)
 		return answer(r, err, ownerwire.EncodeDecideResult)
 	case ownerwire.OpSeatWait:
-		p, ok := decodeParams(params, ownerwire.DecodeSeatWaitParams)
+		p, extended, ok := h.decodeWait(params)
 		if !ok {
 			return outcome{code: CodeBadParams}
 		}
@@ -411,6 +424,12 @@ func (h *Handler) serve(ctx context.Context, peer seatgate.Peer, op string, para
 			return outcome{code: ownerwire.CodeWaitFull}
 		}
 		defer h.waits.give(key)
+		if extended {
+			// The extended wait (waitchat.go): the Card result as the
+			// plain wait's, and the chat cursor of the desk-enabled leads.
+			r, err := h.chatWait.WaitPendingChat(ctx, p.Since, *p.Chat, h.cursor)
+			return answer(r, err, ownerwire.EncodeSeatWaitChatResult)
+		}
 		r, err := h.wait.WaitPending(ctx, p.Since)
 		return answer(r, err, ownerwire.EncodeSeatWaitResult)
 	case ownerwire.OpSeatGenesis:

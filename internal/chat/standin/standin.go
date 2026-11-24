@@ -234,3 +234,26 @@ func (p *Port) read(params ownerwire.SeatChatParams) (ownerwire.SeatChatResult, 
 	}
 	return r, nil
 }
+
+// ChatCursor answers the chat cursor of the extended seat.wait over the
+// samples: [ownerwire.ChatCursor] of the sample leads whose chat is read,
+// each of switch generation 1 and its head. The samples never change, so the
+// cursor is the same for every call and every stand-in: a held wait is never
+// woken for the chat. The lead whose chat is off is not in it. A call whose
+// context is done answers its error.
+func (p *Port) ChatCursor(ctx context.Context) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	var leads []ownerwire.ChatCursorLead
+	for i := range p.leads {
+		if l := &p.leads[i]; l.chat != ownerwire.ChatOff {
+			leads = append(leads, ownerwire.ChatCursorLead{Lead: l.id, Gen: 1, Head: l.head()})
+		}
+	}
+	return ownerwire.ChatCursor(leads), nil
+}
+
+// ChatCursorChanged answers nil: the samples never change, so the cursor
+// never moves.
+func (p *Port) ChatCursorChanged() <-chan struct{} { return nil }

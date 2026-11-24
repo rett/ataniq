@@ -343,3 +343,45 @@ func TestConcurrentCalls(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// The stand-in's chat cursor is deterministic: the same for every call, every
+// clock and every stand-in, made over the two leads whose chat is read and
+// their heads, never over the off one; it never says it changed.
+func TestTheChatCursorIsDeterministic(t *testing.T) {
+	p := New(clock)
+	got, err := p.ChatCursor(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := ownerwire.ChatCursor([]ownerwire.ChatCursorLead{
+		{Lead: LeadAlpha, Gen: 1, Head: 10},
+		{Lead: LeadBravo, Gen: 1, Head: 5},
+	})
+	if got != want {
+		t.Errorf("the cursor is %d, want %d", got, want)
+	}
+	if got < 1 || got > ownerwire.MaxChatSeq {
+		t.Errorf("the cursor %d is not 1 to 2^53-1", got)
+	}
+	other := New(func() time.Time { return clock().Add(97 * time.Hour) })
+	for i := 0; i < 3; i++ {
+		if again, err := other.ChatCursor(context.Background()); err != nil || again != got {
+			t.Errorf("call %d of another stand-in: %d (%v), want %d", i, again, err, got)
+		}
+	}
+	// The cursor of the off lead's list would differ: it is not covered.
+	withOff := ownerwire.ChatCursor([]ownerwire.ChatCursorLead{
+		{Lead: LeadAlpha, Gen: 1, Head: 10}, {Lead: LeadBravo, Gen: 1, Head: 5}, {Lead: LeadCharlie, Gen: 1},
+	})
+	if withOff == got {
+		t.Error("the off lead does not change a cursor that covers it")
+	}
+	if p.ChatCursorChanged() != nil {
+		t.Error("the stand-in says its cursor may change")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := p.ChatCursor(ctx); !errors.Is(err, context.Canceled) {
+		t.Errorf("a cancelled call: %v", err)
+	}
+}

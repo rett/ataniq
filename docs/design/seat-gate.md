@@ -242,6 +242,7 @@ them and never hands them to the handler.
 | `watch` | `seat.wait` | `ownerwire.SeatWaitParams` | `ownerwire.SeatWaitResult` | G14 (built) |
 | `genesis` | `seat.genesis` | `ownerwire.SeatGenesisParams` | `ownerwire.SeatGenesisResult` | genesis G3 (wire), G4 (handler and thread store) and G11a (the verb `plan`), built |
 | `chat` | `seat.chat` | `ownerwire.SeatChatParams` | `ownerwire.SeatChatResult` | G19b (wire, handler and the STAND-IN port of the phone trial), built; the scratch leads' replies (`leaddaemon.LeadChat`, both tags), built; read only |
+| `wait-chat` | `seat.wait`, extended | `ownerwire.DecodeSeatWaitChatParams` | `ownerwire.DecodeSeatWaitChatResult` | browser push stage 2, built: see [chat hints on the wait](#chat-hints-on-the-wait) |
 
 A handler made with `gatehost.New` answers `["pair", "read"]` (`gatehost.Caps`);
 one made with `gatehost.NewDeciding`, `["pair", "read", "login", "decide"]`
@@ -256,9 +257,13 @@ with or without a seat origin: an answer decides nothing either. Either
 handler adds `chat` last when it was given a chat port (`gatehost.WithChat`, a
 `gatehost.ChatPort`), with or without a seat origin: a read decides nothing;
 the daemon gives one to the phone trial's gate and to a scratch daemon's gate
-only (see [chat](#chat)). The daemon's start line names every capability the
+only (see [chat](#chat)). Either handler adds `wait-chat` after `chat` when it
+serves `watch` and `chat`, its service can answer the extended wait
+(`gatehost.ChatWaitPort`, which the owner channel's service is) and its chat
+port gives a cursor (`ownerchannel.ChatCursor`, which the stand-in gives); see
+[chat hints on the wait](#chat-hints-on-the-wait). The daemon's start line names every capability the
 gate lists, in its order, in words (`pair, read, login, decide, watch and
-genesis`, and `... genesis and chat` in the phone trial and in scratch mode). The seat reads the list (`seatgate.Client.Caps`) and offers login and decisions
+genesis`, and `... genesis, chat and wait-chat` in the phone trial). The seat reads the list (`seatgate.Client.Caps`) and offers login and decisions
 only when the gate lists them; otherwise it says that the desk does not take
 phone logins, or does not take decisions from the phone. It starts its watcher
 only when the gate lists `watch`; otherwise its pages say "Not live".
@@ -1669,7 +1674,8 @@ runs when no browser is looking (see [the notices section](#notices)).
 
 ### Chat hints on the wait
 
-Status: the wire (`ownerwire`, `waitchat.go`) is built and tested; not
+Status: the wire (`ownerwire`, `waitchat.go`), the gate's capability, the
+daemon's wait and the trial's stand-in cursor are built and tested; not
 qualified. A seat that shows the leads' conversations learns that what it may
 read moved from the one wait it already holds, not from a second wait or a
 timer. The hint is never content: an integer that a page's script can carry,
@@ -1705,6 +1711,54 @@ an enabled lead's head moves, when its segment is reset (a new generation),
 and when a lead is enabled or disabled; a lead whose chat is off is not in it,
 so its activity moves nothing. A daemon that restarts with the same leads,
 generations and heads gives the same cursor.
+
+**The gate.** A handler lists `wait-chat` last, after `chat`, only when it
+serves `watch` and `chat`, its service answers the extended wait
+(`gatehost.ChatWaitPort`, `ownerchannel.Service.WaitPendingChat`) and its chat
+port gives a cursor (`ownerchannel.ChatCursor`: `ChatCursor(ctx)` and
+`ChatCursorChanged()`). Without it the handler reads `seat.wait` with the
+plain decoder alone, so the extended params are `bad-params`, as at a gate of
+an earlier build. With it the handler takes both forms: the plain params get
+the plain wait and exactly the plain result, and the extended params the
+extended wait and result. The extended wait holds the same wait slots as the
+plain one (two for each peer), counts against the service's eight, and the
+chat port's cursor is read by the service's wait and nowhere else.
+
+**The daemon's wait** (`ownerchannel`, `waitchat.go`) is the wait above with
+the cursor beside it:
+
+- The Card side is unchanged: the same pokes, the same looks at the door under
+  the same one-second floor, the same version. A change of the chat makes no
+  look at the door: an answer given for the chat carries the Card result of the
+  last look, which no poke has made stale, so the chat cannot change when a
+  Card change is noticed.
+- The cursor is read when the wait is armed, whenever the port says it may
+  have changed (`ChatCursorChanged`) or a poke wakes the wait, and again just
+  before every answer. An answer carries the cursor of the leads enabled at
+  that moment: a lead turned off meanwhile is not in it, and whatever it did
+  leaves no trace (a hint already noticed is purged by the switch).
+- It answers at once when `since` is not the version, as the plain wait does,
+  and when `chat` is 0 and the port gives a cursor (the seat has none yet). A
+  cursor that is not the seat's answers no sooner than 18 seconds after the
+  wait was armed (`ownerchannel.WaitChatGap`), whether it moved during the
+  hold or before it; a Card change answers at once, with the cursor read
+  then, so a Card and a chat change together are one answer with both. So a
+  busy lead costs the seat no more waits than an idle one: with the seat's
+  2-second pause, about one every 20 seconds, 4 in 80 seconds, which leaves
+  the waits' room of 5 its one wait to spare for a reconnect.
+- A wake for which the cursor did not change answers nothing and makes no look
+  at the door: a lead whose chat is off changes no answer, no time of an
+  answer, no timer and no look, even if its port woke the wait for it
+  (`TestWaitChatOffOnlyActivityIsInvisible` compares such a run with an idle
+  one).
+- A cursor that cannot be read (an error, a panic, a value out of its range)
+  is no cursor: the wait holds and answers on the Cards alone, its answer
+  carries no `chat`, and it does not answer at once to a seat with none, so it
+  cannot spin. It fails closed.
+
+The trial's stand-in gives a cursor over its two sample leads whose chat is
+read, each of generation 1 and its head, the same for every call: its samples
+never change, so a held wait is never woken for the chat.
 
 ## Notices
 
