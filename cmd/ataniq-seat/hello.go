@@ -16,7 +16,7 @@ var helloEvery = time.Second
 
 // logHellos logs, once for each connection of the link, the capabilities the
 // gate's hello listed, in its order and in words, and whether the phone then
-// offers "New project" (the gate lists genesis). It ends with ctx. The words
+// offers "New project" and read-only Leads. It ends with ctx. The words
 // are the gate's, of the grammar [a-z0-9.-]{1,40} the transport holds them
 // to; nothing else of the hello is logged.
 func logHellos(ctx context.Context, c *seatgate.Client, every time.Duration, logf func(format string, args ...any)) {
@@ -40,9 +40,14 @@ func logHellos(ctx context.Context, c *seatgate.Client, every time.Duration, log
 func helloLine(caps []string) string {
 	line := "the seat gate offers " + inWords(caps)
 	if slices.Contains(caps, seatlink.CapGenesis) {
-		return line + "; the phone offers New project"
+		line += "; the phone offers New project"
+	} else {
+		line += "; the phone offers no New project"
 	}
-	return line + "; the phone offers no New project"
+	if slices.Contains(caps, seatlink.CapChat) {
+		line += "; the phone offers read-only Leads"
+	}
+	return line
 }
 
 // inWords writes a list as "a", "a and b" or "a, b and c", and "nothing" for
