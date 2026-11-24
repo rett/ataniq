@@ -2,8 +2,9 @@
   phone. The summary links "See the draft plan" when every required answer is
   given and a plan template serves the kind of project, and otherwise says how
   many answers are filled in (or that there is no template for the kind yet);
-  the finished page links "See the plan", kept with the brief at finish, and no
-  longer says that planning is a later step. The plan page
+  the finished page links "See the plan" and says that handing a plan to a
+  project is a later step; it does not say the plan is kept, since the link
+  shows what the desk has when it is followed. The plan page
   (`/projects/<id>/plan`) shows "Draft plan" or "Plan, revision N" with the
   title and the first six digits of the project's id, the plan's short digest,
   the fixed lines "A plan binds nothing: nothing has started, and nothing

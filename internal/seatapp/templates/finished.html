@@ -3,7 +3,7 @@
 {{if .Note}}<p class="note-line" role="status">{{.Note}}</p>
 {{end}}<p>The brief is kept at the desk as <span class="mono">{{short .View.Digest}}</span>.</p>
 <p>Nothing has started, and no agent was given the brief yet.</p>
-{{if .View.PlanReady}}<p>The plan is drawn from the brief and kept with it at the desk. Handing it to a project is a later step.</p>
+{{if .View.PlanReady}}<p>Handing a plan to a project is a later step.</p>
 <p><a id="see-plan" href="{{projectHref .View.Thread "plan"}}">See the plan</a></p>
 {{else}}<p>No plan was drawn: the answers were not complete, or there is no plan template for this kind of project yet.</p>
 {{end}}

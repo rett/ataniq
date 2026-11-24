@@ -388,7 +388,7 @@ func TestGenesisPlanLinks(t *testing.T) {
 	g.set(GenesisVerbRound, &fin, nil)
 	page = r.getWith("/projects/"+testThread, s).Body.String()
 	for _, want := range []string{`<a id="see-plan" href="/projects/` + testThread + `/plan">See the plan</a>`,
-		"The plan is drawn from the brief and kept with it at the desk. Handing it to a project is a later step.",
+		"Handing a plan to a project is a later step.",
 		"Nothing has started, and no agent was given the brief yet."} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the finished page lacks %q", want)
@@ -396,6 +396,11 @@ func TestGenesisPlanLinks(t *testing.T) {
 	}
 	if strings.Contains(page, "Planning the project is a later step") {
 		t.Error("the finished page still says planning is a later step")
+	}
+	// The page does not say the plan is kept: the link shows what the desk
+	// has, and the plan page says what it is.
+	if strings.Contains(page, "kept with") || strings.Contains(page, "is drawn from the brief") {
+		t.Errorf("the finished page claims the plan is kept:\n%s", page)
 	}
 	fin.PlanReady = false
 	g.set(GenesisVerbRound, &fin, nil)

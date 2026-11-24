@@ -2199,9 +2199,10 @@ short form and says that nothing has started and no agent was given the brief.
 The summary links "See the draft plan" when the result's `plan_ready` says a
 plan would be answered, and otherwise says "N of M answers are filled in: no
 plan can be drawn yet." (or, with every answer filled in, that there is no plan
-template for this kind of project yet). The finished page says that the plan
-is drawn and kept with the brief and that handing it to a project is a later
-step, with "See the plan", when `plan_ready`; otherwise that no plan was drawn.
+template for this kind of project yet). The finished page, when `plan_ready`,
+says that handing a plan to a project is a later step and has the link "See
+the plan"; it says nothing of the plan being kept, which the plan page shows
+when the link is followed. Otherwise it says that no plan was drawn.
 
 The plan page, `GET /projects/{thread}/plan`, is a read: one call of `plan`
 (answered from the link's memory on a reload, see above), a session, the

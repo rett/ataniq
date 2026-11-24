@@ -401,6 +401,41 @@ func TestSeatLinkGenesisPlanOverARealStore(t *testing.T) {
 	}
 }
 
+// A stored plan the link remembers is dropped when a read of the thread's
+// own round or summary answers that the thread is unknown: the page of a
+// thread that is gone must not show its plan from memory for the minutes the
+// plan would otherwise be kept.
+func TestSeatLinkGenesisUnknownThreadDropsAStoredPlan(t *testing.T) {
+	for _, verb := range []string{seatapp.GenesisVerbRound, seatapp.GenesisVerbSummary} {
+		f, d, g, clock := genesisGate(t, []string{"genesis"})
+		id := walkToSummary(t, d, clock).Thread
+		call(t, d, seatapp.GenesisCall{Verb: seatapp.GenesisVerbFinish, Thread: id})
+		planCall := seatapp.GenesisCall{Verb: seatapp.GenesisVerbPlan, Thread: id}
+		stored := call(t, d, planCall)
+		if stored.Plan == nil || !stored.Plan.Stored {
+			t.Fatalf("%s: no stored plan: %+v", verb, stored)
+		}
+		n := g.calls.Load()
+		if call(t, d, planCall); g.calls.Load() != n {
+			t.Fatalf("%s: the stored plan is not kept", verb)
+		}
+		// The thread's round is stale before its stored plan is.
+		clock.advance(viewFresh + time.Second)
+		f.set(nil, "genesis-unknown-thread")
+		if _, err := d.Genesis(bg, seatapp.GenesisCall{Verb: verb, Thread: id}); !errors.Is(err, seatapp.ErrGenesisUnknownThread) {
+			t.Fatalf("%s of a thread the desk does not know: %v", verb, err)
+		}
+		f.set(nil, "")
+		n = g.calls.Load()
+		if _, err := d.Genesis(bg, planCall); err != nil && !errors.Is(err, seatapp.ErrGenesisUnknownThread) {
+			t.Fatalf("%s: %v", verb, err)
+		}
+		if g.calls.Load() != n+1 {
+			t.Errorf("%s: the stored plan of an unknown thread was answered from memory", verb)
+		}
+	}
+}
+
 // A brief that is not complete is not ready for a plan, and a kind in the
 // owner's own words has no template: both from a real store, and neither is
 // kept.
