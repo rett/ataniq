@@ -658,7 +658,7 @@ func namesOwnerPackage(pattern string) bool {
 // ownerGoList runs go list in the repository, offline, with the given tags (a
 // comma separated list, or none). Without the tag it refuses a pattern that
 // names a wholly tagged package: with no Go file left, that is an error, and
-// the checks must not depend on it.
+// the checks must not depend on it. It runs through goListOnce.
 func ownerGoList(t *testing.T, tags string, flags []string, patterns ...string) string {
 	t.Helper()
 	args := []string{"list"}
@@ -671,17 +671,7 @@ func ownerGoList(t *testing.T, tags string, flags []string, patterns ...string) 
 			}
 		}
 	}
-	args = append(append(args, flags...), patterns...)
-	cmd := exec.Command(canaryGoTool(t), args...)
-	cmd.Dir = root(t)
-	cmd.Env = canaryGoEnv()
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("go %s: %v\n%s", strings.Join(args, " "), err, stderr.String())
-	}
-	return string(out)
+	return goListOnce(t, append(append(args, flags...), patterns...))
 }
 
 // ownerTagSets are the two tag settings the tagged build is checked under.

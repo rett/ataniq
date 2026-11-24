@@ -22,6 +22,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 )
@@ -1047,9 +1048,10 @@ func canaryGoEnv() []string {
 	return append(os.Environ(), "GOENV=off", "GOWORK=off", "GOFLAGS=", "GO111MODULE=on", "GOPRIVATE=", "GONOPROXY=none", "GONOSUMDB=none", "GOTOOLCHAIN=local", "GOPROXY=off", "GOSUMDB=off")
 }
 
-// canaryGoList runs go list in the repository, offline. Without the tag it
-// refuses a pattern that names a wholly tagged package: with no Go file left,
-// that is an error, and the checks must not depend on it.
+// canaryGoList runs go list in the repository, offline, through goListOnce.
+// Without the tag it refuses a pattern that names a wholly tagged package:
+// with no Go file left, that is an error, and the checks must not depend on
+// it.
 func canaryGoList(t *testing.T, tagged bool, flags []string, patterns ...string) string {
 	t.Helper()
 	args := []string{"list"}
@@ -1062,9 +1064,31 @@ func canaryGoList(t *testing.T, tagged bool, flags []string, patterns ...string)
 			}
 		}
 	}
-	args = append(append(args, flags...), patterns...)
-	cmd := exec.Command(canaryGoTool(t), args...)
-	cmd.Dir = root(t)
+	return goListOnce(t, append(append(args, flags...), patterns...))
+}
+
+// goListed holds the output of every go list goListOnce ran, by its Go
+// executable, folder and arguments.
+var goListed = struct {
+	sync.Mutex
+	out map[string]string
+}{out: map[string]string{}}
+
+// goListOnce runs go list with the arguments in the repository, offline, once
+// per test process: the guards of both tags ask for some of the same listings,
+// and the repository does not change while the tests run. A failed run is not
+// kept.
+func goListOnce(t *testing.T, args []string) string {
+	t.Helper()
+	tool, dir := canaryGoTool(t), root(t)
+	key := strings.Join(append([]string{tool, dir}, args...), "\x00")
+	goListed.Lock()
+	defer goListed.Unlock()
+	if out, ok := goListed.out[key]; ok {
+		return out
+	}
+	cmd := exec.Command(tool, args...)
+	cmd.Dir = dir
 	cmd.Env = canaryGoEnv()
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -1072,6 +1096,7 @@ func canaryGoList(t *testing.T, tagged bool, flags []string, patterns ...string)
 	if err != nil {
 		t.Fatalf("go %s: %v\n%s", strings.Join(args, " "), err, stderr.String())
 	}
+	goListed.out[key] = string(out)
 	return string(out)
 }
 
