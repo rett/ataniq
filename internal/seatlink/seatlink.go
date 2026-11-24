@@ -239,7 +239,9 @@ const (
 
 // Caps is the capability list the seat says in its hello
 // ([seatgate.ClientConfig].Caps), in a new slice.
-func Caps() []string { return []string{CapPair, CapRead, CapLogin, CapDecide, CapWatch, CapGenesis} }
+func Caps() []string {
+	return []string{CapPair, CapRead, CapLogin, CapDecide, CapWatch, CapGenesis, CapChat}
+}
 
 // errBadAnswer is the error of an answer that is not a pairing result of its
 // form. It holds nothing of the answer.
@@ -288,6 +290,7 @@ type Daemon struct {
 	hub watchHub
 	// gmem is the link's short memory of the interview's answers, and
 	// gnow its clock (see genesis.go).
+	cmem chatMemory
 	gmem genesisMemory
 	gnow func() time.Time
 	// wmu guards w and wclosed; wt are the watcher's timings, which tests

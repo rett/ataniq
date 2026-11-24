@@ -34,7 +34,7 @@ const clientHeader = "X-Test-Client"
 func TestSeatLinkBudgetRooms(t *testing.T) {
 	clock := &testClock{t: decideNow}
 	b := &budget{now: clock.now}
-	for _, k := range []kind{kindPublic, kindRead, kindWait, kindGenesis} {
+	for _, k := range []kind{kindPublic, kindRead, kindWait, kindGenesis, kindChat} {
 		for i := 0; i < k.room(); i++ {
 			if !b.take(k) {
 				t.Fatalf("kind %d: call %d refused", k, i+1)
@@ -84,7 +84,7 @@ func TestSeatLinkBudgetRooms(t *testing.T) {
 	}
 	// The window moves on; id0's hold stays for its challenge's life.
 	clock.advance(BudgetWindow)
-	for _, k := range []kind{kindPublic, kindRead, kindWait, kindGenesis} {
+	for _, k := range []kind{kindPublic, kindRead, kindWait, kindGenesis, kindChat} {
 		if !b.take(k) {
 			t.Errorf("kind %d: a call after the window", k)
 		}
@@ -233,7 +233,7 @@ func TestSeatLinkBudgetNeverOverTheGate(t *testing.T) {
 			}
 		}
 		switch k := kind(rnd.IntN(int(numKinds))); k {
-		case kindPublic, kindRead, kindWait, kindGenesis:
+		case kindPublic, kindRead, kindWait, kindGenesis, kindChat:
 			if b.take(k) {
 				sent[k] = append(sent[k], now)
 			}
@@ -285,8 +285,8 @@ func TestSeatLinkBudgetNeverOverTheGate(t *testing.T) {
 
 // TestSeatLinkDecideRoom: through the link, a challenge is asked only with
 // room for its decision; a tap past the room is ErrBusy and reaches no gate.
-// The decision of every challenge drawn is sent even so: 5 challenges, each
-// of them with the room of its decision, fill the 10, whichever sessions
+// The decision of every challenge drawn is sent even so: 4 challenges, each
+// of them with the room of its decision, fill the 8, whichever sessions
 // drew them. A challenge the app dropped lets its decision's room go.
 func TestSeatLinkDecideRoom(t *testing.T) {
 	r := newDecideRig(t)

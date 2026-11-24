@@ -14,6 +14,7 @@ const RefusalLogEvery = 30 * time.Second
 var kindWords = [numKinds]string{
 	kindPublic:  "public",
 	kindRead:    "read",
+	kindChat:    "chat",
 	kindDecide:  "decide",
 	kindGenesis: "genesis",
 }
