@@ -115,7 +115,7 @@ func TestSequenceGrowsAcrossRestarts(t *testing.T) {
 	_ = s.Close()
 
 	// The floor of the open line counts even with no entry.
-	if err := os.WriteFile(e.chatFile("scratch-beta-lead"), []byte(`{"kind":"open","v":1,"next":100}`+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(e.chatFile("scratch-beta-lead"), []byte(`{"kind":"open","v":1,"next":100,"claim":0}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	e.makeOutbox("scratch-beta-lead")
@@ -179,13 +179,13 @@ func TestReadCursorAfterExpiry(t *testing.T) {
 	e := newEnv(t)
 	s := e.on() // the turned-on entry is 1
 	for i := 0; i < 98; i++ {
-		if err := s.addEntries(e.clock.now(), 1, Entry{Who: "lead", Text: "Old.", src: fmt.Sprintf("%032x", i)}); err != nil {
+		if err := s.addEntries(e.clock.now(), 1, Entry{Who: "lead", Text: "Old.", claim: int64(i + 1)}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	e.clock.add(RetainAge + time.Hour)
 	for i := 0; i < 2; i++ {
-		if err := s.addEntries(e.clock.now(), 1, Entry{Who: "lead", Text: "New.", src: fmt.Sprintf("%032x", 100+i)}); err != nil {
+		if err := s.addEntries(e.clock.now(), 1, Entry{Who: "lead", Text: "New.", claim: int64(101 + i)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -292,7 +292,7 @@ func TestRetentionByCount(t *testing.T) {
 	e := newEnv(t)
 	s := e.on()
 	for i := 0; i < RetainEntries+100; i++ {
-		if err := s.addEntries(e.clock.now(), 1, Entry{Who: "lead", Text: fmt.Sprintf("Reply %d.", i), src: fmt.Sprintf("%032x", i)}); err != nil {
+		if err := s.addEntries(e.clock.now(), 1, Entry{Who: "lead", Text: fmt.Sprintf("Reply %d.", i), claim: int64(i + 1)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -324,7 +324,7 @@ func TestJournalBound(t *testing.T) {
 		before := len(e.lines(testRole))
 		s.size = MaxJournalBytes - 10
 		s.stale = true
-		if err := s.addEntries(e.clock.now(), 1, Entry{Who: "lead", Text: "Fits.", src: fmt.Sprintf("%032x", 1)}); err != nil {
+		if err := s.addEntries(e.clock.now(), 1, Entry{Who: "lead", Text: "Fits.", claim: 1}); err != nil {
 			t.Fatal(err)
 		}
 		data, _ := os.ReadFile(e.chatFile(testRole))
@@ -349,12 +349,12 @@ func TestJournalBound(t *testing.T) {
 			t.Fatal(err)
 		}
 		var b strings.Builder
-		b.WriteString(`{"kind":"open","v":1,"next":1}` + "\n")
-		b.WriteString(`{"kind":"switch","chat":"read","gen":1,"at":"2026-01-01T00:00:00Z","epoch":1,"discarded":0}` + "\n")
+		b.WriteString(`{"kind":"open","v":1,"next":1,"claim":0}` + "\n")
+		b.WriteString(`{"kind":"switch","chat":"read","gen":1,"at":"2026-01-01T00:00:00Z","epoch":1,"discarded":0,"since":"2026-01-01T00:00:00.5Z","outbox":"1:2"}` + "\n")
 		b.WriteString(`{"kind":"entry","seq":1,"gen":1,"epoch":1,"who":"system","at":"2026-01-01T00:00:00Z","text":"` + TextTurnedOn + `"}` + "\n")
 		text := strings.Repeat("x", MaxReplyBytes)
 		for seq := 2; b.Len() <= MaxJournalBytes; seq++ {
-			fmt.Fprintf(&b, `{"kind":"entry","seq":%d,"gen":1,"epoch":1,"who":"lead","at":"2026-01-01T00:00:00Z","text":"%s","src":"%032x"}`+"\n", seq, text, seq)
+			fmt.Fprintf(&b, `{"kind":"entry","seq":%d,"gen":1,"epoch":1,"who":"lead","at":"2026-01-01T00:00:00Z","text":"%s","claim":%d}`+"\n", seq, text, seq)
 		}
 		if err := os.WriteFile(e.chatFile(testRole), []byte(b.String()), 0o600); err != nil {
 			t.Fatal(err)
@@ -395,19 +395,20 @@ func TestTornFirstLine(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.open()
-	if l := e.lines(testRole); len(l) != 1 || l[0] != `{"kind":"open","v":1,"next":1}` {
+	if l := e.lines(testRole); len(l) != 1 || l[0] != `{"kind":"open","v":1,"next":1,"claim":0}` {
 		t.Fatalf("file %q", l)
 	}
 }
 
 func TestCorruptFileFailsThatLeadOnly(t *testing.T) {
-	open := `{"kind":"open","v":1,"next":1}`
-	sw := `{"kind":"switch","chat":"read","gen":1,"at":"2026-01-01T00:00:00Z","epoch":1,"discarded":0}`
+	open := `{"kind":"open","v":1,"next":1,"claim":0}`
+	sw := `{"kind":"switch","chat":"read","gen":1,"at":"2026-01-01T00:00:00Z","epoch":1,"discarded":0,"since":"2026-01-01T00:00:00.5Z","outbox":"1:2"}`
+	off := `{"kind":"switch","chat":"off","gen":2,"at":"2026-01-01T00:00:00Z","epoch":1,"discarded":0}`
 	marker := `{"kind":"entry","seq":1,"gen":1,"epoch":1,"who":"system","at":"2026-01-01T00:00:00Z","text":"` + TextTurnedOn + `"}`
 	lead := func(seq int, extra string) string {
 		return fmt.Sprintf(`{"kind":"entry","seq":%d,"gen":1,"epoch":1,"who":"lead","at":"2026-01-01T00:00:00Z","text":"x"%s}`, seq, extra)
 	}
-	src := `,"src":"0123456789abcdef0123456789abcdef"`
+	src := `,"claim":7`
 	// padded is the open line padded with spaces to n bytes, its newline
 	// included.
 	padded := func(n int) string { return open[:len(open)-1] + strings.Repeat(" ", n-1-len(open)) + "}" }
@@ -419,6 +420,12 @@ func TestCorruptFileFailsThatLeadOnly(t *testing.T) {
 		{"garbage line", []string{open, "not json", sw}, "not one JSON object"},
 		{"unknown member", []string{open, strings.Replace(sw, `"discarded":0`, `"discarded":0,"extra":1`, 1)}, "does not have"},
 		{"missing member", []string{open, strings.Replace(sw, `,"discarded":0`, ``, 1)}, "is missing"},
+		{"open line without its claim", []string{strings.Replace(open, `,"claim":0`, ``, 1)}, "is missing"},
+		{"turn-on without its moment", []string{open, strings.Replace(sw, `,"since":"2026-01-01T00:00:00.5Z"`, ``, 1)}, "moment or outbox"},
+		{"turn-on with a moment not UTC", []string{open, strings.Replace(sw, `00.5Z`, `00.5+00:00`, 1)}, "moment or outbox"},
+		{"turn-on without its outbox", []string{open, strings.Replace(sw, `,"outbox":"1:2"`, ``, 1)}, "moment or outbox"},
+		{"turn-on with a bad outbox", []string{open, strings.Replace(sw, `"1:2"`, `"1:02"`, 1)}, "moment or outbox"},
+		{"turn-off with an outbox", []string{open, strings.Replace(off, `"discarded":0`, `"discarded":0,"outbox":"1:2"`, 1)}, "turn-off"},
 		{"member of another kind", []string{open, sw, marker, lead(2, src+`,"next":2`)}, "does not have"},
 		{"member twice", []string{open, strings.Replace(sw, `"gen":1`, `"gen":1,"gen":1`, 1)}, "appears twice"},
 		{"kind twice", []string{open, strings.Replace(sw, `"kind":"switch"`, `"kind":"switch","kind":"switch"`, 1)}, "appears twice"},
@@ -438,8 +445,12 @@ func TestCorruptFileFailsThatLeadOnly(t *testing.T) {
 		{"bad time", []string{open, strings.Replace(sw, "00Z", "00+00:00", 1)}, "UTC"},
 		{"text not plain", []string{open, sw, marker, strings.Replace(lead(2, src), `"text":"x"`, `"text":"a\tb"`, 1)}, "plain"},
 		{"system text not fixed", []string{open, sw, marker, strings.Replace(lead(2, ""), `"lead"`, `"system"`, 1)}, "fixed texts"},
-		{"lead entry without src", []string{open, sw, marker, lead(2, "")}, "source"},
-		{"bad src", []string{open, sw, marker, lead(2, `,"src":"XYZ"`)}, "source"},
+		{"lead entry without its claim", []string{open, sw, marker, lead(2, "")}, "claim id"},
+		{"withheld entry without its claim", []string{open, sw, marker, strings.Replace(strings.Replace(lead(2, ""), `"lead"`, `"system"`, 1), `"text":"x"`, `"text":"`+TextWithheld+`"`, 1)}, "claim id"},
+		{"system entry with a claim", []string{open, sw, marker, strings.Replace(strings.Replace(lead(2, src), `"lead"`, `"system"`, 1), `"text":"x"`, `"text":"`+TextStoppedFolder+`"`, 1)}, "claim id"},
+		{"claim not a number", []string{open, sw, marker, lead(2, `,"claim":"7"`)}, "wrong type"},
+		{"claim zero", []string{open, sw, marker, lead(2, `,"claim":0`)}, "claim id"},
+		{"claim not grown", []string{open, sw, marker, lead(2, src), lead(3, src)}, "claim id"},
 		{"data after the record", []string{open + ` {}`}, "after the record"},
 		{"line too long", []string{open, `{"kind":"other","pad":"` + strings.Repeat("a", MaxLineBytes) + `"}`}, "longer than the bound"},
 		{"line one byte too long with its newline", []string{padded(MaxLineBytes + 1)}, "longer than the bound"},
@@ -493,7 +504,7 @@ func TestCorruptErrorHoldsNoFileBytes(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(e.dir, ChatDirName), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	data := `{"kind":"open","v":1,"next":1}` + "\n" + `{"kind":"open","v":1,"next":1,"\u001b[31mplanted":1}` + "\n"
+	data := `{"kind":"open","v":1,"next":1,"claim":0}` + "\n" + `{"kind":"open","v":1,"next":1,"claim":0,"\u001b[31mplanted":1}` + "\n"
 	if err := os.WriteFile(e.chatFile(testRole), []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -652,9 +663,10 @@ func TestFailedWriteBreaksThatLeadOnly(t *testing.T) {
 			if _, err := s.SetSwitch("off", 1); !errors.Is(err, ErrBroken) {
 				t.Fatalf("SetSwitch: %v", err)
 			}
-			// The reply was not removed: nothing acted on a write that failed.
-			if n := e.names(); !slices.Equal(n, []string{"a.txt"}) {
-				t.Fatalf("outbox %q", n)
+			// The reply's claim was not removed: nothing acted on a write
+			// that failed.
+			if c := e.claims(); !slices.Equal(c, []string{"r1"}) {
+				t.Fatalf("claims %q", c)
 			}
 			other, err := e.openRole("scratch-beta-lead")
 			if err != nil {

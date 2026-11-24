@@ -38,15 +38,33 @@ func parseTime(s string) (time.Time, bool) {
 	return t, true
 }
 
-// openLine is the first line of every file: the version and the floor of
-// the sequence numbers, the next one to give at least.
-type openLine struct {
-	Kind string `json:"kind"`
-	V    int    `json:"v"`
-	Next int64  `json:"next"`
+// sinceLayout is the form of the moment a turn-on found the outbox empty:
+// UTC to the nanosecond, ending in Z.
+const sinceLayout = time.RFC3339Nano
+
+func formatSince(t time.Time) string { return t.UTC().Format(sinceLayout) }
+
+func parseSince(s string) (time.Time, bool) {
+	t, err := time.Parse(sinceLayout, s)
+	if err != nil || formatSince(t) != s {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
-// switchLine is a change of the lead's chat switch, with its generation.
+// openLine is the first line of every file: the version, and the
+// allocation high-waters: the next sequence number to give at least, and the
+// highest claim id given.
+type openLine struct {
+	Kind  string `json:"kind"`
+	V     int    `json:"v"`
+	Next  int64  `json:"next"`
+	Claim int64  `json:"claim"`
+}
+
+// switchLine is a change of the lead's chat switch, with its generation. A
+// turn-on also records the moment it found the outbox empty (since, to the
+// nanosecond) and the outbox's identity ("device:inode").
 type switchLine struct {
 	Kind      string `json:"kind"`
 	Chat      string `json:"chat"`
@@ -54,9 +72,12 @@ type switchLine struct {
 	At        string `json:"at"`
 	Epoch     int64  `json:"epoch"`
 	Discarded int64  `json:"discarded"`
+	Since     string `json:"since,omitempty"`
+	Outbox    string `json:"outbox,omitempty"`
 }
 
-// entryLine is one entry of the conversation.
+// entryLine is one entry of the conversation. claim is the claim id of the
+// reply it was stored from.
 type entryLine struct {
 	Kind  string `json:"kind"`
 	Seq   int64  `json:"seq"`
@@ -65,14 +86,14 @@ type entryLine struct {
 	Who   string `json:"who"`
 	At    string `json:"at"`
 	Text  string `json:"text"`
-	Src   string `json:"src,omitempty"`
+	Claim int64  `json:"claim,omitempty"`
 }
 
 // members are the members each kind of line must have, and may have besides.
 var members = map[string]struct{ want, allow []string }{
-	kindOpen:   {want: []string{"kind", "v", "next"}},
-	kindSwitch: {want: []string{"kind", "chat", "gen", "at", "epoch", "discarded"}},
-	kindEntry:  {want: []string{"kind", "seq", "gen", "epoch", "who", "at", "text"}, allow: []string{"src"}},
+	kindOpen:   {want: []string{"kind", "v", "next", "claim"}},
+	kindSwitch: {want: []string{"kind", "chat", "gen", "at", "epoch", "discarded"}, allow: []string{"since", "outbox"}},
+	kindEntry:  {want: []string{"kind", "seq", "gen", "epoch", "who", "at", "text"}, allow: []string{"claim"}},
 }
 
 // encodeLine marshals one line with its newline, without escaping HTML
@@ -206,17 +227,4 @@ func decodeLine(raw []byte) (any, error) {
 		return nil, err
 	}
 	return l, nil
-}
-
-// validSrc reports 32 lower-case hexadecimal digits.
-func validSrc(s string) bool {
-	if len(s) != 32 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		if c := s[i]; !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
-			return false
-		}
-	}
-	return true
 }

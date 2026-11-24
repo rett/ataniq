@@ -29,9 +29,6 @@ const (
 	// The latest entry that says chat was turned on is never expired.
 	RetainEntries = 500
 	RetainAge     = 14 * 24 * time.Hour
-	// SrcWindow is how many of the newest entries a reply's src is matched
-	// against, to remove a reply that was stored and not yet removed.
-	SrcWindow = 64
 	// RatePerMinute and RatePerHour bound the replies taken from one lead.
 	// The excess waits in the outbox.
 	RatePerMinute = 6
@@ -61,14 +58,18 @@ type Entry struct {
 	// Epoch is the lead's epoch the caller gave when the entry was stored.
 	Epoch int64
 
-	gen int64
-	src string
+	gen   int64
+	claim int64 // the claim id of the reply it was stored from, or 0
 }
 
 // Status is what the store says of its lead.
 type Status struct {
 	// Chat is ownerwire.ChatOff or ownerwire.ChatRead.
 	Chat string
+	// Suspended is true when a scan stopped the lead's chat (Chat is still
+	// read, so what it holds can be read): only a fresh turn-on takes
+	// replies again.
+	Suspended bool
 	// Gen is the generation of the switch: it grows by one with every
 	// change, and is 0 for a lead whose chat was never turned on.
 	Gen int64
@@ -85,15 +86,16 @@ type Status struct {
 // IngestReport is what one [Store.Ingest] did.
 type IngestReport struct {
 	// Taken counts the replies stored as the lead's entries, Withheld those
-	// stored as [TextWithheld], and Repaired the replies that were already
-	// stored and only removed now.
+	// stored as [TextWithheld], and Repaired the claims of replies an
+	// earlier scan stored, whose entry is held, that are only removed now.
 	Taken, Withheld, Repaired int
 	// Dropped counts, by reason, what the scan removed or left.
 	Dropped map[Reason]int
-	// Waiting counts what is left in the outbox for a later scan.
+	// Waiting counts what is left for a later scan: replies not settled,
+	// past the rate, or claimed and not yet read, and the outbox's folders.
 	Waiting int
-	// Missing is true when the outbox is not there.
-	Missing bool
+	// Suspended is true when this scan stopped the lead's chat.
+	Suspended bool
 }
 
 // Options are the settings of [OpenStore].
@@ -106,14 +108,17 @@ type Options struct {
 // the copy of it in memory, its switch and its outbox. It is safe for
 // concurrent use.
 type Store struct {
-	mu     sync.Mutex
-	dirFD  int
-	f      *os.File
-	name   string // <layout role>.jsonl
-	now    func() time.Time
-	ob     *outbox
-	closed bool
-	broken error
+	mu        sync.Mutex
+	root      *Root
+	role      string
+	dirFD     int
+	claimsFD  int // <state root>/chat/<layout role>.claims
+	f         *os.File
+	name      string // <layout role>.jsonl
+	now       func() time.Time
+	kernelNow func() time.Time // the clock of the kernel's change times
+	closed    bool
+	broken    error
 
 	chat        string
 	gen         int64
@@ -128,21 +133,34 @@ type Store struct {
 	replayedEntries bool // the replay read an entry of a segment
 	lastCompact     time.Time
 
+	claimHigh int64     // the highest claim id stored, or the open line's
+	claimNext int64     // the next claim id to give
+	suspended bool      // a scan stopped the chat; a fresh turn-on is needed
+	since     time.Time // when the turn-on found the outbox empty
+	outbox    outboxID  // the outbox the turn-on verified
+
 	taken    []time.Time // when replies were taken, the last hour
 	lastDrop map[Reason]time.Time
 	dropped  map[Reason]int
 
 	// Test hooks.
-	write       func(f *os.File, data []byte) (int, error)
-	sync        func(f *os.File) error
-	afterAppend func() error // after an entry of a reply is stored, before its file is removed
-	beforeSwap  func() error // in a compaction, after the temporary file is synced
+	write        func(f *os.File, data []byte) (int, error)
+	sync         func(f *os.File) error
+	unlink       unlinkFunc
+	beforeClaim  func(name string)    // before an entry of the outbox is claimed
+	afterClaim   func(id int64) error // after a reply is claimed, before it is read
+	afterRead    func(name string)    // after a claimed reply is read, before the second fstat
+	afterAppend  func() error         // after an entry of a reply is stored, before its claim is removed
+	beforeDelete func(id int64)       // before the claim of a stored reply is removed
+	beforeSwap   func() error         // in a compaction, after the temporary file is synced
 }
 
 // OpenStore opens the chat of the lead whose layout role is role, below the
-// state root. It makes the folder <state root>/chat (mode 0700) and the
-// file <layout role>.jsonl (mode 0600) when they are not there, refuses a
-// folder or file that is not private ([ErrInsecure]) and a file another
+// state root. It makes the folder <state root>/chat (mode 0700), the file
+// <layout role>.jsonl (mode 0600) and the lead's claim folder
+// <layout role>.claims (mode 0700) when they are not there, opens the
+// folders by openat2 ([ErrUnavailable] without it), refuses a folder or file
+// that is not private ([ErrInsecure]) and a file another
 // holder has locked ([ErrLocked]), and replays the file: a last line without
 // its newline is cut off, any other damage is [ErrCorrupt] and nothing is
 // repaired. A temporary file a compaction left is removed.
@@ -151,7 +169,9 @@ type Store struct {
 // restored from disk. When the file holds a turned-on switch or entries (the
 // daemon stopped while chat was on), they are dropped by a compaction, as a
 // switch to off would, so the next time the desk turns chat on the lead
-// starts an empty segment. The sequence numbers go on from where they were.
+// starts an empty segment. The sequence numbers and the claim ids go on
+// from where they were; the claims an earlier run left are removed by the
+// next turn-on.
 //
 // An error leaves only this lead without chat; other leads' stores are
 // files of their own.
@@ -167,17 +187,24 @@ func OpenStore(root *Root, role string, opts Options) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	claimsFD, err := privateDirAt(root.openat2, dirFD, claimsName(role))
+	if err != nil {
+		closeFD(dirFD)
+		return nil, fmt.Errorf("the claim folder: %w", err)
+	}
 	s := &Store{
-		dirFD: dirFD, name: role + ".jsonl", now: now,
-		ob:   &outbox{root: root, role: role, now: now},
+		root: root, role: role, dirFD: dirFD, claimsFD: claimsFD, name: role + ".jsonl",
+		now: now, kernelNow: coarseNow,
 		chat: ownerwire.ChatOff, lastDrop: map[Reason]time.Time{}, dropped: map[Reason]int{},
-		write: func(f *os.File, data []byte) (int, error) { return f.Write(data) },
-		sync:  func(f *os.File) error { return f.Sync() },
+		write:  func(f *os.File, data []byte) (int, error) { return f.Write(data) },
+		sync:   func(f *os.File) error { return f.Sync() },
+		unlink: unix.Unlinkat,
 	}
 	if err := s.start(); err != nil {
 		if s.f != nil {
 			_ = s.f.Close()
 		}
+		closeFD(claimsFD)
 		closeFD(dirFD)
 		return nil, err
 	}
@@ -192,34 +219,8 @@ func openChatDir(root *Root) (int, error) {
 		return -1, err
 	}
 	defer closeFD(rootFD)
-	created := false
-	switch err := unix.Mkdirat(rootFD, ChatDirName, 0o700); err {
-	case nil:
-		created = true
-	case unix.EEXIST:
-	default:
-		return -1, fmt.Errorf("leadchat: cannot make the chat folder: %w", err)
-	}
-	fd, err := openAt(root.openat2, rootFD, ChatDirName, unix.O_RDONLY|unix.O_DIRECTORY, 0)
-	switch {
-	case err == unix.ELOOP || err == unix.ENOTDIR || err == unix.EXDEV:
-		return -1, fmt.Errorf("%w: the chat folder is a symbolic link, a mount point or not a folder", ErrInsecure)
-	case err != nil:
-		return -1, fmt.Errorf("leadchat: cannot open the chat folder: %w", err)
-	}
-	if created {
-		// The umask may have cleared bits; the folder is 0700 exactly.
-		if err := unix.Fchmod(fd, 0o700); err != nil {
-			closeFD(fd)
-			return -1, fmt.Errorf("leadchat: cannot set the mode of the chat folder: %w", err)
-		}
-		if err := syncFD(rootFD); err != nil {
-			closeFD(fd)
-			return -1, fmt.Errorf("leadchat: cannot sync the state root: %w", err)
-		}
-	}
-	if err := checkDirFD(fd, true); err != nil {
-		closeFD(fd)
+	fd, err := privateDirAt(root.openat2, rootFD, ChatDirName)
+	if err != nil {
 		return -1, fmt.Errorf("the chat folder: %w", err)
 	}
 	return fd, nil
@@ -327,8 +328,9 @@ func (s *Store) start() error {
 	}
 	now := s.now()
 	s.lastCompact = now
+	s.claimNext = s.claimHigh + 1
 	if empty {
-		return s.appendData(mustLine(openLine{Kind: kindOpen, V: fileVersion, Next: s.last + 1}))
+		return s.appendData(mustLine(openLine{Kind: kindOpen, V: fileVersion, Next: s.last + 1, Claim: s.claimHigh}))
 	}
 	if s.chat == ownerwire.ChatRead || s.replayedEntries {
 		s.turnOff(now, s.switchEpoch)
@@ -348,6 +350,7 @@ func corrupt(n int, reason string) error {
 // the store opens off, so what a file holds of a segment is dropped.
 type replayState struct {
 	lastSeq    int64 // the sequence number of the last entry read
+	lastClaim  int64 // the claim id of the last entry read with one
 	wantMarker bool  // a read switch line was read and no entry yet
 	entries    bool  // an entry of the current segment was read
 }
@@ -424,10 +427,11 @@ func (s *Store) replayLine(n int, raw []byte, rs *replayState) error {
 	}
 	switch l := v.(type) {
 	case openLine:
-		if l.V != fileVersion || l.Next < 1 || l.Next > ownerwire.MaxChatSeq+1 {
+		if l.V != fileVersion || l.Next < 1 || l.Next > ownerwire.MaxChatSeq+1 || l.Claim < 0 || l.Claim > ownerwire.MaxChatSeq {
 			return corrupt(n, "the open line has a version or a floor that is not valid")
 		}
 		s.last = l.Next - 1
+		s.claimHigh = l.Claim
 	case switchLine:
 		at, ok := parseTime(l.At)
 		switch {
@@ -439,6 +443,15 @@ func (s *Store) replayLine(n int, raw []byte, rs *replayState) error {
 			return corrupt(n, "the time is not UTC to the second")
 		case l.Epoch < 0 || l.Epoch > ownerwire.MaxChatSeq || l.Discarded < 0:
 			return corrupt(n, "the epoch or the count is out of range")
+		}
+		if l.Chat == ownerwire.ChatRead {
+			_, ok1 := parseSince(l.Since)
+			_, ok2 := parseOutboxID(l.Outbox)
+			if !ok1 || !ok2 {
+				return corrupt(n, "a turn-on lacks a valid moment or outbox")
+			}
+		} else if l.Since != "" || l.Outbox != "" {
+			return corrupt(n, "a turn-off has a moment or an outbox")
 		}
 		rs.entries = false
 		rs.wantMarker = l.Chat == ownerwire.ChatRead
@@ -462,8 +475,14 @@ func (s *Store) replayLine(n int, raw []byte, rs *replayState) error {
 			return corrupt(n, "a system entry has a text that is not one of the fixed texts")
 		case rs.wantMarker != (l.Who == ownerwire.ChatWhoSystem && l.Text == TextTurnedOn):
 			return corrupt(n, "a segment does not start with its turned-on entry, or has a second one")
-		case l.Src != "" && !validSrc(l.Src), l.Who == ownerwire.ChatWhoLead && l.Src == "":
-			return corrupt(n, "the source is not valid")
+		case l.Claim < 0 || l.Claim > ownerwire.MaxChatSeq || l.Claim != 0 && l.Claim <= rs.lastClaim:
+			return corrupt(n, "the claim id is out of range or does not grow")
+		case (l.Who == ownerwire.ChatWhoLead || l.Text == TextWithheld) != (l.Claim != 0):
+			return corrupt(n, "a reply's entry lacks its claim id, or another entry has one")
+		}
+		if l.Claim != 0 {
+			rs.lastClaim = l.Claim
+			s.claimHigh = max(s.claimHigh, l.Claim)
 		}
 		rs.lastSeq = l.Seq
 		rs.wantMarker = false
@@ -532,7 +551,7 @@ func (s *Store) usable() error {
 }
 
 func (s *Store) entryLine(e Entry) entryLine {
-	return entryLine{Kind: kindEntry, Seq: e.Seq, Gen: e.gen, Epoch: e.Epoch, Who: e.Who, At: formatTime(e.At), Text: e.Text, Src: e.src}
+	return entryLine{Kind: kindEntry, Seq: e.Seq, Gen: e.gen, Epoch: e.Epoch, Who: e.Who, At: formatTime(e.At), Text: e.Text, Claim: e.claim}
 }
 
 // addEntries gives the next sequence numbers to new entries of the current
@@ -568,21 +587,19 @@ func (s *Store) addEntries(at time.Time, epoch int64, es ...Entry) error {
 // nothing is read, whatever happens to the file.
 func (s *Store) turnOff(now time.Time, epoch int64) {
 	s.chat, s.gen, s.switchAt, s.switchEpoch, s.discarded = ownerwire.ChatOff, s.gen+1, now.UTC().Truncate(time.Second), epoch, 0
+	s.suspended, s.since, s.outbox = false, time.Time{}, outboxID{}
 	s.entries = nil
 	s.taken = nil
 	s.lastDrop = map[Reason]time.Time{}
 }
 
 // snapshot is the content of a compacted file: the open line with the
-// floor, the switch, and the entries held.
+// high-waters, the switch, and the entries held.
 func (s *Store) snapshot() ([]byte, error) {
 	var buf bytes.Buffer
-	buf.Write(mustLine(openLine{Kind: kindOpen, V: fileVersion, Next: s.last + 1}))
+	buf.Write(mustLine(openLine{Kind: kindOpen, V: fileVersion, Next: s.last + 1, Claim: s.claimNext - 1}))
 	if s.gen > 0 {
-		data, err := encodeLine(switchLine{
-			Kind: kindSwitch, Chat: s.chat, Gen: s.gen, At: formatTime(s.switchAt),
-			Epoch: s.switchEpoch, Discarded: s.discarded,
-		})
+		data, err := encodeLine(s.switchLine())
 		if err != nil {
 			return nil, err
 		}
@@ -596,6 +613,18 @@ func (s *Store) snapshot() ([]byte, error) {
 		buf.Write(data)
 	}
 	return buf.Bytes(), nil
+}
+
+// switchLine is the line of the switch as memory holds it.
+func (s *Store) switchLine() switchLine {
+	l := switchLine{
+		Kind: kindSwitch, Chat: s.chat, Gen: s.gen, At: formatTime(s.switchAt),
+		Epoch: s.switchEpoch, Discarded: s.discarded,
+	}
+	if s.chat == ownerwire.ChatRead {
+		l.Since, l.Outbox = formatSince(s.since), s.outbox.String()
+	}
+	return l
 }
 
 // compact writes what memory holds to a temporary file, syncs it, renames
@@ -715,6 +744,7 @@ func (s *Store) Close() error {
 	}
 	s.closed = true
 	err := s.f.Close()
+	closeFD(s.claimsFD)
 	closeFD(s.dirFD)
 	return err
 }
@@ -732,7 +762,7 @@ func (s *Store) Status() (Status, error) {
 	for k, v := range s.dropped {
 		d[k] = v
 	}
-	return Status{Chat: s.chat, Gen: s.gen, Head: s.last, Entries: len(s.entries), Dropped: d}, nil
+	return Status{Chat: s.chat, Suspended: s.suspended, Gen: s.gen, Head: s.last, Entries: len(s.entries), Dropped: d}, nil
 }
 
 // Read answers the entries after the sequence number after, from memory: it
@@ -770,18 +800,27 @@ func (s *Store) Read(after int64) (entries []Entry, reset bool, head int64, err 
 }
 
 // SetSwitch sets the lead's chat switch to off or read, at once, and answers
-// the status. Setting the switch it already has changes nothing. send is
-// never accepted here ([ErrInvalid]).
+// the status. Setting the switch it already has changes nothing, except that
+// read on a suspended lead turns it on afresh. send is never accepted here
+// ([ErrInvalid]).
 //
-// Off to read first clears the outbox, so nothing written before is taken,
-// then appends the switch line (with how many files the clear removed) and
-// the entry [TextTurnedOn] in one synced write. A clear that fails leaves
-// the switch off.
+// Off to read needs the outbox: it is made with mode 0700 when it is not
+// there, and must be a folder of the daemon's user with mode 0700 exactly,
+// reached without a link or a mount point ([ErrInsecure], or
+// [ErrUnavailable] when the kernel cannot reach it so). The claims an
+// earlier segment left are removed, and the outbox is cleared: every entry
+// that is not a folder is claimed and removed, and it is listed again until
+// a listing finds none ([ErrFull] for more than 8192 entries, for an outbox
+// that does not stay empty, or for more than [MaxWaiting] folders). Then the
+// switch line (with how many files the clear removed, the moment the outbox
+// was found empty and the outbox's identity) and the entry [TextTurnedOn] are
+// appended in one synced write. Anything that fails leaves the switch off.
 //
 // Read to off turns the switch off in memory first, so nothing is read from
 // that moment, then drops every entry of the lead by a compaction that keeps
-// the floor of the sequence numbers and the switch line. A compaction that
-// fails breaks the store, with the switch off.
+// the high-waters and the switch line. A compaction that fails breaks the
+// store, with the switch off. A suspended lead turned on again is turned off
+// so first: the fresh turn-on starts a new segment.
 //
 // epoch is the lead's epoch, recorded with the switch.
 func (s *Store) SetSwitch(chat string, epoch int64) (Status, error) {
@@ -804,24 +843,32 @@ func (s *Store) setSwitch(chat string, epoch int64) error {
 	if err := s.usable(); err != nil {
 		return err
 	}
-	if chat == s.chat {
+	if chat == s.chat && (chat != ownerwire.ChatRead || !s.suspended) {
 		return nil
 	}
 	now := s.now()
-	if chat == ownerwire.ChatOff {
+	if chat == ownerwire.ChatOff || s.suspended {
 		s.turnOff(now, epoch)
-		return s.compact()
-	}
-	n, err := s.ob.clear()
-	if err != nil {
-		return err
+		if err := s.compact(); err != nil {
+			return err
+		}
+		if chat == ownerwire.ChatOff {
+			return nil
+		}
 	}
 	if s.last+1 > ownerwire.MaxChatSeq {
 		return fmt.Errorf("%w: the sequence numbers are spent", ErrFull)
 	}
+	n, id, since, err := s.clearOutbox()
+	if err != nil {
+		return err
+	}
 	at := now.UTC().Truncate(time.Second)
 	gen := s.gen + 1
-	sw := mustLine(switchLine{Kind: kindSwitch, Chat: ownerwire.ChatRead, Gen: gen, At: formatTime(at), Epoch: epoch, Discarded: int64(n)})
+	sw := mustLine(switchLine{
+		Kind: kindSwitch, Chat: ownerwire.ChatRead, Gen: gen, At: formatTime(at), Epoch: epoch, Discarded: int64(n),
+		Since: formatSince(since), Outbox: id.String(),
+	})
 	e := Entry{Seq: s.last + 1, Who: ownerwire.ChatWhoSystem, At: at, Text: TextTurnedOn, Epoch: epoch, gen: gen}
 	data, err := encodeLine(s.entryLine(e))
 	if err != nil {
@@ -835,6 +882,7 @@ func (s *Store) setSwitch(chat string, epoch int64) error {
 		return err
 	}
 	s.chat, s.gen, s.switchAt, s.switchEpoch, s.discarded = ownerwire.ChatRead, gen, at, epoch, int64(n)
+	s.since, s.outbox, s.suspended = since, id, false
 	s.entries = []Entry{e}
 	s.last = e.Seq
 	s.taken = nil
@@ -858,34 +906,47 @@ func (s *Store) budget(now time.Time) int {
 	return max(min(RatePerMinute-minute, RatePerHour-len(kept)), 0)
 }
 
-// stored reports whether a reply's src is among the newest [SrcWindow]
-// entries.
-func (s *Store) stored(src string) bool {
-	for i, n := len(s.entries)-1, 0; i >= 0 && n < SrcWindow; i, n = i-1, n+1 {
-		if s.entries[i].src == src {
-			return true
-		}
-	}
-	return false
+// suspend stops the lead's chat: the scan's fixed system entry text is
+// written, the only one of the suspension, and nothing more is taken until
+// a fresh turn-on.
+func (s *Store) suspend(now time.Time, epoch int64, text string, rep *IngestReport) error {
+	s.suspended = true
+	rep.Suspended = true
+	return s.addEntries(now, epoch, Entry{Who: ownerwire.ChatWhoSystem, Text: text})
 }
 
 // Ingest scans the lead's outbox once and takes what it may. A lead whose
-// switch is off answers [ErrOff] and nothing is read. epoch is the lead's
-// epoch, recorded with each entry.
+// switch is off answers [ErrOff], a suspended lead [ErrSuspended], and
+// nothing is read. epoch is the lead's epoch, recorded with each entry.
 //
-// Each settled reply is judged by [ReplyText]. One that passes is stored as
-// the lead's entry, one that looks like a credential as the system's
-// [TextWithheld], each with its src, in a synced append; only then is its
-// file removed, and only when its name still holds the inode that was read.
-// A reply whose src is among the newest [SrcWindow] entries was stored by an
-// earlier scan that stopped before it removed the file: it is removed and not
-// stored again. A reply that is too long or not plain text is removed.
-// Taken replies (stored or withheld) count against [RatePerMinute] and
-// [RatePerHour]; the excess waits. For the drops the owner is told about, a
-// fixed system entry is written at most once per reason a minute.
+// The outbox must be the folder the turn-on verified (the same device and
+// inode), of the daemon's user with mode 0700, reached without a link or a
+// mount point; an outbox that is gone, replaced, not private or closed to
+// the daemon suspends the chat with the entry [TextStoppedFolder]. An outbox of more than
+// [MaxDirEntries] entries, or of more than [MaxWaiting] replies and folders,
+// suspends it with the entry [TextStoppedFull], before anything in it is
+// touched.
 //
-// An error from the outbox leaves the store as it is; a write or sync that
-// fails breaks it.
+// Every entry the scan takes or removes is first claimed: renamed, by one
+// rename that replaces nothing, into the lead's claim folder
+// (<state root>/chat/<layout role>.claims, mode 0700, which no sandbox
+// binds) under a name the daemon chooses from a claim counter; only the
+// claim is examined, read and removed, never the lead's name. A file whose
+// change time is before the turn-on found the outbox empty, a stale
+// dot-name and a file with another name are claimed and removed. A settled
+// reply is claimed, read by its handle and judged by
+// [ReplyText]: one that passes is stored as the lead's entry, one that looks
+// like a credential as the system's [TextWithheld], each with its claim id,
+// in a synced append; only then is its claim removed. A claim an earlier
+// scan left is read first: one whose id is at most the highest stored was
+// stored and is only removed, any other is read and stored once. A reply that
+// is too long or not plain text is removed. Taken replies (stored or
+// withheld) count against [RatePerMinute] and [RatePerHour]; the excess
+// waits. For the drops the owner is told about, a fixed system entry is
+// written at most once per reason a minute.
+//
+// An error leaves the store as it is, with a claim it made kept for the
+// next scan; a write or sync that fails breaks it.
 func (s *Store) Ingest(epoch int64) (IngestReport, error) {
 	rep := IngestReport{Dropped: map[Reason]int{}}
 	if epoch < 0 || epoch > ownerwire.MaxChatSeq {
@@ -899,6 +960,9 @@ func (s *Store) Ingest(epoch int64) (IngestReport, error) {
 	if s.chat != ownerwire.ChatRead {
 		return rep, ErrOff
 	}
+	if s.suspended {
+		return rep, ErrSuspended
+	}
 	now := s.now()
 	s.retain(now)
 	if s.stale && now.Sub(s.lastCompact) >= compactEvery {
@@ -906,66 +970,28 @@ func (s *Store) Ingest(epoch int64) (IngestReport, error) {
 			return rep, err
 		}
 	}
-	b, err := s.ob.scan(s.budget(now))
-	if err != nil {
-		return rep, err
-	}
-	defer b.Close()
-	for k, v := range b.Dropped {
-		rep.Dropped[k] += v
-	}
-	rep.Waiting, rep.Missing = b.Waiting, b.Missing
 	defer func() {
 		for k, v := range rep.Dropped {
 			s.dropped[k] += v
 		}
 	}()
-	for _, r := range b.Replies {
-		if s.stored(r.Src) {
-			if _, err := b.Remove(r); err != nil {
-				return rep, err
-			}
-			rep.Repaired++
-			continue
-		}
-		text, v := ReplyText(r.Data)
-		e := Entry{src: r.Src}
-		switch v {
-		case VerdictTooLong, VerdictNotPlain:
-			why := ReasonTooLong
-			if v == VerdictNotPlain {
-				why = ReasonNotPlain
-			}
-			removed, err := b.Remove(r)
-			if err != nil {
-				return rep, err
-			}
-			if removed {
-				rep.Dropped[why]++
-			}
-			continue
-		case VerdictWithheld:
-			e.Who, e.Text = ownerwire.ChatWhoSystem, TextWithheld
-		default:
-			e.Who, e.Text = ownerwire.ChatWhoLead, text
-		}
-		if err := s.addEntries(now, epoch, e); err != nil {
-			return rep, err
-		}
-		s.taken = append(s.taken, now)
-		if v == VerdictWithheld {
-			rep.Withheld++
-		} else {
-			rep.Taken++
-		}
-		if s.afterAppend != nil {
-			if err := s.afterAppend(); err != nil {
-				return rep, err
-			}
-		}
-		if _, err := b.Remove(r); err != nil {
-			return rep, err
-		}
+	outFD, id, err := s.openOutbox()
+	switch {
+	case err == nil && id != s.outbox:
+		closeFD(outFD)
+		return rep, s.suspend(now, epoch, TextStoppedFolder, &rep)
+	case errors.Is(err, unix.ENOENT), errors.Is(err, unix.EACCES), errors.Is(err, ErrInsecure):
+		return rep, s.suspend(now, epoch, TextStoppedFolder, &rep)
+	case err != nil:
+		return rep, fmt.Errorf("leadchat: cannot open the outbox: %w", err)
+	}
+	defer closeFD(outFD)
+	stop, err := s.scan(outFD, now, epoch, &rep)
+	if err != nil {
+		return rep, err
+	}
+	if stop != "" {
+		return rep, s.suspend(now, epoch, stop, &rep)
 	}
 	var drops []Entry
 	for _, why := range dropOrder {
