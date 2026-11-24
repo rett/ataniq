@@ -125,6 +125,21 @@
 // next define starts again. No define deletes anything. A lead that has
 // started, or whose record is there, is never cleaned.
 //
+// # Lead replies
+//
+// Provisioning itself leaves the instruction file empty and makes no reply
+// folder. [EnsureChat], which the daemon calls at every define and every
+// start of a scratch lead, makes the reply folder
+// <state root>/leads/<layout role>/home/.ataniq-replies ([OutboxInside] in the
+// sandbox, in the lead's home, which is bound already) with mode 0700, and
+// writes the text of [LeadInstructions] in place of the empty instruction
+// file, by a temporary file that is synced and renamed, only while the lead
+// is proven stopped: a running lead's sandbox binds the file it started with.
+// A file that holds anything else is the owner's and is never overwritten. A
+// reply folder that is not a folder of the caller with mode 0700 exactly is
+// refused and left as it is ([ErrChat]). No environment variable and no bind
+// changes, so the profile digest is the same.
+//
 // # What it prints
 //
 // One line for each folder or file made or kept, the clone, and the marker, to

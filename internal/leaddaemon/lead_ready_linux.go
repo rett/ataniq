@@ -115,10 +115,17 @@ func (l *leadMode) joinObservers(grace time.Duration) bool {
 	}
 	o.mu.Unlock()
 	l.cancelSettlers()
+	// The seat's chat port answers busy from here on, and the chat's
+	// scanners end with the observers.
+	l.port.bind(nil)
+	l.chat.shutdown()
 	ended := make(chan struct{})
 	go func() {
 		o.wg.Wait()
 		l.settle.wg.Wait()
+		if l.chat != nil {
+			l.chat.wg.Wait()
+		}
 		close(ended)
 	}()
 	t := time.NewTimer(grace)

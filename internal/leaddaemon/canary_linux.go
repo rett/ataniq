@@ -250,7 +250,7 @@ func (m *canaryMode) extensions(ctl *leadlifecycle.Controller, reg *leadregistry
 	}
 	// Scratch mode registers the lead.* operations and never the canary's.
 	if m.lead != nil {
-		return []clientapi.Extension{m.lead.extension(ctl, reg)}
+		return []clientapi.Extension{m.lead.extension(ctl, reg), m.lead.chatExtension()}
 	}
 	for _, role := range m.router.order {
 		in := m.router.byRole[role]
