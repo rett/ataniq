@@ -459,7 +459,9 @@ desk: on most questions it takes the question's default; on the language, the
 sign-in and where a web app runs, the desk picks a value for you, shown under
 "What was decided for you" on the summary. Such an answer counts as given, so
 a draft plan can be drawn from it, and the plan says "Some answers were
-decided for you; you can change them from the summary." Finishing accepts
+decided for you; you can change them from the summary." (the stored plan of a
+finished brief, which cannot be changed, says "Some answers were decided for
+you, and finishing accepted them."). Finishing accepts
 them as your answers; the summary says so above the finish button. After the
 last round you read the
 summary: what you chose, what was decided for you and what was left to its

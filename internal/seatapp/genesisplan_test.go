@@ -152,10 +152,26 @@ func TestGenesisPlanPageInferredAnswers(t *testing.T) {
 		t.Error("the page shows the warning's id")
 	}
 
-	p.Warnings = []string{"settle-at-desk"}
+	// The stored plan, of a finished brief that cannot be changed, says
+	// finishing accepted the answers, and never offers the summary.
+	p.Stored, p.Revision = true, 1
 	r, _, s = planRig(t, p)
-	if page := r.getWith(planPath, s).Body.String(); strings.Contains(page, html.EscapeString(planInferredLine)) || strings.Contains(page, "decided for you") {
-		t.Fatalf("a plan with no inferred answer says some were decided:\n%s", page)
+	page = r.getWith(planPath, s).Body.String()
+	warnings = sectionOf(t, page, `<h2 id="warnings-h">Warnings</h2>`)
+	if strings.Count(page, html.EscapeString(planInferredStoredLine)) != 1 || !strings.Contains(warnings, "<li>"+html.EscapeString(planInferredStoredLine)+"</li>") {
+		t.Fatalf("the stored plan does not say finishing accepted the answers:\n%s", page)
+	}
+	if strings.Contains(page, "change them from the summary") {
+		t.Error("the stored plan offers a change from the summary")
+	}
+
+	// A plan with no inferred answer, draft or stored, says neither.
+	for _, stored := range []bool{false, true} {
+		p.Stored, p.Warnings = stored, []string{"settle-at-desk"}
+		r, _, s = planRig(t, p)
+		if page := r.getWith(planPath, s).Body.String(); strings.Contains(page, html.EscapeString(planInferredLine)) || strings.Contains(page, html.EscapeString(planInferredStoredLine)) || strings.Contains(page, "decided for you") {
+			t.Fatalf("a plan (stored %v) with no inferred answer says some were decided:\n%s", stored, page)
+		}
 	}
 }
 
