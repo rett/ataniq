@@ -20,8 +20,8 @@ import (
 
 // The fixed sentences of the plan page. A test pins each.
 const (
-	planBindsNothing = "A plan binds nothing: nothing has started, and nothing starts from this page."
-	planDraftLine    = "This is a draft; finishing the interview keeps it as revision 1."
+	planBindsNothing = "This plan gives no permission to do the work. Viewing it starts nothing."
+	planDraftLine    = "This is a draft; finishing the interview keeps it as revision 1. You can change the draft by editing your answers."
 	planAlwaysWaits  = "Publishing, releases, pushing code, credentials and raising any limit always wait for you, whatever the plan says."
 	planCharterLine  = "Draft. Not signed. It allows nothing. Nothing starts from this page. Signing is a later step and is not built."
 	planNotReady     = "No plan can be drawn yet: some answers are missing."
@@ -238,15 +238,15 @@ func planOf(thread string, p *GenesisPlanView) planData {
 func (a *app) planPage(w http.ResponseWriter, r *http.Request, s Session) {
 	thread := r.PathValue("thread")
 	if !ValidThreadID(thread) {
-		a.problem(w, problemNotFound)
+		a.problem(w, r, problemNotFound)
 		return
 	}
 	g, ctx, cancel, err := a.genesisCall(r, s)
 	if err != nil {
 		if errors.Is(err, errTooMany) {
-			a.problem(w, problemTooManyProjects)
+			a.problem(w, r, problemTooManyProjects)
 		} else {
-			a.problem(w, problemGenesisNotOffered)
+			a.problem(w, r, problemGenesisNotOffered)
 		}
 		return
 	}
@@ -264,11 +264,11 @@ func (a *app) planPage(w http.ResponseWriter, r *http.Request, s Session) {
 		a.render(w, "plan", http.StatusConflict, planData{Title: pageTitles["plan"], Heading: "No plan yet", Thread: thread, Tag: thread[:6], Missing: planNoTemplate, Back: backToProject, Nav: projectsNav()})
 		return
 	case err != nil:
-		a.problem(w, genesisProblem(err))
+		a.problem(w, r, genesisProblem(err))
 		return
 	}
 	if v.Thread != thread || v.State != GenesisStatePlan || v.Plan == nil || !validPlan(v.Plan) {
-		a.problem(w, problemFailed)
+		a.problem(w, r, problemFailed)
 		return
 	}
 	a.render(w, "plan", http.StatusOK, planOf(thread, v.Plan))

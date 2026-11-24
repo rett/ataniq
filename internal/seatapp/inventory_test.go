@@ -300,6 +300,23 @@ func mentionsDeciding(js string) bool {
 	return decidingRe.MatchString(strings.ReplaceAll(js, watchBanner, ""))
 }
 
+// checkProblemLinks holds problem pages to their own inventory: the way back,
+// and a same-document GET only when the failed read can be retried.
+func checkProblemLinks(t *testing.T, page string, retry bool) {
+	t.Helper()
+	allowed := []string{"a#back"}
+	if retry {
+		allowed = append(allowed, "a#retry")
+	}
+	if strings.Contains(page, `<a id="retry" href="">Try this page again</a>`) != retry ||
+		!strings.Contains(page, `<a id="back" href="/cards/">`) || strings.Count(page, "<a ") != len(allowed) {
+		t.Errorf("unexpected links on problem page (retry %t): %s", retry, page)
+	}
+	for _, f := range inspectPage(page, allowed, false) {
+		t.Error(f)
+	}
+}
+
 func TestPageInventory(t *testing.T) {
 	// The notifier is a PushPort, so the notices' routes and controls exist;
 	// the daemon runs the interview, so the project pages exist.
@@ -341,6 +358,9 @@ func TestPageInventory(t *testing.T) {
 		body := w.Body.String()
 		switch e.kind {
 		case "page":
+			if !strings.Contains(body, `<meta name="format-detection" content="telephone=no">`) {
+				t.Errorf("%s: automatic telephone links are enabled", e.pattern)
+			}
 			if ct := w.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
 				t.Errorf("%s: content type %q", e.pattern, ct)
 			}

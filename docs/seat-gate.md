@@ -464,7 +464,10 @@ writes it (see [The reverse proxy](#the-reverse-proxy)).
 
 When the daemon's gate lists `genesis` (its start line ends in `... watch and
 genesis`), the card list on the phone has a "New project" button and lists the
-projects in progress. Nothing is configured for it on either host.
+projects in progress. Open "Projects" for the project list. If a page says
+the desk is busy or unreachable, "Try this page again" reads the same page.
+When a Card's decision is still on its way or its outcome is unknown, "Look
+again" reads that Card. Nothing is configured for it on either host.
 
 What "New project" does. It starts a short interview: a few rounds of one to
 three multiple-choice questions about a project you want to make (what kind,
@@ -473,8 +476,10 @@ questions are the desk's own, from its fixed catalog, and so is the order they
 come in. Each question offers its options, each with a one-line example, and,
 where the question allows them, "Other" (your own words, a short note of
 about 200 letters: the cap is 200 bytes, so accents and emoji take more room),
-"You decide for me" and "Skip". "You decide for me" leaves the answer to the
-desk: on most questions it takes the question's default; on the language, the
+"You decide for me" and "Skip". On a question that accepts several choices,
+use each of those three options on its own. If the phone rejects a particular
+answer, it returns to that question and marks it "Check this answer."
+"You decide for me" leaves the answer to the desk. On most questions it takes the question's default; on the language, the
 sign-in and where a web app runs, the desk picks a value for you, shown under
 "What was decided for you" on the summary. Such an answer counts as given, so
 a draft plan can be drawn from it, and the plan says "Some answers were
@@ -487,7 +492,9 @@ summary: what you chose, what was decided for you and what was left to its
 default; "Change" on a row asks that question again (a change clears the later
 answers that depended on it, the page says how many, and their questions are
 asked again, after the last round too, as round 6 of 6), "Looks right:
-finish" keeps the answers as the project's brief, and "Discard this project"
+finish" saves the answers as the project's brief. You cannot edit them
+afterwards. If required answers are missing, finishing also leaves the
+project without a plan. "Discard this project"
 (after a second page) drops it with all its answers. At most two projects are
 open at once; a third "New project" says so. An open project you leave for 14
 days is discarded. The card list and `/projects/` list the open ones, so after
@@ -499,27 +506,30 @@ article, a podcast or a book), the summary has "See the draft plan"; otherwise
 it says how many answers are filled in, or that there is no template for this
 kind yet. The plan page (`/projects/<id>/plan`) shows, in this order: "Draft
 plan" (or, once finished, "Plan, revision 1"), with the project's title and
-the first six digits of its id, and the lines "A plan binds nothing: nothing
-has started, and nothing starts from this page." and, for a draft, "This is a
-draft; finishing the interview keeps it as revision 1."; the first demo; what
-waits for you (the review points you chose, and always "Publishing, releases,
+the first six digits of its id, and the lines "This plan gives no permission to
+do the work. Viewing it starts nothing." and, for a draft, "This is a draft;
+finishing the interview keeps it as revision 1. You can change the draft by
+editing your answers.";
+the first demo; what waits for you (the review points you chose, and always "Publishing, releases,
 pushing code, credentials and raising any limit always wait for you, whatever
 the plan says."); the outside services the work would use; where the files
-live; the budget band (advisory: nothing enforces it yet); the estimate (an
+live; the suggested monthly budget, which the desk does not enforce; the estimate (an
 estimate, not a promise); the plan's warnings; the milestones, each a section
 you open, with its tasks, their kind and size and what each waits for; your
 own notes, each quoted and marked as your words, never given to a tool, with
 the question it answers above it ("Do you prefer a programming language?", or
 "A note" for a note of your own); and "What a charter would cover", a draft of
-words only ("Draft. Not signed. It allows nothing. ..."), which lists the work
-areas, the outside services, where it would stop for you and the line "Always
+words only ("Draft. Not signed. It allows nothing. ..."). Open "Read the
+proposed limits on the work" for the work areas, the outside services, where
+it would stop for you and the line "Always
 stopping for you before publishing, releases, pushing code, credentials and
-raising any limit.", and then, apart from that list, the monthly budget band
-(advisory; nothing enforces it yet). To tune the plan, go back to the summary and change an answer:
+raising any limit." The suggested monthly budget follows that list. To tune the
+plan, go back to the summary and change an answer:
 the draft is drawn again from the answers. "Looks right: finish" keeps the
 brief and its plan, revision 1, which never changes afterwards; the finished
-page then has "See the plan". A project finished before its answers were
-complete has no plan, and its plan page says so. The short digest under the
+page then has "See the plan" and points you to the desk for the next step.
+If there is no plan, the finished page says why: required answers were
+missing, or the desk has no template for that kind of project. The short digest under the
 heading ("Plan 3c3c3c3c3c3c") is the same for the draft and the kept plan of
 the same answers, so you can tell they match; when some answers were decided
 for you, finishing accepts them, which changes the brief, so the kept plan
@@ -528,8 +538,8 @@ has the draft's content under another digest.
 What it does not do. Nothing starts: no agent is run and no agent is given the
 answers, the brief or the plan, and nothing is built or published. An answer
 only describes the project; it never approves anything, and the project pages
-hold no approve or deny control. The plan page has links only: no button, no
-form and no script; nothing is signed, allowed or started from it, and it is
+hold no approve or deny control. The plan page uses links and native disclosures. It has no button,
+form or script; nothing is signed, allowed or started from it, and it is
 never a card, on the card list or in a notice. The answers are kept on the desk, by the
 daemon, in `owner/genesis/` of its state folder (one file per project, mode
 0600), and are sent nowhere else. Never type a password, a key or a token: say

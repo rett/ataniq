@@ -200,6 +200,17 @@ func TestStyleSheetNavigation(t *testing.T) {
 			t.Errorf("the navigation's link lacks %q", want)
 		}
 	}
+	for _, selector := range []string{`a[href="/login/"],`, "#watch-status a,", "#retry,"} {
+		rule := ruleOf(t, css, selector)
+		if !strings.Contains(rule, "min-height: 44px;") || !strings.Contains(rule, "min-width: 44px;") {
+			t.Errorf("%s link lacks a 44 px target", selector)
+		}
+	}
+	for _, selector := range []string{"#decide-status:empty", "#logout-status:empty", "#watch-status:empty"} {
+		if strings.Contains(ruleOf(t, css, selector), "display: none") {
+			t.Errorf("%s disappears while empty", selector)
+		}
+	}
 	cur := ruleOf(t, css, `.nav a[aria-current="page"] {`)
 	for _, want := range []string{"font-weight: 700;", "text-decoration: none;", "box-shadow: inset"} {
 		if !strings.Contains(cur, want) {
@@ -248,7 +259,7 @@ func TestStyleSheetWideScreen(t *testing.T) {
 	if n := strings.Count(css, "@media (min-width:"); n != 2 {
 		t.Errorf("%d width breakpoints, want 30rem and 60rem", n)
 	}
-	for _, want := range []string{".nav-page {", "display: grid;", "grid-template-columns:", "position: sticky;", "border-right:",
+	for _, want := range []string{".nav-page {", "display: grid;", "grid-template-columns:", "position: sticky;", "border-right:", "height: 100vh;", "height: 100dvh;", "overflow-y: auto;",
 		"max-width: 44rem;", ".nav-page > main:has(.cards) {", "max-width: 60rem;", "flex-direction: column;"} {
 		if !strings.Contains(wide, want) {
 			t.Errorf("the wide block lacks %q", want)

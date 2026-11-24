@@ -1,11 +1,12 @@
 {{define "content"}}
 <h1>Project brief kept</h1>
 {{if .Note}}<p class="note-line" role="status">{{.Note}}</p>
-{{end}}<p>The brief is kept at the desk as <span class="mono">{{short .View.Digest}}</span>.</p>
+{{end}}<p>Your answers are saved at the desk. Brief reference: <span class="mono">{{short .View.Digest}}</span>.</p>
 <p>Nothing has started, and no agent was given the brief yet.</p>
-{{if .View.PlanReady}}<p>Handing a plan to a project is a later step.</p>
+{{if .View.PlanReady}}<p>You can read the plan here. The next step is at the desk.</p>
 <p><a id="see-plan" href="{{projectHref .View.Thread "plan"}}">See the plan</a></p>
-{{else}}<p>No plan was drawn: the answers were not complete, or there is no plan template for this kind of project yet.</p>
+{{else if ne .View.Filled .View.Total}}<p>No plan was drawn because some required answers were missing when you finished.</p>
+{{else}}<p>No plan was drawn because there is no template for this kind of project yet.</p>
 {{end}}
 {{range .Groups}}<section>
 <h2>{{.Heading}}</h2>

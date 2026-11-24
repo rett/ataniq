@@ -81,7 +81,7 @@ func TestGenesisPlanPageSections(t *testing.T) {
 		"What waits for you", "At the first demo", "Before work starts: you see the plan first", html.EscapeString(planAlwaysWaits),
 		"Outside services the work would use", "hosting service",
 		"Where the files live", "On this computer",
-		"Budget band", "A little: up to about 10 dollars a month", "(advisory: nothing enforces it yet)",
+		"Monthly budget", "A little: up to about 10 dollars a month", "This is a guide. The desk does not enforce a spending limit.",
 		"Estimate", "a few days of agent work", "(an estimate, not a promise)",
 		"Warnings", "Some answers are in your own words: they are settled with you at the desk.", planUnknownNote,
 		"Milestones and tasks", "Each milestone ends when these checks pass: lint, unit tests.",
@@ -93,12 +93,12 @@ func TestGenesisPlanPageSections(t *testing.T) {
 		"building, a medium task; after: Settle the language with you; Lay out the repository\\u202eevil",
 		"testing, a large task; after: Build the first page",
 		"Your own notes", "Do you prefer a &lt;b&gt;programming&lt;/b&gt; language?", `<q class="owners">Go &lt;img src=x&gt; and \u200ba small \u202edatabase</q>`, "(" + planNotesMarked + ")",
-		"What a charter would cover", planCharterLine, "A signed charter would allow at most:",
+		"What a charter would cover", planCharterLine, `<details class="milestone">`, "<summary>Read the proposed limits on the work</summary>", "A signed charter would allow at most:",
 		"Work on: the documentation; the source code; the tests; repo:weird.",
 		"Outside services: hosting service.",
 		"Stopping for you at: At the first demo; Before work starts: you see the plan first.",
 		planCharterAlways,
-		"Monthly budget band (advisory; nothing enforces it yet): A little: up to about 10 dollars a month.",
+		"Suggested monthly budget: A little: up to about 10 dollars a month. The desk does not enforce it.", "</details>",
 		`<a id="project-page" href="/projects/` + testThread + `">Back to the summary</a>`,
 		`<a id="project-list" href="/projects/">Back to the project list</a>`,
 	}
@@ -242,7 +242,7 @@ func TestGenesisPlanPageCharterSection(t *testing.T) {
 	if strings.Contains(list, "budget") || strings.Contains(list, "Spending") || !strings.Contains(list, planCharterAlways) {
 		t.Errorf("the charter's list:\n%s", list)
 	}
-	if rest := charter[strings.Index(charter, "</ul>"):]; !strings.Contains(rest, "Monthly budget band (advisory; nothing enforces it yet):") {
+	if rest := charter[strings.Index(charter, "</ul>"):]; !strings.Contains(rest, "Suggested monthly budget:") {
 		t.Errorf("the budget is not a sentence after the list:\n%s", rest)
 	}
 	// No services, and the services lines say none.
@@ -369,6 +369,7 @@ func TestGenesisPlanPageProblems(t *testing.T) {
 		r, g, s := genesisRig(t)
 		g.set(GenesisVerbPlan, nil, c.err)
 		w := r.getWith(planPath, s)
+		checkProblemLinks(t, w.Body.String(), c.err == ErrBusy || c.err == ErrDaemonUnavailable)
 		if w.Code != c.status || !strings.Contains(w.Body.String(), c.words) || strings.Contains(w.Body.String(), "MARKER") {
 			t.Errorf("%v: %d", c.err, w.Code)
 		}
@@ -439,7 +440,7 @@ const finishNoPlanLine = "If you finish now, no plan is drawn for this project, 
 
 // finishAcceptsLine is the summary's sentence, in the finish paragraph, when
 // some answers were decided for the owner.
-const finishAcceptsLine = "Finishing also accepts the answers decided for you."
+const finishAcceptsLine = "Finishing also accepts the answers the desk chose for you."
 
 // The summary's finish paragraph says that finishing accepts the answers
 // decided for the owner when the summary has such rows, and only then.
@@ -450,14 +451,14 @@ func TestGenesisSummarySaysFinishingAccepts(t *testing.T) {
 	page := r.getWith("/projects/"+testThread, s).Body.String()
 	form := page[strings.Index(page, `<form id="finish"`):]
 	form = form[:strings.Index(form, "</form>")]
-	if !strings.Contains(form, "<p>Finishing keeps the answers as the project's brief. "+finishAcceptsLine+" Nothing starts, and no agent is given the brief.</p>") ||
+	if !strings.Contains(form, "<p>Finishing saves these answers as your project brief. You cannot edit them afterwards. "+finishAcceptsLine+" Finishing starts no work and sends nothing to an agent.</p>") ||
 		strings.Count(page, finishAcceptsLine) != 1 || strings.Index(page, "What was decided for you") > strings.Index(page, finishAcceptsLine) {
 		t.Fatalf("the summary with answers decided for the owner:\n%s", page)
 	}
 	sum.DecidedForYou = []GenesisRow{}
 	g.set(GenesisVerbRound, &sum, nil)
 	page = r.getWith("/projects/"+testThread, s).Body.String()
-	if strings.Contains(page, finishAcceptsLine) || !strings.Contains(page, "<p>Finishing keeps the answers as the project's brief. Nothing starts, and no agent is given the brief.</p>") {
+	if strings.Contains(page, finishAcceptsLine) || !strings.Contains(page, "<p>Finishing saves these answers as your project brief. You cannot edit them afterwards. Finishing starts no work and sends nothing to an agent.</p>") {
 		t.Fatalf("the summary with no answer decided for the owner:\n%s", page)
 	}
 }
@@ -499,13 +500,12 @@ func TestGenesisPlanLinks(t *testing.T) {
 	if page = r.getWith("/projects/"+testThread, s).Body.String(); strings.Contains(page, finishNoPlanLine) {
 		t.Error("the summary with a plan ready warns of no plan")
 	}
-	sum.PlanReady = false
 	fin := sampleSummary()
 	fin.State, fin.Digest = GenesisStateFinished, strings.Repeat("7d", 32)
 	g.set(GenesisVerbRound, &fin, nil)
 	page = r.getWith("/projects/"+testThread, s).Body.String()
 	for _, want := range []string{`<a id="see-plan" href="/projects/` + testThread + `/plan">See the plan</a>`,
-		"Handing a plan to a project is a later step.",
+		"You can read the plan here. The next step is at the desk.",
 		"Nothing has started, and no agent was given the brief yet."} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the finished page lacks %q", want)
@@ -520,10 +520,16 @@ func TestGenesisPlanLinks(t *testing.T) {
 		t.Errorf("the finished page claims the plan is kept:\n%s", page)
 	}
 	fin.PlanReady = false
-	g.set(GenesisVerbRound, &fin, nil)
-	page = r.getWith("/projects/"+testThread, s).Body.String()
-	if strings.Contains(page, "see-plan") || !strings.Contains(page, "No plan was drawn") {
-		t.Errorf("the finished page of a brief with no plan:\n%s", page)
+	for filled, why := range map[int]string{
+		13: "No plan was drawn because some required answers were missing when you finished.",
+		14: "No plan was drawn because there is no template for this kind of project yet.",
+	} {
+		fin.Filled = filled
+		g.set(GenesisVerbRound, &fin, nil)
+		page = r.getWith("/projects/"+testThread, s).Body.String()
+		if strings.Contains(page, "see-plan") || strings.Count(page, "No plan was drawn") != 1 || !strings.Contains(page, why) {
+			t.Errorf("finished with %d answers: expected %q", filled, why)
+		}
 	}
 }
 

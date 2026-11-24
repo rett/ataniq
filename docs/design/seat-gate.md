@@ -1223,9 +1223,8 @@ or not. Then the seat:
   Card page whose read of the daemon began after the answer was lost. A
   `HEAD` is no read, and a GET made while the decision is in flight, or
   whose read began before the mark, may show the card as it was before the
-  decision, so its page holds no form, says "A decision of this card was
-  sent and its outcome is not known. Look at it again." and leaves the
-  mark. While it stands, a tap is refused without asking the daemon);
+  decision, so its page holds no form, says "The decision was sent. Its outcome is still unknown.", offers a
+  "Look again" link to the same Card page and leaves the mark. While it stands, a tap is refused without asking the daemon);
 - shows "Decision sent. Outcome unknown." and offers only "Look again", the
   Card page read afresh;
 - on "Look again", once the gate is back, reads the same card with
@@ -1289,9 +1288,9 @@ script): "Cards" (`/cards/`) and, while new projects are offered,
 Card page and a path page, "Projects" on the project pages and the plan
 page. A "Skip to content" link comes first in the body, out of sight until it
 has the focus, and leads to the content, `<main id="content">`; so Tab goes
-from the skip link to the navigation and then to the page. The titles, the
-headings and the landmarks (`header`, `nav`, `main`) are otherwise
-unchanged, and a page's own links (back to the cards, a project's own
+from the skip link to the navigation and then to the page. The Card title names its ID,
+the path-list title names the page number, page count and Card ID, and the
+interview title names the round and round count. A page's own links (back to the cards, a project's own
 navigation, the path pages) stay where they were. The navigation adds no
 logout control: the logout button stays on the pages that had it, and the plan
 page keeps no script, no form and no button, its two links and the
@@ -1306,8 +1305,9 @@ list's last answer, which the seat keeps in memory (a restart forgets it, and
 ends every session with it). So no page makes a call of the gate for the
 navigation. A public page (the status page, pairing, login) and a problem page
 have no navigation, no skip link and no `aria-current`: they are made without
-a session, or without knowing of one, and a problem page keeps its one "Back
-to the cards" link. The page inventory and `nav_test.go` hold every page to
+a session, or without knowing of one, and every problem page links back to the cards. A retryable GET
+(busy, unreachable, changed during the read or rate-limited) also offers
+"Try this page again", a fresh read of the same address. The page inventory and `nav_test.go` hold every page to
 this.
 
 On a phone the navigation is a compact bar at the top, in the header above its
@@ -1323,7 +1323,8 @@ browser, a tablet across), and only on the pages with the navigation (the
 layout gives their body the class `nav-page`), the style sheet makes the
 header a rail on the left, 14rem wide, that stays in place while the page
 scrolls (`position: sticky`), with the links one under the other and the
-current one marked by a bar at its left. The content is a column beside it, at
+current one marked by a bar at its left. The rail fits the visible viewport
+and scrolls vertically when the links need more room. The content is a column beside it, at
 most 44rem wide for reading (a card, a project page, the plan) and 60rem for a
 list (the card list, the project list: a page whose content holds a list of
 cards, by `:has(.cards)`; a browser without `:has` keeps it at 44rem). The
@@ -2330,46 +2331,55 @@ UTF-16 code units, so words with accents or emoji can be cut short of it and
 still be too long; the post is then refused before the port is asked, with the
 note "Your own words were too long, so nothing was sent. ..."), and "You
 decide for me" and "Skip" only when the question allows them; one submit
-button. The summary
-shows the three groups (what you chose, what was decided for you, the
-defaults), the owner's own words quoted and marked as the owner's, a "Change"
-link on each row whose question the link holds, a "Looks right: finish" button
-and a link to the discard step. The finish paragraph above the button says
-"Finishing keeps the answers as the project's brief.", then, only when the
-summary has rows decided for the owner, "Finishing also accepts the answers
-decided for you.", and "Nothing starts, and no agent is given the brief." The finished page shows the brief's digest in
-short form and says that nothing has started and no agent was given the brief.
-The summary links "See the draft plan" when the result's `plan_ready` says a
-plan would be answered, and otherwise says "N of M answers are filled in: no
-plan can be drawn yet." (or, with every answer filled in, that there is no plan
-template for this kind of project yet). The finished page, when `plan_ready`,
-says that handing a plan to a project is a later step and has the link "See
-the plan"; it says nothing of the plan being kept, which the plan page shows
-when the link is followed. Otherwise it says that no plan was drawn.
+button. A locally rejected pick redirects with the fixed note and a zero-based
+question index, for example `?note=bad&q=1#q1-group`. The GET validates the
+index against the questions it displays. The marked fieldset links to the
+error description. A blank round or a desk refusal gets a form-level note.
+The project list describes a summary as "Ready to review your answers." and
+shows the actual count of required answers given. The summary groups what
+you chose, what was decided for you and the defaults. It quotes the owner's
+words. Each editable row has a "Change" link whose accessible name includes
+the question label.
+
+Above "Looks right: finish", every summary says "Finishing saves these
+answers as your project brief. You cannot edit them afterwards." When the
+desk chose answers it adds "Finishing also accepts the answers the desk
+chose for you." The paragraph ends with "Finishing starts no work and
+sends nothing to an agent." An incomplete brief also carries the warning
+"If you finish now, no plan is drawn for this project, and a finished brief
+cannot be changed." A separate link leads to the discard step.
+
+The summary links "See the draft plan" when `plan_ready` is true. Otherwise
+it gives the number of filled answers, or explains that the project kind
+has no template. The finished page shows the short brief reference and says
+"Nothing has started, and no agent was given the brief yet." With a plan
+it says "You can read the plan here. The next step is at the desk." and links
+"See the plan". Without one it gives the applicable reason: missing required
+answers at finish, or a project kind without a template.
 
 The plan page, `GET /projects/{thread}/plan`, is a read: one call of `plan`
 (answered from the link's memory on a reload, see above), a session, the
 project pages' limit of one credential, and a thread id of its form before
 anything is asked; there is no post to it. It is made on the server with no
 script at all (not even the logout's), no form, no button and no input: its
-only controls are links, its own two, back to the thread's page and to the
-project list, and the main navigation's (the skip link, "Cards" and "Projects";
+links are its own two, back to the thread's page and to the project
+list, and the main navigation's (the skip link, "Cards" and "Projects";
 see [Navigation and the wide screen](#navigation-and-the-wide-screen)), and the
 page inventory holds it to that and to the rule that no page but
 the Card page holds a decide control. In order: the heading ("Draft plan", or
 "Plan, revision N" for the stored plan), the plan's title with the first six
-digits of the thread id ("A full web app, 3fa2c1"), the fixed lines "A plan
-binds nothing: nothing has started, and nothing starts from this page." and,
-for a draft, "This is a draft; finishing the interview keeps it as revision
-1.", and the plan's digest in short form, the same for a draft and the stored
+digits of the thread id ("A full web app, 3fa2c1"), the fixed lines "This plan
+gives no permission to do the work. Viewing it starts nothing." and, for a
+draft, "This is a draft; finishing the interview keeps it as revision 1.
+You can change the draft by editing your answers.", and the plan's digest in short form, the same for a draft and the stored
 plan of the same answers (but for a brief with answers decided for the
 owner: finishing confirms them, which changes the brief's digest, so the
 stored plan has the draft's content under another digest); then the first demo; "What waits for you": the
 review points in the app's words and always the fixed sentence "Publishing,
 releases, pushing code, credentials and raising any limit always wait for you,
 whatever the plan says.", whatever the review points hold; the outside
-services, or none; where the files live; the budget band, marked "advisory:
-nothing enforces it yet"; the estimate, marked "an estimate, not a promise";
+services, or none; where the files live; the monthly budget, marked "This is a
+guide. The desk does not enforce a spending limit."; the estimate, marked "an estimate, not a promise";
 the warnings, each a fixed sentence by its id (`inferred-answers` is "Some
 answers were decided for you; you can change them from the summary.", shown
 only when the plan carries it, and on a stored plan, whose brief is finished
@@ -2390,17 +2400,18 @@ notes left out; and
 
 The charter section is words about a later step, never a step. It opens with
 the fixed text "Draft. Not signed. It allows nothing. Nothing starts from this
-page. Signing is a later step and is not built.", then "A signed charter would
-allow at most:" and a list drawn from the plan: the areas of work (the union of
+page. Signing is a later step and is not built." A native disclosure, closed
+initially and labelled "Read the proposed limits on the work", contains
+"A signed charter would allow at most:" and a list drawn from the plan: the areas of work (the union of
 the tasks' scopes, in words where the app has them, else the area's name), the
 outside services, "stopping for you at" the review points and the fixed line
 "Always stopping for you before publishing, releases, pushing code,
 credentials and raising any limit." The budget band is not an item of that
 list, which is what the charter would allow at most: it follows the list as a
-sentence of its own, "Monthly budget band (advisory; nothing enforces it
-yet): ...". Its wording rule, which a test holds: it never says "card", it
+sentence of its own, "Suggested monthly budget: ... . The desk does not
+enforce it." Its wording rule, which a test holds: it never says "card", it
 never says the plan "allows" anything (the one "allows" is the fixed "It
-allows nothing."), it holds no control and no link (no Approve, no Sign, no
+allows nothing."), its disclosure contains no action or link (no Approve, no Sign, no
 passkey, nothing into the card list's pending cards), and it is on the plan
 page alone: never on the card list, a card, a notice or another project page.
 

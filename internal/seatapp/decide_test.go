@@ -178,7 +178,8 @@ func TestSeatDecideFormOnTheCardPage(t *testing.T) {
 	}
 	r.daemon.card.State, r.daemon.card.Ended, r.daemon.card.OnItsWay = "", false, true
 	body = r.getWith("/cards/"+testCardID, s).Body.String()
-	if strings.Contains(body, `id="decide"`) || !strings.Contains(body, "A decision of this card is on its way to the door.") {
+	if strings.Contains(body, `id="decide"`) || !strings.Contains(body, "The decision is on its way to the door.") ||
+		!strings.Contains(body, `<a id="look" href="/cards/`+testCardID+`">Look again</a>`) {
 		t.Error("a card whose decision is on its way")
 	}
 	if len(r.daemon.offers) != before {
@@ -485,7 +486,8 @@ func TestSeatDecideStaleReadKeepsTheMark(t *testing.T) {
 	}
 	w := r.getWith("/cards/"+testCardID, s)
 	body := w.Body.String()
-	if w.Code != 200 || strings.Contains(body, `id="decide"`) || !strings.Contains(body, "A decision of this card was sent and its outcome is not known. Look at it again.") {
+	if w.Code != 200 || strings.Contains(body, `id="decide"`) || !strings.Contains(body, "The decision was sent. Its outcome is still unknown.") ||
+		!strings.Contains(body, `<a id="look" href="/cards/`+testCardID+`">Look again</a>`) {
 		t.Errorf("the page of a read that began before the send: %d", w.Code)
 	}
 	r.clock.Advance(time.Second)
@@ -515,7 +517,7 @@ func TestSeatDecideReadInFlight(t *testing.T) {
 	wantFailure(t, "the lost answer", r.postWith("/api/decide", decideBodyOf(id, testCredentialID), s), 502, "outcome_unknown", sayUnknown)
 	r.daemon.decideHook = nil
 	if body := during.Body.String(); during.Code != 200 || strings.Contains(body, `id="decide"`) ||
-		!strings.Contains(body, "A decision of this card was sent and its outcome is not known. Look at it again.") {
+		!strings.Contains(body, "The decision was sent. Its outcome is still unknown.") {
 		t.Errorf("the page read while the decision was on its way: %d", during.Code)
 	}
 	r.clock.Advance(time.Second)
@@ -570,7 +572,7 @@ func TestSeatDecideReadAcrossTheLoss(t *testing.T) {
 	close(release)
 	w := <-done
 	if body := w.Body.String(); w.Code != 200 || strings.Contains(body, `id="decide"`) ||
-		!strings.Contains(body, "A decision of this card was sent and its outcome is not known. Look at it again.") {
+		!strings.Contains(body, "The decision was sent. Its outcome is still unknown.") {
 		t.Errorf("the page of a read that began while the decision was on its way: %d", w.Code)
 	}
 	r.clock.Advance(time.Second)
@@ -1041,7 +1043,7 @@ func TestSeatDecideLostAnswer(t *testing.T) {
 
 			r.daemon.readErr = nil
 			r.daemon.card.OnItsWay = true
-			if body := r.openCard(t, s); strings.Contains(body, `id="decide"`) || !strings.Contains(body, "on its way to the door") {
+			if body := r.openCard(t, s); strings.Contains(body, `id="decide"`) || !strings.Contains(body, "The decision is on its way to the door.") {
 				t.Error("on its way: the form is offered")
 			}
 			wantFailure(t, "on its way", r.tap(approveBody, s), 409, "cannot_decide", sayCannot)

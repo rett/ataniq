@@ -70,7 +70,7 @@ var pageTitles = map[string]string{
 	"card":  "Card",
 	"paths": "Changed paths",
 	// The pages of the guided new-project interview.
-	"projects": "New projects",
+	"projects": "Projects",
 	"question": "New project: questions",
 	"summary":  "New project: summary",
 	"finished": "New project: brief kept",

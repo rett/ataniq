@@ -181,6 +181,26 @@ func TestMainNavigationOnThePagesBehindASession(t *testing.T) {
 	}
 }
 
+// The page title identifies which card, path-list page or interview round is
+// open, even in history. The project list has a distinct section heading.
+func TestNavigationPageNames(t *testing.T) {
+	r, _, s := genesisRig(t)
+	for path, title := range map[string]string{
+		"/cards/" + testCardID:              "Card " + testCardID,
+		"/cards/" + testCardID + "/paths/1": "Changed paths, page 2 of 3 · " + testCardID,
+		"/projects/" + testThread:           "New project, round 2 of 6",
+		"/projects/":                        "Projects",
+	} {
+		page := r.getWith(path, s).Body.String()
+		if !strings.Contains(page, "<title>"+title+"</title>") {
+			t.Errorf("%s: missing title %q", path, title)
+		}
+		if path == "/projects/" && (!strings.Contains(page, "<h1>Projects</h1>") || !strings.Contains(page, `<h2 id="projects-h">New projects</h2>`)) {
+			t.Error("project list headings do not distinguish page and section")
+		}
+	}
+}
+
 // The navigation shows "Projects" only while the interview is offered: the
 // card list by its own list call, and the Card page and the path pages,
 // which ask nothing of the interview, by the card list's last answer.
