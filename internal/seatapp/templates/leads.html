@@ -1,0 +1,9 @@
+{{define "content"}}
+<h1>Leads</h1>
+{{if .StandIn}}{{template "standin-chat"}}{{end}}
+{{template "chat-rule"}}
+<div class="chat-directory">
+{{template "chat-rows" .Rows}}
+</div>
+<p class="chat-links"><a id="chat-refresh" href="/leads/">Refresh</a></p>
+{{end}}

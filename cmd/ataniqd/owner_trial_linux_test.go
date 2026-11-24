@@ -153,8 +153,9 @@ func TestTrialRunSubmitsSampleCardsThatTheSeatSees(t *testing.T) {
 	if strings.Count(log, "ataniqd: "+ownerBanner+"\nataniqd: "+trialNote+"\n") != 1 {
 		t.Errorf("the STAND-IN banner and the TRIAL line are not printed once, in order:\n%s", log)
 	}
-	if !strings.Contains(log, "seat origin https://seat.example; it serves pair, read, login, decide, watch and genesis") {
-		t.Errorf("the gate's start line:\n%s", log)
+	if !strings.Contains(log, "seat origin https://seat.example; it serves pair, read, login, decide, watch, genesis and chat\n"+
+		"ataniqd: seat gate: "+trialChatNote+"\n") {
+		t.Errorf("the gate's start line and its chat note:\n%s", log)
 	}
 	h := ownerCmdHello(t, socket)
 	if !slices.Contains(h.Operations, trialOpSubmit) || !slices.Contains(h.Operations, ownerwire.OpList) {
@@ -204,10 +205,16 @@ func TestTrialRunSubmitsSampleCardsThatTheSeatSees(t *testing.T) {
 		t.Fatalf("the pinned seat: %v", err)
 	}
 	defer g.Close()
-	for _, want := range []string{seatlink.CapRead} {
+	for _, want := range []string{seatlink.CapRead, "chat"} {
 		if !slices.Contains(g.Caps(), want) {
 			t.Errorf("the gate lists %q", g.Caps())
 		}
+	}
+	// The trial's gate serves the STAND-IN chat: sample leads, marked so.
+	var leads ownerwire.SeatChatResult
+	if err := g.Call(ctx, ownerwire.OpSeatChat, ownerwire.SeatChatParams{Verb: ownerwire.ChatVerbLeads}, &leads); err != nil ||
+		!leads.StandIn || len(leads.Leads) != 3 || leads.Leads[2].Chat != ownerwire.ChatOff {
+		t.Fatalf("seat.chat leads over the trial's gate: %+v, %v", leads, err)
 	}
 	var gl ownerwire.Listing
 	if err := g.Call(ctx, ownerwire.OpList, nil, &gl); err != nil || len(gl.Pending) != 3 {

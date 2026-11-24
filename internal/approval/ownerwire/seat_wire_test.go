@@ -73,15 +73,15 @@ func sampleSeatLoginResult() SeatLoginResult {
 	return SeatLoginResult{Credential: sampleKeyID, CredentialID: byteRun(0, 16), Kind: "vault-passkey"}
 }
 
-// The six operations are the gate's alone: the list of the Unix socket has
+// The seven operations are the gate's alone: the list of the Unix socket has
 // none of them, and GateOperations lists them, in the order of the table.
 func TestGateOperationsAreApartFromTheSocket(t *testing.T) {
-	want := []string{"seat.login-challenge", "seat.login", "seat.challenge", "seat.decide", "seat.wait", "seat.genesis"}
+	want := []string{"seat.login-challenge", "seat.login", "seat.challenge", "seat.decide", "seat.wait", "seat.genesis", "seat.chat"}
 	got := GateOperations()
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("GateOperations() = %v, want %v", got, want)
 	}
-	if consts := []string{OpSeatLoginChallenge, OpSeatLogin, OpSeatChallenge, OpSeatDecide, OpSeatWait, OpSeatGenesis}; !reflect.DeepEqual(consts, want) {
+	if consts := []string{OpSeatLoginChallenge, OpSeatLogin, OpSeatChallenge, OpSeatDecide, OpSeatWait, OpSeatGenesis, OpSeatChat}; !reflect.DeepEqual(consts, want) {
 		t.Errorf("the constants are %v, want %v", consts, want)
 	}
 	socket := make(map[string]bool)

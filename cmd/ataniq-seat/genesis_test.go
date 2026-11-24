@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,7 @@ import (
 
 	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/authorityhost/decisionguard"
+	"ataniq/internal/chat/standin"
 	"ataniq/internal/seatapp"
 	"ataniq/internal/seatgate"
 )
@@ -76,7 +78,19 @@ func startGenesisGate(t *testing.T, seatPin string, caps []string) (seatgate.Ide
 		t.Fatal(err)
 	}
 	var calls atomic.Int64
-	h := func(_ context.Context, _ seatgate.Peer, op string, params json.RawMessage) (json.RawMessage, error) {
+	chat := standin.New(time.Now)
+	h := func(ctx context.Context, _ seatgate.Peer, op string, params json.RawMessage) (json.RawMessage, error) {
+		if op == ownerwire.OpSeatChat && slices.Contains(caps, "chat") {
+			call, err := ownerwire.DecodeSeatChatParams(params)
+			if err != nil {
+				return nil, seatgate.NewCodedError("bad-params")
+			}
+			view, err := chat.Chat(ctx, call)
+			if err != nil {
+				return nil, err
+			}
+			return ownerwire.EncodeSeatChatResult(view)
+		}
 		if op != ownerwire.OpSeatGenesis {
 			return nil, seatgate.NewCodedError("unknown-op")
 		}
@@ -113,6 +127,7 @@ func TestRunOffersTheInterviewWhenTheGateDoes(t *testing.T) {
 		line string
 		port bool
 	}{
+		{[]string{"pair", "read", "genesis", "chat"}, "ataniq-seat: the seat gate offers pair, read, genesis and chat; the phone offers New project; the phone offers read-only Leads\n", true},
 		{[]string{"pair", "read", "genesis"}, "ataniq-seat: the seat gate offers pair, read and genesis; the phone offers New project\n", true},
 		{[]string{"pair", "read"}, "ataniq-seat: the seat gate offers pair and read; the phone offers no New project\n", false},
 	} {
@@ -138,6 +153,19 @@ func TestRunOffersTheInterviewWhenTheGateDoes(t *testing.T) {
 		}
 		if !c.port && (!errors.Is(err, seatapp.ErrNotOffered) || calls.Load() != 0) {
 			t.Errorf("%v: a list: %v, %d calls of the gate", c.caps, err, calls.Load())
+		}
+		chat, ok := d.(seatapp.Chat)
+		offered := slices.Contains(c.caps, "chat")
+		if !ok || chat.ChatOffered() != offered {
+			t.Fatal("chat offer through the running command")
+		}
+		call := seatapp.ChatCall{Verb: seatapp.ChatRead, Lead: "daemon:alpha"}
+		v, err := chat.Chat(context.Background(), call)
+		if offered && (err != nil || !v.ValidFor(call) || !v.StandIn || len(v.Entries) == 0) {
+			t.Fatalf("trial read through the command: %v", err)
+		}
+		if !offered && !errors.Is(err, seatapp.ErrNotOffered) {
+			t.Fatalf("gate without chat: %v", err)
 		}
 		deadline := time.Now().Add(5 * time.Second)
 		for !strings.Contains(stderr.String(), "the seat gate offers") && time.Now().Before(deadline) {
@@ -203,6 +231,8 @@ func TestHelloLineWords(t *testing.T) {
 		caps []string
 		want string
 	}{
+		{[]string{"chat"}, "the seat gate offers chat; the phone offers no New project; the phone offers read-only Leads"},
+		{[]string{"genesis", "chat"}, "the seat gate offers genesis and chat; the phone offers New project; the phone offers read-only Leads"},
 		{nil, "the seat gate offers nothing; the phone offers no New project"},
 		{[]string{"genesis"}, "the seat gate offers genesis; the phone offers New project"},
 		{[]string{"pair", "read", "login", "decide", "watch", "genesis"}, "the seat gate offers pair, read, login, decide, watch and genesis; the phone offers New project"},

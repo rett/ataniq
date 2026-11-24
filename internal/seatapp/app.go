@@ -229,6 +229,7 @@ type app struct {
 	// geneses bounds the project pages and posts of each credential's
 	// sessions (see genesis.go).
 	geneses *limiter
+	chats   *limiter
 	// glog is the rate limit of the journal line for that limit (see
 	// genesisAllow).
 	glog struct {
@@ -240,6 +241,10 @@ type app struct {
 	// from the reads; watchHold is how long a poll is held.
 	watches   *limiter
 	watchHold time.Duration
+	// projectsOffered is what the card list last learnt of the new-project
+	// interview: offered or not. The Card page and the path pages show the
+	// main navigation's "Projects" link by it, without a call of their own.
+	projectsOffered atomic.Bool
 	// lastPoll is the time, in Unix nanoseconds, of the last accepted poll,
 	// 0 before the first; the notices stay quiet while it is recent.
 	lastPoll atomic.Int64
@@ -298,7 +303,7 @@ func newApp(cfg Config) (*app, http.Handler, error) {
 	a := &app{cfg: cfg, pair: newPairing(cfg), login: newLogins(cfg), sess: newSessions(cfg.Now),
 		reads: newLimiter(readRequests, readWindow), decides: newLimiter(decideRequests, decideWindow),
 		watches: newLimiter(watchRequests, watchWindow), watchHold: watchHold, host: hostHeader,
-		pushes: newLimiter(pushRequests, pushWindow), geneses: newLimiter(genesisRequests, genesisWindow)}
+		pushes: newLimiter(pushRequests, pushWindow), chats: newLimiter(30, time.Minute), geneses: newLimiter(genesisRequests, genesisWindow)}
 	a.push, _ = cfg.Notifier.(PushPort)
 
 	mux := http.NewServeMux()
@@ -361,6 +366,9 @@ func (a *app) routes() []route {
 		// the server and plain forms, each post answered with a redirect.
 		// Without a Genesis port, or with one that is not offered, the pages
 		// answer "not offered" and the posts go to the project list.
+		{"GET /leads", a.redirect("/leads/")},
+		{"GET /leads/{$}", a.authed(a.chatPage)},
+		{"GET /leads/{kind}/{key}", a.authed(a.chatPage)},
 		{"GET /projects/{$}", a.authed(a.projectList)},
 		{"GET /projects", a.redirect(projectsPath)},
 		{"POST /projects/new", a.form(a.projectStart)},
@@ -461,6 +469,13 @@ func (a *app) guard(next http.Handler) http.Handler {
 		}
 		if r.Body != nil {
 			r.Body = http.MaxBytesReader(w, r.Body, MaxBody)
+		}
+		// ServeMux redirects unclean paths before matching a handler. A
+		// malformed chat path must never become a link copied from the URL.
+		if strings.HasPrefix(r.URL.Path, "/leads/") && r.URL.Path != "/leads/" &&
+			(!strings.HasPrefix(r.URL.EscapedPath(), "/leads/daemon/") || !chatKey.MatchString(strings.TrimPrefix(r.URL.EscapedPath(), "/leads/daemon/"))) {
+			a.authed(func(w http.ResponseWriter, r *http.Request, _ Session) { a.problem(w, r, problemNotFound) })(w, r)
+			return
 		}
 		next.ServeHTTP(w, r)
 	})

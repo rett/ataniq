@@ -37,9 +37,9 @@ func TestSeatCardPagesNeedASession(t *testing.T) {
 		t.Fatalf("%d card routes in the inventory", len(routes))
 	}
 	// The project pages need a session too (TestGenesisNeedsASession): every
-	// page of the inventory that needs one is a card page or a project page.
-	if n := len(authedRoutes("GET /")) - len(routes) - len(authedRoutes("GET /projects/")); n != 0 {
-		t.Fatalf("%d pages that need a session are neither card nor project pages", n)
+	// page of the inventory that needs one is a card page or a project or chat page.
+	if n := len(authedRoutes("GET /")) - len(routes) - len(authedRoutes("GET /projects/")) - len(authedRoutes("GET /leads/")); n != 0 {
+		t.Fatalf("%d pages that need a session are outside Cards, Projects and Leads", n)
 	}
 	r := newRig(t)
 	planted := &http.Cookie{Name: SessionCookie, Value: b64.EncodeToString(make([]byte, 32))}
@@ -161,19 +161,16 @@ func TestSeatCardWithHostileLeadText(t *testing.T) {
 				t.Errorf("%s: the page lacks %q", path, want)
 			}
 		}
+		// The skip link's "#content" is the one address of the page
+		// itself.
 		for _, m := range regexp.MustCompile(`(?i)\s(href|src)="([^"]*)"`).FindAllStringSubmatch(body, -1) {
-			if !strings.HasPrefix(m[2], "/") || strings.HasPrefix(m[2], "//") {
+			if (!strings.HasPrefix(m[2], "/") || strings.HasPrefix(m[2], "//")) && m[2] != "#content" {
 				t.Errorf("%s: an address that is not the app's: %q", path, m[2])
 			}
 		}
-		// The rest of the inventory's rules hold too. The lead's text names
-		// an address and a script address, as text only, which is all the
-		// two rules that read the whole page can see; the addresses of the
-		// page are checked above.
-		for _, f := range inspectPage(body, []string{"a", "a#paths", "a#back", "a#prev", "a#next", "button#logout"}, false) {
-			if f != "external address" && f != "javascript address" {
-				t.Errorf("%s: %s", path, f)
-			}
+		// The inventory checks actionable attributes and ignores body text.
+		for _, f := range inspectPage(body, withNav("a", "a#paths", "a#back", "a#prev", "a#next", "button#logout"), false) {
+			t.Errorf("%s: %s", path, f)
 		}
 	}
 	body := r.getWith("/cards/"+testCardID, s).Body.String()
@@ -277,9 +274,7 @@ func TestSeatReadErrors(t *testing.T) {
 				t.Errorf("%v, %s: %d", tc.err, path, w.Code)
 			}
 			checkHeaders(t, path, w)
-			for _, f := range inspectPage(body, []string{"a#back"}, false) {
-				t.Errorf("%v, %s: %s", tc.err, path, f)
-			}
+			checkProblemLinks(t, body, tc.err == ErrBusy || tc.err == ErrDaemonUnavailable || tc.err == ErrCardChanged)
 		}
 	}
 }
@@ -354,6 +349,7 @@ func TestSeatReadsAreBounded(t *testing.T) {
 	if w.Code != http.StatusTooManyRequests || !strings.Contains(w.Body.String(), "Wait a minute") {
 		t.Errorf("past the bound: %d", w.Code)
 	}
+	checkProblemLinks(t, w.Body.String(), true)
 	if n := r.daemon.readCount(); n != readRequests {
 		t.Errorf("the daemon was asked %d reads", n)
 	}

@@ -23,7 +23,9 @@ phone-tested: nothing of them has run on a phone, and no real browser has
 checked the page's Trusted Types registration of the service worker. Not built
 yet: the phone trial (G13); question cards; the seat's side of the guided new
 project (its wire, the daemon's thread store and the gate's route are built,
-see [guided new project](#guided-new-project)); and
+see [guided new project](#guided-new-project)); the seat's side of the
+leads' conversations (its wire, the gate's route and a STAND-IN port served in
+the phone trial only are built, read only, see [chat](#chat)); and
 the one function that makes an origin canonical (G1;
 [the seat origin](#the-seat-origin) lists where the three checks in use
 disagree). This document is the contract that
@@ -237,6 +239,7 @@ them and never hands them to the handler.
 | `decide` | `seat.decide` | `SeatDecideParams` | `ownerwire.DecideResult` | G8b (built) |
 | `watch` | `seat.wait` | `ownerwire.SeatWaitParams` | `ownerwire.SeatWaitResult` | G14 (built) |
 | `genesis` | `seat.genesis` | `ownerwire.SeatGenesisParams` | `ownerwire.SeatGenesisResult` | genesis G3 (wire), G4 (handler and thread store) and G11a (the verb `plan`), built |
+| `chat` | `seat.chat` | `ownerwire.SeatChatParams` | `ownerwire.SeatChatResult` | G19b (wire, handler and the STAND-IN port of the phone trial), built; read only |
 
 A handler made with `gatehost.New` answers `["pair", "read"]` (`gatehost.Caps`);
 one made with `gatehost.NewDeciding`, `["pair", "read", "login", "decide"]`
@@ -247,9 +250,13 @@ origin is configured and its service can decide from the phone (see
 owner channel's service is), with or without a seat origin: a wait decides
 nothing. Either handler adds `genesis` last (`Handler.Caps`) when it was given
 the daemon's thread store (`gatehost.WithGenesis`, a `gatehost.GenesisPort`),
-with or without a seat origin: an answer decides nothing either. The daemon's
-start line names every capability the gate lists, in its order, in words
-(`pair, read, login, decide, watch and genesis`). The seat reads the list (`seatgate.Client.Caps`) and offers login and decisions
+with or without a seat origin: an answer decides nothing either. Either
+handler adds `chat` last when it was given a chat port (`gatehost.WithChat`, a
+`gatehost.ChatPort`), with or without a seat origin: a read decides nothing;
+the daemon gives one to the phone trial's gate only (see [chat](#chat)). The
+daemon's start line names every capability the gate lists, in its order, in
+words (`pair, read, login, decide, watch and genesis`, and `... genesis and
+chat` in the phone trial). The seat reads the list (`seatgate.Client.Caps`) and offers login and decisions
 only when the gate lists them; otherwise it says that the desk does not take
 phone logins, or does not take decisions from the phone. It starts its watcher
 only when the gate lists `watch`; otherwise its pages say "Not live".
@@ -267,8 +274,8 @@ The gate never serves `owner.decide`, `owner.decider`, `owner.beat`,
 `owner.pair-reject`) or the key operations (`owner.keys`, `owner.key-revoke`,
 `owner.keys-off`). A key is revoked at the desk only.
 
-The four new operations of G8, `seat.wait` of G14 and `seat.genesis` are the
-gate's alone. They are not added to `ownerwire.Operations()`, which is the list the daemon's
+The four new operations of G8, `seat.wait` of G14, `seat.genesis` and
+`seat.chat` are the gate's alone. They are not added to `ownerwire.Operations()`, which is the list the daemon's
 Unix socket serves and announces; `ownerwire.GateOperations()` lists them
 separately, so the socket neither announces nor serves them.
 
@@ -399,6 +406,9 @@ The handler (`gatehost`, built for pairing and reads) answers:
 | `genesis-stale-round` | Genesis. An answer to a round the thread has already taken, to a question already answered in the round named (a round asked again after a change keeps the last round's number), or to any round once the walk is done (the thread is at its summary): a double tap, a second tab, a post the browser sent again. A state of the thread, not a misuse; the seat goes back to the thread's page with "That round was already answered." |
 | `genesis-not-ready` | Genesis. A `plan` of a thread whose brief is not complete for planning: a required field is not set, on an open thread or on one the owner finished early (an answer the host inferred for the owner counts as set, confirmed or not). A state of the thread, not a misuse. The plan's `brief_incomplete`. |
 | `genesis-no-template` | Genesis. A `plan` of a thread whose kind no plan template serves: the kind in the owner's own words. It is answered before the brief is complete as well, since completing it would not help. A state of the thread, not a misuse. The plan's `no_template`. |
+| `chat-off` | Chat. A `read` of `seat.chat` of a lead whose chat switch is off. A state of the lead, not a misuse: not counted by the refusal bound. |
+| `chat-unknown-lead` | Chat. A `read` of a lead the chat port does not hold (gone, or never one of its leads). Not counted. |
+| `chat-busy` | Chat. The chat port cannot serve the call now. Not counted. The STAND-IN never answers it. |
 
 The nine genesis words are the gate's words for the refusals of the host's
 genesis packages (`internal/genesis/brief`, `code.go`) and for four states of
@@ -482,6 +492,14 @@ codes: like `round`, it is a read the seat may send as often as its own room
 allows. So is `plan`: its refusals, `genesis-not-ready` and
 `genesis-no-template`, count for nothing (a test sends seventeen of them
 through the gate and its real store and is never shut out).
+
+Of `seat.chat`, none of its three words counts (`chat-off`,
+`chat-unknown-lead`, `chat-busy`): they answer the state of the leads and of
+the host, which a seat in good order meets, and a read may be sent as often as
+the seat link's read room allows (14 calls in 80 seconds, shared with the card
+lists). `bad-params` counts as everywhere: the seat's own pages
+never send a `send`, a lead of another form or a limit past 16. See
+[chat](#chat).
 
 ## The challenge
 
@@ -777,7 +795,7 @@ sends none past the room of its kind:
 | --- | --- | --- |
 | Pings | `seat.ping`, every 15 s (`seatlink.PingInterval`, which `ataniq-seat` sets) | 6 |
 | Anyone's | `seat.pair`, `seat.login-challenge`, `seat.login` | 12 (6 logins) |
-| Reads | `owner.list`, `owner.show`, `owner.paths`, of every session together | 14 |
+| Reads | `owner.list`, `owner.show`, `owner.paths`, and `seat.chat` (the leads' directory and transcripts, see [chat](#chat)), of every session together | 14 |
 | Decisions | `seat.challenge`, `seat.decide` | 10 (5 decisions) |
 | Waits | `seat.wait`, the watcher's one long wait (see [live refresh](#live-refresh-seatwait)) | 6 |
 | Genesis | `seat.genesis`, every verb, of every session together (see [guided new project](#guided-new-project)) | 12 |
@@ -795,7 +813,11 @@ now, one call for each tap and a few reads over, taken from the decisions (12
 to 10: 5 decisions, each a challenge and a decision call, in 80 seconds).
 Anyone's room stays 12: strangers can hold it
 with login challenges they never answer, and a smaller one would let fewer of
-them keep the owner from logging in. A call without room is not sent: the phone says the desk is
+them keep the owner from logging in. Chat's calls are reads: they share the
+reads' 14 with the card lists, and chat has no room of its own and took
+nothing from the others. Chat gets a room of its own only when replies are
+built, sized from a measured mix of use, not before (see [chat](#chat)). A
+call without room is not sent: the phone says the desk is
 busy (`desk_busy`, the problem "The desk is busy", or `rate_limited` for a
 pairing), before anything is asked. A decision's challenge is asked only
 when the room of decisions holds it and its `seat.decide` as well: the room
@@ -1206,9 +1228,8 @@ or not. Then the seat:
   Card page whose read of the daemon began after the answer was lost. A
   `HEAD` is no read, and a GET made while the decision is in flight, or
   whose read began before the mark, may show the card as it was before the
-  decision, so its page holds no form, says "A decision of this card was
-  sent and its outcome is not known. Look at it again." and leaves the
-  mark. While it stands, a tap is refused without asking the daemon);
+  decision, so its page holds no form, says "The decision was sent. Its outcome is still unknown.", offers a
+  "Look again" link to the same Card page and leaves the mark. While it stands, a tap is refused without asking the daemon);
 - shows "Decision sent. Outcome unknown." and offers only "Look again", the
   Card page read afresh;
 - on "Look again", once the gate is back, reads the same card with
@@ -1258,6 +1279,68 @@ sent says the last line and also leaves the card marked sent until it is read
 again. A challenge the seat link recomputes differently says that the desk's
 challenge is not this card's and that the passkey was not asked. A held
 approve shows the host's line and, under it, the held words above.
+
+### Navigation and the wide screen
+
+Every page behind a session has one main navigation (built, G19a): the card
+list, a Card page, the pages of a card's path list, the project list, every
+project page (a round, the summary, a change, the discard step, the finished
+brief), the plan page and both lead chat pages. It is `<nav aria-label="Main">` in the page's
+header, a list of plain links and nothing else (no button, no form, no
+script): "Cards" (`/cards/`) and, while new projects are offered,
+"Projects" (`/projects/`). A connected gate offering `chat` adds "Leads"
+(`/leads/`) after those links, using only the negotiated hello. The current section carries
+`aria-current="page"`, exactly one on the page: "Cards" on the card list, a
+Card page and a path page, "Projects" on the project pages and the plan
+page, and "Leads" on the directory and conversation. A "Skip to content" link comes first in
+the body, out of sight until it
+has the focus, and leads to the content, `<main id="content">`; so Tab goes
+from the skip link to the navigation and then to the page. The Card title names its ID,
+the path-list title names the page number, page count and Card ID, and the
+interview title names the round and round count. A page's own links (back to the cards, a project's own
+navigation, the path pages) stay where they were. The navigation adds no
+logout control: the logout button stays on the pages that had it, and the plan
+page keeps no script, no form and no button, its two links and the
+navigation's.
+
+"Projects" is shown on the condition of the card list's "New projects" part.
+The card list shows it when its `list` call says the interview is offered; a
+project page is made only when it is, so it always shows it; a Card page and a
+path page ask the daemon nothing of the interview and show it by the card
+list's last answer, which the seat keeps in memory (a restart forgets it, and
+ends every session with it). So no page makes a call of the gate for the
+navigation. A public page (the status page, pairing, login) and a problem page
+have no navigation, no skip link and no `aria-current`: they are made without
+a session, or without knowing of one, and every problem page links back to the cards. A retryable GET
+(busy, unreachable, a card or a conversation changed during the read, or
+rate-limited) also offers
+"Try this page again", a fresh read of the same address. The page inventory and `nav_test.go` hold every page to
+this.
+
+On a phone the navigation is a compact bar at the top, in the header above its
+rule and in the page's flow: the brand and the links on one row, or the links
+on a row of their own on a narrow screen. Each link is a 44 px target; the current
+one is in the text colour, bold, not underlined and with a bar under it, so it
+is told apart without colour. Nothing is fixed to the screen, so the bar never
+covers the content, the keyboard or the home indicator, and needs no safe-area
+inset.
+
+On a screen at least 60rem wide (960 px at the default text size: a desktop
+browser, a tablet across), and only on the pages with the navigation (the
+layout gives their body the class `nav-page`), the style sheet makes the
+header a rail on the left, 14rem wide, that stays in place while the page
+scrolls (`position: sticky`), with the links one under the other and the
+current one marked by a bar at its left. The rail fits the visible viewport
+and scrolls vertically when the links need more room. The content is a column beside it, at
+most 44rem wide for reading (a card, a project page, the plan) and 60rem for a
+list (the card list, the project list: a page whose content holds a list of
+cards, by `:has(.cards)`; a browser without `:has` keeps it at 44rem). The
+layout is CSS only: a page is the same markup in the same order at every
+width, so the order of reading and of Tab does not change, and below 60rem
+every page keeps the phone's layout. The public pages keep their one centred
+column at every width. A card is still read on one whole page: there is no
+second pane, no prefetch of a card, and nothing that would count as reading a
+card the owner did not open (see the session's reading of a card above).
 
 ## Live refresh: seat.wait
 
@@ -1401,12 +1484,9 @@ hello lists `watch`.
   state after, so it misses no change. Publishing never blocks and starts no
   goroutine.
 
-The seat's 60 requests a minute are now split in rooms of pings 6, decisions
-16, anyone's (`seat.pair`, `seat.login-challenge`, `seat.login`) 12, reads 20
-and waits 6, which add up to 60. The waits' 6 come from the reads, which had 26
-(see [login](#login-seatlogin-challenge-and-seatlogin)); the code checks the
-sum, and that an idle watcher's waits fit their room with two to spare, when it
-is compiled.
+The watcher reserves six calls in the shared 80-second window. The link
+checks at compile time that idle waits fit with two calls to spare. The
+[budget table](#login-seatlogin-challenge-and-seatlogin) gives every room.
 
 ### The browser's long poll
 
@@ -1483,7 +1563,8 @@ an answer is written into the page. One status line (`#watch-status`) says:
   publishes up to about 6 changes in 80 seconds, each list reloads at most
   every 20 seconds, so a list takes up to 4 of the 14 reads) can still use
   most of the 14, and the owner's own taps on a card may then be answered
-  `desk_busy` until the room frees. No second room is built for the reloads.
+  `desk_busy` until the room frees; the Leads pages' reads share the same 14.
+  No second room is built for the reloads.
 - A Card page never reloads by itself, since the owner may be ticking
   sign-offs. When its card is `changed` or `gone` it shows the line above,
   disables every control the page marks with the attribute `data-offer` (the
@@ -2255,44 +2336,55 @@ UTF-16 code units, so words with accents or emoji can be cut short of it and
 still be too long; the post is then refused before the port is asked, with the
 note "Your own words were too long, so nothing was sent. ..."), and "You
 decide for me" and "Skip" only when the question allows them; one submit
-button. The summary
-shows the three groups (what you chose, what was decided for you, the
-defaults), the owner's own words quoted and marked as the owner's, a "Change"
-link on each row whose question the link holds, a "Looks right: finish" button
-and a link to the discard step. The finish paragraph above the button says
-"Finishing keeps the answers as the project's brief.", then, only when the
-summary has rows decided for the owner, "Finishing also accepts the answers
-decided for you.", and "Nothing starts, and no agent is given the brief." The finished page shows the brief's digest in
-short form and says that nothing has started and no agent was given the brief.
-The summary links "See the draft plan" when the result's `plan_ready` says a
-plan would be answered, and otherwise says "N of M answers are filled in: no
-plan can be drawn yet." (or, with every answer filled in, that there is no plan
-template for this kind of project yet). The finished page, when `plan_ready`,
-says that handing a plan to a project is a later step and has the link "See
-the plan"; it says nothing of the plan being kept, which the plan page shows
-when the link is followed. Otherwise it says that no plan was drawn.
+button. A locally rejected pick redirects with the fixed note and a zero-based
+question index, for example `?note=bad&q=1#q1-group`. The GET validates the
+index against the questions it displays. The marked fieldset links to the
+error description. A blank round or a desk refusal gets a form-level note.
+The project list describes a summary as "Ready to review your answers." and
+shows the actual count of required answers given. The summary groups what
+you chose, what was decided for you and the defaults. It quotes the owner's
+words. Each editable row has a "Change" link whose accessible name includes
+the question label.
+
+Above "Looks right: finish", every summary says "Finishing saves these
+answers as your project brief. You cannot edit them afterwards." When the
+desk chose answers it adds "Finishing also accepts the answers the desk
+chose for you." The paragraph ends with "Finishing starts no work and
+sends nothing to an agent." An incomplete brief also carries the warning
+"If you finish now, no plan is drawn for this project, and a finished brief
+cannot be changed." A separate link leads to the discard step.
+
+The summary links "See the draft plan" when `plan_ready` is true. Otherwise
+it gives the number of filled answers, or explains that the project kind
+has no template. The finished page shows the short brief reference and says
+"Nothing has started, and no agent was given the brief yet." With a plan
+it says "You can read the plan here. The next step is at the desk." and links
+"See the plan". Without one it gives the applicable reason: missing required
+answers at finish, or a project kind without a template.
 
 The plan page, `GET /projects/{thread}/plan`, is a read: one call of `plan`
 (answered from the link's memory on a reload, see above), a session, the
 project pages' limit of one credential, and a thread id of its form before
 anything is asked; there is no post to it. It is made on the server with no
 script at all (not even the logout's), no form, no button and no input: its
-only controls are two links, back to the thread's page and to the project
-list, and the page inventory holds it to that and to the rule that no page but
+links are its own two, back to the thread's page and to the project
+list, and the main navigation's (the skip link, "Cards" and "Projects";
+see [Navigation and the wide screen](#navigation-and-the-wide-screen)), and the
+page inventory holds it to that and to the rule that no page but
 the Card page holds a decide control. In order: the heading ("Draft plan", or
 "Plan, revision N" for the stored plan), the plan's title with the first six
-digits of the thread id ("A full web app, 3fa2c1"), the fixed lines "A plan
-binds nothing: nothing has started, and nothing starts from this page." and,
-for a draft, "This is a draft; finishing the interview keeps it as revision
-1.", and the plan's digest in short form, the same for a draft and the stored
+digits of the thread id ("A full web app, 3fa2c1"), the fixed lines "This plan
+gives no permission to do the work. Viewing it starts nothing." and, for a
+draft, "This is a draft; finishing the interview keeps it as revision 1.
+You can change the draft by editing your answers.", and the plan's digest in short form, the same for a draft and the stored
 plan of the same answers (but for a brief with answers decided for the
 owner: finishing confirms them, which changes the brief's digest, so the
 stored plan has the draft's content under another digest); then the first demo; "What waits for you": the
 review points in the app's words and always the fixed sentence "Publishing,
 releases, pushing code, credentials and raising any limit always wait for you,
 whatever the plan says.", whatever the review points hold; the outside
-services, or none; where the files live; the budget band, marked "advisory:
-nothing enforces it yet"; the estimate, marked "an estimate, not a promise";
+services, or none; where the files live; the monthly budget, marked "This is a
+guide. The desk does not enforce a spending limit."; the estimate, marked "an estimate, not a promise";
 the warnings, each a fixed sentence by its id (`inferred-answers` is "Some
 answers were decided for you; you can change them from the summary.", shown
 only when the plan carries it, and on a stored plan, whose brief is finished
@@ -2313,17 +2405,18 @@ notes left out; and
 
 The charter section is words about a later step, never a step. It opens with
 the fixed text "Draft. Not signed. It allows nothing. Nothing starts from this
-page. Signing is a later step and is not built.", then "A signed charter would
-allow at most:" and a list drawn from the plan: the areas of work (the union of
+page. Signing is a later step and is not built." A native disclosure, closed
+initially and labelled "Read the proposed limits on the work", contains
+"A signed charter would allow at most:" and a list drawn from the plan: the areas of work (the union of
 the tasks' scopes, in words where the app has them, else the area's name), the
 outside services, "stopping for you at" the review points and the fixed line
 "Always stopping for you before publishing, releases, pushing code,
 credentials and raising any limit." The budget band is not an item of that
 list, which is what the charter would allow at most: it follows the list as a
-sentence of its own, "Monthly budget band (advisory; nothing enforces it
-yet): ...". Its wording rule, which a test holds: it never says "card", it
+sentence of its own, "Suggested monthly budget: ... . The desk does not
+enforce it." Its wording rule, which a test holds: it never says "card", it
 never says the plan "allows" anything (the one "allows" is the fixed "It
-allows nothing."), it holds no control and no link (no Approve, no Sign, no
+allows nothing."), its disclosure contains no action or link (no Approve, no Sign, no
 passkey, nothing into the card list's pending cards), and it is on the plan
 page alone: never on the card list, a card, a notice or another project page.
 
@@ -2554,6 +2647,288 @@ plan's tasks into Qargi's backlog; until then they are refused, and the plan's
 tasks are not carried for any kind. Nothing records that a hand-off was
 printed or that the project was created, and a later revision of the plan does
 not mark an earlier hand-off stale beyond the digest in its first line.
+
+## Chat
+
+The phone trial serves fixed sample conversations through the daemon's
+STAND-IN port (`internal/chat/standin`), the gate's `chat` capability and
+the seat link. The trial enables this port with
+`ataniqd run --owner-channel --trial --seat-gate ADDR`. Real lead history,
+desk switch configuration and sending remain future work.
+
+`seat.chat` is the seat's read-only view of the leads' conversations: it lists
+the leads the daemon would show, each with its chat switch, and reads one
+lead's retained conversation in pages. It reads and nothing else. No verb sends,
+no member of a result is, or leads to, a decision, a grant or an approval, and
+a chat page never shows Approve: approvals are only on Cards.
+
+### One operation, two verbs
+
+`seat.chat` is gate-only (`ownerwire.GateOperations`, never
+`ownerwire.Operations`): the daemon's Unix socket neither serves nor announces
+it. Its params (`ownerwire.SeatChatParams`) are a union tagged by `verb`; a
+member of another verb is refused `bad-params`:
+
+| Verb | Members | Answers |
+| --- | --- | --- |
+| `leads` | none | the state `leads` |
+| `read` | `lead`, `after` (0 to 2^53-1; 0 or absent reads from the start of what is retained), `limit` (1 to 16) | the state `read` |
+
+There is no `send`: an unknown verb, `send` included, is `bad-params`, and so is
+a member such as `body` that no verb takes.
+
+A lead is named `kind:key` on the wire from the start, so that a later kind of
+lead adds rows and not operations. The one kind is `daemon` (a lead the daemon
+runs); the others are reserved. The key is 1 to 32 lower-case letters, digits
+and dashes, starting with a letter or a digit (`ownerwire.ValidChatLead`).
+
+### The result
+
+The result (`ownerwire.SeatChatResult`) is a union tagged by `state`:
+
+- `leads`: up to 8 rows (`ownerwire.MaxChatLeads`), none twice, each `lead`,
+  `chat` (`off`, `read` or `send`), `state` (`running`, `starting`, `stopped`
+  or `unknown`), `epoch` and `head` (the sequence number of the lead's last
+  entry). A row whose `chat` is `off` carries `lead` and `chat` and nothing
+  else: the decoder refuses a `state`, an `epoch` or a `head` on it, even one
+  written as 0, so an off lead's activity is not disclosed.
+- `read`: the `lead`, its `epoch` and `head`, up to 16 `entries`, `more` and
+  `reset`. An entry is `seq` (1 to 2^53-1, in order, each above the one before
+  and none above the head), `who` (`lead` or `system` in this slice; a later
+  `seat` or `desk` is a change of the wire), `at` (a record time), `text` and
+  `cut` (true when the host shortened the entry to fit).
+
+Every result of a stand-in port carries `stand_in: true`; the seat shows a
+banner that says the leads are samples.
+
+**Paging.** A read is paged by the encoded bytes of its result, within 16 KiB:
+`ownerwire.FillSeatChatRead` takes entries, at most `limit`, while the encoded
+result fits, and sets `more` when it left any out. A page with `more` holds at
+least one entry, so the cursor always moves on: the seat reads on with `after`
+set to the last `seq` of the page. The largest entry fits a page on its own (a
+test holds it: 2000 bytes of `"`, written `\"`, are about 4.2 KiB in a page),
+and sixteen of them take several pages. A cursor before the start of what the
+host retains, or past the head (a cursor of a conversation the host no longer
+holds), reads from the start of what is retained with `reset: true`, and the
+seat drops what it held of the lead; `after` 0 is never a reset. A cursor at
+the head gives an empty page.
+
+**Text.** The text of an entry is 1 to 2000 bytes of plain text
+(`ownerwire.ValidChatText`): valid UTF-8 whose every rune is a line feed or
+printable (`unicode.IsPrint`), with something besides spaces and line feeds.
+So a tab, a carriage return, ESC, DEL, every other C0 and C1 control, the line
+and paragraph separators, the non-ASCII spaces and the bidirectional and other
+format controls (U+202E, U+200E, the isolates, the zero-width characters, the
+byte order mark) are refused, whether the text came as a string or as b64. The
+rule is the character rule of the injection's message bodies
+(`command.CheckBody`). The text is a `record.Text`, so a text of several lines
+travels as b64, since the codec writes no line feed in a string.
+
+### Caps
+
+| What | Cap |
+| --- | --- |
+| Params | 4 KiB (`MaxSeatChatParamsBytes`) |
+| Result | 16 KiB (`MaxSeatChatResultBytes`); one over is `record-too-large`, and the handler answers `failed` rather than send it |
+| Rows of a list | 8 (`MaxChatLeads`) |
+| Entries of a page, and a read's `limit` | 16 (`MaxChatReadLimit`) |
+| Text of an entry | 2000 bytes (`MaxChatText`), longer cut by the host and marked `cut` |
+| Key of a lead | 32 bytes (`MaxChatKeyBytes`) |
+| Sequence number, epoch, head, `after` | 2^53-1 (`MaxChatSeq`), so a page's script can carry the cursor |
+
+### The route and the port
+
+The handler gives the decoded params to the daemon's chat port
+(`gatehost.ChatPort`, one method, given with `gatehost.WithChat`) and encodes its
+answer with the wire's encoder, which holds the cap and every rule of the
+result: a page over 16 KiB, an off row with a state or a text with a
+bidirectional control is answered `failed` and never sent. The handler lists
+`chat` last in its hello, and serves the operation, only when it was given the
+port, with either constructor and with or without a seat origin, since a read
+decides nothing; without it the operation is `unknown-op` before its params are
+read. The daemon gives the port only to the phone trial's gate, so the start
+line of the trial's gate ends `... watch, genesis and chat` and is followed by
+one line that says the chat is the STAND-IN's; every other gate lists no
+`chat`.
+
+The route (`gatehost`, `chat.go`) holds the chat port alone. It reaches neither
+the owner channel's service (the reads, the pairing, which enrols a key) nor
+the login and decision (the decide path), the wait or the thread store. Two
+tests hold that, after the review's first finding: a test of the wired handler
+(a deciding handler over a service that pairs, reads and waits, with the
+thread store and the chat port, each a fake that records its calls) makes chat
+calls, served and refused, and sees no call on any other port, while an
+`owner.list`, a `seat.challenge` and a `seat.wait` on the same handler reach
+theirs; and a source test holds that `chat.go` imports nothing of the owner
+channel and names no other port of the handler, and that the operation's case
+only hands the params to it. The handler holds no limit, intake or host-effect
+port of its own: those are the service's, which the package's imports test
+keeps it from reaching but through the service.
+
+### Codes and the refusal bound
+
+| Code | Meaning |
+| --- | --- |
+| `chat-off` | A `read` of a lead whose chat switch is off. |
+| `chat-unknown-lead` | A `read` of a lead the port does not hold. |
+| `chat-busy` | The port cannot serve the call now; the seat may ask again later. The stand-in never answers it. |
+
+The port may also refuse `bad-params`; any other word or error is `failed`, with
+the cause in the daemon's log. None of the three chat words counts for
+[the refusal bound](#the-refusal-bound): they answer the state of the leads and
+of the host, which a seat in good order meets (a page left open while the desk
+turned a lead's chat off, a link to a lead that is gone, a busy host), and a read
+may be sent as often as the seat link's read room allows; a test sends forty of
+each and the seat's reads, decisions and chat go on being served. `bad-params` counts as
+everywhere: the seat's own pages never send a `send`, a lead of another form or
+a limit past 16. `unknown-op` from a gate that serves no chat counts as for any
+operation.
+
+### What a lead's text is
+
+A lead's text is untrusted. It is shown to the owner only, escaped
+(`seatapp.Text`, `textContent`), with no link made from it and no image loaded,
+and never obeyed by anything: not by the seat, not by the daemon, not by
+another lead. Markup in it is text (the stand-in's samples carry
+`<b>bold</b> & "quotes"` and a link to example.com for the seat to show as
+text). Every page of the seat asks the browser to make no link of its own of
+a telephone number, a date, an address or an email address in it either
+(`<meta name="format-detection" content="telephone=no, date=no, address=no,
+email=no">`, which the page inventory test holds on every page). A `system`
+entry is a line the host writes about the lead (a restart).
+The pages are to say, in fixed words, that a lead's words are not instructions
+from Ataniq and that approvals are only on Cards.
+
+### The stand-in
+
+`internal/chat/standin` is the only chat port built. It imports the standard
+library and `ownerwire` only, opens no file and no socket, reaches no lead,
+holder, unit or sandbox and asks no other port of the daemon; a test holds its
+imports. Its samples are made once from the clock it is given and never
+changed: `daemon:alpha` (chat `read`, running, epoch 3, whose three oldest
+entries are no longer retained, so its conversation starts at 4),
+`daemon:bravo` (chat `read`, stopped, epoch 1) and `daemon:charlie` (chat `off`,
+listed bare and refused `chat-off`). The conversations hold lead replies and
+system lines, each beginning "Sample:" (`Sample: lead restarted, epoch 3`): a long reply
+cut to 2000 bytes and marked `cut`, replies of several lines, and the markup
+sample. No sample carries a bidirectional control; the wire refuses one.
+
+### Not built: sending, replies and an outbox
+
+Nothing of this slice sends. There is no verb, port method, sender, queue,
+outbox or store for it, and no lead receives anything because of a chat call.
+Replies are not captured: no reader of a provider's conversation file, no hook,
+no outbox.
+
+### Reading chat on the seat
+
+The authenticated `GET /leads/` directory lists up to eight leads. An enabled
+row links to `/leads/daemon/{key}#newest`. An off row shows its name and a
+fixed explanation, and a direct read of it answers 403. An unknown lead
+answers 404. A conversation uses one directory lookup and one selected read
+under the request deadline. On a wide screen the directory sits beside the
+transcript. Each page of a sample, a problem page of the chat pages too,
+displays the chat's own STAND-IN banner, which says what is a sample there:
+"STAND-IN These leads and conversations are samples held by the phone trial.
+No real lead is read, and nothing here is an approval." (the template part
+`standin-chat`; the Cards pages keep the banner of the stand-in door).
+
+The seat link negotiates `chat` independently of `genesis` and `decide`.
+It checks the strict wire result, and the app checks its own representation
+and binding again. Directory and read must agree on lead, connection, epoch
+and trial context. Message text goes through `Text` into an escaped text node.
+The links use a validated 1–32 byte key and an integer cursor. Fixed speaker
+labels distinguish Lead and System. Pages have no form or script.
+
+A Leads page asks the port and answers by its error, as the project pages do,
+not by the offer alone: the offer (`ChatOffered`) is false both while the link
+is down and when the connected gate lists no `chat`. The link tells the two
+apart and sends nothing in either case: with no connection a call is
+`ErrDaemonUnavailable`, and the page is "The desk cannot be reached. Try again
+in a moment." with its link to try again; a connected gate without `chat` is
+`ErrNotOffered`, and the page is "The desk does not offer lead chat.", with no
+retry, since trying again would not help.
+
+The recent window starts after the directory head minus 16, floored at zero.
+An explicit `?after=N` reads after N. The next link (Show later) uses the last
+sequence returned even on a short page. The earlier link (Show earlier) reads
+one window back, after N minus 16, floored at zero, whichever way the page was
+reached, so it needs no memory of the pages before. The page's heading is
+"Lead KEY" alone, and the lead's state is the line under it. The transcript is
+a list with `role="log"`, and no `aria-live`: the page is made once and never
+changes while it is open (a reader is not to announce it as it loads). The
+log marks the last entry as newest (`id="newest"`, with `tabindex="-1"`, so a
+link to `#newest` moves the focus there as well as the view; an empty page's
+line takes the id). When the head lies beyond the page, Jump to newest reads the
+last window, after the head minus 16, floored at zero. A session keeps only
+the last epoch it showed of each shared lead: a restart marker above the log
+records an epoch change observed across reads. A reset (a cursor before what
+the host retains, or past the head) has its own notice, "This page starts
+again from the oldest kept message.", in words that hold for both causes.
+
+Chat's calls are reads. They share the seat link's read room (14 calls per
+80-second window, see the budget table under
+[login](#login-seatlogin-challenge-and-seatlogin)) with the card lists, are
+counted and refused like the other reads, and a refusal's log line names the
+kind `read`. Chat shares that room until replies are built; it gets a room of
+its own then, sized from measured use (see Budget (8) below), and not before,
+so the rooms of logins, decisions, reads and the interview are as they were.
+The chat pages have their own page limit of 30 requests per credential per
+minute. Within the login and gate connection the link reuses a directory
+for 20 seconds, every directory, the trial's or a real one, and a read at the
+same lead and cursor for 10 seconds only when it is the trial's (`stand_in`),
+whose samples never change; a real transcript is never reused. A refusal of the gate, an answer the link does not take, a
+replacement connection, a fresh directory or a retention reset invalidates
+earlier answers. A call the link refuses itself and does not send (no room in
+the reads, no connection, no capability) is no news of the gate and keeps them,
+so a tap that meets a busy read room does not cost the next page its
+directory. Logout ends access to that
+session's cache. Real transcript reads require live authorization.
+
+### Before a real port
+
+A port that serves real leads replaces the stand-in only once it meets these
+constraints, from the independent review of the chat design (its findings 1, 2,
+4, 5, 7 and 8):
+
+- **Authority (1).** The port holds no reference to the decide path, the
+  pairing and the key list, the limits, the intake or the host's effects, and
+  the wired-handler test above is repeated over the daemon's real wiring with
+  instrumented decision, enrolment, limit, intake and host-effect ports, which
+  a chat call must leave untouched. Sending, when it comes, uses an input that
+  cannot answer a native dialog of the runtime, or stays off on that runtime.
+- **Disclosure (2).** No provider history is read by default. Replies come
+  from an explicit, bounded outbox the lead publishes to deliberately, from the
+  point the owner enabled chat; the daemon, not the lead, assigns the lead's
+  identity, the sequence, the time and `who`. Historical, desk and tool turns
+  are left out. Any disclosure filter runs on the daemon before the first
+  export, and raw text stays out of logs, errors and fixtures.
+- **Access (4).** `off`, `read` and `send` are the daemon's policy, checked on
+  every list and read (and later every receipt lookup, send and queued
+  dispatch), changed at the desk only, never over the gate. An off lead's
+  name, head and activity are suppressed beyond its bare row. Reads are
+  authorised live and fail closed; history is bound to a conversation
+  incarnation and dropped on a downgrade or a replacement; a credential's
+  display id is recorded as claimed, never as proven; caps hold on the daemon
+  across connections and lead lifetimes.
+- **Storage (5).** A chat store lives in a private daemon-owned folder no lead
+  can reach, with file names derived from validated identities, handle checks
+  (owner, type, mode, one link, size) on every active, rotated and temporary
+  file, one writer, sync and rename, torn-tail recovery, monotonic sequence
+  numbers, defined cursor gaps and retention, and chat disabled, not Cards, on
+  corruption or a disk failure.
+- **Refresh (7).** No change to `seat.wait` in this slice: the seat refreshes
+  by hand. A later live refresh is an opt-in, compatible wait shape with its
+  own cursor, keeps the Card version independent, and keeps the one watcher and
+  the two waits for each peer. Paging by encoded bytes with a progressing
+  cursor and a defined reset is already the wire's.
+- **Budget (8).** The gate stays at 60 requests a minute. Until replies are
+  built, chat's calls share the reads' room, and no other room is cut for
+  them. When replies are built, chat's own room on the seat link is sized
+  from a measured mix of an interview, three Card tabs, logins and decisions,
+  and under contention chat answers busy before Cards and decisions are
+  starved. Malformed wire counts for the refusal bound;
+  rejected user text and the state of a lead do not.
 
 ## The record change
 

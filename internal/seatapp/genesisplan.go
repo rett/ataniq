@@ -20,8 +20,8 @@ import (
 
 // The fixed sentences of the plan page. A test pins each.
 const (
-	planBindsNothing = "A plan binds nothing: nothing has started, and nothing starts from this page."
-	planDraftLine    = "This is a draft; finishing the interview keeps it as revision 1."
+	planBindsNothing = "This plan gives no permission to do the work. Viewing it starts nothing."
+	planDraftLine    = "This is a draft; finishing the interview keeps it as revision 1. You can change the draft by editing your answers."
 	planAlwaysWaits  = "Publishing, releases, pushing code, credentials and raising any limit always wait for you, whatever the plan says."
 	planCharterLine  = "Draft. Not signed. It allows nothing. Nothing starts from this page. Signing is a later step and is not built."
 	planNotReady     = "No plan can be drawn yet: some answers are missing."
@@ -161,6 +161,7 @@ type (
 		Estimate               string
 		Warnings, Gates, Areas []string
 		Milestones             []milestoneView
+		Nav                    *navView
 	}
 	milestoneView struct {
 		Open        bool
@@ -176,11 +177,11 @@ type (
 )
 
 // planOf is the page's data for a plan.
-func planOf(thread string, p *GenesisPlanView) planData {
+func (a *app) planOf(thread string, p *GenesisPlanView) planData {
 	d := planData{Title: pageTitles["plan"], Thread: thread, Tag: thread[:6], Plan: p, Back: "Back to the summary",
 		Waits: wordsOf(planReviewWords, p.ReviewPoints), Services: append([]string{}, p.ExternalServices...),
 		Hosts: wordOf(planHostWords, p.Hosts), Budget: wordOf(planBudgetWords, p.BudgetBand),
-		Gates: wordsOf(planCheckWords, p.Gates), Warnings: []string{}, Areas: []string{}}
+		Gates: wordsOf(planCheckWords, p.Gates), Warnings: []string{}, Areas: []string{}, Nav: a.projectsNav()}
 	d.Heading = "Draft plan"
 	if p.Stored {
 		d.Heading = "Plan, revision " + strconv.Itoa(p.Revision)
@@ -237,15 +238,15 @@ func planOf(thread string, p *GenesisPlanView) planData {
 func (a *app) planPage(w http.ResponseWriter, r *http.Request, s Session) {
 	thread := r.PathValue("thread")
 	if !ValidThreadID(thread) {
-		a.problem(w, problemNotFound)
+		a.problem(w, r, problemNotFound)
 		return
 	}
 	g, ctx, cancel, err := a.genesisCall(r, s)
 	if err != nil {
 		if errors.Is(err, errTooMany) {
-			a.problem(w, problemTooManyProjects)
+			a.problem(w, r, problemTooManyProjects)
 		} else {
-			a.problem(w, problemGenesisNotOffered)
+			a.problem(w, r, problemGenesisNotOffered)
 		}
 		return
 	}
@@ -253,24 +254,24 @@ func (a *app) planPage(w http.ResponseWriter, r *http.Request, s Session) {
 	v, err := g.Genesis(ctx, GenesisCall{Verb: GenesisVerbPlan, Thread: thread})
 	switch {
 	case errors.Is(err, ErrGenesisNotReady):
-		d := planData{Title: pageTitles["plan"], Heading: "No plan yet", Thread: thread, Tag: thread[:6], Missing: planNotReady, Back: backToProject}
+		d := planData{Title: pageTitles["plan"], Heading: "No plan yet", Thread: thread, Tag: thread[:6], Missing: planNotReady, Back: backToProject, Nav: a.projectsNav()}
 		if rv, rerr := g.Genesis(ctx, GenesisCall{Verb: GenesisVerbRound, Thread: thread}); rerr == nil && rv.Thread == thread && rv.State == GenesisStateFinished {
 			d.Heading, d.Missing, d.Back = "No plan", planFinishedNone, backToBrief
 		}
 		a.render(w, "plan", http.StatusConflict, d)
 		return
 	case errors.Is(err, ErrGenesisNoTemplate):
-		a.render(w, "plan", http.StatusConflict, planData{Title: pageTitles["plan"], Heading: "No plan yet", Thread: thread, Tag: thread[:6], Missing: planNoTemplate, Back: backToProject})
+		a.render(w, "plan", http.StatusConflict, planData{Title: pageTitles["plan"], Heading: "No plan yet", Thread: thread, Tag: thread[:6], Missing: planNoTemplate, Back: backToProject, Nav: a.projectsNav()})
 		return
 	case err != nil:
-		a.problem(w, genesisProblem(err))
+		a.problem(w, r, genesisProblem(err))
 		return
 	}
 	if v.Thread != thread || v.State != GenesisStatePlan || v.Plan == nil || !validPlan(v.Plan) {
-		a.problem(w, problemFailed)
+		a.problem(w, r, problemFailed)
 		return
 	}
-	a.render(w, "plan", http.StatusOK, planOf(thread, v.Plan))
+	a.render(w, "plan", http.StatusOK, a.planOf(thread, v.Plan))
 }
 
 // validPlan reports whether a plan is within the app's own bounds: the

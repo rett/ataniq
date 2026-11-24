@@ -126,6 +126,7 @@ var opCaps = map[string]string{
 	ownerwire.OpSeatDecide:         CapDecide,
 	ownerwire.OpSeatWait:           CapWatch,
 	ownerwire.OpSeatGenesis:        CapGenesis,
+	ownerwire.OpSeatChat:           CapChat,
 }
 
 // Operations returns the operations a handler made with [New] serves, in a
@@ -155,7 +156,9 @@ type Handler struct {
 	// genesis is the daemon's thread store, or nil (CapGenesis is then not
 	// served).
 	genesis GenesisPort
-	caps    map[string]bool
+	// chat is the daemon's chat port, or nil (CapChat is then not served).
+	chat ChatPort
+	caps map[string]bool
 	// counts holds how often each code was answered, in memory.
 	cmu    sync.Mutex
 	counts map[string]int64
@@ -223,8 +226,9 @@ func NewDeciding(svc Port, seat SeatPort, g ownerchannel.Gate, pinned func(finge
 
 // Caps returns the capability list of the handler, for the gate's hello
 // ([seatgate.ServerConfig].Caps), in a new slice: [Caps] or [DecidingCaps],
-// [CapWatch] after them when the handler's service can wait, and [CapGenesis]
-// last when the handler was given the thread store.
+// [CapWatch] after them when the handler's service can wait, [CapGenesis]
+// when the handler was given the thread store, and [CapChat] last when it was
+// given the chat port.
 func (h *Handler) Caps() []string {
 	caps := Caps()
 	if h.seat != nil {
@@ -235,6 +239,9 @@ func (h *Handler) Caps() []string {
 	}
 	if h.genesis != nil {
 		caps = append(caps, CapGenesis)
+	}
+	if h.chat != nil {
+		caps = append(caps, CapChat)
 	}
 	return caps
 }
@@ -417,6 +424,9 @@ func (h *Handler) serve(ctx context.Context, peer seatgate.Peer, op string, para
 		}
 		r, err := h.genesis.Genesis(ctx, p)
 		return genesisAnswer(r, err)
+	case ownerwire.OpSeatChat:
+		// The route is in chat.go, and holds the chat port alone.
+		return h.serveChat(ctx, params)
 	}
 	return outcome{code: CodeUnknownOp}
 }

@@ -70,7 +70,9 @@ const (
 	// keep that room until their challenges' life ends.
 	publicRoom = 12
 	// readRoom is owner.list, owner.show and owner.paths, the reads of every
-	// session together.
+	// session together, and seat.chat, the read-only leads' directory and
+	// transcripts (chat.go). Chat shares this room until replies ship; it
+	// gets a room of its own then, sized from measured use, not before.
 	readRoom = 14
 	// waitRoom is seat.wait, the watcher's one long wait (watch.go). The
 	// watcher keeps one wait in flight, and the gate holds it up to 25

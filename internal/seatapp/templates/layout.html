@@ -3,16 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="format-detection" content="telephone=no, date=no, address=no, email=no">
 <meta name="color-scheme" content="light dark">
-<title>{{.Title}}</title>
+<title>{{block "title" .}}{{.Title}}{{end}}</title>
 <link rel="stylesheet" href="/static/app.css">
 {{block "head" .}}{{end}}
 </head>
-<body>
-<header>
+<body{{if .Nav}} class="nav-page"{{end}}>
+{{with .Nav}}<a id="skip" class="skip" href="#content">Skip to content</a>
+{{end}}<header>
 <p class="brand">Authority seat</p>
-</header>
-<main>
+{{with .Nav}}{{template "nav" .}}
+{{end}}</header>
+<main{{if .Nav}} id="content"{{end}}>
 {{template "content" .}}
 </main>
 </body>

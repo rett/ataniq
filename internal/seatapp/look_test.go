@@ -174,6 +174,102 @@ func TestStyleSheet(t *testing.T) {
 	}
 }
 
+// TestStyleSheetNavigation checks the look of the main navigation: its
+// links 44 px targets, the current one marked by more than a colour (bold,
+// no underline, a bar), the skip link out of sight only while it has no
+// focus, nothing fixed to the screen (which on a phone could cover the
+// content, the keyboard or the home indicator), and !important in the rule
+// of [hidden] alone.
+func TestStyleSheetNavigation(t *testing.T) {
+	css := newRig(t).do("GET", "/static/app.css", nil, nil).Body.String()
+	for _, bad := range []string{"position: fixed", "@import", "url(", "@font-face", "http:", "https:"} {
+		if strings.Contains(css, bad) {
+			t.Errorf("the style sheet holds %q", bad)
+		}
+	}
+	if strings.Count(css, "!important") != 1 || !strings.Contains(css, "[hidden] {\n  display: none !important;\n}") {
+		t.Error("!important outside the rule of [hidden]")
+	}
+	skip := ruleOf(t, css, ".skip {")
+	if !strings.Contains(css, ".skip:not(:focus) {") || !strings.Contains(skip, "min-height: 44px;") || !strings.Contains(skip, "position: absolute;") {
+		t.Errorf("the skip link is not shown on focus as a 44 px target:\n%s", skip)
+	}
+	link := ruleOf(t, css, ".nav a {")
+	for _, want := range []string{"min-height: 44px;", "min-width: 44px;"} {
+		if !strings.Contains(link, want) {
+			t.Errorf("the navigation's link lacks %q", want)
+		}
+	}
+	for _, selector := range []string{`a[href="/login/"],`, "#watch-status a,", "#retry,"} {
+		rule := ruleOf(t, css, selector)
+		if !strings.Contains(rule, "min-height: 44px;") || !strings.Contains(rule, "min-width: 44px;") {
+			t.Errorf("%s link lacks a 44 px target", selector)
+		}
+	}
+	for _, selector := range []string{"#decide-status:empty", "#logout-status:empty", "#watch-status:empty"} {
+		if strings.Contains(ruleOf(t, css, selector), "display: none") {
+			t.Errorf("%s disappears while empty", selector)
+		}
+	}
+	cur := ruleOf(t, css, `.nav a[aria-current="page"] {`)
+	for _, want := range []string{"font-weight: 700;", "text-decoration: none;", "box-shadow: inset"} {
+		if !strings.Contains(cur, want) {
+			t.Errorf("the current link lacks %q, a mark that is not a colour", want)
+		}
+	}
+}
+
+// ruleOf is the text of the first rule of the style sheet that opens with
+// head, up to its closing brace.
+func ruleOf(t *testing.T, css, head string) string {
+	t.Helper()
+	i := strings.Index(css, head)
+	if i < 0 {
+		t.Fatalf("the style sheet has no rule %q", head)
+	}
+	j := strings.Index(css[i:], "}")
+	return css[i : i+j+1]
+}
+
+// mediaBlock is the text of the style sheet's media block that opens with
+// head, up to its closing brace at the start of a line, or "".
+func mediaBlock(css, head string) string {
+	i := strings.Index(css, head+" {\n")
+	if i < 0 {
+		return ""
+	}
+	j := strings.Index(css[i:], "\n}")
+	if j < 0 {
+		return ""
+	}
+	return css[i : i+j+2]
+}
+
+// TestStyleSheetWideScreen checks the wide-screen layout: the phone's
+// breakpoint (30rem) and the wide screen's (60rem), and no other; the rail,
+// the reading column and the wider lists inside the wide block; and the
+// class of the pages with the navigation styled only there, so nothing
+// below 60rem changes.
+func TestStyleSheetWideScreen(t *testing.T) {
+	css := newRig(t).do("GET", "/static/app.css", nil, nil).Body.String()
+	phone, wide := mediaBlock(css, "@media (min-width: 30rem)"), mediaBlock(css, "@media (min-width: 60rem)")
+	if phone == "" || wide == "" {
+		t.Fatalf("the style sheet lacks a breakpoint: 30rem %t, 60rem %t", phone != "", wide != "")
+	}
+	if n := strings.Count(css, "@media (min-width:"); n != 2 {
+		t.Errorf("%d width breakpoints, want 30rem and 60rem", n)
+	}
+	for _, want := range []string{".nav-page {", "display: grid;", "grid-template-columns:", "position: sticky;", "border-right:", "height: 100vh;", "height: 100dvh;", "overflow-y: auto;",
+		"max-width: 44rem;", ".nav-page > main:has(.cards) {", ".chat-aside {", ".chat-layout {", "minmax(10rem, 1fr) minmax(0, 2.5fr)", ".chat-thread {", "max-width: 60rem;", "flex-direction: column;"} {
+		if !strings.Contains(wide, want) {
+			t.Errorf("the wide block lacks %q", want)
+		}
+	}
+	if n, in := strings.Count(css, ".nav-page"), strings.Count(wide, ".nav-page"); n != in {
+		t.Errorf("%d of %d rules of .nav-page outside the wide block", n-in, n)
+	}
+}
+
 // inMedia reports whether the declaration is inside a media block.
 func inMedia(css, decl string) bool {
 	i := strings.Index(css, decl)

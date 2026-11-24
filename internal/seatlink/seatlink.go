@@ -141,9 +141,10 @@
 // pings included, and every browser's traffic shares it. The link counts
 // every call it sends, by kind, over [BudgetWindow], and sends none past
 // the room of its kind (see budget.go): anyone's (pairings and logins),
-// reads, decisions, the watcher's waits and the interview's calls, beside
-// the pings of the transport every [PingInterval]. A call without room is seatapp.ErrBusy and
-// is not sent; the watcher alone sleeps for room instead.
+// reads (the leads' chat among them, see chat.go), decisions, the watcher's
+// waits and the interview's calls, beside the pings of the transport every
+// [PingInterval]. A call without room is seatapp.ErrBusy and is not sent;
+// the watcher alone sleeps for room instead.
 // The rooms and the pings add up to GateRate, so the gate's rate never
 // refuses a call the link sent. A decision's challenge is asked only with
 // room for its seat.decide as well, kept for that one challenge until the
@@ -177,7 +178,7 @@
 // before anything is sent: a thread id of another form is
 // seatapp.ErrGenesisUnknownThread and an answer the wire does not take
 // seatapp.ErrGenesisBadAnswer. Every call sent has the room of its kind
-// (kindGenesis, 10 in [BudgetWindow]). The answer is read with
+// (kindGenesis, 12 in [BudgetWindow]). The answer is read with
 // [ownerwire.DecodeSeatGenesisResult], must be one the verb answers and of the
 // thread called, and is turned into the app's values with every count and
 // length checked again; an answer that does not pass is an error that holds
@@ -239,7 +240,9 @@ const (
 
 // Caps is the capability list the seat says in its hello
 // ([seatgate.ClientConfig].Caps), in a new slice.
-func Caps() []string { return []string{CapPair, CapRead, CapLogin, CapDecide, CapWatch, CapGenesis} }
+func Caps() []string {
+	return []string{CapPair, CapRead, CapLogin, CapDecide, CapWatch, CapGenesis, CapChat}
+}
 
 // errBadAnswer is the error of an answer that is not a pairing result of its
 // form. It holds nothing of the answer.
@@ -288,6 +291,7 @@ type Daemon struct {
 	hub watchHub
 	// gmem is the link's short memory of the interview's answers, and
 	// gnow its clock (see genesis.go).
+	cmem chatMemory
 	gmem genesisMemory
 	gnow func() time.Time
 	// wmu guards w and wclosed; wt are the watcher's timings, which tests

@@ -303,7 +303,8 @@ background and redials when it drops. Each time the link comes up it prints
 what the gate's hello listed, and whether the phone then offers "New project":
 `ataniq-seat: the seat gate offers pair, read, login, decide, watch and
 genesis; the phone offers New project` (without `genesis`, `the phone offers no
-New project`). Restarting the seat ends every session of the phone.
+New project`). A gate offering `chat` adds `the phone offers read-only Leads`
+to this line. Restarting the seat ends every session of the phone.
 
 On the authority host the seat is not started by hand: its unit is started by
 the switch's reload list (see [the README](../deploy/authority-host/README.md#enabling-it)).
@@ -348,6 +349,26 @@ minutes idle, 12 hours at most, at logout, or when the seat restarts.
 card's page. Each page carries the STAND-IN banner. The card list and the Card page update
 by themselves, see [Live refresh](#live-refresh).
 
+**Moving between pages.** Every page behind the login has a short row of links
+at the top: "Cards", and "Projects" when the desk runs new projects (see
+[New projects](#new-projects)). When the connected desk offers chat, "Leads"
+appears after the other links. The link of the part you are in is bold, has a
+bar under it and is announced as the current page. With a keyboard, the first
+Tab reaches "Skip to content", which jumps past the links to the page. The
+status, pairing, login and error pages have no such row. The row has no Log
+out: Log out stays at the foot of the pages that had it (the plan page has
+none, as before). A card's page and its path pages show "Projects" by what the
+card list last learnt, so the link may be missing for a moment after the desk
+starts offering new projects; open the card list once and it is there.
+
+**On a computer.** In a browser window at least about 960 pixels wide (60rem at
+the default text size), the row of links becomes a column on the left that
+stays in place while the page scrolls, and the page sits beside it in a
+column narrow enough to read comfortably (wider for the card list and the
+project list). Only the layout changes: every page shows and does the same as
+on the phone. Make the window narrower, or zoom in, and the phone layout comes
+back.
+
 **Approve and deny.** A decision is made only on a card's own page, with a fresh
 passkey every time: one tap on Approve or Deny names the action and the card,
 and a second tap on the confirm button asks the phone for one assertion (face,
@@ -379,8 +400,9 @@ up without a reload, and a card that was decided, withdrawn or replaced
   at the desk or on the phone is seen within a few seconds, and a page that
   just reloaded waits until it is 20 seconds old before it reloads again.
   Every reload is a read of the desk, and the seat's reads share 14 calls in 80
-  seconds (see below). With several card lists open at once, in a busy period,
-  the reloads can use most of those 14, and a tap of yours on a card may then be
+  seconds (see below), with the Leads pages as well. With several card lists open
+  at once, in a busy period, the reloads can use most of those 14, and a tap of
+  yours on a card may then be
   answered "The desk is busy" for a moment: close the lists you are not looking at.
 - **A Card page** never reloads by itself, since you may be ticking boxes.
   When its card was decided elsewhere or changed, the page says "This card
@@ -408,7 +430,9 @@ answers when the set of cards changes or after 25 seconds. The pages ask the
 seat, not the gate. The gate takes 60 requests a minute on the seat's one link,
 and the seat keeps a room for each kind of call within every 80 seconds: pings
 6, decisions 10, pairing and login (anyone's) 12, reads 14, waits 6 and the
-new-project pages 12, 60 in all. An idle seat sends one wait about every 25 seconds. A page's poll is not
+new-project pages 12, 60 in all. The Leads pages are reads: they share the
+reads' 14 with the card lists until replies are built, and get a room of their
+own only then, sized from what they are measured to use. An idle seat sends one wait about every 25 seconds. A page's poll is not
 a request that keeps the session alive: a session still ends 30 minutes after
 the last page you loaded or tap you made, however long a page stays open.
 
@@ -441,11 +465,43 @@ read timeout for the seat must be above 30 seconds and its buffering of
 `/api/watch` must be off, so that the answer reaches the phone when the seat
 writes it (see [The reverse proxy](#the-reverse-proxy)).
 
+## Leads
+
+Select **Leads** after login to see which conversations the desk shares.
+In the phone trial the Leads pages carry the banner "**STAND-IN** These leads
+and conversations are samples held by the phone trial. No real lead is read,
+and nothing here is an approval." Every sample line begins "Sample:". Open
+`alpha` or `bravo` to read its conversation. The directory lists `charlie`
+with chat off and offers no link for it. On a wide screen the directory stays
+beside the conversation.
+
+The conversation opens on its most recent messages, up to 16. **Show earlier**
+goes back 16 messages and **Show later** goes on from the page's last message,
+through the retained history. **Jump to newest** shows the most recent
+messages again and goes to the latest one. **Refresh** asks for the recent window again. Each Leads page is one or
+two reads of the desk, and they share the reads' 14 calls in 80 seconds with
+the card lists (see [What it costs](#live-refresh)); past it the page says "The
+desk is busy. Try again in a minute." The seat reuses the directory it last
+read for 20 seconds (every directory, the trial's or a real one), and a
+transcript page for 10 seconds only when it is the trial's sample data, which
+never changes; a real lead's transcript is read again for every page. A separate
+notice says "This page starts again from the oldest kept message." when the
+place you asked for is no longer kept (older messages expired, or the page's
+place is past the conversation the desk holds now), and another when the lead
+changed epochs.
+
+Lead and System labels come from the seat. Links and markup in a reply appear
+as text. Approvals are only on Cards. Sending and live refresh are not built,
+including for a lead whose desk setting allows sending.
+
 ## New projects
 
 When the daemon's gate lists `genesis` (its start line ends in `... watch and
 genesis`), the card list on the phone has a "New project" button and lists the
-projects in progress. Nothing is configured for it on either host.
+projects in progress. Open "Projects" for the project list. If a page says
+the desk is busy or unreachable, "Try this page again" reads the same page.
+When a Card's decision is still on its way or its outcome is unknown, "Look
+again" reads that Card. Nothing is configured for it on either host.
 
 What "New project" does. It starts a short interview: a few rounds of one to
 three multiple-choice questions about a project you want to make (what kind,
@@ -454,8 +510,10 @@ questions are the desk's own, from its fixed catalog, and so is the order they
 come in. Each question offers its options, each with a one-line example, and,
 where the question allows them, "Other" (your own words, a short note of
 about 200 letters: the cap is 200 bytes, so accents and emoji take more room),
-"You decide for me" and "Skip". "You decide for me" leaves the answer to the
-desk: on most questions it takes the question's default; on the language, the
+"You decide for me" and "Skip". On a question that accepts several choices,
+use each of those three options on its own. If the phone rejects a particular
+answer, it returns to that question and marks it "Check this answer."
+"You decide for me" leaves the answer to the desk. On most questions it takes the question's default; on the language, the
 sign-in and where a web app runs, the desk picks a value for you, shown under
 "What was decided for you" on the summary. Such an answer counts as given, so
 a draft plan can be drawn from it, and the plan says "Some answers were
@@ -468,7 +526,9 @@ summary: what you chose, what was decided for you and what was left to its
 default; "Change" on a row asks that question again (a change clears the later
 answers that depended on it, the page says how many, and their questions are
 asked again, after the last round too, as round 6 of 6), "Looks right:
-finish" keeps the answers as the project's brief, and "Discard this project"
+finish" saves the answers as the project's brief. You cannot edit them
+afterwards. If required answers are missing, finishing also leaves the
+project without a plan. "Discard this project"
 (after a second page) drops it with all its answers. At most two projects are
 open at once; a third "New project" says so. An open project you leave for 14
 days is discarded. The card list and `/projects/` list the open ones, so after
@@ -480,27 +540,30 @@ article, a podcast or a book), the summary has "See the draft plan"; otherwise
 it says how many answers are filled in, or that there is no template for this
 kind yet. The plan page (`/projects/<id>/plan`) shows, in this order: "Draft
 plan" (or, once finished, "Plan, revision 1"), with the project's title and
-the first six digits of its id, and the lines "A plan binds nothing: nothing
-has started, and nothing starts from this page." and, for a draft, "This is a
-draft; finishing the interview keeps it as revision 1."; the first demo; what
-waits for you (the review points you chose, and always "Publishing, releases,
+the first six digits of its id, and the lines "This plan gives no permission to
+do the work. Viewing it starts nothing." and, for a draft, "This is a draft;
+finishing the interview keeps it as revision 1. You can change the draft by
+editing your answers.";
+the first demo; what waits for you (the review points you chose, and always "Publishing, releases,
 pushing code, credentials and raising any limit always wait for you, whatever
 the plan says."); the outside services the work would use; where the files
-live; the budget band (advisory: nothing enforces it yet); the estimate (an
+live; the suggested monthly budget, which the desk does not enforce; the estimate (an
 estimate, not a promise); the plan's warnings; the milestones, each a section
 you open, with its tasks, their kind and size and what each waits for; your
 own notes, each quoted and marked as your words, never given to a tool, with
 the question it answers above it ("Do you prefer a programming language?", or
 "A note" for a note of your own); and "What a charter would cover", a draft of
-words only ("Draft. Not signed. It allows nothing. ..."), which lists the work
-areas, the outside services, where it would stop for you and the line "Always
+words only ("Draft. Not signed. It allows nothing. ..."). Open "Read the
+proposed limits on the work" for the work areas, the outside services, where
+it would stop for you and the line "Always
 stopping for you before publishing, releases, pushing code, credentials and
-raising any limit.", and then, apart from that list, the monthly budget band
-(advisory; nothing enforces it yet). To tune the plan, go back to the summary and change an answer:
+raising any limit." The suggested monthly budget follows that list. To tune the
+plan, go back to the summary and change an answer:
 the draft is drawn again from the answers. "Looks right: finish" keeps the
 brief and its plan, revision 1, which never changes afterwards; the finished
-page then has "See the plan". A project finished before its answers were
-complete has no plan, and its plan page says so. The short digest under the
+page then has "See the plan" and points you to the desk for the next step.
+If there is no plan, the finished page says why: required answers were
+missing, or the desk has no template for that kind of project. The short digest under the
 heading ("Plan 3c3c3c3c3c3c") is the same for the draft and the kept plan of
 the same answers, so you can tell they match; when some answers were decided
 for you, finishing accepts them, which changes the brief, so the kept plan
@@ -509,8 +572,8 @@ has the draft's content under another digest.
 What it does not do. Nothing starts: no agent is run and no agent is given the
 answers, the brief or the plan, and nothing is built or published. An answer
 only describes the project; it never approves anything, and the project pages
-hold no approve or deny control. The plan page has links only: no button, no
-form and no script; nothing is signed, allowed or started from it, and it is
+hold no approve or deny control. The plan page uses links and native disclosures. It has no button,
+form or script; nothing is signed, allowed or started from it, and it is
 never a card, on the card list or in a notice. The answers are kept on the desk, by the
 daemon, in `owner/genesis/` of its state folder (one file per project, mode
 0600), and are sent nowhere else. Never type a password, a key or a token: say
@@ -814,6 +877,25 @@ with the list closed and notices on, a notice says that cards wait
 - The journal, `owner/journal.db` of the state folder, keeps each decision with
   the evidence of its assertion, and each outcome with the trial's line.
 
+With `--seat-gate` the trial's gate, and no other, also serves the seat's lead
+pages from STAND-IN samples: the capability `chat` (read only, see
+[the design](design/seat-gate.md#chat)). The gate's start line then ends
+`... watch, genesis and chat` and is followed by
+
+```text
+ataniqd: seat gate: chat: STAND-IN sample leads and conversations of the phone trial, held in memory; no lead is read or reached
+```
+
+The samples are three leads held in memory: `daemon:alpha` (running, a short
+conversation with a long reply marked cut, replies of several lines, a reply
+that looks like markup, which a page shows as text, and restart lines),
+`daemon:bravo` (stopped) and `daemon:charlie`, whose chat is off and which
+shows nothing but its name. Every lead reply and every system line begins
+"Sample:" (`Sample: lead restarted, epoch 3`), and every result is marked as a
+sample, so the seat shows a banner. No lead, conversation file or
+other part of the daemon is read or reached, nothing is written, and nothing
+can be sent: there is no way to send a message from the seat yet. Open **Leads** after login to read the samples.
+
 `--trial` needs `--owner-channel` (exit 2 without it). The daemon refuses the
 trial's settings without `--trial`, and other settings with it (exit 10), and a
 state folder or a runtime folder that is, lies inside or contains the account's
@@ -887,7 +969,8 @@ What the phone shows, by the code the seat's API answers:
 | "Too many tries. Wait a while..." | `rate_limited` | The pairing or login limits of the seat. | Wait; the limits age out. |
 | "Decisions are paused on this host." (on the card page, in place of the Approve and Deny buttons) or "Decisions are paused on this host. Nothing was sent." (after a tap) | `decisions_inhibited` | The authority host's decision inhibit is there (a switch under way, a boot not yet requalified, a failure), or the `--decision-guard` folder is missing, a link or not readable. The seat logs the guard's code (`decision-guard-...`). | On the authority host, `ah-switch status` says why. On another host, check `--decision-guard`. Tap again once decisions are taken. |
 | "The desk is busy. Try again in a minute." | `desk_busy` | The seat's room at the gate, or the gate's rate, is used up. | Wait a few minutes. |
-| "The desk is busy. Try again in a minute." on the project pages, or on any page, and the page does not say which limit refused | `desk_busy` | One of the seat's own limits refused the call, and the seat's log (standard error; the journal of its unit) has the line that says which. `ataniq-seat: the link has no room for a call of kind KIND (USED of ROOM in the last 80 seconds); the page says the desk is busy`: the link's room at the gate for that kind of call (KIND is `public`, `read`, `decide` or `genesis`; the interview's is 12 calls in 80 seconds) is spent, and nothing was sent. `ataniq-seat: the project pages' limit of 30 requests a minute was reached for one credential`: the phone's pages of the projects were asked for more than 30 times in a minute, which is the app's limit for one passkey, apart from the link's room. Either line is written once in 30 seconds for what it names, and the next one ends `N more since the last line` for the refusals held back in between; no line holds a project, a card, a passkey or an answer. If neither line is in the log, the gate refused (see the daemon's log). | Wait a minute and tap again; the rooms come back as the 80 seconds pass. If it repeats with no one tapping fast, tell the lead, with the lines and their times. |
+| "The desk is busy. Try again in a minute." on the project pages, or on any page, and the page does not say which limit refused | `desk_busy` | One of the seat's own limits refused the call, and the seat's log (standard error; the journal of its unit) has the line that says which. `ataniq-seat: the link has no room for a call of kind KIND (USED of ROOM in the last 80 seconds); the page says the desk is busy`: the link's room at the gate for that kind of call (KIND is `public`, `read`, `decide` or `genesis`; the Leads pages' calls are `read`, sharing the reads' 14 calls in 80 seconds; the interview's is 12 calls in 80 seconds) is spent, and nothing was sent. `ataniq-seat: the project pages' limit of 30 requests a minute was reached for one credential`: the phone's pages of the projects were asked for more than 30 times in a minute, which is the app's limit for one passkey, apart from the link's room. Either line is written once in 30 seconds for what it names, and the next one ends `N more since the last line` for the refusals held back in between; no line holds a project, a card, a passkey or an answer. If neither line is in the log, the gate refused (see the daemon's log). | Wait a minute and tap again; the rooms come back as the 80 seconds pass. If it repeats with no one tapping fast, tell the lead, with the lines and their times. |
+| No "Leads" in the menu, or "The desk does not offer lead chat." | (a page) | The connected daemon's gate does not list `chat`: only the phone trial's gate serves it (the seat's log line of the gate's offer does not end `the phone offers read-only Leads`). While the seat cannot reach the gate, a Leads page says "The desk cannot be reached. Try again in a moment." instead, with a link to try again. | Run the phone trial's gate, or use the desk; for the second page, wait and try again. |
 | No "New project" on the card list, or "New projects are not offered" | (a page) | The daemon's gate does not list `genesis` (the seat's log says `the phone offers no New project`), or the seat runs without `--gate`. | Check the daemon's start line; restart the daemon with its gate. |
 | "That project is not open. ..." or "No such project" | (a page) | The project was finished, discarded, or left for 14 days, or the address is not one of the seat's. | Start a new one from the card list. |
 | "The desk does not take phone logins now." | `login_unavailable` | The gate is read-only: no usable origin file at the daemon. | Fix the origin file, restart the daemon. |

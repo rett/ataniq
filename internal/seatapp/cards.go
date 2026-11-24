@@ -316,6 +316,7 @@ type (
 		// page shows it: the daemon runs the interview.
 		Projects projectsPart
 		Genesis  bool
+		Nav      *navView
 	}
 	cardData struct {
 		Title string
@@ -337,6 +338,7 @@ type (
 		// Watch is the watcher's version taken before the page's read, with
 		// the card and binding the page shows.
 		Watch watchPage
+		Nav   *navView
 	}
 	pathsData struct {
 		Title string
@@ -349,10 +351,18 @@ type (
 		// app's own addresses, empty when there is none.
 		Number           int
 		Prev, Next, Back string
+		Nav              *navView
 	}
+	// problemData has no navigation (Nav is nil): a problem page is made
+	// without knowing whether a session asked for it.
 	problemData struct {
 		Title   string
 		Message string
+		// StandIn is set by the chat pages alone, for a problem of the
+		// trial's samples: the page shows the chat's banner (standin-chat).
+		StandIn bool
+		Retry   bool
+		Nav     *navView
 	}
 )
 
@@ -360,7 +370,7 @@ type (
 // It answers the problem and returns false when the bound is met.
 func (a *app) read(w http.ResponseWriter, r *http.Request, s Session) (context.Context, context.CancelFunc, bool) {
 	if !a.reads.allow(s.Credential, a.cfg.Now()) {
-		a.problem(w, problemTooMany)
+		a.problem(w, r, problemTooMany)
 		return nil, nil, false
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), daemonTimeout)
@@ -379,13 +389,15 @@ func (a *app) cardList(w http.ResponseWriter, r *http.Request, s Session) {
 	wp := a.watchVersion()
 	l, err := a.cfg.Daemon.List(ctx)
 	if err != nil {
-		a.problem(w, readProblem(err))
+		a.problem(w, r, readProblem(err))
 		return
 	}
 	d := cardsData{Title: pageTitles["cards"], Now: a.cfg.Now(), Listing: l, Watch: wp, Push: a.push != nil}
 	// The new projects, when the daemon runs the interview: a list that
 	// cannot be read leaves the start offered and says so.
 	d.Projects, d.Genesis = a.listProjects(ctx)
+	a.projectsOffered.Store(d.Genesis)
+	d.Nav = &navView{Current: navCards, Projects: d.Genesis, Leads: a.chatOffered()}
 	a.render(w, "cards", http.StatusOK, d)
 }
 
@@ -393,7 +405,7 @@ func (a *app) cardList(w http.ResponseWriter, r *http.Request, s Session) {
 func (a *app) cardPage(w http.ResponseWriter, r *http.Request, s Session) {
 	id := r.PathValue("id")
 	if !validCardID(id) {
-		a.problem(w, problemNotFound)
+		a.problem(w, r, problemNotFound)
 		return
 	}
 	ctx, cancel, ok := a.read(w, r, s)
@@ -405,15 +417,15 @@ func (a *app) cardPage(w http.ResponseWriter, r *http.Request, s Session) {
 	wp := a.watchVersion()
 	c, err := a.cfg.Daemon.Show(ctx, id)
 	if err != nil {
-		a.problem(w, readProblem(err))
+		a.problem(w, r, readProblem(err))
 		return
 	}
 	if c.ID != id {
-		a.problem(w, problemFailed)
+		a.problem(w, r, problemFailed)
 		return
 	}
 	now := a.cfg.Now()
-	d := cardData{Title: pageTitles["card"], Now: now, Card: c, RPID: a.cfg.RPID, Watch: wp.still()}
+	d := cardData{Title: pageTitles["card"], Now: now, Card: c, RPID: a.cfg.RPID, Watch: wp.still(), Nav: a.cardsNav()}
 	if !c.Ended && (c.State == "" || c.State == "pending") {
 		// Only a pending card can change under its page: a decided, ended
 		// or expired one is not in the pending set, so a page that named
@@ -464,7 +476,7 @@ func (a *app) pathsPage(w http.ResponseWriter, r *http.Request, s Session) {
 	id := r.PathValue("id")
 	n, err := strconv.Atoi(r.PathValue("n"))
 	if !validCardID(id) || err != nil || n < 0 || n > maxPage || strconv.Itoa(n) != r.PathValue("n") {
-		a.problem(w, problemNotFound)
+		a.problem(w, r, problemNotFound)
 		return
 	}
 	ctx, cancel, ok := a.read(w, r, s)
@@ -474,16 +486,16 @@ func (a *app) pathsPage(w http.ResponseWriter, r *http.Request, s Session) {
 	defer cancel()
 	p, err := a.cfg.Daemon.Pages(ctx, id, n)
 	if err != nil {
-		a.problem(w, readProblem(err))
+		a.problem(w, r, readProblem(err))
 		return
 	}
 	if p.N != n || p.Pages < 1 || p.N >= p.Pages || p.Review == "" {
-		a.problem(w, problemFailed)
+		a.problem(w, r, problemFailed)
 		return
 	}
 	// A page counts as read only when it showed every path whole, and
 	// only once it was written.
-	d := pathsData{Title: pageTitles["paths"], ID: id, Page: p, Number: n + 1, Back: cardHref(id), Cut: !rowsWhole(p.Rows)}
+	d := pathsData{Title: pageTitles["paths"], ID: id, Page: p, Number: n + 1, Back: cardHref(id), Cut: !rowsWhole(p.Rows), Nav: a.cardsNav()}
 	if n > 0 {
 		d.Prev = pathsHref(id, n-1)
 	}
@@ -496,6 +508,11 @@ func (a *app) pathsPage(w http.ResponseWriter, r *http.Request, s Session) {
 }
 
 // problem answers a problem page.
-func (a *app) problem(w http.ResponseWriter, p problem) {
-	a.render(w, "problem", p.status, problemData{Title: p.title, Message: p.message})
+func (a *app) problem(w http.ResponseWriter, r *http.Request, p problem) {
+	a.problemBanner(w, r, p, false)
+}
+
+func (a *app) problemBanner(w http.ResponseWriter, r *http.Request, p problem, standIn bool) {
+	retry := r.Method == http.MethodGet && (p == problemChanged || p == problemChatChanged || p == problemBusy || p == problemUnavailable || p.status == http.StatusTooManyRequests)
+	a.render(w, "problem", p.status, problemData{Title: p.title, Message: p.message, Retry: retry, StandIn: standIn})
 }

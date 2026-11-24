@@ -1,9 +1,10 @@
+{{define "title"}}New project, round {{num .View.Round}} of {{num .View.Of}}{{end}}
 {{define "content"}}
 <h1>New project</h1>
-{{if .Note}}<p class="note-line" role="status">{{.Note}}</p>
+{{if .Note}}<p id="answer-note" class="note-line" role="status">{{.Note}}</p>
 {{end}}{{if .Reset}}<p class="note-line" role="status">Your change cleared {{num .Reset}} later answers. Their questions are asked again.</p>
 {{end}}<p class="progress">Round {{num .View.Round}} of {{num .View.Of}}. {{num .View.Filled}} of {{num .View.Total}} required answers given.</p>
-<form id="answer" action="{{projectHref .View.Thread "answer"}}" method="post">
+<form id="answer" action="{{projectHref .View.Thread "answer"}}" method="post"{{if .Note}} aria-describedby="answer-note"{{end}}>
 <input type="hidden" id="round" name="round" value="{{num .View.Round}}">
 {{range .Questions}}{{template "question" .}}
 {{end}}<button id="send" type="submit">Next</button>

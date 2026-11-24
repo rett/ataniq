@@ -3,6 +3,7 @@ package seatapp
 import (
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,13 +43,13 @@ var inventory = []struct {
 	{"POST /api/login-challenge", "api", nil, "", false},
 	{"POST /api/login", "api", nil, "", false},
 	{"POST /api/logout", "api", nil, "", false},
-	{pattern: "GET /cards/{$}", kind: "page", controls: []string{"a", "button#logout", "button#enable-notices", "button#stop-notices",
-		"form#start-project", "button#start-project-go"}, authed: true},
+	{pattern: "GET /cards/{$}", kind: "page", controls: withNav("a", "button#logout", "button#enable-notices", "button#stop-notices",
+		"form#start-project", "button#start-project-go"), authed: true},
 	{pattern: "GET /cards", kind: "redirect"},
-	{pattern: "GET /cards/{id}", kind: "page", controls: []string{"a#paths", "a#back", "button#logout",
-		"input#signoff-0", "button#approve", "textarea#reason", "button#deny", "button#confirm-go", "button#confirm-cancel", "a#look"},
+	{pattern: "GET /cards/{id}", kind: "page", controls: withNav("a#paths", "a#back", "button#logout",
+		"input#signoff-0", "button#approve", "textarea#reason", "button#deny", "button#confirm-go", "button#confirm-cancel", "a#look"),
 		path: "/cards/" + testCardID, authed: true},
-	{pattern: "GET /cards/{id}/paths/{n}", kind: "page", controls: []string{"a#prev", "a#next", "a#back", "button#logout"}, path: "/cards/" + testCardID + "/paths/1", authed: true},
+	{pattern: "GET /cards/{id}/paths/{n}", kind: "page", controls: withNav("a#prev", "a#next", "a#back", "button#logout"), path: "/cards/" + testCardID + "/paths/1", authed: true},
 	{pattern: "GET /static/session.js", kind: "asset"},
 	{pattern: "GET /static/decide.js", kind: "asset"},
 	{pattern: "POST /api/decide-challenge", kind: "api"},
@@ -64,19 +65,23 @@ var inventory = []struct {
 	{pattern: "POST /api/push/info", kind: "api"},
 	{pattern: "POST /api/push/subscribe", kind: "api"},
 	{pattern: "POST /api/push/unsubscribe", kind: "api"},
+	{pattern: "GET /leads", kind: "redirect"},
+	{pattern: "GET /leads/{$}", kind: "page", controls: withNav("a", "a#chat-refresh"), authed: true},
+	{pattern: "GET /leads/{kind}/{key}", kind: "page", controls: withNav("a", "a#chat-refresh", "a#chat-jump", "a#chat-prev", "a#chat-next"), path: "/leads/daemon/alpha", authed: true},
 	// The new-project pages: plain forms that post to the app, and no
 	// decide control.
-	{pattern: "GET /projects/{$}", kind: "page", controls: []string{"a", "a#back", "button#logout", "form#start-project", "button#start-project-go"}, authed: true},
+	{pattern: "GET /projects/{$}", kind: "page", controls: withNav("a", "a#back", "button#logout", "form#start-project", "button#start-project-go"), authed: true},
 	{pattern: "GET /projects", kind: "redirect"},
 	{pattern: "POST /projects/new", kind: "api"},
 	{pattern: "GET /projects/{thread}", kind: "page", controls: questionControls("form#answer", "input#round", "a#project-list", "a#discard-link"),
 		path: "/projects/" + testThread, authed: true},
 	{pattern: "GET /projects/{thread}/change/{node}", kind: "page", controls: questionControls("form#change", "input#node", "a#keep"),
 		path: "/projects/" + testThread + "/change/kind", authed: true},
-	{pattern: "GET /projects/{thread}/discard", kind: "page", controls: []string{"form#discard", "button#discard-go", "a#keep", "button#logout"},
+	{pattern: "GET /projects/{thread}/discard", kind: "page", controls: withNav("form#discard", "button#discard-go", "a#keep", "button#logout"),
 		path: "/projects/" + testThread + "/discard", authed: true},
-	// The plan page: links only, no form, no button, no script.
-	{pattern: "GET /projects/{thread}/plan", kind: "page", controls: []string{"a#project-page", "a#project-list"},
+	// The plan page: links only, no form, no button, no script: its two
+	// links and the main navigation's, and no logout control.
+	{pattern: "GET /projects/{thread}/plan", kind: "page", controls: withNav("a#project-page", "a#project-list"),
 		path: "/projects/" + testThread + "/plan", authed: true},
 	{pattern: "POST /projects/{thread}/answer", kind: "api"},
 	{pattern: "POST /projects/{thread}/change", kind: "api"},
@@ -84,12 +89,22 @@ var inventory = []struct {
 	{pattern: "POST /projects/{thread}/discard", kind: "api"},
 }
 
+// navControls are the links every page behind a session holds before its
+// content: the skip link and the main navigation's, all plain links. The
+// Projects and Leads links follow their independent offers.
+var navControls = []string{"a#skip", "a#nav-cards", "a#nav-projects", "a#nav-leads"}
+
+// withNav is the controls given and the navigation's.
+func withNav(controls ...string) []string {
+	return append(append([]string{}, navControls...), controls...)
+}
+
 // questionControls are the controls of a page with the form of a round, or
 // of one question, beside the ones given: for each of up to three questions
 // its node, its options (or a scale's five steps), "Other" with its text,
 // "You decide for me" and "Skip", and the one submit button.
 func questionControls(more ...string) []string {
-	out := append([]string{"button#send", "button#logout"}, more...)
+	out := withNav(append([]string{"button#send", "button#logout"}, more...)...)
 	for i := 0; i < MaxGenesisQuestions; i++ {
 		q := "q" + strconv.Itoa(i) + "-"
 		out = append(out, "input#n"+strconv.Itoa(i), "input#"+q+"other", "input#"+q+"text", "input#"+q+"host", "input#"+q+"skip")
@@ -108,27 +123,28 @@ var formRoutes = map[string]bool{
 	"GET /projects/{thread}/change/{node}": true, "GET /projects/{thread}/discard": true,
 }
 
-// formRe finds a form's start tag, and projectAction the address of a
-// project's post.
-var (
-	formRe        = regexp.MustCompile(`(?is)<form\b([^>]*)>`)
-	projectAction = regexp.MustCompile(`^/projects/[0-9a-f]{16}/(answer|change|finish|discard)$`)
-)
+// projectAction is the address of a project form post.
+var projectAction = regexp.MustCompile(`^/projects/[0-9a-f]{16}/(answer|change|finish|discard)$`)
 
 // checkForms fails for a form that is not a plain post to a project route of
 // the app.
 func checkForms(t testing.TB, pattern, html string) {
 	t.Helper()
-	for _, m := range formRe.FindAllStringSubmatch(html, -1) {
-		attrs := map[string]string{}
-		for _, a := range attrRe.FindAllStringSubmatch(m[1], -1) {
-			attrs[strings.ToLower(a[1])] = a[2] + a[3] + a[4]
+	elements, err := pageElements(html)
+	if err != nil {
+		t.Errorf("%s: %v", pattern, err)
+		return
+	}
+	for _, el := range elements {
+		if el.name != "form" {
+			continue
 		}
+		attrs := el.attrs
 		action := attrs["action"]
 		ok := attrs["method"] == "post" && attrs["enctype"] == "" && attrs["target"] == "" &&
 			(action == "/projects/new" || projectAction.MatchString(action))
 		if !ok {
-			t.Errorf("%s: a form that is not a plain post to a project route: %s", pattern, m[0])
+			t.Errorf("%s: a form that is not a plain post to a project route: %s", pattern, action)
 		}
 	}
 }
@@ -197,41 +213,64 @@ var decideWords = regexp.MustCompile(`(?i)approv|den(y|ies|ied)|decid|decision|r
 // externalRe finds an address with a scheme or without one that names a host.
 var externalRe = regexp.MustCompile(`(?i)https?:|[("'=\s]//[a-z0-9]`)
 
+// urlAttrs are the attributes that carry an address a browser may fetch,
+// follow, ping or report to; a meta element's content is held to the same
+// rules (a refresh's url=), and appAttrs are those of them whose address
+// must be one of the app's own paths.
+var (
+	urlAttrs = map[string]bool{"href": true, "src": true, "action": true, "formaction": true, "srcset": true, "poster": true, "data": true,
+		"ping": true, "background": true, "cite": true, "manifest": true}
+	appAttrs = map[string]bool{"href": true, "src": true, "action": true, "formaction": true,
+		"ping": true, "background": true, "cite": true, "manifest": true}
+)
+
 var (
 	tagRe  = regexp.MustCompile(`(?is)<(/?)([a-z][a-z0-9-]*)([^>]*)>`)
 	attrRe = regexp.MustCompile(`(?is)([a-z_:][-a-z0-9_:.]*)\s*(?:=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?`)
 )
 
 // inspectPage returns what is wrong with an HTML page: an inline script or
-// style, an event handler, an external address, a form or a control that the
-// inventory does not list for it, and a control that looks like deciding when
-// the page may not hold one.
+// style, an event handler, an external address (in any attribute of
+// urlAttrs, or a meta element's content), a meta element with http-equiv
+// (the layout has none: a refresh or a policy set in markup), a form or a
+// control that the inventory does not list for it, and a control that looks
+// like deciding when the page may not hold one.
 func inspectPage(html string, allowed []string, mayDecide bool) []string {
 	var found []string
 	add := func(parts ...string) { found = append(found, strings.Join(parts, " ")) }
-	if strings.Contains(strings.ToLower(html), "javascript:") {
-		add("javascript address")
+	elements, err := pageElements(html)
+	if err != nil {
+		return []string{err.Error()}
 	}
-	if externalRe.MatchString(html) {
-		add("external address")
-	}
-	for _, m := range tagRe.FindAllStringSubmatch(html, -1) {
-		closing, name, rest := m[1], strings.ToLower(m[2]), m[3]
-		if closing != "" {
-			continue
+	for _, el := range elements {
+		name, attrs := el.name, el.attrs
+		if slices.Contains(allowed, "a#chat-refresh") {
+			if name == "script" {
+				add("script on chat page")
+			}
+			if name == "a" && !listedChatLink(attrs["id"], attrs["href"]) {
+				add("unlisted chat link", attrs["href"])
+			}
 		}
-		attrs := map[string]string{}
-		for _, a := range attrRe.FindAllStringSubmatch(rest, -1) {
-			v := a[2] + a[3] + a[4]
-			attrs[strings.ToLower(a[1])] = v
-			key := strings.ToLower(a[1])
+		for key, v := range attrs {
+			chatLink := name == "a" && key == "href" && chatHref(v)
+			if key == "href" && strings.HasPrefix(v, "/leads") && !chatLink {
+				add("unlisted chat destination", v)
+			}
+			if (urlAttrs[key] || (name == "meta" && key == "content")) &&
+				(externalRe.MatchString(" "+v) || strings.Contains(strings.ToLower(v), "javascript:") || strings.ContainsAny(v, "\\\t\r\n")) {
+				add("unsafe address", key, v)
+			}
+			if name == "meta" && key == "http-equiv" {
+				add("meta http-equiv", v)
+			}
 			if strings.HasPrefix(key, "on") {
 				add("event handler", key)
 			}
 			if key == "style" {
 				add("style attribute")
 			}
-			if (key == "href" || key == "src" || key == "action" || key == "formaction") && v != "" &&
+			if appAttrs[key] && v != "" &&
 				!(strings.HasPrefix(v, "/") && !strings.HasPrefix(v, "//")) && !strings.HasPrefix(v, "#") {
 				add("address that is not of this app", key, v)
 			}
@@ -240,7 +279,7 @@ func inspectPage(html string, allowed []string, mayDecide bool) []string {
 			}
 			if !mayDecide && (key == "id" || key == "name" || key == "class" || key == "action" || key == "formaction" ||
 				key == "href" || key == "value" || key == "for" || strings.HasPrefix(key, "data-") || strings.HasPrefix(key, "aria-")) &&
-				key != "data-rp-name" && decideWords.MatchString(v) {
+				key != "data-rp-name" && !chatLink && decideWords.MatchString(v) {
 				add("attribute that looks like deciding", key, v)
 			}
 		}
@@ -289,10 +328,27 @@ func mentionsDeciding(js string) bool {
 	return decidingRe.MatchString(strings.ReplaceAll(js, watchBanner, ""))
 }
 
+// checkProblemLinks holds problem pages to their own inventory: the way back,
+// and a same-document GET only when the failed read can be retried.
+func checkProblemLinks(t *testing.T, page string, retry bool) {
+	t.Helper()
+	allowed := []string{"a#back"}
+	if retry {
+		allowed = append(allowed, "a#retry")
+	}
+	if strings.Contains(page, `<a id="retry" href="">Try this page again</a>`) != retry ||
+		!strings.Contains(page, `<a id="back" href="/cards/">`) || strings.Count(page, "<a ") != len(allowed) {
+		t.Errorf("unexpected links on problem page (retry %t): %s", retry, page)
+	}
+	for _, f := range inspectPage(page, allowed, false) {
+		t.Error(f)
+	}
+}
+
 func TestPageInventory(t *testing.T) {
 	// The notifier is a PushPort, so the notices' routes and controls exist;
 	// the daemon runs the interview, so the project pages exist.
-	r := newRig(t, withPush(&fakePush{}), withGenesis(&fakeGenesis{}))
+	r := newRig(t, withPush(&fakePush{}), withGenesis(&fakeGenesis{}), withChat(sampleChat()))
 	session := r.login(t)
 	for _, e := range inventory {
 		if !strings.HasPrefix(e.pattern, "GET ") {
@@ -330,11 +386,26 @@ func TestPageInventory(t *testing.T) {
 		body := w.Body.String()
 		switch e.kind {
 		case "page":
+			// No number, date, address or email address in a lead's text, a
+			// card or a project becomes a link the browser made.
+			if strings.Count(body, `<meta name="format-detection" content="telephone=no, date=no, address=no, email=no">`) != 1 ||
+				strings.Count(body, `name="format-detection"`) != 1 {
+				t.Errorf("%s: automatic telephone, date, address or email links are enabled", e.pattern)
+			}
 			if ct := w.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
 				t.Errorf("%s: content type %q", e.pattern, ct)
 			}
 			for _, f := range inspectPage(body, e.controls, deciders[e.pattern]) {
 				t.Errorf("%s: %s", e.pattern, f)
+			}
+			// A page behind a session has the main navigation; a public
+			// page has none, and no skip link.
+			if e.authed {
+				for _, f := range checkNav(body) {
+					t.Errorf("%s: %s", e.pattern, f)
+				}
+			} else if hasNav(body) {
+				t.Errorf("%s: a public page with the main navigation", e.pattern)
 			}
 			// A decider is listed because it holds the form: the
 			// inventory's page shows it.
@@ -349,9 +420,13 @@ func TestPageInventory(t *testing.T) {
 					}
 				}
 			} else {
-				for _, p := range []string{"/static/push.js", "/manifest.webmanifest", "apple-touch-icon", "notices"} {
-					if strings.Contains(body, p) {
-						t.Errorf("%s: holds %q, which only the card list may", e.pattern, p)
+				elements, err := pageElements(body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, el := range elements {
+					if el.attrs["src"] == "/static/push.js" || el.attrs["href"] == "/manifest.webmanifest" || el.attrs["rel"] == "apple-touch-icon" || strings.Contains(el.attrs["id"], "notices") {
+						t.Errorf("%s: a notices control or asset outside Cards", e.pattern)
 					}
 				}
 			}
@@ -421,6 +496,51 @@ func TestInspectPageSeesWhatItLooksFor(t *testing.T) {
 	// A page that may decide is not held to the words, only to the rest.
 	if f := inspectPage(`<button id="start" name="approve" type="button">x</button><script src="/static/decide.js"></script>`, []string{"button#start"}, true); len(f) != 0 {
 		t.Errorf("a decider: %v", f)
+	}
+}
+
+// TestInspectPageSeesEveryAddress: the check reads every attribute that
+// carries an address, and a meta element's content, and refuses a meta
+// element with http-equiv. Each page below holds only elements the check
+// allows, so the one finding is the address's or the meta's.
+func TestInspectPageSeesEveryAddress(t *testing.T) {
+	allowed := []string{"a"}
+	for _, clean := range []string{
+		`<a href="/cards/">x</a>`,
+		`<meta name="viewport" content="width=device-width, initial-scale=1">`,
+		`<meta name="format-detection" content="telephone=no, date=no, address=no, email=no">`,
+		`<meta name="color-scheme" content="light dark">`,
+		`<blockquote cite="/cards/">x</blockquote>`,
+	} {
+		if f := inspectPage(clean, allowed, false); len(f) != 0 {
+			t.Errorf("%s: %v", clean, f)
+		}
+	}
+	for _, c := range []struct{ page, want string }{
+		{`<a ping="https://example.com/x">x</a>`, "unsafe address ping"},
+		{`<a href="/cards/" ping="//elsewhere/x">x</a>`, "unsafe address ping"},
+		{`<a href="/cards/" ping="beacon">x</a>`, "address that is not of this app ping"},
+		{`<body background="https://example.com/b.png"><p>x</p></body>`, "unsafe address background"},
+		{`<table background="//elsewhere/b.png"></table>`, "unsafe address background"},
+		{`<blockquote cite="https://example.com/q">x</blockquote>`, "unsafe address cite"},
+		{`<q cite="javascript:x()">x</q>`, "unsafe address cite"},
+		{`<html manifest="https://example.com/app.appcache"></html>`, "unsafe address manifest"},
+		{`<html manifest="app.appcache"></html>`, "address that is not of this app manifest"},
+		{`<meta name="x" content="https://example.com/">`, "unsafe address content"},
+		{`<meta property="og:image" content="//elsewhere/i.png">`, "unsafe address content"},
+		{`<meta http-equiv="refresh" content="0;url=//elsewhere">`, "meta http-equiv refresh"},
+		{`<meta http-equiv="refresh" content="0;url=//elsewhere">`, "unsafe address content"},
+		{`<meta http-equiv="refresh" content="5">`, "meta http-equiv refresh"},
+		{`<meta http-equiv="Content-Security-Policy" content="default-src *">`, "meta http-equiv Content-Security-Policy"},
+	} {
+		f := inspectPage(c.page, allowed, false)
+		found := false
+		for _, line := range f {
+			found = found || strings.HasPrefix(line, c.want)
+		}
+		if !found {
+			t.Errorf("%s: no finding %q in %v", c.page, c.want, f)
+		}
 	}
 }
 
@@ -508,7 +628,7 @@ func TestProjectPagesInEveryState(t *testing.T) {
 	sum := sampleSummary()
 	g.set(GenesisVerbRound, &sum, nil)
 	body := r.getWith("/projects/"+testThread+"?reset=3&note=changed", s).Body.String()
-	for _, f := range inspectPage(body, []string{"a", "form#finish", "button#finish-go", "a#project-list", "a#discard-link", "a#see-plan", "button#logout"}, false) {
+	for _, f := range inspectPage(body, withNav("a", "form#finish", "button#finish-go", "a#project-list", "a#discard-link", "a#see-plan", "button#logout"), false) {
 		t.Errorf("the summary: %s", f)
 	}
 	checkForms(t, "the summary", body)
@@ -516,11 +636,11 @@ func TestProjectPagesInEveryState(t *testing.T) {
 	fin.State, fin.Digest = GenesisStateFinished, strings.Repeat("ab", 32)
 	g.set(GenesisVerbRound, &fin, nil)
 	body = r.getWith("/projects/"+testThread+"?note=done", s).Body.String()
-	for _, f := range inspectPage(body, []string{"a#project-list", "a#see-plan", "button#logout"}, false) {
+	for _, f := range inspectPage(body, withNav("a#project-list", "a#see-plan", "button#logout"), false) {
 		t.Errorf("the finished page: %s", f)
 	}
 	body = r.getWith("/projects/?note=open", s).Body.String()
-	for _, f := range inspectPage(body, []string{"a", "a#back", "button#logout", "form#start-project", "button#start-project-go"}, false) {
+	for _, f := range inspectPage(body, withNav("a", "a#back", "button#logout", "form#start-project", "button#start-project-go"), false) {
 		t.Errorf("the project list: %s", f)
 	}
 	// The rule sees a form that is not a plain post to a project route.

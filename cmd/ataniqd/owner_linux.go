@@ -77,7 +77,9 @@ of the socket is a seat.
                     interview, whose threads it keeps one file each in
                     owner/genesis/ of the state folder (a folder it makes,
                     mode 0700; it refuses a link, a folder that is not the
-                    daemon user's and one open to writing). With the seat
+                    daemon user's and one open to writing). In the phone
+                    trial alone (--trial, below) it also serves the seat's
+                    lead pages from STAND-IN samples. With the seat
                     origin in the
                     owner-local file ataniq/owner-local/seat-origin of the
                     configuration folder (https:// and a lower-case domain
@@ -136,7 +138,11 @@ tries the phone end to end without a lead, a mirror or a sandbox:
                     without --trial and other settings with it, and a state or
                     runtime folder that is, lies inside or contains a default
                     folder of the account (so give --runtime-dir), and prints a
-                    TRIAL line after the STAND-IN banner at start.
+                    TRIAL line after the STAND-IN banner at start. With
+                    --seat-gate the trial's gate also serves the seat's lead
+                    pages (the capability chat, read only) from STAND-IN
+                    sample leads and conversations held in memory: no lead is
+                    read or reached, and no other gate serves chat.
   trial submit      ask the trial daemon on the socket (default the runtime
                     folder's daemon.sock) for N sample cards (1 to 10, default
                     1) of a kind: finish, a sample feature finish, or branch-prune,
@@ -248,6 +254,10 @@ func (a *app) ownerRun(o *ownerFlags, cfg *leaddaemon.Config) (code int) {
 			return code
 		}
 		gate = g
+		// The phone trial's gate, and no other, serves the STAND-IN chat.
+		if trial != nil {
+			trialChat(gate)
+		}
 	}
 	oc := &leaddaemon.OwnerChannel{
 		Build: withSeatGate(gate, func() (leaddaemon.OwnerService, func() error, error) {
