@@ -2132,7 +2132,7 @@ The seat link (`seatlink.Daemon.Genesis`, the app's `seatapp.Genesis` port)
 calls `seat.genesis` only when the hello lists `genesis`; otherwise every call
 is "not offered" and nothing is sent, and the phone shows no "New project". The
 link holds each call to the wire's form with the wire's encoder before it is
-sent, maps the seven genesis codes to the app's errors (and `rate-limited`,
+sent, maps the nine genesis codes to the app's errors (and `rate-limited`,
 `busy` and `too-many-refusals` to "busy", `unknown-op` to "not offered"), and
 takes an answer only when it is one the verb answers, of the thread called,
 with every count and length checked again. Each call has the room of the
@@ -2150,7 +2150,20 @@ answer is kept only when no call that changes threads began or ended while it
 was asked (a generation taken before the read is sent, which each such call
 moves on as it starts and as it ends), so a read that overlapped a change,
 even one that began after the change was sent and came back before it, is
-never kept; the change's own answer is kept when nothing else changed. A summary's rows get their questions, for a change, from
+never kept; the change's own answer is kept when nothing else changed. A
+`plan` is one call of the room, and the link keeps its answer, under the same
+generation rule, for the thread: a preview (`stored: false`) for 10 seconds,
+as a round, and forgotten by every call that changes the thread (`answer`,
+`change`, `finish`, `discard`), whatever its answer; the plan the host stored
+at finish (`stored: true`), which never changes, with its digest for 5
+minutes, through those calls (only `genesis-unknown-thread` forgets it). A
+finish keeps nothing of the plan: the next `plan` reads the stored one. The
+link converts a plan to the app's own view (`seatapp.GenesisPlanView`) and
+checks it again against the app's copies of the plan record's caps and closed
+lists (a test holds them equal to the wire's); a plan past them is not shown.
+It carries `plan_ready` of every result into the app's view (`PlanReady`).
+`genesis-not-ready` and `genesis-no-template` are the app's
+`ErrGenesisNotReady` and `ErrGenesisNoTemplate`. A summary's rows get their questions, for a change, from
 the catalog the seat's build holds, and only when the thread's catalog digest is
 that catalog's; under another catalog the row offers no change.
 
