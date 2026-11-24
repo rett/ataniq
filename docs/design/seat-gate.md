@@ -1223,9 +1223,8 @@ or not. Then the seat:
   Card page whose read of the daemon began after the answer was lost. A
   `HEAD` is no read, and a GET made while the decision is in flight, or
   whose read began before the mark, may show the card as it was before the
-  decision, so its page holds no form, says "A decision of this card was
-  sent and its outcome is not known. Look at it again." and leaves the
-  mark. While it stands, a tap is refused without asking the daemon);
+  decision, so its page holds no form, says "The decision was sent. Its outcome is still unknown.", offers a
+  "Look again" link to the same Card page and leaves the mark. While it stands, a tap is refused without asking the daemon);
 - shows "Decision sent. Outcome unknown." and offers only "Look again", the
   Card page read afresh;
 - on "Look again", once the gate is back, reads the same card with
@@ -1289,9 +1288,9 @@ script): "Cards" (`/cards/`) and, while new projects are offered,
 Card page and a path page, "Projects" on the project pages and the plan
 page. A "Skip to content" link comes first in the body, out of sight until it
 has the focus, and leads to the content, `<main id="content">`; so Tab goes
-from the skip link to the navigation and then to the page. The titles, the
-headings and the landmarks (`header`, `nav`, `main`) are otherwise
-unchanged, and a page's own links (back to the cards, a project's own
+from the skip link to the navigation and then to the page. The Card title names its ID,
+the path-list title names the page number, page count and Card ID, and the
+interview title names the round and round count. A page's own links (back to the cards, a project's own
 navigation, the path pages) stay where they were. The navigation adds no
 logout control: the logout button stays on the pages that had it, and the plan
 page keeps no script, no form and no button, its two links and the
@@ -1306,8 +1305,9 @@ list's last answer, which the seat keeps in memory (a restart forgets it, and
 ends every session with it). So no page makes a call of the gate for the
 navigation. A public page (the status page, pairing, login) and a problem page
 have no navigation, no skip link and no `aria-current`: they are made without
-a session, or without knowing of one, and a problem page keeps its one "Back
-to the cards" link. The page inventory and `nav_test.go` hold every page to
+a session, or without knowing of one, and every problem page links back to the cards. A retryable GET
+(busy, unreachable, changed during the read or rate-limited) also offers
+"Try this page again", a fresh read of the same address. The page inventory and `nav_test.go` hold every page to
 this.
 
 On a phone the navigation is a compact bar at the top, in the header above its
@@ -1323,7 +1323,8 @@ browser, a tablet across), and only on the pages with the navigation (the
 layout gives their body the class `nav-page`), the style sheet makes the
 header a rail on the left, 14rem wide, that stays in place while the page
 scrolls (`position: sticky`), with the links one under the other and the
-current one marked by a bar at its left. The content is a column beside it, at
+current one marked by a bar at its left. The rail fits the visible viewport
+and scrolls vertically when the links need more room. The content is a column beside it, at
 most 44rem wide for reading (a card, a project page, the plan) and 60rem for a
 list (the card list, the project list: a page whose content holds a list of
 cards, by `:has(.cards)`; a browser without `:has` keeps it at 44rem). The

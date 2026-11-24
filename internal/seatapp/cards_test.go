@@ -279,9 +279,7 @@ func TestSeatReadErrors(t *testing.T) {
 				t.Errorf("%v, %s: %d", tc.err, path, w.Code)
 			}
 			checkHeaders(t, path, w)
-			for _, f := range inspectPage(body, []string{"a#back"}, false) {
-				t.Errorf("%v, %s: %s", tc.err, path, f)
-			}
+			checkProblemLinks(t, body, tc.err == ErrBusy || tc.err == ErrDaemonUnavailable || tc.err == ErrCardChanged)
 		}
 	}
 }
@@ -356,6 +354,7 @@ func TestSeatReadsAreBounded(t *testing.T) {
 	if w.Code != http.StatusTooManyRequests || !strings.Contains(w.Body.String(), "Wait a minute") {
 		t.Errorf("past the bound: %d", w.Code)
 	}
+	checkProblemLinks(t, w.Body.String(), true)
 	if n := r.daemon.readCount(); n != readRequests {
 		t.Errorf("the daemon was asked %d reads", n)
 	}

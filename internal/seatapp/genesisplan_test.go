@@ -369,6 +369,7 @@ func TestGenesisPlanPageProblems(t *testing.T) {
 		r, g, s := genesisRig(t)
 		g.set(GenesisVerbPlan, nil, c.err)
 		w := r.getWith(planPath, s)
+		checkProblemLinks(t, w.Body.String(), c.err == ErrBusy || c.err == ErrDaemonUnavailable)
 		if w.Code != c.status || !strings.Contains(w.Body.String(), c.words) || strings.Contains(w.Body.String(), "MARKER") {
 			t.Errorf("%v: %d", c.err, w.Code)
 		}

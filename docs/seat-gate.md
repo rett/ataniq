@@ -464,7 +464,10 @@ writes it (see [The reverse proxy](#the-reverse-proxy)).
 
 When the daemon's gate lists `genesis` (its start line ends in `... watch and
 genesis`), the card list on the phone has a "New project" button and lists the
-projects in progress. Nothing is configured for it on either host.
+projects in progress. Open "Projects" for the project list. If a page says
+the desk is busy or unreachable, "Try this page again" reads the same page.
+When a Card's decision is still on its way or its outcome is unknown, "Look
+again" reads that Card. Nothing is configured for it on either host.
 
 What "New project" does. It starts a short interview: a few rounds of one to
 three multiple-choice questions about a project you want to make (what kind,

@@ -238,15 +238,15 @@ func planOf(thread string, p *GenesisPlanView) planData {
 func (a *app) planPage(w http.ResponseWriter, r *http.Request, s Session) {
 	thread := r.PathValue("thread")
 	if !ValidThreadID(thread) {
-		a.problem(w, problemNotFound)
+		a.problem(w, r, problemNotFound)
 		return
 	}
 	g, ctx, cancel, err := a.genesisCall(r, s)
 	if err != nil {
 		if errors.Is(err, errTooMany) {
-			a.problem(w, problemTooManyProjects)
+			a.problem(w, r, problemTooManyProjects)
 		} else {
-			a.problem(w, problemGenesisNotOffered)
+			a.problem(w, r, problemGenesisNotOffered)
 		}
 		return
 	}
@@ -264,11 +264,11 @@ func (a *app) planPage(w http.ResponseWriter, r *http.Request, s Session) {
 		a.render(w, "plan", http.StatusConflict, planData{Title: pageTitles["plan"], Heading: "No plan yet", Thread: thread, Tag: thread[:6], Missing: planNoTemplate, Back: backToProject, Nav: projectsNav()})
 		return
 	case err != nil:
-		a.problem(w, genesisProblem(err))
+		a.problem(w, r, genesisProblem(err))
 		return
 	}
 	if v.Thread != thread || v.State != GenesisStatePlan || v.Plan == nil || !validPlan(v.Plan) {
-		a.problem(w, problemFailed)
+		a.problem(w, r, problemFailed)
 		return
 	}
 	a.render(w, "plan", http.StatusOK, planOf(thread, v.Plan))

@@ -358,6 +358,7 @@ type (
 	problemData struct {
 		Title   string
 		Message string
+		Retry   bool
 		Nav     *navView
 	}
 )
@@ -366,7 +367,7 @@ type (
 // It answers the problem and returns false when the bound is met.
 func (a *app) read(w http.ResponseWriter, r *http.Request, s Session) (context.Context, context.CancelFunc, bool) {
 	if !a.reads.allow(s.Credential, a.cfg.Now()) {
-		a.problem(w, problemTooMany)
+		a.problem(w, r, problemTooMany)
 		return nil, nil, false
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), daemonTimeout)
@@ -385,7 +386,7 @@ func (a *app) cardList(w http.ResponseWriter, r *http.Request, s Session) {
 	wp := a.watchVersion()
 	l, err := a.cfg.Daemon.List(ctx)
 	if err != nil {
-		a.problem(w, readProblem(err))
+		a.problem(w, r, readProblem(err))
 		return
 	}
 	d := cardsData{Title: pageTitles["cards"], Now: a.cfg.Now(), Listing: l, Watch: wp, Push: a.push != nil}
@@ -401,7 +402,7 @@ func (a *app) cardList(w http.ResponseWriter, r *http.Request, s Session) {
 func (a *app) cardPage(w http.ResponseWriter, r *http.Request, s Session) {
 	id := r.PathValue("id")
 	if !validCardID(id) {
-		a.problem(w, problemNotFound)
+		a.problem(w, r, problemNotFound)
 		return
 	}
 	ctx, cancel, ok := a.read(w, r, s)
@@ -413,11 +414,11 @@ func (a *app) cardPage(w http.ResponseWriter, r *http.Request, s Session) {
 	wp := a.watchVersion()
 	c, err := a.cfg.Daemon.Show(ctx, id)
 	if err != nil {
-		a.problem(w, readProblem(err))
+		a.problem(w, r, readProblem(err))
 		return
 	}
 	if c.ID != id {
-		a.problem(w, problemFailed)
+		a.problem(w, r, problemFailed)
 		return
 	}
 	now := a.cfg.Now()
@@ -472,7 +473,7 @@ func (a *app) pathsPage(w http.ResponseWriter, r *http.Request, s Session) {
 	id := r.PathValue("id")
 	n, err := strconv.Atoi(r.PathValue("n"))
 	if !validCardID(id) || err != nil || n < 0 || n > maxPage || strconv.Itoa(n) != r.PathValue("n") {
-		a.problem(w, problemNotFound)
+		a.problem(w, r, problemNotFound)
 		return
 	}
 	ctx, cancel, ok := a.read(w, r, s)
@@ -482,11 +483,11 @@ func (a *app) pathsPage(w http.ResponseWriter, r *http.Request, s Session) {
 	defer cancel()
 	p, err := a.cfg.Daemon.Pages(ctx, id, n)
 	if err != nil {
-		a.problem(w, readProblem(err))
+		a.problem(w, r, readProblem(err))
 		return
 	}
 	if p.N != n || p.Pages < 1 || p.N >= p.Pages || p.Review == "" {
-		a.problem(w, problemFailed)
+		a.problem(w, r, problemFailed)
 		return
 	}
 	// A page counts as read only when it showed every path whole, and
@@ -504,6 +505,7 @@ func (a *app) pathsPage(w http.ResponseWriter, r *http.Request, s Session) {
 }
 
 // problem answers a problem page.
-func (a *app) problem(w http.ResponseWriter, p problem) {
-	a.render(w, "problem", p.status, problemData{Title: p.title, Message: p.message})
+func (a *app) problem(w http.ResponseWriter, r *http.Request, p problem) {
+	retry := r.Method == http.MethodGet && (p == problemChanged || p == problemBusy || p == problemUnavailable || p.status == http.StatusTooManyRequests)
+	a.render(w, "problem", p.status, problemData{Title: p.title, Message: p.message, Retry: retry})
 }

@@ -8,7 +8,7 @@
 {{with .Rows}}<dl class="facts">
 {{range .}}<dt>{{text .Label maxLine}}</dt>
 <dd>{{if .OwnersWords}}<q class="owners">{{text .Value maxLine}}</q> <span class="meta">(your own words)</span>{{else}}{{text .Value maxLine}}{{end}}
-{{if .Question}}<br><a href="{{changeHref $.View.Thread .Node}}">Change</a>{{end}}</dd>
+{{if .Question}}<br><a href="{{changeHref $.View.Thread .Node}}" aria-label="Change answer: {{text .Label maxLine}}">Change</a>{{end}}</dd>
 {{end}}</dl>
 {{else}}<p>{{.Empty}}</p>
 {{end}}</section>

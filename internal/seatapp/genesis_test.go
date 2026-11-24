@@ -688,7 +688,7 @@ func TestGenesisSummaryChangeFinishDiscard(t *testing.T) {
 	page := r.getWith("/projects/"+testThread, s).Body.String()
 	for _, want := range []string{"What you chose", "What was decided for you", "Defaults", "None.",
 		`<q class="owners">Go &lt;script&gt;alert(1)&lt;/script&gt;</q> <span class="meta">(your own words)</span>`,
-		`<a href="/projects/` + testThread + `/change/kind">Change</a>`,
+		`<a href="/projects/` + testThread + `/change/kind" aria-label="Change answer: What kind of project is it?">Change</a>`,
 		`<form id="finish" action="/projects/` + testThread + `/finish" method="post">`, "Looks right: finish",
 		`<a id="discard-link" href="/projects/` + testThread + `/discard">Discard this project</a>`} {
 		if !strings.Contains(page, want) {

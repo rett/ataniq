@@ -369,16 +369,16 @@ func (a *app) pageCall(w http.ResponseWriter, r *http.Request, s Session, c Gene
 	g, ctx, cancel, err := a.genesisCall(r, s)
 	if err != nil {
 		if errors.Is(err, errTooMany) {
-			a.problem(w, problemTooManyProjects)
+			a.problem(w, r, problemTooManyProjects)
 		} else {
-			a.problem(w, problemGenesisNotOffered)
+			a.problem(w, r, problemGenesisNotOffered)
 		}
 		return GenesisView{}, false
 	}
 	defer cancel()
 	v, err := g.Genesis(ctx, c)
 	if err != nil {
-		a.problem(w, genesisProblem(err))
+		a.problem(w, r, genesisProblem(err))
 		return GenesisView{}, false
 	}
 	return v, true
@@ -454,7 +454,7 @@ func (a *app) projectList(w http.ResponseWriter, r *http.Request, s Session) {
 		return
 	}
 	if v.State != GenesisStateThreads {
-		a.problem(w, problemFailed)
+		a.problem(w, r, problemFailed)
 		return
 	}
 	part := projectsPart{Threads: openThreads(v.Threads), Listed: true, CanStart: len(v.Threads) < MaxGenesisThreads}
@@ -490,7 +490,7 @@ func resetOf(r *http.Request) int {
 func (a *app) projectPage(w http.ResponseWriter, r *http.Request, s Session) {
 	thread := r.PathValue("thread")
 	if !ValidThreadID(thread) {
-		a.problem(w, problemNotFound)
+		a.problem(w, r, problemNotFound)
 		return
 	}
 	v, ok := a.pageCall(w, r, s, GenesisCall{Verb: GenesisVerbRound, Thread: thread})
@@ -498,7 +498,7 @@ func (a *app) projectPage(w http.ResponseWriter, r *http.Request, s Session) {
 		return
 	}
 	if v.Thread != thread {
-		a.problem(w, problemFailed)
+		a.problem(w, r, problemFailed)
 		return
 	}
 	note, reset := noteOf(r), resetOf(r)
@@ -512,7 +512,7 @@ func (a *app) projectPage(w http.ResponseWriter, r *http.Request, s Session) {
 			d.Questions = append(d.Questions, questionView{I: i, Multi: q.Type == GenesisTypeMulti, Q: q})
 		}
 		if len(d.Questions) == 0 {
-			a.problem(w, problemFailed)
+			a.problem(w, r, problemFailed)
 			return
 		}
 		a.render(w, "question", http.StatusOK, d)
@@ -521,7 +521,7 @@ func (a *app) projectPage(w http.ResponseWriter, r *http.Request, s Session) {
 	case GenesisStateFinished:
 		a.render(w, "finished", http.StatusOK, summaryData{Title: pageTitles["finished"], Note: note, View: v, Groups: groupsOf(v), Nav: projectsNav()})
 	default:
-		a.problem(w, problemFailed)
+		a.problem(w, r, problemFailed)
 	}
 }
 
@@ -539,7 +539,7 @@ func groupsOf(v GenesisView) []rowGroup {
 func (a *app) changePage(w http.ResponseWriter, r *http.Request, s Session) {
 	thread, node := r.PathValue("thread"), r.PathValue("node")
 	if !ValidThreadID(thread) || !validNodeID(node) {
-		a.problem(w, problemNotFound)
+		a.problem(w, r, problemNotFound)
 		return
 	}
 	v, ok := a.pageCall(w, r, s, GenesisCall{Verb: GenesisVerbSummary, Thread: thread})
@@ -547,7 +547,7 @@ func (a *app) changePage(w http.ResponseWriter, r *http.Request, s Session) {
 		return
 	}
 	if v.Thread != thread {
-		a.problem(w, problemFailed)
+		a.problem(w, r, problemFailed)
 		return
 	}
 	if v.State == GenesisStateFinished {
@@ -560,7 +560,7 @@ func (a *app) changePage(w http.ResponseWriter, r *http.Request, s Session) {
 				continue
 			}
 			if row.Question == nil || row.Question.ID != node {
-				a.problem(w, problemNoChange)
+				a.problem(w, r, problemNoChange)
 				return
 			}
 			q := *row.Question
@@ -569,7 +569,7 @@ func (a *app) changePage(w http.ResponseWriter, r *http.Request, s Session) {
 			return
 		}
 	}
-	a.problem(w, problemNoChange)
+	a.problem(w, r, problemNoChange)
 }
 
 // discardPage answers GET /projects/{thread}/discard: the step that asks
@@ -577,15 +577,15 @@ func (a *app) changePage(w http.ResponseWriter, r *http.Request, s Session) {
 func (a *app) discardPage(w http.ResponseWriter, r *http.Request, s Session) {
 	thread := r.PathValue("thread")
 	if !ValidThreadID(thread) {
-		a.problem(w, problemNotFound)
+		a.problem(w, r, problemNotFound)
 		return
 	}
 	if _, ok := a.genesisPort(); !ok {
-		a.problem(w, problemGenesisNotOffered)
+		a.problem(w, r, problemGenesisNotOffered)
 		return
 	}
 	if !a.genesisAllow(s.Credential) {
-		a.problem(w, problemTooManyProjects)
+		a.problem(w, r, problemTooManyProjects)
 		return
 	}
 	a.render(w, "discard", http.StatusOK, discardData{Title: pageTitles["discard"], Thread: thread, Nav: projectsNav()})
