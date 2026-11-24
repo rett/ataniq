@@ -503,8 +503,9 @@ looks like a password or key. ..."), and the page never shows it back.
 What it costs. The pages are plain pages with forms, and each answer is one call
 of the gate. The seat keeps 12 calls in 80 seconds of the gate's rate for them;
 answering a round every 5 seconds stays inside it, because an answer and the
-page after it are one call. Opening the plan page is one call; reopening a
-draft within 10 seconds, or the kept plan within 5 minutes, is none. Past it the page says
+page after it are one call. Opening the plan page is one call (two when no plan can be drawn yet, since the
+thread's round is read too); reopening a draft within 10 seconds, or the kept
+plan within 5 minutes, is none. Past it the page says
 "The desk is busy. Try again in a minute." and nothing is sent.
 
 ## Notices

@@ -2244,6 +2244,13 @@ allows nothing."), it holds no control and no link (no Approve, no Sign, no
 passkey, nothing into the card list's pending cards), and it is on the plan
 page alone: never on the card list, a card, a notice or another project page.
 
+The verb `plan` and the `plan_ready` member of a result have no capability of
+their own: they ride on `genesis`, so the seat and the daemon of a build are
+deployed together. A daemon older than the seat answers `plan` with
+`bad-params` (the page says something went wrong), and a seat older than the
+daemon refuses a result that carries `plan_ready` as one it does not
+understand.
+
 A plan that is not ready (`genesis-not-ready`) is a page of fixed words, "No
 plan can be drawn yet: some answers are missing."; only then is the thread's
 round read too, and a finished thread's page says instead "This project was
