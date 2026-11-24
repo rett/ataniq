@@ -163,7 +163,26 @@ func (l *lab) checkout(c string) {
 // publish makes ref in the bare repository point at the commit.
 func (l *lab) publish(ref, commit string) {
 	l.t.Helper()
-	l.w("push", "--quiet", "--force", l.bare, commit+":"+ref)
+	l.pushInto(l.bare, commit+":"+ref, "--force")
+}
+
+// pushInto pushes refspec from the work repository into the bare repository
+// at bare, with the flags given, and leaves nothing running when it returns.
+//
+// A push ends with the receive-pack on the other side starting "git
+// maintenance run --auto" in the background. That takes
+// objects/maintenance.lock, is still running when the push returns, and
+// ends some milliseconds later, under load a good deal later: a lock file
+// and a changed mtime of objects/ in a repository that a test of the code
+// under test expects to find still. The settings that would stop it
+// (receive.autogc, gc.auto, maintenance.auto) do not reach it from the
+// environment, which git cleans for a local push, so the receive-pack is
+// started by hand with the one it reads.
+func (l *lab) pushInto(bare, refspec string, flags ...string) {
+	l.t.Helper()
+	args := []string{"push", "--quiet", "--receive-pack='" + l.git.Path + "' -c receive.autogc=false receive-pack"}
+	args = append(args, flags...)
+	l.w(append(args, bare, refspec)...)
 }
 
 // scene is a bare repository with an upstream branch at base and a lead

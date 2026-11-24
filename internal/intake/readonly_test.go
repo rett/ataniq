@@ -34,12 +34,39 @@ func snapshot(t *testing.T, s *scene) string {
 	return b.String()
 }
 
+// snapshotDiff lists the lines of two snapshots that are not in the other,
+// by their place: a file that changed shows as its old line and its new.
+func snapshotDiff(before, after string) string {
+	count := func(s string) map[string]int {
+		m := map[string]int{}
+		for _, l := range strings.Split(s, "\n") {
+			m[l]++
+		}
+		return m
+	}
+	b, a := count(before), count(after)
+	var out strings.Builder
+	for _, l := range strings.Split(before, "\n") {
+		if b[l] > a[l] {
+			fmt.Fprintf(&out, "- %s\n", l)
+			b[l]--
+		}
+	}
+	for _, l := range strings.Split(after, "\n") {
+		if a[l] > b[l] {
+			fmt.Fprintf(&out, "+ %s\n", l)
+			a[l]--
+		}
+	}
+	return out.String()
+}
+
 // assertUntouched fails when the repository changed since before was taken,
 // or when an index file or a work tree appeared.
 func assertUntouched(t *testing.T, s *scene, before string) {
 	t.Helper()
 	if after := snapshot(t, s); after != before {
-		t.Errorf("the repository changed:\nbefore:\n%s\nafter:\n%s", before, after)
+		t.Errorf("the repository changed; the difference (- before, + after):\n%s\nbefore:\n%s\nafter:\n%s", snapshotDiff(before, after), before, after)
 	}
 	for _, name := range []string{"index", "index.lock", "FETCH_HEAD", "ORIG_HEAD", "MERGE_HEAD"} {
 		if _, err := os.Lstat(filepath.Join(s.bare, name)); err == nil {
