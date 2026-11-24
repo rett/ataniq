@@ -1108,7 +1108,8 @@ never removed: it waits, and counts toward the 32.
 (a tab, a carriage return, a control or format character, invalid UTF-8) or
 that is over 2000 bytes is dropped, never cut. A reply that looks like a key, a
 token or a full commit id (any bare word of exactly 40 or 64 hexadecimal
-digits, all digits and all letters included) is not stored: the entry reads "A reply was
+digits, all digits and all letters included) is not stored: the entry reads "A
+reply was
 withheld: it looked like a key, a token or a full commit id." Ask leads for
 short commit ids. For drops the owner sees one fixed line per reason a minute,
 and never the dropped text.

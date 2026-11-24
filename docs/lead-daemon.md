@@ -850,12 +850,14 @@ be used, its head and counts, never a reply's text); `chat.set` (`key`,
 `chat`) sets a lead's switch to `off` or `read` at once and answers its row; and
 `chat.purge` (`key`) removes what it can of the lead's quarantine, where each
 turn-on sets the earlier reply folder aside, only while the lead is proven
-stopped, and answers `{"key","removed","left","free"}`. The switch lives in memory, so **every lead is off whenever the
+stopped, and answers `{"key","removed","left","free"}`. The switch lives in
+memory, so **every lead is off whenever the
 daemon starts**. `chat.set` adds the error codes `chat-send-not-built` (for
 `send`), `chat-key-unrepresentable` (for a key longer than a seat's lead
 identifier holds, 32 bytes) and `chat-quarantine-full` (a turn-on needs one of
 the quarantine's four names free), `chat.purge` adds `chat-lead-not-stopped`
-(a lead that runs, starts or stops, or has a command in progress), and both use `refused`, `unavailable` and
+(a lead that runs, starts or stops, or has a command in progress), and both use
+`refused`, `unavailable` and
 `invalid-request` as the canary's operations do. None is served by the seat
 gate, and a client's check of the six lead operations does not count them.
 `ataniqd chat list --config CONFIG`, `ataniqd chat set KEY off|read --config

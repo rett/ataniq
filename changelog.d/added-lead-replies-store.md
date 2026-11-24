@@ -17,7 +17,8 @@
   8 MiB, locked and checked by handle, that replays after every compaction)
   that stores each claim at most once in a conversation, drops text that is
   not plain or too long, withholds text shaped like a key, a token or a full
-  commit id (any bare word of 40 or 64 hexadecimal digits), keeps 500 entries or 14 days, and has a per-lead switch `off` or
+  commit id (any bare word of 40 or 64 hexadecimal digits), keeps 500 entries or
+  14 days, and has a per-lead switch `off` or
   `read` that, when turned on, makes a fresh outbox (mode 0700) in a private
   staging folder (`<state root>/leads/<layout role>/staging`), holds it open
   and proves with a probe there that the file system can claim, sets the

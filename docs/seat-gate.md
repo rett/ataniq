@@ -444,7 +444,8 @@ without one (while the Leads pages shared the reads, a conversation refreshed
 once in 10 seconds left almost half of them "busy"); the conversation's own
 refreshes are "busy" instead, more than half of them when refreshed that
 often, and none once in 30 seconds. Opening Leads, selecting a lead and
-refreshing it once is never "busy" when you do it once in 80 seconds. An idle seat sends one wait about every 25 seconds. A page's poll is not
+refreshing it once is never "busy" when you do it once in 80 seconds. An idle
+seat sends one wait about every 25 seconds. A page's poll is not
 a request that keeps the session alive: a session still ends 30 minutes after
 the last page you loaded or tap you made, however long a page stays open.
 
@@ -505,7 +506,8 @@ through the retained history. **Jump to newest** shows the most recent
 messages again and goes to the latest one. **Refresh** asks for the recent window again. Each Leads page is one or
 two calls of the desk, and they have a room of their own, 6 calls in 80
 seconds, apart from the card lists' reads (see [What it costs](#live-refresh)):
-opening Leads, selecting a lead and one refresh, with a call to spare. Past it the page says "The desk is busy. Try
+opening Leads, selecting a lead and one refresh, with a call to spare. Past it
+the page says "The desk is busy. Try
 again in a minute.", and the card lists lose nothing to it. The seat reuses only the trial's sample
 data, which never changes: its directory for 20 seconds and a transcript page
 for 10 seconds. A real lead's directory and transcript are read again for

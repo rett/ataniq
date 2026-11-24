@@ -20,7 +20,8 @@
   puts back an owner's version saved meanwhile, never over the owner's own
   text, and deletes no owner's version: one an upgrade displaced or a crash
   left is kept beside the file as `instructions.md.displaced-N`, which the
-  daemon reports in its log and never deletes; neither touches the reply folder (`/home/lead/.ataniq-replies`), which
+  daemon reports in its log and never deletes; neither touches the reply folder
+  (`/home/lead/.ataniq-replies`), which
   each turn-on of the chat makes afresh. The instructions say that Cards are
   the only path of an approval and a chat message grants no authority, that
   the daemon makes a fresh folder at each turn-on, and that a full folder or
