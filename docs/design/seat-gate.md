@@ -1950,7 +1950,8 @@ with no page open (`TestSeatLeadsStreamIsNoCheckIn`,
 
 The pages. `/leads/` and `/leads/daemon/{key}` carry the template part
 `watch-leads`: the polite status line (`role="status"`, `aria-live="polite"`,
-the page's one live region; the conversation's log keeps none) and a mark
+the page's one live region, implicit roles counted: the conversation's log
+is a plain list and a reset's notice plain text, `liveRegions`) and a mark
 `data-view="leads"` with the cursor (`data-chat`), the page
 (`data-page`, `directory` or `conversation`) and, for a conversation whose
 read reached the head (the port answered no `more`), `data-follow`, the
@@ -2039,10 +2040,19 @@ following read waits until its page is 40 seconds old: 2 calls every 40
 seconds are 4 in any 80, which leaves one of chat's 5 to spare in the
 steady state; the first following read after opening Leads and selecting
 the lead (3 calls) still fits, with none to spare. A reply then appears
-within about 40 seconds of the last one shown. A second conversation
-following at once, or taps beside it, can still meet chat's busy page, as
-by hand; the Card lists lose nothing to it either way. The directory and an
-offer read nothing until the owner taps.
+within about 40 seconds of the last one shown. One continuously following
+conversation is what the room is sized for. A refresh by hand beside it
+(2 more calls), a second tab following a conversation (2 more every 40
+seconds: 8 in 80 with the first), or a conversation's own address that
+read on toward the head (up to 4 calls, `newestReads`) can meet chat's busy
+page; the room is shared by every session of the seat. Since the directory
+is read first, a page can spend its first call and meet busy at the second.
+A known limit, kept for simplicity: a following read is an ordinary
+navigation, so one that meets busy replaces the conversation with the busy
+page (which offers to try again), and the page follows no more until the
+owner reads it again; the 40-second gap keeps a single following
+conversation clear of it. The Card lists lose nothing to it either way. The
+directory and an offer read nothing until the owner taps.
 
 The trial's stand-in has a fixed cursor (its samples never change), so its
 Leads pages open a live stream that never carries an event: the trial shows
@@ -3578,10 +3588,12 @@ sequence returned even on a short page. The earlier link (Show earlier) reads
 one window back, after N minus 16, floored at zero, whichever way the page was
 reached, so it needs no memory of the pages before. The page's heading is
 "Lead KEY" alone, and the lead's state is the line under it. The transcript is
-a list with `role="log"`, and no `aria-live`: the log is made once and never
-changes while the page is open (a reader is not to announce it as it loads);
-new replies come by a new read of the page, and the one live region is the
-hint stream's polite status line. The
+a plain ordered list, labelled by the Conversation heading, with no
+`aria-live` and no `role="log"` (whose live behaviour is implicit): the log
+is made once and never changes while the page is open (a reader is not to
+announce it as it loads); new replies come by a new read of the page, and
+the one live region is the hint stream's polite status line. A reset's
+notice is plain text for the same reason. The
 log marks the last entry as newest (`id="newest"`, with `tabindex="-1"`, so a
 link to `#newest` moves the focus there as well as the view; an empty page's
 line takes the id). When the head lies beyond the page, Jump to newest goes to

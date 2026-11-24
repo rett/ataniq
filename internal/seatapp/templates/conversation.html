@@ -21,10 +21,10 @@
     </p>
     {{template "watch-leads" .Watch}}
 
-    {{if .Reset}}<p class="note-line" role="status">This page starts again from the oldest kept message.</p>{{end}}
+    {{if .Reset}}<p class="note-line">This page starts again from the oldest kept message.</p>{{end}}
     {{if .Restarted}}<p class="chat-epoch"><strong>Lead restarted: epoch {{num .Epoch}}</strong></p>{{end}}
 
-    <ol class="chat-log" role="log" aria-labelledby="conversation-h">
+    <ol class="chat-log" aria-labelledby="conversation-h">
       {{range .Messages}}<li{{if .Last}} id="newest" tabindex="-1"{{end}}>
         <p class="chat-byline">
           <strong>{{if eq .Who "lead"}}Lead{{else}}System{{end}}</strong>

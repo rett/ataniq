@@ -188,19 +188,20 @@ func TestChatPages(t *testing.T) {
 			}
 		}
 		// The one script is the live refresh's, after its status line,
-		// the one live region of the page.
+		// the one live region of the page, implicit roles counted.
 		const line = `<p id="watch-status" role="status" aria-live="polite"></p>`
 		if strings.Count(body, "<script") != 1 || strings.Count(body, `<script src="/static/watch.js"></script>`) != 1 ||
-			strings.Count(body, line) != 1 || strings.Count(body, "aria-live") != 1 ||
+			strings.Count(body, line) != 1 || liveRegions(body) != 1 ||
 			strings.Index(body, line) > strings.Index(body, `<script src="/static/watch.js"></script>`) {
 			t.Error("the Leads page's script or status line")
 		}
 		if path != "/leads/" {
 			// The heading names the lead alone; the state is the line
-			// under it. The log is a static list: no live region.
-			// The one live region is the stream's status line (above).
+			// under it. The log is a static list: no live region, and no
+			// role="log", whose live behaviour is implicit. The one live
+			// region is the stream's status line (above).
 			if !regexp.MustCompile(`<h1>Lead <bdi>alpha</bdi></h1>\s*<p class="chat-state">The lead is running.</p>`).MatchString(body) ||
-				!strings.Contains(body, `<ol class="chat-log" role="log" aria-labelledby="conversation-h">`) ||
+				!strings.Contains(body, `<ol class="chat-log" aria-labelledby="conversation-h">`) ||
 				strings.Contains(regexp.MustCompile(`(?s)<ol class="chat-log".*?</ol>`).FindString(body), "aria-live") ||
 				strings.Contains(body, "aria-relevant") || strings.Contains(body, "aria-atomic") {
 				t.Error("the conversation's heading or log")
@@ -611,6 +612,11 @@ func TestChatPagingHistory(t *testing.T) {
 	if strings.Count(reset, "This page starts again from the oldest kept message.") != 1 || strings.Contains(reset, "no longer kept") || strings.Contains(reset, "Show earlier") || strings.Contains(reset, "Lead restarted:") {
 		t.Error("reset")
 	}
+	// The reset's notice is static text: the status line stays the page's
+	// one live region.
+	if n := liveRegions(reset); n != 1 {
+		t.Errorf("a reset page has %d live regions", n)
+	}
 	f.read.Reset = false
 	f.read.More = false
 	f.read.Entries = []ChatEntry{}
@@ -753,6 +759,22 @@ func TestChatOwnAddressIsTheNewest(t *testing.T) {
 			t.Errorf("another epoch on the way: %d", w.Code)
 		}
 	})
+}
+
+// liveRegionRole is the roles whose live behaviour is implicit (WAI-ARIA:
+// log, status, alert, marquee and timer); an output element is a status.
+var liveRegionRole = regexp.MustCompile(`\brole="(log|status|alert|marquee|timer)"`)
+
+// liveRegions counts the elements of page that are live regions: an
+// aria-live attribute, an implicitly live role, or an output element.
+func liveRegions(page string) int {
+	n := 0
+	for _, tag := range regexp.MustCompile(`<[a-zA-Z][^>]*>`).FindAllString(page, -1) {
+		if strings.Contains(tag, "aria-live=") || liveRegionRole.MatchString(tag) || strings.HasPrefix(tag, "<output") {
+			n++
+		}
+	}
+	return n
 }
 
 func TestChatInventoryControls(t *testing.T) {

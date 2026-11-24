@@ -624,7 +624,12 @@ its activity. Each read is the page's ordinary read, so the desk authorizes
 it as when you tap Refresh. It costs no call of the gate beyond that read:
 the directory and the page, 2 of the Leads pages' 5 calls in 80 seconds
 (the 40 seconds between two reads keep one open conversation inside them),
-and none of the card lists'. A read that the page makes by itself counts as
+and none of the card lists'. One following conversation fits; a refresh by
+hand beside it, a second tab following a conversation, or a conversation
+that read on toward its latest message can meet "The desk is busy". When a
+read the page makes by itself meets it, the busy page replaces the
+conversation and the page follows no more: tap **Try this page again** a
+minute later. A read that the page makes by itself counts as
 activity for the session, like a reload you make; a hidden page reads
 nothing, so it does not keep the session alive.
 
