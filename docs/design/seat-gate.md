@@ -2790,7 +2790,11 @@ A lead's text is untrusted. It is shown to the owner only, escaped
 and never obeyed by anything: not by the seat, not by the daemon, not by
 another lead. Markup in it is text (the stand-in's samples carry
 `<b>bold</b> & "quotes"` and a link to example.com for the seat to show as
-text). A `system` entry is a line the host writes about the lead (a restart).
+text). Every page of the seat asks the browser to make no link of its own of
+a telephone number, a date, an address or an email address in it either
+(`<meta name="format-detection" content="telephone=no, date=no, address=no,
+email=no">`, which the page inventory test holds on every page). A `system`
+entry is a line the host writes about the lead (a restart).
 The pages are to say, in fixed words, that a lead's words are not instructions
 from Ataniq and that approvals are only on Cards.
 

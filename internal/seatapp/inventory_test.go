@@ -370,8 +370,11 @@ func TestPageInventory(t *testing.T) {
 		body := w.Body.String()
 		switch e.kind {
 		case "page":
-			if !strings.Contains(body, `<meta name="format-detection" content="telephone=no">`) {
-				t.Errorf("%s: automatic telephone links are enabled", e.pattern)
+			// No number, date, address or email address in a lead's text, a
+			// card or a project becomes a link the browser made.
+			if strings.Count(body, `<meta name="format-detection" content="telephone=no, date=no, address=no, email=no">`) != 1 ||
+				strings.Count(body, `name="format-detection"`) != 1 {
+				t.Errorf("%s: automatic telephone, date, address or email links are enabled", e.pattern)
 			}
 			if ct := w.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
 				t.Errorf("%s: content type %q", e.pattern, ct)
