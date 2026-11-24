@@ -56,8 +56,10 @@
 //     keeps no answer: its brief is emptied. Every call to it is
 //     genesis-unknown-thread, as one never started.
 //   - An answer must name the round the thread is at, and a node of that
-//     round. An answer to a round the thread has already taken, or to any
-//     round once the walk is done, is refused genesis-stale-round (the
+//     round. An answer to a round the thread has already taken, to a node
+//     already answered in the round named (a round asked again after a
+//     change keeps the last round's number), or to any round once the walk
+//     is done, is refused genesis-stale-round (the
 //     thread's state, which a second tab or a post sent twice meets); one to
 //     a round it has not reached, genesis-bad-answer. A change must name a
 //     node that has an answer. One answer failing fails the whole call and

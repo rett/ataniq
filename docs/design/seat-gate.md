@@ -396,7 +396,7 @@ The handler (`gatehost`, built for pairing and reads) answers:
 | `genesis-over-cap` | Genesis. An answer that would take a field, a note or the brief past its cap. The brief's `too_large`. |
 | `genesis-secret-shaped` | Genesis. Text that looks like a key, a token or a password (the start of a private key block, `-----BEGIN`; a well-known key prefix; an assignment with a value, `password=...`, or `password: ...` with a value that is not a plain word; a run of 32 or more hexadecimal digits, or of random-looking letters, digits, `_`, `+` and `=`, where a dash or a slash ends the run). It catches pasted keys and obvious assignments, not every typed password; names, web addresses, paths and the phrase "private key" pass, and a bare git commit id (40 hexadecimal digits) is refused. Credentials are never typed on the phone. The brief's `secret_shaped`. |
 | `genesis-done` | Genesis. An answer, a change or a discard of a thread that is finished. |
-| `genesis-stale-round` | Genesis. An answer to a round the thread has already taken, or to any round once the walk is done (the thread is at its summary): a double tap, a second tab, a post the browser sent again. A state of the thread, not a misuse; the seat goes back to the thread's page with "That round was already answered." |
+| `genesis-stale-round` | Genesis. An answer to a round the thread has already taken, to a question already answered in the round named (a round asked again after a change keeps the last round's number), or to any round once the walk is done (the thread is at its summary): a double tap, a second tab, a post the browser sent again. A state of the thread, not a misuse; the seat goes back to the thread's page with "That round was already answered." |
 | `genesis-not-ready` | Genesis. A `plan` of a thread whose brief is not complete: a required field is not filled, or an answer the host inferred is not confirmed, on an open thread or on one the owner finished early. A state of the thread, not a misuse. The plan's `brief_incomplete`. |
 | `genesis-no-template` | Genesis. A `plan` of a thread whose kind no plan template serves: the kind in the owner's own words. It is answered before the brief is complete as well, since completing it would not help. A state of the thread, not a misuse. The plan's `no_template`. |
 
@@ -1902,6 +1902,20 @@ eligible and is asked again in the next round beside the questions of the
 highest weight left. The walk is done when every required field is filled,
 after the sixth round, or when no eligible question is left.
 
+A change can leave required fields unset: it clears the answers that depended
+on the changed one (a new sub-kind clears the four answers of the build), and
+a new kind moves the brief to another kind's questions. Before the sixth round
+their questions are eligible again in the next round. After it, a brief in
+which an answer was changed (its history holds a value that left its field)
+is not done while an eligible question is left: the walker asks them in a
+round that keeps the last round's number (round 6 of 6 again), as often as
+needed, a question that depends on another in the round after that one's
+answer. The wire's rounds stay six (`MaxGenesisRounds`), and `Apply` takes an
+answer in the brief's last round as before. Without a change the walk still
+ends after the sixth round, whatever is left: a brief with more questions left
+unanswered than the rounds had room for stays incomplete, its summary says how
+many answers are filled in, and finishing it draws no plan.
+
 So an interview that answers every question asks every required question of
 its kind within the six rounds: with catalog v1, software, publishing and
 media (14 required fields each) take 6 rounds (the kind, then three questions
@@ -2094,18 +2108,21 @@ gate; it is fixed by hand and the daemon restarted.
 - **The verbs** are the wire's, exactly. `start` refuses a third open thread
   `genesis-busy` and answers the first round, `catalog.Next` of an empty brief.
   `round` answers the question round the thread is at, or the summary when the
-  walk is done (every required field filled, six rounds, or no question left);
+  walk is done (every required field filled, six rounds without a change, or
+  no question left; see [the walk](#the-walk));
   a finished thread answers its summary and digest. `answer` must name the
-  thread's current round and nodes of it (a round already taken, or any round
-  once the walk is done, is `genesis-stale-round`; a round it has not reached,
-  or a node of another round, `genesis-bad-answer`); each
+  thread's current round and nodes of it (a round already taken, a node
+  already answered in the round named, or any round once the walk is done, is
+  `genesis-stale-round`; a round it has not reached, or a node of another
+  round, `genesis-bad-answer`); each
   answer goes through `catalog.Apply`, and one failing fails the whole call and
   changes nothing; text that looks like a secret is refused
   `genesis-secret-shaped`, a field or brief over its cap `genesis-over-cap`.
   `change` names a node that has an answer and replaces it through
   `catalog.Apply`, which clears the closure of the node's invalidations, keeps
   the cleared values in the brief's history and says how many in `reset`; the
-  next round asks the cleared questions again, under the next round number.
+  next round asks the cleared questions again, under the next round number,
+  or, after the sixth round, in a round that keeps the sixth's number.
   `summary` reads the summary at any time. `finish` freezes the brief and
   answers its digest, at any time on an open thread (there is no separate
   "enough": the owner reads the summary and finishes), and again on a finished

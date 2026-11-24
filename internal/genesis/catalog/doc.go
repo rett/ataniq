@@ -34,7 +34,10 @@
 // for the brief's kind, the three of the highest weight, whatever their
 // topics, so no round is short while questions are left. It is done when
 // every required field is filled, after 6 rounds, when the caller says
-// enough, or when no question is left that fills a required field.
+// enough, or when no question is left that fills a required field. After
+// 6 rounds, a brief in which an answer was changed is not done while a
+// question is left: a change can clear answers, and their questions are
+// asked again in a round that keeps the sixth round's number.
 // [Apply] checks an answer against its node and sets the field: an option
 // as owner-chosen, other text as owner-chosen free text, you-decide as the
 // node's default with the node's provenance, skip as the default. An

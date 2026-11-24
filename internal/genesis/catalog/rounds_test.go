@@ -251,3 +251,58 @@ func TestOneQuestionLeftUnansweredStillEndsReady(t *testing.T) {
 		}
 	}
 }
+
+// After the last round, a change that clears answers has their questions
+// asked again in a round that keeps the last round's number, as often as
+// questions are left, and Apply takes its answers; without a change the walk
+// is done after the last round whatever is left, and enough still ends it.
+func TestARoundIsAskedAgainAfterAChange(t *testing.T) {
+	c := mustV1(t)
+	b, _ := walkOf(t, c, kindPaths[0], styleFirst, nil)
+	if b.Rounds != MaxRounds {
+		t.Fatalf("the walk took %d rounds", b.Rounds)
+	}
+	changed, res := apply(t, c, b, "software.sub_kind", Answer{Choice: "web_tool", Round: b.Rounds})
+	if res.Reset != 4 {
+		t.Fatalf("the change reset %d", res.Reset)
+	}
+	r, done, err := Next(c, changed, Limits{})
+	if err != nil || done || !r.Again || r.Number != MaxRounds || r.Unanswered != 4 ||
+		strings.Join(ids(r), ",") != "software.stack,software.data,software.auth" {
+		t.Fatalf("round %+v, done %v, %v", r, done, err)
+	}
+	if _, done, _ := Next(c, changed, Limits{Enough: true}); !done {
+		t.Fatal("enough did not end the walk")
+	}
+	for _, n := range r.Nodes {
+		changed, _ = apply(t, c, changed, n.ID, Answer{Choice: n.Options[0].ID, Round: r.Number})
+	}
+	r, done, _ = Next(c, changed, Limits{})
+	if done || !r.Again || r.Number != MaxRounds || strings.Join(ids(r), ",") != "software.deploy_kind" {
+		t.Fatalf("the next round asked again: %+v, done %v", r, done)
+	}
+	changed, _ = apply(t, c, changed, "software.deploy_kind", Answer{Choice: "local", Round: r.Number})
+	if _, done, _ := Next(c, changed, Limits{}); !done || changed.Rounds != MaxRounds {
+		t.Fatalf("not done once complete, or past round %d: %d", MaxRounds, changed.Rounds)
+	}
+	if missing, filled, total := ready(t, c, changed); len(missing) != 0 || filled != total {
+		t.Fatalf("missing %v, %d of %d", missing, filled, total)
+	}
+
+	// Without a change, a field left after the last round ends the walk.
+	left, _ := walkOf(t, c, kindPaths[0], styleFirst, func(round int, node string) bool {
+		return node == "goal" && round == 2 || node == "software.auth" && round == 4 || node == "budget_band" && round == 5
+	})
+	if missing, _, _ := ready(t, c, left); left.Rounds != MaxRounds || len(missing) != 1 {
+		t.Fatalf("round %d, missing %v", left.Rounds, missing)
+	}
+	if r, done, _ := Next(c, left, Limits{}); !done {
+		t.Fatalf("a round past the last without a change: %+v", r)
+	}
+	// Before the last round, a round after a change is the next one.
+	early, _ := apply(t, c, brief.New(c.Digest()), "kind", Answer{Choice: "software", Round: 1})
+	early, _ = apply(t, c, early, "kind", Answer{Choice: "media", Round: 1})
+	if r, done, _ := Next(c, early, Limits{}); done || r.Again || r.Number != 2 {
+		t.Fatalf("the round after an early change: %+v", r)
+	}
+}
