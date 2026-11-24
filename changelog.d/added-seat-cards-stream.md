@@ -16,5 +16,8 @@
   shown list opens holds the notices back for 30 seconds and counts the
   cards it shows as seen, as a poll does; nothing the seat writes on it
   counts, so a card the list has not shown yet still brings its notice. A proxy
-  in front must pass the stream on unbuffered and uncompressed; not yet
+  in front must pass the stream on unbuffered and uncompressed (a list
+  whose stream's first heartbeat does not come within 8 seconds, or whose
+  hint cannot be read, falls back to the poll); a hidden list never
+  reloads, and reloads once for a change it missed when shown; not yet
   qualified on the deployed path or on a phone.

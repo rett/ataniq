@@ -1788,17 +1788,34 @@ The open stream:
 
 The page (`watch.js`). Only the card list streams; the Card page keeps the
 poll until its withdrawal of stale offers has parity. The script reads the
-body with a reader and a `TextDecoder`, splits lines itself, fails the
-stream on a line of more than 512 characters or an event's data of more
-than 256, skips comments, unknown fields and events of any other kind, and
-fails it after 30 seconds without a byte. It holds one stream per page. It
-closes it on `visibilitychange` to hidden and on `pagehide`; on being shown,
-on `pageshow` from the history cache and on `online` it opens one again
-after a wait of 1 second doubling with the failures in a row to 30, plus up
-to 2 seconds at random, with the version it shows. A stream the seat ends
-is opened again after that wait; two that end within 5 seconds of opening,
-any refusal, any error and a browser that cannot read a stream with
-`fetch` fall back to the poll, unchanged, until the page is shown again.
+body with a reader, decodes it 256 bytes at a time with a `TextDecoder`,
+and checks the bounds as each slice is taken: a line of more than 512
+characters (before it is cut out) or an event's data of more than 256 fails
+the stream, so no more than a bound and a slice is ever held. It splits
+lines itself and skips comments, unknown fields and events of any other
+kind. A `cards-changed` event whose data is not the seat's one form (an
+object whose one member is a version that is not empty) fails the stream:
+a stream whose hints cannot be read must not look live. The opening
+heartbeat must come whole within 8 seconds of the request, below the
+rotation, so a proxy that holds the response back until its end puts the
+page on the poll within one rotation; after it, 30 seconds without a byte
+fail the stream. A stream that ends inside an event, or before its opening
+heartbeat, fails too. It holds one stream per page, opened with the
+version the page shows (never a hint's, see the notices above). It closes
+it on `visibilitychange` to hidden and on `pagehide`; on being shown, on
+`pageshow` from the history cache and on `online` it opens one again after
+a wait of 1 second doubling with the failures in a row to 30, plus up to 2
+seconds at random. A stream the seat ends is opened again after that wait;
+two that end within 5 seconds of opening, any refusal, any error and a
+browser that cannot read a stream with `fetch` fall back to the poll,
+unchanged, until the page is shown again.
+
+The list reloads only while it is shown. A reload waiting its 20 seconds is
+dropped on `visibilitychange` to hidden, on `pagehide` and on the poll's
+`ended`, and the page's visibility is looked at again when its timer runs;
+the change stays pending (a version heard of and not shown), and when the
+page is shown again it reloads once for it, by the same rule. A hidden page
+therefore never spends a read of the desk, nor touches the session.
 Every text it puts on the page is still one of its constants, set with
 `textContent`; the Trusted Types policy, the content security policy, the
 cookies and the service worker are unchanged, and nothing is stored.

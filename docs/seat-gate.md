@@ -229,8 +229,9 @@ together:
   needs no change; whether both hops (the owner's front proxy and Caddy) pass
   a hint on at once is not yet qualified (see
   [the design](design/seat-gate.md#the-card-lists-hint-stream)). A proxy that
-  holds the stream back costs nothing but time: the page sees no byte for 30
-  seconds, closes the stream and falls back to the poll above.
+  holds the stream back costs nothing but time: the page does not get the
+  stream's opening heartbeat within 8 seconds, closes the stream and falls
+  back to the poll above until it is shown again.
 - **No redirects.** Serve the paths as asked, with no change of host, scheme or
   path. The pairing QR carries its one-time code in the address fragment, which
   must reach the app as the desk drew it. (The app itself answers `/pair`,
@@ -419,7 +420,9 @@ up without a reload, and a card that was decided, withdrawn or replaced
   refusal, an error) the list falls back to the poll that the Card page
   uses, with no difference you can see but the delay, until the page is
   shown again. The stream is closed while the page is hidden or the phone is
-  locked, and opened again a second or two after the page is shown.
+  locked, and opened again a second or two after the page is shown. A hidden
+  list never reloads: a change it heard of before it was hidden waits, and
+  the list reloads once for it when it is shown again.
   A new card that came in through the daemon's door is seen within about 30
   seconds, the interval at which the daemon looks at the door; a decision made
   at the desk or on the phone is seen within a few seconds, and a page that
@@ -1108,7 +1111,7 @@ What the phone shows, by the code the seat's API answers:
 | Status line "Session ended. Log in again." | `ended` (answer of `POST /api/watch`) | Idle 30 minutes without a page load or tap (a poll does not count), 12 hours, a seat restart, a logout, or a revoked key. | Log in. |
 | Nothing visible, but `POST /api/watch` answers 429 in the proxy's log or the browser's tools | `rate_limited` | More than 12 polls a minute from one passkey's sessions, as more than four tabs open at once make. The page waits 60 seconds and asks again. | Close the extra tabs. |
 | Nothing visible, but `POST /api/watch/stream` answers 403, 429 or 503 in the proxy's log, followed by `POST /api/watch` | (the stream's refusal: `session ended`, `too many streams`, `busy`, `not live` or `shutting down`) | The card list's stream was refused: no live session, a fourth card list of one passkey or more than 12 opens in a minute, 32 streams open on the seat, the desk out of reach, or the seat stopping. The list fell back to the poll, which says what it is on the status line. | Nothing; close the extra tabs if there are many. The list tries the stream again when it is shown again. |
-| The card list updates only after about 25 seconds, and the browser's tools show `/api/watch/stream` open for 30 seconds with nothing in it | (none) | A proxy on the way buffers or compresses the stream, so the page falls back to the poll after 30 seconds of silence. | Turn buffering and compression off for `/api/watch/stream` on the front proxy (see [The reverse proxy](#the-reverse-proxy)). |
+| The card list updates only after about 25 seconds, and the browser's tools show `/api/watch/stream` closed by the page after about 8 seconds with nothing in it, followed by `/api/watch` | (none) | A proxy on the way buffers or compresses the stream, so the stream's opening heartbeat does not reach the page within 8 seconds and the page falls back to the poll. | Turn buffering and compression off for `/api/watch/stream` on the front proxy (see [The reverse proxy](#the-reverse-proxy)). |
 | "This card changed or was decided elsewhere. Look again." | `changed` or `gone` (the card's state in the poll's answer) | The card, which was waiting when the page was read, was decided on another page or phone or at the desk, replaced, expired or withdrawn since. Not shown for a card that was already decided, ended or expired when the page was read, nor on the page whose own confirm sent the decision. | Reload, or go back to the cards. |
 | A line `seat.wait refused wait-full (peer ...)` in the daemon's log | `wait-full` | The gate already holds two waits for that seat key (or the daemon's eight). Normal for a moment when the seat reconnects. Not counted against the seat. | Nothing if it stops. If it repeats every minute, look for a second `ataniq-seat` with the same identity. |
 

@@ -8,14 +8,17 @@
 // event, "cards-changed", whose data is the new version and nothing else.
 // The seat ends a stream within 25 seconds and the list opens another. On
 // any failure of the stream (a refusal, an error, a stream of the wrong
-// form, a silence, a browser that cannot read one) the page falls back to
-// the long poll, which every other page uses, until the page is shown again.
-// A hidden page holds no stream: it closes it when hidden or left, and opens
-// one again, after a short random wait, when it is shown again or the
-// network is back.
+// form, a hint it cannot read, an opening heartbeat that does not come
+// promptly, a silence, a stream cut inside an event, a browser that cannot
+// read one) the page falls back to the long poll, which every other page
+// uses, until the page is shown again. A hidden page holds no stream: it
+// closes it when hidden or left, and opens one again, after a short random
+// wait, when it is shown again or the network is back.
 //
 // The card list reloads when its version moved (at most once every twenty
-// seconds, never over a form field with typed text). A Card page never
+// seconds, never over a form field with typed text, and only while it is
+// shown: a change heard of is kept pending while the page is hidden, and
+// the page reloads once for it when it is shown again). A Card page never
 // reloads by itself, since the owner may be ticking sign-offs: it shows a
 // banner, and turns off the controls the page marks with data-offer. The
 // page's own script honours the stale mark this script puts on the document,
@@ -57,7 +60,9 @@
   var RELOAD_RETRY = 2000;
   var STREAM_LINE_MAX = 512;   // characters of one line of the stream; a longer one fails it
   var STREAM_EVENT_MAX = 256;  // characters of one event's data; more fails it
+  var STREAM_FIRST = 8000;     // the opening heartbeat, whole, must come this soon after the request
   var STREAM_SILENCE = 30000;  // the seat writes every 10 seconds: no byte for this long fails it
+  var STREAM_SLICE = 256;      // bytes of the stream decoded at a time, so that the bounds hold as it is read
   var STREAM_SHORT = 5000;     // a stream the seat ends sooner than this, twice in a row, fails it
   var REOPEN_FIRST = 1000;     // the wait before a stream is opened again, doubling after each failure,
   var REOPEN_LAST = 30000;     // to this,
@@ -86,6 +91,7 @@
   var inflight = false;
   var timer = null;        // the next poll
   var reloadTimer = null;  // a reload waiting its turn
+  var pendingChange = false; // the list heard of a version it does not show yet
   var backoff = 0;
   var bannerShown = false;
   var pollCtl = null;      // the poll in flight
@@ -153,14 +159,25 @@
 
   // wantReload reloads the list once twenty seconds have passed since this page
   // was loaded, and not while a field holds typed text. A reload pending is
-  // never set twice.
+  // never set twice. The list reloads only while it is shown: the change is
+  // kept pending (pendingChange) while the page is hidden or left, its timer
+  // is cancelled then (cancelReload), the page is looked at again when the
+  // timer runs, and awake reconciles a pending change once.
   function wantReload() {
-    if (reloadTimer !== null) { return; }
+    pendingChange = true;
+    if (reloadTimer !== null || stopped || document.hidden) { return; }
     var wait = Math.max(0, loadedAt + RELOAD_GAP - Date.now());
     reloadTimer = setTimeout(function tryReload() {
+      reloadTimer = null;
+      if (stopped || document.hidden) { return; }
       if (typing()) { reloadTimer = setTimeout(tryReload, RELOAD_RETRY); return; }
       location.reload();
     }, wait);
+  }
+
+  // cancelReload drops a reload waiting its turn; the change stays pending.
+  function cancelReload() {
+    if (reloadTimer !== null) { clearTimeout(reloadTimer); reloadTimer = null; }
   }
 
   // next asks by the page's transport: the stream, or a poll.
@@ -245,6 +262,8 @@
     case "ended":
       stopped = true;
       cancel();
+      cancelReload();
+      closeStream();
       say(TEXT.ended, [link(TEXT.login, LOGIN_PATH)]);
       return;
     case "offline":
@@ -302,27 +321,42 @@
 
   // hinted acts on the data of a cards-changed event: the version the seat
   // has now. It is the poll's "changed" on the list: the list reloads by the
-  // same rule, and nothing of the hint is put on the page.
+  // same rule, and nothing of the hint is put on the page. It reports false
+  // for data that is not the seat's one form, an object whose one member is
+  // a version that is not empty, which fails the stream: a stream whose
+  // hints cannot be read must not look live.
   function hinted(text) {
     var hint = null;
-    try { hint = JSON.parse(text); } catch (e) { return; }
-    if (!hint || typeof hint !== "object" || !validVersion(hint.version) || hint.version === version) { return; }
+    try { hint = JSON.parse(text); } catch (e) { return false; }
+    if (!hint || typeof hint !== "object" || Array.isArray(hint) || Object.keys(hint).length !== 1 ||
+        !validVersion(hint.version) || hint.version === "") {
+      return false;
+    }
+    if (hint.version === version) { return true; }
     version = hint.version;
     quiet();
     if (!still) { wantReload(); }
+    return true;
   }
 
   // readStream opens a stream and reads it to its end, acting on each
-  // event. It returns when the seat ends the stream, and throws on any
-  // failure: a refusal, a response that is not a stream, a line or an
-  // event over its bound, or STREAM_SILENCE without a byte.
+  // event. It returns when the seat ends the stream between two events, and
+  // throws on any failure: a refusal, a response that is not a stream, an
+  // opening heartbeat that is not whole within STREAM_FIRST of the request
+  // (a proxy that holds the response back to its end fails here, well
+  // inside a rotation), a line or an event over its bound, a hint that
+  // cannot be read, STREAM_SILENCE without a byte once the stream is open,
+  // and an end inside an event or before the opening heartbeat. The body is
+  // decoded STREAM_SLICE bytes at a time, and the bounds are checked as each
+  // slice is taken, so that no more than a bound and a slice is ever held.
   async function readStream(c) {
     var silence = null;
-    function hush() {
+    var opened = false; // the opening heartbeat came, whole
+    function hush(ms) {
       if (silence !== null) { clearTimeout(silence); }
-      silence = setTimeout(function () { c.ctl.abort(); }, STREAM_SILENCE);
+      silence = setTimeout(function () { c.ctl.abort(); }, ms);
     }
-    hush();
+    hush(STREAM_FIRST);
     try {
       var resp = await send(STREAM_PATH, { version: rendered }, c.ctl);
       var type = (resp.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
@@ -330,43 +364,56 @@
           !resp.body || typeof resp.body.getReader !== "function") {
         throw { stream: false };
       }
-      streamFails = 0;
-      quiet();
       var reader = resp.body.getReader();
       var decoder = new TextDecoder();
       var rest = "", kind = "", evData = "";
       for (;;) {
         var chunk = await reader.read();
-        if (chunk.done) { return; }
-        hush();
-        rest += decoder.decode(chunk.value, { stream: true });
-        var nl;
-        while ((nl = rest.indexOf("\n")) >= 0) {
-          var line = rest.slice(0, nl);
-          rest = rest.slice(nl + 1);
-          if (line.length > STREAM_LINE_MAX) { throw { stream: false }; }
-          if (line.charAt(line.length - 1) === "\r") { line = line.slice(0, -1); }
-          if (line === "") {
-            // The end of an event: act on it if it is of the one kind.
-            if (kind === STREAM_KIND) { hinted(evData); }
-            kind = "";
-            evData = "";
-            continue;
-          }
-          if (line.charAt(0) === ":") { continue; } // a heartbeat
-          var colon = line.indexOf(":");
-          var field = colon < 0 ? line : line.slice(0, colon);
-          var value = colon < 0 ? "" : line.slice(colon + 1);
-          if (value.charAt(0) === " ") { value = value.slice(1); }
-          if (field === "event") {
-            kind = value;
-          } else if (field === "data") {
-            evData = evData === "" ? value : evData + "\n" + value;
-            if (evData.length > STREAM_EVENT_MAX) { throw { stream: false }; }
-          }
-          // Any other field is skipped.
+        if (chunk.done) {
+          rest += decoder.decode();
+          // The seat ends a stream between two events: anything left is an
+          // event cut short.
+          if (!opened || rest !== "" || kind !== "" || evData !== "") { throw { stream: false }; }
+          return;
         }
-        if (rest.length > STREAM_LINE_MAX) { throw { stream: false }; }
+        var bytes = chunk.value;
+        for (var at = 0; at < bytes.length; at += STREAM_SLICE) {
+          rest += decoder.decode(bytes.subarray(at, at + STREAM_SLICE), { stream: true });
+          var nl;
+          while ((nl = rest.indexOf("\n")) >= 0) {
+            if (nl > STREAM_LINE_MAX) { throw { stream: false }; }
+            var line = rest.slice(0, nl);
+            rest = rest.slice(nl + 1);
+            if (line.charAt(line.length - 1) === "\r") { line = line.slice(0, -1); }
+            if (line === "") {
+              // The end of an event: act on it if it is of the one kind.
+              if (kind === STREAM_KIND && !hinted(evData)) { throw { stream: false }; }
+              kind = "";
+              evData = "";
+              if (!opened) {
+                opened = true;
+                streamFails = 0;
+                quiet();
+              }
+              continue;
+            }
+            if (line.charAt(0) === ":") { continue; } // a heartbeat
+            var colon = line.indexOf(":");
+            var field = colon < 0 ? line : line.slice(0, colon);
+            var value = colon < 0 ? "" : line.slice(colon + 1);
+            if (value.charAt(0) === " ") { value = value.slice(1); }
+            if (field === "event") {
+              kind = value;
+            } else if (field === "data") {
+              evData = evData === "" ? value : evData + "\n" + value;
+              if (evData.length > STREAM_EVENT_MAX) { throw { stream: false }; }
+            }
+            // Any other field is skipped.
+          }
+          if (rest.length > STREAM_LINE_MAX) { throw { stream: false }; }
+        }
+        // Once open, any byte shows the stream alive.
+        if (opened) { hush(STREAM_SILENCE); }
       }
     } finally {
       clearTimeout(silence);
@@ -426,20 +473,26 @@
     return base + Math.floor(Math.random() * REOPEN_JITTER);
   }
 
-  // asleep: the page is hidden or left. The stream is closed; a poll in
+  // asleep: the page is hidden or left. The stream is closed and a reload
+  // waiting its turn is dropped (the change stays pending); a poll in
   // flight runs out, as before, and none is asked after it.
   function asleep() {
     cancel();
+    cancelReload();
     closeStream();
   }
 
-  // awake: the page is shown again, or the network is back. A page that
-  // streams (or fell back from the stream) opens one stream after a short
-  // random wait, with the version it shows, so a change it missed is said
-  // at once; any other page polls at once.
+  // awake: the page is shown again, or the network is back. A list with a
+  // change pending reloads for it, once. A page that streams (or fell back
+  // from the stream) opens one stream after a short random wait, with the
+  // version it shows, so a change it missed is said at once; any other page
+  // polls at once.
   function awake() {
     if (stopped || document.hidden) { return; }
     cancel();
+    // A change heard of while the page was shown, whose reload the page's
+    // hiding dropped: one reload now, by the usual rule.
+    if (pendingChange && !onCard && !still) { wantReload(); }
     if (streamable) {
       useStream = true;
       if (pollCtl !== null) { pollCtl.abort(); }
