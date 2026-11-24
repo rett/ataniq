@@ -324,7 +324,8 @@ func TestSeatChatSharesTheReadRoom(t *testing.T) {
 // opens a lead's conversation and refreshes it twice, twenty seconds apart.
 // Chat shares the read room with the Cards tab: each chat page is counted as
 // two reads, the directory and a transcript, as a real lead's is (the link
-// reuses neither of a real host). None of it is refused.
+// reuses neither of a real host). None of it is refused. TestBudgetMixedUse
+// measures three tabs and a conversation refreshed every 10 seconds.
 func TestSeatChatMixedBudget(t *testing.T) {
 	clock := &testClock{t: decideNow}
 	b := budget{now: clock.now}

@@ -156,6 +156,13 @@ type budget struct {
 
 	mu   sync.Mutex
 	sent [numKinds][]time.Time
+	// refusedAt are the calls refused for room in the last BudgetWindow,
+	// by kind, to the second (see stats).
+	refusedAt [numKinds][]refusedStep
+	// The period of the stats line (see rollLocked): when it began, and
+	// the calls taken and refused in it, by kind.
+	period                     time.Time
+	periodTaken, periodRefused [numKinds]int
 	// holds are the room kept for answers, one for each challenge drawn
 	// and not answered, by the token reserve gave it before the challenge
 	// was asked. A challenge's room is its own: another challenge, of the
@@ -167,8 +174,8 @@ type budget struct {
 	last uint64
 }
 
-// prune drops the calls older than BudgetWindow and the holds past their
-// life. It runs under mu.
+// prune drops the calls and the refusals older than BudgetWindow and the
+// holds past their life. It runs under mu.
 func (b *budget) prune(now time.Time) {
 	cut := now.Add(-BudgetWindow)
 	for k := range b.sent {
@@ -178,6 +185,12 @@ func (b *budget) prune(now time.Time) {
 			i++
 		}
 		b.sent[k] = ts[i:]
+		rs := b.refusedAt[k]
+		i = 0
+		for i < len(rs) && !rs[i].at.After(cut) {
+			i++
+		}
+		b.refusedAt[k] = rs[i:]
 	}
 	for t, h := range b.holds {
 		if !now.Before(h.until) {
@@ -204,12 +217,14 @@ func (b *budget) take(k kind) bool {
 	b.mu.Lock()
 	now := b.now()
 	b.prune(now)
+	s := b.rollLocked(now)
 	ok := b.takeLocked(k, now)
 	var r *refusal
 	if !ok {
-		r = b.refusedLocked(k, now)
+		r = b.refuseLocked(k, now)
 	}
 	b.mu.Unlock()
+	b.tellStats(s)
 	b.tell(r)
 	return ok
 }
@@ -219,8 +234,27 @@ func (b *budget) takeLocked(k kind, now time.Time) bool {
 	if b.used(k) >= k.room() {
 		return false
 	}
-	b.sent[k] = append(b.sent[k], now)
+	b.sentLocked(k, now)
 	return true
+}
+
+// sentLocked counts a call of a kind that is sent. It runs under mu.
+func (b *budget) sentLocked(k kind, now time.Time) {
+	b.sent[k] = append(b.sent[k], now)
+	b.periodTaken[k]++
+}
+
+// refuseLocked counts a call of a kind refused for room, and returns the
+// refusal line to tell, if one is due (refusedLocked). It runs under mu.
+func (b *budget) refuseLocked(k kind, now time.Time) *refusal {
+	b.periodRefused[k]++
+	rs := b.refusedAt[k]
+	if n := len(rs); n > 0 && now.Sub(rs[n-1].at) < time.Second {
+		rs[n-1].n++
+	} else {
+		b.refusedAt[k] = append(rs, refusedStep{at: now, n: 1})
+	}
+	return b.refusedLocked(k, now)
 }
 
 // takeOrWait is take for a caller that sleeps rather than refuses: it counts
@@ -229,9 +263,17 @@ func (b *budget) takeLocked(k kind, now time.Time) bool {
 // counted age out of BudgetWindow (never less than a millisecond).
 func (b *budget) takeOrWait(k kind) (bool, time.Duration) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	now := b.now()
 	b.prune(now)
+	s := b.rollLocked(now)
+	ok, wait := b.takeOrWaitLocked(k, now)
+	b.mu.Unlock()
+	b.tellStats(s)
+	return ok, wait
+}
+
+// takeOrWaitLocked is takeOrWait under mu.
+func (b *budget) takeOrWaitLocked(k kind, now time.Time) (bool, time.Duration) {
 	if b.takeLocked(k, now) {
 		return true, 0
 	}
@@ -260,20 +302,24 @@ func (b *budget) reserve(k kind) (uint64, bool) {
 	b.mu.Lock()
 	now := b.now()
 	b.prune(now)
+	s := b.rollLocked(now)
 	if b.used(k)+2 > k.room() {
-		r := b.refusedLocked(k, now)
+		r := b.refuseLocked(k, now)
 		b.mu.Unlock()
+		b.tellStats(s)
 		b.tell(r)
 		return 0, false
 	}
-	defer b.mu.Unlock()
 	if b.holds == nil {
 		b.holds = map[uint64]hold{}
 	}
 	b.last++
-	b.sent[k] = append(b.sent[k], now)
+	b.sentLocked(k, now)
 	b.holds[b.last] = hold{kind: k, until: now.Add(HoldLife)}
-	return b.last, true
+	token := b.last
+	b.mu.Unlock()
+	b.tellStats(s)
+	return token, true
 }
 
 // bind names the challenge a hold is for, and lets the room go at the
@@ -323,20 +369,90 @@ func (b *budget) answer(k kind, id string) bool {
 	b.mu.Lock()
 	now := b.now()
 	b.prune(now)
+	s := b.rollLocked(now)
 	for t, h := range b.holds {
 		if h.kind == k && h.id != "" && h.id == id {
 			delete(b.holds, t)
-			b.sent[k] = append(b.sent[k], now)
+			b.sentLocked(k, now)
 			b.mu.Unlock()
+			b.tellStats(s)
 			return true
 		}
 	}
 	ok := b.takeLocked(k, now)
 	var r *refusal
 	if !ok {
-		r = b.refusedLocked(k, now)
+		r = b.refuseLocked(k, now)
 	}
 	b.mu.Unlock()
+	b.tellStats(s)
 	b.tell(r)
 	return ok
+}
+
+// refusedStep is the calls of a kind refused for room within a second of
+// the first of them, at.
+type refusedStep struct {
+	at time.Time
+	n  int
+}
+
+// kindStats are the calls of a kind the link took (counted and sent) and
+// refused for room.
+type kindStats struct {
+	taken, refused int
+}
+
+// budgetStats are, for each kind, the calls taken and refused in the last
+// BudgetWindow. A challenge and its answer are each a call taken; the room
+// a hold keeps is not. The refusals are counted to the second, so one
+// refused up to a second before the window's start may still be counted.
+// A wait that found no room slept and is not a refusal.
+type budgetStats [numKinds]kindStats
+
+// stats returns the calls taken and refused in the last BudgetWindow, by
+// kind.
+func (b *budget) stats() budgetStats {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.prune(b.now())
+	var st budgetStats
+	for k := range st {
+		st[k].taken = len(b.sent[k])
+		for _, r := range b.refusedAt[k] {
+			st[k].refused += r.n
+		}
+	}
+	return st
+}
+
+// StatsLogEvery is the least time between two stats lines (see
+// rollLocked): the link tells what it took and refused, by kind, at most
+// once in StatsLogEvery, and only when it refused something.
+const StatsLogEvery = 10 * time.Minute
+
+// rollLocked ends the stats period when it has lasted StatsLogEvery, and
+// returns its line when the period refused a call and there is a log. A
+// period begins at the link's first call and at the end of the one before;
+// it ends at the first call at least StatsLogEvery after it began, so the
+// line of a period with refusals waits for the link's next call (an idle
+// seat's watcher makes one about every 25 seconds). It runs under mu.
+func (b *budget) rollLocked(now time.Time) *statsLine {
+	if b.period.IsZero() || now.Before(b.period) {
+		b.period = now
+		return nil
+	}
+	if now.Sub(b.period) < StatsLogEvery {
+		return nil
+	}
+	var s *statsLine
+	for k := range b.periodRefused {
+		if b.periodRefused[k] > 0 && b.logf != nil {
+			s = &statsLine{minutes: int(now.Sub(b.period) / time.Minute), taken: b.periodTaken, refused: b.periodRefused}
+			break
+		}
+	}
+	b.period = now
+	b.periodTaken, b.periodRefused = [numKinds]int{}, [numKinds]int{}
+	return s
 }
