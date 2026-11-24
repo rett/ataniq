@@ -65,19 +65,30 @@
 
 {{define "chat-state"}}{{if eq .State "running"}}The lead is running.{{else if eq .State "starting"}}The lead is starting.{{else if eq .State "stopped"}}The lead is stopped.{{else}}The desk does not know the lead's state.{{end}}{{end}}
 
+{{define "chat-sharing"}}{{if eq .Chat "read"}}Read only{{else}}Send enabled. Read only here.{{end}}{{end}}
+
+{{define "chat-time"}}<time datetime="{{text (.UTC.Format "2006-01-02T15:04:05Z") maxID}}">{{when .}}</time>{{end}}
+
+{{define "chat-project"}}<p class="chat-source"><strong>STAND-IN</strong> Sample project · {{text .Project maxName}}</p>{{end}}
+
+{{define "chat-directory"}}
+<h2 id="directory-h">Daemon leads</h2>
+{{with .Sample}}{{template "chat-project" .}}{{end}}
+{{template "chat-rows" .Rows}}
+{{end}}
+
 {{define "chat-rows"}}
 {{with .}}<ul class="chat-rows">
   {{range .}}<li>
     {{if eq .Chat "off"}}
       <strong><bdi>{{text .Key maxID}}</bdi></strong>
-      <span class="meta">The desk does not share this lead's state.</span>
-      <span class="chat-badge">Chat is off for this lead. Turn it on at the desk.</span>
+      <span class="chat-badge">Off</span>
     {{else}}
       {{if .Here}}<strong><bdi>{{text .Key maxID}}</bdi></strong>
       <span class="meta">Open conversation</span>
       {{else}}<a href="/leads/daemon/{{text .Key maxID}}#newest"><bdi>{{text .Key maxID}}</bdi></a>{{end}}
       <span class="meta">{{template "chat-state" .}}</span>
-      <span class="chat-badge">{{if eq .Chat "read"}}Read only{{else}}Send enabled. Read only here.{{end}}</span>
+      <span class="chat-badge">{{template "chat-sharing" .}}</span>
     {{end}}
   </li>{{end}}
 </ul>{{else}}<p>No leads are listed.</p>{{end}}

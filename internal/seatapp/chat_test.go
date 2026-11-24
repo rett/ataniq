@@ -105,7 +105,7 @@ func TestChatPages(t *testing.T) {
 		if path != "/leads/" {
 			// The heading names the lead alone; the state is the line
 			// under it. The log is a static list: no live region.
-			if !strings.Contains(body, "<h1>Lead <bdi>alpha</bdi></h1>\n<p class=\"chat-state\">The lead is running.</p>") ||
+			if !regexp.MustCompile(`<h1>Lead <bdi>alpha</bdi></h1>\s*<p class="chat-state">The lead is running.</p>`).MatchString(body) ||
 				!strings.Contains(body, `<ol class="chat-log" role="log" aria-labelledby="conversation-h">`) || strings.Contains(body, "aria-live") ||
 				strings.Contains(body, "aria-relevant") || strings.Contains(body, "aria-atomic") {
 				t.Error("the conversation's heading or log")
@@ -166,6 +166,112 @@ func TestChatFailurePages(t *testing.T) {
 		if r.getWith("/cards/", s).Code != 200 {
 			t.Error("Cards unusable")
 		}
+	}
+}
+
+func TestChatCockpit(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		trial bool
+	}{
+		{"trial", true}, {"daemon", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := sampleChat()
+			// A trial may use an unfamiliar key. A real lead may use a
+			// familiar one without acquiring the trial's context or gates.
+			key := "alpha"
+			if tc.trial {
+				key = "work"
+			}
+			path := "/leads/daemon/" + key
+			f.list.Rows[0].Lead, f.read.Lead = "daemon:"+key, "daemon:"+key
+			f.list.StandIn, f.read.StandIn = tc.trial, tc.trial
+			f.read.Entries = append(f.read.Entries,
+				ChatEntry{Seq: 8, Who: "system", Text: hostileChat + " system", At: time.Unix(120, 0).UTC(), Cut: true},
+				ChatEntry{Seq: 9, Who: "system", Text: "Earlier event", At: time.Unix(60, 0).UTC()})
+			r := newRig(t, withChat(f))
+			s := r.login(t)
+			directory := r.getWith("/leads/", s).Body.String()
+			if len(f.calls) != 1 || f.calls[0].Verb != ChatLeads || strings.Contains(directory, "Open conversation") ||
+				strings.Contains(directory, "conversation-h") || !strings.Contains(directory, "Daemon leads") {
+				t.Fatal("directory selected or read a conversation")
+			}
+			if strings.Contains(directory, "STAND-IN") != tc.trial || strings.Contains(directory, chatTrial.Project) != tc.trial {
+				t.Error("directory sample grouping")
+			}
+			rows := regexp.MustCompile(`(?s)<ul class="chat-rows">(.*?)</ul>`).FindString(directory)
+			last := strings.LastIndex(rows, "<li>")
+			if last < 0 {
+				t.Fatal("missing lead rows")
+			}
+			off := rows[last:]
+			words := strings.Join(strings.Fields(tagRe.ReplaceAllString(off, "")), " ")
+			if words != "later Off" || strings.Contains(off, "<a ") {
+				t.Fatalf("off row %q", off)
+			}
+			w := r.getWith(path, s)
+			page := w.Body.String()
+			if w.Code != 200 || len(f.calls) != 3 || f.calls[2].Verb != ChatRead {
+				t.Fatalf("cockpit status %d, calls %v", w.Code, f.calls)
+			}
+			order := []string{navOpen, `aria-label="Cockpit sections"`, `class="chat-directory"`, `class="chat-context"`, `class="chat-thread"`, `class="chat-evidence"`, `class="chat-timeline"`}
+			rest := page
+			for _, marker := range order {
+				var ok bool
+				_, rest, ok = strings.Cut(rest, marker)
+				if !ok {
+					t.Fatalf("missing or misplaced %s", marker)
+				}
+			}
+			for _, link := range []string{`href="/leads/">Back to Leads`, `href="#conversation-h">Conversation`, `href="#evidence-h">Evidence`, `href="#timeline-h">Timeline`, `href="/cards/">Open Cards`} {
+				if !strings.Contains(page, link) {
+					t.Error(link)
+				}
+			}
+			for _, name := range []string{"directory", "context", "thread", "evidence", "timeline"} {
+				pane := regexp.MustCompile(`(?s)<section class="chat-` + name + `".*?</section>`).FindString(page)
+				if pane == "" || strings.Contains(pane, "STAND-IN") != tc.trial {
+					t.Errorf("%s: missing pane or incorrect source label", name)
+				}
+				if name == "context" {
+					for _, value := range []string{"<bdi>" + key + "</bdi>", "Read only", "The lead is running.", "<dd>1</dd>"} {
+						if !strings.Contains(pane, value) {
+							t.Errorf("selected context lacks %s", value)
+						}
+					}
+				}
+			}
+			if !strings.Contains(page, "Terminal attachment is available at the desk.") ||
+				strings.Contains(page, chatBanner) != tc.trial || strings.Contains(page, chatTrial.Gate) != tc.trial ||
+				strings.Contains(page, chatTrial.Project) != tc.trial {
+				t.Fatal("incorrect source, context or evidence")
+			}
+			timeline := rest
+			if tc.trial {
+				for _, event := range chatTrial.Events {
+					if !strings.Contains(timeline, event.Text) || !strings.Contains(timeline, when(event.At)) {
+						t.Error("missing dated sample", event)
+					}
+				}
+				if strings.Contains(timeline, "Earlier event") {
+					t.Error("mixed timeline sources")
+				}
+				return
+			}
+			// The log keeps sequence order. The timeline dates only this page's
+			// system entries, including hostile words as plain text.
+			bodies := regexp.MustCompile(`<p dir="auto" class="chat-body">([^<]*)</p>`).FindAllStringSubmatch(timeline, -1)
+			if len(bodies) != 2 || bodies[0][1] != "Earlier event" || html.UnescapeString(bodies[1][1]) != hostileChat+" system" ||
+				!strings.Contains(timeline, "Shortened system entry.") || strings.Contains(timeline, chatTrial.Events[0].Text) {
+				t.Error("timeline is not the dated system entries of this page")
+			}
+			f.read.Entries = f.read.Entries[:1]
+			next := r.getWith(path+"?after=0", s).Body.String()
+			if !strings.Contains(next, "No system entries on this page.") || strings.Contains(next, "Earlier event") {
+				t.Error("timeline retained another page's events")
+			}
+		})
 	}
 }
 
@@ -385,10 +491,11 @@ func TestChatAtCapacityAndReadOnly(t *testing.T) {
 	s := r.login(t)
 	page := r.getWith("/leads/daemon/later?after=0", s)
 	body := page.Body.String()
-	if page.Code != 200 || strings.Count(body, ` id="newest" tabindex="-1"`) != 1 || strings.Count(body, ` id="newest"`) != 1 || strings.Count(body, "<time ") != 16 || strings.Count(body, strings.Repeat("é", 1000)) != 16 || !strings.Contains(body, `id="chat-jump" href="#newest"`) {
+	log := regexp.MustCompile(`(?s)<ol class="chat-log".*?</ol>`).FindString(body)
+	if page.Code != 200 || strings.Count(body, ` id="newest" tabindex="-1"`) != 1 || strings.Count(body, ` id="newest"`) != 1 || strings.Count(log, "<time ") != 16 || strings.Count(log, strings.Repeat("é", 1000)) != 16 || !strings.Contains(body, `id="chat-jump" href="#newest"`) {
 		t.Fatal("full conversation")
 	}
-	if findings := inspectPage(body, withNav("a", "a#chat-refresh", "a#chat-jump"), false); len(findings) != 0 {
+	if findings := inspectPage(body, withCockpitLinks("a", "a#chat-refresh", "a#chat-jump"), false); len(findings) != 0 {
 		t.Fatal(findings)
 	}
 	if len(checkNav(body)) != 0 || strings.Contains(body, "Show earlier") || strings.Contains(body, "Show later") {
