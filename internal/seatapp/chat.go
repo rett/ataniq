@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,18 +45,40 @@ type chatRow struct {
 }
 type chatMessage struct {
 	ChatEntry
-	Stamp string
-	Last  bool
+	Last bool
 }
+
+type timelineEvent struct {
+	At   time.Time
+	Text string
+	Cut  bool
+}
+
+type chatSample struct {
+	Project, Gate string
+	Events        []timelineEvent
+}
+
+// Every validated trial directory shares these presentation samples.
+var chatTrial = chatSample{
+	Project: "Console trial",
+	Gate:    "Waiting for review",
+	Events: []timelineEvent{
+		{At: time.Date(2026, 1, 12, 9, 0, 0, 0, time.UTC), Text: "Sample project opened."},
+		{At: time.Date(2026, 1, 12, 9, 15, 0, 0, time.UTC), Text: "Sample gate queued for review."},
+	},
+}
+
 type leadsData struct {
 	pageData
-	StandIn bool
-	Rows    []chatRow
+	Sample *chatSample
+	Rows   []chatRow
 }
 type conversationData struct {
 	leadsData
 	Selected                                     chatRow
 	Messages                                     []chatMessage
+	Timeline                                     []timelineEvent
 	Epoch, Head                                  int64
 	Restarted, Reset, HavePrev, More, JumpRemote bool
 	PrevAfter, LastSeq, TailAfter                int64
@@ -158,7 +181,10 @@ func (a *app) chatPage(w http.ResponseWriter, r *http.Request, s Session) {
 		return
 	}
 	h.directory(list)
-	data := leadsData{pageData: pageData{Title: pageTitles["leads"], Nav: &navView{Current: navLeads, Leads: true, Projects: a.projectsOffered.Load()}}, StandIn: list.StandIn}
+	data := leadsData{pageData: pageData{Title: pageTitles["leads"], Nav: &navView{Current: navLeads, Leads: true, Projects: a.projectsOffered.Load()}}}
+	if list.StandIn {
+		data.Sample = &chatTrial
+	}
 	var selected LeadRow
 	var row chatRow
 	for _, item := range list.Rows {
@@ -169,17 +195,17 @@ func (a *app) chatPage(w http.ResponseWriter, r *http.Request, s Session) {
 		}
 	}
 	if lead == "" {
-		if a.chatLive(w, r, p, ctx) {
+		if a.chatLive(w, r, p, ctx, list.StandIn) {
 			a.render(w, "leads", http.StatusOK, data)
 		}
 		return
 	}
 	if selected.Lead == "" {
-		a.problemBanner(w, r, problemChatMissing, data.StandIn)
+		a.problemBanner(w, r, problemChatMissing, list.StandIn)
 		return
 	}
 	if selected.Chat == "off" {
-		a.problemBanner(w, r, problemChatOff, data.StandIn)
+		a.problemBanner(w, r, problemChatOff, list.StandIn)
 		return
 	}
 	if !explicit {
@@ -191,28 +217,28 @@ func (a *app) chatPage(w http.ResponseWriter, r *http.Request, s Session) {
 		if errors.Is(err, ErrChatUnknownLead) || errors.Is(err, ErrChatOff) {
 			delete(h.byLead, lead)
 		}
-		a.problemBanner(w, r, chatProblem(err), data.StandIn)
+		a.problemBanner(w, r, chatProblem(err), list.StandIn)
 		return
 	}
 	if !read.ValidFor(c) {
-		a.problemBanner(w, r, problemFailed, data.StandIn)
+		a.problemBanner(w, r, problemFailed, list.StandIn)
 		return
 	}
 	if read.Connection != list.Connection || read.StandIn != list.StandIn || read.Epoch != *selected.Epoch || read.Head < *selected.Head {
-		a.problemBanner(w, r, problemChatChanged, data.StandIn)
+		a.problemBanner(w, r, problemChatChanged, list.StandIn)
 		return
 	}
 	old, seen := h.byLead[lead]
 	d, visit := conversation(data, row, read, after, old, seen)
-	if a.chatLive(w, r, p, ctx) && a.render(w, "conversation", http.StatusOK, d) {
+	if a.chatLive(w, r, p, ctx, list.StandIn) && a.render(w, "conversation", http.StatusOK, d) {
 		h.byLead[lead] = visit
 	}
 }
 
-func (a *app) chatLive(w http.ResponseWriter, r *http.Request, p Chat, ctx context.Context) bool {
+func (a *app) chatLive(w http.ResponseWriter, r *http.Request, p Chat, ctx context.Context, standIn bool) bool {
 	_, _, ok := a.sess.look(cookieValue(r, SessionCookie))
 	if !ok || !p.ChatOffered() || ctx.Err() != nil {
-		a.problem(w, r, problemUnavailable)
+		a.problemBanner(w, r, problemUnavailable, ok && standIn)
 		return false
 	}
 	return true
@@ -232,8 +258,16 @@ func conversation(list leadsData, row chatRow, v ChatView, after int64, visit ch
 		d.PrevAfter = max(0, after-MaxChatEntries)
 	}
 	for i, e := range v.Entries {
-		d.Messages = append(d.Messages, chatMessage{ChatEntry: e, Stamp: e.At.UTC().Format(time.RFC3339), Last: i+1 == len(v.Entries)})
+		d.Messages = append(d.Messages, chatMessage{ChatEntry: e, Last: i+1 == len(v.Entries)})
+		if list.Sample == nil && e.Who == "system" {
+			d.Timeline = append(d.Timeline, timelineEvent{At: e.At, Text: e.Text, Cut: e.Cut})
+		}
 		d.LastSeq = e.Seq
+	}
+	if list.Sample != nil {
+		d.Timeline = list.Sample.Events
+	} else {
+		slices.SortStableFunc(d.Timeline, func(a, b timelineEvent) int { return a.At.Compare(b.At) })
 	}
 	d.JumpRemote = v.Head > d.LastSeq
 	if d.JumpRemote {

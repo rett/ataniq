@@ -2823,8 +2823,8 @@ no outbox.
 ### Reading chat on the seat
 
 The authenticated `GET /leads/` directory lists up to eight leads. An enabled
-row links to `/leads/daemon/{key}#newest`. An off row shows its name and a
-fixed explanation, and a direct read of it answers 403. An unknown lead
+row links to `/leads/daemon/{key}#newest`. An off row shows its name and **Off**; on `/leads/` it adds the
+fixed sentence "Chat is off for this lead. Turn it on at the desk.", and in the cockpit's left pane nothing more. A direct read of it answers 403. An unknown lead
 answers 404. A conversation uses one directory lookup and one selected read
 under the request deadline. On a wide screen the directory sits beside the
 transcript. Each page of a sample, a problem page of the chat pages too,

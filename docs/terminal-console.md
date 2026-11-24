@@ -81,6 +81,20 @@ limited to 4096 inspected bytes and 512 emitted bytes per field.
 If you shrink the window below the minimum while the session has focus, focus
 returns to the console.
 
+## Web console
+
+In the seat app, **Leads** opens the directory. Selecting a shared lead opens
+a read-only cockpit with the lead's name at the top, Context and the directory
+on the left, the paged conversation in the centre and a Timeline below.
+Evidence & approvals takes a third column on a wide enough window and
+otherwise sits under the conversation. On a phone the panes stack, the
+conversation first, with links to the conversation, evidence and timeline. The trial labels its sample project, gate and events **STAND-IN**.
+With daemon chat the timeline draws from system entries on the current page.
+
+Terminal attachment, keystrokes and lead controls stay at the desk.
+**Open Cards** takes you to the seat's existing approval pages.
+See [Leads in the seat app](seat-gate.md#leads).
+
 ## Keys
 
 The cockpit has two focus states: console focus and session focus. The focus
