@@ -16,6 +16,7 @@ var kindWords = [numKinds]string{
 	kindRead:    "read",
 	kindDecide:  "decide",
 	kindGenesis: "genesis",
+	kindChat:    "chat",
 }
 
 // refusal is one line the budget has to tell: what it holds is a kind and
@@ -73,10 +74,11 @@ type statsLine struct {
 
 // say writes the line of s with logf.
 func (s statsLine) say(logf func(format string, args ...any)) {
-	logf("ataniq-seat: calls of the link in the last %d minutes, taken/refused by kind: public %d/%d, read %d/%d, decide %d/%d, genesis %d/%d, wait %d/%d\n",
+	logf("ataniq-seat: calls of the link in the last %d minutes, taken/refused by kind: public %d/%d, read %d/%d, chat %d/%d, decide %d/%d, genesis %d/%d, wait %d/%d\n",
 		s.minutes,
 		s.taken[kindPublic], s.refused[kindPublic],
 		s.taken[kindRead], s.refused[kindRead],
+		s.taken[kindChat], s.refused[kindChat],
 		s.taken[kindDecide], s.refused[kindDecide],
 		s.taken[kindGenesis], s.refused[kindGenesis],
 		s.taken[kindWait], s.refused[kindWait])

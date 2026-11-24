@@ -33,9 +33,9 @@ const (
 	HoldLife = 5 * time.Minute
 )
 
-// The room of each kind of call in BudgetWindow. The six add up to GateRate:
+// The room of each kind of call in BudgetWindow. The seven add up to GateRate:
 //
-//	pings 6 + decisions 10 + anyone's 12 + reads 14 + waits 6 + genesis 12 = 60
+//	pings 6 + decisions 10 + anyone's 12 + reads 12 + chat 2 + waits 6 + genesis 12 = 60
 //
 // The room of seat.genesis was made when the interview's pages came: before
 // it the rooms were pings 6, decisions 16, anyone's 12, reads 20 and waits 6.
@@ -48,10 +48,18 @@ const (
 // tap plus an occasional read, with a few to spare for an answer that is
 // refused and asked again. The 2 were taken from decisions (12 to 10: 5
 // decisions, each a challenge and a decision call, in 80 seconds), where
-// they were the least used. Reads stay 14: three card lists that reload every
-// 20 seconds take 12 of them. Anyone's room stays 12: strangers can hold it
+// they were the least used. Anyone's room stays 12: strangers can hold it
 // with login challenges they never answer, and a smaller one would let fewer
 // of them keep the owner from logging in.
+//
+// Chat's room was carved out of the reads' 14 when replies came (12 for the
+// Cards pages and 2 for chat): a conversation shared the reads' room before,
+// and one refreshed every 10 seconds had almost half of three Card tabs'
+// list reloads refused (TestBudgetMixedUse). Three card lists that reload
+// every 20 seconds take the 12 reads; chat's 2 are one refresh of a real
+// conversation (its directory and its page) in 80 seconds, and a chat call
+// past them is busy without touching the reads, so chat never takes a
+// Card's read and a Card's read never takes chat's.
 const (
 	// pingRoom is the pings: one every PingInterval is 6 at most in
 	// BudgetWindow, and 5 in a minute of the gate's.
@@ -69,11 +77,14 @@ const (
 	// answered. Strangers who draw login challenges and never answer them
 	// keep that room until their challenges' life ends.
 	publicRoom = 12
-	// readRoom is owner.list, owner.show and owner.paths, the reads of every
-	// session together, and seat.chat, the read-only leads' directory and
-	// transcripts (chat.go). Chat shares this room until replies ship; it
-	// gets a room of its own then, sized from measured use, not before.
-	readRoom = 14
+	// readRoom is owner.list, owner.show and owner.paths, the Cards pages'
+	// reads of every session together. Chat never counts in it.
+	readRoom = 12
+	// chatRoom is seat.chat, its leads and read verbs, of every session
+	// together (chat.go): one refresh of a real conversation, the directory
+	// and a page. A chat call past it is answered busy and sent nowhere, and
+	// it never spends the reads' room.
+	chatRoom = 2
 	// waitRoom is seat.wait, the watcher's one long wait (watch.go). The
 	// watcher keeps one wait in flight, and the gate holds it up to 25
 	// seconds, so an idle seat sends one about every 25 seconds: 4 in
@@ -92,8 +103,8 @@ const (
 // The rooms and the pings are the gate's rate: either difference below is
 // a negative constant, which does not convert to uint, if they are not.
 const (
-	_ = uint(GateRate - pingRoom - decideRoom - publicRoom - readRoom - waitRoom - genesisRoom)
-	_ = uint(pingRoom + decideRoom + publicRoom + readRoom + waitRoom + genesisRoom - GateRate)
+	_ = uint(GateRate - pingRoom - decideRoom - publicRoom - readRoom - chatRoom - waitRoom - genesisRoom)
+	_ = uint(pingRoom + decideRoom + publicRoom + readRoom + chatRoom + waitRoom + genesisRoom - GateRate)
 	// A decision and a login each take two calls of their room, so each
 	// room is even.
 	_ = uint(0 - decideRoom%2)
@@ -114,6 +125,7 @@ const (
 	kindDecide
 	kindWait
 	kindGenesis
+	kindChat
 	numKinds
 )
 
@@ -128,6 +140,8 @@ func (k kind) room() int {
 		return waitRoom
 	case kindGenesis:
 		return genesisRoom
+	case kindChat:
+		return chatRoom
 	}
 	return decideRoom
 }

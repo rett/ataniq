@@ -32,14 +32,19 @@ func TestBudgetStats(t *testing.T) {
 		b.takeOrWait(kindWait)
 	}
 	b.take(kindRead)
-	want := budgetStats{kindRead: {readRoom, 4}, kindDecide: {2, 0}, kindWait: {waitRoom, 0}}
+	// Chat's room is its own: its calls and refusals are counted apart
+	// from the reads'.
+	for i := 0; i <= chatRoom; i++ {
+		b.take(kindChat)
+	}
+	want := budgetStats{kindRead: {readRoom, 4}, kindChat: {chatRoom, 1}, kindDecide: {2, 0}, kindWait: {waitRoom, 0}}
 	if got := b.stats(); got != want {
 		t.Fatalf("stats %v, want %v", got, want)
 	}
 	// The reads of the first second leave the window first, with the
-	// refusals counted with them; the one refused a second later stays.
+	// refusals counted with them; the calls of a second later stay.
 	clock.advance(BudgetWindow - time.Second)
-	want = budgetStats{kindRead: {0, 1}, kindDecide: {1, 0}, kindWait: {waitRoom, 0}}
+	want = budgetStats{kindRead: {0, 1}, kindChat: {chatRoom, 1}, kindDecide: {1, 0}, kindWait: {waitRoom, 0}}
 	if got := b.stats(); got != want {
 		t.Fatalf("stats a window on %v, want %v", got, want)
 	}
@@ -96,6 +101,9 @@ func TestBudgetStatsLine(t *testing.T) {
 	for i := 0; i < readRoom+2; i++ {
 		b.take(kindRead)
 	}
+	for i := 0; i < chatRoom+1; i++ {
+		b.take(kindChat)
+	}
 	b.takeOrWait(kindWait)
 	clock.advance(StatsLogEvery - time.Second)
 	b.take(kindGenesis)
@@ -104,7 +112,7 @@ func TestBudgetStatsLine(t *testing.T) {
 	}
 	clock.advance(time.Second)
 	b.takeOrWait(kindWait)
-	want := "ataniq-seat: calls of the link in the last 10 minutes, taken/refused by kind: public 12/1, read 14/3, decide 2/0, genesis 1/0, wait 1/0\n"
+	want := "ataniq-seat: calls of the link in the last 10 minutes, taken/refused by kind: public 12/1, read 12/3, chat 2/1, decide 2/0, genesis 1/0, wait 1/0\n"
 	got := statsLines()
 	if len(got) != 1 || got[0] != want {
 		t.Fatalf("lines %q, want %q", got, want)
@@ -153,8 +161,9 @@ type mixMeasure struct {
 	// refreshes, chatShown and chatBusy are the conversation's refreshes,
 	// those that showed the conversation and those that met a busy desk.
 	refreshes, chatShown, chatBusy int
-	// worstReads is the most read calls refused in one 80-second window.
-	worstReads int
+	// worstReads and worstChat are the most read and chat calls refused in
+	// one 80-second window.
+	worstReads, worstChat int
 }
 
 // mixRun runs one use of TestBudgetMixedUse for 600 seconds, and the call
@@ -202,10 +211,10 @@ func mixRun(t *testing.T, use mixUse) (mixMeasure, []string) {
 		v, err := d.chat(context.Background(), c, &peer)
 		switch err {
 		case nil:
-			count(kindRead, true)
+			count(kindChat, true)
 			return v, true
 		case seatapp.ErrBusy:
-			count(kindRead, false)
+			count(kindChat, false)
 			return v, false
 		}
 		t.Fatalf("chat %s: %v", c.Verb, err)
@@ -232,8 +241,9 @@ func mixRun(t *testing.T, use mixUse) (mixMeasure, []string) {
 		if at == 600 {
 			// The period's last second is 599: what it says is the
 			// tally so far, and the wait at 600 tells it.
-			want := fmt.Sprintf("ataniq-seat: calls of the link in the last 10 minutes, taken/refused by kind: public %d/%d, read %d/%d, decide %d/%d, genesis %d/%d, wait %d/%d\n",
+			want := fmt.Sprintf("ataniq-seat: calls of the link in the last 10 minutes, taken/refused by kind: public %d/%d, read %d/%d, chat %d/%d, decide %d/%d, genesis %d/%d, wait %d/%d\n",
 				tally[kindPublic].taken, tally[kindPublic].refused, tally[kindRead].taken, tally[kindRead].refused,
+				tally[kindChat].taken, tally[kindChat].refused,
 				tally[kindDecide].taken, tally[kindDecide].refused, tally[kindGenesis].taken, tally[kindGenesis].refused,
 				tally[kindWait].taken, tally[kindWait].refused)
 			d.budget.takeOrWait(kindWait)
@@ -243,7 +253,7 @@ func mixRun(t *testing.T, use mixUse) (mixMeasure, []string) {
 					lines = append(lines, line)
 				}
 			}
-			if refused := tally[kindRead].refused + tally[kindGenesis].refused; refused > 0 {
+			if refused := tally[kindRead].refused + tally[kindChat].refused + tally[kindGenesis].refused; refused > 0 {
 				if len(lines) != 1 || lines[0] != want {
 					t.Fatalf("%s: stats lines %q, want %q", use.name, lines, want)
 				}
@@ -310,7 +320,9 @@ func mixRun(t *testing.T, use mixUse) (mixMeasure, []string) {
 		case 406:
 			answer(kindDecide, "decision-2")
 		}
-		m.worstReads = max(m.worstReads, d.budget.stats()[kindRead].refused)
+		st := d.budget.stats()
+		m.worstReads = max(m.worstReads, st[kindRead].refused)
+		m.worstChat = max(m.worstChat, st[kindChat].refused)
 		clock.advance(time.Second)
 	}
 	panic("unreachable")
@@ -318,43 +330,70 @@ func mixRun(t *testing.T, use mixUse) (mixMeasure, []string) {
 
 // TestBudgetMixedUse measures the seat link's rooms (budget.go) under a
 // mixed use, with the rooms as they are (pings 6, decisions 10, anyone's
-// 12, reads 14, waits 6, genesis 12): an interview answer every 12
+// 12, reads 12, chat 2, waits 6, genesis 12): an interview answer every 12
 // seconds, three Card tabs reloading every 20 seconds, in step or
 // staggered, a conversation of a real lead refreshed by hand every 10
-// seconds (two reads a refresh, the directory and the page, neither
+// seconds (two chat calls a refresh, the directory and the page, neither
 // reused), every 30 seconds, or not at all, the watcher, one login and two
-// decisions, over 600
-// seconds (521 whole 80-second windows). The login and the decisions
-// always complete: their rooms are their own. What it measured is pinned
-// below and recorded in the design (docs/design/seat-gate.md, "Reading chat
-// on the seat"); a change of a room or of the link's reuse changes it, and
-// is to be measured and recorded again:
+// decisions, over 600 seconds (521 whole 80-second windows). The login and
+// the decisions always complete: their rooms are their own. Chat has a room
+// of its own, so a run with chat refuses no Card list read, no list of open
+// projects and no interview answer that the same tabs without chat do not:
+// chat's load causes no Card refusal; only chat's own refreshes meet busy.
+// What it measured is pinned below and recorded in the design
+// (docs/design/seat-gate.md, "Reading chat on the seat"); a change of a room
+// or of the link's reuse changes it, and is to be measured and recorded
+// again:
 //
-//   - With no chat, no Card list read is refused: three tabs take 12 of the
-//     14 reads.
-//   - A conversation refreshed every 10 seconds starves the Card tabs: 42
-//     of their 90 list reads are refused, up to 10 reads in one window, and
-//     28 of its 60 refreshes are busy. Every 30 seconds, 9 of the 90 are
-//     refused and 9 of its 20 refreshes are busy.
-//   - With the tabs staggered, the interview's room is short too, with chat
-//     or without: 7 of the 50 answers, and 20 of the 65 lists of open
-//     projects the link did not hold, are refused, since each answer makes
-//     the next tab's list a call of the gate. In step, none is.
+//   - No Card list read is refused, with chat or without: three tabs take
+//     the 12 reads.
+//   - A conversation refreshed every 10 seconds shows 8 of its 60 refreshes
+//     and meets busy at 52, with up to 7 chat calls refused in one window.
+//     Every 30 seconds, 7 of its 20 refreshes show and 13 are busy. (When a
+//     refresh's directory is sent and its page then meets busy, the
+//     directory's call was spent for nothing; that is chat's own cost.)
+//   - With the tabs staggered, the interview's room is short, with chat or
+//     without: 7 of the 50 answers, and 20 of the 65 lists of open projects
+//     the link did not hold, are refused, since each answer makes the next
+//     tab's list a call of the gate. In step, none is. (Before chat had its
+//     room, a refresh every 10 seconds had 42 of the 90 Card list reads
+//     refused, and every 30 seconds 9.)
 func TestBudgetMixedUse(t *testing.T) {
+	steps := [3]int{0, 0, 0}
+	staggered := [3]int{0, 7, 14}
+	baseline := map[[3]int]mixMeasure{}
 	for _, c := range []struct {
 		use  mixUse
 		want mixMeasure
 	}{
-		{mixUse{"tabs in step, no chat", [3]int{0, 0, 0}, 0}, mixMeasure{cardReads: 90, projectLists: 30, answers: 50}},
-		{mixUse{"tabs staggered, no chat", [3]int{0, 7, 14}, 0}, mixMeasure{cardReads: 90, projectLists: 45, projectRefused: 20, answers: 50, answersRefused: 7}},
-		{mixUse{"tabs in step, chat every 10 s", [3]int{0, 0, 0}, 10}, mixMeasure{cardReads: 90, cardRefused: 42, projectLists: 30, answers: 50, refreshes: 60, chatShown: 32, chatBusy: 28, worstReads: 10}},
-		{mixUse{"tabs staggered, chat every 10 s", [3]int{0, 7, 14}, 10}, mixMeasure{cardReads: 90, cardRefused: 42, projectLists: 45, projectRefused: 20, answers: 50, answersRefused: 7, refreshes: 60, chatShown: 32, chatBusy: 28, worstReads: 10}},
-		{mixUse{"tabs staggered, chat every 30 s", [3]int{0, 7, 14}, 30}, mixMeasure{cardReads: 90, cardRefused: 9, projectLists: 45, projectRefused: 20, answers: 50, answersRefused: 7, refreshes: 20, chatShown: 11, chatBusy: 9, worstReads: 3}},
+		{mixUse{"tabs in step, no chat", steps, 0}, mixMeasure{cardReads: 90, projectLists: 30, answers: 50}},
+		{mixUse{"tabs staggered, no chat", staggered, 0}, mixMeasure{cardReads: 90, projectLists: 45, projectRefused: 20, answers: 50, answersRefused: 7}},
+		{mixUse{"tabs in step, chat every 10 s", steps, 10}, mixMeasure{cardReads: 90, projectLists: 30, answers: 50, refreshes: 60, chatShown: 8, chatBusy: 52, worstChat: 7}},
+		{mixUse{"tabs staggered, chat every 10 s", staggered, 10}, mixMeasure{cardReads: 90, projectLists: 45, projectRefused: 20, answers: 50, answersRefused: 7, refreshes: 60, chatShown: 8, chatBusy: 52, worstChat: 7}},
+		{mixUse{"tabs in step, chat every 30 s", steps, 30}, mixMeasure{cardReads: 90, projectLists: 30, answers: 50, refreshes: 20, chatShown: 7, chatBusy: 13, worstChat: 2}},
+		{mixUse{"tabs staggered, chat every 30 s", staggered, 30}, mixMeasure{cardReads: 90, projectLists: 45, projectRefused: 20, answers: 50, answersRefused: 7, refreshes: 20, chatShown: 7, chatBusy: 13, worstChat: 2}},
 	} {
 		got, _ := mixRun(t, c.use)
 		t.Logf("%s: %+v", c.use.name, got)
 		if got != c.want {
 			t.Errorf("%s: measured %+v, recorded %+v", c.use.name, got, c.want)
+		}
+		if c.use.chat == 0 {
+			baseline[c.use.tabs] = got
+			continue
+		}
+		// Chat's load is no worse for the Cards and the interview than
+		// the same tabs without chat: no refusal is chat's doing.
+		base, ok := baseline[c.use.tabs]
+		if !ok {
+			t.Fatalf("%s: no run without chat to compare with", c.use.name)
+		}
+		if got.cardRefused > base.cardRefused || got.worstReads > base.worstReads ||
+			got.projectRefused > base.projectRefused || got.answersRefused > base.answersRefused {
+			t.Errorf("%s: chat cost the Cards or the interview: %+v, without chat %+v", c.use.name, got, base)
+		}
+		if got.chatShown+got.chatBusy != got.refreshes || got.chatShown == 0 {
+			t.Errorf("%s: of %d refreshes %d shown and %d busy", c.use.name, got.refreshes, got.chatShown, got.chatBusy)
 		}
 	}
 }

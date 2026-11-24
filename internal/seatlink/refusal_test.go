@@ -36,7 +36,7 @@ func TestSeatLinkRefusalLog(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		k    kind
-	}{{"public", kindPublic}, {"read", kindRead}, {"genesis", kindGenesis}} {
+	}{{"public", kindPublic}, {"read", kindRead}, {"chat", kindChat}, {"genesis", kindGenesis}} {
 		var l logLines
 		clock := &testClock{t: decideNow}
 		b := &budget{now: clock.now, logf: l.logf}
