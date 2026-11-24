@@ -54,8 +54,11 @@ func (d *Daemon) Chat(ctx context.Context, c seatapp.ChatCall) (seatapp.ChatView
 	return d.chat(ctx, c, d.c)
 }
 
-// chat forgets every kept answer when the gate refuses a call or answers
-// one the link does not take, since the leads or the host changed. A call
+// chat keeps the trial's answers (stand_in) a short while, and sends every
+// call of a real host to the gate. It forgets every kept answer when the
+// gate refuses a call or answers one the link does not take, since the
+// leads or the host changed, and when a directory or a reset comes from the
+// gate. A call
 // the link does not send (no connection, no capability, no room) is no news
 // of the gate, and keeps them: a tap that meets the busy read room must not
 // cost the next page its directory.
@@ -127,12 +130,14 @@ func (d *Daemon) chat(ctx context.Context, c seatapp.ChatCall, peer chatPeer) (v
 		if c.Verb == seatapp.ChatLeads {
 			ttl = listFresh
 		}
-		// Every directory, the trial's or a real one, is kept listFresh (20
-		// seconds), as the interview's list is. A transcript page is kept
-		// viewFresh (10 seconds) only when it is the trial's, whose samples
-		// never change: a real transcript requires live read authorization
-		// on every request, so it is never kept.
-		if c.Verb == seatapp.ChatLeads || v.StandIn {
+		// Only the trial's answers are kept: its directory listFresh (20
+		// seconds), as the interview's list is, and a transcript page
+		// viewFresh (10 seconds), since its samples never change. A real
+		// directory and a real transcript are never kept: the desk
+		// authorizes every list and read live, and a kept directory would
+		// show a lead the desk turned off, or its old state, epoch and
+		// head, until it aged out.
+		if v.StandIn {
 			if m.answers == nil || len(m.answers) >= 32 {
 				m.answers = make(map[seatapp.ChatCall]chatCached)
 			}

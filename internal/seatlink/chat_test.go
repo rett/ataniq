@@ -25,6 +25,9 @@ type chatTestPeer struct {
 	// real answers as a host of real leads would: the samples without
 	// their stand_in mark.
 	real bool
+	// off are the leads the desk turned off: a directory lists them bare,
+	// and a read of one is refused chat-off.
+	off map[string]bool
 }
 
 func (p *chatTestPeer) Connected() (time.Time, bool) { return p.since, !p.since.IsZero() }
@@ -46,9 +49,17 @@ func (p *chatTestPeer) Call(ctx context.Context, op string, params, result any) 
 	if err != nil {
 		return err
 	}
+	if p.off[c.Lead] {
+		return &seatgate.RemoteError{Code: ownerwire.CodeChatOff}
+	}
 	r, err := p.port.Chat(ctx, c)
 	if err != nil {
 		return err
+	}
+	for i, row := range r.Leads {
+		if p.off[row.Lead] {
+			r.Leads[i] = ownerwire.ChatLeadRow{Lead: row.Lead, Chat: "off"}
+		}
 	}
 	if p.real {
 		r.StandIn = false
@@ -120,10 +131,10 @@ func TestSeatChatDownOrNotOffered(t *testing.T) {
 	}
 }
 
-// TestSeatChatRealReuse: of a host that is not the trial's, the link
-// reuses the directory for 20 seconds, as the trial's, and never a
-// transcript page: each read is a call of the gate.
-func TestSeatChatRealReuse(t *testing.T) {
+// TestSeatChatRealLive: of a host that is not the trial's, the link
+// reuses nothing: every directory and every transcript page is a call of
+// the gate, so the desk authorizes each one live.
+func TestSeatChatRealLive(t *testing.T) {
 	clock := &testClock{t: decideNow}
 	d := Daemon{budget: budget{now: roomy()}, gnow: clock.now}
 	p := chatTestPeer{since: clock.now(), port: standin.New(clock.now), real: true}
@@ -139,12 +150,82 @@ func TestSeatChatRealReuse(t *testing.T) {
 	ask(list, 1)
 	ask(read, 2)
 	ask(read, 3)
-	ask(list, 3)
-	clock.advance(19 * time.Second)
-	ask(list, 3)
-	ask(read, 4)
-	clock.advance(time.Second)
+	ask(list, 4)
 	ask(list, 5)
+	clock.advance(time.Second)
+	ask(list, 6)
+	ask(read, 7)
+	if len(d.cmem.answers) != 0 {
+		t.Fatalf("the link kept %d answers of a real host", len(d.cmem.answers))
+	}
+}
+
+// TestSeatChatRealDirectoryTurnedOff: a real directory lists a lead
+// running; the desk turns its chat off while the same session and the same
+// connection stay open. The next directory, asked at once, is the gate's:
+// the lead's row is bare, with no state, epoch or head left of it, and a
+// read of it is refused. Of the trial, in the same session and connection,
+// the directory is still reused.
+func TestSeatChatRealDirectoryTurnedOff(t *testing.T) {
+	clock := &testClock{t: decideNow}
+	d := Daemon{budget: budget{now: roomy()}, gnow: clock.now}
+	session := make(chan struct{})
+	p := chatTestPeer{since: clock.now(), port: standin.New(clock.now), real: true}
+	list := seatapp.ChatCall{Verb: seatapp.ChatLeads, SessionDone: session}
+	read := seatapp.ChatCall{Verb: seatapp.ChatRead, Lead: "daemon:alpha", SessionDone: session}
+	row := func(v seatapp.ChatView, lead string) seatapp.LeadRow {
+		t.Helper()
+		for _, r := range v.Rows {
+			if r.Lead == lead {
+				return r
+			}
+		}
+		t.Fatalf("no row %s", lead)
+		return seatapp.LeadRow{}
+	}
+	got, err := d.chat(context.Background(), list, &p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := row(got, "daemon:alpha"); r.Chat == "off" || r.State != "running" || r.Epoch == nil || r.Head == nil {
+		t.Fatalf("the lead before: %+v", r)
+	}
+	if _, err := d.chat(context.Background(), read, &p); err != nil {
+		t.Fatal(err)
+	}
+	p.off = map[string]bool{"daemon:alpha": true}
+	clock.advance(time.Second)
+	got, err = d.chat(context.Background(), list, &p)
+	if err != nil || p.calls != 3 {
+		t.Fatalf("the directory after: %v, %d calls", err, p.calls)
+	}
+	if r := row(got, "daemon:alpha"); r.Chat != "off" || r.State != "" || r.Epoch != nil || r.Head != nil {
+		t.Fatalf("the lead turned off still shows %+v", r)
+	}
+	if _, err := d.chat(context.Background(), read, &p); err != seatapp.ErrChatOff || p.calls != 4 {
+		t.Fatalf("a read of the lead turned off: %v, %d calls", err, p.calls)
+	}
+
+	// The trial's directory, on the same session and connection, is kept.
+	p.real, p.off = false, nil
+	for want, n := range []int{5, 5, 5} {
+		got, err := d.chat(context.Background(), list, &p)
+		if err != nil || !got.StandIn || p.calls != n {
+			t.Fatalf("trial directory %d: %v, %d calls, want %d", want, err, p.calls, n)
+		}
+		clock.advance(5 * time.Second)
+	}
+	// It is kept for its session alone: another session asks the gate,
+	// and a session that ended is refused.
+	other := list
+	other.SessionDone = make(chan struct{})
+	if _, err := d.chat(context.Background(), other, &p); err != nil || p.calls != 6 {
+		t.Fatalf("another session: %v, %d calls", err, p.calls)
+	}
+	close(session)
+	if _, err := d.chat(context.Background(), list, &p); err != seatapp.ErrDaemonUnavailable {
+		t.Fatalf("an ended session: %v", err)
+	}
 }
 
 func TestSeatChatWireBoundsAndCodes(t *testing.T) {
@@ -242,9 +323,9 @@ func TestSeatChatSharesTheReadRoom(t *testing.T) {
 // card list, a read, and its list of open projects, an interview call), and
 // opens a lead's conversation and refreshes it twice, twenty seconds apart.
 // Chat shares the read room with the Cards tab: each chat page is counted as
-// two reads, the directory and a transcript, as a real lead's would be (the
-// link reuses neither here: the directory lives 20 seconds and a real
-// transcript is never reused). None of it is refused.
+// two reads, the directory and a transcript, as a real lead's is (the link
+// reuses neither of a real host). None of it is refused. TestBudgetMixedUse
+// measures three tabs and a conversation refreshed every 10 seconds.
 func TestSeatChatMixedBudget(t *testing.T) {
 	clock := &testClock{t: decideNow}
 	b := budget{now: clock.now}

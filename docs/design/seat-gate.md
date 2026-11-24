@@ -802,7 +802,14 @@ sends none past the room of its kind:
 
 The rooms add up to the gate's 60 (6 + 10 + 12 + 14 + 6 + 12, a sum the code
 checks when it is compiled), so the gate's rate never refuses a call the seat
-sent. Before the watcher the reads had 26 and there was no room for waits;
+sent. A test reads this table and fails when a row and the link's room of the
+kind disagree (`TestSeatLinkDesignRoomsTable`). The link counts, by kind, the
+calls it took and refused for room in the last 80 seconds (`budgetStats`),
+and, besides the line of each refusal (one in 30 seconds for a kind), writes
+one line of counts at most every 10 minutes, and only for a period in which
+it refused a call: `ataniq-seat: calls of the link in the last N minutes,
+taken/refused by kind: public T/R, read T/R, decide T/R, genesis T/R, wait
+T/R`, numbers and fixed words, nothing of a call. Before the watcher the reads had 26 and there was no room for waits;
 before the interview's pages the rooms were 6, 16 (8 decisions), 12 (6
 logins), 20 and 6, and the interview first had 10, taken from the reads (20
 to 14) and the decisions (16 to 12). A phone trial ran out of those 10 at the
@@ -2874,16 +2881,56 @@ kind `read`. Chat shares that room until replies are built; it gets a room of
 its own then, sized from measured use (see Budget (8) below), and not before,
 so the rooms of logins, decisions, reads and the interview are as they were.
 The chat pages have their own page limit of 30 requests per credential per
-minute. Within the login and gate connection the link reuses a directory
-for 20 seconds, every directory, the trial's or a real one, and a read at the
-same lead and cursor for 10 seconds only when it is the trial's (`stand_in`),
-whose samples never change; a real transcript is never reused. A refusal of the gate, an answer the link does not take, a
-replacement connection, a fresh directory or a retention reset invalidates
-earlier answers. A call the link refuses itself and does not send (no room in
-the reads, no connection, no capability) is no news of the gate and keeps them,
-so a tap that meets a busy read room does not cost the next page its
-directory. Logout ends access to that
-session's cache. Real transcript reads require live authorization.
+minute.
+
+What sharing costs was measured with the rooms as they are
+(`TestBudgetMixedUse`, a fake clock over 600 seconds, 521 whole 80-second
+windows): an interview answer every 12 seconds, three Card tabs reloading
+every 20 seconds (each a card list, a read, and a list of open projects,
+which the link keeps 20 seconds and an answer forgets), the watcher, one
+login and two decisions, with a real lead's conversation refreshed by hand
+(two reads a refresh, the directory and the page, neither reused) once in 10
+seconds, once in 30 seconds, or not at all:
+
+| Use | Card list reads refused | Chat refreshes busy | Most reads refused in one window |
+| --- | --- | --- | --- |
+| No chat | 0 of 90 | none made | 0 |
+| Chat once in 30 s (tabs staggered) | 9 of 90 | 9 of 20 | 3 |
+| Chat once in 10 s (tabs in step or staggered) | 42 of 90 | 28 of 60 | 10 |
+
+The login and both decisions completed in every run: their rooms are their
+own, and reads cannot take them. Without chat the three tabs take 12 of the
+14 reads and none is refused; a conversation refreshed once in 10 seconds asks
+16 reads in 80 seconds and starves the Card tabs of almost half their
+reloads, and one in 30 seconds still costs them one in ten. The rooms
+were not changed for it: the measurement is the evidence for chat's own room
+when replies are built (Budget (8) below). It also showed the interview's
+room short with the three tabs staggered, chat or not: 7 of 50 answers and
+20 of the 65 lists of open projects the link did not hold were refused,
+since each answer makes the next tab's list a call of the gate (none with
+the tabs in step). The link reuses an answer only when the validated answer is the
+trial's (`stand_in`), whose samples never change, and only within the login
+and the gate connection: the trial's directory for 20 seconds and its read at
+the same lead and cursor for 10 seconds. A real directory and a real
+transcript are never reused: every one is a call of the gate, which the desk
+authorizes live, so a lead the desk turns off shows as off at the next
+directory, with no state, epoch or head left of it, even while the same
+session and connection stay open (`TestSeatChatRealDirectoryTurnedOff`). A
+refusal of the gate, an answer the link does not take, a replacement
+connection, a fresh directory or a retention reset invalidates earlier
+answers. A call the link refuses itself and does not send (no room in the
+reads, no connection, no capability) is no news of the gate and keeps them, so
+a tap that meets a busy read room does not cost the trial's next page its
+directory. Logout ends access to that session's cache.
+
+What a login keeps of a lead to mark a restart (the last epoch it showed, and
+the switch it was shown under) is dropped whenever the lead may be another:
+at session end, on a replacement connection or a change between the trial and
+a real host, when a directory no longer lists the lead or lists it off, when
+its switch changed (a downgrade from `send` to `read` among them), when a read
+resets, and when an epoch is below the one kept. The marker shows only when
+the epoch rose under the same switch with no reset, so a key used again never
+carries the marker of the lead before.
 
 ### Before a real port
 
@@ -2927,7 +2974,10 @@ constraints, from the independent review of the chat design (its findings 1, 2,
   them. When replies are built, chat's own room on the seat link is sized
   from a measured mix of an interview, three Card tabs, logins and decisions,
   and under contention chat answers busy before Cards and decisions are
-  starved. Malformed wire counts for the refusal bound;
+  starved. The first measurement is recorded under
+  [reading chat on the seat](#reading-chat-on-the-seat): shared as it is, a
+  conversation refreshed once in 10 seconds has 42 of 90 Card list reloads
+  refused, so sharing does not yet meet this. Malformed wire counts for the refusal bound;
   rejected user text and the state of a lead do not.
 
 ## The record change

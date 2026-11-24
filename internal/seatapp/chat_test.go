@@ -443,6 +443,56 @@ func TestChatReusedKeyHasNoPredecessorOrRestart(t *testing.T) {
 	}
 }
 
+// TestChatVisitDroppedForAnotherLead: of a real host, what a login kept of
+// a lead (the epoch behind the restart marker) is dropped when the lead's
+// switch changes, when a read resets and when the epoch falls below the one
+// kept, so a lead that may be another under the same key never shows the
+// marker of the one before. A rise of the epoch under the same switch, with
+// no reset, still shows it.
+func TestChatVisitDroppedForAnotherLead(t *testing.T) {
+	f := sampleChat()
+	f.list.StandIn, f.read.StandIn = false, false
+	f.read.Lead = "daemon:approve"
+	r := newRig(t, withChat(f))
+	s := r.login(t)
+	row := &f.list.Rows[1]
+	page := func(epoch int64) string {
+		t.Helper()
+		*row.Epoch = epoch
+		f.read.Epoch = epoch
+		w := r.getWith("/leads/daemon/approve?after=2", s)
+		if w.Code != 200 || strings.Contains(w.Body.String(), "STAND-IN") {
+			t.Fatal(w.Code, w.Body)
+		}
+		return w.Body.String()
+	}
+	marked := func(p string) bool { return strings.Contains(p, "Lead restarted:") }
+	if marked(page(1)) {
+		t.Fatal("a first visit is marked")
+	}
+	if !marked(page(2)) || marked(page(2)) {
+		t.Fatal("a restart under the same switch")
+	}
+	// A downgrade, send to read, drops the visit.
+	row.Chat = "read"
+	if marked(page(3)) {
+		t.Fatal("marked across a downgrade")
+	}
+	// A reset drops it, and its page starts a visit of its own.
+	f.read.Reset = true
+	if p := page(4); marked(p) || !strings.Contains(p, "This page starts again from the oldest kept message.") {
+		t.Fatal("marked across a reset")
+	}
+	f.read.Reset = false
+	if marked(page(4)) || !marked(page(5)) {
+		t.Fatal("the visit a reset started")
+	}
+	// An epoch below the one kept is another lead under the key.
+	if marked(page(1)) || !marked(page(2)) {
+		t.Fatal("marked across a fall of the epoch")
+	}
+}
+
 func TestChatTypedResultAdmission(t *testing.T) {
 	for _, change := range []func(*ChatView){
 		func(v *ChatView) { v.Rows[0].Epoch = nil }, func(v *ChatView) { v.Rows[0].Head = nil },
