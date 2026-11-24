@@ -5,10 +5,14 @@
   with the stand-in lead and then with one real Claude lead, in three
   terminals (daemon, console, desk), with every step that starts a process,
   changes a unit or defines a lead marked OWNER ONLY. The daemon refuses that
-  folder while it holds the trial's settings; the trial's unit is stopped and
-  masked for the sitting, and only `owner/scratch.json` is swapped, within
-  `owner/`, by the owner's `prepare.sh --swap-in` and `--swap-out`, which
-  check that the unit is inactive and masked and the gate's port free,
+  folder while it holds the trial's settings; the trial's unit is stopped for
+  the sitting (a unit file also masked for the boot), and only
+  `owner/scratch.json` is swapped, within `owner/`, by the owner's
+  `prepare.sh --swap-in` and `--swap-out`, which check the gate's port free
+  and the trial's unit inactive and, by the kind `--record-trial` recorded,
+  unable to start: a transient unit gone, a unit file masked or, when a
+  unit file of higher priority shadows the runtime mask, without an
+  activation source (the fallback written in the evidence),
   record the trial settings file's identity and digest in the proof's
   folder, rename only to names that are free (a dangling link counts as
   taken) and verify each step; `--status` reads the layout and prints one
@@ -20,7 +24,9 @@
   `systemd-run` command that re-creates it, with the command line of its
   main process read from `/proc` and every argument single-quoted; it
   refuses, writing nothing, a `MainPID` of 0, a command line it cannot read
-  or keep exactly and a program that is not the unit's. The daemon's output
+  or keep exactly and a program that is not the unit's. `--status` and the
+  printed steps name the way back for the kind: the restart script for a
+  transient unit, unmask and start for a unit file. The daemon's output
   ends with its exit status. `qualification/scratch-seat/prepare.sh` writes
   the scratch config (mode 0600) and the files it names in a folder of the
   proof's own, with leads fresh for each sitting (`standin-N`, `live-N`):

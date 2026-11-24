@@ -287,3 +287,115 @@ func TestScratchSeatPrepareRecordTrialUnitFile(t *testing.T) {
 	}
 	k.onlyShows(t)
 }
+
+// recordTrial runs --record-trial for the root, with the user manager
+// saying the lines given and, for a transient unit, a main process that
+// runs the sample program.
+func (k scratchSeatKit) recordTrial(t *testing.T, r string, units []string) {
+	t.Helper()
+	k.unitsSay(t, units...)
+	k.procSays(t, "4242", nulJoin([]string{"/srv/sample/bin/ataniqd", "run", "--state-dir", k.state}))
+	if out, code := k.run(t, k.procEnv(), "--record-trial", "--state", k.state, "--root", r, "--unit", "sample-trial.service"); code != 0 {
+		t.Fatalf("--record-trial: exit %d:\n%s", code, out)
+	}
+}
+
+// --swap-in by the kind of the trial's unit. A transient unit is taken once
+// it is gone (inactive and not-found) and refused while it runs or stays
+// loaded; a unit file is taken masked, or, when the runtime mask did not
+// take and was taken back, without an activation source (the fallback is
+// written in the evidence), and refused with one, or with the runtime mask
+// still there. What the guard found is in evidence/trial-unit-guard.txt;
+// --status and --swap-out name step 15 for the kind.
+func TestScratchSeatPrepareSwapInGuard(t *testing.T) {
+	const unit = "sample-trial.service "
+	mask := func(k scratchSeatKit) func() {
+		dir := filepath.Join(k.dir, "run", "systemd", "user")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("/dev/null", filepath.Join(dir, "sample-trial.service")); err != nil {
+			t.Fatal(err)
+		}
+		return func() {}
+	}
+	for _, c := range []struct {
+		name      string
+		transient bool
+		units     []string
+		setup     func(k scratchSeatKit) func()
+		want      string // the refusal, or the guard's evidence when it is taken
+		ok        bool
+	}{
+		{"a transient unit gone", true, []string{unit + "LoadState not-found"}, nil,
+			"kind transient, ActiveState=inactive, LoadState=not-found: gone; only trial-restart.sh makes it again: accepted", true},
+		{"a transient unit masked", true, []string{unit + "LoadState masked"}, nil, "kind transient, ActiveState=inactive, LoadState=masked", true},
+		{"a transient unit that runs", true, []string{unit + "ActiveState active", unit + "LoadState loaded"}, nil, "is active, not inactive", false},
+		{"a transient unit still loaded", true, []string{unit + "ActiveState inactive", unit + "LoadState loaded"}, nil, "not gone (not-found)", false},
+		{"a unit file masked", false, []string{unit + "LoadState masked"}, nil, "kind file, ActiveState=inactive, LoadState=masked: the runtime mask took: accepted", true},
+		{"a mask that did not take, no activation source", false, []string{unit + "LoadState loaded", unit + "UnitFileState disabled"}, nil,
+			"the runtime mask did not take (a unit file of higher priority shadows it) and was taken back; fallback: no activation source (TriggeredBy, WantedBy, RequiredBy, BoundBy and UpheldBy empty, UnitFileState=disabled): accepted", true},
+		{"a mask that did not take, still there", false, []string{unit + "LoadState loaded"}, mask, "its runtime mask is there", false},
+		{"a mask that did not take, a socket", false, []string{unit + "LoadState loaded", unit + "TriggeredBy sample-trial.socket"}, nil,
+			"can be started: TriggeredBy=sample-trial.socket", false},
+		{"a mask that did not take, enabled", false, []string{unit + "LoadState loaded", unit + "UnitFileState enabled", unit + "WantedBy default.target"}, nil,
+			"can be started: WantedBy=default.target UnitFileState=enabled", false},
+		{"a mask that did not take, bound", false, []string{unit + "LoadState loaded", unit + "BoundBy other.service", unit + "RequiredBy more.service"}, nil,
+			"can be started: RequiredBy=more.service BoundBy=other.service", false},
+		{"a mask that did not take, linked", false, []string{unit + "LoadState loaded", unit + "UnitFileState linked"}, nil, "can be started: UnitFileState=linked", false},
+		{"a unit file that is gone", false, []string{unit + "LoadState not-found"}, nil, "neither masked nor loaded", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			k := newScratchSeatKit(t)
+			r := filepath.Join(k.dir, "proof")
+			if out, code := k.run(t, nil, k.args("--write", r, false)...); code != 0 {
+				t.Fatalf("--write: exit %d:\n%s", code, out)
+			}
+			if c.transient {
+				k.recordTrial(t, r, k.transientUnit("/srv/sample/bin/ataniqd", "Sample trial"))
+			} else {
+				k.recordTrial(t, r, k.fileUnit())
+			}
+			k.unitsSay(t, c.units...)
+			if c.setup != nil {
+				c.setup(k)
+			}
+			gate := "192.0.2.10:" + freeTCPPort(t)
+			vals := []string{"--state", k.state, "--root", r}
+			canon := filepath.Join(k.state, "owner", "scratch.json")
+			trial := mustRead(t, canon)
+			out, code := k.run(t, nil, append(append([]string{"--swap-in"}, vals...), "--gate", gate, "--sitting", "3", "--unit", "sample-trial.service")...)
+			guard := filepath.Join(r, "evidence", "trial-unit-guard.txt")
+			if !c.ok {
+				if code != 1 || !strings.Contains(out, c.want) {
+					t.Fatalf("--swap-in: exit %d, want 1 and %q:\n%s", code, c.want, out)
+				}
+				if !bytes.Equal(mustRead(t, canon), trial) {
+					t.Fatal("a refused --swap-in moved the trial's settings")
+				}
+				for _, p := range []string{guard, filepath.Join(r, "swap-record")} {
+					if _, err := os.Lstat(p); err == nil {
+						t.Fatalf("a refused --swap-in wrote %s", p)
+					}
+				}
+				k.onlyShows(t)
+				return
+			}
+			if code != 0 || !strings.Contains(out, "status: swapped in") {
+				t.Fatalf("--swap-in: exit %d:\n%s", code, out)
+			}
+			if g := string(mustRead(t, guard)); !strings.HasPrefix(g, "swap-in, sitting 3, unit sample-trial.service: ") || !strings.Contains(g, c.want) || strings.Count(g, "\n") != 1 {
+				t.Errorf("the guard's evidence: %q, want %q", g, c.want)
+			}
+			out, code = k.run(t, nil, append(append([]string{"--swap-out"}, vals...), "--gate", gate, "--unit", "sample-trial.service")...)
+			step15 := "unmask the trial's unit if it is masked and start it again (step 15)"
+			if c.transient {
+				step15 = "re-create the trial's transient unit: OWNER ONLY: sh " + filepath.Join(r, "trial-restart.sh") + " (step 15)"
+			}
+			if code != 0 || !strings.Contains(out, "status: trial in place (the way back is done)") || !strings.Contains(out, "next: "+step15) {
+				t.Fatalf("--swap-out: exit %d, want %q:\n%s", code, step15, out)
+			}
+			k.onlyShows(t)
+		})
+	}
+}
