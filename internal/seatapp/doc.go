@@ -367,6 +367,22 @@
 // the rules a test can: the viewport, the language, a title and the landmarks
 // of each page, and the style sheet's sizes and contrast.
 //
+// Every page behind a session has the main navigation: a "Skip to content"
+// link first, then, in the header, <nav aria-label="Main"> of plain links
+// ("Cards", and "Projects" while new projects are offered) with
+// aria-current on the link of the page's own section, then the content in
+// <main id="content">. It is a page's navView; the public pages and the
+// problem pages have none. The Card page and the path pages ask the daemon
+// nothing of the interview: they show "Projects" by the card list's last
+// answer. The navigation holds no button, form or script, so it adds no
+// logout control: the plan page keeps no script and no button. nav_test.go
+// holds every page to it. On a phone it is a bar at the top, in the page's
+// flow. The layout gives the body of those pages the class nav-page, and on
+// a screen at least 60rem wide the style sheet alone makes their header a
+// sticky rail on the left beside a column of about 44rem (60rem for a list
+// of cards); the markup and its order are the same at every width, and the
+// public pages keep their one column.
+//
 // # Seams
 //
 // [Daemon] is the port to the daemon, defined here and implemented over the

@@ -42,13 +42,13 @@ var inventory = []struct {
 	{"POST /api/login-challenge", "api", nil, "", false},
 	{"POST /api/login", "api", nil, "", false},
 	{"POST /api/logout", "api", nil, "", false},
-	{pattern: "GET /cards/{$}", kind: "page", controls: []string{"a", "button#logout", "button#enable-notices", "button#stop-notices",
-		"form#start-project", "button#start-project-go"}, authed: true},
+	{pattern: "GET /cards/{$}", kind: "page", controls: withNav("a", "button#logout", "button#enable-notices", "button#stop-notices",
+		"form#start-project", "button#start-project-go"), authed: true},
 	{pattern: "GET /cards", kind: "redirect"},
-	{pattern: "GET /cards/{id}", kind: "page", controls: []string{"a#paths", "a#back", "button#logout",
-		"input#signoff-0", "button#approve", "textarea#reason", "button#deny", "button#confirm-go", "button#confirm-cancel", "a#look"},
+	{pattern: "GET /cards/{id}", kind: "page", controls: withNav("a#paths", "a#back", "button#logout",
+		"input#signoff-0", "button#approve", "textarea#reason", "button#deny", "button#confirm-go", "button#confirm-cancel", "a#look"),
 		path: "/cards/" + testCardID, authed: true},
-	{pattern: "GET /cards/{id}/paths/{n}", kind: "page", controls: []string{"a#prev", "a#next", "a#back", "button#logout"}, path: "/cards/" + testCardID + "/paths/1", authed: true},
+	{pattern: "GET /cards/{id}/paths/{n}", kind: "page", controls: withNav("a#prev", "a#next", "a#back", "button#logout"), path: "/cards/" + testCardID + "/paths/1", authed: true},
 	{pattern: "GET /static/session.js", kind: "asset"},
 	{pattern: "GET /static/decide.js", kind: "asset"},
 	{pattern: "POST /api/decide-challenge", kind: "api"},
@@ -66,17 +66,18 @@ var inventory = []struct {
 	{pattern: "POST /api/push/unsubscribe", kind: "api"},
 	// The new-project pages: plain forms that post to the app, and no
 	// decide control.
-	{pattern: "GET /projects/{$}", kind: "page", controls: []string{"a", "a#back", "button#logout", "form#start-project", "button#start-project-go"}, authed: true},
+	{pattern: "GET /projects/{$}", kind: "page", controls: withNav("a", "a#back", "button#logout", "form#start-project", "button#start-project-go"), authed: true},
 	{pattern: "GET /projects", kind: "redirect"},
 	{pattern: "POST /projects/new", kind: "api"},
 	{pattern: "GET /projects/{thread}", kind: "page", controls: questionControls("form#answer", "input#round", "a#project-list", "a#discard-link"),
 		path: "/projects/" + testThread, authed: true},
 	{pattern: "GET /projects/{thread}/change/{node}", kind: "page", controls: questionControls("form#change", "input#node", "a#keep"),
 		path: "/projects/" + testThread + "/change/kind", authed: true},
-	{pattern: "GET /projects/{thread}/discard", kind: "page", controls: []string{"form#discard", "button#discard-go", "a#keep", "button#logout"},
+	{pattern: "GET /projects/{thread}/discard", kind: "page", controls: withNav("form#discard", "button#discard-go", "a#keep", "button#logout"),
 		path: "/projects/" + testThread + "/discard", authed: true},
-	// The plan page: links only, no form, no button, no script.
-	{pattern: "GET /projects/{thread}/plan", kind: "page", controls: []string{"a#project-page", "a#project-list"},
+	// The plan page: links only, no form, no button, no script: its two
+	// links and the main navigation's, and no logout control.
+	{pattern: "GET /projects/{thread}/plan", kind: "page", controls: withNav("a#project-page", "a#project-list"),
 		path: "/projects/" + testThread + "/plan", authed: true},
 	{pattern: "POST /projects/{thread}/answer", kind: "api"},
 	{pattern: "POST /projects/{thread}/change", kind: "api"},
@@ -84,12 +85,22 @@ var inventory = []struct {
 	{pattern: "POST /projects/{thread}/discard", kind: "api"},
 }
 
+// navControls are the links every page behind a session holds before its
+// content: the skip link and the main navigation's, all plain links. The
+// "Projects" link is there only while new projects are offered.
+var navControls = []string{"a#skip", "a#nav-cards", "a#nav-projects"}
+
+// withNav is the controls given and the navigation's.
+func withNav(controls ...string) []string {
+	return append(append([]string{}, navControls...), controls...)
+}
+
 // questionControls are the controls of a page with the form of a round, or
 // of one question, beside the ones given: for each of up to three questions
 // its node, its options (or a scale's five steps), "Other" with its text,
 // "You decide for me" and "Skip", and the one submit button.
 func questionControls(more ...string) []string {
-	out := append([]string{"button#send", "button#logout"}, more...)
+	out := withNav(append([]string{"button#send", "button#logout"}, more...)...)
 	for i := 0; i < MaxGenesisQuestions; i++ {
 		q := "q" + strconv.Itoa(i) + "-"
 		out = append(out, "input#n"+strconv.Itoa(i), "input#"+q+"other", "input#"+q+"text", "input#"+q+"host", "input#"+q+"skip")
@@ -336,6 +347,15 @@ func TestPageInventory(t *testing.T) {
 			for _, f := range inspectPage(body, e.controls, deciders[e.pattern]) {
 				t.Errorf("%s: %s", e.pattern, f)
 			}
+			// A page behind a session has the main navigation; a public
+			// page has none, and no skip link.
+			if e.authed {
+				for _, f := range checkNav(body) {
+					t.Errorf("%s: %s", e.pattern, f)
+				}
+			} else if hasNav(body) {
+				t.Errorf("%s: a public page with the main navigation", e.pattern)
+			}
 			// A decider is listed because it holds the form: the
 			// inventory's page shows it.
 			if deciders[e.pattern] && !strings.Contains(body, `<script src="/static/decide.js"></script>`) {
@@ -508,7 +528,7 @@ func TestProjectPagesInEveryState(t *testing.T) {
 	sum := sampleSummary()
 	g.set(GenesisVerbRound, &sum, nil)
 	body := r.getWith("/projects/"+testThread+"?reset=3&note=changed", s).Body.String()
-	for _, f := range inspectPage(body, []string{"a", "form#finish", "button#finish-go", "a#project-list", "a#discard-link", "a#see-plan", "button#logout"}, false) {
+	for _, f := range inspectPage(body, withNav("a", "form#finish", "button#finish-go", "a#project-list", "a#discard-link", "a#see-plan", "button#logout"), false) {
 		t.Errorf("the summary: %s", f)
 	}
 	checkForms(t, "the summary", body)
@@ -516,11 +536,11 @@ func TestProjectPagesInEveryState(t *testing.T) {
 	fin.State, fin.Digest = GenesisStateFinished, strings.Repeat("ab", 32)
 	g.set(GenesisVerbRound, &fin, nil)
 	body = r.getWith("/projects/"+testThread+"?note=done", s).Body.String()
-	for _, f := range inspectPage(body, []string{"a#project-list", "a#see-plan", "button#logout"}, false) {
+	for _, f := range inspectPage(body, withNav("a#project-list", "a#see-plan", "button#logout"), false) {
 		t.Errorf("the finished page: %s", f)
 	}
 	body = r.getWith("/projects/?note=open", s).Body.String()
-	for _, f := range inspectPage(body, []string{"a", "a#back", "button#logout", "form#start-project", "button#start-project-go"}, false) {
+	for _, f := range inspectPage(body, withNav("a", "a#back", "button#logout", "form#start-project", "button#start-project-go"), false) {
 		t.Errorf("the project list: %s", f)
 	}
 	// The rule sees a form that is not a plain post to a project route.

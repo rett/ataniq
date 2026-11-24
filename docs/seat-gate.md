@@ -348,6 +348,25 @@ minutes idle, 12 hours at most, at logout, or when the seat restarts.
 card's page. Each page carries the STAND-IN banner. The card list and the Card page update
 by themselves, see [Live refresh](#live-refresh).
 
+**Moving between pages.** Every page behind the login has a short row of links
+at the top: "Cards", and "Projects" when the desk runs new projects (see
+[New projects](#new-projects)). The link of the part you are in is bold, has a
+bar under it and is announced as the current page. With a keyboard, the first
+Tab reaches "Skip to content", which jumps past the links to the page. The
+status, pairing, login and error pages have no such row. The row has no Log
+out: Log out stays at the foot of the pages that had it (the plan page has
+none, as before). A card's page and its path pages show "Projects" by what the
+card list last learnt, so the link may be missing for a moment after the desk
+starts offering new projects; open the card list once and it is there.
+
+**On a computer.** In a browser window at least about 960 pixels wide (60rem at
+the default text size), the row of links becomes a column on the left that
+stays in place while the page scrolls, and the page sits beside it in a
+column narrow enough to read comfortably (wider for the card list and the
+project list). Only the layout changes: every page shows and does the same as
+on the phone. Make the window narrower, or zoom in, and the phone layout comes
+back.
+
 **Approve and deny.** A decision is made only on a card's own page, with a fresh
 passkey every time: one tap on Approve or Deny names the action and the card,
 and a second tap on the confirm button asks the phone for one assertion (face,

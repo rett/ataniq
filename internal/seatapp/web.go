@@ -23,6 +23,38 @@ type pageData struct {
 	Title string
 	// RPID and RPName are the passkey's relying party, for the pairing page.
 	RPID, RPName string
+	// Nav is nil: a public page has no main navigation.
+	Nav *navView
+}
+
+// navView is what the main navigation of a page behind a session shows; a
+// page without one (nil) has no navigation and no skip link. The layout
+// shows it as plain links, with aria-current on the link of the page's own
+// section.
+type navView struct {
+	// Current is the page's section: navCards or navProjects.
+	Current string
+	// Projects says the "Projects" link is shown: the new-project interview
+	// is offered, the condition of the card list's "New projects" part.
+	Projects bool
+}
+
+// The sections of the main navigation.
+const (
+	navCards    = "cards"
+	navProjects = "projects"
+)
+
+// projectsNav is the navigation of a project page: the page exists only
+// while the interview is offered, so its link is shown.
+func projectsNav() *navView { return &navView{Current: navProjects, Projects: true} }
+
+// cardsNav is the navigation of a Card page and of a page of a card's path
+// list. Those pages ask the daemon nothing of the interview, so the
+// "Projects" link follows the card list's last answer (see listProjects);
+// the card list itself uses its own.
+func (a *app) cardsNav() *navView {
+	return &navView{Current: navCards, Projects: a.projectsOffered.Load()}
 }
 
 // pageNames are the pages, one template file each; each defines "content"

@@ -161,6 +161,7 @@ type (
 		Estimate               string
 		Warnings, Gates, Areas []string
 		Milestones             []milestoneView
+		Nav                    *navView
 	}
 	milestoneView struct {
 		Open        bool
@@ -180,7 +181,7 @@ func planOf(thread string, p *GenesisPlanView) planData {
 	d := planData{Title: pageTitles["plan"], Thread: thread, Tag: thread[:6], Plan: p, Back: "Back to the summary",
 		Waits: wordsOf(planReviewWords, p.ReviewPoints), Services: append([]string{}, p.ExternalServices...),
 		Hosts: wordOf(planHostWords, p.Hosts), Budget: wordOf(planBudgetWords, p.BudgetBand),
-		Gates: wordsOf(planCheckWords, p.Gates), Warnings: []string{}, Areas: []string{}}
+		Gates: wordsOf(planCheckWords, p.Gates), Warnings: []string{}, Areas: []string{}, Nav: projectsNav()}
 	d.Heading = "Draft plan"
 	if p.Stored {
 		d.Heading = "Plan, revision " + strconv.Itoa(p.Revision)
@@ -253,14 +254,14 @@ func (a *app) planPage(w http.ResponseWriter, r *http.Request, s Session) {
 	v, err := g.Genesis(ctx, GenesisCall{Verb: GenesisVerbPlan, Thread: thread})
 	switch {
 	case errors.Is(err, ErrGenesisNotReady):
-		d := planData{Title: pageTitles["plan"], Heading: "No plan yet", Thread: thread, Tag: thread[:6], Missing: planNotReady, Back: backToProject}
+		d := planData{Title: pageTitles["plan"], Heading: "No plan yet", Thread: thread, Tag: thread[:6], Missing: planNotReady, Back: backToProject, Nav: projectsNav()}
 		if rv, rerr := g.Genesis(ctx, GenesisCall{Verb: GenesisVerbRound, Thread: thread}); rerr == nil && rv.Thread == thread && rv.State == GenesisStateFinished {
 			d.Heading, d.Missing, d.Back = "No plan", planFinishedNone, backToBrief
 		}
 		a.render(w, "plan", http.StatusConflict, d)
 		return
 	case errors.Is(err, ErrGenesisNoTemplate):
-		a.render(w, "plan", http.StatusConflict, planData{Title: pageTitles["plan"], Heading: "No plan yet", Thread: thread, Tag: thread[:6], Missing: planNoTemplate, Back: backToProject})
+		a.render(w, "plan", http.StatusConflict, planData{Title: pageTitles["plan"], Heading: "No plan yet", Thread: thread, Tag: thread[:6], Missing: planNoTemplate, Back: backToProject, Nav: projectsNav()})
 		return
 	case err != nil:
 		a.problem(w, genesisProblem(err))

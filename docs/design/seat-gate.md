@@ -1259,6 +1259,64 @@ again. A challenge the seat link recomputes differently says that the desk's
 challenge is not this card's and that the passkey was not asked. A held
 approve shows the host's line and, under it, the held words above.
 
+### Navigation and the wide screen
+
+Every page behind a session has one main navigation (built, G19a): the card
+list, a Card page, the pages of a card's path list, the project list, every
+project page (a round, the summary, a change, the discard step, the finished
+brief) and the plan page. It is `<nav aria-label="Main">` in the page's
+header, a list of plain links and nothing else (no button, no form, no
+script): "Cards" (`/cards/`) and, while new projects are offered,
+"Projects" (`/projects/`). The link of the page's own section carries
+`aria-current="page"`, exactly one on the page: "Cards" on the card list, a
+Card page and a path page, "Projects" on the project pages and the plan
+page. A "Skip to content" link comes first in the body, out of sight until it
+has the focus, and leads to the content, `<main id="content">`; so Tab goes
+from the skip link to the navigation and then to the page. The titles, the
+headings and the landmarks (`header`, `nav`, `main`) are otherwise
+unchanged, and a page's own links (back to the cards, a project's own
+navigation, the path pages) stay where they were. The navigation adds no
+logout control: the logout button stays on the pages that had it, and the plan
+page keeps no script, no form and no button, its two links and the
+navigation's. A later section adds its link to the same list (the lead pages'
+"Leads" is next).
+
+"Projects" is shown on the condition of the card list's "New projects" part.
+The card list shows it when its `list` call says the interview is offered; a
+project page is made only when it is, so it always shows it; a Card page and a
+path page ask the daemon nothing of the interview and show it by the card
+list's last answer, which the seat keeps in memory (a restart forgets it, and
+ends every session with it). So no page makes a call of the gate for the
+navigation. A public page (the status page, pairing, login) and a problem page
+have no navigation, no skip link and no `aria-current`: they are made without
+a session, or without knowing of one, and a problem page keeps its one "Back
+to the cards" link. The page inventory and `nav_test.go` hold every page to
+this.
+
+On a phone the navigation is a compact bar at the top, in the header above its
+rule and in the page's flow: the brand and the links on one row, or the links
+on a row of their own on a narrow screen. Each link is a 44 px target; the current
+one is in the text colour, bold, not underlined and with a bar under it, so it
+is told apart without colour. Nothing is fixed to the screen, so the bar never
+covers the content, the keyboard or the home indicator, and needs no safe-area
+inset.
+
+On a screen at least 60rem wide (960 px at the default text size: a desktop
+browser, a tablet across), and only on the pages with the navigation (the
+layout gives their body the class `nav-page`), the style sheet makes the
+header a rail on the left, 14rem wide, that stays in place while the page
+scrolls (`position: sticky`), with the links one under the other and the
+current one marked by a bar at its left. The content is a column beside it, at
+most 44rem wide for reading (a card, a project page, the plan) and 60rem for a
+list (the card list, the project list: a page whose content holds a list of
+cards, by `:has(.cards)`; a browser without `:has` keeps it at 44rem). The
+layout is CSS only: a page is the same markup in the same order at every
+width, so the order of reading and of Tab does not change, and below 60rem
+every page keeps the phone's layout. The public pages keep their one centred
+column at every width. A card is still read on one whole page: there is no
+second pane, no prefetch of a card, and nothing that would count as reading a
+card the owner did not open (see the session's reading of a card above).
+
 ## Live refresh: seat.wait
 
 Status: built (G14, first part) and tested on loopback; not qualified, and
@@ -2277,8 +2335,10 @@ The plan page, `GET /projects/{thread}/plan`, is a read: one call of `plan`
 project pages' limit of one credential, and a thread id of its form before
 anything is asked; there is no post to it. It is made on the server with no
 script at all (not even the logout's), no form, no button and no input: its
-only controls are two links, back to the thread's page and to the project
-list, and the page inventory holds it to that and to the rule that no page but
+only controls are links, its own two, back to the thread's page and to the
+project list, and the main navigation's (the skip link, "Cards" and "Projects";
+see [Navigation and the wide screen](#navigation-and-the-wide-screen)), and the
+page inventory holds it to that and to the rule that no page but
 the Card page holds a decide control. In order: the heading ("Draft plan", or
 "Plan, revision N" for the stored plan), the plan's title with the first six
 digits of the thread id ("A full web app, 3fa2c1"), the fixed lines "A plan
