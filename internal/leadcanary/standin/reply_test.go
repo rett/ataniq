@@ -197,8 +197,13 @@ func TestNoReplyWithoutACommit(t *testing.T) {
 	r := newRepo(t)
 	dir := makeOutbox(t, r)
 	run := startRun(t, r, 100*time.Millisecond)
+	// The stand-in draws its prompt once the terminal is raw. Until then the
+	// terminal's own echo answers a paste, and a terminal closed before the
+	// stand-in has set it up makes Run fail with EIO.
+	i := run.pty.waitFor(t, 0, "\x1b[?2004h")
 	run.pty.send(t, pasteOf("no token here")+"\r")
-	run.pty.waitFor(t, 0, "no token")
+	// The stand-in's own answer to the submitted paste: it has read all of it.
+	run.pty.waitFor(t, i, "\r\nno token\r\n> ")
 	if err := run.finish(t); err != nil {
 		t.Fatal(err)
 	}
