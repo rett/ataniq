@@ -244,34 +244,76 @@ func TestRecognizeConfiguredPageBound(t *testing.T) {
 	}
 }
 
+// sqliteBusy reports whether err is the engine's busy error: its busy
+// handler gave up waiting for a lock.
+func sqliteBusy(err error) bool {
+	var se *sqlite.Error
+	return errors.As(err, &se) && se.Code()&0xff == 5
+}
+
+// TestRecognizeBusyDeadline: a database that another connection holds
+// locked ends a recognition at a bound, with no Info, within time, and
+// leaves no ownership behind. Which bound ends it is the case's:
+//   - the caller's deadline, with the engine's busy wait and the operation's
+//     timeout far beyond it: the context error, never the busy one;
+//   - the busy timeout alone, the operation's timeout far beyond it: the
+//     engine's busy error, never the context's;
+//   - the busy timeout equal to the operation's timeout, the most that
+//     Options allow (BusyTimeout may not exceed OperationTimeout): the two
+//     bounds are one instant. The context's timer and the engine's busy
+//     handler run on their own clocks and goroutines, so which of them ends
+//     the wait first is not decided (under load the engine's gave up first
+//     in about half the runs, with the context's timer not yet fired); either
+//     is the end of the wait, and the case holds the result to be one of the
+//     two, and the wait to be bounded.
 func TestRecognizeBusyDeadline(t *testing.T) {
-	for _, callerDeadline := range []bool{false, true} {
-		path, o := fixture(t)
-		mustCreate(t, path, o).Close()
-		db := fixtureDB(t, path)
-		execFixture(t, db, "PRAGMA journal_mode=DELETE")
-		execFixture(t, db, "BEGIN EXCLUSIVE")
-		ctx := context.Background()
-		if callerDeadline {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, 30*time.Millisecond)
-			defer cancel()
-		} else {
-			o.OperationTimeout = 30 * time.Millisecond
-			o.BusyTimeout = 30 * time.Millisecond
-		}
-		start := time.Now()
-		if got, err := Recognize(ctx, path, o); !errors.Is(err, context.DeadlineExceeded) || got != (Info{}) {
-			t.Fatal("busy recognition", got, err)
-		}
-		if time.Since(start) > 2*time.Second {
-			t.Fatal("unbounded recognition")
-		}
-		execFixture(t, db, "ROLLBACK")
-		db.Close()
-		if _, err := Recognize(context.Background(), path, o); err != nil {
-			t.Fatal("deadline leaked ownership", err)
-		}
+	const (
+		ctxOK = 1 << iota
+		busyOK
+	)
+	for _, tc := range []struct {
+		name     string
+		caller   time.Duration // the caller's deadline, or none
+		op, busy time.Duration // Options, 0 for the defaults
+		accept   int           // ctxOK, busyOK or both
+	}{
+		{"caller deadline", 30 * time.Millisecond, 5 * time.Second, 4 * time.Second, ctxOK},
+		{"busy timeout alone", 0, 5 * time.Second, 30 * time.Millisecond, busyOK},
+		{"operation timeout equal to the busy timeout", 0, 30 * time.Millisecond, 30 * time.Millisecond, ctxOK | busyOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path, o := fixture(t)
+			mustCreate(t, path, o).Close()
+			db := fixtureDB(t, path)
+			execFixture(t, db, "PRAGMA journal_mode=DELETE")
+			execFixture(t, db, "BEGIN EXCLUSIVE")
+			o.OperationTimeout, o.BusyTimeout = tc.op, tc.busy
+			ctx := context.Background()
+			if tc.caller > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, tc.caller)
+				defer cancel()
+			}
+			start := time.Now()
+			got, err := Recognize(ctx, path, o)
+			if got != (Info{}) {
+				t.Fatal("busy recognition returned an Info", got, err)
+			}
+			byCtx, byBusy := errors.Is(err, context.DeadlineExceeded), sqliteBusy(err)
+			if !(byCtx && tc.accept&ctxOK != 0) && !(byBusy && !byCtx && tc.accept&busyOK != 0) {
+				t.Fatalf("busy recognition ended with %v (context's deadline %v, engine's busy %v), accepted: context %v, busy %v",
+					err, byCtx, byBusy, tc.accept&ctxOK != 0, tc.accept&busyOK != 0)
+			}
+			// Far below the bounds the case does not use.
+			if time.Since(start) > 2*time.Second {
+				t.Fatal("unbounded recognition")
+			}
+			execFixture(t, db, "ROLLBACK")
+			db.Close()
+			if _, err := Recognize(context.Background(), path, o); err != nil {
+				t.Fatal("deadline leaked ownership", err)
+			}
+		})
 	}
 }
 
