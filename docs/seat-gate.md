@@ -414,12 +414,15 @@ up without a reload, and a card that was decided, withdrawn or replaced
 - **The card list** reloads itself when the set of waiting cards changed, at
   most once every 20 seconds, and never while a field on it holds typed text.
   It hears of the change over a stream that the seat holds open (it says only
-  that the cards moved, never which or how many), so a change the seat
-  learns of reaches the list at once rather than at the next poll. When the
-  stream cannot be used (an older browser, a proxy that holds it back, a
-  refusal, an error) the list falls back to the poll that the Card page
-  uses, with no difference you can see but the delay, until the page is
-  shown again. The stream is closed while the page is hidden or the phone is
+  that the cards moved, never which or how many). The poll that the Card
+  page uses already answers as soon as the seat learns of a change, so the
+  stream is not faster: what it changes is that the list holds no poll of
+  the session's (the three held polls below are left to the Card pages and
+  to lists that fell back), and that each hint names its kind, which later
+  stages can add to. When the stream cannot be used (an older browser, a
+  proxy that holds it back, a refusal, an error) the list falls back to that
+  poll until the page is shown again; you see no difference, and the
+  notices behave the same way with either. The stream is closed while the page is hidden or the phone is
   locked, and opened again a second or two after the page is shown. A hidden
   list never reloads: a change it heard of before it was hidden waits, and
   the list reloads once for it when it is shown again.
@@ -449,10 +452,13 @@ up without a reload, and a card that was decided, withdrawn or replaced
 - A tab that is hidden asks nothing, and asks at once when it is shown again
   (the card list a second or two later, at a random moment, so that the
   tabs and phones that come back together do not ask together).
-- Up to three tabs of one session are kept live at once. A fourth takes the
-  place of the oldest, whose page then waits 25 seconds before it asks again;
-  with more than four tabs open the pages cannot all stay live (see
-  "Troubleshooting").
+- Two limits keep the open tabs live, one for each way of asking. Up to
+  three card lists of one passkey stream at once, across its sessions: a
+  fourth is refused and falls back to the poll, and the first three keep
+  their streams. Up to three polls of one session are held at once (Card
+  pages, and lists that fell back): a fourth takes the place of the oldest,
+  whose page then waits 25 seconds before it asks again; with more than four
+  polling tabs open the pages cannot all stay live (see "Troubleshooting").
 
 What it costs. The seat keeps one long call at the gate for the whole seat,
 whatever the number of pages and phones open: a held request that the gate
@@ -482,7 +488,11 @@ costs one more wait and no refusal. The card list's stream asks the gate
 nothing either: it is fed by the same one wait. A page's poll, and the card
 list's stream and its heartbeats, are not requests that keep the session
 alive: a session still ends 30 minutes after the last page you loaded or tap
-you made, however long a page stays open, and the stream ends with it.
+you made, however long a page stays open, and the stream ends with it. An
+automatic refresh of a visible card list is the same as you reloading it:
+it counts as activity, since it shows you the new cards. A hidden page does
+not refresh, so a list left in a background tab or on a locked phone does
+not keep the session alive.
 
 The stream's limits: at most 3 streams open at once for one passkey, across
 its sessions (one for each of three tabs), 12 opened a minute for one

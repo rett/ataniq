@@ -1658,8 +1658,13 @@ poll, and the card list's stream with its heartbeats and its reconnects, are
 requests that do not count: a page left open does not keep its
 session alive, and the poll's answer `ended` tells the page when the session is
 gone. A page that reloads itself because the list changed is a page request,
-which counts, as it is the owner's own sight of a new card. That a poll does not
-extend the idle time is a settled design choice, not a limit of the build.
+which counts, as it is the owner's own sight of a new card: an automatic
+refresh of a visible list is the same as the owner reloading it, and counts
+as activity, whether the poll or the stream prompted it. A hidden page does
+not refresh (watch.js reloads only while the page is shown, see the hint
+stream below), so a list left hidden does not keep its session alive. That a
+poll does not extend the idle time is a settled design choice, not a limit of
+the build.
 
 ### The card list's hint stream
 
@@ -1673,6 +1678,16 @@ makes a GET, which may come without `Origin`, and reconnects by itself. The
 page reads the stream with a same-origin `fetch` POST instead, so the checks
 of every POST apply, and the script owns its parsing, its bounds and its
 reconnects.
+
+What it changes. The held poll already answers as soon as the watcher
+changes, so the stream does not make a change reach the list sooner. What
+it changes is that a card list holds no poll of its session's three (the
+held polls are left to the Card pages and to lists that fell back), and
+that each hint names its kind, which later stages extend. Its own limit is
+per credential: three streams of one passkey at once, a fourth refused (it
+falls back to the poll, and the three keep their streams), apart from the
+poll's three held polls per session, where a fourth replaces the oldest.
+The notices are held back by a list's stream as by a poll (below).
 
 What crosses it. `POST /api/watch/stream` (`internal/seatapp`,
 `watchstream.go`) writes a closed set: an event of the one kind
@@ -1847,7 +1862,10 @@ Screen app:
    at 30 minutes with no tap; a seat restart ends it and the list falls back.
 6. A proxy or gate interrupted: the list falls back and shows "Not live: the
    desk is out of reach", and comes back when it is shown again.
-7. With the phone asleep, a notice still arrives for a new card.
+7. With the phone asleep, a notice still arrives for a new card; with the
+   list open and shown, none arrives for a card it shows, and none after it
+   is closed; with the phone locked after a hint and before the list
+   reloaded, the notice arrives about 30 seconds later.
 
 The shipped Caddyfile needs no change for it as far as the code shows
 (`reverse_proxy` flushes `text/event-stream` at once and the file has no
