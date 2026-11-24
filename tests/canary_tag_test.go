@@ -38,6 +38,7 @@ var canaryAllowedPaths = []string{
 	"internal/leadholder/canaryroot/",
 	"internal/leadholder/serve/",
 	"internal/leadcontrol/",
+	"internal/leadchat/",
 	"internal/leaddaemon/",
 	"internal/mirror/",
 	"cmd/ataniqd/",
@@ -56,6 +57,7 @@ var canaryWholePaths = []string{
 	"internal/leadholder/screenrec/",
 	"internal/leadholder/canaryroot/",
 	"internal/leadcontrol/",
+	"internal/leadchat/",
 	"cmd/ataniq-canary/",
 	"cmd/ataniq-canary-standin/",
 }
@@ -81,6 +83,7 @@ var canaryForbiddenDeps = []string{
 	"internal/leadholder/screenrec",
 	"internal/leadholder/canaryroot",
 	"internal/leadcontrol",
+	"internal/leadchat",
 }
 
 // canaryMakeTargets are the Makefile targets whose recipes may name the tag.
