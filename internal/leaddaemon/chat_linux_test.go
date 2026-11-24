@@ -56,6 +56,18 @@ func (f *fakeSource) seatRead(lead string, after int64, limit int) (ownerwire.Se
 	return ownerwire.SeatChatResult{State: ownerwire.ChatStateRead, Lead: lead, Entries: []ownerwire.ChatEntry{}}, nil
 }
 
+func (f *fakeSource) seatCursor() ([]ownerwire.ChatCursorLead, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.panic {
+		panic("a source that breaks")
+	}
+	return []ownerwire.ChatCursorLead{{Lead: "daemon:alpha", Gen: 1, Head: 2}}, nil
+}
+
+func (f *fakeSource) onChange(func()) {}
+
 func (f *fakeSource) count() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

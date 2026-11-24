@@ -242,6 +242,7 @@ them and never hands them to the handler.
 | `watch` | `seat.wait` | `ownerwire.SeatWaitParams` | `ownerwire.SeatWaitResult` | G14 (built) |
 | `genesis` | `seat.genesis` | `ownerwire.SeatGenesisParams` | `ownerwire.SeatGenesisResult` | genesis G3 (wire), G4 (handler and thread store) and G11a (the verb `plan`), built |
 | `chat` | `seat.chat` | `ownerwire.SeatChatParams` | `ownerwire.SeatChatResult` | G19b (wire, handler and the STAND-IN port of the phone trial), built; the scratch leads' replies (`leaddaemon.LeadChat`, both tags), built; read only |
+| `wait-chat` | `seat.wait`, extended | `ownerwire.DecodeSeatWaitChatParams` | `ownerwire.DecodeSeatWaitChatResult` | browser push stage 2, built: see [chat hints on the wait](#chat-hints-on-the-wait) |
 
 A handler made with `gatehost.New` answers `["pair", "read"]` (`gatehost.Caps`);
 one made with `gatehost.NewDeciding`, `["pair", "read", "login", "decide"]`
@@ -256,9 +257,15 @@ with or without a seat origin: an answer decides nothing either. Either
 handler adds `chat` last when it was given a chat port (`gatehost.WithChat`, a
 `gatehost.ChatPort`), with or without a seat origin: a read decides nothing;
 the daemon gives one to the phone trial's gate and to a scratch daemon's gate
-only (see [chat](#chat)). The daemon's start line names every capability the
+only (see [chat](#chat)). Either handler adds `wait-chat` after `chat` when it
+serves `watch` and `chat`, its service can answer the extended wait
+(`gatehost.ChatWaitPort`, which the owner channel's service is) and its chat
+port gives a cursor (`ownerchannel.ChatCursor`, which the stand-in and
+`leaddaemon.LeadChat` give); see
+[chat hints on the wait](#chat-hints-on-the-wait). The daemon's start line names every capability the
 gate lists, in its order, in words (`pair, read, login, decide, watch and
-genesis`, and `... genesis and chat` in the phone trial and in scratch mode). The seat reads the list (`seatgate.Client.Caps`) and offers login and decisions
+genesis`, and `... genesis, chat and wait-chat` in the phone trial and in
+scratch mode). The seat reads the list (`seatgate.Client.Caps`) and offers login and decisions
 only when the gate lists them; otherwise it says that the desk does not take
 phone logins, or does not take decisions from the phone. It starts its watcher
 only when the gate lists `watch`; otherwise its pages say "Not live".
@@ -1789,6 +1796,135 @@ Notices, which tell the phone that a card is waiting while no page is open,
 follow the watcher's state described above: they are the reason the watcher
 runs when no browser is looking (see [the notices section](#notices)).
 
+### Chat hints on the wait
+
+Status: the wire (`ownerwire`, `waitchat.go`), the gate's capability, the
+daemon's wait, the trial's stand-in cursor, the scratch leads' cursor and the
+seat link's watcher are built and tested; not qualified. The seat's pages and
+the browser's stream do not use the hint yet. A seat that shows the leads' conversations learns that what it may
+read moved from the one wait it already holds, not from a second wait or a
+timer. The hint is never content: an integer that a page's script can carry,
+which tells the seat to read again through `seat.chat`, where the desk
+authorizes every list and read live.
+
+The extension is opt-in on both sides. A gate that can give it lists the
+capability `wait-chat` in its hello; a seat sends the extended form only to
+such a gate. A legacy caller sends and receives exactly the shapes above.
+
+- Params of the extended form (`ownerwire.DecodeSeatWaitChatParams`):
+  `since` as above and `chat`, always written, 0 to 2^53-1 (`MaxChatSeq`):
+  the cursor the seat last saw, 0 when it has none.
+- Result of the extended form (`ownerwire.DecodeSeatWaitChatResult`): the
+  members of the plain result under the same rules, and `chat`, 1 to 2^53-1,
+  the cursor now. It is left out when the daemon has no cursor to give (its
+  source failed); the seat then drops what it held of the chat. Nothing else
+  is added.
+- The plain form refuses `chat`: `ownerwire.DecodeSeatWaitParams` and
+  `ownerwire.DecodeSeatWaitResult` answer `record-invalid` for it, as a gate or
+  a seat of an earlier build does for a member it does not know. So a seat
+  that sends the extension to a gate that does not offer it is refused
+  `bad-params`, and a seat that did not ask never meets it.
+
+The cursor (`ownerwire.ChatCursor`) is a digest, as the Card version is, and
+is independent of it: the first 8 bytes of the SHA-256 of the domain string
+`ataniq.seat-wait.chat/1`, the number of leads, and for each lead in the order
+of its identifier the identifier (a 4-byte big-endian length and its bytes),
+the generation of its switch and its head (8 bytes big-endian each), masked to
+53 bits, and 1 when that is 0. It covers the leads whose chat the desk
+switched on (read, not stopped by a scan) and nothing else. So it changes when
+an enabled lead's head moves, when its segment is reset (a new generation),
+and when a lead is enabled or disabled; a lead whose chat is off is not in it,
+so its activity moves nothing. A daemon that restarts with the same leads,
+generations and heads gives the same cursor.
+
+**The gate.** A handler lists `wait-chat` last, after `chat`, only when it
+serves `watch` and `chat`, its service answers the extended wait
+(`gatehost.ChatWaitPort`, `ownerchannel.Service.WaitPendingChat`) and its chat
+port gives a cursor (`ownerchannel.ChatCursor`: `ChatCursor(ctx)` and
+`ChatCursorChanged()`). Without it the handler reads `seat.wait` with the
+plain decoder alone, so the extended params are `bad-params`, as at a gate of
+an earlier build. With it the handler takes both forms: the plain params get
+the plain wait and exactly the plain result, and the extended params the
+extended wait and result. The extended wait holds the same wait slots as the
+plain one (two for each peer), counts against the service's eight, and the
+chat port's cursor is read by the service's wait and nowhere else.
+
+**The daemon's wait** (`ownerchannel`, `waitchat.go`) is the wait above with
+the cursor beside it:
+
+- The Card side is unchanged: the same pokes, the same looks at the door under
+  the same one-second floor, the same version. A change of the chat makes no
+  look at the door: an answer given for the chat carries the Card result of the
+  last look, which no poke has made stale, so the chat cannot change when a
+  Card change is noticed.
+- The cursor is read when the wait is armed, whenever the port says it may
+  have changed (`ChatCursorChanged`) or a poke wakes the wait, and again just
+  before every answer. An answer carries the cursor of the leads enabled at
+  that moment: a lead turned off meanwhile is not in it, and whatever it did
+  leaves no trace (a hint already noticed is purged by the switch).
+- It answers at once when `since` is not the version, as the plain wait does,
+  and when `chat` is 0 and the port gives a cursor (the seat has none yet). A
+  cursor that is not the seat's answers no sooner than 18 seconds after the
+  wait was armed (`ownerchannel.WaitChatGap`), whether it moved during the
+  hold or before it; a Card change answers at once, with the cursor read
+  then, so a Card and a chat change together are one answer with both. So a
+  busy lead costs the seat no more waits than an idle one: with the seat's
+  2-second pause, about one every 20 seconds, 4 in 80 seconds, which leaves
+  the waits' room of 5 its one wait to spare for a reconnect.
+- A wake for which the cursor did not change answers nothing and makes no look
+  at the door: a lead whose chat is off changes no answer, no time of an
+  answer, no timer and no look, even if its port woke the wait for it
+  (`TestWaitChatOffOnlyActivityIsInvisible` compares such a run with an idle
+  one).
+- A cursor that cannot be read (an error, a panic, a value out of its range)
+  is no cursor: the wait holds and answers on the Cards alone, its answer
+  carries no `chat`, and it does not answer at once to a seat with none, so it
+  cannot spin. It fails closed.
+
+The trial's stand-in gives a cursor over its two sample leads whose chat is
+read, each of generation 1 and its head, the same for every call: its samples
+never change, so a held wait is never woken for the chat.
+
+The scratch leads' port (`leaddaemon.LeadChat`, both tags) gives the cursor of
+the leads whose desk switch is read, not stopped by a scan, with a store that
+works and an epoch the wire holds: exactly the leads whose conversation a seat
+read is served. For each it reads the store's status (the generation of the
+switch and the head), and nothing of any other lead. Its broadcast
+(`ChatCursorChanged`) is closed when a reply is taken from a lead that is on,
+when a lead's switch is set (on, off, a new segment), when a scan stops a
+lead's chat or its store fails, and when the port is bound or unbound. A lead
+whose chat is off has no scanner, so its replies are not read and close
+nothing; a test writes them, and starts that lead, and finds the cursor and
+the broadcast unchanged (`TestLeadChatCursorCoversTheEnabledLeadsOnly`). The
+cursor's reads are not counted against the port's 40 calls a minute, which are
+the seat's. An unbound port, a failing source or a panic gives no cursor. The
+wired-daemon test (`cmd/ataniqd`, `chat_scratch_linux_test.go`) sends extended
+waits through the real wiring and finds that the waits are the service's only
+counts and that the door, the suite and the drop folder do not move.
+
+**The seat** (`seatlink`, `watchchat.go`). The seat's hello lists
+`wait-chat`. Its one watcher sends the extended wait in place of the plain one
+when the gate's hello lists `wait-chat` and `chat`, on the same call, so the
+hint costs no call of the gate and no room beyond the waits' 5; the two waits
+for each peer and the one watcher are unchanged. Otherwise it sends exactly
+the plain params. A gate that lists it and answers the extended params
+`bad-params` gets the plain wait for the rest of that connection. Each form's
+answer is read with its own decoder.
+
+The watcher publishes the hint (`Daemon.ChatHint`: live, the cursor, and the
+connection it was learned on) and a broadcast beside the Cards'
+(`Daemon.ChatHintChanged`, beside `WatchChanged`): a chat change wakes the
+hint's subscribers and not the Cards'. It drops what it holds of the chat, and
+publishes the hint as not live, whenever it may be stale: on a lost link, on a
+new connection (a cursor of another connection is never sent or shown), when
+the gate no longer lists the capability, when an answer carries no cursor,
+and after any wait that failed or was refused. Its next extended wait then
+carries 0, which the gate answers at once with a fresh cursor: one fresh
+authorized view. A cursor is published only while the connection it came on is
+still the client's. The hint says that something the seat may read moved and
+nothing else: no lead, no count and no text, and a page that acts on it reads
+the directory and the conversation again through `seat.chat`.
+
 ## Notices
 
 Status: built (G14, the rest: N1 the notice core, N2 the push library, N3 the
@@ -3245,7 +3381,11 @@ Where the scratch leads' read-only port stands:
   every connection. What applies to sending and its receipts is open with
   sending.
 - **Storage: met** by the chat store of `internal/leadchat`.
-- **Refresh: met.** `seat.wait` is unchanged.
+- **Refresh: met.** The plain `seat.wait` is unchanged. The opt-in extended
+  wait carries the port's chat cursor (`LeadChat.ChatCursor`), computed from
+  the desk-enabled leads alone, keeps the Card version independent, and keeps
+  the one watcher and the two waits for each peer (see
+  [chat hints on the wait](#chat-hints-on-the-wait)).
 - **Budget: met.** The seat's chat room is unchanged, and the port answers
   `chat-busy` past its own 40 calls a minute.
 

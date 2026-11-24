@@ -379,8 +379,8 @@ ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits
   of the guided new-project interview (below), which every start of the gate
   does. The line says in words the capabilities the gate lists in its hello,
   in their order. In the phone trial (`--trial`, below) alone the gate also
-  lists `chat`, last (`... watch, genesis and chat`), and a second line
-  follows:
+  lists `chat` and, after it, `wait-chat`, the chat cursor on the seat's live
+  wait (`... watch, genesis, chat and wait-chat`), and a second line follows:
 
 ```text
 ataniqd: seat gate: chat: STAND-IN sample leads and conversations of the phone trial, held in memory; no lead is read or reached

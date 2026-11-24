@@ -198,6 +198,8 @@ type watcher struct {
 	// without waiting for the answer of a wait the gate holds. Only the
 	// goroutine reads it.
 	linkLost bool
+	// chat is what the watcher keeps of the chat cursor (watchchat.go).
+	chat watchChat
 }
 
 // StartWatch starts the watcher, once; a second call, or a call after
@@ -240,6 +242,7 @@ func (d *Daemon) Close() error {
 		<-w.done
 	}
 	d.hub.update(d.wt.withDefaults().now(), func(s *WatchState) { *s = WatchState{} })
+	d.chub.set(ChatHint{})
 	return nil
 }
 
@@ -249,7 +252,9 @@ func (w *watcher) run(ctx context.Context) {
 	since := ""
 	back := w.t.backMin
 	for ctx.Err() == nil {
-		if _, ok := d.c.Connected(); !ok {
+		conn, ok := d.c.Connected()
+		if !ok {
+			w.purgeChat()
 			w.linkLost = true
 			w.publish(func(s *WatchState) { s.Watching, s.Offline = d.offers(CapWatch), true })
 			if w.t.sleep(ctx, w.t.idle) != nil {
@@ -258,6 +263,7 @@ func (w *watcher) run(ctx context.Context) {
 			continue
 		}
 		if !d.offers(CapWatch) {
+			w.purgeChat()
 			w.linkLost = false
 			w.publish(func(s *WatchState) { *s = WatchState{} })
 			if w.t.sleep(ctx, w.t.idle) != nil {
@@ -272,6 +278,7 @@ func (w *watcher) run(ctx context.Context) {
 			}
 		})
 		w.linkLost = false
+		ext := w.chatFor(conn)
 		ok, wait := d.budget.takeOrWait(kindWait)
 		if !ok {
 			if w.t.sleep(ctx, wait) != nil {
@@ -279,13 +286,22 @@ func (w *watcher) run(ctx context.Context) {
 			}
 			continue
 		}
-		res, err := w.wait(ctx, since)
+		res, err := w.wait(ctx, since, ext)
 		if ctx.Err() != nil {
 			return
 		}
 		if err != nil {
+			// A wait that failed says nothing of the chat: what was kept
+			// of it may be stale.
+			w.purgeChat()
 			var re *seatgate.RemoteError
 			if errors.As(err, &re) {
+				if ext && re.Code == codeBadParams {
+					// A gate that lists the extension but refuses its
+					// params: the plain wait for the rest of this
+					// connection.
+					w.chat.refused, w.chat.refusedC = true, conn
+				}
 				// The gate answered, with a code: the link is up, so
 				// whatever offline was published for an earlier failure of
 				// the link is lifted now, not when a wait is next held and
@@ -321,6 +337,9 @@ func (w *watcher) run(ctx context.Context) {
 		back = w.t.backMin
 		changed := res.Version != since
 		since = res.Version
+		if ext && w.takeChat(conn, res.Chat) {
+			changed = true
+		}
 		cards := make([]WatchCard, len(res.Cards))
 		for i, c := range res.Cards {
 			cards[i] = WatchCard{ID: c.ID, Kind: c.Kind, BindingSHA256: c.BindingSHA256, Held: c.Held}
@@ -334,9 +353,19 @@ func (w *watcher) run(ctx context.Context) {
 	}
 }
 
-// wait sends one seat.wait with since and reads the answer.
-func (w *watcher) wait(ctx context.Context, since string) (ownerwire.SeatWaitResult, error) {
-	params, err := ownerwire.EncodeSeatWaitParams(ownerwire.SeatWaitParams{Since: since})
+// wait sends one seat.wait with since and reads the answer: the plain one,
+// or with ext the extended one, which carries the chat cursor the watcher
+// holds (0 for none). Each form's answer is read with its own decoder, so a
+// plain answer that carries chat is not of its form.
+func (w *watcher) wait(ctx context.Context, since string, ext bool) (ownerwire.SeatWaitResult, error) {
+	encode, decode := ownerwire.EncodeSeatWaitParams, ownerwire.DecodeSeatWaitResult
+	p := ownerwire.SeatWaitParams{Since: since}
+	if ext {
+		encode, decode = ownerwire.EncodeSeatWaitChatParams, ownerwire.DecodeSeatWaitChatResult
+		cursor := w.chat.cursor
+		p.Chat = &cursor
+	}
+	params, err := encode(p)
 	if err != nil {
 		return ownerwire.SeatWaitResult{}, errFailed
 	}
@@ -346,7 +375,7 @@ func (w *watcher) wait(ctx context.Context, since string) (ownerwire.SeatWaitRes
 	if err := w.d.c.Call(cctx, ownerwire.OpSeatWait, json.RawMessage(params), &raw); err != nil {
 		return ownerwire.SeatWaitResult{}, err
 	}
-	res, err := ownerwire.DecodeSeatWaitResult(raw)
+	res, err := decode(raw)
 	if err != nil {
 		return ownerwire.SeatWaitResult{}, errWatchAnswer
 	}

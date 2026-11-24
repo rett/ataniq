@@ -153,7 +153,7 @@ func TestTrialRunSubmitsSampleCardsThatTheSeatSees(t *testing.T) {
 	if strings.Count(log, "ataniqd: "+ownerBanner+"\nataniqd: "+trialNote+"\n") != 1 {
 		t.Errorf("the STAND-IN banner and the TRIAL line are not printed once, in order:\n%s", log)
 	}
-	if !strings.Contains(log, "seat origin https://seat.example; it serves pair, read, login, decide, watch, genesis and chat\n"+
+	if !strings.Contains(log, "seat origin https://seat.example; it serves pair, read, login, decide, watch, genesis, chat and wait-chat\n"+
 		"ataniqd: seat gate: "+trialChatNote+"\n") {
 		t.Errorf("the gate's start line and its chat note:\n%s", log)
 	}

@@ -328,7 +328,7 @@ func TestScratchSeatServesTheLeadsRepliesReadOnly(t *testing.T) {
 			start, next = l, lines[i+1]
 		}
 	}
-	if !strings.Contains(start, "; it serves pair, read, watch, genesis and chat only: ") ||
+	if !strings.Contains(start, "; it serves pair, read, watch, genesis, chat and wait-chat only: ") ||
 		next != "ataniqd: seat gate: "+scratchChatNote {
 		t.Fatalf("the gate's start lines are not the scratch chat's:\n%s", log)
 	}
@@ -340,7 +340,7 @@ func TestScratchSeatServesTheLeadsRepliesReadOnly(t *testing.T) {
 	}
 
 	c := s.dial(t)
-	if got := strings.Join(c.Caps(), " "); !strings.HasSuffix(got, " chat") {
+	if got := strings.Join(c.Caps(), " "); !strings.HasSuffix(got, " chat wait-chat") {
 		t.Fatalf("the gate's capabilities: %q", got)
 	}
 	offRows := []ownerwire.ChatLeadRow{{Lead: "daemon:alpha", Chat: ownerwire.ChatOff}, {Lead: "daemon:beta", Chat: ownerwire.ChatOff}}
@@ -409,6 +409,7 @@ type countingService struct {
 		leaddaemon.OwnerService
 		gatehost.SeatPort
 		gatehost.WaitPort
+		gatehost.ChatWaitPort
 	}
 	mu    sync.Mutex
 	calls map[string][]string
@@ -528,6 +529,10 @@ func (c *countingService) SeatDecide(ctx context.Context, src ownerchannel.Sourc
 func (c *countingService) WaitPending(ctx context.Context, since string) (ownerwire.SeatWaitResult, error) {
 	c.hit(kindWait, "wait")
 	return c.inner.WaitPending(ctx, since)
+}
+func (c *countingService) WaitPendingChat(ctx context.Context, since string, chat int64, src ownerchannel.ChatCursor) (ownerwire.SeatWaitResult, error) {
+	c.hit(kindWait, "wait-chat")
+	return c.inner.WaitPendingChat(ctx, since, chat, src)
 }
 
 // treeOf lists every name below root with its size, its mode and its
@@ -779,6 +784,7 @@ func TestScratchSeatChatReachesNoOtherAuthority(t *testing.T) {
 			leaddaemon.OwnerService
 			gatehost.SeatPort
 			gatehost.WaitPort
+			gatehost.ChatWaitPort
 		})
 		if !ok {
 			_ = closer()
@@ -791,7 +797,7 @@ func TestScratchSeatChatReachesNoOtherAuthority(t *testing.T) {
 
 	s := newScratchSeatWorld(t, true)
 	ta, errs, done := s.start(t)
-	if !strings.Contains(errs.String(), ", seat origin https://seat.example.invalid; it serves pair, read, login, decide, watch, genesis and chat\n") {
+	if !strings.Contains(errs.String(), ", seat origin https://seat.example.invalid; it serves pair, read, login, decide, watch, genesis, chat and wait-chat\n") {
 		t.Fatalf("the gate does not decide and serve chat:\n%s", errs.String())
 	}
 	if cd.Door == nil {
@@ -851,6 +857,42 @@ func TestScratchSeatChatReachesNoOtherAuthority(t *testing.T) {
 	if r := s.chatRow(t, "beta"); r.Chat != leadwire.ChatOff {
 		t.Fatalf("a seat call turned a chat on: %+v", r)
 	}
+
+	// The chat cursor of the extended wait, read through the daemon's real
+	// wiring (the gate's extended wait, the owner channel's service and the
+	// scratch leads' port), reaches no other authority either: the waits
+	// are the service's only counts, and the door, the suite and the drop
+	// folder do not move. The cursor is that of alpha, the one lead on.
+	waits := 0
+	for _, chat := range []int64{0, 0, 0} {
+		params, err := ownerwire.EncodeSeatWaitChatParams(ownerwire.SeatWaitParams{Chat: &chat})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var raw json.RawMessage
+		if err := c.Call(ctx, ownerwire.OpSeatWait, json.RawMessage(params), &raw); err != nil {
+			t.Fatalf("the extended wait: %v", err)
+		}
+		waits++
+		r, err := ownerwire.DecodeSeatWaitChatResult(raw)
+		if err != nil || r.Chat == nil {
+			t.Fatalf("the extended wait answered %s (%v)", raw, err)
+		}
+		if strings.Contains(string(raw), "approve") || strings.Contains(string(raw), "daemon:") {
+			t.Fatalf("the extended wait carries a lead's text or name: %s", raw)
+		}
+	}
+	afterWait := s.authority(t, svc, cd, suite)
+	if got := strings.Join(afterWait.service[kindWait], " "); got != strings.TrimSpace(strings.Repeat("wait-chat ", waits)) {
+		t.Fatalf("the extended waits reached the service as %q", got)
+	}
+	delete(afterWait.service, kindWait)
+	if !sameAuthority(before, afterWait) {
+		t.Fatalf("the chat cursor moved an instrument:\nbefore %+v\nafter  %+v", before, afterWait)
+	}
+	svc.mu.Lock()
+	delete(svc.calls, kindWait)
+	svc.mu.Unlock()
 
 	// The positive controls: each instrument moves through its own path.
 	var listing ownerwire.Listing

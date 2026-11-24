@@ -179,6 +179,15 @@ func (w *waitState) wakeChan() (<-chan struct{}, uint64) {
 // before they look at anything. A call that ends, by an answer or by its
 // context, leaves no goroutine and no timer.
 func (s *Service) WaitPending(ctx context.Context, since string) (ownerwire.SeatWaitResult, error) {
+	return s.held(ctx, func(ctx context.Context) (ownerwire.SeatWaitResult, error) {
+		return s.waitPending(ctx, since)
+	})
+}
+
+// held runs one wait, f, within the service's bounds: it is refused
+// [ErrWaitFull] past [Config].WaitMax waits, and an error of a service that
+// closed meanwhile is [ErrClosed].
+func (s *Service) held(ctx context.Context, f func(context.Context) (ownerwire.SeatWaitResult, error)) (ownerwire.SeatWaitResult, error) {
 	ctx, done, err := s.begin(ctx)
 	if err != nil {
 		return ownerwire.SeatWaitResult{}, err
@@ -198,7 +207,7 @@ func (s *Service) WaitPending(ctx context.Context, since string) (ownerwire.Seat
 		w.mu.Unlock()
 	}()
 
-	res, err := s.waitPending(ctx, since)
+	res, err := f(ctx)
 	if err != nil && ctx.Err() != nil && s.ctx.Err() != nil {
 		return ownerwire.SeatWaitResult{}, ErrClosed
 	}

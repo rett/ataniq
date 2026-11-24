@@ -575,7 +575,7 @@ func TestTheChatRouteNamesNoOtherPort(t *testing.T) {
 		}
 	}
 	// The handler's fields other than chat, log, caps and the bound's.
-	others := map[string]bool{"svc": true, "seat": true, "gate": true, "wait": true, "waits": true, "genesis": true, "pinned": true, "counts": true}
+	others := map[string]bool{"svc": true, "seat": true, "gate": true, "wait": true, "waits": true, "genesis": true, "pinned": true, "counts": true, "chatWait": true, "cursor": true}
 	ast.Inspect(f, func(n ast.Node) bool {
 		switch x := n.(type) {
 		case *ast.SelectorExpr:

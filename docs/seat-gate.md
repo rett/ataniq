@@ -985,7 +985,7 @@ With `--seat-gate` the trial's gate, and no other, also serves the seat's lead
 pages from STAND-IN samples (a scratch daemon's gate serves real leads'
 replies instead, see [Leads](#leads)): the capability `chat` (read only, see
 [the design](design/seat-gate.md#chat)). The gate's start line then ends
-`... watch, genesis and chat` and is followed by
+`... watch, genesis, chat and wait-chat` and is followed by
 
 ```text
 ataniqd: seat gate: chat: STAND-IN sample leads and conversations of the phone trial, held in memory; no lead is read or reached
@@ -1000,6 +1000,12 @@ shows its key and **Off**. Every lead reply and every system line begins
 sample, so the seat shows a banner. No lead, conversation file or
 other part of the daemon is read or reached, nothing is written, and nothing
 can be sent: there is no way to send a message from the seat yet. Open **Leads** after login to read the samples.
+
+`wait-chat` says the gate also offers the seat's live wait a chat cursor, a
+number that changes when what the seat may read of the leads' chat changes
+(see [the design](design/seat-gate.md#chat-hints-on-the-wait)). It carries no
+text of a lead, and a lead whose chat is off never moves it. The samples never
+change, so the trial's cursor never moves.
 
 `--trial` needs `--owner-channel` (exit 2 without it). The daemon refuses the
 trial's settings without `--trial`, and other settings with it (exit 10), and a
