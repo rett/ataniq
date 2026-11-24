@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"ataniq/internal/approval/ownerjournal"
 	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/clientapi"
+	"ataniq/internal/leadcanary"
 	"ataniq/internal/leadchat"
 	"ataniq/internal/leaddaemon"
 	"ataniq/internal/leadholder/canaryroot"
@@ -123,6 +125,87 @@ func ownerKeys(t *testing.T, socket string) ownerwire.KeysView {
 		t.Fatalf("owner.keys: %v", err)
 	}
 	return keys
+}
+
+// proofScript runs the owner's prepare script with --self-test and the
+// arguments, and returns what it printed.
+func proofScript(t *testing.T, args ...string) []byte {
+	t.Helper()
+	cmd := exec.Command("/bin/sh", append([]string{filepath.Join("..", "..", "qualification", "scratch-seat", "prepare.sh"), "--self-test"}, args...)...)
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=/srv/sample-home"}
+	var out, serr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &serr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("prepare.sh --self-test %v: %v: %s", args, err, serr.String())
+	}
+	return out.Bytes()
+}
+
+// What qualification/scratch-seat/prepare.sh writes is what the daemon reads:
+// its scratch config passes the scratch config's strict reader, with the
+// trial's state folder as the state root, one lead running at a time, the
+// stand-in lead and the live lead with the model named, and owner/ of the
+// state folder never mounted; its owner channel's settings pass the strict
+// reader of the settings as non-trial settings of the stand-in door, whose
+// suite names a sandbox template the script never writes.
+func TestScratchSeatProofScriptWritesWhatTheDaemonReads(t *testing.T) {
+	dir := shortDir(t)
+	state, root := filepath.Join(dir, "trial-state"), filepath.Join(dir, "proof")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(root, "scratch.json")
+	if err := os.WriteFile(cfgPath, proofScript(t, "config", state, root, "sample-model"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := leadcanary.ReadScratchConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("the script's config: %v", err)
+	}
+	if cfg.StateRoot != state || cfg.RuntimeRoot != filepath.Join(root, "runtime") || cfg.MaxRunning != 1 || len(cfg.Entries) != 2 {
+		t.Fatalf("the script's config: %+v", cfg)
+	}
+	standin, live := cfg.Entries[0], cfg.Entries[1]
+	if standin.Key != "standin" || standin.Agent.Kind != leadcanary.AgentStandIn || !standin.Inject ||
+		live.Key != "live" || live.Agent.Kind != leadcanary.AgentLive || !live.Inject ||
+		strings.Join(live.Agent.Argv, " ") != "/ataniq/agent/claude --model sample-model" || standin.ProfileDigest != "" || live.ProfileDigest != "" {
+		t.Fatalf("the script's leads: %+v", cfg.Entries)
+	}
+	if !slices.Contains(cfg.Sandbox.NeverMounted, filepath.Join(state, hostadapter.OwnerDirName)) {
+		t.Fatalf("the owner folder of the state folder is not never-mounted: %v", cfg.Sandbox.NeverMounted)
+	}
+	for _, l := range cfg.Entries {
+		if len(l.Key) > 32 {
+			t.Fatalf("the seat cannot show the lead %q", l.Key)
+		}
+	}
+	// Without a model the config has the stand-in lead only.
+	if err := os.WriteFile(cfgPath, proofScript(t, "config", state, root), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err := leadcanary.ReadScratchConfig(cfgPath); err != nil || len(cfg.Entries) != 1 || cfg.Entries[0].Key != "standin" {
+		t.Fatalf("the script's config without a model: %+v %v", cfg, err)
+	}
+
+	setPath := filepath.Join(root, "owner-scratch.json")
+	if err := os.WriteFile(setPath, proofScript(t, "settings", root), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sc, err := hostadapter.LoadScratch(setPath)
+	if err != nil {
+		t.Fatalf("the script's settings: %v", err)
+	}
+	oc := filepath.Join(root, "owner-channel")
+	if sc.Trial || sc.Door != hostadapter.DoorStandIn || len(sc.Roots) != 1 || sc.Roots[0] != oc ||
+		sc.Drop != filepath.Join(oc, "drop") || sc.Sandbox != filepath.Join(oc, "no-template.json") {
+		t.Fatalf("the script's settings: %+v", sc)
+	}
+	if _, err := sc.VerifySuiteOf(); err != nil {
+		t.Fatalf("the script's settings name no suite: %v", err)
+	}
+	if err := checkScratchRoots(state, sc, func(string) string { return "" }); err != nil {
+		t.Fatalf("the script's settings and the trial's state folder: %v", err)
+	}
 }
 
 // The scratch daemon on the phone trial's state folder, step by step as the

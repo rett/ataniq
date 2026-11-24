@@ -1257,6 +1257,24 @@ can call `chat.set` and the `lead.*` operations on its socket, as [the
 same-user limit](#what-scratch-mode-leaves-open) says. The host setup, the pins,
 the deployment of the seat and every live run are the owner's.
 
+## The attended proof of real replies
+
+[The attended proof of real replies](scratch-seat-proof.md) is the owner's
+runbook for one sitting with this daemon on the phone trial's state folder, so
+that the trial's gate key, seat pins and paired phones are reused: first the
+stand-in lead, then one real Claude lead, each reply read on the phone and the
+desktop. The daemon refuses that folder while it holds the trial's settings
+(`"trial": true` in `owner/scratch.json`). Of the trial's own files the
+runbook moves only that one, by the owner's hand, to a free name and back
+(the root marker, the proof's settings and the leads' folders are added
+beside them), with the trial's unit stopped meanwhile, which the state
+folder's daemon lock enforces.
+`qualification/scratch-seat/prepare.sh` writes the scratch config and the
+files it names in a folder of the proof's own (`--dry` writes nothing;
+`--self-test` computes only) and never writes in the trial's state folder or
+starts anything. `TestScratchSeatTakesThePhoneTrialsStateFolder` in
+`cmd/ataniqd` proves the folder's way there and back in process.
+
 ## Failure handling and owner recovery
 
 The daemon refuses to start when the config, a root or the root marker is not
