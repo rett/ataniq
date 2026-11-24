@@ -112,20 +112,28 @@
 // stands, answer gives the answers of a round, change replaces an earlier
 // answer (the result's reset says how many later answers it cleared),
 // summary reads the brief grouped by who chose each field, finish freezes
-// the brief and gives its digest, and discard drops the thread. The result
-// is a union tagged by "state" ([SeatGenesisResult]): question, summary,
-// finished or discarded. The decoders hold exactly the members each verb and
-// each state takes, the grammars of ids and the caps (three questions, eight
-// options, the catalog's text caps, 64 summary rows, 16 KiB the result).
+// the brief and gives its digest, discard drops the thread, list reads the
+// open threads, and plan reads the project plan a complete brief gives: a
+// preview compiled for the read on an open thread, the plan stored at finish
+// on a finished one. The result is a union tagged by "state"
+// ([SeatGenesisResult]): question, summary, finished, discarded, threads or
+// plan. The decoders hold exactly the members each verb and each state takes,
+// the grammars of ids and the caps (three questions, eight options, the
+// catalog's text caps, 64 summary rows, a plan of 12 KiB, 16 KiB the result).
+// A plan ([GenesisPlan]) is the plan record of the host, member by member:
+// the wire writes it to the record's own canonical bytes, and the result
+// carries their digest, which the decoder holds to them.
 //
 // Every text in a result is plain text the host owns: the catalog's, or the
-// owner's own "other" text in a row marked untrusted, which a surface escapes
-// and an agent never obeys. An answer writes a brief field and nothing else:
-// no member of these forms is, or leads to, a decision, a contract or a plan.
-// The thread ids, the questions and the brief are the host's; this package
-// holds only the words, and the gate codes [CodeGenesisBusy],
-// [CodeGenesisUnknownThread], [CodeGenesisBadAnswer], [CodeGenesisOverCap],
-// [CodeGenesisSecretShaped], [CodeGenesisDone] and [CodeGenesisStaleRound].
+// owner's own "other" text in a row or a plan's note marked untrusted, which
+// a surface escapes and an agent never obeys. An answer writes a brief field
+// and nothing else, and a plan is a proposal: no member of these forms is, or
+// leads to, a decision, a contract or an approval. The thread ids, the
+// questions, the brief and the plan are the host's; this package holds only
+// the words, and the gate codes [CodeGenesisBusy], [CodeGenesisUnknownThread],
+// [CodeGenesisBadAnswer], [CodeGenesisOverCap], [CodeGenesisSecretShaped],
+// [CodeGenesisDone], [CodeGenesisStaleRound], [CodeGenesisNotReady] and
+// [CodeGenesisNoTemplate].
 //
 // # Records travel as bytes
 //

@@ -98,10 +98,11 @@ const (
 	// [SeatWaitParams]. Result: [SeatWaitResult].
 	OpSeatWait = "seat.wait"
 	// OpSeatGenesis is the guided new-project interview: one operation, a
-	// union of eight verbs (start, list, round, answer, change, summary,
-	// finish and discard) tagged by the "verb" of its params. It answers questions of the
-	// host's own catalog and fills a project brief; an answer is never an
-	// approval and decides nothing. Its capability is "genesis". Params:
+	// union of nine verbs (start, list, round, answer, change, summary,
+	// finish, discard and plan) tagged by the "verb" of its params. It answers questions of the
+	// host's own catalog, fills a project brief and reads the plan the brief
+	// gives; an answer is never an approval and decides nothing, and a plan
+	// is a proposal that grants nothing. Its capability is "genesis". Params:
 	// [SeatGenesisParams]. Result: [SeatGenesisResult].
 	OpSeatGenesis = "seat.genesis"
 )

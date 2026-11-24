@@ -74,7 +74,7 @@ type Refusal struct {
 func (r *Refusal) Error() string { return "genesis: " + r.code }
 
 // GateCode returns the word the seat gate answers the refusal with: one of the
-// seven words of seat.genesis, or [CodeBadParams].
+// nine words of seat.genesis, or [CodeBadParams].
 func (r *Refusal) GateCode() string { return r.code }
 
 func refuse(code string) error { return &Refusal{code: code} }
@@ -95,9 +95,11 @@ var ErrClosed = errors.New("genesis: the thread store is closed")
 // gateWord maps each refusal code of the brief, the walker and the plan to
 // the word the seat gate answers it with. The empty word says the refusal is
 // the host's own fault and not the owner's mistake (a brief that breaks its
-// own rules, a catalog of another version): the call fails, and the cause is
-// logged. No plan is asked over the gate yet, so the plan's codes have none.
-// A test of package genesis holds this map to the wire's.
+// own rules, a catalog of another version, a template that does not hold):
+// the call fails, and the cause is logged. Of the plan's codes, a brief that
+// is not complete and a kind no template serves are the thread's state, which
+// the verb plan answers genesis-not-ready and genesis-no-template. A test of
+// package genesis holds this map to the wire's.
 var gateWord = map[brief.Code]string{
 	brief.CodeSecretShaped: ownerwire.CodeGenesisSecretShaped,
 	brief.CodeTooLarge:     ownerwire.CodeGenesisOverCap,
@@ -115,8 +117,8 @@ var gateWord = map[brief.Code]string{
 	brief.CodeCatalogInvalid:  "",
 	brief.CodeCatalogMismatch: "",
 
-	brief.CodeBriefIncomplete: "",
-	brief.CodeNoTemplate:      "",
+	brief.CodeBriefIncomplete: ownerwire.CodeGenesisNotReady,
+	brief.CodeNoTemplate:      ownerwire.CodeGenesisNoTemplate,
 	brief.CodeTemplateInvalid: "",
 	brief.CodePlanInvalid:     "",
 	brief.CodeNoChange:        "",

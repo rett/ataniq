@@ -79,16 +79,17 @@ func TestSeatGenesisIsAGateOperation(t *testing.T) {
 	}
 }
 
-// The seven words are of the gate's grammar, each its own.
+// The nine words are of the gate's grammar, each its own.
 func TestGenesisCodesAreWords(t *testing.T) {
 	codes := map[string]string{
 		CodeGenesisBusy: "genesis-busy", CodeGenesisUnknownThread: "genesis-unknown-thread",
 		CodeGenesisBadAnswer: "genesis-bad-answer", CodeGenesisOverCap: "genesis-over-cap",
 		CodeGenesisSecretShaped: "genesis-secret-shaped", CodeGenesisDone: "genesis-done",
-		CodeGenesisStaleRound: "genesis-stale-round",
+		CodeGenesisStaleRound: "genesis-stale-round", CodeGenesisNotReady: "genesis-not-ready",
+		CodeGenesisNoTemplate: "genesis-no-template",
 	}
-	if len(codes) != 7 {
-		t.Fatalf("%d codes with different words, want 7", len(codes))
+	if len(codes) != 9 {
+		t.Fatalf("%d codes with different words, want 9", len(codes))
 	}
 	grammar := regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
 	for code, word := range codes {
@@ -137,12 +138,12 @@ func vector[T any](t *testing.T, name, js string, want T, dec func([]byte) (T, e
 	}
 }
 
-// The params of each of the eight verbs, as the one canonical spelling.
+// The params of each of the nine verbs, as the one canonical spelling.
 func TestSeatGenesisParamsVectors(t *testing.T) {
 	dec, enc := DecodeSeatGenesisParams, EncodeSeatGenesisParams
 	vector(t, "start", `{"verb":"start"}`, SeatGenesisParams{Verb: GenesisVerbStart}, dec, enc)
 	vector(t, "list", `{"verb":"list"}`, SeatGenesisParams{Verb: GenesisVerbList}, dec, enc)
-	for _, verb := range []string{GenesisVerbRound, GenesisVerbSummary, GenesisVerbFinish, GenesisVerbDiscard} {
+	for _, verb := range []string{GenesisVerbRound, GenesisVerbSummary, GenesisVerbFinish, GenesisVerbDiscard, GenesisVerbPlan} {
 		vector(t, verb, `{"thread":"`+genThread+`","verb":"`+verb+`"}`, SeatGenesisParams{Verb: verb, Thread: genThread}, dec, enc)
 	}
 	vector(t, "answer", `{"answers":[`+
@@ -160,7 +161,8 @@ func TestSeatGenesisParamsVectors(t *testing.T) {
 		SeatGenesisParams{Verb: GenesisVerbChange, Thread: genThread, Node: "goal", Answer: &GenesisPick{Kind: GenesisKindOther, Text: "a family cookbook"}}, dec, enc)
 }
 
-// The result of each of the four states, as the one canonical spelling.
+// The result of each of the states but plan (see genesis_plan_wire_test.go),
+// as the one canonical spelling.
 func TestSeatGenesisResultVectors(t *testing.T) {
 	dec, enc := DecodeSeatGenesisResult, EncodeSeatGenesisResult
 	vector(t, "question", `{"catalog_digest":"`+genCatalog+`","nodes":[`+
@@ -299,6 +301,7 @@ func TestSeatGenesisParamsAreAClosedUnion(t *testing.T) {
 		GenesisVerbSummary: {thread: true},
 		GenesisVerbFinish:  {thread: true},
 		GenesisVerbDiscard: {thread: true},
+		GenesisVerbPlan:    {thread: true},
 	}
 	build := func(verb string, m members) SeatGenesisParams {
 		p := SeatGenesisParams{Verb: verb}
@@ -361,7 +364,8 @@ func TestSeatGenesisParamsAreAClosedUnion(t *testing.T) {
 	// An empty list is not a missing one, and a verb is a closed word.
 	_, err := EncodeSeatGenesisParams(SeatGenesisParams{Verb: GenesisVerbRound, Thread: genThread, Answers: []GenesisAnswer{}})
 	refused(t, err, record.CodeRecordInvalid, "an empty list of answers for a round")
-	for _, verb := range []string{"", "Start", "begin", "start ", "answers", "answer\n", "restart", "decide", "approve", "List", "lists", "threads"} {
+	for _, verb := range []string{"", "Start", "begin", "start ", "answers", "answer\n", "restart", "decide", "approve", "List", "lists", "threads",
+		"Plan", "plans", "draft", "preview", "revise", "charter", "sign"} {
 		_, err := EncodeSeatGenesisParams(SeatGenesisParams{Verb: verb})
 		refused(t, err, record.CodeRecordInvalid, "the verb "+strconv.Quote(verb))
 		_, err = DecodeSeatGenesisParams([]byte(`{"verb":` + strconv.Quote(verb) + `}`))
