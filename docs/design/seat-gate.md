@@ -2849,8 +2849,12 @@ so the rooms of logins, decisions, reads and the interview are as they were.
 The chat pages have their own page limit of 30 requests per credential per
 minute. Within the login and gate connection the link can
 reuse a directory for 20 seconds and a trial read at the same lead and cursor
-for 10 seconds. A chat error, replacement connection, fresh directory or
-retention reset invalidates earlier answers. Logout ends access to that
+for 10 seconds. A refusal of the gate, an answer the link does not take, a
+replacement connection, a fresh directory or a retention reset invalidates
+earlier answers. A call the link refuses itself and does not send (no room in
+the reads, no connection, no capability) is no news of the gate and keeps them,
+so a tap that meets a busy read room does not cost the next page its
+directory. Logout ends access to that
 session's cache. Real transcript reads require live authorization.
 
 ### Before a real port

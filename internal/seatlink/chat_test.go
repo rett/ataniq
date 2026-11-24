@@ -119,6 +119,32 @@ func TestSeatChatRejectsMalformedAnswers(t *testing.T) {
 	}
 }
 
+// TestSeatChatMemoryKeptOnLocalBusy: a chat call the link refuses itself
+// for want of room sends nothing and keeps the kept directory, so the next
+// page is still served from it. (A refusal of the gate forgets it:
+// TestSeatChatMemory.)
+func TestSeatChatMemoryKeptOnLocalBusy(t *testing.T) {
+	clock := &testClock{t: decideNow}
+	d := Daemon{budget: budget{now: clock.now}, gnow: clock.now}
+	p := chatTestPeer{since: clock.now(), port: standin.New(clock.now)}
+	list := seatapp.ChatCall{Verb: seatapp.ChatLeads}
+	read := seatapp.ChatCall{Verb: seatapp.ChatRead, Lead: "daemon:alpha"}
+	if _, err := d.chat(context.Background(), list, &p); err != nil || p.calls != 1 {
+		t.Fatalf("directory: %v, %d calls", err, p.calls)
+	}
+	for d.budget.used(kindRead) < readRoom {
+		if !d.budget.take(kindRead) {
+			t.Fatal("read refused below the room")
+		}
+	}
+	if _, err := d.chat(context.Background(), read, &p); err != seatapp.ErrBusy || p.calls != 1 {
+		t.Fatalf("a read with no room: %v, %d calls", err, p.calls)
+	}
+	if _, err := d.chat(context.Background(), list, &p); err != nil || p.calls != 1 {
+		t.Fatalf("the kept directory after a local busy: %v, %d calls", err, p.calls)
+	}
+}
+
 // TestSeatChatSharesTheReadRoom: chat's calls are reads. They count in the
 // read room the Cards pages use, a chat call past it is ErrBusy and reaches
 // no gate, and the refusal's journal line names the kind read.
