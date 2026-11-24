@@ -35,8 +35,8 @@ func TestSeatWatchReloadGapIsTwentySeconds(t *testing.T) {
 	// The limit is stated, as a limit, in both documents, with the reads'
 	// room and the owner's taps.
 	for path, allowance := range map[string]string{
-		"../../docs/design/seat-gate.md": "the reads have 14 calls in 80",
-		"../../docs/seat-gate.md":        "the seat's reads share 14 calls in 80",
+		"../../docs/design/seat-gate.md": "the reads have 12 calls in 80",
+		"../../docs/seat-gate.md":        "the seat's reads share 12 calls in 80",
 	} {
 		b, err := os.ReadFile(path)
 		if err != nil {

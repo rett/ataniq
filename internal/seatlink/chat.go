@@ -60,8 +60,14 @@ func (d *Daemon) Chat(ctx context.Context, c seatapp.ChatCall) (seatapp.ChatView
 // leads or the host changed, and when a directory or a reset comes from the
 // gate. A call
 // the link does not send (no connection, no capability, no room) is no news
-// of the gate, and keeps them: a tap that meets the busy read room must not
+// of the gate, and keeps them: a tap that meets the full chat room must not
 // cost the next page its directory.
+//
+// Every call sent counts in the chat room (kindChat) and nowhere else: a
+// call past it is ErrBusy, the page's busy outcome, before anything is sent
+// and before the reads' room is looked at, so chat never takes a Card's
+// read. The busy is the link's own and reaches no gate, so it is not counted
+// by the gate's refusal bound.
 func (d *Daemon) chat(ctx context.Context, c seatapp.ChatCall, peer chatPeer) (v seatapp.ChatView, err error) {
 	m := &d.cmem
 	m.mu.Lock()
@@ -99,7 +105,7 @@ func (d *Daemon) chat(ctx context.Context, c seatapp.ChatCall, peer chatPeer) (v
 	cached, hit := m.answers[c]
 	raw := cached.raw
 	if !hit {
-		if !d.budget.take(kindRead) {
+		if !d.budget.take(kindChat) {
 			return v, seatapp.ErrBusy
 		}
 		if err := peer.Call(ctx, ownerwire.OpSeatChat, json.RawMessage(params), &raw); err != nil {

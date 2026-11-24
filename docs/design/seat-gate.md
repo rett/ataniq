@@ -496,8 +496,8 @@ through the gate and its real store and is never shut out).
 Of `seat.chat`, none of its three words counts (`chat-off`,
 `chat-unknown-lead`, `chat-busy`): they answer the state of the leads and of
 the host, which a seat in good order meets, and a read may be sent as often as
-the seat link's read room allows (14 calls in 80 seconds, shared with the card
-lists). `bad-params` counts as everywhere: the seat's own pages
+the seat link's chat room allows (2 calls in 80 seconds, apart from the card
+lists' reads). `bad-params` counts as everywhere: the seat's own pages
 never send a `send`, a lead of another form or a limit past 16. See
 [chat](#chat).
 
@@ -795,12 +795,13 @@ sends none past the room of its kind:
 | --- | --- | --- |
 | Pings | `seat.ping`, every 15 s (`seatlink.PingInterval`, which `ataniq-seat` sets) | 6 |
 | Anyone's | `seat.pair`, `seat.login-challenge`, `seat.login` | 12 (6 logins) |
-| Reads | `owner.list`, `owner.show`, `owner.paths`, and `seat.chat` (the leads' directory and transcripts, see [chat](#chat)), of every session together | 14 |
+| Reads | `owner.list`, `owner.show`, `owner.paths`, the Cards pages' reads of every session together | 12 |
+| Chat | `seat.chat`, its `leads` and `read` (the leads' directory and transcripts, see [chat](#chat)), of every session together | 2 |
 | Decisions | `seat.challenge`, `seat.decide` | 10 (5 decisions) |
 | Waits | `seat.wait`, the watcher's one long wait (see [live refresh](#live-refresh-seatwait)) | 6 |
 | Genesis | `seat.genesis`, every verb, of every session together (see [guided new project](#guided-new-project)) | 12 |
 
-The rooms add up to the gate's 60 (6 + 10 + 12 + 14 + 6 + 12, a sum the code
+The rooms add up to the gate's 60 (6 + 10 + 12 + 12 + 2 + 6 + 12, a sum the code
 checks when it is compiled), so the gate's rate never refuses a call the seat
 sent. A test reads this table and fails when a row and the link's room of the
 kind disagree (`TestSeatLinkDesignRoomsTable`). The link counts, by kind, the
@@ -808,8 +809,8 @@ calls it took and refused for room in the last 80 seconds (`budgetStats`),
 and, besides the line of each refusal (one in 30 seconds for a kind), writes
 one line of counts at most every 10 minutes, and only for a period in which
 it refused a call: `ataniq-seat: calls of the link in the last N minutes,
-taken/refused by kind: public T/R, read T/R, decide T/R, genesis T/R, wait
-T/R`, numbers and fixed words, nothing of a call. Before the watcher the reads had 26 and there was no room for waits;
+taken/refused by kind: public T/R, read T/R, chat T/R, decide T/R, genesis
+T/R, wait T/R`, numbers and fixed words, nothing of a call. Before the watcher the reads had 26 and there was no room for waits;
 before the interview's pages the rooms were 6, 16 (8 decisions), 12 (6
 logins), 20 and 6, and the interview first had 10, taken from the reads (20
 to 14) and the decisions (16 to 12). A phone trial ran out of those 10 at the
@@ -820,10 +821,12 @@ now, one call for each tap and a few reads over, taken from the decisions (12
 to 10: 5 decisions, each a challenge and a decision call, in 80 seconds).
 Anyone's room stays 12: strangers can hold it
 with login challenges they never answer, and a smaller one would let fewer of
-them keep the owner from logging in. Chat's calls are reads: they share the
-reads' 14 with the card lists, and chat has no room of its own and took
-nothing from the others. Chat gets a room of its own only when replies are
-built, sized from a measured mix of use, not before (see [chat](#chat)). A
+them keep the owner from logging in. Chat's room was carved out of the
+reads' 14 when replies were built (12 for the card lists, 2 for chat), sized
+from a measured mix of use (see [chat](#chat)); before, chat's calls shared
+the reads' 14. A chat call past chat's room is busy before the reads' room is
+looked at, so chat never takes a card list's read, and a card's read never
+takes chat's. A
 call without room is not sent: the phone says the desk is
 busy (`desk_busy`, the problem "The desk is busy", or `rate_limited` for a
 pairing), before anything is asked. A decision's challenge is asked only
@@ -1565,12 +1568,13 @@ an answer is written into the page. One status line (`#watch-status`) says:
   since it was loaded (a reload is put off until the page's own read, which is
   the page's load, is 20 seconds old), and not while a field holds typed text.
   The gap keeps the reloads inside the reads' room: each reload is one
-  `owner.list`, and the reads have 14 calls in 80 seconds. It is a stated
+  `owner.list`, and the reads have 12 calls in 80 seconds. It is a stated
   limit, not a bound: three card lists open in a busy period (the watcher
   publishes up to about 6 changes in 80 seconds, each list reloads at most
-  every 20 seconds, so a list takes up to 4 of the 14 reads) can still use
-  most of the 14, and the owner's own taps on a card may then be answered
-  `desk_busy` until the room frees; the Leads pages' reads share the same 14.
+  every 20 seconds, so a list takes up to 4 of the 12 reads) can use all
+  12, and the owner's own taps on a card may then be answered `desk_busy`
+  until the room frees; the Leads pages have a room of their own and take
+  none of the 12.
   No second room is built for the reloads.
 - A Card page never reloads by itself, since the owner may be ticking
   sign-offs. When its card is `changed` or `gone` it shows the line above,
@@ -2785,7 +2789,7 @@ the cause in the daemon's log. None of the three chat words counts for
 [the refusal bound](#the-refusal-bound): they answer the state of the leads and
 of the host, which a seat in good order meets (a page left open while the desk
 turned a lead's chat off, a link to a lead that is gone, a busy host), and a read
-may be sent as often as the seat link's read room allows; a test sends forty of
+may be sent as often as the seat link's chat room allows; a test sends forty of
 each and the seat's reads, decisions and chat go on being served. `bad-params` counts as
 everywhere: the seat's own pages never send a `send`, a lead of another form or
 a limit past 16. `unknown-op` from a gate that serves no chat counts as for any
@@ -2873,42 +2877,52 @@ records an epoch change observed across reads. A reset (a cursor before what
 the host retains, or past the head) has its own notice, "This page starts
 again from the oldest kept message.", in words that hold for both causes.
 
-Chat's calls are reads. They share the seat link's read room (14 calls per
-80-second window, see the budget table under
-[login](#login-seatlogin-challenge-and-seatlogin)) with the card lists, are
-counted and refused like the other reads, and a refusal's log line names the
-kind `read`. Chat shares that room until replies are built; it gets a room of
-its own then, sized from measured use (see Budget (8) below), and not before,
-so the rooms of logins, decisions, reads and the interview are as they were.
-The chat pages have their own page limit of 30 requests per credential per
-minute.
+Chat's calls have a room of their own on the seat link: 2 calls per
+80-second window (see the budget table under
+[login](#login-seatlogin-challenge-and-seatlogin)), one refresh of a real
+conversation (its directory and its page), carved from the reads' 14 when
+replies were built, so the card lists keep 12 and the rooms of logins,
+decisions and the interview are as they were. Every `leads` and `read` of
+`seat.chat` is counted in chat's room and nowhere else. A chat call past it is
+answered busy (`desk_busy`, "The desk is busy") before anything is sent and
+before the reads' room is looked at, so chat never takes a card list's read,
+and a card's read never takes chat's; the refusal's log line names the kind
+`chat`. That busy is the seat link's own: nothing reaches the gate, so it is
+not counted by [the refusal bound](#the-refusal-bound), as the port's
+`chat-busy` is not. The chat pages have their own page limit of 30 requests
+per credential per minute.
 
-What sharing costs was measured with the rooms as they are
+What chat costs was measured with the rooms as they are
 (`TestBudgetMixedUse`, a fake clock over 600 seconds, 521 whole 80-second
 windows): an interview answer every 12 seconds, three Card tabs reloading
-every 20 seconds (each a card list, a read, and a list of open projects,
-which the link keeps 20 seconds and an answer forgets), the watcher, one
-login and two decisions, with a real lead's conversation refreshed by hand
-(two reads a refresh, the directory and the page, neither reused) once in 10
-seconds, once in 30 seconds, or not at all:
+every 20 seconds, in step or staggered (each a card list, a read, and a list
+of open projects, which the link keeps 20 seconds and an answer forgets), the
+watcher, one login and two decisions, with a real lead's conversation
+refreshed by hand (two chat calls a refresh, the directory and the page,
+neither reused) once in 10 seconds, once in 30 seconds, or not at all:
 
-| Use | Card list reads refused | Chat refreshes busy | Most reads refused in one window |
-| --- | --- | --- | --- |
-| No chat | 0 of 90 | none made | 0 |
-| Chat once in 30 s (tabs staggered) | 9 of 90 | 9 of 20 | 3 |
-| Chat once in 10 s (tabs in step or staggered) | 42 of 90 | 28 of 60 | 10 |
+| Use | Card list reads refused | Chat refreshes busy | Most reads refused in one window | Most chat calls refused in one window |
+| --- | --- | --- | --- | --- |
+| No chat | 0 of 90 | none made | 0 | 0 |
+| Chat once in 30 s (tabs in step or staggered) | 0 of 90 | 13 of 20 | 0 | 2 |
+| Chat once in 10 s (tabs in step or staggered) | 0 of 90 | 52 of 60 | 0 | 7 |
 
 The login and both decisions completed in every run: their rooms are their
-own, and reads cannot take them. Without chat the three tabs take 12 of the
-14 reads and none is refused; a conversation refreshed once in 10 seconds asks
-16 reads in 80 seconds and starves the Card tabs of almost half their
-reloads, and one in 30 seconds still costs them one in ten. The rooms
-were not changed for it: the measurement is the evidence for chat's own room
-when replies are built (Budget (8) below). It also showed the interview's
-room short with the three tabs staggered, chat or not: 7 of 50 answers and
-20 of the 65 lists of open projects the link did not hold were refused,
-since each answer makes the next tab's list a call of the gate (none with
-the tabs in step). The link reuses an answer only when the validated answer is the
+own, and neither reads nor chat can take them. The three tabs take the 12
+reads and none is refused, with chat or without: the test compares each run
+with chat to the same tabs without it and fails on any Card list read, list of
+open projects or interview answer that chat's load refused. Chat pays for its
+own load instead: a conversation refreshed once in 10 seconds shows 8 of its
+60 refreshes, and one in 30 seconds 7 of 20. When a refresh's directory is
+sent and its page then meets busy, the directory's call is spent for nothing;
+that is chat's own room, too. Before the carve, chat shared the reads' 14: a
+conversation refreshed once in 10 seconds had 42 of the 90 Card list reloads
+refused (up to 10 reads in one window) and 28 of its 60 refreshes busy, and
+one in 30 seconds 9 of the 90 and 9 of its 20. The measurement also showed the
+interview's room short with the three tabs staggered, chat or not: 7 of 50
+answers and 20 of the 65 lists of open projects the link did not hold were
+refused, since each answer makes the next tab's list a call of the gate (none
+with the tabs in step). The link reuses an answer only when the validated answer is the
 trial's (`stand_in`), whose samples never change, and only within the login
 and the gate connection: the trial's directory for 20 seconds and its read at
 the same lead and cursor for 10 seconds. A real directory and a real
@@ -2919,9 +2933,9 @@ session and connection stay open (`TestSeatChatRealDirectoryTurnedOff`). A
 refusal of the gate, an answer the link does not take, a replacement
 connection, a fresh directory or a retention reset invalidates earlier
 answers. A call the link refuses itself and does not send (no room in the
-reads, no connection, no capability) is no news of the gate and keeps them, so
-a tap that meets a busy read room does not cost the trial's next page its
-directory. Logout ends access to that session's cache.
+chat room, no connection, no capability) is no news of the gate and keeps
+them, so a tap that meets a full chat room does not cost the trial's next page
+its directory. Logout ends access to that session's cache.
 
 What a login keeps of a lead to mark a restart (the last epoch it showed, and
 the switch it was shown under) is dropped whenever the lead may be another:
@@ -2969,16 +2983,17 @@ constraints, from the independent review of the chat design (its findings 1, 2,
   own cursor, keeps the Card version independent, and keeps the one watcher and
   the two waits for each peer. Paging by encoded bytes with a progressing
   cursor and a defined reset is already the wire's.
-- **Budget (8).** The gate stays at 60 requests a minute. Until replies are
-  built, chat's calls share the reads' room, and no other room is cut for
-  them. When replies are built, chat's own room on the seat link is sized
-  from a measured mix of an interview, three Card tabs, logins and decisions,
-  and under contention chat answers busy before Cards and decisions are
-  starved. The first measurement is recorded under
-  [reading chat on the seat](#reading-chat-on-the-seat): shared as it is, a
-  conversation refreshed once in 10 seconds has 42 of 90 Card list reloads
-  refused, so sharing does not yet meet this. Malformed wire counts for the refusal bound;
-  rejected user text and the state of a lead do not.
+- **Budget (8).** The gate stays at 60 requests a minute. With replies,
+  chat has its own room on the seat link, 2 calls in 80 seconds carved from
+  the reads' 14 (the Cards pages keep 12), sized from a measured mix of an
+  interview, three Card tabs, logins and decisions, and under contention chat
+  answers busy before Cards and decisions are starved: a chat call past its
+  room is busy before the reads' room is looked at. The measurement is
+  recorded under [reading chat on the seat](#reading-chat-on-the-seat): a
+  conversation refreshed once in 10 seconds now has none of the 90 Card list
+  reloads refused (42 while chat shared the reads), and 52 of its own 60
+  refreshes busy. Malformed wire counts for the refusal bound; rejected user
+  text, the state of a lead and a chat call the link finds no room for do not.
 
 ## The record change
 
