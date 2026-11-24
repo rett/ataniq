@@ -60,16 +60,18 @@ type switchLine struct {
 }
 
 // entryLine is one entry of the conversation. claim is the claim id of the
-// reply it was stored from.
+// reply it was stored from; hasClaim says that a line read had the member at
+// all, so a replay tells "claim":0 from no claim.
 type entryLine struct {
-	Kind  string `json:"kind"`
-	Seq   int64  `json:"seq"`
-	Gen   int64  `json:"gen"`
-	Epoch int64  `json:"epoch"`
-	Who   string `json:"who"`
-	At    string `json:"at"`
-	Text  string `json:"text"`
-	Claim int64  `json:"claim,omitempty"`
+	Kind     string `json:"kind"`
+	Seq      int64  `json:"seq"`
+	Gen      int64  `json:"gen"`
+	Epoch    int64  `json:"epoch"`
+	Who      string `json:"who"`
+	At       string `json:"at"`
+	Text     string `json:"text"`
+	Claim    int64  `json:"claim,omitempty"`
+	hasClaim bool
 }
 
 // members are the members each kind of line must have, and may have besides.
@@ -209,5 +211,6 @@ func decodeLine(raw []byte) (any, error) {
 	if err := strict(raw, &l); err != nil {
 		return nil, err
 	}
+	_, l.hasClaim = set["claim"]
 	return l, nil
 }

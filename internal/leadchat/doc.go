@@ -159,7 +159,10 @@
 // how many things it set aside; an entry line
 // {"kind":"entry","seq":S,"gen":G,"epoch":E,"who":"lead|system","at":T,"text":"...","claim":C}
 // records one entry, with the claim id of the reply it was stored from (a
-// lead's entry and [TextWithheld] have one, no other entry has). Entries are
+// lead's entry and [TextWithheld] have one, from 1; no other entry has the
+// member at all, not even "claim":0). A generation is at most 2^53-1 and a
+// read switch's at most one less, so the turn-off after it always has one; a
+// turn-on that would leave none is refused ([ErrFull]). Entries are
 // checked in their own increasing order, so a compacted file (the open
 // line's floor above the entries it kept) and the appends after it replay
 // alike; every segment starts with the entry [TextTurnedOn], and a system

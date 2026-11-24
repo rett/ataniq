@@ -43,6 +43,11 @@ const (
 	compactEvery = time.Hour
 	// dropEvery is how often one reason's drop entry is written at most.
 	dropEvery = time.Minute
+	// maxGen is the highest generation of the switch. A read switch is at
+	// most maxGen-1, so the turn-off after it always has a generation: a
+	// replay refuses a read switch at maxGen, and a turn-on that would leave
+	// no generation for its turn-off is refused ([ErrFull]).
+	maxGen = ownerwire.MaxChatSeq
 )
 
 // Entry is one entry of a lead's conversation, as the store holds it.
@@ -443,6 +448,8 @@ func (s *Store) replayLine(n int, raw []byte, rs *replayState) error {
 			return corrupt(n, "the switch is not off or read")
 		case l.Gen <= s.gen:
 			return corrupt(n, "the generation does not grow")
+		case l.Gen > maxGen || l.Chat == ownerwire.ChatRead && l.Gen >= maxGen:
+			return corrupt(n, "the generation is out of range")
 		case !ok:
 			return corrupt(n, "the time is not UTC to the second")
 		case l.Epoch < 0 || l.Epoch > ownerwire.MaxChatSeq || l.Discarded < 0:
@@ -453,6 +460,7 @@ func (s *Store) replayLine(n int, raw []byte, rs *replayState) error {
 		s.chat, s.gen, s.switchAt, s.switchEpoch, s.discarded = l.Chat, l.Gen, at, l.Epoch, l.Discarded
 	case entryLine:
 		_, ok := parseTime(l.At)
+		reply := l.Who == ownerwire.ChatWhoLead || l.Text == TextWithheld
 		switch {
 		case s.chat != ownerwire.ChatRead || l.Gen != s.gen:
 			return corrupt(n, "an entry while chat is off, or of another generation")
@@ -470,10 +478,10 @@ func (s *Store) replayLine(n int, raw []byte, rs *replayState) error {
 			return corrupt(n, "a system entry has a text that is not one of the fixed texts")
 		case rs.wantMarker != (l.Who == ownerwire.ChatWhoSystem && l.Text == TextTurnedOn):
 			return corrupt(n, "a segment does not start with its turned-on entry, or has a second one")
-		case l.Claim < 0 || l.Claim > ownerwire.MaxChatSeq || l.Claim != 0 && l.Claim <= rs.lastClaim:
-			return corrupt(n, "the claim id is out of range or does not grow")
-		case (l.Who == ownerwire.ChatWhoLead || l.Text == TextWithheld) != (l.Claim != 0):
+		case l.hasClaim != reply:
 			return corrupt(n, "a reply's entry lacks its claim id, or another entry has one")
+		case reply && (l.Claim < 1 || l.Claim > ownerwire.MaxChatSeq || l.Claim <= rs.lastClaim):
+			return corrupt(n, "the claim id is out of range or does not grow")
 		}
 		if l.Claim != 0 {
 			rs.lastClaim = l.Claim
@@ -581,7 +589,8 @@ func (s *Store) addEntries(at time.Time, epoch int64, es ...Entry) error {
 // turnOff sets the switch off in memory, ends the segment and drops every
 // entry: from here on nothing is read, whatever happens to the file. The
 // outbox is let go of; its claims stay in the claim folder until the next
-// turn-on discards them.
+// turn-on discards them. The generation has room: a read switch is at most
+// maxGen-1, by the replay and by setSwitch.
 func (s *Store) turnOff(now time.Time, epoch int64) {
 	s.chat, s.gen, s.switchAt, s.switchEpoch, s.discarded = ownerwire.ChatOff, s.gen+1, now.UTC().Truncate(time.Second), epoch, 0
 	s.suspended = false
@@ -850,6 +859,17 @@ func (s *Store) setSwitch(chat string, epoch int64) error {
 	}
 	if chat == s.chat && (chat != ownerwire.ChatRead || !s.suspended) {
 		return nil
+	}
+	if chat == ownerwire.ChatRead {
+		// The turn-on and the turn-off after it, and before them the
+		// turn-off of a suspended lead.
+		need := int64(2)
+		if s.suspended {
+			need = 3
+		}
+		if s.gen > maxGen-need {
+			return fmt.Errorf("%w: the generations of the switch are spent", ErrFull)
+		}
 	}
 	now := s.now()
 	if chat == ownerwire.ChatOff || s.suspended {

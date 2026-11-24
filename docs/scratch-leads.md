@@ -889,8 +889,9 @@ chat; it does not wait for the lead to write again later.
 
 **The store.** `<state root>/chat/<layout role>.jsonl` (folder mode 0700, file
 mode 0600, no sandbox binds it): strict JSON lines of at most 8 KiB (no member
-named twice, none null, valid UTF-8, the system lines only the fixed texts),
-each synced, locked by the daemon, checked by handle like [the command
+named twice, none null, valid UTF-8, the system lines only the fixed texts, a
+claim number only on a reply's line, and switch generations below 2^53 that
+always leave one for the turn-off after a turn-on), each synced, locked by the daemon, checked by handle like [the command
 table](#the-command-table), and at most 8 MiB in all. A torn last line is cut;
 any other damage leaves that lead's chat unavailable and touches no other lead;
 nothing is repaired, and the error names the line and a fixed reason, never what
