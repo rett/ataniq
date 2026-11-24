@@ -15,5 +15,4 @@
   read-only chat port, `leaddaemon.LeadChat`, answers the seat's `seat.chat`
   from the same chats (off leads as bare rows and `chat-off`, a stopped chat or
   a failed store as `chat-busy`, at most 40 calls a minute, and `chat-busy`
-  until the daemon binds it); the owner channel does not give it to the seat
-  gate yet. See `docs/scratch-leads.md`, "Lead replies".
+  until the daemon binds it). See `docs/scratch-leads.md`, "Lead replies".

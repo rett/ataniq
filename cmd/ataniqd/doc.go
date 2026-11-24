@@ -52,8 +52,13 @@
 // STAND-IN rig whose settings "ataniqd trial init" writes: sample cards only,
 // made on demand by "ataniqd trial submit" through the operation trial.submit,
 // decided through the real decision path and applied to nothing; with
-// --seat-gate its gate alone also serves seat.chat (the capability chat) from
-// the STAND-IN sample leads of package chat/standin, held in memory.
+// --seat-gate its gate also serves seat.chat (the capability chat) from the
+// STAND-IN sample leads of package chat/standin, held in memory. In a build
+// with both tags, run --scratch CONFIG --owner-channel --seat-gate ADDR
+// (chat_scratch_linux.go) gives the gate the scratch leads' read-only chat
+// port, leaddaemon.LeadChat, instead: the replies the leads wrote to their
+// outboxes, of each lead the desk turned on with "ataniqd chat set KEY read".
+// --trial is refused with --scratch, so no other gate serves chat.
 // "ataniqd genesis list" and "ataniqd genesis handoff TAG" (genesis_linux.go;
 // genesis_off_linux.go has the same names for every other build) read the
 // finished interviews in owner/genesis of the state folder through the thread

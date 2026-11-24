@@ -121,6 +121,10 @@ In order, by the owner's hand. The daemon never runs `ataniq-canary`.
 5. Drive the leads from the console ([the console guide](terminal-console.md)),
    which defines, starts, stops, messages and attaches.
 
+To read the leads' replies on the phone as well, run the daemon of the build
+with both tags instead: see
+[Running real leads with the seat](#running-real-leads-with-the-seat).
+
 Nothing about a lead is made until its `lead.define` runs: the daemon provisions
 it then, in the folders below, with the git of the host.
 
@@ -794,10 +798,11 @@ A lead can reply to the owner in writing, for the desk and, later, the seat to
 show. The store and the reader are [`internal/leadchat`](../internal/leadchat/doc.go);
 the daemon's desk switch, its scanner and the seat's chat port are in
 `internal/leaddaemon` (`chat_desk_linux.go`, `chat_port_linux.go`), all behind
-the canary tag like the rest of scratch mode. Nothing here sends to a lead, and
-**the owner channel's daemon does not give the port to the seat gate yet**: a
-gate still serves only its STAND-IN samples (composing the two is the next
-step). Cards stay the only path of an approval.
+the canary tag like the rest of scratch mode. Nothing here sends to a lead. The
+daemon built with both tags gives the port to the seat gate when it runs
+scratch mode with the owner channel (see
+[Running real leads with the seat](#running-real-leads-with-the-seat)); every
+other gate serves no lead's replies. Cards stay the only path of an approval.
 
 **The desk's switch.** Each lead's chat is `off` or `read`; sending is not
 built. The switch is the desk's and lives in the daemon's memory: **every lead
@@ -844,7 +849,7 @@ Its lines hold counts and fixed words only: never a reply's text, a file name
 or a path.
 
 **What the seat sees.** The daemon's chat port (`leaddaemon.LeadChat`) is the
-read-only view that the seat gate's `seat.chat` route will call. It imports
+read-only view that the seat gate's `seat.chat` route calls. It imports
 nothing of the approval packages but the wire's types, holds no way to the
 owner channel's service, the lifecycle, a holder or the command table, and a
 test holds that no chat call (a list, a read, a refusal, a reply whose text asks
@@ -1041,6 +1046,92 @@ turned-on line is always kept), and holds them in memory, so reading them
 touches no file. A seat whose cursor is not an entry the store holds now (one of
 an earlier conversation, or one that expired) is told to reset and gets what is
 held.
+
+## Running real leads with the seat
+
+One daemon can serve the scratch leads and the owner channel with the seat
+gate together, so that the owner reads the leads' replies on the phone. It is
+the daemon of `make scratch-seat-build`, the one build with both tags,
+`ataniq_ownerchannel` and `ataniq_canary`; `make canary-build` still builds the
+holder, the console, `ataniq-canary` and the probe. Like each of the two, it is
+provisional and unqualified, and its door is the owner channel's stand-in. The
+owner runs it by hand:
+
+```sh
+build/scratch-seat/ataniqd run --scratch CONFIG --owner-channel --seat-gate IP:PORT
+```
+
+**Refused flags.** With `--scratch` the daemon refuses, at the usage exit code
+(2) and before it reads or makes anything: `--trial` ("--trial and --scratch
+exclude each other: a daemon with real leads never serves the phone trial's
+samples"), `--canary`, `--state-dir` and `--runtime-dir` (the roots are the
+config's). `--seat-gate` without `--owner-channel` is refused as in every
+build. So such a daemon never serves the phone trial's STAND-IN cards or sample
+leads.
+
+**What the owner prepares**, on the daemon's host, before the first start:
+
+1. The scratch roots and the config, as in [the owner's steps](#the-owners-steps)
+   1 to 3: private roots that are not the account's defaults, the config of
+   mode 0600 outside both roots, the holder and sandbox inputs, and local
+   throwaway source repositories. `ataniq-canary scratch-init --config CONFIG`
+   writes only the root marker: it provisions no lead and does not set up the
+   owner channel.
+2. The owner channel's **non-trial** scratch settings, `owner/scratch.json` in
+   the config's state root (the folder `owner/` of mode 0700, the file of mode
+   0600): `"door": "stand-in"`, the one project, its mirror, the drop folder,
+   the scratch roots, and the suite's sandbox template and work folder, as
+   [the lead daemon guide](lead-daemon.md#the-scratch-settings) describes
+   them. Not the trial's settings (`ataniqd trial
+   init`), which this daemon refuses. Keep the mirror, the drop folder, the
+   template and the work folder in a scratch root of their own, apart from the
+   leads' folders in the state root (`leads/`, `mirrors/`, `chat/`) and from
+   every lead's reply folder; the daemon refuses a drop folder in the state
+   root. This adapter can collect requests from the drop folder and run the
+   suite in the verification sandbox: the word stand-in on its door does not
+   make every host action inert.
+3. The gate's identity and the pinned seat key: `ataniqd seat-gate init
+   --state-dir STATE` with the config's state root as `STATE` prints the gate's
+   fingerprint, which the seat on the authority host pins, and
+   `owner/gate/seat-pins` holds the seat's key fingerprint (see
+   [the seat gate guide](seat-gate.md#keys)). The gate key and the list of the
+   phones' keys (`owner/keys.log`) are in the state root, so a new scratch state
+   root means a new gate fingerprint for the seat and new pairings of the phones.
+4. The seat origin, the owner-local file `ataniq/owner-local/seat-origin` of the
+   configuration folder ([the origin file](seat-gate.md#the-origin-file)). The
+   phone shows Leads after a login, and without an origin the gate serves no
+   login.
+
+At start the daemon prints the owner channel's STAND-IN banner, the gate's start
+line, which ends `... watch, genesis and chat`, and after it:
+
+```text
+ataniqd: seat gate: chat: replies the scratch leads wrote to their outboxes; read only
+```
+
+**Reading a lead's replies.** The owner defines and starts a lead from the
+console ([the console guide](terminal-console.md)). Its chat is off, like every
+lead's whenever the daemon starts; `"inject": false` is enough for replies, and
+recording screens is not needed. Then, at the desk:
+
+```sh
+ataniqd chat set KEY read --config CONFIG
+```
+
+The seat's Leads pages then list the lead as `daemon:KEY` and show what it
+wrote to its reply folder from that moment on, read only. `ataniqd chat set
+KEY off --config CONFIG` hides them at once (the next read is `chat-off`), and
+a restart of the daemon turns every lead off. A lead whose chat is off is a bare
+row on the seat. Nothing is sent to a lead from the seat or the desk.
+
+**What it leaves open.** A lead's sandbox leaves the host's non-loopback
+addresses reachable, so a lead can reach the gate's port: pinned mutual TLS
+refuses its calls, not its connections, and a firewall rule that admits only
+the authority host to the port is the owner's to set. The daemon holds the lead
+control plane and the approvals in one process: any process of the owner's user
+can call `chat.set` and the `lead.*` operations on its socket, as [the
+same-user limit](#what-scratch-mode-leaves-open) says. The host setup, the pins,
+the deployment of the seat and every live run are the owner's.
 
 ## Failure handling and owner recovery
 
@@ -1239,6 +1330,7 @@ which settles it at its reconcile, as before.
 | Provisioning of a scratch lead, `scratch-clean` (tagged) | [`internal/leadcanary/provision`](../internal/leadcanary/provision/doc.go) |
 | The screen recorder (tagged) | [`internal/leadholder/screenrec`](../internal/leadholder/screenrec/doc.go), and `--record-dir` in `cmd/ataniq-holder/canary_linux.go` |
 | The owner's commands | [`cmd/ataniq-canary`](../cmd/ataniq-canary/main.go) (`scratch-init`, `scratch-clean`), [`cmd/ataniqd`](../cmd/ataniqd/doc.go) (`run --scratch`, `chat list`, `chat set`) |
+| The composition with the seat gate (both tags) | `cmd/ataniqd`: `chat_scratch_linux.go`, and `ownerRun` in `owner_linux.go` |
 | The console's client | [`internal/consoleclient`](../internal/consoleclient/doc.go) |
 | The console's view | [`internal/terminalconsole/leadctl`](../internal/terminalconsole/leadctl/doc.go) |
 
