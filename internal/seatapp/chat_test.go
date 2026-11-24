@@ -274,7 +274,7 @@ func TestChatPagingHistory(t *testing.T) {
 	}
 	f.read.Reset = true
 	reset := get("?after=999")
-	if !strings.Contains(reset, "Earlier messages are no longer kept.") || strings.Contains(reset, "Show earlier") || strings.Contains(reset, "Lead restarted:") {
+	if strings.Count(reset, "This page starts again from the oldest kept message.") != 1 || strings.Contains(reset, "no longer kept") || strings.Contains(reset, "Show earlier") || strings.Contains(reset, "Lead restarted:") {
 		t.Error("reset")
 	}
 	f.read.Reset = false

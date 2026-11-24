@@ -483,7 +483,10 @@ two reads of the desk, and they share the reads' 14 calls in 80 seconds with
 the card lists (see [What it costs](#live-refresh)); past it the page says "The
 desk is busy. Try again in a minute." The seat can reuse the
 trial directory for 20 seconds and a transcript page for 10 seconds. A separate
-notice tells you if earlier messages have expired or the lead changed epochs.
+notice says "This page starts again from the oldest kept message." when the
+place you asked for is no longer kept (older messages expired, or the page's
+place is past the conversation the desk holds now), and another when the lead
+changed epochs.
 
 Lead and System labels come from the seat. Links and markup in a reply appear
 as text. Approvals are only on Cards. Sending and live refresh are not built,

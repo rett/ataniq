@@ -18,7 +18,7 @@
       {{else if .Messages}}<a id="chat-jump" href="#newest">Jump to newest</a>{{end}}
     </p>
 
-    {{if .Reset}}<p class="note-line" role="status">Earlier messages are no longer kept.</p>{{end}}
+    {{if .Reset}}<p class="note-line" role="status">This page starts again from the oldest kept message.</p>{{end}}
     {{if .Restarted}}<p class="chat-epoch"><strong>Lead restarted: epoch {{num .Epoch}}</strong></p>{{end}}
 
     <ol class="chat-log" role="log" aria-labelledby="conversation-h"

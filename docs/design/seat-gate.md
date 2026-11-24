@@ -2843,8 +2843,9 @@ reached, so it needs no memory of the pages before. The log marks the last
 entry as newest. When the head lies beyond the page, Jump to newest reads the
 last window, after the head minus 16, floored at zero. A session keeps only
 the last epoch it showed of each shared lead: a restart marker above the log
-records an epoch change observed across reads. A retention reset has its own
-notice.
+records an epoch change observed across reads. A reset (a cursor before what
+the host retains, or past the head) has its own notice, "This page starts
+again from the oldest kept message.", in words that hold for both causes.
 
 Chat's calls are reads. They share the seat link's read room (14 calls per
 80-second window, see the budget table under
