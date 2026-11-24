@@ -6,10 +6,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"ataniq/internal/approval/ownerwire"
+	"ataniq/internal/leadchat"
 	"ataniq/internal/leadwire"
 )
 
@@ -214,5 +216,37 @@ func TestLeadChatCursorLeavesOutASuspendedLead(t *testing.T) {
 	waitFor(t, 5*time.Second, "the broadcast", func() bool { return closed(ch) })
 	if c := cursorOf(t, port); c != cursorFor(t, port, nil) {
 		t.Fatalf("a suspended lead is in the cursor: %d", c)
+	}
+}
+
+// A drop moves the cursor, and closes the broadcast, exactly when it writes
+// an entry: the first notice of a drop is the lead's new head, with no reply
+// taken; a drop within the minute of that notice writes nothing, and says
+// nothing.
+func TestLeadChatCursorMovesForADropNoticeOnly(t *testing.T) {
+	l, port := newChatEnv(t)
+	l.start()
+	l.up("alpha", submitted)
+	l.mustChatSet("alpha", leadwire.ChatRead)
+	out := l.outboxOf("alpha")
+	before := cursorOf(t, port)
+	ch := port.ChatCursorChanged()
+	reply(t, out, "0001-long.txt", strings.Repeat("x", leadchat.MaxReplyBytes+1))
+	waitFor(t, 15*time.Second, "the first drop", func() bool { return l.chatRow("alpha").Dropped["too-long"] == 1 })
+	waitFor(t, 5*time.Second, "the broadcast of the drop's notice", func() bool { return closed(ch) })
+	noticed := cursorOf(t, port)
+	if noticed == before || l.chatRow("alpha").Entries != 2 {
+		t.Fatalf("the drop's notice: the cursor %d (was %d), %d entries", noticed, before, l.chatRow("alpha").Entries)
+	}
+
+	ch = port.ChatCursorChanged()
+	reply(t, out, "0002-long.txt", strings.Repeat("y", leadchat.MaxReplyBytes+1))
+	waitFor(t, 15*time.Second, "the second drop", func() bool { return l.chatRow("alpha").Dropped["too-long"] == 2 })
+	time.Sleep(5 * l.scratch.ChatScanEvery)
+	if closed(ch) {
+		t.Fatal("a drop that wrote no entry closed the broadcast")
+	}
+	if c := cursorOf(t, port); c != noticed || l.chatRow("alpha").Entries != 2 {
+		t.Fatalf("a drop that wrote no entry: the cursor %d (was %d), %d entries", c, noticed, l.chatRow("alpha").Entries)
 	}
 }

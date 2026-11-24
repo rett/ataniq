@@ -1903,9 +1903,13 @@ the leads whose desk switch is read, not stopped by a scan, with a store that
 works and an epoch the wire holds: exactly the leads whose conversation a seat
 read is served. For each it reads the store's status (the generation of the
 switch and the head), and nothing of any other lead. Its broadcast
-(`ChatCursorChanged`) is closed when a reply is taken from a lead that is on,
-when a lead's switch is set (on, off, a new segment), when a scan stops a
-lead's chat or its store fails, and when the port is bound or unbound. A lead
+(`ChatCursorChanged`) is closed when a scan gives a lead that is on a new head
+(`leadchat.IngestReport.HeadAdvanced`: a reply taken or withheld, or the fixed
+entry of a drop or of a suspension, also when the scan fails after it), when a
+lead's switch is set (on, off, a new segment), when a scan stops a lead's chat
+or its store fails, and when the port is bound or unbound. A drop that writes
+no entry (its notice was written less than a minute before) moves no head and
+closes nothing (`TestLeadChatCursorMovesForADropNoticeOnly`). A lead
 whose chat is off has no scanner, so its replies are not read and close
 nothing; a test writes them, and starts that lead, and finds the cursor and
 the broadcast unchanged (`TestLeadChatCursorCoversTheEnabledLeadsOnly`). The

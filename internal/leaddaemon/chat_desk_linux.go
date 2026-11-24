@@ -608,6 +608,13 @@ func (d *chatDesk) scanOnce(cl *chatLead, failing *bool) bool {
 		return true
 	}
 	rep, err := store.Ingest(epoch)
+	if rep.HeadAdvanced || rep.Suspended {
+		// The lead is readable (its scanner runs only then): its head
+		// moved (a reply, a withheld one, the fixed entry of a drop or of
+		// a suspension, before an error or not), or a scan stopped its
+		// chat. A drop that wrote no entry moved nothing and says nothing.
+		d.cursorMoved()
+	}
 	switch {
 	case errors.Is(err, leadchat.ErrOff), errors.Is(err, leadchat.ErrSuspended):
 		// The scanner runs only while the desk's switch is read: the lead
@@ -633,11 +640,6 @@ func (d *chatDesk) scanOnce(cl *chatLead, failing *bool) bool {
 	dropped := 0
 	for _, n := range rep.Dropped {
 		dropped += n
-	}
-	if rep.Taken+rep.Withheld > 0 || rep.Suspended {
-		// The lead is readable (its scanner runs only then): its head moved,
-		// or a scan stopped its chat.
-		d.cursorMoved()
 	}
 	if rep.Taken+rep.Withheld+rep.Repaired+dropped > 0 {
 		d.logf("chat: the lead %q: %d repl(ies) taken, %d withheld, %d repaired, %d file(s) dropped, %d waiting", cl.key, rep.Taken, rep.Withheld, rep.Repaired, dropped, rep.Waiting)
