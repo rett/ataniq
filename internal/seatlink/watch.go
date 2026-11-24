@@ -78,8 +78,9 @@ type WatchPort interface {
 }
 
 var (
-	_ WatchPort       = (*Daemon)(nil)
-	_ seatapp.Watcher = (*Daemon)(nil)
+	_ WatchPort           = (*Daemon)(nil)
+	_ seatapp.Watcher     = (*Daemon)(nil)
+	_ seatapp.ChatWatcher = (*Daemon)(nil)
 )
 
 // watchHub holds the published state and the broadcast. Its zero value is a
