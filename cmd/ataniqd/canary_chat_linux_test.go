@@ -64,15 +64,19 @@ func TestChatCommand(t *testing.T) {
 	if err := cl.Call(ctx, leadwire.OpDefine, leadwire.DefineParams{Client: "test", CommandID: "def-1", Role: "scratch-alpha/lead"}, &r); err != nil || r.Status != leadwire.StatusDone {
 		t.Fatalf("define: %+v %v", r, err)
 	}
-	// The define made the reply folder.
-	if fi, err := os.Lstat(filepath.Join(w.State, "leads", "scratch-alpha-lead", "home", leadchat.OutboxName)); err != nil || fi.Mode().Perm() != 0o700 {
-		t.Fatalf("the reply folder: %v %v", fi, err)
+	// The define made no reply folder: the turn-on makes it.
+	outbox := filepath.Join(w.State, "leads", "scratch-alpha-lead", "home", leadchat.OutboxName)
+	if _, err := os.Lstat(outbox); !os.IsNotExist(err) {
+		t.Fatalf("the define made the reply folder: %v", err)
 	}
 
 	code, out, errs = chatRun(t, "set", "alpha", "read", "--config", w.ConfigPath)
 	var row leadwire.ChatLead
 	if code != 0 || json.Unmarshal([]byte(out), &row) != nil || row.Key != "alpha" || row.Chat != leadwire.ChatRead || row.Entries != 1 {
 		t.Fatalf("set alpha read: %d %q %s", code, out, errs)
+	}
+	if fi, err := os.Lstat(outbox); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("the reply folder after read: %v %v", fi, err)
 	}
 	for _, tc := range []struct {
 		args []string

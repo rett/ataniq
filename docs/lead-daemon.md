@@ -861,13 +861,13 @@ gate, and a client's check of the six lead operations does not count them.
 CONFIG` and `ataniqd chat purge KEY --config CONFIG` call them and print one
 JSON line.
 
-Every `lead.define` and `lead.start` of a scratch lead also makes the lead's
-reply folder, `<state>/leads/<layout role>/home/.ataniq-replies` (mode 0700; the
-lead sees it as `/home/lead/.ataniq-replies`), and, while the lead is proven
-stopped, writes the reply instructions into the lead's empty instruction file
-(`<state>/leads/<layout role>/instructions.md`, which the sandbox binds
+Every `lead.define` and `lead.start` of a scratch lead also, while the lead is
+proven stopped, writes the reply instructions into the lead's empty instruction
+file (`<state>/leads/<layout role>/instructions.md`, which the sandbox binds
 read-only as the runtime's user-level instructions); a file with the owner's
-own text is never overwritten. The daemon also has a chat port for the seat
+own text is never overwritten. Neither makes nor judges the lead's reply
+folder, `<state>/leads/<layout role>/home/.ataniq-replies` (the lead sees it as
+`/home/lead/.ataniq-replies`): `chat.set read` makes it afresh (mode 0700). The daemon also has a chat port for the seat
 gate's `seat.chat`, read only and bound once the chat stores are open; the
 owner channel does not give it to the gate yet. See [Lead
 replies](scratch-leads.md#lead-replies-read-only).

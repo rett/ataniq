@@ -11,31 +11,37 @@ import (
 	"golang.org/x/sys/unix"
 
 	"ataniq/internal/leadcanary"
-	"ataniq/internal/leadchat"
 	"ataniq/internal/leadrole"
 	"ataniq/internal/leadsandbox/safefile"
 )
 
 // This file is what a scratch lead needs for its replies to the owner, beside
-// what provisioning makes: the reply folder in the lead's home and the text of
-// its instruction file. The daemon calls [EnsureChat] at every lead.define (an
-// already provisioned lead included) and at every lead.start, before the
-// lead's unit starts.
+// what provisioning makes: the text of its instruction file. The daemon calls
+// [EnsureChat] at every lead.define (an already provisioned lead included)
+// and at every lead.start, before the lead's unit starts. It never makes,
+// opens or judges the lead's reply folder: the desk's turn-on of the lead's
+// chat makes that folder afresh (package leadchat), so a lead whose chat is
+// off starts whatever its home holds at that name.
 
-// ErrChat is wrapped when the reply folder or the instruction file of a lead
-// is not as [EnsureChat] makes it: the reply folder is not a folder of the
-// caller with mode 0700 exactly, or the instruction file is not a regular
-// file of the caller with mode 0600 and one link.
-var ErrChat = errors.New("provision: the lead's reply folder or instruction file is not as the daemon makes it")
+// ErrChat is wrapped when the instruction file of a lead is not as
+// [EnsureChat] needs it: not a regular file of the caller with mode 0600 and
+// one link, reached without a link or a mount point, or one that changed
+// while the empty file was being replaced.
+var ErrChat = errors.New("provision: the lead's instruction file is not as the daemon makes it")
 
 // maxInstructionsBytes is the largest instruction file that is read to judge
 // it. A larger one is the owner's and is kept.
 const maxInstructionsBytes = 64 << 10
 
 // instructionsTmp is the temporary name the instruction text is written under
-// in the lead's folder, and renamed from. The lead's folder is not bound into
-// the sandbox, so only the daemon writes in it.
+// in the lead's folder, and exchanged from. The lead's folder is not bound
+// into the sandbox, so only the daemon writes in it.
 const instructionsTmp = "." + InstructionsName + ".tmp"
+
+// resolveFlags is what the lookup of the instruction file below the lead's
+// folder uses: beneath the folder, no symbolic or magic link, and no mount
+// point crossed (a file bound over the name is refused).
+const resolveFlags = unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_XDEV
 
 // Instructions says what [EnsureChat] found or did with the lead's
 // instruction file.
@@ -71,38 +77,35 @@ type ChatOptions struct {
 
 // ChatResult is what [EnsureChat] did.
 type ChatResult struct {
-	// OutboxMade is true when the reply folder was not there and was made.
-	OutboxMade bool
 	// Instructions is what became of the instruction file.
 	Instructions Instructions
 }
 
-// EnsureChat makes the reply folder of a provisioned scratch lead and writes
-// the text of its instruction file. Both are reached from the state root's
-// handle, one name at a time, without following a link or crossing a mount
-// point:
+// EnsureChat writes the text of the instruction file of a provisioned scratch
+// lead, <state root>/leads/<layout role>/instructions.md. The lead's folder is
+// reached from the state root's handle, one name at a time, and the file
+// below it by openat2, without following a link or crossing a mount point.
+// The file must be a regular file of the caller with mode 0600 and one link
+// ([ErrChat] otherwise), and is judged by its handle:
 //
-//   - the reply folder <state root>/leads/<layout role>/home/.ataniq-replies
-//     ([OutboxInside] in the sandbox) is made with mode 0700 when it is not
-//     there, in the lead's home (a folder of the caller that group and other
-//     cannot write), and is then opened by its descriptor and must be a
-//     folder of the caller with mode 0700 exactly, on the home's file system.
-//     One that is there with another mode, of another user, a link or not a
-//     folder is refused ([ErrChat]) and left as it is: the daemon never
-//     changes the mode of a folder the lead may have changed;
-//   - the instruction file <state root>/leads/<layout role>/instructions.md,
-//     which must be a regular file of the caller with mode 0600 and one link
-//     ([ErrChat] otherwise), is judged by its handle: a file that holds the
-//     text of [LeadInstructions] is kept; the empty file provisioning makes
-//     is replaced by that text only when opts.Stopped says the lead is proven
-//     stopped, and kept otherwise; a file that holds anything else is the
-//     owner's and is never overwritten. The text is written by handle to a
-//     temporary file in the lead's folder (made exclusively, mode 0600),
-//     synced, and renamed over the file, and the folder is synced; a file
-//     that changed between the judgement and the rename is not replaced.
+//   - a file that holds the text of [LeadInstructions] is kept; it is
+//     recognised by a read of one byte more than the text, compared whole,
+//     with its size unchanged after the read;
+//   - the empty file provisioning makes is replaced by that text only when
+//     opts.Stopped says the lead is proven stopped, and kept otherwise. The
+//     text is written to a temporary file in the lead's folder (made
+//     exclusively, mode 0600) and synced; the empty file is checked again by
+//     its handle and by its name, and the temporary file and the name are
+//     exchanged (RENAME_EXCHANGE). The file that the exchange took out of
+//     the name must be the empty file that was checked: when it is not (an
+//     owner's edit came in the moment between), the exchange is undone, the
+//     owner's file is back at its name, and the call is refused ([ErrChat]).
+//     Otherwise the empty file is removed and the folder is synced;
+//   - a file that holds anything else is the owner's and is never
+//     overwritten.
 //
-// The lead must be provisioned: its home and its instruction file are
-// provisioning's. EnsureChat looks at no reply in the folder.
+// The lead must be provisioned: its folder and its instruction file are
+// provisioning's. EnsureChat makes, opens and judges no reply folder.
 func EnsureChat(cfg leadcanary.Config, opts ChatOptions) (ChatResult, error) {
 	if cfg.Reserved != leadrole.ReservedScratch {
 		return ChatResult{}, fmt.Errorf("%w: EnsureChat takes a scratch lead", ErrScratchKind)
@@ -117,9 +120,6 @@ func EnsureChat(cfg leadcanary.Config, opts ChatOptions) (ChatResult, error) {
 	}
 	defer root.Close()
 	var res ChatResult
-	if res.OutboxMade, err = ensureOutbox(root, p); err != nil {
-		return ChatResult{}, err
-	}
 	if res.Instructions, err = ensureInstructions(root, p, opts.Stopped); err != nil {
 		return ChatResult{}, err
 	}
@@ -127,75 +127,14 @@ func EnsureChat(cfg leadcanary.Config, opts ChatOptions) (ChatResult, error) {
 }
 
 // dirFD opens the folder rel beneath the root and returns a descriptor the
-// caller owns, with what fstat says of it.
-func dirFD(root *safefile.Root, rel string) (int, safefile.Info, error) {
+// caller owns.
+func dirFD(root *safefile.Root, rel string) (int, error) {
 	h, err := root.OpenDirHandle(rel)
 	if err != nil {
-		return -1, safefile.Info{}, err
+		return -1, err
 	}
 	defer h.Close()
-	info, err := h.Info()
-	if err != nil {
-		return -1, safefile.Info{}, err
-	}
-	fd, err := h.Dup()
-	if err != nil {
-		return -1, safefile.Info{}, err
-	}
-	return fd, info, nil
-}
-
-// ensureOutbox makes the reply folder when it is not there and checks it.
-func ensureOutbox(root *safefile.Root, p Paths) (made bool, err error) {
-	home, info, err := dirFD(root, p.stateRel(p.Home))
-	if err != nil {
-		return false, fmt.Errorf("the lead's home %s: %w", p.Home, err)
-	}
-	defer unix.Close(home)
-	if !owned(info) || info.Mode&0o022 != 0 {
-		return false, fmt.Errorf("%w: the lead's home %s is not a folder of the caller closed to group and other writes", ErrChat, p.Home)
-	}
-	at := p.Home + "/" + leadchat.OutboxName
-	switch err := unix.Mkdirat(home, leadchat.OutboxName, dirMode); {
-	case err == nil:
-		made = true
-	case err == unix.EEXIST:
-	default:
-		return false, fmt.Errorf("%s: %w", at, err)
-	}
-	fd, err := unix.Openat(home, leadchat.OutboxName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	if err != nil {
-		// A link answers ELOOP or ENOTDIR here, and a file ENOTDIR.
-		return made, fmt.Errorf("%w: %s cannot be opened as a folder: %w", ErrChat, at, err)
-	}
-	defer unix.Close(fd)
-	if made {
-		// The umask may have narrowed the mode; 0700 is set exactly on the
-		// folder this call made, and on no other.
-		if err := unix.Fchmod(fd, dirMode); err != nil {
-			return made, fmt.Errorf("%s: %w", at, err)
-		}
-	}
-	var st unix.Stat_t
-	if err := unix.Fstat(fd, &st); err != nil {
-		return made, fmt.Errorf("%s: %w", at, err)
-	}
-	switch {
-	case st.Mode&unix.S_IFMT != unix.S_IFDIR:
-		return made, fmt.Errorf("%w: %s is not a folder", ErrChat, at)
-	case int(st.Uid) != unix.Geteuid():
-		return made, fmt.Errorf("%w: %s is not the caller's", ErrChat, at)
-	case st.Mode&0o7777 != dirMode:
-		return made, fmt.Errorf("%w: %s has mode %04o; it must stay 0700", ErrChat, at, st.Mode&0o7777)
-	case uint64(st.Dev) != info.Dev:
-		return made, fmt.Errorf("%w: %s is on another file system than the lead's home", ErrChat, at)
-	}
-	if made {
-		if err := syncDirFD(home); err != nil {
-			return made, fmt.Errorf("%s: %w", p.Home, err)
-		}
-	}
-	return made, nil
+	return h.Dup()
 }
 
 // syncDirFD syncs the folder that the descriptor (which may be O_PATH) names.
@@ -208,45 +147,62 @@ func syncDirFD(fd int) error {
 	return unix.Fsync(d)
 }
 
+// openBeneath opens the one name below dir by openat2 with [resolveFlags].
+func openBeneath(dir int, name string, flags int) (int, error) {
+	how := unix.OpenHow{Flags: uint64(flags | unix.O_CLOEXEC | unix.O_NOFOLLOW), Resolve: resolveFlags}
+	for {
+		fd, err := unix.Openat2(dir, name, &how)
+		if err != unix.EINTR && err != unix.EAGAIN {
+			return fd, err
+		}
+	}
+}
+
+// checkInstructions judges the instruction file by the stat of its handle.
+func checkInstructions(st *unix.Stat_t, at string) error {
+	switch {
+	case st.Mode&unix.S_IFMT != unix.S_IFREG:
+		return fmt.Errorf("%w: %s is not a regular file", ErrChat, at)
+	case int(st.Uid) != unix.Geteuid(), st.Mode&0o7777 != 0o600, st.Nlink != 1:
+		return fmt.Errorf("%w: %s is not a file of the caller with mode 0600 and one link", ErrChat, at)
+	}
+	return nil
+}
+
 // ensureInstructions judges the instruction file and writes the text when it
 // is the empty one and the lead is proven stopped.
 func ensureInstructions(root *safefile.Root, p Paths, stopped bool) (Instructions, error) {
-	lead, _, err := dirFD(root, p.stateRel(p.LeadDir))
+	lead, err := dirFD(root, p.stateRel(p.LeadDir))
 	if err != nil {
 		return "", fmt.Errorf("the lead's folder %s: %w", p.LeadDir, err)
 	}
 	defer unix.Close(lead)
 	at := p.InstructionFile
-	fd, err := unix.Openat(lead, InstructionsName, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
+	fd, err := openBeneath(lead, InstructionsName, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOCTTY)
 	if err != nil {
 		if err == unix.ENOENT {
 			return "", fmt.Errorf("%s: %w", at, fs.ErrNotExist)
 		}
-		return "", fmt.Errorf("%w: %s cannot be opened as a file: %w", ErrChat, at, err)
+		return "", fmt.Errorf("%w: %s cannot be opened as a file beneath the lead's folder: %w", ErrChat, at, err)
 	}
 	defer unix.Close(fd)
 	var st unix.Stat_t
 	if err := unix.Fstat(fd, &st); err != nil {
 		return "", fmt.Errorf("%s: %w", at, err)
 	}
-	switch {
-	case st.Mode&unix.S_IFMT != unix.S_IFREG:
-		return "", fmt.Errorf("%w: %s is not a regular file", ErrChat, at)
-	case int(st.Uid) != unix.Geteuid(), st.Mode&0o7777 != 0o600, st.Nlink != 1:
-		return "", fmt.Errorf("%w: %s is not a file of the caller with mode 0600 and one link", ErrChat, at)
-	case st.Size > maxInstructionsBytes:
+	if err := checkInstructions(&st, at); err != nil {
+		return "", err
+	}
+	if st.Size > maxInstructionsBytes {
 		return InstructionsOwner, nil
 	}
 	text := []byte(LeadInstructions())
 	if st.Size != 0 {
-		if st.Size != int64(len(text)) {
-			return InstructionsOwner, nil
-		}
-		got, err := readAllFD(fd, st.Size)
-		if err != nil {
+		same, err := holdsExactly(fd, text, st.Size)
+		switch {
+		case err != nil:
 			return "", fmt.Errorf("%s: %w", at, err)
-		}
-		if bytes.Equal(got, text) {
+		case same:
 			return InstructionsCurrent, nil
 		}
 		return InstructionsOwner, nil
@@ -254,15 +210,21 @@ func ensureInstructions(root *safefile.Root, p Paths, stopped bool) (Instruction
 	if !stopped {
 		return InstructionsLegacy, nil
 	}
-	if err := replaceFile(lead, InstructionsName, &st, text); err != nil {
+	if err := replaceEmpty(lead, InstructionsName, fd, &st, text); err != nil {
 		return "", fmt.Errorf("%s: %w", at, err)
 	}
 	return InstructionsWritten, nil
 }
 
-// readAllFD reads exactly n bytes from fd, from its start.
-func readAllFD(fd int, n int64) ([]byte, error) {
-	buf := make([]byte, n)
+// holdsExactly reports whether the file of fd, whose size was size, holds
+// exactly text: one byte more than the text is read from its start, the
+// bytes read are the text, and the size is the same after the read. A file
+// that grew or shrank while it was read is not the text.
+func holdsExactly(fd int, text []byte, size int64) (bool, error) {
+	if size != int64(len(text)) {
+		return false, nil
+	}
+	buf := make([]byte, len(text)+1)
 	got := 0
 	for got < len(buf) {
 		k, err := unix.Pread(fd, buf[got:], int64(got))
@@ -270,21 +232,37 @@ func readAllFD(fd int, n int64) ([]byte, error) {
 			continue
 		}
 		if err != nil {
-			return nil, err
+			return false, err
 		}
 		if k == 0 {
-			return nil, errors.New("the file changed while it was read")
+			break
 		}
 		got += k
 	}
-	return buf, nil
+	var after unix.Stat_t
+	if err := unix.Fstat(fd, &after); err != nil {
+		return false, err
+	}
+	return got == len(text) && bytes.Equal(buf[:got], text) && after.Size == size, nil
 }
 
-// replaceFile writes data to a temporary file of the folder dir (made
-// exclusively, mode 0600), syncs it, and renames it over name when name is
-// still the file judged (seen); then it syncs the folder. A temporary file a
-// crash left is removed first.
-func replaceFile(dir int, name string, seen *unix.Stat_t, data []byte) error {
+// errDisplaced is the fixed note of an upgrade that met another version of
+// the instruction file: it is kept at its name and the text is not written.
+var errDisplaced = fmt.Errorf("%w: the file changed while its empty form was being replaced; the version found is kept and the text was not written", ErrChat)
+
+// exchangeHook, a test's hook, runs in replaceEmpty after the empty file is
+// checked again and before the exchange.
+var exchangeHook func()
+
+// replaceEmpty puts data at name below dir in place of the empty file the
+// handle fd holds (seen is its stat). data is written to a temporary file of
+// dir (made exclusively, mode 0600) and synced; the empty file is checked
+// again, by its handle (still empty, one link) and by its name (the same
+// file); then the temporary file and name are exchanged. The file the
+// exchange took out must be the empty file checked: when it is not, the
+// exchange is undone and the call is refused ([errDisplaced]), and the file
+// found is at its name again. A temporary file a crash left is removed first.
+func replaceEmpty(dir int, name string, fd int, seen *unix.Stat_t, data []byte) error {
 	if err := unix.Unlinkat(dir, instructionsTmp, 0); err != nil && err != unix.ENOENT {
 		return fmt.Errorf("a leftover temporary file cannot be removed: %w", err)
 	}
@@ -292,9 +270,11 @@ func replaceFile(dir int, name string, seen *unix.Stat_t, data []byte) error {
 	if err != nil {
 		return err
 	}
-	done := false
+	// keepTmp is set when the temporary name holds a file that is not the
+	// daemon's text (an exchange that could not be undone).
+	keepTmp := false
 	defer func() {
-		if !done {
+		if !keepTmp {
 			_ = unix.Unlinkat(dir, instructionsTmp, 0)
 		}
 	}()
@@ -318,16 +298,44 @@ func replaceFile(dir int, name string, seen *unix.Stat_t, data []byte) error {
 	if err != nil {
 		return err
 	}
-	var now unix.Stat_t
-	if err := unix.Fstatat(dir, name, &now, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+	var now, named unix.Stat_t
+	if err := unix.Fstat(fd, &now); err != nil {
 		return err
 	}
-	if now.Dev != seen.Dev || now.Ino != seen.Ino || now.Size != seen.Size || now.Mtim != seen.Mtim || now.Ctim != seen.Ctim {
-		return fmt.Errorf("%w: the file changed while it was judged; it is left as it is", ErrChat)
-	}
-	if err := unix.Renameat(dir, instructionsTmp, dir, name); err != nil {
+	if err := unix.Fstatat(dir, name, &named, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		return err
 	}
-	done = true
+	if now.Size != 0 || now.Nlink != 1 || now.Dev != seen.Dev || now.Ino != seen.Ino ||
+		named.Dev != seen.Dev || named.Ino != seen.Ino {
+		return errDisplaced
+	}
+	if exchangeHook != nil {
+		exchangeHook()
+	}
+	if err := unix.Renameat2(dir, instructionsTmp, dir, name, unix.RENAME_EXCHANGE); err != nil {
+		return fmt.Errorf("the text cannot be exchanged for the empty file: %w", err)
+	}
+	// The temporary name now holds what the name held at the exchange.
+	var out unix.Stat_t
+	if err := unix.Fstatat(dir, instructionsTmp, &out, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		keepTmp = true
+		return fmt.Errorf("the file exchanged out cannot be examined: %w", err)
+	}
+	if err := unix.Fstat(fd, &now); err != nil {
+		keepTmp = true
+		return err
+	}
+	if out.Dev != seen.Dev || out.Ino != seen.Ino || out.Mode&unix.S_IFMT != unix.S_IFREG || now.Size != 0 {
+		// Another version took the name in the moment before the
+		// exchange, or the empty file was written: put it back.
+		if err := unix.Renameat2(dir, instructionsTmp, dir, name, unix.RENAME_EXCHANGE); err != nil {
+			keepTmp = true
+			return fmt.Errorf("%w; the version found is kept as %s, because the exchange could not be undone: %v", ErrChat, instructionsTmp, err)
+		}
+		return errDisplaced
+	}
+	if err := unix.Unlinkat(dir, instructionsTmp, 0); err != nil {
+		return err
+	}
 	return syncDirFD(dir)
 }

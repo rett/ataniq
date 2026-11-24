@@ -218,10 +218,11 @@
 // reply folder was replaced, opened to others or held too much), the lead's
 // store fails, or the daemon stops, where it is joined with the observers.
 // Its log lines hold counts and fixed words only. Every define and every
-// start of a lead first makes its reply folder (mode 0700) and writes the
-// text of its instruction file while the lead is proven stopped
-// (provision.EnsureChat); a reply folder that is not private refuses the
-// command (chat-folder).
+// start of a lead first writes the text of its instruction file while the
+// lead is proven stopped (provision.EnsureChat); an instruction file that is
+// not private, or that changed while it was replaced, refuses the command
+// (chat-folder). Neither looks at the reply folder, which the turn-on of the
+// lead's chat makes.
 //
 // [LeadChat] (chat_port_linux.go) is the seat's view of the same chats, the
 // chat port of the gate's seat.chat route: it fits gatehost.ChatPort by its

@@ -448,9 +448,12 @@ func TestChatListReadOffCycles(t *testing.T) {
 		t.Fatalf("a read of a lead that is not one: %v", err)
 	}
 
-	// On. The reply folder was made by the define; what is in it before the
-	// turn-on is discarded unread.
+	// On. The define made no reply folder; one the lead made before the
+	// turn-on is set aside unread.
 	out := l.outboxOf("alpha")
+	if err := os.Mkdir(out, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	reply(t, out, "0000-before.txt", "written before chat was on")
 	r := l.mustChatSet("alpha", leadwire.ChatRead)
 	if r.Chat != leadwire.ChatRead || r.Head < 1 || r.Entries != 1 {
@@ -911,8 +914,8 @@ func TestDefineAndStartPrepareTheReplies(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := l.outboxOf("alpha")
-	if fi, err := os.Lstat(out); err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
-		t.Fatalf("the reply folder after define: %v %v", fi, err)
+	if _, err := os.Lstat(out); !os.IsNotExist(err) {
+		t.Fatalf("the define made the reply folder: %v", err)
 	}
 	if b, _ := os.ReadFile(p.InstructionFile); string(b) != provision.LeadInstructions() {
 		t.Fatalf("the instruction file after define: %q", b)
@@ -936,15 +939,12 @@ func TestDefineAndStartPrepareTheReplies(t *testing.T) {
 	}
 	want(t, l.stopLead("alpha", sr.Epoch), leadwire.StatusDone, "")
 
-	// Stopped, with the reply folder gone: the start makes it and writes the
-	// text before the unit starts.
-	if err := os.Remove(out); err != nil {
-		t.Fatal(err)
-	}
+	// Stopped: the start writes the text before the unit starts, and makes
+	// no reply folder.
 	starts := l.gate.starts.Load()
 	want(t, l.startLead("alpha"), leadwire.StatusDone, "")
-	if fi, err := os.Lstat(out); err != nil || fi.Mode().Perm() != 0o700 {
-		t.Fatalf("the reply folder after start: %v %v", fi, err)
+	if _, err := os.Lstat(out); !os.IsNotExist(err) {
+		t.Fatalf("the start made the reply folder: %v", err)
 	}
 	if b, _ := os.ReadFile(p.InstructionFile); string(b) != provision.LeadInstructions() {
 		t.Fatal("the start did not write the instruction text")
@@ -963,16 +963,36 @@ func TestDefineAndStartPrepareTheReplies(t *testing.T) {
 		t.Fatal("the owner's text was replaced")
 	}
 
-	// A reply folder the lead opened to others refuses the start, and is
-	// left as it is; nothing reached the manager.
+	// A lead whose chat is off starts whatever its home holds at the reply
+	// folder's name (here a folder open to others), which is left as it is;
+	// the turn-on of its chat sets it aside and makes the folder afresh.
+	if err := os.Mkdir(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Chmod(out, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	starts = l.gate.starts.Load()
-	want(t, l.startLead("alpha"), leadwire.StatusRefused, codeChatFolder)
+	want(t, l.startLead("alpha"), leadwire.StatusDone, "")
 	if fi, _ := os.Lstat(out); fi.Mode().Perm() != 0o755 {
-		t.Fatal("the daemon changed the reply folder's mode")
+		t.Fatal("the start changed the reply folder's mode")
 	}
+	if l.gate.starts.Load() != starts+1 {
+		t.Fatal("the start did not reach the manager")
+	}
+	l.mustChatSet("alpha", leadwire.ChatRead)
+	if fi, err := os.Lstat(out); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("the reply folder after the turn-on: %v %v", fi, err)
+	}
+
+	// An instruction file that is not private refuses the start; nothing
+	// reached the manager.
+	want(t, l.stopLead("alpha", 0), leadwire.StatusDone, "")
+	if err := os.Chmod(p.InstructionFile, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	starts = l.gate.starts.Load()
+	want(t, l.startLead("alpha"), leadwire.StatusRefused, codeChatFolder)
 	if l.gate.starts.Load() != starts {
 		t.Fatal("a refused start reached the manager")
 	}

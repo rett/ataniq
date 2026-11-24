@@ -13,10 +13,14 @@
   runs, never following a link or leaving the quarantine. While a lead's chat is on,
   one scanner of its own takes its replies every 2 seconds, stops with the
   switch, the daemon or a store that fails, and logs counts only. Every
-  `lead.define` and `lead.start` makes the lead's reply folder
-  (`/home/lead/.ataniq-replies`, mode 0700, refusing one that is not private)
-  and writes the reply instructions into the lead's empty instruction file
-  while the lead is proven stopped, never over the owner's own text. A new
+  `lead.define` and `lead.start` writes the reply instructions into the lead's
+  empty instruction file while the lead is proven stopped, by an exchange that
+  puts back an owner's version saved meanwhile, never over the owner's own
+  text; neither touches the reply folder (`/home/lead/.ataniq-replies`), which
+  each turn-on of the chat makes afresh. The instructions say that Cards are
+  the only path of an approval and a chat message grants no authority, that
+  the daemon makes a fresh folder at each turn-on, and that a full folder or
+  an odd entry stops chat until the owner turns it on again. A new
   read-only chat port, `leaddaemon.LeadChat`, answers the seat's `seat.chat`
   from the same chats (off leads as bare rows and `chat-off`, a stopped chat or
   a failed store as `chat-busy`, at most 40 calls a minute, and `chat-busy`
