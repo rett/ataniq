@@ -55,6 +55,21 @@ const CodeTooManyRefusals = "too-many-refusals"
 // requests a minute, and by the store's own limits (two open threads, eight
 // files). They are kept out of this table by being absent.
 //
+// Of seat.chat, none of its three words counts; bad-params does, as
+// everywhere, and so does unknown-op from a handler that serves no chat.
+// chat-off (a lead whose switch is off), chat-unknown-lead (a lead the host
+// does not know, such as one removed while a page was open) and chat-busy (a
+// host that cannot serve the read now) answer the state of the leads and of
+// the host, which a seat in good order meets: a page left open while the desk
+// turned a lead's chat off, a link to a lead that is gone, a reload while the
+// host is busy. A read is a read: the seat may send it as often as its own
+// room allows, and a few reloads must not shut the owner out of approvals for
+// ten minutes. Params the wire's decoder refuses (a verb that sends, a lead of
+// another form, a limit past 16) are bad-params and count: the seat's own
+// pages never send them. The chat words are kept out of this table by being
+// absent; they stay bounded by the seat's own limits, the seat link's room and
+// the gate's 60 requests a minute.
+//
 // wait-full, the answer to a seat.wait past the peer's two held waits or the
 // service's own limit, does not count either, and must not: it is a load
 // answer, not a misuse. A seat that reconnects while its old wait is still
