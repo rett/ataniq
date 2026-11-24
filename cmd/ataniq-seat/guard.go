@@ -20,7 +20,7 @@ const defaultGuardDir = "/var/lib/authority-host"
 // contract: before it relays a decision's challenge or a decision, it asks
 // decisionguard.Check of the state folder, every time, and on any error
 // relays nothing and answers seatapp.ErrDecisionsInhibited. Pairing, login,
-// the reading of cards and the new-project interview decide nothing and go
+// the reading of cards and chat, and the new-project interview decide nothing and go
 // through unchanged.
 type guardedDaemon struct {
 	seatapp.Daemon
@@ -127,8 +127,23 @@ func (g guardedDaemon) Genesis(ctx context.Context, c seatapp.GenesisCall) (seat
 	return seatapp.GenesisView{}, seatapp.ErrNotOffered
 }
 
+// ChatOffered reports the connected link's offer without a gate call.
+func (g guardedDaemon) ChatOffered() bool {
+	d, ok := g.Daemon.(seatapp.Chat)
+	return ok && d.ChatOffered()
+}
+
+// Chat passes the two read operations through while decisions are paused.
+func (g guardedDaemon) Chat(ctx context.Context, c seatapp.ChatCall) (seatapp.ChatView, error) {
+	if d, ok := g.Daemon.(seatapp.Chat); ok {
+		return d.Chat(ctx, c)
+	}
+	return seatapp.ChatView{}, seatapp.ErrNotOffered
+}
+
 var (
 	_ seatlink.WatchPort = guardedDaemon{}
 	_ seatapp.Watcher    = guardedDaemon{}
 	_ seatapp.Genesis    = guardedDaemon{}
+	_ seatapp.Chat       = guardedDaemon{}
 )

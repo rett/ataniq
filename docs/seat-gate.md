@@ -303,7 +303,8 @@ background and redials when it drops. Each time the link comes up it prints
 what the gate's hello listed, and whether the phone then offers "New project":
 `ataniq-seat: the seat gate offers pair, read, login, decide, watch and
 genesis; the phone offers New project` (without `genesis`, `the phone offers no
-New project`). Restarting the seat ends every session of the phone.
+New project`). A gate offering `chat` adds `the phone offers read-only Leads`
+to this line. Restarting the seat ends every session of the phone.
 
 On the authority host the seat is not started by hand: its unit is started by
 the switch's reload list (see [the README](../deploy/authority-host/README.md#enabling-it)).
@@ -350,7 +351,8 @@ by themselves, see [Live refresh](#live-refresh).
 
 **Moving between pages.** Every page behind the login has a short row of links
 at the top: "Cards", and "Projects" when the desk runs new projects (see
-[New projects](#new-projects)). The link of the part you are in is bold, has a
+[New projects](#new-projects)). When the connected desk offers chat, "Leads"
+appears after the other links. The link of the part you are in is bold, has a
 bar under it and is announced as the current page. With a keyboard, the first
 Tab reaches "Skip to content", which jumps past the links to the page. The
 status, pairing, login and error pages have no such row. The row has no Log
@@ -397,9 +399,9 @@ up without a reload, and a card that was decided, withdrawn or replaced
   seconds, the interval at which the daemon looks at the door; a decision made
   at the desk or on the phone is seen within a few seconds, and a page that
   just reloaded waits until it is 20 seconds old before it reloads again.
-  Every reload is a read of the desk, and the seat's reads share 14 calls in 80
+  Every reload is a read of the desk, and the seat's reads share 12 calls in 80
   seconds (see below). With several card lists open at once, in a busy period,
-  the reloads can use most of those 14, and a tap of yours on a card may then be
+  the reloads can use all 12, and a tap of yours on a card may then be
   answered "The desk is busy" for a moment: close the lists you are not looking at.
 - **A Card page** never reloads by itself, since you may be ticking boxes.
   When its card was decided elsewhere or changed, the page says "This card
@@ -426,8 +428,8 @@ whatever the number of pages and phones open: a held request that the gate
 answers when the set of cards changes or after 25 seconds. The pages ask the
 seat, not the gate. The gate takes 60 requests a minute on the seat's one link,
 and the seat keeps a room for each kind of call within every 80 seconds: pings
-6, decisions 10, pairing and login (anyone's) 12, reads 14, waits 6 and the
-new-project pages 12, 60 in all. An idle seat sends one wait about every 25 seconds. A page's poll is not
+6, decisions 8, pairing and login 10, reads 12, waits 6, new projects 12
+and chat 6, totalling 60. An idle seat sends one wait about every 25 seconds. A page's poll is not
 a request that keeps the session alive: a session still ends 30 minutes after
 the last page you loaded or tap you made, however long a page stays open.
 
@@ -459,6 +461,24 @@ Behind a proxy. A held request lasts up to 25 seconds, so the front proxy's
 read timeout for the seat must be above 30 seconds and its buffering of
 `/api/watch` must be off, so that the answer reaches the phone when the seat
 writes it (see [The reverse proxy](#the-reverse-proxy)).
+
+## Leads
+
+Select **Leads** after login to see which conversations the desk shares.
+In the phone trial the **STAND-IN** banner identifies scratch samples. Open
+`alpha` or `bravo` to read its conversation. The directory lists `charlie`
+with chat off and offers no link for it. On a wide screen the directory stays
+beside the conversation.
+
+The conversation opens on recent messages. **Show earlier** and **Show later**
+page through retained history. **Jump to newest** goes to the latest known
+entry. **Refresh** asks for the recent window again. The seat can reuse the
+trial directory for 20 seconds and a transcript page for 10 seconds. A separate
+notice tells you if earlier messages have expired or the lead changed epochs.
+
+Lead and System labels come from the seat. Links and markup in a reply appear
+as text. Approvals are only on Cards. Sending and live refresh are not built,
+including for a lead whose desk setting allows sending.
 
 ## New projects
 
@@ -859,8 +879,7 @@ that looks like markup, which a page shows as text, and restart lines),
 shows nothing but its name. Every lead reply begins "Sample:" and every result
 is marked as a sample, so the seat shows a banner. No lead, conversation file or
 other part of the daemon is read or reached, nothing is written, and nothing
-can be sent: there is no way to send a message from the seat yet. The seat's
-lead pages themselves are not built yet.
+can be sent: there is no way to send a message from the seat yet. Open **Leads** after login to read the samples.
 
 `--trial` needs `--owner-channel` (exit 2 without it). The daemon refuses the
 trial's settings without `--trial`, and other settings with it (exit 10), and a
@@ -935,7 +954,7 @@ What the phone shows, by the code the seat's API answers:
 | "Too many tries. Wait a while..." | `rate_limited` | The pairing or login limits of the seat. | Wait; the limits age out. |
 | "Decisions are paused on this host." (on the card page, in place of the Approve and Deny buttons) or "Decisions are paused on this host. Nothing was sent." (after a tap) | `decisions_inhibited` | The authority host's decision inhibit is there (a switch under way, a boot not yet requalified, a failure), or the `--decision-guard` folder is missing, a link or not readable. The seat logs the guard's code (`decision-guard-...`). | On the authority host, `ah-switch status` says why. On another host, check `--decision-guard`. Tap again once decisions are taken. |
 | "The desk is busy. Try again in a minute." | `desk_busy` | The seat's room at the gate, or the gate's rate, is used up. | Wait a few minutes. |
-| "The desk is busy. Try again in a minute." on the project pages, or on any page, and the page does not say which limit refused | `desk_busy` | One of the seat's own limits refused the call, and the seat's log (standard error; the journal of its unit) has the line that says which. `ataniq-seat: the link has no room for a call of kind KIND (USED of ROOM in the last 80 seconds); the page says the desk is busy`: the link's room at the gate for that kind of call (KIND is `public`, `read`, `decide` or `genesis`; the interview's is 12 calls in 80 seconds) is spent, and nothing was sent. `ataniq-seat: the project pages' limit of 30 requests a minute was reached for one credential`: the phone's pages of the projects were asked for more than 30 times in a minute, which is the app's limit for one passkey, apart from the link's room. Either line is written once in 30 seconds for what it names, and the next one ends `N more since the last line` for the refusals held back in between; no line holds a project, a card, a passkey or an answer. If neither line is in the log, the gate refused (see the daemon's log). | Wait a minute and tap again; the rooms come back as the 80 seconds pass. If it repeats with no one tapping fast, tell the lead, with the lines and their times. |
+| "The desk is busy. Try again in a minute." on the project pages, or on any page, and the page does not say which limit refused | `desk_busy` | One of the seat's own limits refused the call, and the seat's log (standard error; the journal of its unit) has the line that says which. `ataniq-seat: the link has no room for a call of kind KIND (USED of ROOM in the last 80 seconds); the page says the desk is busy`: the link's room at the gate for that kind of call (KIND is `public`, `read`, `decide`, `genesis` or `chat`; the interview's is 10 calls in 80 seconds) is spent, and nothing was sent. `ataniq-seat: the project pages' limit of 30 requests a minute was reached for one credential`: the phone's pages of the projects were asked for more than 30 times in a minute, which is the app's limit for one passkey, apart from the link's room. Either line is written once in 30 seconds for what it names, and the next one ends `N more since the last line` for the refusals held back in between; no line holds a project, a card, a passkey or an answer. If neither line is in the log, the gate refused (see the daemon's log). | Wait a minute and tap again; the rooms come back as the 80 seconds pass. If it repeats with no one tapping fast, tell the lead, with the lines and their times. |
 | No "New project" on the card list, or "New projects are not offered" | (a page) | The daemon's gate does not list `genesis` (the seat's log says `the phone offers no New project`), or the seat runs without `--gate`. | Check the daemon's start line; restart the daemon with its gate. |
 | "That project is not open. ..." or "No such project" | (a page) | The project was finished, discarded, or left for 14 days, or the address is not one of the seat's. | Start a new one from the card list. |
 | "The desk does not take phone logins now." | `login_unavailable` | The gate is read-only: no usable origin file at the daemon. | Fix the origin file, restart the daemon. |

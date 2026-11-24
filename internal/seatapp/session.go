@@ -74,7 +74,8 @@ type Session struct {
 	Kind string
 	// key is the session's key in the app's table, for the state the app
 	// keeps with it (see decide.go).
-	key tokenKey
+	key  tokenKey
+	chat *chatHistory
 }
 
 // session is one session as the app keeps it.
@@ -231,6 +232,7 @@ func (ss *sessions) add(k tokenKey, s Session) {
 		ss.drop(oldest)
 	}
 	s.CredentialID = append([]byte(nil), s.CredentialID...)
+	s.chat = &chatHistory{}
 	ss.m[k] = &session{Session: s, created: now, used: now, gone: make(chan struct{})}
 }
 

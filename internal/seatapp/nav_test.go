@@ -9,7 +9,7 @@ import (
 
 // The main navigation: on every page behind a session, a skip link first,
 // then the header's <nav aria-label="Main"> of plain links ("Cards", and
-// "Projects" while new projects are offered), with aria-current on the link
+// "Projects" and "Leads" while their ports are offered), with aria-current on the link
 // of the page's own section, and then the content in <main id="content">.
 // No public page has any of it.
 
@@ -109,7 +109,17 @@ func checkNav(page string) []string {
 			found = append(found, "a link of the navigation that is not a plain link of the app: "+a)
 		}
 	}
-	if n := strings.Count(page, "aria-current"); n != 1 {
+	elements, err := pageElements(page)
+	if err != nil {
+		return append(found, err.Error())
+	}
+	n := 0
+	for _, el := range elements {
+		if _, ok := el.attrs["aria-current"]; ok {
+			n++
+		}
+	}
+	if n != 1 {
 		found = append(found, "aria-current set "+strconv.Itoa(n)+" times, not once")
 	} else if !strings.Contains(nav, ` aria-current="page">`) {
 		found = append(found, "aria-current outside the navigation")
@@ -285,7 +295,7 @@ func TestPlanPageKeepsLinksOnly(t *testing.T) {
 			controls = e.controls
 		}
 	}
-	want := []string{"a#skip", "a#nav-cards", "a#nav-projects", "a#project-page", "a#project-list"}
+	want := []string{"a#skip", "a#nav-cards", "a#nav-projects", "a#nav-leads", "a#project-page", "a#project-list"}
 	if strings.Join(controls, " ") != strings.Join(want, " ") {
 		t.Errorf("the plan page's inventory is %q, want %q", controls, want)
 	}
@@ -296,8 +306,8 @@ func TestPlanPageKeepsLinksOnly(t *testing.T) {
 			t.Errorf("the plan page holds %q", bad)
 		}
 	}
-	if n := strings.Count(body, "<a "); n != len(want) {
-		t.Errorf("the plan page has %d links, want %d", n, len(want))
+	if n := strings.Count(body, "<a "); n != len(want)-1 {
+		t.Errorf("the plan page has %d links, want %d", n, len(want)-1)
 	}
 }
 
@@ -347,5 +357,33 @@ func TestCheckNavSeesWhatItLooksFor(t *testing.T) {
 	}
 	if f := firstFocusable(`<body><input type="text" id="x">` + skipLink); !strings.HasPrefix(f, "<input") {
 		t.Errorf("a text input not taken for the first focusable: %s", f)
+	}
+}
+
+func TestLeadsNavFollowsTheLocalHello(t *testing.T) {
+	f := sampleChat()
+	r := newRig(t, withGenesis(&fakeGenesis{}), withChat(f))
+	s := r.login(t)
+	for _, offered := range []bool{true, false} {
+		f.offered = offered
+		for _, path := range []string{"/cards/", "/projects/", planPath} {
+			w := r.getWith(path, s)
+			nav := navOf(w.Body.String())
+			if w.Code != 200 || strings.Contains(nav, `id="nav-leads"`) != offered || !strings.Contains(nav, projLink) {
+				t.Fatalf("%s: %d %s", path, w.Code, nav)
+			}
+			if offered && strings.Index(nav, projLink) > strings.Index(nav, `id="nav-leads"`) {
+				t.Error("Leads precedes Projects")
+			}
+		}
+	}
+	if len(f.calls) != 0 {
+		t.Fatal("header called chat")
+	}
+	f.offered = true
+	only := newRig(t, withChat(f))
+	nav := navOf(only.getWith("/cards/", only.login(t)).Body.String())
+	if strings.Contains(nav, projLink) || !strings.Contains(nav, `id="nav-leads"`) {
+		t.Error("independent offers", nav)
 	}
 }

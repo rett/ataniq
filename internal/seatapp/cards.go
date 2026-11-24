@@ -216,7 +216,7 @@ const (
 	// card's path list asks twice when the card was not shown), so they do
 	// not bound the gate's calls: the port counts every call it sends, and
 	// keeps the reads of all sessions to their own room there (package
-	// seatlink: 14 calls in 80 seconds); a read past it is the problem "The
+	// seatlink: 12 calls in 80 seconds); a read past it is the problem "The
 	// desk is busy".
 	readRequests = 20
 	readWindow   = time.Minute
@@ -358,6 +358,7 @@ type (
 	problemData struct {
 		Title   string
 		Message string
+		StandIn bool
 		Retry   bool
 		Nav     *navView
 	}
@@ -394,7 +395,7 @@ func (a *app) cardList(w http.ResponseWriter, r *http.Request, s Session) {
 	// cannot be read leaves the start offered and says so.
 	d.Projects, d.Genesis = a.listProjects(ctx)
 	a.projectsOffered.Store(d.Genesis)
-	d.Nav = &navView{Current: navCards, Projects: d.Genesis}
+	d.Nav = &navView{Current: navCards, Projects: d.Genesis, Leads: a.chatOffered()}
 	a.render(w, "cards", http.StatusOK, d)
 }
 
@@ -506,6 +507,10 @@ func (a *app) pathsPage(w http.ResponseWriter, r *http.Request, s Session) {
 
 // problem answers a problem page.
 func (a *app) problem(w http.ResponseWriter, r *http.Request, p problem) {
+	a.problemBanner(w, r, p, false)
+}
+
+func (a *app) problemBanner(w http.ResponseWriter, r *http.Request, p problem, standIn bool) {
 	retry := r.Method == http.MethodGet && (p == problemChanged || p == problemBusy || p == problemUnavailable || p.status == http.StatusTooManyRequests)
-	a.render(w, "problem", p.status, problemData{Title: p.title, Message: p.message, Retry: retry})
+	a.render(w, "problem", p.status, problemData{Title: p.title, Message: p.message, Retry: retry, StandIn: standIn})
 }

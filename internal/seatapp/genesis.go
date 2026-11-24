@@ -35,7 +35,7 @@ const (
 	// genesisRequests and genesisWindow bound the project pages and posts
 	// of one credential's sessions. They do not bound the gate's calls: the
 	// port keeps the interview to its own room at the gate (package
-	// seatlink: 12 calls in 80 seconds), and a call past it is the note
+	// seatlink: 10 calls in 80 seconds), and a call past it is the note
 	// "The desk is busy".
 	genesisRequests = 30
 	genesisWindow   = time.Minute
@@ -459,7 +459,7 @@ func (a *app) projectList(w http.ResponseWriter, r *http.Request, s Session) {
 		return
 	}
 	part := projectsPart{Threads: openThreads(v.Threads), Listed: true, CanStart: len(v.Threads) < MaxGenesisThreads}
-	a.render(w, "projects", http.StatusOK, projectsData{Title: pageTitles["projects"], Note: noteOf(r), Projects: part, Nav: projectsNav()})
+	a.render(w, "projects", http.StatusOK, projectsData{Title: pageTitles["projects"], Note: noteOf(r), Projects: part, Nav: a.projectsNav()})
 }
 
 // projectStart answers POST /projects/new: a new thread, and its page.
@@ -521,7 +521,7 @@ func (a *app) projectPage(w http.ResponseWriter, r *http.Request, s Session) {
 	note, reset := noteOf(r), resetOf(r)
 	switch v.State {
 	case GenesisStateQuestion:
-		d := questionData{Title: pageTitles["question"], Note: note, Reset: reset, View: v, Nav: projectsNav()}
+		d := questionData{Title: pageTitles["question"], Note: note, Reset: reset, View: v, Nav: a.projectsNav()}
 		questions := v.Questions[:min(len(v.Questions), MaxGenesisQuestions)]
 		rejected := rejectedQuestion(r, len(questions))
 		for i, q := range questions {
@@ -533,9 +533,9 @@ func (a *app) projectPage(w http.ResponseWriter, r *http.Request, s Session) {
 		}
 		a.render(w, "question", http.StatusOK, d)
 	case GenesisStateSummary:
-		a.render(w, "summary", http.StatusOK, summaryData{Title: pageTitles["summary"], Note: note, Reset: reset, View: v, Groups: groupsOf(v), Nav: projectsNav()})
+		a.render(w, "summary", http.StatusOK, summaryData{Title: pageTitles["summary"], Note: note, Reset: reset, View: v, Groups: groupsOf(v), Nav: a.projectsNav()})
 	case GenesisStateFinished:
-		a.render(w, "finished", http.StatusOK, summaryData{Title: pageTitles["finished"], Note: note, View: v, Groups: groupsOf(v), Nav: projectsNav()})
+		a.render(w, "finished", http.StatusOK, summaryData{Title: pageTitles["finished"], Note: note, View: v, Groups: groupsOf(v), Nav: a.projectsNav()})
 	default:
 		a.problem(w, r, problemFailed)
 	}
@@ -581,7 +581,7 @@ func (a *app) changePage(w http.ResponseWriter, r *http.Request, s Session) {
 			}
 			q := *row.Question
 			a.render(w, "change", http.StatusOK, changeData{Title: pageTitles["change"], Note: noteOf(r), Thread: thread, Row: row,
-				Question: questionView{I: 0, Invalid: rejectedQuestion(r, 1) == 0, Multi: q.Type == GenesisTypeMulti, Q: q}, Nav: projectsNav()})
+				Question: questionView{I: 0, Invalid: rejectedQuestion(r, 1) == 0, Multi: q.Type == GenesisTypeMulti, Q: q}, Nav: a.projectsNav()})
 			return
 		}
 	}
@@ -604,7 +604,7 @@ func (a *app) discardPage(w http.ResponseWriter, r *http.Request, s Session) {
 		a.problem(w, r, problemTooManyProjects)
 		return
 	}
-	a.render(w, "discard", http.StatusOK, discardData{Title: pageTitles["discard"], Thread: thread, Nav: projectsNav()})
+	a.render(w, "discard", http.StatusOK, discardData{Title: pageTitles["discard"], Thread: thread, Nav: a.projectsNav()})
 }
 
 // The values of a question's controls that are not an option's id. An

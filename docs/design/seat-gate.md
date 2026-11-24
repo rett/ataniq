@@ -793,28 +793,19 @@ sends none past the room of its kind:
 | Kind | Calls | Room in 80 s |
 | --- | --- | --- |
 | Pings | `seat.ping`, every 15 s (`seatlink.PingInterval`, which `ataniq-seat` sets) | 6 |
-| Anyone's | `seat.pair`, `seat.login-challenge`, `seat.login` | 12 (6 logins) |
-| Reads | `owner.list`, `owner.show`, `owner.paths`, of every session together | 14 |
-| Decisions | `seat.challenge`, `seat.decide` | 10 (5 decisions) |
+| Anyone's | `seat.pair`, `seat.login-challenge`, `seat.login` | 10 (5 logins) |
+| Reads | `owner.list`, `owner.show`, `owner.paths`, of every session together | 12 |
+| Decisions | `seat.challenge`, `seat.decide` | 8 (4 decisions) |
 | Waits | `seat.wait`, the watcher's one long wait (see [live refresh](#live-refresh-seatwait)) | 6 |
 | Genesis | `seat.genesis`, every verb, of every session together (see [guided new project](#guided-new-project)) | 12 |
+| Chat | `seat.chat`, directory and transcript reads | 6 |
 
-The rooms add up to the gate's 60 (6 + 10 + 12 + 14 + 6 + 12, a sum the code
-checks when it is compiled), so the gate's rate never refuses a call the seat
-sent. Before the watcher the reads had 26 and there was no room for waits;
-before the interview's pages the rooms were 6, 16 (8 decisions), 12 (6
-logins), 20 and 6, and the interview first had 10, taken from the reads (20
-to 14) and the decisions (16 to 12). A phone trial ran out of those 10 at the
-fifth round: an owner answers a round every 10 to 15 seconds, so 80 seconds
-hold 6 to 8 taps, and the taps and the reads the pages make now and then (the
-list of open projects, a summary) came to more than 10. The interview has 12
-now, one call for each tap and a few reads over, taken from the decisions (12
-to 10: 5 decisions, each a challenge and a decision call, in 80 seconds).
-Anyone's room stays 12: strangers can hold it
-with login challenges they never answer, and a smaller one would let fewer of
-them keep the owner from logging in. A call without room is not sent: the phone says the desk is
-busy (`desk_busy`, the problem "The desk is busy", or `rate_limited` for a
-pairing), before anything is asked. A decision's challenge is asked only
+Pings 6 + decisions 8 + public 12 + reads 12 + waits 6 + Genesis 10 + chat 6
+equals the gate rate of 60. The link checks the sum and the even sizes of the
+two rooms that reserve challenge/answer pairs at compile time. Chat takes two
+calls each from decisions, public calls and reads. Genesis keeps room for an
+interview and the project-list reads a Cards tab makes while it is open.
+A call without room is answered busy locally. A decision's challenge is asked only
 when the room of decisions holds it and its `seat.decide` as well: the room
 of the decision is kept for that one challenge, under a token the link gives
 before the challenge is asked, until the decision is sent, the seat app
@@ -1280,13 +1271,15 @@ approve shows the host's line and, under it, the held words above.
 Every page behind a session has one main navigation (built, G19a): the card
 list, a Card page, the pages of a card's path list, the project list, every
 project page (a round, the summary, a change, the discard step, the finished
-brief) and the plan page. It is `<nav aria-label="Main">` in the page's
+brief), the plan page and both lead chat pages. It is `<nav aria-label="Main">` in the page's
 header, a list of plain links and nothing else (no button, no form, no
 script): "Cards" (`/cards/`) and, while new projects are offered,
-"Projects" (`/projects/`). The link of the page's own section carries
+"Projects" (`/projects/`). A connected gate offering `chat` adds "Leads"
+(`/leads/`) after those links, using only the negotiated hello. The current section carries
 `aria-current="page"`, exactly one on the page: "Cards" on the card list, a
 Card page and a path page, "Projects" on the project pages and the plan
-page. A "Skip to content" link comes first in the body, out of sight until it
+page, and "Leads" on the directory and conversation. A "Skip to content" link comes first in
+the body, out of sight until it
 has the focus, and leads to the content, `<main id="content">`; so Tab goes
 from the skip link to the navigation and then to the page. The Card title names its ID,
 the path-list title names the page number, page count and Card ID, and the
@@ -1294,8 +1287,7 @@ interview title names the round and round count. A page's own links (back to the
 navigation, the path pages) stay where they were. The navigation adds no
 logout control: the logout button stays on the pages that had it, and the plan
 page keeps no script, no form and no button, its two links and the
-navigation's. A later section adds its link to the same list (the lead pages'
-"Leads" is next).
+navigation's.
 
 "Projects" is shown on the condition of the card list's "New projects" part.
 The card list shows it when its `list` call says the interview is offered; a
@@ -1477,12 +1469,9 @@ hello lists `watch`.
   state after, so it misses no change. Publishing never blocks and starts no
   goroutine.
 
-The seat's 60 requests a minute are now split in rooms of pings 6, decisions
-16, anyone's (`seat.pair`, `seat.login-challenge`, `seat.login`) 12, reads 20
-and waits 6, which add up to 60. The waits' 6 come from the reads, which had 26
-(see [login](#login-seatlogin-challenge-and-seatlogin)); the code checks the
-sum, and that an idle watcher's waits fit their room with two to spare, when it
-is compiled.
+The watcher reserves six calls in the shared 80-second window. The link
+checks at compile time that idle waits fit with two calls to spare. The
+[budget table](#login-seatlogin-challenge-and-seatlogin) gives every room.
 
 ### The browser's long poll
 
@@ -1554,11 +1543,11 @@ an answer is written into the page. One status line (`#watch-status`) says:
   since it was loaded (a reload is put off until the page's own read, which is
   the page's load, is 20 seconds old), and not while a field holds typed text.
   The gap keeps the reloads inside the reads' room: each reload is one
-  `owner.list`, and the reads have 14 calls in 80 seconds. It is a stated
+  `owner.list`, and the reads have 12 calls in 80 seconds. It is a stated
   limit, not a bound: three card lists open in a busy period (the watcher
   publishes up to about 6 changes in 80 seconds, each list reloads at most
-  every 20 seconds, so a list takes up to 4 of the 14 reads) can still use
-  most of the 14, and the owner's own taps on a card may then be answered
+  every 20 seconds, so a list takes up to 4 of the 12 reads) can still use
+  all 12, and the owner's own taps on a card may then be answered
   `desk_busy` until the room frees. No second room is built for the reloads.
 - A Card page never reloads by itself, since the owner may be ticking
   sign-offs. When its card is `changed` or `gone` it shows the line above,
@@ -2278,7 +2267,7 @@ sent, maps the nine genesis codes to the app's errors (and `rate-limited`,
 `busy` and `too-many-refusals` to "busy", `unknown-op` to "not offered"), and
 takes an answer only when it is one the verb answers, of the thread called,
 with every count and length checked again. Each call has the room of the
-interview at the gate: 12 calls in 80 seconds, of every session together, taken
+interview at the gate: 10 calls in 80 seconds, of every session together, taken
 from the reads and the decisions (see the budget table under
 [login](#login-seatlogin-challenge-and-seatlogin)). So that the pages do not
 spend that room on reads, the link answers a `list` from the last one for 20
@@ -2645,17 +2634,11 @@ not mark an earlier hand-off stale beyond the digest in its first line.
 
 ## Chat
 
-Status: read-only stand-in slice (G19b). Built and tested: the wire
-(`ownerwire`, `chat.go`), the gate handler's route and the capability `chat`
-(`internal/approval/gatehost`, `chat.go`), a STAND-IN chat port of fixed sample
-leads and conversations held in memory (`internal/chat/standin`), and the
-daemon's wiring, which gives that port to the gate of the phone trial
-(`ataniqd run --owner-channel --trial --seat-gate ADDR`) and to no other gate.
-An end-to-end test runs it over the real gate with the trial's service behind
-it and the seat's link replaced by a raw frame sender. Not built: the seat
-link's call and the seat's pages (G19c), a real chat port, a chat store, any
-reader of a lead's conversation, the chat switch in a lead's settings, and
-every form of sending. Nothing of it is deployed or phone-tested.
+The phone trial serves fixed sample conversations through the daemon's
+STAND-IN port (`internal/chat/standin`), the gate's `chat` capability and
+the seat link. The trial enables this port with
+`ataniqd run --owner-channel --trial --seat-gate ADDR`. Real lead history,
+desk switch configuration and sending remain future work.
 
 `seat.chat` is the seat's read-only view of the leads' conversations: it lists
 the leads the daemon would show, each with its chat switch, and reads one
@@ -2815,7 +2798,38 @@ sample. No sample carries a bidirectional control; the wire refuses one.
 Nothing of this slice sends. There is no verb, port method, sender, queue,
 outbox or store for it, and no lead receives anything because of a chat call.
 Replies are not captured: no reader of a provider's conversation file, no hook,
-no outbox. The seat link's call, its budget room and the pages are G19c.
+no outbox.
+
+### Reading chat on the seat
+
+The authenticated `GET /leads/` directory lists up to eight leads. An enabled
+row links to `/leads/daemon/{key}#newest`. An off row shows its name and a
+fixed explanation, and a direct read of it answers 403. An unknown lead
+answers 404. A conversation uses one directory lookup and one selected read
+under the request deadline. On a wide screen the directory sits beside the
+transcript. Each page displays the shared STAND-IN banner for a sample.
+
+The seat link negotiates `chat` independently of `genesis` and `decide`.
+It checks the strict wire result, and the app checks its own representation
+and binding again. Directory and read must agree on lead, connection, epoch
+and trial context. Message text goes through `Text` into an escaped text node.
+The links use a validated 1–32 byte key and an integer cursor. Fixed speaker
+labels distinguish Lead and System. Pages have no form or script.
+
+The recent window starts after the directory head minus 16, floored at zero.
+An explicit `?after=N` reads after N. The next link uses the last sequence
+returned even on a short page. A session keeps up to 32 predecessor cursors
+per shared lead. A direct bookmark without a known predecessor links to zero.
+The log marks the last entry as newest. When the head lies beyond the page,
+the jump requests `after=head-1`. A restart marker above the log records an
+epoch change observed across reads. A retention reset has its own notice.
+
+Chat has six calls per 80-second window and its own page limit of 30 requests
+per credential per minute. Within the login and gate connection the link can
+reuse a directory for 20 seconds and a trial read at the same lead and cursor
+for 10 seconds. A chat error, replacement connection, fresh directory or
+retention reset invalidates earlier answers. Logout ends access to that
+session's cache. Real transcript reads require live authorization.
 
 ### Before a real port
 

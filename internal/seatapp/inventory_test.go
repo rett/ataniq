@@ -3,6 +3,7 @@ package seatapp
 import (
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -64,6 +65,9 @@ var inventory = []struct {
 	{pattern: "POST /api/push/info", kind: "api"},
 	{pattern: "POST /api/push/subscribe", kind: "api"},
 	{pattern: "POST /api/push/unsubscribe", kind: "api"},
+	{pattern: "GET /leads", kind: "redirect"},
+	{pattern: "GET /leads/{$}", kind: "page", controls: withNav("a", "a#chat-refresh"), authed: true},
+	{pattern: "GET /leads/{kind}/{key}", kind: "page", controls: withNav("a", "a#chat-refresh", "a#chat-jump", "a#chat-prev", "a#chat-next"), path: "/leads/daemon/alpha", authed: true},
 	// The new-project pages: plain forms that post to the app, and no
 	// decide control.
 	{pattern: "GET /projects/{$}", kind: "page", controls: withNav("a", "a#back", "button#logout", "form#start-project", "button#start-project-go"), authed: true},
@@ -87,8 +91,8 @@ var inventory = []struct {
 
 // navControls are the links every page behind a session holds before its
 // content: the skip link and the main navigation's, all plain links. The
-// "Projects" link is there only while new projects are offered.
-var navControls = []string{"a#skip", "a#nav-cards", "a#nav-projects"}
+// Projects and Leads links follow their independent offers.
+var navControls = []string{"a#skip", "a#nav-cards", "a#nav-projects", "a#nav-leads"}
 
 // withNav is the controls given and the navigation's.
 func withNav(controls ...string) []string {
@@ -119,27 +123,28 @@ var formRoutes = map[string]bool{
 	"GET /projects/{thread}/change/{node}": true, "GET /projects/{thread}/discard": true,
 }
 
-// formRe finds a form's start tag, and projectAction the address of a
-// project's post.
-var (
-	formRe        = regexp.MustCompile(`(?is)<form\b([^>]*)>`)
-	projectAction = regexp.MustCompile(`^/projects/[0-9a-f]{16}/(answer|change|finish|discard)$`)
-)
+// projectAction is the address of a project form post.
+var projectAction = regexp.MustCompile(`^/projects/[0-9a-f]{16}/(answer|change|finish|discard)$`)
 
 // checkForms fails for a form that is not a plain post to a project route of
 // the app.
 func checkForms(t testing.TB, pattern, html string) {
 	t.Helper()
-	for _, m := range formRe.FindAllStringSubmatch(html, -1) {
-		attrs := map[string]string{}
-		for _, a := range attrRe.FindAllStringSubmatch(m[1], -1) {
-			attrs[strings.ToLower(a[1])] = a[2] + a[3] + a[4]
+	elements, err := pageElements(html)
+	if err != nil {
+		t.Errorf("%s: %v", pattern, err)
+		return
+	}
+	for _, el := range elements {
+		if el.name != "form" {
+			continue
 		}
+		attrs := el.attrs
 		action := attrs["action"]
 		ok := attrs["method"] == "post" && attrs["enctype"] == "" && attrs["target"] == "" &&
 			(action == "/projects/new" || projectAction.MatchString(action))
 		if !ok {
-			t.Errorf("%s: a form that is not a plain post to a project route: %s", pattern, m[0])
+			t.Errorf("%s: a form that is not a plain post to a project route: %s", pattern, action)
 		}
 	}
 }
@@ -220,22 +225,29 @@ var (
 func inspectPage(html string, allowed []string, mayDecide bool) []string {
 	var found []string
 	add := func(parts ...string) { found = append(found, strings.Join(parts, " ")) }
-	if strings.Contains(strings.ToLower(html), "javascript:") {
-		add("javascript address")
+	elements, err := pageElements(html)
+	if err != nil {
+		return []string{err.Error()}
 	}
-	if externalRe.MatchString(html) {
-		add("external address")
-	}
-	for _, m := range tagRe.FindAllStringSubmatch(html, -1) {
-		closing, name, rest := m[1], strings.ToLower(m[2]), m[3]
-		if closing != "" {
-			continue
+	for _, el := range elements {
+		name, attrs := el.name, el.attrs
+		if slices.Contains(allowed, "a#chat-refresh") {
+			if name == "script" {
+				add("script on chat page")
+			}
+			if name == "a" && !listedChatLink(attrs["id"], attrs["href"]) {
+				add("unlisted chat link", attrs["href"])
+			}
 		}
-		attrs := map[string]string{}
-		for _, a := range attrRe.FindAllStringSubmatch(rest, -1) {
-			v := a[2] + a[3] + a[4]
-			attrs[strings.ToLower(a[1])] = v
-			key := strings.ToLower(a[1])
+		for key, v := range attrs {
+			chatLink := name == "a" && key == "href" && chatHref(v)
+			if key == "href" && strings.HasPrefix(v, "/leads") && !chatLink {
+				add("unlisted chat destination", v)
+			}
+			if (key == "href" || key == "src" || key == "action" || key == "formaction" || key == "srcset" || key == "poster" || key == "data") &&
+				(externalRe.MatchString(" "+v) || strings.Contains(strings.ToLower(v), "javascript:") || strings.ContainsAny(v, "\\\t\r\n")) {
+				add("unsafe address", key, v)
+			}
 			if strings.HasPrefix(key, "on") {
 				add("event handler", key)
 			}
@@ -251,7 +263,7 @@ func inspectPage(html string, allowed []string, mayDecide bool) []string {
 			}
 			if !mayDecide && (key == "id" || key == "name" || key == "class" || key == "action" || key == "formaction" ||
 				key == "href" || key == "value" || key == "for" || strings.HasPrefix(key, "data-") || strings.HasPrefix(key, "aria-")) &&
-				key != "data-rp-name" && decideWords.MatchString(v) {
+				key != "data-rp-name" && !chatLink && decideWords.MatchString(v) {
 				add("attribute that looks like deciding", key, v)
 			}
 		}
@@ -320,7 +332,7 @@ func checkProblemLinks(t *testing.T, page string, retry bool) {
 func TestPageInventory(t *testing.T) {
 	// The notifier is a PushPort, so the notices' routes and controls exist;
 	// the daemon runs the interview, so the project pages exist.
-	r := newRig(t, withPush(&fakePush{}), withGenesis(&fakeGenesis{}))
+	r := newRig(t, withPush(&fakePush{}), withGenesis(&fakeGenesis{}), withChat(sampleChat()))
 	session := r.login(t)
 	for _, e := range inventory {
 		if !strings.HasPrefix(e.pattern, "GET ") {
@@ -389,9 +401,13 @@ func TestPageInventory(t *testing.T) {
 					}
 				}
 			} else {
-				for _, p := range []string{"/static/push.js", "/manifest.webmanifest", "apple-touch-icon", "notices"} {
-					if strings.Contains(body, p) {
-						t.Errorf("%s: holds %q, which only the card list may", e.pattern, p)
+				elements, err := pageElements(body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, el := range elements {
+					if el.attrs["src"] == "/static/push.js" || el.attrs["href"] == "/manifest.webmanifest" || el.attrs["rel"] == "apple-touch-icon" || strings.Contains(el.attrs["id"], "notices") {
+						t.Errorf("%s: a notices control or asset outside Cards", e.pattern)
 					}
 				}
 			}

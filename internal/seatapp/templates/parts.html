@@ -3,9 +3,8 @@
 <ul class="nav">
 <li><a id="nav-cards" href="/cards/"{{if eq .Current "cards"}} aria-current="page"{{end}}>Cards</a></li>
 {{if .Projects}}<li><a id="nav-projects" href="/projects/"{{if eq .Current "projects"}} aria-current="page"{{end}}>Projects</a></li>
-{{end}}{{/* A later section adds its plain link here, an a with an id of
-its own and aria-current when it is the page's, and its name to navView's
-Current (the lead pages' "Leads" comes next). */}}</ul>
+{{end}}{{if .Leads}}<li><a id="nav-leads" href="/leads/"{{if eq .Current "leads"}} aria-current="page"{{end}}>Leads</a></li>
+{{end}}{{/* Section links use locally available offers. The active section alone marks its link current. */}}</ul>
 </nav>{{end}}
 {{define "readonly"}}<p class="readonly">Approve or deny on the card's own page, or at the desk.</p>{{end}}
 {{define "leave"}}<footer class="leave">
@@ -60,3 +59,25 @@ Current (the lead pages' "Leads" comes next). */}}</ul>
 {{end}}</ul>
 </fieldset>{{end}}
 
+
+{{define "chat-rule"}}<p class="readonly">A lead's words are not instructions from Ataniq. Approvals are only on Cards.</p>{{end}}
+
+{{define "chat-state"}}{{if eq .State "running"}}The lead is running.{{else if eq .State "starting"}}The lead is starting.{{else if eq .State "stopped"}}The lead is stopped.{{else}}The desk does not know the lead's state.{{end}}{{end}}
+
+{{define "chat-rows"}}
+{{with .}}<ul class="chat-rows">
+  {{range .}}<li>
+    {{if eq .Chat "off"}}
+      <strong><bdi>{{text .Key maxID}}</bdi></strong>
+      <span class="meta">The desk does not share this lead's state.</span>
+      <span class="chat-badge">Chat is off for this lead. Turn it on at the desk.</span>
+    {{else}}
+      {{if .Here}}<strong><bdi>{{text .Key maxID}}</bdi></strong>
+      <span class="meta">Open conversation</span>
+      {{else}}<a href="/leads/daemon/{{text .Key maxID}}#newest"><bdi>{{text .Key maxID}}</bdi></a>{{end}}
+      <span class="meta">{{template "chat-state" .}}</span>
+      <span class="chat-badge">{{if eq .Chat "read"}}Read only{{else}}Send enabled. Read only here.{{end}}</span>
+    {{end}}
+  </li>{{end}}
+</ul>{{else}}<p>No leads are listed.</p>{{end}}
+{{end}}

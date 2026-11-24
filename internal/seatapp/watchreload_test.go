@@ -10,7 +10,7 @@ import (
 
 // TestSeatWatchReloadGapIsTwentySeconds: the card list reloads itself only
 // once its own read (the page's load) is at least 20 seconds old, so that the
-// reloads of three lists open in a busy period stay inside the 14 reads the
+// reloads of three lists open in a busy period stay inside the 12 reads the
 // seat has in 80 seconds as far as a gap can keep them. The script's timer
 // is set for what is left of that age, never sooner; this reads the text,
 // as the repository has no JavaScript engine.
@@ -34,13 +34,16 @@ func TestSeatWatchReloadGapIsTwentySeconds(t *testing.T) {
 	}
 	// The limit is stated, as a limit, in both documents, with the reads'
 	// room and the owner's taps.
-	for _, path := range []string{"../../docs/design/seat-gate.md", "../../docs/seat-gate.md"} {
+	for path, allowance := range map[string]string{
+		"../../docs/design/seat-gate.md": "the reads have 12 calls in 80",
+		"../../docs/seat-gate.md":        "the seat's reads share 12 calls in 80",
+	} {
 		b, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		doc := string(b)
-		for _, want := range []string{"every 20 seconds", "14 calls in 80"} {
+		for _, want := range []string{"every 20 seconds", allowance} {
 			if !strings.Contains(doc, want) {
 				t.Errorf("%s lacks %q", path, want)
 			}
