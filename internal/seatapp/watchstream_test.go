@@ -281,6 +281,7 @@ func TestSeatStreamNotLive(t *testing.T) {
 		"not watching": func(st *WatchState) { *st = WatchState{} },
 		"offline":      func(st *WatchState) { *st = WatchState{Watching: true, Version: "aa", Offline: true} },
 		"bad version":  func(st *WatchState) { *st = WatchState{Watching: true, Version: "not hex"} },
+		"no version":   func(st *WatchState) { *st = WatchState{Watching: true} },
 	} {
 		wd.set(f)
 		w := r.streamDo(context.Background(), streamOK, nil, s)
@@ -874,5 +875,62 @@ func TestSeatStreamDoesNotSuppressNotices(t *testing.T) {
 	var core noticeCore
 	if d := core.decide(r.clock.Now(), wd.Watch(), r.app.lastPollTime()); !d.Send || d.N != 3 {
 		t.Errorf("with a stream open the notice is %+v", d)
+	}
+}
+
+// TestSeatStreamStrictInput: the body is one object with exactly one string
+// member "version"; a header the checks rest on, and the session cookie,
+// each come exactly once, counted before they are parsed. None of the
+// refusals reaches the watcher or opens a stream.
+func TestSeatStreamStrictInput(t *testing.T) {
+	r, wd := newWatchRig(t, "aa", time.Minute)
+	s := r.login(t)
+	for name, body := range map[string]string{
+		"no member":         `{}`,
+		"null version":      `{"version":null}`,
+		"a number":          `{"version":12}`,
+		"the key twice":     `{"version":"aa","version":"aa"}`,
+		"the key twice, ab": `{"version":"aa","version":"bb"}`,
+		"another case":      `{"Version":"aa"}`,
+		"an array":          `["aa"]`,
+		"after the object":  `{"version":"aa"} {}`,
+		"two members":       `{"version":"aa","x":1}`,
+	} {
+		w := r.streamDo(context.Background(), body, nil, s)
+		if w.Code != 400 || w.Body.String() != `{"error":"bad_request"}`+"\n" {
+			t.Errorf("%s: %d %q", name, w.Code, w.Body)
+		}
+	}
+	// An empty version is a page made before the watcher had one: taken.
+	done, cancel := context.WithCancel(context.Background())
+	cancel()
+	if w := r.streamDo(done, `{"version":""}`, nil, s); w.Code != 200 {
+		t.Errorf("an empty version: %d %q", w.Code, w.Body)
+	}
+	twice := func(name string, mod func(*http.Request)) {
+		req := streamRequest(context.Background(), streamPath, streamOK, s)
+		mod(req)
+		w := httptest.NewRecorder()
+		r.h.ServeHTTP(w, req)
+		if w.Code == 200 || strings.HasPrefix(w.Header().Get("Content-Type"), "text/event-stream") {
+			t.Errorf("%s: %d %q", name, w.Code, w.Body)
+		}
+	}
+	twice("two fetch metadata", func(req *http.Request) { req.Header.Add("Sec-Fetch-Site", "same-origin") })
+	twice("fetch metadata after another", func(req *http.Request) {
+		req.Header.Del("Sec-Fetch-Site")
+		req.Header.Add("Sec-Fetch-Site", "same-origin")
+		req.Header.Add("Sec-Fetch-Site", "cross-site")
+	})
+	twice("two content types", func(req *http.Request) { req.Header.Add("Content-Type", "application/json") })
+	twice("a malformed second cookie", func(req *http.Request) { req.Header.Add("Cookie", SessionCookie+`="x y"`) })
+	twice("a second cookie in one header", func(req *http.Request) {
+		req.Header.Set("Cookie", SessionCookie+"="+s.Value+"; "+SessionCookie+"=\x01")
+	})
+	if n := wd.watchCalls(); n != 1 {
+		t.Errorf("the refusals reached the watcher: %d calls, want the one stream's", n)
+	}
+	if r.streams() != 0 {
+		t.Errorf("%d streams open", r.streams())
 	}
 }

@@ -1692,17 +1692,28 @@ and its reconnects ask the gate nothing and take no room.
 Admission, all of it before any header of the stream:
 
 - The checks of every POST (`a.post`): `Origin` exactly the seat origin,
-  `Host` the origin's host, `Sec-Fetch-Site: same-origin`, a body declared
-  JSON of at most `seatapp.MaxBody`. A GET is 405.
+  once, `Host` the origin's host, `Sec-Fetch-Site: same-origin`, a body
+  declared JSON of at most `seatapp.MaxBody`. `Sec-Fetch-Site` and
+  `Content-Type` must each come exactly once: a second one is refused
+  whatever the first says (this holds for every POST of the seat). A GET is
+  405.
 - Exactly one `__Host-seat` cookie of a live session, looked at with
   `sessions.lookUntil`, which never marks it used; none, two, or one that is
-  not live is 403 `session ended`, with no redirect to the login page.
-- A body `{"version": ...}` of at most 64 hex digits, strictly decoded.
+  not live is 403 `session ended`, with no redirect to the login page. The
+  cookies of the name are counted in the `Cookie` headers as sent, before
+  they are parsed, so a second one with a malformed value, which the parser
+  would drop, still refuses the request (this too holds for every route).
+- A body that is one object with exactly one member, `version`, a string of
+  at most 64 lower-case hex digits (empty for a page made before the watcher
+  had a version). It is read token by token: a member that is absent, null,
+  of another type, of another case or given twice, another member, and
+  anything after the object are 400.
 - At most 12 opens a minute for one credential (429 `too many streams`,
   `Retry-After: 60`), at most 3 streams open at once for one credential
   across its sessions (429, `Retry-After: 25`), at most 32 open in all (503
   `busy`, `Retry-After: 25`), a watcher that watches, reaches the gate and has
-  a version (503 `not live`, `Retry-After: 30`), and a server that is not
+  a version that is not empty, that is, has had an answer of the gate (503
+  `not live`, `Retry-After: 30`), and a server that is not
   stopping (503 `shutting down`, `Retry-After: 5`). Each refusal is a fixed
   text; the page takes any refusal as the sign to fall back to the poll,
   which then says what it is.

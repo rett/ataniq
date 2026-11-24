@@ -83,10 +83,38 @@ const (
 // skips.
 var streamHeartbeat = []byte(":\n\n")
 
-// streamBody is the body of POST /api/watch/stream: the version the page
-// has. A newer version at the seat is said at once, as the first event.
-type streamBody struct {
-	Version string `json:"version"`
+// streamVersion reads the body of POST /api/watch/stream: an object with
+// exactly one member, "version", a string the poll takes (the version the
+// page shows; empty for a page made while the watcher had none). A newer
+// version at the seat is said at once, as the first event. The body is read
+// token by token, so that a member that is absent, null, of another type,
+// of another name (in any case) or given twice is refused, as is anything
+// after the object.
+func streamVersion(raw []byte) (string, bool) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	want := func(d json.Delim) bool {
+		t, err := dec.Token()
+		return err == nil && t == d
+	}
+	str := func() (string, bool) {
+		t, err := dec.Token()
+		v, ok := t.(string)
+		return v, err == nil && ok
+	}
+	if !want('{') {
+		return "", false
+	}
+	if k, ok := str(); !ok || k != "version" {
+		return "", false
+	}
+	v, ok := str()
+	if !ok || !want('}') {
+		return "", false
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return "", false
+	}
+	return v, validWatchVersion(v)
 }
 
 // streamHint is the data of a cards-changed event.
@@ -113,10 +141,11 @@ func streamEvent(version string) ([]byte, bool) {
 }
 
 // streamLive reports whether a state can be streamed: the watcher watches,
-// reaches the gate, and has a version a poll takes. Any other state ends
-// the stream, and the page's poll then says what it is.
+// reaches the gate, and has a version a poll takes that is not empty (an
+// empty one is a watcher that has no answer of the gate yet). Any other
+// state ends the stream, and the page's poll then says what it is.
 func streamLive(s WatchState) bool {
-	return s.Watching && !s.Offline && validWatchVersion(s.Version)
+	return s.Watching && !s.Offline && s.Version != "" && validWatchVersion(s.Version)
 }
 
 // streamSlots counts the open streams, by credential and in all, and ends
@@ -246,16 +275,8 @@ func (a *app) watchStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, bodyError(err))
 		return
 	}
-	var in streamBody
-	if !bytes.HasPrefix(bytes.TrimSpace(raw), []byte("{")) {
-		writeError(w, errBadRequest)
-		return
-	}
-	if err := decodeBody(bytes.NewReader(raw), &in); err != nil {
-		writeError(w, bodyError(err))
-		return
-	}
-	if !validWatchVersion(in.Version) {
+	version, ok := streamVersion(raw)
+	if !ok {
 		writeError(w, errBadRequest)
 		return
 	}
@@ -311,7 +332,7 @@ func (a *app) watchStream(w http.ResponseWriter, r *http.Request) {
 	if sw.send(streamHeartbeat) != nil {
 		return
 	}
-	a.runStream(r, sw, wt, ch, st, in.Version, s.key, gone, until)
+	a.runStream(r, sw, wt, ch, st, version, s.key, gone, until)
 }
 
 // runStream is the open stream's loop. sent is the version the page has,

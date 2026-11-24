@@ -511,13 +511,26 @@ func (a *app) post(h http.HandlerFunc) http.HandlerFunc {
 		if !a.sameOrigin(w, r) {
 			return
 		}
-		mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-		if err != nil || mt != "application/json" {
+		ct, one := oneHeader(r, "Content-Type")
+		mt, _, err := mime.ParseMediaType(ct)
+		if !one || err != nil || mt != "application/json" {
 			writeText(w, http.StatusUnsupportedMediaType, "unsupported media type\n")
 			return
 		}
 		h(w, r)
 	}
+}
+
+// oneHeader returns the value of a header that a request carries exactly
+// once. A header the checks rest on (Sec-Fetch-Site, Content-Type) that
+// comes twice is ambiguous, whatever its first value says, and is taken as
+// absent.
+func oneHeader(r *http.Request, name string) (string, bool) {
+	v := r.Header.Values(name)
+	if len(v) != 1 {
+		return "", false
+	}
+	return v[0], true
 }
 
 // writeText writes a fixed plain-text body.

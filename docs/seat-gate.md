@@ -181,6 +181,9 @@ together:
   which may also come with no `Origin` header at all when `Sec-Fetch-Site`
   says `same-origin`; `Origin: null` is refused there too. A proxy that removes
   or rewrites either breaks pairing, login, decisions and the project pages.
+  A proxy must not add a second `Sec-Fetch-Site` or `Content-Type` header
+  either, nor a second `__Host-seat` cookie: a request with two of any of
+  them is refused, whatever the first one says.
 - **Overwrite the client-address header on every request.** `--socket` needs
   `--client-addr-header NAME`, the header the proxy sets to the client's address,
   because a Unix peer has no address and every client would share one limit. The

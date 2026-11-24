@@ -260,7 +260,7 @@ func (a *app) originCheck(w http.ResponseWriter, r *http.Request, absentOK bool)
 	if !sent && absentOK {
 		originOK = true
 	}
-	if !originOK || r.Host != a.host || r.Header.Get("Sec-Fetch-Site") != "same-origin" {
+	if site, ok := oneHeader(r, "Sec-Fetch-Site"); !originOK || r.Host != a.host || !ok || site != "same-origin" {
 		writeText(w, http.StatusForbidden, "forbidden\n")
 		return false
 	}
@@ -276,8 +276,9 @@ func (a *app) form(h func(http.ResponseWriter, *http.Request, Session)) http.Han
 		if !a.formOrigin(w, r) {
 			return
 		}
-		mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-		if err != nil || mt != "application/x-www-form-urlencoded" {
+		ct, one := oneHeader(r, "Content-Type")
+		mt, _, err := mime.ParseMediaType(ct)
+		if !one || err != nil || mt != "application/x-www-form-urlencoded" {
 			writeText(w, http.StatusUnsupportedMediaType, "unsupported media type\n")
 			return
 		}

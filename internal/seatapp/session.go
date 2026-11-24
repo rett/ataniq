@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -309,13 +310,34 @@ func (ss *sessions) count() int {
 
 // cookieValue returns the value of the one cookie of a name the request
 // carries. A request with none, or with more than one, has none: two cookies
-// of one name are not the app's doing.
+// of one name are not the app's doing. The names are counted in the Cookie
+// headers as sent, before they are parsed, since the parser drops a cookie
+// whose value is malformed: a second cookie of the name is refused whatever
+// its value.
 func cookieValue(r *http.Request, name string) string {
+	if cookieNames(r, name) != 1 {
+		return ""
+	}
 	cs := r.CookiesNamed(name)
 	if len(cs) != 1 {
 		return ""
 	}
 	return cs[0].Value
+}
+
+// cookieNames counts the cookies of a name in the request's Cookie headers,
+// whatever their values.
+func cookieNames(r *http.Request, name string) int {
+	n := 0
+	for _, line := range r.Header.Values("Cookie") {
+		for _, part := range strings.Split(line, ";") {
+			k, _, _ := strings.Cut(strings.TrimSpace(part), "=")
+			if strings.TrimSpace(k) == name {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // setCookie sets a cookie of the app: the path /, Secure, HttpOnly and
