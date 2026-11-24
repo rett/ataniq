@@ -1215,17 +1215,23 @@ keeps its sample leads.
    phone shows Leads after a login, and without an origin the gate serves no
    login.
 
-At start the daemon prints the owner channel's STAND-IN banner, the gate's start
-line, which ends `... watch, genesis, chat and wait-chat`, and after it:
+At start the daemon prints the owner channel's STAND-IN banner, then the gate's
+start line, which ends `... watch, genesis, chat and wait-chat`, and the chat
+line after it (with the seat origin; without one the start line ends
+`... watch, genesis, chat and wait-chat only:` and the reason):
 
 ```text
+ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>, seat origin https://seat.example; it serves pair, read, login, decide, watch, genesis, chat and wait-chat
 ataniqd: seat gate: chat: replies the scratch leads wrote to their outboxes; read only
 ```
 
 `wait-chat` says the seat's live wait can carry a chat cursor: a number that
-moves when a reply is taken from a lead whose chat is on, or a lead's chat is
-turned on or off, and for nothing a lead whose chat is off does. It carries no
-text and no lead's name.
+moves when a lead whose chat is on gets a new entry (a reply, or the line that
+says replies were dropped), or a lead's chat is turned on or off, and for
+nothing a lead whose chat is off does. It carries no text and no lead's name,
+and it is keyed by a secret the daemon makes at each start and never sends, so
+its value means nothing after a restart. It only hints that the seat should
+read again: it never allows a read, which the desk checks on every one.
 
 **Reading a lead's replies.** The owner defines and starts a lead from the
 console ([the console guide](terminal-console.md)). Its chat is off, like every
