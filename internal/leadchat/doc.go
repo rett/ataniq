@@ -3,8 +3,12 @@
 // Package leadchat is the daemon's side of a scratch lead's replies to the
 // owner, read only: the outbox reader, which takes the replies a lead writes
 // into a folder of its own home, and the chat store, which keeps them for
-// the seat. Nothing here sends to a lead, and nothing here is wired into the
-// daemon or the seat yet.
+// the seat. Nothing here sends to a lead. The daemon's scratch mode holds one
+// store per lead and switches it at the desk (internal/leaddaemon,
+// chat_desk_linux.go), and its read-only chat port (chat_port_linux.go) gives
+// the stores to the seat gate of a daemon built with both tags and run as
+// "ataniqd run --scratch CONFIG --owner-channel --seat-gate ADDR"
+// (cmd/ataniqd, chat_scratch_linux.go).
 //
 // # The outbox
 //

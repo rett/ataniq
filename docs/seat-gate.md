@@ -499,6 +499,17 @@ changed epochs. The restart notice is not shown across a reset, a change of
 the lead's chat setting or a fall of its epoch, where the lead may be another
 under the same name.
 
+With real leads, the daemon of `make scratch-seat-build` run as
+`build/scratch-seat/ataniqd run --scratch CONFIG --owner-channel --seat-gate
+IP:PORT`, the Leads pages show the replies the scratch leads wrote to their
+reply folders, read only, for each lead whose chat the desk turned on with
+`ataniqd chat set KEY read --config CONFIG`; every lead is off whenever the
+daemon starts, and a lead turned off is refused at once. The gate's start line
+is then followed by `ataniqd: seat gate: chat: replies the scratch leads wrote
+to their outboxes; read only`. That daemon refuses `--trial`, so it never
+serves the samples. What the owner prepares is in
+[the scratch leads guide](scratch-leads.md#running-real-leads-with-the-seat).
+
 Lead and System labels come from the seat. Links and markup in a reply appear
 as text. Approvals are only on Cards. Sending and live refresh are not built,
 including for a lead whose desk setting allows sending.
@@ -906,7 +917,8 @@ with the list closed and notices on, a notice says that cards wait
   the evidence of its assertion, and each outcome with the trial's line.
 
 With `--seat-gate` the trial's gate, and no other, also serves the seat's lead
-pages from STAND-IN samples: the capability `chat` (read only, see
+pages from STAND-IN samples (a scratch daemon's gate serves real leads'
+replies instead, see [Leads](#leads)): the capability `chat` (read only, see
 [the design](design/seat-gate.md#chat)). The gate's start line then ends
 `... watch, genesis and chat` and is followed by
 
@@ -998,7 +1010,7 @@ What the phone shows, by the code the seat's API answers:
 | "Decisions are paused on this host." (on the card page, in place of the Approve and Deny buttons) or "Decisions are paused on this host. Nothing was sent." (after a tap) | `decisions_inhibited` | The authority host's decision inhibit is there (a switch under way, a boot not yet requalified, a failure), or the `--decision-guard` folder is missing, a link or not readable. The seat logs the guard's code (`decision-guard-...`). | On the authority host, `ah-switch status` says why. On another host, check `--decision-guard`. Tap again once decisions are taken. |
 | "The desk is busy. Try again in a minute." | `desk_busy` | The seat's room at the gate, or the gate's rate, is used up. | Wait a few minutes. |
 | "The desk is busy. Try again in a minute." on the project pages, or on any page, and the page does not say which limit refused | `desk_busy` | One of the seat's own limits refused the call, and the seat's log (standard error; the journal of its unit) has the line that says which. `ataniq-seat: the link has no room for a call of kind KIND (USED of ROOM in the last 80 seconds); the page says the desk is busy`: the link's room at the gate for that kind of call (KIND is `public`, `read`, `chat`, `decide` or `genesis`; the card lists' reads have 12 calls in 80 seconds, the Leads pages' calls are `chat`, with 2 calls in 80 seconds of their own; the interview's is 12 calls in 80 seconds) is spent, and nothing was sent. `ataniq-seat: the project pages' limit of 30 requests a minute was reached for one credential`: the phone's pages of the projects were asked for more than 30 times in a minute, which is the app's limit for one passkey, apart from the link's room. Either line is written once in 30 seconds for what it names, and the next one ends `N more since the last line` for the refusals held back in between; no line holds a project, a card, a passkey or an answer. If neither line is in the log, the gate refused (see the daemon's log). At most every 10 minutes, after a period in which the link refused a call, it also writes `ataniq-seat: calls of the link in the last N minutes, taken/refused by kind: public T/R, read T/R, chat T/R, decide T/R, genesis T/R, wait T/R`, the calls of each kind it sent and refused in that period. | Wait a minute and tap again; the rooms come back as the 80 seconds pass. If it repeats with no one tapping fast, tell the lead, with the lines and their times. |
-| No "Leads" in the menu, or "The desk does not offer lead chat." | (a page) | The connected daemon's gate does not list `chat`: only the phone trial's gate serves it (the seat's log line of the gate's offer does not end `the phone offers read-only Leads`). While the seat cannot reach the gate, a Leads page says "The desk cannot be reached. Try again in a moment." instead, with a link to try again. | Run the phone trial's gate, or use the desk; for the second page, wait and try again. |
+| No "Leads" in the menu, or "The desk does not offer lead chat." | (a page) | The connected daemon's gate does not list `chat`: only the phone trial's gate and the gate of a scratch daemon of `make scratch-seat-build` (`run --scratch CONFIG --owner-channel`) serve it (the seat's log line of the gate's offer does not end `the phone offers read-only Leads`). While the seat cannot reach the gate, a Leads page says "The desk cannot be reached. Try again in a moment." instead, with a link to try again. | Run the phone trial's gate or the scratch daemon with the gate, or use the desk; for the second page, wait and try again. |
 | No "New project" on the card list, or "New projects are not offered" | (a page) | The daemon's gate does not list `genesis` (the seat's log says `the phone offers no New project`), or the seat runs without `--gate`. | Check the daemon's start line; restart the daemon with its gate. |
 | "That project is not open. ..." or "No such project" | (a page) | The project was finished, discarded, or left for 14 days, or the address is not one of the seat's. | Start a new one from the card list. |
 | "The desk does not take phone logins now." | `login_unavailable` | The gate is read-only: no usable origin file at the daemon. | Fix the origin file, restart the daemon. |

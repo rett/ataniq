@@ -38,10 +38,12 @@ import (
 // the thread store there and serves the capability genesis (gatehost.CapGenesis),
 // the interview's one operation, seat.genesis. A thread store that does not
 // open is logged and leaves the interview out: the gate serves the rest. When
-// the gate is given a chat port (SeatGate.Chat: the command gives one only to
-// the phone trial, the STAND-IN sample leads of package chat/standin), it
-// serves the capability chat (gatehost.CapChat), the seat's read-only view of
-// the leads' conversations, seat.chat; every other gate serves no chat.
+// the gate is given a chat port (SeatGate.Chat: the command gives one to the
+// phone trial, the STAND-IN sample leads of package chat/standin, and, in a
+// build with the canary tag too, to a scratch daemon, its leads' replies
+// through [LeadChat]), it serves the capability chat (gatehost.CapChat), the
+// seat's read-only view of the leads' conversations, seat.chat; every other
+// gate serves no chat.
 
 const (
 	// SeatGateDirName is the name of the gate's folder in the owner folder
@@ -245,13 +247,16 @@ type SeatGate struct {
 	// chat. With one the gate serves the capability chat, last in its hello,
 	// and seat.chat, the seat's read-only view of the leads' conversations,
 	// with or without an origin: a read decides nothing. The command gives
-	// one only to the phone trial (run --owner-channel --trial), the STAND-IN
-	// sample leads of package chat/standin; every other daemon serves no
-	// chat.
+	// one to the phone trial (run --owner-channel --trial), the STAND-IN
+	// sample leads of package chat/standin, and, in a build with both tags,
+	// to a scratch daemon (run --scratch CONFIG --owner-channel), the
+	// read-only view of its leads' replies ([LeadChat], which the scratch
+	// mode binds); the two exclude each other, and every other daemon serves
+	// no chat.
 	Chat gatehost.ChatPort
 	// ChatNote, when set and the gate serves chat, is a line the gate writes
 	// after its start line, to say what the chat port is (the trial's says it
-	// serves samples).
+	// serves samples, a scratch daemon's that it serves the leads' replies).
 	ChatNote string
 	// Log receives the gate's lines: the one start line, the handler's
 	// refusals and a stop that did not go as asked; nil discards them. No

@@ -424,7 +424,8 @@ that is not as the daemon wrote it is not served and is logged once by name, in
 fixed text that holds no answer, and never repaired. The store's log lines
 (`ataniqd: genesis: a thread was started`, `... finished`, `... discarded`,
 `... expired`, an answer refused as secret-shaped, by count only) hold no
-answer. With `chat`, which only the phone trial's gate lists, it serves
+answer. With `chat`, which only the phone trial's gate and a scratch
+daemon's gate (below) list, it serves
 `seat.chat` (see [the design](design/seat-gate.md#chat)), the seat's read-only
 view of the leads' conversations: `leads` lists the leads with their chat
 switch (an off lead's row carries nothing but its name and switch) and `read`
@@ -434,7 +435,12 @@ Nothing sends. The trial serves it from STAND-IN samples held in memory
 `daemon:charlie`, whose chat is off): no lead, conversation file or other port
 of the daemon is read or reached, and every result is marked `stand_in`. Its
 refusals, `chat-off`, `chat-unknown-lead` and `chat-busy`, are not counted by
-the refusal bound. Every other operation is refused `unknown-op`.
+the refusal bound. In a build with both tags (`make scratch-seat-build`),
+`ataniqd run --scratch CONFIG --owner-channel --seat-gate ADDR` serves it from
+the scratch leads' replies instead, read only, each lead off until the desk
+turns it on (see [the scratch leads guide](scratch-leads.md#running-real-leads-with-the-seat));
+`--trial` is refused with `--scratch`. Every other operation is refused
+`unknown-op`.
 A seat whose key is not pinned is refused in the handshake and never reaches
 the service. On the daemon's socket `seat.pair` stays refused and the seven
 seat operations (the four of login and decision, `seat.wait`, `seat.genesis`

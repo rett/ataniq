@@ -24,8 +24,10 @@ checked the page's Trusted Types registration of the service worker. Not built
 yet: the phone trial (G13); question cards; the seat's side of the guided new
 project (its wire, the daemon's thread store and the gate's route are built,
 see [guided new project](#guided-new-project)); the seat's side of the
-leads' conversations (its wire, the gate's route and a STAND-IN port served in
-the phone trial only are built, read only, see [chat](#chat)); and
+leads' conversations (its wire, the gate's route, a STAND-IN port served in
+the phone trial and the real port of the scratch leads' replies, served by a
+daemon built with both tags and run with `--scratch`, are built, read only, see
+[chat](#chat)); and
 the one function that makes an origin canonical (G1;
 [the seat origin](#the-seat-origin) lists where the three checks in use
 disagree). This document is the contract that
@@ -239,7 +241,7 @@ them and never hands them to the handler.
 | `decide` | `seat.decide` | `SeatDecideParams` | `ownerwire.DecideResult` | G8b (built) |
 | `watch` | `seat.wait` | `ownerwire.SeatWaitParams` | `ownerwire.SeatWaitResult` | G14 (built) |
 | `genesis` | `seat.genesis` | `ownerwire.SeatGenesisParams` | `ownerwire.SeatGenesisResult` | genesis G3 (wire), G4 (handler and thread store) and G11a (the verb `plan`), built |
-| `chat` | `seat.chat` | `ownerwire.SeatChatParams` | `ownerwire.SeatChatResult` | G19b (wire, handler and the STAND-IN port of the phone trial), built; read only |
+| `chat` | `seat.chat` | `ownerwire.SeatChatParams` | `ownerwire.SeatChatResult` | G19b (wire, handler and the STAND-IN port of the phone trial), built; the scratch leads' replies (`leaddaemon.LeadChat`, both tags), built; read only |
 
 A handler made with `gatehost.New` answers `["pair", "read"]` (`gatehost.Caps`);
 one made with `gatehost.NewDeciding`, `["pair", "read", "login", "decide"]`
@@ -253,10 +255,10 @@ the daemon's thread store (`gatehost.WithGenesis`, a `gatehost.GenesisPort`),
 with or without a seat origin: an answer decides nothing either. Either
 handler adds `chat` last when it was given a chat port (`gatehost.WithChat`, a
 `gatehost.ChatPort`), with or without a seat origin: a read decides nothing;
-the daemon gives one to the phone trial's gate only (see [chat](#chat)). The
-daemon's start line names every capability the gate lists, in its order, in
-words (`pair, read, login, decide, watch and genesis`, and `... genesis and
-chat` in the phone trial). The seat reads the list (`seatgate.Client.Caps`) and offers login and decisions
+the daemon gives one to the phone trial's gate and to a scratch daemon's gate
+only (see [chat](#chat)). The daemon's start line names every capability the
+gate lists, in its order, in words (`pair, read, login, decide, watch and
+genesis`, and `... genesis and chat` in the phone trial and in scratch mode). The seat reads the list (`seatgate.Client.Caps`) and offers login and decisions
 only when the gate lists them; otherwise it says that the desk does not take
 phone logins, or does not take decisions from the phone. It starts its watcher
 only when the gate lists `watch`; otherwise its pages say "Not live".
@@ -2664,8 +2666,15 @@ not mark an earlier hand-off stale beyond the digest in its first line.
 The phone trial serves fixed sample conversations through the daemon's
 STAND-IN port (`internal/chat/standin`), the gate's `chat` capability and
 the seat link. The trial enables this port with
-`ataniqd run --owner-channel --trial --seat-gate ADDR`. Real lead history,
-desk switch configuration and sending remain future work.
+`ataniqd run --owner-channel --trial --seat-gate ADDR`. A daemon built with
+both tags (`make scratch-seat-build`) and run as
+`ataniqd run --scratch CONFIG --owner-channel --seat-gate ADDR` serves the
+scratch leads' written replies instead, through the real port
+(`leaddaemon.LeadChat`, over the chat stores of `internal/leadchat`), each
+lead's chat switched `off` or `read` at the desk
+([the scratch leads guide](../scratch-leads.md#running-real-leads-with-the-seat)).
+The command refuses `--trial` with `--scratch`, so no gate serves both. Sending
+remains future work.
 
 `seat.chat` is the seat's read-only view of the leads' conversations: it lists
 the leads the daemon would show, each with its chat switch, and reads one
@@ -2757,10 +2766,14 @@ bidirectional control is answered `failed` and never sent. The handler lists
 `chat` last in its hello, and serves the operation, only when it was given the
 port, with either constructor and with or without a seat origin, since a read
 decides nothing; without it the operation is `unknown-op` before its params are
-read. The daemon gives the port only to the phone trial's gate, so the start
-line of the trial's gate ends `... watch, genesis and chat` and is followed by
-one line that says the chat is the STAND-IN's; every other gate lists no
-`chat`.
+read. The daemon gives a port to two gates only, which exclude each other: the
+phone trial's, the STAND-IN, whose start line ends `... watch, genesis and
+chat` and is followed by one line that says the chat is the STAND-IN's; and, in
+a build with both tags, a scratch daemon's (`run --scratch CONFIG
+--owner-channel --seat-gate ADDR`), the real port, whose start line ends the
+same and is followed by `seat gate: chat: replies the scratch leads wrote to
+their outboxes; read only` (`cmd/ataniqd`, `chat_scratch_linux.go`). Every
+other gate lists no `chat`.
 
 The route (`gatehost`, `chat.go`) holds the chat port alone. It reaches neither
 the owner channel's service (the reads, the pairing, which enrols a key) nor
@@ -2812,7 +2825,9 @@ from Ataniq and that approvals are only on Cards.
 
 ### The stand-in
 
-`internal/chat/standin` is the only chat port built. It imports the standard
+`internal/chat/standin` is the phone trial's chat port; the real one, of the
+scratch leads' replies, is `leaddaemon.LeadChat` (see
+[before a real port](#before-a-real-port)). The stand-in imports the standard
 library and `ownerwire` only, opens no file and no socket, reaches no lead,
 holder, unit or sandbox and asks no other port of the daemon; a test holds its
 imports. Its samples are made once from the clock it is given and never
@@ -2828,8 +2843,10 @@ sample. No sample carries a bidirectional control; the wire refuses one.
 
 Nothing of this slice sends. There is no verb, port method, sender, queue,
 outbox or store for it, and no lead receives anything because of a chat call.
-Replies are not captured: no reader of a provider's conversation file, no hook,
-no outbox.
+The title is kept for the links to it: replies are now captured, read only, for
+the scratch leads alone, from the outbox each lead writes to deliberately
+(`internal/leadchat`, [the scratch leads guide](../scratch-leads.md#lead-replies-read-only)).
+No reader of a provider's conversation file and no hook is built.
 
 ### Reading chat on the seat
 
@@ -2950,7 +2967,10 @@ carries the marker of the lead before.
 
 A port that serves real leads replaces the stand-in only once it meets these
 constraints, from the independent review of the chat design (its findings 1, 2,
-4, 5, 7 and 8):
+4, 5, 7 and 8). The real port of the scratch leads' replies
+(`leaddaemon.LeadChat`, given to the gate of a daemon built with both tags and
+run with `--scratch`) is read only; where each constraint stands for it is
+said after the list.
 
 - **Authority (1).** The port holds no reference to the decide path, the
   pairing and the key list, the limits, the intake or the host's effects, and
@@ -2994,6 +3014,46 @@ constraints, from the independent review of the chat design (its findings 1, 2,
   reloads refused (42 while chat shared the reads), and 52 of its own 60
   refreshes busy. Malformed wire counts for the refusal bound; rejected user
   text, the state of a lead and a chat call the link finds no room for do not.
+
+Where the scratch leads' read-only port stands:
+
+- **Authority: met for reading.** The port (`chat_port_linux.go`) imports
+  nothing of the approval packages but the wire's types and reaches the desk's
+  read-only view alone (`internal/leaddaemon`, `chat_imports_test.go`). The
+  wired-handler test is repeated over the daemon's real wiring
+  (`cmd/ataniqd`, `chat_scratch_linux_test.go`): the command run as the owner
+  runs it, with a pinned seat over TLS on the loopback address, the real host
+  adapter's service wrapped so that every call is counted by its authority
+  (decision, enrolment, limits, reads, wait), a counting suite runner for the
+  host's effect, and the drop folder of the intake watched. Served chat calls
+  (a reply whose words ask for an approval, a pairing and a start among them),
+  refused ones and the desk's own chat operations sent to the gate reach none,
+  and `owner.list`, `seat.login-challenge`, `seat.pair`, `owner.limit` and a
+  request dropped for the intake are the positive controls. The intake, the
+  door and the merge are observed through the service and the drop folder, not
+  each as a fake of its own. The sending half does not apply: nothing sends.
+- **Disclosure: met.** No provider history is read. A lead's replies come from
+  its outbox, taken only from a turn-on on; the daemon assigns the lead's
+  identity, the sequence, the time and `who`; the text filter runs before the
+  store; logs hold counts and fixed words.
+- **Access: met for reading.** `off` and `read` are the desk's, in the daemon's
+  memory, checked on every list, read and scan, set only on the Unix socket
+  (the gate answers `chat.list` and `chat.set` `unknown-op`); an off lead is a
+  bare row; a turn-off and a restart drop the history; 40 calls a minute across
+  every connection. What applies to sending and its receipts is open with
+  sending.
+- **Storage: met** by the chat store of `internal/leadchat`.
+- **Refresh: met.** `seat.wait` is unchanged.
+- **Budget: met.** The seat's chat room is unchanged, and the port answers
+  `chat-busy` past its own 40 calls a minute.
+
+Not met, and not the code's to meet: the composed daemon is provisional and
+unqualified like the owner channel; its gate's key and key list are in the
+scratch state root, so a new root means a new gate fingerprint for the seat to
+pin and new pairings; and a lead's sandbox leaves the host's non-loopback
+addresses reachable, so a lead can reach the gate's port (pinned mutual TLS
+refuses its calls, not its connections): a firewall rule that admits the
+authority host alone is the owner's.
 
 ## The record change
 
