@@ -10,7 +10,7 @@ import (
 )
 
 // The store imports, of this repository, the wire's words, the brief, the
-// catalog and the family's strict JSON writer; of the standard library,
+// catalog, the plan's compiler and the family's strict JSON writer; of the standard library,
 // nothing that opens a socket or runs a program. It reads and writes files
 // through an os.Root on its own folder and calls no other function of os that
 // names a path, but the two that make and look at the folder itself.
@@ -20,6 +20,7 @@ func TestImportsAndNoExecution(t *testing.T) {
 		"ataniq/internal/genesis/brief":          true,
 		"ataniq/internal/genesis/catalog":        true,
 		"ataniq/internal/genesis/internal/canon": true,
+		"ataniq/internal/genesis/plan":           true,
 	}
 	banned := map[string]bool{
 		"net": true, "net/http": true, "os/exec": true, "unsafe": true, "plugin": true,

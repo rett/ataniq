@@ -12,15 +12,18 @@
 //     templates, as data, and the deterministic compiler that turns a
 //     finished brief into a plan: a proposal that binds nothing.
 //   - thread holds the thread store: the daemon's persistent record of the
-//     interviews begun on the phone, the one writer of them, which serves
-//     the eight verbs of the wire to the seat gate.
+//     interviews begun on the phone and the plans stored for them, the one
+//     writer of them, which serves the nine verbs of the wire to the seat
+//     gate.
 //   - package approval/ownerwire holds the words of the wire the phone
-//     speaks to ask the questions and send the answers: the one gate
-//     operation seat.genesis, with its strict forms and the gate codes
-//     genesis-busy, genesis-unknown-thread, genesis-bad-answer,
-//     genesis-over-cap, genesis-secret-shaped, genesis-done and
-//     genesis-stale-round. The wire
-//     knows nothing of the packages above; the host maps one to the other.
+//     speaks to ask the questions, send the answers and read the plan: the
+//     one gate operation seat.genesis, with its strict forms and the gate
+//     codes genesis-busy, genesis-unknown-thread, genesis-bad-answer,
+//     genesis-over-cap, genesis-secret-shaped, genesis-done,
+//     genesis-stale-round, genesis-not-ready and genesis-no-template. The
+//     wire knows nothing of the packages above; the host maps one to the
+//     other, and the plan the wire carries is the plan record member by
+//     member.
 //
 // An answer writes a brief field and nothing else: no answer reaches a
 // decision, a contract or a plan. A plan is compiled by the host from a
@@ -37,6 +40,12 @@
 // answers it with, or to none, and the map is held complete (see
 // TestEveryRefusalCodeHasItsGateWord): a new refusal code fails the test until
 // it is mapped.
+//
+// The wire's plan is the plan record: its caps, names and closed lists are the
+// record's, it accepts a plan exactly when the record does, and every plan of
+// every template and answer combination is written by the wire to the
+// record's own canonical bytes, under the same digest, in a result under its
+// 16 KiB (see TestEveryPlanIsAResultTheWireAccepts).
 //
 // The package holds no code, only this comment and its tests.
 package genesis

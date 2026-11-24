@@ -290,7 +290,8 @@ func FuzzDecodeSeatGenesisParams(f *testing.F) {
 		`{"answer":{"kind":"skip","node":"goal"},"node":"goal",`+t+`,"verb":"change"}`,
 		`{"node":"goal",`+t+`,"verb":"change"}`, `{"answer":null,"node":"goal",`+t+`,"verb":"change"}`,
 		`{"verb":"approve"}`, `{"verb":"Start"}`, `{"verb":1}`, `{"verb":"start","verb":"start"}`,
-		`{"verb":"list"}`, `{"verb":"list",`+t+`}`, `{"round":1,"verb":"list"}`)
+		`{"verb":"list"}`, `{"verb":"list",`+t+`}`, `{"round":1,"verb":"list"}`,
+		`{`+t+`,"verb":"plan"}`, `{"verb":"plan"}`, `{"round":1,`+t+`,"verb":"plan"}`, `{`+t+`,"verb":"Plan"}`)
 }
 
 func FuzzDecodeSeatGenesisResult(f *testing.F) {
@@ -318,5 +319,13 @@ func FuzzDecodeSeatGenesisResult(f *testing.F) {
 		`{"nodes":[],"of":0,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"threads","threads":[`+lt+`]}`,
 		`{"nodes":[],"of":0,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"threads","threads":[`+lt+`,`+lt+`]}`,
 		`{"nodes":[],"of":0,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"threads"}`,
-		`{`+head+`,"nodes":[],"of":0,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"threads","threads":[]}`)
+		`{`+head+`,"nodes":[],"of":0,"progress":{"filled":0,"total":0},"reset":0,"round":0,"state":"threads","threads":[]}`,
+		`{`+head+`,"nodes":[],"of":6,"plan":`+planJSON+`,"plan_digest":"`+genPlan+`","progress":{"filled":1,"plan_ready":true,"total":1},"reset":0,"round":3,"state":"plan","stored":true}`,
+		`{`+head+`,"nodes":[],"of":6,"plan":`+planJSON+`,"plan_digest":"`+genPlan+`","progress":{"filled":1,"total":1},"reset":0,"round":3,"state":"plan"}`,
+		`{`+head+`,"nodes":[],"of":6,"plan":`+planJSON+`,"plan_digest":"`+genBrief+`","progress":{"filled":1,"total":1},"reset":0,"round":3,"state":"plan"}`,
+		`{`+head+`,"nodes":[],"of":6,"plan_digest":"`+genPlan+`","progress":{"filled":1,"total":1},"reset":0,"round":3,"state":"plan"}`,
+		`{`+head+`,"nodes":[],"of":6,"plan":`+planJSON+`,"plan_digest":"`+genPlan+`","progress":{"filled":0,"total":1},"reset":0,"round":3,"state":"plan"}`,
+		`{`+head+`,"nodes":[],"of":6,"plan":`+planJSON+`,"plan_digest":"`+genPlan+`","progress":{"filled":1,"total":1},"reset":0,"round":3,"state":"plan","stored":false}`,
+		`{`+head+`,"groups":{"decided_for_you":[],"defaults":[],"you_chose":[`+row+`]},"nodes":[],"of":6,"plan":`+planJSON+`,"progress":{"filled":1,"total":1},"reset":0,"round":3,"state":"summary"}`,
+		`{`+head+`,"groups":{"decided_for_you":[],"defaults":[],"you_chose":[`+row+`]},"nodes":[],"of":6,"progress":{"filled":1,"plan_ready":true,"total":1},"reset":0,"round":3,"state":"summary"}`)
 }

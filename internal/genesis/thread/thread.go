@@ -6,6 +6,7 @@ import (
 
 	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/genesis/brief"
+	"ataniq/internal/genesis/plan"
 )
 
 // The bounds of the store.
@@ -22,9 +23,9 @@ const (
 	// DirName is the name of the store's folder in the owner state folder.
 	DirName = "genesis"
 
-	// maxFileBytes is the most a thread file may hold: the brief's cap and
-	// room for the thread's own members.
-	maxFileBytes = brief.MaxBriefBytes + 4096
+	// maxFileBytes is the most a thread file may hold: the brief's cap, the
+	// plan's cap and room for the thread's own members.
+	maxFileBytes = brief.MaxBriefBytes + plan.MaxPlanBytes + 4096
 	// maxEntries is the most files the folder may hold; a folder with more
 	// is not a store of ours.
 	maxEntries = 64
@@ -57,6 +58,16 @@ type record struct {
 	// frozen is the digest of the brief of a finished thread, and "" for
 	// any other.
 	frozen string
+	// plan is the plan stored for a finished thread, revision 1 of its
+	// frozen brief, and nil for any other thread and for a finished one that
+	// has none: finished before its brief was complete, of a kind no
+	// template serves, or finished before plans were stored (such a thread
+	// is given its plan when one is first asked of it). A stored plan is
+	// never compiled again: a template that changes later leaves it as it
+	// is.
+	plan *plan.Plan
+	// planDigest is the digest of plan, and "" without one.
+	planDigest string
 }
 
 // CodeBadParams is the gate's word for params the store refuses to take as
@@ -74,7 +85,7 @@ type Refusal struct {
 func (r *Refusal) Error() string { return "genesis: " + r.code }
 
 // GateCode returns the word the seat gate answers the refusal with: one of the
-// seven words of seat.genesis, or [CodeBadParams].
+// nine words of seat.genesis, or [CodeBadParams].
 func (r *Refusal) GateCode() string { return r.code }
 
 func refuse(code string) error { return &Refusal{code: code} }
@@ -95,9 +106,11 @@ var ErrClosed = errors.New("genesis: the thread store is closed")
 // gateWord maps each refusal code of the brief, the walker and the plan to
 // the word the seat gate answers it with. The empty word says the refusal is
 // the host's own fault and not the owner's mistake (a brief that breaks its
-// own rules, a catalog of another version): the call fails, and the cause is
-// logged. No plan is asked over the gate yet, so the plan's codes have none.
-// A test of package genesis holds this map to the wire's.
+// own rules, a catalog of another version, a template that does not hold):
+// the call fails, and the cause is logged. Of the plan's codes, a brief that
+// is not complete and a kind no template serves are the thread's state, which
+// the verb plan answers genesis-not-ready and genesis-no-template. A test of
+// package genesis holds this map to the wire's.
 var gateWord = map[brief.Code]string{
 	brief.CodeSecretShaped: ownerwire.CodeGenesisSecretShaped,
 	brief.CodeTooLarge:     ownerwire.CodeGenesisOverCap,
@@ -115,8 +128,8 @@ var gateWord = map[brief.Code]string{
 	brief.CodeCatalogInvalid:  "",
 	brief.CodeCatalogMismatch: "",
 
-	brief.CodeBriefIncomplete: "",
-	brief.CodeNoTemplate:      "",
+	brief.CodeBriefIncomplete: ownerwire.CodeGenesisNotReady,
+	brief.CodeNoTemplate:      ownerwire.CodeGenesisNoTemplate,
 	brief.CodeTemplateInvalid: "",
 	brief.CodePlanInvalid:     "",
 	brief.CodeNoChange:        "",
@@ -130,8 +143,9 @@ func GateWord(c brief.Code) (word string, ok bool) {
 	return word, ok
 }
 
-// mapAnswerError turns the error of the walker or the brief, on an answer the
-// owner sent, into the store's: a [*Refusal] for the owner's mistake, and the
+// mapAnswerError turns the error of the walker, the brief or the plan's
+// compiler, on an answer the owner sent or a plan asked of a thread, into the
+// store's: a [*Refusal] for the owner's mistake or the thread's state, and the
 // error itself, which the gate answers failed, for the host's own fault.
 func mapAnswerError(err error) error {
 	if code, ok := brief.CodeOf(err); ok {

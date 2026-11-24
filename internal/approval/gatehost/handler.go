@@ -58,7 +58,7 @@ var _ WaitPort = (*ownerchannel.Service)(nil)
 //
 //	GateCode() string
 //
-// through [errors.As]: one of the seven words of seat.genesis
+// through [errors.As]: one of the nine words of seat.genesis
 // ([ownerwire.CodeGenesisBusy] and the rest) or [CodeBadParams]. A refusal
 // that carries any other word, and every other error, is answered failed and
 // logged, as are a cancelled call (unavailable) and an expired one

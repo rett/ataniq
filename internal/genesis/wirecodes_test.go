@@ -22,14 +22,16 @@ import (
 //
 // A refusal of what the owner sent is one of three words: the text looks like
 // a secret (genesis-secret-shaped), something is over a cap (genesis-over-cap),
-// or the answer is not one the question allows (genesis-bad-answer). The four
-// others of the wire are of the host's state, not of any refusal of these
-// packages: genesis-busy (a start past two open threads), genesis-unknown-thread,
-// genesis-done (a call to a thread that is finished) and genesis-stale-round
-// (an answer to a round the thread has already taken).
+// or the answer is not one the question allows (genesis-bad-answer). Two are
+// the plan's, asked with the verb plan: the brief is not complete
+// (genesis-not-ready) or no template serves its kind (genesis-no-template).
+// The four others of the wire are of the host's state, not of any refusal of
+// these packages: genesis-busy (a start past two open threads),
+// genesis-unknown-thread, genesis-done (a call to a thread that is finished)
+// and genesis-stale-round (an answer to a round the thread has already taken).
 //
-// The plan's refusals have no word: no plan is asked over the gate yet, and a
-// refusal of one is the host's.
+// The plan's other refusals (a template or a plan that breaks its rules, a
+// revision with no change) have no word: they are the host's.
 var gateWord = map[brief.Code]string{
 	brief.CodeSecretShaped: ownerwire.CodeGenesisSecretShaped,
 	brief.CodeTooLarge:     ownerwire.CodeGenesisOverCap,
@@ -47,8 +49,8 @@ var gateWord = map[brief.Code]string{
 	brief.CodeCatalogInvalid:  "",
 	brief.CodeCatalogMismatch: "",
 
-	brief.CodeBriefIncomplete: "",
-	brief.CodeNoTemplate:      "",
+	brief.CodeBriefIncomplete: ownerwire.CodeGenesisNotReady,
+	brief.CodeNoTemplate:      ownerwire.CodeGenesisNoTemplate,
 	brief.CodeTemplateInvalid: "",
 	brief.CodePlanInvalid:     "",
 	brief.CodeNoChange:        "",
@@ -121,14 +123,14 @@ func TestEveryRefusalCodeHasItsGateWord(t *testing.T) {
 }
 
 // The words are the gate's: each is of the gate's grammar and is declared in
-// ownerwire, and the seven words of seat.genesis are each the word of at least
+// ownerwire, and the nine words of seat.genesis are each the word of at least
 // one refusal or of the host's state, and none twice.
 func TestTheGateWordsOfGenesisAreAllUsedOnce(t *testing.T) {
 	grammar := regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
 	all := map[string]bool{
 		ownerwire.CodeGenesisBusy: false, ownerwire.CodeGenesisUnknownThread: false, ownerwire.CodeGenesisBadAnswer: false,
 		ownerwire.CodeGenesisOverCap: false, ownerwire.CodeGenesisSecretShaped: false, ownerwire.CodeGenesisDone: false,
-		ownerwire.CodeGenesisStaleRound: false,
+		ownerwire.CodeGenesisStaleRound: false, ownerwire.CodeGenesisNotReady: false, ownerwire.CodeGenesisNoTemplate: false,
 	}
 	for code, word := range gateWord {
 		if word == "" {
@@ -157,8 +159,8 @@ func TestTheGateWordsOfGenesisAreAllUsedOnce(t *testing.T) {
 	}
 	sort.Strings(words)
 	t.Logf("the words of seat.genesis: %v", words)
-	if len(words) != 7 {
-		t.Errorf("%d gate words, want 7", len(words))
+	if len(words) != 9 {
+		t.Errorf("%d gate words, want 9", len(words))
 	}
 }
 

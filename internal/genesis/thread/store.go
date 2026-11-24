@@ -16,6 +16,7 @@ import (
 	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/genesis/brief"
 	"ataniq/internal/genesis/catalog"
+	"ataniq/internal/genesis/plan"
 )
 
 // Options are what a store is opened with. The zero value is the daemon's own:
@@ -342,6 +343,7 @@ func (t *tx) expireAll() error {
 // discarded is the thread as it is once it is dropped: no answer is kept.
 func (t *tx) discarded(r record) record {
 	r.state, r.brief, r.frozen, r.updated = StateDiscarded, brief.New(r.catalog), "", t.now
+	r.plan, r.planDigest = nil, ""
 	return r
 }
 
@@ -573,6 +575,13 @@ func (s *Store) Change(ctx context.Context, id, node string, pick ownerwire.Gene
 
 // Finish freezes the brief and answers its digest. A thread that is finished
 // answers the same again.
+//
+// When the brief is complete and a template serves its kind, the plan of the
+// brief, revision 1, is compiled and stored with the frozen brief, in the
+// same write. A brief that is not complete, or of a kind no template serves,
+// is frozen as it is, with no plan: the owner may stop early. A plan the host
+// fails to compile for a fault of its own does not stop the finish either: it
+// is logged, and drawn when it is next asked for.
 func (s *Store) Finish(ctx context.Context, id string) (ownerwire.SeatGenesisResult, error) {
 	return s.run(ctx, func(t *tx) (ownerwire.SeatGenesisResult, error) {
 		r, err := t.get(id)
@@ -587,11 +596,105 @@ func (s *Store) Finish(ctx context.Context, id string) (ownerwire.SeatGenesisRes
 			return ownerwire.SeatGenesisResult{}, err
 		}
 		r.state, r.frozen, r.updated = StateFinished, d, t.now
+		p, pd, perr := s.compile(r.brief)
+		if perr == nil {
+			r.plan, r.planDigest = &p, pd
+		}
 		res, err := t.commit(r, 0)
 		if err != nil {
 			return ownerwire.SeatGenesisResult{}, err
 		}
 		t.logf("genesis: a thread was finished")
+		if _, refused := RefusalCode(perr); perr == nil {
+			t.logf("genesis: a plan was drawn")
+		} else if !refused {
+			t.logf("genesis: a plan could not be drawn at finish")
+		}
+		return res, nil
+	})
+}
+
+// templateKinds are the kinds a plan template serves.
+var templateKinds = sync.OnceValues(func() (map[string]bool, error) {
+	ts, err := plan.Templates()
+	if err != nil {
+		return nil, err
+	}
+	kinds := map[string]bool{}
+	for _, t := range ts {
+		kinds[t.Kind] = true
+	}
+	return kinds, nil
+})
+
+// hasTemplate reports whether a plan template serves the kind.
+func hasTemplate(kind string) (bool, error) {
+	kinds, err := templateKinds()
+	if err != nil {
+		return false, err
+	}
+	return kinds[kind], nil
+}
+
+// compile compiles the plan of a brief, revision 1, and its digest. A kind no
+// template serves is refused genesis-no-template, whether or not the brief is
+// complete (completing it would not help); a brief that is not complete
+// genesis-not-ready. Any other error is the host's own fault.
+func (s *Store) compile(b brief.Brief) (plan.Plan, string, error) {
+	if b.Kind != "" {
+		ok, err := hasTemplate(b.Kind)
+		if err != nil {
+			return plan.Plan{}, "", err
+		}
+		if !ok {
+			return plan.Plan{}, "", refuse(ownerwire.CodeGenesisNoTemplate)
+		}
+	}
+	p, err := plan.Compile(b, s.cat)
+	if err != nil {
+		return plan.Plan{}, "", mapAnswerError(err)
+	}
+	d, err := plan.Digest(p)
+	if err != nil {
+		return plan.Plan{}, "", err
+	}
+	return p, d, nil
+}
+
+// Plan answers the thread's plan. On an open thread whose brief is complete it
+// is a preview: the plan is compiled for the read, revision 1, answered with
+// stored false and kept nowhere, and the same brief gives the same plan and
+// digest each time. On a finished thread it is the plan stored at finish,
+// answered with stored true; a finished thread that has none and whose brief
+// is complete (one finished before plans were stored) is given one now, which
+// is stored, once, as finish would have. A brief that is not complete is
+// refused genesis-not-ready, a kind no template serves genesis-no-template. A
+// stored plan is never compiled again. It is a read: it touches no thread.
+func (s *Store) Plan(ctx context.Context, id string) (ownerwire.SeatGenesisResult, error) {
+	return s.run(ctx, func(t *tx) (ownerwire.SeatGenesisResult, error) {
+		r, err := t.get(id)
+		if err != nil {
+			return ownerwire.SeatGenesisResult{}, err
+		}
+		if r.plan != nil {
+			return planView(s.cat, r, *r.plan, r.planDigest, true)
+		}
+		p, d, err := s.compile(r.brief)
+		if err != nil {
+			return ownerwire.SeatGenesisResult{}, err
+		}
+		if r.state != StateFinished {
+			return planView(s.cat, r, p, d, false)
+		}
+		r.plan, r.planDigest = &p, d
+		res, err := planView(s.cat, r, p, d, true)
+		if err != nil {
+			return ownerwire.SeatGenesisResult{}, err
+		}
+		if err := t.put(r); err != nil {
+			return ownerwire.SeatGenesisResult{}, err
+		}
+		t.logf("genesis: a plan was drawn")
 		return res, nil
 	})
 }
@@ -686,6 +789,8 @@ func (s *Store) Genesis(ctx context.Context, p ownerwire.SeatGenesisParams) (own
 		return s.Finish(ctx, p.Thread)
 	case ownerwire.GenesisVerbDiscard:
 		return s.Discard(ctx, p.Thread)
+	case ownerwire.GenesisVerbPlan:
+		return s.Plan(ctx, p.Thread)
 	}
 	return ownerwire.SeatGenesisResult{}, refuse(CodeBadParams)
 }
