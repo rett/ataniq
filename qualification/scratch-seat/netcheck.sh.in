@@ -1,0 +1,118 @@
+# The body of ROOT/netcheck.sh, which prepare.sh --write writes after six
+# lines of its own (the first line, a note, then SELF, PASTA, BWRAP, GATE_HOST
+# and GATE_PORT, the real values). It is never run by prepare or by an agent:
+# the owner runs it by hand, once, with the phone trial running (so that
+# something listens on the gate's address), before either lead starts.
+#
+# It is modelled on the canary run kit's netcheck (qualification/canary/run/
+# netcheck.sh.in) and checks, in the shape of the sandbox profile (pasta, then
+# bubblewrap with the read-only root, no capabilities, UID 0):
+#   1. from this host, outside any sandbox, that a TCP connection to the
+#      gate's address is made (the trial's gate answers): without a listener
+#      the next check proves nothing;
+#   2. from the lead's network, that no TCP connection to the gate's address
+#      is made (refused or timed out is a PASS);
+# and it lists what it does not refuse: this host's listening sockets on
+# non-loopback addresses, and the open network of the sandbox. It sends no
+# byte to the gate (a connection is made and closed), uses no credential and
+# starts no agent. One line per check, PASS or FINDING, and INFO lines; the
+# exit status is the number of findings.
+#
+# POSIX sh. The script calls itself with --core to run the sandbox.
+RESOLV=/etc/resolv.conf
+_stub=0
+[ "$(readlink -f /etc/resolv.conf 2>/dev/null)" = /run/systemd/resolve/stub-resolv.conf ] && _stub=1
+if [ "$_stub" -eq 0 ] && [ -r /etc/resolv.conf ]; then
+  _ns=$(awk '$1 == "nameserver" { print $2 }' /etc/resolv.conf)
+  [ "$_ns" = 127.0.0.53 ] && _stub=1
+fi
+if [ "$_stub" -eq 1 ] && [ -r /run/systemd/resolve/resolv.conf ]; then
+  RESOLV=/run/systemd/resolve/resolv.conf
+fi
+SH=$(command -v sh) || SH=/bin/sh
+
+# core runs the command given as arguments inside pasta and bubblewrap in the
+# shape of the profile.
+core() {
+  _opt=
+  [ -e /etc/ssl ] && _opt="$_opt --ro-bind /etc/ssl /etc/ssl"
+  [ -e /etc/ca-certificates ] && _opt="$_opt --ro-bind /etc/ca-certificates /etc/ca-certificates"
+  [ -e /etc/nsswitch.conf ] && _opt="$_opt --ro-bind /etc/nsswitch.conf /etc/nsswitch.conf"
+  [ -e /usr/lib64 ] && _opt="$_opt --symlink usr/lib64 /lib64"
+  # shellcheck disable=SC2086  # the optional binds are split on purpose
+  "$PASTA" -f -q --config-net -t none -u none -T none -U none --no-map-gw -- \
+    "$BWRAP" --die-with-parent --unshare-all --share-net --unshare-user --uid 0 --gid 0 \
+    --cap-drop ALL --clearenv --tmpfs / --ro-bind /usr /usr \
+    --symlink usr/bin /bin --symlink usr/lib /lib $_opt \
+    --ro-bind /etc/hosts /etc/hosts \
+    --ro-bind /etc/passwd /etc/passwd --ro-bind /etc/group /etc/group \
+    --ro-bind "$RESOLV" /etc/resolv.conf \
+    --dev /dev --proc /proc --tmpfs /tmp --setenv PATH /usr/bin --setenv HOME /tmp \
+    --remount-ro / -- "$@"
+}
+
+# The connect test: curl opens a TCP connection (telnet:// sends nothing but
+# what standard input holds, and it is empty) and prints the time to connect,
+# 0.000000 when no connection was made.
+CONNECT='t=$(curl -s -o /dev/null --connect-timeout 5 -m 8 -w "%{time_connect}" "telnet://$0:$1" </dev/null); echo "connect ${t:-0.000000}"'
+
+if [ "${1:-}" = --core ]; then
+  core /usr/bin/sh -c "$CONNECT" "$GATE_HOST" "$GATE_PORT"
+  exit
+fi
+
+FINDINGS=0
+finding() {
+  FINDINGS=$((FINDINGS + 1))
+  printf 'FINDING  %s\n' "$*"
+}
+pass() { printf 'PASS     %s\n' "$*"; }
+info() { printf 'INFO     %s\n' "$*"; }
+
+# connected TEXT succeeds when the text holds a time to connect above zero.
+connected() {
+  printf '%s\n' "$1" | awk '$1 == "connect" && $2 + 0 > 0 { f = 1 } END { exit !f }'
+}
+
+echo "netcheck: pasta $PASTA, bubblewrap $BWRAP, the gate $GATE_HOST:$GATE_PORT"
+if ! command -v curl >/dev/null 2>&1; then
+  finding 'curl is not on PATH: nothing could be checked'
+  echo "netcheck: $FINDINGS finding(s)"
+  exit "$FINDINGS"
+fi
+HOSTSIDE=$("$SH" -c "$CONNECT" "$GATE_HOST" "$GATE_PORT" 2>&1)
+if connected "$HOSTSIDE"; then
+  pass "this host reaches the gate's address (the trial's gate listens)"
+else
+  finding "nothing on this host answers at $GATE_HOST:$GATE_PORT: run this while the trial runs; without a listener the next line proves nothing"
+fi
+SANDBOX=$("$SH" "$SELF" --core 2>&1)
+if connected "$SANDBOX"; then
+  finding "the lead's network reaches the gate's port $GATE_HOST:$GATE_PORT: do not start a lead until a rule refuses it"
+elif printf '%s\n' "$SANDBOX" | grep -q '^connect '; then
+  pass "the lead's network does not reach the gate's port (refused or timed out)"
+else
+  finding "the sandbox did not run the connect test (see its output below)"
+fi
+if command -v ss >/dev/null 2>&1; then
+  _l=$(ss -ltnu 2>/dev/null | awk 'NR > 1 && $5 !~ /^(127\.|\[::1\]|\[::ffff:127\.)/ { print $1, $5 }' | LC_ALL=C sort)
+  if [ -n "$_l" ]; then
+    printf '%s\n' "$_l" | while IFS= read -r _x; do info "listener on this host: $_x"; done
+  else
+    info 'no listener on a non-loopback address of this host'
+  fi
+else
+  info 'ss is not on PATH: list this host'"'"'s listeners another way'
+fi
+info "not refused: the lead's network is open. pasta gives the sandbox this host's outbound access, to your LAN, to the"
+info "listeners above where your rules let this host reach them, and to the Internet. provider_host is a DNS check, not a"
+info "rule, and the guard hook exits 0: it guards nothing. Accept this in writing in ${SELF%/*}/evidence/notes.txt before a live login, or stop."
+if [ "$FINDINGS" -gt 0 ]; then
+  echo
+  echo "Each finding above needs a look before the sitting. What the sandbox printed:"
+  printf '%s\n' "$SANDBOX" | head -n 10 | sed 's/^/  sandbox: /'
+  echo "netcheck: $FINDINGS finding(s)"
+  [ "$FINDINGS" -le 100 ] || FINDINGS=100
+  exit "$FINDINGS"
+fi
+echo "netcheck: no finding"

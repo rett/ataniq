@@ -155,7 +155,7 @@ func TestScratchSeatProofScriptWritesWhatTheDaemonReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfgPath := filepath.Join(root, "scratch.json")
-	if err := os.WriteFile(cfgPath, proofScript(t, "config", state, root, "sample-model"), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, proofScript(t, "config", state, root, "3", "sample-model"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := leadcanary.ReadScratchConfig(cfgPath)
@@ -166,8 +166,8 @@ func TestScratchSeatProofScriptWritesWhatTheDaemonReads(t *testing.T) {
 		t.Fatalf("the script's config: %+v", cfg)
 	}
 	standin, live := cfg.Entries[0], cfg.Entries[1]
-	if standin.Key != "standin" || standin.Agent.Kind != leadcanary.AgentStandIn || !standin.Inject ||
-		live.Key != "live" || live.Agent.Kind != leadcanary.AgentLive || !live.Inject ||
+	if standin.Key != "standin-3" || standin.Agent.Kind != leadcanary.AgentStandIn || !standin.Inject ||
+		live.Key != "live-3" || live.Agent.Kind != leadcanary.AgentLive || !live.Inject ||
 		strings.Join(live.Agent.Argv, " ") != "/ataniq/agent/claude --model sample-model" || standin.ProfileDigest != "" || live.ProfileDigest != "" {
 		t.Fatalf("the script's leads: %+v", cfg.Entries)
 	}
@@ -180,10 +180,10 @@ func TestScratchSeatProofScriptWritesWhatTheDaemonReads(t *testing.T) {
 		}
 	}
 	// Without a model the config has the stand-in lead only.
-	if err := os.WriteFile(cfgPath, proofScript(t, "config", state, root), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, proofScript(t, "config", state, root, "3"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if cfg, err := leadcanary.ReadScratchConfig(cfgPath); err != nil || len(cfg.Entries) != 1 || cfg.Entries[0].Key != "standin" {
+	if cfg, err := leadcanary.ReadScratchConfig(cfgPath); err != nil || len(cfg.Entries) != 1 || cfg.Entries[0].Key != "standin-3" {
 		t.Fatalf("the script's config without a model: %+v %v", cfg, err)
 	}
 

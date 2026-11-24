@@ -1265,15 +1265,19 @@ that the trial's gate key, seat pins and paired phones are reused: first the
 stand-in lead, then one real Claude lead, each reply read on the phone and the
 desktop. The daemon refuses that folder while it holds the trial's settings
 (`"trial": true` in `owner/scratch.json`). Of the trial's own files the
-runbook moves only that one, by the owner's hand, to a free name and back
-(the root marker, the proof's settings and the leads' folders are added
-beside them), with the trial's unit stopped meanwhile, which the state
-folder's daemon lock enforces.
+runbook swaps only that one, within `owner/`, by the owner's
+`prepare.sh --swap-in` and back by `--swap-out` (the root marker, the
+proof's settings and the leads' folders are added beside them), with the
+trial's unit stopped and masked meanwhile and the gate's port free, which the
+swaps check; the state folder's daemon lock still refuses a second daemon.
 `qualification/scratch-seat/prepare.sh` writes the scratch config and the
-files it names in a folder of the proof's own (`--dry` writes nothing;
-`--self-test` computes only) and never writes in the trial's state folder or
-starts anything. `TestScratchSeatTakesThePhoneTrialsStateFolder` in
-`cmd/ataniqd` proves the folder's way there and back in process.
+files it names in a folder of the proof's own (`--dry` reads and writes
+nothing of the owner's; `--self-test` computes only; `--write` never writes
+in the trial's state folder or starts anything; `--status` only reads).
+Each sitting has leads of its own (`standin-N`, `live-N`).
+`TestScratchSeatTakesThePhoneTrialsStateFolder` in `cmd/ataniqd` proves the
+folder's way there and back in process, on the files `--write` makes and
+with the swaps.
 
 ## Failure handling and owner recovery
 
