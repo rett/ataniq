@@ -10,6 +10,7 @@ import (
 	"io"
 	"slices"
 	"time"
+	"unicode/utf8"
 )
 
 // MaxLineBytes is the longest line of a chat file, its newline included.
@@ -81,7 +82,7 @@ func encodeLine(v any) ([]byte, error) {
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(v); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
+		return nil, fmt.Errorf("%w: a line does not encode", ErrInvalid)
 	}
 	if buf.Len() > MaxLineBytes {
 		return nil, fmt.Errorf("%w: a line of %d bytes", ErrInvalid, buf.Len())
@@ -89,43 +90,101 @@ func encodeLine(v any) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// The reasons a line is refused. Each is fixed text: no reason holds a byte
+// of the file, so an error that is logged shows nothing a damaged file holds.
+var (
+	errNotRecord  = errors.New("not one JSON object")
+	errBadUTF8    = errors.New("not valid UTF-8")
+	errTwice      = errors.New("a member appears twice")
+	errNull       = errors.New("a member is null")
+	errNoKind     = errors.New("no kind, or a kind that is not known")
+	errLacks      = errors.New("a member the kind needs is missing")
+	errForeign    = errors.New("a member the kind does not have")
+	errMemberType = errors.New("a member has the wrong type")
+	errDataAfter  = errors.New("data after the record")
+)
+
+// objectMembers reads raw as exactly one JSON object and returns its
+// members: a member named twice, a null member and anything after the
+// object are refused.
+func objectMembers(raw []byte) (map[string]json.RawMessage, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	tok, err := dec.Token()
+	if err != nil || tok != json.Delim('{') {
+		return nil, errNotRecord
+	}
+	set := map[string]json.RawMessage{}
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, errNotRecord
+		}
+		name, ok := tok.(string)
+		if !ok {
+			return nil, errNotRecord
+		}
+		if _, dup := set[name]; dup {
+			return nil, errTwice
+		}
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			return nil, errNotRecord
+		}
+		if string(v) == "null" {
+			return nil, errNull
+		}
+		set[name] = v
+	}
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
+		return nil, errNotRecord
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, errDataAfter
+	}
+	return set, nil
+}
+
 // strict decodes raw into v: no unknown member, nothing after the object.
 func strict(raw []byte, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
-		return errors.New("not a record")
+		return errMemberType
 	}
 	if _, err := dec.Token(); err != io.EOF {
-		return errors.New("data after the record")
+		return errDataAfter
 	}
 	return nil
 }
 
-// decodeLine reads one line strictly: its kind, then exactly the members of
-// that kind, then the line itself. It returns one of openLine, switchLine
-// and entryLine.
+// decodeLine reads one line strictly: valid UTF-8, one object whose members
+// are each named once and none null, its kind, then exactly the members of
+// that kind, each of its type. It returns one of openLine, switchLine and
+// entryLine. An error is one of the fixed reasons above.
 func decodeLine(raw []byte) (any, error) {
-	var set map[string]json.RawMessage
-	if err := strict(raw, &set); err != nil {
+	if !utf8.Valid(raw) {
+		return nil, errBadUTF8
+	}
+	set, err := objectMembers(raw)
+	if err != nil {
 		return nil, err
 	}
 	var kind string
 	if err := json.Unmarshal(set["kind"], &kind); err != nil {
-		return nil, errors.New("no kind")
+		return nil, errNoKind
 	}
 	m, ok := members[kind]
 	if !ok {
-		return nil, errors.New("unknown kind")
+		return nil, errNoKind
 	}
 	for _, name := range m.want {
 		if _, ok := set[name]; !ok {
-			return nil, fmt.Errorf("the %s line lacks %s", kind, name)
+			return nil, errLacks
 		}
 	}
 	for name := range set {
 		if !slices.Contains(m.want, name) && !slices.Contains(m.allow, name) {
-			return nil, fmt.Errorf("the %s line has %s", kind, name)
+			return nil, errForeign
 		}
 	}
 	switch kind {

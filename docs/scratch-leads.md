@@ -830,13 +830,18 @@ replies. **A restart of the daemon turns every lead's chat off**, and deletes
 what was stored; it is never turned back on from disk.
 
 **The store.** `<state root>/chat/<layout role>.jsonl` (folder mode 0700, file
-mode 0600, no sandbox binds it): strict JSON lines, each synced, locked by the
-daemon, checked by handle like [the command table](#the-command-table). A torn
-last line is cut; any other damage leaves that lead's chat unavailable and
-touches no other lead; nothing is repaired. Sequence numbers only grow, across
-switches and restarts. It keeps a lead's newest 500 entries, none older than 14
-days (the turned-on line is always kept), and holds them in memory, so reading
-them touches no file.
+mode 0600, no sandbox binds it): strict JSON lines of at most 8 KiB (no member
+named twice, none null, valid UTF-8, the system lines only the fixed texts),
+each synced, locked by the daemon, checked by handle like [the command
+table](#the-command-table), and at most 8 MiB in all. A torn last line is cut;
+any other damage leaves that lead's chat unavailable and touches no other lead;
+nothing is repaired, and the error names the line and a fixed reason, never what
+the line holds. Sequence numbers only grow, across switches, compactions and
+restarts. It keeps a lead's newest 500 entries, none older than 14 days (the
+turned-on line is always kept), and holds them in memory, so reading them
+touches no file. A seat whose cursor is not an entry the store holds now (one of
+an earlier conversation, or one that expired) is told to reset and gets what is
+held.
 
 ## Failure handling and owner recovery
 

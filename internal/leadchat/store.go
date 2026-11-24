@@ -5,10 +5,12 @@ package leadchat
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -34,6 +36,11 @@ const (
 	// The excess waits in the outbox.
 	RatePerMinute = 6
 	RatePerHour   = 60
+	// MaxJournalBytes bounds a lead's chat file: a replay refuses a larger
+	// file as corrupt, and an append that would pass it compacts first and
+	// is refused ([ErrFull]) when the file would still pass it. What the
+	// store keeps (500 entries of at most [MaxLineBytes]) is half of it.
+	MaxJournalBytes = 8 << 20
 	// compactEvery is how often the file is compacted at most to drop
 	// expired entries; reads drop them at once in memory.
 	compactEvery = time.Hour
@@ -115,8 +122,11 @@ type Store struct {
 	discarded   int64
 	last        int64 // the highest sequence number given, or the open floor less one
 	entries     []Entry
-	stale       bool // the file holds entries that memory dropped
-	lastCompact time.Time
+	stale       bool  // the file holds entries that memory dropped
+	size        int64 // the file's size in bytes
+
+	replayedEntries bool // the replay read an entry of a segment
+	lastCompact     time.Time
 
 	taken    []time.Time // when replies were taken, the last hour
 	lastDrop map[Reason]time.Time
@@ -320,37 +330,65 @@ func (s *Store) start() error {
 	if empty {
 		return s.appendData(mustLine(openLine{Kind: kindOpen, V: fileVersion, Next: s.last + 1}))
 	}
-	if s.chat == ownerwire.ChatRead || len(s.entries) > 0 {
+	if s.chat == ownerwire.ChatRead || s.replayedEntries {
 		s.turnOff(now, s.switchEpoch)
 		return s.compact()
 	}
 	return nil
 }
 
-func corrupt(n int, format string, args ...any) error {
-	return fmt.Errorf("%w: line %d: %s", ErrCorrupt, n, fmt.Sprintf(format, args...))
+// corrupt is the error of a damaged file: a fixed reason and the line's
+// number, never a byte of the file.
+func corrupt(n int, reason string) error {
+	return fmt.Errorf("%w: line %d: %s", ErrCorrupt, n, reason)
 }
 
-// replay reads the file into memory. It reports a file that holds no line.
+// replayState is what a replay keeps while it reads: the order of the
+// sequence numbers and whether a turned-on entry is due. It keeps no entry:
+// the store opens off, so what a file holds of a segment is dropped.
+type replayState struct {
+	lastSeq    int64 // the sequence number of the last entry read
+	wantMarker bool  // a read switch line was read and no entry yet
+	entries    bool  // an entry of the current segment was read
+}
+
+// replay reads the file, line by line, and keeps only the floor of the
+// sequence numbers and the switch. It reports a file that holds no line. A
+// file over [MaxJournalBytes] or a line over [MaxLineBytes] (its newline
+// included) is corrupt.
 func (s *Store) replay() (empty bool, err error) {
+	st, err := fstatFD(int(s.f.Fd()))
+	if err != nil {
+		return false, fmt.Errorf("leadchat: cannot examine the chat file: %w", err)
+	}
+	if st.Size > MaxJournalBytes {
+		return false, corrupt(0, "the file is larger than the bound")
+	}
 	if _, err := s.f.Seek(0, io.SeekStart); err != nil {
 		return false, fmt.Errorf("leadchat: cannot read the chat file: %w", err)
 	}
-	rd := bufio.NewReaderSize(s.f, MaxLineBytes+1)
+	rd := bufio.NewReaderSize(io.LimitReader(s.f, MaxJournalBytes+1), MaxLineBytes+1)
 	var offset int64
+	var rs replayState
 	n := 0
 	for {
 		raw, err := rd.ReadSlice('\n')
 		if err == nil {
 			n++
-			if err := s.replayLine(n, raw[:len(raw)-1]); err != nil {
+			if len(raw) > MaxLineBytes {
+				return false, corrupt(n, "the line is longer than the bound")
+			}
+			if offset+int64(len(raw)) > MaxJournalBytes {
+				return false, corrupt(n, "the file is larger than the bound")
+			}
+			if err := s.replayLine(n, raw[:len(raw)-1], &rs); err != nil {
 				return false, err
 			}
 			offset += int64(len(raw))
 			continue
 		}
 		if err == bufio.ErrBufferFull {
-			return false, corrupt(n+1, "the line is longer than %d bytes", MaxLineBytes)
+			return false, corrupt(n+1, "the line is longer than the bound")
 		}
 		if err != io.EOF {
 			return false, fmt.Errorf("leadchat: cannot read the chat file: %w", err)
@@ -364,15 +402,22 @@ func (s *Store) replay() (empty bool, err error) {
 				return false, fmt.Errorf("leadchat: cannot sync the cut: %w", err)
 			}
 		}
+		if _, err := s.f.Seek(0, io.SeekEnd); err != nil {
+			return false, fmt.Errorf("leadchat: cannot read the chat file: %w", err)
+		}
+		s.size = offset
+		s.replayedEntries = rs.entries
 		return n == 0, nil
 	}
 }
 
-// replayLine applies one line, or says why the file is corrupt.
-func (s *Store) replayLine(n int, raw []byte) error {
+// replayLine applies one line, or says why the file is corrupt. Entries are
+// checked in their own increasing order: a compacted file holds the
+// retained entries below the open line's floor, and appends after it.
+func (s *Store) replayLine(n int, raw []byte, rs *replayState) error {
 	v, err := decodeLine(raw)
 	if err != nil {
-		return corrupt(n, "%v", err)
+		return corrupt(n, err.Error())
 	}
 	if _, isOpen := v.(openLine); isOpen != (n == 1) {
 		return corrupt(n, "the open line is not the first line, or the first line is not the open line")
@@ -395,16 +440,15 @@ func (s *Store) replayLine(n int, raw []byte) error {
 		case l.Epoch < 0 || l.Epoch > ownerwire.MaxChatSeq || l.Discarded < 0:
 			return corrupt(n, "the epoch or the count is out of range")
 		}
-		if l.Chat == ownerwire.ChatOff {
-			s.entries = nil
-		}
+		rs.entries = false
+		rs.wantMarker = l.Chat == ownerwire.ChatRead
 		s.chat, s.gen, s.switchAt, s.switchEpoch, s.discarded = l.Chat, l.Gen, at, l.Epoch, l.Discarded
 	case entryLine:
-		at, ok := parseTime(l.At)
+		_, ok := parseTime(l.At)
 		switch {
 		case s.chat != ownerwire.ChatRead || l.Gen != s.gen:
 			return corrupt(n, "an entry while chat is off, or of another generation")
-		case l.Seq <= s.last || l.Seq > ownerwire.MaxChatSeq:
+		case l.Seq <= rs.lastSeq || l.Seq > ownerwire.MaxChatSeq:
 			return corrupt(n, "the sequence number does not grow")
 		case l.Who != ownerwire.ChatWhoLead && l.Who != ownerwire.ChatWhoSystem:
 			return corrupt(n, "the writer is not lead or system")
@@ -414,11 +458,17 @@ func (s *Store) replayLine(n int, raw []byte) error {
 			return corrupt(n, "the epoch is out of range")
 		case !ownerwire.ValidChatText(l.Text):
 			return corrupt(n, "the text is not plain text")
+		case l.Who == ownerwire.ChatWhoSystem && !systemText(l.Text):
+			return corrupt(n, "a system entry has a text that is not one of the fixed texts")
+		case rs.wantMarker != (l.Who == ownerwire.ChatWhoSystem && l.Text == TextTurnedOn):
+			return corrupt(n, "a segment does not start with its turned-on entry, or has a second one")
 		case l.Src != "" && !validSrc(l.Src), l.Who == ownerwire.ChatWhoLead && l.Src == "":
 			return corrupt(n, "the source is not valid")
 		}
-		s.last = l.Seq
-		s.entries = append(s.entries, Entry{Seq: l.Seq, Who: l.Who, At: at, Text: l.Text, Epoch: l.Epoch, gen: l.Gen, src: l.Src})
+		rs.lastSeq = l.Seq
+		rs.wantMarker = false
+		rs.entries = true
+		s.last = max(s.last, l.Seq)
 	}
 	return nil
 }
@@ -431,9 +481,30 @@ func mustLine(v any) []byte {
 	return data
 }
 
-// appendData writes data at the end of the file and syncs it. A failure
+// room makes room for an append of n bytes within [MaxJournalBytes]: when
+// the file would pass it, the expired entries are dropped and the file is
+// compacted first, and an append that would pass it still is refused.
+func (s *Store) room(n int) error {
+	if s.size+int64(n) <= MaxJournalBytes {
+		return nil
+	}
+	s.retain(s.now())
+	if err := s.compact(); err != nil {
+		return err
+	}
+	if s.size+int64(n) <= MaxJournalBytes {
+		return nil
+	}
+	return fmt.Errorf("%w: the chat file would pass its bound", ErrFull)
+}
+
+// appendData writes data at the end of the file and syncs it. An append
+// that would pass [MaxJournalBytes] is refused and writes nothing. A failure
 // breaks the store for good: what reached the disk is unknown.
 func (s *Store) appendData(data []byte) error {
+	if s.size+int64(len(data)) > MaxJournalBytes {
+		return fmt.Errorf("%w: the chat file would pass its bound", ErrFull)
+	}
 	n, err := s.write(s.f, data)
 	if err == nil && n != len(data) {
 		err = errors.New("short write")
@@ -445,6 +516,7 @@ func (s *Store) appendData(data []byte) error {
 		s.broken = fmt.Errorf("%w: %v", ErrBroken, err)
 		return s.broken
 	}
+	s.size += int64(len(data))
 	return nil
 }
 
@@ -480,6 +552,9 @@ func (s *Store) addEntries(at time.Time, epoch int64, es ...Entry) error {
 		}
 		buf.Write(data)
 		out[i] = e
+	}
+	if err := s.room(buf.Len()); err != nil {
+		return err
 	}
 	if err := s.appendData(buf.Bytes()); err != nil {
 		return err
@@ -543,6 +618,9 @@ func (s *Store) compactFile() error {
 	if err != nil {
 		return err
 	}
+	if len(data) > MaxJournalBytes {
+		return errors.New("the snapshot passes the bound")
+	}
 	tmp := s.tmpName()
 	if err := unix.Unlinkat(s.dirFD, tmp, 0); err != nil && err != unix.ENOENT {
 		return fmt.Errorf("cannot remove the old temporary file: %w", err)
@@ -588,6 +666,7 @@ func (s *Store) compactFile() error {
 	}
 	old := s.f
 	s.f = nf
+	s.size = int64(len(data))
 	_ = old.Close()
 	if err := syncFD(s.dirFD); err != nil {
 		return fmt.Errorf("cannot sync the chat folder: %w", err)
@@ -657,10 +736,14 @@ func (s *Store) Status() (Status, error) {
 }
 
 // Read answers the entries after the sequence number after, from memory: it
-// reads no file. after 0 reads from the start of what is held. An after
-// before the start of what is held, or past the head, answers everything held
-// with reset set. head is [Status].Head. A lead whose chat is off answers
-// [ErrOff].
+// reads no file. after 0 reads from the start of what is held. Any other
+// after must be the sequence number of an entry held now, the last one a
+// reader was given: a cursor of an earlier segment, one past the head, and
+// one whose entry expired (after the pinned turned-on entry too) answer
+// everything held with reset set, so the reader drops what it shows. A
+// reader that pages on from an entry it was given, the turned-on entry
+// included, is never reset. head is [Status].Head. A lead whose chat is off
+// answers [ErrOff].
 func (s *Store) Read(after int64) (entries []Entry, reset bool, head int64, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -675,15 +758,12 @@ func (s *Store) Read(after int64) (entries []Entry, reset bool, head int64, err 
 	}
 	s.retain(s.now())
 	from := 0
-	switch {
-	case after > s.last:
-		reset = true
-	case after == 0 || len(s.entries) == 0:
-	case after < s.entries[0].Seq-1:
-		reset = true
-	default:
-		for from < len(s.entries) && s.entries[from].Seq <= after {
-			from++
+	if after != 0 {
+		i, held := slices.BinarySearchFunc(s.entries, after, func(e Entry, seq int64) int { return cmp.Compare(e.Seq, seq) })
+		if held {
+			from = i + 1
+		} else {
+			reset = true
 		}
 	}
 	return append([]Entry(nil), s.entries[from:]...), reset, s.last, nil
@@ -747,7 +827,11 @@ func (s *Store) setSwitch(chat string, epoch int64) error {
 	if err != nil {
 		return err
 	}
-	if err := s.appendData(append(sw, data...)); err != nil {
+	data = append(sw, data...)
+	if err := s.room(len(data)); err != nil {
+		return err
+	}
+	if err := s.appendData(data); err != nil {
 		return err
 	}
 	s.chat, s.gen, s.switchAt, s.switchEpoch, s.discarded = ownerwire.ChatRead, gen, at, epoch, int64(n)

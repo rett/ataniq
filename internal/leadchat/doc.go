@@ -66,27 +66,42 @@
 // # The store
 //
 // A lead's chat is <state root>/chat/<layout role>.jsonl, mode 0600, in a
-// folder of mode 0700 that no sandbox binds. It is strict JSON lines (no
-// unknown member, each line at most [MaxLineBytes]): the first line is
-// {"kind":"open","v":1,"next":N}, the floor of the sequence numbers; a switch
+// folder of mode 0700 that no sandbox binds. It is strict JSON lines: each
+// line valid UTF-8 and at most [MaxLineBytes] with its newline, one object
+// whose members are each named once and none null, of exactly the members of
+// its kind. The first line is {"kind":"open","v":1,"next":N}, the
+// allocation high-water: no sequence number below N is given again. A switch
 // line {"kind":"switch","chat":"read|off","gen":G,"at":T,"epoch":E,"discarded":N}
 // records each change of the switch with its generation; an entry line
 // {"kind":"entry","seq":S,"gen":G,"epoch":E,"who":"lead|system","at":T,"text":"...","src":"..."}
-// records one entry. The file is opened by handle (a regular file of the
-// caller, mode 0600, one link, no link followed) and held with an exclusive,
-// non-blocking flock. Every append is synced before the call returns. A last
-// line without its newline is cut off; any other damage makes [OpenStore]
-// fail with [ErrCorrupt] and nothing is repaired, so that lead has no chat
-// (fail closed) while the others are untouched. A write or sync that fails
-// breaks the store ([ErrBroken]). Sequence numbers only grow: a new one is
-// one above the highest given, or above the open line's floor. A compaction
-// writes a temporary file, syncs it, renames it over the file and syncs the
-// folder; a temporary file left by a crash is removed.
+// records one entry. Entries are checked in their own increasing order, so a
+// compacted file (the open line's floor above the entries it kept) and the
+// appends after it replay alike; every segment starts with the entry
+// [TextTurnedOn], and a system entry holds one of the fixed texts. The file
+// is opened by handle (a regular file of the caller, mode 0600, one link, no
+// link followed) and held with an exclusive, non-blocking flock. Every
+// append is synced before the call returns. A last line without its newline
+// is cut off; any other damage makes [OpenStore] fail with [ErrCorrupt],
+// whose text is a fixed reason and the line's number and never a byte of
+// the file, and nothing is repaired, so that lead has no chat (fail closed)
+// while the others are untouched. A write or sync that fails breaks the
+// store ([ErrBroken]). Sequence numbers only grow: a new one is one above the
+// highest given, or above the open line's floor. A compaction writes a
+// temporary file, syncs it, renames it over the file and syncs the folder;
+// a temporary file left by a crash is removed.
+//
+// The file is at most [MaxJournalBytes]: a replay refuses a larger one
+// before it reads a line, and keeps no entry while it reads (every lead
+// opens off), and an append that would pass the bound compacts first and is
+// refused ([ErrFull]) if it still would.
 //
 // The store keeps the newest [RetainEntries] entries, none older than
 // [RetainAge]; the latest entry that says chat was turned on is never
 // expired. Everything it keeps is in memory, so [Store.Read] touches no
-// file.
+// file. A reader's cursor is the sequence number of the last entry it was
+// given: a cursor that is not an entry held now (one of an earlier segment,
+// past the head, or in a gap that expired) is answered with everything held
+// and reset set.
 //
 // # The switch
 //

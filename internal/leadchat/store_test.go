@@ -152,14 +152,74 @@ func TestReadCursor(t *testing.T) {
 	if _, _, _, err := s.Read(-1); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("negative cursor: %v", err)
 	}
-	// After entries expired, a cursor before what is held resets.
-	s.entries = s.entries[2:]
-	if es, reset, _, _ := s.Read(1); !reset || es[0].Seq != 3 {
-		t.Fatalf("before the start: reset %v, %v", reset, seqs(es))
+}
+
+// readCase is one read of a cursor test: the cursor, the sequence numbers
+// answered and the reset.
+type readCase struct {
+	after int64
+	want  []int64
+	reset bool
+}
+
+func checkReads(t *testing.T, s *Store, cases []readCase) {
+	t.Helper()
+	for _, c := range cases {
+		es, reset, _, err := s.Read(c.after)
+		if err != nil || reset != c.reset || !slices.Equal(seqs(es), c.want) {
+			t.Errorf("after %d: %v, reset %v, %v; want %v, reset %v", c.after, seqs(es), reset, err, c.want, c.reset)
+		}
 	}
-	if es, reset, _, _ := s.Read(2); reset || es[0].Seq != 3 {
-		t.Fatalf("at the start: reset %v, %v", reset, seqs(es))
+}
+
+// After entries expired, the store holds the pinned turned-on entry and the
+// newest: a cursor in the gap, the pinned entry's gap included, resets, and
+// a reader that pages on from an entry it was given goes on.
+func TestReadCursorAfterExpiry(t *testing.T) {
+	e := newEnv(t)
+	s := e.on() // the turned-on entry is 1
+	for i := 0; i < 98; i++ {
+		if err := s.addEntries(e.clock.now(), 1, Entry{Who: "lead", Text: "Old.", src: fmt.Sprintf("%032x", i)}); err != nil {
+			t.Fatal(err)
+		}
 	}
+	e.clock.add(RetainAge + time.Hour)
+	for i := 0; i < 2; i++ {
+		if err := s.addEntries(e.clock.now(), 1, Entry{Who: "lead", Text: "New.", src: fmt.Sprintf("%032x", 100+i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	checkReads(t, s, []readCase{
+		{0, []int64{1, 100, 101}, false},
+		{1, []int64{100, 101}, false}, // paging on from the turned-on entry
+		{50, []int64{1, 100, 101}, true},
+		{2, []int64{1, 100, 101}, true},
+		{99, []int64{1, 100, 101}, true},
+		{100, []int64{101}, false},
+		{101, []int64{}, false},
+		{102, []int64{1, 100, 101}, true},
+	})
+}
+
+// A cursor of an earlier segment resets, even the one just before the new
+// turned-on entry.
+func TestReadCursorOfAnEarlierSegment(t *testing.T) {
+	e := newEnv(t)
+	s := e.on()
+	e.reply("a.txt", "First segment.")
+	ingest(t, s) // 1 and 2
+	if _, err := s.SetSwitch("off", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetSwitch("read", 1); err != nil {
+		t.Fatal(err)
+	}
+	checkReads(t, s, []readCase{
+		{2, []int64{3}, true},
+		{1, []int64{3}, true},
+		{3, []int64{}, false},
+		{0, []int64{3}, false},
+	})
 }
 
 func TestRetentionByAge(t *testing.T) {
@@ -189,6 +249,43 @@ func TestRetentionByAge(t *testing.T) {
 	if !strings.Contains(after[0], `"next":4`) || !strings.Contains(after[1], `"kind":"switch"`) {
 		t.Fatalf("compacted head %q", after[:2])
 	}
+	// The newest entry expires too: the high-water stays.
+	e.clock.add(RetainAge)
+	ingest(t, s)
+	wantTexts(t, s, TextTurnedOn)
+	if l := e.lines(testRole); countKind(l, "entry") != 1 || !strings.Contains(l[0], `"next":4`) {
+		t.Fatalf("file after the newest expired %q", l)
+	}
+	// The compacted file replays.
+	_ = s.Close()
+	s = e.open()
+	if st, err := s.Status(); err != nil || st.Head != 3 || st.Chat != "off" {
+		t.Fatalf("after reopen %+v, %v", st, err)
+	}
+	if st, err := s.SetSwitch("read", 1); err != nil || st.Head != 4 {
+		t.Fatalf("on after reopen %+v, %v", st, err)
+	}
+}
+
+// A compaction that kept the turned-on entry and newer entries above it, with
+// a gap between, replays: the entries are checked in their own order.
+func TestCompactedFileReplaysWithAppendsAfterIt(t *testing.T) {
+	e := newEnv(t)
+	s := e.on()
+	e.reply("a.txt", "Old.")
+	ingest(t, s)
+	e.clock.add(RetainAge + compactEvery)
+	e.reply("b.txt", "Newer.")
+	ingest(t, s) // compacts (1 kept, 2 gone), then appends 3
+	l := e.lines(testRole)
+	if !strings.Contains(l[0], `"next":3`) || countKind(l, "entry") != 2 {
+		t.Fatalf("file %q", l)
+	}
+	_ = s.Close()
+	s = e.open()
+	if st, err := s.Status(); err != nil || st.Head != 3 {
+		t.Fatalf("after reopen %+v, %v", st, err)
+	}
 }
 
 func TestRetentionByCount(t *testing.T) {
@@ -208,6 +305,64 @@ func TestRetentionByCount(t *testing.T) {
 	if n := countKind(e.lines(testRole), "entry"); n != RetainEntries {
 		t.Fatalf("%d entries in the file after compaction", n)
 	}
+	head := int64(RetainEntries + 101)
+	if st, _ := s.Status(); st.Head != head {
+		t.Fatalf("head %d", st.Head)
+	}
+	// The compacted file replays.
+	_ = s.Close()
+	s = e.open()
+	if st, err := s.Status(); err != nil || st.Head != head || st.Chat != "off" {
+		t.Fatalf("after reopen %+v, %v", st, err)
+	}
+}
+
+func TestJournalBound(t *testing.T) {
+	t.Run("an append that would pass it compacts first", func(t *testing.T) {
+		e := newEnv(t)
+		s := e.on()
+		before := len(e.lines(testRole))
+		s.size = MaxJournalBytes - 10
+		s.stale = true
+		if err := s.addEntries(e.clock.now(), 1, Entry{Who: "lead", Text: "Fits.", src: fmt.Sprintf("%032x", 1)}); err != nil {
+			t.Fatal(err)
+		}
+		data, _ := os.ReadFile(e.chatFile(testRole))
+		if s.size != int64(len(data)) || len(e.lines(testRole)) != before+1 {
+			t.Fatalf("size %d, file %d bytes", s.size, len(data))
+		}
+	})
+	t.Run("an append that would still pass it is refused", func(t *testing.T) {
+		e := newEnv(t)
+		s := e.on()
+		s.size = MaxJournalBytes
+		if err := s.appendData([]byte("{}\n")); !errors.Is(err, ErrFull) {
+			t.Fatalf("appendData: %v", err)
+		}
+		if _, err := s.Status(); err != nil {
+			t.Fatalf("a refused append broke the store: %v", err)
+		}
+	})
+	t.Run("a replay refuses a larger file", func(t *testing.T) {
+		e := newEnv(t)
+		if err := os.Mkdir(filepath.Join(e.dir, ChatDirName), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		var b strings.Builder
+		b.WriteString(`{"kind":"open","v":1,"next":1}` + "\n")
+		b.WriteString(`{"kind":"switch","chat":"read","gen":1,"at":"2026-01-01T00:00:00Z","epoch":1,"discarded":0}` + "\n")
+		b.WriteString(`{"kind":"entry","seq":1,"gen":1,"epoch":1,"who":"system","at":"2026-01-01T00:00:00Z","text":"` + TextTurnedOn + `"}` + "\n")
+		text := strings.Repeat("x", MaxReplyBytes)
+		for seq := 2; b.Len() <= MaxJournalBytes; seq++ {
+			fmt.Fprintf(&b, `{"kind":"entry","seq":%d,"gen":1,"epoch":1,"who":"lead","at":"2026-01-01T00:00:00Z","text":"%s","src":"%032x"}`+"\n", seq, text, seq)
+		}
+		if err := os.WriteFile(e.chatFile(testRole), []byte(b.String()), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.openRole(testRole); !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "larger than the bound") {
+			t.Fatalf("OpenStore: %v", err)
+		}
+	})
 }
 
 func TestTornTailIsCut(t *testing.T) {
@@ -248,42 +403,61 @@ func TestTornFirstLine(t *testing.T) {
 func TestCorruptFileFailsThatLeadOnly(t *testing.T) {
 	open := `{"kind":"open","v":1,"next":1}`
 	sw := `{"kind":"switch","chat":"read","gen":1,"at":"2026-01-01T00:00:00Z","epoch":1,"discarded":0}`
-	entry := func(seq int, extra string) string {
-		return fmt.Sprintf(`{"kind":"entry","seq":%d,"gen":1,"epoch":1,"who":"system","at":"2026-01-01T00:00:00Z","text":"x"%s}`, seq, extra)
+	marker := `{"kind":"entry","seq":1,"gen":1,"epoch":1,"who":"system","at":"2026-01-01T00:00:00Z","text":"` + TextTurnedOn + `"}`
+	lead := func(seq int, extra string) string {
+		return fmt.Sprintf(`{"kind":"entry","seq":%d,"gen":1,"epoch":1,"who":"lead","at":"2026-01-01T00:00:00Z","text":"x"%s}`, seq, extra)
 	}
-	cases := map[string][]string{
-		"garbage line":           {open, "not json", sw},
-		"unknown member":         {open, strings.Replace(sw, `"discarded":0`, `"discarded":0,"extra":1`, 1)},
-		"missing member":         {open, strings.Replace(sw, `,"discarded":0`, ``, 1)},
-		"member of another kind": {open, sw, entry(1, `,"next":2`)},
-		"unknown kind":           {open, `{"kind":"other"}`},
-		"no open line":           {sw},
-		"second open line":       {open, open},
-		"wrong version":          {strings.Replace(open, `"v":1`, `"v":2`, 1)},
-		"generation not grown":   {open, sw, sw},
-		"entry while off":        {open, entry(1, "")},
-		"sequence not grown":     {open, sw, entry(2, ""), entry(2, "")},
-		"sequence under floor":   {strings.Replace(open, `"next":1`, `"next":5`, 1), sw, entry(3, "")},
-		"bad time":               {open, strings.Replace(sw, "00Z", "00+00:00", 1)},
-		"text not plain":         {open, sw, strings.Replace(entry(1, ""), `"text":"x"`, `"text":"a\tb"`, 1)},
-		"lead entry without src": {open, sw, strings.Replace(entry(1, ""), `"system"`, `"lead"`, 1)},
-		"bad src":                {open, sw, entry(1, `,"src":"XYZ"`)},
-		"data after the record":  {open + ` {}`},
-		"line too long":          {open, `{"kind":"other","pad":"` + strings.Repeat("a", MaxLineBytes) + `"}`},
+	src := `,"src":"0123456789abcdef0123456789abcdef"`
+	// padded is the open line padded with spaces to n bytes, its newline
+	// included.
+	padded := func(n int) string { return open[:len(open)-1] + strings.Repeat(" ", n-1-len(open)) + "}" }
+	cases := []struct {
+		name   string
+		lines  []string
+		reason string
+	}{
+		{"garbage line", []string{open, "not json", sw}, "not one JSON object"},
+		{"unknown member", []string{open, strings.Replace(sw, `"discarded":0`, `"discarded":0,"extra":1`, 1)}, "does not have"},
+		{"missing member", []string{open, strings.Replace(sw, `,"discarded":0`, ``, 1)}, "is missing"},
+		{"member of another kind", []string{open, sw, marker, lead(2, src+`,"next":2`)}, "does not have"},
+		{"member twice", []string{open, strings.Replace(sw, `"gen":1`, `"gen":1,"gen":1`, 1)}, "appears twice"},
+		{"kind twice", []string{open, strings.Replace(sw, `"kind":"switch"`, `"kind":"switch","kind":"switch"`, 1)}, "appears twice"},
+		{"null scalar", []string{open, strings.Replace(sw, `"epoch":1`, `"epoch":null`, 1)}, "is null"},
+		{"null text", []string{open, sw, marker, strings.Replace(lead(2, src), `"text":"x"`, `"text":null`, 1)}, "is null"},
+		{"invalid UTF-8", []string{open, sw, marker, strings.Replace(lead(2, src), `"text":"x"`, "\"text\":\"a\xffb\"", 1)}, "UTF-8"},
+		{"wrong type", []string{open, strings.Replace(sw, `"epoch":1`, `"epoch":"1"`, 1)}, "wrong type"},
+		{"unknown kind", []string{open, `{"kind":"other"}`}, "kind"},
+		{"no open line", []string{sw}, "open line"},
+		{"second open line", []string{open, open}, "open line"},
+		{"wrong version", []string{strings.Replace(open, `"v":1`, `"v":2`, 1)}, "version"},
+		{"generation not grown", []string{open, sw, sw}, "generation"},
+		{"entry while off", []string{open, lead(1, src)}, "while chat is off"},
+		{"segment without its turned-on entry", []string{open, sw, lead(1, src)}, "turned-on"},
+		{"second turned-on entry", []string{open, sw, marker, strings.Replace(marker, `"seq":1`, `"seq":2`, 1)}, "turned-on"},
+		{"sequence not grown", []string{open, sw, marker, lead(2, src), lead(2, src)}, "does not grow"},
+		{"bad time", []string{open, strings.Replace(sw, "00Z", "00+00:00", 1)}, "UTC"},
+		{"text not plain", []string{open, sw, marker, strings.Replace(lead(2, src), `"text":"x"`, `"text":"a\tb"`, 1)}, "plain"},
+		{"system text not fixed", []string{open, sw, marker, strings.Replace(lead(2, ""), `"lead"`, `"system"`, 1)}, "fixed texts"},
+		{"lead entry without src", []string{open, sw, marker, lead(2, "")}, "source"},
+		{"bad src", []string{open, sw, marker, lead(2, `,"src":"XYZ"`)}, "source"},
+		{"data after the record", []string{open + ` {}`}, "after the record"},
+		{"line too long", []string{open, `{"kind":"other","pad":"` + strings.Repeat("a", MaxLineBytes) + `"}`}, "longer than the bound"},
+		{"line one byte too long with its newline", []string{padded(MaxLineBytes + 1)}, "longer than the bound"},
 	}
-	for name, lines := range cases {
-		t.Run(name, func(t *testing.T) {
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
 			e := newEnv(t)
 			e.makeOutbox("scratch-beta-lead")
 			if err := os.Mkdir(filepath.Join(e.dir, ChatDirName), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			data := strings.Join(lines, "\n") + "\n"
+			data := strings.Join(c.lines, "\n") + "\n"
 			if err := os.WriteFile(e.chatFile(testRole), []byte(data), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := e.openRole(testRole); !errors.Is(err, ErrCorrupt) {
-				t.Fatalf("OpenStore: %v", err)
+			_, err := e.openRole(testRole)
+			if !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), c.reason) {
+				t.Fatalf("OpenStore: %v, want %q", err, c.reason)
 			}
 			if got, _ := os.ReadFile(e.chatFile(testRole)); string(got) != data {
 				t.Fatalf("the corrupt file was changed")
@@ -296,6 +470,36 @@ func TestCorruptFileFailsThatLeadOnly(t *testing.T) {
 				t.Fatalf("the other lead: %v", err)
 			}
 		})
+	}
+	// A line of exactly the bound, its newline included, is read.
+	t.Run("line of the bound", func(t *testing.T) {
+		e := newEnv(t)
+		if err := os.Mkdir(filepath.Join(e.dir, ChatDirName), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(e.chatFile(testRole), []byte(padded(MaxLineBytes)+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.openRole(testRole); err != nil {
+			t.Fatalf("OpenStore: %v", err)
+		}
+	})
+}
+
+// The error of a corrupt file holds a fixed reason and a line number, never
+// a byte of the file.
+func TestCorruptErrorHoldsNoFileBytes(t *testing.T) {
+	e := newEnv(t)
+	if err := os.Mkdir(filepath.Join(e.dir, ChatDirName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data := `{"kind":"open","v":1,"next":1}` + "\n" + `{"kind":"open","v":1,"next":1,"\u001b[31mplanted":1}` + "\n"
+	if err := os.WriteFile(e.chatFile(testRole), []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := e.openRole(testRole)
+	if !errors.Is(err, ErrCorrupt) || strings.Contains(err.Error(), "planted") || !strings.Contains(err.Error(), "line 2") {
+		t.Fatalf("OpenStore: %v", err)
 	}
 }
 

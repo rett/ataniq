@@ -8,7 +8,8 @@
   devices, hard links and badly named files, reads at most 256 entries a scan,
   keeps at most 32 replies waiting and takes at most 6 a minute and 60 an hour;
   and a chat store per lead (`<state root>/chat/<layout role>.jsonl`, strict
-  synced JSON lines, locked and checked by handle) that stores each reply
+  synced JSON lines, at most 8 MiB, locked and checked by handle, that
+  replays after every compaction) that stores each reply
   exactly once, drops text that is not plain or too long, withholds text
   shaped like a key, a token or a full commit id, keeps 500 entries or 14
   days, and has a per-lead switch `off` or `read` that clears the outbox when

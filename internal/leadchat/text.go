@@ -72,6 +72,20 @@ var dropTexts = map[Reason]string{
 // dropOrder is the order the drop entries of one scan are written in.
 var dropOrder = []Reason{ReasonRefused, ReasonName, ReasonFull, ReasonTooLong, ReasonNotPlain}
 
+// systemText reports whether s is one of the fixed texts of a system entry:
+// a replay refuses any other.
+func systemText(s string) bool {
+	if s == TextTurnedOn || s == TextWithheld {
+		return true
+	}
+	for _, t := range dropTexts {
+		if s == t {
+			return true
+		}
+	}
+	return false
+}
+
 // Verdict is what [ReplyText] makes of a reply.
 type Verdict int
 
