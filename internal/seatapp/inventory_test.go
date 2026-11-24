@@ -75,6 +75,9 @@ var inventory = []struct {
 		path: "/projects/" + testThread + "/change/kind", authed: true},
 	{pattern: "GET /projects/{thread}/discard", kind: "page", controls: []string{"form#discard", "button#discard-go", "a#keep", "button#logout"},
 		path: "/projects/" + testThread + "/discard", authed: true},
+	// The plan page: links only, no form, no button, no script.
+	{pattern: "GET /projects/{thread}/plan", kind: "page", controls: []string{"a#project-page", "a#project-list"},
+		path: "/projects/" + testThread + "/plan", authed: true},
 	{pattern: "POST /projects/{thread}/answer", kind: "api"},
 	{pattern: "POST /projects/{thread}/change", kind: "api"},
 	{pattern: "POST /projects/{thread}/finish", kind: "api"},
@@ -505,7 +508,7 @@ func TestProjectPagesInEveryState(t *testing.T) {
 	sum := sampleSummary()
 	g.set(GenesisVerbRound, &sum, nil)
 	body := r.getWith("/projects/"+testThread+"?reset=3&note=changed", s).Body.String()
-	for _, f := range inspectPage(body, []string{"a", "form#finish", "button#finish-go", "a#project-list", "a#discard-link", "button#logout"}, false) {
+	for _, f := range inspectPage(body, []string{"a", "form#finish", "button#finish-go", "a#project-list", "a#discard-link", "a#see-plan", "button#logout"}, false) {
 		t.Errorf("the summary: %s", f)
 	}
 	checkForms(t, "the summary", body)
@@ -513,7 +516,7 @@ func TestProjectPagesInEveryState(t *testing.T) {
 	fin.State, fin.Digest = GenesisStateFinished, strings.Repeat("ab", 32)
 	g.set(GenesisVerbRound, &fin, nil)
 	body = r.getWith("/projects/"+testThread+"?note=done", s).Body.String()
-	for _, f := range inspectPage(body, []string{"a#project-list", "button#logout"}, false) {
+	for _, f := range inspectPage(body, []string{"a#project-list", "a#see-plan", "button#logout"}, false) {
 		t.Errorf("the finished page: %s", f)
 	}
 	body = r.getWith("/projects/?note=open", s).Body.String()

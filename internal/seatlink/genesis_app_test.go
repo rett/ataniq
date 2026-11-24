@@ -131,20 +131,55 @@ func TestSeatLinkGenesisOverTheSeatApp(t *testing.T) {
 	if page := br.do("GET", w.Header().Get("Location"), "").Body.String(); strings.Contains(page, "OPENSSH") || !strings.Contains(page, "password or key") {
 		t.Fatalf("the page after a secret:\n%s", page)
 	}
+	// The summary links the draft plan; the plan page is one call of the
+	// gate, and a reload of it none.
+	sum = br.do("GET", "/projects/"+thread, "").Body.String()
+	if !strings.Contains(sum, `<a id="see-plan" href="/projects/`+thread+`/plan">See the draft plan</a>`) {
+		t.Fatalf("the summary after the change lacks the plan's link:\n%s", sum)
+	}
+	before := g.calls.Load()
+	draft := br.do("GET", "/projects/"+thread+"/plan", "")
+	if draft.Code != 200 || g.calls.Load()-before != 1 {
+		t.Fatalf("the draft plan page: %d, %d calls of the gate\n%s", draft.Code, g.calls.Load()-before, draft.Body)
+	}
+	tag := regexp.MustCompile(`Plan <span class="mono">([0-9a-f]{12})</span>`)
+	dm := tag.FindStringSubmatch(draft.Body.String())
+	for _, want := range []string{"<h1>Draft plan</h1>", `A full web app</strong>, <span class="mono">` + thread[:6] + `</span>`,
+		"This is a draft; finishing the interview keeps it as revision 1.", "What a charter would cover",
+		`<q class="owners">Go and a &lt;small&gt; database</q>`} {
+		if !strings.Contains(draft.Body.String(), want) {
+			t.Fatalf("the draft plan page lacks %q:\n%s", want, draft.Body)
+		}
+	}
+	if dm == nil {
+		t.Fatalf("the draft plan page has no digest tag:\n%s", draft.Body)
+	}
+	before = g.calls.Load()
+	if again := br.do("GET", "/projects/"+thread+"/plan", ""); again.Code != 200 || g.calls.Load() != before {
+		t.Fatalf("the draft plan page reloaded: %d, %d calls", again.Code, g.calls.Load()-before)
+	}
 	// Finish: the finished page and its digest; the card list lists nothing
 	// in progress.
 	if w = br.postForm("/projects/"+thread+"/finish", nil); w.Code != http.StatusSeeOther {
 		t.Fatalf("the finish: %d", w.Code)
 	}
 	fin := br.do("GET", "/projects/"+thread, "").Body.String()
-	if !strings.Contains(fin, "Nothing has started, and no agent was given the brief yet.") || strings.Contains(fin, "<form") {
+	if !strings.Contains(fin, "Nothing has started, and no agent was given the brief yet.") || strings.Contains(fin, "<form") ||
+		!strings.Contains(fin, `<a id="see-plan" href="/projects/`+thread+`/plan">See the plan</a>`) {
 		t.Fatalf("the finished page:\n%s", fin)
+	}
+	// The plan kept at finish: revision 1, with the draft's digest.
+	kept := br.do("GET", "/projects/"+thread+"/plan", "")
+	km := tag.FindStringSubmatch(kept.Body.String())
+	if kept.Code != 200 || !strings.Contains(kept.Body.String(), "<h1>Plan, revision 1</h1>") || strings.Contains(kept.Body.String(), "This is a draft") ||
+		km == nil || km[1] != dm[1] {
+		t.Fatalf("the kept plan's page (draft tag %v):\n%s", dm, kept.Body)
 	}
 	if body := br.do("GET", "/cards/", "").Body.String(); !strings.Contains(body, "No project is in progress.") {
 		t.Fatalf("the card list after the finish:\n%s", body)
 	}
 	// No page holds a decide control.
-	for _, page := range []string{sum, cp, fin} {
+	for _, page := range []string{sum, cp, fin, draft.Body.String(), kept.Body.String()} {
 		if strings.Contains(page, "decide.js") || strings.Contains(page, `id="approve"`) {
 			t.Fatal("a project page holds a decide control")
 		}

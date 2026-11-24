@@ -73,7 +73,7 @@ func sampleRound() GenesisView {
 // in one.
 func sampleSummary() GenesisView {
 	q := kindQuestion()
-	return GenesisView{State: GenesisStateSummary, Thread: testThread, Round: 6, Of: 6, Filled: 14, Total: 14,
+	return GenesisView{State: GenesisStateSummary, Thread: testThread, Round: 6, Of: 6, Filled: 14, Total: 14, PlanReady: true,
 		YouChose: []GenesisRow{
 			{Node: "kind", Field: "kind", Label: "What kind of project is it?", Value: "Software", Question: &q},
 			{Node: "software.stack", Field: "software.stack", Label: "What will it be built with?", Value: "Go <script>alert(1)</script>", OwnersWords: true},
@@ -119,6 +119,9 @@ func (f *fakeGenesis) Genesis(_ context.Context, c GenesisCall) (GenesisView, er
 		return v, nil
 	case GenesisVerbDiscard:
 		return GenesisView{State: GenesisStateDiscarded, Thread: c.Thread}, nil
+	case GenesisVerbPlan:
+		p := samplePlan()
+		return GenesisView{State: GenesisStatePlan, Thread: c.Thread, Round: 6, Of: 6, Filled: 14, Total: 14, PlanReady: true, Plan: &p}, nil
 	}
 	return GenesisView{}, errors.New("unknown verb")
 }
@@ -831,7 +834,8 @@ func TestGenesisPagesAreWellFormed(t *testing.T) {
 	sum := sampleSummary()
 	titles := map[string]string{}
 	inputRe := regexp.MustCompile(`<input type="(radio|checkbox|text)" id="([^"]+)"`)
-	for _, path := range []string{"/projects/", "/projects/" + testThread, "/projects/" + testThread + "/change/kind", "/projects/" + testThread + "/discard", "summary"} {
+	for _, path := range []string{"/projects/", "/projects/" + testThread, "/projects/" + testThread + "/change/kind", "/projects/" + testThread + "/discard", "summary",
+		"/projects/" + testThread + "/plan"} {
 		get := path
 		if path == "summary" {
 			g.set(GenesisVerbRound, &sum, nil)

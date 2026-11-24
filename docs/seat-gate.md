@@ -464,10 +464,37 @@ open at once; a third "New project" says so. An open project you leave for 14
 days is discarded. The card list and `/projects/` list the open ones, so after
 a restart of the seat you find them again.
 
+The plan. When every required answer is given and the desk has a plan template
+for the kind of project (a web app or a one-page tool, a newsletter or an
+article, a podcast or a book), the summary has "See the draft plan"; otherwise
+it says how many answers are filled in, or that there is no template for this
+kind yet. The plan page (`/projects/<id>/plan`) shows, in this order: "Draft
+plan" (or, once finished, "Plan, revision 1"), with the project's title and
+the first six digits of its id, and the lines "A plan binds nothing: nothing
+has started, and nothing starts from this page." and, for a draft, "This is a
+draft; finishing the interview keeps it as revision 1."; the first demo; what
+waits for you (the review points you chose, and always "Publishing, releases,
+pushing code, credentials and raising any limit always wait for you, whatever
+the plan says."); the outside services the work would use; where the files
+live; the budget band (advisory: nothing enforces it yet); the estimate (an
+estimate, not a promise); the plan's warnings; the milestones, each a section
+you open, with its tasks, their kind and size and what each waits for; your
+own notes, quoted and marked as your words, never given to a tool; and "What a
+charter would cover", a draft of words only ("Draft. Not signed. It allows
+nothing. ..."). To tune the plan, go back to the summary and change an answer:
+the draft is drawn again from the answers. "Looks right: finish" keeps the
+brief and its plan, revision 1, which never changes afterwards; the finished
+page then has "See the plan". A project finished before its answers were
+complete has no plan, and its plan page says so. The short digest under the
+heading ("Plan 3c3c3c3c3c3c") is the same for the draft and the kept plan of
+the same answers, so you can tell they match.
+
 What it does not do. Nothing starts: no agent is run and no agent is given the
-answers or the brief, and nothing is planned, built or published. An answer
+answers, the brief or the plan, and nothing is built or published. An answer
 only describes the project; it never approves anything, and the project pages
-hold no approve or deny control. The answers are kept on the desk, by the
+hold no approve or deny control. The plan page has links only: no button, no
+form and no script; nothing is signed, allowed or started from it, and it is
+never a card, on the card list or in a notice. The answers are kept on the desk, by the
 daemon, in `owner/genesis/` of its state folder (one file per project, mode
 0600), and are sent nowhere else. Never type a password, a key or a token: say
 that a credential is needed instead. Text that looks like one is refused ("That
@@ -476,7 +503,8 @@ looks like a password or key. ..."), and the page never shows it back.
 What it costs. The pages are plain pages with forms, and each answer is one call
 of the gate. The seat keeps 12 calls in 80 seconds of the gate's rate for them;
 answering a round every 5 seconds stays inside it, because an answer and the
-page after it are one call. Past it the page says
+page after it are one call. Opening the plan page is one call; reopening a
+draft within 10 seconds, or the kept plan within 5 minutes, is none. Past it the page says
 "The desk is busy. Try again in a minute." and nothing is sent.
 
 ## Notices

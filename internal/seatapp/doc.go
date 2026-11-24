@@ -50,6 +50,7 @@
 //	GET  /projects/{thread}    the project's round, its summary, or its finished brief (a session, a Genesis)
 //	GET  /projects/{thread}/change/{node}   one answer's question, to answer again (a session, a Genesis)
 //	GET  /projects/{thread}/discard         the step before a discard (a session, a Genesis)
+//	GET  /projects/{thread}/plan            the project's plan, links only (a session, a Genesis)
 //	POST /projects/{thread}/answer, /change, /finish, /discard   forms (a session, a Genesis)
 //
 // The routes marked PushPort exist only when [Config].Notifier is also a

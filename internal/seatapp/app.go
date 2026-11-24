@@ -367,6 +367,7 @@ func (a *app) routes() []route {
 		{"GET /projects/{thread}", a.authed(a.projectPage)},
 		{"GET /projects/{thread}/change/{node}", a.authed(a.changePage)},
 		{"GET /projects/{thread}/discard", a.authed(a.discardPage)},
+		{"GET /projects/{thread}/plan", a.authed(a.planPage)},
 		{"POST /projects/{thread}/answer", a.form(a.projectAnswer)},
 		{"POST /projects/{thread}/change", a.form(a.projectChange)},
 		{"POST /projects/{thread}/finish", a.form(a.projectFinish)},
