@@ -1703,6 +1703,13 @@ Admission, all of it before any header of the stream:
   cookies of the name are counted in the `Cookie` headers as sent, before
   they are parsed, so a second one with a malformed value, which the parser
   would drop, still refuses the request (this too holds for every route).
+- A place among the handshakes in progress, taken before a byte of the body
+  is read or the watcher is looked at: at most 3 requests of one credential
+  in their admission at once (429 `too many streams`, `Retry-After: 25`) and
+  8 in all (503 `busy`, `Retry-After: 25`), apart from the streams open. A
+  page has one at a time; the bound keeps one session from holding many
+  bodies open. The place is given back at every exit, and once the stream's
+  headers are written.
 - A body that is one object with exactly one member, `version`, a string of
   at most 64 lower-case hex digits (empty for a page made before the watcher
   had a version). It is read token by token: a member that is absent, null,
@@ -1717,6 +1724,12 @@ Admission, all of it before any header of the stream:
   stopping (503 `shutting down`, `Retry-After: 5`). Each refusal is a fixed
   text; the page takes any refusal as the sign to fall back to the poll,
   which then says what it is.
+- Last, after the body and the places: the session again, without marking
+  it used (a logout, an eviction or its idle time while the body came is 403
+  `session ended`), the server's end (503 `shutting down`), the client's
+  (nothing is written), and the stream's life (503 `busy`). Only then are
+  the headers written; a refusal there writes no byte of a stream and gives
+  every place back.
 
 The open stream:
 
@@ -1728,14 +1741,22 @@ The open stream:
 - Changes are coalesced: at most one event every 2 seconds, one pending
   event at most, said with the version as it is when the gap ends. An event
   is at most 256 bytes. A heartbeat is written once in 10 seconds.
-- It ends within 25 seconds (`streamLife`), under the seat's and Caddy's
-  30-second write timeouts, and the page opens another; no heartbeat has to
-  outlast a write timeout, and neither timeout is lifted for the path.
-- Every write has a deadline of 5 seconds of its own (and the end of the
-  response one more), so a client that stops reading loses its stream and
-  never holds the watcher, which publishes by closing a channel and waits
-  for nobody. A stream that missed changes says the latest version when it
-  writes again, and the page's next stream reconciles in any case.
+- The response has one cutoff, 25 seconds (`streamLife`) after the request
+  reached the handler: its admission, every write and the end of the
+  response are done by then, under the seat's and Caddy's 30-second write
+  timeouts, and the page opens another; no write has to outlast a write
+  timeout, and neither timeout is lifted for the path. The stream stops
+  writing 1 second (`streamFinish`) before the cutoff, for the end of the
+  response.
+- Every write and its flush have the earlier of 5 seconds and the time left
+  to the cutoff, so a client that stops reading loses its stream and never
+  holds the watcher, which publishes by closing a channel and waits for
+  nobody. After a write is flushed the connection's deadline goes back to
+  the cutoff: the 10 seconds between heartbeats are never under a write's 5
+  (Go's HTTP/2 writer would reset the stream at that deadline). The end of
+  the response is bounded the same way. A stream that missed changes says
+  the latest version when it writes again, and the page's next stream
+  reconciles in any case.
 - It ends with its session, also in silence: it waits on the session's
   `gone` channel (logout, eviction, removal), on a timer armed at the
   earlier of the session's idle end and its 12-hour age, and looks at the

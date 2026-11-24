@@ -33,9 +33,11 @@ const streamKindCards = "cards-changed"
 
 // The limits of the stream.
 const (
-	// streamLife is the longest a stream stays open: the seat ends it and
-	// the page opens a new one. It is under the seat's 30-second write
-	// timeout and the proxy's, so that no write has to outlast them.
+	// streamLife is the longest a stream's response lasts, counted from
+	// the request's arrival at the handler, its admission and its end
+	// included: the seat ends it and the page opens a new one. It is under
+	// the seat's 30-second write timeout and the proxy's, so that no write
+	// has to outlast them.
 	streamLife = 25 * time.Second
 	// streamBeat is the gap between two heartbeats, a comment line that
 	// shows the connection is alive to the page and to the proxies.
@@ -45,8 +47,17 @@ const (
 	streamGap = 2 * time.Second
 	// streamWrite bounds each write: a client that does not read within it
 	// loses its stream, and the page opens another or falls back to the
-	// poll.
+	// poll. A write that begins less than streamWrite before the cutoff has
+	// only what is left.
 	streamWrite = 5 * time.Second
+	// streamFinish is the part of the life kept for the end of the
+	// response: the stream stops writing this long before its cutoff.
+	streamFinish = time.Second
+	// streamHandshakes and streamHandshakesPer bound the requests that are
+	// in their admission at once (their bodies being read), in all and for
+	// one credential: a page has one at a time.
+	streamHandshakes    = 8
+	streamHandshakesPer = 3
 	// streamPerCredential is the most streams open at once for one
 	// credential, across its sessions: one for each of three tabs.
 	streamPerCredential = 3
@@ -156,10 +167,56 @@ type streamSlots struct {
 	per   map[string]int
 	down  chan struct{}
 	ended bool
+	// shaking and shakingPer count the handshakes in progress, in all and
+	// by credential, at most shakeMax and shakePerMax (streamHandshakes and
+	// streamHandshakesPer; tests lower them).
+	shaking               int
+	shakingPer            map[string]int
+	shakeMax, shakePerMax int
 }
 
 func newStreamSlots() *streamSlots {
-	return &streamSlots{per: map[string]int{}, down: make(chan struct{})}
+	return &streamSlots{per: map[string]int{}, down: make(chan struct{}), shakingPer: map[string]int{},
+		shakeMax: streamHandshakes, shakePerMax: streamHandshakesPer}
+}
+
+// handshake takes a place for a request of credential in its admission,
+// before its body is read, and returns its release, which is safe to run
+// more than once: the stream runs it once its headers are written, and
+// every exit before that runs it too. It refuses past shakePerMax for the
+// credential, past shakeMax in all, and once the slots are ended.
+func (s *streamSlots) handshake(credential string) (release func(), refusal int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case s.ended:
+		return nil, slotDown
+	case s.shakingPer[credential] >= s.shakePerMax:
+		return nil, slotCredential
+	case s.shaking >= s.shakeMax:
+		return nil, slotFull
+	}
+	s.shakingPer[credential]++
+	s.shaking++
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			s.shaking--
+			if s.shakingPer[credential]--; s.shakingPer[credential] <= 0 {
+				delete(s.shakingPer, credential)
+			}
+		})
+	}, slotOK
+}
+
+// handshakes returns how many handshakes are in progress, in all and of
+// credential.
+func (s *streamSlots) handshakes(credential string) (total, mine int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.shaking, s.shakingPer[credential]
 }
 
 // The refusals of acquire.
@@ -254,22 +311,49 @@ func refuseStream(w http.ResponseWriter, status int, text string, retry int) {
 // header is written: the checks of every POST (a.post: Origin, Host,
 // Sec-Fetch-Site, a JSON body), exactly one session cookie of a live session,
 // looked at and never marked used (no stream, heartbeat or reconnect extends
-// the session's idle time), a body of the stream's form, the credential's
-// opens and open streams, all streams together, and a watcher that is live.
-// A refusal is a fixed text with no redirect, which the page takes as the
-// sign to fall back to the poll.
+// the session's idle time), a place among the handshakes in progress, which
+// is taken before the body is read, a body of the stream's form, the
+// credential's opens and open streams, all streams together, a watcher that
+// is live, and, last, the session again (it may have ended while the body
+// came), the server's end and the request's. A refusal is a fixed text with
+// no redirect, which the page takes as the sign to fall back to the poll.
+//
+// The response has one cutoff, streamLife after the request reached the
+// handler: its admission, its writes and the end of the response are all
+// done by then. Each write has the earlier of streamWrite and the time left
+// to the cutoff; between writes the cutoff alone bounds the connection.
 //
 // Once open, the stream ends when its life is over, when the session ends
 // (logout, eviction, its idle time or its age, even in silence: a timer is
 // armed at the earlier of the two), when the watcher is no longer live, when
-// a write fails or outlasts streamWrite, when the request ends, and when the
-// server shuts down. The session is looked at again before every write.
+// a write fails or outlasts its deadline, when the request ends, and when
+// the server shuts down. The session is looked at again before every write.
 func (a *app) watchStream(w http.ResponseWriter, r *http.Request) {
-	s, gone, until, ok := a.sess.lookUntil(cookieValue(r, SessionCookie))
+	timer := a.streamTimer
+	if timer == nil {
+		timer = realNoticeTimer
+	}
+	now := a.streamNow
+	if now == nil {
+		now = time.Now
+	}
+	// The life is armed first: the admission is part of it.
+	cutoff := now().Add(a.streamLife)
+	life, stopLife := timer(max(a.streamLife-streamFinish, a.streamLife/2))
+	defer stopLife()
+
+	s, gone, _, ok := a.sess.lookUntil(cookieValue(r, SessionCookie))
 	if !ok {
 		refuseStream(w, http.StatusForbidden, streamTextEnded, 0)
 		return
 	}
+	// A place among the handshakes, before a byte of the body is read or
+	// the watcher is looked at: a session cannot hold many bodies open.
+	shook, refusal := a.streams.handshake(s.Credential)
+	if !refuseSlot(w, refusal) {
+		return
+	}
+	defer shook()
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeError(w, bodyError(err))
@@ -290,6 +374,11 @@ func (a *app) watchStream(w http.ResponseWriter, r *http.Request) {
 		refuseStream(w, http.StatusTooManyRequests, streamTextLimited, streamRetryLimited)
 		return
 	}
+	release, refusal := a.streams.acquire(s.Credential)
+	if !refuseSlot(w, refusal) {
+		return
+	}
+	defer release()
 	wt, ok := a.watcher()
 	if !ok {
 		refuseStream(w, http.StatusServiceUnavailable, streamTextNotLive, streamRetryNotLive)
@@ -303,19 +392,32 @@ func (a *app) watchStream(w http.ResponseWriter, r *http.Request) {
 		refuseStream(w, http.StatusServiceUnavailable, streamTextNotLive, streamRetryNotLive)
 		return
 	}
-	release, refusal := a.streams.acquire(s.Credential)
-	switch refusal {
-	case slotCredential:
-		refuseStream(w, http.StatusTooManyRequests, streamTextLimited, streamRetryFull)
-		return
-	case slotFull:
-		refuseStream(w, http.StatusServiceUnavailable, streamTextFull, streamRetryFull)
-		return
-	case slotDown:
-		refuseStream(w, http.StatusServiceUnavailable, streamTextDown, streamRetryDown)
+	// The last look before the stream's headers: the session may have
+	// ended while the body came (a logout, an eviction, its idle time), the
+	// server may be stopping, the client may have gone, and the life may
+	// have run out in the admission.
+	until, ok := a.sess.liveUntil(s.key)
+	select {
+	case <-gone:
+		ok = false
+	default:
+	}
+	if !ok {
+		refuseStream(w, http.StatusForbidden, streamTextEnded, 0)
 		return
 	}
-	defer release()
+	select {
+	case <-a.streams.down:
+		refuseStream(w, http.StatusServiceUnavailable, streamTextDown, streamRetryDown)
+		return
+	case <-life:
+		refuseStream(w, http.StatusServiceUnavailable, streamTextFull, streamRetryFull)
+		return
+	default:
+	}
+	if r.Context().Err() != nil {
+		return
+	}
 
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
@@ -323,28 +425,38 @@ func (a *app) watchStream(w http.ResponseWriter, r *http.Request) {
 	// a proxy in front not to buffer the stream; a proxy that does not know
 	// it ignores it.
 	h.Set("X-Accel-Buffering", "no")
-	sw := &streamWriter{w: w, rc: http.NewResponseController(w), wait: a.streamWrite}
+	sw := &streamWriter{w: w, rc: http.NewResponseController(w), wait: a.streamWrite, cutoff: cutoff, now: now}
 	// The end of the response (the chunked body's last chunk) is written
-	// after the handler returns: it gets a deadline of its own, whatever
-	// the last write's was.
-	defer func() { sw.rc.SetWriteDeadline(time.Now().Add(a.streamWrite)) }()
+	// after the handler returns: it too is bounded by the cutoff.
+	defer sw.finish()
 	w.WriteHeader(http.StatusOK)
 	if sw.send(streamHeartbeat) != nil {
 		return
 	}
-	a.runStream(r, sw, wt, ch, st, version, s.key, gone, until)
+	shook()
+	a.runStream(r, sw, timer, life, wt, ch, st, version, s.key, gone, until)
+}
+
+// refuseSlot answers the refusal of a place for a stream, and reports
+// whether there was none (slotOK).
+func refuseSlot(w http.ResponseWriter, refusal int) bool {
+	switch refusal {
+	case slotCredential:
+		refuseStream(w, http.StatusTooManyRequests, streamTextLimited, streamRetryFull)
+	case slotFull:
+		refuseStream(w, http.StatusServiceUnavailable, streamTextFull, streamRetryFull)
+	case slotDown:
+		refuseStream(w, http.StatusServiceUnavailable, streamTextDown, streamRetryDown)
+	default:
+		return true
+	}
+	return false
 }
 
 // runStream is the open stream's loop. sent is the version the page has,
 // st the state as the stream opened, and ch the channel taken before it.
-func (a *app) runStream(r *http.Request, sw *streamWriter, wt Watcher, ch <-chan struct{}, st WatchState,
-	sent string, k tokenKey, gone <-chan struct{}, until time.Time) {
-	timer := a.streamTimer
-	if timer == nil {
-		timer = realNoticeTimer
-	}
-	life, stopLife := timer(a.streamLife)
-	defer stopLife()
+func (a *app) runStream(r *http.Request, sw *streamWriter, timer noticeTimer, life <-chan time.Time, wt Watcher,
+	ch <-chan struct{}, st WatchState, sent string, k tokenKey, gone <-chan struct{}, until time.Time) {
 	beat, stopBeat := timer(a.streamBeat)
 	defer func() { stopBeat() }()
 	sessionLeft := func(until time.Time) time.Duration {
@@ -443,23 +555,61 @@ func (a *app) runStream(r *http.Request, sw *streamWriter, wt Watcher, ch <-chan
 	}
 }
 
-// streamWriter writes the stream, each write with its own deadline, and
-// flushes it at once.
+// streamWriter writes the stream, flushes each write at once, and keeps the
+// response inside its cutoff.
 type streamWriter struct {
 	w    http.ResponseWriter
 	rc   *http.ResponseController
 	wait time.Duration
+	// cutoff is when the response is over, its end included; now is the
+	// clock the deadlines are taken by.
+	cutoff time.Time
+	now    func() time.Time
 }
 
-// send writes b and flushes it. A writer that takes no deadline (a test's
-// recorder) is written without one; the server's own write timeout still
-// bounds the response.
+// errStreamCutoff is a write asked at or past the cutoff.
+var errStreamCutoff = errors.New("seatapp: the stream's cutoff has passed")
+
+// deadline sets the connection's write deadline. A writer that takes none
+// (a test's recorder) is written without one; the server's own write
+// timeout still bounds the response.
+func (sw *streamWriter) deadline(t time.Time) error {
+	if err := sw.rc.SetWriteDeadline(t); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return err
+	}
+	return nil
+}
+
+// bound is the deadline of a write that begins now: streamWrite, or the
+// time left to the cutoff when that is less.
+func (sw *streamWriter) bound() time.Time {
+	if t := sw.now().Add(sw.wait); t.Before(sw.cutoff) {
+		return t
+	}
+	return sw.cutoff
+}
+
+// send writes b and flushes it, within bound, and then sets the deadline
+// back to the cutoff: a wait for the next write (up to a heartbeat's gap,
+// which is longer than streamWrite) is bounded by the cutoff alone, never
+// by the last write's deadline.
 func (sw *streamWriter) send(b []byte) error {
-	if err := sw.rc.SetWriteDeadline(time.Now().Add(sw.wait)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+	if !sw.now().Before(sw.cutoff) {
+		return errStreamCutoff
+	}
+	if err := sw.deadline(sw.bound()); err != nil {
 		return err
 	}
 	if _, err := sw.w.Write(b); err != nil {
 		return err
 	}
-	return sw.rc.Flush()
+	if err := sw.rc.Flush(); err != nil {
+		return err
+	}
+	return sw.deadline(sw.cutoff)
 }
+
+// finish sets the deadline of the end of the response, which the server
+// writes after the handler returns: within bound, so never past the
+// cutoff.
+func (sw *streamWriter) finish() { sw.deadline(sw.bound()) }

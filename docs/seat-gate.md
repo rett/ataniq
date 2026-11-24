@@ -483,8 +483,11 @@ you made, however long a page stays open, and the stream ends with it.
 
 The stream's limits: at most 3 streams open at once for one passkey, across
 its sessions (one for each of three tabs), 12 opened a minute for one
-passkey, and 32 open in all. A stream past them is refused with a
-`Retry-After`, and that page falls back to the poll.
+passkey, and 32 open in all; and, while a stream is being opened, at most 3
+openings of one passkey in progress and 8 in all. A stream past them is
+refused with a `Retry-After`, and that page falls back to the poll. A
+stream's response lasts 25 seconds at most from its request, its opening
+included.
 
 A stale offer is never what decides. Live refresh only withdraws an offer
 sooner; a tap on an old page is refused by the seat or the daemon as before

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -415,8 +416,15 @@ func TestSeatStreamCoalesces(t *testing.T) {
 // heartbeat has to outlast it.
 func TestSeatStreamLimitsAreTheDesigns(t *testing.T) {
 	wt := Server(nil).WriteTimeout
-	if streamLife > 25*time.Second || streamLife+streamWrite > wt || streamBeat >= streamLife {
-		t.Errorf("life %v, write %v, beat %v, write timeout %v", streamLife, streamWrite, streamBeat, wt)
+	// The life is the whole response, its admission and its end included,
+	// so it alone must fit the write timeout; the stream stops writing
+	// streamFinish before it, after more than one heartbeat.
+	if streamLife > 25*time.Second || streamLife >= wt || streamFinish <= 0 || streamFinish >= streamWrite ||
+		2*streamBeat >= streamLife-streamFinish {
+		t.Errorf("life %v, write %v, finish %v, beat %v, write timeout %v", streamLife, streamWrite, streamFinish, streamBeat, wt)
+	}
+	if streamHandshakes != 8 || streamHandshakesPer != 3 {
+		t.Error("the handshake limits moved: the design and the guide need to follow")
 	}
 	if streamPerCredential != 3 || streamOpens != 12 || streamOpenWindow != time.Minute || streamMax != 32 || streamEventMax != 256 {
 		t.Error("the stream's limits moved: the design and the guide need to follow")
@@ -932,5 +940,339 @@ func TestSeatStreamStrictInput(t *testing.T) {
 	}
 	if r.streams() != 0 {
 		t.Errorf("%d streams open", r.streams())
+	}
+}
+
+// pausedBody is a request body whose first read waits until it is let go:
+// a client that sends its body slowly. reads counts the reads begun.
+type pausedBody struct {
+	body    string
+	reading chan struct{} // closed at the first read
+	letGo   chan struct{}
+	once    sync.Once
+	reads   atomic.Int32
+	off     int
+}
+
+func newPausedBody(body string) *pausedBody {
+	return &pausedBody{body: body, reading: make(chan struct{}), letGo: make(chan struct{})}
+}
+
+func (b *pausedBody) Read(p []byte) (int, error) {
+	b.reads.Add(1)
+	b.once.Do(func() { close(b.reading) })
+	<-b.letGo
+	if b.off >= len(b.body) {
+		return 0, io.EOF
+	}
+	n := copy(p, b.body[b.off:])
+	b.off += n
+	return n, nil
+}
+
+// pausedStream sends a stream request whose body is paused, in a
+// goroutine; the recorder arrives on the channel when the handler returns.
+func (r *rig) pausedStream(ctx context.Context, body *pausedBody, c *http.Cookie) <-chan *httptest.ResponseRecorder {
+	out := make(chan *httptest.ResponseRecorder, 1)
+	req := streamRequest(ctx, streamPath, "", c)
+	req.Body = io.NopCloser(body)
+	req.ContentLength = -1
+	go func() {
+		w := httptest.NewRecorder()
+		r.h.ServeHTTP(w, req)
+		out <- w
+	}()
+	return out
+}
+
+// handshakes returns how many stream handshakes are in progress.
+func (r *rig) handshakes() int {
+	n, _ := r.app.streams.handshakes("")
+	return n
+}
+
+// noStream fails when w is a stream's response, or holds a byte of one.
+func noStream(t *testing.T, name string, w *httptest.ResponseRecorder) {
+	t.Helper()
+	if strings.HasPrefix(w.Header().Get("Content-Type"), "text/event-stream") || strings.Contains(w.Body.String(), ":\n\n") {
+		t.Errorf("%s: a stream's bytes: %d %q %q", name, w.Code, w.Header().Get("Content-Type"), w.Body)
+	}
+}
+
+// TestSeatStreamAdmissionLooksAgainAfterTheBody: a session that ends while
+// the body is still coming, a server that stops meanwhile, and a client that
+// goes are each refused before a byte of the stream, with their places
+// given back.
+func TestSeatStreamAdmissionLooksAgainAfterTheBody(t *testing.T) {
+	r, _ := newWatchRig(t, "aa", time.Minute)
+	s := r.login(t)
+	b := newPausedBody(streamOK)
+	got := r.pausedStream(context.Background(), b, s)
+	<-b.reading
+	if r.handshakes() != 1 {
+		t.Errorf("%d handshakes in progress, want 1", r.handshakes())
+	}
+	if w := r.postWith("/api/logout", "{}", s); w.Code != 200 {
+		t.Fatalf("logout: %d", w.Code)
+	}
+	close(b.letGo)
+	w := within(t, got, 3*time.Second)
+	if w.Code != 403 || w.Body.String() != streamTextEnded {
+		t.Errorf("a logout during the body: %d %q, want 403 %q", w.Code, w.Body, streamTextEnded)
+	}
+	noStream(t, "logout", w)
+	if r.streams() != 0 || r.handshakes() != 0 {
+		t.Errorf("%d streams and %d handshakes left", r.streams(), r.handshakes())
+	}
+
+	// The session reaches its idle time while the body is coming.
+	s = r.login(t)
+	b = newPausedBody(streamOK)
+	got = r.pausedStream(context.Background(), b, s)
+	<-b.reading
+	r.clock.Advance(SessionIdle)
+	close(b.letGo)
+	w = within(t, got, 3*time.Second)
+	if w.Code != 403 || w.Body.String() != streamTextEnded {
+		t.Errorf("the idle time during the body: %d %q", w.Code, w.Body)
+	}
+	noStream(t, "idle", w)
+
+	// The client goes while its body is coming: no stream, nothing held.
+	s = r.login(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	b = newPausedBody(streamOK)
+	got = r.pausedStream(ctx, b, s)
+	<-b.reading
+	cancel()
+	close(b.letGo)
+	noStream(t, "a client gone", within(t, got, 3*time.Second))
+
+	// The server stops while the body is coming.
+	b = newPausedBody(streamOK)
+	got = r.pausedStream(context.Background(), b, s)
+	<-b.reading
+	r.app.streams.end()
+	close(b.letGo)
+	w = within(t, got, 3*time.Second)
+	if w.Code != 503 || w.Body.String() != streamTextDown {
+		t.Errorf("a shutdown during the body: %d %q", w.Code, w.Body)
+	}
+	noStream(t, "shutdown", w)
+	if r.streams() != 0 || r.handshakes() != 0 {
+		t.Errorf("%d streams and %d handshakes left", r.streams(), r.handshakes())
+	}
+}
+
+// TestSeatStreamBoundsHandshakes: the requests in their admission are
+// bounded before a byte of their body is read, three for a credential and
+// eight in all, apart from the open streams; a refusal is fixed; every
+// end of a handshake gives its place back.
+func TestSeatStreamBoundsHandshakes(t *testing.T) {
+	r, wd := newWatchRig(t, "aa", time.Minute)
+	creds := []string{"0123456789abcdef", "1123456789abcdef", "2123456789abcdef"}
+	var cookies []*http.Cookie
+	for _, c := range creds {
+		r.daemon.mu.Lock()
+		r.daemon.loginRes.Credential = c
+		r.daemon.mu.Unlock()
+		r.clock.Advance(loginAllWindow)
+		cookies = append(cookies, r.login(t))
+	}
+	var bodies []*pausedBody
+	var outs []<-chan *httptest.ResponseRecorder
+	pause := func(c *http.Cookie) {
+		b := newPausedBody(streamOK)
+		bodies = append(bodies, b)
+		outs = append(outs, r.pausedStream(context.Background(), b, c))
+		<-b.reading
+	}
+	for i := 0; i < streamHandshakesPer; i++ {
+		pause(cookies[0])
+	}
+	// A fourth of the credential is refused, its body unread.
+	extra := newPausedBody(streamOK)
+	close(extra.letGo)
+	w := within(t, r.pausedStream(context.Background(), extra, cookies[0]), 3*time.Second)
+	if w.Code != 429 || w.Body.String() != streamTextLimited || w.Header().Get("Retry-After") != "25" || extra.reads.Load() != 0 {
+		t.Errorf("a fourth handshake of the credential: %d %q %q, %d reads", w.Code, w.Body, w.Header().Get("Retry-After"), extra.reads.Load())
+	}
+	for len(bodies) < streamHandshakes {
+		pause(cookies[1+len(bodies)%2])
+	}
+	if r.handshakes() != streamHandshakes || r.streams() != 0 {
+		t.Fatalf("%d handshakes and %d streams, want %d and none", r.handshakes(), r.streams(), streamHandshakes)
+	}
+	extra = newPausedBody(streamOK)
+	close(extra.letGo)
+	// cookies[1] has two handshakes in progress: the refusal is the total's.
+	w = within(t, r.pausedStream(context.Background(), extra, cookies[1]), 3*time.Second)
+	if w.Code != 503 || w.Body.String() != streamTextFull || extra.reads.Load() != 0 {
+		t.Errorf("a handshake past %d: %d %q, %d reads", streamHandshakes, w.Code, w.Body, extra.reads.Load())
+	}
+	if n := wd.watchCalls(); n != 0 {
+		t.Errorf("a handshake in progress reached the watcher %d times", n)
+	}
+	// Every end gives its place back: a bad body, a stream that opens and
+	// ends.
+	bodies[0].body = "{"
+	close(bodies[0].letGo)
+	if w := within(t, outs[0], 3*time.Second); w.Code != 400 {
+		t.Errorf("a bad body: %d", w.Code)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	opened := r.streamAsync(ctx, streamOK, cookies[0])
+	r.waitStreams(t, 1)
+	if r.handshakes() != streamHandshakes-1 {
+		t.Errorf("an open stream holds its handshake: %d in progress", r.handshakes())
+	}
+	cancel()
+	within(t, opened, 3*time.Second)
+	for i, b := range bodies[1:] {
+		b.body = "null"
+		close(b.letGo)
+		within(t, outs[i+1], 3*time.Second)
+	}
+	if r.handshakes() != 0 || r.streams() != 0 {
+		t.Errorf("%d handshakes and %d streams left", r.handshakes(), r.streams())
+	}
+}
+
+// deadlineWriter is a client that reads everything at once and records the
+// write deadlines the stream sets, by the stream's clock.
+type deadlineWriter struct {
+	h         http.Header
+	mu        sync.Mutex
+	deadlines []time.Time
+	writes    []time.Time // the deadline in force at each write
+	wrote     chan struct{}
+}
+
+func newDeadlineWriter() *deadlineWriter {
+	return &deadlineWriter{h: http.Header{}, wrote: make(chan struct{}, 16)}
+}
+
+func (w *deadlineWriter) Header() http.Header { return w.h }
+func (w *deadlineWriter) WriteHeader(int)     {}
+func (w *deadlineWriter) Write(b []byte) (int, error) {
+	w.mu.Lock()
+	var d time.Time
+	if n := len(w.deadlines); n > 0 {
+		d = w.deadlines[n-1]
+	}
+	w.writes = append(w.writes, d)
+	w.mu.Unlock()
+	w.wrote <- struct{}{}
+	return len(b), nil
+}
+func (w *deadlineWriter) FlushError() error { return nil }
+func (w *deadlineWriter) SetWriteDeadline(t time.Time) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.deadlines = append(w.deadlines, t)
+	return nil
+}
+
+// last returns the deadline set last, and the one in force at the last
+// write.
+func (w *deadlineWriter) last() (set, wrote time.Time) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.deadlines[len(w.deadlines)-1], w.writes[len(w.writes)-1]
+}
+
+// TestSeatStreamDeadlines: the response has one cutoff, streamLife after
+// the request arrived, its admission included; a write has the earlier of
+// streamWrite and the time left; between writes the cutoff alone is in
+// force, so a heartbeat's gap of more than streamWrite does not end the
+// stream; and the end of the response is bounded by the cutoff too.
+func TestSeatStreamDeadlines(t *testing.T) {
+	r, wd := newWatchRig(t, "aa", time.Minute)
+	ft := &fakeTimers{clk: r.clock}
+	r.app.streamTimer = ft.timer
+	r.app.streamNow = r.clock.Now
+	r.app.streamGap = time.Millisecond
+	s := r.login(t)
+	entry := r.clock.Now()
+	cutoff := entry.Add(streamLife)
+
+	dw := newDeadlineWriter()
+	b := newPausedBody(streamOK)
+	req := streamRequest(context.Background(), streamPath, "", s)
+	req.Body = io.NopCloser(b)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.h.ServeHTTP(dw, req)
+	}()
+	<-b.reading
+	// The admission takes 3 seconds of the life.
+	r.clock.Advance(3 * time.Second)
+	close(b.letGo)
+	<-dw.wrote
+	waitTimers(t, ft, 3) // the life, the heartbeat and the session's end
+	set, wrote := dw.last()
+	if !wrote.Equal(entry.Add(3*time.Second + streamWrite)) {
+		t.Errorf("the first write had the deadline %v, want streamWrite after it began", wrote.Sub(entry))
+	}
+	if !set.Equal(cutoff) {
+		t.Errorf("after the first write the deadline is %v, want the cutoff %v", set.Sub(entry), streamLife)
+	}
+	// A quiet heartbeat's gap, longer than streamWrite: nothing is armed
+	// for it but the cutoff, and the heartbeat goes out.
+	ft.advance(streamBeat)
+	<-dw.wrote
+	set, wrote = dw.last()
+	if !wrote.Equal(entry.Add(3*time.Second+streamBeat+streamWrite)) || !set.Equal(cutoff) {
+		t.Errorf("a heartbeat after a quiet gap: write %v, then %v", wrote.Sub(entry), set.Sub(entry))
+	}
+	// A write that begins 3 seconds before the cutoff has those 3 seconds.
+	waitTimers(t, ft, 3)
+	r.clock.Advance(cutoff.Add(-3 * time.Second).Sub(r.clock.Now()))
+	wd.set(func(st *WatchState) { st.Version = "bb" })
+	<-dw.wrote
+	if _, wrote = dw.last(); !wrote.Equal(cutoff) {
+		t.Errorf("a write near the end had the deadline %v, want the cutoff %v", wrote.Sub(entry), streamLife)
+	}
+	// The life ends streamFinish before the cutoff; the end of the
+	// response is bounded by it.
+	ft.advance(cutoff.Add(-streamFinish).Sub(r.clock.Now()))
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the stream outlived its life")
+	}
+	set, _ = dw.last()
+	if set.After(cutoff) {
+		t.Errorf("the end of the response may go to %v, past the cutoff %v", set.Sub(entry), streamLife)
+	}
+	dw.mu.Lock()
+	for _, d := range dw.deadlines {
+		if d.After(cutoff) {
+			t.Errorf("a deadline at %v, past the cutoff", d.Sub(entry))
+		}
+	}
+	dw.mu.Unlock()
+}
+
+// TestSeatStreamLifeCountsTheAdmission: an admission that outlasts the
+// stream's life is refused before a byte of the stream.
+func TestSeatStreamLifeCountsTheAdmission(t *testing.T) {
+	r, _ := newWatchRig(t, "aa", time.Minute)
+	ft := &fakeTimers{clk: r.clock}
+	r.app.streamTimer = ft.timer
+	s := r.login(t)
+	b := newPausedBody(streamOK)
+	got := r.pausedStream(context.Background(), b, s)
+	<-b.reading
+	ft.advance(streamLife)
+	close(b.letGo)
+	w := within(t, got, 3*time.Second)
+	if w.Code != 503 || w.Body.String() != streamTextFull {
+		t.Errorf("an admission past the life: %d %q", w.Code, w.Body)
+	}
+	noStream(t, "past the life", w)
+	if r.streams() != 0 || r.handshakes() != 0 {
+		t.Errorf("%d streams and %d handshakes left", r.streams(), r.handshakes())
 	}
 }

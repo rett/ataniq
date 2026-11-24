@@ -249,6 +249,9 @@ type app struct {
 	streamOpens                                    *limiter
 	streamLife, streamBeat, streamGap, streamWrite time.Duration
 	streamTimer                                    noticeTimer
+	// streamNow is the clock of the stream's write deadlines; time.Now
+	// when nil. For tests.
+	streamNow func() time.Time
 	// projectsOffered is what the card list last learnt of the new-project
 	// interview: offered or not. The Card page and the path pages show the
 	// main navigation's "Projects" link by it, without a call of their own.

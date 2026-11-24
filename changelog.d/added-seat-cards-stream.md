@@ -5,8 +5,11 @@
   the list reloads by the same rule as before (at most once every 20
   seconds, never over typed text). It asks the gate nothing, does not keep
   the session alive, ends with the session, a logout or the seat's
-  shutdown, and is reopened about every 25 seconds. At most 3 streams are
-  open for one passkey, 12 are opened a minute and 32 are open in all. Any
+  shutdown, and is reopened about every 25 seconds (its response lasts 25
+  seconds at most from its request, its opening included). At most 3 streams
+  are open for one passkey, 12 are opened a minute and 32 are open in all,
+  and at most 3 openings of one passkey (8 in all) are in progress, bounded
+  before the request's body is read. Any
   refusal or failure of the stream, or a browser that cannot read one, falls
   back to the long poll, which the Card page keeps. The stream is closed
   while the page is hidden and reopened when it is shown. It is not a poll
