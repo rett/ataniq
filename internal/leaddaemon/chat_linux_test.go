@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -203,6 +204,91 @@ func TestLeadChatCapsTheCallsAMinute(t *testing.T) {
 	if _, err := c.Chat(context.Background(), leadsParams); err != nil {
 		t.Fatalf("a minute later: %v", err)
 	}
+}
+
+// An admission is counted until a full minute has passed since it, in the
+// order the calls were made: a caller whose clock reads earlier than the
+// admissions before it (out of order) drops none of them, and a caller held
+// before the lock reads the clock once it holds the lock, so it cannot drop
+// the admissions made while it waited.
+func TestLeadChatCountsEveryAdmissionForAMinute(t *testing.T) {
+	start := time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC)
+	t.Run("out of order", func(t *testing.T) {
+		var mu sync.Mutex
+		now := start.Add(30 * time.Second)
+		c := NewLeadChat()
+		c.now = func() time.Time {
+			mu.Lock()
+			defer mu.Unlock()
+			return now
+		}
+		c.bind(&fakeSource{})
+		for i := 0; i < ChatCallsPerMinute; i++ {
+			if _, err := c.Chat(context.Background(), leadsParams); err != nil {
+				t.Fatalf("call %d: %v", i, err)
+			}
+		}
+		// A clock that reads earlier than every admission.
+		mu.Lock()
+		now = start
+		mu.Unlock()
+		if _, err := c.Chat(context.Background(), leadsParams); gateCode(err) != ownerwire.CodeChatBusy {
+			t.Fatalf("a call whose clock reads earlier: %v", err)
+		}
+		mu.Lock()
+		now = start.Add(89 * time.Second)
+		mu.Unlock()
+		if _, err := c.Chat(context.Background(), leadsParams); gateCode(err) != ownerwire.CodeChatBusy {
+			t.Fatalf("59 s after the admissions: %v", err)
+		}
+		mu.Lock()
+		now = start.Add(90 * time.Second)
+		mu.Unlock()
+		if _, err := c.Chat(context.Background(), leadsParams); err != nil {
+			t.Fatalf("a full minute after the admissions: %v", err)
+		}
+	})
+	t.Run("the first caller held before the lock", func(t *testing.T) {
+		// A monotonic clock: every reading is a second after the last.
+		var mu sync.Mutex
+		ticks := 0
+		c := NewLeadChat()
+		c.now = func() time.Time {
+			mu.Lock()
+			defer mu.Unlock()
+			ticks++
+			return start.Add(time.Duration(ticks) * time.Second)
+		}
+		src := &fakeSource{}
+		c.bind(src)
+		held := make(chan struct{})
+		release := make(chan struct{})
+		var first0 atomic.Bool
+		c.beforeLock = func() {
+			if first0.CompareAndSwap(false, true) {
+				close(held)
+				<-release
+			}
+		}
+		first := make(chan error, 1)
+		go func() {
+			_, err := c.Chat(context.Background(), leadsParams)
+			first <- err
+		}()
+		<-held
+		for i := 0; i < ChatCallsPerMinute; i++ {
+			if _, err := c.Chat(context.Background(), leadsParams); err != nil {
+				t.Fatalf("call %d: %v", i, err)
+			}
+		}
+		close(release)
+		if err := <-first; gateCode(err) != ownerwire.CodeChatBusy {
+			t.Fatalf("the held caller after 40 admissions: %v", err)
+		}
+		if src.count() != ChatCallsPerMinute {
+			t.Fatalf("the source was asked %d times", src.count())
+		}
+	})
 }
 
 // The registry's states map to the seat's words as the plan says.

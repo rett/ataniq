@@ -73,7 +73,10 @@ type LeadChat struct {
 	now func() time.Time
 
 	mu    sync.Mutex
-	calls []time.Time // the calls served the last minute
+	calls []time.Time // the calls served, until a full minute has passed since each
+
+	// beforeLock, a test's hook, runs in admit before the lock is taken.
+	beforeLock func()
 }
 
 // chatBinding holds the bound source.
@@ -95,17 +98,24 @@ func (c *LeadChat) bind(src chatSource) {
 	c.src.Store(&chatBinding{src: src})
 }
 
-// admit reports whether one more call fits in the minute, and counts it.
+// admit reports whether one more call fits in the minute, and counts it. The
+// clock is read under the lock, so the admissions are counted in the order
+// they were made; an admission is counted until a full minute has passed
+// since it, and one the clock shows as later than now (a clock that went
+// back) is counted too, never dropped.
 func (c *LeadChat) admit() bool {
+	if c.beforeLock != nil {
+		c.beforeLock()
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	now := time.Now()
 	if c.now != nil {
 		now = c.now()
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	kept := c.calls[:0]
 	for _, t := range c.calls {
-		if now.Sub(t) < time.Minute && !t.After(now) {
+		if now.Sub(t) < time.Minute {
 			kept = append(kept, t)
 		}
 	}
