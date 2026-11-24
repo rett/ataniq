@@ -1887,6 +1887,29 @@ nothing else. An answer is a message from the owner and never an authority:
 no member of these forms is, or leads to, a decision record, a contract, a plan
 token or an approval, and a question page never shows Approve.
 
+### The walk
+
+The walker (`catalog.Next`) asks at most 6 rounds of 1 to 3 questions. A
+question is eligible when its condition holds on the brief as it stands and
+its field is unset and required for the brief's kind (before the kind is
+chosen, only the kind is required, so round 1 asks the kind alone). A round
+holds the eligible questions of the highest weight, up to three, whatever
+their topics: a question's topic is its own label and does not group a round.
+A question whose condition names another question's answer is not eligible
+while that answer is unset, so it is never in the same round as that question
+and waits for the next. A question left unanswered on the page stays
+eligible and is asked again in the next round beside the questions of the
+highest weight left. The walk is done when every required field is filled,
+after the sixth round, or when no eligible question is left.
+
+So an interview that answers every question asks every required question of
+its kind within the six rounds: with catalog v1, software, publishing and
+media (14 required fields each) take 6 rounds (the kind, then three questions
+a round, the review points last) and a kind in the owner's own words (10
+required fields) takes 4. Every kind has room to spare for one question left
+unanswered in a round of two or three, which a later round asks again. A test of the catalog walks every kind and fails
+when a catalog edit makes one need more rounds than the interview has.
+
 ### One operation, nine verbs
 
 `seat.genesis`, capability `genesis`, the gate's alone. Its params are

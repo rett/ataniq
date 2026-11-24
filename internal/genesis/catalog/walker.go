@@ -41,8 +41,8 @@ func (l Limits) norm() Limits {
 type Round struct {
 	// Number is the round's number, from 1; answers to it carry it.
 	Number int
-	// Nodes are the 1 to 3 questions of the round, on one topic, highest
-	// weight first.
+	// Nodes are the 1 to 3 questions of the round, highest weight first,
+	// of one topic or of several.
 	Nodes []Node
 	// Unanswered is how many required fields are not set yet, before
 	// this round.
@@ -110,10 +110,15 @@ func Readiness(c Catalog, b brief.Brief) (filled, total int) {
 // Next returns the next round for the brief, or done. The walk is done
 // when the caller says enough, after the last round, when every required
 // field is filled, or when no question is left that fills a required
-// field. Otherwise the round holds the eligible question of the highest
-// weight (its condition holds, its field is unset and required for the
-// brief's kind) and up to two more on the same topic, by weight. Next is
-// pure: it reads the catalog and the brief and changes neither.
+// field. Otherwise the round holds the eligible questions (a question's
+// condition holds on the brief as it is, and its field is unset and
+// required for the brief's kind) of the highest weight, up to the most a
+// round asks, whatever their topics: a round is never short of questions
+// while eligible ones are left, so the rounds hold every required question
+// of a kind. A question whose condition names the answer to another
+// question of the round is not eligible until that answer is given, so it
+// waits for a later round. Next is pure: it reads the catalog and the brief
+// and changes neither.
 func Next(c Catalog, b brief.Brief, limits Limits) (Round, bool, error) {
 	if err := checkCatalog(c, b); err != nil {
 		return Round{}, false, err
@@ -128,15 +133,12 @@ func Next(c Catalog, b brief.Brief, limits Limits) (Round, bool, error) {
 	if len(cands) == 0 {
 		return Round{}, true, nil
 	}
-	first := c.Nodes[cands[0]]
-	r := Round{Number: b.Rounds + 1, Nodes: []Node{first}}
-	for _, i := range cands[1:] {
+	r := Round{Number: b.Rounds + 1}
+	for _, i := range cands {
 		if len(r.Nodes) == l.MaxPerRound {
 			break
 		}
-		if c.Nodes[i].Topic == first.Topic {
-			r.Nodes = append(r.Nodes, c.Nodes[i])
-		}
+		r.Nodes = append(r.Nodes, c.Nodes[i])
 	}
 	for _, f := range required {
 		if _, ok := b.Get(f); !ok {
