@@ -74,8 +74,8 @@ seat reads only the leads whose chat is read. Sending is not built.
                         the quarantine's four names free (exit 31 otherwise).
   chat purge KEY        removes what the lead's quarantine holds, in bounded
                         steps (run it again while "left" is not 0), and prints
-                        the counts. A folder the daemon cannot open is left
-                        for the owner to delete by hand.
+                        the counts. A folder the daemon cannot open is left,
+                        to be deleted by hand.
 Exit codes of canary and chat: 0 done; 2 usage; 10 the config; 20 no daemon;
 21 unauthorized; 22 protocol error; 30 refused; 31 unavailable; 1 anything
 else.
@@ -112,6 +112,11 @@ func (c *canaryFlags) define(fs *flag.FlagSet) {
 		return nil
 	})
 }
+
+// leadMode reports whether run was given a mode with leads, --canary or
+// --scratch, whatever its config holds: the flags alone, read before any
+// file is.
+func (c *canaryFlags) leadMode() bool { return c.set || c.scratchSet }
 
 // canaryRun reads the canary config when --canary was given and sets the roots
 // and the canary parts of cfg. It returns applied true, or a code to end with.
