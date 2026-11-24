@@ -1,6 +1,7 @@
 /*
  * The seat app's one style sheet. Operate mode: calm, plain, high contrast.
- * Mobile first, one column, no framework, system fonts only. The phone's text size and its light or
+ * Mobile first, one column (a rail and a column on a wide screen, at the end),
+ * no framework, system fonts only. The phone's text size and its light or
  * dark setting are followed. Nothing here is fetched from another site.
  *
  * Colour system: two voices, Dusk with red alerts. Light value, then dark.
@@ -664,3 +665,55 @@ button.stop {
   }
 }
 
+/*
+ * A wide screen (a desktop browser, a tablet across): the navigation becomes
+ * a rail on the left that stays in place while the page scrolls, and the
+ * content a column beside it, about 44rem for reading (a card, a project
+ * page) and wider for the lists. Only the pages with the navigation (the
+ * layout gives their body the class nav-page) change; the public pages keep
+ * their one centred column. The markup and its order are the same at every
+ * width, and below this one every page keeps the phone's layout.
+ */
+@media (min-width: 60rem) {
+  .nav-page {
+    display: grid;
+    grid-template-columns: 14rem minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .nav-page > header {
+    position: sticky;
+    top: 0;
+    display: block;
+    max-width: none;
+    height: 100vh;
+    margin: 0;
+    padding: 24px 16px;
+    border-bottom: 0;
+    border-right: 2px solid var(--line);
+  }
+
+  .nav-page .nav {
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 24px;
+  }
+
+  .nav-page .nav a {
+    padding: 0 12px;
+  }
+
+  .nav-page .nav a[aria-current="page"] {
+    box-shadow: inset 4px 0 0 var(--fg);
+  }
+
+  .nav-page > main {
+    max-width: 44rem;
+    margin: 0;
+    padding: 24px 32px 48px;
+  }
+
+  .nav-page > main:has(.cards) {
+    max-width: 60rem;
+  }
+}

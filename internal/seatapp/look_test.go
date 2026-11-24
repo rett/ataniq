@@ -220,6 +220,45 @@ func ruleOf(t *testing.T, css, head string) string {
 	return css[i : i+j+1]
 }
 
+// mediaBlock is the text of the style sheet's media block that opens with
+// head, up to its closing brace at the start of a line, or "".
+func mediaBlock(css, head string) string {
+	i := strings.Index(css, head+" {\n")
+	if i < 0 {
+		return ""
+	}
+	j := strings.Index(css[i:], "\n}")
+	if j < 0 {
+		return ""
+	}
+	return css[i : i+j+2]
+}
+
+// TestStyleSheetWideScreen checks the wide-screen layout: the phone's
+// breakpoint (30rem) and the wide screen's (60rem), and no other; the rail,
+// the reading column and the wider lists inside the wide block; and the
+// class of the pages with the navigation styled only there, so nothing
+// below 60rem changes.
+func TestStyleSheetWideScreen(t *testing.T) {
+	css := newRig(t).do("GET", "/static/app.css", nil, nil).Body.String()
+	phone, wide := mediaBlock(css, "@media (min-width: 30rem)"), mediaBlock(css, "@media (min-width: 60rem)")
+	if phone == "" || wide == "" {
+		t.Fatalf("the style sheet lacks a breakpoint: 30rem %t, 60rem %t", phone != "", wide != "")
+	}
+	if n := strings.Count(css, "@media (min-width:"); n != 2 {
+		t.Errorf("%d width breakpoints, want 30rem and 60rem", n)
+	}
+	for _, want := range []string{".nav-page {", "display: grid;", "grid-template-columns:", "position: sticky;", "border-right:",
+		"max-width: 44rem;", ".nav-page > main:has(.cards) {", "max-width: 60rem;", "flex-direction: column;"} {
+		if !strings.Contains(wide, want) {
+			t.Errorf("the wide block lacks %q", want)
+		}
+	}
+	if n, in := strings.Count(css, ".nav-page"), strings.Count(wide, ".nav-page"); n != in {
+		t.Errorf("%d of %d rules of .nav-page outside the wide block", n-in, n)
+	}
+}
+
 // inMedia reports whether the declaration is inside a media block.
 func inMedia(css, decl string) bool {
 	i := strings.Index(css, decl)

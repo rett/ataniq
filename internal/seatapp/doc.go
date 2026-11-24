@@ -377,7 +377,11 @@
 // answer. The navigation holds no button, form or script, so it adds no
 // logout control: the plan page keeps no script and no button. nav_test.go
 // holds every page to it. On a phone it is a bar at the top, in the page's
-// flow.
+// flow. The layout gives the body of those pages the class nav-page, and on
+// a screen at least 60rem wide the style sheet alone makes their header a
+// sticky rail on the left beside a column of about 44rem (60rem for a list
+// of cards); the markup and its order are the same at every width, and the
+// public pages keep their one column.
 //
 // # Seams
 //

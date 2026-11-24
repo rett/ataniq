@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="/static/app.css">
 {{block "head" .}}{{end}}
 </head>
-<body>
+<body{{if .Nav}} class="nav-page"{{end}}>
 {{with .Nav}}<a id="skip" class="skip" href="#content">Skip to content</a>
 {{end}}<header>
 <p class="brand">Authority seat</p>

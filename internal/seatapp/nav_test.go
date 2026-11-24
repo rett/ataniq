@@ -170,6 +170,10 @@ func TestMainNavigationOnThePagesBehindASession(t *testing.T) {
 		if !strings.Contains(navOf(body), projLink) {
 			t.Errorf("%s: no Projects link while projects are offered", p.name)
 		}
+		// The class the wide screen's layout styles.
+		if !strings.Contains(body, "<body class=\"nav-page\">\n"+skipLink) {
+			t.Errorf("%s: the body is not of the class nav-page", p.name)
+		}
 		// The title and the one level-one heading are the page's own.
 		if strings.Count(body, "<h1") != 1 || strings.Count(body, "<title>") != 1 {
 			t.Errorf("%s: not one title and one level-one heading", p.name)

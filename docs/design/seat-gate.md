@@ -1259,7 +1259,7 @@ again. A challenge the seat link recomputes differently says that the desk's
 challenge is not this card's and that the passkey was not asked. A held
 approve shows the host's line and, under it, the held words above.
 
-### Navigation
+### Navigation and the wide screen
 
 Every page behind a session has one main navigation (built, G19a): the card
 list, a Card page, the pages of a card's path list, the project list, every
@@ -1300,6 +1300,22 @@ one is in the text colour, bold, not underlined and with a bar under it, so it
 is told apart without colour. Nothing is fixed to the screen, so the bar never
 covers the content, the keyboard or the home indicator, and needs no safe-area
 inset.
+
+On a screen at least 60rem wide (960 px at the default text size: a desktop
+browser, a tablet across), and only on the pages with the navigation (the
+layout gives their body the class `nav-page`), the style sheet makes the
+header a rail on the left, 14rem wide, that stays in place while the page
+scrolls (`position: sticky`), with the links one under the other and the
+current one marked by a bar at its left. The content is a column beside it, at
+most 44rem wide for reading (a card, a project page, the plan) and 60rem for a
+list (the card list, the project list: a page whose content holds a list of
+cards, by `:has(.cards)`; a browser without `:has` keeps it at 44rem). The
+layout is CSS only: a page is the same markup in the same order at every
+width, so the order of reading and of Tab does not change, and below 60rem
+every page keeps the phone's layout. The public pages keep their one centred
+column at every width. A card is still read on one whole page: there is no
+second pane, no prefetch of a card, and nothing that would count as reading a
+card the owner did not open (see the session's reading of a card above).
 
 ## Live refresh: seat.wait
 
@@ -2321,7 +2337,7 @@ anything is asked; there is no post to it. It is made on the server with no
 script at all (not even the logout's), no form, no button and no input: its
 only controls are links, its own two, back to the thread's page and to the
 project list, and the main navigation's (the skip link, "Cards" and "Projects";
-see [Navigation](#navigation)), and the
+see [Navigation and the wide screen](#navigation-and-the-wide-screen)), and the
 page inventory holds it to that and to the rule that no page but
 the Card page holds a decide control. In order: the heading ("Draft plan", or
 "Plan, revision N" for the stored plan), the plan's title with the first six
