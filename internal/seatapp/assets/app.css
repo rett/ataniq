@@ -728,7 +728,7 @@ button.stop {
 .chat-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-areas: "directory" "thread" "context" "evidence" "timeline";
+  grid-template-areas: "thread" "context" "directory" "evidence" "timeline";
   gap: 1.5rem;
   margin-top: 1rem;
 }
@@ -761,10 +761,6 @@ button.stop {
 
 .chat-events li {
   margin-bottom: 1rem;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  html { scroll-behavior: auto; }
 }
 
 .chat-links,

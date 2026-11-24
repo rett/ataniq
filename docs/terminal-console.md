@@ -84,10 +84,11 @@ returns to the console.
 ## Web console
 
 In the seat app, **Leads** opens the directory. Selecting a shared lead opens
-a read-only cockpit with the directory and Context on the left, the paged
-conversation in the centre, Evidence & approvals on the right and a Timeline
-below. On a phone the panes stack, with links to the conversation, evidence
-and timeline. The trial labels its sample project, gate and events **STAND-IN**.
+a read-only cockpit with the lead's name at the top, Context and the directory
+on the left, the paged conversation in the centre and a Timeline below.
+Evidence & approvals takes a third column on a wide enough window and
+otherwise sits under the conversation. On a phone the panes stack, the
+conversation first, with links to the conversation, evidence and timeline. The trial labels its sample project, gate and events **STAND-IN**.
 With daemon chat the timeline draws from system entries on the current page.
 
 Terminal attachment, keystrokes and lead controls stay at the desk.

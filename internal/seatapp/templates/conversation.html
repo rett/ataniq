@@ -1,4 +1,6 @@
 {{define "content"}}
+<h1>Lead <bdi>{{text .Selected.Key maxID}}</bdi></h1>
+<p class="chat-state">{{template "chat-state" .Selected}}</p>
 {{if .Sample}}{{template "standin-chat"}}{{end}}
 {{template "chat-rule"}}
 
@@ -9,25 +11,7 @@
   <a id="chat-timeline" href="#timeline-h">Timeline</a>
 </nav>
 <div class="chat-layout">
-  <div class="chat-aside">
-    <section class="chat-directory" aria-labelledby="directory-h">
-      {{template "chat-directory" .}}
-    </section>
-    <section class="chat-context" aria-labelledby="context-h">
-      <h2 id="context-h">Context</h2>
-      {{with .Sample}}{{template "chat-project" .}}{{end}}
-      <dl>
-        <dt>Lead key</dt><dd><bdi>{{text .Selected.Key maxID}}</bdi></dd>
-        <dt>Sharing</dt><dd>{{template "chat-sharing" .Selected}}</dd>
-        <dt>State</dt><dd>{{template "chat-state" .Selected}}</dd>
-        <dt>Epoch</dt><dd>{{num .Epoch}}</dd>
-      </dl>
-    </section>
-  </div>
-
   <section class="chat-thread" aria-labelledby="conversation-h">
-    <h1>Lead <bdi>{{text .Selected.Key maxID}}</bdi></h1>
-    <p class="chat-state">{{template "chat-state" .Selected}}</p>
     <p class="chat-source">Source · {{if .Sample}}<strong>STAND-IN</strong> phone trial{{else}}Daemon chat{{end}} · Epoch {{num .Epoch}}</p>
     <h2 id="conversation-h" tabindex="-1">Conversation</h2>
     <p class="chat-links">
@@ -56,6 +40,22 @@
       {{if .More}}<a id="chat-next" href="/leads/daemon/{{text .Selected.Key maxID}}?after={{num .LastSeq}}">Show later</a>{{end}}
     </nav>{{end}}
   </section>
+
+  <div class="chat-aside">
+    <section class="chat-context" aria-labelledby="context-h">
+      <h2 id="context-h">Context</h2>
+      {{with .Sample}}{{template "chat-project" .}}{{end}}
+      <dl>
+        <dt>Lead key</dt><dd><bdi>{{text .Selected.Key maxID}}</bdi></dd>
+        <dt>Sharing</dt><dd>{{template "chat-sharing" .Selected}}</dd>
+        <dt>State</dt><dd>{{template "chat-state" .Selected}}</dd>
+        <dt>Epoch</dt><dd>{{num .Epoch}}</dd>
+      </dl>
+    </section>
+    <section class="chat-directory" aria-labelledby="directory-h">
+      {{template "chat-directory" .}}
+    </section>
+  </div>
 
   <section class="chat-evidence" aria-labelledby="evidence-h">
     <h2 id="evidence-h" tabindex="-1">Evidence &amp; approvals</h2>
