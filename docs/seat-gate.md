@@ -481,14 +481,16 @@ through the retained history. **Jump to newest** shows the most recent
 messages again and goes to the latest one. **Refresh** asks for the recent window again. Each Leads page is one or
 two reads of the desk, and they share the reads' 14 calls in 80 seconds with
 the card lists (see [What it costs](#live-refresh)); past it the page says "The
-desk is busy. Try again in a minute." The seat reuses the directory it last
-read for 20 seconds (every directory, the trial's or a real one), and a
-transcript page for 10 seconds only when it is the trial's sample data, which
-never changes; a real lead's transcript is read again for every page. A separate
+desk is busy. Try again in a minute." The seat reuses only the trial's sample
+data, which never changes: its directory for 20 seconds and a transcript page
+for 10 seconds. A real lead's directory and transcript are read again for
+every page, so a lead the desk turns off shows as off on the next page. A separate
 notice says "This page starts again from the oldest kept message." when the
 place you asked for is no longer kept (older messages expired, or the page's
 place is past the conversation the desk holds now), and another when the lead
-changed epochs.
+changed epochs. The restart notice is not shown across a reset, a change of
+the lead's chat setting or a fall of its epoch, where the lead may be another
+under the same name.
 
 Lead and System labels come from the seat. Links and markup in a reply appear
 as text. Approvals are only on Cards. Sending and live refresh are not built,

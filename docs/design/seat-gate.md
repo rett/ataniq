@@ -2874,16 +2874,29 @@ kind `read`. Chat shares that room until replies are built; it gets a room of
 its own then, sized from measured use (see Budget (8) below), and not before,
 so the rooms of logins, decisions, reads and the interview are as they were.
 The chat pages have their own page limit of 30 requests per credential per
-minute. Within the login and gate connection the link reuses a directory
-for 20 seconds, every directory, the trial's or a real one, and a read at the
-same lead and cursor for 10 seconds only when it is the trial's (`stand_in`),
-whose samples never change; a real transcript is never reused. A refusal of the gate, an answer the link does not take, a
-replacement connection, a fresh directory or a retention reset invalidates
-earlier answers. A call the link refuses itself and does not send (no room in
-the reads, no connection, no capability) is no news of the gate and keeps them,
-so a tap that meets a busy read room does not cost the next page its
-directory. Logout ends access to that
-session's cache. Real transcript reads require live authorization.
+minute. The link reuses an answer only when the validated answer is the
+trial's (`stand_in`), whose samples never change, and only within the login
+and the gate connection: the trial's directory for 20 seconds and its read at
+the same lead and cursor for 10 seconds. A real directory and a real
+transcript are never reused: every one is a call of the gate, which the desk
+authorizes live, so a lead the desk turns off shows as off at the next
+directory, with no state, epoch or head left of it, even while the same
+session and connection stay open (`TestSeatChatRealDirectoryTurnedOff`). A
+refusal of the gate, an answer the link does not take, a replacement
+connection, a fresh directory or a retention reset invalidates earlier
+answers. A call the link refuses itself and does not send (no room in the
+reads, no connection, no capability) is no news of the gate and keeps them, so
+a tap that meets a busy read room does not cost the trial's next page its
+directory. Logout ends access to that session's cache.
+
+What a login keeps of a lead to mark a restart (the last epoch it showed, and
+the switch it was shown under) is dropped whenever the lead may be another:
+at session end, on a replacement connection or a change between the trial and
+a real host, when a directory no longer lists the lead or lists it off, when
+its switch changed (a downgrade from `send` to `read` among them), when a read
+resets, and when an epoch is below the one kept. The marker shows only when
+the epoch rose under the same switch with no reset, so a key used again never
+carries the marker of the lead before.
 
 ### Before a real port
 
