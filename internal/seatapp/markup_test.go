@@ -90,12 +90,18 @@ func listedChatLink(id, href string) bool {
 	switch id {
 	case "skip":
 		return href == "#content"
-	case "nav-cards":
+	case "nav-cards", "chat-cards":
 		return href == "/cards/"
 	case "nav-projects":
 		return href == "/projects/"
-	case "nav-leads":
+	case "nav-leads", "chat-back":
 		return href == "/leads/"
+	case "chat-conversation":
+		return href == "#conversation-h"
+	case "chat-evidence":
+		return href == "#evidence-h"
+	case "chat-timeline":
+		return href == "#timeline-h"
 	case "chat-refresh":
 		return chatHref(href) && !strings.ContainsAny(href, "?#")
 	case "chat-jump":

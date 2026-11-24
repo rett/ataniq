@@ -270,6 +270,21 @@ func TestStyleSheetWideScreen(t *testing.T) {
 	}
 }
 
+func TestChatCockpitWidths(t *testing.T) {
+	css := newRig(t).do("GET", "/static/app.css", nil, nil).Body.String()
+	wide := mediaBlock(css, "@media (min-width: 60rem)")
+	cockpit := mediaBlock(css, "@container cockpit (min-width: 72rem)")
+	if !strings.Contains(ruleOf(t, css, ".chat-layout {"), `"directory" "thread" "context" "evidence" "timeline"`) ||
+		!strings.Contains(ruleOf(t, css, ".chat-aside {"), "display: contents;") {
+		t.Error("phone pane order")
+	}
+	if !strings.Contains(ruleOf(t, wide, ".nav-page > main:has(.chat-layout) {"), "container: cockpit / inline-size;") ||
+		!strings.Contains(wide, `"aside thread" "aside evidence" "timeline timeline"`) ||
+		!strings.Contains(cockpit, `"aside thread evidence" "timeline timeline timeline"`) {
+		t.Error("pane layout after the navigation rail")
+	}
+}
+
 // inMedia reports whether the declaration is inside a media block.
 func inMedia(css, decl string) bool {
 	i := strings.Index(css, decl)

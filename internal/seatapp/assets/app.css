@@ -722,7 +722,49 @@ button.stop {
 }
 
 .chat-aside {
-  display: none;
+  display: contents;
+}
+
+.chat-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "directory" "thread" "context" "evidence" "timeline";
+  gap: 1.5rem;
+  margin-top: 1rem;
+}
+
+.chat-layout section {
+  min-width: 0;
+  border-top: 2px solid var(--line);
+  padding-top: 0.75rem;
+}
+
+.chat-directory { grid-area: directory; }
+.chat-context { grid-area: context; }
+.chat-thread { grid-area: thread; }
+.chat-evidence { grid-area: evidence; }
+.chat-timeline { grid-area: timeline; }
+
+.chat-context dt,
+.chat-source,
+.chat-events time {
+  color: var(--muted);
+}
+
+.chat-context dd {
+  margin: 0 0 0.5rem;
+}
+
+.chat-events {
+  padding-left: 1.5rem;
+}
+
+.chat-events li {
+  margin-bottom: 1rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
 }
 
 .chat-links,
@@ -817,23 +859,31 @@ button.stop {
 
   .nav-page > main:has(.chat-layout) {
     width: 100%;
-    max-width: 68rem;
+    max-width: 100rem;
+    container: cockpit / inline-size;
   }
 
   .chat-layout {
-    display: grid;
     grid-template-columns: minmax(10rem, 1fr) minmax(0, 2.5fr);
+    grid-template-areas: "aside thread" "aside evidence" "timeline timeline";
     align-items: start;
-    gap: 1.5rem;
   }
 
   .chat-aside {
     display: block;
+    grid-area: aside;
     border-right: 1px solid var(--line);
     padding-right: 1rem;
   }
 
   .chat-thread {
     max-width: 44rem;
+  }
+}
+
+@container cockpit (min-width: 72rem) {
+  .chat-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2.5fr) minmax(0, 1fr);
+    grid-template-areas: "aside thread evidence" "timeline timeline timeline";
   }
 }
