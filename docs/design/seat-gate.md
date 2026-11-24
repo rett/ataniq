@@ -1876,8 +1876,9 @@ deployed and not phone-tested. The plan compiler is built as a library (genesis
 G10, `internal/genesis/plan`, see [the plan](#the-plan)), and the daemon serves
 it (genesis G11a): the verb `plan`, a preview of the plan of a complete brief
 before finish and the plan stored at finish. The seat's link and its plan page
-are built too (genesis G11b, see [the seat's pages](#the-seats-pages)); the
-charter is a later stage.
+are built too (genesis G11b, see [the seat's pages](#the-seats-pages)), and so
+is the hand-off of a software plan to Qargi, printed at the desk (genesis G13,
+see [hand-off](#hand-off)); the charter is a later stage.
 
 The owner starts a new project on the phone by answering a few multiple-choice
 questions. The questions are the host's own, from a versioned catalog
@@ -2467,6 +2468,92 @@ template before it is handed to an agent. Another test compiles two briefs that 
 their `other` texts and notes, one reading like instructions with markup and
 commands, and finds the plans byte for byte equal outside `notes` and
 `brief_digest`.
+
+### Hand-off
+
+What the owner takes from a finished interview to Qargi, which creates the
+project. It is printed at the desk and never run by Ataniq: the daemon serves
+no hand-off over the gate, and nothing in Ataniq runs Qargi or any other
+program for it.
+
+`internal/genesis/handoff` is a pure library (the plan package and the standard
+library: no file, clock, program or network). `Emit(plan, thread)` takes a
+stored plan and the id of its thread and returns comment lines and one command
+line. The desk's commands read the stored plan without writing anything
+(`thread.ReadFinished` and `thread.ReadPlan`, by the store's own file reader
+and rules; see [the lead daemon guide](../lead-daemon.md#the-guided-interview-at-the-desk)):
+`ataniqd genesis list` lists the finished interviews that hold a plan and
+`ataniqd genesis handoff TAG` prints the hand-off of one.
+
+**What is emitted.** Only a plan of the software template (a web app or a
+one-page tool) has a hand-off; any other is refused in fixed text, "A hand-off
+for this kind of project is not available yet.", exit code 3 at the desk. The
+command is exactly
+
+```text
+qargi project new NAME --methodology gitflow
+```
+
+NAME is made by the host: a prefix from a closed map of the plan's title (a
+catalog label: "A full web app" gives `webapp`, "A one-page tool" `webtool`,
+any other title `software`) and the first six digits of the thread's id,
+checked against Qargi's grammar of a project name (a lower-case letter, then at
+most 23 lower-case letters or digits).
+Qargi's `project new` gives the gitflow methodology's required parameter
+`project` the value NAME itself, so the command does not repeat it, and the
+generated Makefile has only the stub targets bootstrap and doctor, so no test
+command is given either. Above the command, comment lines, each starting `# `:
+
+```text
+# Hand-off for plan 840ca3c6564a (revision 1) of thread a1b2c3.
+# Nothing has been run. Run the command yourself, in the folder where you keep projects.
+# It prints a plan and a token; creating the project needs your own words. The plan's tasks are not imported: Qargi's backlog is where work is tracked.
+# The plan keeps the files on your own server; the command sets up no host and chooses no deployment.
+# The plan's monthly budget band is none (nothing extra); it is advisory, and the command does not carry it.
+qargi project new webappa1b2c3 --methodology gitflow
+```
+
+A plan that names external services gets one more line naming them, from the
+plan's closed list. The digest in the first line is the plan's, so a hand-off
+names the plan it was made from. Every word of the header comes from the
+emitter or from a closed map over the plan's closed lists (where the files
+live, the services, the budget band).
+
+**The closed grammar.** `ValidateCommand` holds a command line to one regular
+expression over the exact pieces above, the name included, and nothing else:
+one line, no other flag, no shell metacharacter (`;`, `&&`, `|`, a backtick,
+`$(`, a redirect), no hyphen in the name. `Emit` checks its own line with it
+before it returns, and the tests hold it to a table of lines it refuses.
+
+**What is never emitted.** A repository URL (`--url`), a provider
+(`--provider`, `--provider-local` and the like: Qargi has no default and the
+choice is the owner's), a folder (`--dir`: the owner runs the command in the
+folder where he keeps projects), declared gates (`--param gates=...`), a
+deployment (the owner's "your own server", "this computer" and "a file or code
+host" are where the files live, not a deployment, and map to none, so
+`--deployment` is left out), a plan token or approval words (`--plan`,
+`--approved`: Qargi prints its own plan and token, and creating needs the
+owner's own words, typed by him), `--json`, and any text of the plan but what
+the closed map of the title reads: never the title itself, a note, or an
+`other` answer. A test compiles plans from briefs that differ only in their
+`other` texts and notes (one of them written to look like flags and shell
+commands) and finds the hand-offs equal byte for byte but for the plan's digest
+in the first line, which covers the notes, with none of the words in either.
+
+**Why the daemon never runs Qargi.** Creating a project is one of the three
+things that bind, approved on its own: Qargi asks for it with a plan, a token
+and the owner's own words, and Ataniq does not stand in for any of them. A
+daemon that ran the command would hold a path from a phone answer to a program
+run at the desk; printing it keeps the owner at the keyboard for the one step
+that creates something, and keeps the daemon's side read-only. The desk's
+commands run no program, open no socket and write nothing in the state folder.
+
+**What is not built.** A hand-off for the other kinds (publishing and media)
+waits for a plain Qargi methodology that is not gitflow and for an import of a
+plan's tasks into Qargi's backlog; until then they are refused, and the plan's
+tasks are not carried for any kind. Nothing records that a hand-off was
+printed or that the project was created, and a later revision of the plan does
+not mark an earlier hand-off stale beyond the digest in its first line.
 
 ## The record change
 
