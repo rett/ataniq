@@ -96,11 +96,12 @@ func newScratchSeatKit(t *testing.T) scratchSeatKit {
 		}
 	}
 	// systemctl --user show -p PROP --value -- UNIT answers from the units
-	// file ("UNIT PROP VALUE" lines); an unlisted ActiveState is inactive and
-	// an unlisted LoadState not-found. Every other call is refused.
+	// file ("UNIT PROP VALUE" lines, the value the rest of the line); an
+	// unlisted ActiveState is inactive and an unlisted LoadState not-found.
+	// Every other call is refused.
 	systemctl := "#!/bin/sh\necho \"systemctl $*\" >>'" + k.calls + "'\n" +
 		"[ \"$1 $2 $3\" = '--user show -p' ] && [ \"$5 $6\" = '--value --' ] || exit 97\n" +
-		"v=$(awk -v u=\"$7\" -v p=\"$4\" '$1 == u && $2 == p { print $3; exit }' '" + k.units + "' 2>/dev/null)\n" +
+		"v=$(awk -v u=\"$7\" -v p=\"$4\" '$1 == u && $2 == p { s = $0; sub(/^[^ ]+ [^ ]+ ?/, \"\", s); print s; exit }' '" + k.units + "' 2>/dev/null)\n" +
 		"if [ -z \"$v\" ]; then case $4 in ActiveState) v=inactive ;; LoadState) v=not-found ;; esac; fi\n" +
 		"printf '%s\\n' \"$v\"\n"
 	if err := os.WriteFile(filepath.Join(k.tools, "systemctl"), []byte(systemctl), 0o700); err != nil {
@@ -431,7 +432,7 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root string, live bool) {
 	for _, want := range []string{
 		"A for the daemon, B for the console, C for the desk",
 		"OWNER ONLY (starts pasta, bubblewrap and curl): sh " + root + "/netcheck.sh",
-		"-p UnitFileState -p TriggeredBy -p InvocationID -- \"$TRIAL_UNIT\" >" + root + "/evidence/trial-unit-before.txt",
+		"--record-trial" + prep + " --unit \"$TRIAL_UNIT\"",
 		"--status" + prep,
 		"OWNER ONLY: systemctl --user stop -- \"$TRIAL_UNIT\"",
 		"OWNER ONLY: systemctl --user mask --runtime -- \"$TRIAL_UNIT\"",

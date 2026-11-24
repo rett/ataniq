@@ -17,10 +17,11 @@ the console, a sandbox, an agent, the claude program), changes a unit (stop,
 mask, unmask, start) or defines a lead (the daemon runs git) is marked
 **OWNER ONLY** and is run by the owner's hand, in his terminal. An agent may
 run `qualification/scratch-seat/prepare.sh` with `--dry` or `--self-test`
-only, and the tests. `--write`, `--status`, `--swap-in` and `--swap-out` are
-the owner's: `--write` starts nothing and writes only in the proof's own
-folder, and `--status` only reads, but they name his folders; the swaps
-rename his settings.
+only, and the tests. `--write`, `--record-trial`, `--status`, `--swap-in`
+and `--swap-out` are the owner's: `--write` starts nothing and writes only in
+the proof's own folder, `--record-trial` reads his trial's unit and writes
+only in that folder, and `--status` only reads, but they name his folders and
+his unit; the swaps rename his settings.
 
 **What is removed, and what is not.** No step deletes a file of the trial or
 of the proof. Two things go by design: the chat service consumes each reply
@@ -150,7 +151,13 @@ expected, and nothing restores them.
 `tests/scratch_seat_prepare_test.go` holds the script's refusals and swaps
 in sample folders: a swap stopped half way is named by `--status` and
 finished by `--swap-out`, and a layout of none of the three states is refused
-by every mode with nothing moved.
+by every mode with nothing moved. `tests/scratch_seat_record_test.go` holds
+`--record-trial` on a stub `systemctl` and a fake `/proc` entry: the restart
+script of a transient unit, run there with a `systemd-run` stub, gives it the
+unit's name, description, `--collect` and the command line byte for byte
+(spaces, quotes, `$`, backslashes, a tab, an empty argument), and a `MainPID`
+of 0, another program, a newline in an argument or a command line that
+cannot be read is refused with nothing written.
 
 What none of it shows: the real unit, its mask, holder, sandbox and stand-in,
 the paste, claude and its login, the seat on the authority host, the phone,
@@ -278,24 +285,57 @@ with your values.
    a DNS check and not a rule, and the guard hook guards nothing. Before a
    live login, write in `$ROOT/evidence/notes.txt` that you accept this open
    network (and the listeners it named), or stop after the stand-in.
-- **f. Read and record, nothing more:** the pins the gate will use, the
-   trial's unit as it is, and the trial's fingerprint line of its current
-   run:
+- **f. Read and record, nothing more,** while the trial runs: the pins the
+   gate will use, the trial's unit as it is, and the trial's fingerprint line
+   of its current run:
 
    ```sh
    $D seat-gate pins --state-dir "$S"
-   systemctl --user show -p Id -p ExecStart -p ActiveState -p SubState -p LoadState -p UnitFileState -p TriggeredBy -p InvocationID -- "$TRIAL_UNIT" >"$ROOT/evidence/trial-unit-before.txt"
+   sh "$P" --record-trial
    journalctl --user --unit "$TRIAL_UNIT" -I | grep 'key fingerprint' | tail -n 1
    ```
 
-   `trial-unit-before.txt` is what step 15 restores: whether the unit was
-   active, its unit-file state (enabled or not) and what triggers it. Look at
-   `TriggeredBy`: a socket or timer named there can start the trial again,
-   which the mask of step 1 prevents. The seat origin file
-   (`ataniq/owner-local/seat-origin` of your configuration folder) is the
-   trial's and stays as it is.
+   `--record-trial` starts and changes nothing: it reads the unit from the
+   user manager (`systemctl --user show` only) and, for a transient unit, the
+   command line of its main process (`/proc/MAINPID/cmdline`), and writes in
+   `$ROOT` only. `$ROOT/evidence/trial-unit-before.txt` is the unit as it
+   runs: `Id`, `Description`, `Transient`, `UnitFileState`, `FragmentPath`,
+   `CollectMode`, `LoadState`, `ActiveState`, `SubState`, `TriggeredBy`,
+   `WantedBy`, `RequiredBy`, `BoundBy`, `UpheldBy`, `InvocationID`,
+   `MainPID`, `ExecStart`, `Restart`, `Environment` and `WorkingDirectory`.
+   `$ROOT/trial-unit` records its kind, which steps 1, 3 and 15 and
+   `--status` follow:
+
+   - **A transient unit** (`Transient=yes`, `UnitFileState=transient`: the
+     trial was started with `systemd-run --user --unit NAME ...`). Stopped,
+     it is unloaded (`LoadState=not-found`), and nothing starts it again but
+     the same `systemd-run`. `--record-trial` writes that command as
+     `$ROOT/trial-restart.sh` (mode 0700), which step 15 runs and prepare
+     never does: `systemd-run --user --unit "$name" --description '...'`,
+     `--collect` when `CollectMode=inactive-or-failed`, then `--` and the
+     main process's command line exactly as `/proc` holds it, every argument
+     single-quoted. It carries the unit's name, description, collect mode and
+     command line, and nothing else of it: compare `Environment`,
+     `WorkingDirectory` and `Restart` in `trial-unit-before.txt` with how you
+     made the unit, and re-create it by hand if they differ. It refuses,
+     writing nothing, a `MainPID` of 0, a command line that cannot be read,
+     that holds a newline in an argument or that was changed (its last byte
+     is not a NUL), and a main process whose program is not `ExecStart`'s.
+   - **A unit file** (`Transient=no`, its file at `FragmentPath`). No
+     restart script: step 15 starts it again with `systemctl`. Look at
+     `TriggeredBy`, `WantedBy`, `RequiredBy`, `BoundBy` and `UpheldBy`: a
+     socket, timer or other unit named there can start the trial again,
+     which the mask of step 1 prevents.
+
+   Both refuse, writing nothing, a unit that is not loaded and active (it is
+   recorded while the trial runs, before step 1), a name the user manager
+   knows by another (an alias), a root `--write` did not make, a root that
+   has swapped, and a record that is there already (one record for a root;
+   it is kept). The seat origin file (`ataniq/owner-local/seat-origin` of
+   your configuration folder) is the trial's and stays as it is.
 - **g. The settings, read:** `sh "$P" --status` prints `status: trial in
-   place (not swapped)` and the next step.
+   place (not swapped)`, the kind of the trial's unit as recorded, and the
+   next step.
 
 ## The sitting
 
@@ -593,7 +633,9 @@ these, are the sitting's evidence:
 - `$ROOT/evidence/netcheck.txt`: the network check of step e.
 - `$ROOT/evidence/trial-unit-before.txt` and `trial-unit-after.txt`: the
   trial's unit before the sitting and after it (they name your unit and its
-  command line: keep them with your own files).
+  command line: keep them with your own files). `$ROOT/trial-unit`, the
+  unit's kind, and, for a transient unit, `$ROOT/trial-restart.sh`, which
+  holds its command line: keep them as private as the unit's files.
 - `$ROOT/evidence/daemon.log`: the daemon's output, each run ending with its
   exit status line. Its chat lines hold counts and fixed words, never a
   reply's text; its provisioning lines name folders of the state folder.

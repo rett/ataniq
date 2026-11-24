@@ -12,7 +12,15 @@
   record the trial settings file's identity and digest in the proof's
   folder, rename only to names that are free (a dangling link counts as
   taken) and verify each step; `--status` reads the layout and prints one
-  next step, also after an interruption or a reboot. The daemon's output
+  next step, also after an interruption or a reboot. The owner's
+  `prepare.sh --record-trial`, run while the trial runs, reads the trial's
+  unit (`systemctl --user show` only) and records it in the proof's folder:
+  its properties as evidence, its kind (a transient unit of `systemd-run`, or
+  a unit file) and, for a transient unit, `trial-restart.sh`, the
+  `systemd-run` command that re-creates it, with the command line of its
+  main process read from `/proc` and every argument single-quoted; it
+  refuses, writing nothing, a `MainPID` of 0, a command line it cannot read
+  or keep exactly and a program that is not the unit's. The daemon's output
   ends with its exit status. `qualification/scratch-seat/prepare.sh` writes
   the scratch config (mode 0600) and the files it names in a folder of the
   proof's own, with leads fresh for each sitting (`standin-N`, `live-N`):
