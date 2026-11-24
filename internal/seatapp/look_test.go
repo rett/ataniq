@@ -274,7 +274,7 @@ func TestChatCockpitWidths(t *testing.T) {
 	css := newRig(t).do("GET", "/static/app.css", nil, nil).Body.String()
 	wide := mediaBlock(css, "@media (min-width: 60rem)")
 	cockpit := mediaBlock(css, "@container cockpit (min-width: 72rem)")
-	if !strings.Contains(ruleOf(t, css, ".chat-layout {"), `"directory" "thread" "context" "evidence" "timeline"`) ||
+	if !strings.Contains(ruleOf(t, css, ".chat-layout {"), `"thread" "context" "directory" "evidence" "timeline"`) ||
 		!strings.Contains(ruleOf(t, css, ".chat-aside {"), "display: contents;") {
 		t.Error("phone pane order")
 	}

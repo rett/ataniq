@@ -83,6 +83,7 @@
     {{if eq .Chat "off"}}
       <strong><bdi>{{text .Key maxID}}</bdi></strong>
       <span class="chat-badge">Off</span>
+      {{block "chat-off-note" .}}{{end}}
     {{else}}
       {{if .Here}}<strong><bdi>{{text .Key maxID}}</bdi></strong>
       <span class="meta">Open conversation</span>

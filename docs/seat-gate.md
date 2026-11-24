@@ -473,12 +473,15 @@ and conversations are samples held by the phone trial. No real lead is read,
 and nothing here is an approval." Every sample conversation entry begins
 "Sample:". Opening the directory reads only the list of leads. Open
 `alpha` or `bravo` to read its conversation. The directory lists `charlie`
-with its key and **Off**.
+with its key and **Off**; on the Leads page itself it adds "Chat is off for
+this lead. Turn it on at the desk."
 
-On a wide screen the directory and **Context** sit beside the conversation.
+On a wide screen **Context** and the directory sit beside the conversation.
 Context shows the selected key, sharing mode, state and epoch. **Evidence &
-approvals** links to **Open Cards**, and the **Timeline** runs below the
-panes. In the trial, the project grouping, gate and dated events are labelled
+approvals** links to **Open Cards**; it takes a third column on a wide enough
+window and otherwise sits under the conversation. The **Timeline** runs below
+the panes. On a phone the page opens on the lead's name and the conversation,
+then Context, the directory, Evidence and Timeline. In the trial, the project grouping, gate and dated events are labelled
 **STAND-IN** samples. With daemon chat the timeline shows the system entries
 on the conversation page being read. On a phone, use **Conversation**,
 **Evidence** and **Timeline** to jump between sections, or **Back to Leads**

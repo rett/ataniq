@@ -169,6 +169,75 @@ func TestChatFailurePages(t *testing.T) {
 	}
 }
 
+// TestChatCockpitHeadingOrder: the lead's heading is the first in the page,
+// so Skip to content lands on it, the section links follow it, and the
+// directory's heading comes after it, in the order of the panes.
+func TestChatCockpitHeadingOrder(t *testing.T) {
+	f := sampleChat()
+	r := newRig(t, withChat(f))
+	s := r.login(t)
+	page := r.getWith("/leads/daemon/alpha", s).Body.String()
+	_, main, ok := strings.Cut(page, `<main id="content">`)
+	if !ok {
+		t.Fatal("no main")
+	}
+	heads := regexp.MustCompile(`<h([1-6])[^>]*>`).FindAllStringSubmatch(main, -1)
+	if len(heads) == 0 || heads[0][1] != "1" || strings.Count(main, "<h1") != 1 {
+		t.Fatalf("the first heading of the page is not its only h1: %v", heads)
+	}
+	for _, h := range heads[1:] {
+		if h[1] != "2" {
+			t.Errorf("heading level %s after the h1", h[1])
+		}
+	}
+	if !regexp.MustCompile(`^\s*<h1>Lead <bdi>alpha</bdi></h1>`).MatchString(main) {
+		t.Error("the lead's h1 does not open the page")
+	}
+	last := strings.Index(main, "</h1>")
+	if strings.Index(main, `aria-label="Cockpit sections"`) < last {
+		t.Error("the section links come before the heading")
+	}
+	for _, id := range []string{"conversation-h", "context-h", "directory-h", "evidence-h", "timeline-h"} {
+		at := strings.Index(main, `<h2 id="`+id+`"`)
+		if at < last {
+			t.Fatalf("%s is missing, or not after the h1 and the earlier panes", id)
+		}
+		last = at
+	}
+}
+
+// TestChatLinkDropAfterDirectory: a link that drops after the directory
+// was read ends the page as the unavailable page. The chat's STAND-IN
+// banner is on it exactly once while the session lives, and not when the
+// session ended.
+func TestChatLinkDropAfterDirectory(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		ending bool
+	}{{"link", false}, {"session", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := sampleChat()
+			r := newRig(t, withChat(f))
+			s := r.login(t)
+			f.onRead = func() {
+				f.offered = false
+				if tc.ending {
+					r.postWith("/api/logout", "{}", s)
+				}
+			}
+			w := r.getWith("/leads/daemon/alpha", s)
+			body := w.Body.String()
+			want := 1
+			if tc.ending {
+				want = 0
+			}
+			if w.Code != 503 || !strings.Contains(body, problemUnavailable.message) || strings.Count(body, chatBanner) != want || strings.Contains(body, "chat-body") {
+				t.Fatalf("%d, banners %d, %s", w.Code, strings.Count(body, chatBanner), body)
+			}
+		})
+	}
+}
+
 func TestChatCockpit(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -207,7 +276,11 @@ func TestChatCockpit(t *testing.T) {
 			}
 			off := rows[last:]
 			words := strings.Join(strings.Fields(tagRe.ReplaceAllString(off, "")), " ")
-			if words != "later Off" || strings.Contains(off, "<a ") {
+			// On the Leads page an off row is its key, Off and the fixed
+			// sentence: no state, epoch or link.
+			if words != "later Off Chat is off for this lead. Turn it on at the desk." || strings.Contains(off, "<a ") ||
+				strings.Contains(off, "href") || strings.Contains(off, "running") || strings.Contains(off, "unknown") ||
+				strings.Contains(strings.ToLower(off), "epoch") {
 				t.Fatalf("off row %q", off)
 			}
 			w := r.getWith(path, s)
@@ -215,7 +288,13 @@ func TestChatCockpit(t *testing.T) {
 			if w.Code != 200 || len(f.calls) != 3 || f.calls[2].Verb != ChatRead {
 				t.Fatalf("cockpit status %d, calls %v", w.Code, f.calls)
 			}
-			order := []string{navOpen, `aria-label="Cockpit sections"`, `class="chat-directory"`, `class="chat-context"`, `class="chat-thread"`, `class="chat-evidence"`, `class="chat-timeline"`}
+			// The cockpit's narrow left pane keeps its off row to the key and Off.
+			paneRows := regexp.MustCompile(`(?s)<ul class="chat-rows">(.*?)</ul>`).FindString(page)
+			paneOff := paneRows[strings.LastIndex(paneRows, "<li>"):]
+			if got := strings.Join(strings.Fields(tagRe.ReplaceAllString(paneOff, "")), " "); got != "later Off" || strings.Contains(paneOff, "<a ") {
+				t.Fatalf("off row in the cockpit %q", paneOff)
+			}
+			order := []string{navOpen, `aria-label="Cockpit sections"`, `class="chat-thread"`, `class="chat-context"`, `class="chat-directory"`, `class="chat-evidence"`, `class="chat-timeline"`}
 			rest := page
 			for _, marker := range order {
 				var ok bool
