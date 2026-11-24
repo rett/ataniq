@@ -3,7 +3,7 @@ package brief
 import "errors"
 
 // Code is the short, fixed word a refusal is known by. Every refusal code
-// of the genesis packages (the brief and the question catalog) is declared
+// of the genesis packages (the brief, the question catalog and the plan) is declared
 // in this file, and no other package declares one.
 type Code string
 
@@ -49,6 +49,22 @@ const (
 	// CodeRoundInvalid answers an answer stamped with a round that is not
 	// the current or the next one, or past the last round.
 	CodeRoundInvalid Code = "round_invalid"
+)
+
+// The refusal codes of the plan compiler and its templates.
+const (
+	// CodeBriefIncomplete answers a plan asked of a brief whose required
+	// fields are not all filled.
+	CodeBriefIncomplete Code = "brief_incomplete"
+	// CodeTemplateMissing answers a plan asked of a brief whose kind has
+	// no plan template.
+	CodeTemplateMissing Code = "template_missing"
+	// CodeTemplateInvalid answers a plan template that breaks its rules on
+	// load, or names a field or an option the catalog does not hold.
+	CodeTemplateInvalid Code = "template_invalid"
+	// CodePlanInvalid answers a plan that breaks the rules of the record
+	// or its form.
+	CodePlanInvalid Code = "plan_invalid"
 )
 
 // Error is a refusal: a code, and a detail for the owner's eyes.

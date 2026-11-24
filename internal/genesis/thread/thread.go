@@ -92,10 +92,11 @@ func RefusalCode(err error) (string, bool) {
 // ErrClosed is the error of a call to a store that was closed.
 var ErrClosed = errors.New("genesis: the thread store is closed")
 
-// gateWord maps each refusal code of the brief and the walker to the word the
-// seat gate answers it with. The empty word says the refusal is the host's
-// own fault and not the owner's mistake (a brief that breaks its own rules,
-// a catalog of another version): the call fails, and the cause is logged.
+// gateWord maps each refusal code of the brief, the walker and the plan to
+// the word the seat gate answers it with. The empty word says the refusal is
+// the host's own fault and not the owner's mistake (a brief that breaks its
+// own rules, a catalog of another version): the call fails, and the cause is
+// logged. No plan is asked over the gate yet, so the plan's codes have none.
 // A test of package genesis holds this map to the wire's.
 var gateWord = map[brief.Code]string{
 	brief.CodeSecretShaped: ownerwire.CodeGenesisSecretShaped,
@@ -113,6 +114,11 @@ var gateWord = map[brief.Code]string{
 	brief.CodeNotInferred:     "",
 	brief.CodeCatalogInvalid:  "",
 	brief.CodeCatalogMismatch: "",
+
+	brief.CodeBriefIncomplete: "",
+	brief.CodeTemplateMissing: "",
+	brief.CodeTemplateInvalid: "",
+	brief.CodePlanInvalid:     "",
 }
 
 // GateWord returns the word the seat gate answers a refusal code of the brief

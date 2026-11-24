@@ -1862,8 +1862,9 @@ sender. The seat's side is built (genesis G5): the verb `list`, the seat link's
 call with a room of its own (`internal/seatlink`, `genesis.go`), the seat's
 pages (`internal/seatapp`, see [the seat's pages](#the-seats-pages)) and the
 command's wiring (`cmd/ataniq-seat`, which needs nothing configured). It is not
-deployed and not phone-tested; what the brief is for (the plan, the charter)
-is a later stage, and nothing reads a finished brief yet.
+deployed and not phone-tested. The plan compiler is built as a library (genesis
+G10, `internal/genesis/plan`, see [the plan](#the-plan)); nothing calls it yet,
+and the charter is a later stage.
 
 The owner starts a new project on the phone by answering a few multiple-choice
 questions. The questions are the host's own, from a versioned catalog
@@ -2150,6 +2151,59 @@ is the app's port (an answer decides nothing, so the guard passes it on while
 decisions are paused), and the command logs each hello's capabilities, with
 whether the phone offers "New project" (`ataniq-seat: the seat gate offers
 pair, read, login, decide, watch and genesis; the phone offers New project`).
+
+### The plan
+
+`internal/genesis/plan` compiles a finished brief into a project plan,
+`ataniq.project-plan/1`: a pure library, with no wire and no page yet. A plan is
+a proposal: it binds nothing and grants nothing. Three things bind, each
+approved on its own, and none of them is the plan: the creation of the project,
+the charter, and the delegation contracts.
+
+The record is canonical JSON under the brief's rules, with a SHA-256 digest:
+`plan` (the revision, 1 for a first compile, part of the digest),
+`brief_digest`, `catalog_digest`, `template` (`id`, `version`, `digest`),
+`title` (a label of the catalog, such as "A newsletter", never the owner's
+text), `milestones` (at most 8) of `tasks` (at most 6 each, 40 in all; each a
+`title`, a `kind` of build, write, review or test, a `tier` of fast, balanced
+or deep, which is a size class and not a model, `depends_on`, a `scope` of area
+names such as `repo:src` or `store:manuscript`, and `checks` such as
+`unit-tests` or `rights-manifest`), `gates`, `first_demo` (one sentence of the
+template's), `review_points`, `hosts`, `external_services` (every external
+service the work would use, by name, from a closed list), `spend` (`none`,
+`low` or `medium`: a ceiling's id, never a number), `estimate` (a band such as
+"about a day of agent work", with `estimate: true` and the words "an
+estimate, not a promise"), `never` (publish, release, push, credentials,
+raise-a-cap, spend-past-ceiling), `notes` and `notes_dropped`. A milestone and
+a task keep their place in the template as their id (`m1`, `t4`), so an id
+means one thing in every revision, and a plan's ids may skip numbers. The time
+of the compile is kept in an envelope beside the digest, not under it: the
+same brief gives the same bytes and digest at any time.
+
+`Compile` refuses a brief that is not complete (an inferred answer the owner
+did not confirm counts as missing), a brief of another catalog and a kind with
+no template (`other`), each with a refusal code of the brief package. `Next`
+compiles the revision after a plan, and `Diff` names what changed against the
+revision the owner last saw: milestones and tasks added, removed or changed by
+id, top-level fields by name, with short texts, at most 48 entries.
+
+The templates are data, `ataniq.genesis-plan-template/1`, embedded in the
+canonical form, one per kind: software (a web app or a one-page tool),
+publishing (a newsletter or an article) and media (a podcast or a book). A
+changed template is a new version: a test pins the digest of each, and a plan
+records the digest it was compiled with. Every template holds the same
+security block (no push, no outward step, secrets by reference). A task, a
+gate, a service or a demo may hold a condition over one field of the brief,
+from a closed set (eq, in, contains, set); the fields and options it names are
+held to the catalog when a plan is compiled, and one the catalog does not hold
+is a refusal, never a default.
+
+The owner's own text (an `other` answer, a note of the brief) is quoted in
+`notes` as `{field, text, untrusted: true}`, at most 8 of 200 bytes, and
+chooses nothing: a condition may hold for `other`, but never reads the text. A
+test compiles a brief whose `other` answers read like instructions and whose
+notes hold markup and commands, and finds the plan otherwise the plan of plain
+words.
 
 ## The record change
 

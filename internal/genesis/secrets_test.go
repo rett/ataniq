@@ -46,7 +46,8 @@ func secretShapes() map[string]*regexp.Regexp {
 }
 
 // scanned reports whether a file of the family is one the scan reads: a test
-// file, anything under a testdata directory, and the catalog's data.
+// file, anything under a testdata directory, and the data of the catalog and
+// the plan templates.
 func scanned(path string) bool {
 	slashed := filepath.ToSlash(path)
 	return strings.HasSuffix(slashed, "_test.go") || strings.Contains(slashed, "/testdata/") || strings.HasSuffix(slashed, ".json")
@@ -58,6 +59,7 @@ func scanned(path string) bool {
 func TestNoKeyShapedLiteral(t *testing.T) {
 	shapes := secretShapes()
 	files := 0
+	dirs := map[string]bool{}
 	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -70,6 +72,7 @@ func TestNoKeyShapedLiteral(t *testing.T) {
 			return err
 		}
 		files++
+		dirs[filepath.ToSlash(filepath.Dir(path))] = true
 		for n, line := range strings.Split(string(data), "\n") {
 			for name, re := range shapes {
 				if re.MatchString(line) {
@@ -82,10 +85,16 @@ func TestNoKeyShapedLiteral(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The scan read the family: the tests of brief, catalog and canon, the
-	// testdata and the catalog.
+	// The scan read the family: the tests of brief, catalog, canon and plan,
+	// the testdata, the catalog and the plan templates.
 	if files < 8 {
 		t.Fatalf("the scan read %d files, want the whole family", files)
+	}
+	// The plan's tests, its golden plans and its templates among them.
+	for _, dir := range []string{"brief", "catalog", "plan", "plan/templates", "plan/testdata"} {
+		if !dirs[dir] {
+			t.Errorf("the scan read nothing in %s", dir)
+		}
 	}
 }
 

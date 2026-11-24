@@ -27,6 +27,9 @@ import (
 // packages: genesis-busy (a start past two open threads), genesis-unknown-thread,
 // genesis-done (a call to a thread that is finished) and genesis-stale-round
 // (an answer to a round the thread has already taken).
+//
+// The plan's refusals have no word: no plan is asked over the gate yet, and a
+// refusal of one is the host's.
 var gateWord = map[brief.Code]string{
 	brief.CodeSecretShaped: ownerwire.CodeGenesisSecretShaped,
 	brief.CodeTooLarge:     ownerwire.CodeGenesisOverCap,
@@ -43,6 +46,11 @@ var gateWord = map[brief.Code]string{
 	brief.CodeNotInferred:     "",
 	brief.CodeCatalogInvalid:  "",
 	brief.CodeCatalogMismatch: "",
+
+	brief.CodeBriefIncomplete: "",
+	brief.CodeTemplateMissing: "",
+	brief.CodeTemplateInvalid: "",
+	brief.CodePlanInvalid:     "",
 }
 
 // hostStateWords are the gate words of seat.genesis that no refusal of the
