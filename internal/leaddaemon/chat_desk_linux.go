@@ -112,8 +112,10 @@ type chatLead struct {
 	worker *chatWorker
 }
 
-// chatWorker is one scanner.
+// chatWorker is one scanner, of one generation of the lead's switch: the
+// segment the store's turn-on of that generation started.
 type chatWorker struct {
+	gen    int64
 	cancel context.CancelFunc
 	done   chan struct{}
 }
@@ -132,6 +134,12 @@ type chatDesk struct {
 	// beforeSeatRead, a test's hook, runs in a seat read after the desk's
 	// own checks and before the store's.
 	beforeSeatRead func(cl *chatLead)
+	// beforeSwitch, a test's hook, runs in chat.set read before the
+	// store's switch is set.
+	beforeSwitch func(cl *chatLead)
+	// afterScan, a test's hook, runs in a scanner after each scan, with
+	// whether it goes on, before an ending scanner lets go of the lead.
+	afterScan func(ctx context.Context, cl *chatLead, goOn bool)
 
 	mu     sync.Mutex
 	ctx    context.Context
@@ -400,20 +408,33 @@ func (d *chatDesk) seatRead(lead string, after int64, limit int) (ownerwire.Seat
 
 // ---- the scanner ----------------------------------------------------------
 
-// startWorker starts the scanner of the lead, in place of any it has. The
-// caller holds cl.setMu and not cl.mu. Nothing starts once the desk closed.
-func (d *chatDesk) startWorker(cl *chatLead) {
-	d.stopWorker(cl)
+// switched records the store's effective switch st, which SetSwitch
+// answered, in the desk, under the lead's lock: the desk's switch is read
+// exactly when the store's is, and a lead that is read and not stopped by a
+// scan has one scanner, of the store's generation. A scanner of the same
+// generation is kept; one of another generation, or of a lead that is off or
+// stopped, is let go of, and returned for the caller to end and wait for;
+// started says a new scanner was started. No scanner starts once the desk
+// closed. The caller holds cl.setMu.
+func (d *chatDesk) switched(cl *chatLead, st leadchat.Status) (old *chatWorker, started bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.closed {
-		return
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+	cl.on = st.Chat == ownerwire.ChatRead
+	if cl.on {
+		cl.lastHead = st.Head
+	}
+	want := cl.on && !st.Suspended && !cl.broken && !d.closed
+	if w := cl.worker; w != nil && (!want || w.gen != st.Gen) {
+		old, cl.worker = w, nil
+	}
+	if !want || cl.worker != nil {
+		return old, false
 	}
 	ctx, cancel := context.WithCancel(d.ctx)
-	w := &chatWorker{cancel: cancel, done: make(chan struct{})}
-	cl.mu.Lock()
+	w := &chatWorker{gen: st.Gen, cancel: cancel, done: make(chan struct{})}
 	cl.worker = w
-	cl.mu.Unlock()
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
@@ -427,6 +448,16 @@ func (d *chatDesk) startWorker(cl *chatLead) {
 		}
 		cl.mu.Unlock()
 	}()
+	return old, true
+}
+
+// endWorker ends a scanner the desk let go of and waits for it. The caller
+// holds no lock of the lead's but cl.setMu.
+func endWorker(w *chatWorker) {
+	if w != nil {
+		w.cancel()
+		<-w.done
+	}
 }
 
 // stopWorker ends the lead's scanner and waits for it. The caller holds
@@ -436,10 +467,7 @@ func (d *chatDesk) stopWorker(cl *chatLead) {
 	w := cl.worker
 	cl.worker = nil
 	cl.mu.Unlock()
-	if w != nil {
-		w.cancel()
-		<-w.done
-	}
+	endWorker(w)
 }
 
 // scan is one lead's scanner: a scan of its reply folder every interval
@@ -467,7 +495,11 @@ func (d *chatDesk) scan(ctx context.Context, cl *chatLead) {
 		if ctx.Err() != nil {
 			return
 		}
-		if !d.scanOnce(cl, &failing) {
+		goOn := d.scanOnce(cl, &failing)
+		if d.afterScan != nil {
+			d.afterScan(ctx, cl, goOn)
+		}
+		if !goOn {
 			return
 		}
 	}
@@ -625,7 +657,12 @@ func (d *chatDesk) setOff(cl *chatLead) {
 	}
 }
 
-// setRead turns the lead's chat on.
+// setRead turns the lead's chat on. The store's switch and the desk's are
+// changed together: whatever SetSwitch answers, the effective switch it
+// reports is what the desk records, with the scanner of its generation, so a
+// failed turn-on (a suspended lead is turned off first) leaves the desk off
+// as the seat sees it, and a scan that stopped the chat meanwhile cannot
+// leave a new segment without a scanner.
 func (d *chatDesk) setRead(cl *chatLead) *clientapi.ErrorBody {
 	d.mu.Lock()
 	closed := d.closed
@@ -634,7 +671,7 @@ func (d *chatDesk) setRead(cl *chatLead) *clientapi.ErrorBody {
 		return unavailable(msgChatStopping)
 	}
 	cl.mu.Lock()
-	store, broken := cl.store, cl.broken
+	store, broken, was := cl.store, cl.broken, cl.on
 	cl.mu.Unlock()
 	if store == nil || broken {
 		return unavailable(msgChatStore)
@@ -643,34 +680,28 @@ func (d *chatDesk) setRead(cl *chatLead) *clientapi.ErrorBody {
 	if !ok {
 		return unavailable(msgChatEpoch)
 	}
-	pre, err := store.Status()
-	if err != nil {
+	if d.beforeSwitch != nil {
+		d.beforeSwitch(cl)
+	}
+	st, err := store.SetSwitch(ownerwire.ChatRead, epoch)
+	if err != nil && storeDown(err) {
 		cl.mu.Lock()
 		d.markBroken(cl, err)
 		cl.mu.Unlock()
-		return unavailable(msgChatStore)
 	}
-	st, err := store.SetSwitch(ownerwire.ChatRead, epoch)
-	if err != nil {
-		if storeDown(err) {
-			cl.mu.Lock()
-			d.markBroken(cl, err)
-			cl.mu.Unlock()
-			return unavailable(msgChatStore)
-		}
+	old, started := d.switched(cl, st)
+	endWorker(old)
+	switch {
+	case err != nil && storeDown(err):
+		return unavailable(msgChatStore)
+	case err != nil:
 		d.logf("chat: the chat of the lead %q cannot be turned on (%s)", cl.key, chatErrWord(err))
+		if was && st.Chat != ownerwire.ChatRead {
+			d.logf("chat: the chat of the lead %q is off", cl.key)
+		}
 		return unavailable(msgChatFolder)
 	}
-	cl.mu.Lock()
-	was := cl.on
-	cl.on = true
-	cl.lastHead = st.Head
-	running := cl.worker != nil
-	cl.mu.Unlock()
-	// A lead that was off, or whose chat the scan stopped (the store turned
-	// it on afresh), gets a new scanner; one that is on keeps its own.
-	if !was || pre.Suspended || !running {
-		d.startWorker(cl)
+	if !was || started {
 		d.logf("chat: the chat of the lead %q is on (read)", cl.key)
 	}
 	return nil

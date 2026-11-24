@@ -814,7 +814,7 @@ show it:
 | Operation | Params | Result |
 | --- | --- | --- |
 | `chat.list` | none, or `{}` | `{"leads":[{"key","chat","seat","suspended","unavailable","head","entries","dropped"}]}`, one row per configured lead, in the config's order: the switch, whether the seat can list the lead, whether the scan stopped its chat, whether its store cannot be used, the highest sequence number given, how many entries the chat holds, and the counts of what was removed or left, by reason. Never a reply's text, a file name or a path. |
-| `chat.set` | `key`, `chat` (`off` or `read`) | The lead's row. `off` always succeeds: the switch is off before the answer, the scanner has ended, and the lead's entries are dropped. `read` turns the chat on (clearing the reply folder first, as below) and starts the lead's scanner; on a lead that is on it changes nothing, and on a lead whose chat the scan stopped it turns it on afresh. It is idempotent, so it takes no command id and keeps no receipt. |
+| `chat.set` | `key`, `chat` (`off` or `read`) | The lead's row. `off` always succeeds: the switch is off before the answer, the scanner has ended, and the lead's entries are dropped. `read` turns the chat on (clearing the reply folder first, as below) and starts the lead's scanner; on a lead that is on it changes nothing, and on a lead whose chat the scan stopped it turns it on afresh. The desk records the switch the store answers, under one lock with the lead's scanner, so a `read` that is refused leaves the lead as the store left it: a stopped chat, which is turned off before it is turned on afresh, is then `off` at the desk and on the seat, with no scanner. It is idempotent, so it takes no command id and keeps no receipt. |
 
 `chat.set` answers `chat-send-not-built` for `send`; `chat-key-unrepresentable`
 for a lead whose key is longer than 32 bytes (a seat's lead identifier is
@@ -840,8 +840,12 @@ a refusal (an unrepresentable key or a key that is not a lead), 31 when the
 lead's chat cannot be used, 20 when no daemon answers, and 2 for usage (`send`
 is refused there, before the daemon is asked).
 
-**The scanner.** While a lead's switch is read, one scanner of its own reads
-its reply folder every 2 seconds. A scanner ends when the switch goes off, when
+**The scanner.** While a lead's switch is read and its chat is not stopped,
+one scanner of its own reads its reply folder every 2 seconds. The scanner
+belongs to the generation of the switch that started it: a turn-on that starts
+a new conversation (also of a chat a scan stopped meanwhile) gets a scanner of
+its own and ends the earlier one, so a new conversation is never left without
+one. A scanner ends when the switch goes off, when
 a scan stops the lead's chat, when the lead's store fails, and when the daemon
 stops, which waits for it like the ready observers. A scan that fails otherwise
 (an error of the file system) is tried again at the next tick and logged once.

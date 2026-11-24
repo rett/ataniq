@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1240,6 +1241,42 @@ func TestQuarantineIsBounded(t *testing.T) {
 	}
 	if n := e.list(filepath.Join(e.quarDir(), "2")); !slices.Equal(n, []string{"left.txt"}) {
 		t.Fatalf("set aside %q", n)
+	}
+}
+
+// SetSwitch answers the effective switch, also when it fails: a stopped
+// chat whose fresh turn-on is refused is off, at a new generation.
+func TestSetSwitchAnswersTheEffectiveSwitch(t *testing.T) {
+	e := newEnv(t)
+	s := e.on()
+	if err := os.Rename(e.outbox, e.outbox+".old"); err != nil {
+		t.Fatal(err)
+	}
+	e.makeOutbox(testRole)
+	if rep := ingest(t, s); !rep.Suspended {
+		t.Fatalf("report %+v", rep)
+	}
+	for i := 2; i <= MaxQuarantine; i++ {
+		if err := os.WriteFile(filepath.Join(e.quarDir(), strconv.Itoa(i)), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(e.quarDir(), "1", "x"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := s.SetSwitch("read", 1)
+	if !errors.Is(err, ErrQuarantined) || st.Chat != "off" || st.Suspended || st.Gen != 2 {
+		t.Fatalf("SetSwitch read: %+v, %v", st, err)
+	}
+	st, err = s.SetSwitch("read", 1)
+	if !errors.Is(err, ErrQuarantined) || st.Chat != "off" || st.Gen != 2 {
+		t.Fatalf("SetSwitch read again: %+v, %v", st, err)
+	}
+	if err := os.Remove(filepath.Join(e.quarDir(), "4")); err != nil {
+		t.Fatal(err)
+	}
+	if st, err = s.SetSwitch("read", 1); err != nil || st.Chat != "read" || st.Gen != 3 {
+		t.Fatalf("SetSwitch read with a free name: %+v, %v", st, err)
 	}
 }
 

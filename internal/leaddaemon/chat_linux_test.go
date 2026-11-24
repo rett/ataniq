@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -601,6 +602,196 @@ func TestChatSeatReadOfAChatStoppedMeanwhileIsBusy(t *testing.T) {
 	if _, err := seatRead(port, "alpha", 0); gateCode(err) != ownerwire.CodeChatBusy {
 		t.Fatalf("a later read: %v", err)
 	}
+}
+
+// fillQuarantine fills the lead's quarantine with four entries that hold
+// something (a folder already there gets a file), so that a turn-on that
+// must set one more aside is refused.
+func (l *leadEnv) fillQuarantine(key string) {
+	l.t.Helper()
+	p, err := provision.PathsOf(l.cfgOf(key))
+	if err != nil {
+		l.t.Fatal(err)
+	}
+	q := filepath.Join(p.LeadDir, leadchat.QuarantineName)
+	if err := os.Mkdir(q, 0o700); err != nil && !os.IsExist(err) {
+		l.t.Fatal(err)
+	}
+	for i := 1; i <= leadchat.MaxQuarantine; i++ {
+		name := filepath.Join(q, strconv.Itoa(i))
+		if fi, err := os.Lstat(name); err == nil && fi.IsDir() {
+			// A folder set aside that holds something is not freed.
+			name = filepath.Join(name, "kept")
+		}
+		if err := os.WriteFile(name, []byte("set aside"), 0o600); err != nil {
+			l.t.Fatal(err)
+		}
+	}
+}
+
+// workerOf is the lead's scanner and its generation, under the lead's lock.
+func workerOf(d *chatDesk, key string) (bool, int64) {
+	cl := d.byKey[key]
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+	if cl.worker == nil {
+		return false, 0
+	}
+	return true, cl.worker.gen
+}
+
+// The switch and its scanner change together, whichever way a scan that
+// stops the chat interleaves with chat.set read.
+func TestChatSwitchAndScannerChangeTogether(t *testing.T) {
+	// The scanner stops the chat and is held before it lets go of the lead;
+	// chat.set read turns the chat on afresh meanwhile: the new segment gets
+	// a scanner of its own generation, and the old one ends.
+	t.Run("the scanner ends after the switch", func(t *testing.T) {
+		l, port := newChatEnv(t)
+		l.start()
+		l.up("alpha", submitted)
+		d := deskOf(t, port)
+		held := make(chan struct{})
+		release := make(chan struct{})
+		var once sync.Once
+		d.afterScan = func(ctx context.Context, cl *chatLead, goOn bool) {
+			if goOn {
+				return
+			}
+			once.Do(func() {
+				close(held)
+				<-release
+			})
+		}
+		l.mustChatSet("alpha", leadwire.ChatRead)
+		_, before := workerOf(d, "alpha")
+		out := l.outboxOf("alpha")
+		if err := os.Rename(out, out+"-old"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(out, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-held:
+		case <-time.After(15 * time.Second):
+			t.Fatal("the scanner did not stop the chat")
+		}
+		set := make(chan leadwire.ChatLead, 1)
+		go func() {
+			r, err := l.chatSet("alpha", leadwire.ChatRead)
+			if err != nil {
+				t.Error(err)
+			}
+			set <- r
+		}()
+		// chat.set waits for the old scanner, which ends once released.
+		time.Sleep(100 * time.Millisecond)
+		close(release)
+		var r leadwire.ChatLead
+		select {
+		case r = <-set:
+		case <-time.After(15 * time.Second):
+			t.Fatal("chat.set did not return")
+		}
+		if r.Chat != leadwire.ChatRead || r.Suspended {
+			t.Fatalf("the row after read: %+v", r)
+		}
+		running, gen := workerOf(d, "alpha")
+		if !running || gen == before {
+			t.Fatalf("the new segment's scanner: running %v, generation %d (was %d)", running, gen, before)
+		}
+		reply(t, out, "0001-after.txt", "after")
+		waitFor(t, 15*time.Second, "the new segment's reply is taken", func() bool { return l.chatRow("alpha").Entries == 2 })
+	})
+	// The scanner stops the chat and lets go of the lead before chat.set
+	// read: a new scanner starts with the new segment.
+	t.Run("the scanner ends before the switch", func(t *testing.T) {
+		l, port := newChatEnv(t)
+		l.start()
+		l.up("alpha", submitted)
+		d := deskOf(t, port)
+		l.mustChatSet("alpha", leadwire.ChatRead)
+		out := l.outboxOf("alpha")
+		if err := os.Rename(out, out+"-old"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(out, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, 15*time.Second, "the scanner ends", func() bool { running, _ := workerOf(d, "alpha"); return !running })
+		r := l.mustChatSet("alpha", leadwire.ChatRead)
+		if r.Chat != leadwire.ChatRead || r.Suspended {
+			t.Fatalf("the row after read: %+v", r)
+		}
+		if running, _ := workerOf(d, "alpha"); !running {
+			t.Fatal("no scanner after read")
+		}
+		reply(t, out, "0001-after.txt", "after")
+		waitFor(t, 15*time.Second, "the new segment's reply is taken", func() bool { return l.chatRow("alpha").Entries == 2 })
+	})
+	// A scan stops the chat right before the store's switch is set: the
+	// switch turns it on afresh, with a scanner of the new generation.
+	t.Run("the chat stops right before the switch", func(t *testing.T) {
+		l, port := newChatEnv(t)
+		l.start()
+		l.up("alpha", submitted)
+		d := deskOf(t, port)
+		l.mustChatSet("alpha", leadwire.ChatRead)
+		out := l.outboxOf("alpha")
+		d.beforeSwitch = func(cl *chatLead) {
+			d.beforeSwitch = nil
+			if err := os.Rename(out, out+"-old"); err != nil {
+				t.Error(err)
+			}
+			if err := os.Mkdir(out, 0o700); err != nil {
+				t.Error(err)
+			}
+			if rep, _ := cl.store.Ingest(0); !rep.Suspended {
+				t.Error("the hook's scan did not stop the chat")
+			}
+		}
+		r := l.mustChatSet("alpha", leadwire.ChatRead)
+		if r.Chat != leadwire.ChatRead || r.Suspended {
+			t.Fatalf("the row after read: %+v", r)
+		}
+		reply(t, out, "0001-after.txt", "after")
+		waitFor(t, 15*time.Second, "the new segment's reply is taken", func() bool { return l.chatRow("alpha").Entries == 2 })
+	})
+	// A stopped chat that cannot be turned on again (its quarantine is full)
+	// is off at the desk and on the seat, with no scanner: the store turned
+	// it off before the turn-on was refused.
+	t.Run("a failed turn-on of a stopped chat", func(t *testing.T) {
+		l, port := newChatEnv(t)
+		l.start()
+		l.up("alpha", submitted)
+		d := deskOf(t, port)
+		l.mustChatSet("alpha", leadwire.ChatRead)
+		out := l.outboxOf("alpha")
+		if err := os.Rename(out, out+"-old"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(out, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, 15*time.Second, "the chat is stopped", func() bool { return l.chatRow("alpha").Suspended })
+		l.fillQuarantine("alpha")
+		if _, err := l.chatSet("alpha", leadwire.ChatRead); err == nil {
+			t.Fatal("the turn-on with a full quarantine was not refused")
+		}
+		if r := l.chatRow("alpha"); r.Chat != leadwire.ChatOff || r.Suspended || r.Unavailable {
+			t.Fatalf("the desk's row: %+v", r)
+		}
+		if rows := seatLeads(t, port); rows[0].Chat != ownerwire.ChatOff {
+			t.Fatalf("the seat's row: %+v", rows[0])
+		}
+		if _, err := seatRead(port, "alpha", 0); gateCode(err) != ownerwire.CodeChatOff {
+			t.Fatalf("a seat read: %v", err)
+		}
+		if running, _ := workerOf(d, "alpha"); running {
+			t.Fatal("a scanner runs for a lead that is off")
+		}
+	})
 }
 
 // The define makes the reply folder (mode 0700) and writes the instruction

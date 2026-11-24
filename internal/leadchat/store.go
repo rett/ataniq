@@ -770,6 +770,11 @@ func (s *Store) Close() error {
 func (s *Store) Status() (Status, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.status()
+}
+
+// status is Status; the caller holds s.mu.
+func (s *Store) status() (Status, error) {
 	if err := s.usable(); err != nil {
 		return Status{}, err
 	}
@@ -838,9 +843,13 @@ func (s *Store) read(after int64, seat bool) (entries []Entry, reset bool, head 
 }
 
 // SetSwitch sets the lead's chat switch to off or read, at once, and answers
-// the status. Setting the switch it already has changes nothing, except that
-// read on a suspended lead turns it on afresh. send is never accepted here
-// ([ErrInvalid]).
+// the status the switch left, taken under the same lock: its Chat, Suspended
+// and Gen are the effective switch, and no scan comes between. A call that
+// fails answers the effective status too, when the store can still say it
+// (a failed turn-on of a suspended lead leaves it off), and a zero Status
+// otherwise. Setting the switch it already has changes nothing, except that
+// read on a suspended lead turns it on afresh, with a new generation. send is
+// never accepted here ([ErrInvalid]).
 //
 // Off to read starts a segment with an outbox made for it. The lead's home
 // must be there ([ErrUnavailable]) and reached without a link or a mount
@@ -873,12 +882,16 @@ func (s *Store) SetSwitch(chat string, epoch int64) (Status, error) {
 		return Status{}, fmt.Errorf("%w: the epoch is out of range", ErrInvalid)
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	err := s.setSwitch(chat, epoch)
-	s.mu.Unlock()
-	if err != nil {
+	st, serr := s.status()
+	switch {
+	case err != nil && serr != nil:
 		return Status{}, err
+	case err != nil:
+		return st, err
 	}
-	return s.Status()
+	return st, serr
 }
 
 func (s *Store) setSwitch(chat string, epoch int64) error {
