@@ -6,35 +6,36 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"ataniq/internal/genesis/brief"
 	"ataniq/internal/genesis/internal/canon"
 )
 
-// timeLayout is the one form of a time: RFC 3339 in UTC to the second.
-const timeLayout = "2006-01-02T15:04:05Z"
-
-// maxDepth is how deep a plan nests: the envelope, the plan, the
-// milestones, a milestone, its tasks, a task and its lists need seven
-// levels.
+// maxDepth is how deep a plan nests: the plan, the milestones, a
+// milestone, its tasks, a task and its lists need six levels.
 const maxDepth = 8
 
 func invalid(detail string) error { return fail(brief.CodePlanInvalid, detail) }
 
-// Check checks every rule of the record: the schema, the revision, the
-// digests, the template, the texts and their caps, the milestones and the
-// tasks (ids unique and in order, every dependency a task of the plan,
-// no cycle), the closed lists (kinds, tiers, areas, checks, review points,
-// hosts, services, spends, estimate bands and the never-list), and the
-// notes. [Decode] holds a plan to it, and [Compile] holds its own result to
-// it.
+// Check checks the record on its own: the schema, the revision and the
+// digest before it, the digests, the template's id and version, the texts
+// and their caps, the milestones and the tasks (ids unique and in order,
+// every dependency a task before it, so no cycle), the grammar of area
+// names and check ids, the closed lists of the record (kinds, sizes,
+// review points, hosts, services, budget bands, estimate bands, warnings)
+// and the notes. It never reads a template: a plan compiled from a template
+// that is no longer embedded still holds. [Decode] holds a plan to it, and
+// [Compile] holds its own result to it.
 func Check(p Plan) error {
 	switch {
 	case p.Schema != Schema:
 		return invalid("plan.schema is not " + Schema)
 	case p.Revision < 1 || p.Revision > MaxRevision:
 		return invalid("plan.plan is not a revision from 1 to 9999")
+	case (p.Revision == 1) != (p.PrevDigest == ""):
+		return invalid("plan.prev_digest is empty exactly for revision 1")
+	case p.PrevDigest != "" && !isLowerHex64(p.PrevDigest):
+		return invalid("plan.prev_digest is not a SHA-256 digest in lower-case hexadecimal")
 	case !isLowerHex64(p.BriefDigest):
 		return invalid("plan.brief_digest is not a SHA-256 digest in lower-case hexadecimal")
 	case !isLowerHex64(p.CatalogDigest):
@@ -43,8 +44,8 @@ func Check(p Plan) error {
 		return invalid("plan.template.id is not a template id")
 	case !validVersion(p.Template.Version):
 		return invalid("plan.template.version is not a version id")
-	case !isLowerHex64(p.Template.Digest):
-		return invalid("plan.template.digest is not a SHA-256 digest in lower-case hexadecimal")
+	case !isLowerHex64(p.TemplateDigest):
+		return invalid("plan.template_digest is not a SHA-256 digest in lower-case hexadecimal")
 	}
 	if err := checkText(p.Title, MaxTitle, "plan.title", invalid); err != nil {
 		return err
@@ -58,37 +59,32 @@ func Check(p Plan) error {
 	if len(p.Gates) == 0 {
 		return invalid("plan.gates is empty")
 	}
-	if err := checkSet(p.Gates, Checks, "plan.gates"); err != nil {
+	if err := checkSet(p.Gates, validCheckID, "plan.gates"); err != nil {
 		return err
 	}
 	if len(p.ReviewPoints) == 0 {
 		return invalid("plan.review_points is empty")
 	}
-	if err := checkSet(p.ReviewPoints, ReviewPoints, "plan.review_points"); err != nil {
+	if err := checkSet(p.ReviewPoints, in(ReviewPoints), "plan.review_points"); err != nil {
 		return err
 	}
 	if !contains(Hosts, p.Hosts) {
 		return invalid("plan.hosts is not one of the hosts")
 	}
-	if err := checkSet(p.ExternalServices, Services, "plan.external_services"); err != nil {
+	if err := checkSet(p.ExternalServices, in(Services), "plan.external_services"); err != nil {
 		return err
 	}
-	if !contains(Spends, p.Spend) {
-		return invalid("plan.spend is not one of the ceilings")
+	if !contains(BudgetBands, p.BudgetBand) {
+		return invalid("plan.budget_band is not one of the bands")
 	}
 	if b, ok := bandOf(p.Estimate.Band); !ok || b.Label != p.Estimate.Label {
 		return invalid("plan.estimate is not one of the bands with its label")
 	}
-	if len(p.Never) != len(Never) {
-		return invalid("plan.never is not the never-list")
-	}
-	for i, n := range Never {
-		if p.Never[i] != n {
-			return invalid("plan.never is not the never-list")
-		}
+	if err := checkSet(p.Warnings, in(Warnings), "plan.warnings"); err != nil {
+		return err
 	}
 	if len(p.Notes) > MaxNotes {
-		return fail(brief.CodeTooLarge, "the plan quotes more than 8 notes")
+		return fail(brief.CodeTooLarge, "the plan holds more than 8 notes")
 	}
 	for i, n := range p.Notes {
 		where := "plan.notes[" + strconv.Itoa(i) + "]"
@@ -103,16 +99,15 @@ func Check(p Plan) error {
 		return invalid("plan.notes_dropped is out of range")
 	}
 	if p.NotesDropped > 0 && len(p.Notes) < MaxNotes {
-		return invalid("plan.notes_dropped counts notes the plan had room to quote")
+		return invalid("plan.notes_dropped counts notes the plan had room for")
 	}
 	return nil
 }
 
 func checkMilestones(ms []Milestone) error {
 	if len(ms) == 0 || len(ms) > MaxMilestones {
-		return invalid("plan.milestones does not hold 1 to 8 milestones")
+		return invalid("plan.milestones does not hold 1 to 4 milestones")
 	}
-	all := map[string]int{}
 	var tasks []Task
 	last := 0
 	for i, m := range ms {
@@ -134,14 +129,14 @@ func checkMilestones(ms []Milestone) error {
 		if len(m.Tasks) == 0 || len(m.Tasks) > MaxTasksPerMilestone {
 			return invalid(where + ".tasks does not hold 1 to 6 tasks")
 		}
-		for _, t := range m.Tasks {
-			all[t.ID] = len(tasks)
-			tasks = append(tasks, t)
-		}
+		tasks = append(tasks, m.Tasks...)
 	}
 	if len(tasks) > MaxTasks {
-		return invalid("the plan holds more than 40 tasks")
+		return invalid("the plan holds more than 12 tasks")
 	}
+	// Tasks are in the order of their ids, and a task waits only for a
+	// task before it: the dependencies form no cycle.
+	before := map[string]bool{}
 	last = 0
 	for i, t := range tasks {
 		where := "plan.tasks[" + strconv.Itoa(i) + "]"
@@ -159,16 +154,16 @@ func checkMilestones(ms []Milestone) error {
 		if !contains(Kinds, t.Kind) {
 			return invalid(where + ".kind is not one of the kinds")
 		}
-		if !contains(Tiers, t.Tier) {
-			return invalid(where + ".tier is not one of the tiers")
+		if _, ok := Sizes[t.Size]; !ok {
+			return invalid(where + ".size is not one of the sizes")
 		}
 		if len(t.Scope) == 0 {
 			return invalid(where + ".scope is empty")
 		}
-		if err := checkSet(t.Scope, Areas, where+".scope"); err != nil {
+		if err := checkSet(t.Scope, validArea, where+".scope"); err != nil {
 			return err
 		}
-		if err := checkSet(t.Checks, Checks, where+".checks"); err != nil {
+		if err := checkSet(t.Checks, validCheckID, where+".checks"); err != nil {
 			return err
 		}
 		prev := 0
@@ -177,52 +172,32 @@ func checkMilestones(ms []Milestone) error {
 			if !ok {
 				return invalid(where + ".depends_on names an id that is not a task id")
 			}
-			if _, ok := all[d]; !ok {
-				return invalid(where + ".depends_on names a task the plan does not hold")
-			}
 			if d == t.ID {
 				return invalid(where + ".depends_on names the task itself")
 			}
+			if !before[d] {
+				return invalid(where + ".depends_on names a task that is not before it in the plan")
+			}
 			if dn <= prev {
-				return invalid(where + ".depends_on is not sorted, or repeats an id")
+				return invalid(where + ".depends_on is not in order, or repeats an id")
 			}
 			prev = dn
 		}
-	}
-	// The dependencies form no cycle.
-	const visiting, done = 1, 2
-	state := make([]int, len(tasks))
-	var visit func(i int) bool
-	visit = func(i int) bool {
-		switch state[i] {
-		case visiting:
-			return false
-		case done:
-			return true
-		}
-		state[i] = visiting
-		for _, d := range tasks[i].DependsOn {
-			if !visit(all[d]) {
-				return false
-			}
-		}
-		state[i] = done
-		return true
-	}
-	for i := range tasks {
-		if !visit(i) {
-			return invalid("the dependencies of the tasks form a cycle")
-		}
+		before[t.ID] = true
 	}
 	return nil
 }
 
+func in(closed []string) func(string) bool {
+	return func(s string) bool { return contains(closed, s) }
+}
+
 // checkSet checks that list is sorted, holds no item twice and holds only
-// items of closed.
-func checkSet(list, closed []string, where string) error {
+// items ok accepts.
+func checkSet(list []string, ok func(string) bool, where string) error {
 	for i, s := range list {
-		if !contains(closed, s) {
-			return invalid(where + " names an item outside its closed list")
+		if !ok(s) {
+			return invalid(where + " names an item that is not one of its kind")
 		}
 		if i > 0 && list[i-1] >= s {
 			return invalid(where + " is not sorted, or repeats an item")
@@ -231,8 +206,32 @@ func checkSet(list, closed []string, where string) error {
 	return nil
 }
 
-// checkText holds the rules of a host text: 1 to max bytes of plain text,
-// no leading or trailing space, no markup character and no web address.
+// validArea reports whether s is an area name: repo: or store:, then a
+// lower-case letter and up to 31 lower-case letters, digits and "-".
+func validArea(s string) bool {
+	prefix, name, ok := strings.Cut(s, ":")
+	return ok && (prefix == "repo" || prefix == "store") && validWord(name, 32)
+}
+
+// validCheckID reports whether s is a check id: a lower-case letter and up
+// to 31 lower-case letters, digits and "-".
+func validCheckID(s string) bool { return validWord(s, 32) }
+
+func validWord(s string, max int) bool {
+	if len(s) == 0 || len(s) > max || s[0] < 'a' || s[0] > 'z' {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; !(c >= 'a' && c <= 'z') && !(c >= '0' && c <= '9') && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+// checkText holds the rules of a host text, the catalog's: 1 to max bytes
+// of plain text, no leading or trailing space, no markup character and no
+// web address.
 func checkText(s string, max int, where string, refuse func(string) error) error {
 	lower := strings.ToLower(s)
 	switch {
@@ -293,7 +292,7 @@ func bandOf(id string) (Band, bool) {
 }
 
 // Encode returns the canonical form of a valid plan: keys sorted, no
-// whitespace. The time of the compile is not part of it.
+// whitespace.
 func Encode(p Plan) ([]byte, error) {
 	if err := Check(p); err != nil {
 		return nil, err
@@ -303,14 +302,14 @@ func Encode(p Plan) ([]byte, error) {
 		return nil, invalid("the plan does not encode: " + err.Error())
 	}
 	if len(out) > MaxPlanBytes {
-		return nil, fail(brief.CodeTooLarge, "the plan is larger than 32768 bytes")
+		return nil, fail(brief.CodeTooLarge, "the plan is larger than 12288 bytes")
 	}
 	return out, nil
 }
 
 // Digest returns the SHA-256 of the canonical form of a valid plan, in
-// lower-case hexadecimal. The revision number is part of it, and the time
-// of the compile is not.
+// lower-case hexadecimal. The revision number and the digest of the
+// revision before are part of it.
 func Digest(p Plan) (string, error) {
 	out, err := Encode(p)
 	if err != nil {
@@ -329,7 +328,7 @@ func planValue(p Plan) canon.Value {
 				canon.M("id", canon.Str(t.ID)),
 				canon.M("title", canon.Str(t.Title)),
 				canon.M("kind", canon.Str(string(t.Kind))),
-				canon.M("tier", canon.Str(string(t.Tier))),
+				canon.M("size", canon.Str(string(t.Size))),
 				canon.M("depends_on", canon.Strs(t.DependsOn)),
 				canon.M("scope", canon.Strs(t.Scope)),
 				canon.M("checks", canon.Strs(t.Checks)),
@@ -353,13 +352,14 @@ func planValue(p Plan) canon.Value {
 	return canon.Obj(
 		canon.M("schema", canon.Str(p.Schema)),
 		canon.M("plan", canon.Num(int64(p.Revision))),
+		canon.M("prev_digest", canon.Str(p.PrevDigest)),
 		canon.M("brief_digest", canon.Str(p.BriefDigest)),
 		canon.M("catalog_digest", canon.Str(p.CatalogDigest)),
 		canon.M("template", canon.Obj(
 			canon.M("id", canon.Str(p.Template.ID)),
 			canon.M("version", canon.Str(p.Template.Version)),
-			canon.M("digest", canon.Str(p.Template.Digest)),
 		)),
+		canon.M("template_digest", canon.Str(p.TemplateDigest)),
 		canon.M("title", canon.Str(p.Title)),
 		canon.M("milestones", canon.List(ms...)),
 		canon.M("gates", canon.Strs(p.Gates)),
@@ -367,14 +367,17 @@ func planValue(p Plan) canon.Value {
 		canon.M("review_points", canon.Strs(p.ReviewPoints)),
 		canon.M("hosts", canon.Str(p.Hosts)),
 		canon.M("external_services", canon.Strs(p.ExternalServices)),
-		canon.M("spend", canon.Str(p.Spend)),
+		canon.M("budget_band", canon.Obj(
+			canon.M("id", canon.Str(p.BudgetBand)),
+			canon.M("enforcement", canon.Str(Enforcement)),
+		)),
 		canon.M("estimate", canon.Obj(
 			canon.M("band", canon.Str(p.Estimate.Band)),
 			canon.M("label", canon.Str(p.Estimate.Label)),
 			canon.M("estimate", canon.Boolean(true)),
 			canon.M("caveat", canon.Str(EstimateCaveat)),
 		)),
-		canon.M("never", canon.Strs(p.Never)),
+		canon.M("warnings", canon.Strs(p.Warnings)),
 		canon.M("notes", canon.List(notes...)),
 		canon.M("notes_dropped", canon.Num(int64(p.NotesDropped))),
 	)
@@ -385,20 +388,15 @@ func planValue(p Plan) canon.Value {
 // control character, no repeated key), an unknown or missing field, and a
 // plan that breaks any rule of [Check]. It accepts any JSON spelling of a
 // valid plan; decoding a canonical plan and encoding it gives the same
-// bytes. The plan it returns has no time of compile: that is the
-// envelope's.
+// bytes. It reads no template.
 func Decode(data []byte) (Plan, error) {
 	if len(data) > MaxPlanBytes {
-		return Plan{}, fail(brief.CodeTooLarge, "the plan is larger than 32768 bytes")
+		return Plan{}, fail(brief.CodeTooLarge, "the plan is larger than 12288 bytes")
 	}
 	v, err := canon.Parse(data, maxDepth)
 	if err != nil {
 		return Plan{}, invalid(err.Error())
 	}
-	return decodeChecked(v)
-}
-
-func decodeChecked(v canon.Value) (Plan, error) {
 	p, err := decodePlan(v)
 	if err != nil {
 		return Plan{}, err
@@ -414,9 +412,9 @@ func wrap(err error) error { return invalid(err.Error()) }
 
 func decodePlan(v canon.Value) (Plan, error) {
 	m, err := canon.Fields(v, "plan", []string{
-		"schema", "plan", "brief_digest", "catalog_digest", "template", "title", "milestones", "gates",
-		"first_demo", "review_points", "hosts", "external_services", "spend", "estimate", "never", "notes",
-		"notes_dropped",
+		"schema", "plan", "prev_digest", "brief_digest", "catalog_digest", "template", "template_digest", "title",
+		"milestones", "gates", "first_demo", "review_points", "hosts", "external_services", "budget_band",
+		"estimate", "warnings", "notes", "notes_dropped",
 	}, nil)
 	if err != nil {
 		return Plan{}, wrap(err)
@@ -433,16 +431,17 @@ func decodePlan(v canon.Value) (Plan, error) {
 		}
 	}
 	str("schema", &p.Schema)
+	str("prev_digest", &p.PrevDigest)
 	str("brief_digest", &p.BriefDigest)
 	str("catalog_digest", &p.CatalogDigest)
+	str("template_digest", &p.TemplateDigest)
 	str("title", &p.Title)
 	str("first_demo", &p.FirstDemo)
 	str("hosts", &p.Hosts)
-	str("spend", &p.Spend)
-	strs("gates", &p.Gates, len(Checks))
+	strs("gates", &p.Gates, MaxTasks*4)
 	strs("review_points", &p.ReviewPoints, len(ReviewPoints))
 	strs("external_services", &p.ExternalServices, len(Services))
-	strs("never", &p.Never, len(Never))
+	strs("warnings", &p.Warnings, len(Warnings))
 	if err == nil {
 		p.Revision, err = canon.AsInt(m["plan"], "plan.plan", 1, MaxRevision)
 	}
@@ -452,14 +451,25 @@ func decodePlan(v canon.Value) (Plan, error) {
 	if err != nil {
 		return Plan{}, wrap(err)
 	}
-	tm, err := canon.Fields(m["template"], "plan.template", []string{"id", "version", "digest"}, nil)
+	tm, err := canon.Fields(m["template"], "plan.template", []string{"id", "version"}, nil)
 	if err != nil {
 		return Plan{}, wrap(err)
 	}
-	for key, dst := range map[string]*string{"id": &p.Template.ID, "version": &p.Template.Version, "digest": &p.Template.Digest} {
-		if *dst, err = canon.AsString(tm[key], "plan.template."+key); err != nil {
-			return Plan{}, wrap(err)
-		}
+	if p.Template.ID, err = canon.AsString(tm["id"], "plan.template.id"); err != nil {
+		return Plan{}, wrap(err)
+	}
+	if p.Template.Version, err = canon.AsString(tm["version"], "plan.template.version"); err != nil {
+		return Plan{}, wrap(err)
+	}
+	bm, err := canon.Fields(m["budget_band"], "plan.budget_band", []string{"id", "enforcement"}, nil)
+	if err != nil {
+		return Plan{}, wrap(err)
+	}
+	if p.BudgetBand, err = canon.AsString(bm["id"], "plan.budget_band.id"); err != nil {
+		return Plan{}, wrap(err)
+	}
+	if e, err := canon.AsString(bm["enforcement"], "plan.budget_band.enforcement"); err != nil || e != Enforcement {
+		return Plan{}, invalid("plan.budget_band.enforcement is not advisory")
 	}
 	em, err := canon.Fields(m["estimate"], "plan.estimate", []string{"band", "label", "estimate", "caveat"}, nil)
 	if err != nil {
@@ -482,7 +492,7 @@ func decodePlan(v canon.Value) (Plan, error) {
 		return Plan{}, invalid("plan.milestones is not a list")
 	}
 	if len(mv.Arr) > MaxMilestones {
-		return Plan{}, invalid("plan.milestones does not hold 1 to 8 milestones")
+		return Plan{}, invalid("plan.milestones does not hold 1 to 4 milestones")
 	}
 	p.Milestones = make([]Milestone, len(mv.Arr))
 	for i, e := range mv.Arr {
@@ -495,7 +505,7 @@ func decodePlan(v canon.Value) (Plan, error) {
 		return Plan{}, invalid("plan.notes is not a list")
 	}
 	if len(nv.Arr) > MaxNotes {
-		return Plan{}, fail(brief.CodeTooLarge, "the plan quotes more than 8 notes")
+		return Plan{}, fail(brief.CodeTooLarge, "the plan holds more than 8 notes")
 	}
 	p.Notes = make([]Note, len(nv.Arr))
 	for i, e := range nv.Arr {
@@ -525,7 +535,8 @@ func decodeMilestone(v canon.Value, where string) (Milestone, error) {
 		return Milestone{}, wrap(err)
 	}
 	var ms Milestone
-	for key, dst := range map[string]*string{"id": &ms.ID, "title": &ms.Title, "goal": &ms.Goal} {
+	for _, key := range []string{"id", "title", "goal"} {
+		dst := map[string]*string{"id": &ms.ID, "title": &ms.Title, "goal": &ms.Goal}[key]
 		if *dst, err = canon.AsString(m[key], where+"."+key); err != nil {
 			return Milestone{}, wrap(err)
 		}
@@ -540,100 +551,27 @@ func decodeMilestone(v canon.Value, where string) (Milestone, error) {
 	ms.Tasks = make([]Task, len(tv.Arr))
 	for i, e := range tv.Arr {
 		tw := where + ".tasks[" + strconv.Itoa(i) + "]"
-		tm, err := canon.Fields(e, tw, []string{"id", "title", "kind", "tier", "depends_on", "scope", "checks"}, nil)
+		tm, err := canon.Fields(e, tw, []string{"id", "title", "kind", "size", "depends_on", "scope", "checks"}, nil)
 		if err != nil {
 			return Milestone{}, wrap(err)
 		}
 		t := &ms.Tasks[i]
-		var kind, tier string
-		for key, dst := range map[string]*string{"id": &t.ID, "title": &t.Title, "kind": &kind, "tier": &tier} {
+		var kind, size string
+		for _, key := range []string{"id", "title", "kind", "size"} {
+			dst := map[string]*string{"id": &t.ID, "title": &t.Title, "kind": &kind, "size": &size}[key]
 			if *dst, err = canon.AsString(tm[key], tw+"."+key); err != nil {
 				return Milestone{}, wrap(err)
 			}
 		}
-		t.Kind, t.Tier = Kind(kind), Tier(tier)
-		for key, dst := range map[string]*[]string{"depends_on": &t.DependsOn, "scope": &t.Scope, "checks": &t.Checks} {
-			if *dst, err = canon.AsStrings(tm[key], tw+"."+key, MaxTasks); err != nil {
+		t.Kind, t.Size = Kind(kind), Size(size)
+		for _, key := range []string{"depends_on", "scope", "checks"} {
+			dst := map[string]*[]string{"depends_on": &t.DependsOn, "scope": &t.Scope, "checks": &t.Checks}[key]
+			if *dst, err = canon.AsStrings(tm[key], tw+"."+key, MaxTasks*2); err != nil {
 				return Milestone{}, wrap(err)
 			}
 		}
 	}
 	return ms, nil
-}
-
-// EncodeEnvelope returns the canonical form of a plan in its envelope:
-// {"compiled_at", "digest", "plan"}, where compiled_at is the time of the
-// compile and digest the plan's [Digest]. The envelope is what a store
-// keeps; the plan inside it is what the digest covers.
-func EncodeEnvelope(p Plan) ([]byte, error) {
-	if !validTime(p.CompiledAt) {
-		return nil, invalid("the time of the compile is not a time in UTC to the second")
-	}
-	if err := Check(p); err != nil {
-		return nil, err
-	}
-	d, err := Digest(p)
-	if err != nil {
-		return nil, err
-	}
-	out, err := canon.Encode(canon.Obj(
-		canon.M("compiled_at", canon.Str(p.CompiledAt.Format(timeLayout))),
-		canon.M("digest", canon.Str(d)),
-		canon.M("plan", planValue(p)),
-	))
-	if err != nil {
-		return nil, invalid("the envelope does not encode: " + err.Error())
-	}
-	return out, nil
-}
-
-// DecodeEnvelope reads a plan in its envelope strictly, as [Decode] does,
-// and refuses one whose digest is not the plan's. The plan it returns
-// carries the time of the compile.
-func DecodeEnvelope(data []byte) (Plan, error) {
-	if len(data) > MaxEnvelopeBytes {
-		return Plan{}, fail(brief.CodeTooLarge, "the envelope is larger than 33024 bytes")
-	}
-	v, err := canon.Parse(data, maxDepth)
-	if err != nil {
-		return Plan{}, invalid(err.Error())
-	}
-	m, err := canon.Fields(v, "envelope", []string{"compiled_at", "digest", "plan"}, nil)
-	if err != nil {
-		return Plan{}, wrap(err)
-	}
-	at, err := canon.AsString(m["compiled_at"], "envelope.compiled_at")
-	if err != nil {
-		return Plan{}, wrap(err)
-	}
-	t, err := time.Parse(timeLayout, at)
-	if err != nil || t.Format(timeLayout) != at {
-		return Plan{}, invalid("envelope.compiled_at is not a time in UTC to the second")
-	}
-	want, err := canon.AsString(m["digest"], "envelope.digest")
-	if err != nil {
-		return Plan{}, wrap(err)
-	}
-	p, err := decodeChecked(m["plan"])
-	if err != nil {
-		return Plan{}, err
-	}
-	d, err := Digest(p)
-	if err != nil {
-		return Plan{}, err
-	}
-	if d != want {
-		return Plan{}, invalid("envelope.digest is not the digest of its plan")
-	}
-	p.CompiledAt = t
-	return p, nil
-}
-
-// stamp turns at into the plan's form of a time: UTC, to the second.
-func stamp(at time.Time) time.Time { return at.UTC().Truncate(time.Second) }
-
-func validTime(t time.Time) bool {
-	return t.Equal(stamp(t)) && t.Location() == time.UTC && t.Year() >= 1 && t.Year() <= 9999
 }
 
 func isLowerHex64(s string) bool {
@@ -648,17 +586,7 @@ func isLowerHex64(s string) bool {
 	return true
 }
 
-func validTemplateID(s string) bool {
-	if len(s) == 0 || len(s) > 32 || s[0] < 'a' || s[0] > 'z' {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		if c := s[i]; !(c >= 'a' && c <= 'z') && !(c >= '0' && c <= '9') && c != '-' {
-			return false
-		}
-	}
-	return true
-}
+func validTemplateID(s string) bool { return validWord(s, 32) }
 
 func validVersion(s string) bool {
 	if len(s) == 0 || len(s) > 16 {

@@ -1,9 +1,9 @@
 package plan
 
 import (
+	"reflect"
 	"sort"
 	"strconv"
-	"time"
 
 	"ataniq/internal/genesis/brief"
 	"ataniq/internal/genesis/catalog"
@@ -11,9 +11,8 @@ import (
 
 // Compile compiles a finished brief into a first plan, revision 1, with the
 // embedded template of the brief's kind. It is pure and deterministic: the
-// same brief and catalog give the same plan, byte for byte, and at is used
-// for nothing but the plan's CompiledAt, which is not part of the record or
-// its digest.
+// same brief and catalog give the same plan, byte for byte. It reads no
+// clock: when a plan was made is the store's to keep.
 //
 // It refuses, with a [*brief.Error]: a catalog that was not loaded
 // (catalog_invalid); a brief started under another catalog
@@ -21,39 +20,60 @@ import (
 // the catalog does not offer (brief_invalid and the brief's codes); a brief
 // whose required fields are not all filled, an inferred value the owner did
 // not confirm counting as not filled (brief_incomplete); a kind with no
-// template (template_missing); and a template that does not hold to the
-// catalog (template_invalid).
+// template, such as other (no_template); and a template that does not hold
+// to the catalog, or gives a plan over its caps (template_invalid).
 //
-// The owner's own text, the text of an "other" answer or a note, is quoted
-// in the plan's notes and chooses nothing: a condition that compares with
-// "other" holds for any text.
-func Compile(b brief.Brief, cat catalog.Catalog, at time.Time) (Plan, error) {
+// The owner's own text, the text of an "other" answer or a note, is kept in
+// the plan's notes for the owner's eyes and chooses nothing: a condition
+// may hold for an "other" answer, never for what it says.
+func Compile(b brief.Brief, cat catalog.Catalog) (Plan, error) {
 	ts, err := Templates()
 	if err != nil {
 		return Plan{}, err
 	}
-	return compileWith(b, cat, ts, 1, at)
+	return compileWith(b, cat, ts)
 }
 
 // Next compiles the brief into the revision after prev, with the embedded
-// templates, as [Compile] does. The revision number is part of the digest,
-// so the next revision of an unchanged brief has another digest; [Diff]
-// says what changed.
-func Next(prev Plan, b brief.Brief, cat catalog.Catalog, at time.Time) (Plan, error) {
-	if err := Check(prev); err != nil {
+// templates, as [Compile] does, and records prev's digest in it. When the
+// content would be prev's ([ContentEqual]: brief digests differ for the
+// same answers given again), it refuses with no_change and there is no new
+// revision.
+func Next(prev Plan, b brief.Brief, cat catalog.Catalog) (Plan, error) {
+	prevDigest, err := Digest(prev)
+	if err != nil {
 		return Plan{}, err
 	}
 	if prev.Revision >= MaxRevision {
 		return Plan{}, invalid("the plan is at its last revision")
 	}
-	ts, err := Templates()
+	p, err := Compile(b, cat)
 	if err != nil {
 		return Plan{}, err
 	}
-	return compileWith(b, cat, ts, prev.Revision+1, at)
+	if ContentEqual(prev, p) {
+		return Plan{}, fail(brief.CodeNoChange, "the plan would be the revision before it")
+	}
+	p.Revision, p.PrevDigest = prev.Revision+1, prevDigest
+	if _, err := Encode(p); err != nil {
+		return Plan{}, err
+	}
+	return p, nil
 }
 
-func compileWith(b brief.Brief, cat catalog.Catalog, ts []Template, revision int, at time.Time) (Plan, error) {
+// ContentEqual reports whether two plans propose the same: equal but for
+// their revision, the digest before and the brief's digest, which differs
+// for the same answers given again.
+func ContentEqual(a, b Plan) bool {
+	strip := func(p Plan) Plan {
+		p = p.Clone()
+		p.Revision, p.PrevDigest, p.BriefDigest = 0, "", ""
+		return p
+	}
+	return reflect.DeepEqual(strip(a), strip(b))
+}
+
+func compileWith(b brief.Brief, cat catalog.Catalog, ts []Template) (Plan, error) {
 	if cat.Digest() == "" {
 		return Plan{}, fail(brief.CodeCatalogInvalid, "the catalog was not loaded")
 	}
@@ -63,10 +83,6 @@ func compileWith(b brief.Brief, cat catalog.Catalog, ts []Template, revision int
 	briefDigest, err := brief.Digest(b)
 	if err != nil {
 		return Plan{}, err
-	}
-	compiledAt := stamp(at)
-	if !validTime(compiledAt) {
-		return Plan{}, invalid("the time of the compile is out of range")
 	}
 	if filled, total := catalog.Readiness(cat, b); b.Kind == "" || filled < total {
 		return Plan{}, fail(brief.CodeBriefIncomplete, "the brief's required fields are not all filled")
@@ -82,7 +98,7 @@ func compileWith(b brief.Brief, cat catalog.Catalog, ts []Template, revision int
 		}
 	}
 	if !found {
-		return Plan{}, fail(brief.CodeTemplateMissing, "no template plans for the brief's kind")
+		return Plan{}, fail(brief.CodeNoTemplate, "no template plans for the brief's kind")
 	}
 	if t.digest == "" {
 		return Plan{}, tplInvalid("the template was not loaded")
@@ -98,25 +114,21 @@ func compileWith(b brief.Brief, cat catalog.Catalog, ts []Template, revision int
 		return Plan{}, err
 	}
 	p := Plan{
-		Schema:        Schema,
-		Revision:      revision,
-		BriefDigest:   briefDigest,
-		CatalogDigest: cat.Digest(),
-		Template:      TemplateRef{ID: t.ID, Version: t.Version, Digest: t.digest},
-		Title:         title,
-		Never:         append([]string{}, Never...),
-		CompiledAt:    compiledAt,
+		Schema:         Schema,
+		Revision:       1,
+		BriefDigest:    briefDigest,
+		CatalogDigest:  cat.Digest(),
+		Template:       TemplateRef{ID: t.ID, Version: t.Version},
+		TemplateDigest: t.digest,
+		Title:          title,
 	}
 	p.Milestones = milestones(t, b)
-	points := 0
-	for _, task := range p.Tasks() {
-		points += map[Tier]int{TierFast: 1, TierBalanced: 2, TierDeep: 4}[task.Tier]
+	if n := len(p.Tasks()); len(p.Milestones) > MaxMilestones || n > MaxTasks {
+		return Plan{}, tplInvalid("the template gives the brief a plan of more than 12 tasks")
 	}
-	for _, band := range Bands {
-		if points <= band.MaxPoints {
-			p.Estimate = Estimate{Band: band.ID, Label: band.Label}
-			break
-		}
+	p.Estimate, p.Warnings = estimate(p.Tasks()), holding(t.Warnings, b)
+	if estimateMayExceed(p.Tasks()) {
+		p.Warnings = sortedUnique(append(p.Warnings, WarnEstimate))
 	}
 	p.Gates = holding(t.Gates, b)
 	p.ExternalServices = holding(t.Services, b)
@@ -128,12 +140,46 @@ func compileWith(b brief.Brief, cat catalog.Catalog, ts []Template, revision int
 	}
 	p.ReviewPoints = sortedUnique(choices(b, "review_points"))
 	p.Hosts = one(b, "hosts")
-	p.Spend = one(b, "budget_band")
+	p.BudgetBand = one(b, "budget_band")
 	p.Notes, p.NotesDropped = notesOf(b)
 	if _, err := Encode(p); err != nil {
 		return Plan{}, err
 	}
 	return p, nil
+}
+
+// points counts the tasks' sizes.
+func points(tasks []Task) int {
+	n := 0
+	for _, t := range tasks {
+		n += Sizes[t.Size]
+	}
+	return n
+}
+
+// estimate is the smallest band that covers the tasks' sizes. It counts
+// work, not money.
+func estimate(tasks []Task) Estimate {
+	n := points(tasks)
+	for _, b := range Bands {
+		if n <= b.MaxPoints {
+			return Estimate{Band: b.ID, Label: b.Label}
+		}
+	}
+	last := Bands[len(Bands)-1]
+	return Estimate{Band: last.ID, Label: last.Label}
+}
+
+// estimateMayExceed reports whether the tasks fill more than three quarters
+// of their band.
+func estimateMayExceed(tasks []Task) bool {
+	n := points(tasks)
+	for _, b := range Bands {
+		if n <= b.MaxPoints {
+			return 4*n > 3*b.MaxPoints
+		}
+	}
+	return true
 }
 
 // milestones builds the milestones of the template whose tasks hold for the
@@ -196,7 +242,7 @@ func milestones(t Template, b brief.Brief) []Milestone {
 				ID:        "t" + strconv.Itoa(e.n),
 				Title:     k.Title,
 				Kind:      k.Kind,
-				Tier:      k.Tier,
+				Size:      k.Size,
 				DependsOn: ids,
 				Scope:     append([]string{}, k.Scope...),
 				Checks:    append([]string{}, k.Checks...),
@@ -245,11 +291,11 @@ func checkValues(b brief.Brief, cat catalog.Catalog) error {
 		good := false
 		switch f.Value.Kind() {
 		case brief.KindOne:
-			good = node.Type != catalog.Multi && canSet(node, f.Value.One(), false)
+			good = node.Type != catalog.Multi && canSet(node, f.Value.One())
 		case brief.KindMany:
 			good = node.Type == catalog.Multi
 			for _, c := range f.Value.Many() {
-				good = good && canSet(node, c, false)
+				good = good && canSet(node, c)
 			}
 		case brief.KindOther:
 			good = node.AllowOther
@@ -260,7 +306,8 @@ func checkValues(b brief.Brief, cat catalog.Catalog) error {
 	}
 	// The fields whose values the plan carries as they are have a word in
 	// the plan's closed lists for every option of the catalog.
-	for field, closed := range map[string][]string{"hosts": Hosts, "budget_band": Spends, "review_points": ReviewPoints} {
+	for _, field := range []string{"hosts", "budget_band", "review_points"} {
+		closed := map[string][]string{"hosts": Hosts, "budget_band": BudgetBands, "review_points": ReviewPoints}[field]
 		f, _ := b.Get(field)
 		vals := f.Value.Many()
 		if f.Value.Kind() == brief.KindOne {
@@ -308,9 +355,9 @@ func choices(b brief.Brief, field string) []string {
 	return f.Value.Many()
 }
 
-// notesOf quotes the owner's own texts: the "other" answers, by field
-// name, then the brief's notes, in order. Past [MaxNotes] they are counted,
-// not quoted.
+// notesOf keeps the owner's own texts: the "other" answers, by field name,
+// then the brief's notes, in order. Past [MaxNotes] they are counted, not
+// kept.
 func notesOf(b brief.Brief) ([]Note, int) {
 	names := make([]string, 0, len(b.Fields))
 	for name := range b.Fields {

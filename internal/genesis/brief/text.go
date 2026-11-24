@@ -9,9 +9,10 @@ import (
 )
 
 // Untrusted is free text: the text of an "other" answer, or a note. It is
-// data and never instructions. Whoever shows it escapes it, and whoever
-// hands it to an agent quotes it as data. It is the only type in a brief
-// that carries free text.
+// data and never instructions. It is for the owner's eyes only: whoever
+// shows it escapes it, and it is never served to an implementation agent
+// (a plan keeps it in its notes and leaves it out of what an agent is
+// given). It is the only type in a brief that carries free text.
 type Untrusted string
 
 // MaxFreeText is the cap of one free text, in bytes.

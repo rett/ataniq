@@ -48,9 +48,10 @@ var gateWord = map[brief.Code]string{
 	brief.CodeCatalogMismatch: "",
 
 	brief.CodeBriefIncomplete: "",
-	brief.CodeTemplateMissing: "",
+	brief.CodeNoTemplate:      "",
 	brief.CodeTemplateInvalid: "",
 	brief.CodePlanInvalid:     "",
+	brief.CodeNoChange:        "",
 }
 
 // hostStateWords are the gate words of seat.genesis that no refusal of the

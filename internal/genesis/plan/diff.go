@@ -39,7 +39,7 @@ type ItemChange struct {
 	// when it was added and New when it was removed.
 	Old, New string
 	// Members name what changed in it, sorted: for a milestone title, goal
-	// and tasks; for a task title, kind, tier, depends_on, scope, checks
+	// and tasks; for a task title, kind, size, depends_on, scope, checks
 	// and milestone. Empty unless Op is [Changed].
 	Members []string
 }
@@ -80,8 +80,10 @@ func (d Changes) Empty() bool {
 
 // Diff compares two plans, prev the one the owner last saw and next the
 // one to show against it. The revision number is not a changed field: it is
-// From and To. Within the cap, fields come first, then milestones, then
-// tasks, each in order of name or id.
+// From and To. Neither is the brief's digest, which differs for the same
+// answers given again, nor the digest before: two plans that are
+// [ContentEqual] have an empty diff. Within the cap, fields come first,
+// then milestones, then tasks, each in order of name or id.
 func Diff(prev, next Plan) Changes {
 	d := Changes{From: prev.Revision, To: next.Revision}
 	d.FromDigest, _ = Digest(prev)
@@ -106,22 +108,22 @@ func Diff(prev, next Plan) Changes {
 func summary(p Plan) map[string]string {
 	notes := count(len(p.Notes), "note")
 	if p.NotesDropped > 0 {
-		notes += " and " + strconv.Itoa(p.NotesDropped) + " not quoted"
+		notes += " and " + strconv.Itoa(p.NotesDropped) + " not kept"
 	}
 	return map[string]string{
-		"brief_digest":      shortDigest(p.BriefDigest),
+		"budget_band":       p.BudgetBand,
 		"catalog_digest":    shortDigest(p.CatalogDigest),
 		"estimate":          p.Estimate.Label,
 		"external_services": strings.Join(p.ExternalServices, ", "),
 		"first_demo":        p.FirstDemo,
 		"gates":             strings.Join(p.Gates, ", "),
 		"hosts":             p.Hosts,
-		"never":             strings.Join(p.Never, ", "),
 		"notes":             notes,
 		"review_points":     strings.Join(p.ReviewPoints, ", "),
-		"spend":             p.Spend,
-		"template":          p.Template.ID + " " + p.Template.Version + " " + shortDigest(p.Template.Digest),
+		"template":          p.Template.ID + " " + p.Template.Version,
+		"template_digest":   shortDigest(p.TemplateDigest),
 		"title":             p.Title,
+		"warnings":          strings.Join(p.Warnings, ", "),
 	}
 }
 
@@ -225,7 +227,7 @@ func taskChanges(prev, next Plan) []ItemChange {
 			for name, same := range map[string]bool{
 				"title":      x.Title == y.Title,
 				"kind":       x.Kind == y.Kind,
-				"tier":       x.Tier == y.Tier,
+				"size":       x.Size == y.Size,
 				"depends_on": sameStrings(x.DependsOn, y.DependsOn),
 				"scope":      sameStrings(x.Scope, y.Scope),
 				"checks":     sameStrings(x.Checks, y.Checks),

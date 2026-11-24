@@ -110,7 +110,7 @@ func walk(t testing.TB, c catalog.Catalog, picks map[string]catalog.Answer, s st
 
 func compile(t testing.TB, c catalog.Catalog, b brief.Brief) Plan {
 	t.Helper()
-	p, err := Compile(b, c, t0)
+	p, err := Compile(b, c)
 	must(t, err)
 	return p
 }

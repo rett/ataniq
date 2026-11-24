@@ -3,8 +3,10 @@ package plan
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -16,13 +18,14 @@ import (
 // templateDigests pin the embedded templates: a changed template is a new
 // version, with a new digest here.
 var templateDigests = map[string]string{
-	"media":      "becdf86ea0b0311c24aa43eac5db42a0a85eedb8731ea6e77652cec650ad429a",
-	"publishing": "5beaa43082ee5cf4c0845a31c7340a5c0db5f8e3f37ddf9229865ffe11f3ac03",
-	"software":   "3a081bbc1b13145c38fda5d3736b1ea1e7ceeab18afe00fe891defb25160cec3",
+	"media":      "27041dbc83151f59522dca72e9dc0ab5a01bc32c4a7f4689b1c5ff751bd2b97d",
+	"publishing": "4f193affc6539a04922cc74d047ac2a9cec2502393764f898ca6eb776ab81e59",
+	"software":   "82f4a99439fdcb41d4571574f0d47ac377a20f8d0f1eb402b1ea47b7a06eaf6c",
 }
 
 // The embedded templates are canonical, one per kind but other, each
-// digest the SHA-256 of its file, and each pinned.
+// digest the SHA-256 of its file, each pinned, each held to the catalog,
+// and small: at most 4 milestones.
 func TestEmbeddedTemplates(t *testing.T) {
 	ts, err := Templates()
 	must(t, err)
@@ -44,10 +47,10 @@ func TestEmbeddedTemplates(t *testing.T) {
 		if tp.Digest() != hex.EncodeToString(sum[:]) {
 			t.Errorf("%s: the digest is not that of the file", tp.ID)
 		}
-		if tp.Digest() != templateDigests[tp.ID] {
+		if tp.Digest() != templateDigests[tp.ID] && !*update {
 			t.Errorf("%s: the digest is %s; a changed template is a new version", tp.ID, tp.Digest())
 		}
-		if tp.ID != tp.Kind || tp.Version != "v1" {
+		if tp.ID != tp.Kind || tp.Version != "v1" || len(tp.Milestones) > MaxMilestones {
 			t.Errorf("%s: kind %s version %s", tp.ID, tp.Kind, tp.Version)
 		}
 		must(t, tp.checkAgainst(c))
@@ -62,11 +65,10 @@ func TestEmbeddedTemplates(t *testing.T) {
 }
 
 // Every option of the catalog for where the files live, the budget and the
-// review points has its word in the plan's closed lists, and every area and
-// check a template names is in the plan's.
+// review points has its word in the plan's closed lists.
 func TestClosedListsCoverTheCatalog(t *testing.T) {
 	c := v1(t)
-	for field, closed := range map[string][]string{"hosts": Hosts, "budget_band": Spends, "review_points": ReviewPoints} {
+	for field, closed := range map[string][]string{"hosts": Hosts, "budget_band": BudgetBands, "review_points": ReviewPoints} {
 		n, ok := c.Node(field)
 		if !ok {
 			t.Fatalf("no node %s", field)
@@ -80,20 +82,23 @@ func TestClosedListsCoverTheCatalog(t *testing.T) {
 			t.Errorf("%s: the plan names %d, the catalog %d", field, len(closed), len(n.Options))
 		}
 	}
-	for _, list := range [][]string{Areas, Checks, ReviewPoints, Hosts, Services, Spends} {
-		if !sortedSet(list) {
-			t.Errorf("%v is not sorted", list)
+	for _, list := range [][]string{Areas, Checks, ReviewPoints, Hosts, Services, BudgetBands, Warnings} {
+		for i := 1; i < len(list); i++ {
+			if list[i-1] >= list[i] {
+				t.Errorf("%v is not sorted", list)
+			}
 		}
 	}
-}
-
-func sortedSet(list []string) bool {
-	for i := 1; i < len(list); i++ {
-		if list[i-1] >= list[i] {
-			return false
+	for _, a := range Areas {
+		if !validArea(a) {
+			t.Errorf("%s is not of the grammar of an area", a)
 		}
 	}
-	return true
+	for _, ch := range Checks {
+		if !validCheckID(ch) {
+			t.Errorf("%s is not of the grammar of a check", ch)
+		}
+	}
 }
 
 func softwareData(t testing.TB) string {
@@ -104,8 +109,9 @@ func softwareData(t testing.TB) string {
 }
 
 // LoadTemplate refuses a template that breaks its rules: an unknown field,
-// kind, task kind, tier, area, check or operation, a dependency that is not
-// before its task, and a security default that is not the default.
+// kind, task kind, size, area, check, warning or operation, a dependency
+// that is not before its task, and a security default that is not the
+// default.
 func TestLoadTemplateRefuses(t *testing.T) {
 	v := softwareData(t)
 	if _, err := LoadTemplate([]byte(v)); err != nil {
@@ -124,20 +130,25 @@ func TestLoadTemplateRefuses(t *testing.T) {
 		"a schema":                    replace(TemplateSchema, "ataniq.genesis-plan-template/2"),
 		"an unknown kind":             replace(`"kind":"software","milestones"`, `"kind":"music","milestones"`),
 		"a task kind":                 replace(`"kind":"build"`, `"kind":"deploy"`),
-		"a tier":                      replace(`"tier":"deep"`, `"tier":"opus"`),
+		"a size":                      replace(`"size":"large"`, `"size":"opus"`),
+		"a tier":                      replace(`"size":"large"`, `"tier":"large"`),
 		"an area of no template":      replace(`"scope":["repo:build"]`, `"scope":["repo:secrets"]`),
 		"an area of another template": replace(`"scope":["repo:build"]`, `"scope":["store:assets"]`),
 		"a check of another template": replace(`"checks":["lint"],"depends_on":["layout"]`, `"checks":["loudness"],"depends_on":["layout"]`),
 		"a gate not of the checks":    replace(`{"check":"lint"}`, `{"check":"spelling"}`),
 		"no gate that always holds":   replace(`"gates":[{"check":"lint"},{"check":"unit-tests"}]`, `"gates":[{"check":"lint","when":{"field":"hosts","op":"set"}}]`),
-		"a service":                   replace(`"name":"file host"`, `"name":"payments"`),
+		"a service":                   replace(`"name":"file or code host"`, `"name":"payments"`),
+		"a warning":                   replace(`"id":"settle-at-desk"`, `"id":"all-clear"`),
+		"the estimate's warning":      replace(`"id":"settle-at-desk"`, `"id":"estimate-may-exceed-band"`),
+		"a warning always":            replace(`{"id":"settle-at-desk","when":{"field":"software.stack","op":"other"}}`, `{"id":"settle-at-desk"}`),
 		"an operation":                replace(`"op":"eq"`, `"op":"regex"`),
+		"an other with a value":       replace(`{"field":"software.stack","op":"other"}`, `{"field":"software.stack","op":"other","value":"go"}`),
 		"a field of no brief":         replace(`"field":"hosts"`, `"field":"colour"`),
 		"a field of another kind":     replace(`"field":"software.data"`, `"field":"media.rights"`),
 		"an eq without a value":       replace(`"value":"local"`, `"values":["local"]`),
-		"a dependency after the task": replace(`"depends_on":["agree-stack"]`, `"depends_on":["agents"]`),
-		"a dependency unknown":        replace(`"depends_on":["agree-stack"]`, `"depends_on":["nothing"]`),
-		"a repeated ref":              replace(`"ref":"agents"`, `"ref":"layout"`),
+		"a dependency after the task": replace(`"depends_on":["settle-stack"]`, `"depends_on":["makefile"]`),
+		"a dependency unknown":        replace(`"depends_on":["settle-stack"]`, `"depends_on":["nothing"]`),
+		"a repeated ref":              replace(`"ref":"makefile"`, `"ref":"layout"`),
 		"a push":                      replace(`"push":false`, `"push":true`),
 		"an outward step":             replace(`"outward_steps":false`, `"outward_steps":true`),
 		"secrets by value":            replace(`"secrets":"by-reference"`, `"secrets":"inline"`),
@@ -157,12 +168,14 @@ func TestLoadTemplateRefuses(t *testing.T) {
 	wantCode(t, err, brief.CodeTooLarge)
 }
 
-// A template that loads is held to the catalog when a plan is compiled: a
-// field that is not a required field of the kind, an option no answer sets,
-// eq on a field of several choices, contains on a field of one, a title
-// field that takes other text, and two templates of one kind are refused;
-// a brief whose kind has no template is refused template_missing. None is
-// read as a default.
+// A template that loads is held to the catalog when the embedded set is
+// loaded and when a plan is compiled: a field that is not a required field
+// of the kind, an option no answer sets, "other" compared as an option, an
+// other branch on a field that takes no text, a field that takes the
+// owner's text read with no other branch, eq on a field of several
+// choices, contains on a field of one, a title field that takes other
+// text, and two templates of one kind are refused; a brief whose kind has
+// no template is refused no_template. None is read as a default.
 func TestTemplateAgainstTheCatalog(t *testing.T) {
 	c := v1(t)
 	b := walk(t, c, map[string]catalog.Answer{"kind": pickOne("software"), "software.sub_kind": pickOne("web_app")}, defaults)
@@ -173,31 +186,33 @@ func TestTemplateAgainstTheCatalog(t *testing.T) {
 		must(t, err)
 		return tp
 	}
-	replace := func(old, new string) Template {
+	replace := func(old, new string, n int) Template {
 		t.Helper()
 		if !strings.Contains(v, old) {
 			t.Fatalf("the template does not hold %s", old)
 		}
-		return load(strings.Replace(v, old, new, 1))
+		return load(strings.Replace(v, old, new, n))
 	}
 	cases := map[string]Template{
-		"a field no question sets":    replace(`"field":"software.data","op":"eq","value":"local"`, `"field":"software.colour","op":"eq","value":"local"`),
-		"a field not required":        replace(`"field":"hosts","op":"eq"`, `"field":"formats","op":"eq"`),
-		"an option no answer sets":    replace(`"value":"hosting"`, `"value":"kubernetes"`),
-		"other where none is allowed": replace(`"value":"local"`, `"value":"other"`),
-		"eq on several choices":       replace(`"field":"hosts","op":"eq","value":"file_host"`, `"field":"review_points","op":"eq","value":"plan"`),
-		"contains on one choice":      replace(`"field":"hosts","op":"eq","value":"file_host"`, `"field":"hosts","op":"contains","value":"file_host"`),
-		"a title of the owner's text": replace(`"title_field":"software.sub_kind"`, `"title_field":"software.stack"`),
-		"a title not required":        replace(`"title_field":"software.sub_kind"`, `"title_field":"software.colour"`),
+		"a field no question sets":    replace(`"field":"software.data","op":"eq","value":"local"`, `"field":"software.colour","op":"eq","value":"local"`, 1),
+		"a field not required":        replace(`"field":"hosts","op":"eq"`, `"field":"formats","op":"eq"`, 1),
+		"an option no answer sets":    replace(`"value":"hosting"`, `"value":"kubernetes"`, 1),
+		"other compared as an option": replace(`"value":"passkey"`, `"value":"other"`, 1),
+		"other on a field of no text": replace(`{"field":"software.stack","op":"other"}`, `{"field":"software.data","op":"other"}`, 1),
+		"no other branch":             replace(`{"field":"software.auth","op":"other"}`, `{"field":"software.stack","op":"other"}`, -1),
+		"eq on several choices":       replace(`"field":"hosts","op":"eq","value":"file_host"`, `"field":"review_points","op":"eq","value":"plan"`, 1),
+		"contains on one choice":      replace(`"field":"hosts","op":"eq","value":"file_host"`, `"field":"hosts","op":"contains","value":"file_host"`, 1),
+		"a title of the owner's text": replace(`"title_field":"software.sub_kind"`, `"title_field":"software.stack"`, 1),
+		"a title not required":        replace(`"title_field":"software.sub_kind"`, `"title_field":"software.colour"`, 1),
 	}
 	for name, tp := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := compileWith(b, c, []Template{tp}, 1, t0)
+			_, err := compileWith(b, c, []Template{tp})
 			wantCode(t, err, brief.CodeTemplateInvalid)
 		})
 	}
 	good := load(v)
-	_, err := compileWith(b, c, []Template{good, good}, 1, t0)
+	_, err := compileWith(b, c, []Template{good, good})
 	wantCode(t, err, brief.CodeTemplateInvalid)
 	ts, err := Templates()
 	must(t, err)
@@ -207,11 +222,34 @@ func TestTemplateAgainstTheCatalog(t *testing.T) {
 			others = append(others, tp)
 		}
 	}
-	_, err = compileWith(b, c, others, 1, t0)
-	wantCode(t, err, brief.CodeTemplateMissing)
-	_, err = compileWith(b, c, []Template{{Kind: brief.DomainSoftware}}, 1, t0)
+	_, err = compileWith(b, c, others)
+	wantCode(t, err, brief.CodeNoTemplate)
+	_, err = compileWith(b, c, []Template{{Kind: brief.DomainSoftware}})
 	wantCode(t, err, brief.CodeTemplateInvalid)
-	if _, err := compileWith(b, c, []Template{good}, 1, t0); err != nil {
+	if _, err := compileWith(b, c, []Template{good}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// A template whose tasks would give a brief more than 12 tasks is refused
+// when the plan is compiled, not cut short.
+func TestATemplateOverTheCapIsRefused(t *testing.T) {
+	c := v1(t)
+	b := walk(t, c, map[string]catalog.Answer{"kind": pickOne("software"), "software.sub_kind": pickOne("web_app")}, defaults)
+	var m map[string]any
+	must(t, json.Unmarshal([]byte(softwareData(t)), &m))
+	var tasks []any
+	for i := 0; i < MaxTasksPerMilestone; i++ {
+		tasks = append(tasks, map[string]any{"checks": []any{}, "depends_on": []any{}, "kind": "write", "ref": "more-" + strconv.Itoa(i),
+			"scope": []any{"repo:docs"}, "size": "small", "title": "More work"})
+	}
+	m["milestones"] = append(m["milestones"].([]any), map[string]any{"title": "More", "goal": "More work", "tasks": tasks})
+	data, err := json.Marshal(m)
+	must(t, err)
+	tp, err := LoadTemplate(data)
+	if err != nil {
+		t.Fatalf("the template with more tasks: %v", err)
+	}
+	_, err = compileWith(b, c, []Template{tp})
+	wantCode(t, err, brief.CodeTemplateInvalid)
 }

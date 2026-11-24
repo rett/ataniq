@@ -23,7 +23,7 @@ func TestDiffOfAChangedBrief(t *testing.T) {
 		"software.deploy_kind": pickOne("hosting"), "budget_band": pickOne("low"),
 	}, defaults)
 	p1 := compile(t, c, before)
-	p2, err := Next(p1, after, c, t0)
+	p2, err := Next(p1, after, c)
 	must(t, err)
 	d := Diff(p1, p2)
 	if d.From != 1 || d.To != 2 || d.FromDigest == "" || d.ToDigest == "" || d.More != 0 {
@@ -33,16 +33,13 @@ func TestDiffOfAChangedBrief(t *testing.T) {
 	for _, f := range d.Fields {
 		fields[f.Name] = f
 	}
-	if f := fields["spend"]; f.Old != "none" || f.New != "low" {
-		t.Errorf("spend %+v", f)
+	if f := fields["budget_band"]; f.Old != "none" || f.New != "low" {
+		t.Errorf("budget band %+v", f)
 	}
 	if f := fields["external_services"]; f.Old != "" || f.New != "hosting service" {
 		t.Errorf("services %+v", f)
 	}
-	if _, ok := fields["brief_digest"]; !ok {
-		t.Error("the brief's digest is not a changed field")
-	}
-	for _, name := range []string{"title", "template", "never", "gates", "first_demo"} {
+	for _, name := range []string{"title", "template", "template_digest", "gates", "first_demo", "brief_digest", "prev_digest", "plan"} {
 		if _, ok := fields[name]; ok {
 			t.Errorf("%s changed", name)
 		}
@@ -148,22 +145,22 @@ func TestDiffNeverQuotesTheOwner(t *testing.T) {
 	}
 }
 
-// big returns a valid plan of eight milestones of five tasks, whose titles
-// carry the word given.
+// big returns a plan of eight milestones of six tasks, whose titles carry
+// the word given: over the record's caps, so that the diff's own cap is
+// reached (a plan within the caps has fewer changes than it).
 func big(t testing.TB, word string) Plan {
 	t.Helper()
 	p := sample(t)
 	p.Milestones = nil
 	n := 0
-	for i := 1; i <= MaxMilestones; i++ {
+	for i := 1; i <= 8; i++ {
 		m := Milestone{ID: "m" + strconv.Itoa(i), Title: "Step " + word, Goal: "A step"}
-		for j := 0; j < 5; j++ {
+		for j := 0; j < 6; j++ {
 			n++
-			m.Tasks = append(m.Tasks, Task{ID: "t" + strconv.Itoa(n), Title: strings.TrimSpace(strings.Repeat(word+" é ", 10)), Kind: KindWrite, Tier: TierFast, DependsOn: []string{}, Scope: []string{"repo:docs"}, Checks: []string{}})
+			m.Tasks = append(m.Tasks, Task{ID: "t" + strconv.Itoa(n), Title: strings.TrimSpace(strings.Repeat(word+" é ", 10)), Kind: KindWrite, Size: SizeSmall, DependsOn: []string{}, Scope: []string{"repo:docs"}, Checks: []string{}})
 		}
 		p.Milestones = append(p.Milestones, m)
 	}
-	must(t, Check(p))
 	return p
 }
 
@@ -171,10 +168,10 @@ func big(t testing.TB, word string) Plan {
 // tasks, and counts the rest; a short text is cut on a character boundary.
 func TestDiffCaps(t *testing.T) {
 	a, b := big(t, "alpha"), big(t, "omega")
-	b.Spend = "medium"
+	b.BudgetBand = "medium"
 	d := Diff(a, b)
 	n := len(d.Fields) + len(d.Milestones) + len(d.Tasks)
-	if n != MaxDiffEntries || d.More != 1+8+40-MaxDiffEntries {
+	if n != MaxDiffEntries || d.More != 1+8+48-MaxDiffEntries || d.FromDigest != "" {
 		t.Fatalf("%d listed, %d more", n, d.More)
 	}
 	if len(d.Fields) != 1 || len(d.Milestones) != 8 || d.Tasks[0].ID != "t1" || d.Tasks[len(d.Tasks)-1].ID != "t39" {

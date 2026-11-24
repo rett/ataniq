@@ -56,15 +56,18 @@ const (
 	// CodeBriefIncomplete answers a plan asked of a brief whose required
 	// fields are not all filled.
 	CodeBriefIncomplete Code = "brief_incomplete"
-	// CodeTemplateMissing answers a plan asked of a brief whose kind has
-	// no plan template.
-	CodeTemplateMissing Code = "template_missing"
+	// CodeNoTemplate answers a plan asked of a brief whose kind has no
+	// plan template, such as a kind in the owner's own words.
+	CodeNoTemplate Code = "no_template"
 	// CodeTemplateInvalid answers a plan template that breaks its rules on
 	// load, or names a field or an option the catalog does not hold.
 	CodeTemplateInvalid Code = "template_invalid"
 	// CodePlanInvalid answers a plan that breaks the rules of the record
 	// or its form.
 	CodePlanInvalid Code = "plan_invalid"
+	// CodeNoChange answers a next revision whose plan would be the
+	// revision before it.
+	CodeNoChange Code = "no_change"
 )
 
 // Error is a refusal: a code, and a detail for the owner's eyes.

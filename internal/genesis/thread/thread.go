@@ -116,9 +116,10 @@ var gateWord = map[brief.Code]string{
 	brief.CodeCatalogMismatch: "",
 
 	brief.CodeBriefIncomplete: "",
-	brief.CodeTemplateMissing: "",
+	brief.CodeNoTemplate:      "",
 	brief.CodeTemplateInvalid: "",
 	brief.CodePlanInvalid:     "",
+	brief.CodeNoChange:        "",
 }
 
 // GateWord returns the word the seat gate answers a refusal code of the brief
