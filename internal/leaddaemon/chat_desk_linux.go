@@ -146,6 +146,8 @@ type chatDesk struct {
 	byKey  map[string]*chatLead
 	bySeat map[string]*chatLead
 	every  time.Duration
+	// now is the clock the stores are opened with; nil means time.Now.
+	now func() time.Time
 	// stateOf reads the registry's entry of a role; nil until the registry
 	// is open, which leaves every lead's state unknown.
 	stateOf func(leadrole.Role) chatState
@@ -204,12 +206,15 @@ func (d *chatDesk) cursorMoved() {
 
 // newChatDesk builds the desk of the leads, in the order of the config. It
 // opens nothing.
-func newChatDesk(logf func(string, ...any), every time.Duration) *chatDesk {
+//
+// now is the clock of the chat stores, and is nil in the daemon (the stores
+// then use time.Now); only a test passes one.
+func newChatDesk(logf func(string, ...any), every time.Duration, now func() time.Time) *chatDesk {
 	if every <= 0 {
 		every = DefaultChatScanEvery
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &chatDesk{logf: logf, byKey: map[string]*chatLead{}, bySeat: map[string]*chatLead{}, every: every, ctx: ctx, cancel: cancel}
+	return &chatDesk{logf: logf, byKey: map[string]*chatLead{}, bySeat: map[string]*chatLead{}, every: every, now: now, ctx: ctx, cancel: cancel}
 }
 
 // add adds a lead. A key the seat's identifier cannot hold gets no seat
@@ -249,7 +254,7 @@ func (d *chatDesk) open(stateDir string) {
 	}
 	d.root = root
 	for _, cl := range d.leads {
-		s, err := leadchat.OpenStore(root, cl.layout, leadchat.Options{})
+		s, err := leadchat.OpenStore(root, cl.layout, leadchat.Options{Now: d.now})
 		if err != nil {
 			d.logf("chat: the chat store of the lead %q cannot be opened (%s); the lead has no chat until the daemon is restarted", cl.key, chatErrWord(err))
 			continue

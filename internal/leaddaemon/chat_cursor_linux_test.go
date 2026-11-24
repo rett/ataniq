@@ -127,6 +127,7 @@ func TestLeadChatCursorCoversTheEnabledLeadsOnly(t *testing.T) {
 	}
 
 	// beta is off: its activity moves nothing.
+	requireTestClock(t, port)
 	offActivity := func(what string, n int) {
 		t.Helper()
 		before := cursorOf(t, port)
@@ -294,6 +295,7 @@ func TestChatScanAdmittedBeforeATurnOffEndsBeforeTheOffIsSeen(t *testing.T) {
 			l, port := newChatEnv(t)
 			l.start()
 			l.up("alpha", submitted)
+			requireTestClock(t, port)
 			d := deskOf(t, port)
 			var armed atomic.Bool
 			reached := make(chan struct{})
@@ -314,15 +316,16 @@ func TestChatScanAdmittedBeforeATurnOffEndsBeforeTheOffIsSeen(t *testing.T) {
 				armed.Store(true)
 				<-reached
 				// The scan is admitted and holds the lead's change lock; a
-				// reply reaches the outbox now, and settles while the
-				// turn-off waits.
+				// reply reaches the outbox now, and is settled for the
+				// scan that is released (the test clock), so the turn-off
+				// waits for the scan and not for the reply's age.
 				reply(t, out, "0002-second.txt", "second")
 				offDone = make(chan struct{})
 				go func() {
 					defer close(offDone)
 					l.mustChatSet("alpha", leadwire.ChatOff)
 				}()
-				time.Sleep(leadchat.SettleAge + 10*l.scratch.ChatScanEvery)
+				time.Sleep(10 * l.scratch.ChatScanEvery)
 				select {
 				case <-offDone:
 					t.Fatal("the turn-off returned while an admitted scan had not ingested")
