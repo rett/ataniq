@@ -35,7 +35,7 @@ func TestLeadChatCursorNeedsABoundSource(t *testing.T) {
 		t.Fatal("a bind did not close the broadcast")
 	}
 	v, err := c.ChatCursor(ctx)
-	if want := ownerwire.ChatCursor([]ownerwire.ChatCursorLead{{Lead: "daemon:alpha", Gen: 1, Head: 2}}); err != nil || v != want {
+	if want := cursorFor(t, c, []ownerwire.ChatCursorLead{{Lead: "daemon:alpha", Gen: 1, Head: 2}}); err != nil || v != want {
 		t.Fatalf("the cursor is %d (%v), want %d", v, err, want)
 	}
 	src.mu.Lock()
@@ -54,6 +54,15 @@ func TestLeadChatCursorNeedsABoundSource(t *testing.T) {
 	if _, err := c.ChatCursor(ctx); err == nil {
 		t.Fatal("an unbound port gave a cursor")
 	}
+	// A new binding has a new key: the same set gives another cursor, so
+	// the seat cannot recognise a set across a bind.
+	c.bind(src)
+	src.mu.Lock()
+	src.panic = false
+	src.mu.Unlock()
+	if again, err := c.ChatCursor(ctx); err != nil || again == v {
+		t.Fatalf("a new binding gave %d (%v), the old one's %d", again, err, v)
+	}
 	// The cursor is not counted against the seat's calls.
 	c.bind(&fakeSource{})
 	for i := 0; i < 2*ChatCallsPerMinute; i++ {
@@ -64,6 +73,16 @@ func TestLeadChatCursorNeedsABoundSource(t *testing.T) {
 	if _, err := c.Chat(ctx, leadsParams); err != nil {
 		t.Fatalf("a seat call after the cursors: %v", err)
 	}
+}
+
+// cursorFor is the cursor of leads under the key of port's binding.
+func cursorFor(t *testing.T, port *LeadChat, leads []ownerwire.ChatCursorLead) int64 {
+	t.Helper()
+	b := port.src.Load()
+	if b == nil {
+		t.Fatal("the port is not bound")
+	}
+	return ownerwire.ChatCursor(b.key, leads)
 }
 
 func cursorOf(t *testing.T, port *LeadChat) int64 {
@@ -92,7 +111,7 @@ func closed(ch <-chan struct{}) bool {
 func TestLeadChatCursorCoversTheEnabledLeadsOnly(t *testing.T) {
 	l, port := newChatEnv(t)
 	l.start()
-	none := ownerwire.ChatCursor(nil)
+	none := cursorFor(t, port, nil)
 	if c := cursorOf(t, port); c != none {
 		t.Fatalf("with every lead off the cursor is %d, want that of no lead %d", c, none)
 	}
@@ -143,7 +162,7 @@ func TestLeadChatCursorCoversTheEnabledLeadsOnly(t *testing.T) {
 	}
 	g1 := gen()
 	on := cursorOf(t, port)
-	if want := ownerwire.ChatCursor([]ownerwire.ChatCursorLead{{Lead: "daemon:alpha", Gen: g1, Head: r.Head}}); on != want {
+	if want := cursorFor(t, port, []ownerwire.ChatCursorLead{{Lead: "daemon:alpha", Gen: g1, Head: r.Head}}); on != want {
 		t.Fatalf("with alpha on the cursor is %d, want %d", on, want)
 	}
 	offActivity("alpha on", 2)
@@ -153,7 +172,7 @@ func TestLeadChatCursorCoversTheEnabledLeadsOnly(t *testing.T) {
 	waitFor(t, 15*time.Second, "the reply is taken", func() bool { return l.chatRow("alpha").Entries == 2 })
 	waitFor(t, 5*time.Second, "the broadcast", func() bool { return closed(ch) })
 	moved := cursorOf(t, port)
-	if moved == on || moved != ownerwire.ChatCursor([]ownerwire.ChatCursorLead{{Lead: "daemon:alpha", Gen: g1, Head: l.chatRow("alpha").Head}}) {
+	if moved == on || moved != cursorFor(t, port, []ownerwire.ChatCursorLead{{Lead: "daemon:alpha", Gen: g1, Head: l.chatRow("alpha").Head}}) {
 		t.Fatalf("a reply taken: the cursor is %d (was %d)", moved, on)
 	}
 
@@ -193,7 +212,7 @@ func TestLeadChatCursorLeavesOutASuspendedLead(t *testing.T) {
 	}
 	waitFor(t, 10*time.Second, "the chat is suspended", func() bool { return l.chatRow("alpha").Suspended })
 	waitFor(t, 5*time.Second, "the broadcast", func() bool { return closed(ch) })
-	if c := cursorOf(t, port); c != ownerwire.ChatCursor(nil) {
+	if c := cursorOf(t, port); c != cursorFor(t, port, nil) {
 		t.Fatalf("a suspended lead is in the cursor: %d", c)
 	}
 }

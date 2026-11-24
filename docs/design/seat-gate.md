@@ -1826,16 +1826,28 @@ such a gate. A legacy caller sends and receives exactly the shapes above.
   `bad-params`, and a seat that did not ask never meets it.
 
 The cursor (`ownerwire.ChatCursor`) is a digest, as the Card version is, and
-is independent of it: the first 8 bytes of the SHA-256 of the domain string
-`ataniq.seat-wait.chat/1`, the number of leads, and for each lead in the order
-of its identifier the identifier (a 4-byte big-endian length and its bytes),
-the generation of its switch and its head (8 bytes big-endian each), masked to
-53 bits, and 1 when that is 0. It covers the leads whose chat the desk
-switched on (read, not stopped by a scan) and nothing else. So it changes when
-an enabled lead's head moves, when its segment is reset (a new generation),
-and when a lead is enabled or disabled; a lead whose chat is off is not in it,
-so its activity moves nothing. A daemon that restarts with the same leads,
-generations and heads gives the same cursor.
+is independent of it, but keyed: the first 8 bytes of the HMAC-SHA-256, under
+the cursor key, of the domain string `ataniq.seat-wait.chat/2`, the number of
+leads, and for each lead in the order of its identifier the identifier (a
+4-byte big-endian length and its bytes), the generation of its switch and its
+head (8 bytes big-endian each), masked to 53 bits, and 1 when that is 0. The
+key (`ownerwire.ChatCursorKey`, 32 bytes from `crypto/rand`) is made by the
+daemon for each binding of its cursor's source, at each start and for each
+source that replaces another, and held in its memory alone: never written,
+logged or sent. The cursor covers the leads whose chat the desk switched on
+(read, not stopped by a scan) and nothing else. So it changes when an enabled
+lead's head moves, when its segment is reset (a new generation), and when a
+lead is enabled or disabled; a lead whose chat is off is not in it, so its
+activity moves nothing. Within one binding the same set gives the same
+cursor; a new binding gives every set, the empty one included, another
+cursor, so a seat cannot tell from a cursor which heads or generations it
+covers, nor recognise a set it saw before a restart.
+
+The cursor is a change hint and nothing more. Two different sets give the
+same cursor with a chance of about 2^-53, so a cursor the seat already holds
+may hide a change (the next one, or the end of the hold, shows it); it never
+allows anything. No read is authorized by a cursor, equal or not: every list
+and every page goes through `seat.chat`, which the desk authorizes live.
 
 **The gate.** A handler lists `wait-chat` last, after `chat`, only when it
 serves `watch` and `chat`, its service answers the extended wait
@@ -1882,8 +1894,9 @@ the cursor beside it:
   cannot spin. It fails closed.
 
 The trial's stand-in gives a cursor over its two sample leads whose chat is
-read, each of generation 1 and its head, the same for every call: its samples
-never change, so a held wait is never woken for the chat.
+read, each of generation 1 and its head, under a key it makes once, the same
+for every call: its samples never change, so a held wait is never woken for
+the chat. A trial started again has a new key and so another cursor.
 
 The scratch leads' port (`leaddaemon.LeadChat`, both tags) gives the cursor of
 the leads whose desk switch is read, not stopped by a scan, with a store that

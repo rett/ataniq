@@ -94,8 +94,14 @@ type LeadChat struct {
 	cch chan struct{}
 }
 
-// chatBinding holds the bound source.
-type chatBinding struct{ src chatSource }
+// chatBinding holds the bound source and the key of its chat cursor: a
+// random key made at the bind, held in the daemon's memory alone, so the
+// cursors of one binding compare equal exactly when their sets do, and no
+// cursor can be recognised across a bind (a restart, a replaced source).
+type chatBinding struct {
+	src chatSource
+	key ownerwire.ChatCursorKey
+}
 
 // NewLeadChat returns a port that answers chat-busy until the scratch mode of
 // a [Run] whose [Scratch].Chat it is binds it.
@@ -113,7 +119,7 @@ func (c *LeadChat) bind(src chatSource) {
 		old = c.src.Swap(nil)
 	} else {
 		src.onChange(c.cursorChanged)
-		old = c.src.Swap(&chatBinding{src: src})
+		old = c.src.Swap(&chatBinding{src: src, key: ownerwire.NewChatCursorKey()})
 	}
 	if old != nil && old.src != nil && (src == nil || old.src != src) {
 		old.src.onChange(nil)
@@ -127,8 +133,8 @@ var errNoCursor = errors.New("lead chat: no chat cursor")
 
 // ChatCursor answers the chat cursor of the extended seat.wait
 // (ownerchannel.ChatCursor, by its method set alone):
-// [ownerwire.ChatCursor] over the leads the seat may read now, each with the
-// generation of its switch and its head. A lead whose chat is off, stopped by
+// [ownerwire.ChatCursor], under the binding's key, over the leads the seat
+// may read now, each with the generation of its switch and its head. A lead whose chat is off, stopped by
 // a scan, or whose store failed is not in it, so nothing it does moves the
 // cursor. It reads only the desk's switches and the stores' status: it reads
 // no reply, changes nothing, and is not counted against
@@ -154,7 +160,7 @@ func (c *LeadChat) ChatCursor(ctx context.Context) (v int64, err error) {
 	if err != nil {
 		return 0, errNoCursor
 	}
-	return ownerwire.ChatCursor(leads), nil
+	return ownerwire.ChatCursor(b.key, leads), nil
 }
 
 // ChatCursorChanged answers a channel that is closed when the cursor may

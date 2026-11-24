@@ -1,6 +1,8 @@
 package ownerwire
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"sort"
@@ -29,7 +31,12 @@ import (
 // carry, which changes when what the seat may read of the chat changes, and
 // for nothing else. It is computed by [ChatCursor] from the leads whose chat
 // the desk switched on (read, not suspended) alone, so a lead whose chat is
-// off moves nothing.
+// off moves nothing. It is keyed by a secret the daemon holds
+// ([ChatCursorKey]), so the seat can compare two cursors of one binding for
+// equality and learn nothing else from them. Equality is only a hint that
+// nothing changed, never a permission: no read is ever authorized by a
+// cursor, and every read goes through seat.chat, which the desk authorizes
+// live.
 
 // ChatCursorLead is one desk-enabled lead as a chat cursor covers it: the
 // lead's identifier, the generation of its switch (the segment its turn-on
@@ -45,16 +52,38 @@ type ChatCursorLead struct {
 	Head int64
 }
 
-// chatCursorDomain starts the bytes [ChatCursor] hashes, so that no other
-// digest of this package can be taken for a cursor.
-const chatCursorDomain = "ataniq.seat-wait.chat/1"
+// ChatCursorKeySize is the size of a [ChatCursorKey] in bytes.
+const ChatCursorKeySize = 32
 
-// ChatCursor returns the chat cursor of a set of desk-enabled leads: an
-// integer of 1 to [MaxChatSeq], from the first 8 bytes of the SHA-256 of a
-// canonical encoding of the set. Like [PendingVersion] it is a digest, not a
-// counter, so a daemon that restarts with the same leads, generations and
-// heads gives the same cursor; it is never 0, which a seat sends when it has
-// none.
+// ChatCursorKey is the secret a chat cursor is keyed by. The daemon makes one
+// with [NewChatCursorKey] for each binding of its cursor's source (each start
+// of the daemon, and each source that replaces another) and keeps it in its
+// memory alone: it is never written, logged or sent. So two cursors of one
+// binding are equal exactly when their sets are (but for a collision of 53
+// bits), and a cursor tells the seat nothing else: not a head, a generation
+// or a lead, and not the set of a past binding, the empty set included.
+type ChatCursorKey [ChatCursorKeySize]byte
+
+// NewChatCursorKey returns a fresh key from the operating system's random
+// source (crypto/rand, which never fails but by ending the program).
+func NewChatCursorKey() ChatCursorKey {
+	var k ChatCursorKey
+	_, _ = rand.Read(k[:])
+	return k
+}
+
+// chatCursorDomain starts the bytes [ChatCursor] authenticates, so that no
+// other digest of this package can be taken for a cursor. Version 2 is the
+// keyed cursor.
+const chatCursorDomain = "ataniq.seat-wait.chat/2"
+
+// ChatCursor returns the chat cursor of a set of desk-enabled leads under
+// key: an integer of 1 to [MaxChatSeq], from the first 8 bytes of the
+// HMAC-SHA-256, keyed by key, of a canonical encoding of the set, masked to
+// 53 bits. It is a digest, not a counter; it is never 0, which a seat sends
+// when it has none. Without the key nothing of the set can be told from it,
+// and with another key (a restart of the daemon, a replaced source) the same
+// set gives another cursor.
 //
 // The encoding is the domain string, then the number of leads, then each lead
 // in the order of its identifier: the identifier as a 4-byte big-endian length
@@ -63,7 +92,11 @@ const chatCursorDomain = "ataniq.seat-wait.chat/1"
 // empty set has a cursor too. So the cursor changes when an enabled lead's
 // head moves, when its segment is reset (a new generation), and when a lead
 // is enabled or disabled; nothing else is in it.
-func ChatCursor(leads []ChatCursorLead) int64 {
+//
+// Two different sets give the same cursor with a chance of about 2^-53: a
+// cursor that is the seat's may hide a change, never reveal one. That is why
+// equality is only a hint, and never allows a read.
+func ChatCursor(key ChatCursorKey, leads []ChatCursorLead) int64 {
 	sorted := append([]ChatCursorLead(nil), leads...)
 	sort.Slice(sorted, func(i, j int) bool {
 		a, b := sorted[i], sorted[j]
@@ -75,7 +108,7 @@ func ChatCursor(leads []ChatCursorLead) int64 {
 		}
 		return a.Head < b.Head
 	})
-	h := sha256.New()
+	h := hmac.New(sha256.New, key[:])
 	var n4 [4]byte
 	var n8 [8]byte
 	field := func(s string) {

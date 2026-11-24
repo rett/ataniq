@@ -50,8 +50,11 @@ func (f *fakeCursor) cursorLocked() int64 {
 	for _, l := range f.leads {
 		all = append(all, l)
 	}
-	return ownerwire.ChatCursor(all)
+	return ownerwire.ChatCursor(testKey, all)
 }
+
+// testKey is the fake's cursor key; the daemon's is random.
+var testKey = ownerwire.NewChatCursorKey()
 
 func (f *fakeCursor) cursor() int64 {
 	f.mu.Lock()
@@ -259,7 +262,7 @@ func TestWaitChatStaleCursorWaitsTheGap(t *testing.T) {
 	w := newWaitEnv(t)
 	src := newFakeCursor(leadA)
 	first := w.now(t)
-	out := w.startChatWait(context.Background(), first.Version, ownerwire.ChatCursor(nil), src)
+	out := w.startChatWait(context.Background(), first.Version, ownerwire.ChatCursor(testKey, nil), src)
 	w.held(t, 2)
 	got, moved := w.drive(t, out, time.Second, 40)
 	if got.err != nil || chatOf(t, got.res) != src.cursor() {
@@ -321,7 +324,7 @@ func TestWaitChatSwitchOffBeforeTheAnswerPurgesTheHint(t *testing.T) {
 	if got.err != nil {
 		t.Fatal(got.err)
 	}
-	if c, want := chatOf(t, got.res), ownerwire.ChatCursor([]ownerwire.ChatCursorLead{leadB}); c != want {
+	if c, want := chatOf(t, got.res), ownerwire.ChatCursor(testKey, []ownerwire.ChatCursorLead{leadB}); c != want {
 		t.Fatalf("the cursor is %d, want %d, that of the lead still enabled", c, want)
 	}
 
