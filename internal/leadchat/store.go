@@ -149,17 +149,19 @@ type Store struct {
 	dropped  map[Reason]int
 
 	// Test hooks.
-	write        func(f *os.File, data []byte) (int, error)
-	sync         func(f *os.File) error
-	unlink       unlinkFunc
-	rename       renameFunc
-	beforeMake   func()               // in a turn-on, before the fresh outbox is made
-	beforeClaim  func(name string)    // before an entry of the outbox is claimed
-	afterClaim   func(id int64) error // after a reply is claimed, before it is read
-	afterRead    func(name string)    // after a claimed reply is read, before the second fstat
-	afterAppend  func() error         // after an entry of a reply is stored, before its claim is removed
-	beforeDelete func(id int64)       // before the claim of a stored reply is removed
-	beforeSwap   func() error         // in a compaction, after the temporary file is synced
+	write         func(f *os.File, data []byte) (int, error)
+	sync          func(f *os.File) error
+	unlink        unlinkFunc
+	rename        renameFunc
+	afterStage    func()               // in a turn-on, after the new outbox is made in the staging folder, before it is opened
+	beforePublish func()               // in a turn-on, after the earlier outbox is set aside, before the new one is published
+	afterPublish  func()               // in a turn-on, after the new outbox is published, before its name is checked
+	beforeClaim   func(name string)    // before an entry of the outbox is claimed
+	afterClaim    func(id int64) error // after a reply is claimed, before it is read
+	afterRead     func(name string)    // after a claimed reply is read, before the second fstat
+	afterAppend   func() error         // after an entry of a reply is stored, before its claim is removed
+	beforeDelete  func(id int64)       // before the claim of a stored reply is removed
+	beforeSwap    func() error         // in a compaction, after the temporary file is synced
 }
 
 // OpenStore opens the chat of the lead whose layout role is role, below the
@@ -820,15 +822,18 @@ func (s *Store) Read(after int64) (entries []Entry, reset bool, head int64, err 
 // Off to read starts a segment with an outbox made for it. The lead's home
 // must be there ([ErrUnavailable]) and reached without a link or a mount
 // point ([ErrInsecure], or [ErrUnavailable] when the kernel cannot reach it
-// so). The claims an earlier segment left are discarded, the earlier outbox
-// is removed when it is an empty folder and otherwise set aside, unread, in
-// the lead's quarantine ([ErrQuarantined] when that holds [MaxQuarantine]
-// already), and a new outbox is made with mode 0700 and held open until the
-// segment ends. A probe file made in it is claimed and removed, so a file
-// system that cannot rename without replacing refuses the turn-on
-// ([ErrUnavailable]). Then the switch line (with how many things the turn-on
-// set aside) and the entry [TextTurnedOn] are appended in one synced write.
-// Anything that fails leaves the switch off.
+// so). The claims an earlier segment left are discarded; a new outbox is
+// made in the lead's staging folder with mode 0700, opened and judged there,
+// and held open until the segment ends; a probe file made in it is claimed
+// and removed, so a file system that cannot rename without replacing refuses
+// the turn-on ([ErrUnavailable]); the earlier outbox, an empty one included,
+// is set aside, unread, in the lead's quarantine ([ErrQuarantined] when its
+// [MaxQuarantine] names all hold something); and the held folder is
+// published at the outbox's name, which must then lead to it
+// ([ErrUnavailable] otherwise). Then the switch line (with how many things
+// the turn-on set aside) and the entry [TextTurnedOn] are appended in one
+// synced write. Anything that fails leaves the switch off. The package
+// documentation tells the order.
 //
 // Read to off turns the switch off in memory first, so nothing is read from
 // that moment, lets go of the outbox, then drops every entry of the lead by a

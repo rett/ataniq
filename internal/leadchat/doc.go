@@ -36,27 +36,40 @@
 // afresh, so nothing published before the turn-on can be taken, whatever its
 // times say:
 //
-//  1. the lead's quarantine, <state root>/leads/<layout role>/quarantine, is
-//     made (mode 0700) or verified: a folder of the daemon's, bound into no
+//  1. the lead's quarantine, <state root>/leads/<layout role>/quarantine, and
+//     its staging folder, <state root>/leads/<layout role>/staging, are made
+//     (mode 0700) or verified: folders of the daemon's, bound into no
 //     sandbox, on the file system of the lead's home;
 //  2. every claim an earlier segment or an earlier run left is discarded:
 //     a file is unlinked unopened, and a folder, which unlink refuses, is set
-//     aside in the quarantine;
-//  3. the earlier outbox is removed when it is an empty folder, and set
-//     aside otherwise (whatever it is: a folder that holds anything, a
-//     symbolic link, a file): renamed, by a rename that replaces nothing,
-//     into the quarantine under 1, 2, 3 or 4, whichever is free, and never
-//     opened, read or walked. A quarantine that holds [MaxQuarantine]
-//     already refuses the turn-on ([ErrQuarantined]) until the owner purges
-//     it ([Store.PurgeQuarantine]);
-//  4. a new outbox is made with mode 0700, opened by openat2, set to 0700
-//     exactly and verified on its descriptor. A name that is there again
-//     already (the lead made it in the moment between) refuses the turn-on
-//     ([ErrUnavailable]). The descriptor is held until the segment ends;
-//  5. a probe file made in the new outbox is claimed and removed as a reply
+//     aside in the quarantine; whatever the staging folder holds (a folder
+//     an earlier turn-on made and did not publish) is set aside too;
+//  3. the new outbox is made in the staging folder (mode 0700), opened there
+//     by openat2 and judged on its descriptor: a folder of the daemon's user
+//     that holds nothing and has one link from its parent, so a name put in
+//     its place before the open is refused ([ErrUnavailable]). Its mode is
+//     set to 0700 exactly on that descriptor, which is held until the
+//     segment ends: the grant is bound to a folder the daemon made, never to
+//     one it found;
+//  4. a probe file made in the new outbox is claimed and removed as a reply
 //     is: a file system or a filter that cannot rename without replacing
 //     (EINVAL, ENOSYS, EOPNOTSUPP, EPERM, EACCES, or two file systems)
-//     refuses the turn-on ([ErrUnavailable]) rather than the first reply.
+//     refuses the turn-on ([ErrUnavailable]) rather than the first reply;
+//  5. the earlier outbox, whatever it is (an empty folder, a folder that
+//     holds anything, a symbolic link, a file), is set aside: renamed, by a
+//     rename that replaces nothing, into the quarantine under 1, 2, 3 or 4,
+//     whichever is free, and never opened, read or walked. When every name
+//     is taken, one that holds an empty folder is freed by removing that
+//     folder (which fails for one that holds anything); a quarantine whose
+//     four names all hold something refuses the turn-on ([ErrQuarantined])
+//     until the owner purges it ([Store.PurgeQuarantine]): a turn-on needs
+//     one free name;
+//  6. the held folder is published at the outbox's name by a rename that
+//     replaces nothing, and the name must then lead to it (the same device
+//     and inode). A name the lead took in the moment between, and a name
+//     that leads elsewhere right after the rename, refuse the turn-on
+//     ([ErrUnavailable]); what the staging folder or the outbox's name then
+//     holds is set aside.
 //
 // Anything that fails leaves the switch off. The lead must use the folder
 // the daemon made and never make it itself: while chat is off, what it

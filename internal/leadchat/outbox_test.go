@@ -196,11 +196,12 @@ func TestIngestSetsAsideWhatTookAReplysNameBeforeTheClaim(t *testing.T) {
 			if !rep.Suspended || rep.Taken != 0 || len(rep.Dropped) != 0 {
 				t.Fatalf("report %+v", rep)
 			}
-			if n, c, q := e.names(), e.claims(), e.quarantined(); !slices.Equal(n, []string{"b.txt"}) || len(c) != 0 || !slices.Equal(q, []string{"1"}) {
+			// 1 is the outbox the turn-on set aside, 2 the claim.
+			if n, c, q := e.names(), e.claims(), e.quarantined(); !slices.Equal(n, []string{"b.txt"}) || len(c) != 0 || !slices.Equal(q, []string{"1", "2"}) {
 				t.Fatalf("outbox %q, claims %q, quarantine %q", n, c, q)
 			}
 			if name == "a folder" {
-				if _, err := os.Stat(filepath.Join(e.quarDir(), "1", "deep", "x.txt")); err != nil {
+				if _, err := os.Stat(filepath.Join(e.quarDir(), "2", "deep", "x.txt")); err != nil {
 					t.Fatalf("the folder set aside was walked: %v", err)
 				}
 			}
@@ -500,10 +501,10 @@ func TestIngestFloodPastWaiting(t *testing.T) {
 	if err != nil || st.Suspended || st.Gen != 3 {
 		t.Fatalf("a fresh turn-on: %+v, %v", st, err)
 	}
-	if n, q := e.names(), e.quarantined(); len(n) != 0 || !slices.Equal(q, []string{"1"}) {
+	if n, q := e.names(), e.quarantined(); len(n) != 0 || !slices.Equal(q, []string{"1", "2"}) {
 		t.Fatalf("the fresh turn-on left outbox %q, quarantine %q", n, q)
 	}
-	if old := e.list(filepath.Join(e.quarDir(), "1")); len(old) != MaxWaiting+1 {
+	if old := e.list(filepath.Join(e.quarDir(), "2")); len(old) != MaxWaiting+1 {
 		t.Fatalf("%d entries set aside", len(old))
 	}
 	wantTexts(t, s, TextTurnedOn)
@@ -711,7 +712,7 @@ func TestRestartDiscardsTheSegment(t *testing.T) {
 		if err != nil || st.Chat != "read" {
 			t.Fatalf("SetSwitch: %+v, %v", st, err)
 		}
-		if n, c, q := e.names(), e.claims(), e.quarantined(); len(n) != 0 || len(c) != 0 || !slices.Equal(q, []string{"1"}) {
+		if n, c, q := e.names(), e.claims(), e.quarantined(); len(n) != 0 || len(c) != 0 || !slices.Equal(q, []string{"1", "2"}) {
 			t.Fatalf("the turn-on left outbox %q, claims %q, quarantine %q", n, c, q)
 		}
 		if l := e.lines(testRole); !strings.Contains(l[len(l)-2], `"discarded":2`) {
@@ -905,19 +906,46 @@ func TestTurnOnMakesAFreshOutbox(t *testing.T) {
 			t.Fatalf("quarantine %q", q)
 		}
 	})
-	t.Run("an empty one is removed", func(t *testing.T) {
+	t.Run("an empty one is set aside", func(t *testing.T) {
 		e := newEnv(t)
+		var before unix.Stat_t
+		if err := unix.Stat(e.outbox, &before); err != nil {
+			t.Fatal(err)
+		}
 		s := e.on()
+		if q := e.quarantined(); !slices.Equal(q, []string{"1"}) {
+			t.Fatalf("quarantine %q", q)
+		}
+		var aside unix.Stat_t
+		if err := unix.Stat(filepath.Join(e.quarDir(), "1"), &aside); err != nil || aside.Ino != before.Ino {
+			t.Fatalf("the earlier, empty outbox was not set aside: %v", err)
+		}
+		if l := e.lines(testRole); !strings.Contains(l[1], `"discarded":1`) {
+			t.Fatalf("switch line %s", l[1])
+		}
 		for _, sw := range []string{"off", "read", "off", "read"} {
 			if _, err := s.SetSwitch(sw, 1); err != nil {
 				t.Fatal(err)
 			}
 		}
-		if q := e.quarantined(); len(q) != 0 {
+		if q := e.quarantined(); !slices.Equal(q, []string{"1", "2", "3"}) {
 			t.Fatalf("quarantine %q", q)
 		}
-		if l := e.lines(testRole); !strings.Contains(l[len(l)-2], `"discarded":0`) {
+		if l := e.lines(testRole); !strings.Contains(l[len(l)-2], `"discarded":1`) {
 			t.Fatalf("switch line %s", l[len(l)-2])
+		}
+		// A full quarantine of empty folders frees a name by removing one:
+		// nothing set aside is lost.
+		for i := 0; i < 3; i++ {
+			if _, err := s.SetSwitch("off", 1); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.SetSwitch("read", 1); err != nil {
+				t.Fatalf("turn-on with a quarantine of empty folders: %v", err)
+			}
+		}
+		if q := e.quarantined(); len(q) != MaxQuarantine {
+			t.Fatalf("quarantine %q", q)
 		}
 	})
 	t.Run("one that holds anything is set aside", func(t *testing.T) {
@@ -1020,22 +1048,125 @@ func TestTurnOnMakesAFreshOutbox(t *testing.T) {
 	t.Run("made again by the lead during the turn-on", func(t *testing.T) {
 		e := newEnv(t)
 		s := e.open()
-		s.beforeMake = func() { e.makeOutbox(testRole) }
+		s.beforePublish = func() {
+			e.makeOutbox(testRole)
+			e.file("planted.txt", "Made before the daemon's folder was published.")
+		}
 		if _, err := s.SetSwitch("read", 1); !errors.Is(err, ErrUnavailable) {
 			t.Fatalf("SetSwitch read: %v", err)
 		}
 		if st, err := s.Status(); err != nil || st.Chat != "off" || st.Gen != 0 {
 			t.Fatalf("status %+v, %v", st, err)
 		}
-		s.beforeMake = nil
+		// The staged folder went to the quarantine, and the lead's folder
+		// was not pinned.
+		if q := e.quarantined(); !slices.Equal(q, []string{"1", "2"}) {
+			t.Fatalf("quarantine %q", q)
+		}
+		if n := e.list(filepath.Join(e.dir, "leads", testRole, StagingName)); len(n) != 0 {
+			t.Fatalf("staging %q", n)
+		}
+		s.beforePublish = nil
 		if _, err := s.SetSwitch("read", 1); err != nil {
 			t.Fatal(err)
+		}
+		if n := e.names(); len(n) != 0 {
+			t.Fatalf("the published outbox holds %q", n)
+		}
+		e.reply("a.txt", "After.")
+		ingest(t, s)
+		wantTexts(t, s, TextTurnedOn, "After.")
+	})
+	t.Run("replaced in the staging folder before it is opened", func(t *testing.T) {
+		for name, swap := range map[string]func(e *env, staged string){
+			"a folder that holds a reply": func(e *env, staged string) {
+				if err := os.Rename(staged, staged+".made"); err != nil {
+					e.t.Fatal(err)
+				}
+				if err := os.Mkdir(staged, 0o700); err != nil {
+					e.t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(staged, "old.txt"), []byte("From before."), 0o600); err != nil {
+					e.t.Fatal(err)
+				}
+			},
+			"a link": func(e *env, staged string) {
+				elsewhere := filepath.Join(e.dir, "elsewhere")
+				if err := os.Mkdir(elsewhere, 0o700); err != nil {
+					e.t.Fatal(err)
+				}
+				if err := os.Remove(staged); err != nil {
+					e.t.Fatal(err)
+				}
+				if err := os.Symlink(elsewhere, staged); err != nil {
+					e.t.Fatal(err)
+				}
+			},
+			"gone": func(e *env, staged string) {
+				if err := os.Remove(staged); err != nil {
+					e.t.Fatal(err)
+				}
+			},
+		} {
+			t.Run(name, func(t *testing.T) {
+				e := newEnv(t)
+				s := e.open()
+				staged := filepath.Join(e.dir, "leads", testRole, StagingName, stagedName)
+				s.afterStage = func() { swap(e, staged) }
+				if _, err := s.SetSwitch("read", 1); !errors.Is(err, ErrUnavailable) {
+					t.Fatalf("SetSwitch read: %v", err)
+				}
+				if st, err := s.Status(); err != nil || st.Chat != "off" || st.Gen != 0 {
+					t.Fatalf("status %+v, %v", st, err)
+				}
+				// Nothing was published: the earlier outbox is still at
+				// its name, untouched.
+				if fi, err := os.Lstat(e.outbox); err != nil || !fi.IsDir() {
+					t.Fatalf("outbox %v, %v", fi, err)
+				}
+				if n := e.names(); len(n) != 0 {
+					t.Fatalf("the outbox holds %q", n)
+				}
+				s.afterStage = nil
+				if _, err := s.SetSwitch("read", 1); err != nil {
+					t.Fatal(err)
+				}
+				ingest(t, s)
+				wantTexts(t, s, TextTurnedOn)
+			})
+		}
+	})
+	t.Run("replaced right after it is published", func(t *testing.T) {
+		e := newEnv(t)
+		s := e.open()
+		s.afterPublish = func() {
+			if err := os.Rename(e.outbox, e.outbox+".moved"); err != nil {
+				e.t.Fatal(err)
+			}
+			e.makeOutbox(testRole)
+			e.file("planted.txt", "Not the daemon's folder.")
+		}
+		if _, err := s.SetSwitch("read", 1); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("SetSwitch read: %v", err)
+		}
+		if st, err := s.Status(); err != nil || st.Chat != "off" || st.Gen != 0 {
+			t.Fatalf("status %+v, %v", st, err)
+		}
+		if _, err := os.Lstat(e.outbox); !os.IsNotExist(err) {
+			t.Fatalf("the replacement was left at the outbox's name: %v", err)
+		}
+		if q := e.quarantined(); !slices.Equal(q, []string{"1", "2"}) {
+			t.Fatalf("quarantine %q", q)
+		}
+		if n := e.list(filepath.Join(e.quarDir(), "2")); !slices.Equal(n, []string{"planted.txt"}) {
+			t.Fatalf("set aside %q", n)
 		}
 	})
 }
 
 // The quarantine holds MaxQuarantine entries: a turn-on that would set aside
-// one more is refused until the owner purges it.
+// one more, when none of them is an empty folder, is refused until the owner
+// purges it.
 func TestQuarantineIsBounded(t *testing.T) {
 	e := newEnv(t)
 	s := e.open()
@@ -1068,8 +1199,13 @@ func TestQuarantineIsBounded(t *testing.T) {
 	if _, err := s.SetSwitch("read", 1); err != nil {
 		t.Fatal(err)
 	}
-	if q := e.quarantined(); !slices.Equal(q, []string{"1"}) {
+	// 1 is the folder the refused turn-on made and could not set aside, 2
+	// the earlier outbox.
+	if q := e.quarantined(); !slices.Equal(q, []string{"1", "2"}) {
 		t.Fatalf("quarantine %q", q)
+	}
+	if n := e.list(filepath.Join(e.quarDir(), "2")); !slices.Equal(n, []string{"left.txt"}) {
+		t.Fatalf("set aside %q", n)
 	}
 }
 
@@ -1211,8 +1347,17 @@ func TestTurnOnRefuses(t *testing.T) {
 		if _, err := s.SetSwitch("read", 1); err != nil {
 			t.Fatal(err)
 		}
-		if q, c := e.quarantined(), e.claims(); len(q) != 0 || len(c) != 0 {
+		// The quarantine holds the folder the refused turn-ons made and the
+		// earlier outbox, both empty: a name an empty folder holds is freed
+		// when it is needed.
+		q, c := e.quarantined(), e.claims()
+		if len(c) != 0 || !slices.Equal(q, []string{"1", "2"}) {
 			t.Fatalf("quarantine %q, claims %q", q, c)
+		}
+		for _, name := range q {
+			if n := e.list(filepath.Join(e.quarDir(), name)); len(n) != 0 {
+				t.Fatalf("quarantine %s holds %q", name, n)
+			}
 		}
 	})
 }
@@ -1241,13 +1386,13 @@ func TestTurnOnDiscardsEarlierClaims(t *testing.T) {
 	if _, err := s.SetSwitch("read", 1); err != nil {
 		t.Fatal(err)
 	}
-	if c, q := e.claims(), e.quarantined(); len(c) != 0 || !slices.Equal(q, []string{"1"}) {
+	if c, q := e.claims(), e.quarantined(); len(c) != 0 || !slices.Equal(q, []string{"1", "2"}) {
 		t.Fatalf("claims %q, quarantine %q", c, q)
 	}
 	if _, err := os.Stat(filepath.Join(e.quarDir(), "1", "inner")); err != nil {
 		t.Fatalf("the folder set aside: %v", err)
 	}
-	if l := e.lines(testRole); !strings.Contains(l[1], `"discarded":2`) {
+	if l := e.lines(testRole); !strings.Contains(l[1], `"discarded":3`) {
 		t.Fatalf("switch line %s", l[1])
 	}
 	ingest(t, s)

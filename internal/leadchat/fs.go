@@ -40,12 +40,14 @@ var (
 	// the kernel has no openat2 with the resolve flags (or a filter denies
 	// it), it cannot rename without replacing (the turn-on's probe failed),
 	// the outbox, the claim folder and the quarantine are on two file
-	// systems, the lead's home is not there, or the reply folder was made
-	// by another while chat was turned on. A turn-on is refused.
+	// systems, the lead's home is not there, the folder the turn-on made was
+	// replaced before it was opened or published, or the reply folder was
+	// made by another while chat was turned on. A turn-on is refused.
 	ErrUnavailable = errors.New("leadchat: the outbox is unavailable")
-	// ErrQuarantined: the lead's quarantine holds [MaxQuarantine] folders
-	// set aside, and a turn-on that would set aside one more is refused
-	// until the owner purges it ([Store.PurgeQuarantine]).
+	// ErrQuarantined: the lead's quarantine holds [MaxQuarantine] entries
+	// set aside, none of them an empty folder, and a turn-on that would set
+	// aside one more is refused until the owner purges it
+	// ([Store.PurgeQuarantine]).
 	ErrQuarantined = errors.New("leadchat: the quarantine is full; purge it before chat is turned on again")
 	// ErrSuspended: the lead's chat was stopped by a scan (the outbox was
 	// replaced, removed or made open to others, held a folder, a link or a

@@ -949,20 +949,30 @@ it) leaves the reply folder unavailable, and chat cannot be turned on.
 conversation: from a turn-on to the next turn-off, stop or restart. Turning chat
 on makes it afresh, so nothing written before can be shown, whatever its times
 say. The turn-on removes what an earlier conversation left in the daemon's claim
-folder; removes the earlier reply folder when it is empty, and otherwise moves it
-whole, unread and unopened, into the lead's quarantine
+folder; makes the new reply folder in the lead's staging folder
+(`<state root>/leads/<layout role>/staging`, mode 0700, made by the daemon and
+bound into no sandbox), opens it there, checks on its descriptor that it is the
+empty folder it made, sets its mode to 0700 on that descriptor and keeps it open
+until the conversation ends; makes a probe file in it and takes it as it would
+take a reply; moves the earlier reply folder, whatever it is and also when it is
+empty, whole, unread and unopened, into the lead's quarantine
 (`<state root>/leads/<layout role>/quarantine`, mode 0700, made by the daemon and
-bound into no sandbox), under `1` to `4`; makes a new reply folder with mode 0700
-and keeps it open until the conversation ends; and makes a probe file in it and
-takes it as it would take a reply. The turn-on is refused, and chat stays off,
-when the lead's home is not there or is reached through a link, when the file
-system cannot rename without replacing (the probe failed), when the lead made the
-folder again in the moment between, and when the quarantine already holds four
-entries. The quarantine is the owner's to empty: the store's purge removes what
-it holds, one name at a time, never following a link, at most 16 deep and 8192
-entries a purge, and leaves and counts what it cannot remove. The lead must use
-the folder the daemon made and never make it: what it writes there while chat
-is off is set aside unread at the next turn-on.
+bound into no sandbox), under `1` to `4`; and then moves the folder it holds to
+the reply folder's name in the lead's home by a rename that never replaces
+anything, and checks that the name leads to it. So the conversation is bound to
+a folder the daemon made, never to one it found. The turn-on is refused, and
+chat stays off, when the lead's home is not there or is reached through a link,
+when the file system cannot rename without replacing (the probe failed), when
+the folder it made was replaced before it was opened, when the lead made the
+reply folder again in the moment before it was moved there or replaced it in the
+moment after (what is at the name is then moved into the quarantine too), and
+when the quarantine is full. A turn-on needs one free name in the quarantine:
+when all four hold something, a name that holds an empty folder is freed by
+removing that folder (which never removes anything that holds a file), and
+otherwise the turn-on is refused until the owner purges the quarantine (see
+[the switch](#how-the-reader-works)). The lead must use the folder the daemon
+made and never make it: what it writes there while chat is off is set aside
+unread at the next turn-on.
 
 **What stops the chat.** Every scan checks that the reply folder's name still
 leads to the folder the turn-on made (the same device and inode, which no other
