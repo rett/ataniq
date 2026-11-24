@@ -29,12 +29,18 @@ func TestSeatWatchScriptLeadsMatchesTheSeat(t *testing.T) {
 			t.Errorf("watch.js lacks %q", want)
 		}
 	}
-	// The page's address decides nothing: it is read only to link a
-	// conversation's offer to the conversation's own newest page, and only
-	// when it is a conversation's path.
-	if n := strings.Count(js, "location.pathname"); n != 2 || strings.Count(funcBody(t, js, "newestTarget"), "location.pathname") != 2 ||
-		!strings.Contains(funcBody(t, js, "newestTarget"), "CHAT_PAGE.test(location.pathname)") {
+	// The page's address decides nothing: its path is read only to link a
+	// conversation's offer, and its following read, to the conversation's
+	// page that holds its newest entry, and only when it is a
+	// conversation's path; the address without its fragment, only to tell
+	// whether that page is this one.
+	if n := strings.Count(js, "location.pathname"); n != 3 || strings.Count(funcBody(t, js, "newestPage"), "location.pathname") != 2 ||
+		!strings.Contains(funcBody(t, js, "newestPage"), "CHAT_PAGE.test(location.pathname)") ||
+		!strings.Contains(js, "function here() { return location.pathname + location.search; }") {
 		t.Errorf("watch.js reads its address other than for the offer's link (%d times)", n)
+	}
+	if n := strings.Count(js, "location.search"); n != 1 {
+		t.Errorf("watch.js reads its query %d times", n)
 	}
 	if strings.Contains(js, "location.hash") || strings.Contains(js, "document.URL") {
 		t.Error("watch.js reads its address")
@@ -97,16 +103,22 @@ func TestSeatWatchScriptLeadsOffersAndFollows(t *testing.T) {
 	for _, want := range []string{
 		"if (offerShown) { return; }", "offerShown = true;",
 		"say(TEXT.leadsChanged, [link(TEXT.refresh, LEADS_PATH)]);",
-		"var a = link(TEXT.showNewest, newestTarget());", "say(TEXT.newReplies, [a]);",
+		"say(TEXT.newReplies, [link(TEXT.showNewest, newestTarget())]);",
 	} {
 		if !strings.Contains(of, want) {
 			t.Errorf("offer lacks %q", want)
 		}
 	}
-	for _, bad := range []string{"location.", "wantReload", "reloadNow"} {
+	for _, bad := range []string{"location.", "wantReload", "reloadNow", "addEventListener"} {
 		if strings.Contains(of, bad) {
 			t.Errorf("offer holds %q", bad)
 		}
+	}
+	// "Show newest" goes to the page that holds the newest entry: never a
+	// fragment alone on this page, which would only move the view on a page
+	// that does not hold the new replies.
+	if nt := funcBody(t, js, "newestTarget"); !strings.Contains(nt, "return page === here() ? page : page + NEWEST;") {
+		t.Errorf("newestTarget: %s", nt)
 	}
 	// Nothing moves the focus or the view.
 	for _, bad := range []string{".focus(", "scrollIntoView", "scrollTo(", "scrollBy(", "autofocus", "tabIndex"} {
@@ -122,7 +134,7 @@ func TestSeatWatchScriptLeadsOffersAndFollows(t *testing.T) {
 		}
 	}
 	rn := funcBody(t, js, "reloadNow")
-	for _, want := range []string{"if (!following()) { offer(); return; }", "if (location.search !== target) { location.replace(target + NEWEST); return; }"} {
+	for _, want := range []string{"if (!following()) { offer(); return; }", "if (page !== here()) { location.replace(page + NEWEST); return; }"} {
 		if !strings.Contains(rn, want) {
 			t.Errorf("reloadNow lacks %q", want)
 		}

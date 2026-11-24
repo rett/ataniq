@@ -518,8 +518,8 @@ func TestSeatLeadsPagesCarryTheStream(t *testing.T) {
 	ld.leadsChat.onRead = func() { ld.fakeChatWatcher.setQuiet(ChatHint{Live: true, Cursor: 8, Connection: time.Unix(1, 0)}) }
 	const status = `<p id="watch-status" role="status" aria-live="polite"></p>`
 	for path, mark := range map[string]string{
-		"/leads/":             `<div id="watch" data-view="leads" data-live="yes" data-chat="7" data-page="directory"></div>`,
-		"/leads/daemon/alpha": `<div id="watch" data-view="leads" data-live="yes" data-chat="7" data-page="conversation"></div>`,
+		"/leads/":                     `<div id="watch" data-view="leads" data-live="yes" data-chat="7" data-page="directory"></div>`,
+		"/leads/daemon/alpha?after=4": `<div id="watch" data-view="leads" data-live="yes" data-chat="7" data-page="conversation"></div>`,
 	} {
 		ld.fakeChatWatcher.setQuiet(ChatHint{Live: true, Cursor: 7, Connection: time.Unix(1, 0)})
 		body := r.getWith(path, s).Body.String()

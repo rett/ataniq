@@ -159,7 +159,7 @@ func TestChatPages(t *testing.T) {
 	r := newRig(t, withChat(f))
 	s := r.login(t)
 	before := r.daemon.count()
-	for _, path := range []string{"/leads/", "/leads/daemon/alpha"} {
+	for _, path := range []string{"/leads/", "/leads/daemon/alpha?after=4"} {
 		if w := r.getWith(path); w.Code != 303 || w.Header().Get("Location") != "/login/" {
 			t.Fatal("public page", w.Code)
 		}
@@ -209,7 +209,7 @@ func TestChatPages(t *testing.T) {
 			if match == nil || html.UnescapeString(match[1]) != Text(hostileChat, 2000) {
 				t.Error("message was not a text node with the original lines")
 			}
-			for _, want := range []string{`href="/leads/daemon/alpha?after=5#newest"`, `href="/leads/daemon/alpha?after=7"`, `href="/leads/daemon/alpha?after=0"`, `<li id="newest" tabindex="-1">`, "Shortened; the lead wrote more."} {
+			for _, want := range []string{`href="/leads/daemon/alpha#newest"`, `href="/leads/daemon/alpha?after=7"`, `href="/leads/daemon/alpha?after=0"`, `<li id="newest" tabindex="-1">`, "Shortened; the lead wrote more."} {
 				if !strings.Contains(body, want) {
 					t.Error(want)
 				}
@@ -271,7 +271,7 @@ func TestChatCockpitHeadingOrder(t *testing.T) {
 	f := sampleChat()
 	r := newRig(t, withChat(f))
 	s := r.login(t)
-	page := r.getWith("/leads/daemon/alpha", s).Body.String()
+	page := r.getWith("/leads/daemon/alpha?after=4", s).Body.String()
 	_, main, ok := strings.Cut(page, `<main id="content">`)
 	if !ok {
 		t.Fatal("no main")
@@ -320,7 +320,7 @@ func TestChatLinkDropAfterDirectory(t *testing.T) {
 					r.postWith("/api/logout", "{}", s)
 				}
 			}
-			w := r.getWith("/leads/daemon/alpha", s)
+			w := r.getWith("/leads/daemon/alpha?after=4", s)
 			body := w.Body.String()
 			want := 1
 			if tc.ending {
@@ -378,7 +378,7 @@ func TestChatCockpit(t *testing.T) {
 				strings.Contains(strings.ToLower(off), "epoch") {
 				t.Fatalf("off row %q", off)
 			}
-			w := r.getWith(path, s)
+			w := r.getWith(path+"?after=4", s)
 			page := w.Body.String()
 			if w.Code != 200 || len(f.calls) != 3 || f.calls[2].Verb != ChatRead {
 				t.Fatalf("cockpit status %d, calls %v", w.Code, f.calls)
@@ -578,18 +578,23 @@ func TestChatPagingHistory(t *testing.T) {
 	if strings.Contains(first, "Lead restarted:") {
 		t.Fatal("first epoch or bookmark")
 	}
-	// The recent window of a longer conversation: after head-16.
+	// The recent window of a longer conversation: after head-16. (A
+	// recent window that leaves entries out reads on toward the head:
+	// TestChatOwnAddressIsTheNewest.)
 	*f.list.Rows[0].Head = 60
 	f.read.Head = 60
 	f.read.Entries[0].Seq = 45
-	recent := get("")
+	f.read.More = false
+	get("")
 	if got := f.calls[len(f.calls)-1].After; got != 44 {
 		t.Fatalf("the recent window read after %d", got)
 	}
-	has(recent, `?after=28">Show earlier`, `?after=45">Show later`, `?after=44#newest">Jump to newest`)
+	f.read.More = true
+	recent := get("?after=44")
+	has(recent, `?after=28">Show earlier`, `?after=45">Show later`, `"/leads/daemon/alpha#newest">Jump to newest`)
 	// Show earlier from there is one window back, and so on to zero.
 	f.read.Entries[0].Seq = 29
-	has(get("?after=28"), `?after=12">Show earlier`, `?after=29">Show later`, `?after=44#newest">Jump to newest`)
+	has(get("?after=28"), `?after=12">Show earlier`, `?after=29">Show later`, `"/leads/daemon/alpha#newest">Jump to newest`)
 	f.read.Entries[0].Seq = 13
 	has(get("?after=12"), `?after=0">Show earlier`)
 	// A short page (the wire pages by bytes too) goes back one window as well.
@@ -609,13 +614,14 @@ func TestChatPagingHistory(t *testing.T) {
 	f.read.Reset = false
 	f.read.More = false
 	f.read.Entries = []ChatEntry{}
-	if empty := get("?after=61"); !strings.Contains(empty, "No messages on this page.") || !strings.Contains(empty, `?after=44#newest">Jump to newest`) || !strings.Contains(empty, `?after=45">Show earlier`) {
+	if empty := get("?after=61"); !strings.Contains(empty, "No messages on this page.") || !strings.Contains(empty, `"/leads/daemon/alpha#newest">Jump to newest`) || !strings.Contains(empty, `?after=45">Show earlier`) {
 		t.Error("empty page")
 	}
-	// A head inside the first window jumps to the whole conversation.
+	// A head inside the first window jumps to the conversation's own
+	// address too.
 	*f.list.Rows[0].Head = 5
 	f.read.Head = 5
-	if early := get("?after=1"); !strings.Contains(early, `?after=0#newest">Jump to newest`) {
+	if early := get("?after=1"); !strings.Contains(early, `"/leads/daemon/alpha#newest">Jump to newest`) {
 		t.Error("jump within the first window")
 	}
 	f.read.Head = 0
@@ -627,6 +633,126 @@ func TestChatPagingHistory(t *testing.T) {
 	if w := r.getWith("/leads/", s); !strings.Contains(w.Body.String(), "No leads are listed.") || !strings.Contains(w.Body.String(), chatBanner) {
 		t.Error("empty trial directory")
 	}
+}
+
+// TestChatOwnAddressIsTheNewest: the conversation's own address is its
+// newest page. A recent window that the gate's bound of a result cuts
+// short, or that replies arriving after the directory push past, leaves
+// entries out at first: the page reads on, after a sequence it was given,
+// at most twice more, and ends at the head, following. A busy room keeps the
+// page read so far, which offers Show later; an explicit cursor reads once.
+func TestChatOwnAddressIsTheNewest(t *testing.T) {
+	const entry = `<p dir="auto" class="lead chat-body">`
+	reads := func(f *fakeChat) (afters []int64) {
+		for _, c := range f.calls {
+			if c.Verb == ChatRead {
+				afters = append(afters, c.After)
+			}
+		}
+		return afters
+	}
+	t.Run("byte cap", func(t *testing.T) {
+		l := &chatLog{lead: "daemon:alpha", epoch: 1}
+		l.add(16, MaxChatTextBytes)
+		f := logChat(l)
+		r := newRig(t, withChat(f))
+		s := r.login(t)
+		if first, _ := l.read(ChatCall{Verb: ChatRead, Lead: l.lead}); !first.More || len(first.Entries) >= 16 {
+			t.Fatalf("the recent window is not cut short: %d entries", len(first.Entries))
+		}
+		w := r.getWith("/leads/daemon/alpha", s)
+		body := w.Body.String()
+		if w.Code != 200 {
+			t.Fatal(w.Code)
+		}
+		if got := reads(f); len(got) != 3 || got[0] != 0 {
+			t.Errorf("reads after %v", got)
+		}
+		if n := strings.Count(body, entry); n < 2 || !strings.Contains(body, `data-follow="16"`) || strings.Contains(body, `id="chat-next"`) || strings.Contains(body, `id="chat-jump" href="/leads/`) {
+			t.Errorf("not the newest page: %d entries: %s", n, body)
+		}
+		// An explicit cursor is a page of its own: one read, which the bound
+		// cuts short.
+		f.calls = nil
+		body = r.getWith("/leads/daemon/alpha?after=0", s).Body.String()
+		if got := reads(f); len(got) != 1 || !strings.Contains(body, `id="chat-next"`) || strings.Contains(body, "data-follow") ||
+			!strings.Contains(body, `id="chat-jump" href="/leads/daemon/alpha#newest"`) {
+			t.Errorf("an explicit page: reads %v: %s", got, body)
+		}
+	})
+	t.Run("replies after the directory", func(t *testing.T) {
+		l := &chatLog{lead: "daemon:alpha", epoch: 1}
+		l.add(30, 10)
+		f := logChat(l)
+		first := true
+		f.onRead = func() {
+			if first {
+				first = false
+				l.add(20, 10)
+			}
+		}
+		r := newRig(t, withChat(f))
+		s := r.login(t)
+		body := r.getWith("/leads/daemon/alpha", s).Body.String()
+		if got := reads(f); len(got) < 2 || got[0] != 14 {
+			t.Errorf("reads after %v", got)
+		}
+		if !strings.Contains(body, `data-follow="50"`) || strings.Contains(body, `id="chat-next"`) || strings.Count(body, entry) != MaxChatEntries {
+			t.Errorf("not the newest page: %s", body)
+		}
+	})
+	t.Run("bounded", func(t *testing.T) {
+		l := &chatLog{lead: "daemon:alpha", epoch: 1}
+		l.add(30, 10)
+		f := logChat(l)
+		f.onRead = func() { l.add(20, 10) }
+		r := newRig(t, withChat(f))
+		s := r.login(t)
+		w := r.getWith("/leads/daemon/alpha", s)
+		if got := reads(f); w.Code != 200 || len(got) != 1+newestReads {
+			t.Errorf("%d, reads after %v", w.Code, got)
+		}
+		if body := w.Body.String(); !strings.Contains(body, `id="chat-next"`) || strings.Contains(body, "data-follow") {
+			t.Errorf("a page short of the head: %s", body)
+		}
+	})
+	t.Run("busy", func(t *testing.T) {
+		l := &chatLog{lead: "daemon:alpha", epoch: 1}
+		l.add(16, MaxChatTextBytes)
+		f := logChat(l)
+		n := 0
+		f.reads = func(c ChatCall) (ChatView, error) {
+			if n++; n > 1 {
+				return ChatView{}, ErrBusy
+			}
+			return l.read(c)
+		}
+		r := newRig(t, withChat(f))
+		s := r.login(t)
+		w := r.getWith("/leads/daemon/alpha", s)
+		body := w.Body.String()
+		if w.Code != 200 || len(reads(f)) != 2 || !strings.Contains(body, `id="chat-next"`) || strings.Contains(body, "data-follow") || strings.Contains(body, problemBusy.message) {
+			t.Errorf("a busy room: %d %s", w.Code, body)
+		}
+	})
+	t.Run("changed", func(t *testing.T) {
+		l := &chatLog{lead: "daemon:alpha", epoch: 1}
+		l.add(16, MaxChatTextBytes)
+		f := logChat(l)
+		n := 0
+		f.reads = func(c ChatCall) (ChatView, error) {
+			v, err := l.read(c)
+			if n++; n > 1 {
+				v.Epoch++
+			}
+			return v, err
+		}
+		r := newRig(t, withChat(f))
+		s := r.login(t)
+		if w := r.getWith("/leads/daemon/alpha", s); w.Code != 409 || !strings.Contains(w.Body.String(), problemChatChanged.message) {
+			t.Errorf("another epoch on the way: %d", w.Code)
+		}
+	})
 }
 
 func TestChatInventoryControls(t *testing.T) {
@@ -683,7 +809,7 @@ func TestChatLogoutDuringRead(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	f.onRead = func() { close(entered); <-release }
 	out := make(chan *httptest.ResponseRecorder, 1)
-	go func() { out <- r.getWith("/leads/daemon/alpha", s) }()
+	go func() { out <- r.getWith("/leads/daemon/alpha?after=4", s) }()
 	<-entered
 	r.postWith("/api/logout", "{}", s)
 	close(release)

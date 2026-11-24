@@ -6,8 +6,9 @@
   again through its ordinary page at most once every 40 seconds (2 calls of
   the Leads pages' 5 in 80 seconds) and only while shown, never over typed
   text or an open dialog; scrolled away or on older messages it shows "New
-  replies." with a link **Show newest**, and the Leads page shows "Leads
-  changed." with **Refresh**. Nothing takes the focus. The stream asks the
+  replies." with a link **Show newest**, which loads the page that holds the
+  newest message, and the Leads page shows "Leads changed." with
+  **Refresh**. Nothing takes the focus. The stream asks the
   gate nothing, shares the card list's limits (3 streams of one passkey,
   card lists and Leads pages together, 32 in all), takes no notices'
   foreground lease and counts no card as seen. With no live hint (a gate

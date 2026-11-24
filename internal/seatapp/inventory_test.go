@@ -68,7 +68,7 @@ var inventory = []struct {
 	{pattern: "POST /api/push/unsubscribe", kind: "api"},
 	{pattern: "GET /leads", kind: "redirect"},
 	{pattern: "GET /leads/{$}", kind: "page", controls: withNav("a", "a#chat-refresh"), authed: true},
-	{pattern: "GET /leads/{kind}/{key}", kind: "page", controls: withCockpitLinks("a", "a#chat-refresh", "a#chat-jump", "a#chat-prev", "a#chat-next"), path: "/leads/daemon/alpha", authed: true},
+	{pattern: "GET /leads/{kind}/{key}", kind: "page", controls: withCockpitLinks("a", "a#chat-refresh", "a#chat-jump", "a#chat-prev", "a#chat-next"), path: "/leads/daemon/alpha?after=4", authed: true},
 	// The new-project pages: plain forms that post to the app, and no
 	// decide control.
 	{pattern: "GET /projects/{$}", kind: "page", controls: withNav("a", "a#back", "button#logout", "form#start-project", "button#start-project-go"), authed: true},

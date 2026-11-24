@@ -561,11 +561,14 @@ on the conversation page being read. On a phone, use **Conversation**,
 **Evidence** and **Timeline** to jump between sections, or **Back to Leads**
 to return to the directory.
 
-The conversation opens on its most recent messages, up to 16. **Show earlier**
-goes back 16 messages and **Show later** goes on from the page's last message,
-through the retained history. **Jump to newest** shows the most recent
-messages again and goes to the latest one. **Refresh** asks for the recent window again. Each Leads page is one or
-two calls of the desk, and they have a room of their own, 5 calls in 80
+The conversation opens on its most recent messages, up to 16, and ends at the
+latest one: when long messages do not all fit on one page, or replies arrived
+while it was read, the page reads on toward the latest message, up to twice
+more. **Show earlier** goes back 16 messages and **Show later** goes on from
+the page's last message, through the retained history. **Jump to newest**
+opens the conversation again at its latest message. **Refresh** asks for the
+recent window again. Each Leads page is one or two calls of the desk (up to
+four when the conversation reads on toward its latest message), and they have a room of their own, 5 calls in 80
 seconds, apart from the card lists' reads (see [What it costs](#live-refresh)):
 opening Leads, selecting a lead and one refresh, with no call to spare. Past it
 the page says "The desk is busy. Try
@@ -604,8 +607,8 @@ then starts with the first message after the last one you saw (**Show
 earlier** goes back to those), and more new replies than fit on one page
 leave **Show later**. When you have scrolled away from the newest
 message, or you are reading older messages, the page does not move: the
-status line says "New replies." with a link **Show newest**, which takes
-you to the newest message (and the page then follows the new replies). The
+status line says "New replies." with a link **Show newest**, which loads
+the page that holds the newest message, at that message. The
 Leads page says "Leads changed." with a link **Refresh** when what it lists
 may have changed. Nothing takes the focus, and a page never reads again
 while it is hidden, while a field holds typed text or while a dialog is open;

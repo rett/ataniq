@@ -16,7 +16,7 @@
     <h2 id="conversation-h" tabindex="-1">Conversation</h2>
     <p class="chat-links">
       <a id="chat-refresh" href="/leads/daemon/{{text .Selected.Key maxID}}">Refresh</a>
-      {{if .JumpRemote}}<a id="chat-jump" href="/leads/daemon/{{text .Selected.Key maxID}}?after={{num .TailAfter}}#newest">Jump to newest</a>
+      {{if .JumpRemote}}<a id="chat-jump" href="/leads/daemon/{{text .Selected.Key maxID}}#newest">Jump to newest</a>
       {{else if .Messages}}<a id="chat-jump" href="#newest">Jump to newest</a>{{end}}
     </p>
     {{template "watch-leads" .Watch}}

@@ -1994,9 +1994,14 @@ What the page does on `chat-changed` (`watch.js`, the same file, its one
   the page's own already, the page reloads.
 - Any other conversation (its reader scrolled away from the newest entry,
   or a page of older entries) shows "New replies." and a plain link **Show
-  newest**, once: to `#newest` on a page that shows the newest entries
-  (followed there, the page then follows the replies pending), and to the
-  conversation's own newest page otherwise.
+  newest**, once. It loads the page that holds the newest entry, at
+  `#newest`: on a page that shows the newest entries, the page after its
+  follow cursor (the following read's page), and otherwise the
+  conversation's own address, which the seat answers with its newest
+  entries (below). It is never a fragment alone on the page it is on, which
+  would only move the view on a page that does not hold the new replies:
+  when the destination is the page's own address the link has no fragment,
+  so following it loads the page again (`newestTarget`).
 - No hint moves the focus, scrolls, or reads a hidden page. A hidden page
   closes its stream; a change heard of before is kept, and acted on once,
   by the rules above, when the page is shown again, when its new stream
@@ -3548,7 +3553,18 @@ in a moment." with its link to try again; a connected gate without `chat` is
 retry, since trying again would not help.
 
 The recent window starts after the directory head minus 16, floored at zero.
-An explicit `?after=N` reads after N. The next link (Show later) uses the last
+The conversation's own address (no `?after=`) is its newest page: when that
+read leaves entries out (`more`: the gate's 16 KiB bound of a result cut it
+short, or replies arriving after the directory pushed past the window), the
+page reads on toward the head, at most twice more (`newestReads`), each time
+after a sequence the previous read returned, never an inferred one
+(`newestAfter`: the earliest entry with no more sequences after it than that
+read held, or its last entry), so the page ends at the head
+(`TestChatOwnAddressIsTheNewest`). Such a page is at most 4 of chat's 5
+calls. A further read that meets busy, or that resets (its cursor no longer
+kept), leaves the page read so far, which offers Show later; any other
+failure or disagreement of a further read is the page's, as for the first.
+An explicit `?after=N` reads after N, once. The next link (Show later) uses the last
 sequence returned even on a short page. The earlier link (Show earlier) reads
 one window back, after N minus 16, floored at zero, whichever way the page was
 reached, so it needs no memory of the pages before. The page's heading is
@@ -3559,8 +3575,8 @@ new replies come by a new read of the page, and the one live region is the
 hint stream's polite status line. The
 log marks the last entry as newest (`id="newest"`, with `tabindex="-1"`, so a
 link to `#newest` moves the focus there as well as the view; an empty page's
-line takes the id). When the head lies beyond the page, Jump to newest reads the
-last window, after the head minus 16, floored at zero. A session keeps only
+line takes the id). When the head lies beyond the page, Jump to newest goes to
+the conversation's own address, its newest page, at `#newest`. A session keeps only
 the last epoch it showed of each shared lead: a restart marker above the log
 records an epoch change observed across reads. A reset (a cursor before what
 the host retains, or past the head) has its own notice, "This page starts
