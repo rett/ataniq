@@ -513,6 +513,6 @@ func (a *app) problem(w http.ResponseWriter, r *http.Request, p problem) {
 }
 
 func (a *app) problemBanner(w http.ResponseWriter, r *http.Request, p problem, standIn bool) {
-	retry := r.Method == http.MethodGet && (p == problemChanged || p == problemBusy || p == problemUnavailable || p.status == http.StatusTooManyRequests)
+	retry := r.Method == http.MethodGet && (p == problemChanged || p == problemChatChanged || p == problemBusy || p == problemUnavailable || p.status == http.StatusTooManyRequests)
 	a.render(w, "problem", p.status, problemData{Title: p.title, Message: p.message, Retry: retry, StandIn: standIn})
 }

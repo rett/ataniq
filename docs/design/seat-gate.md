@@ -1312,7 +1312,8 @@ ends every session with it). So no page makes a call of the gate for the
 navigation. A public page (the status page, pairing, login) and a problem page
 have no navigation, no skip link and no `aria-current`: they are made without
 a session, or without knowing of one, and every problem page links back to the cards. A retryable GET
-(busy, unreachable, changed during the read or rate-limited) also offers
+(busy, unreachable, a card or a conversation changed during the read, or
+rate-limited) also offers
 "Try this page again", a fresh read of the same address. The page inventory and `nav_test.go` hold every page to
 this.
 
@@ -2852,8 +2853,13 @@ The recent window starts after the directory head minus 16, floored at zero.
 An explicit `?after=N` reads after N. The next link (Show later) uses the last
 sequence returned even on a short page. The earlier link (Show earlier) reads
 one window back, after N minus 16, floored at zero, whichever way the page was
-reached, so it needs no memory of the pages before. The log marks the last
-entry as newest. When the head lies beyond the page, Jump to newest reads the
+reached, so it needs no memory of the pages before. The page's heading is
+"Lead KEY" alone, and the lead's state is the line under it. The transcript is
+a list with `role="log"`, and no `aria-live`: the page is made once and never
+changes while it is open (a reader is not to announce it as it loads). The
+log marks the last entry as newest (`id="newest"`, with `tabindex="-1"`, so a
+link to `#newest` moves the focus there as well as the view; an empty page's
+line takes the id). When the head lies beyond the page, Jump to newest reads the
 last window, after the head minus 16, floored at zero. A session keeps only
 the last epoch it showed of each shared lead: a restart marker above the log
 records an epoch change observed across reads. A reset (a cursor before what

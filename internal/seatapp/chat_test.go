@@ -103,11 +103,18 @@ func TestChatPages(t *testing.T) {
 			}
 		}
 		if path != "/leads/" {
+			// The heading names the lead alone; the state is the line
+			// under it. The log is a static list: no live region.
+			if !strings.Contains(body, "<h1>Lead <bdi>alpha</bdi></h1>\n<p class=\"chat-state\">The lead is running.</p>") ||
+				!strings.Contains(body, `<ol class="chat-log" role="log" aria-labelledby="conversation-h">`) || strings.Contains(body, "aria-live") ||
+				strings.Contains(body, "aria-relevant") || strings.Contains(body, "aria-atomic") {
+				t.Error("the conversation's heading or log")
+			}
 			match := regexp.MustCompile(`(?s)<p dir="auto" class="lead chat-body">([^<]*)</p>`).FindStringSubmatch(body)
 			if match == nil || html.UnescapeString(match[1]) != Text(hostileChat, 2000) {
 				t.Error("message was not a text node with the original lines")
 			}
-			for _, want := range []string{`href="/leads/daemon/alpha?after=5#newest"`, `href="/leads/daemon/alpha?after=7"`, `href="/leads/daemon/alpha?after=0"`, `<li id="newest">`, "Shortened; the lead wrote more."} {
+			for _, want := range []string{`href="/leads/daemon/alpha?after=5#newest"`, `href="/leads/daemon/alpha?after=7"`, `href="/leads/daemon/alpha?after=0"`, `<li id="newest" tabindex="-1">`, "Shortened; the lead wrote more."} {
 				if !strings.Contains(body, want) {
 					t.Error(want)
 				}
@@ -152,6 +159,10 @@ func TestChatFailurePages(t *testing.T) {
 		if tc.calls == 2 && (strings.Count(body, chatBanner) != 1 || strings.Contains(body, "Scratch only")) {
 			t.Error("lost trial banner")
 		}
+		// A read that may go well the next time offers to try again: a busy
+		// or unreachable desk, and a conversation that changed during it.
+		retry := tc.words == problemBusy.message || tc.words == problemUnavailable.message || tc.words == problemChatChanged.message
+		checkProblemLinks(t, body, retry)
 		if r.getWith("/cards/", s).Code != 200 {
 			t.Error("Cards unusable")
 		}
@@ -329,7 +340,7 @@ func TestChatPagingHistory(t *testing.T) {
 	}
 	f.read.Head = 0
 	*f.list.Rows[0].Head = 0
-	if !strings.Contains(get(""), "No messages yet.") {
+	if !strings.Contains(get(""), `<p id="newest" tabindex="-1">No messages yet.</p>`) {
 		t.Error("empty conversation")
 	}
 	f.list.Rows = []LeadRow{}
@@ -374,7 +385,7 @@ func TestChatAtCapacityAndReadOnly(t *testing.T) {
 	s := r.login(t)
 	page := r.getWith("/leads/daemon/later?after=0", s)
 	body := page.Body.String()
-	if page.Code != 200 || strings.Count(body, ` id="newest"`) != 1 || strings.Count(body, "<time ") != 16 || strings.Count(body, strings.Repeat("é", 1000)) != 16 || !strings.Contains(body, `id="chat-jump" href="#newest"`) {
+	if page.Code != 200 || strings.Count(body, ` id="newest" tabindex="-1"`) != 1 || strings.Count(body, ` id="newest"`) != 1 || strings.Count(body, "<time ") != 16 || strings.Count(body, strings.Repeat("é", 1000)) != 16 || !strings.Contains(body, `id="chat-jump" href="#newest"`) {
 		t.Fatal("full conversation")
 	}
 	if findings := inspectPage(body, withNav("a", "a#chat-refresh", "a#chat-jump"), false); len(findings) != 0 {

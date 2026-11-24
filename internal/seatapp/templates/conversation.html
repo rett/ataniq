@@ -1,6 +1,6 @@
 {{define "content"}}
-<h1>Lead <bdi>{{text .Selected.Key maxID}}</bdi>
-<span class="chat-state">{{template "chat-state" .Selected}}</span></h1>
+<h1>Lead <bdi>{{text .Selected.Key maxID}}</bdi></h1>
+<p class="chat-state">{{template "chat-state" .Selected}}</p>
 {{if .StandIn}}{{template "standin-chat"}}{{end}}
 {{template "chat-rule"}}
 
@@ -21,9 +21,8 @@
     {{if .Reset}}<p class="note-line" role="status">This page starts again from the oldest kept message.</p>{{end}}
     {{if .Restarted}}<p class="chat-epoch"><strong>Lead restarted: epoch {{num .Epoch}}</strong></p>{{end}}
 
-    <ol class="chat-log" role="log" aria-labelledby="conversation-h"
-        aria-live="polite" aria-relevant="additions" aria-atomic="false">
-      {{range .Messages}}<li{{if .Last}} id="newest"{{end}}>
+    <ol class="chat-log" role="log" aria-labelledby="conversation-h">
+      {{range .Messages}}<li{{if .Last}} id="newest" tabindex="-1"{{end}}>
         <p class="chat-byline">
           <strong>{{if eq .Who "lead"}}Lead{{else}}System{{end}}</strong>
           <time datetime="{{text .Stamp maxID}}">{{when .At}}</time>
@@ -32,7 +31,7 @@
         {{if .Cut}}<p class="meta">Shortened; the lead wrote more.</p>{{end}}
       </li>{{end}}
     </ol>
-    {{if not .Messages}}<p id="newest">{{if .Head}}No messages on this page.{{else}}No messages yet.{{end}}</p>{{end}}
+    {{if not .Messages}}<p id="newest" tabindex="-1">{{if .Head}}No messages on this page.{{else}}No messages yet.{{end}}</p>{{end}}
 
     {{if or .HavePrev .More}}<nav class="chat-links" aria-label="Conversation pages">
       {{if .HavePrev}}<a id="chat-prev" href="/leads/daemon/{{text .Selected.Key maxID}}?after={{num .PrevAfter}}">Show earlier</a>{{end}}
