@@ -1,0 +1,45 @@
+{{define "content"}}
+<h1>Lead <bdi>{{text .Selected.Key maxID}}</bdi>
+<span class="chat-state">{{template "chat-state" .Selected}}</span></h1>
+{{if .StandIn}}{{template "standin"}}{{end}}
+{{template "chat-rule"}}
+
+<div class="chat-layout">
+  <aside class="chat-aside" aria-labelledby="other-leads">
+    <h2 id="other-leads">Leads</h2>
+    {{template "chat-rows" .Rows}}
+  </aside>
+
+  <section class="chat-thread" aria-labelledby="conversation-h">
+    <h2 id="conversation-h">Conversation</h2>
+    <p class="chat-links">
+      <a id="chat-refresh" href="/leads/daemon/{{text .Selected.Key maxID}}">Refresh</a>
+      {{if .JumpRemote}}<a id="chat-jump" href="/leads/daemon/{{text .Selected.Key maxID}}?after={{num .TailAfter}}#newest">Jump to newest</a>
+      {{else if .Messages}}<a id="chat-jump" href="#newest">Jump to newest</a>{{end}}
+    </p>
+
+    {{if .Reset}}<p class="note-line" role="status">Earlier messages are no longer kept.</p>{{end}}
+    {{if .Restarted}}<p class="chat-epoch"><strong>Lead restarted: epoch {{num .Epoch}}</strong></p>{{end}}
+
+    <ol class="chat-log" role="log" aria-labelledby="conversation-h"
+        aria-live="polite" aria-relevant="additions" aria-atomic="false">
+      {{range .Messages}}<li{{if .Last}} id="newest"{{end}}>
+        <p class="chat-byline">
+          <strong>{{if eq .Who "lead"}}Lead{{else}}System{{end}}</strong>
+          <time datetime="{{text .Stamp maxID}}">{{when .At}}</time>
+        </p>
+        <p dir="auto" class="{{if eq .Who "lead"}}lead {{end}}chat-body">{{text .Text 2000}}</p>
+        {{if .Cut}}<p class="meta">Shortened; the lead wrote more.</p>{{end}}
+      </li>{{end}}
+    </ol>
+    {{if not .Messages}}<p id="newest">{{if .Head}}No messages on this page.{{else}}No messages yet.{{end}}</p>{{end}}
+
+    {{if or .HavePrev .More}}<nav class="chat-links" aria-label="Conversation pages">
+      {{if .HavePrev}}<a id="chat-prev" href="/leads/daemon/{{text .Selected.Key maxID}}?after={{num .PrevAfter}}">Show earlier</a>{{end}}
+      {{if .More}}<a id="chat-next" href="/leads/daemon/{{text .Selected.Key maxID}}?after={{num .LastSeq}}">Show later</a>{{end}}
+    </nav>{{end}}
+
+    {{/* A future composer belongs here, outside the log and paging navigation. */}}
+  </section>
+</div>
+{{end}}

@@ -260,7 +260,7 @@ func TestStyleSheetWideScreen(t *testing.T) {
 		t.Errorf("%d width breakpoints, want 30rem and 60rem", n)
 	}
 	for _, want := range []string{".nav-page {", "display: grid;", "grid-template-columns:", "position: sticky;", "border-right:", "height: 100vh;", "height: 100dvh;", "overflow-y: auto;",
-		"max-width: 44rem;", ".nav-page > main:has(.cards) {", "max-width: 60rem;", "flex-direction: column;"} {
+		"max-width: 44rem;", ".nav-page > main:has(.cards) {", ".chat-aside {", ".chat-layout {", "minmax(10rem, 1fr) minmax(0, 2.5fr)", ".chat-thread {", "max-width: 60rem;", "flex-direction: column;"} {
 		if !strings.Contains(wide, want) {
 			t.Errorf("the wide block lacks %q", want)
 		}

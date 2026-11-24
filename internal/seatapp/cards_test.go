@@ -37,9 +37,9 @@ func TestSeatCardPagesNeedASession(t *testing.T) {
 		t.Fatalf("%d card routes in the inventory", len(routes))
 	}
 	// The project pages need a session too (TestGenesisNeedsASession): every
-	// page of the inventory that needs one is a card page or a project page.
-	if n := len(authedRoutes("GET /")) - len(routes) - len(authedRoutes("GET /projects/")); n != 0 {
-		t.Fatalf("%d pages that need a session are neither card nor project pages", n)
+	// page of the inventory that needs one is a card page or a project or chat page.
+	if n := len(authedRoutes("GET /")) - len(routes) - len(authedRoutes("GET /projects/")) - len(authedRoutes("GET /leads/")); n != 0 {
+		t.Fatalf("%d pages that need a session are outside Cards, Projects and Leads", n)
 	}
 	r := newRig(t)
 	planted := &http.Cookie{Name: SessionCookie, Value: b64.EncodeToString(make([]byte, 32))}
@@ -168,14 +168,9 @@ func TestSeatCardWithHostileLeadText(t *testing.T) {
 				t.Errorf("%s: an address that is not the app's: %q", path, m[2])
 			}
 		}
-		// The rest of the inventory's rules hold too. The lead's text names
-		// an address and a script address, as text only, which is all the
-		// two rules that read the whole page can see; the addresses of the
-		// page are checked above.
+		// The inventory checks actionable attributes and ignores body text.
 		for _, f := range inspectPage(body, withNav("a", "a#paths", "a#back", "a#prev", "a#next", "button#logout"), false) {
-			if f != "external address" && f != "javascript address" {
-				t.Errorf("%s: %s", path, f)
-			}
+			t.Errorf("%s: %s", path, f)
 		}
 	}
 	body := r.getWith("/cards/"+testCardID, s).Body.String()
