@@ -224,25 +224,25 @@ func TestSeatLeadsStreamHints(t *testing.T) {
 	if c.resp.StatusCode != 200 || c.resp.Header.Get("Content-Type") != "text/event-stream" || c.resp.Header.Get("Cache-Control") != "no-store" {
 		t.Fatalf("stream: %d %v", c.resp.StatusCode, c.resp.Header)
 	}
-	if b, ok := c.next(t, 3*time.Second); !ok || b != ":" {
+	if b, ok := c.next(t, waitBound); !ok || b != ":" {
 		t.Fatalf("first block %q %v, want the heartbeat", b, ok)
 	}
-	if b, ok := cards.next(t, 3*time.Second); !ok || b != ":" {
+	if b, ok := cards.next(t, waitBound); !ok || b != ":" {
 		t.Fatalf("the card list's first block %q %v", b, ok)
 	}
 	// The Cards move: nothing on the Leads stream; the card list hears it.
 	ld.watchDaemon.set(func(st *WatchState) { st.Version, st.Waiting = "bb", 4 })
-	if b, ok := cards.nextEvent(t, 3*time.Second); !ok || !hintRe.MatchString(b) {
+	if b, ok := cards.nextEvent(t, waitBound); !ok || !hintRe.MatchString(b) {
 		t.Fatalf("the card list's event %q %v", b, ok)
 	}
 	ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 9, Connection: time.Unix(1, 0)})
-	if b, ok := c.nextEvent(t, 3*time.Second); !ok || b != "event: chat-changed\ndata: 9" {
+	if b, ok := c.nextEvent(t, waitBound); !ok || b != "event: chat-changed\ndata: 9" {
 		t.Fatalf("event %q %v", b, ok)
 	}
 	// A wake that leaves the cursor says nothing; the next move does.
 	ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 9, Connection: time.Unix(1, 0)})
 	ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: MaxChatSeq, Connection: time.Unix(1, 0)})
-	if b, ok := c.nextEvent(t, 3*time.Second); !ok || b != fmt.Sprintf("event: chat-changed\ndata: %d", int64(MaxChatSeq)) {
+	if b, ok := c.nextEvent(t, waitBound); !ok || b != fmt.Sprintf("event: chat-changed\ndata: %d", int64(MaxChatSeq)) {
 		t.Fatalf("event %q %v", b, ok)
 	}
 	if n := r.daemon.count(); n != asked {
@@ -280,8 +280,8 @@ func TestSeatLeadsStreamSaysAMissedChangeAtOnce(t *testing.T) {
 	srv := streamServer(t, r)
 	for body, want := range map[string]string{`{"leads":"3"}`: "event: chat-changed\ndata: 7", `{"leads":"0"}`: "event: chat-changed\ndata: 7"} {
 		c := openStream(t, srv, body, s)
-		c.next(t, 3*time.Second)
-		if b, ok := c.next(t, 3*time.Second); !ok || b != want {
+		c.next(t, waitBound)
+		if b, ok := c.next(t, waitBound); !ok || b != want {
 			t.Errorf("%s: %q %v", body, b, ok)
 		}
 		c.cancel()
@@ -290,7 +290,7 @@ func TestSeatLeadsStreamSaysAMissedChangeAtOnce(t *testing.T) {
 	r.app.streamBeat = 20 * time.Millisecond
 	c := openStream(t, srv, leadsOK, s)
 	for i := 0; i < 3; i++ {
-		if b, ok := c.next(t, 3*time.Second); !ok || b != ":" {
+		if b, ok := c.next(t, waitBound); !ok || b != ":" {
 			t.Fatalf("a stream of the current cursor: %q %v", b, ok)
 		}
 	}
@@ -329,9 +329,9 @@ func TestSeatLeadsStreamEndsWhenTheHintDies(t *testing.T) {
 			s := r.login(t)
 			srv := streamServer(t, r)
 			c := openStream(t, srv, leadsOK, s)
-			c.next(t, 3*time.Second)
+			c.next(t, waitBound)
 			kill(ld)
-			c.ended(t, 3*time.Second)
+			c.ended(t, waitBound)
 			// In the gap, the one change said before the hint died is 8,
 			// or 9 when the stream woke once for both; the change pending
 			// when it died is never said.
@@ -356,7 +356,7 @@ func TestSeatLeadsStreamEndsWhenTheHintDies(t *testing.T) {
 	got := r.streamAsync(context.Background(), leadsOK, s)
 	r.waitStreams(t, 1)
 	r.postWith("/api/logout", "{}", s)
-	within(t, got, 3*time.Second)
+	within(t, got, waitBound)
 	r.waitStreams(t, 0)
 }
 
@@ -394,7 +394,7 @@ func TestSeatLeadsStreamOpeningFlush(t *testing.T) {
 				r, ld := newLeadsRig(t)
 				r.app.streamBeat = 20 * time.Millisecond
 				s := r.login(t)
-				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), waitBound)
 				defer cancel()
 				w := &flushHook{ResponseRecorder: httptest.NewRecorder(), hook: func() { kill(ld) }}
 				r.h.ServeHTTP(w, streamRequest(ctx, streamPath, body, s))
@@ -440,7 +440,7 @@ func TestSeatLeadsStreamSharesTheLimits(t *testing.T) {
 	}
 	cancel()
 	for _, o := range outs {
-		within(t, o, 3*time.Second)
+		within(t, o, waitBound)
 	}
 	r.waitStreams(t, 0)
 	// The opens of a minute: 3 above and 2 refused are 5 of the 12; Leads
@@ -468,7 +468,7 @@ func TestSeatLeadsStreamIsNoCheckIn(t *testing.T) {
 	srv := streamServer(t, r)
 	for _, body := range []string{leadsOK, `{"leads":"0"}`} {
 		c := openStream(t, srv, body, s)
-		c.next(t, 3*time.Second)
+		c.next(t, waitBound)
 		if got := r.app.foregroundUntil(r.clock.Now()); !got.IsZero() {
 			t.Errorf("%s: a lease to %v", body, got)
 		}
@@ -490,7 +490,7 @@ func TestSeatLeadsStreamIsNoCheckIn(t *testing.T) {
 func TestSeatLeadsStreamNoticeNotHeldBack(t *testing.T) {
 	sr := newStreamNoticeRigWith(t, func(wd *watchDaemon) Daemon { return leadsWrap(wd) })
 	c := openStream(t, sr.srv, leadsOK, sr.s)
-	if b, ok := c.next(t, 3*time.Second); !ok || b != ":" {
+	if b, ok := c.next(t, waitBound); !ok || b != ":" {
 		t.Fatalf("stream: %q %v", b, ok)
 	}
 	sr.change(t, 1)
