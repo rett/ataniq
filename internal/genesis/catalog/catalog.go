@@ -82,7 +82,8 @@ type Node struct {
 	Field string
 	// Type is the type of the question.
 	Type Type
-	// Topic groups the nodes a round may hold together.
+	// Topic is the node's own topic label. It does not group a round: a
+	// round may hold nodes of several topics.
 	Topic string
 	// Prompt is the question as the owner reads it.
 	Prompt string

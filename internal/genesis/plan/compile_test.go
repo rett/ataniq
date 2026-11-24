@@ -410,7 +410,7 @@ func TestDigestVectors(t *testing.T) {
 
 const (
 	vectorSoftware = "840ca3c6564a41c876c26420fa511b1523be86c72d494c9c84545a34c253a1df"
-	vectorPodcast  = "6342289e96e59a1df1631988b218626bb9d5ce00f24f182f34d4b1ee5f2c4e99"
+	vectorPodcast  = "7b0aaa6fe1af52ce1fd947527acbb05a18f6f442b5627d197ca74c84c076302e"
 )
 
 // Every combination of the answers the templates' conditions read, for

@@ -39,14 +39,19 @@ func (l Limits) norm() Limits {
 
 // Round is the next round of questions.
 type Round struct {
-	// Number is the round's number, from 1; answers to it carry it.
+	// Number is the round's number, from 1; answers to it carry it. A
+	// round asked again after the last one (see [Next]) has the last
+	// round's number.
 	Number int
-	// Nodes are the 1 to 3 questions of the round, on one topic, highest
-	// weight first.
+	// Nodes are the 1 to 3 questions of the round, highest weight first,
+	// of one topic or of several.
 	Nodes []Node
 	// Unanswered is how many required fields are not set yet, before
 	// this round.
 	Unanswered int
+	// Again is set on a round asked after the last round, because an
+	// answer was changed: it has the last round's number.
+	Again bool
 }
 
 // Answer is the owner's answer to one node. Exactly one of Choice,
@@ -110,10 +115,21 @@ func Readiness(c Catalog, b brief.Brief) (filled, total int) {
 // Next returns the next round for the brief, or done. The walk is done
 // when the caller says enough, after the last round, when every required
 // field is filled, or when no question is left that fills a required
-// field. Otherwise the round holds the eligible question of the highest
-// weight (its condition holds, its field is unset and required for the
-// brief's kind) and up to two more on the same topic, by weight. Next is
-// pure: it reads the catalog and the brief and changes neither.
+// field. After the last round, a brief in which an earlier answer was
+// changed (its history holds a value that left its field) is not done
+// while a question is left that fills a required field: a change can clear
+// the answers that depended on it, or move the brief to another kind, and
+// those questions are asked again in a round that keeps the last round's
+// number (Again), as often as a change leaves some, so the interview never
+// has more than [MaxRounds] round numbers. Otherwise the round holds the eligible questions (a question's
+// condition holds on the brief as it is, and its field is unset and
+// required for the brief's kind) of the highest weight, up to the most a
+// round asks, whatever their topics: a round is never short of questions
+// while eligible ones are left, so the rounds hold every required question
+// of a kind. A question whose condition names the answer to another
+// question of the round is not eligible until that answer is given, so it
+// waits for a later round. Next is pure: it reads the catalog and the brief
+// and changes neither.
 func Next(c Catalog, b brief.Brief, limits Limits) (Round, bool, error) {
 	if err := checkCatalog(c, b); err != nil {
 		return Round{}, false, err
@@ -121,22 +137,23 @@ func Next(c Catalog, b brief.Brief, limits Limits) (Round, bool, error) {
 	l := limits.norm()
 	required := Required(c, b)
 	filled, total := b.Readiness(required)
-	if l.Enough || b.Rounds >= l.MaxRounds || filled == total {
+	again := b.Rounds >= l.MaxRounds
+	if l.Enough || filled == total || (again && !changed(b)) {
 		return Round{}, true, nil
 	}
 	cands := candidates(c, b, required)
 	if len(cands) == 0 {
 		return Round{}, true, nil
 	}
-	first := c.Nodes[cands[0]]
-	r := Round{Number: b.Rounds + 1, Nodes: []Node{first}}
-	for _, i := range cands[1:] {
+	r := Round{Number: b.Rounds + 1, Again: again}
+	if again {
+		r.Number = b.Rounds
+	}
+	for _, i := range cands {
 		if len(r.Nodes) == l.MaxPerRound {
 			break
 		}
-		if c.Nodes[i].Topic == first.Topic {
-			r.Nodes = append(r.Nodes, c.Nodes[i])
-		}
+		r.Nodes = append(r.Nodes, c.Nodes[i])
 	}
 	for _, f := range required {
 		if _, ok := b.Get(f); !ok {
@@ -144,6 +161,12 @@ func Next(c Catalog, b brief.Brief, limits Limits) (Round, bool, error) {
 		}
 	}
 	return r, false, nil
+}
+
+// changed reports whether an earlier answer of the brief was changed: its
+// history holds a value that left its field, or held one it dropped.
+func changed(b brief.Brief) bool {
+	return len(b.History) > 0 || b.HistoryDropped > 0
 }
 
 // candidates returns the indexes of the eligible nodes, highest weight

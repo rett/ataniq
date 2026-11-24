@@ -457,7 +457,8 @@ about 200 letters: the cap is 200 bytes, so accents and emoji take more room),
 "You decide for me" and "Skip". After the last round you read the
 summary: what you chose, what was decided for you and what was left to its
 default; "Change" on a row asks that question again (a change clears the later
-answers that depended on it, and the page says how many), "Looks right:
+answers that depended on it, the page says how many, and their questions are
+asked again, after the last round too, as round 6 of 6), "Looks right:
 finish" keeps the answers as the project's brief, and "Discard this project"
 (after a second page) drops it with all its answers. At most two projects are
 open at once; a third "New project" says so. An open project you leave for 14

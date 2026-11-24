@@ -279,8 +279,9 @@ type GenesisNode struct {
 	Type string `json:"type"`
 	// Prompt is the question, 1 to [MaxGenesisPrompt] bytes.
 	Prompt string `json:"prompt"`
-	// Topic groups the questions of a round, 1 to [MaxGenesisTopicBytes]
-	// bytes.
+	// Topic is the question's own topic label, 1 to
+	// [MaxGenesisTopicBytes] bytes. A round may hold questions of several
+	// topics.
 	Topic string `json:"topic"`
 	// Options are the choices: two to [MaxGenesisOptions] for a single or
 	// multiple choice, yes and no for a yes-or-no question and none for a

@@ -463,9 +463,11 @@ func (s *Store) Summary(ctx context.Context, id string) (ownerwire.SeatGenesisRe
 }
 
 // Answer gives the answers of a round, which must be the round the thread is
-// at, each to a question of it. A round the thread has already taken, or any
-// round once the walk is done, is refused genesis-stale-round; a round it has
-// not reached genesis-bad-answer. Every answer goes through the walker; one
+// at, each to a question of it. A round the thread has already taken, any
+// round once the walk is done, or a question already answered in the round
+// named (a round asked again after a change keeps the last round's number),
+// is refused genesis-stale-round; a round it has not reached
+// genesis-bad-answer. Every answer goes through the walker; one
 // that fails fails the call and changes nothing. It answers the next round or
 // the summary.
 func (s *Store) Answer(ctx context.Context, id string, round int, answers []ownerwire.GenesisAnswer) (ownerwire.SeatGenesisResult, error) {
@@ -496,6 +498,12 @@ func (s *Store) Answer(ctx context.Context, id string, round int, answers []owne
 		b, reset := r.brief, 0
 		seen := map[string]bool{}
 		for _, a := range answers {
+			if !seen[a.Node] && !inRound(cur, a.Node) && answeredIn(s.cat, r.brief, a.Node, round) {
+				// A round asked again after the last one keeps its number:
+				// a question of it answered already is the post sent
+				// twice.
+				return ownerwire.SeatGenesisResult{}, refuse(ownerwire.CodeGenesisStaleRound)
+			}
 			if seen[a.Node] || !inRound(cur, a.Node) {
 				return ownerwire.SeatGenesisResult{}, refuse(ownerwire.CodeGenesisBadAnswer)
 			}
@@ -513,6 +521,17 @@ func (s *Store) Answer(ctx context.Context, id string, round int, answers []owne
 		r.brief, r.updated = b, t.now
 		return t.commit(r, reset)
 	})
+}
+
+// answeredIn reports whether the node's field holds an answer to the node
+// given in the round.
+func answeredIn(c catalog.Catalog, b brief.Brief, node string, round int) bool {
+	n, ok := c.Node(node)
+	if !ok {
+		return false
+	}
+	f, set := b.Get(n.Field)
+	return set && f.Node == node && f.Round == round
 }
 
 func inRound(r catalog.Round, node string) bool {

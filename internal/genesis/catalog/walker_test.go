@@ -215,8 +215,10 @@ func checkComplete(t testing.TB, c Catalog, b brief.Brief) {
 	}
 }
 
-// The rounds of one software path: the kind alone, then three on one
-// topic at a time, in six rounds.
+// The rounds of one software path: the kind alone, then three at a time by
+// weight, in six rounds. (With v1's weights the software path's rounds
+// happen to be one topic each; TestRoundsOfEveryKind pins rounds that mix
+// topics.)
 func TestRoundsOfASoftwarePath(t *testing.T) {
 	c := mustV1(t)
 	b := brief.New(c.Digest())
