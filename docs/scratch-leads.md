@@ -916,6 +916,15 @@ whose numbers are the reader's own constants:
 
 No message of the seat reaches a lead in this build.
 
+**The stand-in's replies.** For the attended proof of the outbox with no AI, the
+stand-in agent (`internal/leadcanary/standin`) writes one reply after each
+commit it makes: the text `Stand-in: handled <7-character commit id>.` (under
+200 bytes, no full commit id, no path), written to a dot-name, closed and
+renamed without replacing to `<seq>-standin.txt`. It writes nothing when the
+reply folder is missing, is a link or cannot be written, and none when three of
+its own replies are already waiting; it never makes, changes or removes the
+folder, or any file but its own.
+
 ### How the reader works
 
 **The outbox.** A lead writes each reply as one plain-text file in

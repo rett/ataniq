@@ -128,6 +128,9 @@ type loop struct {
 	// pending is the last paste, until a carriage return submits it.
 	pending *pasted
 	werr    error
+
+	// replySeq is the next sequence number to try for a reply's name.
+	replySeq int
 }
 
 // pasted is what is kept of a paste: the token it carried, if any.
@@ -279,6 +282,7 @@ func (l *loop) submit() error {
 		} else {
 			result = "committed " + Branch
 			line = "committed " + hash
+			l.reply(hash)
 		}
 	}
 	if l.rp != nil {
@@ -289,6 +293,19 @@ func (l *loop) submit() error {
 	}
 	l.write([]byte("\r\n" + result + "\r\n" + prompt))
 	return nil
+}
+
+// reply writes the lead reply of one handled commit to the outbox, when there
+// is one (see writeReply). It is best effort: a reply that cannot be written
+// changes nothing else, and one that is written is at most one per commit.
+func (l *loop) reply(hash string) {
+	if l.replySeq == 0 {
+		l.replySeq = 1
+	}
+	if len(hash) > replyIDLen {
+		hash = hash[:replyIDLen]
+	}
+	l.replySeq, _ = writeReply(l.c.Home, l.replySeq, hash)
 }
 
 // echo makes bytes safe to show: line breaks become CR LF, any other control

@@ -38,6 +38,16 @@
 // optional file report.txt. The files it writes are written without following
 // a link, and are refused when they are not regular files.
 //
+// # Lead reply
+//
+// After each commit it makes, in either mode, the stand-in writes one short
+// reply to the lead's reply folder, <home>/.ataniq-replies, so that the
+// outbox can be proved with no AI: "Stand-in: handled <7-character commit
+// id>.", first to a dot-name, then renamed to "<seq>-standin.txt". It writes
+// nothing when the folder is missing, is a link, cannot be written, or already
+// holds three replies of its own. It never makes, changes or removes the
+// folder, nor any file but its own.
+//
 // # Terminal
 //
 // Run puts the terminal in raw mode when it is given a descriptor, and
