@@ -986,9 +986,12 @@ yet read, is left untouched and the chat stops with "Chat was stopped: more than
 32 files were waiting in the reply folder. Turn chat on again to go on."; a
 folder, a symbolic link, a FIFO, a socket or a device in it is never opened or
 walked, and the chat stops with "Chat was stopped: the reply folder held a
-folder, a link or a special file. Turn chat on again to go on." A stopped chat
-can still be read; turning it on again starts a new conversation, and sets the
-whole folder aside.
+folder, a link or a special file. Turn chat on again to go on." The seat reads
+nothing of a stopped chat: its row shows `unknown` and a read answers
+`chat-busy` until the desk turns chat on again, which starts a new conversation
+and sets the whole folder aside. The check that a lead may be shown and the copy
+of the page are made under one lock of the store, so no page holds the stop line
+of a chat that was shown as not stopped.
 
 **What is taken.** A reply is taken when its change time (which the lead cannot
 set, and which the rename sets) is at least 2 seconds old: it is moved, by one

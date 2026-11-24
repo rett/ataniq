@@ -886,6 +886,40 @@ func TestOutboxIdentity(t *testing.T) {
 	})
 }
 
+// The seat reads nothing of a chat a scan stopped, until a fresh turn-on;
+// the daemon's own Read still answers the retained history.
+func TestReadSeatOfAStoppedChat(t *testing.T) {
+	e := newEnv(t)
+	s := e.on()
+	e.reply("a.txt", "Before the stop.")
+	ingest(t, s)
+	if es, _, _, err := s.ReadSeat(0); err != nil || len(es) != 2 {
+		t.Fatalf("ReadSeat: %v, %v", es, err)
+	}
+	if err := os.Rename(e.outbox, e.outbox+".old"); err != nil {
+		t.Fatal(err)
+	}
+	if rep := ingest(t, s); !rep.Suspended {
+		t.Fatalf("report %+v", rep)
+	}
+	if _, _, _, err := s.ReadSeat(0); !errors.Is(err, ErrSuspended) {
+		t.Fatalf("ReadSeat of a stopped chat: %v", err)
+	}
+	wantTexts(t, s, TextTurnedOn, "Before the stop.", TextStoppedFolder)
+	if _, err := s.SetSwitch("read", 1); err != nil {
+		t.Fatal(err)
+	}
+	if es, _, _, err := s.ReadSeat(0); err != nil || len(es) != 1 || es[0].Text != TextTurnedOn {
+		t.Fatalf("ReadSeat after a fresh turn-on: %v, %v", es, err)
+	}
+	if _, err := s.SetSwitch("off", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := s.ReadSeat(0); !errors.Is(err, ErrOff) {
+		t.Fatalf("ReadSeat of a chat that is off: %v", err)
+	}
+}
+
 // Every turn-on makes the outbox afresh: an earlier, empty one is removed,
 // and an earlier one that holds anything, or is not a folder, is set aside
 // whole, unread, in the quarantine.

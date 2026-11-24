@@ -129,6 +129,9 @@ type chatDesk struct {
 	// stateOf reads the registry's entry of a role; nil until the registry
 	// is open, which leaves every lead's state unknown.
 	stateOf func(leadrole.Role) chatState
+	// beforeSeatRead, a test's hook, runs in a seat read after the desk's
+	// own checks and before the store's.
+	beforeSeatRead func(cl *chatLead)
 
 	mu     sync.Mutex
 	ctx    context.Context
@@ -341,7 +344,9 @@ const seatTime = "2006-01-02T15:04:05Z"
 // seatRead answers one page of a lead's conversation. An unknown lead is
 // chat-unknown-lead, a lead whose switch is off chat-off, and a lead whose
 // chat the scan stopped, whose store failed, or whose epoch the wire cannot
-// hold, chat-busy. It holds the lead's lock for the whole read.
+// hold, chat-busy. It holds the lead's lock for the whole read, and the
+// store's ReadSeat checks the lead's chat and copies the page under one
+// lock of the store's.
 func (d *chatDesk) seatRead(lead string, after int64, limit int) (ownerwire.SeatChatResult, error) {
 	cl, ok := d.bySeat[lead]
 	if !ok {
@@ -359,20 +364,17 @@ func (d *chatDesk) seatRead(lead string, after int64, limit int) (ownerwire.Seat
 	if !ok {
 		return ownerwire.SeatChatResult{}, refuseBusy
 	}
-	s, err := cl.store.Status()
-	switch {
-	case err != nil:
-		d.markBroken(cl, err)
-		return ownerwire.SeatChatResult{}, refuseBusy
-	case s.Chat != ownerwire.ChatRead:
-		return ownerwire.SeatChatResult{}, refuseOff
-	case s.Suspended:
-		return ownerwire.SeatChatResult{}, refuseBusy
+	if d.beforeSeatRead != nil {
+		d.beforeSeatRead(cl)
 	}
-	entries, reset, head, err := cl.store.Read(after)
+	// One call of the store checks that the lead may be shown (on, not
+	// stopped by a scan) and copies the page under one lock.
+	entries, reset, head, err := cl.store.ReadSeat(after)
 	switch {
 	case errors.Is(err, leadchat.ErrOff):
 		return ownerwire.SeatChatResult{}, refuseOff
+	case errors.Is(err, leadchat.ErrSuspended):
+		return ownerwire.SeatChatResult{}, refuseBusy
 	case errors.Is(err, leadchat.ErrInvalid):
 		return ownerwire.SeatChatResult{}, refuseParams
 	case err != nil:

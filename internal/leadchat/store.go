@@ -72,8 +72,9 @@ type Status struct {
 	// Chat is ownerwire.ChatOff or ownerwire.ChatRead.
 	Chat string
 	// Suspended is true when a scan stopped the lead's chat (Chat is still
-	// read, so what it holds can be read): only a fresh turn-on takes
-	// replies again. A seat shows it: read and suspended is not read.
+	// read, and [Store.Read] still answers what it holds): only a fresh
+	// turn-on takes replies again, and [Store.ReadSeat] answers
+	// [ErrSuspended] meanwhile. Read and suspended is not read.
 	Suspended bool
 	// Gen is the generation of the switch: it grows by one with every
 	// change, and is 0 for a lead whose chat was never turned on.
@@ -789,9 +790,28 @@ func (s *Store) Status() (Status, error) {
 // reader that pages on from an entry it was given, the turned-on entry
 // included, is never reset. head is [Status].Head. A lead whose chat is off
 // answers [ErrOff].
+//
+// Read is the retained history, for the daemon's own callers: it answers a
+// suspended lead's entries too. What the seat is shown is [Store.ReadSeat].
 func (s *Store) Read(after int64) (entries []Entry, reset bool, head int64, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.read(after, false)
+}
+
+// ReadSeat answers what [Store.Read] answers, for the seat: under the one
+// lock that copies the page, it checks that the lead's entries may be shown
+// to the seat, so that no page holds an entry written after a check passed.
+// A lead whose chat is off answers [ErrOff], and one whose chat a scan
+// stopped [ErrSuspended], until a fresh turn-on.
+func (s *Store) ReadSeat(after int64) (entries []Entry, reset bool, head int64, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.read(after, true)
+}
+
+// read is Read and ReadSeat; the caller holds s.mu.
+func (s *Store) read(after int64, seat bool) (entries []Entry, reset bool, head int64, err error) {
 	if err := s.usable(); err != nil {
 		return nil, false, 0, err
 	}
@@ -800,6 +820,9 @@ func (s *Store) Read(after int64) (entries []Entry, reset bool, head int64, err 
 	}
 	if s.chat != ownerwire.ChatRead {
 		return nil, false, 0, ErrOff
+	}
+	if seat && s.suspended {
+		return nil, false, 0, ErrSuspended
 	}
 	s.retain(s.now())
 	from := 0

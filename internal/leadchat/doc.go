@@ -100,8 +100,10 @@
 //     draft) and any other name are never claimed and never removed: they
 //     wait, counted toward [MaxWaiting].
 //
-// A stopped chat can still be read; only a fresh turn-on, which sets the
-// whole outbox aside, takes replies again.
+// Only a fresh turn-on, which sets the whole outbox aside, takes replies
+// again. The seat reads nothing of a stopped chat ([Store.ReadSeat] answers
+// [ErrSuspended]); the daemon's own [Store.Read] still answers the retained
+// history.
 //
 // # Claims
 //

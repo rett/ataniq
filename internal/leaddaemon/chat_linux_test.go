@@ -548,6 +548,61 @@ func TestChatSuspendedLeadIsBusy(t *testing.T) {
 	}
 }
 
+// deskOf is the chat desk the scratch mode bound to the port.
+func deskOf(t *testing.T, port *LeadChat) *chatDesk {
+	t.Helper()
+	b := port.src.Load()
+	if b == nil {
+		t.Fatal("the port is not bound")
+	}
+	d, ok := b.src.(*chatDesk)
+	if !ok {
+		t.Fatalf("the port's source is %T", b.src)
+	}
+	return d
+}
+
+// A scan that stops the lead's chat after the desk's checks of a seat read
+// and before its page is copied leaves the read chat-busy: the store checks
+// that the lead may be shown and copies the page under one lock, so no page
+// holds the stop entry of a chat that was not shown as stopped.
+func TestChatSeatReadOfAChatStoppedMeanwhileIsBusy(t *testing.T) {
+	l, port := newChatEnv(t)
+	l.start()
+	l.up("alpha", submitted)
+	l.mustChatSet("alpha", leadwire.ChatRead)
+	out := l.outboxOf("alpha")
+	reply(t, out, "0001-first.txt", "first")
+	waitFor(t, 15*time.Second, "the reply is taken", func() bool { return l.chatRow("alpha").Entries == 2 })
+	d := deskOf(t, port)
+	stopped := false
+	d.beforeSeatRead = func(cl *chatLead) {
+		d.beforeSeatRead = nil
+		if err := os.Rename(out, out+"-old"); err != nil {
+			t.Error(err)
+			return
+		}
+		if err := os.Mkdir(out, 0o700); err != nil {
+			t.Error(err)
+			return
+		}
+		// The scan the scanner would make, at once.
+		_, _ = cl.store.Ingest(0)
+		st, err := cl.store.Status()
+		stopped = err == nil && st.Suspended
+	}
+	page, err := seatRead(port, "alpha", 0)
+	if !stopped {
+		t.Fatal("the hook did not stop the chat")
+	}
+	if gateCode(err) != ownerwire.CodeChatBusy {
+		t.Fatalf("a read of a chat stopped meanwhile: %+v, %v", page, err)
+	}
+	if _, err := seatRead(port, "alpha", 0); gateCode(err) != ownerwire.CodeChatBusy {
+		t.Fatalf("a later read: %v", err)
+	}
+}
+
 // The define makes the reply folder (mode 0700) and writes the instruction
 // text while the lead is proven stopped; a define of a lead that runs keeps an
 // empty file, which the next start of the stopped lead writes; a start makes

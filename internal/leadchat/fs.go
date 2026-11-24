@@ -51,8 +51,10 @@ var (
 	ErrQuarantined = errors.New("leadchat: the quarantine is full; purge it before chat is turned on again")
 	// ErrSuspended: the lead's chat was stopped by a scan (the outbox was
 	// replaced, removed or made open to others, held a folder, a link or a
-	// special file, or held too many entries); what it holds can be read,
-	// and only a fresh turn-on takes replies again.
+	// special file, or held too many entries): only a fresh turn-on takes
+	// replies again, and the seat reads nothing of it meanwhile
+	// ([Store.ReadSeat]); the daemon's own [Store.Read] still answers what
+	// it holds.
 	ErrSuspended = errors.New("leadchat: chat is stopped for the lead until it is turned on again")
 )
 
