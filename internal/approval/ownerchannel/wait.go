@@ -57,6 +57,13 @@ import (
 // [Config].WaitMax. The gate maps it to the wait-full code.
 var ErrWaitFull = errors.New("ownerchannel: too many waits are held")
 
+// ErrWaitRecovery says that an extended wait's look found the journal
+// uncertain and left its recovery to the service's tick, which owns it: the
+// extended wait never reopens the journal or reconciles, since that may hand
+// over decisions and uses. The gate maps it to the unavailable code, and the
+// seat asks again after its pause.
+var ErrWaitRecovery = errors.New("ownerchannel: the journal must be recovered first; the service's tick recovers it")
+
 const (
 	// defaultWaitHold is the longest a wait is held: under the gate's 30
 	// seconds for a request.
@@ -307,6 +314,15 @@ func (s *Service) waitPending(ctx context.Context, since string) (ownerwire.Seat
 // give, when it fires while the token or the floor is waited for, ends the
 // wait: the answer is then (zero, true, nil).
 func (s *Service) lookNow(ctx context.Context, give <-chan time.Time) (waitSnap, bool, error) {
+	return s.lookFor(ctx, give, true)
+}
+
+// lookFor is lookNow, with the look's handling of an uncertain journal: with
+// fix, as [Service.List] does, the journal is recovered (reopened and
+// reconciled, which may redeliver decisions and settle uses); without it, the
+// look answers [ErrWaitRecovery] and recovers nothing. The plain wait looks
+// with fix, as it always did; the extended wait without it.
+func (s *Service) lookFor(ctx context.Context, give <-chan time.Time, fix bool) (waitSnap, bool, error) {
 	w := &s.wait
 	clk := w.clock()
 	fresh := func(c waitSnap, seq uint64, now time.Time) bool {
@@ -357,7 +373,7 @@ func (s *Service) lookNow(ctx context.Context, give <-chan time.Time) (waitSnap,
 			return waitSnap{}, false, ctx.Err()
 		}
 	}
-	snap, err := s.takeWaitSnap(ctx)
+	snap, err := s.takeWaitSnap(ctx, fix)
 	<-w.chk
 	if err != nil {
 		return waitSnap{}, false, err
@@ -372,11 +388,21 @@ func (s *Service) lookNow(ctx context.Context, give <-chan time.Time) (waitSnap,
 // takeWaitSnap lists the door as [Service.List] does, for the cards that are
 // pending: it closes the held cards that expired, reads the door and the held
 // marks, and makes the result. It takes the service's locks only as List
-// does.
-func (s *Service) takeWaitSnap(ctx context.Context) (waitSnap, error) {
+// does. An error of the journal is recovered with fix (jfix), and is
+// [ErrWaitRecovery] without it when the journal is uncertain.
+func (s *Service) takeWaitSnap(ctx context.Context, fix bool) (waitSnap, error) {
+	jerr := func(err error) error {
+		switch {
+		case fix:
+			return s.jfix(ctx, err)
+		case errors.Is(err, ownerjournal.ErrUncertain):
+			return ErrWaitRecovery
+		}
+		return err
+	}
 	now := s.now()
 	if _, err := s.journalIn(ctx).ExpireHeld(now); err != nil {
-		return waitSnap{}, s.jfix(ctx, err)
+		return waitSnap{}, jerr(err)
 	}
 	entries, err := s.cfg.Door.List(ctx)
 	if err != nil {
@@ -398,7 +424,7 @@ func (s *Service) takeWaitSnap(ctx context.Context) (waitSnap, error) {
 			seen[project] = true
 			cards, err := s.journalIn(ctx).HeldCards(project)
 			if err != nil {
-				return waitSnap{}, s.jfix(ctx, err)
+				return waitSnap{}, jerr(err)
 			}
 			for _, c := range cards {
 				held[c.ID] = true

@@ -62,6 +62,7 @@ type fakeIntake struct {
 	reviewErr  error
 	tipErr     error
 	freshErr   error
+	freshes    int
 	// stale makes the evidence at a use not the newest.
 	stale bool
 
@@ -133,6 +134,7 @@ func (f *fakeIntake) Patch(context.Context, ReviewRef) (ReviewPatch, error) {
 func (f *fakeIntake) Fresh(_ context.Context, in FreshInput) (door.Fresh, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.freshes++
 	if f.freshErr != nil {
 		return door.Fresh{}, f.freshErr
 	}

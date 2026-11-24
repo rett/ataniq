@@ -11,7 +11,9 @@
   Cursor equality is only a change hint and never authorizes a read. A chat
   change answers a held wait no sooner than 18 seconds after it began, a Card
   change at once, and a cursor source that fails gives the plain Card result
-  with no `chat`. A seat or gate that does not know the extension sends and
-  receives exactly the old shapes; the plain form now refuses a `chat`
-  member. The phone trial's gate lists it (its start line ends `... genesis,
-  chat and wait-chat`); its STAND-IN cursor never moves within a run.
+  with no `chat`. The extended wait never recovers an uncertain journal: it
+  answers `unavailable` and leaves the recovery to the daemon's tick. A seat
+  or gate that does not know the extension sends and receives exactly the old
+  shapes; the plain form now refuses a `chat` member. The phone trial's gate
+  lists it (its start line ends `... genesis, chat and wait-chat`); its
+  STAND-IN cursor never moves within a run.

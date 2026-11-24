@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"ataniq/internal/approval/ownerjournal"
 	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/approval/record"
 )
@@ -669,5 +670,132 @@ func TestWaitPlainCarriesNoChat(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(reflect.TypeOf(w.svc).String()), "chat") {
 		t.Fatal("the service's type names chat")
+	}
+}
+
+// authority is what a wait could move beyond its looks: the door's
+// decisions, uses and settles, the intake's resolves, fresh reads and
+// applies, the merges, the suite runs, the lead's replies, the journal's
+// openings and the undelivered decisions.
+type authority struct {
+	decides, uses, settles        int
+	resolves, freshes, applies    int
+	builds, runs, replies, opened int
+	undelivered                   int
+}
+
+func (w *waitEnv) authority(t *testing.T, opened *atomic.Int64) authority {
+	t.Helper()
+	var a authority
+	a.decides, a.uses, a.settles = w.door.counts()
+	w.intake.mu.Lock()
+	a.resolves, a.freshes, a.applies = w.intake.resolves, w.intake.freshes, w.intake.applies
+	w.intake.mu.Unlock()
+	w.merger.mu.Lock()
+	a.builds = w.merger.builds
+	w.merger.mu.Unlock()
+	w.verif.mu.Lock()
+	a.runs = w.verif.runs
+	w.verif.mu.Unlock()
+	a.replies = len(w.mail.all())
+	a.opened = int(opened.Load())
+	und, err := unwrapJournal(w.svc.journal()).Undelivered()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.undelivered = len(und)
+	return a
+}
+
+// The extended wait leaves an uncertain journal to the service's tick: a
+// look that finds the journal uncertain, at once or in a held wait that a
+// chat wake and a poke woke, answers ErrWaitRecovery and reopens nothing,
+// reconciles nothing and so hands over no pending decision: no decision, use,
+// intake, merge, suite, reply or reopening comes of the wait. The plain wait
+// still recovers, as it always did, and its recovery redelivers the
+// decision: the positive control.
+func TestWaitChatLeavesAnUncertainJournalToTheTick(t *testing.T) {
+	e := newEnv(t)
+	var opened atomic.Int64
+	var fails atomic.Int64
+	e.journalWrap = func(st *ownerjournal.Store) Journal {
+		opened.Add(1)
+		return &shaky{Store: st, failing: func(m string) bool {
+			if m != "ExpireHeld" {
+				return false
+			}
+			for {
+				n := fails.Load()
+				if n <= 0 {
+					return false
+				}
+				if fails.CompareAndSwap(n, n-1) {
+					return true
+				}
+			}
+		}}
+	}
+	e.start()
+	wc := &fakeWaitClock{clock: e.clock}
+	e.svc.wait.clk = wc
+	w := &waitEnv{env: e, wc: wc}
+
+	p := w.card("feature-a")
+	w.door.mu.Lock()
+	w.door.failDecide = errors.New("connection refused")
+	w.door.mu.Unlock()
+	if _, err := w.decide(p, true); !errors.Is(err, ErrDoorUnavailable) {
+		t.Fatalf("Decide returned %v", err)
+	}
+	w.door.mu.Lock()
+	w.door.failDecide = nil
+	w.door.mu.Unlock()
+	src := newFakeCursor(leadA)
+	first := w.now(t)
+	before := w.authority(t, &opened)
+	if before.undelivered != 1 {
+		t.Fatalf("%d undelivered decisions, want the one the door did not take", before.undelivered)
+	}
+
+	// At once: a look of the extended wait meets the uncertain journal.
+	w.wc.Advance(waitFloor)
+	fails.Store(1)
+	got := answered(t, w.startChatWait(context.Background(), "", 0, src))
+	if !errors.Is(got.err, ErrWaitRecovery) {
+		t.Fatalf("the extended wait answered %+v, want ErrWaitRecovery", got)
+	}
+	if a := w.authority(t, &opened); a != before {
+		t.Fatalf("the extended wait moved an instrument:\n before %+v\n after  %+v", before, a)
+	}
+
+	// Held: a chat wake, then a poke whose look meets the uncertain journal.
+	first = w.now(t)
+	out := w.startChatWait(context.Background(), first.Version, src.cursor(), src)
+	w.held(t, 1)
+	src.change(func(m map[string]ownerwire.ChatCursorLead) { l := m[leadA.Lead]; l.Head++; m[leadA.Lead] = l })
+	w.held(t, 2)
+	if a := w.authority(t, &opened); a != before {
+		t.Fatalf("a chat wake moved an instrument:\n before %+v\n after  %+v", before, a)
+	}
+	fails.Store(1)
+	w.svc.poke()
+	got, _ = w.drive(t, out, time.Second, 10)
+	if !errors.Is(got.err, ErrWaitRecovery) {
+		t.Fatalf("the held extended wait answered %+v, want ErrWaitRecovery", got)
+	}
+	if a := w.authority(t, &opened); a != before {
+		t.Fatalf("the held extended wait moved an instrument:\n before %+v\n after  %+v", before, a)
+	}
+
+	// The positive control: the plain wait recovers, and the recovery
+	// hands the decision over.
+	w.wc.Advance(waitFloor)
+	fails.Store(1)
+	if _, err := w.svc.WaitPending(context.Background(), ""); !errors.Is(err, ErrJournalReopened) {
+		t.Fatalf("the plain wait answered %v, want ErrJournalReopened", err)
+	}
+	after := w.authority(t, &opened)
+	if after.opened != before.opened+1 || after.decides <= before.decides || after.undelivered != 0 {
+		t.Fatalf("the plain wait's recovery: before %+v, after %+v", before, after)
 	}
 }

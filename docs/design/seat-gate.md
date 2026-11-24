@@ -1920,6 +1920,21 @@ the cursor beside it:
   its cursor can be read: the plain wait's behaviour, with no `chat` in any
   answer. A port that answers a nil channel on purpose is read on the wait's
   other wakes and before each answer. It fails closed.
+- Its looks at the door never recover the journal. The plain wait's look, as
+  `owner.list`, reopens an uncertain journal and reconciles, which may
+  redeliver a decision and settle a use; the extended wait's look answers
+  `ownerchannel.ErrWaitRecovery` instead (the gate's `unavailable`) and leaves
+  the recovery to the service's tick, which owns it, so the seat asks again
+  after its pause. So the extended wait reaches no decision, intake, use,
+  merge, suite, reply or effect of the host: its calls are the look's reads of
+  the door and the journal and the journal's own close of held cards that
+  expired, as every look makes. This is the extended wait's alone: the plain
+  wait, which seats of earlier builds send, still recovers as it did.
+  `TestWaitChatLeavesAnUncertainJournalToTheTick` holds an undelivered
+  decision, makes the look uncertain at once and in a held wait woken by a
+  chat change and a poke, and finds no decision, use, intake, merge, suite,
+  reply or reopening; the plain wait, its positive control, reopens and hands
+  the decision over.
 
 The trial's stand-in gives a cursor over its two sample leads whose chat is
 read, each of generation 1 and its head, under a key it makes once, the same
@@ -1966,7 +1981,10 @@ cursor's reads are not counted against the port's 40 calls a minute, which are
 the seat's. An unbound port, a failing source or a panic gives no cursor. The
 wired-daemon test (`cmd/ataniqd`, `chat_scratch_linux_test.go`) sends extended
 waits through the real wiring and finds that the waits are the service's only
-counts and that the door, the suite and the drop folder do not move.
+counts and that the door, the suite and the drop folder do not move. Those
+waits are answered at once on a sound journal; a held wait through a chat wake
+and an uncertain look are covered at the service
+(`TestWaitChatLeavesAnUncertainJournalToTheTick`, above).
 
 **The seat** (`seatlink`, `watchchat.go`). The seat's hello lists
 `wait-chat`. Its one watcher sends the extended wait in place of the plain one

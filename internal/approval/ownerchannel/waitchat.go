@@ -86,6 +86,15 @@ const chatSampleTries = 4
 // answer carries a validated sample of the cursor taken just before it, in
 // Chat, or none when src cannot give one. The bounds of WaitPending hold, and
 // the two kinds of wait count together against [Config].WaitMax.
+//
+// Unlike WaitPending, its looks at the door never recover the journal: a look
+// that finds it uncertain answers [ErrWaitRecovery] and leaves the recovery,
+// which may redeliver decisions and settle uses, to the service's tick, its
+// owner. So the extended wait reaches no decision, intake, use, merge, suite,
+// mailbox or effect of the host: its calls are the look's reads of the door
+// and of the journal, and the journal's own close of held cards that expired,
+// as every look makes. WaitPending, which seats and callers of earlier
+// builds use, is unchanged and still recovers.
 func (s *Service) WaitPendingChat(ctx context.Context, since string, chat int64, src ChatCursor) (ownerwire.SeatWaitResult, error) {
 	return s.held(ctx, func(ctx context.Context) (ownerwire.SeatWaitResult, error) {
 		return s.waitPendingChat(ctx, since, chat, src)
@@ -193,7 +202,7 @@ func (s *Service) waitPendingChat(ctx context.Context, since string, chat int64,
 	clk := w.clock()
 	cs := &chatSource{src: src}
 	due := clk.Now().Add(WaitChatGap)
-	snap, _, err := s.lookNow(ctx, nil)
+	snap, _, err := s.lookFor(ctx, nil, false)
 	if err != nil {
 		return ownerwire.SeatWaitResult{}, err
 	}
@@ -239,7 +248,7 @@ func (s *Service) waitPendingChat(ctx context.Context, since string, chat int64,
 			// A poke came after the look began: look again, as the floor
 			// allows. A hold that ends while the floor is waited out
 			// answers what was last seen.
-			next, ended, err := s.lookNow(ctx, end.C())
+			next, ended, err := s.lookFor(ctx, end.C(), false)
 			if err != nil {
 				return ownerwire.SeatWaitResult{}, err
 			}
@@ -326,7 +335,7 @@ func (s *Service) waitPendingChat(ctx context.Context, since string, chat int64,
 			expT = nil
 			s.poke()
 		case <-end.C():
-			last, _, err := s.lookNow(ctx, nil)
+			last, _, err := s.lookFor(ctx, nil, false)
 			if err != nil {
 				return ownerwire.SeatWaitResult{}, err
 			}
