@@ -212,7 +212,9 @@
 // Unix socket; chat.set refuses send (chat-send-not-built), a key longer
 // than a seat's lead identifier holds (chat-key-unrepresentable) and a
 // turn-on whose lead's quarantine has no free name (chat-quarantine-full),
-// which chat.purge empties. While a lead's switch is read
+// which chat.purge empties, only while the lead is proven stopped and with
+// the role's operation lock held (chat-lead-not-stopped otherwise). While a
+// lead's switch is read
 // one scanner of its own takes its replies every [DefaultChatScanEvery]; a
 // scanner ends when the switch is off, the scan stops the lead's chat (the
 // reply folder was replaced, opened to others or held too much), the lead's

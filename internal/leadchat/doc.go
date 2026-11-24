@@ -63,8 +63,8 @@
 //     is taken, one that holds an empty folder is freed by removing that
 //     folder (which fails for one that holds anything); a quarantine whose
 //     four names all hold something refuses the turn-on ([ErrQuarantined])
-//     until the owner purges it ([Store.PurgeQuarantine]): a turn-on needs
-//     one free name;
+//     until the owner purges it ([Store.PurgeQuarantine], only while the
+//     lead is proven stopped): a turn-on needs one free name;
 //  6. the held folder is published at the outbox's name by a rename that
 //     replaces nothing, and the name must then lead to it (the same device
 //     and inode). A name the lead took in the moment between, and a name

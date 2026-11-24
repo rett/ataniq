@@ -45,8 +45,9 @@ const (
 	msgChatFolder       = "the lead's reply folder cannot be used: it must be a folder of the daemon's user with mode 0700 in the home of a provisioned lead; see the daemon's log"
 	msgChatEpoch        = "the lead's epoch cannot be carried to the seat"
 	msgChatStopping     = "the daemon is stopping"
-	msgChatQuarantine   = "the lead's quarantine is full: its four names all hold a reply folder set aside, and a turn-on needs one free; purge it (ataniqd chat purge) or empty it by hand, then turn chat on again"
+	msgChatQuarantine   = "the lead's quarantine is full: its four names all hold a reply folder set aside, and a turn-on needs one free; stop the lead, purge it (ataniqd chat purge) or empty it by hand, then turn chat on again"
 	msgChatPurge        = "the lead's quarantine cannot be purged; see the daemon's log"
+	msgChatNotStopped   = "the lead is not proven stopped (it runs, starts or stops, or another command of it is in progress); its quarantine is purged only while it is stopped: stop it, then purge again"
 )
 
 // chatState is what the registry shows of a lead, for its chat: the state as
@@ -133,6 +134,12 @@ type chatDesk struct {
 	// stateOf reads the registry's entry of a role; nil until the registry
 	// is open, which leaves every lead's state unknown.
 	stateOf func(leadrole.Role) chatState
+	// holdStopped takes the role's operation lock and proves the lead
+	// stopped by the registry, and answers the release of the lock; false
+	// (with the lock not held) when another command of the role holds the
+	// lock or the lead is not proven stopped. nil until the registry is
+	// open, which proves no lead stopped.
+	holdStopped func(leadrole.Role) (release func(), ok bool)
 	// beforeSeatRead, a test's hook, runs in a seat read after the desk's
 	// own checks and before the store's.
 	beforeSeatRead func(cl *chatLead)
@@ -715,8 +722,12 @@ func (d *chatDesk) setRead(cl *chatLead) *clientapi.ErrorBody {
 }
 
 // purge answers chat.purge: it removes what it can of the lead's quarantine
-// (leadchat.Store.PurgeQuarantine) and answers the counts. It changes no
-// switch, and runs whether the lead's chat is off or read.
+// (leadchat.Store.PurgeQuarantine) and answers the counts. It runs only while
+// the lead is proven stopped, holding the role's operation lock so that no
+// define, start or stop runs beside it, and is refused chat-lead-not-stopped
+// otherwise: with the lead's processes gone, nothing but the daemon changes
+// what the quarantine holds. It changes no switch, and runs whether the
+// lead's chat is off or read.
 func (d *chatDesk) purge(params json.RawMessage) (any, *clientapi.ErrorBody) {
 	var p leadwire.ChatPurgeParams
 	if f := decodeLead(params, &p, "key"); f != nil {
@@ -726,6 +737,15 @@ func (d *chatDesk) purge(params json.RawMessage) (any, *clientapi.ErrorBody) {
 	if !ok {
 		return nil, refused(msgChatNotALead)
 	}
+	notStopped := &clientapi.ErrorBody{Code: leadwire.CodeChatLeadNotStopped, Message: msgChatNotStopped}
+	if d.holdStopped == nil {
+		return nil, notStopped
+	}
+	release, ok := d.holdStopped(cl.role)
+	if !ok {
+		return nil, notStopped
+	}
+	defer release()
 	cl.setMu.Lock()
 	defer cl.setMu.Unlock()
 	cl.mu.Lock()
@@ -734,7 +754,7 @@ func (d *chatDesk) purge(params json.RawMessage) (any, *clientapi.ErrorBody) {
 	if store == nil || broken {
 		return nil, unavailable(msgChatStore)
 	}
-	rep, err := store.PurgeQuarantine()
+	rep, err := store.PurgeQuarantine(leadchat.PurgeOptions{Stopped: true})
 	if err != nil {
 		if storeDown(err) {
 			cl.mu.Lock()

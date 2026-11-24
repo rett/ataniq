@@ -58,7 +58,9 @@ const (
 	// maxClaimEntries is the most entries a turn-on reads from the claim
 	// folder an earlier segment left.
 	maxClaimEntries = 256
-	// maxPurgeEntries and maxTreeDepth bound one purge of the quarantine.
+	// maxPurgeEntries bounds the removals of one purge of the quarantine
+	// (and the names of the quarantine itself it reads), and maxTreeDepth
+	// how deep it walks.
 	maxPurgeEntries = 8192
 	maxTreeDepth    = 16
 )
@@ -742,27 +744,48 @@ func (s *Store) scan(now time.Time, epoch int64, rep *IngestReport) (string, err
 type PurgeReport struct {
 	// Removed counts the entries of the quarantine removed whole, and Left
 	// those still there: a folder larger or deeper than one purge removes
-	// (a later purge goes on with it), one that did not stay empty, or one
-	// that cannot be removed (a folder closed to the daemon's user, which
-	// the owner removes by hand).
+	// (a later purge goes on with it), or one that cannot be removed (a
+	// folder closed to the daemon's user, which the owner removes by hand).
 	Removed, Left int
 	// Free counts the names 1 to [MaxQuarantine] that are free after the
 	// purge: a turn-on needs one.
 	Free int
 }
 
-// PurgeQuarantine removes what the lead's quarantine holds, for the owner:
-// each entry is unlinked, and a folder is removed with what it holds, deepest
-// first, one name at a time below descriptors, never following a link,
-// crossing a mount point or leaving the quarantine. One purge looks at most
-// at 8192 names and walks at most 16 folders deep: of a wider folder it
-// removes the names it read, and a folder deeper than that is moved up, by a
-// rename, to the top of the entry being purged. What it cannot remove is
-// left (counted in Left); a purge run again goes on from there and makes
-// progress on a tree that does not change. A folder closed to the daemon's
+// PurgeOptions are what the caller of [Store.PurgeQuarantine] knows of the
+// lead.
+type PurgeOptions struct {
+	// Stopped is true when the caller proved the lead's unit stopped (it is
+	// not running, starting or stopping, and no launch is pending) and
+	// holds the lock that keeps a start from running beside the purge.
+	// Only then does a purge remove anything ([ErrNotStopped] otherwise).
+	Stopped bool
+}
+
+// ErrNotStopped: a purge of the quarantine was asked for a lead that is not
+// proven stopped; nothing was looked at or removed.
+var ErrNotStopped = errors.New("leadchat: the lead is not proven stopped; its quarantine is purged only while it is stopped")
+
+// PurgeQuarantine removes what the lead's quarantine holds, for the owner,
+// and only while the lead is proven stopped (opts.Stopped; [ErrNotStopped]
+// otherwise): with the lead's processes gone, nothing but the daemon changes
+// what the quarantine holds, so a folder opened below it stays below it and
+// the purge removes only what was set aside. Each entry is unlinked, and a
+// folder is removed with what it holds, deepest first, one name at a time
+// below descriptors, never following a link, crossing a mount point or
+// leaving the quarantine. The walk deals with each name as it reads it, so a
+// leaf is removed before a wide list of names is read. One purge makes at
+// most 8192 removals and walks at most 16 folders deep: a folder deeper than
+// that is moved up, by a rename, to the top of the entry being purged. What
+// it does not reach is left (counted in Left); a purge run again goes on
+// from there, and each purge removes something while anything can be
+// removed, so repeated purges empty any tree. A folder closed to the daemon's
 // user is never opened and stays: the owner removes it by hand. A lead
 // without a quarantine has nothing to purge.
-func (s *Store) PurgeQuarantine() (PurgeReport, error) {
+func (s *Store) PurgeQuarantine(opts PurgeOptions) (PurgeReport, error) {
+	if !opts.Stopped {
+		return PurgeReport{}, ErrNotStopped
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rep := PurgeReport{Free: MaxQuarantine}
@@ -792,11 +815,14 @@ func (s *Store) PurgeQuarantine() (PurgeReport, error) {
 	if more {
 		rep.Left++
 	}
-	p := &purge{call: s.root.openat2, unlink: s.unlink, rename: s.rename, left: maxPurgeEntries - len(names)}
+	p := &purge{call: s.root.openat2, unlink: s.unlink, rename: s.rename, left: s.purgeBudget, moved: &s.purgeMoved}
 	for _, name := range names {
-		err := s.unlink(quar, name, 0)
-		if err == unix.EISDIR {
-			err = p.removeTree(quar, name, -1, 0)
+		err := errPurgeLeft
+		if p.left > 0 {
+			err = p.remove(quar, name, 0)
+			if err == unix.EISDIR {
+				err = p.removeTree(quar, name, -1, 0)
+			}
 		}
 		if err == nil || err == unix.ENOENT {
 			rep.Removed++

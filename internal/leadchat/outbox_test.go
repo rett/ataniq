@@ -5,6 +5,7 @@ package leadchat
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1252,7 +1253,7 @@ func TestQuarantineIsBounded(t *testing.T) {
 	if n := e.names(); !slices.Equal(n, []string{"left.txt"}) {
 		t.Fatalf("outbox %q", n)
 	}
-	rep, err := s.PurgeQuarantine()
+	rep, err := s.PurgeQuarantine(stopped)
 	if err != nil || rep.Removed != MaxQuarantine || rep.Left != 0 {
 		t.Fatalf("PurgeQuarantine: %+v, %v", rep, err)
 	}
@@ -1305,12 +1306,45 @@ func TestSetSwitchAnswersTheEffectiveSwitch(t *testing.T) {
 	}
 }
 
+// stopped is the purge's proof that the lead is stopped.
+var stopped = PurgeOptions{Stopped: true}
+
+// A purge of a lead that is not proven stopped is refused and looks at
+// nothing: only a stopped lead's quarantine is purged.
+func TestPurgeQuarantineNeedsAStoppedLead(t *testing.T) {
+	e := newEnv(t)
+	s := e.open()
+	if err := os.MkdirAll(filepath.Join(e.quarDir(), "1", "a"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.quarDir(), "2"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unlinks := 0
+	s.unlink = func(dirfd int, name string, flags int) error {
+		unlinks++
+		return unix.Unlinkat(dirfd, name, flags)
+	}
+	if rep, err := s.PurgeQuarantine(PurgeOptions{}); !errors.Is(err, ErrNotStopped) || rep != (PurgeReport{}) {
+		t.Fatalf("a purge of a lead not proven stopped: %+v, %v", rep, err)
+	}
+	if unlinks != 0 {
+		t.Fatalf("a refused purge removed %d names", unlinks)
+	}
+	if q := e.quarantined(); !slices.Equal(q, []string{"1", "2"}) {
+		t.Fatalf("quarantine %q", q)
+	}
+	if rep, err := s.PurgeQuarantine(stopped); err != nil || rep.Removed != 2 || rep.Left != 0 {
+		t.Fatalf("a purge of the stopped lead: %+v, %v", rep, err)
+	}
+}
+
 // A purge removes what it can within its bounds, never follows a link, and
 // leaves and counts what it cannot.
 func TestPurgeQuarantine(t *testing.T) {
 	e := newEnv(t)
 	s := e.open()
-	if rep, err := s.PurgeQuarantine(); err != nil || rep != (PurgeReport{Free: MaxQuarantine}) {
+	if rep, err := s.PurgeQuarantine(stopped); err != nil || rep != (PurgeReport{Free: MaxQuarantine}) {
 		t.Fatalf("no quarantine: %+v, %v", rep, err)
 	}
 	outside := filepath.Join(e.dir, "outside")
@@ -1353,7 +1387,7 @@ func TestPurgeQuarantine(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(closed, 0o700) })
-	rep, err := s.PurgeQuarantine()
+	rep, err := s.PurgeQuarantine(stopped)
 	if err != nil || rep.Removed != 2 || rep.Left != 2 || rep.Free != 2 {
 		t.Fatalf("PurgeQuarantine: %+v, %v", rep, err)
 	}
@@ -1365,7 +1399,7 @@ func TestPurgeQuarantine(t *testing.T) {
 	}
 	// The deep tree was moved up in part; a second purge removes the rest.
 	// The folder closed to the daemon stays, for the owner's hand.
-	rep, err = s.PurgeQuarantine()
+	rep, err = s.PurgeQuarantine(stopped)
 	if err != nil || rep.Removed != 1 || rep.Left != 1 || rep.Free != 3 {
 		t.Fatalf("the second PurgeQuarantine: %+v, %v", rep, err)
 	}
@@ -1379,7 +1413,7 @@ func TestPurgeQuarantine(t *testing.T) {
 func purgeUntilEmpty(t *testing.T, e *env, s *Store, max int) int {
 	t.Helper()
 	for n := 1; n <= max; n++ {
-		rep, err := s.PurgeQuarantine()
+		rep, err := s.PurgeQuarantine(stopped)
 		if err != nil {
 			t.Fatalf("purge %d: %v", n, err)
 		}
@@ -1394,8 +1428,8 @@ func purgeUntilEmpty(t *testing.T, e *env, s *Store, max int) int {
 	return 0
 }
 
-// A folder set aside that holds more names than one purge looks at is
-// removed in batches over repeated purges.
+// A folder set aside that holds more names than one purge removes is removed
+// over repeated purges.
 func TestPurgeQuarantineOfAWideTree(t *testing.T) {
 	e := newEnv(t)
 	s := e.open()
@@ -1410,16 +1444,80 @@ func TestPurgeQuarantineOfAWideTree(t *testing.T) {
 		}
 		_ = f.Close()
 	}
-	rep, err := s.PurgeQuarantine()
+	rep, err := s.PurgeQuarantine(stopped)
 	if err != nil || rep.Removed != 0 || rep.Left != 1 {
 		t.Fatalf("the first purge: %+v, %v", rep, err)
 	}
 	ents, err := os.ReadDir(wide)
-	if err != nil || len(ents) == 0 || len(ents) > 110 {
-		t.Fatalf("the first purge left %d names: %v", len(ents), err)
+	if err != nil || len(ents) != 100 {
+		t.Fatalf("the first purge left %d names, want 100: %v", len(ents), err)
 	}
 	if n := purgeUntilEmpty(t, e, s, 3); n != 1 {
 		t.Fatalf("%d more purges", n)
+	}
+}
+
+// treeSize counts the names below dir, dir included.
+func treeSize(t *testing.T, dir string) int {
+	t.Helper()
+	n := 0
+	err := filepath.WalkDir(dir, func(string, fs.DirEntry, error) error { n++; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// purgeWithProgress purges with a small budget until the quarantine is
+// empty: every purge must remove something, and the purges needed are at
+// most what the tree's size asks of the budget, and two more.
+func purgeWithProgress(t *testing.T, e *env, s *Store, budget int) {
+	t.Helper()
+	s.purgeBudget = budget
+	size := treeSize(t, e.quarDir()) - 1
+	for n := 1; ; n++ {
+		if n > size/budget+2 {
+			t.Fatalf("%d purges left %d names", n-1, treeSize(t, e.quarDir())-1)
+		}
+		before := treeSize(t, e.quarDir()) - 1
+		rep, err := s.PurgeQuarantine(stopped)
+		if err != nil {
+			t.Fatalf("purge %d: %v", n, err)
+		}
+		after := treeSize(t, e.quarDir()) - 1
+		if after >= before {
+			t.Fatalf("purge %d made no progress: %d names before, %d after (%+v)", n, before, after, rep)
+		}
+		if rep.Left == 0 {
+			if after != 0 || rep.Free != MaxQuarantine {
+				t.Fatalf("purge %d left %d names, %+v", n, after, rep)
+			}
+			return
+		}
+	}
+}
+
+// A wide folder whose children are all folders that hold something, wider
+// than one purge removes, is emptied over repeated purges, each of which
+// removes its whole budget: the walk enters a child and removes its leaves
+// before it reads the rest of the list.
+func TestPurgeQuarantineOfAWideTreeOfFolders(t *testing.T) {
+	for _, budget := range []int{1, 2, 7, 64} {
+		t.Run(strconv.Itoa(budget), func(t *testing.T) {
+			e := newEnv(t)
+			s := e.open()
+			wide := filepath.Join(e.quarDir(), "1", "wide")
+			for i := 0; i < 3*budget+5; i++ {
+				child := filepath.Join(wide, "d"+strconv.Itoa(i))
+				if err := os.MkdirAll(filepath.Join(child, "inner"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(child, "inner", "f"), []byte("x"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			purgeWithProgress(t, e, s, budget)
+		})
 	}
 }
 
@@ -1427,27 +1525,42 @@ func TestPurgeQuarantineOfAWideTree(t *testing.T) {
 // first over repeated purges: what lies past the bound is moved up within
 // the entry, never out of the quarantine.
 func TestPurgeQuarantineOfADeepTree(t *testing.T) {
-	e := newEnv(t)
-	s := e.open()
 	const depth = 5*maxTreeDepth + 3
-	p := filepath.Join(e.quarDir(), "1")
-	for i := 0; i < depth; i++ {
-		p = filepath.Join(p, "d")
+	chain := func(t *testing.T, e *env) {
+		p := filepath.Join(e.quarDir(), "1")
+		for i := 0; i < depth; i++ {
+			p = filepath.Join(p, "d")
+		}
+		if err := os.MkdirAll(p, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(p, "bottom.txt"), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := os.MkdirAll(p, 0o700); err != nil {
-		t.Fatal(err)
+	t.Run("whole budget", func(t *testing.T) {
+		e := newEnv(t)
+		s := e.open()
+		chain(t, e)
+		if _, err := s.PurgeQuarantine(stopped); err != nil {
+			t.Fatalf("the first purge: %v", err)
+		}
+		if ents, err := os.ReadDir(e.dir); err != nil || len(ents) != 2 {
+			t.Fatalf("the purge moved something out of the quarantine: %v, %v", ents, err)
+		}
+		purgeUntilEmpty(t, e, s, 2*depth/maxTreeDepth+2)
+	})
+	for _, budget := range []int{1, 3, maxTreeDepth + 1} {
+		t.Run("budget "+strconv.Itoa(budget), func(t *testing.T) {
+			e := newEnv(t)
+			s := e.open()
+			chain(t, e)
+			purgeWithProgress(t, e, s, budget)
+			if ents, err := os.ReadDir(e.dir); err != nil || len(ents) != 2 {
+				t.Fatalf("the purge moved something out of the quarantine: %v, %v", ents, err)
+			}
+		})
 	}
-	if err := os.WriteFile(filepath.Join(p, "bottom.txt"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	rep, err := s.PurgeQuarantine()
-	if err != nil || rep.Left != 1 {
-		t.Fatalf("the first purge: %+v, %v", rep, err)
-	}
-	if ents, err := os.ReadDir(e.dir); err != nil || len(ents) != 2 {
-		t.Fatalf("the purge moved something out of the quarantine: %v, %v", ents, err)
-	}
-	purgeUntilEmpty(t, e, s, 2*depth/maxTreeDepth+2)
 }
 
 // A turn-on needs the lead's home reached safely and a file system that

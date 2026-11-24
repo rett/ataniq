@@ -166,6 +166,11 @@ type Store struct {
 
 	// fstat is the turn-on's stat of the folder it made.
 	fstat func(fd int) (unix.Stat_t, error)
+	// purgeBudget is how many removals one purge makes (maxPurgeEntries;
+	// a test makes it smaller), and purgeMoved the counter of the names of
+	// the folders purges moved up.
+	purgeBudget int
+	purgeMoved  int64
 }
 
 // OpenStore opens the chat of the lead whose layout role is role, below the
@@ -215,6 +220,8 @@ func OpenStore(root *Root, role string, opts Options) (*Store, error) {
 		unlink: unix.Unlinkat,
 		rename: unix.Renameat2,
 		fstat:  fstatFD,
+
+		purgeBudget: maxPurgeEntries,
 	}
 	if err := s.start(); err != nil {
 		if s.f != nil {

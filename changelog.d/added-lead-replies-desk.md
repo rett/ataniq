@@ -9,8 +9,10 @@
   sending is not built (`send` is refused `chat-send-not-built`). A turn-on
   needs one of the four names of the lead's quarantine free, and is refused
   `chat-quarantine-full` (exit 31, with one fixed line) otherwise; the purge
-  removes what it can in bounded steps, wide and deep folders over repeated
-  runs, never following a link or leaving the quarantine. While a lead's chat is on,
+  runs only while the lead is proven stopped (`chat-lead-not-stopped`, exit
+  30, otherwise) and removes what it can in bounded steps, each of which
+  removes something, wide and deep folders over repeated runs, never
+  following a link or leaving the quarantine. While a lead's chat is on,
   one scanner of its own takes its replies every 2 seconds, stops with the
   switch, the daemon or a store that fails, and logs counts only. Every
   `lead.define` and `lead.start` writes the reply instructions into the lead's
