@@ -2009,6 +2009,35 @@ still the client's. The hint says that something the seat may read moved and
 nothing else: no lead, no count and no text, and a page that acts on it reads
 the directory and the conversation again through `seat.chat`.
 
+Each wait is bound to one connection. The watcher reads the client's
+connection and its hello's capabilities as one (the connection before and
+after the capabilities must agree), decides on them whether the wait is the
+extended one and which cursor it carries (one learned on that connection, or
+0), and checks just before it sends that the client's connection is still
+that one; when it is not, nothing is sent and it starts over on the new
+connection, whose first wait carries 0
+(`TestSeatLinkWatchChatNeverSendsACursorToAnotherConnection`). An answer that
+comes when the connection is no longer the one it was asked on publishes no
+cursor. While a hint is live the watcher's pauses (after a change, or for
+room) look at the client every second and drop the hint, waking its
+subscribers, as soon as its connection is gone
+(`TestSeatLinkWatchChatLossDuringThePauseDropsTheHint`), and
+`Daemon.ChatHint` checks the connection and its capability again when it is
+read, so it never answers a hint of a connection that is not the client's now.
+The seatgate client picks the connection of a call under its own lock, so a
+connection replaced in the instant between the watcher's last check and that
+pick can still carry this connection's cursor once; the gate then answers it
+as a stale cursor or refuses it, and the answer, which came on another
+connection, is dropped. Closing that instant needs a call of the client bound
+to a named connection, which `seatgate` does not offer.
+
+A live hint is an observation of the past: the cursor the gate last answered
+on the connection. A lead whose chat was turned off since may still be in it
+until the next answer, which comes no sooner than the chat's gap. It is never
+a permission: the page that acts on it reads through `seat.chat`, where the
+desk authorizes every read live, and equal cursors only say that nothing seems
+to have changed.
+
 ## Notices
 
 Status: built (G14, the rest: N1 the notice core, N2 the push library, N3 the
