@@ -6,6 +6,7 @@ import (
 
 	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/genesis/brief"
+	"ataniq/internal/genesis/plan"
 )
 
 // The bounds of the store.
@@ -22,9 +23,9 @@ const (
 	// DirName is the name of the store's folder in the owner state folder.
 	DirName = "genesis"
 
-	// maxFileBytes is the most a thread file may hold: the brief's cap and
-	// room for the thread's own members.
-	maxFileBytes = brief.MaxBriefBytes + 4096
+	// maxFileBytes is the most a thread file may hold: the brief's cap, the
+	// plan's cap and room for the thread's own members.
+	maxFileBytes = brief.MaxBriefBytes + plan.MaxPlanBytes + 4096
 	// maxEntries is the most files the folder may hold; a folder with more
 	// is not a store of ours.
 	maxEntries = 64
@@ -57,6 +58,16 @@ type record struct {
 	// frozen is the digest of the brief of a finished thread, and "" for
 	// any other.
 	frozen string
+	// plan is the plan stored for a finished thread, revision 1 of its
+	// frozen brief, and nil for any other thread and for a finished one that
+	// has none: finished before its brief was complete, of a kind no
+	// template serves, or finished before plans were stored (such a thread
+	// is given its plan when one is first asked of it). A stored plan is
+	// never compiled again: a template that changes later leaves it as it
+	// is.
+	plan *plan.Plan
+	// planDigest is the digest of plan, and "" without one.
+	planDigest string
 }
 
 // CodeBadParams is the gate's word for params the store refuses to take as
@@ -132,8 +143,9 @@ func GateWord(c brief.Code) (word string, ok bool) {
 	return word, ok
 }
 
-// mapAnswerError turns the error of the walker or the brief, on an answer the
-// owner sent, into the store's: a [*Refusal] for the owner's mistake, and the
+// mapAnswerError turns the error of the walker, the brief or the plan's
+// compiler, on an answer the owner sent or a plan asked of a thread, into the
+// store's: a [*Refusal] for the owner's mistake or the thread's state, and the
 // error itself, which the gate answers failed, for the host's own fault.
 func mapAnswerError(err error) error {
 	if code, ok := brief.CodeOf(err); ok {

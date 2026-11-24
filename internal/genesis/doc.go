@@ -12,8 +12,9 @@
 //     templates, as data, and the deterministic compiler that turns a
 //     finished brief into a plan: a proposal that binds nothing.
 //   - thread holds the thread store: the daemon's persistent record of the
-//     interviews begun on the phone, the one writer of them, which serves
-//     the eight verbs of the wire to the seat gate.
+//     interviews begun on the phone and the plans stored for them, the one
+//     writer of them, which serves the nine verbs of the wire to the seat
+//     gate.
 //   - package approval/ownerwire holds the words of the wire the phone
 //     speaks to ask the questions, send the answers and read the plan: the
 //     one gate operation seat.genesis, with its strict forms and the gate

@@ -89,8 +89,8 @@ func TestAFullInterviewOfTheWebAppPath(t *testing.T) {
 	if r := w.ok(w.s.Round(ctx, first.Thread)); !reflect.DeepEqual(r, fin) {
 		t.Fatalf("round of a finished thread: %+v", r)
 	}
-	// What the log says holds no answer.
-	if w.log.count("a thread was started") != 1 || w.log.count("a thread was finished") != 1 || len(w.log.all()) != 2 {
+	// What the log says holds no answer; the plan was stored at finish.
+	if w.log.count("a thread was started") != 1 || w.log.count("a thread was finished") != 1 || w.log.count("a plan was drawn") != 1 || len(w.log.all()) != 3 {
 		t.Fatalf("log %q", w.log.all())
 	}
 }
@@ -916,7 +916,7 @@ func TestRefusalsAreGateWords(t *testing.T) {
 	for code := range map[string]bool{
 		ownerwire.CodeGenesisBusy: true, ownerwire.CodeGenesisUnknownThread: true, ownerwire.CodeGenesisBadAnswer: true,
 		ownerwire.CodeGenesisOverCap: true, ownerwire.CodeGenesisSecretShaped: true, ownerwire.CodeGenesisDone: true, CodeBadParams: true,
-		ownerwire.CodeGenesisStaleRound: true,
+		ownerwire.CodeGenesisStaleRound: true, ownerwire.CodeGenesisNotReady: true, ownerwire.CodeGenesisNoTemplate: true,
 	} {
 		err := refuse(code)
 		if got, ok := RefusalCode(fmt.Errorf("wrapped: %w", err)); !ok || got != code {

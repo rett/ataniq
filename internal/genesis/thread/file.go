@@ -13,6 +13,7 @@ import (
 
 	"ataniq/internal/genesis/brief"
 	"ataniq/internal/genesis/internal/canon"
+	"ataniq/internal/genesis/plan"
 )
 
 // timeLayout is the one form of a time in a thread file, as in a brief.
@@ -49,7 +50,9 @@ func isHex(s string, n int) bool {
 
 // encodeRecord writes a thread in its file form: the canonical JSON of its
 // members and a digest of the rest, which is SHA-256 of the canonical JSON of
-// the members without it.
+// the members without it. A finished thread with a stored plan holds it as the
+// member plan, the plan record in its canonical form, with plan_digest, its
+// digest; a thread without one leaves both out.
 func encodeRecord(r record) ([]byte, error) {
 	bb, err := brief.Encode(r.brief)
 	if err != nil {
@@ -70,6 +73,17 @@ func encodeRecord(r record) ([]byte, error) {
 	}
 	if r.frozen != "" {
 		ms = append(ms, canon.M("brief_digest", canon.Str(r.frozen)))
+	}
+	if r.plan != nil {
+		pb, err := plan.Encode(*r.plan)
+		if err != nil {
+			return nil, err
+		}
+		pv, err := canon.Parse(pb, maxDepth)
+		if err != nil {
+			return nil, err
+		}
+		ms = append(ms, canon.M("plan", pv), canon.M("plan_digest", canon.Str(r.planDigest)))
 	}
 	body, err := canon.Encode(canon.Obj(ms...))
 	if err != nil {
@@ -110,7 +124,8 @@ func decodeRecord(name string, data []byte) (record, error) {
 	if err != nil || !bytes.Equal(again, data) {
 		return record{}, bad("the file is not in the canonical form")
 	}
-	m, err := canon.Fields(v, "thread", []string{"brief", "catalog", "created", "digest", "id", "schema", "state", "updated"}, []string{"brief_digest"})
+	m, err := canon.Fields(v, "thread", []string{"brief", "catalog", "created", "digest", "id", "schema", "state", "updated"},
+		[]string{"brief_digest", "plan", "plan_digest"})
 	if err != nil {
 		return record{}, bad(err.Error())
 	}
@@ -173,6 +188,9 @@ func decodeRecord(name string, data []byte) (record, error) {
 	case hasDigest:
 		return record{}, bad("a thread that is not finished has a brief digest")
 	}
+	if r.plan, r.planDigest, err = decodePlan(r, m); err != nil {
+		return record{}, err
+	}
 	// The digest of the file's own content.
 	rest := make([]canon.Member, 0, len(v.Obj))
 	for _, mem := range v.Obj {
@@ -189,6 +207,43 @@ func decodeRecord(name string, data []byte) (record, error) {
 		return record{}, bad("the digest of the file does not match its content")
 	}
 	return r, nil
+}
+
+// decodePlan reads the stored plan of a thread file, which only a finished
+// thread may hold, with its digest: the plan record, held to its own checks
+// (never to the templates embedded now, so that a plan of a template that
+// changed since is served as it was stored), its digest, and the brief and
+// the catalog it was drawn from, which are the thread's.
+func decodePlan(r record, m map[string]canon.Value) (*plan.Plan, string, error) {
+	pv, hasPlan := m["plan"]
+	dv, hasDigest := m["plan_digest"]
+	switch {
+	case !hasPlan && !hasDigest:
+		return nil, "", nil
+	case hasPlan != hasDigest:
+		return nil, "", bad("the plan and its digest are not both in the file")
+	case r.state != StateFinished:
+		return nil, "", bad("a thread that is not finished has a plan")
+	}
+	pb, err := canon.Encode(pv)
+	if err != nil {
+		return nil, "", bad("the plan does not encode")
+	}
+	p, err := plan.Decode(pb)
+	if err != nil {
+		return nil, "", bad("the plan does not pass its own checks")
+	}
+	d, err := canon.AsString(dv, "thread.plan_digest")
+	if err != nil {
+		return nil, "", bad(err.Error())
+	}
+	if sum, err := plan.Digest(p); err != nil || sum != d {
+		return nil, "", bad("the plan does not match its digest")
+	}
+	if p.BriefDigest != r.frozen || p.CatalogDigest != r.catalog {
+		return nil, "", bad("the plan was not drawn from the thread's brief")
+	}
+	return &p, d, nil
 }
 
 // readFile reads one thread file of the folder, through the root: a regular
