@@ -163,7 +163,7 @@ func TestTheWirePlanGrammarsAreTheRecords(t *testing.T) {
 	}
 	words := []string{"", "a", "a1", "a-b", "a_b", "A", "1a", "-a", "a.b", "a b", "aé", strings.Repeat("a", 32), strings.Repeat("a", 33), "repo", "v1"}
 	versions := []string{"", "v1", "1", "1.2", "1-2", ".1", "-1", "V1", "v_1", strings.Repeat("1", 16), strings.Repeat("1", 17), "1.", "a b"}
-	texts := []string{"", "a", " a", "a ", "a\tb", "a<b", "a>b", "see http://x", "WWW.x", "mailto:x", "a café", strings.Repeat("t", 60), strings.Repeat("t", 61),
+	texts := []string{"", "a", " a", "a ", "a\tb", "a<b", "a>b", "see http://example.com", "WWW.example.com", "mailto:a@example.com", "a café", strings.Repeat("t", 60), strings.Repeat("t", 61),
 		strings.Repeat("t", 100), strings.Repeat("t", 101), strings.Repeat("t", 120), strings.Repeat("t", 121), " a"}
 	fields := []string{"", "notes", "goal", "kind", "software.stack", "software.", "music.key", "Goal", "software.1a", "software." + strings.Repeat("a", 32),
 		"software." + strings.Repeat("a", 33), "note"}
