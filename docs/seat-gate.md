@@ -833,6 +833,25 @@ with the list closed and notices on, a notice says that cards wait
 - The journal, `owner/journal.db` of the state folder, keeps each decision with
   the evidence of its assertion, and each outcome with the trial's line.
 
+With `--seat-gate` the trial's gate, and no other, also serves the seat's lead
+pages from STAND-IN samples: the capability `chat` (read only, see
+[the design](design/seat-gate.md#chat)). The gate's start line then ends
+`... watch, genesis and chat` and is followed by
+
+```text
+ataniqd: seat gate: chat: STAND-IN sample leads and conversations of the phone trial, held in memory; no lead is read or reached
+```
+
+The samples are three leads held in memory: `daemon:alpha` (running, a short
+conversation with a long reply marked cut, replies of several lines, a reply
+that looks like markup, which a page shows as text, and restart lines),
+`daemon:bravo` (stopped) and `daemon:charlie`, whose chat is off and which
+shows nothing but its name. Every lead reply begins "Sample:" and every result
+is marked as a sample, so the seat shows a banner. No lead, conversation file or
+other part of the daemon is read or reached, nothing is written, and nothing
+can be sent: there is no way to send a message from the seat yet. The seat's
+lead pages themselves are not built yet.
+
 `--trial` needs `--owner-channel` (exit 2 without it). The daemon refuses the
 trial's settings without `--trial`, and other settings with it (exit 10), and a
 state folder or a runtime folder that is, lies inside or contains the account's

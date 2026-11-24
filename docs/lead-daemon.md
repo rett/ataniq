@@ -359,7 +359,13 @@ ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits
   leave it out. `genesis` is in the line because the gate opens the thread store
   of the guided new-project interview (below), which every start of the gate
   does. The line says in words the capabilities the gate lists in its hello,
-  in their order.
+  in their order. In the phone trial (`--trial`, below) alone the gate also
+  lists `chat`, last (`... watch, genesis and chat`), and a second line
+  follows:
+
+```text
+ataniqd: seat gate: chat: STAND-IN sample leads and conversations of the phone trial, held in memory; no lead is read or reached
+```
 
 The gate speaks TLS 1.3 with pinned keys, strict frames of at most 257 KiB
 (the largest listing, card or page and the response around it) and the limits
@@ -400,10 +406,21 @@ that is not as the daemon wrote it is not served and is logged once by name, in
 fixed text that holds no answer, and never repaired. The store's log lines
 (`ataniqd: genesis: a thread was started`, `... finished`, `... discarded`,
 `... expired`, an answer refused as secret-shaped, by count only) hold no
-answer. Every other operation is refused `unknown-op`.
+answer. With `chat`, which only the phone trial's gate lists, it serves
+`seat.chat` (see [the design](design/seat-gate.md#chat)), the seat's read-only
+view of the leads' conversations: `leads` lists the leads with their chat
+switch (an off lead's row carries nothing but its name and switch) and `read`
+reads one page of a lead's conversation, paged by encoded bytes within 16 KiB.
+Nothing sends. The trial serves it from STAND-IN samples held in memory
+(`internal/chat/standin`: three sample leads, `daemon:alpha`, `daemon:bravo` and
+`daemon:charlie`, whose chat is off): no lead, conversation file or other port
+of the daemon is read or reached, and every result is marked `stand_in`. Its
+refusals, `chat-off`, `chat-unknown-lead` and `chat-busy`, are not counted by
+the refusal bound. Every other operation is refused `unknown-op`.
 A seat whose key is not pinned is refused in the handshake and never reaches
-the service. On the daemon's socket `seat.pair` stays refused and the six
-seat operations (the four of login and decision, `seat.wait` and `seat.genesis`) are not served: no connection there is a seat. `owner.show`
+the service. On the daemon's socket `seat.pair` stays refused and the seven
+seat operations (the four of login and decision, `seat.wait`, `seat.genesis`
+and `seat.chat`) are not served: no connection there is a seat. `owner.show`
 marks a card whose decision is journaled and not yet taken by the door
 (`"on_its_way": true`), on the socket and the gate alike.
 
@@ -495,7 +512,9 @@ not give a new card the id of one the journal holds a decision for). Its keys:
   `ataniqd trial init --state-dir DIR` writes and `ataniqd run --owner-channel
   --trial` serves (see [the phone trial](seat-gate.md#phone-trial)): sample
   cards only, made by `ataniqd trial submit`, decided through the real decision
-  path and applied to nothing. Trial settings name the project, the role, the
+  path and applied to nothing, and, with `--seat-gate`, STAND-IN sample leads
+  and conversations for the seat's lead pages (the capability `chat`, read
+  only, held in memory). Trial settings name the project, the role, the
   target, the seat, the door and the kinds, and no mirror, identity, gate,
   drop folder, root, sandbox or work folder. The daemon refuses trial settings
   without `--trial` and other settings with it, and checks a trial's state

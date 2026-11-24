@@ -265,7 +265,7 @@ func TestWithoutTheCapabilitiesTheSeatOperationsAreUnknown(t *testing.T) {
 	f := &fakePort{}
 	for _, op := range ownerwire.GateOperations() {
 		// One handler for each operation: the three refusals of each count,
-		// and the six operations together would pass the bound.
+		// and the seven operations together would pass the bound.
 		h, lb := newHandler(t, f)
 		for _, params := range []json.RawMessage{nil, seatParams(t, op), json.RawMessage(`not json`)} {
 			if out, err := h.Handle(context.Background(), seat, op, params); out != nil || codeOfErr(err) != CodeUnknownOp {
