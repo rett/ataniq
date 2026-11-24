@@ -22,6 +22,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 )
@@ -1047,9 +1048,10 @@ func canaryGoEnv() []string {
 	return append(os.Environ(), "GOENV=off", "GOWORK=off", "GOFLAGS=", "GO111MODULE=on", "GOPRIVATE=", "GONOPROXY=none", "GONOSUMDB=none", "GOTOOLCHAIN=local", "GOPROXY=off", "GOSUMDB=off")
 }
 
-// canaryGoList runs go list in the repository, offline. Without the tag it
-// refuses a pattern that names a wholly tagged package: with no Go file left,
-// that is an error, and the checks must not depend on it.
+// canaryGoList runs go list in the repository, offline, through goListOnce.
+// Without the tag it refuses a pattern that names a wholly tagged package:
+// with no Go file left, that is an error, and the checks must not depend on
+// it.
 func canaryGoList(t *testing.T, tagged bool, flags []string, patterns ...string) string {
 	t.Helper()
 	args := []string{"list"}
@@ -1062,9 +1064,31 @@ func canaryGoList(t *testing.T, tagged bool, flags []string, patterns ...string)
 			}
 		}
 	}
-	args = append(append(args, flags...), patterns...)
-	cmd := exec.Command(canaryGoTool(t), args...)
-	cmd.Dir = root(t)
+	return goListOnce(t, append(append(args, flags...), patterns...))
+}
+
+// goListed holds the output of every go list goListOnce ran, by its Go
+// executable, folder and arguments.
+var goListed = struct {
+	sync.Mutex
+	out map[string]string
+}{out: map[string]string{}}
+
+// goListOnce runs go list with the arguments in the repository, offline, once
+// per test process: the guards of both tags ask for some of the same listings,
+// and the repository does not change while the tests run. A failed run is not
+// kept.
+func goListOnce(t *testing.T, args []string) string {
+	t.Helper()
+	tool, dir := canaryGoTool(t), root(t)
+	key := strings.Join(append([]string{tool, dir}, args...), "\x00")
+	goListed.Lock()
+	defer goListed.Unlock()
+	if out, ok := goListed.out[key]; ok {
+		return out
+	}
+	cmd := exec.Command(tool, args...)
+	cmd.Dir = dir
 	cmd.Env = canaryGoEnv()
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -1072,6 +1096,7 @@ func canaryGoList(t *testing.T, tagged bool, flags []string, patterns ...string)
 	if err != nil {
 		t.Fatalf("go %s: %v\n%s", strings.Join(args, " "), err, stderr.String())
 	}
+	goListed.out[key] = string(out)
 	return string(out)
 }
 
@@ -1498,7 +1523,7 @@ test: doctor
 # The tagged run.
 test-canary: doctor
 	@pkgs=$$(grep -rl 'ataniq_canary' .); \
-	sh scripts/go-tool.sh test -tags ataniq_canary $$pkgs ./tests/
+	sh scripts/go-tool.sh test -tags ataniq_canary $${pkgs:-./tests/}
 
 canary-build: doctor
 	@sh scripts/go-tool.sh build -tags ataniq_canary ./cmd/ataniq-canary
@@ -1960,8 +1985,10 @@ func TestCanaryTagListRefusesTaggedPackages(t *testing.T) {
 }
 
 // make test-canary runs doctor, then the tagged tests of every package that
-// holds a file whose constraint names the tag, found at run time, and ./tests/,
-// and with no such package runs ./tests/ alone.
+// holds a file whose constraint names the tag, found at run time, and with no
+// such package runs ./tests/ alone, so that go test is never given an empty
+// list. ./tests/ is otherwise left to make test (see
+// TestCanaryTagTestsClosure).
 func TestCanaryTagMakeTarget(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -1983,7 +2010,7 @@ func TestCanaryTagMakeTarget(t *testing.T) {
 			"cmd/ataniqd/main.go":               "// +build ignore\n\npackage main\n",
 			"cmd/ataniq-holder/canary.go":       "//go:build linux && ataniq_canary\n\npackage main\n",
 			"tests/y_test.go":                   "package tests\n",
-		}, "test -tags ataniq_canary ./cmd/ataniq-holder ./internal/leadcanary ./internal/leadcanary/sub ./internal/leaddaemon ./tests/"},
+		}, "test -tags ataniq_canary ./cmd/ataniq-holder ./internal/leadcanary ./internal/leadcanary/sub ./internal/leaddaemon"},
 		// Every form Go builds with the tag is found.
 		{"every form Go builds with the tag", map[string]string{
 			"internal/plusonly/p.go":     hdrPlusTagged + "\n\npackage a\n",
@@ -1995,7 +2022,7 @@ func TestCanaryTagMakeTarget(t *testing.T) {
 			"build/o.go":                 hdrTagged + "\n\npackage a\n",
 			"internal/plain/p.go":        hdrPlusPlain + "\n\npackage a\n",
 			"internal/plain/q.go":        "// the ataniq_canary tag is not a constraint\n\npackage a\n",
-		}, "test -tags ataniq_canary ./build ./internal/indented ./internal/nested/build ./internal/plusonly ./internal/tabbed ./tests/"},
+		}, "test -tags ataniq_canary ./build ./internal/indented ./internal/nested/build ./internal/plusonly ./internal/tabbed"},
 		// Go's ./... skips folders that start with a dot or an underscore,
 		// such as a nested checkout under a hidden tool folder with its own
 		// go.mod.
@@ -2005,13 +2032,13 @@ func TestCanaryTagMakeTarget(t *testing.T) {
 			".tool/worktrees/w/internal/leadcanary/a.go": hdrTagged + "\n\npackage a\n",
 			"internal/_old/a.go":                         hdrTagged + "\n\npackage a\n",
 			".hidden/a.go":                               hdrTagged + "\n\npackage a\n",
-		}, "test -tags ataniq_canary ./internal/leadcanary ./tests/"},
+		}, "test -tags ataniq_canary ./internal/leadcanary"},
 		// The tree the slice leaves, with a nested checkout under a hidden folder.
 		{"a correct tree with tagged packages", canaryCorrectTree(), "test -tags ataniq_canary " +
 			"./cmd/ataniq-canary ./cmd/ataniq-canary-standin ./cmd/ataniq-holder ./cmd/ataniqd " +
 			"./internal/leadcanary ./internal/leadcanary/provision ./internal/leadcanary/provision/provisiontest " +
 			"./internal/leadcanary/standin ./internal/leaddaemon ./internal/leadholder/canaryroot " +
-			"./internal/leadholder/injectbridge ./internal/leadholder/sandboxstart ./internal/leadholder/serve ./tests/"},
+			"./internal/leadholder/injectbridge ./internal/leadholder/sandboxstart ./internal/leadholder/serve"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir, pin := fixture(t)
