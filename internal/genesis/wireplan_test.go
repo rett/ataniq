@@ -203,6 +203,21 @@ func TestTheWirePlanGrammarsAreTheRecords(t *testing.T) {
 			checked++
 		}
 	}
+	// The structural cases: ids and sets, the counts of notes, the estimate,
+	// the revision and the closed lists. Wire and record agree on each.
+	for _, sc := range structuralCases(base) {
+		p := base.Clone()
+		sc.set(&p)
+		host := plan.Check(p) == nil
+		_, err := ownerwire.EncodeGenesisPlan(toWire(p))
+		if wire := err == nil; wire != host {
+			t.Errorf("%s: the wire accepts %v, the plan %v (%v)", sc.name, wire, host, err)
+		}
+		if host != sc.ok {
+			t.Errorf("%s: the plan accepts %v, expected %v", sc.name, host, sc.ok)
+		}
+		checked++
+	}
 	// Text that looks like a secret: the plan refuses it, the wire carries it.
 	p := base.Clone()
 	p.Notes[0].Text = brief.Untrusted("my key " + "AKI" + "A" + "IOSFODNN7" + "EXAMPLE")
@@ -213,6 +228,136 @@ func TestTheWirePlanGrammarsAreTheRecords(t *testing.T) {
 		t.Errorf("the wire refuses text that looks like a key, which is the host's to refuse: %v", err)
 	}
 	t.Logf("%d plans held to both", checked)
+}
+
+// structuralCase is one change of a plan that is not a string of a grammar:
+// ok says whether the record accepts it.
+type structuralCase struct {
+	name string
+	ok   bool
+	set  func(p *plan.Plan)
+}
+
+// structuralCases are the changes of the plan's structure: the order,
+// uniqueness and references of its ids, its sets, its notes' count, its
+// estimate, its revision and its closed lists. Each is made of what base
+// holds, so that a change of a template does not break them.
+func structuralCases(base plan.Plan) []structuralCase {
+	var ids []string
+	for _, m := range base.Milestones {
+		for _, t := range m.Tasks {
+			ids = append(ids, t.ID)
+		}
+	}
+	last := len(base.Milestones) - 1
+	lastTask := len(base.Milestones[last].Tasks) - 1
+	// task is the base's last task, the one with the most before it.
+	task := func(p *plan.Plan) *plan.Task { return &p.Milestones[last].Tasks[lastTask] }
+	first := func(p *plan.Plan) *plan.Task { return &p.Milestones[0].Tasks[0] }
+	notes := func(p *plan.Plan, n int) {
+		p.Notes = nil
+		for i := 0; i < n; i++ {
+			p.Notes = append(p.Notes, plan.Note{Field: plan.FieldNotes, Text: brief.Untrusted("note " + strings.Repeat("n", i))})
+		}
+	}
+	hex := strings.Repeat("ab", 32)
+	other := func(list []string, not string) string {
+		for _, s := range list {
+			if s != not {
+				return s
+			}
+		}
+		return ""
+	}
+	cs := []structuralCase{
+		{"base", true, func(p *plan.Plan) {}},
+		// depends_on: in order, no duplicate, backward, known.
+		{"depends_on in order", true, func(p *plan.Plan) { task(p).DependsOn = []string{ids[0], ids[1]} }},
+		{"depends_on out of order", false, func(p *plan.Plan) { task(p).DependsOn = []string{ids[1], ids[0]} }},
+		{"depends_on twice", false, func(p *plan.Plan) { task(p).DependsOn = []string{ids[0], ids[0]} }},
+		{"depends_on on itself", false, func(p *plan.Plan) { task(p).DependsOn = []string{task(p).ID} }},
+		{"depends_on a later task", false, func(p *plan.Plan) { first(p).DependsOn = []string{ids[len(ids)-1]} }},
+		{"depends_on an unknown task", false, func(p *plan.Plan) { task(p).DependsOn = []string{"t998"} }},
+		{"depends_on a milestone", false, func(p *plan.Plan) { task(p).DependsOn = []string{"m1"} }},
+		{"depends_on the empty id", false, func(p *plan.Plan) { task(p).DependsOn = []string{""} }},
+		{"task ids out of order", false, func(p *plan.Plan) {
+			m := &p.Milestones[0]
+			m.Tasks[0].ID, m.Tasks[1].ID = m.Tasks[1].ID, m.Tasks[0].ID
+		}},
+		{"task id twice", false, func(p *plan.Plan) { p.Milestones[0].Tasks[1].ID = p.Milestones[0].Tasks[0].ID }},
+		{"milestone id twice", false, func(p *plan.Plan) {
+			if len(p.Milestones) > 1 {
+				p.Milestones[1].ID = p.Milestones[0].ID
+			} else {
+				p.Milestones = append(p.Milestones, p.Milestones[0])
+			}
+		}},
+		// Sets: sorted, no duplicate.
+		{"gates twice", false, func(p *plan.Plan) { p.Gates = []string{plan.Checks[0], plan.Checks[0]} }},
+		{"gates out of order", false, func(p *plan.Plan) { p.Gates = []string{plan.Checks[1], plan.Checks[0]} }},
+		{"gates in order", true, func(p *plan.Plan) { p.Gates = []string{plan.Checks[0], plan.Checks[1]} }},
+		{"review points twice", false, func(p *plan.Plan) { p.ReviewPoints = []string{plan.ReviewPoints[0], plan.ReviewPoints[0]} }},
+		{"review points out of order", false, func(p *plan.Plan) { p.ReviewPoints = []string{plan.ReviewPoints[1], plan.ReviewPoints[0]} }},
+		{"review points, none", false, func(p *plan.Plan) { p.ReviewPoints = nil }},
+		{"services twice", false, func(p *plan.Plan) { p.ExternalServices = []string{plan.Services[0], plan.Services[0]} }},
+		{"services out of order", false, func(p *plan.Plan) { p.ExternalServices = []string{plan.Services[1], plan.Services[0]} }},
+		{"services in order", true, func(p *plan.Plan) { p.ExternalServices = []string{plan.Services[0], plan.Services[1]} }},
+		{"warnings twice", false, func(p *plan.Plan) { p.Warnings = []string{plan.Warnings[0], plan.Warnings[0]} }},
+		{"warnings out of order", false, func(p *plan.Plan) { p.Warnings = []string{plan.Warnings[1], plan.Warnings[0]} }},
+		{"warnings in order", true, func(p *plan.Plan) { p.Warnings = []string{plan.Warnings[0], plan.Warnings[1]} }},
+		{"scope twice", false, func(p *plan.Plan) { first(p).Scope = []string{plan.Areas[0], plan.Areas[0]} }},
+		{"scope out of order", false, func(p *plan.Plan) { first(p).Scope = []string{plan.Areas[1], plan.Areas[0]} }},
+		{"scope in order", true, func(p *plan.Plan) { first(p).Scope = []string{plan.Areas[0], plan.Areas[1]} }},
+		{"checks twice", false, func(p *plan.Plan) { first(p).Checks = []string{plan.Checks[0], plan.Checks[0]} }},
+		{"checks out of order", false, func(p *plan.Plan) { first(p).Checks = []string{plan.Checks[1], plan.Checks[0]} }},
+		{"checks in order", true, func(p *plan.Plan) { first(p).Checks = []string{plan.Checks[0], plan.Checks[1]} }},
+		// The owner's notes and the count left out.
+		{"no notes, none dropped", true, func(p *plan.Plan) { notes(p, 0); p.NotesDropped = 0 }},
+		{"no notes, one dropped", false, func(p *plan.Plan) { notes(p, 0); p.NotesDropped = 1 }},
+		{"7 notes, one dropped", false, func(p *plan.Plan) { notes(p, plan.MaxNotes-1); p.NotesDropped = 1 }},
+		{"1 note, 7 dropped", false, func(p *plan.Plan) { notes(p, 1); p.NotesDropped = plan.MaxNotes - 1 }},
+		{"8 notes, none dropped", true, func(p *plan.Plan) { notes(p, plan.MaxNotes); p.NotesDropped = 0 }},
+		{"8 notes, one dropped", true, func(p *plan.Plan) { notes(p, plan.MaxNotes); p.NotesDropped = 1 }},
+		{"8 notes, dropped at the cap", true, func(p *plan.Plan) { notes(p, plan.MaxNotes); p.NotesDropped = ownerwire.MaxGenesisPlanNotesDropped }},
+		{"8 notes, dropped past the cap", false, func(p *plan.Plan) { notes(p, plan.MaxNotes); p.NotesDropped = ownerwire.MaxGenesisPlanNotesDropped + 1 }},
+		{"8 notes, dropped below none", false, func(p *plan.Plan) { notes(p, plan.MaxNotes); p.NotesDropped = -1 }},
+		{"9 notes", false, func(p *plan.Plan) { notes(p, plan.MaxNotes+1) }},
+		// The estimate: a band of the list with its own label.
+		{"estimate unknown band", false, func(p *plan.Plan) { p.Estimate = plan.Estimate{Band: "years", Label: p.Estimate.Label} }},
+		{"estimate no band", false, func(p *plan.Plan) { p.Estimate = plan.Estimate{Label: p.Estimate.Label} }},
+		{"estimate no label", false, func(p *plan.Plan) { p.Estimate.Label = "" }},
+		{"estimate unknown label", false, func(p *plan.Plan) { p.Estimate.Label = "about a fortnight" }},
+		// The revision and the one before it.
+		{"revision 1 with a previous digest", false, func(p *plan.Plan) { p.Revision, p.PrevDigest = 1, hex }},
+		{"revision 2 with no previous digest", false, func(p *plan.Plan) { p.Revision, p.PrevDigest = 2, "" }},
+		{"revision 2 with a previous digest", true, func(p *plan.Plan) { p.Revision, p.PrevDigest = 2, hex }},
+		{"revision 2 with a short digest", false, func(p *plan.Plan) { p.Revision, p.PrevDigest = 2, hex[:63] }},
+		{"revision 2 with a long digest", false, func(p *plan.Plan) { p.Revision, p.PrevDigest = 2, hex+"a" }},
+		{"revision 2 with an upper-case digest", false, func(p *plan.Plan) { p.Revision, p.PrevDigest = 2, strings.ToUpper(hex) }},
+		{"revision 2 with a digest not of hexadecimal", false, func(p *plan.Plan) { p.Revision, p.PrevDigest = 2, strings.Repeat("xy", 32) }},
+		{"revision 0", false, func(p *plan.Plan) { p.Revision, p.PrevDigest = 0, "" }},
+		{"revision at the cap", true, func(p *plan.Plan) { p.Revision, p.PrevDigest = plan.MaxRevision, hex }},
+		{"revision past the cap", false, func(p *plan.Plan) { p.Revision, p.PrevDigest = plan.MaxRevision+1, hex }},
+		{"revision negative", false, func(p *plan.Plan) { p.Revision, p.PrevDigest = -1, hex }},
+		{"brief digest short", false, func(p *plan.Plan) { p.BriefDigest = hex[:63] }},
+		{"catalog digest upper-case", false, func(p *plan.Plan) { p.CatalogDigest = strings.ToUpper(hex) }},
+		{"template digest empty", false, func(p *plan.Plan) { p.TemplateDigest = "" }},
+		// The closed lists: a word that is none of them.
+		{"task kind unknown", false, func(p *plan.Plan) { task(p).Kind = "deploy" }},
+		{"task kind empty", false, func(p *plan.Plan) { task(p).Kind = "" }},
+		{"task size unknown", false, func(p *plan.Plan) { task(p).Size = "huge" }},
+		{"task size empty", false, func(p *plan.Plan) { task(p).Size = "" }},
+		{"service unknown", false, func(p *plan.Plan) { p.ExternalServices = []string{"payment service"} }},
+		{"warning unknown", false, func(p *plan.Plan) { p.Warnings = []string{"something-new"} }},
+		{"review point unknown", false, func(p *plan.Plan) { p.ReviewPoints = []string{"always"} }},
+		{"area of the grammar and not of the list", true, func(p *plan.Plan) { first(p).Scope = []string{"repo:weird"} }},
+		{"check of another grammar", false, func(p *plan.Plan) { first(p).Checks = []string{"Unit Tests"} }},
+		{"another budget band", true, func(p *plan.Plan) { p.BudgetBand = other(plan.BudgetBands, p.BudgetBand) }},
+		{"schema of another version", false, func(p *plan.Plan) { p.Schema = "ataniq.project-plan/2" }},
+		{"no milestone", false, func(p *plan.Plan) { p.Milestones = nil }},
+		{"a milestone with no task", false, func(p *plan.Plan) { p.Milestones[0].Tasks = nil }},
+	}
+	return cs
 }
 
 // planOf walks an interview to its end, as the store does, answering from
