@@ -115,6 +115,8 @@ func closed(ch <-chan struct{}) bool {
 func TestLeadChatCursorCoversTheEnabledLeadsOnly(t *testing.T) {
 	l, port := newChatEnv(t)
 	l.start()
+	// The daemon says it listens before it binds the port.
+	waitFor(t, 10*time.Second, "the port is bound", func() bool { return port.src.Load() != nil })
 	none := cursorFor(t, port, nil)
 	if c := cursorOf(t, port); c != none {
 		t.Fatalf("with every lead off the cursor is %d, want that of no lead %d", c, none)
