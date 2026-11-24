@@ -176,6 +176,7 @@ type (
 		Title    string
 		Note     string
 		Projects projectsPart
+		Nav      *navView
 	}
 	// questionView is one question of a form, with its place in the form:
 	// the fields are named a<i> (one choice), m<i> (several), t<i> (own
@@ -191,6 +192,7 @@ type (
 		Reset     int
 		View      GenesisView
 		Questions []questionView
+		Nav       *navView
 	}
 	summaryData struct {
 		Title string
@@ -199,6 +201,7 @@ type (
 		View  GenesisView
 		// Groups are the three groups, each with its heading.
 		Groups []rowGroup
+		Nav    *navView
 	}
 	rowGroup struct {
 		Heading, Empty string
@@ -210,10 +213,12 @@ type (
 		Thread   string
 		Row      GenesisRow
 		Question questionView
+		Nav      *navView
 	}
 	discardData struct {
 		Title  string
 		Thread string
+		Nav    *navView
 	}
 )
 
@@ -453,7 +458,7 @@ func (a *app) projectList(w http.ResponseWriter, r *http.Request, s Session) {
 		return
 	}
 	part := projectsPart{Threads: openThreads(v.Threads), Listed: true, CanStart: len(v.Threads) < MaxGenesisThreads}
-	a.render(w, "projects", http.StatusOK, projectsData{Title: pageTitles["projects"], Note: noteOf(r), Projects: part})
+	a.render(w, "projects", http.StatusOK, projectsData{Title: pageTitles["projects"], Note: noteOf(r), Projects: part, Nav: projectsNav()})
 }
 
 // projectStart answers POST /projects/new: a new thread, and its page.
@@ -499,7 +504,7 @@ func (a *app) projectPage(w http.ResponseWriter, r *http.Request, s Session) {
 	note, reset := noteOf(r), resetOf(r)
 	switch v.State {
 	case GenesisStateQuestion:
-		d := questionData{Title: pageTitles["question"], Note: note, Reset: reset, View: v}
+		d := questionData{Title: pageTitles["question"], Note: note, Reset: reset, View: v, Nav: projectsNav()}
 		for i, q := range v.Questions {
 			if i >= MaxGenesisQuestions {
 				break
@@ -512,9 +517,9 @@ func (a *app) projectPage(w http.ResponseWriter, r *http.Request, s Session) {
 		}
 		a.render(w, "question", http.StatusOK, d)
 	case GenesisStateSummary:
-		a.render(w, "summary", http.StatusOK, summaryData{Title: pageTitles["summary"], Note: note, Reset: reset, View: v, Groups: groupsOf(v)})
+		a.render(w, "summary", http.StatusOK, summaryData{Title: pageTitles["summary"], Note: note, Reset: reset, View: v, Groups: groupsOf(v), Nav: projectsNav()})
 	case GenesisStateFinished:
-		a.render(w, "finished", http.StatusOK, summaryData{Title: pageTitles["finished"], Note: note, View: v, Groups: groupsOf(v)})
+		a.render(w, "finished", http.StatusOK, summaryData{Title: pageTitles["finished"], Note: note, View: v, Groups: groupsOf(v), Nav: projectsNav()})
 	default:
 		a.problem(w, problemFailed)
 	}
@@ -560,7 +565,7 @@ func (a *app) changePage(w http.ResponseWriter, r *http.Request, s Session) {
 			}
 			q := *row.Question
 			a.render(w, "change", http.StatusOK, changeData{Title: pageTitles["change"], Note: noteOf(r), Thread: thread, Row: row,
-				Question: questionView{I: 0, Multi: q.Type == GenesisTypeMulti, Q: q}})
+				Question: questionView{I: 0, Multi: q.Type == GenesisTypeMulti, Q: q}, Nav: projectsNav()})
 			return
 		}
 	}
@@ -583,7 +588,7 @@ func (a *app) discardPage(w http.ResponseWriter, r *http.Request, s Session) {
 		a.problem(w, problemTooManyProjects)
 		return
 	}
-	a.render(w, "discard", http.StatusOK, discardData{Title: pageTitles["discard"], Thread: thread})
+	a.render(w, "discard", http.StatusOK, discardData{Title: pageTitles["discard"], Thread: thread, Nav: projectsNav()})
 }
 
 // The values of a question's controls that are not an option's id. An

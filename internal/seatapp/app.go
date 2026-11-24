@@ -240,6 +240,10 @@ type app struct {
 	// from the reads; watchHold is how long a poll is held.
 	watches   *limiter
 	watchHold time.Duration
+	// projectsOffered is what the card list last learnt of the new-project
+	// interview: offered or not. The Card page and the path pages show the
+	// main navigation's "Projects" link by it, without a call of their own.
+	projectsOffered atomic.Bool
 	// lastPoll is the time, in Unix nanoseconds, of the last accepted poll,
 	// 0 before the first; the notices stay quiet while it is recent.
 	lastPoll atomic.Int64

@@ -174,6 +174,52 @@ func TestStyleSheet(t *testing.T) {
 	}
 }
 
+// TestStyleSheetNavigation checks the look of the main navigation: its
+// links 44 px targets, the current one marked by more than a colour (bold,
+// no underline, a bar), the skip link out of sight only while it has no
+// focus, nothing fixed to the screen (which on a phone could cover the
+// content, the keyboard or the home indicator), and !important in the rule
+// of [hidden] alone.
+func TestStyleSheetNavigation(t *testing.T) {
+	css := newRig(t).do("GET", "/static/app.css", nil, nil).Body.String()
+	for _, bad := range []string{"position: fixed", "@import", "url(", "@font-face", "http:", "https:"} {
+		if strings.Contains(css, bad) {
+			t.Errorf("the style sheet holds %q", bad)
+		}
+	}
+	if strings.Count(css, "!important") != 1 || !strings.Contains(css, "[hidden] {\n  display: none !important;\n}") {
+		t.Error("!important outside the rule of [hidden]")
+	}
+	skip := ruleOf(t, css, ".skip {")
+	if !strings.Contains(css, ".skip:not(:focus) {") || !strings.Contains(skip, "min-height: 44px;") || !strings.Contains(skip, "position: absolute;") {
+		t.Errorf("the skip link is not shown on focus as a 44 px target:\n%s", skip)
+	}
+	link := ruleOf(t, css, ".nav a {")
+	for _, want := range []string{"min-height: 44px;", "min-width: 44px;"} {
+		if !strings.Contains(link, want) {
+			t.Errorf("the navigation's link lacks %q", want)
+		}
+	}
+	cur := ruleOf(t, css, `.nav a[aria-current="page"] {`)
+	for _, want := range []string{"font-weight: 700;", "text-decoration: none;", "box-shadow: inset"} {
+		if !strings.Contains(cur, want) {
+			t.Errorf("the current link lacks %q, a mark that is not a colour", want)
+		}
+	}
+}
+
+// ruleOf is the text of the first rule of the style sheet that opens with
+// head, up to its closing brace.
+func ruleOf(t *testing.T, css, head string) string {
+	t.Helper()
+	i := strings.Index(css, head)
+	if i < 0 {
+		t.Fatalf("the style sheet has no rule %q", head)
+	}
+	j := strings.Index(css[i:], "}")
+	return css[i : i+j+1]
+}
+
 // inMedia reports whether the declaration is inside a media block.
 func inMedia(css, decl string) bool {
 	i := strings.Index(css, decl)

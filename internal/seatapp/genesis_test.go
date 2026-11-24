@@ -842,7 +842,7 @@ func TestGenesisPagesAreWellFormed(t *testing.T) {
 			get = "/projects/" + testThread
 		}
 		body := r.getWith(get, s).Body.String()
-		for _, want := range []string{"<!doctype html>", `<html lang="en">`, `<meta name="viewport" content="width=device-width, initial-scale=1">`, "<main>", "</main>"} {
+		for _, want := range []string{"<!doctype html>", `<html lang="en">`, `<meta name="viewport" content="width=device-width, initial-scale=1">`, `<main id="content">`, "</main>"} {
 			if !strings.Contains(body, want) {
 				t.Errorf("%s: lacks %s", path, want)
 			}

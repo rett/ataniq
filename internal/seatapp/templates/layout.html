@@ -9,10 +9,12 @@
 {{block "head" .}}{{end}}
 </head>
 <body>
-<header>
+{{with .Nav}}<a id="skip" class="skip" href="#content">Skip to content</a>
+{{end}}<header>
 <p class="brand">Authority seat</p>
-</header>
-<main>
+{{with .Nav}}{{template "nav" .}}
+{{end}}</header>
+<main{{if .Nav}} id="content"{{end}}>
 {{template "content" .}}
 </main>
 </body>

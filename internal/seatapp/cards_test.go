@@ -161,8 +161,10 @@ func TestSeatCardWithHostileLeadText(t *testing.T) {
 				t.Errorf("%s: the page lacks %q", path, want)
 			}
 		}
+		// The skip link's "#content" is the one address of the page
+		// itself.
 		for _, m := range regexp.MustCompile(`(?i)\s(href|src)="([^"]*)"`).FindAllStringSubmatch(body, -1) {
-			if !strings.HasPrefix(m[2], "/") || strings.HasPrefix(m[2], "//") {
+			if (!strings.HasPrefix(m[2], "/") || strings.HasPrefix(m[2], "//")) && m[2] != "#content" {
 				t.Errorf("%s: an address that is not the app's: %q", path, m[2])
 			}
 		}
@@ -170,7 +172,7 @@ func TestSeatCardWithHostileLeadText(t *testing.T) {
 		// an address and a script address, as text only, which is all the
 		// two rules that read the whole page can see; the addresses of the
 		// page are checked above.
-		for _, f := range inspectPage(body, []string{"a", "a#paths", "a#back", "a#prev", "a#next", "button#logout"}, false) {
+		for _, f := range inspectPage(body, withNav("a", "a#paths", "a#back", "a#prev", "a#next", "button#logout"), false) {
 			if f != "external address" && f != "javascript address" {
 				t.Errorf("%s: %s", path, f)
 			}

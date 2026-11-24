@@ -121,7 +121,8 @@ func TestGenesisPlanPageSections(t *testing.T) {
 			t.Errorf("the page holds %q", bad)
 		}
 	}
-	// No script, no form, no control but the two links.
+	// No script, no form, no control but the two links (and the main
+	// navigation's, which the page inventory holds to links).
 	for _, bad := range []string{"<script", "<form", "<button", "<input", "<textarea", "<select"} {
 		if strings.Contains(page, bad) {
 			t.Errorf("the plan page holds %s", bad)
@@ -225,9 +226,10 @@ func TestGenesisPlanPageCharterSection(t *testing.T) {
 			t.Errorf("the charter section holds %q", bad)
 		}
 	}
-	// The page links into no card at all.
-	if strings.Contains(page, `href="/cards`) {
-		t.Error("the plan page links to the cards")
+	// The page links into no card at all: the main navigation's link to
+	// the card list is its one address under /cards.
+	if regexp.MustCompile(`href="/cards(/[^"]|[^/"])`).MatchString(page) || strings.Count(page, `href="/cards`) != 1 {
+		t.Error("the plan page links to a card")
 	}
 	for _, path := range []string{"/cards/", "/projects/", "/projects/" + testThread} {
 		if body := r.getWith(path, s).Body.String(); strings.Contains(body, "What a charter would cover") || strings.Contains(body, "charter") {
@@ -344,7 +346,7 @@ func TestGenesisPlanPageWithNoPlan(t *testing.T) {
 		t.Errorf("no template: %d\n%s", w.Code, w.Body)
 	}
 	for _, body := range []string{w.Body.String()} {
-		for _, f := range inspectPage(body, []string{"a#project-page", "a#project-list"}, false) {
+		for _, f := range inspectPage(body, withNav("a#project-page", "a#project-list"), false) {
 			t.Errorf("the page with no plan: %s", f)
 		}
 	}

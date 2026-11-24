@@ -316,6 +316,7 @@ type (
 		// page shows it: the daemon runs the interview.
 		Projects projectsPart
 		Genesis  bool
+		Nav      *navView
 	}
 	cardData struct {
 		Title string
@@ -337,6 +338,7 @@ type (
 		// Watch is the watcher's version taken before the page's read, with
 		// the card and binding the page shows.
 		Watch watchPage
+		Nav   *navView
 	}
 	pathsData struct {
 		Title string
@@ -349,10 +351,14 @@ type (
 		// app's own addresses, empty when there is none.
 		Number           int
 		Prev, Next, Back string
+		Nav              *navView
 	}
+	// problemData has no navigation (Nav is nil): a problem page is made
+	// without knowing whether a session asked for it.
 	problemData struct {
 		Title   string
 		Message string
+		Nav     *navView
 	}
 )
 
@@ -386,6 +392,8 @@ func (a *app) cardList(w http.ResponseWriter, r *http.Request, s Session) {
 	// The new projects, when the daemon runs the interview: a list that
 	// cannot be read leaves the start offered and says so.
 	d.Projects, d.Genesis = a.listProjects(ctx)
+	a.projectsOffered.Store(d.Genesis)
+	d.Nav = &navView{Current: navCards, Projects: d.Genesis}
 	a.render(w, "cards", http.StatusOK, d)
 }
 
@@ -413,7 +421,7 @@ func (a *app) cardPage(w http.ResponseWriter, r *http.Request, s Session) {
 		return
 	}
 	now := a.cfg.Now()
-	d := cardData{Title: pageTitles["card"], Now: now, Card: c, RPID: a.cfg.RPID, Watch: wp.still()}
+	d := cardData{Title: pageTitles["card"], Now: now, Card: c, RPID: a.cfg.RPID, Watch: wp.still(), Nav: a.cardsNav()}
 	if !c.Ended && (c.State == "" || c.State == "pending") {
 		// Only a pending card can change under its page: a decided, ended
 		// or expired one is not in the pending set, so a page that named
@@ -483,7 +491,7 @@ func (a *app) pathsPage(w http.ResponseWriter, r *http.Request, s Session) {
 	}
 	// A page counts as read only when it showed every path whole, and
 	// only once it was written.
-	d := pathsData{Title: pageTitles["paths"], ID: id, Page: p, Number: n + 1, Back: cardHref(id), Cut: !rowsWhole(p.Rows)}
+	d := pathsData{Title: pageTitles["paths"], ID: id, Page: p, Number: n + 1, Back: cardHref(id), Cut: !rowsWhole(p.Rows), Nav: a.cardsNav()}
 	if n > 0 {
 		d.Prev = pathsHref(id, n-1)
 	}
