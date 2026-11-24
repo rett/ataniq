@@ -1245,6 +1245,34 @@ func TestScratchSeatProofRunbookShellIsSafe(t *testing.T) {
 	}
 }
 
+// AGENTS.md and CLAUDE.md say, next to the canary prepare's rule, that an
+// agent runs the scratch seat prepare script only with --dry or --self-test
+// and that its other modes and its network check are the owner's.
+func TestScratchSeatPrepareAgentRule(t *testing.T) {
+	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
+		data, err := os.ReadFile(filepath.Join(root(t), name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		for _, want := range []string{
+			"`qualification/scratch-seat/prepare.sh`", "only with `--dry` or `--self-test`",
+			"its `--write`, `--status`, `--swap-in` and `--swap-out` are the owner's", "the `ROOT/netcheck.sh` its `--write` writes",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s does not say %q", name, want)
+			}
+		}
+		if i, j := strings.Index(text, "canary-prepare.sh` only with"), strings.Index(text, "`qualification/scratch-seat/prepare.sh`"); name == "CLAUDE.md" && (i < 0 || j < i) {
+			t.Errorf("%s does not put the rule after the canary prepare's", name)
+		}
+	}
+	agents := string(mustRead(t, filepath.Join(root(t), "AGENTS.md")))
+	if !strings.Contains(agents, "-run ScratchSeatPrepare` after doctor") {
+		t.Error("AGENTS.md does not name the targeted check of the script")
+	}
+}
+
 func mustRead(t *testing.T, path string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(path)
