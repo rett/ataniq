@@ -73,6 +73,9 @@ type leadsData struct {
 	pageData
 	Sample *chatSample
 	Rows   []chatRow
+	// Watch is the chat hint taken before the page's reads, for the page's
+	// hint stream (watchleads.go).
+	Watch leadsWatch
 }
 type conversationData struct {
 	leadsData
@@ -81,7 +84,7 @@ type conversationData struct {
 	Timeline                                     []timelineEvent
 	Epoch, Head                                  int64
 	Restarted, Reset, HavePrev, More, JumpRemote bool
-	PrevAfter, LastSeq, TailAfter                int64
+	PrevAfter, LastSeq                           int64
 }
 
 // A login keeps only the last displayed epoch per listed lead, and the chat
@@ -180,6 +183,9 @@ func (a *app) chatPage(w http.ResponseWriter, r *http.Request, s Session) {
 		a.problem(w, r, problemUnavailable)
 		return
 	}
+	// The hint before the reads: a change between the two leaves the page
+	// a cursor older than what it shows, and its stream says so at once.
+	lw := a.leadsHint()
 	c := ChatCall{Verb: ChatLeads, SessionDone: gone}
 	list, err := p.Chat(ctx, c)
 	if err != nil {
@@ -191,7 +197,11 @@ func (a *app) chatPage(w http.ResponseWriter, r *http.Request, s Session) {
 		return
 	}
 	h.directory(list)
-	data := leadsData{pageData: pageData{Title: pageTitles["leads"], Nav: &navView{Current: navLeads, Leads: true, Projects: a.projectsOffered.Load()}}}
+	// A cursor learned on another connection than the directory's (the
+	// link was replaced between the two) is not this page's: the page is
+	// not live. The read below must come from the directory's connection.
+	lw = lw.boundTo(list.Connection)
+	data := leadsData{pageData: pageData{Title: pageTitles["leads"], Nav: &navView{Current: navLeads, Leads: true, Projects: a.projectsOffered.Load()}}, Watch: lw}
 	if list.StandIn {
 		data.Sample = &chatTrial
 	}
@@ -218,31 +228,99 @@ func (a *app) chatPage(w http.ResponseWriter, r *http.Request, s Session) {
 		a.problemBanner(w, r, problemChatOff, list.StandIn)
 		return
 	}
+	// The chat hint is one cursor for every lead, so a page that follows
+	// is read again after its last entry whenever any lead replied. A
+	// cursor at the head the directory lists has nothing after it for this
+	// lead (the head is the last entry's sequence, and it only grows
+	// within an epoch): that page is answered as the conversation's own
+	// address is, with its newest window and its follow mark, so the
+	// reader keeps the conversation in view and the page goes on
+	// following. The directory already told, so this adds no read.
+	if explicit && after == *selected.Head {
+		explicit = false
+	}
 	if !explicit {
 		after = max(0, *selected.Head-MaxChatEntries)
 	}
-	c.Verb, c.Lead, c.After = ChatRead, lead, after
-	read, err := p.Chat(ctx, c)
-	if err != nil {
+	// readAt reads the conversation after a cursor and checks the answer;
+	// failed answers the page of an error.
+	readAt := func(after int64) (ChatView, error) {
+		c.Verb, c.Lead, c.After = ChatRead, lead, after
+		v, err := p.Chat(ctx, c)
+		if err == nil && !v.ValidFor(c) {
+			err = errChatInvalid
+		}
+		return v, err
+	}
+	failed := func(err error) {
 		if errors.Is(err, ErrChatUnknownLead) || errors.Is(err, ErrChatOff) {
 			delete(h.byLead, lead)
 		}
 		a.problemBanner(w, r, chatProblem(err), list.StandIn)
-		return
 	}
-	if !read.ValidFor(c) {
-		a.problemBanner(w, r, problemFailed, list.StandIn)
+	read, err := readAt(after)
+	if err != nil {
+		failed(err)
 		return
 	}
 	if read.Connection != list.Connection || read.StandIn != list.StandIn || read.Epoch != *selected.Epoch || read.Head < *selected.Head {
 		a.problemBanner(w, r, problemChatChanged, list.StandIn)
 		return
 	}
+	// The conversation's own address is its newest page. A recent window
+	// that the gate's bound of a result cut short, or that replies arriving
+	// since the directory pushed past the window, left entries out: the
+	// page reads on toward the head, at most newestReads more times. A
+	// busy room, or a cursor the chat no longer holds, keeps the page read
+	// so far, which then offers Show later.
+	for n := 0; !explicit && read.More && n < newestReads; n++ {
+		next, err := readAt(newestAfter(read))
+		if errors.Is(err, ErrBusy) {
+			break
+		}
+		if err != nil {
+			failed(err)
+			return
+		}
+		if next.Connection != read.Connection || next.StandIn != read.StandIn || next.Epoch != read.Epoch || next.Head < read.Head {
+			a.problemBanner(w, r, problemChatChanged, list.StandIn)
+			return
+		}
+		if next.Reset {
+			break
+		}
+		read, after = next, c.After
+	}
 	old, seen := h.byLead[lead]
 	d, visit := conversation(data, row, read, after, old, seen)
 	if a.chatLive(w, r, p, ctx, list.StandIn) && a.render(w, "conversation", http.StatusOK, d) {
 		h.byLead[lead] = visit
 	}
+}
+
+// newestReads bounds the reads a conversation's own address makes beyond
+// its first to reach the newest entries: with the directory, a page is 4 of
+// chat's 5 calls in 80 seconds at most.
+const newestReads = 2
+
+// errChatInvalid is an answer of the port that its call does not take.
+var errChatInvalid = errors.New("seatapp: a chat answer of the wrong form")
+
+// newestAfter is the cursor of the next read toward the newest entries, for
+// a read v that left entries out (More, so v holds one at least): always a
+// sequence v returned, never an inferred one, which might fall between kept
+// entries. It is the earliest entry with no more sequences after it, to the
+// head, than v held entries, so the next read ends at the head holding as
+// many entries as v did, when they are no larger; when every entry has more
+// after it, the last entry, so the next read goes on from there.
+func newestAfter(v ChatView) int64 {
+	n := int64(len(v.Entries))
+	for _, e := range v.Entries {
+		if v.Head-e.Seq <= n {
+			return e.Seq
+		}
+	}
+	return v.Entries[len(v.Entries)-1].Seq
 }
 
 func (a *app) chatLive(w http.ResponseWriter, r *http.Request, p Chat, ctx context.Context, standIn bool) bool {
@@ -257,8 +335,8 @@ func (a *app) chatLive(w http.ResponseWriter, r *http.Request, p Chat, ctx conte
 // conversation makes a page of a read after the cursor after. Show earlier
 // reads one window back (after MaxChatEntries entries less, from zero at
 // least), Show later from the page's last entry, and Jump to newest, when
-// the head lies past the page, the last window (after head less
-// MaxChatEntries, from zero at least).
+// the head lies past the page, goes to the conversation's own address, its
+// newest page.
 //
 // The restart marker shows only when the epoch rose since the visit kept: a
 // reset, or an epoch below the kept one (another lead under the key), drops
@@ -287,8 +365,27 @@ func conversation(list leadsData, row chatRow, v ChatView, after int64, visit ch
 		slices.SortStableFunc(d.Timeline, func(a, b timelineEvent) int { return a.At.Compare(b.At) })
 	}
 	d.JumpRemote = v.Head > d.LastSeq
-	if d.JumpRemote {
-		d.TailAfter = max(0, v.Head-MaxChatEntries)
+	d.Watch.Conversation = true
+	if !v.More {
+		d.Watch.Follow, d.Watch.After = true, followAfter(v, after, d.LastSeq)
 	}
 	return d, visit
+}
+
+// followAfter is the cursor of the read that follows new replies on a page
+// that shows the newest entries: the page's last rendered entry, a sequence
+// the read returned, so the following read starts directly after it. Every
+// new reply then comes first on the next page, whatever the size of the
+// entries above it, and the cursor never falls between kept entries (a
+// cursor the chat does not hold reads from the oldest kept entry again). A
+// page with no entry rendered its read's cursor (the head at most), or,
+// after a reset, the head.
+func followAfter(v ChatView, after, lastSeq int64) int64 {
+	if len(v.Entries) > 0 {
+		return lastSeq
+	}
+	if v.Reset {
+		return v.Head
+	}
+	return min(after, v.Head)
 }

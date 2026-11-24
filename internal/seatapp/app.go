@@ -241,6 +241,19 @@ type app struct {
 	// from the reads; watchHold is how long a poll is held.
 	watches   *limiter
 	watchHold time.Duration
+	// streams are the open hint streams (watchstream.go), streamOpens
+	// bounds how often each credential's sessions open one, and the
+	// durations are the stream's limits, which tests shorten. streamTimer
+	// is the stream's timer; the real one when nil. For tests.
+	streams                                        *streamSlots
+	streamOpens                                    *limiter
+	streamLife, streamBeat, streamGap, streamWrite time.Duration
+	streamTimer                                    noticeTimer
+	// streamNow is the clock of the stream's write deadlines; time.Now
+	// when nil. For tests.
+	streamNow func() time.Time
+	// fg are the streams' foreground leases, which hold the notices back.
+	fg *foreground
 	// projectsOffered is what the card list last learnt of the new-project
 	// interview: offered or not. The Card page and the path pages show the
 	// main navigation's "Projects" link by it, without a call of their own.
@@ -303,14 +316,16 @@ func newApp(cfg Config) (*app, http.Handler, error) {
 	a := &app{cfg: cfg, pair: newPairing(cfg), login: newLogins(cfg), sess: newSessions(cfg.Now),
 		reads: newLimiter(readRequests, readWindow), decides: newLimiter(decideRequests, decideWindow),
 		watches: newLimiter(watchRequests, watchWindow), watchHold: watchHold, host: hostHeader,
-		pushes: newLimiter(pushRequests, pushWindow), chats: newLimiter(30, time.Minute), geneses: newLimiter(genesisRequests, genesisWindow)}
+		pushes: newLimiter(pushRequests, pushWindow), chats: newLimiter(30, time.Minute), geneses: newLimiter(genesisRequests, genesisWindow),
+		streams: newStreamSlots(), fg: newForeground(), streamOpens: newLimiter(streamOpens, streamOpenWindow),
+		streamLife: streamLife, streamBeat: streamBeat, streamGap: streamGap, streamWrite: streamWrite}
 	a.push, _ = cfg.Notifier.(PushPort)
 
 	mux := http.NewServeMux()
 	for _, rt := range a.routes() {
 		mux.HandleFunc(rt.pattern, rt.handler)
 	}
-	return a, a.guard(mux), nil
+	return a, &appHandler{Handler: a.guard(mux), a: a}, nil
 }
 
 // route is one entry of the app's route table.
@@ -351,6 +366,10 @@ func (a *app) routes() []route {
 		{"POST /api/decide", a.post(a.decidePost)},
 		{"GET /static/watch.js", a.asset("assets/watch.js", "text/javascript; charset=utf-8")},
 		{"POST /api/watch", a.post(a.watchPost)},
+		// The hint stream (watchstream.go) of the card list, with the poll
+		// above as its fallback, and of the Leads pages (watchleads.go),
+		// with their Refresh links as theirs: one route, two views.
+		{"POST " + streamPath, a.post(a.watchStream)},
 		// The phone's side of the notices: all of them answer 404 unless
 		// Config.Notifier is also a PushPort (see push.go).
 		{"GET /manifest.webmanifest", a.pushOnly(a.asset("assets/manifest.webmanifest", "application/manifest+json"))},
@@ -401,9 +420,11 @@ func (a *app) redirect(to string) http.HandlerFunc {
 }
 
 // Server returns an http.Server for h with the header, read, write and idle
-// limits of the app. The caller sets Addr or serves a listener.
+// limits of the app. The caller sets Addr or serves a listener. When h is the
+// handler of [New] or [Open], the server's Shutdown also ends the app's open
+// hint streams, which would otherwise hold it until their life ended.
 func Server(h http.Handler) *http.Server {
-	return &http.Server{
+	srv := &http.Server{
 		Handler:           h,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -411,6 +432,10 @@ func Server(h http.Handler) *http.Server {
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    maxHeaderBytes,
 	}
+	if e, ok := h.(streamEnder); ok {
+		srv.RegisterOnShutdown(e.endStreams)
+	}
+	return srv
 }
 
 // securityHeaders are on every response, an error included.
@@ -492,13 +517,26 @@ func (a *app) post(h http.HandlerFunc) http.HandlerFunc {
 		if !a.sameOrigin(w, r) {
 			return
 		}
-		mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-		if err != nil || mt != "application/json" {
+		ct, one := oneHeader(r, "Content-Type")
+		mt, _, err := mime.ParseMediaType(ct)
+		if !one || err != nil || mt != "application/json" {
 			writeText(w, http.StatusUnsupportedMediaType, "unsupported media type\n")
 			return
 		}
 		h(w, r)
 	}
+}
+
+// oneHeader returns the value of a header that a request carries exactly
+// once. A header the checks rest on (Sec-Fetch-Site, Content-Type) that
+// comes twice is ambiguous, whatever its first value says, and is taken as
+// absent.
+func oneHeader(r *http.Request, name string) (string, bool) {
+	v := r.Header.Values(name)
+	if len(v) != 1 {
+		return "", false
+	}
+	return v[0], true
 }
 
 // writeText writes a fixed plain-text body.

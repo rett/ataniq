@@ -144,7 +144,9 @@ func TestChatOverTheTrialsGate(t *testing.T) {
 	w, _ := trialWorld(t)
 	addr, h := w.startChatGate(standin.New(w.rig.clock.Now))
 	s := w.dialChat(addr)
-	if caps := s.c.Caps(); len(caps) == 0 || caps[len(caps)-1] != gatehost.CapChat || !slices.Equal(caps, h.Caps()) {
+	// chat, and after it the extended wait: the trial's service can wait and
+	// the stand-in gives a cursor.
+	if caps := s.c.Caps(); len(caps) < 2 || caps[len(caps)-2] != gatehost.CapChat || caps[len(caps)-1] != gatehost.CapWaitChat || !slices.Equal(caps, h.Caps()) {
 		t.Fatalf("the hello lists %q", caps)
 	}
 
@@ -219,10 +221,79 @@ func TestAGateWithoutTheTrialListsNoChat(t *testing.T) {
 	w := newDecideWorld(t, nil)
 	addr, h := w.startChatGate(nil)
 	s := w.dialChat(addr)
-	if slices.Contains(s.c.Caps(), gatehost.CapChat) || slices.Contains(h.Caps(), gatehost.CapChat) {
+	if slices.Contains(s.c.Caps(), gatehost.CapChat) || slices.Contains(h.Caps(), gatehost.CapChat) || slices.Contains(h.Caps(), gatehost.CapWaitChat) {
 		t.Fatalf("the hello lists %q", s.c.Caps())
 	}
 	if _, _, code := s.send(ownerwire.SeatChatParams{Verb: ownerwire.ChatVerbLeads}); code != gatehost.CodeUnknownOp {
 		t.Fatalf("seat.chat: %q", code)
+	}
+}
+
+// waitRaw sends seat.wait with the raw params and returns the raw result or
+// the gate's code.
+func (s *chatSeat) waitRaw(b json.RawMessage) (json.RawMessage, string) {
+	s.t.Helper()
+	var raw json.RawMessage
+	if err := s.c.Call(pairCtx(s.t), ownerwire.OpSeatWait, b, &raw); err != nil {
+		var re *seatgate.RemoteError
+		if errors.As(err, &re) {
+			return nil, re.Code
+		}
+		s.t.Fatalf("seat.wait: %v", err)
+	}
+	return raw, ""
+}
+
+// The extended wait over the trial's gate, with the real owner channel's
+// service and the stand-in's cursor: a new seat that sends it gets the Card
+// result and the stand-in's deterministic cursor; a legacy seat on the same
+// gate sends the plain params and gets exactly the plain result; and a gate
+// with no chat port (an older or a non-trial gate) refuses the extended params
+// bad-params, so a seat that sent them anyway falls back to the plain wait.
+func TestWaitChatOverTheTrialsGate(t *testing.T) {
+	w, _ := trialWorld(t)
+	port := standin.New(w.rig.clock.Now)
+	addr, _ := w.startChatGate(port)
+	s := w.dialChat(addr)
+	want, err := port.ChatCursor(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero := int64(0)
+	ext, err := ownerwire.EncodeSeatWaitChatParams(ownerwire.SeatWaitParams{Chat: &zero})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, code := s.waitRaw(ext)
+	if code != "" {
+		t.Fatalf("the extended wait was refused %s", code)
+	}
+	r, err := ownerwire.DecodeSeatWaitChatResult(raw)
+	if err != nil || r.Chat == nil || *r.Chat != want {
+		t.Fatalf("the extended wait answered %s (%v), want the cursor %d", raw, err, want)
+	}
+	plain, err := ownerwire.EncodeSeatWaitParams(ownerwire.SeatWaitParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, code = s.waitRaw(plain)
+	if code != "" {
+		t.Fatalf("the plain wait was refused %s", code)
+	}
+	p, err := ownerwire.DecodeSeatWaitResult(raw)
+	if err != nil || strings.Contains(string(raw), "chat") || p.Version != r.Version {
+		t.Fatalf("the plain wait answered %s (%v)", raw, err)
+	}
+
+	other, h := w.startChatGate(nil)
+	if slices.Contains(h.Caps(), gatehost.CapWaitChat) {
+		t.Fatalf("a gate with no chat lists %q", h.Caps())
+	}
+	o := w.dialChat(other)
+	if _, code := o.waitRaw(ext); code != gatehost.CodeBadParams {
+		t.Fatalf("the extended wait at a gate without it: %q", code)
+	}
+	if _, code := o.waitRaw(plain); code != "" {
+		t.Fatalf("the plain wait after it: %q", code)
 	}
 }

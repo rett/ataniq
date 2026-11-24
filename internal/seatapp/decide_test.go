@@ -1433,3 +1433,48 @@ func TestSeatCardWhileDecisionsAreInhibited(t *testing.T) {
 		t.Error("an ended card is offered to the port or shows the notice")
 	}
 }
+
+// TestSeatDecideRevokedEndsEveryLoginOfTheKey: a key_revoked the daemon
+// says to one session's decision ends every session that credential logged
+// in, with the held stream of another of them, and leaves another
+// credential's session alone; an ordinary logout keeps to its own session.
+func TestSeatDecideRevokedEndsEveryLoginOfTheKey(t *testing.T) {
+	r, _ := newWatchRig(t, "aa", time.Minute)
+	a, b, c := r.login(t), r.login(t), r.login(t)
+	r.daemon.mu.Lock()
+	saved := r.daemon.loginRes
+	r.daemon.loginRes.Credential = "fedcba9876543210"
+	r.daemon.loginRes.CredentialID = bytes.Repeat([]byte{0x22}, 32)
+	r.daemon.mu.Unlock()
+	r.clock.Advance(loginAllWindow)
+	other := r.login(t)
+	r.daemon.mu.Lock()
+	r.daemon.loginRes = saved
+	r.daemon.mu.Unlock()
+
+	// A logout ends its own session only.
+	if w := r.postWith("/api/logout", "{}", c); w.Code != 200 {
+		t.Fatalf("logout: %d", w.Code)
+	}
+	for name, ck := range map[string]*http.Cookie{"a": a, "b": b, "other": other} {
+		if _, ok := r.sessionOf(ck.Value); !ok {
+			t.Fatalf("the logout of c ended %s", name)
+		}
+	}
+
+	held := r.streamAsync(context.Background(), streamOK, b)
+	r.waitStreams(t, 1)
+	r.openCard(t, a)
+	r.daemon.decideChErr = ErrKeyRevoked
+	wantFailure(t, "revoked", r.tap(approveBody, a), 403, "key_revoked", "This phone's passkey is no longer paired. Pair it again at the desk.")
+	within(t, held, 3*time.Second)
+	r.waitStreams(t, 0)
+	for name, ck := range map[string]*http.Cookie{"a": a, "b": b} {
+		if _, ok := r.sessionOf(ck.Value); ok {
+			t.Errorf("session %s of the revoked key goes on", name)
+		}
+	}
+	if _, ok := r.sessionOf(other.Value); !ok {
+		t.Error("another credential's session ended with the revoked key")
+	}
+}

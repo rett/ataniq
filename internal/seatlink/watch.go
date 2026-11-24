@@ -78,8 +78,9 @@ type WatchPort interface {
 }
 
 var (
-	_ WatchPort       = (*Daemon)(nil)
-	_ seatapp.Watcher = (*Daemon)(nil)
+	_ WatchPort           = (*Daemon)(nil)
+	_ seatapp.Watcher     = (*Daemon)(nil)
+	_ seatapp.ChatWatcher = (*Daemon)(nil)
 )
 
 // watchHub holds the published state and the broadcast. Its zero value is a
@@ -148,6 +149,10 @@ type watchTimes struct {
 	sleep func(ctx context.Context, d time.Duration) error
 	// now is the clock of the state's At.
 	now func() time.Time
+	// beforeSend, a test's hook, runs in a wait after its request is made
+	// for the session named by conn, before the last check of the
+	// connection and the call.
+	beforeSend func(conn time.Time)
 }
 
 func (t watchTimes) withDefaults() watchTimes {
@@ -198,6 +203,8 @@ type watcher struct {
 	// without waiting for the answer of a wait the gate holds. Only the
 	// goroutine reads it.
 	linkLost bool
+	// chat is what the watcher keeps of the chat cursor (watchchat.go).
+	chat watchChat
 }
 
 // StartWatch starts the watcher, once; a second call, or a call after
@@ -240,6 +247,7 @@ func (d *Daemon) Close() error {
 		<-w.done
 	}
 	d.hub.update(d.wt.withDefaults().now(), func(s *WatchState) { *s = WatchState{} })
+	d.chub.set(ChatHint{})
 	return nil
 }
 
@@ -249,7 +257,9 @@ func (w *watcher) run(ctx context.Context) {
 	since := ""
 	back := w.t.backMin
 	for ctx.Err() == nil {
-		if _, ok := d.c.Connected(); !ok {
+		sess, ok := d.session()
+		if !ok {
+			w.purgeChat()
 			w.linkLost = true
 			w.publish(func(s *WatchState) { s.Watching, s.Offline = d.offers(CapWatch), true })
 			if w.t.sleep(ctx, w.t.idle) != nil {
@@ -257,7 +267,8 @@ func (w *watcher) run(ctx context.Context) {
 			}
 			continue
 		}
-		if !d.offers(CapWatch) {
+		if !sess.offers(CapWatch) {
+			w.purgeChat()
 			w.linkLost = false
 			w.publish(func(s *WatchState) { *s = WatchState{} })
 			if w.t.sleep(ctx, w.t.idle) != nil {
@@ -272,20 +283,42 @@ func (w *watcher) run(ctx context.Context) {
 			}
 		})
 		w.linkLost = false
+		ext := w.chatFor(sess)
+		if !d.still(sess) {
+			// The connection changed since it was read: start over on the
+			// new one, before spending room.
+			w.purgeChat()
+			continue
+		}
 		ok, wait := d.budget.takeOrWait(kindWait)
 		if !ok {
-			if w.t.sleep(ctx, wait) != nil {
+			if w.pause(ctx, wait) != nil {
 				return
 			}
 			continue
 		}
-		res, err := w.wait(ctx, since)
+		res, err := w.wait(ctx, since, ext, sess)
 		if ctx.Err() != nil {
 			return
 		}
+		if errors.Is(err, errSessionGone) {
+			// Nothing was sent: the wait is asked again on the new
+			// connection, with what the watcher holds of it.
+			w.purgeChat()
+			continue
+		}
 		if err != nil {
+			// A wait that failed says nothing of the chat: what was kept
+			// of it may be stale.
+			w.purgeChat()
 			var re *seatgate.RemoteError
 			if errors.As(err, &re) {
+				if ext && re.Code == codeBadParams {
+					// A gate that lists the extension but refuses its
+					// params: the plain wait for the rest of this
+					// connection.
+					w.chat.refused, w.chat.refusedC = true, sess.conn
+				}
 				// The gate answered, with a code: the link is up, so
 				// whatever offline was published for an earlier failure of
 				// the link is lifted now, not when a wait is next held and
@@ -321,6 +354,9 @@ func (w *watcher) run(ctx context.Context) {
 		back = w.t.backMin
 		changed := res.Version != since
 		since = res.Version
+		if ext && w.takeChat(sess.conn, res.Chat) {
+			changed = true
+		}
 		cards := make([]WatchCard, len(res.Cards))
 		for i, c := range res.Cards {
 			cards[i] = WatchCard{ID: c.ID, Kind: c.Kind, BindingSHA256: c.BindingSHA256, Held: c.Held}
@@ -328,17 +364,42 @@ func (w *watcher) run(ctx context.Context) {
 		w.publish(func(s *WatchState) {
 			*s = WatchState{Watching: true, Version: res.Version, Waiting: res.Waiting, Cards: cards, More: res.More}
 		})
-		if changed && w.t.sleep(ctx, w.t.coalesce) != nil {
+		if changed && w.pause(ctx, w.t.coalesce) != nil {
 			return
 		}
 	}
 }
 
-// wait sends one seat.wait with since and reads the answer.
-func (w *watcher) wait(ctx context.Context, since string) (ownerwire.SeatWaitResult, error) {
-	params, err := ownerwire.EncodeSeatWaitParams(ownerwire.SeatWaitParams{Since: since})
+// errSessionGone says the client's connection changed between the
+// session the wait was made for and its sending: nothing was sent.
+var errSessionGone = errors.New("seatlink: the connection changed before the wait was sent")
+
+// wait sends one seat.wait with since and reads the answer: the plain one,
+// or with ext the extended one, which carries the chat cursor the watcher
+// holds of the session sess (0 for none). Each form's answer is read with its
+// own decoder, so a plain answer that carries chat is not of its form. Just
+// before it sends, it checks that the client's connection is still sess's,
+// and sends nothing ([errSessionGone]) when it is not.
+func (w *watcher) wait(ctx context.Context, since string, ext bool, sess session) (ownerwire.SeatWaitResult, error) {
+	encode, decode := ownerwire.EncodeSeatWaitParams, ownerwire.DecodeSeatWaitResult
+	p := ownerwire.SeatWaitParams{Since: since}
+	if ext {
+		encode, decode = ownerwire.EncodeSeatWaitChatParams, ownerwire.DecodeSeatWaitChatResult
+		var cursor int64
+		if w.chat.conn.Equal(sess.conn) {
+			cursor = w.chat.cursor
+		}
+		p.Chat = &cursor
+	}
+	params, err := encode(p)
 	if err != nil {
 		return ownerwire.SeatWaitResult{}, errFailed
+	}
+	if w.t.beforeSend != nil {
+		w.t.beforeSend(sess.conn)
+	}
+	if !w.d.still(sess) {
+		return ownerwire.SeatWaitResult{}, errSessionGone
 	}
 	cctx, cancel := context.WithTimeout(ctx, w.t.call)
 	defer cancel()
@@ -346,7 +407,7 @@ func (w *watcher) wait(ctx context.Context, since string) (ownerwire.SeatWaitRes
 	if err := w.d.c.Call(cctx, ownerwire.OpSeatWait, json.RawMessage(params), &raw); err != nil {
 		return ownerwire.SeatWaitResult{}, err
 	}
-	res, err := ownerwire.DecodeSeatWaitResult(raw)
+	res, err := decode(raw)
 	if err != nil {
 		return ownerwire.SeatWaitResult{}, errWatchAnswer
 	}

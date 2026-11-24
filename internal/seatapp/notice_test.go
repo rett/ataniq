@@ -478,12 +478,22 @@ type noticeRig struct {
 
 func newNoticeRig(t *testing.T) *noticeRig {
 	t.Helper()
+	return newNoticeRigWith(t, nil)
+}
+
+// newNoticeRigWith is newNoticeRig, whose daemon port is wrap's of the
+// watching port when wrap is not nil.
+func newNoticeRigWith(t *testing.T, wrap func(*watchDaemon) Daemon) *noticeRig {
+	t.Helper()
 	nr := &noticeRig{n: &fakeNotifier{}}
 	wd := &watchDaemon{fakeWatcher: newFakeWatcher("aa")}
 	nr.wd = wd
 	nr.rig = newRig(t, func(c *Config) {
 		wd.fakeDaemon = c.Daemon.(*fakeDaemon)
 		c.Daemon = wd
+		if wrap != nil {
+			c.Daemon = wrap(wd)
+		}
 		c.Notifier = nr.n
 		c.Logf = func(format string, args ...any) {
 			nr.logMu.Lock()

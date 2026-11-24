@@ -18,6 +18,11 @@
 <div id="watch" data-live="{{if .Live}}yes{{else}}no{{end}}" data-version="{{.Version}}"{{if .Card}} data-card="{{.Card}}" data-binding="{{.Binding}}"{{else if .Still}} data-still="yes"{{end}}></div>
 <script src="/static/watch.js"></script>{{end}}
 
+{{/* The Leads pages' stream: the view is named by data-view, never by the page's address. */}}
+{{define "watch-leads"}}<p id="watch-status" role="status" aria-live="polite"></p>
+<div id="watch" data-view="leads" data-live="{{if .Live}}yes{{else}}no{{end}}" data-chat="{{num .Chat}}" data-page="{{if .Conversation}}conversation{{else}}directory{{end}}"{{if .Follow}} data-follow="{{num .After}}"{{end}}></div>
+<script src="/static/watch.js"></script>{{end}}
+
 {{define "push"}}<section id="notices" aria-labelledby="notices-h">
 <h2 id="notices-h">Notices</h2>
 <p>Notices work only from the Home Screen app on iPhone. Add this page to your Home Screen, open it from there, then tap Enable.</p>

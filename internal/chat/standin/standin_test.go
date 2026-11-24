@@ -343,3 +343,52 @@ func TestConcurrentCalls(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// The stand-in's chat cursor is fixed: the same for every call of a
+// stand-in, under its own key, made over the two leads whose chat is read and
+// their heads, never over the off one; it never says it changed. Another
+// stand-in, the trial started again, has another key and another cursor.
+func TestTheChatCursorIsFixed(t *testing.T) {
+	p := New(clock)
+	got, err := p.ChatCursor(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.key == (ownerwire.ChatCursorKey{}) {
+		t.Fatal("the stand-in's key is zero")
+	}
+	want := ownerwire.ChatCursor(p.key, []ownerwire.ChatCursorLead{
+		{Lead: LeadAlpha, Gen: 1, Head: 10},
+		{Lead: LeadBravo, Gen: 1, Head: 5},
+	})
+	if got != want {
+		t.Errorf("the cursor is %d, want %d", got, want)
+	}
+	if got < 1 || got > ownerwire.MaxChatSeq {
+		t.Errorf("the cursor %d is not 1 to 2^53-1", got)
+	}
+	for i := 0; i < 3; i++ {
+		if again, err := p.ChatCursor(context.Background()); err != nil || again != got {
+			t.Errorf("call %d: %d (%v), want %d", i, again, err, got)
+		}
+	}
+	other := New(clock)
+	if again, err := other.ChatCursor(context.Background()); err != nil || again == got {
+		t.Errorf("another stand-in on the same clock: %d (%v), the first's %d", again, err, got)
+	}
+	// The cursor of the off lead's list would differ: it is not covered.
+	withOff := ownerwire.ChatCursor(p.key, []ownerwire.ChatCursorLead{
+		{Lead: LeadAlpha, Gen: 1, Head: 10}, {Lead: LeadBravo, Gen: 1, Head: 5}, {Lead: LeadCharlie, Gen: 1},
+	})
+	if withOff == got {
+		t.Error("the off lead does not change a cursor that covers it")
+	}
+	if p.ChatCursorChanged() != nil {
+		t.Error("the stand-in says its cursor may change")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := p.ChatCursor(ctx); !errors.Is(err, context.Canceled) {
+		t.Errorf("a cancelled call: %v", err)
+	}
+}

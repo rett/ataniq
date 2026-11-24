@@ -62,6 +62,7 @@ type fakeIntake struct {
 	reviewErr  error
 	tipErr     error
 	freshErr   error
+	freshes    int
 	// stale makes the evidence at a use not the newest.
 	stale bool
 
@@ -133,6 +134,7 @@ func (f *fakeIntake) Patch(context.Context, ReviewRef) (ReviewPatch, error) {
 func (f *fakeIntake) Fresh(_ context.Context, in FreshInput) (door.Fresh, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.freshes++
 	if f.freshErr != nil {
 		return door.Fresh{}, f.freshErr
 	}
@@ -342,8 +344,11 @@ type countingDoor struct {
 	// does the same for List.
 	failDecide error
 	failList   error
-	// lists counts the calls of List.
-	lists int
+	// lists counts the calls of List, and listAt holds when each was made,
+	// on now, when now is set.
+	lists  int
+	listAt []time.Time
+	now    func() time.Time
 	// failShow makes Show fail as a call, and refuseSettle makes the next
 	// Settle answer with a refusal, once.
 	failShow     error
@@ -366,6 +371,9 @@ func (c *countingDoor) Show(ctx context.Context, id string) (door.Shown, error) 
 func (c *countingDoor) List(ctx context.Context) ([]door.Entry, error) {
 	c.mu.Lock()
 	c.lists++
+	if c.now != nil {
+		c.listAt = append(c.listAt, c.now())
+	}
 	fail := c.failList
 	c.mu.Unlock()
 	if fail != nil {
@@ -465,7 +473,7 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	return &env{
-		t: t, clock: clock, stand: stand, door: &countingDoor{Door: stand},
+		t: t, clock: clock, stand: stand, door: &countingDoor{Door: stand, now: clock.Now},
 		intake: newIntake(t), merger: newMerger(), verif: newVerifier(t), mail: &fakeMailbox{},
 		path: filepath.Join(dir, "owner.db"), at: map[string]func(){},
 	}

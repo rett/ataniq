@@ -114,6 +114,26 @@ func (g guardedDaemon) WatchChanged() <-chan struct{} {
 	return nil
 }
 
+// ChatHint passes the link's chat hint on (seatapp.ChatWatcher), for the
+// Leads pages' stream, and says it is not live for a daemon port that learns
+// none. Like the watched state it is a hint that decides nothing, so it is
+// not guarded.
+func (g guardedDaemon) ChatHint() seatapp.ChatHint {
+	if d, ok := g.Daemon.(seatapp.ChatWatcher); ok {
+		return d.ChatHint()
+	}
+	return seatapp.ChatHint{}
+}
+
+// ChatHintChanged passes the link's channel on, and returns a channel that is
+// never closed (a nil one) for a daemon port that learns no hint.
+func (g guardedDaemon) ChatHintChanged() <-chan struct{} {
+	if d, ok := g.Daemon.(seatapp.ChatWatcher); ok {
+		return d.ChatHintChanged()
+	}
+	return nil
+}
+
 // Genesis passes a call of the guided new-project interview on to a daemon
 // port that runs it (seatapp.Genesis, which the gate link is), and answers
 // seatapp.ErrNotOffered for one that does not, so the phone then shows no
@@ -142,8 +162,9 @@ func (g guardedDaemon) Chat(ctx context.Context, c seatapp.ChatCall) (seatapp.Ch
 }
 
 var (
-	_ seatlink.WatchPort = guardedDaemon{}
-	_ seatapp.Watcher    = guardedDaemon{}
-	_ seatapp.Genesis    = guardedDaemon{}
-	_ seatapp.Chat       = guardedDaemon{}
+	_ seatlink.WatchPort  = guardedDaemon{}
+	_ seatapp.Watcher     = guardedDaemon{}
+	_ seatapp.ChatWatcher = guardedDaemon{}
+	_ seatapp.Genesis     = guardedDaemon{}
+	_ seatapp.Chat        = guardedDaemon{}
 )

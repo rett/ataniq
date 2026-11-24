@@ -51,3 +51,33 @@ type Watcher interface {
 	Watch() WatchState
 	WatchChanged() <-chan struct{}
 }
+
+// ChatHint is where the leads' chat stands, as the daemon port's watcher
+// last learned it from the gate's extended wait (package seatlink publishes
+// it: docs/design/seat-gate.md, "Chat hints on the wait"). It is a change
+// hint and never content: a cursor that moves when what the seat may read of
+// the chat moves, and says nothing of which lead, how much or what. The zero
+// hint is not live.
+type ChatHint struct {
+	// Live is true when the watcher holds a cursor of the port's current
+	// connection, learned from the gate's last answer.
+	Live bool
+	// Cursor is that cursor, 1 to [MaxChatSeq], a number a page's script
+	// can carry; 0 when not Live.
+	Cursor int64
+	// Connection is the connection the cursor was learned on, as
+	// [ChatView].Connection names it; zero when not Live.
+	Connection time.Time
+}
+
+// ChatWatcher is the part of a [Daemon] that says the leads' chat moved,
+// for the Leads pages' hint stream (watchleads.go). Like [Watcher] it never
+// asks the gate: ChatHint is a snapshot of what the port's one watcher last
+// learned, and ChatHintChanged a channel that is closed when it next
+// changes (a hint that stops being live is a change too). To miss no
+// change, take the channel first and the hint after. A port that learns no
+// hint may return a channel that is never closed (nil).
+type ChatWatcher interface {
+	ChatHint() ChatHint
+	ChatHintChanged() <-chan struct{}
+}

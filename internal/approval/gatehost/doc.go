@@ -73,6 +73,14 @@
 // of the call, and the handler starts no goroutine of its own. A wait takes
 // one of the gate's handler places while it is held, as any request does.
 //
+// The extended wait (waitchat.go) carries, beside the Card version, the chat
+// cursor of the leads the desk switched on. The handler lists wait-chat, last,
+// only when it serves the wait and the chat, its service answers the extended
+// wait ([ChatWaitPort]) and its chat port gives a cursor
+// ([ownerchannel.ChatCursor]); without it, the extended params are bad-params,
+// as at a gate of an earlier build. With it the plain params are answered
+// exactly as before. The extended wait holds the same slots.
+//
 // # The interview
 //
 // seat.genesis is the guided new-project interview: one operation of nine

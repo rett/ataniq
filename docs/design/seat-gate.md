@@ -242,6 +242,7 @@ them and never hands them to the handler.
 | `watch` | `seat.wait` | `ownerwire.SeatWaitParams` | `ownerwire.SeatWaitResult` | G14 (built) |
 | `genesis` | `seat.genesis` | `ownerwire.SeatGenesisParams` | `ownerwire.SeatGenesisResult` | genesis G3 (wire), G4 (handler and thread store) and G11a (the verb `plan`), built |
 | `chat` | `seat.chat` | `ownerwire.SeatChatParams` | `ownerwire.SeatChatResult` | G19b (wire, handler and the STAND-IN port of the phone trial), built; the scratch leads' replies (`leaddaemon.LeadChat`, both tags), built; read only |
+| `wait-chat` | `seat.wait`, extended | `ownerwire.DecodeSeatWaitChatParams` | `ownerwire.DecodeSeatWaitChatResult` | browser push stage 2, built: see [chat hints on the wait](#chat-hints-on-the-wait) |
 
 A handler made with `gatehost.New` answers `["pair", "read"]` (`gatehost.Caps`);
 one made with `gatehost.NewDeciding`, `["pair", "read", "login", "decide"]`
@@ -256,9 +257,15 @@ with or without a seat origin: an answer decides nothing either. Either
 handler adds `chat` last when it was given a chat port (`gatehost.WithChat`, a
 `gatehost.ChatPort`), with or without a seat origin: a read decides nothing;
 the daemon gives one to the phone trial's gate and to a scratch daemon's gate
-only (see [chat](#chat)). The daemon's start line names every capability the
+only (see [chat](#chat)). Either handler adds `wait-chat` after `chat` when it
+serves `watch` and `chat`, its service can answer the extended wait
+(`gatehost.ChatWaitPort`, which the owner channel's service is) and its chat
+port gives a cursor (`ownerchannel.ChatCursor`, which the stand-in and
+`leaddaemon.LeadChat` give); see
+[chat hints on the wait](#chat-hints-on-the-wait). The daemon's start line names every capability the
 gate lists, in its order, in words (`pair, read, login, decide, watch and
-genesis`, and `... genesis and chat` in the phone trial and in scratch mode). The seat reads the list (`seatgate.Client.Caps`) and offers login and decisions
+genesis`, and `... genesis, chat and wait-chat` in the phone trial and in
+scratch mode). The seat reads the list (`seatgate.Client.Caps`) and offers login and decisions
 only when the gate lists them; otherwise it says that the desk does not take
 phone logins, or does not take decisions from the phone. It starts its watcher
 only when the gate lists `watch`; otherwise its pages say "Not live".
@@ -892,7 +899,10 @@ Reads after a revoke: the reads are the pin's, not a credential's, since the
 daemon keeps no session. A seat session whose key was revoked still reads cards
 until the seat learns of the revoke or the session ends (G7: 30 minutes idle,
 12 hours at most). The seat ends a session at once when a call of it is
-answered `key-revoked` or `key-unknown`. To cut the reads at once, the owner
+answered `key-revoked` or `key-unknown`, and with it every other session the
+same credential logged in (another tab's login, another phone's), with their
+held polls and streams; a logout ends its own session only. To cut the reads
+at once, the owner
 removes the seat's pin (G4) and restarts the daemon.
 
 The two domain strings differ, so an assertion made for a login can never be
@@ -1287,7 +1297,7 @@ text of the gate's, and a code it does not know gets the last line:
 | `approval-expired` | The card's time ran out. |
 | `approval-consumed`, `approval-void`, `previous-epoch`, `decision-invalid` | The card cannot be decided now. Look at it again. |
 | `assertion-invalid` | The phone's answer was not accepted. If this repeats, check the seat at the desk. |
-| `key-revoked`, `key-unknown` | This phone's passkey is no longer paired. Pair it again at the desk. (The session ends.) |
+| `key-revoked`, `key-unknown` | This phone's passkey is no longer paired. Pair it again at the desk. (Every session of that passkey ends.) |
 | `kind-refused` | This project does not take decisions from this kind of passkey. |
 | `decisions_inhibited` (the seat's own, not a gate code) | Decisions are paused on this host. Nothing was sent. |
 | `challenges-full`, `busy`, `rate-limited`, `too-many-refusals` | The desk is busy. Try again in a few minutes. |
@@ -1543,6 +1553,10 @@ seconds beside the pages, and it always finds room.
 
 ### The browser's long poll
 
+The Card page, a page of a browser that cannot read a stream, and the card
+list whenever its stream fails use this poll; the card list reads
+[its hint stream](#the-card-lists-hint-stream) first.
+
 The browser does not talk to the gate. `POST /api/watch` (`internal/seatapp`,
 `watchpoll.go`) goes through the same checks as every POST of the app (the
 Host, `Origin` and `Sec-Fetch-Site: same-origin` rules, a JSON body of at most
@@ -1594,7 +1608,8 @@ as it was; the script then withdraws the offer when the card is `gone` and
 does not show the line "decided elsewhere", since the page itself says what
 became of the decision. It polls once at a time, at least 2 seconds
 apart, and not while the page is hidden; it polls at once when the page is shown
-again. It puts on the page only texts that are its own constants, set as text
+again (the card list, which streams, opens its stream again instead, see
+[its hint stream](#the-card-lists-hint-stream)). It puts on the page only texts that are its own constants, set as text
 and never as markup, so that the page's content security policy
 (`script-src 'self'`, `require-trusted-types-for 'script'`) holds and nothing of
 an answer is written into the page. One status line (`#watch-status`) says:
@@ -1646,26 +1661,656 @@ refusal.
 ### A poll never extends a session
 
 A session ends after 30 minutes without a request and at 12 hours at most. The
-poll is a request that does not count: a page left open does not keep its
+poll, and the card list's stream with its heartbeats and its reconnects, are
+requests that do not count: a page left open does not keep its
 session alive, and the poll's answer `ended` tells the page when the session is
 gone. A page that reloads itself because the list changed is a page request,
-which counts, as it is the owner's own sight of a new card. That a poll does not
-extend the idle time is a settled design choice, not a limit of the build.
+which counts, as it is the owner's own sight of a new card: an automatic
+refresh of a visible list is the same as the owner reloading it, and counts
+as activity, whether the poll or the stream prompted it. So does a Leads
+conversation's following read (below), which shows the owner the new
+replies on the page the owner has in view. A hidden page does not refresh
+(watch.js reloads only while the page is shown, see the hint stream below),
+so a list or a conversation left hidden does not keep its session alive. That a
+poll does not extend the idle time is a settled design choice, not a limit of
+the build.
 
-### Why not server-sent events
+### The card list's hint stream
 
-A stream would update at once with no polling, and is not used. The seat's
-`WriteTimeout` is 30 seconds, as is the `write` timeout of the shipped Caddyfile
-(`deploy/authority-host/seat/etc/caddy/Caddyfile`); either cuts a response that
-is still open at 30 seconds, so a stream would have to be reopened every 30
-seconds and would need those timeouts lifted for one path, which widens what a
-slow or stuck connection may hold. A poll answered within 25 seconds fits both
-timeouts as they are, and a front proxy with a read timeout above 30 seconds
-(see [the operator guide](../seat-gate.md#the-reverse-proxy)).
+Status: built (push stage 1, Cards only) and tested on loopback; not
+qualified on the deployed path or on a phone. The owner chose server-sent
+events over same-origin HTTPS with the long poll as fallback, not
+WebSocket: the traffic is one way, the standard library writes and flushes
+`text/event-stream`, `connect-src 'self'` already covers it, and no proxy
+upgrade is involved. The browser's built-in event source is not used: it
+makes a GET, which may come without `Origin`, and reconnects by itself. The
+page reads the stream with a same-origin `fetch` POST instead, so the checks
+of every POST apply, and the script owns its parsing, its bounds and its
+reconnects.
+
+What it changes. The held poll already answers as soon as the watcher
+changes, so the stream does not make a change reach the list sooner. What
+it changes is that a card list holds no poll of its session's three (the
+held polls are left to the Card pages and to lists that fell back), and
+that each hint names its kind, which later stages extend. Its own limit is
+per credential: three streams of one passkey at once, a fourth refused (it
+falls back to the poll, and the three keep their streams), apart from the
+poll's three held polls per session, where a fourth replaces the oldest.
+The notices are held back by a list's stream as by a poll (below).
+
+What crosses it. `POST /api/watch/stream` (`internal/seatapp`,
+`watchstream.go`) writes a closed set: an event of the one kind
+`cards-changed`, whose data is `{"version":"<hex>"}`, the version the poll
+answers and nothing else, and a heartbeat comment (`:`). No card text, id,
+title, time, count or binding is written, nor anything of another view. An
+event only prompts the page's own read, by the poll's rules: the list
+reloads at most once every 20 seconds since its load, never over typed text,
+and nothing is marked read by an event. The same route serves the Leads
+pages' view (below), which shares every rule of this section but the
+notices; no interview hint crosses it.
+
+Where it comes from. The stream is fed by the seat's single watcher
+(`Watcher.WatchChanged`, the local broadcast): one `seat.wait` at the gate
+for the whole seat, however many streams are open. A stream, its heartbeats
+and its reconnects ask the gate nothing and take no room.
+
+Admission, all of it before any header of the stream:
+
+- The checks of every POST (`a.post`): `Origin` exactly the seat origin,
+  once, `Host` the origin's host, `Sec-Fetch-Site: same-origin`, a body
+  declared JSON of at most `seatapp.MaxBody`. `Sec-Fetch-Site` and
+  `Content-Type` must each come exactly once: a second one is refused
+  whatever the first says (this holds for every POST of the seat). A GET is
+  405.
+- Exactly one `__Host-seat` cookie of a live session, looked at with
+  `sessions.lookUntil`, which never marks it used; none, two, or one that is
+  not live is 403 `session ended`, with no redirect to the login page. The
+  cookies of the name are counted in the `Cookie` headers as sent, before
+  they are parsed, so a second one with a malformed value, which the parser
+  would drop, still refuses the request (this too holds for every route).
+- A place among the handshakes in progress, taken before a byte of the body
+  is read or the watcher is looked at: at most 3 requests of one credential
+  in their admission at once (429 `too many streams`, `Retry-After: 25`) and
+  8 in all (503 `busy`, `Retry-After: 25`), apart from the streams open. A
+  page has one at a time; the bound keeps one session from holding many
+  bodies open. The place is given back at every exit, and once the stream's
+  headers are written.
+- A body that is one object with exactly one member, `version`, a string of
+  at most 64 lower-case hex digits (empty for a page made before the watcher
+  had a version). It is read token by token: a member that is absent, null,
+  of another type, of another case or given twice, another member, and
+  anything after the object are 400.
+- At most 12 opens a minute for one credential (429 `too many streams`,
+  `Retry-After: 60`), at most 3 streams open at once for one credential
+  across its sessions (429, `Retry-After: 25`), at most 32 open in all (503
+  `busy`, `Retry-After: 25`), a watcher that watches, reaches the gate and has
+  a version that is not empty, that is, has had an answer of the gate (503
+  `not live`, `Retry-After: 30`), and a server that is not
+  stopping (503 `shutting down`, `Retry-After: 5`). Each refusal is a fixed
+  text; the page takes any refusal as the sign to fall back to the poll,
+  which then says what it is.
+- Last, after the body and the places: the session again, without marking
+  it used (a logout, an eviction or its idle time while the body came is 403
+  `session ended`), the server's end (503 `shutting down`), the client's
+  (nothing is written), and the stream's life (503 `busy`). Only then are
+  the headers written; a refusal there writes no byte of a stream and gives
+  every place back.
+
+The open stream:
+
+- It starts with a heartbeat, which also sends the headers
+  (`Content-Type: text/event-stream`, `X-Accel-Buffering: no`, and the
+  security headers and `Cache-Control: no-store` of every response). When
+  the page's version is not the watcher's, the first event says the current
+  one at once, which is how a page that comes back reconciles what it shows.
+- Changes are coalesced: at most one event every 2 seconds, one pending
+  event at most, said with the version as it is when the gap ends. An event
+  is at most 256 bytes. A heartbeat is written once in 10 seconds.
+- The response has one cutoff, 25 seconds (`streamLife`) after the request
+  reached the handler: its admission, every write and the end of the
+  response are done by then, under the seat's and Caddy's 30-second write
+  timeouts, and the page opens another; no write has to outlast a write
+  timeout, and neither timeout is lifted for the path. The stream stops
+  writing 1 second (`streamFinish`) before the cutoff, for the end of the
+  response.
+- Every write and its flush have the earlier of 5 seconds and the time left
+  to the cutoff, so a client that stops reading loses its stream and never
+  holds the watcher, which publishes by closing a channel and waits for
+  nobody. After a write is flushed the connection's deadline goes back to
+  the cutoff: the 10 seconds between heartbeats are never under a write's 5
+  (Go's HTTP/2 writer would reset the stream at that deadline). The end of
+  the response is bounded the same way. A stream that missed changes says
+  the latest version when it writes again, and the page's next stream
+  reconciles in any case.
+- It ends with its session, also in silence: it waits on the session's
+  `gone` channel (logout, eviction, removal), on a timer armed at the
+  earlier of the session's idle end and its 12-hour age, and looks at the
+  session again, without marking it used, before every write. It ends when
+  the watcher is no longer live, when the request ends, and when the server
+  shuts down: `seatapp.Server` registers the end of every stream with
+  `RegisterOnShutdown` (the stream does not hijack the connection, so
+  `Shutdown` sees it end and closes it), and `App.Close` ends them too.
+- For the notices, the stream's opening is the page's check-in, as a poll
+  is: the page opens a stream only while it is shown. Each accepted opening
+  takes a foreground lease of 30 seconds (`streamLease`), at most to the
+  session's own end, and while a lease lasts the notices are held back, as
+  within 60 seconds of a poll. Only a new check-in makes a new lease: the
+  page's next stream, which the seat's rotation brings about every 25
+  seconds while the page is shown. Nothing the seat writes renews it, not a
+  heartbeat and not a hint, even when the write succeeds: a suspended phone
+  can leave a proxy taking the seat's writes. A lease ends early when its
+  stream ends for any reason but its rotation (the page hidden or left,
+  which aborts the request, a failed write, the session's end, the seat's
+  shutdown) and with its session; a rotated stream's lease runs out by
+  itself, which covers the page's reconnect.
+- What counts as seen is what the page shows, not what it was told. The
+  page opens each stream with the version it shows (`rendered`, which the
+  list changes only by reloading), not the version of the last hint; when
+  that is the watcher's version, the waiting count is the owner's seen
+  count, as a poll's is. A hint the page has not shown yet is not seen: a
+  card that comes while the list is open, and a phone suspended before the
+  list reloads, leaves that card's notice due once the lease runs out.
+
+The page (`watch.js`). Only the card list streams; the Card page keeps the
+poll until its withdrawal of stale offers has parity. The script reads the
+body with a reader, decodes it 256 bytes at a time with a `TextDecoder`,
+and checks the bounds as each slice is taken: a line of more than 512
+characters (before it is cut out) or an event's data of more than 256 fails
+the stream, so no more than a bound and a slice is ever held. It splits
+lines itself and skips comments, unknown fields and events of any other
+kind. A `cards-changed` event whose data is not the seat's one form (an
+object whose one member is a version that is not empty) fails the stream:
+a stream whose hints cannot be read must not look live. The opening
+heartbeat must come whole within 8 seconds of the request, below the
+rotation, so a proxy that holds the response back until its end puts the
+page on the poll within one rotation; after it, 30 seconds without a byte
+fail the stream. A stream that ends inside an event, or before its opening
+heartbeat, fails too. It holds one stream per page, opened with the
+version the page shows (never a hint's, see the notices above). It closes
+it on `visibilitychange` to hidden and on `pagehide`; on being shown, on
+`pageshow` from the history cache and on `online` it opens one again after
+a wait of 1 second doubling with the failures in a row to 30, plus up to 2
+seconds at random. A stream the seat ends is opened again after that wait;
+two that end within 5 seconds of opening, any refusal, any error and a
+browser that cannot read a stream with `fetch` fall back to the poll,
+unchanged, until the page is shown again.
+
+The list reloads only while it is shown. A reload waiting its 20 seconds is
+dropped on `visibilitychange` to hidden, on `pagehide` and on the poll's
+`ended`, and the page's visibility is looked at again when its timer runs;
+the change stays pending (a version heard of and not shown), and when the
+page is shown again it reloads once for it, by the same rule. A hidden page
+therefore never spends a read of the desk, nor touches the session.
+Every text it puts on the page is still one of its constants, set with
+`textContent`; the Trusted Types policy, the content security policy, the
+cookies and the service worker are unchanged, and nothing is stored.
+
+What it costs and what it cannot do. A taken-over seat or front proxy can
+suppress or invent hints, as it can fake a poll's answer; a hint decides
+nothing and the daemon checks every decision's binding. A stolen live cookie
+reads the same hints as the poll's answers until the session ends. Delivery
+is foreground only: on a phone, a locked screen or a switched app suspends
+the page, and either end may believe a stream is alive until its write
+deadline or its life ends it.
+
+Attended qualification, not done: the owner and the lead, on the deployed
+path (the owner's TLS terminator on 443, Caddy on port 80 of the authority
+host, the seat's socket), with the iPhone in a Safari tab and in the Home
+Screen app:
+
+1. A change at the desk reaches the open list within a second or two, well
+   before the stream's rotation, which shows that both proxy hops flush each
+   write at once, with no buffering and no compression (the response has no
+   `Content-Encoding`).
+2. The stream is reopened about every 25 seconds, with no error in the
+   browser's tools and no 502 or 504 at either proxy.
+3. Lock and unlock, background and foreground, a change of network, a page
+   restored from history: the stream is closed while hidden, one stream comes
+   back, and a change made meanwhile is said at once.
+4. Four card lists open: the fourth falls back to the poll and stays live.
+5. A logout in another tab ends the stream at once; an idle session ends it
+   at 30 minutes with no tap; a seat restart ends it and the list falls back.
+6. A proxy or gate interrupted: the list falls back and shows "Not live: the
+   desk is out of reach", and comes back when it is shown again.
+7. With the phone asleep, a notice still arrives for a new card; with the
+   list open and shown, none arrives for a card it shows, and none after it
+   is closed; with the phone locked after a hint and before the list
+   reloaded, the notice arrives about 30 seconds later.
+
+The shipped Caddyfile needs no change for it as far as the code shows
+(`reverse_proxy` flushes `text/event-stream` at once and the file has no
+`encode`); if the qualification shows otherwise, the setting is a reviewed
+change of the deployment, not of this build.
 
 Notices, which tell the phone that a card is waiting while no page is open,
 follow the watcher's state described above: they are the reason the watcher
 runs when no browser is looking (see [the notices section](#notices)).
+
+### The Leads pages' hint stream
+
+Status: built (push stage 3) and tested on loopback with fakes, and the
+script with a fake clock outside the repository; not qualified on the
+deployed path or on a phone. The Leads pages (the cockpit) use the chat hint
+of [the wait](#chat-hints-on-the-wait) through the same route and the same
+code as the card list's stream above: SSE read with a same-origin `fetch`
+POST, no poll of the chat, and the page's manual **Refresh** link as the
+fallback.
+
+The view. The opening body names the view by its one member, a closed set:
+`{"version":"<hex>"}` is the card list's, unchanged, and `{"leads":"<n>"}`
+the Leads pages', where `n` is the chat cursor the page was rendered with, a
+decimal string of 0 to 2^53-1 with no sign and no leading zero (`0` for a
+page made while the seat had no cursor). It is read token by token with the
+card list's rules: exactly one member, a string, of one of the two names in
+that case, never null, never twice, two members (of one view or of both) and
+anything after the object refused 400 (`TestSeatLeadsStreamStrictInput`).
+
+What crosses it. One kind of event, `chat-changed`, whose data is the cursor
+alone, the integer `seatlink.ChatHint` holds, in decimal on one line: never
+a lead, its key, state, head, epoch or count, and never a text. A Leads
+stream writes no `cards-changed` and a card list's no `chat-changed`. The
+cursor covers only the leads whose chat the desk switched on, so a lead
+whose chat is off never makes an event, and the seat never learns of its
+activity (see the wait). An event only prompts the page's own read, through
+its ordinary authenticated GET, which asks `seat.chat`, where the desk
+authorizes every list and read live; a cursor is never a permission.
+
+Admission and lifetime are the card list's, in the one handler
+(`watchStream`, `streamSource`): the checks of every POST, one live session
+looked at without marking it used, the handshake places taken before the
+body is read, the opens of a credential in a minute, the open streams of a
+credential and in all, the session looked at again before the headers, one
+cutoff 25 seconds after the request, heartbeats, the 2-second gap between
+events, the 256-byte bound of an event, the write deadlines, the end with
+the session, the server's shutdown and the request. Both views are counted
+together in each limit: three streams of one passkey at once, whichever
+pages they are of (a fourth is refused, 429, and the three keep their
+streams), 12 opens of one passkey a minute, 8 handshakes and 32 open
+streams in all (`TestSeatLeadsStreamSharesTheLimits`). The view is live
+only while the port's chat hint is live and the connected gate offers chat
+(`ChatOffered`, a local look): otherwise the stream is refused with the
+fixed 503 `not live` and `Retry-After: 30` (also for a port with no hint or
+no chat port), and an open stream ends cleanly, with no event, when either
+stops: a lost link, a new connection, a gate that stops offering the
+extension or chat, a downgrade. A stream is bound to the connection its
+admission found the hint on: a hint of a later connection is not live for
+it, so it ends rather than say that connection's cursor, and the page opens
+another. It looks at the hint after the opening heartbeat, before it says
+any cursor (the hint may die, or its connection be replaced, while the
+heartbeat is written: `TestSeatLeadsStreamOpeningFlush`), on each of its
+wakes and again before every heartbeat, since a hint whose connection went
+is not live when it is read even before its watcher says so
+(`TestSeatLeadsStreamEndsWhenTheHintDies`). A change pending in the gap is
+not said once the hint is dead.
+
+A Leads stream is no check-in for the notices: it takes no foreground lease
+and counts no card as seen, so the notices behave with a Leads page open as
+with no page open (`TestSeatLeadsStreamIsNoCheckIn`,
+`TestSeatLeadsStreamNoticeNotHeldBack`).
+
+The pages. `/leads/` and `/leads/daemon/{key}` carry the template part
+`watch-leads`: the polite status line (`role="status"`, `aria-live="polite"`,
+the page's one live region, implicit roles counted: the conversation's log
+is a plain list and a reset's notice plain text, `liveRegions`) and a mark
+`data-view="leads"` with the cursor (`data-chat`), the page
+(`data-page`, `directory` or `conversation`) and, for a conversation whose
+read reached the head (the port answered no `more`), `data-follow`, the
+cursor its following read is made after. The script tells the view by that
+mark, never by the page's address. The cursor is taken before the page's
+reads, as the card list's version is, so a change between them leaves the
+page an older cursor and its first stream says the change at once; a stream
+opened with an older cursor or with 0 says the current one as its first
+event. The seat keeps the connection the cursor was learned on (never on
+the page): when the directory read came from another connection (the link
+was replaced between the two), the page carries no cursor and is rendered
+not live, with its **Refresh** link, rather than compare a cursor of one
+connection with the chat of another
+(`TestSeatLeadsPagesCursorOfTheirConnection`). Problem pages carry no mark and no script.
+
+What the page does on `chat-changed` (`watch.js`, the same file, its one
+`fetch`):
+
+- The directory shows "Leads changed." and a plain link **Refresh** to
+  `/leads/` in its status line, once; nothing moves and nothing is read.
+- A conversation follows new replies only when the seat marked it as showing
+  the newest entries and its newest entry (`#newest`) is in view, so the
+  reader is already at it. It then reads once, by the card list's reload
+  rule with a longer gap: not before the page is 40 seconds old
+  (`FOLLOW_GAP`, see the budget below), never while a field holds typed text
+  or a dialog is open (the Leads pages have neither today; the guard stays),
+  never while any element but the body holds the focus (a focused link, the
+  newest entry itself after a tap on it: `focused`), only while it is shown,
+  and the reader's place and the focus are looked at again when the read is
+  due; a reader not at the newest entry then, or holding a control, gets
+  the offer below instead, so no automatic read replaces the page under a
+  focused control. The read is the page's own path with
+  `?after=` the follow cursor, at `#newest`: the last rendered entry
+  (`followAfter`; for a page with no entry its read's cursor, the head at
+  most), so the read starts directly after the last entry the page showed
+  and skips nothing. The cursor is a sequence the read returned, never an
+  inferred one: a cursor the chat does not hold (one that fell between kept
+  entries) would read from the oldest kept entry again. There is no
+  look-back above the new entries: the gate bounds a result to 16 KiB, so a
+  look-back of large entries could fill the page before the new reply
+  (`TestSeatFollowAtTheByteCap`); the next page starts with the first new
+  entry, and **Show earlier** leads back. More new entries than fit leave
+  the next page with **Show later** and no follow mark. It never reads
+  after the hinted cursor, which is no sequence number. When the address is
+  the page's own already, the page reloads.
+- Any other conversation (its reader scrolled away from the newest entry,
+  or a page of older entries) shows "New replies." and a plain link **Show
+  newest**, once. It loads the page that holds the newest entry, at
+  `#newest`: on a page that shows the newest entries, the page after its
+  follow cursor (the following read's page), and otherwise the
+  conversation's own address, which the seat answers with its newest
+  entries (below). It is never a fragment alone on the page it is on, which
+  would only move the view on a page that does not hold the new replies:
+  when the destination is the page's own address the link has no fragment,
+  so following it loads the page again (`newestTarget`).
+- No hint moves the focus, scrolls, or reads a hidden page. A hidden page
+  closes its stream; a change heard of before is kept, and acted on once,
+  by the rules above, when the page is shown again, when its new stream
+  says the current cursor at once. The offer stays through the stream's
+  rotations and is said once.
+- A cursor that is not of the seat's form (empty, signed, with a leading
+  zero, past 2^53-1, or 0) fails the stream; an event of another kind is
+  skipped. Any failure or refusal, as on the card list, but with no poll to
+  fall back to: the page drops a following read waiting its turn and the
+  change pending (`fallBack`), so a page that says "Not live" moves no
+  more, says "Not live" (unless it shows its offer) and keeps to its
+  **Refresh** link until it is shown again, when a new stream says the
+  current cursor at once. A page made while the view was not live
+  (`data-live="no"`), and a Leads page in a browser that cannot read a
+  stream with `fetch` (no `ReadableStream`), says "Not live" at once and
+  opens nothing, also when shown again: it needs a reload.
+
+Budget. A Leads stream asks the gate nothing: it is fed by the one wait the
+seat already holds, which carries the chat cursor at no extra call
+([Chat hints on the wait](#chat-hints-on-the-wait)); streams, heartbeats and
+reconnects take no room. A following read is the conversation page's
+ordinary GET: the directory and the page, 2 calls of chat's room of 5 in 80
+seconds, as a tap on Refresh, and it takes no card list's read. The card
+list's 20-second gap would let a conversation that follows a busy lead read
+every 20 seconds (the wait answers a chat change about every 20 seconds
+under sustained activity), 8 calls in 80 seconds, past the room: the
+measured "Leads visited once in 20 s" load, where most visits met busy (see
+[Reading chat on the seat](#reading-chat-on-the-seat)), and a following read
+that meets busy replaces the conversation with chat's busy page. So a
+following read waits until its page is 40 seconds old: 2 calls every 40
+seconds are 4 in any 80, which leaves one of chat's 5 to spare in the
+steady state; the first following read after opening Leads and selecting
+the lead (3 calls) still fits, with none to spare. A reply then appears
+within about 40 seconds of the last one shown. One continuously following
+conversation is what the room is sized for. A refresh by hand beside it
+(2 more calls), a second tab following a conversation (2 more every 40
+seconds: 8 in 80 with the first), or a conversation's own address that
+read on toward the head (up to 4 calls, `newestReads`) can meet chat's busy
+page; the room is shared by every session of the seat. Since the directory
+is read first, a page can spend its first call and meet busy at the second.
+A known limit, kept for simplicity: a following read is an ordinary
+navigation, so one that meets busy replaces the conversation with the busy
+page (which offers to try again), and the page follows no more until the
+owner reads it again; the 40-second gap keeps a single following
+conversation clear of it. The Card lists lose nothing to it either way. The
+directory and an offer read nothing until the owner taps.
+
+The trial's stand-in has a fixed cursor (its samples never change), so its
+Leads pages open a live stream that never carries an event: the trial shows
+the stream's heartbeats and rotations, and no automatic read.
+
+What it costs and what it cannot do. A taken-over seat or front proxy can
+suppress or invent hints, or learn when the chat it may read moved, as the
+wait already lets it; a hint decides nothing and every read is authorized
+by the desk. Delivery is foreground only, as for the card list.
+
+Attended qualification, not done, with the card list's steps: a reply of an
+enabled lead reaches a conversation that is open at its newest entry within
+about 40 seconds and appears without a tap; a conversation scrolled away
+shows "New replies. Show newest" and does not move; the directory shows
+"Leads changed. Refresh"; a lead turned off at the desk makes no event; the
+trial's pages make none; a lock and unlock reconciles once.
+
+### Chat hints on the wait
+
+Status: the wire (`ownerwire`, `waitchat.go`), the gate's capability, the
+daemon's wait, the trial's stand-in cursor, the scratch leads' cursor and the
+seat link's watcher are built and tested; not qualified. The Leads pages use
+the hint through the hint stream ([The Leads pages' hint stream](#the-leads-pages-hint-stream)). A seat that shows the leads' conversations learns that what it may
+read moved from the one wait it already holds, not from a second wait or a
+timer. The hint is never content: an integer that a page's script can carry,
+which tells the seat to read again through `seat.chat`, where the desk
+authorizes every list and read live.
+
+The extension is opt-in on both sides. A gate that can give it lists the
+capability `wait-chat` in its hello; a seat sends the extended form only to
+such a gate. A legacy caller sends and receives exactly the shapes above.
+
+- Params of the extended form (`ownerwire.DecodeSeatWaitChatParams`):
+  `since` as above and `chat`, always written, 0 to 2^53-1 (`MaxChatSeq`):
+  the cursor the seat last saw, 0 when it has none.
+- Result of the extended form (`ownerwire.DecodeSeatWaitChatResult`): the
+  members of the plain result under the same rules, and `chat`, 1 to 2^53-1,
+  the cursor now. It is left out when the daemon has no cursor to give (its
+  source failed); the seat then drops what it held of the chat. Nothing else
+  is added.
+- The plain form refuses `chat`: `ownerwire.DecodeSeatWaitParams` and
+  `ownerwire.DecodeSeatWaitResult` answer `record-invalid` for it, as a gate or
+  a seat of an earlier build does for a member it does not know. So a seat
+  that sends the extension to a gate that does not offer it is refused
+  `bad-params`, and a seat that did not ask never meets it.
+
+The cursor (`ownerwire.ChatCursor`) is a digest, as the Card version is, and
+is independent of it, but keyed: the first 8 bytes of the HMAC-SHA-256, under
+the cursor key, of the domain string `ataniq.seat-wait.chat/2`, the number of
+leads, and for each lead in the order of its identifier the identifier (a
+4-byte big-endian length and its bytes), the generation of its switch and its
+head (8 bytes big-endian each), masked to 53 bits, and 1 when that is 0. The
+key (`ownerwire.ChatCursorKey`, 32 bytes from `crypto/rand`) is made by the
+daemon for each binding of its cursor's source, at each start and for each
+source that replaces another, and held in its memory alone: never written,
+logged or sent. The cursor covers the leads whose chat the desk switched on
+(read, not stopped by a scan) and nothing else. So it changes when an enabled
+lead's head moves, when its segment is reset (a new generation), and when a
+lead is enabled or disabled; a lead whose chat is off is not in it, so its
+activity moves nothing. Within one binding the same set gives the same
+cursor; a new binding gives every set, the empty one included, another
+cursor, so a seat cannot tell from a cursor which heads or generations it
+covers, nor recognise a set it saw before a restart.
+
+The cursor is a change hint and nothing more. Two different sets give the
+same cursor with a chance of about 2^-53, so a cursor the seat already holds
+may hide a change (the next one, or the end of the hold, shows it); it never
+allows anything. No read is authorized by a cursor, equal or not: every list
+and every page goes through `seat.chat`, which the desk authorizes live.
+
+**The gate.** A handler lists `wait-chat` last, after `chat`, only when it
+serves `watch` and `chat`, its service answers the extended wait
+(`gatehost.ChatWaitPort`, `ownerchannel.Service.WaitPendingChat`) and its chat
+port gives a cursor (`ownerchannel.ChatCursor`: `ChatCursor(ctx)` and
+`ChatCursorChanged()`). Without it the handler reads `seat.wait` with the
+plain decoder alone, so the extended params are `bad-params`, as at a gate of
+an earlier build. With it the handler takes both forms: the plain params get
+the plain wait and exactly the plain result, and the extended params the
+extended wait and result. The extended wait holds the same wait slots as the
+plain one (two for each peer), counts against the service's eight, and the
+chat port's cursor is read by the service's wait and nowhere else.
+
+**The daemon's wait** (`ownerchannel`, `waitchat.go`) is the wait above with
+the cursor beside it:
+
+- The Card side is unchanged: the same pokes, the same looks at the door under
+  the same one-second floor, the same version. A change of the chat makes no
+  look at the door: an answer given for the chat carries the Card result of the
+  last look, which no poke has made stale, so the chat cannot change when a
+  Card change is noticed.
+- The cursor is sampled when the wait is armed, whenever the port says it may
+  have changed (`ChatCursorChanged`), when the chat's gap ends, and again just
+  before every answer for the Cards. A sample is validated: the port's change
+  channel is taken first, the cursor read after, and a sample after which the
+  channel closed is taken again (at most four times, then the wait has no
+  cursor for it). An answer carries a sample whose channel had not closed when
+  it was answered, so it is the cursor of the leads enabled at that moment: a
+  lead turned off meanwhile is not in it, and whatever it did leaves no trace
+  (a hint already noticed is purged by the switch). A seat with no cursor is
+  answered with the one sample that decided to answer it, never a second read.
+- It answers at once when `since` is not the version, as the plain wait does,
+  and when `chat` is 0 and the port gives a cursor (the seat has none yet). A
+  cursor that is not the seat's answers no sooner than 18 seconds after the
+  wait was armed (`ownerchannel.WaitChatGap`), whether it moved during the
+  hold or before it; a Card change answers at once, with the cursor sampled
+  then, so a Card and a chat change together are one answer with both. So a
+  busy lead costs the seat no more waits than an idle one in the steady state:
+  with the seat's 2-second pause, about one every 20 seconds, 4 in 80
+  seconds. A wait that answers at once (a seat with no cursor, the first wait
+  of a connection, or one after a Card change) is not paced, so under
+  sustained permitted activity the calls can come at about 0, 2, 22, 42 and 62
+  seconds: 5 in the first 80 seconds. The waits' room of 5 still holds its
+  cap, but a reconnect in that first window may find no spare slot and waits
+  for room as any wait does.
+- The gap is pacing, not timing concealment. It is a floor measured from the
+  arming of the wait: a permitted change before it is coalesced into one
+  answer at the floor, but a first change after it is answered when it is
+  seen, before the normal 25-second hold ends, so the seat learns about when a
+  change it may read came. It learns no count of changes from the timing, and
+  nothing of a lead whose chat is off.
+- A wake for which the cursor did not change answers nothing, makes no look at
+  the door and sets or stops no timer: the timer of the next Card expiry is
+  kept across chat wakes (and re-armed only when a look finds another expiry
+  or the timer fired), and the timer of the chat's gap is set once, when the
+  cursor first differs from the seat's, and stopped only when it no longer
+  does. So a lead whose chat is off changes no answer, no time of an answer,
+  no timer and no look, even if its port woke the wait for it.
+  `TestWaitChatOffOnlyActivityIsInvisible` compares such a run with an idle
+  one on a fake clock stepped by 100 milliseconds, with every wake taken before
+  the next, and compares the answer, its time, every timer made or stopped
+  with its time, and every look at the door with its time, with a Card that
+  expires within the hold, with the chat's gap running, with both and with
+  neither.
+- A cursor that cannot be read (an error, a panic, a value out of its range)
+  is no cursor: the wait holds and answers on the Cards alone, its answer
+  carries no `chat`, and it does not answer at once to a seat with none, so it
+  cannot spin. A port whose change channel cannot be taken
+  (`ChatCursorChanged` panics) is no port for the rest of the wait, even if
+  its cursor can be read: the plain wait's behaviour, with no `chat` in any
+  answer. A port that answers a nil channel on purpose is read on the wait's
+  other wakes and before each answer. It fails closed.
+- Its looks at the door never recover the journal. The plain wait's look, as
+  `owner.list`, reopens an uncertain journal and reconciles, which may
+  redeliver a decision and settle a use; the extended wait's look answers
+  `ownerchannel.ErrWaitRecovery` instead (the gate's `unavailable`) and leaves
+  the recovery to the service's tick, which owns it, so the seat asks again
+  after its pause. So the extended wait reaches no decision, intake, use,
+  merge, suite, reply or effect of the host: its calls are the look's reads of
+  the door and the journal and the journal's own close of held cards that
+  expired, as every look makes. This is the extended wait's alone: the plain
+  wait, which seats of earlier builds send, still recovers as it did.
+  `TestWaitChatLeavesAnUncertainJournalToTheTick` holds an undelivered
+  decision, makes the look uncertain at once and in a held wait woken by a
+  chat change and a poke, and finds no decision, use, intake, merge, suite,
+  reply or reopening; the plain wait, its positive control, reopens and hands
+  the decision over.
+
+The trial's stand-in gives a cursor over its two sample leads whose chat is
+read, each of generation 1 and its head, under a key it makes once, the same
+for every call: its samples never change, so a held wait is never woken for
+the chat. A trial started again has a new key and so another cursor.
+
+The scratch leads' port (`leaddaemon.LeadChat`, both tags) gives the cursor of
+the leads whose desk switch is read, not stopped by a scan, with a store that
+works and an epoch the wire holds: exactly the leads whose conversation a seat
+read is served. For each it reads the store's status (the generation of the
+switch and the head), and nothing of any other lead. Its broadcast
+(`ChatCursorChanged`) is closed when a scan gives a lead that is on a new head
+(`leadchat.IngestReport.HeadAdvanced`: a reply taken or withheld, or the fixed
+entry of a drop or of a suspension, also when the scan fails after it), when a
+lead's switch is set (on, off, a new segment), when a scan stops a lead's chat
+or its store fails, and when the port is bound or unbound. A drop that writes
+no entry (its notice was written less than a minute before) moves no head and
+closes nothing (`TestLeadChatCursorMovesForADropNoticeOnly`).
+
+Each lead has a change lock under which every change the cursor covers is
+made and signalled: a scan from its admission (the desk's switch read)
+through the store's ingest to its signal, the publication of a turn-off, a
+turn-on with the desk's record of it, a scanner's panic and the closing of
+the store. So a scan admitted before a turn-off is published ingests and
+signals before the seat can see the lead off, and once the seat can see it off
+no scan of it is admitted: a reply that arrives while a lead is off moves no
+head and leaves no gap in its sequence numbers, and its next turn-on starts
+one after the head the seat could last see
+(`TestChatScanAdmittedBeforeATurnOffEndsBeforeTheOffIsSeen`). The scanner of
+a lead turned off is waited for after the lock is let go of. The cursor holds
+the change lock of every lead the seat can list while it samples them, in the
+desk's order, so it digests one state the desk held, never one lead sampled on
+before a turn-off beside another sampled on after a turn-on
+(`TestLeadChatCursorIsOneStateOfTheDesk`); and the port checks its binding
+again after the sample and discards a sample of a binding that was replaced or
+taken back meanwhile (`TestLeadChatCursorDiscardsASampleOfAReplacedBinding`),
+reading again from the binding now, at most three times, then giving no
+cursor. The registry's epoch is read as each lead is sampled; it only decides
+whether the wire can hold the lead. A lead
+whose chat is off has no scanner, so its replies are not read and close
+nothing; a test writes them, and starts that lead, and finds the cursor and
+the broadcast unchanged (`TestLeadChatCursorCoversTheEnabledLeadsOnly`). The
+cursor's reads are not counted against the port's 40 calls a minute, which are
+the seat's. An unbound port, a failing source or a panic gives no cursor. The
+wired-daemon test (`cmd/ataniqd`, `chat_scratch_linux_test.go`) sends extended
+waits through the real wiring and finds that the waits are the service's only
+counts and that the door, the suite and the drop folder do not move. Those
+waits are answered at once on a sound journal; a held wait through a chat wake
+and an uncertain look are covered at the service
+(`TestWaitChatLeavesAnUncertainJournalToTheTick`, above).
+
+**The seat** (`seatlink`, `watchchat.go`). The seat's hello lists
+`wait-chat`. Its one watcher sends the extended wait in place of the plain one
+when the gate's hello lists `wait-chat` and `chat`, on the same call, so the
+hint costs no call of the gate and no room beyond the waits' 5; the two waits
+for each peer and the one watcher are unchanged. Otherwise it sends exactly
+the plain params. A gate that lists it and answers the extended params
+`bad-params` gets the plain wait for the rest of that connection. Each form's
+answer is read with its own decoder.
+
+The watcher publishes the hint (`Daemon.ChatHint`: live, the cursor, and the
+connection it was learned on) and a broadcast beside the Cards'
+(`Daemon.ChatHintChanged`, beside `WatchChanged`): a chat change wakes the
+hint's subscribers and not the Cards'. It drops what it holds of the chat, and
+publishes the hint as not live, whenever it may be stale: on a lost link, on a
+new connection (a cursor of another connection is never sent or shown), when
+the gate no longer lists the capability, when an answer carries no cursor,
+and after any wait that failed or was refused. Its next extended wait then
+carries 0, which the gate answers at once with a fresh cursor: one fresh
+authorized view. A cursor is published only while the connection it came on is
+still the client's. The hint says that something the seat may read moved and
+nothing else: no lead, no count and no text, and a page that acts on it reads
+the directory and the conversation again through `seat.chat`.
+
+Each wait is bound to one connection. The watcher reads the client's
+connection and its hello's capabilities as one (the connection before and
+after the capabilities must agree), decides on them whether the wait is the
+extended one and which cursor it carries (one learned on that connection, or
+0), and checks just before it sends that the client's connection is still
+that one; when it is not, nothing is sent and it starts over on the new
+connection, whose first wait carries 0
+(`TestSeatLinkWatchChatNeverSendsACursorToAnotherConnection`). An answer that
+comes when the connection is no longer the one it was asked on publishes no
+cursor. While a hint is live the watcher's pauses (after a change, or for
+room) look at the client every second and drop the hint, waking its
+subscribers, as soon as its connection is gone
+(`TestSeatLinkWatchChatLossDuringThePauseDropsTheHint`), and
+`Daemon.ChatHint` checks the connection and its capability again when it is
+read, so it never answers a hint of a connection that is not the client's now.
+The seatgate client picks the connection of a call under its own lock, so a
+connection replaced in the instant between the watcher's last check and that
+pick can still carry this connection's cursor once; the gate then answers it
+as a stale cursor or refuses it, and the answer, which came on another
+connection, is dropped. Closing that instant needs a call of the client bound
+to a named connection, which `seatgate` does not offer.
+
+A live hint is an observation of the past: the cursor the gate last answered
+on the connection. A lead whose chat was turned off since may still be in it
+until the next answer, which comes no sooner than the chat's gap. It is never
+a permission: the page that acts on it reads through `seat.chat`, where the
+desk authorizes every read live, and equal cursors only say that nothing seems
+to have changed.
 
 ## Notices
 
@@ -1789,6 +2434,12 @@ one of the holds below applies. The rules:
    no more), and counts as seen: the floor of rule 2 is at least that count,
    so a card the owner looked at on the page does not bring a notice a minute
    after the page is closed. A card that comes after the last poll does.
+   The card list's hint stream does the same by its own rule (see
+   [the hint stream](#the-card-lists-hint-stream)): each stream the page
+   opens, which it does only while shown, is a check-in that holds the
+   notices back for a lease of 30 seconds, and counts as seen the cards of
+   the version the page says it shows, when it is the watcher's. Nothing the
+   seat writes on the stream renews the lease or counts as seen.
 4. After a call to the notifier that failed, nothing is sent for 1 minute; each
    failure after it doubles the wait, to a longest of 30 minutes, and a call
    the notifier took ends the run. A failure is logged at most once a minute,
@@ -2908,7 +3559,8 @@ It checks the strict wire result, and the app checks its own representation
 and binding again. Directory and read must agree on lead, connection, epoch
 and trial context. Message text goes through `Text` into an escaped text node.
 The links use a validated 1–32 byte key and an integer cursor. Fixed speaker
-labels distinguish Lead and System. Pages have no form or script.
+labels distinguish Lead and System. Pages have no form; their one script is
+the live refresh's ([The Leads pages' hint stream](#the-leads-pages-hint-stream)).
 
 A Leads page asks the port and answers by its error, as the project pages do,
 not by the offer alone: the offer (`ChatOffered`) is false both while the link
@@ -2920,17 +3572,32 @@ in a moment." with its link to try again; a connected gate without `chat` is
 retry, since trying again would not help.
 
 The recent window starts after the directory head minus 16, floored at zero.
-An explicit `?after=N` reads after N. The next link (Show later) uses the last
+The conversation's own address (no `?after=`) is its newest page: when that
+read leaves entries out (`more`: the gate's 16 KiB bound of a result cut it
+short, or replies arriving after the directory pushed past the window), the
+page reads on toward the head, at most twice more (`newestReads`), each time
+after a sequence the previous read returned, never an inferred one
+(`newestAfter`: the earliest entry with no more sequences after it than that
+read held, or its last entry), so the page ends at the head
+(`TestChatOwnAddressIsTheNewest`). Such a page is at most 4 of chat's 5
+calls. A further read that meets busy, or that resets (its cursor no longer
+kept), leaves the page read so far, which offers Show later; any other
+failure or disagreement of a further read is the page's, as for the first.
+An explicit `?after=N` reads after N, once. The next link (Show later) uses the last
 sequence returned even on a short page. The earlier link (Show earlier) reads
 one window back, after N minus 16, floored at zero, whichever way the page was
 reached, so it needs no memory of the pages before. The page's heading is
 "Lead KEY" alone, and the lead's state is the line under it. The transcript is
-a list with `role="log"`, and no `aria-live`: the page is made once and never
-changes while it is open (a reader is not to announce it as it loads). The
+a plain ordered list, labelled by the Conversation heading, with no
+`aria-live` and no `role="log"` (whose live behaviour is implicit): the log
+is made once and never changes while the page is open (a reader is not to
+announce it as it loads); new replies come by a new read of the page, and
+the one live region is the hint stream's polite status line. A reset's
+notice is plain text for the same reason. The
 log marks the last entry as newest (`id="newest"`, with `tabindex="-1"`, so a
 link to `#newest` moves the focus there as well as the view; an empty page's
-line takes the id). When the head lies beyond the page, Jump to newest reads the
-last window, after the head minus 16, floored at zero. A session keeps only
+line takes the id). When the head lies beyond the page, Jump to newest goes to
+the conversation's own address, its newest page, at `#newest`. A session keeps only
 the last epoch it showed of each shared lead: a restart marker above the log
 records an epoch change observed across reads. A reset (a cursor before what
 the host retains, or past the head) has its own notice, "This page starts
@@ -3120,7 +3787,11 @@ Where the scratch leads' read-only port stands:
   every connection. What applies to sending and its receipts is open with
   sending.
 - **Storage: met** by the chat store of `internal/leadchat`.
-- **Refresh: met.** `seat.wait` is unchanged.
+- **Refresh: met.** The plain `seat.wait` is unchanged. The opt-in extended
+  wait carries the port's chat cursor (`LeadChat.ChatCursor`), computed from
+  the desk-enabled leads alone, keeps the Card version independent, and keeps
+  the one watcher and the two waits for each peer (see
+  [chat hints on the wait](#chat-hints-on-the-wait)).
 - **Budget: met.** The seat's chat room is unchanged, and the port answers
   `chat-busy` past its own 40 calls a minute.
 

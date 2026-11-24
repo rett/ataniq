@@ -56,6 +56,7 @@ var inventory = []struct {
 	{pattern: "POST /api/decide", kind: "api"},
 	{pattern: "GET /static/watch.js", kind: "asset"},
 	{pattern: "POST /api/watch", kind: "api"},
+	{pattern: "POST /api/watch/stream", kind: "api"},
 	{pattern: "GET /manifest.webmanifest", kind: "asset"},
 	{pattern: "GET /sw.js", kind: "asset"},
 	{pattern: "GET /static/push.js", kind: "asset"},
@@ -67,7 +68,7 @@ var inventory = []struct {
 	{pattern: "POST /api/push/unsubscribe", kind: "api"},
 	{pattern: "GET /leads", kind: "redirect"},
 	{pattern: "GET /leads/{$}", kind: "page", controls: withNav("a", "a#chat-refresh"), authed: true},
-	{pattern: "GET /leads/{kind}/{key}", kind: "page", controls: withCockpitLinks("a", "a#chat-refresh", "a#chat-jump", "a#chat-prev", "a#chat-next"), path: "/leads/daemon/alpha", authed: true},
+	{pattern: "GET /leads/{kind}/{key}", kind: "page", controls: withCockpitLinks("a", "a#chat-refresh", "a#chat-jump", "a#chat-prev", "a#chat-next"), path: "/leads/daemon/alpha?after=4", authed: true},
 	// The new-project pages: plain forms that post to the app, and no
 	// decide control.
 	{pattern: "GET /projects/{$}", kind: "page", controls: withNav("a", "a#back", "button#logout", "form#start-project", "button#start-project-go"), authed: true},
@@ -249,8 +250,10 @@ func inspectPage(html string, allowed []string, mayDecide bool) []string {
 	for _, el := range elements {
 		name, attrs := el.name, el.attrs
 		if slices.Contains(allowed, "a#chat-refresh") {
-			if name == "script" {
-				add("script on chat page")
+			// A Leads page's one script is the live refresh's, which
+			// reads the hint stream and shows only its constants.
+			if name == "script" && attrs["src"] != "/static/watch.js" {
+				add("script on chat page", attrs["src"])
 			}
 			if name == "a" && !listedChatLink(attrs["id"], attrs["href"]) {
 				add("unlisted chat link", attrs["href"])

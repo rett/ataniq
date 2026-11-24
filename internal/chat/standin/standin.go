@@ -80,6 +80,9 @@ func (l *sampleLead) head() int64 { return l.first - 1 + int64(len(l.entries)) }
 // changed, so it is safe for concurrent use. Make one with [New].
 type Port struct {
 	leads []sampleLead
+	// key is the chat cursor's key, made once by [New]: random, and held
+	// by this stand-in alone.
+	key ownerwire.ChatCursorKey
 }
 
 // New returns the stand-in with its samples. now is the clock the sample
@@ -95,7 +98,7 @@ func New(now func() time.Time) *Port {
 
 // newWith returns a stand-in that serves the given leads.
 func newWith(leads []sampleLead) *Port {
-	return &Port{leads: leads}
+	return &Port{leads: leads, key: ownerwire.NewChatCursorKey()}
 }
 
 // line is one entry of a sample conversation before it is numbered: who
@@ -234,3 +237,28 @@ func (p *Port) read(params ownerwire.SeatChatParams) (ownerwire.SeatChatResult, 
 	}
 	return r, nil
 }
+
+// ChatCursor answers the chat cursor of the extended seat.wait over the
+// samples: [ownerwire.ChatCursor], under the stand-in's own random key, of
+// the sample leads whose chat is read, each of switch generation 1 and its
+// head. The samples never change, so the cursor is the same for every call of
+// a stand-in: a held wait is never woken for the chat. Another stand-in (the
+// trial started again) has another key, and so another cursor. The lead
+// whose chat is off is not in it. A call whose context is done answers its
+// error.
+func (p *Port) ChatCursor(ctx context.Context) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	var leads []ownerwire.ChatCursorLead
+	for i := range p.leads {
+		if l := &p.leads[i]; l.chat != ownerwire.ChatOff {
+			leads = append(leads, ownerwire.ChatCursorLead{Lead: l.id, Gen: 1, Head: l.head()})
+		}
+	}
+	return ownerwire.ChatCursor(p.key, leads), nil
+}
+
+// ChatCursorChanged answers nil: the samples never change, so the cursor
+// never moves.
+func (p *Port) ChatCursorChanged() <-chan struct{} { return nil }

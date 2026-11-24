@@ -181,6 +181,9 @@ together:
   which may also come with no `Origin` header at all when `Sec-Fetch-Site`
   says `same-origin`; `Origin: null` is refused there too. A proxy that removes
   or rewrites either breaks pairing, login, decisions and the project pages.
+  A proxy must not add a second `Sec-Fetch-Site` or `Content-Type` header
+  either, nor a second `__Host-seat` cookie: a request with two of any of
+  them is refused, whatever the first one says.
 - **Overwrite the client-address header on every request.** `--socket` needs
   `--client-addr-header NAME`, the header the proxy sets to the client's address,
   because a Unix peer has no address and every client would share one limit. The
@@ -214,6 +217,21 @@ together:
   proxy that cuts the request earlier makes every page poll again and again,
   each time answered by an error that the page waits out with a growing
   pause, so the page lags without saying why.
+- **Pass the card list's stream on at once.** The card list reads
+  `POST /api/watch/stream`, a response of type `text/event-stream` that the
+  seat keeps open for up to 25 seconds and writes a few bytes to at a time
+  (a heartbeat once in 10 seconds, and a hint when the cards change). Every
+  proxy on the way must hand each write to the phone as it comes: no
+  buffering, no compression, and the same read timeout above 30 seconds as
+  for `/api/watch`. The seat sends `X-Accel-Buffering: no` and no
+  `Content-Encoding`. The shipped Caddyfile has no `encode` and Caddy's
+  `reverse_proxy` flushes a `text/event-stream` response as it comes, so it
+  needs no change; whether both hops (the owner's front proxy and Caddy) pass
+  a hint on at once is not yet qualified (see
+  [the design](design/seat-gate.md#the-card-lists-hint-stream)). A proxy that
+  holds the stream back costs nothing but time: the page does not get the
+  stream's opening heartbeat within 8 seconds, closes the stream and falls
+  back to the poll above until it is shown again.
 - **No redirects.** Serve the paths as asked, with no change of host, scheme or
   path. The pairing QR carries its one-time code in the address fragment, which
   must reach the app as the desk drew it. (The app itself answers `/pair`,
@@ -395,6 +413,19 @@ up without a reload, and a card that was decided, withdrawn or replaced
 
 - **The card list** reloads itself when the set of waiting cards changed, at
   most once every 20 seconds, and never while a field on it holds typed text.
+  It hears of the change over a stream that the seat holds open (it says only
+  that the cards moved, never which or how many). The poll that the Card
+  page uses already answers as soon as the seat learns of a change, so the
+  stream is not faster: what it changes is that the list holds no poll of
+  the session's (the three held polls below are left to the Card pages and
+  to lists that fell back), and that each hint names its kind, which later
+  stages can add to. When the stream cannot be used (an older browser, a
+  proxy that holds it back, a refusal, an error) the list falls back to that
+  poll until the page is shown again; you see no difference, and the
+  notices behave the same way with either. The stream is closed while the page is hidden or the phone is
+  locked, and opened again a second or two after the page is shown. A hidden
+  list never reloads: a change it heard of before it was hidden waits, and
+  the list reloads once for it when it is shown again.
   A new card that came in through the daemon's door is seen within about 30
   seconds, the interval at which the daemon looks at the door; a decision made
   at the desk or on the phone is seen within a few seconds, and a page that
@@ -418,11 +449,17 @@ up without a reload, and a card that was decided, withdrawn or replaced
   gate is down or the gate does not answer (the page asks again every 30
   seconds), and "Session
   ended. Log in again." when the session is gone.
-- A tab that is hidden asks nothing, and asks at once when it is shown again.
-- Up to three tabs of one session are kept live at once. A fourth takes the
-  place of the oldest, whose page then waits 25 seconds before it asks again;
-  with more than four tabs open the pages cannot all stay live (see
-  "Troubleshooting").
+- A tab that is hidden asks nothing, and asks at once when it is shown again
+  (the card list a second or two later, at a random moment, so that the
+  tabs and phones that come back together do not ask together).
+- Two limits keep the open tabs live, one for each way of asking. Up to
+  three streams of one passkey are open at once, across its sessions, card
+  lists and Leads pages together: a fourth is refused (a card list falls
+  back to the poll, a Leads page keeps to its Refresh link), and the first
+  three keep their streams. Up to three polls of one session are held at once (Card
+  pages, and lists that fell back): a fourth takes the place of the oldest,
+  whose page then waits 25 seconds before it asks again; with more than four
+  polling tabs open the pages cannot all stay live (see "Troubleshooting").
 
 What it costs. The seat keeps one long call at the gate for the whole seat,
 whatever the number of pages and phones open: a held request that the gate
@@ -448,9 +485,25 @@ and about one in three once in 30 seconds. Opening Leads, selecting a lead
 and refreshing it once is never "busy" when you do it once in 80 seconds. An
 idle seat sends one wait about every 25 seconds, 4 in 80 seconds, and the
 waits' fifth call is for a reconnect: the seat's link lost and back at once
-costs one more wait and no refusal. A page's poll is not
-a request that keeps the session alive: a session still ends 30 minutes after
-the last page you loaded or tap you made, however long a page stays open.
+costs one more wait and no refusal. The card list's stream asks the gate
+nothing either: it is fed by the same one wait. A page's poll, and the card
+list's stream and its heartbeats, are not requests that keep the session
+alive: a session still ends 30 minutes after the last page you loaded or tap
+you made, however long a page stays open, and the stream ends with it. An
+automatic refresh of a visible card list is the same as you reloading it:
+it counts as activity, since it shows you the new cards. A hidden page does
+not refresh, so a list left in a background tab or on a locked phone does
+not keep the session alive.
+
+The stream's limits, which count the card lists' and the Leads pages'
+streams together: at most 3 streams open at once for one passkey, across
+its sessions (one for each of three tabs), 12 opened a minute for one
+passkey, and 32 open in all; and, while a stream is being opened, at most 3
+openings of one passkey in progress and 8 in all. A stream past them is
+refused with a `Retry-After`, and that page falls back to the poll (a Leads
+page to its Refresh link). A
+stream's response lasts 25 seconds at most from its request, its opening
+included.
 
 A stale offer is never what decides. Live refresh only withdraws an offer
 sooner; a tap on an old page is refused by the seat or the daemon as before
@@ -476,10 +529,15 @@ How to tell it works.
    seat key from somewhere else, such as a second `ataniq-seat` using the same
    identity: stop the extra one.
 
-Behind a proxy. A held request lasts up to 25 seconds, so the front proxy's
-read timeout for the seat must be above 30 seconds and its buffering of
-`/api/watch` must be off, so that the answer reaches the phone when the seat
-writes it (see [The reverse proxy](#the-reverse-proxy)).
+Behind a proxy. A held request, and a stream, last up to 25 seconds, so the
+front proxy's read timeout for the seat must be above 30 seconds and its
+buffering of `/api/watch` and `/api/watch/stream` must be off, so that the
+answer, and each hint, reaches the phone when the seat writes it (see
+[The reverse proxy](#the-reverse-proxy)). To see that the stream works, open
+the card list in a desktop browser's network tools: `/api/watch/stream`
+stays open and is opened again about every 25 seconds, and `/api/watch` is
+not asked. A `/api/watch` every 25 seconds or so instead means the list fell
+back to the poll.
 
 ## Leads
 
@@ -503,11 +561,14 @@ on the conversation page being read. On a phone, use **Conversation**,
 **Evidence** and **Timeline** to jump between sections, or **Back to Leads**
 to return to the directory.
 
-The conversation opens on its most recent messages, up to 16. **Show earlier**
-goes back 16 messages and **Show later** goes on from the page's last message,
-through the retained history. **Jump to newest** shows the most recent
-messages again and goes to the latest one. **Refresh** asks for the recent window again. Each Leads page is one or
-two calls of the desk, and they have a room of their own, 5 calls in 80
+The conversation opens on its most recent messages, up to 16, and ends at the
+latest one: when long messages do not all fit on one page, or replies arrived
+while it was read, the page reads on toward the latest message, up to twice
+more. **Show earlier** goes back 16 messages and **Show later** goes on from
+the page's last message, through the retained history. **Jump to newest**
+opens the conversation again at its latest message. **Refresh** asks for the
+recent window again. Each Leads page is one or two calls of the desk (up to
+four when the conversation reads on toward its latest message), and they have a room of their own, 5 calls in 80
 seconds, apart from the card lists' reads (see [What it costs](#live-refresh)):
 opening Leads, selecting a lead and one refresh, with no call to spare. Past it
 the page says "The desk is busy. Try
@@ -534,8 +595,56 @@ serves the samples. What the owner prepares is in
 [the scratch leads guide](scratch-leads.md#running-real-leads-with-the-seat).
 
 Lead and System labels come from the seat. Links and markup in a reply appear
-as text. Approvals are only on Cards. Sending and live refresh are not built,
-including for a lead whose desk setting allows sending.
+as text. Approvals are only on Cards. Sending is not built, including for a
+lead whose desk setting allows sending.
+
+### New replies without refreshing
+
+With the conversation open at its newest message, a new reply of a lead
+whose chat is on appears by itself: the page reads the conversation again,
+at most once every 40 seconds, and opens at the newest message: the page
+then starts with the first message after the last one you saw (**Show
+earlier** goes back to those), and more new replies than fit on one page
+leave **Show later**. The hint does not say which lead replied, so a
+reply of another lead also reads the page again: with nothing new for this
+lead, the page shows the conversation's newest messages again, as its own
+address does, and keeps following. When you have scrolled away from the newest
+message, or you are reading older messages, the page does not move: the
+status line says "New replies." with a link **Show newest**, which loads
+the page that holds the newest message, at that message. The
+Leads page says "Leads changed." with a link **Refresh** when what it lists
+may have changed. Nothing takes the focus, and a page never reads again
+by itself while it is hidden, while a field holds typed text, while a dialog
+is open or while a link or another control has the focus (after a tap on
+**Conversation**, for example): it says "New replies." with **Show newest**
+instead. A page shown again catches up once.
+
+The seat learns that the chat moved from the one wait it already holds at
+the gate (the gate's hello lists `wait-chat`), as a number that says only
+that something it may read moved: never which lead, how much or what. A lead
+whose chat is off never makes the page move, and the seat never learns of
+its activity. Each read is the page's ordinary read, so the desk authorizes
+it as when you tap Refresh. It costs no call of the gate beyond that read:
+the directory and the page, 2 of the Leads pages' 5 calls in 80 seconds
+(the 40 seconds between two reads keep one open conversation inside them),
+and none of the card lists'. One following conversation fits; a refresh by
+hand beside it, a second tab following a conversation, or a conversation
+that read on toward its latest message can meet "The desk is busy". When a
+read the page makes by itself meets it, the busy page replaces the
+conversation and the page follows no more: tap **Try this page again** a
+minute later. A read that the page makes by itself counts as
+activity for the session, like a reload you make; a hidden page reads
+nothing, so it does not keep the session alive.
+
+The status line says "Not live" when the page cannot be told (the gate does
+not list `wait-chat`, the link is down, the seat refused the page's stream,
+for example a fourth open stream of your passkey, or the browser cannot read
+the stream): use **Refresh**. A page that says it is not live moves no
+more, even for a reply heard of before. When its stream failed, it tries
+again when the page is shown again (switch away and back) or reloaded; a
+page that was not live when it was made says so from the start and needs a
+reload (**Refresh**). In the phone trial the samples never change, so the
+pages are live and never move.
 
 ## New projects
 
@@ -665,7 +774,16 @@ the notifier, unless:
   visible is one you are looking at; a hidden tab or a phone that has put the
   page to sleep asks nothing, so close the pages and wait a minute when you
   test). The cards that page found waiting count as seen: closing the page does
-  not bring a notice for them, only a card that comes after its last poll does;
+  not bring a notice for them, only a card that comes after its last poll does.
+  The card list's stream holds notices back too: each time the list opens
+  its stream, which it does only while it is shown and again about every 25
+  seconds, it holds them back for 30 seconds, and the cards it shows count
+  as seen, so the list open in front of you brings no notice and closing it
+  brings none for cards it showed. What the seat writes on the stream does
+  not count, since a phone put to sleep can leave the stream open: a card
+  that comes while the list is open but that the list has not shown yet
+  (the phone locked before it reloaded) brings its notice about 30 seconds
+  later;
 - the count came back up after a dip, to no more than what was last told, and
   fewer than 2 minutes have passed since the last notice (a card decided and
   another asked is not a new notice at once): so with the count not rising,
@@ -943,7 +1061,7 @@ With `--seat-gate` the trial's gate, and no other, also serves the seat's lead
 pages from STAND-IN samples (a scratch daemon's gate serves real leads'
 replies instead, see [Leads](#leads)): the capability `chat` (read only, see
 [the design](design/seat-gate.md#chat)). The gate's start line then ends
-`... watch, genesis and chat` and is followed by
+`... watch, genesis, chat and wait-chat` and is followed by
 
 ```text
 ataniqd: seat gate: chat: STAND-IN sample leads and conversations of the phone trial, held in memory; no lead is read or reached
@@ -958,6 +1076,15 @@ shows its key and **Off**. Every lead reply and every system line begins
 sample, so the seat shows a banner. No lead, conversation file or
 other part of the daemon is read or reached, nothing is written, and nothing
 can be sent: there is no way to send a message from the seat yet. Open **Leads** after login to read the samples.
+
+`wait-chat` says the gate also offers the seat's live wait a chat cursor, a
+number that changes when what the seat may read of the leads' chat changes
+(see [the design](design/seat-gate.md#chat-hints-on-the-wait)). It carries no
+text of a lead, and a lead whose chat is off never moves it. It is keyed by a
+secret the daemon makes at each start and never sends, so its value means
+nothing across a restart, and it only says that something may have changed: it
+never allows a read, which the gate authorizes on every `seat.chat` call. The
+samples never change, so the trial's cursor never moves while the trial runs.
 
 `--trial` needs `--owner-channel` (exit 2 without it). The daemon refuses the
 trial's settings without `--trial`, and other settings with it (exit 10), and a
@@ -1047,7 +1174,7 @@ What the phone shows, by the code the seat's API answers:
 | "The card's time ran out." | `card_expired` | The card expired; a new challenge cannot renew it. | Nothing to do on the phone; see the card at the desk. |
 | "The card cannot be decided now. Look at it again." | `cannot_decide` | Already decided, void or in another state. | Reload the card. |
 | "The phone's answer was not accepted. If this repeats, check the seat at the desk." | `assertion_refused` | The assertion did not verify. | Check the origin on both hosts and the gate key the seat has pinned. |
-| "This phone's passkey is no longer paired. Pair it again at the desk." | `key_revoked` | The key was revoked or is not on the list. The session ends. | Pair again at the desk. |
+| "This phone's passkey is no longer paired. Pair it again at the desk." | `key_revoked` | The key was revoked or is not on the list. Every session logged in with that passkey ends, on every tab and phone. | Pair again at the desk. |
 | "This project does not take decisions from this kind of passkey." | `kind_refused` | The `"kinds"` policy excludes the credential's claimed kind. | Change the policy or pair another credential. |
 | "Decision sent. Outcome unknown." | `outcome_unknown` | The answer was lost after the decision was sent. | Tap "Look again" and read the card; never retry blindly. |
 | "The session ended. Log in again." | `session_ended` | Idle 30 minutes, 12 hours, a seat restart, or a logout. | Log in. |
@@ -1056,6 +1183,8 @@ What the phone shows, by the code the seat's API answers:
 | Status line "Not live: the desk is out of reach" | `offline` (answer of `POST /api/watch`) | The seat's link to the gate is down, or a wait got no answer from the gate (it timed out). The watcher retries after 1 second, doubling to 30, and any answer of the gate, even a refusal, lifts it at once. The page asks again every 30 seconds. | Check the daemon, the firewall and both pins as for `daemon_unavailable`. It clears by itself once the link is back. |
 | Status line "Session ended. Log in again." | `ended` (answer of `POST /api/watch`) | Idle 30 minutes without a page load or tap (a poll does not count), 12 hours, a seat restart, a logout, or a revoked key. | Log in. |
 | Nothing visible, but `POST /api/watch` answers 429 in the proxy's log or the browser's tools | `rate_limited` | More than 12 polls a minute from one passkey's sessions, as more than four tabs open at once make. The page waits 60 seconds and asks again. | Close the extra tabs. |
+| Nothing visible, but `POST /api/watch/stream` answers 403, 429 or 503 in the proxy's log, followed by `POST /api/watch` | (the stream's refusal: `session ended`, `too many streams`, `busy`, `not live` or `shutting down`) | The card list's stream was refused: no live session, a fourth card list of one passkey or more than 12 opens in a minute, 32 streams open on the seat, the desk out of reach, or the seat stopping. The list fell back to the poll, which says what it is on the status line. | Nothing; close the extra tabs if there are many. The list tries the stream again when it is shown again. |
+| The card list updates only after about 25 seconds, and the browser's tools show `/api/watch/stream` closed by the page after about 8 seconds with nothing in it, followed by `/api/watch` | (none) | A proxy on the way buffers or compresses the stream, so the stream's opening heartbeat does not reach the page within 8 seconds and the page falls back to the poll. | Turn buffering and compression off for `/api/watch/stream` on the front proxy (see [The reverse proxy](#the-reverse-proxy)). |
 | "This card changed or was decided elsewhere. Look again." | `changed` or `gone` (the card's state in the poll's answer) | The card, which was waiting when the page was read, was decided on another page or phone or at the desk, replaced, expired or withdrawn since. Not shown for a card that was already decided, ended or expired when the page was read, nor on the page whose own confirm sent the decision. | Reload, or go back to the cards. |
 | A line `seat.wait refused wait-full (peer ...)` in the daemon's log | `wait-full` | The gate already holds two waits for that seat key (or the daemon's eight). Normal for a moment when the seat reconnects. Not counted against the seat. | Nothing if it stops. If it repeats every minute, look for a second `ataniq-seat` with the same identity. |
 

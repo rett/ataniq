@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ataniq/internal/approval/ownerwire"
@@ -104,6 +105,20 @@ type chatLead struct {
 	// setMu orders the sets of the lead's switch.
 	setMu sync.Mutex
 
+	// chg is the lead's change lock: every change of what the chat cursor
+	// covers of the lead is made, and signalled, under it: a scan from its
+	// admission (the switch read) through the store's ingest to its signal,
+	// the publication of a turn-off, a turn-on with the desk's record of
+	// it, a scanner's panic and the closing of the store. The cursor holds
+	// the change lock of every lead while it samples them, so it samples
+	// one state of the desk that existed, and a scan admitted before a
+	// turn-off is published ingests and signals before the seat can see the
+	// lead off. Nothing waits for a scanner while it holds chg, and no lock
+	// of the lead's or the desk's is held when it is taken: it comes after
+	// setMu, before d.mu and cl.mu, and no one holds two leads' but the
+	// cursor, which takes them in the desk's order.
+	chg sync.Mutex
+
 	// mu guards what follows; a seat read holds it for the whole read, so a
 	// set to off that has returned is seen by every read after it.
 	mu       sync.Mutex
@@ -149,12 +164,42 @@ type chatDesk struct {
 	// afterScan, a test's hook, runs in a scanner after each scan, with
 	// whether it goes on, before an ending scanner lets go of the lead.
 	afterScan func(ctx context.Context, cl *chatLead, goOn bool)
+	// atScan, a test's hook, runs in a scan once it is admitted (the
+	// lead's switch read, its change lock held), before the store's ingest.
+	atScan func(cl *chatLead)
+	// atCursor, a test's hook, runs in the cursor's sampling, the change
+	// locks held, before each lead is sampled.
+	atCursor func(cl *chatLead)
+
+	// changed is the function the seat's port gave (onChange), called when
+	// what the chat cursor covers may have changed; nil when none.
+	changed atomic.Pointer[func()]
 
 	mu     sync.Mutex
 	ctx    context.Context
 	cancel context.CancelFunc
 	closed bool
 	wg     sync.WaitGroup
+}
+
+// onChange gives the desk the function it calls when what seatCursor answers
+// may have changed; nil takes it back.
+func (d *chatDesk) onChange(f func()) {
+	if f == nil {
+		d.changed.Store(nil)
+		return
+	}
+	d.changed.Store(&f)
+}
+
+// cursorMoved says that what the chat cursor covers may have changed. It is
+// called only for a lead that was or becomes readable by the seat: never for
+// the activity of a lead whose chat is off, which the cursor does not cover.
+// It never blocks, and may be called under the lead's lock.
+func (d *chatDesk) cursorMoved() {
+	if f := d.changed.Load(); f != nil {
+		(*f)()
+	}
 }
 
 // newChatDesk builds the desk of the leads, in the order of the config. It
@@ -249,6 +294,9 @@ func storeDown(err error) bool {
 func (d *chatDesk) markBroken(cl *chatLead, err error) {
 	if !cl.broken {
 		cl.broken = true
+		if cl.on {
+			d.cursorMoved()
+		}
 		d.logf("chat: the chat store of the lead %q failed (%s); the lead has no chat until the daemon is restarted", cl.key, chatErrWord(err))
 	}
 }
@@ -280,6 +328,7 @@ func (d *chatDesk) closeStores() error {
 	}
 	var errs []error
 	for _, cl := range d.leads {
+		cl.chg.Lock()
 		cl.mu.Lock()
 		if cl.store != nil {
 			if err := cl.store.Close(); err != nil && !errors.Is(err, leadchat.ErrClosed) {
@@ -289,6 +338,7 @@ func (d *chatDesk) closeStores() error {
 		}
 		cl.on = false
 		cl.mu.Unlock()
+		cl.chg.Unlock()
 	}
 	if d.root != nil {
 		if err := d.root.Close(); err != nil && !errors.Is(err, leadchat.ErrClosed) {
@@ -351,6 +401,66 @@ func (d *chatDesk) seatRow(cl *chatLead) ownerwire.ChatLeadRow {
 		}
 	}
 	return ownerwire.ChatLeadRow{Lead: cl.seatID, Chat: ownerwire.ChatRead, State: word, Epoch: &epoch, Head: &head}
+}
+
+// seatCursor answers what the chat cursor of the extended seat.wait covers:
+// each lead the seat can list whose chat is read, not stopped by a scan, with
+// a store that works and an epoch the wire holds (the leads whose
+// conversation a seat read is served), with the generation of its switch and
+// its head. A lead whose chat is off is left out, and nothing of it is read.
+// It reads the stores' status only.
+//
+// The leads are sampled together, as one state of the desk: the change lock
+// of every lead the seat can list is held, in the desk's order, from before
+// the first is sampled until after the last, so no switch, scan or failure
+// of a lead comes between two samples and the set answered is one the desk
+// held at one moment (never, say, a lead sampled on before it was turned off
+// beside another sampled on after it was turned on). The registry's epoch is
+// read as each lead is sampled; it decides only whether the wire can hold
+// the lead.
+func (d *chatDesk) seatCursor() ([]ownerwire.ChatCursorLead, error) {
+	var held []*chatLead
+	defer func() {
+		for i := len(held) - 1; i >= 0; i-- {
+			held[i].chg.Unlock()
+		}
+	}()
+	for _, cl := range d.leads {
+		if cl.seatID != "" {
+			cl.chg.Lock()
+			held = append(held, cl)
+		}
+	}
+	var out []ownerwire.ChatCursorLead
+	for _, cl := range held {
+		if d.atCursor != nil {
+			d.atCursor(cl)
+		}
+		if l, ok := d.cursorLead(cl); ok {
+			out = append(out, l)
+		}
+	}
+	return out, nil
+}
+
+func (d *chatDesk) cursorLead(cl *chatLead) (ownerwire.ChatCursorLead, bool) {
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+	if !cl.on || cl.broken || cl.store == nil {
+		return ownerwire.ChatCursorLead{}, false
+	}
+	if _, ok := chatEpoch(d.state(cl).epoch); !ok {
+		return ownerwire.ChatCursorLead{}, false
+	}
+	s, err := cl.store.Status()
+	switch {
+	case err != nil:
+		d.markBroken(cl, err)
+		return ownerwire.ChatCursorLead{}, false
+	case s.Chat != ownerwire.ChatRead || s.Suspended:
+		return ownerwire.ChatCursorLead{}, false
+	}
+	return ownerwire.ChatCursorLead{Lead: cl.seatID, Gen: s.Gen, Head: s.Head}, true
 }
 
 // setText sets an entry's text, whose type is the wire's record text, from a
@@ -432,9 +542,15 @@ func (d *chatDesk) switched(cl *chatLead, st leadchat.Status) (old *chatWorker, 
 	defer d.mu.Unlock()
 	cl.mu.Lock()
 	defer cl.mu.Unlock()
+	was := cl.on
 	cl.on = st.Chat == ownerwire.ChatRead
 	if cl.on {
 		cl.lastHead = st.Head
+	}
+	if was || cl.on {
+		// A turn-on, a new segment, or a failed turn-on that left the lead
+		// off: the leads the seat may read may differ.
+		d.cursorMoved()
 	}
 	want := cl.on && !st.Suspended && !cl.broken && !d.closed
 	if w := cl.worker; w != nil && (!want || w.gen != st.Gen) {
@@ -488,9 +604,15 @@ func (d *chatDesk) stopWorker(cl *chatLead) {
 func (d *chatDesk) scan(ctx context.Context, cl *chatLead) {
 	defer func() {
 		if r := recover(); r != nil {
+			// scanOnce let go of the change lock as the panic left it.
+			cl.chg.Lock()
 			cl.mu.Lock()
 			cl.broken = true
+			if cl.on {
+				d.cursorMoved()
+			}
 			cl.mu.Unlock()
+			cl.chg.Unlock()
 			d.logf("chat: the scanner of the lead %q panicked (%T); the lead has no chat until the daemon is restarted", cl.key, r)
 		}
 	}()
@@ -519,7 +641,15 @@ func (d *chatDesk) scan(ctx context.Context, cl *chatLead) {
 // scanOnce scans the lead's reply folder once, and reports whether the
 // scanner goes on. Its log lines hold counts and fixed words only: never a
 // reply's text, a file name or a path.
+//
+// The scan holds the lead's change lock from its admission to its signal: a
+// turn-off published after the admission waits for the ingest and its
+// signal, so whatever the scan stored was stored while the seat could see the
+// lead on, and once the seat can see it off no scan of it is admitted, and
+// its head does not move until the next turn-on.
 func (d *chatDesk) scanOnce(cl *chatLead, failing *bool) bool {
+	cl.chg.Lock()
+	defer cl.chg.Unlock()
 	cl.mu.Lock()
 	if !cl.on || cl.broken || cl.store == nil {
 		cl.mu.Unlock()
@@ -531,9 +661,22 @@ func (d *chatDesk) scanOnce(cl *chatLead, failing *bool) bool {
 	if !ok {
 		return true
 	}
+	if d.atScan != nil {
+		d.atScan(cl)
+	}
 	rep, err := store.Ingest(epoch)
+	if rep.HeadAdvanced || rep.Suspended {
+		// The lead is readable (its scanner runs only then): its head
+		// moved (a reply, a withheld one, the fixed entry of a drop or of
+		// a suspension, before an error or not), or a scan stopped its
+		// chat. A drop that wrote no entry moved nothing and says nothing.
+		d.cursorMoved()
+	}
 	switch {
 	case errors.Is(err, leadchat.ErrOff), errors.Is(err, leadchat.ErrSuspended):
+		// The scanner runs only while the desk's switch is read: the lead
+		// was readable, and the store says it is not now.
+		d.cursorMoved()
 		return false
 	case err != nil && storeDown(err):
 		cl.mu.Lock()
@@ -645,13 +788,21 @@ func (d *chatDesk) set(params json.RawMessage) (any, *clientapi.ErrorBody) {
 }
 
 // setOff turns the lead's chat off: the desk's switch first, so that no read
-// after this call sees the lead on, then the scanner, then the store.
+// after this call sees the lead on, then the scanner, then the store. The
+// switch is published under the lead's change lock, after any scan admitted
+// before it has ingested and signalled; the scanner is waited for after the
+// lock is let go of.
 func (d *chatDesk) setOff(cl *chatLead) {
+	cl.chg.Lock()
 	cl.mu.Lock()
 	was := cl.on
 	cl.on = false
 	store, broken := cl.store, cl.broken
+	if was {
+		d.cursorMoved()
+	}
 	cl.mu.Unlock()
+	cl.chg.Unlock()
 	d.stopWorker(cl)
 	if store == nil || broken {
 		return
@@ -694,6 +845,10 @@ func (d *chatDesk) setRead(cl *chatLead) *clientapi.ErrorBody {
 	if d.beforeSwitch != nil {
 		d.beforeSwitch(cl)
 	}
+	// The store's switch and the desk's record of it change under the
+	// change lock, as one change; the scanner let go of is waited for
+	// after it.
+	cl.chg.Lock()
 	st, err := store.SetSwitch(ownerwire.ChatRead, epoch)
 	if err != nil && storeDown(err) {
 		cl.mu.Lock()
@@ -701,6 +856,7 @@ func (d *chatDesk) setRead(cl *chatLead) *clientapi.ErrorBody {
 		cl.mu.Unlock()
 	}
 	old, started := d.switched(cl, st)
+	cl.chg.Unlock()
 	endWorker(old)
 	switch {
 	case err != nil && storeDown(err):
