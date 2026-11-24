@@ -91,7 +91,7 @@ func TestNoKeyShapedLiteral(t *testing.T) {
 		t.Fatalf("the scan read %d files, want the whole family", files)
 	}
 	// The plan's tests, its golden plans and its templates among them.
-	for _, dir := range []string{"brief", "catalog", "plan", "plan/templates", "plan/testdata"} {
+	for _, dir := range []string{"brief", "catalog", "plan", "plan/templates", "plan/testdata", "handoff", "handoff/testdata"} {
 		if !dirs[dir] {
 			t.Errorf("the scan read nothing in %s", dir)
 		}

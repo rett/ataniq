@@ -15,6 +15,9 @@
 //     interviews begun on the phone and the plans stored for them, the one
 //     writer of them, which serves the nine verbs of the wire to the seat
 //     gate.
+//   - handoff turns the stored plan of a finished software thread into a
+//     hand-off for Qargi: comment lines and one command line of a closed
+//     grammar, which the owner runs himself. Nothing in the family runs it.
 //   - package approval/ownerwire holds the words of the wire the phone
 //     speaks to ask the questions, send the answers and read the plan: the
 //     one gate operation seat.genesis, with its strict forms and the gate
