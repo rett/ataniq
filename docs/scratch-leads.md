@@ -778,6 +778,66 @@ set `record_screens` back to `false`. If a copy of a recording that holds a
 login code or a session id left the machine, take the session as leaked: sign
 the agent out of it, so that it is revoked, before the lead goes on.
 
+## Lead replies (read only, not wired yet)
+
+A lead will be able to reply to the owner in writing, for the seat to show.
+The daemon's side of that is in [`internal/leadchat`](../internal/leadchat/doc.go),
+behind the canary tag like the rest of scratch mode. Nothing calls it yet: the
+daemon does not scan an outbox, no command turns chat on, and the seat still
+shows only its STAND-IN samples. What follows is what the package does, so
+that the wiring that comes next has one place to point to.
+
+**The outbox.** A lead writes each reply as one plain-text file in
+`/home/lead/.ataniq-replies`, which is
+`<state root>/leads/<layout role>/home/.ataniq-replies` on the host: its own
+writable home, so no new bind is needed. It writes under a name that starts
+with a dot and then renames the file to a name of lower-case letters, digits,
+dots, dashes and underscores that ends in `.txt` (at most 64 bytes, starting
+with a letter or a digit). The daemon reads and removes each file, and assigns
+the sender, the time and the order; it never shows a file name.
+
+**What is taken.** The folder is reached from the state root's descriptor, one
+name at a time, without following a link or crossing a mount point. A reply is
+taken only when it is a regular file of the daemon's user with one link, at
+most 2000 bytes, and its change time (which the lead cannot set, and which the
+rename sets) is at least 2 seconds old; it is read and checked again, and a
+file that changed while it was read waits for the next scan. At most 256
+entries are read in one scan, at most 32 replies wait (the excess, in name
+order, is removed), and at most 6 replies a minute and 60 an hour are taken
+from one lead; the rest wait. A symbolic link, a FIFO, a socket, a device, a
+file with more than one link and a file with another name are removed; a
+folder is left as it is; a file whose name starts with a dot is left until it
+is 10 minutes old and then removed.
+
+**The text.** Trailing line feeds are trimmed. A reply that is not plain text
+(a tab, a carriage return, a control or format character, invalid UTF-8) or
+that is over 2000 bytes is dropped, never cut. A reply that looks like a key, a
+token or a full 40-digit commit id is not stored: the entry reads "A reply was
+withheld: it looked like a key, a token or a full commit id." Ask leads for
+short commit ids. For drops the owner sees one fixed line per reason a minute,
+and never the dropped text.
+
+**Exactly once.** The entry is written and synced before the file is removed,
+and the file is removed only when its name still holds the file that was read.
+A daemon stopped between the two removes the file at the next scan without
+storing it again.
+
+**The switch.** Each lead's chat is `off` or `read` (sending is not built). It
+takes effect at once. Turning it on clears the outbox first, so nothing written
+before is ever shown, and the first entry reads "Chat was turned on. Replies
+written from now on show here." Turning it off deletes that lead's stored
+replies. **A restart of the daemon turns every lead's chat off**, and deletes
+what was stored; it is never turned back on from disk.
+
+**The store.** `<state root>/chat/<layout role>.jsonl` (folder mode 0700, file
+mode 0600, no sandbox binds it): strict JSON lines, each synced, locked by the
+daemon, checked by handle like [the command table](#the-command-table). A torn
+last line is cut; any other damage leaves that lead's chat unavailable and
+touches no other lead; nothing is repaired. Sequence numbers only grow, across
+switches and restarts. It keeps a lead's newest 500 entries, none older than 14
+days (the turned-on line is always kept), and holds them in memory, so reading
+them touches no file.
+
 ## Failure handling and owner recovery
 
 The daemon refuses to start when the config, a root or the root marker is not
@@ -967,6 +1027,7 @@ which settles it at its reconcile, as before.
 | --- | --- |
 | The wire values (untagged) | [`internal/leadwire`](../internal/leadwire/doc.go) |
 | The command table (tagged) | [`internal/leadcontrol`](../internal/leadcontrol/doc.go) |
+| The outbox reader and chat store of lead replies (tagged, not wired yet) | [`internal/leadchat`](../internal/leadchat/doc.go) |
 | The operations and scratch mode of the daemon (tagged) | `internal/leaddaemon`: `lead_ext_linux.go`, `lead_mode_linux.go`, `canary_router_linux.go` |
 | The scratch config, names and per-lead evidence (tagged) | [`internal/leadcanary`](../internal/leadcanary/doc.go) |
 | Provisioning of a scratch lead, `scratch-clean` (tagged) | [`internal/leadcanary/provision`](../internal/leadcanary/provision/doc.go) |
@@ -978,7 +1039,7 @@ which settles it at its reconcile, as before.
 The targeted checks, after `make doctor`:
 
 ```sh
-sh scripts/go-tool.sh test -tags ataniq_canary ./internal/leadcontrol/ ./internal/leadcanary/... ./internal/leaddaemon/ ./cmd/ataniqd/ ./cmd/ataniq-canary/
+sh scripts/go-tool.sh test -tags ataniq_canary ./internal/leadcontrol/ ./internal/leadchat/ ./internal/leadcanary/... ./internal/leaddaemon/ ./cmd/ataniqd/ ./cmd/ataniq-canary/
 sh scripts/go-tool.sh test ./internal/leadwire/ ./internal/consoleclient/ ./internal/terminalconsole/... ./cmd/ataniq-console/
 ```
 
