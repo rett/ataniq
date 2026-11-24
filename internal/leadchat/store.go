@@ -103,6 +103,13 @@ type IngestReport struct {
 	Waiting int
 	// Suspended is true when this scan stopped the lead's chat.
 	Suspended bool
+	// HeadAdvanced is true when this scan gave the lead's chat a new head:
+	// it stored a reply, a withheld one, the fixed entry of a drop or of a
+	// suspension, whether or not it failed after. A scan that dropped a
+	// reply and wrote no entry for it (the drop's entry was written less
+	// than a minute before) leaves it false, as does a scan that took
+	// nothing. It is set on an error too.
+	HeadAdvanced bool
 }
 
 // Options are the settings of [OpenStore].
@@ -1023,9 +1030,11 @@ func (s *Store) suspend(now time.Time, epoch int64, text string, rep *IngestRepo
 // entry is written at most once a minute.
 //
 // An error leaves the store as it is, with a claim it made kept for the
-// next scan of the segment; a write or sync that fails breaks it.
-func (s *Store) Ingest(epoch int64) (IngestReport, error) {
-	rep := IngestReport{Dropped: map[Reason]int{}}
+// next scan of the segment; a write or sync that fails breaks it. The report
+// says whether the scan moved the head ([IngestReport].HeadAdvanced), on an
+// error too.
+func (s *Store) Ingest(epoch int64) (rep IngestReport, err error) {
+	rep = IngestReport{Dropped: map[Reason]int{}}
 	if epoch < 0 || epoch > ownerwire.MaxChatSeq {
 		return rep, fmt.Errorf("%w: the epoch is out of range", ErrInvalid)
 	}
@@ -1034,6 +1043,10 @@ func (s *Store) Ingest(epoch int64) (IngestReport, error) {
 	if err := s.usable(); err != nil {
 		return rep, err
 	}
+	// The head is the highest sequence number given; whatever this scan
+	// appended, before an error or not, moved it.
+	before := s.last
+	defer func() { rep.HeadAdvanced = s.last != before }()
 	if s.chat != ownerwire.ChatRead {
 		return rep, ErrOff
 	}

@@ -383,8 +383,16 @@ ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits
   wait (`... watch, genesis, chat and wait-chat`), and a second line follows:
 
 ```text
+ataniqd: seat gate: listening on 192.0.2.10:7443, key fingerprint <64 hex digits>, seat origin https://seat.example; it serves pair, read, login, decide, watch, genesis, chat and wait-chat
 ataniqd: seat gate: chat: STAND-IN sample leads and conversations of the phone trial, held in memory; no lead is read or reached
 ```
+
+  A scratch daemon's gate (see [the scratch leads guide](scratch-leads.md))
+  ends its start line the same way, and its second line says
+  `chat: replies the scratch leads wrote to their outboxes; read only`. The
+  chat cursor is a number keyed by a secret the daemon makes at each start: it
+  carries no text and no lead's name, means nothing after a restart, and only
+  hints that the seat should read again; it never allows a read.
 
 The gate speaks TLS 1.3 with pinned keys, strict frames of at most 257 KiB
 (the largest listing, card or page and the response around it) and the limits

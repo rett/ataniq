@@ -1026,8 +1026,11 @@ can be sent: there is no way to send a message from the seat yet. Open **Leads**
 `wait-chat` says the gate also offers the seat's live wait a chat cursor, a
 number that changes when what the seat may read of the leads' chat changes
 (see [the design](design/seat-gate.md#chat-hints-on-the-wait)). It carries no
-text of a lead, and a lead whose chat is off never moves it. The samples never
-change, so the trial's cursor never moves.
+text of a lead, and a lead whose chat is off never moves it. It is keyed by a
+secret the daemon makes at each start and never sends, so its value means
+nothing across a restart, and it only says that something may have changed: it
+never allows a read, which the gate authorizes on every `seat.chat` call. The
+samples never change, so the trial's cursor never moves while the trial runs.
 
 `--trial` needs `--owner-channel` (exit 2 without it). The daemon refuses the
 trial's settings without `--trial`, and other settings with it (exit 10), and a

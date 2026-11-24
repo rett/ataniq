@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -356,5 +357,117 @@ func TestSeatLinkWatchChatClose(t *testing.T) {
 	}
 	if h := d.ChatHint(); h.Live {
 		t.Fatalf("a hint after Close: %+v", h)
+	}
+}
+
+// A reconnection that comes after the watcher read the connection and made
+// its wait, and before it sent it, sends nothing on the new connection that
+// was meant for the old: the wait is not sent, and the first wait on the new
+// connection carries 0, never the old connection's cursor.
+func TestSeatLinkWatchChatNeverSendsACursorToAnotherConnection(t *testing.T) {
+	desk := newChatWaitDesk(7)
+	seat := newIdentity(t, "seat")
+	g := &restartable{t: t, id: newIdentity(t, "gate"), pins: []string{seat.Fingerprint()}, caps: fullCaps, h: desk.handle}
+	g.start()
+	t.Cleanup(g.stop)
+	d, c := g.link(t, seat)
+	var armed atomic.Bool
+	at := make(chan time.Time, 1)
+	resume := make(chan struct{})
+	wt := fastTimes(nil)
+	wt.beforeSend = func(conn time.Time) {
+		if armed.CompareAndSwap(true, false) {
+			at <- conn
+			<-resume
+		}
+	}
+	d.wt = wt
+	d.StartWatch()
+	nextHint(t, d, "the cursor", func(h ChatHint) bool { return h.Live && h.Cursor == 7 })
+	<-desk.held
+
+	// A Card change answers the held wait; the watcher makes its next wait,
+	// with the cursor 7, and stops before it sends it.
+	armed.Store(true)
+	desk.change(func(d *chatWaitDesk) { d.cards = append(d.cards, waitCard(5)) })
+	old := <-at
+	n := len(desk.params())
+	g.stop()
+	g.start()
+	eventually(t, "a new connection", func() bool { now, ok := c.Connected(); return ok && !now.Equal(old) })
+	close(resume)
+	eventually(t, "a wait on the new connection", func() bool { return len(desk.params()) > n })
+	ps := desk.params()[n:]
+	if ps[0].Chat == nil || *ps[0].Chat != 0 {
+		t.Fatalf("the first wait on the new connection carried %+v, not 0", ps[0])
+	}
+	for _, p := range ps {
+		if p.Chat != nil && *p.Chat == 7 {
+			t.Fatalf("the old connection's cursor was sent on the new one: %+v", ps)
+		}
+	}
+	h := nextHint(t, d, "a cursor of the new connection", func(h ChatHint) bool { return h.Live })
+	if h.Connection.Equal(old) {
+		t.Fatalf("the hint names the old connection: %+v", h)
+	}
+}
+
+// A link lost while the watcher pauses after a change drops the hint at
+// once and wakes its subscribers, not when the pause ends.
+func TestSeatLinkWatchChatLossDuringThePauseDropsTheHint(t *testing.T) {
+	desk := newChatWaitDesk(7)
+	seat := newIdentity(t, "seat")
+	g := &restartable{t: t, id: newIdentity(t, "gate"), pins: []string{seat.Fingerprint()}, caps: fullCaps, h: desk.handle}
+	g.start()
+	t.Cleanup(g.stop)
+	d, _ := g.link(t, seat)
+	wt := fastTimes(nil)
+	wt.coalesce = time.Minute
+	d.wt = wt
+	d.StartWatch()
+	// The first answer moved the cursor from none to 7: the watcher pauses
+	// a minute after it.
+	nextHint(t, d, "the cursor", func(h ChatHint) bool { return h.Live && h.Cursor == 7 })
+	ch := d.ChatHintChanged()
+	if h := d.ChatHint(); !h.Live {
+		t.Fatalf("the hint was dropped before the link: %+v", h)
+	}
+	g.stop()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hint's subscribers were not woken while the watcher paused")
+	}
+	if h := d.ChatHint(); h.Live {
+		t.Fatalf("a hint of a lost link: %+v", h)
+	}
+}
+
+// ChatHint checks the hint's connection when it is read: a hint of a
+// connection that is not the client's now is not live, whether or not the
+// watcher dropped it.
+func TestSeatLinkChatHintIsOfTheConnectionNow(t *testing.T) {
+	desk := newChatWaitDesk(7)
+	d, c, _ := chatRig(t, desk, fullCaps)
+	conn, ok := c.Connected()
+	if !ok {
+		t.Fatal("not connected")
+	}
+	d.chub.set(ChatHint{Live: true, Cursor: 5, Connection: conn})
+	if h := d.ChatHint(); !h.Live || h.Cursor != 5 {
+		t.Fatalf("a hint of the connection now: %+v", h)
+	}
+	d.chub.set(ChatHint{Live: true, Cursor: 5, Connection: conn.Add(-time.Second)})
+	if h := d.ChatHint(); h != (ChatHint{}) {
+		t.Fatalf("a hint of another connection: %+v", h)
+	}
+
+	// A gate that does not list the extension has no live hint either.
+	plain := newChatWaitDesk(7)
+	d2, c2, _ := chatRig(t, plain, []string{"pair", "read", "watch", "chat"})
+	conn2, _ := c2.Connected()
+	d2.chub.set(ChatHint{Live: true, Cursor: 5, Connection: conn2})
+	if h := d2.ChatHint(); h.Live {
+		t.Fatalf("a hint on a gate without wait-chat: %+v", h)
 	}
 }

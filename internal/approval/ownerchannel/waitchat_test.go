@@ -6,10 +6,13 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"ataniq/internal/approval/ownerjournal"
 	"ataniq/internal/approval/ownerwire"
+	"ataniq/internal/approval/record"
 )
 
 // fakeCursor is a chat port's cursor: the cursor of the enabled leads, which
@@ -22,6 +25,14 @@ type fakeCursor struct {
 	err    error
 	panics bool
 	reads  int
+	// onRead, if set, runs in each read, under the lock, after the cursor
+	// was taken: it may change the leads and close the channel, as a change
+	// that comes just after a read does.
+	onRead func(f *fakeCursor, n int)
+	// failFrom makes every read from the failFrom-th on fail, when not 0.
+	failFrom int
+	// subPanics makes ChatCursorChanged panic.
+	subPanics bool
 }
 
 func newFakeCursor(leads ...ownerwire.ChatCursorLead) *fakeCursor {
@@ -39,10 +50,29 @@ func (f *fakeCursor) ChatCursor(ctx context.Context) (int64, error) {
 	if f.panics {
 		panic("the cursor's source broke")
 	}
-	if f.err != nil {
-		return 0, f.err
+	if f.err != nil || (f.failFrom > 0 && f.reads >= f.failFrom) {
+		return 0, errors.New("the desk's chat is down")
 	}
-	return f.cursorLocked(), nil
+	v := f.cursorLocked()
+	if f.onRead != nil {
+		f.onRead(f, f.reads)
+	}
+	return v, nil
+}
+
+func (f *fakeCursor) readCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reads
+}
+
+// changeLocked is change with the lock held.
+func (f *fakeCursor) changeLocked(edit func(map[string]ownerwire.ChatCursorLead)) {
+	if edit != nil {
+		edit(f.leads)
+	}
+	close(f.ch)
+	f.ch = make(chan struct{})
 }
 
 func (f *fakeCursor) cursorLocked() int64 {
@@ -50,8 +80,11 @@ func (f *fakeCursor) cursorLocked() int64 {
 	for _, l := range f.leads {
 		all = append(all, l)
 	}
-	return ownerwire.ChatCursor(all)
+	return ownerwire.ChatCursor(testKey, all)
 }
+
+// testKey is the fake's cursor key; the daemon's is random.
+var testKey = ownerwire.NewChatCursorKey()
 
 func (f *fakeCursor) cursor() int64 {
 	f.mu.Lock()
@@ -62,6 +95,9 @@ func (f *fakeCursor) cursor() int64 {
 func (f *fakeCursor) ChatCursorChanged() <-chan struct{} {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.subPanics {
+		panic("the cursor's change channel broke")
+	}
 	return f.ch
 }
 
@@ -154,66 +190,172 @@ func TestWaitChatHoldsAndAnswersTheSameCursor(t *testing.T) {
 	}
 }
 
-// offRun is one run of an extended wait held over an idle desk, with during,
-// if not nil, run while it is held, and what it answered and when.
-func offRun(t *testing.T, during func(src *fakeCursor)) (ownerwire.SeatWaitResult, time.Duration, []time.Duration, int) {
+// chatScene is the Card and chat setting of an off-only run: a card that
+// expires expiry after the wait begins (0 for none within the hold), and a
+// seat whose cursor is stale, so that the chat's gap runs.
+type chatScene struct {
+	expiry time.Duration
+	stale  bool
+}
+
+// chatRun is what a run shows: the answer, when it came, the timers made and
+// stopped and the looks at the door, each at its time from the wait's start.
+type chatRun struct {
+	res   ownerwire.SeatWaitResult
+	at    time.Duration
+	ops   []string
+	looks []time.Duration
+	// wakes counts the off-only wakes the wait took.
+	wakes int
+}
+
+// offRun runs an extended wait in scene, the clock moved in steps of 100
+// milliseconds. With busy, a lead whose chat is off is active: before every
+// fifth step its port wakes the wait twice, each wake taken by the wait
+// before the next (it sampled the cursor again and is waiting once more)
+// while the wait is waiting. Each step that fires a timer waits for the wait
+// to wait again, or answer, before the next.
+func offRun(t *testing.T, scene chatScene, busy bool) chatRun {
+	t.Helper()
 	w := newWaitEnv(t)
-	w.card("feature-a")
+	a := w.card("feature-a")
+	if scene.expiry > 0 {
+		expires, err := record.ParseTime(a.Binding.PendingExpiresAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// w.now moves the clock a second more.
+		w.wc.Advance(expires.Sub(w.clock.Now()) - scene.expiry - waitFloor)
+	}
 	src := newFakeCursor(leadA)
 	first := w.now(t)
-	base := w.lists()
-	out := w.startChatWait(context.Background(), first.Version, src.cursor(), src)
-	w.held(t, 1)
-	asked := len(w.wc.asks())
-	var moved time.Duration
-	for i := 0; i < 40; i++ {
-		if during != nil && i < 20 {
-			during(src)
-		}
+	chat := src.cursor()
+	if scene.stale {
+		chat = ownerwire.ChatCursor(testKey, nil)
+	}
+	var parks atomic.Int64
+	parked := make(chan struct{}, 1)
+	w.svc.wait.parked = func() {
+		parks.Add(1)
 		select {
-		case r := <-out:
-			if r.err != nil {
-				t.Fatal(r.err)
-			}
-			return r.res, moved, w.wc.asks()[asked:], w.lists() - base
-		case <-time.After(15 * time.Millisecond):
+		case parked <- struct{}{}:
+		default:
 		}
-		w.wc.Advance(time.Second)
-		moved += time.Second
 	}
-	r := answered(t, out)
-	if r.err != nil {
-		t.Fatal(r.err)
+	w.wc.record()
+	t0 := w.clock.Now()
+	w.door.mu.Lock()
+	looked := len(w.door.listAt)
+	w.door.mu.Unlock()
+	out := w.startChatWait(context.Background(), first.Version, chat, src)
+	var got *waitOut
+	// settle waits for the wait to wait again after a wake, or to answer.
+	// A wake that leaves it in the floor's wait for a look parks it later,
+	// after the step that ends the floor; settle then gives up after a
+	// second of real time and says so.
+	settle := func(since int64) bool {
+		deadline := time.After(time.Second)
+		for got == nil && parks.Load() <= since {
+			select {
+			case r := <-out:
+				got = &r
+			case <-parked:
+			case <-deadline:
+				return false
+			}
+		}
+		return true
 	}
-	return r.res, moved, w.wc.asks()[asked:], w.lists() - base
+	if !settle(0) {
+		t.Fatal("the wait never waited")
+	}
+	run := chatRun{}
+	waiting := true
+	for step := 0; got == nil && step < 400; step++ {
+		if busy && waiting && step%5 == 0 {
+			for i := 0; i < 2; i++ {
+				before, reads := parks.Load(), src.readCount()
+				src.change(nil)
+				if !settle(before) || got != nil {
+					t.Fatalf("an off-only wake at %s was not taken", run.at)
+				}
+				if src.readCount() == reads {
+					t.Fatalf("an off-only wake at %s did not sample the cursor", run.at)
+				}
+				run.wakes++
+			}
+		}
+		before := parks.Load()
+		fired := w.wc.Advance(100 * time.Millisecond)
+		run.at += 100 * time.Millisecond
+		if fired > 0 {
+			waiting = settle(before)
+		}
+	}
+	if got == nil {
+		r := answered(t, out)
+		got = &r
+	}
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	run.res, run.ops = got.res, w.wc.opLog()
+	w.door.mu.Lock()
+	for _, at := range w.door.listAt[looked:] {
+		run.looks = append(run.looks, at.Sub(t0))
+	}
+	w.door.mu.Unlock()
+	return run
 }
 
 // A lead whose chat is off is not in the cursor, so its activity, even when
-// the source wakes the wait for it, changes nothing: the answer, the time it
-// comes, the timers the wait set and the looks at the door are those of an
-// idle desk.
+// the port wakes the wait for it, changes nothing: the answer, the time it
+// comes, every timer the wait makes or stops, with its time, and every look
+// at the door, with its time, are those of an idle desk. That holds with a
+// Card that expires within the hold, with the chat's gap running, with both,
+// and with neither.
 func TestWaitChatOffOnlyActivityIsInvisible(t *testing.T) {
-	idle, idleAt, idleTimers, idleLooks := offRun(t, nil)
-	busy, busyAt, busyTimers, busyLooks := offRun(t, func(src *fakeCursor) {
-		// An off lead wrote: nothing the cursor covers moved, but the
-		// source wakes the waits all the same.
-		src.change(nil)
-		src.change(nil)
-	})
-	if !reflect.DeepEqual(idle, busy) {
-		t.Errorf("an off lead's activity changed the answer:\n idle %+v\n busy %+v", idle, busy)
-	}
-	if idleAt != busyAt {
-		t.Errorf("an off lead's activity changed the time of the answer: %s, idle %s", busyAt, idleAt)
-	}
-	if !reflect.DeepEqual(idleTimers, busyTimers) {
-		t.Errorf("an off lead's activity changed the timers: %v, idle %v", busyTimers, idleTimers)
-	}
-	if idleLooks != busyLooks {
-		t.Errorf("an off lead's activity made %d looks at the door, idle %d", busyLooks, idleLooks)
-	}
-	if busyAt < defaultWaitHold {
-		t.Errorf("answered after %s, before the hold", busyAt)
+	for name, scene := range map[string]chatScene{
+		"an idle hold":                      {},
+		"a Card that expires":               {expiry: 10 * time.Second},
+		"the chat's gap":                    {stale: true},
+		"a Card that expires and the gap":   {expiry: 10 * time.Second, stale: true},
+		"the gap, then a Card that expires": {expiry: 21 * time.Second, stale: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			idle := offRun(t, scene, false)
+			busy := offRun(t, scene, true)
+			t.Logf("idle: answered %+v after %s, timers %q, looks %v; busy took %d off-only wakes", idle.res, idle.at, idle.ops, idle.looks, busy.wakes)
+			if busy.wakes == 0 {
+				t.Fatal("the busy run took no off-only wake")
+			}
+			if !reflect.DeepEqual(idle.res, busy.res) {
+				t.Errorf("an off lead's activity changed the answer:\n idle %+v\n busy %+v", idle.res, busy.res)
+			}
+			if idle.at != busy.at {
+				t.Errorf("an off lead's activity changed the time of the answer: %s, idle %s", busy.at, idle.at)
+			}
+			if !reflect.DeepEqual(idle.ops, busy.ops) {
+				t.Errorf("an off lead's activity changed the timers:\n busy %q\n idle %q", busy.ops, idle.ops)
+			}
+			if !reflect.DeepEqual(idle.looks, busy.looks) {
+				t.Errorf("an off lead's activity changed the looks at the door: %v, idle %v", busy.looks, idle.looks)
+			}
+			switch {
+			case scene.expiry > 0 && scene.expiry < WaitChatGap:
+				if idle.res.Waiting != 0 || idle.at > scene.expiry+2*time.Second {
+					t.Errorf("the Card's expiry answered %+v after %s", idle.res, idle.at)
+				}
+			case scene.stale:
+				if idle.at < WaitChatGap || idle.at > WaitChatGap+time.Second {
+					t.Errorf("the gap answered after %s", idle.at)
+				}
+			default:
+				if idle.at < defaultWaitHold {
+					t.Errorf("answered after %s, before the hold", idle.at)
+				}
+			}
+		})
 	}
 }
 
@@ -259,7 +401,7 @@ func TestWaitChatStaleCursorWaitsTheGap(t *testing.T) {
 	w := newWaitEnv(t)
 	src := newFakeCursor(leadA)
 	first := w.now(t)
-	out := w.startChatWait(context.Background(), first.Version, ownerwire.ChatCursor(nil), src)
+	out := w.startChatWait(context.Background(), first.Version, ownerwire.ChatCursor(testKey, nil), src)
 	w.held(t, 2)
 	got, moved := w.drive(t, out, time.Second, 40)
 	if got.err != nil || chatOf(t, got.res) != src.cursor() {
@@ -321,7 +463,7 @@ func TestWaitChatSwitchOffBeforeTheAnswerPurgesTheHint(t *testing.T) {
 	if got.err != nil {
 		t.Fatal(got.err)
 	}
-	if c, want := chatOf(t, got.res), ownerwire.ChatCursor([]ownerwire.ChatCursorLead{leadB}); c != want {
+	if c, want := chatOf(t, got.res), ownerwire.ChatCursor(testKey, []ownerwire.ChatCursorLead{leadB}); c != want {
 		t.Fatalf("the cursor is %d, want %d, that of the lead still enabled", c, want)
 	}
 
@@ -400,6 +542,99 @@ func TestWaitChatFailingSourceFailsClosed(t *testing.T) {
 	}
 }
 
+// The cursor that answers a seat with none at once is the one sample that
+// decided to answer: a source whose second read fails still gives it, and
+// is read once.
+func TestWaitChatBootstrapIsOneSample(t *testing.T) {
+	w := newWaitEnv(t)
+	w.card("feature-a")
+	src := newFakeCursor(leadA)
+	first := w.now(t)
+	want := src.cursor()
+	src.set(func(f *fakeCursor) { f.failFrom = 2 })
+	got := answered(t, w.startChatWait(context.Background(), first.Version, 0, src))
+	if got.err != nil || chatOf(t, got.res) != want {
+		t.Fatalf("answered %+v, want the cursor %d", got, want)
+	}
+	if n := src.readCount(); n != 1 {
+		t.Fatalf("the source was read %d times, want once", n)
+	}
+}
+
+// A sample after which the port's channel closed (a change just after the
+// read) is taken again before it is answered: at once to a seat with none,
+// and when the chat's gap ends. The answer is the cursor after the change.
+func TestWaitChatAnswersAValidatedSample(t *testing.T) {
+	moveA := func(f *fakeCursor, n int) {
+		if n == 1 {
+			f.changeLocked(func(m map[string]ownerwire.ChatCursorLead) { l := m[leadA.Lead]; l.Head += 5; m[leadA.Lead] = l })
+		}
+	}
+	t.Run("at once", func(t *testing.T) {
+		w := newWaitEnv(t)
+		src := newFakeCursor(leadA)
+		first := w.now(t)
+		before := src.cursor()
+		src.set(func(f *fakeCursor) { f.onRead = moveA })
+		got := answered(t, w.startChatWait(context.Background(), first.Version, 0, src))
+		if c := chatOf(t, got.res); got.err != nil || c == before || c != src.cursor() {
+			t.Fatalf("answered %d (%v), want the cursor after the change %d, not %d", c, got.err, src.cursor(), before)
+		}
+	})
+	t.Run("at the end of the gap", func(t *testing.T) {
+		w := newWaitEnv(t)
+		src := newFakeCursor(leadA)
+		first := w.now(t)
+		stale := ownerwire.ChatCursor(testKey, nil)
+		out := w.startChatWait(context.Background(), first.Version, stale, src)
+		w.held(t, 2)
+		before := src.cursor()
+		base := src.readCount()
+		src.set(func(f *fakeCursor) {
+			f.onRead = func(f *fakeCursor, n int) { moveA(f, n-base) }
+		})
+		got, moved := w.drive(t, out, time.Second, 40)
+		if got.err != nil || moved < WaitChatGap-time.Second {
+			t.Fatalf("answered %+v after %s", got, moved)
+		}
+		if c := chatOf(t, got.res); c == before || c != src.cursor() {
+			t.Fatalf("the gap answered %d, want the cursor after the change %d, not %d", c, src.cursor(), before)
+		}
+	})
+}
+
+// A port whose change channel cannot be taken (ChatCursorChanged panics),
+// though its cursor can be read, is the plain wait's behaviour: no answer
+// carries chat, a seat with no cursor is held as any other, a Card change
+// answers at once, and the cursor is not read.
+func TestWaitChatAPanickingSubscriptionIsTheCardOnlyWait(t *testing.T) {
+	w := newWaitEnv(t)
+	w.card("feature-a")
+	src := newFakeCursor(leadA)
+	src.set(func(f *fakeCursor) { f.subPanics = true })
+	first := w.now(t)
+	got := answered(t, w.startChatWait(context.Background(), "", 0, src))
+	if got.err != nil || got.res.Chat != nil || got.res.Version != first.Version {
+		t.Fatalf("with no version: %+v", got)
+	}
+	out := w.startChatWait(context.Background(), first.Version, 0, src)
+	w.held(t, 1)
+	got, moved := w.drive(t, out, time.Second, 40)
+	if got.err != nil || got.res.Chat != nil || moved < defaultWaitHold {
+		t.Fatalf("a seat with no cursor: %+v after %s", got, moved)
+	}
+	out = w.startChatWait(context.Background(), first.Version, src.cursor(), src)
+	w.held(t, 1)
+	w.card("feature-b")
+	got, moved = w.drive(t, out, time.Second, 40)
+	if got.err != nil || got.res.Chat != nil || got.res.Waiting != 2 || moved >= defaultWaitHold {
+		t.Fatalf("a Card change: %+v after %s", got, moved)
+	}
+	if n := src.readCount(); n != 0 {
+		t.Fatalf("the cursor was read %d times", n)
+	}
+}
+
 // The extended and the plain waits count together against the service's
 // limit, and a cancelled extended wait leaves no timer.
 func TestWaitChatSharesTheLimit(t *testing.T) {
@@ -435,5 +670,132 @@ func TestWaitPlainCarriesNoChat(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(reflect.TypeOf(w.svc).String()), "chat") {
 		t.Fatal("the service's type names chat")
+	}
+}
+
+// authority is what a wait could move beyond its looks: the door's
+// decisions, uses and settles, the intake's resolves, fresh reads and
+// applies, the merges, the suite runs, the lead's replies, the journal's
+// openings and the undelivered decisions.
+type authority struct {
+	decides, uses, settles        int
+	resolves, freshes, applies    int
+	builds, runs, replies, opened int
+	undelivered                   int
+}
+
+func (w *waitEnv) authority(t *testing.T, opened *atomic.Int64) authority {
+	t.Helper()
+	var a authority
+	a.decides, a.uses, a.settles = w.door.counts()
+	w.intake.mu.Lock()
+	a.resolves, a.freshes, a.applies = w.intake.resolves, w.intake.freshes, w.intake.applies
+	w.intake.mu.Unlock()
+	w.merger.mu.Lock()
+	a.builds = w.merger.builds
+	w.merger.mu.Unlock()
+	w.verif.mu.Lock()
+	a.runs = w.verif.runs
+	w.verif.mu.Unlock()
+	a.replies = len(w.mail.all())
+	a.opened = int(opened.Load())
+	und, err := unwrapJournal(w.svc.journal()).Undelivered()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.undelivered = len(und)
+	return a
+}
+
+// The extended wait leaves an uncertain journal to the service's tick: a
+// look that finds the journal uncertain, at once or in a held wait that a
+// chat wake and a poke woke, answers ErrWaitRecovery and reopens nothing,
+// reconciles nothing and so hands over no pending decision: no decision, use,
+// intake, merge, suite, reply or reopening comes of the wait. The plain wait
+// still recovers, as it always did, and its recovery redelivers the
+// decision: the positive control.
+func TestWaitChatLeavesAnUncertainJournalToTheTick(t *testing.T) {
+	e := newEnv(t)
+	var opened atomic.Int64
+	var fails atomic.Int64
+	e.journalWrap = func(st *ownerjournal.Store) Journal {
+		opened.Add(1)
+		return &shaky{Store: st, failing: func(m string) bool {
+			if m != "ExpireHeld" {
+				return false
+			}
+			for {
+				n := fails.Load()
+				if n <= 0 {
+					return false
+				}
+				if fails.CompareAndSwap(n, n-1) {
+					return true
+				}
+			}
+		}}
+	}
+	e.start()
+	wc := &fakeWaitClock{clock: e.clock}
+	e.svc.wait.clk = wc
+	w := &waitEnv{env: e, wc: wc}
+
+	p := w.card("feature-a")
+	w.door.mu.Lock()
+	w.door.failDecide = errors.New("connection refused")
+	w.door.mu.Unlock()
+	if _, err := w.decide(p, true); !errors.Is(err, ErrDoorUnavailable) {
+		t.Fatalf("Decide returned %v", err)
+	}
+	w.door.mu.Lock()
+	w.door.failDecide = nil
+	w.door.mu.Unlock()
+	src := newFakeCursor(leadA)
+	first := w.now(t)
+	before := w.authority(t, &opened)
+	if before.undelivered != 1 {
+		t.Fatalf("%d undelivered decisions, want the one the door did not take", before.undelivered)
+	}
+
+	// At once: a look of the extended wait meets the uncertain journal.
+	w.wc.Advance(waitFloor)
+	fails.Store(1)
+	got := answered(t, w.startChatWait(context.Background(), "", 0, src))
+	if !errors.Is(got.err, ErrWaitRecovery) {
+		t.Fatalf("the extended wait answered %+v, want ErrWaitRecovery", got)
+	}
+	if a := w.authority(t, &opened); a != before {
+		t.Fatalf("the extended wait moved an instrument:\n before %+v\n after  %+v", before, a)
+	}
+
+	// Held: a chat wake, then a poke whose look meets the uncertain journal.
+	first = w.now(t)
+	out := w.startChatWait(context.Background(), first.Version, src.cursor(), src)
+	w.held(t, 1)
+	src.change(func(m map[string]ownerwire.ChatCursorLead) { l := m[leadA.Lead]; l.Head++; m[leadA.Lead] = l })
+	w.held(t, 2)
+	if a := w.authority(t, &opened); a != before {
+		t.Fatalf("a chat wake moved an instrument:\n before %+v\n after  %+v", before, a)
+	}
+	fails.Store(1)
+	w.svc.poke()
+	got, _ = w.drive(t, out, time.Second, 10)
+	if !errors.Is(got.err, ErrWaitRecovery) {
+		t.Fatalf("the held extended wait answered %+v, want ErrWaitRecovery", got)
+	}
+	if a := w.authority(t, &opened); a != before {
+		t.Fatalf("the held extended wait moved an instrument:\n before %+v\n after  %+v", before, a)
+	}
+
+	// The positive control: the plain wait recovers, and the recovery
+	// hands the decision over.
+	w.wc.Advance(waitFloor)
+	fails.Store(1)
+	if _, err := w.svc.WaitPending(context.Background(), ""); !errors.Is(err, ErrJournalReopened) {
+		t.Fatalf("the plain wait answered %v, want ErrJournalReopened", err)
+	}
+	after := w.authority(t, &opened)
+	if after.opened != before.opened+1 || after.decides <= before.decides || after.undelivered != 0 {
+		t.Fatalf("the plain wait's recovery: before %+v, after %+v", before, after)
 	}
 }

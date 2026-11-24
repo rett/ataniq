@@ -94,8 +94,14 @@ type LeadChat struct {
 	cch chan struct{}
 }
 
-// chatBinding holds the bound source.
-type chatBinding struct{ src chatSource }
+// chatBinding holds the bound source and the key of its chat cursor: a
+// random key made at the bind, held in the daemon's memory alone, so the
+// cursors of one binding compare equal exactly when their sets do, and no
+// cursor can be recognised across a bind (a restart, a replaced source).
+type chatBinding struct {
+	src chatSource
+	key ownerwire.ChatCursorKey
+}
 
 // NewLeadChat returns a port that answers chat-busy until the scratch mode of
 // a [Run] whose [Scratch].Chat it is binds it.
@@ -113,7 +119,7 @@ func (c *LeadChat) bind(src chatSource) {
 		old = c.src.Swap(nil)
 	} else {
 		src.onChange(c.cursorChanged)
-		old = c.src.Swap(&chatBinding{src: src})
+		old = c.src.Swap(&chatBinding{src: src, key: ownerwire.NewChatCursorKey()})
 	}
 	if old != nil && old.src != nil && (src == nil || old.src != src) {
 		old.src.onChange(nil)
@@ -127,13 +133,22 @@ var errNoCursor = errors.New("lead chat: no chat cursor")
 
 // ChatCursor answers the chat cursor of the extended seat.wait
 // (ownerchannel.ChatCursor, by its method set alone):
-// [ownerwire.ChatCursor] over the leads the seat may read now, each with the
-// generation of its switch and its head. A lead whose chat is off, stopped by
-// a scan, or whose store failed is not in it, so nothing it does moves the
-// cursor. It reads only the desk's switches and the stores' status: it reads
-// no reply, changes nothing, and is not counted against
-// [ChatCallsPerMinute], since the seat does not send it. An unbound port, a
-// failing source and a panic below it answer an error: no cursor.
+// [ownerwire.ChatCursor], under the binding's key, over the leads the seat
+// may read now, each with the generation of its switch and its head. A lead
+// whose chat is off, stopped by a scan, or whose store failed is not in it,
+// so nothing it does moves the cursor. It reads only the desk's switches and
+// the stores' status: it reads no reply, changes no switch, head or entry
+// (a status may drop expired entries from memory, as every read does), and
+// is not counted against [ChatCallsPerMinute], since the seat does not send
+// it. An unbound port, a failing source and a panic below it answer an
+// error: no cursor.
+//
+// The source samples its leads as one state (chatDesk.seatCursor), and the
+// binding is checked again after the sample: a sample taken from a binding
+// that was replaced or taken back meanwhile is discarded, and the cursor is
+// read again from the binding now, at most [cursorTries] times in all,
+// after which there is no cursor. So a cursor is never that of a source the
+// port no longer holds, nor under its key.
 func (c *LeadChat) ChatCursor(ctx context.Context) (v int64, err error) {
 	if c == nil {
 		return 0, errNoCursor
@@ -143,19 +158,28 @@ func (c *LeadChat) ChatCursor(ctx context.Context) (v int64, err error) {
 			v, err = 0, errNoCursor
 		}
 	}()
-	if err := ctx.Err(); err != nil {
-		return 0, err
+	for try := 0; try < cursorTries; try++ {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		b := c.src.Load()
+		if b == nil || b.src == nil {
+			return 0, errNoCursor
+		}
+		leads, err := b.src.seatCursor()
+		if err != nil {
+			return 0, errNoCursor
+		}
+		if c.src.Load() == b {
+			return ownerwire.ChatCursor(b.key, leads), nil
+		}
 	}
-	b := c.src.Load()
-	if b == nil || b.src == nil {
-		return 0, errNoCursor
-	}
-	leads, err := b.src.seatCursor()
-	if err != nil {
-		return 0, errNoCursor
-	}
-	return ownerwire.ChatCursor(leads), nil
+	return 0, errNoCursor
 }
+
+// cursorTries is how many samples [LeadChat.ChatCursor] takes at most while
+// the binding keeps changing under it.
+const cursorTries = 3
 
 // ChatCursorChanged answers a channel that is closed when the cursor may
 // next have changed: an enabled lead's head moved, a lead's switch changed,

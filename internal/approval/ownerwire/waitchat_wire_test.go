@@ -155,8 +155,17 @@ func TestSeatWaitChatResultContent(t *testing.T) {
 	}
 }
 
-// The cursor's vectors: they pin the encoding, so that a seat and a daemon
-// of different builds agree.
+// testCursorKey is a fixed key of the tests: a daemon's key is random.
+var testCursorKey = func() ChatCursorKey {
+	var k ChatCursorKey
+	for i := range k {
+		k[i] = byte(i + 1)
+	}
+	return k
+}()
+
+// The cursor's vectors: they pin the encoding, so that the daemon's builds
+// agree with the design, under one fixed key.
 func TestChatCursorVectors(t *testing.T) {
 	a := ChatCursorLead{Lead: "daemon:alpha", Gen: 1, Head: 7}
 	b := ChatCursorLead{Lead: "daemon:bravo", Gen: 2, Head: 0}
@@ -164,12 +173,12 @@ func TestChatCursorVectors(t *testing.T) {
 		set  []ChatCursorLead
 		want int64
 	}{
-		"no lead":   {nil, chatCursorVector(t, nil)},
-		"one lead":  {[]ChatCursorLead{a}, chatCursorVector(t, []ChatCursorLead{a})},
-		"two leads": {[]ChatCursorLead{b, a}, chatCursorVector(t, []ChatCursorLead{a, b})},
+		"no lead":   {nil, chatCursorVector(t, testCursorKey, nil)},
+		"one lead":  {[]ChatCursorLead{a}, chatCursorVector(t, testCursorKey, []ChatCursorLead{a})},
+		"two leads": {[]ChatCursorLead{b, a}, chatCursorVector(t, testCursorKey, []ChatCursorLead{a, b})},
 	}
 	for name, v := range vectors {
-		got := ChatCursor(v.set)
+		got := ChatCursor(testCursorKey, v.set)
 		if got != v.want {
 			t.Errorf("%s: %d, want %d", name, got, v.want)
 		}
@@ -177,14 +186,42 @@ func TestChatCursorVectors(t *testing.T) {
 			t.Errorf("%s: %d is not 1 to 2^53-1", name, got)
 		}
 	}
-	if got, want := ChatCursor(nil), int64(2554866884011498); got != want {
-		t.Errorf("the empty set's cursor is %d, want %d: the encoding changed", got, want)
+	if got, want := ChatCursor(testCursorKey, nil), int64(7180710471686983); got != want {
+		t.Errorf("the empty set's cursor under the test key is %d, want %d: the encoding changed", got, want)
+	}
+}
+
+// The cursor is keyed: the same set under two keys, the empty set
+// included, gives two cursors, so a seat cannot recognise a set (no lead on,
+// one lead at a head it saw) across a restart of the daemon or a new
+// binding, and a fresh key is a random one.
+func TestChatCursorIsKeyed(t *testing.T) {
+	sets := map[string][]ChatCursorLead{
+		"no lead":  nil,
+		"one lead": {{Lead: "daemon:alpha", Gen: 1, Head: 7}},
+	}
+	k1, k2 := NewChatCursorKey(), NewChatCursorKey()
+	if k1 == k2 || k1 == (ChatCursorKey{}) || k2 == (ChatCursorKey{}) {
+		t.Fatal("two fresh keys are equal or zero")
+	}
+	for name, set := range sets {
+		a, b, c := ChatCursor(k1, set), ChatCursor(k2, set), ChatCursor(testCursorKey, set)
+		if a == b || a == c || b == c {
+			t.Errorf("%s: the same cursor under two keys (%d, %d, %d)", name, a, b, c)
+		}
+		if again := ChatCursor(k1, set); again != a {
+			t.Errorf("%s: one key gives %d and %d", name, a, again)
+		}
+		if a < 1 || a > MaxChatSeq || b < 1 || b > MaxChatSeq {
+			t.Errorf("%s: %d or %d is not 1 to 2^53-1", name, a, b)
+		}
 	}
 }
 
 // chatCursorVector computes the cursor of a set already in order, with the
-// encoding written out here once more, byte by byte.
-func chatCursorVector(t *testing.T, sorted []ChatCursorLead) int64 {
+// encoding written out here once more, byte by byte, and HMAC as RFC 2104
+// defines it over SHA-256.
+func chatCursorVector(t *testing.T, key ChatCursorKey, sorted []ChatCursorLead) int64 {
 	t.Helper()
 	var b []byte
 	str := func(s string) {
@@ -196,7 +233,7 @@ func chatCursorVector(t *testing.T, sorted []ChatCursorLead) int64 {
 			b = append(b, byte(uint64(v)>>(8*i)))
 		}
 	}
-	str("ataniq.seat-wait.chat/1")
+	str("ataniq.seat-wait.chat/2")
 	n := len(sorted)
 	b = append(b, byte(n>>24), byte(n>>16), byte(n>>8), byte(n))
 	for _, l := range sorted {
@@ -204,7 +241,16 @@ func chatCursorVector(t *testing.T, sorted []ChatCursorLead) int64 {
 		num(l.Gen)
 		num(l.Head)
 	}
-	sum := sha256.Sum256(b)
+	var ipad, opad [64]byte
+	for i := range ipad {
+		ipad[i], opad[i] = 0x36, 0x5c
+		if i < len(key) {
+			ipad[i] ^= key[i]
+			opad[i] ^= key[i]
+		}
+	}
+	inner := sha256.Sum256(append(ipad[:], b...))
+	sum := sha256.Sum256(append(opad[:], inner[:]...))
 	var v uint64
 	for _, c := range sum[:8] {
 		v = v<<8 | uint64(c)
@@ -225,10 +271,10 @@ func TestChatCursorChanges(t *testing.T) {
 		{Lead: "daemon:bravo", Gen: 1, Head: 0},
 		{Lead: "daemon:charlie", Gen: 7, Head: 2},
 	}
-	want := ChatCursor(base)
+	want := ChatCursor(testCursorKey, base)
 	kept := append([]ChatCursorLead(nil), base...)
 	reversed := []ChatCursorLead{base[2], base[1], base[0]}
-	if ChatCursor(reversed) != want {
+	if ChatCursor(testCursorKey, reversed) != want {
 		t.Error("the order of the leads changes the cursor")
 	}
 	for i := range base {
@@ -247,7 +293,7 @@ func TestChatCursorChanges(t *testing.T) {
 		"a lead twice":      func(s []ChatCursorLead) []ChatCursorLead { return append(s, s[0]) },
 		"head and gen swap": func(s []ChatCursorLead) []ChatCursorLead { s[0].Gen, s[0].Head = s[0].Head, s[0].Gen; return s },
 	} {
-		got := ChatCursor(change(append([]ChatCursorLead(nil), base...)))
+		got := ChatCursor(testCursorKey, change(append([]ChatCursorLead(nil), base...)))
 		if got == want {
 			t.Errorf("%s does not change the cursor", name)
 		}
@@ -275,7 +321,7 @@ func TestChatCursorIsNotACatenation(t *testing.T) {
 	}
 	seen := map[int64]string{}
 	for name, set := range sets {
-		v := ChatCursor(set)
+		v := ChatCursor(testCursorKey, set)
 		if other, dup := seen[v]; dup {
 			t.Errorf("%s and %s have the same cursor %d", name, other, v)
 		}

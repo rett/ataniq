@@ -1913,16 +1913,28 @@ such a gate. A legacy caller sends and receives exactly the shapes above.
   `bad-params`, and a seat that did not ask never meets it.
 
 The cursor (`ownerwire.ChatCursor`) is a digest, as the Card version is, and
-is independent of it: the first 8 bytes of the SHA-256 of the domain string
-`ataniq.seat-wait.chat/1`, the number of leads, and for each lead in the order
-of its identifier the identifier (a 4-byte big-endian length and its bytes),
-the generation of its switch and its head (8 bytes big-endian each), masked to
-53 bits, and 1 when that is 0. It covers the leads whose chat the desk
-switched on (read, not stopped by a scan) and nothing else. So it changes when
-an enabled lead's head moves, when its segment is reset (a new generation),
-and when a lead is enabled or disabled; a lead whose chat is off is not in it,
-so its activity moves nothing. A daemon that restarts with the same leads,
-generations and heads gives the same cursor.
+is independent of it, but keyed: the first 8 bytes of the HMAC-SHA-256, under
+the cursor key, of the domain string `ataniq.seat-wait.chat/2`, the number of
+leads, and for each lead in the order of its identifier the identifier (a
+4-byte big-endian length and its bytes), the generation of its switch and its
+head (8 bytes big-endian each), masked to 53 bits, and 1 when that is 0. The
+key (`ownerwire.ChatCursorKey`, 32 bytes from `crypto/rand`) is made by the
+daemon for each binding of its cursor's source, at each start and for each
+source that replaces another, and held in its memory alone: never written,
+logged or sent. The cursor covers the leads whose chat the desk switched on
+(read, not stopped by a scan) and nothing else. So it changes when an enabled
+lead's head moves, when its segment is reset (a new generation), and when a
+lead is enabled or disabled; a lead whose chat is off is not in it, so its
+activity moves nothing. Within one binding the same set gives the same
+cursor; a new binding gives every set, the empty one included, another
+cursor, so a seat cannot tell from a cursor which heads or generations it
+covers, nor recognise a set it saw before a restart.
+
+The cursor is a change hint and nothing more. Two different sets give the
+same cursor with a chance of about 2^-53, so a cursor the seat already holds
+may hide a change (the next one, or the end of the hold, shows it); it never
+allows anything. No read is authorized by a cursor, equal or not: every list
+and every page goes through `seat.chat`, which the desk authorizes live.
 
 **The gate.** A handler lists `wait-chat` last, after `chat`, only when it
 serves `watch` and `chat`, its service answers the extended wait
@@ -1944,42 +1956,111 @@ the cursor beside it:
   look at the door: an answer given for the chat carries the Card result of the
   last look, which no poke has made stale, so the chat cannot change when a
   Card change is noticed.
-- The cursor is read when the wait is armed, whenever the port says it may
-  have changed (`ChatCursorChanged`) or a poke wakes the wait, and again just
-  before every answer. An answer carries the cursor of the leads enabled at
-  that moment: a lead turned off meanwhile is not in it, and whatever it did
-  leaves no trace (a hint already noticed is purged by the switch).
+- The cursor is sampled when the wait is armed, whenever the port says it may
+  have changed (`ChatCursorChanged`), when the chat's gap ends, and again just
+  before every answer for the Cards. A sample is validated: the port's change
+  channel is taken first, the cursor read after, and a sample after which the
+  channel closed is taken again (at most four times, then the wait has no
+  cursor for it). An answer carries a sample whose channel had not closed when
+  it was answered, so it is the cursor of the leads enabled at that moment: a
+  lead turned off meanwhile is not in it, and whatever it did leaves no trace
+  (a hint already noticed is purged by the switch). A seat with no cursor is
+  answered with the one sample that decided to answer it, never a second read.
 - It answers at once when `since` is not the version, as the plain wait does,
   and when `chat` is 0 and the port gives a cursor (the seat has none yet). A
   cursor that is not the seat's answers no sooner than 18 seconds after the
   wait was armed (`ownerchannel.WaitChatGap`), whether it moved during the
-  hold or before it; a Card change answers at once, with the cursor read
+  hold or before it; a Card change answers at once, with the cursor sampled
   then, so a Card and a chat change together are one answer with both. So a
-  busy lead costs the seat no more waits than an idle one: with the seat's
-  2-second pause, about one every 20 seconds, 4 in 80 seconds, which leaves
-  the waits' room of 5 its one wait to spare for a reconnect.
-- A wake for which the cursor did not change answers nothing and makes no look
-  at the door: a lead whose chat is off changes no answer, no time of an
-  answer, no timer and no look, even if its port woke the wait for it
-  (`TestWaitChatOffOnlyActivityIsInvisible` compares such a run with an idle
-  one).
+  busy lead costs the seat no more waits than an idle one in the steady state:
+  with the seat's 2-second pause, about one every 20 seconds, 4 in 80
+  seconds. A wait that answers at once (a seat with no cursor, the first wait
+  of a connection, or one after a Card change) is not paced, so under
+  sustained permitted activity the calls can come at about 0, 2, 22, 42 and 62
+  seconds: 5 in the first 80 seconds. The waits' room of 5 still holds its
+  cap, but a reconnect in that first window may find no spare slot and waits
+  for room as any wait does.
+- The gap is pacing, not timing concealment. It is a floor measured from the
+  arming of the wait: a permitted change before it is coalesced into one
+  answer at the floor, but a first change after it is answered when it is
+  seen, before the normal 25-second hold ends, so the seat learns about when a
+  change it may read came. It learns no count of changes from the timing, and
+  nothing of a lead whose chat is off.
+- A wake for which the cursor did not change answers nothing, makes no look at
+  the door and sets or stops no timer: the timer of the next Card expiry is
+  kept across chat wakes (and re-armed only when a look finds another expiry
+  or the timer fired), and the timer of the chat's gap is set once, when the
+  cursor first differs from the seat's, and stopped only when it no longer
+  does. So a lead whose chat is off changes no answer, no time of an answer,
+  no timer and no look, even if its port woke the wait for it.
+  `TestWaitChatOffOnlyActivityIsInvisible` compares such a run with an idle
+  one on a fake clock stepped by 100 milliseconds, with every wake taken before
+  the next, and compares the answer, its time, every timer made or stopped
+  with its time, and every look at the door with its time, with a Card that
+  expires within the hold, with the chat's gap running, with both and with
+  neither.
 - A cursor that cannot be read (an error, a panic, a value out of its range)
   is no cursor: the wait holds and answers on the Cards alone, its answer
   carries no `chat`, and it does not answer at once to a seat with none, so it
-  cannot spin. It fails closed.
+  cannot spin. A port whose change channel cannot be taken
+  (`ChatCursorChanged` panics) is no port for the rest of the wait, even if
+  its cursor can be read: the plain wait's behaviour, with no `chat` in any
+  answer. A port that answers a nil channel on purpose is read on the wait's
+  other wakes and before each answer. It fails closed.
+- Its looks at the door never recover the journal. The plain wait's look, as
+  `owner.list`, reopens an uncertain journal and reconciles, which may
+  redeliver a decision and settle a use; the extended wait's look answers
+  `ownerchannel.ErrWaitRecovery` instead (the gate's `unavailable`) and leaves
+  the recovery to the service's tick, which owns it, so the seat asks again
+  after its pause. So the extended wait reaches no decision, intake, use,
+  merge, suite, reply or effect of the host: its calls are the look's reads of
+  the door and the journal and the journal's own close of held cards that
+  expired, as every look makes. This is the extended wait's alone: the plain
+  wait, which seats of earlier builds send, still recovers as it did.
+  `TestWaitChatLeavesAnUncertainJournalToTheTick` holds an undelivered
+  decision, makes the look uncertain at once and in a held wait woken by a
+  chat change and a poke, and finds no decision, use, intake, merge, suite,
+  reply or reopening; the plain wait, its positive control, reopens and hands
+  the decision over.
 
 The trial's stand-in gives a cursor over its two sample leads whose chat is
-read, each of generation 1 and its head, the same for every call: its samples
-never change, so a held wait is never woken for the chat.
+read, each of generation 1 and its head, under a key it makes once, the same
+for every call: its samples never change, so a held wait is never woken for
+the chat. A trial started again has a new key and so another cursor.
 
 The scratch leads' port (`leaddaemon.LeadChat`, both tags) gives the cursor of
 the leads whose desk switch is read, not stopped by a scan, with a store that
 works and an epoch the wire holds: exactly the leads whose conversation a seat
 read is served. For each it reads the store's status (the generation of the
 switch and the head), and nothing of any other lead. Its broadcast
-(`ChatCursorChanged`) is closed when a reply is taken from a lead that is on,
-when a lead's switch is set (on, off, a new segment), when a scan stops a
-lead's chat or its store fails, and when the port is bound or unbound. A lead
+(`ChatCursorChanged`) is closed when a scan gives a lead that is on a new head
+(`leadchat.IngestReport.HeadAdvanced`: a reply taken or withheld, or the fixed
+entry of a drop or of a suspension, also when the scan fails after it), when a
+lead's switch is set (on, off, a new segment), when a scan stops a lead's chat
+or its store fails, and when the port is bound or unbound. A drop that writes
+no entry (its notice was written less than a minute before) moves no head and
+closes nothing (`TestLeadChatCursorMovesForADropNoticeOnly`).
+
+Each lead has a change lock under which every change the cursor covers is
+made and signalled: a scan from its admission (the desk's switch read)
+through the store's ingest to its signal, the publication of a turn-off, a
+turn-on with the desk's record of it, a scanner's panic and the closing of
+the store. So a scan admitted before a turn-off is published ingests and
+signals before the seat can see the lead off, and once the seat can see it off
+no scan of it is admitted: a reply that arrives while a lead is off moves no
+head and leaves no gap in its sequence numbers, and its next turn-on starts
+one after the head the seat could last see
+(`TestChatScanAdmittedBeforeATurnOffEndsBeforeTheOffIsSeen`). The scanner of
+a lead turned off is waited for after the lock is let go of. The cursor holds
+the change lock of every lead the seat can list while it samples them, in the
+desk's order, so it digests one state the desk held, never one lead sampled on
+before a turn-off beside another sampled on after a turn-on
+(`TestLeadChatCursorIsOneStateOfTheDesk`); and the port checks its binding
+again after the sample and discards a sample of a binding that was replaced or
+taken back meanwhile (`TestLeadChatCursorDiscardsASampleOfAReplacedBinding`),
+reading again from the binding now, at most three times, then giving no
+cursor. The registry's epoch is read as each lead is sampled; it only decides
+whether the wire can hold the lead. A lead
 whose chat is off has no scanner, so its replies are not read and close
 nothing; a test writes them, and starts that lead, and finds the cursor and
 the broadcast unchanged (`TestLeadChatCursorCoversTheEnabledLeadsOnly`). The
@@ -1987,7 +2068,10 @@ cursor's reads are not counted against the port's 40 calls a minute, which are
 the seat's. An unbound port, a failing source or a panic gives no cursor. The
 wired-daemon test (`cmd/ataniqd`, `chat_scratch_linux_test.go`) sends extended
 waits through the real wiring and finds that the waits are the service's only
-counts and that the door, the suite and the drop folder do not move.
+counts and that the door, the suite and the drop folder do not move. Those
+waits are answered at once on a sound journal; a held wait through a chat wake
+and an uncertain look are covered at the service
+(`TestWaitChatLeavesAnUncertainJournalToTheTick`, above).
 
 **The seat** (`seatlink`, `watchchat.go`). The seat's hello lists
 `wait-chat`. Its one watcher sends the extended wait in place of the plain one
@@ -2011,6 +2095,35 @@ authorized view. A cursor is published only while the connection it came on is
 still the client's. The hint says that something the seat may read moved and
 nothing else: no lead, no count and no text, and a page that acts on it reads
 the directory and the conversation again through `seat.chat`.
+
+Each wait is bound to one connection. The watcher reads the client's
+connection and its hello's capabilities as one (the connection before and
+after the capabilities must agree), decides on them whether the wait is the
+extended one and which cursor it carries (one learned on that connection, or
+0), and checks just before it sends that the client's connection is still
+that one; when it is not, nothing is sent and it starts over on the new
+connection, whose first wait carries 0
+(`TestSeatLinkWatchChatNeverSendsACursorToAnotherConnection`). An answer that
+comes when the connection is no longer the one it was asked on publishes no
+cursor. While a hint is live the watcher's pauses (after a change, or for
+room) look at the client every second and drop the hint, waking its
+subscribers, as soon as its connection is gone
+(`TestSeatLinkWatchChatLossDuringThePauseDropsTheHint`), and
+`Daemon.ChatHint` checks the connection and its capability again when it is
+read, so it never answers a hint of a connection that is not the client's now.
+The seatgate client picks the connection of a call under its own lock, so a
+connection replaced in the instant between the watcher's last check and that
+pick can still carry this connection's cursor once; the gate then answers it
+as a stale cursor or refuses it, and the answer, which came on another
+connection, is dropped. Closing that instant needs a call of the client bound
+to a named connection, which `seatgate` does not offer.
+
+A live hint is an observation of the past: the cursor the gate last answered
+on the connection. A lead whose chat was turned off since may still be in it
+until the next answer, which comes no sooner than the chat's gap. It is never
+a permission: the page that acts on it reads through `seat.chat`, where the
+desk authorizes every read live, and equal cursors only say that nothing seems
+to have changed.
 
 ## Notices
 

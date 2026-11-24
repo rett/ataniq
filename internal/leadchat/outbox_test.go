@@ -285,6 +285,54 @@ func TestIngestDropsOversize(t *testing.T) {
 	}
 }
 
+// The report says when a scan moved the head, and only then: a reply taken,
+// the first notice of a drop with no reply taken (the scan's only entry is
+// the fixed one), and a scan that fails after it stored an entry each move
+// it; a drop within the minute of its notice writes no entry and does not,
+// nor does a scan that finds nothing.
+func TestIngestReportsAHeadAdvance(t *testing.T) {
+	e := newEnv(t)
+	s := e.on()
+	head := func() int64 {
+		t.Helper()
+		st, err := s.Status()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.Head
+	}
+	step := func(what string, want bool) IngestReport {
+		t.Helper()
+		before := head()
+		rep := ingest(t, s)
+		if rep.HeadAdvanced != want || (head() != before) != want {
+			t.Fatalf("%s: HeadAdvanced %v, head %d to %d, want moved %v (report %+v)", what, rep.HeadAdvanced, before, head(), want, rep)
+		}
+		return rep
+	}
+	step("nothing to take", false)
+	e.reply("a.txt", strings.Repeat("x", MaxReplyBytes+1))
+	if rep := step("the first drop's notice", true); rep.Taken+rep.Withheld != 0 || rep.Dropped[ReasonTooLong] != 1 {
+		t.Fatalf("the first drop: %+v", rep)
+	}
+	e.reply("b.txt", strings.Repeat("x", MaxReplyBytes+1))
+	if rep := step("a drop within the minute", false); rep.Dropped[ReasonTooLong] != 1 {
+		t.Fatalf("the second drop: %+v", rep)
+	}
+	e.reply("c.txt", "Taken.")
+	step("a reply taken", true)
+	e.clock.add(time.Minute)
+	e.reply("d.txt", "Stored, then the scan fails.")
+	crash := errors.New("synthetic crash after the append")
+	s.afterAppend = func() error { return crash }
+	before := head()
+	rep, err := s.Ingest(1)
+	if !errors.Is(err, crash) || !rep.HeadAdvanced || head() == before {
+		t.Fatalf("a scan that failed after its append: %+v, %v, head %d to %d", rep, err, before, head())
+	}
+	s.afterAppend = nil
+}
+
 func TestIngestWaitsForSettle(t *testing.T) {
 	e := newEnv(t)
 	s := e.on()
