@@ -102,6 +102,19 @@
 //     embedded is served as it was stored. Its plan goes with a thread's
 //     file when the file is pruned.
 //
+// # Reading at the desk
+//
+// [ReadFinished] and [ReadPlan] read the folder for the desk, beside a daemon
+// or without one, and write nothing: no folder is made (one that is not there
+// holds no thread), no temporary file is removed, nothing expires or is
+// pruned, and no lock is taken. They reach the folder as [Open] does and read
+// each file by the same code and rules; a file that does not pass is skipped
+// with the line Open would log, never served. They answer only finished
+// threads that hold a stored plan: the id, a tag (its first 6 digits), the
+// kind, the plan's digest and when it was finished; ReadPlan takes a tag of
+// 6 to 16 digits that must name exactly one of them ([TagError] otherwise:
+// none, ambiguous or not a tag) and answers its stored plan as stored.
+//
 // # Concurrency and the clock
 //
 // One mutex serialises every call of a store. A call holds it for its own

@@ -1,0 +1,6 @@
+# Hand-off for plan 57317978084b (revision 1) of thread a1b2c3.
+# Nothing has been run. Run the command yourself, in the folder where you keep projects.
+# It prints a plan and a token; creating the project needs your own words. The plan's tasks are not imported: Qargi's backlog is where work is tracked.
+# The plan keeps the files on this computer; the command sets up no host and chooses no deployment.
+# The plan's monthly budget band is low (a little); it is advisory, and the command does not carry it.
+qargi project new webtoola1b2c3 --methodology gitflow

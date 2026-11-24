@@ -93,6 +93,26 @@ of the socket is a seat.
                     already there is never overwritten.
   seat-gate pins    print the seat pins as the daemon reads them at start.
 
+The desk reads the finished interviews of owner/genesis/ of the state folder,
+whether or not the daemon runs, and writes nothing there:
+
+       ataniqd genesis list [--state-dir DIR]
+       ataniqd genesis handoff TAG [--state-dir DIR]
+
+  genesis list      print one line per finished interview that holds a plan:
+                    its tag (the first 6 digits of its id), its kind, the
+                    plan's digest (12 digits) and the day it was finished. A
+                    file that is not served is named on standard error.
+  genesis handoff   print the hand-off of the plan of the interview whose id
+                    starts with TAG (6 to 16 digits): comment lines and one
+                    command line, "qargi project new NAME --methodology
+                    gitflow", for you to run yourself in the folder where you
+                    keep projects; it prints Qargi's plan and token, and
+                    creating the project needs your own words. Nothing is run.
+                    Only a software plan has a hand-off yet. Exit codes: 0
+                    printed, 1 a failure, 2 usage, 3 refused (no interview or
+                    more than one has the tag, or its kind has no hand-off).
+
 The phone trial is a STAND-IN rig for scratch state only, in which the owner
 tries the phone end to end without a lead, a mirror or a sandbox:
 
