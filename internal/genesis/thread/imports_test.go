@@ -80,13 +80,26 @@ func TestOnlyTheFolderIsReachedByPath(t *testing.T) {
 			t.Errorf("store.go calls %s", call)
 		}
 	}
-	file, err := os.ReadFile("file.go")
+	for _, name := range []string{"file.go", "read.go"} {
+		file, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, call := range []string{"os.Open(", "os.ReadFile(", "os.WriteFile(", "os.Remove(", "os.Rename(", "os.Create(", "os.Lstat(", "os.Stat(", "os.Mkdir("} {
+			if strings.Contains(string(file), call) {
+				t.Errorf("%s calls %s", name, call)
+			}
+		}
+	}
+	// The reader writes nothing: no call that makes, removes or writes,
+	// through the root or by path.
+	read, err := os.ReadFile("read.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, call := range []string{"os.Open(", "os.ReadFile(", "os.WriteFile(", "os.Remove(", "os.Rename(", "os.Create(", "os.Lstat(", "os.Stat(", "os.Mkdir("} {
-		if strings.Contains(string(file), call) {
-			t.Errorf("file.go calls %s", call)
+	for _, call := range []string{"Remove(", "Rename(", "Mkdir(", "OpenFile(", "Create(", "Chmod(", "Chtimes(", "Symlink(", "Link(", "WriteFile(", "writeFile(", "syncDir(", "openFolder(", ".put(", "Flock("} {
+		if strings.Contains(string(read), call) {
+			t.Errorf("read.go calls %s", call)
 		}
 	}
 }
