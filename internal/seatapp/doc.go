@@ -204,9 +204,10 @@
 // minutes later, and the first page of a card's path list may ask the gate
 // twice), so the port counts every call it sends and keeps each kind to its
 // own room at the gate (package seatlink): anyone's pairings and logins,
-// Card reads, chat reads, waits, decisions and the new-project interview (10 calls in 80 seconds:
-// one for each tap of the owner's, and a few reads), which the others cannot
-// take, and a decision's
+// reads (the Cards pages' and the leads' chat pages', which share one room),
+// the watcher's waits, decisions and the new-project interview (12 calls in
+// 80 seconds: one for each tap of the owner's, and a few reads), which the
+// others cannot take, and a decision's
 // challenge only with room for the decision too, kept for that challenge
 // until its decision is sent, and a login challenge only with room for its
 // login, so a login is not refused for room after the passkey. The app
@@ -397,7 +398,9 @@
 // decide control, and only the Card page loads the decide script. The
 // inventory test fetches every page, the card pages with a session, and
 // checks each for an inline script or style, an event handler, an address
-// outside the app, a form or control it does not list, a form that is not a
-// plain post to a project route, and, on every page but the Card page,
-// anything that looks like deciding.
+// outside the app (in href, src, action, formaction, srcset, poster, data,
+// ping, background, cite or manifest, or a meta element's content), a meta
+// element with http-equiv, a form or control it does not list, a form that
+// is not a plain post to a project route, and, on every page but the Card
+// page, anything that looks like deciding.
 package seatapp

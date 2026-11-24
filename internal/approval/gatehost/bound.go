@@ -67,8 +67,9 @@ const CodeTooManyRefusals = "too-many-refusals"
 // ten minutes. Params the wire's decoder refuses (a verb that sends, a lead of
 // another form, a limit past 16) are bad-params and count: the seat's own
 // pages never send them. The chat words are kept out of this table by being
-// absent; they stay bounded by the seat's own limits, the seat link's room and
-// the gate's 60 requests a minute.
+// absent; they stay bounded by the seat's own 30 chat pages a minute for each
+// credential, by the seat link's read room of 14 calls, which chat shares
+// with the Cards pages' reads, and by the gate's 60 requests a minute.
 //
 // wait-full, the answer to a seat.wait past the peer's two held waits or the
 // service's own limit, does not count either, and must not: it is a load

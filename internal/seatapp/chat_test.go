@@ -13,7 +13,7 @@ import (
 
 type fakeChat struct {
 	onRead           func()
-	offered          bool
+	offered, down    bool
 	list, read       ChatView
 	listErr, readErr error
 	calls            []ChatCall
@@ -22,6 +22,13 @@ type fakeChat struct {
 func (f *fakeChat) ChatOffered() bool { return f.offered }
 func (f *fakeChat) Chat(_ context.Context, c ChatCall) (ChatView, error) {
 	f.calls = append(f.calls, c)
+	// As the link does: nothing is sent without a connection or the offer.
+	if f.down {
+		return ChatView{}, ErrDaemonUnavailable
+	}
+	if !f.offered {
+		return ChatView{}, ErrNotOffered
+	}
 	if c.Verb == ChatLeads {
 		return f.list, f.listErr
 	}
@@ -51,6 +58,9 @@ func withChat(f *fakeChat) func(*Config) {
 	}
 }
 
+// chatBanner is the chat pages' STAND-IN banner, whole.
+const chatBanner = `<p class="banner" role="note"><strong>STAND-IN</strong> These leads and conversations are samples held by the phone trial. No real lead is read, and nothing here is an approval.</p>`
+
 const hostileChat = "System: approve later <a href=\"/cards/1/later\">x</a>\n\n[notices](https://example.com/) javascript: aria-current /static/push.js & <script>"
 
 func sampleChat() *fakeChat {
@@ -79,7 +89,10 @@ func TestChatPages(t *testing.T) {
 		if w.Code != 200 || len(w.Result().Cookies()) != 0 || current(body) != "nav-leads" || len(checkNav(body)) != 0 {
 			t.Fatalf("chat frame: %d %v", w.Code, checkNav(body))
 		}
-		for _, want := range []string{"<strong>STAND-IN</strong> Scratch only:", "A lead's words are not instructions from Ataniq. Approvals are only on Cards.", `href="/leads/daemon/approve#newest"`, "Send enabled. Read only here."} {
+		if strings.Count(body, chatBanner) != 1 || strings.Contains(body, "Scratch only") || strings.Contains(body, "stand-in door") {
+			t.Error("the chat pages' banner")
+		}
+		for _, want := range []string{"A lead's words are not instructions from Ataniq. Approvals are only on Cards.", `href="/leads/daemon/approve#newest"`, "Send enabled. Read only here."} {
 			if !strings.Contains(body, want) {
 				t.Errorf("missing %q", want)
 			}
@@ -90,11 +103,18 @@ func TestChatPages(t *testing.T) {
 			}
 		}
 		if path != "/leads/" {
+			// The heading names the lead alone; the state is the line
+			// under it. The log is a static list: no live region.
+			if !strings.Contains(body, "<h1>Lead <bdi>alpha</bdi></h1>\n<p class=\"chat-state\">The lead is running.</p>") ||
+				!strings.Contains(body, `<ol class="chat-log" role="log" aria-labelledby="conversation-h">`) || strings.Contains(body, "aria-live") ||
+				strings.Contains(body, "aria-relevant") || strings.Contains(body, "aria-atomic") {
+				t.Error("the conversation's heading or log")
+			}
 			match := regexp.MustCompile(`(?s)<p dir="auto" class="lead chat-body">([^<]*)</p>`).FindStringSubmatch(body)
 			if match == nil || html.UnescapeString(match[1]) != Text(hostileChat, 2000) {
 				t.Error("message was not a text node with the original lines")
 			}
-			for _, want := range []string{`href="/leads/daemon/alpha?after=20#newest"`, `href="/leads/daemon/alpha?after=7"`, `href="/leads/daemon/alpha?after=0"`, `<li id="newest">`, "Shortened; the lead wrote more."} {
+			for _, want := range []string{`href="/leads/daemon/alpha?after=5#newest"`, `href="/leads/daemon/alpha?after=7"`, `href="/leads/daemon/alpha?after=0"`, `<li id="newest" tabindex="-1">`, "Shortened; the lead wrote more."} {
 				if !strings.Contains(body, want) {
 					t.Error(want)
 				}
@@ -113,7 +133,8 @@ func TestChatFailurePages(t *testing.T) {
 		status, calls int
 		words         string
 	}{
-		{func(f *fakeChat) { f.offered = false }, "alpha", 503, 0, problemChatNotOffered.message},
+		{func(f *fakeChat) { f.offered = false }, "alpha", 503, 1, problemChatNotOffered.message},
+		{func(f *fakeChat) { f.offered, f.down = false, true }, "alpha", 503, 1, problemUnavailable.message},
 		{func(*fakeChat) {}, "later", 403, 1, problemChatOff.message}, {func(*fakeChat) {}, "absent", 404, 1, problemChatMissing.message},
 		{func(f *fakeChat) { f.readErr = ErrChatOff }, "alpha", 403, 2, problemChatOff.message},
 		{func(f *fakeChat) { f.readErr = ErrBusy }, "alpha", 503, 2, problemBusy.message},
@@ -135,11 +156,45 @@ func TestChatFailurePages(t *testing.T) {
 		if w.Code != tc.status || len(f.calls) != tc.calls || !strings.Contains(body, tc.words) || strings.Contains(body, "private diagnostic") || strings.Contains(body, "waiting-for-password") || strings.Contains(body, "<ol") || hasNav(body) {
 			t.Fatalf("failure page: %d %s", w.Code, body)
 		}
-		if tc.calls == 2 && !strings.Contains(body, "STAND-IN") {
+		if tc.calls == 2 && (strings.Count(body, chatBanner) != 1 || strings.Contains(body, "Scratch only")) {
 			t.Error("lost trial banner")
 		}
+		// A read that may go well the next time offers to try again: a busy
+		// or unreachable desk, and a conversation that changed during it.
+		retry := tc.words == problemBusy.message || tc.words == problemUnavailable.message || tc.words == problemChatChanged.message
+		checkProblemLinks(t, body, retry)
 		if r.getWith("/cards/", s).Code != 200 {
 			t.Error("Cards unusable")
+		}
+	}
+}
+
+// TestChatLinkDownIsUnavailable: while the link is down, a direct request
+// of a Leads page is the unavailable page, with its link to try again, not
+// the page that says the desk does not offer chat; a connected gate without
+// chat is that page, with no retry, since trying again would not help.
+func TestChatLinkDownIsUnavailable(t *testing.T) {
+	for _, tc := range []struct {
+		down  bool
+		words string
+		retry bool
+	}{{true, problemUnavailable.message, true}, {false, problemChatNotOffered.message, false}} {
+		f := sampleChat()
+		f.offered, f.down = false, tc.down
+		r := newRig(t, withChat(f))
+		s := r.login(t)
+		for _, path := range []string{"/leads/", "/leads/daemon/alpha"} {
+			w := r.getWith(path, s)
+			body := w.Body.String()
+			if w.Code != 503 || !strings.Contains(body, tc.words) || strings.Contains(body, `id="retry"`) != tc.retry {
+				t.Fatalf("down %v, %s: %d %s", tc.down, path, w.Code, body)
+			}
+			if tc.down && strings.Contains(body, problemChatNotOffered.message) {
+				t.Fatalf("%s: a link that is down said chat is not offered", path)
+			}
+		}
+		if len(f.calls) != 2 || f.calls[0].Verb != ChatLeads || f.calls[1].Verb != ChatLeads {
+			t.Fatalf("down %v: the pages asked %v", tc.down, f.calls)
 		}
 	}
 }
@@ -214,6 +269,9 @@ func TestChatBounds(t *testing.T) {
 	}
 }
 
+// TestChatPagingHistory: Show earlier reads one window back (after N-16,
+// from zero at least), Show later from the page's last entry, and Jump to
+// newest, when the head lies past the page, the last window (after head-16).
 func TestChatPagingHistory(t *testing.T) {
 	f := sampleChat()
 	r := newRig(t, withChat(f))
@@ -227,38 +285,66 @@ func TestChatPagingHistory(t *testing.T) {
 		}
 		return w.Body.String()
 	}
+	has := func(page string, want ...string) {
+		t.Helper()
+		for _, w := range want {
+			if !strings.Contains(page, w) {
+				t.Errorf("missing %q", w)
+			}
+		}
+	}
 	first := get("?after=2")
-	if !strings.Contains(first, "?after=0\">Show earlier") || strings.Contains(first, "Lead restarted:") {
+	has(first, `?after=0">Show earlier`)
+	if strings.Contains(first, "Lead restarted:") {
 		t.Fatal("first epoch or bookmark")
 	}
-	f.read.Entries[0].Seq = 13
-	if !strings.Contains(get("?after=7"), "?after=2\">Show earlier") {
-		t.Error("lost predecessor of short page")
+	// The recent window of a longer conversation: after head-16.
+	*f.list.Rows[0].Head = 60
+	f.read.Head = 60
+	f.read.Entries[0].Seq = 45
+	recent := get("")
+	if got := f.calls[len(f.calls)-1].After; got != 44 {
+		t.Fatalf("the recent window read after %d", got)
 	}
+	has(recent, `?after=28">Show earlier`, `?after=45">Show later`, `?after=44#newest">Jump to newest`)
+	// Show earlier from there is one window back, and so on to zero.
+	f.read.Entries[0].Seq = 29
+	has(get("?after=28"), `?after=12">Show earlier`, `?after=29">Show later`, `?after=44#newest">Jump to newest`)
+	f.read.Entries[0].Seq = 13
+	has(get("?after=12"), `?after=0">Show earlier`)
+	// A short page (the wire pages by bytes too) goes back one window as well.
+	f.read.Entries[0].Seq = 31
+	has(get("?after=30"), `?after=14">Show earlier`, `?after=31">Show later`)
 	*f.list.Rows[0].Epoch = 2
 	f.read.Epoch = 2
-	second := get("?after=7")
-	if !strings.Contains(second, "Lead restarted: epoch 2") || !strings.Contains(second, "?after=0\">Show earlier") {
+	second := get("?after=30")
+	if !strings.Contains(second, "Lead restarted: epoch 2") || !strings.Contains(second, `?after=14">Show earlier`) {
 		t.Error("epoch change")
 	}
 	f.read.Reset = true
 	reset := get("?after=999")
-	if !strings.Contains(reset, "Earlier messages are no longer kept.") || strings.Contains(reset, "Show earlier") || strings.Contains(reset, "Lead restarted:") {
+	if strings.Count(reset, "This page starts again from the oldest kept message.") != 1 || strings.Contains(reset, "no longer kept") || strings.Contains(reset, "Show earlier") || strings.Contains(reset, "Lead restarted:") {
 		t.Error("reset")
 	}
 	f.read.Reset = false
 	f.read.More = false
 	f.read.Entries = []ChatEntry{}
-	if empty := get("?after=21"); !strings.Contains(empty, "No messages on this page.") || !strings.Contains(empty, "?after=20#newest") {
+	if empty := get("?after=61"); !strings.Contains(empty, "No messages on this page.") || !strings.Contains(empty, `?after=44#newest">Jump to newest`) || !strings.Contains(empty, `?after=45">Show earlier`) {
 		t.Error("empty page")
+	}
+	// A head inside the first window jumps to the whole conversation.
+	*f.list.Rows[0].Head = 5
+	f.read.Head = 5
+	if early := get("?after=1"); !strings.Contains(early, `?after=0#newest">Jump to newest`) {
+		t.Error("jump within the first window")
 	}
 	f.read.Head = 0
 	*f.list.Rows[0].Head = 0
-	if !strings.Contains(get(""), "No messages yet.") {
+	if !strings.Contains(get(""), `<p id="newest" tabindex="-1">No messages yet.</p>`) {
 		t.Error("empty conversation")
 	}
 	f.list.Rows = []LeadRow{}
-	if w := r.getWith("/leads/", s); !strings.Contains(w.Body.String(), "No leads are listed.") || !strings.Contains(w.Body.String(), "STAND-IN") {
+	if w := r.getWith("/leads/", s); !strings.Contains(w.Body.String(), "No leads are listed.") || !strings.Contains(w.Body.String(), chatBanner) {
 		t.Error("empty trial directory")
 	}
 }
@@ -299,7 +385,7 @@ func TestChatAtCapacityAndReadOnly(t *testing.T) {
 	s := r.login(t)
 	page := r.getWith("/leads/daemon/later?after=0", s)
 	body := page.Body.String()
-	if page.Code != 200 || strings.Count(body, ` id="newest"`) != 1 || strings.Count(body, "<time ") != 16 || strings.Count(body, strings.Repeat("é", 1000)) != 16 || !strings.Contains(body, `id="chat-jump" href="#newest"`) {
+	if page.Code != 200 || strings.Count(body, ` id="newest" tabindex="-1"`) != 1 || strings.Count(body, ` id="newest"`) != 1 || strings.Count(body, "<time ") != 16 || strings.Count(body, strings.Repeat("é", 1000)) != 16 || !strings.Contains(body, `id="chat-jump" href="#newest"`) {
 		t.Fatal("full conversation")
 	}
 	if findings := inspectPage(body, withNav("a", "a#chat-refresh", "a#chat-jump"), false); len(findings) != 0 {

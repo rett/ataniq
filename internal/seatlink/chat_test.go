@@ -20,10 +20,20 @@ type chatTestPeer struct {
 	port  *standin.Port
 	calls int
 	code  string
+	// noChat is a gate whose hello does not list chat.
+	noChat bool
+	// real answers as a host of real leads would: the samples without
+	// their stand_in mark.
+	real bool
 }
 
 func (p *chatTestPeer) Connected() (time.Time, bool) { return p.since, !p.since.IsZero() }
-func (p *chatTestPeer) Caps() []string               { return []string{CapChat} }
+func (p *chatTestPeer) Caps() []string {
+	if p.noChat {
+		return []string{CapRead}
+	}
+	return []string{CapChat}
+}
 func (p *chatTestPeer) Call(ctx context.Context, op string, params, result any) error {
 	p.calls++
 	if p.code != "" {
@@ -39,6 +49,9 @@ func (p *chatTestPeer) Call(ctx context.Context, op string, params, result any) 
 	r, err := p.port.Chat(ctx, c)
 	if err != nil {
 		return err
+	}
+	if p.real {
+		r.StandIn = false
 	}
 	raw, err := ownerwire.EncodeSeatChatResult(r)
 	*result.(*json.RawMessage) = raw
@@ -86,6 +99,54 @@ func TestSeatChatMemory(t *testing.T) {
 	}
 }
 
+// TestSeatChatDownOrNotOffered: with no connection a chat call is
+// ErrDaemonUnavailable, and to a connected gate without chat ErrNotOffered,
+// so the pages can tell a link that is down from a gate without chat;
+// neither sends anything or takes room.
+func TestSeatChatDownOrNotOffered(t *testing.T) {
+	clock := &testClock{t: decideNow}
+	d := Daemon{budget: budget{now: clock.now}, gnow: clock.now}
+	list := seatapp.ChatCall{Verb: seatapp.ChatLeads}
+	down := chatTestPeer{port: standin.New(clock.now)}
+	if _, err := d.chat(context.Background(), list, &down); err != seatapp.ErrDaemonUnavailable {
+		t.Fatalf("a link that is down: %v", err)
+	}
+	other := chatTestPeer{since: clock.now(), port: standin.New(clock.now), noChat: true}
+	if _, err := d.chat(context.Background(), list, &other); err != seatapp.ErrNotOffered {
+		t.Fatalf("a gate without chat: %v", err)
+	}
+	if down.calls+other.calls != 0 || d.budget.used(kindRead) != 0 {
+		t.Fatal("a call that cannot be served was sent or counted")
+	}
+}
+
+// TestSeatChatRealReuse: of a host that is not the trial's, the link
+// reuses the directory for 20 seconds, as the trial's, and never a
+// transcript page: each read is a call of the gate.
+func TestSeatChatRealReuse(t *testing.T) {
+	clock := &testClock{t: decideNow}
+	d := Daemon{budget: budget{now: roomy()}, gnow: clock.now}
+	p := chatTestPeer{since: clock.now(), port: standin.New(clock.now), real: true}
+	list := seatapp.ChatCall{Verb: seatapp.ChatLeads}
+	read := seatapp.ChatCall{Verb: seatapp.ChatRead, Lead: "daemon:alpha"}
+	ask := func(c seatapp.ChatCall, n int) {
+		t.Helper()
+		got, err := d.chat(context.Background(), c, &p)
+		if err != nil || !got.ValidFor(c) || got.StandIn || p.calls != n {
+			t.Fatalf("call %s: count %d, want %d, error %v", c.Verb, p.calls, n, err)
+		}
+	}
+	ask(list, 1)
+	ask(read, 2)
+	ask(read, 3)
+	ask(list, 3)
+	clock.advance(19 * time.Second)
+	ask(list, 3)
+	ask(read, 4)
+	clock.advance(time.Second)
+	ask(list, 5)
+}
+
 func TestSeatChatWireBoundsAndCodes(t *testing.T) {
 	if !slices.Contains(Caps(), CapChat) || seatapp.MaxChatTextBytes != ownerwire.MaxChatText || seatapp.MaxChatSeq != ownerwire.MaxChatSeq || seatapp.MaxChatKeyBytes != ownerwire.MaxChatKeyBytes || seatapp.MaxChatLeads != ownerwire.MaxChatLeads || seatapp.MaxChatEntries != ownerwire.MaxChatReadLimit {
 		t.Fatal("seat and wire disagree")
@@ -119,27 +180,99 @@ func TestSeatChatRejectsMalformedAnswers(t *testing.T) {
 	}
 }
 
-// A six-round interview, with start and two corrections, at a tap every
-// twelve seconds (a person reads each question). Cards reloads every twenty seconds, including its projects
-// read. The owner opens chat and refreshes it twice during the interview.
+// TestSeatChatMemoryKeptOnLocalBusy: a chat call the link refuses itself
+// for want of room sends nothing and keeps the kept directory, so the next
+// page is still served from it. (A refusal of the gate forgets it:
+// TestSeatChatMemory.)
+func TestSeatChatMemoryKeptOnLocalBusy(t *testing.T) {
+	clock := &testClock{t: decideNow}
+	d := Daemon{budget: budget{now: clock.now}, gnow: clock.now}
+	p := chatTestPeer{since: clock.now(), port: standin.New(clock.now)}
+	list := seatapp.ChatCall{Verb: seatapp.ChatLeads}
+	read := seatapp.ChatCall{Verb: seatapp.ChatRead, Lead: "daemon:alpha"}
+	if _, err := d.chat(context.Background(), list, &p); err != nil || p.calls != 1 {
+		t.Fatalf("directory: %v, %d calls", err, p.calls)
+	}
+	for d.budget.used(kindRead) < readRoom {
+		if !d.budget.take(kindRead) {
+			t.Fatal("read refused below the room")
+		}
+	}
+	if _, err := d.chat(context.Background(), read, &p); err != seatapp.ErrBusy || p.calls != 1 {
+		t.Fatalf("a read with no room: %v, %d calls", err, p.calls)
+	}
+	if _, err := d.chat(context.Background(), list, &p); err != nil || p.calls != 1 {
+		t.Fatalf("the kept directory after a local busy: %v, %d calls", err, p.calls)
+	}
+}
+
+// TestSeatChatSharesTheReadRoom: chat's calls are reads. They count in the
+// read room the Cards pages use, a chat call past it is ErrBusy and reaches
+// no gate, and the refusal's journal line names the kind read.
+func TestSeatChatSharesTheReadRoom(t *testing.T) {
+	var l logLines
+	clock := &testClock{t: decideNow}
+	d := Daemon{budget: budget{now: clock.now, logf: l.logf}, gnow: clock.now}
+	p := chatTestPeer{since: clock.now(), port: standin.New(clock.now)}
+	list := seatapp.ChatCall{Verb: seatapp.ChatLeads}
+	if _, err := d.chat(context.Background(), list, &p); err != nil || p.calls != 1 {
+		t.Fatalf("directory: %v, %d calls", err, p.calls)
+	}
+	if got := d.budget.used(kindRead); got != 1 {
+		t.Fatalf("a chat call took %d of the read room", got)
+	}
+	for i := 1; i < readRoom; i++ {
+		if !d.budget.take(kindRead) {
+			t.Fatalf("read %d refused", i+1)
+		}
+	}
+	read := seatapp.ChatCall{Verb: seatapp.ChatRead, Lead: "daemon:alpha"}
+	if _, err := d.chat(context.Background(), read, &p); err != seatapp.ErrBusy || p.calls != 1 {
+		t.Fatalf("a chat read past the read room: %v, %d calls", err, p.calls)
+	}
+	got := l.all()
+	if len(got) != 1 || !strings.Contains(got[0], "kind read (14 of 14 in the last 80 seconds)") {
+		t.Fatalf("lines: %q", got)
+	}
+}
+
+// TestSeatChatMixedBudget: the owner walks a six-round interview, with its
+// start and two corrections (9 taps), at a tap every twelve seconds (a person
+// reads each question), while a Cards tab reloads every twenty seconds (its
+// card list, a read, and its list of open projects, an interview call), and
+// opens a lead's conversation and refreshes it twice, twenty seconds apart.
+// Chat shares the read room with the Cards tab: each chat page is counted as
+// two reads, the directory and a transcript, as a real lead's would be (the
+// link reuses neither here: the directory lives 20 seconds and a real
+// transcript is never reused). None of it is refused.
 func TestSeatChatMixedBudget(t *testing.T) {
 	clock := &testClock{t: decideNow}
 	b := budget{now: clock.now}
-	take := func(k kind) {
+	take := func(at int, k kind) {
 		t.Helper()
 		if !b.take(k) {
-			t.Fatalf("normal use exhausted room %d", k)
+			t.Fatalf("second %d: normal use exhausted the room of kind %s", at, kindWords[k])
 		}
 	}
-	for tap := 0; tap < 9; tap++ {
-		take(kindGenesis)
-		if tap%4 == 0 {
-			take(kindRead)
-			take(kindGenesis)
-			take(kindChat)
-			take(kindChat)
+	reads := 0
+	for at := 0; at <= 180; at++ {
+		if at%20 == 0 {
+			take(at, kindRead)
+			take(at, kindGenesis)
+			reads++
 		}
-		clock.advance(12 * time.Second)
+		if at%12 == 0 && at/12 < 9 {
+			take(at, kindGenesis)
+		}
+		if at == 30 || at == 50 || at == 70 {
+			take(at, kindRead)
+			take(at, kindRead)
+			reads += 2
+		}
+		clock.advance(time.Second)
+	}
+	if reads != 16 {
+		t.Fatalf("the walk made %d reads", reads)
 	}
 }
 

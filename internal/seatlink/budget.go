@@ -33,21 +33,34 @@ const (
 	HoldLife = 5 * time.Minute
 )
 
-// Rooms in BudgetWindow, including the transport's pings:
+// The room of each kind of call in BudgetWindow. The six add up to GateRate:
 //
-//	pings 6 + decisions 8 + public 12 + reads 12 + waits 6 + genesis 10 + chat 6 = 60
+//	pings 6 + decisions 10 + anyone's 12 + reads 14 + waits 6 + genesis 12 = 60
 //
-// Three Card tabs can each reload four times. The interview keeps its
-// room for a complete walk and the project lists the Cards tab requests.
+// The room of seat.genesis was made when the interview's pages came: before
+// it the rooms were pings 6, decisions 16, anyone's 12, reads 20 and waits 6.
+// It was first 10 (decisions 12, reads 14), and an interview walked on a
+// phone ran out of it at the fifth round: the owner answers a round every 10
+// to 15 seconds, so 80 seconds hold 6 to 8 taps, each an answer and the page
+// it redirects to (one call together, see genesis.go), plus the reads the
+// pages make now and then (the list of open projects, a summary, a thread
+// the link does not hold). The interview has 12 because it is one call per
+// tap plus an occasional read, with a few to spare for an answer that is
+// refused and asked again. The 2 were taken from decisions (12 to 10: 5
+// decisions, each a challenge and a decision call, in 80 seconds), where
+// they were the least used. Reads stay 14: three card lists that reload every
+// 20 seconds take 12 of them. Anyone's room stays 12: strangers can hold it
+// with login challenges they never answer, and a smaller one would let fewer
+// of them keep the owner from logging in.
 const (
 	// pingRoom is the pings: one every PingInterval is 6 at most in
 	// BudgetWindow, and 5 in a minute of the gate's.
 	pingRoom = 6
-	// decideRoom is seat.challenge and seat.decide: 4 decisions. A challenge
+	// decideRoom is seat.challenge and seat.decide: 5 decisions. A challenge
 	// is drawn only with room for its seat.decide as well, kept for that
 	// challenge alone until the decision is sent, the app drops the
 	// challenge, or the challenge's life ends.
-	decideRoom = 8
+	decideRoom = 10
 	// publicRoom is seat.pair, seat.login-challenge and seat.login, which the
 	// seat relays for anyone who reaches its pages: 6 logins. A login
 	// challenge is drawn only with room for its seat.login as well, kept
@@ -57,8 +70,10 @@ const (
 	// keep that room until their challenges' life ends.
 	publicRoom = 12
 	// readRoom is owner.list, owner.show and owner.paths, the reads of every
-	// session together.
-	readRoom = 12
+	// session together, and seat.chat, the read-only leads' directory and
+	// transcripts (chat.go). Chat shares this room until replies ship; it
+	// gets a room of its own then, sized from measured use, not before.
+	readRoom = 14
 	// waitRoom is seat.wait, the watcher's one long wait (watch.go). The
 	// watcher keeps one wait in flight, and the gate holds it up to 25
 	// seconds, so an idle seat sends one about every 25 seconds: 4 in
@@ -71,16 +86,14 @@ const (
 	// genesisRoom is seat.genesis, every verb of the interview: the pages'
 	// starts, lists, rounds, answers, changes, summaries, finishes and
 	// discards, of every session together.
-	genesisRoom = 10
-	// chatRoom is shared by directory and transcript reads.
-	chatRoom = 6
+	genesisRoom = 12
 )
 
 // The rooms and the pings are the gate's rate: either difference below is
 // a negative constant, which does not convert to uint, if they are not.
 const (
-	_ = uint(GateRate - pingRoom - decideRoom - publicRoom - readRoom - waitRoom - genesisRoom - chatRoom)
-	_ = uint(pingRoom + decideRoom + publicRoom + readRoom + waitRoom + genesisRoom + chatRoom - GateRate)
+	_ = uint(GateRate - pingRoom - decideRoom - publicRoom - readRoom - waitRoom - genesisRoom)
+	_ = uint(pingRoom + decideRoom + publicRoom + readRoom + waitRoom + genesisRoom - GateRate)
 	// A decision and a login each take two calls of their room, so each
 	// room is even.
 	_ = uint(0 - decideRoom%2)
@@ -101,7 +114,6 @@ const (
 	kindDecide
 	kindWait
 	kindGenesis
-	kindChat
 	numKinds
 )
 
@@ -114,8 +126,6 @@ func (k kind) room() int {
 		return readRoom
 	case kindWait:
 		return waitRoom
-	case kindChat:
-		return chatRoom
 	case kindGenesis:
 		return genesisRoom
 	}

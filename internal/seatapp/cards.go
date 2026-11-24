@@ -216,7 +216,7 @@ const (
 	// card's path list asks twice when the card was not shown), so they do
 	// not bound the gate's calls: the port counts every call it sends, and
 	// keeps the reads of all sessions to their own room there (package
-	// seatlink: 12 calls in 80 seconds); a read past it is the problem "The
+	// seatlink: 14 calls in 80 seconds); a read past it is the problem "The
 	// desk is busy".
 	readRequests = 20
 	readWindow   = time.Minute
@@ -358,6 +358,8 @@ type (
 	problemData struct {
 		Title   string
 		Message string
+		// StandIn is set by the chat pages alone, for a problem of the
+		// trial's samples: the page shows the chat's banner (standin-chat).
 		StandIn bool
 		Retry   bool
 		Nav     *navView
@@ -511,6 +513,6 @@ func (a *app) problem(w http.ResponseWriter, r *http.Request, p problem) {
 }
 
 func (a *app) problemBanner(w http.ResponseWriter, r *http.Request, p problem, standIn bool) {
-	retry := r.Method == http.MethodGet && (p == problemChanged || p == problemBusy || p == problemUnavailable || p.status == http.StatusTooManyRequests)
+	retry := r.Method == http.MethodGet && (p == problemChanged || p == problemChatChanged || p == problemBusy || p == problemUnavailable || p.status == http.StatusTooManyRequests)
 	a.render(w, "problem", p.status, problemData{Title: p.title, Message: p.message, Retry: retry, StandIn: standIn})
 }

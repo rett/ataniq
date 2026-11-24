@@ -102,8 +102,8 @@ func TestAReadGivesTheWholeRetainedConversation(t *testing.T) {
 			cut = cut || e.Cut
 			lines = lines || strings.Contains(string(e.Text), "\n")
 			markup = markup || strings.Contains(string(e.Text), "<b>bold</b> & \"quotes\"")
-			if e.Who == ownerwire.ChatWhoLead && !strings.HasPrefix(string(e.Text), "Sample:") {
-				t.Errorf("%s: the lead's entry %d does not say it is a sample: %q", c.lead, e.Seq, e.Text)
+			if !strings.HasPrefix(string(e.Text), "Sample:") {
+				t.Errorf("%s: the %s entry %d does not say it is a sample: %q", c.lead, e.Who, e.Seq, e.Text)
 			}
 		}
 		if cut != c.someCut || lines != c.someLines || markup != c.someMarkup {

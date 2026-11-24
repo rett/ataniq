@@ -213,15 +213,28 @@ var decideWords = regexp.MustCompile(`(?i)approv|den(y|ies|ied)|decid|decision|r
 // externalRe finds an address with a scheme or without one that names a host.
 var externalRe = regexp.MustCompile(`(?i)https?:|[("'=\s]//[a-z0-9]`)
 
+// urlAttrs are the attributes that carry an address a browser may fetch,
+// follow, ping or report to; a meta element's content is held to the same
+// rules (a refresh's url=), and appAttrs are those of them whose address
+// must be one of the app's own paths.
+var (
+	urlAttrs = map[string]bool{"href": true, "src": true, "action": true, "formaction": true, "srcset": true, "poster": true, "data": true,
+		"ping": true, "background": true, "cite": true, "manifest": true}
+	appAttrs = map[string]bool{"href": true, "src": true, "action": true, "formaction": true,
+		"ping": true, "background": true, "cite": true, "manifest": true}
+)
+
 var (
 	tagRe  = regexp.MustCompile(`(?is)<(/?)([a-z][a-z0-9-]*)([^>]*)>`)
 	attrRe = regexp.MustCompile(`(?is)([a-z_:][-a-z0-9_:.]*)\s*(?:=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?`)
 )
 
 // inspectPage returns what is wrong with an HTML page: an inline script or
-// style, an event handler, an external address, a form or a control that the
-// inventory does not list for it, and a control that looks like deciding when
-// the page may not hold one.
+// style, an event handler, an external address (in any attribute of
+// urlAttrs, or a meta element's content), a meta element with http-equiv
+// (the layout has none: a refresh or a policy set in markup), a form or a
+// control that the inventory does not list for it, and a control that looks
+// like deciding when the page may not hold one.
 func inspectPage(html string, allowed []string, mayDecide bool) []string {
 	var found []string
 	add := func(parts ...string) { found = append(found, strings.Join(parts, " ")) }
@@ -244,9 +257,12 @@ func inspectPage(html string, allowed []string, mayDecide bool) []string {
 			if key == "href" && strings.HasPrefix(v, "/leads") && !chatLink {
 				add("unlisted chat destination", v)
 			}
-			if (key == "href" || key == "src" || key == "action" || key == "formaction" || key == "srcset" || key == "poster" || key == "data") &&
+			if (urlAttrs[key] || (name == "meta" && key == "content")) &&
 				(externalRe.MatchString(" "+v) || strings.Contains(strings.ToLower(v), "javascript:") || strings.ContainsAny(v, "\\\t\r\n")) {
 				add("unsafe address", key, v)
+			}
+			if name == "meta" && key == "http-equiv" {
+				add("meta http-equiv", v)
 			}
 			if strings.HasPrefix(key, "on") {
 				add("event handler", key)
@@ -254,7 +270,7 @@ func inspectPage(html string, allowed []string, mayDecide bool) []string {
 			if key == "style" {
 				add("style attribute")
 			}
-			if (key == "href" || key == "src" || key == "action" || key == "formaction") && v != "" &&
+			if appAttrs[key] && v != "" &&
 				!(strings.HasPrefix(v, "/") && !strings.HasPrefix(v, "//")) && !strings.HasPrefix(v, "#") {
 				add("address that is not of this app", key, v)
 			}
@@ -370,8 +386,11 @@ func TestPageInventory(t *testing.T) {
 		body := w.Body.String()
 		switch e.kind {
 		case "page":
-			if !strings.Contains(body, `<meta name="format-detection" content="telephone=no">`) {
-				t.Errorf("%s: automatic telephone links are enabled", e.pattern)
+			// No number, date, address or email address in a lead's text, a
+			// card or a project becomes a link the browser made.
+			if strings.Count(body, `<meta name="format-detection" content="telephone=no, date=no, address=no, email=no">`) != 1 ||
+				strings.Count(body, `name="format-detection"`) != 1 {
+				t.Errorf("%s: automatic telephone, date, address or email links are enabled", e.pattern)
 			}
 			if ct := w.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
 				t.Errorf("%s: content type %q", e.pattern, ct)
@@ -477,6 +496,51 @@ func TestInspectPageSeesWhatItLooksFor(t *testing.T) {
 	// A page that may decide is not held to the words, only to the rest.
 	if f := inspectPage(`<button id="start" name="approve" type="button">x</button><script src="/static/decide.js"></script>`, []string{"button#start"}, true); len(f) != 0 {
 		t.Errorf("a decider: %v", f)
+	}
+}
+
+// TestInspectPageSeesEveryAddress: the check reads every attribute that
+// carries an address, and a meta element's content, and refuses a meta
+// element with http-equiv. Each page below holds only elements the check
+// allows, so the one finding is the address's or the meta's.
+func TestInspectPageSeesEveryAddress(t *testing.T) {
+	allowed := []string{"a"}
+	for _, clean := range []string{
+		`<a href="/cards/">x</a>`,
+		`<meta name="viewport" content="width=device-width, initial-scale=1">`,
+		`<meta name="format-detection" content="telephone=no, date=no, address=no, email=no">`,
+		`<meta name="color-scheme" content="light dark">`,
+		`<blockquote cite="/cards/">x</blockquote>`,
+	} {
+		if f := inspectPage(clean, allowed, false); len(f) != 0 {
+			t.Errorf("%s: %v", clean, f)
+		}
+	}
+	for _, c := range []struct{ page, want string }{
+		{`<a ping="https://example.com/x">x</a>`, "unsafe address ping"},
+		{`<a href="/cards/" ping="//elsewhere/x">x</a>`, "unsafe address ping"},
+		{`<a href="/cards/" ping="beacon">x</a>`, "address that is not of this app ping"},
+		{`<body background="https://example.com/b.png"><p>x</p></body>`, "unsafe address background"},
+		{`<table background="//elsewhere/b.png"></table>`, "unsafe address background"},
+		{`<blockquote cite="https://example.com/q">x</blockquote>`, "unsafe address cite"},
+		{`<q cite="javascript:x()">x</q>`, "unsafe address cite"},
+		{`<html manifest="https://example.com/app.appcache"></html>`, "unsafe address manifest"},
+		{`<html manifest="app.appcache"></html>`, "address that is not of this app manifest"},
+		{`<meta name="x" content="https://example.com/">`, "unsafe address content"},
+		{`<meta property="og:image" content="//elsewhere/i.png">`, "unsafe address content"},
+		{`<meta http-equiv="refresh" content="0;url=//elsewhere">`, "meta http-equiv refresh"},
+		{`<meta http-equiv="refresh" content="0;url=//elsewhere">`, "unsafe address content"},
+		{`<meta http-equiv="refresh" content="5">`, "meta http-equiv refresh"},
+		{`<meta http-equiv="Content-Security-Policy" content="default-src *">`, "meta http-equiv Content-Security-Policy"},
+	} {
+		f := inspectPage(c.page, allowed, false)
+		found := false
+		for _, line := range f {
+			found = found || strings.HasPrefix(line, c.want)
+		}
+		if !found {
+			t.Errorf("%s: no finding %q in %v", c.page, c.want, f)
+		}
 	}
 }
 

@@ -54,15 +54,15 @@ func (d *Daemon) Chat(ctx context.Context, c seatapp.ChatCall) (seatapp.ChatView
 	return d.chat(ctx, c, d.c)
 }
 
+// chat forgets every kept answer when the gate refuses a call or answers
+// one the link does not take, since the leads or the host changed. A call
+// the link does not send (no connection, no capability, no room) is no news
+// of the gate, and keeps them: a tap that meets the busy read room must not
+// cost the next page its directory.
 func (d *Daemon) chat(ctx context.Context, c seatapp.ChatCall, peer chatPeer) (v seatapp.ChatView, err error) {
 	m := &d.cmem
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	defer func() {
-		if err != nil {
-			m.answers = nil
-		}
-	}()
 	connection, connected := peer.Connected()
 	if !connected || ctx.Err() != nil {
 		return v, seatapp.ErrDaemonUnavailable
@@ -96,15 +96,17 @@ func (d *Daemon) chat(ctx context.Context, c seatapp.ChatCall, peer chatPeer) (v
 	cached, hit := m.answers[c]
 	raw := cached.raw
 	if !hit {
-		if !d.budget.take(kindChat) {
+		if !d.budget.take(kindRead) {
 			return v, seatapp.ErrBusy
 		}
 		if err := peer.Call(ctx, ownerwire.OpSeatChat, json.RawMessage(params), &raw); err != nil {
+			m.answers = nil
 			return v, mapCall(ctx, ownerwire.OpSeatChat, err, chatCodes)
 		}
 	}
 	v, err = decodeChat(c, raw)
 	if err != nil {
+		m.answers = nil
 		return seatapp.ChatView{}, err
 	}
 	select {
@@ -125,8 +127,11 @@ func (d *Daemon) chat(ctx context.Context, c seatapp.ChatCall, peer chatPeer) (v
 		if c.Verb == seatapp.ChatLeads {
 			ttl = listFresh
 		}
-		// Only the trial has immutable policy and bodies. A real transcript
-		// requires live read authorization on every request.
+		// Every directory, the trial's or a real one, is kept listFresh (20
+		// seconds), as the interview's list is. A transcript page is kept
+		// viewFresh (10 seconds) only when it is the trial's, whose samples
+		// never change: a real transcript requires live read authorization
+		// on every request, so it is never kept.
 		if c.Verb == seatapp.ChatLeads || v.StandIn {
 			if m.answers == nil || len(m.answers) >= 32 {
 				m.answers = make(map[seatapp.ChatCall]chatCached)
