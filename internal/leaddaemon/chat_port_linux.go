@@ -134,12 +134,21 @@ var errNoCursor = errors.New("lead chat: no chat cursor")
 // ChatCursor answers the chat cursor of the extended seat.wait
 // (ownerchannel.ChatCursor, by its method set alone):
 // [ownerwire.ChatCursor], under the binding's key, over the leads the seat
-// may read now, each with the generation of its switch and its head. A lead whose chat is off, stopped by
-// a scan, or whose store failed is not in it, so nothing it does moves the
-// cursor. It reads only the desk's switches and the stores' status: it reads
-// no reply, changes nothing, and is not counted against
-// [ChatCallsPerMinute], since the seat does not send it. An unbound port, a
-// failing source and a panic below it answer an error: no cursor.
+// may read now, each with the generation of its switch and its head. A lead
+// whose chat is off, stopped by a scan, or whose store failed is not in it,
+// so nothing it does moves the cursor. It reads only the desk's switches and
+// the stores' status: it reads no reply, changes no switch, head or entry
+// (a status may drop expired entries from memory, as every read does), and
+// is not counted against [ChatCallsPerMinute], since the seat does not send
+// it. An unbound port, a failing source and a panic below it answer an
+// error: no cursor.
+//
+// The source samples its leads as one state (chatDesk.seatCursor), and the
+// binding is checked again after the sample: a sample taken from a binding
+// that was replaced or taken back meanwhile is discarded, and the cursor is
+// read again from the binding now, at most [cursorTries] times in all,
+// after which there is no cursor. So a cursor is never that of a source the
+// port no longer holds, nor under its key.
 func (c *LeadChat) ChatCursor(ctx context.Context) (v int64, err error) {
 	if c == nil {
 		return 0, errNoCursor
@@ -149,19 +158,28 @@ func (c *LeadChat) ChatCursor(ctx context.Context) (v int64, err error) {
 			v, err = 0, errNoCursor
 		}
 	}()
-	if err := ctx.Err(); err != nil {
-		return 0, err
+	for try := 0; try < cursorTries; try++ {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		b := c.src.Load()
+		if b == nil || b.src == nil {
+			return 0, errNoCursor
+		}
+		leads, err := b.src.seatCursor()
+		if err != nil {
+			return 0, errNoCursor
+		}
+		if c.src.Load() == b {
+			return ownerwire.ChatCursor(b.key, leads), nil
+		}
 	}
-	b := c.src.Load()
-	if b == nil || b.src == nil {
-		return 0, errNoCursor
-	}
-	leads, err := b.src.seatCursor()
-	if err != nil {
-		return 0, errNoCursor
-	}
-	return ownerwire.ChatCursor(b.key, leads), nil
+	return 0, errNoCursor
 }
+
+// cursorTries is how many samples [LeadChat.ChatCursor] takes at most while
+// the binding keeps changing under it.
+const cursorTries = 3
 
 // ChatCursorChanged answers a channel that is closed when the cursor may
 // next have changed: an enabled lead's head moved, a lead's switch changed,

@@ -1909,7 +1909,28 @@ entry of a drop or of a suspension, also when the scan fails after it), when a
 lead's switch is set (on, off, a new segment), when a scan stops a lead's chat
 or its store fails, and when the port is bound or unbound. A drop that writes
 no entry (its notice was written less than a minute before) moves no head and
-closes nothing (`TestLeadChatCursorMovesForADropNoticeOnly`). A lead
+closes nothing (`TestLeadChatCursorMovesForADropNoticeOnly`).
+
+Each lead has a change lock under which every change the cursor covers is
+made and signalled: a scan from its admission (the desk's switch read)
+through the store's ingest to its signal, the publication of a turn-off, a
+turn-on with the desk's record of it, a scanner's panic and the closing of
+the store. So a scan admitted before a turn-off is published ingests and
+signals before the seat can see the lead off, and once the seat can see it off
+no scan of it is admitted: a reply that arrives while a lead is off moves no
+head and leaves no gap in its sequence numbers, and its next turn-on starts
+one after the head the seat could last see
+(`TestChatScanAdmittedBeforeATurnOffEndsBeforeTheOffIsSeen`). The scanner of
+a lead turned off is waited for after the lock is let go of. The cursor holds
+the change lock of every lead the seat can list while it samples them, in the
+desk's order, so it digests one state the desk held, never one lead sampled on
+before a turn-off beside another sampled on after a turn-on
+(`TestLeadChatCursorIsOneStateOfTheDesk`); and the port checks its binding
+again after the sample and discards a sample of a binding that was replaced or
+taken back meanwhile (`TestLeadChatCursorDiscardsASampleOfAReplacedBinding`),
+reading again from the binding now, at most three times, then giving no
+cursor. The registry's epoch is read as each lead is sampled; it only decides
+whether the wire can hold the lead. A lead
 whose chat is off has no scanner, so its replies are not read and close
 nothing; a test writes them, and starts that lead, and finds the cursor and
 the broadcast unchanged (`TestLeadChatCursorCoversTheEnabledLeadsOnly`). The
