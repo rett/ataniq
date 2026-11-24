@@ -639,6 +639,9 @@ func TestChatLeavesOutAKeyTheSeatCannotHold(t *testing.T) {
 	l.resetScratch()
 	l.scratch.Chat = port
 	l.start()
+	// The daemon says it listens before it binds the port and serves; the
+	// gate is started after both.
+	waitFor(t, 10*time.Second, "the port is bound", func() bool { return port.src.Load() != nil })
 	rows := seatLeads(t, port)
 	if len(rows) != 1 || rows[0].Lead != "daemon:alpha" {
 		t.Fatalf("the seat's rows: %+v", rows)
