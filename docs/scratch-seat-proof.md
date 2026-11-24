@@ -638,6 +638,10 @@ open network.
     sh "$ROOT/trial-restart.sh"
     ```
 
+    If you masked its name meanwhile, take the mask back first
+    (`systemctl --user unmask --runtime -- "$TRIAL_UNIT"`): a masked name
+    stops `systemd-run` from making the unit.
+
     A unit file: take the mask back if it is there, and start it, when
     `trial-unit-before.txt` says `ActiveState=active`.
 
