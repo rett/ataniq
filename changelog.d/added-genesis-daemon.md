@@ -26,5 +26,4 @@
   refusal bound counts only `genesis-bad-answer` and `bad-params` of the
   interview, and not `genesis-stale-round`, `genesis-busy`, `genesis-done`,
   `genesis-unknown-thread`, `genesis-secret-shaped` or `genesis-over-cap`, so
-  that a few taps never shut the seat out of approvals. The seat has no page
-  for the interview yet.
+  that a few taps never shut the seat out of approvals.

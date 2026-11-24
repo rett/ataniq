@@ -103,6 +103,12 @@ func RefusalCode(err error) (string, bool) {
 // ErrClosed is the error of a call to a store that was closed.
 var ErrClosed = errors.New("genesis: the thread store is closed")
 
+// ErrPlanBrief is the error of a plan drawn late for a finished thread that is
+// not the plan of the thread's frozen brief: the plan names another brief
+// digest. It is the host's own fault, not a refusal: the plan is not kept and
+// not served.
+var ErrPlanBrief = errors.New("genesis: a plan was drawn for another brief than the thread's")
+
 // gateWord maps each refusal code of the brief, the walker and the plan to
 // the word the seat gate answers it with. The empty word says the refusal is
 // the host's own fault and not the owner's mistake (a brief that breaks its

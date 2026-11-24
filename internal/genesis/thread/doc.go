@@ -81,8 +81,9 @@
 //     whose brief is complete (compiled for the read, stored nowhere), and
 //     the stored plan on a finished one; a finished thread with none whose
 //     brief is complete (finished before plans were stored) is given its
-//     plan on the first ask, stored once. A brief that is not complete is
-//     refused genesis-not-ready, a kind no template serves
+//     plan on the first ask, stored once, and only when it is the plan of the
+//     thread's frozen brief (else [ErrPlanBrief], nothing kept). A brief that
+//     is not complete is refused genesis-not-ready, a kind no template serves
 //     genesis-no-template. A stored plan is never compiled again: a template
 //     that changes later never alters it, and a plan of a template no longer
 //     embedded is served as it was stored. Its plan goes with a thread's

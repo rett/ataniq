@@ -181,7 +181,8 @@ func TestSeatLinkGenesisPlanOfEachTemplate(t *testing.T) {
 				}
 			}
 			for i, n := range p.Notes {
-				if pv.Notes[i] != (seatapp.GenesisNote{Field: n.Field, Text: n.Text}) {
+				// The label is the catalog's, for the golden plans' catalog.
+				if pv.Notes[i] != (seatapp.GenesisNote{Field: n.Field, Label: noteLabel(p.CatalogDigest, n.Field), Text: n.Text}) {
 					t.Fatalf("%s: note %d: %+v", name, i, pv.Notes[i])
 				}
 			}
@@ -323,6 +324,31 @@ func TestSeatLinkGenesisPlanCodesAndAnswers(t *testing.T) {
 	}
 }
 
+// A note's label is the words of the catalog's question for its field, when
+// the plan was compiled under the catalog this build holds and the question
+// takes the owner's own words; otherwise none, and the page says "A note".
+func TestSeatLinkGenesisNoteLabels(t *testing.T) {
+	cat, err := v1()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name, digest, field, want string
+	}{
+		{"the stack", cat.Digest(), "software.stack", "Do you prefer a programming language?"},
+		{"the sign-in", cat.Digest(), "software.auth", "How should people sign in?"},
+		{"a note of the brief's own", cat.Digest(), "notes", ""},
+		{"a field that takes no own words", cat.Digest(), "software.data", ""},
+		{"a field the catalog has not", cat.Digest(), "software.unheard", ""},
+		{"another catalog", strings.Repeat("0f", 32), "software.stack", ""},
+		{"no catalog", "", "software.stack", ""},
+	} {
+		if got := noteLabel(c.digest, c.field); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
 // The plan through the link, the gate and a real store: the summary of the
 // web app path says a plan is ready; the plan is a preview, kept as a round
 // is (viewFresh) and forgotten by a change of its thread; finish stores it;
@@ -346,6 +372,10 @@ func TestSeatLinkGenesisPlanOverARealStore(t *testing.T) {
 	// The owner's words are a note of the plan, never a title or a task.
 	if len(pre.Plan.Notes) != 1 || pre.Plan.Notes[0].Text != "Go and a small database" {
 		t.Fatalf("the preview's notes: %+v", pre.Plan.Notes)
+	}
+	// Its note says which answer it is: the catalog's own question.
+	if n := pre.Plan.Notes[0]; n.Field != "software.stack" || n.Label != "Do you prefer a programming language?" {
+		t.Fatalf("the note's field and label: %+v", n)
 	}
 	// Read again within viewFresh: from the memory.
 	clock.advance(viewFresh - time.Second)
@@ -398,6 +428,41 @@ func TestSeatLinkGenesisPlanOverARealStore(t *testing.T) {
 	call(t, d, planCall)
 	if calls() != n+1 {
 		t.Fatalf("a stored plan at storedPlanFresh was not asked again: %d calls", calls()-n)
+	}
+}
+
+// A stored plan the link remembers is dropped when a read of the thread's
+// own round or summary answers that the thread is unknown: the page of a
+// thread that is gone must not show its plan from memory for the minutes the
+// plan would otherwise be kept.
+func TestSeatLinkGenesisUnknownThreadDropsAStoredPlan(t *testing.T) {
+	for _, verb := range []string{seatapp.GenesisVerbRound, seatapp.GenesisVerbSummary} {
+		f, d, g, clock := genesisGate(t, []string{"genesis"})
+		id := walkToSummary(t, d, clock).Thread
+		call(t, d, seatapp.GenesisCall{Verb: seatapp.GenesisVerbFinish, Thread: id})
+		planCall := seatapp.GenesisCall{Verb: seatapp.GenesisVerbPlan, Thread: id}
+		stored := call(t, d, planCall)
+		if stored.Plan == nil || !stored.Plan.Stored {
+			t.Fatalf("%s: no stored plan: %+v", verb, stored)
+		}
+		n := g.calls.Load()
+		if call(t, d, planCall); g.calls.Load() != n {
+			t.Fatalf("%s: the stored plan is not kept", verb)
+		}
+		// The thread's round is stale before its stored plan is.
+		clock.advance(viewFresh + time.Second)
+		f.set(nil, "genesis-unknown-thread")
+		if _, err := d.Genesis(bg, seatapp.GenesisCall{Verb: verb, Thread: id}); !errors.Is(err, seatapp.ErrGenesisUnknownThread) {
+			t.Fatalf("%s of a thread the desk does not know: %v", verb, err)
+		}
+		f.set(nil, "")
+		n = g.calls.Load()
+		if _, err := d.Genesis(bg, planCall); err != nil && !errors.Is(err, seatapp.ErrGenesisUnknownThread) {
+			t.Fatalf("%s: %v", verb, err)
+		}
+		if g.calls.Load() != n+1 {
+			t.Errorf("%s: the stored plan of an unknown thread was answered from memory", verb)
+		}
 	}
 }
 

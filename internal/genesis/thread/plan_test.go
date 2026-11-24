@@ -2,6 +2,7 @@ package thread
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"ataniq/internal/approval/ownerwire"
+	"ataniq/internal/genesis/brief"
 	"ataniq/internal/genesis/catalog"
 	"ataniq/internal/genesis/plan"
 )
@@ -260,6 +262,52 @@ func TestAThreadFinishedBeforePlansGetsItsPlanOnce(t *testing.T) {
 	w.open()
 	if again := w.ok(w.askPlan(id)); !reflect.DeepEqual(again, got) {
 		t.Fatalf("after the restart: %+v", again)
+	}
+}
+
+// A plan drawn late is kept only when it is the plan of the thread's frozen
+// brief. A compiler that answers a plan of another brief (forged here through
+// the store's test seam) is not kept and not served: the call fails with the
+// typed error, the log says fixed words and nothing of the plan, the file is
+// as it was, and the next ask, with the compiler in order, draws the plan.
+func TestAPlanOfAnotherBriefIsNotKeptWhenDrawnLate(t *testing.T) {
+	w := newWorld(t)
+	id := w.ok(w.s.Start(ctx)).Thread
+	w.interview(id, 0)
+	w.ok(w.s.Finish(ctx, id))
+	r := w.s.threads[id]
+	r.plan, r.planDigest = nil, ""
+	w.writeRecord(r)
+	w.open()
+	before := w.bytesOf(id)
+	drawn := w.log.count("a plan was drawn")
+	w.s.compiler = func(b brief.Brief) (plan.Plan, string, error) {
+		p, err := plan.Compile(b, v1(t))
+		if err != nil {
+			return plan.Plan{}, "", err
+		}
+		p.BriefDigest = strings.Repeat("9e", 32)
+		d, err := plan.Digest(p)
+		return p, d, err
+	}
+	res, err := w.askPlan(id)
+	if !errors.Is(err, ErrPlanBrief) || res.Plan != nil || res.PlanDigest != "" {
+		t.Fatalf("a plan of another brief: %+v, %v", res, err)
+	}
+	if _, refused := RefusalCode(err); refused {
+		t.Fatal("a forged plan is refused as the owner's mistake")
+	}
+	if !bytes.Equal(w.bytesOf(id), before) || w.s.threads[id].plan != nil || w.log.count("a plan was drawn") != drawn {
+		t.Fatalf("the forged plan was kept: %q", w.log.all())
+	}
+	if w.log.count("did not match the thread's brief and was not kept") != 1 || strings.Contains(strings.Join(w.log.all(), "\n"), "9e9e") {
+		t.Fatalf("the log: %q", w.log.all())
+	}
+	// With the compiler in order the next ask draws the plan and keeps it.
+	w.s.compiler = nil
+	got := w.ok(w.askPlan(id))
+	if _, d := w.compiled(id); !got.Stored || got.PlanDigest != d {
+		t.Fatalf("the plan drawn after the fault: %+v", got)
 	}
 }
 

@@ -290,9 +290,11 @@ func cloneMilestones(ms []Milestone) []Milestone {
 }
 
 // AgentPlan is what of a plan may be served to an implementation agent:
-// the plan without the owner's notes, and without the digests. Every
-// string in it is a constant of a template, of the catalog or of this
-// package; none is the owner's text.
+// the plan without the owner's notes, and without the digests. For a plan
+// that [Compile] made, every string in it is a constant of a template, of
+// the catalog or of this package; none is the owner's text. A plan that
+// [Decode] read is held to its grammar only, so a plan from a store must be
+// re-checked against its template before it is handed to an agent.
 type AgentPlan struct {
 	Revision         int
 	Title            string
@@ -312,7 +314,8 @@ type AgentPlan struct {
 
 // ForAgent returns the projection of the plan an implementation agent may
 // be given. It holds no note: the owner's own words are never served to an
-// agent.
+// agent. That every other string is a constant is true of a plan Compile
+// made; a decoded plan is held to grammar only (see [AgentPlan]).
 func (p Plan) ForAgent() AgentPlan {
 	return AgentPlan{
 		Revision:         p.Revision,

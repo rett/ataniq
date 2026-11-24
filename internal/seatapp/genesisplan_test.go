@@ -29,7 +29,7 @@ func samplePlan() GenesisPlanView {
 		Gates: []string{"lint", "unit-tests"}, FirstDemo: "It runs on this computer & one flow works.",
 		ReviewPoints: []string{"demo", "plan"}, Hosts: "this_computer", ExternalServices: []string{"hosting service"},
 		BudgetBand: "low", Estimate: "days", Warnings: []string{"settle-at-desk", "something-new"},
-		Notes: []GenesisNote{{Field: "software.stack", Text: "Go <img src=x> and \u200ba small \u202edatabase"}}, NotesDropped: 0,
+		Notes: []GenesisNote{{Field: "software.stack", Label: "Do you prefer a <b>programming</b> language?", Text: "Go <img src=x> and \u200ba small \u202edatabase"}}, NotesDropped: 0,
 	}
 }
 
@@ -92,12 +92,13 @@ func TestGenesisPlanPageSections(t *testing.T) {
 		"Build the first page &lt;script&gt;alert(1)&lt;/script&gt;",
 		"building, a medium task; after: Settle the language with you; Lay out the repository\\u202eevil",
 		"testing, a large task; after: Build the first page",
-		"Your own notes", `<q class="owners">Go &lt;img src=x&gt; and \u200ba small \u202edatabase</q>`, "(" + planNotesMarked + ")",
+		"Your own notes", "Do you prefer a &lt;b&gt;programming&lt;/b&gt; language?", `<q class="owners">Go &lt;img src=x&gt; and \u200ba small \u202edatabase</q>`, "(" + planNotesMarked + ")",
 		"What a charter would cover", planCharterLine, "A signed charter would allow at most:",
 		"Work on: the documentation; the source code; the tests; repo:weird.",
 		"Outside services: hosting service.",
-		"Spending: A little: up to about 10 dollars a month (advisory).",
 		"Stopping for you at: At the first demo; Before work starts: you see the plan first.",
+		planCharterAlways,
+		"Monthly budget band (advisory; nothing enforces it yet): A little: up to about 10 dollars a month.",
 		`<a id="project-page" href="/projects/` + testThread + `">Back to the summary</a>`,
 		`<a id="project-list" href="/projects/">Back to the project list</a>`,
 	}
@@ -190,6 +191,15 @@ func TestGenesisPlanPageCharterSection(t *testing.T) {
 			t.Errorf("%s shows the charter", path)
 		}
 	}
+	// The budget is not an item of the "at most" list: it is a sentence of its
+	// own after it, and the list holds the always-stopping line.
+	list := charter[strings.Index(charter, "<ul>"):strings.Index(charter, "</ul>")]
+	if strings.Contains(list, "budget") || strings.Contains(list, "Spending") || !strings.Contains(list, planCharterAlways) {
+		t.Errorf("the charter's list:\n%s", list)
+	}
+	if rest := charter[strings.Index(charter, "</ul>"):]; !strings.Contains(rest, "Monthly budget band (advisory; nothing enforces it yet):") {
+		t.Errorf("the budget is not a sentence after the list:\n%s", rest)
+	}
 	// No services, and the services lines say none.
 	p := samplePlan()
 	p.ExternalServices = []string{}
@@ -199,6 +209,10 @@ func TestGenesisPlanPageCharterSection(t *testing.T) {
 		t.Error("a plan with no outside service does not say none")
 	}
 }
+
+// planCharterAlways is the line of the charter's list that says what always
+// waits for the owner.
+const planCharterAlways = "Always stopping for you before publishing, releases, pushing code, credentials and raising any limit."
 
 // The owner's notes: shown only when there are some, each through Text, and
 // a count of the ones left out.
@@ -219,6 +233,39 @@ func TestGenesisPlanPageNotes(t *testing.T) {
 	if strings.Count(page, `<q class="owners">`) != MaxGenesisPlanNotes || !strings.Contains(page, "3 more notes were left out.") ||
 		!strings.Contains(page, `note \u2066x`) {
 		t.Errorf("the notes:\n%s", sectionOf(t, page, "Your own notes"))
+	}
+}
+
+// Each note says which answer it belongs to: the question's words that the
+// link gave for its field, shown before the quoted text, or "A note" for a
+// note of the brief's own, a field with no words and a label on the field
+// "notes". The words are escaped like every text.
+func TestGenesisPlanPageNotesSayWhichAnswer(t *testing.T) {
+	p := samplePlan()
+	p.Notes = []GenesisNote{
+		{Field: "software.stack", Label: "Do you prefer a programming language?", Text: "one"},
+		{Field: "software.auth", Label: "How should people <i>sign</i> in\u202e?", Text: "two"},
+		{Field: "notes", Text: "three"},
+		{Field: "notes", Label: "A label that must not be used", Text: "four"},
+		{Field: "software.unheard", Text: "five"},
+	}
+	r, _, s := planRig(t, p)
+	notes := sectionOf(t, r.getWith(planPath, s).Body.String(), "Your own notes")
+	for _, want := range []string{
+		`<span class="meta">Do you prefer a programming language?</span><br><q class="owners">one</q>`,
+		`<span class="meta">How should people &lt;i&gt;sign&lt;/i&gt; in\u202e?</span><br><q class="owners">two</q>`,
+		`<span class="meta">A note</span><br><q class="owners">three</q>`,
+		`<span class="meta">A note</span><br><q class="owners">four</q>`,
+		`<span class="meta">A note</span><br><q class="owners">five</q>`,
+	} {
+		if !strings.Contains(notes, want) {
+			t.Errorf("the notes lack %q:\n%s", want, notes)
+		}
+	}
+	for _, bad := range []string{"must not be used", "<i>", "\u202e"} {
+		if strings.Contains(notes, bad) {
+			t.Errorf("the notes hold %q", bad)
+		}
 	}
 }
 
@@ -341,6 +388,10 @@ func TestGenesisPlanPageIsGuarded(t *testing.T) {
 	}
 }
 
+// finishNoPlanLine is the warning of the summary page above the finish
+// button when the answers are not complete.
+const finishNoPlanLine = "If you finish now, no plan is drawn for this project, and a finished brief cannot be changed."
+
 // The summary links the draft plan when the port says it is ready, and
 // otherwise says why there is none; the finished page links the plan kept
 // with the brief, and says what is true now.
@@ -358,18 +409,33 @@ func TestGenesisPlanLinks(t *testing.T) {
 	if strings.Contains(page, "see-plan") || !strings.Contains(page, "9 of 14 answers are filled in: no plan can be drawn yet.") {
 		t.Errorf("the summary of a brief not complete:\n%s", page)
 	}
+	// Finishing with answers missing is warned of, above the button, in
+	// the form; with a plan ready, or with all answers in and no template,
+	// there is no such line.
+	if !strings.Contains(page, finishNoPlanLine) || strings.Index(page, finishNoPlanLine) > strings.Index(page, `id="finish-go"`) {
+		t.Errorf("the summary of a brief not complete does not warn above the finish button:\n%s", page)
+	}
 	sum.Filled = 14
 	g.set(GenesisVerbRound, &sum, nil)
 	page = r.getWith("/projects/"+testThread, s).Body.String()
 	if strings.Contains(page, "see-plan") || !strings.Contains(page, planNoTemplate) {
 		t.Errorf("the summary of a kind with no template:\n%s", page)
 	}
+	if strings.Contains(page, finishNoPlanLine) {
+		t.Error("the summary of a kind with no template warns of no plan beside its own sentence")
+	}
+	sum.PlanReady = true
+	g.set(GenesisVerbRound, &sum, nil)
+	if page = r.getWith("/projects/"+testThread, s).Body.String(); strings.Contains(page, finishNoPlanLine) {
+		t.Error("the summary with a plan ready warns of no plan")
+	}
+	sum.PlanReady = false
 	fin := sampleSummary()
 	fin.State, fin.Digest = GenesisStateFinished, strings.Repeat("7d", 32)
 	g.set(GenesisVerbRound, &fin, nil)
 	page = r.getWith("/projects/"+testThread, s).Body.String()
 	for _, want := range []string{`<a id="see-plan" href="/projects/` + testThread + `/plan">See the plan</a>`,
-		"The plan is drawn from the brief and kept with it at the desk. Handing it to a project is a later step.",
+		"Handing a plan to a project is a later step.",
 		"Nothing has started, and no agent was given the brief yet."} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the finished page lacks %q", want)
@@ -377,6 +443,11 @@ func TestGenesisPlanLinks(t *testing.T) {
 	}
 	if strings.Contains(page, "Planning the project is a later step") {
 		t.Error("the finished page still says planning is a later step")
+	}
+	// The page does not say the plan is kept: the link shows what the desk
+	// has, and the plan page says what it is.
+	if strings.Contains(page, "kept with") || strings.Contains(page, "is drawn from the brief") {
+		t.Errorf("the finished page claims the plan is kept:\n%s", page)
 	}
 	fin.PlanReady = false
 	g.set(GenesisVerbRound, &fin, nil)

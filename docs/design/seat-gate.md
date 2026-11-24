@@ -157,8 +157,8 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   `STATE/owner/genesis/`; the gate handler's route and the capability
   `genesis` (`gatehost.WithGenesis`); and the daemon's wiring
   (`SeatGate.GenesisDir`). The verb `plan` and the plan stored at finish are
-  built on the daemon's side (genesis G11a); the seat has no page for the plan
-  yet.
+  built on the daemon's side (genesis G11a), and the seat's link and its plan
+  page are built too (genesis G11b).
 - The release of the seat for the authority host, `deploy/authority-host/seat`
   (G12, built, not deployed): the unit `ataniq-seat.service`, the Caddyfile
   and the validators, reload, stop and health lists, laid over the base
@@ -2199,9 +2199,10 @@ short form and says that nothing has started and no agent was given the brief.
 The summary links "See the draft plan" when the result's `plan_ready` says a
 plan would be answered, and otherwise says "N of M answers are filled in: no
 plan can be drawn yet." (or, with every answer filled in, that there is no plan
-template for this kind of project yet). The finished page says that the plan
-is drawn and kept with the brief and that handing it to a project is a later
-step, with "See the plan", when `plan_ready`; otherwise that no plan was drawn.
+template for this kind of project yet). The finished page, when `plan_ready`,
+says that handing a plan to a project is a later step and has the link "See
+the plan"; it says nothing of the plan being kept, which the plan page shows
+when the link is followed. Otherwise it says that no plan was drawn.
 
 The plan page, `GET /projects/{thread}/plan`, is a read: one call of `plan`
 (answered from the link's memory on a reload, see above), a session, the
@@ -2229,7 +2230,11 @@ ordered list of its tasks: title, kind and size in words, and "after:" the
 titles of the tasks it waits for; "Your own notes", only when there are some,
 each quoted with the `Text` rendering of untrusted text (bidirectional and
 hidden characters shown as escapes) and marked "your words, shown as you wrote
-them; never given to a tool", with the count of the notes left out; and
+them; never given to a tool", with the words of the catalog question it
+answers above it (the note's `field` looked up, by the link, in the catalog it
+holds, as a summary row's label is; "A note" when the field is `notes`, is
+unknown to the link or the plan is of another catalog) and the count of the
+notes left out; and
 "What a charter would cover". Every text is escaped by the page templates.
 
 The charter section is words about a later step, never a step. It opens with
@@ -2237,12 +2242,23 @@ the fixed text "Draft. Not signed. It allows nothing. Nothing starts from this
 page. Signing is a later step and is not built.", then "A signed charter would
 allow at most:" and a list drawn from the plan: the areas of work (the union of
 the tasks' scopes, in words where the app has them, else the area's name), the
-outside services, the budget band (advisory), and "stopping for you at" the
-review points. Its wording rule, which a test holds: it never says "card", it
+outside services, "stopping for you at" the review points and the fixed line
+"Always stopping for you before publishing, releases, pushing code,
+credentials and raising any limit." The budget band is not an item of that
+list, which is what the charter would allow at most: it follows the list as a
+sentence of its own, "Monthly budget band (advisory; nothing enforces it
+yet): ...". Its wording rule, which a test holds: it never says "card", it
 never says the plan "allows" anything (the one "allows" is the fixed "It
 allows nothing."), it holds no control and no link (no Approve, no Sign, no
 passkey, nothing into the card list's pending cards), and it is on the plan
 page alone: never on the card list, a card, a notice or another project page.
+
+The verb `plan` and the `plan_ready` member of a result have no capability of
+their own: they ride on `genesis`, so the seat and the daemon of a build are
+deployed together. A daemon older than the seat answers `plan` with
+`bad-params` (the page says something went wrong), and a seat older than the
+daemon refuses a result that carries `plan_ready` as one it does not
+understand.
 
 A plan that is not ready (`genesis-not-ready`) is a page of fixed words, "No
 plan can be drawn yet: some answers are missing."; only then is the thread's
@@ -2365,8 +2381,10 @@ The owner's own text (an `other` answer, a note of the brief) is kept in
 `notes` as `{field, text, untrusted: true}`, at most 8 of 200 bytes, for the
 owner's eyes only, and chooses nothing. Notes are never served to an
 implementation agent: `Plan.ForAgent` is what an agent may be given, it holds
-no note, and a test holds every string in it to a constant of a template, the
-catalog or the package. Another test compiles two briefs that differ only in
+no note, and a test holds every string in it, for a plan `Compile` made, to a
+constant of a template, the catalog or the package. A decoded plan is held to
+its grammar only, so a plan from a store must be re-checked against its
+template before it is handed to an agent. Another test compiles two briefs that differ only in
 their `other` texts and notes, one reading like instructions with markup and
 commands, and finds the plans byte for byte equal outside `notes` and
 `brief_digest`.

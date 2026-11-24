@@ -50,6 +50,9 @@ type Store struct {
 	// bad holds the names (ids) of files that are not served.
 	bad     map[string]bool
 	secrets int
+	// compiler replaces the plan compiler where a test needs a fault of it;
+	// nil is the compiler.
+	compiler func(b brief.Brief) (plan.Plan, string, error)
 }
 
 // Open opens the store in dir, the folder of the threads: it makes it, mode
@@ -641,6 +644,9 @@ func hasTemplate(kind string) (bool, error) {
 // complete (completing it would not help); a brief that is not complete
 // genesis-not-ready. Any other error is the host's own fault.
 func (s *Store) compile(b brief.Brief) (plan.Plan, string, error) {
+	if s.compiler != nil {
+		return s.compiler(b)
+	}
 	if b.Kind != "" {
 		ok, err := hasTemplate(b.Kind)
 		if err != nil {
@@ -669,7 +675,10 @@ func (s *Store) compile(b brief.Brief) (plan.Plan, string, error) {
 // is complete (one finished before plans were stored) is given one now, which
 // is stored, once, as finish would have. A brief that is not complete is
 // refused genesis-not-ready, a kind no template serves genesis-no-template. A
-// stored plan is never compiled again. It is a read: it touches no thread.
+// stored plan is never compiled again. It touches no thread: it writes only to
+// the store, once, the plan of a finished thread that has none, and only when
+// the plan is of the thread's frozen brief (else [ErrPlanBrief], and nothing
+// is kept).
 func (s *Store) Plan(ctx context.Context, id string) (ownerwire.SeatGenesisResult, error) {
 	return s.run(ctx, func(t *tx) (ownerwire.SeatGenesisResult, error) {
 		r, err := t.get(id)
@@ -685,6 +694,10 @@ func (s *Store) Plan(ctx context.Context, id string) (ownerwire.SeatGenesisResul
 		}
 		if r.state != StateFinished {
 			return planView(s.cat, r, p, d, false)
+		}
+		if p.BriefDigest != r.frozen {
+			t.logf("genesis: a plan drawn late did not match the thread's brief and was not kept")
+			return ownerwire.SeatGenesisResult{}, ErrPlanBrief
 		}
 		r.plan, r.planDigest = &p, d
 		res, err := planView(s.cat, r, p, d, true)

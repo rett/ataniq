@@ -54,7 +54,7 @@
 {{with .Notes}}<section aria-labelledby="notes-h">
 <h2 id="notes-h">Your own notes</h2>
 <ul class="plain">
-{{range .}}<li><q class="owners">{{text .Text maxLine}}</q> <span class="meta">(your words, shown as you wrote them; never given to a tool)</span></li>
+{{range .}}<li><span class="meta">{{text .Heading maxLine}}</span><br><q class="owners">{{text .Text maxLine}}</q> <span class="meta">(your words, shown as you wrote them; never given to a tool)</span></li>
 {{end}}</ul>
 {{if $.Plan.NotesDropped}}<p>{{num $.Plan.NotesDropped}} more notes were left out.</p>
 {{end}}</section>
@@ -65,9 +65,10 @@
 <ul>
 <li>Work on: {{range $i, $a := $.Areas}}{{if $i}}; {{end}}{{text $a maxLine}}{{end}}.</li>
 <li>Outside services: {{with $.Services}}{{range $i, $s := .}}{{if $i}}; {{end}}{{text $s maxLine}}{{end}}{{else}}none{{end}}.</li>
-<li>Spending: {{text $.Budget maxLine}} (advisory).</li>
 <li>Stopping for you at: {{with $.Waits}}{{range $i, $p := .}}{{if $i}}; {{end}}{{text $p maxLine}}{{end}}{{else}}no point of the plan{{end}}.</li>
+<li>Always stopping for you before publishing, releases, pushing code, credentials and raising any limit.</li>
 </ul>
+<p>Monthly budget band (advisory; nothing enforces it yet): {{text $.Budget maxLine}}.</p>
 </section>
 {{else}}<p role="status">{{text .Missing maxLine}}</p>
 {{end}}<nav aria-label="Project">

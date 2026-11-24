@@ -41,12 +41,14 @@
 // is kept in the plan's notes, each {field, text, untrusted: true}, at most
 // 200 bytes and 8 notes, for the owner's eyes only. It is never served to an
 // implementation agent: [Plan.ForAgent] is the projection an agent may be
-// given, and it holds no note; every string in it is a constant of a
-// template, of the catalog or of this package. The text chooses nothing in
-// the plan: a template's condition may hold for an "other" answer (the
-// closed predicate other), never for what it says, and two briefs that
-// differ only in such texts give plans that differ only in their notes and
-// the brief's digest.
+// given, and it holds no note; for a plan Compile made, every string in it
+// is a constant of a template, of the catalog or of this package. A decoded
+// plan is held to grammar only, so a plan from a store must be re-checked
+// against its template before it is handed to an agent. The text chooses
+// nothing in the plan: a template's condition may hold for an "other"
+// answer (the closed predicate other), never for what it says, and two
+// briefs that differ only in such texts give plans that differ only in
+// their notes and the brief's digest.
 //
 // # The canonical form
 //
@@ -66,7 +68,14 @@
 // A template is data, ataniq.genesis-plan-template/1, embedded from
 // templates/*.json in the canonical form, versioned and reviewed like code;
 // [LoadTemplate] reads one strictly. A changed template is a new version: a
-// test pins the digest of each. There are three, one per kind: software
+// test pins the digest of each by id@version, fails when the digest of a
+// pinned id@version changes, and fails on an id@version with no pin. To
+// change a template, raise its "version" in templates/ID.json (v2 after v1),
+// run the plan tests with -update, which reports the pin to add, and add
+// that line to templateDigests in template_test.go without removing the old
+// version's line, which stays on record because a stored plan names the
+// digest it was compiled with; then regenerate the golden plans as below.
+// There are three, one per kind: software
 // (web app and one-page tool), publishing (newsletter and article) and
 // media (podcast and book). Each holds the same security block (no push,
 // no outward step, secrets by reference). A task, a gate, a service, a

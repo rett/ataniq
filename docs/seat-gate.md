@@ -479,9 +479,14 @@ the plan says."); the outside services the work would use; where the files
 live; the budget band (advisory: nothing enforces it yet); the estimate (an
 estimate, not a promise); the plan's warnings; the milestones, each a section
 you open, with its tasks, their kind and size and what each waits for; your
-own notes, quoted and marked as your words, never given to a tool; and "What a
-charter would cover", a draft of words only ("Draft. Not signed. It allows
-nothing. ..."). To tune the plan, go back to the summary and change an answer:
+own notes, each quoted and marked as your words, never given to a tool, with
+the question it answers above it ("Do you prefer a programming language?", or
+"A note" for a note of your own); and "What a charter would cover", a draft of
+words only ("Draft. Not signed. It allows nothing. ..."), which lists the work
+areas, the outside services, where it would stop for you and the line "Always
+stopping for you before publishing, releases, pushing code, credentials and
+raising any limit.", and then, apart from that list, the monthly budget band
+(advisory; nothing enforces it yet). To tune the plan, go back to the summary and change an answer:
 the draft is drawn again from the answers. "Looks right: finish" keeps the
 brief and its plan, revision 1, which never changes afterwards; the finished
 page then has "See the plan". A project finished before its answers were
@@ -503,8 +508,9 @@ looks like a password or key. ..."), and the page never shows it back.
 What it costs. The pages are plain pages with forms, and each answer is one call
 of the gate. The seat keeps 12 calls in 80 seconds of the gate's rate for them;
 answering a round every 5 seconds stays inside it, because an answer and the
-page after it are one call. Opening the plan page is one call; reopening a
-draft within 10 seconds, or the kept plan within 5 minutes, is none. Past it the page says
+page after it are one call. Opening the plan page is one call (two when no plan can be drawn yet, since the
+thread's round is read too); reopening a draft within 10 seconds, or the kept
+plan within 5 minutes, is none. Past it the page says
 "The desk is busy. Try again in a minute." and nothing is sent.
 
 ## Notices
