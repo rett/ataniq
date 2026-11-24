@@ -168,6 +168,12 @@
 // The waits have a room of their own (waitRoom). See watch.go for the
 // timings. [Daemon.Close] stops the goroutine.
 //
+// When the gate's hello lists "wait-chat" ([CapWaitChat]) and "chat", the
+// watcher sends the extended seat.wait on the same call, and
+// [Daemon.ChatHint] and [Daemon.ChatHintChanged] say when the cursor of the
+// leads' chat the seat may read moved (watchchat.go): no call and no room
+// beyond the waits'.
+//
 // # The interview
 //
 // [Daemon.Genesis] implements [seatapp.Genesis], the guided new-project
@@ -241,7 +247,7 @@ const (
 // Caps is the capability list the seat says in its hello
 // ([seatgate.ClientConfig].Caps), in a new slice.
 func Caps() []string {
-	return []string{CapPair, CapRead, CapLogin, CapDecide, CapWatch, CapGenesis, CapChat}
+	return []string{CapPair, CapRead, CapLogin, CapDecide, CapWatch, CapGenesis, CapChat, CapWaitChat}
 }
 
 // errBadAnswer is the error of an answer that is not a pairing result of its
@@ -287,8 +293,10 @@ type Daemon struct {
 	shown shownCards
 	// budget counts the calls the link sends, by kind (see budget.go).
 	budget budget
-	// hub is the watcher's published state (see watch.go).
-	hub watchHub
+	// hub is the watcher's published state (see watch.go), and chub its
+	// chat hint (see watchchat.go).
+	hub  watchHub
+	chub chatHub
 	// gmem is the link's short memory of the interview's answers, and
 	// gnow its clock (see genesis.go).
 	cmem chatMemory

@@ -1677,8 +1677,9 @@ runs when no browser is looking (see [the notices section](#notices)).
 ### Chat hints on the wait
 
 Status: the wire (`ownerwire`, `waitchat.go`), the gate's capability, the
-daemon's wait, the trial's stand-in cursor and the scratch leads' cursor are
-built and tested; not qualified. A seat that shows the leads' conversations learns that what it may
+daemon's wait, the trial's stand-in cursor, the scratch leads' cursor and the
+seat link's watcher are built and tested; not qualified. The seat's pages and
+the browser's stream do not use the hint yet. A seat that shows the leads' conversations learns that what it may
 read moved from the one wait it already holds, not from a second wait or a
 timer. The hint is never content: an integer that a page's script can carry,
 which tells the seat to read again through `seat.chat`, where the desk
@@ -1778,6 +1779,29 @@ the seat's. An unbound port, a failing source or a panic gives no cursor. The
 wired-daemon test (`cmd/ataniqd`, `chat_scratch_linux_test.go`) sends extended
 waits through the real wiring and finds that the waits are the service's only
 counts and that the door, the suite and the drop folder do not move.
+
+**The seat** (`seatlink`, `watchchat.go`). The seat's hello lists
+`wait-chat`. Its one watcher sends the extended wait in place of the plain one
+when the gate's hello lists `wait-chat` and `chat`, on the same call, so the
+hint costs no call of the gate and no room beyond the waits' 5; the two waits
+for each peer and the one watcher are unchanged. Otherwise it sends exactly
+the plain params. A gate that lists it and answers the extended params
+`bad-params` gets the plain wait for the rest of that connection. Each form's
+answer is read with its own decoder.
+
+The watcher publishes the hint (`Daemon.ChatHint`: live, the cursor, and the
+connection it was learned on) and a broadcast beside the Cards'
+(`Daemon.ChatHintChanged`, beside `WatchChanged`): a chat change wakes the
+hint's subscribers and not the Cards'. It drops what it holds of the chat, and
+publishes the hint as not live, whenever it may be stale: on a lost link, on a
+new connection (a cursor of another connection is never sent or shown), when
+the gate no longer lists the capability, when an answer carries no cursor,
+and after any wait that failed or was refused. Its next extended wait then
+carries 0, which the gate answers at once with a fresh cursor: one fresh
+authorized view. A cursor is published only while the connection it came on is
+still the client's. The hint says that something the seat may read moved and
+nothing else: no lead, no count and no text, and a page that acts on it reads
+the directory and the conversation again through `seat.chat`.
 
 ## Notices
 
