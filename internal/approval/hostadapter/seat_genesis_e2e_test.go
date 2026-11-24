@@ -400,3 +400,96 @@ func TestGenesisRefusalsAreBoundedOverTheGate(t *testing.T) {
 		t.Fatalf("a read of a seat that is shut out: %q", code)
 	}
 }
+
+// gPlan asks the plan of a thread.
+func gPlan(id string) ownerwire.SeatGenesisParams {
+	return ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbPlan, Thread: id}
+}
+
+// The plan over the gate: the web app interview walked to its summary gives a
+// preview, compiled on each read and stored nowhere; finish stores it, and the
+// plan of the finished thread is that one, stored, the same after a restart of
+// the daemon. An interview finished early has no plan (genesis-not-ready), nor
+// has a kind in the owner's own words (genesis-no-template), and neither shuts
+// the seat out.
+func TestGenesisPlanOverTheGate(t *testing.T) {
+	w := newDecideWorld(t, nil)
+	dir := filepath.Join(privateDir(t), "genesis")
+	g := w.startGenesisGate(dir)
+	seat := w.dialGenesis(g)
+
+	a := seat.ok(gStart()).Thread
+	var sum ownerwire.SeatGenesisResult
+	for i, round := range webAppRounds {
+		sum = seat.ok(gAnswer(a, i+1, round...))
+	}
+	if sum.State != ownerwire.GenesisStateSummary || !sum.Progress.PlanReady {
+		t.Fatalf("the summary: %+v", sum)
+	}
+	pre := seat.ok(gPlan(a))
+	if pre.State != ownerwire.GenesisStatePlan || pre.Stored || pre.Thread != a || pre.Plan == nil || pre.Plan.Revision != 1 ||
+		pre.Plan.PrevDigest != "" || len(pre.PlanDigest) != 64 || pre.Plan.CatalogDigest != sum.CatalogDigest {
+		t.Fatalf("the preview: %+v", pre)
+	}
+	if d, err := ownerwire.GenesisPlanDigest(*pre.Plan); err != nil || d != pre.PlanDigest {
+		t.Fatalf("the preview's digest %s is not its plan's %s: %v", pre.PlanDigest, d, err)
+	}
+	if again := seat.ok(gPlan(a)); again.PlanDigest != pre.PlanDigest || !reflect.DeepEqual(again, pre) {
+		t.Fatalf("the preview asked again: %+v, want %+v", again, pre)
+	}
+	// A preview is stored nowhere: the thread's file has no plan.
+	file := filepath.Join(dir, a+".json")
+	if data, err := os.ReadFile(file); err != nil || bytes.Contains(data, []byte(`"plan_digest"`)) {
+		t.Fatalf("the open thread's file: %v", err)
+	}
+
+	fin := seat.ok(ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbFinish, Thread: a})
+	if fin.State != ownerwire.GenesisStateFinished || !fin.Progress.PlanReady {
+		t.Fatalf("finish: %+v", fin)
+	}
+	stored := seat.ok(gPlan(a))
+	if !stored.Stored || stored.PlanDigest != pre.PlanDigest || !reflect.DeepEqual(stored.Plan, pre.Plan) {
+		t.Fatalf("the stored plan: %+v, want the preview's %s", stored, pre.PlanDigest)
+	}
+	if data, err := os.ReadFile(file); err != nil || !bytes.Contains(data, []byte(`"plan_digest":"`+pre.PlanDigest+`"`)) {
+		t.Fatalf("the finished thread's file does not hold its plan: %v", err)
+	}
+
+	// The daemon is restarted: the same plan comes back.
+	_ = seat.c.Close()
+	g.stop()
+	lines := strings.Join(g.log.all(), "\n")
+	if !strings.Contains(lines, "genesis: a plan was drawn") || strings.Contains(lines, pre.Plan.Title) || strings.Contains(lines, pre.PlanDigest) {
+		t.Fatalf("the store's log %q", g.log.all())
+	}
+	g = w.startGenesisGate(dir)
+	seat = w.dialGenesis(g)
+	if got := seat.ok(gPlan(a)); !reflect.DeepEqual(got, stored) {
+		t.Fatalf("after the restart: %+v, want %+v", got, stored)
+	}
+
+	// An interview finished early: no plan, before the finish or after.
+	b := seat.ok(gStart()).Thread
+	seat.ok(gAnswer(b, 1, webAppRounds[0]...))
+	seat.refused(gPlan(b), ownerwire.CodeGenesisNotReady)
+	early := seat.ok(ownerwire.SeatGenesisParams{Verb: ownerwire.GenesisVerbFinish, Thread: b})
+	if early.State != ownerwire.GenesisStateFinished || early.Progress.PlanReady {
+		t.Fatalf("the early finish: %+v", early)
+	}
+	// The two refusals, more of them together than the refusal bound (the
+	// gate's rate of 60 a minute allows no more), shut no one out.
+	for i := 0; i < gatehost.RefusalBound/2; i++ {
+		seat.refused(gPlan(b), ownerwire.CodeGenesisNotReady)
+	}
+
+	// A kind in the owner's own words: no template, as often as it is asked.
+	c := seat.ok(gStart()).Thread
+	seat.ok(gAnswer(c, 1, gOther("kind", "a board game for two players")))
+	for i := 0; i < gatehost.RefusalBound/2; i++ {
+		seat.refused(gPlan(c), ownerwire.CodeGenesisNoTemplate)
+	}
+	// None of it shut the seat out.
+	if got := seat.ok(gPlan(a)); !reflect.DeepEqual(got, stored) {
+		t.Fatalf("the stored plan after the refusals: %+v", got)
+	}
+}

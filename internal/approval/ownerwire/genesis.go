@@ -10,9 +10,11 @@ import (
 // This file holds the words of seat.genesis, the one operation of the guided
 // new-project interview: the owner on the phone starts a thread, answers its
 // rounds of questions, changes an earlier answer, reads the summary and
-// finishes or discards the thread, and the seat lists the threads that are
-// open. The questions and the brief they fill are
-// the host's: see packages internal/genesis/catalog and internal/genesis/brief.
+// finishes or discards the thread, reads the plan a complete brief gives, and
+// the seat lists the threads that are open. The questions, the brief they fill
+// and the plan are the host's: see packages internal/genesis/catalog,
+// internal/genesis/brief and internal/genesis/plan (genesis_plan.go holds the
+// plan's forms).
 // This file is only the wire. It cannot import them, so it holds the same
 // grammars and caps as forms of its own, and a test of package genesis holds
 // the two in step. See docs/design/seat-gate.md, "Guided new project".
@@ -93,6 +95,12 @@ const (
 	// memory of them (a restart) finds the threads; it answers the state
 	// threads.
 	GenesisVerbList = "list"
+	// GenesisVerbPlan reads the thread's plan: the thread. On an open thread
+	// whose brief is complete it is a preview the host compiles for the
+	// read and keeps nowhere; on a finished thread it is the plan the host
+	// stored when the thread was finished. It answers the state plan, and is
+	// a read like round.
+	GenesisVerbPlan = "plan"
 )
 
 // The kinds of an answer.
@@ -124,6 +132,9 @@ const (
 	// GenesisStateThreads is the answer to a list: the host's open
 	// threads, and no thread of its own.
 	GenesisStateThreads = "threads"
+	// GenesisStatePlan is the answer to a plan: the thread's plan, its
+	// digest, and whether it is the plan the host stored.
+	GenesisStatePlan = "plan"
 )
 
 // The types of a question, the catalog's words.
@@ -136,10 +147,10 @@ const (
 
 // The gate's words for a refusal of seat.genesis. Each is of the grammar of a
 // gate code, [a-z0-9-]{1,40}. Four are of the host's state (busy,
-// unknown-thread, done and stale-round), and three are the host's refusal
+// unknown-thread, done and stale-round), and five are the host's refusal
 // codes of the genesis packages (see package brief) in the seat's words
-// (bad-answer, over-cap and secret-shaped): a test of package genesis holds
-// the mapping.
+// (bad-answer, over-cap, secret-shaped, not-ready and no-template): a test of
+// package genesis holds the mapping.
 const (
 	// CodeGenesisBusy answers a start while the host already holds
 	// [MaxGenesisThreads] open threads (of every pinned seat together).
@@ -169,6 +180,14 @@ const (
 	// its summary): the state of the thread, which a second tab or a double
 	// tap meets, not a misuse.
 	CodeGenesisStaleRound = "genesis-stale-round"
+	// CodeGenesisNotReady answers a plan of a thread whose brief is not
+	// complete: a required field is not filled, or an answer the host
+	// inferred is not confirmed. The brief's brief_incomplete.
+	CodeGenesisNotReady = "genesis-not-ready"
+	// CodeGenesisNoTemplate answers a plan of a thread whose kind no plan
+	// template serves, such as a kind in the owner's own words. The
+	// brief's no_template.
+	CodeGenesisNoTemplate = "genesis-no-template"
 )
 
 // GenesisPick is the owner's choice for one question: a kind and what the
@@ -210,6 +229,7 @@ type GenesisAnswer struct {
 //	summary  thread
 //	finish   thread
 //	discard  thread
+//	plan     thread
 type SeatGenesisParams struct {
 	// Verb is one of the verbs.
 	Verb string `json:"verb"`
@@ -236,6 +256,9 @@ type GenesisProgress struct {
 	// Total is the number of required fields of the brief's kind, at most
 	// [MaxGenesisRows].
 	Total int `json:"total"`
+	// PlanReady says the verb plan would answer a plan: the brief is
+	// complete and a template serves its kind. It is left out when false.
+	PlanReady bool `json:"plan_ready,omitempty"`
 }
 
 // GenesisOption is one choice of a question, in the catalog's words.
@@ -310,13 +333,16 @@ type GenesisGroups struct {
 //	finished   0 to of       none   given   given   0
 //	discarded  0             none   none    none    0 (progress 0 of 0)
 //	threads    0 (of 0)      none   none    none    0 (progress 0 of 0)
+//	plan       0 to of       none   none    none    0 (progress all filled)
 //
 // Every state but threads names its thread and its catalog digest; threads
 // names neither, and is the only state with a list of threads (0 to
-// [MaxGenesisThreads] of them), which every other state leaves out.
+// [MaxGenesisThreads] of them), which every other state leaves out. plan is
+// the only state with a plan, its plan digest and the mark stored, which
+// every other state leaves out.
 //
-// Every text in it is plain text the host owns: the catalog's, or the
-// owner's own "other" text in a row marked Untrusted.
+// Every text in it is plain text the host owns: the catalog's, a template's,
+// or the owner's own text in a row or a plan's note marked untrusted.
 type SeatGenesisResult struct {
 	// State is one of the states.
 	State string `json:"state"`
@@ -347,6 +373,17 @@ type SeatGenesisResult struct {
 	// Threads are the host's open threads, oldest first, at most
 	// [MaxGenesisThreads]; given, and possibly empty, for threads only.
 	Threads []GenesisThread `json:"threads,omitempty"`
+	// Plan is the thread's plan; given for plan only.
+	Plan *GenesisPlan `json:"plan,omitempty"`
+	// PlanDigest is the digest of the plan, the SHA-256 of its canonical
+	// form ([GenesisPlanDigest]), 64 lower-case hexadecimal digits; given
+	// for plan only.
+	PlanDigest string `json:"plan_digest,omitempty"`
+	// Stored is true when the plan is the one the host stored for the
+	// thread (a finished thread's), and false for a preview the host
+	// compiled for the read and keeps nowhere. It is left out when false,
+	// and is false for every state but plan.
+	Stored bool `json:"stored,omitempty"`
 }
 
 // GenesisThread is one open thread in the answer to a list: where it stands,
@@ -373,7 +410,7 @@ var (
 )
 
 // DecodeSeatGenesisParams reads the params of seat.genesis: a verb that is
-// one of the eight, and exactly the members that verb takes, each within its
+// one of the nine, and exactly the members that verb takes, each within its
 // grammar and caps. Params over [MaxSeatGenesisParamsBytes] are refused
 // record-too-large; anything else that is wrong, such as a member of another
 // verb, a thread id of another form, an answer whose kind and members do not
@@ -394,8 +431,9 @@ func EncodeSeatGenesisParams(p SeatGenesisParams) ([]byte, error) {
 // [MaxSeatGenesisResultBytes] is refused record-too-large; anything else
 // that is wrong, such as a member the state does not take, more than
 // [MaxGenesisNodes] questions, a question with a number of options its type
-// does not allow, a summary of more than [MaxGenesisRows] rows, or a list
-// of more than [MaxGenesisThreads] threads, record-invalid.
+// does not allow, a summary of more than [MaxGenesisRows] rows, a list of
+// more than [MaxGenesisThreads] threads, or a plan that breaks a rule of the
+// plan record or whose digest is not its own, record-invalid.
 func DecodeSeatGenesisResult(data []byte) (SeatGenesisResult, error) {
 	return seatGenesisResultForm.decode(data)
 }
@@ -513,9 +551,9 @@ func (c *checker) pick(kind string, ids []string, text, where string) {
 func checkSeatGenesisParams(p *SeatGenesisParams) error {
 	c := &checker{invalid: record.CodeRecordInvalid}
 	switch p.Verb {
-	case GenesisVerbStart, GenesisVerbList, GenesisVerbRound, GenesisVerbAnswer, GenesisVerbChange, GenesisVerbSummary, GenesisVerbFinish, GenesisVerbDiscard:
+	case GenesisVerbStart, GenesisVerbList, GenesisVerbRound, GenesisVerbAnswer, GenesisVerbChange, GenesisVerbSummary, GenesisVerbFinish, GenesisVerbDiscard, GenesisVerbPlan:
 	default:
-		c.need(false, "genesis.verb is not start, list, round, answer, change, summary, finish or discard")
+		c.need(false, "genesis.verb is not start, list, round, answer, change, summary, finish, discard or plan")
 		return c.result()
 	}
 	if p.Verb == GenesisVerbStart || p.Verb == GenesisVerbList {
@@ -626,7 +664,7 @@ func (c *checker) genesisThreads(ts []GenesisThread) {
 func checkSeatGenesisResult(r *SeatGenesisResult) error {
 	c := &checker{invalid: record.CodeRecordInvalid}
 	switch r.State {
-	case GenesisStateQuestion, GenesisStateSummary, GenesisStateFinished, GenesisStateDiscarded:
+	case GenesisStateQuestion, GenesisStateSummary, GenesisStateFinished, GenesisStateDiscarded, GenesisStatePlan:
 	case GenesisStateThreads:
 		// A list names no thread of its own and nothing of one.
 		c.need(r.Thread == "", "genesis.thread is given for a threads")
@@ -636,10 +674,11 @@ func checkSeatGenesisResult(r *SeatGenesisResult) error {
 		c.need(len(r.Nodes) == 0, "genesis.nodes is given for a threads")
 		c.need(r.Groups == nil, "genesis.groups is given for a threads")
 		c.need(r.Digest == "", "genesis.digest is given for a threads")
+		c.need(r.Plan == nil && r.PlanDigest == "" && !r.Stored, "genesis.plan, plan_digest or stored is given for a threads")
 		c.genesisThreads(r.Threads)
 		return c.result()
 	default:
-		c.need(false, "genesis.state is not question, summary, finished, discarded or threads")
+		c.need(false, "genesis.state is not question, summary, finished, discarded, threads or plan")
 		return c.result()
 	}
 	c.need(r.Threads == nil, "genesis.threads is given for a "+r.State)
@@ -697,11 +736,18 @@ func checkSeatGenesisResult(r *SeatGenesisResult) error {
 	} else {
 		c.need(r.Digest == "", "genesis.digest is given for a "+r.State)
 	}
-	if r.State == GenesisStateFinished || r.State == GenesisStateDiscarded {
+	if r.State == GenesisStateFinished || r.State == GenesisStateDiscarded || r.State == GenesisStatePlan {
 		c.need(r.Reset == 0, "genesis.reset is given for a "+r.State)
 	}
 	if r.State == GenesisStateDiscarded {
 		c.need(r.Progress == GenesisProgress{}, "genesis.progress is given for a discarded thread")
+	}
+
+	// The plan, with its digest and the mark stored: only a plan has them.
+	if r.State == GenesisStatePlan {
+		c.genesisPlanResult(r)
+	} else {
+		c.need(r.Plan == nil && r.PlanDigest == "" && !r.Stored, "genesis.plan, plan_digest or stored is given for a "+r.State)
 	}
 	return c.result()
 }

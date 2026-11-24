@@ -39,11 +39,14 @@ const CodeTooManyRefusals = "too-many-refusals"
 // own pages never send one, and a seat that keeps sending them is the misuse
 // the bound is for. None of the others counts. genesis-stale-round (a round
 // already taken), genesis-busy (a third open thread), genesis-done (a call to
-// a finished thread) and genesis-unknown-thread (a thread that expired, was
-// discarded, or is not the store's) answer the state of the daemon's store,
-// which a seat in good order meets: a double tap, a second tab, a post the
-// browser sent again, a start after two threads were left open, a page left
-// open past a discard. genesis-secret-shaped and genesis-over-cap answer what
+// a finished thread), genesis-unknown-thread (a thread that expired, was
+// discarded, or is not the store's), genesis-not-ready (a plan of a brief that
+// is not complete) and genesis-no-template (a plan of a kind no template
+// serves) answer the state of the daemon's store, which a seat in good order
+// meets: a double tap, a second tab, a post the browser sent again, a start
+// after two threads were left open, a page left open past a discard, a link
+// to the plan of a thread the owner finished early or of a kind of the
+// owner's own words. genesis-secret-shaped and genesis-over-cap answer what
 // the owner typed, which the owner may get wrong a few times on the way to a
 // good answer. None of them says anything against the peer, and a few taps
 // must not shut the owner out of approvals for ten minutes. They stay bounded

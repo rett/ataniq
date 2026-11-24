@@ -149,13 +149,16 @@ remain the owner's direct words (see [approvals](approvals.md#owner-channel)).
   plan; see [guided new project](#guided-new-project)): `seat.genesis`
   (`ownerwire.OpSeatGenesis`, in `ownerwire.GateOperations` and not in
   `ownerwire.Operations`), `SeatGenesisParams`, `SeatGenesisResult` and their
-  parts, and the seven codes `genesis-busy`, `genesis-unknown-thread`,
+  parts, and the nine codes `genesis-busy`, `genesis-unknown-thread`,
   `genesis-bad-answer`, `genesis-over-cap`, `genesis-secret-shaped`,
-  `genesis-done` and `genesis-stale-round`. The daemon's side is built too (genesis G4): the thread
+  `genesis-done`, `genesis-stale-round`, `genesis-not-ready` and
+  `genesis-no-template`. The daemon's side is built too (genesis G4): the thread
   store, `internal/genesis/thread`, which keeps the threads in
   `STATE/owner/genesis/`; the gate handler's route and the capability
   `genesis` (`gatehost.WithGenesis`); and the daemon's wiring
-  (`SeatGate.GenesisDir`). The seat has no page for it yet.
+  (`SeatGate.GenesisDir`). The verb `plan` and the plan stored at finish are
+  built on the daemon's side (genesis G11a), and the seat's link and its plan
+  page are built too (genesis G11b).
 - The release of the seat for the authority host, `deploy/authority-host/seat`
   (G12, built, not deployed): the unit `ataniq-seat.service`, the Caddyfile
   and the validators, reload, stop and health lists, laid over the base
@@ -233,7 +236,7 @@ them and never hands them to the handler.
 | `decide` | `seat.challenge` | `SeatChallengeParams` | `SeatChallengeResult` | G8b (built) |
 | `decide` | `seat.decide` | `SeatDecideParams` | `ownerwire.DecideResult` | G8b (built) |
 | `watch` | `seat.wait` | `ownerwire.SeatWaitParams` | `ownerwire.SeatWaitResult` | G14 (built) |
-| `genesis` | `seat.genesis` | `ownerwire.SeatGenesisParams` | `ownerwire.SeatGenesisResult` | genesis G3 (wire) and G4 (handler and thread store), built |
+| `genesis` | `seat.genesis` | `ownerwire.SeatGenesisParams` | `ownerwire.SeatGenesisResult` | genesis G3 (wire), G4 (handler and thread store) and G11a (the verb `plan`), built |
 
 A handler made with `gatehost.New` answers `["pair", "read"]` (`gatehost.Caps`);
 one made with `gatehost.NewDeciding`, `["pair", "read", "login", "decide"]`
@@ -394,12 +397,15 @@ The handler (`gatehost`, built for pairing and reads) answers:
 | `genesis-secret-shaped` | Genesis. Text that looks like a key, a token or a password (the start of a private key block, `-----BEGIN`; a well-known key prefix; an assignment with a value, `password=...`, or `password: ...` with a value that is not a plain word; a run of 32 or more hexadecimal digits, or of random-looking letters, digits, `_`, `+` and `=`, where a dash or a slash ends the run). It catches pasted keys and obvious assignments, not every typed password; names, web addresses, paths and the phrase "private key" pass, and a bare git commit id (40 hexadecimal digits) is refused. Credentials are never typed on the phone. The brief's `secret_shaped`. |
 | `genesis-done` | Genesis. An answer, a change or a discard of a thread that is finished. |
 | `genesis-stale-round` | Genesis. An answer to a round the thread has already taken, or to any round once the walk is done (the thread is at its summary): a double tap, a second tab, a post the browser sent again. A state of the thread, not a misuse; the seat goes back to the thread's page with "That round was already answered." |
+| `genesis-not-ready` | Genesis. A `plan` of a thread whose brief is not complete: a required field is not filled, or an answer the host inferred is not confirmed, on an open thread or on one the owner finished early. A state of the thread, not a misuse. The plan's `brief_incomplete`. |
+| `genesis-no-template` | Genesis. A `plan` of a thread whose kind no plan template serves: the kind in the owner's own words. It is answered before the brief is complete as well, since completing it would not help. A state of the thread, not a misuse. The plan's `no_template`. |
 
-The seven genesis words are the gate's words for the refusals of the host's
+The nine genesis words are the gate's words for the refusals of the host's
 genesis packages (`internal/genesis/brief`, `code.go`) and for four states of
 the host's thread store (`genesis-busy`, `genesis-unknown-thread`,
 `genesis-done` and `genesis-stale-round`). The other refusals of those packages (`brief_invalid`,
-`domain_mismatch`, `not_inferred`, `catalog_invalid`, `catalog_mismatch`) are a
+`domain_mismatch`, `not_inferred`, `catalog_invalid`, `catalog_mismatch`, and
+of the plan `template_invalid`, `plan_invalid` and `no_change`) are a
 fault of the host, not of what the owner sent, and are answered `failed`. A test
 (`internal/genesis`, `wirecodes_test.go`) holds the map complete: a refusal code
 added to the brief fails it until the code is mapped. Whether a genesis refusal
@@ -456,11 +462,13 @@ answer the question cannot take (an unknown node, an option the question does
 not hold, a form of answer it does not take, a round the thread has not
 reached) is what the peer sent, the seat's own pages never send one, and a
 seat that keeps sending them is the misuse the bound is for. None of the other
-genesis words counts. `genesis-stale-round`, `genesis-busy`, `genesis-done` and
-`genesis-unknown-thread` answer the state of the thread store, which a seat in
-good order meets: a double tap or a second tab on a round already taken, a
-start while two threads are open, an answer sent after the thread finished, a
-page left open after its thread expired or was discarded.
+genesis words counts. `genesis-stale-round`, `genesis-busy`, `genesis-done`,
+`genesis-unknown-thread`, `genesis-not-ready` and `genesis-no-template` answer
+the state of the thread store, which a seat in good order meets: a double tap
+or a second tab on a round already taken, a start while two threads are open,
+an answer sent after the thread finished, a page left open after its thread
+expired or was discarded, a link to the plan of a thread the owner finished
+early or of a kind in the owner's own words.
 `genesis-secret-shaped` and `genesis-over-cap` answer what the owner typed,
 which the owner may get wrong a few times on the way to a good answer. None of
 them says anything against the seat, and a few taps must not shut the owner
@@ -471,7 +479,9 @@ store's own limits (two open threads, eight files). A test sends 40 double
 taps through the gate and its real store and is never shut out. A `list` names
 no thread and takes no answer, so in good order it meets none of the counted
 codes: like `round`, it is a read the seat may send as often as its own room
-allows.
+allows. So is `plan`: its refusals, `genesis-not-ready` and
+`genesis-no-template`, count for nothing (a test sends seventeen of them
+through the gate and its real store and is never shut out).
 
 ## The challenge
 
@@ -1862,8 +1872,12 @@ sender. The seat's side is built (genesis G5): the verb `list`, the seat link's
 call with a room of its own (`internal/seatlink`, `genesis.go`), the seat's
 pages (`internal/seatapp`, see [the seat's pages](#the-seats-pages)) and the
 command's wiring (`cmd/ataniq-seat`, which needs nothing configured). It is not
-deployed and not phone-tested; what the brief is for (the plan, the charter)
-is a later stage, and nothing reads a finished brief yet.
+deployed and not phone-tested. The plan compiler is built as a library (genesis
+G10, `internal/genesis/plan`, see [the plan](#the-plan)), and the daemon serves
+it (genesis G11a): the verb `plan`, a preview of the plan of a complete brief
+before finish and the plan stored at finish. The seat's link and its plan page
+are built too (genesis G11b, see [the seat's pages](#the-seats-pages)); the
+charter is a later stage.
 
 The owner starts a new project on the phone by answering a few multiple-choice
 questions. The questions are the host's own, from a versioned catalog
@@ -1873,7 +1887,7 @@ nothing else. An answer is a message from the owner and never an authority:
 no member of these forms is, or leads to, a decision record, a contract, a plan
 token or an approval, and a question page never shows Approve.
 
-### One operation, eight verbs
+### One operation, nine verbs
 
 `seat.genesis`, capability `genesis`, the gate's alone. Its params are
 `ownerwire.SeatGenesisParams`, a union tagged by `verb`. A verb takes exactly
@@ -1887,8 +1901,9 @@ the members below, and a member of another verb is refused `bad-params`:
 | `answer` | `thread`, `round`, `answers` | Applies 1 to 3 answers, each to another node, to the round named, and answers the next round or the summary. |
 | `change` | `thread`, `node`, `answer` | Replaces an earlier answer. It clears the answers that depended on it (the catalog's invalidation closure), keeps them in the brief's history, and says how many in `reset`. |
 | `summary` | `thread` | Answers the summary. |
-| `finish` | `thread` | Freezes the brief and answers its digest. After it, `answer`, `change` and `discard` are `genesis-done`. |
+| `finish` | `thread` | Freezes the brief and answers its digest. When the brief is complete and a template serves its kind, it compiles the plan, revision 1, and stores it in the same write as the frozen brief; otherwise (the owner stops early, or the kind is in the owner's own words) it freezes the brief with no plan. After it, `answer`, `change` and `discard` are `genesis-done`. |
 | `discard` | `thread` | Drops an open thread. A finished thread is `genesis-done`: its brief stays as it was finished. |
+| `plan` | `thread` | Answers the thread's project plan (state `plan`). On an open thread whose brief is complete, a preview: compiled for the read, `stored: false`, kept nowhere, the same plan and digest for the same brief. On a finished thread, the plan stored at finish, `stored: true`. A brief that is not complete is `genesis-not-ready`, a kind no template serves `genesis-no-template`. A read, free like `round`. |
 
 An answer is `{node, kind, ids, text}`, and a change's `answer` is
 `{kind, ids, text}`. The kind is one of `choice` (exactly one id), `choices`
@@ -1914,9 +1929,12 @@ only that a credential is needed, by reference.
 | `finished` | 0 to `of` | none | given | given | 0 |
 | `discarded` | 0 | none | none | none | 0 (progress 0 of 0) |
 | `threads` | 0 (`of` 0) | none | none | none | 0 (progress 0 of 0) |
+| `plan` | 0 to `of` | none | none | none | 0 (progress all filled) |
 
 Always but for `threads`: `thread`, `of` (the most rounds, 1 to 6), `progress`
-(`filled` of `total` required fields), `catalog_digest` (the digest of the
+(`filled` of `total` required fields, and `plan_ready: true`, left out when
+false, when `plan` would answer a plan: one is stored, or the brief is
+complete and a template serves its kind), `catalog_digest` (the digest of the
 catalog the thread is walked under, 64 lower-case hexadecimal digits: a thread
 stays on one version) and `reset`. `threads`, the answer to `list`, names no
 thread and no catalog (both are left out) and is the only state with a list,
@@ -1934,11 +1952,29 @@ set the field: `you_chose`, `decided_for_you` and `defaults`, each a list of
 twice. `label` is the question as the catalog words it and `value` the answer
 as text: the labels of the chosen options, joined, or the owner's own text.
 
-Every text in a result is plain text the host owns: the catalog's, or the
-owner's own `other` text, which is in a row with `untrusted: true` (at most 200
-bytes). The seat escapes every text it shows, and shows an untrusted one as
-quoted data; an agent given the brief gets that text as quoted data and never
-as an instruction.
+`plan`, the answer to `plan`, is the only state with `plan`, `plan_digest`
+and `stored`, which every other state leaves out. `plan` is the plan record,
+member by member under the record's own names (see [the plan](#the-plan)):
+`schema`, `plan` (the revision), `prev_digest`, `brief_digest`,
+`catalog_digest` (the thread's), `template` (`id`, `version`),
+`template_digest`, `title`, `milestones` of `tasks`, `gates`, `first_demo`,
+`review_points`, `hosts`, `external_services`, `budget_band` (`id`,
+`enforcement: "advisory"`), `estimate` (`band`, `label`, `estimate: true`,
+`caveat`), `warnings`, `notes` (each `{field, text, untrusted: true}`) and
+`notes_dropped`. The wire writes it to the record's own canonical bytes, and
+`plan_digest` is their SHA-256, which the decoder computes again and holds the
+plan to: a plan changed on its way is refused. `stored` is `true` for the plan
+the host stored at finish and is left out (false) for a preview. The wire
+cannot import the plan package; it holds the record's grammar, caps and closed
+lists as forms of its own (`ownerwire`, `genesis_plan.go`), and a test of
+`internal/genesis` holds them in step.
+
+Every text in a result is plain text the host owns: the catalog's, a plan
+template's, or the owner's own `other` text, which is in a row with
+`untrusted: true` (at most 200 bytes), or in a note of a plan, likewise
+marked. The seat escapes every text it shows, and shows an untrusted one as
+quoted data. That text is for the owner's eyes only: it is never served to an
+implementation agent (see [the plan](#the-plan)).
 
 ### Caps
 
@@ -1953,11 +1989,16 @@ as an instruction.
 | The owner's `other` text | 200 bytes |
 | Value text of a summary row | 512 bytes |
 | Summary rows | 64 |
+| A plan, in its canonical form | 12 KiB (`MaxGenesisPlanBytes`, the plan record's `MaxPlanBytes`) |
 
 The result cap is the binding one for a summary: 64 rows of short texts take
 about 8 KiB, and a host with more to say shortens its texts. The v1 catalog's
 largest result, over walks that answer every question with the longest text it
 takes, is a few KiB (a test runs the walks of v1 through the wire's forms).
+The largest plan of all 912 combinations of the answers the templates read,
+with the owner's longest texts in every `other` answer and eight notes, is
+about 7 KiB, in a result of about 7.3 KiB; the largest plan the record allows
+at all (every count and text at its cap) is about 10.4 KiB.
 
 ### What a test pins
 
@@ -1968,7 +2009,12 @@ threads, of a thread twice or of a thread that is not open. `internal/genesis` h
 the wire in step with the host: the caps equal the catalog's and the brief's,
 the grammars accept exactly what the brief's do, every refusal code of the brief
 has its gate word or none, and every result of the v1 catalog's walks
-passes the wire. The fuzz tests (`FuzzDecodeSeatGenesisParams`,
+passes the wire. The wire's plan is held to the record: its caps, names and
+closed lists are the plan package's, it accepts a plan exactly when
+`plan.Check` does over a corpus of each grammar and text (key-shaped notes,
+which the host refuses, are the one difference), and every plan of the 912
+answer combinations is written by the wire to the record's own bytes, under
+the record's digest, and reads back to the same record. The fuzz tests (`FuzzDecodeSeatGenesisParams`,
 `FuzzDecodeSeatGenesisResult`) hold that a decoder never panics, that a refusal
 is a `*record.Error` with a detail that can be shown as it is, and that what
 decodes encodes to no more bytes and to itself.
@@ -1997,7 +2043,13 @@ gate; it is fixed by hand and the daemon restarted.
   thread was started under (a thread stays on one version). One file each, named
   by the id with the suffix `.json`, mode 0600, in the canonical form of the
   brief's strict JSON with a digest of the file's own content, schema
-  `ataniq.genesis-thread/1`.
+  `ataniq.genesis-thread/1`. A finished thread's file may also hold its plan:
+  the optional members `plan` (the `ataniq.project-plan/1` record in its
+  canonical form) and `plan_digest`. The plan lives there, with the frozen
+  brief it was drawn from, and nowhere else; a file without them is as valid as
+  before (no migration and no new schema: the reader already takes optional
+  members by name; a daemon older than the plan does not serve a file that
+  holds one).
 - **Writing** is atomic: a temporary file of the same folder, written, synced,
   renamed over the thread's file, and the folder synced. A call changes the
   thread in memory only after the file is written, so a write that fails leaves
@@ -2009,7 +2061,10 @@ gate; it is fixed by hand and the daemon restarted.
   is over its cap, is not strict JSON in the canonical form, names another id
   than its file, holds a brief that does not decode or was started under
   another catalog than the thread's or the store's, or whose digest (of the file
-  or of a finished brief) does not match, is not served: the log says so once, in
+  or of a finished brief) does not match, or whose plan is on a thread that is
+  not finished, does not decode under the plan record's own checks, does not
+  match `plan_digest` or was not drawn from the thread's frozen brief and
+  catalog, is not served: the log says so once, in
   fixed text naming the file (`genesis: the thread file <name> is not served:
   <check>`), and the file is left as it is. It is never repaired or overwritten,
   and its id is not used again.
@@ -2032,7 +2087,21 @@ gate; it is fixed by hand and the daemon restarted.
   answers its digest, at any time on an open thread (there is no separate
   "enough": the owner reads the summary and finishes), and again on a finished
   one with the same digest; afterwards `answer`, `change` and `discard` are
-  `genesis-done`. `discard` drops an open thread and empties its brief. `list`
+  `genesis-done`. When the brief is complete and a template serves its kind,
+  `finish` compiles the plan, revision 1, and stores it in the same atomic
+  write as the frozen brief; a brief that is not complete, or of a kind no
+  template serves, is frozen without a plan, and a compiler fault of the host
+  does not stop the finish (it is logged, and the plan drawn when next asked).
+  `plan` answers a preview on an open thread whose brief is complete
+  (compiled on read, `stored: false`, written nowhere), and the stored plan on
+  a finished thread (`stored: true`); a finished thread with no plan whose
+  brief is complete (one finished before plans were stored) is compiled on the
+  first `plan` and stored then, once, without touching its time. A brief that
+  is not complete is `genesis-not-ready`, a kind no template serves
+  `genesis-no-template` (asked before completeness). A stored plan is never
+  compiled again: a template change never alters a stored plan, and a plan of a
+  template no longer embedded is served as it was stored (a test stores one
+  whose template digest is no embedded template's). `discard` drops an open thread and empties its brief. `list`
   answers the open threads, oldest first (by the time each was started, then
   by id), each with the state, round and progress `round` would answer and
   nothing of its brief; it expires what is due first, as `start` does, and
@@ -2044,15 +2113,17 @@ gate; it is fixed by hand and the daemon restarted.
   the brief's refusal codes to the gate's words is the store's own table
   (`thread.GateWord`), held equal to the wire's by a test of `internal/genesis`.
 - **Limits.** At most 2 open threads; at most 8 files, the oldest finished or
-  discarded thread removed first when a start would pass it; a thread
+  discarded thread removed first when a start would pass it, its plan with it; a thread
   untouched (no answer, change, finish or discard; a read does not count) for
   14 days is discarded on the next access or at open, and keeps no answer. The
   store's clock and its source of ids are injectable, which the tests use.
 - **The log** holds fixed texts and no answer or brief content: `genesis: a
   thread was started`, `... finished`, `... discarded`, `... expired`, `genesis:
+  a plan was drawn` (a plan was stored, at finish or on a late first ask),
+  `genesis: a plan could not be drawn at finish`, `genesis:
   an answer was refused as secret-shaped (N since the store was opened)` (a
-  count only), and the line about a file that is not served. A thread's id is
-  not in them.
+  count only), and the line about a file that is not served. A thread's id and
+  anything of a plan are not in them.
 
 Not built: the view of the threads for the desk, which the console will need.
 
@@ -2062,7 +2133,7 @@ The seat link (`seatlink.Daemon.Genesis`, the app's `seatapp.Genesis` port)
 calls `seat.genesis` only when the hello lists `genesis`; otherwise every call
 is "not offered" and nothing is sent, and the phone shows no "New project". The
 link holds each call to the wire's form with the wire's encoder before it is
-sent, maps the seven genesis codes to the app's errors (and `rate-limited`,
+sent, maps the nine genesis codes to the app's errors (and `rate-limited`,
 `busy` and `too-many-refusals` to "busy", `unknown-op` to "not offered"), and
 takes an answer only when it is one the verb answers, of the thread called,
 with every count and length checked again. Each call has the room of the
@@ -2080,7 +2151,20 @@ answer is kept only when no call that changes threads began or ended while it
 was asked (a generation taken before the read is sent, which each such call
 moves on as it starts and as it ends), so a read that overlapped a change,
 even one that began after the change was sent and came back before it, is
-never kept; the change's own answer is kept when nothing else changed. A summary's rows get their questions, for a change, from
+never kept; the change's own answer is kept when nothing else changed. A
+`plan` is one call of the room, and the link keeps its answer, under the same
+generation rule, for the thread: a preview (`stored: false`) for 10 seconds,
+as a round, and forgotten by every call that changes the thread (`answer`,
+`change`, `finish`, `discard`), whatever its answer; the plan the host stored
+at finish (`stored: true`), which never changes, with its digest for 5
+minutes, through those calls (only `genesis-unknown-thread` forgets it). A
+finish keeps nothing of the plan: the next `plan` reads the stored one. The
+link converts a plan to the app's own view (`seatapp.GenesisPlanView`) and
+checks it again against the app's copies of the plan record's caps and closed
+lists (a test holds them equal to the wire's); a plan past them is not shown.
+It carries `plan_ready` of every result into the app's view (`PlanReady`).
+`genesis-not-ready` and `genesis-no-template` are the app's
+`ErrGenesisNotReady` and `ErrGenesisNoTemplate`. A summary's rows get their questions, for a change, from
 the catalog the seat's build holds, and only when the thread's catalog digest is
 that catalog's; under another catalog the row offers no change.
 
@@ -2094,6 +2178,7 @@ script but the logout's:
 | `GET /projects/{thread}` | The round the thread is at, its summary, or the finished brief, by the answer to `round`. |
 | `GET /projects/{thread}/change/{node}` | One answer's question, from the summary's row, to answer again. |
 | `GET /projects/{thread}/discard` | The step before a discard: a form posting the discard, and the way back. |
+| `GET /projects/{thread}/plan` | The thread's plan, by the answer to `plan`: a draft of an open thread, or the plan stored at finish. Links only. |
 
 A round's page shows "Round N of M" and the required answers given, and each
 question as a fieldset of real inputs: radio buttons for a single choice, a
@@ -2111,6 +2196,78 @@ defaults), the owner's own words quoted and marked as the owner's, a "Change"
 link on each row whose question the link holds, a "Looks right: finish" button
 and a link to the discard step. The finished page shows the brief's digest in
 short form and says that nothing has started and no agent was given the brief.
+The summary links "See the draft plan" when the result's `plan_ready` says a
+plan would be answered, and otherwise says "N of M answers are filled in: no
+plan can be drawn yet." (or, with every answer filled in, that there is no plan
+template for this kind of project yet). The finished page, when `plan_ready`,
+says that handing a plan to a project is a later step and has the link "See
+the plan"; it says nothing of the plan being kept, which the plan page shows
+when the link is followed. Otherwise it says that no plan was drawn.
+
+The plan page, `GET /projects/{thread}/plan`, is a read: one call of `plan`
+(answered from the link's memory on a reload, see above), a session, the
+project pages' limit of one credential, and a thread id of its form before
+anything is asked; there is no post to it. It is made on the server with no
+script at all (not even the logout's), no form, no button and no input: its
+only controls are two links, back to the thread's page and to the project
+list, and the page inventory holds it to that and to the rule that no page but
+the Card page holds a decide control. In order: the heading ("Draft plan", or
+"Plan, revision N" for the stored plan), the plan's title with the first six
+digits of the thread id ("A full web app, 3fa2c1"), the fixed lines "A plan
+binds nothing: nothing has started, and nothing starts from this page." and,
+for a draft, "This is a draft; finishing the interview keeps it as revision
+1.", and the plan's digest in short form, the same for a draft and the stored
+plan of the same answers; then the first demo; "What waits for you": the
+review points in the app's words and always the fixed sentence "Publishing,
+releases, pushing code, credentials and raising any limit always wait for you,
+whatever the plan says.", whatever the review points hold; the outside
+services, or none; where the files live; the budget band, marked "advisory:
+nothing enforces it yet"; the estimate, marked "an estimate, not a promise";
+the warnings, each a fixed sentence by its id (an id the app does not know is
+"A note from the plan.", never its text); "Milestones and tasks", one native
+`details` element a milestone (only the first open), each with its goal and an
+ordered list of its tasks: title, kind and size in words, and "after:" the
+titles of the tasks it waits for; "Your own notes", only when there are some,
+each quoted with the `Text` rendering of untrusted text (bidirectional and
+hidden characters shown as escapes) and marked "your words, shown as you wrote
+them; never given to a tool", with the words of the catalog question it
+answers above it (the note's `field` looked up, by the link, in the catalog it
+holds, as a summary row's label is; "A note" when the field is `notes`, is
+unknown to the link or the plan is of another catalog) and the count of the
+notes left out; and
+"What a charter would cover". Every text is escaped by the page templates.
+
+The charter section is words about a later step, never a step. It opens with
+the fixed text "Draft. Not signed. It allows nothing. Nothing starts from this
+page. Signing is a later step and is not built.", then "A signed charter would
+allow at most:" and a list drawn from the plan: the areas of work (the union of
+the tasks' scopes, in words where the app has them, else the area's name), the
+outside services, "stopping for you at" the review points and the fixed line
+"Always stopping for you before publishing, releases, pushing code,
+credentials and raising any limit." The budget band is not an item of that
+list, which is what the charter would allow at most: it follows the list as a
+sentence of its own, "Monthly budget band (advisory; nothing enforces it
+yet): ...". Its wording rule, which a test holds: it never says "card", it
+never says the plan "allows" anything (the one "allows" is the fixed "It
+allows nothing."), it holds no control and no link (no Approve, no Sign, no
+passkey, nothing into the card list's pending cards), and it is on the plan
+page alone: never on the card list, a card, a notice or another project page.
+
+The verb `plan` and the `plan_ready` member of a result have no capability of
+their own: they ride on `genesis`, so the seat and the daemon of a build are
+deployed together. A daemon older than the seat answers `plan` with
+`bad-params` (the page says something went wrong), and a seat older than the
+daemon refuses a result that carries `plan_ready` as one it does not
+understand.
+
+A plan that is not ready (`genesis-not-ready`) is a page of fixed words, "No
+plan can be drawn yet: some answers are missing."; only then is the thread's
+round read too, and a finished thread's page says instead "This project was
+finished before its answers were complete, so no plan was drawn."
+(`genesis-not-ready` of a finished thread). A kind with no template
+(`genesis-no-template`) is "There is no plan template for this kind of project
+yet." An unknown thread, a busy or unreachable desk and an interview not
+offered are the problems of the other project pages.
 
 Every act is a plain form posted to the app (`/projects/new`, and
 `/projects/{thread}/answer`, `/change`, `/finish`, `/discard`), with the checks
@@ -2150,6 +2307,87 @@ is the app's port (an answer decides nothing, so the guard passes it on while
 decisions are paused), and the command logs each hello's capabilities, with
 whether the phone offers "New project" (`ataniq-seat: the seat gate offers
 pair, read, login, decide, watch and genesis; the phone offers New project`).
+
+### The plan
+
+`internal/genesis/plan` compiles a finished brief into a project plan,
+`ataniq.project-plan/1`: a pure library, with no clock and no wire. The
+daemon's thread store calls it (see [the thread store](#the-thread-store)): a
+preview on a complete open thread, the plan stored at finish, served over the
+wire by the verb `plan` and shown by the seat's plan page (see [the seat's
+pages](#the-seats-pages)). A plan is a proposal: it binds nothing and grants nothing. Three things
+bind, each approved on its own, and none of them is the plan: the creation of
+the project, the charter, and the delegation contracts. What always waits for
+the owner (publishing, a release, a push, credentials, raising a cap) is not a
+field of the plan: the page that shows a plan says it in fixed words,
+whatever the plan holds.
+
+The record is canonical JSON under the brief's rules, with a SHA-256 digest:
+`plan` (the revision, 1 for a first compile), `prev_digest` (the digest of the
+revision before; empty for 1), `brief_digest`, `catalog_digest`, `template`
+(`id`, `version`) and `template_digest`, `title` (a label of the catalog, such
+as "A newsletter", never the owner's text), `milestones` (at most 4) of `tasks`
+(at most 6 each, 12 in all; each a `title`, a `kind` of build, write, review or
+test, a `size` of small, medium or large, which chooses no model,
+`depends_on`, a `scope` of area names such as `repo:src` or
+`store:manuscript`, and `checks` such as `unit-tests` or `rights-manifest`),
+`gates`, `first_demo` (one sentence of the template's), `review_points`
+(exactly as the owner chose them), `hosts`, `external_services` (every
+external service the work would use, by name, from a closed list: hosting
+service, email delivery, generator service, file or code host),
+`budget_band` (`none`, `low` or `medium`, never a number, with `enforcement:
+"advisory"`), `estimate` (a band of the tasks' sizes, such as "about a day of
+agent work", with `estimate: true` and the words "an estimate, not a
+promise"), `warnings` (closed ids: `estimate-may-exceed-band`,
+`rights-not-cleared`, `settle-at-desk`), `notes` and `notes_dropped`. A plan
+is at most 12 KiB, under the 16 KiB of a result on the wire. A milestone and a
+task keep their place in the template as their id (`m1`, `t4`), so an id means
+one thing in every revision, and a plan's ids may skip numbers. A plan holds
+no time: when it was made is the store's to keep, and the same brief gives the
+same bytes and digest at any time. `Decode` holds a plan to its grammar, its
+caps and its own consistency only, never to the templates embedded now: a
+plan of a template version no longer embedded still reads, and a template
+change never alters a stored plan. Where a plan lives is the thread store:
+revision 1 of a finished thread's frozen brief, in the thread's own file,
+written once and never compiled again; a preview is compiled on each read
+and kept nowhere.
+
+`Compile` refuses a brief that is not complete (an inferred answer the owner
+did not confirm counts as missing), a brief of another catalog and a kind with
+no template (`no_template`; the kind in the owner's own words is one, for
+which the phone will say a fixed sentence), each with a refusal code of the
+brief package. `Next` compiles the revision after a plan and refuses
+`no_change` when the plan would be the one before (the brief's digest alone
+differs for the same answers given again), and `Diff` names what changed
+against the revision the owner last saw: milestones and tasks added, removed or
+changed by id, top-level fields by name, with short texts, at most 48 entries,
+never a brief digest alone and never the owner's words.
+
+The templates are data, `ataniq.genesis-plan-template/1`, embedded in the
+canonical form, one per kind: software (a web app or a one-page tool),
+publishing (a newsletter or an article) and media (a podcast or a book). A
+changed template is a new version: a test pins the digest of each, and a plan
+records the digest it was compiled with. Every template holds the same
+security block (no push, no outward step, secrets by reference). A task, a
+gate, a service, a warning or a demo may hold a condition over one field of
+the brief, from a closed set (eq, in, contains, set, other); the fields and
+options it names are held to the catalog when the templates are loaded and
+when a plan is compiled, and one the catalog does not hold is a refusal, never
+a default. A field a template reads that takes the owner's own words needs an
+explicit `other` branch: a language in the owner's words gives a task to settle
+it at the desk, never anything drawn from the words.
+
+The owner's own text (an `other` answer, a note of the brief) is kept in
+`notes` as `{field, text, untrusted: true}`, at most 8 of 200 bytes, for the
+owner's eyes only, and chooses nothing. Notes are never served to an
+implementation agent: `Plan.ForAgent` is what an agent may be given, it holds
+no note, and a test holds every string in it, for a plan `Compile` made, to a
+constant of a template, the catalog or the package. A decoded plan is held to
+its grammar only, so a plan from a store must be re-checked against its
+template before it is handed to an agent. Another test compiles two briefs that differ only in
+their `other` texts and notes, one reading like instructions with markup and
+commands, and finds the plans byte for byte equal outside `notes` and
+`brief_digest`.
 
 ## The record change
 

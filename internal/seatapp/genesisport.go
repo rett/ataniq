@@ -30,7 +30,9 @@ import (
 // [ErrGenesisSecretShaped] for text that looks like a password or a key,
 // [ErrGenesisDone] for an answer, a change or a discard of a finished
 // thread, [ErrGenesisStaleRound] for an answer to a round the thread has
-// already taken (a post sent twice, a second tab),
+// already taken (a post sent twice, a second tab), [ErrGenesisNotReady] for
+// a plan of a thread whose answers are not complete,
+// [ErrGenesisNoTemplate] for a plan of a kind no plan template serves,
 // [ErrBusy] when the port's room or the gate's rate is spent (nothing is
 // sent, or nothing was taken), [ErrNotOffered] when the gate does not run
 // the interview, and [ErrDaemonUnavailable] when it cannot be reached. Any
@@ -52,6 +54,7 @@ const (
 	GenesisVerbSummary = "summary"
 	GenesisVerbFinish  = "finish"
 	GenesisVerbDiscard = "discard"
+	GenesisVerbPlan    = "plan"
 )
 
 // The kinds of a [GenesisPick].
@@ -81,6 +84,9 @@ const (
 	GenesisStateDiscarded = "discarded"
 	// GenesisStateThreads is the answer to a list.
 	GenesisStateThreads = "threads"
+	// GenesisStatePlan is the answer to a plan: the thread's project plan,
+	// a preview or the one kept at finish.
+	GenesisStatePlan = "plan"
 )
 
 // The types of a [GenesisQuestion].
@@ -133,6 +139,7 @@ const (
 //	summary  Thread
 //	finish   Thread
 //	discard  Thread
+//	plan     Thread
 type GenesisCall struct {
 	Verb    string
 	Thread  string
@@ -183,6 +190,12 @@ type GenesisView struct {
 	Digest string
 	// Threads are the open threads, oldest first, for a list.
 	Threads []GenesisThread
+	// PlanReady says a plan call would answer a plan: one is kept for
+	// the thread, or its answers are complete and a plan template serves
+	// its kind. It is false for a list.
+	PlanReady bool
+	// Plan is the thread's project plan, for a plan; nil otherwise.
+	Plan *GenesisPlanView
 }
 
 // GenesisQuestion is one question of a round, in the catalog's words.
@@ -241,6 +254,13 @@ var (
 	// ErrGenesisStaleRound says the round was already answered: the
 	// thread has moved on, and its page shows where it stands.
 	ErrGenesisStaleRound = errors.New("seatapp: the round was already answered")
+	// ErrGenesisNotReady says no plan can be drawn for the thread: a
+	// required answer is missing, or one the desk inferred is not
+	// confirmed.
+	ErrGenesisNotReady = errors.New("seatapp: no plan can be drawn yet")
+	// ErrGenesisNoTemplate says no plan template serves the thread's kind
+	// of project, such as a kind in the owner's own words.
+	ErrGenesisNoTemplate = errors.New("seatapp: no plan template for this kind of project")
 )
 
 // ValidThreadID reports whether s is a thread id: [GenesisThreadLength]
@@ -255,4 +275,145 @@ func ValidThreadID(s string) bool {
 		}
 	}
 	return true
+}
+
+// The bounds of a project plan: this package's own copies of the plan
+// record's (package ownerwire mirrors them, and a test of package seatlink
+// holds the two equal).
+const (
+	// MaxGenesisPlanRevision is the highest revision of a plan.
+	MaxGenesisPlanRevision = 9999
+	// MaxGenesisPlanMilestones is the most milestones of a plan.
+	MaxGenesisPlanMilestones = 4
+	// MaxGenesisPlanMilestoneTasks is the most tasks of one milestone.
+	MaxGenesisPlanMilestoneTasks = 6
+	// MaxGenesisPlanTasks is the most tasks of a plan in all.
+	MaxGenesisPlanTasks = 12
+	// MaxGenesisPlanTitle, MaxGenesisPlanMilestoneTitle,
+	// MaxGenesisPlanGoal, MaxGenesisPlanTaskTitle and MaxGenesisPlanDemo
+	// are the longest texts of a plan's title, a milestone's title and
+	// goal, a task's title and the first demo, in bytes.
+	MaxGenesisPlanTitle          = 60
+	MaxGenesisPlanMilestoneTitle = 60
+	MaxGenesisPlanGoal           = 120
+	MaxGenesisPlanTaskTitle      = 100
+	MaxGenesisPlanDemo           = 120
+	// MaxGenesisPlanNotes is the most notes of a plan; a note's text is at
+	// most [MaxGenesisOther] bytes, the owner's own words.
+	MaxGenesisPlanNotes = 8
+	// MaxGenesisPlanNotesDropped is the highest count of notes left out.
+	MaxGenesisPlanNotesDropped = 1 << 16
+	// MaxGenesisPlanWord is the longest word of a plan: a check id, or an
+	// area's name after its prefix (repo: or store:).
+	MaxGenesisPlanWord = 32
+	// MaxGenesisPlanList is the most items of one list of a plan that the
+	// record bounds by its size alone: the gates, and a task's scope and
+	// checks. The templates name two or three; the app takes no more
+	// than this.
+	MaxGenesisPlanList = 16
+)
+
+// The closed lists of a project plan: this package's own copies of the
+// plan record's, which a test of package seatlink holds equal to the
+// wire's. The pages give each item words of their own.
+var (
+	// GenesisPlanKinds are the kinds of a task.
+	GenesisPlanKinds = []string{"build", "review", "test", "write"}
+	// GenesisPlanSizes are the sizes of a task.
+	GenesisPlanSizes = []string{"large", "medium", "small"}
+	// GenesisPlanReviewPoints are the points where the work waits for the
+	// owner.
+	GenesisPlanReviewPoints = []string{"demo", "milestone", "plan", "publish"}
+	// GenesisPlanHosts are the places the project's files may live.
+	GenesisPlanHosts = []string{"file_host", "own_server", "this_computer"}
+	// GenesisPlanServices are the outside services a plan may name, by
+	// name.
+	GenesisPlanServices = []string{"email delivery", "file or code host", "generator service", "hosting service"}
+	// GenesisPlanBudgetBands are the monthly budget bands.
+	GenesisPlanBudgetBands = []string{"low", "medium", "none"}
+	// GenesisPlanWarnings are the warnings a plan may carry.
+	GenesisPlanWarnings = []string{"estimate-may-exceed-band", "rights-not-cleared", "settle-at-desk"}
+	// GenesisPlanEstimates are the estimate bands, each with its words.
+	GenesisPlanEstimates = map[string]string{
+		"hours": "a few hours of agent work",
+		"day":   "about a day of agent work",
+		"days":  "a few days of agent work",
+		"week":  "about a week of agent work",
+	}
+)
+
+// GenesisPlanView is a thread's project plan, as the plan page shows it. It
+// is a proposal: it binds nothing, grants nothing and starts nothing. Every
+// text in it is the host's (a plan template's, the catalog's) but the notes,
+// which are the owner's own words; the app shows each with [Text].
+type GenesisPlanView struct {
+	// Revision is the plan's revision, 1 for the first.
+	Revision int
+	// Digest is the plan's digest, 64 lower-case hexadecimal digits: the
+	// same for a preview and for the plan kept from the same answers.
+	Digest string
+	// Stored says the plan is the one the desk kept when the interview
+	// was finished; false for a preview of an open thread, drawn for the
+	// read and kept nowhere.
+	Stored bool
+	// Title is the plan's title, a label of the catalog ("A web app").
+	Title string
+	// Milestones are 1 to [MaxGenesisPlanMilestones] milestones.
+	Milestones []GenesisMilestone
+	// Gates are the check ids every milestone ends with.
+	Gates []string
+	// FirstDemo is the sentence that says what the first demo shows.
+	FirstDemo string
+	// ReviewPoints are where the work waits for the owner, as the owner
+	// chose them: items of [GenesisPlanReviewPoints].
+	ReviewPoints []string
+	// Hosts is where the project's files live: an item of
+	// [GenesisPlanHosts].
+	Hosts string
+	// ExternalServices are the outside services the work would use, by
+	// name: items of [GenesisPlanServices].
+	ExternalServices []string
+	// BudgetBand is the monthly budget band, advisory: an item of
+	// [GenesisPlanBudgetBands].
+	BudgetBand string
+	// Estimate is the size of the work as a band: a key of
+	// [GenesisPlanEstimates]. It is an estimate, not a promise.
+	Estimate string
+	// Warnings are the plan's warnings, by id.
+	Warnings []string
+	// Notes are the owner's own words, at most [MaxGenesisPlanNotes], for
+	// the owner's eyes only; NotesDropped counts the ones the plan has no
+	// room for.
+	Notes        []GenesisNote
+	NotesDropped int
+}
+
+// GenesisMilestone is one milestone of a plan.
+type GenesisMilestone struct {
+	ID, Title, Goal string
+	// Tasks are 1 to [MaxGenesisPlanMilestoneTasks] tasks.
+	Tasks []GenesisTask
+}
+
+// GenesisTask is one task of a milestone.
+type GenesisTask struct {
+	// ID is the task's id (t and a number), which DependsOn names.
+	ID, Title string
+	// Kind is an item of [GenesisPlanKinds], Size of [GenesisPlanSizes].
+	Kind, Size string
+	// DependsOn are the ids of the earlier tasks it waits for.
+	DependsOn []string
+	// Scope are the areas of work it may change: repo:x or store:x.
+	Scope []string
+}
+
+// GenesisNote is one text of the owner's own words in a plan: the field of
+// the brief it was given for, and the text, which a page shows quoted and
+// marked as the owner's. Label is the words of the catalog's question that
+// field answers (a constant of the catalog the link holds, as a summary
+// row's label is), and "" when the link holds no such question: a note of
+// the brief's own ("notes"), a field it does not know, or a plan of another
+// catalog.
+type GenesisNote struct {
+	Field, Label, Text string
 }

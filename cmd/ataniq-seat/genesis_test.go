@@ -182,7 +182,7 @@ func serveTo(t *testing.T, args []string, w io.Writer) (stop func() int) {
 	case c := <-done:
 		cancel()
 		t.Fatalf("run ended with %d", c)
-	case <-time.After(5 * time.Second):
+	case <-time.After(waitLong):
 		cancel()
 		t.Fatal("no listener")
 	}
@@ -191,8 +191,8 @@ func serveTo(t *testing.T, args []string, w io.Writer) (stop func() int) {
 		select {
 		case c := <-done:
 			return c
-		case <-time.After(5 * time.Second):
-			t.Fatal("no shutdown")
+		case <-time.After(waitLong):
+			t.Fatalf("no shutdown after %v", waitLong)
 			return -1
 		}
 	}

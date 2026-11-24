@@ -73,9 +73,9 @@
 //
 // # The interview
 //
-// seat.genesis is the guided new-project interview: one operation of eight
-// verbs (start, list, round, answer, change, summary, finish, discard), each with
-// the members its verb takes, which the wire's decoder holds. The handler gives
+// seat.genesis is the guided new-project interview: one operation of nine
+// verbs (start, list, round, answer, change, summary, finish, discard, plan),
+// each with the members its verb takes, which the wire's decoder holds. The handler gives
 // the decoded params to the daemon's thread store ([GenesisPort], given with
 // [WithGenesis]) and encodes its result with the wire's encoder. The handler
 // serves it, and lists genesis last in its hello, only when it was given the
@@ -86,8 +86,8 @@
 //
 // The port refuses with the gate's word, which the handler passes on when it is
 // one of genesis-busy, genesis-unknown-thread, genesis-bad-answer,
-// genesis-over-cap, genesis-secret-shaped, genesis-done, genesis-stale-round
-// and bad-params; any
+// genesis-over-cap, genesis-secret-shaped, genesis-done, genesis-stale-round,
+// genesis-not-ready, genesis-no-template and bad-params; any
 // other word or error is answered failed, and the cause, which the store words
 // without a byte of an answer, is logged.
 //
@@ -151,11 +151,12 @@
 // previous-epoch, review-changed, record-invalid and record-too-large. A refusal with any other code is
 // answered failed and logged, so that only words from this list reach a seat.
 //
-// The thread store's refusals are told as the seven words of seat.genesis
+// The thread store's refusals are told as the nine words of seat.genesis
 // (genesis-busy and the rest, above): a third open thread, a thread the store
 // does not hold, an answer the question does not allow, an answer past a cap,
 // text that looks like a secret, an answer, change or discard of a finished
-// thread, and an answer to a round the thread has already taken.
+// thread, an answer to a round the thread has already taken, a plan of a
+// brief that is not complete, and a plan of a kind no template serves.
 //
 // The handler adds codes of its own: unknown-op, bad-params, not-pinned,
 // wait-full and too-many-refusals (below). A result the service returned that its encoder
@@ -189,12 +190,15 @@
 //
 // Of seat.genesis, only genesis-bad-answer counts, with bad-params: an answer
 // the question cannot take, which the seat's own pages never send. The others
-// do not: genesis-stale-round, genesis-busy, genesis-done and
-// genesis-unknown-thread answer the state of the thread store, which a seat in
-// good order meets (a double tap, a second tab, a page left open past a
-// discard), and genesis-secret-shaped and genesis-over-cap answer what the
-// owner typed, which the owner may get wrong a few times; a few taps must not
-// shut the owner out of approvals. They are bounded by the seat's 30 project
+// do not: genesis-stale-round, genesis-busy, genesis-done,
+// genesis-unknown-thread, genesis-not-ready and genesis-no-template answer the
+// state of the thread store, which a seat in good order meets (a double tap, a
+// second tab, a page left open past a discard, a plan asked of a brief the
+// owner finished early or of a kind no template serves), and
+// genesis-secret-shaped and genesis-over-cap answer what the owner typed,
+// which the owner may get wrong a few times; a few taps must not shut the
+// owner out of approvals. plan, like round and list, is a read the seat may
+// send as often as its own room allows. They are bounded by the seat's 30 project
 // requests a minute, the seat link's room of 12 interview calls, the gate's
 // 60 requests a minute and the store's own limits.
 //
