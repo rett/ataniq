@@ -971,9 +971,11 @@ No message of the seat reaches a lead in this build.
 stand-in agent (`internal/leadcanary/standin`) writes one reply after each
 commit it makes: the text `Stand-in: handled <7-character commit id>.` (under
 200 bytes, no full commit id, no path), written to a dot-name, closed and
-renamed without replacing to `<seq>-standin.txt`. It writes nothing when the
-reply folder is missing, is a link or cannot be written, and none when three of
-its own replies are already waiting; it never makes, changes or removes the
+renamed without replacing to `<seq>-standin.txt`, all below one descriptor of
+the folder it opened and listed, so a folder a turn-on put in its place
+meanwhile is never written. It writes nothing when the reply folder is missing,
+is a link, cannot be written or holds more than 64 names, and none when three
+of its own replies are already waiting; it never makes, changes or removes the
 folder, or any file but its own.
 
 ### How the reader works

@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -70,14 +69,26 @@ func isOwnReply(name string) bool {
 	return true
 }
 
+// maxListed bounds how many names of the reply folder the stand-in reads to
+// count its own replies; a folder that holds more gets no reply (it is
+// best-effort, and the daemon stops such a chat anyway).
+const maxListed = 64
+
+// replyHook, a test's hook, runs in writeReply once the folder is held and
+// listed, before the reply is written.
+var replyHook func()
+
 // writeReply writes one reply, "Stand-in: handled <id>.", to the reply folder
 // of home, and returns the sequence number it used (seq is the first number
 // to try). It writes nothing, and says so with an error, when home is empty,
 // when the folder is missing, is not a folder (a link is not), cannot be
-// read or written, or already holds MaxWaitingReplies of the stand-in's own
-// replies. It never makes, changes or removes the folder, or any file but its
-// own: the text goes first to a dot-name, which is closed and then renamed
-// without replacing to "<seq>-standin.txt".
+// read or written, holds more than maxListed names, or already holds
+// MaxWaitingReplies of the stand-in's own replies. The folder is opened once,
+// without following a link, and every later step works below that one
+// descriptor: a folder replaced meanwhile (a turn-on makes a new one) is
+// never reached by name again. It never makes, changes or removes the folder,
+// or any file but its own: the text goes first to a dot-name, which is closed
+// and then renamed without replacing to "<seq>-standin.txt".
 func writeReply(home string, seq int, id string) (int, error) {
 	if home == "" {
 		return seq, errors.New("standin: no home")
@@ -85,44 +96,49 @@ func writeReply(home string, seq int, id string) (int, error) {
 	if !validReplyID(id) {
 		return seq, errors.New("standin: no valid commit id")
 	}
-	dir := filepath.Join(home, OutboxName)
-	st, err := os.Lstat(dir)
-	if err != nil {
-		return seq, fmt.Errorf("standin: reply folder: %w", err)
-	}
-	if !st.IsDir() {
+	dfd, err := unix.Open(filepath.Join(home, OutboxName), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	switch {
+	case err == unix.ELOOP || err == unix.ENOTDIR:
 		return seq, errors.New("standin: the reply folder is not a folder")
+	case err != nil:
+		return seq, fmt.Errorf("standin: reply folder: %w", err)
 	}
-	entries, err := os.ReadDir(dir)
+	defer unix.Close(dfd)
+	names, more, err := readFolderNames(dfd, maxListed)
 	if err != nil {
 		return seq, fmt.Errorf("standin: reply folder: %w", err)
+	}
+	if more {
+		return seq, errors.New("standin: the reply folder holds too many names")
 	}
 	waiting := 0
-	for _, e := range entries {
-		if isOwnReply(e.Name()) {
+	for _, name := range names {
+		if isOwnReply(name) {
 			waiting++
 		}
 	}
 	if waiting >= MaxWaitingReplies {
 		return seq, errors.New("standin: replies are waiting")
 	}
+	if replyHook != nil {
+		replyHook()
+	}
 	text := replyText(id)
-	tmp := filepath.Join(dir, replyTmpName)
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	fd, err := unix.Openat(dfd, replyTmpName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
 	if err != nil {
 		return seq, fmt.Errorf("standin: reply: %w", err)
 	}
+	f := os.NewFile(uintptr(fd), replyTmpName)
 	_, err = f.WriteString(text)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
 	if err != nil {
-		os.Remove(tmp)
+		_ = unix.Unlinkat(dfd, replyTmpName, 0)
 		return seq, fmt.Errorf("standin: reply: %w", err)
 	}
 	for ; seq <= replySeqMax; seq++ {
-		final := filepath.Join(dir, fmt.Sprintf("%04d%s", seq, ReplySuffix))
-		err = unix.Renameat2(unix.AT_FDCWD, tmp, unix.AT_FDCWD, final, unix.RENAME_NOREPLACE)
+		err = unix.Renameat2(dfd, replyTmpName, dfd, fmt.Sprintf("%04d%s", seq, ReplySuffix), unix.RENAME_NOREPLACE)
 		if err == nil {
 			return seq + 1, nil
 		}
@@ -130,6 +146,29 @@ func writeReply(home string, seq int, id string) (int, error) {
 			break
 		}
 	}
-	os.Remove(tmp)
+	_ = unix.Unlinkat(dfd, replyTmpName, 0)
 	return seq, fmt.Errorf("standin: reply: %w", err)
+}
+
+// readFolderNames reads at most max names of the folder dfd (without "." and
+// ".."), and reports whether it holds more.
+func readFolderNames(dfd int, max int) ([]string, bool, error) {
+	names := []string{}
+	buf := make([]byte, 8192)
+	for {
+		n, err := unix.ReadDirent(dfd, buf)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		if n <= 0 {
+			return names, false, nil
+		}
+		_, _, names = unix.ParseDirent(buf[:n], max+1-len(names), names)
+		if len(names) > max {
+			return names[:max], true, nil
+		}
+	}
 }
