@@ -419,6 +419,31 @@ func TestGenesisPlanPageIsGuarded(t *testing.T) {
 // button when the answers are not complete.
 const finishNoPlanLine = "If you finish now, no plan is drawn for this project, and a finished brief cannot be changed."
 
+// finishAcceptsLine is the summary's sentence, in the finish paragraph, when
+// some answers were decided for the owner.
+const finishAcceptsLine = "Finishing also accepts the answers decided for you."
+
+// The summary's finish paragraph says that finishing accepts the answers
+// decided for the owner when the summary has such rows, and only then.
+func TestGenesisSummarySaysFinishingAccepts(t *testing.T) {
+	r, g, s := genesisRig(t)
+	sum := sampleSummary()
+	g.set(GenesisVerbRound, &sum, nil)
+	page := r.getWith("/projects/"+testThread, s).Body.String()
+	form := page[strings.Index(page, `<form id="finish"`):]
+	form = form[:strings.Index(form, "</form>")]
+	if !strings.Contains(form, "<p>Finishing keeps the answers as the project's brief. "+finishAcceptsLine+" Nothing starts, and no agent is given the brief.</p>") ||
+		strings.Count(page, finishAcceptsLine) != 1 || strings.Index(page, "What was decided for you") > strings.Index(page, finishAcceptsLine) {
+		t.Fatalf("the summary with answers decided for the owner:\n%s", page)
+	}
+	sum.DecidedForYou = []GenesisRow{}
+	g.set(GenesisVerbRound, &sum, nil)
+	page = r.getWith("/projects/"+testThread, s).Body.String()
+	if strings.Contains(page, finishAcceptsLine) || !strings.Contains(page, "<p>Finishing keeps the answers as the project's brief. Nothing starts, and no agent is given the brief.</p>") {
+		t.Fatalf("the summary with no answer decided for the owner:\n%s", page)
+	}
+}
+
 // The summary links the draft plan when the port says it is ready, and
 // otherwise says why there is none; the finished page links the plan kept
 // with the brief, and says what is true now.

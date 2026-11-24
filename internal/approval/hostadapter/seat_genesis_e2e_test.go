@@ -509,8 +509,10 @@ func TestGenesisPlanOverTheGate(t *testing.T) {
 // app runs leaves three answers decided for him, which no page confirms while
 // the interview is open. Over the gate the interview still reaches a summary
 // ready for a plan, every answer counted as filled; the preview is drawn with
-// the warning inferred-answers and stored nowhere; finishing stores the plan,
-// with the warning.
+// the warning inferred-answers and stored nowhere; finishing confirms the
+// three answers (the summary says it does) and stores the plan compiled after
+// that, with the warning: the preview's content, under the digest of the brief
+// as frozen.
 func TestGenesisYouDecideIsReadyOverTheGate(t *testing.T) {
 	w := newDecideWorld(t, nil)
 	dir := filepath.Join(privateDir(t), "genesis")
@@ -543,13 +545,19 @@ func TestGenesisYouDecideIsReadyOverTheGate(t *testing.T) {
 	}
 	stored := seat.ok(gPlan(id))
 	if !stored.Stored || stored.Plan == nil || !slices.Contains(stored.Plan.Warnings, "inferred-answers") || stored.Plan.Title != pre.Plan.Title ||
-		!reflect.DeepEqual(stored.Plan.Milestones, pre.Plan.Milestones) {
-		t.Fatalf("the stored plan: %+v, want the preview's %+v", stored, pre)
+		!reflect.DeepEqual(stored.Plan.Milestones, pre.Plan.Milestones) || stored.Plan.BriefDigest != fin.Digest || stored.PlanDigest == pre.PlanDigest {
+		t.Fatalf("the stored plan: %+v, want the preview's %+v of the frozen brief %s", stored, pre, fin.Digest)
 	}
-	if data, err := os.ReadFile(file); err != nil || !bytes.Contains(data, []byte(`"plan_digest":"`+stored.PlanDigest+`"`)) {
+	data, err := os.ReadFile(file)
+	if err != nil || !bytes.Contains(data, []byte(`"plan_digest":"`+stored.PlanDigest+`"`)) {
 		t.Fatalf("the finished thread's file does not hold its plan: %v", err)
 	}
-	if lines := strings.Join(g.log.all(), "\n"); strings.Count(lines, "genesis: a plan was drawn") != 1 {
+	if bytes.Contains(data, []byte(`"confirmed":false`)) || bytes.Count(data, []byte(`"confirmed":true`)) != 3 {
+		t.Fatalf("finishing did not confirm the three answers: %s", data)
+	}
+	lines := strings.Join(g.log.all(), "\n")
+	if strings.Count(lines, "genesis: a plan was drawn") != 1 || strings.Count(lines, "genesis: answers decided for the owner were confirmed by finishing") != 1 ||
+		strings.Contains(lines, "software.") || strings.Contains(lines, id) {
 		t.Fatalf("the store's log %q", g.log.all())
 	}
 }

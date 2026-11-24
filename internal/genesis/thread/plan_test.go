@@ -145,8 +145,10 @@ func TestThePlanIsPreviewedThenStoredAtFinish(t *testing.T) {
 // ready for a plan: its progress says every required answer is filled, in the
 // same notion as plan_ready, and the preview is drawn, with the warning
 // inferred-answers, and stores nothing; the open thread's brief keeps the
-// three answers as they were, not confirmed. Finishing stores the plan, with
-// the warning.
+// three answers as they were, not confirmed. Finishing confirms them, in the
+// write that freezes the brief, and stores the plan compiled after the
+// confirmation, with the warning: the preview's content, under the digest of
+// the brief as frozen.
 func TestInferredAnswersAreReadyForAPlan(t *testing.T) {
 	w := newWorld(t)
 	id := w.ok(w.s.Start(ctx)).Thread
@@ -190,11 +192,90 @@ func TestInferredAnswersAreReadyForAPlan(t *testing.T) {
 	if r.plan == nil || !slicesContain(r.plan.Warnings, plan.WarnInferred) || !plan.ContentEqual(*r.plan, p) {
 		t.Fatalf("finish stored %+v, want the preview's content", r.plan)
 	}
+	// The frozen brief is the open one with the three answers confirmed,
+	// and nothing else changed; its digest is the one finish answered, and
+	// the plan's.
+	want := b.Clone()
+	for _, name := range inferredFields {
+		if err := want.Confirm(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !reflect.DeepEqual(r.brief, want) {
+		t.Fatalf("the frozen brief: %+v, want %+v", r.brief, want)
+	}
+	if f, n := catalog.Readiness(v1(t), r.brief); f != n {
+		t.Fatalf("the frozen brief's readiness: %d of %d", f, n)
+	}
+	wd, err := brief.Digest(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fin.Digest != wd || r.frozen != wd || r.plan.BriefDigest != wd || r.planDigest == d {
+		t.Fatalf("finish answered %s, froze %s, plan of %s; want %s", fin.Digest, r.frozen, r.plan.BriefDigest, wd)
+	}
+	// The confirmation is in the file, written with the plan.
+	if data := w.bytesOf(id); bytes.Contains(data, []byte(`"confirmed":false`)) || !bytes.Contains(data, []byte(`"confirmed":true`)) ||
+		!bytes.Contains(data, []byte(`"plan_digest":"`+r.planDigest+`"`)) {
+		t.Fatalf("the finished thread's file: %s", data)
+	}
 	stored := w.ok(w.askPlan(id))
 	if !stored.Stored || stored.PlanDigest != r.planDigest || !slicesContain(stored.Plan.Warnings, plan.WarnInferred) {
 		t.Fatalf("the stored plan: %+v", stored)
 	}
-	if w.log.count("a plan was drawn") != 1 {
+	if w.log.count("a plan was drawn") != 1 || w.log.count("genesis: answers decided for the owner were confirmed by finishing") != 1 {
+		t.Fatalf("log %q", w.log.all())
+	}
+	// A second finish answers the same, and confirms nothing again.
+	if again := w.ok(w.s.Finish(ctx, id)); !reflect.DeepEqual(again, fin) || w.log.count("confirmed by finishing") != 1 {
+		t.Fatalf("finish again: %+v, log %q", again, w.log.all())
+	}
+	for _, l := range w.log.all() {
+		for _, name := range append([]string{id, "passkey", "local"}, inferredFields...) {
+			if strings.Contains(l, name) {
+				t.Fatalf("the log line %q holds %q", l, name)
+			}
+		}
+	}
+}
+
+// An interview without an answer decided for the owner logs no
+// confirmation at finish.
+func TestFinishWithNothingInferredConfirmsNothing(t *testing.T) {
+	w := newWorld(t)
+	id := w.ok(w.s.Start(ctx)).Thread
+	w.interview(id, 0)
+	w.ok(w.s.Finish(ctx, id))
+	if w.log.count("confirmed by finishing") != 0 || w.log.count("a plan was drawn") != 1 {
+		t.Fatalf("log %q", w.log.all())
+	}
+}
+
+// An interview finished early, with answers decided for the owner and a
+// required answer not given, still stores no plan: finishing confirms the
+// inferred answers and freezes the brief as it is.
+func TestAnEarlyFinishWithInferredAnswersHasNoPlan(t *testing.T) {
+	w := newWorld(t)
+	id := w.ok(w.s.Start(ctx)).Thread
+	res := w.answerAll(id, youDecideWebApp[:4])
+	if res.State != ownerwire.GenesisStateQuestion || res.Progress.PlanReady || res.Progress.Filled == res.Progress.Total {
+		t.Fatalf("after four rounds: %+v", res.Progress)
+	}
+	_, err := w.askPlan(id)
+	refused(t, err, ownerwire.CodeGenesisNotReady)
+	fin := w.ok(w.s.Finish(ctx, id))
+	r := w.s.threads[id]
+	if fin.State != ownerwire.GenesisStateFinished || fin.Progress.PlanReady || r.plan != nil || bytes.Contains(w.bytesOf(id), []byte(`"plan`)) {
+		t.Fatalf("an early finish: %+v", fin)
+	}
+	for _, name := range inferredFields {
+		if f, _ := r.brief.Get(name); f.Provenance != brief.SupervisorInferred || !f.Confirmed {
+			t.Fatalf("%s: %+v", name, f)
+		}
+	}
+	_, err = w.askPlan(id)
+	refused(t, err, ownerwire.CodeGenesisNotReady)
+	if w.log.count("confirmed by finishing") != 1 || w.log.count("plan") != 0 {
 		t.Fatalf("log %q", w.log.all())
 	}
 }

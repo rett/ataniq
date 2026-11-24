@@ -314,7 +314,9 @@
 // keeps (seat.genesis): the owner answers rounds of one to three questions of
 // the host's catalog, reads the summary, changes an answer, and finishes or
 // discards it. Finishing keeps the answers as the project's brief, at the
-// desk; nothing starts, and no agent is given the brief.
+// desk, and accepts the answers decided for the owner, which the summary
+// shows right above the finish button and says so; nothing starts, and no
+// agent is given the brief.
 //
 // The pages are made on the server, with no script but the logout's, and
 // each act is a plain HTML form posted to the app: a start, the answers of
