@@ -20,7 +20,9 @@
   each turn-on of the chat makes afresh. The instructions say that Cards are
   the only path of an approval and a chat message grants no authority, that
   the daemon makes a fresh folder at each turn-on, and that a full folder or
-  an odd entry stops chat until the owner turns it on again. A new
+  an odd entry stops chat until the owner turns it on again. When the
+  instruction file cannot be installed safely, the define or start is refused
+  `chat-folder`, which the console words as such. A new
   read-only chat port, `leaddaemon.LeadChat`, answers the seat's `seat.chat`
   from the same chats (off leads as bare rows and `chat-off`, a stopped chat or
   a failed store as `chat-busy`, at most 40 calls a minute, and `chat-busy`
