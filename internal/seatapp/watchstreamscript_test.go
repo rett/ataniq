@@ -32,6 +32,7 @@ func TestSeatWatchScriptStreamMatchesTheSeat(t *testing.T) {
 	for _, want := range []string{
 		`var STREAM_PATH = "` + streamPath + `";`,
 		`var STREAM_KIND = "` + streamKindCards + `";`,
+		`var STREAM_KIND_CHAT = "` + streamKindChat + `";`,
 		"var STREAM_EVENT_MAX = " + strconv.Itoa(streamEventMax) + ";",
 		"resp.body.getReader()", "new TextDecoder()", "decoder.decode(bytes.subarray(at, at + STREAM_SLICE), { stream: true })",
 		`type !== "text/event-stream"`, "resp.status !== 200 || resp.redirected",
@@ -53,7 +54,7 @@ func TestSeatWatchScriptStreamMatchesTheSeat(t *testing.T) {
 	}
 	// The stream carries the version the page shows, never one a hint
 	// brought: the seat counts it as what the owner has seen.
-	for _, want := range []string{"send(POLL_PATH, body, ctl)", "send(STREAM_PATH, { version: rendered }, c.ctl)",
+	for _, want := range []string{"send(POLL_PATH, body, ctl)", "send(STREAM_PATH, onLeads ? { leads: renderedChat } : { version: rendered }, c.ctl)",
 		"var rendered = version;"} {
 		if !strings.Contains(js, want) {
 			t.Errorf("watch.js lacks %q", want)
@@ -87,7 +88,7 @@ func TestSeatWatchScriptStreamIsBounded(t *testing.T) {
 		"rest.length > STREAM_LINE_MAX", "evData.length > STREAM_EVENT_MAX",
 		"silence = setTimeout(function () { c.ctl.abort(); }, ms);",
 		"hush(STREAM_FIRST);", "if (opened) { hush(STREAM_SILENCE); }",
-		"if (kind === STREAM_KIND && !hinted(evData)) { throw { stream: false }; }",
+		"if (kind === streamKind && !(onLeads ? chatHinted(evData) : hinted(evData))) { throw { stream: false }; }",
 		`if (line.charAt(0) === ":") { continue; }`,
 		`if (field === "event")`, `} else if (field === "data") {`,
 		"rest += decoder.decode();",
@@ -235,14 +236,17 @@ func TestSeatWatchScriptStreamFollowsThePage(t *testing.T) {
 	for _, want := range []string{
 		"pendingChange = true;",
 		"if (reloadTimer !== null || stopped || document.hidden) { return; }",
-		"reloadTimer = null;\n      if (stopped || document.hidden) { return; }\n      if (typing())",
+		"reloadTimer = null;\n      if (stopped || document.hidden) { return; }\n      if (holding())",
 	} {
 		if !strings.Contains(wr, want) {
 			t.Errorf("wantReload lacks %q", want)
 		}
 	}
-	if strings.Count(js, "pendingChange = ") != 2 { // its declaration and wantReload
+	if strings.Count(js, "pendingChange = ") != 3 { // its declaration, wantReload and chatChanged
 		t.Error("the pending change is set or cleared elsewhere")
+	}
+	if !strings.Contains(funcBody(t, js, "chatChanged"), "pendingChange = true;\n    if (stopped || document.hidden) { return; }") {
+		t.Error("a Leads page acts on a change while hidden")
 	}
 	aw := funcBody(t, js, "awake")
 	for _, want := range []string{"if (stopped || document.hidden) { return; }", "pollCtl.abort()", "if (conn === null) { schedule(reopenWait()); }"} {

@@ -453,9 +453,10 @@ up without a reload, and a card that was decided, withdrawn or replaced
   (the card list a second or two later, at a random moment, so that the
   tabs and phones that come back together do not ask together).
 - Two limits keep the open tabs live, one for each way of asking. Up to
-  three card lists of one passkey stream at once, across its sessions: a
-  fourth is refused and falls back to the poll, and the first three keep
-  their streams. Up to three polls of one session are held at once (Card
+  three streams of one passkey are open at once, across its sessions, card
+  lists and Leads pages together: a fourth is refused (a card list falls
+  back to the poll, a Leads page keeps to its Refresh link), and the first
+  three keep their streams. Up to three polls of one session are held at once (Card
   pages, and lists that fell back): a fourth takes the place of the oldest,
   whose page then waits 25 seconds before it asks again; with more than four
   polling tabs open the pages cannot all stay live (see "Troubleshooting").
@@ -494,11 +495,13 @@ it counts as activity, since it shows you the new cards. A hidden page does
 not refresh, so a list left in a background tab or on a locked phone does
 not keep the session alive.
 
-The stream's limits: at most 3 streams open at once for one passkey, across
+The stream's limits, which count the card lists' and the Leads pages'
+streams together: at most 3 streams open at once for one passkey, across
 its sessions (one for each of three tabs), 12 opened a minute for one
 passkey, and 32 open in all; and, while a stream is being opened, at most 3
 openings of one passkey in progress and 8 in all. A stream past them is
-refused with a `Retry-After`, and that page falls back to the poll. A
+refused with a `Retry-After`, and that page falls back to the poll (a Leads
+page to its Refresh link). A
 stream's response lasts 25 seconds at most from its request, its opening
 included.
 
@@ -589,8 +592,41 @@ serves the samples. What the owner prepares is in
 [the scratch leads guide](scratch-leads.md#running-real-leads-with-the-seat).
 
 Lead and System labels come from the seat. Links and markup in a reply appear
-as text. Approvals are only on Cards. Sending and live refresh are not built,
-including for a lead whose desk setting allows sending.
+as text. Approvals are only on Cards. Sending is not built, including for a
+lead whose desk setting allows sending.
+
+### New replies without refreshing
+
+With the conversation open at its newest message, a new reply of a lead
+whose chat is on appears by itself: the page reads the conversation again,
+at most once every 40 seconds, and opens at the newest message, with up to
+8 of the messages you were reading above the new ones (more new replies
+than fit leave **Show later**). When you have scrolled away from the newest
+message, or you are reading older messages, the page does not move: the
+status line says "New replies." with a link **Show newest**, which takes
+you to the newest message (and the page then follows the new replies). The
+Leads page says "Leads changed." with a link **Refresh** when what it lists
+may have changed. Nothing takes the focus, and a page never reads again
+while it is hidden, while a field holds typed text or while a dialog is open;
+a page shown again catches up once.
+
+The seat learns that the chat moved from the one wait it already holds at
+the gate (the gate's hello lists `wait-chat`), as a number that says only
+that something it may read moved: never which lead, how much or what. A lead
+whose chat is off never makes the page move, and the seat never learns of
+its activity. Each read is the page's ordinary read, so the desk authorizes
+it as when you tap Refresh. It costs no call of the gate beyond that read:
+the directory and the page, 2 of the Leads pages' 5 calls in 80 seconds
+(the 40 seconds between two reads keep one open conversation inside them),
+and none of the card lists'. A read that the page makes by itself counts as
+activity for the session, like a reload you make; a hidden page reads
+nothing, so it does not keep the session alive.
+
+The status line says "Not live" when the page cannot be told (the gate does
+not list `wait-chat`, the link is down, or the seat refused the page's
+stream, for example a fourth open stream of your passkey): use **Refresh**.
+It comes back when the page is shown again or reloaded. In the phone trial
+the samples never change, so the pages are live and never move.
 
 ## New projects
 

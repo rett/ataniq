@@ -250,8 +250,10 @@ func inspectPage(html string, allowed []string, mayDecide bool) []string {
 	for _, el := range elements {
 		name, attrs := el.name, el.attrs
 		if slices.Contains(allowed, "a#chat-refresh") {
-			if name == "script" {
-				add("script on chat page")
+			// A Leads page's one script is the live refresh's, which
+			// reads the hint stream and shows only its constants.
+			if name == "script" && attrs["src"] != "/static/watch.js" {
+				add("script on chat page", attrs["src"])
 			}
 			if name == "a" && !listedChatLink(attrs["id"], attrs["href"]) {
 				add("unlisted chat link", attrs["href"])

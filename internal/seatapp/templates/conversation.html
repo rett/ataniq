@@ -19,6 +19,7 @@
       {{if .JumpRemote}}<a id="chat-jump" href="/leads/daemon/{{text .Selected.Key maxID}}?after={{num .TailAfter}}#newest">Jump to newest</a>
       {{else if .Messages}}<a id="chat-jump" href="#newest">Jump to newest</a>{{end}}
     </p>
+    {{template "watch-leads" .Watch}}
 
     {{if .Reset}}<p class="note-line" role="status">This page starts again from the oldest kept message.</p>{{end}}
     {{if .Restarted}}<p class="chat-epoch"><strong>Lead restarted: epoch {{num .Epoch}}</strong></p>{{end}}

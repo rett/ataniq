@@ -96,3 +96,38 @@ func (a *app) leadsSource() (streamSource, bool) {
 		event: chatEvent,
 	}, true
 }
+
+// leadsWatch is what a Leads page carries for its stream (the template part
+// "watch-leads"): whether the page may open one, the chat cursor taken
+// before the page's own read, which page it is, and, for a conversation that
+// shows the newest entries, the cursor its following read is made after.
+// Every field is the app's own.
+type leadsWatch struct {
+	Live bool
+	// Chat is the cursor, 0 when there was none.
+	Chat int64
+	// Conversation marks a conversation's page; the directory's is not.
+	Conversation bool
+	// Follow marks a conversation page whose read reached the head: it
+	// shows the newest entries, so the page may follow new replies. After
+	// is then the cursor of the read that follows them (see followAfter).
+	Follow bool
+	After  int64
+}
+
+// leadsHint takes the chat hint for a Leads page. It must run before the
+// page's own reads, so that a change between the two makes the page's
+// cursor older than what it shows, and the page's first stream says
+// chat-changed at once, never the other way round.
+func (a *app) leadsHint() leadsWatch {
+	var lw leadsWatch
+	cw, p, ok := a.chatWatcher()
+	if !ok {
+		return lw
+	}
+	h := cw.ChatHint()
+	if chatLive(h) && p.ChatOffered() {
+		lw.Live, lw.Chat = true, chatCursor(h)
+	}
+	return lw
+}

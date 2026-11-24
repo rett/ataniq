@@ -445,3 +445,87 @@ func TestSeatLeadsStreamNoticeNotHeldBack(t *testing.T) {
 	c.cancel()
 	sr.waitStreams(t, 0)
 }
+
+// TestSeatLeadsPagesCarryTheStream: the Leads pages, and they alone, carry
+// the stream's mark (data-view="leads"), with the cursor taken before their
+// reads, which page they are, and, for a conversation whose read reached
+// the head, the cursor of its following read; the Cards pages carry none.
+func TestSeatLeadsPagesCarryTheStream(t *testing.T) {
+	r, ld := newLeadsRig(t)
+	s := r.login(t)
+	// The hint moves while the directory is read: the page has the older
+	// cursor, so that its stream says the change at once.
+	ld.leadsChat.onRead = func() { ld.fakeChatWatcher.setQuiet(ChatHint{Live: true, Cursor: 8}) }
+	const status = `<p id="watch-status" role="status" aria-live="polite"></p>`
+	for path, mark := range map[string]string{
+		"/leads/":             `<div id="watch" data-view="leads" data-live="yes" data-chat="7" data-page="directory"></div>`,
+		"/leads/daemon/alpha": `<div id="watch" data-view="leads" data-live="yes" data-chat="7" data-page="conversation"></div>`,
+	} {
+		ld.fakeChatWatcher.setQuiet(ChatHint{Live: true, Cursor: 7})
+		body := r.getWith(path, s).Body.String()
+		if strings.Count(body, mark) != 1 || strings.Count(body, `data-view=`) != 1 || strings.Count(body, status) != 1 ||
+			strings.Index(body, status) > strings.Index(body, mark) || strings.Index(body, mark) > strings.Index(body, `<script src="/static/watch.js"></script>`) {
+			t.Errorf("%s: the stream's mark: %s", path, body)
+		}
+	}
+	// The sample read ends before the head (More): no follow mark. A read
+	// that reached the head follows after its last entry less half a window.
+	ld.leadsChat.onRead = nil
+	ld.leadsChat.read.More = false
+	body := r.getWith("/leads/daemon/alpha?after=4", s).Body.String()
+	if !strings.Contains(body, `data-page="conversation" data-follow="0"></div>`) {
+		t.Errorf("a conversation at the head: %s", body)
+	}
+	ld.leadsChat.read.Entries[0].Seq = 30
+	ld.leadsChat.read.Head = 30
+	*ld.leadsChat.list.Rows[0].Head = 30
+	if body := r.getWith("/leads/daemon/alpha", s).Body.String(); !strings.Contains(body, `data-follow="22"`) {
+		t.Errorf("the follow cursor: %s", body)
+	}
+	// A hint that is not live, or chat not offered when the page asks:
+	// the page is not live, with no cursor.
+	ld.fakeChatWatcher.setQuiet(ChatHint{})
+	if body := r.getWith("/leads/", s).Body.String(); !strings.Contains(body, `data-view="leads" data-live="no" data-chat="0" data-page="directory"`) {
+		t.Errorf("a Leads page with no hint: %s", body)
+	}
+	// The Cards pages carry no mark of the Leads.
+	for _, path := range []string{"/cards/", "/cards/" + testCardID, "/cards/" + testCardID + "/paths/1"} {
+		if body := r.getWith(path, s).Body.String(); strings.Contains(body, "data-view") || strings.Contains(body, "data-chat") || strings.Contains(body, "data-follow") {
+			t.Errorf("%s carries a Leads mark", path)
+		}
+	}
+}
+
+// TestSeatFollowAfter: the following read starts at or before the last
+// rendered entry, so it skips nothing, and keeps up to half a window of
+// what the page showed.
+func TestSeatFollowAfter(t *testing.T) {
+	entries := func(seqs ...int64) []ChatEntry {
+		var out []ChatEntry
+		for _, s := range seqs {
+			out = append(out, ChatEntry{Seq: s})
+		}
+		return out
+	}
+	for _, c := range []struct {
+		v     ChatView
+		after int64
+		last  int64
+		want  int64
+	}{
+		{ChatView{Head: 3, Entries: entries(1, 2, 3)}, 0, 3, 0},
+		{ChatView{Head: 40, Entries: entries(25, 40)}, 24, 40, 32},
+		{ChatView{Head: 8}, 8, 0, 0},
+		{ChatView{Head: 20}, 20, 0, 12},
+		{ChatView{Head: 20}, 50, 0, 12},
+		{ChatView{Head: 20, Reset: true}, 50, 0, 12},
+	} {
+		got := followAfter(c.v, c.after, c.last)
+		if got != c.want {
+			t.Errorf("%+v after %d: %d, want %d", c.v, c.after, got, c.want)
+		}
+		if n := len(c.v.Entries); n > 0 && got > c.v.Entries[n-1].Seq {
+			t.Errorf("%+v: the following read skips the last entry", c.v)
+		}
+	}
+}

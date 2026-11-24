@@ -1667,9 +1667,11 @@ session alive, and the poll's answer `ended` tells the page when the session is
 gone. A page that reloads itself because the list changed is a page request,
 which counts, as it is the owner's own sight of a new card: an automatic
 refresh of a visible list is the same as the owner reloading it, and counts
-as activity, whether the poll or the stream prompted it. A hidden page does
-not refresh (watch.js reloads only while the page is shown, see the hint
-stream below), so a list left hidden does not keep its session alive. That a
+as activity, whether the poll or the stream prompted it. So does a Leads
+conversation's following read (below), which shows the owner the new
+replies on the page the owner has in view. A hidden page does not refresh
+(watch.js reloads only while the page is shown, see the hint stream below),
+so a list or a conversation left hidden does not keep its session alive. That a
 poll does not extend the idle time is a settled design choice, not a limit of
 the build.
 
@@ -1703,8 +1705,9 @@ answers and nothing else, and a heartbeat comment (`:`). No card text, id,
 title, time, count or binding is written, nor anything of another view. An
 event only prompts the page's own read, by the poll's rules: the list
 reloads at most once every 20 seconds since its load, never over typed text,
-and nothing is marked read by an event. No chat, lead or interview hint
-crosses it; those, and any gate change they need, are later stages.
+and nothing is marked read by an event. The same route serves the Leads
+pages' view (below), which shares every rule of this section but the
+notices; no interview hint crosses it.
 
 Where it comes from. The stream is fed by the seat's single watcher
 (`Watcher.WatchChanged`, the local broadcast): one `seat.wait` at the gate
@@ -1883,12 +1886,156 @@ Notices, which tell the phone that a card is waiting while no page is open,
 follow the watcher's state described above: they are the reason the watcher
 runs when no browser is looking (see [the notices section](#notices)).
 
+### The Leads pages' hint stream
+
+Status: built (push stage 3) and tested on loopback with fakes, and the
+script with a fake clock outside the repository; not qualified on the
+deployed path or on a phone. The Leads pages (the cockpit) use the chat hint
+of [the wait](#chat-hints-on-the-wait) through the same route and the same
+code as the card list's stream above: SSE read with a same-origin `fetch`
+POST, no poll of the chat, and the page's manual **Refresh** link as the
+fallback.
+
+The view. The opening body names the view by its one member, a closed set:
+`{"version":"<hex>"}` is the card list's, unchanged, and `{"leads":"<n>"}`
+the Leads pages', where `n` is the chat cursor the page was rendered with, a
+decimal string of 0 to 2^53-1 with no sign and no leading zero (`0` for a
+page made while the seat had no cursor). It is read token by token with the
+card list's rules: exactly one member, a string, of one of the two names in
+that case, never null, never twice, two members (of one view or of both) and
+anything after the object refused 400 (`TestSeatLeadsStreamStrictInput`).
+
+What crosses it. One kind of event, `chat-changed`, whose data is the cursor
+alone, the integer `seatlink.ChatHint` holds, in decimal on one line: never
+a lead, its key, state, head, epoch or count, and never a text. A Leads
+stream writes no `cards-changed` and a card list's no `chat-changed`. The
+cursor covers only the leads whose chat the desk switched on, so a lead
+whose chat is off never makes an event, and the seat never learns of its
+activity (see the wait). An event only prompts the page's own read, through
+its ordinary authenticated GET, which asks `seat.chat`, where the desk
+authorizes every list and read live; a cursor is never a permission.
+
+Admission and lifetime are the card list's, in the one handler
+(`watchStream`, `streamSource`): the checks of every POST, one live session
+looked at without marking it used, the handshake places taken before the
+body is read, the opens of a credential in a minute, the open streams of a
+credential and in all, the session looked at again before the headers, one
+cutoff 25 seconds after the request, heartbeats, the 2-second gap between
+events, the 256-byte bound of an event, the write deadlines, the end with
+the session, the server's shutdown and the request. Both views are counted
+together in each limit: three streams of one passkey at once, whichever
+pages they are of (a fourth is refused, 429, and the three keep their
+streams), 12 opens of one passkey a minute, 8 handshakes and 32 open
+streams in all (`TestSeatLeadsStreamSharesTheLimits`). The view is live
+only while the port's chat hint is live and the connected gate offers chat
+(`ChatOffered`, a local look): otherwise the stream is refused with the
+fixed 503 `not live` and `Retry-After: 30` (also for a port with no hint or
+no chat port), and an open stream ends cleanly, with no event, when either
+stops: a lost link, a new connection, a gate that stops offering the
+extension or chat, a downgrade. It looks at the hint on each of its wakes
+and again before every heartbeat, since a hint whose connection went is not
+live when it is read even before its watcher says so
+(`TestSeatLeadsStreamEndsWhenTheHintDies`). A change pending in the gap is
+not said once the hint is dead.
+
+A Leads stream is no check-in for the notices: it takes no foreground lease
+and counts no card as seen, so the notices behave with a Leads page open as
+with no page open (`TestSeatLeadsStreamIsNoCheckIn`,
+`TestSeatLeadsStreamNoticeNotHeldBack`).
+
+The pages. `/leads/` and `/leads/daemon/{key}` carry the template part
+`watch-leads`: the polite status line (`role="status"`, `aria-live="polite"`,
+the page's one live region; the conversation's log keeps none) and a mark
+`data-view="leads"` with the cursor (`data-chat`), the page
+(`data-page`, `directory` or `conversation`) and, for a conversation whose
+read reached the head (the port answered no `more`), `data-follow`, the
+cursor its following read is made after. The script tells the view by that
+mark, never by the page's address. The cursor is taken before the page's
+reads, as the card list's version is, so a change between them leaves the
+page an older cursor and its first stream says the change at once; a stream
+opened with an older cursor or with 0 says the current one as its first
+event. Problem pages carry no mark and no script.
+
+What the page does on `chat-changed` (`watch.js`, the same file, its one
+`fetch`):
+
+- The directory shows "Leads changed." and a plain link **Refresh** to
+  `/leads/` in its status line, once; nothing moves and nothing is read.
+- A conversation follows new replies only when the seat marked it as showing
+  the newest entries and its newest entry (`#newest`) is in view, so the
+  reader is already at it. It then reads once, by the card list's reload
+  rule with a longer gap: not before the page is 40 seconds old
+  (`FOLLOW_GAP`, see the budget below), never while a field holds typed text
+  or a dialog is open (the Leads pages have neither today; the guard stays),
+  only while it is shown, and the reader's place is looked at again when the
+  read is due. The read is the page's own path with
+  `?after=` the follow cursor, at `#newest`: the last rendered entry less
+  half a window (8), from 0 at least (`followAfter`), so the read starts at
+  or before the last entry the page showed and skips nothing, keeps up to 8
+  of the entries the reader saw above the new ones, and fits up to 8 new
+  ones below; more leave the next page with **Show later** and no follow
+  mark. It never reads after the hinted cursor, which is no sequence number.
+  When the address is the page's own already, the page reloads.
+- Any other conversation (its reader scrolled away from the newest entry,
+  or a page of older entries) shows "New replies." and a plain link **Show
+  newest**, once: to `#newest` on a page that shows the newest entries
+  (followed there, the page then follows the replies pending), and to the
+  conversation's own newest page otherwise.
+- No hint moves the focus, scrolls, or reads a hidden page. A hidden page
+  closes its stream; a change heard of before is kept, and acted on once,
+  by the rules above, when the page is shown again, when its new stream
+  says the current cursor at once. The offer stays through the stream's
+  rotations and is said once.
+- A cursor that is not of the seat's form (empty, signed, with a leading
+  zero, past 2^53-1, or 0) fails the stream; an event of another kind is
+  skipped. Any failure or refusal, as on the card list, but with no poll to
+  fall back to: the page says "Not live" (unless it shows its offer) and
+  keeps to its **Refresh** link until it is shown again. A page made while
+  the view was not live says "Not live" and opens nothing.
+
+Budget. A Leads stream asks the gate nothing: it is fed by the one wait the
+seat already holds, which carries the chat cursor at no extra call
+([Chat hints on the wait](#chat-hints-on-the-wait)); streams, heartbeats and
+reconnects take no room. A following read is the conversation page's
+ordinary GET: the directory and the page, 2 calls of chat's room of 5 in 80
+seconds, as a tap on Refresh, and it takes no card list's read. The card
+list's 20-second gap would let a conversation that follows a busy lead read
+every 20 seconds (the wait answers a chat change about every 20 seconds
+under sustained activity), 8 calls in 80 seconds, past the room: the
+measured "Leads visited once in 20 s" load, where most visits met busy (see
+[Reading chat on the seat](#reading-chat-on-the-seat)), and a following read
+that meets busy replaces the conversation with chat's busy page. So a
+following read waits until its page is 40 seconds old: 2 calls every 40
+seconds are 4 in any 80, which leaves one of chat's 5 to spare in the
+steady state; the first following read after opening Leads and selecting
+the lead (3 calls) still fits, with none to spare. A reply then appears
+within about 40 seconds of the last one shown. A second conversation
+following at once, or taps beside it, can still meet chat's busy page, as
+by hand; the Card lists lose nothing to it either way. The directory and an
+offer read nothing until the owner taps.
+
+The trial's stand-in has a fixed cursor (its samples never change), so its
+Leads pages open a live stream that never carries an event: the trial shows
+the stream's heartbeats and rotations, and no automatic read.
+
+What it costs and what it cannot do. A taken-over seat or front proxy can
+suppress or invent hints, or learn when the chat it may read moved, as the
+wait already lets it; a hint decides nothing and every read is authorized
+by the desk. Delivery is foreground only, as for the card list.
+
+Attended qualification, not done, with the card list's steps: a reply of an
+enabled lead reaches a conversation that is open at its newest entry within
+about 40 seconds and appears without a tap; a conversation scrolled away
+shows "New replies. Show newest" and does not move; the directory shows
+"Leads changed. Refresh"; a lead turned off at the desk makes no event; the
+trial's pages make none; a lock and unlock reconciles once.
+
 ### Chat hints on the wait
 
 Status: the wire (`ownerwire`, `waitchat.go`), the gate's capability, the
 daemon's wait, the trial's stand-in cursor, the scratch leads' cursor and the
-seat link's watcher are built and tested; not qualified. The seat's pages and
-the browser's stream do not use the hint yet. A seat that shows the leads' conversations learns that what it may
+seat link's watcher are built and tested; not qualified. The Leads pages use
+the hint through the hint stream ([The Leads pages' hint stream](#the-leads-pages-hint-stream)). A seat that shows the leads' conversations learns that what it may
 read moved from the one wait it already holds, not from a second wait or a
 timer. The hint is never content: an integer that a page's script can carry,
 which tells the seat to read again through `seat.chat`, where the desk
@@ -3372,7 +3519,8 @@ It checks the strict wire result, and the app checks its own representation
 and binding again. Directory and read must agree on lead, connection, epoch
 and trial context. Message text goes through `Text` into an escaped text node.
 The links use a validated 1–32 byte key and an integer cursor. Fixed speaker
-labels distinguish Lead and System. Pages have no form or script.
+labels distinguish Lead and System. Pages have no form; their one script is
+the live refresh's ([The Leads pages' hint stream](#the-leads-pages-hint-stream)).
 
 A Leads page asks the port and answers by its error, as the project pages do,
 not by the offer alone: the offer (`ChatOffered`) is false both while the link
@@ -3389,8 +3537,10 @@ sequence returned even on a short page. The earlier link (Show earlier) reads
 one window back, after N minus 16, floored at zero, whichever way the page was
 reached, so it needs no memory of the pages before. The page's heading is
 "Lead KEY" alone, and the lead's state is the line under it. The transcript is
-a list with `role="log"`, and no `aria-live`: the page is made once and never
-changes while it is open (a reader is not to announce it as it loads). The
+a list with `role="log"`, and no `aria-live`: the log is made once and never
+changes while the page is open (a reader is not to announce it as it loads);
+new replies come by a new read of the page, and the one live region is the
+hint stream's polite status line. The
 log marks the last entry as newest (`id="newest"`, with `tabindex="-1"`, so a
 link to `#newest` moves the focus there as well as the view; an empty page's
 line takes the id). When the head lies beyond the page, Jump to newest reads the
