@@ -555,17 +555,17 @@ func TestGenesisFormsThatDoNotAgreeAreNotSent(t *testing.T) {
 		"round with a sign":         {url.Values{"round": {"+2"}, "n0": {"kind"}, "a0": {"software"}}, "bad"},
 		"a node twice":              {url.Values{"round": {"2"}, "n0": {"kind"}, "a0": {"software"}, "n1": {"kind"}, "a1": {"media"}}, "bad"},
 		"a node of another form":    {url.Values{"round": {"2"}, "n0": {"Kind"}, "a0": {"software"}}, "bad"},
-		"two choices of one":        {url.Values{"round": {"2"}, "n0": {"kind"}, "a0": {"software", "media"}}, "bad"},
-		"one and many":              {url.Values{"round": {"2"}, "n0": {"kind"}, "a0": {"software"}, "m0": {"media"}}, "bad"},
-		"an option and own words":   {url.Values{"round": {"2"}, "n0": {"kind"}, "a0": {"software"}, "t0": {"MARKER words"}}, "bad"},
-		"other with no words":       {url.Values{"round": {"2"}, "n0": {"kind"}, "a0": {"~other"}}, "bad"},
-		"skip with words":           {url.Values{"round": {"2"}, "n0": {"kind"}, "a0": {"~skip"}, "t0": {"MARKER words"}}, "bad"},
-		"skip and an option":        {url.Values{"round": {"2"}, "n1": {"formats"}, "m1": {"~skip", "audio"}}, "bad"},
-		"a pick that is not one":    {url.Values{"round": {"2"}, "n0": {"kind"}, "a0": {"~approve"}}, "bad"},
-		"words with a control byte": {url.Values{"round": {"2"}, "n0": {"kind"}, "t0": {"MARKER\x07words"}}, "bad"},
-		"words not utf-8":           {url.Values{"round": {"2"}, "n0": {"kind"}, "t0": {"MARKER\xffwords"}}, "bad"},
-		"words twice":               {url.Values{"round": {"2"}, "n0": {"kind"}, "t0": {"MARKER", "words"}}, "bad"},
-		"words over 200 bytes":      {url.Values{"round": {"2"}, "n0": {"kind"}, "t0": {"MARKER" + long}}, "long"},
+		"two choices of one":        {url.Values{"round": {"2"}, "n0": {"kind"}, "a0": {"software", "media"}}, "bad&q=0#q0-group"},
+		"one and many":              {url.Values{"round": {"2"}, "n0": {"kind"}, "a0": {"software"}, "m0": {"media"}}, "bad&q=0#q0-group"},
+		"an option and own words":   {url.Values{"round": {"2"}, "n0": {"kind"}, "a0": {"software"}, "t0": {"MARKER words"}}, "bad&q=0#q0-group"},
+		"other with no words":       {url.Values{"round": {"2"}, "n0": {"kind"}, "a0": {"~other"}}, "bad&q=0#q0-group"},
+		"skip with words":           {url.Values{"round": {"2"}, "n0": {"kind"}, "a0": {"~skip"}, "t0": {"MARKER words"}}, "bad&q=0#q0-group"},
+		"skip and an option":        {url.Values{"round": {"2"}, "n1": {"formats"}, "m1": {"~skip", "audio"}}, "bad&q=1#q1-group"},
+		"a pick that is not one":    {url.Values{"round": {"2"}, "n0": {"kind"}, "a0": {"~approve"}}, "bad&q=0#q0-group"},
+		"words with a control byte": {url.Values{"round": {"2"}, "n0": {"kind"}, "t0": {"MARKER\x07words"}}, "bad&q=0#q0-group"},
+		"words not utf-8":           {url.Values{"round": {"2"}, "n0": {"kind"}, "t0": {"MARKER\xffwords"}}, "bad&q=0#q0-group"},
+		"words twice":               {url.Values{"round": {"2"}, "n0": {"kind"}, "t0": {"MARKER", "words"}}, "bad&q=0#q0-group"},
+		"words over 200 bytes":      {url.Values{"round": {"2"}, "n0": {"kind"}, "t0": {"MARKER" + long}}, "long&q=0#q0-group"},
 	} {
 		r, g, s := genesisRig(t)
 		w := r.postForm("/projects/"+testThread+"/answer", c.form, s)
@@ -576,6 +576,48 @@ func TestGenesisFormsThatDoNotAgreeAreNotSent(t *testing.T) {
 		if calls := g.seen(); len(calls) != 0 {
 			t.Errorf("%s: the port was given %+v", name, calls)
 		}
+	}
+}
+
+// The redirect's position identifies just the rejected fieldset. Both the
+// form and that fieldset refer to the fixed note on the fresh page.
+func TestGenesisRejectedQuestion(t *testing.T) {
+	r, g, s := genesisRig(t)
+	round := sampleRound()
+	round.Questions = round.Questions[:2]
+	round.Questions[1].Skip = true
+	g.set(GenesisVerbRound, &round, nil)
+	path := "/projects/" + testThread
+	w := r.postForm(path+"/answer", url.Values{"round": {"2"}, "n1": {"formats"}, "m1": {"~skip", "audio"}}, s)
+	seeOtherTo(t, "conflicting choices", w, path+"?note=bad&q=1#q1-group")
+	dest, _, _ := strings.Cut(w.Header().Get("Location"), "#")
+	page := r.getWith(dest, s).Body.String()
+	for _, want := range []string{
+		`id="q1-group" tabindex="-1" aria-invalid="true" aria-describedby="answer-note"`,
+		"<legend>Check this answer. Which formats?</legend>",
+		`method="post" aria-describedby="answer-note"`, `id="answer-note"`,
+		"Choose any options that apply.", "Leave it to its default. Choose it on its own.",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("rejected question lacks %q", want)
+		}
+	}
+	if strings.Count(page, `aria-invalid="true"`) != 1 {
+		t.Error("wrong number of marked questions")
+	}
+	for _, query := range []string{"note=bad", "note=bad&q=2", "note=long&q=-1", "note=bad&q=01",
+		"note=bad&q=9999999999999999999999", "note=bad&q=x", "note=bad&q=0&q=1", "note=busy&q=1"} {
+		page := r.getWith(path+"?"+query, s).Body.String()
+		if strings.Contains(page, "aria-invalid") || !strings.Contains(page, `method="post" aria-describedby="answer-note"`) {
+			t.Errorf("%s did not keep the note at form level", query)
+		}
+	}
+	w = r.postForm(path+"/change", url.Values{"node": {"kind"}, "a0": {"~other"}}, s)
+	seeOtherTo(t, "invalid change", w, path+"/change/kind?note=bad&q=0#q0-group")
+	page = r.getWith(path+"/change/kind?note=bad&q=0", s).Body.String()
+	if !strings.Contains(page, "<legend>Check this answer. What &lt;b&gt;kind&lt;/b&gt; of project is it?</legend>") ||
+		!strings.Contains(page, `id="q0-group" tabindex="-1" aria-invalid="true" aria-describedby="answer-note"`) {
+		t.Error("the change page does not identify the rejected answer")
 	}
 }
 
@@ -647,13 +689,13 @@ func TestGenesisOwnWordsAreCappedInBytes(t *testing.T) {
 	}
 	// 150 letters of two bytes each: 300 bytes.
 	w := r.postForm("/projects/"+testThread+"/answer", url.Values{"round": {"2"}, "n0": {"kind"}, "t0": {strings.Repeat("é", 150)}}, s)
-	seeOtherTo(t, "accented words past 200 bytes", w, "/projects/"+testThread+"?note=long")
+	seeOtherTo(t, "accented words past 200 bytes", w, "/projects/"+testThread+"?note=long&q=0#q0-group")
 	for _, c := range g.seen() {
 		if c.Verb == GenesisVerbAnswer {
 			t.Errorf("the port was given %+v", c)
 		}
 	}
-	note := r.getWith("/projects/"+testThread+"?note=long", s).Body.String()
+	note := r.getWith("/projects/"+testThread+"?note=long&q=0", s).Body.String()
 	if !strings.Contains(note, "Your own words were too long, so nothing was sent. Keep them to about 200 letters (accents and emoji take more room) and send again.") {
 		t.Errorf("the page after:\n%s", note)
 	}

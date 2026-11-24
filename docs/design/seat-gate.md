@@ -2331,8 +2331,11 @@ UTF-16 code units, so words with accents or emoji can be cut short of it and
 still be too long; the post is then refused before the port is asked, with the
 note "Your own words were too long, so nothing was sent. ..."), and "You
 decide for me" and "Skip" only when the question allows them; one submit
-button. The summary
-shows the three groups (what you chose, what was decided for you, the
+button. A locally rejected pick redirects with the fixed note and a zero-based
+question index, for example `?note=bad&q=1#q1-group`. The GET validates the
+index against the questions it displays. The marked fieldset links to the
+error description. A blank round or a desk refusal gets a form-level note.
+The summary shows the three groups (what you chose, what was decided for you, the
 defaults), the owner's own words quoted and marked as the owner's, a "Change"
 link on each row whose question the link holds, a "Looks right: finish" button
 and a link to the discard step. The finish paragraph above the button says

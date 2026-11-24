@@ -182,9 +182,10 @@ type (
 	// the fields are named a<i> (one choice), m<i> (several), t<i> (own
 	// words) and n<i> (the node).
 	questionView struct {
-		I     int
-		Multi bool
-		Q     GenesisQuestion
+		I       int
+		Invalid bool
+		Multi   bool
+		Q       GenesisQuestion
 	}
 	questionData struct {
 		Title     string
@@ -485,6 +486,22 @@ func resetOf(r *http.Request) int {
 	return n
 }
 
+// rejectedQuestion returns the position of a locally rejected answer, or -1
+// for a form-level note. Only a canonical index into the displayed questions
+// can identify a fieldset on the new page.
+func rejectedQuestion(r *http.Request, count int) int {
+	query := r.URL.Query()
+	if (query.Get("note") != "bad" && query.Get("note") != "long") || len(query["q"]) != 1 {
+		return -1
+	}
+	raw := query.Get("q")
+	i, err := strconv.Atoi(raw)
+	if err != nil || i < 0 || i >= count || strconv.Itoa(i) != raw {
+		return -1
+	}
+	return i
+}
+
 // projectPage answers GET /projects/{thread}: the round the thread is at,
 // its summary, or the finished brief.
 func (a *app) projectPage(w http.ResponseWriter, r *http.Request, s Session) {
@@ -505,11 +522,10 @@ func (a *app) projectPage(w http.ResponseWriter, r *http.Request, s Session) {
 	switch v.State {
 	case GenesisStateQuestion:
 		d := questionData{Title: pageTitles["question"], Note: note, Reset: reset, View: v, Nav: projectsNav()}
-		for i, q := range v.Questions {
-			if i >= MaxGenesisQuestions {
-				break
-			}
-			d.Questions = append(d.Questions, questionView{I: i, Multi: q.Type == GenesisTypeMulti, Q: q})
+		questions := v.Questions[:min(len(v.Questions), MaxGenesisQuestions)]
+		rejected := rejectedQuestion(r, len(questions))
+		for i, q := range questions {
+			d.Questions = append(d.Questions, questionView{I: i, Invalid: i == rejected, Multi: q.Type == GenesisTypeMulti, Q: q})
 		}
 		if len(d.Questions) == 0 {
 			a.problem(w, r, problemFailed)
@@ -565,7 +581,7 @@ func (a *app) changePage(w http.ResponseWriter, r *http.Request, s Session) {
 			}
 			q := *row.Question
 			a.render(w, "change", http.StatusOK, changeData{Title: pageTitles["change"], Note: noteOf(r), Thread: thread, Row: row,
-				Question: questionView{I: 0, Multi: q.Type == GenesisTypeMulti, Q: q}, Nav: projectsNav()})
+				Question: questionView{I: 0, Invalid: rejectedQuestion(r, 1) == 0, Multi: q.Type == GenesisTypeMulti, Q: q}, Nav: projectsNav()})
 			return
 		}
 	}
@@ -693,6 +709,13 @@ func plainText(s string) bool {
 	return true
 }
 
+// rejectAnswer redirects to the question that failed local validation. The
+// address carries only a fixed note code and the question's form position.
+func rejectAnswer(w http.ResponseWriter, back string, i int, err error) {
+	index := strconv.Itoa(i)
+	seeOther(w, back+"?note="+noteWord(err)+"&q="+index+"#q"+index+"-group", "")
+}
+
 // projectAnswer answers POST /projects/{thread}/answer: the answers of the
 // round the form showed, then the thread's page.
 func (a *app) projectAnswer(w http.ResponseWriter, r *http.Request, s Session) {
@@ -725,7 +748,7 @@ func (a *app) projectAnswer(w http.ResponseWriter, r *http.Request, s Session) {
 			continue
 		}
 		if err != nil {
-			seeOther(w, back, noteWord(err))
+			rejectAnswer(w, back, i, err)
 			return
 		}
 		c.Answers = append(c.Answers, GenesisAnswer{Node: node, Pick: p})
@@ -759,7 +782,7 @@ func (a *app) projectChange(w http.ResponseWriter, r *http.Request, s Session) {
 		err = ErrGenesisBadAnswer
 	}
 	if err != nil {
-		seeOther(w, back, noteWord(err))
+		rejectAnswer(w, back, 0, err)
 		return
 	}
 	v, ok := a.postCall(w, r, s, GenesisCall{Verb: GenesisVerbChange, Thread: thread, Node: node, Pick: p}, back)

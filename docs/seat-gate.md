@@ -476,8 +476,10 @@ questions are the desk's own, from its fixed catalog, and so is the order they
 come in. Each question offers its options, each with a one-line example, and,
 where the question allows them, "Other" (your own words, a short note of
 about 200 letters: the cap is 200 bytes, so accents and emoji take more room),
-"You decide for me" and "Skip". "You decide for me" leaves the answer to the
-desk: on most questions it takes the question's default; on the language, the
+"You decide for me" and "Skip". On a question that accepts several choices,
+use each of those three options on its own. If the phone rejects a particular
+answer, it returns to that question and marks it "Check this answer."
+"You decide for me" leaves the answer to the desk. On most questions it takes the question's default; on the language, the
 sign-in and where a web app runs, the desk picks a value for you, shown under
 "What was decided for you" on the summary. Such an answer counts as given, so
 a draft plan can be drawn from it, and the plan says "Some answers were

@@ -44,17 +44,19 @@ Current (the lead pages' "Leads" comes next). */}}</ul>
 {{else}}<p>Two projects are open. Finish or discard one before you start another.</p>
 {{end}}</section>{{end}}
 
-{{define "question"}}<fieldset class="question">
-<legend>{{text .Q.Prompt maxLine}}</legend>
+{{define "question"}}<fieldset class="question" id="{{qid .I "group"}}"{{if .Invalid}} tabindex="-1" aria-invalid="true" aria-describedby="answer-note"{{end}}>
+<legend>{{if .Invalid}}Check this answer. {{end}}{{text .Q.Prompt maxLine}}</legend>
+{{if .Multi}}<p>Choose any options that apply.</p>
+{{end}}
 <input type="hidden" id="{{field "n" .I}}" name="{{field "n" .I}}" value="{{text .Q.ID maxID}}">
 <ul class="options">
 {{if eq .Q.Type "scale"}}{{range steps}}<li><label class="option" for="{{oid $.I .}}"><input type="radio" id="{{oid $.I .}}" name="{{pickName $.Multi $.I}}" value="{{num .}}"> <span class="choice">{{num .}}</span>{{if eq . 1}} <span class="example">the least</span>{{end}}{{if eq . 5}} <span class="example">the most</span>{{end}}</label></li>
 {{end}}{{else}}{{range $j, $o := .Q.Options}}<li><label class="option" for="{{oid $.I $j}}"><input type="{{inputType $.Multi}}" id="{{oid $.I $j}}" name="{{pickName $.Multi $.I}}" value="{{text $o.ID maxID}}"> <span class="choice">{{text $o.Label maxName}}</span> <span class="example">{{text $o.Example maxLine}}</span></label></li>
-{{end}}{{end}}{{if .Q.Other}}<li><label class="option" for="{{qid .I "other"}}"><input type="{{inputType .Multi}}" id="{{qid .I "other"}}" name="{{pickName .Multi .I}}" value="~other"> <span class="choice">Other</span> <span class="example">Say it in your own words below.</span></label>
+{{end}}{{end}}{{if .Q.Other}}<li><label class="option" for="{{qid .I "other"}}"><input type="{{inputType .Multi}}" id="{{qid .I "other"}}" name="{{pickName .Multi .I}}" value="~other"> <span class="choice">Other</span> <span class="example">Say it in your own words below.{{if .Multi}} Choose it on its own.{{end}}</span></label>
 <label class="field" for="{{qid .I "text"}}">Your own words (a short note, about 200 letters; never a password or key)</label>
 <input type="text" id="{{qid .I "text"}}" name="{{field "t" .I}}" maxlength="200" autocomplete="off" spellcheck="true"></li>
-{{end}}{{if .Q.YouDecide}}<li><label class="option" for="{{qid .I "host"}}"><input type="{{inputType .Multi}}" id="{{qid .I "host"}}" name="{{pickName .Multi .I}}" value="~host"> <span class="choice">You decide for me</span> <span class="example">The desk picks, and the summary lists it.</span></label></li>
-{{end}}{{if .Q.Skip}}<li><label class="option" for="{{qid .I "skip"}}"><input type="{{inputType .Multi}}" id="{{qid .I "skip"}}" name="{{pickName .Multi .I}}" value="~skip"> <span class="choice">Skip</span> <span class="example">Leave it to its default.</span></label></li>
+{{end}}{{if .Q.YouDecide}}<li><label class="option" for="{{qid .I "host"}}"><input type="{{inputType .Multi}}" id="{{qid .I "host"}}" name="{{pickName .Multi .I}}" value="~host"> <span class="choice">You decide for me</span> <span class="example">The desk picks, and the summary lists it.{{if .Multi}} Choose it on its own.{{end}}</span></label></li>
+{{end}}{{if .Q.Skip}}<li><label class="option" for="{{qid .I "skip"}}"><input type="{{inputType .Multi}}" id="{{qid .I "skip"}}" name="{{pickName .Multi .I}}" value="~skip"> <span class="choice">Skip</span> <span class="example">Leave it to its default.{{if .Multi}} Choose it on its own.{{end}}</span></label></li>
 {{end}}</ul>
 </fieldset>{{end}}
 
