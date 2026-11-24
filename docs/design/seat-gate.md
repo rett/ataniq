@@ -899,7 +899,10 @@ Reads after a revoke: the reads are the pin's, not a credential's, since the
 daemon keeps no session. A seat session whose key was revoked still reads cards
 until the seat learns of the revoke or the session ends (G7: 30 minutes idle,
 12 hours at most). The seat ends a session at once when a call of it is
-answered `key-revoked` or `key-unknown`. To cut the reads at once, the owner
+answered `key-revoked` or `key-unknown`, and with it every other session the
+same credential logged in (another tab's login, another phone's), with their
+held polls and streams; a logout ends its own session only. To cut the reads
+at once, the owner
 removes the seat's pin (G4) and restarts the daemon.
 
 The two domain strings differ, so an assertion made for a login can never be
@@ -1294,7 +1297,7 @@ text of the gate's, and a code it does not know gets the last line:
 | `approval-expired` | The card's time ran out. |
 | `approval-consumed`, `approval-void`, `previous-epoch`, `decision-invalid` | The card cannot be decided now. Look at it again. |
 | `assertion-invalid` | The phone's answer was not accepted. If this repeats, check the seat at the desk. |
-| `key-revoked`, `key-unknown` | This phone's passkey is no longer paired. Pair it again at the desk. (The session ends.) |
+| `key-revoked`, `key-unknown` | This phone's passkey is no longer paired. Pair it again at the desk. (Every session of that passkey ends.) |
 | `kind-refused` | This project does not take decisions from this kind of passkey. |
 | `decisions_inhibited` (the seat's own, not a gate code) | Decisions are paused on this host. Nothing was sent. |
 | `challenges-full`, `busy`, `rate-limited`, `too-many-refusals` | The desk is busy. Try again in a few minutes. |
@@ -1662,8 +1665,13 @@ poll, and the card list's stream with its heartbeats and its reconnects, are
 requests that do not count: a page left open does not keep its
 session alive, and the poll's answer `ended` tells the page when the session is
 gone. A page that reloads itself because the list changed is a page request,
-which counts, as it is the owner's own sight of a new card. That a poll does not
-extend the idle time is a settled design choice, not a limit of the build.
+which counts, as it is the owner's own sight of a new card: an automatic
+refresh of a visible list is the same as the owner reloading it, and counts
+as activity, whether the poll or the stream prompted it. A hidden page does
+not refresh (watch.js reloads only while the page is shown, see the hint
+stream below), so a list left hidden does not keep its session alive. That a
+poll does not extend the idle time is a settled design choice, not a limit of
+the build.
 
 ### The card list's hint stream
 
@@ -1677,6 +1685,16 @@ makes a GET, which may come without `Origin`, and reconnects by itself. The
 page reads the stream with a same-origin `fetch` POST instead, so the checks
 of every POST apply, and the script owns its parsing, its bounds and its
 reconnects.
+
+What it changes. The held poll already answers as soon as the watcher
+changes, so the stream does not make a change reach the list sooner. What
+it changes is that a card list holds no poll of its session's three (the
+held polls are left to the Card pages and to lists that fell back), and
+that each hint names its kind, which later stages extend. Its own limit is
+per credential: three streams of one passkey at once, a fourth refused (it
+falls back to the poll, and the three keep their streams), apart from the
+poll's three held polls per session, where a fourth replaces the oldest.
+The notices are held back by a list's stream as by a poll (below).
 
 What crosses it. `POST /api/watch/stream` (`internal/seatapp`,
 `watchstream.go`) writes a closed set: an event of the one kind
@@ -1696,20 +1714,44 @@ and its reconnects ask the gate nothing and take no room.
 Admission, all of it before any header of the stream:
 
 - The checks of every POST (`a.post`): `Origin` exactly the seat origin,
-  `Host` the origin's host, `Sec-Fetch-Site: same-origin`, a body declared
-  JSON of at most `seatapp.MaxBody`. A GET is 405.
+  once, `Host` the origin's host, `Sec-Fetch-Site: same-origin`, a body
+  declared JSON of at most `seatapp.MaxBody`. `Sec-Fetch-Site` and
+  `Content-Type` must each come exactly once: a second one is refused
+  whatever the first says (this holds for every POST of the seat). A GET is
+  405.
 - Exactly one `__Host-seat` cookie of a live session, looked at with
   `sessions.lookUntil`, which never marks it used; none, two, or one that is
-  not live is 403 `session ended`, with no redirect to the login page.
-- A body `{"version": ...}` of at most 64 hex digits, strictly decoded.
+  not live is 403 `session ended`, with no redirect to the login page. The
+  cookies of the name are counted in the `Cookie` headers as sent, before
+  they are parsed, so a second one with a malformed value, which the parser
+  would drop, still refuses the request (this too holds for every route).
+- A place among the handshakes in progress, taken before a byte of the body
+  is read or the watcher is looked at: at most 3 requests of one credential
+  in their admission at once (429 `too many streams`, `Retry-After: 25`) and
+  8 in all (503 `busy`, `Retry-After: 25`), apart from the streams open. A
+  page has one at a time; the bound keeps one session from holding many
+  bodies open. The place is given back at every exit, and once the stream's
+  headers are written.
+- A body that is one object with exactly one member, `version`, a string of
+  at most 64 lower-case hex digits (empty for a page made before the watcher
+  had a version). It is read token by token: a member that is absent, null,
+  of another type, of another case or given twice, another member, and
+  anything after the object are 400.
 - At most 12 opens a minute for one credential (429 `too many streams`,
   `Retry-After: 60`), at most 3 streams open at once for one credential
   across its sessions (429, `Retry-After: 25`), at most 32 open in all (503
   `busy`, `Retry-After: 25`), a watcher that watches, reaches the gate and has
-  a version (503 `not live`, `Retry-After: 30`), and a server that is not
+  a version that is not empty, that is, has had an answer of the gate (503
+  `not live`, `Retry-After: 30`), and a server that is not
   stopping (503 `shutting down`, `Retry-After: 5`). Each refusal is a fixed
   text; the page takes any refusal as the sign to fall back to the poll,
   which then says what it is.
+- Last, after the body and the places: the session again, without marking
+  it used (a logout, an eviction or its idle time while the body came is 403
+  `session ended`), the server's end (503 `shutting down`), the client's
+  (nothing is written), and the stream's life (503 `busy`). Only then are
+  the headers written; a refusal there writes no byte of a stream and gives
+  every place back.
 
 The open stream:
 
@@ -1721,14 +1763,22 @@ The open stream:
 - Changes are coalesced: at most one event every 2 seconds, one pending
   event at most, said with the version as it is when the gap ends. An event
   is at most 256 bytes. A heartbeat is written once in 10 seconds.
-- It ends within 25 seconds (`streamLife`), under the seat's and Caddy's
-  30-second write timeouts, and the page opens another; no heartbeat has to
-  outlast a write timeout, and neither timeout is lifted for the path.
-- Every write has a deadline of 5 seconds of its own (and the end of the
-  response one more), so a client that stops reading loses its stream and
-  never holds the watcher, which publishes by closing a channel and waits
-  for nobody. A stream that missed changes says the latest version when it
-  writes again, and the page's next stream reconciles in any case.
+- The response has one cutoff, 25 seconds (`streamLife`) after the request
+  reached the handler: its admission, every write and the end of the
+  response are done by then, under the seat's and Caddy's 30-second write
+  timeouts, and the page opens another; no write has to outlast a write
+  timeout, and neither timeout is lifted for the path. The stream stops
+  writing 1 second (`streamFinish`) before the cutoff, for the end of the
+  response.
+- Every write and its flush have the earlier of 5 seconds and the time left
+  to the cutoff, so a client that stops reading loses its stream and never
+  holds the watcher, which publishes by closing a channel and waits for
+  nobody. After a write is flushed the connection's deadline goes back to
+  the cutoff: the 10 seconds between heartbeats are never under a write's 5
+  (Go's HTTP/2 writer would reset the stream at that deadline). The end of
+  the response is bounded the same way. A stream that missed changes says
+  the latest version when it writes again, and the page's next stream
+  reconciles in any case.
 - It ends with its session, also in silence: it waits on the session's
   `gone` channel (logout, eviction, removal), on a timer armed at the
   earlier of the session's idle end and its 12-hour age, and looks at the
@@ -1737,23 +1787,57 @@ The open stream:
   shuts down: `seatapp.Server` registers the end of every stream with
   `RegisterOnShutdown` (the stream does not hijack the connection, so
   `Shutdown` sees it end and closes it), and `App.Close` ends them too.
-- It is not a poll for the notices: it neither holds a notice back nor
-  counts the cards as seen. A suspended page can leave a stream open, and
-  the sight of the list is what the notices' quiet stands for.
+- For the notices, the stream's opening is the page's check-in, as a poll
+  is: the page opens a stream only while it is shown. Each accepted opening
+  takes a foreground lease of 30 seconds (`streamLease`), at most to the
+  session's own end, and while a lease lasts the notices are held back, as
+  within 60 seconds of a poll. Only a new check-in makes a new lease: the
+  page's next stream, which the seat's rotation brings about every 25
+  seconds while the page is shown. Nothing the seat writes renews it, not a
+  heartbeat and not a hint, even when the write succeeds: a suspended phone
+  can leave a proxy taking the seat's writes. A lease ends early when its
+  stream ends for any reason but its rotation (the page hidden or left,
+  which aborts the request, a failed write, the session's end, the seat's
+  shutdown) and with its session; a rotated stream's lease runs out by
+  itself, which covers the page's reconnect.
+- What counts as seen is what the page shows, not what it was told. The
+  page opens each stream with the version it shows (`rendered`, which the
+  list changes only by reloading), not the version of the last hint; when
+  that is the watcher's version, the waiting count is the owner's seen
+  count, as a poll's is. A hint the page has not shown yet is not seen: a
+  card that comes while the list is open, and a phone suspended before the
+  list reloads, leaves that card's notice due once the lease runs out.
 
 The page (`watch.js`). Only the card list streams; the Card page keeps the
 poll until its withdrawal of stale offers has parity. The script reads the
-body with a reader and a `TextDecoder`, splits lines itself, fails the
-stream on a line of more than 512 characters or an event's data of more
-than 256, skips comments, unknown fields and events of any other kind, and
-fails it after 30 seconds without a byte. It holds one stream per page. It
-closes it on `visibilitychange` to hidden and on `pagehide`; on being shown,
-on `pageshow` from the history cache and on `online` it opens one again
-after a wait of 1 second doubling with the failures in a row to 30, plus up
-to 2 seconds at random, with the version it shows. A stream the seat ends
-is opened again after that wait; two that end within 5 seconds of opening,
-any refusal, any error and a browser that cannot read a stream with
-`fetch` fall back to the poll, unchanged, until the page is shown again.
+body with a reader, decodes it 256 bytes at a time with a `TextDecoder`,
+and checks the bounds as each slice is taken: a line of more than 512
+characters (before it is cut out) or an event's data of more than 256 fails
+the stream, so no more than a bound and a slice is ever held. It splits
+lines itself and skips comments, unknown fields and events of any other
+kind. A `cards-changed` event whose data is not the seat's one form (an
+object whose one member is a version that is not empty) fails the stream:
+a stream whose hints cannot be read must not look live. The opening
+heartbeat must come whole within 8 seconds of the request, below the
+rotation, so a proxy that holds the response back until its end puts the
+page on the poll within one rotation; after it, 30 seconds without a byte
+fail the stream. A stream that ends inside an event, or before its opening
+heartbeat, fails too. It holds one stream per page, opened with the
+version the page shows (never a hint's, see the notices above). It closes
+it on `visibilitychange` to hidden and on `pagehide`; on being shown, on
+`pageshow` from the history cache and on `online` it opens one again after
+a wait of 1 second doubling with the failures in a row to 30, plus up to 2
+seconds at random. A stream the seat ends is opened again after that wait;
+two that end within 5 seconds of opening, any refusal, any error and a
+browser that cannot read a stream with `fetch` fall back to the poll,
+unchanged, until the page is shown again.
+
+The list reloads only while it is shown. A reload waiting its 20 seconds is
+dropped on `visibilitychange` to hidden, on `pagehide` and on the poll's
+`ended`, and the page's visibility is looked at again when its timer runs;
+the change stays pending (a version heard of and not shown), and when the
+page is shown again it reloads once for it, by the same rule. A hidden page
+therefore never spends a read of the desk, nor touches the session.
 Every text it puts on the page is still one of its constants, set with
 `textContent`; the Trusted Types policy, the content security policy, the
 cookies and the service worker are unchanged, and nothing is stored.
@@ -1785,7 +1869,10 @@ Screen app:
    at 30 minutes with no tap; a seat restart ends it and the list falls back.
 6. A proxy or gate interrupted: the list falls back and shows "Not live: the
    desk is out of reach", and comes back when it is shown again.
-7. With the phone asleep, a notice still arrives for a new card.
+7. With the phone asleep, a notice still arrives for a new card; with the
+   list open and shown, none arrives for a card it shows, and none after it
+   is closed; with the phone locked after a hint and before the list
+   reloaded, the notice arrives about 30 seconds later.
 
 The shipped Caddyfile needs no change for it as far as the code shows
 (`reverse_proxy` flushes `text/event-stream` at once and the file has no
@@ -2047,9 +2134,12 @@ one of the holds below applies. The rules:
    no more), and counts as seen: the floor of rule 2 is at least that count,
    so a card the owner looked at on the page does not bring a notice a minute
    after the page is closed. A card that comes after the last poll does.
-   The card list's hint stream is not a poll: an open stream, its heartbeats
-   and its events neither hold a notice back nor count cards as seen (see
-   [the hint stream](#the-card-lists-hint-stream)).
+   The card list's hint stream does the same by its own rule (see
+   [the hint stream](#the-card-lists-hint-stream)): each stream the page
+   opens, which it does only while shown, is a check-in that holds the
+   notices back for a lease of 30 seconds, and counts as seen the cards of
+   the version the page says it shows, when it is the watcher's. Nothing the
+   seat writes on the stream renews the lease or counts as seen.
 4. After a call to the notifier that failed, nothing is sent for 1 minute; each
    failure after it doubles the wait, to a longest of 30 minutes, and a call
    the notifier took ends the run. A failure is logged at most once a minute,

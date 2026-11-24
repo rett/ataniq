@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -281,6 +282,7 @@ func TestSeatStreamNotLive(t *testing.T) {
 		"not watching": func(st *WatchState) { *st = WatchState{} },
 		"offline":      func(st *WatchState) { *st = WatchState{Watching: true, Version: "aa", Offline: true} },
 		"bad version":  func(st *WatchState) { *st = WatchState{Watching: true, Version: "not hex"} },
+		"no version":   func(st *WatchState) { *st = WatchState{Watching: true} },
 	} {
 		wd.set(f)
 		w := r.streamDo(context.Background(), streamOK, nil, s)
@@ -414,8 +416,15 @@ func TestSeatStreamCoalesces(t *testing.T) {
 // heartbeat has to outlast it.
 func TestSeatStreamLimitsAreTheDesigns(t *testing.T) {
 	wt := Server(nil).WriteTimeout
-	if streamLife > 25*time.Second || streamLife+streamWrite > wt || streamBeat >= streamLife {
-		t.Errorf("life %v, write %v, beat %v, write timeout %v", streamLife, streamWrite, streamBeat, wt)
+	// The life is the whole response, its admission and its end included,
+	// so it alone must fit the write timeout; the stream stops writing
+	// streamFinish before it, after more than one heartbeat.
+	if streamLife > 25*time.Second || streamLife >= wt || streamFinish <= 0 || streamFinish >= streamWrite ||
+		2*streamBeat >= streamLife-streamFinish {
+		t.Errorf("life %v, write %v, finish %v, beat %v, write timeout %v", streamLife, streamWrite, streamFinish, streamBeat, wt)
+	}
+	if streamHandshakes != 8 || streamHandshakesPer != 3 {
+		t.Error("the handshake limits moved: the design and the guide need to follow")
 	}
 	if streamPerCredential != 3 || streamOpens != 12 || streamOpenWindow != time.Minute || streamMax != 32 || streamEventMax != 256 {
 		t.Error("the stream's limits moved: the design and the guide need to follow")
@@ -848,31 +857,557 @@ func TestSeatStreamAppCloseEndsStreams(t *testing.T) {
 	within(t, got, 3*time.Second)
 }
 
-// TestSeatStreamDoesNotSuppressNotices: an open stream, its heartbeats and
-// its events are not a poll: they neither hold the notices back nor count
-// the cards as seen.
-func TestSeatStreamDoesNotSuppressNotices(t *testing.T) {
+// TestSeatStreamCheckInIsTheForeground: a stream's opening takes a lease
+// of streamLease, at most to the session's end, which a poll's quiet does
+// not need; it counts as seen only the waiting count of the version the
+// page says it shows, when it is the watcher's; a stream that ends for any
+// reason but its life ends the lease, and the session's end ends it too.
+func TestSeatStreamCheckInIsTheForeground(t *testing.T) {
+	r, wd := newWatchRig(t, "aa", time.Minute)
+	wd.set(func(st *WatchState) { st.Version, st.Waiting = "bb", 3 })
+	s := r.login(t)
+	srv := streamServer(t, r)
+	// A page that shows an older version: a lease, and nothing seen.
+	c := openStream(t, srv, streamOK, s)
+	c.next(t, 3*time.Second)
+	now := r.clock.Now()
+	if got := r.app.foregroundUntil(now); !got.Equal(now.Add(streamLease)) {
+		t.Errorf("the lease runs to %v, want streamLease", got.Sub(now))
+	}
+	if seq, _ := r.app.pollSeen(); seq != 0 {
+		t.Error("a stream opened with an older version counted the cards as seen")
+	}
+	if !r.app.lastPollTime().IsZero() {
+		t.Error("the stream counted as a poll")
+	}
+	// The page shows the watcher's version: its count is seen.
+	c2 := openStream(t, srv, `{"version":"bb"}`, s)
+	c2.next(t, 3*time.Second)
+	if seq, waiting := r.app.pollSeen(); seq != 1 || waiting != 3 {
+		t.Errorf("seen %d times, %d waiting; want once, 3", seq, waiting)
+	}
+	// A page that closes its stream ends its lease; the other stays.
+	c.cancel()
+	r.waitStreams(t, 1)
+	if r.app.foregroundUntil(r.clock.Now()).IsZero() {
+		t.Error("one closed stream ended the other's lease")
+	}
+	c2.cancel()
+	r.waitStreams(t, 0)
+	if got := r.app.foregroundUntil(r.clock.Now()); !got.IsZero() {
+		t.Errorf("closed streams left a lease to %v", got.Sub(now))
+	}
+	// The lease ends with the session: at its idle end, and at a logout.
+	r.clock.Advance(SessionIdle - 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	got := r.streamAsync(ctx, `{"version":"bb"}`, s)
+	r.waitStreams(t, 1)
+	k, _ := keyOf(s.Value)
+	until, _ := r.app.sess.liveUntil(k)
+	if fu := r.app.foregroundUntil(r.clock.Now()); !fu.Equal(until) {
+		t.Errorf("the lease runs %v past the session", fu.Sub(until))
+	}
+	r.postWith("/api/logout", "{}", s)
+	within(t, got, 3*time.Second)
+	if !r.app.foregroundUntil(r.clock.Now()).IsZero() {
+		t.Error("a lease outlived its session")
+	}
+}
+
+// streamNoticeRig is a notice rig whose card list streams, on the same
+// fake clock: the stream's timers are apart from the notices', and fire
+// with fire.
+type streamNoticeRig struct {
+	*noticeRig
+	ft  *fakeTimers
+	srv *httptest.Server
+	s   *http.Cookie
+	n   int
+}
+
+func newStreamNoticeRig(t *testing.T) *streamNoticeRig {
+	t.Helper()
+	nr := newNoticeRig(t)
+	sr := &streamNoticeRig{noticeRig: nr, ft: &fakeTimers{clk: nr.clock}}
+	nr.app.streamTimer = sr.ft.timer
+	nr.app.streamLife = time.Hour // no rotation in the way
+	sr.s = nr.login(t)
+	sr.srv = streamServer(t, nr.rig)
+	return sr
+}
+
+// change sets the count waiting with a new version of hex digits, which
+// a stream takes, and waits for the notices' goroutine to judge it.
+func (sr *streamNoticeRig) change(t *testing.T, waiting int) {
+	t.Helper()
+	sr.n++
+	before := sr.parks.Load()
+	sr.wd.set(func(st *WatchState) {
+		st.Watching, st.Offline, st.Waiting = true, false, waiting
+		st.Version = fmt.Sprintf("%02x", sr.n)
+	})
+	sr.parked(t, before+1)
+}
+
+// version is the watcher's version now.
+func (sr *streamNoticeRig) version() string { return sr.wd.Watch().Version }
+
+// open opens the list's stream with the version the page shows.
+func (sr *streamNoticeRig) open(t *testing.T, shows string) *streamConn {
+	t.Helper()
+	c := openStream(t, sr.srv, `{"version":"`+shows+`"}`, sr.s)
+	if b, ok := c.next(t, 3*time.Second); !ok || b != ":" {
+		t.Fatalf("stream: %q %v", b, ok)
+	}
+	return c
+}
+
+// TestSeatStreamNoticeNotDoubledForASeenCount: a card that comes while the
+// list is shown is held back by the stream's lease; the list reloads and
+// checks in with the version it shows, which counts the card as seen; the
+// list closes, and no notice is sent for the card the owner saw.
+func TestSeatStreamNoticeNotDoubledForASeenCount(t *testing.T) {
+	sr := newStreamNoticeRig(t)
+	c := sr.open(t, sr.version())
+	sr.change(t, 1)
+	sr.expect(t)
+	if b, ok := c.nextEvent(t, 3*time.Second); !ok || !hintRe.MatchString(b) {
+		t.Fatalf("hint %q %v", b, ok)
+	}
+	// The page reloads (its stream is left) and shows the new version.
+	c.cancel()
+	sr.waitStreams(t, 0)
+	c2 := sr.open(t, sr.version())
+	sr.expect(t)
+	// The list is closed.
+	c2.cancel()
+	sr.waitStreams(t, 0)
+	sr.pass(t, streamLease)
+	sr.pass(t, noticeSpacing)
+	sr.pass(t, time.Hour)
+	sr.expect(t)
+	// A card after the one seen is told, once the owner is gone.
+	sr.change(t, 2)
+	sr.expect(t, 2)
+}
+
+// TestSeatStreamNoticeDueWhenTheHintWasNotShown: a card that comes while
+// the list is shown is held back only while the lease lasts. The phone is
+// suspended before the list reloads: the seat's heartbeats still go out (a
+// proxy takes them), and do not renew the lease; when it runs out the
+// notice is sent, with the stream still open.
+func TestSeatStreamNoticeDueWhenTheHintWasNotShown(t *testing.T) {
+	sr := newStreamNoticeRig(t)
+	c := sr.open(t, sr.version())
+	sr.change(t, 1)
+	if b, ok := c.nextEvent(t, 3*time.Second); !ok || !hintRe.MatchString(b) {
+		t.Fatalf("hint %q %v", b, ok)
+	}
+	elapsed := time.Duration(0)
+	for ; elapsed+streamBeat < streamLease; elapsed += streamBeat {
+		waitTimers(t, sr.ft, 3) // the life, the heartbeat and the session's end
+		sr.pass(t, streamBeat)
+		sr.ft.advance(0)
+		if b, ok := c.next(t, 3*time.Second); !ok || b != ":" {
+			t.Fatalf("heartbeat %q %v", b, ok)
+		}
+		sr.expect(t)
+	}
+	sr.pass(t, streamLease-elapsed)
+	if sr.streams() != 1 {
+		t.Fatalf("%d streams open, want the suspended page's", sr.streams())
+	}
+	sr.expect(t, 1)
+}
+
+// TestSeatStreamStrictInput: the body is one object with exactly one string
+// member "version"; a header the checks rest on, and the session cookie,
+// each come exactly once, counted before they are parsed. None of the
+// refusals reaches the watcher or opens a stream.
+func TestSeatStreamStrictInput(t *testing.T) {
+	r, wd := newWatchRig(t, "aa", time.Minute)
+	s := r.login(t)
+	for name, body := range map[string]string{
+		"no member":         `{}`,
+		"null version":      `{"version":null}`,
+		"a number":          `{"version":12}`,
+		"the key twice":     `{"version":"aa","version":"aa"}`,
+		"the key twice, ab": `{"version":"aa","version":"bb"}`,
+		"another case":      `{"Version":"aa"}`,
+		"an array":          `["aa"]`,
+		"after the object":  `{"version":"aa"} {}`,
+		"two members":       `{"version":"aa","x":1}`,
+	} {
+		w := r.streamDo(context.Background(), body, nil, s)
+		if w.Code != 400 || w.Body.String() != `{"error":"bad_request"}`+"\n" {
+			t.Errorf("%s: %d %q", name, w.Code, w.Body)
+		}
+	}
+	// An empty version is a page made before the watcher had one: taken.
+	done, cancel := context.WithCancel(context.Background())
+	cancel()
+	if w := r.streamDo(done, `{"version":""}`, nil, s); w.Code != 200 {
+		t.Errorf("an empty version: %d %q", w.Code, w.Body)
+	}
+	twice := func(name string, mod func(*http.Request)) {
+		req := streamRequest(context.Background(), streamPath, streamOK, s)
+		mod(req)
+		w := httptest.NewRecorder()
+		r.h.ServeHTTP(w, req)
+		if w.Code == 200 || strings.HasPrefix(w.Header().Get("Content-Type"), "text/event-stream") {
+			t.Errorf("%s: %d %q", name, w.Code, w.Body)
+		}
+	}
+	twice("two fetch metadata", func(req *http.Request) { req.Header.Add("Sec-Fetch-Site", "same-origin") })
+	twice("fetch metadata after another", func(req *http.Request) {
+		req.Header.Del("Sec-Fetch-Site")
+		req.Header.Add("Sec-Fetch-Site", "same-origin")
+		req.Header.Add("Sec-Fetch-Site", "cross-site")
+	})
+	twice("two content types", func(req *http.Request) { req.Header.Add("Content-Type", "application/json") })
+	twice("a malformed second cookie", func(req *http.Request) { req.Header.Add("Cookie", SessionCookie+`="x y"`) })
+	twice("a second cookie in one header", func(req *http.Request) {
+		req.Header.Set("Cookie", SessionCookie+"="+s.Value+"; "+SessionCookie+"=\x01")
+	})
+	if n := wd.watchCalls(); n != 1 {
+		t.Errorf("the refusals reached the watcher: %d calls, want the one stream's", n)
+	}
+	if r.streams() != 0 {
+		t.Errorf("%d streams open", r.streams())
+	}
+}
+
+// pausedBody is a request body whose first read waits until it is let go:
+// a client that sends its body slowly. reads counts the reads begun.
+type pausedBody struct {
+	body    string
+	reading chan struct{} // closed at the first read
+	letGo   chan struct{}
+	once    sync.Once
+	reads   atomic.Int32
+	off     int
+}
+
+func newPausedBody(body string) *pausedBody {
+	return &pausedBody{body: body, reading: make(chan struct{}), letGo: make(chan struct{})}
+}
+
+func (b *pausedBody) Read(p []byte) (int, error) {
+	b.reads.Add(1)
+	b.once.Do(func() { close(b.reading) })
+	<-b.letGo
+	if b.off >= len(b.body) {
+		return 0, io.EOF
+	}
+	n := copy(p, b.body[b.off:])
+	b.off += n
+	return n, nil
+}
+
+// pausedStream sends a stream request whose body is paused, in a
+// goroutine; the recorder arrives on the channel when the handler returns.
+func (r *rig) pausedStream(ctx context.Context, body *pausedBody, c *http.Cookie) <-chan *httptest.ResponseRecorder {
+	out := make(chan *httptest.ResponseRecorder, 1)
+	req := streamRequest(ctx, streamPath, "", c)
+	req.Body = io.NopCloser(body)
+	req.ContentLength = -1
+	go func() {
+		w := httptest.NewRecorder()
+		r.h.ServeHTTP(w, req)
+		out <- w
+	}()
+	return out
+}
+
+// handshakes returns how many stream handshakes are in progress.
+func (r *rig) handshakes() int {
+	n, _ := r.app.streams.handshakes("")
+	return n
+}
+
+// noStream fails when w is a stream's response, or holds a byte of one.
+func noStream(t *testing.T, name string, w *httptest.ResponseRecorder) {
+	t.Helper()
+	if strings.HasPrefix(w.Header().Get("Content-Type"), "text/event-stream") || strings.Contains(w.Body.String(), ":\n\n") {
+		t.Errorf("%s: a stream's bytes: %d %q %q", name, w.Code, w.Header().Get("Content-Type"), w.Body)
+	}
+}
+
+// TestSeatStreamAdmissionLooksAgainAfterTheBody: a session that ends while
+// the body is still coming, a server that stops meanwhile, and a client that
+// goes are each refused before a byte of the stream, with their places
+// given back.
+func TestSeatStreamAdmissionLooksAgainAfterTheBody(t *testing.T) {
+	r, _ := newWatchRig(t, "aa", time.Minute)
+	s := r.login(t)
+	b := newPausedBody(streamOK)
+	got := r.pausedStream(context.Background(), b, s)
+	<-b.reading
+	if r.handshakes() != 1 {
+		t.Errorf("%d handshakes in progress, want 1", r.handshakes())
+	}
+	if w := r.postWith("/api/logout", "{}", s); w.Code != 200 {
+		t.Fatalf("logout: %d", w.Code)
+	}
+	close(b.letGo)
+	w := within(t, got, 3*time.Second)
+	if w.Code != 403 || w.Body.String() != streamTextEnded {
+		t.Errorf("a logout during the body: %d %q, want 403 %q", w.Code, w.Body, streamTextEnded)
+	}
+	noStream(t, "logout", w)
+	if r.streams() != 0 || r.handshakes() != 0 {
+		t.Errorf("%d streams and %d handshakes left", r.streams(), r.handshakes())
+	}
+
+	// The session reaches its idle time while the body is coming.
+	s = r.login(t)
+	b = newPausedBody(streamOK)
+	got = r.pausedStream(context.Background(), b, s)
+	<-b.reading
+	r.clock.Advance(SessionIdle)
+	close(b.letGo)
+	w = within(t, got, 3*time.Second)
+	if w.Code != 403 || w.Body.String() != streamTextEnded {
+		t.Errorf("the idle time during the body: %d %q", w.Code, w.Body)
+	}
+	noStream(t, "idle", w)
+
+	// The client goes while its body is coming: no stream, nothing held.
+	s = r.login(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	b = newPausedBody(streamOK)
+	got = r.pausedStream(ctx, b, s)
+	<-b.reading
+	cancel()
+	close(b.letGo)
+	noStream(t, "a client gone", within(t, got, 3*time.Second))
+
+	// The server stops while the body is coming.
+	b = newPausedBody(streamOK)
+	got = r.pausedStream(context.Background(), b, s)
+	<-b.reading
+	r.app.streams.end()
+	close(b.letGo)
+	w = within(t, got, 3*time.Second)
+	if w.Code != 503 || w.Body.String() != streamTextDown {
+		t.Errorf("a shutdown during the body: %d %q", w.Code, w.Body)
+	}
+	noStream(t, "shutdown", w)
+	if r.streams() != 0 || r.handshakes() != 0 {
+		t.Errorf("%d streams and %d handshakes left", r.streams(), r.handshakes())
+	}
+}
+
+// TestSeatStreamBoundsHandshakes: the requests in their admission are
+// bounded before a byte of their body is read, three for a credential and
+// eight in all, apart from the open streams; a refusal is fixed; every
+// end of a handshake gives its place back.
+func TestSeatStreamBoundsHandshakes(t *testing.T) {
+	r, wd := newWatchRig(t, "aa", time.Minute)
+	creds := []string{"0123456789abcdef", "1123456789abcdef", "2123456789abcdef"}
+	var cookies []*http.Cookie
+	for _, c := range creds {
+		r.daemon.mu.Lock()
+		r.daemon.loginRes.Credential = c
+		r.daemon.mu.Unlock()
+		r.clock.Advance(loginAllWindow)
+		cookies = append(cookies, r.login(t))
+	}
+	var bodies []*pausedBody
+	var outs []<-chan *httptest.ResponseRecorder
+	pause := func(c *http.Cookie) {
+		b := newPausedBody(streamOK)
+		bodies = append(bodies, b)
+		outs = append(outs, r.pausedStream(context.Background(), b, c))
+		<-b.reading
+	}
+	for i := 0; i < streamHandshakesPer; i++ {
+		pause(cookies[0])
+	}
+	// A fourth of the credential is refused, its body unread.
+	extra := newPausedBody(streamOK)
+	close(extra.letGo)
+	w := within(t, r.pausedStream(context.Background(), extra, cookies[0]), 3*time.Second)
+	if w.Code != 429 || w.Body.String() != streamTextLimited || w.Header().Get("Retry-After") != "25" || extra.reads.Load() != 0 {
+		t.Errorf("a fourth handshake of the credential: %d %q %q, %d reads", w.Code, w.Body, w.Header().Get("Retry-After"), extra.reads.Load())
+	}
+	for len(bodies) < streamHandshakes {
+		pause(cookies[1+len(bodies)%2])
+	}
+	if r.handshakes() != streamHandshakes || r.streams() != 0 {
+		t.Fatalf("%d handshakes and %d streams, want %d and none", r.handshakes(), r.streams(), streamHandshakes)
+	}
+	extra = newPausedBody(streamOK)
+	close(extra.letGo)
+	// cookies[1] has two handshakes in progress: the refusal is the total's.
+	w = within(t, r.pausedStream(context.Background(), extra, cookies[1]), 3*time.Second)
+	if w.Code != 503 || w.Body.String() != streamTextFull || extra.reads.Load() != 0 {
+		t.Errorf("a handshake past %d: %d %q, %d reads", streamHandshakes, w.Code, w.Body, extra.reads.Load())
+	}
+	if n := wd.watchCalls(); n != 0 {
+		t.Errorf("a handshake in progress reached the watcher %d times", n)
+	}
+	// Every end gives its place back: a bad body, a stream that opens and
+	// ends.
+	bodies[0].body = "{"
+	close(bodies[0].letGo)
+	if w := within(t, outs[0], 3*time.Second); w.Code != 400 {
+		t.Errorf("a bad body: %d", w.Code)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	opened := r.streamAsync(ctx, streamOK, cookies[0])
+	r.waitStreams(t, 1)
+	if r.handshakes() != streamHandshakes-1 {
+		t.Errorf("an open stream holds its handshake: %d in progress", r.handshakes())
+	}
+	cancel()
+	within(t, opened, 3*time.Second)
+	for i, b := range bodies[1:] {
+		b.body = "null"
+		close(b.letGo)
+		within(t, outs[i+1], 3*time.Second)
+	}
+	if r.handshakes() != 0 || r.streams() != 0 {
+		t.Errorf("%d handshakes and %d streams left", r.handshakes(), r.streams())
+	}
+}
+
+// deadlineWriter is a client that reads everything at once and records the
+// write deadlines the stream sets, by the stream's clock.
+type deadlineWriter struct {
+	h         http.Header
+	mu        sync.Mutex
+	deadlines []time.Time
+	writes    []time.Time // the deadline in force at each write
+	wrote     chan struct{}
+}
+
+func newDeadlineWriter() *deadlineWriter {
+	return &deadlineWriter{h: http.Header{}, wrote: make(chan struct{}, 16)}
+}
+
+func (w *deadlineWriter) Header() http.Header { return w.h }
+func (w *deadlineWriter) WriteHeader(int)     {}
+func (w *deadlineWriter) Write(b []byte) (int, error) {
+	w.mu.Lock()
+	var d time.Time
+	if n := len(w.deadlines); n > 0 {
+		d = w.deadlines[n-1]
+	}
+	w.writes = append(w.writes, d)
+	w.mu.Unlock()
+	w.wrote <- struct{}{}
+	return len(b), nil
+}
+func (w *deadlineWriter) FlushError() error { return nil }
+func (w *deadlineWriter) SetWriteDeadline(t time.Time) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.deadlines = append(w.deadlines, t)
+	return nil
+}
+
+// last returns the deadline set last, and the one in force at the last
+// write.
+func (w *deadlineWriter) last() (set, wrote time.Time) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.deadlines[len(w.deadlines)-1], w.writes[len(w.writes)-1]
+}
+
+// TestSeatStreamDeadlines: the response has one cutoff, streamLife after
+// the request arrived, its admission included; a write has the earlier of
+// streamWrite and the time left; between writes the cutoff alone is in
+// force, so a heartbeat's gap of more than streamWrite does not end the
+// stream; and the end of the response is bounded by the cutoff too.
+func TestSeatStreamDeadlines(t *testing.T) {
 	r, wd := newWatchRig(t, "aa", time.Minute)
 	ft := &fakeTimers{clk: r.clock}
 	r.app.streamTimer = ft.timer
+	r.app.streamNow = r.clock.Now
+	r.app.streamGap = time.Millisecond
 	s := r.login(t)
-	srv := streamServer(t, r)
-	c := openStream(t, srv, streamOK, s)
-	c.next(t, 3*time.Second)
-	waitTimers(t, ft, 3)
+	entry := r.clock.Now()
+	cutoff := entry.Add(streamLife)
+
+	dw := newDeadlineWriter()
+	b := newPausedBody(streamOK)
+	req := streamRequest(context.Background(), streamPath, "", s)
+	req.Body = io.NopCloser(b)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.h.ServeHTTP(dw, req)
+	}()
+	<-b.reading
+	// The admission takes 3 seconds of the life.
+	r.clock.Advance(3 * time.Second)
+	close(b.letGo)
+	<-dw.wrote
+	waitTimers(t, ft, 3) // the life, the heartbeat and the session's end
+	set, wrote := dw.last()
+	if !wrote.Equal(entry.Add(3*time.Second + streamWrite)) {
+		t.Errorf("the first write had the deadline %v, want streamWrite after it began", wrote.Sub(entry))
+	}
+	if !set.Equal(cutoff) {
+		t.Errorf("after the first write the deadline is %v, want the cutoff %v", set.Sub(entry), streamLife)
+	}
+	// A quiet heartbeat's gap, longer than streamWrite: nothing is armed
+	// for it but the cutoff, and the heartbeat goes out.
 	ft.advance(streamBeat)
-	c.next(t, 3*time.Second)
-	wd.set(func(st *WatchState) { st.Version, st.Waiting = "bb", 3 })
-	c.nextEvent(t, 3*time.Second)
-	if !r.app.lastPollTime().IsZero() {
-		t.Error("the stream counted as a poll for the notices")
+	<-dw.wrote
+	set, wrote = dw.last()
+	if !wrote.Equal(entry.Add(3*time.Second+streamBeat+streamWrite)) || !set.Equal(cutoff) {
+		t.Errorf("a heartbeat after a quiet gap: write %v, then %v", wrote.Sub(entry), set.Sub(entry))
 	}
-	if seq, _ := r.app.pollSeen(); seq != 0 {
-		t.Error("the stream counted the cards as seen")
+	// A write that begins 3 seconds before the cutoff has those 3 seconds.
+	waitTimers(t, ft, 3)
+	r.clock.Advance(cutoff.Add(-3 * time.Second).Sub(r.clock.Now()))
+	wd.set(func(st *WatchState) { st.Version = "bb" })
+	<-dw.wrote
+	if _, wrote = dw.last(); !wrote.Equal(cutoff) {
+		t.Errorf("a write near the end had the deadline %v, want the cutoff %v", wrote.Sub(entry), streamLife)
 	}
-	// The notice core, given the time of the last poll (none), sends.
-	var core noticeCore
-	if d := core.decide(r.clock.Now(), wd.Watch(), r.app.lastPollTime()); !d.Send || d.N != 3 {
-		t.Errorf("with a stream open the notice is %+v", d)
+	// The life ends streamFinish before the cutoff; the end of the
+	// response is bounded by it.
+	ft.advance(cutoff.Add(-streamFinish).Sub(r.clock.Now()))
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the stream outlived its life")
+	}
+	set, _ = dw.last()
+	if set.After(cutoff) {
+		t.Errorf("the end of the response may go to %v, past the cutoff %v", set.Sub(entry), streamLife)
+	}
+	dw.mu.Lock()
+	for _, d := range dw.deadlines {
+		if d.After(cutoff) {
+			t.Errorf("a deadline at %v, past the cutoff", d.Sub(entry))
+		}
+	}
+	dw.mu.Unlock()
+}
+
+// TestSeatStreamLifeCountsTheAdmission: an admission that outlasts the
+// stream's life is refused before a byte of the stream.
+func TestSeatStreamLifeCountsTheAdmission(t *testing.T) {
+	r, _ := newWatchRig(t, "aa", time.Minute)
+	ft := &fakeTimers{clk: r.clock}
+	r.app.streamTimer = ft.timer
+	s := r.login(t)
+	b := newPausedBody(streamOK)
+	got := r.pausedStream(context.Background(), b, s)
+	<-b.reading
+	ft.advance(streamLife)
+	close(b.letGo)
+	w := within(t, got, 3*time.Second)
+	if w.Code != 503 || w.Body.String() != streamTextFull {
+		t.Errorf("an admission past the life: %d %q", w.Code, w.Body)
+	}
+	noStream(t, "past the life", w)
+	if r.streams() != 0 || r.handshakes() != 0 {
+		t.Errorf("%d streams and %d handshakes left", r.streams(), r.handshakes())
 	}
 }

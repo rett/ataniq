@@ -229,10 +229,14 @@ func TestSeatWatchScriptLiveAndKeepsQuiet(t *testing.T) {
 		t.Errorf("location.reload() appears %d times", n)
 	}
 	// The list reloads only through wantReload, which is called for a list
-	// page's changed answer and for a hint of the stream, and nowhere else
-	// (a page marked still is no list).
-	if n := strings.Count(js, "wantReload()"); n != 3 { // its definition and its two calls
+	// page's changed answer, for a hint of the stream, and once for a change
+	// still pending when the list is shown again, and nowhere else (a page
+	// marked still is no list).
+	if n := strings.Count(js, "wantReload()"); n != 4 { // its definition and its three calls
 		t.Errorf("wantReload appears %d times", n)
+	}
+	if !strings.Contains(funcBody(t, js, "awake"), "if (pendingChange && !onCard && !still) { wantReload(); }") {
+		t.Error("a list shown again does not reconcile its pending change")
 	}
 	if !regexp.MustCompile(`(?s)\} else \{\s*quiet\(\);\s*if \(data\.state === "changed" && !still\) \{ wantReload\(\); \}`).MatchString(js) {
 		t.Error("watch.js reloads other than from the list page's changed answer")

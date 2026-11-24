@@ -34,7 +34,9 @@ type Notifier interface {
 // restart can at worst send one more notice for the cards then waiting).
 const (
 	// noticeQuiet is how long after a browser's poll no notice is sent: a
-	// page that polls is open, and the owner is looking at it.
+	// page that polls is open, and the owner is looking at it. A card
+	// list's stream holds the notices back by its lease instead
+	// (streamLease, see foreground in watchstream.go).
 	noticeQuiet = 60 * time.Second
 	// noticeSpacing is how long a count that comes back to what was
 	// announced does not announce again: a card decided and another asked
@@ -79,9 +81,10 @@ const (
 // stands: the announced count at once after an announcement, and, once
 // noticeSpacing has passed, the least the count was in the meantime (so a
 // card decided and another asked is a new notice, but only after the
-// spacing). Then it is held back while a browser polled within noticeQuiet,
-// while a failed call is backed off, past noticeDailyMax answered calls in a
-// day, and past noticeTryMax calls of any end in a day.
+// spacing). Then it is held back while the owner looks at a page (a browser
+// polled within noticeQuiet, or a card list's stream holds a foreground
+// lease), while a failed call is backed off, past noticeDailyMax answered
+// calls in a day, and past noticeTryMax calls of any end in a day.
 type noticeCore struct {
 	floor, low   int
 	lastSent     time.Time
@@ -108,6 +111,26 @@ type noticeDecision struct {
 // decide judges the state st at now, given the time of the last browser poll
 // (zero when there was none). It changes only what it has seen of the count.
 func (c *noticeCore) decide(now time.Time, st WatchState, lastPoll time.Time) noticeDecision {
+	return c.judge(now, st, quietUntil(lastPoll, time.Time{}))
+}
+
+// quietUntil is when the owner stops counting as looking at a page: the
+// later of noticeQuiet after the last poll and the end of the last
+// foreground lease of a stream; zero for neither.
+func quietUntil(lastPoll, foreground time.Time) time.Time {
+	var q time.Time
+	if !lastPoll.IsZero() {
+		q = lastPoll.Add(noticeQuiet)
+	}
+	if foreground.After(q) {
+		q = foreground
+	}
+	return q
+}
+
+// judge is decide with the end of the owner's sight of a page, quiet (zero
+// for none): a notice due is held back until it.
+func (c *noticeCore) judge(now time.Time, st WatchState, quiet time.Time) noticeDecision {
 	// A state that is not live says nothing: the count may be old.
 	if !st.Watching || st.Offline {
 		return noticeDecision{}
@@ -141,9 +164,7 @@ func (c *noticeCore) decide(now time.Time, st WatchState, lastPoll time.Time) no
 			wake = until
 		}
 	}
-	if !lastPoll.IsZero() {
-		hold(lastPoll.Add(noticeQuiet))
-	}
+	hold(quiet)
 	hold(c.backoffUntil)
 	if !c.dayStart.IsZero() && now.Before(c.dayStart.Add(noticeDay)) && c.dayCalls >= noticeDailyMax {
 		hold(c.dayStart.Add(noticeDay))
@@ -255,7 +276,8 @@ func (x *App) Close() error {
 func (a *app) polled() { a.lastPoll.Store(a.cfg.Now().UnixNano()) }
 
 // sawWaiting records the count of cards waiting that a live poll, just
-// accepted, found: what a page in front of the owner shows. The goroutine
+// accepted, found, or that a card list's stream was opened with (the page
+// shows the watcher's version): what a page in front of the owner shows. The goroutine
 // takes each such count once, in pollSeen.
 func (a *app) sawWaiting(waiting int) {
 	a.pollMu.Lock()
@@ -328,7 +350,7 @@ func (a *app) noticeLoop(ctx context.Context, w Watcher, n Notifier, timer notic
 			seenSeq = seq
 			core.seen(waiting)
 		}
-		d := core.decide(now, st, a.lastPollTime())
+		d := core.judge(now, st, quietUntil(a.lastPollTime(), a.foregroundUntil(now)))
 		if d.Send {
 			core.tried(now)
 			cctx, cancel := context.WithTimeout(ctx, noticeCall)

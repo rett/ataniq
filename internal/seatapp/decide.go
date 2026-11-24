@@ -507,10 +507,13 @@ func (a *app) decideSession(w http.ResponseWriter, r *http.Request) (Session, bo
 }
 
 // failDecide answers a failure of the port. A passkey that is no longer
-// paired ends the session.
-func (a *app) failDecide(w http.ResponseWriter, r *http.Request, e decideError) {
+// paired ends every session it logged in, the request's and any other (a
+// second tab's login, another phone's): what the daemon said of the
+// credential holds for all of them, and each one's held poll and stream end
+// with it.
+func (a *app) failDecide(w http.ResponseWriter, s Session, e decideError) {
 	if e == errDecideRevoked {
-		a.sess.end(cookieValue(r, SessionCookie))
+		a.sess.endCredential(s.CredentialID)
 		clearCookie(w, SessionCookie)
 	}
 	writeDecideError(w, e)
@@ -608,7 +611,7 @@ func (a *app) decideChallenge(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		e, _ := decideFailure(err)
-		a.failDecide(w, r, e)
+		a.failDecide(w, s, e)
 		return
 	}
 	f := ch.Frame
@@ -721,7 +724,7 @@ func (a *app) decidePost(w http.ResponseWriter, r *http.Request) {
 		} else {
 			a.sess.lost(s.key, pd.card)
 		}
-		a.failDecide(w, r, e)
+		a.failDecide(w, s, e)
 		return
 	}
 	a.sess.settle(s.key, pd.card, res.Held)

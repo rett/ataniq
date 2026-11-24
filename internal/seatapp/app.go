@@ -249,6 +249,11 @@ type app struct {
 	streamOpens                                    *limiter
 	streamLife, streamBeat, streamGap, streamWrite time.Duration
 	streamTimer                                    noticeTimer
+	// streamNow is the clock of the stream's write deadlines; time.Now
+	// when nil. For tests.
+	streamNow func() time.Time
+	// fg are the streams' foreground leases, which hold the notices back.
+	fg *foreground
 	// projectsOffered is what the card list last learnt of the new-project
 	// interview: offered or not. The Card page and the path pages show the
 	// main navigation's "Projects" link by it, without a call of their own.
@@ -312,7 +317,7 @@ func newApp(cfg Config) (*app, http.Handler, error) {
 		reads: newLimiter(readRequests, readWindow), decides: newLimiter(decideRequests, decideWindow),
 		watches: newLimiter(watchRequests, watchWindow), watchHold: watchHold, host: hostHeader,
 		pushes: newLimiter(pushRequests, pushWindow), chats: newLimiter(30, time.Minute), geneses: newLimiter(genesisRequests, genesisWindow),
-		streams: newStreamSlots(), streamOpens: newLimiter(streamOpens, streamOpenWindow),
+		streams: newStreamSlots(), fg: newForeground(), streamOpens: newLimiter(streamOpens, streamOpenWindow),
 		streamLife: streamLife, streamBeat: streamBeat, streamGap: streamGap, streamWrite: streamWrite}
 	a.push, _ = cfg.Notifier.(PushPort)
 
@@ -511,13 +516,26 @@ func (a *app) post(h http.HandlerFunc) http.HandlerFunc {
 		if !a.sameOrigin(w, r) {
 			return
 		}
-		mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-		if err != nil || mt != "application/json" {
+		ct, one := oneHeader(r, "Content-Type")
+		mt, _, err := mime.ParseMediaType(ct)
+		if !one || err != nil || mt != "application/json" {
 			writeText(w, http.StatusUnsupportedMediaType, "unsupported media type\n")
 			return
 		}
 		h(w, r)
 	}
+}
+
+// oneHeader returns the value of a header that a request carries exactly
+// once. A header the checks rest on (Sec-Fetch-Site, Content-Type) that
+// comes twice is ambiguous, whatever its first value says, and is taken as
+// absent.
+func oneHeader(r *http.Request, name string) (string, bool) {
+	v := r.Header.Values(name)
+	if len(v) != 1 {
+		return "", false
+	}
+	return v[0], true
 }
 
 // writeText writes a fixed plain-text body.

@@ -33,7 +33,7 @@ func TestSeatWatchScriptStreamMatchesTheSeat(t *testing.T) {
 		`var STREAM_PATH = "` + streamPath + `";`,
 		`var STREAM_KIND = "` + streamKindCards + `";`,
 		"var STREAM_EVENT_MAX = " + strconv.Itoa(streamEventMax) + ";",
-		"resp.body.getReader()", "new TextDecoder()", "decoder.decode(chunk.value, { stream: true })",
+		"resp.body.getReader()", "new TextDecoder()", "decoder.decode(bytes.subarray(at, at + STREAM_SLICE), { stream: true })",
 		`type !== "text/event-stream"`, "resp.status !== 200 || resp.redirected",
 	} {
 		if !strings.Contains(js, want) {
@@ -51,7 +51,10 @@ func TestSeatWatchScriptStreamMatchesTheSeat(t *testing.T) {
 			t.Errorf("send lacks %q", want)
 		}
 	}
-	for _, want := range []string{"send(POLL_PATH, body, ctl)", "send(STREAM_PATH, { version: version }, c.ctl)"} {
+	// The stream carries the version the page shows, never one a hint
+	// brought: the seat counts it as what the owner has seen.
+	for _, want := range []string{"send(POLL_PATH, body, ctl)", "send(STREAM_PATH, { version: rendered }, c.ctl)",
+		"var rendered = version;"} {
 		if !strings.Contains(js, want) {
 			t.Errorf("watch.js lacks %q", want)
 		}
@@ -61,26 +64,61 @@ func TestSeatWatchScriptStreamMatchesTheSeat(t *testing.T) {
 	if strings.Count(js, "send(STREAM_PATH") != 1 {
 		t.Error("the stream is opened from more than one place")
 	}
+	if regexp.MustCompile(`\brendered\s*=[^=]`).FindAllStringIndex(js, -1) == nil ||
+		len(regexp.MustCompile(`\brendered\s*=[^=]`).FindAllStringIndex(js, -1)) != 1 {
+		t.Error("the rendered version is set other than once, at the page's load")
+	}
 }
 
-// TestSeatWatchScriptStreamIsBounded: a line and an event's data have their
-// bounds, a silence ends the stream, and only the one kind of event, through
-// hinted, reaches the page; an unknown kind or field is skipped.
+// TestSeatWatchScriptStreamIsBounded: the body is decoded a bounded slice
+// at a time, and a line (before it is cut out) and an event's data are
+// checked against their bounds as each slice is taken; the opening
+// heartbeat must come whole within a first deadline, below the rotation,
+// and an open stream must not fall silent; only the one kind of event,
+// through hinted, reaches the page, and a hint that cannot be read fails
+// the stream; an unknown kind or field is skipped; a stream that ends
+// inside an event, or before its opening heartbeat, fails.
 func TestSeatWatchScriptStreamIsBounded(t *testing.T) {
 	js := watchScript(t)
 	read := funcBody(t, js, "readStream")
 	for _, want := range []string{
-		"line.length > STREAM_LINE_MAX", "rest.length > STREAM_LINE_MAX", "evData.length > STREAM_EVENT_MAX",
-		"setTimeout(function () { c.ctl.abort(); }, STREAM_SILENCE)",
-		"if (kind === STREAM_KIND) { hinted(evData); }",
+		"for (var at = 0; at < bytes.length; at += STREAM_SLICE) {",
+		"if (nl > STREAM_LINE_MAX) { throw { stream: false }; }\n            var line = rest.slice(0, nl);",
+		"rest.length > STREAM_LINE_MAX", "evData.length > STREAM_EVENT_MAX",
+		"silence = setTimeout(function () { c.ctl.abort(); }, ms);",
+		"hush(STREAM_FIRST);", "if (opened) { hush(STREAM_SILENCE); }",
+		"if (kind === STREAM_KIND && !hinted(evData)) { throw { stream: false }; }",
 		`if (line.charAt(0) === ":") { continue; }`,
 		`if (field === "event")`, `} else if (field === "data") {`,
+		"rest += decoder.decode();",
+		`if (!opened || rest !== "" || kind !== "" || evData !== "") { throw { stream: false }; }`,
 	} {
 		if !strings.Contains(read, want) {
 			t.Errorf("readStream lacks %q", want)
 		}
 	}
-	m := regexp.MustCompile(`STREAM_LINE_MAX = (\d+);`).FindStringSubmatch(js)
+	// The whole chunk is never decoded at once.
+	if strings.Contains(read, "decoder.decode(chunk.value") {
+		t.Error("readStream decodes a whole chunk")
+	}
+	// The first deadline is below the rotation, so a proxy that holds the
+	// response back to its end has the page on the poll within a rotation;
+	// a slice is no larger than a line's bound.
+	m := regexp.MustCompile(`STREAM_FIRST = (\d+);`).FindStringSubmatch(js)
+	if m == nil {
+		t.Fatal("watch.js has no STREAM_FIRST")
+	}
+	if n, _ := strconv.Atoi(m[1]); n <= 1000 || n >= int((streamLife-streamFinish).Milliseconds()) {
+		t.Errorf("the first deadline is %d ms", n)
+	}
+	m = regexp.MustCompile(`STREAM_SLICE = (\d+);`).FindStringSubmatch(js)
+	if m == nil {
+		t.Fatal("watch.js has no STREAM_SLICE")
+	}
+	if n, _ := strconv.Atoi(m[1]); n <= 0 || n > 512 {
+		t.Errorf("a slice is %d bytes", n)
+	}
+	m = regexp.MustCompile(`STREAM_LINE_MAX = (\d+);`).FindStringSubmatch(js)
 	if m == nil {
 		t.Fatal("watch.js has no STREAM_LINE_MAX")
 	}
@@ -109,8 +147,13 @@ func TestSeatWatchScriptStreamIsBounded(t *testing.T) {
 			t.Errorf("hinted holds %q", bad)
 		}
 	}
-	if !strings.Contains(h, "validVersion(hint.version)") || !strings.Contains(h, "JSON.parse(text)") {
-		t.Error("hinted does not check the version it takes")
+	for _, want := range []string{
+		"validVersion(hint.version)", "JSON.parse(text)", "catch (e) { return false; }",
+		"Object.keys(hint).length !== 1", `hint.version === ""`,
+	} {
+		if !strings.Contains(h, want) {
+			t.Errorf("hinted does not check the hint it takes: no %q", want)
+		}
 	}
 	if strings.Count(js, "hinted(") != 2 { // its definition and its one call
 		t.Errorf("hinted appears %d times", strings.Count(js, "hinted("))
@@ -174,8 +217,32 @@ func TestSeatWatchScriptStreamFollowsThePage(t *testing.T) {
 		}
 	}
 	as := funcBody(t, js, "asleep")
-	if !strings.Contains(as, "closeStream();") || !strings.Contains(as, "cancel();") {
-		t.Errorf("asleep does not close the stream: %s", as)
+	for _, want := range []string{"closeStream();", "cancel();", "cancelReload();"} {
+		if !strings.Contains(as, want) {
+			t.Errorf("asleep lacks %q: %s", want, as)
+		}
+	}
+	// A reload waiting its turn is dropped on hide, pagehide and a session's
+	// end, and looks at the page again when its timer runs; the change is
+	// kept pending for the page's return.
+	if !strings.Contains(funcBody(t, js, "cancelReload"), "clearTimeout(reloadTimer); reloadTimer = null;") {
+		t.Error("cancelReload does not drop the reload")
+	}
+	if !regexp.MustCompile(`(?s)case "ended":\s*stopped = true;\s*cancel\(\);\s*cancelReload\(\);`).MatchString(js) {
+		t.Error("an ended session leaves a reload waiting")
+	}
+	wr := funcBody(t, js, "wantReload")
+	for _, want := range []string{
+		"pendingChange = true;",
+		"if (reloadTimer !== null || stopped || document.hidden) { return; }",
+		"reloadTimer = null;\n      if (stopped || document.hidden) { return; }\n      if (typing())",
+	} {
+		if !strings.Contains(wr, want) {
+			t.Errorf("wantReload lacks %q", want)
+		}
+	}
+	if strings.Count(js, "pendingChange = ") != 2 { // its declaration and wantReload
+		t.Error("the pending change is set or cleared elsewhere")
 	}
 	aw := funcBody(t, js, "awake")
 	for _, want := range []string{"if (stopped || document.hidden) { return; }", "pollCtl.abort()", "if (conn === null) { schedule(reopenWait()); }"} {
