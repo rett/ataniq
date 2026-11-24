@@ -56,6 +56,10 @@ func TestOwnerFilesCarryTheirConstraint(t *testing.T) {
 // build without the tag does not depend on the service, the journal or the
 // stand-in for the door through the daemon. (The import guard of this package
 // reads every file, and the tag guard in tests/ reads the build.)
+//
+// The one exception is the scratch leads' chat (chat_*_linux.go and its
+// tests, behind the canary tag): it takes the wire's types of seat.chat from
+// ownerwire, and nothing else of internal/approval (see chatImportsAllowed).
 func TestNoUntaggedFileOfTheDaemonReachesTheOwnerChannel(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -78,6 +82,9 @@ func TestNoUntaggedFileOfTheDaemonReachesTheOwnerChannel(t *testing.T) {
 			p, err := strconv.Unquote(imp.Path.Value)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if chatFile(name) && p == modulePath+"/internal/approval/ownerwire" {
+				continue
 			}
 			if strings.HasPrefix(p, modulePath+"/internal/approval") {
 				t.Errorf("%s, which is built without the tag, imports %s", name, p)

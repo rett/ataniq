@@ -26,8 +26,12 @@
 // CONFIG", whose roots are the config's (--state-dir and --runtime-dir are
 // refused), "ataniqd canary define|start|ticket|inject|stop --config CONFIG",
 // which calls the operation of the running daemon and prints its result as one
-// JSON line, and "ataniqd --version", which names the tag. Package leaddaemon
-// says what the daemon then does.
+// JSON line, and "ataniqd --version", which names the tag. It also adds
+// scratch mode, "ataniqd run --scratch CONFIG", and the desk's switch of the
+// scratch leads' written replies, "ataniqd chat list --config CONFIG" and
+// "ataniqd chat set KEY off|read --config CONFIG", which call chat.list and
+// chat.set of the running daemon and print the result as one JSON line.
+// Package leaddaemon says what the daemon then does.
 //
 // A build with the ataniq_ownerchannel tag adds one flag to run
 // (owner_linux.go; every other build has owner_off_linux.go and none of it):

@@ -14,6 +14,7 @@ import (
 	"ataniq/internal/clientapi"
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leaddaemon"
+	"ataniq/internal/leadwire"
 )
 
 // This file is canary mode of the command: a build with the ataniq_canary tag.
@@ -55,8 +56,22 @@ serves no canary operation.
                         when the config, a root or the root marker (written by
                         scratch-init) is not right, or when the command table
                         or the record of a lead cannot be read.
-Exit codes of canary: 0 done; 2 usage; 10 the config; 20 no daemon; 21
-unauthorized; 22 protocol error; 30 refused; 31 unavailable; 1 anything else.
+
+Under --scratch the desk also switches each lead's written replies (its chat),
+read only: off or read, off for every lead whenever the daemon starts. The
+seat reads only the leads whose chat is read. Sending is not built.
+
+       ataniqd chat list --config CONFIG
+       ataniqd chat set KEY off|read --config CONFIG
+
+  chat list             prints the chat of every lead of the scratch CONFIG
+                        as one JSON line: the switch, whether it is stopped,
+                        and counts, never a reply's text.
+  chat set KEY off|read sets the switch of the lead KEY at once and prints its
+                        row. read clears the lead's reply folder first.
+Exit codes of canary and chat: 0 done; 2 usage; 10 the config; 20 no daemon;
+21 unauthorized; 22 protocol error; 30 refused; 31 unavailable; 1 anything
+else.
 `
 
 // canaryTag is what the version output names.
@@ -152,8 +167,60 @@ func (a *app) canaryCommand(args []string) (code int, ok bool) {
 		return leaddaemon.ExitOK, true
 	case len(args) > 0 && args[0] == "canary":
 		return a.canaryCmd(args[1:]), true
+	case len(args) > 0 && args[0] == "chat":
+		return a.chatCmd(args[1:]), true
 	}
 	return 0, false
+}
+
+// chatCmd is "ataniqd chat list --config CONFIG" and "ataniqd chat set KEY
+// off|read --config CONFIG": the desk's switch of the scratch leads' chat.
+func (a *app) chatCmd(args []string) int {
+	usageErr := func(format string, args ...any) int {
+		fmt.Fprintf(a.stderr, "ataniqd chat: "+format+"\n", args...)
+		fmt.Fprint(a.stderr, usage)
+		return leaddaemon.ExitUsage
+	}
+	if len(args) == 0 {
+		return usageErr("list or set is required")
+	}
+	call := leaddaemon.ChatCall{}
+	rest := args[1:]
+	switch args[0] {
+	case "list":
+		call.Op = leadwire.OpChatList
+	case "set":
+		if len(rest) < 2 {
+			return usageErr("set needs a lead's key and off or read")
+		}
+		call.Op, call.Key, call.Chat = leadwire.OpChatSet, rest[0], rest[1]
+		rest = rest[2:]
+		switch call.Chat {
+		case leadwire.ChatOff, leadwire.ChatRead:
+		case leadwire.ChatSend:
+			return usageErr("send is not built; the switch is off or read")
+		default:
+			return usageErr("the switch is off or read")
+		}
+	default:
+		return usageErr("unknown operation %q", leaddaemon.SafeText(args[0]))
+	}
+	var config string
+	if code := a.flags("chat "+args[0], rest, func(fs *flag.FlagSet) {
+		fs.StringVar(&config, "config", "", "scratch config file")
+	}); code >= 0 {
+		return code
+	}
+	if config == "" {
+		return usageErr("--config is required")
+	}
+	sc, err := leadcanary.ReadScratchConfig(config)
+	if err != nil {
+		fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(err.Error()))
+		return leaddaemon.ExitConfig
+	}
+	call.Socket = clientapi.SocketPath(sc.RuntimeRoot)
+	return leaddaemon.RunChat(context.Background(), call, a.stdout, a.stderr)
 }
 
 // canaryCmd is "ataniqd canary OP --config CONFIG [...]".
