@@ -928,7 +928,14 @@ type streamNoticeRig struct {
 
 func newStreamNoticeRig(t *testing.T) *streamNoticeRig {
 	t.Helper()
-	nr := newNoticeRig(t)
+	return newStreamNoticeRigWith(t, nil)
+}
+
+// newStreamNoticeRigWith is newStreamNoticeRig, whose daemon port is wrap's
+// of the watching port when wrap is not nil (see newNoticeRigWith).
+func newStreamNoticeRigWith(t *testing.T, wrap func(*watchDaemon) Daemon) *streamNoticeRig {
+	t.Helper()
+	nr := newNoticeRigWith(t, wrap)
 	sr := &streamNoticeRig{noticeRig: nr, ft: &fakeTimers{clk: nr.clock}}
 	nr.app.streamTimer = sr.ft.timer
 	nr.app.streamLife = time.Hour // no rotation in the way

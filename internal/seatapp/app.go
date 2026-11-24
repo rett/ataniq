@@ -366,8 +366,9 @@ func (a *app) routes() []route {
 		{"POST /api/decide", a.post(a.decidePost)},
 		{"GET /static/watch.js", a.asset("assets/watch.js", "text/javascript; charset=utf-8")},
 		{"POST /api/watch", a.post(a.watchPost)},
-		// The card list's hint stream (watchstream.go), with the poll above
-		// as its fallback.
+		// The hint stream (watchstream.go) of the card list, with the poll
+		// above as its fallback, and of the Leads pages (watchleads.go),
+		// with their Refresh links as theirs: one route, two views.
 		{"POST " + streamPath, a.post(a.watchStream)},
 		// The phone's side of the notices: all of them answer 404 unless
 		// Config.Notifier is also a PushPort (see push.go).
