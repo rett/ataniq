@@ -269,6 +269,24 @@ func FuzzDecodeSeatWaitResult(f *testing.F) {
 		`{"cards":[],"more":false,"version":"","waiting":0}`)
 }
 
+func FuzzDecodeSeatWaitChatParams(f *testing.F) {
+	const v = "9ac6d04d66be695b1abd73a004de6e86"
+	fuzzForm(f, "seat wait chat params", `{"chat":0,"since":""}`, `{"chat":9007199254740991,"since":"`+v+`"}`,
+		`{"chat":9007199254740992,"since":"`+v+`"}`, `{"chat":-1,"since":""}`, `{"chat":"1","since":""}`,
+		`{"chat":null,"since":""}`, `{"since":"`+v+`"}`, `{"chat":1}`, `{"chat":1,"since":"`+v+`","x":1}`)
+}
+
+func FuzzDecodeSeatWaitChatResult(f *testing.F) {
+	const v = `"version":"9ac6d04d66be695b1abd73a004de6e86"`
+	fuzzForm(f, "seat wait chat result",
+		`{"cards":[],"chat":1,"more":false,`+v+`,"waiting":0}`,
+		`{"cards":[],"more":false,`+v+`,"waiting":0}`,
+		`{"cards":[],"chat":0,"more":false,`+v+`,"waiting":0}`,
+		`{"cards":[],"chat":9007199254740992,"more":false,`+v+`,"waiting":0}`,
+		`{"cards":[],"chat":-5,"more":false,`+v+`,"waiting":0}`,
+		`{"cards":[],"chat":1,"lead":"daemon:a","more":false,`+v+`,"waiting":0}`)
+}
+
 func FuzzDecodeSeatGenesisParams(f *testing.F) {
 	const t = `"thread":"0123456789abcdef"`
 	fuzzForm(f, "seat genesis params",

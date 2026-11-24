@@ -1667,6 +1667,45 @@ Notices, which tell the phone that a card is waiting while no page is open,
 follow the watcher's state described above: they are the reason the watcher
 runs when no browser is looking (see [the notices section](#notices)).
 
+### Chat hints on the wait
+
+Status: the wire (`ownerwire`, `waitchat.go`) is built and tested; not
+qualified. A seat that shows the leads' conversations learns that what it may
+read moved from the one wait it already holds, not from a second wait or a
+timer. The hint is never content: an integer that a page's script can carry,
+which tells the seat to read again through `seat.chat`, where the desk
+authorizes every list and read live.
+
+The extension is opt-in on both sides. A gate that can give it lists the
+capability `wait-chat` in its hello; a seat sends the extended form only to
+such a gate. A legacy caller sends and receives exactly the shapes above.
+
+- Params of the extended form (`ownerwire.DecodeSeatWaitChatParams`):
+  `since` as above and `chat`, always written, 0 to 2^53-1 (`MaxChatSeq`):
+  the cursor the seat last saw, 0 when it has none.
+- Result of the extended form (`ownerwire.DecodeSeatWaitChatResult`): the
+  members of the plain result under the same rules, and `chat`, 1 to 2^53-1,
+  the cursor now. It is left out when the daemon has no cursor to give (its
+  source failed); the seat then drops what it held of the chat. Nothing else
+  is added.
+- The plain form refuses `chat`: `ownerwire.DecodeSeatWaitParams` and
+  `ownerwire.DecodeSeatWaitResult` answer `record-invalid` for it, as a gate or
+  a seat of an earlier build does for a member it does not know. So a seat
+  that sends the extension to a gate that does not offer it is refused
+  `bad-params`, and a seat that did not ask never meets it.
+
+The cursor (`ownerwire.ChatCursor`) is a digest, as the Card version is, and
+is independent of it: the first 8 bytes of the SHA-256 of the domain string
+`ataniq.seat-wait.chat/1`, the number of leads, and for each lead in the order
+of its identifier the identifier (a 4-byte big-endian length and its bytes),
+the generation of its switch and its head (8 bytes big-endian each), masked to
+53 bits, and 1 when that is 0. It covers the leads whose chat the desk
+switched on (read, not stopped by a scan) and nothing else. So it changes when
+an enabled lead's head moves, when its segment is reset (a new generation),
+and when a lead is enabled or disabled; a lead whose chat is off is not in it,
+so its activity moves nothing. A daemon that restarts with the same leads,
+generations and heads gives the same cursor.
+
 ## Notices
 
 Status: built (G14, the rest: N1 the notice core, N2 the push library, N3 the
