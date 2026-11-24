@@ -56,6 +56,7 @@ var inventory = []struct {
 	{pattern: "POST /api/decide", kind: "api"},
 	{pattern: "GET /static/watch.js", kind: "asset"},
 	{pattern: "POST /api/watch", kind: "api"},
+	{pattern: "POST /api/watch/stream", kind: "api"},
 	{pattern: "GET /manifest.webmanifest", kind: "asset"},
 	{pattern: "GET /sw.js", kind: "asset"},
 	{pattern: "GET /static/push.js", kind: "asset"},

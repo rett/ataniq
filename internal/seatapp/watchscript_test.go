@@ -57,23 +57,24 @@ func TestSeatWatchScriptIsSafe(t *testing.T) {
 	}
 }
 
-// TestSeatWatchScriptReferencesOnlyItsOwnAddresses: the one address it posts
-// to is /api/watch; the two it links to are the login page and the card list.
+// TestSeatWatchScriptReferencesOnlyItsOwnAddresses: the two addresses it
+// posts to are /api/watch and the hint stream; the two it links to are the
+// login page and the card list.
 func TestSeatWatchScriptReferencesOnlyItsOwnAddresses(t *testing.T) {
 	js := watchScript(t)
-	api := regexp.MustCompile(`/api/[A-Za-z0-9_-]*`).FindAllString(js, -1)
+	api := regexp.MustCompile(`/api/[A-Za-z0-9_/-]*`).FindAllString(js, -1)
 	if len(api) == 0 {
 		t.Fatal("watch.js names no /api address")
 	}
 	for _, a := range api {
-		if a != "/api/watch" {
+		if a != "/api/watch" && a != streamPath {
 			t.Errorf("watch.js names %q", a)
 		}
 	}
-	// Every quoted path of the script is one of the three.
+	// Every quoted path of the script is one of the four.
 	for _, m := range regexp.MustCompile(`"(/[^"]*)"`).FindAllStringSubmatch(js, -1) {
 		switch m[1] {
-		case "/api/watch", "/login/", "/cards/":
+		case "/api/watch", streamPath, "/login/", "/cards/":
 		default:
 			t.Errorf("watch.js names the address %q", m[1])
 		}
@@ -228,12 +229,16 @@ func TestSeatWatchScriptLiveAndKeepsQuiet(t *testing.T) {
 		t.Errorf("location.reload() appears %d times", n)
 	}
 	// The list reloads only through wantReload, which is called for a list
-	// page's changed answer alone (a page marked still is no list).
-	if n := strings.Count(js, "wantReload()"); n != 2 { // its definition and its one call
+	// page's changed answer and for a hint of the stream, and nowhere else
+	// (a page marked still is no list).
+	if n := strings.Count(js, "wantReload()"); n != 3 { // its definition and its two calls
 		t.Errorf("wantReload appears %d times", n)
 	}
 	if !regexp.MustCompile(`(?s)\} else \{\s*quiet\(\);\s*if \(data\.state === "changed" && !still\) \{ wantReload\(\); \}`).MatchString(js) {
 		t.Error("watch.js reloads other than from the list page's changed answer")
+	}
+	if !regexp.MustCompile(`(?s)version = hint\.version;\s*quiet\(\);\s*if \(!still\) \{ wantReload\(\); \}`).MatchString(js) {
+		t.Error("watch.js does not reload a list on a hint by the same rule")
 	}
 	// The reload waits for the page's age, and for a field without typed text.
 	for _, want := range []string{"loadedAt + RELOAD_GAP", "typing()", "reloadTimer !== null"} {

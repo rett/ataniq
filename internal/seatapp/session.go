@@ -144,25 +144,60 @@ func (ss *sessions) get(value string) (Session, bool) {
 // look returns the session of a cookie value like get, and does not mark it
 // used: a request that only looks never extends the session's idle time. A
 // session past its idle time or its age is removed and is not returned. The
-// watch poll is its only caller. gone is closed when the session ends.
+// watch poll is its only caller (the hint stream uses lookUntil). gone is
+// closed when the session ends.
 func (ss *sessions) look(value string) (s Session, gone <-chan struct{}, ok bool) {
+	s, gone, _, ok = ss.lookUntil(value)
+	return s, gone, ok
+}
+
+// lookUntil is look, which also returns when the session ends by itself if
+// nothing marks it used: the earlier of its idle time and its age. The hint
+// stream arms a timer at it, so that it ends with the session in silence.
+func (ss *sessions) lookUntil(value string) (s Session, gone <-chan struct{}, until time.Time, ok bool) {
 	k, ok := keyOf(value)
 	if !ok {
-		return Session{}, nil, false
+		return Session{}, nil, time.Time{}, false
 	}
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	cur, ok := ss.m[k]
 	if !ok {
-		return Session{}, nil, false
+		return Session{}, nil, time.Time{}, false
 	}
 	if !cur.live(ss.now()) {
 		ss.drop(k)
-		return Session{}, nil, false
+		return Session{}, nil, time.Time{}, false
 	}
 	out := cur.Session
 	out.key = k
-	return out, cur.gone, true
+	return out, cur.gone, cur.until(), true
+}
+
+// liveUntil reports whether the session of k is live, without marking it
+// used, and when it ends by itself (see lookUntil). A session past its idle
+// time or its age is removed.
+func (ss *sessions) liveUntil(k tokenKey) (until time.Time, ok bool) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	cur, ok := ss.m[k]
+	if !ok {
+		return time.Time{}, false
+	}
+	if !cur.live(ss.now()) {
+		ss.drop(k)
+		return time.Time{}, false
+	}
+	return cur.until(), true
+}
+
+// until is when s ends by itself if nothing marks it used.
+func (s *session) until() time.Time {
+	idle, age := s.used.Add(SessionIdle), s.created.Add(SessionMax)
+	if age.Before(idle) {
+		return age
+	}
+	return idle
 }
 
 // holdWatch makes the caller one of the session's held watch polls, at most

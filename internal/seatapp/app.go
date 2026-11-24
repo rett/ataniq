@@ -241,6 +241,14 @@ type app struct {
 	// from the reads; watchHold is how long a poll is held.
 	watches   *limiter
 	watchHold time.Duration
+	// streams are the open hint streams (watchstream.go), streamOpens
+	// bounds how often each credential's sessions open one, and the
+	// durations are the stream's limits, which tests shorten. streamTimer
+	// is the stream's timer; the real one when nil. For tests.
+	streams                                        *streamSlots
+	streamOpens                                    *limiter
+	streamLife, streamBeat, streamGap, streamWrite time.Duration
+	streamTimer                                    noticeTimer
 	// projectsOffered is what the card list last learnt of the new-project
 	// interview: offered or not. The Card page and the path pages show the
 	// main navigation's "Projects" link by it, without a call of their own.
@@ -303,14 +311,16 @@ func newApp(cfg Config) (*app, http.Handler, error) {
 	a := &app{cfg: cfg, pair: newPairing(cfg), login: newLogins(cfg), sess: newSessions(cfg.Now),
 		reads: newLimiter(readRequests, readWindow), decides: newLimiter(decideRequests, decideWindow),
 		watches: newLimiter(watchRequests, watchWindow), watchHold: watchHold, host: hostHeader,
-		pushes: newLimiter(pushRequests, pushWindow), chats: newLimiter(30, time.Minute), geneses: newLimiter(genesisRequests, genesisWindow)}
+		pushes: newLimiter(pushRequests, pushWindow), chats: newLimiter(30, time.Minute), geneses: newLimiter(genesisRequests, genesisWindow),
+		streams: newStreamSlots(), streamOpens: newLimiter(streamOpens, streamOpenWindow),
+		streamLife: streamLife, streamBeat: streamBeat, streamGap: streamGap, streamWrite: streamWrite}
 	a.push, _ = cfg.Notifier.(PushPort)
 
 	mux := http.NewServeMux()
 	for _, rt := range a.routes() {
 		mux.HandleFunc(rt.pattern, rt.handler)
 	}
-	return a, a.guard(mux), nil
+	return a, &appHandler{Handler: a.guard(mux), a: a}, nil
 }
 
 // route is one entry of the app's route table.
@@ -351,6 +361,9 @@ func (a *app) routes() []route {
 		{"POST /api/decide", a.post(a.decidePost)},
 		{"GET /static/watch.js", a.asset("assets/watch.js", "text/javascript; charset=utf-8")},
 		{"POST /api/watch", a.post(a.watchPost)},
+		// The card list's hint stream (watchstream.go), with the poll above
+		// as its fallback.
+		{"POST " + streamPath, a.post(a.watchStream)},
 		// The phone's side of the notices: all of them answer 404 unless
 		// Config.Notifier is also a PushPort (see push.go).
 		{"GET /manifest.webmanifest", a.pushOnly(a.asset("assets/manifest.webmanifest", "application/manifest+json"))},
@@ -401,9 +414,11 @@ func (a *app) redirect(to string) http.HandlerFunc {
 }
 
 // Server returns an http.Server for h with the header, read, write and idle
-// limits of the app. The caller sets Addr or serves a listener.
+// limits of the app. The caller sets Addr or serves a listener. When h is the
+// handler of [New] or [Open], the server's Shutdown also ends the app's open
+// hint streams, which would otherwise hold it until their life ended.
 func Server(h http.Handler) *http.Server {
-	return &http.Server{
+	srv := &http.Server{
 		Handler:           h,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -411,6 +426,10 @@ func Server(h http.Handler) *http.Server {
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    maxHeaderBytes,
 	}
+	if e, ok := h.(streamEnder); ok {
+		srv.RegisterOnShutdown(e.endStreams)
+	}
+	return srv
 }
 
 // securityHeaders are on every response, an error included.
