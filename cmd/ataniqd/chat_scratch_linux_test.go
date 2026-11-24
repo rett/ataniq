@@ -20,6 +20,7 @@ import (
 	"ataniq/internal/approval/ownerchannel"
 	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/clientapi"
+	"ataniq/internal/leadcanary"
 	"ataniq/internal/leadcanary/provision/provisiontest"
 	"ataniq/internal/leadchat"
 	"ataniq/internal/leaddaemon"
@@ -228,22 +229,39 @@ func seatChat(t *testing.T, c *seatgate.Client, params string) (ownerwire.SeatCh
 	return res, ""
 }
 
-// The flags that would put the phone trial's samples beside real lead
-// definitions are refused, before anything is read or made: --trial with
-// --scratch, with or without --owner-channel and --seat-gate, at the usage
-// exit code like the other refusals of run's flags.
-func TestRunRefusesTheTrialWithScratch(t *testing.T) {
+// The flags that would put the phone trial's samples beside leads are
+// refused from the flags alone, before any config or setting is read or
+// anything is made: --trial with --scratch and with --canary (whose agent may
+// be live), with or without --owner-channel and --seat-gate, at the usage
+// exit code like the other refusals of run's flags. An unreadable or missing
+// config is never read, so the refusal is the usage's, not the config's.
+func TestRunRefusesTheTrialWithLeads(t *testing.T) {
 	w := newScratchWorld(t)
 	addr := freeLoopback(t)
+	unreadable := filepath.Join(w.Dir, "unreadable.json")
+	if err := os.WriteFile(unreadable, []byte("{}"), 0); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(w.Dir, "missing.json")
+	f := newCanaryFixture(t)
+	live := f.cfg
+	live.Agent.Kind = leadcanary.AgentLive
+	livePath := f.write(t, live)
 	for _, args := range [][]string{
 		{"run", "--scratch", w.ConfigPath, "--owner-channel", "--trial"},
 		{"run", "--owner-channel", "--trial", "--scratch", w.ConfigPath},
 		{"run", "--scratch", w.ConfigPath, "--owner-channel", "--trial", "--seat-gate", addr},
 		{"run", "--scratch", w.ConfigPath, "--trial"},
+		{"run", "--scratch", unreadable, "--owner-channel", "--trial"},
+		{"run", "--trial", "--scratch", missing},
+		{"run", "--canary", livePath, "--owner-channel", "--trial", "--seat-gate", addr},
+		{"run", "--owner-channel", "--trial", "--canary", livePath},
+		{"run", "--canary", unreadable, "--owner-channel", "--trial"},
+		{"run", "--canary", missing, "--trial"},
 	} {
 		ta := scratchApp(t, w)
 		code := ta.run(args)
-		if code != leaddaemon.ExitUsage || ta.err.String() != trialScratchRefusal {
+		if code != leaddaemon.ExitUsage || ta.err.String() != trialLeadRefusal {
 			t.Errorf("%v: exit %d, stderr %q", args, code, ta.err.String())
 		}
 	}
@@ -252,6 +270,17 @@ func TestRunRefusesTheTrialWithScratch(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(w.State, hostadapter.OwnerDirName)); err == nil {
 		t.Fatal("a daemon made the owner folder")
+	}
+	f.wantStateRootAsProvisioned(t)
+	// The same flags without a mode with leads pass the check: the
+	// standalone phone trial, whose sample port the trial's own tests serve
+	// end to end (TestTrialRunSubmitsSampleCardsThatTheSeatSees).
+	ta := scratchApp(t, w)
+	if code := ta.trialCheck(&ownerFlags{set: true, trial: true}, &canaryFlags{}); code != -1 || ta.err.String() != "" {
+		t.Fatalf("the standalone trial: %d %q", code, ta.err.String())
+	}
+	if code := ta.trialCheck(&ownerFlags{set: true}, &canaryFlags{scratchSet: true, scratch: w.ConfigPath}); code != -1 {
+		t.Fatalf("scratch without the trial: %d", code)
 	}
 }
 

@@ -176,6 +176,10 @@ func (a *app) runCmd(args []string) int {
 	}); code >= 0 {
 		return code
 	}
+	// Flags that exclude each other are refused before any file is read.
+	if code := a.trialCheck(&owner, &canary); code >= 0 {
+		return code
+	}
 	cfg := leaddaemon.Config{
 		NewManager: a.newManager,
 		Signals:    a.signals,

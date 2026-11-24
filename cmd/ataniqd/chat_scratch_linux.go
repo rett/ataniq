@@ -11,7 +11,8 @@ import "ataniq/internal/leaddaemon"
 // their stores are open. The port is a read-only view of the replies the
 // leads wrote to their outboxes, each lead off until the desk turns it on
 // (ataniqd chat set KEY read). The phone trial's STAND-IN port is never given
-// to such a gate: run refuses --trial with --scratch (owner_linux.go).
+// to such a gate: run refuses --trial with --scratch and with --canary, from
+// the flags, before any config is read (owner_linux.go).
 //
 // A build with the owner channel's tag alone has no scratch mode and leaves
 // scratchSeat nil. The file sets it in its init, as owner_host_linux.go sets
@@ -19,7 +20,7 @@ import "ataniq/internal/leaddaemon"
 // channel's.
 
 func init() {
-	scratchSeat = &scratchSeatSet{on: scratchModeOn, chat: scratchChat}
+	scratchSeat = &scratchSeatSet{on: leadModeOn, chat: scratchChat}
 	usage += scratchSeatUsage
 }
 
@@ -39,17 +40,19 @@ with the seat gate together:
   each lead whose chat the desk turned on (ataniqd chat set KEY read); every
   lead is off whenever the daemon starts. The gate's start line is followed by
   "seat gate: chat: replies the scratch leads wrote to their outboxes; read
-  only". --trial is refused with --scratch, so such a daemon never serves the
-  phone trial's samples.
+  only". --trial is refused with --scratch and with --canary (exit 2, before
+  any config is read), so a daemon with leads never serves the phone trial's
+  samples.
 `
 
 // scratchChatNote is the line the gate writes after its start line when it
 // serves the scratch leads' chat.
 const scratchChatNote = "chat: replies the scratch leads wrote to their outboxes; read only"
 
-// scratchModeOn reports whether the daemon runs scratch mode, with real lead
-// definitions (run --scratch CONFIG).
-func scratchModeOn(cfg *leaddaemon.Config) bool { return cfg.Scratch != nil }
+// leadModeOn reports whether the daemon runs a mode with leads: scratch mode
+// (run --scratch CONFIG) or canary mode (run --canary CONFIG), whose agent
+// may be live.
+func leadModeOn(cfg *leaddaemon.Config) bool { return cfg.Scratch != nil || cfg.Canary != nil }
 
 // scratchChat gives the gate the scratch leads' chat port when the daemon runs
 // scratch mode: a new [leaddaemon.LeadChat] in cfg.Scratch.Chat, which the

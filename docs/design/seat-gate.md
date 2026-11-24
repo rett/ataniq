@@ -2673,7 +2673,8 @@ scratch leads' written replies instead, through the real port
 (`leaddaemon.LeadChat`, over the chat stores of `internal/leadchat`), each
 lead's chat switched `off` or `read` at the desk
 ([the scratch leads guide](../scratch-leads.md#running-real-leads-with-the-seat)).
-The command refuses `--trial` with `--scratch`, so no gate serves both. Sending
+The command refuses `--trial` with `--scratch` and with `--canary`, from the
+flags before any config is read, so no gate serves both. Sending
 remains future work.
 
 `seat.chat` is the seat's read-only view of the leads' conversations: it lists

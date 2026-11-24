@@ -59,7 +59,8 @@
 // (chat_scratch_linux.go) gives the gate the scratch leads' read-only chat
 // port, leaddaemon.LeadChat, instead: the replies the leads wrote to their
 // outboxes, of each lead the desk turned on with "ataniqd chat set KEY read".
-// --trial is refused with --scratch, so no other gate serves chat.
+// --trial is refused with --scratch and with --canary, from the flags
+// before any config is read, so no other gate serves chat.
 // "ataniqd genesis list" and "ataniqd genesis handoff TAG" (genesis_linux.go;
 // genesis_off_linux.go has the same names for every other build) read the
 // finished interviews in owner/genesis of the state folder through the thread

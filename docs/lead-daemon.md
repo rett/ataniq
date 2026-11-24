@@ -440,7 +440,8 @@ the refusal bound. In a build with both tags (`make scratch-seat-build`),
 `ataniqd run --scratch CONFIG --owner-channel --seat-gate ADDR` serves it from
 the scratch leads' replies instead, read only, each lead off until the desk
 turns it on (see [the scratch leads guide](scratch-leads.md#running-real-leads-with-the-seat));
-`--trial` is refused with `--scratch`. Every other operation is refused
+`--trial` is refused with `--scratch` and with `--canary`, from the flags
+before any config is read. Every other operation is refused
 `unknown-op`.
 A seat whose key is not pinned is refused in the handshake and never reaches
 the service. On the daemon's socket `seat.pair` stays refused and the seven

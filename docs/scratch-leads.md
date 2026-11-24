@@ -1107,12 +1107,16 @@ build/scratch-seat/ataniqd run --scratch CONFIG --owner-channel --seat-gate IP:P
 ```
 
 **Refused flags.** With `--scratch` the daemon refuses, at the usage exit code
-(2) and before it reads or makes anything: `--trial` ("--trial and --scratch
-exclude each other: a daemon with real leads never serves the phone trial's
+(2) and before it reads or makes anything: `--trial` ("--trial excludes
+--scratch and --canary: a daemon with leads never serves the phone trial's
 samples"), `--canary`, `--state-dir` and `--runtime-dir` (the roots are the
-config's). `--seat-gate` without `--owner-channel` is refused as in every
-build. So such a daemon never serves the phone trial's STAND-IN cards or sample
-leads.
+config's). The refusal of `--trial` is made from the flags alone, before any
+config is read, so a config that is missing or cannot be read gives the usage
+refusal too, and it holds for `--canary` as well, whose agent may be live: no
+daemon with leads serves the trial's samples. `--seat-gate` without
+`--owner-channel` is refused as in every build. The standalone phone trial
+(`run --owner-channel --trial`, no `--scratch` or `--canary`) is unchanged and
+keeps its sample leads.
 
 **What the owner prepares**, on the daemon's host, before the first start:
 
