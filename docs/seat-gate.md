@@ -16,7 +16,7 @@ address or key belongs in a file of this repository.
 
 | Where | What | Build |
 | --- | --- | --- |
-| Lead host (the host of the daemon) | `ataniqd run --owner-channel --seat-gate ADDR`: the daemon with the owner channel and the gate, a TCP listener on one address of this host. | Tag `ataniq_ownerchannel`: `make ownerchannel-build` builds `build/owner/ataniqd`. A build without the tag has no gate and no `seat-gate` command. |
+| Lead host (the host of the daemon) | `ataniqd run --owner-channel --seat-gate ADDR`: the daemon with the owner channel and the gate, a TCP listener on one address of this host. | Tag `ataniq_ownerchannel`: `make ownerchannel-build` builds `build/owner/ataniqd`, the one build with that tag alone. For real scratch leads behind the gate, `make scratch-seat-build` builds `build/scratch-seat/ataniqd`, the one build with both tags, `ataniq_ownerchannel` and `ataniq_canary` (see [Builds with a tag](#builds-with-a-tag)). A build without the tag has no gate and no `seat-gate` command. |
 | Lead host | `ataniq-console --daemon DIR`: the desk. It starts a pairing and confirms it; it holds the decider's place. | Untagged. |
 | Authority host (the seat host) | `ataniq-seat`: the seat web app, which links to the gate. It listens on a Unix socket or a loopback address only. | Untagged, and static for a release: see [Deploying the seat app](../deploy/authority-host/DEPLOY.md#deploying-the-seat-app) (`CGO_ENABLED=0 sh scripts/go-tool.sh build -trimpath -o build/authority-host/ataniq-seat ./cmd/ataniq-seat`). No Makefile target builds it. |
 | Authority host | `ataniq-seat-notify`, the notifier (optional): the one unit that sends the phone a push notice that cards wait. The seat tells it how many cards wait over a Unix socket. | Untagged, static, built with the seat's release: see [the README](../deploy/authority-host/README.md#the-notifier) and [Notices](#notices). |
@@ -783,6 +783,25 @@ console and the seat.
 operation of the owner connection (`owner.key-revoke`; `owner.keys-off` revokes
 every credential); no console view or command of this tree calls it yet. To cut
 a seat's reads at once, remove its pin and restart the daemon.
+
+## Builds with a tag
+
+Three Makefile targets build with a tag, each the one target for its tags, and
+none is used by a release or a CI job; each runs `make doctor` first and starts
+nothing:
+
+- `make ownerchannel-build` builds the daemon with `ataniq_ownerchannel` alone
+  into `build/owner/`: the owner channel and the gate, with the phone trial.
+- `make scratch-seat-build` builds the daemon with both tags,
+  `ataniq_ownerchannel` and `ataniq_canary`, into `build/scratch-seat/`: the
+  owner channel and the gate with scratch mode (see
+  [the scratch leads guide](scratch-leads.md)), for the owner's own trial of
+  real scratch leads with the seat gate.
+- `make canary-build` builds the binaries of the attended canary run with
+  `ataniq_canary` alone into `build/canary/`.
+
+All three folders are ignored by git. Each build is provisional and
+unqualified, and [Scratch only](#scratch-only) holds for the two with the gate.
 
 ## Scratch only
 

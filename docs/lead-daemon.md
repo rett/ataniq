@@ -265,9 +265,24 @@ packages that hold both); `make test` stays untagged and skips them.
 `make ownerchannel-build` builds the daemon with the tag, and nothing else, into
 `build/owner/ataniqd` (the folder is ignored by git). It runs `make doctor`
 first and starts nothing. It is the one target that builds a binary with the
-tag: no release, no CI job and no other target uses it or depends on it, and the
-tests in `tests/ownerchannel_tag_test.go` refuse any other recipe that names
-the tag. The binary is for the owner's own trial of the unqualified channel.
+tag alone: no release, no CI job and no other target uses it or depends on it.
+The binary is for the owner's own trial of the unqualified channel.
+
+`make scratch-seat-build` builds the daemon with both tags,
+`ataniq_ownerchannel` and `ataniq_canary`, and nothing else, into
+`build/scratch-seat/ataniqd` (the folder is ignored by git), so that one daemon
+has the owner channel, the seat gate and scratch mode (see
+[the scratch leads guide](scratch-leads.md)). It runs `make doctor` first and
+starts nothing. It is the one target that builds the daemon with both tags, for
+the owner's own trial of real scratch leads with the seat gate: no release, no
+CI job and no other target uses it or depends on it. `make canary-build` stays
+the one target that builds binaries with the canary tag alone.
+
+The tests in `tests/ownerchannel_tag_test.go` refuse any recipe but those of
+`make test-ownerchannel`, `make ownerchannel-build` and
+`make scratch-seat-build` that names the tag, and hold the recipe of
+`make scratch-seat-build` to exactly the mkdir of its folder and its one build,
+with `doctor` its sole prerequisite.
 
 ### Starting it
 

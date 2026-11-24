@@ -66,7 +66,9 @@ client and the leads view) are untagged and do nothing until a daemon's `hello`
 lists the operations, and a release daemon lists none. A release build has no
 scratch mode: `hello` lists two operations and says `mutations: false`, and
 `ataniqd` has no `--scratch` flag. Only `make canary-build` builds binaries with
-the tag. The tests of the tagged code run with `make test-canary`.
+the tag alone; `make scratch-seat-build` builds the daemon with it and the owner
+channel's tag together, into `build/scratch-seat/`, for the owner's own trial of
+real scratch leads with the seat gate, and no release or CI job uses it. The tests of the tagged code run with `make test-canary`.
 
 **The reserved prefix is `scratch-`** (`leadrole.ScratchPrefix`), beside the
 canary's `throwaway-`. Each mode accepts its own prefix and refuses the other's:

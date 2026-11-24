@@ -101,11 +101,15 @@ knows `--scratch` only and its control socket answers every `inject` request
 waiver, the path from a control request to the terminal and the canary
 operations are not switched off in such a binary; they are not in it.
 
-Only `make canary-build` builds binaries with the tag. No release step, no
-other target and no CI workflow does. `make test` stays untagged, and
-`make test-canary` runs the tests of the tagged code, so while tagged code
-exists the whole suite is `make test` and then `make test-canary`. CI runs the
-second one as a tests-only job that keeps nothing.
+Only `make canary-build` builds binaries with the tag alone, and only
+`make scratch-seat-build` builds one with it and the owner channel's tag
+together: the daemon, into `build/scratch-seat/`, for the owner's own trial of
+real scratch leads with the seat gate (see
+[the lead daemon guide](lead-daemon.md#the-owner-channel-tagged-build-only)).
+No release step, no other target and no CI workflow does. `make test` stays
+untagged, and `make test-canary` runs the tests of the tagged code, so while
+tagged code exists the whole suite is `make test` and then `make test-canary`.
+CI runs the second one as a tests-only job that keeps nothing.
 
 A few pieces are untagged on purpose, because they are inert capability that a
 release build never calls: the `ptyhost` option for a child with no controlling
