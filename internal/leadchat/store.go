@@ -163,6 +163,14 @@ type Store struct {
 	afterAppend   func() error         // after an entry of a reply is stored, before its claim is removed
 	beforeDelete  func(id int64)       // before the claim of a stored reply is removed
 	beforeSwap    func() error         // in a compaction, after the temporary file is synced
+
+	// fstat is the turn-on's stat of the folder it made.
+	fstat func(fd int) (unix.Stat_t, error)
+	// purgeBudget is how many removals one purge makes (maxPurgeEntries;
+	// a test makes it smaller), and purgeMoved the counter of the names of
+	// the folders purges moved up.
+	purgeBudget int
+	purgeMoved  int64
 }
 
 // OpenStore opens the chat of the lead whose layout role is role, below the
@@ -211,6 +219,9 @@ func OpenStore(root *Root, role string, opts Options) (*Store, error) {
 		sync:   func(f *os.File) error { return f.Sync() },
 		unlink: unix.Unlinkat,
 		rename: unix.Renameat2,
+		fstat:  fstatFD,
+
+		purgeBudget: maxPurgeEntries,
 	}
 	if err := s.start(); err != nil {
 		if s.f != nil {

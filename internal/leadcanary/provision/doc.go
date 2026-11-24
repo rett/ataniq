@@ -135,7 +135,11 @@
 // file that is synced and exchanged with the empty file, which must be what
 // the exchange took out, or the exchange is undone and the owner's version
 // kept ([ErrChat]). A file that holds anything else is the owner's and is
-// never overwritten. EnsureChat never makes, opens or judges the reply
+// never overwritten. Only the daemon's own files (the empty file it checked
+// and the text it wrote, by inode) are ever deleted: a version that would be
+// lost otherwise, a later save that met the undo or what a crash left at the
+// temporary name, is kept beside the file under a recovery name
+// ([KeptPrefix]), which the daemon never deletes. EnsureChat never makes, opens or judges the reply
 // folder <state root>/leads/<layout role>/home/.ataniq-replies
 // ([OutboxInside] in the sandbox, in the lead's home, which is bound
 // already): the desk's turn-on of the lead's chat makes it afresh (package

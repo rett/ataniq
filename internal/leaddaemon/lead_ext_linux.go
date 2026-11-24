@@ -128,7 +128,7 @@ const (
 	msgDaemonBroken    = "the registry or the command table cannot be written; the daemon must be restarted"
 	msgReceiptNo       = "the command ran but its receipt could not be recorded in full; read the lead's state"
 	msgRecordNotFound  = "the lead has no record, so provisioning is not complete"
-	msgChatPrepare     = "the lead's instruction file is not as the daemon makes it, or changed while it was written; see the daemon's log"
+	msgChatPrepare     = "the lead's instruction file is not as the daemon makes it, changed while it was written, or is busy; see the daemon's log"
 )
 
 // The proof a stop of a lead that was defined and never started carries: the
@@ -513,12 +513,22 @@ func (m *leadMode) define(ctx context.Context, lr *leadRole) outcome {
 // (provision.EnsureChat), under the role's operation lock, which a define and
 // a start hold. The empty instruction file of an earlier provisioning is
 // replaced only while the lead is proven stopped. An instruction file that is
-// not as the daemon makes it, or that changed while it was replaced, refuses
-// the command (chat-folder). The reply folder is not looked at: the desk's
-// turn-on makes it, so a lead whose chat is off starts whatever its home holds
-// at that name.
+// not as the daemon makes it, that changed while it was replaced, or that is
+// busy, refuses the command (chat-folder). A version of the file that an
+// upgrade displaced or a crash left is kept beside it under a recovery name
+// (provision.KeptPrefix), which the daemon never deletes: the log says when
+// one was found at the temporary name and, at every define and start, how
+// many recovery names hold a version. The reply folder is not looked at: the
+// desk's turn-on makes it, so a lead whose chat is off starts whatever its
+// home holds at that name.
 func (m *leadMode) ensureChat(lr *leadRole) (outcome, bool) {
 	res, err := provision.EnsureChat(lr.cfg, provision.ChatOptions{Stopped: m.provenStopped(lr)})
+	if res.Leftover {
+		m.d.logf("scratch: the lead %q: an earlier upgrade of its instruction file was cut short; what it left is kept beside the file under a recovery name", lr.key)
+	}
+	if res.Kept > 0 {
+		m.d.logf("scratch: the lead %q: %d earlier versions of its instruction file are kept beside it as %sN; the daemon never deletes them", lr.key, res.Kept, provision.KeptPrefix)
+	}
 	if err != nil {
 		m.d.logf("scratch: the lead %q: its instruction file: %s", lr.key, SafeText(err.Error()))
 		return refusedOut(codeChatFolder, msgChatPrepare), true

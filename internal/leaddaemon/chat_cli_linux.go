@@ -21,7 +21,7 @@ const ChatCallTimeout = 30 * time.Second
 
 // QuarantineFullLine is what "ataniqd chat set KEY read" prints when the
 // turn-on is refused because the lead's quarantine is full.
-const QuarantineFullLine = "ataniqd: chat set: the lead's quarantine is full (a turn-on needs one of its four names free); run ataniqd chat purge KEY --config CONFIG, or empty <state root>/leads/<layout role>/quarantine by hand, then turn chat on again"
+const QuarantineFullLine = "ataniqd: chat set: the lead's quarantine is full (a turn-on needs one of its four names free); stop the lead, run ataniqd chat purge KEY --config CONFIG (or empty <state root>/leads/<layout role>/quarantine by hand), then turn chat on again"
 
 // ChatCall is one call of the desk's chat command, "ataniqd chat".
 type ChatCall struct {
@@ -40,8 +40,8 @@ type ChatCall struct {
 // RunChat calls chat.list, chat.set or chat.purge of the daemon at c.Socket,
 // prints the result as one JSON line to stdout and returns the exit code:
 // [ExitOK] when the daemon answered a result; [ExitRefused] for a key that is
-// not a lead of the daemon, a key the seat cannot hold and send, which is
-// not built; [ExitUnavailable] when the lead's chat cannot be used, and for
+// not a lead of the daemon, a key the seat cannot hold, send, which is not
+// built, and a purge of a lead that is not proven stopped; [ExitUnavailable] when the lead's chat cannot be used, and for
 // a turn-on refused because the lead's quarantine is full (with the fixed
 // line [QuarantineFullLine]); and the codes of [RunCanary] for the rest.
 // Messages go to stderr, one line each, escaped.
@@ -82,7 +82,7 @@ func RunChat(ctx context.Context, c ChatCall, stdout, stderr io.Writer) int {
 		var ce *clientapi.Error
 		if errors.As(err, &ce) {
 			switch string(ce.Code) {
-			case leadwire.CodeChatSendNotBuilt, leadwire.CodeChatKeyUnrepresentable:
+			case leadwire.CodeChatSendNotBuilt, leadwire.CodeChatKeyUnrepresentable, leadwire.CodeChatLeadNotStopped:
 				fmt.Fprintf(stderr, "ataniqd: %s refused: %s\n", c.Op, SafeText(ce.Message))
 				return ExitRefused
 			case leadwire.CodeChatQuarantineFull:

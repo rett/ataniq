@@ -46,11 +46,12 @@
 //     an earlier turn-on made and did not publish) is set aside too;
 //  3. the new outbox is made in the staging folder (mode 0700), opened there
 //     by openat2 and judged on its descriptor: a folder of the daemon's user
-//     that holds nothing and has one link from its parent, so a name put in
-//     its place before the open is refused ([ErrUnavailable]). Its mode is
-//     set to 0700 exactly on that descriptor, which is held until the
-//     segment ends: the grant is bound to a folder the daemon made, never to
-//     one it found;
+//     that holds nothing (its listing; its link count is not judged, since a
+//     file system may report one link for a folder, as Btrfs does), so a
+//     name put in its place before the open is refused ([ErrUnavailable]).
+//     Its mode is set to 0700 exactly on that descriptor, which is held
+//     until the segment ends: the grant is bound to a folder the daemon
+//     made, never to one it found;
 //  4. a probe file made in the new outbox is claimed and removed as a reply
 //     is: a file system or a filter that cannot rename without replacing
 //     (EINVAL, ENOSYS, EOPNOTSUPP, EPERM, EACCES, or two file systems)
@@ -62,8 +63,8 @@
 //     is taken, one that holds an empty folder is freed by removing that
 //     folder (which fails for one that holds anything); a quarantine whose
 //     four names all hold something refuses the turn-on ([ErrQuarantined])
-//     until the owner purges it ([Store.PurgeQuarantine]): a turn-on needs
-//     one free name;
+//     until the owner purges it ([Store.PurgeQuarantine], only while the
+//     lead is proven stopped): a turn-on needs one free name;
 //  6. the held folder is published at the outbox's name by a rename that
 //     replaces nothing, and the name must then lead to it (the same device
 //     and inode). A name the lead took in the moment between, and a name
@@ -160,7 +161,10 @@
 // trailing line feeds, and drops what is not plain text by
 // [ownerwire.ValidChatText]. A text that [brief.SecretShaped], weighed on the
 // whole text, finds shaped like a key, a token or a full commit id is not
-// stored: the entry is the fixed system text [TextWithheld]. A drop writes a
+// stored, nor one that holds a bare word of exactly 40 or 64 hexadecimal
+// digits of a single class (all digits or all letters), a full commit id
+// [brief.SecretShaped] lets pass: the entry is the fixed system text
+// [TextWithheld]. A drop writes a
 // fixed system entry, at most one per reason a minute. No entry holds a file
 // name, a path or a count.
 //

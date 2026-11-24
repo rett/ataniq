@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -697,6 +698,20 @@ func TestChatSeatReadOfAChatStoppedMeanwhileIsBusy(t *testing.T) {
 // fillQuarantine fills the lead's quarantine with four entries that hold
 // something (a folder already there gets a file), so that a turn-on that
 // must set one more aside is refused.
+// treeNames lists the names below dir, sorted.
+func treeNames(t *testing.T, dir string) []string {
+	t.Helper()
+	var names []string
+	err := filepath.WalkDir(dir, func(p string, _ fs.DirEntry, err error) error {
+		names = append(names, p)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return names
+}
+
 func (l *leadEnv) fillQuarantine(key string) {
 	l.t.Helper()
 	p, err := provision.PathsOf(l.cfgOf(key))
@@ -854,7 +869,7 @@ func TestChatSwitchAndScannerChangeTogether(t *testing.T) {
 	t.Run("a failed turn-on of a stopped chat", func(t *testing.T) {
 		l, port := newChatEnv(t)
 		l.start()
-		l.up("alpha", submitted)
+		up := l.up("alpha", submitted)
 		d := deskOf(t, port)
 		l.mustChatSet("alpha", leadwire.ChatRead)
 		out := l.outboxOf("alpha")
@@ -882,7 +897,31 @@ func TestChatSwitchAndScannerChangeTogether(t *testing.T) {
 		if running, _ := workerOf(d, "alpha"); running {
 			t.Fatal("a scanner runs for a lead that is off")
 		}
-		// The purge frees the quarantine, and the turn-on goes on.
+		// A purge of the running lead is refused and removes nothing: the
+		// quarantine is purged only while the lead is proven stopped.
+		quar := filepath.Join(filepath.Dir(filepath.Dir(out)), leadchat.QuarantineName)
+		before := treeNames(t, quar)
+		if err := l.call(leadwire.OpChatPurge, leadwire.ChatPurgeParams{Key: "alpha"}, nil); !errors.As(err, &ce) ||
+			string(ce.Code) != leadwire.CodeChatLeadNotStopped || ce.Message != msgChatNotStopped {
+			t.Fatalf("chat.purge of a running lead: %v", err)
+		}
+		if after := treeNames(t, quar); !slices.Equal(before, after) {
+			t.Fatalf("a refused purge changed the quarantine: %q, then %q", before, after)
+		}
+		// A purge while another command of the role holds its lock is
+		// refused too.
+		want(t, l.stopLead("alpha", up.Epoch), leadwire.StatusDone, "")
+		release, ok := d.holdStopped(d.byKey["alpha"].role)
+		if !ok {
+			t.Fatal("the stopped lead is not proven stopped, or its lock is held")
+		}
+		err := l.call(leadwire.OpChatPurge, leadwire.ChatPurgeParams{Key: "alpha"}, nil)
+		release()
+		if !errors.As(err, &ce) || string(ce.Code) != leadwire.CodeChatLeadNotStopped {
+			t.Fatalf("chat.purge while a command holds the role's lock: %v", err)
+		}
+		// The purge of the stopped lead frees the quarantine, and the
+		// turn-on goes on.
 		var pr leadwire.ChatPurgeResult
 		if err := l.call(leadwire.OpChatPurge, leadwire.ChatPurgeParams{Key: "alpha"}, &pr); err != nil ||
 			pr.Key != "alpha" || pr.Removed != leadchat.MaxQuarantine || pr.Left != 0 || pr.Free != leadchat.MaxQuarantine {

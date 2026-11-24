@@ -8,10 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
+
+	"golang.org/x/sys/unix"
 
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leadcanary/provision/provisiontest"
@@ -321,4 +324,217 @@ func TestTheLeadInstructionsText(t *testing.T) {
 			t.Errorf("the text holds %q", bad)
 		}
 	}
+}
+
+// An instruction file that a lease holds answers EAGAIN to the nonblocking
+// open: the call is refused at once (ErrBusy) and changes nothing, never
+// spinning while the role's lock is held. A lookup that keeps meeting a
+// rename is run again a bounded number of times, and EINTR is run again.
+func TestEnsureChatBoundsABusyOpen(t *testing.T) {
+	_, cfg, p := chatLead(t)
+	calls := 0
+	openat2 = func(dir int, name string, how *unix.OpenHow) (int, error) {
+		calls++
+		return -1, unix.EAGAIN
+	}
+	defer func() { openat2 = unix.Openat2 }()
+	if _, err := EnsureChat(cfg, ChatOptions{Stopped: true}); !errors.Is(err, ErrBusy) || errors.Is(err, ErrChat) {
+		t.Fatalf("EnsureChat with a lease: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("a nonblocking open that met a lease was tried %d times", calls)
+	}
+	if fi := lstat(t, p.InstructionFile); fi.Size() != 0 {
+		t.Fatal("a busy call changed the instruction file")
+	}
+	lead, err := unix.Open(p.LeadDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(lead)
+	calls = 0
+	if _, err := openBeneath(lead, InstructionsName, unix.O_RDONLY); !errors.Is(err, ErrBusy) {
+		t.Fatalf("a lookup that keeps meeting a rename: %v", err)
+	}
+	if calls != lookupTries {
+		t.Fatalf("a lookup was tried %d times, want %d", calls, lookupTries)
+	}
+	calls = 0
+	openat2 = func(dir int, name string, how *unix.OpenHow) (int, error) {
+		calls++
+		switch calls {
+		case 1:
+			return -1, unix.EINTR
+		case 2:
+			return -1, unix.EAGAIN
+		}
+		return unix.Openat2(dir, name, how)
+	}
+	fd, err := openBeneath(lead, InstructionsName, unix.O_RDONLY)
+	if err != nil || calls != 3 {
+		t.Fatalf("an interrupted, then raced lookup: %v after %d calls", err, calls)
+	}
+	unix.Close(fd)
+	openat2 = unix.Openat2
+	if res := ensure(t, cfg, true); res.Instructions != InstructionsWritten {
+		t.Fatalf("once the lease is gone: %+v", res)
+	}
+}
+
+// ownerSave saves text at path as an editor does: a new file renamed over it.
+func ownerSave(t *testing.T, path, text string) {
+	t.Helper()
+	tmp := path + ".owner-save"
+	if err := os.WriteFile(tmp, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An owner's save that comes after the exchange took out another version and
+// before the exchange is undone is never lost: the undo puts the first
+// version back at its name and the later save is kept under a recovery name,
+// mode 0600, which later calls report and never delete.
+func TestEnsureChatKeepsASecondSaveBeforeTheUndo(t *testing.T) {
+	for name, first := range map[string]func(p Paths){
+		"a new file at the name": func(p Paths) { ownerSave(t, p.InstructionFile, "the first save\n") },
+		"the empty file written": func(p Paths) {
+			if err := os.WriteFile(p.InstructionFile, []byte("the first save\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, cfg, p := chatLead(t)
+			exchangeHook = func() { first(p) }
+			undoHook = func() { ownerSave(t, p.InstructionFile, "the second save\n") }
+			defer func() { exchangeHook, undoHook = nil, nil }()
+			res, err := EnsureChat(cfg, ChatOptions{Stopped: true})
+			kept := filepath.Join(p.LeadDir, KeptPrefix+"1")
+			if !errors.Is(err, ErrChat) || !strings.Contains(err.Error(), KeptPrefix+"1") {
+				t.Fatalf("EnsureChat: %v", err)
+			}
+			if res.Kept != 1 {
+				t.Fatalf("result %+v", res)
+			}
+			if b, _ := os.ReadFile(p.InstructionFile); string(b) != "the first save\n" {
+				t.Fatalf("the instruction file holds %q", b)
+			}
+			if b, _ := os.ReadFile(kept); string(b) != "the second save\n" {
+				t.Fatalf("the recovery file holds %q", b)
+			}
+			if fi := lstat(t, kept); fi.Mode().Perm() != 0o600 {
+				t.Fatalf("the recovery file has mode %v", fi.Mode())
+			}
+			if exists(filepath.Join(p.LeadDir, instructionsTmp)) {
+				t.Fatal("the temporary name was left")
+			}
+			exchangeHook, undoHook = nil, nil
+			for i := 0; i < 2; i++ {
+				if res := ensure(t, cfg, true); res.Instructions != InstructionsOwner || res.Kept != 1 || res.Leftover {
+					t.Fatalf("again: %+v", res)
+				}
+			}
+			if b, _ := os.ReadFile(kept); string(b) != "the second save\n" {
+				t.Fatalf("the recovery file holds %q", b)
+			}
+		})
+	}
+	// The undo that takes the daemon's own text back out deletes it and
+	// keeps nothing.
+	_, cfg, p := chatLead(t)
+	exchangeHook = func() { ownerSave(t, p.InstructionFile, "the only save\n") }
+	defer func() { exchangeHook = nil }()
+	res, err := EnsureChat(cfg, ChatOptions{Stopped: true})
+	if !errors.Is(err, ErrChat) || !strings.Contains(err.Error(), "the version found is kept") || res.Kept != 0 {
+		t.Fatalf("EnsureChat: %+v, %v", res, err)
+	}
+	if exists(filepath.Join(p.LeadDir, KeptPrefix+"1")) || exists(filepath.Join(p.LeadDir, instructionsTmp)) {
+		t.Fatal("the daemon's own text was kept")
+	}
+}
+
+// A crash of an upgrade can leave a version at the temporary name: the text
+// the daemon wrote, or the owner's version an exchange took out. The next
+// define or start finds it, whatever the instruction file holds, keeps it
+// under the first free recovery name and reports it; nothing deletes it.
+func TestEnsureChatKeepsWhatACrashLeft(t *testing.T) {
+	for name, c := range map[string]struct {
+		live   string // the instruction file's text; "" is the empty file
+		before []int  // recovery names taken already
+		want   Instructions
+	}{
+		"beside the current text":           {live: LeadInstructions(), want: InstructionsCurrent},
+		"beside the empty file":             {live: "", want: InstructionsWritten},
+		"beside an owner's text":            {live: "the owner's text\n", want: InstructionsOwner},
+		"with a recovery name taken":        {live: LeadInstructions(), before: []int{1}, want: InstructionsCurrent},
+		"with recovery names 1 and 3 taken": {live: "", before: []int{1, 3}, want: InstructionsWritten},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, cfg, p := chatLead(t)
+			if err := os.WriteFile(p.InstructionFile, []byte(c.live), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for _, n := range c.before {
+				if err := os.WriteFile(filepath.Join(p.LeadDir, KeptPrefix+strconv.Itoa(n)), []byte("kept before"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			left := filepath.Join(p.LeadDir, instructionsTmp)
+			if err := os.WriteFile(left, []byte("the owner's earlier version\n"), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			res := ensure(t, cfg, true)
+			if res.Instructions != c.want || !res.Leftover || res.Kept != len(c.before)+1 {
+				t.Fatalf("result %+v", res)
+			}
+			if exists(left) {
+				t.Fatal("the leftover is still at the temporary name")
+			}
+			free := 1
+			for slices.Contains(c.before, free) {
+				free++
+			}
+			kept := filepath.Join(p.LeadDir, KeptPrefix+strconv.Itoa(free))
+			if b, _ := os.ReadFile(kept); string(b) != "the owner's earlier version\n" {
+				t.Fatalf("%s holds %q", kept, b)
+			}
+			if fi := lstat(t, kept); fi.Mode().Perm() != 0o600 {
+				t.Fatalf("the recovery file has mode %v", fi.Mode())
+			}
+			for _, n := range c.before {
+				if b, _ := os.ReadFile(filepath.Join(p.LeadDir, KeptPrefix+strconv.Itoa(n))); string(b) != "kept before" {
+					t.Fatalf("recovery name %d holds %q", n, b)
+				}
+			}
+			// A later call reports it again and deletes nothing.
+			again := ensure(t, cfg, true)
+			if again.Leftover || again.Kept != len(c.before)+1 {
+				t.Fatalf("again: %+v", again)
+			}
+			if b, _ := os.ReadFile(kept); string(b) != "the owner's earlier version\n" {
+				t.Fatalf("%s holds %q after a later call", kept, b)
+			}
+		})
+	}
+	t.Run("every recovery name taken", func(t *testing.T) {
+		_, cfg, p := chatLead(t)
+		for n := 1; n <= MaxKept; n++ {
+			if err := os.WriteFile(filepath.Join(p.LeadDir, KeptPrefix+strconv.Itoa(n)), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		left := filepath.Join(p.LeadDir, instructionsTmp)
+		if err := os.WriteFile(left, []byte("left"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := EnsureChat(cfg, ChatOptions{Stopped: true}); !errors.Is(err, ErrChat) {
+			t.Fatalf("EnsureChat: %v", err)
+		}
+		if b, _ := os.ReadFile(left); string(b) != "left" {
+			t.Fatalf("the leftover holds %q", b)
+		}
+	})
 }

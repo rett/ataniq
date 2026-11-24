@@ -111,8 +111,9 @@ const (
 // is too long, whatever it holds; it is never cut. Otherwise its trailing
 // line feeds are trimmed and the rest must be plain text by
 // [ownerwire.ValidChatText]. A plain text that [brief.SecretShaped] finds
-// shaped like a credential, weighed on the whole text, is withheld. text is
-// set for VerdictOK only.
+// shaped like a credential, weighed on the whole text, is withheld, and so is
+// one that holds a full commit id ([fullHexID]) of a single character class,
+// which [brief.SecretShaped] lets pass. text is set for VerdictOK only.
 func ReplyText(data []byte) (text string, v Verdict) {
 	if len(data) > MaxReplyBytes {
 		return "", VerdictTooLong
@@ -121,10 +122,49 @@ func ReplyText(data []byte) (text string, v Verdict) {
 	if !ownerwire.ValidChatText(s) {
 		return "", VerdictNotPlain
 	}
-	if brief.SecretShaped(s) {
+	if brief.SecretShaped(s) || fullHexID(s) {
 		return "", VerdictWithheld
 	}
 	return s, VerdictOK
+}
+
+// fullHexID reports whether s holds a bare token of exactly 40 or 64
+// hexadecimal digits: a full commit id of SHA-1 or SHA-256, which the lead's
+// instructions say is withheld. A token is a run of ASCII letters and digits;
+// one that is wholly hexadecimal and 40 or 64 long is a full id whatever its
+// characters (all digits, all letters or both). A short id (7 to 12 digits)
+// and a longer or shorter run pass.
+func fullHexID(s string) bool {
+	start := -1
+	for i := 0; i <= len(s); i++ {
+		if i < len(s) && isAlnum(s[i]) {
+			if start < 0 {
+				start = i
+			}
+			continue
+		}
+		if start >= 0 {
+			if n := i - start; (n == 40 || n == 64) && allHex(s[start:i]) {
+				return true
+			}
+			start = -1
+		}
+	}
+	return false
+}
+
+func isAlnum(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+func allHex(t string) bool {
+	for i := 0; i < len(t); i++ {
+		c := t[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 // ValidReplyName reports whether name is the name of a finished reply:

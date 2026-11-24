@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -314,7 +315,7 @@ func TestSeatChatOwnRoom(t *testing.T) {
 	if _, err := d.chat(context.Background(), read, &p); err != nil || p.calls != 2 {
 		t.Fatalf("page with the reads' room full: %v, %d calls", err, p.calls)
 	}
-	if got := d.budget.used(kindChat); got != chatRoom {
+	if got := d.budget.used(kindChat); got != 2 {
 		t.Fatalf("two chat calls took %d of chat's room", got)
 	}
 	if got := d.budget.used(kindRead); got != readRoom {
@@ -344,7 +345,7 @@ func TestSeatChatOwnRoom(t *testing.T) {
 	}
 	got := l.all()
 	if len(got) != 2 || !strings.Contains(got[0], "kind read (12 of 12 in the last 80 seconds)") ||
-		!strings.Contains(got[1], "kind chat (2 of 2 in the last 80 seconds)") {
+		!strings.Contains(got[1], fmt.Sprintf("kind chat (%d of %d in the last 80 seconds)", chatRoom, chatRoom)) {
 		t.Fatalf("lines: %q", got)
 	}
 }

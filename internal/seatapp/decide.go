@@ -23,8 +23,8 @@ const (
 	maxSignOffs = 300
 	// decideRequests and decideWindow bound the decision challenges one
 	// credential's sessions may ask for. The port keeps the decisions to a
-	// room of their own at the gate (package seatlink: 10 calls in 80
-	// seconds, 5 decisions), which logins, pairings and reads cannot take,
+	// room of their own at the gate (package seatlink: 8 calls in 80
+	// seconds, 4 decisions), which logins, pairings and reads cannot take,
 	// and asks a challenge only with room for its decision as well, kept for
 	// that challenge until the app drops it (ChallengeDropper): a tap past
 	// it is answered desk_busy before any challenge, and a decision the

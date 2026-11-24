@@ -13,7 +13,9 @@ package leadwire
 //
 // chat.purge empties what it can of the lead's quarantine, where each
 // turn-on sets the earlier reply folder aside unread: a turn-on needs one of
-// its four names free, and is refused [CodeChatQuarantineFull] otherwise.
+// its four names free, and is refused [CodeChatQuarantineFull] otherwise. A
+// purge runs only while the lead is proven stopped, and is refused
+// [CodeChatLeadNotStopped] otherwise.
 //
 // chat.set is idempotent: the same switch set twice changes nothing the
 // second time, so it takes no command id and keeps no receipt. A lead's
@@ -54,11 +56,16 @@ const (
 	// lead's quarantine to set the earlier reply folder aside, and all four
 	// hold something; chat.purge, or the owner's hand, empties it.
 	CodeChatQuarantineFull = "chat-quarantine-full"
+	// CodeChatLeadNotStopped: chat.purge runs only while the lead is proven
+	// stopped (not running, starting or stopping, with no launch pending
+	// and no other command of it in progress), so that nothing but the
+	// daemon changes what the quarantine holds; nothing was purged.
+	CodeChatLeadNotStopped = "chat-lead-not-stopped"
 )
 
-// ChatErrorCodes returns the three chat error codes above, in a new slice.
+// ChatErrorCodes returns the four chat error codes above, in a new slice.
 func ChatErrorCodes() []string {
-	return []string{CodeChatSendNotBuilt, CodeChatKeyUnrepresentable, CodeChatQuarantineFull}
+	return []string{CodeChatSendNotBuilt, CodeChatKeyUnrepresentable, CodeChatQuarantineFull, CodeChatLeadNotStopped}
 }
 
 type (

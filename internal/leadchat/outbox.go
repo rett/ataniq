@@ -58,7 +58,9 @@ const (
 	// maxClaimEntries is the most entries a turn-on reads from the claim
 	// folder an earlier segment left.
 	maxClaimEntries = 256
-	// maxPurgeEntries and maxTreeDepth bound one purge of the quarantine.
+	// maxPurgeEntries bounds the removals of one purge of the quarantine
+	// (and the names of the quarantine itself it reads), and maxTreeDepth
+	// how deep it walks.
 	maxPurgeEntries = 8192
 	maxTreeDepth    = 16
 )
@@ -113,8 +115,9 @@ type claimState struct {
 // an earlier segment left is removed, or set aside when it is a folder, and
 // whatever the staging folder holds is set aside; the new outbox is made in
 // the staging folder with mode 0700, opened there, judged by its descriptor
-// (a folder of the daemon's user, empty, with one link from its parent) and
-// set to mode 0700; a probe file made in it is claimed and removed, to prove
+// (a folder of the daemon's user that holds nothing; its link count is not
+// judged, since a file system may report one for a folder) and set to mode
+// 0700; a probe file made in it is claimed and removed, to prove
 // the file system renames without replacing; the earlier outbox, whatever it
 // is (an empty folder included), is set aside (renamed, never read or
 // walked); and the held folder is published at the outbox's name by a rename
@@ -178,7 +181,7 @@ func (s *Store) openGrant() (*grant, int, error) {
 		return unstage(fmt.Errorf("leadchat: cannot open the outbox: %w", err))
 	}
 	g.out = out
-	if err := checkFresh(out); err != nil {
+	if err := s.checkFresh(out); err != nil {
 		return unstage(err)
 	}
 	// The umask may have cleared bits; the outbox is 0700 exactly. The
@@ -233,15 +236,20 @@ func (s *Store) openGrant() (*grant, int, error) {
 }
 
 // checkFresh judges the folder a turn-on made in the staging folder, by its
-// descriptor: a folder of the daemon's user that holds nothing and has one
-// link from its parent. A folder put in its place before it was opened holds
-// something or was made by another, and is refused ([ErrUnavailable]).
-func checkFresh(fd int) error {
-	st, err := fstatFD(fd)
+// descriptor: a folder of the daemon's user that holds nothing (its listing).
+// The staging folder is the daemon's own (0700, bound into no sandbox), so
+// what is found there is the daemon's; a folder put in its place before it
+// was opened holds something or was made by another, and is refused
+// ([ErrUnavailable]). The folder's link count is not judged: a file system
+// may report one link for a folder (Btrfs does). Its mode is set to 0700 and
+// checked next, and its identity is held by the descriptor until the
+// segment ends.
+func (s *Store) checkFresh(fd int) error {
+	st, err := s.fstat(fd)
 	if err != nil {
 		return fmt.Errorf("leadchat: cannot examine the outbox: %w", err)
 	}
-	if st.Mode&unix.S_IFMT != unix.S_IFDIR || int(st.Uid) != unix.Geteuid() || st.Nlink != 2 {
+	if st.Mode&unix.S_IFMT != unix.S_IFDIR || int(st.Uid) != unix.Geteuid() {
 		return fmt.Errorf("%w: the outbox the daemon made was replaced before it was opened", ErrUnavailable)
 	}
 	names, more, err := readNames(fd, 0)
@@ -736,27 +744,48 @@ func (s *Store) scan(now time.Time, epoch int64, rep *IngestReport) (string, err
 type PurgeReport struct {
 	// Removed counts the entries of the quarantine removed whole, and Left
 	// those still there: a folder larger or deeper than one purge removes
-	// (a later purge goes on with it), one that did not stay empty, or one
-	// that cannot be removed (a folder closed to the daemon's user, which
-	// the owner removes by hand).
+	// (a later purge goes on with it), or one that cannot be removed (a
+	// folder closed to the daemon's user, which the owner removes by hand).
 	Removed, Left int
 	// Free counts the names 1 to [MaxQuarantine] that are free after the
 	// purge: a turn-on needs one.
 	Free int
 }
 
-// PurgeQuarantine removes what the lead's quarantine holds, for the owner:
-// each entry is unlinked, and a folder is removed with what it holds, deepest
-// first, one name at a time below descriptors, never following a link,
-// crossing a mount point or leaving the quarantine. One purge looks at most
-// at 8192 names and walks at most 16 folders deep: of a wider folder it
-// removes the names it read, and a folder deeper than that is moved up, by a
-// rename, to the top of the entry being purged. What it cannot remove is
-// left (counted in Left); a purge run again goes on from there and makes
-// progress on a tree that does not change. A folder closed to the daemon's
+// PurgeOptions are what the caller of [Store.PurgeQuarantine] knows of the
+// lead.
+type PurgeOptions struct {
+	// Stopped is true when the caller proved the lead's unit stopped (it is
+	// not running, starting or stopping, and no launch is pending) and
+	// holds the lock that keeps a start from running beside the purge.
+	// Only then does a purge remove anything ([ErrNotStopped] otherwise).
+	Stopped bool
+}
+
+// ErrNotStopped: a purge of the quarantine was asked for a lead that is not
+// proven stopped; nothing was looked at or removed.
+var ErrNotStopped = errors.New("leadchat: the lead is not proven stopped; its quarantine is purged only while it is stopped")
+
+// PurgeQuarantine removes what the lead's quarantine holds, for the owner,
+// and only while the lead is proven stopped (opts.Stopped; [ErrNotStopped]
+// otherwise): with the lead's processes gone, nothing but the daemon changes
+// what the quarantine holds, so a folder opened below it stays below it and
+// the purge removes only what was set aside. Each entry is unlinked, and a
+// folder is removed with what it holds, deepest first, one name at a time
+// below descriptors, never following a link, crossing a mount point or
+// leaving the quarantine. The walk deals with each name as it reads it, so a
+// leaf is removed before a wide list of names is read. One purge makes at
+// most 8192 removals and walks at most 16 folders deep: a folder deeper than
+// that is moved up, by a rename, to the top of the entry being purged. What
+// it does not reach is left (counted in Left); a purge run again goes on
+// from there, and each purge removes something while anything can be
+// removed, so repeated purges empty any tree. A folder closed to the daemon's
 // user is never opened and stays: the owner removes it by hand. A lead
 // without a quarantine has nothing to purge.
-func (s *Store) PurgeQuarantine() (PurgeReport, error) {
+func (s *Store) PurgeQuarantine(opts PurgeOptions) (PurgeReport, error) {
+	if !opts.Stopped {
+		return PurgeReport{}, ErrNotStopped
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rep := PurgeReport{Free: MaxQuarantine}
@@ -786,11 +815,14 @@ func (s *Store) PurgeQuarantine() (PurgeReport, error) {
 	if more {
 		rep.Left++
 	}
-	p := &purge{call: s.root.openat2, unlink: s.unlink, rename: s.rename, left: maxPurgeEntries - len(names)}
+	p := &purge{call: s.root.openat2, unlink: s.unlink, rename: s.rename, left: s.purgeBudget, moved: &s.purgeMoved}
 	for _, name := range names {
-		err := s.unlink(quar, name, 0)
-		if err == unix.EISDIR {
-			err = p.removeTree(quar, name, -1, 0)
+		err := errPurgeLeft
+		if p.left > 0 {
+			err = p.remove(quar, name, 0)
+			if err == unix.EISDIR {
+				err = p.removeTree(quar, name, -1, 0)
+			}
 		}
 		if err == nil || err == unix.ENOENT {
 			rep.Removed++

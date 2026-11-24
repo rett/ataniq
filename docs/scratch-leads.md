@@ -817,7 +817,7 @@ and show it and empty a lead's quarantine:
 | --- | --- | --- |
 | `chat.list` | none, or `{}` | `{"leads":[{"key","chat","seat","suspended","unavailable","head","entries","dropped"}]}`, one row per configured lead, in the config's order: the switch, whether the seat can list the lead, whether the scan stopped its chat, whether its store cannot be used, the highest sequence number given, how many entries the chat holds, and the counts of what was removed or left, by reason. Never a reply's text, a file name or a path. |
 | `chat.set` | `key`, `chat` (`off` or `read`) | The lead's row. `off` always succeeds: the switch is off before the answer, the scanner has ended, and the lead's entries are dropped. `read` turns the chat on (clearing the reply folder first, as below) and starts the lead's scanner; on a lead that is on it changes nothing, and on a lead whose chat the scan stopped it turns it on afresh. The desk records the switch the store answers, under one lock with the lead's scanner, so a `read` that is refused leaves the lead as the store left it: a stopped chat, which is turned off before it is turned on afresh, is then `off` at the desk and on the seat, with no scanner. It is idempotent, so it takes no command id and keeps no receipt. |
-| `chat.purge` | `key` | `{"key","removed","left","free"}`: what one purge of the lead's quarantine did. It changes no switch and runs whether the chat is off or read. |
+| `chat.purge` | `key` | `{"key","removed","left","free"}`: what one purge of the lead's quarantine did. It runs only while the lead is proven stopped (`chat-lead-not-stopped` otherwise), changes no switch, and runs whether the chat is off or read. |
 
 `chat.set` answers `chat-send-not-built` for `send`; `chat-key-unrepresentable`
 for a lead whose key is longer than 32 bytes (a seat's lead identifier is
@@ -827,9 +827,11 @@ says so in one line at start, with a count and no key); `refused` for a key
 that is not a lead of the daemon; `invalid-request` for any other switch;
 `chat-quarantine-full` for a turn-on that must set the earlier reply folder
 aside when all four names of the lead's quarantine hold something (see below);
-and `unavailable` for a lead whose chat cannot be used: one that is not
-provisioned (it has no home yet), a reply folder that could not be made or
-published safely, or a store that could not be opened or failed. A lead whose
+`chat.purge` answers `chat-lead-not-stopped` for a lead that is not proven
+stopped; and both answer `unavailable` for a lead whose chat cannot be used:
+one that is not provisioned (it has no home yet), a reply folder that could
+not be made or published safely, or a store that could not be opened or
+failed. A lead whose
 store cannot be opened or fails has no chat until the daemon is restarted, and
 no other lead is touched.
 
@@ -841,18 +843,41 @@ that holds an empty folder is freed by removing that folder, and otherwise the
 turn-on is refused `chat-quarantine-full`, the lead's chat stays off, and
 `ataniqd chat set KEY read` prints one fixed line and exits 31. The cap counts
 the names in use, not their size. `ataniqd chat purge KEY --config CONFIG`
-(`chat.purge`) empties what it can: each entry is unlinked, and a folder is
-removed with what it holds, deepest first, one name at a time below
+(`chat.purge`) empties what it can, and only while the lead is **stopped**:
+the registry must prove it stopped (defined and never started, stopped or
+ended, with no launch pending) and no other command of it may be in progress,
+which the purge keeps out for as long as it runs by holding the lead's
+operation lock. A purge of a lead that runs, starts or stops is refused
+`chat-lead-not-stopped` (exit 30) and touches nothing. With the lead's
+processes gone, nothing but the daemon changes what the quarantine holds, so a
+folder the purge opened stays in the quarantine. Each entry is unlinked, and a
+folder is removed with what it holds, deepest first, one name at a time below
 descriptors, never following a link, crossing a mount point or leaving the
-quarantine. One purge looks at most at 8192 names and walks at most 16 folders
-deep: of a wider folder it removes the names it read, and a folder deeper than
-that is moved up within the entry being purged, so a purge run again goes on
-from there and makes progress until nothing is left. It prints how many
-entries it removed, how many are `left` and how many names are `free`; run it
-again while `left` is not 0. A folder the daemon's user cannot open (one the
-lead made unreadable) is never opened and stays: the owner deletes it by hand,
-`rm -rf` on the quarantine's entry after `chmod -R u+rwx`, while the daemon
-runs or not.
+quarantine. The purge deals with each name as it reads it, so it removes a
+leaf before it reads a long list of names beside it. One purge makes at most
+8192 removals and walks at most 16 folders deep; a folder deeper than that is
+moved up within the entry being purged. Every purge removes something while
+anything can be removed, so purges run again empty any tree, however wide or
+deep. It prints how many entries it removed, how many are `left` and how many
+names are `free`; run it again while `left` is not 0.
+
+A folder the daemon's user cannot open (one the lead made unreadable) is never
+opened and stays; the owner deletes it by hand. Stop the lead first (never
+work on a running lead's quarantine), then, in the lead's quarantine
+(`<state root>/leads/<layout role>/quarantine`), give your user access to the
+**folders** of the numbered entry only, and delete it:
+
+```sh
+find ENTRY -type d -exec chmod u+rwx {} \;
+rm -rf ENTRY
+```
+
+`find` changes each folder before it enters it (`\;` runs `chmod` at once; with
+`+` the changes wait, and a folder closed to you is not entered), and `-type d`
+matches folders only, never a symbolic link. Never change the mode of the files
+in it (no `chmod -R`): a file set aside can be a hard link to a file elsewhere,
+whose mode would change with it, and removing a file needs no permission on the
+file itself.
 
 At the desk:
 
@@ -864,10 +889,10 @@ ataniqd chat purge KEY --config CONFIG
 ```
 
 Each prints one JSON line. The exit codes are those of `ataniqd canary`: 30 for
-a refusal (an unrepresentable key or a key that is not a lead), 31 when the
-lead's chat cannot be used or its quarantine is full, 20 when no daemon
-answers, and 2 for usage (`send` is refused there, before the daemon is
-asked).
+a refusal (an unrepresentable key, a key that is not a lead, or a purge of a
+lead that is not stopped), 31 when the lead's chat cannot be used or its
+quarantine is full, 20 when no daemon answers, and 2 for usage (`send` is
+refused there, before the daemon is asked).
 
 **The scanner.** While a lead's switch is read and its chat is not stopped,
 one scanner of its own reads its reply folder every 2 seconds. The scanner
@@ -916,17 +941,36 @@ Every `lead.define` (a lead that was provisioned before included) and every
 is bound read-only over `~/.claude/CLAUDE.md` or `~/.codex/AGENTS.md`. It is
 reached from the state root's handle without following a link or crossing a
 mount point (the last name too), and must be a regular file of the daemon's
-user with mode 0600 and one link (`chat-folder` otherwise). Provisioning makes
-it empty. The text replaces the empty file only while the lead is proven
-stopped (the registry does not know it, or shows it defined and never started,
-stopped or ended, with no launch pending): a running lead's sandbox binds the
-file it started with. The text is written to a temporary file in the lead's
-folder and synced; the empty file is checked again, by its handle and its name,
-and the temporary file is exchanged with it (`RENAME_EXCHANGE`). The file the
-exchange took out must be that empty file: when the owner saved another version
-in the moment between, the exchange is undone, the owner's version is at its
-name again, and the define or start is refused (`chat-folder`) with a fixed
-note. The text is recognised as current only by a read of one byte more than
+user with mode 0600 and one link (`chat-folder` otherwise). A file a lease
+holds (its nonblocking open answers `EAGAIN`) or a lookup that meets a rename
+four times in a row refuses the define or start at once (`chat-folder`, and the
+daemon's log says the file is busy): nothing is changed, and the command can be
+run again later. Provisioning makes it empty. The text replaces the empty file
+only while the lead is proven stopped (the registry does not know it, or shows
+it defined and never started, stopped or ended, with no launch pending): a
+running lead's sandbox binds the file it started with. The text is written to a
+temporary file in the lead's folder and synced; the empty file is checked again,
+by its handle and its name, and the temporary file is exchanged with it
+(`RENAME_EXCHANGE`). The file the exchange took out must be that empty file,
+still empty: when the owner saved another version in the moment between, the
+exchange is undone, the owner's version is at its name again, and the define or
+start is refused (`chat-folder`) with a fixed note.
+
+The daemon never deletes an owner's version. It deletes only the empty file it
+checked and the text it wrote, each recognised by its inode. A version that
+would otherwise be lost is kept beside the file under a recovery name,
+`instructions.md.displaced-N` (the first free N from 1 to 64, mode 0600 when it
+is a plain file with one link): a second save that came before the exchange was
+undone, a version the undo could not put back, and anything an upgrade cut
+short by a crash left at the temporary name (`.instructions.md.tmp`), which the
+next define or start finds, whatever the instruction file holds, and keeps. The
+daemon's log says when it kept a leftover and, at every define and start, how
+many recovery names hold a version. The daemon never reads, overwrites or
+deletes them: look at each, put back what you want at `instructions.md`, and
+delete the rest. With all 64 names taken, a version is left where it is and the
+define or start is refused (`chat-folder`) until you delete some.
+
+The text is recognised as current only by a read of one byte more than
 it, compared whole, with the size unchanged after. A file that holds anything
 else is the owner's and is never overwritten. The text, whose numbers are the
 reader's own constants:
@@ -1063,7 +1107,9 @@ never removed: it waits, and counts toward the 32.
 **The text.** Trailing line feeds are trimmed. A reply that is not plain text
 (a tab, a carriage return, a control or format character, invalid UTF-8) or
 that is over 2000 bytes is dropped, never cut. A reply that looks like a key, a
-token or a full 40-digit commit id is not stored: the entry reads "A reply was
+token or a full commit id (any bare word of exactly 40 or 64 hexadecimal
+digits, all digits and all letters included) is not stored: the entry reads "A
+reply was
 withheld: it looked like a key, a token or a full commit id." Ask leads for
 short commit ids. For drops the owner sees one fixed line per reason a minute,
 and never the dropped text.

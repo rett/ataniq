@@ -348,9 +348,26 @@ func (l *leadMode) extension(ctl *leadlifecycle.Controller, reg *leadregistry.Re
 	// it; the seat's port gets the chat once it can answer.
 	if l.chat != nil {
 		l.chat.stateOf = func(role leadrole.Role) chatState { return chatStateOf(reg.Get(role)) }
+		l.chat.holdStopped = l.holdStopped
 		l.port.bind(l.chat)
 	}
 	return &leadExt{m: l}
+}
+
+// holdStopped takes the role's operation lock, as a define, a start and a
+// stop do (a try-lock: a command of the role in progress answers false), and
+// answers its release when the registry proves the lead stopped
+// (provenStopped). Otherwise it lets the lock go and answers false.
+func (l *leadMode) holdStopped(role leadrole.Role) (func(), bool) {
+	lr, ok := l.roles[role]
+	if !ok || !lr.tryLock() {
+		return nil, false
+	}
+	if !l.provenStopped(lr) {
+		lr.unlock()
+		return nil, false
+	}
+	return lr.unlock, true
 }
 
 // chatExtension is the extension of chat.list and chat.set.

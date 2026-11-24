@@ -89,6 +89,51 @@ func TestReplyText(t *testing.T) {
 	}
 }
 
+// A full commit id is withheld whatever its characters: one of a single
+// class (all digits, all letters), which brief.SecretShaped lets pass, too.
+// A short id and a run of another length pass.
+func TestReplyTextWithholdsFullCommitIDs(t *testing.T) {
+	digits40 := strings.Repeat("1234567890", 4)
+	letters40 := strings.Repeat("abcdef", 7)[:40]
+	upper40 := strings.ToUpper(letters40)
+	digits64 := strings.Repeat("9876543210", 7)[:64]
+	letters64 := strings.Repeat("fedcba", 11)[:64]
+	for _, id := range []string{digits40, letters40, digits64, letters64} {
+		if brief.SecretShaped(id) {
+			t.Fatalf("%d characters of one class are secret-shaped to brief; the case is covered there", len(id))
+		}
+	}
+	withheld := map[string]string{
+		"40 digits":            "Merged as " + digits40 + ".",
+		"40 letters":           "Merged as " + letters40 + ".",
+		"40 capital letters":   "Merged as " + upper40 + ".",
+		"64 digits":            "Object " + digits64,
+		"64 letters":           digits40[:3] + " " + letters64 + " more",
+		"40 digits alone":      digits40,
+		"in a path":            "see commit/" + letters40 + "/files",
+		"mixed (brief's case)": "Merged as " + syntheticCommitID() + ".",
+	}
+	for name, s := range withheld {
+		if text, v := ReplyText([]byte(s)); v != VerdictWithheld || text != "" {
+			t.Errorf("%s: got %q, %d; want withheld", name, text, v)
+		}
+	}
+	passed := map[string]string{
+		"7 digits":            "Committed 1234567.",
+		"12 letters":          "Committed abcdefabcdef.",
+		"12 mixed":            "Committed 1a2b3c4d5e6f.",
+		"39 digits":           "Total " + digits40[:39] + ".",
+		"41 digits":           "Total " + digits40 + "1.",
+		"40 in a word":        "x" + digits40,
+		"40 letters, not hex": strings.Repeat("abcdefg", 6)[:40],
+	}
+	for name, s := range passed {
+		if text, v := ReplyText([]byte(s)); v != VerdictOK || text != s {
+			t.Errorf("%s: got %q, %d; want it to pass", name, text, v)
+		}
+	}
+}
+
 func TestFixedTextsArePlain(t *testing.T) {
 	all := []string{TextTurnedOn, TextWithheld, TextStoppedFolder, TextStoppedOdd, TextStoppedFull}
 	for _, why := range dropOrder {

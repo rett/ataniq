@@ -235,14 +235,16 @@ func renameNoReplace(call renameFunc, oldDir int, oldName string, newDir int, ne
 // unlinkFunc is unlinkat; a test replaces it to make a removal fail.
 type unlinkFunc func(dirfd int, name string, flags int) error
 
-// purge is one purge's work on the quarantine: its budget of entries and
-// the calls it makes. Only [Store.PurgeQuarantine] uses it.
+// purge is one purge's work on the quarantine: its budget and the calls it
+// makes. Only [Store.PurgeQuarantine] uses it, and only for a lead proven
+// stopped: nothing but the daemon changes the quarantine meanwhile, so a
+// folder opened below it stays below it, and a tree only shrinks.
 type purge struct {
 	call   openat2Func
 	unlink unlinkFunc
 	rename renameFunc
-	left   int // how many more entries this purge may look at
-	moved  int // a counter for the names of folders moved up
+	left   int    // how many more removals this purge makes
+	moved  *int64 // the store's counter for the names of folders moved up
 }
 
 // errPurgeLeft says that a purge left part of a folder for a later one.
@@ -252,20 +254,26 @@ var errPurgeLeft = fmt.Errorf("%w: a folder set aside is left for a later purge"
 // first, one name at a time below descriptors, never following a link,
 // never crossing a mount point and never leaving the folder top (the
 // quarantine's entry being purged; dirfd and name are top's parent and name
-// at depth 0). Each name looked at spends one of p.left. A folder that holds
-// more than is left is purged in part: the names read are removed and the
-// rest is left for a later purge. A folder maxTreeDepth below top is not
-// walked: it is moved up, by a rename that replaces nothing, to a name of
-// its own directly in top, where a later purge goes on with it. What is
-// left answers errPurgeLeft; a purge that is run again makes progress on a
-// tree that does not change.
+// at depth 0).
+//
+// The walk is incremental: the folder's names are read a buffer at a time
+// and each is dealt with before the next is read, so a folder is entered,
+// and its first leaf removed, before a wide list of its siblings is read.
+// Each removal spends one of p.left; the names read and the moves up are
+// not counted. A folder maxTreeDepth below top is not walked: it is moved up,
+// by a rename that replaces nothing, to a name of its own directly in top,
+// where the walk or a later purge goes on with it. A folder the daemon's
+// user cannot open stays, and its siblings are still removed. What is left
+// answers errPurgeLeft. A purge that has one removal to spend removes one
+// entry when any can be removed, so purges run again empty a tree that
+// nothing else changes, however wide or deep.
 func (p *purge) removeTree(dirfd int, name string, top int, depth int) error {
 	fd, err := openAt(p.call, dirfd, name, unix.O_RDONLY|unix.O_DIRECTORY, 0)
 	switch {
 	case err == unix.ENOENT:
 		return nil
 	case err == unix.ENOTDIR || err == unix.ELOOP:
-		return p.unlink(dirfd, name, 0) // no folder any more
+		return p.remove(dirfd, name, 0) // no folder any more
 	case err != nil:
 		return err
 	}
@@ -273,61 +281,117 @@ func (p *purge) removeTree(dirfd int, name string, top int, depth int) error {
 	if depth == 0 {
 		top = fd
 	}
-	names, more, err := readNames(fd, p.left)
-	if err != nil {
-		return err
-	}
-	p.left -= len(names)
-	left := more
-	for _, n := range names {
+	left := false
+	err = eachName(fd, func(n string) error {
+		if p.left <= 0 {
+			return errPurgeLeft
+		}
 		st, err := lstatAt(fd, n)
 		switch {
 		case err == unix.ENOENT:
-			continue
+			return nil
 		case err != nil:
 			return err
 		case st.Mode&unix.S_IFMT == unix.S_IFDIR && depth+1 >= maxTreeDepth:
-			if err := p.moveUp(fd, n, top); err != nil {
-				return err
+			err = p.moveUp(fd, n, top)
+			if err == nil {
+				err = errPurgeLeft // it is in top now, for the walk of top
 			}
-			left = true
-			continue
 		case st.Mode&unix.S_IFMT == unix.S_IFDIR:
 			err = p.removeTree(fd, n, top, depth+1)
 		default:
-			err = p.unlink(fd, n, 0)
+			err = p.remove(fd, n, 0)
 		}
 		switch {
-		case err == errPurgeLeft:
+		case err == nil, err == unix.ENOENT:
+		case err == errPurgeLeft, err == unix.EACCES, err == unix.EPERM:
 			left = true
-		case err != nil && err != unix.ENOENT:
+			if p.left <= 0 {
+				return errPurgeLeft
+			}
+		default:
 			return err
 		}
-	}
-	if left {
+		return nil
+	})
+	switch {
+	case err == errPurgeLeft:
+		return errPurgeLeft
+	case err != nil:
+		return err
+	case p.left <= 0:
 		return errPurgeLeft
 	}
-	switch err := p.unlink(dirfd, name, unix.AT_REMOVEDIR); err {
+	switch err := p.remove(dirfd, name, unix.AT_REMOVEDIR); err {
 	case nil, unix.ENOENT:
 		return nil
 	case unix.ENOTEMPTY, unix.EEXIST:
-		return errPurgeLeft // something came in meanwhile
+		return errPurgeLeft // a name the walk could not remove, or one moved up into it
 	default:
+		if left {
+			return errPurgeLeft
+		}
 		return err
 	}
 }
 
+// remove unlinks name below dir and spends one of p.left when it did.
+func (p *purge) remove(dir int, name string, flags int) error {
+	err := p.unlink(dir, name, flags)
+	if err == nil {
+		p.left--
+	}
+	return err
+}
+
 // moveUp moves the folder name below dir to a new name directly in top, by a
-// rename that replaces nothing.
+// rename that replaces nothing. It spends nothing of p.left: the folder it
+// leaves is removed next, and a folder is moved at most once for every
+// maxTreeDepth folders above it. The names come from the store's counter, so
+// a purge run again never meets the same taken names.
 func (p *purge) moveUp(dir int, name string, top int) error {
 	for try := 0; try < 64; try++ {
-		p.moved++
-		err := renameNoReplace(p.rename, dir, name, top, ".purge-"+strconv.Itoa(p.moved))
+		*p.moved++
+		err := renameNoReplace(p.rename, dir, name, top, ".purge-"+strconv.FormatInt(*p.moved, 10))
 		if err != unix.EEXIST && err != unix.ENOTEMPTY {
 			return err
 		}
 	}
 	return errPurgeLeft
+}
+
+// eachName calls fn for each name of the folder (without "." and ".."), a
+// buffer of names at a time, in the order the folder gives them, until fn
+// answers an error, which eachName answers. Names fn removes may be skipped
+// or not; none is given twice. The names are the lead's: untrusted text,
+// never shown.
+func eachName(dirfd int, fn func(name string) error) error {
+	fd, err := openRetry(func() (int, error) {
+		return unix.Openat(dirfd, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	})
+	if err != nil {
+		return fmt.Errorf("leadchat: cannot list a folder: %w", err)
+	}
+	defer closeFD(fd)
+	buf := make([]byte, 8192)
+	for {
+		n, err := unix.ReadDirent(fd, buf)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("leadchat: cannot list a folder: %w", err)
+		}
+		if n <= 0 {
+			return nil
+		}
+		_, _, names := unix.ParseDirent(buf[:n], -1, nil)
+		for _, name := range names {
+			if err := fn(name); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 // openDirAt opens the folder name below dirfd and checks its descriptor: a
