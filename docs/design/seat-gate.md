@@ -1862,8 +1862,9 @@ sender. The seat's side is built (genesis G5): the verb `list`, the seat link's
 call with a room of its own (`internal/seatlink`, `genesis.go`), the seat's
 pages (`internal/seatapp`, see [the seat's pages](#the-seats-pages)) and the
 command's wiring (`cmd/ataniq-seat`, which needs nothing configured). It is not
-deployed and not phone-tested; what the brief is for (the plan, the charter)
-is a later stage, and nothing reads a finished brief yet.
+deployed and not phone-tested. The plan compiler is built as a library (genesis
+G10, `internal/genesis/plan`, see [the plan](#the-plan)); nothing calls it yet,
+and the charter is a later stage.
 
 The owner starts a new project on the phone by answering a few multiple-choice
 questions. The questions are the host's own, from a versioned catalog
@@ -1937,8 +1938,8 @@ as text: the labels of the chosen options, joined, or the owner's own text.
 Every text in a result is plain text the host owns: the catalog's, or the
 owner's own `other` text, which is in a row with `untrusted: true` (at most 200
 bytes). The seat escapes every text it shows, and shows an untrusted one as
-quoted data; an agent given the brief gets that text as quoted data and never
-as an instruction.
+quoted data. That text is for the owner's eyes only: it is never served to an
+implementation agent (see [the plan](#the-plan)).
 
 ### Caps
 
@@ -2150,6 +2151,79 @@ is the app's port (an answer decides nothing, so the guard passes it on while
 decisions are paused), and the command logs each hello's capabilities, with
 whether the phone offers "New project" (`ataniq-seat: the seat gate offers
 pair, read, login, decide, watch and genesis; the phone offers New project`).
+
+### The plan
+
+`internal/genesis/plan` compiles a finished brief into a project plan,
+`ataniq.project-plan/1`: a pure library, with no clock, no wire and no page
+yet. A plan is a proposal: it binds nothing and grants nothing. Three things
+bind, each approved on its own, and none of them is the plan: the creation of
+the project, the charter, and the delegation contracts. What always waits for
+the owner (publishing, a release, a push, credentials, raising a cap) is not a
+field of the plan: the page that shows a plan will say it in fixed words,
+whatever the plan holds.
+
+The record is canonical JSON under the brief's rules, with a SHA-256 digest:
+`plan` (the revision, 1 for a first compile), `prev_digest` (the digest of the
+revision before; empty for 1), `brief_digest`, `catalog_digest`, `template`
+(`id`, `version`) and `template_digest`, `title` (a label of the catalog, such
+as "A newsletter", never the owner's text), `milestones` (at most 4) of `tasks`
+(at most 6 each, 12 in all; each a `title`, a `kind` of build, write, review or
+test, a `size` of small, medium or large, which chooses no model,
+`depends_on`, a `scope` of area names such as `repo:src` or
+`store:manuscript`, and `checks` such as `unit-tests` or `rights-manifest`),
+`gates`, `first_demo` (one sentence of the template's), `review_points`
+(exactly as the owner chose them), `hosts`, `external_services` (every
+external service the work would use, by name, from a closed list: hosting
+service, email delivery, generator service, file or code host),
+`budget_band` (`none`, `low` or `medium`, never a number, with `enforcement:
+"advisory"`), `estimate` (a band of the tasks' sizes, such as "about a day of
+agent work", with `estimate: true` and the words "an estimate, not a
+promise"), `warnings` (closed ids: `estimate-may-exceed-band`,
+`rights-not-cleared`, `settle-at-desk`), `notes` and `notes_dropped`. A plan
+is at most 12 KiB, under the 16 KiB of a result on the wire. A milestone and a
+task keep their place in the template as their id (`m1`, `t4`), so an id means
+one thing in every revision, and a plan's ids may skip numbers. A plan holds
+no time: when it was made is the store's to keep, and the same brief gives the
+same bytes and digest at any time. `Decode` holds a plan to its grammar, its
+caps and its own consistency only, never to the templates embedded now: a
+plan of a template version no longer embedded still reads, and a template
+change never changes a plan.
+
+`Compile` refuses a brief that is not complete (an inferred answer the owner
+did not confirm counts as missing), a brief of another catalog and a kind with
+no template (`no_template`; the kind in the owner's own words is one, for
+which the phone will say a fixed sentence), each with a refusal code of the
+brief package. `Next` compiles the revision after a plan and refuses
+`no_change` when the plan would be the one before (the brief's digest alone
+differs for the same answers given again), and `Diff` names what changed
+against the revision the owner last saw: milestones and tasks added, removed or
+changed by id, top-level fields by name, with short texts, at most 48 entries,
+never a brief digest alone and never the owner's words.
+
+The templates are data, `ataniq.genesis-plan-template/1`, embedded in the
+canonical form, one per kind: software (a web app or a one-page tool),
+publishing (a newsletter or an article) and media (a podcast or a book). A
+changed template is a new version: a test pins the digest of each, and a plan
+records the digest it was compiled with. Every template holds the same
+security block (no push, no outward step, secrets by reference). A task, a
+gate, a service, a warning or a demo may hold a condition over one field of
+the brief, from a closed set (eq, in, contains, set, other); the fields and
+options it names are held to the catalog when the templates are loaded and
+when a plan is compiled, and one the catalog does not hold is a refusal, never
+a default. A field a template reads that takes the owner's own words needs an
+explicit `other` branch: a language in the owner's words gives a task to settle
+it at the desk, never anything drawn from the words.
+
+The owner's own text (an `other` answer, a note of the brief) is kept in
+`notes` as `{field, text, untrusted: true}`, at most 8 of 200 bytes, for the
+owner's eyes only, and chooses nothing. Notes are never served to an
+implementation agent: `Plan.ForAgent` is what an agent may be given, it holds
+no note, and a test holds every string in it to a constant of a template, the
+catalog or the package. Another test compiles two briefs that differ only in
+their `other` texts and notes, one reading like instructions with markup and
+commands, and finds the plans byte for byte equal outside `notes` and
+`brief_digest`.
 
 ## The record change
 
