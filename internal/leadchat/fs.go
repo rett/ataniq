@@ -32,19 +32,25 @@ var (
 	// ErrInvalid: an argument is not valid (a role that is not a layout
 	// name, a switch that is not off or read, a negative cursor).
 	ErrInvalid = errors.New("leadchat: invalid argument")
-	// ErrFull: the outbox holds more entries than one clear reads or does
-	// not stay empty, the sequence numbers or claim ids are spent, or the
-	// chat file would pass its bound.
+	// ErrFull: the claim folder holds more entries than a turn-on reads, the
+	// sequence numbers, claim ids or generations are spent, or the chat file
+	// would pass its bound.
 	ErrFull = errors.New("leadchat: too many entries")
-	// ErrUnavailable: the outbox cannot be reached safely: the kernel has no
-	// openat2 with the resolve flags (or a filter denies it), it cannot
-	// rename without replacing, the outbox and the chat folder are on two
-	// file systems, or the lead's home is not there. A turn-on is refused.
+	// ErrUnavailable: the outbox cannot be reached or claimed from safely:
+	// the kernel has no openat2 with the resolve flags (or a filter denies
+	// it), it cannot rename without replacing (the turn-on's probe failed),
+	// the outbox, the claim folder and the quarantine are on two file
+	// systems, the lead's home is not there, or the reply folder was made
+	// by another while chat was turned on. A turn-on is refused.
 	ErrUnavailable = errors.New("leadchat: the outbox is unavailable")
+	// ErrQuarantined: the lead's quarantine holds [MaxQuarantine] folders
+	// set aside, and a turn-on that would set aside one more is refused
+	// until the owner purges it ([Store.PurgeQuarantine]).
+	ErrQuarantined = errors.New("leadchat: the quarantine is full; purge it before chat is turned on again")
 	// ErrSuspended: the lead's chat was stopped by a scan (the outbox was
-	// replaced, removed or made open to others, or held too many entries);
-	// what it holds can be read, and only a fresh turn-on takes replies
-	// again.
+	// replaced, removed or made open to others, held a folder, a link or a
+	// special file, or held too many entries); what it holds can be read,
+	// and only a fresh turn-on takes replies again.
 	ErrSuspended = errors.New("leadchat: chat is stopped for the lead until it is turned on again")
 )
 
@@ -197,20 +203,25 @@ func privateDirAt(call openat2Func, dirfd int, name string) (int, error) {
 	return fd, nil
 }
 
+// renameFunc is renameat2; a test replaces it to stand in for a file system
+// that cannot rename without replacing.
+type renameFunc func(oldDir int, oldName string, newDir int, newName string, flags uint) error
+
 // renameNoReplace renames the one name oldName below oldDir to newName below
 // newDir, and fails rather than replace what newName holds. Neither name is
-// followed. A kernel or file system that cannot rename without replacing,
-// and two folders on two file systems, answer [ErrUnavailable].
-func renameNoReplace(oldDir int, oldName string, newDir int, newName string) error {
+// followed. A kernel, file system or filter that cannot or will not rename
+// so (EINVAL, ENOSYS, EOPNOTSUPP, EPERM, EACCES), and two folders on two
+// file systems, answer [ErrUnavailable].
+func renameNoReplace(call renameFunc, oldDir int, oldName string, newDir int, newName string) error {
 	for {
-		err := unix.Renameat2(oldDir, oldName, newDir, newName, unix.RENAME_NOREPLACE)
+		err := call(oldDir, oldName, newDir, newName, unix.RENAME_NOREPLACE)
 		switch err {
 		case unix.EINTR:
 			continue
-		case unix.EINVAL, unix.ENOSYS:
-			return fmt.Errorf("%w: the kernel cannot rename without replacing", ErrUnavailable)
+		case unix.EINVAL, unix.ENOSYS, unix.EOPNOTSUPP, unix.EPERM, unix.EACCES:
+			return fmt.Errorf("%w: the kernel cannot rename without replacing (%v)", ErrUnavailable, err)
 		case unix.EXDEV:
-			return fmt.Errorf("%w: the outbox and the chat folder are on two file systems", ErrUnavailable)
+			return fmt.Errorf("%w: the outbox, the claim folder and the quarantine are not on one file system", ErrUnavailable)
 		}
 		return err
 	}
@@ -222,10 +233,11 @@ type unlinkFunc func(dirfd int, name string, flags int) error
 // removeTree removes the folder name below dirfd and what it holds, one name
 // at a time below descriptors, without following a link or crossing a mount
 // point, at most maxTreeDepth deep and *left entries in all: a deeper or
-// larger tree, or one that does not stay empty, is left with [ErrFull].
+// larger tree, or one that does not stay empty, is left with [ErrFull]. Only
+// [Store.PurgeQuarantine] uses it, on what the quarantine holds.
 func removeTree(call openat2Func, unlink unlinkFunc, dirfd int, name string, left *int, depth int) error {
 	if depth >= maxTreeDepth {
-		return fmt.Errorf("%w: a claimed folder is too deep", ErrFull)
+		return fmt.Errorf("%w: a folder set aside is too deep", ErrFull)
 	}
 	fd, err := openAt(call, dirfd, name, unix.O_RDONLY|unix.O_DIRECTORY, 0)
 	switch {
@@ -242,7 +254,7 @@ func removeTree(call openat2Func, unlink unlinkFunc, dirfd int, name string, lef
 		return err
 	}
 	if more {
-		return fmt.Errorf("%w: a claimed folder holds too many entries", ErrFull)
+		return fmt.Errorf("%w: a folder set aside holds too many entries", ErrFull)
 	}
 	*left -= len(names)
 	for _, n := range names {
@@ -265,7 +277,7 @@ func removeTree(call openat2Func, unlink unlinkFunc, dirfd int, name string, lef
 	case nil, unix.ENOENT:
 		return nil
 	case unix.ENOTEMPTY, unix.EEXIST:
-		return fmt.Errorf("%w: a claimed folder did not stay empty", ErrFull)
+		return fmt.Errorf("%w: a folder set aside did not stay empty", ErrFull)
 	default:
 		return err
 	}

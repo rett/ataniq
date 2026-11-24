@@ -350,7 +350,7 @@ func TestJournalBound(t *testing.T) {
 		}
 		var b strings.Builder
 		b.WriteString(`{"kind":"open","v":1,"next":1,"claim":0}` + "\n")
-		b.WriteString(`{"kind":"switch","chat":"read","gen":1,"at":"2026-01-01T00:00:00Z","epoch":1,"discarded":0,"since":"2026-01-01T00:00:00.5Z","outbox":"1:2"}` + "\n")
+		b.WriteString(`{"kind":"switch","chat":"read","gen":1,"at":"2026-01-01T00:00:00Z","epoch":1,"discarded":0}` + "\n")
 		b.WriteString(`{"kind":"entry","seq":1,"gen":1,"epoch":1,"who":"system","at":"2026-01-01T00:00:00Z","text":"` + TextTurnedOn + `"}` + "\n")
 		text := strings.Repeat("x", MaxReplyBytes)
 		for seq := 2; b.Len() <= MaxJournalBytes; seq++ {
@@ -402,7 +402,7 @@ func TestTornFirstLine(t *testing.T) {
 
 func TestCorruptFileFailsThatLeadOnly(t *testing.T) {
 	open := `{"kind":"open","v":1,"next":1,"claim":0}`
-	sw := `{"kind":"switch","chat":"read","gen":1,"at":"2026-01-01T00:00:00Z","epoch":1,"discarded":0,"since":"2026-01-01T00:00:00.5Z","outbox":"1:2"}`
+	sw := `{"kind":"switch","chat":"read","gen":1,"at":"2026-01-01T00:00:00Z","epoch":1,"discarded":0}`
 	off := `{"kind":"switch","chat":"off","gen":2,"at":"2026-01-01T00:00:00Z","epoch":1,"discarded":0}`
 	marker := `{"kind":"entry","seq":1,"gen":1,"epoch":1,"who":"system","at":"2026-01-01T00:00:00Z","text":"` + TextTurnedOn + `"}`
 	lead := func(seq int, extra string) string {
@@ -421,11 +421,9 @@ func TestCorruptFileFailsThatLeadOnly(t *testing.T) {
 		{"unknown member", []string{open, strings.Replace(sw, `"discarded":0`, `"discarded":0,"extra":1`, 1)}, "does not have"},
 		{"missing member", []string{open, strings.Replace(sw, `,"discarded":0`, ``, 1)}, "is missing"},
 		{"open line without its claim", []string{strings.Replace(open, `,"claim":0`, ``, 1)}, "is missing"},
-		{"turn-on without its moment", []string{open, strings.Replace(sw, `,"since":"2026-01-01T00:00:00.5Z"`, ``, 1)}, "moment or outbox"},
-		{"turn-on with a moment not UTC", []string{open, strings.Replace(sw, `00.5Z`, `00.5+00:00`, 1)}, "moment or outbox"},
-		{"turn-on without its outbox", []string{open, strings.Replace(sw, `,"outbox":"1:2"`, ``, 1)}, "moment or outbox"},
-		{"turn-on with a bad outbox", []string{open, strings.Replace(sw, `"1:2"`, `"1:02"`, 1)}, "moment or outbox"},
-		{"turn-off with an outbox", []string{open, strings.Replace(off, `"discarded":0`, `"discarded":0,"outbox":"1:2"`, 1)}, "turn-off"},
+		{"turn-on with a moment", []string{open, strings.Replace(sw, `"discarded":0`, `"discarded":0,"since":"2026-01-01T00:00:00.5Z"`, 1)}, "does not have"},
+		{"turn-off with an empty moment", []string{open, strings.Replace(off, `"discarded":0`, `"discarded":0,"since":""`, 1)}, "does not have"},
+		{"turn-off with an empty outbox", []string{open, strings.Replace(off, `"discarded":0`, `"discarded":0,"outbox":""`, 1)}, "does not have"},
 		{"member of another kind", []string{open, sw, marker, lead(2, src+`,"next":2`)}, "does not have"},
 		{"member twice", []string{open, strings.Replace(sw, `"gen":1`, `"gen":1,"gen":1`, 1)}, "appears twice"},
 		{"kind twice", []string{open, strings.Replace(sw, `"kind":"switch"`, `"kind":"switch","kind":"switch"`, 1)}, "appears twice"},
@@ -450,6 +448,11 @@ func TestCorruptFileFailsThatLeadOnly(t *testing.T) {
 		{"system entry with a claim", []string{open, sw, marker, strings.Replace(strings.Replace(lead(2, src), `"lead"`, `"system"`, 1), `"text":"x"`, `"text":"`+TextStoppedFolder+`"`, 1)}, "claim id"},
 		{"claim not a number", []string{open, sw, marker, lead(2, `,"claim":"7"`)}, "wrong type"},
 		{"claim zero", []string{open, sw, marker, lead(2, `,"claim":0`)}, "claim id"},
+		{"system entry with claim zero", []string{open, sw, marker, strings.Replace(strings.Replace(lead(2, `,"claim":0`), `"lead"`, `"system"`, 1), `"text":"x"`, `"text":"`+TextStoppedFolder+`"`, 1)}, "claim id"},
+		{"turned-on entry with claim zero", []string{open, sw, strings.Replace(marker, `"}`, `","claim":0}`, 1)}, "claim id"},
+		{"generation past the bound", []string{open, strings.Replace(off, `"gen":2`, fmt.Sprintf(`"gen":%d`, maxGen+1), 1)}, "generation is out of range"},
+		{"turn-on at the last generation", []string{open, strings.Replace(sw, `"gen":1`, fmt.Sprintf(`"gen":%d`, maxGen), 1)}, "generation is out of range"},
+		{"generation past int64", []string{open, strings.Replace(off, `"gen":2`, `"gen":9223372036854775808`, 1)}, "wrong type"},
 		{"claim not grown", []string{open, sw, marker, lead(2, src), lead(3, src)}, "claim id"},
 		{"data after the record", []string{open + ` {}`}, "after the record"},
 		{"line too long", []string{open, `{"kind":"other","pad":"` + strings.Repeat("a", MaxLineBytes) + `"}`}, "longer than the bound"},
@@ -691,4 +694,80 @@ func TestClosedStore(t *testing.T) {
 	if _, err := s.SetSwitch("read", 1); !errors.Is(err, ErrClosed) {
 		t.Fatalf("SetSwitch: %v", err)
 	}
+}
+
+// The generation has a bound, and a read switch always leaves one for its
+// turn-off: the last transitions the store can make are made and replay, and
+// the one past them is refused and changes nothing.
+func TestGenerationBound(t *testing.T) {
+	head := `{"kind":"open","v":1,"next":1,"claim":0}` + "\n"
+	offAt := func(gen int64) string {
+		return fmt.Sprintf(`{"kind":"switch","chat":"off","gen":%d,"at":"2026-01-01T00:00:00Z","epoch":1,"discarded":0}`+"\n", gen)
+	}
+	write := func(e *env, data string) {
+		if err := os.Mkdir(filepath.Join(e.dir, ChatDirName), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(e.chatFile(testRole), []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("the last turn-on and turn-off", func(t *testing.T) {
+		e := newEnv(t)
+		write(e, head+offAt(maxGen-2))
+		s := e.open()
+		if st, err := s.SetSwitch("read", 1); err != nil || st.Gen != maxGen-1 {
+			t.Fatalf("on: %+v, %v", st, err)
+		}
+		if st, err := s.SetSwitch("off", 1); err != nil || st.Gen != maxGen {
+			t.Fatalf("off: %+v, %v", st, err)
+		}
+		before := e.lines(testRole)
+		if _, err := s.SetSwitch("read", 1); !errors.Is(err, ErrFull) {
+			t.Fatalf("on past the bound: %v", err)
+		}
+		if st, _ := s.Status(); st.Chat != "off" || st.Gen != maxGen {
+			t.Fatalf("status %+v", st)
+		}
+		if after := e.lines(testRole); !slices.Equal(before, after) {
+			t.Fatalf("a refused turn-on changed the file:\n%q\n%q", before, after)
+		}
+		_ = s.Close()
+		s = e.open()
+		if st, _ := s.Status(); st.Gen != maxGen {
+			t.Fatalf("after reopen %+v", st)
+		}
+	})
+	t.Run("a restart at the last read generation", func(t *testing.T) {
+		e := newEnv(t)
+		write(e, head+offAt(maxGen-2))
+		s := e.on()
+		_ = s.Close()
+		s = e.open() // turns off at maxGen
+		if st, _ := s.Status(); st.Chat != "off" || st.Gen != maxGen {
+			t.Fatalf("after restart %+v", st)
+		}
+		_ = s.Close()
+		e.open()
+	})
+	t.Run("a suspended lead needs room for its turn-off", func(t *testing.T) {
+		e := newEnv(t)
+		write(e, head+offAt(maxGen-3))
+		s := e.on()
+		if err := os.Remove(e.outbox); err != nil {
+			t.Fatal(err)
+		}
+		if rep := ingest(t, s); !rep.Suspended {
+			t.Fatalf("report %+v", rep)
+		}
+		if _, err := s.SetSwitch("read", 1); !errors.Is(err, ErrFull) {
+			t.Fatalf("on again: %v", err)
+		}
+		if st, _ := s.Status(); st.Chat != "read" || !st.Suspended || st.Gen != maxGen-2 {
+			t.Fatalf("status %+v", st)
+		}
+		if st, err := s.SetSwitch("off", 1); err != nil || st.Gen != maxGen-1 {
+			t.Fatalf("off: %+v, %v", st, err)
+		}
+	})
 }

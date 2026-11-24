@@ -791,38 +791,68 @@ that the wiring that comes next has one place to point to.
 `/home/lead/.ataniq-replies`, which is
 `<state root>/leads/<layout role>/home/.ataniq-replies` on the host: its own
 writable home, so no new bind is needed. It writes under a name that starts
-with a dot and then renames the file to a name of lower-case letters, digits,
-dots, dashes and underscores that ends in `.txt` (at most 64 bytes, starting
-with a letter or a digit). The daemon takes each file out of the folder, reads it
-and removes it, and assigns the sender, the time and the order; it never shows a
-file name.
+with a dot, closes the file, and then renames it to a name of lower-case
+letters, digits, dots, dashes and underscores that ends in `.txt` (at most 64
+bytes, starting with a letter or a digit). The daemon takes each file out of the
+folder, reads it and removes it, and assigns the sender, the time and the order;
+it never shows a file name. The folder is reached from the state root's
+descriptor, one name at a time, by `openat2` without following a link or
+crossing a mount point; a kernel without `openat2` (or one whose filter denies
+it) leaves the reply folder unavailable, and chat cannot be turned on.
 
-**What is taken.** The folder is reached from the state root's descriptor, one
-name at a time, by `openat2` without following a link or crossing a mount
-point; a kernel without `openat2` (or one whose filter denies it) leaves the
-reply folder unavailable, and chat cannot be turned on. The reply folder must be
-the lead's (the daemon's user) with mode 0700 exactly. Before anything is moved,
-every name is looked at: a folder holding more than 256 entries, or more than 32
-replies and folders (folders are never removed, so they count for good), is left
-untouched and the lead's chat stops with one line, "Chat was stopped: the reply
-folder held more than 256 entries, or more than 32 replies and folders. Turn chat
-on again to go on." Otherwise every file the daemon takes or removes is first
-moved, by one rename that never replaces anything, into a claim folder of the
-daemon's (`<state root>/chat/<layout role>.claims`, mode 0700, on the same file
-system, bound into no sandbox) under a name the daemon chooses, and only that
-claim is read and removed: the lead's file names are never acted on again, so a
-lead that writes the same name again keeps its new file. A reply is claimed when
-its change time (which the lead cannot set, and which the rename sets) is at
-least 2 seconds old. The claim is taken only when it is a regular file of the
-daemon's user with one link, that group and other cannot write (the lead's
-umask may let them read it), and at most 2000 bytes; it is read and checked
-again, and a file that changed while it was read waits for the next scan. At
-most 6 replies a minute and 60 an hour are taken from one lead; the rest wait. A
-symbolic link, a FIFO, a socket, a device, a folder that took a reply's name, a
-file with more than one link and a file with another name are removed; a folder
-in the reply folder is left as it is; a file whose name starts with a dot is
-left until it is 10 minutes old and then removed. A file whose change time is
-before chat was turned on is removed unread.
+**A fresh folder for every turn-on.** The reply folder belongs to one
+conversation: from a turn-on to the next turn-off, stop or restart. Turning chat
+on makes it afresh, so nothing written before can be shown, whatever its times
+say. The turn-on removes what an earlier conversation left in the daemon's claim
+folder; removes the earlier reply folder when it is empty, and otherwise moves it
+whole, unread and unopened, into the lead's quarantine
+(`<state root>/leads/<layout role>/quarantine`, mode 0700, made by the daemon and
+bound into no sandbox), under `1` to `4`; makes a new reply folder with mode 0700
+and keeps it open until the conversation ends; and makes a probe file in it and
+takes it as it would take a reply. The turn-on is refused, and chat stays off,
+when the lead's home is not there or is reached through a link, when the file
+system cannot rename without replacing (the probe failed), when the lead made the
+folder again in the moment between, and when the quarantine already holds four
+entries. The quarantine is the owner's to empty: the store's purge removes what
+it holds, one name at a time, never following a link, at most 16 deep and 8192
+entries a purge, and leaves and counts what it cannot remove. The lead must use
+the folder the daemon made and never make it: what it writes there while chat
+is off is set aside unread at the next turn-on.
+
+**What stops the chat.** Every scan checks that the reply folder's name still
+leads to the folder the turn-on made (the same device and inode, which no other
+folder can have while the daemon holds it open), of the daemon's user, mode 0700,
+reached without a link. One that is gone, replaced, made open to others or closed
+to the daemon stops the lead's chat with one line, "Chat was stopped: the reply
+folder is gone, was replaced, is no longer private, or cannot be read. Turn chat
+on again to go on." Before anything is moved, every name is looked at: a folder
+that holds more than 32 entries of any kind, counting the replies taken and not
+yet read, is left untouched and the chat stops with "Chat was stopped: more than
+32 files were waiting in the reply folder. Turn chat on again to go on."; a
+folder, a symbolic link, a FIFO, a socket or a device in it is never opened or
+walked, and the chat stops with "Chat was stopped: the reply folder held a
+folder, a link or a special file. Turn chat on again to go on." A stopped chat
+can still be read; turning it on again starts a new conversation, and sets the
+whole folder aside.
+
+**What is taken.** A reply is taken when its change time (which the lead cannot
+set, and which the rename sets) is at least 2 seconds old: it is moved, by one
+rename that never replaces anything, into a claim folder of the daemon's
+(`<state root>/chat/<layout role>.claims`, mode 0700, on the same file system,
+bound into no sandbox) under a name the daemon chooses, and only that claim is
+judged, read and removed: the lead's file names are never acted on again, so a
+lead that writes the same name again keeps its new file. A claim that is not a
+regular file (something took the reply's name in the moment before) is moved
+unopened into the quarantine and stops the chat as above. A regular file is
+taken only when it is of the daemon's user, has one link, is readable by its
+owner, cannot be written by group or other (the lead's umask may let them read
+it), and holds at most 2000 bytes; otherwise it is dropped. It is read and
+checked again, and one that changed while it was read waits for the next scan,
+and nothing newer is taken meanwhile; one that cannot be read whole three times,
+or is still changing 30 seconds after it was first left, is dropped. At most 6
+replies a minute and 60 an hour are taken from one lead; the rest wait. A file
+whose name starts with a dot, and a file with another name, is never taken and
+never removed: it waits, and counts toward the 32.
 
 **The text.** Trailing line feeds are trimmed. A reply that is not plain text
 (a tab, a carriage return, a control or format character, invalid UTF-8) or
@@ -832,38 +862,36 @@ withheld: it looked like a key, a token or a full commit id." Ask leads for
 short commit ids. For drops the owner sees one fixed line per reason a minute,
 and never the dropped text.
 
-**Exactly once.** The entry is written and synced, with the number of its
-claim, before the claim is removed. Every scan looks at the claim folder first:
-a claim whose entry was stored is only removed, and a claim that was never
-stored is read and stored once. So a daemon that stops, or a removal that fails,
-between the claim, the entry and the removal stores each reply once, and the
-same text written twice under the same name is two replies. After a restart,
-chat is off, and the next turn-on removes every claim and clears the reply
-folder, so nothing written before the restart is shown.
+**Recovery.** The entry is written and synced, with the number of its claim,
+before the claim is removed. Within one conversation each claim is stored at
+most once: a scan that failed between the claim and the entry reads it again
+and stores it once, and one that failed between the entry and the removal only
+removes it. The same text written twice under the same name is two replies. **A
+restart of the daemon ends the conversation:** every lead's chat is off, what
+was stored is deleted, and the next turn-on discards the claims and the reply
+folder it left, unread. So a reply taken but not stored before a restart is
+lost, and nothing is shown twice. For the same reason no folder is synced after
+a claim or a removal: a power loss is a restart.
 
 **The switch.** Each lead's chat is `off` or `read` (sending is not built). It
-takes effect at once. Turning it on makes the reply folder (mode 0700) when it is
-not there and checks it, removes what is left in the claim folder, and clears
-the reply folder: everything that is not a folder is claimed and removed, and the
-folder is listed again until a listing finds nothing (more than 8192 entries in
-a listing, a folder that does not stay empty, or more than 32 folders refuse the
-turn-on, and chat stays off). It records the folder's identity and the moment it
-was found empty, and the first entry reads "Chat was turned on. Replies written
-from now on show here." A file that still turns up with a change time before
-that moment is removed unread, so no reply written before chat was turned on is
-shown. Every scan checks that the reply folder is still the folder that was
-checked: one that is gone, replaced, made open to others or closed to the daemon
-stops the lead's chat with one line, "Chat was stopped: the reply folder is
-gone, was replaced, or is no longer private. Turn chat on again to go on." A
-stopped chat can still be read; turning it on again starts a new conversation,
-as turning it off and on would. Turning it off deletes that lead's stored
-replies. **A restart of the daemon turns every lead's chat off**, and deletes
-what was stored; it is never turned back on from disk.
+takes effect at once. Turning it on does what is above and then writes the
+first entry, "Chat was turned on. Replies written from now on show here."
+Turning it off lets go of the reply folder and deletes that lead's stored
+replies. A restart turns every lead's chat off; it is never turned back on from
+disk.
+
+**What the lead is told.** The lead's instructions must say: write each reply
+under a dot-name in the folder the daemon made, close it, then rename it to a
+reply name; never make the folder, change its mode, or put a folder, a link or a
+special file in it; and when the folder is not there, or chat was stopped, stop
+writing replies until the owner turns chat on again. A full folder stops the
+chat; it does not wait for the lead to write again later.
 
 **The store.** `<state root>/chat/<layout role>.jsonl` (folder mode 0700, file
 mode 0600, no sandbox binds it): strict JSON lines of at most 8 KiB (no member
-named twice, none null, valid UTF-8, the system lines only the fixed texts),
-each synced, locked by the daemon, checked by handle like [the command
+named twice, none null, valid UTF-8, the system lines only the fixed texts, a
+claim number only on a reply's line, and switch generations below 2^53 that
+always leave one for the turn-off after a turn-on), each synced, locked by the daemon, checked by handle like [the command
 table](#the-command-table), and at most 8 MiB in all. A torn last line is cut;
 any other damage leaves that lead's chat unavailable and touches no other lead;
 nothing is repaired, and the error names the line and a fixed reason, never what
