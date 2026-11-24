@@ -829,12 +829,13 @@ func TestOwnerChannelTagMakefileCheck(t *testing.T) {
 		"\n# comment that names test-ownerchannel\n" +
 		"test-ownerchannel: doctor\n" +
 		"\t@own=$$(grep ataniq_ownerchannel .); \\\n" +
-		"\tsh scripts/go-tool.sh test -tags ataniq_ownerchannel $$own ./tests/ && \\\n" +
-		"\tsh scripts/go-tool.sh test -tags ataniq_ownerchannel,ataniq_canary ./tests/\n" +
+		"\tsh scripts/go-tool.sh test -tags ataniq_ownerchannel $${own:-./tests/} && \\\n" +
+		"\tsh scripts/go-tool.sh test -tags ataniq_ownerchannel,ataniq_canary $${both:-./tests/}\n" +
 		"\ntest: doctor\n\t@sh scripts/go-tool.sh test ./...\n"
 	// ownRecipe adds a line to the recipe of the target.
 	ownRecipe := func(line string) string {
-		return strings.Replace(good, "ataniq_canary ./tests/\n\ntest:", "ataniq_canary ./tests/\n"+line+"\ntest:", 1)
+		const last = "ataniq_canary $${both:-./tests/}\n"
+		return strings.Replace(good, last+"\ntest:", last+line+"\ntest:", 1)
 	}
 	// withBuild is the sample with the recipe of the build target, whose one
 	// build line is buildLine; build replaces that line, and buildRecipe adds a
@@ -1452,9 +1453,10 @@ func TestOwnerChannelTagInstructions(t *testing.T) {
 
 // make test-ownerchannel runs doctor, then two runs of the tests, each over
 // the packages that hold a file whose constraint names a tag it sets, found at
-// run time, and ./tests/. The second run sets the pair of tags. With no such
-// package each run is ./tests/ alone, and the second run does not start when
-// the first fails.
+// run time. The second run sets the pair of tags. With no such package a run
+// is ./tests/ alone, so that go test is never given an empty list; ./tests/ is
+// otherwise left to make test (see TestCanaryTagTestsClosure). The second run
+// does not start when the first fails.
 func TestOwnerChannelTagMakeTarget(t *testing.T) {
 	const own, pair = "test -tags ataniq_ownerchannel ", "test -tags ataniq_ownerchannel,ataniq_canary "
 	for _, tc := range []struct {
@@ -1466,7 +1468,12 @@ func TestOwnerChannelTagMakeTarget(t *testing.T) {
 		{"no tagged package", map[string]string{
 			"internal/a/a.go": "package a\n",
 			"tests/x_test.go": "package tests\n\nconst tag = \"ataniq_ownerchannel\"\n",
-		}, "", ""},
+		}, "./tests/", "./tests/"},
+		// A run with no package of its own runs ./tests/ alone, the other
+		// run its packages.
+		{"only the pair run has a package", map[string]string{
+			"internal/leadcanary/k.go": ownHdrCanaryTag + "\n\npackage a\n",
+		}, "./tests/", "./internal/leadcanary"},
 		{"each run reads the tags it sets", map[string]string{
 			"cmd/ataniqd/o.go":                    ownHdrTagged + "\n\npackage a\n",
 			"internal/leaddaemon/o.go":            ownHdrBothTags + "\n\npackage a\n",
@@ -1481,8 +1488,8 @@ func TestOwnerChannelTagMakeTarget(t *testing.T) {
 			".hidden/a.go":                        ownHdrTagged + "\n\npackage a\n",
 			"internal/other/comment.go":           "// the ataniq_ownerchannel tag\n\npackage a\n",
 			"tests/y_test.go":                     "package tests\n",
-		}, "./cmd/ataniqd ./internal/approval/hostadapter ./internal/leaddaemon ",
-			"./cmd/ataniqd ./internal/approval/hostadapter ./internal/leadcanary ./internal/leaddaemon "},
+		}, "./cmd/ataniqd ./internal/approval/hostadapter ./internal/leaddaemon",
+			"./cmd/ataniqd ./internal/approval/hostadapter ./internal/leadcanary ./internal/leaddaemon"},
 		// Every form Go builds with the tag is found, as in make test-canary.
 		{"every form Go builds with the tag", map[string]string{
 			"internal/plusonly/p.go":     ownHdrPlusOwn + "\n\npackage a\n",
@@ -1490,16 +1497,16 @@ func TestOwnerChannelTagMakeTarget(t *testing.T) {
 			"internal/tabbed/t.go":       "//go:build\tlinux && ataniq_ownerchannel\n\npackage a\n",
 			"internal/indented/i.go":     "  \t" + ownHdrTagged + "\n\npackage a\n",
 			"internal/nested/build/n.go": ownHdrTagged + "\n\npackage a\n",
-		}, "./internal/indented ./internal/nested/build ./internal/plusonly ./internal/tabbed ",
-			"./internal/indented ./internal/nested/build ./internal/plusonly ./internal/tabbed "},
+		}, "./internal/indented ./internal/nested/build ./internal/plusonly ./internal/tabbed",
+			"./internal/indented ./internal/nested/build ./internal/plusonly ./internal/tabbed"},
 		{"a nested checkout under a hidden folder", map[string]string{
 			"cmd/ataniqd/o.go":                   ownHdrTagged + "\n\npackage a\n",
 			".tool/worktrees/w/go.mod":           "module ataniq\n",
 			".tool/worktrees/w/cmd/ataniqd/o.go": ownHdrTagged + "\n\npackage a\n",
-		}, "./cmd/ataniqd ", "./cmd/ataniqd "},
+		}, "./cmd/ataniqd", "./cmd/ataniqd"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			want := own + tc.first + "./tests/\n" + pair + tc.both + "./tests/\n"
+			want := own + tc.first + "\n" + pair + tc.both + "\n"
 			got, out, err := runOwnerMakeTarget(t, tc.files, "")
 			if err != nil {
 				t.Fatalf("make test-ownerchannel: %s %v", out, err)
@@ -1519,7 +1526,7 @@ func TestOwnerChannelTagMakeTarget(t *testing.T) {
 		if err == nil {
 			t.Fatalf("make test-ownerchannel passed although the first run failed:\n%s", out)
 		}
-		if want := own + "./cmd/ataniqd ./tests/\n"; got != want {
+		if want := own + "./cmd/ataniqd\n"; got != want {
 			t.Fatalf("go ran\n%s\nwant\n%s", got, want)
 		}
 	})

@@ -1498,7 +1498,7 @@ test: doctor
 # The tagged run.
 test-canary: doctor
 	@pkgs=$$(grep -rl 'ataniq_canary' .); \
-	sh scripts/go-tool.sh test -tags ataniq_canary $$pkgs ./tests/
+	sh scripts/go-tool.sh test -tags ataniq_canary $${pkgs:-./tests/}
 
 canary-build: doctor
 	@sh scripts/go-tool.sh build -tags ataniq_canary ./cmd/ataniq-canary
@@ -1960,8 +1960,10 @@ func TestCanaryTagListRefusesTaggedPackages(t *testing.T) {
 }
 
 // make test-canary runs doctor, then the tagged tests of every package that
-// holds a file whose constraint names the tag, found at run time, and ./tests/,
-// and with no such package runs ./tests/ alone.
+// holds a file whose constraint names the tag, found at run time, and with no
+// such package runs ./tests/ alone, so that go test is never given an empty
+// list. ./tests/ is otherwise left to make test (see
+// TestCanaryTagTestsClosure).
 func TestCanaryTagMakeTarget(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -1983,7 +1985,7 @@ func TestCanaryTagMakeTarget(t *testing.T) {
 			"cmd/ataniqd/main.go":               "// +build ignore\n\npackage main\n",
 			"cmd/ataniq-holder/canary.go":       "//go:build linux && ataniq_canary\n\npackage main\n",
 			"tests/y_test.go":                   "package tests\n",
-		}, "test -tags ataniq_canary ./cmd/ataniq-holder ./internal/leadcanary ./internal/leadcanary/sub ./internal/leaddaemon ./tests/"},
+		}, "test -tags ataniq_canary ./cmd/ataniq-holder ./internal/leadcanary ./internal/leadcanary/sub ./internal/leaddaemon"},
 		// Every form Go builds with the tag is found.
 		{"every form Go builds with the tag", map[string]string{
 			"internal/plusonly/p.go":     hdrPlusTagged + "\n\npackage a\n",
@@ -1995,7 +1997,7 @@ func TestCanaryTagMakeTarget(t *testing.T) {
 			"build/o.go":                 hdrTagged + "\n\npackage a\n",
 			"internal/plain/p.go":        hdrPlusPlain + "\n\npackage a\n",
 			"internal/plain/q.go":        "// the ataniq_canary tag is not a constraint\n\npackage a\n",
-		}, "test -tags ataniq_canary ./build ./internal/indented ./internal/nested/build ./internal/plusonly ./internal/tabbed ./tests/"},
+		}, "test -tags ataniq_canary ./build ./internal/indented ./internal/nested/build ./internal/plusonly ./internal/tabbed"},
 		// Go's ./... skips folders that start with a dot or an underscore,
 		// such as a nested checkout under a hidden tool folder with its own
 		// go.mod.
@@ -2005,13 +2007,13 @@ func TestCanaryTagMakeTarget(t *testing.T) {
 			".tool/worktrees/w/internal/leadcanary/a.go": hdrTagged + "\n\npackage a\n",
 			"internal/_old/a.go":                         hdrTagged + "\n\npackage a\n",
 			".hidden/a.go":                               hdrTagged + "\n\npackage a\n",
-		}, "test -tags ataniq_canary ./internal/leadcanary ./tests/"},
+		}, "test -tags ataniq_canary ./internal/leadcanary"},
 		// The tree the slice leaves, with a nested checkout under a hidden folder.
 		{"a correct tree with tagged packages", canaryCorrectTree(), "test -tags ataniq_canary " +
 			"./cmd/ataniq-canary ./cmd/ataniq-canary-standin ./cmd/ataniq-holder ./cmd/ataniqd " +
 			"./internal/leadcanary ./internal/leadcanary/provision ./internal/leadcanary/provision/provisiontest " +
 			"./internal/leadcanary/standin ./internal/leaddaemon ./internal/leadholder/canaryroot " +
-			"./internal/leadholder/injectbridge ./internal/leadholder/sandboxstart ./internal/leadholder/serve ./tests/"},
+			"./internal/leadholder/injectbridge ./internal/leadholder/sandboxstart ./internal/leadholder/serve"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir, pin := fixture(t)
