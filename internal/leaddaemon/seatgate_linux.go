@@ -37,7 +37,11 @@ import (
 // folder for the guided new-project interview (SeatGate.GenesisDir), it opens
 // the thread store there and serves the capability genesis (gatehost.CapGenesis),
 // the interview's one operation, seat.genesis. A thread store that does not
-// open is logged and leaves the interview out: the gate serves the rest.
+// open is logged and leaves the interview out: the gate serves the rest. When
+// the gate is given a chat port (SeatGate.Chat: the command gives one only to
+// the phone trial, the STAND-IN sample leads of package chat/standin), it
+// serves the capability chat (gatehost.CapChat), the seat's read-only view of
+// the leads' conversations, seat.chat; every other gate serves no chat.
 
 const (
 	// SeatGateDirName is the name of the gate's folder in the owner folder
@@ -237,6 +241,18 @@ type SeatGate struct {
 	// "New project"), and nothing in the folder is read or written. The rest
 	// of the gate, and the daemon, are not stopped for it.
 	GenesisDir string
+	// Chat is the chat port of the gate, or nil for a gate that serves no
+	// chat. With one the gate serves the capability chat, last in its hello,
+	// and seat.chat, the seat's read-only view of the leads' conversations,
+	// with or without an origin: a read decides nothing. The command gives
+	// one only to the phone trial (run --owner-channel --trial), the STAND-IN
+	// sample leads of package chat/standin; every other daemon serves no
+	// chat.
+	Chat gatehost.ChatPort
+	// ChatNote, when set and the gate serves chat, is a line the gate writes
+	// after its start line, to say what the chat port is (the trial's says it
+	// serves samples).
+	ChatNote string
 	// Log receives the gate's lines: the one start line, the handler's
 	// refusals and a stop that did not go as asked; nil discards them. No
 	// line holds a pin.
@@ -264,14 +280,16 @@ func (g *SeatGate) logf(format string, a ...any) {
 // new-project interview, when the gate has a GenesisDir whose thread store
 // opens, with or without an origin: an answer decides nothing either. A store
 // that does not open is not an error of the start: the gate logs it and
-// serves the rest without genesis. The
+// serves the rest without genesis. It serves chat when it was given a chat
+// port (SeatGate.Chat), with or without an origin: a read decides nothing. The
 // calls of login and decide are bound to the gate's own key fingerprint and
 // checked against the origin and its host, the relying party id. It writes one line once the
 // gate listens, which names the address, the gate's key fingerprint, the
 // origin when it serves login and decide, and what it serves (the
-// capabilities of the handler's hello, in its order: watch and genesis among
-// them when it serves them), with why it serves no login and decide only when
-// it does not; never a pin.
+// capabilities of the handler's hello, in its order: watch, genesis and chat
+// among them when it serves them), with why it serves no login and decide only
+// when it does not; never a pin. With chat and a ChatNote it writes the note
+// as a second line.
 //
 // Stop stops accepting, lets the requests in flight finish for the server's
 // shutdown grace, closes every connection and returns once the server has
@@ -310,6 +328,9 @@ func (g *SeatGate) Start(svc gatehost.Port) (stop func(), err error) {
 			opts = append(opts, gatehost.WithGenesis(store))
 		}
 	}
+	if g.Chat != nil {
+		opts = append(opts, gatehost.WithChat(g.Chat))
+	}
 	closeStore := func() {
 		if store != nil {
 			_ = store.Close()
@@ -318,9 +339,9 @@ func (g *SeatGate) Start(svc gatehost.Port) (stop func(), err error) {
 	var h *gatehost.Handler
 	var serves string
 	seat, canDecide := svc.(gatehost.SeatPort)
-	// The handler lists watch when its service can wait (gatehost.New) and
-	// genesis when it was given the thread store; the start line says what it
-	// lists.
+	// The handler lists watch when its service can wait (gatehost.New),
+	// genesis when it was given the thread store and chat when it was given
+	// the chat port; the start line says what it lists.
 	switch {
 	case g.Origin == "":
 		why := g.NoOrigin
@@ -374,6 +395,9 @@ func (g *SeatGate) Start(svc gatehost.Port) (stop func(), err error) {
 		}
 	}()
 	g.logf("seat gate: listening on %s, key fingerprint %s%s", ln.Addr(), g.Identity.Fingerprint(), SafeText(serves))
+	if g.Chat != nil && g.ChatNote != "" {
+		g.logf("seat gate: %s", SafeText(g.ChatNote))
+	}
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -402,7 +426,8 @@ func storeReason(err error) string {
 }
 
 // capWords says a capability list in words, as the start line does: "pair and
-// read", "pair, read and watch", "pair, read, login, decide, watch and genesis".
+// read", "pair, read and watch", "pair, read, login, decide, watch, genesis
+// and chat".
 func capWords(caps []string) string {
 	switch len(caps) {
 	case 0:

@@ -20,6 +20,7 @@ import (
 
 	"ataniq/internal/approval/hostadapter"
 	"ataniq/internal/approval/ownerchannel"
+	"ataniq/internal/chat/standin"
 	"ataniq/internal/clientapi"
 	"ataniq/internal/leaddaemon"
 )
@@ -36,6 +37,19 @@ import (
 // trialNote is the line the daemon prints after the STAND-IN banner when it
 // serves the trial.
 const trialNote = "owner channel: TRIAL: sample cards only, made by ataniqd trial submit; an approval applies nothing"
+
+// trialChatNote is the line the trial's gate writes after its start line: its
+// chat is the STAND-IN's.
+const trialChatNote = "chat: STAND-IN sample leads and conversations of the phone trial, held in memory; no lead is read or reached"
+
+// trialChat gives the trial's gate the STAND-IN chat port (package
+// chat/standin): three sample leads and their sample conversations, made once
+// from the clock and held in memory, so the owner can try the seat's lead
+// pages. Only the trial's gate gets it; every other gate serves no chat.
+func trialChat(gate *leaddaemon.SeatGate) {
+	gate.Chat = standin.New(time.Now)
+	gate.ChatNote = trialChatNote
+}
 
 // trialOpSubmit is the operation that makes sample cards. Only a daemon run
 // with --trial serves it.
