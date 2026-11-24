@@ -336,7 +336,15 @@ func TestCanaryRunKitInstructionLines(t *testing.T) {
 			t.Errorf("the run kit item of AGENTS.md does not say %s", want)
 		}
 	}
+	// Three targets build with a tag, each the one for its tags: the run kit
+	// with the canary tag alone, the owner's daemon with the owner channel's tag
+	// alone, and the daemon for real scratch leads with the seat gate with both.
 	const oneTarget = "`make canary-build` is the one target that builds binaries with the canary tag"
+	oneTargets := []string{
+		oneTarget + " alone",
+		"`make ownerchannel-build` is the one target that builds a binary with that tag alone",
+		"`make scratch-seat-build` is the one target that builds the daemon with both tags",
+	}
 	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
 		data, err := os.ReadFile(filepath.Join(root(t), name))
 		if err != nil {
@@ -345,8 +353,30 @@ func TestCanaryRunKitInstructionLines(t *testing.T) {
 		if strings.Contains(string(data), "no other target builds with the tag") {
 			t.Errorf("%s still says that no other target builds with the tag", name)
 		}
+		if strings.Contains(string(data), "no other target builds the pair") {
+			t.Errorf("%s still says that no other target builds the pair of tags", name)
+		}
 		if !strings.Contains(string(data), oneTarget) {
 			t.Errorf("%s does not say: %s", name, oneTarget)
+		}
+		for _, want := range oneTargets {
+			if !strings.Contains(string(data), want) {
+				t.Errorf("%s does not say: %s", name, want)
+			}
+		}
+		// The pair's build is for the owner's own trial and no release's.
+		if !regexp.MustCompile("`make scratch-seat-build` is the one target that builds the daemon with both tags[^.]*`build/scratch-seat/`[^.]*for the owner's own trial of real scratch leads with the seat gate[^.]*no release and no CI job uses it").Match(data) {
+			t.Errorf("%s does not say that make scratch-seat-build builds into build/scratch-seat/ for the owner's own trial and that no release and no CI job uses it", name)
+		}
+	}
+	// The guides that name the builds with a tag name the pair's build too.
+	for _, name := range []string{"README.md", "docs/lead-daemon.md", "docs/seat-gate.md"} {
+		data, err := os.ReadFile(filepath.Join(root(t), name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), "`make scratch-seat-build`") {
+			t.Errorf("%s does not name make scratch-seat-build", name)
 		}
 	}
 	// The two helpers are fenced too: the reset deletes after a typed word, the

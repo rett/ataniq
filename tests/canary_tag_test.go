@@ -84,8 +84,10 @@ var canaryForbiddenDeps = []string{
 }
 
 // canaryMakeTargets are the Makefile targets whose recipes may name the tag.
-// test-ownerchannel runs the pair of tags together, so it names this one too.
-var canaryMakeTargets = []string{"test-canary", "canary-build", "test-ownerchannel"}
+// test-ownerchannel runs the pair of tags together, and scratch-seat-build
+// builds the daemon with the pair, so they name this one too (the owner
+// channel's guard holds the recipe of scratch-seat-build to its exact lines).
+var canaryMakeTargets = []string{"test-canary", "canary-build", "test-ownerchannel", "scratch-seat-build"}
 
 func underAnyPath(p string, folders []string) bool {
 	for _, folder := range folders {
@@ -380,8 +382,9 @@ func buildsNeverWithTag(exprs []constraint.Expr) bool {
 
 var makeRuleLine = regexp.MustCompile(`^([A-Za-z0-9_.%/ -]+):($|[^=])`)
 
-// canaryTargetRef finds the name of one of canaryMakeTargets as a word.
-var canaryTargetRef = regexp.MustCompile(`(^|[^A-Za-z0-9_.-])(test-canary|canary-build)($|[^A-Za-z0-9_.-])`)
+// canaryTargetRef finds the name of one of canaryMakeTargets as a word, but
+// test-ownerchannel, which the owner channel's guard reads.
+var canaryTargetRef = regexp.MustCompile(`(^|[^A-Za-z0-9_.-])(test-canary|canary-build|scratch-seat-build)($|[^A-Za-z0-9_.-])`)
 
 var makeInclude = regexp.MustCompile(`^-?s?include\s`)
 
@@ -823,9 +826,9 @@ var canaryJobGuardKey = regexp.MustCompile(`^["']?(if|continue-on-error)["']?\s*
 // checkCanaryWorkflow is check (5). Its input is every file under .github:
 // the workflow files directly below .github/workflows by their file name, and
 // every other file (composite actions, nested folders, anything else) by its
-// path. No file names the tag or canary-build outside a comment, no run line of
-// any file names the run kit's folder, and no file uses a local action outside
-// .github. test.yml has a job test-canary that runs the make target and never
+// path. No file names the tag, or canary-build or scratch-seat-build outside a
+// comment, no run line of any file names the run kit's folder, and no file uses
+// a local action outside .github. test.yml has a job test-canary that runs the make target and never
 // names the tag, uses only the actions of canaryJobUses, has no if or
 // continue-on-error that could keep it from failing, has read-only
 // permissions, and is written in no flow style, with no complex or merge key
@@ -877,8 +880,10 @@ func checkCanaryWorkflow(files map[string]string) []string {
 				kept = append(kept, line)
 			}
 		}
-		if strings.Contains(strings.Join(kept, "\n"), "canary-build") {
-			problems = append(problems, name+": names canary-build")
+		for _, target := range []string{"canary-build", "scratch-seat-build"} {
+			if strings.Contains(strings.Join(kept, "\n"), target) {
+				problems = append(problems, name+": names "+target)
+			}
 		}
 		if strings.Contains(files[name], canaryTag) {
 			problems = append(problems, name+": names the tag "+canaryTag)
@@ -1575,6 +1580,17 @@ func TestCanaryTagMakefileCheck(t *testing.T) {
 		{"names that only look like an include", "includedir = x\nINCLUDES = y\n", nil},
 		{"the targets in comments and a continued phony line", ".PHONY: test \\\n\ttest-canary\n# test-canary and canary-build\n", nil},
 		{"a name that only contains a tagged target's", "test-canary-x: doctor\n\t@true\nmy-canary-build:\n\t@true\n", nil},
+		// The daemon built with the pair of tags: its recipe may name the tag,
+		// and no other line may name the target.
+		{"the pair build", "scratch-seat-build: doctor\n\t@mkdir -p build/scratch-seat\n\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel,ataniq_canary -trimpath -o build/scratch-seat/ataniqd ./cmd/ataniqd\n", nil},
+		{"the pair build in the phony line and a comment", ".PHONY: test scratch-seat-build\n# scratch-seat-build is the owner's\n", nil},
+		{"the pair build's recipe shared with another target", "scratch-seat-build other: doctor\n\t@sh scripts/go-tool.sh build -tags ataniq_ownerchannel,ataniq_canary ./cmd/ataniqd\n", []int{2}},
+		{"a prerequisite of another target names the pair build", "release: doctor scratch-seat-build\n\t@true\n", []int{1}},
+		{"a recipe that calls the pair build", "test: doctor\n\t@$(MAKE) scratch-seat-build\n", []int{2}},
+		{"the canary build runs the pair build", "canary-build: doctor\n\t@$(MAKE) scratch-seat-build\n", []int{2}},
+		{"the pair build depends on the canary build", "scratch-seat-build: canary-build\n\t@true\n", []int{1}},
+		{"a variable that names the pair build", "T = scratch-seat-build\n", []int{1}},
+		{"a name that only contains the pair build's", "my-scratch-seat-build: doctor\n\t@true\nscratch-seat-builds:\n\t@true\n", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var got []int
@@ -1746,6 +1762,11 @@ func TestCanaryTagWorkflowCheck(t *testing.T) {
 		{"a composite action that names the tag", map[string]string{"test.yml": goodWorkflow, ".github/actions/b/action.yml": "runs:\n  using: composite\n  steps:\n    - run: go build -tags ataniq_canary ./...\n      shell: sh\n"}, true},
 		{"a composite action that only mentions canary-build in a comment", map[string]string{"test.yml": goodWorkflow, ".github/actions/b/action.yml": "# not canary-build\nruns:\n  using: composite\n  steps: []\n"}, false},
 		{"a file that is not yaml names canary-build", map[string]string{"test.yml": goodWorkflow, ".github/scripts/ship.sh": "make canary-build\n"}, true},
+		{"another workflow runs scratch-seat-build", map[string]string{"test.yml": goodWorkflow, "release.yml": "jobs:\n  b:\n    steps:\n      - run: make scratch-seat-build\n"}, true},
+		{"the first job runs scratch-seat-build", edit("- run: make test\n", "- run: make scratch-seat-build\n"), true},
+		{"a composite action that runs scratch-seat-build", map[string]string{"test.yml": goodWorkflow, ".github/actions/b/action.yml": "runs:\n  using: composite\n  steps:\n    - run: make scratch-seat-build\n      shell: sh\n"}, true},
+		{"a file that is not yaml names scratch-seat-build", map[string]string{"test.yml": goodWorkflow, ".github/scripts/ship.sh": "make scratch-seat-build\n"}, true},
+		{"a comment that names scratch-seat-build is not a run", map[string]string{"test.yml": goodWorkflow, "x.yml": "# make scratch-seat-build is for the owner\nname: x\n"}, false},
 		{"another workflow names the tag", map[string]string{"test.yml": goodWorkflow, "other.yml": "# ataniq_canary\n"}, true},
 		{"a quoted if on the job", edit("    timeout-minutes: 30\n    permissions", "    'if': always()\n    permissions"), true},
 		{"a quoted continue-on-error on a step of the job", edit("      - run: make test-canary\n", "      - run: make test-canary\n        \"continue-on-error\": true\n"), true},
