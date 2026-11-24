@@ -341,6 +341,10 @@ func TestGenesisPlanPageIsGuarded(t *testing.T) {
 	}
 }
 
+// finishNoPlanLine is the warning of the summary page above the finish
+// button when the answers are not complete.
+const finishNoPlanLine = "If you finish now, no plan is drawn for this project, and a finished brief cannot be changed."
+
 // The summary links the draft plan when the port says it is ready, and
 // otherwise says why there is none; the finished page links the plan kept
 // with the brief, and says what is true now.
@@ -358,12 +362,27 @@ func TestGenesisPlanLinks(t *testing.T) {
 	if strings.Contains(page, "see-plan") || !strings.Contains(page, "9 of 14 answers are filled in: no plan can be drawn yet.") {
 		t.Errorf("the summary of a brief not complete:\n%s", page)
 	}
+	// Finishing with answers missing is warned of, above the button, in
+	// the form; with a plan ready, or with all answers in and no template,
+	// there is no such line.
+	if !strings.Contains(page, finishNoPlanLine) || strings.Index(page, finishNoPlanLine) > strings.Index(page, `id="finish-go"`) {
+		t.Errorf("the summary of a brief not complete does not warn above the finish button:\n%s", page)
+	}
 	sum.Filled = 14
 	g.set(GenesisVerbRound, &sum, nil)
 	page = r.getWith("/projects/"+testThread, s).Body.String()
 	if strings.Contains(page, "see-plan") || !strings.Contains(page, planNoTemplate) {
 		t.Errorf("the summary of a kind with no template:\n%s", page)
 	}
+	if strings.Contains(page, finishNoPlanLine) {
+		t.Error("the summary of a kind with no template warns of no plan beside its own sentence")
+	}
+	sum.PlanReady = true
+	g.set(GenesisVerbRound, &sum, nil)
+	if page = r.getWith("/projects/"+testThread, s).Body.String(); strings.Contains(page, finishNoPlanLine) {
+		t.Error("the summary with a plan ready warns of no plan")
+	}
+	sum.PlanReady = false
 	fin := sampleSummary()
 	fin.State, fin.Digest = GenesisStateFinished, strings.Repeat("7d", 32)
 	g.set(GenesisVerbRound, &fin, nil)

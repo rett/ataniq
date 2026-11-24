@@ -21,7 +21,8 @@
 {{end}}</section>
 <form id="finish" action="{{projectHref .View.Thread "finish"}}" method="post">
 <p>Finishing keeps the answers as the project's brief. Nothing starts, and no agent is given the brief.</p>
-<button id="finish-go" type="submit">Looks right: finish</button>
+{{if and (not .View.PlanReady) (ne .View.Filled .View.Total)}}<p class="note-line">If you finish now, no plan is drawn for this project, and a finished brief cannot be changed.</p>
+{{end}}<button id="finish-go" type="submit">Looks right: finish</button>
 </form>
 <nav aria-label="Project">
 <p><a id="project-list" href="/projects/">Back to the project list</a></p>

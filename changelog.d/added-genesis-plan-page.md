@@ -20,3 +20,6 @@
   fixed words. The seat's link reads the plan in one call of the interview's
   room and keeps a draft 10 seconds and a kept plan 5 minutes; a change of an
   answer forgets the draft.
+  The summary of a brief with answers missing says, above the finish button,
+  that finishing now draws no plan and that a finished brief cannot be
+  changed.
