@@ -161,7 +161,10 @@
 // trailing line feeds, and drops what is not plain text by
 // [ownerwire.ValidChatText]. A text that [brief.SecretShaped], weighed on the
 // whole text, finds shaped like a key, a token or a full commit id is not
-// stored: the entry is the fixed system text [TextWithheld]. A drop writes a
+// stored, nor one that holds a bare word of exactly 40 or 64 hexadecimal
+// digits of a single class (all digits or all letters), a full commit id
+// [brief.SecretShaped] lets pass: the entry is the fixed system text
+// [TextWithheld]. A drop writes a
 // fixed system entry, at most one per reason a minute. No entry holds a file
 // name, a path or a count.
 //
