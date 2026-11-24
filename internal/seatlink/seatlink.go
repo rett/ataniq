@@ -141,9 +141,10 @@
 // pings included, and every browser's traffic shares it. The link counts
 // every call it sends, by kind, over [BudgetWindow], and sends none past
 // the room of its kind (see budget.go): anyone's (pairings and logins),
-// reads, decisions, the watcher's waits, chat and the interview's calls, beside
-// the pings of the transport every [PingInterval]. A call without room is seatapp.ErrBusy and
-// is not sent; the watcher alone sleeps for room instead.
+// reads (the leads' chat among them, see chat.go), decisions, the watcher's
+// waits and the interview's calls, beside the pings of the transport every
+// [PingInterval]. A call without room is seatapp.ErrBusy and is not sent;
+// the watcher alone sleeps for room instead.
 // The rooms and the pings add up to GateRate, so the gate's rate never
 // refuses a call the link sent. A decision's challenge is asked only with
 // room for its seat.decide as well, kept for that one challenge until the

@@ -119,27 +119,73 @@ func TestSeatChatRejectsMalformedAnswers(t *testing.T) {
 	}
 }
 
-// A six-round interview, with start and two corrections, at a tap every
-// twelve seconds (a person reads each question). Cards reloads every twenty seconds, including its projects
-// read. The owner opens chat and refreshes it twice during the interview.
+// TestSeatChatSharesTheReadRoom: chat's calls are reads. They count in the
+// read room the Cards pages use, a chat call past it is ErrBusy and reaches
+// no gate, and the refusal's journal line names the kind read.
+func TestSeatChatSharesTheReadRoom(t *testing.T) {
+	var l logLines
+	clock := &testClock{t: decideNow}
+	d := Daemon{budget: budget{now: clock.now, logf: l.logf}, gnow: clock.now}
+	p := chatTestPeer{since: clock.now(), port: standin.New(clock.now)}
+	list := seatapp.ChatCall{Verb: seatapp.ChatLeads}
+	if _, err := d.chat(context.Background(), list, &p); err != nil || p.calls != 1 {
+		t.Fatalf("directory: %v, %d calls", err, p.calls)
+	}
+	if got := d.budget.used(kindRead); got != 1 {
+		t.Fatalf("a chat call took %d of the read room", got)
+	}
+	for i := 1; i < readRoom; i++ {
+		if !d.budget.take(kindRead) {
+			t.Fatalf("read %d refused", i+1)
+		}
+	}
+	read := seatapp.ChatCall{Verb: seatapp.ChatRead, Lead: "daemon:alpha"}
+	if _, err := d.chat(context.Background(), read, &p); err != seatapp.ErrBusy || p.calls != 1 {
+		t.Fatalf("a chat read past the read room: %v, %d calls", err, p.calls)
+	}
+	got := l.all()
+	if len(got) != 1 || !strings.Contains(got[0], "kind read (14 of 14 in the last 80 seconds)") {
+		t.Fatalf("lines: %q", got)
+	}
+}
+
+// TestSeatChatMixedBudget: the owner walks a six-round interview, with its
+// start and two corrections (9 taps), at a tap every twelve seconds (a person
+// reads each question), while a Cards tab reloads every twenty seconds (its
+// card list, a read, and its list of open projects, an interview call), and
+// opens a lead's conversation and refreshes it twice, twenty seconds apart.
+// Chat shares the read room with the Cards tab: each chat page is counted as
+// two reads, the directory and a transcript, as a real lead's would be (the
+// link reuses neither here: the directory lives 20 seconds and a real
+// transcript is never reused). None of it is refused.
 func TestSeatChatMixedBudget(t *testing.T) {
 	clock := &testClock{t: decideNow}
 	b := budget{now: clock.now}
-	take := func(k kind) {
+	take := func(at int, k kind) {
 		t.Helper()
 		if !b.take(k) {
-			t.Fatalf("normal use exhausted room %d", k)
+			t.Fatalf("second %d: normal use exhausted the room of kind %s", at, kindWords[k])
 		}
 	}
-	for tap := 0; tap < 9; tap++ {
-		take(kindGenesis)
-		if tap%4 == 0 {
-			take(kindRead)
-			take(kindGenesis)
-			take(kindChat)
-			take(kindChat)
+	reads := 0
+	for at := 0; at <= 180; at++ {
+		if at%20 == 0 {
+			take(at, kindRead)
+			take(at, kindGenesis)
+			reads++
 		}
-		clock.advance(12 * time.Second)
+		if at%12 == 0 && at/12 < 9 {
+			take(at, kindGenesis)
+		}
+		if at == 30 || at == 50 || at == 70 {
+			take(at, kindRead)
+			take(at, kindRead)
+			reads += 2
+		}
+		clock.advance(time.Second)
+	}
+	if reads != 16 {
+		t.Fatalf("the walk made %d reads", reads)
 	}
 }
 

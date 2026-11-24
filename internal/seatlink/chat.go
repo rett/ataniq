@@ -96,7 +96,7 @@ func (d *Daemon) chat(ctx context.Context, c seatapp.ChatCall, peer chatPeer) (v
 	cached, hit := m.answers[c]
 	raw := cached.raw
 	if !hit {
-		if !d.budget.take(kindChat) {
+		if !d.budget.take(kindRead) {
 			return v, seatapp.ErrBusy
 		}
 		if err := peer.Call(ctx, ownerwire.OpSeatChat, json.RawMessage(params), &raw); err != nil {
