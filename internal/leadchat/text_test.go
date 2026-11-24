@@ -90,7 +90,7 @@ func TestReplyText(t *testing.T) {
 }
 
 func TestFixedTextsArePlain(t *testing.T) {
-	all := []string{TextTurnedOn, TextWithheld, TextStoppedFolder, TextStoppedFull}
+	all := []string{TextTurnedOn, TextWithheld, TextStoppedFolder, TextStoppedOdd, TextStoppedFull}
 	for _, why := range dropOrder {
 		s, ok := dropTexts[why]
 		if !ok {
@@ -113,7 +113,7 @@ func TestFixedTextsNameTheirBounds(t *testing.T) {
 		bounds []int
 	}{
 		{dropTexts[ReasonTooLong], []int{MaxReplyBytes}},
-		{TextStoppedFull, []int{MaxDirEntries, MaxWaiting}},
+		{TextStoppedFull, []int{MaxWaiting}},
 	}
 	for _, c := range cases {
 		for _, b := range c.bounds {
@@ -122,7 +122,7 @@ func TestFixedTextsNameTheirBounds(t *testing.T) {
 			}
 		}
 	}
-	for _, s := range append([]string{TextTurnedOn, TextWithheld, TextStoppedFolder, TextStoppedFull}, slices.Collect(maps.Values(dropTexts))...) {
+	for _, s := range append([]string{TextTurnedOn, TextWithheld, TextStoppedFolder, TextStoppedOdd, TextStoppedFull}, slices.Collect(maps.Values(dropTexts))...) {
 		if !systemText(s) {
 			t.Errorf("%q is not a fixed text", s)
 		}

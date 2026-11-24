@@ -350,7 +350,7 @@ func TestJournalBound(t *testing.T) {
 		}
 		var b strings.Builder
 		b.WriteString(`{"kind":"open","v":1,"next":1,"claim":0}` + "\n")
-		b.WriteString(`{"kind":"switch","chat":"read","gen":1,"at":"2026-01-01T00:00:00Z","epoch":1,"discarded":0,"since":"2026-01-01T00:00:00.5Z","outbox":"1:2"}` + "\n")
+		b.WriteString(`{"kind":"switch","chat":"read","gen":1,"at":"2026-01-01T00:00:00Z","epoch":1,"discarded":0}` + "\n")
 		b.WriteString(`{"kind":"entry","seq":1,"gen":1,"epoch":1,"who":"system","at":"2026-01-01T00:00:00Z","text":"` + TextTurnedOn + `"}` + "\n")
 		text := strings.Repeat("x", MaxReplyBytes)
 		for seq := 2; b.Len() <= MaxJournalBytes; seq++ {
@@ -402,7 +402,7 @@ func TestTornFirstLine(t *testing.T) {
 
 func TestCorruptFileFailsThatLeadOnly(t *testing.T) {
 	open := `{"kind":"open","v":1,"next":1,"claim":0}`
-	sw := `{"kind":"switch","chat":"read","gen":1,"at":"2026-01-01T00:00:00Z","epoch":1,"discarded":0,"since":"2026-01-01T00:00:00.5Z","outbox":"1:2"}`
+	sw := `{"kind":"switch","chat":"read","gen":1,"at":"2026-01-01T00:00:00Z","epoch":1,"discarded":0}`
 	off := `{"kind":"switch","chat":"off","gen":2,"at":"2026-01-01T00:00:00Z","epoch":1,"discarded":0}`
 	marker := `{"kind":"entry","seq":1,"gen":1,"epoch":1,"who":"system","at":"2026-01-01T00:00:00Z","text":"` + TextTurnedOn + `"}`
 	lead := func(seq int, extra string) string {
@@ -421,11 +421,9 @@ func TestCorruptFileFailsThatLeadOnly(t *testing.T) {
 		{"unknown member", []string{open, strings.Replace(sw, `"discarded":0`, `"discarded":0,"extra":1`, 1)}, "does not have"},
 		{"missing member", []string{open, strings.Replace(sw, `,"discarded":0`, ``, 1)}, "is missing"},
 		{"open line without its claim", []string{strings.Replace(open, `,"claim":0`, ``, 1)}, "is missing"},
-		{"turn-on without its moment", []string{open, strings.Replace(sw, `,"since":"2026-01-01T00:00:00.5Z"`, ``, 1)}, "moment or outbox"},
-		{"turn-on with a moment not UTC", []string{open, strings.Replace(sw, `00.5Z`, `00.5+00:00`, 1)}, "moment or outbox"},
-		{"turn-on without its outbox", []string{open, strings.Replace(sw, `,"outbox":"1:2"`, ``, 1)}, "moment or outbox"},
-		{"turn-on with a bad outbox", []string{open, strings.Replace(sw, `"1:2"`, `"1:02"`, 1)}, "moment or outbox"},
-		{"turn-off with an outbox", []string{open, strings.Replace(off, `"discarded":0`, `"discarded":0,"outbox":"1:2"`, 1)}, "turn-off"},
+		{"turn-on with a moment", []string{open, strings.Replace(sw, `"discarded":0`, `"discarded":0,"since":"2026-01-01T00:00:00.5Z"`, 1)}, "does not have"},
+		{"turn-off with an empty moment", []string{open, strings.Replace(off, `"discarded":0`, `"discarded":0,"since":""`, 1)}, "does not have"},
+		{"turn-off with an empty outbox", []string{open, strings.Replace(off, `"discarded":0`, `"discarded":0,"outbox":""`, 1)}, "does not have"},
 		{"member of another kind", []string{open, sw, marker, lead(2, src+`,"next":2`)}, "does not have"},
 		{"member twice", []string{open, strings.Replace(sw, `"gen":1`, `"gen":1,"gen":1`, 1)}, "appears twice"},
 		{"kind twice", []string{open, strings.Replace(sw, `"kind":"switch"`, `"kind":"switch","kind":"switch"`, 1)}, "appears twice"},

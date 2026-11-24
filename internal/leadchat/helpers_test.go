@@ -129,16 +129,15 @@ func (e *env) reply(name, text string) {
 // names lists the outbox, sorted.
 func (e *env) names() []string {
 	e.t.Helper()
-	ents, err := os.ReadDir(e.outbox)
-	if err != nil {
+	return e.list(e.outbox)
+}
+
+// file writes a file of the lead in the outbox under name, as it is.
+func (e *env) file(name, text string) {
+	e.t.Helper()
+	if err := os.WriteFile(filepath.Join(e.outbox, name), []byte(text), 0o600); err != nil {
 		e.t.Fatal(err)
 	}
-	var out []string
-	for _, d := range ents {
-		out = append(out, d.Name())
-	}
-	sort.Strings(out)
-	return out
 }
 
 // claimDir is the lead's claim folder.
@@ -147,7 +146,25 @@ func (e *env) claimDir() string { return filepath.Join(e.dir, ChatDirName, claim
 // claims lists the lead's claim folder, sorted.
 func (e *env) claims() []string {
 	e.t.Helper()
-	ents, err := os.ReadDir(e.claimDir())
+	return e.list(e.claimDir())
+}
+
+// quarDir is the lead's quarantine.
+func (e *env) quarDir() string { return filepath.Join(e.dir, "leads", testRole, QuarantineName) }
+
+// quarantined lists the lead's quarantine, sorted; none is an empty list.
+func (e *env) quarantined() []string {
+	e.t.Helper()
+	if _, err := os.Lstat(e.quarDir()); os.IsNotExist(err) {
+		return nil
+	}
+	return e.list(e.quarDir())
+}
+
+// list lists a folder, sorted.
+func (e *env) list(dir string) []string {
+	e.t.Helper()
+	ents, err := os.ReadDir(dir)
 	if err != nil {
 		e.t.Fatal(err)
 	}

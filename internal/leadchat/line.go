@@ -38,20 +38,6 @@ func parseTime(s string) (time.Time, bool) {
 	return t, true
 }
 
-// sinceLayout is the form of the moment a turn-on found the outbox empty:
-// UTC to the nanosecond, ending in Z.
-const sinceLayout = time.RFC3339Nano
-
-func formatSince(t time.Time) string { return t.UTC().Format(sinceLayout) }
-
-func parseSince(s string) (time.Time, bool) {
-	t, err := time.Parse(sinceLayout, s)
-	if err != nil || formatSince(t) != s {
-		return time.Time{}, false
-	}
-	return t, true
-}
-
 // openLine is the first line of every file: the version, and the
 // allocation high-waters: the next sequence number to give at least, and the
 // highest claim id given.
@@ -62,9 +48,8 @@ type openLine struct {
 	Claim int64  `json:"claim"`
 }
 
-// switchLine is a change of the lead's chat switch, with its generation. A
-// turn-on also records the moment it found the outbox empty (since, to the
-// nanosecond) and the outbox's identity ("device:inode").
+// switchLine is a change of the lead's chat switch, with its generation; a
+// turn-on records how many things it set aside (discarded).
 type switchLine struct {
 	Kind      string `json:"kind"`
 	Chat      string `json:"chat"`
@@ -72,8 +57,6 @@ type switchLine struct {
 	At        string `json:"at"`
 	Epoch     int64  `json:"epoch"`
 	Discarded int64  `json:"discarded"`
-	Since     string `json:"since,omitempty"`
-	Outbox    string `json:"outbox,omitempty"`
 }
 
 // entryLine is one entry of the conversation. claim is the claim id of the
@@ -92,7 +75,7 @@ type entryLine struct {
 // members are the members each kind of line must have, and may have besides.
 var members = map[string]struct{ want, allow []string }{
 	kindOpen:   {want: []string{"kind", "v", "next", "claim"}},
-	kindSwitch: {want: []string{"kind", "chat", "gen", "at", "epoch", "discarded"}, allow: []string{"since", "outbox"}},
+	kindSwitch: {want: []string{"kind", "chat", "gen", "at", "epoch", "discarded"}},
 	kindEntry:  {want: []string{"kind", "seq", "gen", "epoch", "who", "at", "text"}, allow: []string{"claim"}},
 }
 
