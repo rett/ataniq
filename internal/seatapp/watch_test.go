@@ -160,7 +160,7 @@ func (r *rig) held() int {
 // waitHeld waits until n polls are held.
 func (r *rig) waitHeld(t *testing.T, n int) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(waitBound)
 	for r.held() != n {
 		if time.Now().After(deadline) {
 			t.Fatalf("%d held polls, want %d", r.held(), n)
@@ -168,6 +168,12 @@ func (r *rig) waitHeld(t *testing.T, n int) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// waitBound is the liveness bound of the tests' waits for something they
+// expect to happen: a passing run never waits it out, so it is generous for
+// a host under load. A wait that is itself the assertion (that a poll is not
+// held to the end of its hold, say) has a bound of its own.
+const waitBound = 30 * time.Second
 
 // within reads one answer from ch, or fails after d.
 func within(t *testing.T, ch <-chan *httptest.ResponseRecorder, d time.Duration) *httptest.ResponseRecorder {
@@ -198,7 +204,7 @@ func TestSeatWatchHoldsAndWakes(t *testing.T) {
 	case <-time.After(30 * time.Millisecond):
 	}
 	wd.set(func(st *WatchState) { st.Version, st.Waiting = "bb", 3 })
-	a := pollAnswer(t, within(t, got, 3*time.Second))
+	a := pollAnswer(t, within(t, got, waitBound))
 	if a.State != "changed" || a.Version != "bb" || a.Waiting != 3 {
 		t.Errorf("answer %+v", a)
 	}
@@ -364,7 +370,7 @@ func TestSeatWatchEndsWithTheSession(t *testing.T) {
 	got := r.pollAsync(context.Background(), pollOK, s)
 	r.waitHeld(t, 1)
 	r.postWith("/api/logout", "{}", s)
-	if a := pollAnswer(t, within(t, got, 3*time.Second)); a.State != "ended" {
+	if a := pollAnswer(t, within(t, got, waitBound)); a.State != "ended" {
 		t.Errorf("after a logout: %+v", a)
 	}
 
@@ -373,7 +379,7 @@ func TestSeatWatchEndsWithTheSession(t *testing.T) {
 	got = r2.pollAsync(context.Background(), pollOK, s2)
 	r2.waitHeld(t, 1)
 	r2.clock.Advance(SessionIdle)
-	if a := pollAnswer(t, within(t, got, 3*time.Second)); a.State != "ended" {
+	if a := pollAnswer(t, within(t, got, waitBound)); a.State != "ended" {
 		t.Errorf("after the idle time: %+v", a)
 	}
 }
@@ -411,7 +417,7 @@ func TestSeatWatchOffline(t *testing.T) {
 	got := r.pollAsync(context.Background(), pollOK, s)
 	r.waitHeld(t, 1)
 	wd.set(func(st *WatchState) { st.Offline = true })
-	if a := pollAnswer(t, within(t, got, 3*time.Second)); a.State != "offline" {
+	if a := pollAnswer(t, within(t, got, waitBound)); a.State != "offline" {
 		t.Errorf("went offline while held: %+v", a)
 	}
 }
@@ -435,7 +441,7 @@ func TestSeatWatchHeldPollsPerSession(t *testing.T) {
 	case <-time.After(30 * time.Millisecond):
 	}
 	fourth := r.pollAsync(context.Background(), pollOK, s)
-	a := pollAnswer(t, within(t, tabs[0], 3*time.Second))
+	a := pollAnswer(t, within(t, tabs[0], waitBound))
 	if a.State != "replaced" || a.Version != "aa" || a.Card != "unknown" {
 		t.Errorf("the oldest poll: %+v", a)
 	}
@@ -448,7 +454,7 @@ func TestSeatWatchHeldPollsPerSession(t *testing.T) {
 		}
 	}
 	fifth := r.pollAsync(context.Background(), pollOK, s)
-	if a := pollAnswer(t, within(t, tabs[1], 3*time.Second)); a.State != "replaced" {
+	if a := pollAnswer(t, within(t, tabs[1], waitBound)); a.State != "replaced" {
 		t.Errorf("the next oldest poll: %+v", a)
 	}
 	r.waitHeld(t, maxHeldPolls)
@@ -457,7 +463,7 @@ func TestSeatWatchHeldPollsPerSession(t *testing.T) {
 	wd.set(func(st *WatchState) { st.Version = "bb" })
 	held := map[string]<-chan *httptest.ResponseRecorder{"tab 3": tabs[2], "fourth": fourth, "fifth": fifth, "other": third}
 	for name, ch := range held {
-		if a := pollAnswer(t, within(t, ch, 3*time.Second)); a.State != "changed" || a.Version != "bb" {
+		if a := pollAnswer(t, within(t, ch, waitBound)); a.State != "changed" || a.Version != "bb" {
 			t.Errorf("%s: %+v", name, a)
 		}
 	}
@@ -578,7 +584,7 @@ func TestSeatWatchTwoTabsKeepBothHeld(t *testing.T) {
 	}
 	wd.set(func(st *WatchState) { st.Version = "bb" })
 	for _, ch := range []<-chan *httptest.ResponseRecorder{a, b} {
-		if got := pollAnswer(t, within(t, ch, 3*time.Second)); got.State != "changed" {
+		if got := pollAnswer(t, within(t, ch, waitBound)); got.State != "changed" {
 			t.Errorf("%+v", got)
 		}
 	}
@@ -736,7 +742,7 @@ func TestSeatWatchCardStates(t *testing.T) {
 	got := r.pollAsync(context.Background(), `{"version":"aa","card":"`+testCardID+`","binding":"`+bind+`"}`, s)
 	r.waitHeld(t, 1)
 	wd.set(func(st *WatchState) { st.Version, st.Cards = "cc", listed[1:] })
-	if a := pollAnswer(t, within(t, got, 3*time.Second)); a.State != "changed" || a.Card != "gone" || a.Version != "cc" {
+	if a := pollAnswer(t, within(t, got, waitBound)); a.State != "changed" || a.Card != "gone" || a.Version != "cc" {
 		t.Errorf("a card decided while held: %+v", a)
 	}
 }
@@ -784,7 +790,7 @@ func TestSeatWatchLeavesNoGoroutine(t *testing.T) {
 		r.waitHeld(t, 2*maxHeldPolls)
 		cancel()
 		for _, o := range outs {
-			within(t, o, 3*time.Second)
+			within(t, o, waitBound)
 		}
 		// Ended by a newer poll (past the most held) and by a change.
 		a := r.pollAsync(context.Background(), pollOK, s)
@@ -795,21 +801,21 @@ func TestSeatWatchLeavesNoGoroutine(t *testing.T) {
 			r.waitHeld(t, i+1)
 		}
 		rest = append(rest, r.pollAsync(context.Background(), pollOK, s))
-		within(t, a, 3*time.Second)
+		within(t, a, waitBound)
 		wd.set(func(st *WatchState) { st.Version += "1" })
 		for _, b := range rest {
-			within(t, b, 3*time.Second)
+			within(t, b, waitBound)
 		}
 		wd.set(func(st *WatchState) { st.Version = "aa" })
 		// Ended by the hold.
 		r.app.watchHold = 20 * time.Millisecond
-		within(t, r.pollAsync(context.Background(), pollOK, s), 3*time.Second)
+		within(t, r.pollAsync(context.Background(), pollOK, s), waitBound)
 		r.clock.Advance(watchWindow)
 	}
 	if r.held() != 0 {
 		t.Errorf("%d polls still held", r.held())
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(waitBound)
 	for runtime.NumGoroutine() > before {
 		if time.Now().After(deadline) {
 			buf := make([]byte, 1<<16)
@@ -835,7 +841,7 @@ func TestSeatWatchRequestEndLeavesNoAnswer(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(waitBound):
 		t.Fatal("the poll outlived its request")
 	}
 	if w.Body.Len() != 0 {

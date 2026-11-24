@@ -517,7 +517,7 @@ func newNoticeRigWith(t *testing.T, wrap func(*watchDaemon) Daemon) *noticeRig {
 // parked waits until the goroutine has parked n times in all.
 func (nr *noticeRig) parked(t *testing.T, n int64) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(waitBound)
 	for nr.parks.Load() < n {
 		if time.Now().After(deadline) {
 			t.Fatalf("the notices' goroutine parked %d times, want %d", nr.parks.Load(), n)
@@ -750,7 +750,7 @@ func goroutinesIn(name string) int {
 
 func waitGoroutines(t *testing.T, name string, want int) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(waitBound)
 	for goroutinesIn(name) != want {
 		if time.Now().After(deadline) {
 			t.Fatalf("%d goroutines in %s, want %d", goroutinesIn(name), name, want)
@@ -770,7 +770,7 @@ func TestNoticeOpenStartsAndCloseStops(t *testing.T) {
 	}
 	waitGoroutines(t, "noticeLoop", 1)
 	wd.set(func(s *WatchState) { s.Waiting, s.Version = 2, "bb" })
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(waitBound)
 	for len(n.got()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
@@ -807,7 +807,7 @@ func TestNoticeCloseCancelsACallInFlight(t *testing.T) {
 		t.Fatal(err)
 	}
 	wd.set(func(s *WatchState) { s.Waiting, s.Version = 1, "bb" })
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(waitBound)
 	for len(n.got()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
@@ -815,7 +815,7 @@ func TestNoticeCloseCancelsACallInFlight(t *testing.T) {
 	go func() { x.Close(); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(waitBound):
 		t.Fatal("Close waited on a call in flight")
 	}
 	waitGoroutines(t, "noticeLoop", 0)

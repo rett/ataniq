@@ -1467,7 +1467,7 @@ func TestSeatDecideRevokedEndsEveryLoginOfTheKey(t *testing.T) {
 	r.openCard(t, a)
 	r.daemon.decideChErr = ErrKeyRevoked
 	wantFailure(t, "revoked", r.tap(approveBody, a), 403, "key_revoked", "This phone's passkey is no longer paired. Pair it again at the desk.")
-	within(t, held, 3*time.Second)
+	within(t, held, waitBound)
 	r.waitStreams(t, 0)
 	for name, ck := range map[string]*http.Cookie{"a": a, "b": b} {
 		if _, ok := r.sessionOf(ck.Value); ok {
