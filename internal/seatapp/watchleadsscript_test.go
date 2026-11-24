@@ -29,12 +29,18 @@ func TestSeatWatchScriptLeadsMatchesTheSeat(t *testing.T) {
 			t.Errorf("watch.js lacks %q", want)
 		}
 	}
-	// The page's address decides nothing: it is read only to link a
-	// conversation's offer to the conversation's own newest page, and only
-	// when it is a conversation's path.
-	if n := strings.Count(js, "location.pathname"); n != 2 || strings.Count(funcBody(t, js, "newestTarget"), "location.pathname") != 2 ||
-		!strings.Contains(funcBody(t, js, "newestTarget"), "CHAT_PAGE.test(location.pathname)") {
+	// The page's address decides nothing: its path is read only to link a
+	// conversation's offer, and its following read, to the conversation's
+	// page that holds its newest entry, and only when it is a
+	// conversation's path; the address without its fragment, only to tell
+	// whether that page is this one.
+	if n := strings.Count(js, "location.pathname"); n != 3 || strings.Count(funcBody(t, js, "newestPage"), "location.pathname") != 2 ||
+		!strings.Contains(funcBody(t, js, "newestPage"), "CHAT_PAGE.test(location.pathname)") ||
+		!strings.Contains(js, "function here() { return location.pathname + location.search; }") {
 		t.Errorf("watch.js reads its address other than for the offer's link (%d times)", n)
+	}
+	if n := strings.Count(js, "location.search"); n != 1 {
+		t.Errorf("watch.js reads its query %d times", n)
 	}
 	if strings.Contains(js, "location.hash") || strings.Contains(js, "document.URL") {
 		t.Error("watch.js reads its address")
@@ -63,10 +69,18 @@ func TestSeatWatchScriptLeadsMatchesTheSeat(t *testing.T) {
 		t.Errorf("the rendered cursor is set %d times", n)
 	}
 	// No poll of the chat: no timer of its own, and a failed stream turns to
-	// no other request.
+	// no other request. A failure drops a following read waiting its turn,
+	// and the change pending, so that a page that says it is not live moves
+	// no more.
 	fb := funcBody(t, js, "fallBack")
-	if !strings.Contains(fb, "if (onLeads && !offerShown) { say(TEXT.notLive); }") {
+	if !strings.Contains(fb, "if (onLeads && !offerShown) { say(TEXT.notLive); }") ||
+		!strings.Contains(fb, "if (onLeads) {\n      cancelReload();\n      pendingChange = false;\n    }") {
 		t.Errorf("fallBack does not keep a Leads page to its Refresh link: %s", fb)
+	}
+	// A browser that cannot read the stream: a Leads page, which has no
+	// poll, says it is not live and asks nothing, as a page made not live.
+	if !strings.Contains(js, "if (!live || (onLeads && !streamable)) {\n    say(TEXT.notLive);\n    return;\n  }\n  next();") {
+		t.Error("a Leads page that cannot stream does not say it is not live")
 	}
 	if strings.Contains(js, "setInterval") || strings.Count(js, "fetch(") != 1 {
 		t.Error("watch.js has a request or timer of its own for the chat")
@@ -97,16 +111,22 @@ func TestSeatWatchScriptLeadsOffersAndFollows(t *testing.T) {
 	for _, want := range []string{
 		"if (offerShown) { return; }", "offerShown = true;",
 		"say(TEXT.leadsChanged, [link(TEXT.refresh, LEADS_PATH)]);",
-		"var a = link(TEXT.showNewest, newestTarget());", "say(TEXT.newReplies, [a]);",
+		"say(TEXT.newReplies, [link(TEXT.showNewest, newestTarget())]);",
 	} {
 		if !strings.Contains(of, want) {
 			t.Errorf("offer lacks %q", want)
 		}
 	}
-	for _, bad := range []string{"location.", "wantReload", "reloadNow"} {
+	for _, bad := range []string{"location.", "wantReload", "reloadNow", "addEventListener"} {
 		if strings.Contains(of, bad) {
 			t.Errorf("offer holds %q", bad)
 		}
+	}
+	// "Show newest" goes to the page that holds the newest entry: never a
+	// fragment alone on this page, which would only move the view on a page
+	// that does not hold the new replies.
+	if nt := funcBody(t, js, "newestTarget"); !strings.Contains(nt, "return page === here() ? page : page + NEWEST;") {
+		t.Errorf("newestTarget: %s", nt)
 	}
 	// Nothing moves the focus or the view.
 	for _, bad := range []string{".focus(", "scrollIntoView", "scrollTo(", "scrollBy(", "autofocus", "tabIndex"} {
@@ -121,11 +141,19 @@ func TestSeatWatchScriptLeadsOffersAndFollows(t *testing.T) {
 			t.Errorf("following lacks %q", want)
 		}
 	}
-	rn := funcBody(t, js, "reloadNow")
-	for _, want := range []string{"if (!following()) { offer(); return; }", "if (location.search !== target) { location.replace(target + NEWEST); return; }"} {
-		if !strings.Contains(rn, want) {
-			t.Errorf("reloadNow lacks %q", want)
-		}
+	if !strings.Contains(funcBody(t, js, "reloadNow"), "if (page !== here()) { location.replace(page + NEWEST); return; }") {
+		t.Error("reloadNow does not read the conversation's following page")
+	}
+	// A conversation reads again by itself only while it follows and no
+	// control holds the focus: looked at when the change comes and again
+	// when the read is due, which otherwise shows the offer. A focused
+	// control is any element but the body (and the document's element).
+	if !strings.Contains(funcBody(t, js, "wantReload"), "if (onLeads && (!following() || focused())) { offer(); return; }") {
+		t.Error("a conversation's following read does not look at the reader's place and focus when it is due")
+	}
+	if fc := funcBody(t, js, "focused"); !strings.Contains(fc, "var el = document.activeElement;") ||
+		!strings.Contains(fc, "return !!el && el !== document.body && el !== document.documentElement;") {
+		t.Errorf("focused: %s", fc)
 	}
 	// reloadNow runs only from wantReload's timer, which waits out the
 	// page's age, a hidden page, typed text and an open dialog. A

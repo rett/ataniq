@@ -60,7 +60,7 @@ func TestSeatWatchScriptIsSafe(t *testing.T) {
 // TestSeatWatchScriptReferencesOnlyItsOwnAddresses: the two addresses it
 // posts to are /api/watch and the hint stream; the three it links to are the
 // login page, the card list and the Leads page (a conversation's offer links
-// to its own newest entry, or its own newest page, by its own path).
+// to the page of its own path that holds its newest entry).
 func TestSeatWatchScriptReferencesOnlyItsOwnAddresses(t *testing.T) {
 	js := watchScript(t)
 	api := regexp.MustCompile(`/api/[A-Za-z0-9_/-]*`).FindAllString(js, -1)
@@ -88,9 +88,11 @@ func TestSeatWatchScriptReferencesOnlyItsOwnAddresses(t *testing.T) {
 	}
 	// The one other way is a conversation's following read: its own path,
 	// after the cursor the seat rendered, at its newest entry.
+	np := funcBody(t, js, "newestPage")
 	if strings.Count(js, "location.replace(") != 1 ||
-		!strings.Contains(funcBody(t, js, "reloadNow"), `location.replace(target + NEWEST)`) ||
-		!strings.Contains(funcBody(t, js, "reloadNow"), `var target = "?after=" + followAfter;`) {
+		!strings.Contains(funcBody(t, js, "reloadNow"), `if (page !== here()) { location.replace(page + NEWEST); return; }`) ||
+		!strings.Contains(np, `return followAfter !== "" ? path + "?after=" + followAfter : path;`) ||
+		!strings.Contains(np, `var path = CHAT_PAGE.test(location.pathname) ? location.pathname : "";`) {
 		t.Error("watch.js moves the page other than by a reload or the conversation's following read")
 	}
 }
@@ -247,7 +249,7 @@ func TestSeatWatchScriptLiveAndKeepsQuiet(t *testing.T) {
 	if !strings.Contains(funcBody(t, js, "awake"), "if (pendingChange && !onCard && !still) { if (onLeads) { chatChanged(); } else { wantReload(); } }") {
 		t.Error("a list shown again does not reconcile its pending change")
 	}
-	if !strings.Contains(funcBody(t, js, "chatChanged"), "if (following()) { wantReload(); } else { offer(); }") {
+	if !strings.Contains(funcBody(t, js, "chatChanged"), "if (following() && !focused()) { wantReload(); } else { offer(); }") {
 		t.Error("a conversation reloads other than when it follows")
 	}
 	if !regexp.MustCompile(`(?s)\} else \{\s*quiet\(\);\s*if \(data\.state === "changed" && !still\) \{ wantReload\(\); \}`).MatchString(js) {

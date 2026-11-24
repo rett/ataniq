@@ -1932,9 +1932,14 @@ only while the port's chat hint is live and the connected gate offers chat
 fixed 503 `not live` and `Retry-After: 30` (also for a port with no hint or
 no chat port), and an open stream ends cleanly, with no event, when either
 stops: a lost link, a new connection, a gate that stops offering the
-extension or chat, a downgrade. It looks at the hint on each of its wakes
-and again before every heartbeat, since a hint whose connection went is not
-live when it is read even before its watcher says so
+extension or chat, a downgrade. A stream is bound to the connection its
+admission found the hint on: a hint of a later connection is not live for
+it, so it ends rather than say that connection's cursor, and the page opens
+another. It looks at the hint after the opening heartbeat, before it says
+any cursor (the hint may die, or its connection be replaced, while the
+heartbeat is written: `TestSeatLeadsStreamOpeningFlush`), on each of its
+wakes and again before every heartbeat, since a hint whose connection went
+is not live when it is read even before its watcher says so
 (`TestSeatLeadsStreamEndsWhenTheHintDies`). A change pending in the gap is
 not said once the hint is dead.
 
@@ -1945,7 +1950,8 @@ with no page open (`TestSeatLeadsStreamIsNoCheckIn`,
 
 The pages. `/leads/` and `/leads/daemon/{key}` carry the template part
 `watch-leads`: the polite status line (`role="status"`, `aria-live="polite"`,
-the page's one live region; the conversation's log keeps none) and a mark
+the page's one live region, implicit roles counted: the conversation's log
+is a plain list and a reset's notice plain text, `liveRegions`) and a mark
 `data-view="leads"` with the cursor (`data-chat`), the page
 (`data-page`, `directory` or `conversation`) and, for a conversation whose
 read reached the head (the port answered no `more`), `data-follow`, the
@@ -1954,7 +1960,12 @@ mark, never by the page's address. The cursor is taken before the page's
 reads, as the card list's version is, so a change between them leaves the
 page an older cursor and its first stream says the change at once; a stream
 opened with an older cursor or with 0 says the current one as its first
-event. Problem pages carry no mark and no script.
+event. The seat keeps the connection the cursor was learned on (never on
+the page): when the directory read came from another connection (the link
+was replaced between the two), the page carries no cursor and is rendered
+not live, with its **Refresh** link, rather than compare a cursor of one
+connection with the chat of another
+(`TestSeatLeadsPagesCursorOfTheirConnection`). Problem pages carry no mark and no script.
 
 What the page does on `chat-changed` (`watch.js`, the same file, its one
 `fetch`):
@@ -1967,20 +1978,35 @@ What the page does on `chat-changed` (`watch.js`, the same file, its one
   rule with a longer gap: not before the page is 40 seconds old
   (`FOLLOW_GAP`, see the budget below), never while a field holds typed text
   or a dialog is open (the Leads pages have neither today; the guard stays),
-  only while it is shown, and the reader's place is looked at again when the
-  read is due. The read is the page's own path with
-  `?after=` the follow cursor, at `#newest`: the last rendered entry less
-  half a window (8), from 0 at least (`followAfter`), so the read starts at
-  or before the last entry the page showed and skips nothing, keeps up to 8
-  of the entries the reader saw above the new ones, and fits up to 8 new
-  ones below; more leave the next page with **Show later** and no follow
-  mark. It never reads after the hinted cursor, which is no sequence number.
-  When the address is the page's own already, the page reloads.
+  never while any element but the body holds the focus (a focused link, the
+  newest entry itself after a tap on it: `focused`), only while it is shown,
+  and the reader's place and the focus are looked at again when the read is
+  due; a reader not at the newest entry then, or holding a control, gets
+  the offer below instead, so no automatic read replaces the page under a
+  focused control. The read is the page's own path with
+  `?after=` the follow cursor, at `#newest`: the last rendered entry
+  (`followAfter`; for a page with no entry its read's cursor, the head at
+  most), so the read starts directly after the last entry the page showed
+  and skips nothing. The cursor is a sequence the read returned, never an
+  inferred one: a cursor the chat does not hold (one that fell between kept
+  entries) would read from the oldest kept entry again. There is no
+  look-back above the new entries: the gate bounds a result to 16 KiB, so a
+  look-back of large entries could fill the page before the new reply
+  (`TestSeatFollowAtTheByteCap`); the next page starts with the first new
+  entry, and **Show earlier** leads back. More new entries than fit leave
+  the next page with **Show later** and no follow mark. It never reads
+  after the hinted cursor, which is no sequence number. When the address is
+  the page's own already, the page reloads.
 - Any other conversation (its reader scrolled away from the newest entry,
   or a page of older entries) shows "New replies." and a plain link **Show
-  newest**, once: to `#newest` on a page that shows the newest entries
-  (followed there, the page then follows the replies pending), and to the
-  conversation's own newest page otherwise.
+  newest**, once. It loads the page that holds the newest entry, at
+  `#newest`: on a page that shows the newest entries, the page after its
+  follow cursor (the following read's page), and otherwise the
+  conversation's own address, which the seat answers with its newest
+  entries (below). It is never a fragment alone on the page it is on, which
+  would only move the view on a page that does not hold the new replies:
+  when the destination is the page's own address the link has no fragment,
+  so following it loads the page again (`newestTarget`).
 - No hint moves the focus, scrolls, or reads a hidden page. A hidden page
   closes its stream; a change heard of before is kept, and acted on once,
   by the rules above, when the page is shown again, when its new stream
@@ -1989,9 +2015,14 @@ What the page does on `chat-changed` (`watch.js`, the same file, its one
 - A cursor that is not of the seat's form (empty, signed, with a leading
   zero, past 2^53-1, or 0) fails the stream; an event of another kind is
   skipped. Any failure or refusal, as on the card list, but with no poll to
-  fall back to: the page says "Not live" (unless it shows its offer) and
-  keeps to its **Refresh** link until it is shown again. A page made while
-  the view was not live says "Not live" and opens nothing.
+  fall back to: the page drops a following read waiting its turn and the
+  change pending (`fallBack`), so a page that says "Not live" moves no
+  more, says "Not live" (unless it shows its offer) and keeps to its
+  **Refresh** link until it is shown again, when a new stream says the
+  current cursor at once. A page made while the view was not live
+  (`data-live="no"`), and a Leads page in a browser that cannot read a
+  stream with `fetch` (no `ReadableStream`), says "Not live" at once and
+  opens nothing, also when shown again: it needs a reload.
 
 Budget. A Leads stream asks the gate nothing: it is fed by the one wait the
 seat already holds, which carries the chat cursor at no extra call
@@ -2009,10 +2040,19 @@ following read waits until its page is 40 seconds old: 2 calls every 40
 seconds are 4 in any 80, which leaves one of chat's 5 to spare in the
 steady state; the first following read after opening Leads and selecting
 the lead (3 calls) still fits, with none to spare. A reply then appears
-within about 40 seconds of the last one shown. A second conversation
-following at once, or taps beside it, can still meet chat's busy page, as
-by hand; the Card lists lose nothing to it either way. The directory and an
-offer read nothing until the owner taps.
+within about 40 seconds of the last one shown. One continuously following
+conversation is what the room is sized for. A refresh by hand beside it
+(2 more calls), a second tab following a conversation (2 more every 40
+seconds: 8 in 80 with the first), or a conversation's own address that
+read on toward the head (up to 4 calls, `newestReads`) can meet chat's busy
+page; the room is shared by every session of the seat. Since the directory
+is read first, a page can spend its first call and meet busy at the second.
+A known limit, kept for simplicity: a following read is an ordinary
+navigation, so one that meets busy replaces the conversation with the busy
+page (which offers to try again), and the page follows no more until the
+owner reads it again; the 40-second gap keeps a single following
+conversation clear of it. The Card lists lose nothing to it either way. The
+directory and an offer read nothing until the owner taps.
 
 The trial's stand-in has a fixed cursor (its samples never change), so its
 Leads pages open a live stream that never carries an event: the trial shows
@@ -3532,19 +3572,32 @@ in a moment." with its link to try again; a connected gate without `chat` is
 retry, since trying again would not help.
 
 The recent window starts after the directory head minus 16, floored at zero.
-An explicit `?after=N` reads after N. The next link (Show later) uses the last
+The conversation's own address (no `?after=`) is its newest page: when that
+read leaves entries out (`more`: the gate's 16 KiB bound of a result cut it
+short, or replies arriving after the directory pushed past the window), the
+page reads on toward the head, at most twice more (`newestReads`), each time
+after a sequence the previous read returned, never an inferred one
+(`newestAfter`: the earliest entry with no more sequences after it than that
+read held, or its last entry), so the page ends at the head
+(`TestChatOwnAddressIsTheNewest`). Such a page is at most 4 of chat's 5
+calls. A further read that meets busy, or that resets (its cursor no longer
+kept), leaves the page read so far, which offers Show later; any other
+failure or disagreement of a further read is the page's, as for the first.
+An explicit `?after=N` reads after N, once. The next link (Show later) uses the last
 sequence returned even on a short page. The earlier link (Show earlier) reads
 one window back, after N minus 16, floored at zero, whichever way the page was
 reached, so it needs no memory of the pages before. The page's heading is
 "Lead KEY" alone, and the lead's state is the line under it. The transcript is
-a list with `role="log"`, and no `aria-live`: the log is made once and never
-changes while the page is open (a reader is not to announce it as it loads);
-new replies come by a new read of the page, and the one live region is the
-hint stream's polite status line. The
+a plain ordered list, labelled by the Conversation heading, with no
+`aria-live` and no `role="log"` (whose live behaviour is implicit): the log
+is made once and never changes while the page is open (a reader is not to
+announce it as it loads); new replies come by a new read of the page, and
+the one live region is the hint stream's polite status line. A reset's
+notice is plain text for the same reason. The
 log marks the last entry as newest (`id="newest"`, with `tabindex="-1"`, so a
 link to `#newest` moves the focus there as well as the view; an empty page's
-line takes the id). When the head lies beyond the page, Jump to newest reads the
-last window, after the head minus 16, floored at zero. A session keeps only
+line takes the id). When the head lies beyond the page, Jump to newest goes to
+the conversation's own address, its newest page, at `#newest`. A session keeps only
 the last epoch it showed of each shared lead: a restart marker above the log
 records an epoch change observed across reads. A reset (a cursor before what
 the host retains, or past the head) has its own notice, "This page starts

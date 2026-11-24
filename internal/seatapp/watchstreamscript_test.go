@@ -236,13 +236,13 @@ func TestSeatWatchScriptStreamFollowsThePage(t *testing.T) {
 	for _, want := range []string{
 		"pendingChange = true;",
 		"if (reloadTimer !== null || stopped || document.hidden) { return; }",
-		"reloadTimer = null;\n      if (stopped || document.hidden) { return; }\n      if (holding())",
+		"reloadTimer = null;\n      if (stopped || document.hidden) { return; }\n      if (onLeads && (!following() || focused())) { offer(); return; }\n      if (holding())",
 	} {
 		if !strings.Contains(wr, want) {
 			t.Errorf("wantReload lacks %q", want)
 		}
 	}
-	if strings.Count(js, "pendingChange = ") != 3 { // its declaration, wantReload and chatChanged
+	if strings.Count(js, "pendingChange = ") != 4 { // its declaration, wantReload, chatChanged and a Leads page's fallBack
 		t.Error("the pending change is set or cleared elsewhere")
 	}
 	if !strings.Contains(funcBody(t, js, "chatChanged"), "pendingChange = true;\n    if (stopped || document.hidden) { return; }") {

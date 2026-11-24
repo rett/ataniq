@@ -2,6 +2,7 @@ package seatapp
 
 import (
 	"strconv"
+	"time"
 )
 
 // The Leads pages' view of the hint stream (watchstream.go): the directory
@@ -21,7 +22,8 @@ import (
 //
 // The view is live only while the hint is live and the port offers chat; a
 // stream ends when either stops (a lost link, a gate that stops offering
-// it, a downgrade), and is refused "not live" while either is so. A Leads
+// it, a downgrade) or when the hint is of another connection than the one
+// it was admitted on, and is refused "not live" while either is so. A Leads
 // stream is no check-in for the notices: it takes no foreground lease and
 // counts no card as seen.
 
@@ -79,19 +81,31 @@ func (a *app) chatWatcher() (ChatWatcher, Chat, bool) {
 	return cw, p, ok
 }
 
-// leadsSource is the Leads view's source: the chat hint's broadcast, and the
-// cursor, live while the hint is and the port offers chat (both are local
-// looks, which send nothing).
+// leadsSource is the Leads view's source, made for one stream: the chat
+// hint's broadcast, and the cursor, live while the hint is, the port offers
+// chat (both are local looks, which send nothing) and the hint is of the
+// connection the stream was admitted on. The first look that finds the view
+// live, the admission's, binds the stream to the hint's connection: a hint
+// of a later connection is not live for it, so the stream ends and the page
+// opens another with what it shows, and no cursor of one connection is said
+// on a stream admitted on another. The looks are the handler's, on one
+// goroutine.
 func (a *app) leadsSource() (streamSource, bool) {
 	cw, p, ok := a.chatWatcher()
 	if !ok {
 		return streamSource{}, false
 	}
+	var conn time.Time
+	bound := false
 	return streamSource{
 		changed: cw.ChatHintChanged,
 		current: func() (string, bool) {
 			h := cw.ChatHint()
-			return chatToken(h), chatLive(h) && p.ChatOffered()
+			live := chatLive(h) && p.ChatOffered()
+			if live && !bound {
+				conn, bound = h.Connection, true
+			}
+			return chatToken(h), live && h.Connection.Equal(conn)
 		},
 		event: chatEvent,
 	}, true
@@ -110,15 +124,34 @@ type leadsWatch struct {
 	Conversation bool
 	// Follow marks a conversation page whose read reached the head: it
 	// shows the newest entries, so the page may follow new replies. After
-	// is then the cursor of the read that follows them (see followAfter).
+	// is then the cursor of the read that follows them, the last rendered
+	// entry (see followAfter).
 	Follow bool
 	After  int64
+	// connection is the connection the cursor was learned on. It stays in
+	// the app: a page whose reads came from another connection carries no
+	// cursor (see [leadsWatch.boundTo]).
+	connection time.Time
 }
 
-// leadsHint takes the chat hint for a Leads page. It must run before the
-// page's own reads, so that a change between the two makes the page's
-// cursor older than what it shows, and the page's first stream says
-// chat-changed at once, never the other way round.
+// boundTo returns lw when its cursor was learned on the connection the
+// page's reads came from, and a mark that is not live otherwise: a cursor of
+// one connection is never put on a page read through another, where it
+// would compare against the wrong chat. The page then shows "Not live" and
+// its Refresh link.
+func (lw leadsWatch) boundTo(connection time.Time) leadsWatch {
+	if lw.Live && lw.connection.Equal(connection) {
+		return lw
+	}
+	return leadsWatch{}
+}
+
+// leadsHint takes the chat hint for a Leads page, with the connection it
+// was learned on. It must run before the page's own reads, so that a change
+// between the two makes the page's cursor older than what it shows, and the
+// page's first stream says chat-changed at once, never the other way round;
+// the page keeps it only when its reads came from the same connection
+// ([leadsWatch.boundTo]).
 func (a *app) leadsHint() leadsWatch {
 	var lw leadsWatch
 	cw, p, ok := a.chatWatcher()
@@ -127,7 +160,7 @@ func (a *app) leadsHint() leadsWatch {
 	}
 	h := cw.ChatHint()
 	if chatLive(h) && p.ChatOffered() {
-		lw.Live, lw.Chat = true, chatCursor(h)
+		lw.Live, lw.Chat, lw.connection = true, chatCursor(h), h.Connection
 	}
 	return lw
 }

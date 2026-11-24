@@ -88,9 +88,11 @@ var (
 )
 
 // leadsWrap makes a leadsDaemon of a watching port, the sample chat and a
-// hint of cursor 7.
+// hint of cursor 7, all of one connection.
 func leadsWrap(wd *watchDaemon) *leadsDaemon {
-	return &leadsDaemon{watchDaemon: wd, leadsChat: &leadsChat{fakeChat: sampleChat()}, fakeChatWatcher: newFakeChatWatcher(7)}
+	f := sampleChat()
+	f.list.Connection, f.read.Connection = time.Unix(1, 0), time.Unix(1, 0)
+	return &leadsDaemon{watchDaemon: wd, leadsChat: &leadsChat{fakeChat: f}, fakeChatWatcher: newFakeChatWatcher(7)}
 }
 
 // newLeadsRig is a watch rig whose port also has the sample chat and a live
@@ -238,8 +240,8 @@ func TestSeatLeadsStreamHints(t *testing.T) {
 		t.Fatalf("event %q %v", b, ok)
 	}
 	// A wake that leaves the cursor says nothing; the next move does.
-	ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 9, Connection: time.Unix(2, 0)})
-	ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: MaxChatSeq, Connection: time.Unix(2, 0)})
+	ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 9, Connection: time.Unix(1, 0)})
+	ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: MaxChatSeq, Connection: time.Unix(1, 0)})
 	if b, ok := c.nextEvent(t, 3*time.Second); !ok || b != fmt.Sprintf("event: chat-changed\ndata: %d", int64(MaxChatSeq)) {
 		t.Fatalf("event %q %v", b, ok)
 	}
@@ -295,8 +297,8 @@ func TestSeatLeadsStreamSaysAMissedChangeAtOnce(t *testing.T) {
 }
 
 // TestSeatLeadsStreamEndsWhenTheHintDies: the stream ends, cleanly and with
-// no event, when the hint stops being live (a lost link, a new connection, a
-// downgrade), when its gate stops offering chat, also when the hint died
+// no event, when the hint stops being live (a lost link, a downgrade) or is
+// of a new connection, when its gate stops offering chat, also when the hint died
 // with no wake (its connection gone before its watcher said so: the view is
 // looked at again before each heartbeat), and at a logout. A change that is
 // pending in the gap is not said once the hint is dead.
@@ -307,9 +309,17 @@ func TestSeatLeadsStreamEndsWhenTheHintDies(t *testing.T) {
 		"no wake":      func(ld *leadsDaemon) { ld.fakeChatWatcher.setQuiet(ChatHint{}) },
 		"offer, quiet": func(ld *leadsDaemon) { ld.gone.Store(true) },
 		"in the gap": func(ld *leadsDaemon) {
-			ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 8})
-			ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 9})
+			ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 8, Connection: time.Unix(1, 0)})
+			ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 9, Connection: time.Unix(1, 0)})
 			ld.fakeChatWatcher.setQuiet(ChatHint{})
+		},
+		// A live hint of a new connection: the stream was admitted on the
+		// first, and says nothing of the second's cursor.
+		"new connection": func(ld *leadsDaemon) {
+			ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 8, Connection: time.Unix(2, 0)})
+		},
+		"new connection, quiet": func(ld *leadsDaemon) {
+			ld.fakeChatWatcher.setQuiet(ChatHint{Live: true, Cursor: 8, Connection: time.Unix(2, 0)})
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -348,6 +358,56 @@ func TestSeatLeadsStreamEndsWhenTheHintDies(t *testing.T) {
 	r.postWith("/api/logout", "{}", s)
 	within(t, got, 3*time.Second)
 	r.waitStreams(t, 0)
+}
+
+// flushHook is a recorder that runs a hook at its first flush: the opening
+// heartbeat's.
+type flushHook struct {
+	*httptest.ResponseRecorder
+	once sync.Once
+	hook func()
+}
+
+func (f *flushHook) Flush() {
+	f.ResponseRecorder.Flush()
+	f.once.Do(f.hook)
+}
+
+// TestSeatLeadsStreamOpeningFlush: the hint dies, or its connection is
+// replaced, while the opening heartbeat is written: the stream looks at the
+// view again after it, so no block that follows carries a cursor, even for
+// a page that opened with an older cursor (whose first event would say the
+// current one).
+func TestSeatLeadsStreamOpeningFlush(t *testing.T) {
+	for name, kill := range map[string]func(*leadsDaemon){
+		"not live": func(ld *leadsDaemon) { ld.fakeChatWatcher.setQuiet(ChatHint{}) },
+		"no offer": func(ld *leadsDaemon) { ld.gone.Store(true) },
+		"new connection": func(ld *leadsDaemon) {
+			ld.fakeChatWatcher.setQuiet(ChatHint{Live: true, Cursor: 8, Connection: time.Unix(2, 0)})
+		},
+		"new connection, woken": func(ld *leadsDaemon) {
+			ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 9, Connection: time.Unix(2, 0)})
+		},
+	} {
+		for _, body := range []string{`{"leads":"0"}`, `{"leads":"3"}`, leadsOK} {
+			t.Run(name+" "+body, func(t *testing.T) {
+				r, ld := newLeadsRig(t)
+				r.app.streamBeat = 20 * time.Millisecond
+				s := r.login(t)
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				w := &flushHook{ResponseRecorder: httptest.NewRecorder(), hook: func() { kill(ld) }}
+				r.h.ServeHTTP(w, streamRequest(ctx, streamPath, body, s))
+				if ctx.Err() != nil {
+					t.Fatal("the stream did not end")
+				}
+				if w.Code != 200 || w.Body.String() != ":\n\n" {
+					t.Errorf("after the opening heartbeat: %d %q", w.Code, w.Body)
+				}
+				r.waitStreams(t, 0)
+			})
+		}
+	}
 }
 
 // TestSeatLeadsStreamSharesTheLimits: the streams of both views are counted
@@ -455,13 +515,13 @@ func TestSeatLeadsPagesCarryTheStream(t *testing.T) {
 	s := r.login(t)
 	// The hint moves while the directory is read: the page has the older
 	// cursor, so that its stream says the change at once.
-	ld.leadsChat.onRead = func() { ld.fakeChatWatcher.setQuiet(ChatHint{Live: true, Cursor: 8}) }
+	ld.leadsChat.onRead = func() { ld.fakeChatWatcher.setQuiet(ChatHint{Live: true, Cursor: 8, Connection: time.Unix(1, 0)}) }
 	const status = `<p id="watch-status" role="status" aria-live="polite"></p>`
 	for path, mark := range map[string]string{
-		"/leads/":             `<div id="watch" data-view="leads" data-live="yes" data-chat="7" data-page="directory"></div>`,
-		"/leads/daemon/alpha": `<div id="watch" data-view="leads" data-live="yes" data-chat="7" data-page="conversation"></div>`,
+		"/leads/":                     `<div id="watch" data-view="leads" data-live="yes" data-chat="7" data-page="directory"></div>`,
+		"/leads/daemon/alpha?after=4": `<div id="watch" data-view="leads" data-live="yes" data-chat="7" data-page="conversation"></div>`,
 	} {
-		ld.fakeChatWatcher.setQuiet(ChatHint{Live: true, Cursor: 7})
+		ld.fakeChatWatcher.setQuiet(ChatHint{Live: true, Cursor: 7, Connection: time.Unix(1, 0)})
 		body := r.getWith(path, s).Body.String()
 		if strings.Count(body, mark) != 1 || strings.Count(body, `data-view=`) != 1 || strings.Count(body, status) != 1 ||
 			strings.Index(body, status) > strings.Index(body, mark) || strings.Index(body, mark) > strings.Index(body, `<script src="/static/watch.js"></script>`) {
@@ -469,17 +529,17 @@ func TestSeatLeadsPagesCarryTheStream(t *testing.T) {
 		}
 	}
 	// The sample read ends before the head (More): no follow mark. A read
-	// that reached the head follows after its last entry less half a window.
+	// that reached the head follows after its last entry.
 	ld.leadsChat.onRead = nil
 	ld.leadsChat.read.More = false
 	body := r.getWith("/leads/daemon/alpha?after=4", s).Body.String()
-	if !strings.Contains(body, `data-page="conversation" data-follow="0"></div>`) {
+	if !strings.Contains(body, `data-page="conversation" data-follow="7"></div>`) {
 		t.Errorf("a conversation at the head: %s", body)
 	}
 	ld.leadsChat.read.Entries[0].Seq = 30
 	ld.leadsChat.read.Head = 30
 	*ld.leadsChat.list.Rows[0].Head = 30
-	if body := r.getWith("/leads/daemon/alpha", s).Body.String(); !strings.Contains(body, `data-follow="22"`) {
+	if body := r.getWith("/leads/daemon/alpha", s).Body.String(); !strings.Contains(body, `data-follow="30"`) {
 		t.Errorf("the follow cursor: %s", body)
 	}
 	// A hint that is not live, or chat not offered when the page asks:
@@ -496,9 +556,36 @@ func TestSeatLeadsPagesCarryTheStream(t *testing.T) {
 	}
 }
 
-// TestSeatFollowAfter: the following read starts at or before the last
-// rendered entry, so it skips nothing, and keeps up to half a window of
-// what the page showed.
+// TestSeatLeadsPagesCursorOfTheirConnection: the link is replaced between
+// the hint the page takes and its directory read. The reads come from the
+// new connection and agree with each other, but the cursor is the old
+// one's: the page carries no cursor and is not live, so it shows its
+// Refresh link; a page whose hint and reads share their connection is live.
+func TestSeatLeadsPagesCursorOfTheirConnection(t *testing.T) {
+	r, ld := newLeadsRig(t)
+	s := r.login(t)
+	const notLive = `data-view="leads" data-live="no" data-chat="0"`
+	ld.leadsChat.list.Connection, ld.leadsChat.read.Connection = time.Unix(2, 0), time.Unix(2, 0)
+	for _, path := range []string{"/leads/", "/leads/daemon/alpha?after=4"} {
+		w := r.getWith(path, s)
+		body := w.Body.String()
+		if w.Code != 200 || !strings.Contains(body, notLive) || strings.Contains(body, `data-chat="7"`) || strings.Contains(body, "data-follow") {
+			t.Errorf("%s: a cursor of another connection: %d %s", path, w.Code, body)
+		}
+	}
+	// The hint moves to the new connection too: the page is live with its
+	// cursor.
+	ld.fakeChatWatcher.setQuiet(ChatHint{Live: true, Cursor: 12, Connection: time.Unix(2, 0)})
+	for _, path := range []string{"/leads/", "/leads/daemon/alpha?after=4"} {
+		if body := r.getWith(path, s).Body.String(); !strings.Contains(body, `data-view="leads" data-live="yes" data-chat="12"`) {
+			t.Errorf("%s: the cursor of the reads' connection: %s", path, body)
+		}
+	}
+}
+
+// TestSeatFollowAfter: the following read starts directly after the last
+// rendered entry, a sequence the read returned, so it skips nothing and
+// never starts at a cursor the chat may not hold.
 func TestSeatFollowAfter(t *testing.T) {
 	entries := func(seqs ...int64) []ChatEntry {
 		var out []ChatEntry
@@ -513,19 +600,50 @@ func TestSeatFollowAfter(t *testing.T) {
 		last  int64
 		want  int64
 	}{
-		{ChatView{Head: 3, Entries: entries(1, 2, 3)}, 0, 3, 0},
-		{ChatView{Head: 40, Entries: entries(25, 40)}, 24, 40, 32},
-		{ChatView{Head: 8}, 8, 0, 0},
-		{ChatView{Head: 20}, 20, 0, 12},
-		{ChatView{Head: 20}, 50, 0, 12},
-		{ChatView{Head: 20, Reset: true}, 50, 0, 12},
+		{ChatView{Head: 3, Entries: entries(1, 2, 3)}, 0, 3, 3},
+		{ChatView{Head: 40, Entries: entries(25, 40)}, 24, 40, 40},
+		{ChatView{Head: 40, Entries: entries(25, 40), Reset: true}, 3, 40, 40},
+		{ChatView{Head: 8}, 8, 0, 8},
+		{ChatView{Head: 20}, 20, 0, 20},
+		{ChatView{Head: 20}, 50, 0, 20},
+		{ChatView{Head: 20, Reset: true}, 5, 0, 20},
 	} {
 		got := followAfter(c.v, c.after, c.last)
 		if got != c.want {
 			t.Errorf("%+v after %d: %d, want %d", c.v, c.after, got, c.want)
 		}
-		if n := len(c.v.Entries); n > 0 && got > c.v.Entries[n-1].Seq {
-			t.Errorf("%+v: the following read skips the last entry", c.v)
+		if n := len(c.v.Entries); n > 0 && got != c.v.Entries[n-1].Seq {
+			t.Errorf("%+v: the following read does not start after the last entry", c.v)
 		}
+	}
+}
+
+// TestSeatFollowAtTheByteCap: the entries the reader saw are as large as an
+// entry can be, so that a page holds fewer than a window of them (the
+// gate's bound of a result). The page shows the newest entry and follows
+// after it; a reply as large arrives, and the following read shows it, at
+// the newest, still following. Half a window back, the bound cuts the
+// page before the new reply: a look-back would lose it.
+func TestSeatFollowAtTheByteCap(t *testing.T) {
+	r, ld := newLeadsRig(t)
+	s := r.login(t)
+	l := &chatLog{lead: "daemon:alpha", epoch: 1, conn: time.Unix(1, 0)}
+	l.add(8, 10)
+	l.add(8, MaxChatTextBytes)
+	ld.leadsChat.fakeChat = logChat(l)
+	const entry = `<p dir="auto" class="lead chat-body">`
+	body := r.getWith("/leads/daemon/alpha?after=15", s).Body.String()
+	if strings.Count(body, entry) != 1 || !strings.Contains(body, `data-follow="16"`) {
+		t.Fatalf("the newest page: %s", body)
+	}
+	l.add(1, MaxChatTextBytes)
+	body = r.getWith("/leads/daemon/alpha?after=16", s).Body.String()
+	if strings.Count(body, entry) != 1 || !strings.Contains(body, `data-follow="17"`) || !strings.Contains(body, `<li id="newest" tabindex="-1">`) ||
+		strings.Contains(body, `id="chat-next"`) {
+		t.Errorf("the following read: %s", body)
+	}
+	body = r.getWith("/leads/daemon/alpha?after=8", s).Body.String()
+	if n := strings.Count(body, entry); n >= 9 || !strings.Contains(body, `id="chat-next"`) || strings.Contains(body, "data-follow") {
+		t.Errorf("half a window back: %d entries: %s", n, body)
 	}
 }

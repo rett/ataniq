@@ -561,11 +561,14 @@ on the conversation page being read. On a phone, use **Conversation**,
 **Evidence** and **Timeline** to jump between sections, or **Back to Leads**
 to return to the directory.
 
-The conversation opens on its most recent messages, up to 16. **Show earlier**
-goes back 16 messages and **Show later** goes on from the page's last message,
-through the retained history. **Jump to newest** shows the most recent
-messages again and goes to the latest one. **Refresh** asks for the recent window again. Each Leads page is one or
-two calls of the desk, and they have a room of their own, 5 calls in 80
+The conversation opens on its most recent messages, up to 16, and ends at the
+latest one: when long messages do not all fit on one page, or replies arrived
+while it was read, the page reads on toward the latest message, up to twice
+more. **Show earlier** goes back 16 messages and **Show later** goes on from
+the page's last message, through the retained history. **Jump to newest**
+opens the conversation again at its latest message. **Refresh** asks for the
+recent window again. Each Leads page is one or two calls of the desk (up to
+four when the conversation reads on toward its latest message), and they have a room of their own, 5 calls in 80
 seconds, apart from the card lists' reads (see [What it costs](#live-refresh)):
 opening Leads, selecting a lead and one refresh, with no call to spare. Past it
 the page says "The desk is busy. Try
@@ -599,16 +602,19 @@ lead whose desk setting allows sending.
 
 With the conversation open at its newest message, a new reply of a lead
 whose chat is on appears by itself: the page reads the conversation again,
-at most once every 40 seconds, and opens at the newest message, with up to
-8 of the messages you were reading above the new ones (more new replies
-than fit leave **Show later**). When you have scrolled away from the newest
+at most once every 40 seconds, and opens at the newest message: the page
+then starts with the first message after the last one you saw (**Show
+earlier** goes back to those), and more new replies than fit on one page
+leave **Show later**. When you have scrolled away from the newest
 message, or you are reading older messages, the page does not move: the
-status line says "New replies." with a link **Show newest**, which takes
-you to the newest message (and the page then follows the new replies). The
+status line says "New replies." with a link **Show newest**, which loads
+the page that holds the newest message, at that message. The
 Leads page says "Leads changed." with a link **Refresh** when what it lists
 may have changed. Nothing takes the focus, and a page never reads again
-while it is hidden, while a field holds typed text or while a dialog is open;
-a page shown again catches up once.
+by itself while it is hidden, while a field holds typed text, while a dialog
+is open or while a link or another control has the focus (after a tap on
+**Conversation**, for example): it says "New replies." with **Show newest**
+instead. A page shown again catches up once.
 
 The seat learns that the chat moved from the one wait it already holds at
 the gate (the gate's hello lists `wait-chat`), as a number that says only
@@ -618,15 +624,24 @@ its activity. Each read is the page's ordinary read, so the desk authorizes
 it as when you tap Refresh. It costs no call of the gate beyond that read:
 the directory and the page, 2 of the Leads pages' 5 calls in 80 seconds
 (the 40 seconds between two reads keep one open conversation inside them),
-and none of the card lists'. A read that the page makes by itself counts as
+and none of the card lists'. One following conversation fits; a refresh by
+hand beside it, a second tab following a conversation, or a conversation
+that read on toward its latest message can meet "The desk is busy". When a
+read the page makes by itself meets it, the busy page replaces the
+conversation and the page follows no more: tap **Try this page again** a
+minute later. A read that the page makes by itself counts as
 activity for the session, like a reload you make; a hidden page reads
 nothing, so it does not keep the session alive.
 
 The status line says "Not live" when the page cannot be told (the gate does
-not list `wait-chat`, the link is down, or the seat refused the page's
-stream, for example a fourth open stream of your passkey): use **Refresh**.
-It comes back when the page is shown again or reloaded. In the phone trial
-the samples never change, so the pages are live and never move.
+not list `wait-chat`, the link is down, the seat refused the page's stream,
+for example a fourth open stream of your passkey, or the browser cannot read
+the stream): use **Refresh**. A page that says it is not live moves no
+more, even for a reply heard of before. When its stream failed, it tries
+again when the page is shown again (switch away and back) or reloaded; a
+page that was not live when it was made says so from the start and needs a
+reload (**Refresh**). In the phone trial the samples never change, so the
+pages are live and never move.
 
 ## New projects
 

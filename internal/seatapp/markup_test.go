@@ -105,7 +105,9 @@ func listedChatLink(id, href string) bool {
 	case "chat-refresh":
 		return chatHref(href) && !strings.ContainsAny(href, "?#")
 	case "chat-jump":
-		return href == "#newest" || (chatHref(href) && strings.Contains(href, "?after=") && strings.HasSuffix(href, "#newest"))
+		// This page's newest entry, or the conversation's own address, its
+		// newest page.
+		return href == "#newest" || (chatHref(href) && !strings.Contains(href, "?") && strings.HasSuffix(href, "#newest"))
 	case "chat-prev", "chat-next":
 		return chatHref(href) && strings.Contains(href, "?after=") && !strings.Contains(href, "#")
 	case "":
