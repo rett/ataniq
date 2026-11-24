@@ -141,7 +141,7 @@
 // pings included, and every browser's traffic shares it. The link counts
 // every call it sends, by kind, over [BudgetWindow], and sends none past
 // the room of its kind (see budget.go): anyone's (pairings and logins),
-// reads, decisions, the watcher's waits and the interview's calls, beside
+// reads, decisions, the watcher's waits, chat and the interview's calls, beside
 // the pings of the transport every [PingInterval]. A call without room is seatapp.ErrBusy and
 // is not sent; the watcher alone sleeps for room instead.
 // The rooms and the pings add up to GateRate, so the gate's rate never
@@ -177,7 +177,7 @@
 // before anything is sent: a thread id of another form is
 // seatapp.ErrGenesisUnknownThread and an answer the wire does not take
 // seatapp.ErrGenesisBadAnswer. Every call sent has the room of its kind
-// (kindGenesis, 10 in [BudgetWindow]). The answer is read with
+// (kindGenesis, 12 in [BudgetWindow]). The answer is read with
 // [ownerwire.DecodeSeatGenesisResult], must be one the verb answers and of the
 // thread called, and is turned into the app's values with every count and
 // length checked again; an answer that does not pass is an error that holds
