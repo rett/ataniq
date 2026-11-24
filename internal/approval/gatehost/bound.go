@@ -68,7 +68,7 @@ const CodeTooManyRefusals = "too-many-refusals"
 // another form, a limit past 16) are bad-params and count: the seat's own
 // pages never send them. The chat words are kept out of this table by being
 // absent; they stay bounded by the seat's own 30 chat pages a minute for each
-// credential, by the seat link's own chat room of 2 calls in 80 seconds,
+// credential, by the seat link's own chat room of 5 calls in 80 seconds,
 // which Cards reads never use, and by the gate's 60 requests a minute.
 //
 // wait-full, the answer to a seat.wait past the peer's two held waits or the
