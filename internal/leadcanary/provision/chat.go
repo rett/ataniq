@@ -147,15 +147,44 @@ func syncDirFD(fd int) error {
 	return unix.Fsync(d)
 }
 
-// openBeneath opens the one name below dir by openat2 with [resolveFlags].
+// ErrBusy is wrapped when the instruction file cannot be opened for now:
+// a nonblocking open met a file lease, or a lookup kept meeting a rename or a
+// mount beside it. Nothing was changed; the caller tries again later.
+var ErrBusy = errors.New("provision: the lead's instruction file is busy; nothing was changed, try again later")
+
+// openat2 is the system call; a test replaces it to make an open answer
+// EAGAIN.
+var openat2 = unix.Openat2
+
+// lookupTries bounds the opens of one name that a protected lookup's EAGAIN
+// (a rename or a mount beside it) runs again.
+const lookupTries = 4
+
+// openBeneath opens the one name below dir by openat2 with [resolveFlags],
+// as package leadchat's openAt does. An open interrupted by a signal (EINTR)
+// is run again. EAGAIN is a lease on the file when flags hold O_NONBLOCK,
+// and is answered at once; otherwise it is a lookup that met a rename or a
+// mount, and the open is run again at most [lookupTries] times in all. An
+// EAGAIN that is left is [ErrBusy].
 func openBeneath(dir int, name string, flags int) (int, error) {
 	how := unix.OpenHow{Flags: uint64(flags | unix.O_CLOEXEC | unix.O_NOFOLLOW), Resolve: resolveFlags}
-	for {
-		fd, err := unix.Openat2(dir, name, &how)
-		if err != unix.EINTR && err != unix.EAGAIN {
-			return fd, err
+	var fd int
+	var err error
+	for try := 0; try < lookupTries; try++ {
+		for {
+			fd, err = openat2(dir, name, &how)
+			if err != unix.EINTR {
+				break
+			}
+		}
+		if err != unix.EAGAIN || flags&unix.O_NONBLOCK != 0 {
+			break
 		}
 	}
+	if err == unix.EAGAIN {
+		return -1, ErrBusy
+	}
+	return fd, err
 }
 
 // checkInstructions judges the instruction file by the stat of its handle.
@@ -180,8 +209,11 @@ func ensureInstructions(root *safefile.Root, p Paths, stopped bool) (Instruction
 	at := p.InstructionFile
 	fd, err := openBeneath(lead, InstructionsName, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOCTTY)
 	if err != nil {
-		if err == unix.ENOENT {
+		switch {
+		case err == unix.ENOENT:
 			return "", fmt.Errorf("%s: %w", at, fs.ErrNotExist)
+		case errors.Is(err, ErrBusy):
+			return "", fmt.Errorf("%s: %w", at, err)
 		}
 		return "", fmt.Errorf("%w: %s cannot be opened as a file beneath the lead's folder: %w", ErrChat, at, err)
 	}

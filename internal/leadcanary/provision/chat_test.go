@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 
+	"golang.org/x/sys/unix"
+
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leadcanary/provision/provisiontest"
 	"ataniq/internal/leadchat"
@@ -320,5 +322,60 @@ func TestTheLeadInstructionsText(t *testing.T) {
 		if strings.Contains(text, bad) {
 			t.Errorf("the text holds %q", bad)
 		}
+	}
+}
+
+// An instruction file that a lease holds answers EAGAIN to the nonblocking
+// open: the call is refused at once (ErrBusy) and changes nothing, never
+// spinning while the role's lock is held. A lookup that keeps meeting a
+// rename is run again a bounded number of times, and EINTR is run again.
+func TestEnsureChatBoundsABusyOpen(t *testing.T) {
+	_, cfg, p := chatLead(t)
+	calls := 0
+	openat2 = func(dir int, name string, how *unix.OpenHow) (int, error) {
+		calls++
+		return -1, unix.EAGAIN
+	}
+	defer func() { openat2 = unix.Openat2 }()
+	if _, err := EnsureChat(cfg, ChatOptions{Stopped: true}); !errors.Is(err, ErrBusy) || errors.Is(err, ErrChat) {
+		t.Fatalf("EnsureChat with a lease: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("a nonblocking open that met a lease was tried %d times", calls)
+	}
+	if fi := lstat(t, p.InstructionFile); fi.Size() != 0 {
+		t.Fatal("a busy call changed the instruction file")
+	}
+	lead, err := unix.Open(p.LeadDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(lead)
+	calls = 0
+	if _, err := openBeneath(lead, InstructionsName, unix.O_RDONLY); !errors.Is(err, ErrBusy) {
+		t.Fatalf("a lookup that keeps meeting a rename: %v", err)
+	}
+	if calls != lookupTries {
+		t.Fatalf("a lookup was tried %d times, want %d", calls, lookupTries)
+	}
+	calls = 0
+	openat2 = func(dir int, name string, how *unix.OpenHow) (int, error) {
+		calls++
+		switch calls {
+		case 1:
+			return -1, unix.EINTR
+		case 2:
+			return -1, unix.EAGAIN
+		}
+		return unix.Openat2(dir, name, how)
+	}
+	fd, err := openBeneath(lead, InstructionsName, unix.O_RDONLY)
+	if err != nil || calls != 3 {
+		t.Fatalf("an interrupted, then raced lookup: %v after %d calls", err, calls)
+	}
+	unix.Close(fd)
+	openat2 = unix.Openat2
+	if res := ensure(t, cfg, true); res.Instructions != InstructionsWritten {
+		t.Fatalf("once the lease is gone: %+v", res)
 	}
 }

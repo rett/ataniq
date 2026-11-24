@@ -916,8 +916,11 @@ Every `lead.define` (a lead that was provisioned before included) and every
 is bound read-only over `~/.claude/CLAUDE.md` or `~/.codex/AGENTS.md`. It is
 reached from the state root's handle without following a link or crossing a
 mount point (the last name too), and must be a regular file of the daemon's
-user with mode 0600 and one link (`chat-folder` otherwise). Provisioning makes
-it empty. The text replaces the empty file only while the lead is proven
+user with mode 0600 and one link (`chat-folder` otherwise). A file a lease
+holds (its nonblocking open answers `EAGAIN`) or a lookup that meets a rename
+four times in a row refuses the define or start at once (`chat-folder`, and the
+daemon's log says the file is busy): nothing is changed, and the command can be
+run again later. Provisioning makes it empty. The text replaces the empty file only while the lead is proven
 stopped (the registry does not know it, or shows it defined and never started,
 stopped or ended, with no launch pending): a running lead's sandbox binds the
 file it started with. The text is written to a temporary file in the lead's
