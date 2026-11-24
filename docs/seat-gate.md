@@ -605,7 +605,10 @@ whose chat is on appears by itself: the page reads the conversation again,
 at most once every 40 seconds, and opens at the newest message: the page
 then starts with the first message after the last one you saw (**Show
 earlier** goes back to those), and more new replies than fit on one page
-leave **Show later**. When you have scrolled away from the newest
+leave **Show later**. The hint does not say which lead replied, so a
+reply of another lead also reads the page again: with nothing new for this
+lead, the page shows the conversation's newest messages again, as its own
+address does, and keeps following. When you have scrolled away from the newest
 message, or you are reading older messages, the page does not move: the
 status line says "New replies." with a link **Show newest**, which loads
 the page that holds the newest message, at that message. The

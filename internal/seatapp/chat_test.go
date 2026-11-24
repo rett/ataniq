@@ -759,6 +759,57 @@ func TestChatOwnAddressIsTheNewest(t *testing.T) {
 			t.Errorf("another epoch on the way: %d", w.Code)
 		}
 	})
+	// The hint is one cursor for every lead: a following read set off by
+	// another lead's reply finds nothing after its cursor, the head. The
+	// page is then the newest window, as the own address answers it, still
+	// following, with no read beyond the own address's.
+	t.Run("following, nothing new", func(t *testing.T) {
+		l := &chatLog{lead: "daemon:alpha", epoch: 1}
+		l.add(30, 10)
+		f := logChat(l)
+		r := newRig(t, withChat(f))
+		s := r.login(t)
+		w := r.getWith("/leads/daemon/alpha?after=30", s)
+		body := w.Body.String()
+		if got := reads(f); w.Code != 200 || len(got) != 1 || got[0] != 14 {
+			t.Errorf("%d, reads after %v", w.Code, got)
+		}
+		if !strings.Contains(body, `data-follow="30"`) || strings.Count(body, entry) != MaxChatEntries || strings.Contains(body, "No messages on this page.") ||
+			strings.Contains(body, `id="chat-next"`) || !strings.Contains(body, `?after=0">Show earlier`) {
+			t.Errorf("not the newest window: %s", body)
+		}
+		// A window the gate's bound cuts short reads on as the own
+		// address does, at most twice more.
+		l = &chatLog{lead: "daemon:alpha", epoch: 1}
+		l.add(16, MaxChatTextBytes)
+		f = logChat(l)
+		r = newRig(t, withChat(f))
+		s = r.login(t)
+		w = r.getWith("/leads/daemon/alpha?after=16", s)
+		body = w.Body.String()
+		if got := reads(f); w.Code != 200 || len(got) != 3 || got[0] != 0 {
+			t.Errorf("%d, reads after %v", w.Code, got)
+		}
+		if !strings.Contains(body, `data-follow="16"`) || strings.Contains(body, `id="chat-next"`) || strings.Contains(body, "No messages on this page.") {
+			t.Errorf("not the newest page: %s", body)
+		}
+	})
+	t.Run("following, new entries", func(t *testing.T) {
+		l := &chatLog{lead: "daemon:alpha", epoch: 1}
+		l.add(30, 10)
+		f := logChat(l)
+		r := newRig(t, withChat(f))
+		s := r.login(t)
+		l.add(2, 10)
+		w := r.getWith("/leads/daemon/alpha?after=30", s)
+		body := w.Body.String()
+		if got := reads(f); w.Code != 200 || len(got) != 1 || got[0] != 30 {
+			t.Errorf("%d, reads after %v", w.Code, got)
+		}
+		if !strings.Contains(body, `data-follow="32"`) || strings.Count(body, entry) != 2 || !strings.Contains(body, `?after=14">Show earlier`) {
+			t.Errorf("not only what follows: %s", body)
+		}
+	})
 }
 
 // liveRegionRole is the roles whose live behaviour is implicit (WAI-ARIA:

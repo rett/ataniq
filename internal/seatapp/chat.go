@@ -228,6 +228,17 @@ func (a *app) chatPage(w http.ResponseWriter, r *http.Request, s Session) {
 		a.problemBanner(w, r, problemChatOff, list.StandIn)
 		return
 	}
+	// The chat hint is one cursor for every lead, so a page that follows
+	// is read again after its last entry whenever any lead replied. A
+	// cursor at the head the directory lists has nothing after it for this
+	// lead (the head is the last entry's sequence, and it only grows
+	// within an epoch): that page is answered as the conversation's own
+	// address is, with its newest window and its follow mark, so the
+	// reader keeps the conversation in view and the page goes on
+	// following. The directory already told, so this adds no read.
+	if explicit && after == *selected.Head {
+		explicit = false
+	}
 	if !explicit {
 		after = max(0, *selected.Head-MaxChatEntries)
 	}
