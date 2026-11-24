@@ -113,7 +113,8 @@ type waitSnap struct {
 }
 
 // waitState is the service's wait bookkeeping. mu guards every field but
-// chk and clk; see the lock notes above.
+// chk, clk and parked, which a test sets before the first wait; see the lock
+// notes above.
 type waitState struct {
 	mu sync.Mutex
 	// seq counts the pokes, and ch is closed and dropped by the next poke
@@ -129,6 +130,9 @@ type waitState struct {
 	chk chan struct{}
 	// clk is the wait clock; nil is the real one.
 	clk waitClock
+	// parked, a test's hook, runs in an extended wait each time it is about
+	// to wait for its next wake: what it does with a wake is done by then.
+	parked func()
 }
 
 func newWaitState() waitState { return waitState{chk: make(chan struct{}, 1)} }

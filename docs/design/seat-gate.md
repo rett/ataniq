@@ -1869,29 +1869,57 @@ the cursor beside it:
   look at the door: an answer given for the chat carries the Card result of the
   last look, which no poke has made stale, so the chat cannot change when a
   Card change is noticed.
-- The cursor is read when the wait is armed, whenever the port says it may
-  have changed (`ChatCursorChanged`) or a poke wakes the wait, and again just
-  before every answer. An answer carries the cursor of the leads enabled at
-  that moment: a lead turned off meanwhile is not in it, and whatever it did
-  leaves no trace (a hint already noticed is purged by the switch).
+- The cursor is sampled when the wait is armed, whenever the port says it may
+  have changed (`ChatCursorChanged`), when the chat's gap ends, and again just
+  before every answer for the Cards. A sample is validated: the port's change
+  channel is taken first, the cursor read after, and a sample after which the
+  channel closed is taken again (at most four times, then the wait has no
+  cursor for it). An answer carries a sample whose channel had not closed when
+  it was answered, so it is the cursor of the leads enabled at that moment: a
+  lead turned off meanwhile is not in it, and whatever it did leaves no trace
+  (a hint already noticed is purged by the switch). A seat with no cursor is
+  answered with the one sample that decided to answer it, never a second read.
 - It answers at once when `since` is not the version, as the plain wait does,
   and when `chat` is 0 and the port gives a cursor (the seat has none yet). A
   cursor that is not the seat's answers no sooner than 18 seconds after the
   wait was armed (`ownerchannel.WaitChatGap`), whether it moved during the
-  hold or before it; a Card change answers at once, with the cursor read
+  hold or before it; a Card change answers at once, with the cursor sampled
   then, so a Card and a chat change together are one answer with both. So a
-  busy lead costs the seat no more waits than an idle one: with the seat's
-  2-second pause, about one every 20 seconds, 4 in 80 seconds, which leaves
-  the waits' room of 5 its one wait to spare for a reconnect.
-- A wake for which the cursor did not change answers nothing and makes no look
-  at the door: a lead whose chat is off changes no answer, no time of an
-  answer, no timer and no look, even if its port woke the wait for it
-  (`TestWaitChatOffOnlyActivityIsInvisible` compares such a run with an idle
-  one).
+  busy lead costs the seat no more waits than an idle one in the steady state:
+  with the seat's 2-second pause, about one every 20 seconds, 4 in 80
+  seconds. A wait that answers at once (a seat with no cursor, the first wait
+  of a connection, or one after a Card change) is not paced, so under
+  sustained permitted activity the calls can come at about 0, 2, 22, 42 and 62
+  seconds: 5 in the first 80 seconds. The waits' room of 5 still holds its
+  cap, but a reconnect in that first window may find no spare slot and waits
+  for room as any wait does.
+- The gap is pacing, not timing concealment. It is a floor measured from the
+  arming of the wait: a permitted change before it is coalesced into one
+  answer at the floor, but a first change after it is answered when it is
+  seen, before the normal 25-second hold ends, so the seat learns about when a
+  change it may read came. It learns no count of changes from the timing, and
+  nothing of a lead whose chat is off.
+- A wake for which the cursor did not change answers nothing, makes no look at
+  the door and sets or stops no timer: the timer of the next Card expiry is
+  kept across chat wakes (and re-armed only when a look finds another expiry
+  or the timer fired), and the timer of the chat's gap is set once, when the
+  cursor first differs from the seat's, and stopped only when it no longer
+  does. So a lead whose chat is off changes no answer, no time of an answer,
+  no timer and no look, even if its port woke the wait for it.
+  `TestWaitChatOffOnlyActivityIsInvisible` compares such a run with an idle
+  one on a fake clock stepped by 100 milliseconds, with every wake taken before
+  the next, and compares the answer, its time, every timer made or stopped
+  with its time, and every look at the door with its time, with a Card that
+  expires within the hold, with the chat's gap running, with both and with
+  neither.
 - A cursor that cannot be read (an error, a panic, a value out of its range)
   is no cursor: the wait holds and answers on the Cards alone, its answer
   carries no `chat`, and it does not answer at once to a seat with none, so it
-  cannot spin. It fails closed.
+  cannot spin. A port whose change channel cannot be taken
+  (`ChatCursorChanged` panics) is no port for the rest of the wait, even if
+  its cursor can be read: the plain wait's behaviour, with no `chat` in any
+  answer. A port that answers a nil channel on purpose is read on the wait's
+  other wakes and before each answer. It fails closed.
 
 The trial's stand-in gives a cursor over its two sample leads whose chat is
 read, each of generation 1 and its head, under a key it makes once, the same
