@@ -214,6 +214,20 @@ together:
   proxy that cuts the request earlier makes every page poll again and again,
   each time answered by an error that the page waits out with a growing
   pause, so the page lags without saying why.
+- **Pass the card list's stream on at once.** The card list reads
+  `POST /api/watch/stream`, a response of type `text/event-stream` that the
+  seat keeps open for up to 25 seconds and writes a few bytes to at a time
+  (a heartbeat once in 10 seconds, and a hint when the cards change). Every
+  proxy on the way must hand each write to the phone as it comes: no
+  buffering, no compression, and the same read timeout above 30 seconds as
+  for `/api/watch`. The seat sends `X-Accel-Buffering: no` and no
+  `Content-Encoding`. The shipped Caddyfile has no `encode` and Caddy's
+  `reverse_proxy` flushes a `text/event-stream` response as it comes, so it
+  needs no change; whether both hops (the owner's front proxy and Caddy) pass
+  a hint on at once is not yet qualified (see
+  [the design](design/seat-gate.md#the-card-lists-hint-stream)). A proxy that
+  holds the stream back costs nothing but time: the page sees no byte for 30
+  seconds, closes the stream and falls back to the poll above.
 - **No redirects.** Serve the paths as asked, with no change of host, scheme or
   path. The pairing QR carries its one-time code in the address fragment, which
   must reach the app as the desk drew it. (The app itself answers `/pair`,
@@ -395,6 +409,14 @@ up without a reload, and a card that was decided, withdrawn or replaced
 
 - **The card list** reloads itself when the set of waiting cards changed, at
   most once every 20 seconds, and never while a field on it holds typed text.
+  It hears of the change over a stream that the seat holds open (it says only
+  that the cards moved, never which or how many), so a change the seat
+  learns of reaches the list at once rather than at the next poll. When the
+  stream cannot be used (an older browser, a proxy that holds it back, a
+  refusal, an error) the list falls back to the poll that the Card page
+  uses, with no difference you can see but the delay, until the page is
+  shown again. The stream is closed while the page is hidden or the phone is
+  locked, and opened again a second or two after the page is shown.
   A new card that came in through the daemon's door is seen within about 30
   seconds, the interval at which the daemon looks at the door; a decision made
   at the desk or on the phone is seen within a few seconds, and a page that
@@ -418,7 +440,9 @@ up without a reload, and a card that was decided, withdrawn or replaced
   gate is down or the gate does not answer (the page asks again every 30
   seconds), and "Session
   ended. Log in again." when the session is gone.
-- A tab that is hidden asks nothing, and asks at once when it is shown again.
+- A tab that is hidden asks nothing, and asks at once when it is shown again
+  (the card list a second or two later, at a random moment, so that the
+  tabs and phones that come back together do not ask together).
 - Up to three tabs of one session are kept live at once. A fourth takes the
   place of the oldest, whose page then waits 25 seconds before it asks again;
   with more than four tabs open the pages cannot all stay live (see
@@ -448,9 +472,16 @@ and about one in three once in 30 seconds. Opening Leads, selecting a lead
 and refreshing it once is never "busy" when you do it once in 80 seconds. An
 idle seat sends one wait about every 25 seconds, 4 in 80 seconds, and the
 waits' fifth call is for a reconnect: the seat's link lost and back at once
-costs one more wait and no refusal. A page's poll is not
-a request that keeps the session alive: a session still ends 30 minutes after
-the last page you loaded or tap you made, however long a page stays open.
+costs one more wait and no refusal. The card list's stream asks the gate
+nothing either: it is fed by the same one wait. A page's poll, and the card
+list's stream and its heartbeats, are not requests that keep the session
+alive: a session still ends 30 minutes after the last page you loaded or tap
+you made, however long a page stays open, and the stream ends with it.
+
+The stream's limits: at most 3 streams open at once for one passkey, across
+its sessions (one for each of three tabs), 12 opened a minute for one
+passkey, and 32 open in all. A stream past them is refused with a
+`Retry-After`, and that page falls back to the poll.
 
 A stale offer is never what decides. Live refresh only withdraws an offer
 sooner; a tap on an old page is refused by the seat or the daemon as before
@@ -476,10 +507,15 @@ How to tell it works.
    seat key from somewhere else, such as a second `ataniq-seat` using the same
    identity: stop the extra one.
 
-Behind a proxy. A held request lasts up to 25 seconds, so the front proxy's
-read timeout for the seat must be above 30 seconds and its buffering of
-`/api/watch` must be off, so that the answer reaches the phone when the seat
-writes it (see [The reverse proxy](#the-reverse-proxy)).
+Behind a proxy. A held request, and a stream, last up to 25 seconds, so the
+front proxy's read timeout for the seat must be above 30 seconds and its
+buffering of `/api/watch` and `/api/watch/stream` must be off, so that the
+answer, and each hint, reaches the phone when the seat writes it (see
+[The reverse proxy](#the-reverse-proxy)). To see that the stream works, open
+the card list in a desktop browser's network tools: `/api/watch/stream`
+stays open and is opened again about every 25 seconds, and `/api/watch` is
+not asked. A `/api/watch` every 25 seconds or so instead means the list fell
+back to the poll.
 
 ## Leads
 
@@ -665,7 +701,13 @@ the notifier, unless:
   visible is one you are looking at; a hidden tab or a phone that has put the
   page to sleep asks nothing, so close the pages and wait a minute when you
   test). The cards that page found waiting count as seen: closing the page does
-  not bring a notice for them, only a card that comes after its last poll does;
+  not bring a notice for them, only a card that comes after its last poll does.
+  The card list's stream is not a poll: an open stream, its heartbeats and its
+  hints neither hold a notice back nor count cards as seen, since a stream can
+  stay open on a phone that is no longer showing it. With the card list open
+  over its stream a notice can therefore come while you look at the list, and
+  closing it can bring a notice for cards it showed; a Card page, which polls,
+  holds them back as before;
 - the count came back up after a dip, to no more than what was last told, and
   fewer than 2 minutes have passed since the last notice (a card decided and
   another asked is not a new notice at once): so with the count not rising,
@@ -1056,6 +1098,8 @@ What the phone shows, by the code the seat's API answers:
 | Status line "Not live: the desk is out of reach" | `offline` (answer of `POST /api/watch`) | The seat's link to the gate is down, or a wait got no answer from the gate (it timed out). The watcher retries after 1 second, doubling to 30, and any answer of the gate, even a refusal, lifts it at once. The page asks again every 30 seconds. | Check the daemon, the firewall and both pins as for `daemon_unavailable`. It clears by itself once the link is back. |
 | Status line "Session ended. Log in again." | `ended` (answer of `POST /api/watch`) | Idle 30 minutes without a page load or tap (a poll does not count), 12 hours, a seat restart, a logout, or a revoked key. | Log in. |
 | Nothing visible, but `POST /api/watch` answers 429 in the proxy's log or the browser's tools | `rate_limited` | More than 12 polls a minute from one passkey's sessions, as more than four tabs open at once make. The page waits 60 seconds and asks again. | Close the extra tabs. |
+| Nothing visible, but `POST /api/watch/stream` answers 403, 429 or 503 in the proxy's log, followed by `POST /api/watch` | (the stream's refusal: `session ended`, `too many streams`, `busy`, `not live` or `shutting down`) | The card list's stream was refused: no live session, a fourth card list of one passkey or more than 12 opens in a minute, 32 streams open on the seat, the desk out of reach, or the seat stopping. The list fell back to the poll, which says what it is on the status line. | Nothing; close the extra tabs if there are many. The list tries the stream again when it is shown again. |
+| The card list updates only after about 25 seconds, and the browser's tools show `/api/watch/stream` open for 30 seconds with nothing in it | (none) | A proxy on the way buffers or compresses the stream, so the page falls back to the poll after 30 seconds of silence. | Turn buffering and compression off for `/api/watch/stream` on the front proxy (see [The reverse proxy](#the-reverse-proxy)). |
 | "This card changed or was decided elsewhere. Look again." | `changed` or `gone` (the card's state in the poll's answer) | The card, which was waiting when the page was read, was decided on another page or phone or at the desk, replaced, expired or withdrawn since. Not shown for a card that was already decided, ended or expired when the page was read, nor on the page whose own confirm sent the decision. | Reload, or go back to the cards. |
 | A line `seat.wait refused wait-full (peer ...)` in the daemon's log | `wait-full` | The gate already holds two waits for that seat key (or the daemon's eight). Normal for a moment when the seat reconnects. Not counted against the seat. | Nothing if it stops. If it repeats every minute, look for a second `ataniq-seat` with the same identity. |
 

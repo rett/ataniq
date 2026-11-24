@@ -241,9 +241,11 @@ func Open(cfg Config) (*App, error) {
 	return x, nil
 }
 
-// Close stops the notices' goroutine and waits for it. A call to the
-// notifier in flight is cancelled. It is safe to call more than once.
+// Close stops the notices' goroutine and waits for it, and ends the app's
+// open hint streams. A call to the notifier in flight is cancelled. It is
+// safe to call more than once.
 func (x *App) Close() error {
+	x.endStreams()
 	x.once.Do(x.stop)
 	return nil
 }
