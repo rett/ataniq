@@ -141,6 +141,24 @@ func (e *env) names() []string {
 	return out
 }
 
+// claimDir is the lead's claim folder.
+func (e *env) claimDir() string { return filepath.Join(e.dir, ChatDirName, claimsName(testRole)) }
+
+// claims lists the lead's claim folder, sorted.
+func (e *env) claims() []string {
+	e.t.Helper()
+	ents, err := os.ReadDir(e.claimDir())
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	var out []string
+	for _, d := range ents {
+		out = append(out, d.Name())
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (e *env) chatFile(role string) string { return filepath.Join(e.dir, ChatDirName, role+".jsonl") }
 
 // lines reads the chat file's lines.

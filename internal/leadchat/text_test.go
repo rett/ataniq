@@ -6,6 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"maps"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode"
@@ -87,7 +90,7 @@ func TestReplyText(t *testing.T) {
 }
 
 func TestFixedTextsArePlain(t *testing.T) {
-	all := []string{TextTurnedOn, TextWithheld}
+	all := []string{TextTurnedOn, TextWithheld, TextStoppedFolder, TextStoppedFull}
 	for _, why := range dropOrder {
 		s, ok := dropTexts[why]
 		if !ok {
@@ -99,6 +102,33 @@ func TestFixedTextsArePlain(t *testing.T) {
 		if !ownerwire.ValidChatText(s) || brief.SecretShaped(s) {
 			t.Errorf("%q is not a plain, harmless text", s)
 		}
+	}
+}
+
+// A text that names a bound names the constant's value, so the two cannot
+// drift apart.
+func TestFixedTextsNameTheirBounds(t *testing.T) {
+	cases := []struct {
+		text   string
+		bounds []int
+	}{
+		{dropTexts[ReasonTooLong], []int{MaxReplyBytes}},
+		{TextStoppedFull, []int{MaxDirEntries, MaxWaiting}},
+	}
+	for _, c := range cases {
+		for _, b := range c.bounds {
+			if !strings.Contains(c.text, " "+strconv.Itoa(b)+" ") {
+				t.Errorf("%q does not name %d", c.text, b)
+			}
+		}
+	}
+	for _, s := range append([]string{TextTurnedOn, TextWithheld, TextStoppedFolder, TextStoppedFull}, slices.Collect(maps.Values(dropTexts))...) {
+		if !systemText(s) {
+			t.Errorf("%q is not a fixed text", s)
+		}
+	}
+	if systemText("Chat was turned on.") {
+		t.Error("a text that is not fixed was accepted")
 	}
 }
 

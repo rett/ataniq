@@ -3,6 +3,7 @@
 package leadchat
 
 import (
+	"fmt"
 	"strings"
 
 	"ataniq/internal/approval/ownerwire"
@@ -15,7 +16,7 @@ const MaxReplyBytes = ownerwire.MaxChatText
 
 // The fixed texts of the system entries. Each is plain text by
 // [ownerwire.ValidChatText] (a test holds that), and none holds anything a
-// lead wrote.
+// lead wrote. A text that names a bound is made from its constant.
 const (
 	// TextTurnedOn opens every segment: the first entry after the desk
 	// turned chat on for the lead.
@@ -23,19 +24,29 @@ const (
 	// TextWithheld stands for a reply that looked like a credential: no
 	// text of it is stored.
 	TextWithheld = "A reply was withheld: it looked like a key, a token or a full commit id."
+	// TextStoppedFolder is the one entry of a chat a scan stopped because
+	// the outbox is gone, was replaced, or is not private any more.
+	TextStoppedFolder = "Chat was stopped: the reply folder is gone, was replaced, or is no longer private. Turn chat on again to go on."
 )
 
-// Reason is why a file of the outbox was dropped, removed or left. The
-// reasons are the keys of the counts a scan and a store report.
+// TextStoppedFull is the one entry of a chat a scan stopped because the
+// outbox held more than [MaxDirEntries] entries or more than [MaxWaiting]
+// replies and folders.
+var TextStoppedFull = fmt.Sprintf("Chat was stopped: the reply folder held more than %d entries, or more than %d replies and folders. Turn chat on again to go on.", MaxDirEntries, MaxWaiting)
+
+// Reason is why an entry of the outbox was removed, or why it is counted.
+// The reasons are the keys of the counts a scan and a store report.
 type Reason string
 
 // The reasons.
 const (
-	// ReasonRefused: a symbolic link, a FIFO, a socket, a device, a file of
-	// another user or a file with more than one link. It is removed.
+	// ReasonRefused: a symbolic link, a FIFO, a socket, a device, a folder
+	// that took a reply's place, a file of another user, a file with more
+	// than one link, or a file that group or other may write. It is
+	// removed.
 	ReasonRefused Reason = "refused"
-	// ReasonName: a regular file whose name is not a reply name and does
-	// not start with a dot. It is removed.
+	// ReasonName: an entry whose name is not a reply name and does not
+	// start with a dot. It is removed.
 	ReasonName Reason = "name"
 	// ReasonTooLong: a reply over [MaxReplyBytes]. It is removed.
 	ReasonTooLong Reason = "too-long"
@@ -44,33 +55,45 @@ const (
 	// (invalid UTF-8, a tab, a carriage return, a control or format
 	// character, or nothing but spaces). It is removed.
 	ReasonNotPlain Reason = "not-plain"
-	// ReasonFull: a reply past [MaxWaiting] waiting entries, in name
-	// order. It is removed.
-	ReasonFull Reason = "full"
 	// ReasonStale: a file whose name starts with a dot (a reply being
 	// written) that is older than [StaleAge]. It is removed.
 	ReasonStale Reason = "stale"
-	// ReasonFolder: a folder in the outbox. It is left as it is, and a
-	// folder with a reply name counts toward [MaxWaiting].
+	// ReasonBefore: an entry whose change time is before the turn-on
+	// found the outbox empty: written before chat was on. It is removed,
+	// never read.
+	ReasonBefore Reason = "before"
+	// ReasonFolder: a folder in the outbox. It is left as it is, and counts
+	// toward [MaxWaiting].
 	ReasonFolder Reason = "folder"
-	// ReasonOverflow: the outbox held more than [MaxDirEntries] entries;
-	// the rest were not read this scan.
-	ReasonOverflow Reason = "overflow"
 )
 
 // dropTexts are the system entries of the drops that the owner is told
-// about, at most one per reason a minute. Stale in-progress files, folders
-// and an overflow are only counted.
+// about, at most one per reason a minute. Stale in-progress files, entries
+// from before the turn-on and folders are only counted.
 var dropTexts = map[Reason]string{
-	ReasonRefused:  "Files were removed from the reply folder: they were not plain files of the lead.",
+	ReasonRefused:  "Files were removed from the reply folder: they were not private plain files of the lead.",
 	ReasonName:     "Files were removed from the reply folder: their names were not reply names.",
-	ReasonTooLong:  "Replies were dropped: they were longer than 2000 bytes.",
+	ReasonTooLong:  fmt.Sprintf("Replies were dropped: they were longer than %d bytes.", MaxReplyBytes),
 	ReasonNotPlain: "Replies were dropped: they were not plain text.",
-	ReasonFull:     "Replies were dropped: the reply folder held more than 32 replies.",
 }
 
 // dropOrder is the order the drop entries of one scan are written in.
-var dropOrder = []Reason{ReasonRefused, ReasonName, ReasonFull, ReasonTooLong, ReasonNotPlain}
+var dropOrder = []Reason{ReasonRefused, ReasonName, ReasonTooLong, ReasonNotPlain}
+
+// systemText reports whether s is one of the fixed texts of a system entry:
+// a replay refuses any other.
+func systemText(s string) bool {
+	switch s {
+	case TextTurnedOn, TextWithheld, TextStoppedFolder, TextStoppedFull:
+		return true
+	}
+	for _, t := range dropTexts {
+		if s == t {
+			return true
+		}
+	}
+	return false
+}
 
 // Verdict is what [ReplyText] makes of a reply.
 type Verdict int

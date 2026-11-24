@@ -32,9 +32,20 @@ var (
 	// ErrInvalid: an argument is not valid (a role that is not a layout
 	// name, a switch that is not off or read, a negative cursor).
 	ErrInvalid = errors.New("leadchat: invalid argument")
-	// ErrFull: the outbox holds more entries than one clear reads, or the
-	// sequence numbers are spent.
+	// ErrFull: the outbox holds more entries than one clear reads or does
+	// not stay empty, the sequence numbers or claim ids are spent, or the
+	// chat file would pass its bound.
 	ErrFull = errors.New("leadchat: too many entries")
+	// ErrUnavailable: the outbox cannot be reached safely: the kernel has no
+	// openat2 with the resolve flags (or a filter denies it), it cannot
+	// rename without replacing, the outbox and the chat folder are on two
+	// file systems, or the lead's home is not there. A turn-on is refused.
+	ErrUnavailable = errors.New("leadchat: the outbox is unavailable")
+	// ErrSuspended: the lead's chat was stopped by a scan (the outbox was
+	// replaced, removed or made open to others, or held too many entries);
+	// what it holds can be read, and only a fresh turn-on takes replies
+	// again.
+	ErrSuspended = errors.New("leadchat: chat is stopped for the lead until it is turned on again")
 )
 
 // resolveFlags is what every openat2 lookup below a folder descriptor uses:
@@ -127,12 +138,11 @@ func openRetry(open func() (int, error)) (int, error) {
 }
 
 // openAt opens the one name below dirfd with flags (O_CLOEXEC and O_NOFOLLOW
-// are added): with openat2 beneath dirfd and the resolve flags, and, where
-// the kernel has no openat2 or a filter denies it, with openat, which on a
-// single name with O_NOFOLLOW refuses a link the same way. A name is never a
-// path: it holds no slash and is not "." or "..", which the callers hold.
-// openat2 may answer EAGAIN when a rename races the lookup; that is tried
-// again a few times.
+// are added) with openat2 beneath dirfd and the resolve flags. There is no
+// fallback: where the kernel has no openat2 or a filter denies it, the open
+// fails with [ErrUnavailable]. A name is never a path: it holds no slash and
+// is not "." or "..", which the callers hold. openat2 may answer EAGAIN when
+// a rename races the lookup; that is tried again a few times.
 func openAt(call openat2Func, dirfd int, name string, flags int, mode uint32) (int, error) {
 	flags |= unix.O_CLOEXEC | unix.O_NOFOLLOW
 	how := unix.OpenHow{Flags: uint64(flags), Mode: uint64(mode), Resolve: resolveFlags}
@@ -145,9 +155,120 @@ func openAt(call openat2Func, dirfd int, name string, flags int, mode uint32) (i
 		}
 	}
 	if err == unix.ENOSYS || err == unix.EPERM {
-		return openRetry(func() (int, error) { return unix.Openat(dirfd, name, flags, mode) })
+		return -1, fmt.Errorf("%w: the kernel cannot open a name beneath a folder without following links", ErrUnavailable)
 	}
 	return fd, err
+}
+
+// privateDirAt opens the folder name below dirfd, making it with mode 0700
+// when it is not there, and checks its descriptor: a folder of the caller
+// with mode 0700 exactly. A folder it made is made durable in dirfd.
+func privateDirAt(call openat2Func, dirfd int, name string) (int, error) {
+	created := false
+	switch err := unix.Mkdirat(dirfd, name, 0o700); err {
+	case nil:
+		created = true
+	case unix.EEXIST:
+	default:
+		return -1, fmt.Errorf("leadchat: cannot make a folder: %w", err)
+	}
+	fd, err := openAt(call, dirfd, name, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+	switch {
+	case err == unix.ELOOP || err == unix.ENOTDIR || err == unix.EXDEV:
+		return -1, fmt.Errorf("%w: a symbolic link, a mount point or not a folder", ErrInsecure)
+	case err != nil:
+		return -1, err
+	}
+	if created {
+		// The umask may have cleared bits; the folder is 0700 exactly.
+		if err := unix.Fchmod(fd, 0o700); err != nil {
+			closeFD(fd)
+			return -1, fmt.Errorf("leadchat: cannot set the mode of a folder: %w", err)
+		}
+		if err := syncFD(dirfd); err != nil {
+			closeFD(fd)
+			return -1, fmt.Errorf("leadchat: cannot sync a folder: %w", err)
+		}
+	}
+	if err := checkDirFD(fd, true); err != nil {
+		closeFD(fd)
+		return -1, err
+	}
+	return fd, nil
+}
+
+// renameNoReplace renames the one name oldName below oldDir to newName below
+// newDir, and fails rather than replace what newName holds. Neither name is
+// followed. A kernel or file system that cannot rename without replacing,
+// and two folders on two file systems, answer [ErrUnavailable].
+func renameNoReplace(oldDir int, oldName string, newDir int, newName string) error {
+	for {
+		err := unix.Renameat2(oldDir, oldName, newDir, newName, unix.RENAME_NOREPLACE)
+		switch err {
+		case unix.EINTR:
+			continue
+		case unix.EINVAL, unix.ENOSYS:
+			return fmt.Errorf("%w: the kernel cannot rename without replacing", ErrUnavailable)
+		case unix.EXDEV:
+			return fmt.Errorf("%w: the outbox and the chat folder are on two file systems", ErrUnavailable)
+		}
+		return err
+	}
+}
+
+// unlinkFunc is unlinkat; a test replaces it to make a removal fail.
+type unlinkFunc func(dirfd int, name string, flags int) error
+
+// removeTree removes the folder name below dirfd and what it holds, one name
+// at a time below descriptors, without following a link or crossing a mount
+// point, at most maxTreeDepth deep and *left entries in all: a deeper or
+// larger tree, or one that does not stay empty, is left with [ErrFull].
+func removeTree(call openat2Func, unlink unlinkFunc, dirfd int, name string, left *int, depth int) error {
+	if depth >= maxTreeDepth {
+		return fmt.Errorf("%w: a claimed folder is too deep", ErrFull)
+	}
+	fd, err := openAt(call, dirfd, name, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+	switch {
+	case err == unix.ENOENT:
+		return nil
+	case err == unix.ENOTDIR || err == unix.ELOOP:
+		return unlink(dirfd, name, 0) // no folder any more
+	case err != nil:
+		return err
+	}
+	defer closeFD(fd)
+	names, more, err := readNames(fd, *left)
+	if err != nil {
+		return err
+	}
+	if more {
+		return fmt.Errorf("%w: a claimed folder holds too many entries", ErrFull)
+	}
+	*left -= len(names)
+	for _, n := range names {
+		st, err := lstatAt(fd, n)
+		switch {
+		case err == unix.ENOENT:
+			continue
+		case err != nil:
+			return err
+		case st.Mode&unix.S_IFMT == unix.S_IFDIR:
+			err = removeTree(call, unlink, fd, n, left, depth+1)
+		default:
+			err = unlink(fd, n, 0)
+		}
+		if err != nil && err != unix.ENOENT {
+			return err
+		}
+	}
+	switch err := unlink(dirfd, name, unix.AT_REMOVEDIR); err {
+	case nil, unix.ENOENT:
+		return nil
+	case unix.ENOTEMPTY, unix.EEXIST:
+		return fmt.Errorf("%w: a claimed folder did not stay empty", ErrFull)
+	default:
+		return err
+	}
 }
 
 // openDirAt opens the folder name below dirfd and checks its descriptor: a
