@@ -24,4 +24,6 @@
   starts nothing. It takes an IPv4 gate only and one `NAME.service` as the
   trial's unit, which the printed commands name as `"$TRIAL_UNIT"`. A test
   in `cmd/ataniqd` takes a trial-shaped state folder to the scratch daemon
-  and back and shows the gate's key, the pins and the paired keys unchanged.
+  and back on the files `--write` makes and with the swaps, and shows the
+  gate's key, the pins, the paired keys and the trial's settings unchanged;
+  another holds the script's gate check to the daemon's.
