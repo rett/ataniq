@@ -398,7 +398,9 @@
 // decide control, and only the Card page loads the decide script. The
 // inventory test fetches every page, the card pages with a session, and
 // checks each for an inline script or style, an event handler, an address
-// outside the app, a form or control it does not list, a form that is not a
-// plain post to a project route, and, on every page but the Card page,
-// anything that looks like deciding.
+// outside the app (in href, src, action, formaction, srcset, poster, data,
+// ping, background, cite or manifest, or a meta element's content), a meta
+// element with http-equiv, a form or control it does not list, a form that
+// is not a plain post to a project route, and, on every page but the Card
+// page, anything that looks like deciding.
 package seatapp
