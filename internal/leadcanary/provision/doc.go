@@ -129,16 +129,18 @@
 //
 // Provisioning itself leaves the instruction file empty and makes no reply
 // folder. [EnsureChat], which the daemon calls at every define and every
-// start of a scratch lead, makes the reply folder
-// <state root>/leads/<layout role>/home/.ataniq-replies ([OutboxInside] in the
-// sandbox, in the lead's home, which is bound already) with mode 0700, and
-// writes the text of [LeadInstructions] in place of the empty instruction
-// file, by a temporary file that is synced and renamed, only while the lead
-// is proven stopped: a running lead's sandbox binds the file it started with.
-// A file that holds anything else is the owner's and is never overwritten. A
-// reply folder that is not a folder of the caller with mode 0700 exactly is
-// refused and left as it is ([ErrChat]). No environment variable and no bind
-// changes, so the profile digest is the same.
+// start of a scratch lead, writes the text of [LeadInstructions] in place of
+// the empty instruction file only while the lead is proven stopped (a
+// running lead's sandbox binds the file it started with): by a temporary
+// file that is synced and exchanged with the empty file, which must be what
+// the exchange took out, or the exchange is undone and the owner's version
+// kept ([ErrChat]). A file that holds anything else is the owner's and is
+// never overwritten. EnsureChat never makes, opens or judges the reply
+// folder <state root>/leads/<layout role>/home/.ataniq-replies
+// ([OutboxInside] in the sandbox, in the lead's home, which is bound
+// already): the desk's turn-on of the lead's chat makes it afresh (package
+// leadchat). No environment variable and no bind changes, so the profile
+// digest is the same.
 //
 // # What it prints
 //

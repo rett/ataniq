@@ -63,12 +63,19 @@ seat reads only the leads whose chat is read. Sending is not built.
 
        ataniqd chat list --config CONFIG
        ataniqd chat set KEY off|read --config CONFIG
+       ataniqd chat purge KEY --config CONFIG
 
   chat list             prints the chat of every lead of the scratch CONFIG
                         as one JSON line: the switch, whether it is stopped,
                         and counts, never a reply's text.
   chat set KEY off|read sets the switch of the lead KEY at once and prints its
-                        row. read clears the lead's reply folder first.
+                        row. read sets the lead's reply folder aside, unread,
+                        in its quarantine and makes a new one; it needs one of
+                        the quarantine's four names free (exit 31 otherwise).
+  chat purge KEY        removes what the lead's quarantine holds, in bounded
+                        steps (run it again while "left" is not 0), and prints
+                        the counts. A folder the daemon cannot open is left,
+                        to be deleted by hand.
 Exit codes of canary and chat: 0 done; 2 usage; 10 the config; 20 no daemon;
 21 unauthorized; 22 protocol error; 30 refused; 31 unavailable; 1 anything
 else.
@@ -105,6 +112,11 @@ func (c *canaryFlags) define(fs *flag.FlagSet) {
 		return nil
 	})
 }
+
+// leadMode reports whether run was given a mode with leads, --canary or
+// --scratch, whatever its config holds: the flags alone, read before any
+// file is.
+func (c *canaryFlags) leadMode() bool { return c.set || c.scratchSet }
 
 // canaryRun reads the canary config when --canary was given and sets the roots
 // and the canary parts of cfg. It returns applied true, or a code to end with.
@@ -173,8 +185,10 @@ func (a *app) canaryCommand(args []string) (code int, ok bool) {
 	return 0, false
 }
 
-// chatCmd is "ataniqd chat list --config CONFIG" and "ataniqd chat set KEY
-// off|read --config CONFIG": the desk's switch of the scratch leads' chat.
+// chatCmd is "ataniqd chat list --config CONFIG", "ataniqd chat set KEY
+// off|read --config CONFIG" and "ataniqd chat purge KEY --config CONFIG": the
+// desk's switch of the scratch leads' chat and the purge of a lead's
+// quarantine.
 func (a *app) chatCmd(args []string) int {
 	usageErr := func(format string, args ...any) int {
 		fmt.Fprintf(a.stderr, "ataniqd chat: "+format+"\n", args...)
@@ -182,7 +196,7 @@ func (a *app) chatCmd(args []string) int {
 		return leaddaemon.ExitUsage
 	}
 	if len(args) == 0 {
-		return usageErr("list or set is required")
+		return usageErr("list, set or purge is required")
 	}
 	call := leaddaemon.ChatCall{}
 	rest := args[1:]
@@ -202,6 +216,12 @@ func (a *app) chatCmd(args []string) int {
 		default:
 			return usageErr("the switch is off or read")
 		}
+	case "purge":
+		if len(rest) < 1 || rest[0] == "" || rest[0][0] == '-' {
+			return usageErr("purge needs a lead's key")
+		}
+		call.Op, call.Key = leadwire.OpChatPurge, rest[0]
+		rest = rest[1:]
 	default:
 		return usageErr("unknown operation %q", leaddaemon.SafeText(args[0]))
 	}

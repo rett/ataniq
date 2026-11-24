@@ -3,6 +3,7 @@
 package standin
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -216,5 +217,55 @@ func TestWriteReplyRefusesAnIDThatIsNotShortHex(t *testing.T) {
 	}
 	if names := listNames(t, dir); len(names) != 0 {
 		t.Fatalf("the folder holds %v", names)
+	}
+}
+
+// The folder is held from the listing to the rename: a folder that replaces
+// it meanwhile (a turn-on makes a new one) gets nothing, and the reply ends
+// in the folder that was listed.
+func TestReplyHoldsTheFolderItListed(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, OutboxName)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(home, "moved")
+	replyHook = func() {
+		if err := os.Rename(dir, moved); err != nil {
+			t.Error(err)
+		}
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Error(err)
+		}
+	}
+	defer func() { replyHook = nil }()
+	if _, err := writeReply(home, 1, "abc1234"); err != nil {
+		t.Fatal(err)
+	}
+	if ents, _ := os.ReadDir(dir); len(ents) != 0 {
+		t.Fatalf("the new folder holds %v", ents)
+	}
+	if b, err := os.ReadFile(filepath.Join(moved, "0001"+ReplySuffix)); err != nil || string(b) != replyText("abc1234") {
+		t.Fatalf("the listed folder's reply: %q, %v", b, err)
+	}
+}
+
+// A folder that holds more names than the stand-in reads gets no reply.
+func TestReplySkipsAFolderPastTheBound(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, OutboxName)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i <= maxListed; i++ {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf(".draft-%d", i)), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := writeReply(home, 1, "abc1234"); err == nil {
+		t.Fatal("a reply was written past the bound")
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "0001"+ReplySuffix)); !os.IsNotExist(err) {
+		t.Fatalf("a reply is there: %v", err)
 	}
 }

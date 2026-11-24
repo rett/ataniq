@@ -18,9 +18,13 @@
   that stores each claim at most once in a conversation, drops text that is
   not plain or too long, withholds text shaped like a key, a token or a full
   commit id, keeps 500 entries or 14 days, and has a per-lead switch `off` or
-  `read` that, when turned on, sets the earlier outbox aside unread in the
-  lead's quarantine (`<state root>/leads/<layout role>/quarantine`, at most
-  four, which the owner purges), makes a fresh outbox (mode 0700) that it
-  holds open, proves with a probe that the file system can claim, deletes the
-  stored replies when turned off, and is off again after every restart. See
-  `docs/scratch-leads.md`, "Lead replies".
+  `read` that, when turned on, makes a fresh outbox (mode 0700) in a private
+  staging folder (`<state root>/leads/<layout role>/staging`), holds it open
+  and proves with a probe there that the file system can claim, sets the
+  earlier outbox aside unread, an empty one included, in the lead's quarantine
+  (`<state root>/leads/<layout role>/quarantine`, at most four, which the
+  owner purges), and publishes the held folder at the outbox's name by a
+  rename that replaces nothing, refusing the turn-on when the name was taken
+  or replaced meanwhile; it deletes the stored replies when turned off, and
+  is off again after every restart. See `docs/scratch-leads.md`, "Lead
+  replies".

@@ -19,25 +19,32 @@ import (
 // clears the lead's reply folder first, which takes a moment at most.
 const ChatCallTimeout = 30 * time.Second
 
+// QuarantineFullLine is what "ataniqd chat set KEY read" prints when the
+// turn-on is refused because the lead's quarantine is full.
+const QuarantineFullLine = "ataniqd: chat set: the lead's quarantine is full (a turn-on needs one of its four names free); run ataniqd chat purge KEY --config CONFIG, or empty <state root>/leads/<layout role>/quarantine by hand, then turn chat on again"
+
 // ChatCall is one call of the desk's chat command, "ataniqd chat".
 type ChatCall struct {
 	// Socket is the daemon's socket path. Required.
 	Socket string
-	// Op is leadwire.OpChatList or leadwire.OpChatSet. Required.
+	// Op is leadwire.OpChatList, leadwire.OpChatSet or
+	// leadwire.OpChatPurge. Required.
 	Op string
-	// Key and Chat are the lead's key and the switch, off or read, for
-	// chat.set.
+	// Key is the lead's key, for chat.set and chat.purge; Chat is the
+	// switch, off or read, for chat.set.
 	Key, Chat string
 	// Timeout bounds the call; default [ChatCallTimeout].
 	Timeout time.Duration
 }
 
-// RunChat calls chat.list or chat.set of the daemon at c.Socket, prints the
-// result as one JSON line to stdout and returns the exit code: [ExitOK] when
-// the daemon answered a result; [ExitRefused] for a key that is not a lead of
-// the daemon, a key the seat cannot hold and send, which is not built;
-// [ExitUnavailable] when the lead's chat cannot be used; and the codes of
-// [RunCanary] for the rest. Messages go to stderr, one line each, escaped.
+// RunChat calls chat.list, chat.set or chat.purge of the daemon at c.Socket,
+// prints the result as one JSON line to stdout and returns the exit code:
+// [ExitOK] when the daemon answered a result; [ExitRefused] for a key that is
+// not a lead of the daemon, a key the seat cannot hold and send, which is
+// not built; [ExitUnavailable] when the lead's chat cannot be used, and for
+// a turn-on refused because the lead's quarantine is full (with the fixed
+// line [QuarantineFullLine]); and the codes of [RunCanary] for the rest.
+// Messages go to stderr, one line each, escaped.
 func RunChat(ctx context.Context, c ChatCall, stdout, stderr io.Writer) int {
 	timeout := c.Timeout
 	if timeout <= 0 {
@@ -49,6 +56,8 @@ func RunChat(ctx context.Context, c ChatCall, stdout, stderr io.Writer) int {
 		result = new(leadwire.ChatListResult)
 	case leadwire.OpChatSet:
 		params, result = leadwire.ChatSetParams{Key: c.Key, Chat: c.Chat}, new(leadwire.ChatLead)
+	case leadwire.OpChatPurge:
+		params, result = leadwire.ChatPurgeParams{Key: c.Key}, new(leadwire.ChatPurgeResult)
 	default:
 		fmt.Fprintf(stderr, "ataniqd: %s is not a chat operation\n", SafeText(c.Op))
 		return ExitUsage
@@ -76,6 +85,9 @@ func RunChat(ctx context.Context, c ChatCall, stdout, stderr io.Writer) int {
 			case leadwire.CodeChatSendNotBuilt, leadwire.CodeChatKeyUnrepresentable:
 				fmt.Fprintf(stderr, "ataniqd: %s refused: %s\n", c.Op, SafeText(ce.Message))
 				return ExitRefused
+			case leadwire.CodeChatQuarantineFull:
+				fmt.Fprintln(stderr, QuarantineFullLine)
+				return ExitUnavailable
 			case string(clientapi.CodeUnsupportedOperation):
 				fmt.Fprintln(stderr, "ataniqd: the daemon has no chat: it does not run in scratch mode, or is of an older version")
 				return ExitProtocol

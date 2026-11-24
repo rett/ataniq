@@ -72,8 +72,9 @@ type Status struct {
 	// Chat is ownerwire.ChatOff or ownerwire.ChatRead.
 	Chat string
 	// Suspended is true when a scan stopped the lead's chat (Chat is still
-	// read, so what it holds can be read): only a fresh turn-on takes
-	// replies again. A seat shows it: read and suspended is not read.
+	// read, and [Store.Read] still answers what it holds): only a fresh
+	// turn-on takes replies again, and [Store.ReadSeat] answers
+	// [ErrSuspended] meanwhile. Read and suspended is not read.
 	Suspended bool
 	// Gen is the generation of the switch: it grows by one with every
 	// change, and is 0 for a lead whose chat was never turned on.
@@ -149,17 +150,19 @@ type Store struct {
 	dropped  map[Reason]int
 
 	// Test hooks.
-	write        func(f *os.File, data []byte) (int, error)
-	sync         func(f *os.File) error
-	unlink       unlinkFunc
-	rename       renameFunc
-	beforeMake   func()               // in a turn-on, before the fresh outbox is made
-	beforeClaim  func(name string)    // before an entry of the outbox is claimed
-	afterClaim   func(id int64) error // after a reply is claimed, before it is read
-	afterRead    func(name string)    // after a claimed reply is read, before the second fstat
-	afterAppend  func() error         // after an entry of a reply is stored, before its claim is removed
-	beforeDelete func(id int64)       // before the claim of a stored reply is removed
-	beforeSwap   func() error         // in a compaction, after the temporary file is synced
+	write         func(f *os.File, data []byte) (int, error)
+	sync          func(f *os.File) error
+	unlink        unlinkFunc
+	rename        renameFunc
+	afterStage    func()               // in a turn-on, after the new outbox is made in the staging folder, before it is opened
+	beforePublish func()               // in a turn-on, after the earlier outbox is set aside, before the new one is published
+	afterPublish  func()               // in a turn-on, after the new outbox is published, before its name is checked
+	beforeClaim   func(name string)    // before an entry of the outbox is claimed
+	afterClaim    func(id int64) error // after a reply is claimed, before it is read
+	afterRead     func(name string)    // after a claimed reply is read, before the second fstat
+	afterAppend   func() error         // after an entry of a reply is stored, before its claim is removed
+	beforeDelete  func(id int64)       // before the claim of a stored reply is removed
+	beforeSwap    func() error         // in a compaction, after the temporary file is synced
 }
 
 // OpenStore opens the chat of the lead whose layout role is role, below the
@@ -767,6 +770,11 @@ func (s *Store) Close() error {
 func (s *Store) Status() (Status, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.status()
+}
+
+// status is Status; the caller holds s.mu.
+func (s *Store) status() (Status, error) {
 	if err := s.usable(); err != nil {
 		return Status{}, err
 	}
@@ -787,9 +795,28 @@ func (s *Store) Status() (Status, error) {
 // reader that pages on from an entry it was given, the turned-on entry
 // included, is never reset. head is [Status].Head. A lead whose chat is off
 // answers [ErrOff].
+//
+// Read is the retained history, for the daemon's own callers: it answers a
+// suspended lead's entries too. What the seat is shown is [Store.ReadSeat].
 func (s *Store) Read(after int64) (entries []Entry, reset bool, head int64, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.read(after, false)
+}
+
+// ReadSeat answers what [Store.Read] answers, for the seat: under the one
+// lock that copies the page, it checks that the lead's entries may be shown
+// to the seat, so that no page holds an entry written after a check passed.
+// A lead whose chat is off answers [ErrOff], and one whose chat a scan
+// stopped [ErrSuspended], until a fresh turn-on.
+func (s *Store) ReadSeat(after int64) (entries []Entry, reset bool, head int64, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.read(after, true)
+}
+
+// read is Read and ReadSeat; the caller holds s.mu.
+func (s *Store) read(after int64, seat bool) (entries []Entry, reset bool, head int64, err error) {
 	if err := s.usable(); err != nil {
 		return nil, false, 0, err
 	}
@@ -798,6 +825,9 @@ func (s *Store) Read(after int64) (entries []Entry, reset bool, head int64, err 
 	}
 	if s.chat != ownerwire.ChatRead {
 		return nil, false, 0, ErrOff
+	}
+	if seat && s.suspended {
+		return nil, false, 0, ErrSuspended
 	}
 	s.retain(s.now())
 	from := 0
@@ -813,22 +843,29 @@ func (s *Store) Read(after int64) (entries []Entry, reset bool, head int64, err 
 }
 
 // SetSwitch sets the lead's chat switch to off or read, at once, and answers
-// the status. Setting the switch it already has changes nothing, except that
-// read on a suspended lead turns it on afresh. send is never accepted here
-// ([ErrInvalid]).
+// the status the switch left, taken under the same lock: its Chat, Suspended
+// and Gen are the effective switch, and no scan comes between. A call that
+// fails answers the effective status too, when the store can still say it
+// (a failed turn-on of a suspended lead leaves it off), and a zero Status
+// otherwise. Setting the switch it already has changes nothing, except that
+// read on a suspended lead turns it on afresh, with a new generation. send is
+// never accepted here ([ErrInvalid]).
 //
 // Off to read starts a segment with an outbox made for it. The lead's home
 // must be there ([ErrUnavailable]) and reached without a link or a mount
 // point ([ErrInsecure], or [ErrUnavailable] when the kernel cannot reach it
-// so). The claims an earlier segment left are discarded, the earlier outbox
-// is removed when it is an empty folder and otherwise set aside, unread, in
-// the lead's quarantine ([ErrQuarantined] when that holds [MaxQuarantine]
-// already), and a new outbox is made with mode 0700 and held open until the
-// segment ends. A probe file made in it is claimed and removed, so a file
-// system that cannot rename without replacing refuses the turn-on
-// ([ErrUnavailable]). Then the switch line (with how many things the turn-on
-// set aside) and the entry [TextTurnedOn] are appended in one synced write.
-// Anything that fails leaves the switch off.
+// so). The claims an earlier segment left are discarded; a new outbox is
+// made in the lead's staging folder with mode 0700, opened and judged there,
+// and held open until the segment ends; a probe file made in it is claimed
+// and removed, so a file system that cannot rename without replacing refuses
+// the turn-on ([ErrUnavailable]); the earlier outbox, an empty one included,
+// is set aside, unread, in the lead's quarantine ([ErrQuarantined] when its
+// [MaxQuarantine] names all hold something); and the held folder is
+// published at the outbox's name, which must then lead to it
+// ([ErrUnavailable] otherwise). Then the switch line (with how many things
+// the turn-on set aside) and the entry [TextTurnedOn] are appended in one
+// synced write. Anything that fails leaves the switch off. The package
+// documentation tells the order.
 //
 // Read to off turns the switch off in memory first, so nothing is read from
 // that moment, lets go of the outbox, then drops every entry of the lead by a
@@ -845,12 +882,16 @@ func (s *Store) SetSwitch(chat string, epoch int64) (Status, error) {
 		return Status{}, fmt.Errorf("%w: the epoch is out of range", ErrInvalid)
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	err := s.setSwitch(chat, epoch)
-	s.mu.Unlock()
-	if err != nil {
+	st, serr := s.status()
+	switch {
+	case err != nil && serr != nil:
 		return Status{}, err
+	case err != nil:
+		return st, err
 	}
-	return s.Status()
+	return st, serr
 }
 
 func (s *Store) setSwitch(chat string, epoch int64) error {

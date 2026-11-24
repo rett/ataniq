@@ -2673,7 +2673,8 @@ scratch leads' written replies instead, through the real port
 (`leaddaemon.LeadChat`, over the chat stores of `internal/leadchat`), each
 lead's chat switched `off` or `read` at the desk
 ([the scratch leads guide](../scratch-leads.md#running-real-leads-with-the-seat)).
-The command refuses `--trial` with `--scratch`, so no gate serves both. Sending
+The command refuses `--trial` with `--scratch` and with `--canary`, from the
+flags before any config is read, so no gate serves both. Sending
 remains future work.
 
 `seat.chat` is the seat's read-only view of the leads' conversations: it lists
@@ -3024,21 +3025,29 @@ Where the scratch leads' read-only port stands:
   (`cmd/ataniqd`, `chat_scratch_linux_test.go`): the command run as the owner
   runs it, with a pinned seat over TLS on the loopback address, the real host
   adapter's service wrapped so that every call is counted by its authority
-  (decision, enrolment, limits, reads, wait), a counting suite runner for the
-  host's effect, and the drop folder of the intake watched. Served chat calls
-  (a reply whose words ask for an approval, a pairing and a start among them),
-  refused ones and the desk's own chat operations sent to the gate reach none,
-  and `owner.list`, `seat.login-challenge`, `seat.pair`, `owner.limit` and a
-  request dropped for the intake are the positive controls. The intake, the
-  door and the merge are observed through the service and the drop folder, not
-  each as a fake of its own. The sending half does not apply: nothing sends.
+  (decision, enrolment, limits, reads, wait), the stand-in door the adapter is
+  given wrapped so that every call that hands it something is counted (the
+  intake's admit and plan, the owner's decide, the use and settle of an
+  applied approval), a counting suite runner for the host's effect of a
+  merge, and the drop folder of the intake watched. Across the ingestion of a
+  reply whose words ask for an approval, a pairing and a start, served chat
+  calls, refused ones and the desk's own chat operations sent to the gate, no
+  count moves. The positive controls move each boundary the fixture reaches
+  through its ordinary path: `owner.list`, `seat.login-challenge`,
+  `seat.pair`, `owner.limit` and `owner.decide` from the deciding console
+  move the service's counts, and a real request dropped for the intake is
+  delivered to the door's admit and answered. The fixture has no mirror, so
+  no card is made: the door's decide, use and settle and the suite cannot be
+  moved there, and the test says so; their nearest boundaries are the
+  service's decide and the door's admit. The sending half does not apply:
+  nothing sends.
 - **Disclosure: met.** No provider history is read. A lead's replies come from
   its outbox, taken only from a turn-on on; the daemon assigns the lead's
   identity, the sequence, the time and `who`; the text filter runs before the
   store; logs hold counts and fixed words.
 - **Access: met for reading.** `off` and `read` are the desk's, in the daemon's
   memory, checked on every list, read and scan, set only on the Unix socket
-  (the gate answers `chat.list` and `chat.set` `unknown-op`); an off lead is a
+  (the gate answers `chat.list`, `chat.set` and `chat.purge` `unknown-op`); an off lead is a
   bare row; a turn-off and a restart drop the history; 40 calls a minute across
   every connection. What applies to sending and its receipts is open with
   sending.

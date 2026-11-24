@@ -206,20 +206,23 @@
 // store per lead in <state>/chat; a lead whose store cannot be opened has no
 // chat and every other lead is untouched. Each lead's switch is the desk's,
 // in memory: off or read, off for every lead whenever the daemon starts,
-// effective at once, and checked on every list, read and scan. Two
-// operations of their own, chat.list and chat.set (leadwire.ChatOperations,
-// listed after the six), are the desk's switch on the Unix socket; chat.set
-// refuses send (chat-send-not-built) and a key longer than a seat's lead
-// identifier holds (chat-key-unrepresentable). While a lead's switch is read
+// effective at once, and checked on every list, read and scan. Three
+// operations of their own, chat.list, chat.set and chat.purge
+// (leadwire.ChatOperations, listed after the six), are the desk's on the
+// Unix socket; chat.set refuses send (chat-send-not-built), a key longer
+// than a seat's lead identifier holds (chat-key-unrepresentable) and a
+// turn-on whose lead's quarantine has no free name (chat-quarantine-full),
+// which chat.purge empties. While a lead's switch is read
 // one scanner of its own takes its replies every [DefaultChatScanEvery]; a
 // scanner ends when the switch is off, the scan stops the lead's chat (the
 // reply folder was replaced, opened to others or held too much), the lead's
 // store fails, or the daemon stops, where it is joined with the observers.
 // Its log lines hold counts and fixed words only. Every define and every
-// start of a lead first makes its reply folder (mode 0700) and writes the
-// text of its instruction file while the lead is proven stopped
-// (provision.EnsureChat); a reply folder that is not private refuses the
-// command (chat-folder).
+// start of a lead first writes the text of its instruction file while the
+// lead is proven stopped (provision.EnsureChat); an instruction file that is
+// not private, or that changed while it was replaced, refuses the command
+// (chat-folder). Neither looks at the reply folder, which the turn-on of the
+// lead's chat makes.
 //
 // [LeadChat] (chat_port_linux.go) is the seat's view of the same chats, the
 // chat port of the gate's seat.chat route: it fits gatehost.ChatPort by its

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -40,17 +41,21 @@ var (
 	// the kernel has no openat2 with the resolve flags (or a filter denies
 	// it), it cannot rename without replacing (the turn-on's probe failed),
 	// the outbox, the claim folder and the quarantine are on two file
-	// systems, the lead's home is not there, or the reply folder was made
-	// by another while chat was turned on. A turn-on is refused.
+	// systems, the lead's home is not there, the folder the turn-on made was
+	// replaced before it was opened or published, or the reply folder was
+	// made by another while chat was turned on. A turn-on is refused.
 	ErrUnavailable = errors.New("leadchat: the outbox is unavailable")
-	// ErrQuarantined: the lead's quarantine holds [MaxQuarantine] folders
-	// set aside, and a turn-on that would set aside one more is refused
-	// until the owner purges it ([Store.PurgeQuarantine]).
+	// ErrQuarantined: the lead's quarantine holds [MaxQuarantine] entries
+	// set aside, none of them an empty folder, and a turn-on that would set
+	// aside one more is refused until the owner purges it
+	// ([Store.PurgeQuarantine]).
 	ErrQuarantined = errors.New("leadchat: the quarantine is full; purge it before chat is turned on again")
 	// ErrSuspended: the lead's chat was stopped by a scan (the outbox was
 	// replaced, removed or made open to others, held a folder, a link or a
-	// special file, or held too many entries); what it holds can be read,
-	// and only a fresh turn-on takes replies again.
+	// special file, or held too many entries): only a fresh turn-on takes
+	// replies again, and the seat reads nothing of it meanwhile
+	// ([Store.ReadSeat]); the daemon's own [Store.Read] still answers what
+	// it holds.
 	ErrSuspended = errors.New("leadchat: chat is stopped for the lead until it is turned on again")
 )
 
@@ -230,33 +235,50 @@ func renameNoReplace(call renameFunc, oldDir int, oldName string, newDir int, ne
 // unlinkFunc is unlinkat; a test replaces it to make a removal fail.
 type unlinkFunc func(dirfd int, name string, flags int) error
 
-// removeTree removes the folder name below dirfd and what it holds, one name
-// at a time below descriptors, without following a link or crossing a mount
-// point, at most maxTreeDepth deep and *left entries in all: a deeper or
-// larger tree, or one that does not stay empty, is left with [ErrFull]. Only
-// [Store.PurgeQuarantine] uses it, on what the quarantine holds.
-func removeTree(call openat2Func, unlink unlinkFunc, dirfd int, name string, left *int, depth int) error {
-	if depth >= maxTreeDepth {
-		return fmt.Errorf("%w: a folder set aside is too deep", ErrFull)
-	}
-	fd, err := openAt(call, dirfd, name, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+// purge is one purge's work on the quarantine: its budget of entries and
+// the calls it makes. Only [Store.PurgeQuarantine] uses it.
+type purge struct {
+	call   openat2Func
+	unlink unlinkFunc
+	rename renameFunc
+	left   int // how many more entries this purge may look at
+	moved  int // a counter for the names of folders moved up
+}
+
+// errPurgeLeft says that a purge left part of a folder for a later one.
+var errPurgeLeft = fmt.Errorf("%w: a folder set aside is left for a later purge", ErrFull)
+
+// removeTree removes the folder name below dirfd and what it holds, deepest
+// first, one name at a time below descriptors, never following a link,
+// never crossing a mount point and never leaving the folder top (the
+// quarantine's entry being purged; dirfd and name are top's parent and name
+// at depth 0). Each name looked at spends one of p.left. A folder that holds
+// more than is left is purged in part: the names read are removed and the
+// rest is left for a later purge. A folder maxTreeDepth below top is not
+// walked: it is moved up, by a rename that replaces nothing, to a name of
+// its own directly in top, where a later purge goes on with it. What is
+// left answers errPurgeLeft; a purge that is run again makes progress on a
+// tree that does not change.
+func (p *purge) removeTree(dirfd int, name string, top int, depth int) error {
+	fd, err := openAt(p.call, dirfd, name, unix.O_RDONLY|unix.O_DIRECTORY, 0)
 	switch {
 	case err == unix.ENOENT:
 		return nil
 	case err == unix.ENOTDIR || err == unix.ELOOP:
-		return unlink(dirfd, name, 0) // no folder any more
+		return p.unlink(dirfd, name, 0) // no folder any more
 	case err != nil:
 		return err
 	}
 	defer closeFD(fd)
-	names, more, err := readNames(fd, *left)
+	if depth == 0 {
+		top = fd
+	}
+	names, more, err := readNames(fd, p.left)
 	if err != nil {
 		return err
 	}
-	if more {
-		return fmt.Errorf("%w: a folder set aside holds too many entries", ErrFull)
-	}
-	*left -= len(names)
+	p.left -= len(names)
+	left := more
 	for _, n := range names {
 		st, err := lstatAt(fd, n)
 		switch {
@@ -264,23 +286,48 @@ func removeTree(call openat2Func, unlink unlinkFunc, dirfd int, name string, lef
 			continue
 		case err != nil:
 			return err
+		case st.Mode&unix.S_IFMT == unix.S_IFDIR && depth+1 >= maxTreeDepth:
+			if err := p.moveUp(fd, n, top); err != nil {
+				return err
+			}
+			left = true
+			continue
 		case st.Mode&unix.S_IFMT == unix.S_IFDIR:
-			err = removeTree(call, unlink, fd, n, left, depth+1)
+			err = p.removeTree(fd, n, top, depth+1)
 		default:
-			err = unlink(fd, n, 0)
+			err = p.unlink(fd, n, 0)
 		}
-		if err != nil && err != unix.ENOENT {
+		switch {
+		case err == errPurgeLeft:
+			left = true
+		case err != nil && err != unix.ENOENT:
 			return err
 		}
 	}
-	switch err := unlink(dirfd, name, unix.AT_REMOVEDIR); err {
+	if left {
+		return errPurgeLeft
+	}
+	switch err := p.unlink(dirfd, name, unix.AT_REMOVEDIR); err {
 	case nil, unix.ENOENT:
 		return nil
 	case unix.ENOTEMPTY, unix.EEXIST:
-		return fmt.Errorf("%w: a folder set aside did not stay empty", ErrFull)
+		return errPurgeLeft // something came in meanwhile
 	default:
 		return err
 	}
+}
+
+// moveUp moves the folder name below dir to a new name directly in top, by a
+// rename that replaces nothing.
+func (p *purge) moveUp(dir int, name string, top int) error {
+	for try := 0; try < 64; try++ {
+		p.moved++
+		err := renameNoReplace(p.rename, dir, name, top, ".purge-"+strconv.Itoa(p.moved))
+		if err != unix.EEXIST && err != unix.ENOTEMPTY {
+			return err
+		}
+	}
+	return errPurgeLeft
 }
 
 // openDirAt opens the folder name below dirfd and checks its descriptor: a

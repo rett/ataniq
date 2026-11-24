@@ -1,28 +1,35 @@
 package leadwire
 
-// The desk's chat switch: two operations of their own, kept apart from the
+// The desk's chat switch: three operations of their own, kept apart from the
 // six of the lead control plane. A daemon in scratch mode lists them in its
 // hello after the six; a client that looks for lead control counts only
-// [Operations], so these two never make a daemon read as another version of
-// it. Only the daemon's own user reaches them, on the Unix socket: the seat
-// gate does not serve them, and nothing of the seat can call them.
+// [Operations], so these never make a daemon read as another version of it.
+// Only the daemon's own user reaches them, on the Unix socket: the seat gate
+// does not serve them, and nothing of the seat can call them.
 //
-//	chat.list  no params        -> [ChatListResult]
-//	chat.set   [ChatSetParams]  -> [ChatLead], the lead's row after the set
+//	chat.list   no params           -> [ChatListResult]
+//	chat.set    [ChatSetParams]     -> [ChatLead], the lead's row after the set
+//	chat.purge  [ChatPurgeParams]   -> [ChatPurgeResult]
+//
+// chat.purge empties what it can of the lead's quarantine, where each
+// turn-on sets the earlier reply folder aside unread: a turn-on needs one of
+// its four names free, and is refused [CodeChatQuarantineFull] otherwise.
 //
 // chat.set is idempotent: the same switch set twice changes nothing the
 // second time, so it takes no command id and keeps no receipt. A lead's
 // switch is off or read; send is not built, and is refused
 // ([CodeChatSendNotBuilt]).
 const (
-	OpChatList = "chat.list"
-	OpChatSet  = "chat.set"
+	OpChatList  = "chat.list"
+	OpChatSet   = "chat.set"
+	OpChatPurge = "chat.purge"
 )
 
-// ChatOperations returns the two chat operations in the order the daemon
-// lists them: chat.list, chat.set. The slice is a new one on every call.
+// ChatOperations returns the three chat operations in the order the daemon
+// lists them: chat.list, chat.set, chat.purge. The slice is a new one on
+// every call.
 func ChatOperations() []string {
-	return []string{OpChatList, OpChatSet}
+	return []string{OpChatList, OpChatSet, OpChatPurge}
 }
 
 // The values of a lead's chat switch. ChatSend is named so that a desk can
@@ -33,9 +40,9 @@ const (
 	ChatSend = "send"
 )
 
-// The error codes of chat.set beside the four of [ErrorCodes] (it answers
-// invalid-request, refused for a key that is not a lead of the daemon, and
-// unavailable for a lead whose chat cannot be used).
+// The error codes of chat.set and chat.purge beside the four of [ErrorCodes]
+// (they answer invalid-request, refused for a key that is not a lead of the
+// daemon, and unavailable for a lead whose chat cannot be used).
 const (
 	// CodeChatSendNotBuilt: the switch asked for is send, which is not built.
 	CodeChatSendNotBuilt = "chat-send-not-built"
@@ -43,11 +50,15 @@ const (
 	// lead identifier holds (32 bytes), so the seat could never show it and
 	// its chat is never turned on.
 	CodeChatKeyUnrepresentable = "chat-key-unrepresentable"
+	// CodeChatQuarantineFull: chat.set read needs one free name in the
+	// lead's quarantine to set the earlier reply folder aside, and all four
+	// hold something; chat.purge, or the owner's hand, empties it.
+	CodeChatQuarantineFull = "chat-quarantine-full"
 )
 
-// ChatErrorCodes returns the two chat error codes above, in a new slice.
+// ChatErrorCodes returns the three chat error codes above, in a new slice.
 func ChatErrorCodes() []string {
-	return []string{CodeChatSendNotBuilt, CodeChatKeyUnrepresentable}
+	return []string{CodeChatSendNotBuilt, CodeChatKeyUnrepresentable, CodeChatQuarantineFull}
 }
 
 type (
@@ -56,6 +67,28 @@ type (
 	ChatSetParams struct {
 		Key  string `json:"key"`
 		Chat string `json:"chat"`
+	}
+
+	// ChatPurgeParams are the params of chat.purge: the lead's key, which
+	// is required.
+	ChatPurgeParams struct {
+		Key string `json:"key"`
+	}
+
+	// ChatPurgeResult is the result of chat.purge: counts only, never a
+	// name of what was removed.
+	ChatPurgeResult struct {
+		// Key is the lead's key.
+		Key string `json:"key"`
+		// Removed counts the entries of the quarantine removed whole.
+		Removed int `json:"removed"`
+		// Left counts those still there: one larger or deeper than one
+		// purge removes, which the next purge goes on with, or one the
+		// daemon cannot open, which the owner removes by hand.
+		Left int `json:"left"`
+		// Free counts the quarantine's free names, of four; a turn-on
+		// needs one.
+		Free int `json:"free"`
 	}
 
 	// ChatListResult is the result of chat.list: one row per configured

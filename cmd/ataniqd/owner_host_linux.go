@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"ataniq/internal/approval/credkind"
+	"ataniq/internal/approval/door"
 	"ataniq/internal/approval/door/doortest"
 	"ataniq/internal/approval/hostadapter"
 	"ataniq/internal/approval/ownerchannel"
@@ -33,6 +34,11 @@ import (
 // runner) and refuses settings that name none rather than refuse every
 // request. A test sets a fake; nothing else does.
 var ownerSuite hostadapter.Suite
+
+// ownerDoorWrap, when set, wraps the stand-in door the builder hands the host
+// adapter. It is nil: the adapter gets the stand-in itself. A test sets a
+// wrapper that counts the calls at the door; nothing else does.
+var ownerDoorWrap func(*doortest.Door) door.Door
 
 // ownerNotice receives the host-written lines of the service and the adapter.
 // The default writes them to the standard error, one line each.
@@ -143,13 +149,17 @@ func buildOwnerService(stateDir string) (leaddaemon.OwnerService, func() error, 
 	}
 	cfg := scratchDoorConfig(sc, time.Now)
 	standIn := doortest.New(cfg)
+	var d door.Door = standIn
+	if ownerDoorWrap != nil {
+		d = ownerDoorWrap(standIn)
+	}
 	keys := openOwnerKeys(stateDir)
 	o, err := hostadapter.Open(context.Background(), hostadapter.OpenConfig{
 		Config: hostadapter.Config{
 			Git: git, Projects: []hostadapter.Project{sc.ProjectOf()}, Suite: suite, Now: time.Now,
 			Notice: func(line string) { ownerNotice(line) },
 		},
-		StateDir: stateDir, Door: standIn, Ender: standInEnder{standIn},
+		StateDir: stateDir, Door: d, Ender: standInEnder{standIn},
 		DropDir: sc.Drop, CollectProject: sc.Project,
 		Service: ownerchannel.Config{
 			Keys: keys, KindPolicy: scratchKindPolicy(sc),

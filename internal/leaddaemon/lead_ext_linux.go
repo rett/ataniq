@@ -128,7 +128,7 @@ const (
 	msgDaemonBroken    = "the registry or the command table cannot be written; the daemon must be restarted"
 	msgReceiptNo       = "the command ran but its receipt could not be recorded in full; read the lead's state"
 	msgRecordNotFound  = "the lead has no record, so provisioning is not complete"
-	msgChatPrepare     = "the lead's reply folder or instruction file is not as the daemon makes it; see the daemon's log"
+	msgChatPrepare     = "the lead's instruction file is not as the daemon makes it, or changed while it was written; see the daemon's log"
 )
 
 // The proof a stop of a lead that was defined and never started carries: the
@@ -509,21 +509,19 @@ func (m *leadMode) define(ctx context.Context, lr *leadRole) outcome {
 	})
 }
 
-// ensureChat makes the lead's reply folder and writes the text of its
-// instruction file (provision.EnsureChat), under the role's operation lock,
-// which a define and a start hold. The empty instruction file of an earlier
-// provisioning is replaced only while the lead is proven stopped. A reply
-// folder or an instruction file that is not as the daemon makes it refuses
-// the command (chat-folder): the daemon does not change what the lead may
-// have changed.
+// ensureChat writes the text of the lead's instruction file
+// (provision.EnsureChat), under the role's operation lock, which a define and
+// a start hold. The empty instruction file of an earlier provisioning is
+// replaced only while the lead is proven stopped. An instruction file that is
+// not as the daemon makes it, or that changed while it was replaced, refuses
+// the command (chat-folder). The reply folder is not looked at: the desk's
+// turn-on makes it, so a lead whose chat is off starts whatever its home holds
+// at that name.
 func (m *leadMode) ensureChat(lr *leadRole) (outcome, bool) {
 	res, err := provision.EnsureChat(lr.cfg, provision.ChatOptions{Stopped: m.provenStopped(lr)})
 	if err != nil {
-		m.d.logf("scratch: the lead %q: its reply folder or instruction file: %s", lr.key, SafeText(err.Error()))
+		m.d.logf("scratch: the lead %q: its instruction file: %s", lr.key, SafeText(err.Error()))
 		return refusedOut(codeChatFolder, msgChatPrepare), true
-	}
-	if res.OutboxMade {
-		m.d.logf("scratch: the lead %q: its reply folder was made (mode 0700)", lr.key)
 	}
 	switch res.Instructions {
 	case provision.InstructionsWritten:
