@@ -127,8 +127,11 @@ func (d *Daemon) chat(ctx context.Context, c seatapp.ChatCall, peer chatPeer) (v
 		if c.Verb == seatapp.ChatLeads {
 			ttl = listFresh
 		}
-		// Only the trial has immutable policy and bodies. A real transcript
-		// requires live read authorization on every request.
+		// Every directory, the trial's or a real one, is kept listFresh (20
+		// seconds), as the interview's list is. A transcript page is kept
+		// viewFresh (10 seconds) only when it is the trial's, whose samples
+		// never change: a real transcript requires live read authorization
+		// on every request, so it is never kept.
 		if c.Verb == seatapp.ChatLeads || v.StandIn {
 			if m.answers == nil || len(m.answers) >= 32 {
 				m.answers = make(map[seatapp.ChatCall]chatCached)

@@ -22,6 +22,9 @@ type chatTestPeer struct {
 	code  string
 	// noChat is a gate whose hello does not list chat.
 	noChat bool
+	// real answers as a host of real leads would: the samples without
+	// their stand_in mark.
+	real bool
 }
 
 func (p *chatTestPeer) Connected() (time.Time, bool) { return p.since, !p.since.IsZero() }
@@ -46,6 +49,9 @@ func (p *chatTestPeer) Call(ctx context.Context, op string, params, result any) 
 	r, err := p.port.Chat(ctx, c)
 	if err != nil {
 		return err
+	}
+	if p.real {
+		r.StandIn = false
 	}
 	raw, err := ownerwire.EncodeSeatChatResult(r)
 	*result.(*json.RawMessage) = raw
@@ -112,6 +118,33 @@ func TestSeatChatDownOrNotOffered(t *testing.T) {
 	if down.calls+other.calls != 0 || d.budget.used(kindRead) != 0 {
 		t.Fatal("a call that cannot be served was sent or counted")
 	}
+}
+
+// TestSeatChatRealReuse: of a host that is not the trial's, the link
+// reuses the directory for 20 seconds, as the trial's, and never a
+// transcript page: each read is a call of the gate.
+func TestSeatChatRealReuse(t *testing.T) {
+	clock := &testClock{t: decideNow}
+	d := Daemon{budget: budget{now: roomy()}, gnow: clock.now}
+	p := chatTestPeer{since: clock.now(), port: standin.New(clock.now), real: true}
+	list := seatapp.ChatCall{Verb: seatapp.ChatLeads}
+	read := seatapp.ChatCall{Verb: seatapp.ChatRead, Lead: "daemon:alpha"}
+	ask := func(c seatapp.ChatCall, n int) {
+		t.Helper()
+		got, err := d.chat(context.Background(), c, &p)
+		if err != nil || !got.ValidFor(c) || got.StandIn || p.calls != n {
+			t.Fatalf("call %s: count %d, want %d, error %v", c.Verb, p.calls, n, err)
+		}
+	}
+	ask(list, 1)
+	ask(read, 2)
+	ask(read, 3)
+	ask(list, 3)
+	clock.advance(19 * time.Second)
+	ask(list, 3)
+	ask(read, 4)
+	clock.advance(time.Second)
+	ask(list, 5)
 }
 
 func TestSeatChatWireBoundsAndCodes(t *testing.T) {

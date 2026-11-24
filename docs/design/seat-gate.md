@@ -2874,9 +2874,10 @@ kind `read`. Chat shares that room until replies are built; it gets a room of
 its own then, sized from measured use (see Budget (8) below), and not before,
 so the rooms of logins, decisions, reads and the interview are as they were.
 The chat pages have their own page limit of 30 requests per credential per
-minute. Within the login and gate connection the link can
-reuse a directory for 20 seconds and a trial read at the same lead and cursor
-for 10 seconds. A refusal of the gate, an answer the link does not take, a
+minute. Within the login and gate connection the link reuses a directory
+for 20 seconds, every directory, the trial's or a real one, and a read at the
+same lead and cursor for 10 seconds only when it is the trial's (`stand_in`),
+whose samples never change; a real transcript is never reused. A refusal of the gate, an answer the link does not take, a
 replacement connection, a fresh directory or a retention reset invalidates
 earlier answers. A call the link refuses itself and does not send (no room in
 the reads, no connection, no capability) is no news of the gate and keeps them,
