@@ -311,6 +311,36 @@ func TestEveryCodeIsClassed(t *testing.T) {
 	}
 }
 
+// Every word of seat.genesis is classed: of them only genesis-bad-answer
+// counts, with bad-params. The state of the thread store (stale-round, busy,
+// done, unknown-thread, and of a plan not-ready and no-template) and what the
+// owner typed (secret-shaped, over-cap) do not. A word added to the port's
+// list fails here until it is put in one class.
+func TestEveryGenesisWordIsClassed(t *testing.T) {
+	want := map[string]bool{
+		ownerwire.CodeGenesisBadAnswer: true, CodeBadParams: true,
+		ownerwire.CodeGenesisStaleRound: false, ownerwire.CodeGenesisBusy: false, ownerwire.CodeGenesisDone: false,
+		ownerwire.CodeGenesisUnknownThread: false, ownerwire.CodeGenesisNotReady: false, ownerwire.CodeGenesisNoTemplate: false,
+		ownerwire.CodeGenesisSecretShaped: false, ownerwire.CodeGenesisOverCap: false,
+	}
+	if len(genesisCodes) != len(want) {
+		t.Fatalf("the port may refuse with %d words, the test classes %d", len(genesisCodes), len(want))
+	}
+	for c := range genesisCodes {
+		counts, ok := want[c]
+		if !ok {
+			t.Errorf("%q is not classed", c)
+			continue
+		}
+		if countedFor(ownerwire.OpSeatGenesis, c) != counts {
+			t.Errorf("%q counts %v, want %v", c, !counts, counts)
+		}
+		if !seatgate.ValidCode(c) {
+			t.Errorf("%q is not a gate code", c)
+		}
+	}
+}
+
 // A key unpinned after its handshake counts its not-pinned refusals, so its
 // log lines are bounded too.
 func TestNotPinnedRefusalsAreBounded(t *testing.T) {

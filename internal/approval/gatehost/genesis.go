@@ -6,7 +6,7 @@ import (
 	"ataniq/internal/approval/ownerwire"
 )
 
-// genesisCodes are the gate words a [GenesisPort] may refuse with: the seven
+// genesisCodes are the gate words a [GenesisPort] may refuse with: the nine
 // words of seat.genesis, and bad-params for params the port itself refuses.
 var genesisCodes = map[string]bool{
 	ownerwire.CodeGenesisBusy:          true,
@@ -16,6 +16,8 @@ var genesisCodes = map[string]bool{
 	ownerwire.CodeGenesisSecretShaped:  true,
 	ownerwire.CodeGenesisDone:          true,
 	ownerwire.CodeGenesisStaleRound:    true,
+	ownerwire.CodeGenesisNotReady:      true,
+	ownerwire.CodeGenesisNoTemplate:    true,
 	CodeBadParams:                      true,
 }
 
