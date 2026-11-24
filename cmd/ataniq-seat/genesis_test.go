@@ -277,7 +277,7 @@ func TestRunLogsTheLinksRefusalForRoom(t *testing.T) {
 		t.Fatal("no call was refused for room")
 	}
 	out := stderr.String()
-	const line = "ataniq-seat: the link has no room for a call of kind genesis (12 of 12 in the last 80 seconds); the page says the desk is busy\n"
+	const line = "ataniq-seat: the link has no room for a call of kind genesis (10 of 10 in the last 80 seconds); the page says the desk is busy\n"
 	if strings.Count(out, line) != 1 || strings.Count(out, "the link has no room") != 1 {
 		t.Errorf("stderr lacks the one line: %q", out)
 	}

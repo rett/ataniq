@@ -35,7 +35,7 @@ const (
 	// genesisRequests and genesisWindow bound the project pages and posts
 	// of one credential's sessions. They do not bound the gate's calls: the
 	// port keeps the interview to its own room at the gate (package
-	// seatlink: 12 calls in 80 seconds), and a call past it is the note
+	// seatlink: 10 calls in 80 seconds), and a call past it is the note
 	// "The desk is busy".
 	genesisRequests = 30
 	genesisWindow   = time.Minute

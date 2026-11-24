@@ -35,7 +35,7 @@ const (
 
 // Rooms in BudgetWindow, including the transport's pings:
 //
-//	pings 6 + decisions 8 + public 10 + reads 12 + waits 6 + genesis 12 + chat 6 = 60
+//	pings 6 + decisions 8 + public 12 + reads 12 + waits 6 + genesis 10 + chat 6 = 60
 //
 // Three Card tabs can each reload four times. The interview keeps its
 // room for a complete walk and the project lists the Cards tab requests.
@@ -49,13 +49,13 @@ const (
 	// challenge, or the challenge's life ends.
 	decideRoom = 8
 	// publicRoom is seat.pair, seat.login-challenge and seat.login, which the
-	// seat relays for anyone who reaches its pages: 5 logins. A login
+	// seat relays for anyone who reaches its pages: 6 logins. A login
 	// challenge is drawn only with room for its seat.login as well, kept
 	// for that challenge until the login is sent or the challenge's life
 	// ends, so a login is never refused for room once the phone has
 	// answered. Strangers who draw login challenges and never answer them
 	// keep that room until their challenges' life ends.
-	publicRoom = 10
+	publicRoom = 12
 	// readRoom is owner.list, owner.show and owner.paths, the reads of every
 	// session together.
 	readRoom = 12
@@ -71,7 +71,7 @@ const (
 	// genesisRoom is seat.genesis, every verb of the interview: the pages'
 	// starts, lists, rounds, answers, changes, summaries, finishes and
 	// discards, of every session together.
-	genesisRoom = 12
+	genesisRoom = 10
 	// chatRoom is shared by directory and transcript reads.
 	chatRoom = 6
 )

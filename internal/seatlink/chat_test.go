@@ -120,7 +120,7 @@ func TestSeatChatRejectsMalformedAnswers(t *testing.T) {
 }
 
 // A six-round interview, with start and two corrections, at a tap every
-// five seconds. Cards reloads every twenty seconds, including its projects
+// twelve seconds (a person reads each question). Cards reloads every twenty seconds, including its projects
 // read. The owner opens chat and refreshes it twice during the interview.
 func TestSeatChatMixedBudget(t *testing.T) {
 	clock := &testClock{t: decideNow}
@@ -139,7 +139,7 @@ func TestSeatChatMixedBudget(t *testing.T) {
 			take(kindChat)
 			take(kindChat)
 		}
-		clock.advance(5 * time.Second)
+		clock.advance(12 * time.Second)
 	}
 }
 

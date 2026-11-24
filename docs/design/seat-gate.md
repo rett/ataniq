@@ -800,7 +800,7 @@ sends none past the room of its kind:
 | Genesis | `seat.genesis`, every verb, of every session together (see [guided new project](#guided-new-project)) | 12 |
 | Chat | `seat.chat`, directory and transcript reads | 6 |
 
-Pings 6 + decisions 8 + public 10 + reads 12 + waits 6 + Genesis 12 + chat 6
+Pings 6 + decisions 8 + public 12 + reads 12 + waits 6 + Genesis 10 + chat 6
 equals the gate rate of 60. The link checks the sum and the even sizes of the
 two rooms that reserve challenge/answer pairs at compile time. Chat takes two
 calls each from decisions, public calls and reads. Genesis keeps room for an
@@ -2267,7 +2267,7 @@ sent, maps the nine genesis codes to the app's errors (and `rate-limited`,
 `busy` and `too-many-refusals` to "busy", `unknown-op` to "not offered"), and
 takes an answer only when it is one the verb answers, of the thread called,
 with every count and length checked again. Each call has the room of the
-interview at the gate: 12 calls in 80 seconds, of every session together, taken
+interview at the gate: 10 calls in 80 seconds, of every session together, taken
 from the reads and the decisions (see the budget table under
 [login](#login-seatlogin-challenge-and-seatlogin)). So that the pages do not
 spend that room on reads, the link answers a `list` from the last one for 20
