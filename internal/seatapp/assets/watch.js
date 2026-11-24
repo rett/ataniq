@@ -67,6 +67,11 @@
   var card = root.dataset.card || "";
   var binding = root.dataset.binding || "";
   var version = root.dataset.version || "";
+  // rendered is the version this page shows, which never moves: the list
+  // shows a newer one only by reloading. A stream is opened with it, so
+  // that the seat counts as seen only what the page shows, never a hint it
+  // has not shown yet; version is the poll's, and moves with each answer.
+  var rendered = version;
   var onCard = card !== "";
   // A Card page of a card that is not pending names no card; it is no list,
   // so it never reloads.
@@ -319,7 +324,7 @@
     }
     hush();
     try {
-      var resp = await send(STREAM_PATH, { version: version }, c.ctl);
+      var resp = await send(STREAM_PATH, { version: rendered }, c.ctl);
       var type = (resp.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
       if (resp.status !== 200 || resp.redirected || type !== "text/event-stream" ||
           !resp.body || typeof resp.body.getReader !== "function") {

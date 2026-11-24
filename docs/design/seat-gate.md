@@ -1765,9 +1765,26 @@ The open stream:
   shuts down: `seatapp.Server` registers the end of every stream with
   `RegisterOnShutdown` (the stream does not hijack the connection, so
   `Shutdown` sees it end and closes it), and `App.Close` ends them too.
-- It is not a poll for the notices: it neither holds a notice back nor
-  counts the cards as seen. A suspended page can leave a stream open, and
-  the sight of the list is what the notices' quiet stands for.
+- For the notices, the stream's opening is the page's check-in, as a poll
+  is: the page opens a stream only while it is shown. Each accepted opening
+  takes a foreground lease of 30 seconds (`streamLease`), at most to the
+  session's own end, and while a lease lasts the notices are held back, as
+  within 60 seconds of a poll. Only a new check-in makes a new lease: the
+  page's next stream, which the seat's rotation brings about every 25
+  seconds while the page is shown. Nothing the seat writes renews it, not a
+  heartbeat and not a hint, even when the write succeeds: a suspended phone
+  can leave a proxy taking the seat's writes. A lease ends early when its
+  stream ends for any reason but its rotation (the page hidden or left,
+  which aborts the request, a failed write, the session's end, the seat's
+  shutdown) and with its session; a rotated stream's lease runs out by
+  itself, which covers the page's reconnect.
+- What counts as seen is what the page shows, not what it was told. The
+  page opens each stream with the version it shows (`rendered`, which the
+  list changes only by reloading), not the version of the last hint; when
+  that is the watcher's version, the waiting count is the owner's seen
+  count, as a poll's is. A hint the page has not shown yet is not seen: a
+  card that comes while the list is open, and a phone suspended before the
+  list reloads, leaves that card's notice due once the lease runs out.
 
 The page (`watch.js`). Only the card list streams; the Card page keeps the
 poll until its withdrawal of stale offers has parity. The script reads the
@@ -1946,9 +1963,12 @@ one of the holds below applies. The rules:
    no more), and counts as seen: the floor of rule 2 is at least that count,
    so a card the owner looked at on the page does not bring a notice a minute
    after the page is closed. A card that comes after the last poll does.
-   The card list's hint stream is not a poll: an open stream, its heartbeats
-   and its events neither hold a notice back nor count cards as seen (see
-   [the hint stream](#the-card-lists-hint-stream)).
+   The card list's hint stream does the same by its own rule (see
+   [the hint stream](#the-card-lists-hint-stream)): each stream the page
+   opens, which it does only while shown, is a check-in that holds the
+   notices back for a lease of 30 seconds, and counts as seen the cards of
+   the version the page says it shows, when it is the watcher's. Nothing the
+   seat writes on the stream renews the lease or counts as seen.
 4. After a call to the notifier that failed, nothing is sent for 1 minute; each
    failure after it doubles the wait, to a longest of 30 minutes, and a call
    the notifier took ends the run. A failure is logged at most once a minute,

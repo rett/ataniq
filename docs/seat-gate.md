@@ -708,12 +708,15 @@ the notifier, unless:
   page to sleep asks nothing, so close the pages and wait a minute when you
   test). The cards that page found waiting count as seen: closing the page does
   not bring a notice for them, only a card that comes after its last poll does.
-  The card list's stream is not a poll: an open stream, its heartbeats and its
-  hints neither hold a notice back nor count cards as seen, since a stream can
-  stay open on a phone that is no longer showing it. With the card list open
-  over its stream a notice can therefore come while you look at the list, and
-  closing it can bring a notice for cards it showed; a Card page, which polls,
-  holds them back as before;
+  The card list's stream holds notices back too: each time the list opens
+  its stream, which it does only while it is shown and again about every 25
+  seconds, it holds them back for 30 seconds, and the cards it shows count
+  as seen, so the list open in front of you brings no notice and closing it
+  brings none for cards it showed. What the seat writes on the stream does
+  not count, since a phone put to sleep can leave the stream open: a card
+  that comes while the list is open but that the list has not shown yet
+  (the phone locked before it reloaded) brings its notice about 30 seconds
+  later;
 - the count came back up after a dip, to no more than what was last told, and
   fewer than 2 minutes have passed since the last notice (a card decided and
   another asked is not a new notice at once): so with the count not rising,

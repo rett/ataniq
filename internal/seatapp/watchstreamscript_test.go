@@ -51,7 +51,10 @@ func TestSeatWatchScriptStreamMatchesTheSeat(t *testing.T) {
 			t.Errorf("send lacks %q", want)
 		}
 	}
-	for _, want := range []string{"send(POLL_PATH, body, ctl)", "send(STREAM_PATH, { version: version }, c.ctl)"} {
+	// The stream carries the version the page shows, never one a hint
+	// brought: the seat counts it as what the owner has seen.
+	for _, want := range []string{"send(POLL_PATH, body, ctl)", "send(STREAM_PATH, { version: rendered }, c.ctl)",
+		"var rendered = version;"} {
 		if !strings.Contains(js, want) {
 			t.Errorf("watch.js lacks %q", want)
 		}
@@ -60,6 +63,10 @@ func TestSeatWatchScriptStreamMatchesTheSeat(t *testing.T) {
 	// key.
 	if strings.Count(js, "send(STREAM_PATH") != 1 {
 		t.Error("the stream is opened from more than one place")
+	}
+	if regexp.MustCompile(`\brendered\s*=[^=]`).FindAllStringIndex(js, -1) == nil ||
+		len(regexp.MustCompile(`\brendered\s*=[^=]`).FindAllStringIndex(js, -1)) != 1 {
+		t.Error("the rendered version is set other than once, at the page's load")
 	}
 }
 

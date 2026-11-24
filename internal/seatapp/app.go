@@ -252,6 +252,8 @@ type app struct {
 	// streamNow is the clock of the stream's write deadlines; time.Now
 	// when nil. For tests.
 	streamNow func() time.Time
+	// fg are the streams' foreground leases, which hold the notices back.
+	fg *foreground
 	// projectsOffered is what the card list last learnt of the new-project
 	// interview: offered or not. The Card page and the path pages show the
 	// main navigation's "Projects" link by it, without a call of their own.
@@ -315,7 +317,7 @@ func newApp(cfg Config) (*app, http.Handler, error) {
 		reads: newLimiter(readRequests, readWindow), decides: newLimiter(decideRequests, decideWindow),
 		watches: newLimiter(watchRequests, watchWindow), watchHold: watchHold, host: hostHeader,
 		pushes: newLimiter(pushRequests, pushWindow), chats: newLimiter(30, time.Minute), geneses: newLimiter(genesisRequests, genesisWindow),
-		streams: newStreamSlots(), streamOpens: newLimiter(streamOpens, streamOpenWindow),
+		streams: newStreamSlots(), fg: newForeground(), streamOpens: newLimiter(streamOpens, streamOpenWindow),
 		streamLife: streamLife, streamBeat: streamBeat, streamGap: streamGap, streamWrite: streamWrite}
 	a.push, _ = cfg.Notifier.(PushPort)
 

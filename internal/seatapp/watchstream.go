@@ -24,6 +24,12 @@ import (
 // comment. No card text, id, count, title or time is ever written to it. An
 // event only prompts the page's own read: the list reloads by the rules of
 // watch.js, as after a poll's "changed".
+//
+// For the notices, a stream's opening is the page's check-in: the page
+// opens one only while it is shown. It takes a foreground lease (see
+// foreground), and the version the page says it shows, when it is the
+// watcher's, counts the cards waiting as seen. A hint the seat writes is
+// not seen until the page shows it, reloads, and checks in with it.
 
 // streamPath is the stream's one address.
 const streamPath = "/api/watch/stream"
@@ -68,6 +74,10 @@ const (
 	streamOpenWindow = time.Minute
 	// streamMax is the most streams open at once, of all credentials.
 	streamMax = 32
+	// streamLease is how long a stream's opening counts the owner as
+	// looking at the card list, for the notices: the stream's life and the
+	// page's reconnect after it.
+	streamLease = 30 * time.Second
 	// streamEventMax is the most bytes of one event, its lines included.
 	streamEventMax = 256
 )
@@ -157,6 +167,76 @@ func streamEvent(version string) ([]byte, bool) {
 // state ends the stream, and the page's poll then says what it is.
 func streamLive(s WatchState) bool {
 	return s.Watching && !s.Offline && s.Version != "" && validWatchVersion(s.Version)
+}
+
+// foreground holds the leases of the card lists' streams: while one lasts,
+// the owner counts as looking at the list, and the notices are held back,
+// as for a poll within noticeQuiet. A lease is taken when a stream opens,
+// the page's check-in, and lasts streamLease, at most to the session's own
+// end; only a new check-in (the page's next stream, which the rotation
+// brings) makes a new one. Nothing the seat writes renews it, since a
+// suspended phone can leave a proxy taking the seat's writes. It ends early
+// when its stream ends for any reason but its life, and with its session.
+type foreground struct {
+	mu     sync.Mutex
+	leases map[uint64]lease
+	next   uint64
+}
+
+// lease is one stream's: the session it is of, and when it runs out.
+type lease struct {
+	key   tokenKey
+	until time.Time
+}
+
+func newForeground() *foreground { return &foreground{leases: map[uint64]lease{}} }
+
+// grant takes a lease for the session of k at now, to the earlier of
+// streamLease and sessionEnd, and returns its end, which is safe to run
+// more than once.
+func (f *foreground) grant(k tokenKey, now, sessionEnd time.Time) (end func()) {
+	until := now.Add(streamLease)
+	if sessionEnd.Before(until) {
+		until = sessionEnd
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := f.next
+	f.next++
+	f.leases[id] = lease{key: k, until: until}
+	return func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		delete(f.leases, id)
+	}
+}
+
+// live returns the leases that have not run out at now, and drops the
+// others.
+func (f *foreground) live(now time.Time) []lease {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []lease
+	for id, l := range f.leases {
+		if !now.Before(l.until) {
+			delete(f.leases, id)
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
+// foregroundUntil is when the last live lease of a live session runs out,
+// zero when there is none.
+func (a *app) foregroundUntil(now time.Time) time.Time {
+	var out time.Time
+	for _, l := range a.fg.live(now) {
+		if _, ok := a.sess.liveUntil(l.key); ok && l.until.After(out) {
+			out = l.until
+		}
+	}
+	return out
 }
 
 // streamSlots counts the open streams, by credential and in all, and ends
@@ -419,6 +499,15 @@ func (a *app) watchStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The stream is open: the page checked in, visible (a hidden page
+	// opens none). It holds the notices back while its lease lasts, and the
+	// version it says it shows, when it is the watcher's, is the count the
+	// owner has seen.
+	endLease := a.fg.grant(s.key, a.cfg.Now(), until)
+	if version == st.Version {
+		a.sawWaiting(st.Waiting)
+	}
+
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	// Cache-Control: no-store is on every response (guard). This one asks
@@ -431,10 +520,16 @@ func (a *app) watchStream(w http.ResponseWriter, r *http.Request) {
 	defer sw.finish()
 	w.WriteHeader(http.StatusOK)
 	if sw.send(streamHeartbeat) != nil {
+		endLease()
 		return
 	}
 	shook()
-	a.runStream(r, sw, timer, life, wt, ch, st, version, s.key, gone, until)
+	// A stream the seat rotated leaves its lease to run out, which covers
+	// the page's reconnect; any other end (the page hidden, left or gone,
+	// a failed write, the session's end, the server's) ends it now.
+	if !a.runStream(r, sw, timer, life, wt, ch, st, version, s.key, gone, until) {
+		endLease()
+	}
 }
 
 // refuseSlot answers the refusal of a place for a stream, and reports
@@ -454,9 +549,11 @@ func refuseSlot(w http.ResponseWriter, refusal int) bool {
 }
 
 // runStream is the open stream's loop. sent is the version the page has,
-// st the state as the stream opened, and ch the channel taken before it.
+// st the state as the stream opened, and ch the channel taken before it. It
+// reports whether the stream ended at its life, the seat's own rotation,
+// rather than for any other reason.
 func (a *app) runStream(r *http.Request, sw *streamWriter, timer noticeTimer, life <-chan time.Time, wt Watcher,
-	ch <-chan struct{}, st WatchState, sent string, k tokenKey, gone <-chan struct{}, until time.Time) {
+	ch <-chan struct{}, st WatchState, sent string, k tokenKey, gone <-chan struct{}, until time.Time) (rotated bool) {
 	beat, stopBeat := timer(a.streamBeat)
 	defer func() { stopBeat() }()
 	sessionLeft := func(until time.Time) time.Duration {
@@ -500,7 +597,7 @@ func (a *app) runStream(r *http.Request, sw *streamWriter, timer noticeTimer, li
 		return true
 	}
 	if st.Version != sent && !say(st) {
-		return
+		return false
 	}
 	for {
 		select {
@@ -508,7 +605,7 @@ func (a *app) runStream(r *http.Request, sw *streamWriter, timer noticeTimer, li
 			ch = wt.WatchChanged()
 			st = wt.Watch()
 			if !streamLive(st) {
-				return
+				return false
 			}
 			if st.Version == sent {
 				continue
@@ -518,7 +615,7 @@ func (a *app) runStream(r *http.Request, sw *streamWriter, timer noticeTimer, li
 				continue
 			}
 			if !say(st) {
-				return
+				return false
 			}
 		case <-gap:
 			stopGap()
@@ -527,30 +624,30 @@ func (a *app) runStream(r *http.Request, sw *streamWriter, timer noticeTimer, li
 				pending = false
 				st = wt.Watch()
 				if !streamLive(st) || !say(st) {
-					return
+					return false
 				}
 			}
 		case <-beat:
 			stopBeat()
 			if !alive() || sw.send(streamHeartbeat) != nil {
-				return
+				return false
 			}
 			beat, stopBeat = timer(a.streamBeat)
 		case <-sessEnd:
 			stopSess()
 			u, ok := a.sess.liveUntil(k)
 			if !ok {
-				return
+				return false
 			}
 			sessEnd, stopSess = timer(sessionLeft(u))
 		case <-life:
-			return
+			return true
 		case <-gone:
-			return
+			return false
 		case <-a.streams.down:
-			return
+			return false
 		case <-r.Context().Done():
-			return
+			return false
 		}
 	}
 }

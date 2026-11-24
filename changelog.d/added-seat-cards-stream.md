@@ -12,7 +12,9 @@
   before the request's body is read. Any
   refusal or failure of the stream, or a browser that cannot read one, falls
   back to the long poll, which the Card page keeps. The stream is closed
-  while the page is hidden and reopened when it is shown. It is not a poll
-  for the notices: a notice can come while the list is open over it. A proxy
+  while the page is hidden and reopened when it is shown. Each stream the
+  shown list opens holds the notices back for 30 seconds and counts the
+  cards it shows as seen, as a poll does; nothing the seat writes on it
+  counts, so a card the list has not shown yet still brings its notice. A proxy
   in front must pass the stream on unbuffered and uncompressed; not yet
   qualified on the deployed path or on a phone.

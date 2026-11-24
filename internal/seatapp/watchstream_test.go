@@ -857,33 +857,168 @@ func TestSeatStreamAppCloseEndsStreams(t *testing.T) {
 	within(t, got, 3*time.Second)
 }
 
-// TestSeatStreamDoesNotSuppressNotices: an open stream, its heartbeats and
-// its events are not a poll: they neither hold the notices back nor count
-// the cards as seen.
-func TestSeatStreamDoesNotSuppressNotices(t *testing.T) {
+// TestSeatStreamCheckInIsTheForeground: a stream's opening takes a lease
+// of streamLease, at most to the session's end, which a poll's quiet does
+// not need; it counts as seen only the waiting count of the version the
+// page says it shows, when it is the watcher's; a stream that ends for any
+// reason but its life ends the lease, and the session's end ends it too.
+func TestSeatStreamCheckInIsTheForeground(t *testing.T) {
 	r, wd := newWatchRig(t, "aa", time.Minute)
-	ft := &fakeTimers{clk: r.clock}
-	r.app.streamTimer = ft.timer
+	wd.set(func(st *WatchState) { st.Version, st.Waiting = "bb", 3 })
 	s := r.login(t)
 	srv := streamServer(t, r)
+	// A page that shows an older version: a lease, and nothing seen.
 	c := openStream(t, srv, streamOK, s)
 	c.next(t, 3*time.Second)
-	waitTimers(t, ft, 3)
-	ft.advance(streamBeat)
-	c.next(t, 3*time.Second)
-	wd.set(func(st *WatchState) { st.Version, st.Waiting = "bb", 3 })
-	c.nextEvent(t, 3*time.Second)
-	if !r.app.lastPollTime().IsZero() {
-		t.Error("the stream counted as a poll for the notices")
+	now := r.clock.Now()
+	if got := r.app.foregroundUntil(now); !got.Equal(now.Add(streamLease)) {
+		t.Errorf("the lease runs to %v, want streamLease", got.Sub(now))
 	}
 	if seq, _ := r.app.pollSeen(); seq != 0 {
-		t.Error("the stream counted the cards as seen")
+		t.Error("a stream opened with an older version counted the cards as seen")
 	}
-	// The notice core, given the time of the last poll (none), sends.
-	var core noticeCore
-	if d := core.decide(r.clock.Now(), wd.Watch(), r.app.lastPollTime()); !d.Send || d.N != 3 {
-		t.Errorf("with a stream open the notice is %+v", d)
+	if !r.app.lastPollTime().IsZero() {
+		t.Error("the stream counted as a poll")
 	}
+	// The page shows the watcher's version: its count is seen.
+	c2 := openStream(t, srv, `{"version":"bb"}`, s)
+	c2.next(t, 3*time.Second)
+	if seq, waiting := r.app.pollSeen(); seq != 1 || waiting != 3 {
+		t.Errorf("seen %d times, %d waiting; want once, 3", seq, waiting)
+	}
+	// A page that closes its stream ends its lease; the other stays.
+	c.cancel()
+	r.waitStreams(t, 1)
+	if r.app.foregroundUntil(r.clock.Now()).IsZero() {
+		t.Error("one closed stream ended the other's lease")
+	}
+	c2.cancel()
+	r.waitStreams(t, 0)
+	if got := r.app.foregroundUntil(r.clock.Now()); !got.IsZero() {
+		t.Errorf("closed streams left a lease to %v", got.Sub(now))
+	}
+	// The lease ends with the session: at its idle end, and at a logout.
+	r.clock.Advance(SessionIdle - 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	got := r.streamAsync(ctx, `{"version":"bb"}`, s)
+	r.waitStreams(t, 1)
+	k, _ := keyOf(s.Value)
+	until, _ := r.app.sess.liveUntil(k)
+	if fu := r.app.foregroundUntil(r.clock.Now()); !fu.Equal(until) {
+		t.Errorf("the lease runs %v past the session", fu.Sub(until))
+	}
+	r.postWith("/api/logout", "{}", s)
+	within(t, got, 3*time.Second)
+	if !r.app.foregroundUntil(r.clock.Now()).IsZero() {
+		t.Error("a lease outlived its session")
+	}
+}
+
+// streamNoticeRig is a notice rig whose card list streams, on the same
+// fake clock: the stream's timers are apart from the notices', and fire
+// with fire.
+type streamNoticeRig struct {
+	*noticeRig
+	ft  *fakeTimers
+	srv *httptest.Server
+	s   *http.Cookie
+	n   int
+}
+
+func newStreamNoticeRig(t *testing.T) *streamNoticeRig {
+	t.Helper()
+	nr := newNoticeRig(t)
+	sr := &streamNoticeRig{noticeRig: nr, ft: &fakeTimers{clk: nr.clock}}
+	nr.app.streamTimer = sr.ft.timer
+	nr.app.streamLife = time.Hour // no rotation in the way
+	sr.s = nr.login(t)
+	sr.srv = streamServer(t, nr.rig)
+	return sr
+}
+
+// change sets the count waiting with a new version of hex digits, which
+// a stream takes, and waits for the notices' goroutine to judge it.
+func (sr *streamNoticeRig) change(t *testing.T, waiting int) {
+	t.Helper()
+	sr.n++
+	before := sr.parks.Load()
+	sr.wd.set(func(st *WatchState) {
+		st.Watching, st.Offline, st.Waiting = true, false, waiting
+		st.Version = fmt.Sprintf("%02x", sr.n)
+	})
+	sr.parked(t, before+1)
+}
+
+// version is the watcher's version now.
+func (sr *streamNoticeRig) version() string { return sr.wd.Watch().Version }
+
+// open opens the list's stream with the version the page shows.
+func (sr *streamNoticeRig) open(t *testing.T, shows string) *streamConn {
+	t.Helper()
+	c := openStream(t, sr.srv, `{"version":"`+shows+`"}`, sr.s)
+	if b, ok := c.next(t, 3*time.Second); !ok || b != ":" {
+		t.Fatalf("stream: %q %v", b, ok)
+	}
+	return c
+}
+
+// TestSeatStreamNoticeNotDoubledForASeenCount: a card that comes while the
+// list is shown is held back by the stream's lease; the list reloads and
+// checks in with the version it shows, which counts the card as seen; the
+// list closes, and no notice is sent for the card the owner saw.
+func TestSeatStreamNoticeNotDoubledForASeenCount(t *testing.T) {
+	sr := newStreamNoticeRig(t)
+	c := sr.open(t, sr.version())
+	sr.change(t, 1)
+	sr.expect(t)
+	if b, ok := c.nextEvent(t, 3*time.Second); !ok || !hintRe.MatchString(b) {
+		t.Fatalf("hint %q %v", b, ok)
+	}
+	// The page reloads (its stream is left) and shows the new version.
+	c.cancel()
+	sr.waitStreams(t, 0)
+	c2 := sr.open(t, sr.version())
+	sr.expect(t)
+	// The list is closed.
+	c2.cancel()
+	sr.waitStreams(t, 0)
+	sr.pass(t, streamLease)
+	sr.pass(t, noticeSpacing)
+	sr.pass(t, time.Hour)
+	sr.expect(t)
+	// A card after the one seen is told, once the owner is gone.
+	sr.change(t, 2)
+	sr.expect(t, 2)
+}
+
+// TestSeatStreamNoticeDueWhenTheHintWasNotShown: a card that comes while
+// the list is shown is held back only while the lease lasts. The phone is
+// suspended before the list reloads: the seat's heartbeats still go out (a
+// proxy takes them), and do not renew the lease; when it runs out the
+// notice is sent, with the stream still open.
+func TestSeatStreamNoticeDueWhenTheHintWasNotShown(t *testing.T) {
+	sr := newStreamNoticeRig(t)
+	c := sr.open(t, sr.version())
+	sr.change(t, 1)
+	if b, ok := c.nextEvent(t, 3*time.Second); !ok || !hintRe.MatchString(b) {
+		t.Fatalf("hint %q %v", b, ok)
+	}
+	elapsed := time.Duration(0)
+	for ; elapsed+streamBeat < streamLease; elapsed += streamBeat {
+		waitTimers(t, sr.ft, 3) // the life, the heartbeat and the session's end
+		sr.pass(t, streamBeat)
+		sr.ft.advance(0)
+		if b, ok := c.next(t, 3*time.Second); !ok || b != ":" {
+			t.Fatalf("heartbeat %q %v", b, ok)
+		}
+		sr.expect(t)
+	}
+	sr.pass(t, streamLease-elapsed)
+	if sr.streams() != 1 {
+		t.Fatalf("%d streams open, want the suspended page's", sr.streams())
+	}
+	sr.expect(t, 1)
 }
 
 // TestSeatStreamStrictInput: the body is one object with exactly one string
