@@ -76,6 +76,11 @@
 //     refused genesis-done, and its brief digest is the one finish returned. Finish
 //     may be called at any time on an open thread (the owner's "enough"), and
 //     again on a finished one, which answers the same digest.
+//   - A brief is complete for planning when every required field of its
+//     kind is set: an answer decided for the owner (a "you decide" answer the
+//     host inferred) counts whether or not he has confirmed it, and the plan
+//     drawn from it carries the warning inferred-answers. The progress of a
+//     result (filled of total) and plan_ready follow that one notion.
 //   - Finish of a brief that is complete, of a kind a template serves,
 //     compiles its plan, revision 1, and stores it with the frozen brief in
 //     the one write; a brief that is not, or of a kind no template serves,

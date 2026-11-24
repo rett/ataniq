@@ -112,6 +112,10 @@ const (
 	// WarnEstimate says the work is near the top of its estimate band and
 	// may run past it.
 	WarnEstimate = "estimate-may-exceed-band"
+	// WarnInferred says some answers were decided for the owner (a "you
+	// decide" answer the host inferred): the plan was drawn from them as
+	// they are, whether or not he has confirmed them yet.
+	WarnInferred = "inferred-answers"
 	// WarnRights says some rights are not cleared yet.
 	WarnRights = "rights-not-cleared"
 	// WarnDesk says some answers are the owner's own words, to be settled
@@ -120,7 +124,7 @@ const (
 )
 
 // Warnings are the warnings a plan may carry, sorted.
-var Warnings = []string{WarnEstimate, WarnRights, WarnDesk}
+var Warnings = []string{WarnEstimate, WarnInferred, WarnRights, WarnDesk}
 
 // EstimateCaveat is the words every estimate carries.
 const EstimateCaveat = "an estimate, not a promise"

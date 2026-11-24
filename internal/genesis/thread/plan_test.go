@@ -140,6 +140,74 @@ func TestThePlanIsPreviewedThenStoredAtFinish(t *testing.T) {
 	}
 }
 
+// "You decide" on the language, the sign-in and where the app runs leaves
+// three answers inferred for the owner, not confirmed. The interview is still
+// ready for a plan: its progress says every required answer is filled, in the
+// same notion as plan_ready, and the preview is drawn, with the warning
+// inferred-answers, and stores nothing; the open thread's brief keeps the
+// three answers as they were, not confirmed. Finishing stores the plan, with
+// the warning.
+func TestInferredAnswersAreReadyForAPlan(t *testing.T) {
+	w := newWorld(t)
+	id := w.ok(w.s.Start(ctx)).Thread
+	sum := w.answerAll(id, youDecideWebApp)
+	if sum.State != ownerwire.GenesisStateSummary || sum.Progress.Filled != sum.Progress.Total || sum.Progress.Total != 14 || !sum.Progress.PlanReady {
+		t.Fatalf("the summary: %+v", sum.Progress)
+	}
+	if sum.Groups == nil || len(sum.Groups.DecidedForYou) != len(inferredFields) {
+		t.Fatalf("decided for you: %+v", sum.Groups)
+	}
+	b := w.s.threads[id].brief
+	for _, name := range inferredFields {
+		if f, _ := b.Get(name); f.Provenance != brief.SupervisorInferred || f.Confirmed {
+			t.Fatalf("%s: %+v", name, f)
+		}
+	}
+	if f, n := catalog.Readiness(v1(t), b); f != n-len(inferredFields) {
+		t.Fatalf("readiness %d of %d: the inferred answers count as confirmed", f, n)
+	}
+	// The list's progress is the same.
+	list := w.ok(w.s.List(ctx))
+	if len(list.Threads) != 1 || list.Threads[0].Filled != sum.Progress.Filled || list.Threads[0].Total != sum.Progress.Total {
+		t.Fatalf("the list: %+v", list.Threads)
+	}
+
+	before := w.bytesOf(id)
+	pre := w.ok(w.askPlan(id))
+	p, d := w.compiled(id)
+	if pre.Stored || pre.Plan == nil || pre.PlanDigest != d || pre.Progress != sum.Progress || !slicesContain(pre.Plan.Warnings, plan.WarnInferred) {
+		t.Fatalf("the preview: %+v", pre)
+	}
+	if !bytes.Equal(w.bytesOf(id), before) || w.s.threads[id].plan != nil || !reflect.DeepEqual(w.s.threads[id].brief, b) {
+		t.Fatal("a preview was stored, or touched the brief")
+	}
+
+	fin := w.ok(w.s.Finish(ctx, id))
+	if fin.State != ownerwire.GenesisStateFinished || !fin.Progress.PlanReady || fin.Progress.Filled != fin.Progress.Total {
+		t.Fatalf("finish: %+v", fin)
+	}
+	r := w.s.threads[id]
+	if r.plan == nil || !slicesContain(r.plan.Warnings, plan.WarnInferred) || !plan.ContentEqual(*r.plan, p) {
+		t.Fatalf("finish stored %+v, want the preview's content", r.plan)
+	}
+	stored := w.ok(w.askPlan(id))
+	if !stored.Stored || stored.PlanDigest != r.planDigest || !slicesContain(stored.Plan.Warnings, plan.WarnInferred) {
+		t.Fatalf("the stored plan: %+v", stored)
+	}
+	if w.log.count("a plan was drawn") != 1 {
+		t.Fatalf("log %q", w.log.all())
+	}
+}
+
+func slicesContain(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
 // A brief that is not complete has no plan: genesis-not-ready, on an open
 // thread and on one finished early, which finish freezes as it is, without
 // a plan; the verb writes nothing.

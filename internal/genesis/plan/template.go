@@ -513,7 +513,7 @@ func (t Template) check() error {
 	}
 	for i, w := range t.Warnings {
 		where := "template.warnings[" + strconv.Itoa(i) + "]"
-		if !contains(Warnings, w.Value) || w.Value == WarnEstimate {
+		if !contains(Warnings, w.Value) || w.Value == WarnEstimate || w.Value == WarnInferred {
 			return tplInvalid(where + ".id is not one of the warnings a template gives")
 		}
 		if w.When == nil {

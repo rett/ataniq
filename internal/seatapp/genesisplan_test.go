@@ -132,6 +132,33 @@ func TestGenesisPlanPageSections(t *testing.T) {
 	}
 }
 
+// A plan drawn from answers decided for the owner carries the warning
+// inferred-answers, and the page says so in its fixed sentence, escaped,
+// among the warnings; a plan without the warning has no such sentence.
+func TestGenesisPlanPageInferredAnswers(t *testing.T) {
+	p := samplePlan()
+	p.Warnings = []string{"inferred-answers"}
+	r, _, s := planRig(t, p)
+	w := r.getWith(planPath, s)
+	if w.Code != http.StatusOK {
+		t.Fatalf("the plan page: %d\n%s", w.Code, w.Body)
+	}
+	page := w.Body.String()
+	warnings := sectionOf(t, page, `<h2 id="warnings-h">Warnings</h2>`)
+	if strings.Count(page, html.EscapeString(planInferredLine)) != 1 || !strings.Contains(warnings, "<li>"+html.EscapeString(planInferredLine)+"</li>") {
+		t.Fatalf("the warnings do not say some answers were decided for the owner:\n%s", page)
+	}
+	if strings.Contains(page, "inferred-answers") {
+		t.Error("the page shows the warning's id")
+	}
+
+	p.Warnings = []string{"settle-at-desk"}
+	r, _, s = planRig(t, p)
+	if page := r.getWith(planPath, s).Body.String(); strings.Contains(page, html.EscapeString(planInferredLine)) || strings.Contains(page, "decided for you") {
+		t.Fatalf("a plan with no inferred answer says some were decided:\n%s", page)
+	}
+}
+
 // The stored plan: its heading names its revision, there is no draft line,
 // and the way back is the finished brief.
 func TestGenesisPlanPageStored(t *testing.T) {

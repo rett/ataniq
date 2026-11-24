@@ -28,6 +28,9 @@ const (
 	planNoTemplate   = "There is no plan template for this kind of project yet."
 	planFinishedNone = "This project was finished before its answers were complete, so no plan was drawn."
 	planUnknownNote  = "A note from the plan."
+	// planInferredLine is the words of the warning inferred-answers: the plan
+	// was drawn from answers decided for the owner.
+	planInferredLine = "Some answers were decided for you; you can change them from the summary."
 	planNoteHeading  = "A note"
 	planNotesMarked  = "your words, shown as you wrote them; never given to a tool"
 	backToBrief      = "Back to the project's brief"
@@ -67,6 +70,7 @@ var (
 	}
 	planWarningWords = map[string]string{
 		"estimate-may-exceed-band": "The work is near the top of its estimate, and may take longer.",
+		"inferred-answers":         planInferredLine,
 		"rights-not-cleared":       "Some rights are not cleared yet: they are cleared with you before anything uses them.",
 		"settle-at-desk":           "Some answers are in your own words: they are settled with you at the desk.",
 	}

@@ -10,9 +10,13 @@ import (
 )
 
 // base is the result of a thread with what every result holds: the thread,
-// its progress and its catalog; the caller gives the state.
+// its progress and its catalog; the caller gives the state. The progress
+// counts the required answers filled for planning ([catalog.PlanReadiness]:
+// an answer decided for the owner counts, confirmed or not), the notion
+// plan_ready follows, so a page never says answers are missing while a plan
+// can be drawn, or the reverse.
 func base(c catalog.Catalog, r record, reset int) ownerwire.SeatGenesisResult {
-	filled, total := catalog.Readiness(c, r.brief)
+	filled, total := catalog.PlanReadiness(c, r.brief)
 	return ownerwire.SeatGenesisResult{
 		Thread: r.id, Of: catalog.MaxRounds, Round: r.brief.Rounds, Nodes: []ownerwire.GenesisNode{},
 		Progress: ownerwire.GenesisProgress{Filled: filled, Total: total, PlanReady: planReady(r, filled, total)},
@@ -21,7 +25,8 @@ func base(c catalog.Catalog, r record, reset int) ownerwire.SeatGenesisResult {
 }
 
 // planReady reports whether the verb plan answers a plan for the thread: it
-// has one stored, or its brief is complete and a template serves its kind.
+// has one stored, or its brief is complete for planning (filled and total
+// are its [catalog.PlanReadiness]) and a template serves its kind.
 func planReady(r record, filled, total int) bool {
 	if r.plan != nil {
 		return true

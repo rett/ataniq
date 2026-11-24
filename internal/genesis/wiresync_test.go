@@ -179,7 +179,7 @@ func TestEveryWalkOfCatalogV1IsAResultTheWireAccepts(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				filled, total := catalog.Readiness(c, b)
+				filled, total := catalog.PlanReadiness(c, b)
 				res := ownerwire.SeatGenesisResult{Thread: "0123456789abcdef", Of: catalog.MaxRounds, Nodes: []ownerwire.GenesisNode{},
 					Progress: ownerwire.GenesisProgress{Filled: filled, Total: total}, CatalogDigest: c.Digest(), Round: b.Rounds}
 				if done {
