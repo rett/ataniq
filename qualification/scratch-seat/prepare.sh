@@ -501,6 +501,8 @@ self_check() {
     _n=$((_n + 1))
   done
   # sq: what the shell reads back is the value itself.
+  _r=''
+  # shellcheck disable=SC2016,SC1003  # the samples are literal on purpose
   for _v in 'a b' "it's" "'" "''" '$HOME' '${x}' 'a\b' '\' '`x`' '"q"' '' ' -x ' '*' '!x' '%s'; do
     eval "_r=$(sq "$_v")"
     [ "$_r" = "$_v" ] || _fail "sq does not quote $_v"
@@ -952,6 +954,7 @@ kind_print() {
       else
         say "  $KINDREC: unit $K_UNIT, a unit file ($K_FRAG)"
       fi
+      say "  invocation recorded: $K_INV (step 15 wants another one, a new run)"
       ;;
   esac
 }
@@ -1216,6 +1219,9 @@ if [ "$MODE" = record-trial ]; then
   _nl='
 '
   _txt=''
+  # Every property is set by the loop, through eval.
+  U_Id='' U_Description='' U_Transient='' U_UnitFileState='' U_FragmentPath='' U_CollectMode='' U_LoadState=''
+  U_ActiveState='' U_InvocationID='' U_MainPID='' U_ExecStart=''
   for _p in Id Description Transient UnitFileState FragmentPath CollectMode LoadState ActiveState SubState \
     TriggeredBy WantedBy RequiredBy BoundBy UpheldBy InvocationID MainPID ExecStart Restart Environment WorkingDirectory; do
     _v=$(unit_prop "$UNIT" "$_p")
@@ -1231,7 +1237,7 @@ if [ "$MODE" = record-trial ]; then
   esac
   case $U_Transient in
     yes)
-      KIND=transient
+      KIND='transient'
       [ "$U_UnitFileState" = transient ] || die "the trial's unit is transient but its UnitFileState is $U_UnitFileState; nothing was written"
       case $U_FragmentPath in
         /*/systemd/transient/*) ;;
@@ -1239,7 +1245,7 @@ if [ "$MODE" = record-trial ]; then
       esac
       ;;
     no)
-      KIND=file
+      KIND='file'
       case $U_FragmentPath in
         /*) ;;
         *) die "the trial's unit is not transient and has no unit file (FragmentPath is empty); nothing was written" ;;
@@ -1273,6 +1279,7 @@ if [ "$MODE" = record-trial ]; then
     [ -z "$U_Description" ] || _desc=" --description $(sq "$U_Description")"
   fi
 
+  # shellcheck disable=SC2329  # the trap below runs it
   half_rec() {
     _rc=$?
     if [ "$_rc" -ne 0 ]; then printf '%s\n' "$NAME: --record-trial stopped part way: look at $ROOT (it keeps what was written)" >&2; fi
