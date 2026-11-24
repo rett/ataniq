@@ -2835,6 +2835,15 @@ and trial context. Message text goes through `Text` into an escaped text node.
 The links use a validated 1–32 byte key and an integer cursor. Fixed speaker
 labels distinguish Lead and System. Pages have no form or script.
 
+A Leads page asks the port and answers by its error, as the project pages do,
+not by the offer alone: the offer (`ChatOffered`) is false both while the link
+is down and when the connected gate lists no `chat`. The link tells the two
+apart and sends nothing in either case: with no connection a call is
+`ErrDaemonUnavailable`, and the page is "The desk cannot be reached. Try again
+in a moment." with its link to try again; a connected gate without `chat` is
+`ErrNotOffered`, and the page is "The desk does not offer lead chat.", with no
+retry, since trying again would not help.
+
 The recent window starts after the directory head minus 16, floored at zero.
 An explicit `?after=N` reads after N. The next link (Show later) uses the last
 sequence returned even on a short page. The earlier link (Show earlier) reads

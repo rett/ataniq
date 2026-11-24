@@ -20,10 +20,17 @@ type chatTestPeer struct {
 	port  *standin.Port
 	calls int
 	code  string
+	// noChat is a gate whose hello does not list chat.
+	noChat bool
 }
 
 func (p *chatTestPeer) Connected() (time.Time, bool) { return p.since, !p.since.IsZero() }
-func (p *chatTestPeer) Caps() []string               { return []string{CapChat} }
+func (p *chatTestPeer) Caps() []string {
+	if p.noChat {
+		return []string{CapRead}
+	}
+	return []string{CapChat}
+}
 func (p *chatTestPeer) Call(ctx context.Context, op string, params, result any) error {
 	p.calls++
 	if p.code != "" {
@@ -83,6 +90,27 @@ func TestSeatChatMemory(t *testing.T) {
 	p.since = time.Time{}
 	if _, err := d.chat(context.Background(), read, &p); err != seatapp.ErrDaemonUnavailable {
 		t.Fatal(err)
+	}
+}
+
+// TestSeatChatDownOrNotOffered: with no connection a chat call is
+// ErrDaemonUnavailable, and to a connected gate without chat ErrNotOffered,
+// so the pages can tell a link that is down from a gate without chat;
+// neither sends anything or takes room.
+func TestSeatChatDownOrNotOffered(t *testing.T) {
+	clock := &testClock{t: decideNow}
+	d := Daemon{budget: budget{now: clock.now}, gnow: clock.now}
+	list := seatapp.ChatCall{Verb: seatapp.ChatLeads}
+	down := chatTestPeer{port: standin.New(clock.now)}
+	if _, err := d.chat(context.Background(), list, &down); err != seatapp.ErrDaemonUnavailable {
+		t.Fatalf("a link that is down: %v", err)
+	}
+	other := chatTestPeer{since: clock.now(), port: standin.New(clock.now), noChat: true}
+	if _, err := d.chat(context.Background(), list, &other); err != seatapp.ErrNotOffered {
+		t.Fatalf("a gate without chat: %v", err)
+	}
+	if down.calls+other.calls != 0 || d.budget.used(kindRead) != 0 {
+		t.Fatal("a call that cannot be served was sent or counted")
 	}
 }
 

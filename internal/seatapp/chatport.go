@@ -10,7 +10,10 @@ import (
 	"unicode/utf8"
 )
 
-// Chat is the optional read-only port. Checking the offer uses only local state.
+// Chat is the optional read-only port. Checking the offer uses only local
+// state. A call is ErrDaemonUnavailable while the port holds no connection
+// to the gate and ErrNotOffered when the connected gate does not offer
+// chat; neither sends anything. The pages tell the two apart by that error.
 type Chat interface {
 	ChatOffered() bool
 	Chat(context.Context, ChatCall) (ChatView, error)

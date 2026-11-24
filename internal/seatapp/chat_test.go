@@ -13,7 +13,7 @@ import (
 
 type fakeChat struct {
 	onRead           func()
-	offered          bool
+	offered, down    bool
 	list, read       ChatView
 	listErr, readErr error
 	calls            []ChatCall
@@ -22,6 +22,13 @@ type fakeChat struct {
 func (f *fakeChat) ChatOffered() bool { return f.offered }
 func (f *fakeChat) Chat(_ context.Context, c ChatCall) (ChatView, error) {
 	f.calls = append(f.calls, c)
+	// As the link does: nothing is sent without a connection or the offer.
+	if f.down {
+		return ChatView{}, ErrDaemonUnavailable
+	}
+	if !f.offered {
+		return ChatView{}, ErrNotOffered
+	}
 	if c.Verb == ChatLeads {
 		return f.list, f.listErr
 	}
@@ -119,7 +126,8 @@ func TestChatFailurePages(t *testing.T) {
 		status, calls int
 		words         string
 	}{
-		{func(f *fakeChat) { f.offered = false }, "alpha", 503, 0, problemChatNotOffered.message},
+		{func(f *fakeChat) { f.offered = false }, "alpha", 503, 1, problemChatNotOffered.message},
+		{func(f *fakeChat) { f.offered, f.down = false, true }, "alpha", 503, 1, problemUnavailable.message},
 		{func(*fakeChat) {}, "later", 403, 1, problemChatOff.message}, {func(*fakeChat) {}, "absent", 404, 1, problemChatMissing.message},
 		{func(f *fakeChat) { f.readErr = ErrChatOff }, "alpha", 403, 2, problemChatOff.message},
 		{func(f *fakeChat) { f.readErr = ErrBusy }, "alpha", 503, 2, problemBusy.message},
@@ -146,6 +154,36 @@ func TestChatFailurePages(t *testing.T) {
 		}
 		if r.getWith("/cards/", s).Code != 200 {
 			t.Error("Cards unusable")
+		}
+	}
+}
+
+// TestChatLinkDownIsUnavailable: while the link is down, a direct request
+// of a Leads page is the unavailable page, with its link to try again, not
+// the page that says the desk does not offer chat; a connected gate without
+// chat is that page, with no retry, since trying again would not help.
+func TestChatLinkDownIsUnavailable(t *testing.T) {
+	for _, tc := range []struct {
+		down  bool
+		words string
+		retry bool
+	}{{true, problemUnavailable.message, true}, {false, problemChatNotOffered.message, false}} {
+		f := sampleChat()
+		f.offered, f.down = false, tc.down
+		r := newRig(t, withChat(f))
+		s := r.login(t)
+		for _, path := range []string{"/leads/", "/leads/daemon/alpha"} {
+			w := r.getWith(path, s)
+			body := w.Body.String()
+			if w.Code != 503 || !strings.Contains(body, tc.words) || strings.Contains(body, `id="retry"`) != tc.retry {
+				t.Fatalf("down %v, %s: %d %s", tc.down, path, w.Code, body)
+			}
+			if tc.down && strings.Contains(body, problemChatNotOffered.message) {
+				t.Fatalf("%s: a link that is down said chat is not offered", path)
+			}
+		}
+		if len(f.calls) != 2 || f.calls[0].Verb != ChatLeads || f.calls[1].Verb != ChatLeads {
+			t.Fatalf("down %v: the pages asked %v", tc.down, f.calls)
 		}
 	}
 }

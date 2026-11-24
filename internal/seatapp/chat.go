@@ -123,8 +123,13 @@ func (a *app) chatPage(w http.ResponseWriter, r *http.Request, s Session) {
 		a.problem(w, r, problemNotFound)
 		return
 	}
+	// As the project pages do, the page asks the port and answers by its
+	// error, not by ChatOffered alone, which is false both while the link
+	// is down and when the connected gate has no chat: the port tells the
+	// two apart (ErrDaemonUnavailable, the page that offers a retry, and
+	// ErrNotOffered) and sends nothing in either case.
 	p, ok := a.cfg.Daemon.(Chat)
-	if !ok || !p.ChatOffered() {
+	if !ok {
 		a.problem(w, r, problemChatNotOffered)
 		return
 	}
