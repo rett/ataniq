@@ -20,8 +20,8 @@ import (
 
 // The fixed sentences of the plan page. A test pins each.
 const (
-	planBindsNothing = "A plan binds nothing: nothing has started, and nothing starts from this page."
-	planDraftLine    = "This is a draft; finishing the interview keeps it as revision 1."
+	planBindsNothing = "This plan gives no permission to do the work. Viewing it starts nothing."
+	planDraftLine    = "This is a draft; finishing the interview keeps it as revision 1. You can change the draft by editing your answers."
 	planAlwaysWaits  = "Publishing, releases, pushing code, credentials and raising any limit always wait for you, whatever the plan says."
 	planCharterLine  = "Draft. Not signed. It allows nothing. Nothing starts from this page. Signing is a later step and is not built."
 	planNotReady     = "No plan can be drawn yet: some answers are missing."

@@ -32,7 +32,7 @@ Current (the lead pages' "Leads" comes next). */}}</ul>
 <ul class="cards">
 {{range .}}<li><a href="{{projectHref .Thread ""}}">
 <span class="what">Project {{short .Thread}}</span>
-<span class="meta">{{if eq .State "summary"}}All questions answered: read the summary and finish.{{else}}Round {{num .Round}} of {{num .Of}}.{{end}} {{num .Filled}} of {{num .Total}} required answers given.</span>
+<span class="meta">{{if eq .State "summary"}}Ready to review your answers.{{else}}Round {{num .Round}} of {{num .Of}}.{{end}} {{num .Filled}} of {{num .Total}} required answers given.</span>
 </a></li>
 {{end}}</ul>
 {{else}}<p>No project is in progress.</p>

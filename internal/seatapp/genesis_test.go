@@ -195,10 +195,10 @@ func TestGenesisOnTheCardList(t *testing.T) {
 	// Two open: no start.
 	two := GenesisView{State: GenesisStateThreads, Threads: []GenesisThread{
 		{Thread: testThread, State: GenesisStateQuestion, Round: 2, Of: 6, Total: 1},
-		{Thread: "fedcba9876543210", State: GenesisStateSummary, Round: 6, Of: 6, Filled: 1, Total: 1}}}
+		{Thread: "fedcba9876543210", State: GenesisStateSummary, Round: 6, Of: 6, Filled: 13, Total: 14}}}
 	g.set(GenesisVerbList, &two, nil)
 	body = r.getWith("/cards/", s).Body.String()
-	if strings.Contains(body, "start-project") || !strings.Contains(body, "Two projects are open.") || !strings.Contains(body, "read the summary and finish") {
+	if strings.Contains(body, "start-project") || !strings.Contains(body, "Two projects are open.") || !strings.Contains(body, "Ready to review your answers. 13 of 14 required answers given.") {
 		t.Errorf("two open projects:\n%s", body)
 	}
 	// A list that cannot be read: the start is offered and the page says so.

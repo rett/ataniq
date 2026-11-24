@@ -1,8 +1,8 @@
 {{define "content"}}
 <h1>{{.Heading}}</h1>
 {{with .Plan}}<p class="plan-tag"><strong>{{text .Title maxLine}}</strong>, <span class="mono">{{text $.Tag maxID}}</span></p>
-<p class="binds">A plan binds nothing: nothing has started, and nothing starts from this page.</p>
-{{if not .Stored}}<p class="binds">This is a draft; finishing the interview keeps it as revision 1.</p>
+<p class="binds">This plan gives no permission to do the work. Viewing it starts nothing.</p>
+{{if not .Stored}}<p class="binds">This is a draft; finishing the interview keeps it as revision 1. You can change the draft by editing your answers.</p>
 {{end}}<p class="meta">Plan <span class="mono">{{short .Digest}}</span></p>
 <section aria-labelledby="demo-h">
 <h2 id="demo-h">First demo</h2>
@@ -27,8 +27,8 @@
 <p>{{text $.Hosts maxLine}}</p>
 </section>
 <section aria-labelledby="budget-h">
-<h2 id="budget-h">Budget band</h2>
-<p>{{text $.Budget maxLine}} <span class="meta">(advisory: nothing enforces it yet)</span></p>
+<h2 id="budget-h">Monthly budget</h2>
+<p>{{text $.Budget maxLine}} <span class="meta">This is a guide. The desk does not enforce a spending limit.</span></p>
 </section>
 <section aria-labelledby="estimate-h">
 <h2 id="estimate-h">Estimate</h2>
@@ -61,6 +61,8 @@
 {{end}}<section id="charter" aria-labelledby="charter-h">
 <h2 id="charter-h">What a charter would cover</h2>
 <p class="binds">Draft. Not signed. It allows nothing. Nothing starts from this page. Signing is a later step and is not built.</p>
+<details class="milestone">
+<summary>Read the proposed limits on the work</summary>
 <p>A signed charter would allow at most:</p>
 <ul>
 <li>Work on: {{range $i, $a := $.Areas}}{{if $i}}; {{end}}{{text $a maxLine}}{{end}}.</li>
@@ -68,7 +70,8 @@
 <li>Stopping for you at: {{with $.Waits}}{{range $i, $p := .}}{{if $i}}; {{end}}{{text $p maxLine}}{{end}}{{else}}no point of the plan{{end}}.</li>
 <li>Always stopping for you before publishing, releases, pushing code, credentials and raising any limit.</li>
 </ul>
-<p>Monthly budget band (advisory; nothing enforces it yet): {{text $.Budget maxLine}}.</p>
+<p>Suggested monthly budget: {{text $.Budget maxLine}}. The desk does not enforce it.</p>
+</details>
 </section>
 {{else}}<p role="status">{{text .Missing maxLine}}</p>
 {{end}}<nav aria-label="Project">
