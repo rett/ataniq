@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,12 +16,31 @@ import (
 	"ataniq/internal/genesis/internal/canon"
 )
 
-// templateDigests pin the embedded templates: a changed template is a new
-// version, with a new digest here.
+// templateDigests pin the templates by "id@version": a changed template is a
+// new version, with a new entry here. An entry is kept when its version is
+// no longer embedded, so that the digest a stored plan names stays on record
+// and an old version cannot be reused for other bytes.
 var templateDigests = map[string]string{
-	"media":      "27041dbc83151f59522dca72e9dc0ab5a01bc32c4a7f4689b1c5ff751bd2b97d",
-	"publishing": "4f193affc6539a04922cc74d047ac2a9cec2502393764f898ca6eb776ab81e59",
-	"software":   "82f4a99439fdcb41d4571574f0d47ac377a20f8d0f1eb402b1ea47b7a06eaf6c",
+	"media@v1":      "27041dbc83151f59522dca72e9dc0ab5a01bc32c4a7f4689b1c5ff751bd2b97d",
+	"publishing@v1": "4f193affc6539a04922cc74d047ac2a9cec2502393764f898ca6eb776ab81e59",
+	"software@v1":   "82f4a99439fdcb41d4571574f0d47ac377a20f8d0f1eb402b1ea47b7a06eaf6c",
+}
+
+// checkPin holds a template's digest to the pins. A pinned id@version whose
+// digest differs is a template changed without a new version: refused
+// always, -update or not. An id@version with no pin is refused unless
+// -update says the pin is being added; the entry to add is then logged.
+func checkPin(pins map[string]string, key, digest string, update bool) (note string, err error) {
+	want, pinned := pins[key]
+	switch {
+	case pinned && want != digest:
+		return "", fmt.Errorf("%s: the digest is %s, pinned %s: a changed template is a new version, not a new digest for its version", key, digest, want)
+	case !pinned && !update:
+		return "", fmt.Errorf("%s: no pin for the digest %s; add \"%s\": \"%s\" to templateDigests (the test with -update only reports it)", key, digest, key, digest)
+	case !pinned:
+		return fmt.Sprintf("pin to add: %q: %q,", key, digest), nil
+	}
+	return "", nil
 }
 
 // The embedded templates are canonical, one per kind but other, each
@@ -47,10 +67,14 @@ func TestEmbeddedTemplates(t *testing.T) {
 		if tp.Digest() != hex.EncodeToString(sum[:]) {
 			t.Errorf("%s: the digest is not that of the file", tp.ID)
 		}
-		if tp.Digest() != templateDigests[tp.ID] && !*update {
-			t.Errorf("%s: the digest is %s; a changed template is a new version", tp.ID, tp.Digest())
+		note, err := checkPin(templateDigests, tp.ID+"@"+tp.Version, tp.Digest(), *update)
+		if err != nil {
+			t.Error(err)
 		}
-		if tp.ID != tp.Kind || tp.Version != "v1" || len(tp.Milestones) > MaxMilestones {
+		if note != "" {
+			t.Log(note)
+		}
+		if tp.ID != tp.Kind || len(tp.Milestones) > MaxMilestones {
 			t.Errorf("%s: kind %s version %s", tp.ID, tp.Kind, tp.Version)
 		}
 		must(t, tp.checkAgainst(c))
@@ -61,6 +85,46 @@ func TestEmbeddedTemplates(t *testing.T) {
 	must(t, err)
 	if again[0].Milestones[0].Tasks[0].Title == "changed" {
 		t.Fatal("Templates returns a shared template")
+	}
+}
+
+// The pins by id@version: a digest that differs from the pin of its
+// version fails whatever the flag says; a version with no pin fails unless
+// -update; and an entry of a version no longer embedded does no harm.
+func TestTemplatePinsAreByVersion(t *testing.T) {
+	pins := map[string]string{"software@v1": "aa", "software@v0": "old"}
+	for _, c := range []struct {
+		name, key, digest string
+		update, fails     bool
+	}{
+		{"same", "software@v1", "aa", false, false},
+		{"changed", "software@v1", "bb", false, true},
+		{"changed, update", "software@v1", "bb", true, true},
+		{"new version", "software@v2", "cc", false, true},
+		{"new version, update", "software@v2", "cc", true, false},
+		{"another kind", "media@v1", "dd", false, true},
+	} {
+		note, err := checkPin(pins, c.key, c.digest, c.update)
+		if (err != nil) != c.fails {
+			t.Errorf("%s: error %v, fails %v", c.name, err, c.fails)
+		}
+		if c.name == "new version, update" && !strings.Contains(note, `"software@v2": "cc"`) {
+			t.Errorf("the pin to add is not reported: %q", note)
+		}
+	}
+	// Every pin is of the form id@version, and every embedded template has
+	// one.
+	ts, err := Templates()
+	must(t, err)
+	for key := range templateDigests {
+		if i := strings.IndexByte(key, '@'); i < 1 || !validVersion(key[i+1:]) {
+			t.Errorf("the pin %q is not id@version", key)
+		}
+	}
+	for _, tp := range ts {
+		if _, ok := templateDigests[tp.ID+"@"+tp.Version]; !ok {
+			t.Errorf("%s@%s has no pin", tp.ID, tp.Version)
+		}
 	}
 }
 
