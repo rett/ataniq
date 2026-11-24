@@ -82,7 +82,7 @@ const (
 	// do not bound the gate's calls: a challenge may be answered at any time
 	// in its life, so the logins of a minute can be more. The port counts
 	// every call it sends the gate, and keeps logins and pairings to their
-	// own room there (package seatlink: 10 calls in 80 seconds, 5 logins),
+	// own room there (package seatlink: 12 calls in 80 seconds, 6 logins),
 	// apart from the owner's reads and decisions; a login past it is
 	// answered desk_busy.
 	loginAllRequests = 8

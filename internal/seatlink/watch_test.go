@@ -268,19 +268,20 @@ func goroutinesIn(name string) int {
 
 // TestSeatLinkWaitRoomArithmetic: the waits' room is taken from the reads',
 // the interview's from the reads' and the decisions', chat's from the
-// reads', the decisions' and anyone's, and the rooms and the pings are the
+// reads', the decisions' and the waits', and the rooms and the pings are the
 // gate's rate. (The compile-time checks in
 // budget.go say the same; this keeps the numbers of the plan in view.)
 func TestSeatLinkWaitRoomArithmetic(t *testing.T) {
 	got := []int{pingRoom, decideRoom, publicRoom, readRoom, chatRoom, waitRoom, genesisRoom}
-	if want := []int{6, 8, 10, 12, 6, 6, 12}; !slices.Equal(got, want) {
+	if want := []int{6, 8, 12, 12, 5, 5, 12}; !slices.Equal(got, want) {
 		t.Errorf("the rooms (pings, decisions, anyone's, reads, chat, waits, genesis) are %v, want %v", got, want)
 	}
 	if sum := pingRoom + decideRoom + publicRoom + readRoom + chatRoom + waitRoom + genesisRoom; sum != GateRate {
 		t.Errorf("the rooms add up to %d, the gate's rate is %d", sum, GateRate)
 	}
-	// An idle watcher: one wait each WatchHold, the most in any window.
-	if n := int(BudgetWindow/WatchHold) + 1; n != 4 || waitRoom-n != 2 {
+	// An idle watcher: one wait each WatchHold, the most in any window,
+	// and 1 to spare for the wait after a reconnect.
+	if n := int(BudgetWindow/WatchHold) + 1; n != 4 || waitRoom-n != 1 {
 		t.Errorf("an idle watcher sends %d waits a window, leaving %d", n, waitRoom-n)
 	}
 	if !slices.Contains(Caps(), CapWatch) {
@@ -299,10 +300,11 @@ func TestSeatLinkBudgetTakeOrWait(t *testing.T) {
 		}
 		clock.advance(10 * time.Second)
 	}
-	// The first call was 60 s ago: it ages out in 20 s.
+	// The first call was 50 s ago (5 calls 10 s apart): it ages out in
+	// 30 s.
 	ok, wait := b.takeOrWait(kindWait)
-	if ok || wait != 20*time.Second {
-		t.Fatalf("without room: %v, %v; want false, 20s", ok, wait)
+	if ok || wait != 30*time.Second {
+		t.Fatalf("without room: %v, %v; want false, 30s", ok, wait)
 	}
 	if len(b.sent[kindWait]) != waitRoom {
 		t.Errorf("a refused call was counted: %d", len(b.sent[kindWait]))
@@ -805,6 +807,219 @@ func TestSeatLinkWatchRoomSimulation(t *testing.T) {
 	}
 }
 
+// gateWaitsPerPeer is the most waits the gate holds at once for a peer
+// (gatehost.MaxWaitsPerPeer): the seat's one, and one for a reconnect while
+// the wait before it unwinds. A third is answered wait-full.
+const gateWaitsPerPeer = 2
+
+// reconnectRate is what a run of TestSeatLinkWatchReconnectRate saw.
+type reconnectRate struct {
+	// at are the times of the waits that reached the gate, full the waits
+	// it answered wait-full, and mostHeld the most it held at once.
+	at             []time.Time
+	full, mostHeld int
+	// slept are the watcher's sleeps, in order.
+	slept []time.Duration
+}
+
+// watchReconnectRun runs the watcher on a simulated clock against a gate
+// that holds every wait its 25 seconds (nothing changes), and that goes
+// away cut into the cutAt-th wait and is back at once. The wait it cut
+// stays held at the gate for the rest of its 25 seconds, as a wait unwinds
+// on the daemon, while the new connection asks; the gate holds two for the
+// peer, as gatehost does, and answers a third wait-full. A sleep of the
+// watcher moves the clock by what it asked for, and, while the link is away,
+// lasts in real time until the link is back, so the reconnect costs the
+// simulated clock nothing but the watcher's own pause.
+func watchReconnectRun(t *testing.T, cut time.Duration, cutAt, total int) reconnectRate {
+	t.Helper()
+	clk := &testClock{t: decideNow}
+	var (
+		mu       sync.Mutex
+		r        reconnectRate
+		held     []time.Time // until when each wait the gate holds is held
+		cutSince time.Time   // the connection the gate's going away ended
+		cutDone  bool
+		g        *restartable
+		c        *seatgate.Client
+	)
+	version := ownerwire.PendingVersion(nil)
+	answer, err := ownerwire.EncodeSeatWaitResult(ownerwire.SeatWaitResult{Version: version, Cards: []ownerwire.SeatWaitCard{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := func(ctx context.Context, _ seatgate.Peer, op string, params json.RawMessage) (json.RawMessage, error) {
+		if op != ownerwire.OpSeatWait {
+			return nil, seatgate.NewCodedError("unknown-op")
+		}
+		p, err := ownerwire.DecodeSeatWaitParams(params)
+		if err != nil {
+			return nil, seatgate.NewCodedError("bad-params")
+		}
+		mu.Lock()
+		now := clk.now()
+		held = slices.DeleteFunc(held, func(until time.Time) bool { return !now.Before(until) })
+		if len(held) >= gateWaitsPerPeer {
+			r.full++
+			mu.Unlock()
+			return nil, seatgate.NewCodedError(ownerwire.CodeWaitFull)
+		}
+		r.at = append(r.at, now)
+		if p.Since != version {
+			// The first wait: answered at once.
+			mu.Unlock()
+			return answer, nil
+		}
+		held = append(held, now.Add(WatchHold))
+		r.mostHeld = max(r.mostHeld, len(held))
+		if len(r.at) == cutAt && !cutDone {
+			// The link is lost cut into this wait, which the gate keeps
+			// holding (it unwinds) until its 25 seconds are up.
+			cutDone = true
+			cutSince, _ = c.Connected()
+			clk.advance(cut)
+			mu.Unlock()
+			go func() {
+				g.stop()
+				g.start()
+			}()
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		clk.advance(WatchHold)
+		held = held[:len(held)-1]
+		mu.Unlock()
+		return answer, nil
+	}
+	seat := newIdentity(t, "seat")
+	g = &restartable{t: t, id: newIdentity(t, "gate"), pins: []string{seat.Fingerprint()}, caps: []string{"pair", "read", "watch"}, h: h, rate: 1 << 30}
+	g.start()
+	t.Cleanup(g.stop)
+	var d *Daemon
+	d, c = g.link(t, seat)
+	d.budget.now = clk.now
+	d.wt = watchTimes{
+		now: clk.now,
+		sleep: func(ctx context.Context, dur time.Duration) error {
+			for {
+				mu.Lock()
+				gone := cutDone
+				mu.Unlock()
+				if since, ok := c.Connected(); ok && (!gone || !since.Equal(cutSince)) {
+					break
+				}
+				if err := sleepFor(ctx, time.Millisecond); err != nil {
+					return err
+				}
+			}
+			mu.Lock()
+			r.slept = append(r.slept, dur)
+			mu.Unlock()
+			clk.advance(dur)
+			return sleepFor(ctx, 50*time.Microsecond)
+		},
+	}
+	d.StartWatch()
+	eventually(t, "a long run", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(r.at)+r.full >= total
+	})
+	d.Close()
+	mu.Lock()
+	defer mu.Unlock()
+	r.at = slices.Clone(r.at)
+	r.slept = slices.Clone(r.slept)
+	return r
+}
+
+// mostInWindow is the most of the times at, in order, that one BudgetWindow
+// holds.
+func mostInWindow(at []time.Time) int {
+	most := 0
+	for i := range at {
+		j := i
+		for j < len(at) && at[j].Sub(at[i]) < BudgetWindow {
+			j++
+		}
+		most = max(most, j-i)
+	}
+	return most
+}
+
+// TestSeatLinkWatchReconnectRate measures the watcher's calls on a simulated
+// clock: an idle seat (the gate holds every wait its 25 seconds) with one
+// reconnect, the link lost 1, 3, 12 or 23 seconds into a wait and back at
+// once, while the wait it cut is still held at the gate (two waits of the
+// peer overlap, the old one unwinding and the new one held). The waits'
+// room of 5 holds it: the gate answers no wait wait-full, the watcher never
+// sleeps for room (its only sleeps are the 2 seconds after the first answer
+// and the 1 second after the lost link), and no BudgetWindow holds more
+// than waitRoom waits. The first window holds 5: the first wait, which has
+// no version yet, is answered at once, and the next comes 2 seconds later
+// (at 0, 2, 27, 52 and 77 seconds). An idle window after it holds 4 (one
+// every 25 seconds); the wait after the reconnect is sent a second after
+// the one the link cut, so a window holds 5 when the cut came less than 4
+// seconds into a wait (the window then reaches the next idle wait as well),
+// and 4 otherwise. A second reconnect, or a change, in a window of 5 would
+// find no room, and the watcher would sleep until some frees: the page
+// lags, and nothing is refused.
+func TestSeatLinkWatchReconnectRate(t *testing.T) {
+	const cutAt, total = 8, 24
+	for _, c := range []struct {
+		cut  time.Duration
+		most int
+	}{
+		{time.Second, 5},
+		{3 * time.Second, 5},
+		{12 * time.Second, 4},
+		{23 * time.Second, 4},
+	} {
+		t.Run(c.cut.String(), func(t *testing.T) {
+			r := watchReconnectRun(t, c.cut, cutAt, total)
+			first := 0
+			for first < len(r.at) && r.at[first].Sub(decideNow) < BudgetWindow {
+				first++
+			}
+			// The windows from the second wait on.
+			most := mostInWindow(r.at[1:])
+			t.Logf("cut %v into wait %d: %d waits, %d in the first window, most in one window after %d, wait-full %d, most held %d, sleeps %v",
+				c.cut, cutAt, len(r.at), first, most, r.full, r.mostHeld, r.slept)
+			if first != 5 || first > waitRoom {
+				t.Errorf("the first window holds %d waits, want 5 (room %d)", first, waitRoom)
+			}
+			if r.full != 0 {
+				t.Errorf("the gate answered %d waits wait-full", r.full)
+			}
+			if r.mostHeld != gateWaitsPerPeer {
+				t.Errorf("the gate held at most %d waits at once: the reconnect's overlap did not happen", r.mostHeld)
+			}
+			if want := []time.Duration{watchCoalesce, watchBackMin}; !slices.Equal(r.slept, want) {
+				t.Errorf("the watcher slept %v, want %v (no sleep for room)", r.slept, want)
+			}
+			if most != c.most || most > waitRoom {
+				t.Errorf("one window holds %d waits, want %d (room %d)", most, c.most, waitRoom)
+			}
+			// The schedule: the first wait at once, the second 2 s
+			// later, then one every 25 s; the one after the cut 1 s
+			// after the cut, and every 25 s from it.
+			want := []time.Time{decideNow}
+			next := decideNow.Add(watchCoalesce)
+			for i := 2; i <= len(r.at); i++ {
+				want = append(want, next)
+				if i == cutAt {
+					next = next.Add(c.cut + watchBackMin)
+				} else {
+					next = next.Add(WatchHold)
+				}
+			}
+			if !slices.EqualFunc(r.at, want, time.Time.Equal) {
+				t.Errorf("the waits were sent at %v, want %v", r.at, want)
+			}
+		})
+	}
+}
+
 // TestSeatLinkWatchRoomExhaustedSleeps: with the room spent the watcher
 // sleeps until room frees, sends nothing meanwhile, publishes nothing wrong
 // and then sends.
@@ -813,7 +1028,7 @@ func TestSeatLinkWatchRoomExhaustedSleeps(t *testing.T) {
 	clk := &testClock{t: decideNow}
 	r := newWatchRig(t, desk, []string{"pair", "read", "watch"})
 	r.d.budget.now = clk.now
-	// The room is spent: 6 waits, 10 seconds apart; the first is 50 s old.
+	// The room is spent: 5 waits, 10 seconds apart; the first is 40 s old.
 	for i := 0; i < waitRoom; i++ {
 		clk.advance(10 * time.Second)
 		if ok, _ := r.d.budget.takeOrWait(kindWait); !ok {
@@ -831,12 +1046,12 @@ func TestSeatLinkWatchRoomExhaustedSleeps(t *testing.T) {
 	}}
 	eventually(t, "connected", func() bool { _, ok := r.c.Connected(); return ok })
 	r.d.StartWatch()
-	// The oldest call of the 6 was made at +10 s, now is +60 s: it leaves
-	// the window 30 s from now.
+	// The oldest call of the 5 was made at +10 s, now is +50 s: it leaves
+	// the window 40 s from now.
 	select {
 	case d := <-slept:
-		if d != BudgetWindow-50*time.Second {
-			t.Errorf("slept %v for room, want %v", d, BudgetWindow-50*time.Second)
+		if d != BudgetWindow-40*time.Second {
+			t.Errorf("slept %v for room, want %v", d, BudgetWindow-40*time.Second)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the watcher did not sleep for room")

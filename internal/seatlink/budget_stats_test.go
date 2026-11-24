@@ -360,8 +360,8 @@ func mixRun(t *testing.T, use mixUse) (mixMeasure, []string) {
 }
 
 // TestBudgetMixedUse measures the seat link's rooms (budget.go) under a
-// mixed use, with the rooms as they are (pings 6, decisions 8, anyone's 10,
-// reads 12, chat 6, waits 6, genesis 12): an interview answer every 12
+// mixed use, with the rooms as they are (pings 6, decisions 8, anyone's 12,
+// reads 12, chat 5, waits 5, genesis 12): an interview answer every 12
 // seconds, three Card tabs reloading every 20 seconds, in step or
 // staggered, a conversation of a real lead refreshed by hand every 10
 // seconds (two chat calls a refresh, the directory and the page, neither
@@ -382,14 +382,21 @@ func mixRun(t *testing.T, use mixUse) (mixMeasure, []string) {
 //   - No Card list read is refused, with chat or without: three tabs take
 //     the 12 reads.
 //   - A visit of the Leads pages every 80 seconds never meets busy, on one
-//     browser or beside the tabs: its five calls fit chat's 6. (With chat's
-//     room 2, all 8 visits met busy at their first selection.) Visits every
-//     20 seconds meet busy at 22 of 30.
-//   - A conversation refreshed every 10 seconds shows 24 of its 60
-//     refreshes and meets busy at 36, with up to 5 chat calls refused in
-//     one window. Every 30 seconds, all 20 show. (When a refresh's
-//     directory is sent and its page then meets busy, the directory's call
-//     was spent for nothing; that is chat's own cost.)
+//     browser or beside the tabs: its five calls fit chat's 5, since the
+//     visit's first call leaves the window as the next visit begins. (With
+//     chat's room 2, all 8 visits met busy at their first selection; with
+//     6, none did either.) Visits every 20 seconds meet busy at 22 of 30,
+//     with up to 9 chat calls refused in one window (8 with chat's 6).
+//   - A conversation refreshed every 10 seconds shows 16 of its 60
+//     refreshes and meets busy at 44, with up to 6 chat calls refused in
+//     one window (24 shown with chat's 6). Every 30 seconds, 14 of the 20
+//     show and 6 meet busy, 1 chat call refused in one window at most (all
+//     20 showed with chat's 6): three refreshes, 6 calls, fall in one
+//     window. (When a refresh's directory is sent and its page then meets
+//     busy, the directory's call was spent for nothing; that is chat's own
+//     cost.)
+//   - The watcher, one wait every 25 seconds, always finds room in the
+//     waits' 5.
 //   - With the tabs staggered, the interview's room is short, with chat or
 //     without: 7 of the 50 answers, and 20 of the 65 lists of open projects
 //     the link did not hold, are refused, since each answer makes the next
@@ -406,14 +413,14 @@ func TestBudgetMixedUse(t *testing.T) {
 	}{
 		{mixUse{name: "tabs in step, no chat", tabs: steps, chat: 0}, mixMeasure{cardReads: 90, projectLists: 30, answers: 50}},
 		{mixUse{name: "tabs staggered, no chat", tabs: staggered, chat: 0}, mixMeasure{cardReads: 90, projectLists: 45, projectRefused: 20, answers: 50, answersRefused: 7}},
-		{mixUse{name: "tabs in step, chat every 10 s", tabs: steps, chat: 10}, mixMeasure{cardReads: 90, projectLists: 30, answers: 50, refreshes: 60, chatShown: 24, chatBusy: 36, worstChat: 5}},
-		{mixUse{name: "tabs staggered, chat every 10 s", tabs: staggered, chat: 10}, mixMeasure{cardReads: 90, projectLists: 45, projectRefused: 20, answers: 50, answersRefused: 7, refreshes: 60, chatShown: 24, chatBusy: 36, worstChat: 5}},
-		{mixUse{name: "tabs in step, chat every 30 s", tabs: steps, chat: 30}, mixMeasure{cardReads: 90, projectLists: 30, answers: 50, refreshes: 20, chatShown: 20}},
-		{mixUse{name: "tabs staggered, chat every 30 s", tabs: staggered, chat: 30}, mixMeasure{cardReads: 90, projectLists: 45, projectRefused: 20, answers: 50, answersRefused: 7, refreshes: 20, chatShown: 20}},
+		{mixUse{name: "tabs in step, chat every 10 s", tabs: steps, chat: 10}, mixMeasure{cardReads: 90, projectLists: 30, answers: 50, refreshes: 60, chatShown: 16, chatBusy: 44, worstChat: 6}},
+		{mixUse{name: "tabs staggered, chat every 10 s", tabs: staggered, chat: 10}, mixMeasure{cardReads: 90, projectLists: 45, projectRefused: 20, answers: 50, answersRefused: 7, refreshes: 60, chatShown: 16, chatBusy: 44, worstChat: 6}},
+		{mixUse{name: "tabs in step, chat every 30 s", tabs: steps, chat: 30}, mixMeasure{cardReads: 90, projectLists: 30, answers: 50, refreshes: 20, chatShown: 14, chatBusy: 6, worstChat: 1}},
+		{mixUse{name: "tabs staggered, chat every 30 s", tabs: staggered, chat: 30}, mixMeasure{cardReads: 90, projectLists: 45, projectRefused: 20, answers: 50, answersRefused: 7, refreshes: 20, chatShown: 14, chatBusy: 6, worstChat: 1}},
 		{mixUse{name: "one browser, Leads visited every 80 s", visit: 80, noCard: true}, mixMeasure{visits: 8}},
 		{mixUse{name: "tabs in step, Leads visited every 80 s", tabs: steps, visit: 80}, mixMeasure{cardReads: 90, projectLists: 30, answers: 50, visits: 8}},
 		{mixUse{name: "tabs staggered, Leads visited every 80 s", tabs: staggered, visit: 80}, mixMeasure{cardReads: 90, projectLists: 45, projectRefused: 20, answers: 50, answersRefused: 7, visits: 8}},
-		{mixUse{name: "tabs in step, Leads visited every 20 s", tabs: steps, visit: 20}, mixMeasure{cardReads: 90, projectLists: 30, answers: 50, worstChat: 8, visits: 30, visitsBusy: 22}},
+		{mixUse{name: "tabs in step, Leads visited every 20 s", tabs: steps, visit: 20}, mixMeasure{cardReads: 90, projectLists: 30, answers: 50, worstChat: 9, visits: 30, visitsBusy: 22}},
 	} {
 		got, _ := mixRun(t, c.use)
 		t.Logf("%s: %+v", c.use.name, got)

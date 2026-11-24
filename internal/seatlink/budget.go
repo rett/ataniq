@@ -35,7 +35,7 @@ const (
 
 // The room of each kind of call in BudgetWindow. The seven add up to GateRate:
 //
-//	pings 6 + decisions 8 + anyone's 10 + reads 12 + chat 6 + waits 6 + genesis 12 = 60
+//	pings 6 + decisions 8 + anyone's 12 + reads 12 + chat 5 + waits 5 + genesis 12 = 60
 //
 // The room of seat.genesis was made when the interview's pages came: before
 // it the rooms were pings 6, decisions 16, anyone's 12, reads 20 and waits 6.
@@ -48,9 +48,7 @@ const (
 // tap plus an occasional read, with a few to spare for an answer that is
 // refused and asked again. The 2 were taken from decisions (12 to 10: 5
 // decisions, each a challenge and a decision call, in 80 seconds), where
-// they were the least used. Anyone's room was 12 until chat needed more:
-// strangers can hold it with login challenges they never answer, and a
-// smaller one lets fewer of them keep the owner from logging in.
+// they were the least used.
 //
 // Chat's room was carved out of the reads' 14 when replies came (12 for the
 // Cards pages and 2 for chat): a conversation shared the reads' room before,
@@ -59,11 +57,17 @@ const (
 // every 20 seconds take the 12 reads. Chat's 2 did not hold the owner's
 // ordinary path, cold: the Leads page (the directory) and a selected lead's
 // conversation (the directory again and the page) are 3 calls, so the first
-// selection was busy. Chat has 6 now, 2 more taken from the decisions (10 to
-// 8, 4 decisions; decisions are rare) and 2 from anyone's (12 to 10, 5
-// logins): the Leads page, a conversation and one refresh of it (5 calls)
-// fit in 80 seconds with one to spare. The conversation page's directory is
-// not saved by reusing the Leads page's: the page's heading shows the
+// selection was busy. Chat has 5 now, 2 more taken from the decisions (10 to
+// 8, 4 decisions; decisions are rare) and 1 from the waits (6 to 5): the
+// Leads page, a conversation and one refresh of it (5 calls) fit in 80
+// seconds, with none to spare. Anyone's room was cut to 10 for chat for a
+// while, and the pairing flow (a pairing, then the owner's login) then met
+// a busy desk at its login challenge (TestSeatPairE2E in
+// internal/approval/hostadapter), as it had once before when anyone's room
+// was cut: anyone's room keeps 12, 6 logins. Strangers can hold it with
+// login challenges they never answer, so a smaller one would also let fewer
+// of them keep the owner from logging in. The conversation page's directory
+// is not saved by reusing the Leads page's: the page's heading shows the
 // selected lead's state, which only a directory carries, and a real
 // directory is never reused (chat.go). A chat call past the room is busy
 // without touching the reads, so chat never takes a Card's read and a
@@ -78,31 +82,34 @@ const (
 	// challenge, or the challenge's life ends.
 	decideRoom = 8
 	// publicRoom is seat.pair, seat.login-challenge and seat.login, which the
-	// seat relays for anyone who reaches its pages: 5 logins. A login
+	// seat relays for anyone who reaches its pages: 6 logins. A login
 	// challenge is drawn only with room for its seat.login as well, kept
 	// for that challenge until the login is sent or the challenge's life
 	// ends, so a login is never refused for room once the phone has
 	// answered. Strangers who draw login challenges and never answer them
 	// keep that room until their challenges' life ends.
-	publicRoom = 10
+	publicRoom = 12
 	// readRoom is owner.list, owner.show and owner.paths, the Cards pages'
 	// reads of every session together. Chat never counts in it.
 	readRoom = 12
 	// chatRoom is seat.chat, its leads and read verbs, of every session
 	// together (chat.go): the Leads page's directory, a conversation's
-	// directory and page, and one refresh of it, with one call to spare. A
+	// directory and page, and one refresh of it, with no call to spare. A
 	// chat call past it is answered busy and sent nowhere, and it never
 	// spends the reads' room.
-	chatRoom = 6
+	chatRoom = 5
 	// waitRoom is seat.wait, the watcher's one long wait (watch.go). The
 	// watcher keeps one wait in flight, and the gate holds it up to 25
 	// seconds, so an idle seat sends one about every 25 seconds: 4 in
-	// BudgetWindow (at 0, 25, 50 and 75 seconds), which leaves 2 for the
-	// waits that a change cut short. With no room the watcher sleeps until
-	// some frees rather than sending; the page lags, and nothing is
-	// refused. The room is taken from readRoom (26 before the watcher), so
-	// the rooms still add up to GateRate.
-	waitRoom = 6
+	// BudgetWindow (at 0, 25, 50 and 75 seconds), which leaves 1 for a wait
+	// that a reconnect or a change cut short (a reconnect's wait is sent
+	// about a second after the wait it cut, so one in a window is 5 waits
+	// at most: TestSeatLinkWatchReconnectRate). With no room the watcher
+	// sleeps until some frees rather than sending; the page lags, and
+	// nothing is refused. The room was taken from readRoom (26 before the
+	// watcher) and was 6 until chat took 1, so the rooms still add up to
+	// GateRate.
+	waitRoom = 5
 	// genesisRoom is seat.genesis, every verb of the interview: the pages'
 	// starts, lists, rounds, answers, changes, summaries, finishes and
 	// discards, of every session together.
@@ -121,8 +128,9 @@ const (
 	// The pings of BudgetWindow fit their room.
 	_ = uint(pingRoom - int(BudgetWindow/PingInterval) - 1)
 	// An idle watcher's waits of BudgetWindow (one every WatchHold, the
-	// first at the window's start) fit their room with 2 to spare.
-	_ = uint(waitRoom - 2 - (int(BudgetWindow/WatchHold) + 1))
+	// first at the window's start) fit their room with 1 to spare, the
+	// wait after a reconnect.
+	_ = uint(waitRoom - 1 - (int(BudgetWindow/WatchHold) + 1))
 )
 
 // kind is a kind of call the link sends.
