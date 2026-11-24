@@ -94,9 +94,13 @@ func scratchKindPolicy(sc hostadapter.Scratch) func(project string) (credkind.Po
 	}
 }
 
+// withdrawer is the stand-in door's withdraw of a request, which no door
+// interface has.
+type withdrawer interface{ Withdraw(id string) error }
+
 // standInEnder ends a request at the stand-in door, which has a withdraw of
 // its own for it.
-type standInEnder struct{ d *doortest.Door }
+type standInEnder struct{ d withdrawer }
 
 func (e standInEnder) EndRequest(_ context.Context, id string) error { return e.d.Withdraw(id) }
 
@@ -153,13 +157,20 @@ func buildOwnerService(stateDir string) (leaddaemon.OwnerService, func() error, 
 	if ownerDoorWrap != nil {
 		d = ownerDoorWrap(standIn)
 	}
+	// The ender withdraws through the door the adapter is given, when it
+	// can, so that a test's wrapped door sees every call that changes the
+	// stand-in, the withdraw included.
+	var ender withdrawer = standIn
+	if w, ok := d.(withdrawer); ok {
+		ender = w
+	}
 	keys := openOwnerKeys(stateDir)
 	o, err := hostadapter.Open(context.Background(), hostadapter.OpenConfig{
 		Config: hostadapter.Config{
 			Git: git, Projects: []hostadapter.Project{sc.ProjectOf()}, Suite: suite, Now: time.Now,
 			Notice: func(line string) { ownerNotice(line) },
 		},
-		StateDir: stateDir, Door: d, Ender: standInEnder{standIn},
+		StateDir: stateDir, Door: d, Ender: standInEnder{ender},
 		DropDir: sc.Drop, CollectProject: sc.Project,
 		Service: ownerchannel.Config{
 			Keys: keys, KindPolicy: scratchKindPolicy(sc),

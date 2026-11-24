@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/approval/record"
 	"ataniq/internal/clientapi"
+	"ataniq/internal/exchange/gitenv"
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leadcanary/provision/provisiontest"
 	"ataniq/internal/leadchat"
@@ -566,7 +568,8 @@ func sameTreeOf(a, b map[string]string) bool {
 }
 
 // countingSuite is the suite runner of the host adapter, the host's effect of
-// a verified merge, counted; it answers nothing.
+// a verified merge, counted; it runs nothing and answers a clean pass, so a
+// request on a real mirror makes a card.
 type countingSuite struct {
 	mu   sync.Mutex
 	runs int
@@ -576,7 +579,7 @@ func (s *countingSuite) Run(context.Context, hostadapter.SuiteRequest) (hostadap
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.runs++
-	return hostadapter.SuiteResult{}, errors.New("the test's suite runs nothing")
+	return hostadapter.SuiteResult{Passed: true, Output: []byte("ok\n"), Started: time.Now(), Duration: time.Second}, nil
 }
 
 func (s *countingSuite) count() int {
@@ -587,10 +590,12 @@ func (s *countingSuite) count() int {
 
 // countingDoor is the stand-in door the builder hands the host adapter, with
 // every call that hands it something counted before it is passed on: admit
-// and plan (the intake's delivery of a lead's request), decide (the owner's
-// decision), use and settle (the host's effect of an approval being
-// applied). The door's reads, list and show, are not counted: the service's
-// tick reads the door whatever comes.
+// and plan (the intake's delivery of a lead's request), withdraw (the end of
+// a request refused before its plan, through the adapter's ender, which the
+// builder gives this door too), decide (the owner's decision), use and
+// settle (the host's effect of an approval being applied). The door's reads,
+// list and show, are not counted: the service's tick reads the door whatever
+// comes.
 type countingDoor struct {
 	*doortest.Door
 	mu    sync.Mutex
@@ -635,6 +640,66 @@ func (d *countingDoor) Use(ctx context.Context, in door.UseInput) (door.Used, er
 func (d *countingDoor) Settle(ctx context.Context, in door.SettleInput) (door.Settled, error) {
 	d.hit("settle")
 	return d.Door.Settle(ctx, in)
+}
+func (d *countingDoor) Withdraw(id string) error {
+	d.hit("withdraw")
+	return d.Door.Withdraw(id)
+}
+
+// fixtureGit runs git on the bare repository dir with a private environment
+// and fixed identities, and answers its output without the last newline.
+func fixtureGit(t *testing.T, dir, index, stdin string, args ...string) string {
+	t.Helper()
+	g, err := gitenv.Find()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(g.Path, args...)
+	cmd.Env = []string{
+		"PATH=/usr/bin:/bin", "HOME=/nonexistent", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_TERMINAL_PROMPT=0", "GIT_DIR=" + dir, "GIT_INDEX_FILE=" + index,
+		"GIT_AUTHOR_NAME=fixture", "GIT_AUTHOR_EMAIL=fixture@example.invalid",
+		"GIT_COMMITTER_NAME=fixture", "GIT_COMMITTER_EMAIL=fixture@example.invalid",
+		"GIT_AUTHOR_DATE=1700000000 +0000", "GIT_COMMITTER_DATE=1700000000 +0000",
+	}
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %q: %v", args, err)
+	}
+	return strings.TrimSuffix(string(out), "\n")
+}
+
+// makeMirror makes the scratch settings' mirror, a bare repository with a
+// root, the target branch moved on from it and the feature branch x of the
+// settings' role, and answers the feature's commit and the target's.
+func makeMirror(t *testing.T, mirror string) (feature, target string) {
+	t.Helper()
+	index := filepath.Join(filepath.Dir(mirror), "mirror.index")
+	fixtureGit(t, mirror, index, "", "init", "--bare", "--quiet", "--template=", mirror)
+	put := func(path, content string) {
+		id := fixtureGit(t, mirror, index, content, "hash-object", "-w", "--stdin")
+		fixtureGit(t, mirror, index, "", "update-index", "--add", "--cacheinfo", "100644,"+id+","+path)
+	}
+	commit := func(msg string, parents ...string) string {
+		args := []string{"commit-tree", fixtureGit(t, mirror, index, "", "write-tree"), "-m", msg}
+		for _, p := range parents {
+			args = append(args, "-p", p)
+		}
+		return fixtureGit(t, mirror, index, "", args...)
+	}
+	put("README.md", "readme\n")
+	rootC := commit("root")
+	put("target-side.txt", "target\n")
+	target = commit("target moves", rootC)
+	fixtureGit(t, mirror, index, "", "read-tree", rootC)
+	put("feature.txt", "one\n")
+	feature = commit("feature", rootC)
+	fixtureGit(t, mirror, index, "", "update-ref", "refs/heads/develop", target)
+	fixtureGit(t, mirror, index, "", "update-ref", "refs/leads/role-a/heads/feature/x", feature)
+	return feature, target
 }
 
 // authority is what every instrument of the composed daemon has counted.
@@ -687,13 +752,14 @@ func sameAuthority(a, b authority) bool {
 // owner.list and seat.login-challenge and seat.pair over the gate, and
 // owner.limit and owner.decide (from the deciding console, for a card that
 // is not there) on the socket, move the service's counts; a request dropped
-// in the drop folder is delivered by the intake's collector to the door's
-// admit, and answered. The fixture has no mirror and no feature commit, so
-// no card can be made, decided at the door or merged: the door's decide,
-// use and settle and the suite cannot be moved here. Their nearest boundary
-// the fixture reaches is the door's admit, which the dropped request moves,
-// and the request is answered without a suite run; the decision boundary
-// is the service's decide, which the console's decide moves.
+// in the drop folder while there is no mirror is delivered by the intake's
+// collector to the door's admit, refused before its plan with no suite run,
+// and withdrawn at the door through the adapter's ender. Then the fixture's
+// mirror is made (a target branch and the role's feature branch), and an
+// ordinary Card's whole path moves every other instrument: a request for the
+// feature is admitted, verified by the suite and planned at the door, the
+// owner approves the card from the deciding console, and the door's decide,
+// use and settle apply it, which moves the mirror's target branch.
 func TestScratchSeatChatReachesNoOtherAuthority(t *testing.T) {
 	suite := &countingSuite{}
 	useSuite(t, suite)
@@ -844,6 +910,78 @@ func TestScratchSeatChatReachesNoOtherAuthority(t *testing.T) {
 	}
 	if n := suite.count(); n != 0 {
 		t.Fatalf("a request with no mirror ran the suite %d times", n)
+	}
+	waitUntil(t, 20*time.Second, "the refused request is withdrawn at the door", func() bool { return cd.seen()["withdraw"] == 1 })
+
+	// An ordinary Card, from the lead's request to the merge.
+	mirror := filepath.Join(filepath.Dir(s.drop), "mirror.git")
+	feature, target := makeMirror(t, mirror)
+	rq2, err := record.EncodeRequest(record.Request{
+		Schema: record.SchemaRequest, RequestID: "rq-chat-02", Epoch: 7,
+		Verb: record.VerbFeatureFinish, Argv: []string{"x"}, FeatureSHA: feature,
+		NoteSHA256: record.Digest(note), At: record.FormatTime(time.Now()),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.drop, "rq-chat-02.note"), note, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.drop, "rq-chat-02.request"), rq2, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var pending ownerwire.PendingItem
+	waitUntil(t, 60*time.Second, "the request makes a card", func() bool {
+		var l ownerwire.Listing
+		if err := cl.Call(ctx, ownerwire.OpList, nil, &l); err != nil || len(l.Pending) != 1 {
+			return false
+		}
+		pending = l.Pending[0]
+		return true
+	})
+	if n := suite.count(); n != 1 {
+		t.Fatalf("the card's request ran the suite %d times", n)
+	}
+	if got := cd.seen(); got["admit"] != 2 || got["plan"] != 1 {
+		t.Fatalf("the card's request at the door: %v", got)
+	}
+	var shown ownerwire.ShowResult
+	if err := cl.Call(ctx, ownerwire.OpShow, ownerwire.ShowParams{ID: pending.ID}, &shown); err != nil {
+		t.Fatalf("owner.show: %v", err)
+	}
+	p, err := record.DecodePending(shown.Record.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approve := ownerwire.DecisionFrame{ID: p.ID, BindingSHA256: p.BindingSHA256, Decision: record.DecisionApprove, SignedOff: []record.SignOff{}}
+	if sum := p.Binding.Summary; sum != nil {
+		for _, fl := range sum.Flagged {
+			approve.SignedOff = append(approve.SignedOff, record.SignOff{Kind: fl.Kind, Path: fl.Path})
+		}
+	}
+	if err := cl.Call(ctx, ownerwire.OpBeat, nil, nil); err != nil {
+		t.Fatalf("owner.beat: %v", err)
+	}
+	var res ownerwire.DecideResult
+	if err := cl.Call(ctx, ownerwire.OpDecide, approve, &res); err != nil {
+		t.Fatalf("owner.decide of the card: %+v, %v", res, err)
+	}
+	waitUntil(t, 60*time.Second, "the approval is applied at the door", func() bool {
+		got := cd.seen()
+		return got["decide"] == 1 && got["use"] == 1 && got["settle"] == 1
+	})
+	index := filepath.Join(filepath.Dir(mirror), "mirror.index")
+	if tip := fixtureGit(t, mirror, index, "", "rev-parse", "refs/heads/develop"); tip == target {
+		t.Fatal("the approved card did not move the target branch")
+	}
+	final := cd.seen()
+	for _, op := range []string{"admit", "plan", "withdraw", "decide", "use", "settle"} {
+		if final[op] == 0 || final[op] == before.door[op] {
+			t.Errorf("the door's %s did not move: %v", op, final)
+		}
+	}
+	if suite.count() == before.suite {
+		t.Error("the suite did not move")
 	}
 
 	c.Close()
