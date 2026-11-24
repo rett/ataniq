@@ -735,30 +735,40 @@ func (s *Store) scan(now time.Time, epoch int64, rep *IngestReport) (string, err
 // PurgeReport is what one [Store.PurgeQuarantine] did.
 type PurgeReport struct {
 	// Removed counts the entries of the quarantine removed whole, and Left
-	// those still there: a folder deeper or larger than one purge removes,
-	// one that did not stay empty, or one that could not be removed.
+	// those still there: a folder larger or deeper than one purge removes
+	// (a later purge goes on with it), one that did not stay empty, or one
+	// that cannot be removed (a folder closed to the daemon's user, which
+	// the owner removes by hand).
 	Removed, Left int
+	// Free counts the names 1 to [MaxQuarantine] that are free after the
+	// purge: a turn-on needs one.
+	Free int
 }
 
 // PurgeQuarantine removes what the lead's quarantine holds, for the owner:
-// each entry is unlinked, and a folder is removed with what it holds, one
-// name at a time below descriptors, never following a link or crossing a
-// mount point, at most 16 deep and 8192 entries in all a purge. What it
-// cannot remove is left (counted in Left); a later purge goes on from there.
-// A lead without a quarantine has nothing to purge.
+// each entry is unlinked, and a folder is removed with what it holds, deepest
+// first, one name at a time below descriptors, never following a link,
+// crossing a mount point or leaving the quarantine. One purge looks at most
+// at 8192 names and walks at most 16 folders deep: of a wider folder it
+// removes the names it read, and a folder deeper than that is moved up, by a
+// rename, to the top of the entry being purged. What it cannot remove is
+// left (counted in Left); a purge run again goes on from there and makes
+// progress on a tree that does not change. A folder closed to the daemon's
+// user is never opened and stays: the owner removes it by hand. A lead
+// without a quarantine has nothing to purge.
 func (s *Store) PurgeQuarantine() (PurgeReport, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var rep PurgeReport
+	rep := PurgeReport{Free: MaxQuarantine}
 	if err := s.usable(); err != nil {
-		return rep, err
+		return PurgeReport{}, err
 	}
 	lead, err := s.root.walk("leads", s.role)
 	if errors.Is(err, unix.ENOENT) {
 		return rep, nil
 	}
 	if err != nil {
-		return rep, homeErr(err)
+		return PurgeReport{}, homeErr(err)
 	}
 	defer closeFD(lead)
 	quar, err := openDirAt(s.root.openat2, lead, QuarantineName, true)
@@ -766,26 +776,31 @@ func (s *Store) PurgeQuarantine() (PurgeReport, error) {
 		return rep, nil
 	}
 	if err != nil {
-		return rep, fmt.Errorf("the quarantine: %w", err)
+		return PurgeReport{}, fmt.Errorf("the quarantine: %w", err)
 	}
 	defer closeFD(quar)
 	names, more, err := readNames(quar, maxPurgeEntries)
 	if err != nil {
-		return rep, err
+		return PurgeReport{}, err
 	}
 	if more {
 		rep.Left++
 	}
-	left := maxPurgeEntries - len(names)
+	p := &purge{call: s.root.openat2, unlink: s.unlink, rename: s.rename, left: maxPurgeEntries - len(names)}
 	for _, name := range names {
 		err := s.unlink(quar, name, 0)
 		if err == unix.EISDIR {
-			err = removeTree(s.root.openat2, s.unlink, quar, name, &left, 0)
+			err = p.removeTree(quar, name, -1, 0)
 		}
 		if err == nil || err == unix.ENOENT {
 			rep.Removed++
 		} else {
 			rep.Left++
+		}
+	}
+	for slot := 1; slot <= MaxQuarantine; slot++ {
+		if _, err := lstatAt(quar, strconv.Itoa(slot)); err == nil {
+			rep.Free--
 		}
 	}
 	return rep, nil

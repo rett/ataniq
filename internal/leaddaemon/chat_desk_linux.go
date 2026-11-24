@@ -20,8 +20,8 @@ import (
 // This file is the desk's side of the scratch leads' replies: the chat desk,
 // which holds one chat store per lead (package leadchat), the desk's switch of
 // each lead, the scanner that takes a lead's replies while its switch is read,
-// and the two operations of the switch, chat.list and chat.set, which only the
-// daemon's own user reaches on the Unix socket. The seat reads through the
+// and the three operations of the desk, chat.list, chat.set and chat.purge,
+// which only the daemon's own user reaches on the Unix socket. The seat reads through the
 // port of chat_port_linux.go, which this desk is the source of.
 //
 // The switch is the desk's and lives in memory: every lead is off when the
@@ -45,6 +45,8 @@ const (
 	msgChatFolder       = "the lead's reply folder cannot be used: it must be a folder of the daemon's user with mode 0700 in the home of a provisioned lead; see the daemon's log"
 	msgChatEpoch        = "the lead's epoch cannot be carried to the seat"
 	msgChatStopping     = "the daemon is stopping"
+	msgChatQuarantine   = "the lead's quarantine is full: its four names all hold a reply folder set aside, and a turn-on needs one free; purge it (ataniqd chat purge) or empty it by hand, then turn chat on again"
+	msgChatPurge        = "the lead's quarantine cannot be purged; see the daemon's log"
 )
 
 // chatState is what the registry shows of a lead, for its chat: the state as
@@ -221,6 +223,8 @@ func chatErrWord(err error) string {
 		return "unavailable"
 	case errors.Is(err, leadchat.ErrBroken):
 		return "broken"
+	case errors.Is(err, leadchat.ErrQuarantined):
+		return "quarantine full"
 	case errors.Is(err, leadchat.ErrFull):
 		return "full"
 	case errors.Is(err, leadchat.ErrClosed):
@@ -699,6 +703,9 @@ func (d *chatDesk) setRead(cl *chatLead) *clientapi.ErrorBody {
 		if was && st.Chat != ownerwire.ChatRead {
 			d.logf("chat: the chat of the lead %q is off", cl.key)
 		}
+		if errors.Is(err, leadchat.ErrQuarantined) {
+			return &clientapi.ErrorBody{Code: leadwire.CodeChatQuarantineFull, Message: msgChatQuarantine}
+		}
 		return unavailable(msgChatFolder)
 	}
 	if !was || started {
@@ -707,24 +714,61 @@ func (d *chatDesk) setRead(cl *chatLead) *clientapi.ErrorBody {
 	return nil
 }
 
-// chatExt is the extension of the two chat operations.
+// purge answers chat.purge: it removes what it can of the lead's quarantine
+// (leadchat.Store.PurgeQuarantine) and answers the counts. It changes no
+// switch, and runs whether the lead's chat is off or read.
+func (d *chatDesk) purge(params json.RawMessage) (any, *clientapi.ErrorBody) {
+	var p leadwire.ChatPurgeParams
+	if f := decodeLead(params, &p, "key"); f != nil {
+		return nil, f
+	}
+	cl, ok := d.byKey[p.Key]
+	if !ok {
+		return nil, refused(msgChatNotALead)
+	}
+	cl.setMu.Lock()
+	defer cl.setMu.Unlock()
+	cl.mu.Lock()
+	store, broken := cl.store, cl.broken
+	cl.mu.Unlock()
+	if store == nil || broken {
+		return nil, unavailable(msgChatStore)
+	}
+	rep, err := store.PurgeQuarantine()
+	if err != nil {
+		if storeDown(err) {
+			cl.mu.Lock()
+			d.markBroken(cl, err)
+			cl.mu.Unlock()
+			return nil, unavailable(msgChatStore)
+		}
+		d.logf("chat: the quarantine of the lead %q cannot be purged (%s)", cl.key, chatErrWord(err))
+		return nil, unavailable(msgChatPurge)
+	}
+	d.logf("chat: the quarantine of the lead %q was purged: %d removed, %d left, %d of %d names free", cl.key, rep.Removed, rep.Left, rep.Free, leadchat.MaxQuarantine)
+	return leadwire.ChatPurgeResult{Key: cl.key, Removed: rep.Removed, Left: rep.Left, Free: rep.Free}, nil
+}
+
+// chatExt is the extension of the three chat operations.
 type chatExt struct{ d *chatDesk }
 
 var _ clientapi.Extension = (*chatExt)(nil)
 
-// Operations lists chat.list and chat.set, in leadwire's order.
+// Operations lists chat.list, chat.set and chat.purge, in leadwire's order.
 func (x *chatExt) Operations() []string { return leadwire.ChatOperations() }
 
-// Mutating is true: chat.set changes the switch.
+// Mutating is true: chat.set changes the switch, and chat.purge removes.
 func (x *chatExt) Mutating() bool { return true }
 
-// Handle serves chat.list and chat.set.
+// Handle serves chat.list, chat.set and chat.purge.
 func (x *chatExt) Handle(_ context.Context, op string, params json.RawMessage) (any, *clientapi.ErrorBody) {
 	switch op {
 	case leadwire.OpChatList:
 		return x.d.list(params)
 	case leadwire.OpChatSet:
 		return x.d.set(params)
+	case leadwire.OpChatPurge:
+		return x.d.purge(params)
 	}
 	return nil, &clientapi.ErrorBody{Code: clientapi.CodeUnsupportedOperation, Message: msgBadParams}
 }

@@ -28,9 +28,10 @@
 // which calls the operation of the running daemon and prints its result as one
 // JSON line, and "ataniqd --version", which names the tag. It also adds
 // scratch mode, "ataniqd run --scratch CONFIG", and the desk's switch of the
-// scratch leads' written replies, "ataniqd chat list --config CONFIG" and
-// "ataniqd chat set KEY off|read --config CONFIG", which call chat.list and
-// chat.set of the running daemon and print the result as one JSON line.
+// scratch leads' written replies, "ataniqd chat list --config CONFIG",
+// "ataniqd chat set KEY off|read --config CONFIG" and "ataniqd chat purge KEY
+// --config CONFIG", which call chat.list, chat.set and chat.purge of the
+// running daemon and print the result as one JSON line.
 // Package leaddaemon says what the daemon then does.
 //
 // A build with the ataniq_ownerchannel tag adds one flag to run

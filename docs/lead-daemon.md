@@ -38,8 +38,9 @@ the second exception**, in the same tagged build and under `ataniqd run
 --scratch CONFIG` alone (it excludes `--canary`): the daemon serves six more
 operations, `lead.list`, `lead.define`, `lead.start`, `lead.stop`, `lead.ticket`
 and `lead.inject`, for up to eight scratch leads, with a durable receipt for each
-command, and two of the desk's own, `chat.list` and `chat.set`, which switch each
-lead's written replies to the owner off or read (see [the chat
+command, and three of the desk's own, `chat.list`, `chat.set` and `chat.purge`,
+which switch each lead's written replies to the owner off or read and empty a
+lead's quarantine (see [the chat
 operations](#the-chat-operations-scratch-mode)). [The scratch leads
 guide](scratch-leads.md) describes it. Release
 builds contain neither mode, and a tagged build without `--canary` and
@@ -824,7 +825,8 @@ adds the error codes `refused` and `unavailable` (see
 `--scratch`, registers six more tagged operations, `lead.list`, `lead.define`,
 `lead.start`, `lead.stop`, `lead.ticket` and `lead.inject`, and adds the error
 code `conflict` (see [the scratch leads guide](scratch-leads.md#the-operations)),
-then the desk's two chat operations, `chat.list` and `chat.set` (below).
+then the desk's three chat operations, `chat.list`, `chat.set` and
+`chat.purge` (below).
 The two modes exclude each other, and release builds still register none.
 When one is registered,
 `hello` lists the two base operations and then the extensions', and says
@@ -840,19 +842,23 @@ stays provisional.
 ### The chat operations (scratch mode)
 
 Under `--scratch` the daemon also keeps each scratch lead's written replies to
-the owner, read only, and lists two operations of the desk after the six lead
+the owner, read only, and lists three operations of the desk after the six lead
 operations: `chat.list` (no params) answers one row per lead (its switch,
 whether the seat can list it, whether its chat was stopped or its store cannot
-be used, its head and counts, never a reply's text), and `chat.set` (`key`,
-`chat`) sets a lead's switch to `off` or `read` at once and answers its row. The
-switch lives in memory, so **every lead is off whenever the daemon starts**.
-`chat.set` adds the error codes `chat-send-not-built` (for `send`) and
-`chat-key-unrepresentable` (for a key longer than a seat's lead identifier
-holds, 32 bytes), and uses `refused`, `unavailable` and `invalid-request` as the
-canary's operations do. Neither is served by the seat gate, and a client's check
-of the six lead operations does not count them. `ataniqd chat list --config
-CONFIG` and `ataniqd chat set KEY off|read --config CONFIG` call them and print
-one JSON line.
+be used, its head and counts, never a reply's text); `chat.set` (`key`,
+`chat`) sets a lead's switch to `off` or `read` at once and answers its row; and
+`chat.purge` (`key`) removes what it can of the lead's quarantine, where each
+turn-on sets the earlier reply folder aside, and answers `{"key","removed",
+"left","free"}`. The switch lives in memory, so **every lead is off whenever the
+daemon starts**. `chat.set` adds the error codes `chat-send-not-built` (for
+`send`), `chat-key-unrepresentable` (for a key longer than a seat's lead
+identifier holds, 32 bytes) and `chat-quarantine-full` (a turn-on needs one of
+the quarantine's four names free), and both use `refused`, `unavailable` and
+`invalid-request` as the canary's operations do. None is served by the seat
+gate, and a client's check of the six lead operations does not count them.
+`ataniqd chat list --config CONFIG`, `ataniqd chat set KEY off|read --config
+CONFIG` and `ataniqd chat purge KEY --config CONFIG` call them and print one
+JSON line.
 
 Every `lead.define` and `lead.start` of a scratch lead also makes the lead's
 reply folder, `<state>/leads/<layout role>/home/.ataniq-replies` (mode 0700; the

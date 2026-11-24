@@ -252,7 +252,8 @@ The daemon registers one extension with six operations, listed by `hello` after
 `"mutations":true`. The protocol name stays `ataniq.client/1`, and the daemon
 serves no canary operation under `--scratch`. A client takes all six as lead
 control, none as a daemon without it, and some as a version error. After the
-six, `hello` lists the desk's two chat operations, `chat.list` and `chat.set`
+six, `hello` lists the desk's three chat operations, `chat.list`, `chat.set` and
+`chat.purge`
 (see [Lead replies](#lead-replies-read-only)); they are a list of their own
 (`leadwire.ChatOperations`), so a client's check of the six is the same with
 or without them.
@@ -807,25 +808,50 @@ other gate serves no lead's replies. Cards stay the only path of an approval.
 **The desk's switch.** Each lead's chat is `off` or `read`; sending is not
 built. The switch is the desk's and lives in the daemon's memory: **every lead
 is off whenever the daemon starts**, a set takes effect at once, and every
-list, read and scan checks it. Two operations on the daemon's Unix socket, which
-only the daemon's own user reaches and the seat gate does not serve, set and
-show it:
+list, read and scan checks it. Three operations on the daemon's Unix socket,
+which only the daemon's own user reaches and the seat gate does not serve, set
+and show it and empty a lead's quarantine:
 
 | Operation | Params | Result |
 | --- | --- | --- |
 | `chat.list` | none, or `{}` | `{"leads":[{"key","chat","seat","suspended","unavailable","head","entries","dropped"}]}`, one row per configured lead, in the config's order: the switch, whether the seat can list the lead, whether the scan stopped its chat, whether its store cannot be used, the highest sequence number given, how many entries the chat holds, and the counts of what was removed or left, by reason. Never a reply's text, a file name or a path. |
 | `chat.set` | `key`, `chat` (`off` or `read`) | The lead's row. `off` always succeeds: the switch is off before the answer, the scanner has ended, and the lead's entries are dropped. `read` turns the chat on (clearing the reply folder first, as below) and starts the lead's scanner; on a lead that is on it changes nothing, and on a lead whose chat the scan stopped it turns it on afresh. The desk records the switch the store answers, under one lock with the lead's scanner, so a `read` that is refused leaves the lead as the store left it: a stopped chat, which is turned off before it is turned on afresh, is then `off` at the desk and on the seat, with no scanner. It is idempotent, so it takes no command id and keeps no receipt. |
+| `chat.purge` | `key` | `{"key","removed","left","free"}`: what one purge of the lead's quarantine did. It changes no switch and runs whether the chat is off or read. |
 
 `chat.set` answers `chat-send-not-built` for `send`; `chat-key-unrepresentable`
 for a lead whose key is longer than 32 bytes (a seat's lead identifier is
 `daemon:<key>` with a key of at most 32 bytes, and scratch keys may have 50:
 such a lead is left out of the seat's list, its chat stays off, and the daemon
 says so in one line at start, with a count and no key); `refused` for a key
-that is not a lead of the daemon; `invalid-request` for any other switch; and
-`unavailable` for a lead whose chat cannot be used: one that is not provisioned
-(it has no home yet), a reply folder that is not private, or a store that could
-not be opened or failed. A lead whose store cannot be opened or fails has no
-chat until the daemon is restarted, and no other lead is touched.
+that is not a lead of the daemon; `invalid-request` for any other switch;
+`chat-quarantine-full` for a turn-on that must set the earlier reply folder
+aside when all four names of the lead's quarantine hold something (see below);
+and `unavailable` for a lead whose chat cannot be used: one that is not
+provisioned (it has no home yet), a reply folder that could not be made or
+published safely, or a store that could not be opened or failed. A lead whose
+store cannot be opened or fails has no chat until the daemon is restarted, and
+no other lead is touched.
+
+**The quarantine and its purge.** Each turn-on sets the earlier reply folder
+aside, unread, in the lead's quarantine
+(`<state root>/leads/<layout role>/quarantine`) under one of the names `1` to
+`4`, so a turn-on needs one free name. When all four hold something, a name
+that holds an empty folder is freed by removing that folder, and otherwise the
+turn-on is refused `chat-quarantine-full`, the lead's chat stays off, and
+`ataniqd chat set KEY read` prints one fixed line and exits 31. The cap counts
+the names in use, not their size. `ataniqd chat purge KEY --config CONFIG`
+(`chat.purge`) empties what it can: each entry is unlinked, and a folder is
+removed with what it holds, deepest first, one name at a time below
+descriptors, never following a link, crossing a mount point or leaving the
+quarantine. One purge looks at most at 8192 names and walks at most 16 folders
+deep: of a wider folder it removes the names it read, and a folder deeper than
+that is moved up within the entry being purged, so a purge run again goes on
+from there and makes progress until nothing is left. It prints how many
+entries it removed, how many are `left` and how many names are `free`; run it
+again while `left` is not 0. A folder the daemon's user cannot open (one the
+lead made unreadable) is never opened and stays: the owner deletes it by hand,
+`rm -rf` on the quarantine's entry after `chmod -R u+rwx`, while the daemon
+runs or not.
 
 At the desk:
 
@@ -833,12 +859,14 @@ At the desk:
 ataniqd chat list --config CONFIG
 ataniqd chat set KEY read --config CONFIG
 ataniqd chat set KEY off --config CONFIG
+ataniqd chat purge KEY --config CONFIG
 ```
 
 Each prints one JSON line. The exit codes are those of `ataniqd canary`: 30 for
 a refusal (an unrepresentable key or a key that is not a lead), 31 when the
-lead's chat cannot be used, 20 when no daemon answers, and 2 for usage (`send`
-is refused there, before the daemon is asked).
+lead's chat cannot be used or its quarantine is full, 20 when no daemon
+answers, and 2 for usage (`send` is refused there, before the daemon is
+asked).
 
 **The scanner.** While a lead's switch is read and its chat is not stopped,
 one scanner of its own reads its reply folder every 2 seconds. The scanner
@@ -974,7 +1002,7 @@ when the quarantine is full. A turn-on needs one free name in the quarantine:
 when all four hold something, a name that holds an empty folder is freed by
 removing that folder (which never removes anything that holds a file), and
 otherwise the turn-on is refused until the owner purges the quarantine (see
-[the switch](#how-the-reader-works)). The lead must use the folder the daemon
+[the quarantine and its purge](#lead-replies-read-only)). The lead must use the folder the daemon
 made and never make it: what it writes there while chat is off is set aside
 unread at the next turn-on.
 

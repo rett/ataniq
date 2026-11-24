@@ -3038,7 +3038,7 @@ Where the scratch leads' read-only port stands:
   store; logs hold counts and fixed words.
 - **Access: met for reading.** `off` and `read` are the desk's, in the daemon's
   memory, checked on every list, read and scan, set only on the Unix socket
-  (the gate answers `chat.list` and `chat.set` `unknown-op`); an off lead is a
+  (the gate answers `chat.list`, `chat.set` and `chat.purge` `unknown-op`); an off lead is a
   bare row; a turn-off and a restart drop the history; 40 calls a minute across
   every connection. What applies to sending and its receipts is open with
   sending.

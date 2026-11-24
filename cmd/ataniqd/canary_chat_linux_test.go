@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 
 	"ataniq/internal/clientapi"
 	"ataniq/internal/leadchat"
+	"ataniq/internal/leaddaemon"
 	"ataniq/internal/leadwire"
 )
 
@@ -96,6 +98,43 @@ func TestChatCommand(t *testing.T) {
 		t.Fatalf("set alpha off: %d %q", code, out)
 	}
 
+	// A quarantine whose four names all hold something refuses the turn-on
+	// with the fixed line; the purge empties it and the turn-on goes on.
+	quar := filepath.Join(w.State, "leads", "scratch-alpha-lead", leadchat.QuarantineName)
+	for i := 1; i <= leadchat.MaxQuarantine; i++ {
+		name := filepath.Join(quar, strconv.Itoa(i))
+		if fi, err := os.Lstat(name); err == nil && fi.IsDir() {
+			name = filepath.Join(name, "kept")
+		}
+		if err := os.WriteFile(name, []byte("set aside"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if code, out, errs := chatRun(t, "set", "alpha", "read", "--config", w.ConfigPath); code != 31 || out != "" || errs != leaddaemon.QuarantineFullLine+"\n" {
+		t.Fatalf("read with a full quarantine: %d %q %q", code, out, errs)
+	}
+	code, out, errs = chatRun(t, "purge", "alpha", "--config", w.ConfigPath)
+	var purged leadwire.ChatPurgeResult
+	if code != 0 || json.Unmarshal([]byte(out), &purged) != nil || purged.Key != "alpha" || purged.Removed != leadchat.MaxQuarantine || purged.Left != 0 || purged.Free != leadchat.MaxQuarantine {
+		t.Fatalf("purge alpha: %d %q %s", code, out, errs)
+	}
+	if code, out, errs := chatRun(t, "set", "alpha", "read", "--config", w.ConfigPath); code != 0 {
+		t.Fatalf("read after the purge: %d %q %s", code, out, errs)
+	}
+	for _, tc := range []struct {
+		args []string
+		code int
+	}{
+		{[]string{"purge", "--config", w.ConfigPath}, 2},
+		{[]string{"purge"}, 2},
+		{[]string{"purge", "alpha"}, 2},
+		{[]string{"purge", "gamma", "--config", w.ConfigPath}, 30},
+	} {
+		if code, _, errs := chatRun(t, tc.args...); code != tc.code {
+			t.Errorf("chat %q: %d, want %d: %s", tc.args, code, tc.code, errs)
+		}
+	}
+
 	ta.signals <- syscall.SIGTERM
 	if code := <-done; code != 0 {
 		t.Fatalf("exit %d: %s", code, ta.err.String())
@@ -112,7 +151,7 @@ func TestUsageNamesTheChatCommand(t *testing.T) {
 		t.Fatal(code)
 	}
 	got := ta.out.String()
-	for _, want := range []string{"ataniqd chat list --config CONFIG", "ataniqd chat set KEY off|read --config CONFIG", "Sending is not built", "off for every lead whenever the daemon starts"} {
+	for _, want := range []string{"ataniqd chat list --config CONFIG", "ataniqd chat set KEY off|read --config CONFIG", "ataniqd chat purge KEY --config CONFIG", "Sending is not built", "off for every lead whenever the daemon starts"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the usage lacks %q", want)
 		}

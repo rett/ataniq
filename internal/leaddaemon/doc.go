@@ -206,11 +206,13 @@
 // store per lead in <state>/chat; a lead whose store cannot be opened has no
 // chat and every other lead is untouched. Each lead's switch is the desk's,
 // in memory: off or read, off for every lead whenever the daemon starts,
-// effective at once, and checked on every list, read and scan. Two
-// operations of their own, chat.list and chat.set (leadwire.ChatOperations,
-// listed after the six), are the desk's switch on the Unix socket; chat.set
-// refuses send (chat-send-not-built) and a key longer than a seat's lead
-// identifier holds (chat-key-unrepresentable). While a lead's switch is read
+// effective at once, and checked on every list, read and scan. Three
+// operations of their own, chat.list, chat.set and chat.purge
+// (leadwire.ChatOperations, listed after the six), are the desk's on the
+// Unix socket; chat.set refuses send (chat-send-not-built), a key longer
+// than a seat's lead identifier holds (chat-key-unrepresentable) and a
+// turn-on whose lead's quarantine has no free name (chat-quarantine-full),
+// which chat.purge empties. While a lead's switch is read
 // one scanner of its own takes its replies every [DefaultChatScanEvery]; a
 // scanner ends when the switch is off, the scan stops the lead's chat (the
 // reply folder was replaced, opened to others or held too much), the lead's

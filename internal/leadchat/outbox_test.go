@@ -1285,7 +1285,7 @@ func TestSetSwitchAnswersTheEffectiveSwitch(t *testing.T) {
 func TestPurgeQuarantine(t *testing.T) {
 	e := newEnv(t)
 	s := e.open()
-	if rep, err := s.PurgeQuarantine(); err != nil || rep != (PurgeReport{}) {
+	if rep, err := s.PurgeQuarantine(); err != nil || rep != (PurgeReport{Free: MaxQuarantine}) {
 		t.Fatalf("no quarantine: %+v, %v", rep, err)
 	}
 	outside := filepath.Join(e.dir, "outside")
@@ -1329,7 +1329,7 @@ func TestPurgeQuarantine(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(closed, 0o700) })
 	rep, err := s.PurgeQuarantine()
-	if err != nil || rep.Removed != 2 || rep.Left != 2 {
+	if err != nil || rep.Removed != 2 || rep.Left != 2 || rep.Free != 2 {
 		t.Fatalf("PurgeQuarantine: %+v, %v", rep, err)
 	}
 	if q := e.quarantined(); !slices.Equal(q, []string{"2", "4"}) {
@@ -1338,6 +1338,91 @@ func TestPurgeQuarantine(t *testing.T) {
 	if data, err := os.ReadFile(filepath.Join(outside, "keep.txt")); err != nil || string(data) != "keep" {
 		t.Fatalf("a link was followed: %q, %v", data, err)
 	}
+	// The deep tree was moved up in part; a second purge removes the rest.
+	// The folder closed to the daemon stays, for the owner's hand.
+	rep, err = s.PurgeQuarantine()
+	if err != nil || rep.Removed != 1 || rep.Left != 1 || rep.Free != 3 {
+		t.Fatalf("the second PurgeQuarantine: %+v, %v", rep, err)
+	}
+	if q := e.quarantined(); !slices.Equal(q, []string{"4"}) {
+		t.Fatalf("quarantine %q", q)
+	}
+}
+
+// purgeUntilEmpty purges the quarantine until it is empty, at most max times,
+// and answers how many purges it took.
+func purgeUntilEmpty(t *testing.T, e *env, s *Store, max int) int {
+	t.Helper()
+	for n := 1; n <= max; n++ {
+		rep, err := s.PurgeQuarantine()
+		if err != nil {
+			t.Fatalf("purge %d: %v", n, err)
+		}
+		if rep.Left == 0 {
+			if q := e.quarantined(); len(q) != 0 || rep.Free != MaxQuarantine {
+				t.Fatalf("purge %d left %q, %+v", n, q, rep)
+			}
+			return n
+		}
+	}
+	t.Fatalf("%d purges left %q", max, e.quarantined())
+	return 0
+}
+
+// A folder set aside that holds more names than one purge looks at is
+// removed in batches over repeated purges.
+func TestPurgeQuarantineOfAWideTree(t *testing.T) {
+	e := newEnv(t)
+	s := e.open()
+	wide := filepath.Join(e.quarDir(), "1", "wide")
+	if err := os.MkdirAll(wide, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxPurgeEntries+100; i++ {
+		f, err := os.OpenFile(filepath.Join(wide, "f"+strconv.Itoa(i)), os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = f.Close()
+	}
+	rep, err := s.PurgeQuarantine()
+	if err != nil || rep.Removed != 0 || rep.Left != 1 {
+		t.Fatalf("the first purge: %+v, %v", rep, err)
+	}
+	ents, err := os.ReadDir(wide)
+	if err != nil || len(ents) == 0 || len(ents) > 110 {
+		t.Fatalf("the first purge left %d names: %v", len(ents), err)
+	}
+	if n := purgeUntilEmpty(t, e, s, 3); n != 1 {
+		t.Fatalf("%d more purges", n)
+	}
+}
+
+// A folder set aside that is deeper than one purge walks is removed deepest
+// first over repeated purges: what lies past the bound is moved up within
+// the entry, never out of the quarantine.
+func TestPurgeQuarantineOfADeepTree(t *testing.T) {
+	e := newEnv(t)
+	s := e.open()
+	const depth = 5*maxTreeDepth + 3
+	p := filepath.Join(e.quarDir(), "1")
+	for i := 0; i < depth; i++ {
+		p = filepath.Join(p, "d")
+	}
+	if err := os.MkdirAll(p, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(p, "bottom.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := s.PurgeQuarantine()
+	if err != nil || rep.Left != 1 {
+		t.Fatalf("the first purge: %+v, %v", rep, err)
+	}
+	if ents, err := os.ReadDir(e.dir); err != nil || len(ents) != 2 {
+		t.Fatalf("the purge moved something out of the quarantine: %v, %v", ents, err)
+	}
+	purgeUntilEmpty(t, e, s, 2*depth/maxTreeDepth+2)
 }
 
 // A turn-on needs the lead's home reached safely and a file system that

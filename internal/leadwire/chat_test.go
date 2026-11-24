@@ -8,11 +8,11 @@ import (
 	"testing"
 )
 
-// The chat operations are two, in their order, in a list of their own: none
+// The chat operations are three, in their order, in a list of their own: none
 // of them is one of the six, so a client's all-six check of lead control is
 // the same with or without them.
 func TestChatOperations(t *testing.T) {
-	want := []string{"chat.list", "chat.set"}
+	want := []string{"chat.list", "chat.set", "chat.purge"}
 	got := ChatOperations()
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ChatOperations() = %v, want %v", got, want)
@@ -47,6 +47,14 @@ func TestChatJSON(t *testing.T) {
 	}
 	if string(b) != `{"key":"alpha","chat":"read"}` {
 		t.Fatalf("params %s", b)
+	}
+	b, err = json.Marshal(ChatPurgeParams{Key: "alpha"})
+	if err != nil || string(b) != `{"key":"alpha"}` {
+		t.Fatalf("purge params %s, %v", b, err)
+	}
+	b, err = json.Marshal(ChatPurgeResult{Key: "alpha", Removed: 2, Left: 1, Free: 3})
+	if err != nil || string(b) != `{"key":"alpha","removed":2,"left":1,"free":3}` {
+		t.Fatalf("purge result %s, %v", b, err)
 	}
 	b, err = json.Marshal(ChatListResult{Leads: []ChatLead{{Key: "alpha", Chat: ChatOff, Seat: true, Dropped: map[string]int{}}}})
 	if err != nil {

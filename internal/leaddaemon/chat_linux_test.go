@@ -4,6 +4,7 @@ package leaddaemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -862,8 +863,9 @@ func TestChatSwitchAndScannerChangeTogether(t *testing.T) {
 		}
 		waitFor(t, 15*time.Second, "the chat is stopped", func() bool { return l.chatRow("alpha").Suspended })
 		l.fillQuarantine("alpha")
-		if _, err := l.chatSet("alpha", leadwire.ChatRead); err == nil {
-			t.Fatal("the turn-on with a full quarantine was not refused")
+		var ce *clientapi.Error
+		if _, err := l.chatSet("alpha", leadwire.ChatRead); !errors.As(err, &ce) || string(ce.Code) != leadwire.CodeChatQuarantineFull || ce.Message != msgChatQuarantine {
+			t.Fatalf("the turn-on with a full quarantine: %v", err)
 		}
 		if r := l.chatRow("alpha"); r.Chat != leadwire.ChatOff || r.Suspended || r.Unavailable {
 			t.Fatalf("the desk's row: %+v", r)
@@ -876,6 +878,21 @@ func TestChatSwitchAndScannerChangeTogether(t *testing.T) {
 		}
 		if running, _ := workerOf(d, "alpha"); running {
 			t.Fatal("a scanner runs for a lead that is off")
+		}
+		// The purge frees the quarantine, and the turn-on goes on.
+		var pr leadwire.ChatPurgeResult
+		if err := l.call(leadwire.OpChatPurge, leadwire.ChatPurgeParams{Key: "alpha"}, &pr); err != nil ||
+			pr.Key != "alpha" || pr.Removed != leadchat.MaxQuarantine || pr.Left != 0 || pr.Free != leadchat.MaxQuarantine {
+			t.Fatalf("chat.purge: %+v, %v", pr, err)
+		}
+		if r := l.mustChatSet("alpha", leadwire.ChatRead); r.Chat != leadwire.ChatRead || r.Suspended {
+			t.Fatalf("read after the purge: %+v", r)
+		}
+		if err := l.call(leadwire.OpChatPurge, leadwire.ChatPurgeParams{Key: "gamma"}, nil); !errors.As(err, &ce) || ce.Code != CodeRefused {
+			t.Fatalf("chat.purge of a key that is not a lead: %v", err)
+		}
+		if err := l.call(leadwire.OpChatPurge, json.RawMessage(`{"key":"alpha","x":1}`), nil); !errors.As(err, &ce) || ce.Code != clientapi.CodeInvalidRequest {
+			t.Fatalf("chat.purge with another key: %v", err)
 		}
 	})
 }
