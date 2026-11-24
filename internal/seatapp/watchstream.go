@@ -11,31 +11,51 @@ import (
 	"time"
 )
 
-// The hint stream of the card list: POST /api/watch/stream, a response of
-// server-sent events that says, while the page is open, that the pending
-// cards moved. The long poll (watchpoll.go) stays, as the way of every page
-// that cannot stream and of every failure of the stream. The stream is fed
-// by the same watcher as the poll (one seat.wait at the gate for the whole
-// seat), so a stream, its heartbeats and its reconnects ask the gate
-// nothing.
+// The hint stream: POST /api/watch/stream, a response of server-sent events
+// that says, while a page is open, that what it shows moved. It has two
+// views, which the opening body names by its one member, and which share
+// every admission, limit and lifetime rule below:
 //
-// What crosses it is a closed set: one kind of event, streamKindCards, whose
-// data is the version a poll answers ({"version":"<hex>"}), and a heartbeat
-// comment. No card text, id, count, title or time is ever written to it. An
-// event only prompts the page's own read: the list reloads by the rules of
-// watch.js, as after a poll's "changed".
+//   - The card list's ({"version":"<hex>"}): the pending cards moved. The
+//     long poll (watchpoll.go) stays, as the way of every page that cannot
+//     stream and of every failure of the stream. It is fed by the same
+//     watcher as the poll (one seat.wait at the gate for the whole seat).
+//   - The Leads pages' ({"leads":"<cursor>"}): the leads' chat the seat may
+//     read moved (watchleads.go). It is fed by the chat hint the same
+//     watcher learns on the same wait; it has no poll to fall back to.
 //
-// For the notices, a stream's opening is the page's check-in: the page
+// So a stream, its heartbeats and its reconnects ask the gate nothing.
+//
+// What crosses it is a closed set: for the card list one kind of event,
+// streamKindCards, whose data is the version a poll answers
+// ({"version":"<hex>"}); for the Leads pages one kind, streamKindChat, whose
+// data is the chat cursor alone, a decimal integer; and a heartbeat comment.
+// No card text, id, count, title or time, and no lead, head, state, count or
+// text of the chat, is ever written to it. An event only prompts the page's
+// own read, by the rules of watch.js.
+//
+// For the notices, a card list's stream's opening is the page's check-in: the page
 // opens one only while it is shown. It takes a foreground lease (see
 // foreground), and the version the page says it shows, when it is the
 // watcher's, counts the cards waiting as seen. A hint the seat writes is
-// not seen until the page shows it, reloads, and checks in with it.
+// not seen until the page shows it, reloads, and checks in with it. A Leads
+// stream is no check-in: it takes no lease and credits nothing as seen.
 
 // streamPath is the stream's one address.
 const streamPath = "/api/watch/stream"
 
-// streamKindCards is the one kind of event the stream writes.
-const streamKindCards = "cards-changed"
+// The kinds of event the stream writes: one for each view.
+const (
+	streamKindCards = "cards-changed"
+	streamKindChat  = "chat-changed"
+)
+
+// The views of the stream. The opening body names one by its one member:
+// "version" the card list's, "leads" the Leads pages'.
+const (
+	streamViewCards = "cards"
+	streamViewLeads = "leads"
+)
 
 // The limits of the stream.
 const (
@@ -104,14 +124,18 @@ const (
 // skips.
 var streamHeartbeat = []byte(":\n\n")
 
-// streamVersion reads the body of POST /api/watch/stream: an object with
-// exactly one member, "version", a string the poll takes (the version the
-// page shows; empty for a page made while the watcher had none). A newer
-// version at the seat is said at once, as the first event. The body is read
-// token by token, so that a member that is absent, null, of another type,
-// of another name (in any case) or given twice is refused, as is anything
-// after the object.
-func streamVersion(raw []byte) (string, bool) {
+// streamOpening reads the body of POST /api/watch/stream: an object with
+// exactly one member, a string, whose name is the view. "version" is the
+// card list's: a version the poll takes (the version the page shows; empty
+// for a page made while the watcher had none). "leads" is the Leads pages':
+// the chat cursor the page was rendered with, a decimal integer of at most
+// 2^53-1 with no sign and no leading zero, "0" for a page made while there
+// was none (validChatToken). A newer version or cursor at the seat is said
+// at once, as the first event. The body is read token by token, so that a
+// member that is absent, null, of another type, of another name (in any
+// case) or given twice, two members of either view, and anything after the
+// object are refused.
+func streamOpening(raw []byte) (view, token string, ok bool) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	want := func(d json.Delim) bool {
 		t, err := dec.Token()
@@ -123,19 +147,26 @@ func streamVersion(raw []byte) (string, bool) {
 		return v, err == nil && ok
 	}
 	if !want('{') {
-		return "", false
+		return "", "", false
 	}
-	if k, ok := str(); !ok || k != "version" {
-		return "", false
+	k, ok := str()
+	if !ok {
+		return "", "", false
 	}
 	v, ok := str()
 	if !ok || !want('}') {
-		return "", false
+		return "", "", false
 	}
 	if _, err := dec.Token(); err != io.EOF {
-		return "", false
+		return "", "", false
 	}
-	return v, validWatchVersion(v)
+	switch k {
+	case "version":
+		return streamViewCards, v, validWatchVersion(v)
+	case "leads":
+		return streamViewLeads, v, validChatToken(v)
+	}
+	return "", "", false
 }
 
 // streamHint is the data of a cards-changed event.
@@ -151,11 +182,17 @@ func streamEvent(version string) ([]byte, bool) {
 	if err != nil {
 		return nil, false
 	}
+	return sseEvent(streamKindCards, data)
+}
+
+// sseEvent returns the bytes of an event of kind with data, one line of it,
+// and false when they would not fit in streamEventMax.
+func sseEvent(kind string, data []byte) ([]byte, bool) {
 	b := make([]byte, 0, streamEventMax)
-	b = append(b, "event: "+streamKindCards+"\ndata: "...)
+	b = append(b, "event: "+kind+"\ndata: "...)
 	b = append(b, data...)
 	b = append(b, "\n\n"...)
-	if len(b) > streamEventMax {
+	if len(b) > streamEventMax || bytes.ContainsAny(data, "\r\n") {
 		return nil, false
 	}
 	return b, true
@@ -167,6 +204,49 @@ func streamEvent(version string) ([]byte, bool) {
 // state ends the stream, and the page's poll then says what it is.
 func streamLive(s WatchState) bool {
 	return s.Watching && !s.Offline && s.Version != "" && validWatchVersion(s.Version)
+}
+
+// streamSource is what a view of the stream reads: the broadcast it waits
+// on, its token now (the Cards version, or the chat cursor) with whether
+// the view is live, and the event that says a token. checkIn is the card
+// list's alone: the page's check-in for the notices, which takes the
+// foreground lease and credits the count the page shows as seen, and
+// returns the lease's end. A Leads stream has none.
+type streamSource struct {
+	changed func() <-chan struct{}
+	current func() (token string, live bool)
+	event   func(token string) ([]byte, bool)
+	checkIn func(k tokenKey, now, until time.Time, shows string) (end func())
+}
+
+// streamSource returns the source of view, and false when the port has
+// none (it does not watch, or has no chat hint).
+func (a *app) streamSource(view string) (streamSource, bool) {
+	if view == streamViewLeads {
+		return a.leadsSource()
+	}
+	wt, ok := a.watcher()
+	if !ok {
+		return streamSource{}, false
+	}
+	// st is the state current last read; checkIn runs right after the
+	// admission's read, on the same goroutine, so it is that state.
+	var st WatchState
+	return streamSource{
+		changed: wt.WatchChanged,
+		current: func() (string, bool) {
+			st = wt.Watch()
+			return st.Version, streamLive(st)
+		},
+		event: streamEvent,
+		checkIn: func(k tokenKey, now, until time.Time, shows string) func() {
+			end := a.fg.grant(k, now, until)
+			if shows == st.Version {
+				a.sawWaiting(st.Waiting)
+			}
+			return end
+		},
+	}, true
 }
 
 // foreground holds the leases of the card lists' streams: while one lasts,
@@ -394,9 +474,11 @@ func refuseStream(w http.ResponseWriter, status int, text string, retry int) {
 // the session's idle time), a place among the handshakes in progress, which
 // is taken before the body is read, a body of the stream's form, the
 // credential's opens and open streams, all streams together, a watcher that
-// is live, and, last, the session again (it may have ended while the body
-// came), the server's end and the request's. A refusal is a fixed text with
-// no redirect, which the page takes as the sign to fall back to the poll.
+// is live (for the Leads view: a chat hint that is live while the gate
+// offers chat), and, last, the session again (it may have ended while the
+// body came), the server's end and the request's. A refusal is a fixed text
+// with no redirect, which the card list takes as the sign to fall back to
+// the poll, and a Leads page as the sign to keep to its Refresh link.
 //
 // The response has one cutoff, streamLife after the request reached the
 // handler: its admission, its writes and the end of the response are all
@@ -405,9 +487,11 @@ func refuseStream(w http.ResponseWriter, status int, text string, retry int) {
 //
 // Once open, the stream ends when its life is over, when the session ends
 // (logout, eviction, its idle time or its age, even in silence: a timer is
-// armed at the earlier of the two), when the watcher is no longer live, when
-// a write fails or outlasts its deadline, when the request ends, and when
-// the server shuts down. The session is looked at again before every write.
+// armed at the earlier of the two), when its view is no longer live (the
+// watcher, or the chat hint: a lost link, a gate that stops offering it, a
+// downgrade), when a write fails or outlasts its deadline, when the request
+// ends, and when the server shuts down. The session, and the view, are
+// looked at again before every write.
 func (a *app) watchStream(w http.ResponseWriter, r *http.Request) {
 	timer := a.streamTimer
 	if timer == nil {
@@ -439,7 +523,7 @@ func (a *app) watchStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, bodyError(err))
 		return
 	}
-	version, ok := streamVersion(raw)
+	view, shows, ok := streamOpening(raw)
 	if !ok {
 		writeError(w, errBadRequest)
 		return
@@ -459,16 +543,16 @@ func (a *app) watchStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
-	wt, ok := a.watcher()
+	src, ok := a.streamSource(view)
 	if !ok {
 		refuseStream(w, http.StatusServiceUnavailable, streamTextNotLive, streamRetryNotLive)
 		return
 	}
 	// The channel before the state: a change between the two is not
 	// missed.
-	ch := wt.WatchChanged()
-	st := wt.Watch()
-	if !streamLive(st) {
+	ch := src.changed()
+	now0, live := src.current()
+	if !live {
 		refuseStream(w, http.StatusServiceUnavailable, streamTextNotLive, streamRetryNotLive)
 		return
 	}
@@ -499,13 +583,13 @@ func (a *app) watchStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The stream is open: the page checked in, visible (a hidden page
-	// opens none). It holds the notices back while its lease lasts, and the
+	// The stream is open. A card list checked in, visible (a hidden page
+	// opens none): it holds the notices back while its lease lasts, and the
 	// version it says it shows, when it is the watcher's, is the count the
-	// owner has seen.
-	endLease := a.fg.grant(s.key, a.cfg.Now(), until)
-	if version == st.Version {
-		a.sawWaiting(st.Waiting)
+	// owner has seen. A Leads page checks in for nothing.
+	endLease := func() {}
+	if src.checkIn != nil {
+		endLease = src.checkIn(s.key, a.cfg.Now(), until, shows)
 	}
 
 	h := w.Header()
@@ -527,7 +611,7 @@ func (a *app) watchStream(w http.ResponseWriter, r *http.Request) {
 	// A stream the seat rotated leaves its lease to run out, which covers
 	// the page's reconnect; any other end (the page hidden, left or gone,
 	// a failed write, the session's end, the server's) ends it now.
-	if !a.runStream(r, sw, timer, life, wt, ch, st, version, s.key, gone, until) {
+	if !a.runStream(r, sw, timer, life, src, ch, now0, shows, s.key, gone, until) {
 		endLease()
 	}
 }
@@ -548,12 +632,12 @@ func refuseSlot(w http.ResponseWriter, refusal int) bool {
 	return false
 }
 
-// runStream is the open stream's loop. sent is the version the page has,
-// st the state as the stream opened, and ch the channel taken before it. It
-// reports whether the stream ended at its life, the seat's own rotation,
-// rather than for any other reason.
-func (a *app) runStream(r *http.Request, sw *streamWriter, timer noticeTimer, life <-chan time.Time, wt Watcher,
-	ch <-chan struct{}, st WatchState, sent string, k tokenKey, gone <-chan struct{}, until time.Time) (rotated bool) {
+// runStream is the open stream's loop. sent is the token the page has (the
+// version, or the chat cursor), cur the view's token as the stream opened,
+// and ch the channel taken before it. It reports whether the stream ended
+// at its life, the seat's own rotation, rather than for any other reason.
+func (a *app) runStream(r *http.Request, sw *streamWriter, timer noticeTimer, life <-chan time.Time, src streamSource,
+	ch <-chan struct{}, cur string, sent string, k tokenKey, gone <-chan struct{}, until time.Time) (rotated bool) {
 	beat, stopBeat := timer(a.streamBeat)
 	defer func() { stopBeat() }()
 	sessionLeft := func(until time.Time) time.Duration {
@@ -582,39 +666,39 @@ func (a *app) runStream(r *http.Request, sw *streamWriter, timer noticeTimer, li
 		_, ok := a.sess.liveUntil(k)
 		return ok
 	}
-	// say writes the event of the version now, when it is not the one the
+	// say writes the event of the token now, when it is not the one the
 	// page has.
-	say := func(s WatchState) bool {
-		if s.Version == sent {
+	say := func(tok string) bool {
+		if tok == sent {
 			return true
 		}
-		b, ok := streamEvent(s.Version)
+		b, ok := src.event(tok)
 		if !ok || !alive() || sw.send(b) != nil {
 			return false
 		}
-		sent = s.Version
+		sent = tok
 		gap, stopGap = timer(a.streamGap)
 		return true
 	}
-	if st.Version != sent && !say(st) {
+	if cur != sent && !say(cur) {
 		return false
 	}
 	for {
 		select {
 		case <-ch:
-			ch = wt.WatchChanged()
-			st = wt.Watch()
-			if !streamLive(st) {
+			ch = src.changed()
+			tok, live := src.current()
+			if !live {
 				return false
 			}
-			if st.Version == sent {
+			if tok == sent {
 				continue
 			}
 			if gap != nil {
 				pending = true
 				continue
 			}
-			if !say(st) {
+			if !say(tok) {
 				return false
 			}
 		case <-gap:
@@ -622,14 +706,17 @@ func (a *app) runStream(r *http.Request, sw *streamWriter, timer noticeTimer, li
 			gap, stopGap = nil, func() {}
 			if pending {
 				pending = false
-				st = wt.Watch()
-				if !streamLive(st) || !say(st) {
+				tok, live := src.current()
+				if !live || !say(tok) {
 					return false
 				}
 			}
 		case <-beat:
 			stopBeat()
-			if !alive() || sw.send(streamHeartbeat) != nil {
+			// The view is looked at again before a heartbeat too: a chat
+			// hint can stop being live (its connection gone) before its
+			// watcher says so.
+			if _, live := src.current(); !live || !alive() || sw.send(streamHeartbeat) != nil {
 				return false
 			}
 			beat, stopBeat = timer(a.streamBeat)

@@ -147,31 +147,33 @@ func (w *watchingDaemon) Watch() seatlink.WatchState    { return w.state }
 func (w *watchingDaemon) WatchChanged() <-chan struct{} { return w.ch }
 
 // TestRunServesTheHintStream: the command's server has the card list's hint
-// stream, with its admission: a request without a session is refused with
-// the fixed text and no redirect, before any header of a stream; and the
-// command still shuts down at once.
+// stream, of both views, with its admission: a request without a session is
+// refused with the fixed text and no redirect, before any header of a
+// stream; and the command still shuts down at once.
 func TestRunServesTheHintStream(t *testing.T) {
 	addr, _, stop := serve(t, []string{"--origin", seatOrigin, "--listen", freeLoopback(t)})
-	req, err := http.NewRequest("POST", "http://"+addr.String()+"/api/watch/stream", strings.NewReader(`{"version":""}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Host = seatRPID
-	req.Header.Set("Origin", seatOrigin)
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	req.Header.Set("Content-Type", "application/json")
-	tr := &http.Transport{DisableKeepAlives: true}
-	defer tr.CloseIdleConnections()
-	resp, err := (&http.Client{Transport: tr}).Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden || string(body) != "session ended\n" ||
-		resp.Header.Get("Location") != "" || strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") ||
-		resp.Header.Get("Cache-Control") != "no-store" {
-		t.Errorf("stream without a session: %d %q %v", resp.StatusCode, body, resp.Header)
+	for _, opening := range []string{`{"version":""}`, `{"leads":"0"}`} {
+		req, err := http.NewRequest("POST", "http://"+addr.String()+"/api/watch/stream", strings.NewReader(opening))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = seatRPID
+		req.Header.Set("Origin", seatOrigin)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		req.Header.Set("Content-Type", "application/json")
+		tr := &http.Transport{DisableKeepAlives: true}
+		resp, err := (&http.Client{Transport: tr}).Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		tr.CloseIdleConnections()
+		if resp.StatusCode != http.StatusForbidden || string(body) != "session ended\n" ||
+			resp.Header.Get("Location") != "" || strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") ||
+			resp.Header.Get("Cache-Control") != "no-store" {
+			t.Errorf("stream %s without a session: %d %q %v", opening, resp.StatusCode, body, resp.Header)
+		}
 	}
 	if code := stop(); code != 0 {
 		t.Errorf("shutdown code %d", code)

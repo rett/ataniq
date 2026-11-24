@@ -73,6 +73,9 @@ type leadsData struct {
 	pageData
 	Sample *chatSample
 	Rows   []chatRow
+	// Watch is the chat hint taken before the page's reads, for the page's
+	// hint stream (watchleads.go).
+	Watch leadsWatch
 }
 type conversationData struct {
 	leadsData
@@ -180,6 +183,9 @@ func (a *app) chatPage(w http.ResponseWriter, r *http.Request, s Session) {
 		a.problem(w, r, problemUnavailable)
 		return
 	}
+	// The hint before the reads: a change between the two leaves the page
+	// a cursor older than what it shows, and its stream says so at once.
+	lw := a.leadsHint()
 	c := ChatCall{Verb: ChatLeads, SessionDone: gone}
 	list, err := p.Chat(ctx, c)
 	if err != nil {
@@ -191,7 +197,7 @@ func (a *app) chatPage(w http.ResponseWriter, r *http.Request, s Session) {
 		return
 	}
 	h.directory(list)
-	data := leadsData{pageData: pageData{Title: pageTitles["leads"], Nav: &navView{Current: navLeads, Leads: true, Projects: a.projectsOffered.Load()}}}
+	data := leadsData{pageData: pageData{Title: pageTitles["leads"], Nav: &navView{Current: navLeads, Leads: true, Projects: a.projectsOffered.Load()}}, Watch: lw}
 	if list.StandIn {
 		data.Sample = &chatTrial
 	}
@@ -290,5 +296,28 @@ func conversation(list leadsData, row chatRow, v ChatView, after int64, visit ch
 	if d.JumpRemote {
 		d.TailAfter = max(0, v.Head-MaxChatEntries)
 	}
+	d.Watch.Conversation = true
+	if !v.More {
+		d.Watch.Follow, d.Watch.After = true, followAfter(v, after, d.LastSeq)
+	}
 	return d, visit
+}
+
+// followAfter is the cursor of the read that follows new replies on a page
+// that shows the newest entries: the page's last rendered entry less half a
+// window, from zero at least. Nothing after the last rendered entry is ever
+// skipped (the read starts at or before it), up to half a window of what
+// the page showed stays above the new entries, and up to half a window of
+// new entries fits below; more than that leaves the next page with Show
+// later. A page with no entry rendered its read's cursor (the head at most),
+// or, after a reset, the head.
+func followAfter(v ChatView, after, lastSeq int64) int64 {
+	last := lastSeq
+	if len(v.Entries) == 0 {
+		last = min(after, v.Head)
+		if v.Reset {
+			last = v.Head
+		}
+	}
+	return max(0, last-MaxChatEntries/2)
 }

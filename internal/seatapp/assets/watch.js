@@ -26,6 +26,19 @@
 // sends its form, so that a card this very page moved is not said to have
 // been moved elsewhere.
 //
+// The Leads pages (the directory and a conversation, which their template
+// marks with data-view="leads") read the same stream, opened with the chat
+// cursor the page was rendered with: one kind of event, "chat-changed",
+// whose data is the new cursor, an integer, and nothing else. They never
+// poll: on any failure of the stream they keep to their Refresh link until
+// the page is shown again. On a hint the directory offers "Leads changed.
+// Refresh"; a conversation that shows the newest entries (the seat marks it
+// with data-follow) and whose newest entry is in view reads again once,
+// after its follow cursor, so that the new replies appear (by the card
+// list's rule, but at most once every forty seconds: never over typed text
+// or an open dialog, only while shown); any other conversation offers "New
+// replies. Show newest". No hint moves the focus or reloads a hidden page.
+//
 // Every text put on the page is one of the constants below, set with
 // textContent, never as markup, and never taken from the seat's answer.
 "use strict";
@@ -41,13 +54,22 @@
     changed: "This card changed or was decided elsewhere. Look again.",
     login: "Log in",
     cards: "Back to the cards",
-    reload: "Reload"
+    reload: "Reload",
+    leadsChanged: "Leads changed.",
+    refresh: "Refresh",
+    newReplies: "New replies.",
+    showNewest: "Show newest"
   };
   var LOGIN_PATH = "/login/";
   var CARDS_PATH = "/cards/";
+  var LEADS_PATH = "/leads/";
+  var NEWEST = "#newest";       // the conversation's newest entry, on its page
+  var CHAT_PAGE = /^\/leads\/daemon\/[a-z0-9][a-z0-9-]{0,31}$/; // a conversation's own path
   var POLL_PATH = "/api/watch";
   var STREAM_PATH = "/api/watch/stream";
-  var STREAM_KIND = "cards-changed";  // the one kind of event acted on; any other is skipped
+  var STREAM_KIND = "cards-changed";  // the card list's one kind of event; any other is skipped
+  var STREAM_KIND_CHAT = "chat-changed"; // the Leads pages' one kind of event; any other is skipped
+  var MAX_CURSOR = 9007199254740991;   // 2^53-1, the largest chat cursor
 
   var REQUEST_TIMEOUT = 30000; // the seat holds a poll for 25 seconds at most
   var MIN_GAP = 2000;          // the least time between the starts of two polls
@@ -58,6 +80,8 @@
   var BACKOFF_LAST = 60000;
   var RELOAD_GAP = 20000;      // the page is reloaded only once its own read is this old
   var RELOAD_RETRY = 2000;
+  var FOLLOW_GAP = 40000;      // a conversation's following read is made only once the page is this old:
+                               // its 2 calls, every 40 seconds, fit chat's 5 calls in 80 seconds with one to spare
   var STREAM_LINE_MAX = 512;   // characters of one line of the stream; a longer one fails it
   var STREAM_EVENT_MAX = 256;  // characters of one event's data; more fails it
   var STREAM_FIRST = 8000;     // the opening heartbeat, whole, must come this soon after the request
@@ -81,8 +105,19 @@
   // A Card page of a card that is not pending names no card; it is no list,
   // so it never reloads.
   var still = root.dataset.still === "yes";
-  // Only the card list streams; the Card page keeps the poll, which says
-  // what became of its card.
+  // A Leads page names its view. It streams the chat's hints with the cursor
+  // it was rendered with, which never moves (the page shows a newer one only
+  // by being read again), and never polls.
+  var onLeads = root.dataset.view === "leads";
+  var renderedChat = onLeads && validCursor(root.dataset.chat || "") ? root.dataset.chat : "0";
+  var conversation = onLeads && root.dataset.page === "conversation";
+  // followAfter is the cursor a conversation that shows the newest entries
+  // reads after to follow new replies; empty on any other page.
+  var followAfter = conversation && /^[0-9]{1,16}$/.test(root.dataset.follow || "") ? root.dataset.follow : "";
+  var streamKind = onLeads ? STREAM_KIND_CHAT : STREAM_KIND;
+  var offerShown = false;  // a Leads page shows its offer, which stays
+  // Only the card list and the Leads pages stream; the Card page keeps the
+  // poll, which says what became of its card.
   var streamable = live && !onCard && !still && canStream();
   var useStream = streamable; // false after a failure of the stream, until the page is shown again
 
@@ -144,9 +179,10 @@
     Array.prototype.forEach.call(document.querySelectorAll("[data-offer]"), function (el) { el.disabled = true; });
   }
 
-  // quiet clears the status line after a good answer, but a banner stays.
+  // quiet clears the status line after a good answer, but a banner, and a
+  // Leads page's offer, stay.
   function quiet() {
-    if (bannerShown) { showBanner(); } else { say(""); }
+    if (bannerShown) { showBanner(); } else if (!offerShown) { say(""); }
   }
 
   function typing() {
@@ -157,22 +193,98 @@
       el.type !== "checkbox" && el.type !== "radio";
   }
 
-  // wantReload reloads the list once twenty seconds have passed since this page
-  // was loaded, and not while a field holds typed text. A reload pending is
-  // never set twice. The list reloads only while it is shown: the change is
-  // kept pending (pendingChange) while the page is hidden or left, its timer
-  // is cancelled then (cancelReload), the page is looked at again when the
+  // holding reports whether the page must not be read again now: a field
+  // holds typed text, or an open dialog waits for an answer.
+  function holding() {
+    return typing() || document.querySelector("dialog[open], [aria-modal='true']") !== null;
+  }
+
+  // wantReload reloads the page once twenty seconds have passed since it was
+  // loaded (a conversation's following read forty), and not while a field
+  // holds typed text or a dialog is open. A reload pending is never set
+  // twice. The page reloads only while it is shown: the change is kept
+  // pending (pendingChange) while the page is hidden or left, its timer is
+  // cancelled then (cancelReload), the page is looked at again when the
   // timer runs, and awake reconciles a pending change once.
   function wantReload() {
     pendingChange = true;
     if (reloadTimer !== null || stopped || document.hidden) { return; }
     var wait = Math.max(0, loadedAt + RELOAD_GAP - Date.now());
+    if (onLeads) { wait = Math.max(0, loadedAt + FOLLOW_GAP - Date.now()); }
     reloadTimer = setTimeout(function tryReload() {
       reloadTimer = null;
       if (stopped || document.hidden) { return; }
-      if (typing()) { reloadTimer = setTimeout(tryReload, RELOAD_RETRY); return; }
-      location.reload();
+      if (holding()) { reloadTimer = setTimeout(tryReload, RELOAD_RETRY); return; }
+      reloadNow();
     }, wait);
+  }
+
+  // reloadNow reads the page again. The card list reloads. A conversation
+  // that still follows (its reader may have left the newest entry while the
+  // reload waited) is read after its follow cursor, so that every entry
+  // after the last it showed appears, at its newest entry; one that no
+  // longer follows shows the offer instead.
+  function reloadNow() {
+    if (onLeads) {
+      if (!following()) { offer(); return; }
+      var target = "?after=" + followAfter;
+      // The same address with its fragment would only move the view.
+      if (location.search !== target) { location.replace(target + NEWEST); return; }
+    }
+    location.reload();
+  }
+
+  // validCursor reports whether s is a chat cursor as the seat writes it: a
+  // decimal integer of 0 to 2^53-1, with no sign and no leading zero.
+  function validCursor(s) {
+    return typeof s === "string" && /^(0|[1-9][0-9]{0,15})$/.test(s) && Number(s) <= MAX_CURSOR;
+  }
+
+  // following reports whether a conversation follows new replies: the seat
+  // marked the page as showing the newest entries, and the newest entry is
+  // in view, so the reader is at it.
+  function following() {
+    if (followAfter === "") { return false; }
+    var el = document.getElementById("newest");
+    if (!el || typeof el.getBoundingClientRect !== "function") { return false; }
+    var box = el.getBoundingClientRect();
+    return box.bottom > 0 && box.top < window.innerHeight;
+  }
+
+  // newestTarget is where a conversation's offer goes: its newest entry on
+  // this page when the page shows the newest entries, otherwise the
+  // conversation's newest page.
+  function newestTarget() {
+    if (followAfter === "" && CHAT_PAGE.test(location.pathname)) { return location.pathname + NEWEST; }
+    return NEWEST;
+  }
+
+  // offer shows a Leads page's quiet offer, once: a plain link the owner
+  // may follow, in the polite status line; nothing moves and nothing is
+  // read. A conversation's link, once followed to the newest entry, lets
+  // the page follow the replies pending.
+  function offer() {
+    if (offerShown) { return; }
+    offerShown = true;
+    if (!conversation) {
+      say(TEXT.leadsChanged, [link(TEXT.refresh, LEADS_PATH)]);
+      return;
+    }
+    var a = link(TEXT.showNewest, newestTarget());
+    a.addEventListener("click", function () {
+      setTimeout(function () { if (pendingChange) { chatChanged(); } }, 0);
+    });
+    say(TEXT.newReplies, [a]);
+  }
+
+  // chatChanged acts on a change of the chat that the page does not show:
+  // a conversation that follows reads again by wantReload's rule, any other
+  // Leads page shows its offer. While the page is hidden it is kept pending,
+  // for awake.
+  function chatChanged() {
+    pendingChange = true;
+    if (stopped || document.hidden) { return; }
+    if (following()) { wantReload(); } else { offer(); }
   }
 
   // cancelReload drops a reload waiting its turn; the change stays pending.
@@ -228,9 +340,9 @@
 
   // poll asks once, then the next poll is scheduled from the answer. Nothing
   // is asked while the page is hidden: the page asks again, at once, when it
-  // is shown.
+  // is shown. A Leads page never polls: the chat has no poll.
   async function poll() {
-    if (stopped || inflight || document.hidden) { return; }
+    if (stopped || inflight || document.hidden || onLeads) { return; }
     inflight = true;
     var began = Date.now();
     var data = null, failure = null;
@@ -339,6 +451,16 @@
     return true;
   }
 
+  // chatHinted acts on the data of a chat-changed event: the cursor the seat
+  // has now, a decimal integer and nothing else. A cursor that is not the
+  // one the page was rendered with is a change of the chat. It reports
+  // false for data of any other form, which fails the stream.
+  function chatHinted(text) {
+    if (!validCursor(text) || text === "0") { return false; }
+    if (text !== renderedChat) { chatChanged(); }
+    return true;
+  }
+
   // readStream opens a stream and reads it to its end, acting on each
   // event. It returns when the seat ends the stream between two events, and
   // throws on any failure: a refusal, a response that is not a stream, an
@@ -358,7 +480,7 @@
     }
     hush(STREAM_FIRST);
     try {
-      var resp = await send(STREAM_PATH, { version: rendered }, c.ctl);
+      var resp = await send(STREAM_PATH, onLeads ? { leads: renderedChat } : { version: rendered }, c.ctl);
       var type = (resp.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
       if (resp.status !== 200 || resp.redirected || type !== "text/event-stream" ||
           !resp.body || typeof resp.body.getReader !== "function") {
@@ -387,7 +509,7 @@
             if (line.charAt(line.length - 1) === "\r") { line = line.slice(0, -1); }
             if (line === "") {
               // The end of an event: act on it if it is of the one kind.
-              if (kind === STREAM_KIND && !hinted(evData)) { throw { stream: false }; }
+              if (kind === streamKind && !(onLeads ? chatHinted(evData) : hinted(evData))) { throw { stream: false }; }
               kind = "";
               evData = "";
               if (!opened) {
@@ -457,11 +579,14 @@
   }
 
   // fallBack turns the page to the poll until it is shown again, and polls
-  // at once, as a page that cannot stream does from its start.
+  // at once, as a page that cannot stream does from its start. A Leads page
+  // has no poll: it says it is not live (unless it shows its offer) and
+  // keeps to its Refresh link.
   function fallBack() {
     useStream = false;
     streamFails += 1;
     shortEnds = 0;
+    if (onLeads && !offerShown) { say(TEXT.notLive); }
     poll();
   }
 
@@ -483,7 +608,7 @@
   }
 
   // awake: the page is shown again, or the network is back. A list with a
-  // change pending reloads for it, once. A page that streams (or fell back
+  // change pending reloads for it, once; a Leads page acts on it once. A page that streams (or fell back
   // from the stream) opens one stream after a short random wait, with the
   // version it shows, so a change it missed is said at once; any other page
   // polls at once.
@@ -492,7 +617,7 @@
     cancel();
     // A change heard of while the page was shown, whose reload the page's
     // hiding dropped: one reload now, by the usual rule.
-    if (pendingChange && !onCard && !still) { wantReload(); }
+    if (pendingChange && !onCard && !still) { if (onLeads) { chatChanged(); } else { wantReload(); } }
     if (streamable) {
       useStream = true;
       if (pollCtl !== null) { pollCtl.abort(); }

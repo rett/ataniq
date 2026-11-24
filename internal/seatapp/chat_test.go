@@ -97,16 +97,26 @@ func TestChatPages(t *testing.T) {
 				t.Errorf("missing %q", want)
 			}
 		}
-		for _, forbidden := range []string{"<script", "<form", "<button", `href="/leads/daemon/later`} {
+		for _, forbidden := range []string{"<form", "<button", `href="/leads/daemon/later`} {
 			if strings.Contains(body, forbidden) {
 				t.Error(forbidden)
 			}
 		}
+		// The one script is the live refresh's, after its status line,
+		// the one live region of the page.
+		const line = `<p id="watch-status" role="status" aria-live="polite"></p>`
+		if strings.Count(body, "<script") != 1 || strings.Count(body, `<script src="/static/watch.js"></script>`) != 1 ||
+			strings.Count(body, line) != 1 || strings.Count(body, "aria-live") != 1 ||
+			strings.Index(body, line) > strings.Index(body, `<script src="/static/watch.js"></script>`) {
+			t.Error("the Leads page's script or status line")
+		}
 		if path != "/leads/" {
 			// The heading names the lead alone; the state is the line
 			// under it. The log is a static list: no live region.
+			// The one live region is the stream's status line (above).
 			if !regexp.MustCompile(`<h1>Lead <bdi>alpha</bdi></h1>\s*<p class="chat-state">The lead is running.</p>`).MatchString(body) ||
-				!strings.Contains(body, `<ol class="chat-log" role="log" aria-labelledby="conversation-h">`) || strings.Contains(body, "aria-live") ||
+				!strings.Contains(body, `<ol class="chat-log" role="log" aria-labelledby="conversation-h">`) ||
+				strings.Contains(regexp.MustCompile(`(?s)<ol class="chat-log".*?</ol>`).FindString(body), "aria-live") ||
 				strings.Contains(body, "aria-relevant") || strings.Contains(body, "aria-atomic") {
 				t.Error("the conversation's heading or log")
 			}

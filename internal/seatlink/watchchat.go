@@ -5,6 +5,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"ataniq/internal/seatapp"
 )
 
 // This file is the seat's side of the extended seat.wait: the chat cursor the
@@ -59,19 +61,13 @@ const CapWaitChat = "wait-chat"
 const codeBadParams = "bad-params"
 
 // ChatHint is where the leads' chat stands, as the watcher last learned it
-// from the extended wait. The zero hint is not live.
-type ChatHint struct {
-	// Live is true when the watcher holds a cursor of the current
-	// connection, learned from the gate's last answer.
-	Live bool
-	// Cursor is that cursor, 1 to 2^53-1, a number a page's script can
-	// carry; 0 when not Live. It changes when what the seat may read of the
-	// chat changes, and says nothing else: no lead, no count, no text.
-	Cursor int64
-	// Connection is the connection the cursor was learned on, as
-	// [seatapp.ChatView].Connection names it; zero when not Live.
-	Connection time.Time
-}
+// from the extended wait: Live, the Cursor (1 to 2^53-1, a number a page's
+// script can carry; 0 when not live) and the Connection it was learned on.
+// It is the app's type, so that the link's method set is the app's
+// [seatapp.ChatWatcher]. The cursor changes when what the seat may read of
+// the chat changes, and says nothing else: no lead, no count, no text. The
+// zero hint is not live.
+type ChatHint = seatapp.ChatHint
 
 // chatHub holds the published hint and its broadcast, as watchHub does for
 // the Cards. Its zero value is a hint that is not live, with a channel that is

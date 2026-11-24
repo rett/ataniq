@@ -91,6 +91,13 @@ otherwise sits under the conversation. On a phone the panes stack, the
 conversation first, with links to the conversation, evidence and timeline. The trial labels its sample project, gate and events **STAND-IN**.
 With daemon chat the timeline draws from system entries on the current page.
 
+A conversation open at its newest message shows a lead's new replies by
+itself, read again at most once every 40 seconds; scrolled away or on older
+messages it offers **Show newest** instead, and the Leads page offers
+**Refresh**. The seat learns only that the chat it may read moved, never
+from a lead whose chat is off. Nothing takes the focus, and a hidden page
+reads nothing.
+
 Terminal attachment, keystrokes and lead controls stay at the desk.
 **Open Cards** takes you to the seat's existing approval pages.
 See [Leads in the seat app](seat-gate.md#leads).
