@@ -35,7 +35,7 @@ const (
 
 // The room of each kind of call in BudgetWindow. The seven add up to GateRate:
 //
-//	pings 6 + decisions 10 + anyone's 12 + reads 12 + chat 2 + waits 6 + genesis 12 = 60
+//	pings 6 + decisions 8 + anyone's 10 + reads 12 + chat 6 + waits 6 + genesis 12 = 60
 //
 // The room of seat.genesis was made when the interview's pages came: before
 // it the rooms were pings 6, decisions 16, anyone's 12, reads 20 and waits 6.
@@ -48,43 +48,52 @@ const (
 // tap plus an occasional read, with a few to spare for an answer that is
 // refused and asked again. The 2 were taken from decisions (12 to 10: 5
 // decisions, each a challenge and a decision call, in 80 seconds), where
-// they were the least used. Anyone's room stays 12: strangers can hold it
-// with login challenges they never answer, and a smaller one would let fewer
-// of them keep the owner from logging in.
+// they were the least used. Anyone's room was 12 until chat needed more:
+// strangers can hold it with login challenges they never answer, and a
+// smaller one lets fewer of them keep the owner from logging in.
 //
 // Chat's room was carved out of the reads' 14 when replies came (12 for the
 // Cards pages and 2 for chat): a conversation shared the reads' room before,
 // and one refreshed every 10 seconds had almost half of three Card tabs'
 // list reloads refused (TestBudgetMixedUse). Three card lists that reload
-// every 20 seconds take the 12 reads; chat's 2 are one refresh of a real
-// conversation (its directory and its page) in 80 seconds, and a chat call
-// past them is busy without touching the reads, so chat never takes a
-// Card's read and a Card's read never takes chat's.
+// every 20 seconds take the 12 reads. Chat's 2 did not hold the owner's
+// ordinary path, cold: the Leads page (the directory) and a selected lead's
+// conversation (the directory again and the page) are 3 calls, so the first
+// selection was busy. Chat has 6 now, 2 more taken from the decisions (10 to
+// 8, 4 decisions; decisions are rare) and 2 from anyone's (12 to 10, 5
+// logins): the Leads page, a conversation and one refresh of it (5 calls)
+// fit in 80 seconds with one to spare. The conversation page's directory is
+// not saved by reusing the Leads page's: the page's heading shows the
+// selected lead's state, which only a directory carries, and a real
+// directory is never reused (chat.go). A chat call past the room is busy
+// without touching the reads, so chat never takes a Card's read and a
+// Card's read never takes chat's.
 const (
 	// pingRoom is the pings: one every PingInterval is 6 at most in
 	// BudgetWindow, and 5 in a minute of the gate's.
 	pingRoom = 6
-	// decideRoom is seat.challenge and seat.decide: 5 decisions. A challenge
+	// decideRoom is seat.challenge and seat.decide: 4 decisions. A challenge
 	// is drawn only with room for its seat.decide as well, kept for that
 	// challenge alone until the decision is sent, the app drops the
 	// challenge, or the challenge's life ends.
-	decideRoom = 10
+	decideRoom = 8
 	// publicRoom is seat.pair, seat.login-challenge and seat.login, which the
-	// seat relays for anyone who reaches its pages: 6 logins. A login
+	// seat relays for anyone who reaches its pages: 5 logins. A login
 	// challenge is drawn only with room for its seat.login as well, kept
 	// for that challenge until the login is sent or the challenge's life
 	// ends, so a login is never refused for room once the phone has
 	// answered. Strangers who draw login challenges and never answer them
 	// keep that room until their challenges' life ends.
-	publicRoom = 12
+	publicRoom = 10
 	// readRoom is owner.list, owner.show and owner.paths, the Cards pages'
 	// reads of every session together. Chat never counts in it.
 	readRoom = 12
 	// chatRoom is seat.chat, its leads and read verbs, of every session
-	// together (chat.go): one refresh of a real conversation, the directory
-	// and a page. A chat call past it is answered busy and sent nowhere, and
-	// it never spends the reads' room.
-	chatRoom = 2
+	// together (chat.go): the Leads page's directory, a conversation's
+	// directory and page, and one refresh of it, with one call to spare. A
+	// chat call past it is answered busy and sent nowhere, and it never
+	// spends the reads' room.
+	chatRoom = 6
 	// waitRoom is seat.wait, the watcher's one long wait (watch.go). The
 	// watcher keeps one wait in flight, and the gate holds it up to 25
 	// seconds, so an idle seat sends one about every 25 seconds: 4 in

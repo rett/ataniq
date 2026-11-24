@@ -105,7 +105,7 @@ func TestSeatLinkRefusalLogChallenges(t *testing.T) {
 		t.Fatal("an answer with no room")
 	}
 	got := l.all()
-	if len(got) != 1 || !strings.Contains(got[0], "kind decide (10 of 10 in the last 80 seconds)") {
+	if len(got) != 1 || !strings.Contains(got[0], fmt.Sprintf("kind decide (%d of %d in the last 80 seconds)", decideRoom, decideRoom)) {
 		t.Fatalf("lines: %q", got)
 	}
 	clock.advance(RefusalLogEvery)
@@ -119,7 +119,7 @@ func TestSeatLinkRefusalLogChallenges(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("lines: %q", got)
 	}
-	if !strings.Contains(got[1], "kind public (12 of 12") {
+	if !strings.Contains(got[1], fmt.Sprintf("kind public (%d of %d", publicRoom, publicRoom)) {
 		t.Fatalf("the public line: %q", got[1])
 	}
 	for _, line := range got {
