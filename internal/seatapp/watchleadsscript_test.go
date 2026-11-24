@@ -69,10 +69,18 @@ func TestSeatWatchScriptLeadsMatchesTheSeat(t *testing.T) {
 		t.Errorf("the rendered cursor is set %d times", n)
 	}
 	// No poll of the chat: no timer of its own, and a failed stream turns to
-	// no other request.
+	// no other request. A failure drops a following read waiting its turn,
+	// and the change pending, so that a page that says it is not live moves
+	// no more.
 	fb := funcBody(t, js, "fallBack")
-	if !strings.Contains(fb, "if (onLeads && !offerShown) { say(TEXT.notLive); }") {
+	if !strings.Contains(fb, "if (onLeads && !offerShown) { say(TEXT.notLive); }") ||
+		!strings.Contains(fb, "if (onLeads) {\n      cancelReload();\n      pendingChange = false;\n    }") {
 		t.Errorf("fallBack does not keep a Leads page to its Refresh link: %s", fb)
+	}
+	// A browser that cannot read the stream: a Leads page, which has no
+	// poll, says it is not live and asks nothing, as a page made not live.
+	if !strings.Contains(js, "if (!live || (onLeads && !streamable)) {\n    say(TEXT.notLive);\n    return;\n  }\n  next();") {
+		t.Error("a Leads page that cannot stream does not say it is not live")
 	}
 	if strings.Contains(js, "setInterval") || strings.Count(js, "fetch(") != 1 {
 		t.Error("watch.js has a request or timer of its own for the chat")
@@ -133,11 +141,19 @@ func TestSeatWatchScriptLeadsOffersAndFollows(t *testing.T) {
 			t.Errorf("following lacks %q", want)
 		}
 	}
-	rn := funcBody(t, js, "reloadNow")
-	for _, want := range []string{"if (!following()) { offer(); return; }", "if (page !== here()) { location.replace(page + NEWEST); return; }"} {
-		if !strings.Contains(rn, want) {
-			t.Errorf("reloadNow lacks %q", want)
-		}
+	if !strings.Contains(funcBody(t, js, "reloadNow"), "if (page !== here()) { location.replace(page + NEWEST); return; }") {
+		t.Error("reloadNow does not read the conversation's following page")
+	}
+	// A conversation reads again by itself only while it follows and no
+	// control holds the focus: looked at when the change comes and again
+	// when the read is due, which otherwise shows the offer. A focused
+	// control is any element but the body (and the document's element).
+	if !strings.Contains(funcBody(t, js, "wantReload"), "if (onLeads && (!following() || focused())) { offer(); return; }") {
+		t.Error("a conversation's following read does not look at the reader's place and focus when it is due")
+	}
+	if fc := funcBody(t, js, "focused"); !strings.Contains(fc, "var el = document.activeElement;") ||
+		!strings.Contains(fc, "return !!el && el !== document.body && el !== document.documentElement;") {
+		t.Errorf("focused: %s", fc)
 	}
 	// reloadNow runs only from wantReload's timer, which waits out the
 	// page's age, a hidden page, typed text and an open dialog. A

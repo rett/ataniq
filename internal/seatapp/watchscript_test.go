@@ -249,7 +249,7 @@ func TestSeatWatchScriptLiveAndKeepsQuiet(t *testing.T) {
 	if !strings.Contains(funcBody(t, js, "awake"), "if (pendingChange && !onCard && !still) { if (onLeads) { chatChanged(); } else { wantReload(); } }") {
 		t.Error("a list shown again does not reconcile its pending change")
 	}
-	if !strings.Contains(funcBody(t, js, "chatChanged"), "if (following()) { wantReload(); } else { offer(); }") {
+	if !strings.Contains(funcBody(t, js, "chatChanged"), "if (following() && !focused()) { wantReload(); } else { offer(); }") {
 		t.Error("a conversation reloads other than when it follows")
 	}
 	if !regexp.MustCompile(`(?s)\} else \{\s*quiet\(\);\s*if \(data\.state === "changed" && !still\) \{ wantReload\(\); \}`).MatchString(js) {

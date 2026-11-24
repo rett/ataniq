@@ -36,9 +36,12 @@
 // with data-follow) and whose newest entry is in view reads again once,
 // after its follow cursor, so that the new replies appear (by the card
 // list's rule, but at most once every forty seconds: never over typed text
-// or an open dialog, only while shown); any other conversation offers "New
-// replies. Show newest", a link that loads the conversation's page that
-// holds its newest entry. No hint moves the focus or reloads a hidden page.
+// or an open dialog, never while a control holds the focus, only while
+// shown); any other conversation offers "New replies. Show newest", a link
+// that loads the conversation's page that holds its newest entry. No hint
+// moves the focus or reloads a hidden page. A failure of the stream drops
+// a following read waiting its turn, and a browser that cannot read the
+// stream says "Not live" from the start.
 //
 // Every text put on the page is one of the constants below, set with
 // textContent, never as markup, and never taken from the seat's answer.
@@ -194,6 +197,14 @@
       el.type !== "checkbox" && el.type !== "radio";
   }
 
+  // focused reports whether a control holds the focus: any element but the
+  // body (or the document's own element, where some browsers leave it). A
+  // Leads page never reads again by itself then: it offers the new replies.
+  function focused() {
+    var el = document.activeElement;
+    return !!el && el !== document.body && el !== document.documentElement;
+  }
+
   // holding reports whether the page must not be read again now: a field
   // holds typed text, or an open dialog waits for an answer.
   function holding() {
@@ -206,7 +217,9 @@
   // twice. The page reloads only while it is shown: the change is kept
   // pending (pendingChange) while the page is hidden or left, its timer is
   // cancelled then (cancelReload), the page is looked at again when the
-  // timer runs, and awake reconciles a pending change once.
+  // timer runs, and awake reconciles a pending change once. A conversation
+  // that no longer follows when the timer runs, or whose reader holds a
+  // control, shows the offer instead.
   function wantReload() {
     pendingChange = true;
     if (reloadTimer !== null || stopped || document.hidden) { return; }
@@ -215,19 +228,18 @@
     reloadTimer = setTimeout(function tryReload() {
       reloadTimer = null;
       if (stopped || document.hidden) { return; }
+      if (onLeads && (!following() || focused())) { offer(); return; }
       if (holding()) { reloadTimer = setTimeout(tryReload, RELOAD_RETRY); return; }
       reloadNow();
     }, wait);
   }
 
   // reloadNow reads the page again. The card list reloads. A conversation
-  // that still follows (its reader may have left the newest entry while the
-  // reload waited) is read after its follow cursor, so that every entry
-  // after the last it showed appears, at its newest entry; one that no
-  // longer follows shows the offer instead.
+  // that still follows (wantReload looked again) is read after its follow
+  // cursor, so that every entry after the last it showed appears, at its
+  // newest entry.
   function reloadNow() {
     if (onLeads) {
-      if (!following()) { offer(); return; }
       var page = newestPage();
       // The same address with its fragment would only move the view.
       if (page !== here()) { location.replace(page + NEWEST); return; }
@@ -290,13 +302,13 @@
   }
 
   // chatChanged acts on a change of the chat that the page does not show:
-  // a conversation that follows reads again by wantReload's rule, any other
-  // Leads page shows its offer. While the page is hidden it is kept pending,
-  // for awake.
+  // a conversation that follows, while no control holds the focus, reads
+  // again by wantReload's rule; any other Leads page shows its offer. While
+  // the page is hidden it is kept pending, for awake.
   function chatChanged() {
     pendingChange = true;
     if (stopped || document.hidden) { return; }
-    if (following()) { wantReload(); } else { offer(); }
+    if (following() && !focused()) { wantReload(); } else { offer(); }
   }
 
   // cancelReload drops a reload waiting its turn; the change stays pending.
@@ -592,9 +604,15 @@
 
   // fallBack turns the page to the poll until it is shown again, and polls
   // at once, as a page that cannot stream does from its start. A Leads page
-  // has no poll: it says it is not live (unless it shows its offer) and
-  // keeps to its Refresh link.
+  // has no poll: it drops a following read waiting its turn and the change
+  // pending (a page that says it is not live moves no more; a stream opened
+  // when it is shown again says the current cursor), says it is not live
+  // (unless it shows its offer) and keeps to its Refresh link.
   function fallBack() {
+    if (onLeads) {
+      cancelReload();
+      pendingChange = false;
+    }
     useStream = false;
     streamFails += 1;
     shortEnds = 0;
@@ -647,7 +665,9 @@
   window.addEventListener("pageshow", function (ev) { if (ev.persisted) { awake(); } });
   window.addEventListener("online", function () { awake(); });
 
-  if (!live) {
+  // A page made while its view was not live, and a Leads page in a browser
+  // that cannot read the stream (it has no poll), say so and ask nothing.
+  if (!live || (onLeads && !streamable)) {
     say(TEXT.notLive);
     return;
   }

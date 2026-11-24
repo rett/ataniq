@@ -1977,8 +1977,12 @@ What the page does on `chat-changed` (`watch.js`, the same file, its one
   rule with a longer gap: not before the page is 40 seconds old
   (`FOLLOW_GAP`, see the budget below), never while a field holds typed text
   or a dialog is open (the Leads pages have neither today; the guard stays),
-  only while it is shown, and the reader's place is looked at again when the
-  read is due. The read is the page's own path with
+  never while any element but the body holds the focus (a focused link, the
+  newest entry itself after a tap on it: `focused`), only while it is shown,
+  and the reader's place and the focus are looked at again when the read is
+  due; a reader not at the newest entry then, or holding a control, gets
+  the offer below instead, so no automatic read replaces the page under a
+  focused control. The read is the page's own path with
   `?after=` the follow cursor, at `#newest`: the last rendered entry
   (`followAfter`; for a page with no entry its read's cursor, the head at
   most), so the read starts directly after the last entry the page showed
@@ -2010,9 +2014,14 @@ What the page does on `chat-changed` (`watch.js`, the same file, its one
 - A cursor that is not of the seat's form (empty, signed, with a leading
   zero, past 2^53-1, or 0) fails the stream; an event of another kind is
   skipped. Any failure or refusal, as on the card list, but with no poll to
-  fall back to: the page says "Not live" (unless it shows its offer) and
-  keeps to its **Refresh** link until it is shown again. A page made while
-  the view was not live says "Not live" and opens nothing.
+  fall back to: the page drops a following read waiting its turn and the
+  change pending (`fallBack`), so a page that says "Not live" moves no
+  more, says "Not live" (unless it shows its offer) and keeps to its
+  **Refresh** link until it is shown again, when a new stream says the
+  current cursor at once. A page made while the view was not live
+  (`data-live="no"`), and a Leads page in a browser that cannot read a
+  stream with `fetch` (no `ReadableStream`), says "Not live" at once and
+  opens nothing, also when shown again: it needs a reload.
 
 Budget. A Leads stream asks the gate nothing: it is fed by the one wait the
 seat already holds, which carries the chat cursor at no extra call

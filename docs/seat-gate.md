@@ -611,8 +611,10 @@ status line says "New replies." with a link **Show newest**, which loads
 the page that holds the newest message, at that message. The
 Leads page says "Leads changed." with a link **Refresh** when what it lists
 may have changed. Nothing takes the focus, and a page never reads again
-while it is hidden, while a field holds typed text or while a dialog is open;
-a page shown again catches up once.
+by itself while it is hidden, while a field holds typed text, while a dialog
+is open or while a link or another control has the focus (after a tap on
+**Conversation**, for example): it says "New replies." with **Show newest**
+instead. A page shown again catches up once.
 
 The seat learns that the chat moved from the one wait it already holds at
 the gate (the gate's hello lists `wait-chat`), as a number that says only
@@ -627,10 +629,14 @@ activity for the session, like a reload you make; a hidden page reads
 nothing, so it does not keep the session alive.
 
 The status line says "Not live" when the page cannot be told (the gate does
-not list `wait-chat`, the link is down, or the seat refused the page's
-stream, for example a fourth open stream of your passkey): use **Refresh**.
-It comes back when the page is shown again or reloaded. In the phone trial
-the samples never change, so the pages are live and never move.
+not list `wait-chat`, the link is down, the seat refused the page's stream,
+for example a fourth open stream of your passkey, or the browser cannot read
+the stream): use **Refresh**. A page that says it is not live moves no
+more, even for a reply heard of before. When its stream failed, it tries
+again when the page is shown again (switch away and back) or reloaded; a
+page that was not live when it was made says so from the start and needs a
+reload (**Refresh**). In the phone trial the samples never change, so the
+pages are live and never move.
 
 ## New projects
 
