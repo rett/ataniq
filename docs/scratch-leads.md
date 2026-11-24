@@ -1216,11 +1216,16 @@ keeps its sample leads.
    login.
 
 At start the daemon prints the owner channel's STAND-IN banner, the gate's start
-line, which ends `... watch, genesis and chat`, and after it:
+line, which ends `... watch, genesis, chat and wait-chat`, and after it:
 
 ```text
 ataniqd: seat gate: chat: replies the scratch leads wrote to their outboxes; read only
 ```
+
+`wait-chat` says the seat's live wait can carry a chat cursor: a number that
+moves when a reply is taken from a lead whose chat is on, or a lead's chat is
+turned on or off, and for nothing a lead whose chat is off does. It carries no
+text and no lead's name.
 
 **Reading a lead's replies.** The owner defines and starts a lead from the
 console ([the console guide](terminal-console.md)). Its chat is off, like every

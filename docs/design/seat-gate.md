@@ -260,10 +260,12 @@ the daemon gives one to the phone trial's gate and to a scratch daemon's gate
 only (see [chat](#chat)). Either handler adds `wait-chat` after `chat` when it
 serves `watch` and `chat`, its service can answer the extended wait
 (`gatehost.ChatWaitPort`, which the owner channel's service is) and its chat
-port gives a cursor (`ownerchannel.ChatCursor`, which the stand-in gives); see
+port gives a cursor (`ownerchannel.ChatCursor`, which the stand-in and
+`leaddaemon.LeadChat` give); see
 [chat hints on the wait](#chat-hints-on-the-wait). The daemon's start line names every capability the
 gate lists, in its order, in words (`pair, read, login, decide, watch and
-genesis`, and `... genesis, chat and wait-chat` in the phone trial). The seat reads the list (`seatgate.Client.Caps`) and offers login and decisions
+genesis`, and `... genesis, chat and wait-chat` in the phone trial and in
+scratch mode). The seat reads the list (`seatgate.Client.Caps`) and offers login and decisions
 only when the gate lists them; otherwise it says that the desk does not take
 phone logins, or does not take decisions from the phone. It starts its watcher
 only when the gate lists `watch`; otherwise its pages say "Not live".
@@ -1675,8 +1677,8 @@ runs when no browser is looking (see [the notices section](#notices)).
 ### Chat hints on the wait
 
 Status: the wire (`ownerwire`, `waitchat.go`), the gate's capability, the
-daemon's wait and the trial's stand-in cursor are built and tested; not
-qualified. A seat that shows the leads' conversations learns that what it may
+daemon's wait, the trial's stand-in cursor and the scratch leads' cursor are
+built and tested; not qualified. A seat that shows the leads' conversations learns that what it may
 read moved from the one wait it already holds, not from a second wait or a
 timer. The hint is never content: an integer that a page's script can carry,
 which tells the seat to read again through `seat.chat`, where the desk
@@ -1759,6 +1761,23 @@ the cursor beside it:
 The trial's stand-in gives a cursor over its two sample leads whose chat is
 read, each of generation 1 and its head, the same for every call: its samples
 never change, so a held wait is never woken for the chat.
+
+The scratch leads' port (`leaddaemon.LeadChat`, both tags) gives the cursor of
+the leads whose desk switch is read, not stopped by a scan, with a store that
+works and an epoch the wire holds: exactly the leads whose conversation a seat
+read is served. For each it reads the store's status (the generation of the
+switch and the head), and nothing of any other lead. Its broadcast
+(`ChatCursorChanged`) is closed when a reply is taken from a lead that is on,
+when a lead's switch is set (on, off, a new segment), when a scan stops a
+lead's chat or its store fails, and when the port is bound or unbound. A lead
+whose chat is off has no scanner, so its replies are not read and close
+nothing; a test writes them, and starts that lead, and finds the cursor and
+the broadcast unchanged (`TestLeadChatCursorCoversTheEnabledLeadsOnly`). The
+cursor's reads are not counted against the port's 40 calls a minute, which are
+the seat's. An unbound port, a failing source or a panic gives no cursor. The
+wired-daemon test (`cmd/ataniqd`, `chat_scratch_linux_test.go`) sends extended
+waits through the real wiring and finds that the waits are the service's only
+counts and that the door, the suite and the drop folder do not move.
 
 ## Notices
 
@@ -3213,7 +3232,11 @@ Where the scratch leads' read-only port stands:
   every connection. What applies to sending and its receipts is open with
   sending.
 - **Storage: met** by the chat store of `internal/leadchat`.
-- **Refresh: met.** `seat.wait` is unchanged.
+- **Refresh: met.** The plain `seat.wait` is unchanged. The opt-in extended
+  wait carries the port's chat cursor (`LeadChat.ChatCursor`), computed from
+  the desk-enabled leads alone, keeps the Card version independent, and keeps
+  the one watcher and the two waits for each peer (see
+  [chat hints on the wait](#chat-hints-on-the-wait)).
 - **Budget: met.** The seat's chat room is unchanged, and the port answers
   `chat-busy` past its own 40 calls a minute.
 
