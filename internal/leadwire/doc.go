@@ -16,6 +16,12 @@
 //	lead.ticket  [TicketParams] -> [Receipt] with a [TicketResult]
 //	lead.inject  [InjectParams] -> [Receipt] with an [InjectResult]
 //
+// The desk's chat switch has two operations of its own, listed apart by
+// [ChatOperations] so that the six stay the whole of lead control:
+//
+//	chat.list    no params         -> [ChatListResult]
+//	chat.set     [ChatSetParams]   -> [ChatLead]
+//
 // Every key of a params struct is required, so no field is omitted when it is
 // empty or zero. A mutating operation's params begin with the client and the
 // command id, then the role, then the rest in the order of the struct; the
