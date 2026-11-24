@@ -79,7 +79,9 @@ of the socket is a seat.
                     mode 0700; it refuses a link, a folder that is not the
                     daemon user's and one open to writing). In the phone
                     trial alone (--trial, below) it also serves the seat's
-                    lead pages from STAND-IN samples. With the seat
+                    lead pages from STAND-IN samples; a daemon with real
+                    leads (--scratch, a build with both tags) serves their
+                    replies instead, read only. With the seat
                     origin in the
                     owner-local file ataniq/owner-local/seat-origin of the
                     configuration folder (https:// and a lower-case domain
@@ -142,7 +144,9 @@ tries the phone end to end without a lead, a mirror or a sandbox:
                     --seat-gate the trial's gate also serves the seat's lead
                     pages (the capability chat, read only) from STAND-IN
                     sample leads and conversations held in memory: no lead is
-                    read or reached, and no other gate serves chat.
+                    read or reached, and no other gate serves these samples.
+                    --trial is refused with every flag that gives the
+                    daemon leads (--scratch, in a build that has it).
   trial submit      ask the trial daemon on the socket (default the runtime
                     folder's daemon.sock) for N sample cards (1 to 10, default
                     1) of a kind: finish, a sample feature finish, or branch-prune,
@@ -203,9 +207,55 @@ var ownerGuard *ownerGuardSet
 // decider. A test replaces it, so that none needs a real terminal.
 var ownerInspector leaddaemon.PeerInspector = leaddaemon.ProcInspector{}
 
+// scratchSeatSet is what a build with both tags, ataniq_ownerchannel and
+// ataniq_canary, adds to the owner channel (chat_scratch_linux.go): scratch
+// mode with the seat gate.
+type scratchSeatSet struct {
+	// on reports whether the daemon runs a mode with leads: scratch mode
+	// (run --scratch) or canary mode (run --canary).
+	on func(cfg *leaddaemon.Config) bool
+	// chat gives the gate the scratch leads' chat port when the daemon runs
+	// scratch mode.
+	chat func(cfg *leaddaemon.Config, gate *leaddaemon.SeatGate)
+}
+
+// scratchSeat is set by a build with both tags. It is nil in a build with the
+// owner channel's tag alone, which has no scratch mode: its gate serves no
+// lead's chat but the phone trial's samples.
+var scratchSeat *scratchSeatSet
+
+// leadsOn reports whether the daemon runs a mode with leads, scratch or
+// canary mode.
+func leadsOn(cfg *leaddaemon.Config) bool {
+	return scratchSeat != nil && scratchSeat.on(cfg)
+}
+
+// trialLeadRefusal is what run says when --trial is given with a mode that
+// has leads, --scratch or --canary.
+const trialLeadRefusal = "ataniqd run: --trial excludes --scratch and --canary: a daemon with leads never serves the phone trial's samples\n"
+
+// trialCheck refuses --trial with a mode that has leads (--scratch, or
+// --canary, whose agent may be live), from the flags alone: before any
+// config or setting is read, at the usage exit code. It returns a code to
+// end with, or -1 to go on.
+func (a *app) trialCheck(o *ownerFlags, c *canaryFlags) (code int) {
+	if o.trial && c.leadMode() {
+		fmt.Fprint(a.stderr, trialLeadRefusal)
+		return leaddaemon.ExitUsage
+	}
+	return -1
+}
+
 // ownerRun sets the daemon's serve hook when --owner-channel was given. It
 // returns a code to end with, or -1 to go on. The roots of cfg are final.
 func (a *app) ownerRun(o *ownerFlags, cfg *leaddaemon.Config) (code int) {
+	// The phone trial serves sample cards and, with a gate, STAND-IN sample
+	// leads; a daemon with leads never does. trialCheck refused the flags
+	// already; this holds it for the config too.
+	if o.trial && leadsOn(cfg) {
+		fmt.Fprint(a.stderr, trialLeadRefusal)
+		return leaddaemon.ExitUsage
+	}
 	if !o.set {
 		if o.gateSet {
 			fmt.Fprint(a.stderr, "ataniqd run: --seat-gate needs --owner-channel\n")
@@ -254,9 +304,13 @@ func (a *app) ownerRun(o *ownerFlags, cfg *leaddaemon.Config) (code int) {
 			return code
 		}
 		gate = g
-		// The phone trial's gate, and no other, serves the STAND-IN chat.
+		// The phone trial's gate, and no other, serves the STAND-IN chat; a
+		// scratch daemon's gate serves the real leads' chat (a build with
+		// both tags), and the two exclude each other (above).
 		if trial != nil {
 			trialChat(gate)
+		} else if scratchSeat != nil {
+			scratchSeat.chat(cfg, gate)
 		}
 	}
 	oc := &leaddaemon.OwnerChannel{

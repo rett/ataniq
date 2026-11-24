@@ -228,8 +228,8 @@
 // Of seat.chat, none of its words counts: chat-off, chat-unknown-lead and
 // chat-busy answer the state of the leads and of the host (a page left open
 // while the desk turned a lead's chat off, a lead that is gone, a busy host),
-// and a read may be sent as often as the seat link's read room allows (14
-// calls in 80 seconds, shared with the Cards pages' reads); forty of them
+// and a read may be sent as often as the seat link's read room allows (12
+// calls in 80 seconds; chat has its own room of 5); forty of them
 // never shut a seat out. bad-params, which the seat's own pages never meet,
 // counts as everywhere.
 //

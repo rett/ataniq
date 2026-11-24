@@ -164,8 +164,9 @@ func TestRunScratchRefusesAPlaceThatIsNotTheOwners(t *testing.T) {
 }
 
 // The command runs the daemon in scratch mode end to end: hello lists the six
-// operations and none of the canary's, a define provisions and defines a lead of
-// the config, the list shows it, and SIGTERM ends the daemon clean.
+// lead operations, the desk's two chat operations and none of the canary's, a
+// define provisions and defines a lead of the config, the list shows it, and
+// SIGTERM ends the daemon clean.
 func TestRunScratchEndToEnd(t *testing.T) {
 	w := newScratchWorld(t)
 	ta := scratchApp(t, w)
@@ -176,7 +177,7 @@ func TestRunScratchEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := append(clientapi.Operations(), leadwire.Operations()...)
+	want := append(append(clientapi.Operations(), leadwire.Operations()...), leadwire.ChatOperations()...)
 	if strings.Join(ops, " ") != strings.Join(want, " ") {
 		t.Fatalf("hello operations %v, want %v", ops, want)
 	}

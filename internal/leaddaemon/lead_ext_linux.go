@@ -87,6 +87,7 @@ const (
 	codePanic            = "panic"
 	codeDaemonBroken     = "daemon-broken"
 	codeReceipt          = "receipt-not-recorded"
+	codeChatFolder       = "chat-folder"
 )
 
 // The fixed texts of the receipts and the errors this file answers. They are
@@ -127,6 +128,7 @@ const (
 	msgDaemonBroken    = "the registry or the command table cannot be written; the daemon must be restarted"
 	msgReceiptNo       = "the command ran but its receipt could not be recorded in full; read the lead's state"
 	msgRecordNotFound  = "the lead has no record, so provisioning is not complete"
+	msgChatPrepare     = "the lead's instruction file is not as the daemon makes it, changed while it was written, or is busy; see the daemon's log"
 )
 
 // The proof a stop of a lead that was defined and never started carries: the
@@ -477,6 +479,11 @@ func (m *leadMode) define(ctx context.Context, lr *leadRole) outcome {
 		if pin, ok := lr.cfg.PinnedDigest(); ok && pin != rec.ProfileDigest {
 			return refusedOut(codeDigestPin, msgDigestPin)
 		}
+		// The lead's reply folder and the text of its instruction file, also
+		// for a lead that was provisioned before.
+		if out, failed := m.ensureChat(lr); failed {
+			return out
+		}
 		holder, err := m.holderFor(lr, rec.ProfileDigest, leadlock.DaemonPath(m.d.StateDir))
 		if err != nil {
 			m.d.logf("scratch: the holder command of the lead %q: %s", lr.key, SafeText(err.Error()))
@@ -500,6 +507,62 @@ func (m *leadMode) define(ctx context.Context, lr *leadRole) outcome {
 		lr.in.ext.record(leadcanary.Entry{Event: leadcanary.EventDefine})
 		return done(leadwire.DefineResult{Role: lr.role.String(), State: string(e.Shown.State), ProfileDigest: rec.ProfileDigest})
 	})
+}
+
+// ensureChat writes the text of the lead's instruction file
+// (provision.EnsureChat), under the role's operation lock, which a define and
+// a start hold. The empty instruction file of an earlier provisioning is
+// replaced only while the lead is proven stopped. An instruction file that is
+// not as the daemon makes it, that changed while it was replaced, or that is
+// busy, refuses the command (chat-folder). A version of the file that an
+// upgrade displaced or a crash left is kept beside it under a recovery name
+// (provision.KeptPrefix), which the daemon never deletes: the log says when
+// one was found at the temporary name and, at every define and start, how
+// many recovery names hold a version. The reply folder is not looked at: the
+// desk's turn-on makes it, so a lead whose chat is off starts whatever its
+// home holds at that name.
+func (m *leadMode) ensureChat(lr *leadRole) (outcome, bool) {
+	res, err := provision.EnsureChat(lr.cfg, provision.ChatOptions{Stopped: m.provenStopped(lr)})
+	if res.Leftover {
+		m.d.logf("scratch: the lead %q: an earlier upgrade of its instruction file was cut short; what it left is kept beside the file under a recovery name", lr.key)
+	}
+	if res.Kept > 0 {
+		m.d.logf("scratch: the lead %q: %d earlier versions of its instruction file are kept beside it as %sN; the daemon never deletes them", lr.key, res.Kept, provision.KeptPrefix)
+	}
+	if err != nil {
+		m.d.logf("scratch: the lead %q: its instruction file: %s", lr.key, SafeText(err.Error()))
+		return refusedOut(codeChatFolder, msgChatPrepare), true
+	}
+	switch res.Instructions {
+	case provision.InstructionsWritten:
+		m.d.logf("scratch: the lead %q: the reply instructions were written to its instruction file", lr.key)
+	case provision.InstructionsLegacy:
+		m.d.logf("scratch: the lead %q: its instruction file is still empty, because the lead is not proven stopped; a define or a start of the stopped lead writes it", lr.key)
+	case provision.InstructionsOwner:
+		m.d.logf("scratch: the lead %q: its instruction file holds the owner's own text, which is kept", lr.key)
+	}
+	return outcome{}, false
+}
+
+// provenStopped reports whether the registry proves the lead stopped: it does
+// not know the role, or shows it desired (defined and never started), stopped
+// or ended with no launch pending. The caller holds the role's operation lock,
+// so no start of the role runs beside.
+func (m *leadMode) provenStopped(lr *leadRole) bool {
+	e, err := m.reg.Get(lr.role)
+	switch {
+	case errors.Is(err, leadregistry.ErrNoRole):
+		return true
+	case err != nil:
+		return false
+	case e.Intent != nil && e.Intent.Outcome == leadregistry.OutcomePending:
+		return false
+	}
+	switch e.Shown.State {
+	case leadregistry.StateDesired, leadregistry.StateStopped, leadregistry.StateEnded:
+		return true
+	}
+	return false
 }
 
 // provisionFailed answers a provisioning that did not finish. A lead that is
@@ -548,6 +611,11 @@ func (m *leadMode) start(ctx context.Context, lr *leadRole) outcome {
 		if lr.in.ext.recordFolderLeft() {
 			m.d.logf("scratch start %q: %s", lr.key, logRecordLeft)
 			return refusedOut(codeRecordLeft, msgRecordLeft)
+		}
+		// The reply folder and the instruction text, before the unit starts:
+		// a lead that is proven stopped starts with the text.
+		if out, failed := m.ensureChat(lr); failed {
+			return out
 		}
 		if !m.reserve(lr) {
 			return refusedOut(leadwire.CodeMaxRunning, msgMaxRunning)

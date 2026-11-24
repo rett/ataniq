@@ -38,7 +38,11 @@ the second exception**, in the same tagged build and under `ataniqd run
 --scratch CONFIG` alone (it excludes `--canary`): the daemon serves six more
 operations, `lead.list`, `lead.define`, `lead.start`, `lead.stop`, `lead.ticket`
 and `lead.inject`, for up to eight scratch leads, with a durable receipt for each
-command. [The scratch leads guide](scratch-leads.md) describes it. Release
+command, and three of the desk's own, `chat.list`, `chat.set` and `chat.purge`,
+which switch each lead's written replies to the owner off or read and empty a
+lead's quarantine (see [the chat
+operations](#the-chat-operations-scratch-mode)). [The scratch leads
+guide](scratch-leads.md) describes it. Release
 builds contain neither mode, and a tagged build without `--canary` and
 `--scratch` is the read-only skeleton this guide describes. Everything below is
 about that skeleton unless it says otherwise.
@@ -265,9 +269,24 @@ packages that hold both); `make test` stays untagged and skips them.
 `make ownerchannel-build` builds the daemon with the tag, and nothing else, into
 `build/owner/ataniqd` (the folder is ignored by git). It runs `make doctor`
 first and starts nothing. It is the one target that builds a binary with the
-tag: no release, no CI job and no other target uses it or depends on it, and the
-tests in `tests/ownerchannel_tag_test.go` refuse any other recipe that names
-the tag. The binary is for the owner's own trial of the unqualified channel.
+tag alone: no release, no CI job and no other target uses it or depends on it.
+The binary is for the owner's own trial of the unqualified channel.
+
+`make scratch-seat-build` builds the daemon with both tags,
+`ataniq_ownerchannel` and `ataniq_canary`, and nothing else, into
+`build/scratch-seat/ataniqd` (the folder is ignored by git), so that one daemon
+has the owner channel, the seat gate and scratch mode (see
+[the scratch leads guide](scratch-leads.md)). It runs `make doctor` first and
+starts nothing. It is the one target that builds the daemon with both tags, for
+the owner's own trial of real scratch leads with the seat gate: no release, no
+CI job and no other target uses it or depends on it. `make canary-build` stays
+the one target that builds binaries with the canary tag alone.
+
+The tests in `tests/ownerchannel_tag_test.go` refuse any recipe but those of
+`make test-ownerchannel`, `make ownerchannel-build` and
+`make scratch-seat-build` that names the tag, and hold the recipe of
+`make scratch-seat-build` to exactly the mkdir of its folder and its one build,
+with `doctor` its sole prerequisite.
 
 ### Starting it
 
@@ -406,7 +425,8 @@ that is not as the daemon wrote it is not served and is logged once by name, in
 fixed text that holds no answer, and never repaired. The store's log lines
 (`ataniqd: genesis: a thread was started`, `... finished`, `... discarded`,
 `... expired`, an answer refused as secret-shaped, by count only) hold no
-answer. With `chat`, which only the phone trial's gate lists, it serves
+answer. With `chat`, which only the phone trial's gate and a scratch
+daemon's gate (below) list, it serves
 `seat.chat` (see [the design](design/seat-gate.md#chat)), the seat's read-only
 view of the leads' conversations: `leads` lists the leads with their chat
 switch (an off lead's row carries nothing but its name and switch) and `read`
@@ -416,7 +436,13 @@ Nothing sends. The trial serves it from STAND-IN samples held in memory
 `daemon:charlie`, whose chat is off): no lead, conversation file or other port
 of the daemon is read or reached, and every result is marked `stand_in`. Its
 refusals, `chat-off`, `chat-unknown-lead` and `chat-busy`, are not counted by
-the refusal bound. Every other operation is refused `unknown-op`.
+the refusal bound. In a build with both tags (`make scratch-seat-build`),
+`ataniqd run --scratch CONFIG --owner-channel --seat-gate ADDR` serves it from
+the scratch leads' replies instead, read only, each lead off until the desk
+turns it on (see [the scratch leads guide](scratch-leads.md#running-real-leads-with-the-seat));
+`--trial` is refused with `--scratch` and with `--canary`, from the flags
+before any config is read. Every other operation is refused
+`unknown-op`.
 A seat whose key is not pinned is refused in the handshake and never reaches
 the service. On the daemon's socket `seat.pair` stays refused and the seven
 seat operations (the four of login and decision, `seat.wait`, `seat.genesis`
@@ -799,7 +825,9 @@ adds the error codes `refused` and `unavailable` (see
 [the canary slice guide](canary-slice.md#the-commands)), and, under
 `--scratch`, registers six more tagged operations, `lead.list`, `lead.define`,
 `lead.start`, `lead.stop`, `lead.ticket` and `lead.inject`, and adds the error
-code `conflict` (see [the scratch leads guide](scratch-leads.md#the-operations)).
+code `conflict` (see [the scratch leads guide](scratch-leads.md#the-operations)),
+then the desk's three chat operations, `chat.list`, `chat.set` and
+`chat.purge` (below).
 The two modes exclude each other, and release builds still register none.
 When one is registered,
 `hello` lists the two base operations and then the extensions', and says
@@ -811,6 +839,41 @@ may answer with codes of its own, never `unauthorized`, `busy`, `too-large` or
 `unsupported-protocol`; a malformed error body from it is answered `internal`,
 and so is a panic in it, also while its result is marshalled. The protocol
 stays provisional.
+
+### The chat operations (scratch mode)
+
+Under `--scratch` the daemon also keeps each scratch lead's written replies to
+the owner, read only, and lists three operations of the desk after the six lead
+operations: `chat.list` (no params) answers one row per lead (its switch,
+whether the seat can list it, whether its chat was stopped or its store cannot
+be used, its head and counts, never a reply's text); `chat.set` (`key`,
+`chat`) sets a lead's switch to `off` or `read` at once and answers its row; and
+`chat.purge` (`key`) removes what it can of the lead's quarantine, where each
+turn-on sets the earlier reply folder aside, only while the lead is proven
+stopped, and answers `{"key","removed","left","free"}`. The switch lives in
+memory, so **every lead is off whenever the
+daemon starts**. `chat.set` adds the error codes `chat-send-not-built` (for
+`send`), `chat-key-unrepresentable` (for a key longer than a seat's lead
+identifier holds, 32 bytes) and `chat-quarantine-full` (a turn-on needs one of
+the quarantine's four names free), `chat.purge` adds `chat-lead-not-stopped`
+(a lead that runs, starts or stops, or has a command in progress), and both use
+`refused`, `unavailable` and
+`invalid-request` as the canary's operations do. None is served by the seat
+gate, and a client's check of the six lead operations does not count them.
+`ataniqd chat list --config CONFIG`, `ataniqd chat set KEY off|read --config
+CONFIG` and `ataniqd chat purge KEY --config CONFIG` call them and print one
+JSON line.
+
+Every `lead.define` and `lead.start` of a scratch lead also, while the lead is
+proven stopped, writes the reply instructions into the lead's empty instruction
+file (`<state>/leads/<layout role>/instructions.md`, which the sandbox binds
+read-only as the runtime's user-level instructions); a file with the owner's
+own text is never overwritten. Neither makes nor judges the lead's reply
+folder, `<state>/leads/<layout role>/home/.ataniq-replies` (the lead sees it as
+`/home/lead/.ataniq-replies`): `chat.set read` makes it afresh (mode 0700). The daemon also has a chat port for the seat
+gate's `seat.chat`, read only and bound once the chat stores are open; the
+owner channel does not give it to the gate yet. See [Lead
+replies](scratch-leads.md#lead-replies-read-only).
 
 ## The registry
 

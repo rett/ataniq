@@ -16,7 +16,7 @@ address or key belongs in a file of this repository.
 
 | Where | What | Build |
 | --- | --- | --- |
-| Lead host (the host of the daemon) | `ataniqd run --owner-channel --seat-gate ADDR`: the daemon with the owner channel and the gate, a TCP listener on one address of this host. | Tag `ataniq_ownerchannel`: `make ownerchannel-build` builds `build/owner/ataniqd`. A build without the tag has no gate and no `seat-gate` command. |
+| Lead host (the host of the daemon) | `ataniqd run --owner-channel --seat-gate ADDR`: the daemon with the owner channel and the gate, a TCP listener on one address of this host. | Tag `ataniq_ownerchannel`: `make ownerchannel-build` builds `build/owner/ataniqd`, the one build with that tag alone. For real scratch leads behind the gate, `make scratch-seat-build` builds `build/scratch-seat/ataniqd`, the one build with both tags, `ataniq_ownerchannel` and `ataniq_canary` (see [Builds with a tag](#builds-with-a-tag)). A build without the tag has no gate and no `seat-gate` command. |
 | Lead host | `ataniq-console --daemon DIR`: the desk. It starts a pairing and confirms it; it holds the decider's place. | Untagged. |
 | Authority host (the seat host) | `ataniq-seat`: the seat web app, which links to the gate. It listens on a Unix socket or a loopback address only. | Untagged, and static for a release: see [Deploying the seat app](../deploy/authority-host/DEPLOY.md#deploying-the-seat-app) (`CGO_ENABLED=0 sh scripts/go-tool.sh build -trimpath -o build/authority-host/ataniq-seat ./cmd/ataniq-seat`). No Makefile target builds it. |
 | Authority host | `ataniq-seat-notify`, the notifier (optional): the one unit that sends the phone a push notice that cards wait. The seat tells it how many cards wait over a Unix socket. | Untagged, static, built with the seat's release: see [the README](../deploy/authority-host/README.md#the-notifier) and [Notices](#notices). |
@@ -399,10 +399,10 @@ up without a reload, and a card that was decided, withdrawn or replaced
   seconds, the interval at which the daemon looks at the door; a decision made
   at the desk or on the phone is seen within a few seconds, and a page that
   just reloaded waits until it is 20 seconds old before it reloads again.
-  Every reload is a read of the desk, and the seat's reads share 14 calls in 80
-  seconds (see below), with the Leads pages as well. With several card lists open
-  at once, in a busy period, the reloads can use most of those 14, and a tap of
-  yours on a card may then be
+  Every reload is a read of the desk, and the seat's reads share 12 calls in 80
+  seconds (see below); the Leads pages have a room of their own and take none
+  of them. With several card lists open at once, in a busy period, the reloads
+  can use all 12, and a tap of yours on a card may then be
   answered "The desk is busy" for a moment: close the lists you are not looking at.
 - **A Card page** never reloads by itself, since you may be ticking boxes.
   When its card was decided elsewhere or changed, the page says "This card
@@ -429,10 +429,26 @@ whatever the number of pages and phones open: a held request that the gate
 answers when the set of cards changes or after 25 seconds. The pages ask the
 seat, not the gate. The gate takes 60 requests a minute on the seat's one link,
 and the seat keeps a room for each kind of call within every 80 seconds: pings
-6, decisions 10, pairing and login (anyone's) 12, reads 14, waits 6 and the
-new-project pages 12, 60 in all. The Leads pages are reads: they share the
-reads' 14 with the card lists until replies are built, and get a room of their
-own only then, sized from what they are measured to use. An idle seat sends one wait about every 25 seconds. A page's poll is not
+6, decisions 8, pairing and login (anyone's) 12, reads 12, the Leads pages 5,
+waits 5 and the new-project pages 12, 60 in all. The Leads pages' 5 hold your
+ordinary path within 80 seconds, with no call to spare: the Leads page (1
+call), a lead's conversation (2: the list again and the page) and one refresh
+of it (2). They were first 2, taken from the reads, which had 14 and shared
+them with the Leads pages, and the first lead you selected said the desk was
+busy; the 3 more came from the decisions, which are rare, and from the waits.
+Pairing and login keep their 12: with fewer, pairing a phone and then logging
+in on it met a busy desk. A Leads page past its room says the desk is busy
+without taking a card list's read. Measured with three card lists open and
+reloading every 20 seconds, no reload of the lists is "busy",
+with a conversation refreshed once in 10 seconds or once in 30 seconds or
+without one (while the Leads pages shared the reads, a conversation refreshed
+once in 10 seconds left almost half of them "busy"); the conversation's own
+refreshes are "busy" instead, about three in four when refreshed that often,
+and about one in three once in 30 seconds. Opening Leads, selecting a lead
+and refreshing it once is never "busy" when you do it once in 80 seconds. An
+idle seat sends one wait about every 25 seconds, 4 in 80 seconds, and the
+waits' fifth call is for a reconnect: the seat's link lost and back at once
+costs one more wait and no refusal. A page's poll is not
 a request that keeps the session alive: a session still ends 30 minutes after
 the last page you loaded or tap you made, however long a page stays open.
 
@@ -491,16 +507,31 @@ The conversation opens on its most recent messages, up to 16. **Show earlier**
 goes back 16 messages and **Show later** goes on from the page's last message,
 through the retained history. **Jump to newest** shows the most recent
 messages again and goes to the latest one. **Refresh** asks for the recent window again. Each Leads page is one or
-two reads of the desk, and they share the reads' 14 calls in 80 seconds with
-the card lists (see [What it costs](#live-refresh)); past it the page says "The
-desk is busy. Try again in a minute." The seat reuses the directory it last
-read for 20 seconds (every directory, the trial's or a real one), and a
-transcript page for 10 seconds only when it is the trial's sample data, which
-never changes; a real lead's transcript is read again for every page. A separate
+two calls of the desk, and they have a room of their own, 5 calls in 80
+seconds, apart from the card lists' reads (see [What it costs](#live-refresh)):
+opening Leads, selecting a lead and one refresh, with no call to spare. Past it
+the page says "The desk is busy. Try
+again in a minute.", and the card lists lose nothing to it. The seat reuses only the trial's sample
+data, which never changes: its directory for 20 seconds and a transcript page
+for 10 seconds. A real lead's directory and transcript are read again for
+every page, so a lead the desk turns off shows as off on the next page. A separate
 notice says "This page starts again from the oldest kept message." when the
 place you asked for is no longer kept (older messages expired, or the page's
 place is past the conversation the desk holds now), and another when the lead
-changed epochs.
+changed epochs. The restart notice is not shown across a reset, a change of
+the lead's chat setting or a fall of its epoch, where the lead may be another
+under the same name.
+
+With real leads, the daemon of `make scratch-seat-build` run as
+`build/scratch-seat/ataniqd run --scratch CONFIG --owner-channel --seat-gate
+IP:PORT`, the Leads pages show the replies the scratch leads wrote to their
+reply folders, read only, for each lead whose chat the desk turned on with
+`ataniqd chat set KEY read --config CONFIG`; every lead is off whenever the
+daemon starts, and a lead turned off is refused at once. The gate's start line
+is then followed by `ataniqd: seat gate: chat: replies the scratch leads wrote
+to their outboxes; read only`. That daemon refuses `--trial`, so it never
+serves the samples. What the owner prepares is in
+[the scratch leads guide](scratch-leads.md#running-real-leads-with-the-seat).
 
 Lead and System labels come from the seat. Links and markup in a reply appear
 as text. Approvals are only on Cards. Sending and live refresh are not built,
@@ -796,6 +827,25 @@ operation of the owner connection (`owner.key-revoke`; `owner.keys-off` revokes
 every credential); no console view or command of this tree calls it yet. To cut
 a seat's reads at once, remove its pin and restart the daemon.
 
+## Builds with a tag
+
+Three Makefile targets build with a tag, each the one target for its tags, and
+none is used by a release or a CI job; each runs `make doctor` first and starts
+nothing:
+
+- `make ownerchannel-build` builds the daemon with `ataniq_ownerchannel` alone
+  into `build/owner/`: the owner channel and the gate, with the phone trial.
+- `make scratch-seat-build` builds the daemon with both tags,
+  `ataniq_ownerchannel` and `ataniq_canary`, into `build/scratch-seat/`: the
+  owner channel and the gate with scratch mode (see
+  [the scratch leads guide](scratch-leads.md)), for the owner's own trial of
+  real scratch leads with the seat gate.
+- `make canary-build` builds the binaries of the attended canary run with
+  `ataniq_canary` alone into `build/canary/`.
+
+All three folders are ignored by git. Each build is provisional and
+unqualified, and [Scratch only](#scratch-only) holds for the two with the gate.
+
 ## Scratch only
 
 The phone path is for scratch state. The phone shows the STAND-IN banner on the
@@ -890,7 +940,8 @@ with the list closed and notices on, a notice says that cards wait
   the evidence of its assertion, and each outcome with the trial's line.
 
 With `--seat-gate` the trial's gate, and no other, also serves the seat's lead
-pages from STAND-IN samples: the capability `chat` (read only, see
+pages from STAND-IN samples (a scratch daemon's gate serves real leads'
+replies instead, see [Leads](#leads)): the capability `chat` (read only, see
 [the design](design/seat-gate.md#chat)). The gate's start line then ends
 `... watch, genesis and chat` and is followed by
 
@@ -981,8 +1032,8 @@ What the phone shows, by the code the seat's API answers:
 | "Too many tries. Wait a while..." | `rate_limited` | The pairing or login limits of the seat. | Wait; the limits age out. |
 | "Decisions are paused on this host." (on the card page, in place of the Approve and Deny buttons) or "Decisions are paused on this host. Nothing was sent." (after a tap) | `decisions_inhibited` | The authority host's decision inhibit is there (a switch under way, a boot not yet requalified, a failure), or the `--decision-guard` folder is missing, a link or not readable. The seat logs the guard's code (`decision-guard-...`). | On the authority host, `ah-switch status` says why. On another host, check `--decision-guard`. Tap again once decisions are taken. |
 | "The desk is busy. Try again in a minute." | `desk_busy` | The seat's room at the gate, or the gate's rate, is used up. | Wait a few minutes. |
-| "The desk is busy. Try again in a minute." on the project pages, or on any page, and the page does not say which limit refused | `desk_busy` | One of the seat's own limits refused the call, and the seat's log (standard error; the journal of its unit) has the line that says which. `ataniq-seat: the link has no room for a call of kind KIND (USED of ROOM in the last 80 seconds); the page says the desk is busy`: the link's room at the gate for that kind of call (KIND is `public`, `read`, `decide` or `genesis`; the Leads pages' calls are `read`, sharing the reads' 14 calls in 80 seconds; the interview's is 12 calls in 80 seconds) is spent, and nothing was sent. `ataniq-seat: the project pages' limit of 30 requests a minute was reached for one credential`: the phone's pages of the projects were asked for more than 30 times in a minute, which is the app's limit for one passkey, apart from the link's room. Either line is written once in 30 seconds for what it names, and the next one ends `N more since the last line` for the refusals held back in between; no line holds a project, a card, a passkey or an answer. If neither line is in the log, the gate refused (see the daemon's log). | Wait a minute and tap again; the rooms come back as the 80 seconds pass. If it repeats with no one tapping fast, tell the lead, with the lines and their times. |
-| No "Leads" in the menu, or "The desk does not offer lead chat." | (a page) | The connected daemon's gate does not list `chat`: only the phone trial's gate serves it (the seat's log line of the gate's offer does not end `the phone offers read-only Leads`). While the seat cannot reach the gate, a Leads page says "The desk cannot be reached. Try again in a moment." instead, with a link to try again. | Run the phone trial's gate, or use the desk; for the second page, wait and try again. |
+| "The desk is busy. Try again in a minute." on the project pages, or on any page, and the page does not say which limit refused | `desk_busy` | One of the seat's own limits refused the call, and the seat's log (standard error; the journal of its unit) has the line that says which. `ataniq-seat: the link has no room for a call of kind KIND (USED of ROOM in the last 80 seconds); the page says the desk is busy`: the link's room at the gate for that kind of call (KIND is `public`, `read`, `chat`, `decide` or `genesis`; the card lists' reads have 12 calls in 80 seconds, the Leads pages' calls are `chat`, with 5 calls in 80 seconds of their own; the interview's is 12 calls in 80 seconds) is spent, and nothing was sent. `ataniq-seat: the project pages' limit of 30 requests a minute was reached for one credential`: the phone's pages of the projects were asked for more than 30 times in a minute, which is the app's limit for one passkey, apart from the link's room. Either line is written once in 30 seconds for what it names, and the next one ends `N more since the last line` for the refusals held back in between; no line holds a project, a card, a passkey or an answer. If neither line is in the log, the gate refused (see the daemon's log). At most every 10 minutes, after a period in which the link refused a call, it also writes `ataniq-seat: calls of the link in the last N minutes, taken/refused by kind: public T/R, read T/R, chat T/R, decide T/R, genesis T/R, wait T/R`, the calls of each kind it sent and refused in that period. | Wait a minute and tap again; the rooms come back as the 80 seconds pass. If it repeats with no one tapping fast, tell the lead, with the lines and their times. |
+| No "Leads" in the menu, or "The desk does not offer lead chat." | (a page) | The connected daemon's gate does not list `chat`: only the phone trial's gate and the gate of a scratch daemon of `make scratch-seat-build` (`run --scratch CONFIG --owner-channel`) serve it (the seat's log line of the gate's offer does not end `the phone offers read-only Leads`). While the seat cannot reach the gate, a Leads page says "The desk cannot be reached. Try again in a moment." instead, with a link to try again. | Run the phone trial's gate or the scratch daemon with the gate, or use the desk; for the second page, wait and try again. |
 | No "New project" on the card list, or "New projects are not offered" | (a page) | The daemon's gate does not list `genesis` (the seat's log says `the phone offers no New project`), or the seat runs without `--gate`. | Check the daemon's start line; restart the daemon with its gate. |
 | "That project is not open. ..." or "No such project" | (a page) | The project was finished, discarded, or left for 14 days, or the address is not one of the seat's. | Start a new one from the card list. |
 | "The desk does not take phone logins now." | `login_unavailable` | The gate is read-only: no usable origin file at the daemon. | Fix the origin file, restart the daemon. |

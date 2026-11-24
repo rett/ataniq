@@ -20,6 +20,9 @@ type canaryFlags struct{}
 
 func (*canaryFlags) define(*flag.FlagSet) {}
 
+// leadMode reports whether run was given a mode with leads: never here.
+func (*canaryFlags) leadMode() bool { return false }
+
 // canaryRun is the part of run that reads the canary config. It does nothing
 // here: the roots are the flags' or the defaults'.
 func (a *app) canaryRun(*canaryFlags, string, string, *leaddaemon.Config) (applied bool, code int) {

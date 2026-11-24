@@ -343,6 +343,26 @@ func TestLeadsDetectionByHello(t *testing.T) {
 			t.Fatal("the connection was not kept")
 		}
 	})
+	// The desk's two chat operations, which a scratch daemon lists after the
+	// six, change nothing of the detection: beside the six they are lead
+	// control, and alone they are none of it.
+	t.Run("the chat operations beside the six", func(t *testing.T) {
+		f := startOwnerWith(t, clientapi.Options{}, append(leadwire.Operations(), leadwire.ChatOperations()...))
+		l := newLeads(t, f.dir)
+		if err := l.Detect(); err != nil {
+			t.Fatalf("Detect: %v", err)
+		}
+		if len(f.sent()) != 0 {
+			t.Fatalf("Detect sent %v", f.sent())
+		}
+	})
+	t.Run("the chat operations alone", func(t *testing.T) {
+		f := startOwnerWith(t, clientapi.Options{}, leadwire.ChatOperations())
+		l := newLeads(t, f.dir)
+		if err := l.Detect(); !errors.Is(err, ErrNoLeadControl) {
+			t.Fatalf("Detect: %v", err)
+		}
+	})
 	t.Run("another protocol", func(t *testing.T) {
 		hello := leadHello()
 		hello.Protocols = []string{"other.protocol/9"}

@@ -54,11 +54,20 @@ func (d *Daemon) Chat(ctx context.Context, c seatapp.ChatCall) (seatapp.ChatView
 	return d.chat(ctx, c, d.c)
 }
 
-// chat forgets every kept answer when the gate refuses a call or answers
-// one the link does not take, since the leads or the host changed. A call
+// chat keeps the trial's answers (stand_in) a short while, and sends every
+// call of a real host to the gate. It forgets every kept answer when the
+// gate refuses a call or answers one the link does not take, since the
+// leads or the host changed, and when a directory or a reset comes from the
+// gate. A call
 // the link does not send (no connection, no capability, no room) is no news
-// of the gate, and keeps them: a tap that meets the busy read room must not
+// of the gate, and keeps them: a tap that meets the full chat room must not
 // cost the next page its directory.
+//
+// Every call sent counts in the chat room (kindChat) and nowhere else: a
+// call past it is ErrBusy, the page's busy outcome, before anything is sent
+// and before the reads' room is looked at, so chat never takes a Card's
+// read. The busy is the link's own and reaches no gate, so it is not counted
+// by the gate's refusal bound.
 func (d *Daemon) chat(ctx context.Context, c seatapp.ChatCall, peer chatPeer) (v seatapp.ChatView, err error) {
 	m := &d.cmem
 	m.mu.Lock()
@@ -96,7 +105,7 @@ func (d *Daemon) chat(ctx context.Context, c seatapp.ChatCall, peer chatPeer) (v
 	cached, hit := m.answers[c]
 	raw := cached.raw
 	if !hit {
-		if !d.budget.take(kindRead) {
+		if !d.budget.take(kindChat) {
 			return v, seatapp.ErrBusy
 		}
 		if err := peer.Call(ctx, ownerwire.OpSeatChat, json.RawMessage(params), &raw); err != nil {
@@ -127,12 +136,14 @@ func (d *Daemon) chat(ctx context.Context, c seatapp.ChatCall, peer chatPeer) (v
 		if c.Verb == seatapp.ChatLeads {
 			ttl = listFresh
 		}
-		// Every directory, the trial's or a real one, is kept listFresh (20
-		// seconds), as the interview's list is. A transcript page is kept
-		// viewFresh (10 seconds) only when it is the trial's, whose samples
-		// never change: a real transcript requires live read authorization
-		// on every request, so it is never kept.
-		if c.Verb == seatapp.ChatLeads || v.StandIn {
+		// Only the trial's answers are kept: its directory listFresh (20
+		// seconds), as the interview's list is, and a transcript page
+		// viewFresh (10 seconds), since its samples never change. A real
+		// directory and a real transcript are never kept: the desk
+		// authorizes every list and read live, and a kept directory would
+		// show a lead the desk turned off, or its old state, epoch and
+		// head, until it aged out.
+		if v.StandIn {
 			if m.answers == nil || len(m.answers) >= 32 {
 				m.answers = make(map[seatapp.ChatCall]chatCached)
 			}

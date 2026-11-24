@@ -16,6 +16,7 @@ var kindWords = [numKinds]string{
 	kindRead:    "read",
 	kindDecide:  "decide",
 	kindGenesis: "genesis",
+	kindChat:    "chat",
 }
 
 // refusal is one line the budget has to tell: what it holds is a kind and
@@ -63,13 +64,44 @@ func (b *budget) tell(r *refusal) {
 	}
 }
 
+// statsLine is the stats line of a period (see rollLocked): its length in
+// whole minutes, and the calls taken and refused in it, by kind. It holds
+// counts and nothing of any call.
+type statsLine struct {
+	minutes        int
+	taken, refused [numKinds]int
+}
+
+// say writes the line of s with logf.
+func (s statsLine) say(logf func(format string, args ...any)) {
+	logf("ataniq-seat: calls of the link in the last %d minutes, taken/refused by kind: public %d/%d, read %d/%d, chat %d/%d, decide %d/%d, genesis %d/%d, wait %d/%d\n",
+		s.minutes,
+		s.taken[kindPublic], s.refused[kindPublic],
+		s.taken[kindRead], s.refused[kindRead],
+		s.taken[kindChat], s.refused[kindChat],
+		s.taken[kindDecide], s.refused[kindDecide],
+		s.taken[kindGenesis], s.refused[kindGenesis],
+		s.taken[kindWait], s.refused[kindWait])
+}
+
+// tellStats says a stats line the budget owes, outside mu.
+func (b *budget) tellStats(s *statsLine) {
+	if s != nil {
+		s.say(b.logf)
+	}
+}
+
 // WithLogf gives the link a log: logf, which is called with a fixed-text
 // line (ending in a newline) when the link has no room for a call of a
 // kind and answers [seatapp.ErrBusy] without sending it. There is at most
 // one line for each kind in [RefusalLogEvery]; the calls refused between
 // two lines are counted in the second. A line names the kind and the room
-// used, nothing of the call: no thread, card, credential or answer. Nil is
-// no log.
+// used, nothing of the call: no thread, card, credential or answer. When
+// a period of at least [StatsLogEvery] refused any call, the link also
+// writes one line of counts for the period, the calls taken and refused
+// of each kind, at the first call after the period ends: at most one
+// such line in StatsLogEvery, and none for a period that refused nothing.
+// Nil is no log.
 func WithLogf(logf func(format string, args ...any)) Option {
 	return func(d *Daemon) error {
 		d.budget.logf = logf

@@ -98,6 +98,7 @@ var reasonWords = map[string]string{
 	"record-invalid":       "the lead's record is not valid; the owner checks its folders",
 	"digest-pin":           "the profile digest is not the one pinned for the lead",
 	"holder-command":       "the lead's holder command could not be built; see the daemon's log",
+	"chat-folder":          "the lead's instruction file cannot be installed safely; the owner checks it",
 
 	// Start and stop.
 	"not-provisioned":        "the lead is not provisioned; define it first",

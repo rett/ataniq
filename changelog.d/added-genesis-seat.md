@@ -12,8 +12,9 @@
   by the daemon in `owner/genesis/` of its state folder and sent nowhere else.
   `seat.genesis` has a new verb, `list`, which answers the open projects, so a
   restarted seat finds them again. The seat keeps 12 of the gate's 60 calls a
-  minute (in its 80-second window) for the interview, taken from the reads (now
-  14) and the decisions (now 10, 5 decisions). `ataniq-seat` needs nothing
+  minute (in its 80-second window) for the interview, taken from the reads and
+  the decisions (with the Leads pages' room below, the reads now have 12 and
+  the decisions 8, 4 decisions). `ataniq-seat` needs nothing
   configured for it, and logs the capabilities each hello of the gate lists,
   with whether the phone offers "New project". Every response of the seat now
   carries `Referrer-Policy: same-origin` (it was `no-referrer`), under which a

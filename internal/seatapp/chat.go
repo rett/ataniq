@@ -84,10 +84,19 @@ type conversationData struct {
 	PrevAfter, LastSeq, TailAfter                int64
 }
 
-// A login keeps only the last displayed epoch per listed lead, to say that a
-// lead restarted between two reads; the page links are computed from the
-// page itself. Serialize its chat requests independently of logout, Cards
-// and other logins.
+// A login keeps only the last displayed epoch per listed lead, and the chat
+// switch it was shown under, to say that a lead restarted between two reads;
+// the page links are computed from the page itself. Serialize its chat
+// requests independently of logout, Cards and other logins.
+//
+// What a login keeps of a lead is dropped whenever the lead it was kept for
+// may be gone: the session ends (the history is the session's), the
+// connection is replaced or the host turns from the trial's to a real one or
+// back, a directory no longer lists the lead or lists it off, its switch
+// changed (a downgrade from send to read may close the conversation the desk
+// held), a read resets, or an epoch is below the one kept (another lead under
+// the same key). So no restart marker of an earlier lead is carried to a key
+// used again.
 type chatHistory struct {
 	mu         sync.Mutex
 	connection time.Time
@@ -96,6 +105,7 @@ type chatHistory struct {
 }
 type chatVisit struct {
 	epoch int64
+	chat  string
 }
 
 func (h *chatHistory) directory(v ChatView) {
@@ -103,10 +113,10 @@ func (h *chatHistory) directory(v ChatView) {
 		h.byLead = make(map[string]chatVisit)
 		h.connection, h.trial = v.Connection, v.StandIn
 	}
-	for lead := range h.byLead {
+	for lead, visit := range h.byLead {
 		shared := false
 		for _, row := range v.Rows {
-			if row.Lead == lead && row.Chat != "off" {
+			if row.Lead == lead && row.Chat != "off" && row.Chat == visit.chat {
 				shared = true
 				break
 			}
@@ -249,10 +259,17 @@ func (a *app) chatLive(w http.ResponseWriter, r *http.Request, p Chat, ctx conte
 // least), Show later from the page's last entry, and Jump to newest, when
 // the head lies past the page, the last window (after head less
 // MaxChatEntries, from zero at least).
+//
+// The restart marker shows only when the epoch rose since the visit kept: a
+// reset, or an epoch below the kept one (another lead under the key), drops
+// the visit instead, and the page starts a new one.
 func conversation(list leadsData, row chatRow, v ChatView, after int64, visit chatVisit, seen bool) (conversationData, chatVisit) {
-	d := conversationData{leadsData: list, Selected: row, Epoch: v.Epoch, Head: v.Head, More: v.More, Reset: v.Reset, Restarted: seen && visit.epoch != v.Epoch}
+	if v.Reset || visit.epoch > v.Epoch {
+		seen = false
+	}
+	d := conversationData{leadsData: list, Selected: row, Epoch: v.Epoch, Head: v.Head, More: v.More, Reset: v.Reset, Restarted: seen && visit.epoch < v.Epoch}
 	d.Title = pageTitles["conversation"]
-	visit.epoch = v.Epoch
+	visit = chatVisit{epoch: v.Epoch, chat: row.Chat}
 	d.HavePrev = after > 0 && !v.Reset
 	if d.HavePrev {
 		d.PrevAfter = max(0, after-MaxChatEntries)

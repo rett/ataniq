@@ -67,6 +67,7 @@ func TestSeatLinkDesignRoomsTable(t *testing.T) {
 		"Pings":     pingRoom,
 		"Anyone's":  kindPublic.room(),
 		"Reads":     kindRead.room(),
+		"Chat":      kindChat.room(),
 		"Decisions": kindDecide.room(),
 		"Waits":     kindWait.room(),
 		"Genesis":   kindGenesis.room(),
@@ -95,8 +96,8 @@ func TestSeatLinkDesignRoomsTable(t *testing.T) {
 	if got, want := notes["Decisions"], fmt.Sprintf("%d decisions", decideRoom/2); got != want {
 		t.Errorf("the decisions' room says %q, want %q", got, want)
 	}
-	sum := fmt.Sprintf("The rooms add up to the gate's %d (%d + %d + %d + %d + %d + %d,", GateRate,
-		pingRoom, decideRoom, publicRoom, readRoom, waitRoom, genesisRoom)
+	sum := fmt.Sprintf("The rooms add up to the gate's %d (%d + %d + %d + %d + %d + %d + %d,", GateRate,
+		pingRoom, decideRoom, publicRoom, readRoom, chatRoom, waitRoom, genesisRoom)
 	if !strings.Contains(doc, sum) {
 		t.Errorf("the design lacks %q", sum)
 	}
@@ -109,8 +110,8 @@ func TestSeatLinkGuideRooms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := fmt.Sprintf("pings\n%d, decisions %d, pairing and login (anyone's) %d, reads %d, waits %d and the\nnew-project pages %d, %d in all.",
-		pingRoom, decideRoom, publicRoom, readRoom, waitRoom, genesisRoom, GateRate)
+	want := fmt.Sprintf("pings\n%d, decisions %d, pairing and login (anyone's) %d, reads %d, the Leads pages %d,\nwaits %d and the new-project pages %d, %d in all.",
+		pingRoom, decideRoom, publicRoom, readRoom, chatRoom, waitRoom, genesisRoom, GateRate)
 	if !strings.Contains(string(b), want) {
 		t.Errorf("the guide lacks %q", want)
 	}

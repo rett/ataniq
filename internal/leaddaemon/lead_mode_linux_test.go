@@ -34,9 +34,9 @@ func (l *leadEnv) notMade() {
 	}
 }
 
-// hello lists the base operations and then the six lead operations, with
-// mutations true, and not one of the canary's. Canary mode lists the canary's
-// five and none of the lead's.
+// hello lists the base operations, the six lead operations and the two chat
+// operations of the desk, with mutations true, and not one of the canary's.
+// Canary mode lists the canary's five and none of the lead's.
 func TestLeadHelloListsTheSixWithMutations(t *testing.T) {
 	l := newLeadEnv(t)
 	l.start()
@@ -50,7 +50,7 @@ func TestLeadHelloListsTheSixWithMutations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantOps := append(clientapi.Operations(), leadwire.Operations()...)
+	wantOps := append(append(clientapi.Operations(), leadwire.Operations()...), leadwire.ChatOperations()...)
 	if strings.Join(h.Operations, " ") != strings.Join(wantOps, " ") || !h.Mutations {
 		t.Fatalf("hello: operations %v mutations %v, want %v and true", h.Operations, h.Mutations, wantOps)
 	}
