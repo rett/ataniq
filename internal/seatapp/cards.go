@@ -216,7 +216,7 @@ const (
 	// card's path list asks twice when the card was not shown), so they do
 	// not bound the gate's calls: the port counts every call it sends, and
 	// keeps the reads of all sessions to their own room there (package
-	// seatlink: 14 calls in 80 seconds); a read past it is the problem "The
+	// seatlink: 12 calls in 80 seconds); a read past it is the problem "The
 	// desk is busy".
 	readRequests = 20
 	readWindow   = time.Minute
