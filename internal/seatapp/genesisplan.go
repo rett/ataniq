@@ -28,13 +28,17 @@ const (
 	planNoTemplate   = "There is no plan template for this kind of project yet."
 	planFinishedNone = "This project was finished before its answers were complete, so no plan was drawn."
 	planUnknownNote  = "A note from the plan."
-	// planInferredLine is the words of the warning inferred-answers: the plan
-	// was drawn from answers decided for the owner.
+	// planInferredLine is the words of the warning inferred-answers on a
+	// draft plan: the plan was drawn from answers decided for the owner, who
+	// can still change them from the summary.
 	planInferredLine = "Some answers were decided for you; you can change them from the summary."
-	planNoteHeading  = "A note"
-	planNotesMarked  = "your words, shown as you wrote them; never given to a tool"
-	backToBrief      = "Back to the project's brief"
-	backToProject    = "Back to the project"
+	// planInferredStoredLine is the same warning on a stored plan: the brief
+	// is finished and cannot be changed, so it says finishing accepted them.
+	planInferredStoredLine = "Some answers were decided for you, and finishing accepted them."
+	planNoteHeading        = "A note"
+	planNotesMarked        = "your words, shown as you wrote them; never given to a tool"
+	backToBrief            = "Back to the project's brief"
+	backToProject          = "Back to the project"
 )
 
 // The words of the plan's closed lists and of the words it names. A word
@@ -188,6 +192,9 @@ func planOf(thread string, p *GenesisPlanView) planData {
 	}
 	for _, w := range p.Warnings {
 		if s, ok := planWarningWords[w]; ok {
+			if w == "inferred-answers" && p.Stored {
+				s = planInferredStoredLine
+			}
 			d.Warnings = append(d.Warnings, s)
 		} else {
 			d.Warnings = append(d.Warnings, planUnknownNote)

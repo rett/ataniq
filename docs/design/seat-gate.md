@@ -2294,7 +2294,9 @@ services, or none; where the files live; the budget band, marked "advisory:
 nothing enforces it yet"; the estimate, marked "an estimate, not a promise";
 the warnings, each a fixed sentence by its id (`inferred-answers` is "Some
 answers were decided for you; you can change them from the summary.", shown
-only when the plan carries it; an id the app does not know is "A note from
+only when the plan carries it, and on a stored plan, whose brief is finished
+and cannot be changed, "Some answers were decided for you, and finishing
+accepted them."; an id the app does not know is "A note from
 the plan.", never its text); "Milestones and tasks", one native
 `details` element a milestone (only the first open), each with its goal and an
 ordered list of its tasks: title, kind and size in words, and "after:" the
