@@ -458,6 +458,93 @@ func TestReadiness(t *testing.T) {
 	}
 }
 
+// Planning readiness counts an inferred field whether or not the owner
+// confirmed it; readiness counts it only once confirmed. An unset field
+// counts in neither.
+func TestPlanReadiness(t *testing.T) {
+	b := New(testCatalog)
+	must(t, b.Set("goal", One("try"), OwnerChosen, "goal", 1, t0))
+	must(t, b.Set("audience", One("me"), Default, "audience", 1, t0))
+	must(t, b.Set("hosts", One("own_server"), SupervisorInferred, "hosts", 1, t0))
+	must(t, b.Set("schedule", One("week"), SupervisorInferred, "schedule", 1, t0))
+	must(t, b.Confirm("schedule"))
+	cases := []struct {
+		required               []string
+		ready, plan, totalWant int
+	}{
+		{nil, 0, 0, 0},
+		{[]string{"goal"}, 1, 1, 1},
+		{[]string{"audience"}, 1, 1, 1},
+		{[]string{"hosts"}, 0, 1, 1},
+		{[]string{"schedule"}, 1, 1, 1},
+		{[]string{"budget_band"}, 0, 0, 1},
+		{[]string{"hosts", "hosts"}, 0, 1, 1},
+		{[]string{"goal", "audience", "hosts", "schedule", "budget_band"}, 3, 4, 5},
+	}
+	for _, c := range cases {
+		f, n := b.Readiness(c.required)
+		pf, pn := b.PlanReadiness(c.required)
+		if f != c.ready || n != c.totalWant || pf != c.plan || pn != c.totalWant {
+			t.Errorf("%v: readiness %d of %d, planning %d of %d, want %d, %d of %d", c.required, f, n, pf, pn, c.ready, c.plan, c.totalWant)
+		}
+	}
+	hosts, _ := b.Get("hosts")
+	if hosts.Filled() || !hosts.PlanFilled() {
+		t.Errorf("an inferred field not confirmed: filled %v, filled for planning %v", hosts.Filled(), hosts.PlanFilled())
+	}
+	if !b.Inferred() {
+		t.Error("the brief does not say it holds inferred fields")
+	}
+	plain := New(testCatalog)
+	must(t, plain.Set("goal", One("try"), OwnerChosen, "goal", 1, t0))
+	if plain.Inferred() {
+		t.Error("a brief with no inferred field says it holds one")
+	}
+}
+
+// ConfirmInferred confirms every inferred field at once, as Confirm does
+// one, and nothing else: it counts what it confirmed, a second call
+// confirms nothing, and the provenance stays supervisor-inferred.
+func TestConfirmInferred(t *testing.T) {
+	b := New(testCatalog)
+	must(t, b.Set("goal", One("try"), OwnerChosen, "goal", 1, t0))
+	must(t, b.Set("audience", One("me"), Default, "audience", 1, t0))
+	must(t, b.Set("hosts", One("own_server"), SupervisorInferred, "hosts", 1, t0))
+	must(t, b.Set("schedule", One("week"), SupervisorInferred, "schedule", 1, t0))
+	must(t, b.Set("quality_bar", One("solid"), SupervisorInferred, "quality_bar", 1, t0))
+	must(t, b.Confirm("schedule"))
+	required := []string{"goal", "audience", "hosts", "schedule", "quality_bar"}
+	if f, n := b.Readiness(required); f != 3 || n != 5 {
+		t.Fatalf("before: %d of %d", f, n)
+	}
+	want := b.Clone()
+	must(t, want.Confirm("hosts"))
+	must(t, want.Confirm("quality_bar"))
+	n, err := b.ConfirmInferred()
+	must(t, err)
+	if n != 2 {
+		t.Fatalf("confirmed %d, want 2", n)
+	}
+	if !reflect.DeepEqual(b, want) {
+		t.Fatalf("the brief is %+v, want %+v", b, want)
+	}
+	if f, n := b.Readiness(required); f != 5 || n != 5 {
+		t.Fatalf("after: %d of %d", f, n)
+	}
+	for _, name := range []string{"hosts", "schedule", "quality_bar"} {
+		if f, _ := b.Get(name); f.Provenance != SupervisorInferred || !f.Confirmed {
+			t.Errorf("%s: %+v", name, f)
+		}
+	}
+	if n, err := b.ConfirmInferred(); err != nil || n != 0 {
+		t.Fatalf("again: %d, %v", n, err)
+	}
+	empty := New(testCatalog)
+	if n, err := empty.ConfirmInferred(); err != nil || n != 0 {
+		t.Fatalf("an empty brief: %d, %v", n, err)
+	}
+}
+
 // A decoder never upgrades a provenance: an inferred field stays inferred
 // and unconfirmed, and does not count as filled.
 func TestDecodeDoesNotUpgrade(t *testing.T) {

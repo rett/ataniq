@@ -112,6 +112,13 @@ func Readiness(c Catalog, b brief.Brief) (filled, total int) {
 	return b.Readiness(Required(c, b))
 }
 
+// PlanReadiness counts the required fields of the brief's kind that are
+// filled for planning ([brief.Brief.PlanReadiness]: an inferred value counts
+// whether or not the owner confirmed it).
+func PlanReadiness(c Catalog, b brief.Brief) (filled, total int) {
+	return b.PlanReadiness(Required(c, b))
+}
+
 // Next returns the next round for the brief, or done. The walk is done
 // when the caller says enough, after the last round, when every required
 // field is filled, or when no question is left that fills a required

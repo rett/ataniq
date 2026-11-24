@@ -1,6 +1,7 @@
 package brief
 
 import (
+	"sort"
 	"strings"
 	"time"
 )
@@ -280,6 +281,33 @@ func (b *Brief) Confirm(field string) error {
 	return b.commit(c)
 }
 
+// ConfirmInferred confirms, as [Brief.Confirm] does, every
+// supervisor-inferred field that is not confirmed yet, and returns how many
+// it confirmed. It is the owner's acceptance of every answer decided for
+// him at once: the thread store calls it when the owner finishes an
+// interview, whose summary shows those answers right above the finish
+// button. When one confirmation fails, the brief is left as it was.
+func (b *Brief) ConfirmInferred() (int, error) {
+	names := make([]string, 0, len(b.Fields))
+	for name, f := range b.Fields {
+		if f.Provenance == SupervisorInferred && !f.Confirmed {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return 0, nil
+	}
+	sort.Strings(names)
+	c := b.Clone()
+	for _, name := range names {
+		if err := c.Confirm(name); err != nil {
+			return 0, err
+		}
+	}
+	*b = c
+	return len(names), nil
+}
+
 // Clear clears a field and keeps its value in the history as cleared.
 // Clearing a field that is not set does nothing.
 func (b *Brief) Clear(field string, at time.Time) error {
@@ -390,6 +418,43 @@ func (b Brief) Readiness(required []string) (filled, total int) {
 	}
 	return filled, total
 }
+
+// PlanReadiness counts the required fields that are filled for planning
+// only: set by the owner, set to a default, or inferred, whether or not the
+// owner confirmed it. A plan is a proposal and binds nothing, so it may be
+// drawn from a value decided for the owner, and says so; [Brief.Readiness],
+// which counts an inferred value only once it is confirmed, is the notion
+// for what binds. A name listed twice counts once.
+func (b Brief) PlanReadiness(required []string) (filled, total int) {
+	seen := make(map[string]bool, len(required))
+	for _, name := range required {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		total++
+		if f, ok := b.Fields[name]; ok && f.PlanFilled() {
+			filled++
+		}
+	}
+	return filled, total
+}
+
+// Inferred reports whether any live field of the brief was inferred for the
+// owner, confirmed or not.
+func (b Brief) Inferred() bool {
+	for _, f := range b.Fields {
+		if f.Provenance == SupervisorInferred {
+			return true
+		}
+	}
+	return false
+}
+
+// PlanFilled reports whether the field counts towards planning readiness:
+// any field with a provenance, an inferred one whether or not it is
+// confirmed.
+func (f Field) PlanFilled() bool { return f.Provenance.Valid() }
 
 // Filled reports whether the field counts towards readiness.
 func (f Field) Filled() bool {
