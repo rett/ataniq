@@ -18,6 +18,23 @@
 # starts no agent. One line per check, PASS or FINDING, and INFO lines; the
 # exit status is the number of findings.
 #
+# The network shape is the holder's for a scratch lead, and a test
+# (TestScratchSeatNetcheckMatchesTheLeadsNetwork) holds it there: the pasta
+# arguments are sandboxnet.PastaArgs() (internal/leadsandbox/sandboxnet), the
+# ones the plan passes, and the bubblewrap options that make the namespaces
+# and the identity are the profile's flag set for the identity a scratch lead
+# has, UID and GID 0 (provisioning names no other identity and no seccomp
+# filter). What differs, and why the check still proves the gate unreachable
+# from the lead: the binds (the host's /usr and a few /etc files here, the
+# profile's table there) and the program inside (sh and curl here, the probe
+# and the agent there) do not change the network; the resolv.conf here is
+# the host's (its upstream list behind a systemd-resolved stub), where the
+# holder writes one it derives, and the gate is an address, so no name is
+# looked up; and pasta starts from the owner's shell here and from the holder
+# in the lead's user unit there, which sets no network property of its own,
+# so both start in this host's network as the same user. Whether the gate
+# answers is decided by pasta's namespace and its options, which are the same.
+#
 # POSIX sh. The script calls itself with --core to run the sandbox.
 RESOLV=/etc/resolv.conf
 _stub=0

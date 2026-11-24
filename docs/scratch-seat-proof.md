@@ -294,6 +294,22 @@ with your values.
    a DNS check and not a rule, and the guard hook guards nothing. Before a
    live login, write in `$ROOT/evidence/notes.txt` that you accept this open
    network (and the listeners it named), or stop after the stand-in.
+
+   The connect test runs in the network shape of a scratch lead's sandbox:
+   pasta with the plan's own arguments (`sandboxnet.PastaArgs()`: no port
+   forwarding either way, the host's loopback and gateway not mapped), and
+   bubblewrap with the profile's flag set for the identity a scratch lead has
+   (`--unshare-all --share-net --unshare-user`, UID and GID 0, no
+   capabilities, no seccomp filter, as scratch provisioning names none);
+   `TestScratchSeatNetcheckMatchesTheLeadsNetwork` fails when either drifts,
+   or when the lead's unit gains a network property. What differs does not
+   decide whether the gate answers: the binds (the host's `/usr` and a few
+   `/etc` files here, the profile's table in the sandbox) and the program
+   inside (`sh` and `curl` here, the probe and the agent there); the
+   `resolv.conf` (the host's here, one the holder derives there), since the
+   gate is an address and no name is looked up; and where pasta starts (your
+   shell here, the holder in the lead's user unit there, which sets no
+   network property), both in this host's network as your user.
 - **f. Read and record, nothing more,** while the trial runs: the pins the
    gate will use, the trial's unit as it is, and the trial's fingerprint line
    of its current run:

@@ -34,8 +34,10 @@
   `--write` checks the trial's settings, the gate's material, the tools and
   the root (physical paths, an existing parent, an empty or new folder)
   first, runs git in a cleared environment, writes the owner's network check
-  `netcheck.sh`, never writes in the trial's state folder, never deletes and
-  starts nothing. It takes an IPv4 gate only and one `NAME.service` as the
+  `netcheck.sh` (its connect test in the network shape of a scratch lead's
+  sandbox: the plan's pasta arguments and the profile's bubblewrap flag set
+  for the lead's identity, which a test holds), never writes in the trial's
+  state folder, never deletes and starts nothing. It takes an IPv4 gate only and one `NAME.service` as the
   trial's unit, which the printed commands name as `"$TRIAL_UNIT"`. A test
   in `cmd/ataniqd` takes a trial-shaped state folder to the scratch daemon
   and back on the files `--write` makes and with the swaps, and shows the
