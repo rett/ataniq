@@ -1,0 +1,77 @@
+{{define "content"}}
+<h1>{{.Heading}}</h1>
+{{with .Plan}}<p class="plan-tag"><strong>{{text .Title maxLine}}</strong>, <span class="mono">{{text $.Tag maxID}}</span></p>
+<p class="binds">A plan binds nothing: nothing has started, and nothing starts from this page.</p>
+{{if not .Stored}}<p class="binds">This is a draft; finishing the interview keeps it as revision 1.</p>
+{{end}}<p class="meta">Plan <span class="mono">{{short .Digest}}</span></p>
+<section aria-labelledby="demo-h">
+<h2 id="demo-h">First demo</h2>
+<p>{{text .FirstDemo maxLine}}</p>
+</section>
+<section aria-labelledby="waits-h">
+<h2 id="waits-h">What waits for you</h2>
+{{with $.Waits}}<ul class="plain">
+{{range .}}<li>{{text . maxLine}}</li>
+{{end}}</ul>
+{{end}}<p class="always">Publishing, releases, pushing code, credentials and raising any limit always wait for you, whatever the plan says.</p>
+</section>
+<section aria-labelledby="services-h">
+<h2 id="services-h">Outside services the work would use</h2>
+{{with $.Services}}<ul class="plain">
+{{range .}}<li>{{text . maxLine}}</li>
+{{end}}</ul>
+{{else}}<p>None.</p>
+{{end}}</section>
+<section aria-labelledby="hosts-h">
+<h2 id="hosts-h">Where the files live</h2>
+<p>{{text $.Hosts maxLine}}</p>
+</section>
+<section aria-labelledby="budget-h">
+<h2 id="budget-h">Budget band</h2>
+<p>{{text $.Budget maxLine}} <span class="meta">(advisory: nothing enforces it yet)</span></p>
+</section>
+<section aria-labelledby="estimate-h">
+<h2 id="estimate-h">Estimate</h2>
+<p>{{text $.Estimate maxLine}} <span class="meta">(an estimate, not a promise)</span></p>
+</section>
+{{with $.Warnings}}<section aria-labelledby="warnings-h">
+<h2 id="warnings-h">Warnings</h2>
+<ul class="plain">
+{{range .}}<li>{{text . maxLine}}</li>
+{{end}}</ul>
+</section>
+{{end}}<section aria-labelledby="milestones-h">
+<h2 id="milestones-h">Milestones and tasks</h2>
+{{with $.Gates}}<p>Each milestone ends when these checks pass: {{range $i, $g := .}}{{if $i}}, {{end}}{{text $g maxLine}}{{end}}.</p>
+{{end}}{{range $.Milestones}}<details class="milestone"{{if .Open}} open{{end}}>
+<summary>{{text .Title maxLine}} <span class="meta">({{text .Count maxLine}})</span></summary>
+<p class="goal">{{text .Goal maxLine}}</p>
+<ol class="tasks">
+{{range .Tasks}}<li><span class="task">{{text .Title maxLine}}</span><br><span class="meta">{{text .Kind maxLine}}, {{text .Size maxLine}}{{with .After}}; after: {{range $i, $t := .}}{{if $i}}; {{end}}{{text $t maxLine}}{{end}}{{end}}</span></li>
+{{end}}</ol>
+</details>
+{{end}}</section>
+{{with .Notes}}<section aria-labelledby="notes-h">
+<h2 id="notes-h">Your own notes</h2>
+<ul class="plain">
+{{range .}}<li><q class="owners">{{text .Text maxLine}}</q> <span class="meta">(your words, shown as you wrote them; never given to a tool)</span></li>
+{{end}}</ul>
+{{if $.Plan.NotesDropped}}<p>{{num $.Plan.NotesDropped}} more notes were left out.</p>
+{{end}}</section>
+{{end}}<section id="charter" aria-labelledby="charter-h">
+<h2 id="charter-h">What a charter would cover</h2>
+<p class="binds">Draft. Not signed. It allows nothing. Nothing starts from this page. Signing is a later step and is not built.</p>
+<p>A signed charter would allow at most:</p>
+<ul>
+<li>Work on: {{range $i, $a := $.Areas}}{{if $i}}; {{end}}{{text $a maxLine}}{{end}}.</li>
+<li>Outside services: {{with $.Services}}{{range $i, $s := .}}{{if $i}}; {{end}}{{text $s maxLine}}{{end}}{{else}}none{{end}}.</li>
+<li>Spending: {{text $.Budget maxLine}} (advisory).</li>
+<li>Stopping for you at: {{with $.Waits}}{{range $i, $p := .}}{{if $i}}; {{end}}{{text $p maxLine}}{{end}}{{else}}no point of the plan{{end}}.</li>
+</ul>
+</section>
+{{else}}<p role="status">{{text .Missing maxLine}}</p>
+{{end}}<nav aria-label="Project">
+<p><a id="project-page" href="{{projectHref .Thread ""}}">{{.Back}}</a></p>
+<p><a id="project-list" href="/projects/">Back to the project list</a></p>
+</nav>
+{{end}}

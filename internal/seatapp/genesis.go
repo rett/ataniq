@@ -15,8 +15,9 @@ import (
 
 // The pages of the guided new-project interview: the project list, the
 // question page of a round, the summary, the page that changes one answer,
-// the discard step and the finished page, all made on the server, with no
-// script. Each act is a plain HTML form posted to the app, which checks it
+// the discard step, the finished page and the plan page (genesisplan.go,
+// which has no form), all made on the server, with no script but the
+// logout's (the plan page has none at all). Each act is a plain HTML form posted to the app, which checks it
 // as it checks every changing request (formOrigin), calls the [Genesis] port
 // once, and answers with a redirect to a page (post/redirect/get), never
 // with a page of its own: a reload never sends a form again. A refusal is
@@ -59,8 +60,8 @@ func validNodeID(s string) bool {
 }
 
 // projectHref is the address of a project's page, or of a part of it
-// (answer, change, finish, discard): the app's own words and a thread id it
-// checked.
+// (answer, change, finish, discard, plan): the app's own words and a thread
+// id it checked.
 func projectHref(thread, part string) string {
 	if !ValidThreadID(thread) {
 		return projectsPath
@@ -68,7 +69,7 @@ func projectHref(thread, part string) string {
 	switch part {
 	case "":
 		return projectsPath + thread
-	case "answer", "change", "finish", "discard":
+	case "answer", "change", "finish", "discard", "plan":
 		return projectsPath + thread + "/" + part
 	}
 	return projectsPath

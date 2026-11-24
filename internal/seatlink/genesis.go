@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -44,6 +46,33 @@ const (
 	_ = uint(seatapp.MaxGenesisExample - ownerwire.MaxGenesisExample)
 	_ = uint(ownerwire.MaxGenesisValue - seatapp.MaxGenesisValue)
 	_ = uint(seatapp.MaxGenesisValue - ownerwire.MaxGenesisValue)
+	// The plan's.
+	_ = uint(ownerwire.MaxGenesisPlanRevision - seatapp.MaxGenesisPlanRevision)
+	_ = uint(seatapp.MaxGenesisPlanRevision - ownerwire.MaxGenesisPlanRevision)
+	_ = uint(ownerwire.MaxGenesisPlanMilestones - seatapp.MaxGenesisPlanMilestones)
+	_ = uint(seatapp.MaxGenesisPlanMilestones - ownerwire.MaxGenesisPlanMilestones)
+	_ = uint(ownerwire.MaxGenesisPlanMilestoneTasks - seatapp.MaxGenesisPlanMilestoneTasks)
+	_ = uint(seatapp.MaxGenesisPlanMilestoneTasks - ownerwire.MaxGenesisPlanMilestoneTasks)
+	_ = uint(ownerwire.MaxGenesisPlanTasks - seatapp.MaxGenesisPlanTasks)
+	_ = uint(seatapp.MaxGenesisPlanTasks - ownerwire.MaxGenesisPlanTasks)
+	_ = uint(ownerwire.MaxGenesisPlanTitle - seatapp.MaxGenesisPlanTitle)
+	_ = uint(seatapp.MaxGenesisPlanTitle - ownerwire.MaxGenesisPlanTitle)
+	_ = uint(ownerwire.MaxGenesisPlanMilestoneTitle - seatapp.MaxGenesisPlanMilestoneTitle)
+	_ = uint(seatapp.MaxGenesisPlanMilestoneTitle - ownerwire.MaxGenesisPlanMilestoneTitle)
+	_ = uint(ownerwire.MaxGenesisPlanGoal - seatapp.MaxGenesisPlanGoal)
+	_ = uint(seatapp.MaxGenesisPlanGoal - ownerwire.MaxGenesisPlanGoal)
+	_ = uint(ownerwire.MaxGenesisPlanTaskTitle - seatapp.MaxGenesisPlanTaskTitle)
+	_ = uint(seatapp.MaxGenesisPlanTaskTitle - ownerwire.MaxGenesisPlanTaskTitle)
+	_ = uint(ownerwire.MaxGenesisPlanDemo - seatapp.MaxGenesisPlanDemo)
+	_ = uint(seatapp.MaxGenesisPlanDemo - ownerwire.MaxGenesisPlanDemo)
+	_ = uint(ownerwire.MaxGenesisPlanNotes - seatapp.MaxGenesisPlanNotes)
+	_ = uint(seatapp.MaxGenesisPlanNotes - ownerwire.MaxGenesisPlanNotes)
+	_ = uint(ownerwire.MaxGenesisPlanNoteText - seatapp.MaxGenesisOther)
+	_ = uint(seatapp.MaxGenesisOther - ownerwire.MaxGenesisPlanNoteText)
+	_ = uint(ownerwire.MaxGenesisPlanNotesDropped - seatapp.MaxGenesisPlanNotesDropped)
+	_ = uint(seatapp.MaxGenesisPlanNotesDropped - ownerwire.MaxGenesisPlanNotesDropped)
+	_ = uint(ownerwire.MaxGenesisPlanWordBytes - seatapp.MaxGenesisPlanWord)
+	_ = uint(seatapp.MaxGenesisPlanWord - ownerwire.MaxGenesisPlanWordBytes)
 )
 
 // How long the link answers a read of the interview from its memory of the
@@ -59,7 +88,14 @@ const (
 	// form's post redirects to, so that one answer of the owner's is one
 	// call of the gate and not two.
 	viewFresh = 10 * time.Second
-	// maxViews bounds the threads whose last answer the link keeps.
+	// storedPlanFresh is how long the plan the desk kept for a finished
+	// thread is answered from the link's memory: a kept plan never
+	// changes (a later revision is another thread's), so the page may be
+	// read again and again on one call of the gate. A preview, which the
+	// next answer may change, lives viewFresh, as a round does.
+	storedPlanFresh = 5 * time.Minute
+	// maxViews bounds the threads whose last answer the link keeps, and
+	// the threads whose plan it keeps.
 	maxViews = 8
 )
 
@@ -73,6 +109,8 @@ var genesisCodes = map[string]error{
 	ownerwire.CodeGenesisSecretShaped:  seatapp.ErrGenesisSecretShaped,
 	ownerwire.CodeGenesisDone:          seatapp.ErrGenesisDone,
 	ownerwire.CodeGenesisStaleRound:    seatapp.ErrGenesisStaleRound,
+	ownerwire.CodeGenesisNotReady:      seatapp.ErrGenesisNotReady,
+	ownerwire.CodeGenesisNoTemplate:    seatapp.ErrGenesisNoTemplate,
 	seatgate.CodeRateLimited:           seatapp.ErrBusy,
 	seatgate.CodeBusy:                  seatapp.ErrBusy,
 	codeTooManyRefusals:                seatapp.ErrBusy,
@@ -107,9 +145,11 @@ var v1 = sync.OnceValues(catalog.V1)
 // call that is sent has the room of its kind (kindGenesis); without room it
 // is [seatapp.ErrBusy] and is not sent. The answer is read with the wire's
 // decoder and must be one the verb answers, of the thread called; it is then
-// converted to the app's values with each length checked again. A list, and
-// a round asked again soon after, may be answered from the link's memory of
-// the last answer (see genesisMemory). Nothing is retried.
+// converted to the app's values with each length checked again. A list, a
+// round asked again soon after, and a plan read again, may be answered from
+// the link's memory of the last answer (see genesisMemory). A plan's codes,
+// genesis-not-ready and genesis-no-template, are [seatapp.ErrGenesisNotReady]
+// and [seatapp.ErrGenesisNoTemplate]. Nothing is retried.
 func (d *Daemon) Genesis(ctx context.Context, c seatapp.GenesisCall) (seatapp.GenesisView, error) {
 	if ctx.Err() != nil {
 		return seatapp.GenesisView{}, seatapp.ErrDaemonUnavailable
@@ -168,7 +208,8 @@ func genesisParams(c seatapp.GenesisCall) ([]byte, error) {
 	p := ownerwire.SeatGenesisParams{Verb: c.Verb, Thread: c.Thread, Round: c.Round, Node: c.Node}
 	switch c.Verb {
 	case seatapp.GenesisVerbStart, seatapp.GenesisVerbList, seatapp.GenesisVerbRound, seatapp.GenesisVerbSummary,
-		seatapp.GenesisVerbFinish, seatapp.GenesisVerbDiscard, seatapp.GenesisVerbAnswer, seatapp.GenesisVerbChange:
+		seatapp.GenesisVerbFinish, seatapp.GenesisVerbDiscard, seatapp.GenesisVerbAnswer, seatapp.GenesisVerbChange,
+		seatapp.GenesisVerbPlan:
 	default:
 		return nil, errGenesisCall
 	}
@@ -216,6 +257,7 @@ var answers = map[string][]string{
 	seatapp.GenesisVerbSummary: {ownerwire.GenesisStateSummary, ownerwire.GenesisStateFinished},
 	seatapp.GenesisVerbFinish:  {ownerwire.GenesisStateFinished},
 	seatapp.GenesisVerbDiscard: {ownerwire.GenesisStateDiscarded},
+	seatapp.GenesisVerbPlan:    {ownerwire.GenesisStatePlan},
 }
 
 // genesisView checks that res answers the call c and turns it into the
@@ -250,6 +292,7 @@ func genesisView(c seatapp.GenesisCall, res ownerwire.SeatGenesisResult) (seatap
 	v := seatapp.GenesisView{
 		State: res.State, Thread: res.Thread, Round: res.Round, Of: res.Of,
 		Filled: res.Progress.Filled, Total: res.Progress.Total, Reset: res.Reset, Digest: res.Digest,
+		PlanReady: res.Progress.PlanReady,
 	}
 	if v.Of < 0 || v.Of > seatapp.MaxGenesisRounds || v.Round < 0 || v.Round > v.Of || v.Filled < 0 || v.Filled > v.Total ||
 		v.Total > seatapp.MaxGenesisRows || v.Reset < 0 || v.Reset > seatapp.MaxGenesisRows || len(res.Nodes) > seatapp.MaxGenesisQuestions {
@@ -279,6 +322,15 @@ func genesisView(c seatapp.GenesisCall, res ownerwire.SeatGenesisResult) (seatap
 		if v.Defaults, err = appRows(g.Defaults, res.CatalogDigest); err != nil {
 			return bad()
 		}
+	}
+	if res.State == ownerwire.GenesisStatePlan {
+		p, ok := appPlan(res)
+		if !ok {
+			return bad()
+		}
+		v.Plan = p
+	} else if res.Plan != nil || res.PlanDigest != "" || res.Stored {
+		return bad()
 	}
 	return v, nil
 }
@@ -352,26 +404,147 @@ func wireNode(n catalog.Node) ownerwire.GenesisNode {
 	return out
 }
 
+// appPlan turns the plan of a result into the app's view, and reports false
+// for one whose counts or texts are past the app's own bounds, or whose
+// words are not of the app's closed lists. The wire's decoder has held the
+// plan to the record's rules and its digest already; this is the app's own
+// check again, so that the pages never meet more than they are made for.
+func appPlan(res ownerwire.SeatGenesisResult) (*seatapp.GenesisPlanView, bool) {
+	p := res.Plan
+	if p == nil || !lowerHex64(res.PlanDigest) || p.Revision < 1 || p.Revision > seatapp.MaxGenesisPlanRevision ||
+		!text(p.Title, seatapp.MaxGenesisPlanTitle) || !text(p.FirstDemo, seatapp.MaxGenesisPlanDemo) ||
+		len(p.Milestones) < 1 || len(p.Milestones) > seatapp.MaxGenesisPlanMilestones ||
+		len(p.Gates) > seatapp.MaxGenesisPlanList || len(p.ReviewPoints) > len(seatapp.GenesisPlanReviewPoints) ||
+		len(p.ExternalServices) > len(seatapp.GenesisPlanServices) || len(p.Warnings) > len(seatapp.GenesisPlanWarnings) ||
+		len(p.Notes) > seatapp.MaxGenesisPlanNotes || p.NotesDropped < 0 || p.NotesDropped > seatapp.MaxGenesisPlanNotesDropped ||
+		!slices.Contains(seatapp.GenesisPlanHosts, p.Hosts) || !slices.Contains(seatapp.GenesisPlanBudgetBands, p.BudgetBand.ID) {
+		return nil, false
+	}
+	if words, ok := seatapp.GenesisPlanEstimates[p.Estimate.Band]; !ok || words != p.Estimate.Label {
+		return nil, false
+	}
+	v := &seatapp.GenesisPlanView{
+		Revision: p.Revision, Digest: res.PlanDigest, Stored: res.Stored, Title: p.Title, FirstDemo: p.FirstDemo,
+		Hosts: p.Hosts, BudgetBand: p.BudgetBand.ID, Estimate: p.Estimate.Band, NotesDropped: p.NotesDropped,
+		Gates: []string{}, ReviewPoints: []string{}, ExternalServices: []string{}, Warnings: []string{}, Notes: []seatapp.GenesisNote{},
+	}
+	for _, g := range p.Gates {
+		if !planWord(g) {
+			return nil, false
+		}
+		v.Gates = append(v.Gates, g)
+	}
+	for _, list := range []struct {
+		from, closed []string
+		to           *[]string
+	}{
+		{p.ReviewPoints, seatapp.GenesisPlanReviewPoints, &v.ReviewPoints},
+		{p.ExternalServices, seatapp.GenesisPlanServices, &v.ExternalServices},
+		{p.Warnings, seatapp.GenesisPlanWarnings, &v.Warnings},
+	} {
+		for _, w := range list.from {
+			if !slices.Contains(list.closed, w) || slices.Contains(*list.to, w) {
+				return nil, false
+			}
+			*list.to = append(*list.to, w)
+		}
+	}
+	tasks := 0
+	seen := map[string]bool{}
+	for _, m := range p.Milestones {
+		if !text(m.ID, 4) || !text(m.Title, seatapp.MaxGenesisPlanMilestoneTitle) || !text(m.Goal, seatapp.MaxGenesisPlanGoal) ||
+			len(m.Tasks) < 1 || len(m.Tasks) > seatapp.MaxGenesisPlanMilestoneTasks {
+			return nil, false
+		}
+		am := seatapp.GenesisMilestone{ID: m.ID, Title: m.Title, Goal: m.Goal, Tasks: []seatapp.GenesisTask{}}
+		for _, t := range m.Tasks {
+			tasks++
+			if tasks > seatapp.MaxGenesisPlanTasks || !text(t.ID, 4) || seen[t.ID] || !text(t.Title, seatapp.MaxGenesisPlanTaskTitle) ||
+				!slices.Contains(seatapp.GenesisPlanKinds, t.Kind) || !slices.Contains(seatapp.GenesisPlanSizes, t.Size) ||
+				len(t.DependsOn) > seatapp.MaxGenesisPlanTasks || len(t.Scope) < 1 || len(t.Scope) > seatapp.MaxGenesisPlanList {
+				return nil, false
+			}
+			at := seatapp.GenesisTask{ID: t.ID, Title: t.Title, Kind: t.Kind, Size: t.Size, DependsOn: []string{}, Scope: []string{}}
+			for _, d := range t.DependsOn {
+				if !seen[d] {
+					return nil, false
+				}
+				at.DependsOn = append(at.DependsOn, d)
+			}
+			for _, a := range t.Scope {
+				prefix, name, ok := strings.Cut(a, ":")
+				if !ok || (prefix != "repo" && prefix != "store") || !planWord(name) {
+					return nil, false
+				}
+				at.Scope = append(at.Scope, a)
+			}
+			seen[t.ID] = true
+			am.Tasks = append(am.Tasks, at)
+		}
+		v.Milestones = append(v.Milestones, am)
+	}
+	for _, n := range p.Notes {
+		if !n.Untrusted || !text(n.Field, ownerwire.MaxGenesisFieldBytes) || !text(n.Text, seatapp.MaxGenesisOther) {
+			return nil, false
+		}
+		v.Notes = append(v.Notes, seatapp.GenesisNote{Field: n.Field, Text: n.Text})
+	}
+	return v, true
+}
+
+// lowerHex64 reports whether s is a digest: 64 lower-case hexadecimal digits.
+func lowerHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// planWord reports whether s is a word of a plan: a check id, or an area's
+// name after its prefix: a lower-case letter, then lower-case letters,
+// digits and "-", at most [seatapp.MaxGenesisPlanWord] bytes.
+func planWord(s string) bool {
+	if s == "" || len(s) > seatapp.MaxGenesisPlanWord || s[0] < 'a' || s[0] > 'z' {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
 // genesisMemory is the link's short memory of the interview's answers, so
 // that a read the pages make again and again does not spend the room of the
-// owner's own taps: the last list, for listFresh, and the last answer for
-// each thread (its round as it stands), for viewFresh. The link is the seat's
-// one way to the threads, and every call that changes one goes through it,
-// so what it remembers is what the gate would answer, but for a thread that
-// expired meanwhile (a page then meets genesis-unknown-thread at its next
-// post). A call that changes threads (start, answer, change, finish,
-// discard) forgets the list and its thread before it is sent, and again when
-// it ends, whatever its answer (a refusal, a lost answer, a failure): each
-// moves the generation (gen) on. An answer is kept only when the generation
-// is still the one taken before it was sent, so no change began or ended
-// while it was asked: a read that crossed a change, even one that began after
-// the change was sent and came back before it, is never kept. Nothing is
-// kept past maxViews threads, and what is stale is dropped at each call.
+// owner's own taps: the last list, for listFresh, the last answer for each
+// thread (its round as it stands), for viewFresh, and the last plan of each
+// thread: a preview for viewFresh, and the plan the desk kept at finish,
+// which never changes, for storedPlanFresh. The link is the seat's one way
+// to the threads, and every call that changes one goes through it, so what
+// it remembers is what the gate would answer, but for a thread that expired
+// meanwhile (a page then meets genesis-unknown-thread at its next post). A
+// call that changes threads (start, answer, change, finish, discard)
+// forgets the list, its thread's round and its thread's preview plan before
+// it is sent, and again when it ends, whatever its answer (a refusal, a lost
+// answer, a failure): each moves the generation (gen) on. A finish keeps
+// nothing of the plan: the next plan call reads the one the desk kept. An
+// answer is kept only when the generation is still the one taken before it
+// was sent, so no change began or ended while it was asked: a read that
+// crossed a change, even one that began after the change was sent and came
+// back before it, is never kept. Nothing is kept past maxViews threads of
+// each kind, and what is stale is dropped at each call.
 type genesisMemory struct {
 	mu    sync.Mutex
 	gen   uint64
 	list  *kept
 	views map[string]kept
+	plans map[string]kept
 }
 
 // kept is one answer the link remembers, and when it was given.
@@ -404,12 +577,27 @@ func (m *genesisMemory) before(c seatapp.GenesisCall, now time.Time) (gen uint64
 		if k, found := m.views[c.Thread]; found {
 			return m.gen, k.res, true
 		}
+	case c.Verb == seatapp.GenesisVerbPlan:
+		if k, found := m.plans[c.Thread]; found {
+			return m.gen, k.res, true
+		}
 	case changes(c.Verb):
-		m.gen++
-		m.list = nil
-		delete(m.views, c.Thread)
+		m.changed(c.Thread)
 	}
 	return m.gen, ownerwire.SeatGenesisResult{}, false
+}
+
+// changed moves the generation on and forgets what a change of thread may
+// have made stale: the list, the thread's round, and the thread's plan
+// unless it is the one the desk kept, which no call changes. It runs under
+// mu.
+func (m *genesisMemory) changed(thread string) {
+	m.gen++
+	m.list = nil
+	delete(m.views, thread)
+	if k, found := m.plans[thread]; found && !k.res.Stored {
+		delete(m.plans, thread)
+	}
 }
 
 // after ends a call in the memory; res is its answer, or nil when it has
@@ -420,16 +608,14 @@ func (m *genesisMemory) before(c seatapp.GenesisCall, now time.Time) (gen uint64
 // gen as the call ended (no call that changes threads began or ended since it
 // was sent, but the call itself): a list as the list, and any other answer
 // that is where its thread stands now (a round, or the answer to a call that
-// changed it) as that thread's round, with no reset. A discard is kept as
-// nothing.
+// changed it) as that thread's round, with no reset, and a plan as that
+// thread's plan. A discard is kept as nothing.
 func (m *genesisMemory) after(c seatapp.GenesisCall, res *ownerwire.SeatGenesisResult, gen uint64, now time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	fresh := res != nil && gen == m.gen
 	if changes(c.Verb) {
-		m.gen++
-		m.list = nil
-		delete(m.views, c.Thread)
+		m.changed(c.Thread)
 	}
 	if !fresh {
 		return
@@ -444,16 +630,23 @@ func (m *genesisMemory) after(c seatapp.GenesisCall, res *ownerwire.SeatGenesisR
 		r := *res
 		r.Reset = 0
 		m.views[r.Thread] = kept{res: r, at: now}
+	case seatapp.GenesisVerbPlan:
+		if m.plans == nil || len(m.plans) >= maxViews {
+			m.plans = map[string]kept{}
+		}
+		m.plans[res.Thread] = kept{res: *res, at: now}
 	}
 }
 
-// forget drops what the memory holds of a thread, and the list.
+// forget drops what the memory holds of a thread, its kept plan too, and
+// the list.
 func (m *genesisMemory) forget(thread string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.gen++
 	m.list = nil
 	delete(m.views, thread)
+	delete(m.plans, thread)
 }
 
 // prune drops what is stale. It runs under mu.
@@ -464,6 +657,15 @@ func (m *genesisMemory) prune(now time.Time) {
 	for t, k := range m.views {
 		if now.Sub(k.at) >= viewFresh || now.Before(k.at) {
 			delete(m.views, t)
+		}
+	}
+	for t, k := range m.plans {
+		fresh := viewFresh
+		if k.res.Stored {
+			fresh = storedPlanFresh
+		}
+		if now.Sub(k.at) >= fresh || now.Before(k.at) {
+			delete(m.plans, t)
 		}
 	}
 }

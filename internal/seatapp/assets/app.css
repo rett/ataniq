@@ -528,10 +528,51 @@ q.owners {
 #keep,
 #discard-link,
 #project-list,
+#project-page,
+#see-plan,
 .facts dd a {
   display: inline-block;
   min-height: 44px;
   padding: 10px 0;
+}
+
+/* The plan page: a milestone is a native details element, its tasks an
+   ordered list. The open or closed state is the browser's own marker and
+   the words, never a colour. */
+details.milestone {
+  margin: 0 0 12px;
+  border: 1px solid var(--line);
+  background: var(--field);
+}
+
+details.milestone > summary {
+  min-height: 44px;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+details.milestone > summary:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+details.milestone .goal,
+details.milestone .tasks {
+  margin: 0 12px 12px;
+}
+
+.tasks li {
+  margin: 0 0 8px;
+}
+
+ul.plain {
+  padding-left: 1.25rem;
+}
+
+.binds,
+.always {
+  font-weight: 600;
 }
 
 button.stop {

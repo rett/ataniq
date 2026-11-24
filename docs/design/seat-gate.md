@@ -1875,8 +1875,9 @@ command's wiring (`cmd/ataniq-seat`, which needs nothing configured). It is not
 deployed and not phone-tested. The plan compiler is built as a library (genesis
 G10, `internal/genesis/plan`, see [the plan](#the-plan)), and the daemon serves
 it (genesis G11a): the verb `plan`, a preview of the plan of a complete brief
-before finish and the plan stored at finish. The seat's link and pages for the
-plan are a later task (G11b), and the charter a later stage.
+before finish and the plan stored at finish. The seat's link and its plan page
+are built too (genesis G11b, see [the seat's pages](#the-seats-pages)); the
+charter is a later stage.
 
 The owner starts a new project on the phone by answering a few multiple-choice
 questions. The questions are the host's own, from a versioned catalog
@@ -2132,7 +2133,7 @@ The seat link (`seatlink.Daemon.Genesis`, the app's `seatapp.Genesis` port)
 calls `seat.genesis` only when the hello lists `genesis`; otherwise every call
 is "not offered" and nothing is sent, and the phone shows no "New project". The
 link holds each call to the wire's form with the wire's encoder before it is
-sent, maps the seven genesis codes to the app's errors (and `rate-limited`,
+sent, maps the nine genesis codes to the app's errors (and `rate-limited`,
 `busy` and `too-many-refusals` to "busy", `unknown-op` to "not offered"), and
 takes an answer only when it is one the verb answers, of the thread called,
 with every count and length checked again. Each call has the room of the
@@ -2150,7 +2151,20 @@ answer is kept only when no call that changes threads began or ended while it
 was asked (a generation taken before the read is sent, which each such call
 moves on as it starts and as it ends), so a read that overlapped a change,
 even one that began after the change was sent and came back before it, is
-never kept; the change's own answer is kept when nothing else changed. A summary's rows get their questions, for a change, from
+never kept; the change's own answer is kept when nothing else changed. A
+`plan` is one call of the room, and the link keeps its answer, under the same
+generation rule, for the thread: a preview (`stored: false`) for 10 seconds,
+as a round, and forgotten by every call that changes the thread (`answer`,
+`change`, `finish`, `discard`), whatever its answer; the plan the host stored
+at finish (`stored: true`), which never changes, with its digest for 5
+minutes, through those calls (only `genesis-unknown-thread` forgets it). A
+finish keeps nothing of the plan: the next `plan` reads the stored one. The
+link converts a plan to the app's own view (`seatapp.GenesisPlanView`) and
+checks it again against the app's copies of the plan record's caps and closed
+lists (a test holds them equal to the wire's); a plan past them is not shown.
+It carries `plan_ready` of every result into the app's view (`PlanReady`).
+`genesis-not-ready` and `genesis-no-template` are the app's
+`ErrGenesisNotReady` and `ErrGenesisNoTemplate`. A summary's rows get their questions, for a change, from
 the catalog the seat's build holds, and only when the thread's catalog digest is
 that catalog's; under another catalog the row offers no change.
 
@@ -2164,6 +2178,7 @@ script but the logout's:
 | `GET /projects/{thread}` | The round the thread is at, its summary, or the finished brief, by the answer to `round`. |
 | `GET /projects/{thread}/change/{node}` | One answer's question, from the summary's row, to answer again. |
 | `GET /projects/{thread}/discard` | The step before a discard: a form posting the discard, and the way back. |
+| `GET /projects/{thread}/plan` | The thread's plan, by the answer to `plan`: a draft of an open thread, or the plan stored at finish. Links only. |
 
 A round's page shows "Round N of M" and the required answers given, and each
 question as a fieldset of real inputs: radio buttons for a single choice, a
@@ -2181,6 +2196,62 @@ defaults), the owner's own words quoted and marked as the owner's, a "Change"
 link on each row whose question the link holds, a "Looks right: finish" button
 and a link to the discard step. The finished page shows the brief's digest in
 short form and says that nothing has started and no agent was given the brief.
+The summary links "See the draft plan" when the result's `plan_ready` says a
+plan would be answered, and otherwise says "N of M answers are filled in: no
+plan can be drawn yet." (or, with every answer filled in, that there is no plan
+template for this kind of project yet). The finished page says that the plan
+is drawn and kept with the brief and that handing it to a project is a later
+step, with "See the plan", when `plan_ready`; otherwise that no plan was drawn.
+
+The plan page, `GET /projects/{thread}/plan`, is a read: one call of `plan`
+(answered from the link's memory on a reload, see above), a session, the
+project pages' limit of one credential, and a thread id of its form before
+anything is asked; there is no post to it. It is made on the server with no
+script at all (not even the logout's), no form, no button and no input: its
+only controls are two links, back to the thread's page and to the project
+list, and the page inventory holds it to that and to the rule that no page but
+the Card page holds a decide control. In order: the heading ("Draft plan", or
+"Plan, revision N" for the stored plan), the plan's title with the first six
+digits of the thread id ("A full web app, 3fa2c1"), the fixed lines "A plan
+binds nothing: nothing has started, and nothing starts from this page." and,
+for a draft, "This is a draft; finishing the interview keeps it as revision
+1.", and the plan's digest in short form, the same for a draft and the stored
+plan of the same answers; then the first demo; "What waits for you": the
+review points in the app's words and always the fixed sentence "Publishing,
+releases, pushing code, credentials and raising any limit always wait for you,
+whatever the plan says.", whatever the review points hold; the outside
+services, or none; where the files live; the budget band, marked "advisory:
+nothing enforces it yet"; the estimate, marked "an estimate, not a promise";
+the warnings, each a fixed sentence by its id (an id the app does not know is
+"A note from the plan.", never its text); "Milestones and tasks", one native
+`details` element a milestone (only the first open), each with its goal and an
+ordered list of its tasks: title, kind and size in words, and "after:" the
+titles of the tasks it waits for; "Your own notes", only when there are some,
+each quoted with the `Text` rendering of untrusted text (bidirectional and
+hidden characters shown as escapes) and marked "your words, shown as you wrote
+them; never given to a tool", with the count of the notes left out; and
+"What a charter would cover". Every text is escaped by the page templates.
+
+The charter section is words about a later step, never a step. It opens with
+the fixed text "Draft. Not signed. It allows nothing. Nothing starts from this
+page. Signing is a later step and is not built.", then "A signed charter would
+allow at most:" and a list drawn from the plan: the areas of work (the union of
+the tasks' scopes, in words where the app has them, else the area's name), the
+outside services, the budget band (advisory), and "stopping for you at" the
+review points. Its wording rule, which a test holds: it never says "card", it
+never says the plan "allows" anything (the one "allows" is the fixed "It
+allows nothing."), it holds no control and no link (no Approve, no Sign, no
+passkey, nothing into the card list's pending cards), and it is on the plan
+page alone: never on the card list, a card, a notice or another project page.
+
+A plan that is not ready (`genesis-not-ready`) is a page of fixed words, "No
+plan can be drawn yet: some answers are missing."; only then is the thread's
+round read too, and a finished thread's page says instead "This project was
+finished before its answers were complete, so no plan was drawn."
+(`genesis-not-ready` of a finished thread). A kind with no template
+(`genesis-no-template`) is "There is no plan template for this kind of project
+yet." An unknown thread, a busy or unreachable desk and an interview not
+offered are the problems of the other project pages.
 
 Every act is a plain form posted to the app (`/projects/new`, and
 `/projects/{thread}/answer`, `/change`, `/finish`, `/discard`), with the checks
@@ -2227,11 +2298,12 @@ pair, read, login, decide, watch and genesis; the phone offers New project`).
 `ataniq.project-plan/1`: a pure library, with no clock and no wire. The
 daemon's thread store calls it (see [the thread store](#the-thread-store)): a
 preview on a complete open thread, the plan stored at finish, served over the
-wire by the verb `plan`. The seat has no page for it yet. A plan is a proposal: it binds nothing and grants nothing. Three things
+wire by the verb `plan` and shown by the seat's plan page (see [the seat's
+pages](#the-seats-pages)). A plan is a proposal: it binds nothing and grants nothing. Three things
 bind, each approved on its own, and none of them is the plan: the creation of
 the project, the charter, and the delegation contracts. What always waits for
 the owner (publishing, a release, a push, credentials, raising a cap) is not a
-field of the plan: the page that shows a plan will say it in fixed words,
+field of the plan: the page that shows a plan says it in fixed words,
 whatever the plan holds.
 
 The record is canonical JSON under the brief's rules, with a SHA-256 digest:

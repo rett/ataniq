@@ -28,7 +28,7 @@ type pageData struct {
 // pageNames are the pages, one template file each; each defines "content"
 // inside the shared layout.
 var pageNames = []string{"home", "pair", "login", "cards", "card", "paths", "problem",
-	"projects", "question", "summary", "finished", "change", "discard"}
+	"projects", "question", "summary", "finished", "change", "discard", "plan"}
 
 var pageTitles = map[string]string{
 	"home":  "Authority seat",
@@ -44,6 +44,7 @@ var pageTitles = map[string]string{
 	"finished": "New project: brief kept",
 	"change":   "New project: change an answer",
 	"discard":  "New project: discard",
+	"plan":     "New project: plan",
 }
 
 // The most characters of each kind of text a page shows; Text says how many
