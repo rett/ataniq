@@ -124,7 +124,8 @@ type leadsWatch struct {
 	Conversation bool
 	// Follow marks a conversation page whose read reached the head: it
 	// shows the newest entries, so the page may follow new replies. After
-	// is then the cursor of the read that follows them (see followAfter).
+	// is then the cursor of the read that follows them, the last rendered
+	// entry (see followAfter).
 	Follow bool
 	After  int64
 	// connection is the connection the cursor was learned on. It stays in

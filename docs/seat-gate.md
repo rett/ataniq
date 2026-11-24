@@ -599,9 +599,10 @@ lead whose desk setting allows sending.
 
 With the conversation open at its newest message, a new reply of a lead
 whose chat is on appears by itself: the page reads the conversation again,
-at most once every 40 seconds, and opens at the newest message, with up to
-8 of the messages you were reading above the new ones (more new replies
-than fit leave **Show later**). When you have scrolled away from the newest
+at most once every 40 seconds, and opens at the newest message: the page
+then starts with the first message after the last one you saw (**Show
+earlier** goes back to those), and more new replies than fit on one page
+leave **Show later**. When you have scrolled away from the newest
 message, or you are reading older messages, the page does not move: the
 status line says "New replies." with a link **Show newest**, which takes
 you to the newest message (and the page then follows the new replies). The

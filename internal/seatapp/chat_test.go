@@ -2,17 +2,21 @@ package seatapp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"html"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
 type fakeChat struct {
-	onRead           func()
+	onRead, onList func()
+	// reads, when set, answers the reads in place of read and readErr.
+	reads            func(ChatCall) (ChatView, error)
 	offered, down    bool
 	list, read       ChatView
 	listErr, readErr error
@@ -30,12 +34,93 @@ func (f *fakeChat) Chat(_ context.Context, c ChatCall) (ChatView, error) {
 		return ChatView{}, ErrNotOffered
 	}
 	if c.Verb == ChatLeads {
+		if f.onList != nil {
+			f.onList()
+		}
 		return f.list, f.listErr
 	}
 	if f.onRead != nil {
 		f.onRead()
 	}
+	if f.reads != nil {
+		return f.reads(c)
+	}
 	return f.read, f.readErr
+}
+
+// chatLog is a conversation a read pages through as the gate does
+// (ownerwire.FillSeatChatRead): after a cursor it holds, or from the oldest
+// entry, with reset, after one it does not; at most MaxChatEntries entries,
+// and no more than fit chatResultMax bytes of encoded result, one entry at
+// least; More when it left any out.
+type chatLog struct {
+	lead    string
+	epoch   int64
+	standIn bool
+	conn    time.Time
+	entries []ChatEntry
+}
+
+// chatResultMax is the gate's bound of an encoded seat.chat result
+// (ownerwire.MaxSeatChatResultBytes).
+const chatResultMax = 16 << 10
+
+func (l *chatLog) head() int64 {
+	if len(l.entries) == 0 {
+		return 0
+	}
+	return l.entries[len(l.entries)-1].Seq
+}
+
+// add appends n entries of size bytes each.
+func (l *chatLog) add(n, size int) {
+	for range n {
+		seq := l.head() + 1
+		l.entries = append(l.entries, ChatEntry{Seq: seq, Who: "lead", At: time.Unix(1000+seq, 0).UTC(), Text: strings.Repeat("x", size)})
+	}
+}
+
+func (l *chatLog) read(c ChatCall) (ChatView, error) {
+	v := ChatView{State: ChatRead, Lead: l.lead, Epoch: l.epoch, Head: l.head(), StandIn: l.standIn, Connection: l.conn, Entries: []ChatEntry{}}
+	from := 0
+	if c.After != 0 {
+		i := slices.IndexFunc(l.entries, func(e ChatEntry) bool { return e.Seq == c.After })
+		if i >= 0 {
+			from = i + 1
+		} else {
+			v.Reset = true
+		}
+	}
+	rest := l.entries[from:]
+	for n := 0; n < len(rest) && n < MaxChatEntries; n++ {
+		next := append(slices.Clone(v.Entries), rest[n])
+		b, err := json.Marshal(struct {
+			State, Lead string
+			Epoch, Head int64
+			Entries     []ChatEntry
+			More, Reset bool
+		}{v.State, v.Lead, v.Epoch, v.Head, next, true, v.Reset})
+		if err != nil {
+			return ChatView{}, err
+		}
+		if n > 0 && len(b) > chatResultMax {
+			break
+		}
+		v.Entries = next
+	}
+	v.More = len(v.Entries) < len(rest)
+	return v, nil
+}
+
+// logChat is a chat port of one lead, alpha, whose conversation is l: the
+// directory lists it with l's head.
+func logChat(l *chatLog) *fakeChat {
+	f := &fakeChat{offered: true, reads: l.read}
+	f.onList = func() {
+		epoch, head := l.epoch, l.head()
+		f.list = ChatView{State: ChatLeads, StandIn: l.standIn, Connection: l.conn, Rows: []LeadRow{{l.lead, "read", "running", &epoch, &head}}}
+	}
+	return f
 }
 
 type chatDaemon struct {

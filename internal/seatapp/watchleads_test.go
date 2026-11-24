@@ -529,17 +529,17 @@ func TestSeatLeadsPagesCarryTheStream(t *testing.T) {
 		}
 	}
 	// The sample read ends before the head (More): no follow mark. A read
-	// that reached the head follows after its last entry less half a window.
+	// that reached the head follows after its last entry.
 	ld.leadsChat.onRead = nil
 	ld.leadsChat.read.More = false
 	body := r.getWith("/leads/daemon/alpha?after=4", s).Body.String()
-	if !strings.Contains(body, `data-page="conversation" data-follow="0"></div>`) {
+	if !strings.Contains(body, `data-page="conversation" data-follow="7"></div>`) {
 		t.Errorf("a conversation at the head: %s", body)
 	}
 	ld.leadsChat.read.Entries[0].Seq = 30
 	ld.leadsChat.read.Head = 30
 	*ld.leadsChat.list.Rows[0].Head = 30
-	if body := r.getWith("/leads/daemon/alpha", s).Body.String(); !strings.Contains(body, `data-follow="22"`) {
+	if body := r.getWith("/leads/daemon/alpha", s).Body.String(); !strings.Contains(body, `data-follow="30"`) {
 		t.Errorf("the follow cursor: %s", body)
 	}
 	// A hint that is not live, or chat not offered when the page asks:
@@ -583,9 +583,9 @@ func TestSeatLeadsPagesCursorOfTheirConnection(t *testing.T) {
 	}
 }
 
-// TestSeatFollowAfter: the following read starts at or before the last
-// rendered entry, so it skips nothing, and keeps up to half a window of
-// what the page showed.
+// TestSeatFollowAfter: the following read starts directly after the last
+// rendered entry, a sequence the read returned, so it skips nothing and
+// never starts at a cursor the chat may not hold.
 func TestSeatFollowAfter(t *testing.T) {
 	entries := func(seqs ...int64) []ChatEntry {
 		var out []ChatEntry
@@ -600,19 +600,50 @@ func TestSeatFollowAfter(t *testing.T) {
 		last  int64
 		want  int64
 	}{
-		{ChatView{Head: 3, Entries: entries(1, 2, 3)}, 0, 3, 0},
-		{ChatView{Head: 40, Entries: entries(25, 40)}, 24, 40, 32},
-		{ChatView{Head: 8}, 8, 0, 0},
-		{ChatView{Head: 20}, 20, 0, 12},
-		{ChatView{Head: 20}, 50, 0, 12},
-		{ChatView{Head: 20, Reset: true}, 50, 0, 12},
+		{ChatView{Head: 3, Entries: entries(1, 2, 3)}, 0, 3, 3},
+		{ChatView{Head: 40, Entries: entries(25, 40)}, 24, 40, 40},
+		{ChatView{Head: 40, Entries: entries(25, 40), Reset: true}, 3, 40, 40},
+		{ChatView{Head: 8}, 8, 0, 8},
+		{ChatView{Head: 20}, 20, 0, 20},
+		{ChatView{Head: 20}, 50, 0, 20},
+		{ChatView{Head: 20, Reset: true}, 5, 0, 20},
 	} {
 		got := followAfter(c.v, c.after, c.last)
 		if got != c.want {
 			t.Errorf("%+v after %d: %d, want %d", c.v, c.after, got, c.want)
 		}
-		if n := len(c.v.Entries); n > 0 && got > c.v.Entries[n-1].Seq {
-			t.Errorf("%+v: the following read skips the last entry", c.v)
+		if n := len(c.v.Entries); n > 0 && got != c.v.Entries[n-1].Seq {
+			t.Errorf("%+v: the following read does not start after the last entry", c.v)
 		}
+	}
+}
+
+// TestSeatFollowAtTheByteCap: the entries the reader saw are as large as an
+// entry can be, so that a page holds fewer than a window of them (the
+// gate's bound of a result). The page shows the newest entry and follows
+// after it; a reply as large arrives, and the following read shows it, at
+// the newest, still following. Half a window back, the bound cuts the
+// page before the new reply: a look-back would lose it.
+func TestSeatFollowAtTheByteCap(t *testing.T) {
+	r, ld := newLeadsRig(t)
+	s := r.login(t)
+	l := &chatLog{lead: "daemon:alpha", epoch: 1, conn: time.Unix(1, 0)}
+	l.add(8, 10)
+	l.add(8, MaxChatTextBytes)
+	ld.leadsChat.fakeChat = logChat(l)
+	const entry = `<p dir="auto" class="lead chat-body">`
+	body := r.getWith("/leads/daemon/alpha?after=15", s).Body.String()
+	if strings.Count(body, entry) != 1 || !strings.Contains(body, `data-follow="16"`) {
+		t.Fatalf("the newest page: %s", body)
+	}
+	l.add(1, MaxChatTextBytes)
+	body = r.getWith("/leads/daemon/alpha?after=16", s).Body.String()
+	if strings.Count(body, entry) != 1 || !strings.Contains(body, `data-follow="17"`) || !strings.Contains(body, `<li id="newest" tabindex="-1">`) ||
+		strings.Contains(body, `id="chat-next"`) {
+		t.Errorf("the following read: %s", body)
+	}
+	body = r.getWith("/leads/daemon/alpha?after=8", s).Body.String()
+	if n := strings.Count(body, entry); n >= 9 || !strings.Contains(body, `id="chat-next"`) || strings.Contains(body, "data-follow") {
+		t.Errorf("half a window back: %d entries: %s", n, body)
 	}
 }

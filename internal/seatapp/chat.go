@@ -308,20 +308,19 @@ func conversation(list leadsData, row chatRow, v ChatView, after int64, visit ch
 }
 
 // followAfter is the cursor of the read that follows new replies on a page
-// that shows the newest entries: the page's last rendered entry less half a
-// window, from zero at least. Nothing after the last rendered entry is ever
-// skipped (the read starts at or before it), up to half a window of what
-// the page showed stays above the new entries, and up to half a window of
-// new entries fits below; more than that leaves the next page with Show
-// later. A page with no entry rendered its read's cursor (the head at most),
-// or, after a reset, the head.
+// that shows the newest entries: the page's last rendered entry, a sequence
+// the read returned, so the following read starts directly after it. Every
+// new reply then comes first on the next page, whatever the size of the
+// entries above it, and the cursor never falls between kept entries (a
+// cursor the chat does not hold reads from the oldest kept entry again). A
+// page with no entry rendered its read's cursor (the head at most), or,
+// after a reset, the head.
 func followAfter(v ChatView, after, lastSeq int64) int64 {
-	last := lastSeq
-	if len(v.Entries) == 0 {
-		last = min(after, v.Head)
-		if v.Reset {
-			last = v.Head
-		}
+	if len(v.Entries) > 0 {
+		return lastSeq
 	}
-	return max(0, last-MaxChatEntries/2)
+	if v.Reset {
+		return v.Head
+	}
+	return min(after, v.Head)
 }

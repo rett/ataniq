@@ -1979,13 +1979,19 @@ What the page does on `chat-changed` (`watch.js`, the same file, its one
   or a dialog is open (the Leads pages have neither today; the guard stays),
   only while it is shown, and the reader's place is looked at again when the
   read is due. The read is the page's own path with
-  `?after=` the follow cursor, at `#newest`: the last rendered entry less
-  half a window (8), from 0 at least (`followAfter`), so the read starts at
-  or before the last entry the page showed and skips nothing, keeps up to 8
-  of the entries the reader saw above the new ones, and fits up to 8 new
-  ones below; more leave the next page with **Show later** and no follow
-  mark. It never reads after the hinted cursor, which is no sequence number.
-  When the address is the page's own already, the page reloads.
+  `?after=` the follow cursor, at `#newest`: the last rendered entry
+  (`followAfter`; for a page with no entry its read's cursor, the head at
+  most), so the read starts directly after the last entry the page showed
+  and skips nothing. The cursor is a sequence the read returned, never an
+  inferred one: a cursor the chat does not hold (one that fell between kept
+  entries) would read from the oldest kept entry again. There is no
+  look-back above the new entries: the gate bounds a result to 16 KiB, so a
+  look-back of large entries could fill the page before the new reply
+  (`TestSeatFollowAtTheByteCap`); the next page starts with the first new
+  entry, and **Show earlier** leads back. More new entries than fit leave
+  the next page with **Show later** and no follow mark. It never reads
+  after the hinted cursor, which is no sequence number. When the address is
+  the page's own already, the page reloads.
 - Any other conversation (its reader scrolled away from the newest entry,
   or a page of older entries) shows "New replies." and a plain link **Show
   newest**, once: to `#newest` on a page that shows the newest entries
