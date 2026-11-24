@@ -1,6 +1,7 @@
 package seatapp
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"io"
@@ -280,6 +281,23 @@ func (ss *sessions) end(value string) {
 	ss.mu.Lock()
 	ss.drop(k)
 	ss.mu.Unlock()
+}
+
+// endCredential removes every session that the credential of raw id
+// credentialID logged in: a revocation the daemon reported ends them all,
+// whichever session's request learnt it. An ordinary logout is end, which
+// keeps to its own session.
+func (ss *sessions) endCredential(credentialID []byte) {
+	if len(credentialID) == 0 {
+		return
+	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	for k, s := range ss.m {
+		if bytes.Equal(s.CredentialID, credentialID) {
+			ss.drop(k)
+		}
+	}
 }
 
 // count is the number of sessions kept, live or not yet swept.

@@ -1089,7 +1089,7 @@ What the phone shows, by the code the seat's API answers:
 | "The card's time ran out." | `card_expired` | The card expired; a new challenge cannot renew it. | Nothing to do on the phone; see the card at the desk. |
 | "The card cannot be decided now. Look at it again." | `cannot_decide` | Already decided, void or in another state. | Reload the card. |
 | "The phone's answer was not accepted. If this repeats, check the seat at the desk." | `assertion_refused` | The assertion did not verify. | Check the origin on both hosts and the gate key the seat has pinned. |
-| "This phone's passkey is no longer paired. Pair it again at the desk." | `key_revoked` | The key was revoked or is not on the list. The session ends. | Pair again at the desk. |
+| "This phone's passkey is no longer paired. Pair it again at the desk." | `key_revoked` | The key was revoked or is not on the list. Every session logged in with that passkey ends, on every tab and phone. | Pair again at the desk. |
 | "This project does not take decisions from this kind of passkey." | `kind_refused` | The `"kinds"` policy excludes the credential's claimed kind. | Change the policy or pair another credential. |
 | "Decision sent. Outcome unknown." | `outcome_unknown` | The answer was lost after the decision was sent. | Tap "Look again" and read the card; never retry blindly. |
 | "The session ended. Log in again." | `session_ended` | Idle 30 minutes, 12 hours, a seat restart, or a logout. | Log in. |

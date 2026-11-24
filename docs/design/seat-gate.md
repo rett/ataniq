@@ -892,7 +892,10 @@ Reads after a revoke: the reads are the pin's, not a credential's, since the
 daemon keeps no session. A seat session whose key was revoked still reads cards
 until the seat learns of the revoke or the session ends (G7: 30 minutes idle,
 12 hours at most). The seat ends a session at once when a call of it is
-answered `key-revoked` or `key-unknown`. To cut the reads at once, the owner
+answered `key-revoked` or `key-unknown`, and with it every other session the
+same credential logged in (another tab's login, another phone's), with their
+held polls and streams; a logout ends its own session only. To cut the reads
+at once, the owner
 removes the seat's pin (G4) and restarts the daemon.
 
 The two domain strings differ, so an assertion made for a login can never be
@@ -1287,7 +1290,7 @@ text of the gate's, and a code it does not know gets the last line:
 | `approval-expired` | The card's time ran out. |
 | `approval-consumed`, `approval-void`, `previous-epoch`, `decision-invalid` | The card cannot be decided now. Look at it again. |
 | `assertion-invalid` | The phone's answer was not accepted. If this repeats, check the seat at the desk. |
-| `key-revoked`, `key-unknown` | This phone's passkey is no longer paired. Pair it again at the desk. (The session ends.) |
+| `key-revoked`, `key-unknown` | This phone's passkey is no longer paired. Pair it again at the desk. (Every session of that passkey ends.) |
 | `kind-refused` | This project does not take decisions from this kind of passkey. |
 | `decisions_inhibited` (the seat's own, not a gate code) | Decisions are paused on this host. Nothing was sent. |
 | `challenges-full`, `busy`, `rate-limited`, `too-many-refusals` | The desk is busy. Try again in a few minutes. |
