@@ -145,6 +145,22 @@ func openFolder(dir string) (*os.Root, error) {
 		}
 		fi, err = os.Lstat(dir)
 	}
+	return rootOf(dir, fi, err)
+}
+
+// openExisting checks the folder and opens it as a root as openFolder does,
+// but never makes it: a folder that is not there is [fs.ErrNotExist].
+func openExisting(dir string) (*os.Root, error) {
+	fi, err := os.Lstat(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fs.ErrNotExist
+	}
+	return rootOf(dir, fi, err)
+}
+
+// rootOf checks the folder looked at (fi, or the error of looking) and opens
+// it as a root, and only when what was opened is the folder looked at.
+func rootOf(dir string, fi os.FileInfo, err error) (*os.Root, error) {
 	if err != nil {
 		return nil, openErr("folder-read", "genesis: the folder of the threads cannot be read")
 	}
@@ -182,17 +198,9 @@ func checkFolder(fi os.FileInfo) error {
 // load reads the folder: the threads in it, then the expiry and the cap on
 // the files.
 func (s *Store) load(t *tx) error {
-	d, err := s.root.Open(".")
+	entries, err := readEntries(s.root)
 	if err != nil {
-		return openErr("folder-read", "genesis: the folder of the threads cannot be read")
-	}
-	entries, err := d.ReadDir(maxEntries + 1)
-	_ = d.Close()
-	if err != nil && !errors.Is(err, io.EOF) {
-		return openErr("folder-read", "genesis: the folder of the threads cannot be read")
-	}
-	if len(entries) > maxEntries {
-		return openErr("too-many-files", "genesis: the folder of the threads holds too many files")
+		return err
 	}
 	for _, e := range entries {
 		name := e.Name()
@@ -211,29 +219,64 @@ func (s *Store) load(t *tx) error {
 	return t.removeFiles()
 }
 
+// readEntries lists the folder's entries, and refuses a folder that holds more
+// than [maxEntries].
+func readEntries(root *os.Root) ([]fs.DirEntry, error) {
+	d, err := root.Open(".")
+	if err != nil {
+		return nil, openErr("folder-read", "genesis: the folder of the threads cannot be read")
+	}
+	entries, err := d.ReadDir(maxEntries + 1)
+	_ = d.Close()
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, openErr("folder-read", "genesis: the folder of the threads cannot be read")
+	}
+	if len(entries) > maxEntries {
+		return nil, openErr("too-many-files", "genesis: the folder of the threads holds too many files")
+	}
+	return entries, nil
+}
+
 // loadFile reads one thread file. A file that does not pass is not served and
 // is logged, once.
 func (s *Store) loadFile(t *tx, name string) {
 	id := name[:16]
-	data, err := readFile(s.root, name)
-	var r record
-	if err == nil {
-		r, err = decodeRecord(name, data)
-	}
-	if err == nil && r.catalog != s.cat.Digest() {
-		err = bad("the thread was started under another catalog than the store's")
-	}
+	r, err := readRecord(s.root, name, s.cat.Digest())
 	if err != nil {
 		s.bad[id] = true
-		why := "it cannot be read"
-		var eb *errBad
-		if errors.As(err, &eb) {
-			why = eb.why
-		}
-		t.logf("genesis: the thread file %s is not served: %s", name, why)
+		t.logf("%s", notServed(name, err))
 		return
 	}
 	s.threads[id] = r
+}
+
+// readRecord reads one thread file of the folder strictly (see the package
+// documentation): the file, its decoding and the catalog it was started under,
+// which must be the one given.
+func readRecord(root *os.Root, name, catalog string) (record, error) {
+	data, err := readFile(root, name)
+	if err != nil {
+		return record{}, err
+	}
+	r, err := decodeRecord(name, data)
+	if err != nil {
+		return record{}, err
+	}
+	if r.catalog != catalog {
+		return record{}, bad("the thread was started under another catalog than the store's")
+	}
+	return r, nil
+}
+
+// notServed is the fixed text of a file that is not served: its name and the
+// check it failed, never a byte of the file.
+func notServed(name string, err error) string {
+	why := "it cannot be read"
+	var eb *errBad
+	if errors.As(err, &eb) {
+		why = eb.why
+	}
+	return fmt.Sprintf("genesis: the thread file %s is not served: %s", name, why)
 }
 
 // Close ends the store. A call after it is refused [ErrClosed]. It may be

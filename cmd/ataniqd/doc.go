@@ -48,6 +48,12 @@
 // STAND-IN rig whose settings "ataniqd trial init" writes: sample cards only,
 // made on demand by "ataniqd trial submit" through the operation trial.submit,
 // decided through the real decision path and applied to nothing.
+// "ataniqd genesis list" and "ataniqd genesis handoff TAG" (genesis_linux.go;
+// genesis_off_linux.go has the same names for every other build) read the
+// finished interviews in owner/genesis of the state folder through the thread
+// store's read-only reader, whether or not the daemon runs, and print them or
+// the hand-off of one software plan (package genesis/handoff): a command line
+// for the owner to run himself. Nothing is written, run or sent.
 //
 // A build without the tag is read-only. It starts, stops and manages no unit
 // and defines no lead; no flag does. Reconcile runs at start only, not on a timer. Leads,

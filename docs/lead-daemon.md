@@ -104,10 +104,13 @@ ataniqd run [--state-dir DIR] [--runtime-dir DIR] [--owner-channel [--seat-gate 
 ataniqd status [--socket PATH] [--json]
 ataniqd version
 ataniqd seat-gate init|pins [--state-dir DIR]
+ataniqd genesis list [--state-dir DIR]
+ataniqd genesis handoff TAG [--state-dir DIR]
 ```
 
-`--owner-channel`, `--seat-gate` and `seat-gate` are in the tagged build only
-(see [the owner channel](#the-owner-channel-tagged-build-only)).
+`--owner-channel`, `--seat-gate`, `seat-gate` and `genesis` are in the tagged
+build only (see [the owner channel](#the-owner-channel-tagged-build-only) and
+[the guided interview at the desk](#the-guided-interview-at-the-desk)).
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
@@ -408,6 +411,49 @@ Same-user limit: a process of the daemon's user that is not in a sandbox can
 read the gate's key, add a pin, rewrite the seat origin file and edit the key
 list. Until the sandbox is qualified, the gate and every decision from the
 phone are for scratch state only, behind the STAND-IN banner.
+
+### The guided interview at the desk
+
+```text
+ataniqd genesis list [--state-dir DIR]
+ataniqd genesis handoff TAG [--state-dir DIR]
+```
+
+Two commands of the tagged build read the finished interviews in
+`owner/genesis/` of the state folder (the default state folder, or
+`--state-dir`, as for the other commands). They work whether or not the daemon
+runs, write nothing there (they make no folder, take no lock and expire or
+remove nothing), run no program, open no socket and never run Qargi. A file the
+daemon would not serve is not served here either.
+
+`genesis list` prints one line per finished interview that holds a plan,
+oldest first: its tag (the first 6 digits of its id), its kind, the plan's
+digest (12 digits) and the day it was finished. Interviews still open, dropped
+or finished before their brief was complete are not listed. A file that is not
+served is named on standard error, in the daemon's fixed words.
+
+```text
+a1b2c3  software  840ca3c6564a  2026-11-23
+0f0e0d  publishing  5d0c2a17b9e4  2026-11-23
+```
+
+`genesis handoff TAG` prints the hand-off of the plan of the interview whose id
+starts with TAG (6 to 16 digits): a few lines starting with `#` that name the
+plan and say what the command does not carry, and one command line,
+`qargi project new NAME --methodology gitflow`, with a name made from the kind
+of project and the tag. Ataniq does not run it: you run it yourself, in the
+folder where you keep projects. Qargi then prints its plan and a token, and
+creating the project needs your own words, given to Qargi by you. The plan's
+tasks are not imported; Qargi's backlog is where the work is tracked. Only a
+software plan has a hand-off so far (see [the
+design](design/seat-gate.md#hand-off)).
+
+Exit codes: 0 printed; 1 a failure (a folder the daemon would refuse, which
+the error names by a fixed reason and not by path); 2 usage; 3 refused, with a
+fixed line on standard error: no finished interview with a plan has the tag,
+more than one has it (give more digits), the tag is not 6 to 16 lower-case
+hexadecimal digits, or the kind of project has no hand-off yet; 10 a state
+folder that is not a clean absolute path, or none.
 
 ### The scratch settings
 

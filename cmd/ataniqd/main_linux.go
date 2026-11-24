@@ -125,6 +125,11 @@ func (a *app) run(args []string) int {
 	if code, ok := a.seatGateCommand(args); ok {
 		return code
 	}
+	// The desk's genesis command, which only a build with the
+	// ataniq_ownerchannel tag has too.
+	if code, ok := a.genesisCommand(args); ok {
+		return code
+	}
 	// The phone trial's command, which only a build with the
 	// ataniq_ownerchannel tag has too.
 	if code, ok := a.trialCommand(args); ok {
