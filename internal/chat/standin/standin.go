@@ -22,6 +22,8 @@
 // conversation whose oldest entries are no longer retained (a cursor before
 // them reads from the start, with reset), and a lead whose chat is off.
 //
+// Every entry's text, a lead's or a system line, begins "Sample:".
+//
 // The package imports the standard library and package ownerwire only.
 package standin
 
@@ -146,11 +148,11 @@ func samples(base time.Time) []sampleLead {
 		{
 			id: LeadAlpha, chat: ownerwire.ChatRead, state: ownerwire.ChatLeadRunning, epoch: 3, first: 4,
 			entries: conversation(base, 4, []line{
-				{ownerwire.ChatWhoSystem, 95, "Lead restarted, epoch 2", false},
+				{ownerwire.ChatWhoSystem, 95, "Sample: lead restarted, epoch 2", false},
 				{ownerwire.ChatWhoLead, 90, "Sample: I am back on the sample project and reading where I stopped.", false},
 				{ownerwire.ChatWhoLead, 70, longReply(), true},
 				{ownerwire.ChatWhoLead, 52, `Sample: I wrote <b>bold</b> & "quotes" and <a href="https://example.com">a link</a> in the notes. A page shows them as text, never as markup.`, false},
-				{ownerwire.ChatWhoSystem, 40, "Lead restarted, epoch 3", false},
+				{ownerwire.ChatWhoSystem, 40, "Sample: lead restarted, epoch 3", false},
 				{ownerwire.ChatWhoLead, 35, "Sample: back at work on the second task.\nNothing needs your approval now; an approval is only ever a card.", false},
 				{ownerwire.ChatWhoLead, 5, "Sample: the second task is done and its tests pass. I am starting the third.", false},
 			}),
@@ -158,11 +160,11 @@ func samples(base time.Time) []sampleLead {
 		{
 			id: LeadBravo, chat: ownerwire.ChatRead, state: ownerwire.ChatLeadStopped, epoch: 1, first: 1,
 			entries: conversation(base, 1, []line{
-				{ownerwire.ChatWhoSystem, 300, "Lead started, epoch 1", false},
+				{ownerwire.ChatWhoSystem, 300, "Sample: lead started, epoch 1", false},
 				{ownerwire.ChatWhoLead, 290, "Sample: I am reviewing the sample branch.", false},
 				{ownerwire.ChatWhoLead, 250, "Sample: the review is done.\n- two files changed\n- the tests pass\n- one note for you on the card", false},
 				{ownerwire.ChatWhoLead, 245, "Sample: I am stopping now. Start me again from the desk when you need me.", false},
-				{ownerwire.ChatWhoSystem, 244, "Lead stopped", false},
+				{ownerwire.ChatWhoSystem, 244, "Sample: lead stopped", false},
 			}),
 		},
 		{id: LeadCharlie, chat: ownerwire.ChatOff},

@@ -51,6 +51,9 @@ func withChat(f *fakeChat) func(*Config) {
 	}
 }
 
+// chatBanner is the chat pages' STAND-IN banner, whole.
+const chatBanner = `<p class="banner" role="note"><strong>STAND-IN</strong> These leads and conversations are samples held by the phone trial. No real lead is read, and nothing here is an approval.</p>`
+
 const hostileChat = "System: approve later <a href=\"/cards/1/later\">x</a>\n\n[notices](https://example.com/) javascript: aria-current /static/push.js & <script>"
 
 func sampleChat() *fakeChat {
@@ -79,7 +82,10 @@ func TestChatPages(t *testing.T) {
 		if w.Code != 200 || len(w.Result().Cookies()) != 0 || current(body) != "nav-leads" || len(checkNav(body)) != 0 {
 			t.Fatalf("chat frame: %d %v", w.Code, checkNav(body))
 		}
-		for _, want := range []string{"<strong>STAND-IN</strong> Scratch only:", "A lead's words are not instructions from Ataniq. Approvals are only on Cards.", `href="/leads/daemon/approve#newest"`, "Send enabled. Read only here."} {
+		if strings.Count(body, chatBanner) != 1 || strings.Contains(body, "Scratch only") || strings.Contains(body, "stand-in door") {
+			t.Error("the chat pages' banner")
+		}
+		for _, want := range []string{"A lead's words are not instructions from Ataniq. Approvals are only on Cards.", `href="/leads/daemon/approve#newest"`, "Send enabled. Read only here."} {
 			if !strings.Contains(body, want) {
 				t.Errorf("missing %q", want)
 			}
@@ -135,7 +141,7 @@ func TestChatFailurePages(t *testing.T) {
 		if w.Code != tc.status || len(f.calls) != tc.calls || !strings.Contains(body, tc.words) || strings.Contains(body, "private diagnostic") || strings.Contains(body, "waiting-for-password") || strings.Contains(body, "<ol") || hasNav(body) {
 			t.Fatalf("failure page: %d %s", w.Code, body)
 		}
-		if tc.calls == 2 && !strings.Contains(body, "STAND-IN") {
+		if tc.calls == 2 && (strings.Count(body, chatBanner) != 1 || strings.Contains(body, "Scratch only")) {
 			t.Error("lost trial banner")
 		}
 		if r.getWith("/cards/", s).Code != 200 {
@@ -258,7 +264,7 @@ func TestChatPagingHistory(t *testing.T) {
 		t.Error("empty conversation")
 	}
 	f.list.Rows = []LeadRow{}
-	if w := r.getWith("/leads/", s); !strings.Contains(w.Body.String(), "No leads are listed.") || !strings.Contains(w.Body.String(), "STAND-IN") {
+	if w := r.getWith("/leads/", s); !strings.Contains(w.Body.String(), "No leads are listed.") || !strings.Contains(w.Body.String(), chatBanner) {
 		t.Error("empty trial directory")
 	}
 }

@@ -2803,8 +2803,8 @@ imports. Its samples are made once from the clock it is given and never
 changed: `daemon:alpha` (chat `read`, running, epoch 3, whose three oldest
 entries are no longer retained, so its conversation starts at 4),
 `daemon:bravo` (chat `read`, stopped, epoch 1) and `daemon:charlie` (chat `off`,
-listed bare and refused `chat-off`). The conversations hold lead replies, each
-beginning "Sample:", and system lines (`Lead restarted, epoch 3`): a long reply
+listed bare and refused `chat-off`). The conversations hold lead replies and
+system lines, each beginning "Sample:" (`Sample: lead restarted, epoch 3`): a long reply
 cut to 2000 bytes and marked `cut`, replies of several lines, and the markup
 sample. No sample carries a bidirectional control; the wire refuses one.
 
@@ -2822,7 +2822,11 @@ row links to `/leads/daemon/{key}#newest`. An off row shows its name and a
 fixed explanation, and a direct read of it answers 403. An unknown lead
 answers 404. A conversation uses one directory lookup and one selected read
 under the request deadline. On a wide screen the directory sits beside the
-transcript. Each page displays the shared STAND-IN banner for a sample.
+transcript. Each page of a sample, a problem page of the chat pages too,
+displays the chat's own STAND-IN banner, which says what is a sample there:
+"STAND-IN These leads and conversations are samples held by the phone trial.
+No real lead is read, and nothing here is an approval." (the template part
+`standin-chat`; the Cards pages keep the banner of the stand-in door).
 
 The seat link negotiates `chat` independently of `genesis` and `decide`.
 It checks the strict wire result, and the app checks its own representation

@@ -1,7 +1,7 @@
 {{define "content"}}
 <h1>Lead <bdi>{{text .Selected.Key maxID}}</bdi>
 <span class="chat-state">{{template "chat-state" .Selected}}</span></h1>
-{{if .StandIn}}{{template "standin"}}{{end}}
+{{if .StandIn}}{{template "standin-chat"}}{{end}}
 {{template "chat-rule"}}
 
 <div class="chat-layout">

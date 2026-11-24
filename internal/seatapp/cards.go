@@ -358,6 +358,8 @@ type (
 	problemData struct {
 		Title   string
 		Message string
+		// StandIn is set by the chat pages alone, for a problem of the
+		// trial's samples: the page shows the chat's banner (standin-chat).
 		StandIn bool
 		Retry   bool
 		Nav     *navView
