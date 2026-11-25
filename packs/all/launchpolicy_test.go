@@ -491,6 +491,36 @@ func TestCodexTerminalHelpScope(t *testing.T) {
 	}
 }
 
+func TestClaudeProseRefusals(t *testing.T) {
+	x := baseline(t, builds[0])
+	_, help, _ := x.b.load(t)
+	lines := strings.Split(string(help), "\n")
+	for _, tc := range []struct {
+		line   int
+		prose  string
+		tokens []string
+	}{
+		{56, "--system-prompt[-file]", []string{"--system-prompt-file", "--system-prompt-file=sample"}},
+		{57, "--append-system-prompt[-file]", []string{"--append-system-prompt-file", "--append-system-prompt-file=sample"}},
+		{156, "--permission-prompt-tool", []string{"--permission-prompt-tool", "--permission-prompt-tool=sample"}},
+		{255, "--tmux=classic", []string{"--tmux=classic"}},
+	} {
+		if !strings.Contains(lines[tc.line-1], tc.prose) {
+			t.Fatalf("review prose spelling on help line %d", tc.line)
+		}
+		for _, token := range tc.tokens {
+			t.Run(token, func(t *testing.T) {
+				y := x
+				y.l.Argv = slices.Insert(slices.Clone(x.l.Argv), 1, token)
+				spec := x.expand(t)
+				spec.Argv = slices.Insert(spec.Argv, 1, token)
+				line(t, y.judge(spec), "refused-option", 1, "argv[1]")
+				line(t, x.recheck(t, spec), "refused-option", 2, "argv[1]")
+			})
+		}
+	}
+}
+
 func TestHelpModeClasses(t *testing.T) {
 	// Reviewed against the permission option's choices and behavior in each capture.
 	want := map[pack.Name]map[string]pack.ModeClass{
