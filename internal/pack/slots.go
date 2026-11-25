@@ -62,10 +62,7 @@ type Launch struct {
 	ExcludedForms   []string          `json:"excluded_forms,omitempty"` // documented forms the ceiling excludes
 }
 
-var (
-	slotCeiling = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,63}$`)
-	envName     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
-)
+var slotCeiling = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,63}$`)
 
 // CheckSlotValue checks one supplied value against the declaration. Consumers
 // still need the independent launch policy and the authenticated request.
@@ -104,6 +101,9 @@ var outsideCeiling = []string{
 	strings.Repeat("a", 65),
 }
 
+// Declaration validation checks anchors and a fixed refusal corpus. A grammar
+// may admit other values outside the ceiling, so callers must still call
+// CheckSlotValue for every supplied slot value.
 func compileGrammar(pattern string) (*regexp.Regexp, error) {
 	expr, err := syntax.Parse(pattern, syntax.Perl)
 	if err != nil {
@@ -128,7 +128,9 @@ func compileGrammar(pattern string) (*regexp.Regexp, error) {
 // pattern would accept ^abc|xyz$, an escaped dollar or multiline anchors.
 func anchored(r *syntax.Regexp, end syntax.Op) bool {
 	switch r.Op {
-	case syntax.OpCapture:
+	case syntax.OpRepeat:
+		return r.Min > 0 && anchored(r.Sub[0], end)
+	case syntax.OpCapture, syntax.OpPlus:
 		return anchored(r.Sub[0], end)
 	case syntax.OpConcat:
 		if end == syntax.OpBeginText {
@@ -173,7 +175,7 @@ func tokenSlot(token string, afterSeparator bool) (Slot, error) {
 	return slot, nil
 }
 
-func (l Launch) validate(destinations map[string]Bind) error {
+func (l Launch) validate(layout BindLayout, destinations map[string]Bind) error {
 	for slot, grammar := range l.Grammars {
 		if slot != ModelSlot && slot != EffortSlot {
 			return fmt.Errorf("no declared grammar for slot %q", slot)
@@ -191,7 +193,7 @@ func (l Launch) validate(destinations map[string]Bind) error {
 	}
 	agents := make(map[string]bool)
 	for _, a := range l.Agents {
-		if !slotCeiling.MatchString(a.Name) || agents[a.Name] || !a.validSource(destinations) {
+		if !slotCeiling.MatchString(a.Name) || agents[a.Name] || !a.validSource(layout, destinations) {
 			return fmt.Errorf("invalid agent name or definition for %q", a.Name)
 		}
 		agents[a.Name] = true
@@ -199,8 +201,13 @@ func (l Launch) validate(destinations map[string]Bind) error {
 	if len(l.Argv) == 0 {
 		return errors.New("launch needs argv")
 	}
-	for i, token := range l.Argv {
-		slot, err := tokenSlot(token, i > 0 && l.Argv[i-1] == "--")
+	afterSeparator := false
+	for _, token := range l.Argv {
+		if token == "--" {
+			afterSeparator = true
+			continue
+		}
+		slot, err := tokenSlot(token, afterSeparator)
 		if err != nil {
 			return err
 		}
@@ -219,10 +226,11 @@ func (l Launch) validate(destinations map[string]Bind) error {
 			}
 		}
 	}
-	for name, value := range l.Env {
-		if !envName.MatchString(name) || strings.ContainsFunc(value, unicode.IsControl) {
-			return fmt.Errorf("invalid fixed environment entry %q", name)
+	if len(l.Env) != 0 {
+		if layout.CheckExtraEnv == nil {
+			return errors.New("launch.env needs a profile environment check")
 		}
+		return layout.CheckExtraEnv(l.Env)
 	}
 	return nil
 }

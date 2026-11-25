@@ -1,6 +1,7 @@
 package pack_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -51,6 +52,48 @@ func TestSlotPlacement(t *testing.T) {
 	}
 }
 
+func TestPositionalSlotsAfterSeparator(t *testing.T) {
+	l := sampleLaunch()
+	l.Argv = []string{"run", "--", "{model}", "fixed", "{effort}"}
+	if err := validateSandbox(pack.Sandbox{Launch: &l}); err != nil {
+		t.Fatal(err)
+	}
+	l.Argv = append(l.Argv, "{resume}")
+	if err := validateSandbox(pack.Sandbox{Launch: &l}); err == nil {
+		t.Error("accepted positional resume")
+	}
+}
+
+func TestLaunchExtraEnv(t *testing.T) {
+	env := make(map[string]string)
+	for i := range 64 {
+		env[fmt.Sprintf("SAMPLE_%d", i)] = strings.Repeat("x", 256)
+	}
+	check := func(wantValid bool) {
+		t.Helper()
+		l := pack.Launch{Argv: []string{"run"}, Env: env}
+		if err := validateSandbox(pack.Sandbox{Launch: &l}); (err == nil) != wantValid {
+			t.Errorf("env with %d names, want valid=%v: %v", len(env), wantValid, err)
+		}
+	}
+	check(true)
+	env["ONE_MORE"] = "x"
+	check(false)
+	env = map[string]string{"SAMPLE": strings.Repeat("x", 257)}
+	check(false)
+	env = map[string]string{"PATH": "example"}
+	check(false)
+	env = map[string]string{"SAMPLE_TOKEN": "example"}
+	check(false)
+
+	d := pack.Declaration{Manifest: packtest.Alpha.Manifest(), Sandbox: map[string]pack.Sandbox{
+		"1.0": {Launch: &pack.Launch{Argv: []string{"run"}, Env: map[string]string{"SAMPLE": "on"}}},
+	}}
+	if err := d.Validate(pack.BindLayout{}); err == nil {
+		t.Error("accepted extra environment without a profile check")
+	}
+}
+
 func TestSlotValues(t *testing.T) {
 	l := sampleLaunch()
 	for slot, good := range map[pack.Slot]string{
@@ -96,6 +139,9 @@ func TestDeclaredGrammar(t *testing.T) {
 		pattern string
 		valid   bool
 	}{
+		{`(?:^low$){1}`, true}, {`(?:^low$)+`, true}, {`(?:^low$){1,3}`, true},
+		{`(?:^low$)?`, false}, {`(?:^low$)*`, false}, {`(?:^low$){0,3}`, false},
+		{`(?:low$)+`, false}, {`(?:^low){1}`, false},
 		{modelGrammar, true}, {`^[A-Z]{1,3}$`, true}, {`^a$|^b$`, true},
 		{`^(abc|def)$`, true}, {`^x|y$`, false}, {`(?m)^x$`, false}, {`^x\$`, false},
 		{`[a-z]+`, false}, {`^([a-z]$`, false}, {`^.*$`, false},

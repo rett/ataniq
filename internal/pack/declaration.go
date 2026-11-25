@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -20,6 +22,8 @@ const (
 	ManifestPath      = "declaration.json"
 	HooksPath         = "hook/rows.json"
 	SandboxPath       = "sandbox/declaration.json"
+	// MaxDeclarationBytes is the total input byte limit for DecodeDeclaration.
+	MaxDeclarationBytes = 1 << 20
 )
 
 // Declaration assembles the files embedded by a pack. Each companion document
@@ -120,11 +124,18 @@ func readDocument(data []byte, path string, dst any) error {
 }
 
 // DecodeDeclaration accepts only the three declaration paths. The layout is
-// supplied by core for checking bind destinations and can be empty for packs
-// that declare no binds. No path in files is opened on the host.
+// supplied by core for checking bind destinations and extra environment
+// variables. No path in files is opened on the host.
 func DecodeDeclaration(files map[string][]byte, layout BindLayout) (*Declaration, error) {
 	if err := checkFiles(files); err != nil {
 		return nil, err
+	}
+	remaining := MaxDeclarationBytes
+	for _, data := range files {
+		if len(data) > remaining {
+			return nil, fmt.Errorf("declaration exceeds %d bytes in total", MaxDeclarationBytes)
+		}
+		remaining -= len(data)
 	}
 	var root struct {
 		Schema string `json:"schema"`
@@ -181,11 +192,14 @@ func (d Declaration) Validate(layout BindLayout) error {
 	if strings.TrimSpace(m.Display) == "" || strings.TrimSpace(m.Vendor) == "" || m.Builds == nil {
 		return errors.New("pack needs display, vendor and builds")
 	}
+	if m.Class == "agent-files" && len(m.Builds) != 0 {
+		return errors.New("agent-files pack cannot declare runtime builds")
+	}
 	if len(m.Words) == 0 && strings.TrimSpace(m.NoWordsReason) == "" {
 		return errors.New("pack needs words or a reason for their absence")
 	}
 	for _, w := range m.Words {
-		if w.Text == "" || (w.Match != "substring" && w.Match != "literal" && w.Match != "token") {
+		if !w.valid() {
 			return fmt.Errorf("invalid pack word %+v", w)
 		}
 	}
@@ -222,6 +236,26 @@ func (d Declaration) Validate(layout BindLayout) error {
 	return nil
 }
 
+func (w Word) valid() bool {
+	switch w.Match {
+	case "substring":
+		letters := 0
+		for _, r := range w.Text {
+			if unicode.IsLetter(r) {
+				letters++
+			}
+		}
+		return letters >= 5
+	case "token":
+		return utf8.RuneCountInString(w.Text) >= 3 && strings.IndexFunc(w.Text, func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+		}) == -1
+	case "literal":
+		return len(w.Text) >= 4
+	}
+	return false
+}
+
 var sha256Hex = regexp.MustCompile("^[a-f0-9]{64}$")
 
 func (b Build) validate() error {
@@ -249,7 +283,7 @@ func (b Build) validate() error {
 		default:
 			return fmt.Errorf("unknown interface stability %q", iface.Stability)
 		}
-		if iface.MinimumVersion == "" || (iface.SchemaDigest != "" && !sha256Hex.MatchString(iface.SchemaDigest)) {
+		if strings.TrimSpace(iface.MinimumVersion) == "" || (iface.SchemaDigest != "" && !sha256Hex.MatchString(iface.SchemaDigest)) {
 			return fmt.Errorf("invalid version or schema digest for %q", iface.Kind)
 		}
 	}

@@ -13,7 +13,7 @@ type HookRow struct {
 	Digests   []HookField `json:"digests,omitempty"`
 	Output    string      `json:"output"`
 	Async     bool        `json:"async"`
-	TimeoutMS int         `json:"timeout_ms"`
+	TimeoutMS int32       `json:"timeout_ms"` // 1 through 3,600,000 milliseconds, inclusive
 }
 
 type HookField struct {
@@ -29,8 +29,11 @@ var (
 func checkHooks(rows []HookRow) error {
 	ids := make(map[string]bool)
 	for _, row := range rows {
-		if !hookID.MatchString(row.ID) || ids[row.ID] || row.Event == "" || row.TimeoutMS <= 0 {
+		if !hookID.MatchString(row.ID) || ids[row.ID] || row.Event == "" {
 			return fmt.Errorf("invalid or repeated hook row %q", row.ID)
+		}
+		if row.TimeoutMS < 1 || row.TimeoutMS > 3_600_000 {
+			return fmt.Errorf("row %q: timeout_ms must be in 1..3600000", row.ID)
 		}
 		ids[row.ID] = true
 		switch row.Output {

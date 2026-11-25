@@ -22,6 +22,10 @@ func TestBindRows(t *testing.T) {
 		{pack.ConfigOverlay, "/config/instructions", "file", false}, {pack.ConfigOverlay, "/config/instructions-old", "file", true},
 		{pack.TreeOverlay, "project/agents", "folder", true}, {pack.TreeOverlay, ".git", "file", false},
 		{pack.TreeOverlay, ".git/config", "file", false}, {pack.TreeOverlay, ".github", "folder", true},
+		{pack.TreeOverlay, "rules[1]", "folder", false}, {pack.TreeOverlay, "rules]", "file", false},
+		{pack.TreeOverlay, "dir/a*b", "file", false}, {pack.TreeOverlay, "a?b", "folder", false},
+		{pack.TreeOverlay, "a\\b", "file", false}, {pack.TreeOverlay, "rules ", "folder", false},
+		{pack.TreeOverlay, "two words/file", "file", true}, {pack.ConfigOverlay, "/config/rules[1]", "file", true},
 		{pack.TreeOverlay, ".", "folder", false}, {pack.TreeOverlay, "../other", "folder", false},
 		{pack.TreeOverlay, "/absolute", "file", false}, {pack.TreeOverlay, "dir//file", "file", false},
 		{pack.SessionStore, "/config/sessions", "folder", true}, {pack.SessionStore, "/config/sessions", "file", false},
@@ -61,6 +65,8 @@ func TestAgentDefinition(t *testing.T) {
 		{"/config/agents/a", true, false}, {"/config/agents/../a", false, false},
 		{"/config/sessions/a", false, false}, {"/config/agents-other/a", false, false},
 		{"/config/optional/a", false, false}, {"/tree/a", false, false}, {"", false, false},
+		{"/tree/editable/defs/a", false, false}, {"/config/editable/def", false, false},
+		{"/config/agents/nested/a", false, true},
 	} {
 		l := sampleLaunch()
 		l.Agents = []pack.Agent{{Name: "sample", Builtin: tc.builtin, Definition: tc.definition}}
@@ -68,6 +74,8 @@ func TestAgentDefinition(t *testing.T) {
 			{Role: pack.ConfigOverlay, Kind: "folder", Inside: "/config/agents"},
 			{Role: pack.ConfigOverlay, Kind: "file", Inside: "/config/file"},
 			{Role: pack.TreeOverlay, Kind: "folder", Inside: ".example"},
+			{Role: pack.TreeOverlay, Kind: "folder", Inside: "editable/defs"},
+			{Role: pack.ConfigOverlay, Kind: "file", Inside: "/config/editable/def"},
 			{Role: pack.ConfigOverlay, Kind: "folder", Inside: "/config/optional", Optional: true},
 			{Role: pack.SessionStore, Kind: "folder", Inside: "/config/sessions"},
 		}}

@@ -31,6 +31,9 @@ type Bind struct {
 type BindLayout struct {
 	Config, Tree string
 	CoreRows     []string
+	// CheckExtraEnv applies the consumer's profile rules to the complete
+	// launch.env map. It is required for a nonempty environment.
+	CheckExtraEnv func(map[string]string) error
 }
 
 func cleanInside(p string) bool {
@@ -53,6 +56,10 @@ func (b Bind) destination(layout BindLayout) (string, error) {
 	case TreeOverlay:
 		if path.IsAbs(p) || p == ".." || below(p, "..") || p == ".git" || below(p, ".git") {
 			return "", fmt.Errorf("invalid tree overlay %q", p)
+		}
+		// Preparation lists the target literally as one anchored Git exclude line.
+		if strings.ContainsAny(p, `\*?[]`) || strings.HasSuffix(p, " ") {
+			return "", fmt.Errorf("tree overlay %q cannot be listed in info/exclude", p)
 		}
 		parent = layout.Tree
 		p = path.Join(parent, p)
@@ -110,7 +117,7 @@ func (s Sandbox) validate(layout BindLayout) error {
 		destinations[p] = row
 	}
 	if s.Launch != nil {
-		return s.Launch.validate(destinations)
+		return s.Launch.validate(layout, destinations)
 	}
 	return nil
 }
@@ -121,7 +128,7 @@ type Agent struct {
 	Definition string `json:"definition,omitempty"` // absolute inside path of a rendered definition
 }
 
-func (a Agent) validSource(destinations map[string]Bind) bool {
+func (a Agent) validSource(layout BindLayout, destinations map[string]Bind) bool {
 	if a.Builtin {
 		return a.Definition == ""
 	}
@@ -130,6 +137,10 @@ func (a Agent) validSource(destinations map[string]Bind) bool {
 	}
 	for p, row := range destinations {
 		if row.Optional || (row.Role != ConfigOverlay && row.Role != TreeOverlay) {
+			continue
+		}
+		// A writable intermediate folder could be renamed and replaced.
+		if parent := path.Dir(p); parent != layout.Config && parent != layout.Tree {
 			continue
 		}
 		if (row.Kind == "file" && a.Definition == p) || (row.Kind == "folder" && below(a.Definition, p)) {

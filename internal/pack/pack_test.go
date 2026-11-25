@@ -59,12 +59,31 @@ func TestRegistry(t *testing.T) {
 	}
 }
 
+func TestFrozenRegistryCopy(t *testing.T) {
+	r := pack.New()
+	if err := r.Register(packtest.Beta); err != nil {
+		t.Fatal(err)
+	}
+	other := *r
+	r.Freeze()
+	_ = other.Register(packtest.Alpha)
+	if _, ok := r.Lookup(packtest.Alpha.Name()); ok {
+		t.Error("registration through a value copy changed the frozen registry")
+	}
+	if _, ok := r.Lookup(packtest.Beta.Name()); !ok {
+		t.Error("freeze lost a registered pack")
+	}
+}
+
 func TestBuiltinIdentity(t *testing.T) {
 	if got, err := pack.BuiltinIdentity("alpha", "1.0.0", "abc123"); err != nil || got != "alpha@1.0.0+abc123" {
 		t.Fatalf("identity = %q, %v", got, err)
 	}
+	if got, err := pack.BuiltinIdentity("alpha", "1.0.0+build+2", "abc123"); err != nil || got != "alpha@1.0.0+build+2+abc123" {
+		t.Fatalf("identity with release metadata = %q, %v", got, err)
+	}
 	for _, parts := range [][3]string{
-		{"!", "1", "rev"}, {"alpha", "", "rev"}, {"alpha", "1", ""}, {"alpha", "1+2", "rev"}, {"alpha", "1", "a@b"},
+		{"!", "1", "rev"}, {"alpha", "", "rev"}, {"alpha", "1", ""}, {"alpha", "1", "a+b"}, {"alpha", "1", "a@b"},
 	} {
 		if _, err := pack.BuiltinIdentity(pack.Name(parts[0]), parts[1], parts[2]); err == nil {
 			t.Errorf("accepted identity components %q", parts)

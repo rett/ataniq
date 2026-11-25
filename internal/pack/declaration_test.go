@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"ataniq/internal/leadsandbox/profile"
 	"ataniq/internal/pack"
 	"ataniq/internal/pack/packtest"
 )
@@ -27,8 +28,31 @@ const hookRows = `[{"id":"row","event":"Ready","fields":[{"name":"value","pointe
 func sampleLayout() pack.BindLayout {
 	return pack.BindLayout{
 		Config: "/config", Tree: "/tree",
-		CoreRows: []string{"/etc/hosts", "/config", "/tree", "/config/skills", "/config/instructions"},
+		CheckExtraEnv: checkProfileEnv,
+		CoreRows:      []string{"/etc/hosts", "/config", "/tree", "/config/skills", "/config/instructions"},
 	}
+}
+
+// Use a synthetic profile so the same validator judges every extra variable.
+func checkProfileEnv(env map[string]string) error {
+	in := profile.Inputs{
+		StateRoot: "/state", Role: "sample", Project: "example",
+		Runtime: profile.Runtimes()[0], RuntimeVersion: "1", Identity: profile.IdentityRoot,
+		AgentInstall: "/owned/agent", ProbeBinary: "/owned/probe", SpecDir: "/owned/spec",
+		ManagedSettings: "/owned/settings", ManagedSettingsSHA256: strings.Repeat("a", 64),
+		LeadSkills: "/owned/skills", InstructionFile: "/owned/instructions",
+		GitIdentityDir: "/owned/identity", QargiInstall: "/owned/qargi", QargiRecordsInside: "/records",
+		AssignmentDir: "/owned/assignment", ProjectionDir: "/owned/projection", ResolvConf: "/owned/resolv",
+		NeverMounted: []string{"/private"}, Term: "xterm",
+	}
+	if in.ManagedInside() == "" {
+		in.ManagedSettingsInside = "/etc/example/settings"
+	}
+	in.GitMeta = in.Layout().GitMeta()
+	for name, value := range env {
+		in.ExtraEnv = append(in.ExtraEnv, profile.EnvVar{Name: name, Value: value})
+	}
+	return in.Validate()
 }
 
 func TestReadDeclaration(t *testing.T) {
@@ -54,6 +78,25 @@ func TestReadDeclaration(t *testing.T) {
 	}
 	if d.Hooks["1.0"][0].Event != "Ready" || d.Sandbox["1.0"].Launch.Env["SAMPLE"] != "on" {
 		t.Fatal("lost build rows")
+	}
+}
+
+func TestDeclarationByteLimit(t *testing.T) {
+	if pack.MaxDeclarationBytes != 1<<20 {
+		t.Fatalf("declaration limit = %d, want 1 MiB", pack.MaxDeclarationBytes)
+	}
+	hooks, sandbox := buildDocument(hookRows), buildDocument(`{}`)
+	padding := pack.MaxDeclarationBytes - len(rootDocument) - len(hooks) - len(sandbox)
+	files := map[string][]byte{
+		pack.ManifestPath: []byte(strings.Repeat(" ", padding) + rootDocument),
+		pack.HooksPath:    hooks, pack.SandboxPath: sandbox,
+	}
+	if _, err := pack.DecodeDeclaration(files, sampleLayout()); err != nil {
+		t.Fatalf("at limit: %v", err)
+	}
+	files[pack.HooksPath] = append([]byte(" "), hooks...)
+	if _, err := pack.DecodeDeclaration(files, sampleLayout()); err == nil {
+		t.Error("accepted a declaration one byte over the total limit")
 	}
 }
 
@@ -98,6 +141,7 @@ func TestManifestValidation(t *testing.T) {
 		{"runtime", "other"}, {"token", "prefix"}, {"terminal", "headless"}, {"terminal", "hooks"},
 		{`["terminal"]`, "[]"}, {`["terminal"]`, `["protocol","protocol"]`}, {"preview", "alpha"},
 		{"hooks", "hook"}, {`"verified_on":""`, `"verified_on":"yesterday"`},
+		{`"minimum_version":"1.0"`, `"minimum_version":" \t"`},
 		{"1.0.0", "1.0"}, {`"minimum_version":`, `"schema_digest":"invalid","minimum_version":`},
 		{`"words":[{"text":"sample","match":"token"}]`, `"words":[]`},
 	} {
@@ -105,6 +149,46 @@ func TestManifestValidation(t *testing.T) {
 		if _, err := pack.DecodeDeclaration(map[string][]byte{pack.ManifestPath: []byte(data)}, pack.BindLayout{}); err == nil {
 			t.Errorf("accepted replacing %q by %q", tc.old, tc.replacement)
 		}
+	}
+}
+
+func TestBoundaryWordMinimums(t *testing.T) {
+	for _, tc := range []struct {
+		match, text string
+		valid       bool
+	}{
+		{"substring", "café", false}, {"substring", "café2", false}, {"substring", "cafés", true},
+		{"token", "é2", false}, {"token", "é23", true}, {"token", "x-y", false},
+		{"literal", "abc", false}, {"literal", "éé", true},
+	} {
+		m := packtest.Alpha.Manifest()
+		m.Words = []pack.Word{{Text: tc.text, Match: tc.match}}
+		err := (pack.Declaration{Manifest: m}).Validate(sampleLayout())
+		if (err == nil) != tc.valid {
+			t.Errorf("%s %q: %v", tc.match, tc.text, err)
+		}
+	}
+}
+
+func TestAgentFilesBuilds(t *testing.T) {
+	data := strings.Replace(rootDocument, `"runtime"`, `"agent-files"`, 1)
+	files := map[string][]byte{pack.ManifestPath: []byte(data)}
+	if _, err := pack.DecodeDeclaration(files, sampleLayout()); err == nil {
+		t.Error("agent-files pack declared a runtime build")
+	}
+	header, _, _ := strings.Cut(data, `"builds":`)
+	files[pack.ManifestPath] = []byte(header + `"builds":[]}`)
+	if _, err := pack.DecodeDeclaration(files, sampleLayout()); err != nil {
+		t.Fatal(err)
+	}
+	for path, companion := range map[string][]byte{
+		pack.HooksPath: buildDocument(hookRows), pack.SandboxPath: buildDocument(`{}`),
+	} {
+		files[path] = companion
+		if _, err := pack.DecodeDeclaration(files, sampleLayout()); err == nil {
+			t.Errorf("agent-files pack declared %s build rows", path)
+		}
+		delete(files, path)
 	}
 }
 
@@ -138,6 +222,20 @@ func TestHookDeclaration(t *testing.T) {
 	}
 }
 
+func TestHookTimeoutRange(t *testing.T) {
+	for _, tc := range []struct {
+		ms    string
+		valid bool
+	}{
+		{"0", false}, {"1", true}, {"3600000", true}, {"3600001", false},
+	} {
+		rows := strings.Replace(hookRows, `"timeout_ms":100`, `"timeout_ms":`+tc.ms, 1)
+		if err := decodeHookRows(rows); (err == nil) != tc.valid {
+			t.Errorf("timeout_ms %s: %v", tc.ms, err)
+		}
+	}
+}
+
 func decodeHookRows(rows string) error {
 	_, err := pack.DecodeDeclaration(map[string][]byte{pack.ManifestPath: []byte(rootDocument), pack.HooksPath: buildDocument(rows)}, sampleLayout())
 	return err
@@ -159,8 +257,15 @@ func TestDeclarationDigest(t *testing.T) {
 	if _, err := pack.DeclarationDigest(files); err == nil {
 		t.Error("accepted policy file in digest")
 	}
-	delete(files, pack.ManifestPath)
-	if _, err := pack.DecodeDeclaration(files, sampleLayout()); err == nil {
-		t.Error("decoded without root")
+}
+
+func TestMissingManifest(t *testing.T) {
+	files := map[string][]byte{pack.HooksPath: buildDocument(hookRows)}
+	want := "missing " + pack.ManifestPath
+	if _, err := pack.DecodeDeclaration(files, sampleLayout()); err == nil || err.Error() != want {
+		t.Errorf("DecodeDeclaration error = %v, want %q", err, want)
+	}
+	if _, err := pack.DeclarationDigest(files); err == nil || err.Error() != want {
+		t.Errorf("DeclarationDigest error = %v, want %q", err, want)
 	}
 }
