@@ -572,6 +572,8 @@ func baseline(t *testing.T, b build) launchCase {
 	x.l.Argv = []string{string(b.name), x.prefix + "{permission_mode}", "--model={model}"}
 	if b.name == "claude" {
 		x.l.Argv = append(x.l.Argv, "--agent={agent}", "--effort={effort}", "--resume={resume}")
+	} else {
+		x.l.Argv = append(x.l.Argv, "--no-daemon")
 	}
 	for _, m := range d.Slots.Permission.Values {
 		x.l.PermissionModes = append(x.l.PermissionModes, pack.PermissionMode{Name: m.Name})
@@ -701,6 +703,8 @@ func TestRealTemplates(t *testing.T) {
 					y.l.Argv = slices.Clone(tc.argv)
 					if b.name == "claude" {
 						y.l.Argv = append(y.l.Argv, "--agent={agent}")
+					} else {
+						y.l.Argv = append(y.l.Argv, "--no-daemon")
 					}
 					line(t, y.judge(spec), tc.code, 1, tc.at, tc.detail...)
 				})
@@ -745,7 +749,7 @@ func TestRealTemplates(t *testing.T) {
 				line(t, y.judge(spec), "form-not-admitted", 1, "argv[5]")
 			} else {
 				y.l.Argv = append(slices.Clone(x.l.Argv), "--agent={agent}")
-				line(t, y.judge(spec), "unknown-token", 1, "argv[3]")
+				line(t, y.judge(spec), "unknown-token", 1, "argv[4]")
 			}
 			y = x
 			y.s.Mode = ""
@@ -1019,7 +1023,7 @@ func TestRealExpectedSpec(t *testing.T) {
 	s.Argv[2] = "--model=gpt-5"
 	line(t, x.judge(s), "template-expansion-differs", 2, "argv[2]")
 	check(s, "expected-differs", "slot[model]")
-	s.Argv = s.Argv[:2]
+	s.Argv = slices.Delete(s.Argv, 2, 3)
 	line(t, x.judge(s), "template-expansion-differs", 2, "argv[2]")
 	check(s, "expected-missing", "slot[model]")
 	y = x
@@ -1030,7 +1034,7 @@ func TestRealExpectedSpec(t *testing.T) {
 	line(t, y.recheck(t, s), "expected-unexpected", 3, "slot[model]")
 	s = spec
 	s.Argv = append(slices.Clone(spec.Argv), x.strict)
-	line(t, x.judge(s), "template-expansion-differs", 2, "argv[3]")
+	line(t, x.judge(s), "template-expansion-differs", 2, "argv[4]")
 	line(t, x.recheck(t, s), "", 0, "")
 	for _, slot := range []string{"agent", "resume", "effort"} {
 		y = x
@@ -1051,7 +1055,7 @@ func TestRealExpectedSpec(t *testing.T) {
 	y = x
 	y.p = decoded(t, d, h)
 	s = spec
-	s.Argv = slices.Clone(spec.Argv[:2])
+	s.Argv = slices.Delete(slices.Clone(spec.Argv), 2, 3)
 	line(t, y.recheck(t, s), "expected-unplaceable", 3, "slot[model]")
 	// T39: evaluate the valid substituted spec before comparing it with
 	// the authenticated request. The request names the real requirements mode.
@@ -1299,4 +1303,25 @@ func TestCodexRequirementsAndMode(t *testing.T) {
 	}
 	files[0].Entries = append(files[0].Entries, lp.Entry{Path: []lp.Comp{"allowed_approval_policies", 1}, Type: "string", Text: "never"})
 	line(t, lp.JudgeFiles(x.p, x.s, inv, files), "file-refused", 2, "file[requirements.toml]")
+}
+
+func TestCodexIsolatedTerminal(t *testing.T) {
+	x, _, _ := testOnlyMode(t, baseline(t, builds[1]))
+	for _, role := range []string{"demo/coord/f1", "demo/lead"} {
+		x.s.Role = role
+		x.l.Argv = []string{"codex", "--ask-for-approval={permission_mode}", "--no-daemon"}
+		spec := x.expand(t)
+		if !slices.Contains(spec.Argv, "--no-daemon") {
+			t.Fatal("expanded terminal can use a shared daemon")
+		}
+		if role == "demo/coord/f1" {
+			line(t, x.judge(spec), "", 0, "")
+			line(t, x.recheck(t, spec), "", 0, "")
+			spec.Argv = spec.Argv[:2]
+			line(t, x.recheck(t, spec), "required-missing", 2, "form[no-daemon]")
+		}
+		x.l.Argv = x.l.Argv[:2]
+		_, r := lp.Expand(x.p, x.l, x.s)
+		line(t, r, "required-missing", 1, "form[no-daemon]")
+	}
 }

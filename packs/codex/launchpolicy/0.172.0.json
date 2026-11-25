@@ -118,6 +118,23 @@
       }
     },
     {
+      "id": "no-daemon",
+      "shape": "exact",
+      "token": "--no-daemon",
+      "kinds": {
+        "coordinator": "required",
+        "lead": "required"
+      },
+      "transports": [
+        "terminal"
+      ],
+      "evidence": {
+        "source": "help",
+        "scope": "main",
+        "line": 130
+      }
+    },
+    {
       "id": "strict",
       "shape": "exact",
       "token": "--strict-config",
@@ -193,7 +210,6 @@
     {"token": "--local-provider", "reason": "outside launch forms"},
     {"prefix": "--local-provider=", "reason": "outside launch forms"},
     {"token": "--no-alt-screen", "reason": "outside launch forms"},
-    {"token": "--no-daemon", "reason": "outside launch forms"},
     {"token": "--oss", "reason": "outside launch forms"},
     {"token": "--output-last-message", "reason": "outside launch forms"},
     {"prefix": "--output-last-message=", "reason": "outside launch forms"},
