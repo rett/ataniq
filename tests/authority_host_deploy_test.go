@@ -8,6 +8,7 @@ package tests
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -18,14 +19,70 @@ import (
 const (
 	ahTestHost = "tester@host.example.invalid"
 	ahTestID   = "0007-ab12cd3"
-	// ahSSHOpts are the driver's ssh options: the agent's key only, no key
-	// file, no password, no keyboard-interactive login, no agent forwarded
-	// further, no shared connection.
-	ahSSHOpts = "-o BatchMode=yes -o IdentityFile=none -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o ForwardAgent=no -o ControlPath=none"
+	// ahSSHOpts are the driver's ssh options, before the known-hosts file and
+	// the port: no ssh configuration file, the checked agent's key only, no
+	// key file, public-key authentication only, no proxy, no shared
+	// connection, no agent forwarded further, only the host key the owner's
+	// known-hosts file names.
+	ahSSHOpts = "-F /dev/null -o BatchMode=yes -o IdentityFile=none -o IdentitiesOnly=no -o IdentityAgent=SSH_AUTH_SOCK -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o GSSAPIAuthentication=no -o HostbasedAuthentication=no -o PKCS11Provider=none -o ProxyCommand=none -o ProxyJump=none -o ControlMaster=no -o ControlPath=none -o ForwardAgent=no -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null"
+	// ahSelfTestKnownHosts is the known-hosts file --self-test shows when
+	// AUTHORITY_HOST_KNOWN_HOSTS is not set.
+	ahSelfTestKnownHosts = "/KNOWN-HOSTS-FILE"
 )
 
-// ahSSHArgs is ahSSHOpts as the recording stub writes ssh's arguments.
-var ahSSHArgs = "[" + strings.Join(strings.Fields(ahSSHOpts), "] [") + "]"
+// ahOpts is the whole option list of the driver for a known-hosts file.
+func ahOpts(knownHosts string) string {
+	return ahSSHOpts + " -o UserKnownHostsFile=" + knownHosts
+}
+
+// ahArgs is an option list as the recording stub writes ssh's arguments.
+func ahArgs(opts string) string {
+	return "[" + strings.Join(strings.Fields(opts), "] [") + "]"
+}
+
+// ahEffective reads ssh's arguments as ssh does: -F FILE, and -o KEY=VALUE,
+// where the first value of a key wins (keys are case-insensitive). It returns
+// the effective options and the keys given more than once.
+func ahEffective(t *testing.T, words []string) (map[string]string, []string) {
+	t.Helper()
+	eff := map[string]string{}
+	var twice []string
+	for i := 0; i < len(words); i++ {
+		var key, value string
+		switch words[i] {
+		case "-F":
+			key, value = "configfile", words[i+1]
+		case "-o":
+			k, v, ok := strings.Cut(words[i+1], "=")
+			if !ok {
+				t.Fatalf("an -o without KEY=VALUE: %q", words[i+1])
+			}
+			key, value = strings.ToLower(k), v
+		default:
+			t.Fatalf("an ssh argument that is not an option: %q in %q", words[i], words)
+		}
+		i++
+		if _, ok := eff[key]; ok {
+			twice = append(twice, key)
+			continue
+		}
+		eff[key] = value
+	}
+	return eff, twice
+}
+
+// ahWantEffective is what every connection of the driver must have, for a
+// known-hosts file.
+func ahWantEffective(knownHosts string) map[string]string {
+	return map[string]string{
+		"configfile": "/dev/null", "batchmode": "yes", "identityfile": "none", "identitiesonly": "no",
+		"identityagent": "SSH_AUTH_SOCK", "preferredauthentications": "publickey", "passwordauthentication": "no",
+		"kbdinteractiveauthentication": "no", "gssapiauthentication": "no", "hostbasedauthentication": "no",
+		"pkcs11provider": "none", "proxycommand": "none", "proxyjump": "none", "controlmaster": "no",
+		"controlpath": "none", "forwardagent": "no", "stricthostkeychecking": "yes",
+		"globalknownhostsfile": "/dev/null", "userknownhostsfile": knownHosts,
+	}
+}
 
 // ahAgentStub replaces the recording ssh-add of bin with one that also exits
 // with STUB_AGENT_RC (default 0): `ssh-add -l` exits 1 for an agent with no
@@ -67,6 +124,15 @@ func testAuthorityHostDeploy(t *testing.T) {
 	ahAgentStub(t, bin, calls)
 	stubRelease := filepath.Join(bin, "ah-release")
 	workDir := t.TempDir()
+	// The owner's known-hosts file, and the options with it; --self-test
+	// without it shows a placeholder.
+	knownHosts := filepath.Join(workDir, "known_hosts")
+	if err := os.WriteFile(knownHosts, []byte("host.example.invalid ssh-ed25519 AAAA\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts := ahOpts(knownHosts)
+	args := ahArgs(opts)
+	stOpts := ahOpts(ahSelfTestKnownHosts)
 
 	// The environment is exactly this: no SSH_AUTH_SOCK of the test's own
 	// reaches the driver, and its ssh-add is the stub, so no agent is asked.
@@ -74,7 +140,7 @@ func testAuthorityHostDeploy(t *testing.T) {
 		return append([]string{"PATH=" + bin + ":/usr/bin:/bin", "HOME=" + workDir}, extra...)
 	}
 	withHost := func(extra ...string) []string {
-		return env(append([]string{"AUTHORITY_HOST_SSH=" + ahTestHost, "SSH_AUTH_SOCK=" + filepath.Join(workDir, "agent.sock")}, extra...)...)
+		return env(append([]string{"AUTHORITY_HOST_SSH=" + ahTestHost, "AUTHORITY_HOST_KNOWN_HOSTS=" + knownHosts, "SSH_AUTH_SOCK=" + filepath.Join(workDir, "agent.sock")}, extra...)...)
 	}
 	run := func(env []string, args ...string) (string, int) {
 		t.Helper()
@@ -205,7 +271,7 @@ func testAuthorityHostDeploy(t *testing.T) {
 		if got := called("ah-release")[0]; got != "ah-release [check] [--no-noaicheck] ["+rel+"]" {
 			t.Errorf("ah-release: %s", got)
 		}
-		want := "rsync [-a] [-n] [--delete] [--itemize-changes] [-e] [ssh " + ahSSHOpts + "] [--] [" + rel + "/] [" + ahTestHost + ":incoming/" + ahTestID + "/]"
+		want := "rsync [-a] [-n] [--delete] [--itemize-changes] [-e] [ssh " + opts + "] [--] [" + rel + "/] [" + ahTestHost + ":incoming/" + ahTestID + "/]"
 		if got := called("rsync")[0]; got != want {
 			t.Errorf("rsync:\n got %s\nwant %s", got, want)
 		}
@@ -253,10 +319,10 @@ func testAuthorityHostDeploy(t *testing.T) {
 		if got := names(); !slices.Equal(got, []string{"ssh-add", "ah-release", "rsync", "ssh"}) {
 			t.Fatalf("calls: %v", got)
 		}
-		if got := called("rsync")[0]; strings.Contains(got, "[-n]") || !strings.Contains(got, "[--delete] [--itemize-changes] [-e] [ssh "+ahSSHOpts+"]") {
+		if got := called("rsync")[0]; strings.Contains(got, "[-n]") || !strings.Contains(got, "[--delete] [--itemize-changes] [-e] [ssh "+opts+"]") {
 			t.Errorf("rsync: %s", got)
 		}
-		wantSSH := "ssh " + ahSSHArgs + " [--] [" + ahTestHost + "] [sudo /usr/local/sbin/ah-switch --from \"$HOME/incoming/" + ahTestID + "\" " + ahTestID + "]"
+		wantSSH := "ssh " + args + " [--] [" + ahTestHost + "] [sudo /usr/local/sbin/ah-switch --from \"$HOME/incoming/" + ahTestID + "\" " + ahTestID + "]"
 		if got := called("ssh")[0]; got != wantSSH {
 			t.Errorf("ssh:\n got %s\nwant %s", got, wantSSH)
 		}
@@ -307,7 +373,7 @@ func testAuthorityHostDeploy(t *testing.T) {
 			t.Errorf("ah-release in PATH: calls %v", got)
 		}
 		// With none there, or a missing file named, the driver refuses.
-		noTool := []string{"PATH=/usr/bin:/bin", "HOME=" + workDir, "AUTHORITY_HOST_SSH=" + ahTestHost}
+		noTool := []string{"PATH=/usr/bin:/bin", "HOME=" + workDir, "AUTHORITY_HOST_SSH=" + ahTestHost, "AUTHORITY_HOST_KNOWN_HOSTS=" + knownHosts}
 		if out, code := run(noTool, "--release", rel, "--dry"); code != 2 || !strings.Contains(out, "ah-release is not in PATH") {
 			t.Errorf("no ah-release: exit %d\n%s", code, out)
 		}
@@ -330,8 +396,8 @@ func testAuthorityHostDeploy(t *testing.T) {
 		}
 		for _, want := range []string{
 			"step 1: ah-release check --no-noaicheck " + rel,
-			"rsync -a -n --delete --itemize-changes -e 'ssh " + ahSSHOpts + "' -- " + rel + "/ <the authority host>:/srv/incoming/" + ahTestID + "/",
-			"step 3: ssh " + ahSSHOpts + " -- <the authority host> ",
+			"rsync -a -n --delete --itemize-changes -e 'ssh " + stOpts + "' -- " + rel + "/ <the authority host>:/srv/incoming/" + ahTestID + "/",
+			"step 3: ssh " + stOpts + " -- <the authority host> ",
 			"/usr/local/sbin/ah-switch --from /srv/incoming/" + ahTestID + " " + ahTestID,
 		} {
 			if !strings.Contains(out, want) {
@@ -395,7 +461,7 @@ func testAuthorityHostDeploy(t *testing.T) {
 				t.Errorf("%v: the plan runs a program of the incoming folder:\n%s", mode, out)
 			}
 			for _, line := range called("ssh") {
-				if want := "ssh " + ahSSHArgs + " [--] [" + ahTestHost + "] [" + wantSwitch + "]"; line != want {
+				if want := "ssh " + args + " [--] [" + ahTestHost + "] [" + wantSwitch + "]"; line != want {
 					t.Errorf("%v: an ssh call other than the switch:\n got %s\nwant %s", mode, line, want)
 				}
 			}
@@ -420,7 +486,7 @@ func testAuthorityHostDeploy(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("self-test: exit %d\n%s", code, out)
 		}
-		want := "step 3: ssh " + ahSSHOpts + " -- <the authority host> 'sudo /usr/local/sbin/ah-switch --from /srv/incoming/" + ahTestID + " " + ahTestID + "'"
+		want := "step 3: ssh " + stOpts + " -- <the authority host> 'sudo /usr/local/sbin/ah-switch --from /srv/incoming/" + ahTestID + " " + ahTestID + "'"
 		if !strings.Contains(out, want) || strings.Contains(out, "step 4") {
 			t.Errorf("the self-test output lacks %q:\n%s", want, out)
 		}
@@ -437,7 +503,7 @@ func testAuthorityHostDeploy(t *testing.T) {
 		if got := ahCalls(t, calls); got != nil {
 			t.Fatalf("self-test called %v", got)
 		}
-		if !strings.Contains(out, "ssh options: "+ahSSHOpts+"\n") {
+		if !strings.Contains(out, "ssh options: "+stOpts+"\n") {
 			t.Errorf("the self-test output lacks the exact ssh options:\n%s", out)
 		}
 		for _, line := range strings.Split(out, "\n") {
@@ -454,7 +520,7 @@ func testAuthorityHostDeploy(t *testing.T) {
 		// refuses before it runs anything, ssh-add included.
 		for _, sock := range [][]string{nil, {"SSH_AUTH_SOCK="}} {
 			for _, mode := range [][]string{{"--dry"}, {"--go", "--confirm", ahTestID}, {}} {
-				noAgent := env(append([]string{"AUTHORITY_HOST_SSH=" + ahTestHost}, sock...)...)
+				noAgent := env(append([]string{"AUTHORITY_HOST_SSH=" + ahTestHost, "AUTHORITY_HOST_KNOWN_HOSTS=" + knownHosts}, sock...)...)
 				out, code := run(noAgent, append([]string{"--release", rel, "--ah-release", stubRelease}, mode...)...)
 				if code != 2 || !strings.Contains(out, "SSH_AUTH_SOCK is not set") || !strings.Contains(out, "never a key file") {
 					t.Errorf("%v %v: exit %d\n%s", sock, mode, code, out)
@@ -488,11 +554,11 @@ func testAuthorityHostDeploy(t *testing.T) {
 			for _, line := range ahCalls(t, calls) {
 				switch {
 				case strings.HasPrefix(line, "ssh "):
-					if !strings.HasPrefix(line, "ssh "+ahSSHArgs+" [--] ") {
+					if !strings.HasPrefix(line, "ssh "+args+" [--] ") {
 						t.Errorf("%v: ssh without the options: %s", mode, line)
 					}
 				case strings.HasPrefix(line, "rsync "):
-					if !strings.Contains(line, "[-e] [ssh "+ahSSHOpts+"]") {
+					if !strings.Contains(line, "[-e] [ssh "+opts+"]") {
 						t.Errorf("%v: rsync without the options: %s", mode, line)
 					}
 				}
@@ -500,6 +566,203 @@ func testAuthorityHostDeploy(t *testing.T) {
 					t.Errorf("%v: a key file is named: %s", mode, line)
 				}
 			}
+		}
+	})
+
+	t.Run("needs the owner's known-hosts file", func(t *testing.T) {
+		rel := ahFakeRelease(t, ahTestID)
+		noKH := env("AUTHORITY_HOST_SSH="+ahTestHost, "SSH_AUTH_SOCK="+filepath.Join(workDir, "agent.sock"))
+		for _, mode := range [][]string{{"--dry"}, {"--go", "--confirm", ahTestID}, {}} {
+			out, code := run(noKH, append([]string{"--release", rel, "--ah-release", stubRelease}, mode...)...)
+			if code != 2 || !strings.Contains(out, "AUTHORITY_HOST_KNOWN_HOSTS is not set") {
+				t.Errorf("%v: exit %d\n%s", mode, code, out)
+			}
+			if got := ahCalls(t, calls); got != nil {
+				t.Errorf("%v: something was called: %v", mode, got)
+			}
+		}
+		link := filepath.Join(workDir, "kh-link")
+		if err := os.Symlink(knownHosts, link); err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range []struct{ value, want string }{
+			{"known_hosts", "must be an absolute path"},
+			{"/a b", "must be an absolute path"},
+			{"/a/../b", "must be an absolute path"},
+			{"/a;b", "must be an absolute path"},
+			{"/a/", "must be an absolute path"},
+			{filepath.Join(workDir, "missing"), "must name a regular file (not a link)"},
+			{workDir, "must name a regular file (not a link)"},
+			{link, "must name a regular file (not a link)"},
+		} {
+			out, code := run(env("AUTHORITY_HOST_SSH="+ahTestHost, "AUTHORITY_HOST_KNOWN_HOSTS="+c.value, "SSH_AUTH_SOCK=x"), "--release", rel, "--ah-release", stubRelease, "--dry")
+			if code != 2 || !strings.Contains(out, "AUTHORITY_HOST_KNOWN_HOSTS "+c.want) {
+				t.Errorf("%q: exit %d\n%s", c.value, code, out)
+			}
+			if got := ahCalls(t, calls); got != nil {
+				t.Errorf("%q: called %v", c.value, got)
+			}
+		}
+		// --self-test needs none, and shows the owner's when it is set.
+		if out, code := run(env(), "--release", rel, "--self-test"); code != 0 || !strings.Contains(out, "-o UserKnownHostsFile="+ahSelfTestKnownHosts+"\n") {
+			t.Errorf("self-test: exit %d\n%s", code, out)
+		}
+		if out, code := run(env("AUTHORITY_HOST_KNOWN_HOSTS="+knownHosts), "--release", rel, "--self-test"); code != 0 || !strings.Contains(out, "ssh options: "+opts+"\n") {
+			t.Errorf("self-test with the file: exit %d\n%s", code, out)
+		}
+	})
+
+	t.Run("an alias does not work, a port does", func(t *testing.T) {
+		rel := ahFakeRelease(t, ahTestID)
+		for _, alias := range []string{"authority", "host.example.invalid"} {
+			out, code := run(env("AUTHORITY_HOST_SSH="+alias), "--release", rel, "--dry")
+			if code != 2 || !strings.Contains(out, "an alias does not work") {
+				t.Errorf("%q: exit %d\n%s", alias, code, out)
+			}
+		}
+		for _, bad := range []string{"0", "65536", "22;x", "-1", "022", "port"} {
+			out, code := run(withHost("AUTHORITY_HOST_PORT="+bad), "--release", rel, "--ah-release", stubRelease, "--dry")
+			if code != 2 || !strings.Contains(out, "AUTHORITY_HOST_PORT must be a port number") {
+				t.Errorf("port %q: exit %d\n%s", bad, code, out)
+			}
+			if got := ahCalls(t, calls); got != nil {
+				t.Errorf("port %q: called %v", bad, got)
+			}
+		}
+		if out, code := run(withHost("AUTHORITY_HOST_PORT=2222"), "--release", rel, "--ah-release", stubRelease, "--go", "--confirm", ahTestID); code != 0 {
+			t.Fatalf("port: exit %d\n%s", code, out)
+		}
+		if got := called("ssh")[0]; !strings.HasPrefix(got, "ssh "+ahArgs(opts+" -o Port=2222")+" [--] ") {
+			t.Errorf("port: %s", got)
+		}
+		if got := called("rsync")[0]; !strings.Contains(got, "[-e] [ssh "+opts+" -o Port=2222]") {
+			t.Errorf("port: %s", got)
+		}
+	})
+
+	// The options as ssh reads them, the first value of each winning: every
+	// connection, the ssh of rsync too, has exactly the effective options of
+	// ahWantEffective, each given once, and reads no configuration file.
+	t.Run("the effective options of every connection", func(t *testing.T) {
+		rel := ahFakeRelease(t, ahTestID)
+		for _, c := range []struct {
+			extra []string
+			port  string
+		}{{nil, ""}, {[]string{"AUTHORITY_HOST_PORT=2200"}, "2200"}} {
+			want := ahWantEffective(knownHosts)
+			if c.port != "" {
+				want["port"] = c.port
+			}
+			for _, mode := range [][]string{{"--dry"}, {"--go", "--confirm", ahTestID}} {
+				if out, code := run(withHost(c.extra...), append([]string{"--release", rel, "--ah-release", stubRelease}, mode...)...); code != 0 {
+					t.Fatalf("%v: exit %d\n%s", mode, code, out)
+				}
+				n := 0
+				for _, line := range ahCalls(t, calls) {
+					var words []string
+					switch {
+					case strings.HasPrefix(line, "ssh "):
+						before, _, ok := strings.Cut(strings.TrimPrefix(line, "ssh "), " [--] ")
+						if !ok {
+							t.Fatalf("a connection without --: %s", line)
+						}
+						words = strings.Fields(strings.NewReplacer("[", "", "]", "").Replace(before))
+					case strings.HasPrefix(line, "rsync "):
+						i := strings.Index(line, "[-e] [ssh ")
+						if i < 0 {
+							t.Fatalf("rsync without its -e: %s", line)
+						}
+						rest := line[i+len("[-e] [ssh "):]
+						words = strings.Fields(rest[:strings.Index(rest, "]")])
+					default:
+						continue
+					}
+					n++
+					if len(words) < 2 || words[0] != "-F" || words[1] != "/dev/null" {
+						t.Errorf("%v: the connection does not start with -F /dev/null: %s", mode, line)
+					}
+					got, twice := ahEffective(t, words)
+					if len(twice) != 0 {
+						t.Errorf("%v: options given twice %q: %s", mode, twice, line)
+					}
+					for k, v := range want {
+						if got[k] != v {
+							t.Errorf("%v: %s is %q, want %q: %s", mode, k, got[k], v, line)
+						}
+					}
+					for k := range got {
+						if _, ok := want[k]; !ok {
+							t.Errorf("%v: an option the driver should not set: %s=%s", mode, k, got[k])
+						}
+					}
+				}
+				if (mode[0] == "--dry" && n != 1) || (mode[0] == "--go" && n != 2) {
+					t.Errorf("%v: %d connections checked", mode, n)
+				}
+			}
+		}
+	})
+
+	// What the ssh client itself makes of the options: its -G prints the
+	// effective configuration and connects to nothing. A hostile ~/.ssh/config
+	// of the development host changes none of it.
+	t.Run("the client's own view with a hostile config", func(t *testing.T) {
+		client, err := exec.LookPath("ssh")
+		if err != nil {
+			t.Skip("no ssh client is installed")
+		}
+		rel := ahFakeRelease(t, ahTestID)
+		out, code := run(env("AUTHORITY_HOST_KNOWN_HOSTS="+knownHosts), "--release", rel, "--self-test")
+		if code != 0 {
+			t.Fatalf("self-test: exit %d\n%s", code, out)
+		}
+		var words []string
+		for _, line := range strings.Split(out, "\n") {
+			if o, ok := strings.CutPrefix(line, "ssh options: "); ok {
+				words = strings.Fields(o)
+			}
+		}
+		home := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		hostile := "Host *\n  IdentityFile ~/.ssh/evil-key\n  IdentityAgent /run/evil-agent.sock\n  ProxyJump evil@jump.invalid\n" +
+			"  ControlMaster auto\n  ControlPath ~/.ssh/evil-%r@%h\n  ForwardAgent yes\n  User evil\n  Port 2222\n  PasswordAuthentication yes\n" +
+			"  StrictHostKeyChecking no\n  UserKnownHostsFile ~/.ssh/evil_known_hosts\n  PKCS11Provider /usr/lib/evil.so\n"
+		if err := os.WriteFile(filepath.Join(home, ".ssh", "config"), []byte(hostile), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(client, append(words, "-G", ahTestHost)...)
+		cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin", "SSH_AUTH_SOCK=" + filepath.Join(workDir, "agent.sock")}
+		data, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("-G: %v\n%s", err, data)
+		}
+		got := map[string][]string{}
+		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			k, v, _ := strings.Cut(line, " ")
+			got[k] = append(got[k], v)
+		}
+		for k, v := range map[string]string{
+			"user": "tester", "port": "22", "batchmode": "yes", "identityfile": "none", "identitiesonly": "no",
+			"identityagent": "SSH_AUTH_SOCK", "preferredauthentications": "publickey", "passwordauthentication": "no",
+			"kbdinteractiveauthentication": "no", "gssapiauthentication": "no", "hostbasedauthentication": "no",
+			"controlmaster": "false", "forwardagent": "no", "stricthostkeychecking": "true",
+			"globalknownhostsfile": "/dev/null", "userknownhostsfile": knownHosts,
+		} {
+			if !slices.Equal(got[k], []string{v}) {
+				t.Errorf("-G says %s %q, want %q", k, got[k], v)
+			}
+		}
+		for _, k := range []string{"proxyjump", "proxycommand", "controlpath", "pkcs11provider"} {
+			for _, v := range got[k] {
+				if v != "none" {
+					t.Errorf("-G says %s %s", k, v)
+				}
+			}
+		}
+		if strings.Contains(string(data), "evil") || strings.Contains(string(data), "2222") {
+			t.Errorf("the hostile config reached the connection:\n%s", data)
 		}
 	})
 
@@ -674,6 +937,20 @@ func testAuthorityHostDeployDoc(t *testing.T) {
 			t.Errorf("DEPLOY.md sets the host variable to a value: %s", line)
 		}
 	}
+	for _, want := range []string{
+		"export AUTHORITY_HOST_KNOWN_HOSTS=/ABSOLUTE/PATH/known_hosts",
+		"export AUTHORITY_HOST_PORT=22",
+		"a host name or an address, not an ssh alias",
+		"ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub",
+		"Host key verification failed.",
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("DEPLOY.md does not say %q", want)
+		}
+	}
+	if strings.Contains(string(data), "USER@HOST` or an ssh alias") {
+		t.Error("DEPLOY.md still offers an ssh alias for the host")
+	}
 }
 
 // testAuthorityHostDeployKey checks the owner's procedure for the deploy key:
@@ -688,20 +965,34 @@ func testAuthorityHostDeployKey(t *testing.T, data string, section func(from, to
 	for _, want := range []string{
 		"The deploy key never lives on the development host (the AI host).",
 		ahSSHOpts,
-		"It refuses to start when SSH_AUTH_SOCK is unset or its agent holds no key.",
+		"It refuses to start when AUTHORITY_HOST_KNOWN_HOSTS is not a regular file, or when SSH_AUTH_SOCK is unset or its agent holds no key.",
+		"No ssh configuration file is read at all (-F /dev/null: no IdentityFile, IdentityAgent, ProxyJump, Match or alias of yours or of the system's applies)",
+		"and -o Port=N after them when AUTHORITY_HOST_PORT is set",
 		"No private key for the authority host, the git remote or signing is kept on the development host",
 		"ssh-keygen -t ed25519 -f DEPLOY-KEY",
 		"ssh-add -c -t 30m -h AI-HOST -h 'AI-HOST>USER@AUTHORITY-HOST' DEPLOY-KEY",
 		"Forward it for the deploy session only",
-		"ssh -A AI-HOST",
-		"ForwardAgent ~/.ssh/outward-agent.sock",
+		"ssh -o ControlMaster=no -o ControlPath=none -o ForwardAgent=~/.ssh/outward-agent.sock AI-HOST",
+		"ssh -o ControlMaster=no -o ControlPath=none -A AI-HOST",
+		"ForwardAgent ~/.ssh/outward-agent.sock ControlMaster no ControlPath none",
+		"a login that reuses an existing master connection gets that master's forwarded agent",
+		"needs OpenSSH 8.9 or newer at both ends of every hop, client and server",
+		"the development host's sshd (which receives the forwarded agent) and its ssh",
+		"the authority host's sshd (which proves to the agent which host it is)",
+		"accept a confirmation only right after you started the step that causes it",
+		"Refuse any other prompt, and any prompt beyond that count, and treat it as an incident",
+		"tear the forwarding down at once instead of waiting for -t",
+		"SSH_AUTH_SOCK=~/.ssh/outward-agent.sock ssh-add -D",
+		"and close the forwarded login (exit)",
+		"A FIDO2 key follows its own minimum: OpenSSH 8.2 or newer on the laptop",
+		"with -h, every hop still needs OpenSSH 8.9 or newer, client and server",
 		`restrict,from="192.0.2.10" ssh-ed25519 AAAA...PUBLIC-KEY deploy-key`,
 		"There is no forced command (command=)",
 		"sudo -l -U DEPLOYUSER lists the one ah-switch form and nothing else",
 		"refuse the confirmation on the laptop (or let it time out): it ends rsync -n failed and nothing is copied",
 		"If no confirmation popped, the key is not loaded with -c",
 		"deploy.sh --dry refuses (SSH_AUTH_SOCK is not set)",
-		`env -u SSH_AUTH_SOCK ssh -o BatchMode=yes -o IdentityAgent=none "$AUTHORITY_HOST_SSH" true`,
+		`env -u SSH_AUTH_SOCK ssh -o BatchMode=yes -o IdentityAgent=none -o ControlMaster=no -o ControlPath=none -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$AUTHORITY_HOST_KNOWN_HOSTS" "$AUTHORITY_HOST_SSH" true`,
 		"Permission denied (publickey)",
 		"ssh-keygen -lf /home/DEPLOYUSER/.ssh/authorized_keys",
 		"only the confirmation becomes a touch",
@@ -741,10 +1032,21 @@ func testAuthorityHostDeployKey(t *testing.T, data string, section func(from, to
 		}
 	}
 	ahPlaceholdersOnly(t, "DEPLOY.md, The deploy key", key)
+	for _, line := range strings.Split(data, "\n") {
+		line = strings.TrimSpace(line)
+		if (strings.HasPrefix(line, "ssh ") || strings.HasPrefix(line, "env -u SSH_AUTH_SOCK ssh ")) &&
+			(strings.HasSuffix(line, " AI-HOST") || strings.Contains(line, "$AUTHORITY_HOST_SSH\" true")) &&
+			!strings.Contains(line, "-o ControlMaster=no -o ControlPath=none") {
+			t.Errorf("DEPLOY.md makes a login that may reuse a shared connection: %s", line)
+		}
+	}
+	if strings.Contains(ahFlat(data), "The authority host needs OpenSSH 8.2 or newer.") {
+		t.Error("DEPLOY.md still gives 8.2 as the authority host's minimum with -h")
+	}
 	// The procedure's every use of ssh in the manual carries the agent-only
 	// options, and the driver prints the same.
 	for _, line := range strings.Split(data, "\n") {
-		if strings.Contains(line, "rsync -a -e 'ssh ") && !strings.Contains(line, ahSSHOpts) {
+		if (strings.Contains(line, "rsync -a -e 'ssh ") || strings.Contains(line, `rsync -a -e "ssh `)) && !strings.Contains(line, ahSSHOpts+" -o UserKnownHostsFile=") {
 			t.Errorf("DEPLOY.md copies with ssh options other than the driver's: %s", line)
 		}
 	}
@@ -914,13 +1216,23 @@ func TestAuthorityHostDeployOutwardKeys(t *testing.T) {
 		"git remote set-url --push origin ssh://git@GIT-HOST/OWNER/REPO.git",
 		"is read-only: anonymous https when the repository is public",
 		"ssh-add -c -t 30m -h AI-HOST -h 'AI-HOST>git@GIT-HOST' PUSH-KEY",
-		"git config core.sshCommand 'ssh -o IdentityFile=none -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no",
+		"git config core.sshCommand 'ssh " + ahSSHOpts + " -o UserKnownHostsFile=/KNOWN-HOSTS-FILE'",
+		"No ssh configuration file is read (-F /dev/null), so no IdentityFile, IdentityAgent or ProxyJump of yours applies",
 		"git config gpg.format ssh",
 		"git config user.signingkey 'key::ssh-ed25519 AAAA...PUBLIC-KEY signing-key'",
 		"the private part stays in the agent on the laptop",
 		"ssh-add -c -t 30m SIGNING-KEY",
 		"refuses it for any other signature",
 		"Branch and tag protection on the git host is the owner's setting",
+		"on a connection of its own (ControlMaster=no, ControlPath=none), and torn down when the step is done: ssh-add -D on the outward agent, then close the forwarded login",
+		"A confirmation is accepted only right after the owner started the step that causes it; any other prompt is refused and treated as an incident",
+		"## The cutover: from old keys to the laptop's",
+		"Check the fingerprints of all three keys.",
+		"ssh-keygen -lf PUSH-KEY, ssh-keygen -lf SIGNING-KEY and ssh-keygen -lf DEPLOY-KEY",
+		"Withdraw the old trust for new operations.",
+		`keep an old signing key only with valid-before="DATE"`,
+		"Check what remains usable once the laptop's keys are loaded.",
+		"What remains usable is the laptop's keys, through the forwarded agent, within their -h limits, one confirmation at a time.",
 	} {
 		if !strings.Contains(flat, want) {
 			t.Errorf("docs/outward-keys.md does not say %q", want)

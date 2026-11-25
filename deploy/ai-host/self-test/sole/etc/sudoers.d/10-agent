@@ -1,0 +1,2 @@
+# the only grant of agent, without a password
+agent ALL=(ALL) NOPASSWD: ALL

@@ -1,0 +1,32 @@
+== user
+user: agent, uid 1001; groups: agent
+== sudo
+read: /etc/sudoers, /etc/sudoers.d/10-tools
+rule: /etc/sudoers:1: users root; applies to agent: no; password: asked: root ALL=(ALL:ALL) ALL
+rule: /etc/sudoers.d/10-tools:1: users agent,other; applies to agent: yes; password: not asked for some commands (as root): agent, other ALL = (root) NOPASSWD: /usr/bin/apt, PASSWD: ALL
+sudo -l -U agent also lists, without a password: (root) NOPASSWD: /usr/bin/apt, PASSWD: ALL
+agent has a usable password: sudo can still ask for it
+== by hand: the edits the owner makes with visudo before --apply
+by hand 1: /etc/sudoers.d/10-tools:1: agent, other ALL = (root) NOPASSWD: /usr/bin/apt, PASSWD: ALL
+  why: it gives agent sudo without a password; it also applies to others (agent,other), and the edit changes their sudo too
+  do: as root, open the file with: visudo -f '/etc/sudoers.d/10-tools'
+  do: on line 1, delete each NOPASSWD: tag (or change it to PASSWD:), or delete the whole rule
+  do: save it (visudo checks it), then run --dry again
+== plan: what --apply writes (new files only; it never moves, edits or removes a file)
+stop: no other rule gives agent sudo with a password: once the passwordless rules are gone, sudo would refuse agent, not ask for a password
+  do: first add a rule that asks for it, for example agent ALL=(ALL:ALL) ALL (as root: visudo -f '/etc/sudoers.d/50-agent'); if agent is to have no sudo at all, make sure root can log in another way first; this stop goes when the passwordless rules do
+change 1: write /etc/sudoers.d/zz-ap14-level1-agent (a new file), mode 0440, owner root, with:
+    | # AP14 level 1, written by ap14-level1.sh: sudo asks agent for the password
+    | # every time; no cached credentials.
+    | Defaults:agent timestamp_timeout=0
+change 2: create the folder /etc/ataniq (a new folder), mode 0755, owner root
+change 3: create the standing-grants register /etc/ataniq/grants (a new folder), mode 0755, owner root: the owner's verbatim words go there; agents may read it, never write it
+change 4: write /etc/ataniq/grants/README (a new file), mode 0644, owner root
+--apply refuses while a stop or a by-hand edit is listed: it writes nothing until each is handled
+== routes to root (reported, never changed by this script)
+note: setuid search covers: nothing
+note: user-writable test: find -L PATH ( -user 1001 -o -perm -0002 -o ( -perm -0020 ( -group 1001 ) ) )
+no route found
+== summary
+changes: 4; by hand: 1; stops: 1; findings: 0
+exit: 1

@@ -1,53 +1,89 @@
 == user
 user: agent, uid 1001; groups: wheel agent
 == sudo
-read: /etc/sudoers, /etc/sudoers.d/05-alias, /etc/sudoers.d/15-mixed, /etc/sudoers.d/16-netgroup, /etc/sudoers.d/17-hosts, /etc/sudoers.d/zzz-late, /etc/sudoers.site/extra
-rule: /etc/sudoers:3: Defaults !authenticate: Defaults:%wheel !authenticate
-rule: /etc/sudoers:5: NOPASSWD, as root: %wheel ALL=(ALL:ALL) NOPASSWD: ALL
-rule: /etc/sudoers.d/05-alias:3: NOPASSWD, as other: OPS ALL = (DBA) NOPASSWD: /usr/bin/psql
-rule: /etc/sudoers.d/15-mixed:1: NOPASSWD, as root: agent ALL=(root) NOPASSWD: /usr/bin/apt
-rule: /etc/sudoers.d/16-netgroup:1: NOPASSWD, as root: +admins ALL=(ALL) NOPASSWD: ALL
-rule: /etc/sudoers.d/17-hosts:1: NOPASSWD, as root: agent ALL = NOPASSWD: /usr/bin/a : otherhost = PASSWD: /usr/bin/b
-rule: /etc/sudoers.site/extra:1: NOPASSWD, as root: #1001 ALL=(ALL) NOPASSWD:ALL
-== plan: what --apply changes, in this order
-change 1: write /etc/sudoers.d/zz-ap14-level1, mode 0440, owner root, with:
-    | # AP14 level 1, written by ap14-level1.sh: sudo asks for the password every
-    | # time; no cached credentials for this user.
+read: /etc/sudoers, /etc/sudoers.d/05-alias, /etc/sudoers.d/15-mixed, /etc/sudoers.d/16-netgroup, /etc/sudoers.d/17-hosts, /etc/sudoers.d/18-exclusion, /etc/sudoers.d/zzz-late, /etc/sudoers.site/extra, /etc/sudoers.missing
+rule: /etc/sudoers:3: Defaults !authenticate for %wheel; applies to agent: yes; password: not asked: Defaults:%wheel !authenticate
+rule: /etc/sudoers:4: exempt_group wheel (its members never type a password); applies to agent: yes: Defaults exempt_group=wheel
+rule: /etc/sudoers:6: users root; applies to agent: no; password: asked: root ALL=(ALL:ALL) ALL
+rule: /etc/sudoers:7: users %wheel; applies to agent: yes; password: not asked (as root): %wheel ALL=(ALL:ALL) NOPASSWD: ALL
+rule: /etc/sudoers:8: users agent; applies to agent: yes; password: asked: agent ALL = (root) PASSWD: /usr/bin/b, /usr/bin/c
+rule: /etc/sudoers:9: users other; applies to agent: no; password: not asked (as root): other ALL=(ALL) NOPASSWD: ALL
+rule: /etc/sudoers.d/05-alias:3: users OPS; applies to agent: yes; password: not asked (as other): OPS ALL = (DBA) NOPASSWD: /usr/bin/psql
+rule: /etc/sudoers.d/15-mixed:1: users agent; applies to agent: yes; password: not asked (as root): agent ALL=(root) NOPASSWD: /usr/bin/apt
+rule: /etc/sudoers.d/16-netgroup:1: users +admins; applies to agent: maybe; password: not asked (as root): +admins ALL=(ALL) NOPASSWD: ALL
+rule: /etc/sudoers.d/17-hosts:1: users agent; applies to agent: yes; password: not asked for some commands (as root): agent ALL = NOPASSWD: /usr/bin/a : otherhost = PASSWD: /usr/bin/b
+rule: /etc/sudoers.d/18-exclusion:1: users agent; applies to agent: yes; password: not asked (as root): agent ALL=(ALL) NOPASSWD: ALL, !/usr/bin/su
+rule: /etc/sudoers.site/extra:1: users #1001; applies to agent: yes; password: not asked (as root): #1001 ALL=(ALL) NOPASSWD:ALL
+== by hand: the edits the owner makes with visudo before --apply
+by hand 1: /etc/sudoers:3: Defaults:%wheel !authenticate
+  why: !authenticate lets %wheel run sudo without a password
+  do: as root, open the file with: visudo -f '/etc/sudoers'
+  do: on line 3, delete !authenticate (the whole line when it is the only setting)
+  do: save it (visudo checks it), then run --dry again
+by hand 2: /etc/sudoers:4: Defaults exempt_group=wheel
+  why: agent is in wheel, whose members never type a password for sudo
+  do: as root, open the file with: visudo -f '/etc/sudoers'
+  do: on line 4, delete the exempt_group setting (the whole line when it is the only setting)
+  do: save it (visudo checks it), then run --dry again
+by hand 3: /etc/sudoers:7: %wheel ALL=(ALL:ALL) NOPASSWD: ALL
+  why: it gives agent sudo without a password; it also applies to others (%wheel), and the edit changes their sudo too
+  do: as root, open the file with: visudo -f '/etc/sudoers'
+  do: on line 7, delete each NOPASSWD: tag (or change it to PASSWD:), or delete the whole rule
+  do: save it (visudo checks it), then run --dry again
+by hand 4: /etc/sudoers.d/05-alias:3: OPS ALL = (DBA) NOPASSWD: /usr/bin/psql
+  why: it gives agent sudo without a password; it also applies to others (OPS), and the edit changes their sudo too
+  do: as root, open the file with: visudo -f '/etc/sudoers.d/05-alias'
+  do: on line 3, delete each NOPASSWD: tag (or change it to PASSWD:), or delete the whole rule
+  do: save it (visudo checks it), then run --dry again
+by hand 5: /etc/sudoers.d/15-mixed:1: agent ALL=(root) NOPASSWD: /usr/bin/apt
+  why: it gives agent sudo without a password
+  do: as root, open the file with: visudo -f '/etc/sudoers.d/15-mixed'
+  do: on line 1, delete each NOPASSWD: tag (or change it to PASSWD:), or delete the whole rule
+  do: save it (visudo checks it), then run --dry again
+by hand 6: /etc/sudoers.d/16-netgroup:1: +admins ALL=(ALL) NOPASSWD: ALL
+  why: it may give agent sudo without a password (+admins is a netgroup or non-Unix group: check whether agent is in it); the script cannot tell, so --apply waits for the edit
+  do: as root, open the file with: visudo -f '/etc/sudoers.d/16-netgroup'
+  do: on line 1, delete each NOPASSWD: tag (or change it to PASSWD:), or delete the whole rule
+  do: save it (visudo checks it), then run --dry again
+by hand 7: /etc/sudoers.d/17-hosts:1: agent ALL = NOPASSWD: /usr/bin/a : otherhost = PASSWD: /usr/bin/b
+  why: it gives agent sudo without a password
+  do: as root, open the file with: visudo -f '/etc/sudoers.d/17-hosts'
+  do: on line 1, delete each NOPASSWD: tag (or change it to PASSWD:), or delete the whole rule
+  do: save it (visudo checks it), then run --dry again
+by hand 8: /etc/sudoers.d/18-exclusion:1: agent ALL=(ALL) NOPASSWD: ALL, !/usr/bin/su
+  why: it gives agent sudo without a password
+  do: as root, open the file with: visudo -f '/etc/sudoers.d/18-exclusion'
+  do: on line 1, delete each NOPASSWD: tag (or change it to PASSWD:), or delete the whole rule
+  do: save it (visudo checks it), then run --dry again
+by hand 9: /etc/sudoers.site/extra:1: #1001 ALL=(ALL) NOPASSWD:ALL
+  why: it gives agent sudo without a password
+  do: as root, open the file with: visudo -f '/etc/sudoers.site/extra'
+  do: on line 1, delete each NOPASSWD: tag (or change it to PASSWD:), or delete the whole rule
+  do: save it (visudo checks it), then run --dry again
+== plan: what --apply writes (new files only; it never moves, edits or removes a file)
+stop: /etc/sudoers.missing:0: not a readable file; not read: the audit cannot tell what sudo reads there
+  do: read it by hand and fix it with visudo (so that the script can read it), then run --dry again
+stop: no other rule gives agent sudo with a password: once the passwordless rules are gone, sudo would refuse agent, not ask for a password
+  do: first add a rule that asks for it, for example agent ALL=(ALL:ALL) ALL (as root: visudo -f '/etc/sudoers.d/50-agent'); if agent is to have no sudo at all, make sure root can log in another way first; this stop goes when the passwordless rules do
+change 1: write /etc/sudoers.d/zz-ap14-level1-agent (a new file), mode 0440, owner root, with:
+    | # AP14 level 1, written by ap14-level1.sh: sudo asks agent for the password
+    | # every time; no cached credentials.
     | Defaults:agent timestamp_timeout=0
-stop: /etc/sudoers:3: Defaults:%wheel !authenticate
-  do: edit it with visudo -f /etc/sudoers: drop NOPASSWD (or !authenticate) for agent and its groups, or remove the line; then run --dry again
-stop: /etc/sudoers:5: %wheel ALL=(ALL:ALL) NOPASSWD: ALL
-  do: edit it with visudo -f /etc/sudoers: drop NOPASSWD (or !authenticate) for agent and its groups, or remove the line; then run --dry again
-stop: /etc/sudoers.d/05-alias:3: OPS ALL = (DBA) NOPASSWD: /usr/bin/psql
-  do: edit it with visudo -f /etc/sudoers.d/05-alias: drop NOPASSWD (or !authenticate) for agent and its groups, or remove the line; then run --dry again
-stop: /etc/sudoers.d/15-mixed:1: agent ALL=(root) NOPASSWD: /usr/bin/apt
-  do: edit it with visudo -f /etc/sudoers.d/15-mixed: drop NOPASSWD (or !authenticate) for agent and its groups, or remove the line; then run --dry again
-change 2: move /etc/sudoers.d/17-hosts aside into /etc/ap14-level1/backup-<UTC time of the run>/ (its one rule, line 1: agent ALL = NOPASSWD: /usr/bin/a : otherhost = PASSWD: /usr/bin/b)
-stop: /etc/sudoers.site/extra:1: #1001 ALL=(ALL) NOPASSWD:ALL
-  do: edit it with visudo -f /etc/sudoers.site/extra: drop NOPASSWD (or !authenticate) for agent and its groups, or remove the line; then run --dry again
-stop: agent has no usable password (passwd -S says NP): after the change sudo would ask for a password agent does not have
+stop: sudo -l -U agent failed (exit 127): the effective policy is unknown: (no sudo-l.txt in the fixtures)
+  do: run sudo -l -U agent as root and read the error; fix it, then run --dry again
+stop: agent has no usable password (passwd -S says NP): sudo would ask for a password agent does not have
   do: set one with passwd agent (as root), or make sure root can log in another way, then run --dry again
 stop: /etc/ataniq exists but is not a folder owned by root that only root may write
-  do: look at who made it and what it holds, move it away by hand, then run --dry again
---apply refuses while a stop is listed: it changes nothing until each is handled
+  do: look at who made it and what it holds, and fix or remove it by hand, then run --dry again
+--apply refuses while a stop or a by-hand edit is listed: it writes nothing until each is handled
 == routes to root (reported, never changed by this script)
-finding: sudo-nopasswd: /etc/sudoers:3: Defaults:%wheel !authenticate
-  remedy: remove NOPASSWD (or !authenticate) for agent with visudo -f /etc/sudoers
-finding: sudo-nopasswd: /etc/sudoers:5: %wheel ALL=(ALL:ALL) NOPASSWD: ALL
-  remedy: remove NOPASSWD (or !authenticate) for agent with visudo -f /etc/sudoers
-finding: sudo-nopasswd: /etc/sudoers.d/05-alias:3: OPS ALL = (DBA) NOPASSWD: /usr/bin/psql
-  remedy: remove NOPASSWD (or !authenticate) for agent with visudo -f /etc/sudoers.d/05-alias
-finding: sudo-nopasswd: /etc/sudoers.d/15-mixed:1: agent ALL=(root) NOPASSWD: /usr/bin/apt
-  remedy: remove NOPASSWD (or !authenticate) for agent with visudo -f /etc/sudoers.d/15-mixed
-finding: sudo-nopasswd: /etc/sudoers.d/16-netgroup:1: may apply to agent (a netgroup or non-Unix group): +admins ALL=(ALL) NOPASSWD: ALL
-  remedy: check whether agent is in it; if so, remove the rule with visudo -f /etc/sudoers.d/16-netgroup
-finding: sudo-nopasswd: /etc/sudoers.site/extra:1: #1001 ALL=(ALL) NOPASSWD:ALL
-  remedy: remove NOPASSWD (or !authenticate) for agent with visudo -f /etc/sudoers.site/extra
+finding: sudo-timeout: /etc/sudoers:5: sets timestamp_timeout=15 for a command or runas user, which sudo applies after the drop-in wherever it sits: Defaults!/usr/bin/backup timestamp_timeout=15
+  remedy: remove it or make it timestamp_timeout=0, as root with visudo -f '/etc/sudoers'
 finding: sudo-timeout: /etc/sudoers.d/zzz-late:1: sets timestamp_timeout=30 after the drop-in, which it may override: Defaults timestamp_timeout=30
-  remedy: remove it or make it timestamp_timeout=0, with visudo -f /etc/sudoers.d/zzz-late
+  remedy: remove it or make it timestamp_timeout=0, as root with visudo -f '/etc/sudoers.d/zzz-late'
 note: agent is in wheel: sudo and polkit admin actions ask for agent's password
 note: setuid search covers: nothing
 note: user-writable test: find -L PATH ( -user 1001 -o -perm -0002 -o ( -perm -0020 ( -group 998 -o -group 1001 ) ) )
 == summary
-changes: 2; stops: 7; findings: 7
+changes: 1; by hand: 9; stops: 5; findings: 2
 exit: 1

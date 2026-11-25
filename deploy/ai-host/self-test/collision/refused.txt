@@ -1,0 +1,1 @@
+refused: the audit lists a stop or a by-hand edit (stops: 1; by hand: 0): nothing was written

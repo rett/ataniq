@@ -1,3 +1,0 @@
-# AP14 level 1, written by ap14-level1.sh: sudo asks for the password every
-# time; no cached credentials for this user.
-Defaults:agent timestamp_timeout=0

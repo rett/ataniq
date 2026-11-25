@@ -8,13 +8,22 @@ order, and what to do when a step fails. Nothing here is automatic: every step
 is run by the owner, or with the owner's word, and every script shows what it
 will do first (`--dry`).
 
-The host is never named in a file. The deploy driver reads it from the
-environment variable `AUTHORITY_HOST_SSH` (`USER@HOST` or an ssh alias), set in
-your own shell, and prints only `the authority host`:
+The host is never named in a file. The deploy driver's connection reads no
+ssh configuration of the development host (`-F /dev/null`, see "The deploy
+key"), so everything it needs comes from your own shell's environment, never
+from this repository, and it prints only `the authority host`:
 
 ```
-export AUTHORITY_HOST_SSH=USER@HOST     # your value; not in any file of this repository
+export AUTHORITY_HOST_SSH=USER@HOST                           # your value: a host name or an address, not an ssh alias
+export AUTHORITY_HOST_KNOWN_HOSTS=/ABSOLUTE/PATH/known_hosts  # a file you keep, with the authority host's key
+export AUTHORITY_HOST_PORT=22                                 # only when the port is not 22
 ```
+
+Put the authority host's key in that known-hosts file from a source you
+trust: read its fingerprint on the host itself, from your root session
+(`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`), and compare it with the
+line you add. The driver accepts no other host key (`StrictHostKeyChecking
+yes`, and no other known-hosts file).
 
 ## What you need first
 
@@ -37,18 +46,26 @@ The deploy key never lives on the development host (the AI host). It stays on
 the owner's laptop, in the laptop's ssh-agent, which asks on the laptop before
 each use; the agent is forwarded to the development host only for a deploy
 session. `deploy.sh` logs in with the agent's key only. `deploy.sh --self-test`
-prints its exact ssh options:
+prints its exact ssh options (here without `AUTHORITY_HOST_KNOWN_HOSTS`, which
+it shows as `/KNOWN-HOSTS-FILE`):
 
 ```
--o BatchMode=yes -o IdentityFile=none -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o ForwardAgent=no -o ControlPath=none
+-F /dev/null -o BatchMode=yes -o IdentityFile=none -o IdentitiesOnly=no -o IdentityAgent=SSH_AUTH_SOCK -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o GSSAPIAuthentication=no -o HostbasedAuthentication=no -o PKCS11Provider=none -o ProxyCommand=none -o ProxyJump=none -o ControlMaster=no -o ControlPath=none -o ForwardAgent=no -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null -o UserKnownHostsFile=/KNOWN-HOSTS-FILE
 ```
 
-No key file, no password, the agent goes no further than the development host,
-and no shared connection, so every step is a new login and a new confirmation.
-It refuses to start when `SSH_AUTH_SOCK` is unset or its agent holds no key. No
-private key for the authority host, the git remote or signing is kept on the
-development host; push and signing keys follow the same rules (see [outward
-keys](../../docs/outward-keys.md)).
+and `-o Port=N` after them when `AUTHORITY_HOST_PORT` is set. No ssh
+configuration file is read at all (`-F /dev/null`: no `IdentityFile`,
+`IdentityAgent`, `ProxyJump`, `Match` or alias of yours or of the system's
+applies); no key file; only the agent of `SSH_AUTH_SOCK`, the one the driver
+checked; public-key authentication only (no password, keyboard-interactive,
+Kerberos, host-based login or token library); a direct connection with no
+proxy; no shared connection, so every step is a new login and a new
+confirmation; the agent goes no further than the development host; and only
+the host key of your known-hosts file. It refuses to start when
+`AUTHORITY_HOST_KNOWN_HOSTS` is not a regular file, or when `SSH_AUTH_SOCK` is
+unset or its agent holds no key. No private key for the authority host, the
+git remote or signing is kept on the development host; push and signing keys
+follow the same rules (see [outward keys](../../docs/outward-keys.md)).
 
 Placeholders: `AI-HOST` is the development host and `USER@AUTHORITY-HOST` the
 deploying user on the authority host, each named as the laptop's `known_hosts`
@@ -72,9 +89,16 @@ sees it; `DEPLOY-KEY` is the key's file on the laptop.
 
    `-c` needs an askpass program on the laptop (`SSH_ASKPASS`); without one
    every use is refused. `-h` looks both hosts up in the laptop's
-   `known_hosts`, so both must be there, and the development host's ssh must
-   be OpenSSH 8.9 or newer, which tells the agent which host it logs in to;
-   the agent refuses the key on any other hop. Forward only an agent whose
+   `known_hosts`, so both must be there. A destination constraint (`-h`)
+   needs OpenSSH 8.9 or newer at both ends of every hop, client and server:
+   the laptop's `ssh` and `ssh-agent`, the development host's `sshd` (which
+   receives the forwarded agent) and its `ssh` (which tells the agent which
+   host it logs in to), and the authority host's `sshd` (which proves to the
+   agent which host it is). Check each with `ssh -V`, and on the hosts with
+   `sshd -V` (or the package version) from a root session; with an older one
+   anywhere the agent refuses the key, or the constraint is not enforced
+   there, so do not deploy until all of them are 8.9 or newer. The agent
+   refuses the key on any other hop. Forward only an agent whose
    keys all carry `-h` (the signing key aside, see [outward
    keys](../../docs/outward-keys.md)): a key added without it is usable from the
    development host to anywhere. A second agent on the laptop for these
@@ -85,23 +109,51 @@ sees it; `DEPLOY-KEY` is the key's file on the laptop.
    SSH_AUTH_SOCK=~/.ssh/outward-agent.sock ssh-add -c -t 30m -h AI-HOST -h 'AI-HOST>USER@AUTHORITY-HOST' DEPLOY-KEY
    ```
 
-3. **Forward it for the deploy session only**, never for an everyday one:
+3. **Forward it for the deploy session only**, never for an everyday one, on
+   a connection of its own:
 
    ```
-   ssh -o ForwardAgent=~/.ssh/outward-agent.sock AI-HOST
+   ssh -o ControlMaster=no -o ControlPath=none -o ForwardAgent=~/.ssh/outward-agent.sock AI-HOST
    ```
 
-   With a single agent that holds nothing but such keys, `ssh -A AI-HOST` does
-   the same. For an alias, set `ForwardAgent` on an alias of its own that you
-   use only for deploy, push and release sessions, never on the everyday one:
+   `ControlMaster=no` and `ControlPath=none` keep this login off any shared
+   connection of your ssh configuration: a login that reuses an existing
+   master connection gets that master's forwarded agent (often none, or the
+   everyday one), not the one named here. With a single agent that holds
+   nothing but such keys, `ssh -o ControlMaster=no -o ControlPath=none -A
+   AI-HOST` does the same. For an alias, set these on an alias of its own
+   that you use only for deploy, push and release sessions, never on the
+   everyday one:
 
    ```
    Host ai-outward
        HostName AI-HOST
        ForwardAgent ~/.ssh/outward-agent.sock
+       ControlMaster no
+       ControlPath none
    ```
 
    In that session `ssh-add -l` lists the key; `deploy.sh` runs there.
+
+   **Which confirmations to accept.** While the agent is forwarded, any
+   process of the deploying account on the development host can ask it to
+   sign, every agent session included; within the `-h` limits that is a
+   login, and the signing key, which has no `-h`, signs anything. So accept a
+   confirmation only right after you started the step that causes it, one for
+   each login it makes: the `--dry` run's `rsync -n`, then `--go`'s copy and
+   its switch (see "Deploy: dry, then go"), a `git push`, or a signature you
+   asked for. Refuse any other prompt, and any prompt beyond that count, and
+   treat it as an incident: something on the development host is using the
+   forwarded agent; stop, close the session and find out what asked before
+   the next one. When the step is done, tear the forwarding down at once
+   instead of waiting for `-t`: on the laptop remove every key from the
+   outward agent,
+
+   ```
+   SSH_AUTH_SOCK=~/.ssh/outward-agent.sock ssh-add -D
+   ```
+
+   and close the forwarded login (`exit`).
 
 4. **On the authority host**, from your root session, the deploying user's
    `~/.ssh/authorized_keys` holds this key's line, and no key whose private
@@ -135,11 +187,13 @@ sees it; `DEPLOY-KEY` is the key's file on the laptop.
    - In a session without the agent, `deploy.sh --dry` refuses (`SSH_AUTH_SOCK
      is not set`), and this fails with `Permission denied (publickey)`, which
      shows that no key file ssh reads on the development host (the defaults,
-     and any `IdentityFile` line of your ssh config, which `IdentityFile=none`
-     does not drop) is accepted:
+     and any `IdentityFile` line of your ssh config, which this check reads on
+     purpose, though the driver reads none) is accepted. It, too, makes a
+     connection of its own, so that no shared connection of your
+     configuration, which may carry a forwarded agent, logs in for it:
 
      ```
-     env -u SSH_AUTH_SOCK ssh -o BatchMode=yes -o IdentityAgent=none "$AUTHORITY_HOST_SSH" true
+     env -u SSH_AUTH_SOCK ssh -o BatchMode=yes -o IdentityAgent=none -o ControlMaster=no -o ControlPath=none -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$AUTHORITY_HOST_KNOWN_HOSTS" "$AUTHORITY_HOST_SSH" true
      ```
 
    - From your root session on the authority host, `ssh-keygen -lf
@@ -162,9 +216,13 @@ sees it; `DEPLOY-KEY` is the key's file on the laptop.
    restrict,from="192.0.2.10" sk-ssh-ed25519@openssh.com AAAA...PUBLIC-KEY deploy-key
    ```
 
-   The authority host needs OpenSSH 8.2 or newer. Nothing else changes:
-   `deploy.sh`, the forwarding and the proof stay the same, and a deploy
-   without the touch fails.
+   A FIDO2 key follows its own minimum: OpenSSH 8.2 or newer on the laptop
+   (with its FIDO library, for `ed25519-sk`) and on the authority host's
+   `sshd` (which must accept the `sk-ssh-ed25519@openssh.com` key type). It
+   does not lower the minimum of step 2: with `-h`, every hop still needs
+   OpenSSH 8.9 or newer, client and server. Nothing else changes:
+   `deploy.sh`, the forwarding, the confirmations to accept and the proof
+   stay the same, and a deploy without the touch fails.
 
 ## The first deploy
 
@@ -244,9 +302,12 @@ this one uses the forwarded deploy key with the options of `deploy.sh`, see "The
 deploy key"), from the development host:
 
 ```
-rsync -a -e 'ssh -o BatchMode=yes -o IdentityFile=none -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o ForwardAgent=no -o ControlPath=none' \
+rsync -a -e "ssh -F /dev/null -o BatchMode=yes -o IdentityFile=none -o IdentitiesOnly=no -o IdentityAgent=SSH_AUTH_SOCK -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o GSSAPIAuthentication=no -o HostbasedAuthentication=no -o PKCS11Provider=none -o ProxyCommand=none -o ProxyJump=none -o ControlMaster=no -o ControlPath=none -o ForwardAgent=no -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null -o UserKnownHostsFile=$AUTHORITY_HOST_KNOWN_HOSTS" \
   deploy/authority-host/bootstrap/host-bootstrap.sh build/authority-host/ah-switch "$AUTHORITY_HOST_SSH":incoming/
 ```
+
+(add `-o Port=$AUTHORITY_HOST_PORT` inside the quotes when the port is not
+22).
 
 Then, on the host, as root, copy both files into a new folder only root can
 write, and judge and run only those copies. The incoming folder belongs to the
@@ -706,7 +767,9 @@ state; read the message, fix the cause, run the step again.
 | Bootstrap | `refused: ... writable by its group or by others`, `is a symbolic link` or `not owned by root` | Nothing was changed. Fix that folder (it must be a real folder, root-owned, mode without group or other write) and run the dry run again |
 | Bootstrap | `refused: sha256 of the switch binary is ... not ...` | Nothing was changed. The file on the host is not the one you built; copy it again and compare, do not paste the host's hash |
 | Bootstrap | `Caddyfile.pre-authority-host exists and is never overwritten`, or the Caddyfile is a link to elsewhere | Nothing was changed. Move the old backup (or link) away by hand, then run again |
-| `deploy.sh` | `AUTHORITY_HOST_SSH is not set`, a bad release id or a bad `--incoming-base` | Nothing was run. Set the variable, or name a release folder `COUNTER-COMMIT` and a safe incoming folder |
+| `deploy.sh` | `AUTHORITY_HOST_SSH is not set`, `must be USER@HOST`, a bad release id or a bad `--incoming-base` | Nothing was run. Set the variable to `USER@HOST` (an ssh alias does not work: the driver reads no ssh configuration), or name a release folder `COUNTER-COMMIT` and a safe incoming folder |
+| `deploy.sh` | `AUTHORITY_HOST_KNOWN_HOSTS is not set` or `must name a regular file`, or `AUTHORITY_HOST_PORT must be a port number` | Nothing was run. Point the variable at your known-hosts file (an absolute path, not a link) and set the port only when it is not 22 |
+| `deploy.sh --dry` | `Host key verification failed.` | Nothing was copied. Your known-hosts file has no key, or another key, for the authority host. Do not accept a key you have not checked: read the fingerprint on the host itself, from your root session, compare, then add the line |
 | `deploy.sh` | `SSH_AUTH_SOCK is not set`, `the agent of SSH_AUTH_SOCK holds no key` or `cannot reach the agent` | Nothing was run but `ssh-add -l`. Forward the laptop's agent for this session and load the key there, as in "The deploy key"; never put a key file on the development host instead |
 | `deploy.sh --dry` | `rsync -n failed` | Nothing was copied. If the laptop asked and you refused, or it timed out, this is the confirmation working. Otherwise check that the incoming folder exists on the host and belongs to the deploying user, and that the key is in the forwarded agent (`ssh-add -l`) and allowed on this hop (`-h`, see "The deploy key") |
 | `deploy.sh --go` | rsync failed | The switch was not run. The partial copy is only in the incoming folder; run `--go` again (rsync resumes) |

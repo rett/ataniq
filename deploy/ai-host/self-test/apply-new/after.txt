@@ -1,0 +1,11 @@
+d drwx------ etc
+d drwxr-xr-x etc/ataniq
+d drwxr-xr-x etc/ataniq/grants
+f -rw-r--r-- 1922192980 etc/ataniq/grants/README
+f -rw------- 429117212 etc/group
+f -rw------- 2698414279 etc/passwd
+f -r--r----- 2308190271 etc/sudoers
+d drwx------ etc/sudoers.d
+f -r--r----- 3869837918 etc/sudoers.d/10-admins
+f -r--r----- 3420202545 etc/sudoers.d/zz-ap14-level1-agent
+f -r--r----- 3474475618 etc/sudoers.d/zz-ap14-level1-other

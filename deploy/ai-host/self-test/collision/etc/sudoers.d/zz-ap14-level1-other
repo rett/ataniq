@@ -1,0 +1,3 @@
+# AP14 level 1, written by ap14-level1.sh: sudo asks other for the password
+# every time; no cached credentials.
+Defaults:other timestamp_timeout=0
