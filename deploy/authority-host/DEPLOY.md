@@ -20,7 +20,9 @@ export AUTHORITY_HOST_SSH=USER@HOST     # your value; not in any file of this re
 
 - On the development host: Git, Make, `sh`, `rsync`, `ssh`, the repository's
   toolchain (`make doctor` passes) and a way to run `ah-release` (see step 2).
-- On the authority host: the deploying user can log in with a key, without a
+- On the authority host: the deploying user can log in with the owner's deploy
+  key from the laptop's agent, forwarded to the development host for the
+  session (see "The deploy key" below), never with a key file and never with a
   password (`ssh -o BatchMode=yes` never asks), has a folder it owns for
   incoming releases (default `~/incoming`, outside `/opt/authority-host`; make it
   once with `mkdir -m 0700 ~/incoming`) and may run the switch form of
@@ -28,6 +30,141 @@ export AUTHORITY_HOST_SSH=USER@HOST     # your value; not in any file of this re
   switch" below).
 - Root on the authority host, your own way in, for the bootstrap and for
   anything the switch asks the owner to do.
+
+## The deploy key
+
+The deploy key never lives on the development host (the AI host). It stays on
+the owner's laptop, in the laptop's ssh-agent, which asks on the laptop before
+each use; the agent is forwarded to the development host only for a deploy
+session. `deploy.sh` logs in with the agent's key only. `deploy.sh --self-test`
+prints its exact ssh options:
+
+```
+-o BatchMode=yes -o IdentityFile=none -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o ForwardAgent=no -o ControlPath=none
+```
+
+No key file, no password, the agent goes no further than the development host,
+and no shared connection, so every step is a new login and a new confirmation.
+It refuses to start when `SSH_AUTH_SOCK` is unset or its agent holds no key. No
+private key for the authority host, the git remote or signing is kept on the
+development host; push and signing keys follow the same rules (see [outward
+keys](../../docs/outward-keys.md)).
+
+Placeholders: `AI-HOST` is the development host and `USER@AUTHORITY-HOST` the
+deploying user on the authority host, each named as the laptop's `known_hosts`
+names it; `192.0.2.10` is the development host's address as the authority host
+sees it; `DEPLOY-KEY` is the key's file on the laptop.
+
+1. **On the laptop, make the key (or keep the one you have there)**, with a
+   passphrase. It is never copied to another host.
+
+   ```
+   ssh-keygen -t ed25519 -f DEPLOY-KEY -C deploy-key
+   ```
+
+2. **Load it for the session**, with a confirmation for each use (`-c`), usable
+   only from the laptop to the development host and from there to the
+   authority host (`-h`), for 30 minutes (`-t`):
+
+   ```
+   ssh-add -c -t 30m -h AI-HOST -h 'AI-HOST>USER@AUTHORITY-HOST' DEPLOY-KEY
+   ```
+
+   `-c` needs an askpass program on the laptop (`SSH_ASKPASS`); without one
+   every use is refused. `-h` looks both hosts up in the laptop's
+   `known_hosts`, so both must be there, and the development host's ssh must
+   be OpenSSH 8.9 or newer, which tells the agent which host it logs in to;
+   the agent refuses the key on any other hop. Forward only an agent whose
+   keys all carry `-h` (the signing key aside, see [outward
+   keys](../../docs/outward-keys.md)): a key added without it is usable from the
+   development host to anywhere. A second agent on the laptop for these
+   sessions keeps the everyday keys out of it:
+
+   ```
+   ssh-agent -a ~/.ssh/outward-agent.sock
+   SSH_AUTH_SOCK=~/.ssh/outward-agent.sock ssh-add -c -t 30m -h AI-HOST -h 'AI-HOST>USER@AUTHORITY-HOST' DEPLOY-KEY
+   ```
+
+3. **Forward it for the deploy session only**, never for an everyday one:
+
+   ```
+   ssh -o ForwardAgent=~/.ssh/outward-agent.sock AI-HOST
+   ```
+
+   With a single agent that holds nothing but such keys, `ssh -A AI-HOST` does
+   the same. For an alias, set `ForwardAgent` on an alias of its own that you
+   use only for deploy, push and release sessions, never on the everyday one:
+
+   ```
+   Host ai-outward
+       HostName AI-HOST
+       ForwardAgent ~/.ssh/outward-agent.sock
+   ```
+
+   In that session `ssh-add -l` lists the key; `deploy.sh` runs there.
+
+4. **On the authority host**, from your root session, the deploying user's
+   `~/.ssh/authorized_keys` holds this key's line, and no key whose private
+   part is on the development host:
+
+   ```
+   restrict,from="192.0.2.10" ssh-ed25519 AAAA...PUBLIC-KEY deploy-key
+   ```
+
+   `restrict` turns off forwarding of ports, of the agent and of X11, the
+   terminal and `~/.ssh/rc`; `from=` takes the key only from the development
+   host's address. There is no forced command (`command=`): the copy is
+   `rsync --server` with flags that the sending rsync's version chooses, which
+   a small fixed command cannot check (`rrsync`, which can, is a Python
+   program), and the switch would need a second dispatcher in front of `sudo`:
+   both would be code on the login path that no release verifies. The boundary
+   is `restrict` and `from=` here, the confirmation on the laptop for each use,
+   and the sudo rule of "Who may switch" below: `sudo -l -U DEPLOYUSER` lists
+   the one `ah-switch` form and nothing else. A confirmed use can still run
+   any command as the deploying user, so that account owns nothing else and
+   has no other sudo rule.
+
+5. **Prove it**, once it is set up and after any change to it:
+
+   - In the forwarded session, run `sh deploy/authority-host/deploy.sh --dry
+     --release DIR/ID` and refuse the confirmation on the laptop (or let it
+     time out): it ends `rsync -n failed` and nothing is copied. Run it again
+     and accept: it passes. If no confirmation popped, the key is not loaded
+     with `-c`: remove it (`ssh-add -d DEPLOY-KEY` on the laptop), load it as
+     in step 2, and deploy nothing until it pops.
+   - In a session without the agent, `deploy.sh --dry` refuses (`SSH_AUTH_SOCK
+     is not set`), and this fails with `Permission denied (publickey)`, which
+     shows that no key file ssh reads on the development host (the defaults,
+     and any `IdentityFile` line of your ssh config, which `IdentityFile=none`
+     does not drop) is accepted:
+
+     ```
+     env -u SSH_AUTH_SOCK ssh -o BatchMode=yes -o IdentityAgent=none "$AUTHORITY_HOST_SSH" true
+     ```
+
+   - From your root session on the authority host, `ssh-keygen -lf
+     /home/DEPLOYUSER/.ssh/authorized_keys` lists only fingerprints that
+     `ssh-keygen -lf DEPLOY-KEY` prints on the laptop.
+
+6. **Later, a FIDO2 key** (`ed25519-sk`): only the confirmation becomes a touch.
+   The file on the laptop is then a handle; the private key stays on the
+   security key, which signs only when touched, so `-c` is no longer needed:
+
+   ```
+   ssh-keygen -t ed25519-sk -f DEPLOY-KEY-SK -C deploy-key
+   ssh-add -t 30m -h AI-HOST -h 'AI-HOST>USER@AUTHORITY-HOST' DEPLOY-KEY-SK
+   ```
+
+   The line on the authority host becomes this one, never with
+   `no-touch-required`:
+
+   ```
+   restrict,from="192.0.2.10" sk-ssh-ed25519@openssh.com AAAA...PUBLIC-KEY deploy-key
+   ```
+
+   The authority host needs OpenSSH 8.2 or newer. Nothing else changes:
+   `deploy.sh`, the forwarding and the proof stay the same, and a deploy
+   without the touch fails.
 
 ## The first deploy
 
@@ -103,11 +240,12 @@ build.
 ### 3. Set the host up, once: bootstrap, dry then apply
 
 Copy the script and the switch binary to the authority host (any way you trust;
-this one uses your own ssh), from the development host:
+this one uses the forwarded deploy key with the options of `deploy.sh`, see "The
+deploy key"), from the development host:
 
 ```
-rsync -a -e 'ssh -o BatchMode=yes' deploy/authority-host/bootstrap/host-bootstrap.sh \
-  build/authority-host/ah-switch "$AUTHORITY_HOST_SSH":incoming/
+rsync -a -e 'ssh -o BatchMode=yes -o IdentityFile=none -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o ForwardAgent=no -o ControlPath=none' \
+  deploy/authority-host/bootstrap/host-bootstrap.sh build/authority-host/ah-switch "$AUTHORITY_HOST_SSH":incoming/
 ```
 
 Then, on the host, as root, copy both files into a new folder only root can
@@ -198,7 +336,10 @@ sudo /usr/local/sbin/ah-switch --from "$HOME/incoming/ID" ID
 
 `--go` repeats the check, copies the release to the host's incoming folder with
 `rsync -a --delete --itemize-changes` (what it prints is rsync's list of
-changes), runs that command over `ssh -o BatchMode=yes` and streams its output.
+changes), runs that command over ssh with the options of "The deploy key" and
+streams its output. Each of the two is a login with the deploy key, so `--go`
+asks for two confirmations on the laptop, and `--dry` for one; `--dry` ends
+with a reminder to stop if none popped.
 It is refused unless `--confirm` is the release id, so a pasted command cannot
 deploy another release. `--incoming-base PATH` changes where on the host the
 release goes, `--ah-release FILE` names the release tool, and `--skip-check`
@@ -528,8 +669,8 @@ and never in this repository:
   the switch refuses when `SUDO_UID` or `SUDO_USER` is set, so the owner needs a
   real root login for it, not a root shell started with `sudo`) or alternate
   root (`--root`). A rule for the whole program would hand all of
-  them to the deploy key, which lives on the development host. So give the
-  deploying user this rule and no other for the switch, in a file of
+  them to the deploy key, whose every use is made from the development host.
+  So give the deploying user this rule and no other for the switch, in a file of
   `/etc/sudoers.d` (made with `visudo -f`), with the user's name and home
   folder in place of `DEPLOYUSER` and `/home/DEPLOYUSER/incoming` (sudo 1.9.10
   or newer, for the regular expression that limits the arguments):
@@ -566,7 +707,8 @@ state; read the message, fix the cause, run the step again.
 | Bootstrap | `refused: sha256 of the switch binary is ... not ...` | Nothing was changed. The file on the host is not the one you built; copy it again and compare, do not paste the host's hash |
 | Bootstrap | `Caddyfile.pre-authority-host exists and is never overwritten`, or the Caddyfile is a link to elsewhere | Nothing was changed. Move the old backup (or link) away by hand, then run again |
 | `deploy.sh` | `AUTHORITY_HOST_SSH is not set`, a bad release id or a bad `--incoming-base` | Nothing was run. Set the variable, or name a release folder `COUNTER-COMMIT` and a safe incoming folder |
-| `deploy.sh --dry` | `rsync -n failed` | Nothing was copied. Check that the incoming folder exists on the host and belongs to the deploying user, and that ssh works in batch mode |
+| `deploy.sh` | `SSH_AUTH_SOCK is not set`, `the agent of SSH_AUTH_SOCK holds no key` or `cannot reach the agent` | Nothing was run but `ssh-add -l`. Forward the laptop's agent for this session and load the key there, as in "The deploy key"; never put a key file on the development host instead |
+| `deploy.sh --dry` | `rsync -n failed` | Nothing was copied. If the laptop asked and you refused, or it timed out, this is the confirmation working. Otherwise check that the incoming folder exists on the host and belongs to the deploying user, and that the key is in the forwarded agent (`ssh-add -l`) and allowed on this hop (`-h`, see "The deploy key") |
 | `deploy.sh --go` | rsync failed | The switch was not run. The partial copy is only in the incoming folder; run `--go` again (rsync resumes) |
 | `deploy.sh --go` | the switch step failed (the output above it is the switch's) | The release is in the incoming folder, possibly already imported. Read the switch's `status` and its outcome, then see below |
 | Switch | `step 4/9 noaicheck: FAILED: noaicheck-failed: exit status N (run it by hand to see its hits)`: the no-AI check found something before activation (`HIT` lines that only the checker prints, step `noaicheck`, phase `pre`) | The switch prints no `HIT` line, here or in phase `post`, and `ah-release check` prints only codes: when the checker finds a hit it exits 1, so the builder prints both `noaicheck-exit` and `noaicheck-hit` (and `noaicheck-hit` alone only for a checker that prints a hit and exits 0); the `HIT` lines themselves exist only when you run the checker. The release is imported by now (`releases/ID`), so, from a real root login, run `/opt/authority-host/releases/ID/bin/ah-noaicheck --phase pre --root / --release /opt/authority-host/releases/ID --require-policy` (the switch's own arguments) and read its `HIT` lines (`HIT policy ... empty` means an allowlist was not filled; the README's [no-AI check](README.md#the-no-ai-check) lists the kinds). If the result line says `result: failed at noaicheck; current unchanged (...)` and does not say the decision services are stopped, nothing was changed: fix the host or the release and deploy again (a release that must change is a new build with a higher counter, see the `release-exists` row). If it says they are stopped, the release's package step ran before the check: take the failed rows below |
