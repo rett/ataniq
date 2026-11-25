@@ -186,8 +186,10 @@ func TestTR34TR35HookTransitions(t *testing.T) {
 		_, err := DecodeHookView(bad)
 		requireError(t, err, row.path, row.why)
 	}
-	_, err = DecodeHookView(append(b, '!'))
-	requireError(t, err, "HookView", "inconsistent")
+	for _, suffix := range []byte{'!', ' ', '\n'} {
+		_, err = DecodeHookView(append(b, suffix))
+		requireError(t, err, "HookView", "inconsistent")
+	}
 }
 func TestDecodeRejectsImpossibleHistory(t *testing.T) {
 	for _, h := range []HookView{

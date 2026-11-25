@@ -145,8 +145,10 @@ func TestTC14DecodeInputs(t *testing.T) {
 			}
 		}
 	}
-	_, err = DecodeInputs(append(raw, '0'))
-	requireError(t, err, "Inputs", "inconsistent")
+	for _, suffix := range []byte{'0', ' ', '\n'} {
+		_, err = DecodeInputs(append(raw, suffix))
+		requireError(t, err, "Inputs", "inconsistent")
+	}
 }
 func TestTC15RecordGoldens(t *testing.T) {
 	b, err := os.ReadFile("sessiontest/testdata/compose.golden")

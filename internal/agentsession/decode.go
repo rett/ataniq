@@ -39,6 +39,11 @@ func object(b []byte, path string, fields ...field) error {
 		}
 		values[name] = raw
 	}
+	// json.Valid accepts whitespace after the document. Both wire decoders
+	// require the closing brace to consume the last byte of their input.
+	if _, err := d.Token(); err != nil || d.InputOffset() != int64(len(b)) {
+		return invalid(path, "inconsistent")
+	}
 	for _, f := range fields {
 		if raw, ok := values[f.name]; ok {
 			if err := f.read(raw, path+"."+f.name); err != nil {
