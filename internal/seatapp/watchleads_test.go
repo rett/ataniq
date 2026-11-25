@@ -296,6 +296,18 @@ func TestSeatLeadsStreamSaysAMissedChangeAtOnce(t *testing.T) {
 	}
 }
 
+// waitChatHintCalls waits until ChatHint has been called n times.
+func waitChatHintCalls(t *testing.T, w *fakeChatWatcher, n int) {
+	t.Helper()
+	deadline := time.Now().Add(waitBound)
+	for w.calls() < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("ChatHint called %d times, want %d", w.calls(), n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // TestSeatLeadsStreamEndsWhenTheHintDies: the stream ends, cleanly and with
 // no event, when the hint stops being live (a lost link, a downgrade) or is
 // of a new connection, when its gate stops offering chat, also when the hint died
@@ -304,10 +316,8 @@ func TestSeatLeadsStreamSaysAMissedChangeAtOnce(t *testing.T) {
 // pending in the gap is not said once the hint is dead.
 func TestSeatLeadsStreamEndsWhenTheHintDies(t *testing.T) {
 	for name, kill := range map[string]func(*leadsDaemon){
-		"not live":     func(ld *leadsDaemon) { ld.fakeChatWatcher.set(ChatHint{}) },
-		"no offer":     func(ld *leadsDaemon) { ld.gone.Store(true); ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 7}) },
-		"no wake":      func(ld *leadsDaemon) { ld.fakeChatWatcher.setQuiet(ChatHint{}) },
-		"offer, quiet": func(ld *leadsDaemon) { ld.gone.Store(true) },
+		"not live": func(ld *leadsDaemon) { ld.fakeChatWatcher.set(ChatHint{}) },
+		"no offer": func(ld *leadsDaemon) { ld.gone.Store(true); ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 7}) },
 		"in the gap": func(ld *leadsDaemon) {
 			ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 8, Connection: time.Unix(1, 0)})
 			ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 9, Connection: time.Unix(1, 0)})
@@ -317,9 +327,6 @@ func TestSeatLeadsStreamEndsWhenTheHintDies(t *testing.T) {
 		// first, and says nothing of the second's cursor.
 		"new connection": func(ld *leadsDaemon) {
 			ld.fakeChatWatcher.set(ChatHint{Live: true, Cursor: 8, Connection: time.Unix(2, 0)})
-		},
-		"new connection, quiet": func(ld *leadsDaemon) {
-			ld.fakeChatWatcher.setQuiet(ChatHint{Live: true, Cursor: 8, Connection: time.Unix(2, 0)})
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -347,6 +354,44 @@ func TestSeatLeadsStreamEndsWhenTheHintDies(t *testing.T) {
 			}
 			if events > 1 {
 				t.Errorf("%d events: a change pending in the gap was said after the hint died", events)
+			}
+			r.waitStreams(t, 0)
+		})
+	}
+	// The hint dies with no wake: only the look at the view before a
+	// heartbeat can find it. The stream's timers stand still, so neither a
+	// heartbeat the host happens to run nor the rotation can end it. The
+	// test waits until the stream has read the view after its opening
+	// heartbeat, so that read cannot be the one that finds the dead hint,
+	// then kills the hint and fires exactly one heartbeat: the stream ends
+	// at it, cleanly, and writes nothing more, the heartbeat included.
+	for name, kill := range map[string]func(*leadsDaemon){
+		"no wake":      func(ld *leadsDaemon) { ld.fakeChatWatcher.setQuiet(ChatHint{}) },
+		"offer, quiet": func(ld *leadsDaemon) { ld.gone.Store(true) },
+		"new connection, quiet": func(ld *leadsDaemon) {
+			ld.fakeChatWatcher.setQuiet(ChatHint{Live: true, Cursor: 8, Connection: time.Unix(2, 0)})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, ld := newLeadsRig(t)
+			ft := stillTimers(r)
+			s := r.login(t)
+			srv := streamServer(t, r)
+			read := ld.fakeChatWatcher.calls()
+			c := openStream(t, srv, leadsOK, s)
+			if b, ok := c.next(t, waitBound); !ok || b != ":" {
+				t.Fatalf("the first block %q %v, want the heartbeat", b, ok)
+			}
+			// The admission's read and the one after the opening heartbeat.
+			waitChatHintCalls(t, ld.fakeChatWatcher, read+2)
+			kill(ld)
+			waitDue(t, ft, r.app.streamBeat)
+			ft.advance(r.app.streamBeat)
+			if b, ok := c.next(t, waitBound); ok {
+				t.Fatalf("a block after the hint died, at the heartbeat: %q", b)
+			}
+			if c.readErr != nil {
+				t.Errorf("the stream ended with %v, not a clean end", c.readErr)
 			}
 			r.waitStreams(t, 0)
 		})
