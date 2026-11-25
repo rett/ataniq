@@ -22,6 +22,8 @@ const (
 	ManifestPath      = "declaration.json"
 	HooksPath         = "hook/rows.json"
 	SandboxPath       = "sandbox/declaration.json"
+	// MaxDeclarationBytes is the total input byte limit for DecodeDeclaration.
+	MaxDeclarationBytes = 1 << 20
 )
 
 // Declaration assembles the files embedded by a pack. Each companion document
@@ -127,6 +129,13 @@ func readDocument(data []byte, path string, dst any) error {
 func DecodeDeclaration(files map[string][]byte, layout BindLayout) (*Declaration, error) {
 	if err := checkFiles(files); err != nil {
 		return nil, err
+	}
+	remaining := MaxDeclarationBytes
+	for _, data := range files {
+		if len(data) > remaining {
+			return nil, fmt.Errorf("declaration exceeds %d bytes in total", MaxDeclarationBytes)
+		}
+		remaining -= len(data)
 	}
 	var root struct {
 		Schema string `json:"schema"`

@@ -81,6 +81,25 @@ func TestReadDeclaration(t *testing.T) {
 	}
 }
 
+func TestDeclarationByteLimit(t *testing.T) {
+	if pack.MaxDeclarationBytes != 1<<20 {
+		t.Fatalf("declaration limit = %d, want 1 MiB", pack.MaxDeclarationBytes)
+	}
+	hooks, sandbox := buildDocument(hookRows), buildDocument(`{}`)
+	padding := pack.MaxDeclarationBytes - len(rootDocument) - len(hooks) - len(sandbox)
+	files := map[string][]byte{
+		pack.ManifestPath: []byte(strings.Repeat(" ", padding) + rootDocument),
+		pack.HooksPath:    hooks, pack.SandboxPath: sandbox,
+	}
+	if _, err := pack.DecodeDeclaration(files, sampleLayout()); err != nil {
+		t.Fatalf("at limit: %v", err)
+	}
+	files[pack.HooksPath] = append([]byte(" "), hooks...)
+	if _, err := pack.DecodeDeclaration(files, sampleLayout()); err == nil {
+		t.Error("accepted a declaration one byte over the total limit")
+	}
+}
+
 func TestStrictDeclaration(t *testing.T) {
 	sandbox := `{"launch":{"argv":["run"],"permission_modes":[{"name":"m-plan","lead":true}]}}`
 	for _, tc := range []struct{ name, path, data string }{
