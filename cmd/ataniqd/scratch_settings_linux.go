@@ -99,6 +99,11 @@ func defineSettingsFlags(fs *flag.FlagSet, s *settingsFlags) {
 		return nil
 	})
 	fs.BoolVar(&s.check, "check", false, "with --owner-settings: check and print what the daemon would read, then exit; nothing is bound, locked or started")
+	fs.BoolVar(&s.keysPrefix, "keys-prefix", false, "with --check: check the state folder's key list and its head with the journal's own reader and print the list's prefix, LEN:SHA256")
+	fs.Func("keys-since", "with --check: check the key list and its head, and name each record appended to the list since the prefix LEN:SHA256", func(v string) error {
+		s.keysSince, s.sinceSet = v, true
+		return nil
+	})
 }
 
 // The refusals of the folder, by name. Each is one line of --check. The
@@ -491,6 +496,16 @@ func ownerSettingsRun(a *app, o *ownerFlags, cfg *leaddaemon.Config) (scratchLoa
 	case cfg.Scratch == nil:
 		fmt.Fprint(a.stderr, "ataniqd run: --owner-settings and --check need --scratch CONFIG\n")
 		return nil, leaddaemon.ExitUsage
+	case (s.keysPrefix || s.sinceSet) && !s.check:
+		fmt.Fprint(a.stderr, "ataniqd run: --keys-prefix and --keys-since need --check\n")
+		return nil, leaddaemon.ExitUsage
+	case s.keysPrefix && s.sinceSet:
+		fmt.Fprint(a.stderr, "ataniqd run: --keys-prefix and --keys-since exclude each other\n")
+		return nil, leaddaemon.ExitUsage
+	case s.keysPrefix || s.sinceSet:
+		// The key list alone: neither the settings folder nor the gate is
+		// looked at.
+		return nil, a.keysCheck(s, cfg.StateDir)
 	case !s.dirSet:
 		fmt.Fprint(a.stderr, "ataniqd run: --check needs --owner-settings DIR\n")
 		return nil, leaddaemon.ExitUsage

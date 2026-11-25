@@ -161,10 +161,19 @@ The byte comparison holds because no phone logs in during the test. In the
 sitting, a login on the phone with a credential whose sign counter rises
 appends a counter record to the key journal (`keys.log`, `keys.head`); a
 passkey of the platform's keeps its counter at 0 and appends nothing. A
-digest alone cannot tell that record from a pairing, a revocation or the
-head catching up with the list, so step g also keeps a private copy of
-`keys.log`, and step 13 checks that the copy is a byte prefix of the list and
-names the kind of each record appended to it.
+digest alone cannot tell that record from a pairing, a revocation or damage,
+so the key list is the daemon's to judge: at step g its `--check
+--keys-prefix` records the list's prefix (its length and SHA-256) once the
+journal's own reader passes the list and its head, and at step 13 its
+`--check --keys-since` checks the list and its head with the same reader,
+checks that the prefix is the list's beginning and names the type of each
+record appended after it. The test takes both while the trial runs and after
+it ran again, with nothing appended; `cmd/ataniqd/scratch_keys_linux_test.go`
+holds the verdicts on lists the journal wrote (counter records hold; a
+pairing, a revocation and a refused pairing are CHANGED) and on damage (a
+record the chain holds but the reader refuses, a garbage head, a head that
+lags the list, no head, a changed old byte, another prefix): each is CHANGED,
+never a catch-up.
 
 The tests of the flag (`cmd/ataniqd/scratch_settings_linux_test.go`) hold its
 refusals, each with `--check` (the line of its rule says `FAIL` and why) and
@@ -187,9 +196,11 @@ every row of their bind tables, as the holder builds them
 (`sandboxstart.BindTable`, the code of its start). `tests/scratch_seat_prepare_test.go` holds the script: `--dry` and
 `--self-test` read and write nothing, `--write` writes in the root only and
 refuses what it can judge, `--status` runs the daemon's check with exactly
-the flags of step 2 and `--check`, compares the trial's digests and names
-what was appended to the key list since step g, and no line of the script
-deletes, moves, links or masks anything or runs `systemctl`.
+the flags of step 2 and `--check`, and `--status --compare` refuses a record
+of step g that does not list each of the six files once, compares the
+trial's digests and passes the prefix of step g to the daemon's key check,
+printing its verdict; no line of the script deletes, moves, links or masks
+anything or runs `systemctl`.
 
 What none of it shows: the real unit and its stop and start, the holder,
 sandbox and stand-in, the paste, claude and its login, the seat on the
@@ -369,7 +380,7 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    $D seat-gate pins --state-dir "$S"
    journalctl --user --unit "$TRIAL_UNIT" -I | grep 'key fingerprint' | tail -n 1
    (cd "$S/owner" && sha256sum -- gate/key.pem gate/cert.pem gate/seat-pins keys.log keys.head scratch.json) >"$ROOT/evidence/trial-before.sha256"
-   cp -- "$S/owner/keys.log" "$ROOT/keys-before.log"
+   $D run --scratch "$CONFIG" --owner-channel --check --keys-prefix >"$ROOT/evidence/keys-before.prefix"
    ```
 
    `--status` runs the daemon's own check, `$D run --scratch "$CONFIG"
@@ -397,12 +408,17 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    `check: no refusal`. The daemon makes the same checks at its start and
    refuses (exit 10) with the same reasons, before any lock; only the locks
    and the gate's port, which the check does not take, are left to the start.
-   The pins line, the trial's fingerprint line of its current run, and the
-   digests of the trial's gate key, certificate, pins, key list and settings
-   are the record that step 13 compares with. The copy of the key list,
-   `$ROOT/keys-before.log`, is private and not evidence (it holds the paired
-   credentials' public keys): step 13 tells from it what was appended to the
-   list. Nothing of the trial is changed by any of it.
+   The pins line, the trial's fingerprint line of its current run, the
+   digests of the trial's gate key, certificate, pins, key list and settings,
+   and the key list's prefix are the record that step 13 compares with. The
+   last line is **OWNER ONLY**: the daemon's read-only check of the key list
+   and its head, which reads the trial's `owner/keys.log` and `keys.head`,
+   has the journal's own reader judge them on a private copy in a temporary
+   folder that it removes, and prints one line, `LEN:SHA256`, the list's
+   length and SHA-256 (a digest, not the keys). When the list or its head
+   does not hold it prints the reason, nothing goes into the file, and step
+   13 will say CHANGED: run it again, and if it fails again, stop. Nothing of
+   the trial is changed by any of it.
 
 ## The sitting
 
@@ -636,32 +652,33 @@ it, the sitting has no live lead: go on with step 11.
 13. **The trial's files are the same bytes (C).** With both daemons stopped:
 
     ```sh
-    (cd "$S/owner" && sha256sum -c -- "$ROOT/evidence/trial-before.sha256")
-    sh "$P" --status
+    sh "$P" --status --compare
     ```
 
-    The first prints `OK` for each of `gate/key.pem`, `gate/cert.pem`,
-    `gate/seat-pins`, `keys.log`, `keys.head` and `scratch.json`: the trial's
-    gate key, certificate, pins, paired keys and settings are byte-identical
-    to step g. `--status` makes the same comparison after the daemon's check
-    and ends `status: the trial's gate key, certificate, pins, key list and
-    settings are the same bytes as recorded`. A `FAILED` line is written in
-    `$ROOT/evidence/notes.txt` and looked at before the trial starts.
-    `keys.log` and `keys.head` may differ, and `--status` says why: the copy
-    of step g must be the list of step g (its recorded digest) and a byte
-    prefix of the list now, and each record appended is named by its kind,
-    `status:   keys.log is the list of step g with N record(s) appended:
-    counter ...`. Counter records alone are a phone login with a passkey
-    whose sign counter rises (see [What was proved in
-    process](#what-was-proved-in-process)): `--status` passes them and ends
-    `status: the trial's gate key, certificate, pins and settings are the
-    same bytes as recorded ..., and the key list holds the records of step g
-    unchanged`. `keys.head` alone changed, with `keys.log` the same bytes, is
-    the head catching up with the list (a daemon makes it right at open), and
-    passes too. Any other kind (`added`: a pairing; `revoked`: a revocation;
-    `rejected`: a refused pairing; `unreadable`: not a record), an old byte
-    of the list changed, a missing copy or a copy that is not the list of
-    step g is `status: CHANGED`, a finding.
+    After the daemon's check, `--compare` takes the record of step g, which
+    must be there: `trial-before.sha256` must list each of `gate/key.pem`,
+    `gate/cert.pem`, `gate/seat-pins`, `keys.log`, `keys.head` and
+    `scratch.json` once and nothing else, or it confirms nothing and the
+    line is `status: CHANGED: the record ... is incomplete` (a record cut
+    short at step g, say). Then `sha256sum -c` prints a line per file: the
+    gate key, certificate, pins and settings must be `OK`, byte-identical
+    to step g. The key list and its head are not judged by their digests,
+    which a phone login changes: `--status` passes the prefix of step g
+    (`keys-before.prefix`) to the daemon's `--check --keys-since` and prints
+    its lines. The daemon checks the list and its head with the journal's
+    own reader, checks that the prefix of step g is the list's beginning and
+    names the type of each record appended since: `keys  since step g (N
+    bytes): M record(s) appended: counter ...`. Counter records alone are a
+    phone login with a passkey whose sign counter rises (see [What was
+    proved in process](#what-was-proved-in-process)) and end `keys: holds`;
+    `--status` then ends `status: the trial's gate key, certificate, pins
+    and settings are the same bytes as recorded ..., and the daemon's check
+    of the key list since step g holds`. Any other record (`added`: a
+    pairing; `revoked`: a revocation; `rejected`: a refused pairing), an old
+    byte of the list changed, a head that does not count the list, any
+    damage, a missing or malformed prefix and a missing or incomplete record
+    are `CHANGED`, a finding. Write each `FAILED` or `CHANGED` line in
+    `$ROOT/evidence/notes.txt` and look at it before the trial starts.
 14. **OWNER ONLY (C): start the trial again**, by your own command, the one
     you started it with:
 
@@ -718,6 +735,8 @@ these, are the sitting's evidence:
 - `$ROOT/evidence/trial-before.sha256`: the SHA-256 digests of the trial's gate
   key, certificate, pins, key list and settings at step g (digests only; a
   digest of the gate's key does not give the key).
+- `$ROOT/evidence/keys-before.prefix`: the key list's length and SHA-256 at
+  step g, as the daemon's `--check --keys-prefix` printed it.
 - `$ROOT/evidence/daemon.log`: the daemon's output, each run ending with its
   exit status line. Its chat lines hold counts and fixed words, never a
   reply's text; its provisioning lines name folders of the state folder.
@@ -742,9 +761,8 @@ and `leads/scratch-standin-N-lead/` hold the provider's config and login
 `holder/final.json` and `holder/final.json.previous`, which keep the last
 screen the holder showed even with `record_screens` off: it can hold a reply,
 a prompt or a login code. `chat/` holds the stored replies while a chat is
-on. `$ROOT/version-home.*` is the claude copy's home of step c, and
-`$ROOT/keys-before.log` the copy of the trial's key list of step g. Keep them where
-they are and share none of them; never archive the state folder, or the
+on. `$ROOT/version-home.*` is the claude copy's home of step c. Keep them
+where they are and share none of them; never archive the state folder, or the
 proof's root, as evidence.
 
 Not recorded: the replies' text, screenshots of a conversation, the message

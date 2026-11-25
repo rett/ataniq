@@ -642,6 +642,13 @@ func TestScratchSeatTakesThePhoneTrialsStateFolder(t *testing.T) {
 	if code != leaddaemon.ExitLockHeld {
 		t.Fatalf("while the trial runs: exit %d: %s", code, msg)
 	}
+	// Step g: the key list's prefix, judged by the journal's own reader on a
+	// copy, while the trial runs and holds the list.
+	code, out, msg = scratchRun("--check", "--keys-prefix")
+	keysBefore := strings.TrimSpace(out)
+	if code != 0 || msg != "" || !strings.Contains(keysBefore, ":") || strings.Count(out, "\n") != 1 {
+		t.Fatalf("--check --keys-prefix while the trial runs: exit %d: %q %q", code, out, msg)
+	}
 	if !sameTreeOf(ownerTree, treeOf(t, owner)) {
 		t.Fatal("the refused daemons, --check or scratch-init changed the owner folder")
 	}
@@ -747,4 +754,11 @@ func TestScratchSeatTakesThePhoneTrialsStateFolder(t *testing.T) {
 	g.Close()
 	stopApp(t, ta, errs, done)
 	sameTrial("after the trial ran again")
+	// Step 13: the daemon's check of the key list since step g holds, with
+	// no record appended (no phone logged in).
+	code, out, msg = scratchRun("--check", "--keys-since", keysBefore)
+	if code != 0 || msg != "" || !strings.Contains(out, "no record was appended") || !strings.HasSuffix(out, "keys: holds: the key list is the list of step g\n") {
+		t.Fatalf("--check --keys-since after the proof: exit %d:\n%s%s", code, out, msg)
+	}
+	sameTrial("after the key checks")
 }

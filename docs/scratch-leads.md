@@ -1312,6 +1312,22 @@ read, and ends `check: no refusal` (exit 0) or `check: N refusal(s)` (exit
 10). It binds, locks, makes and starts nothing; the locks and the gate's port,
 which it does not take, are the start's own refusals (exit 12, 17 and 18).
 
+`--check --keys-prefix` and `--check --keys-since LEN:SHA256` check the key
+list of the state root alone (`owner/keys.log` and its head
+`owner/keys.head`), with the journal's own reader: the records well formed,
+in sequence, on the digest chain and within the list's rules, and the head's
+count and digest the list's. The reader runs on a private copy in a
+temporary folder that is removed, so nothing of the state root is written,
+and a head that lags the list (a start would make it right) does not pass.
+`--keys-prefix` prints the list's prefix, its length in bytes and its
+SHA-256, as `LEN:SHA256`. `--keys-since` checks that a prefix taken earlier
+is the list's beginning, ending at a whole record, and names the type of
+each record appended since: counter records alone (a phone login whose
+passkey's sign counter rises) end `keys: holds` (exit 0); any other record,
+a changed or missing old byte and any damage end `keys: CHANGED` (exit 1).
+The attended proof takes the prefix before its sitting and checks the list
+against it after.
+
 **Reading a lead's replies.** The owner defines and starts a lead from the
 console ([the console guide](terminal-console.md)). Its chat is off, like every
 lead's whenever the daemon starts; `"inject": false` is enough for replies, and

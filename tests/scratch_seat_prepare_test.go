@@ -199,11 +199,14 @@ func TestScratchSeatPrepareIsPlainShell(t *testing.T) {
 		t.Error("the script does not name the daemon's binary")
 	}
 	// A command line of the script (not a line of a here-document, which is
-	// printed) that runs one of these programs.
+	// printed) that runs one of these programs, each in exactly the forms
+	// allowed, once each: the daemon's check, and its read-only check of the
+	// key list since step g (--status --compare).
 	inDoc := false
-	allowed := map[string]string{
-		`"$DAEMON"`:    `"$DAEMON" run --scratch "$CONFIG" --owner-channel --seat-gate "$GATE" --owner-settings "$SETTINGS_DIR" --check || RC=$?`,
-		"/usr/bin/git": `/usr/bin/git -c core.hooksPath=/dev/null -c commit.gpgSign=false -c tag.gpgSign=false -c core.fsmonitor=false \`,
+	allowed := map[string][]string{
+		`"$DAEMON"`: {`"$DAEMON" run --scratch "$CONFIG" --owner-channel --seat-gate "$GATE" --owner-settings "$SETTINGS_DIR" --check || RC=$?`,
+			`"$DAEMON" run --scratch "$CONFIG" --owner-channel --check --keys-since "$_prefix" || _krc=$?`},
+		"/usr/bin/git": {`/usr/bin/git -c core.hooksPath=/dev/null -c commit.gpgSign=false -c tag.gpgSign=false -c core.fsmonitor=false \`},
 	}
 	seen := map[string]int{}
 	for i, line := range strings.Split(text, "\n") {
@@ -231,15 +234,15 @@ func TestScratchSeatPrepareIsPlainShell(t *testing.T) {
 				t.Errorf("line %d runs %s: %q", i+1, word, trimmed)
 			case "\"$DAEMON\"", "/usr/bin/git":
 				seen[word]++
-				if !strings.Contains(trimmed, allowed[word]) {
+				if !slices.ContainsFunc(allowed[word], func(a string) bool { return strings.Contains(trimmed, a) }) {
 					t.Errorf("line %d runs %s other than as allowed: %q", i+1, word, trimmed)
 				}
 			}
 		}
 	}
-	for word := range allowed {
-		if seen[word] != 1 {
-			t.Errorf("%s is run on %d lines, want 1", word, seen[word])
+	for word, forms := range allowed {
+		if seen[word] != len(forms) {
+			t.Errorf("%s is run on %d lines, want %d", word, seen[word], len(forms))
 		}
 	}
 	if !strings.Contains(text, "/usr/bin/env -i PATH=/usr/bin:/bin HOME=\"$ROOT\"") {
@@ -396,8 +399,9 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root string, live bool) {
 		"scratch-init --config " + root + "/scratch.json",
 		"--status" + prep + "   (the daemon's check: it must end \"check: no refusal\")",
 		"(cd " + state + "/owner && sha256sum -- gate/key.pem gate/cert.pem gate/seat-pins keys.log keys.head scratch.json) >" + root + "/evidence/trial-before.sha256",
-		"cp -- " + state + "/owner/keys.log " + root + "/keys-before.log   (a private copy, not evidence: step 13 shows what was appended to it)",
-		"--status" + prep + "   (the daemon's check, the same comparison, and the kind of each record appended to keys.log since g)",
+		"OWNER ONLY (the daemon's read-only check of the key list and its head; it writes only this file): ",
+		" run --scratch " + root + "/scratch.json --owner-channel --check --keys-prefix >" + root + "/evidence/keys-before.prefix",
+		"--status" + prep + " --compare   (the daemon's check; the trial's files against the record of g, which lists all six; the daemon's check of the key list since g)",
 		"OWNER ONLY: systemctl --user stop -- \"$TRIAL_UNIT\"",
 		"(inactive; nothing is masked)",
 		"sh -c 'trap : INT; \"$@\" 2>&1; echo \"ataniqd: exit status $?\"' sh ",
@@ -411,7 +415,6 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root string, live bool) {
 		"NOT delivered (nothing was written)",
 		"Ctrl+\\ then q",
 		"no paste; write it in " + root + "/evidence/notes.txt; stop and reconcile",
-		"(cd " + state + "/owner && sha256sum -c -- " + root + "/evidence/trial-before.sha256)",
 		"OWNER ONLY: start the trial again with your own command (systemctl --user start -- \"$TRIAL_UNIT\" for a unit file, or your systemd-run)",
 		"journalctl --user --unit \"$TRIAL_UNIT\" -I",
 	} {
@@ -434,8 +437,8 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root string, live bool) {
 	if live && !strings.Contains(out, "chat set live-3 off") || !live && !strings.Contains(out, "chat set standin-3 off") {
 		t.Errorf("the off step, live %v:\n%s", live, out)
 	}
-	order := []string{"scratch-init", "--status", "sha256sum --", "/keys-before.log", "systemctl --user stop", "--owner-settings " + root + "/owner-settings |",
-		"d on standin-3", "sha256sum -c", "appended to keys.log since g", "start the trial again"}
+	order := []string{"scratch-init", "--status", "sha256sum --", "--keys-prefix >", "systemctl --user stop", "--owner-settings " + root + "/owner-settings |",
+		"d on standin-3", "--compare", "key list since g", "start the trial again"}
 	if live {
 		order = append(order[:7], append([]string{"The drop rule", "d on live-3"}, order[7:]...)...)
 	}
@@ -443,6 +446,9 @@ func scratchSeatCommandsHold(t *testing.T, out, state, root string, live bool) {
 		if strings.Index(out, order[i-1]) > strings.Index(out, order[i]) {
 			t.Errorf("%q comes after %q:\n%s", order[i-1], order[i], out)
 		}
+	}
+	if strings.Contains(out, "sha256sum -c") || strings.Contains(out, "keys-before.log") {
+		t.Errorf("a step confirms the record by hand or copies the key list:\n%s", out)
 	}
 	for _, line := range strings.Split(out, "\n") {
 		if strings.Contains(line, " rm ") || strings.Contains(line, "rm -") || strings.Contains(line, " mv ") || strings.Contains(line, "unlink") ||
@@ -811,11 +817,15 @@ func TestScratchSeatPrepareWriteTouchesOnlyTheRoot(t *testing.T) {
 
 // --status runs the daemon's own check on the files --write made, with the
 // flags the daemon is started with and --check, and passes its lines and its
-// exit status through; it then compares the trial's gate key, certificate,
-// pins, key list and settings with the digests the owner recorded at step g
-// (sha256sum -c), says when none are recorded yet, and names a file that
-// changed. It writes nothing anywhere and runs nothing but the daemon's
-// check, here a stub that records its arguments.
+// exit status through; without --compare it only says whether the record of
+// step g is there. --status --compare (step 13) needs that record: it must
+// list each of the six files once and nothing else before sha256sum -c counts
+// (review finding 4); the trial's gate key, certificate, pins and settings
+// must be the same bytes; and the key list is the daemon's to judge, by
+// --check --keys-since with the prefix recorded at step g, whose lines and
+// verdict prepare prints and never works out itself (review finding 3). It
+// writes nothing anywhere and runs nothing but the daemon's two checks, here
+// a stub that records its arguments.
 func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 	k := newScratchSeatKit(t)
 	r := filepath.Join(k.dir, "proof")
@@ -823,143 +833,167 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 		t.Fatalf("--write: exit %d:\n%s", code, out)
 	}
 	args := filepath.Join(k.dir, "daemon-args")
+	keysArgs := filepath.Join(k.dir, "daemon-keys-args")
 	daemon := filepath.Join(k.dir, "check-daemon")
-	stub := func(code int) {
-		body := "#!/bin/sh\nfor a; do printf '%s\\n' \"$a\"; done >'" + args + "'\necho 'check: from the stub'\nexit " + strconv.Itoa(code) + "\n"
+	// stub answers the daemon's check with code, and its key check with
+	// keysCode and a line of its own.
+	stub := func(code, keysCode int) {
+		body := "#!/bin/sh\ncase \" $* \" in *' --keys-since '*) for a; do printf '%s\\n' \"$a\"; done >'" + keysArgs + "'\n" +
+			"  echo 'keys: from the stub'; exit " + strconv.Itoa(keysCode) + " ;;\nesac\n" +
+			"for a; do printf '%s\\n' \"$a\"; done >'" + args + "'\necho 'check: from the stub'\nexit " + strconv.Itoa(code) + "\n"
 		if err := os.WriteFile(daemon, []byte(body), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
 	status := []string{"--status", "--state", k.state, "--root", r, "--gate", "192.0.2.10:7443", "--daemon", daemon}
+	compare := append(slices.Clone(status), "--compare")
 	beforeState, beforeRoot := scratchSeatFiles(t, k.state), scratchSeatFiles(t, r)
+	before := filepath.Join(r, "evidence", "trial-before.sha256")
+	prefixFile := filepath.Join(r, "evidence", "keys-before.prefix")
 
-	stub(0)
+	stub(0, 0)
 	out, code := k.run(t, nil, status...)
 	if code != 0 || !strings.Contains(out, "check: from the stub\n") || !strings.Contains(out, "status: the daemon's check found no refusal") ||
-		!strings.Contains(out, "status: no "+r+"/evidence/trial-before.sha256 yet") {
+		!strings.Contains(out, "status: no "+before+" yet") {
 		t.Fatalf("--status: exit %d:\n%s", code, out)
 	}
 	want := []string{"run", "--scratch", r + "/scratch.json", "--owner-channel", "--seat-gate", "192.0.2.10:7443", "--owner-settings", r + "/owner-settings", "--check"}
 	if got := strings.Split(strings.TrimSpace(string(mustRead(t, args))), "\n"); !slices.Equal(got, want) {
 		t.Fatalf("the daemon's check was run with %q, want %q", got, want)
 	}
-	stub(10)
+	stub(10, 0)
 	if out, code := k.run(t, nil, status...); code != 10 || !strings.Contains(out, "ended with exit status 10: the daemon would not start") {
 		t.Fatalf("--status with a refusal: exit %d:\n%s", code, out)
 	}
+	stub(0, 0)
+	// --compare without the record of step g is CHANGED, not a pass.
+	if out, code := k.run(t, nil, compare...); code != 1 || !strings.Contains(out, "status: CHANGED: there is no record "+before+" of step g") {
+		t.Fatalf("--status --compare without the record: exit %d:\n%s", code, out)
+	}
+	// --compare belongs to --status.
+	if out, code := k.run(t, nil, append(k.args("--dry", r, false), "--compare")...); code != 2 || !strings.Contains(out, "usage") {
+		t.Errorf("--dry --compare: exit %d:\n%s", code, out)
+	}
 
-	// The digests the owner records at step g, then a file of the trial that
-	// changes, and one that comes back.
-	record := exec.Command("/bin/sh", "-c", "cd \"$1\" && sha256sum -- gate/key.pem gate/cert.pem gate/seat-pins keys.log keys.head scratch.json >\"$2\"",
-		"sh", filepath.Join(k.state, "owner"), filepath.Join(r, "evidence", "trial-before.sha256"))
-	if b, err := record.CombinedOutput(); err != nil {
-		t.Fatalf("recording the digests: %v %s", err, b)
+	// The record the owner makes at step g: the digests of the six files and
+	// the prefix the daemon printed.
+	digests := func(names string) {
+		t.Helper()
+		record := exec.Command("/bin/sh", "-c", "cd \"$1\" && sha256sum -- "+names+" >\"$2\"",
+			"sh", filepath.Join(k.state, "owner"), before)
+		if b, err := record.CombinedOutput(); err != nil {
+			t.Fatalf("recording the digests: %v %s", err, b)
+		}
 	}
-	stub(0)
-	out, code = k.run(t, nil, status...)
-	if code != 0 || !strings.Contains(out, "status:   gate/key.pem: OK") ||
-		!strings.Contains(out, "status: the trial's gate key, certificate, pins, key list and settings are the same bytes as recorded in "+r+"/evidence/trial-before.sha256") {
-		t.Fatalf("--status with the same files: exit %d:\n%s", code, out)
+	const all = "gate/key.pem gate/cert.pem gate/seat-pins keys.log keys.head scratch.json"
+	digests(all)
+	if out, code := k.run(t, nil, status...); code != 0 || !strings.Contains(out, "status: the record of step g is there; compare the trial's files with it at step 13 (--status --compare)") {
+		t.Fatalf("--status with the record: exit %d:\n%s", code, out)
 	}
+	prefix := "12:" + strings.Repeat("0123456789abcdef", 4)
+	if err := os.WriteFile(prefixFile, []byte(prefix+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, code = k.run(t, nil, compare...)
+	if code != 0 || !strings.Contains(out, "status:   gate/key.pem: OK") || !strings.Contains(out, "keys: from the stub\n") ||
+		!strings.Contains(out, "status: the trial's gate key, certificate, pins and settings are the same bytes as recorded in "+before+", and the daemon's check of the key list since step g holds") {
+		t.Fatalf("--status --compare with the same files: exit %d:\n%s", code, out)
+	}
+	wantKeys := []string{"run", "--scratch", r + "/scratch.json", "--owner-channel", "--check", "--keys-since", prefix}
+	if got := strings.Split(strings.TrimSpace(string(mustRead(t, keysArgs))), "\n"); !slices.Equal(got, wantKeys) {
+		t.Fatalf("the daemon's key check was run with %q, want %q", got, wantKeys)
+	}
+	// The key list is the daemon's to judge: whatever the digests say of
+	// keys.log and keys.head, its verdict decides, and prepare says CHANGED
+	// when it does not hold.
+	keys := filepath.Join(k.state, "owner", "keys.log")
+	oldKeys := mustRead(t, keys)
+	if err := os.WriteFile(keys, append(slices.Clone(oldKeys), []byte("appended\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := k.run(t, nil, compare...); code != 0 || !strings.Contains(out, "status:   keys.log: FAILED") || strings.Contains(out, "CHANGED") ||
+		!strings.Contains(out, "and the daemon's check of the key list since step g holds") {
+		t.Fatalf("--status --compare with a key list the daemon passes: exit %d:\n%s", code, out)
+	}
+	stub(0, 1)
+	if out, code := k.run(t, nil, compare...); code != 1 || !strings.Contains(out, "keys: from the stub") ||
+		!strings.Contains(out, "status: CHANGED: the daemon's check of the key list ended with exit status 1") {
+		t.Fatalf("--status --compare with a key list the daemon refuses: exit %d:\n%s", code, out)
+	}
+	if err := os.WriteFile(keys, oldKeys, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stub(0, 0)
+	// A changed pin file is CHANGED; with a refusal of the check too, the
+	// check's exit status is kept.
 	pins := filepath.Join(k.state, "owner", "gate", "seat-pins")
 	old := mustRead(t, pins)
-	if err := os.WriteFile(pins, append(old, []byte(strings.Repeat("cd", 32)+"\n")...), 0o600); err != nil {
+	if err := os.WriteFile(pins, append(slices.Clone(old), []byte(strings.Repeat("cd", 32)+"\n")...), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, code = k.run(t, nil, status...)
+	out, code = k.run(t, nil, compare...)
 	if code != 1 || !strings.Contains(out, "status:   gate/seat-pins: FAILED") || !strings.Contains(out, "status: CHANGED: a file of the trial other than the key list is not the bytes recorded") {
-		t.Fatalf("--status with a changed pin file: exit %d:\n%s", code, out)
+		t.Fatalf("--status --compare with a changed pin file: exit %d:\n%s", code, out)
 	}
-	stub(10)
-	if out, code := k.run(t, nil, status...); code != 10 || !strings.Contains(out, "status: CHANGED") {
-		t.Fatalf("--status with a refusal and a changed file: exit %d:\n%s", code, out)
+	stub(10, 0)
+	if out, code := k.run(t, nil, compare...); code != 10 || !strings.Contains(out, "status: CHANGED") {
+		t.Fatalf("--status --compare with a refusal and a changed file: exit %d:\n%s", code, out)
 	}
+	stub(0, 0)
 	if err := os.WriteFile(pins, old, 0o600); err != nil {
 		t.Fatal(err)
 	}
-
-	// The key list may only grow (review finding 4). With the private copy
-	// of step g, --status checks that the copy is a byte prefix of the list
-	// and names the kind of each record appended: counter records alone are
-	// a phone login and pass; a pairing, a revocation, a refused pairing or
-	// a line that is not a record is CHANGED; so is a list whose old bytes
-	// changed, or a list that changed with no copy, or a copy that is not
-	// the file of step g. A head that changed while the list did not is the
-	// head catching up, and passes.
-	stub(0)
-	keys, head := filepath.Join(k.state, "owner", "keys.log"), filepath.Join(k.state, "owner", "keys.head")
-	oldKeys, oldHead := mustRead(t, keys), mustRead(t, head)
-	copyKeys := filepath.Join(r, "keys-before.log")
-	hex := strings.Repeat("0123456789abcdef", 4)
-	rec := func(seq int, typ, more string) string {
-		return hex + ` {"at":"2026-11-20T14:00:00Z",` + more + `"id":"585cf66cd7e1ac88","seq":` + strconv.Itoa(seq) + `,"type":"` + typ + `"}` + "\n"
-	}
-	set := func(keysBody, headBody string) {
-		t.Helper()
-		if err := os.WriteFile(keys, []byte(keysBody), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(head, []byte(headBody), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	status4 := func(name string, wantCode int, wants ...string) {
-		t.Helper()
-		out, code := k.run(t, nil, status...)
-		if code != wantCode {
-			t.Errorf("%s: exit %d, want %d:\n%s", name, code, wantCode, out)
-		}
-		for _, w := range wants {
-			if !strings.Contains(out, w) {
-				t.Errorf("%s does not say %q:\n%s", name, w, out)
-			}
-		}
-	}
-	set(string(oldKeys)+rec(2, "counter", `"counter":5,`), "sample head 2\n")
-	status4("a counter record without the copy", 1, "status:   keys.log: FAILED", "status: CHANGED: the key list or its head is not the bytes recorded, and there is no copy "+copyKeys+" of step g")
-	if err := os.WriteFile(copyKeys, []byte("not the list of step g\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	status4("a copy that is not the list of step g", 1, "status: CHANGED: the key list is not the bytes recorded, and "+copyKeys+" is not the keys.log of step g")
-	if err := os.WriteFile(copyKeys, oldKeys, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	status4("a counter record", 0, "status:   keys.log is the list of step g with 1 record(s) appended: counter",
-		"status:   only counter records were appended: a phone login with a passkey whose sign counter rises",
-		"status: the trial's gate key, certificate, pins and settings are the same bytes as recorded in "+r+"/evidence/trial-before.sha256, and the key list holds the records of step g unchanged")
-	set(string(oldKeys)+rec(2, "counter", `"counter":5,`)+rec(3, "counter", `"counter":6,`), "sample head 3\n")
-	status4("two counter records", 0, "with 2 record(s) appended: counter counter", "only counter records were appended")
-	for _, c := range []struct{ name, body, appended string }{
-		{"a pairing", rec(2, "counter", `"counter":5,`) + rec(3, "added", `"credential_id":"Y2Nj","kind":"platform-passkey","public_key":"aw==",`), "2 record(s) appended: counter added"},
-		{"a revocation", rec(2, "revoked", ""), "1 record(s) appended: revoked"},
-		{"a refused pairing", rec(2, "rejected", ""), "1 record(s) appended: rejected"},
-		{"a line that is not a record", "not a record\n", "1 record(s) appended: unreadable"},
-		{"a record cut short", strings.TrimSuffix(rec(2, "counter", `"counter":5,`), "\n"), "1 record(s) appended: unreadable"},
+	// A record that does not list the six files once confirms nothing, even
+	// when every line it holds is OK (review finding 4): a record of the
+	// gate's key alone, one with a file twice, and one with a line more.
+	for _, c := range []struct{ name, names, extra, want string }{
+		{"the gate's key alone", "gate/key.pem", "", "missing or repeated: gate/cert.pem gate/seat-pins keys.log keys.head scratch.json"},
+		{"a file twice", all + " keys.log", "", "missing or repeated: keys.log"},
+		{"a line more", all, "not a line of sha256sum\n", "holds 7 line(s)"},
 	} {
-		set(string(oldKeys)+c.body, "sample head 2\n")
-		status4(c.name, 1, "status:   keys.log is the list of step g with "+c.appended, "status: CHANGED: a record that is not a counter was appended to the key list")
+		digests(c.names)
+		if c.extra != "" {
+			f, err := os.OpenFile(before, os.O_APPEND|os.O_WRONLY, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.WriteString(c.extra)
+			f.Close()
+		}
+		os.Remove(keysArgs)
+		out, code := k.run(t, nil, compare...)
+		if code != 1 || !strings.Contains(out, "status: CHANGED: the record "+before+" is incomplete: ") || !strings.Contains(out, c.want) ||
+			strings.Contains(out, ": OK") || strings.Contains(out, "holds\n") {
+			t.Errorf("%s: exit %d, want CHANGED and %q:\n%s", c.name, code, c.want, out)
+		}
+		if _, err := os.Lstat(keysArgs); err == nil {
+			t.Errorf("%s: the key list was judged on an incomplete record", c.name)
+		}
 	}
-	changed := append([]byte("S"), oldKeys[1:]...)
-	set(string(changed)+rec(2, "counter", `"counter":5,`), "sample head 2\n")
-	status4("a list whose old bytes changed", 1, "status: CHANGED: keys.log is not the list of step g with records appended: its copy "+copyKeys+" is not a byte prefix of it")
-	set(string(oldKeys[:len(oldKeys)-1]), string(oldHead))
-	status4("a list cut short", 1, "is not a byte prefix of it")
-	set(string(oldKeys), "sample head caught up\n")
-	status4("a head that caught up", 0, "status:   keys.head: FAILED", "status:   keys.log is the same bytes as at step g; only keys.head changed: the head caught up with the list",
-		"and the key list holds the records of step g unchanged")
-	set(string(oldKeys)+rec(2, "counter", `"counter":5,`), "sample head 2\n")
-	if err := os.WriteFile(pins, append(old, []byte(strings.Repeat("cd", 32)+"\n")...), 0o600); err != nil {
-		t.Fatal(err)
+	digests(all)
+	// A prefix that is missing or not of the daemon's form is CHANGED, and
+	// the daemon's key check is not run.
+	for _, bad := range []string{"", "12", "12:" + strings.Repeat("0123456789abcdef", 4) + "\nmore", "012:" + strings.Repeat("0123456789abcdef", 4),
+		"12:" + strings.Repeat("0123456789ABCDEF", 4), "12:" + strings.Repeat("0123456789abcdef", 3)} {
+		if err := os.WriteFile(prefixFile, []byte(bad+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		os.Remove(keysArgs)
+		out, code := k.run(t, nil, compare...)
+		if code != 1 || !strings.Contains(out, "status: CHANGED: there is no prefix of the key list of step g in "+prefixFile) {
+			t.Errorf("the prefix %q: exit %d:\n%s", bad, code, out)
+		}
+		if _, err := os.Lstat(keysArgs); err == nil {
+			t.Errorf("the prefix %q: the daemon's key check ran", bad)
+		}
 	}
-	status4("a counter record and a changed pin file", 1, "status:   gate/seat-pins: FAILED",
-		"status: CHANGED: a file of the trial other than the key list is not the bytes recorded", "only counter records were appended")
-	if err := os.WriteFile(pins, old, 0o600); err != nil {
-		t.Fatal(err)
+	os.Remove(prefixFile)
+	if out, code := k.run(t, nil, compare...); code != 1 || !strings.Contains(out, "there is no prefix of the key list of step g") {
+		t.Errorf("no prefix: exit %d:\n%s", code, out)
 	}
-	set(string(oldKeys), string(oldHead))
-	os.Remove(copyKeys)
 	os.Remove(args)
-	os.Remove(filepath.Join(r, "evidence", "trial-before.sha256"))
+	os.Remove(keysArgs)
+	os.Remove(before)
 	if !sameScratchSeatFiles(beforeState, scratchSeatFiles(t, k.state)) || !sameScratchSeatFiles(beforeRoot, scratchSeatFiles(t, r)) {
 		t.Error("--status changed the state folder or the root")
 	}
@@ -1046,7 +1080,9 @@ func TestScratchSeatProofRunbookShellIsSafe(t *testing.T) {
 		"H=$(mktemp -d \"$ROOT/version-home.XXXXXX\") && env -i HOME=\"$H\" \"$ROOT/agent-install/claude\" --version",
 		"unset CLAUDE_FILE CLAUDE_MODEL",
 		"{ sh \"$ROOT/netcheck.sh\"; echo \"netcheck: exit status $?\"; } 2>&1 | tee -a \"$ROOT/evidence/netcheck.txt\"",
-		"(cd \"$S/owner\" && sha256sum -c -- \"$ROOT/evidence/trial-before.sha256\")",
+		"sh \"$P\" --status --compare",
+		"$D run --scratch \"$CONFIG\" --owner-channel --check --keys-prefix >\"$ROOT/evidence/keys-before.prefix\"",
+		"must list each of `gate/key.pem`, `gate/cert.pem`, `gate/seat-pins`, `keys.log`, `keys.head` and `scratch.json` once and nothing else",
 		"byte-identical to step g",
 		"open the seat's web app (the same seat, on the authority host)",
 		"`submitted`: the fence put it in. claude will ask to approve the write of its reply. `w` attaches as the writer",
@@ -1063,7 +1099,8 @@ func TestScratchSeatProofRunbookShellIsSafe(t *testing.T) {
 		t.Error("the live lead is defined before the drop rule's step")
 	}
 	for _, stale := range []string{"chat purge", "plain Yes", "leads/scratch-live-lead/home", "test ! -e", "--swap-in", "--swap-out",
-		"--record-trial", "trial-restart.sh", "mask --runtime", "swap-record", "scratch.json.trial", "owner-scratch.json", "env -i HOME=\"$(mktemp -d)\""} {
+		"--record-trial", "trial-restart.sh", "mask --runtime", "swap-record", "scratch.json.trial", "owner-scratch.json", "env -i HOME=\"$(mktemp -d)\"",
+		"keys-before.log", "sha256sum -c --", "head catching up", "scratch_mounts_linux", "by place in the filesystem"} {
 		if strings.Contains(text, stale) {
 			t.Errorf("the runbook still says %q", stale)
 		}

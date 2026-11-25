@@ -45,13 +45,19 @@
   tools and the root (physical paths, an existing parent, an empty or new
   folder) first, runs git in a cleared environment, never writes in the
   trial's state folder, never deletes and starts nothing, and `--status`
-  runs the daemon's `--check` and compares the trial's gate key,
-  certificate, pins, key list and settings with the digests the owner
-  recorded before the sitting; from a private copy of the key list taken
-  then, it checks that the list only grew (the copy is a byte prefix) and
-  names the kind of each record appended, passing counter records alone (a
-  phone login) and a head that caught up with the list, and calling any
-  pairing, revocation, changed old byte or missing copy CHANGED. It takes an IPv4 gate only. It also writes
+  runs the daemon's `--check`; with `--compare` it then refuses a record of
+  the digests taken before the sitting that does not list each of the six
+  files once, compares the trial's gate key, certificate, pins and settings
+  with it, and has the daemon judge the key list. For that the daemon of
+  both tags takes `run --scratch CONFIG --owner-channel --check
+  --keys-prefix`, which checks the key list and its head with the journal's
+  own reader on a private copy (nothing of the state root is written) and
+  prints the list's length and SHA-256, and `--check --keys-since
+  LEN:SHA256`, which checks them again, checks that the prefix is the
+  list's beginning and names the type of each record appended since:
+  counter records alone (a phone login) hold, and any other record, a
+  changed old byte, a head that does not count the list or any damage is
+  CHANGED. It takes an IPv4 gate only. It also writes
   the owner's network check `netcheck.sh` (its connect test in the network
   shape of a scratch lead's sandbox: the plan's pasta arguments and the
   profile's bubblewrap flag set for the lead's identity, which a test

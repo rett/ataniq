@@ -93,6 +93,32 @@ with the seat gate together:
                     "pass" or "FAIL" with the reason, then what the daemon
                     would read, and exit: 0 when nothing is refused, 10
                     otherwise. It binds, locks, makes and starts nothing.
+
+       ataniqd run --scratch CONFIG --owner-channel --check --keys-prefix
+       ataniqd run --scratch CONFIG --owner-channel --check
+               --keys-since LEN:SHA256
+
+  --keys-prefix     with --check: check only the key list owner/keys.log of
+                    the state root and its head owner/keys.head, with the
+                    journal's own reader (the records well formed, in
+                    sequence, on the digest chain and within the list's
+                    rules; the head's count and digest the list's), run on
+                    a private copy in a temporary folder that is removed, so
+                    nothing of the state root is written; then print the
+                    list's prefix, LEN:SHA256, its length in bytes and its
+                    SHA-256. Exit 0, or 1 with the reason on standard error
+                    when the list or its head does not hold (a head that
+                    lags the list, which a start would make right, does not).
+  --keys-since LEN:SHA256
+                    with --check: check the key list and its head as
+                    --keys-prefix does, check that the prefix is the list's
+                    first LEN bytes, ending at a whole record, and name the
+                    type of each record appended after it. Counter records
+                    alone (a phone login whose passkey's sign counter rises)
+                    hold: "keys: holds" and exit 0. Any other record (added,
+                    revoked, rejected), a changed or missing old byte and
+                    any damage of the list or its head is "keys: CHANGED"
+                    and exit 1; a prefix not of the form is exit 2.
 `
 
 // scratchChatNote is the line the gate writes after its start line when it
