@@ -1,0 +1,21 @@
+{
+  "schema": "ataniq.pack-declaration/1",
+  "name": "codex",
+  "class": "runtime",
+  "vendor": "OpenAI",
+  "display": "Codex",
+  "qargi_name": "codex",
+  "words": [
+    {"text": "codex", "match": "substring"},
+    {"text": "openai", "match": "substring"}
+  ],
+  "builds": [
+    {
+      "version": "0.169",
+      "aliases": ["0.169.0"],
+      "transports": ["terminal"],
+      "verified_on": "",
+      "source": "internal/inject/screen/testdata/codex-0.169"
+    }
+  ]
+}

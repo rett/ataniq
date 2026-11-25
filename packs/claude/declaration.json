@@ -1,0 +1,20 @@
+{
+  "schema": "ataniq.pack-declaration/1",
+  "name": "claude",
+  "class": "runtime",
+  "vendor": "Anthropic",
+  "display": "Claude Code",
+  "qargi_name": "claude-code",
+  "words": [
+    {"text": "claude", "match": "substring"},
+    {"text": "anthropic", "match": "substring"}
+  ],
+  "builds": [
+    {
+      "version": "2.1.325",
+      "transports": ["terminal"],
+      "verified_on": "",
+      "source": "internal/inject/screen/testdata/claude-2.1.325"
+    }
+  ]
+}
