@@ -110,8 +110,11 @@ with the seat gate together:
                     formed, in sequence, on the digest chain and within the
                     list's rules; the head's count and digest exactly the
                     list's. Nothing is created, repaired, locked or written,
-                    anywhere. Then print the list's prefix, LEN:SHA256, its
-                    length in bytes and its SHA-256. Exit 0, or 1 with the
+                    anywhere. Then print one line: the list's prefix,
+                    LEN:SHA256, its length in bytes and its SHA-256, a space
+                    and the SHA-256 of the head, both of the bytes the
+                    checks read from the descriptors they checked, one
+                    snapshot. Exit 0, or 1 with the
                     reason on standard error when the list or its head does
                     not hold (a mode or owner the daemon would refuse, a
                     missing list or head, and a head that lags the list,

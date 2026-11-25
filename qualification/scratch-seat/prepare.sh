@@ -69,14 +69,15 @@
 # ROOT/owner-settings --check", which reads the trial's state folder and binds,
 # locks, makes and starts nothing, and passes its lines and its exit status
 # through. With --record (step g), once the check found no refusal, it takes
-# the baseline of step g: the digests of the trial's six files, then the
-# key list's prefix from the daemon's "ataniqd run --scratch
-# ROOT/scratch.json --owner-channel --check --keys-prefix"; only when the
-# prefix's digest is the digest of keys.log just taken are both written, in
-# a new folder that is then given its name, ROOT/evidence/step-g, so that
-# the baseline appears whole or not at all; on disagreement nothing is
-# written and the step is run again, and a baseline that is there is never
-# replaced. With --compare (step 13) it then compares the trial's files with
+# the baseline of step g: the digests of the trial's gate key, certificate,
+# pins and settings, then the key list's prefix and its head's digest from
+# the daemon's "ataniqd run --scratch ROOT/scratch.json --owner-channel
+# --check --keys-prefix", both of the one snapshot the journal's checks
+# passed (prepare opens neither file of the key list); the six digests and
+# the prefix are written in a new folder that is then given its name,
+# ROOT/evidence/step-g, so that the baseline appears whole or not at all;
+# when the daemon refuses nothing is written and the step is run again, and
+# a baseline that is there is never replaced. With --compare (step 13) it then compares the trial's files with
 # the baseline of step g, which must be there: step-g/trial-before.sha256
 # must be six lines naming each of the six files once, the names compared as
 # text, before any file it lists is opened, and the trial's gate key,
@@ -112,6 +113,10 @@ BINARIES='ataniq-holder ataniq-canary ataniq-canary-standin ataniq-console atani
 TOKEN='canary-token: proof-standin-0001'
 # The trial's files whose digests the sitting compares, relative to owner/.
 TRIAL_FILES='gate/key.pem gate/cert.pem gate/seat-pins keys.log keys.head scratch.json'
+# Of them, the gate's files, which prepare hashes itself at step g with the
+# settings scratch.json: all but the key list and its head, whose digests
+# the daemon gives from the one snapshot its checks passed.
+GATE_FILES='gate/key.pem gate/cert.pem gate/seat-pins'
 
 say() { printf '%s\n' "$*"; }
 
@@ -916,14 +921,15 @@ not_recorded() {
 }
 
 # record_baseline is --status --record (step g), once the daemon's check
-# found no refusal: the digests of the trial's six files and the daemon's
-# prefix of the key list, taken one after the other while the trial runs,
-# must agree, the prefix's digest being the record's of keys.log; only then
-# are both written, into a new folder of their own that is then given its
-# name, so that the baseline appears whole or not at all. On disagreement
-# (a record was appended between the two, by a phone login, say) nothing is
-# written and the step is run again. A baseline that is there is kept and
-# never replaced.
+# found no refusal: the digests of the trial's gate key, certificate, pins
+# and settings, which prepare takes, and the daemon's line of the key list,
+# its prefix and its head's digest, both of the one snapshot the journal's
+# checks passed (so the list and the head recorded are one pair, and
+# prepare opens neither: a FIFO in place of one is the daemon's refusal, not
+# a read that blocks). The six digests make the record; it and the prefix
+# are written into a new folder of their own that is then given its name, so
+# that the baseline appears whole or not at all. A baseline that is there is
+# kept and never replaced.
 record_baseline() {
   if [ "$RC" -ne 0 ]; then
     say "status: NOT RECORDED: the sitting failed preflight; nothing was written: fix what the check refused, then run this step again"
@@ -938,14 +944,12 @@ record_baseline() {
     return 0
   fi
   _src=0
-  # shellcheck disable=SC2086  # the six names are split on purpose
-  _sums=$(cd -- "$OWNER" && sha256sum -- $TRIAL_FILES) || _src=$?
+  # shellcheck disable=SC2086  # the names are split on purpose
+  _gate=$(cd -- "$OWNER" && sha256sum -- $GATE_FILES) || _src=$?
+  _conf=
+  [ "$_src" -ne 0 ] || _conf=$(cd -- "$OWNER" && sha256sum -- scratch.json) || _src=$?
   if [ "$_src" -ne 0 ]; then
-    not_recorded "sha256sum of the trial's files ended with exit status $_src; nothing was written"
-    return 0
-  fi
-  if ! _why=$(manifest_ok "$_sums"); then
-    not_recorded "the digests of the trial's files are not a record of the six files ($_why); nothing was written"
+    not_recorded "sha256sum of the trial's gate key, certificate, pins or settings ended with exit status $_src; nothing was written"
     return 0
   fi
   say "status: the daemon's check of the key list: $DAEMON run --scratch $CONFIG --owner-channel --check --keys-prefix"
@@ -955,13 +959,25 @@ record_baseline() {
     not_recorded "the daemon's check of the key list ended with exit status $_krc (the line above says why); nothing was written: run this step again, and if it fails again, stop"
     return 0
   fi
-  _p=$(prefix_form "$_kp")
+  # One line: LEN:SHA256 of the list, a space, the SHA-256 of the head.
+  _p=
+  _h=${_kp#* }
+  case $_kp in
+    *"$_nl"* | *' '*' '*) ;;
+    *' '*) _p=$(prefix_form "${_kp%% *}") ;;
+  esac
+  # shellcheck disable=SC2254  # HEX64 is a pattern on purpose
+  case $_h in
+    $HEX64) ;;
+    *) _p= ;;
+  esac
   if [ -z "$_p" ]; then
-    not_recorded "the daemon's check of the key list printed no prefix of the form LEN:SHA256; nothing was written"
+    not_recorded "the daemon's check of the key list printed no line of the form LEN:SHA256 HEADSHA256 (the list's prefix and its head's digest); nothing was written"
     return 0
   fi
-  if [ "${_p#*:}" != "$(keys_digest "$_sums")" ]; then
-    not_recorded "the key list changed between its digest and the daemon's check (a record was appended meanwhile: a phone login, say), so the two are not one baseline; nothing was written: run this step again"
+  _sums=$_gate$_nl${_p#*:}'  keys.log'$_nl$_h'  keys.head'$_nl$_conf
+  if ! _why=$(manifest_ok "$_sums"); then
+    not_recorded "the digests of the trial's files are not a record of the six files ($_why); nothing was written"
     return 0
   fi
   _tmp=$EVIDENCE/.step-g.$$

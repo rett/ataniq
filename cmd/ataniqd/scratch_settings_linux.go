@@ -99,7 +99,7 @@ func defineSettingsFlags(fs *flag.FlagSet, s *settingsFlags) {
 		return nil
 	})
 	fs.BoolVar(&s.check, "check", false, "with --owner-settings: check and print what the daemon would read, then exit; nothing is bound, locked or started")
-	fs.BoolVar(&s.keysPrefix, "keys-prefix", false, "with --check: check the state folder's key list and its head with the journal's own checks, read only, and print the list's prefix, LEN:SHA256")
+	fs.BoolVar(&s.keysPrefix, "keys-prefix", false, "with --check: check the state folder's key list and its head with the journal's own checks, read only, and print the list's prefix, LEN:SHA256, and the SHA-256 of its head, from the one snapshot checked")
 	fs.Func("keys-since", "with --check: check the key list and its head, and name each record appended to the list since the prefix LEN:SHA256", func(v string) error {
 		s.keysSince, s.sinceSet = v, true
 		return nil

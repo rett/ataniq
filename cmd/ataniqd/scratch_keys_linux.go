@@ -39,8 +39,11 @@ import (
 // refuse or change at its next open never holds here.
 //
 // --keys-prefix prints the list's prefix, its length in bytes and the SHA-256
-// of those bytes ("LEN:SHA256"), once the list and its head pass. prepare.sh
-// records it at step g. --keys-since PREFIX then checks, at step 13, that the
+// of those bytes ("LEN:SHA256"), a space and the SHA-256 of the head's bytes,
+// once the list and its head pass: both digests of the one snapshot the
+// journal's checks passed, taken from the bytes read from the descriptors
+// they checked. prepare.sh records both at step g and hashes neither file
+// itself, so the list and the head it records are one pair. --keys-since PREFIX then checks, at step 13, that the
 // list and its head pass, that the recorded prefix is the list's first LEN
 // bytes, ending at a whole record, and names the type of each record appended
 // after it, read from the records the check passed. Counter records alone (a
@@ -88,10 +91,10 @@ func parseKeysPrefix(s string) (keysPrefix, error) {
 }
 
 // trialKeys is the key list of the state folder as the journal's checks
-// passed it: its bytes and its number of records.
+// passed it: its bytes, its head's bytes and its number of records.
 type trialKeys struct {
-	data    []byte
-	records int
+	data, head []byte
+	records    int
 }
 
 // readTrialKeys has the journal's read-only checks judge owner/keys.log and
@@ -105,12 +108,19 @@ func readTrialKeys(stateDir string) (trialKeys, error) {
 	case err != nil:
 		return trialKeys{}, fmt.Errorf("the journal's checks refuse the key list or its head: %v", err)
 	}
-	return trialKeys{data: snap.Data, records: snap.Records}, nil
+	return trialKeys{data: snap.Data, head: snap.Head, records: snap.Records}, nil
 }
 
 // prefixOf is the list's prefix of its whole length.
 func (k trialKeys) prefixOf() keysPrefix {
 	return keysPrefix{size: len(k.data), sum: sha256.Sum256(k.data)}
+}
+
+// snapshotLine is what --keys-prefix prints: the list's prefix, a space and
+// the SHA-256 of the head's bytes, both of the one snapshot.
+func (k trialKeys) snapshotLine() string {
+	sum := sha256.Sum256(k.head)
+	return k.prefixOf().String() + " " + hex.EncodeToString(sum[:])
 }
 
 // appendedSince returns the type of each record of the list after the
@@ -151,7 +161,7 @@ func (a *app) keysCheck(s settingsFlags, stateDir string) int {
 			fmt.Fprintf(a.stderr, "ataniqd run: --keys-prefix: %s\n", leaddaemon.SafeText(err.Error()))
 			return leaddaemon.ExitFailure
 		}
-		fmt.Fprintln(a.stdout, k.prefixOf().String())
+		fmt.Fprintln(a.stdout, k.snapshotLine())
 		return leaddaemon.ExitOK
 	}
 	p, err := parseKeysPrefix(s.keysSince)

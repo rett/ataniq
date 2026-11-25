@@ -56,11 +56,12 @@
   refuses a `--state` that is not the config's `state_root` (the same device
   and inode) and runs the daemon's `--check` (the printed steps that run
   `--status` carry the selected `--daemon`); with `--record` (before the
-  sitting) it then takes the baseline, the digests of the trial's six files
-  and the daemon's prefix of the key list, and writes both, whole, into
-  `evidence/step-g` only when the prefix's digest is the digests' of the
-  key list (a record appended between them writes nothing, and the step is
-  taken again); with `--compare` it then refuses a record of
+  sitting) it then takes the baseline, the digests of the trial's gate key,
+  certificate, pins and settings and the daemon's prefix of the key list
+  and digest of its head, both of one snapshot (prepare opens neither file
+  of the key list), and writes them, whole, into `evidence/step-g` (a
+  refusal of the key check writes nothing, and the step is taken again);
+  with `--compare` it then refuses a record of
   the digests taken before the sitting that does not name each of the six
   files once (the names compared as text, before any listed file is
   opened), compares the trial's gate key, certificate, pins and settings
@@ -70,7 +71,8 @@
   own checks read only, on the files themselves (the ownership, mode and
   link-count checks of the journal's opener and its replay, with an exact
   head; nothing is created, repaired or written, anywhere), and prints the
-  list's length and SHA-256, and `--check --keys-since
+  list's length and SHA-256 and the SHA-256 of its head, from the bytes it
+  checked, and `--check --keys-since
   LEN:SHA256`, which checks them again, checks that the prefix is the
   list's beginning and names the type of each record appended since:
   counter records alone (a phone login) hold, and any other record, a

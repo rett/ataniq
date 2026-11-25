@@ -40,6 +40,14 @@ func keysPrefixOf(t *testing.T, w *settingsWorld) string {
 	return strconv.Itoa(len(b)) + ":" + hex.EncodeToString(sum[:])
 }
 
+// keysSnapshotOf is what --keys-prefix prints of the world's key list as it
+// is now: the prefix, a space and the SHA-256 of the head.
+func keysSnapshotOf(t *testing.T, w *settingsWorld) string {
+	t.Helper()
+	sum := sha256.Sum256(fileBytes(t, filepath.Join(w.owner, ownerjournal.KeysHeadFileName)))
+	return keysPrefixOf(t, w) + " " + hex.EncodeToString(sum[:])
+}
+
 // appendChained appends one record to the world's key list with a digest
 // that follows the chain, and moves the head to count it: a record the
 // chain holds and the rules of the list may refuse.
@@ -120,7 +128,8 @@ func ownerFolder(t *testing.T, w *settingsWorld) map[string]string {
 	return out
 }
 
-// --keys-prefix prints the list's length and SHA-256 once the journal's
+// --keys-prefix prints the list's length and SHA-256, and the SHA-256 of
+// its head, once the journal's
 // checks pass the list and its head, and writes nothing: the trial's owner/
 // folder is as it was, to the inode and the time, and TMPDIR is empty. --keys-since that prefix
 // then holds with no record appended. The flags need --check, exclude each
@@ -130,12 +139,12 @@ func TestKeysCheckPrintsThePrefixAndHoldsOnTheSameList(t *testing.T) {
 	w, tmp := keysWorld(t)
 	folder := ownerFolder(t, w)
 	code, out, msg := keysRun(t, w, "--keys-prefix")
-	if code != 0 || msg != "" || out != keysPrefixOf(t, w)+"\n" {
-		t.Fatalf("--keys-prefix: exit %d: %q %q, want %q", code, out, msg, keysPrefixOf(t, w))
+	if code != 0 || msg != "" || out != keysSnapshotOf(t, w)+"\n" {
+		t.Fatalf("--keys-prefix: exit %d: %q %q, want %q", code, out, msg, keysSnapshotOf(t, w))
 	}
 	w.sameTrial(t, "after --keys-prefix")
 	nothingInTmp(t, tmp)
-	prefix := strings.TrimSpace(out)
+	prefix, _, _ := strings.Cut(strings.TrimSpace(out), " ")
 	code, out, _ = keysRun(t, w, "--keys-since", prefix)
 	if code != 0 || !strings.Contains(out, "keys  "+keysPathOf(w.state)+": 1 record(s), each well formed, in sequence, on the digest chain and within the rules of the list, and its head keys.head counts them") ||
 		!strings.Contains(out, "no record was appended") || !strings.HasSuffix(out, "keys: holds: the key list is the list of step g\n") {

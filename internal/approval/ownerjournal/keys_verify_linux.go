@@ -11,9 +11,13 @@ import (
 )
 
 // KeysSnapshot is what [VerifyKeys] read and passed: the bytes of the list's
-// file, as read from the descriptor it checked, and its number of records.
+// file and of its head, each as read from the descriptor it checked, and the
+// list's number of records. The two are one snapshot: the head was read
+// while the list's file was unchanged, and holds the list's count and last
+// digest.
 type KeysSnapshot struct {
 	Data    []byte
+	Head    []byte
 	Records int
 }
 
@@ -27,7 +31,10 @@ type KeysSnapshot struct {
 // read from the descriptor that was checked, must hold under the replay of
 // OpenKeys: the header, each record by the strict reader, the numbers in
 // sequence, the digest chain and the rules of the list ([ErrDamaged]). The
-// head must be exact: it counts every record and holds the last digest.
+// head must be exact: it counts every record and holds the last digest. It
+// returns the bytes of the list and of the head that it checked, so that a
+// caller that records digests of the two takes them from this one snapshot
+// and opens neither file itself.
 //
 // It creates, repairs, locks and writes nothing. Where OpenKeys would make
 // something, VerifyKeys refuses: no file ([ErrNoKeys], where OpenKeys makes a
@@ -73,7 +80,7 @@ func VerifyKeys(path string) (_ KeysSnapshot, err error) {
 	if err != nil {
 		return KeysSnapshot{}, err
 	}
-	h, ok, err := k.readHead()
+	h, headData, ok, err := k.readHeadData()
 	if err != nil {
 		return KeysSnapshot{}, err
 	}
@@ -95,5 +102,5 @@ func VerifyKeys(path string) (_ KeysSnapshot, err error) {
 	if err := k.checkPath(); err != nil {
 		return KeysSnapshot{}, err
 	}
-	return KeysSnapshot{Data: data, Records: list.records}, nil
+	return KeysSnapshot{Data: data, Head: headData, Records: list.records}, nil
 }

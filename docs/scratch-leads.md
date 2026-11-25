@@ -1329,8 +1329,9 @@ opener would refuse, a missing list or head (the opener would make one) and
 a head that lags the list (a start would make it right) do not pass. It is a
 guard for the owner's trial against his own mistakes: whoever can write the
 folder can write a list and a head that hold.
-`--keys-prefix` prints the list's prefix, its length in bytes and its
-SHA-256, as `LEN:SHA256`. `--keys-since` checks that a prefix taken earlier
+`--keys-prefix` prints one line, the list's prefix, its length in bytes and
+its SHA-256, as `LEN:SHA256`, a space and the SHA-256 of the head: both of
+the bytes the checks read from the descriptors they checked, one snapshot. `--keys-since` checks that a prefix taken earlier
 is the list's beginning, ending at a whole record, and names the type of
 each record appended since: counter records alone (a phone login whose
 passkey's sign counter rises) end `keys: holds` (exit 0); any other record,

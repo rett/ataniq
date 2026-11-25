@@ -207,8 +207,9 @@ every row of their bind tables, as the holder builds them
 refuses what it can judge, `--status` refuses a `--state` that is not the
 config's `state_root` by identity and runs the daemon's check with exactly
 the flags of step 2 and `--check`, `--status --record` writes the baseline of
-step g only when the daemon's prefix and the digests agree (a record
-appended between them writes nothing), and `--status --compare` refuses a record
+step g with the key list's and its head's digests from the daemon's one
+snapshot (a stub's head digest that is not the file's is the one recorded,
+and a FIFO in place of either file does not block it), and `--status --compare` refuses a record
 of step g that does not name each of the six files once, by its name as
 text, before it opens one, takes `sha256sum -c`'s exit status for the other
 four files' digests and passes the prefix of step g to the daemon's key check,
@@ -468,25 +469,26 @@ version, and e runs pasta, bubblewrap, ip, curl and a throwaway user unit.
    start.
    With `--record`, once the check found no refusal, `--status` takes the
    baseline that step 13 compares with: the SHA-256 digests of the trial's
-   gate key, certificate, pins, key list, its head and settings, then the
-   key list's prefix from the daemon's read-only check of the key list and
-   its head, `$D run --scratch "$CONFIG" --owner-channel --check
-   --keys-prefix`. That check has the journal's own checks judge the trial's
-   `owner/keys.log` and `keys.head` read only, on the files themselves
-   (`ownerjournal.VerifyKeys`: the folder and both files opened without
-   following a link and held to the ownership, mode and link-count checks
-   of the journal's opener, the records under its replay, and a head that
-   counts them exactly; it creates, repairs, locks and writes nothing), and
-   prints one line, `LEN:SHA256`, the list's length and SHA-256 (a digest,
-   not the keys). The two are one record only when the prefix's digest is
-   the digest of `keys.log` taken just before: then both files are written
-   into a new folder of their own, which is then given its name,
-   `$ROOT/evidence/step-g`, so the baseline appears whole or not at all, and
-   the last line is `status: recorded: ...`. When they disagree (a record
-   was appended between them, by a phone login, say), when the key check
-   refuses (it prints why), or when the daemon's check refused, nothing is
-   written and the line says `status: NOT RECORDED: ...`: run the step
-   again, and if it fails again, stop. A baseline that is there is kept and
+   gate key, certificate, pins and settings, then the key list's from the
+   daemon's read-only check of the key list and its head, `$D run --scratch
+   "$CONFIG" --owner-channel --check --keys-prefix`. That check has the
+   journal's own checks judge the trial's `owner/keys.log` and `keys.head`
+   read only, on the files themselves (`ownerjournal.VerifyKeys`: the folder
+   and both files opened without following a link and held to the
+   ownership, mode and link-count checks of the journal's opener, the
+   records under its replay, and a head that counts them exactly; it
+   creates, repairs, locks and writes nothing), and prints one line,
+   `LEN:SHA256 HEADSHA256`: the list's length and SHA-256 and the head's
+   SHA-256 (digests, not the keys), both of the bytes the checks read from
+   the descriptors they checked, so the list and the head are one pair even
+   while a phone login appends. prepare opens neither file of the key list.
+   The six digests and the prefix are written into a new folder of their
+   own, which is then given its name, `$ROOT/evidence/step-g`, so the
+   baseline appears whole or not at all, and the last line is `status:
+   recorded: ...`. When the key check refuses (it prints why; a record
+   appended while it read is one such refusal), or when the daemon's check
+   refused, nothing is written and the line says `status: NOT RECORDED:
+   ...`: run the step again, and if it fails again, stop. A baseline that is there is kept and
    never replaced. The pins line and the trial's fingerprint line of its
    current run go with it. Nothing of the trial is changed by any of it.
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // folderState is every name in the folder of a list with its mode, its
@@ -79,6 +80,9 @@ func TestVerifyKeysPassesTheListTheJournalOpens(t *testing.T) {
 	}
 	if !bytes.Equal(got.Data, fileBytes(t, path)) || got.Records != 3 {
 		t.Errorf("the snapshot: %d bytes, %d records", len(got.Data), got.Records)
+	}
+	if !bytes.Equal(got.Head, fileBytes(t, headPathOf(path))) {
+		t.Errorf("the snapshot's head %q is not the head file's", got.Head)
 	}
 	if !sameFolderState(before, folderState(t, filepath.Dir(path))) {
 		t.Error("VerifyKeys changed the folder")
@@ -223,6 +227,36 @@ func TestVerifyKeysRefusesWhatTheOpenerRefuses(t *testing.T) {
 					k.Close()
 				}
 				t.Fatalf("OpenKeys: %v, want %v as VerifyKeys", err, c.want)
+			}
+		})
+	}
+}
+
+// A FIFO in place of the list or of its head is refused at once, as a file
+// that is not a plain file, and never blocks the check: both are opened
+// nonblocking and checked before they are read.
+func TestVerifyKeysRefusesAFIFOWithoutBlocking(t *testing.T) {
+	for _, which := range []string{"the list", "the head"} {
+		t.Run(which, func(t *testing.T) {
+			path := aList(t)
+			target := path
+			if which == "the head" {
+				target = headPathOf(path)
+			}
+			must(t, os.Remove(target))
+			must(t, syscall.Mkfifo(target, 0o600))
+			done := make(chan error, 1)
+			go func() {
+				_, err := VerifyKeys(path)
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if !errors.Is(err, ErrNotPrivate) {
+					t.Fatalf("VerifyKeys with a FIFO as %s: %v, want %v", which, err, ErrNotPrivate)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatalf("VerifyKeys blocked on a FIFO as %s", which)
 			}
 		})
 	}
