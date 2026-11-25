@@ -182,8 +182,9 @@ The checks guard against mistakes, not attackers: a mount layout you or root
 make (a bind mount of a folder within a guarded one, nested mounts, a mount
 made after the check, another namespace) is outside them, and a lead cannot
 make a mount on the host. `TestScratchLeadReachCoversEveryBind` in
-`internal/leaddaemon` holds the leads' reach to every source of their bind
-tables. `tests/scratch_seat_prepare_test.go` holds the script: `--dry` and
+`internal/leaddaemon` holds the leads' reach to the concrete host source of
+every row of their bind tables, as the holder builds them
+(`sandboxstart.BindTable`, the code of its start). `tests/scratch_seat_prepare_test.go` holds the script: `--dry` and
 `--self-test` read and write nothing, `--write` writes in the root only and
 refuses what it can judge, `--status` runs the daemon's check with exactly
 the flags of step 2 and `--check`, compares the trial's digests and names
