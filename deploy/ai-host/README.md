@@ -21,6 +21,12 @@ only `--self-test`.
 
 - **Know the everyday user's password.** Afterwards sudo asks for it every
   time.
+- **Make sure that password is usable.** In the root shell, `passwd -S NAME`
+  must show `P` in its second field. `L`, `LK` or `NP` there mean the user
+  has no usable password: set one first with `passwd NAME`, or do not remove
+  `NOPASSWD` until root can log in another way. Keep the root shell open
+  until sudo has been used once with that password, in a session agents
+  cannot reach.
 - **Keep a root shell open** for the whole sitting, in a second terminal, so
   you can undo an edit by hand.
 - **Install the script as root's own regular file.** Your checkout is
@@ -167,6 +173,13 @@ If it does not work: a `refused:` line says why (bad arguments); nothing was
 read.
 
 ### 3. Make the edits by hand
+
+Before you remove a `NOPASSWD:` tag, read the user's password state in the
+root shell: `passwd -S NAME` must show `P` in its second field. `L`, `LK` or
+`NP` there mean the user has no usable password: set one first with
+`passwd NAME`, or do not remove `NOPASSWD` until root can log in another
+way. Keep the root shell open until sudo has been used once with that
+password, in a session agents cannot reach.
 
 For each finding of sudo, as root:
 
