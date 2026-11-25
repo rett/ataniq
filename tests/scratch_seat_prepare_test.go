@@ -1098,6 +1098,54 @@ func TestScratchSeatPrepareStatusRunsTheDaemonsCheck(t *testing.T) {
 	}
 	k.noCalls(t)
 
+	// The state folder --status reads is the config's state_root, by
+	// identity, before anything is compared or run (review finding 5): a
+	// --state of another trial, a config edited to name another folder, and
+	// a config with a second state_root (in another case, which a JSON
+	// reader may take) or another form of the line are refused, and the
+	// daemon is not run.
+	other := filepath.Join(k.dir, "other-trial")
+	if err := os.MkdirAll(filepath.Join(other, "owner"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(r, "scratch.json")
+	cfg := mustRead(t, config)
+	for _, c := range []struct {
+		name  string
+		state string
+		cfg   string
+		want  string
+	}{
+		{"a --state of another trial", other, string(cfg), "is not the folder --state names, " + other},
+		{"a config of another state folder", k.state, strings.Replace(string(cfg), `"state_root": "`+k.state+`"`, `"state_root": "`+other+`"`, 1), "the scratch config's state folder " + other + " is not the folder --state names"},
+		{"a second state_root", k.state, strings.Replace(string(cfg), "{\n", "{\n  \"State_Root\": \""+other+"\",\n", 1), "names a state_root 2 times"},
+		{"another form of the line", k.state, strings.Replace(string(cfg), `"state_root": "`, `"state_root":"`, 1), "is not the line --write writes"},
+	} {
+		if err := os.WriteFile(config, []byte(c.cfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		os.Remove(args)
+		os.Remove(keysArgs)
+		st := slices.Clone(compare)
+		st[2] = c.state
+		out, code := k.run(t, nil, st...)
+		if code != 1 || !strings.Contains(out, c.want) || strings.Contains(out, "status: the daemon's check") {
+			t.Errorf("%s: exit %d, want 1 and %q:\n%s", c.name, code, c.want, out)
+		}
+		for _, f := range []string{args, keysArgs} {
+			if _, err := os.Lstat(f); err == nil {
+				t.Errorf("%s: the daemon ran", c.name)
+			}
+		}
+	}
+	if err := os.WriteFile(config, cfg, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := k.run(t, nil, status...); code != 0 || !strings.Contains(out, "status: the state folder "+k.state+" is the state_root of "+config+" (the same device and inode)") {
+		t.Errorf("--status on the config's own state folder: exit %d:\n%s", code, out)
+	}
+	os.Remove(args)
+
 	// Without the config, or without the daemon, nothing is run.
 	if out, code := k.run(t, nil, "--status", "--state", k.state, "--root", filepath.Join(k.dir, "other"), "--gate", "192.0.2.10:7443", "--daemon", daemon); code != 1 ||
 		!strings.Contains(out, "run --write first") {

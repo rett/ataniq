@@ -62,7 +62,11 @@
 # copies, never answers a prompt, never deletes anything and never writes in
 # the trial's state folder.
 #
-# --status is the owner's: it runs the daemon's check, "ataniqd run --scratch
+# --status is the owner's. It first checks that the state folder --state
+# names is the state_root of ROOT/scratch.json, by identity (the same device
+# and inode), and refuses otherwise before it runs or compares anything: the
+# daemon takes its state folder from the config, so the two must be one
+# trial's. Then it runs the daemon's check, "ataniqd run --scratch
 # ROOT/scratch.json --owner-channel --seat-gate IP:PORT --owner-settings
 # ROOT/owner-settings --check", which reads the trial's state folder and binds,
 # locks, makes and starts nothing, and passes its lines and its exit status
@@ -244,6 +248,10 @@ check_home() {
 
 # phys DIR prints the physical path of an existing folder, or fails.
 phys() { (cd -P -- "$1" 2>/dev/null && pwd -P); }
+
+# id_of PATH prints the identity of a folder, its device and inode (of what a
+# link leads to), or fails.
+id_of() { stat -L -c '%d:%i' -- "$1" 2>/dev/null; }
 
 # The values every computation uses. set_paths STATE ROOT sets the names of
 # the proof's files; set_keys SITTING the leads' keys.
@@ -759,6 +767,35 @@ keys_fresh() {
   done
 }
 
+# same_state refuses, before anything is compared or run, a scratch config
+# whose state_root is not the folder --state names, by identity (the same
+# device and inode). The daemon takes its state folder from the config and
+# --status reads the files of --state: were they two folders, the daemon's
+# check and its judgement of the key list would be of one trial and the
+# digests of another. The config must hold one state_root, in the line
+# --write writes; another form is refused, not interpreted.
+same_state() {
+  _c=$(LC_ALL=C grep -i -c -e '"state_root"' -- "$CONFIG") || _c=0
+  [ "$_c" -eq 1 ] || die "the scratch config $CONFIG names a state_root $_c times, not once as --write writes it"
+  _l=$(LC_ALL=C grep -i -e '"state_root"' -- "$CONFIG") || die "cannot read the scratch config $CONFIG"
+  case $_l in
+    '  "state_root": "'*'",') ;;
+    *) die "the state_root line of $CONFIG is not the line --write writes: give the config --write wrote" ;;
+  esac
+  _sr=${_l#'  "state_root": "'}
+  _sr=${_sr%'",'}
+  case $_sr in
+    /*) ;;
+    *) die "the state_root of $CONFIG is not an absolute path" ;;
+  esac
+  case $_sr in
+    *[!A-Za-z0-9._/+-]*) die "the state_root of $CONFIG has a character outside A-Z a-z 0-9 . _ / + -" ;;
+  esac
+  _a=$(id_of "$S") || die "the state folder cannot be looked at: $S"
+  _b=$(id_of "$_sr") || die "the state folder of the scratch config cannot be looked at: $_sr"
+  [ "$_a" = "$_b" ] || die "the scratch config's state folder $_sr is not the folder --state names, $S (another device and inode): the daemon would check one trial and --status compare another; give the --state and --root of one proof"
+}
+
 # status_failed sets RC to 1 unless the daemon's check already failed.
 status_failed() { [ "$RC" -ne 0 ] || RC=1; }
 
@@ -901,6 +938,8 @@ if [ "$MODE" = status ]; then
   if [ ! -f "$DAEMON" ] || [ ! -x "$DAEMON" ]; then
     die "no daemon of both tags at $DAEMON (docs/scratch-seat-proof.md, Before the sitting, says how to build it)"
   fi
+  same_state
+  say "status: the state folder $S is the state_root of $CONFIG (the same device and inode)"
   say "status: the daemon's check: $DAEMON run --scratch $CONFIG --owner-channel --seat-gate $GATE --owner-settings $SETTINGS_DIR --check"
   RC=0
   "$DAEMON" run --scratch "$CONFIG" --owner-channel --seat-gate "$GATE" --owner-settings "$SETTINGS_DIR" --check || RC=$?
@@ -964,10 +1003,6 @@ for _x in json txt; do
     [ -f "$SCREENS/$_s.$_x" ] || die "the recorded screens are missing in the checkout: $SCREENS"
   done
 done
-
-# id_of PATH prints the identity of a folder, its device and inode (of what a
-# link leads to), or fails.
-id_of() { stat -L -c '%d:%i' -- "$1" 2>/dev/null; }
 
 # MARK is prepare's own mark in a folder it made: a file whose one line names
 # the folder's own identity, so that a copy of the mark in another folder is

@@ -202,7 +202,8 @@ make a mount on the host. `TestScratchLeadReachCoversEveryBind` in
 every row of their bind tables, as the holder builds them
 (`sandboxstart.BindTable`, the code of its start). `tests/scratch_seat_prepare_test.go` holds the script: `--dry` and
 `--self-test` read and write nothing, `--write` writes in the root only and
-refuses what it can judge, `--status` runs the daemon's check with exactly
+refuses what it can judge, `--status` refuses a `--state` that is not the
+config's `state_root` by identity and runs the daemon's check with exactly
 the flags of step 2 and `--check`, and `--status --compare` refuses a record
 of step g that does not name each of the six files once, by its name as
 text, before it opens one, takes `sha256sum -c`'s exit status for the other
@@ -405,7 +406,11 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    $D run --scratch "$CONFIG" --owner-channel --check --keys-prefix >"$ROOT/evidence/keys-before.prefix"
    ```
 
-   `--status` runs the daemon's own check, `$D run --scratch "$CONFIG"
+   `--status` first checks that `$S` is the `state_root` of `$CONFIG`, the
+   same folder by device and inode, and refuses before it runs or compares
+   anything when it is not (a `--state` of another trial, or a config edited
+   to name another folder): the daemon takes its state folder from the
+   config, and the digests are of `$S`. Then it runs the daemon's own check, `$D run --scratch "$CONFIG"
    --owner-channel --seat-gate "$SEAT_GATE" --owner-settings "$SETTINGS"
    --check`, and passes its lines through. The check binds, locks, makes and
    starts nothing, so it runs beside the trial. Each line is `pass` with what
