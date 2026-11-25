@@ -75,7 +75,7 @@ var reasonWords = map[string]string{
 	"max-running":       "the limit of running leads is reached",
 	"second-message":    "a message was already sent in this epoch",
 	"message-in-flight": "a message is already in flight for this lead",
-	"stale-epoch":       "the epoch changed; read the list and try again",
+	"stale-epoch":       "the epoch changed or the lead is not ready yet; read the list and try again",
 
 	// Any command.
 	"role-busy":            "another command for this lead is running; try again",

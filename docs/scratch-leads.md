@@ -349,6 +349,20 @@ on the holder's word, and in no other way:
   and the same role** as the registry shows. A refusal (`wrong-epoch` included),
   no answer, an answer with no status and a status of another epoch or role are
   ignored: the lead stays `starting`, and nothing else changes.
+- **Which build answered.** Before it sets `ready`, the observer reads the
+  build the holder recorded in its `holder.json` for the epoch, which the
+  holder reads from its own running executable. `lead.start` checked the holder
+  executable by its path, and the unit manager looks the path up again, so a
+  holder rebuilt in between runs as another build. A holder that is not the
+  daemon's build is never shown `ready`. When this daemon's own `lead.start`
+  launched the epoch, the observer stops the lead as `lead.stop` does (under the
+  role's operation lock, taken as a try-lock), logs why and writes a `stop`
+  line in the lead's evidence whose detail is the `holder-version-skew`
+  refusal; the next `lead.start` is then refused `holder-version-skew` before
+  anything changes while the executable is still the other build. A lead the
+  daemon adopted at its start is left `starting` and is not stopped, and its
+  ticket and message are refused `holder-version-skew`. A `holder.json` that is
+  not yet the epoch's is asked again, as a holder that does not answer is.
 - **What it sets.** The shown state `ready` for that epoch, with the reason code
   `holder-ready`, the evidence kind `ataniq-observation` and the detail "the
   holder is up and the agent was started; the agent's login is not observed".
@@ -376,7 +390,8 @@ on the holder's word, and in no other way:
   the daemon starts.
 - **It does not change** what counts against `max_running` (a `starting` lead
   and a `ready` one both count), the receipts, the command table or the
-  evidence file.
+  evidence file, but for the `stop` line of a holder that started as another
+  build (above).
 - **At shutdown** the daemon ends the observers and waits for them before it
   closes the registry, so a daemon stopped while a holder does not answer still
   exits 0 and promptly. When the server itself did not stop within the grace the
@@ -385,7 +400,9 @@ on the holder's word, and in no other way:
   and logged) leaves the lead as it is shown.
 
 `ready` is for scratch leads only. The canary has no observer and its lead stays
-`starting` (see [the canary slice](canary-slice.md)).
+`starting` (see [the canary slice](canary-slice.md)); a canary holder that
+started as another build is refused at its ticket and its message, and the
+owner stops it.
 
 `lead.list` shows the state and the reason together: a promoted lead's row says
 `"state":"ready"` and `"state_reason":"holder-ready"`, both from the registry's
@@ -434,15 +451,24 @@ refused message is not spent). A `holder.json` of another epoch than the lead's
 current one is refused with `stale-epoch` before its build is looked at, since
 it is not the record of the holder that would be asked: most often the holder
 of a lead that is starting has not written its own yet, and the ticket or the
-message is asked again once the list shows the lead ready. The same build is
-the same main module version, VCS revision and modified flag; the build tags
-and the Go version are not compared, so the daemon of `make scratch-seat-build`
+message is asked again once the list shows the lead ready. A lead shown
+`starting` whose holder has written no `holder.json` at all yet (its first
+start) is refused the same way, `stale-epoch` with the text "the holder of the
+epoch has not written its state file yet: the role is still starting; try
+again in a moment", and not as another build: nothing is known of a build
+yet, and waiting is the way out. The console's leads view words `stale-epoch`
+as "the epoch changed or the lead is not ready yet; read the list and try
+again". The same build is
+the same main module path, module version, VCS revision and modified flag;
+the build tags and the Go version are not compared, so the daemon of `make scratch-seat-build`
 and the holder of `make canary-build` from one checkout are the same build. A
 build without a VCS revision is never the expected one, and a holder that
 records no build (a holder older than build identities) is refused as such. Its
 message, unlike the other codes' fixed texts, names what was found and both
 builds, as read from the binary or the record: a version, the first 12
-characters of the revision and `modified`, in a restricted character set. Not
+characters of the revision and `modified`, in a restricted character set, and
+both module paths when they differ (cut in the middle when the 256 bytes of
+the message would not hold them). Not
 checked are `lead.stop` and the `status` questions of the daemon's ready
 observer, which only read the holder's state: stop a skewed lead and start it
 again with the new holder. A refused start leaves the lead stopped, and a start

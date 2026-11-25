@@ -128,6 +128,11 @@ type leadRole struct {
 	// daemon forgets it, and the row then reads the answer from the role's
 	// last receipt when that is the message's (see leadMode.deliveryOf).
 	delivery deliveryMemo
+	// launched is the epoch this daemon's own lead.start launched last, 0 for
+	// none; it is read and written under the operation lock. The ready
+	// observer stops the holder of that epoch when it is not the expected
+	// build (see leadMode.stopSkewed), and leaves one it adopted alone.
+	launched uint64
 }
 
 // deliveryMemo is the holder's three words about a message, for the epoch it

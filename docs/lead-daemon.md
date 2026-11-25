@@ -927,7 +927,13 @@ JSON object per line. The first line is a header that names the format
   member this build does not know is not launched (`ErrLaunchProfile`, which a
   start in scratch mode answers with the code `profile-not-launchable`, and
   the canary's start with its text, both saying to define the role again)
-  until it is defined again. Only the requested profile is checked for a
+  until it is defined again. So is a role whose define record repeats a
+  member anywhere in its payload, the requested member itself included,
+  compared exactly and as encoding/json folds names (`requested` and
+  `Requested` are one member to it): no build writes one, and the typed
+  decoding would merge the occurrences while the stored bytes keep the last,
+  so the profile that was checked would not be the one launched. The record
+  replays, and is not damage. Only the requested profile is checked for a
   member this build does not know: in every other record kind such a member is
   dropped, and the record replays as the record this build knows. A later
   build therefore adds to an existing record kind only a member that an older
@@ -1265,8 +1271,13 @@ the config is the daemon's own build, and before it mints an attach ticket or
 sends a message that the running holder recorded that build in its
 `holder.json`, for the role's current epoch. A holder that is not is refused
 with `holder-version-skew`, with a message that names both builds, and a
-`holder.json` of another epoch with `stale-epoch`, naming both epochs; nothing
-changes (see `internal/leadholder/buildid` for what "the same build" means, and
+`holder.json` of another epoch with `stale-epoch`, naming both epochs; so is a
+role shown `starting` whose holder has written no `holder.json` yet, with a
+text that says it is still starting; nothing changes. In scratch mode the
+ready observer checks that `holder.json` again before it shows a lead
+`ready`, and stops a lead whose holder started as another build than the
+executable checked before the start (see
+[the scratch leads guide](scratch-leads.md#ready)) (see `internal/leadholder/buildid` for what "the same build" means, and
 [the scratch leads guide](scratch-leads.md) for the receipt). A daemon whose
 own build cannot be read does not start (the config step).
 

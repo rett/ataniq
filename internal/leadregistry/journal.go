@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"ataniq/internal/leadrole"
 )
@@ -303,6 +305,104 @@ func requestedDigest(raw json.RawMessage, r Requested) (digest string, foreign b
 	return hex.EncodeToString(sum[:]), foreign, nil
 }
 
+// repeatsMember reports whether an object anywhere in the JSON value data has
+// two members whose names encoding/json would match to the same field: the
+// same name, or two names that are equal under its case folding (simple
+// Unicode case folding, as bytes.EqualFold; "Requested" and "requested" are
+// one member to it, see [foldName]). The
+// names are compared as decoded, escapes resolved. data has already been
+// decoded once, so an error here is not expected.
+//
+// No build writes a repeated member, and a line that has one is ambiguous:
+// the typed decoding of a define record merges the occurrences of an object
+// member (the members of each that it knows) while json.RawMessage keeps only
+// the last, so the restriction an earlier occurrence carries (a member this
+// build does not know) would leave both the digest and the foreign check. A
+// define record with one replays, and its profile is not launched
+// (ErrLaunchProfile) until the role is defined again. It is not damage
+// (ErrCorrupt): the line is chained and every value in it is one this build
+// knows, the refusal of a launch is what this build does with any profile it
+// cannot read whole, and a define again lifts it, where a journal that does
+// not open stops every role of the daemon.
+func repeatsMember(data []byte) (bool, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	// One set of the folded names per open object, and nil for an array.
+	var open []map[string]bool
+	key := false // the next token of the innermost object is a member name
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if key {
+			if d, ok := tok.(json.Delim); ok && d == '}' {
+				open = open[:len(open)-1]
+				key = len(open) > 0 && open[len(open)-1] != nil
+				continue
+			}
+			name, ok := tok.(string)
+			if !ok {
+				return false, fmt.Errorf("a member name that is not a string")
+			}
+			folded := foldName(name)
+			if open[len(open)-1][folded] {
+				return true, nil
+			}
+			open[len(open)-1][folded] = true
+			key = false
+			continue
+		}
+		switch tok {
+		case json.Delim('{'):
+			open = append(open, map[string]bool{})
+			key = true
+			continue
+		case json.Delim('['):
+			open = append(open, nil)
+		case json.Delim(']'):
+			open = open[:len(open)-1]
+		}
+		// After a value (or an array's end) inside an object, a name comes
+		// next; inside an array, another value.
+		key = len(open) > 0 && open[len(open)-1] != nil
+	}
+}
+
+// foldName folds a member name as encoding/json does to match it with a
+// field (its foldName): an ASCII letter to upper case, every other rune to the
+// smallest rune of its unicode.SimpleFold orbit, so that two names fold to one
+// exactly when bytes.EqualFold holds for them.
+func foldName(name string) string {
+	out := make([]byte, 0, len(name))
+	for i := 0; i < len(name); {
+		c := name[i]
+		if c < utf8.RuneSelf {
+			if 'a' <= c && c <= 'z' {
+				c -= 'a' - 'A'
+			}
+			out = append(out, c)
+			i++
+			continue
+		}
+		r, n := utf8.DecodeRuneInString(name[i:])
+		for {
+			next := unicode.SimpleFold(r)
+			if next <= r {
+				r = next
+				break
+			}
+			r = next
+		}
+		out = utf8.AppendRune(out, r)
+		i += n
+	}
+	return string(out)
+}
+
 // decodeLine verifies one journal line (without its newline) against the
 // chain value before it and the sequence number it must carry, and returns the
 // validated record and the new chain value.
@@ -375,7 +475,16 @@ func decodeLine(prev [sha256.Size]byte, wantSeq uint64, line []byte) (record, [s
 		if err != nil {
 			return record{}, zero, fmt.Errorf("bad %s payload: %v", env.Kind, err)
 		}
-		d.digest, d.foreign = digest, foreign
+		// A member repeated anywhere in the payload, the requested member
+		// itself included, makes the stored profile ambiguous: the typed
+		// decoding merges the occurrences and the raw one keeps the last, so
+		// what was checked would not be what is launched. Such a profile is
+		// not launched (see [repeatsMember]).
+		repeated, err := repeatsMember(env.Payload)
+		if err != nil {
+			return record{}, zero, fmt.Errorf("bad %s payload: %v", env.Kind, err)
+		}
+		d.digest, d.foreign = digest, foreign || repeated
 	}
 	if err := p.validate(); err != nil {
 		return record{}, zero, fmt.Errorf("bad %s payload: %w", env.Kind, err)

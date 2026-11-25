@@ -661,6 +661,7 @@ func (m *leadMode) start(ctx context.Context, lr *leadRole) outcome {
 			unit = e.Intent.UnitName
 		}
 		lr.in.ext.record(leadcanary.Entry{Event: leadcanary.EventStart, Epoch: e.Epoch})
+		lr.launched = e.Epoch
 		// The launch has its outcome: no timer of an earlier epoch is left for
 		// the role.
 		m.cancelSettle(lr)

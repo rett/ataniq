@@ -151,6 +151,23 @@ func exitText(r exitResult) string {
 	return fmt.Sprintf("exit status %d", r.code)
 }
 
+// msgStartedSkew says what a start found when the holder that started is not
+// the build its executable was before the start.
+const msgStartedSkew = "the holder that started is not the build checked before the start (was the holder executable replaced in between?)"
+
+// startedSkew checks the holder that has answered for the epoch by the build
+// it recorded in holder.json, read from its own running executable: nil for
+// the expected build of the epoch, and otherwise the refusal (an error that
+// matches buildid.ErrSkew, or buildid.ErrOtherEpoch for a state file of
+// another epoch).
+func (a *app) startedSkew(l layout, epoch uint64) error {
+	ch, err := a.checker()
+	if err != nil {
+		return err
+	}
+	return ch.BeforeAttach(l.state, epoch)
+}
+
 func (a *app) cmdStart(cfg startConfig) int {
 	l, err := a.layoutFor(cfg.name)
 	if err != nil {
@@ -254,6 +271,30 @@ func (a *app) cmdStart(cfg startConfig) int {
 			return a.fail("the holder did not answer within %s (last: %v); it was ended%s", a.lim.startWait, res.last, killNote(killed))
 		}
 		return a.fail("the holder did not answer within %s (last: %v); look at the journal of %s, or run: ataniq-scratch stop %s", a.lim.startWait, res.last, unitName(l.name), l.name)
+	}
+	// The holder that answered is checked again, by the build it recorded
+	// from its own running executable, before it counts as started: exec and
+	// systemd-run look the holder path up again after the check above, so a
+	// holder rebuilt in between starts as another build. One that is not the
+	// expected build of the epoch is stopped, and the start is refused.
+	if err := a.startedSkew(l, hold.N); err != nil {
+		fmt.Fprintf(a.errout, "refused: %v\n", err)
+		if cfg.direct {
+			ended, killed := a.terminate(proc, exited)
+			if !ended {
+				return a.fail("%s, and it was told to end but was not seen to end, so it may still be running (epoch %d is kept)", msgStartedSkew, hold.N)
+			}
+			hold.Undo()
+			return a.fail("%s; it was ended%s", msgStartedSkew, killNote(killed))
+		}
+		code, err := a.launch.Run(systemctlStopArgv(l.name), io.Discard, a.errout)
+		switch {
+		case err != nil:
+			return a.fail("%s, and systemctl could not be run (%v), so its unit %s may still be running (epoch %d is kept)", msgStartedSkew, err, unitName(l.name), hold.N)
+		case code != 0:
+			return a.fail("%s, and systemctl --user stop %s failed with status %d, so it may still be running (epoch %d is kept)", msgStartedSkew, unitName(l.name), code, hold.N)
+		}
+		return a.fail("%s; its unit %s was stopped (epoch %d is kept)", msgStartedSkew, unitName(l.name), hold.N)
 	}
 	hold.Release()
 
