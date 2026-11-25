@@ -18,7 +18,7 @@ signs commits, tags and releases. The owner's rule for them:
 
 The deploy key's procedure, with the forwarding, the authority host's
 `authorized_keys` line and how to prove it, is in [the deploy
-manual](../deploy/authority-host/DEPLOY.md). This page adds git.
+manual](../deploy/authority-host/DEPLOY.md#the-deploy-key). This page adds git.
 
 The placeholders: `AI-HOST` is the development host and `git@GIT-HOST` the git
 host's ssh login, each named as the laptop's `known_hosts` names it; `OWNER/REPO`

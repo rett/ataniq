@@ -18,7 +18,29 @@ import (
 const (
 	ahTestHost = "tester@host.example.invalid"
 	ahTestID   = "0007-ab12cd3"
+	// ahSSHOpts are the driver's ssh options: the agent's key only, no key
+	// file, no password, no keyboard-interactive login, no agent forwarded
+	// further, no shared connection.
+	ahSSHOpts = "-o BatchMode=yes -o IdentityFile=none -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o ForwardAgent=no -o ControlPath=none"
 )
+
+// ahSSHArgs is ahSSHOpts as the recording stub writes ssh's arguments.
+var ahSSHArgs = "[" + strings.Join(strings.Fields(ahSSHOpts), "] [") + "]"
+
+// ahAgentStub replaces the recording ssh-add of bin with one that also exits
+// with STUB_AGENT_RC (default 0): `ssh-add -l` exits 1 for an agent with no
+// key and 2 for one it cannot reach.
+func ahAgentStub(t *testing.T, bin, calls string) {
+	t.Helper()
+	body := "#!/bin/sh\n" +
+		"printf '%s' 'ssh-add' >>'" + calls + "'\n" +
+		"for a in \"$@\"; do printf ' [%s]' \"$a\" >>'" + calls + "'; done\n" +
+		"printf '\\n' >>'" + calls + "'\n" +
+		"exit \"${STUB_AGENT_RC-0}\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "ssh-add"), []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // ahFakeRelease makes a release folder named id with a MANIFEST that says
 // so, and returns its path.
@@ -41,15 +63,18 @@ func ahFakeRelease(t *testing.T, id string) string {
 }
 
 func testAuthorityHostDeploy(t *testing.T) {
-	bin, calls := ahStubs(t, "ssh", "rsync", "ah-release")
+	bin, calls := ahStubs(t, "ssh", "rsync", "ah-release", "ssh-add")
+	ahAgentStub(t, bin, calls)
 	stubRelease := filepath.Join(bin, "ah-release")
 	workDir := t.TempDir()
 
+	// The environment is exactly this: no SSH_AUTH_SOCK of the test's own
+	// reaches the driver, and its ssh-add is the stub, so no agent is asked.
 	env := func(extra ...string) []string {
 		return append([]string{"PATH=" + bin + ":/usr/bin:/bin", "HOME=" + workDir}, extra...)
 	}
 	withHost := func(extra ...string) []string {
-		return env(append([]string{"AUTHORITY_HOST_SSH=" + ahTestHost}, extra...)...)
+		return env(append([]string{"AUTHORITY_HOST_SSH=" + ahTestHost, "SSH_AUTH_SOCK=" + filepath.Join(workDir, "agent.sock")}, extra...)...)
 	}
 	run := func(env []string, args ...string) (string, int) {
 		t.Helper()
@@ -174,19 +199,34 @@ func testAuthorityHostDeploy(t *testing.T) {
 		if got := called("ssh"); got != nil {
 			t.Fatalf("a dry run ran an ssh command of its own: %v", got)
 		}
-		if got := names(); !slices.Equal(got, []string{"ah-release", "rsync"}) {
+		if got := names(); !slices.Equal(got, []string{"ssh-add", "ah-release", "rsync"}) {
 			t.Fatalf("calls: %v", got)
 		}
 		if got := called("ah-release")[0]; got != "ah-release [check] [--no-noaicheck] ["+rel+"]" {
 			t.Errorf("ah-release: %s", got)
 		}
-		want := "rsync [-a] [-n] [--delete] [--itemize-changes] [-e] [ssh -o BatchMode=yes] [--] [" + rel + "/] [" + ahTestHost + ":incoming/" + ahTestID + "/]"
+		want := "rsync [-a] [-n] [--delete] [--itemize-changes] [-e] [ssh " + ahSSHOpts + "] [--] [" + rel + "/] [" + ahTestHost + ":incoming/" + ahTestID + "/]"
 		if got := called("rsync")[0]; got != want {
 			t.Errorf("rsync:\n got %s\nwant %s", got, want)
 		}
 		if !strings.Contains(out, "sudo /usr/local/sbin/ah-switch --from") || !strings.Contains(out, "the authority host") ||
 			!strings.Contains(out, "dry run, nothing was copied and nothing was switched") {
 			t.Errorf("the dry output lacks the ssh command or the host's name for it:\n%s", out)
+		}
+		// After the checks, the reminder: the use must have popped a
+		// confirmation on the laptop, and without one the deploy stops.
+		done := strings.Index(out, "dry run, nothing was copied and nothing was switched")
+		reminder := strings.Index(out, "reminder: this dry run used the deploy key once")
+		if reminder < done {
+			t.Errorf("the dry output lacks the confirmation reminder after the checks:\n%s", out)
+		}
+		for _, want := range []string{
+			"must have popped a confirmation on the laptop",
+			"If none popped, the key is not loaded with ssh-add -c: stop here, do not run --go",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("the dry output does not say %q:\n%s", want, out)
+			}
 		}
 		if again, code := run(withHost(), "--release", rel, "--ah-release", stubRelease); code != 0 || again != out {
 			t.Errorf("--dry is not the default: exit %d\n%s", code, again)
@@ -210,13 +250,13 @@ func testAuthorityHostDeploy(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit %d\n%s", code, out)
 		}
-		if got := names(); !slices.Equal(got, []string{"ah-release", "rsync", "ssh"}) {
+		if got := names(); !slices.Equal(got, []string{"ssh-add", "ah-release", "rsync", "ssh"}) {
 			t.Fatalf("calls: %v", got)
 		}
-		if got := called("rsync")[0]; strings.Contains(got, "[-n]") || !strings.Contains(got, "[--delete] [--itemize-changes]") {
+		if got := called("rsync")[0]; strings.Contains(got, "[-n]") || !strings.Contains(got, "[--delete] [--itemize-changes] [-e] [ssh "+ahSSHOpts+"]") {
 			t.Errorf("rsync: %s", got)
 		}
-		wantSSH := "ssh [-o] [BatchMode=yes] [--] [" + ahTestHost + "] [sudo /usr/local/sbin/ah-switch --from \"$HOME/incoming/" + ahTestID + "\" " + ahTestID + "]"
+		wantSSH := "ssh " + ahSSHArgs + " [--] [" + ahTestHost + "] [sudo /usr/local/sbin/ah-switch --from \"$HOME/incoming/" + ahTestID + "\" " + ahTestID + "]"
 		if got := called("ssh")[0]; got != wantSSH {
 			t.Errorf("ssh:\n got %s\nwant %s", got, wantSSH)
 		}
@@ -232,9 +272,9 @@ func testAuthorityHostDeploy(t *testing.T) {
 			fail string
 			want []string
 		}{
-			{"ah-release", []string{"ah-release"}},
-			{"rsync", []string{"ah-release", "rsync"}},
-			{"ssh", []string{"ah-release", "rsync", "ssh"}},
+			{"ah-release", []string{"ssh-add", "ah-release"}},
+			{"rsync", []string{"ssh-add", "ah-release", "rsync"}},
+			{"ssh", []string{"ssh-add", "ah-release", "rsync", "ssh"}},
 		} {
 			out, code := run(withHost("STUB_FAIL="+c.fail), args...)
 			if code != 1 || strings.Contains(out, "switched;") {
@@ -256,14 +296,14 @@ func testAuthorityHostDeploy(t *testing.T) {
 		if code != 0 || !strings.Contains(out, "warning: --skip-check") {
 			t.Errorf("skip-check: exit %d\n%s", code, out)
 		}
-		if got := names(); !slices.Equal(got, []string{"rsync"}) {
+		if got := names(); !slices.Equal(got, []string{"ssh-add", "rsync"}) {
 			t.Errorf("skip-check calls: %v", got)
 		}
 		// Without --ah-release the tool comes from PATH: found there, it is run.
 		if out, code := run(withHost(), "--release", rel, "--dry"); code != 0 {
 			t.Errorf("ah-release in PATH: exit %d\n%s", code, out)
 		}
-		if got := names(); !slices.Equal(got, []string{"ah-release", "rsync"}) {
+		if got := names(); !slices.Equal(got, []string{"ssh-add", "ah-release", "rsync"}) {
 			t.Errorf("ah-release in PATH: calls %v", got)
 		}
 		// With none there, or a missing file named, the driver refuses.
@@ -290,8 +330,8 @@ func testAuthorityHostDeploy(t *testing.T) {
 		}
 		for _, want := range []string{
 			"step 1: ah-release check --no-noaicheck " + rel,
-			"rsync -a -n --delete --itemize-changes -e 'ssh -o BatchMode=yes' -- " + rel + "/ <the authority host>:/srv/incoming/" + ahTestID + "/",
-			"step 3: ssh -o BatchMode=yes -- <the authority host> ",
+			"rsync -a -n --delete --itemize-changes -e 'ssh " + ahSSHOpts + "' -- " + rel + "/ <the authority host>:/srv/incoming/" + ahTestID + "/",
+			"step 3: ssh " + ahSSHOpts + " -- <the authority host> ",
 			"/usr/local/sbin/ah-switch --from /srv/incoming/" + ahTestID + " " + ahTestID,
 		} {
 			if !strings.Contains(out, want) {
@@ -355,7 +395,7 @@ func testAuthorityHostDeploy(t *testing.T) {
 				t.Errorf("%v: the plan runs a program of the incoming folder:\n%s", mode, out)
 			}
 			for _, line := range called("ssh") {
-				if want := "ssh [-o] [BatchMode=yes] [--] [" + ahTestHost + "] [" + wantSwitch + "]"; line != want {
+				if want := "ssh " + ahSSHArgs + " [--] [" + ahTestHost + "] [" + wantSwitch + "]"; line != want {
 					t.Errorf("%v: an ssh call other than the switch:\n got %s\nwant %s", mode, line, want)
 				}
 			}
@@ -364,7 +404,7 @@ func testAuthorityHostDeploy(t *testing.T) {
 		if _, code := run(withHost(), "--release", rel, "--ah-release", stubRelease, "--go", "--confirm", ahTestID); code != 0 {
 			t.Fatalf("go: exit %d", code)
 		}
-		if got := names(); !slices.Equal(got, []string{"ah-release", "rsync", "ssh"}) {
+		if got := names(); !slices.Equal(got, []string{"ssh-add", "ah-release", "rsync", "ssh"}) {
 			t.Errorf("go calls: %v", got)
 		}
 		// The removed flag is refused, before anything runs.
@@ -380,9 +420,86 @@ func testAuthorityHostDeploy(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("self-test: exit %d\n%s", code, out)
 		}
-		want := "step 3: ssh -o BatchMode=yes -- <the authority host> 'sudo /usr/local/sbin/ah-switch --from /srv/incoming/" + ahTestID + " " + ahTestID + "'"
+		want := "step 3: ssh " + ahSSHOpts + " -- <the authority host> 'sudo /usr/local/sbin/ah-switch --from /srv/incoming/" + ahTestID + " " + ahTestID + "'"
 		if !strings.Contains(out, want) || strings.Contains(out, "step 4") {
 			t.Errorf("the self-test output lacks %q:\n%s", want, out)
+		}
+	})
+
+	t.Run("logs in with the agent's key only", func(t *testing.T) {
+		rel := ahFakeRelease(t, ahTestID)
+		// --self-test prints the exact options, without an agent and
+		// without running anything, and every command it shows has them.
+		out, code := run(env(), "--release", rel, "--self-test")
+		if code != 0 {
+			t.Fatalf("self-test: exit %d\n%s", code, out)
+		}
+		if got := ahCalls(t, calls); got != nil {
+			t.Fatalf("self-test called %v", got)
+		}
+		if !strings.Contains(out, "ssh options: "+ahSSHOpts+"\n") {
+			t.Errorf("the self-test output lacks the exact ssh options:\n%s", out)
+		}
+		for _, line := range strings.Split(out, "\n") {
+			if strings.HasPrefix(line, "step 2: ") || strings.HasPrefix(line, "step 3: ") {
+				for _, opt := range []string{"-o BatchMode=yes", "-o IdentityFile=none", "-o PasswordAuthentication=no", "-o KbdInteractiveAuthentication=no"} {
+					if !strings.Contains(line, opt) {
+						t.Errorf("%q lacks %s", line, opt)
+					}
+				}
+			}
+		}
+
+		// Without SSH_AUTH_SOCK, or with an empty one, every other mode
+		// refuses before it runs anything, ssh-add included.
+		for _, sock := range [][]string{nil, {"SSH_AUTH_SOCK="}} {
+			for _, mode := range [][]string{{"--dry"}, {"--go", "--confirm", ahTestID}, {}} {
+				noAgent := env(append([]string{"AUTHORITY_HOST_SSH=" + ahTestHost}, sock...)...)
+				out, code := run(noAgent, append([]string{"--release", rel, "--ah-release", stubRelease}, mode...)...)
+				if code != 2 || !strings.Contains(out, "SSH_AUTH_SOCK is not set") || !strings.Contains(out, "never a key file") {
+					t.Errorf("%v %v: exit %d\n%s", sock, mode, code, out)
+				}
+				if got := ahCalls(t, calls); got != nil {
+					t.Errorf("%v %v: something was called: %v", sock, mode, got)
+				}
+			}
+		}
+
+		// An agent with no key, or one that cannot be reached: refused
+		// after ssh-add -l alone, which uses no key.
+		for _, c := range []struct{ rc, want string }{{"1", "holds no key"}, {"2", "cannot reach the agent"}} {
+			for _, mode := range [][]string{{"--dry"}, {"--go", "--confirm", ahTestID}} {
+				out, code := run(withHost("STUB_AGENT_RC="+c.rc), append([]string{"--release", rel, "--ah-release", stubRelease}, mode...)...)
+				if code != 2 || !strings.Contains(out, c.want) {
+					t.Errorf("ssh-add exit %s %v: exit %d\n%s", c.rc, mode, code, out)
+				}
+				if got := ahCalls(t, calls); !slices.Equal(got, []string{"ssh-add [-l]"}) {
+					t.Errorf("ssh-add exit %s %v: calls %v", c.rc, mode, got)
+				}
+			}
+		}
+
+		// With a key in the agent, every ssh the driver runs, and the ssh of
+		// every rsync, carries the options, and nothing names a key file.
+		for _, mode := range [][]string{{"--dry"}, {"--go", "--confirm", ahTestID}} {
+			if out, code := run(withHost(), append([]string{"--release", rel, "--ah-release", stubRelease}, mode...)...); code != 0 {
+				t.Fatalf("%v: exit %d\n%s", mode, code, out)
+			}
+			for _, line := range ahCalls(t, calls) {
+				switch {
+				case strings.HasPrefix(line, "ssh "):
+					if !strings.HasPrefix(line, "ssh "+ahSSHArgs+" [--] ") {
+						t.Errorf("%v: ssh without the options: %s", mode, line)
+					}
+				case strings.HasPrefix(line, "rsync "):
+					if !strings.Contains(line, "[-e] [ssh "+ahSSHOpts+"]") {
+						t.Errorf("%v: rsync without the options: %s", mode, line)
+					}
+				}
+				if strings.Contains(line, "[-i]") || strings.Contains(line, "-i ") {
+					t.Errorf("%v: a key file is named: %s", mode, line)
+				}
+			}
 		}
 	})
 
@@ -420,6 +537,9 @@ func testAuthorityHostDeployHelp(t *testing.T) {
 		"contacts the host, read-only (ssh and rsync -n)",
 		"starts nothing",
 		"The remote rsync reads the destination; no files are copied and the switch is not run.",
+		"The key is the agent's, never a key file.",
+		"-o IdentityFile=none", "-o PasswordAuthentication=no", "-o KbdInteractiveAuthentication=no",
+		"Except for --self-test the script refuses, before it runs anything else, when SSH_AUTH_SOCK is unset or empty",
 	} {
 		if !strings.Contains(flat, want) {
 			t.Errorf("deploy.sh's help does not say %q", want)
@@ -529,6 +649,7 @@ func testAuthorityHostDeployDoc(t *testing.T) {
 		t.Error("DEPLOY.md step 6 does not acknowledge the outcome before the rollback")
 	}
 	t.Run("bootstrap copies are root's own", func(t *testing.T) { testAuthorityHostRootCopies(t, section) })
+	t.Run("deploy key", func(t *testing.T) { testAuthorityHostDeployKey(t, string(data), section) })
 	t.Run("first deploy", func(t *testing.T) { testAuthorityHostFirstDeploy(t, string(data), section) })
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.HasSuffix(strings.TrimSpace(line), "NOPASSWD: /usr/local/sbin/ah-switch") {
@@ -552,6 +673,83 @@ func testAuthorityHostDeployDoc(t *testing.T) {
 		if strings.Contains(line, "AUTHORITY_HOST_SSH=") && !strings.Contains(line, "USER@HOST") {
 			t.Errorf("DEPLOY.md sets the host variable to a value: %s", line)
 		}
+	}
+}
+
+// testAuthorityHostDeployKey checks the owner's procedure for the deploy key:
+// kept on the laptop and loaded there with a confirmation for each use, a
+// destination constraint and a lifetime; the agent forwarded for the deploy
+// session only; the authority host's line with restrict and from=, and the
+// reason there is no forced command; the proof that a deploy without the
+// confirmation fails and that no key file of the development host is
+// accepted; and the same with a FIDO2 key. It names only placeholders.
+func testAuthorityHostDeployKey(t *testing.T, data string, section func(from, to string) string) {
+	key := section("## The deploy key", "## The first deploy")
+	for _, want := range []string{
+		"The deploy key never lives on the development host (the AI host).",
+		ahSSHOpts,
+		"It refuses to start when SSH_AUTH_SOCK is unset or its agent holds no key.",
+		"No private key for the authority host, the git remote or signing is kept on the development host",
+		"ssh-keygen -t ed25519 -f DEPLOY-KEY",
+		"ssh-add -c -t 30m -h AI-HOST -h 'AI-HOST>USER@AUTHORITY-HOST' DEPLOY-KEY",
+		"Forward it for the deploy session only",
+		"ssh -A AI-HOST",
+		"ForwardAgent ~/.ssh/outward-agent.sock",
+		`restrict,from="192.0.2.10" ssh-ed25519 AAAA...PUBLIC-KEY deploy-key`,
+		"There is no forced command (command=)",
+		"sudo -l -U DEPLOYUSER lists the one ah-switch form and nothing else",
+		"refuse the confirmation on the laptop (or let it time out): it ends rsync -n failed and nothing is copied",
+		"If no confirmation popped, the key is not loaded with -c",
+		"deploy.sh --dry refuses (SSH_AUTH_SOCK is not set)",
+		`env -u SSH_AUTH_SOCK ssh -o BatchMode=yes -o IdentityAgent=none "$AUTHORITY_HOST_SSH" true`,
+		"Permission denied (publickey)",
+		"ssh-keygen -lf /home/DEPLOYUSER/.ssh/authorized_keys",
+		"only the confirmation becomes a touch",
+		"ssh-keygen -t ed25519-sk",
+		"never with no-touch-required",
+		`restrict,from="192.0.2.10" sk-ssh-ed25519@openssh.com AAAA...PUBLIC-KEY deploy-key`,
+		"a deploy without the touch fails",
+	} {
+		if !strings.Contains(key, want) {
+			t.Errorf("DEPLOY.md, The deploy key, does not say %q", want)
+		}
+	}
+	// Every authorized_keys line the manual shows is restricted and limited
+	// to the development host's address, and none skips the touch.
+	for _, line := range strings.Split(data, "\n") {
+		if !strings.Contains(line, "AAAA") {
+			continue
+		}
+		if !strings.Contains(line, `restrict,from="`) {
+			t.Errorf("DEPLOY.md shows a key line without restrict and from=: %s", line)
+		}
+		if strings.Contains(line, "no-touch-required") || strings.Contains(line, "command=") {
+			t.Errorf("DEPLOY.md shows a key line with an option it rules out: %s", line)
+		}
+	}
+	// Each ssh-add of a key the manual loads asks for each use and expires.
+	for _, line := range strings.Split(data, "\n") {
+		if i := strings.Index(line, "ssh-add "); i >= 0 && strings.Contains(line, "DEPLOY-KEY") {
+			load := line[i:]
+			if strings.HasPrefix(load, "ssh-add -d ") {
+				continue // removing a key, not loading one
+			}
+			if !strings.Contains(load, " -t ") || !strings.Contains(load, " -h ") ||
+				(!strings.Contains(load, " -c ") && !strings.Contains(load, "DEPLOY-KEY-SK")) {
+				t.Errorf("DEPLOY.md loads the deploy key without -c, -h or -t: %s", line)
+			}
+		}
+	}
+	ahPlaceholdersOnly(t, "DEPLOY.md, The deploy key", key)
+	// The procedure's every use of ssh in the manual carries the agent-only
+	// options, and the driver prints the same.
+	for _, line := range strings.Split(data, "\n") {
+		if strings.Contains(line, "rsync -a -e 'ssh ") && !strings.Contains(line, ahSSHOpts) {
+			t.Errorf("DEPLOY.md copies with ssh options other than the driver's: %s", line)
+		}
+	}
+	if strings.Contains(ahFlat(data), "which lives on the development host") {
+		t.Error("DEPLOY.md still says the deploy key lives on the development host")
 	}
 }
 

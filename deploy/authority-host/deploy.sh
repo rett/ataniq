@@ -35,26 +35,53 @@
 #                        the release's no-AI check, on the verified copy it
 #                        imports, before anything changes; the driver never
 #                        runs a file of the incoming folder.
-#   --self-test          compute and print every command without running
-#                        ah-release, rsync or ssh, and without AUTHORITY_HOST_SSH.
-#                        It starts nothing and contacts nothing.
+#   --self-test          compute and print every command, and the ssh options,
+#                        without running ah-release, ssh-add, rsync or ssh,
+#                        and without AUTHORITY_HOST_SSH or an agent. It starts
+#                        nothing and contacts nothing.
 #
 # The host is named only by the environment variable AUTHORITY_HOST_SSH
 # (USER@HOST or an ssh alias), read at run time; it is never written to a file
 # and never printed: the output says `the authority host`. Without the
-# variable the script refuses (except for --self-test). ssh runs with
-# `-o BatchMode=yes`: it never asks for a password or passphrase.
+# variable the script refuses (except for --self-test).
 #
-# POSIX sh only. Tools: rsync and ssh (not in --self-test), grep, sed, cd, pwd.
+# The key is the agent's, never a key file. Every ssh, and the ssh of every
+# rsync, runs with these options (SSH_OPTS below):
+#   -o BatchMode=yes                    never ask for a password or passphrase
+#   -o IdentityFile=none                no default key file (~/.ssh/id_*)
+#   -o PasswordAuthentication=no        no password
+#   -o KbdInteractiveAuthentication=no  no keyboard-interactive login
+#   -o ForwardAgent=no                  the agent goes no further than here
+#   -o ControlPath=none                 no shared connection: every use of
+#                                       the key is a new login, and so a new
+#                                       confirmation on the laptop
+# so the only key it can log in with is one the agent of SSH_AUTH_SOCK holds:
+# the owner's, forwarded from the laptop for this session and loaded there
+# with `ssh-add -c` (a confirmation for each use) or held on a FIDO2 key (a
+# touch for each use). Except for --self-test the script refuses, before it
+# runs anything else, when SSH_AUTH_SOCK is unset or empty, when the agent
+# cannot be reached, or when it holds no key (`ssh-add -l`). It cannot tell
+# a confirmed key from one that is not: --dry says what to look for. An
+# IdentityFile line of your own ssh config is still read; see DEPLOY.md,
+# "The deploy key".
+#
+# POSIX sh only. Tools: ssh-add, rsync and ssh (not in --self-test), grep,
+# sed, cd, pwd.
 #
 # Exit status: 0 done; 1 a step failed (nothing later was run); 2 refused
-# before anything was run (bad arguments, environment, release or confirm).
+# before anything was run (bad arguments, environment, agent, release or
+# confirm; `ssh-add -l`, which only asks the agent for its list, is the one
+# command such a refusal may follow).
 
 set -eu
 LC_ALL=C
 export LC_ALL
 
 DP_NAME=deploy.sh
+# The ssh options of every connection (see the header). Each is one word
+# without a glob character, so the unquoted expansion below splits it into
+# exactly these words.
+SSH_OPTS='-o BatchMode=yes -o IdentityFile=none -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o ForwardAgent=no -o ControlPath=none'
 say() { printf '%s\n' "$*"; }
 die() {
   printf '%s: %s\n' "$DP_NAME" "$*" >&2
@@ -224,6 +251,24 @@ if [ "$SKIP" = 0 ]; then
   fi
 fi
 
+# --- the agent (not in --self-test) -------------------------------------------
+# The last refusal, so that a bad argument is refused before anything runs.
+# `ssh-add -l` only asks the agent for its list of keys: it uses no key, so it
+# asks for no confirmation. Its exit status is 0 for a list, 1 for an agent
+# with no key, 2 for an agent it cannot reach.
+if [ "$MODE" != self-test ]; then
+  [ -n "${SSH_AUTH_SOCK-}" ] ||
+    die "SSH_AUTH_SOCK is not set: the deploy uses the agent's key only, never a key file; forward the laptop's agent for this session (see DEPLOY.md, \"The deploy key\")"
+  command -v ssh-add >/dev/null 2>&1 || die "ssh-add is not in PATH: it is needed to ask the agent for its keys"
+  AGENT_RC=0
+  ssh-add -l >/dev/null 2>&1 || AGENT_RC=$?
+  case $AGENT_RC in
+    0) ;;
+    1) die "the agent of SSH_AUTH_SOCK holds no key: load the deploy key on the laptop with ssh-add -c (see DEPLOY.md, \"The deploy key\")" ;;
+    *) die "cannot reach the agent of SSH_AUTH_SOCK (ssh-add -l exit $AGENT_RC): forward the laptop's agent for this session (see DEPLOY.md, \"The deploy key\")" ;;
+  esac
+fi
+
 # --- plan ---------------------------------------------------------------------
 say "deploy: release $ID, mode $MODE, to the authority host"
 say "release folder: $RELEASE_DIR"
@@ -243,28 +288,36 @@ run_check() {
 
 RSYNC_NO=
 [ "$MODE" = go ] || RSYNC_NO='-n '
-RSYNC_SHOW="rsync -a ${RSYNC_NO}--delete --itemize-changes -e 'ssh -o BatchMode=yes' -- $(q "$RELEASE_DIR/") <the authority host>:$(q "$RSYNC_DEST")"
-SSH_SHOW="ssh -o BatchMode=yes -- <the authority host> $(q "$REMOTE_CMD")"
+RSYNC_SHOW="rsync -a ${RSYNC_NO}--delete --itemize-changes -e 'ssh $SSH_OPTS' -- $(q "$RELEASE_DIR/") <the authority host>:$(q "$RSYNC_DEST")"
+SSH_SHOW="ssh $SSH_OPTS -- <the authority host> $(q "$REMOTE_CMD")"
 
+say "ssh options: $SSH_OPTS"
+if [ "$MODE" = self-test ]; then
+  say "agent: SSH_AUTH_SOCK must be set and its agent hold a key (ssh-add -l); not checked by --self-test"
+else
+  say "agent: SSH_AUTH_SOCK is set and its agent holds a key"
+fi
 run_check
 say "step 2: $RSYNC_SHOW"
 case $MODE in
   self-test)
     say "step 3: $SSH_SHOW"
-    say "self-test: computed the commands above; ah-release, rsync and ssh were not run"
+    say "self-test: computed the commands above; ah-release, ssh-add, rsync and ssh were not run"
     exit 0
     ;;
   dry)
-    rsync -a -n --delete --itemize-changes -e 'ssh -o BatchMode=yes' -- "$RELEASE_DIR/" "$HOST:$RSYNC_DEST" ||
-      fail "rsync -n failed (is $BASE there on the host, and owned by the deploying user?); nothing was copied"
+    rsync -a -n --delete --itemize-changes -e "ssh $SSH_OPTS" -- "$RELEASE_DIR/" "$HOST:$RSYNC_DEST" ||
+      fail "rsync -n failed (is $BASE there on the host, and owned by the deploying user? was the confirmation on the laptop refused?); nothing was copied"
     say "step 3, only with --go --confirm $ID: $SSH_SHOW"
     say "deploy: dry run, nothing was copied and nothing was switched"
+    say "reminder: this dry run used the deploy key once (the ssh of rsync -n), and that use must have popped a confirmation on the laptop (a touch, with a FIDO2 key). If none popped, the key is not loaded with ssh-add -c: stop here, do not run --go, and load it again as DEPLOY.md says (\"The deploy key\"). --go uses it twice: the copy and the switch."
     ;;
   go)
-    rsync -a --delete --itemize-changes -e 'ssh -o BatchMode=yes' -- "$RELEASE_DIR/" "$HOST:$RSYNC_DEST" ||
+    rsync -a --delete --itemize-changes -e "ssh $SSH_OPTS" -- "$RELEASE_DIR/" "$HOST:$RSYNC_DEST" ||
       fail "rsync failed; the switch was not run"
     say "step 3: $SSH_SHOW"
-    ssh -o BatchMode=yes -- "$HOST" "$REMOTE_CMD" ||
+    # shellcheck disable=SC2086  # SSH_OPTS splits into its words, see above
+    ssh $SSH_OPTS -- "$HOST" "$REMOTE_CMD" ||
       fail "the switch on the authority host failed or could not run; see DEPLOY.md, \"When a step fails\""
     say "deploy: release $ID switched; verify with ah-switch status on the host (see DEPLOY.md)"
     ;;
