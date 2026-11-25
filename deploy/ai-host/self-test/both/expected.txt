@@ -1,0 +1,21 @@
+== sudo -n -l -U agent (exit 0)
+  | User agent may run the following commands on aihost:
+  |     (ALL : ALL) ALL
+  | 
+  | User agent is not allowed to run sudo on aihost.
+stop: sudo -l -U agent says both that agent may run commands and that agent is not allowed to run sudo
+finding: dropin: sudo -l lists no timestamp_timeout=0 for agent: sudo's built-in default keeps a ticket for some minutes, so commands run unprompted after one password
+== register /etc/ataniq/grants
+  | d 0 755 /
+  | d 0 755 /etc
+  | d 0 755 /etc/ataniq
+  | d 0 755 /etc/ataniq/grants
+  | f 0 644 /etc/ataniq/grants/README
+  | f 0 644 /etc/ataniq/grants/backup-unit
+check: /etc/ataniq/grants and every folder above it are root's and not writable by group or others; its 2 entries are regular files of root's, not writable by group or others
+== by hand, for the owner
+- no timestamp_timeout=0: write the drop-in /etc/sudoers.d/zz-ap14-level1-agent by hand and check the whole configuration with visudo -c (README, step 4).
+== summary
+findings: 1; stops: 1
+result: STOPPED: the check could not see everything, so it is not clean; fix what each stop says and run --check again
+exit: 3

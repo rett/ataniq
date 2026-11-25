@@ -1,1 +1,0 @@
-agent ALL = NOPASSWD: /usr/bin/a : otherhost = PASSWD: /usr/bin/b

@@ -7,6 +7,7 @@ package tests
 // never show.
 
 import (
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -705,7 +706,8 @@ func testAuthorityHostDeploy(t *testing.T) {
 
 	// What the ssh client itself makes of the options: its -G prints the
 	// effective configuration and connects to nothing. A hostile ~/.ssh/config
-	// of the development host changes none of it.
+	// of the development host, which a control run that selects it shows to
+	// take effect, changes none of it.
 	t.Run("the client's own view with a hostile config", func(t *testing.T) {
 		client, err := exec.LookPath("ssh")
 		if err != nil {
@@ -729,20 +731,39 @@ func testAuthorityHostDeploy(t *testing.T) {
 		hostile := "Host *\n  IdentityFile ~/.ssh/evil-key\n  IdentityAgent /run/evil-agent.sock\n  ProxyJump evil@jump.invalid\n" +
 			"  ControlMaster auto\n  ControlPath ~/.ssh/evil-%r@%h\n  ForwardAgent yes\n  User evil\n  Port 2222\n  PasswordAuthentication yes\n" +
 			"  StrictHostKeyChecking no\n  UserKnownHostsFile ~/.ssh/evil_known_hosts\n  PKCS11Provider /usr/lib/evil.so\n"
-		if err := os.WriteFile(filepath.Join(home, ".ssh", "config"), []byte(hostile), 0o600); err != nil {
+		hostileFile := filepath.Join(home, ".ssh", "config")
+		if err := os.WriteFile(hostileFile, []byte(hostile), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		cmd := exec.Command(client, append(words, "-G", ahTestHost)...)
-		cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin", "SSH_AUTH_SOCK=" + filepath.Join(workDir, "agent.sock")}
-		data, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("-G: %v\n%s", err, data)
+		clientEnv := []string{"HOME=" + home, "PATH=/usr/bin:/bin", "SSH_AUTH_SOCK=" + filepath.Join(workDir, "agent.sock")}
+		view := func(args ...string) (map[string][]string, string) {
+			t.Helper()
+			cmd := exec.Command(client, append(args, "-G", ahTestHost)...)
+			cmd.Env = clientEnv
+			data, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("-G: %v\n%s", err, data)
+			}
+			got := map[string][]string{}
+			for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+				k, v, _ := strings.Cut(line, " ")
+				got[k] = append(got[k], v)
+			}
+			return got, string(data)
 		}
-		got := map[string][]string{}
-		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-			k, v, _ := strings.Cut(line, " ")
-			got[k] = append(got[k], v)
+		// The positive control: a configuration-only run that selects the
+		// hostile file explicitly shows its distinctive values, so the file
+		// is one the client reads and their absence below is the driver's
+		// doing. (OpenSSH finds ~/.ssh/config from the account database, not
+		// from HOME, so only -F proves the file would take effect.)
+		ctl, ctlData := view("-F", hostileFile)
+		for k, v := range map[string]string{"port": "2222", "proxyjump": "evil@jump.invalid", "forwardagent": "yes", "passwordauthentication": "yes", "stricthostkeychecking": "false"} {
+			if !slices.Equal(ctl[k], []string{v}) {
+				t.Errorf("the control: -G -F with the hostile file says %s %q, want %q:\n%s", k, ctl[k], v, ctlData)
+			}
 		}
+		// The driver's isolated option vector, with the same file in place.
+		got, data := view(words...)
 		for k, v := range map[string]string{
 			"user": "tester", "port": "22", "batchmode": "yes", "identityfile": "none", "identitiesonly": "no",
 			"identityagent": "SSH_AUTH_SOCK", "preferredauthentications": "publickey", "passwordauthentication": "no",
@@ -761,7 +782,7 @@ func testAuthorityHostDeploy(t *testing.T) {
 				}
 			}
 		}
-		if strings.Contains(string(data), "evil") || strings.Contains(string(data), "2222") {
+		if strings.Contains(data, "evil") || strings.Contains(data, "2222") {
 			t.Errorf("the hostile config reached the connection:\n%s", data)
 		}
 	})
@@ -992,7 +1013,10 @@ func testAuthorityHostDeployKey(t *testing.T, data string, section func(from, to
 		"refuse the confirmation on the laptop (or let it time out): it ends rsync -n failed and nothing is copied",
 		"If no confirmation popped, the key is not loaded with -c",
 		"deploy.sh --dry refuses (SSH_AUTH_SOCK is not set)",
-		`env -u SSH_AUTH_SOCK ssh -o BatchMode=yes -o IdentityAgent=none -o ControlMaster=no -o ControlPath=none -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$AUTHORITY_HOST_KNOWN_HOSTS" "$AUTHORITY_HOST_SSH" true`,
+		"Then test each identity under review, one at a time, on the very connection the driver makes",
+		"the old deploy key wherever a copy may remain. Run this once for each, with KEY its path",
+		"Each must fail with Permission denied (publickey).",
+		"add -v and look for Server accepts key",
 		"Permission denied (publickey)",
 		"ssh-keygen -lf /home/DEPLOYUSER/.ssh/authorized_keys",
 		"only the confirmation becomes a touch",
@@ -1052,6 +1076,32 @@ func testAuthorityHostDeployKey(t *testing.T, data string, section func(from, to
 	}
 	if strings.Contains(ahFlat(data), "which lives on the development host") {
 		t.Error("DEPLOY.md still says the deploy key lives on the development host")
+	}
+	// The negative check is the driver's connection with only the identity
+	// changed: the same options, destination, port and known-hosts file, no
+	// configuration file and no proxy, no agent, and the one key file KEY.
+	var negative []string
+	for _, line := range strings.Split(data, "\n") {
+		if line = strings.TrimSpace(line); strings.HasPrefix(line, "env -u SSH_AUTH_SOCK ssh ") {
+			negative = append(negative, line)
+		}
+	}
+	if len(negative) != 1 {
+		t.Fatalf("DEPLOY.md has %d negative checks, want 1: %q", len(negative), negative)
+	}
+	words := strings.Fields(strings.TrimPrefix(negative[0], "env -u SSH_AUTH_SOCK ssh "))
+	if n := len(words); n < 3 || words[n-2] != `"$AUTHORITY_HOST_SSH"` || words[n-1] != "true" {
+		t.Fatalf("the negative check does not end with the driver's destination and true: %s", negative[0])
+	}
+	got, twice := ahEffective(t, words[:len(words)-2])
+	if len(twice) != 0 {
+		t.Errorf("the negative check gives options twice: %q", twice)
+	}
+	want := ahWantEffective(`"$AUTHORITY_HOST_KNOWN_HOSTS"`)
+	want["identityfile"], want["identitiesonly"], want["identityagent"] = "KEY", "yes", "none"
+	want["port"] = `"${AUTHORITY_HOST_PORT:-22}"`
+	if !maps.Equal(got, want) {
+		t.Errorf("the negative check is not the driver's connection with the identity KEY:\n got %v\nwant %v", got, want)
 	}
 }
 
@@ -1229,14 +1279,52 @@ func TestAuthorityHostDeployOutwardKeys(t *testing.T) {
 		"## The cutover: from old keys to the laptop's",
 		"Check the fingerprints of all three keys.",
 		"ssh-keygen -lf PUSH-KEY, ssh-keygen -lf SIGNING-KEY and ssh-keygen -lf DEPLOY-KEY",
-		"Withdraw the old trust for new operations.",
-		`keep an old signing key only with valid-before="DATE"`,
+		// An exposed key is replaced by a distinct new keypair, never moved.
+		"Such a key is exposed: it is replaced, never moved to the laptop.",
+		"Make new, distinct keypairs on the laptop.",
+		"ssh-keygen -t ed25519 -f PUSH-KEY, ssh-keygen -t ed25519 -f SIGNING-KEY and ssh-keygen -t ed25519 -f DEPLOY-KEY",
+		"never use one keypair for two roles", "three different fingerprints",
+		// The release signers file is a key store of its own.
+		"List what is trusted now, in every key store.", "There are three:",
+		"the authority host's release signers: the file the switch policy names (allowed_signers in /etc/authority-host/switch-policy.json",
+		"ssh-keygen -lf /etc/authority-host/allowed_signers",
+		"in the release signers file, the old key's line for the principal, replaced by the new key's",
+		"Withdraw the old trust.",
+		// Git: revocation for current trust, recorded object ids for history.
+		"Current trust:", "revoke the old signing key.", "git config gpg.ssh.revocationFile FILE",
+		"git then refuses every signature it made, whatever date the signature claims",
+		"Archival verification:", "before you revoke it, record the object ids of the commits and tags it signed",
+		"git rev-parse TAG TAG^{commit}", "on a machine agents do not use",
+		"Do not rely on valid-before in the allowed-signers file: git compares it with the signing time recorded in the object",
 		"Check what remains usable once the laptop's keys are loaded.",
+		// The old key's rejection and the new key's acceptance in each verifier.
+		"check the old key's rejection and the new key's acceptance in each verifier",
+		"ssh-keygen -Y verify -f /etc/authority-host/allowed_signers -I PRINCIPAL -n authority-host-release -s SHA256SUMS.sig < SHA256SUMS",
+		"The sums and signature of the last release the old key signed must now fail (Could not verify signature)",
+		"ssh-keygen -Y sign -f SIGNING-KEY -n authority-host-release FILE",
+		`must pass with Good "authority-host-release" signature for PRINCIPAL`,
+		"a commit or tag signed with the old key does not verify (git verify-commit, git verify-tag), whatever its recorded date, and a new tag signed with the new key does",
 		"What remains usable is the laptop's keys, through the forwarded agent, within their -h limits, one confirmation at a time.",
 	} {
 		if !strings.Contains(flat, want) {
 			t.Errorf("docs/outward-keys.md does not say %q", want)
 		}
+	}
+	// valid-before is never offered as what keeps later signatures out.
+	for _, bad := range []string{`keep an old signing key only with valid-before`, "none it makes after does", "for new operations"} {
+		if strings.Contains(flat, bad) {
+			t.Errorf("docs/outward-keys.md still says %q", bad)
+		}
+	}
+	// The verifier the page checks is the one ah-switch runs: the same
+	// namespace, and the principal given, never discovered.
+	verify, err := os.ReadFile(filepath.Join(root(t), "internal/authorityhost/switcher/verify.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(verify), `const SignatureNamespace = "authority-host-release"`) ||
+		!strings.Contains(string(verify), `"-Y", "verify", "-f", allowedSigners, "-I", principal, "-n", SignatureNamespace, "-s", signaturePath`) {
+		t.Error("the switcher's verifier is not the ssh-keygen -Y verify -f FILE -I PRINCIPAL -n authority-host-release the page checks")
 	}
 	// The signing key is a literal, never a key file.
 	for _, line := range strings.Split(string(data), "\n") {

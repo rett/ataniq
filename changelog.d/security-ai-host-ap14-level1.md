@@ -1,24 +1,24 @@
-- `deploy/ai-host/ap14-level1.sh`, AP14 level 1 for an AI host, run by the
-  owner as root from a copy installed as root's own file. It never moves,
-  edits or removes an existing file. `--dry --user NAME` is a read-only audit:
-  every sudo rule, who it gives sudo and whether it asks for a password, the
-  exact `visudo -f` edit for the owner to make by hand for each passwordless
-  rule, `Defaults !authenticate` or `exempt_group` that applies to the user,
-  and a stop for whatever it cannot see (an unreadable include, a failed
-  `sudo -l -U`, an unknown password status, an unsafe register entry, a
-  foreign file at the drop-in's name) or for an edit that would leave the
-  user no sudo rule that asks for the password. `--apply --user NAME
-  --confirm NAME` refuses while an edit or a stop is listed, and otherwise
-  writes only new files, under one lock: the drop-in
-  `/etc/sudoers.d/zz-ap14-level1-NAME` (`timestamp_timeout=0`, no cached
-  credentials; checked with `visudo -cf` alone, published with `ln`, then
-  `visudo -c`) and the root-owned standing-grants register
-  `/etc/ataniq/grants`; a failed step removes only what the run created.
-  `--verify --user NAME` checks that `sudo -l -U` still lists the user's grant
-  and that `sudo -n true` says a password is required. Root-equivalent
-  groups, polkit rules returning YES, doas `nopass`, setuid files no package
-  owns and root-run paths the user may write are reported with a quoted
-  remedy, never changed. `--self-test` runs unprivileged, reads only the
-  fixtures and runs `--apply` against temporary copies, failing each step in
-  turn. Agents run only `--self-test` and the Go tests. See
-  `deploy/ai-host/README.md`.
+- AP14 level 1 for an AI host (`deploy/ai-host/README.md`): the owner takes
+  passwordless and cached sudo away from the everyday user by hand, from the
+  guide's steps: the edits with `visudo -f` (remove the `NOPASSWD:` tag in
+  place, keep one password-asked grant, never delete a rule), the drop-in
+  `/etc/sudoers.d/zz-ap14-level1-NAME` (`Defaults:NAME timestamp_timeout=0`,
+  checked with `visudo -c`) and the root-owned standing-grants register
+  `/etc/ataniq/grants`, one fresh root-owned file per grant.
+  `deploy/ai-host/ap14-level1.sh --check --user NAME` is the read-only check
+  of the result, run by the owner as root from a copy installed as root's own
+  file: it runs `sudo -n -l -U NAME` once and judges only what sudo prints
+  (a `NOPASSWD` command; `targetpw`, `rootpw`, `runaspw`, `!authenticate` or
+  `exempt_group`, global or command-specific; a non-zero `timestamp_timeout`;
+  no `timestamp_timeout=0`), checks the register and every folder above it by
+  stat rules, and prints plain steps for the owner, never an edit command. It
+  changes nothing. It stops, never clean (exit 3), on a failed or unknown
+  sudo output, anything on sudo's error output, an unreadable register, and a
+  user with no sudo grant until the owner answers that root can log in
+  another way (`--other-root-login`). Verification is `--check` again and the
+  owner's `sudo -k; sudo -n true` in a new login, whose limit the guide states.
+  Groups, polkit, doas, setuid files and root-run paths are a checklist for the
+  owner; the user's own shell start files and `PATH` folders are a known limit
+  of level 1. `--self-test` runs unprivileged and judges saved `sudo -l`
+  outputs and register listings in place, never running sudo and writing
+  nothing. Agents run only `--self-test` and the Go tests.

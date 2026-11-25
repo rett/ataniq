@@ -1,3 +1,0 @@
-/etc/sudoers 0440
-/etc/sudoers.d/10-admins 0440
-/etc/sudoers.d/zz-ap14-level1-other 0440

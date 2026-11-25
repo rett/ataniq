@@ -1,3 +1,0 @@
-User_Alias OPS = %#1001, !other
-Runas_Alias DBA = postgres
-OPS ALL = (DBA) NOPASSWD: /usr/bin/psql

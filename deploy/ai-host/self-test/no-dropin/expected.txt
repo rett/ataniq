@@ -1,0 +1,23 @@
+== sudo -n -l -U agent (exit 0)
+  | Matching Defaults entries for agent on aihost:
+  |     env_reset, mail_badpass
+  | 
+  | User agent may run the following commands on aihost:
+  |     (ALL : ALL) ALL
+finding: dropin: sudo -l lists no timestamp_timeout=0 for agent: sudo's built-in default keeps a ticket for some minutes, so commands run unprompted after one password
+check: no command sudo lists for agent skips the password
+check: no default makes sudo ask for another account's password, or for none (targetpw, rootpw, runaspw, !authenticate, exempt_group)
+== register /etc/ataniq/grants
+  | d 0 755 /
+  | d 0 755 /etc
+  | d 0 755 /etc/ataniq
+  | d 0 755 /etc/ataniq/grants
+  | f 0 644 /etc/ataniq/grants/README
+  | f 0 644 /etc/ataniq/grants/backup-unit
+check: /etc/ataniq/grants and every folder above it are root's and not writable by group or others; its 2 entries are regular files of root's, not writable by group or others
+== by hand, for the owner
+- no timestamp_timeout=0: write the drop-in /etc/sudoers.d/zz-ap14-level1-agent by hand and check the whole configuration with visudo -c (README, step 4).
+== summary
+findings: 1; stops: 0
+result: findings remain: fix them by hand, then run --check again
+exit: 1

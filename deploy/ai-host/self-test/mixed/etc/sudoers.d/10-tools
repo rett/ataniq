@@ -1,1 +1,0 @@
-agent, other ALL = (root) NOPASSWD: /usr/bin/apt, PASSWD: ALL
