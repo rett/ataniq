@@ -1,0 +1,324 @@
+[
+  {
+    "In": {
+      "Transport": {
+        "State": "idle",
+        "Basis": "screen",
+        "Source": "",
+        "At": "0001-01-01T00:00:00Z",
+        "Detail": null
+      },
+      "Self": {
+        "State": "idle",
+        "Basis": "self",
+        "Source": "client",
+        "At": "0001-01-01T00:00:00Z",
+        "Detail": null
+      },
+      "Hook": null,
+      "Sight": "rules"
+    },
+    "Record": {
+      "State": "idle",
+      "Basis": "screen",
+      "Deliverable": true,
+      "Permit": "transport",
+      "Refusal": null,
+      "Claims": [
+        {
+          "State": "idle",
+          "Basis": "screen",
+          "Source": "",
+          "At": "0001-01-01T00:00:00Z",
+          "Detail": null
+        },
+        {
+          "State": "idle",
+          "Basis": "self",
+          "Source": "client",
+          "At": "0001-01-01T00:00:00Z",
+          "Detail": null
+        }
+      ],
+      "Veto": null,
+      "Sight": "rules",
+      "Disagree": false,
+      "Dropped": null
+    }
+  },
+  {
+    "In": {
+      "Transport": {
+        "State": "idle",
+        "Basis": "transport",
+        "Source": "",
+        "At": "0001-01-01T00:00:00Z",
+        "Detail": null
+      },
+      "Self": {
+        "State": "busy",
+        "Basis": "self",
+        "Source": "client",
+        "At": "0001-01-01T00:00:00Z",
+        "Detail": null
+      },
+      "Hook": null,
+      "Sight": "rules"
+    },
+    "Record": {
+      "State": "busy",
+      "Basis": "self",
+      "Deliverable": false,
+      "Permit": "",
+      "Refusal": [
+        "state busy"
+      ],
+      "Claims": [
+        {
+          "State": "idle",
+          "Basis": "transport",
+          "Source": "",
+          "At": "0001-01-01T00:00:00Z",
+          "Detail": null
+        },
+        {
+          "State": "busy",
+          "Basis": "self",
+          "Source": "client",
+          "At": "0001-01-01T00:00:00Z",
+          "Detail": null
+        }
+      ],
+      "Veto": null,
+      "Sight": "rules",
+      "Disagree": true,
+      "Dropped": null
+    }
+  },
+  {
+    "In": {
+      "Transport": {
+        "State": "unknown",
+        "Basis": "transport",
+        "Source": "",
+        "At": "0001-01-01T00:00:00Z",
+        "Detail": null
+      },
+      "Self": {
+        "State": "blocked",
+        "Basis": "self",
+        "Source": "client",
+        "At": "0001-01-01T00:00:00Z",
+        "Detail": null
+      },
+      "Hook": null,
+      "Sight": "rules"
+    },
+    "Record": {
+      "State": "blocked",
+      "Basis": "self",
+      "Deliverable": false,
+      "Permit": "",
+      "Refusal": [
+        "state blocked",
+        "transport cannot tell"
+      ],
+      "Claims": [
+        {
+          "State": "unknown",
+          "Basis": "transport",
+          "Source": "",
+          "At": "0001-01-01T00:00:00Z",
+          "Detail": null
+        },
+        {
+          "State": "blocked",
+          "Basis": "self",
+          "Source": "client",
+          "At": "0001-01-01T00:00:00Z",
+          "Detail": null
+        }
+      ],
+      "Veto": null,
+      "Sight": "rules",
+      "Disagree": false,
+      "Dropped": null
+    }
+  },
+  {
+    "In": {
+      "Transport": {
+        "State": "unknown",
+        "Basis": "transport",
+        "Source": "",
+        "At": "0001-01-01T00:00:00Z",
+        "Detail": null
+      },
+      "Self": {
+        "State": "unknown",
+        "Basis": "self",
+        "Source": "client",
+        "At": "0001-01-01T00:00:00Z",
+        "Detail": null
+      },
+      "Hook": {
+        "State": "unknown",
+        "Basis": "self",
+        "Source": "hook",
+        "At": "0001-01-01T00:00:00Z",
+        "Detail": null
+      },
+      "Sight": "rules"
+    },
+    "Record": {
+      "State": "unknown",
+      "Basis": "",
+      "Deliverable": false,
+      "Permit": "",
+      "Refusal": [
+        "state unknown",
+        "transport cannot tell"
+      ],
+      "Claims": [
+        {
+          "State": "unknown",
+          "Basis": "transport",
+          "Source": "",
+          "At": "0001-01-01T00:00:00Z",
+          "Detail": null
+        },
+        {
+          "State": "unknown",
+          "Basis": "self",
+          "Source": "client",
+          "At": "0001-01-01T00:00:00Z",
+          "Detail": null
+        },
+        {
+          "State": "unknown",
+          "Basis": "self",
+          "Source": "hook",
+          "At": "0001-01-01T00:00:00Z",
+          "Detail": null
+        }
+      ],
+      "Veto": null,
+      "Sight": "rules",
+      "Disagree": false,
+      "Dropped": null
+    }
+  },
+  {
+    "In": {
+      "Transport": {
+        "State": "asking",
+        "Basis": "screen",
+        "Source": "",
+        "At": "0001-01-01T00:00:00Z",
+        "Detail": null
+      },
+      "Self": {
+        "State": "idle",
+        "Basis": "self",
+        "Source": "hook",
+        "At": "0001-01-01T00:00:00Z",
+        "Detail": null
+      },
+      "Hook": {
+        "State": "asking",
+        "Basis": "self",
+        "Source": "hook",
+        "At": "0001-01-01T00:00:00Z",
+        "Detail": null
+      },
+      "Sight": "rules"
+    },
+    "Record": {
+      "State": "unknown",
+      "Basis": "",
+      "Deliverable": false,
+      "Permit": "",
+      "Refusal": [
+        "state unknown",
+        "transport dropped"
+      ],
+      "Claims": [
+        {
+          "State": "asking",
+          "Basis": "screen",
+          "Source": "",
+          "At": "0001-01-01T00:00:00Z",
+          "Detail": null
+        },
+        {
+          "State": "idle",
+          "Basis": "self",
+          "Source": "hook",
+          "At": "0001-01-01T00:00:00Z",
+          "Detail": null
+        },
+        {
+          "State": "asking",
+          "Basis": "self",
+          "Source": "hook",
+          "At": "0001-01-01T00:00:00Z",
+          "Detail": null
+        }
+      ],
+      "Veto": null,
+      "Sight": "rules",
+      "Disagree": false,
+      "Dropped": [
+        {
+          "Slot": "transport",
+          "Reason": "basis-not-allowed"
+        },
+        {
+          "Slot": "self",
+          "Reason": "slot-source"
+        },
+        {
+          "Slot": "hook",
+          "Reason": "hook-asking"
+        }
+      ]
+    }
+  },
+  {
+    "In": {
+      "Transport": {
+        "State": "unknown",
+        "Basis": "transport",
+        "Source": "",
+        "At": "0001-01-01T00:00:00Z",
+        "Detail": null
+      },
+      "Self": null,
+      "Hook": null,
+      "Sight": "rules"
+    },
+    "Record": {
+      "State": "unknown",
+      "Basis": "",
+      "Deliverable": false,
+      "Permit": "",
+      "Refusal": [
+        "state unknown",
+        "transport cannot tell"
+      ],
+      "Claims": [
+        {
+          "State": "unknown",
+          "Basis": "transport",
+          "Source": "",
+          "At": "0001-01-01T00:00:00Z",
+          "Detail": null
+        }
+      ],
+      "Veto": null,
+      "Sight": "rules",
+      "Disagree": false,
+      "Dropped": null
+    }
+  }
+]

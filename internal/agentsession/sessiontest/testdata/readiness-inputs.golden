@@ -1,0 +1,22 @@
+Build {DeclaresDenyRow bool, DenyMeant bool}
+DeliveryResult {Ready bool, Reasons []DeliveryReason}
+DenyResult {InForce bool, Reason DenyReason}
+Expectation {Facts []FactExp, Sources SourcesExp}
+FactExp {Fact Fact, Required bool, Want Want}
+FactObs {Fact Fact, Seen bool, Got Want}
+Gates {ReadbackActive bool, ReadbackOffered bool, S3Active bool}
+HookReport {Kind HookKind, Session string, Age time.Duration}
+HookView {bound string, ageLimit time.Duration, form IDForm, foreign int, reports []classifiedReport}
+I2 {A8 Assertion, A12 Assertion, A13 Assertion, A14 Assertion}
+I4 {reading Reading, cause Cause, contradicted []Fact}
+I5 {Attempted bool, EffectAbsent bool, Independent bool}
+Independent {Launch Launch, Gates Gates, Build Build, I1 bool, I2 I2, I3 bool, Readback Readback, I5 I5}
+Launch {BundleB bool, DeclaresHookRows bool}
+Obs {Bound string, Foreign int}
+Readback {Exp Expectation, Obs ReadbackObs}
+ReadbackObs {Attempt Outcome, Facts []FactObs, Sources SourcesObs}
+Result {Delivery DeliveryResult, Deny DenyResult, Obs Obs}
+SourcesExp {Digest [32]uint8}
+SourcesObs {Seen bool, Digest [32]uint8}
+classifiedReport {HookReport HookReport, Class Class}
+func(Independent) DeliveryResult
