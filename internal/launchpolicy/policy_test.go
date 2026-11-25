@@ -2,8 +2,10 @@ package launchpolicy
 
 import (
 	"bytes"
+	"crypto/sha256"
 	_ "embed"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -207,6 +209,51 @@ func TestT6Canonical(t *testing.T) {
 		t.Fatal("pending locator encoding")
 	}
 }
+
+func TestT5ProtocolProfileRequiresItsOwnSitting(t *testing.T) {
+	const hash = "ecf2ffecfebfd6330f0a5bda285f7bb44ad6e74dc8b8311b8b7e5dd91fe93a88"
+	first := ProtocolExercise{Pack: "alpha", Build: "1.0", FixtureSHA256: hash,
+		Observation: "synthetic", Mode: "m-quiet", ProfileDigest: "d1"}
+	ask := first
+	ask.Mode = "m-ask"
+	records := map[ProtocolExercise]string{first: "quiet-first", ask: "ask-first"}
+	p := decode(t, alphaPolicy)
+	if err := p.CheckProtocolSittings(records); err != nil {
+		t.Fatal(err)
+	}
+
+	d := tree(t, alphaPolicy)
+	modeRow(d, "m-quiet")["vector"].(obj)["protocol"].(obj)["profiles"] = []string{"d1", "d2"}
+	p = decode(t, wire(t, d))
+	if err := p.CheckProtocolSittings(records); err == nil {
+		t.Fatal("qualified an appended profile without a sitting")
+	}
+	second := first
+	second.ProfileDigest = "d2"
+	for _, wrong := range []func(*ProtocolExercise){
+		func(e *ProtocolExercise) { e.Observation = "other" },
+		func(e *ProtocolExercise) { e.FixtureSHA256 = "other" },
+		func(e *ProtocolExercise) { e.Build = "2.0" },
+		func(e *ProtocolExercise) { e.Pack = "beta" },
+		func(e *ProtocolExercise) { e.Mode = "m-ask" },
+	} {
+		e := second
+		wrong(&e)
+		records[e] = "other-sitting"
+		if err := p.CheckProtocolSittings(records); err == nil {
+			t.Fatal("qualified an appended profile with unrelated evidence")
+		}
+		delete(records, e)
+	}
+	records[second] = records[first]
+	if err := p.CheckProtocolSittings(records); err == nil {
+		t.Fatal("qualified two profiles with one sitting")
+	}
+	records[second] = "quiet-second"
+	if err := p.CheckProtocolSittings(records); err != nil {
+		t.Fatal(err)
+	}
+}
 func unrecorded(t *testing.T, b []byte) []byte {
 	d := tree(t, b)
 	d["fixture"].(obj)["sha256"] = ""
@@ -273,6 +320,12 @@ func TestHelpDefinitionEvidence(t *testing.T) {
 	}{
 		{"  -m, --mode=<v>   select a value", "--mode=", true},
 		{"--[no-]quiet     suppress output", "--no-quiet", true},
+		{"--[no-]quiet     suppress output", "--[no-]quiet", false},
+		{"-m <mode>, --mode=<mode>  choose mode", "--mode=", true},
+		{"-m <mode>, --mode=<mode>  choose mode", "--mode=<mode>", false},
+		{"-m<mode>, --mode MODE   choose mode", "-m", true},
+		{"--quiet   see -m, --mode=<mode>", "--mode=", false},
+		{"--quiet, broken", "--quiet", false},
 		{"--mode=m-plan    select this value", "--mode=m-plan", true},
 		{"examples: --mode=m-plan", "--mode=m-plan", false},
 		{"--quiet    see --mode=m-plan", "--mode=m-plan", false},
@@ -281,5 +334,28 @@ func TestHelpDefinitionEvidence(t *testing.T) {
 		if got := defines(tc.line, tc.spelling); got != tc.want {
 			t.Errorf("defines(%q, %q) = %t", tc.line, tc.spelling, got)
 		}
+	}
+}
+
+func TestGroupedHelpLocator(t *testing.T) {
+	const help = "-m <mode>, --mode=<mode>  choose mode\n--[no-]quiet  suppress output\n"
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(help)))
+	raw := bytes.ReplaceAll(alphaPolicy, []byte(fmt.Sprintf("%x", sha256.Sum256([]byte(fixtureHelp)))), []byte(hash))
+	for _, tc := range []struct {
+		token string
+		valid bool
+	}{{"--quiet", true}, {"--no-quiet", true}, {"--[no-]quiet", false}} {
+		t.Run(tc.token, func(t *testing.T) {
+			d := tree(t, raw)
+			scope := d["options"].([]any)[0].(obj)
+			scope["to"] = 2
+			f := formRow(d, "quiet")
+			f["token"] = tc.token
+			f["evidence"] = obj{"source": "help", "scope": scope["scope"], "line": 2}
+			_, err := Decode(wire(t, d), []byte(help))
+			if (err == nil) != tc.valid {
+				t.Fatalf("valid = %t, decode error = %v", tc.valid, err)
+			}
+		})
 	}
 }

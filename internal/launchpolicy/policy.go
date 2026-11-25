@@ -466,40 +466,54 @@ func (p *Policy) evidence(e evidence, spelling string, lines []string) bool {
 	return false
 }
 
-// A locator names one option definition, including a grouped spelling.
-// Stop at the description; words in prose never qualify a spelling.
+var helpMetavariable = regexp.MustCompile(`^(<[a-zA-Z0-9_.-]+>|[A-Z][A-Z0-9_-]*)$`)
+
+// A comma continues the definition only immediately after an option and
+// its optional operand. Anything following the definition is description.
 func defines(line, want string) bool {
-	fields := strings.Fields(line)
-	for _, field := range fields {
-		if !strings.HasPrefix(field, "-") {
-			break
+	matched := false
+	for {
+		part, rest, comma := strings.Cut(line, ",")
+		fields := strings.Fields(part)
+		if len(fields) == 0 || !strings.HasPrefix(fields[0], "-") {
+			return false
 		}
-		for part := range strings.SplitSeq(field, ",") {
-			if !strings.HasPrefix(part, "-") {
-				continue
+		option := fields[0]
+		name, operand, equals := strings.Cut(option, "=")
+		if i := strings.IndexByte(name, '<'); i >= 0 {
+			if equals || !helpMetavariable.MatchString(name[i:]) {
+				return false
 			}
-			if part == want {
-				return true
+			name = name[:i]
+		}
+		// Expand the help notation before comparing either spelling.
+		names := []string{name}
+		if suffix, negative := strings.CutPrefix(name, "--[no-]"); negative {
+			if suffix == "" {
+				return false
 			}
-			name, _, attached := strings.Cut(part, "=")
-			if attached {
-				name += "="
-			}
-			if name == want {
-				return true
-			}
-			if strings.HasPrefix(name, "--[no-]") {
-				suffix := strings.TrimPrefix(name, "--[no-]")
-				if "--"+suffix == want || "--no-"+suffix == want {
-					return true
+			names = []string{"--" + suffix, "--no-" + suffix}
+		}
+		for _, spelling := range names {
+			if equals {
+				spelling += "="
+				if !helpMetavariable.MatchString(operand) && spelling+operand == want {
+					matched = true
 				}
 			}
+			if spelling == want {
+				matched = true
+			}
 		}
-		if !strings.HasSuffix(field, ",") {
-			break
+		fields = fields[1:]
+		if len(fields) != 0 && helpMetavariable.MatchString(fields[0]) {
+			fields = fields[1:]
 		}
+		if len(fields) != 0 || !comma {
+			return matched
+		}
+		line = rest
 	}
-	return false
 }
 
 func (f *form) transports(t pack.Transport) bool {

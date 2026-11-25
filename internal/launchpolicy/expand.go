@@ -36,7 +36,7 @@ func identity(p *Policy, s Snapshot) (string, *Refusal) {
 	return role.Kind().String(), nil
 }
 
-func bounds(argv []string, env map[string]string, stage int) *Refusal {
+func (s *Snapshot) bounds(argv []string, env map[string]string, stage int) *Refusal {
 	for i, token := range argv {
 		if i >= 64 || len(token) > 512 {
 			return refuse("bound", stage, argvAt(i))
@@ -44,7 +44,7 @@ func bounds(argv []string, env map[string]string, stage int) *Refusal {
 	}
 	if len(env) > 32 {
 		keys := slices.Sorted(maps.Keys(env))
-		return refuse("bound", stage, location("env", keys[32], 32))
+		return refuse("bound", stage, s.location("env", keys[32], 32))
 	}
 	return nil
 }
@@ -57,43 +57,50 @@ func (p *Policy) lookup(token string) (*form, string) {
 	return nil, "unknown-token"
 }
 
-type sequence struct {
-	policy    *Policy
-	kind      string
-	transport pack.Transport
-	stage     int
-	counts    map[*form]int
-	split     int // index of the separator, -1 until seen
+func (p *Policy) checkTransport(t pack.Transport) *Refusal {
+	if !p.executable.transports(t) {
+		return refuse("transport-not-admitted", 0, "snapshot")
+	}
+	return nil
 }
 
-func newSequence(p *Policy, kind string, t pack.Transport, stage int) *sequence {
-	return &sequence{policy: p, kind: kind, transport: t, stage: stage, counts: make(map[*form]int), split: -1}
+type sequence struct {
+	policy   *Policy
+	kind     string
+	snapshot *Snapshot
+	stage    int
+	counts   map[*form]int
+	split    int // index of the separator, -1 until seen
+}
+
+func newSequence(p *Policy, kind string, s *Snapshot, stage int) *sequence {
+	return &sequence{policy: p, kind: kind, snapshot: s, stage: stage, counts: make(map[*form]int), split: -1}
 }
 func (q *sequence) requiredForms() *Refusal {
 	for i := range q.policy.doc.Forms {
 		f := &q.policy.doc.Forms[i]
-		if f.Kinds[q.kind] == required && f.transports(q.transport) && q.counts[f] == 0 {
-			return refuse("required-missing", q.stage, location("form", f.ID, i))
+		if f.Kinds[q.kind] == required && f.transports(q.snapshot.Transport) && q.counts[f] == 0 {
+			return refuse("required-missing", q.stage, q.snapshot.location("form", f.ID, i))
 		}
 	}
 	return nil
 }
 func (q *sequence) place(f *form, i int, token string, written bool) *Refusal {
-	if !f.admitted(q.kind, q.transport) {
-		return tokenFault("form-not-admitted", q.stage, i, f, token)
+	if !f.admitted(q.kind, q.snapshot.Transport) {
+		return q.snapshot.tokenFault("form-not-admitted", q.stage, i, f, token)
 	}
 	if q.counts[f] >= f.Kinds[q.kind].limit() {
 		// An executable repeated before the split has a known wrong position.
 		if f == q.policy.executable && q.split < 0 {
-			return tokenFault("form-position", q.stage, i, f, token)
+			return q.snapshot.tokenFault("form-position", q.stage, i, f, token)
 		}
-		return tokenFault("form-repeated", q.stage, i, f, token)
+		return q.snapshot.tokenFault("form-repeated", q.stage, i, f, token)
 	}
 	if (q.split >= 0) != (f.After != nil) {
-		return tokenFault("form-position", q.stage, i, f, token)
+		return q.snapshot.tokenFault("form-position", q.stage, i, f, token)
 	}
 	if !written && (f.At != nil && *f.At.Index != i || f.After != nil && *f.After != i-q.split-1) {
-		return tokenFault("form-position", q.stage, i, f, token)
+		return q.snapshot.tokenFault("form-position", q.stage, i, f, token)
 	}
 	q.counts[f]++
 	if f.Separator {
@@ -163,18 +170,21 @@ func Expand(p *Policy, launch pack.Launch, s Snapshot) (Spec, *Refusal) {
 	if r != nil {
 		return Spec{}, r
 	}
+	if r := p.checkTransport(s.Transport); r != nil {
+		return Spec{}, r
+	}
 	return expand(p, launch, s, kind)
 }
 func expand(p *Policy, launch pack.Launch, s Snapshot, kind string) (Spec, *Refusal) {
-	if r := bounds(launch.Argv, nil, 1); r != nil {
+	if r := s.bounds(launch.Argv, nil, 1); r != nil {
 		return Spec{}, r
 	}
-	written := newSequence(p, kind, s.Transport, 1)
+	written := newSequence(p, kind, &s, 1)
 	forms := make([]*form, len(launch.Argv))
 	for i, token := range launch.Argv {
 		f, code := written.templateForm(token)
 		if code != "" {
-			return Spec{}, tokenFault(code, 1, i, f, token)
+			return Spec{}, s.tokenFault(code, 1, i, f, token)
 		}
 		if r := written.place(f, i, token, true); r != nil {
 			return Spec{}, r
@@ -192,7 +202,7 @@ func expand(p *Policy, launch pack.Launch, s Snapshot, kind string) (Spec, *Refu
 			v := s.value(f.Slot)
 			if v == "" {
 				if f.Kinds[kind] == required {
-					return Spec{}, refuse("required-missing", 1, location("slot", string(f.Slot), 0))
+					return Spec{}, refuse("required-missing", 1, s.slotLocation(f.Slot))
 				}
 				continue
 			}
@@ -205,7 +215,7 @@ func expand(p *Policy, launch pack.Launch, s Snapshot, kind string) (Spec, *Refu
 		spec.Argv = spec.Argv[:n-1]
 		surviving = surviving[:n-1]
 	}
-	final := newSequence(p, kind, s.Transport, 1)
+	final := newSequence(p, kind, &s, 1)
 	for i, f := range surviving {
 		token := spec.Argv[i]
 		found, code := final.finalForm(i, token)
@@ -213,7 +223,7 @@ func expand(p *Policy, launch pack.Launch, s Snapshot, kind string) (Spec, *Refu
 			code = "form-position"
 		}
 		if code != "" {
-			return Spec{}, tokenFault(code, 1, i, f, token)
+			return Spec{}, s.tokenFault(code, 1, i, f, token)
 		}
 		if r := final.place(f, i, token, false); r != nil {
 			return Spec{}, r

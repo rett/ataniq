@@ -27,6 +27,9 @@ func authenticate(p *Policy, s Snapshot, intent Intent) (string, *Refusal) {
 	if v != (View{s.Pack, s.Version, s.Mode, s.Model, s.Effort}) {
 		return "", refuse("expected-differs", 0, "snapshot")
 	}
+	if r := p.checkTransport(s.Transport); r != nil {
+		return "", r
+	}
 	if s.Transport == pack.Protocol {
 		m := p.modes[s.Mode]
 		if kind != "coordinator" || !s.OwnerProtocol || m == nil || m.Class != pack.NoPrompt || m.Vector.Protocol == nil || m.Vector.Protocol.observation == nil || !slices.Contains(m.Vector.Protocol.Profiles, digest) {
@@ -105,15 +108,15 @@ func Recheck(p *Policy, spec Spec, s Snapshot, intent Intent) (Verdict, *Refusal
 }
 
 func judgeSpec(p *Policy, spec Spec, s Snapshot, kind string, l *pack.Launch, expanded *Spec) (Verdict, *Refusal) {
-	if r := bounds(spec.Argv, spec.Env, 2); r != nil {
+	if r := s.bounds(spec.Argv, spec.Env, 2); r != nil {
 		return Verdict{}, r
 	}
-	q := newSequence(p, kind, s.Transport, 2)
+	q := newSequence(p, kind, &s, 2)
 	pairs := make(map[pack.Slot]string)
 	for i, token := range spec.Argv {
 		f, code := q.finalForm(i, token)
 		if code != "" {
-			return Verdict{}, tokenFault(code, 2, i, f, token)
+			return Verdict{}, s.tokenFault(code, 2, i, f, token)
 		}
 		if r := q.place(f, i, token, false); r != nil {
 			return Verdict{}, r
@@ -123,23 +126,23 @@ func judgeSpec(p *Policy, spec Spec, s Snapshot, kind string, l *pack.Launch, ex
 		}
 		v := strings.TrimPrefix(token, string(f.Prefix))
 		if code := q.checkValue(f.Slot, v); code != "" {
-			return Verdict{}, tokenFault(code, 2, i, f, token)
+			return Verdict{}, s.tokenFault(code, 2, i, f, token)
 		}
 		if l != nil && l.CheckSlotValue(f.Slot, v) != nil {
-			return Verdict{}, tokenFault("value-unadmitted", 2, i, f, token)
+			return Verdict{}, s.tokenFault("value-unadmitted", 2, i, f, token)
 		}
 		pairs[f.Slot] = v
 	}
 	for i, name := range slices.Sorted(maps.Keys(spec.Env)) {
 		if !slices.Contains(p.env[name], spec.Env[name]) {
-			return Verdict{}, refuse("env-refused", 2, location("env", name, i))
+			return Verdict{}, refuse("env-refused", 2, s.location("env", name, i))
 		}
 	}
 	if r := q.requiredForms(); r != nil {
 		return Verdict{}, r
 	}
 	if expanded != nil {
-		if r := difference(*expanded, spec); r != nil {
+		if r := s.difference(*expanded, spec); r != nil {
 			return Verdict{}, r
 		}
 	}
@@ -159,7 +162,7 @@ func (q *sequence) checkValue(slot pack.Slot, v string) string {
 		if m.Class == pack.Bypass || m.Class == pack.NoPrompt && q.kind != "coordinator" {
 			return "mode-class-refused"
 		}
-		vec := m.vector(q.transport)
+		vec := m.vector(q.snapshot.Transport)
 		if vec == nil || vec.observation == nil {
 			return "mode-vector-pending"
 		}
@@ -175,7 +178,7 @@ func (q *sequence) checkValue(slot pack.Slot, v string) string {
 	return ""
 }
 
-func difference(want, got Spec) *Refusal {
+func (s *Snapshot) difference(want, got Spec) *Refusal {
 	const code = "template-expansion-differs"
 	for i := 0; i < max(len(want.Argv), len(got.Argv)); i++ {
 		if i >= len(want.Argv) || i >= len(got.Argv) || got.Argv[i] != want.Argv[i] {
@@ -188,7 +191,7 @@ func difference(want, got Spec) *Refusal {
 		a, has := want.Env[k]
 		b, exists := got.Env[k]
 		if has != exists || a != b {
-			return refuse(code, 2, location("env", k, i))
+			return refuse(code, 2, s.location("env", k, i))
 		}
 	}
 	return nil
@@ -206,7 +209,7 @@ func (q *sequence) expect(s Snapshot, spec Spec, pairs map[pack.Slot]string) (Ve
 	for _, slot := range slots {
 		v, found := pairs[slot]
 		want := s.value(slot)
-		at := location("slot", string(slot), 0)
+		at := s.slotLocation(slot)
 		if want == "" {
 			if found {
 				return Verdict{}, refuse("expected-unexpected", 3, at)
@@ -214,7 +217,7 @@ func (q *sequence) expect(s Snapshot, spec Spec, pairs map[pack.Slot]string) (Ve
 			continue
 		}
 		f := q.policy.bySlot[slot]
-		if f == nil || !f.admitted(q.kind, q.transport) {
+		if f == nil || !f.admitted(q.kind, q.snapshot.Transport) {
 			return Verdict{}, refuse("expected-unplaceable", 3, at)
 		}
 		if !found {
@@ -224,7 +227,10 @@ func (q *sequence) expect(s Snapshot, spec Spec, pairs map[pack.Slot]string) (Ve
 			return Verdict{}, refuse("expected-differs", 3, at)
 		}
 	}
-	m := q.policy.modes[s.Mode] // the required mode passed R25 and R29
+	m := q.policy.modes[pairs[pack.PermissionModeSlot]]
+	if m == nil {
+		return Verdict{}, refuse("expected-missing", 3, s.slotLocation(pack.PermissionModeSlot))
+	}
 	recognizer := ""
 	if s.Transport == pack.Terminal {
 		recognizer = string(m.Recognizer)
@@ -260,7 +266,7 @@ func JudgeFiles(p *Policy, s Snapshot, inv Inventory, files []FileView) *Refusal
 	}
 	slices.Sort(destinations)
 	for i, dest := range slices.Compact(destinations) {
-		at := location("file", dest, i)
+		at := s.location("file", dest, i)
 		want, got := expected[dest], supplied[dest]
 		if dest == "" || len(want) != 1 || len(got) != 1 {
 			return refuse("file-refused", 2, at)
@@ -303,19 +309,30 @@ func (p *Policy) fileEntries(s Snapshot, w ExpectedFile, row *fileRow, entries [
 		return invalid
 	}
 	for _, e := range entries {
-		if !validPath(e.Path) || !scalar(e.Type) {
+		if !validPath(e.Path) {
 			return invalid
 		}
 	}
 	ordered := slices.Clone(entries)
 	slices.SortFunc(ordered, func(a, b Entry) int { return comparePath(a.Path, b.Path) })
 	haveName := false
-	requiredCount := 0
+	remaining := row.Required
 	for i, e := range ordered {
-		if i > 0 && comparePath(ordered[i-1].Path, e.Path) == 0 {
+		if !scalar(e.Type) || i > 0 && comparePath(ordered[i-1].Path, e.Path) == 0 {
 			return invalid
 		}
+		needed := false
+		if len(remaining) > 0 {
+			order := comparePath(remaining[0].Path, e.Path)
+			if order < 0 {
+				return invalid
+			}
+			needed = order == 0
+		}
 		if w.Definition {
+			if !haveName && comparePath([]Comp{"name"}, e.Path) < 0 {
+				return invalid
+			}
 			if len(e.Path) == 0 {
 				return "agent-key-refused"
 			}
@@ -330,18 +347,17 @@ func (p *Policy) fileEntries(s Snapshot, w ExpectedFile, row *fileRow, entries [
 				haveName = true
 			}
 		}
-		n, needed := slices.BinarySearchFunc(row.Required, e.Path, func(k requirement, path []Comp) int { return comparePath(k.Path, path) })
 		if needed {
-			k := row.Required[n]
+			k := remaining[0]
 			if k.Type != e.Type || *k.Text != e.Text {
 				return invalid
 			}
-			requiredCount++
+			remaining = remaining[1:]
 		} else if _, allowed := slices.BinarySearchFunc(row.Allowed, e.Path, comparePath); !allowed {
 			return invalid
 		}
 	}
-	if requiredCount != len(row.Required) || w.Definition && !haveName {
+	if len(remaining) != 0 || w.Definition && !haveName {
 		return invalid
 	}
 	return ""

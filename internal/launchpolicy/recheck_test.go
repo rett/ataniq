@@ -218,3 +218,24 @@ func TestInvalidSnapshotIdentity(t *testing.T) {
 		line(t, x.recheck(t, spec), "snapshot-invalid", "0", "snapshot")
 	}
 }
+
+func TestUnsupportedTransportWithEmptyLaunch(t *testing.T) {
+	x := baseline(t, "BQ")
+	x.s.Transport = pack.Terminal
+	x.s.Mode, x.s.Model = "", ""
+	x.bind(t)
+	x.l.Argv = nil
+	spec := Spec{Role: x.s.Role, Transport: x.s.Transport, ProfileDigest: x.s.ProfileDigest}
+	t.Run("expand", func(t *testing.T) {
+		_, r := Expand(x.p, x.l, x.s)
+		line(t, r, "transport-not-admitted", "0", "snapshot")
+	})
+	t.Run("judge", func(t *testing.T) {
+		line(t, x.judge(spec), "transport-not-admitted", "0", "snapshot")
+	})
+	t.Run("recheck", func(t *testing.T) {
+		line(t, x.recheck(t, spec), "transport-not-admitted", "0", "snapshot")
+	})
+	x.s.Requested = nil
+	line(t, x.recheck(t, spec), "snapshot-invalid", "0", "snapshot")
+}
