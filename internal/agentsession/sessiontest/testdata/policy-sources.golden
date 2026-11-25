@@ -1,0 +1,74 @@
+[
+  {
+    "Entries": [
+      {
+        "Kind": "ab",
+        "Name": "c",
+        "Raw": "",
+        "Content": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "Frame": "6174616e69712e706f6c6963792d736f75726365732f310a000000010000000261620000000163e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Digest": "9c5a7517a3301bbc3b37c74d7b770baf9b5d597569e1b776dab10fbeb85066c0"
+  },
+  {
+    "Entries": [
+      {
+        "Kind": "ab",
+        "Name": "c",
+        "Raw": "data",
+        "Content": "3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8b7"
+      },
+      {
+        "Kind": "config",
+        "Name": "one",
+        "Raw": "data\n",
+        "Content": "6667b2d1aab6a00caa5aee5af8ad9f1465e567abf1c209d15727d57b3e8f6e5f"
+      },
+      {
+        "Kind": "config",
+        "Name": "two",
+        "Raw": "data\r\n",
+        "Content": "dfa40b427fe0a9437c7e7e1f9c0f740dbc4f1b18fffdde9d1e7309290026f1fc"
+      }
+    ],
+    "Frame": "6174616e69712e706f6c6963792d736f75726365732f310a0000000300000002616200000001633a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8b700000006636f6e666967000000036f6e656667b2d1aab6a00caa5aee5af8ad9f1465e567abf1c209d15727d57b3e8f6e5f00000006636f6e6669670000000374776fdfa40b427fe0a9437c7e7e1f9c0f740dbc4f1b18fffdde9d1e7309290026f1fc",
+    "Digest": "e00f0ef6043790d4d4ad42deaa6e97bed2d43f6e25d5e12b74b273fb956e6b56"
+  },
+  {
+    "Entries": [
+      {
+        "Kind": "a",
+        "Name": "bc",
+        "Raw": "",
+        "Content": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "Frame": "6174616e69712e706f6c6963792d736f75726365732f310a000000010000000161000000026263e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Digest": "be830ebb3a8e32cbdcc4e908221845cdc63ce9dd5cef2c90c5bc8f9560151bd7"
+  },
+  {
+    "Entries": [
+      {
+        "Kind": "a",
+        "Name": "bc",
+        "Raw": "data",
+        "Content": "3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8b7"
+      },
+      {
+        "Kind": "config",
+        "Name": "one",
+        "Raw": "data\n",
+        "Content": "6667b2d1aab6a00caa5aee5af8ad9f1465e567abf1c209d15727d57b3e8f6e5f"
+      },
+      {
+        "Kind": "config",
+        "Name": "two",
+        "Raw": "data\r\n",
+        "Content": "dfa40b427fe0a9437c7e7e1f9c0f740dbc4f1b18fffdde9d1e7309290026f1fc"
+      }
+    ],
+    "Frame": "6174616e69712e706f6c6963792d736f75726365732f310a0000000300000001610000000262633a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8b700000006636f6e666967000000036f6e656667b2d1aab6a00caa5aee5af8ad9f1465e567abf1c209d15727d57b3e8f6e5f00000006636f6e6669670000000374776fdfa40b427fe0a9437c7e7e1f9c0f740dbc4f1b18fffdde9d1e7309290026f1fc",
+    "Digest": "d426f76c30f5efe591cdd3cb9537424c6f830e15e448aabf329e5357314adc21"
+  }
+]

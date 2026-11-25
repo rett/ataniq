@@ -1,0 +1,122 @@
+{
+  "State": [
+    "idle",
+    "busy",
+    "blocked",
+    "asking",
+    "ended",
+    "unknown"
+  ],
+  "Basis": [
+    "host",
+    "transport",
+    "self",
+    "screen"
+  ],
+  "Sight": [
+    "rules",
+    "blind",
+    "none"
+  ],
+  "Permit": [
+    "transport",
+    "self-checked"
+  ],
+  "Assertion": [
+    "pass",
+    "fail",
+    "not-checked"
+  ],
+  "Reading": [
+    "matches",
+    "contradicts",
+    "unavailable"
+  ],
+  "Cause": [
+    "",
+    "not-performed",
+    "error",
+    "timeout",
+    "unparsable",
+    "partial"
+  ],
+  "Fact": [
+    "hooks-loaded",
+    "folder-trust",
+    "mode-admitted",
+    "outranking-policy",
+    "policy-sources"
+  ],
+  "Want": [
+    "yes",
+    "no",
+    "trusted",
+    "untrusted"
+  ],
+  "Outcome": [
+    "read",
+    "not-performed",
+    "error",
+    "timeout",
+    "unparsable"
+  ],
+  "HookKind": [
+    "session-start",
+    "drift",
+    "config-change",
+    "other"
+  ],
+  "IDForm": [
+    "uuid",
+    "printable"
+  ],
+  "Class": [
+    "bound",
+    "foreign"
+  ],
+  "DeliveryReason": [
+    "baseline",
+    "assertion",
+    "readback-contradicts",
+    "deny-evidence-missing",
+    "invalid-input"
+  ],
+  "DenyReason": [
+    "pack-no-hook-port",
+    "pack-hooks-fail-open",
+    "pack-not-in-slice",
+    "pack-hooks-not-loaded",
+    "pack-unqualified",
+    "pack-policy-outranked",
+    "pack-hooks-unverified",
+    "pack-mode-drift",
+    "",
+    "invalid-input"
+  ],
+  "ClaimSource": [
+    "",
+    "client",
+    "hook"
+  ],
+  "Slot": [
+    "transport",
+    "self",
+    "hook"
+  ],
+  "DroppedReason": [
+    "basis-not-allowed",
+    "slot-basis",
+    "slot-source",
+    "hook-asking"
+  ],
+  "InputReason": [
+    "unknown-value",
+    "empty-value",
+    "inconsistent",
+    "too-long",
+    "not-printable",
+    "duplicate",
+    "negative",
+    "declaration-omits-required-row"
+  ]
+}
