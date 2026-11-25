@@ -1,0 +1,18 @@
+# file: /etc/systemd/system/backup.service
+# owner: root
+# group: root
+user::rw-
+user:agent:rw-
+group::r--
+mask::rw-
+other::r--
+
+# file: /etc/cron.d/job
+# owner: root
+# group: root
+user::rw-
+group::r--
+group:docker:rw-		#effective:r--
+mask::r--
+other::r--
+
