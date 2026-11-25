@@ -84,11 +84,12 @@
   and in a throwaway user unit with the lead unit's fixed properties,
   classifies each probe as connected, refused, or filtered or timed out,
   passes the lead's network only on a timeout the probe itself reports
-  after the sandbox showed the route it takes to the gate's address (the
-  kernel's choice: the longest mask, then the lowest metric; not a reject,
-  unreachable or blackhole route, not on lo, and not to an address of the
-  sandbox's own) and a source address on that route's interface (without
-  them the probe did not run), takes curl's "could not connect" (status 7,
+  after the sandbox showed the route it takes to the gate's address and
+  the source address the kernel selects for it, both from the kernel's own
+  lookup, `ip -4 route get` (a unicast route: not local, a loopback gate
+  included, not a reject, unreachable or blackhole route, not on lo; a
+  lookup that fails or cannot be made is indeterminate; without them the
+  probe did not run), takes curl's "could not connect" (status 7,
   no time to connect), a probe that did not run and a wrapper that ended
   with a status other than 0 for findings, and the runbook
   records its exit status). The runbook's last steps compare the trial's

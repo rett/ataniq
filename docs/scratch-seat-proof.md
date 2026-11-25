@@ -237,7 +237,7 @@ step 10, and the files stay, private (see [What is recorded](#what-is-recorded))
 ## Before the sitting
 
 None of these starts the daemon or a lead; c runs the claude copy, to read its
-version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
+version, and e runs pasta, bubblewrap, ip, curl and a throwaway user unit.
 `prepare.sh` prints c to g with your values.
 
 - **a. Build**, in the checkout, after `make doctor`:
@@ -340,7 +340,8 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
 - **d. The firewall is your rule.** The gate's port admits TCP from the
    authority host only, as [the firewall](seat-gate.md#the-firewall) says.
 - **e. OWNER ONLY: the lead's network, with the trial running** (it starts
-   pasta, bubblewrap, curl and a throwaway user unit, as the canary kit's
+   pasta, bubblewrap, ip (a route lookup, no packet), curl and a throwaway
+   user unit, as the canary kit's
    `netcheck.sh` does; it uses no credential and starts no agent):
 
    ```sh
@@ -366,19 +367,25 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    is a `FINDING`, and so is a connection, and so is a wrapper (the probe's
    shell, pasta and bubblewrap, or the unit) that ended with a status other
    than 0, whatever it printed. Inside the sandbox, before the probe, the
-   check establishes the route the sandbox takes to the gate's address, as
-   the kernel chooses it from `/proc/net/route` (of the routes that are up
-   and hold the address, the longest mask, then the lowest metric), and
-   prints `net route=... addr=...`: the route must not be a reject,
-   unreachable or blackhole route, not on `lo`, not a gateway route with no
-   gateway, and the gate's address must not be one of the sandbox's own
-   (`/proc/net/fib_trie`: the probe would reach the sandbox, not the gate);
-   the source address must be an IPv4 address of the sandbox other than
-   loopback on the route's interface. Without them the probe is not made,
-   the line ends `note=` and why (`reject`, `noroute`, `lo`, `local`,
-   `noaddress`), and the verdict says `the probe did not run: no usable
-   route and source address to the gate's address in the sandbox`. Any
-   `FINDING` there ends the sitting before it starts. The probe is curl with no configuration
+   check asks the kernel's own lookup for the gate's address, `ip -4 route
+   get` (iproute2's `ip`, from the host's `/usr/bin` or `/usr/sbin`, which
+   the sandbox binds), and prints `net route=... addr=...` with the output
+   interface and the source address the kernel selected. The route must be
+   a unicast route: not local (the gate's address one of the sandbox's own,
+   a loopback gate among them: the probe would reach the sandbox, not the
+   gate), not a reject, unreachable or blackhole route, not on `lo`, not
+   through a gateway of 0.0.0.0, with a source address that is not loopback
+   and not the gate's. A lookup that fails (as one through an unreachable
+   or prohibit route does), answers out of its form, or cannot be made (no
+   `ip` in the sandbox) is indeterminate. Nothing is inferred from subnets
+   or the sandbox's address list. Without a usable route the probe is not
+   made, the line ends `note=` and why (`local`, `reject`, `type`, `lo`,
+   `nogateway`, `noaddress`, `lookup`, `noip`), and the verdict says `the
+   probe did not run: no usable route and source address to the gate's
+   address in the sandbox`. What the two tables of the kernel would say is
+   what this lookup says; the check establishes no more than the kernel's
+   answer for that one address at that moment. Any `FINDING` there ends
+   the sitting before it starts. The probe is curl with no configuration
    file and no proxy, to the numeric address, and it sends no byte. The
    script then lists this host's listeners on non-loopback addresses and
    says what stays open until the drop rule is in place: the sandbox's
@@ -398,7 +405,7 @@ version, and e runs pasta, bubblewrap, curl and a throwaway user unit.
    `TestScratchSeatNetcheckClassifiesEachProbe` holds the classes on inert
    fixtures. What differs does not decide whether the gate answers: the binds
    (the host's `/usr` and a few `/etc` files here, the profile's table in the
-   sandbox) and the program inside (`sh` and `curl` here, the probe and the
+   sandbox) and the program inside (`sh`, `ip` and `curl` here, the probe and the
    agent there); the `resolv.conf` (the host's here, one the holder derives
    there), since the gate is an address and no name is looked up. The
    throwaway unit's name is systemd-run's, not a lead unit's: a rule that
