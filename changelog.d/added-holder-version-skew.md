@@ -17,4 +17,9 @@
   checked, nor are the status questions of the daemon's ready observer, so a
   skewed lead can still be stopped. In scratch mode the code of the refused
   receipt of `lead.start`, `lead.ticket` and `lead.inject` is
-  `holder-version-skew`.
+  `holder-version-skew`. A holder that starts as another build than the one
+  checked before the start (its executable replaced in between, which the
+  start looks up again) is stopped and the start refused
+  `holder-version-skew`: `ataniq-scratch start` reads the `holder.json` the
+  holder wrote from its own running executable before it reports the holder
+  started.

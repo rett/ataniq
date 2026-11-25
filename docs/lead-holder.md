@@ -106,10 +106,17 @@ ignored by git.
 
 Build the two from one checkout, in a git checkout: `start` and `ticket` refuse
 a holder that is not the build of `ataniq-scratch` itself, with
-`refused: holder-version-skew: ...` and exit status 1, and change nothing.
-`start` reads the build from the holder binary before it takes an epoch;
-`ticket` reads the build the running holder recorded in its `holder.json`
-before it asks the holder anything. A `holder.json` of another epoch than the
+`refused: holder-version-skew: ...` and exit status 1; a refusal before the
+start changes nothing. `start` reads the build from the holder binary before it takes an epoch, and
+again, once the holder has answered, from the `holder.json` the holder wrote
+from its own running executable: the binary may have been replaced between
+the first check and the start, which looks the path up again. A holder that
+started as another build is stopped (with `--direct` it is ended and the
+epoch is given back; in unit mode its unit is stopped with `systemctl --user
+stop` and the epoch is kept), `start` prints the refusal and why, and it
+exits 1 without saying that anything started. `ticket` reads the build the
+running holder recorded in its `holder.json` before it asks the holder
+anything. A `holder.json` of another epoch than the
 last one `start` took is refused first, with `refused: stale-epoch: ...`, which
 names both epochs: it is not the record of the holder that would be asked. The
 same build is the same main module path, module version, VCS revision and
