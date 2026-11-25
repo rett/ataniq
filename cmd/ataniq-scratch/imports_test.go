@@ -10,9 +10,10 @@ import (
 )
 
 // TestImportGuard keeps the command small: of this repository it may import
-// only the wire protocol package, and of anything else only the standard
-// library and golang.org/x/sys/unix. It reads the direct imports of the
-// command's non-test files.
+// only the wire protocol package and the holder's build identity (buildid,
+// which imports only the standard library), and of anything else only the
+// standard library and golang.org/x/sys/unix. It reads the direct imports of
+// the command's non-test files.
 func TestImportGuard(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -38,9 +39,9 @@ func TestImportGuard(t *testing.T) {
 			switch {
 			case p == "C", p == "unsafe":
 				t.Errorf("%s imports %s", name, p)
-			case p == "ataniq/internal/leadholder/wire", p == "golang.org/x/sys/unix":
+			case p == "ataniq/internal/leadholder/wire", p == "ataniq/internal/leadholder/buildid", p == "golang.org/x/sys/unix":
 			case strings.HasPrefix(p, "ataniq/") || p == "ataniq":
-				t.Errorf("%s imports %s: of this repository only the wire package is allowed", name, p)
+				t.Errorf("%s imports %s: of this repository only the wire and buildid packages are allowed", name, p)
 			case strings.Contains(first, "."):
 				t.Errorf("%s imports %s: only the standard library and golang.org/x/sys/unix are allowed", name, p)
 			}

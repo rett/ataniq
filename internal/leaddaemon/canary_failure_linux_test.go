@@ -46,6 +46,11 @@ func TestCanaryFailureCodes(t *testing.T) {
 		"an exhausted epoch":    {leadregistry.ErrEpochExhausted, CodeRefused, msgRegistryNo},
 		"invalid input":         {leadregistry.ErrInvalid, CodeRefused, msgRegistryNo},
 		"no role":               {leadregistry.ErrNoRole, CodeRefused, "the role is not defined"},
+		// Before the launch refusal it also matches: its own text says to
+		// define the role again.
+		"a profile this build does not launch": {
+			fmt.Errorf("sample: %w", leadregistry.ErrLaunchProfile), CodeRefused, msgProfileNotLaunchable,
+		},
 		// What is not known stays unavailable, a refusal of the registry beside
 		// it or not.
 		"a stop that is not proven": {

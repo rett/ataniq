@@ -17,6 +17,7 @@ import (
 
 	"ataniq/internal/clientapi"
 	"ataniq/internal/leadcanary"
+	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadholder/canaryroot"
 	"ataniq/internal/leadholder/wire"
 	"ataniq/internal/leadlifecycle"
@@ -152,6 +153,7 @@ const (
 	msgForeignUnit  = "a unit with the role's name is not the role's recorded unit"
 	msgFailed       = "the operation failed; see the daemon's log"
 	msgStaleEpoch   = "the epoch is not the role's current epoch"
+	msgNotReady     = "the holder of the epoch has not written its state file yet: the role is still starting; try again in a moment"
 	msgStopping     = "the daemon is stopping"
 	attachRoleWrite = string(wire.RoleWriter)
 	attachRoleView  = string(wire.RoleViewer)
@@ -186,6 +188,9 @@ type canaryExt struct {
 	// written, see [leadcanary.ReleasesMessage]) is not spent, so the lead may
 	// send another in the epoch; the canary's is spent whatever the answer.
 	scratch bool
+	// build is the check of the holder's build before a launch and before an
+	// attach (launchSkew, attachSkew).
+	build *buildid.Checker
 
 	mu sync.Mutex
 	// spent holds the epochs whose one message is spent. It starts from the
@@ -218,6 +223,7 @@ func (m *canaryMode) newExt(in *leadInstance, ctl *leadlifecycle.Controller, reg
 	return &canaryExt{
 		cfg: cfg, role: cfg.Role, holderDir: holderDir, ctl: ctl, reg: reg, ev: in.ev, adm: adm,
 		dial: m.dialFor, wait: m.injectFor, logf: m.d.logf, spent: spent, idPrefix: m.idPrefix, scratch: m.lead != nil,
+		build: m.build,
 		profile: leadregistry.Requested{
 			// The registry's runtime enum is checked by the registry; the config
 			// names the key. The model, the effort and the access mode are not
@@ -365,6 +371,9 @@ func (x *canaryExt) failure(op string, err error) *clientapi.ErrorBody {
 		return refused("a unit with the role's name is loaded")
 	case errors.Is(err, leadunit.ErrInvalidSpec):
 		return refused("the unit's limits are outside the bounds")
+	case errors.Is(err, leadregistry.ErrLaunchProfile):
+		// Before ErrLaunchRefused, which it matches too.
+		return refused(msgProfileNotLaunchable)
 	case errors.Is(err, leadregistry.ErrLaunchRefused):
 		return refused("the registry does not admit a launch in the role's state")
 	case errors.Is(err, leadregistry.ErrInvalid):
@@ -450,6 +459,11 @@ func (x *canaryExt) start(ctx context.Context) (any, *clientapi.ErrorBody) {
 	if x.recordFolderLeft() {
 		x.logf("canary start: %s", logRecordLeft)
 		return nil, refused(msgRecordLeft)
+	}
+	// The holder the unit would run is the daemon's own build, or nothing
+	// changes.
+	if f := x.launchSkew("canary start"); f != nil {
+		return nil, f.body()
 	}
 	e, err := x.ctl.Start(ctx, x.role)
 	if err != nil {
@@ -548,6 +562,70 @@ func (x *canaryExt) ticket(ctx context.Context, attach wire.Role) (any, *clienta
 	return res, nil
 }
 
+// launchSkew checks, before a launch, the build of the holder executable the
+// config names against the build the daemon expects (buildid). It returns nil
+// for the expected build, and otherwise the refusal of [skewRefusal].
+func (x *canaryExt) launchSkew(op string) *opFail {
+	return x.skewRefusal(op, x.build.BeforeLaunch(x.cfg.Holder.Executable))
+}
+
+// attachSkew checks, before anything is asked of the running holder of the
+// role's entry e (its current epoch), the build it recorded in holder.json in
+// its state folder against the build the daemon expects (buildid). A state
+// file of another epoch says nothing of the holder of this one (most often
+// that holder has not written its own yet) and is refused with stale-epoch,
+// before its build is looked at. So is a state folder with no state file while
+// the registry shows the role starting: the holder of a first start, or of a
+// start after one whose file was moved aside, has not written it yet, which
+// says nothing of a build either, and waiting is the way out, not a rebuild.
+// It returns nil for a file of the epoch that records the expected build, and
+// otherwise the refusal of [skewRefusal].
+func (x *canaryExt) attachSkew(op string, e leadregistry.Entry) *opFail {
+	err := x.holderBuild(e.Epoch)
+	var se *buildid.SkewError
+	if errors.As(err, &se) && se.Why == buildid.WhyNoStateFile && e.Shown.State == leadregistry.StateStarting {
+		x.logf("%s: the holder of epoch %d has no state file yet; the role is starting", op, e.Epoch)
+		return refusal(codeStaleEpoch, msgNotReady)
+	}
+	return x.skewRefusal(op, err)
+}
+
+// holderBuild checks the build the holder of the epoch recorded in holder.json
+// in its state folder against the build the daemon expects: nil for the
+// expected build, and otherwise the error of [buildid.Checker.BeforeAttach].
+// It logs nothing.
+func (x *canaryExt) holderBuild(epoch uint64) error {
+	layout, err := x.cfg.Layout()
+	if err != nil {
+		// Validated at setup; a layout that cannot be worked out is refused
+		// like a record that cannot be read.
+		return &buildid.SkewError{Expected: x.build.Expected, Why: buildid.WhyUnreadable, Cause: err}
+	}
+	return x.build.BeforeAttach(layout.Holder(), epoch)
+}
+
+// skewRefusal is nil for a nil err, and otherwise the refusal of a holder
+// check: the code holder-version-skew, with a message that says what was
+// found and names both builds (a holder that records no build, an older
+// holder, is refused as such), or for a state file of another epoch the code
+// stale-epoch, with a message that names both epochs. The cause of a read
+// that failed goes to the log.
+func (x *canaryExt) skewRefusal(op string, err error) *opFail {
+	if err == nil {
+		return nil
+	}
+	var se *buildid.SkewError
+	if errors.As(err, &se) && se.Cause != nil {
+		x.logf("%s: %s (%s)", op, SafeText(err.Error()), SafeText(se.Cause.Error()))
+	} else {
+		x.logf("%s: %s", op, SafeText(err.Error()))
+	}
+	if errors.Is(err, buildid.ErrOtherEpoch) {
+		return refusal(codeStaleEpoch, SafeText(err.Error()))
+	}
+	return refusal(codeHolderVersionSkew, SafeText(err.Error()))
+}
+
 // opFail is why an operation of the extension did not give a result: whether it
 // was refused (nothing was done) or could not be carried out, the reason code
 // and the fixed text. The canary's operations answer it as an error; the lead
@@ -584,6 +662,11 @@ func (x *canaryExt) ticketFor(ctx context.Context, attach wire.Role, want uint64
 	}
 	if want != 0 && want != e.Epoch {
 		return CanaryTicketResult{}, refusal(codeStaleEpoch, msgStaleEpoch)
+	}
+	// The running holder recorded the daemon's own build for the epoch, or no
+	// ticket is minted and the holder is asked nothing.
+	if f := x.attachSkew("ticket", e); f != nil {
+		return CanaryTicketResult{}, f
 	}
 	ticket, err := wire.NewTicket()
 	if err != nil {
@@ -625,7 +708,9 @@ func (x *canaryExt) ticketFor(ctx context.Context, attach wire.Role, want uint64
 //
 // A refusal before the request frame is written leaves the message unspent: a
 // message that does not pass the admission, a role that is not running, a
-// second message, the holder's socket that cannot be dialled. Once the frame
+// holder that did not record the daemon's build for the epoch
+// (holder-version-skew, or stale-epoch for a state file of another epoch or
+// none yet while the role is starting; see attachSkew), a second message, the holder's socket that cannot be dialled. Once the frame
 // is written the message is spent for the epoch whatever comes back (the
 // canary's rule; the exception of scratch mode is below), and
 // whatever becomes of the daemon: the inject-sent line of the evidence, which
@@ -669,7 +754,8 @@ func (x *canaryExt) inject(ctx context.Context, p CanaryInjectParams) (any, *cli
 // [canaryExt.ticketFor] is for a ticket. The check of the epoch comes after the
 // one of whether the role is running and before the one of whether the epoch's
 // message is spent, so that a message that names an epoch that is not the
-// role's is never counted against the role's. The frame the holder gets
+// role's is never counted against the role's; the check of the holder's build
+// follows it, also before the spent message is looked at. The frame the holder gets
 // carries the epoch that was checked.
 func (x *canaryExt) injectFor(ctx context.Context, p CanaryInjectParams, want uint64) (CanaryInjectResult, *opFail) {
 	e, running := x.runningEntry()
@@ -695,6 +781,12 @@ func (x *canaryExt) injectFor(ctx context.Context, p CanaryInjectParams, want ui
 	if want != 0 && want != epoch {
 		x.refuse(p.MessageID, epoch, codeStaleEpoch)
 		return CanaryInjectResult{}, refusal(codeStaleEpoch, msgStaleEpoch)
+	}
+	// The running holder recorded the daemon's own build for the epoch, as
+	// for a ticket, or no frame is written and the message is not spent.
+	if f := x.attachSkew("inject", e); f != nil {
+		x.refuse(p.MessageID, epoch, f.code)
+		return CanaryInjectResult{}, f
 	}
 	x.mu.Lock()
 	switch {

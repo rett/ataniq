@@ -338,7 +338,11 @@ func TestWholeLineTruncationIsNotDetected(t *testing.T) {
 	}
 }
 
-func TestUnknownPayloadFieldIsCorrupt(t *testing.T) {
+// TestUnknownPayloadMemberIsTolerated: a payload member this build does not
+// know, as a newer build may write, is ignored on replay; the record applies as
+// what this build knows of it. (Before the registry read records written by
+// other builds, such a line was corrupt.)
+func TestUnknownPayloadMemberIsTolerated(t *testing.T) {
 	data, _, _ := buildJournal(t)
 	lines := journalLines(data)
 	type extra struct {
@@ -346,9 +350,11 @@ func TestUnknownPayloadFieldIsCorrupt(t *testing.T) {
 		Extra   int     `json:"extra"`
 	}
 	line := craft(t, lines, 2, 2, kindDesired, lead(t, "alpha"), &extra{DesiredRunning, 1})
-	var ce *CorruptError
-	if err := openErr(t, append(bytes.Join(lines[:2], nil), line...)); !errors.As(err, &ce) || ce.Line != 3 {
-		t.Fatalf("unknown payload field: %v", err)
+	dir := writeJournal(t, append(bytes.Join(lines[:2], nil), line...))
+	r := openReg(t, dir)
+	e, err := r.Get(lead(t, "alpha"))
+	if err != nil || e.Desired != DesiredRunning {
+		t.Fatalf("unknown payload member: %+v %v", e, err)
 	}
 }
 

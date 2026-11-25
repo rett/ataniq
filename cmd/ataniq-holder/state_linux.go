@@ -13,12 +13,14 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ataniq/internal/leadholder/buildid"
 	"ataniq/internal/leadholder/session"
 )
 
 // StateFileName is the holder's state file in the state folder. It is written
-// before the agent starts (the lead-hosting design, section 1.1).
-const StateFileName = "holder.json"
+// before the agent starts (the lead-hosting design, section 1.1). A launcher
+// reads its build member under this name (buildid.RecordFileName).
+const StateFileName = buildid.RecordFileName
 
 // PreviousFinalName is where a final record left by an earlier epoch is moved
 // before a new epoch writes its state file: final.json then always belongs to
@@ -50,6 +52,13 @@ type stateFile struct {
 	Rows          int       `json:"rows"`
 	// Agent is the agent's program, ARGV[0].
 	Agent string `json:"agent"`
+	// Build is the build identity of this holder, read from the executable
+	// that runs (/proc/<pid>/exe) when it started. A launcher compares it with
+	// the build it expects before it attaches (buildid); a holder of a build
+	// before this member writes none. A launcher of a build before this member
+	// does not read holder.json at all, and the canary run kit's reader prints
+	// any member, so no older reader refuses a file that has it.
+	Build buildid.Identity `json:"build"`
 	// Scratch is true for a scratch agent, the only kind a build without the
 	// ataniq_canary tag hosts.
 	Scratch bool `json:"scratch"`

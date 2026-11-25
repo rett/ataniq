@@ -19,9 +19,11 @@ import (
 const module = "ataniq"
 
 // scratchRepoDeps are the packages of this repository the command depends on
-// in a build without the ataniq_canary tag, directly or not: exactly these six.
-// A build with the tag adds the written-out list in imports_canary_test.go.
+// in a build without the ataniq_canary tag, directly or not: exactly these
+// seven. A build with the tag adds the written-out list in
+// imports_canary_test.go.
 var scratchRepoDeps = []string{
+	"ataniq/internal/leadholder/buildid",
 	"ataniq/internal/leadholder/eventlog",
 	"ataniq/internal/leadholder/ptyhost",
 	"ataniq/internal/leadholder/serve",
@@ -123,7 +125,7 @@ func guardGoEnv() []string {
 // TestImportGuard keeps the command small. It walks the whole dependency list
 // of the command (go list -deps, offline, without the tests' own imports), not
 // the direct imports: the packages of this repository in it are exactly the
-// list of this build (guardRepoDeps: six without the ataniq_canary tag, a
+// list of this build (guardRepoDeps: seven without the ataniq_canary tag, a
 // written-out longer list with it), and nothing under qualification/, no
 // console package beyond sessionpane, internal/leadcanary, internal/leaddaemon
 // and the fake agent are ever among them.
@@ -189,7 +191,7 @@ func TestImportGuardDirectImports(t *testing.T) {
 func TestImportGuardCheck(t *testing.T) {
 	base := append([]string{"fmt", "golang.org/x/sys/unix", module + "/cmd/ataniq-holder"}, scratchRepoDeps...)
 	if p := checkRepoDeps(base, scratchRepoDeps); len(p) != 0 {
-		t.Fatalf("the six are refused: %v", p)
+		t.Fatalf("the seven are refused: %v", p)
 	}
 	for _, c := range []struct{ extra, want string }{
 		{module + "/qualification/leadsandbox/internal/harness", "qualification/"},

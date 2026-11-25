@@ -112,6 +112,7 @@ func (l *leadEnv) resetScratch() {
 	l.scratch = &Scratch{
 		Config: l.w.Config, Getenv: l.w.Getenv(),
 		InjectWait: 300 * time.Millisecond, DialTimeout: 2 * time.Second,
+		HolderBuild: sameHolderBuild(),
 	}
 }
 
@@ -356,7 +357,7 @@ func bareMode(t *testing.T, w *provisiontest.ScratchWorld) *leadMode {
 	log := &syncBuffer{}
 	d := &daemon{Config: Config{StateDir: w.State, RuntimeDir: w.Runtime, Clock: leadunit.SystemClock{}}, log: log}
 	router := newLeadRouter(msgNotALead)
-	cm := &canaryMode{d: d, router: router, injectFor: 300 * time.Millisecond, dialFor: 2 * time.Second, idPrefix: idPrefixLead}
+	cm := &canaryMode{d: d, router: router, injectFor: 300 * time.Millisecond, dialFor: 2 * time.Second, idPrefix: idPrefixLead, build: sameHolderBuild()}
 	m := &leadMode{
 		cm: cm, d: d, cfg: w.Config, getenv: w.Getenv(), provisionT: time.Minute,
 		roles: map[leadrole.Role]*leadRole{}, maxRunning: w.Config.MaxRunning,
