@@ -16,6 +16,12 @@
       "transports": ["terminal"],
       "verified_on": "",
       "source": "internal/inject/screen/testdata/codex-0.169"
+    },
+    {
+      "version": "0.172.0",
+      "transports": ["terminal"],
+      "verified_on": "",
+      "source": "packs/codex/launchpolicy/0.172.0.help.txt"
     }
   ]
 }

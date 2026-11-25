@@ -5,7 +5,11 @@ A pack gives Ataniq a stable name for a provider runtime and describes the build
 | Pack | Qargi runtime | Terminal version | Alias |
 | --- | --- | --- | --- |
 | `claude` | `claude-code` | `2.1.325` | |
+| `claude` | `claude-code` | `2.1.332` | |
 | `codex` | `codex` | `0.169` | `0.169.0` |
+| `codex` | `codex` | `0.172.0` | |
+
+The screen-qualified Claude 2.1.325 and Codex 0.169 builds have no launch policy. A launch for either build, including the Codex alias, is refused with `policy-missing`. The newer rows identify installed builds by their captured help. Their verification dates remain empty.
 
 ## Adding a pack
 

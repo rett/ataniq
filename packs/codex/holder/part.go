@@ -16,6 +16,9 @@ func (p Part) Manifest() pack.Manifest {
 			Version: "0.169", Aliases: []string{"0.169.0"},
 			Transports: []pack.Transport{pack.Terminal},
 			Source:     "internal/inject/screen/testdata/codex-0.169",
+		}, {
+			Version: "0.172.0", Transports: []pack.Transport{pack.Terminal},
+			Source: "packs/codex/launchpolicy/0.172.0.help.txt",
 		}},
 	}
 }
