@@ -354,15 +354,29 @@ on the holder's word, and in no other way:
   holder reads from its own running executable. `lead.start` checked the holder
   executable by its path, and the unit manager looks the path up again, so a
   holder rebuilt in between runs as another build. A holder that is not the
-  daemon's build is never shown `ready`. When this daemon's own `lead.start`
-  launched the epoch, the observer stops the lead as `lead.stop` does (under the
-  role's operation lock, taken as a try-lock), logs why and writes a `stop`
-  line in the lead's evidence whose detail is the `holder-version-skew`
-  refusal; the next `lead.start` is then refused `holder-version-skew` before
-  anything changes while the executable is still the other build. A lead the
-  daemon adopted at its start is left `starting` and is not stopped, and its
-  ticket and message are refused `holder-version-skew`. A `holder.json` that is
-  not yet the epoch's is asked again, as a holder that does not answer is.
+  daemon's build is never shown `ready`. The observer also reads the file
+  after a question that got no usable answer: a holder of another build may
+  write its `holder.json` of the epoch and never answer, and a file of the
+  epoch that records another build (or none) is acted on as an answer would
+  be; a file that is missing or cannot be read says nothing without an
+  answer. When this daemon's own `lead.start` launched the epoch, the observer
+  stops the lead as `lead.stop` does (under the role's operation lock, taken as
+  a try-lock, and only while the lead is shown `starting` in that epoch, so a
+  later epoch is never stopped), logs why and writes a `stop` line in the
+  lead's evidence whose detail is the `holder-version-skew` refusal. That
+  `lead.start` has already returned by then: its receipt says `done`, with the
+  state `starting`; the stop is the daemon's own later act. The stop has a
+  deadline of its own, 30 s, not what is left of the observer's 60 s, so a
+  holder that answers at the end of the observation is still stopped whole.
+  A stop that is not proven is not tried again; it is shown: the lifecycle
+  leaves the lead `unknown` (`stop-unproven`), and a lead it left in another
+  state is shown `degraded`, with the reason `skew-stop-unproven` and the
+  refusal in the detail, until the owner's `lead.stop`. The next `lead.start` is
+  refused `holder-version-skew` before anything changes while the executable
+  is still the other build. A lead the daemon adopted at its start is left
+  `starting` and is not stopped, and its ticket and message are refused
+  `holder-version-skew`. A `holder.json` that is not yet the epoch's is asked
+  again, as a holder that does not answer is.
 - **What it sets.** The shown state `ready` for that epoch, with the reason code
   `holder-ready`, the evidence kind `ataniq-observation` and the detail "the
   holder is up and the agent was started; the agent's login is not observed".

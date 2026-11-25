@@ -26,16 +26,27 @@ import (
 // the daemon checked the holder executable by its path before the start, and
 // the unit manager looks the path up again, so a holder rebuilt in between
 // runs as another build. A lead whose holder is not the expected build is
-// never shown ready. When this daemon launched the epoch itself, it stops the
-// lead (stopSkewed); a lead it adopted is left starting, and its ticket and
-// message are refused holder-version-skew as before.
+// never shown ready. The file is read after an answer for the epoch, and also
+// after a question that got no usable answer: a holder of another build can
+// write its file of the epoch and never answer, and a file of the epoch that
+// confirms another build (buildid.Confirmed) is acted on as an answer would
+// be. When this daemon launched the epoch itself, it stops the lead
+// (stopSkewed). That launch's lead.start has already returned by then, done,
+// with the state starting: the stop is the daemon's own later act, under the
+// role's lock and with a deadline of its own (skewStopWithin), not what is
+// left of the observation's. A stop that is not proven is shown to the owner:
+// the lifecycle leaves the lead unknown (stop-unproven), and a lead it left in
+// another state is shown degraded with the reason skew-stop-unproven; the
+// owner's lead.stop is the way out of both. A lead the daemon adopted is left
+// starting, and its ticket and message are refused holder-version-skew as
+// before.
 //
 // What ready means here is the holder's word and no more: the holder is up and
 // the agent was started. The agent's login is not observed, so ready is not a
 // claim that the agent works. There is no way back: this file never sets
-// degraded or starting, a lead that is ready stays so until a stop, and a
-// failed or slow observation leaves the lead starting with nothing else
-// changed.
+// starting, sets degraded only for a holder of another build whose stop is not
+// proven, a lead that is ready stays so until a stop, and a failed or slow
+// observation leaves the lead starting with nothing else changed.
 //
 // The observer never blocks lead.start or a client call, and takes no lock
 // across the holder call: it takes the role's operation lock, as a try-lock,
@@ -55,11 +66,22 @@ const (
 	// it doubles after each question that did not settle the matter, up to
 	// eight times this.
 	DefaultReadyBackoff = 200 * time.Millisecond
+	// DefaultSkewStopWithin bounds the stop of a holder of another build that
+	// this daemon launched, counted from when the stop begins: the stop's
+	// signals, its waits for the control group (2 s and the proof bound of
+	// 5 s) and the unit manager's calls, with room to spare.
+	DefaultSkewStopWithin = 30 * time.Second
 
 	// codeHolderReady is the reason code of a state the observer sets.
 	codeHolderReady = "holder-ready"
 	// detailHolderReady is its detail.
 	detailHolderReady = "the holder is up and the agent was started; the agent's login is not observed"
+	// codeSkewStopUnproven is the reason of the degraded state of a lead whose
+	// holder is another build and whose stop by the daemon is not proven.
+	codeSkewStopUnproven = "skew-stop-unproven"
+	// detailSkewStopUnproven heads its detail, before the refusal of the
+	// build check.
+	detailSkewStopUnproven = "the holder is another build and the daemon's stop of it is not proven; stop the lead: "
 )
 
 // leadReadyHook is called by an observer when the holder has answered for the
@@ -214,11 +236,14 @@ func (l *leadMode) watchReady(ctx context.Context, lr *leadRole, epoch uint64) {
 		delay = DefaultReadyBackoff
 	}
 	longest := 8 * delay
+	// base is the observer's own context, without the observation's deadline:
+	// the stop of a holder of another build is bounded on its own.
+	base := ctx
 	ctx, cancel := context.WithTimeout(ctx, within)
 	defer cancel()
 	var why string
 	for {
-		done, w := l.readyStep(ctx, lr, epoch)
+		done, w := l.readyStep(ctx, base, lr, epoch)
 		if done {
 			return
 		}
@@ -244,8 +269,10 @@ func (l *leadMode) watchReady(ctx context.Context, lr *leadRole, epoch uint64) {
 // readyStep makes one question. It reports done when there is nothing more to
 // do (the state was set, or the lead is no longer starting in the epoch, or
 // the registry cannot be used), and otherwise a short word for why the holder
-// did not settle it.
-func (l *leadMode) readyStep(ctx context.Context, lr *leadRole, epoch uint64) (done bool, why string) {
+// did not settle it. ctx bounds the observation; base is the observer's
+// context without that bound, from which the stop of a holder of another
+// build takes its own.
+func (l *leadMode) readyStep(ctx, base context.Context, lr *leadRole, epoch uint64) (done bool, why string) {
 	if !l.startingIn(lr, epoch) {
 		return true, ""
 	}
@@ -255,14 +282,29 @@ func (l *leadMode) readyStep(ctx context.Context, lr *leadRole, epoch uint64) (d
 	}, l.cm.dialFor, l.cm.dialFor)
 	switch {
 	case err != nil:
-		return false, "no usable answer"
+		why = "no usable answer"
 	case !resp.OK:
-		return false, "refused: " + SafeText(resp.Code)
+		why = "refused: " + SafeText(resp.Code)
 	case resp.Status == nil:
-		return false, "no status in the answer"
+		why = "no status in the answer"
 	case resp.Status.Epoch != epoch || resp.Status.Lead != lr.role.String():
 		// Another epoch or another lead: not this lead's holder. Ignored.
-		return false, "the answer is for another epoch or lead"
+		why = "the answer is for another epoch or lead"
+	}
+	if why != "" {
+		// No answer of the epoch's holder, but its state file may be there:
+		// a holder of another build that never answers is known by the file
+		// it wrote for the epoch from its own executable. Only a confirmed
+		// mismatch is acted on; a file that is missing or cannot be read
+		// says nothing without an answer.
+		if berr := ext.holderBuild(epoch); buildid.Confirmed(berr) {
+			f := ext.skewRefusal("scratch ready "+strconv.Quote(lr.key), berr)
+			if l.stopSkewed(base, lr, epoch, f) {
+				return true, ""
+			}
+			return false, "the operation lock was held"
+		}
+		return false, why
 	}
 	if leadReadyHook != nil {
 		leadReadyHook("answered")
@@ -280,7 +322,7 @@ func (l *leadMode) readyStep(ctx context.Context, lr *leadRole, epoch uint64) (d
 			return false, "the holder's state file is not the epoch's yet"
 		}
 		f := ext.skewRefusal("scratch ready "+strconv.Quote(lr.key), err)
-		if l.stopSkewed(ctx, lr, epoch, f) {
+		if l.stopSkewed(base, lr, epoch, f) {
 			return true, ""
 		}
 		return false, "the operation lock was held"
@@ -298,9 +340,17 @@ func (l *leadMode) readyStep(ctx context.Context, lr *leadRole, epoch uint64) (d
 // is recorded in the evidence with the refusal as its detail; a lead this
 // daemon adopted is left as it is shown, starting. It takes the role's
 // operation lock as a try-lock, and reports done: false only when the lock
-// was held, which the caller tries again. A stop that fails leaves the epoch
-// to the settle timer, as a failed lead.stop does.
-func (l *leadMode) stopSkewed(ctx context.Context, lr *leadRole, epoch uint64, f *opFail) (done bool) {
+// was held, which the caller tries again.
+//
+// The stop is fenced to the launch: it is made under the role's lock, which
+// every start, stop and define of the role takes, and only while the lead is
+// shown starting in the epoch this daemon launched, so it never stops a later
+// epoch. Its context is base, which ends when the daemon stops, bounded by
+// skewStopWithin of its own: a holder that answered near the end of the
+// observation still gets a whole stop. A stop that fails is not tried again
+// (the settle timer is for a pending intent, and this launch has its
+// outcome): it is shown to the owner by showStopUnproven.
+func (l *leadMode) stopSkewed(base context.Context, lr *leadRole, epoch uint64, f *opFail) (done bool) {
 	if !lr.tryLock() {
 		return false
 	}
@@ -313,16 +363,62 @@ func (l *leadMode) stopSkewed(ctx context.Context, lr *leadRole, epoch uint64, f
 		return true
 	}
 	l.d.logf("scratch ready %q: the holder that started for epoch %d is not the build checked before the start; the lead is stopped: %s", lr.key, epoch, SafeText(f.msg))
+	within := l.skewStopWithin
+	if within <= 0 {
+		within = DefaultSkewStopWithin
+	}
+	ctx, cancel := context.WithTimeout(base, within)
 	e, err := l.ctl.Stop(ctx, lr.role)
+	cancel()
 	if err != nil {
 		l.armSettle(lr)
 		l.registryDown(err)
 		l.d.logf("scratch ready %q: the stop of the holder of another build failed: %s", lr.key, SafeText(err.Error()))
+		l.showStopUnproven(lr, epoch, f)
 		return true
 	}
 	l.cancelSettle(lr)
 	lr.in.ext.record(leadcanary.Entry{Event: leadcanary.EventStop, Epoch: e.Epoch, Detail: f.msg})
 	return true
+}
+
+// showStopUnproven shows the owner a lead of epoch whose holder is another
+// build (f is the refusal of the check) and whose stop by stopSkewed failed.
+// The caller holds the role's operation lock. A lead the stop left unknown
+// (stop-unproven, or a unit that is not its own) says so already, and one it
+// left stopped or ended is gone; a lead it left in a live state (starting,
+// stopping, or a state the registry was not changed from) is shown degraded
+// with the reason skew-stop-unproven and the refusal in the detail, which no
+// observer changes: lead.stop is the way out.
+func (l *leadMode) showStopUnproven(lr *leadRole, epoch uint64, f *opFail) {
+	e, err := l.reg.Get(lr.role)
+	if err != nil {
+		l.registryDown(err)
+		return
+	}
+	if e.Epoch != epoch {
+		return
+	}
+	switch e.Shown.State {
+	case leadregistry.StateUnknown:
+		l.d.logf("scratch ready %q: the lead of epoch %d is shown unknown (%s): stop it", lr.key, epoch, SafeText(e.Shown.Reason.Code))
+		return
+	case leadregistry.StateStopped, leadregistry.StateEnded:
+		return
+	}
+	detail := detailSkewStopUnproven + f.msg
+	if len(detail) > leadregistry.MaxReasonDetailBytes {
+		detail = detail[:leadregistry.MaxReasonDetailBytes]
+	}
+	if _, err := l.reg.SetState(lr.role, leadregistry.StateChange{
+		Epoch: epoch, State: leadregistry.StateDegraded, Evidence: leadregistry.EvidenceObservation,
+		Reason: leadregistry.Reason{Code: codeSkewStopUnproven, Detail: detail},
+	}); err != nil {
+		l.registryDown(err)
+		l.d.logf("scratch ready %q: the state degraded cannot be set for epoch %d: %s", lr.key, epoch, SafeText(err.Error()))
+		return
+	}
+	l.d.logf("scratch ready %q: the lead of epoch %d is shown degraded (%s): stop it", lr.key, epoch, codeSkewStopUnproven)
 }
 
 // startingIn reports whether the lead is shown starting in the epoch, with its

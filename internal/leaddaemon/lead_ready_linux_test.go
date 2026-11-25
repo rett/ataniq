@@ -4,6 +4,7 @@ package leaddaemon
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"strings"
@@ -876,4 +877,139 @@ func TestLeadReadyLeavesAnAdoptedHolderOfAnotherBuild(t *testing.T) {
 		t.Fatalf("%d starts", n)
 	}
 	want(t, l.ticket("alpha", 1, "writer"), leadwire.StatusRefused, "holder-version-skew")
+}
+
+// waitLog waits for the daemon's log to hold text.
+func (l *leadEnv) waitLog(text string) {
+	l.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(l.log.String(), text) {
+		if time.Now().After(deadline) {
+			l.t.Fatalf("no %q in the log:\n%s", text, l.log)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// The reviewer's case of a holder that never answers: the holder that started
+// for this daemon's start wrote its holder.json of the epoch from its own
+// running executable, which is another build, and gives no usable status
+// (no status in its answers, or nothing listens at all). The observer reads
+// the file after each question that got no answer, and the lead is stopped,
+// with the stop in the evidence, as for one that answered; it does not stay
+// starting after the observation ends.
+func TestLeadReadyStopsAHolderOfAnotherBuildThatDoesNotAnswer(t *testing.T) {
+	for name, listens := range map[string]bool{"no status in its answers": true, "nothing listens": false} {
+		t.Run(name, func(t *testing.T) {
+			l := newLeadEnv(t)
+			l.readyBounds(2 * time.Second)
+			l.scratch.HolderBuild = otherBuildRecord()
+			l.start()
+			want(t, l.define("alpha"), leadwire.StatusDone, "")
+			if listens {
+				h := newReadyHolder(roleOf("alpha"))
+				h.epoch.Store(1)
+				h.noStatus.Store(true)
+				l.holder("alpha", h.answer)
+			}
+			s := l.startLead("alpha")
+			want(t, s, leadwire.StatusDone, "")
+			var sr leadwire.StartResult
+			result(t, s, &sr)
+			if sr.State != "starting" || sr.Epoch != 1 {
+				t.Fatalf("the start result: %+v", sr)
+			}
+			l.waitState("alpha", "stopped")
+			ev := l.evidenceOf("alpha")
+			if len(ev) == 0 || ev[len(ev)-1] != "stop" {
+				t.Fatalf("evidence %v", ev)
+			}
+			if !strings.Contains(l.log.String(), "is not the build checked before the start; the lead is stopped") {
+				t.Fatalf("log:\n%s", l.log)
+			}
+		})
+	}
+}
+
+// A holder of the expected build that never answers, and one whose
+// holder.json cannot be read, confirm no other build: the lead is not stopped
+// and stays starting once the observation ends.
+func TestLeadReadyDoesNotStopASilentHolderOfNoConfirmedBuild(t *testing.T) {
+	for name, rec := range map[string]func(string, uint64) (buildid.Record, error){
+		"the expected build": sameHolderBuild().Record,
+		"an unreadable file": func(string, uint64) (buildid.Record, error) {
+			return buildid.Record{}, errors.New("the state file is not a JSON object of a holder")
+		},
+		"no file": func(string, uint64) (buildid.Record, error) {
+			return buildid.Record{}, os.ErrNotExist
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			l := newLeadEnv(t)
+			l.readyBounds(300 * time.Millisecond)
+			l.scratch.HolderBuild.Record = rec
+			l.start()
+			h := newReadyHolder(roleOf("alpha"))
+			h.epoch.Store(1)
+			h.noStatus.Store(true)
+			l.upWith("alpha", h)
+			l.waitLog("the lead stays starting")
+			l.stays("alpha", "starting", 100*time.Millisecond)
+			if strings.Contains(l.log.String(), "the lead is stopped") {
+				t.Fatalf("log:\n%s", l.log)
+			}
+		})
+	}
+}
+
+// A holder of another build that answers at the very end of the observation
+// still gets a whole stop: the stop has a deadline of its own, not what is
+// left of the observation's, which has run out when it begins.
+func TestLeadReadySkewStopHasItsOwnDeadline(t *testing.T) {
+	l := newLeadEnv(t)
+	l.readyBounds(200 * time.Millisecond)
+	l.scratch.HolderBuild = otherBuildRecord()
+	var once sync.Once
+	leadReadyHook = func(stage string) {
+		once.Do(func() { time.Sleep(400 * time.Millisecond) }) // past the observation's end
+	}
+	t.Cleanup(func() { leadReadyHook = nil })
+	l.start()
+	h := newReadyHolder(roleOf("alpha"))
+	h.epoch.Store(1)
+	l.upWith("alpha", h)
+	l.waitState("alpha", "stopped")
+	if ev := l.evidenceOf("alpha"); len(ev) == 0 || ev[len(ev)-1] != "stop" {
+		t.Fatalf("evidence %v", ev)
+	}
+}
+
+// A stop of a holder of another build that is not proven (here its own
+// deadline is already over when it begins, so the lifecycle does nothing) is
+// not left as a lead shown starting that nothing watches: the lead is shown
+// degraded with the reason skew-stop-unproven and the refusal in the detail,
+// stays so, and the owner's stop ends it.
+func TestLeadReadyShowsAnUnprovenSkewStop(t *testing.T) {
+	l := newLeadEnv(t)
+	l.readyBounds(10 * time.Second)
+	l.scratch.HolderBuild = otherBuildRecord()
+	l.scratch.SkewStopWithin = time.Nanosecond
+	l.start()
+	h := newReadyHolder(roleOf("alpha"))
+	h.epoch.Store(1)
+	l.upWith("alpha", h)
+	l.waitState("alpha", "degraded")
+	state, code, evidence, detail := l.shown("alpha")
+	if state != "degraded" || code != codeSkewStopUnproven || evidence != "ataniq-observation" ||
+		!strings.HasPrefix(detail, detailSkewStopUnproven+"holder-version-skew: the holder is another build") {
+		t.Fatalf("shown: %q %q %q %q", state, code, evidence, detail)
+	}
+	if row := l.row("alpha"); row.State != "degraded" || row.StateReason != codeSkewStopUnproven || row.Epoch != 1 {
+		t.Fatalf("the row: %+v", row)
+	}
+	l.stays("alpha", "degraded", 150*time.Millisecond)
+	want(t, l.stopLead("alpha", 1), leadwire.StatusDone, "")
+	if state, _, _, _ := l.shown("alpha"); state != "stopped" {
+		t.Fatalf("after the stop: %q", state)
+	}
 }

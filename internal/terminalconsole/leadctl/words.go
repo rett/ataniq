@@ -401,6 +401,9 @@ var stateWords = map[[2]string]string{
 	// its window: the daemon settles it when the window ends.
 	{"unknown", reasonLaunchUnsettled}: unsettledWords,
 	{"unknown", reasonLaunchReplyLost}: unsettledWords,
+	// A holder that started as another build than the one checked before the
+	// start, which the daemon could not prove stopped: the owner stops it.
+	{"degraded", "skew-stop-unproven"}: "the holder is another build and its stop is not proven; stop the lead",
 }
 
 // stateLine is the line about the row under the cursor: its state in words,

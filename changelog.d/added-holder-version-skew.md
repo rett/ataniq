@@ -23,6 +23,15 @@
   from its own running executable. `ataniq-scratch start` reads that file
   before it reports the holder started, also when the holder did not answer
   its status in time, and stops a holder of another build and refuses the
-  start `holder-version-skew`. The daemon in scratch mode reads it before it
-  shows a lead `ready` (a lead it adopted is left `starting`, not stopped; the
-  canary's holder is refused at its ticket and message).
+  start `holder-version-skew`. In the daemon's scratch mode the start is not
+  refused: `lead.start` has already returned a `done` receipt with the state
+  `starting` when the ready observer reads the file, after the holder answers
+  its status or, when it does not, after each question. A lead whose file
+  records another build is never shown `ready`; when this daemon launched it,
+  the daemon then stops it on its own, with a deadline of its own, and writes
+  the stop in the lead's evidence; a stop that is not proven leaves the lead
+  `unknown` (`stop-unproven`) or `degraded` with the reason
+  `skew-stop-unproven`, for the owner's `lead.stop`, and the next `lead.start`
+  is refused `holder-version-skew` while the executable is the other build. A
+  lead the daemon adopted is left `starting`, not stopped; the canary's holder
+  is refused at its ticket and message.
